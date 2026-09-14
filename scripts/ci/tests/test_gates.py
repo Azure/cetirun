@@ -319,13 +319,30 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn("comment-summary-in-pr: never", text)
         self.assertIn("run: make license-check", text)
 
-    def test_ci_pyjwt_has_both_security_fixes(self):
+    def test_ci_dependencies_meet_security_floors(self):
         requirements = (validate.ROOT / "scripts/ci/requirements.txt").read_text()
-        version = re.search(
-            r"^PyJWT\[crypto\]==(\d+)\.(\d+)\.(\d+)$", requirements, re.MULTILINE
-        )
-        self.assertIsNotNone(version)
-        self.assertGreaterEqual(tuple(map(int, version.groups())), (2, 13, 0))
+        for package, minimum in {
+            "aiohttp": (3, 14, 3),
+            "PyJWT[crypto]": (2, 13, 0),
+            "pytest": (9, 0, 3),
+        }.items():
+            with self.subTest(package=package):
+                version = re.search(
+                    rf"^{re.escape(package)}==(\d+)\.(\d+)\.(\d+)$",
+                    requirements,
+                    re.MULTILINE,
+                )
+                self.assertIsNotNone(version)
+                self.assertGreaterEqual(tuple(map(int, version.groups())), minimum)
+                if package == "aiohttp":
+                    image = (
+                        validate.ROOT / "app/cetirun-chart/Dockerfile.openclaw"
+                    ).read_text()
+                    self.assertIn(
+                        "ARG CETIRUN_AUTH_AIOHTTP_VERSION="
+                        + ".".join(version.groups()),
+                        image,
+                    )
 
     def test_component_runtime_bases_reject_known_vulnerable_digest(self):
         images = set()

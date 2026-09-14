@@ -27,7 +27,7 @@ class ImageDependencyTests(unittest.TestCase):
             },
             "Dockerfile.openclaw": {
                 "OPENCLAW_VERSION": "2026.6.35",
-                "CETIRUN_AUTH_AIOHTTP_VERSION": "3.13.3",
+                "CETIRUN_AUTH_AIOHTTP_VERSION": "3.14.3",
             },
         }
         for filename, arguments in minimums.items():
