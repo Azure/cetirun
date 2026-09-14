@@ -1,0 +1,50 @@
+name: Feature request
+description: Suggest an improvement to CetiRun.
+title: "[Feature]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Start with the problem you want to solve and search existing requests first.
+        Keep all examples and attachments safe to publish. Do not include credentials, private identifiers or endpoints, customer data, agent conversations, or internal documents.
+        Report suspected vulnerabilities privately through [SECURITY.md](https://github.com/Azure/cetirun/blob/main/SECURITY.md), not this form.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem to solve
+      description: What are you trying to do with CetiRun, who is affected, and what gets in the way?
+    validations:
+      required: true
+
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired outcome
+      description: Describe the behavior you want and how you would know the improvement works.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Suggested approach
+      description: If you have one, describe the approach and affected components. Note effects on APIs, CRDs, authentication, isolation, storage, or existing users.
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Describe any existing features or workarounds you tried and why they were not enough.
+
+  - type: checkboxes
+    id: confirmation
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues for this request.
+          required: true
+        - label: This is not a suspected security vulnerability; I will use MSRC for those reports.
+          required: true
+        - label: I checked the text and attachments and removed secrets, private identifiers, customer data, and other non-public information.
+          required: true
