@@ -1,0 +1,1222 @@
+package handler
+
+import (
+	"archive/zip"
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"reflect"
+	"regexp"
+	"sort"
+	"strings"
+	"time"
+
+	corev1 "k8s.io/api/core/v1"
+
+	"github.com/Azure/CetiRun/app/cetirun-portal/internal/auth"
+	"github.com/Azure/CetiRun/app/cetirun-portal/internal/config"
+	"github.com/Azure/CetiRun/app/cetirun-portal/internal/handler/teamsapp"
+	"github.com/Azure/CetiRun/app/cetirun-portal/internal/kube"
+
+	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+)
+
+// validInstanceNameSuffix matches a valid user-supplied instance name suffix:
+// starts with a lowercase letter, ends with a lowercase letter or digit, only
+// lowercase letters, digits, and hyphens in between.
+var validInstanceNameSuffix = regexp.MustCompile(`^[a-z][a-z0-9-]*[a-z0-9]$|^[a-z]$`)
+
+// reservedInstanceNames are names that collide with one of the gateway-level
+// path tokens. The collision surfaces are:
+//
+//   - EnvoyFilter EXEMPT_PREFIXES (infra/istio/templates/ingress/envoy-filter-alias.yaml):
+//     paths beginning with these prefixes skip the ownership check. An instance with
+//     a matching name would let any authenticated user reach the pod (oauth2, api,
+//     internal, healthz, readyz, assets, instances, admin).
+//   - Portal SPA top-level routes (app/cetirun-portal/web/src/App.tsx): the portal
+//     serves these paths itself, so an instance with that name would be unreachable
+//     via the workspace URL (instances).
+//   - Native agent UI namespace (ui): native Agent UIs are served below
+//     /ui/<instance>, so this token cannot be an instance name.
+//   - Portal hostname/subdomain (portal): reserved to keep the portal's own DNS
+//     name from being shadowed by an instance entry.
+//
+// Keep this list aligned with the three sources above when any of them change.
+var reservedInstanceNames = map[string]struct{}{
+	"oauth2":    {},
+	"api":       {},
+	"internal":  {},
+	"healthz":   {},
+	"readyz":    {},
+	"assets":    {},
+	"portal":    {},
+	"instances": {},
+	"admin":     {},
+	"ui":        {},
+}
+
+// CreateInstanceRequest is the JSON body for POST /api/v1/instance.
+type CreateInstanceRequest struct {
+	InstanceName     string `json:"instanceName,omitempty"`
+	AgentType        string `json:"agentType,omitempty"`
+	DisplayName      string `json:"displayName,omitempty"`
+	Team             string `json:"team"`
+	GatewayToken     string `json:"gatewayToken,omitempty"`
+	TailscaleAuthKey string `json:"tailscaleAuthKey,omitempty"`
+	Model            string `json:"model,omitempty"`
+	TeamsEnabled     bool   `json:"teamsEnabled,omitempty"`
+}
+
+// InstanceResponse is the JSON response for GET /api/v1/instance.
+type InstanceResponse struct {
+	Alias            string            `json:"alias"`
+	InstanceName     string            `json:"instanceName"`
+	AgentType        string            `json:"agentType"`
+	DisplayName      string            `json:"displayName"`
+	Team             string            `json:"team"`
+	Model            string            `json:"model,omitempty"`
+	Phase            string            `json:"phase"`
+	AccessURL        string            `json:"accessUrl,omitempty"`        // Access URL (token is returned separately via GatewayToken)
+	GatewayToken     string            `json:"gatewayToken,omitempty"`     // Separate gateway token for display, when available
+	APIServerKey     string            `json:"apiServerKey,omitempty"`     // Hermes API server key for display, when available
+	CetiRunAuthKey   string            `json:"cetirunAuthKey,omitempty"`   // Bearer key for the in-pod cetirun-auth helper (both agent types)
+	TailscaleAuthKey string            `json:"tailscaleAuthKey,omitempty"` // Tailscale auth key for display, when available
+	Conditions       []ConditionStatus `json:"conditions,omitempty"`
+	CreatedAt        string            `json:"createdAt"`
+	LastReconciled   string            `json:"lastReconciled,omitempty"`
+	UpgradeAvailable bool              `json:"upgradeAvailable"`
+	TeamsEnabled     bool              `json:"teamsEnabled"`
+	TeamsState       string            `json:"teamsState,omitempty"`   // Provisioning | PendingAppRegistration | Ready | Failed | Deleting
+	TeamsAppID       string            `json:"teamsAppId,omitempty"`   // Azure AD Application ID for sideloading
+	TeamsMessage     string            `json:"teamsMessage,omitempty"` // Human-readable Teams status detail
+}
+
+// ConditionStatus is a simplified view of a Kubernetes condition.
+type ConditionStatus struct {
+	Type    string `json:"type"`
+	Status  string `json:"status"`
+	Reason  string `json:"reason"`
+	Message string `json:"message"`
+}
+
+// TeamSummary is the JSON response element for GET /api/v1/teams.
+type TeamSummary struct {
+	Name     string `json:"name"`
+	Role     string `json:"role"`
+	Provider string `json:"provider"`
+}
+
+// ErrorResponse is the standard error envelope.
+type ErrorResponse struct {
+	Error ErrorDetail `json:"error"`
+}
+
+// ErrorDetail holds error code and message.
+type ErrorDetail struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+// StatusResponse is the JSON response for GET /api/v1/instance/status.
+type StatusResponse struct {
+	Conditions []ConditionStatus `json:"conditions"`
+	Events     []EventItem       `json:"events"`
+	NsEvents   []EventItem       `json:"nsEvents"`
+	Pods       []PodStatus       `json:"pods"`
+}
+
+// EventItem is a simplified view of a Kubernetes Event.
+type EventItem struct {
+	Type      string `json:"type"`
+	Reason    string `json:"reason"`
+	Message   string `json:"message"`
+	Source    string `json:"source"`
+	FirstSeen string `json:"firstSeen"`
+	LastSeen  string `json:"lastSeen"`
+	Count     int32  `json:"count"`
+}
+
+// PodStatus is a simplified view of a Pod's status.
+type PodStatus struct {
+	Name         string `json:"name"`
+	Phase        string `json:"phase"`
+	Ready        bool   `json:"ready"`
+	RestartCount int32  `json:"restartCount"`
+}
+
+// InstanceHandler handles /api/v1/instance requests.
+type InstanceHandler struct {
+	Kube   *kube.Client
+	Config config.Config
+}
+
+// ListInstances handles GET /api/v1/instances
+// Returns all instances owned by the authenticated user.
+func (h *InstanceHandler) ListInstances(w http.ResponseWriter, r *http.Request) {
+	claims, ok := auth.ClaimsFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	instances, err := h.Kube.ListAllInstances(r.Context())
+	if err != nil {
+		http.Error(w, fmt.Sprintf("failed to list instances: %v", err), http.StatusInternalServerError)
+		return
+	}
+	var responses []InstanceResponse
+	for i := range instances {
+		inst := &instances[i]
+		if !strings.EqualFold(inst.Spec.User.Alias, claims.Alias) {
+			continue
+		}
+		resp, err := h.toInstanceResponse(r.Context(), inst)
+		if err != nil {
+			continue
+		}
+		responses = append(responses, resp)
+	}
+	if responses == nil {
+		responses = []InstanceResponse{}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(responses)
+}
+
+// GetInstanceByName handles GET /api/v1/instances/{name}
+// Returns 403 if the authenticated user does not own the instance.
+func (h *InstanceHandler) GetInstanceByName(w http.ResponseWriter, r *http.Request) {
+	claims, ok := auth.ClaimsFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	name := r.PathValue("name")
+	if name == "" {
+		http.Error(w, "missing instance name", http.StatusBadRequest)
+		return
+	}
+	instance, err := h.Kube.GetInstanceByName(r.Context(), name)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("instance not found: %v", err), http.StatusNotFound)
+		return
+	}
+	if !strings.EqualFold(instance.Spec.User.Alias, claims.Alias) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	resp, err := h.toInstanceResponse(r.Context(), instance)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("failed to build response: %v", err), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
+}
+
+// UpdateInstanceByName handles PATCH /api/v1/instances/{name}.
+// It reads {name}, verifies ownership, then delegates to the alias-based update.
+func (h *InstanceHandler) UpdateInstanceByName(w http.ResponseWriter, r *http.Request) {
+	claims, ok := auth.ClaimsFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	name := r.PathValue("name")
+	if name == "" {
+		http.Error(w, "missing instance name", http.StatusBadRequest)
+		return
+	}
+
+	var req UpdateInstanceRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_body", "Invalid JSON body")
+		return
+	}
+	if allNilPointers(req) {
+		writeError(w, http.StatusBadRequest, "no_fields", "At least one field must be provided for update")
+		return
+	}
+
+	if req.DisplayName != nil && *req.DisplayName == "" {
+		writeError(w, http.StatusBadRequest, "invalid_display_name", "displayName must be non-empty when provided")
+		return
+	}
+	if req.Team != nil && *req.Team == "" {
+		writeError(w, http.StatusBadRequest, "invalid_team", "team must be non-empty when provided")
+		return
+	}
+	if req.GatewayToken != nil && *req.GatewayToken == "" {
+		writeError(w, http.StatusBadRequest, "invalid_gateway_token", "gatewayToken must be non-empty when provided")
+		return
+	}
+	if req.Model != nil && len(strings.TrimSpace(*req.Model)) > 256 {
+		writeError(w, http.StatusBadRequest, "invalid_model", "model must be 256 characters or fewer")
+		return
+	}
+	if req.TailscaleAuthKey != nil && *req.TailscaleAuthKey != "" && !h.Config.TailscaleEnabled {
+		writeError(w, http.StatusBadRequest, "feature_disabled", "Tailscale feature is not enabled")
+		return
+	}
+
+	// Verify ownership before updating.
+	existing, err := h.Kube.GetInstanceByName(r.Context(), name)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("instance not found: %v", err), http.StatusNotFound)
+		return
+	}
+	if !strings.EqualFold(existing.Spec.User.Alias, claims.Alias) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+
+	opts := kube.UpdateInstanceOpts{
+		DisplayName:      req.DisplayName,
+		Team:             req.Team,
+		GatewayToken:     req.GatewayToken,
+		TailscaleAuthKey: req.TailscaleAuthKey,
+		TeamsEnabled:     req.TeamsEnabled,
+		Model:            req.Model,
+	}
+
+	instance, err := h.Kube.UpdateInstanceByName(r.Context(), name, opts)
+	if err != nil {
+		if kube.IsNotFound(err) {
+			writeError(w, http.StatusNotFound, "instance_not_found", "Instance not found: "+name)
+			return
+		}
+		slog.Error("Failed to update instance", "name", name, "error", err)
+		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to update instance")
+		return
+	}
+
+	resp, err := h.toInstanceResponse(r.Context(), instance)
+	if err != nil {
+		slog.Error("Failed to build instance response", "name", name, "error", err)
+		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to build response")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// DeleteInstanceByName handles DELETE /api/v1/instances/{name}.
+func (h *InstanceHandler) DeleteInstanceByName(w http.ResponseWriter, r *http.Request) {
+	claims, ok := auth.ClaimsFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	name := r.PathValue("name")
+	if name == "" {
+		http.Error(w, "missing instance name", http.StatusBadRequest)
+		return
+	}
+
+	instance, err := h.Kube.GetInstanceByName(r.Context(), name)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("instance not found: %v", err), http.StatusNotFound)
+		return
+	}
+	if !strings.EqualFold(instance.Spec.User.Alias, claims.Alias) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+
+	if err := h.Kube.DeleteInstanceByName(r.Context(), name); err != nil {
+		if kube.IsNotFound(err) {
+			writeError(w, http.StatusNotFound, "instance_not_found", "Instance not found: "+name)
+			return
+		}
+		slog.Error("Failed to delete instance", "name", name, "error", err)
+		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to delete instance")
+		return
+	}
+
+	w.WriteHeader(http.StatusAccepted)
+}
+
+// UpgradeInstanceByName handles POST /api/v1/instances/{name}/upgrade.
+func (h *InstanceHandler) UpgradeInstanceByName(w http.ResponseWriter, r *http.Request) {
+	claims, ok := auth.ClaimsFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	name := r.PathValue("name")
+	if name == "" {
+		http.Error(w, "missing instance name", http.StatusBadRequest)
+		return
+	}
+
+	existing, err := h.Kube.GetInstanceByName(r.Context(), name)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("instance not found: %v", err), http.StatusNotFound)
+		return
+	}
+	if !strings.EqualFold(existing.Spec.User.Alias, claims.Alias) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+
+	instance, err := h.Kube.UpgradeInstanceByName(r.Context(), name)
+	if err != nil {
+		slog.Error("Failed to upgrade instance", "name", name, "error", err)
+		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to upgrade instance")
+		return
+	}
+
+	resp, err := h.toInstanceResponse(r.Context(), instance)
+	if err != nil {
+		slog.Error("Failed to build instance response", "name", name, "error", err)
+		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to build response")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// GetInstanceStatusByName handles GET /api/v1/instances/{name}/status.
+func (h *InstanceHandler) GetInstanceStatusByName(w http.ResponseWriter, r *http.Request) {
+	claims, ok := auth.ClaimsFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	name := r.PathValue("name")
+	if name == "" {
+		http.Error(w, "missing instance name", http.StatusBadRequest)
+		return
+	}
+
+	instance, err := h.Kube.GetInstanceByName(r.Context(), name)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("instance not found: %v", err), http.StatusNotFound)
+		return
+	}
+	if !strings.EqualFold(instance.Spec.User.Alias, claims.Alias) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+
+	ns := fmt.Sprintf("cetirun-%s", instance.Name)
+	resp := StatusResponse{
+		Conditions: []ConditionStatus{},
+		Events:     []EventItem{},
+		NsEvents:   []EventItem{},
+		Pods:       []PodStatus{},
+	}
+
+	for _, c := range instance.Status.Conditions {
+		resp.Conditions = append(resp.Conditions, ConditionStatus{
+			Type:    c.Type,
+			Status:  string(c.Status),
+			Reason:  c.Reason,
+			Message: c.Message,
+		})
+	}
+
+	crEvents, err := h.Kube.GetEvents(r.Context(), instance.Name)
+	if err != nil {
+		slog.Warn("Failed to get CR events", "name", name, "error", err)
+	} else {
+		resp.Events = toEventItems(crEvents)
+	}
+
+	nsEvents, err := h.Kube.GetNamespaceEvents(r.Context(), ns)
+	if err != nil {
+		slog.Warn("Failed to get namespace events", "namespace", ns, "error", err)
+	} else {
+		resp.NsEvents = toEventItems(nsEvents)
+	}
+
+	pods, err := h.Kube.GetPods(r.Context(), ns)
+	if err != nil {
+		slog.Warn("Failed to get pods", "namespace", ns, "error", err)
+	} else {
+		resp.Pods = toPodStatuses(pods)
+	}
+
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// DownloadTeamsAppByName handles GET /api/v1/instances/{name}/teams-app.
+func (h *InstanceHandler) DownloadTeamsAppByName(w http.ResponseWriter, r *http.Request) {
+	claims, ok := auth.ClaimsFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	name := r.PathValue("name")
+	if name == "" {
+		http.Error(w, "missing instance name", http.StatusBadRequest)
+		return
+	}
+
+	instance, err := h.Kube.GetInstanceByName(r.Context(), name)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("instance not found: %v", err), http.StatusNotFound)
+		return
+	}
+	if !strings.EqualFold(instance.Spec.User.Alias, claims.Alias) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+
+	// Reuse the original DownloadTeamsApp logic by temporarily setting the instance in context
+	// via a sub-request, but since that's complex we inline the logic here.
+	if instance.Spec.MSTeams == nil || !instance.Spec.MSTeams.Enabled {
+		writeError(w, http.StatusNotFound, "teams_not_enabled", "Teams integration is not enabled on this instance")
+		return
+	}
+	if instance.Status.MSTeams == nil || instance.Status.MSTeams.State != "Ready" || instance.Status.MSTeams.AppID == "" {
+		writeError(w, http.StatusConflict, "teams_not_ready",
+			"Teams integration is not yet ready. Current state: "+teamsStateOrUnknown(instance))
+		return
+	}
+
+	// Delegate to the shared helper used by DownloadTeamsApp.
+	h.serveTeamsApp(w, instance)
+}
+
+// InternalAuth handles GET /internal/auth
+// Called by the Istio EnvoyFilter Lua script to verify instance ownership.
+// Returns 200 OK if alias owns the instance, 403 Forbidden otherwise.
+// Not behind auth middleware — instance and alias come from the Lua filter via headers.
+// Using headers (not query params) prevents URL-injection attacks.
+func (h *InstanceHandler) InternalAuth(w http.ResponseWriter, r *http.Request) {
+	instanceName := r.Header.Get("X-Internal-Instance")
+	alias := r.Header.Get("X-Internal-Alias")
+	email := r.Header.Get("X-Internal-Email")
+	if instanceName == "" || (alias == "" && email == "") {
+		http.Error(w, "missing instance or identity", http.StatusBadRequest)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 400*time.Millisecond)
+	defer cancel()
+	instance, err := h.Kube.GetInstanceByName(ctx, instanceName)
+	if err != nil {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	ownerAlias := instance.Spec.User.Alias
+	ownerEmail := instance.Spec.User.Email
+	aliasMatch := alias != "" && ownerAlias != "" && strings.EqualFold(ownerAlias, alias)
+	emailMatch := email != "" && ownerEmail != "" && strings.EqualFold(ownerEmail, email)
+	if !aliasMatch && !emailMatch {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
+// GetInstance handles GET /api/v1/instance.
+func (h *InstanceHandler) GetInstance(w http.ResponseWriter, r *http.Request) {
+	claims, _ := auth.ClaimsFromContext(r.Context())
+
+	instance, err := h.Kube.GetInstance(r.Context(), claims.Alias)
+	if err != nil {
+		if kube.IsNotFound(err) {
+			writeError(w, http.StatusNotFound, "instance_not_found",
+				"No OpenClaw instance found for user "+claims.Alias)
+			return
+		}
+		slog.Error("Failed to get instance", "alias", claims.Alias, "error", err)
+		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to get instance")
+		return
+	}
+
+	resp, err := h.toInstanceResponse(r.Context(), instance)
+	if err != nil {
+		slog.Error("Failed to build instance response", "alias", claims.Alias, "error", err)
+		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to build response")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// CreateInstance handles POST /api/v1/instance.
+func (h *InstanceHandler) CreateInstance(w http.ResponseWriter, r *http.Request) {
+	claims, _ := auth.ClaimsFromContext(r.Context())
+
+	var req CreateInstanceRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_body", "Invalid JSON body")
+		return
+	}
+
+	displayName := req.DisplayName
+	if displayName == "" {
+		displayName = claims.DisplayName
+	}
+
+	agentType := req.AgentType
+	if agentType == "" {
+		agentType = cetirunv1alpha1.AgentTypeOpenClaw
+	}
+	if agentType != cetirunv1alpha1.AgentTypeOpenClaw && agentType != cetirunv1alpha1.AgentTypeHermes {
+		writeError(w, http.StatusBadRequest, "invalid_agent_type", "agentType must be openclaw or hermes")
+		return
+	}
+
+	if req.TailscaleAuthKey != "" && !h.Config.TailscaleEnabled {
+		writeError(w, http.StatusBadRequest, "feature_disabled", "Tailscale feature is not enabled")
+		return
+	}
+	if len(strings.TrimSpace(req.Model)) > 256 {
+		writeError(w, http.StatusBadRequest, "invalid_model", "model must be 256 characters or fewer")
+		return
+	}
+
+	instanceName := claims.Alias
+	if req.InstanceName != "" {
+		// Validate the user-supplied suffix before combining.
+		// Must match k8s DNS label rules: start and end with alphanumeric, hyphens allowed in between.
+		if !validInstanceNameSuffix.MatchString(req.InstanceName) {
+			writeError(w, http.StatusBadRequest, "invalid_name", "Instance name must start with a lowercase letter and contain only lowercase letters, digits, and hyphens")
+			return
+		}
+		instanceName = claims.Alias + "-" + req.InstanceName
+	}
+	// Namespace must be a DNS label (max 63 chars): "cetirun-" (8) + instanceName.
+	if len("cetirun-"+instanceName) > 63 {
+		writeError(w, http.StatusBadRequest, "name_too_long", fmt.Sprintf("Instance name too long: 'cetirun-%s' exceeds 63 characters", instanceName))
+		return
+	}
+	// Reject reserved instance names that collide with gateway-level routing or
+	// EnvoyFilter ownership-check exemptions. See reservedInstanceNames.
+	if _, ok := reservedInstanceNames[instanceName]; ok {
+		writeError(w, http.StatusBadRequest, "reserved_name", "Instance name '"+instanceName+"' is reserved")
+		return
+	}
+
+	if h.Config.MaxInstancesPerUser > 0 {
+		all, err := h.Kube.ListAllInstances(r.Context())
+		if err != nil {
+			slog.Error("Failed to list instances for limit check", "alias", claims.Alias, "error", err)
+			writeError(w, http.StatusInternalServerError, "internal_error", "Failed to check instance limit")
+			return
+		}
+		count := 0
+		for _, inst := range all {
+			if strings.EqualFold(inst.Spec.User.Alias, claims.Alias) {
+				count++
+			}
+		}
+		if count >= h.Config.MaxInstancesPerUser {
+			writeError(w, http.StatusForbidden, "limit_exceeded",
+				fmt.Sprintf("Maximum instances per user reached (%d)", h.Config.MaxInstancesPerUser))
+			return
+		}
+	}
+
+	instance, err := h.Kube.CreateInstance(r.Context(), claims.Alias, displayName, req.Team, claims.Email, instanceName, agentType, req.GatewayToken, req.TailscaleAuthKey, strings.TrimSpace(req.Model), req.TeamsEnabled)
+	if err != nil {
+		if kube.IsAlreadyExists(err) {
+			writeError(w, http.StatusConflict, "instance_exists",
+				"Instance already exists for user "+claims.Alias)
+			return
+		}
+		slog.Error("Failed to create instance", "alias", claims.Alias, "error", err)
+		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to create instance")
+		return
+	}
+
+	resp, err := h.toInstanceResponse(r.Context(), instance)
+	if err != nil {
+		slog.Error("Failed to build instance response", "alias", claims.Alias, "error", err)
+		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to build response")
+		return
+	}
+
+	slog.Info("Instance created", "alias", claims.Alias, "team", req.Team, "displayName", displayName)
+	writeJSON(w, http.StatusCreated, resp)
+}
+
+// UpdateInstanceRequest is the JSON body for PATCH /api/v1/instance.
+type UpdateInstanceRequest struct {
+	DisplayName      *string `json:"displayName"`      // nil = no change
+	Team             *string `json:"team"`             // nil = no change, "" = rejected
+	GatewayToken     *string `json:"gatewayToken"`     // nil = no change, "" = rejected
+	TailscaleAuthKey *string `json:"tailscaleAuthKey"` // nil = no change, "" = disable, non-empty = update
+	TeamsEnabled     *bool   `json:"teamsEnabled"`     // nil = no change
+	Model            *string `json:"model"`            // nil = no change, "" = deployment default
+}
+
+// UpdateInstance handles PATCH /api/v1/instance.
+func (h *InstanceHandler) UpdateInstance(w http.ResponseWriter, r *http.Request) {
+	claims, _ := auth.ClaimsFromContext(r.Context())
+
+	var req UpdateInstanceRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_body", "Invalid JSON body")
+		return
+	}
+
+	// Reject empty update requests (no fields provided).
+	if allNilPointers(req) {
+		writeError(w, http.StatusBadRequest, "no_fields", "At least one field must be provided for update")
+		return
+	}
+
+	// Validate: displayName, team and gatewayToken must be non-empty if provided.
+	if req.DisplayName != nil && *req.DisplayName == "" {
+		writeError(w, http.StatusBadRequest, "invalid_display_name", "displayName must be non-empty when provided")
+		return
+	}
+	if req.Team != nil && *req.Team == "" {
+		writeError(w, http.StatusBadRequest, "invalid_team", "team must be non-empty when provided")
+		return
+	}
+	if req.GatewayToken != nil && *req.GatewayToken == "" {
+		writeError(w, http.StatusBadRequest, "invalid_gateway_token", "gatewayToken must be non-empty when provided")
+		return
+	}
+	if req.Model != nil && len(strings.TrimSpace(*req.Model)) > 256 {
+		writeError(w, http.StatusBadRequest, "invalid_model", "model must be 256 characters or fewer")
+		return
+	}
+
+	if req.TailscaleAuthKey != nil && *req.TailscaleAuthKey != "" && !h.Config.TailscaleEnabled {
+		writeError(w, http.StatusBadRequest, "feature_disabled", "Tailscale feature is not enabled")
+		return
+	}
+
+	opts := kube.UpdateInstanceOpts{
+		DisplayName:      req.DisplayName,
+		Team:             req.Team,
+		GatewayToken:     req.GatewayToken,
+		TailscaleAuthKey: req.TailscaleAuthKey,
+		TeamsEnabled:     req.TeamsEnabled,
+		Model:            req.Model,
+	}
+
+	instance, err := h.Kube.UpdateInstance(r.Context(), claims.Alias, opts)
+	if err != nil {
+		if kube.IsNotFound(err) {
+			writeError(w, http.StatusNotFound, "instance_not_found",
+				"No OpenClaw instance found for user "+claims.Alias)
+			return
+		}
+		slog.Error("Failed to update instance", "alias", claims.Alias, "error", err)
+		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to update instance")
+		return
+	}
+
+	resp, err := h.toInstanceResponse(r.Context(), instance)
+	if err != nil {
+		slog.Error("Failed to build instance response", "alias", claims.Alias, "error", err)
+		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to build response")
+		return
+	}
+
+	var changed []string
+	changed = nonNilPointerFields(req)
+	slog.Info("Instance updated", "alias", claims.Alias, "fields", changed)
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// DeleteInstance handles DELETE /api/v1/instance.
+func (h *InstanceHandler) DeleteInstance(w http.ResponseWriter, r *http.Request) {
+	claims, _ := auth.ClaimsFromContext(r.Context())
+
+	err := h.Kube.DeleteInstance(r.Context(), claims.Alias)
+	if err != nil {
+		if kube.IsNotFound(err) {
+			writeError(w, http.StatusNotFound, "instance_not_found",
+				"No OpenClaw instance found for user "+claims.Alias)
+			return
+		}
+		slog.Error("Failed to delete instance", "alias", claims.Alias, "error", err)
+		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to delete instance")
+		return
+	}
+
+	slog.Info("Instance deleted", "alias", claims.Alias)
+	w.WriteHeader(http.StatusAccepted)
+}
+
+// UpgradeInstance handles POST /api/v1/instance/upgrade.
+func (h *InstanceHandler) UpgradeInstance(w http.ResponseWriter, r *http.Request) {
+	claims, _ := auth.ClaimsFromContext(r.Context())
+
+	// Verify the instance exists before attempting upgrade, so we can
+	// distinguish "instance not found" (404) from other not-found errors
+	// (e.g. operator deployment missing → 500).
+	if _, err := h.Kube.GetInstance(r.Context(), claims.Alias); err != nil {
+		if kube.IsNotFound(err) {
+			writeError(w, http.StatusNotFound, "instance_not_found",
+				"No OpenClaw instance found for user "+claims.Alias)
+			return
+		}
+		slog.Error("Failed to get instance", "alias", claims.Alias, "error", err)
+		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to get instance")
+		return
+	}
+
+	instance, err := h.Kube.UpgradeInstance(r.Context(), claims.Alias)
+	if err != nil {
+		slog.Error("Failed to upgrade instance", "alias", claims.Alias, "error", err)
+		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to upgrade instance")
+		return
+	}
+
+	resp, err := h.toInstanceResponse(r.Context(), instance)
+	if err != nil {
+		slog.Error("Failed to build instance response", "alias", claims.Alias, "error", err)
+		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to build response")
+		return
+	}
+
+	slog.Info("Instance upgraded", "alias", claims.Alias)
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (h *InstanceHandler) toInstanceResponse(ctx context.Context, instance *cetirunv1alpha1.OpenClawInstance) (InstanceResponse, error) {
+	resp := InstanceResponse{
+		Alias:        instance.Spec.User.Alias,
+		InstanceName: instance.Name,
+		AgentType:    instance.Spec.AgentType,
+		DisplayName:  instance.Spec.User.DisplayName,
+		Team:         instance.Spec.User.Team,
+		Model:        instance.Spec.Model,
+		Phase:        instance.Status.Phase,
+		CreatedAt:    instance.CreationTimestamp.UTC().Format("2006-01-02T15:04:05Z"),
+	}
+	if resp.AgentType == "" {
+		resp.AgentType = cetirunv1alpha1.AgentTypeOpenClaw
+	}
+
+	if instance.Status.LastReconcileTime != nil {
+		resp.LastReconciled = instance.Status.LastReconcileTime.UTC().Format("2006-01-02T15:04:05Z")
+	}
+
+	for _, c := range instance.Status.Conditions {
+		resp.Conditions = append(resp.Conditions, ConditionStatus{
+			Type:    c.Type,
+			Status:  string(c.Status),
+			Reason:  c.Reason,
+			Message: c.Message,
+		})
+	}
+
+	// Determine if an upgrade is available by comparing instance version with operator latest.
+	// Empty instance version means the operator hasn't backfilled it yet — not upgradeable.
+	latestVersion, err := h.Kube.GetOperatorChartVersion(ctx)
+	if err != nil {
+		slog.Warn("Failed to get operator chart version", "error", err)
+	} else if latestVersion != "" && instance.Spec.Helm.Version != "" && instance.Spec.Helm.Version != latestVersion {
+		resp.UpgradeAvailable = true
+	}
+
+	// Get gateway token and access URL for Ready or Provisioning instances
+	if instance.Status.Phase == "Ready" || instance.Status.Phase == "Provisioning" {
+		ns := instance.Status.Namespace
+		token, err := h.Kube.GetGatewayToken(ctx, ns, instance.Spec.GatewayTokenSecretRef)
+		if err != nil {
+			// Log error but don't block the response
+			slog.Warn("Failed to get gateway token", "alias", instance.Spec.User.Alias, "error", err)
+			// Return original URL without token if token fetch fails
+			resp.AccessURL = instance.Status.AccessURL
+		} else {
+			resp.GatewayToken = token
+			resp.AccessURL = instance.Status.AccessURL
+		}
+		if resp.AgentType == cetirunv1alpha1.AgentTypeHermes {
+			apiServerKey, err := h.Kube.GetAPIServerKey(ctx, ns, instance.Spec.GatewayTokenSecretRef)
+			if err != nil {
+				slog.Warn("Failed to get Hermes API server key", "alias", instance.Spec.User.Alias, "error", err)
+			} else {
+				resp.APIServerKey = apiServerKey
+			}
+		}
+		// The cetirun-auth helper service runs in both Hermes and OpenClaw pods.
+		authKey, err := h.Kube.GetCetiRunAuthKey(ctx, ns, instance.Spec.GatewayTokenSecretRef)
+		if err != nil {
+			slog.Warn("Failed to get cetirun-auth key", "alias", instance.Spec.User.Alias, "error", err)
+		} else {
+			resp.CetiRunAuthKey = authKey
+		}
+		// Get tailscale auth key if Tailscale is enabled
+		if instance.Spec.Tailscale != nil {
+			tsKey, err := h.Kube.GetTailscaleAuthKey(ctx, ns, instance.Spec.Tailscale.AuthKeySecretRef)
+			if err != nil {
+				reason := "secret_read_failed"
+				switch {
+				case kube.IsNotFound(err):
+					reason = "secret_not_found"
+				case kube.IsForbidden(err):
+					reason = "secret_access_denied"
+				}
+				slog.Warn("Failed to get tailscale auth key", "alias", instance.Spec.User.Alias, "reason", reason)
+			} else {
+				resp.TailscaleAuthKey = tsKey
+			}
+		}
+	} else {
+		// For non-Ready/Provisioning states, return original URL (without token)
+		resp.AccessURL = instance.Status.AccessURL
+	}
+
+	// Teams integration status
+	if instance.Spec.MSTeams != nil {
+		resp.TeamsEnabled = instance.Spec.MSTeams.Enabled
+	}
+	if instance.Status.MSTeams != nil {
+		resp.TeamsState = instance.Status.MSTeams.State
+		resp.TeamsAppID = instance.Status.MSTeams.AppID
+		resp.TeamsMessage = instance.Status.MSTeams.Message
+	}
+
+	return resp, nil
+}
+
+// GetInstanceStatus handles GET /api/v1/instance/status.
+func (h *InstanceHandler) GetInstanceStatus(w http.ResponseWriter, r *http.Request) {
+	claims, _ := auth.ClaimsFromContext(r.Context())
+
+	instance, err := h.Kube.GetInstance(r.Context(), claims.Alias)
+	if err != nil {
+		if kube.IsNotFound(err) {
+			writeError(w, http.StatusNotFound, "instance_not_found",
+				"No OpenClaw instance found for user "+claims.Alias)
+			return
+		}
+		slog.Error("Failed to get instance", "alias", claims.Alias, "error", err)
+		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to get instance")
+		return
+	}
+
+	ns := fmt.Sprintf("cetirun-%s", claims.Alias)
+	resp := StatusResponse{
+		Conditions: []ConditionStatus{},
+		Events:     []EventItem{},
+		NsEvents:   []EventItem{},
+		Pods:       []PodStatus{},
+	}
+
+	// Conditions from the CR
+	for _, c := range instance.Status.Conditions {
+		resp.Conditions = append(resp.Conditions, ConditionStatus{
+			Type:    c.Type,
+			Status:  string(c.Status),
+			Reason:  c.Reason,
+			Message: c.Message,
+		})
+	}
+
+	// CR-level events
+	crEvents, err := h.Kube.GetEvents(r.Context(), claims.Alias)
+	if err != nil {
+		slog.Warn("Failed to get CR events", "alias", claims.Alias, "error", err)
+	} else {
+		resp.Events = toEventItems(crEvents)
+	}
+
+	// Namespace-level events
+	nsEvents, err := h.Kube.GetNamespaceEvents(r.Context(), ns)
+	if err != nil {
+		slog.Warn("Failed to get namespace events", "namespace", ns, "error", err)
+	} else {
+		resp.NsEvents = toEventItems(nsEvents)
+	}
+
+	// Pods
+	pods, err := h.Kube.GetPods(r.Context(), ns)
+	if err != nil {
+		slog.Warn("Failed to get pods", "namespace", ns, "error", err)
+	} else {
+		resp.Pods = toPodStatuses(pods)
+	}
+
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// DownloadTeamsApp handles GET /api/v1/instance/teams-app.
+// Returns a ZIP containing a Teams app manifest with the instance's Application ID
+// and display name substituted, plus bot icons.
+func (h *InstanceHandler) DownloadTeamsApp(w http.ResponseWriter, r *http.Request) {
+	claims, _ := auth.ClaimsFromContext(r.Context())
+
+	instance, err := h.Kube.GetInstance(r.Context(), claims.Alias)
+	if err != nil {
+		if kube.IsNotFound(err) {
+			writeError(w, http.StatusNotFound, "instance_not_found",
+				"No OpenClaw instance found for user "+claims.Alias)
+			return
+		}
+		slog.Error("Failed to get instance", "alias", claims.Alias, "error", err)
+		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to get instance")
+		return
+	}
+
+	if instance.Spec.MSTeams == nil || !instance.Spec.MSTeams.Enabled {
+		writeError(w, http.StatusNotFound, "teams_not_enabled",
+			"Teams integration is not enabled on this instance")
+		return
+	}
+
+	if instance.Status.MSTeams == nil || instance.Status.MSTeams.State != "Ready" || instance.Status.MSTeams.AppID == "" {
+		writeError(w, http.StatusConflict, "teams_not_ready",
+			"Teams integration is not yet ready. Current state: "+teamsStateOrUnknown(instance))
+		return
+	}
+
+	h.serveTeamsApp(w, instance)
+}
+
+// serveTeamsApp builds and writes the Teams app ZIP for the given instance.
+func (h *InstanceHandler) serveTeamsApp(w http.ResponseWriter, instance *cetirunv1alpha1.OpenClawInstance) {
+	appID := instance.Status.MSTeams.AppID
+	displayName := instance.Spec.User.DisplayName
+
+	// Read manifest template from embedded assets.
+	manifestBytes, err := teamsapp.Assets.ReadFile("manifest.json")
+	if err != nil {
+		slog.Error("Failed to read embedded manifest template", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to build Teams app package")
+		return
+	}
+
+	// Parse manifest template as JSON and substitute fields safely.
+	var manifestObj map[string]any
+	if err := json.Unmarshal(manifestBytes, &manifestObj); err != nil {
+		slog.Error("Failed to parse manifest template", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to build Teams app package")
+		return
+	}
+
+	// Set application ID.
+	manifestObj["id"] = appID
+
+	// Build display names, applying rune-aware truncation only to fullName.
+	shortName := "CetiRun Bot"
+	fullName := "CetiRun Teams Bot for " + displayName
+	fullNameRunes := []rune(fullName)
+	if len(fullNameRunes) > 100 {
+		fullName = string(fullNameRunes[:100])
+	}
+
+	nameObj, ok := manifestObj["name"].(map[string]any)
+	if !ok {
+		slog.Error("Failed to parse manifest template", "error", "missing or invalid name object")
+		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to build Teams app package")
+		return
+	}
+	nameObj["short"] = shortName
+	nameObj["full"] = fullName
+
+	descObj, _ := manifestObj["description"].(map[string]any)
+	if descObj != nil {
+		descObj["short"] = fullName
+	}
+
+	// Set bot ID.
+	if bots, ok := manifestObj["bots"].([]any); ok && len(bots) > 0 {
+		if bot, ok := bots[0].(map[string]any); ok {
+			bot["botId"] = appID
+		}
+	}
+
+	manifestJSON, err := json.MarshalIndent(manifestObj, "", "  ")
+	if err != nil {
+		slog.Error("Failed to encode manifest", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to build Teams app package")
+		return
+	}
+
+	// Build ZIP in memory.
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+
+	if err := addFileToZip(zw, "manifest.json", manifestJSON); err != nil {
+		slog.Error("Failed to add manifest to ZIP", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to build Teams app package")
+		return
+	}
+
+	for _, name := range []string{"color.png", "outline.png"} {
+		data, err := teamsapp.Assets.ReadFile(name)
+		if err != nil {
+			slog.Error("Failed to read embedded asset", "name", name, "error", err)
+			writeError(w, http.StatusInternalServerError, "internal_error", "Failed to build Teams app package")
+			return
+		}
+		if err := addFileToZip(zw, name, data); err != nil {
+			slog.Error("Failed to add asset to ZIP", "name", name, "error", err)
+			writeError(w, http.StatusInternalServerError, "internal_error", "Failed to build Teams app package")
+			return
+		}
+	}
+
+	if err := zw.Close(); err != nil {
+		slog.Error("Failed to finalize ZIP", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to build Teams app package")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/zip")
+	w.Header().Set("Content-Disposition", `attachment; filename="cetirun-teams-app.zip"`)
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Pragma", "no-cache")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.WriteHeader(http.StatusOK)
+	w.Write(buf.Bytes())
+}
+
+func addFileToZip(zw *zip.Writer, name string, data []byte) error {
+	fw, err := zw.Create(name)
+	if err != nil {
+		return err
+	}
+	_, err = fw.Write(data)
+	return err
+}
+
+func teamsStateOrUnknown(instance *cetirunv1alpha1.OpenClawInstance) string {
+	if instance.Status.MSTeams != nil && instance.Status.MSTeams.State != "" {
+		return instance.Status.MSTeams.State
+	}
+	return "Unknown"
+}
+
+func toEventItems(events []corev1.Event) []EventItem {
+	items := make([]EventItem, 0, len(events))
+	for _, e := range events {
+		source := e.Source.Component
+		if e.Source.Host != "" {
+			if source != "" {
+				source += "/" + e.Source.Host
+			} else {
+				source = e.Source.Host
+			}
+		}
+		item := EventItem{
+			Type:    e.Type,
+			Reason:  e.Reason,
+			Message: e.Message,
+			Source:  source,
+			Count:   e.Count,
+		}
+		if !e.FirstTimestamp.IsZero() {
+			item.FirstSeen = e.FirstTimestamp.UTC().Format("2006-01-02T15:04:05Z")
+		}
+		if !e.LastTimestamp.IsZero() {
+			item.LastSeen = e.LastTimestamp.UTC().Format("2006-01-02T15:04:05Z")
+		}
+		items = append(items, item)
+	}
+	// Sort by lastSeen descending. Events with empty LastSeen (no timestamp)
+	// sort to the end since "" < any non-empty string.
+	sort.Slice(items, func(i, j int) bool {
+		return items[i].LastSeen > items[j].LastSeen
+	})
+	return items
+}
+
+func toPodStatuses(pods []corev1.Pod) []PodStatus {
+	statuses := make([]PodStatus, 0, len(pods))
+	for _, p := range pods {
+		var totalRestarts int32
+		for _, cs := range p.Status.ContainerStatuses {
+			totalRestarts += cs.RestartCount
+		}
+		statuses = append(statuses, PodStatus{
+			Name:         p.Name,
+			Phase:        string(p.Status.Phase),
+			Ready:        isPodReady(&p),
+			RestartCount: totalRestarts,
+		})
+	}
+	return statuses
+}
+
+func isPodReady(pod *corev1.Pod) bool {
+	for _, c := range pod.Status.Conditions {
+		if c.Type == corev1.PodReady {
+			return c.Status == corev1.ConditionTrue
+		}
+	}
+	return false
+}
+
+func writeJSON(w http.ResponseWriter, status int, v interface{}) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(v)
+}
+
+func writeError(w http.ResponseWriter, status int, code, message string) {
+	writeJSON(w, status, ErrorResponse{
+		Error: ErrorDetail{
+			Code:    code,
+			Message: message,
+		},
+	})
+}
+
+// allNilPointers reports whether every field in a struct is a nil pointer.
+// It is used to detect empty PATCH requests.
+func allNilPointers(v any) bool {
+	rv := reflect.ValueOf(v)
+	if rv.Kind() == reflect.Ptr {
+		rv = rv.Elem()
+	}
+	for i := 0; i < rv.NumField(); i++ {
+		f := rv.Field(i)
+		if f.Kind() == reflect.Ptr && !f.IsNil() {
+			return false
+		}
+	}
+	return true
+}
+
+// nonNilPointerFields returns the json tag names of all non-nil pointer fields
+// in a struct. Used to build audit log field lists without logging values.
+func nonNilPointerFields(v any) []string {
+	rv := reflect.ValueOf(v)
+	rt := reflect.TypeOf(v)
+	if rv.Kind() == reflect.Ptr {
+		rv = rv.Elem()
+		rt = rt.Elem()
+	}
+	var fields []string
+	for i := 0; i < rv.NumField(); i++ {
+		f := rv.Field(i)
+		if f.Kind() != reflect.Ptr || f.IsNil() {
+			continue
+		}
+		tag := rt.Field(i).Tag.Get("json")
+		name, _, _ := strings.Cut(tag, ",")
+		if name == "" || name == "-" {
+			name = rt.Field(i).Name
+		}
+		fields = append(fields, name)
+	}
+	return fields
+}
+
+// ListTeams handles GET /api/v1/teams.
+func (h *InstanceHandler) ListTeams(w http.ResponseWriter, r *http.Request) {
+	teams, err := h.Kube.ListTeams(r.Context())
+	if err != nil {
+		slog.Error("failed to list teams", "err", err)
+		http.Error(w, "failed to list teams", http.StatusInternalServerError)
+		return
+	}
+	result := make([]TeamSummary, len(teams))
+	for i, t := range teams {
+		result[i] = TeamSummary{
+			Name:     t.Name,
+			Role:     t.Spec.MemberContext.Role,
+			Provider: t.Spec.Defaults.Provider,
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(result); err != nil {
+		slog.Error("failed to encode teams response", "err", err)
+	}
+}

@@ -1,0 +1,268 @@
+name: E2E
+
+on:
+  pull_request:
+    paths:
+      - "infra/istio/**"
+      - "app/cetirun-operator/**"
+      - "app/cetirun-portal/**"
+      - "app/cetirun-chart/**"
+      - "scripts/**"
+      - ".github/workflows/e2e.yml"
+  push:
+    branches:
+      - "main"
+  schedule:
+    - cron: "0 16 * * *" # 16:00 UTC (02:00 AEST / 03:00 AEDT, depending on daylight saving)
+  workflow_dispatch:
+
+concurrency:
+  group: e2e-deploy
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Always build+deploy every component from the current commit, then run E2E.
+# This ensures a broken component from a prior PR doesn't poison later runs.
+# Dependabot PRs are skipped (github.actor check) because pull_request
+# events from dependabot do not have access to secrets.
+#
+# Job graph (needs):
+#   deploy-operator  ◄── deploy-istio, build-cetirun, build-operator
+#   deploy-portal    ◄── deploy-istio
+#   e2e-test         ◄── deploy-operator, deploy-portal, build-cetirun
+# ──────────────────────────────────────────────────────────────────────────────
+jobs:
+  # ── Deploy Istio ──────────────────────────────────────────────────────────
+  deploy-istio:
+    if: false # E2E temporarily disabled
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up kubeconfig
+        run: |
+          mkdir -p "$HOME/.kube"
+          echo "${{ secrets.E2E_KUBE_CONFIG }}" | base64 -d > "$HOME/.kube/config"
+          chmod 600 "$HOME/.kube/config"
+
+      - name: Write PFX and set path
+        run: |
+          TLS_DIR="$(mktemp -d)"
+          echo "${{ secrets.E2E_TLS_PFX }}" | base64 -d > "${TLS_DIR}/cert.pfx"
+          echo "PFX_PATH=${TLS_DIR}/cert.pfx" >> "$GITHUB_ENV"
+
+      - name: Deploy Istio (local chart)
+        env:
+          SKIP_AZ_VALIDATION: "true"
+          CLIENT_ID: ${{ secrets.E2E_CLIENT_ID }}
+          TENANT_ID: ${{ secrets.E2E_TENANT_ID }}
+          ALLOWED_GROUPS: ${{ secrets.E2E_ALLOWED_GROUPS }}
+          ADMIN_ALIASES: ${{ secrets.E2E_ADMIN_ALIASES }}
+          DOMAIN: ${{ vars.E2E_DOMAIN }}
+        run: infra/istio/deploy.sh
+
+  # ── Build OpenClaw (image + chart) ────────────────────────────────────────
+  build-cetirun:
+    if: false # E2E temporarily disabled
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      image_tag: ${{ steps.tag.outputs.image_tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set image tag
+        id: tag
+        run: |
+          TAG="e2e-${{ github.run_number }}"
+          echo "IMAGE_TAG=${TAG}" >> "$GITHUB_ENV"
+          echo "image_tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to ACR
+        run: echo "${{ secrets.E2E_ACR_PASSWORD }}" | docker login "${{ secrets.E2E_ACR_REGISTRY }}" --username "${{ secrets.E2E_ACR_USERNAME }}" --password-stdin
+
+      - name: Build and push agent images
+        env:
+          REGISTRY: ${{ secrets.E2E_ACR_REGISTRY }}
+          PUSH: "true"
+          BUILD_HERMES: "true"
+        run: scripts/cetirun-docker-build.sh
+
+      - name: Package and push cetirun Helm chart
+        env:
+          REGISTRY: ${{ secrets.E2E_ACR_REGISTRY }}
+          CHART_VERSION: 0.0.0-${{ env.IMAGE_TAG }}
+          APP_VERSION: ${{ env.IMAGE_TAG }}
+        run: |
+          # Override image.repository to use the test ACR
+          sed -i "s|repository: .*openclaw-gateway|repository: ${{ secrets.E2E_ACR_REGISTRY }}/openclaw-gateway|" app/cetirun-chart/values.yaml
+          sed -i "s|repository: .*hermes-gateway|repository: ${{ secrets.E2E_ACR_REGISTRY }}/hermes-gateway|" app/cetirun-chart/values.yaml
+          echo "${{ secrets.E2E_ACR_PASSWORD }}" | helm registry login "${{ secrets.E2E_ACR_REGISTRY }}" \
+            --username "${{ secrets.E2E_ACR_USERNAME }}" --password-stdin
+          scripts/cetirun-helm-release.sh
+
+  # ── Build Operator ────────────────────────────────────────────────────────
+  build-operator:
+    if: false # E2E temporarily disabled
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set image tag
+        run: echo "IMAGE_TAG=e2e-${{ github.run_number }}" >> "$GITHUB_ENV"
+
+      - name: Log in to ACR
+        run: echo "${{ secrets.E2E_ACR_PASSWORD }}" | docker login "${{ secrets.E2E_ACR_REGISTRY }}" --username "${{ secrets.E2E_ACR_USERNAME }}" --password-stdin
+
+      - name: Build and push operator image
+        env:
+          REGISTRY: ${{ secrets.E2E_ACR_REGISTRY }}
+          PUSH: "true"
+        run: scripts/operator-docker-build.sh
+
+  # ── Deploy Operator ───────────────────────────────────────────────────────
+  deploy-operator:
+    if: false # E2E temporarily disabled
+    needs: [deploy-istio, build-cetirun, build-operator]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set image tag
+        run: echo "IMAGE_TAG=e2e-${{ github.run_number }}" >> "$GITHUB_ENV"
+
+      - name: Set up kubeconfig
+        run: |
+          mkdir -p "$HOME/.kube"
+          echo "${{ secrets.E2E_KUBE_CONFIG }}" | base64 -d > "$HOME/.kube/config"
+          chmod 600 "$HOME/.kube/config"
+
+      - name: Log in to ACR
+        run: echo "${{ secrets.E2E_ACR_PASSWORD }}" | docker login "${{ secrets.E2E_ACR_REGISTRY }}" --username "${{ secrets.E2E_ACR_USERNAME }}" --password-stdin
+
+      - name: Create ACR pull secret for operator
+        run: |
+          kubectl create secret docker-registry acr-e2e \
+            --namespace cetirun-system \
+            --docker-server="${{ secrets.E2E_ACR_REGISTRY }}" \
+            --docker-username="${{ secrets.E2E_ACR_USERNAME }}" \
+            --docker-password="${{ secrets.E2E_ACR_PASSWORD }}" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Validate Azure secrets
+        env:
+          SUBSCRIPTION_ID: ${{ secrets.E2E_AZURE_SUBSCRIPTION_ID }}
+          TENANT_ID: ${{ secrets.E2E_AZURE_TENANT_ID }}
+          CLIENT_ID: ${{ secrets.E2E_AZURE_CLIENT_ID }}
+          RESOURCE_GROUP: ${{ vars.E2E_AZURE_RESOURCE_GROUP }}
+          BOT_NAME_PREFIX: ${{ vars.E2E_AZURE_BOT_NAME_PREFIX }}
+        run: |
+          missing=()
+          [ -z "$SUBSCRIPTION_ID" ] && missing+=(E2E_AZURE_SUBSCRIPTION_ID)
+          [ -z "$TENANT_ID" ] && missing+=(E2E_AZURE_TENANT_ID)
+          [ -z "$CLIENT_ID" ] && missing+=(E2E_AZURE_CLIENT_ID)
+          [ -z "$RESOURCE_GROUP" ] && missing+=(E2E_AZURE_RESOURCE_GROUP)
+          [ -z "$BOT_NAME_PREFIX" ] && missing+=(E2E_AZURE_BOT_NAME_PREFIX)
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::error::Missing required Azure secrets/variables: ${missing[*]}"
+            exit 1
+          fi
+
+      - name: Deploy Operator (local chart + test image)
+        env:
+          LOCAL_CHART: "true"
+          IMAGE_REPO: ${{ secrets.E2E_ACR_REGISTRY }}/cetirun-operator
+          E2E_DOMAIN: ${{ vars.E2E_DOMAIN }}
+        run: |
+          VERSION="0.0.0-${IMAGE_TAG}"
+          DOMAIN="${E2E_DOMAIN}"
+          if [[ -z "${DOMAIN}" ]]; then
+            echo "::error::E2E_DOMAIN variable is not set. Configure it in the GitHub environment variables."
+            exit 1
+          fi
+          export HELM_SET_ARGS="cetirun.chart.repoURL=oci://${{ secrets.E2E_ACR_REGISTRY }}/helm/cetirun cetirun.chart.version=${VERSION} domainSuffix=${DOMAIN} skillsStorageAccount=${{ vars.E2E_SKILLS_STORAGE_ACCOUNT || 'cetirunskills' }} azure.subscriptionId=${{ secrets.E2E_AZURE_SUBSCRIPTION_ID }} azure.resourceGroup=${{ vars.E2E_AZURE_RESOURCE_GROUP }} azure.botNamePrefix=${{ vars.E2E_AZURE_BOT_NAME_PREFIX }} azure.tenantId=${{ secrets.E2E_AZURE_TENANT_ID }} azure.clientId=${{ secrets.E2E_AZURE_CLIENT_ID }}"
+          cd app/cetirun-operator
+          deploy/deploy.sh
+
+      - name: Patch operator with ACR credentials
+        run: |
+          kubectl patch deployment cetirun-operator -n cetirun-system --type=strategic -p '{
+            "spec": {"template": {"spec": {
+              "volumes": [{"name": "acr-docker-config", "secret": {"secretName": "acr-e2e", "items": [{"key": ".dockerconfigjson", "path": "config.json"}]}}],
+              "containers": [{"name": "manager",
+                "volumeMounts": [{"name": "acr-docker-config", "mountPath": "/etc/docker", "readOnly": true}],
+                "env": [{"name": "DOCKER_CONFIG", "value": "/etc/docker"}]
+              }]
+            }}}
+          }'
+          kubectl rollout status deployment/cetirun-operator -n cetirun-system --timeout=120s
+
+  # ── Deploy Portal ─────────────────────────────────────────────────────────
+  deploy-portal:
+    if: false # E2E temporarily disabled
+    needs: [deploy-istio]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set image tag
+        run: echo "IMAGE_TAG=e2e-${{ github.run_number }}" >> "$GITHUB_ENV"
+
+      - name: Set up kubeconfig
+        run: |
+          mkdir -p "$HOME/.kube"
+          echo "${{ secrets.E2E_KUBE_CONFIG }}" | base64 -d > "$HOME/.kube/config"
+          chmod 600 "$HOME/.kube/config"
+
+      - name: Log in to ACR
+        run: echo "${{ secrets.E2E_ACR_PASSWORD }}" | docker login "${{ secrets.E2E_ACR_REGISTRY }}" --username "${{ secrets.E2E_ACR_USERNAME }}" --password-stdin
+
+      - name: Build and push portal image
+        env:
+          REGISTRY: ${{ secrets.E2E_ACR_REGISTRY }}
+          PUSH: "true"
+        run: scripts/portal-docker-build.sh
+
+      - name: Deploy Portal (local chart + test image)
+        env:
+          LOCAL_CHART: "true"
+          IMAGE_REPO: ${{ secrets.E2E_ACR_REGISTRY }}/cetirun-portal
+          ISTIO_HOST: ${{ vars.E2E_DOMAIN }}
+        run: |
+          cd app/cetirun-portal
+          deploy/deploy.sh
+
+  # ── E2E Tests ─────────────────────────────────────────────────────────────
+  e2e-test:
+    if: false # E2E temporarily disabled
+    needs: [build-cetirun, deploy-operator, deploy-portal]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up kubeconfig
+        run: |
+          mkdir -p "$HOME/.kube"
+          echo "${{ secrets.E2E_KUBE_CONFIG }}" | base64 -d > "$HOME/.kube/config"
+          chmod 600 "$HOME/.kube/config"
+
+      - name: Run E2E tests
+        env:
+          EXPECTED_IMAGE_TAG: ${{ needs.build-cetirun.outputs.image_tag }}
+        run: |
+          TEST_ALIAS=johnreese AGENT_TYPE=openclaw scripts/e2e-test.sh
+          TEST_ALIAS=hermese2e AGENT_TYPE=hermes scripts/e2e-test.sh

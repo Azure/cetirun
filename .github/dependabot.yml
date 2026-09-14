@@ -1,0 +1,52 @@
+version: 2
+updates:
+  # GitHub Actions — keep action refs up to date
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      codeql:
+        patterns:
+          - "github/codeql-action/*"
+
+  # Dockerfiles
+  - package-ecosystem: "docker"
+    directory: "/app/cetirun-chart"
+    schedule:
+      interval: "weekly"
+
+  - package-ecosystem: "docker"
+    directory: "/app/cetirun-operator"
+    schedule:
+      interval: "weekly"
+
+  - package-ecosystem: "docker"
+    directory: "/app/cetirun-portal"
+    schedule:
+      interval: "weekly"
+
+  # Portal imports operator through a local replace. Update their dependency
+  # graphs together, including dependencies that are indirect in the consumer.
+  - package-ecosystem: "gomod"
+    directories:
+      - "/app/cetirun-operator"
+      - "/app/cetirun-portal"
+    schedule:
+      interval: "weekly"
+    allow:
+      - dependency-type: "all"
+    groups:
+      go-modules:
+        patterns:
+          - "*"
+      go-security:
+        applies-to: "security-updates"
+        patterns:
+          - "*"
+
+  # npm — portal frontend
+  - package-ecosystem: "npm"
+    directory: "/app/cetirun-portal/web"
+    schedule:
+      interval: "weekly"

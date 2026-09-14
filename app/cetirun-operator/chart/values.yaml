@@ -1,0 +1,110 @@
+# Default values for cetirun-operator chart.
+
+# -- Number of operator replicas (leader election keeps only one active).
+replicaCount: 2
+
+# -- Operator container image.
+image:
+  repository: cetirun.azurecr.io/cetirun-operator
+  pullPolicy: IfNotPresent
+  tag: "" # Defaults to .Chart.AppVersion
+  # -- Image digest for pinning (e.g. sha256:abc123...). When set, pins the image; the tag is kept for readability.
+  digest: ""
+
+# -- Image pull secrets.
+imagePullSecrets: []
+
+# -- Name of a kubernetes.io/dockerconfigjson Secret in the operator namespace
+# whose credentials are passed to the Helm registry client via DOCKER_CONFIG.
+# Required when the OCI chart registry (e.g. ACR) is private and the node's
+# kubelet identity does not surface docker credentials inside the pod.
+acrDockerSecret: ""
+
+# -- Namespace to deploy the operator into.
+# The namespace is created by the operator's Helm chart installation, not by the operator itself.
+namespace: cetirun-system
+
+# -- Istio revision label for AKS managed Istio sidecar injection.
+# When empty (default), the operator auto-detects the revision from
+# ConfigMaps in aks-istio-system. Set explicitly to override auto-detection
+# or to pin a specific revision (e.g. "asm-1-22").
+istioRevision: ""
+
+# -- Base domain suffix for instance access URLs (e.g. alias.example.com).
+domainSuffix: ""
+
+# -- CetiRun Helm chart configuration.
+cetirun:
+  # -- Default GitHub Copilot model for instances that do not specify spec.model.
+  # Override this only with a model authorized for the deployment's Copilot users.
+  defaultModel: "gpt-6-astra"
+  chart:
+    # -- OCI registry URL.
+    repoURL: oci://cetirun.azurecr.io/helm/cetirun
+    # -- Chart version to deploy.
+    version: "0.1.0"
+  # -- Operator-level Helm value overrides applied to every CetiRun instance.
+  # Merged on top of the operator's hardcoded defaults but beneath
+  # per-instance spec.helm.values, so instances can still override them.
+  # Example:
+  #   cetirun:
+  #     helmValues:
+  #       skills:
+  #         shared: true
+  #         resourceGroup: "my-rg"
+  #         storageAccount: "cetirunskills"
+  helmValues: {}
+
+# -- Enable leader election (recommended for production with replicaCount > 1).
+leaderElection: true
+
+# -- Resource requests/limits for the operator pod.
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 2Gi
+
+# -- Node selector for the operator pod.
+nodeSelector: {}
+
+# -- Tolerations for the operator pod.
+tolerations: []
+
+# -- Affinity rules for the operator pod.
+affinity: {}
+
+# -- Additional pod annotations.
+podAnnotations: {}
+
+# -- Service account configuration.
+serviceAccount:
+  create: true
+  name: cetirun-operator-controller-manager
+  annotations: {}
+
+# -- Override the chart's default skills storage account.
+# Empty string (default) means use the chart's built-in default.
+# Deprecated: use cetirun.helmValues.skills.storageAccount instead.
+skillsStorageAccount: ""
+
+# -- Azure configuration for Teams auto-provisioning.
+# Only required when instances use msteams.enabled=true.
+azure:
+  # -- Azure subscription ID for Bot Service resources.
+  subscriptionId: ""
+  # -- Resource group for Bot Service resources.
+  resourceGroup: ""
+  # -- Name prefix for Bot Service and AAD app registrations (<prefix>-<alias>).
+  botNamePrefix: ""
+  # -- Azure AD tenant ID for bot app registrations.
+  tenantId: ""
+  # -- Service Tree ID for AAD app registrations (required in MSFT corp tenant).
+  serviceTreeId: ""
+  # -- Client ID of the operator's managed identity (enables workload identity).
+  clientId: ""
+  # -- FIC Issuer IDs mapping (JSON object: {"tenantId":"issuerId",...}).
+  # Required for Federated Identity Credential setup in productivity tenants.
+  ficIssuerIds: ""

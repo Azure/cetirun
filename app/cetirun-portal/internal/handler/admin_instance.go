@@ -1,0 +1,73 @@
+package handler
+
+import (
+	"log/slog"
+	"net/http"
+
+	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"github.com/Azure/CetiRun/app/cetirun-portal/internal/kube"
+)
+
+// AdminInstanceHandler exposes a cluster-wide read-only view of
+// OpenClawInstance resources for admin users. Modifications still go through
+// the user-scoped /api/v1/instances endpoints in InstanceHandler.
+type AdminInstanceHandler struct {
+	Kube *kube.Client
+}
+
+// AdminInstanceSummary is the row shape for the admin instances list.
+type AdminInstanceSummary struct {
+	Name        string `json:"name"`
+	Alias       string `json:"alias"`
+	DisplayName string `json:"displayName,omitempty"`
+	Email       string `json:"email,omitempty"`
+	Team        string `json:"team,omitempty"`
+	AgentType   string `json:"agentType,omitempty"`
+	Phase       string `json:"phase,omitempty"`
+	Ready       bool   `json:"ready"`
+	CreatedAt   string `json:"createdAt"`
+}
+
+// ListAllInstances handles GET /api/v1/admin/instances.
+func (h *AdminInstanceHandler) ListAllInstances(w http.ResponseWriter, r *http.Request) {
+	items, err := h.Kube.ListAllInstances(r.Context())
+	if err != nil {
+		slog.Error("admin: list instances failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to list instances")
+		return
+	}
+	out := make([]AdminInstanceSummary, 0, len(items))
+	for i := range items {
+		ins := &items[i]
+		out = append(out, AdminInstanceSummary{
+			Name:        ins.Name,
+			Alias:       ins.Spec.User.Alias,
+			DisplayName: ins.Spec.User.DisplayName,
+			Email:       ins.Spec.User.Email,
+			Team:        instanceTeam(ins),
+			AgentType:   ins.Spec.AgentType,
+			Phase:       ins.Status.Phase,
+			Ready:       isReady(ins),
+			CreatedAt:   ins.CreationTimestamp.UTC().Format("2006-01-02T15:04:05Z"),
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"instances": out})
+}
+
+// instanceTeam returns the effective team for an instance — the top-level
+// spec.team takes precedence over the legacy spec.user.team.
+func instanceTeam(ins *cetirunv1alpha1.OpenClawInstance) string {
+	if ins.Spec.Team != "" {
+		return ins.Spec.Team
+	}
+	return ins.Spec.User.Team
+}
+
+func isReady(ins *cetirunv1alpha1.OpenClawInstance) bool {
+	for _, c := range ins.Status.Conditions {
+		if c.Type == "Ready" {
+			return c.Status == "True"
+		}
+	}
+	return false
+}

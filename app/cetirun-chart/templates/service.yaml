@@ -1,0 +1,34 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "cetirun.fullname" . }}
+  labels:
+    {{- include "cetirun.labels" . | nindent 4 }}
+  {{- with .Values.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+    {{- include "cetirun.agent.servicePorts" . | nindent 4 }}
+    {{- if .Values.desktop.enabled }}
+    - port: 6080
+      targetPort: 6080
+      protocol: TCP
+      name: novnc
+    {{- end }}
+    {{- if .Values.ttyd.enabled }}
+    - port: {{ .Values.ttyd.port }}
+      targetPort: {{ .Values.ttyd.port }}
+      protocol: TCP
+      name: ttyd
+    {{- end }}
+    {{- if gt (int .Values.msteamsWebhookPort) 0 }}
+    - port: {{ .Values.msteamsWebhookPort }}
+      targetPort: {{ .Values.msteamsWebhookPort }}
+      protocol: TCP
+      name: msteams-webhook
+    {{- end }}
+  selector:
+    {{- include "cetirun.selectorLabels" . | nindent 4 }}

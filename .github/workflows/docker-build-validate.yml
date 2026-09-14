@@ -1,0 +1,278 @@
+name: Docker Build Check
+
+on:
+  schedule:
+    - cron: "0 9 * * *" # 09:00 UTC daily — scan for newly disclosed CVEs
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches:
+      - "main"
+
+concurrency:
+  group: docker-validate-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  security-events: write  # upload Trivy SARIF to Security tab
+  issues: write            # create CVE issues
+
+# NPM_REGISTRY can override the corporate default for general npm-based images.
+# OpenClaw is blocked from ingestion by that feed's policy, so its CI build uses
+# the public registry unless an administrator configures OPENCLAW_NPM_REGISTRY.
+env:
+  NPM_REGISTRY: ${{ vars.NPM_REGISTRY || 'https://packagefeedproxy.microsoft.io/npm/' }}
+  OPENCLAW_NPM_REGISTRY: ${{ vars.OPENCLAW_NPM_REGISTRY || 'https://registry.npmjs.org/' }}
+
+jobs:
+  docker-build-validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/share/swift \
+            /usr/local/share/powershell /usr/local/share/chromium /usr/local/share/boost
+          sudo docker image prune --all --force
+          df -h /
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        with:
+          driver: docker
+
+      - name: Test image dependency policy
+        run: python3 -m unittest discover -s scripts/tests -v
+
+      - name: Build base image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: app/cetirun-chart
+          file: app/cetirun-chart/Dockerfile.base
+          push: false
+          tags: cetirun-base:validation
+          build-args: |
+            NPM_REGISTRY=${{ env.NPM_REGISTRY }}
+
+      - name: Build OpenClaw image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: app/cetirun-chart
+          file: app/cetirun-chart/Dockerfile.openclaw
+          push: false
+          build-args: |
+            BASE_IMAGE=cetirun-base:validation
+            NPM_REGISTRY=${{ env.OPENCLAW_NPM_REGISTRY }}
+          tags: openclaw-gateway:validation
+
+      - name: Smoke test updated runtime dependencies
+        run: |
+          docker run --rm --entrypoint /bin/sh \
+            -e AZURE_CORE_COLLECT_TELEMETRY=0 \
+            openclaw-gateway:validation -c \
+            'test ! -e /home/vibe/.openclaw/identity/device.json && openclaw --version && az version && gh --version && kubectl version --client && tailscale version && supervisord --version && python3 -m pip --version'
+          docker run --rm --entrypoint python3 openclaw-gateway:validation -c \
+            'from pip._vendor import msgpack, pkg_resources; from pip._vendor.cachecontrol.serialize import Serializer; assert msgpack.unpackb(msgpack.packb({"ok": True})) == {"ok": True}; pkg_resources.Requirement.parse("setuptools>=78.1.1"); Serializer()'
+          docker run --rm \
+            --entrypoint /usr/local/lib/cetirun-auth/bin/python \
+            -v "${{ github.workspace }}/app/cetirun-chart/tests:/tests:ro" \
+            -v "${{ github.workspace }}/app/cetirun-chart/configs/cetirun-auth-service.py:/configs/cetirun-auth-service.py:ro" \
+            openclaw-gateway:validation -m unittest discover -s /tests -v
+
+      - name: Build Hermes image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: app/cetirun-chart
+          file: app/cetirun-chart/Dockerfile.hermes
+          push: false
+          build-args: |
+            BASE_IMAGE=cetirun-base:validation
+          tags: hermes-gateway:validation
+
+      - name: Build desktop sidecar image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: app/cetirun-chart
+          file: app/cetirun-chart/Dockerfile.desktop
+          push: false
+          tags: cetirun-desktop:validation
+
+      - name: Pull Trivy from MCR
+        run: docker pull mcr.microsoft.com/oss/v2/aquasecurity/trivy:v0.68.2@sha256:493766e398dcdb680b4084ba396139c495466f4229698b5da7be79d61fa5f5b3
+
+      - name: Scan image for vulnerabilities (Trivy)
+        run: |
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            mcr.microsoft.com/oss/v2/aquasecurity/trivy:v0.68.2@sha256:493766e398dcdb680b4084ba396139c495466f4229698b5da7be79d61fa5f5b3 \
+            image \
+            --format table \
+            --exit-code 1 \
+            --severity CRITICAL,HIGH \
+            --ignore-unfixed \
+            openclaw-gateway:validation
+
+      - name: Scan Hermes image for vulnerabilities (Trivy)
+        run: |
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            mcr.microsoft.com/oss/v2/aquasecurity/trivy:v0.68.2@sha256:493766e398dcdb680b4084ba396139c495466f4229698b5da7be79d61fa5f5b3 \
+            image \
+            --format table \
+            --exit-code 1 \
+            --severity CRITICAL \
+            --ignore-unfixed \
+            hermes-gateway:validation
+
+      - name: Scan desktop image for vulnerabilities (Trivy)
+        run: |
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            mcr.microsoft.com/oss/v2/aquasecurity/trivy:v0.68.2@sha256:493766e398dcdb680b4084ba396139c495466f4229698b5da7be79d61fa5f5b3 \
+            image \
+            --format table \
+            --exit-code 1 \
+            --severity CRITICAL \
+            --ignore-unfixed \
+            cetirun-desktop:validation
+
+      - name: Scan image for SARIF report (Trivy)
+        if: always() && !cancelled()
+        continue-on-error: true
+        run: |
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "${{ github.workspace }}:/workspace" \
+            mcr.microsoft.com/oss/v2/aquasecurity/trivy:v0.68.2@sha256:493766e398dcdb680b4084ba396139c495466f4229698b5da7be79d61fa5f5b3 \
+            image \
+            --format sarif \
+            --output /workspace/trivy-results.sarif \
+            --severity CRITICAL,HIGH \
+            --ignore-unfixed \
+            openclaw-gateway:validation
+
+      - name: Upload Trivy SARIF to GitHub Security
+        if: always() && !cancelled() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
+        with:
+          sarif_file: trivy-results.sarif
+          category: trivy-cetirun
+
+      - name: Scan image for JSON report (Trivy)
+        if: always() && !cancelled() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        continue-on-error: true
+        run: |
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "${{ github.workspace }}:/workspace" \
+            mcr.microsoft.com/oss/v2/aquasecurity/trivy:v0.68.2@sha256:493766e398dcdb680b4084ba396139c495466f4229698b5da7be79d61fa5f5b3 \
+            image \
+            --format json \
+            --output /workspace/trivy-results.json \
+            --severity CRITICAL,HIGH \
+            --ignore-unfixed \
+            openclaw-gateway:validation
+
+      - name: Create or update CVE issue
+        id: create_cve_issue
+        if: always() && !cancelled() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        continue-on-error: true
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const fs = require('fs');
+            const path = 'trivy-results.json';
+            const title = '🔒 Trivy: critical/high CVEs in cetirun image';
+            const label = 'security';
+            const findExistingIssue = async () => {
+              const issues = await github.paginate(github.rest.issues.listForRepo, {
+                owner: context.repo.owner, repo: context.repo.repo,
+                state: 'open', labels: label, creator: 'github-actions[bot]', per_page: 100,
+              });
+              return issues.find(i => i.title === title);
+            };
+
+            if (!fs.existsSync(path)) {
+              core.info('No Trivy JSON report found — skipping issue creation');
+              return;
+            }
+            const report = JSON.parse(fs.readFileSync(path, 'utf8'));
+            const vulns = [];
+            for (const result of (report.Results || [])) {
+              for (const v of (result.Vulnerabilities || [])) {
+                if (v.Severity === 'CRITICAL' || v.Severity === 'HIGH') {
+                  const key = `${v.VulnerabilityID}-${v.PkgName}`;
+                  if (!vulns.find(x => x.key === key)) {
+                    vulns.push({
+                      key,
+                      id: v.VulnerabilityID,
+                      pkg: v.PkgName,
+                      severity: v.Severity,
+                      installed: v.InstalledVersion,
+                      fixed: v.FixedVersion || 'N/A',
+                      title: v.Title || v.Description || '',
+                      target: result.Target,
+                    });
+                  }
+                }
+              }
+            }
+            if (vulns.length === 0) {
+              core.info('No CRITICAL/HIGH CVEs found');
+              const existing = await findExistingIssue();
+              if (existing) {
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner, repo: context.repo.repo,
+                  issue_number: existing.number,
+                  body: 'Docker Build Check found no critical/high CVEs with fixes available. Closing this issue.',
+                });
+                await github.rest.issues.update({
+                  owner: context.repo.owner, repo: context.repo.repo,
+                  issue_number: existing.number,
+                  state: 'closed',
+                  state_reason: 'completed',
+                });
+                core.info(`Closed resolved issue #${existing.number}`);
+              }
+              return;
+            }
+
+            // Ensure label exists
+            try {
+              await github.rest.issues.getLabel({ owner: context.repo.owner, repo: context.repo.repo, name: label });
+            } catch {
+              await github.rest.issues.createLabel({ owner: context.repo.owner, repo: context.repo.repo, name: label, color: 'e11d48', description: 'Security-related issues' });
+            }
+
+            let body = `## Container Image CVE Scan — \`cetirun\`\n\n`;
+            body += `Trivy detected **${vulns.length}** critical/high vulnerabilities with fixes available.\n\n`;
+            body += `| CVE | Package | Severity | Installed | Fixed In | Description |\n`;
+            body += `|-----|---------|----------|-----------|----------|-------------|\n`;
+            const esc = (s, max) => {
+              let v = String(s ?? '').replace(/\r?\n|\r/g, ' ').replace(/\|/g, '\\|').replace(/\s+/g, ' ').trim();
+              return max && v.length > max ? v.substring(0, max - 3) + '...' : v;
+            };
+            for (const v of vulns) {
+              body += `| ${esc(v.id)} | ${esc(v.pkg)} | ${esc(v.severity)} | ${esc(v.installed)} | ${esc(v.fixed)} | ${esc(v.title, 80)} |\n`;
+            }
+            body += `\n*Generated by [Docker Build Check](../actions/workflows/docker-build-validate.yml) on ${new Date().toISOString().split('T')[0]}*\n`;
+
+            // Find existing open issue
+            const existing = await findExistingIssue();
+
+            if (existing) {
+              await github.rest.issues.update({ owner: context.repo.owner, repo: context.repo.repo, issue_number: existing.number, body });
+              core.info(`Updated existing issue #${existing.number}`);
+              core.setOutput('issue_number', existing.number);
+            } else {
+              const created = await github.rest.issues.create({ owner: context.repo.owner, repo: context.repo.repo, title, body, labels: [label] });
+              core.info(`Created issue #${created.data.number}`);
+              core.setOutput('issue_number', created.data.number);
+            }

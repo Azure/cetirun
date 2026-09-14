@@ -1,0 +1,87 @@
+# -- Number of portal replicas.
+replicaCount: 2
+
+# -- Portal container image.
+image:
+  repository: ghcr.io/azure/cetirun-portal
+  pullPolicy: IfNotPresent
+  tag: "" # Defaults to .Chart.AppVersion
+  # -- Image digest for pinning (e.g. sha256:abc123...). When set, pins the image; the tag is kept for readability.
+  digest: ""
+
+# -- Image pull secrets.
+imagePullSecrets: []
+
+# -- Optional notice banner message displayed in the portal UI.
+# Set to a non-empty string to show a dismissible banner. Empty means no banner.
+noticeBanner: >-
+  CetiRun has migrated from OpenClaw to Hermes Agent. Core data and Copilot auth are
+  migrated automatically. If you had custom cron jobs, sub-agents, hooks, MCP servers,
+  or other advanced OpenClaw settings, ask Hermes Agent in chat to migrate them.
+  Prompt: "Please review my old OpenClaw configuration and migrate any custom cron jobs,
+  sub-agents, hooks, MCP servers, approval rules, skills, and other advanced settings to
+  Hermes. Apply safe changes where possible and summarize anything that needs manual
+  setup."
+
+# -- Istio ingress configuration.
+istio:
+  # -- Hostname for the portal VirtualService.
+  host: ""
+  # -- Istio gateway reference.
+  gateway: "aks-istio-ingress/cetirun-gateway"
+  # -- Namespace of the Istio ingress gateway (used by AuthorizationPolicy).
+  gatewayNamespace: "aks-istio-ingress"
+  # -- Service account name of the Istio ingress gateway (used by AuthorizationPolicy).
+  gatewayServiceAccount: "aks-istio-ingressgateway-external"
+  # -- Optional legacy hostname to redirect to istio.host with a 301.
+  # Set to the old portal subdomain (e.g. portal.example.com) to redirect old users.
+  # Leave empty to disable.
+  legacyHost: ""
+  # -- Confirm the target namespace has Istio sidecar injection enabled.
+  # Must be set to true; the AuthorizationPolicy requires mTLS enforcement.
+  sidecarInjection: true
+
+# -- Resource requests/limits.
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+# -- Service account configuration.
+serviceAccount:
+  create: true
+  name: cetirun-portal
+  annotations: {}
+
+# -- Node selector.
+nodeSelector: {}
+
+# -- Tolerations.
+tolerations: []
+
+# -- Affinity rules.
+affinity: {}
+
+# -- Additional pod annotations.
+podAnnotations: {}
+
+# -- Admin configuration. Aliases listed here can access /admin/* routes
+# and admin APIs in the portal. Keep this list in sync with the istio chart's
+# `authPolicy.adminAliases` (the istio deploy script sources both from the
+# same `ADMIN_ALIASES` environment variable).
+admins:
+  aliases: []
+
+# -- Feature flags. These control which features are exposed in the portal UI.
+features:
+  # -- Enable the Tailscale integration feature.
+  tailscaleEnabled: false
+  # -- Maximum number of OpenClawInstances a user may create. 0 = unlimited.
+  maxInstancesPerUser: 1
+  # -- Agent types users can create from the portal. Supported values: openclaw, hermes.
+  allowedAgentTypes:
+    - openclaw
+    - hermes

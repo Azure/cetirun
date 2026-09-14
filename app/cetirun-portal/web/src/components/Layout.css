@@ -1,0 +1,17 @@
+.layout-root {
+  zoom: 1;
+}
+
+/* Medium-large screens (1400px+): slight zoom */
+@media (min-width: 1400px) {
+  .layout-root {
+    zoom: 1.2;
+  }
+}
+
+/* Large screens (1800px+): bigger zoom */
+@media (min-width: 1800px) {
+  .layout-root {
+    zoom: 1.6;
+  }
+}
