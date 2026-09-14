@@ -14,7 +14,7 @@ COPY app/cetirun-portal/web/ ./
 RUN npm run build
 
 # --- Build backend ---
-FROM mcr.microsoft.com/oss/go/microsoft/golang:1.26.5@sha256:ea712a1aaf80306c19ff842ba0bfcb9ad360afd8143e70044e0d0bd6d6899887 AS backend
+FROM mcr.microsoft.com/oss/go/microsoft/golang:1.26.8-1@sha256:1c312e239157abd92e3eb83091ac5febb914b57eb117af7faa46659109632bdd AS backend
 WORKDIR /workspace
 # Copy operator module (needed for CRD types via replace directive).
 COPY app/cetirun-operator/ app/cetirun-operator/
