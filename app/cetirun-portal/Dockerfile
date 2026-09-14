@@ -2,7 +2,7 @@
 # Licensed under the MIT License.
 
 # --- Build frontend ---
-FROM mcr.microsoft.com/azurelinux/base/core:3.0@sha256:1c56f09437dfc2910faad39abaaed336265d246cf183e2adb362d4cb3b881ab6 AS frontend
+FROM mcr.microsoft.com/azurelinux/base/core:3.0@sha256:34a22db497ff34a0f35ca5fc54bd38711d04238a2c1b2f65d35dc9d45dd82584 AS frontend
 ARG NPM_REGISTRY=https://packagefeedproxy.microsoft.io/npm/
 RUN tdnf install -y ca-certificates nodejs24 nodejs24-npm && tdnf clean all
 WORKDIR /app/web
