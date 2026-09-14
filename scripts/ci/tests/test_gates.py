@@ -319,6 +319,32 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn("comment-summary-in-pr: never", text)
         self.assertIn("run: make license-check", text)
 
+    def test_ci_pyjwt_has_both_security_fixes(self):
+        requirements = (validate.ROOT / "scripts/ci/requirements.txt").read_text()
+        version = re.search(
+            r"^PyJWT\[crypto\]==(\d+)\.(\d+)\.(\d+)$", requirements, re.MULTILINE
+        )
+        self.assertIsNotNone(version)
+        self.assertGreaterEqual(tuple(map(int, version.groups())), (2, 13, 0))
+
+    def test_component_runtime_bases_reject_known_vulnerable_digest(self):
+        images = set()
+        vulnerable_digest = (
+            "f8f5a9bb739ad1ec347853144c9ed4ca2260e587082277bc6066fcd5cc9973e8"
+        )
+        for component in validate.MODULES:
+            text = (validate.ROOT / f"app/cetirun-{component}/Dockerfile").read_text()
+            match = re.search(
+                r"^FROM (mcr\.microsoft\.com/azurelinux/distroless/base:3\.0"
+                r"@sha256:([0-9a-f]{64}))$",
+                text,
+                re.MULTILINE,
+            )
+            self.assertIsNotNone(match)
+            self.assertNotEqual(match[2], vulnerable_digest)
+            images.add(match[1])
+        self.assertEqual(len(images), 1)
+
 
 if __name__ == "__main__":
     unittest.main()
