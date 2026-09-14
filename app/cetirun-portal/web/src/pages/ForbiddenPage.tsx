@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 import { Text, tokens } from "@fluentui/react-components";
 
 export function ForbiddenPage({ message }: { message?: string }) {

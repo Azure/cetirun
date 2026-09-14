@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
 # setup.sh — Deploy AdminClaw via OpenClawInstance CR (operator-managed).
 #
 # This script handles pre-requisites that the operator cannot manage:

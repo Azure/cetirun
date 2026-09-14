@@ -1,3 +1,6 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
 """Unit tests for cetirun_teams serviceUrl persistence and standalone send.
 
 These import gateway.* (via adapter.py) so they only run inside the Hermes

@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 // Shared fetch helper used by all portal API clients.
 //
 // OAuth2 Proxy handles authentication at the gateway level. No Authorization

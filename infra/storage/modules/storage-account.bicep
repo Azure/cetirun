@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 // Premium Blob Storage account and container for AKS skill artifacts.
 
 param storageAccountName string

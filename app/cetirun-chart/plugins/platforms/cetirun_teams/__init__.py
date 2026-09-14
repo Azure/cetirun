@@ -1,3 +1,6 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
 """CetiRun Teams platform plugin — workload identity auth."""
 
 from gateway.platform_registry import platform_registry, PlatformEntry

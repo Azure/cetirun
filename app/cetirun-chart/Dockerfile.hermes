@@ -1,3 +1,6 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
 ARG BASE_IMAGE=cetirun.azurecr.io/cetirun-base:latest
 
 FROM ${BASE_IMAGE}

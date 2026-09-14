@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
 """CetiRun in-pod auth helper service.
 
 Exposes a tiny HTTP API on 0.0.0.0:18790 that the Portal "Copilot Auth" UI

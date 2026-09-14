@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 import { apiFetch } from "./fetch";
 
 export interface TeamSkillStorage {

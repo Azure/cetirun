@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 import { Button, Field, Input, Select, Text } from "@fluentui/react-components";
 import { ArrowSync20Regular, Warning20Regular } from "@fluentui/react-icons";
 import { isCopilotAuthSupported, useCopilotModelsQuery } from "../hooks/useCopilotAuth";

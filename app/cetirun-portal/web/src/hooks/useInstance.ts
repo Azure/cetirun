@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   getInstance,

@@ -1,3 +1,6 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
 """CetiRun Teams platform adapter — webhook server and message dispatch."""
 
 import json

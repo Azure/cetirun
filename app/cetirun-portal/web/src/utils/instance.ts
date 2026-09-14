@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 import type { Instance } from "../types/instance";
 
 /** Badge color for an instance phase. */

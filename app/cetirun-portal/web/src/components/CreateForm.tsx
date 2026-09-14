@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 import { useEffect, useMemo, useState } from "react";
 import { Button, Input, Field, Switch, MessageBar, Select } from "@fluentui/react-components";
 import { useCreateInstance } from "../hooks/useInstance";

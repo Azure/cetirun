@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 // Discover ALL egress destinations from cetirun sidecar JSON access logs
 // Covers both ServiceEntry-matched traffic (with FQDN) and PassthroughCluster (IP only)
 

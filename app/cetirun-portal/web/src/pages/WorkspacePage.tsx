@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 import { useParams, useNavigate, Navigate } from "react-router-dom";
 import { Button, Text, Badge, tokens } from "@fluentui/react-components";
 import {

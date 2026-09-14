@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 // Resource-group-scoped orchestrator: deploys AKS cluster into an existing resource group.
 // The resource group is created by deploy.sh before this template runs.
 

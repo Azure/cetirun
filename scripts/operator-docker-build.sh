@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
 set -euo pipefail
 
 if ! command -v docker >/dev/null 2>&1; then

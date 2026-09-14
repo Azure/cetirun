@@ -1,4 +1,9 @@
 {{/*
+Copyright (c) Microsoft Corporation.
+Licensed under the MIT License.
+*/}}
+
+{{/*
 OpenClaw agent-specific named templates.
 These are called by dispatcher templates in _helpers.tpl based on .Values.agentType.
 */}}

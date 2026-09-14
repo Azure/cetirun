@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 import { Routes, Route, Navigate } from "react-router-dom";
 import { Header } from "./components/Header";
 import { NoticeBanner } from "./components/NoticeBanner";

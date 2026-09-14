@@ -1,3 +1,6 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
 # Desktop sidecar: Xvfb + Fluxbox + x11vnc + noVNC + Chrome
 # Provides headed Chrome GUI accessible via noVNC (port 6080) and
 # Chrome DevTools Protocol (port 18800) for gateway browser automation.

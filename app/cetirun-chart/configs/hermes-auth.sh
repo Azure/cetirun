@@ -1,4 +1,7 @@
 #!/bin/sh
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
 set -e
 
 # copilot-auth — Authenticate GitHub Copilot for Hermes.
