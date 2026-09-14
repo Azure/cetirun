@@ -18,7 +18,7 @@ RUN GOOS=linux go build -a -o manager ./cmd/main.go
 
 # ──────────────────────────────────────────────
 # Runtime stage
-FROM mcr.microsoft.com/azurelinux/distroless/base:3.0@sha256:f8f5a9bb739ad1ec347853144c9ed4ca2260e587082277bc6066fcd5cc9973e8
+FROM mcr.microsoft.com/azurelinux/distroless/base:3.0@sha256:4377af4aa7a810b7d59f691eae5066895a71aa3eee4cfb4eba527bbebff16479
 
 WORKDIR /
 
