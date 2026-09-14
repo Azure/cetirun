@@ -1,0 +1,10 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+# Match the auth/Teams runtime pins in Dockerfile.openclaw and Dockerfile.hermes.
+aiohttp==3.13.3
+PyYAML==6.0.2
+azure-identity==1.19.0
+PyJWT[crypto]==2.10.1
+# Test-only dependencies; no Hermes image or agent installation required.
+httpx==0.28.1
+pytest==9.0.2

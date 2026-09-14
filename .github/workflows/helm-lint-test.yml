@@ -15,16 +15,20 @@ permissions:
 
 jobs:
   lint-test:
+    name: Helm all charts
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
 
-      - name: Helm lint
-        run: scripts/cetirun-helm-lint.sh
+      - name: Install pinned Helm
+        run: |
+          python3 scripts/ci/install_tools.py --bin-dir "$RUNNER_TEMP/cetirun-tools" helm
+          echo "$RUNNER_TEMP/cetirun-tools" >> "$GITHUB_PATH"
 
-      - name: Helm template test
-        run: scripts/cetirun-helm-test.sh
+      - name: Lint and render all four charts and runtime variants
+        run: make chart-check

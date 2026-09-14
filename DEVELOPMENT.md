@@ -28,8 +28,8 @@ test scripts require a separately authorized environment.
 Install tools only for the component you are changing:
 
 - Git, Bash, and Make for repository commands.
-- Go compatible with each component's `go.mod` (currently Go 1.26.2 or later
-  in the 1.26 series).
+- Go 1.26.8, matching `.go-version`, both module minimums, and the pinned
+  Microsoft Go builder images.
 - Node.js 24 and npm for the portal frontend, matching its CI configuration.
 - Helm for local chart linting and rendering.
 - Python 3 for the standard-library tests under `scripts/tests/`.
