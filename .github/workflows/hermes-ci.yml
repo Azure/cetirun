@@ -1,0 +1,58 @@
+name: Hermes Gateway Image
+
+on:
+  push:
+    tags:
+      - "hermes-v*"
+  workflow_dispatch:
+
+concurrency:
+  group: hermes-image-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Derive image tag
+        id: tag
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            echo "tag=${GITHUB_REF_NAME#hermes-v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=manual-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Log in to ACR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ${{ secrets.ACR_REGISTRY }}
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
+
+      - name: Build and push Hermes image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: app/cetirun-chart
+          file: app/cetirun-chart/Dockerfile.hermes
+          platforms: linux/amd64
+          push: true
+          provenance: true
+          sbom: true
+          build-args: |
+            BASE_IMAGE=${{ secrets.ACR_REGISTRY }}/cetirun-base:latest
+          tags: |
+            ${{ secrets.ACR_REGISTRY }}/hermes-gateway:${{ steps.tag.outputs.tag }}
+            ${{ secrets.ACR_REGISTRY }}/hermes-gateway:latest

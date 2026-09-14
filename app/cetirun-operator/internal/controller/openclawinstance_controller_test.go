@@ -1,0 +1,1068 @@
+package controller_test
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"sort"
+	"testing"
+	"time"
+
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/tools/record"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+
+	istiov1beta1 "istio.io/client-go/pkg/apis/networking/v1beta1"
+
+	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/controller"
+)
+
+// --- Fake HelmClient ---
+
+type fakeHelmClient struct {
+	installCalled    bool
+	installErr       error
+	lastChartVersion string
+	lastValues       map[string]interface{}
+}
+
+func (f *fakeHelmClient) InstallOrUpgrade(namespace, releaseName string, values map[string]any, chartVersion string) error {
+	f.installCalled = true
+	f.lastChartVersion = chartVersion
+	f.lastValues = values
+	return f.installErr
+}
+
+func (f *fakeHelmClient) Uninstall(namespace, releaseName string) error {
+	return nil
+}
+
+// --- Test helpers ---
+
+func testScheme() *runtime.Scheme {
+	s := runtime.NewScheme()
+	utilruntime.Must(clientgoscheme.AddToScheme(s))
+	utilruntime.Must(cetirunv1alpha1.AddToScheme(s))
+	utilruntime.Must(appsv1.AddToScheme(s))
+	utilruntime.Must(istiov1beta1.AddToScheme(s))
+	// corev1 and rbacv1 are registered by clientgoscheme.AddToScheme
+	_ = rbacv1.AddToScheme(s)
+	return s
+}
+
+// newCR builds a minimal OpenClawInstance for tests. The finalizer is pre-set
+// so the reconciler does not spend a loop adding it.
+func newCR(alias string, phase string, conditions []metav1.Condition, generation int64, observedGen int64, observedHash string) *cetirunv1alpha1.OpenClawInstance {
+	cr := &cetirunv1alpha1.OpenClawInstance{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       alias,
+			Generation: generation,
+			Finalizers: []string{cetirunv1alpha1.Finalizer},
+		},
+		Spec: cetirunv1alpha1.OpenClawInstanceSpec{
+			User: cetirunv1alpha1.UserSpec{
+				Alias:       alias,
+				DisplayName: "Test User",
+				Team:        "test-team",
+			},
+			GatewayTokenSecretRef: "gateway-token",
+			Helm: cetirunv1alpha1.HelmSpec{
+				Version: "0.1.28", // Pre-set to avoid backfill loop in tests.
+				Values:  map[string]runtime.RawExtension{},
+			},
+		},
+		Status: cetirunv1alpha1.OpenClawInstanceStatus{
+			Phase:                phase,
+			Conditions:           conditions,
+			ObservedGeneration:   observedGen,
+			ObservedOperatorHash: observedHash,
+		},
+	}
+	return cr
+}
+
+func gatewayTokenSecret(alias string) *corev1.Secret {
+	return &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "gateway-token",
+			Namespace: "cetirun-" + alias,
+		},
+		Data: map[string][]byte{
+			"OPENCLAW_GATEWAY_TOKEN": []byte("test-token"),
+			"CETIRUN_AUTH_KEY":       []byte("test-auth-key"),
+		},
+	}
+}
+
+func instanceNamespace(alias string) *corev1.Namespace {
+	return &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "cetirun-" + alias,
+		},
+	}
+}
+
+func statefulSet(alias string, readyReplicas int32) *appsv1.StatefulSet {
+	return statefulSetFull(alias, readyReplicas, readyReplicas, 1, 1)
+}
+
+func statefulSetFull(alias string, readyReplicas, updatedReplicas int32, generation, observedGen int64) *appsv1.StatefulSet {
+	replicas := int32(1)
+	return &appsv1.StatefulSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "openclaw-" + alias + "-cetirun",
+			Namespace:  "cetirun-" + alias,
+			Generation: generation,
+		},
+		Spec: appsv1.StatefulSetSpec{
+			Replicas: &replicas,
+		},
+		Status: appsv1.StatefulSetStatus{
+			ReadyReplicas:      readyReplicas,
+			UpdatedReplicas:    updatedReplicas,
+			ObservedGeneration: observedGen,
+		},
+	}
+}
+
+func statefulSetSuspended(alias string) *appsv1.StatefulSet {
+	replicas := int32(0)
+	return &appsv1.StatefulSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "openclaw-" + alias + "-cetirun",
+			Namespace:  "cetirun-" + alias,
+			Generation: 1,
+		},
+		Spec: appsv1.StatefulSetSpec{
+			Replicas: &replicas,
+		},
+		Status: appsv1.StatefulSetStatus{
+			ReadyReplicas:      0,
+			UpdatedReplicas:    0,
+			ObservedGeneration: 1,
+		},
+	}
+}
+
+func findCondition(conditions []metav1.Condition, condType string) *metav1.Condition {
+	for i := range conditions {
+		if conditions[i].Type == condType {
+			return &conditions[i]
+		}
+	}
+	return nil
+}
+
+// --- Tests ---
+
+// TestPhaseConstants verifies phase constant values.
+func TestPhaseConstants(t *testing.T) {
+	phases := []string{
+		cetirunv1alpha1.PhasePending,
+		cetirunv1alpha1.PhaseProvisioning,
+		cetirunv1alpha1.PhaseReady,
+		cetirunv1alpha1.PhaseFailed,
+		cetirunv1alpha1.PhaseDeleting,
+		cetirunv1alpha1.PhaseSuspended,
+	}
+	for _, p := range phases {
+		if p == "" {
+			t.Errorf("phase constant is empty")
+		}
+	}
+}
+
+// TestFinalizerConstant verifies the finalizer name.
+func TestFinalizerConstant(t *testing.T) {
+	if cetirunv1alpha1.Finalizer != "cetirun.microsoft.com/finalizer" {
+		t.Errorf("unexpected finalizer: %s", cetirunv1alpha1.Finalizer)
+	}
+}
+
+func TestReconcile_PodNotReady_StaysProvisioning(t *testing.T) {
+	alias := "alice"
+
+	cr := newCR(alias, cetirunv1alpha1.PhaseProvisioning, nil, 1, 0, "")
+	s := testScheme()
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(cr, instanceNamespace(alias), gatewayTokenSecret(alias), statefulSet(alias, 0)).
+		WithStatusSubresource(cr).
+		Build()
+
+	helmFake := &fakeHelmClient{}
+
+	r := &controller.OpenClawInstanceReconciler{
+		Client:            fakeClient,
+		Scheme:            s,
+		EventRecorder:     record.NewFakeRecorder(10),
+		HelmClient:        helmFake,
+		OperatorNamespace: "cetirun-system",
+		OperatorSAName:    "cetirun-operator-controller-manager",
+		ChartVersion:      "0.1.28",
+		DomainSuffix:      "example.com",
+	}
+
+	result, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: alias},
+	})
+	if err != nil {
+		t.Fatalf("Reconcile returned unexpected error: %v", err)
+	}
+	if result.RequeueAfter != 15*time.Second {
+		t.Errorf("expected RequeueAfter=15s, got %v", result.RequeueAfter)
+	}
+
+	// Fetch updated CR.
+	updated := &cetirunv1alpha1.OpenClawInstance{}
+	if err := fakeClient.Get(context.Background(), types.NamespacedName{Name: alias}, updated); err != nil {
+		t.Fatalf("failed to get updated CR: %v", err)
+	}
+	if updated.Status.Phase != cetirunv1alpha1.PhaseProvisioning {
+		t.Errorf("expected phase=%s, got %s", cetirunv1alpha1.PhaseProvisioning, updated.Status.Phase)
+	}
+
+	podReady := findCondition(updated.Status.Conditions, cetirunv1alpha1.ConditionPodReady)
+	if podReady == nil {
+		t.Fatal("expected PodReady condition to be set")
+	}
+	if podReady.Status != metav1.ConditionFalse {
+		t.Errorf("expected PodReady=False, got %s", podReady.Status)
+	}
+	if podReady.Reason != "PodNotReady" {
+		t.Errorf("expected PodReady reason=PodNotReady, got %s", podReady.Reason)
+	}
+}
+
+func TestReconcile_PodReady_MarksReady(t *testing.T) {
+	alias := "bob"
+
+	cr := newCR(alias, cetirunv1alpha1.PhaseProvisioning, nil, 1, 0, "")
+	s := testScheme()
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(cr, instanceNamespace(alias), gatewayTokenSecret(alias), statefulSet(alias, 1)).
+		WithStatusSubresource(cr).
+		Build()
+
+	helmFake := &fakeHelmClient{}
+
+	r := &controller.OpenClawInstanceReconciler{
+		Client:            fakeClient,
+		Scheme:            s,
+		EventRecorder:     record.NewFakeRecorder(10),
+		HelmClient:        helmFake,
+		OperatorNamespace: "cetirun-system",
+		OperatorSAName:    "cetirun-operator-controller-manager",
+		ChartVersion:      "0.1.28",
+		DomainSuffix:      "example.com",
+	}
+
+	result, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: alias},
+	})
+	if err != nil {
+		t.Fatalf("Reconcile returned unexpected error: %v", err)
+	}
+	if result.RequeueAfter != 10*time.Minute {
+		t.Errorf("expected RequeueAfter=10m, got %v", result.RequeueAfter)
+	}
+
+	updated := &cetirunv1alpha1.OpenClawInstance{}
+	if err := fakeClient.Get(context.Background(), types.NamespacedName{Name: alias}, updated); err != nil {
+		t.Fatalf("failed to get updated CR: %v", err)
+	}
+	if updated.Status.Phase != cetirunv1alpha1.PhaseReady {
+		t.Errorf("expected phase=%s, got %s", cetirunv1alpha1.PhaseReady, updated.Status.Phase)
+	}
+
+	podReady := findCondition(updated.Status.Conditions, cetirunv1alpha1.ConditionPodReady)
+	if podReady == nil {
+		t.Fatal("expected PodReady condition to be set")
+	}
+	if podReady.Status != metav1.ConditionTrue {
+		t.Errorf("expected PodReady=True, got %s", podReady.Status)
+	}
+
+	ready := findCondition(updated.Status.Conditions, cetirunv1alpha1.ConditionReady)
+	if ready == nil {
+		t.Fatal("expected Ready condition to be set")
+	}
+	if ready.Status != metav1.ConditionTrue {
+		t.Errorf("expected Ready=True, got %s", ready.Status)
+	}
+}
+
+func TestReconcile_RolloutIncomplete_StaysProvisioning(t *testing.T) {
+	cases := []struct {
+		name            string
+		readyReplicas   int32
+		updatedReplicas int32
+		stsGeneration   int64
+		stsObservedGen  int64
+	}{
+		{
+			name:            "old pod ready, no updated replicas (rolling update not started)",
+			readyReplicas:   1,
+			updatedReplicas: 0,
+			stsGeneration:   2,
+			stsObservedGen:  2,
+		},
+		{
+			name:            "updated but not yet ready",
+			readyReplicas:   0,
+			updatedReplicas: 1,
+			stsGeneration:   2,
+			stsObservedGen:  2,
+		},
+		{
+			name:            "STS controller not yet observed new generation",
+			readyReplicas:   1,
+			updatedReplicas: 1,
+			stsGeneration:   2,
+			stsObservedGen:  1,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			alias := "rollout"
+
+			cr := newCR(alias, cetirunv1alpha1.PhaseProvisioning, nil, 1, 0, "")
+			sts := statefulSetFull(alias, tc.readyReplicas, tc.updatedReplicas, tc.stsGeneration, tc.stsObservedGen)
+
+			s := testScheme()
+			fakeClient := fake.NewClientBuilder().
+				WithScheme(s).
+				WithObjects(cr, instanceNamespace(alias), gatewayTokenSecret(alias), sts).
+				WithStatusSubresource(cr).
+				Build()
+
+			r := &controller.OpenClawInstanceReconciler{
+				Client:            fakeClient,
+				Scheme:            s,
+				EventRecorder:     record.NewFakeRecorder(10),
+				HelmClient:        &fakeHelmClient{},
+				OperatorNamespace: "cetirun-system",
+				OperatorSAName:    "cetirun-operator-controller-manager",
+				ChartVersion:      "0.1.28",
+				DomainSuffix:      "example.com",
+			}
+
+			result, err := r.Reconcile(context.Background(), ctrl.Request{
+				NamespacedName: types.NamespacedName{Name: alias},
+			})
+			if err != nil {
+				t.Fatalf("Reconcile returned unexpected error: %v", err)
+			}
+			if result.RequeueAfter != 15*time.Second {
+				t.Errorf("expected RequeueAfter=15s, got %v", result.RequeueAfter)
+			}
+
+			updated := &cetirunv1alpha1.OpenClawInstance{}
+			if err := fakeClient.Get(context.Background(), types.NamespacedName{Name: alias}, updated); err != nil {
+				t.Fatalf("failed to get updated CR: %v", err)
+			}
+			if updated.Status.Phase != cetirunv1alpha1.PhaseProvisioning {
+				t.Errorf("expected phase=%s, got %s", cetirunv1alpha1.PhaseProvisioning, updated.Status.Phase)
+			}
+
+			podReady := findCondition(updated.Status.Conditions, cetirunv1alpha1.ConditionPodReady)
+			if podReady == nil {
+				t.Fatal("expected PodReady condition to be set")
+			}
+			if podReady.Status != metav1.ConditionFalse {
+				t.Errorf("expected PodReady=False, got %s", podReady.Status)
+			}
+		})
+	}
+}
+
+func TestReconcile_StatefulSetNotFound_Requeues(t *testing.T) {
+	alias := "carol"
+
+	cr := newCR(alias, cetirunv1alpha1.PhaseProvisioning, nil, 1, 0, "")
+	s := testScheme()
+	// No StatefulSet seeded.
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(cr, instanceNamespace(alias), gatewayTokenSecret(alias)).
+		WithStatusSubresource(cr).
+		Build()
+
+	helmFake := &fakeHelmClient{}
+
+	r := &controller.OpenClawInstanceReconciler{
+		Client:            fakeClient,
+		Scheme:            s,
+		EventRecorder:     record.NewFakeRecorder(10),
+		HelmClient:        helmFake,
+		OperatorNamespace: "cetirun-system",
+		OperatorSAName:    "cetirun-operator-controller-manager",
+		ChartVersion:      "0.1.28",
+		DomainSuffix:      "example.com",
+	}
+
+	result, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: alias},
+	})
+	if err != nil {
+		t.Fatalf("Reconcile returned unexpected error: %v", err)
+	}
+	if result.RequeueAfter != 15*time.Second {
+		t.Errorf("expected RequeueAfter=15s, got %v", result.RequeueAfter)
+	}
+
+	updated := &cetirunv1alpha1.OpenClawInstance{}
+	if err := fakeClient.Get(context.Background(), types.NamespacedName{Name: alias}, updated); err != nil {
+		t.Fatalf("failed to get updated CR: %v", err)
+	}
+
+	podReady := findCondition(updated.Status.Conditions, cetirunv1alpha1.ConditionPodReady)
+	if podReady == nil {
+		t.Fatal("expected PodReady condition to be set")
+	}
+	if podReady.Status != metav1.ConditionFalse {
+		t.Errorf("expected PodReady=False, got %s", podReady.Status)
+	}
+	if podReady.Reason != "StatefulSetNotFound" {
+		t.Errorf("expected PodReady reason=StatefulSetNotFound, got %s", podReady.Reason)
+	}
+}
+
+func TestReconcile_AlreadyDeployed_SkipsHelm(t *testing.T) {
+	alias := "dave"
+	domainSuffix := "example.com"
+
+	conditions := []metav1.Condition{
+		{
+			Type:               cetirunv1alpha1.ConditionHelmDeployed,
+			Status:             metav1.ConditionTrue,
+			Reason:             "ChartInstalled",
+			Message:            "Helm chart successfully installed",
+			LastTransitionTime: metav1.Now(),
+		},
+	}
+
+	gwSecretData := gatewayTokenSecret(alias).Data
+	opHash := computeOperatorHash(domainSuffix, computeSecretHash(gwSecretData), "", "", "", "", "", "", "", "", "")
+
+	cr := newCR(alias, cetirunv1alpha1.PhaseProvisioning, conditions, 1, 1, opHash)
+	s := testScheme()
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(cr, instanceNamespace(alias), gatewayTokenSecret(alias), statefulSet(alias, 0)).
+		WithStatusSubresource(cr).
+		Build()
+
+	helmFake := &fakeHelmClient{}
+
+	r := &controller.OpenClawInstanceReconciler{
+		Client:            fakeClient,
+		Scheme:            s,
+		EventRecorder:     record.NewFakeRecorder(10),
+		HelmClient:        helmFake,
+		OperatorNamespace: "cetirun-system",
+		OperatorSAName:    "cetirun-operator-controller-manager",
+		ChartVersion:      "0.1.28",
+		DomainSuffix:      domainSuffix,
+	}
+
+	result, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: alias},
+	})
+	if err != nil {
+		t.Fatalf("Reconcile returned unexpected error: %v", err)
+	}
+	if result.RequeueAfter != 15*time.Second {
+		t.Errorf("expected RequeueAfter=15s, got %v", result.RequeueAfter)
+	}
+
+	if helmFake.installCalled {
+		t.Error("expected HelmClient.InstallOrUpgrade NOT to be called, but it was")
+	}
+
+	updated := &cetirunv1alpha1.OpenClawInstance{}
+	if err := fakeClient.Get(context.Background(), types.NamespacedName{Name: alias}, updated); err != nil {
+		t.Fatalf("failed to get updated CR: %v", err)
+	}
+
+	podReady := findCondition(updated.Status.Conditions, cetirunv1alpha1.ConditionPodReady)
+	if podReady == nil {
+		t.Fatal("expected PodReady condition to be set")
+	}
+	if podReady.Status != metav1.ConditionFalse {
+		t.Errorf("expected PodReady=False, got %s", podReady.Status)
+	}
+}
+
+// TestReconcile_SecretChanged_TriggersHelm verifies that when the gateway Secret
+// content changes (e.g. token rotation), a Ready instance triggers a full reconcile
+// with Helm upgrade instead of being skipped.
+func TestReconcile_SecretChanged_TriggersHelm(t *testing.T) {
+	alias := "eve"
+	domainSuffix := "example.com"
+
+	// Seed the CR as Ready with an operator hash computed from the OLD secret data.
+	oldSecretData := map[string][]byte{"OPENCLAW_GATEWAY_TOKEN": []byte("old-token")}
+	oldHash := computeOperatorHash(domainSuffix, computeSecretHash(oldSecretData), "", "", "", "", "", "", "", "", "")
+
+	conditions := []metav1.Condition{
+		{
+			Type:               cetirunv1alpha1.ConditionHelmDeployed,
+			Status:             metav1.ConditionTrue,
+			Reason:             "ChartInstalled",
+			Message:            "Helm chart successfully installed",
+			LastTransitionTime: metav1.Now(),
+		},
+		{
+			Type:               cetirunv1alpha1.ConditionReady,
+			Status:             metav1.ConditionTrue,
+			Reason:             "InstanceReady",
+			Message:            "Instance is fully operational",
+			LastTransitionTime: metav1.Now(),
+		},
+	}
+
+	cr := newCR(alias, cetirunv1alpha1.PhaseReady, conditions, 1, 1, oldHash)
+
+	// But the actual Secret in the cluster has NEW content (simulating token rotation).
+	newSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "gateway-token",
+			Namespace: "cetirun-" + alias,
+		},
+		Data: map[string][]byte{
+			"OPENCLAW_GATEWAY_TOKEN": []byte("new-rotated-token"),
+		},
+	}
+
+	s := testScheme()
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(cr, instanceNamespace(alias), newSecret, statefulSet(alias, 1)).
+		WithStatusSubresource(cr).
+		Build()
+
+	helmFake := &fakeHelmClient{}
+
+	r := &controller.OpenClawInstanceReconciler{
+		Client:            fakeClient,
+		Scheme:            s,
+		EventRecorder:     record.NewFakeRecorder(10),
+		HelmClient:        helmFake,
+		OperatorNamespace: "cetirun-system",
+		OperatorSAName:    "cetirun-operator-controller-manager",
+		ChartVersion:      "0.1.28",
+		DomainSuffix:      domainSuffix,
+	}
+
+	result, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: alias},
+	})
+	if err != nil {
+		t.Fatalf("Reconcile returned unexpected error: %v", err)
+	}
+
+	// Should NOT have been skipped (10m requeue = skip path).
+	// Instead, full reconcile should run and reach Ready (10m) with Helm called.
+	if result.RequeueAfter != 10*time.Minute {
+		t.Errorf("expected RequeueAfter=10m (full reconcile → Ready), got %v", result.RequeueAfter)
+	}
+
+	if !helmFake.installCalled {
+		t.Error("expected HelmClient.InstallOrUpgrade to be called after Secret content changed, but it was NOT")
+	}
+}
+
+// TestReconcile_ReadyInstanceBackfillsCetiRunAuthKey verifies that the
+// skip-cache does not prevent upgrades of existing instances whose
+// operator-managed gateway Secret predates CETIRUN_AUTH_KEY.
+func TestReconcile_ReadyInstanceBackfillsCetiRunAuthKey(t *testing.T) {
+	alias := "legacy-auth-key"
+	domainSuffix := "example.com"
+	legacySecretData := map[string][]byte{"OPENCLAW_GATEWAY_TOKEN": []byte("legacy-token")}
+	legacyHash := computeOperatorHash(domainSuffix, computeSecretHash(legacySecretData), "", "", "", "", "", "", "", "", "")
+
+	conditions := []metav1.Condition{
+		{
+			Type:               cetirunv1alpha1.ConditionHelmDeployed,
+			Status:             metav1.ConditionTrue,
+			Reason:             "ChartInstalled",
+			Message:            "Helm chart successfully installed",
+			LastTransitionTime: metav1.Now(),
+		},
+		{
+			Type:               cetirunv1alpha1.ConditionReady,
+			Status:             metav1.ConditionTrue,
+			Reason:             "InstanceReady",
+			Message:            "Instance is fully operational",
+			LastTransitionTime: metav1.Now(),
+		},
+	}
+	cr := newCR(alias, cetirunv1alpha1.PhaseReady, conditions, 1, 1, legacyHash)
+	legacySecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "gateway-token", Namespace: "cetirun-" + alias},
+		Data:       legacySecretData,
+	}
+
+	s := testScheme()
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(cr, instanceNamespace(alias), legacySecret, statefulSet(alias, 1)).
+		WithStatusSubresource(cr).
+		Build()
+	helmFake := &fakeHelmClient{}
+	r := &controller.OpenClawInstanceReconciler{
+		Client:            fakeClient,
+		Scheme:            s,
+		EventRecorder:     record.NewFakeRecorder(10),
+		HelmClient:        helmFake,
+		OperatorNamespace: "cetirun-system",
+		OperatorSAName:    "cetirun-operator-controller-manager",
+		ChartVersion:      "0.1.28",
+		DomainSuffix:      domainSuffix,
+	}
+
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: alias}}); err != nil {
+		t.Fatalf("Reconcile returned unexpected error: %v", err)
+	}
+	if !helmFake.installCalled {
+		t.Fatal("expected Helm install or upgrade after CETIRUN_AUTH_KEY backfill")
+	}
+	podAnnotations, ok := helmFake.lastValues["podAnnotations"].(map[string]interface{})
+	if !ok {
+		t.Fatal("Helm values do not include podAnnotations")
+	}
+	if got, _ := podAnnotations["cetirun.microsoft.com/gateway-secret-resource-version"].(string); got == "" {
+		t.Fatal("Helm values do not trigger a StatefulSet rollout after CETIRUN_AUTH_KEY backfill")
+	}
+	updatedSecret := &corev1.Secret{}
+	if err := fakeClient.Get(context.Background(), types.NamespacedName{Namespace: "cetirun-" + alias, Name: "gateway-token"}, updatedSecret); err != nil {
+		t.Fatalf("get updated gateway Secret: %v", err)
+	}
+	if got := string(updatedSecret.Data["CETIRUN_AUTH_KEY"]); got == "" {
+		t.Fatal("CETIRUN_AUTH_KEY was not backfilled")
+	}
+}
+
+func TestReconcile_RejectsReservedUIInstance(t *testing.T) {
+	alias := "ui"
+	cr := newCR(alias, cetirunv1alpha1.PhaseReady, nil, 1, 1, "")
+	vs := &istiov1beta1.VirtualService{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "cetirun-ui",
+			Namespace: "cetirun-ui",
+		},
+	}
+
+	s := testScheme()
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(cr, vs).
+		WithStatusSubresource(cr).
+		Build()
+	helmFake := &fakeHelmClient{}
+	r := &controller.OpenClawInstanceReconciler{
+		Client:            fakeClient,
+		Scheme:            s,
+		EventRecorder:     record.NewFakeRecorder(10),
+		HelmClient:        helmFake,
+		OperatorNamespace: "cetirun-system",
+		OperatorSAName:    "cetirun-operator-controller-manager",
+		ChartVersion:      "0.1.28",
+		DomainSuffix:      "example.com",
+	}
+
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: alias}}); err == nil {
+		t.Fatal("expected reconcile to reject the reserved instance name")
+	}
+	if helmFake.installCalled {
+		t.Fatal("reserved instance must not run Helm deployment")
+	}
+	if err := fakeClient.Get(context.Background(), types.NamespacedName{Name: "cetirun-ui", Namespace: "cetirun-ui"}, &istiov1beta1.VirtualService{}); err == nil {
+		t.Fatal("VirtualService for reserved instance was not deleted")
+	}
+
+	updated := &cetirunv1alpha1.OpenClawInstance{}
+	if err := fakeClient.Get(context.Background(), types.NamespacedName{Name: alias}, updated); err != nil {
+		t.Fatalf("get reserved instance: %v", err)
+	}
+	if updated.Status.Phase != cetirunv1alpha1.PhaseFailed {
+		t.Fatalf("phase = %q, want Failed", updated.Status.Phase)
+	}
+}
+
+// computeOperatorHash reproduces the operatorConfigHash logic for test seeding.
+// The azureTeamsConfig variadic matches the operator's configHash method, which
+// appends Azure config (subscriptionID, resourceGroup, botNamePrefix, tenantID,
+// oidcIssuerURL) followed by the referenced OpenClawTeam's ResourceVersion to
+// the hash so Teams-enabled instances and team-referenced instances can use the
+// skip-cache.
+func computeOperatorHash(domainSuffix, secretHash, skillsStorageAccount, cetirunHelmValuesHash, chartRegistry string, azureTeamsConfig ...string) string {
+	var payload string
+	if skillsStorageAccount == "" && cetirunHelmValuesHash == "" && chartRegistry == "" && len(azureTeamsConfig) == 0 {
+		payload = domainSuffix + "\x00" + secretHash
+	} else {
+		payload = domainSuffix + "\x00" + secretHash + "\x00" + skillsStorageAccount + "\x00" + cetirunHelmValuesHash + "\x00" + chartRegistry
+		for _, v := range azureTeamsConfig {
+			payload += "\x00" + v
+		}
+	}
+	h := sha256.Sum256([]byte(payload))
+	return hex.EncodeToString(h[:8])
+}
+
+// computeSecretHash reproduces the secretContentHash logic for test seeding.
+func computeSecretHash(data map[string][]byte) string {
+	if len(data) == 0 {
+		return ""
+	}
+	h := sha256.New()
+	keys := make([]string, 0, len(data))
+	for k := range data {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		h.Write([]byte(k))
+		h.Write([]byte{0})
+		h.Write(data[k])
+		h.Write([]byte{0})
+	}
+	return hex.EncodeToString(h.Sum(nil)[:8])
+}
+
+// TestReconcile_EmptyVersion_Backfills verifies that when spec.helm.version is empty,
+// the reconciler backfills it with the operator's default chart version and requeues.
+func TestReconcile_EmptyVersion_Backfills(t *testing.T) {
+	alias := "frank"
+	chartVersion := "0.1.28"
+
+	cr := newCR(alias, cetirunv1alpha1.PhaseProvisioning, nil, 1, 0, "")
+	// Clear the version to simulate a CR without a pinned version.
+	cr.Spec.Helm.Version = ""
+
+	s := testScheme()
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(cr, instanceNamespace(alias), gatewayTokenSecret(alias)).
+		WithStatusSubresource(cr).
+		Build()
+
+	helmFake := &fakeHelmClient{}
+
+	r := &controller.OpenClawInstanceReconciler{
+		Client:            fakeClient,
+		Scheme:            s,
+		EventRecorder:     record.NewFakeRecorder(10),
+		HelmClient:        helmFake,
+		OperatorNamespace: "cetirun-system",
+		OperatorSAName:    "cetirun-operator-controller-manager",
+		ChartVersion:      chartVersion,
+		DomainSuffix:      "example.com",
+	}
+
+	result, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: alias},
+	})
+	if err != nil {
+		t.Fatalf("Reconcile returned unexpected error: %v", err)
+	}
+	if !result.Requeue {
+		t.Error("expected Requeue=true after backfill, got false")
+	}
+
+	// Helm should NOT have been called — backfill requeues before reaching Helm.
+	if helmFake.installCalled {
+		t.Error("expected HelmClient.InstallOrUpgrade NOT to be called during backfill, but it was")
+	}
+
+	// Verify the CR's spec.helm.version was backfilled.
+	updated := &cetirunv1alpha1.OpenClawInstance{}
+	if err := fakeClient.Get(context.Background(), types.NamespacedName{Name: alias}, updated); err != nil {
+		t.Fatalf("failed to get updated CR: %v", err)
+	}
+	if updated.Spec.Helm.Version != chartVersion {
+		t.Errorf("expected spec.helm.version=%q after backfill, got %q", chartVersion, updated.Spec.Helm.Version)
+	}
+}
+
+// TestReconcile_VersionSet_PassesToHelm verifies that when spec.helm.version is set,
+// the reconciler passes it through to HelmClient.InstallOrUpgrade.
+func TestReconcile_VersionSet_PassesToHelm(t *testing.T) {
+	alias := "grace"
+	pinnedVersion := "0.1.9"
+
+	cr := newCR(alias, cetirunv1alpha1.PhaseProvisioning, nil, 1, 0, "")
+	cr.Spec.Helm.Version = pinnedVersion
+
+	s := testScheme()
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(cr, instanceNamespace(alias), gatewayTokenSecret(alias), statefulSet(alias, 1)).
+		WithStatusSubresource(cr).
+		Build()
+
+	helmFake := &fakeHelmClient{}
+
+	r := &controller.OpenClawInstanceReconciler{
+		Client:            fakeClient,
+		Scheme:            s,
+		EventRecorder:     record.NewFakeRecorder(10),
+		HelmClient:        helmFake,
+		OperatorNamespace: "cetirun-system",
+		OperatorSAName:    "cetirun-operator-controller-manager",
+		ChartVersion:      "0.1.28", // Operator default differs from pinned version.
+		DomainSuffix:      "example.com",
+	}
+
+	_, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: alias},
+	})
+	if err != nil {
+		t.Fatalf("Reconcile returned unexpected error: %v", err)
+	}
+
+	if !helmFake.installCalled {
+		t.Fatal("expected HelmClient.InstallOrUpgrade to be called, but it was NOT")
+	}
+	if helmFake.lastChartVersion != pinnedVersion {
+		t.Errorf("expected chartVersion=%q passed to Helm, got %q", pinnedVersion, helmFake.lastChartVersion)
+	}
+}
+
+// TestConditionTailscaleReady verifies the TailscaleReady condition constant.
+func TestConditionTailscaleReady(t *testing.T) {
+	if cetirunv1alpha1.ConditionTailscaleReady != "TailscaleReady" {
+		t.Errorf("unexpected condition: %s", cetirunv1alpha1.ConditionTailscaleReady)
+	}
+}
+
+// TestTailscaleSpec_TypeConstruction verifies CRD struct with Tailscale fields.
+func TestTailscaleSpec_TypeConstruction(t *testing.T) {
+	instance := &cetirunv1alpha1.OpenClawInstance{
+		Spec: cetirunv1alpha1.OpenClawInstanceSpec{
+			User: cetirunv1alpha1.UserSpec{
+				Alias:       "alice",
+				DisplayName: "Alice Smith",
+				Team:        "aks-core",
+			},
+			GatewayTokenSecretRef: "gateway-token",
+			Tailscale: &cetirunv1alpha1.TailscaleSpec{
+				AuthKeySecretRef: "tailscale-auth",
+			},
+		},
+	}
+
+	if instance.Spec.Tailscale == nil {
+		t.Fatal("Tailscale spec should not be nil")
+	}
+	if instance.Spec.Tailscale.AuthKeySecretRef != "tailscale-auth" {
+		t.Errorf("AuthKeySecretRef = %q, want %q", instance.Spec.Tailscale.AuthKeySecretRef, "tailscale-auth")
+	}
+
+	// Verify nil Tailscale is valid (feature disabled).
+	instanceNoTS := &cetirunv1alpha1.OpenClawInstance{
+		Spec: cetirunv1alpha1.OpenClawInstanceSpec{
+			User: cetirunv1alpha1.UserSpec{
+				Alias:       "bob",
+				DisplayName: "Bob",
+				Team:        "aks-core",
+			},
+			GatewayTokenSecretRef: "gateway-token",
+		},
+	}
+	if instanceNoTS.Spec.Tailscale != nil {
+		t.Error("Tailscale spec should be nil when not configured")
+	}
+}
+
+// TestReconcile_Suspended_MarksSuspendedPhase verifies that when spec.suspended=true,
+// the reconciler sets phase=Suspended, PodReady=False, Ready=False, and calls Helm
+// with replicaCount=0.
+func TestReconcile_Suspended_MarksSuspendedPhase(t *testing.T) {
+	alias := "suspended-user"
+
+	cr := newCR(alias, cetirunv1alpha1.PhaseProvisioning, nil, 1, 0, "")
+	cr.Spec.Suspended = true
+
+	s := testScheme()
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(cr, instanceNamespace(alias), gatewayTokenSecret(alias), statefulSetSuspended(alias)).
+		WithStatusSubresource(cr).
+		Build()
+
+	helmFake := &fakeHelmClient{}
+
+	r := &controller.OpenClawInstanceReconciler{
+		Client:            fakeClient,
+		Scheme:            s,
+		EventRecorder:     record.NewFakeRecorder(10),
+		HelmClient:        helmFake,
+		OperatorNamespace: "cetirun-system",
+		OperatorSAName:    "cetirun-operator-controller-manager",
+		ChartVersion:      "0.1.28",
+		DomainSuffix:      "example.com",
+	}
+
+	result, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: alias},
+	})
+	if err != nil {
+		t.Fatalf("Reconcile returned unexpected error: %v", err)
+	}
+	if result.RequeueAfter != 10*time.Minute {
+		t.Errorf("expected RequeueAfter=10m, got %v", result.RequeueAfter)
+	}
+
+	// Verify Helm was called (it should pass replicaCount=0 via buildHelmValues).
+	if !helmFake.installCalled {
+		t.Error("expected Helm InstallOrUpgrade to be called")
+	}
+
+	// Fetch updated CR and verify status.
+	updated := &cetirunv1alpha1.OpenClawInstance{}
+	if err := fakeClient.Get(context.Background(), types.NamespacedName{Name: alias}, updated); err != nil {
+		t.Fatalf("failed to get updated CR: %v", err)
+	}
+	if updated.Status.Phase != cetirunv1alpha1.PhaseSuspended {
+		t.Errorf("expected phase=%s, got %s", cetirunv1alpha1.PhaseSuspended, updated.Status.Phase)
+	}
+
+	podReady := findCondition(updated.Status.Conditions, cetirunv1alpha1.ConditionPodReady)
+	if podReady == nil {
+		t.Fatal("expected PodReady condition to be set")
+	}
+	if podReady.Status != metav1.ConditionFalse {
+		t.Errorf("expected PodReady=False, got %s", podReady.Status)
+	}
+	if podReady.Reason != "Suspended" {
+		t.Errorf("expected PodReady reason=Suspended, got %s", podReady.Reason)
+	}
+
+	ready := findCondition(updated.Status.Conditions, cetirunv1alpha1.ConditionReady)
+	if ready == nil {
+		t.Fatal("expected Ready condition to be set")
+	}
+	if ready.Status != metav1.ConditionFalse {
+		t.Errorf("expected Ready=False, got %s", ready.Status)
+	}
+	if ready.Reason != "InstanceSuspended" {
+		t.Errorf("expected Ready reason=InstanceSuspended, got %s", ready.Reason)
+	}
+}
+
+// TestReconcile_Unsuspend_MarksReady verifies that when spec.suspended changes
+// from true to false, the reconciler transitions through Provisioning back to Ready.
+func TestReconcile_Unsuspend_MarksReady(t *testing.T) {
+	alias := "unsuspend-user"
+
+	// Start with a Suspended instance that now has suspended=false (unsuspending).
+	cr := newCR(alias, cetirunv1alpha1.PhaseSuspended, nil, 2, 1, "")
+	cr.Spec.Suspended = false
+
+	s := testScheme()
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(cr, instanceNamespace(alias), gatewayTokenSecret(alias), statefulSet(alias, 1)).
+		WithStatusSubresource(cr).
+		Build()
+
+	helmFake := &fakeHelmClient{}
+
+	r := &controller.OpenClawInstanceReconciler{
+		Client:            fakeClient,
+		Scheme:            s,
+		EventRecorder:     record.NewFakeRecorder(10),
+		HelmClient:        helmFake,
+		OperatorNamespace: "cetirun-system",
+		OperatorSAName:    "cetirun-operator-controller-manager",
+		ChartVersion:      "0.1.28",
+		DomainSuffix:      "example.com",
+	}
+
+	result, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: alias},
+	})
+	if err != nil {
+		t.Fatalf("Reconcile returned unexpected error: %v", err)
+	}
+	if result.RequeueAfter != 10*time.Minute {
+		t.Errorf("expected RequeueAfter=10m, got %v", result.RequeueAfter)
+	}
+
+	updated := &cetirunv1alpha1.OpenClawInstance{}
+	if err := fakeClient.Get(context.Background(), types.NamespacedName{Name: alias}, updated); err != nil {
+		t.Fatalf("failed to get updated CR: %v", err)
+	}
+	if updated.Status.Phase != cetirunv1alpha1.PhaseReady {
+		t.Errorf("expected phase=%s, got %s", cetirunv1alpha1.PhaseReady, updated.Status.Phase)
+	}
+
+	ready := findCondition(updated.Status.Conditions, cetirunv1alpha1.ConditionReady)
+	if ready == nil {
+		t.Fatal("expected Ready condition to be set")
+	}
+	if ready.Status != metav1.ConditionTrue {
+		t.Errorf("expected Ready=True, got %s", ready.Status)
+	}
+}
+
+// TestReconcile_SuspendedSkipCache verifies the skip-cache works for
+// Suspended instances (no Helm call when nothing changed).
+func TestReconcile_SuspendedSkipCache(t *testing.T) {
+	alias := "skip-cache-suspended"
+
+	// Compute the expected operator hash for skip-cache to match.
+	gwSecretData := gatewayTokenSecret(alias).Data
+	gwHash := computeSecretHash(gwSecretData)
+	opHash := computeOperatorHash("example.com", gwHash, "", "", "", "", "", "", "", "", "")
+
+	cr := newCR(alias, cetirunv1alpha1.PhaseSuspended, nil, 1, 1, opHash)
+
+	s := testScheme()
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(cr, instanceNamespace(alias), gatewayTokenSecret(alias)).
+		WithStatusSubresource(cr).
+		Build()
+
+	helmFake := &fakeHelmClient{}
+
+	r := &controller.OpenClawInstanceReconciler{
+		Client:            fakeClient,
+		Scheme:            s,
+		EventRecorder:     record.NewFakeRecorder(10),
+		HelmClient:        helmFake,
+		OperatorNamespace: "cetirun-system",
+		OperatorSAName:    "cetirun-operator-controller-manager",
+		ChartVersion:      "0.1.28",
+		DomainSuffix:      "example.com",
+	}
+
+	result, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: alias},
+	})
+	if err != nil {
+		t.Fatalf("Reconcile returned unexpected error: %v", err)
+	}
+	if result.RequeueAfter != 10*time.Minute {
+		t.Errorf("expected RequeueAfter=10m (skip-cache), got %v", result.RequeueAfter)
+	}
+
+	// Helm should NOT have been called (skip-cache hit).
+	if helmFake.installCalled {
+		t.Error("Helm InstallOrUpgrade should not be called when skip-cache matches for Suspended instance")
+	}
+}

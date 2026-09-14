@@ -1,0 +1,43 @@
+package handler
+
+import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"reflect"
+	"testing"
+
+	"github.com/Azure/CetiRun/app/cetirun-portal/internal/config"
+)
+
+func TestGetFeatures(t *testing.T) {
+	h := &FeaturesHandler{
+		Config: config.Config{
+			TailscaleEnabled:    true,
+			MaxInstancesPerUser: 2,
+			AllowedAgentTypes:   []string{"hermes"},
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/features", nil)
+	w := httptest.NewRecorder()
+
+	h.GetFeatures(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+	var resp FeaturesResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !resp.TailscaleEnabled {
+		t.Errorf("tailscaleEnabled = false, want true")
+	}
+	if resp.MaxInstancesPerUser != 2 {
+		t.Errorf("maxInstancesPerUser = %d, want 2", resp.MaxInstancesPerUser)
+	}
+	if !reflect.DeepEqual(resp.AllowedAgentTypes, []string{"hermes"}) {
+		t.Errorf("allowedAgentTypes = %#v, want %#v", resp.AllowedAgentTypes, []string{"hermes"})
+	}
+}

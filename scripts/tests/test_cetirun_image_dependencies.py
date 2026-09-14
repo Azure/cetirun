@@ -1,0 +1,143 @@
+import json
+import re
+import subprocess
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+CHART = ROOT / "app" / "cetirun-chart"
+
+
+def version_tuple(value):
+    return tuple(int(part) for part in value.split("."))
+
+
+class ImageDependencyTests(unittest.TestCase):
+    def test_fixed_image_inputs(self):
+        minimums = {
+            "Dockerfile.base": {
+                "GH_VERSION": "2.95.0",
+                "KUBECTL_VERSION": "1.36.4",
+                "TAILSCALE_VERSION": "1.100.0",
+                "MSGPACK_VERSION": "1.2.1",
+                "SETUPTOOLS_VERSION": "80.10.2",
+            },
+            "Dockerfile.openclaw": {
+                "OPENCLAW_VERSION": "2026.6.35",
+                "CETIRUN_AUTH_AIOHTTP_VERSION": "3.13.3",
+            },
+        }
+        for filename, arguments in minimums.items():
+            content = (CHART / filename).read_text()
+            for name, minimum in arguments.items():
+                with self.subTest(filename=filename, argument=name):
+                    match = re.search(rf"^ARG {name}=([\d.]+)$", content, re.MULTILINE)
+                    self.assertIsNotNone(match)
+                    self.assertGreaterEqual(
+                        version_tuple(match[1]), version_tuple(minimum)
+                    )
+
+    def test_npm_fixes_preserve_dependency_major_versions(self):
+        overrides = json.loads((CHART / "configs/cve-overrides.json").read_text())[
+            "overrides"
+        ]
+        minimums = {
+            "form-data@2": "2.5.6",
+            "form-data@3": "3.0.5",
+            "form-data@4": "4.0.6",
+            "protobufjs@7": "7.6.1",
+            "protobufjs@8": "8.4.1",
+            "undici@6": "6.27.0",
+            "undici@7": "7.28.0",
+            "undici@8": "8.5.0",
+            "ws@8": "8.21.0",
+        }
+        for package, minimum in minimums.items():
+            with self.subTest(package=package):
+                self.assertIn(package, overrides)
+                spec = overrides[package]
+                self.assertRegex(spec, r"^\^\d+\.\d+\.\d+$")
+                version = version_tuple(spec[1:])
+                self.assertEqual(version[0], version_tuple(minimum)[0])
+                self.assertGreaterEqual(version, version_tuple(minimum))
+        self.assertNotIn("protobufjs", overrides)
+
+    def test_azure_cli_private_python_packages_are_updated(self):
+        content = (CHART / "Dockerfile.base").read_text()
+        install = content.split("# Install Azure CLI", 1)[1].split(
+            "# Install ripgrep", 1
+        )[0]
+        for package in ("msgpack", "setuptools"):
+            with self.subTest(package=package):
+                self.assertIn(f"{package}==${{{package.upper()}_VERSION}}", install)
+                self.assertIn(f'"${{AZ_SITE}}/{package}"', install)
+                self.assertIn(f'"${{AZ_SITE}}"/{package}-*.dist-info', install)
+        self.assertIn('--target "${AZ_SITE}"', install)
+        self.assertIn("--upgrade", install)
+
+    def test_pip_vendor_payloads_and_manifest_are_updated_together(self):
+        content = (CHART / "Dockerfile.base").read_text()
+        install = content.split("# Install Azure CLI", 1)[1].split(
+            "# Install ripgrep", 1
+        )[0]
+        self.assertIn("import pip._vendor", install)
+        self.assertIn(
+            'for PIP_VENDOR in "${SYSTEM_PIP_VENDOR}" "${AZ_SITE}/pip/_vendor"',
+            install,
+        )
+        self.assertIn(
+            '--upgrade --no-deps --only-binary=:all: --target "${PIP_VENDOR}"',
+            install,
+        )
+        for package in ("msgpack", "setuptools"):
+            with self.subTest(package=package):
+                self.assertIn(f'"{package}==${{{package.upper()}_VERSION}}"', install)
+        self.assertLess(
+            install.index("tdnf install -y azure-cli"), install.index("for PIP_VENDOR")
+        )
+        self.assertLess(
+            install.index('--target "${PIP_VENDOR}"'),
+            install.index("python3 /usr/local/share/cetirun/sync-pip-vendor.py"),
+        )
+        self.assertIn('test -f "${PIP_VENDOR}/vendor.txt"', install)
+        self.assertIn('PYTHONPATH="${PIP_VENDOR%/pip/_vendor}"', install)
+        self.assertIn("--check", install)
+        self.assertIn("|| exit 1;", install)
+
+    def test_plugin_install_and_identity_cleanup_failure_handling(self):
+        content = (CHART / "Dockerfile.openclaw").read_text()
+        install = re.search(
+            r"^RUN (openclaw plugins install.*)$",
+            content.replace("\\\n", ""),
+            re.MULTILINE,
+        )[1]
+        self.assertIn("(openclaw doctor --fix --non-interactive --yes || true)", install)
+        self.assertIn("rm -rf /home/vibe/.openclaw/identity", install)
+        self.assertIn("rm -f /home/vibe/.openclaw/openclaw.json", install)
+        self.assertNotIn("\nRUN openclaw doctor", content)
+        for fail_at, cleanup_exit in ((0, 0), (1, 0), (2, 0), (3, 0), (0, 1), (3, 1)):
+            with self.subTest(fail_at=fail_at, cleanup_exit=cleanup_exit):
+                mocks = (
+                    "calls=0\n"
+                    "openclaw() { calls=$((calls + 1)); "
+                    f'[ "$calls" -ne {fail_at} ]; }}\n'
+                    "npm() { return 0; }\n"
+                    "find() { return 0; }\n"
+                    f'rm() {{ printf "%s\\n" "$*"; return {cleanup_exit}; }}\n'
+                )
+                result = subprocess.run(
+                    ["sh", "-c", mocks + install],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                if fail_at in (1, 2) or cleanup_exit:
+                    self.assertNotEqual(result.returncode, 0, result.stderr)
+                else:
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertIn("-rf /home/vibe/.openclaw/identity", result.stdout)
+                    self.assertIn("-f /home/vibe/.openclaw/openclaw.json", result.stdout)
+
+
+if __name__ == "__main__":
+    unittest.main()

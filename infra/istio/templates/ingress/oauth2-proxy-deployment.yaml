@@ -1,0 +1,88 @@
+{{- $clientId := required "clientId is required for OAuth2 Proxy OIDC configuration" .Values.clientId -}}
+{{- $tenantId := required "tenantId is required for OAuth2 Proxy OIDC configuration" .Values.tenantId -}}
+{{- $allowedGroups := required "allowedGroups is required for OAuth2 Proxy group authorization" .Values.allowedGroups -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: oauth2-proxy
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: oauth2-proxy
+    {{- include "cetirun-istio.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.oauth2Proxy.replicas }}
+  selector:
+    matchLabels:
+      app: oauth2-proxy
+  template:
+    metadata:
+      labels:
+        app: oauth2-proxy
+        azure.workload.identity/use: "true"
+    spec:
+      serviceAccountName: oauth2-proxy
+      containers:
+        - name: oauth2-proxy
+          image: {{ .Values.oauth2Proxy.image.repository }}:{{ .Values.oauth2Proxy.image.tag }}{{- if .Values.oauth2Proxy.image.digest }}@{{ .Values.oauth2Proxy.image.digest }}{{- end }}
+          ports:
+            - containerPort: 4180
+              name: http
+              protocol: TCP
+            - containerPort: 44180
+              name: metrics
+              protocol: TCP
+          env:
+            - name: COOKIE_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: oauth2-proxy-credentials
+                  key: cookie-secret
+          args:
+            - --http-address=0.0.0.0:4180
+            - --provider=entra-id
+            - --oidc-issuer-url=https://login.microsoftonline.com/{{ $tenantId }}/v2.0
+            - --client-id={{ $clientId }}
+            - --redirect-url=https://{{ .Values.domain }}/oauth2/callback
+            - --entra-id-federated-token-auth
+            - --cookie-secret=$(COOKIE_SECRET)
+            - --cookie-domain={{ .Values.domain }}
+            - --cookie-name=_cetirun_oauth2
+            - --cookie-secure=true
+            - --cookie-samesite=lax
+            - --cookie-expire=8h
+            - --email-domain={{ .Values.emailDomain }}
+            - --skip-provider-button=true
+            {{- range (splitList "," $allowedGroups) }}
+            {{- if ne (. | trim) "" }}
+            - --allowed-group={{ . | trim }}
+            {{- end }}
+            {{- end }}
+            - --scope=openid email profile
+            - --upstream=static://200
+            - --reverse-proxy=true
+            - --set-xauthrequest=true
+            - --whitelist-domain={{ .Values.domain }}
+            - --pass-access-token=false
+            - --skip-jwt-bearer-tokens=true
+            - --silence-ping-logging=true
+            - --footer=-
+          readinessProbe:
+            httpGet:
+              path: /ping
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /ping
+              port: http
+            periodSeconds: 30
+          resources:
+            {{- toYaml .Values.oauth2Proxy.resources | nindent 12 }}
+      {{- with .Values.oauth2Proxy.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.oauth2Proxy.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

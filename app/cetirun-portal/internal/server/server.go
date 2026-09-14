@@ -1,0 +1,108 @@
+package server
+
+import (
+	"io/fs"
+	"net/http"
+
+	"github.com/Azure/CetiRun/app/cetirun-portal/internal/handler"
+)
+
+// New creates and configures the HTTP server mux.
+func New(
+	staticFS fs.FS,
+	instanceHandler *handler.InstanceHandler,
+	healthHandler *handler.HealthHandler,
+	featuresHandler *handler.FeaturesHandler,
+	configHandler *handler.ConfigHandler,
+	meHandler *handler.MeHandler,
+	adminTeamHandler *handler.AdminTeamHandler,
+	adminInstanceHandler *handler.AdminInstanceHandler,
+	authMiddleware func(http.Handler) http.Handler,
+	requireAdmin func(http.Handler) http.Handler,
+) *http.ServeMux {
+	mux := http.NewServeMux()
+
+	// Health endpoints (no auth at pod level; external access may be restricted at ingress/gateway).
+	mux.HandleFunc("GET /healthz", healthHandler.Liveness)
+	mux.HandleFunc("GET /readyz", healthHandler.Readiness)
+
+	// Features endpoint: no auth required, safe to expose publicly.
+	mux.HandleFunc("GET /api/features", featuresHandler.GetFeatures)
+
+	// Public config endpoint (no auth required — serves static portal configuration).
+	mux.HandleFunc("GET /api/v1/config", configHandler.GetConfig)
+
+	// API endpoints (auth headers validated by middleware).
+	api := http.NewServeMux()
+	api.HandleFunc("GET /api/v1/me", meHandler.GetMe)
+	api.HandleFunc("GET /api/v1/instance", instanceHandler.GetInstance)
+	api.HandleFunc("POST /api/v1/instance", instanceHandler.CreateInstance)
+	api.HandleFunc("PATCH /api/v1/instance", instanceHandler.UpdateInstance)
+	api.HandleFunc("DELETE /api/v1/instance", instanceHandler.DeleteInstance)
+	api.HandleFunc("POST /api/v1/instance/upgrade", instanceHandler.UpgradeInstance)
+	api.HandleFunc("GET /api/v1/instance/status", instanceHandler.GetInstanceStatus)
+	api.HandleFunc("GET /api/v1/instance/teams-app", instanceHandler.DownloadTeamsApp)
+
+	// Multi-instance API
+	api.HandleFunc("GET /api/v1/instances", instanceHandler.ListInstances)
+	api.HandleFunc("POST /api/v1/instances", instanceHandler.CreateInstance)
+	api.HandleFunc("GET /api/v1/instances/{name}", instanceHandler.GetInstanceByName)
+	api.HandleFunc("PATCH /api/v1/instances/{name}", instanceHandler.UpdateInstanceByName)
+	api.HandleFunc("DELETE /api/v1/instances/{name}", instanceHandler.DeleteInstanceByName)
+	api.HandleFunc("POST /api/v1/instances/{name}/upgrade", instanceHandler.UpgradeInstanceByName)
+	api.HandleFunc("GET /api/v1/instances/{name}/status", instanceHandler.GetInstanceStatusByName)
+	api.HandleFunc("GET /api/v1/instances/{name}/teams-app", instanceHandler.DownloadTeamsAppByName)
+	api.HandleFunc("GET /api/v1/teams", instanceHandler.ListTeams)
+
+	// Admin API: gated by RequireAdmin (in addition to the auth middleware
+	// applied to the entire /api/ subtree). Mounted on a child mux so
+	// requireAdmin only wraps these routes.
+	adminMux := http.NewServeMux()
+	adminMux.HandleFunc("GET /api/v1/admin/teams", adminTeamHandler.ListTeams)
+	adminMux.HandleFunc("POST /api/v1/admin/teams", adminTeamHandler.CreateTeam)
+	adminMux.HandleFunc("GET /api/v1/admin/teams/{name}", adminTeamHandler.GetTeam)
+	adminMux.HandleFunc("PUT /api/v1/admin/teams/{name}", adminTeamHandler.UpdateTeam)
+	adminMux.HandleFunc("DELETE /api/v1/admin/teams/{name}", adminTeamHandler.DeleteTeam)
+	adminMux.HandleFunc("GET /api/v1/admin/instances", adminInstanceHandler.ListAllInstances)
+	api.Handle("/api/v1/admin/", requireAdmin(adminMux))
+
+	mux.Handle("/api/", authMiddleware(api))
+
+	// Internal endpoint for Istio EnvoyFilter ownership check.
+	// Intentionally NOT registered here — served on a separate internal port (:8081)
+	// that is not exposed via Istio VirtualService, preventing external access.
+	// See NewInternalMux().
+
+	// SPA: serve static files, fallback to index.html for client-side routing.
+	fileServer := http.FileServer(http.FS(staticFS))
+	mux.Handle("/", spaHandler(fileServer, staticFS))
+
+	return mux
+}
+
+// spaHandler serves static files when they exist, otherwise falls back to index.html.
+func spaHandler(fileServer http.Handler, fsys fs.FS) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Path
+		if path == "/" {
+			path = "index.html"
+		} else {
+			path = path[1:] // strip leading slash
+		}
+		if _, err := fs.Stat(fsys, path); err != nil {
+			// File not found: serve index.html for SPA routing.
+			r.URL.Path = "/"
+		}
+		fileServer.ServeHTTP(w, r)
+	})
+}
+
+// NewInternalMux creates the internal-only HTTP mux served on :8081.
+// This port must NOT be reachable from outside the cluster — it is not exposed via
+// the Istio VirtualService. Only the Istio EnvoyFilter Lua script calls it directly
+// via cluster-internal DNS (portal_auth_cluster), preventing external information leakage.
+func NewInternalMux(instanceHandler *handler.InstanceHandler) *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /internal/auth", instanceHandler.InternalAuth)
+	return mux
+}

@@ -1,0 +1,11 @@
+apiVersion: cetirun.microsoft.com/v1alpha1
+kind: OpenClawInstance
+metadata:
+  name: bob
+spec:
+  gatewayTokenSecretRef: "gateway-token"
+  user:
+    alias: bob
+    displayName: "Bob Johnson"
+    team: platform
+    email: bob@example.com

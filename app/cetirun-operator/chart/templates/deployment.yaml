@@ -1,0 +1,150 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cetirun-operator
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: cetirun-operator
+    app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: cetirun-operator
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: cetirun-operator
+        app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+        {{- if .Values.azure.clientId }}
+        azure.workload.identity/use: "true"
+        {{- end }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ .Values.serviceAccount.name }}
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: manager
+          image: "{{ include "cetirun-operator.image" . }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - --leader-elect={{ .Values.leaderElection }}
+            - --chart-repo-url={{ .Values.cetirun.chart.repoURL }}
+            - --chart-version={{ .Values.cetirun.chart.version }}
+            - --domain-suffix={{ .Values.domainSuffix }}
+            - {{ printf "--default-model=%s" .Values.cetirun.defaultModel | quote }}
+          env:
+            - name: OPERATOR_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: OPERATOR_SA_NAME
+              value: {{ .Values.serviceAccount.name }}
+            {{- if .Values.istioRevision }}
+            - name: ISTIO_REVISION
+              value: {{ .Values.istioRevision | quote }}
+            {{- end }}
+            # Workaround for https://github.com/kubernetes/kubernetes/issues/135895
+            # client-go v0.35 enables WatchListClient by default, but cache.ListWatch
+            # (used by controller-runtime v0.19) does not declare WatchListSemantics
+            # support. The reflector falsely assumes support, then never receives the
+            # required InitialEventsEnd bookmark, causing informer sync to hang.
+            # Remove once controller-runtime ships a fix.
+            {{- if .Values.skillsStorageAccount }}
+            - name: SKILLS_STORAGE_ACCOUNT
+              value: {{ .Values.skillsStorageAccount | quote }}
+            {{- end }}
+            {{- if .Values.cetirun.helmValues }}
+            - name: CETIRUN_HELM_VALUES
+              value: {{ .Values.cetirun.helmValues | toJson | quote }}
+            {{- end }}
+            {{- if .Values.azure.subscriptionId }}
+            - name: AZURE_SUBSCRIPTION_ID
+              value: {{ .Values.azure.subscriptionId | quote }}
+            {{- end }}
+            {{- if .Values.azure.resourceGroup }}
+            - name: AZURE_RESOURCE_GROUP
+              value: {{ .Values.azure.resourceGroup | quote }}
+            {{- end }}
+            {{- if .Values.azure.botNamePrefix }}
+            - name: AZURE_BOT_NAME_PREFIX
+              value: {{ .Values.azure.botNamePrefix | quote }}
+            {{- end }}
+            {{- if .Values.azure.tenantId }}
+            - name: AZURE_TENANT_ID
+              value: {{ .Values.azure.tenantId | quote }}
+            {{- end }}
+            {{- if .Values.azure.serviceTreeId }}
+            - name: AZURE_SERVICE_TREE_ID
+              value: {{ .Values.azure.serviceTreeId | quote }}
+            {{- end }}
+            {{- if .Values.azure.ficIssuerIds }}
+            - name: FIC_ISSUER_IDS
+              value: {{ .Values.azure.ficIssuerIds | quote }}
+            {{- end }}
+            - name: KUBE_FEATURE_WatchListClient
+              value: "false"
+            {{- if .Values.acrDockerSecret }}
+            - name: DOCKER_CONFIG
+              value: /etc/docker
+            {{- end }}
+          {{- if .Values.acrDockerSecret }}
+          volumeMounts:
+            - name: acr-docker-config
+              mountPath: /etc/docker
+              readOnly: true
+          {{- end }}
+          ports:
+            - name: metrics
+              containerPort: 8080
+              protocol: TCP
+            - name: health
+              containerPort: 8081
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.acrDockerSecret }}
+      volumes:
+        - name: acr-docker-config
+          secret:
+            secretName: {{ .Values.acrDockerSecret }}
+            items:
+              - key: .dockerconfigjson
+                path: config.json
+      {{- end }}

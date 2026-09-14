@@ -1,0 +1,129 @@
+apiVersion: networking.istio.io/v1alpha3
+kind: EnvoyFilter
+metadata:
+  name: cetirun-ownership-check
+  namespace: {{ .Values.gateway.namespace }}
+  labels:
+    {{- include "cetirun-istio.labels" . | nindent 4 }}
+spec:
+  workloadSelector:
+    labels:
+      {{- toYaml .Values.gateway.selector | nindent 6 }}
+  configPatches:
+    # Add a static cluster for the portal auth endpoint
+    - applyTo: CLUSTER
+      match:
+        context: GATEWAY
+      patch:
+        operation: ADD
+        value:
+          name: portal_auth_cluster
+          type: LOGICAL_DNS
+          connect_timeout: 1s
+          load_assignment:
+            cluster_name: portal_auth_cluster
+            endpoints:
+              - lb_endpoints:
+                  - endpoint:
+                      address:
+                        socket_address:
+                          address: "{{ .Values.portalAuth.clusterHost }}"
+                          port_value: {{ .Values.portalAuth.clusterPort }}
+
+    # HTTP filter: path-based ownership check
+    - applyTo: HTTP_FILTER
+      match:
+        context: GATEWAY
+        listener:
+          filterChain:
+            filter:
+              name: envoy.filters.network.http_connection_manager
+              subFilter:
+                name: envoy.filters.http.router
+      patch:
+        operation: INSERT_BEFORE
+        value:
+          name: cetirun.ownership_check
+          typed_config:
+            "@type": type.googleapis.com/envoy.extensions.filters.http.lua.v3.Lua
+            inline_code: |
+              local EXEMPT_PREFIXES = {"/oauth2", "/api/", "/internal/", "/healthz", "/readyz", "/assets/", "/favicon.ico", "/instances/", "/admin/"}
+              local EXEMPT_SUFFIXES = {
+              {{- range .Values.authPolicy.webhookBypassPaths }}
+                "{{ . }}",
+              {{- end }}
+              }
+
+              function is_exempt(path, method)
+                if path == "/" or path == "" then return true end
+                -- Exact match for /admin (the trailing-slash subtree is in EXEMPT_PREFIXES).
+                -- Listing /admin as a prefix would also exempt /adminfoo and shadow any
+                -- instance whose name starts with "admin".
+                if path == "/admin" then return true end
+                for _, prefix in ipairs(EXEMPT_PREFIXES) do
+                  if path:sub(1, #prefix) == prefix then return true end
+                end
+                -- Webhook suffixes (e.g. */api/messages) skip the ownership check only for
+                -- POST. Real Teams webhook calls are POST and carry no oauth2 identity; the
+                -- application validates the Bot Framework JWT. Non-POST requests to the same
+                -- suffix must NOT skip ownership (they keep the authenticated user's identity),
+                -- matching the POST-only oauth2 bypass in the AuthorizationPolicy method guard.
+                if method == "POST" then
+                  for _, suffix in ipairs(EXEMPT_SUFFIXES) do
+                    local s = suffix:match("^%*(.+)") or suffix
+                    if path:sub(-#s) == s then return true end
+                  end
+                end
+                return false
+              end
+
+              function envoy_on_request(request_handle)
+                local path = request_handle:headers():get(":path") or "/"
+                local method = request_handle:headers():get(":method") or ""
+                -- Strip query string for path matching
+                local path_only = path:match("^([^?]+)") or "/"
+
+                if is_exempt(path_only, method) then return end
+
+                -- Native agent UIs are namespaced below /ui/<instance>/.
+                -- All other instance services (terminal, desktop, Teams webhook)
+                -- retain the instance name as their first path segment.
+                local instance_name = path_only:match("^/ui/([^/]+)")
+                if not instance_name then
+                  instance_name = path_only:match("^/([^/]+)")
+                end
+                if not instance_name or instance_name == "" then return end
+
+                -- Extract both alias (email local part) and full email for ownership check.
+                -- Some users have alias == email local part (guwe), others don't (Pengfei.Ni vs peni).
+                -- Portal accepts if either matches.
+                local email = request_handle:headers():get("x-auth-request-email") or ""
+                if email == "" then
+                  email = request_handle:headers():get("x-auth-request-preferred-username") or ""
+                end
+                if email == "" then
+                  request_handle:respond({[":status"] = "403"}, "Forbidden: no identity")
+                  return
+                end
+                local alias = email:match("^([^@]+)") or ""
+
+                -- Call portal ownership check.
+                -- Pass both alias and email so portal can match either against the instance owner.
+                local headers, body = request_handle:httpCall(
+                  "portal_auth_cluster",
+                  {
+                    [":method"] = "GET",
+                    [":path"] = "{{ .Values.portalAuth.path }}",
+                    [":authority"] = "{{ .Values.portalAuth.clusterHost }}",
+                    ["x-internal-instance"] = instance_name,
+                    ["x-internal-alias"] = alias,
+                    ["x-internal-email"] = email,
+                  },
+                  "",
+                  500
+                )
+                local status = headers and headers[":status"] or "500"
+                if status ~= "200" then
+                  request_handle:respond({[":status"] = "403"}, "Forbidden: " .. email .. " does not own " .. instance_name)
+                end
+              end

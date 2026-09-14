@@ -1,0 +1,9 @@
+{{- if or .Release.IsInstall .Release.IsUpgrade -}}
+{{- include "cetirun.validateSecrets" . -}}
+{{- include "cetirun.validateAutoscaling" . -}}
+{{- include "cetirun.validatePorts" . -}}
+{{- include "cetirun.validateWorkloadIdentity" . -}}
+{{- include "cetirun.validateTtydPort" . -}}
+{{- include "cetirun.validateSkills" . -}}
+{{- include "cetirun.validateDesktopBrowserConfig" . -}}
+{{- end -}}

@@ -1,0 +1,28 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "cetirun-portal.fullname" . }}
+  labels:
+    {{- include "cetirun-portal.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["cetirun.microsoft.com"]
+    resources: ["openclawinstances"]
+    verbs: ["get", "list", "create", "update", "patch", "delete"]
+  - apiGroups: ["cetirun.microsoft.com"]
+    resources: ["openclawteams"]
+    verbs: ["get", "list", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "create", "update"]
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "create"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]

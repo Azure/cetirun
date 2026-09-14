@@ -1,0 +1,37 @@
+{{- if .Values.execRestriction.enabled }}
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: {{ include "cetirun.fullname" . }}-{{ .Release.Namespace }}-deny-exec
+  labels:
+    {{- include "cetirun.labels" . | nindent 4 }}
+spec:
+  failurePolicy: Fail
+  matchConditions:
+    - name: "exclude-adminclaw"
+      expression: >-
+        request.userInfo.username != "system:serviceaccount:cetirun-admin:openclaw-admin-cetirun"
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CONNECT"]
+        resources: ["pods/exec"]
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: {{ .Release.Namespace }}
+  validations:
+    - expression: "false"
+      message: "kubectl exec is not allowed on openclaw pods"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: {{ include "cetirun.fullname" . }}-{{ .Release.Namespace }}-deny-exec
+  labels:
+    {{- include "cetirun.labels" . | nindent 4 }}
+spec:
+  policyName: {{ include "cetirun.fullname" . }}-{{ .Release.Namespace }}-deny-exec
+  validationActions:
+    - Deny
+{{- end }}

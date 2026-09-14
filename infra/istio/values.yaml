@@ -1,0 +1,129 @@
+# Required — must be provided at install time.
+clientId: ""
+tenantId: ""
+# Comma-separated Entra ID group object IDs allowed to access CetiRun.
+# Example: "oid1,oid2" or a single "oid".
+allowedGroups: ""
+
+# Cookie secret for OAuth2 Proxy session encryption.
+# If empty, the chart reuses any existing secret via lookup, or generates a new one
+# on first install. This prevents session invalidation on upgrades.
+cookieSecret: ""
+
+# Wildcard domain for CetiRun instances.
+domain: example.com
+
+# Allowed email domain for OAuth2 Proxy. Use "*" to allow any email domain.
+emailDomain: "*"
+
+# TLS certificate for the Istio Gateway.
+# Provide cert and key contents to have the chart manage the TLS secret.
+# If empty, the TLS secret must be created out-of-band.
+tls:
+  enabled: false
+  cert: ""
+  key: ""
+
+# Istio ingress gateway namespace and selector.
+gateway:
+  namespace: aks-istio-ingress
+  selector:
+    istio: aks-istio-ingressgateway-external
+
+# AuthorizationPolicy configuration for wildcard domain.
+authPolicy:
+  # Prefixes exempted from OAuth2 Proxy authentication.
+  # These hosts bypass authentication entirely (e.g., the oauth2 callback itself).
+  authExemptPrefixes:
+    - oauth2
+    - llmapi
+
+  # Static webhook path suffix(es) exempted from OAuth2 Proxy authentication — for POST only.
+  # This is a STATIC Bot Framework webhook exception, NOT a per-instance allowlist: a single
+  # "*/api/messages" entry covers every instance. Per-instance enable/disable is enforced by
+  # operator-owned VirtualService routes (a Teams route for enabled instances; an explicit deny
+  # route for everyone else) — do NOT add concrete per-instance paths here.
+  # Only POST requests to these suffixes bypass auth (real Teams webhook calls are POST and carry
+  # a Bot Framework JWT the application validates). A paired method-guard rule sends all non-POST
+  # requests to the same suffix back through OAuth2 Proxy, so the suffix is not a generic anonymous
+  # bypass. To disable the bypass entirely, set this to an empty list: webhookBypassPaths: []
+  webhookBypassPaths:
+    - "*/api/messages"
+
+  # Prefixes exempted from Lua alias validation but still require OAuth2 Proxy auth.
+  # Use for shared services that aren't tied to a specific user alias.
+  aliasExemptPrefixes:
+    - oauth2
+    - llmapi
+
+# Security response headers injected by the Istio gateway EnvoyFilter.
+# The filter also removes the server header to prevent technology disclosure.
+securityHeaders:
+  strictTransportSecurity: "max-age=31536000; includeSubDomains"
+  xContentTypeOptions: "nosniff"
+  xFrameOptions: "DENY"
+  referrerPolicy: "strict-origin-when-cross-origin"
+  contentSecurityPolicy: "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'self' wss:; img-src 'self' data:; font-src 'self'"
+
+# Internal portal auth endpoint for instance ownership check
+portalAuth:
+  clusterHost: "cetirun-portal.cetirun-portal.svc.cluster.local"
+  clusterPort: 8081
+  path: "/internal/auth"
+
+# OAuth2 Proxy configuration.
+oauth2Proxy:
+  image:
+    repository: quay.io/oauth2-proxy/oauth2-proxy
+    tag: v7.14.3
+    digest: sha256:d8d9ebd17da2c46f76586c1af524b5c56ef8c9620b3a191108216982ac2634a5
+  replicas: 2
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+  nodeSelector:
+    agentpool: system
+  tolerations:
+    - key: CriticalAddonsOnly
+      operator: Exists
+
+# ── Egress audit configuration ──
+# Deploys ServiceEntry, access logging, and blacklist EnvoyFilter to the Istio
+# root config namespace. These resources apply mesh-wide to all sidecar proxies.
+egress:
+  # Namespace for egress resources (Istio root config namespace).
+  namespace: aks-istio-system
+
+  # External services — ServiceEntry enables Istio SNI routing so FQDN appears in access logs.
+  # Without these, HTTPS traffic falls back to PassthroughCluster (IP only, no hostname).
+  # Phase 2: switch outboundTrafficPolicy to REGISTRY_ONLY to enforce as allowlist.
+  externalServices:
+    - github.com
+    - api.github.com
+    - raw.githubusercontent.com
+    - api.githubcopilot.com
+    - copilot-proxy.githubusercontent.com
+    - dev.azure.com
+    - login.microsoftonline.com
+
+  # Access logging (via EnvoyFilter for JSON format with SNI field).
+  accessLog:
+    enabled: true
+
+  # Blacklist mode — EnvoyFilter injects Envoy network RBAC on SIDECAR_OUTBOUND
+  # to block configured destinations. helm.sh/resource-policy: keep prevents Helm
+  # from deleting the resource on uninstall (but helm upgrade will reconcile).
+  blacklist:
+    enabled: true
+    # FQDNs blocked via TLS SNI matching (connection.sni).
+    # Prefix with "." for wildcard subdomain matching (e.g. ".example.com" blocks *.example.com).
+    fqdns:
+      - "models.litellm.cloud"
+      - "checkmarx.zone"
+    # IP addresses or CIDR ranges blocked via destination.ip.
+    ipCidrs:
+      - "129.212.152.70/32"

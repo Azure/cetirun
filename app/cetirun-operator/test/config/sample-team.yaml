@@ -1,0 +1,76 @@
+# Example: OpenClawTeam + OpenClawInstance with skill inheritance
+#
+# Apply order:
+#   kubectl apply -f sample-team.yaml
+#   kubectl create ns cetirun-alice
+#   kubectl create secret generic gateway-token -n cetirun-alice --from-literal=OPENCLAW_GATEWAY_TOKEN="<token>"
+#   kubectl create ns cetirun-bob
+#   kubectl create secret generic gateway-token -n cetirun-bob --from-literal=OPENCLAW_GATEWAY_TOKEN="<token>"
+
+---
+apiVersion: cetirun.microsoft.com/v1alpha1
+kind: OpenClawTeam
+metadata:
+  name: platform
+spec:
+  memberContext:
+    role: "Platform Engineer"
+    description:
+      - "Works on platform infrastructure and developer tooling"
+      - "Deals with reliability, deployments, and service operations"
+  defaults:
+    provider: "github_copilot"
+  skills:
+    - "@anthropic/mcp-server-fetch"
+    - "pvc:platform-shared-skills"
+
+---
+# Instance A: inherits all team skills, no customization
+apiVersion: cetirun.microsoft.com/v1alpha1
+kind: OpenClawInstance
+metadata:
+  name: alice
+spec:
+  user:
+    alias: alice
+    displayName: "Alice Example"
+    email: alice@example.com
+  team: platform
+  gatewayTokenSecretRef: "gateway-token"
+  helm:
+    values:
+      resources:
+        requests:
+          cpu: "100m"
+          memory: "256Mi"
+        limits:
+          cpu: "1"
+          memory: "2Gi"
+
+---
+# Instance B: adds a personal skill, opts out of the shared PVC
+apiVersion: cetirun.microsoft.com/v1alpha1
+kind: OpenClawInstance
+metadata:
+  name: bob
+spec:
+  user:
+    alias: bob
+    displayName: "Bob Example"
+    email: bob@example.com
+  team: platform
+  gatewayTokenSecretRef: "gateway-token"
+  skillOverrides:
+    add:
+      - "npm:@openclaw/matrix"
+    remove:
+      - "pvc:platform-shared-skills"
+  helm:
+    values:
+      resources:
+        requests:
+          cpu: "100m"
+          memory: "256Mi"
+        limits:
+          cpu: "1"
+          memory: "2Gi"
