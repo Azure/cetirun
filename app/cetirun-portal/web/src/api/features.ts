@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 import type { Features } from "../types/features";
 
 const FAIL_CLOSED: Features = { tailscaleEnabled: false, maxInstancesPerUser: 1, allowedAgentTypes: [] };

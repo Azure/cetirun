@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 import { describe, expect, it } from "vitest";
 import { PAGE_SIZE, relativeTime, sortByActivityDesc, type SessionSummary } from "../useSessionList";
 

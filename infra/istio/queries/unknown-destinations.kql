@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 // Identify egress traffic going through PassthroughCluster (not matched by ServiceEntry)
 // These are candidates to add to values.yaml externalServices
 

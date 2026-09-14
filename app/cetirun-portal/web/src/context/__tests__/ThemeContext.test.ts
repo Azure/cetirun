@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 import { describe, it, expect } from "vitest";
 import { webLightTheme, webDarkTheme } from "@fluentui/react-components";
 import { resolveTheme } from "../ThemeContext";

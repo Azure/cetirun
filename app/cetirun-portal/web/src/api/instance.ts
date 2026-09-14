@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 import type { Instance, CreateInstanceRequest, UpdateInstanceRequest, StatusResponse } from "../types/instance";
 import { apiFetch } from "./fetch";
 

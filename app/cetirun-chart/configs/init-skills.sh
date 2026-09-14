@@ -1,4 +1,7 @@
 #!/bin/sh
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
 # init-skills.sh — install npm-packaged skills into the PVC.
 #
 # Environment:

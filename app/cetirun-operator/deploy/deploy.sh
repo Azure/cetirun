@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
 # deploy.sh — One-command deploy for CetiRun Operator.
 #
 # Applies cluster-level prerequisites (CRD + StorageClass + Istio Gateway)

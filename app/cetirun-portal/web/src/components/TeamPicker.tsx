@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 import { Field, Select } from "@fluentui/react-components";
 import { useTeams } from "../hooks/useTeams";
 

@@ -1,4 +1,7 @@
 #!/bin/sh
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
 # session-logger — Tail agent session/audit logs to stdout.
 #
 # Each JSONL line is a complete audit record (user input, assistant output,

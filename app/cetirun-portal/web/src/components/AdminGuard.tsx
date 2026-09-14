@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 import { Outlet } from "react-router-dom";
 import { Spinner } from "@fluentui/react-components";
 import { useMe } from "../context/MeContext";

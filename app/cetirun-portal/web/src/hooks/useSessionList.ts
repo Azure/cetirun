@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 export const PAGE_SIZE = 10;
 
 export type SessionSummary = {

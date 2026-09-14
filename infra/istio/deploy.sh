@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
 # CetiRun Istio Authentication Infrastructure — Helm-based deployment.
 # Installs the cetirun-istio Helm chart and patches the Istio mesh config
 # with the ext_authz extension provider (which cannot be Helm-templated

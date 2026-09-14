@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 package controller
 
 // HelmInstaller abstracts Helm install/upgrade/uninstall operations.

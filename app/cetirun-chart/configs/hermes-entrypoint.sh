@@ -1,4 +1,7 @@
 #!/bin/bash
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
 set -e
 
 export HERMES_HOME="${HERMES_HOME:-/home/vibe/.hermes}"

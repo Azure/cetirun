@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 import { NavLink, Outlet } from "react-router-dom";
 import { Text, tokens } from "@fluentui/react-components";
 

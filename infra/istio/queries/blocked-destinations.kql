@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 // Identify egress traffic blocked by the blacklist EnvoyFilter (RBAC DENY)
 // Blocked connections are reset at TCP level: response_code=0, bytes_sent=0
 // The RBAC filter rejects before data flows, so there's no HTTP response code

@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 // AKS cluster with system + agent + agent2 node pools, Azure CNI + Cilium overlay networking,
 // Istio service mesh addon, Workload Identity, Azure RBAC, and Container Insights.
 

@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
 # Quick dev deploy: build images, push to test ACR, package/push Helm chart,
 # and create/patch an OpenClawInstance CR.
 #

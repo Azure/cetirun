@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 /** Shared table cell styles for Status and Events tabs. */
 export const thStyle: React.CSSProperties = {
   textAlign: "left",

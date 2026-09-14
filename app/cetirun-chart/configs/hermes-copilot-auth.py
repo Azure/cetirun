@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
 """GitHub Copilot auth helper for CetiRun Hermes instances."""
 
 from __future__ import annotations

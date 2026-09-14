@@ -1,3 +1,6 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
 """Token acquisition (outbound) and JWT validation (inbound) for Bot Framework."""
 
 import asyncio
