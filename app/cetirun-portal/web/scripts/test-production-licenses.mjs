@@ -147,6 +147,31 @@ test("build plugin emits the same notice as the standalone generator", t => {
   });
 });
 
+test("platform-only optional packages require their pinned license when installed", t => {
+  const root = fixture(t, { dependencies: { tabster: "8.7.0" } });
+  const nativeName = "@rollup/rollup-linux-x64-gnu";
+  packageAt(root, "tabster", {
+    version: "8.7.0", optionalDependencies: { [nativeName]: "4.53.3" },
+  });
+  const generate = () => productionLicenseNotices(join(root, "package.json"));
+  assert.ok(!generate().includes(nativeName));
+
+  packageAt(root, nativeName, { version: "4.53.3", os: ["linux"], cpu: ["x64"] }, null);
+  assert.throws(generate, /Missing upstream license file or exact supplement/);
+  const committed = fileURLToPath(new URL("../licenses/", import.meta.url));
+  const entry = JSON.parse(readFileSync(join(committed, "supplements.json"), "utf8"))
+    .find(item => item.packages.includes(`${nativeName}@4.53.3`));
+  assert.ok(entry, "Keep the supported x64 package supplement");
+  mkdirSync(join(root, "licenses"));
+  writeFileSync(join(root, "licenses/supplements.json"), JSON.stringify([entry]));
+  for (const file of entry.files) {
+    writeFileSync(join(root, "licenses", file.file), readFileSync(join(committed, file.file)));
+  }
+  const output = generate();
+  assert.ok(output.includes(`Package: ${nativeName}@4.53.3`));
+  assert.ok(output.includes("# Licenses of bundled dependencies"));
+});
+
 test("CLI supports help and nested output and never overwrites output after a failed scan", t => {
   const root = fixture(t, { dependencies: { alpha: "1.0.0" } });
   const output = join(root, "output/notices/THIRD_PARTY_LICENSES.txt");

@@ -23,17 +23,16 @@ locked dependencies with npm ci before generating it. The generator fails when
 required packages or their license files are missing.
 
 Some npm tarballs omit their upstream license text. Version-specific copies for
-Fluent UI System Icons and Embla Carousel are retained under
-app/cetirun-portal/web/licenses/, with immutable source URLs and SHA-256 digests
-in supplements.json. The generator uses these only for the exact reviewed
-package versions. The upstream notices remain:
+Fluent UI System Icons, Embla Carousel, and the Rollup Linux x64 native package
+are retained under app/cetirun-portal/web/licenses/, with immutable source URLs
+and SHA-256 digests in supplements.json. The generator uses these only for the
+exact reviewed package versions. The upstream notices remain:
 
     Fluent UI System Icons: Copyright (c) 2020 Microsoft Corporation
     Embla Carousel: Copyright (c) David Jerleke.
 
-Their full MIT license texts and the Fluent UI upstream NOTICE are in that
-directory and included in the generated Portal notice when those packages are
-present.
+Their license texts and additional upstream notices are in that directory and
+included in the generated Portal notice when those packages are present.
 
 This notice and the Portal JavaScript notice are not complete per-image
 inventories or certifications that distributed images satisfy all redistribution
@@ -132,12 +131,9 @@ relicensed by source headers. The repository does not contain a per-asset
 authorship/license inventory for these files. Verify that provenance and any
 trademark permissions before redistributing them.
 
-The license-header helpers and Portal production-license generator follow the
-MIT-licensed TauGrid helper patterns. The Portal generator is adapted from
-portal/frontend/production-licenses.ts in Azure/taugrid commit
-d8a4b0228478a2e72175cbd916965fb5b28713a1 (PR #264).
-Copyright (c) Microsoft Corporation. The MIT terms are provided in LICENSE.
-No TauGrid runtime components or dependency notices are imported by that reuse.
+The license-header helpers and Portal production-license generator are licensed
+under the MIT License. Copyright (c) Microsoft Corporation. The MIT terms are
+provided in LICENSE.
 
 RUNTIME AND BUILD DEPENDENCIES
 ==============================

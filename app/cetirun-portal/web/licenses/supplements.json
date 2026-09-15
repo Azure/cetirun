@@ -27,5 +27,15 @@
         "source": "https://raw.githubusercontent.com/davidjerleke/embla-carousel/0fe65834136f1aa35e4c1a4a477e5ccb4bb5ee54/LICENSE"
       }
     ]
+  },
+  {
+    "packages": ["@rollup/rollup-linux-x64-gnu@4.53.3"],
+    "files": [
+      {
+        "file": "rollup.LICENSE.md",
+        "sha256": "ad457a6619017a7f47cdbead25a8ec61907818be3e0834f1885bdf6c3ddfb668",
+        "source": "https://raw.githubusercontent.com/rollup/rollup/998b5950a6ea7cea1a7b994e8dab45472c3cbe7e/LICENSE.md"
+      }
+    ]
   }
 ]
