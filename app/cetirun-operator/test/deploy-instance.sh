@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
 # deploy-instance.sh — Interactive script to deploy an OpenClawInstance CR
 # to the AKS cluster.
 #

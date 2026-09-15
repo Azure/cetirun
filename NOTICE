@@ -162,19 +162,19 @@ notice does not claim those steps have been completed.
 SOURCE-HEADER CHECK SCOPE
 ========================
 
-scripts/check-license-headers.py checks supported first-party source under app/,
-infra/, and scripts/. scripts/add-license-headers.py offers a dry run and
+scripts/check-license-headers.py checks supported first-party source and Makefiles
+across the repository, including release/E2E scripts and source under docs/,
+site/, and .github/ when present. scripts/add-license-headers.py offers a dry run and
 requires explicit authorship confirmation before adding missing headers. Both
 accept --root PATH for a checkout or source export. Existing notices and
 unrecognized generated files require review rather than automatic replacement.
 
 The named provenance exceptions above are encoded in scripts/license_headers.py.
-Markdown, YAML, JSON, lockfiles, module manifests, binary assets, hidden paths,
-dependencies, and build outputs are not assigned comment headers. Makefiles and
-settings are outside this baseline. Release scripts (scripts/*release.sh),
-scripts/e2e-test.sh, and app/cetirun-operator/test/ are explicitly deferred;
-.github/, docs/, and site/ are outside the checked roots. These scope boundaries
-are not exemptions from their underlying licenses.
+Markdown, YAML, JSON, lockfiles, module manifests, binary assets, hidden paths
+other than .github/, dependencies, and build outputs are not assigned comment
+headers. Third-party and generated/scaffold exceptions retain their existing
+notices and require provenance review. These scope boundaries are not exemptions
+from their underlying licenses.
 
 APACHE LICENSE, VERSION 2.0
 ==========================

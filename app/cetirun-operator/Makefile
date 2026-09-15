@@ -1,3 +1,6 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
 # cetirun-operator Makefile
 
 # Image name for the operator

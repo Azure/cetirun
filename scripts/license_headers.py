@@ -18,7 +18,7 @@ from pathlib import Path
 
 COPYRIGHT = "Copyright (c) Microsoft Corporation."
 LICENSE = "Licensed under the MIT License."
-SOURCE_ROOTS = ("app", "infra", "scripts")
+REQUIRED_DIRS = ("app", "infra", "scripts")
 DEFAULT_ROOT = Path(__file__).resolve().parent.parent
 UTF8_BOM = b"\xef\xbb\xbf"
 
@@ -38,10 +38,6 @@ EXCLUSIONS = {
         "controller-gen output; do not hand-edit generated code",
     "app/cetirun-portal/web/src/vite-env.d.ts":
         "Vite client type-reference scaffold",
-    "scripts/e2e-test.sh": "E2E changes are deferred",
-}
-EXCLUDED_PREFIXES = {
-    "app/cetirun-operator/test/": "deployment/E2E fixtures are deferred",
 }
 ARTIFACT_DIRS = {
     "node_modules", "vendor", "third_party", "third-party", "dist", "ts-dist",
@@ -68,25 +64,19 @@ GENERATED = re.compile(r"(?im)^\s*(?://|#|/\*|\*)\s*Code generated\b")
 
 def exclusion_reason(relative: str) -> str | None:
     path = Path(relative)
-    if not path.parts or path.parts[0] not in SOURCE_ROOTS:
-        return "outside the first-party source roots"
-    if any(part.startswith(".") or part in ARTIFACT_DIRS for part in path.parts):
+    if any(
+        part in ARTIFACT_DIRS or (part.startswith(".") and part != ".github")
+        for part in path.parts
+    ):
         return "hidden, dependency, or build-output path"
     if relative in EXCLUSIONS:
         return EXCLUSIONS[relative]
-    for prefix, reason in EXCLUDED_PREFIXES.items():
-        if relative.startswith(prefix):
-            return reason
-    if path.parent == Path("scripts") and path.name.endswith("release.sh"):
-        return "release changes are deferred"
-    if path.name == "Makefile" or path.name.startswith("Makefile."):
-        return "build settings are outside this baseline"
     return None
 
 
 def header_for(relative: str) -> tuple[str, ...] | None:
     name = Path(relative).name
-    if name == "Dockerfile" or name.startswith("Dockerfile."):
+    if name in {"Dockerfile", "Makefile"} or name.startswith(("Dockerfile.", "Makefile.")):
         return HASH
     return STYLES.get(Path(name).suffix.lower())
 
@@ -98,7 +88,7 @@ def validate_root(root: Path) -> Path:
     license_path = root / "LICENSE"
     if license_path.is_symlink() or not license_path.is_file():
         raise ValueError("--root must contain a regular LICENSE file")
-    for name in SOURCE_ROOTS:
+    for name in REQUIRED_DIRS:
         directory = root / name
         if directory.is_symlink() or not directory.is_dir():
             raise ValueError(f"--root must contain a real {name}/ directory")
@@ -108,7 +98,7 @@ def validate_root(root: Path) -> Path:
 def git_files(root: Path) -> list[str]:
     result = subprocess.run(
         ["git", "-C", str(root), "ls-files", "--cached", "--others",
-         "--exclude-standard", "-z", "--", *SOURCE_ROOTS],
+         "--exclude-standard", "-z"],
         check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
     )
     return sorted({os.fsdecode(name) for name in result.stdout.split(b"\0") if name})
@@ -120,15 +110,14 @@ def export_files(root: Path) -> list[str]:
     def fail(error):
         raise error
 
-    for source_root in SOURCE_ROOTS:
-        for directory, dirs, names in os.walk(root / source_root, onerror=fail):
-            base = Path(directory)
-            dirs[:] = sorted(
-                name for name in dirs
-                if not (base / name).is_symlink()
-                and not exclusion_reason((base / name).relative_to(root).as_posix() + "/")
-            )
-            files.extend((base / name).relative_to(root).as_posix() for name in names)
+    for directory, dirs, names in os.walk(root, onerror=fail):
+        base = Path(directory)
+        dirs[:] = sorted(
+            name for name in dirs
+            if not (base / name).is_symlink()
+            and not exclusion_reason((base / name).relative_to(root).as_posix())
+        )
+        files.extend((base / name).relative_to(root).as_posix() for name in names)
     return sorted(files)
 
 
@@ -156,6 +145,16 @@ def source_files(root: Path) -> list[tuple[str, tuple[str, ...]]]:
 
 
 def insertion_index(relative: str, lines: list[str]) -> int:
+    if Path(relative).suffix == ".html" and lines:
+        # Hugo content frontmatter and template definitions must stay first.
+        first = lines[0].strip()
+        if first in {"---", "+++"}:
+            for position, line in enumerate(lines[1:], start=1):
+                if line.strip() == first:
+                    return position + 1
+            raise ValueError("unclosed HTML frontmatter")
+        if first.startswith("{{") and "define " in first:
+            return 1
     index = 1 if lines and lines[0].startswith("#!") else 0
     if Path(relative).suffix == ".py":
         # PEP 263 permits the coding cookie on either of the first two lines.
@@ -205,8 +204,8 @@ def run(mode: str, argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=f"{mode.capitalize()} CetiRun first-party copyright/MIT headers.",
         epilog=(
-            "Scope: app/, infra/, scripts/ supported source formats. YAML, JSON, "
-            "Markdown, lockfiles, settings, dependencies and generated/scaffold "
+            "Scope: supported source formats and Makefiles across the repository. "
+            "YAML, JSON, Markdown, lockfiles, dependencies and generated/scaffold "
             "exceptions are not relicensed. Exit 0: success; 1: header/review "
             "failure; 2: invalid input or filesystem/Git error. No network calls."
         ),
@@ -233,11 +232,10 @@ def run(mode: str, argv: list[str] | None = None) -> int:
     try:
         root = validate_root(args.root)
         if args.list_exclusions:
-            for path, reason in sorted({**EXCLUSIONS, **EXCLUDED_PREFIXES}.items()):
+            for path, reason in sorted(EXCLUSIONS.items()):
                 print(f"{path}: {reason}")
-            print("scripts/*release.sh: release changes are deferred")
-            print("Makefile*: build settings are outside this baseline")
-            print("Hidden paths, dependencies, build output and unsupported formats: excluded")
+            print("Hidden paths except .github/, dependencies and build output: excluded")
+            print("Unsupported formats (including YAML, JSON and Markdown): excluded")
             return 0
         sources = source_files(root)
         pending = []
