@@ -1,3 +1,7 @@
+NOTICES
+
+This repository incorporates material as listed below or described in the code.
+
 CetiRun
 Copyright (c) Microsoft Corporation.
 
@@ -6,15 +10,39 @@ Third-party and adapted material remains subject to its own copyright and
 license terms. A CetiRun source header or container image label does not
 relicense dependencies, bundled programs, artwork, or external services.
 
-This notice distinguishes incorporated source from software installed by image
-recipes. It is not a complete per-image dependency inventory or a certification
-that distributed images satisfy all redistribution requirements. The unresolved
-items below must be addressed for the particular artifact being distributed.
+This repository notice covers incorporated source and adaptations. Dependencies
+referenced only through package managers are not additional incorporated source.
+Their notices must accompany the artifacts that actually redistribute them.
+
+The Portal frontend build generates THIRD_PARTY_LICENSES.txt from its installed
+production dependency graph, using
+app/cetirun-portal/web/scripts/production-licenses.mjs. This contains package
+versions and upstream license/copyright text, is included in web/dist, and is
+embedded and served with the Portal at /THIRD_PARTY_LICENSES.txt. Install the
+locked dependencies with npm ci before generating it. The generator fails when
+required packages or their license files are missing.
+
+Some npm tarballs omit their upstream license text. Version-specific copies for
+Fluent UI System Icons and Embla Carousel are retained under
+app/cetirun-portal/web/licenses/, with immutable source URLs and SHA-256 digests
+in supplements.json. The generator uses these only for the exact reviewed
+package versions. The upstream notices remain:
+
+    Fluent UI System Icons: Copyright (c) 2020 Microsoft Corporation
+    Embla Carousel: Copyright (c) David Jerleke.
+
+Their full MIT license texts and the Fluent UI upstream NOTICE are in that
+directory and included in the generated Portal notice when those packages are
+present.
+
+This notice and the Portal JavaScript notice are not complete per-image
+inventories or certifications that distributed images satisfy all redistribution
+requirements. The unresolved items below must be addressed for each artifact.
 
 INCORPORATED SOURCE AND PROVENANCE
 ================================
 
-1. OpenClaw workspace templates
+Component: OpenClaw workspace templates
 
 Included material: app/cetirun-chart/personality/openclaw/ contains workspace
 templates adapted for CetiRun. HEARTBEAT.md matches the upstream template text;
@@ -58,7 +86,7 @@ Both reference licenses use the following MIT terms:
     OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
     SOFTWARE.
 
-2. Helm scaffold-derived chart material
+Component: Helm scaffold-derived chart material
 
 The name, fullname, chart, label, selector, and service-account helpers in
 app/cetirun-chart/templates/_helpers.tpl contain adapted Helm chart scaffolding.
@@ -83,7 +111,7 @@ Chart YAML and NOTES.txt are not covered by the source-header checker; their
 scaffold provenance also needs preservation when packaging charts. The Apache
 License text is reproduced below.
 
-3. Generated code, scaffolding, and artwork
+Generated code, scaffolding, and artwork requiring provenance review
 
 The following source-header exceptions do not assert Microsoft ownership:
 
@@ -104,7 +132,10 @@ relicensed by source headers. The repository does not contain a per-asset
 authorship/license inventory for these files. Verify that provenance and any
 trademark permissions before redistributing them.
 
-The license-header helpers follow the MIT-licensed TauGrid helper patterns.
+The license-header helpers and Portal production-license generator follow the
+MIT-licensed TauGrid helper patterns. The Portal generator is adapted from
+portal/frontend/production-licenses.ts in Azure/taugrid commit
+d8a4b0228478a2e72175cbd916965fb5b28713a1 (PR #264).
 Copyright (c) Microsoft Corporation. The MIT terms are provided in LICENSE.
 No TauGrid runtime components or dependency notices are imported by that reuse.
 
@@ -136,10 +167,11 @@ copyright, attribution, and source-distribution obligations where applicable.
   terms. Review corresponding-source and notice requirements for the actual
   desktop image, including source modifications made by the Dockerfile.
 * The portal binary embeds a frontend bundle built from
-  app/cetirun-portal/web/package-lock.json. React, React DOM, Fluent UI,
-  TanStack Query, React Router, and their transitive dependencies are not
-  CetiRun-authored code. A lockfile's license metadata is not a replacement
-  for distributing applicable license texts and notices with the bundle.
+  app/cetirun-portal/web/package-lock.json. Its generated JavaScript notice
+  accompanies that bundle and includes installed production dependencies and
+  upstream license files. This conservative inventory can include packages
+  removed by tree shaking. Go dependencies, container packages, and assets
+  copied outside that dependency graph still need separate review.
 * The operator and portal link Go dependencies identified by their respective
   go.mod/go.sum files, including Kubernetes, controller-runtime, Helm, and
   Azure SDK packages as applicable. Their runtime images also contain the

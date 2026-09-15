@@ -49,6 +49,12 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Verify generated third-party notices
+        run: |
+          test -s dist/THIRD_PARTY_LICENSES.txt
+          npm run licenses -- --output "$RUNNER_TEMP/portal-THIRD_PARTY_LICENSES.txt"
+          cmp dist/THIRD_PARTY_LICENSES.txt "$RUNNER_TEMP/portal-THIRD_PARTY_LICENSES.txt"
+
   go-build-test:
     name: Portal Go checks
     runs-on: ubuntu-latest

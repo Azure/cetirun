@@ -3,9 +3,14 @@
 
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import { fileURLToPath } from "node:url";
+import { productionLicenses } from "./scripts/production-licenses.mjs";
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [
+    react(),
+    productionLicenses(fileURLToPath(new URL("./package.json", import.meta.url))),
+  ],
   server: {
     proxy: {
       "/api": {
