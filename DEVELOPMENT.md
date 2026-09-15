@@ -106,6 +106,26 @@ go -C app/cetirun-portal vet ./...
 make -C app/cetirun-portal build
 ```
 
+The frontend build also generates `web/dist/THIRD_PARTY_LICENSES.txt` from the
+installed production dependency graph. The Portal embeds and serves this file
+at `/THIRD_PARTY_LICENSES.txt`; no separate server or authentication rule is
+added. Missing required dependency/license files fail the build unless an exact,
+checksum-verified supplement is recorded in `web/licenses/supplements.json`.
+Review supplements when updating dependencies; do not reuse old version
+approvals. `npm test` includes offline generator regressions.
+
+To inspect the notice without building the frontend, after `npm ci`:
+
+```bash
+npm --prefix app/cetirun-portal/web run licenses -- --output /tmp/cetirun-portal-notices/THIRD_PARTY_LICENSES.txt
+```
+
+The generator reads local package metadata and upstream license files without
+network access or executing dependency code. Keep generated output out of Git.
+This JavaScript notice does not cover Go dependencies, image packages, artwork,
+commercial software terms, or corresponding-source obligations. Root `NOTICE`
+retains the manual attributions and unresolved provenance/distribution items.
+
 For backend-only work without frontend dependencies or build output, this
 narrower check covers the internal packages without compiling the embedded UI:
 

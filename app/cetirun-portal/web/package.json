@@ -7,7 +7,9 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "test": "vitest run",
+    "licenses": "node scripts/production-licenses.mjs",
+    "test:licenses": "node --test scripts/test-production-licenses.mjs",
+    "test": "npm run test:licenses && vitest run",
     "test:watch": "vitest"
   },
   "dependencies": {

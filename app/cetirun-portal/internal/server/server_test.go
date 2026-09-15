@@ -31,6 +31,20 @@ func TestSPAHandler_ExistingFile(t *testing.T) {
 	}
 }
 
+func TestSPAHandler_ThirdPartyNotices(t *testing.T) {
+	notice := "CetiRun Portal third-party notices\nCopyright Example Authors\n"
+	staticFS := fstest.MapFS{
+		"index.html":               {Data: []byte("<html>SPA</html>")},
+		"THIRD_PARTY_LICENSES.txt": {Data: []byte(notice)},
+	}
+	handler := spaHandler(http.FileServer(http.FS(staticFS)), staticFS)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/THIRD_PARTY_LICENSES.txt", nil))
+	if response.Code != http.StatusOK || response.Body.String() != notice {
+		t.Fatalf("notice response: status=%d body=%q", response.Code, response.Body.String())
+	}
+}
+
 func TestSPAHandler_IndexFallback(t *testing.T) {
 	staticFS := fstest.MapFS{
 		"index.html": {Data: []byte("<html>SPA</html>")},
