@@ -71,7 +71,7 @@ COPY --chown=vibe:vibe configs/entrypoint.sh /usr/local/bin/entrypoint.sh
 # In-pod auth helper service (shared with Hermes). Runs in its own tiny Python
 # venv so we don't pollute the system Python; venv lives outside /home/vibe so
 # the PVC overlay doesn't shadow it. OpenClaw doesn't otherwise need Python deps.
-ARG CETIRUN_AUTH_AIOHTTP_VERSION=3.13.3
+ARG CETIRUN_AUTH_AIOHTTP_VERSION=3.14.3
 ARG CETIRUN_AUTH_PYYAML_VERSION=6.0.2
 USER root
 RUN /home/vibe/.local/bin/uv venv /usr/local/lib/cetirun-auth --python python3 && \
