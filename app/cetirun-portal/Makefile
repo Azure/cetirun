@@ -1,3 +1,6 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
 IMAGE_REPO ?= ghcr.io/azure/cetirun-portal
 IMAGE_TAG  ?= latest
 NPM_REGISTRY ?= https://packagefeedproxy.microsoft.io/npm/

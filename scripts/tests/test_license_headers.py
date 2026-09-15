@@ -22,7 +22,9 @@ SPEC.loader.exec_module(headers)
 
 class HeaderTextTests(unittest.TestCase):
     def test_all_supported_formats_are_idempotent(self):
-        for name in [f"sample{suffix}" for suffix in headers.STYLES] + ["Dockerfile.base"]:
+        for name in [f"sample{suffix}" for suffix in headers.STYLES] + [
+            "Dockerfile.base", "Makefile", "Makefile.test",
+        ]:
             with self.subTest(name=name):
                 header = headers.header_for(name)
                 original = "body\n"
@@ -62,6 +64,29 @@ class HeaderTextTests(unittest.TestCase):
         updated = headers.add_header("test.go", original, headers.SLASH)
         self.assertTrue(updated.endswith("\n\n" + original))
 
+    def test_html_frontmatter_and_template_definitions_stay_first(self):
+        for prefix in [
+            "---\ntitle: Example\n---\n",
+            '+++\ntitle = "Example"\n+++\n',
+            '{{ define "main" }}\n',
+        ]:
+            with self.subTest(prefix=prefix):
+                original = prefix + "<p>Example</p>\n"
+                header = headers.header_for("site/example.html")
+                updated = headers.add_header("site/example.html", original, header)
+                self.assertTrue(updated.startswith(prefix))
+                self.assertTrue(headers.has_header("site/example.html", updated, header))
+                self.assertEqual(
+                    headers.add_header("site/example.html", updated, header), updated
+                )
+
+    def test_unclosed_html_frontmatter_requires_review(self):
+        with self.assertRaisesRegex(ValueError, "frontmatter"):
+            headers.add_header(
+                "site/example.html", "---\ntitle: Example\n",
+                headers.header_for("site/example.html"),
+            )
+
     def test_empty_file_and_shebang_without_newline(self):
         self.assertTrue(headers.has_header(
             "test.py", headers.add_header("test.py", "", headers.HASH), headers.HASH
@@ -89,15 +114,22 @@ class HeaderTextTests(unittest.TestCase):
         for name in ["config.json", "values.yaml", "README.md", "go.mod", "go.sum", "asset.png"]:
             self.assertIsNone(headers.header_for(name))
         for path in [
-            "scripts/cetirun-helm-release.sh", "scripts/e2e-test.sh",
-            ".github/workflows/e2e.yml", "docs/example.py", "site/example.js",
             "app/node_modules/a.js", "scripts/__pycache__/cache.py",
-            "app/.config/example.py", "app/cetirun-operator/test/deploy-instance.sh",
+            "app/.config/example.py", ".git/hooks/helper.py",
+            ".github/.private/credential.py", "site/vendor/template.html",
             *headers.EXCLUSIONS,
         ]:
             with self.subTest(path=path):
                 self.assertIsNotNone(headers.exclusion_reason(path))
-        self.assertIsNone(headers.exclusion_reason("scripts/check-ci.py"))
+        for path in [
+            "scripts/check-ci.py", "scripts/cetirun-helm-release.sh",
+            "scripts/e2e-test.sh", "app/cetirun-operator/test/deploy-instance.sh",
+            ".github/scripts/check.py", "docs/example.py", "site/example.js",
+            "Makefile", "app/cetirun-portal/Makefile", "new-component/main.go",
+        ]:
+            with self.subTest(path=path):
+                self.assertIsNone(headers.exclusion_reason(path))
+                self.assertIsNotNone(headers.header_for(path))
 
 
 class RepositoryTests(unittest.TestCase):
@@ -106,7 +138,7 @@ class RepositoryTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         (self.root / "LICENSE").write_text("MIT fixture\n")
-        for directory in headers.SOURCE_ROOTS:
+        for directory in headers.REQUIRED_DIRS:
             (self.root / directory).mkdir()
 
     def put(self, relative, content):
@@ -163,16 +195,18 @@ class RepositoryTests(unittest.TestCase):
     def test_exclusions_and_symlinks_are_not_read_or_written(self):
         good = self.put("app/a.py", "pass\n")
         protected = [
-            self.put("scripts/e2e-test.sh", "untouched\n"),
-            self.put("scripts/portal-helm-release.sh", "untouched\n"),
-            self.put("app/cetirun-operator/test/deploy-instance.sh", "untouched\n"),
             self.put("app/node_modules/dependency.js", "untouched\n"),
             self.put("app/.private/credential.py", "untouched\n"),
             self.put("app/cetirun-chart/templates/_helpers.tpl", "untouched\n"),
+            self.put("site/vendor/template.html", "untouched\n"),
+            self.put(".github/.private/credential.py", "untouched\n"),
         ]
-        outside = self.put("outside.py", "untouched\n")
+        external = tempfile.TemporaryDirectory(prefix="cetirun-license-external-")
+        self.addCleanup(external.cleanup)
+        outside = Path(external.name) / "outside.py"
+        outside.write_text("untouched\n")
         (self.root / "app/link.py").symlink_to(outside)
-        (self.root / "app/linked-dir").symlink_to(self.root, target_is_directory=True)
+        (self.root / "app/linked-dir").symlink_to(external.name, target_is_directory=True)
         self.assertEqual(self.run_headers("add", "--confirm-first-party")[0], 0)
         self.assertNotEqual(good.read_text(), "pass\n")
         for path in [outside, *protected]:
@@ -211,6 +245,40 @@ class RepositoryTests(unittest.TestCase):
                 ))
                 self.assertEqual(self.run_headers("check")[0], 0)
 
+    def test_repository_wide_check_and_adder_in_git_and_source_exports(self):
+        paths = [
+            "scripts/cetirun-helm-release.sh",
+            "scripts/istio-helm-release.sh",
+            "scripts/operator-helm-release.sh",
+            "scripts/portal-helm-release.sh",
+            "scripts/e2e-test.sh",
+            "app/cetirun-operator/test/deploy-instance.sh",
+            "Makefile",
+            "app/cetirun-operator/Makefile",
+            "app/cetirun-portal/Makefile",
+            "docs/example.py",
+            "site/example.js",
+            ".github/scripts/check.py",
+            "new-component/main.go",
+        ]
+        for use_git in (False, True):
+            with self.subTest(use_git=use_git):
+                if use_git:
+                    self.git("init", "-q")
+                for relative in paths:
+                    self.put(relative, "body\n")
+                if use_git:
+                    self.git("add", "Makefile", "scripts/cetirun-helm-release.sh")
+                result, output = self.run_headers("check")
+                self.assertEqual(result, 1)
+                for relative in paths:
+                    self.assertIn(relative + ": missing", output)
+                self.assertEqual(self.run_headers("add", "--dry-run")[0], 0)
+                for relative in paths:
+                    self.assertEqual((self.root / relative).read_text(), "body\n")
+                self.assertEqual(self.run_headers("add", "--confirm-first-party")[0], 0)
+                self.assertEqual(self.run_headers("check")[0], 0)
+
     def test_linked_git_worktree_with_new_untracked_source(self):
         self.git("init", "-q")
         self.put("app/existing.py", "\n".join(headers.HASH) + "\n\npass\n")
@@ -235,7 +303,9 @@ class RepositoryTests(unittest.TestCase):
         for mode in ["check", "add"]:
             result, output = self.run_headers(mode, "--list-exclusions")
             self.assertEqual(result, 0)
-            self.assertIn("scripts/*release.sh", output)
+            for relative in headers.EXCLUSIONS:
+                self.assertIn(relative, output)
+            self.assertNotIn("deferred", output)
             self.assertEqual((self.root / "app/a.py").read_text(), "pass\n")
 
     def test_symlink_source_root_is_rejected(self):

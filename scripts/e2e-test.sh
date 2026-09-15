@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
 # e2e-test.sh — End-to-end test for CetiRun.
 #
 # Deploys a test OpenClawInstance, waits for it to become Ready,

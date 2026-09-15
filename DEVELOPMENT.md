@@ -156,6 +156,13 @@ tracked changes.
 
 ## Generated files and dependencies
 
+Run `make license-check` to check supported first-party source and Makefiles
+across the repository, including release and E2E scripts. The `CetiRun license
+headers` CI job runs this check on pull requests and pushes to `main`.
+See [the header helper commands](scripts/README.md#license-headers) for adding
+missing headers. Review authorship first: third-party and generated/scaffold
+exceptions in `scripts/license_headers.py` must retain their own notices.
+
 - Operator API definitions live in `app/cetirun-operator/api/v1alpha1/`.
   `zz_generated.deepcopy.go` and the YAML under `config/crd/bases/` are generated
   from those types. Include regenerated artifacts with their source changes.

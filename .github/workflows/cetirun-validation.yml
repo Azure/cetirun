@@ -13,6 +13,18 @@ permissions:
   contents: read
 
 jobs:
+  license-headers:
+    name: CetiRun license headers
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check first-party source headers across the repository
+        run: make license-check
+
   policy-tests:
     name: CetiRun policy and helper tests
     runs-on: ubuntu-latest
@@ -22,11 +34,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # Header validation is mandatory; a missing checker must fail.
-      - name: Check first-party headers
-        run: make license-check
       - name: Check Python syntax and offline helper regressions
-        if: ${{ !cancelled() }}
         run: make python-check ci-test
 
   python-tests:

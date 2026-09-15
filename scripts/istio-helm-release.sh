@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
 # Package and push the cetirun-istio Helm chart to an OCI registry.
 #
 # Environment variables (all optional, with defaults):

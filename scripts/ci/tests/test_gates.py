@@ -319,6 +319,20 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn("comment-summary-in-pr: never", text)
         self.assertIn("run: make license-check", text)
 
+    def test_license_headers_have_an_unconditional_ci_job(self):
+        text = (validate.ROOT / ".github/workflows/cetirun-validation.yml").read_text()
+        self.assertIn("  pull_request:\n", text)
+        self.assertIn("  push:\n    branches: [main]\n", text)
+        self.assertNotRegex(text, r"(?m)^\s+paths(?:-ignore)?:")
+        job = re.search(
+            r"(?ms)^  license-headers:\n(.*?)(?=^  [a-z][\w-]*:|\Z)", text
+        )
+        self.assertIsNotNone(job)
+        self.assertIn("name: CetiRun license headers", job[1])
+        self.assertIn("run: make license-check", job[1])
+        self.assertNotIn("if:", job[1])
+        self.assertNotIn("continue-on-error:", job[1])
+
     def test_ci_dependencies_meet_security_floors(self):
         requirements = (validate.ROOT / "scripts/ci/requirements.txt").read_text()
         for package, minimum in {
