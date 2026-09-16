@@ -122,6 +122,14 @@ Skills are the primary extensibility mechanism — directories containing a `SKI
 
 You can populate shared skills by uploading skill directories to the Azure Blob Storage container configured in the OpenClaw Helm chart values.
 
+## Microsoft Entra Agent ID
+
+The runtime can optionally deploy the Microsoft Entra ID Auth SDK as a
+pod-local sidecar for Agent ID token validation and on-behalf-of token
+acquisition. The integration is disabled by default and requires dedicated
+Agent ID and Azure Workload Identity objects for each instance. See the
+[Agent ID pilot guide](docs/guides/agent-id-pilot.md).
+
 ## Security
 
 | Layer | Description |

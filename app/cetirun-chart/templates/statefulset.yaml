@@ -82,6 +82,16 @@ spec:
             # errors before IPv4 can connect. Force IPv4-first to avoid this.
             - name: NODE_OPTIONS
               value: "--dns-result-order=ipv4first"
+            {{- if .Values.agentIdentity.enabled }}
+            # The Auth SDK sidecar is reachable only in this pod. Callers must
+            # forward a user bearer token obtained for agentIdentity.audience.
+            - name: ENTRA_SDK_URL
+              value: "http://127.0.0.1:{{ .Values.agentIdentity.sidecar.port }}"
+            - name: CETIRUN_AGENT_IDENTITY_CLIENT_ID
+              value: {{ .Values.agentIdentity.agentIdentityClientId | quote }}
+            - name: CETIRUN_AGENT_IDENTITY_REQUIRED_SCOPE
+              value: {{ .Values.agentIdentity.requiredScope | quote }}
+            {{- end }}
             {{- include "cetirun.agent.envVars" . | nindent 12 }}
             {{- if gt (int .Values.msteamsWebhookPort) 0 }}
             - name: MSTEAMS_WEBHOOK_PORT
@@ -207,6 +217,60 @@ spec:
           {{- with .Values.sidecars }}
             {{- toYaml . | nindent 8 }}
           {{- end }}
+        {{- if .Values.agentIdentity.enabled }}
+        - name: entra-auth-sdk
+          image: "{{ .Values.agentIdentity.sidecar.image.repository }}:{{ .Values.agentIdentity.sidecar.image.tag }}"
+          imagePullPolicy: {{ .Values.agentIdentity.sidecar.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            seccompProfile:
+              type: RuntimeDefault
+          env:
+            - name: Kestrel__Endpoints__Http__Url
+              # Kubelet probes use the Pod IP. NetworkPolicy admits no ingress
+              # to this port, and the runtime still uses the loopback endpoint.
+              value: "http://0.0.0.0:{{ .Values.agentIdentity.sidecar.port }}"
+            - name: AzureAd__Instance
+              value: "https://login.microsoftonline.com/"
+            - name: AzureAd__TenantId
+              value: {{ .Values.agentIdentity.tenantId | quote }}
+            - name: AzureAd__ClientId
+              value: {{ .Values.agentIdentity.blueprintClientId | quote }}
+            - name: AzureAd__Audience
+              value: {{ .Values.agentIdentity.audience | quote }}
+            - name: AzureAd__Scopes
+              value: {{ .Values.agentIdentity.requiredScope | quote }}
+            - name: AzureAd__ClientCredentials__0__SourceType
+              value: "SignedAssertionFilePath"
+            {{- range .Values.agentIdentity.downstreamApis }}
+            {{- $api := . }}
+            - name: DownstreamApis__{{ $api.name }}__BaseUrl
+              value: {{ $api.baseUrl | quote }}
+            {{- range $index, $scope := $api.scopes }}
+            - name: DownstreamApis__{{ $api.name }}__Scopes__{{ $index }}
+              value: {{ $scope | quote }}
+            {{- end }}
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: {{ .Values.agentIdentity.sidecar.port }}
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: {{ .Values.agentIdentity.sidecar.port }}
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            {{- toYaml .Values.agentIdentity.sidecar.resources | nindent 12 }}
+        {{- end }}
         {{- if .Values.desktop.enabled }}
         - name: desktop
           image: "{{ include "cetirun.desktopImage" . }}"

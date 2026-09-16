@@ -67,6 +67,45 @@ azureWorkloadIdentity:
   # -- Client ID of the User-Assigned Managed Identity
   clientId: ""
 
+# -- Microsoft Entra Agent ID integration. When enabled, the Auth SDK runs as
+# a pod-local sidecar. Configure a dedicated Agent ID blueprint, Agent Identity,
+# and User-Assigned Managed Identity for each CetiRun instance trust boundary.
+# The sidecar is not exposed through a Service or ingress.
+agentIdentity:
+  enabled: false
+  # -- Microsoft Entra tenant ID.
+  tenantId: ""
+  # -- Agent identity blueprint application client ID. This is the audience of
+  # incoming user tokens and the parent credential used for OBO exchanges.
+  blueprintClientId: ""
+  # -- Agent identity application client ID used for downstream API calls.
+  agentIdentityClientId: ""
+  # -- Expected audience of incoming user tokens, normally api://<blueprintClientId>.
+  audience: ""
+  # -- Required incoming delegated scope, normally access_agent.
+  requiredScope: "access_agent"
+  # -- Named downstream APIs available through the sidecar. Each item requires
+  # a unique name, HTTPS baseUrl, and at least one delegated scope.
+  downstreamApis: []
+  # - name: Graph
+  #   baseUrl: https://graph.microsoft.com/v1.0
+  #   scopes:
+  #     - User.Read
+  sidecar:
+    image:
+      repository: mcr.microsoft.com/entra-sdk/auth-sidecar
+      tag: "1.0.0"
+      pullPolicy: IfNotPresent
+    # -- Pod-local HTTP port. Do not expose this port through a Service or ingress.
+    port: 5000
+    resources:
+      limits:
+        cpu: 250m
+        memory: 256Mi
+      requests:
+        cpu: 100m
+        memory: 128Mi
+
 # -- Pod annotations
 podAnnotations: {}
 

@@ -145,6 +145,21 @@ The chart includes a NetworkPolicy (enabled by default) that enforces:
 
 For **AKS managed Istio**, the operator sets `istioNamespace: aks-istio-system` and `istioIngressNamespace: aks-istio-ingress`. For **upstream Istio**, the defaults (`istio-system`) work out of the box.
 
+### Microsoft Entra Agent ID
+
+`agentIdentity.enabled=false` by default. When enabled, the chart adds the
+Microsoft Entra ID Auth SDK as an internal sidecar. The runtime calls it at
+`127.0.0.1:5000`; its pod port is protected by the required default-deny
+NetworkPolicy and is never exposed through a Kubernetes Service or ingress.
+It uses the existing `azureWorkloadIdentity` ServiceAccount annotation with the
+`SignedAssertionFilePath` credential type.
+
+Configure a dedicated Agent ID blueprint, Agent Identity, and User-Assigned
+Managed Identity for the instance. The runtime receives `ENTRA_SDK_URL` and
+`CETIRUN_AGENT_IDENTITY_CLIENT_ID` for calls to the sidecar. See the
+[Agent ID pilot guide](../../docs/guides/agent-id-pilot.md) for the required
+Entra setup and the OBO validation flow.
+
 ### Chrome Sidecar
 
 A headed Chrome instance is started automatically via supervisord with remote debugging on port 18800. It enables browser-based skills and MCP servers (e.g., Playwright, Puppeteer) out of the box. Chrome is configured with `--no-sandbox` and `--disable-gpu` for container compatibility and auto-restarts on crash.
@@ -264,6 +279,20 @@ Liveness and startup probes use HTTP GET on the `/health` endpoint, while the re
 | `azureWorkloadIdentity.clientId` | Azure AD client ID for workload identity | `""` |
 | `secrets.braveApiKey` | Brave Search API key | `""` |
 | `secrets.perplexityApiKey` | Perplexity API key | `""` |
+
+### Microsoft Entra Agent ID
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `agentIdentity.enabled` | Deploy the pod-local Auth SDK sidecar | `false` |
+| `agentIdentity.tenantId` | Microsoft Entra tenant ID | `""` |
+| `agentIdentity.blueprintClientId` | Agent ID blueprint client ID | `""` |
+| `agentIdentity.agentIdentityClientId` | Agent Identity client ID | `""` |
+| `agentIdentity.audience` | Expected incoming user-token audience | `""` |
+| `agentIdentity.requiredScope` | Expected incoming delegated scope | `"access_agent"` |
+| `agentIdentity.downstreamApis` | Named HTTPS downstream APIs and scopes | `[]` |
+| `agentIdentity.sidecar.image` | Auth SDK sidecar image | `mcr.microsoft.com/entra-sdk/auth-sidecar:1.0.0` |
+| `agentIdentity.sidecar.port` | Pod-local sidecar HTTP port | `5000` |
 
 ### OpenClaw Configuration
 

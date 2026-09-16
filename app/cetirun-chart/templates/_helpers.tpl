@@ -117,6 +117,62 @@ Validate Azure Workload Identity prerequisites
 {{- end }}
 
 {{/*
+Validate Microsoft Entra Agent ID sidecar settings. Agent ID uses the same
+AKS workload identity plumbing as other Azure integrations, but the managed
+identity and Agent ID objects must be dedicated to this instance.
+*/}}
+{{- define "cetirun.validateAgentIdentity" -}}
+{{- if .Values.agentIdentity.enabled -}}
+{{- if not .Values.agentIdentity.tenantId -}}
+{{- fail "agentIdentity.enabled requires agentIdentity.tenantId" -}}
+{{- end -}}
+{{- if not .Values.agentIdentity.blueprintClientId -}}
+{{- fail "agentIdentity.enabled requires agentIdentity.blueprintClientId" -}}
+{{- end -}}
+{{- if not .Values.agentIdentity.agentIdentityClientId -}}
+{{- fail "agentIdentity.enabled requires agentIdentity.agentIdentityClientId" -}}
+{{- end -}}
+{{- if not .Values.agentIdentity.audience -}}
+{{- fail "agentIdentity.enabled requires agentIdentity.audience" -}}
+{{- end -}}
+{{- if not .Values.agentIdentity.requiredScope -}}
+{{- fail "agentIdentity.enabled requires agentIdentity.requiredScope" -}}
+{{- end -}}
+{{- if or (not .Values.azureWorkloadIdentity.enabled) (not .Values.azureWorkloadIdentity.clientId) -}}
+{{- fail "agentIdentity.enabled requires azureWorkloadIdentity.enabled=true and a dedicated azureWorkloadIdentity.clientId" -}}
+{{- end -}}
+{{- if and (not .Values.serviceAccount.create) (not .Values.serviceAccount.name) -}}
+{{- fail "agentIdentity.enabled requires serviceAccount.create=true or serviceAccount.name" -}}
+{{- end -}}
+{{- if not .Values.networkPolicy.enabled -}}
+{{- fail "agentIdentity.enabled requires networkPolicy.enabled=true so the Auth SDK sidecar remains unreachable outside its pod" -}}
+{{- end -}}
+{{- if or (lt (int .Values.agentIdentity.sidecar.port) 1024) (gt (int .Values.agentIdentity.sidecar.port) 65535) -}}
+{{- fail "agentIdentity.sidecar.port must be between 1024 and 65535" -}}
+{{- end -}}
+{{- if or (not .Values.agentIdentity.sidecar.image.repository) (not .Values.agentIdentity.sidecar.image.tag) -}}
+{{- fail "agentIdentity.enabled requires agentIdentity.sidecar.image.repository and tag" -}}
+{{- end -}}
+{{- $seen := dict -}}
+{{- range .Values.agentIdentity.downstreamApis -}}
+{{- if or (not .name) (not (regexMatch "^[A-Za-z][A-Za-z0-9_-]{0,62}$" .name)) -}}
+{{- fail "agentIdentity.downstreamApis entries require a name matching ^[A-Za-z][A-Za-z0-9_-]{0,62}$" -}}
+{{- end -}}
+{{- if hasKey $seen .name -}}
+{{- fail (printf "agentIdentity.downstreamApis contains duplicate name %q" .name) -}}
+{{- end -}}
+{{- $_ := set $seen .name true -}}
+{{- if not (hasPrefix "https://" .baseUrl) -}}
+{{- fail (printf "agentIdentity.downstreamApis[%s].baseUrl must use https" .name) -}}
+{{- end -}}
+{{- if not .scopes -}}
+{{- fail (printf "agentIdentity.downstreamApis[%s].scopes must not be empty" .name) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end }}
+
+{{/*
 Validate autoscaling settings for single-instance app
 */}}
 {{- define "cetirun.validateAutoscaling" -}}

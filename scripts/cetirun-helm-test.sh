@@ -233,6 +233,45 @@ if grep -q 'runtimeClassName' <<< "$output"; then
 fi
 
 # ---------------------------------------------------------------------------
+# Microsoft Entra Agent ID Auth SDK sidecar tests
+# ---------------------------------------------------------------------------
+
+echo "==> helm template ${release_name} ${chart_dir} (agentIdentity.enabled=true)"
+output=$(helm_template "${release_name}" "${chart_dir}" -f "${chart_dir}/values.yaml" \
+  --set secrets.openclawGatewayToken=lint-token \
+  --set agentIdentity.enabled=true \
+  --set agentIdentity.tenantId=00000000-0000-0000-0000-000000000001 \
+  --set agentIdentity.blueprintClientId=00000000-0000-0000-0000-000000000002 \
+  --set agentIdentity.agentIdentityClientId=00000000-0000-0000-0000-000000000003 \
+  --set agentIdentity.audience=api://00000000-0000-0000-0000-000000000002 \
+  --set azureWorkloadIdentity.enabled=true \
+  --set azureWorkloadIdentity.clientId=00000000-0000-0000-0000-000000000004 \
+  --set serviceAccount.create=true \
+  --set 'agentIdentity.downstreamApis[0].name=Graph' \
+  --set 'agentIdentity.downstreamApis[0].baseUrl=https://graph.microsoft.com/v1.0' \
+  --set 'agentIdentity.downstreamApis[0].scopes[0]=User.Read')
+grep -q 'name: entra-auth-sdk' <<< "$output" || { echo "FAIL: Entra Auth SDK sidecar not rendered" >&2; exit 1; }
+grep -q 'value: "http://0.0.0.0:5000"' <<< "$output" || { echo "FAIL: sidecar health endpoint does not bind to the pod address" >&2; exit 1; }
+grep -q 'value: "http://127.0.0.1:5000"' <<< "$output" || { echo "FAIL: runtime does not use the loopback sidecar endpoint" >&2; exit 1; }
+grep -q 'name: AzureAd__ClientCredentials__0__SourceType' <<< "$output" || { echo "FAIL: sidecar workload identity credential not rendered" >&2; exit 1; }
+grep -q 'value: "SignedAssertionFilePath"' <<< "$output" || { echo "FAIL: sidecar must use SignedAssertionFilePath on AKS" >&2; exit 1; }
+grep -q 'name: DownstreamApis__Graph__BaseUrl' <<< "$output" || { echo "FAIL: Graph downstream API configuration not rendered" >&2; exit 1; }
+grep -q 'name: ENTRA_SDK_URL' <<< "$output" || { echo "FAIL: runtime sidecar URL not rendered" >&2; exit 1; }
+grep -q 'azure.workload.identity/client-id: "00000000-0000-0000-0000-000000000004"' <<< "$output" || { echo "FAIL: workload identity service account annotation not rendered" >&2; exit 1; }
+
+echo "==> helm template ${release_name} ${chart_dir} (agentIdentity missing workload identity, expect failure)"
+if helm_template "${release_name}" "${chart_dir}" -f "${chart_dir}/values.yaml" \
+  --set secrets.openclawGatewayToken=lint-token \
+  --set agentIdentity.enabled=true \
+  --set agentIdentity.tenantId=00000000-0000-0000-0000-000000000001 \
+  --set agentIdentity.blueprintClientId=00000000-0000-0000-0000-000000000002 \
+  --set agentIdentity.agentIdentityClientId=00000000-0000-0000-0000-000000000003 \
+  --set agentIdentity.audience=api://00000000-0000-0000-0000-000000000002 \
+  --set serviceAccount.create=true 2>/dev/null; then
+  echo "FAIL: Agent ID without workload identity should have been rejected" >&2; exit 1
+fi
+
+# ---------------------------------------------------------------------------
 # Hermes + MS Teams (cetirun_teams plugin) tests
 # ---------------------------------------------------------------------------
 
