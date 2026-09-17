@@ -1,0 +1,213 @@
+# This pipeline intentionally validates a unified release without publishing it.
+# Enable the commented future publishing flow only in an explicit follow-up
+# change after MCR onboarding is complete.
+
+name: cetirun-release-$(Date:yyyyMMdd)$(Rev:.r)
+
+trigger:
+  branches:
+    exclude:
+      - "*"
+  tags:
+    include:
+      - "v*.*.*"
+
+pr: none
+
+parameters:
+  - name: releaseVersion
+    displayName: Release version for a manual branch validation run
+    type: string
+    default: ""
+
+pool:
+  vmImage: ubuntu-latest
+
+variables:
+  localRegistry: local.cetirun.invalid
+  DOCKER_DEFAULT_PLATFORM: linux/amd64
+
+steps:
+  - checkout: self
+    fetchDepth: 0
+
+  - bash: |
+      set -euo pipefail
+
+      release_version="${RELEASE_VERSION_INPUT}"
+      if [[ "${BUILD_SOURCEBRANCH}" == refs/tags/v* ]]; then
+        tag_version="${BUILD_SOURCEBRANCH#refs/tags/v}"
+        if [ -n "${release_version}" ] && [ "${release_version}" != "${tag_version}" ]; then
+          echo "ERROR: releaseVersion must be empty or match tag version ${tag_version}." >&2
+          exit 1
+        fi
+        release_version="${tag_version}"
+      elif [ -z "${release_version}" ]; then
+        echo "ERROR: Manual branch runs require releaseVersion (for example, 0.1.0)." >&2
+        exit 1
+      fi
+
+      if [[ ! "${release_version}" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+        echo "ERROR: '${release_version}' is not valid SemVer X.Y.Z." >&2
+        exit 1
+      fi
+
+      echo "##vso[task.setvariable variable=releaseVersion]${release_version}"
+      echo "Resolved unified release version: ${release_version}"
+    displayName: Resolve and validate unified release version
+    env:
+      RELEASE_VERSION_INPUT: ${{ parameters.releaseVersion }}
+
+  - bash: |
+      set -euo pipefail
+
+      chart_field() {
+        local chart_path="$1"
+        local field="$2"
+        local value
+        value="$(awk -F': *' -v field="${field}" '$1 == field { print $2; exit }' "${chart_path}")"
+        value="${value%\"}"
+        value="${value#\"}"
+        printf '%s\n' "${value}"
+      }
+
+      validate_chart() {
+        local chart_path="$1"
+        local field
+        local value
+        for field in version appVersion; do
+          value="$(chart_field "${chart_path}" "${field}")"
+          if [ "${value}" != "${RELEASE_VERSION}" ]; then
+            echo "ERROR: ${chart_path} ${field} '${value}' does not match ${RELEASE_VERSION}." >&2
+            return 1
+          fi
+        done
+        echo "Validated ${chart_path}: version and appVersion are ${RELEASE_VERSION}."
+      }
+
+      validate_chart app/cetirun-chart/Chart.yaml
+      validate_chart app/cetirun-operator/chart/Chart.yaml
+      validate_chart app/cetirun-portal/chart/Chart.yaml
+    displayName: Validate all chart versions
+    env:
+      RELEASE_VERSION: $(releaseVersion)
+
+  - bash: |
+      set -euo pipefail
+      python3 scripts/ci/install_tools.py --bin-dir "${AGENT_TEMPDIRECTORY}/cetirun-tools" helm
+      echo "##vso[task.setvariable variable=helmBin]${AGENT_TEMPDIRECTORY}/cetirun-tools"
+    displayName: Install pinned Helm
+
+  - bash: |
+      set -euo pipefail
+      export PATH="${HELM_BIN}:${PATH}"
+      package_dir="${AGENT_TEMPDIRECTORY}/cetirun-chart-packages"
+      mkdir -p "${package_dir}"
+
+      bash scripts/cetirun-helm-lint.sh
+      bash scripts/cetirun-helm-test.sh
+
+      echo "==> helm package app/cetirun-chart"
+      helm package app/cetirun-chart --destination "${package_dir}" \
+        --version "${RELEASE_VERSION}" --app-version "${RELEASE_VERSION}"
+      test -f "${package_dir}/cetirun-${RELEASE_VERSION}.tgz"
+
+      for chart_dir in app/cetirun-operator/chart app/cetirun-portal/chart; do
+        chart_name="$(awk -F': *' '$1 == "name" { print $2; exit }' "${chart_dir}/Chart.yaml")"
+        echo "==> helm lint ${chart_dir}"
+        helm lint "${chart_dir}"
+        echo "==> helm template ${chart_name} ${chart_dir}"
+        helm template "${chart_name}" "${chart_dir}" --set istio.host=portal.example.com > /dev/null
+        echo "==> helm package ${chart_dir}"
+        helm package "${chart_dir}" --destination "${package_dir}" \
+          --version "${RELEASE_VERSION}" --app-version "${RELEASE_VERSION}"
+        test -f "${package_dir}/${chart_name}-${RELEASE_VERSION}.tgz"
+      done
+    displayName: Lint, template, and package all charts
+    env:
+      AGENT_TEMPDIRECTORY: $(Agent.TempDirectory)
+      HELM_BIN: $(helmBin)
+      RELEASE_VERSION: $(releaseVersion)
+
+  - bash: |
+      set -euo pipefail
+      export DOCKER_DEFAULT_PLATFORM=linux/amd64
+
+      REGISTRY="${LOCAL_REGISTRY}" \
+      IMAGE_TAG="${RELEASE_VERSION}" \
+      PUSH=false \
+      BUILD_BASE=true \
+      BUILD_HERMES=true \
+      BUILD_DESKTOP=true \
+      bash scripts/cetirun-docker-build.sh
+
+      REGISTRY="${LOCAL_REGISTRY}" \
+      IMAGE_TAG="${RELEASE_VERSION}" \
+      PUSH=false \
+      bash scripts/operator-docker-build.sh
+
+      REGISTRY="${LOCAL_REGISTRY}" \
+      IMAGE_TAG="${RELEASE_VERSION}" \
+      PUSH=false \
+      bash scripts/portal-docker-build.sh
+
+      for image in cetirun-base openclaw-gateway hermes-gateway cetirun-desktop cetirun-operator cetirun-portal; do
+        docker image inspect "${LOCAL_REGISTRY}/${image}:${RELEASE_VERSION}" > /dev/null
+        image_platform="$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "${LOCAL_REGISTRY}/${image}:${RELEASE_VERSION}")"
+        if [ "${image_platform}" != linux/amd64 ]; then
+          echo "ERROR: ${image} was built for ${image_platform}, expected linux/amd64." >&2
+          exit 1
+        fi
+      done
+    displayName: Build six Linux AMD64 images locally
+    env:
+      LOCAL_REGISTRY: $(localRegistry)
+      RELEASE_VERSION: $(releaseVersion)
+
+  # FUTURE PUBLISHING (DISABLED): Enable only in an explicit follow-up change
+  # after MCR onboarding. This pipeline currently has no Azure service
+  # connection, ACR credentials, registry login, or publishing commands.
+  # Future public target: mcr.microsoft.com/aks/cetirun.
+  #
+  # - bash: |
+  #     set -euo pipefail
+  #     acr_name="aksmcrimagescommon"
+  #     registry="${acr_name}.azurecr.io"
+  #     repository_prefix="public/aks/cetirun"
+  #     image_artifacts=(cetirun-base openclaw-gateway hermes-gateway cetirun-desktop cetirun-operator cetirun-portal)
+  #     chart_artifacts=(cetirun cetirun-operator cetirun-portal)
+  #
+  #     # Preflight immutability before publishing any versioned artifact.
+  #     for artifact in "${image_artifacts[@]}"; do
+  #       image_repository="${repository_prefix}/${artifact}"
+  #       if az acr repository show-tags --name "${acr_name}" --repository "${image_repository}" --query "[?@=='${RELEASE_VERSION}']" --output tsv | grep -qx "${RELEASE_VERSION}"; then
+  #         echo "ERROR: ${registry}/${image_repository}:${RELEASE_VERSION} already exists." >&2
+  #         exit 1
+  #       fi
+  #     done
+  #     for chart in "${chart_artifacts[@]}"; do
+  #       chart_repository="${repository_prefix}/helm/${chart}"
+  #       if az acr repository show-tags --name "${acr_name}" --repository "${chart_repository}" --query "[?@=='${RELEASE_VERSION}']" --output tsv | grep -qx "${RELEASE_VERSION}"; then
+  #         echo "ERROR: oci://${registry}/${chart_repository}:${RELEASE_VERSION} already exists." >&2
+  #         exit 1
+  #       fi
+  #     done
+  #
+  #     # Push versioned images and charts, then verify their digests and OCI pulls.
+  #     for artifact in "${image_artifacts[@]}"; do
+  #       versioned_image="${registry}/${repository_prefix}/${artifact}:${RELEASE_VERSION}"
+  #       docker tag "${LOCAL_REGISTRY}/${artifact}:${RELEASE_VERSION}" "${versioned_image}"
+  #       docker push "${versioned_image}"
+  #       docker buildx imagetools inspect "${versioned_image}"
+  #     done
+  #     for chart in "${chart_artifacts[@]}"; do
+  #       chart_path="oci://${registry}/${repository_prefix}/helm/${chart}"
+  #       helm push "${AGENT_TEMPDIRECTORY}/cetirun-chart-packages/${chart}-${RELEASE_VERSION}.tgz" "oci://${registry}/${repository_prefix}/helm"
+  #       helm pull "${chart_path}" --version "${RELEASE_VERSION}" --destination "${AGENT_TEMPDIRECTORY}/verified-charts"
+  #     done
+  #
+  #     # Update image latest only after every versioned image and chart succeeds.
+  #     for artifact in "${image_artifacts[@]}"; do
+  #       docker buildx imagetools create --tag "${registry}/${repository_prefix}/${artifact}:latest" "${registry}/${repository_prefix}/${artifact}:${RELEASE_VERSION}"
+  #     done
+  #   displayName: Disabled future MCR publishing
