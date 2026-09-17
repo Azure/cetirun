@@ -6,7 +6,7 @@
 
 CetiRun is an open-source managed runtime for hosting AI agents and AI applications.
 
-It provides isolated, persistent instances on a shared AKS cluster, with authenticated access and managed lifecycle operations. The current runtime supports [OpenClaw](https://github.com/feiskyer/openclaw) and Hermes agents, with a Kubernetes operator and self-service portal for deployment and management.
+It provides isolated, persistent instances on a shared AKS cluster, with authenticated access and managed lifecycle operations. The current runtime supports [OpenClaw](https://github.com/feiskyer/openclaw) and [Hermes](https://github.com/NousResearch/hermes-agent) agents, with a Kubernetes operator and self-service portal for deployment and management.
 
 ## Architecture
 
