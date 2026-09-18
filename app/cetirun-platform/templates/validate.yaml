@@ -1,0 +1,19 @@
+{{- if not .Values.istio.enabled }}
+{{- fail "istio.enabled must be true: install and verify the separate cetirun-istio release first" }}
+{{- end }}
+{{- if not .Values.istio.gateway.name }}
+{{- fail "istio.gateway.name is required" }}
+{{- end }}
+{{- if not .Values.istio.gateway.namespace }}
+{{- fail "istio.gateway.namespace is required" }}
+{{- end }}
+{{- if not .Values.istio.oauth2Proxy.name }}
+{{- fail "istio.oauth2Proxy.name is required" }}
+{{- end }}
+{{- if not .Values.istio.oauth2Proxy.namespace }}
+{{- fail "istio.oauth2Proxy.namespace is required" }}
+{{- end }}
+{{- $portal := index .Values "cetirun-portal" }}
+{{- if and $portal.enabled (not $portal.istio.host) }}
+{{- fail "cetirun-portal.istio.host is required when cetirun-portal is enabled" }}
+{{- end }}

@@ -19,7 +19,7 @@ apiVersion: security.istio.io/v1
 kind: AuthorizationPolicy
 metadata:
   name: {{ include "cetirun-portal.fullname" . }}-allow-gateway
-  namespace: {{ .Release.Namespace }}
+  namespace: {{ include "cetirun-portal.namespace" . }}
   labels:
     {{- include "cetirun-portal.labels" . | nindent 4 }}
 spec:

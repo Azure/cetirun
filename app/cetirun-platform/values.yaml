@@ -1,0 +1,23 @@
+# CetiRun platform umbrella defaults. This chart deliberately does not own
+# managed Istio, credentials, certificates, agent instances, or their data.
+
+istio:
+  # A separately managed cetirun-istio release must be ready before installing
+  # this chart. The deployment helper checks these references against the API.
+  enabled: false
+  gateway:
+    name: cetirun-gateway
+    namespace: aks-istio-ingress
+  oauth2Proxy:
+    name: oauth2-proxy
+    namespace: cetirun-istio
+
+cetirun-operator:
+  enabled: true
+  namespace: cetirun-system
+
+cetirun-portal:
+  enabled: true
+  namespace: cetirun-portal
+  istio:
+    host: ""

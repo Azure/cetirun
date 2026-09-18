@@ -11,7 +11,7 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: {{ include "cetirun-portal.fullname" . }}-internal-auth
-  namespace: {{ .Release.Namespace }}
+  namespace: {{ include "cetirun-portal.namespace" . }}
   labels:
     {{- include "cetirun-portal.labels" . | nindent 4 }}
 spec:

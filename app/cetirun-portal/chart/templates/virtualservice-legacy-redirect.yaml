@@ -3,7 +3,7 @@ apiVersion: networking.istio.io/v1beta1
 kind: VirtualService
 metadata:
   name: {{ include "cetirun-portal.fullname" . }}-legacy-redirect
-  namespace: {{ .Release.Namespace }}
+  namespace: {{ include "cetirun-portal.namespace" . }}
   labels:
     {{- include "cetirun-portal.labels" . | nindent 4 }}
 spec:

@@ -2,7 +2,7 @@ apiVersion: networking.istio.io/v1beta1
 kind: VirtualService
 metadata:
   name: {{ include "cetirun-portal.fullname" . }}
-  namespace: {{ .Release.Namespace }}
+  namespace: {{ include "cetirun-portal.namespace" . }}
   labels:
     {{- include "cetirun-portal.labels" . | nindent 4 }}
 spec:
@@ -13,6 +13,6 @@ spec:
   http:
     - route:
         - destination:
-            host: {{ include "cetirun-portal.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local
+            host: {{ include "cetirun-portal.fullname" . }}.{{ include "cetirun-portal.namespace" . }}.svc.cluster.local
             port:
               number: 8080

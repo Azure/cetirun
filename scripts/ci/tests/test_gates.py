@@ -85,7 +85,7 @@ class GateTests(unittest.TestCase):
                 validate.chart_gate(self.root)
         run.assert_not_called()
 
-    def test_all_four_charts_and_both_runtime_types_are_checked(self):
+    def test_all_five_charts_and_both_runtime_types_are_checked(self):
         for directory, _ in validate.CHARTS:
             chart = self.root / directory
             chart.mkdir(parents=True, exist_ok=True)
@@ -93,13 +93,15 @@ class GateTests(unittest.TestCase):
                 (chart / filename).write_text("fixture")
         (self.root / "scripts").mkdir()
         (self.root / "scripts/cetirun-helm-test.sh").write_text("# fixture")
+        (self.root / "scripts/cetirun-platform-helm-test.sh").write_text("# fixture")
         with patch.object(validate, "run") as run:
             validate.chart_gate(self.root)
         commands = [call.args[0] for call in run.call_args_list]
-        self.assertEqual(sum(c[:2] == ["helm", "lint"] for c in commands), 5)
-        self.assertEqual(sum(c[:2] == ["helm", "template"] for c in commands), 5)
-        self.assertEqual(len({c[3] for c in commands if c[:2] == ["helm", "lint"]}), 4)
+        self.assertEqual(sum(c[:2] == ["helm", "lint"] for c in commands), 6)
+        self.assertEqual(sum(c[:2] == ["helm", "template"] for c in commands), 6)
+        self.assertEqual(len({c[3] for c in commands if c[:2] == ["helm", "lint"]}), 5)
         self.assertTrue(all("--strict" in c for c in commands if c[1] == "lint"))
+        self.assertEqual(sum(c[:2] == ["helm", "dependency"] for c in commands), 1)
         self.assertEqual(commands[-1][0], "bash")
 
     def test_offline_go_environment_cannot_inherit_network_defaults(self):
