@@ -86,6 +86,7 @@ steps:
       }
 
       validate_chart app/cetirun-chart/Chart.yaml
+      validate_chart infra/istio/Chart.yaml
       validate_chart app/cetirun-operator/chart/Chart.yaml
       validate_chart app/cetirun-portal/chart/Chart.yaml
     displayName: Validate all chart versions
@@ -111,6 +112,13 @@ steps:
       helm package app/cetirun-chart --destination "${package_dir}" \
         --version "${RELEASE_VERSION}" --app-version "${RELEASE_VERSION}"
       test -f "${package_dir}/cetirun-${RELEASE_VERSION}.tgz"
+
+      echo "==> helm lint infra/istio"
+      helm lint infra/istio
+      echo "==> helm package infra/istio"
+      helm package infra/istio --destination "${package_dir}" \
+        --version "${RELEASE_VERSION}" --app-version "${RELEASE_VERSION}"
+      test -f "${package_dir}/cetirun-istio-${RELEASE_VERSION}.tgz"
 
       for chart_dir in app/cetirun-operator/chart app/cetirun-portal/chart; do
         chart_name="$(awk -F': *' '$1 == "name" { print $2; exit }' "${chart_dir}/Chart.yaml")"
@@ -175,7 +183,7 @@ steps:
   #     registry="${acr_name}.azurecr.io"
   #     repository_prefix="public/aks/cetirun"
   #     image_artifacts=(openclaw-gateway hermes-gateway cetirun-desktop cetirun-operator cetirun-portal)
-  #     chart_artifacts=(cetirun cetirun-operator cetirun-portal)
+  #     chart_artifacts=(cetirun cetirun-istio cetirun-operator cetirun-portal)
   #
   #     # Preflight immutability before publishing any versioned artifact.
   #     for artifact in "${image_artifacts[@]}"; do
