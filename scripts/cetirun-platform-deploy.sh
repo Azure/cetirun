@@ -9,7 +9,6 @@ script_dir="$(cd "$(dirname "$0")" && pwd)"
 repo_root="$(cd "$script_dir/.." && pwd)"
 chart_dir="${CHART_DIR:-${repo_root}/app/cetirun-platform}"
 namespace="${NAMESPACE:-cetirun-system}"
-portal_namespace="${PORTAL_NAMESPACE:-cetirun-portal}"
 release_name="${RELEASE_NAME:-cetirun-platform}"
 values_file="${VALUES_FILE:-}"
 gateway_name="${ISTIO_GATEWAY_NAME:-cetirun-gateway}"
@@ -40,7 +39,6 @@ kubectl rollout status "deployment/${oauth2_proxy_name}" -n "${oauth2_proxy_name
 
 helm dependency build --skip-refresh "${chart_dir}" >/dev/null
 kubectl create namespace "${namespace}" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
-kubectl create namespace "${portal_namespace}" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 
 helm_args=(
   upgrade --install "${release_name}" "${chart_dir}"
@@ -51,7 +49,6 @@ helm_args=(
   --set-string "istio.oauth2Proxy.name=${oauth2_proxy_name}"
   --set-string "istio.oauth2Proxy.namespace=${oauth2_proxy_namespace}"
   --set-string "cetirun-operator.namespace=${namespace}"
-  --set-string "cetirun-portal.namespace=${portal_namespace}"
 )
 if [ -n "${values_file}" ]; then
   helm_args+=(--values "${values_file}")
@@ -59,4 +56,4 @@ fi
 helm "${helm_args[@]}"
 
 kubectl rollout status deployment/cetirun-operator -n "${namespace}" --timeout=180s
-kubectl rollout status deployment/cetirun-portal -n "${portal_namespace}" --timeout=180s
+kubectl rollout status deployment/cetirun-portal -n "${namespace}" --timeout=180s

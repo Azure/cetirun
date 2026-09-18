@@ -34,8 +34,8 @@ grep -q 'name: cetirun-portal' <<< "${output}" || {
   echo "FAIL: portal was not rendered" >&2
   exit 1
 }
-grep -q 'namespace: cetirun-portal' <<< "${output}" || {
-  echo "FAIL: portal namespace override was not rendered" >&2
+grep -q 'namespace: default' <<< "${output}" || {
+  echo "FAIL: portal was not rendered into the release namespace" >&2
   exit 1
 }
 

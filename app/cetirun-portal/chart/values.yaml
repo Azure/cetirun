@@ -1,11 +1,6 @@
 # -- Number of portal replicas.
 replicaCount: 2
 
-# -- Namespace for Portal resources. Empty uses the Helm release namespace,
-# preserving standalone chart behavior. Set this when rendered by an umbrella
-# release that owns resources in multiple namespaces.
-namespace: ""
-
 # -- Portal container image.
 image:
   repository: ghcr.io/azure/cetirun-portal

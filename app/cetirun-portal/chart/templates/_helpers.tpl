@@ -13,11 +13,6 @@ Create a default fully qualified app name.
 {{- printf "%s" $name | trunc 63 | trimSuffix "-" }}
 {{- end }}
 
-{{/* Resolve the resource namespace without changing standalone releases. */}}
-{{- define "cetirun-portal.namespace" -}}
-{{- default .Release.Namespace .Values.namespace }}
-{{- end }}
-
 {{/*
 Common labels.
 */}}

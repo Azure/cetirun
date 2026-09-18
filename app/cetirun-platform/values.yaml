@@ -18,6 +18,5 @@ cetirun-operator:
 
 cetirun-portal:
   enabled: true
-  namespace: cetirun-portal
   istio:
     host: ""
