@@ -21,7 +21,7 @@ parameters:
     default: ""
 
 pool:
-  vmImage: ubuntu-latest
+  name: 1es-aks-ai-runtime-ado-southcentralus
 
 variables:
   localRegistry: local.cetirun.invalid
