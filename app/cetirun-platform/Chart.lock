@@ -4,6 +4,6 @@ dependencies:
   version: 0.1.0
 - name: cetirun-portal
   repository: file://../cetirun-portal/chart
-  version: 0.1.1
-digest: sha256:cf0ab2b8c10b07759a4524ecc62e4ea7501e27fc3023d6d5562879b65e8af066
-generated: "2026-09-18T15:08:39.854095428+08:00"
+  version: 0.1.0
+digest: sha256:3e456969e7c061badc5a6b3b66e5003d8cba3eee560fdf129dcb1b5ece710bb0
+generated: "2026-09-18T15:56:32.209478773+08:00"

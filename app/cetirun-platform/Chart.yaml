@@ -14,6 +14,6 @@ dependencies:
     repository: file://../cetirun-operator/chart
     condition: cetirun-operator.enabled
   - name: cetirun-portal
-    version: 0.1.1
+    version: 0.1.0
     repository: file://../cetirun-portal/chart
     condition: cetirun-portal.enabled
