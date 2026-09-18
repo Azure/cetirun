@@ -174,7 +174,7 @@ steps:
   #     acr_name="aksmcrimagescommon"
   #     registry="${acr_name}.azurecr.io"
   #     repository_prefix="public/aks/cetirun"
-  #     image_artifacts=(cetirun-base openclaw-gateway hermes-gateway cetirun-desktop cetirun-operator cetirun-portal)
+  #     image_artifacts=(openclaw-gateway hermes-gateway cetirun-desktop cetirun-operator cetirun-portal)
   #     chart_artifacts=(cetirun cetirun-operator cetirun-portal)
   #
   #     # Preflight immutability before publishing any versioned artifact.
