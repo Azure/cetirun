@@ -175,13 +175,13 @@ steps:
   # FUTURE PUBLISHING (DISABLED): Enable only in an explicit follow-up change
   # after MCR onboarding. This pipeline currently has no Azure service
   # connection, ACR credentials, registry login, or publishing commands.
-  # Future public target: mcr.microsoft.com/aks/cetirun.
+  # Future public target: mcr.microsoft.com/aks/ai-runtime/cetirun.
   #
   # - bash: |
   #     set -euo pipefail
   #     acr_name="aksmcrimagescommon"
   #     registry="${acr_name}.azurecr.io"
-  #     repository_prefix="public/aks/cetirun"
+  #     repository_prefix="public/aks/ai-runtime/cetirun"
   #     image_artifacts=(openclaw-gateway hermes-gateway cetirun-desktop cetirun-operator cetirun-portal)
   #     chart_artifacts=(cetirun cetirun-istio cetirun-operator cetirun-portal)
   #
