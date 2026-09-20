@@ -125,6 +125,7 @@ COPY --from=kubectl-build /out/kubectl /usr/local/bin/kubectl
 
 ARG MSGPACK_VERSION=1.2.1
 ARG SETUPTOOLS_VERSION=80.10.2
+ARG PYPI_INDEX_URL=https://pypi.org/simple/
 
 COPY configs/sync-pip-vendor.py /usr/local/share/cetirun/sync-pip-vendor.py
 
@@ -138,6 +139,7 @@ RUN tdnf install -y azure-cli && \
     rm -rf "${AZ_SITE}/msgpack" "${AZ_SITE}"/msgpack-*.dist-info && \
     rm -rf "${AZ_SITE}/setuptools" "${AZ_SITE}"/setuptools-*.dist-info && \
     python3 -m pip install --no-cache-dir --break-system-packages --root-user-action=ignore \
+      --index-url "${PYPI_INDEX_URL}" \
       --upgrade --target "${AZ_SITE}" urllib3==2.7.0 \
       "msgpack==${MSGPACK_VERSION}" "setuptools==${SETUPTOOLS_VERSION}" && \
     SYSTEM_PIP_VENDOR=$(python3 -c 'from pathlib import Path; import pip._vendor; print(Path(pip._vendor.__file__).parent.resolve())') && \
@@ -145,6 +147,7 @@ RUN tdnf install -y azure-cli && \
       test -f "${PIP_VENDOR}/vendor.txt" && \
       echo "Updating pip vendor packages in ${PIP_VENDOR}" && \
       python3 -m pip install --no-cache-dir --break-system-packages --root-user-action=ignore \
+        --index-url "${PYPI_INDEX_URL}" \
         --upgrade --no-deps --only-binary=:all: --target "${PIP_VENDOR}" \
         "msgpack==${MSGPACK_VERSION}" "setuptools==${SETUPTOOLS_VERSION}" && \
       PYTHONPATH="${PIP_VENDOR%/pip/_vendor}" python3 -c \
@@ -169,7 +172,7 @@ RUN curl -fsSL "https://github.com/BurntSushi/ripgrep/releases/download/${RIPGRE
 
 
 # Install supervisor (not in Azure Linux repos — pure Python)
-RUN pip install --no-cache-dir --break-system-packages supervisor
+RUN pip install --no-cache-dir --break-system-packages --index-url "${PYPI_INDEX_URL}" supervisor
 
 # Install ttyd (web terminal) - pinned version with checksum verification
 ARG TTYD_VERSION=1.7.7
