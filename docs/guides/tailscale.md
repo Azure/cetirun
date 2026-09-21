@@ -46,7 +46,7 @@ kubectl create secret generic tailscale-auth -n cetirun-<alias> \
 Agent CR:
 
 ```yaml
-apiVersion: cetirun.microsoft.com/v1beta1
+apiVersion: cetirun.microsoft.com/v1alpha1
 kind: Agent
 metadata:
   name: <alias>

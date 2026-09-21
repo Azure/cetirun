@@ -1,4 +1,4 @@
-apiVersion: cetirun.microsoft.com/v1beta1
+apiVersion: cetirun.microsoft.com/v1alpha1
 kind: Team
 metadata:
   name: aks

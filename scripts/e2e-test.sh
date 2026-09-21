@@ -143,7 +143,7 @@ echo ""
 echo "==> Creating test Agent '${TEST_ALIAS}'..."
 
 kubectl apply -n "${TEST_NAMESPACE}" -f - <<EOF
-apiVersion: cetirun.microsoft.com/v1beta1
+apiVersion: cetirun.microsoft.com/v1alpha1
 kind: Agent
 metadata:
   name: ${TEST_ALIAS}

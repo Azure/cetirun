@@ -195,7 +195,7 @@ See [the header helper commands](scripts/README.md#license-headers) for adding
 missing headers. Review authorship first: third-party and generated/scaffold
 exceptions in `scripts/license_headers.py` must retain their own notices.
 
-- Operator API definitions live in `app/cetirun-operator/api/v1beta1/`.
+- Operator API definitions live in `app/cetirun-operator/api/v1alpha1/`.
   `zz_generated.deepcopy.go` and the YAML under `config/crd/bases/` are generated
   from those types. Include regenerated artifacts with their source changes.
 - The operator requires `controller-gen v0.21.0`. Install it separately with

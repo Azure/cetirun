@@ -24,7 +24,7 @@ import (
 	"github.com/Azure/CetiRun/app/cetirun-portal/internal/handler/teamsapp"
 	"github.com/Azure/CetiRun/app/cetirun-portal/internal/kube"
 
-	cetirunv1beta1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1beta1"
+	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 )
 
 // validInstanceNameSuffix matches a valid user-supplied instance name suffix:
@@ -558,9 +558,9 @@ func (h *InstanceHandler) CreateInstance(w http.ResponseWriter, r *http.Request)
 
 	agentType := req.AgentType
 	if agentType == "" {
-		agentType = cetirunv1beta1.AgentTypeOpenClaw
+		agentType = cetirunv1alpha1.AgentTypeOpenClaw
 	}
-	if agentType != cetirunv1beta1.AgentTypeOpenClaw && agentType != cetirunv1beta1.AgentTypeHermes {
+	if agentType != cetirunv1alpha1.AgentTypeOpenClaw && agentType != cetirunv1alpha1.AgentTypeHermes {
 		writeError(w, http.StatusBadRequest, "invalid_agent_type", "agentType must be openclaw or hermes")
 		return
 	}
@@ -778,7 +778,7 @@ func (h *InstanceHandler) UpgradeInstance(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, resp)
 }
 
-func (h *InstanceHandler) toInstanceResponse(ctx context.Context, instance *cetirunv1beta1.Agent) (InstanceResponse, error) {
+func (h *InstanceHandler) toInstanceResponse(ctx context.Context, instance *cetirunv1alpha1.Agent) (InstanceResponse, error) {
 	resp := InstanceResponse{
 		Alias:        instance.Spec.User.Alias,
 		InstanceName: instance.Name,
@@ -790,7 +790,7 @@ func (h *InstanceHandler) toInstanceResponse(ctx context.Context, instance *ceti
 		CreatedAt:    instance.CreationTimestamp.UTC().Format("2006-01-02T15:04:05Z"),
 	}
 	if resp.AgentType == "" {
-		resp.AgentType = cetirunv1beta1.AgentTypeOpenClaw
+		resp.AgentType = cetirunv1alpha1.AgentTypeOpenClaw
 	}
 
 	if instance.Status.LastReconcileTime != nil {
@@ -828,7 +828,7 @@ func (h *InstanceHandler) toInstanceResponse(ctx context.Context, instance *ceti
 			resp.GatewayToken = token
 			resp.AccessURL = instance.Status.AccessURL
 		}
-		if resp.AgentType == cetirunv1beta1.AgentTypeHermes {
+		if resp.AgentType == cetirunv1alpha1.AgentTypeHermes {
 			apiServerKey, err := h.Kube.GetAPIServerKey(ctx, ns, instance.Spec.GatewayTokenSecretRef)
 			if err != nil {
 				slog.Warn("Failed to get Hermes API server key", "alias", instance.Spec.User.Alias, "error", err)
@@ -972,7 +972,7 @@ func (h *InstanceHandler) DownloadTeamsApp(w http.ResponseWriter, r *http.Reques
 }
 
 // serveTeamsApp builds and writes the Teams app ZIP for the given instance.
-func (h *InstanceHandler) serveTeamsApp(w http.ResponseWriter, instance *cetirunv1beta1.Agent) {
+func (h *InstanceHandler) serveTeamsApp(w http.ResponseWriter, instance *cetirunv1alpha1.Agent) {
 	appID := instance.Status.MSTeams.AppID
 	displayName := instance.Spec.User.DisplayName
 
@@ -1079,7 +1079,7 @@ func addFileToZip(zw *zip.Writer, name string, data []byte) error {
 	return err
 }
 
-func teamsStateOrUnknown(instance *cetirunv1beta1.Agent) string {
+func teamsStateOrUnknown(instance *cetirunv1alpha1.Agent) string {
 	if instance.Status.MSTeams != nil && instance.Status.MSTeams.State != "" {
 		return instance.Status.MSTeams.State
 	}

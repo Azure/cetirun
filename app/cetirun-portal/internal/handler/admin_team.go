@@ -12,7 +12,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	cetirunv1beta1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1beta1"
+	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-portal/internal/kube"
 )
 
@@ -27,7 +27,7 @@ type AdminTeamHandler struct {
 // name. Mirrors the alias pattern used elsewhere in the portal.
 var teamNamePattern = regexp.MustCompile(`^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$`)
 
-// TeamSkillStorageDTO mirrors cetirunv1beta1.SkillStorageSpec.
+// TeamSkillStorageDTO mirrors cetirunv1alpha1.SkillStorageSpec.
 type TeamSkillStorageDTO struct {
 	ResourceGroup    string `json:"resourceGroup"`
 	StorageAccount   string `json:"storageAccount"`
@@ -60,7 +60,7 @@ type TeamUpsertRequest struct {
 	SkillStorage    *TeamSkillStorageDTO `json:"skillStorage,omitempty"`
 }
 
-func toTeamDTO(t *cetirunv1beta1.Team) TeamDTO {
+func toTeamDTO(t *cetirunv1alpha1.Team) TeamDTO {
 	dto := TeamDTO{
 		Name:            t.Name,
 		Role:            t.Spec.MemberContext.Role,
@@ -82,19 +82,19 @@ func toTeamDTO(t *cetirunv1beta1.Team) TeamDTO {
 	return dto
 }
 
-func toTeamSpec(req TeamUpsertRequest) cetirunv1beta1.TeamSpec {
-	spec := cetirunv1beta1.TeamSpec{
-		MemberContext: cetirunv1beta1.TeamContextSpec{
+func toTeamSpec(req TeamUpsertRequest) cetirunv1alpha1.TeamSpec {
+	spec := cetirunv1alpha1.TeamSpec{
+		MemberContext: cetirunv1alpha1.TeamContextSpec{
 			Role:        req.Role,
 			Description: req.Description,
 		},
-		Defaults: cetirunv1beta1.TeamDefaultsSpec{
+		Defaults: cetirunv1alpha1.TeamDefaultsSpec{
 			Provider: req.DefaultProvider,
 		},
 		Skills: req.Skills,
 	}
 	if req.SkillStorage != nil {
-		spec.SkillStorage = &cetirunv1beta1.SkillStorageSpec{
+		spec.SkillStorage = &cetirunv1alpha1.SkillStorageSpec{
 			ResourceGroup:    req.SkillStorage.ResourceGroup,
 			StorageAccount:   req.SkillStorage.StorageAccount,
 			ContainerName:    req.SkillStorage.ContainerName,
@@ -176,7 +176,7 @@ func (h *AdminTeamHandler) CreateTeam(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_skill_storage", msg)
 		return
 	}
-	team := &cetirunv1beta1.Team{
+	team := &cetirunv1alpha1.Team{
 		ObjectMeta: metav1.ObjectMeta{Name: req.Name},
 		Spec:       toTeamSpec(req),
 	}

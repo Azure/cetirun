@@ -9,7 +9,7 @@ Agent CRD specification, namespace layout, service ports, and Kubernetes API per
 ### Full Specification
 
 ```yaml
-apiVersion: cetirun.microsoft.com/v1beta1
+apiVersion: cetirun.microsoft.com/v1alpha1
 kind: Agent
 metadata:
   name: <alias>                     # Must match spec.user.alias
@@ -201,7 +201,7 @@ AdminClaw's `adminclaw-admin` ClusterRole grants the following permissions:
 
 | Resource | API Group | Verbs | Purpose |
 |----------|-----------|-------|---------|
-| `Agent` | `cetirun.microsoft.com/v1beta1` | get, list, watch, create, update, patch | Instance lifecycle (**no delete**) |
+| `Agent` | `cetirun.microsoft.com/v1alpha1` | get, list, watch, create, update, patch | Instance lifecycle (**no delete**) |
 | `Namespace` | core/v1 | get, list, watch, create | Instance namespace provisioning (**no delete**) |
 | `Pod` | core/v1 | get, list, watch, delete | Diagnostics and remediation (restart) |
 | `Pod/exec` | core/v1 | create | Diagnostics and storage cleanup |
@@ -246,7 +246,7 @@ The `spec.msteams` field configures Microsoft Teams bot integration for an insta
 ### Example CR with MS Teams
 
 ```yaml
-apiVersion: cetirun.microsoft.com/v1beta1
+apiVersion: cetirun.microsoft.com/v1alpha1
 kind: Agent
 metadata:
   name: bob

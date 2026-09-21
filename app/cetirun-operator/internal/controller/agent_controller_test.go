@@ -25,7 +25,7 @@ import (
 
 	istiov1beta1 "istio.io/client-go/pkg/apis/networking/v1beta1"
 
-	cetirunv1beta1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1beta1"
+	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/controller"
 )
 
@@ -54,7 +54,7 @@ func (f *fakeHelmClient) Uninstall(namespace, releaseName string) error {
 func testScheme() *runtime.Scheme {
 	s := runtime.NewScheme()
 	utilruntime.Must(clientgoscheme.AddToScheme(s))
-	utilruntime.Must(cetirunv1beta1.AddToScheme(s))
+	utilruntime.Must(cetirunv1alpha1.AddToScheme(s))
 	utilruntime.Must(appsv1.AddToScheme(s))
 	utilruntime.Must(istiov1beta1.AddToScheme(s))
 	// corev1 and rbacv1 are registered by clientgoscheme.AddToScheme
@@ -64,26 +64,26 @@ func testScheme() *runtime.Scheme {
 
 // newCR builds a minimal Agent for tests. The finalizer is pre-set
 // so the reconciler does not spend a loop adding it.
-func newCR(alias string, phase string, conditions []metav1.Condition, generation int64, observedGen int64, observedHash string) *cetirunv1beta1.Agent {
-	cr := &cetirunv1beta1.Agent{
+func newCR(alias string, phase string, conditions []metav1.Condition, generation int64, observedGen int64, observedHash string) *cetirunv1alpha1.Agent {
+	cr := &cetirunv1alpha1.Agent{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:       alias,
 			Generation: generation,
-			Finalizers: []string{cetirunv1beta1.Finalizer},
+			Finalizers: []string{cetirunv1alpha1.Finalizer},
 		},
-		Spec: cetirunv1beta1.AgentSpec{
-			User: cetirunv1beta1.UserSpec{
+		Spec: cetirunv1alpha1.AgentSpec{
+			User: cetirunv1alpha1.UserSpec{
 				Alias:       alias,
 				DisplayName: "Test User",
 				Team:        "test-team",
 			},
 			GatewayTokenSecretRef: "gateway-token",
-			Helm: cetirunv1beta1.HelmSpec{
+			Helm: cetirunv1alpha1.HelmSpec{
 				Version: "0.1.28", // Pre-set to avoid backfill loop in tests.
 				Values:  map[string]runtime.RawExtension{},
 			},
 		},
-		Status: cetirunv1beta1.AgentStatus{
+		Status: cetirunv1alpha1.AgentStatus{
 			Phase:                phase,
 			Conditions:           conditions,
 			ObservedGeneration:   observedGen,
@@ -170,12 +170,12 @@ func findCondition(conditions []metav1.Condition, condType string) *metav1.Condi
 // TestPhaseConstants verifies phase constant values.
 func TestPhaseConstants(t *testing.T) {
 	phases := []string{
-		cetirunv1beta1.PhasePending,
-		cetirunv1beta1.PhaseProvisioning,
-		cetirunv1beta1.PhaseReady,
-		cetirunv1beta1.PhaseFailed,
-		cetirunv1beta1.PhaseDeleting,
-		cetirunv1beta1.PhaseSuspended,
+		cetirunv1alpha1.PhasePending,
+		cetirunv1alpha1.PhaseProvisioning,
+		cetirunv1alpha1.PhaseReady,
+		cetirunv1alpha1.PhaseFailed,
+		cetirunv1alpha1.PhaseDeleting,
+		cetirunv1alpha1.PhaseSuspended,
 	}
 	for _, p := range phases {
 		if p == "" {
@@ -186,15 +186,15 @@ func TestPhaseConstants(t *testing.T) {
 
 // TestFinalizerConstant verifies the stable finalizer name.
 func TestFinalizerConstant(t *testing.T) {
-	if cetirunv1beta1.Finalizer != "cetirun.microsoft.com/finalizer" {
-		t.Errorf("unexpected finalizer: %s", cetirunv1beta1.Finalizer)
+	if cetirunv1alpha1.Finalizer != "cetirun.microsoft.com/finalizer" {
+		t.Errorf("unexpected finalizer: %s", cetirunv1alpha1.Finalizer)
 	}
 }
 
 func TestReconcile_PodNotReady_StaysProvisioning(t *testing.T) {
 	alias := "alice"
 
-	cr := newCR(alias, cetirunv1beta1.PhaseProvisioning, nil, 1, 0, "")
+	cr := newCR(alias, cetirunv1alpha1.PhaseProvisioning, nil, 1, 0, "")
 	s := testScheme()
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(s).
@@ -226,15 +226,15 @@ func TestReconcile_PodNotReady_StaysProvisioning(t *testing.T) {
 	}
 
 	// Fetch updated CR.
-	updated := &cetirunv1beta1.Agent{}
+	updated := &cetirunv1alpha1.Agent{}
 	if err := fakeClient.Get(context.Background(), types.NamespacedName{Name: alias}, updated); err != nil {
 		t.Fatalf("failed to get updated CR: %v", err)
 	}
-	if updated.Status.Phase != cetirunv1beta1.PhaseProvisioning {
-		t.Errorf("expected phase=%s, got %s", cetirunv1beta1.PhaseProvisioning, updated.Status.Phase)
+	if updated.Status.Phase != cetirunv1alpha1.PhaseProvisioning {
+		t.Errorf("expected phase=%s, got %s", cetirunv1alpha1.PhaseProvisioning, updated.Status.Phase)
 	}
 
-	podReady := findCondition(updated.Status.Conditions, cetirunv1beta1.ConditionPodReady)
+	podReady := findCondition(updated.Status.Conditions, cetirunv1alpha1.ConditionPodReady)
 	if podReady == nil {
 		t.Fatal("expected PodReady condition to be set")
 	}
@@ -249,7 +249,7 @@ func TestReconcile_PodNotReady_StaysProvisioning(t *testing.T) {
 func TestReconcile_PodReady_MarksReady(t *testing.T) {
 	alias := "bob"
 
-	cr := newCR(alias, cetirunv1beta1.PhaseProvisioning, nil, 1, 0, "")
+	cr := newCR(alias, cetirunv1alpha1.PhaseProvisioning, nil, 1, 0, "")
 	s := testScheme()
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(s).
@@ -280,15 +280,15 @@ func TestReconcile_PodReady_MarksReady(t *testing.T) {
 		t.Errorf("expected RequeueAfter=10m, got %v", result.RequeueAfter)
 	}
 
-	updated := &cetirunv1beta1.Agent{}
+	updated := &cetirunv1alpha1.Agent{}
 	if err := fakeClient.Get(context.Background(), types.NamespacedName{Name: alias}, updated); err != nil {
 		t.Fatalf("failed to get updated CR: %v", err)
 	}
-	if updated.Status.Phase != cetirunv1beta1.PhaseReady {
-		t.Errorf("expected phase=%s, got %s", cetirunv1beta1.PhaseReady, updated.Status.Phase)
+	if updated.Status.Phase != cetirunv1alpha1.PhaseReady {
+		t.Errorf("expected phase=%s, got %s", cetirunv1alpha1.PhaseReady, updated.Status.Phase)
 	}
 
-	podReady := findCondition(updated.Status.Conditions, cetirunv1beta1.ConditionPodReady)
+	podReady := findCondition(updated.Status.Conditions, cetirunv1alpha1.ConditionPodReady)
 	if podReady == nil {
 		t.Fatal("expected PodReady condition to be set")
 	}
@@ -296,7 +296,7 @@ func TestReconcile_PodReady_MarksReady(t *testing.T) {
 		t.Errorf("expected PodReady=True, got %s", podReady.Status)
 	}
 
-	ready := findCondition(updated.Status.Conditions, cetirunv1beta1.ConditionReady)
+	ready := findCondition(updated.Status.Conditions, cetirunv1alpha1.ConditionReady)
 	if ready == nil {
 		t.Fatal("expected Ready condition to be set")
 	}
@@ -340,7 +340,7 @@ func TestReconcile_RolloutIncomplete_StaysProvisioning(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			alias := "rollout"
 
-			cr := newCR(alias, cetirunv1beta1.PhaseProvisioning, nil, 1, 0, "")
+			cr := newCR(alias, cetirunv1alpha1.PhaseProvisioning, nil, 1, 0, "")
 			sts := statefulSetFull(alias, tc.readyReplicas, tc.updatedReplicas, tc.stsGeneration, tc.stsObservedGen)
 
 			s := testScheme()
@@ -371,15 +371,15 @@ func TestReconcile_RolloutIncomplete_StaysProvisioning(t *testing.T) {
 				t.Errorf("expected RequeueAfter=15s, got %v", result.RequeueAfter)
 			}
 
-			updated := &cetirunv1beta1.Agent{}
+			updated := &cetirunv1alpha1.Agent{}
 			if err := fakeClient.Get(context.Background(), types.NamespacedName{Name: alias}, updated); err != nil {
 				t.Fatalf("failed to get updated CR: %v", err)
 			}
-			if updated.Status.Phase != cetirunv1beta1.PhaseProvisioning {
-				t.Errorf("expected phase=%s, got %s", cetirunv1beta1.PhaseProvisioning, updated.Status.Phase)
+			if updated.Status.Phase != cetirunv1alpha1.PhaseProvisioning {
+				t.Errorf("expected phase=%s, got %s", cetirunv1alpha1.PhaseProvisioning, updated.Status.Phase)
 			}
 
-			podReady := findCondition(updated.Status.Conditions, cetirunv1beta1.ConditionPodReady)
+			podReady := findCondition(updated.Status.Conditions, cetirunv1alpha1.ConditionPodReady)
 			if podReady == nil {
 				t.Fatal("expected PodReady condition to be set")
 			}
@@ -393,7 +393,7 @@ func TestReconcile_RolloutIncomplete_StaysProvisioning(t *testing.T) {
 func TestReconcile_StatefulSetNotFound_Requeues(t *testing.T) {
 	alias := "carol"
 
-	cr := newCR(alias, cetirunv1beta1.PhaseProvisioning, nil, 1, 0, "")
+	cr := newCR(alias, cetirunv1alpha1.PhaseProvisioning, nil, 1, 0, "")
 	s := testScheme()
 	// No StatefulSet seeded.
 	fakeClient := fake.NewClientBuilder().
@@ -425,12 +425,12 @@ func TestReconcile_StatefulSetNotFound_Requeues(t *testing.T) {
 		t.Errorf("expected RequeueAfter=15s, got %v", result.RequeueAfter)
 	}
 
-	updated := &cetirunv1beta1.Agent{}
+	updated := &cetirunv1alpha1.Agent{}
 	if err := fakeClient.Get(context.Background(), types.NamespacedName{Name: alias}, updated); err != nil {
 		t.Fatalf("failed to get updated CR: %v", err)
 	}
 
-	podReady := findCondition(updated.Status.Conditions, cetirunv1beta1.ConditionPodReady)
+	podReady := findCondition(updated.Status.Conditions, cetirunv1alpha1.ConditionPodReady)
 	if podReady == nil {
 		t.Fatal("expected PodReady condition to be set")
 	}
@@ -448,7 +448,7 @@ func TestReconcile_AlreadyDeployed_SkipsHelm(t *testing.T) {
 
 	conditions := []metav1.Condition{
 		{
-			Type:               cetirunv1beta1.ConditionHelmDeployed,
+			Type:               cetirunv1alpha1.ConditionHelmDeployed,
 			Status:             metav1.ConditionTrue,
 			Reason:             "ChartInstalled",
 			Message:            "Helm chart successfully installed",
@@ -459,7 +459,7 @@ func TestReconcile_AlreadyDeployed_SkipsHelm(t *testing.T) {
 	gwSecretData := gatewayTokenSecret(alias).Data
 	opHash := computeOperatorHash(domainSuffix, computeSecretHash(gwSecretData), "", "", "", "", "", "", "", "", "")
 
-	cr := newCR(alias, cetirunv1beta1.PhaseProvisioning, conditions, 1, 1, opHash)
+	cr := newCR(alias, cetirunv1alpha1.PhaseProvisioning, conditions, 1, 1, opHash)
 	s := testScheme()
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(s).
@@ -494,12 +494,12 @@ func TestReconcile_AlreadyDeployed_SkipsHelm(t *testing.T) {
 		t.Error("expected HelmClient.InstallOrUpgrade NOT to be called, but it was")
 	}
 
-	updated := &cetirunv1beta1.Agent{}
+	updated := &cetirunv1alpha1.Agent{}
 	if err := fakeClient.Get(context.Background(), types.NamespacedName{Name: alias}, updated); err != nil {
 		t.Fatalf("failed to get updated CR: %v", err)
 	}
 
-	podReady := findCondition(updated.Status.Conditions, cetirunv1beta1.ConditionPodReady)
+	podReady := findCondition(updated.Status.Conditions, cetirunv1alpha1.ConditionPodReady)
 	if podReady == nil {
 		t.Fatal("expected PodReady condition to be set")
 	}
@@ -521,14 +521,14 @@ func TestReconcile_SecretChanged_TriggersHelm(t *testing.T) {
 
 	conditions := []metav1.Condition{
 		{
-			Type:               cetirunv1beta1.ConditionHelmDeployed,
+			Type:               cetirunv1alpha1.ConditionHelmDeployed,
 			Status:             metav1.ConditionTrue,
 			Reason:             "ChartInstalled",
 			Message:            "Helm chart successfully installed",
 			LastTransitionTime: metav1.Now(),
 		},
 		{
-			Type:               cetirunv1beta1.ConditionReady,
+			Type:               cetirunv1alpha1.ConditionReady,
 			Status:             metav1.ConditionTrue,
 			Reason:             "InstanceReady",
 			Message:            "Instance is fully operational",
@@ -536,7 +536,7 @@ func TestReconcile_SecretChanged_TriggersHelm(t *testing.T) {
 		},
 	}
 
-	cr := newCR(alias, cetirunv1beta1.PhaseReady, conditions, 1, 1, oldHash)
+	cr := newCR(alias, cetirunv1alpha1.PhaseReady, conditions, 1, 1, oldHash)
 
 	// But the actual Secret in the cluster has NEW content (simulating token rotation).
 	newSecret := &corev1.Secret{
@@ -598,21 +598,21 @@ func TestReconcile_ReadyInstanceBackfillsCetiRunAuthKey(t *testing.T) {
 
 	conditions := []metav1.Condition{
 		{
-			Type:               cetirunv1beta1.ConditionHelmDeployed,
+			Type:               cetirunv1alpha1.ConditionHelmDeployed,
 			Status:             metav1.ConditionTrue,
 			Reason:             "ChartInstalled",
 			Message:            "Helm chart successfully installed",
 			LastTransitionTime: metav1.Now(),
 		},
 		{
-			Type:               cetirunv1beta1.ConditionReady,
+			Type:               cetirunv1alpha1.ConditionReady,
 			Status:             metav1.ConditionTrue,
 			Reason:             "InstanceReady",
 			Message:            "Instance is fully operational",
 			LastTransitionTime: metav1.Now(),
 		},
 	}
-	cr := newCR(alias, cetirunv1beta1.PhaseReady, conditions, 1, 1, legacyHash)
+	cr := newCR(alias, cetirunv1alpha1.PhaseReady, conditions, 1, 1, legacyHash)
 	legacySecret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{Name: "gateway-token", Namespace: "cetirun-" + alias},
 		Data:       legacySecretData,
@@ -660,7 +660,7 @@ func TestReconcile_ReadyInstanceBackfillsCetiRunAuthKey(t *testing.T) {
 
 func TestReconcile_RejectsReservedUIInstance(t *testing.T) {
 	alias := "ui"
-	cr := newCR(alias, cetirunv1beta1.PhaseReady, nil, 1, 1, "")
+	cr := newCR(alias, cetirunv1alpha1.PhaseReady, nil, 1, 1, "")
 	vs := &istiov1beta1.VirtualService{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "cetirun-ui",
@@ -696,11 +696,11 @@ func TestReconcile_RejectsReservedUIInstance(t *testing.T) {
 		t.Fatal("VirtualService for reserved instance was not deleted")
 	}
 
-	updated := &cetirunv1beta1.Agent{}
+	updated := &cetirunv1alpha1.Agent{}
 	if err := fakeClient.Get(context.Background(), types.NamespacedName{Name: alias}, updated); err != nil {
 		t.Fatalf("get reserved instance: %v", err)
 	}
-	if updated.Status.Phase != cetirunv1beta1.PhaseFailed {
+	if updated.Status.Phase != cetirunv1alpha1.PhaseFailed {
 		t.Fatalf("phase = %q, want Failed", updated.Status.Phase)
 	}
 }
@@ -751,7 +751,7 @@ func TestReconcile_EmptyVersion_Backfills(t *testing.T) {
 	alias := "frank"
 	chartVersion := "0.1.28"
 
-	cr := newCR(alias, cetirunv1beta1.PhaseProvisioning, nil, 1, 0, "")
+	cr := newCR(alias, cetirunv1alpha1.PhaseProvisioning, nil, 1, 0, "")
 	// Clear the version to simulate a CR without a pinned version.
 	cr.Spec.Helm.Version = ""
 
@@ -791,7 +791,7 @@ func TestReconcile_EmptyVersion_Backfills(t *testing.T) {
 	}
 
 	// Verify the CR's spec.helm.version was backfilled.
-	updated := &cetirunv1beta1.Agent{}
+	updated := &cetirunv1alpha1.Agent{}
 	if err := fakeClient.Get(context.Background(), types.NamespacedName{Name: alias}, updated); err != nil {
 		t.Fatalf("failed to get updated CR: %v", err)
 	}
@@ -806,7 +806,7 @@ func TestReconcile_VersionSet_PassesToHelm(t *testing.T) {
 	alias := "grace"
 	pinnedVersion := "0.1.9"
 
-	cr := newCR(alias, cetirunv1beta1.PhaseProvisioning, nil, 1, 0, "")
+	cr := newCR(alias, cetirunv1alpha1.PhaseProvisioning, nil, 1, 0, "")
 	cr.Spec.Helm.Version = pinnedVersion
 
 	s := testScheme()
@@ -846,22 +846,22 @@ func TestReconcile_VersionSet_PassesToHelm(t *testing.T) {
 
 // TestConditionTailscaleReady verifies the TailscaleReady condition constant.
 func TestConditionTailscaleReady(t *testing.T) {
-	if cetirunv1beta1.ConditionTailscaleReady != "TailscaleReady" {
-		t.Errorf("unexpected condition: %s", cetirunv1beta1.ConditionTailscaleReady)
+	if cetirunv1alpha1.ConditionTailscaleReady != "TailscaleReady" {
+		t.Errorf("unexpected condition: %s", cetirunv1alpha1.ConditionTailscaleReady)
 	}
 }
 
 // TestTailscaleSpec_TypeConstruction verifies CRD struct with Tailscale fields.
 func TestTailscaleSpec_TypeConstruction(t *testing.T) {
-	instance := &cetirunv1beta1.Agent{
-		Spec: cetirunv1beta1.AgentSpec{
-			User: cetirunv1beta1.UserSpec{
+	instance := &cetirunv1alpha1.Agent{
+		Spec: cetirunv1alpha1.AgentSpec{
+			User: cetirunv1alpha1.UserSpec{
 				Alias:       "alice",
 				DisplayName: "Alice Smith",
 				Team:        "aks-core",
 			},
 			GatewayTokenSecretRef: "gateway-token",
-			Tailscale: &cetirunv1beta1.TailscaleSpec{
+			Tailscale: &cetirunv1alpha1.TailscaleSpec{
 				AuthKeySecretRef: "tailscale-auth",
 			},
 		},
@@ -875,9 +875,9 @@ func TestTailscaleSpec_TypeConstruction(t *testing.T) {
 	}
 
 	// Verify nil Tailscale is valid (feature disabled).
-	instanceNoTS := &cetirunv1beta1.Agent{
-		Spec: cetirunv1beta1.AgentSpec{
-			User: cetirunv1beta1.UserSpec{
+	instanceNoTS := &cetirunv1alpha1.Agent{
+		Spec: cetirunv1alpha1.AgentSpec{
+			User: cetirunv1alpha1.UserSpec{
 				Alias:       "bob",
 				DisplayName: "Bob",
 				Team:        "aks-core",
@@ -896,7 +896,7 @@ func TestTailscaleSpec_TypeConstruction(t *testing.T) {
 func TestReconcile_Suspended_MarksSuspendedPhase(t *testing.T) {
 	alias := "suspended-user"
 
-	cr := newCR(alias, cetirunv1beta1.PhaseProvisioning, nil, 1, 0, "")
+	cr := newCR(alias, cetirunv1alpha1.PhaseProvisioning, nil, 1, 0, "")
 	cr.Spec.Suspended = true
 
 	s := testScheme()
@@ -935,15 +935,15 @@ func TestReconcile_Suspended_MarksSuspendedPhase(t *testing.T) {
 	}
 
 	// Fetch updated CR and verify status.
-	updated := &cetirunv1beta1.Agent{}
+	updated := &cetirunv1alpha1.Agent{}
 	if err := fakeClient.Get(context.Background(), types.NamespacedName{Name: alias}, updated); err != nil {
 		t.Fatalf("failed to get updated CR: %v", err)
 	}
-	if updated.Status.Phase != cetirunv1beta1.PhaseSuspended {
-		t.Errorf("expected phase=%s, got %s", cetirunv1beta1.PhaseSuspended, updated.Status.Phase)
+	if updated.Status.Phase != cetirunv1alpha1.PhaseSuspended {
+		t.Errorf("expected phase=%s, got %s", cetirunv1alpha1.PhaseSuspended, updated.Status.Phase)
 	}
 
-	podReady := findCondition(updated.Status.Conditions, cetirunv1beta1.ConditionPodReady)
+	podReady := findCondition(updated.Status.Conditions, cetirunv1alpha1.ConditionPodReady)
 	if podReady == nil {
 		t.Fatal("expected PodReady condition to be set")
 	}
@@ -954,7 +954,7 @@ func TestReconcile_Suspended_MarksSuspendedPhase(t *testing.T) {
 		t.Errorf("expected PodReady reason=Suspended, got %s", podReady.Reason)
 	}
 
-	ready := findCondition(updated.Status.Conditions, cetirunv1beta1.ConditionReady)
+	ready := findCondition(updated.Status.Conditions, cetirunv1alpha1.ConditionReady)
 	if ready == nil {
 		t.Fatal("expected Ready condition to be set")
 	}
@@ -972,7 +972,7 @@ func TestReconcile_Unsuspend_MarksReady(t *testing.T) {
 	alias := "unsuspend-user"
 
 	// Start with a Suspended instance that now has suspended=false (unsuspending).
-	cr := newCR(alias, cetirunv1beta1.PhaseSuspended, nil, 2, 1, "")
+	cr := newCR(alias, cetirunv1alpha1.PhaseSuspended, nil, 2, 1, "")
 	cr.Spec.Suspended = false
 
 	s := testScheme()
@@ -1005,15 +1005,15 @@ func TestReconcile_Unsuspend_MarksReady(t *testing.T) {
 		t.Errorf("expected RequeueAfter=10m, got %v", result.RequeueAfter)
 	}
 
-	updated := &cetirunv1beta1.Agent{}
+	updated := &cetirunv1alpha1.Agent{}
 	if err := fakeClient.Get(context.Background(), types.NamespacedName{Name: alias}, updated); err != nil {
 		t.Fatalf("failed to get updated CR: %v", err)
 	}
-	if updated.Status.Phase != cetirunv1beta1.PhaseReady {
-		t.Errorf("expected phase=%s, got %s", cetirunv1beta1.PhaseReady, updated.Status.Phase)
+	if updated.Status.Phase != cetirunv1alpha1.PhaseReady {
+		t.Errorf("expected phase=%s, got %s", cetirunv1alpha1.PhaseReady, updated.Status.Phase)
 	}
 
-	ready := findCondition(updated.Status.Conditions, cetirunv1beta1.ConditionReady)
+	ready := findCondition(updated.Status.Conditions, cetirunv1alpha1.ConditionReady)
 	if ready == nil {
 		t.Fatal("expected Ready condition to be set")
 	}
@@ -1032,7 +1032,7 @@ func TestReconcile_SuspendedSkipCache(t *testing.T) {
 	gwHash := computeSecretHash(gwSecretData)
 	opHash := computeOperatorHash("example.com", gwHash, "", "", "", "", "", "", "", "", "")
 
-	cr := newCR(alias, cetirunv1beta1.PhaseSuspended, nil, 1, 1, opHash)
+	cr := newCR(alias, cetirunv1alpha1.PhaseSuspended, nil, 1, 1, opHash)
 
 	s := testScheme()
 	fakeClient := fake.NewClientBuilder().

@@ -23,7 +23,7 @@ A list of user aliases with optional config overrides (displayName, team, email,
    - Operator is running: kubectl get deployment -n cetirun-system
 
 3. Create Agent CRs (max 3 concurrent):
-   apiVersion: cetirun.microsoft.com/v1beta1
+   apiVersion: cetirun.microsoft.com/v1alpha1
    kind: Agent
    metadata:
      name: <alias>

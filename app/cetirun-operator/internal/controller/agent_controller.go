@@ -30,7 +30,7 @@ import (
 	"github.com/go-logr/logr"
 	istiov1beta1 "istio.io/client-go/pkg/apis/networking/v1beta1"
 
-	cetirunv1beta1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1beta1"
+	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 )
 
 // AgentReconciler reconciles Agent objects.
@@ -83,10 +83,10 @@ const gatewaySecretResourceVersionAnnotation = "cetirun.microsoft.com/gateway-se
 func (r *AgentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if err := mgr.GetFieldIndexer().IndexField(
 		context.Background(),
-		&cetirunv1beta1.Agent{},
+		&cetirunv1alpha1.Agent{},
 		instanceTeamIndex,
 		func(obj client.Object) []string {
-			inst, ok := obj.(*cetirunv1beta1.Agent)
+			inst, ok := obj.(*cetirunv1alpha1.Agent)
 			if !ok || inst.Spec.Team == "" {
 				return nil
 			}
@@ -96,9 +96,9 @@ func (r *AgentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		return fmt.Errorf("index instance by spec.team: %w", err)
 	}
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&cetirunv1beta1.Agent{}).
+		For(&cetirunv1alpha1.Agent{}).
 		Watches(
-			&cetirunv1beta1.Team{},
+			&cetirunv1alpha1.Team{},
 			handler.EnqueueRequestsFromMapFunc(r.enqueueInstancesForTeam),
 		).
 		WithOptions(crcontroller.Options{MaxConcurrentReconciles: 4}).
@@ -110,7 +110,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	logger := log.FromContext(ctx).WithValues("name", req.Name)
 
 	// 1. Fetch the CR.
-	instance := &cetirunv1beta1.Agent{}
+	instance := &cetirunv1alpha1.Agent{}
 	if err := r.Get(ctx, req.NamespacedName, instance); err != nil {
 		if errors.IsNotFound(err) {
 			logger.V(1).Info("Agent not found, skipping")
@@ -135,9 +135,9 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	}
 
 	// 3. Ensure finalizer.
-	if !controllerutil.ContainsFinalizer(instance, cetirunv1beta1.Finalizer) {
+	if !controllerutil.ContainsFinalizer(instance, cetirunv1alpha1.Finalizer) {
 		logger.V(1).Info("Adding finalizer", "alias", instance.Spec.User.Alias)
-		controllerutil.AddFinalizer(instance, cetirunv1beta1.Finalizer)
+		controllerutil.AddFinalizer(instance, cetirunv1alpha1.Finalizer)
 		if err := r.Update(ctx, instance); err != nil {
 			return ctrl.Result{}, fmt.Errorf("add finalizer: %w", err)
 		}
@@ -157,9 +157,9 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	}
 
 	// 3b. Resolve Team if referenced.
-	var team *cetirunv1beta1.Team
+	var team *cetirunv1alpha1.Team
 	if instance.Spec.Team != "" {
-		team = &cetirunv1beta1.Team{}
+		team = &cetirunv1alpha1.Team{}
 		if err := r.Get(ctx, types.NamespacedName{Name: instance.Spec.Team}, team); err != nil {
 			if errors.IsNotFound(err) {
 				return r.failWith(ctx, instance,
@@ -178,7 +178,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	// skip cache and trigger a full reconcile with Helm upgrade.
 	gwSecretHash := ""
 	gatewaySecretResourceVersion := ""
-	if instance.Status.Phase == cetirunv1beta1.PhaseReady || instance.Status.Phase == cetirunv1beta1.PhaseSuspended {
+	if instance.Status.Phase == cetirunv1alpha1.PhaseReady || instance.Status.Phase == cetirunv1alpha1.PhaseSuspended {
 		gwSecret := &corev1.Secret{}
 		gwSecretKey := types.NamespacedName{
 			Namespace: instanceNamespace(instance.Name),
@@ -215,14 +215,14 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 			// The canonical native UI route is controller-owned state. Keep it
 			// current even when the instance otherwise qualifies for the lightweight
 			// reconcile path after an operator upgrade.
-			if instance.Status.Phase == cetirunv1beta1.PhaseReady {
+			if instance.Status.Phase == cetirunv1alpha1.PhaseReady {
 				canonicalAccessURL := accessURLPathBased(instance.Name, r.DomainSuffix)
 				if instance.Status.AccessURL != canonicalAccessURL {
 					instance.Status.AccessURL = canonicalAccessURL
 					statusChanged = true
 				}
 			}
-			if instance.Status.Phase == cetirunv1beta1.PhaseSuspended {
+			if instance.Status.Phase == cetirunv1alpha1.PhaseSuspended {
 				vsName := virtualServiceName(instance.Name)
 				nsCheck := instanceNamespace(instance.Name)
 				vs := &istiov1beta1.VirtualService{}
@@ -235,14 +235,14 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 					logger.Error(err, "failed to check VirtualService for suspended instance", "alias", instance.Spec.User.Alias)
 				}
 			} else {
-				prevIngressReady := isConditionTrue(instance.Status.Conditions, cetirunv1beta1.ConditionIngressReady)
+				prevIngressReady := isConditionTrue(instance.Status.Conditions, cetirunv1alpha1.ConditionIngressReady)
 				if err := r.ensureVirtualService(ctx, instance); err != nil {
 					logger.Error(err, "VirtualService update failed (lightweight reconcile)", "alias", instance.Spec.User.Alias)
-					setCondition(&instance.Status.Conditions, cetirunv1beta1.ConditionIngressReady,
+					setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionIngressReady,
 						metav1.ConditionFalse, "VirtualServiceFailed", err.Error())
 					statusChanged = statusChanged || prevIngressReady
 				} else {
-					setCondition(&instance.Status.Conditions, cetirunv1beta1.ConditionIngressReady,
+					setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionIngressReady,
 						metav1.ConditionTrue, "VirtualServiceCreated", "Istio ingress configured")
 					statusChanged = statusChanged || !prevIngressReady
 				}
@@ -260,9 +260,9 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	}
 
 	// 5. Set phase to Provisioning if still Pending (or empty).
-	if instance.Status.Phase == "" || instance.Status.Phase == cetirunv1beta1.PhasePending {
+	if instance.Status.Phase == "" || instance.Status.Phase == cetirunv1alpha1.PhasePending {
 		logger.V(1).Info("Setting phase to Provisioning", "alias", instance.Spec.User.Alias, "currentPhase", instance.Status.Phase)
-		if err := r.setPhase(ctx, instance, cetirunv1beta1.PhaseProvisioning); err != nil {
+		if err := r.setPhase(ctx, instance, cetirunv1alpha1.PhaseProvisioning); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
@@ -273,8 +273,8 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	// will happen. We only set the phase in-memory here; it will be persisted
 	// by the next updateStatus call (after Helm install or on error), avoiding
 	// an extra status write that would trigger a redundant reconcile.
-	if instance.Status.Phase == cetirunv1beta1.PhaseReady || instance.Status.Phase == cetirunv1beta1.PhaseSuspended {
-		instance.Status.Phase = cetirunv1beta1.PhaseProvisioning
+	if instance.Status.Phase == cetirunv1alpha1.PhaseReady || instance.Status.Phase == cetirunv1alpha1.PhaseSuspended {
+		instance.Status.Phase = cetirunv1alpha1.PhaseProvisioning
 	}
 
 	alias := instance.Spec.User.Alias
@@ -303,7 +303,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	logger.V(1).Info("Ensuring gateway token secret", "alias", alias)
 	if err := r.ensureGatewayToken(ctx, instance); err != nil {
 		logger.Error(err, "failed to ensure gateway token", "alias", alias)
-		setCondition(&instance.Status.Conditions, cetirunv1beta1.ConditionReady,
+		setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionReady,
 			metav1.ConditionFalse, "GatewayTokenError", err.Error())
 		_ = r.updateStatus(ctx, instance)
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
@@ -315,16 +315,16 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	// to find TAILSCALE_AUTH_KEY via its secretKeyRef.
 	if err := r.ensureTailscaleAuthKey(ctx, instance); err != nil {
 		logger.Error(err, "failed to ensure Tailscale auth key", "alias", alias)
-		setCondition(&instance.Status.Conditions, cetirunv1beta1.ConditionTailscaleReady,
+		setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionTailscaleReady,
 			metav1.ConditionFalse, "TailscaleAuthKeyFailed", err.Error())
 		_ = r.updateStatus(ctx, instance)
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 	if instance.Spec.Tailscale != nil {
-		setCondition(&instance.Status.Conditions, cetirunv1beta1.ConditionTailscaleReady,
+		setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionTailscaleReady,
 			metav1.ConditionTrue, "TailscaleAuthKeyReady", "Tailscale auth key written to gateway Secret")
 	} else {
-		setCondition(&instance.Status.Conditions, cetirunv1beta1.ConditionTailscaleReady,
+		setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionTailscaleReady,
 			metav1.ConditionFalse, "TailscaleDisabled", "Tailscale is not configured")
 	}
 
@@ -367,7 +367,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 			gatewaySecretResourceVersion = gwSecret.ResourceVersion
 		}
 	}
-	alreadyDeployed := isConditionTrue(instance.Status.Conditions, cetirunv1beta1.ConditionHelmDeployed) &&
+	alreadyDeployed := isConditionTrue(instance.Status.Conditions, cetirunv1alpha1.ConditionHelmDeployed) &&
 		instance.Status.ObservedGeneration == instance.Generation &&
 		instance.Status.ObservedOperatorHash == r.configHash(instance, team, gwSecretHash, teamResourceVersion(team))
 	helmValues, err := buildHelmValues(instance, team, r.DomainSuffix, r.SkillsStorageAccount, r.CetiRunHelmValues, r.ChartRegistry, r.DefaultModel)
@@ -387,13 +387,13 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		logger.Info("Installing/upgrading Helm chart", "release", releaseName, "namespace", ns)
 		if err := r.HelmClient.InstallOrUpgrade(ns, releaseName, helmValues, instance.Spec.Helm.Version); err != nil {
 			logger.Error(err, "Helm install/upgrade failed", "release", releaseName)
-			setCondition(&instance.Status.Conditions, cetirunv1beta1.ConditionHelmDeployed,
+			setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionHelmDeployed,
 				metav1.ConditionFalse, "HelmInstallFailed", err.Error())
 			_ = r.updateStatus(ctx, instance)
 			return ctrl.Result{RequeueAfter: 60 * time.Second}, err
 		}
 		logger.Info("Helm chart installed/upgraded successfully", "release", releaseName)
-		setCondition(&instance.Status.Conditions, cetirunv1beta1.ConditionHelmDeployed,
+		setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionHelmDeployed,
 			metav1.ConditionTrue, "ChartInstalled", "Helm chart successfully installed")
 		// Record generation and operator hash immediately so that subsequent reconciles
 		// (e.g. while polling for pod readiness) can skip the Helm install.
@@ -431,10 +431,10 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 			}
 		}
 		if vsDeleteErr != nil {
-			setCondition(&instance.Status.Conditions, cetirunv1beta1.ConditionIngressReady,
+			setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionIngressReady,
 				metav1.ConditionFalse, "SuspendIngressRemovalFailed",
 				fmt.Sprintf("Failed to remove VirtualService %q: %v", vsName, vsDeleteErr))
-			setCondition(&instance.Status.Conditions, cetirunv1beta1.ConditionReady,
+			setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionReady,
 				metav1.ConditionFalse, "SuspendIngressRemovalFailed",
 				"Instance suspend waiting for ingress removal to succeed")
 			now := metav1.Now()
@@ -447,14 +447,14 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 			}
 			return ctrl.Result{RequeueAfter: 30 * time.Second}, vsDeleteErr
 		}
-		setCondition(&instance.Status.Conditions, cetirunv1beta1.ConditionIngressReady,
+		setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionIngressReady,
 			metav1.ConditionFalse, "Suspended", "Ingress removed — instance is suspended")
-		setCondition(&instance.Status.Conditions, cetirunv1beta1.ConditionPodReady,
+		setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionPodReady,
 			metav1.ConditionFalse, "Suspended", "Pod scaled to zero — instance is suspended")
-		setCondition(&instance.Status.Conditions, cetirunv1beta1.ConditionReady,
+		setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionReady,
 			metav1.ConditionFalse, "InstanceSuspended", "Instance is suspended")
 		now := metav1.Now()
-		instance.Status.Phase = cetirunv1beta1.PhaseSuspended
+		instance.Status.Phase = cetirunv1alpha1.PhaseSuspended
 		instance.Status.Namespace = ns
 		instance.Status.HelmReleaseName = releaseName
 		instance.Status.LastReconcileTime = &now
@@ -478,11 +478,11 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	logger.V(1).Info("Ensuring VirtualService", "alias", alias)
 	if err := r.ensureVirtualService(ctx, instance); err != nil {
 		logger.Error(err, "VirtualService creation/update failed (best-effort)", "alias", alias)
-		setCondition(&instance.Status.Conditions, cetirunv1beta1.ConditionIngressReady,
+		setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionIngressReady,
 			metav1.ConditionFalse, "VirtualServiceFailed", err.Error())
 	} else {
 		logger.V(1).Info("VirtualService ensured", "alias", alias)
-		setCondition(&instance.Status.Conditions, cetirunv1beta1.ConditionIngressReady,
+		setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionIngressReady,
 			metav1.ConditionTrue, "VirtualServiceCreated", "Istio ingress configured")
 		r.EventRecorder.Eventf(instance, corev1.EventTypeNormal, "IngressConfigured",
 			"Istio VirtualService created, instance accessible at %s", accessURLPathBased(instance.Name, r.DomainSuffix))
@@ -495,17 +495,17 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	if err := r.Get(ctx, stsKey, sts); err != nil {
 		if errors.IsNotFound(err) {
 			logger.Info("StatefulSet not found yet, requeueing", "name", stsName, "namespace", ns)
-			setCondition(&instance.Status.Conditions, cetirunv1beta1.ConditionPodReady,
+			setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionPodReady,
 				metav1.ConditionFalse, "StatefulSetNotFound", fmt.Sprintf("StatefulSet %s not found", stsName))
-			setCondition(&instance.Status.Conditions, cetirunv1beta1.ConditionReady,
+			setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionReady,
 				metav1.ConditionFalse, "PodNotReady", "StatefulSet not found")
 			_ = r.updateStatus(ctx, instance)
 			return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
 		}
 		logger.Error(err, "Failed to get StatefulSet", "name", stsName, "namespace", ns)
-		setCondition(&instance.Status.Conditions, cetirunv1beta1.ConditionPodReady,
+		setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionPodReady,
 			metav1.ConditionFalse, "StatefulSetGetFailed", fmt.Sprintf("Failed to get StatefulSet %s: %v", stsName, err))
-		setCondition(&instance.Status.Conditions, cetirunv1beta1.ConditionReady,
+		setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionReady,
 			metav1.ConditionFalse, "PodNotReady", "Failed to get StatefulSet")
 		_ = r.updateStatus(ctx, instance)
 		return ctrl.Result{}, err
@@ -526,28 +526,28 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 			"desiredReplicas", desiredReplicas,
 			"stsGeneration", sts.Generation,
 			"stsObservedGeneration", sts.Status.ObservedGeneration)
-		setCondition(&instance.Status.Conditions, cetirunv1beta1.ConditionPodReady,
+		setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionPodReady,
 			metav1.ConditionFalse, "PodNotReady",
 			fmt.Sprintf("Waiting for rollout (ready: %d, updated: %d, desired: %d)",
 				sts.Status.ReadyReplicas, sts.Status.UpdatedReplicas, desiredReplicas))
-		setCondition(&instance.Status.Conditions, cetirunv1beta1.ConditionReady,
+		setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionReady,
 			metav1.ConditionFalse, "PodNotReady", "StatefulSet rollout not complete")
-		instance.Status.Phase = cetirunv1beta1.PhaseProvisioning
+		instance.Status.Phase = cetirunv1alpha1.PhaseProvisioning
 		_ = r.updateStatus(ctx, instance)
 		return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
 	}
 
-	setCondition(&instance.Status.Conditions, cetirunv1beta1.ConditionPodReady,
+	setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionPodReady,
 		metav1.ConditionTrue, "PodReady", "StatefulSet pod is running and ready")
 
 	// 12. Mark Ready.
 	now := metav1.Now()
-	instance.Status.Phase = cetirunv1beta1.PhaseReady
+	instance.Status.Phase = cetirunv1alpha1.PhaseReady
 	instance.Status.AccessURL = accessURLPathBased(instance.Name, r.DomainSuffix)
 	instance.Status.Namespace = ns
 	instance.Status.HelmReleaseName = releaseName
 	instance.Status.LastReconcileTime = &now
-	setCondition(&instance.Status.Conditions, cetirunv1beta1.ConditionReady,
+	setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionReady,
 		metav1.ConditionTrue, "InstanceReady", "Instance is fully operational")
 	if err := r.updateStatus(ctx, instance); err != nil {
 		logger.Error(err, "Failed to update status to Ready", "alias", alias)
@@ -564,11 +564,11 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 }
 
 // handleDelete performs cleanup and removes the finalizer.
-func (r *AgentReconciler) handleDelete(ctx context.Context, instance *cetirunv1beta1.Agent) (ctrl.Result, error) {
+func (r *AgentReconciler) handleDelete(ctx context.Context, instance *cetirunv1alpha1.Agent) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 	alias := instance.Spec.User.Alias
 
-	if !controllerutil.ContainsFinalizer(instance, cetirunv1beta1.Finalizer) {
+	if !controllerutil.ContainsFinalizer(instance, cetirunv1alpha1.Finalizer) {
 		return ctrl.Result{}, nil
 	}
 
@@ -576,7 +576,7 @@ func (r *AgentReconciler) handleDelete(ctx context.Context, instance *cetirunv1b
 	r.EventRecorder.Eventf(instance, corev1.EventTypeNormal, "InstanceDeleting",
 		"Starting cleanup for instance %s", alias)
 
-	if err := r.setPhase(ctx, instance, cetirunv1beta1.PhaseDeleting); err != nil {
+	if err := r.setPhase(ctx, instance, cetirunv1alpha1.PhaseDeleting); err != nil {
 		logger.Error(err, "failed to set phase Deleting")
 	}
 
@@ -633,7 +633,7 @@ func (r *AgentReconciler) handleDelete(ctx context.Context, instance *cetirunv1b
 	}
 
 	// Remove finalizer.
-	controllerutil.RemoveFinalizer(instance, cetirunv1beta1.Finalizer)
+	controllerutil.RemoveFinalizer(instance, cetirunv1alpha1.Finalizer)
 	logger.V(1).Info("Removing finalizer", "alias", alias)
 	if err := r.Update(ctx, instance); err != nil {
 		if errors.IsNotFound(err) {
@@ -885,7 +885,7 @@ func (r *AgentReconciler) ensureNamespace(ctx context.Context, ns, alias string)
 
 // ensureGatewayToken creates the gateway token Secret if it doesn't exist,
 // and ensures MSTEAMS credential keys are populated when spec.msteams is configured.
-func (r *AgentReconciler) ensureGatewayToken(ctx context.Context, instance *cetirunv1beta1.Agent) error {
+func (r *AgentReconciler) ensureGatewayToken(ctx context.Context, instance *cetirunv1alpha1.Agent) error {
 	logger := log.FromContext(ctx)
 	alias := instance.Spec.User.Alias
 	ns := instanceNamespace(instance.Name)
@@ -927,7 +927,7 @@ func (r *AgentReconciler) ensureGatewayToken(ctx context.Context, instance *ceti
 			"CETIRUN_AUTH_KEY":       []byte(authKey),
 		},
 	}
-	if instance.Spec.AgentType == cetirunv1beta1.AgentTypeHermes {
+	if instance.Spec.AgentType == cetirunv1alpha1.AgentTypeHermes {
 		apiKey, err := generateRandomToken(32)
 		if err != nil {
 			return err
@@ -959,7 +959,7 @@ func (r *AgentReconciler) ensureGatewayToken(ctx context.Context, instance *ceti
 	return nil
 }
 
-func (r *AgentReconciler) ensureExistingGatewayToken(ctx context.Context, logger logr.Logger, instance *cetirunv1beta1.Agent, secret *corev1.Secret) error {
+func (r *AgentReconciler) ensureExistingGatewayToken(ctx context.Context, logger logr.Logger, instance *cetirunv1alpha1.Agent, secret *corev1.Secret) error {
 	if err := r.ensureCetiRunAuthKey(ctx, logger, secret); err != nil {
 		return err
 	}
@@ -992,8 +992,8 @@ func (r *AgentReconciler) ensureCetiRunAuthKey(ctx context.Context, logger logr.
 
 // ensureHermesSecretKeys patches the gateway-token Secret with API_SERVER_KEY and hermes.env
 // when a Hermes instance uses an operator-managed existingSecret.
-func (r *AgentReconciler) ensureHermesSecretKeys(ctx context.Context, logger logr.Logger, secret *corev1.Secret, instance *cetirunv1beta1.Agent) error {
-	if instance.Spec.AgentType != cetirunv1beta1.AgentTypeHermes {
+func (r *AgentReconciler) ensureHermesSecretKeys(ctx context.Context, logger logr.Logger, secret *corev1.Secret, instance *cetirunv1alpha1.Agent) error {
+	if instance.Spec.AgentType != cetirunv1alpha1.AgentTypeHermes {
 		return nil
 	}
 	if secret.Data == nil {
@@ -1084,7 +1084,7 @@ func secretEnvValue(data map[string][]byte, key string) string {
 
 // ensureMSTeamsSecretKeys patches the gateway-token Secret with MSTEAMS_APP_ID and
 // MSTEAMS_TENANT_ID when Teams is enabled and the values differ or are missing.
-func (r *AgentReconciler) ensureMSTeamsSecretKeys(ctx context.Context, logger logr.Logger, secret *corev1.Secret, instance *cetirunv1beta1.Agent) error {
+func (r *AgentReconciler) ensureMSTeamsSecretKeys(ctx context.Context, logger logr.Logger, secret *corev1.Secret, instance *cetirunv1alpha1.Agent) error {
 	if instance.Spec.MSTeams == nil || !instance.Spec.MSTeams.Enabled {
 		return nil
 	}
@@ -1112,7 +1112,7 @@ func (r *AgentReconciler) ensureMSTeamsSecretKeys(ctx context.Context, logger lo
 }
 
 // ensureVirtualService creates or updates the Istio VirtualService for this instance.
-func (r *AgentReconciler) ensureVirtualService(ctx context.Context, instance *cetirunv1beta1.Agent) error {
+func (r *AgentReconciler) ensureVirtualService(ctx context.Context, instance *cetirunv1alpha1.Agent) error {
 	logger := log.FromContext(ctx)
 	desired := buildVirtualService(instance, r.DomainSuffix, r.IstioGateway)
 	vsName := virtualServiceName(instance.Name)
@@ -1146,7 +1146,7 @@ func (r *AgentReconciler) ensureVirtualService(ctx context.Context, instance *ce
 
 // rejectReservedUIInstance removes the externally routable VirtualService for
 // an instance whose name conflicts with the native /ui/<instance>/ namespace.
-func (r *AgentReconciler) rejectReservedUIInstance(ctx context.Context, instance *cetirunv1beta1.Agent) (ctrl.Result, error) {
+func (r *AgentReconciler) rejectReservedUIInstance(ctx context.Context, instance *cetirunv1alpha1.Agent) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 	vsName := virtualServiceName(instance.Name)
 	vs := &istiov1beta1.VirtualService{}
@@ -1170,7 +1170,7 @@ func (r *AgentReconciler) rejectReservedUIInstance(ctx context.Context, instance
 // The chart's Secret template is skipped when secrets.existingSecret is set, so
 // we must write TAILSCALE_AUTH_KEY directly into the gateway token Secret.
 // No-op if spec.Tailscale is nil.
-func (r *AgentReconciler) ensureTailscaleAuthKey(ctx context.Context, instance *cetirunv1beta1.Agent) error {
+func (r *AgentReconciler) ensureTailscaleAuthKey(ctx context.Context, instance *cetirunv1alpha1.Agent) error {
 	ns := instanceNamespace(instance.Name)
 	gwSecretName := instance.Spec.GatewayTokenSecretRef
 
@@ -1183,10 +1183,10 @@ func (r *AgentReconciler) ensureTailscaleAuthKey(ctx context.Context, instance *
 			}
 			return fmt.Errorf("get gateway secret %s/%s: %w", ns, gwSecretName, err)
 		}
-		if _, exists := gwSecret.Data[cetirunv1beta1.TailscaleAuthKeyField]; exists {
-			delete(gwSecret.Data, cetirunv1beta1.TailscaleAuthKeyField)
+		if _, exists := gwSecret.Data[cetirunv1alpha1.TailscaleAuthKeyField]; exists {
+			delete(gwSecret.Data, cetirunv1alpha1.TailscaleAuthKeyField)
 			if err := r.Update(ctx, gwSecret); err != nil {
-				return fmt.Errorf("remove %s from gateway secret: %w", cetirunv1beta1.TailscaleAuthKeyField, err)
+				return fmt.Errorf("remove %s from gateway secret: %w", cetirunv1alpha1.TailscaleAuthKeyField, err)
 			}
 		}
 		return nil
@@ -1198,9 +1198,9 @@ func (r *AgentReconciler) ensureTailscaleAuthKey(ctx context.Context, instance *
 	if err := r.Get(ctx, types.NamespacedName{Namespace: ns, Name: tsSecretName}, tsSecret); err != nil {
 		return fmt.Errorf("get Tailscale auth key secret %s/%s: %w", ns, tsSecretName, err)
 	}
-	authKey, ok := tsSecret.Data[cetirunv1beta1.TailscaleAuthKeyField]
+	authKey, ok := tsSecret.Data[cetirunv1alpha1.TailscaleAuthKeyField]
 	if !ok || len(authKey) == 0 {
-		return fmt.Errorf("secret %s/%s missing or empty key %q", ns, tsSecretName, cetirunv1beta1.TailscaleAuthKeyField)
+		return fmt.Errorf("secret %s/%s missing or empty key %q", ns, tsSecretName, cetirunv1alpha1.TailscaleAuthKeyField)
 	}
 
 	// Patch the auth key into the gateway token Secret.
@@ -1211,23 +1211,23 @@ func (r *AgentReconciler) ensureTailscaleAuthKey(ctx context.Context, instance *
 	if gwSecret.Data == nil {
 		gwSecret.Data = make(map[string][]byte)
 	}
-	if string(gwSecret.Data[cetirunv1beta1.TailscaleAuthKeyField]) != string(authKey) {
-		gwSecret.Data[cetirunv1beta1.TailscaleAuthKeyField] = authKey
+	if string(gwSecret.Data[cetirunv1alpha1.TailscaleAuthKeyField]) != string(authKey) {
+		gwSecret.Data[cetirunv1alpha1.TailscaleAuthKeyField] = authKey
 		if err := r.Update(ctx, gwSecret); err != nil {
-			return fmt.Errorf("patch %s into gateway secret: %w", cetirunv1beta1.TailscaleAuthKeyField, err)
+			return fmt.Errorf("patch %s into gateway secret: %w", cetirunv1alpha1.TailscaleAuthKeyField, err)
 		}
 	}
 	return nil
 }
 
 // setPhase updates only the Phase field in the CR status.
-func (r *AgentReconciler) setPhase(ctx context.Context, instance *cetirunv1beta1.Agent, phase string) error {
+func (r *AgentReconciler) setPhase(ctx context.Context, instance *cetirunv1alpha1.Agent, phase string) error {
 	instance.Status.Phase = phase
 	return r.updateStatus(ctx, instance)
 }
 
 // updateStatus patches the CR status sub-resource.
-func (r *AgentReconciler) updateStatus(ctx context.Context, instance *cetirunv1beta1.Agent) error {
+func (r *AgentReconciler) updateStatus(ctx context.Context, instance *cetirunv1alpha1.Agent) error {
 	if err := r.Status().Update(ctx, instance); err != nil {
 		return fmt.Errorf("update status: %w", err)
 	}
@@ -1239,9 +1239,9 @@ func (r *AgentReconciler) updateStatus(ctx context.Context, instance *cetirunv1b
 // and instead use exponential back-off. For now this is acceptable (back-off is still retried).
 // If precise retry intervals are needed, change the return to (ctrl.Result{RequeueAfter: ...}, nil)
 // and log the error explicitly.
-func (r *AgentReconciler) failWith(ctx context.Context, instance *cetirunv1beta1.Agent, reason, message string) (ctrl.Result, error) {
-	instance.Status.Phase = cetirunv1beta1.PhaseFailed
-	setCondition(&instance.Status.Conditions, cetirunv1beta1.ConditionReady,
+func (r *AgentReconciler) failWith(ctx context.Context, instance *cetirunv1alpha1.Agent, reason, message string) (ctrl.Result, error) {
+	instance.Status.Phase = cetirunv1alpha1.PhaseFailed
+	setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionReady,
 		metav1.ConditionFalse, reason, message)
 	_ = r.updateStatus(ctx, instance)
 	r.EventRecorder.Event(instance, corev1.EventTypeWarning, reason, message)
@@ -1251,11 +1251,11 @@ func (r *AgentReconciler) failWith(ctx context.Context, instance *cetirunv1beta1
 // enqueueInstancesForTeam maps an Team event to reconcile requests for
 // all Agents that reference the team via spec.team.
 func (r *AgentReconciler) enqueueInstancesForTeam(ctx context.Context, obj client.Object) []reconcile.Request {
-	team, ok := obj.(*cetirunv1beta1.Team)
+	team, ok := obj.(*cetirunv1alpha1.Team)
 	if !ok {
 		return nil
 	}
-	list := &cetirunv1beta1.AgentList{}
+	list := &cetirunv1alpha1.AgentList{}
 	if err := r.List(ctx, list, client.MatchingFields{instanceTeamIndex: team.Name}); err != nil {
 		log.FromContext(ctx).Error(err, "failed to list instances for team watch", "team", team.Name)
 		return nil

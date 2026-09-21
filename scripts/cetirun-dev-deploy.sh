@@ -99,7 +99,7 @@ fi
 echo ""
 echo "==> Applying Agent for ${ALIAS}"
 cat <<EOF | kubectl apply -f -
-apiVersion: cetirun.microsoft.com/v1beta1
+apiVersion: cetirun.microsoft.com/v1alpha1
 kind: Agent
 metadata:
   name: ${ALIAS}

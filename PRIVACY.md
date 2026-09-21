@@ -33,7 +33,7 @@ reviewing them.
 Source: [portal claims](app/cetirun-portal/internal/auth/claims.go),
 [authentication middleware](app/cetirun-portal/internal/auth/middleware.go),
 [instance handlers](app/cetirun-portal/internal/handler/instance.go),
-[instance API types](app/cetirun-operator/api/v1beta1/agent_types.go),
+[instance API types](app/cetirun-operator/api/v1alpha1/agent_types.go),
 [agent configuration templates](app/cetirun-chart/templates/_agent-openclaw.tpl),
 and [Hermes configuration templates](app/cetirun-chart/templates/_agent-hermes.tpl).
 

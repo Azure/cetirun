@@ -1,7 +1,7 @@
 # cetirun-operator
 
 Kubernetes operator that manages long-lived OpenClaw and Hermes agents via
-`Agent` and `Team` resources in `cetirun.microsoft.com/v1beta1`.
+`Agent` and `Team` resources in `cetirun.microsoft.com/v1alpha1`.
 
 ## API contract
 
@@ -15,8 +15,9 @@ execution. A Team supplies common configuration and skills, not shared access
 to members' private data. Pod replacement does not create a new Agent.
 
 This API replaces `OpenClawInstance` and `OpenClawTeam` in
-`cetirun.microsoft.com/v1alpha1`. It is a breaking resource-name and API-version
-change, not an in-place conversion or an existing-cluster upgrade procedure.
+`cetirun.microsoft.com/v1alpha1`, retaining the same API group and version.
+It is a breaking resource-name change, not an in-place conversion or an
+existing-cluster upgrade procedure.
 The operator and Portal register only the new API. Installing the new CRDs
 does not convert, adopt, or delete old objects.
 
@@ -44,7 +45,7 @@ namespace/release naming and PVC behavior. It does not implement the separate
 
 ```
 cetirun-operator/
-├── api/v1beta1/  # Agent and Team API types and generated DeepCopy methods
+├── api/v1alpha1/  # Agent and Team API types and generated DeepCopy methods
 ├── cmd/          # Main entry point
 ├── internal/     # Reconciler logic
 ├── chart/        # Helm chart for deploying the operator to cetirun-system namespace

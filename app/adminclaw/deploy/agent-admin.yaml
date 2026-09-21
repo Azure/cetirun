@@ -10,7 +10,7 @@
 #   - ServiceAccount openclaw-admin-cetirun (via deploy/rbac.yaml)
 #   - ClusterRole/ClusterRoleBinding adminclaw-admin (via deploy/rbac.yaml)
 #   - Secret gateway-token with OPENCLAW_GATEWAY_TOKEN + MODEL_API_KEY (via setup.sh)
-apiVersion: cetirun.microsoft.com/v1beta1
+apiVersion: cetirun.microsoft.com/v1alpha1
 kind: Agent
 metadata:
   name: admin

@@ -8,7 +8,7 @@
 #   kubectl create secret generic gateway-token -n cetirun-bob --from-literal=OPENCLAW_GATEWAY_TOKEN="<token>"
 
 ---
-apiVersion: cetirun.microsoft.com/v1beta1
+apiVersion: cetirun.microsoft.com/v1alpha1
 kind: Team
 metadata:
   name: platform
@@ -26,7 +26,7 @@ spec:
 
 ---
 # Instance A: inherits all team skills, no customization
-apiVersion: cetirun.microsoft.com/v1beta1
+apiVersion: cetirun.microsoft.com/v1alpha1
 kind: Agent
 metadata:
   name: alice
@@ -49,7 +49,7 @@ spec:
 
 ---
 # Instance B: adds a personal skill, opts out of the shared PVC
-apiVersion: cetirun.microsoft.com/v1beta1
+apiVersion: cetirun.microsoft.com/v1alpha1
 kind: Agent
 metadata:
   name: bob

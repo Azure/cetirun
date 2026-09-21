@@ -18,7 +18,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
-	cetirunv1beta1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1beta1"
+	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/azure"
 )
 
@@ -32,13 +32,13 @@ import (
 //
 // When auto-provisioning fails and no spec.msteams.appId is provided,
 // the status is set to PendingAppRegistration.
-func (r *AgentReconciler) reconcileTeams(ctx context.Context, instance *cetirunv1beta1.Agent) error {
+func (r *AgentReconciler) reconcileTeams(ctx context.Context, instance *cetirunv1alpha1.Agent) error {
 	if instance.Spec.MSTeams == nil || !instance.Spec.MSTeams.Enabled {
 		// Teams disabled — clean up Azure resources and clear status if previously provisioned.
 		if instance.Status.MSTeams != nil {
 			r.deleteTeams(ctx, instance)
 			instance.Status.MSTeams = nil
-			setCondition(&instance.Status.Conditions, cetirunv1beta1.ConditionTeamsReady,
+			setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionTeamsReady,
 				metav1.ConditionFalse, "TeamsDisabled", "Teams integration is not enabled")
 		}
 		return nil
@@ -71,7 +71,7 @@ func (r *AgentReconciler) reconcileTeams(ctx context.Context, instance *cetirunv
 	// resolved appID and tenantID still match the current desired values so
 	// that spec changes (which bump CR generation and miss the skip-cache)
 	// correctly flow through to EnsureBotService.
-	if status := instance.Status.MSTeams; status != nil && status.State == cetirunv1beta1.TeamsStateReady &&
+	if status := instance.Status.MSTeams; status != nil && status.State == cetirunv1alpha1.TeamsStateReady &&
 		status.AppID != "" && status.BotResourceID != "" &&
 		status.AppID == resolveDesiredAppID(instance) {
 		logger.V(1).Info("Teams already provisioned, skipping Azure API calls",
@@ -81,10 +81,10 @@ func (r *AgentReconciler) reconcileTeams(ctx context.Context, instance *cetirunv
 
 	// Initialize status if needed.
 	if instance.Status.MSTeams == nil {
-		instance.Status.MSTeams = &cetirunv1beta1.MSTeamsStatus{}
+		instance.Status.MSTeams = &cetirunv1alpha1.MSTeamsStatus{}
 	}
 	status := instance.Status.MSTeams
-	status.State = cetirunv1beta1.TeamsStateProvisioning
+	status.State = cetirunv1alpha1.TeamsStateProvisioning
 
 	// Create Azure clients.
 	cred, err := r.getAzureCredential()
@@ -132,7 +132,7 @@ func (r *AgentReconciler) reconcileTeams(ctx context.Context, instance *cetirunv
 		if r.AzureOIDCIssuerURL == "" {
 			status.State = "Pending"
 			status.Message = "Waiting for Azure OIDC issuer URL before creating Federated Identity Credential"
-			setCondition(&instance.Status.Conditions, cetirunv1beta1.ConditionTeamsReady,
+			setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionTeamsReady,
 				metav1.ConditionFalse, "FICPending", status.Message)
 			err := fmt.Errorf("azure OIDC issuer URL is not configured; cannot create Federated Identity Credential for app %s", appObjectID)
 			logger.Error(err, "Missing OIDC issuer URL for FIC", "app", appObjectID)
@@ -141,9 +141,9 @@ func (r *AgentReconciler) reconcileTeams(ctx context.Context, instance *cetirunv
 		}
 
 		if err := r.ensureFIC(ctx, graphClient, appObjectID, tenantID, ficSubject, logger); err != nil {
-			status.State = cetirunv1beta1.TeamsStateFailed
+			status.State = cetirunv1alpha1.TeamsStateFailed
 			status.Message = fmt.Sprintf("FIC creation failed: %v", err)
-			setCondition(&instance.Status.Conditions, cetirunv1beta1.ConditionTeamsReady,
+			setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionTeamsReady,
 				metav1.ConditionFalse, "FICFailed", status.Message)
 			logger.Error(err, "Failed to ensure FIC", "app", appObjectID)
 			r.EventRecorder.Eventf(instance, corev1.EventTypeWarning, "FICFailed",
@@ -167,26 +167,26 @@ func (r *AgentReconciler) reconcileTeams(ctx context.Context, instance *cetirunv
 	// ── Step D: Ensure Bot Service + Teams Channel ──
 	botResourceID, err := botClient.EnsureBotService(ctx, r.AzureResourceGroup, botName, endpoint, appID, tenantID)
 	if err != nil {
-		status.State = cetirunv1beta1.TeamsStateFailed
+		status.State = cetirunv1alpha1.TeamsStateFailed
 		status.Message = fmt.Sprintf("Bot Service creation failed: %v", err)
-		setCondition(&instance.Status.Conditions, cetirunv1beta1.ConditionTeamsReady,
+		setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionTeamsReady,
 			metav1.ConditionFalse, "TeamsProvisioningFailed", status.Message)
 		return fmt.Errorf("ensure bot service: %w", err)
 	}
 	status.BotResourceID = botResourceID
 
 	if err := botClient.EnsureTeamsChannel(ctx, r.AzureResourceGroup, botName); err != nil {
-		status.State = cetirunv1beta1.TeamsStateFailed
+		status.State = cetirunv1alpha1.TeamsStateFailed
 		status.Message = fmt.Sprintf("Teams channel creation failed: %v", err)
-		setCondition(&instance.Status.Conditions, cetirunv1beta1.ConditionTeamsReady,
+		setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionTeamsReady,
 			metav1.ConditionFalse, "TeamsProvisioningFailed", status.Message)
 		return fmt.Errorf("ensure teams channel: %w", err)
 	}
 
 	// ── Step E: Update status → Ready ──
-	status.State = cetirunv1beta1.TeamsStateReady
+	status.State = cetirunv1alpha1.TeamsStateReady
 	status.Message = "AAD app, Bot Service, and Teams channel provisioned"
-	setCondition(&instance.Status.Conditions, cetirunv1beta1.ConditionTeamsReady,
+	setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionTeamsReady,
 		metav1.ConditionTrue, "TeamsProvisioned", status.Message)
 
 	// Clean up orphaned AAD apps now that the full pipeline succeeded.
@@ -220,7 +220,7 @@ func (r *AgentReconciler) reconcileTeams(ctx context.Context, instance *cetirunv
 //	A5. Nothing → PendingAppRegistration
 //
 // Returns (appID, appObjectID, error). If PendingAppRegistration, returns ("", "", nil).
-func (r *AgentReconciler) resolveAADApp(ctx context.Context, graphClient *azure.GraphClient, instance *cetirunv1beta1.Agent, botName string, logger logr.Logger) (string, string, error) {
+func (r *AgentReconciler) resolveAADApp(ctx context.Context, graphClient *azure.GraphClient, instance *cetirunv1alpha1.Agent, botName string, logger logr.Logger) (string, string, error) {
 	status := instance.Status.MSTeams
 
 	// A1: Check cached appObjectId in status.
@@ -317,13 +317,13 @@ func (r *AgentReconciler) cleanupOrphanedApps(ctx context.Context, graphClient *
 }
 
 // teamsSetPending sets the Teams status to PendingAppRegistration.
-func (r *AgentReconciler) teamsSetPending(instance *cetirunv1beta1.Agent, message string) error {
+func (r *AgentReconciler) teamsSetPending(instance *cetirunv1alpha1.Agent, message string) error {
 	if instance.Status.MSTeams == nil {
-		instance.Status.MSTeams = &cetirunv1beta1.MSTeamsStatus{}
+		instance.Status.MSTeams = &cetirunv1alpha1.MSTeamsStatus{}
 	}
-	instance.Status.MSTeams.State = cetirunv1beta1.TeamsStatePendingAppRegistration
+	instance.Status.MSTeams.State = cetirunv1alpha1.TeamsStatePendingAppRegistration
 	instance.Status.MSTeams.Message = message
-	setCondition(&instance.Status.Conditions, cetirunv1beta1.ConditionTeamsReady,
+	setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionTeamsReady,
 		metav1.ConditionFalse, "PendingAppRegistration", message)
 	return nil // not an error — caller should return nil to avoid requeue
 }
@@ -405,7 +405,7 @@ func (r *AgentReconciler) ensureServicePrincipal(ctx context.Context, graphClien
 }
 
 // updateTeamsSecretKeys updates the gateway secret with the resolved Teams credentials.
-func (r *AgentReconciler) updateTeamsSecretKeys(ctx context.Context, instance *cetirunv1beta1.Agent, appID, tenantID string) error {
+func (r *AgentReconciler) updateTeamsSecretKeys(ctx context.Context, instance *cetirunv1alpha1.Agent, appID, tenantID string) error {
 	ns := instanceNamespace(instance.Name)
 	secretName := instance.Spec.GatewayTokenSecretRef
 
@@ -435,7 +435,7 @@ func (r *AgentReconciler) updateTeamsSecretKeys(ctx context.Context, instance *c
 
 // deleteTeams performs best-effort cleanup of all Teams-related Azure resources.
 // 404 errors are ignored; other errors are logged but never block CR deletion.
-func (r *AgentReconciler) deleteTeams(ctx context.Context, instance *cetirunv1beta1.Agent) {
+func (r *AgentReconciler) deleteTeams(ctx context.Context, instance *cetirunv1alpha1.Agent) {
 	if instance.Status.MSTeams == nil {
 		return
 	}
@@ -516,7 +516,7 @@ func (r *AgentReconciler) deleteTeams(ctx context.Context, instance *cetirunv1be
 // resolveDesiredAppID returns the app ID that the operator would use for this
 // instance: status.AppID (auto-provisioned) takes precedence over spec.AppID.
 // Used by the short-circuit check to detect when the desired app ID has changed.
-func resolveDesiredAppID(instance *cetirunv1beta1.Agent) string {
+func resolveDesiredAppID(instance *cetirunv1alpha1.Agent) string {
 	if instance.Status.MSTeams != nil && instance.Status.MSTeams.AppID != "" {
 		return instance.Status.MSTeams.AppID
 	}
@@ -535,7 +535,7 @@ func resolveDesiredAppID(instance *cetirunv1beta1.Agent) string {
 // (defaults / memberContext / skills / skillStorage) invalidate the cache so
 // the watch-driven re-enqueue actually re-runs buildHelmValues with the new
 // team data instead of being short-circuited.
-func (r *AgentReconciler) configHash(instance *cetirunv1beta1.Agent, team *cetirunv1beta1.Team, gwSecretHash, teamRV string) string {
+func (r *AgentReconciler) configHash(instance *cetirunv1alpha1.Agent, team *cetirunv1alpha1.Team, gwSecretHash, teamRV string) string {
 	config := []string{
 		r.AzureSubscriptionID, r.AzureResourceGroup, r.AzureBotNamePrefix,
 		r.AzureTenantID, r.AzureOIDCIssuerURL,
@@ -557,7 +557,7 @@ func (r *AgentReconciler) configHash(instance *cetirunv1beta1.Agent, team *cetir
 // usesDeploymentDefaultModel reports whether buildHelmValues will render the
 // operator's default model. Keep the provider precedence in sync with that
 // function: operator Helm values, then the team, then instance Helm values.
-func (r *AgentReconciler) usesDeploymentDefaultModel(instance *cetirunv1beta1.Agent, team *cetirunv1beta1.Team) bool {
+func (r *AgentReconciler) usesDeploymentDefaultModel(instance *cetirunv1alpha1.Agent, team *cetirunv1alpha1.Team) bool {
 	if strings.TrimSpace(instance.Spec.Model) != "" {
 		return false
 	}

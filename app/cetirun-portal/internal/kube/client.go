@@ -18,7 +18,7 @@ import (
 	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	cetirunv1beta1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1beta1"
+	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 )
 
 // AnnotationSecretUpdatedAt is set on the CR when a Secret is updated,
@@ -53,8 +53,8 @@ func NewClient(c client.Client) *Client {
 }
 
 // GetInstance retrieves an Agent by alias (cluster-scoped).
-func (c *Client) GetInstance(ctx context.Context, alias string) (*cetirunv1beta1.Agent, error) {
-	instance := &cetirunv1beta1.Agent{}
+func (c *Client) GetInstance(ctx context.Context, alias string) (*cetirunv1alpha1.Agent, error) {
+	instance := &cetirunv1alpha1.Agent{}
 	key := client.ObjectKey{Name: alias}
 	if err := c.client.Get(ctx, key, instance); err != nil {
 		return nil, err
@@ -67,12 +67,12 @@ func (c *Client) GetInstance(ctx context.Context, alias string) (*cetirunv1beta1
 // if empty it defaults to alias (backward-compatible single-instance behaviour).
 // If gatewayToken or tailscaleAuthKey are non-empty, it pre-creates the
 // corresponding Secrets in the instance namespace before creating the CR.
-func (c *Client) CreateInstance(ctx context.Context, alias, displayName, team, email, instanceName, agentType, gatewayToken, tailscaleAuthKey, model string, teamsEnabled bool) (*cetirunv1beta1.Agent, error) {
+func (c *Client) CreateInstance(ctx context.Context, alias, displayName, team, email, instanceName, agentType, gatewayToken, tailscaleAuthKey, model string, teamsEnabled bool) (*cetirunv1alpha1.Agent, error) {
 	if instanceName == "" {
 		instanceName = alias
 	}
 	if agentType == "" {
-		agentType = cetirunv1beta1.AgentTypeOpenClaw
+		agentType = cetirunv1alpha1.AgentTypeOpenClaw
 	}
 	ns := fmt.Sprintf("cetirun-%s", instanceName)
 
@@ -97,16 +97,16 @@ func (c *Client) CreateInstance(ctx context.Context, alias, displayName, team, e
 		}
 	}
 
-	instance := &cetirunv1beta1.Agent{
+	instance := &cetirunv1alpha1.Agent{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: instanceName,
 		},
-		Spec: cetirunv1beta1.AgentSpec{
+		Spec: cetirunv1alpha1.AgentSpec{
 			AgentType:             agentType,
 			Model:                 strings.TrimSpace(model),
 			GatewayTokenSecretRef: "gateway-token",
 			Team:                  team,
-			User: cetirunv1beta1.UserSpec{
+			User: cetirunv1alpha1.UserSpec{
 				Alias:       alias,
 				DisplayName: displayName,
 				Team:        team,
@@ -115,12 +115,12 @@ func (c *Client) CreateInstance(ctx context.Context, alias, displayName, team, e
 		},
 	}
 	if tailscaleAuthKey != "" {
-		instance.Spec.Tailscale = &cetirunv1beta1.TailscaleSpec{
+		instance.Spec.Tailscale = &cetirunv1alpha1.TailscaleSpec{
 			AuthKeySecretRef: "tailscale-auth",
 		}
 	}
 	if teamsEnabled {
-		instance.Spec.MSTeams = &cetirunv1beta1.MSTeamsSpec{Enabled: true}
+		instance.Spec.MSTeams = &cetirunv1alpha1.MSTeamsSpec{Enabled: true}
 	}
 	if err := c.client.Create(ctx, instance); err != nil {
 		return nil, err
@@ -130,7 +130,7 @@ func (c *Client) CreateInstance(ctx context.Context, alias, displayName, team, e
 
 // DeleteInstance deletes an Agent by alias (CR object name = alias).
 func (c *Client) DeleteInstance(ctx context.Context, alias string) error {
-	instance := &cetirunv1beta1.Agent{
+	instance := &cetirunv1alpha1.Agent{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: alias,
 		},
@@ -270,7 +270,7 @@ func (c *Client) ensureNamespace(ctx context.Context, ns, alias string) error {
 // UpdateInstance updates an existing Agent CR and its associated Secrets.
 // Secrets are updated first (idempotent), then the CR is updated inside a
 // RetryOnConflict loop to handle races with operator status updates.
-func (c *Client) UpdateInstance(ctx context.Context, alias string, opts UpdateInstanceOpts) (*cetirunv1beta1.Agent, error) {
+func (c *Client) UpdateInstance(ctx context.Context, alias string, opts UpdateInstanceOpts) (*cetirunv1alpha1.Agent, error) {
 	// Pre-flight: verify the instance exists.
 	if _, err := c.GetInstance(ctx, alias); err != nil {
 		return nil, err
@@ -304,7 +304,7 @@ func (c *Client) UpdateInstance(ctx context.Context, alias string, opts UpdateIn
 	}
 
 	// Update the CR with RetryOnConflict to handle races with operator.
-	var result *cetirunv1beta1.Agent
+	var result *cetirunv1alpha1.Agent
 	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		instance, err := c.GetInstance(ctx, alias)
 		if err != nil {
@@ -328,7 +328,7 @@ func (c *Client) UpdateInstance(ctx context.Context, alias string, opts UpdateIn
 		if opts.TailscaleAuthKey != nil {
 			if *opts.TailscaleAuthKey != "" {
 				if instance.Spec.Tailscale == nil {
-					instance.Spec.Tailscale = &cetirunv1beta1.TailscaleSpec{
+					instance.Spec.Tailscale = &cetirunv1alpha1.TailscaleSpec{
 						AuthKeySecretRef: "tailscale-auth",
 					}
 				}
@@ -343,7 +343,7 @@ func (c *Client) UpdateInstance(ctx context.Context, alias string, opts UpdateIn
 		if opts.TeamsEnabled != nil {
 			if *opts.TeamsEnabled {
 				if instance.Spec.MSTeams == nil {
-					instance.Spec.MSTeams = &cetirunv1beta1.MSTeamsSpec{}
+					instance.Spec.MSTeams = &cetirunv1alpha1.MSTeamsSpec{}
 				}
 				instance.Spec.MSTeams.Enabled = true
 			} else {
@@ -379,7 +379,7 @@ func (c *Client) UpdateInstance(ctx context.Context, alias string, opts UpdateIn
 // UpdateInstanceByName updates an Agent looked up by metadata.name.
 // Unlike UpdateInstance (which looks up by alias==metadata.name), this uses
 // the actual CR name so it works for instances with custom names (multi-instance).
-func (c *Client) UpdateInstanceByName(ctx context.Context, instanceName string, opts UpdateInstanceOpts) (*cetirunv1beta1.Agent, error) {
+func (c *Client) UpdateInstanceByName(ctx context.Context, instanceName string, opts UpdateInstanceOpts) (*cetirunv1alpha1.Agent, error) {
 	// Pre-flight: verify the instance exists and get the alias for namespace/secret ops.
 	existing, err := c.GetInstanceByName(ctx, instanceName)
 	if err != nil {
@@ -412,7 +412,7 @@ func (c *Client) UpdateInstanceByName(ctx context.Context, instanceName string, 
 		secretsUpdated = true
 	}
 
-	var result *cetirunv1beta1.Agent
+	var result *cetirunv1alpha1.Agent
 	err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		instance, err := c.GetInstanceByName(ctx, instanceName)
 		if err != nil {
@@ -435,7 +435,7 @@ func (c *Client) UpdateInstanceByName(ctx context.Context, instanceName string, 
 		if opts.TailscaleAuthKey != nil {
 			if *opts.TailscaleAuthKey != "" {
 				if instance.Spec.Tailscale == nil {
-					instance.Spec.Tailscale = &cetirunv1beta1.TailscaleSpec{
+					instance.Spec.Tailscale = &cetirunv1alpha1.TailscaleSpec{
 						AuthKeySecretRef: "tailscale-auth",
 					}
 				}
@@ -449,7 +449,7 @@ func (c *Client) UpdateInstanceByName(ctx context.Context, instanceName string, 
 		if opts.TeamsEnabled != nil {
 			if *opts.TeamsEnabled {
 				if instance.Spec.MSTeams == nil {
-					instance.Spec.MSTeams = &cetirunv1beta1.MSTeamsSpec{}
+					instance.Spec.MSTeams = &cetirunv1alpha1.MSTeamsSpec{}
 				}
 				instance.Spec.MSTeams.Enabled = true
 			} else {
@@ -481,12 +481,12 @@ func (c *Client) UpdateInstanceByName(ctx context.Context, instanceName string, 
 }
 
 // UpgradeInstanceByName upgrades an Agent looked up by spec.instanceName.
-func (c *Client) UpgradeInstanceByName(ctx context.Context, instanceName string) (*cetirunv1beta1.Agent, error) {
+func (c *Client) UpgradeInstanceByName(ctx context.Context, instanceName string) (*cetirunv1alpha1.Agent, error) {
 	latestVersion, err := c.GetOperatorChartVersion(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("get latest chart version: %w", err)
 	}
-	var result *cetirunv1beta1.Agent
+	var result *cetirunv1alpha1.Agent
 	err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		instance, err := c.GetInstanceByName(ctx, instanceName)
 		if err != nil {
@@ -508,7 +508,7 @@ func (c *Client) UpgradeInstanceByName(ctx context.Context, instanceName string)
 
 // touchSecretAnnotation sets a timestamp annotation on the CR so that
 // a watch event fires even when spec.generation doesn't change (secret-only updates).
-func touchSecretAnnotation(instance *cetirunv1beta1.Agent) {
+func touchSecretAnnotation(instance *cetirunv1alpha1.Agent) {
 	if instance.Annotations == nil {
 		instance.Annotations = make(map[string]string)
 	}
@@ -607,8 +607,8 @@ func randAlphaNum(n int) (string, error) {
 // GetInstanceByName returns the Agent with the given metadata.name.
 // Since Agent is cluster-scoped and metadata.name is globally unique,
 // this is a direct Get rather than a list scan.
-func (c *Client) GetInstanceByName(ctx context.Context, instanceName string) (*cetirunv1beta1.Agent, error) {
-	instance := &cetirunv1beta1.Agent{}
+func (c *Client) GetInstanceByName(ctx context.Context, instanceName string) (*cetirunv1alpha1.Agent, error) {
+	instance := &cetirunv1alpha1.Agent{}
 	if err := c.client.Get(ctx, client.ObjectKey{Name: instanceName}, instance); err != nil {
 		if errors.IsNotFound(err) {
 			return nil, fmt.Errorf("instance %q not found", instanceName)
@@ -620,8 +620,8 @@ func (c *Client) GetInstanceByName(ctx context.Context, instanceName string) (*c
 
 // GetInstanceByAlias returns the first Agent whose spec.user.alias matches.
 // Used in multi-instance mode where metadata.name != alias.
-func (c *Client) GetInstanceByAlias(ctx context.Context, alias string) (*cetirunv1beta1.Agent, error) {
-	list := &cetirunv1beta1.AgentList{}
+func (c *Client) GetInstanceByAlias(ctx context.Context, alias string) (*cetirunv1alpha1.Agent, error) {
+	list := &cetirunv1alpha1.AgentList{}
 	if err := c.client.List(ctx, list); err != nil {
 		return nil, err
 	}
@@ -630,12 +630,12 @@ func (c *Client) GetInstanceByAlias(ctx context.Context, alias string) (*cetirun
 			return &list.Items[i], nil
 		}
 	}
-	return nil, errors.NewNotFound(cetirunv1beta1.GroupVersion.WithResource("agents").GroupResource(), alias)
+	return nil, errors.NewNotFound(cetirunv1alpha1.GroupVersion.WithResource("agents").GroupResource(), alias)
 }
 
 // ListAllInstances returns all Agent CRs in the cluster.
-func (c *Client) ListAllInstances(ctx context.Context) ([]cetirunv1beta1.Agent, error) {
-	list := &cetirunv1beta1.AgentList{}
+func (c *Client) ListAllInstances(ctx context.Context) ([]cetirunv1alpha1.Agent, error) {
+	list := &cetirunv1alpha1.AgentList{}
 	if err := c.client.List(ctx, list); err != nil {
 		return nil, err
 	}
@@ -719,12 +719,12 @@ func (c *Client) GetPods(ctx context.Context, namespace string) ([]corev1.Pod, e
 }
 
 // UpgradeInstance sets the instance's spec.helm.version to the operator's latest chart version.
-func (c *Client) UpgradeInstance(ctx context.Context, alias string) (*cetirunv1beta1.Agent, error) {
+func (c *Client) UpgradeInstance(ctx context.Context, alias string) (*cetirunv1alpha1.Agent, error) {
 	latestVersion, err := c.GetOperatorChartVersion(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("get latest chart version: %w", err)
 	}
-	var result *cetirunv1beta1.Agent
+	var result *cetirunv1alpha1.Agent
 	err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		instance, err := c.GetInstance(ctx, alias)
 		if err != nil {
@@ -745,8 +745,8 @@ func (c *Client) UpgradeInstance(ctx context.Context, alias string) (*cetirunv1b
 }
 
 // ListTeams returns all Team CRs (cluster-scoped).
-func (c *Client) ListTeams(ctx context.Context) ([]cetirunv1beta1.Team, error) {
-	list := &cetirunv1beta1.TeamList{}
+func (c *Client) ListTeams(ctx context.Context) ([]cetirunv1alpha1.Team, error) {
+	list := &cetirunv1alpha1.TeamList{}
 	if err := c.client.List(ctx, list); err != nil {
 		return nil, err
 	}
@@ -754,8 +754,8 @@ func (c *Client) ListTeams(ctx context.Context) ([]cetirunv1beta1.Team, error) {
 }
 
 // GetTeam retrieves a single Team by name (cluster-scoped).
-func (c *Client) GetTeam(ctx context.Context, name string) (*cetirunv1beta1.Team, error) {
-	team := &cetirunv1beta1.Team{}
+func (c *Client) GetTeam(ctx context.Context, name string) (*cetirunv1alpha1.Team, error) {
+	team := &cetirunv1alpha1.Team{}
 	if err := c.client.Get(ctx, client.ObjectKey{Name: name}, team); err != nil {
 		return nil, err
 	}
@@ -763,7 +763,7 @@ func (c *Client) GetTeam(ctx context.Context, name string) (*cetirunv1beta1.Team
 }
 
 // CreateTeam creates a new Team.
-func (c *Client) CreateTeam(ctx context.Context, team *cetirunv1beta1.Team) (*cetirunv1beta1.Team, error) {
+func (c *Client) CreateTeam(ctx context.Context, team *cetirunv1alpha1.Team) (*cetirunv1alpha1.Team, error) {
 	if err := c.client.Create(ctx, team); err != nil {
 		return nil, err
 	}
@@ -772,8 +772,8 @@ func (c *Client) CreateTeam(ctx context.Context, team *cetirunv1beta1.Team) (*ce
 
 // UpdateTeamSpec replaces an existing Team's spec, retrying on
 // conflict.
-func (c *Client) UpdateTeamSpec(ctx context.Context, name string, newSpec cetirunv1beta1.TeamSpec) (*cetirunv1beta1.Team, error) {
-	var result *cetirunv1beta1.Team
+func (c *Client) UpdateTeamSpec(ctx context.Context, name string, newSpec cetirunv1alpha1.TeamSpec) (*cetirunv1alpha1.Team, error) {
+	var result *cetirunv1alpha1.Team
 	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		team, err := c.GetTeam(ctx, name)
 		if err != nil {
@@ -791,7 +791,7 @@ func (c *Client) UpdateTeamSpec(ctx context.Context, name string, newSpec cetiru
 
 // DeleteTeam deletes a Team by name.
 func (c *Client) DeleteTeam(ctx context.Context, name string) error {
-	team := &cetirunv1beta1.Team{
+	team := &cetirunv1alpha1.Team{
 		ObjectMeta: metav1.ObjectMeta{Name: name},
 	}
 	return c.client.Delete(ctx, team)

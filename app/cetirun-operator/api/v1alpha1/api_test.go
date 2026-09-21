@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-package v1beta1
+package v1alpha1
 
 import (
 	"bytes"
@@ -23,7 +23,7 @@ import (
 )
 
 func TestAPIRegistration(t *testing.T) {
-	wantVersion := schema.GroupVersion{Group: "cetirun.microsoft.com", Version: "v1beta1"}
+	wantVersion := schema.GroupVersion{Group: "cetirun.microsoft.com", Version: "v1alpha1"}
 	if GroupVersion != wantVersion {
 		t.Fatalf("GroupVersion = %v, want %v", GroupVersion, wantVersion)
 	}
@@ -55,8 +55,8 @@ func TestAPIRegistration(t *testing.T) {
 		}
 	}
 	for _, kind := range []string{"Agent", "AgentList", "Team", "TeamList"} {
-		if scheme.Recognizes(schema.GroupVersionKind{Group: GroupVersion.Group, Version: "v1alpha1", Kind: kind}) {
-			t.Errorf("unexpected alpha API for %s", kind)
+		if scheme.Recognizes(schema.GroupVersionKind{Group: GroupVersion.Group, Version: "v1beta1", Kind: kind}) {
+			t.Errorf("unexpected beta API for %s", kind)
 		}
 	}
 }
@@ -86,7 +86,7 @@ func TestAPIWireFormat(t *testing.T) {
 			if err := json.Unmarshal(encoded, &wire); err != nil {
 				t.Fatal(err)
 			}
-			if wire.APIVersion != "cetirun.microsoft.com/v1beta1" || wire.Kind != kind {
+			if wire.APIVersion != "cetirun.microsoft.com/v1alpha1" || wire.Kind != kind {
 				t.Fatalf("unexpected wire identity: %+v", wire)
 			}
 			decoded, gvk, err := codecs.UniversalDeserializer().Decode(encoded, nil, nil)
@@ -141,10 +141,10 @@ func TestGeneratedCRDContract(t *testing.T) {
 				t.Fatalf("names = %+v, want %+v", crd.Spec.Names, wantNames)
 			}
 			if len(crd.Spec.Versions) != 1 {
-				t.Fatalf("versions = %+v; want only v1beta1", crd.Spec.Versions)
+				t.Fatalf("versions = %+v; want only v1alpha1", crd.Spec.Versions)
 			}
 			version := crd.Spec.Versions[0]
-			if version.Name != "v1beta1" || !version.Served || !version.Storage {
+			if version.Name != "v1alpha1" || !version.Served || !version.Storage {
 				t.Fatalf("unexpected version flags: %+v", version)
 			}
 			if version.Subresources == nil || version.Subresources.Status == nil || version.Schema == nil {

@@ -114,10 +114,10 @@ Generated code, scaffolding, and artwork requiring provenance review
 
 The following source-header exceptions do not assert Microsoft ownership:
 
-    app/cetirun-operator/api/v1beta1/groupversion_info.go
+    app/cetirun-operator/api/v1alpha1/groupversion_info.go
         Kubebuilder-style group registration scaffold; original generator
         version and template provenance are not recorded.
-    app/cetirun-operator/api/v1beta1/zz_generated.deepcopy.go
+    app/cetirun-operator/api/v1alpha1/zz_generated.deepcopy.go
         Marked as controller-gen output; do not hand-edit generated code.
     app/cetirun-portal/web/src/vite-env.d.ts
         Vite client type-reference scaffold.

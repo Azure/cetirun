@@ -19,7 +19,7 @@ import (
 	istiov1beta1 "istio.io/client-go/pkg/apis/networking/v1beta1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	cetirunv1beta1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1beta1"
+	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 )
 
 const (
@@ -180,12 +180,12 @@ func generateRandomToken(byteLen int) (string, error) {
 // default.
 // Merge order (later wins): controller defaults → cetirunHelmValues → team
 // context/skills → per-instance spec.helm.values → controller-enforced model.
-func buildHelmValues(instance *cetirunv1beta1.Agent, team *cetirunv1beta1.Team, domainSuffix string, skillsStorageAccount string, cetirunHelmValues map[string]interface{}, chartRegistry string, defaultModels ...string) (map[string]interface{}, error) {
+func buildHelmValues(instance *cetirunv1alpha1.Agent, team *cetirunv1alpha1.Team, domainSuffix string, skillsStorageAccount string, cetirunHelmValues map[string]interface{}, chartRegistry string, defaultModels ...string) (map[string]interface{}, error) {
 	alias := instance.Spec.User.Alias
 	spec := instance.Spec
 	agentType := spec.AgentType
 	if agentType == "" {
-		agentType = cetirunv1beta1.AgentTypeOpenClaw
+		agentType = cetirunv1alpha1.AgentTypeOpenClaw
 	}
 	// userTeam falls back to spec.team when user.team is unset, so the team
 	// label propagates into USER.md / extraEnv even when callers only set the
@@ -411,7 +411,7 @@ func buildHelmValues(instance *cetirunv1beta1.Agent, team *cetirunv1beta1.Team, 
 	// The native OpenClaw Control UI must know the externally visible UI
 	// prefix so it emits prefixed asset, API, media, and WebSocket URLs. This is
 	// platform routing and must not be overridden by user Helm values.
-	if agentType == cetirunv1beta1.AgentTypeOpenClaw {
+	if agentType == cetirunv1alpha1.AgentTypeOpenClaw {
 		values["openclaw"] = deepMerge(values["openclaw"], map[string]interface{}{
 			"config": map[string]interface{}{
 				"gateway": map[string]interface{}{
@@ -480,7 +480,7 @@ func deepMerge(base, override interface{}) interface{} {
 // edits to a referenced team — which do not bump the instance Generation —
 // still force a full reconcile when the team-watch handler re-enqueues the
 // instance.
-func teamResourceVersion(team *cetirunv1beta1.Team) string {
+func teamResourceVersion(team *cetirunv1alpha1.Team) string {
 	if team == nil {
 		return ""
 	}
@@ -502,7 +502,7 @@ func stringsToInterfaces(in []string) []interface{} {
 
 // computeEffectiveSkills returns (base ∪ add) \ remove as a sorted, deduplicated slice.
 // team may be nil (treated as empty base).
-func computeEffectiveSkills(team *cetirunv1beta1.Team, add, remove []string) []string {
+func computeEffectiveSkills(team *cetirunv1alpha1.Team, add, remove []string) []string {
 	set := map[string]struct{}{}
 	if team != nil {
 		for _, s := range team.Spec.Skills {
@@ -552,7 +552,7 @@ func classifySkills(skills []string) (npm []string, clawHub []string, err error)
 //
 // The instance name is not used as a top-level native UI route, which keeps it isolated
 // from Portal SPA routes such as /instances/<name>.
-func buildVirtualService(instance *cetirunv1beta1.Agent, domainSuffix, gateway string) *istiov1beta1.VirtualService {
+func buildVirtualService(instance *cetirunv1alpha1.Agent, domainSuffix, gateway string) *istiov1beta1.VirtualService {
 	if gateway == "" {
 		gateway = DefaultIstioGateway
 	}
@@ -563,7 +563,7 @@ func buildVirtualService(instance *cetirunv1beta1.Agent, domainSuffix, gateway s
 	uiPrefix := "/ui/" + name
 	agentType := instance.Spec.AgentType
 	if agentType == "" {
-		agentType = cetirunv1beta1.AgentTypeOpenClaw
+		agentType = cetirunv1alpha1.AgentTypeOpenClaw
 	}
 
 	makeRoute := func(matchPrefix, rewriteURI string, port uint32, timeoutSecs int64) *istioapiv1beta1.HTTPRoute {
@@ -622,7 +622,7 @@ func buildVirtualService(instance *cetirunv1beta1.Agent, domainSuffix, gateway s
 		makeRedirect(instancePrefix + "/desktop"),
 		makeRedirect(instancePrefix + "/term"),
 	}
-	if agentType == cetirunv1beta1.AgentTypeHermes {
+	if agentType == cetirunv1alpha1.AgentTypeHermes {
 		routes = append(routes,
 			makeRoute(uiPrefix+"/v1", "/v1", hermesAPIPort, 300),
 			makeRoute(uiPrefix+"/health", "/health", hermesAPIPort, 0),

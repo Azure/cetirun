@@ -92,12 +92,12 @@ REGISTRY=cetirun.azurecr.io CHART_VERSION=0.1.0 \
 ### Create an Agent
 
 Once the operator is running, create long-lived agents via the CRD. The
-`cetirun.microsoft.com/v1beta1` API exposes `Agent` and `Team`; see the
+`cetirun.microsoft.com/v1alpha1` API exposes `Agent` and `Team`; see the
 [API contract and existing-cluster limitations](app/cetirun-operator/README.md#api-contract)
 before using it with an older installation.
 
 ```yaml
-apiVersion: cetirun.microsoft.com/v1beta1
+apiVersion: cetirun.microsoft.com/v1alpha1
 kind: Agent
 metadata:
   name: alice

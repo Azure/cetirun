@@ -13,7 +13,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	cetirunv1beta1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1beta1"
+	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-portal/internal/kube"
 )
 
@@ -23,11 +23,11 @@ func newAdminTeamHandler(objs ...client.Object) *AdminTeamHandler {
 }
 
 func TestAdminTeam_List(t *testing.T) {
-	team := &cetirunv1beta1.Team{
+	team := &cetirunv1alpha1.Team{
 		ObjectMeta: metav1.ObjectMeta{Name: "aks"},
-		Spec: cetirunv1beta1.TeamSpec{
-			MemberContext: cetirunv1beta1.TeamContextSpec{Role: "AKS Engineer"},
-			Defaults:      cetirunv1beta1.TeamDefaultsSpec{Provider: "github_copilot"},
+		Spec: cetirunv1alpha1.TeamSpec{
+			MemberContext: cetirunv1alpha1.TeamContextSpec{Role: "AKS Engineer"},
+			Defaults:      cetirunv1alpha1.TeamDefaultsSpec{Provider: "github_copilot"},
 			Skills:        []string{"@anthropic/mcp-server-fetch"},
 		},
 	}
@@ -50,7 +50,7 @@ func TestAdminTeam_List(t *testing.T) {
 }
 
 func TestAdminTeam_Get(t *testing.T) {
-	h := newAdminTeamHandler(&cetirunv1beta1.Team{
+	h := newAdminTeamHandler(&cetirunv1alpha1.Team{
 		ObjectMeta: metav1.ObjectMeta{Name: "aks"},
 	})
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/teams/aks", nil)
@@ -127,7 +127,7 @@ func TestAdminTeam_Create_InvalidSkillStorage(t *testing.T) {
 }
 
 func TestAdminTeam_Update_InvalidSkillStorage(t *testing.T) {
-	h := newAdminTeamHandler(&cetirunv1beta1.Team{
+	h := newAdminTeamHandler(&cetirunv1alpha1.Team{
 		ObjectMeta: metav1.ObjectMeta{Name: "aks"},
 	})
 	body, _ := json.Marshal(TeamUpsertRequest{
@@ -143,10 +143,10 @@ func TestAdminTeam_Update_InvalidSkillStorage(t *testing.T) {
 }
 
 func TestAdminTeam_Update(t *testing.T) {
-	h := newAdminTeamHandler(&cetirunv1beta1.Team{
+	h := newAdminTeamHandler(&cetirunv1alpha1.Team{
 		ObjectMeta: metav1.ObjectMeta{Name: "aks"},
-		Spec: cetirunv1beta1.TeamSpec{
-			MemberContext: cetirunv1beta1.TeamContextSpec{Role: "old"},
+		Spec: cetirunv1alpha1.TeamSpec{
+			MemberContext: cetirunv1alpha1.TeamContextSpec{Role: "old"},
 		},
 	})
 	body, _ := json.Marshal(TeamUpsertRequest{Role: "new"})
@@ -165,7 +165,7 @@ func TestAdminTeam_Update(t *testing.T) {
 }
 
 func TestAdminTeam_Delete(t *testing.T) {
-	h := newAdminTeamHandler(&cetirunv1beta1.Team{
+	h := newAdminTeamHandler(&cetirunv1alpha1.Team{
 		ObjectMeta: metav1.ObjectMeta{Name: "aks"},
 	})
 	req := httptest.NewRequest(http.MethodDelete, "/api/v1/admin/teams/aks", nil)

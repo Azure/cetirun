@@ -10,7 +10,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	cetirunv1beta1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1beta1"
+	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -21,26 +21,26 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-func TestBetaResourcePathsAndEventSelector(t *testing.T) {
-	apiVersion := "cetirun.microsoft.com/v1beta1"
-	agent := cetirunv1beta1.Agent{
+func TestAlphaResourcePathsAndEventSelector(t *testing.T) {
+	apiVersion := "cetirun.microsoft.com/v1alpha1"
+	agent := cetirunv1alpha1.Agent{
 		TypeMeta:   metav1.TypeMeta{APIVersion: apiVersion, Kind: "Agent"},
 		ObjectMeta: metav1.ObjectMeta{Name: "example-agent"},
 	}
-	team := cetirunv1beta1.Team{
+	team := cetirunv1alpha1.Team{
 		TypeMeta:   metav1.TypeMeta{APIVersion: apiVersion, Kind: "Team"},
 		ObjectMeta: metav1.ObjectMeta{Name: "example-team"},
 	}
 	responses := map[string]runtime.Object{
-		"/apis/cetirun.microsoft.com/v1beta1/agents/example-agent": &agent,
-		"/apis/cetirun.microsoft.com/v1beta1/agents": &cetirunv1beta1.AgentList{
+		"/apis/cetirun.microsoft.com/v1alpha1/agents/example-agent": &agent,
+		"/apis/cetirun.microsoft.com/v1alpha1/agents": &cetirunv1alpha1.AgentList{
 			TypeMeta: metav1.TypeMeta{APIVersion: apiVersion, Kind: "AgentList"},
-			Items:    []cetirunv1beta1.Agent{agent},
+			Items:    []cetirunv1alpha1.Agent{agent},
 		},
-		"/apis/cetirun.microsoft.com/v1beta1/teams/example-team": &team,
-		"/apis/cetirun.microsoft.com/v1beta1/teams": &cetirunv1beta1.TeamList{
+		"/apis/cetirun.microsoft.com/v1alpha1/teams/example-team": &team,
+		"/apis/cetirun.microsoft.com/v1alpha1/teams": &cetirunv1alpha1.TeamList{
 			TypeMeta: metav1.TypeMeta{APIVersion: apiVersion, Kind: "TeamList"},
-			Items:    []cetirunv1beta1.Team{team},
+			Items:    []cetirunv1alpha1.Team{team},
 		},
 		"/api/v1/events": &corev1.EventList{
 			TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "EventList"},
@@ -76,9 +76,9 @@ func TestBetaResourcePathsAndEventSelector(t *testing.T) {
 	}))
 	defer server.Close()
 
-	mapper := meta.NewDefaultRESTMapper([]schema.GroupVersion{cetirunv1beta1.GroupVersion, corev1.SchemeGroupVersion})
-	mapper.Add(cetirunv1beta1.GroupVersion.WithKind("Agent"), meta.RESTScopeRoot)
-	mapper.Add(cetirunv1beta1.GroupVersion.WithKind("Team"), meta.RESTScopeRoot)
+	mapper := meta.NewDefaultRESTMapper([]schema.GroupVersion{cetirunv1alpha1.GroupVersion, corev1.SchemeGroupVersion})
+	mapper.Add(cetirunv1alpha1.GroupVersion.WithKind("Agent"), meta.RESTScopeRoot)
+	mapper.Add(cetirunv1alpha1.GroupVersion.WithKind("Team"), meta.RESTScopeRoot)
 	mapper.Add(corev1.SchemeGroupVersion.WithKind("Event"), meta.RESTScopeNamespace)
 	kubeClient, err := client.New(&rest.Config{Host: server.URL}, client.Options{
 		Scheme: newScheme(), Mapper: mapper,
