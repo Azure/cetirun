@@ -18,6 +18,10 @@ parameters:
     displayName: Release version for a manual branch validation run
     type: string
     default: ""
+  - name: forcePublish
+    displayName: Overwrite existing version tags (manual runs only)
+    type: boolean
+    default: false
 
 pool:
   name: 1es-aks-ai-runtime-ado-southcentralus
@@ -54,11 +58,24 @@ steps:
         exit 1
       fi
 
+      force_publish="${FORCE_PUBLISH_INPUT}"
+      if [[ "${force_publish}" != "true" && "${force_publish}" != "false" ]]; then
+        echo "ERROR: forcePublish must be true or false." >&2
+        exit 1
+      fi
+      if [[ "${force_publish}" == "true" && "${BUILD_REASON}" != "Manual" ]]; then
+        echo "ERROR: forcePublish is allowed only for manual runs." >&2
+        exit 1
+      fi
+
       echo "##vso[task.setvariable variable=releaseVersion]${release_version}"
+      echo "##vso[task.setvariable variable=forcePublish]${force_publish}"
       echo "Resolved unified release version: ${release_version}"
     displayName: Resolve and validate unified release version
     env:
       RELEASE_VERSION_INPUT: ${{ parameters.releaseVersion }}
+      FORCE_PUBLISH_INPUT: ${{ parameters.forcePublish }}
+      BUILD_REASON: $(Build.Reason)
 
   - bash: |
       set -euo pipefail
@@ -249,17 +266,44 @@ steps:
           return 0
         }
 
+        remove_existing_tag() {
+          local repository="$1"
+          local result
+          if repository_tag_exists "${repository}"; then
+            az acr repository untag \
+              --name "${ACR_NAME}" \
+              --image "${repository}:${RELEASE_VERSION}"
+            echo "Removed existing tag ${registry}/${repository}:${RELEASE_VERSION}."
+            return 0
+          else
+            result="$?"
+          fi
+          if [ "${result}" -ne 1 ]; then
+            echo "ERROR: could not check whether ${registry}/${repository}:${RELEASE_VERSION} exists." >&2
+            return "${result}"
+          fi
+          return 0
+        }
+
         az acr login --name "${ACR_NAME}"
 
-        # Preflight all immutable version tags before publishing any artifact.
-        for artifact in "${image_artifacts[@]}"; do
-          repository="${REPOSITORY_PREFIX}/${artifact}"
-          require_new_tag "${repository}"
-        done
-        for chart in "${chart_artifacts[@]}"; do
-          repository="${REPOSITORY_PREFIX}/helm/${chart}"
-          require_new_tag "${repository}"
-        done
+        if [[ "${FORCE_PUBLISH}" == "true" ]]; then
+          echo "WARNING: overwriting ${RELEASE_VERSION} tags from a manual run."
+          for artifact in "${image_artifacts[@]}"; do
+            remove_existing_tag "${REPOSITORY_PREFIX}/${artifact}"
+          done
+          for chart in "${chart_artifacts[@]}"; do
+            remove_existing_tag "${REPOSITORY_PREFIX}/helm/${chart}"
+          done
+        else
+          # Preflight all immutable version tags before publishing any artifact.
+          for artifact in "${image_artifacts[@]}"; do
+            require_new_tag "${REPOSITORY_PREFIX}/${artifact}"
+          done
+          for chart in "${chart_artifacts[@]}"; do
+            require_new_tag "${REPOSITORY_PREFIX}/helm/${chart}"
+          done
+        fi
 
         for artifact in "${image_artifacts[@]}"; do
           repository="${REPOSITORY_PREFIX}/${artifact}"
@@ -311,5 +355,6 @@ steps:
       AGENT_TEMPDIRECTORY: $(Agent.TempDirectory)
       HELM_BIN: $(helmBin)
       LOCAL_REGISTRY: $(localRegistry)
+      FORCE_PUBLISH: $(forcePublish)
       RELEASE_VERSION: $(releaseVersion)
       REPOSITORY_PREFIX: $(repositoryPrefix)
