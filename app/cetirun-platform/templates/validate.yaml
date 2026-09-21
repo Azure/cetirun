@@ -1,0 +1,32 @@
+{{- if not .Values.istio.enabled }}
+{{- fail "istio.enabled must be true: install and verify the separate cetirun-istio release first" }}
+{{- end }}
+{{- if not .Values.istio.oauth2Proxy.name }}
+{{- fail "istio.oauth2Proxy.name is required" }}
+{{- end }}
+{{- if not .Values.istio.oauth2Proxy.namespace }}
+{{- fail "istio.oauth2Proxy.namespace is required" }}
+{{- end }}
+{{- $portal := index .Values "cetirun-portal" }}
+{{- $operator := index .Values "cetirun-operator" }}
+{{- if and $operator.enabled (not $operator.domainSuffix) }}
+{{- fail "cetirun-operator.domainSuffix is required when cetirun-operator is enabled" }}
+{{- end }}
+{{- if and $operator.enabled (not $operator.istioGateway) }}
+{{- fail "cetirun-operator.istioGateway is required when cetirun-operator is enabled" }}
+{{- end }}
+{{- if and $operator.enabled (not (regexMatch "^[^/]+/[^/]+$" $operator.istioGateway)) }}
+{{- fail "cetirun-operator.istioGateway must use namespace/name format when cetirun-operator is enabled" }}
+{{- end }}
+{{- if and $portal.enabled (not $portal.istio.host) }}
+{{- fail "cetirun-portal.istio.host is required when cetirun-portal is enabled" }}
+{{- end }}
+{{- if and $portal.enabled (not $portal.istio.gateway) }}
+{{- fail "cetirun-portal.istio.gateway is required when cetirun-portal is enabled" }}
+{{- end }}
+{{- if and $portal.enabled (not $portal.istio.gatewayNamespace) }}
+{{- fail "cetirun-portal.istio.gatewayNamespace is required when cetirun-portal is enabled" }}
+{{- end }}
+{{- if and $portal.enabled (not $portal.istio.gatewayServiceAccount) }}
+{{- fail "cetirun-portal.istio.gatewayServiceAccount is required when cetirun-portal is enabled" }}
+{{- end }}

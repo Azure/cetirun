@@ -4,8 +4,9 @@
 
 # deploy.sh — One-command deploy for CetiRun Operator.
 #
-# Applies cluster-level prerequisites (CRD + StorageClass + Istio Gateway)
-# then installs the operator from the OCI chart published in ACR.
+# Checks cluster-level prerequisites (StorageClass + Istio Gateway) and then
+# installs the operator from the OCI chart published in ACR. The chart installs
+# CetiRun CRDs on its first installation.
 # Every step is idempotent and safe to re-run.
 #
 # Requires: kubectl and helm configured to target the correct cluster,
@@ -21,6 +22,9 @@
 #   IMAGE_TAG           — Override image.tag Helm value
 #   IMAGE_DIGEST        — Override image.digest Helm value (e.g. "sha256:abc123...")
 #   DOMAIN              — Override domainSuffix Helm value (e.g. "example.com")
+#   ISTIO_GATEWAY        — Override the instance VirtualService gateway as namespace/name
+#   ISTIO_INGRESS_NAMESPACE — Namespace where the selected Gateway workload runs
+#                             (default: the namespace in ISTIO_GATEWAY)
 #   CETIRUN_REPO_URL    — Override cetirun.chart.repoURL (default: oci://$REGISTRY/helm/cetirun)
 #   CETIRUN_CHART_VERSION — Override cetirun.chart.version (the agent chart the operator deploys)
 #   HELM_SET_ARGS       — Space-separated extra key=value pairs passed as --set flags
@@ -46,21 +50,22 @@ RELEASE_NAME="${RELEASE_NAME:-cetirun-operator}"
 IMAGE_REPO="${IMAGE_REPO:-${REGISTRY}/cetirun-operator}"
 CETIRUN_REPO_URL="${CETIRUN_REPO_URL:-oci://${REGISTRY}/helm/cetirun}"
 CETIRUN_CHART_VERSION="${CETIRUN_CHART_VERSION:-}"
+ISTIO_GATEWAY="${ISTIO_GATEWAY:-aks-istio-ingress/cetirun-gateway}"
+ISTIO_GATEWAY_NAMESPACE="${ISTIO_GATEWAY%%/*}"
+ISTIO_GATEWAY_NAME="${ISTIO_GATEWAY#*/}"
+ISTIO_INGRESS_NAMESPACE="${ISTIO_INGRESS_NAMESPACE:-${ISTIO_GATEWAY_NAMESPACE}}"
+
+if [[ ! "${ISTIO_GATEWAY}" =~ ^[^/]+/[^/]+$ ]]; then
+  echo "ERROR: ISTIO_GATEWAY must use namespace/name format." >&2
+  exit 1
+fi
+if [ -z "${ISTIO_INGRESS_NAMESPACE}" ]; then
+  echo "ERROR: ISTIO_INGRESS_NAMESPACE must not be empty." >&2
+  exit 1
+fi
 
 echo "==> Checking cluster connectivity..."
 kubectl cluster-info --request-timeout=5s > /dev/null
-
-# ── CRDs ─────────────────────────────────────────────────────────────────────
-echo ""
-echo "==> Applying CRDs..."
-kubectl apply -f "$SCRIPT_DIR/../config/crd/bases/cetirun.microsoft.com_openclawinstances.yaml"
-kubectl apply -f "$SCRIPT_DIR/../config/crd/bases/cetirun.microsoft.com_openclawteams.yaml"
-echo "    Waiting for CRDs to be established..."
-kubectl wait --for=condition=Established \
-  crd/openclawinstances.cetirun.microsoft.com \
-  crd/openclawteams.cetirun.microsoft.com \
-  --timeout=30s
-echo "    CRDs ready."
 
 # ── StorageClass ──────────────────────────────────────────────────────────────
 echo ""
@@ -87,15 +92,15 @@ if ! kubectl get crd virtualservices.networking.istio.io &>/dev/null; then
   echo ""
   exit 1
 fi
-if ! kubectl get gateway.networking.istio.io cetirun-gateway -n aks-istio-ingress &>/dev/null; then
-  echo "ERROR: cetirun-gateway not found in aks-istio-ingress namespace."
+if ! kubectl get gateway.networking.istio.io "${ISTIO_GATEWAY_NAME}" -n "${ISTIO_GATEWAY_NAMESPACE}" &>/dev/null; then
+  echo "ERROR: ${ISTIO_GATEWAY} Gateway not found."
   echo "Deploy shared Istio infrastructure first:"
   echo ""
   echo "    cd infra/istio && ./deploy.sh"
   echo ""
   exit 1
 fi
-echo "    Istio CRDs and cetirun-gateway found."
+echo "    Istio CRDs and ${ISTIO_GATEWAY} found."
 
 # ── Helm install ─────────────────────────────────────────────────────────────
 echo ""
@@ -113,6 +118,8 @@ else
   HELM_ARGS+=("$CHART_REF" --version "$CHART_VERSION")
 fi
 HELM_ARGS+=(--set "image.repository=${IMAGE_REPO}")
+HELM_ARGS+=(--set-string "istioGateway=${ISTIO_GATEWAY}")
+HELM_ARGS+=(--set-string "cetirun.helmValues.networkPolicy.istioIngressNamespace=${ISTIO_INGRESS_NAMESPACE}")
 HELM_ARGS+=(--set "cetirun.chart.repoURL=${CETIRUN_REPO_URL}")
 [ -n "${CETIRUN_CHART_VERSION}" ] && HELM_ARGS+=(--set-string "cetirun.chart.version=${CETIRUN_CHART_VERSION}")
 [ -n "${IMAGE_TAG:-}" ]      && HELM_ARGS+=(--set "image.tag=${IMAGE_TAG}")

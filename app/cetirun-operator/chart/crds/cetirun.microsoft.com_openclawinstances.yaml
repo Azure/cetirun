@@ -1,0 +1,374 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.21.0
+  name: openclawinstances.cetirun.microsoft.com
+spec:
+  group: cetirun.microsoft.com
+  names:
+    kind: OpenClawInstance
+    listKind: OpenClawInstanceList
+    plural: openclawinstances
+    shortNames:
+    - oci
+    singular: openclawinstance
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.user.alias
+      name: Alias
+      type: string
+    - jsonPath: .spec.agentType
+      name: Agent
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.accessUrl
+      name: AccessURL
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: OpenClawInstance is the Schema for the openclawinstances API.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: OpenClawInstanceSpec defines the desired state of OpenClawInstance.
+            properties:
+              agentType:
+                default: openclaw
+                description: AgentType selects the AI agent framework for this instance.
+                enum:
+                - openclaw
+                - hermes
+                type: string
+              gatewayTokenSecretRef:
+                description: |-
+                  GatewayTokenSecretRef is the name of the Secret the operator will create (or use) for the OpenClaw gateway token.
+                  The Secret is created in the instance namespace (cetirun-<alias>).
+                type: string
+              model:
+                description: |-
+                  Model is the GitHub Copilot model ID for this instance. When empty, the
+                  operator deployment's configured default model is used.
+                maxLength: 256
+                type: string
+              helm:
+                description: Helm chart configuration overrides.
+                properties:
+                  values:
+                    additionalProperties:
+                      type: object
+                      x-kubernetes-preserve-unknown-fields: true
+                    description: Values contains arbitrary Helm values merged on top
+                      of operator defaults.
+                    type: object
+                    x-kubernetes-preserve-unknown-fields: true
+                  version:
+                    description: |-
+                      Version pins the OpenClaw Helm chart version for this instance.
+                      When empty on first reconcile, the operator backfills it with
+                      its own --chart-version default so that future operator upgrades
+                      do not automatically roll out a new chart version (which would
+                      restart the StatefulSet pod and interrupt the user's session).
+                      Note: the initial backfill bumps the CR generation, which triggers
+                      a single Helm upgrade call. Because the backfilled version matches
+                      the chart already installed, this upgrade is a no-op and does not
+                      restart the StatefulSet pod.
+                      To upgrade an instance, update this field to the desired version.
+                    type: string
+                type: object
+              msteams:
+                description: |-
+                  MSTeams configures Microsoft Teams bot integration for this instance.
+                  When set, the operator provisions the necessary Helm values, volumes,
+                  and Istio routing for the Teams webhook endpoint.
+                properties:
+                  appId:
+                    description: |-
+                      AppID is the Azure AD Application (client) ID for the Teams bot.
+                      If Enabled=true and AppID is empty, the operator creates the app
+                      automatically and writes the generated appId to status.msteams.appId.
+                      If provided, the operator uses this existing app instead.
+                    pattern: ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$
+                    type: string
+                  enabled:
+                    description: |-
+                      Enabled toggles Teams bot provisioning. When false or omitted, no Teams
+                      resources are created even if the MSTeams block is present.
+                    type: boolean
+                  tenantId:
+                    description: TenantID is the Azure AD tenant ID. Defaults to operator-level
+                      config if not set.
+                    pattern: ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$
+                    type: string
+                  webhookPort:
+                    default: 3978
+                    description: |-
+                      WebhookPort is the port the Teams webhook listener runs on inside the container.
+                      Defaults to 3978.
+                    format: int32
+                    type: integer
+                type: object
+              skillOverrides:
+                description: |-
+                  SkillOverrides customizes the set of skills installed for this instance.
+                  Add appends skills on top of the team defaults; Remove excludes
+                  specific team skills from this instance.
+                properties:
+                  add:
+                    description: |-
+                      Add lists skills to install in addition to team defaults.
+                      Each entry is a ClawHub package ID (e.g. "@anthropic/mcp-server-fetch")
+                      or an npm package prefixed with "npm:" (e.g. "npm:@openclaw/matrix").
+                    items:
+                      pattern: ^(npm:)?(@[a-z0-9][\w.-]*\/)?[a-z0-9][\w.-]*(@[\w.+-]+)?$
+                      type: string
+                    maxItems: 20
+                    type: array
+                    x-kubernetes-list-type: set
+                  remove:
+                    description: |-
+                      Remove lists team-default skills to exclude from this instance.
+                      Uses the same format as Add. Entries not present in the team skill
+                      list are silently ignored.
+                    items:
+                      pattern: ^(npm:)?(@[a-z0-9][\w.-]*\/)?[a-z0-9][\w.-]*(@[\w.+-]+)?$
+                      type: string
+                    maxItems: 20
+                    type: array
+                    x-kubernetes-list-type: set
+                type: object
+              suspended:
+                description: |-
+                  Suspended, when true, scales the instance to zero replicas and removes
+                  ingress routing. The instance data (PVC) is preserved. Set this field
+                  to restrict access for a user without deleting their instance.
+                  Default: false.
+                type: boolean
+              tailscale:
+                description: |-
+                  Tailscale configures the Tailscale mesh VPN sidecar for this instance.
+                  When set, the operator reads the auth key from the referenced Secret
+                  and passes it to the OpenClaw Helm chart. Other Tailscale settings
+                  (hostname, serve, relaxGatewayAuth) use chart defaults and can be
+                  overridden via spec.helm.values if needed.
+                properties:
+                  authKeySecretRef:
+                    description: |-
+                      AuthKeySecretRef is the name of a Secret in the instance namespace (cetirun-<alias>)
+                      containing a Tailscale auth key under the data key "TAILSCALE_AUTH_KEY".
+                      Setting this enables Tailscale (no separate toggle).
+                    minLength: 1
+                    pattern: ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$
+                    type: string
+                required:
+                - authKeySecretRef
+                type: object
+              team:
+                description: |-
+                  Team is the name of the OpenClawTeam this instance belongs to.
+                  The operator merges team defaults (user context, AI model, skills) into
+                  the instance configuration. Per-instance fields take precedence.
+                type: string
+              user:
+                description: User information for this instance.
+                properties:
+                  alias:
+                    description: |-
+                      Alias is the user's short name, used for the namespace, hostname, and Helm release.
+                      Must be a lowercase alphanumeric string optionally separated by hyphens.
+                    pattern: ^[a-z][a-z0-9-]{0,62}$
+                    type: string
+                  displayName:
+                    description: DisplayName is the human-readable name shown in the
+                      UI.
+                    type: string
+                  email:
+                    description: Email address for notifications (optional).
+                    type: string
+                  team:
+                    description: |-
+                      Team is the user's team name.
+                      Deprecated: use spec.team instead. This field will be removed in a future version.
+                    type: string
+                required:
+                - alias
+                - displayName
+                type: object
+            required:
+            - gatewayTokenSecretRef
+            - user
+            type: object
+          status:
+            description: OpenClawInstanceStatus defines the observed state of OpenClawInstance.
+            properties:
+              accessUrl:
+                description: |-
+                  AccessURL is the HTTPS endpoint for the instance's native agent UI.
+                  Example: "https://cetirun.example.com/ui/alice/"
+                type: string
+              conditions:
+                description: Conditions contains the latest available observations
+                  of the instance's state.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              helmReleaseName:
+                description: HelmReleaseName is the Helm release name for this instance.
+                type: string
+              lastReconcileTime:
+                description: LastReconcileTime is the timestamp of the last successful
+                  reconciliation.
+                format: date-time
+                type: string
+              msteams:
+                description: MSTeams reports the observed state of Teams integration
+                  resources.
+                properties:
+                  appId:
+                    description: AppID is the Azure AD Application (client) ID, whether
+                      auto-created or from spec.
+                    type: string
+                  appNotFoundSince:
+                    description: |-
+                      AppNotFoundSince is the timestamp when the cached AppObjectID first returned
+                      a 404 from Graph API. Used to distinguish AAD eventual consistency delays
+                      (which can last up to ~15 min) from genuinely deleted apps. Cleared on
+                      successful app lookup.
+                    format: date-time
+                    type: string
+                  appObjectId:
+                    description: AppObjectID is the Azure AD Application Object ID
+                      (used for Graph API management).
+                    type: string
+                  botResourceId:
+                    description: BotResourceID is the Azure Resource Manager resource
+                      ID of the Bot Service.
+                    type: string
+                  message:
+                    description: Message provides human-readable detail about the
+                      current state.
+                    type: string
+                  servicePrincipalId:
+                    description: ServicePrincipalID is the Object ID of the service
+                      principal for the bot app.
+                    type: string
+                  state:
+                    description: State is the current state of Teams provisioning.
+                    enum:
+                    - Provisioning
+                    - PendingAppRegistration
+                    - Ready
+                    - Failed
+                    - Deleting
+                    type: string
+                type: object
+              namespace:
+                description: Namespace is the Kubernetes namespace where the instance
+                  is deployed.
+                type: string
+              observedGeneration:
+                description: ObservedGeneration is the last CR generation that was
+                  fully reconciled.
+                format: int64
+                type: integer
+              observedOperatorHash:
+                description: |-
+                  ObservedOperatorHash is a hash of the operator-level configuration (e.g. ChartVersion, DomainSuffix)
+                  that was in effect during the last successful reconciliation. A change in this hash
+                  triggers a Helm upgrade even when the CR generation has not changed.
+                type: string
+              phase:
+                description: Phase represents the current lifecycle phase.
+                enum:
+                - Pending
+                - Provisioning
+                - Ready
+                - Failed
+                - Deleting
+                - Suspended
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

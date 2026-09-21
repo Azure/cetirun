@@ -45,6 +45,14 @@ CHARTS = (
             "cookieSecret=lint-cookie-secret",
         ),
     ),
+    (
+        "app/cetirun-platform",
+        (
+            "istio.enabled=true",
+            "cetirun-operator.domainSuffix=platform.example.invalid",
+            "cetirun-portal.istio.host=portal.example.invalid",
+        ),
+    ),
 )
 
 
@@ -147,6 +155,12 @@ def chart_gate(root):
     for directory, _ in CHARTS:
         for filename in ("Chart.yaml", "values.yaml"):
             require_file(root / directory / filename)
+    platform_chart = root / "app/cetirun-platform"
+    run(
+        ["helm", "dependency", "build", "--skip-refresh", str(platform_chart)],
+        root,
+        env=offline_env(),
+    )
     for directory, values in CHARTS:
         chart = root / directory
         options = [arg for value in values for arg in ("--set-string", value)]
@@ -162,6 +176,16 @@ def chart_gate(root):
         ["bash", str(require_file(root / "scripts/cetirun-helm-test.sh"))],
         root,
         env={**offline_env(), "CHART_DIR": str(root / "app/cetirun-chart")},
+    )
+    run(
+        ["bash", str(require_file(root / "scripts/cetirun-platform-helm-test.sh"))],
+        root,
+        env={**offline_env(), "CHART_DIR": str(platform_chart)},
+    )
+    run(
+        ["bash", str(require_file(root / "scripts/cetirun-istio-helm-test.sh"))],
+        root,
+        env={**offline_env(), "CHART_DIR": str(root / "infra/istio")},
     )
 
 

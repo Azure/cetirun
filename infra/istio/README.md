@@ -110,6 +110,22 @@ helm upgrade cetirun-istio . -n cetirun-istio --reuse-values \
   --set 'authPolicy.adminAliases[1]=bob'
 ```
 
+### Portal ownership endpoint
+
+The ownership EnvoyFilter calls the Portal's `/internal/auth` endpoint before
+routing an instance path. By default, `deploy.sh` targets the standalone Portal
+at `cetirun-portal.cetirun-portal.svc.cluster.local:8081`.
+
+For the platform umbrella, set the Portal namespace before deploying Istio:
+
+```bash
+PORTAL_AUTH_NAMESPACE=cetirun-system ./deploy.sh
+```
+
+Set `PORTAL_AUTH_NAMESPACE` and `PORTAL_AUTH_SERVICE`, or use
+`PORTAL_AUTH_CLUSTER_HOST`, when the service has another location or a custom
+cluster FQDN.
+
 ### Exempt Prefixes
 
 The chart uses two separate exemption lists for fine-grained control:

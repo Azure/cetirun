@@ -120,9 +120,10 @@ kubectl describe node <node-name> | grep -A5 Taints
 
 ## Step 1 — Apply Cluster Prerequisites
 
-Run once per cluster before installing the operator. The script applies CRD, checks
-StorageClass, applies Istio Gateway (if Istio is present), and installs the operator
-via Helm. Every step is idempotent and safe to re-run.
+Run once per cluster before installing the operator. The script checks the
+StorageClass and Istio Gateway (if Istio is present), then installs the operator
+via Helm. The chart creates the CetiRun CRDs on its first installation. Every
+step is idempotent and safe to re-run.
 
 ```bash
 cd app/cetirun-operator
@@ -143,6 +144,9 @@ helm install cetirun-operator app/cetirun-operator/chart \
   --set image.repository=... \
   --set image.tag=v... \
   --set leaderElection=true   # set true for production multi-replica
+
+# The chart's crds/ directory creates CetiRun CRDs on first installation.
+# Helm does not upgrade or delete CRDs; schema changes require a reviewed migration.
 
 # Test cluster without access to the shared skills storage account (cetirunskills):
 # Disable shared skills via spec.helm.values in the instance CR (see sample-alice.yaml)

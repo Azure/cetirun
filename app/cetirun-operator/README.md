@@ -62,6 +62,22 @@ The operator Helm chart is published to Azure Container Registry as an OCI artif
 oci://cetirun.azurecr.io/helm/cetirun-operator
 ```
 
+The chart packages the generated CetiRun CRDs in `chart/crds/`. Helm creates
+them before the Operator resources on the first installation. Helm does not
+upgrade or delete CRDs; perform a reviewed CRD migration before an Operator
+release that changes their schemas.
+
+When installing the Operator chart directly with a Gateway workload outside the
+Gateway resource namespace, set the runtime NetworkPolicy ingress namespace as
+well:
+
+```bash
+helm upgrade --install cetirun-operator app/cetirun-operator/chart \
+  --namespace cetirun-system \
+  --set-string istioGateway=gateway-resources/cetirun-gateway \
+  --set-string cetirun.helmValues.networkPolicy.istioIngressNamespace=gateway-workloads
+```
+
 ### Publish to ACR
 
 ```bash

@@ -1,0 +1,35 @@
+# CetiRun platform umbrella defaults. This chart deliberately does not own
+# managed Istio, credentials, certificates, agent instances, or their data.
+
+istio:
+  # A separately managed cetirun-istio release must be ready before installing
+  # this chart. The deployment helper checks these references against the API.
+  enabled: false
+  oauth2Proxy:
+    name: oauth2-proxy
+    namespace: cetirun-istio
+
+cetirun-operator:
+  enabled: true
+  namespace: cetirun-system
+  # Gateway used by instance VirtualServices. It must match the Portal gateway.
+  istioGateway: "aks-istio-ingress/cetirun-gateway"
+  cetirun:
+    helmValues:
+      # Namespace that contains the ingress Gateway workload allowed by instance
+      # NetworkPolicies. It must match the namespace in istioGateway.
+      networkPolicy:
+        istioIngressNamespace: aks-istio-ingress
+  # Required for instance URLs and VirtualServices. The deployment helper sets
+  # this from DOMAIN.
+  domainSuffix: ""
+
+cetirun-portal:
+  enabled: true
+  istio:
+    host: ""
+    # Gateway and source identity used by the portal's VirtualService and
+    # AuthorizationPolicy. They must reference the separately managed gateway.
+    gateway: "aks-istio-ingress/cetirun-gateway"
+    gatewayNamespace: aks-istio-ingress
+    gatewayServiceAccount: aks-istio-ingressgateway-external

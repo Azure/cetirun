@@ -9,7 +9,10 @@ Development, build, and release scripts for CetiRun.
 | `cetirun-docker-build.sh` | Local Docker build for CetiRun agent image |
 | `cetirun-helm-lint.sh` | Lint CetiRun chart values/templates |
 | `cetirun-helm-test.sh` | Render test scenarios for CetiRun chart |
+| `cetirun-istio-helm-test.sh` | Render the Istio chart's portal ownership target defaults and overrides |
 | `cetirun-helm-release.sh` | Lint/package CetiRun chart and push Helm OCI artifact to ACR |
+| `platform-helm-release.sh` | Lint/package the self-contained platform umbrella chart and push it to ACR |
+| `cetirun-platform-deploy.sh` | Install the local platform umbrella after verifying independent Istio prerequisites |
 | `operator-docker-build.sh` | Build and push operator container image to ACR |
 | `operator-helm-release.sh` | Lint/package operator chart and push Helm OCI artifact to ACR |
 | `portal-docker-build.sh` | Build and push portal container image to ACR |
