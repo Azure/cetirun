@@ -11,7 +11,7 @@ import (
 
 // FICIssuerIDs maps Azure AD tenant IDs to their pre-approved FIC Issuer IDs.
 // These are required for the Graph beta API trustedIssuer@odata.bind property
-// when creating Federated Identity Credentials in Microsoft productivity tenants.
+// when a tenant requires a trusted issuer for Federated Identity Credentials.
 //
 // Populated from the FIC_ISSUER_IDS environment variable, which should be a
 // comma-separated list of tenant-id=issuer-id pairs, or a JSON object.

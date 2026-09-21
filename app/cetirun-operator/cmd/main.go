@@ -96,7 +96,7 @@ func main() {
 		Version: chartVersion,
 	}
 	// Extract the registry hostname from the chart repo URL (e.g.
-	// "oci://cetiruntest.azurecr.io/helm/cetirun" → "cetiruntest.azurecr.io").
+	// "oci://registry.example.com/helm/cetirun" → "registry.example.com").
 	// This is passed to the reconciler to override the chart's default
 	// image.repository so that all clusters pull images from the correct ACR.
 	chartRegistry := extractRegistryHost(chartRepoURL)
@@ -219,7 +219,7 @@ func getEnvOrDefault(key, defaultVal string) string {
 }
 
 // extractRegistryHost extracts the registry hostname from an OCI chart URL.
-// Example: "oci://cetiruntest.azurecr.io/helm/cetirun" → "cetiruntest.azurecr.io".
+// Example: "oci://registry.example.com/helm/cetirun" → "registry.example.com".
 // Returns empty string if the URL cannot be parsed or the host is empty.
 func extractRegistryHost(repoURL string) string {
 	// Replace oci:// with https:// so net/url can parse it.

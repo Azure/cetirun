@@ -20,17 +20,15 @@ build_hermes="${BUILD_HERMES:-false}"
 image_ref="${registry}/${image_name}:${image_tag}"
 base_image_ref="${BASE_IMAGE:-${registry}/cetirun-base:${image_tag}}"
 
-# Default to the CFS-protected corporate feed. Callers can explicitly override
-# this when their environment is configured with a different registry.
-npm_registry="${NPM_REGISTRY:-https://packagefeedproxy.microsoft.io/npm/}"
+# Package registries remain independently configurable for each build path.
+npm_registry="${NPM_REGISTRY:-https://registry.npmjs.org/}"
 npm_registry_args=(--build-arg "NPM_REGISTRY=${npm_registry}")
 # Match the public Dockerfile default; private deployment environments can
 # explicitly select their own package proxy with PYPI_INDEX_URL.
 pypi_index_url="${PYPI_INDEX_URL:-https://pypi.org/simple/}"
 pypi_index_args=(--build-arg "PYPI_INDEX_URL=${pypi_index_url}")
 
-# The corporate feed blocks OpenClaw package ingestion. Keep the exception
-# separate so other images continue to use the corporate feed by default.
+# Preserve the separate OpenClaw override for deployments using different mirrors.
 openclaw_npm_registry="${OPENCLAW_NPM_REGISTRY:-https://registry.npmjs.org/}"
 openclaw_npm_registry_args=(--build-arg "NPM_REGISTRY=${openclaw_npm_registry}")
 

@@ -6,23 +6,43 @@
 # and create/patch an OpenClawInstance CR.
 #
 # Usage:
-#   scripts/openclaw-dev-deploy.sh <alias>
-#   scripts/openclaw-dev-deploy.sh <alias> --skip-build   # reuse existing images
-#   scripts/openclaw-dev-deploy.sh <alias> --apply-only    # only apply the CR (no build/push)
+#   scripts/cetirun-dev-deploy.sh <alias>
+#   scripts/cetirun-dev-deploy.sh <alias> --skip-build   # reuse existing images
+#   scripts/cetirun-dev-deploy.sh <alias> --apply-only    # only apply the CR (no build/push)
 #
 # Environment overrides:
-#   REGISTRY         ACR hostname         (default: cetiruntest.azurecr.io)
+#   REGISTRY         ACR hostname         (required)
 #   IMAGE_TAG        image tag override    (default: dev-<branch>-<sha>)
 #   CHART_VERSION    chart version override(default: 0.0.0-dev-<branch>-<sha>)
 set -euo pipefail
+
+usage() {
+  echo "Usage: REGISTRY=<registry> $0 <alias> [--skip-build|--apply-only]"
+}
+if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
+  usage
+  exit 0
+fi
 
 script_dir="$(cd "$(dirname "$0")" && pwd)"
 repo_root="$(cd "$script_dir/.." && pwd)"
 context_dir="${repo_root}/app/cetirun-chart"
 
 # ── Args ──────────────────────────────────────────────────────────────────
-ALIAS="${1:-peni}"
+ALIAS="${1:?Usage: cetirun-dev-deploy.sh <alias> [--skip-build|--apply-only]}"
 MODE="${2:-full}"  # full | --skip-build | --apply-only
+if [ "$#" -gt 2 ]; then
+  usage >&2
+  exit 1
+fi
+case "$MODE" in
+  full|--skip-build|--apply-only) ;;
+  *) usage >&2; exit 1 ;;
+esac
+if [[ ! "$ALIAS" =~ ^[a-z][a-z0-9-]{0,62}$ ]]; then
+  echo "ERROR: alias must match ^[a-z][a-z0-9-]{0,62}$" >&2
+  exit 1
+fi
 
 # When skipping build, IMAGE_TAG must be set explicitly to reuse existing images.
 if [ "$MODE" = "--skip-build" ] && [ -z "${IMAGE_TAG:-}" ]; then
@@ -31,7 +51,7 @@ if [ "$MODE" = "--skip-build" ] && [ -z "${IMAGE_TAG:-}" ]; then
   exit 1
 fi
 
-registry="${REGISTRY:-cetiruntest.azurecr.io}"
+registry="${REGISTRY:?Set REGISTRY to your container registry hostname}"
 
 # ── Tag generation ────────────────────────────────────────────────────────
 branch=$(git -C "$repo_root" rev-parse --abbrev-ref HEAD | sed 's|[/:]|-|g' | head -c 40)
@@ -88,7 +108,6 @@ spec:
   user:
     alias: "${ALIAS}"
     displayName: "${ALIAS}"
-    team: "aks"
   helm:
     version: "${chart_version}"
     values:

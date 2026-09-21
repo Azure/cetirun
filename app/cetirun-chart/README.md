@@ -52,7 +52,7 @@ scripts/cetirun-helm-test.sh
 # Build Docker image (default: cetirun.azurecr.io/openclaw-gateway:latest)
 scripts/cetirun-docker-build.sh
 
-# Override the default corporate npm mirror when a different registry is configured.
+# Override the package mirror for base and Hermes image build stages.
 NPM_REGISTRY=https://packages.example.invalid/npm/ scripts/cetirun-docker-build.sh
 
 # Override the public registry used only for the OpenClaw image.
@@ -62,17 +62,18 @@ OPENCLAW_NPM_REGISTRY=https://packages.example.invalid/npm/ scripts/cetirun-dock
 PUSH=true scripts/cetirun-docker-build.sh
 ```
 
-`NPM_REGISTRY` defaults to the CFS-protected corporate feed,
-`https://packagefeedproxy.microsoft.io/npm/`, and is passed to every image
-build stage other than OpenClaw. Runtime-installed npm skills use the same feed
-through the default `skills.npmRegistry` value. Override either value only when
-the configured registry complies with the calling environment's package-management
-policy.
+`NPM_REGISTRY` and `OPENCLAW_NPM_REGISTRY` both default to
+`https://registry.npmjs.org/`. The latter remains a separate override for
+OpenClaw image builds. Runtime-installed npm skills use `skills.npmRegistry`,
+with the same public default. CI and release workflows accept the corresponding
+repository or organization variables.
 
-OpenClaw image builds use `OPENCLAW_NPM_REGISTRY`, defaulting to
-`https://registry.npmjs.org/` because the corporate feed currently blocks
-OpenClaw package ingestion. CI and release workflows can set a repository or
-organization variable of that name after an approved mirror is available.
+Hermes's `PYPI_INDEX_URL` build argument defaults to `https://pypi.org/simple/`.
+
+The Azure DevOps Git credential helper configures only `dev.azure.com`.
+`openclaw.git.azureDevOps.enabled=false` skips setup without deleting existing
+configuration. Configure additional hosts in the instance's Git configuration;
+initialization preserves those entries.
 
 ## Architecture
 

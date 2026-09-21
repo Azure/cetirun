@@ -104,10 +104,10 @@ azure:
   botNamePrefix: ""
   # -- Azure AD tenant ID for bot app registrations.
   tenantId: ""
-  # -- Service Tree ID for AAD app registrations (required in MSFT corp tenant).
+  # -- Optional serviceManagementReference for AAD app registrations.
   serviceTreeId: ""
   # -- Client ID of the operator's managed identity (enables workload identity).
   clientId: ""
   # -- FIC Issuer IDs mapping (JSON object: {"tenantId":"issuerId",...}).
-  # Required for Federated Identity Credential setup in productivity tenants.
+  # Used when the tenant requires a trusted issuer for Federated Identity Credentials.
   ficIssuerIds: ""

@@ -23,6 +23,18 @@ Keep both directories in the same checkout when building or testing the portal.
 Not every script is a development check: deployment, release, and real-cluster
 test scripts require a separately authorized environment.
 
+### Deployment-specific configuration
+
+`scripts/cetirun-dev-deploy.sh` requires an explicit `REGISTRY` and alias
+argument and no longer inserts a default user team label; use `--help` for its
+modes. Other build, deployment, and Helm publishing helpers retain their
+registry defaults and overrides.
+
+Package defaults use public npm and PyPI. The existing `NPM_REGISTRY`,
+`OPENCLAW_NPM_REGISTRY`, `skills.npmRegistry`, and `PYPI_INDEX_URL` inputs remain
+available for alternate mirrors. Image tags, chart versions, and the
+`BASE_IMAGE` override remain available.
+
 ## Tools and setup
 
 Install tools only for the component you are changing:

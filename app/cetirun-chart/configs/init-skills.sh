@@ -8,8 +8,7 @@
 #   NPM_PACKAGES   space-separated list of npm package specs (e.g. "matrix @scope/foo@1.2.3")
 #   SKILLS_DIR     target directory on the PVC (e.g. /home-data/.cetirun/skills/npm)
 #   NPM_CACHE_DIR  working directory + npm cache root on the PVC
-#   NPM_REGISTRY   package registry; defaults to the CFS-protected corporate
-#                  feed and may be overridden by the deployment environment
+#   NPM_REGISTRY   package registry; defaults to the public npm registry
 #
 # Behavior:
 #   - For each package, install into NPM_CACHE_DIR/<dir>/, then copy
@@ -22,7 +21,7 @@ set -u
 : "${NPM_PACKAGES:=}"
 : "${SKILLS_DIR:=/home-data/.cetirun/skills/npm}"
 : "${NPM_CACHE_DIR:=/home-data/.cetirun/.npm-cache}"
-: "${NPM_REGISTRY:=https://packagefeedproxy.microsoft.io/npm/}"
+: "${NPM_REGISTRY:=https://registry.npmjs.org/}"
 
 if [ -n "$NPM_REGISTRY" ]; then
   export npm_config_registry="$NPM_REGISTRY"

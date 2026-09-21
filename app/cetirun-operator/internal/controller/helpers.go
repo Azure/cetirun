@@ -93,7 +93,7 @@ func instanceKey(instanceName string) string {
 }
 
 // accessURLPathBased returns the canonical native UI URL for an instance.
-// e.g. "https://cetiruntest.aksdev.io/ui/alice-work/"
+// e.g. "https://cetirun.example.com/ui/alice-work/"
 func accessURLPathBased(instanceName, domainSuffix string) string {
 	return fmt.Sprintf("https://%s/ui/%s/", domainSuffix, instanceName)
 }
