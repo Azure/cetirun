@@ -66,6 +66,7 @@ helm_args+=(
   --set-string "cetirun-operator.domainSuffix=${domain}"
   --set-string "cetirun-operator.istioRevision=${istio_revision}"
   --set-string "cetirun-operator.istioGateway=${gateway_namespace}/${gateway_name}"
+  --set-string "cetirun-operator.cetirun.helmValues.networkPolicy.istioIngressNamespace=${gateway_namespace}"
   --set-string "cetirun-portal.istio.host=${domain}"
   --set-string "cetirun-portal.istio.gateway=${gateway_namespace}/${gateway_name}"
   --set-string "cetirun-portal.istio.gatewayNamespace=${gateway_namespace}"

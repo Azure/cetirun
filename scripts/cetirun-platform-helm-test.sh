@@ -70,6 +70,7 @@ done
 echo "==> helm template platform (custom gateway)"
 output=$(helm template platform "${chart_dir}" "${base_args[@]}" \
   --set-string cetirun-operator.istioGateway=custom-namespace/custom-gateway \
+  --set-string cetirun-operator.cetirun.helmValues.networkPolicy.istioIngressNamespace=custom-namespace \
   --set-string cetirun-portal.istio.gateway=custom-namespace/custom-gateway \
   --set-string cetirun-portal.istio.gatewayNamespace=custom-namespace \
   --set-string cetirun-portal.istio.gatewayServiceAccount=custom-gateway-sa)
@@ -87,6 +88,10 @@ grep -q 'cluster.local/ns/custom-namespace/sa/custom-gateway-sa' <<< "${output}"
 }
 grep -q -- '--istio-gateway=custom-namespace/custom-gateway' <<< "${output}" || {
   echo "FAIL: operator did not use the configured gateway" >&2
+  exit 1
+}
+grep -q 'istioIngressNamespace\\":\\"custom-namespace' <<< "${output}" || {
+  echo "FAIL: operator did not pass the custom ingress namespace to instance NetworkPolicies" >&2
   exit 1
 }
 

@@ -2,7 +2,7 @@ apiVersion: v2
 name: cetirun-platform
 description: Helm umbrella chart for CetiRun platform control-plane components
 type: application
-version: 0.1.1
+version: 0.1.0
 appVersion: "0.1.0"
 keywords:
   - cetirun
@@ -10,7 +10,7 @@ keywords:
   - kubernetes
 dependencies:
   - name: cetirun-operator
-    version: 0.1.1
+    version: 0.1.0
     repository: file://../cetirun-operator/chart
     condition: cetirun-operator.enabled
   - name: cetirun-portal

@@ -21,6 +21,8 @@ helm upgrade --install cetirun-platform app/cetirun-platform \
   --set istio.enabled=true \
   --set-string cetirun-operator.domainSuffix=cetirun.example.com \
   --set-string "cetirun-operator.istioRevision=${ISTIO_REVISION}" \
+  --set-string cetirun-operator.istioGateway=aks-istio-ingress/cetirun-gateway \
+  --set-string cetirun-operator.cetirun.helmValues.networkPolicy.istioIngressNamespace=aks-istio-ingress \
   --set cetirun-portal.istio.host=cetirun.example.com \
   --set cetirun-portal.istio.gateway=aks-istio-ingress/cetirun-gateway \
   --set cetirun-portal.istio.gatewayNamespace=aks-istio-ingress \
@@ -34,7 +36,10 @@ kubectl get pods -n cetirun-system -l app.kubernetes.io/name=cetirun-portal \
 The final command verifies that the Portal has the Istio sidecar required for
 its authorization policies. Set `cetirun-operator.istioGateway` to the same
 `<namespace>/<name>` as `cetirun-portal.istio.gateway` when using a custom
-gateway.
+gateway. Also set
+`cetirun-operator.cetirun.helmValues.networkPolicy.istioIngressNamespace` to
+that gateway workload's namespace; otherwise the instance NetworkPolicies block
+ingress traffic.
 
 Helm creates CRDs from a chart's `crds/` directory but deliberately does not
 upgrade or delete them. Upgrade CRD schemas through an explicit, reviewed
