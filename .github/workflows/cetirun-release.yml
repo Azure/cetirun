@@ -83,7 +83,7 @@ jobs:
           driver: docker
 
       - name: Build base image (no push)
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: app/cetirun-chart
           file: app/cetirun-chart/Dockerfile.base
@@ -93,7 +93,7 @@ jobs:
             NPM_REGISTRY=${{ env.NPM_REGISTRY }}
 
       - name: Build OpenClaw image (no push)
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: app/cetirun-chart
           file: app/cetirun-chart/Dockerfile.openclaw
@@ -104,7 +104,7 @@ jobs:
           tags: openclaw-gateway:validation
 
       - name: Build Hermes image (no push)
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: app/cetirun-chart
           file: app/cetirun-chart/Dockerfile.hermes
@@ -114,7 +114,7 @@ jobs:
           tags: hermes-gateway:validation
 
       - name: Build desktop sidecar image (no push)
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: app/cetirun-chart
           file: app/cetirun-chart/Dockerfile.desktop
@@ -148,7 +148,7 @@ jobs:
           password: ${{ secrets.ACR_PASSWORD }}
 
       - name: Build and push base image
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: app/cetirun-chart
           file: app/cetirun-chart/Dockerfile.base
@@ -163,7 +163,7 @@ jobs:
             ${{ secrets.ACR_REGISTRY }}/cetirun-base:latest
 
       - name: Build and push OpenClaw image
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: app/cetirun-chart
           file: app/cetirun-chart/Dockerfile.openclaw
@@ -179,7 +179,7 @@ jobs:
             ${{ secrets.ACR_REGISTRY }}/openclaw-gateway:latest
 
       - name: Build and push Hermes image
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: app/cetirun-chart
           file: app/cetirun-chart/Dockerfile.hermes
@@ -194,7 +194,7 @@ jobs:
             ${{ secrets.ACR_REGISTRY }}/hermes-gateway:latest
 
       - name: Build and push desktop sidecar image
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: app/cetirun-chart
           file: app/cetirun-chart/Dockerfile.desktop

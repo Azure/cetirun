@@ -49,7 +49,7 @@ jobs:
         run: python3 -m unittest discover -s scripts/tests -v
 
       - name: Build base image
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: app/cetirun-chart
           file: app/cetirun-chart/Dockerfile.base
@@ -59,7 +59,7 @@ jobs:
             NPM_REGISTRY=${{ env.NPM_REGISTRY }}
 
       - name: Build OpenClaw image
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: app/cetirun-chart
           file: app/cetirun-chart/Dockerfile.openclaw
@@ -84,7 +84,7 @@ jobs:
             openclaw-gateway:validation -m unittest discover -s /tests -v
 
       - name: Build Hermes image
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: app/cetirun-chart
           file: app/cetirun-chart/Dockerfile.hermes
@@ -94,7 +94,7 @@ jobs:
           tags: hermes-gateway:validation
 
       - name: Build desktop sidecar image
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: app/cetirun-chart
           file: app/cetirun-chart/Dockerfile.desktop
