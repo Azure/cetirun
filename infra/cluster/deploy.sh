@@ -8,6 +8,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BICEP_FILE="${SCRIPT_DIR}/main.bicep"
 PARAM_FILE="${PARAM_FILE:-${SCRIPT_DIR}/main.bicepparam}"
 DEPLOYMENT_NAME="cetirun-cluster-$(date +%Y%m%d%H%M%S)"
+# Set to true only for an explicitly authorized bootstrap environment where
+# local AKS admin accounts remain enabled. Default user credentials preserve
+# the normal Azure RBAC path.
+AKS_ADMIN_CREDENTIALS="${AKS_ADMIN_CREDENTIALS:-false}"
 
 RG_NAME="${RESOURCE_GROUP:?RESOURCE_GROUP is required}"
 LOCATION="${LOCATION:?LOCATION is required}"
@@ -63,9 +67,14 @@ az aks update \
   --yes
 
 # Fetch kubeconfig
+credential_args=()
+if [[ "${AKS_ADMIN_CREDENTIALS}" == "true" ]]; then
+  credential_args+=(--admin)
+fi
 az aks get-credentials \
   --resource-group "$RG_NAME" \
   --name "$CLUSTER_NAME" \
+  "${credential_args[@]}" \
   --overwrite-existing
 
 # Verify
