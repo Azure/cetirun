@@ -13,6 +13,7 @@ release_name="${RELEASE_NAME:-cetirun-platform}"
 values_file="${VALUES_FILE:-}"
 gateway_name="${ISTIO_GATEWAY_NAME:-cetirun-gateway}"
 gateway_namespace="${ISTIO_GATEWAY_NAMESPACE:-aks-istio-ingress}"
+gateway_service_account="${ISTIO_GATEWAY_SERVICE_ACCOUNT:-aks-istio-ingressgateway-external}"
 oauth2_proxy_name="${OAUTH2_PROXY_NAME:-oauth2-proxy}"
 oauth2_proxy_namespace="${OAUTH2_PROXY_NAMESPACE:-cetirun-istio}"
 
@@ -44,11 +45,12 @@ helm_args=(
   upgrade --install "${release_name}" "${chart_dir}"
   --namespace "${namespace}"
   --set istio.enabled=true
-  --set-string "istio.gateway.name=${gateway_name}"
-  --set-string "istio.gateway.namespace=${gateway_namespace}"
   --set-string "istio.oauth2Proxy.name=${oauth2_proxy_name}"
   --set-string "istio.oauth2Proxy.namespace=${oauth2_proxy_namespace}"
   --set-string "cetirun-operator.namespace=${namespace}"
+  --set-string "cetirun-portal.istio.gateway=${gateway_namespace}/${gateway_name}"
+  --set-string "cetirun-portal.istio.gatewayNamespace=${gateway_namespace}"
+  --set-string "cetirun-portal.istio.gatewayServiceAccount=${gateway_service_account}"
 )
 if [ -n "${values_file}" ]; then
   helm_args+=(--values "${values_file}")

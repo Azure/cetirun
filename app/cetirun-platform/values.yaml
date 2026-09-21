@@ -5,9 +5,6 @@ istio:
   # A separately managed cetirun-istio release must be ready before installing
   # this chart. The deployment helper checks these references against the API.
   enabled: false
-  gateway:
-    name: cetirun-gateway
-    namespace: aks-istio-ingress
   oauth2Proxy:
     name: oauth2-proxy
     namespace: cetirun-istio
@@ -20,3 +17,8 @@ cetirun-portal:
   enabled: true
   istio:
     host: ""
+    # Gateway and source identity used by the portal's VirtualService and
+    # AuthorizationPolicy. They must reference the separately managed gateway.
+    gateway: "aks-istio-ingress/cetirun-gateway"
+    gatewayNamespace: aks-istio-ingress
+    gatewayServiceAccount: aks-istio-ingressgateway-external

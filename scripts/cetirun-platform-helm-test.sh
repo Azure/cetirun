@@ -39,6 +39,24 @@ grep -q 'namespace: default' <<< "${output}" || {
   exit 1
 }
 
+echo "==> helm template platform (custom gateway)"
+output=$(helm template platform "${chart_dir}" "${base_args[@]}" \
+  --set-string cetirun-portal.istio.gateway=custom-namespace/custom-gateway \
+  --set-string cetirun-portal.istio.gatewayNamespace=custom-namespace \
+  --set-string cetirun-portal.istio.gatewayServiceAccount=custom-gateway-sa)
+grep -q -- '- custom-namespace/custom-gateway' <<< "${output}" || {
+  echo "FAIL: portal VirtualService did not use the configured gateway" >&2
+  exit 1
+}
+grep -q 'kubernetes.io/metadata.name: custom-namespace' <<< "${output}" || {
+  echo "FAIL: portal policies did not use the configured gateway namespace" >&2
+  exit 1
+}
+grep -q 'cluster.local/ns/custom-namespace/sa/custom-gateway-sa' <<< "${output}" || {
+  echo "FAIL: portal AuthorizationPolicy did not use the configured gateway service account" >&2
+  exit 1
+}
+
 echo "==> helm template platform (operator only)"
 output=$(helm template platform "${chart_dir}" "${base_args[@]}" --set cetirun-portal.enabled=false)
 if grep -q 'name: cetirun-portal' <<< "${output}"; then
