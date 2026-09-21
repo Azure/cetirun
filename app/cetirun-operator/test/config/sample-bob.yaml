@@ -3,6 +3,8 @@ kind: Agent
 metadata:
   name: bob
 spec:
+  agent:
+    type: hermes
   gatewayTokenSecretRef: "gateway-token"
   user:
     alias: bob

@@ -4,6 +4,7 @@ The operator reconciles `Agent` and `Team` resources in
 `cetirun.microsoft.com/v1alpha1`.
 
 - [Custom-resource reference](../../site/content/en/docs/reference/crds.md)
+- [Agent Harness contract](../../site/content/en/docs/reference/agent-harness.md)
 - [Operator chart configuration](../../site/content/en/docs/reference/helm.md#operator-chart)
 - [Architecture and resource names](../../site/content/en/docs/concepts/architecture.md)
 - [Platform installation prerequisites](../../site/content/en/docs/getting-started/platform.md)

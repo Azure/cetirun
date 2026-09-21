@@ -83,5 +83,5 @@ features:
   maxInstancesPerUser: 1
   # -- Agent types users can create from the portal. Supported values: openclaw, hermes.
   allowedAgentTypes:
-    - openclaw
     - hermes
+    - openclaw

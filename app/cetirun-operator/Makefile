@@ -12,7 +12,9 @@ CGO_ENABLED ?= 0
 CONTROLLER_GEN_VERSION := v0.21.0
 CONTROLLER_GEN ?= controller-gen
 
-.PHONY: all build test vet fmt lint docker-build docker-push install-crd generate manifests check-controller-gen sync-crds check-crds
+.PHONY: all build test vet fmt lint docker-build docker-push install-crd \
+	tools generate manifests check-controller-gen sync-crds check-crds \
+	verify-generated test-envtest
 
 CRD_SOURCE_DIR := config/crd/bases
 CRD_CHART_DIR := chart/crds
@@ -49,6 +51,10 @@ docker-build:
 docker-push:
 	docker push $(IMG)
 
+## Explicit tool setup (network access may be required; not an offline check).
+tools:
+	GOBIN="$(CURDIR)/bin" GOTOOLCHAIN=local go install sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_GEN_VERSION)
+
 ## Generate DeepCopy methods from API types
 generate: check-controller-gen
 	$(CONTROLLER_GEN) object paths="./api/..."
@@ -73,6 +79,14 @@ check-crds:
 check-controller-gen:
 	@test "$$($(CONTROLLER_GEN) --version)" = "Version: $(CONTROLLER_GEN_VERSION)" || \
 		{ echo "Install controller-gen $(CONTROLLER_GEN_VERSION) or set CONTROLLER_GEN to its path" >&2; exit 1; }
+
+verify-generated: generate manifests
+	git diff --exit-code -- api/v1alpha1/zz_generated.deepcopy.go $(CRD_SOURCE_DIR) $(CRD_CHART_DIR)
+
+## Uses only a local API server and etcd; never connects to an existing cluster.
+test-envtest:
+	@test -n "$(KUBEBUILDER_ASSETS)" && test -x "$(KUBEBUILDER_ASSETS)/kube-apiserver" && test -x "$(KUBEBUILDER_ASSETS)/etcd" || { echo "Set KUBEBUILDER_ASSETS to preinstalled envtest binaries"; exit 1; }
+	USE_EXISTING_CLUSTER=false go test -tags=envtest ./test/integration -count=1 -v
 
 ## Clean build artifacts
 clean:

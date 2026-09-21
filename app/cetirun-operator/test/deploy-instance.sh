@@ -99,6 +99,8 @@ kind: Agent
 metadata:
   name: ${ALIAS}
 spec:
+  agent:
+    type: hermes
   gatewayTokenSecretRef: "gateway-token"
   user:
     alias: "${ALIAS}"

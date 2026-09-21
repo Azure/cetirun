@@ -86,6 +86,7 @@ func newTestInstance(alias, displayName, team, gatewaySecret string) *cetirunv1a
 	return &cetirunv1alpha1.Agent{
 		ObjectMeta: metav1.ObjectMeta{Name: alias},
 		Spec: cetirunv1alpha1.AgentSpec{
+			Agent: cetirunv1alpha1.HarnessSpec{Type: cetirunv1alpha1.AgentTypeOpenClaw},
 			User: cetirunv1alpha1.UserSpec{
 				Alias:       alias,
 				DisplayName: displayName,
@@ -138,12 +139,12 @@ func TestBuildHelmValues_NonCopilotProviderPreservesHelmModel(t *testing.T) {
 
 func TestBuildHelmValues_AgentType(t *testing.T) {
 	instance := newTestInstance("alice", "Alice Smith", "aks-core", "gateway-token")
-	instance.Spec.AgentType = cetirunv1alpha1.AgentTypeHermes
+	instance.Spec.Agent.Type = cetirunv1alpha1.AgentTypeHermes
 	values, err := buildHelmValues(instance, nil, "example.com", "", nil, "")
 	if err != nil {
 		t.Fatalf("buildHelmValues error: %v", err)
 	}
-	if got := values["agentType"]; got != cetirunv1alpha1.AgentTypeHermes {
+	if got := values["agentType"]; got != string(cetirunv1alpha1.AgentTypeHermes) {
 		t.Errorf("agentType = %q, want %q", got, cetirunv1alpha1.AgentTypeHermes)
 	}
 }
@@ -170,7 +171,7 @@ func TestBuildHelmValues_OpenClawControlUIBasePath(t *testing.T) {
 
 func TestBuildHelmValues_HermesDoesNotSetOpenClawControlUIBasePath(t *testing.T) {
 	instance := newTestInstance("alice", "Alice Smith", "aks-core", "gateway-token")
-	instance.Spec.AgentType = cetirunv1alpha1.AgentTypeHermes
+	instance.Spec.Agent.Type = cetirunv1alpha1.AgentTypeHermes
 
 	values, err := buildHelmValues(instance, nil, "example.com", "", nil, "")
 	if err != nil {
@@ -568,7 +569,7 @@ func TestBuildVirtualService_UsesConfiguredGateway(t *testing.T) {
 func TestBuildVirtualService_HermesRoutes(t *testing.T) {
 	instance := newTestInstance("alice", "Alice Smith", "aks-core", "gateway-token")
 	instance.Name = "alice"
-	instance.Spec.AgentType = cetirunv1alpha1.AgentTypeHermes
+	instance.Spec.Agent.Type = cetirunv1alpha1.AgentTypeHermes
 
 	vs := buildVirtualService(instance, "example.com", DefaultIstioGateway)
 
@@ -1244,7 +1245,8 @@ func TestBuildVirtualServicePathBased(t *testing.T) {
 			Name: "alice-work",
 		},
 		Spec: cetirunv1alpha1.AgentSpec{
-			User: cetirunv1alpha1.UserSpec{Alias: "alice"},
+			Agent: cetirunv1alpha1.HarnessSpec{Type: cetirunv1alpha1.AgentTypeOpenClaw},
+			User:  cetirunv1alpha1.UserSpec{Alias: "alice"},
 		},
 	}
 	domain := "cetirun.example.com"
@@ -1542,7 +1544,7 @@ func TestBuildHelmValues_SkillOverrides(t *testing.T) {
 // so the operator must not branch on agentType when applying team data.
 func TestBuildHelmValues_WithTeam_Hermes(t *testing.T) {
 	inst := newTestInstance("bob", "Bob", "", "gateway-token")
-	inst.Spec.AgentType = cetirunv1alpha1.AgentTypeHermes
+	inst.Spec.Agent.Type = cetirunv1alpha1.AgentTypeHermes
 	team := &cetirunv1alpha1.Team{
 		Spec: cetirunv1alpha1.TeamSpec{
 			Defaults: cetirunv1alpha1.TeamDefaultsSpec{
@@ -1567,7 +1569,7 @@ func TestBuildHelmValues_WithTeam_Hermes(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if vals["agentType"] != cetirunv1alpha1.AgentTypeHermes {
+	if vals["agentType"] != string(cetirunv1alpha1.AgentTypeHermes) {
 		t.Errorf("agentType = %v, want hermes", vals["agentType"])
 	}
 

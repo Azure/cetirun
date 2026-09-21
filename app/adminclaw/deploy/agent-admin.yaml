@@ -1,9 +1,11 @@
 # AdminClaw — Agent CR for operator-managed deployment.
+# Hermes is the default for new deployments. Keep the existing Agent type when
+# reapplying to an existing deployment; Agent types are immutable.
 # The operator will:
 #   1. Ensure namespace cetirun-admin exists (with Istio sidecar label)
 #   2. Create gateway token Secret (gateway-token)
-#   3. Deploy openclaw chart as Helm release "openclaw-admin" in cetirun-admin
-#   4. Create VirtualService "cetirun-admin" routing admin.<your-domain>
+#   3. Deploy the Hermes runtime as Helm release "openclaw-admin" in cetirun-admin
+#   4. Create VirtualService "cetirun-admin" routing /ui/admin/
 #
 # Pre-requisites (applied by setup.sh before this CR):
 #   - Namespace cetirun-admin (created first so SA can land in it)
@@ -15,6 +17,8 @@ kind: Agent
 metadata:
   name: admin
 spec:
+  agent:
+    type: hermes
   gatewayTokenSecretRef: "gateway-token"
   helm:
     values:

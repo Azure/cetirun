@@ -199,16 +199,23 @@ exceptions in `scripts/license_headers.py` must retain their own notices.
   `zz_generated.deepcopy.go` and the YAML under `config/crd/bases/` are generated
   from those types. Include regenerated artifacts with their source changes.
 - The operator requires `controller-gen v0.21.0`. Install it separately with
-  `go install sigs.k8s.io/controller-tools/cmd/controller-gen@v0.21.0` when
-  network setup is authorized, then run
+  `make -C app/cetirun-operator tools` when network setup is authorized.
+  This installs into `app/cetirun-operator/bin`; add that directory to PATH
+  or set `CONTROLLER_GEN` to its absolute path, then run
   `GOPROXY=off GOSUMDB=off GOTOOLCHAIN=local make -C app/cetirun-operator generate manifests`.
-  Set `CONTROLLER_GEN=/path/to/controller-gen` if it is not on PATH. These
-  targets check the version and regenerate deepcopy methods and CRD YAML,
+  These targets check the version and regenerate deepcopy methods and CRD YAML,
   including the Operator chart's CRD copies, without downloading tools.
   `make -C app/cetirun-operator check-crds` checks the packaged copies.
+  `verify-generated` reruns generation and checks both copies and deepcopy
+  against Git.
   Review generator upgrades separately. Operator,
   Portal, and operations-agent RBAC remain source Helm/YAML files and must
   name the matching API resources; do not hand-edit generated output.
+- Agent API defaulting, strict decoding and CEL transitions are covered by
+  `make -C app/cetirun-operator test-envtest`. Set `KUBEBUILDER_ASSETS` to local
+  Kubernetes 1.37 test binaries prepared separately. The target starts isolated
+  API server/etcd processes, refuses missing binaries and never uses a cluster.
+  Normal `go test ./...` runs the schema/serialization tests, not envtest.
 - Helm files under `templates/` are source templates. Rendered Kubernetes
   manifests are validation output, not replacements for those templates.
 - Keep `go.mod` and `go.sum` together when dependencies change. Keep the portal's

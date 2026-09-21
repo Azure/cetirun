@@ -556,9 +556,9 @@ func (h *InstanceHandler) CreateInstance(w http.ResponseWriter, r *http.Request)
 		displayName = claims.DisplayName
 	}
 
-	agentType := req.AgentType
+	agentType := cetirunv1alpha1.AgentType(req.AgentType)
 	if agentType == "" {
-		agentType = cetirunv1alpha1.AgentTypeOpenClaw
+		agentType = cetirunv1alpha1.DefaultAgentType
 	}
 	if agentType != cetirunv1alpha1.AgentTypeOpenClaw && agentType != cetirunv1alpha1.AgentTypeHermes {
 		writeError(w, http.StatusBadRequest, "invalid_agent_type", "agentType must be openclaw or hermes")
@@ -616,7 +616,7 @@ func (h *InstanceHandler) CreateInstance(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
-	instance, err := h.Kube.CreateInstance(r.Context(), claims.Alias, displayName, req.Team, claims.Email, instanceName, agentType, req.GatewayToken, req.TailscaleAuthKey, strings.TrimSpace(req.Model), req.TeamsEnabled)
+	instance, err := h.Kube.CreateInstance(r.Context(), claims.Alias, displayName, req.Team, claims.Email, instanceName, string(agentType), req.GatewayToken, req.TailscaleAuthKey, strings.TrimSpace(req.Model), req.TeamsEnabled)
 	if err != nil {
 		if kube.IsAlreadyExists(err) {
 			writeError(w, http.StatusConflict, "instance_exists",
@@ -782,17 +782,13 @@ func (h *InstanceHandler) toInstanceResponse(ctx context.Context, instance *ceti
 	resp := InstanceResponse{
 		Alias:        instance.Spec.User.Alias,
 		InstanceName: instance.Name,
-		AgentType:    instance.Spec.AgentType,
+		AgentType:    string(instance.Spec.Agent.Type),
 		DisplayName:  instance.Spec.User.DisplayName,
 		Team:         instance.Spec.User.Team,
 		Model:        instance.Spec.Model,
 		Phase:        instance.Status.Phase,
 		CreatedAt:    instance.CreationTimestamp.UTC().Format("2006-01-02T15:04:05Z"),
 	}
-	if resp.AgentType == "" {
-		resp.AgentType = cetirunv1alpha1.AgentTypeOpenClaw
-	}
-
 	if instance.Status.LastReconcileTime != nil {
 		resp.LastReconciled = instance.Status.LastReconcileTime.UTC().Format("2006-01-02T15:04:05Z")
 	}
@@ -828,7 +824,7 @@ func (h *InstanceHandler) toInstanceResponse(ctx context.Context, instance *ceti
 			resp.GatewayToken = token
 			resp.AccessURL = instance.Status.AccessURL
 		}
-		if resp.AgentType == cetirunv1alpha1.AgentTypeHermes {
+		if instance.Spec.Agent.Type == cetirunv1alpha1.AgentTypeHermes {
 			apiServerKey, err := h.Kube.GetAPIServerKey(ctx, ns, instance.Spec.GatewayTokenSecretRef)
 			if err != nil {
 				slog.Warn("Failed to get Hermes API server key", "alias", instance.Spec.User.Alias, "error", err)

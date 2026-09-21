@@ -34,6 +34,7 @@ a public website.
 | Prepare a platform | [Install CetiRun](site/content/en/docs/getting-started/platform.md) |
 | Configure and troubleshoot a deployment | [Operations](site/content/en/docs/operations/_index.md) |
 | Look up resource fields and Helm values | [Reference](site/content/en/docs/reference/_index.md) |
+| Configure an Agent Harness | [Agent Harness](site/content/en/docs/reference/agent-harness.md) |
 | Develop, test, or improve documentation | [Contributing](site/content/en/docs/contributing/_index.md) |
 | Understand security and data flow | [Security](site/content/en/docs/security/_index.md) |
 

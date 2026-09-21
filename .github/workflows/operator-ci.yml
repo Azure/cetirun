@@ -40,6 +40,36 @@ jobs:
       - name: Run go test
         run: go test ./... -v -count=1
 
+      - name: Install CRD generator and envtest
+        env:
+          GOTOOLCHAIN: local
+          GOTELEMETRY: "off"
+        run: |
+          make tools
+          echo "$PWD/bin" >> "$GITHUB_PATH"
+          mkdir -p "$RUNNER_TEMP/cetirun-envtest"
+          archive="$RUNNER_TEMP/cetirun-envtest/envtest.tar.gz"
+          curl --fail --location --retry 3 --max-time 120 \
+            -o "$archive" \
+            https://github.com/kubernetes-sigs/controller-tools/releases/download/envtest-v1.37.0/envtest-v1.37.0-linux-amd64.tar.gz
+          printf '%s  %s\n' f03faedfc68d2a78cee5cb02618bb44e7f67044f4c5fc957f72d3307fda61a9c "$archive" | sha256sum --check -
+          tar -xzf "$archive" -C "$RUNNER_TEMP/cetirun-envtest"
+          echo "KUBEBUILDER_ASSETS=$RUNNER_TEMP/cetirun-envtest/controller-tools/envtest" >> "$GITHUB_ENV"
+
+      - name: Verify generated API artifacts
+        env:
+          GOPROXY: "off"
+          GOTOOLCHAIN: local
+          GOFLAGS: "-mod=readonly"
+        run: make verify-generated
+
+      - name: Test Agent API admission
+        env:
+          GOPROXY: "off"
+          GOTOOLCHAIN: local
+          GOFLAGS: "-mod=readonly"
+        run: make test-envtest
+
       - name: Run go build
         run: CGO_ENABLED=0 go build -o bin/manager ./cmd/main.go
 

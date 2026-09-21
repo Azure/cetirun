@@ -25,6 +25,9 @@ class ApiDocumentationTests(unittest.TestCase):
                     self.assertIn("apiVersion: cetirun.microsoft.com/v1alpha1\n", block)
                     self.assertRegex(block, r"(?m)^kind: (Agent|Team)$")
                     self.assertNotRegex(block, r"(?m)^  namespace:")
+                    if re.search(r"(?m)^kind: Agent$", block):
+                        self.assertRegex(block, r"(?m)^  agent:")
+                        self.assertNotRegex(block, r"(?m)^  agentType:")
         self.assertGreaterEqual(len(examples), 3)
 
     def test_no_legacy_resource_commands_or_source_links(self):
@@ -74,6 +77,23 @@ class ApiDocumentationTests(unittest.TestCase):
             with self.subTest(label=label):
                 self.assertIn(f"**{label}**", guide)
                 self.assertIn(label, (source / relative).read_text())
+
+    def test_harness_reference_and_navigation(self):
+        reference = SITE / "content/en/docs/reference/agent-harness.md"
+        self.assertTrue(reference.is_file())
+        text = reference.read_text()
+        self.assertIn("`hermes` (default)", text)
+        self.assertIn("`AgentRuntimeNotImplemented`", text)
+        for field in ("type", "image", "registrySecretRef", "username", "port"):
+            with self.subTest(field=field):
+                self.assertIn(f"| `{field}` |", text)
+        self.assertIn(
+            "[Agent Harness](agent-harness/)",
+            (SITE / "content/en/docs/reference/_index.md").read_text(),
+        )
+        pointer = (REPO / "docs/agent-harness-contract.md").read_text()
+        self.assertIn("site/content/en/docs/reference/agent-harness.md", pointer)
+        self.assertNotIn("```yaml", pointer)
 
 
 if __name__ == "__main__":

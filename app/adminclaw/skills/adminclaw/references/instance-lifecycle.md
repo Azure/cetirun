@@ -1,6 +1,6 @@
 # Instance Lifecycle Reference
 
-Detailed workflows for creating, upgrading, decommissioning, and reconfiguring OpenClaw instances.
+Detailed workflows for creating, upgrading, decommissioning, and reconfiguring CetiRun agents. New agents default to Hermes; OpenClaw requires an explicit selection.
 
 ---
 
@@ -28,6 +28,8 @@ A list of user aliases with optional config overrides (displayName, team, email,
    metadata:
      name: <alias>
    spec:
+     agent:
+       type: hermes
      user:
        alias: <alias>
        displayName: <name>
@@ -44,7 +46,7 @@ A list of user aliases with optional config overrides (displayName, team, email,
 
 5. Post-verify each Ready instance:
    a. Pod is Running and Ready:
-      kubectl get pods -n cetirun-<alias> -l app.kubernetes.io/name=openclaw
+      kubectl get pods -n cetirun-<alias>
    b. VirtualService resolves correctly:
       kubectl get virtualservice -n cetirun-<alias>
    c. HTTPS endpoint returns 302 (OAuth redirect):

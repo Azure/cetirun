@@ -14,12 +14,14 @@ kind: Agent
 metadata:
   name: <alias>                     # Must match spec.user.alias
 spec:
+  agent:
+    type: hermes                    # Default: hermes. hermes | openclaw | custom; immutable.
   user:
     alias: string                   # Required. Pattern: ^[a-z][a-z0-9-]{0,62}$
     displayName: string             # Required. Human-readable name
     team: string                    # Required. Team identifier (e.g., "aks-core")
     email: string                   # Optional. Notification email
-  gatewayTokenSecretRef: string     # Required. Secret name for OPENCLAW_GATEWAY_TOKEN
+  gatewayTokenSecretRef: string     # Required for built-ins. Native authentication Secret.
   tailscale:                        # Optional.
     authKeySecretRef: string        # Secret name containing TAILSCALE_AUTH_KEY
   msteams:                          # Optional. MS Teams bot integration.
@@ -42,7 +44,9 @@ spec:
 | `spec.user.displayName` | string | Yes | Human-readable display name |
 | `spec.user.team` | string | Yes | Team identifier for grouping and spend tracking |
 | `spec.user.email` | string | No | Contact email for notifications |
-| `spec.gatewayTokenSecretRef` | string | Yes | Name of Secret containing `OPENCLAW_GATEWAY_TOKEN` |
+| `spec.agent` | object | Yes | Agent configuration; see the Agent Harness contract for image, username, port and registry reference rules. |
+| `spec.agent.type` | enum | No | Defaults to `hermes`; `openclaw` and `custom` remain explicit choices. Immutable after creation. |
+| `spec.gatewayTokenSecretRef` | string | Built-ins only | Required for openclaw/hermes; forbidden for custom. |
 | `spec.tailscale.authKeySecretRef` | string | No | Name of Secret containing `TAILSCALE_AUTH_KEY` |
 | `spec.msteams.appId` | string | Yes (if msteams set) | Azure AD Application (client) ID (UUID) |
 | `spec.msteams.tenantId` | string | Yes (if msteams set) | Azure AD tenant ID (UUID) |
@@ -130,7 +134,7 @@ When the operator reconciles an `Agent` CR, it creates:
 | Namespace | `cetirun-<alias>` | (cluster-scoped) — with Istio injection label |
 | Role | `cetirun-operator-ns-role` | `cetirun-<alias>` |
 | RoleBinding | `cetirun-operator-ns-rolebinding` | `cetirun-<alias>` |
-| Secret | `gateway-token` (contains `OPENCLAW_GATEWAY_TOKEN`) | `cetirun-<alias>` |
+| Secret | `gateway-token` (includes `API_SERVER_KEY` for Hermes and native credentials for the selected Agent) | `cetirun-<alias>` |
 | Helm release | `openclaw-<alias>` (chart fullname for K8s resources: `openclaw-<alias>-cetirun`) | `cetirun-<alias>` |
 | StatefulSet | (from Helm chart) | `cetirun-<alias>` |
 | Service | (from Helm chart) | `cetirun-<alias>` |
@@ -139,7 +143,10 @@ When the operator reconciles an `Agent` CR, it creates:
 | PVC | (from Helm chart) | `cetirun-<alias>` |
 | VirtualService | `cetirun-<alias>` | `cetirun-<alias>` |
 
-### VirtualService Pattern
+### Hermes API Route Example
+
+Helm release and Service names retain the `openclaw-` prefix for both built-in
+Agent types; the prefix does not select the runtime.
 
 ```yaml
 apiVersion: networking.istio.io/v1beta1
@@ -148,15 +155,20 @@ metadata:
   name: cetirun-<alias>
   namespace: cetirun-<alias>
 spec:
-  hosts: ["<alias>.<your-domain>"]
+  hosts: ["<your-domain>"]
   gateways: ["aks-istio-ingress/cetirun-gateway"]
   http:
-    - route:
+    - match:
+        - uri:
+            prefix: /ui/<alias>/v1
+      rewrite:
+        uri: /v1
+      route:
         - destination:
             host: openclaw-<alias>-cetirun.cetirun-<alias>.svc.cluster.local
             port:
-              number: 18789  # gateway
-    # Additional routes for ttyd (7681) and noVNC (6080) if configured
+              number: 8642  # Hermes API
+    # Additional routes include the Hermes Dashboard (9119), ttyd (7681), and noVNC (6080).
 ```
 
 ---
@@ -167,7 +179,7 @@ spec:
 cetirun-system        — CetiRun Operator (Deployment, 2 replicas, leader election)
 cetirun-portal        — Portal web UI
 cetirun-admin         — AdminClaw privileged instance
-cetirun-<alias>       — Per-user OpenClaw instances (created by operator)
+cetirun-<alias>       — Per-user Agent instances, default Hermes (created by operator)
 aks-istio-system      — AKS-managed Istio control plane
 aks-istio-ingress     — AKS-managed Istio ingress gateway
 ```
@@ -188,7 +200,9 @@ aks-istio-ingress     — AKS-managed Istio ingress gateway
 
 | Service | Port | Protocol | Description |
 |---------|------|----------|-------------|
-| OpenClaw Gateway | 18789 | HTTP | Main application gateway (primary VirtualService target) |
+| Hermes API | 8642 | HTTP | Default Agent's OpenAI-compatible API |
+| Hermes Dashboard | 9119 | HTTP | Default Agent's native UI |
+| OpenClaw Gateway | 18789 | HTTP | Used when OpenClaw is explicitly selected |
 | ttyd (web terminal) | 7681 | HTTP/WebSocket | Web-based terminal access |
 | noVNC (browser) | 6080 | HTTP/WebSocket | Browser access via noVNC |
 | Chrome CDP | 18800 | HTTP | Chrome DevTools Protocol |
@@ -251,15 +265,17 @@ kind: Agent
 metadata:
   name: bob
 spec:
+  agent:
+    type: hermes
   user:
     alias: bob
     displayName: "Bob Builder"
     team: aks-ai
   gatewayTokenSecretRef: "gateway-token"
   msteams:
+    enabled: true
     appId: "<your-app-id>"
     tenantId: "<your-tenant-id>"
-    authType: managedIdentity
 ```
 
 ### What the Operator Provisions for MS Teams
@@ -271,7 +287,7 @@ spec:
 | Helm values: `msteamsAuthType` | Sets `MSTEAMS_AUTH_TYPE` and `MSTEAMS_USE_MANAGED_IDENTITY` env vars |
 | VirtualService route | `POST /<instance>/api/messages` → webhook port (before catch-all). Non-Teams instances get a deny route returning 404 for the same path. |
 | NetworkPolicy | Allows ingress on webhook port from Istio ingress gateway |
-| ConfigMap (`openclaw.json`) | Registers msteams plugin with load path, enables msteams channel |
+| Native configuration | Hermes uses `hermes-config.yaml` and `cetirun_teams`; explicit OpenClaw uses `openclaw.json` and its msteams plugin. |
 | Extra volumes (certificate only) | Mounts cert Secret at `/etc/msteams-cert/tls.pem` |
 | Azure Workload Identity (managedIdentity only) | Annotated ServiceAccount; IMDS remains blocked by NetworkPolicy |
 

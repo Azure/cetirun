@@ -14,13 +14,17 @@ The operator builds Helm values in this order:
 3. Referenced `Team` provider, member context, and skills.
 4. Controller-derived integration settings and image repositories.
 5. Per-instance `spec.helm.values`.
-6. Enforced OpenClaw native UI base path and Copilot model selection.
+6. Enforced Agent type, OpenClaw native UI base path and Copilot model selection.
 
 Nested maps merge; arrays replace rather than append. Arbitrary Helm overrides
 are a privileged configuration surface. Do not assume a team default enforces
 a security policy against instance overrides. The reconciler also adds the
 gateway Secret's resource version to pod annotations so credential changes can
 roll the workload.
+
+Select the Harness through `spec.agent.type`, defaulting to Hermes. Helm values
+cannot select a different type. See [Agent Harness](../../reference/agent-harness/)
+for the other fields and supported runtime settings.
 
 The CRD declares each top-level `spec.helm.values` entry as an
 object. Use map-shaped overrides such as `secrets`, `persistence`, or `skills`.

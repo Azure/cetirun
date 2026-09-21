@@ -79,6 +79,7 @@
     pages = [
       "/docs/reference",
       "/docs/reference/crds",
+      "/docs/reference/agent-harness",
       "/docs/reference/helm",
       "/docs/reference/scripts",
     ]

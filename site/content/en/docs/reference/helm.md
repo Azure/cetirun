@@ -43,7 +43,7 @@ settings and validation, inspect that file and
 
 | Value | Source default / meaning |
 | --- | --- |
-| `agentType` | `openclaw`; also accepts `hermes` |
+| `agentType` | `hermes`; also accepts explicit `openclaw` |
 | `replicaCount` | `1`; schema accepts only `0` or `1` |
 | `runtimeClassName` | `kata-vm-isolation` |
 | `openclaw.image`, `hermes.image`, `desktop.image` | Repository, pull policy, tag, and digest per image |
@@ -360,7 +360,7 @@ Source: [portal values]({{< repo "app/cetirun-portal/chart/values.yaml" >}}).
 | `admins.aliases` | Explicit administrator aliases |
 | `features.tailscaleEnabled` | `false` |
 | `features.maxInstancesPerUser` | `1`; `0` means unlimited |
-| `features.allowedAgentTypes` | `openclaw`, `hermes` |
+| `features.allowedAgentTypes` | `hermes`, `openclaw`; new agents default to Hermes when allowed |
 | `noticeBanner` | Set your deployment notice explicitly or clear it |
 | `image`, `imagePullSecrets` | Portal image pin and pull access |
 

@@ -72,7 +72,7 @@ func (c *Client) CreateInstance(ctx context.Context, alias, displayName, team, e
 		instanceName = alias
 	}
 	if agentType == "" {
-		agentType = cetirunv1alpha1.AgentTypeOpenClaw
+		agentType = string(cetirunv1alpha1.DefaultAgentType)
 	}
 	ns := fmt.Sprintf("cetirun-%s", instanceName)
 
@@ -102,7 +102,7 @@ func (c *Client) CreateInstance(ctx context.Context, alias, displayName, team, e
 			Name: instanceName,
 		},
 		Spec: cetirunv1alpha1.AgentSpec{
-			AgentType:             agentType,
+			Agent:                 cetirunv1alpha1.HarnessSpec{Type: cetirunv1alpha1.AgentType(agentType)},
 			Model:                 strings.TrimSpace(model),
 			GatewayTokenSecretRef: "gateway-token",
 			Team:                  team,
@@ -122,7 +122,7 @@ func (c *Client) CreateInstance(ctx context.Context, alias, displayName, team, e
 	if teamsEnabled {
 		instance.Spec.MSTeams = &cetirunv1alpha1.MSTeamsSpec{Enabled: true}
 	}
-	if err := c.client.Create(ctx, instance); err != nil {
+	if err := c.client.Create(ctx, instance, client.FieldValidation(metav1.FieldValidationStrict)); err != nil {
 		return nil, err
 	}
 	return instance, nil

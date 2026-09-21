@@ -11,7 +11,7 @@
                 "openclaw",
                 "hermes"
             ],
-            "default": "openclaw"
+            "default": "hermes"
         },
         "replicaCount": {
             "type": "integer",

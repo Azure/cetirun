@@ -2,10 +2,7 @@
 #
 # Apply order:
 #   kubectl apply -f sample-team.yaml
-#   kubectl create ns cetirun-alice
-#   kubectl create secret generic gateway-token -n cetirun-alice --from-literal=OPENCLAW_GATEWAY_TOKEN="<token>"
-#   kubectl create ns cetirun-bob
-#   kubectl create secret generic gateway-token -n cetirun-bob --from-literal=OPENCLAW_GATEWAY_TOKEN="<token>"
+# The operator creates instance namespaces and native authentication Secrets.
 
 ---
 apiVersion: cetirun.microsoft.com/v1alpha1
@@ -31,6 +28,8 @@ kind: Agent
 metadata:
   name: alice
 spec:
+  agent:
+    type: hermes
   user:
     alias: alice
     displayName: "Alice Example"
@@ -54,6 +53,8 @@ kind: Agent
 metadata:
   name: bob
 spec:
+  agent:
+    type: hermes
   user:
     alias: bob
     displayName: "Bob Example"

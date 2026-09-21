@@ -45,6 +45,7 @@ func sampleInstance() *cetirunv1alpha1.Agent {
 			CreationTimestamp: metav1.NewTime(time.Date(2024, 1, 15, 10, 0, 0, 0, time.UTC)),
 		},
 		Spec: cetirunv1alpha1.AgentSpec{
+			Agent: cetirunv1alpha1.HarnessSpec{Type: cetirunv1alpha1.AgentTypeOpenClaw},
 			User: cetirunv1alpha1.UserSpec{
 				Alias:       "alice",
 				DisplayName: "Alice Smith",
@@ -268,6 +269,28 @@ func TestCreateInstance_Success(t *testing.T) {
 	}
 	if resp.Alias != "alice" {
 		t.Errorf("Alias = %q, want %q", resp.Alias, "alice")
+	}
+	if resp.AgentType != "hermes" {
+		t.Errorf("AgentType = %q, want default hermes", resp.AgentType)
+	}
+}
+
+func TestCreateInstance_ExplicitOpenClaw(t *testing.T) {
+	h := &InstanceHandler{Kube: kube.NewClient(newFakeClient())}
+	body := strings.NewReader(`{"agentType":"openclaw"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/instance", body)
+	req = withClaims(req, "alice", "Example User", "alice@example.com")
+	w := httptest.NewRecorder()
+	h.CreateInstance(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusCreated)
+	}
+	var resp InstanceResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.AgentType != "openclaw" {
+		t.Fatalf("explicit AgentType changed: %q", resp.AgentType)
 	}
 }
 
@@ -595,7 +618,7 @@ func TestToInstanceResponse_WithTailscaleAuthKey(t *testing.T) {
 
 func TestToInstanceResponse_HermesAPIServerKey(t *testing.T) {
 	instance := sampleInstance()
-	instance.Spec.AgentType = cetirunv1alpha1.AgentTypeHermes
+	instance.Spec.Agent.Type = cetirunv1alpha1.AgentTypeHermes
 	instance.Status.Phase = "Ready"
 	instance.Spec.GatewayTokenSecretRef = "gateway-token"
 
@@ -633,7 +656,7 @@ func TestToInstanceResponse_HermesAPIServerKey(t *testing.T) {
 // exposing API_SERVER_KEY, which OpenClaw does not use).
 func TestToInstanceResponse_OpenClawCetiRunAuthKey(t *testing.T) {
 	instance := sampleInstance()
-	instance.Spec.AgentType = cetirunv1alpha1.AgentTypeOpenClaw
+	instance.Spec.Agent.Type = cetirunv1alpha1.AgentTypeOpenClaw
 	instance.Status.Phase = "Ready"
 	instance.Spec.GatewayTokenSecretRef = "gateway-token"
 

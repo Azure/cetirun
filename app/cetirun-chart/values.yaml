@@ -3,7 +3,7 @@
 # Declare variables to be passed into your templates.
 
 # -- Agent framework to run in this instance: openclaw or hermes
-agentType: openclaw
+agentType: hermes
 
 # -- Number of replicas for the agent gateway
 # Note: Typically should be 1 as agent runtimes maintain state

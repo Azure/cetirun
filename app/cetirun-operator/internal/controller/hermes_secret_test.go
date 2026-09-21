@@ -75,7 +75,7 @@ func TestEnsureGatewayTokenOpenClawCreatesCetiRunAuthKey(t *testing.T) {
 	}
 
 	instance := hermesSecretTestInstance("alice")
-	instance.Spec.AgentType = cetirunv1alpha1.AgentTypeOpenClaw
+	instance.Spec.Agent.Type = cetirunv1alpha1.AgentTypeOpenClaw
 	r := &AgentReconciler{Client: fake.NewClientBuilder().WithScheme(scheme).Build()}
 	if err := r.ensureGatewayToken(ctx, instance); err != nil {
 		t.Fatalf("ensureGatewayToken: %v", err)
@@ -214,7 +214,7 @@ func hermesSecretTestInstance(alias string) *cetirunv1alpha1.Agent {
 	return &cetirunv1alpha1.Agent{
 		ObjectMeta: metav1.ObjectMeta{Name: alias},
 		Spec: cetirunv1alpha1.AgentSpec{
-			AgentType:             cetirunv1alpha1.AgentTypeHermes,
+			Agent:                 cetirunv1alpha1.HarnessSpec{Type: cetirunv1alpha1.AgentTypeHermes},
 			GatewayTokenSecretRef: "gateway-token",
 			User: cetirunv1alpha1.UserSpec{
 				Alias:       alias,

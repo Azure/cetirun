@@ -42,7 +42,8 @@ kind: Agent
 metadata:
   name: alice
 spec:
-  agentType: openclaw
+  agent:
+    type: hermes
   user:
     alias: alice
     displayName: Alice

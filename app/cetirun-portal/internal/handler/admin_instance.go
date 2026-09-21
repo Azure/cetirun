@@ -48,7 +48,7 @@ func (h *AdminInstanceHandler) ListAllInstances(w http.ResponseWriter, r *http.R
 			DisplayName: ins.Spec.User.DisplayName,
 			Email:       ins.Spec.User.Email,
 			Team:        instanceTeam(ins),
-			AgentType:   ins.Spec.AgentType,
+			AgentType:   string(ins.Spec.Agent.Type),
 			Phase:       ins.Status.Phase,
 			Ready:       isReady(ins),
 			CreatedAt:   ins.CreationTimestamp.UTC().Format("2006-01-02T15:04:05Z"),

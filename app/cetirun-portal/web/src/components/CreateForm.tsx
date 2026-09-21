@@ -10,7 +10,7 @@ import type { AgentType } from "../types/instance";
 import { TeamPicker } from "./TeamPicker";
 import { CopilotModelPicker } from "./CopilotModelPicker";
 
-const DEFAULT_AGENT_TYPES: AgentType[] = ["openclaw", "hermes"];
+const DEFAULT_AGENT_TYPES: AgentType[] = ["hermes", "openclaw"];
 const AGENT_TYPE_LABELS: Record<AgentType, string> = {
   openclaw: "OpenClaw",
   hermes: "Hermes",
@@ -18,7 +18,7 @@ const AGENT_TYPE_LABELS: Record<AgentType, string> = {
 
 export function CreateForm({ onCreated }: { onCreated?: () => void }) {
   const [instanceName, setInstanceName] = useState("");
-  const [agentType, setAgentType] = useState<AgentType>("openclaw");
+  const [agentType, setAgentType] = useState<AgentType>("hermes");
   const [displayName, setDisplayName] = useState("");
   const [team, setTeam] = useState("");
   const [gatewayToken, setGatewayToken] = useState("");
