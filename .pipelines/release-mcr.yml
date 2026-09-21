@@ -1,6 +1,4 @@
-# This pipeline intentionally validates a unified release without publishing it.
-# Enable the commented future publishing flow only in an explicit follow-up
-# change after MCR onboarding is complete.
+# Build-only validation. Publishing is disabled; signing is not configured.
 
 name: cetirun-release-$(Date:yyyyMMdd)$(Rev:.r)
 
@@ -164,14 +162,13 @@ steps:
       LOCAL_REGISTRY: $(localRegistry)
       RELEASE_VERSION: $(releaseVersion)
 
-  # FUTURE PUBLISHING (DISABLED): Enable only in an explicit follow-up change
-  # after MCR onboarding. This pipeline currently has no Azure service
-  # connection, ACR credentials, registry login, or publishing commands.
+  # FUTURE PUBLISHING (DISABLED): Requires MCR onboarding and signing/verification.
+  # Enable only in a separately approved change.
   # Future public target: mcr.microsoft.com/aks/cetirun.
   #
   # - bash: |
   #     set -euo pipefail
-  #     acr_name="aksmcrimagescommon"
+  #     acr_name="${RELEASE_ACR_NAME:?Set RELEASE_ACR_NAME}"
   #     registry="${acr_name}.azurecr.io"
   #     repository_prefix="public/aks/cetirun"
   #     image_artifacts=(cetirun-base openclaw-gateway hermes-gateway cetirun-desktop cetirun-operator cetirun-portal)
