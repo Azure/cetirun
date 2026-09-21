@@ -24,6 +24,10 @@ base_image_ref="${BASE_IMAGE:-${registry}/cetirun-base:${image_tag}}"
 # this when their environment is configured with a different registry.
 npm_registry="${NPM_REGISTRY:-https://packagefeedproxy.microsoft.io/npm/}"
 npm_registry_args=(--build-arg "NPM_REGISTRY=${npm_registry}")
+# Match the public Dockerfile default; private deployment environments can
+# explicitly select their own package proxy with PYPI_INDEX_URL.
+pypi_index_url="${PYPI_INDEX_URL:-https://pypi.org/simple/}"
+pypi_index_args=(--build-arg "PYPI_INDEX_URL=${pypi_index_url}")
 
 # The corporate feed blocks OpenClaw package ingestion. Keep the exception
 # separate so other images continue to use the corporate feed by default.
@@ -46,6 +50,7 @@ if [ "${build_base}" = "true" ]; then
     -f "${context_dir}/Dockerfile.base"
     -t "${base_image_ref}"
     "${npm_registry_args[@]}"
+    "${pypi_index_args[@]}"
     "${common_output_args[@]}"
   )
   if [ "${push}" = "true" ]; then
@@ -86,6 +91,7 @@ if [ "${build_hermes}" = "true" ]; then
     -t "${hermes_image_ref}"
     --build-arg "BASE_IMAGE=${base_image_ref}"
     "${npm_registry_args[@]}"
+    "${pypi_index_args[@]}"
     "${common_output_args[@]}"
   )
   if [ "${push}" = "true" ]; then
