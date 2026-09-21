@@ -588,9 +588,9 @@ skills:
   # by the init-skills init container. Specs can be bare ("matrix"),
   # scoped ("@scope/name"), or version-pinned ("name@1.2.3").
   npm: []
-  # -- npm registry for runtime npm skill installation. Defaults to the
-  # CFS-protected corporate feed; override for a differently configured environment.
-  npmRegistry: "https://packagefeedproxy.microsoft.io/npm/"
+  # -- npm registry for runtime npm skill installation.
+  # Defaults to public npm; override to use a different package mirror.
+  npmRegistry: "https://registry.npmjs.org/"
   # -- Storage capacity
   storageSize: 100Gi
 

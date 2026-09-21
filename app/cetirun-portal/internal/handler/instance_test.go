@@ -55,7 +55,7 @@ func sampleInstance() *cetirunv1alpha1.OpenClawInstance {
 		Status: cetirunv1alpha1.OpenClawInstanceStatus{
 			Phase:             "Ready",
 			Namespace:         "cetirun-alice",
-			AccessURL:         "https://alice.cetirun.io",
+			AccessURL:         "https://alice.cetirun.example.com",
 			LastReconcileTime: &reconcileTime,
 			Conditions: []metav1.Condition{
 				{
@@ -98,8 +98,8 @@ func TestToInstanceResponse(t *testing.T) {
 	if resp.Phase != "Pending" {
 		t.Errorf("Phase = %q, want %q", resp.Phase, "Pending")
 	}
-	if resp.AccessURL != "https://alice.cetirun.io" {
-		t.Errorf("AccessURL = %q, want %q", resp.AccessURL, "https://alice.cetirun.io")
+	if resp.AccessURL != "https://alice.cetirun.example.com" {
+		t.Errorf("AccessURL = %q, want %q", resp.AccessURL, "https://alice.cetirun.example.com")
 	}
 	if resp.CreatedAt != "2024-01-15T10:00:00Z" {
 		t.Errorf("CreatedAt = %q, want %q", resp.CreatedAt, "2024-01-15T10:00:00Z")
@@ -585,8 +585,8 @@ func TestToInstanceResponse_WithTailscaleAuthKey(t *testing.T) {
 		t.Errorf("GatewayToken = %q, want %q", resp.GatewayToken, "gw-token-val")
 	}
 	// AccessURL must remain exactly as the instance status (no token appended).
-	if resp.AccessURL != "https://alice.cetirun.io" {
-		t.Errorf("AccessURL = %q, want %q", resp.AccessURL, "https://alice.cetirun.io")
+	if resp.AccessURL != "https://alice.cetirun.example.com" {
+		t.Errorf("AccessURL = %q, want %q", resp.AccessURL, "https://alice.cetirun.example.com")
 	}
 	if resp.TailscaleAuthKey != "tskey-auth-xxx" {
 		t.Errorf("TailscaleAuthKey = %q, want %q", resp.TailscaleAuthKey, "tskey-auth-xxx")
@@ -719,8 +719,8 @@ func TestToInstanceResponse_NoTailscale(t *testing.T) {
 		t.Errorf("GatewayToken = %q, want %q", resp.GatewayToken, "gw-token-val")
 	}
 	// AccessURL must remain exactly as the instance status (no token appended).
-	if resp.AccessURL != "https://alice.cetirun.io" {
-		t.Errorf("AccessURL = %q, want %q", resp.AccessURL, "https://alice.cetirun.io")
+	if resp.AccessURL != "https://alice.cetirun.example.com" {
+		t.Errorf("AccessURL = %q, want %q", resp.AccessURL, "https://alice.cetirun.example.com")
 	}
 	// TailscaleAuthKey should be empty when Tailscale is not configured.
 	if resp.TailscaleAuthKey != "" {

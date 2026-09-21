@@ -7,7 +7,7 @@ ARG OPENCLAW_VERSION=2026.6.35
 # Pack OpenClaw from npm in a base-derived stage so npm/node versions match runtime.
 FROM ${BASE_IMAGE} AS openclaw-source
 ARG OPENCLAW_VERSION
-# The corporate feed blocks OpenClaw package ingestion; callers may override this.
+# Override NPM_REGISTRY to use a different package mirror.
 ARG NPM_REGISTRY=https://registry.npmjs.org/
 COPY --chown=vibe:vibe .npmrc /home/vibe/.npmrc
 RUN npm config set registry "${NPM_REGISTRY}" && \

@@ -58,7 +58,7 @@ type OpenClawInstanceReconciler struct {
 	DomainSuffix         string
 	SkillsStorageAccount string
 	CetiRunHelmValues    map[string]interface{} // Operator-level Helm value overrides for all instances
-	ChartRegistry        string                 // OCI registry host (e.g. "cetiruntest.azurecr.io"), derived from chart repo URL
+	ChartRegistry        string                 // OCI registry host (e.g. "registry.example.com"), derived from chart repo URL
 	DefaultModel         string                 // Default GitHub Copilot model when spec.model is empty
 
 	// Azure config for Teams auto-provisioning.
@@ -66,7 +66,7 @@ type OpenClawInstanceReconciler struct {
 	AzureResourceGroup  string
 	AzureBotNamePrefix  string
 	AzureTenantID       string
-	AzureServiceTreeID  string // required in MSFT corp tenant for app creation
+	AzureServiceTreeID  string // optional serviceManagementReference for app creation
 	AzureOIDCIssuerURL  string // auto-detected from cluster at startup
 
 	istioMu          sync.Mutex

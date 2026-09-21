@@ -869,7 +869,7 @@ func TestOperatorConfigHash_IncludesCetiRunHelmValues(t *testing.T) {
 // is set, agent image repositories are overridden to pull from the correct ACR.
 func TestBuildHelmValues_ImageRepositoryFromChartRegistry(t *testing.T) {
 	instance := newTestInstance("alice", "Alice Smith", "aks-core", "gateway-token")
-	values, err := buildHelmValues(instance, nil, "example.com", "", nil, "cetiruntest.azurecr.io")
+	values, err := buildHelmValues(instance, nil, "example.com", "", nil, "registry.example.com")
 	if err != nil {
 		t.Fatalf("buildHelmValues error: %v", err)
 	}
@@ -881,8 +881,8 @@ func TestBuildHelmValues_ImageRepositoryFromChartRegistry(t *testing.T) {
 	if !ok {
 		t.Fatal("values[\"openclaw\"].image missing or wrong type")
 	}
-	if got := image["repository"]; got != "cetiruntest.azurecr.io/openclaw-gateway" {
-		t.Errorf("openclaw.image.repository = %q, want %q", got, "cetiruntest.azurecr.io/openclaw-gateway")
+	if got := image["repository"]; got != "registry.example.com/openclaw-gateway" {
+		t.Errorf("openclaw.image.repository = %q, want %q", got, "registry.example.com/openclaw-gateway")
 	}
 	hermes, ok := values["hermes"].(map[string]interface{})
 	if !ok {
@@ -892,8 +892,8 @@ func TestBuildHelmValues_ImageRepositoryFromChartRegistry(t *testing.T) {
 	if !ok {
 		t.Fatal("values[\"hermes\"].image missing or wrong type")
 	}
-	if got := hermesImage["repository"]; got != "cetiruntest.azurecr.io/hermes-gateway" {
-		t.Errorf("hermes.image.repository = %q, want %q", got, "cetiruntest.azurecr.io/hermes-gateway")
+	if got := hermesImage["repository"]; got != "registry.example.com/hermes-gateway" {
+		t.Errorf("hermes.image.repository = %q, want %q", got, "registry.example.com/hermes-gateway")
 	}
 }
 
@@ -922,7 +922,7 @@ func TestBuildHelmValues_ImageRepositoryMergedWithTeams(t *testing.T) {
 		Enabled: true,
 		AppID:   "test-app-id",
 	}
-	values, err := buildHelmValues(instance, nil, "example.com", "", nil, "cetiruntest.azurecr.io")
+	values, err := buildHelmValues(instance, nil, "example.com", "", nil, "registry.example.com")
 	if err != nil {
 		t.Fatalf("buildHelmValues error: %v", err)
 	}
@@ -934,8 +934,8 @@ func TestBuildHelmValues_ImageRepositoryMergedWithTeams(t *testing.T) {
 	if !ok {
 		t.Fatal("values[\"openclaw\"].image missing or wrong type")
 	}
-	if got := image["repository"]; got != "cetiruntest.azurecr.io/openclaw-gateway" {
-		t.Errorf("openclaw.image.repository = %q, want %q", got, "cetiruntest.azurecr.io/openclaw-gateway")
+	if got := image["repository"]; got != "registry.example.com/openclaw-gateway" {
+		t.Errorf("openclaw.image.repository = %q, want %q", got, "registry.example.com/openclaw-gateway")
 	}
 	if _, ok := image["tagSuffix"]; ok {
 		t.Error("image.tagSuffix should not be set (Teams uses the same image now)")
@@ -1231,8 +1231,8 @@ func TestInstanceKey(t *testing.T) {
 }
 
 func TestAccessURLPathBased(t *testing.T) {
-	got := accessURLPathBased("myinstance", "cetiruntest.aksdev.io")
-	want := "https://cetiruntest.aksdev.io/ui/myinstance/"
+	got := accessURLPathBased("myinstance", "cetirun.example.com")
+	want := "https://cetirun.example.com/ui/myinstance/"
 	if got != want {
 		t.Errorf("accessURLPathBased() = %q, want %q", got, want)
 	}
@@ -1247,7 +1247,7 @@ func TestBuildVirtualServicePathBased(t *testing.T) {
 			User: cetirunv1alpha1.UserSpec{Alias: "alice"},
 		},
 	}
-	domain := "cetiruntest.aksdev.io"
+	domain := "cetirun.example.com"
 	vs := buildVirtualService(instance, domain, DefaultIstioGateway)
 
 	// VS must bind to the apex domain, not a subdomain

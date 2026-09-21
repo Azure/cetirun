@@ -163,12 +163,13 @@ SCRIPT
   umask "$old_umask"
   chmod 700 /home-data/.git-credential-azdevops.sh
 
-  # Configure git credential helpers for Azure DevOps domains
+  # Configure the public Azure DevOps endpoint. Keep any user-configured
+  # credential entries for additional hosts unchanged.
   # Note: helper path uses /home/vibe/ (runtime mount), not /home-data/ (init mount)
   GITCONFIG="/home-data/.gitconfig"
   # These git config operations are best-effort: failures should not abort init.
   set +e
-  for domain in msazure.visualstudio.com supportability.visualstudio.com dev.azure.com; do
+  for domain in dev.azure.com; do
     if ! git config --file "$GITCONFIG" "credential.https://$domain.useHttpPath" true; then
       echo "[init-home] Warning: failed to configure git credential useHttpPath for $domain" >&2
     fi

@@ -1353,7 +1353,7 @@
                 "npmRegistry": {
                     "type": "string",
                     "description": "npm registry for runtime npm skill installation.",
-                    "default": "https://packagefeedproxy.microsoft.io/npm/"
+                    "default": "https://registry.npmjs.org/"
                 },
                 "storageSize": {
                     "type": "string",

@@ -3,7 +3,7 @@
 
 IMAGE_REPO ?= ghcr.io/azure/cetirun-portal
 IMAGE_TAG  ?= latest
-NPM_REGISTRY ?= https://packagefeedproxy.microsoft.io/npm/
+NPM_REGISTRY ?= https://registry.npmjs.org/
 
 ##@ Development
 

@@ -16,11 +16,9 @@ concurrency:
 permissions:
   contents: read
 
-# NPM_REGISTRY can override the corporate default for general npm-based images.
-# OpenClaw is blocked from ingestion by that feed's policy, so its CI build uses
-# the public registry unless an administrator configures OPENCLAW_NPM_REGISTRY.
+# Package registries can be overridden independently for general and OpenClaw builds.
 env:
-  NPM_REGISTRY: ${{ vars.NPM_REGISTRY || 'https://packagefeedproxy.microsoft.io/npm/' }}
+  NPM_REGISTRY: ${{ vars.NPM_REGISTRY || 'https://registry.npmjs.org/' }}
   OPENCLAW_NPM_REGISTRY: ${{ vars.OPENCLAW_NPM_REGISTRY || 'https://registry.npmjs.org/' }}
 
 jobs:

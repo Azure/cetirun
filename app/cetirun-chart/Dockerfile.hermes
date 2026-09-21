@@ -12,7 +12,7 @@ LABEL org.opencontainers.image.licenses="MIT"
 # v0.16.0 — pinned by PyPI wheel SHA256 for supply-chain integrity
 ARG HERMES_VERSION=0.16.0
 ARG HERMES_WHEEL_SHA256=accb5a4a4827b41b3d162d2eb0b5f6db585d942ee23a3678ef21fc94d21c34a2
-ARG PYPI_INDEX_URL=https://packagefeedproxy.microsoft.io/pypi/simple/
+ARG PYPI_INDEX_URL=https://pypi.org/simple/
 
 ENV HERMES_HOME=/home/vibe/.hermes
 ENV PATH=/usr/local/lib/hermes-agent/bin:$PATH

@@ -15,7 +15,7 @@ permissions:
 
 # A repository or organization NPM_REGISTRY variable can override this default.
 env:
-  NPM_REGISTRY: ${{ vars.NPM_REGISTRY || 'https://packagefeedproxy.microsoft.io/npm/' }}
+  NPM_REGISTRY: ${{ vars.NPM_REGISTRY || 'https://registry.npmjs.org/' }}
 
 jobs:
   build:

@@ -76,7 +76,7 @@ LABEL org.opencontainers.image.description="CetiRun shared agent base image"
 LABEL org.opencontainers.image.licenses="MIT"
 
 ARG TZ=UTC
-ARG NPM_REGISTRY=https://packagefeedproxy.microsoft.io/npm/
+ARG NPM_REGISTRY=https://registry.npmjs.org/
 ENV TZ="$TZ"
 
 # Install Node.js 25 from the build stage (libgcc-atomic provides libatomic.so.1 required by Node 25)

@@ -21,7 +21,7 @@ image_name="${IMAGE_NAME:-cetirun-portal}"
 image_tag="${IMAGE_TAG:-latest}"
 push="${PUSH:-false}"
 dockerfile="${repo_root}/app/cetirun-portal/Dockerfile"
-npm_registry="${NPM_REGISTRY:-https://packagefeedproxy.microsoft.io/npm/}"
+npm_registry="${NPM_REGISTRY:-https://registry.npmjs.org/}"
 
 image_ref="${registry}/${image_name}:${image_tag}"
 

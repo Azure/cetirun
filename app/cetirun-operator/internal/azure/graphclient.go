@@ -26,8 +26,7 @@ const (
 
 // GraphClient provides raw HTTP access to the Microsoft Graph beta API.
 // We use raw HTTP instead of msgraph-sdk-go because:
-//   - The beta endpoint is required for FIC creation in MSFT productivity tenants
-//     (v1.0 is blocked by FIC policy).
+//   - The beta endpoint supports tenant-configured trusted issuers for FIC creation.
 //   - Raw HTTP gives full control over beta-only fields like trustedIssuer@odata.bind.
 type GraphClient struct {
 	cred       azcore.TokenCredential
@@ -127,7 +126,7 @@ func (c *GraphClient) GetApp(ctx context.Context, appObjectID string) (*Applicat
 }
 
 // CreateApp creates a new Azure AD application.
-// serviceManagementReference is required in Microsoft corp tenant (Service Tree ID).
+// serviceManagementReference is included when supplied by the deployment.
 func (c *GraphClient) CreateApp(ctx context.Context, displayName, signInAudience, serviceManagementReference string) (*Application, error) {
 	body := map[string]interface{}{
 		"displayName":    displayName,
@@ -159,7 +158,7 @@ func (c *GraphClient) ListFederatedCredentials(ctx context.Context, appObjectID 
 }
 
 // CreateFederatedCredential creates a FIC on an application using the beta API
-// with trustedIssuer@odata.bind (required for MSFT productivity tenants).
+// with the configured trustedIssuer@odata.bind.
 func (c *GraphClient) CreateFederatedCredential(ctx context.Context, appObjectID string, req FICCreateRequest) error {
 	u := fmt.Sprintf("%s/applications/%s/federatedIdentityCredentials",
 		graphBetaBase, appObjectID)
