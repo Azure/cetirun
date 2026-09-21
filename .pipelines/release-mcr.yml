@@ -89,6 +89,7 @@ steps:
       validate_chart infra/istio/Chart.yaml
       validate_chart app/cetirun-operator/chart/Chart.yaml
       validate_chart app/cetirun-portal/chart/Chart.yaml
+      validate_chart app/cetirun-platform/Chart.yaml
     displayName: Validate all chart versions
     env:
       RELEASE_VERSION: $(releaseVersion)
@@ -107,6 +108,7 @@ steps:
 
       bash scripts/cetirun-helm-lint.sh
       bash scripts/cetirun-helm-test.sh
+      bash scripts/cetirun-platform-helm-test.sh
 
       echo "==> helm package app/cetirun-chart"
       helm package app/cetirun-chart --destination "${package_dir}" \
@@ -131,6 +133,25 @@ steps:
           --version "${RELEASE_VERSION}" --app-version "${RELEASE_VERSION}"
         test -f "${package_dir}/${chart_name}-${RELEASE_VERSION}.tgz"
       done
+
+      platform_chart="app/cetirun-platform"
+      platform_name="cetirun-platform"
+      echo "==> helm dependency build ${platform_chart}"
+      helm dependency build --skip-refresh "${platform_chart}"
+      echo "==> helm lint ${platform_chart}"
+      helm lint --strict "${platform_chart}" \
+        --set istio.enabled=true \
+        --set-string cetirun-operator.domainSuffix=platform.example.invalid \
+        --set-string cetirun-portal.istio.host=portal.example.invalid
+      echo "==> helm template ${platform_name} ${platform_chart}"
+      helm template "${platform_name}" "${platform_chart}" --include-crds \
+        --set istio.enabled=true \
+        --set-string cetirun-operator.domainSuffix=platform.example.invalid \
+        --set-string cetirun-portal.istio.host=portal.example.invalid > /dev/null
+      echo "==> helm package ${platform_chart}"
+      helm package "${platform_chart}" --destination "${package_dir}" \
+        --version "${RELEASE_VERSION}" --app-version "${RELEASE_VERSION}"
+      test -f "${package_dir}/${platform_name}-${RELEASE_VERSION}.tgz"
     displayName: Lint, template, and package all charts
     env:
       AGENT_TEMPDIRECTORY: $(Agent.TempDirectory)
@@ -183,7 +204,7 @@ steps:
   #     registry="${acr_name}.azurecr.io"
   #     repository_prefix="public/aks/ai-runtime/cetirun"
   #     image_artifacts=(openclaw-gateway hermes-gateway cetirun-desktop cetirun-operator cetirun-portal)
-  #     chart_artifacts=(cetirun cetirun-istio cetirun-operator cetirun-portal)
+  #     chart_artifacts=(cetirun cetirun-istio cetirun-operator cetirun-portal cetirun-platform)
   #
   #     # Preflight immutability before publishing any versioned artifact.
   #     for artifact in "${image_artifacts[@]}"; do
