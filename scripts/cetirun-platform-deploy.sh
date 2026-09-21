@@ -14,6 +14,7 @@ values_file="${VALUES_FILE:-}"
 domain="${DOMAIN:?Set DOMAIN to the public CetiRun hostname}"
 gateway_name="${ISTIO_GATEWAY_NAME:-cetirun-gateway}"
 gateway_namespace="${ISTIO_GATEWAY_NAMESPACE:-aks-istio-ingress}"
+ingress_namespace="${ISTIO_INGRESS_NAMESPACE:-${gateway_namespace}}"
 gateway_service_account="${ISTIO_GATEWAY_SERVICE_ACCOUNT:-aks-istio-ingressgateway-external}"
 oauth2_proxy_name="${OAUTH2_PROXY_NAME:-oauth2-proxy}"
 oauth2_proxy_namespace="${OAUTH2_PROXY_NAMESPACE:-cetirun-istio}"
@@ -36,7 +37,7 @@ fi
 kubectl cluster-info --request-timeout=5s >/dev/null
 kubectl get crd virtualservices.networking.istio.io >/dev/null
 kubectl get gateway.networking.istio.io "${gateway_name}" -n "${gateway_namespace}" >/dev/null
-kubectl get serviceaccount "${gateway_service_account}" -n "${gateway_namespace}" >/dev/null
+kubectl get serviceaccount "${gateway_service_account}" -n "${ingress_namespace}" >/dev/null
 kubectl get deployment "${oauth2_proxy_name}" -n "${oauth2_proxy_namespace}" >/dev/null
 kubectl rollout status "deployment/${oauth2_proxy_name}" -n "${oauth2_proxy_namespace}" --timeout=120s
 
@@ -66,10 +67,10 @@ helm_args+=(
   --set-string "cetirun-operator.domainSuffix=${domain}"
   --set-string "cetirun-operator.istioRevision=${istio_revision}"
   --set-string "cetirun-operator.istioGateway=${gateway_namespace}/${gateway_name}"
-  --set-string "cetirun-operator.cetirun.helmValues.networkPolicy.istioIngressNamespace=${gateway_namespace}"
+  --set-string "cetirun-operator.cetirun.helmValues.networkPolicy.istioIngressNamespace=${ingress_namespace}"
   --set-string "cetirun-portal.istio.host=${domain}"
   --set-string "cetirun-portal.istio.gateway=${gateway_namespace}/${gateway_name}"
-  --set-string "cetirun-portal.istio.gatewayNamespace=${gateway_namespace}"
+  --set-string "cetirun-portal.istio.gatewayNamespace=${ingress_namespace}"
   --set-string "cetirun-portal.istio.gatewayServiceAccount=${gateway_service_account}"
 )
 helm "${helm_args[@]}"

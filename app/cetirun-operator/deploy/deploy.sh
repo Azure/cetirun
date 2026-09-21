@@ -23,6 +23,8 @@
 #   IMAGE_DIGEST        — Override image.digest Helm value (e.g. "sha256:abc123...")
 #   DOMAIN              — Override domainSuffix Helm value (e.g. "example.com")
 #   ISTIO_GATEWAY        — Override the instance VirtualService gateway as namespace/name
+#   ISTIO_INGRESS_NAMESPACE — Namespace where the selected Gateway workload runs
+#                             (default: the namespace in ISTIO_GATEWAY)
 #   CETIRUN_REPO_URL    — Override cetirun.chart.repoURL (default: oci://$REGISTRY/helm/cetirun)
 #   CETIRUN_CHART_VERSION — Override cetirun.chart.version (the agent chart the operator deploys)
 #   HELM_SET_ARGS       — Space-separated extra key=value pairs passed as --set flags
@@ -51,9 +53,14 @@ CETIRUN_CHART_VERSION="${CETIRUN_CHART_VERSION:-}"
 ISTIO_GATEWAY="${ISTIO_GATEWAY:-aks-istio-ingress/cetirun-gateway}"
 ISTIO_GATEWAY_NAMESPACE="${ISTIO_GATEWAY%%/*}"
 ISTIO_GATEWAY_NAME="${ISTIO_GATEWAY#*/}"
+ISTIO_INGRESS_NAMESPACE="${ISTIO_INGRESS_NAMESPACE:-${ISTIO_GATEWAY_NAMESPACE}}"
 
-if [ "${ISTIO_GATEWAY_NAMESPACE}" = "${ISTIO_GATEWAY}" ] || [ -z "${ISTIO_GATEWAY_NAME}" ]; then
+if [[ ! "${ISTIO_GATEWAY}" =~ ^[^/]+/[^/]+$ ]]; then
   echo "ERROR: ISTIO_GATEWAY must use namespace/name format." >&2
+  exit 1
+fi
+if [ -z "${ISTIO_INGRESS_NAMESPACE}" ]; then
+  echo "ERROR: ISTIO_INGRESS_NAMESPACE must not be empty." >&2
   exit 1
 fi
 
@@ -112,6 +119,7 @@ else
 fi
 HELM_ARGS+=(--set "image.repository=${IMAGE_REPO}")
 HELM_ARGS+=(--set-string "istioGateway=${ISTIO_GATEWAY}")
+HELM_ARGS+=(--set-string "cetirun.helmValues.networkPolicy.istioIngressNamespace=${ISTIO_INGRESS_NAMESPACE}")
 HELM_ARGS+=(--set "cetirun.chart.repoURL=${CETIRUN_REPO_URL}")
 [ -n "${CETIRUN_CHART_VERSION}" ] && HELM_ARGS+=(--set-string "cetirun.chart.version=${CETIRUN_CHART_VERSION}")
 [ -n "${IMAGE_TAG:-}" ]      && HELM_ARGS+=(--set "image.tag=${IMAGE_TAG}")

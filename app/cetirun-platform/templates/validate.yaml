@@ -15,6 +15,9 @@
 {{- if and $operator.enabled (not $operator.istioGateway) }}
 {{- fail "cetirun-operator.istioGateway is required when cetirun-operator is enabled" }}
 {{- end }}
+{{- if and $operator.enabled (not (regexMatch "^[^/]+/[^/]+$" $operator.istioGateway)) }}
+{{- fail "cetirun-operator.istioGateway must use namespace/name format when cetirun-operator is enabled" }}
+{{- end }}
 {{- if and $portal.enabled (not $portal.istio.host) }}
 {{- fail "cetirun-portal.istio.host is required when cetirun-portal is enabled" }}
 {{- end }}

@@ -69,28 +69,28 @@ done
 
 echo "==> helm template platform (custom gateway)"
 output=$(helm template platform "${chart_dir}" "${base_args[@]}" \
-  --set-string cetirun-operator.istioGateway=custom-namespace/custom-gateway \
-  --set-string cetirun-operator.cetirun.helmValues.networkPolicy.istioIngressNamespace=custom-namespace \
-  --set-string cetirun-portal.istio.gateway=custom-namespace/custom-gateway \
-  --set-string cetirun-portal.istio.gatewayNamespace=custom-namespace \
+  --set-string cetirun-operator.istioGateway=gateway-resources/custom-gateway \
+  --set-string cetirun-operator.cetirun.helmValues.networkPolicy.istioIngressNamespace=gateway-workloads \
+  --set-string cetirun-portal.istio.gateway=gateway-resources/custom-gateway \
+  --set-string cetirun-portal.istio.gatewayNamespace=gateway-workloads \
   --set-string cetirun-portal.istio.gatewayServiceAccount=custom-gateway-sa)
-grep -q -- '- custom-namespace/custom-gateway' <<< "${output}" || {
+grep -q -- '- gateway-resources/custom-gateway' <<< "${output}" || {
   echo "FAIL: portal VirtualService did not use the configured gateway" >&2
   exit 1
 }
-grep -q 'kubernetes.io/metadata.name: custom-namespace' <<< "${output}" || {
-  echo "FAIL: portal policies did not use the configured gateway namespace" >&2
+grep -q 'kubernetes.io/metadata.name: gateway-workloads' <<< "${output}" || {
+  echo "FAIL: portal policies did not use the configured gateway workload namespace" >&2
   exit 1
 }
-grep -q 'cluster.local/ns/custom-namespace/sa/custom-gateway-sa' <<< "${output}" || {
+grep -q 'cluster.local/ns/gateway-workloads/sa/custom-gateway-sa' <<< "${output}" || {
   echo "FAIL: portal AuthorizationPolicy did not use the configured gateway service account" >&2
   exit 1
 }
-grep -q -- '--istio-gateway=custom-namespace/custom-gateway' <<< "${output}" || {
+grep -q -- '--istio-gateway=gateway-resources/custom-gateway' <<< "${output}" || {
   echo "FAIL: operator did not use the configured gateway" >&2
   exit 1
 }
-grep -q 'istioIngressNamespace\\":\\"custom-namespace' <<< "${output}" || {
+grep -q 'istioIngressNamespace\\":\\"gateway-workloads' <<< "${output}" || {
   echo "FAIL: operator did not pass the custom ingress namespace to instance NetworkPolicies" >&2
   exit 1
 }
@@ -147,5 +147,15 @@ if helm template platform "${chart_dir}" \
   --set-string cetirun-operator.istioGateway= \
   --set-string cetirun-portal.istio.host=portal.example.invalid 2>/dev/null; then
   echo "FAIL: platform rendered without operator gateway" >&2
+  exit 1
+fi
+
+echo "==> helm template platform (malformed operator gateway, expect failure)"
+if helm template platform "${chart_dir}" \
+  --set istio.enabled=true \
+  --set-string cetirun-operator.domainSuffix=platform.example.invalid \
+  --set-string cetirun-operator.istioGateway=not-a-qualified-gateway \
+  --set-string cetirun-portal.istio.host=portal.example.invalid 2>/dev/null; then
+  echo "FAIL: platform rendered with a malformed operator gateway" >&2
   exit 1
 fi

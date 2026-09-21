@@ -36,7 +36,9 @@ kubectl get pods -n cetirun-system -l app.kubernetes.io/name=cetirun-portal \
 The final command verifies that the Portal has the Istio sidecar required for
 its authorization policies. Set `cetirun-operator.istioGateway` to the same
 `<namespace>/<name>` as `cetirun-portal.istio.gateway` when using a custom
-gateway. Also set
+gateway. `cetirun-portal.istio.gatewayNamespace` and
+`gatewayServiceAccount` identify the selected gateway workload, which can run
+in a namespace other than its Gateway resource. Also set
 `cetirun-operator.cetirun.helmValues.networkPolicy.istioIngressNamespace` to
 that gateway workload's namespace; otherwise the instance NetworkPolicies block
 ingress traffic.
@@ -45,10 +47,10 @@ Helm creates CRDs from a chart's `crds/` directory but deliberately does not
 upgrade or delete them. Upgrade CRD schemas through an explicit, reviewed
 migration before upgrading the Operator chart.
 
-`cetirun-portal.istio.gateway`, `gatewayNamespace`, and
-`gatewayServiceAccount` must identify the same ingress gateway. The deployment
-helper configures all three from `ISTIO_GATEWAY_NAME`,
-`ISTIO_GATEWAY_NAMESPACE`, and `ISTIO_GATEWAY_SERVICE_ACCOUNT`.
+The deployment helper accepts `ISTIO_GATEWAY_NAME` and
+`ISTIO_GATEWAY_NAMESPACE` for the Gateway resource, and
+`ISTIO_INGRESS_NAMESPACE` (defaulting to the Gateway namespace) plus
+`ISTIO_GATEWAY_SERVICE_ACCOUNT` for the Gateway workload identity.
 
 When using the umbrella, configure the separate Istio release to reach the
 co-located Portal before installing it:
