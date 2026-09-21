@@ -18,6 +18,7 @@ helm dependency build --skip-refresh "${chart_dir}" > /dev/null
 base_args=(
   -f "${chart_dir}/values.yaml"
   --set istio.enabled=true
+  --set-string cetirun-operator.domainSuffix=platform.example.invalid
   --set-string cetirun-portal.istio.host=portal.example.invalid
 )
 
@@ -73,13 +74,31 @@ fi
 
 echo "==> helm template platform (missing Istio confirmation, expect failure)"
 if helm template platform "${chart_dir}" \
+  --set-string cetirun-operator.domainSuffix=platform.example.invalid \
   --set-string cetirun-portal.istio.host=portal.example.invalid 2>/dev/null; then
   echo "FAIL: platform rendered without Istio confirmation" >&2
   exit 1
 fi
 
 echo "==> helm template platform (missing portal hostname, expect failure)"
-if helm template platform "${chart_dir}" --set istio.enabled=true 2>/dev/null; then
+if helm template platform "${chart_dir}" \
+  --set istio.enabled=true \
+  --set-string cetirun-operator.domainSuffix=platform.example.invalid 2>/dev/null; then
   echo "FAIL: platform rendered without portal hostname" >&2
+  exit 1
+fi
+
+echo "==> helm template platform (missing gateway service account, expect failure)"
+if helm template platform "${chart_dir}" "${base_args[@]}" \
+  --set-string cetirun-portal.istio.gatewayServiceAccount= 2>/dev/null; then
+  echo "FAIL: platform rendered without gateway service account" >&2
+  exit 1
+fi
+
+echo "==> helm template platform (missing operator domain suffix, expect failure)"
+if helm template platform "${chart_dir}" \
+  --set istio.enabled=true \
+  --set-string cetirun-portal.istio.host=portal.example.invalid 2>/dev/null; then
+  echo "FAIL: platform rendered without operator domain suffix" >&2
   exit 1
 fi

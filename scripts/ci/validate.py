@@ -49,6 +49,7 @@ CHARTS = (
         "app/cetirun-platform",
         (
             "istio.enabled=true",
+            "cetirun-operator.domainSuffix=platform.example.invalid",
             "cetirun-portal.istio.host=portal.example.invalid",
         ),
     ),

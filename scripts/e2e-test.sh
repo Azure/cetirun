@@ -18,7 +18,7 @@
 #   TEST_ALIAS            — Instance alias           (default: johnreese)
 #   AGENT_TYPE            — Agent type               (default: openclaw)
 #   TEST_NAMESPACE        — Operator namespace        (default: cetirun-system)
-#   PORTAL_NAMESPACE      — Portal namespace          (default: TEST_NAMESPACE)
+#   PORTAL_NAMESPACE      — Portal namespace          (default: cetirun-portal; set to TEST_NAMESPACE for umbrella)
 #   READY_TIMEOUT         — Seconds to wait for Ready (default: 600)
 #   DOMAIN                — Base domain for routing   (auto-detected from operator Helm values)
 #   EXPECTED_IMAGE_TAG    — If set, verify agent pod uses this image tag
@@ -29,7 +29,7 @@ set -euo pipefail
 TEST_ALIAS="${TEST_ALIAS:-johnreese}"
 AGENT_TYPE="${AGENT_TYPE:-openclaw}"
 TEST_NAMESPACE="${TEST_NAMESPACE:-cetirun-system}"
-PORTAL_NAMESPACE="${PORTAL_NAMESPACE:-${TEST_NAMESPACE}}"
+PORTAL_NAMESPACE="${PORTAL_NAMESPACE:-cetirun-portal}"
 READY_TIMEOUT="${READY_TIMEOUT:-600}"
 INSTANCE_NS="cetirun-${TEST_ALIAS}"
 
@@ -95,7 +95,9 @@ fi
 echo "    Operator running (${OPERATOR_PODS} pod(s))."
 
 # Check portal is running
-PORTAL_PODS=$(kubectl get pods -n "${PORTAL_NAMESPACE}" --field-selector=status.phase=Running -o name 2>/dev/null | wc -l || echo 0)
+PORTAL_PODS=$(kubectl get pods -n "${PORTAL_NAMESPACE}" \
+  -l app.kubernetes.io/name=cetirun-portal \
+  --field-selector=status.phase=Running -o name 2>/dev/null | wc -l || echo 0)
 if (( PORTAL_PODS == 0 )); then
   echo "ERROR: No running portal pods found in ${PORTAL_NAMESPACE}." >&2
   exit 1

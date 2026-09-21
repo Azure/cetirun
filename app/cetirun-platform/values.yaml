@@ -12,6 +12,9 @@ istio:
 cetirun-operator:
   enabled: true
   namespace: cetirun-system
+  # Required for instance URLs and VirtualServices. The deployment helper sets
+  # this from DOMAIN.
+  domainSuffix: ""
 
 cetirun-portal:
   enabled: true

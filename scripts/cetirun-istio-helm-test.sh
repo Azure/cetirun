@@ -33,11 +33,11 @@ assert_ownership_target() {
   }
 }
 
-echo "==> helm template cetirun-istio (umbrella portal default)"
+echo "==> helm template cetirun-istio (standalone portal default)"
 output=$(helm template cetirun-istio "${chart_dir}" "${base_args[@]}")
-assert_ownership_target "${output}" "cetirun-portal.cetirun-system.svc.cluster.local"
-
-echo "==> helm template cetirun-istio (standalone portal override)"
-output=$(helm template cetirun-istio "${chart_dir}" "${base_args[@]}" \
-  --set-string portalAuth.clusterHost=cetirun-portal.cetirun-portal.svc.cluster.local)
 assert_ownership_target "${output}" "cetirun-portal.cetirun-portal.svc.cluster.local"
+
+echo "==> helm template cetirun-istio (umbrella portal override)"
+output=$(helm template cetirun-istio "${chart_dir}" "${base_args[@]}" \
+  --set-string portalAuth.clusterHost=cetirun-portal.cetirun-system.svc.cluster.local)
+assert_ownership_target "${output}" "cetirun-portal.cetirun-system.svc.cluster.local"

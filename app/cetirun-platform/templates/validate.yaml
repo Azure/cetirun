@@ -8,6 +8,10 @@
 {{- fail "istio.oauth2Proxy.namespace is required" }}
 {{- end }}
 {{- $portal := index .Values "cetirun-portal" }}
+{{- $operator := index .Values "cetirun-operator" }}
+{{- if and $operator.enabled (not $operator.domainSuffix) }}
+{{- fail "cetirun-operator.domainSuffix is required when cetirun-operator is enabled" }}
+{{- end }}
 {{- if and $portal.enabled (not $portal.istio.host) }}
 {{- fail "cetirun-portal.istio.host is required when cetirun-portal is enabled" }}
 {{- end }}
@@ -16,4 +20,7 @@
 {{- end }}
 {{- if and $portal.enabled (not $portal.istio.gatewayNamespace) }}
 {{- fail "cetirun-portal.istio.gatewayNamespace is required when cetirun-portal is enabled" }}
+{{- end }}
+{{- if and $portal.enabled (not $portal.istio.gatewayServiceAccount) }}
+{{- fail "cetirun-portal.istio.gatewayServiceAccount is required when cetirun-portal is enabled" }}
 {{- end }}

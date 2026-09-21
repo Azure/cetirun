@@ -67,9 +67,9 @@ securityHeaders:
 
 # Internal portal auth endpoint for instance ownership check
 portalAuth:
-  # The default matches the platform umbrella release namespace. Override this
-  # when the portal is installed independently in another namespace.
-  clusterHost: "cetirun-portal.cetirun-system.svc.cluster.local"
+  # The default preserves standalone Portal deployments. The platform umbrella
+  # deployment overrides this to cetirun-system through infra/istio/deploy.sh.
+  clusterHost: "cetirun-portal.cetirun-portal.svc.cluster.local"
   clusterPort: 8081
   path: "/internal/auth"
 

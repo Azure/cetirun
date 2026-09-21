@@ -32,7 +32,7 @@
 #   RESOURCE_GROUP         — Resource group (required)
 #   RELEASE_NAME           — Helm release name (default: cetirun-istio)
 #   DOMAIN                 — Wildcard domain for CetiRun (required)
-#   PORTAL_AUTH_NAMESPACE  — Namespace of the portal auth service (default: cetirun-system)
+#   PORTAL_AUTH_NAMESPACE  — Namespace of the portal auth service (default: cetirun-portal)
 #   PORTAL_AUTH_SERVICE    — Name of the portal auth service (default: cetirun-portal)
 #   PORTAL_AUTH_CLUSTER_HOST — Explicit portal auth service FQDN (overrides namespace/service)
 #   SKIP_AZ_VALIDATION     — If non-empty, skip az CLI checks (for CI with pre-provided certs)
@@ -75,7 +75,7 @@ RELEASE_NAME="${RELEASE_NAME:-cetirun-istio}"
 DOMAIN="${DOMAIN:?DOMAIN is required}"
 KEY_VAULT_NAME="${KEY_VAULT_NAME:?KEY_VAULT_NAME is required}"
 KEY_VAULT_CERT_NAME="${KEY_VAULT_CERT_NAME:-sslcert}"
-PORTAL_AUTH_NAMESPACE="${PORTAL_AUTH_NAMESPACE:-cetirun-system}"
+PORTAL_AUTH_NAMESPACE="${PORTAL_AUTH_NAMESPACE:-cetirun-portal}"
 PORTAL_AUTH_SERVICE="${PORTAL_AUTH_SERVICE:-cetirun-portal}"
 PORTAL_AUTH_CLUSTER_HOST="${PORTAL_AUTH_CLUSTER_HOST:-${PORTAL_AUTH_SERVICE}.${PORTAL_AUTH_NAMESPACE}.svc.cluster.local}"
 if [[ -z "${PORTAL_AUTH_CLUSTER_HOST}" ]]; then

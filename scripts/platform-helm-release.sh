@@ -46,6 +46,7 @@ helm dependency build --skip-refresh "${chart_dir}"
 echo "==> Linting Helm chart"
 helm lint --strict "${chart_dir}" \
   --set istio.enabled=true \
+  --set-string cetirun-operator.domainSuffix=platform.example.invalid \
   --set-string cetirun-portal.istio.host=portal.example.invalid
 
 echo "==> Packaging Helm chart (${chart_name} v${chart_version})"
