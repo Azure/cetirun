@@ -55,6 +55,7 @@ func main() {
 	var chartRepoURL string
 	var chartVersion string
 	var domainSuffix string
+	var istioGateway string
 	var defaultModel string
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "Address the metric endpoint binds to.")
@@ -67,6 +68,8 @@ func main() {
 	flag.StringVar(&chartVersion, "chart-version", "0.1.0",
 		"Version of the CetiRun Helm chart to deploy.")
 	flag.StringVar(&domainSuffix, "domain-suffix", "", "Base domain suffix for instance access URLs.")
+	flag.StringVar(&istioGateway, "istio-gateway", controller.DefaultIstioGateway,
+		"Istio Gateway namespace/name used by instance VirtualServices.")
 	flag.StringVar(&defaultModel, "default-model", "gpt-6-astra", "Default GitHub Copilot model for instances without spec.model.")
 
 	opts := zap.Options{
@@ -114,6 +117,10 @@ func main() {
 
 	if domainSuffix == "" {
 		setupLog.Info("domain-suffix must be set (e.g. --domain-suffix=example.com)")
+		os.Exit(1)
+	}
+	if istioGateway == "" {
+		setupLog.Info("istio-gateway must be set (e.g. --istio-gateway=aks-istio-ingress/cetirun-gateway)")
 		os.Exit(1)
 	}
 
@@ -171,6 +178,7 @@ func main() {
 		OperatorSAName:       getEnvOrDefault("OPERATOR_SA_NAME", "cetirun-operator-controller-manager"),
 		ChartVersion:         chartVersion,
 		IstioRevision:        istioRevision,
+		IstioGateway:         istioGateway,
 		DomainSuffix:         domainSuffix,
 		SkillsStorageAccount: skillsStorageAccount,
 		CetiRunHelmValues:    cetirunHelmValues,

@@ -12,6 +12,8 @@ istio:
 cetirun-operator:
   enabled: true
   namespace: cetirun-system
+  # Gateway used by instance VirtualServices. It must match the Portal gateway.
+  istioGateway: "aks-istio-ingress/cetirun-gateway"
   # Required for instance URLs and VirtualServices. The deployment helper sets
   # this from DOMAIN.
   domainSuffix: ""

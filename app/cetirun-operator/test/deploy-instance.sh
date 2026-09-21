@@ -14,9 +14,6 @@ SUBSCRIPTION="${AZURE_SUBSCRIPTION_ID:?AZURE_SUBSCRIPTION_ID is required}"
 RESOURCE_GROUP="${RESOURCE_GROUP:?RESOURCE_GROUP is required}"
 CLUSTER_NAME="${AKS_CLUSTER_NAME:?AKS_CLUSTER_NAME is required}"
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CRD_PATH="${SCRIPT_DIR}/../../config/crd/bases/cetirun.microsoft.com_openclawinstances.yaml"
-
 #-----------------------------------------------------------------------
 # Step 1: Obtain admin kubeconfig
 #-----------------------------------------------------------------------
@@ -82,15 +79,12 @@ echo "  Email:        ${EMAIL}"
 echo ""
 
 #-----------------------------------------------------------------------
-# Step 3: Ensure CRD is installed
+# Step 3: Verify operator installation
 #-----------------------------------------------------------------------
-echo "=== Step 3: Ensure OpenClawInstance CRD is installed ==="
-if kubectl get crd openclawinstances.cetirun.microsoft.com &>/dev/null; then
-  echo "CRD already exists."
-else
-  echo "Installing CRD from ${CRD_PATH}..."
-  kubectl apply -f "${CRD_PATH}"
-  echo "CRD installed."
+echo "=== Step 3: Verify OpenClawInstance CRD is installed ==="
+if ! kubectl get crd openclawinstances.cetirun.microsoft.com &>/dev/null; then
+  echo "ERROR: OpenClawInstance CRD is not installed. Install the CetiRun Operator chart first." >&2
+  exit 1
 fi
 echo ""
 

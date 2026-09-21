@@ -39,6 +39,7 @@ spec:
             - --chart-repo-url={{ .Values.cetirun.chart.repoURL }}
             - --chart-version={{ .Values.cetirun.chart.version }}
             - --domain-suffix={{ .Values.domainSuffix }}
+            - {{ printf "--istio-gateway=%s" .Values.istioGateway | quote }}
             - {{ printf "--default-model=%s" .Values.cetirun.defaultModel | quote }}
           env:
             - name: OPERATOR_NAMESPACE

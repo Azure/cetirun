@@ -34,21 +34,6 @@ if [ -n "${values_file}" ] && [ ! -f "${values_file}" ]; then
 fi
 
 kubectl cluster-info --request-timeout=5s >/dev/null
-crd_dir="${repo_root}/app/cetirun-operator/config/crd/bases"
-for crd_file in \
-  "${crd_dir}/cetirun.microsoft.com_openclawinstances.yaml" \
-  "${crd_dir}/cetirun.microsoft.com_openclawteams.yaml"; do
-  if [ ! -f "${crd_file}" ]; then
-    echo "ERROR: Required CRD manifest does not exist: ${crd_file}" >&2
-    exit 1
-  fi
-  kubectl apply -f "${crd_file}" >/dev/null
-done
-kubectl wait --for=condition=Established \
-  crd/openclawinstances.cetirun.microsoft.com \
-  crd/openclawteams.cetirun.microsoft.com \
-  --timeout=30s >/dev/null
-
 kubectl get crd virtualservices.networking.istio.io >/dev/null
 kubectl get gateway.networking.istio.io "${gateway_name}" -n "${gateway_namespace}" >/dev/null
 kubectl get serviceaccount "${gateway_service_account}" -n "${gateway_namespace}" >/dev/null
@@ -69,21 +54,38 @@ kubectl label namespace "${namespace}" "istio.io/rev=${istio_revision}" --overwr
 helm_args=(
   upgrade --install "${release_name}" "${chart_dir}"
   --namespace "${namespace}"
+)
+if [ -n "${values_file}" ]; then
+  helm_args+=(--values "${values_file}")
+fi
+helm_args+=(
   --set istio.enabled=true
   --set-string "istio.oauth2Proxy.name=${oauth2_proxy_name}"
   --set-string "istio.oauth2Proxy.namespace=${oauth2_proxy_namespace}"
   --set-string "cetirun-operator.namespace=${namespace}"
   --set-string "cetirun-operator.domainSuffix=${domain}"
   --set-string "cetirun-operator.istioRevision=${istio_revision}"
+  --set-string "cetirun-operator.istioGateway=${gateway_namespace}/${gateway_name}"
   --set-string "cetirun-portal.istio.host=${domain}"
   --set-string "cetirun-portal.istio.gateway=${gateway_namespace}/${gateway_name}"
   --set-string "cetirun-portal.istio.gatewayNamespace=${gateway_namespace}"
   --set-string "cetirun-portal.istio.gatewayServiceAccount=${gateway_service_account}"
 )
-if [ -n "${values_file}" ]; then
-  helm_args+=(--values "${values_file}")
-fi
 helm "${helm_args[@]}"
 
-kubectl rollout status deployment/cetirun-operator -n "${namespace}" --timeout=180s
-kubectl rollout status deployment/cetirun-portal -n "${namespace}" --timeout=180s
+rendered_manifest="$(helm get manifest "${release_name}" --namespace "${namespace}")"
+deployment_is_rendered() {
+  local deployment_name="$1"
+  awk -v name="${deployment_name}" '
+    $0 == "---" { kind = ""; next }
+    $1 == "kind:" { kind = $2; next }
+    kind == "Deployment" && $1 == "name:" && $2 == name { found = 1; exit }
+    END { exit !found }
+  ' <<< "${rendered_manifest}"
+}
+
+for deployment_name in cetirun-operator cetirun-portal; do
+  if deployment_is_rendered "${deployment_name}"; then
+    kubectl rollout status "deployment/${deployment_name}" -n "${namespace}" --timeout=180s
+  fi
+done

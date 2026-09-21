@@ -30,6 +30,9 @@ namespace: cetirun-system
 # or to pin a specific revision (e.g. "asm-1-22").
 istioRevision: ""
 
+# -- Namespace/name of the Istio Gateway used by instance VirtualServices.
+istioGateway: "aks-istio-ingress/cetirun-gateway"
+
 # -- Base domain suffix for instance access URLs (e.g. alias.example.com).
 domainSuffix: ""
 

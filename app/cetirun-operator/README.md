@@ -62,6 +62,11 @@ The operator Helm chart is published to Azure Container Registry as an OCI artif
 oci://cetirun.azurecr.io/helm/cetirun-operator
 ```
 
+The chart packages the generated CetiRun CRDs in `chart/crds/`. Helm creates
+them before the Operator resources on the first installation. Helm does not
+upgrade or delete CRDs; perform a reviewed CRD migration before an Operator
+release that changes their schemas.
+
 ### Publish to ACR
 
 ```bash

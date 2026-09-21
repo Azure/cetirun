@@ -23,8 +23,8 @@ import (
 )
 
 const (
-	// istioGateway is the Istio Gateway resource that handles external traffic.
-	istioGateway = "aks-istio-ingress/cetirun-gateway"
+	// DefaultIstioGateway is the Istio Gateway resource that handles external traffic.
+	DefaultIstioGateway = "aks-istio-ingress/cetirun-gateway"
 
 	// openclawPort is the port the OpenClaw Gateway listens on.
 	openclawPort = 18789
@@ -552,7 +552,10 @@ func classifySkills(skills []string) (npm []string, clawHub []string, err error)
 //
 // The instance name is not used as a top-level native UI route, which keeps it isolated
 // from Portal SPA routes such as /instances/<name>.
-func buildVirtualService(instance *cetirunv1alpha1.OpenClawInstance, domainSuffix string) *istiov1beta1.VirtualService {
+func buildVirtualService(instance *cetirunv1alpha1.OpenClawInstance, domainSuffix, gateway string) *istiov1beta1.VirtualService {
+	if gateway == "" {
+		gateway = DefaultIstioGateway
+	}
 	name := instance.Name
 	ns := instanceNamespace(name)
 	svcHost := fmt.Sprintf("%s.%s.svc.cluster.local", instanceServiceName(name), ns)
@@ -724,7 +727,7 @@ func buildVirtualService(instance *cetirunv1alpha1.OpenClawInstance, domainSuffi
 		},
 		Spec: istioapiv1beta1.VirtualService{
 			Hosts:    []string{domainSuffix},
-			Gateways: []string{istioGateway},
+			Gateways: []string{gateway},
 			ExportTo: []string{"*"},
 			Http:     routes,
 		},

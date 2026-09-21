@@ -54,6 +54,7 @@ type OpenClawInstanceReconciler struct {
 	OperatorSAName       string
 	ChartVersion         string
 	IstioRevision        string // explicit override; if empty, auto-detected from aks-istio-system
+	IstioGateway         string // namespace/name of the Gateway used by instance VirtualServices
 	DomainSuffix         string
 	SkillsStorageAccount string
 	CetiRunHelmValues    map[string]interface{} // Operator-level Helm value overrides for all instances
@@ -1113,7 +1114,7 @@ func (r *OpenClawInstanceReconciler) ensureMSTeamsSecretKeys(ctx context.Context
 // ensureVirtualService creates or updates the Istio VirtualService for this instance.
 func (r *OpenClawInstanceReconciler) ensureVirtualService(ctx context.Context, instance *cetirunv1alpha1.OpenClawInstance) error {
 	logger := log.FromContext(ctx)
-	desired := buildVirtualService(instance, r.DomainSuffix)
+	desired := buildVirtualService(instance, r.DomainSuffix, r.IstioGateway)
 	vsName := virtualServiceName(instance.Name)
 	vsNS := instanceNamespace(instance.Name)
 

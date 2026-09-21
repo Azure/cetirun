@@ -4,27 +4,41 @@
 It does not install AKS managed Istio, the CetiRun Istio release, certificates,
 credentials, Agent Instances, or retained Agent data.
 
-Install the CetiRun CRDs first (or use `scripts/cetirun-platform-deploy.sh`,
-which installs and waits for them), then use values which explicitly confirm
-the separately installed Istio prerequisites:
+The bundled Operator chart installs the CetiRun CRDs before its other resources
+on the first Helm installation. Use values which explicitly confirm the
+separately installed Istio prerequisites:
 
 ```bash
-kubectl apply -f app/cetirun-operator/config/crd/bases/cetirun.microsoft.com_openclawinstances.yaml
-kubectl apply -f app/cetirun-operator/config/crd/bases/cetirun.microsoft.com_openclawteams.yaml
-kubectl wait --for=condition=Established \
-  crd/openclawinstances.cetirun.microsoft.com \
-  crd/openclawteams.cetirun.microsoft.com --timeout=30s
+ISTIO_REVISION="$(kubectl get pods -n aks-istio-system -l app=istiod \
+  -o jsonpath='{.items[0].metadata.labels.istio\.io/rev}')"
+test -n "${ISTIO_REVISION}"
+kubectl create namespace cetirun-system --dry-run=client -o yaml | kubectl apply -f -
+kubectl label namespace cetirun-system "istio.io/rev=${ISTIO_REVISION}" --overwrite
 
 helm dependency build app/cetirun-platform
 helm upgrade --install cetirun-platform app/cetirun-platform \
-  --namespace cetirun-system --create-namespace \
+  --namespace cetirun-system \
   --set istio.enabled=true \
   --set-string cetirun-operator.domainSuffix=cetirun.example.com \
+  --set-string "cetirun-operator.istioRevision=${ISTIO_REVISION}" \
   --set cetirun-portal.istio.host=cetirun.example.com \
   --set cetirun-portal.istio.gateway=aks-istio-ingress/cetirun-gateway \
   --set cetirun-portal.istio.gatewayNamespace=aks-istio-ingress \
   --set cetirun-portal.istio.gatewayServiceAccount=aks-istio-ingressgateway-external
+
+kubectl rollout status deployment/cetirun-portal -n cetirun-system --timeout=180s
+kubectl get pods -n cetirun-system -l app.kubernetes.io/name=cetirun-portal \
+  -o jsonpath='{range .items[*]}{.spec.containers[*].name}{"\n"}{end}' | grep -qw istio-proxy
 ```
+
+The final command verifies that the Portal has the Istio sidecar required for
+its authorization policies. Set `cetirun-operator.istioGateway` to the same
+`<namespace>/<name>` as `cetirun-portal.istio.gateway` when using a custom
+gateway.
+
+Helm creates CRDs from a chart's `crds/` directory but deliberately does not
+upgrade or delete them. Upgrade CRD schemas through an explicit, reviewed
+migration before upgrading the Operator chart.
 
 `cetirun-portal.istio.gateway`, `gatewayNamespace`, and
 `gatewayServiceAccount` must identify the same ingress gateway. The deployment

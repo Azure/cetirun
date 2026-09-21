@@ -456,7 +456,7 @@ func TestBuildVirtualService_Routes(t *testing.T) {
 	instance.Name = "alice"
 	domainSuffix := "example.com"
 
-	vs := buildVirtualService(instance, domainSuffix)
+	vs := buildVirtualService(instance, domainSuffix, DefaultIstioGateway)
 
 	// VS must bind to the apex domain, not a subdomain
 	if len(vs.Spec.Hosts) != 1 || vs.Spec.Hosts[0] != domainSuffix {
@@ -555,12 +555,22 @@ func TestBuildVirtualService_Routes(t *testing.T) {
 	}
 }
 
+func TestBuildVirtualService_UsesConfiguredGateway(t *testing.T) {
+	instance := newTestInstance("alice", "Alice Smith", "aks-core", "gateway-token")
+	configuredGateway := "custom-namespace/custom-gateway"
+
+	vs := buildVirtualService(instance, "example.com", configuredGateway)
+	if len(vs.Spec.Gateways) != 1 || vs.Spec.Gateways[0] != configuredGateway {
+		t.Fatalf("VS gateways = %v, want [%q]", vs.Spec.Gateways, configuredGateway)
+	}
+}
+
 func TestBuildVirtualService_HermesRoutes(t *testing.T) {
 	instance := newTestInstance("alice", "Alice Smith", "aks-core", "gateway-token")
 	instance.Name = "alice"
 	instance.Spec.AgentType = cetirunv1alpha1.AgentTypeHermes
 
-	vs := buildVirtualService(instance, "example.com")
+	vs := buildVirtualService(instance, "example.com", DefaultIstioGateway)
 
 	// 1 webhook deny route (non-Teams, prepended) + 3 redirects (root, desktop, term)
 	// + 6 proxy routes (v1, health, cetirun-auth, desktop, term, catch-all dashboard)
@@ -942,7 +952,7 @@ func TestBuildVirtualService_MSTeamsRoute(t *testing.T) {
 	}
 	domainSuffix := "example.com"
 
-	vs := buildVirtualService(instance, domainSuffix)
+	vs := buildVirtualService(instance, domainSuffix, DefaultIstioGateway)
 
 	// Should have 9 routes: msteams webhook + WebSocket route + 3 redirects + cetirun-auth + 3 proxy routes.
 	if len(vs.Spec.Http) != 9 {
@@ -970,7 +980,7 @@ func TestBuildVirtualService_MSTeamsRoute(t *testing.T) {
 func TestBuildVirtualService_NoMSTeamsRoute(t *testing.T) {
 	instance := newTestInstance("alice", "Alice Smith", "aks-core", "gateway-token")
 	instance.Name = "alice"
-	vs := buildVirtualService(instance, "example.com")
+	vs := buildVirtualService(instance, "example.com", DefaultIstioGateway)
 
 	// Non-Teams instance still gets a prepended webhook deny route (1 + 8 = 9).
 	if len(vs.Spec.Http) != 9 {
@@ -995,8 +1005,8 @@ func TestBuildVirtualService_WebhookRouteIsPerInstance(t *testing.T) {
 	plain := newTestInstance("alice", "Alice Smith", "aks-core", "gateway-token")
 	plain.Name = "alice"
 
-	teamsVS := buildVirtualService(teams, "example.com")
-	plainVS := buildVirtualService(plain, "example.com")
+	teamsVS := buildVirtualService(teams, "example.com", DefaultIstioGateway)
+	plainVS := buildVirtualService(plain, "example.com", DefaultIstioGateway)
 
 	// Each VS binds only to the shared apex host but matches its own instance path.
 	teamsR0 := teamsVS.Spec.Http[0]
@@ -1238,7 +1248,7 @@ func TestBuildVirtualServicePathBased(t *testing.T) {
 		},
 	}
 	domain := "cetiruntest.aksdev.io"
-	vs := buildVirtualService(instance, domain)
+	vs := buildVirtualService(instance, domain, DefaultIstioGateway)
 
 	// VS must bind to the apex domain, not a subdomain
 	if len(vs.Spec.Hosts) != 1 || vs.Spec.Hosts[0] != domain {
