@@ -183,7 +183,8 @@ RUN curl -fsSL "https://github.com/notofonts/noto-cjk/releases/download/Sans2.00
 RUN tdnf install -y \
       atk at-spi2-atk alsa-lib cups-libs gtk3 libdrm mesa-libgbm nss nspr pango && \
     rpm --import https://dl.google.com/linux/linux_signing_key.pub && \
-    curl -fsSL https://dl.google.com/linux/direct/google-chrome-stable_current_x86_64.rpm \
+    curl --fail --show-error --location --http1.1 --retry 5 --retry-delay 5 --retry-all-errors \
+      https://dl.google.com/linux/direct/google-chrome-stable_current_x86_64.rpm \
       -o /tmp/chrome.rpm && \
     rpm -K /tmp/chrome.rpm && \
     rpm -ivh --nodeps /tmp/chrome.rpm && \
