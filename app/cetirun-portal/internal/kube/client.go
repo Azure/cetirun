@@ -38,7 +38,7 @@ type UpdateInstanceOpts struct {
 
 const chartVersionTTL = 5 * time.Minute
 
-// Client wraps controller-runtime client for OpenClawInstance operations.
+// Client wraps controller-runtime client for Agent operations.
 type Client struct {
 	client          client.Client
 	chartVersionMu  sync.RWMutex
@@ -52,9 +52,9 @@ func NewClient(c client.Client) *Client {
 	return &Client{client: c}
 }
 
-// GetInstance retrieves an OpenClawInstance by alias (cluster-scoped).
-func (c *Client) GetInstance(ctx context.Context, alias string) (*cetirunv1alpha1.OpenClawInstance, error) {
-	instance := &cetirunv1alpha1.OpenClawInstance{}
+// GetInstance retrieves an Agent by alias (cluster-scoped).
+func (c *Client) GetInstance(ctx context.Context, alias string) (*cetirunv1alpha1.Agent, error) {
+	instance := &cetirunv1alpha1.Agent{}
 	key := client.ObjectKey{Name: alias}
 	if err := c.client.Get(ctx, key, instance); err != nil {
 		return nil, err
@@ -62,12 +62,12 @@ func (c *Client) GetInstance(ctx context.Context, alias string) (*cetirunv1alpha
 	return instance, nil
 }
 
-// CreateInstance creates a new OpenClawInstance CR.
+// CreateInstance creates a new Agent CR.
 // instanceName is the logical name for the instance (spec.instanceName and CR name);
 // if empty it defaults to alias (backward-compatible single-instance behaviour).
 // If gatewayToken or tailscaleAuthKey are non-empty, it pre-creates the
 // corresponding Secrets in the instance namespace before creating the CR.
-func (c *Client) CreateInstance(ctx context.Context, alias, displayName, team, email, instanceName, agentType, gatewayToken, tailscaleAuthKey, model string, teamsEnabled bool) (*cetirunv1alpha1.OpenClawInstance, error) {
+func (c *Client) CreateInstance(ctx context.Context, alias, displayName, team, email, instanceName, agentType, gatewayToken, tailscaleAuthKey, model string, teamsEnabled bool) (*cetirunv1alpha1.Agent, error) {
 	if instanceName == "" {
 		instanceName = alias
 	}
@@ -97,11 +97,11 @@ func (c *Client) CreateInstance(ctx context.Context, alias, displayName, team, e
 		}
 	}
 
-	instance := &cetirunv1alpha1.OpenClawInstance{
+	instance := &cetirunv1alpha1.Agent{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: instanceName,
 		},
-		Spec: cetirunv1alpha1.OpenClawInstanceSpec{
+		Spec: cetirunv1alpha1.AgentSpec{
 			AgentType:             agentType,
 			Model:                 strings.TrimSpace(model),
 			GatewayTokenSecretRef: "gateway-token",
@@ -128,9 +128,9 @@ func (c *Client) CreateInstance(ctx context.Context, alias, displayName, team, e
 	return instance, nil
 }
 
-// DeleteInstance deletes an OpenClawInstance by alias (CR object name = alias).
+// DeleteInstance deletes an Agent by alias (CR object name = alias).
 func (c *Client) DeleteInstance(ctx context.Context, alias string) error {
-	instance := &cetirunv1alpha1.OpenClawInstance{
+	instance := &cetirunv1alpha1.Agent{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: alias,
 		},
@@ -138,7 +138,7 @@ func (c *Client) DeleteInstance(ctx context.Context, alias string) error {
 	return c.client.Delete(ctx, instance)
 }
 
-// DeleteInstanceByName deletes an OpenClawInstance whose spec.instanceName matches instanceName.
+// DeleteInstanceByName deletes an Agent whose spec.instanceName matches instanceName.
 func (c *Client) DeleteInstanceByName(ctx context.Context, instanceName string) error {
 	instance, err := c.GetInstanceByName(ctx, instanceName)
 	if err != nil {
@@ -267,10 +267,10 @@ func (c *Client) ensureNamespace(ctx context.Context, ns, alias string) error {
 	return nil
 }
 
-// UpdateInstance updates an existing OpenClawInstance CR and its associated Secrets.
+// UpdateInstance updates an existing Agent CR and its associated Secrets.
 // Secrets are updated first (idempotent), then the CR is updated inside a
 // RetryOnConflict loop to handle races with operator status updates.
-func (c *Client) UpdateInstance(ctx context.Context, alias string, opts UpdateInstanceOpts) (*cetirunv1alpha1.OpenClawInstance, error) {
+func (c *Client) UpdateInstance(ctx context.Context, alias string, opts UpdateInstanceOpts) (*cetirunv1alpha1.Agent, error) {
 	// Pre-flight: verify the instance exists.
 	if _, err := c.GetInstance(ctx, alias); err != nil {
 		return nil, err
@@ -304,7 +304,7 @@ func (c *Client) UpdateInstance(ctx context.Context, alias string, opts UpdateIn
 	}
 
 	// Update the CR with RetryOnConflict to handle races with operator.
-	var result *cetirunv1alpha1.OpenClawInstance
+	var result *cetirunv1alpha1.Agent
 	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		instance, err := c.GetInstance(ctx, alias)
 		if err != nil {
@@ -376,10 +376,10 @@ func (c *Client) UpdateInstance(ctx context.Context, alias string, opts UpdateIn
 	return result, nil
 }
 
-// UpdateInstanceByName updates an OpenClawInstance looked up by metadata.name.
+// UpdateInstanceByName updates an Agent looked up by metadata.name.
 // Unlike UpdateInstance (which looks up by alias==metadata.name), this uses
 // the actual CR name so it works for instances with custom names (multi-instance).
-func (c *Client) UpdateInstanceByName(ctx context.Context, instanceName string, opts UpdateInstanceOpts) (*cetirunv1alpha1.OpenClawInstance, error) {
+func (c *Client) UpdateInstanceByName(ctx context.Context, instanceName string, opts UpdateInstanceOpts) (*cetirunv1alpha1.Agent, error) {
 	// Pre-flight: verify the instance exists and get the alias for namespace/secret ops.
 	existing, err := c.GetInstanceByName(ctx, instanceName)
 	if err != nil {
@@ -412,7 +412,7 @@ func (c *Client) UpdateInstanceByName(ctx context.Context, instanceName string, 
 		secretsUpdated = true
 	}
 
-	var result *cetirunv1alpha1.OpenClawInstance
+	var result *cetirunv1alpha1.Agent
 	err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		instance, err := c.GetInstanceByName(ctx, instanceName)
 		if err != nil {
@@ -480,13 +480,13 @@ func (c *Client) UpdateInstanceByName(ctx context.Context, instanceName string, 
 	return result, nil
 }
 
-// UpgradeInstanceByName upgrades an OpenClawInstance looked up by spec.instanceName.
-func (c *Client) UpgradeInstanceByName(ctx context.Context, instanceName string) (*cetirunv1alpha1.OpenClawInstance, error) {
+// UpgradeInstanceByName upgrades an Agent looked up by spec.instanceName.
+func (c *Client) UpgradeInstanceByName(ctx context.Context, instanceName string) (*cetirunv1alpha1.Agent, error) {
 	latestVersion, err := c.GetOperatorChartVersion(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("get latest chart version: %w", err)
 	}
-	var result *cetirunv1alpha1.OpenClawInstance
+	var result *cetirunv1alpha1.Agent
 	err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		instance, err := c.GetInstanceByName(ctx, instanceName)
 		if err != nil {
@@ -508,7 +508,7 @@ func (c *Client) UpgradeInstanceByName(ctx context.Context, instanceName string)
 
 // touchSecretAnnotation sets a timestamp annotation on the CR so that
 // a watch event fires even when spec.generation doesn't change (secret-only updates).
-func touchSecretAnnotation(instance *cetirunv1alpha1.OpenClawInstance) {
+func touchSecretAnnotation(instance *cetirunv1alpha1.Agent) {
 	if instance.Annotations == nil {
 		instance.Annotations = make(map[string]string)
 	}
@@ -521,7 +521,7 @@ func touchSecretAnnotation(instance *cetirunv1alpha1.OpenClawInstance) {
 // is present (auto-generated 48-char alphanumeric, preserved across updates).
 // CETIRUN_AUTH_KEY is the bearer key for the in-pod cetirun-auth helper
 // service (Portal "Copilot Auth" UI). The chart cannot manage this field
-// itself because Portal passes the secret in as ``secrets.existingSecret``,
+// itself because Portal passes the secret in as secrets.existingSecret,
 // which causes the chart's Secret template to be skipped entirely.
 func (c *Client) createOrUpdateSecret(ctx context.Context, ns, name string, data map[string][]byte) error {
 	labels := map[string]string{
@@ -588,7 +588,7 @@ func ensureCetiRunAuthKey(secret *corev1.Secret, name string) error {
 }
 
 // randAlphaNum returns a cryptographically random alphanumeric string of
-// length n, matching the chart-side ``randAlphaNum`` helper used elsewhere.
+// length n, matching the chart-side randAlphaNum helper used elsewhere.
 // Returns an error when the system CSPRNG fails — callers must surface that
 // rather than fall back to a predictable value, since this string ends up as
 // the CETIRUN_AUTH_KEY bearer credential.
@@ -604,11 +604,11 @@ func randAlphaNum(n int) (string, error) {
 	return string(buf), nil
 }
 
-// GetInstanceByName returns the OpenClawInstance with the given metadata.name.
-// Since OpenClawInstance is cluster-scoped and metadata.name is globally unique,
+// GetInstanceByName returns the Agent with the given metadata.name.
+// Since Agent is cluster-scoped and metadata.name is globally unique,
 // this is a direct Get rather than a list scan.
-func (c *Client) GetInstanceByName(ctx context.Context, instanceName string) (*cetirunv1alpha1.OpenClawInstance, error) {
-	instance := &cetirunv1alpha1.OpenClawInstance{}
+func (c *Client) GetInstanceByName(ctx context.Context, instanceName string) (*cetirunv1alpha1.Agent, error) {
+	instance := &cetirunv1alpha1.Agent{}
 	if err := c.client.Get(ctx, client.ObjectKey{Name: instanceName}, instance); err != nil {
 		if errors.IsNotFound(err) {
 			return nil, fmt.Errorf("instance %q not found", instanceName)
@@ -618,10 +618,10 @@ func (c *Client) GetInstanceByName(ctx context.Context, instanceName string) (*c
 	return instance, nil
 }
 
-// GetInstanceByAlias returns the first OpenClawInstance whose spec.user.alias matches.
+// GetInstanceByAlias returns the first Agent whose spec.user.alias matches.
 // Used in multi-instance mode where metadata.name != alias.
-func (c *Client) GetInstanceByAlias(ctx context.Context, alias string) (*cetirunv1alpha1.OpenClawInstance, error) {
-	list := &cetirunv1alpha1.OpenClawInstanceList{}
+func (c *Client) GetInstanceByAlias(ctx context.Context, alias string) (*cetirunv1alpha1.Agent, error) {
+	list := &cetirunv1alpha1.AgentList{}
 	if err := c.client.List(ctx, list); err != nil {
 		return nil, err
 	}
@@ -630,12 +630,12 @@ func (c *Client) GetInstanceByAlias(ctx context.Context, alias string) (*cetirun
 			return &list.Items[i], nil
 		}
 	}
-	return nil, errors.NewNotFound(cetirunv1alpha1.GroupVersion.WithResource("openclawinstances").GroupResource(), alias)
+	return nil, errors.NewNotFound(cetirunv1alpha1.GroupVersion.WithResource("agents").GroupResource(), alias)
 }
 
-// ListAllInstances returns all OpenClawInstance CRs in the cluster.
-func (c *Client) ListAllInstances(ctx context.Context) ([]cetirunv1alpha1.OpenClawInstance, error) {
-	list := &cetirunv1alpha1.OpenClawInstanceList{}
+// ListAllInstances returns all Agent CRs in the cluster.
+func (c *Client) ListAllInstances(ctx context.Context) ([]cetirunv1alpha1.Agent, error) {
+	list := &cetirunv1alpha1.AgentList{}
 	if err := c.client.List(ctx, list); err != nil {
 		return nil, err
 	}
@@ -686,14 +686,14 @@ func (c *Client) fetchOperatorChartVersion(ctx context.Context) (string, error) 
 	return "", fmt.Errorf("--chart-version not found in operator deployment args")
 }
 
-// GetEvents returns K8s Events related to an OpenClawInstance CR.
-// OpenClawInstance is cluster-scoped, so we search all namespaces using a
+// GetEvents returns K8s Events related to an Agent CR.
+// Agent is cluster-scoped, so we search all namespaces using a
 // raw field selector that the API server natively supports for Events.
 func (c *Client) GetEvents(ctx context.Context, alias string) ([]corev1.Event, error) {
 	eventList := &corev1.EventList{}
 	if err := c.client.List(ctx, eventList, client.MatchingFields{
 		"involvedObject.name": alias,
-		"involvedObject.kind": "OpenClawInstance",
+		"involvedObject.kind": "Agent",
 	}); err != nil {
 		return nil, fmt.Errorf("list events for CR %s: %w", alias, err)
 	}
@@ -719,12 +719,12 @@ func (c *Client) GetPods(ctx context.Context, namespace string) ([]corev1.Pod, e
 }
 
 // UpgradeInstance sets the instance's spec.helm.version to the operator's latest chart version.
-func (c *Client) UpgradeInstance(ctx context.Context, alias string) (*cetirunv1alpha1.OpenClawInstance, error) {
+func (c *Client) UpgradeInstance(ctx context.Context, alias string) (*cetirunv1alpha1.Agent, error) {
 	latestVersion, err := c.GetOperatorChartVersion(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("get latest chart version: %w", err)
 	}
-	var result *cetirunv1alpha1.OpenClawInstance
+	var result *cetirunv1alpha1.Agent
 	err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		instance, err := c.GetInstance(ctx, alias)
 		if err != nil {
@@ -744,36 +744,36 @@ func (c *Client) UpgradeInstance(ctx context.Context, alias string) (*cetirunv1a
 	return result, err
 }
 
-// ListTeams returns all OpenClawTeam CRs (cluster-scoped).
-func (c *Client) ListTeams(ctx context.Context) ([]cetirunv1alpha1.OpenClawTeam, error) {
-	list := &cetirunv1alpha1.OpenClawTeamList{}
+// ListTeams returns all Team CRs (cluster-scoped).
+func (c *Client) ListTeams(ctx context.Context) ([]cetirunv1alpha1.Team, error) {
+	list := &cetirunv1alpha1.TeamList{}
 	if err := c.client.List(ctx, list); err != nil {
 		return nil, err
 	}
 	return list.Items, nil
 }
 
-// GetTeam retrieves a single OpenClawTeam by name (cluster-scoped).
-func (c *Client) GetTeam(ctx context.Context, name string) (*cetirunv1alpha1.OpenClawTeam, error) {
-	team := &cetirunv1alpha1.OpenClawTeam{}
+// GetTeam retrieves a single Team by name (cluster-scoped).
+func (c *Client) GetTeam(ctx context.Context, name string) (*cetirunv1alpha1.Team, error) {
+	team := &cetirunv1alpha1.Team{}
 	if err := c.client.Get(ctx, client.ObjectKey{Name: name}, team); err != nil {
 		return nil, err
 	}
 	return team, nil
 }
 
-// CreateTeam creates a new OpenClawTeam.
-func (c *Client) CreateTeam(ctx context.Context, team *cetirunv1alpha1.OpenClawTeam) (*cetirunv1alpha1.OpenClawTeam, error) {
+// CreateTeam creates a new Team.
+func (c *Client) CreateTeam(ctx context.Context, team *cetirunv1alpha1.Team) (*cetirunv1alpha1.Team, error) {
 	if err := c.client.Create(ctx, team); err != nil {
 		return nil, err
 	}
 	return team, nil
 }
 
-// UpdateTeamSpec replaces an existing OpenClawTeam's spec, retrying on
+// UpdateTeamSpec replaces an existing Team's spec, retrying on
 // conflict.
-func (c *Client) UpdateTeamSpec(ctx context.Context, name string, newSpec cetirunv1alpha1.OpenClawTeamSpec) (*cetirunv1alpha1.OpenClawTeam, error) {
-	var result *cetirunv1alpha1.OpenClawTeam
+func (c *Client) UpdateTeamSpec(ctx context.Context, name string, newSpec cetirunv1alpha1.TeamSpec) (*cetirunv1alpha1.Team, error) {
+	var result *cetirunv1alpha1.Team
 	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		team, err := c.GetTeam(ctx, name)
 		if err != nil {
@@ -789,9 +789,9 @@ func (c *Client) UpdateTeamSpec(ctx context.Context, name string, newSpec cetiru
 	return result, err
 }
 
-// DeleteTeam deletes an OpenClawTeam by name.
+// DeleteTeam deletes a Team by name.
 func (c *Client) DeleteTeam(ctx context.Context, name string) error {
-	team := &cetirunv1alpha1.OpenClawTeam{
+	team := &cetirunv1alpha1.Team{
 		ObjectMeta: metav1.ObjectMeta{Name: name},
 	}
 	return c.client.Delete(ctx, team)

@@ -3,7 +3,7 @@
 # Licensed under the MIT License.
 
 # Quick dev deploy: build images, push to test ACR, package/push Helm chart,
-# and create/patch an OpenClawInstance CR.
+# and create/patch an Agent CR.
 #
 # Usage:
 #   scripts/cetirun-dev-deploy.sh <alias>
@@ -95,12 +95,12 @@ if [ "$MODE" != "--apply-only" ]; then
   rm -rf "$tmp_chart"
 fi
 
-# ── Apply OpenClawInstance CR ─────────────────────────────────────────────
+# ── Apply Agent CR ─────────────────────────────────────────────
 echo ""
-echo "==> Applying OpenClawInstance for ${ALIAS}"
+echo "==> Applying Agent for ${ALIAS}"
 cat <<EOF | kubectl apply -f -
 apiVersion: cetirun.microsoft.com/v1alpha1
-kind: OpenClawInstance
+kind: Agent
 metadata:
   name: ${ALIAS}
 spec:
@@ -133,9 +133,9 @@ echo "  Gateway image:  ${registry}/openclaw-gateway:${image_tag}"
 echo "  Hermes image:   ${registry}/hermes-gateway:${image_tag}"
 echo "  Desktop image:  ${registry}/cetirun-desktop:${image_tag}"
 echo "  Helm chart:     oci://${registry}/helm/cetirun:${chart_version}"
-echo "  CR:             OpenClawInstance/${ALIAS}"
+echo "  CR:             Agent/${ALIAS}"
 echo ""
 echo "  Watch progress:"
-echo "    kubectl get openclawinstance ${ALIAS} -w"
+echo "    kubectl get agent ${ALIAS} -w"
 echo "    kubectl -n cetirun-${ALIAS} get pods -w"
 echo "──────────────────────────────────────────────"

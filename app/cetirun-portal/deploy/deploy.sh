@@ -22,7 +22,7 @@
 #   ISTIO_HOST           — Override istio.host Helm value
 #   ISTIO_LEGACY_HOST    — Optional legacy hostname to 301-redirect to ISTIO_HOST (e.g. portal.<domain>)
 #   NOTICE_BANNER        — Optional notice banner message shown in the portal UI
-#   MAX_INSTANCES_PER_USER — Max OpenClawInstances per user (default: 1, 0 = unlimited)
+#   MAX_INSTANCES_PER_USER — Max Agents per user (default: 1, 0 = unlimited)
 
 set -euo pipefail
 

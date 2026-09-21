@@ -54,6 +54,13 @@ describe("OverviewSection", () => {
     expect(screen.getByText(/aks/i)).toBeInTheDocument();
   });
 
+  it("uses Agent terminology for management actions", () => {
+    renderInRouter(<OverviewSection instance={baseInstance} />);
+    expect(screen.getByRole("button", { name: "Edit Agent" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Delete Agent" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Edit Instance" })).toBeNull();
+  });
+
   it("shows gateway token row", () => {
     renderInRouter(<OverviewSection instance={baseInstance} />);
     expect(screen.getByText(/Gateway Token/i)).toBeInTheDocument();

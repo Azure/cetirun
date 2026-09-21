@@ -52,7 +52,7 @@ Uses Azure Workload Identity — no secrets to manage. The operator creates a Se
 
 ```yaml
 apiVersion: cetirun.microsoft.com/v1alpha1
-kind: OpenClawInstance
+kind: Agent
 metadata:
   name: alice
 spec:
@@ -95,7 +95,7 @@ openssl x509 -in cert.pem -fingerprint -noout | tr -d ':' | cut -d= -f2
 
 ```yaml
 apiVersion: cetirun.microsoft.com/v1alpha1
-kind: OpenClawInstance
+kind: Agent
 metadata:
   name: alice
 spec:

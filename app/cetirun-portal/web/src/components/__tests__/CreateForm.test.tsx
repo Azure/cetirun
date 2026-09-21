@@ -61,7 +61,7 @@ describe("CreateForm", () => {
     expect(screen.getByText("Team (optional)")).toBeInTheDocument();
     expect(screen.getByText("Gateway Token (optional)")).toBeInTheDocument();
     expect(screen.getByText("Tailscale Auth Key (optional)")).toBeInTheDocument();
-    expect(screen.getByText("Create Instance")).toBeInTheDocument();
+    expect(screen.getByText("Create Agent")).toBeInTheDocument();
   });
 
   it("submits without team (optional)", async () => {
@@ -72,7 +72,7 @@ describe("CreateForm", () => {
       screen.getByPlaceholderText("e.g. my-project (leave blank for default)"),
       "my-instance",
     );
-    await user.click(screen.getByText("Create Instance"));
+    await user.click(screen.getByText("Create Agent"));
 
     expect(mockMutate).toHaveBeenCalledWith({
       instanceName: "my-instance",
@@ -97,7 +97,7 @@ describe("CreateForm", () => {
       screen.getByRole("combobox", { name: /Team/ }),
       "platform",
     );
-    await user.click(screen.getByText("Create Instance"));
+    await user.click(screen.getByText("Create Agent"));
 
     expect(mockMutate).toHaveBeenCalledWith({
       instanceName: "my-instance",
@@ -135,7 +135,7 @@ describe("CreateForm", () => {
       "tskey-auth-xxx",
     );
 
-    await user.click(screen.getByText("Create Instance"));
+    await user.click(screen.getByText("Create Agent"));
 
     expect(mockMutate).toHaveBeenCalledWith({
       instanceName: "my-instance",
@@ -156,7 +156,7 @@ describe("CreateForm", () => {
       screen.getByRole("combobox", { name: /Agent Type/ }),
       "hermes",
     );
-    await user.click(screen.getByText("Create Instance"));
+    await user.click(screen.getByText("Create Agent"));
 
     expect(mockMutate).toHaveBeenCalledWith({
       instanceName: undefined,
@@ -177,7 +177,7 @@ describe("CreateForm", () => {
     const agentTypeSelect = screen.getByRole("combobox", { name: /Agent Type/ });
     await waitFor(() => expect(agentTypeSelect).toHaveValue("hermes"));
     expect(agentTypeSelect).toBeDisabled();
-    await user.click(screen.getByText("Create Instance"));
+    await user.click(screen.getByText("Create Agent"));
 
     expect(mockMutate).toHaveBeenCalledWith({
       instanceName: undefined,
@@ -192,7 +192,7 @@ describe("CreateForm", () => {
 
   it("submit button is enabled even without team selected", () => {
     renderWithQuery(<CreateForm />);
-    expect(screen.getByText("Create Instance")).not.toBeDisabled();
+    expect(screen.getByText("Create Agent")).not.toBeDisabled();
   });
 
   it("only shows Copilot model selection for the effective Copilot provider", async () => {

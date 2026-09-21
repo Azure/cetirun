@@ -4,14 +4,14 @@
 
 # e2e-test.sh — End-to-end test for CetiRun.
 #
-# Deploys a test OpenClawInstance, waits for it to become Ready,
+# Deploys a test Agent, waits for it to become Ready,
 # verifies key resources (namespace, secret, StatefulSet, pod, VirtualService),
 # validates gateway routing and OAuth2 redirect to Entra ID, optionally checks
 # the openclaw image tag, and cleans up.
 #
 # Prerequisites:
 #   - kubectl and helm configured to target the AKS cluster
-#   - OpenClawInstance CRD installed
+#   - Agent CRD installed
 #   - Operator, portal, and OAuth2 Proxy pods running
 #
 # Environment variables:
@@ -40,7 +40,7 @@ FAILURES=0
 cleanup() {
   echo ""
   echo "==> Cleanup: deleting test instance '${TEST_ALIAS}'..."
-  kubectl delete openclawinstance "${TEST_ALIAS}" -n "${TEST_NAMESPACE}" --ignore-not-found --timeout=120s 2>/dev/null || true
+  kubectl delete agent "${TEST_ALIAS}" -n "${TEST_NAMESPACE}" --ignore-not-found --timeout=120s 2>/dev/null || true
 
   # Wait for finalizer to complete namespace deletion
   local deadline=$((SECONDS + 180))
@@ -81,8 +81,8 @@ for cmd in kubectl helm jq curl base64; do
 done
 
 kubectl cluster-info --request-timeout=5s > /dev/null
-if ! kubectl get crd openclawinstances.cetirun.microsoft.com &>/dev/null; then
-  echo "ERROR: OpenClawInstance CRD not found. Is the operator deployed?" >&2
+if ! kubectl get crd agents.cetirun.microsoft.com &>/dev/null; then
+  echo "ERROR: Agent CRD not found. Is the operator deployed?" >&2
   exit 1
 fi
 
@@ -119,9 +119,9 @@ echo ""
 echo "==> Cleaning up any leftover instance '${TEST_ALIAS}'..."
 
 # Clean up any leftover from a previous cancelled/failed run
-if kubectl get openclawinstance "${TEST_ALIAS}" -n "${TEST_NAMESPACE}" &>/dev/null; then
+if kubectl get agent "${TEST_ALIAS}" -n "${TEST_NAMESPACE}" &>/dev/null; then
   echo "    Found leftover CR — deleting..."
-  kubectl delete openclawinstance "${TEST_ALIAS}" -n "${TEST_NAMESPACE}" --ignore-not-found --timeout=120s 2>/dev/null || true
+  kubectl delete agent "${TEST_ALIAS}" -n "${TEST_NAMESPACE}" --ignore-not-found --timeout=120s 2>/dev/null || true
 fi
 # Wait for namespace to be fully removed (finalizer may still be running)
 if kubectl get namespace "${INSTANCE_NS}" &>/dev/null; then
@@ -140,11 +140,11 @@ fi
 echo "    Clean."
 
 echo ""
-echo "==> Creating test OpenClawInstance '${TEST_ALIAS}'..."
+echo "==> Creating test Agent '${TEST_ALIAS}'..."
 
 kubectl apply -n "${TEST_NAMESPACE}" -f - <<EOF
 apiVersion: cetirun.microsoft.com/v1alpha1
-kind: OpenClawInstance
+kind: Agent
 metadata:
   name: ${TEST_ALIAS}
 spec:
@@ -172,7 +172,7 @@ echo "==> Waiting for instance to reach Ready phase (timeout: ${READY_TIMEOUT}s)
 DEADLINE=$((SECONDS + READY_TIMEOUT))
 LAST_PHASE=""
 while true; do
-  PHASE=$(kubectl get openclawinstance "${TEST_ALIAS}" -n "${TEST_NAMESPACE}" \
+  PHASE=$(kubectl get agent "${TEST_ALIAS}" -n "${TEST_NAMESPACE}" \
     -o jsonpath='{.status.phase}' 2>/dev/null || echo "Unknown")
 
   if [[ "${PHASE}" != "${LAST_PHASE}" ]]; then
@@ -187,7 +187,7 @@ while true; do
 
   if [[ "${PHASE}" == "Failed" ]]; then
     echo "ERROR: Instance entered Failed phase." >&2
-    MSG=$(kubectl get openclawinstance "${TEST_ALIAS}" -n "${TEST_NAMESPACE}" \
+    MSG=$(kubectl get agent "${TEST_ALIAS}" -n "${TEST_NAMESPACE}" \
       -o jsonpath='{.status.conditions[?(@.type=="Ready")].message}' 2>/dev/null || echo "")
     [[ -n "$MSG" ]] && echo "  Message: ${MSG}" >&2
     exit 1
@@ -196,7 +196,7 @@ while true; do
   if (( SECONDS > DEADLINE )); then
     echo "ERROR: Timed out waiting for Ready phase after ${READY_TIMEOUT}s." >&2
     echo "  Last phase: ${PHASE}" >&2
-    kubectl describe openclawinstance "${TEST_ALIAS}" -n "${TEST_NAMESPACE}" 2>/dev/null || true
+    kubectl describe agent "${TEST_ALIAS}" -n "${TEST_NAMESPACE}" 2>/dev/null || true
     exit 1
   fi
 
@@ -316,13 +316,13 @@ fi
 
 # Suspend the instance
 echo "    Patching suspended=true..."
-kubectl patch openclawinstance "${TEST_ALIAS}" -n "${TEST_NAMESPACE}" --type=merge -p '{"spec":{"suspended":true}}'
+kubectl patch agent "${TEST_ALIAS}" -n "${TEST_NAMESPACE}" --type=merge -p '{"spec":{"suspended":true}}'
 
 # Wait for Suspended phase
 SUSPEND_TIMEOUT=300
 SUSPEND_DEADLINE=$((SECONDS + SUSPEND_TIMEOUT))
 while true; do
-  PHASE=$(kubectl get openclawinstance "${TEST_ALIAS}" -n "${TEST_NAMESPACE}" -o jsonpath='{.status.phase}' 2>/dev/null || echo "Unknown")
+  PHASE=$(kubectl get agent "${TEST_ALIAS}" -n "${TEST_NAMESPACE}" -o jsonpath='{.status.phase}' 2>/dev/null || echo "Unknown")
   if [[ "${PHASE}" == "Suspended" ]]; then
     pass "Phase transitioned to Suspended"
     break
@@ -374,13 +374,13 @@ fi
 
 # Unsuspend the instance
 echo "    Patching suspended=false..."
-kubectl patch openclawinstance "${TEST_ALIAS}" -n "${TEST_NAMESPACE}" --type=merge -p '{"spec":{"suspended":false}}'
+kubectl patch agent "${TEST_ALIAS}" -n "${TEST_NAMESPACE}" --type=merge -p '{"spec":{"suspended":false}}'
 
 # Wait for Ready phase
 UNSUSPEND_DEADLINE=$((SECONDS + READY_TIMEOUT))
 LAST_PHASE_UNSUSPEND=""
 while true; do
-  PHASE=$(kubectl get openclawinstance "${TEST_ALIAS}" -n "${TEST_NAMESPACE}" -o jsonpath='{.status.phase}' 2>/dev/null || echo "Unknown")
+  PHASE=$(kubectl get agent "${TEST_ALIAS}" -n "${TEST_NAMESPACE}" -o jsonpath='{.status.phase}' 2>/dev/null || echo "Unknown")
   if [[ "${PHASE}" != "${LAST_PHASE_UNSUSPEND}" ]]; then
     echo "    Phase: ${PHASE}"
     LAST_PHASE_UNSUSPEND="${PHASE}"

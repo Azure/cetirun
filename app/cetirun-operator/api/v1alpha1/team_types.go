@@ -7,11 +7,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// TODO: rename OpenClawTeam → CetiRunTeam (CRD kind + Go types).
-// Requires CRD migration strategy for existing clusters (dual-CRD or delete+recreate).
-
-// OpenClawTeamSpec defines team-wide configuration applied to every member instance.
-type OpenClawTeamSpec struct {
+// TeamSpec defines team-wide configuration applied to every member instance.
+type TeamSpec struct {
 	// MemberContext defines the team context injected into USER.md for every member instance.
 	// +optional
 	MemberContext TeamContextSpec `json:"memberContext,omitempty"`
@@ -85,8 +82,8 @@ type TeamDefaultsSpec struct {
 	Provider string `json:"provider,omitempty"`
 }
 
-// OpenClawTeamStatus defines the observed state of OpenClawTeam.
-type OpenClawTeamStatus struct {
+// TeamStatus defines the observed state of Team.
+type TeamStatus struct {
 	// Conditions contains the latest available observations of the team's state.
 	// +optional
 	// +listType=map
@@ -100,31 +97,31 @@ type OpenClawTeamStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:scope=Cluster,shortName=oct
+// +kubebuilder:resource:path=teams,scope=Cluster,shortName=crt,singular=team
 // +kubebuilder:printcolumn:name="Role",type=string,JSONPath=`.spec.memberContext.role`
 // +kubebuilder:printcolumn:name="Provider",type=string,JSONPath=`.spec.defaults.provider`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
-// OpenClawTeam is a cluster-scoped resource that defines team-wide configuration
-// (user context, AI provider defaults, and skills) applied to every OpenClawInstance that
+// Team is a cluster-scoped resource that defines team-wide configuration
+// (user context, AI provider defaults, and skills) applied to every Agent that
 // references this team via spec.team.
-type OpenClawTeam struct {
+type Team struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec   OpenClawTeamSpec   `json:"spec,omitempty"`
-	Status OpenClawTeamStatus `json:"status,omitempty"`
+	Spec   TeamSpec   `json:"spec,omitempty"`
+	Status TeamStatus `json:"status,omitempty"`
 }
 
 // +kubebuilder:object:root=true
 
-// OpenClawTeamList contains a list of OpenClawTeam.
-type OpenClawTeamList struct {
+// TeamList contains a list of Team.
+type TeamList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
-	Items           []OpenClawTeam `json:"items"`
+	Items           []Team `json:"items"`
 }
 
 func init() {
-	SchemeBuilder.Register(&OpenClawTeam{}, &OpenClawTeamList{})
+	SchemeBuilder.Register(&Team{}, &TeamList{})
 }

@@ -4,16 +4,16 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.21.0
-  name: openclawteams.cetirun.microsoft.com
+  name: teams.cetirun.microsoft.com
 spec:
   group: cetirun.microsoft.com
   names:
-    kind: OpenClawTeam
-    listKind: OpenClawTeamList
-    plural: openclawteams
+    kind: Team
+    listKind: TeamList
+    plural: teams
     shortNames:
-    - oct
-    singular: openclawteam
+    - crt
+    singular: team
   scope: Cluster
   versions:
   - additionalPrinterColumns:
@@ -30,8 +30,8 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          OpenClawTeam is a cluster-scoped resource that defines team-wide configuration
-          (user context, AI defaults, and skills) applied to every OpenClawInstance that
+          Team is a cluster-scoped resource that defines team-wide configuration
+          (user context, AI provider defaults, and skills) applied to every Agent that
           references this team via spec.team.
         properties:
           apiVersion:
@@ -52,8 +52,8 @@ spec:
           metadata:
             type: object
           spec:
-            description: OpenClawTeamSpec defines team-wide configuration applied
-              to every member instance.
+            description: TeamSpec defines team-wide configuration applied to every
+              member instance.
             properties:
               defaults:
                 description: |-
@@ -131,7 +131,7 @@ spec:
                 x-kubernetes-list-type: set
             type: object
           status:
-            description: OpenClawTeamStatus defines the observed state of OpenClawTeam.
+            description: TeamStatus defines the observed state of Team.
             properties:
               conditions:
                 description: Conditions contains the latest available observations

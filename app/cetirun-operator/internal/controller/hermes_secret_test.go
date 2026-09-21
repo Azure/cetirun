@@ -32,7 +32,7 @@ func TestEnsureGatewayTokenHermesCreatesHermesEnv(t *testing.T) {
 	}
 
 	instance := hermesSecretTestInstance("bob")
-	r := &OpenClawInstanceReconciler{
+	r := &AgentReconciler{
 		Client:       fake.NewClientBuilder().WithScheme(scheme).Build(),
 		DomainSuffix: "claws.example.com",
 	}
@@ -76,7 +76,7 @@ func TestEnsureGatewayTokenOpenClawCreatesCetiRunAuthKey(t *testing.T) {
 
 	instance := hermesSecretTestInstance("alice")
 	instance.Spec.AgentType = cetirunv1alpha1.AgentTypeOpenClaw
-	r := &OpenClawInstanceReconciler{Client: fake.NewClientBuilder().WithScheme(scheme).Build()}
+	r := &AgentReconciler{Client: fake.NewClientBuilder().WithScheme(scheme).Build()}
 	if err := r.ensureGatewayToken(ctx, instance); err != nil {
 		t.Fatalf("ensureGatewayToken: %v", err)
 	}
@@ -117,7 +117,7 @@ func TestEnsureGatewayTokenHermesBackfillsEnvAndPreservesToken(t *testing.T) {
 		},
 	}
 	instance := hermesSecretTestInstance("bob")
-	r := &OpenClawInstanceReconciler{
+	r := &AgentReconciler{
 		Client:       fake.NewClientBuilder().WithScheme(scheme).WithObjects(secret).Build(),
 		DomainSuffix: "claws.example.com",
 	}
@@ -166,7 +166,7 @@ func TestEnsureGatewayTokenConcurrentCreateBackfillsAuthKey(t *testing.T) {
 			Data:       map[string][]byte{"OPENCLAW_GATEWAY_TOKEN": []byte("concurrent-token")},
 		},
 	}
-	r := &OpenClawInstanceReconciler{Client: raceClient, DomainSuffix: "claws.example.com"}
+	r := &AgentReconciler{Client: raceClient, DomainSuffix: "claws.example.com"}
 	if err := r.ensureGatewayToken(ctx, instance); err != nil {
 		t.Fatalf("ensureGatewayToken: %v", err)
 	}
@@ -210,10 +210,10 @@ func (c *gatewaySecretCreateRaceClient) Create(ctx context.Context, obj client.O
 	return c.Client.Create(ctx, obj, opts...)
 }
 
-func hermesSecretTestInstance(alias string) *cetirunv1alpha1.OpenClawInstance {
-	return &cetirunv1alpha1.OpenClawInstance{
+func hermesSecretTestInstance(alias string) *cetirunv1alpha1.Agent {
+	return &cetirunv1alpha1.Agent{
 		ObjectMeta: metav1.ObjectMeta{Name: alias},
-		Spec: cetirunv1alpha1.OpenClawInstanceSpec{
+		Spec: cetirunv1alpha1.AgentSpec{
 			AgentType:             cetirunv1alpha1.AgentTypeHermes,
 			GatewayTokenSecretRef: "gateway-token",
 			User: cetirunv1alpha1.UserSpec{

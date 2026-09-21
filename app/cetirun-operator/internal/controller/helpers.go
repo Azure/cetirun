@@ -180,7 +180,7 @@ func generateRandomToken(byteLen int) (string, error) {
 // default.
 // Merge order (later wins): controller defaults → cetirunHelmValues → team
 // context/skills → per-instance spec.helm.values → controller-enforced model.
-func buildHelmValues(instance *cetirunv1alpha1.OpenClawInstance, team *cetirunv1alpha1.OpenClawTeam, domainSuffix string, skillsStorageAccount string, cetirunHelmValues map[string]interface{}, chartRegistry string, defaultModels ...string) (map[string]interface{}, error) {
+func buildHelmValues(instance *cetirunv1alpha1.Agent, team *cetirunv1alpha1.Team, domainSuffix string, skillsStorageAccount string, cetirunHelmValues map[string]interface{}, chartRegistry string, defaultModels ...string) (map[string]interface{}, error) {
 	alias := instance.Spec.User.Alias
 	spec := instance.Spec
 	agentType := spec.AgentType
@@ -247,7 +247,7 @@ func buildHelmValues(instance *cetirunv1alpha1.OpenClawInstance, team *cetirunv1
 		values[k] = deepMerge(values[k], v)
 	}
 
-	// Apply OpenClawTeam defaults — higher priority than cetirunHelmValues
+	// Apply Team defaults — higher priority than cetirunHelmValues
 	// (deepMerge is called with team values as the override side, so they win
 	// on key collisions), lower priority than per-instance spec.helm.values
 	// which is applied at the bottom of this function.
@@ -269,7 +269,7 @@ func buildHelmValues(instance *cetirunv1alpha1.OpenClawInstance, team *cetirunv1
 		}
 	}
 
-	// Apply OpenClawTeam shared skill storage → chart's skills.shared mode.
+	// Apply Team shared skill storage → chart's skills.shared mode.
 	// Operator maps team.SkillStorage to the chart's existing
 	// skills.{shared,resourceGroup,storageAccount,containerName,...} fields, which
 	// auto-provision a PV+PVC per instance namespace pointing at the same
@@ -475,12 +475,12 @@ func deepMerge(base, override interface{}) interface{} {
 	return merged
 }
 
-// teamResourceVersion returns the OpenClawTeam ResourceVersion (or "" when
+// teamResourceVersion returns the Team ResourceVersion (or "" when
 // team is nil). Used as a cache-invalidation token in configHash so that
 // edits to a referenced team — which do not bump the instance Generation —
 // still force a full reconcile when the team-watch handler re-enqueues the
 // instance.
-func teamResourceVersion(team *cetirunv1alpha1.OpenClawTeam) string {
+func teamResourceVersion(team *cetirunv1alpha1.Team) string {
 	if team == nil {
 		return ""
 	}
@@ -502,7 +502,7 @@ func stringsToInterfaces(in []string) []interface{} {
 
 // computeEffectiveSkills returns (base ∪ add) \ remove as a sorted, deduplicated slice.
 // team may be nil (treated as empty base).
-func computeEffectiveSkills(team *cetirunv1alpha1.OpenClawTeam, add, remove []string) []string {
+func computeEffectiveSkills(team *cetirunv1alpha1.Team, add, remove []string) []string {
 	set := map[string]struct{}{}
 	if team != nil {
 		for _, s := range team.Spec.Skills {
@@ -552,7 +552,7 @@ func classifySkills(skills []string) (npm []string, clawHub []string, err error)
 //
 // The instance name is not used as a top-level native UI route, which keeps it isolated
 // from Portal SPA routes such as /instances/<name>.
-func buildVirtualService(instance *cetirunv1alpha1.OpenClawInstance, domainSuffix, gateway string) *istiov1beta1.VirtualService {
+func buildVirtualService(instance *cetirunv1alpha1.Agent, domainSuffix, gateway string) *istiov1beta1.VirtualService {
 	if gateway == "" {
 		gateway = DefaultIstioGateway
 	}
@@ -674,7 +674,7 @@ func buildVirtualService(instance *cetirunv1alpha1.OpenClawInstance, domainSuffi
 	//
 	// This is a routing-layer narrowing, not a complete boundary: it only applies while
 	// this VirtualService exists. A suspended instance (whose VS is deleted, see the
-	// suspend handler in openclawinstance_controller.go) or a never-created name has no
+	// suspend handler in agent_controller.go) or a never-created name has no
 	// route here, so an anonymous POST to its /api/messages still bypasses oauth2-proxy
 	// and falls through to the portal SPA catch-all. The application layer (Bot Framework
 	// JWT validation on a real Teams instance; the portal serving static index.html

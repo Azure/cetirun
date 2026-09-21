@@ -40,11 +40,11 @@ export function InstanceListPage() {
 
   return (
     <div>
-      <Title2 style={{ marginBottom: 16 }}>All instances</Title2>
-      {isLoading && <Spinner label="Loading instances..." />}
+      <Title2 style={{ marginBottom: 16 }}>All agents</Title2>
+      {isLoading && <Spinner label="Loading agents..." />}
       {error && <MessageBar intent="error">Failed to load: {error.message}</MessageBar>}
       {data && (
-        <Table aria-label="All instances">
+        <Table aria-label="All agents">
           <TableHeader>
             <TableRow>
               <TableHeaderCell>Name</TableHeaderCell>
@@ -60,7 +60,7 @@ export function InstanceListPage() {
             {data.length === 0 && (
               <TableRow>
                 <TableCell colSpan={7}>
-                  <Text>No instances.</Text>
+                  <Text>No agents.</Text>
                 </TableCell>
               </TableRow>
             )}

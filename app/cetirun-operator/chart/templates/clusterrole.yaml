@@ -6,23 +6,23 @@ metadata:
     app.kubernetes.io/name: cetirun-operator
     app.kubernetes.io/managed-by: {{ .Release.Service }}
 rules:
-  # OpenClawInstance CRD
+  # Agent CRD
   - apiGroups: ["cetirun.microsoft.com"]
-    resources: ["openclawinstances"]
+    resources: ["agents"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: ["cetirun.microsoft.com"]
-    resources: ["openclawinstances/status"]
+    resources: ["agents/status"]
     verbs: ["get", "update", "patch"]
   - apiGroups: ["cetirun.microsoft.com"]
-    resources: ["openclawinstances/finalizers"]
+    resources: ["agents/finalizers"]
     verbs: ["update"]
 
-  # OpenClawTeam CRD (cluster-scoped; operator watches to re-enqueue instances on team changes)
+  # Team CRD (cluster-scoped; operator watches to re-enqueue instances on team changes)
   - apiGroups: ["cetirun.microsoft.com"]
-    resources: ["openclawteams"]
+    resources: ["teams"]
     verbs: ["get", "list", "watch"]
   - apiGroups: ["cetirun.microsoft.com"]
-    resources: ["openclawteams/status"]
+    resources: ["teams/status"]
     verbs: ["get", "update", "patch"]
 
   # Namespaces
@@ -35,7 +35,7 @@ rules:
   # StatefulSets, PVCs, or ServiceAccounts. Instead, during each reconcile it
   # dynamically creates a namespaced Role + RoleBinding in cetirun-<alias>, granting
   # itself those permissions only within that one namespace (see ensureNamespacedRBAC
-  # in openclawinstance_controller.go). This limits blast radius if the operator SA
+  # in agent_controller.go). This limits blast radius if the operator SA
   # is compromised — it cannot read secrets from unrelated namespaces.
   #
   # "list" and "watch" are required here so that controller-runtime's informer cache

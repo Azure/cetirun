@@ -66,7 +66,7 @@ export function WorkspacePage() {
             onClick={() => navigate("/")}
             style={{ width: "100%", justifyContent: "flex-start" }}
           >
-            All Instances
+            All Agents
           </Button>
         </div>
 
@@ -128,13 +128,13 @@ export function WorkspacePage() {
 
         {!isLoading && isError && (
           <div style={{ padding: 24 }}>
-            <Text style={{ color: tokens.colorStatusDangerForeground1 }}>Failed to load instance. Please refresh the page.</Text>
+            <Text style={{ color: tokens.colorStatusDangerForeground1 }}>Failed to load agent. Please refresh the page.</Text>
           </div>
         )}
 
         {!isLoading && !isError && !instance && (
           <div style={{ padding: 24 }}>
-            <Text style={{ color: tokens.colorStatusDangerForeground1 }}>Instance not found.</Text>
+            <Text style={{ color: tokens.colorStatusDangerForeground1 }}>Agent not found.</Text>
           </div>
         )}
 

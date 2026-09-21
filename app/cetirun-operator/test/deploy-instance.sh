@@ -2,7 +2,7 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 
-# deploy-instance.sh — Interactive script to deploy an OpenClawInstance CR
+# deploy-instance.sh — Interactive script to deploy an Agent CR
 # to the AKS cluster.
 #
 # Usage:
@@ -81,21 +81,21 @@ echo ""
 #-----------------------------------------------------------------------
 # Step 3: Verify operator installation
 #-----------------------------------------------------------------------
-echo "=== Step 3: Verify OpenClawInstance CRD is installed ==="
-if ! kubectl get crd openclawinstances.cetirun.microsoft.com &>/dev/null; then
-  echo "ERROR: OpenClawInstance CRD is not installed. Install the CetiRun Operator chart first." >&2
+echo "=== Step 3: Verify Agent CRD is installed ==="
+if ! kubectl get crd agents.cetirun.microsoft.com &>/dev/null; then
+  echo "ERROR: Agent CRD is not installed. Install the CetiRun Operator chart first." >&2
   exit 1
 fi
 echo ""
 
 #-----------------------------------------------------------------------
-# Step 4: Generate and apply OpenClawInstance CR
+# Step 4: Generate and apply Agent CR
 #-----------------------------------------------------------------------
-echo "=== Step 4: Deploy OpenClawInstance '${ALIAS}' ==="
+echo "=== Step 4: Deploy Agent '${ALIAS}' ==="
 
 cat <<EOF | kubectl apply -f -
 apiVersion: cetirun.microsoft.com/v1alpha1
-kind: OpenClawInstance
+kind: Agent
 metadata:
   name: ${ALIAS}
 spec:
@@ -108,29 +108,29 @@ spec:
 EOF
 
 #-----------------------------------------------------------------------
-# Step 5: Wait for OpenClawInstance to become Ready
+# Step 5: Wait for Agent to become Ready
 #-----------------------------------------------------------------------
 echo ""
-echo "=== Step 5: Waiting for OpenClawInstance '${ALIAS}' to become Ready ==="
+echo "=== Step 5: Waiting for Agent '${ALIAS}' to become Ready ==="
 echo "(This may take several minutes while Helm installs the chart...)"
 
 TIMEOUT=600
 INTERVAL=10
 ELAPSED=0
 while true; do
-  PHASE=$(kubectl get openclawinstances "${ALIAS}" -o jsonpath='{.status.phase}' 2>/dev/null || true)
+  PHASE=$(kubectl get agents "${ALIAS}" -o jsonpath='{.status.phase}' 2>/dev/null || true)
   if [[ "${PHASE}" == "Ready" ]]; then
-    echo "OpenClawInstance '${ALIAS}' is Ready!"
+    echo "Agent '${ALIAS}' is Ready!"
     break
   fi
   if [[ "${PHASE}" == "Failed" ]]; then
-    echo "ERROR: OpenClawInstance '${ALIAS}' entered Failed phase."
-    kubectl get openclawinstances "${ALIAS}" -o yaml
+    echo "ERROR: Agent '${ALIAS}' entered Failed phase."
+    kubectl get agents "${ALIAS}" -o yaml
     exit 1
   fi
   if (( ELAPSED >= TIMEOUT )); then
     echo "ERROR: Timed out after ${TIMEOUT}s waiting for Ready (current phase: ${PHASE:-<none>})."
-    kubectl get openclawinstances "${ALIAS}" -o yaml
+    kubectl get agents "${ALIAS}" -o yaml
     exit 1
   fi
   echo "  Phase: ${PHASE:-<none>} ... (${ELAPSED}s/${TIMEOUT}s)"
@@ -155,7 +155,7 @@ echo "==========================================="
 echo " Deployment Complete!"
 echo "==========================================="
 echo ""
-echo "OpenClawInstance '${ALIAS}' is Ready."
+echo "Agent '${ALIAS}' is Ready."
 echo ""
 echo "Access your instance at:"
 echo ""
@@ -221,8 +221,8 @@ fi
 echo ""
 
 echo "Check status:"
-echo "  kubectl get openclawinstances ${ALIAS}"
-echo "  kubectl get openclawinstances ${ALIAS} -o yaml"
+echo "  kubectl get agents ${ALIAS}"
+echo "  kubectl get agents ${ALIAS} -o yaml"
 
 #-----------------------------------------------------------------------
 # Step 8: Generate delete-instance-<alias>.sh
@@ -252,13 +252,13 @@ az aks get-credentials \
   --admin \
   --overwrite-existing
 
-# 1. Delete OpenClawInstance CR (operator finalizer cleans up namespace,
+# 1. Delete Agent CR (operator finalizer cleans up namespace,
 #    secrets, Helm release, VirtualService)
-echo "=== Delete OpenClawInstance '${ALIAS}' ==="
-if kubectl get openclawinstance "${ALIAS}" &>/dev/null; then
-  kubectl delete openclawinstance "${ALIAS}"
+echo "=== Delete Agent '${ALIAS}' ==="
+if kubectl get agent "${ALIAS}" &>/dev/null; then
+  kubectl delete agent "${ALIAS}"
 else
-  echo "OpenClawInstance '${ALIAS}' not found — skipping."
+  echo "Agent '${ALIAS}' not found — skipping."
 fi
 
 # 2. Wait for namespace cleanup

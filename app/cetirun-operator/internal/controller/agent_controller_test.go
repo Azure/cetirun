@@ -62,16 +62,16 @@ func testScheme() *runtime.Scheme {
 	return s
 }
 
-// newCR builds a minimal OpenClawInstance for tests. The finalizer is pre-set
+// newCR builds a minimal Agent for tests. The finalizer is pre-set
 // so the reconciler does not spend a loop adding it.
-func newCR(alias string, phase string, conditions []metav1.Condition, generation int64, observedGen int64, observedHash string) *cetirunv1alpha1.OpenClawInstance {
-	cr := &cetirunv1alpha1.OpenClawInstance{
+func newCR(alias string, phase string, conditions []metav1.Condition, generation int64, observedGen int64, observedHash string) *cetirunv1alpha1.Agent {
+	cr := &cetirunv1alpha1.Agent{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:       alias,
 			Generation: generation,
 			Finalizers: []string{cetirunv1alpha1.Finalizer},
 		},
-		Spec: cetirunv1alpha1.OpenClawInstanceSpec{
+		Spec: cetirunv1alpha1.AgentSpec{
 			User: cetirunv1alpha1.UserSpec{
 				Alias:       alias,
 				DisplayName: "Test User",
@@ -83,7 +83,7 @@ func newCR(alias string, phase string, conditions []metav1.Condition, generation
 				Values:  map[string]runtime.RawExtension{},
 			},
 		},
-		Status: cetirunv1alpha1.OpenClawInstanceStatus{
+		Status: cetirunv1alpha1.AgentStatus{
 			Phase:                phase,
 			Conditions:           conditions,
 			ObservedGeneration:   observedGen,
@@ -184,7 +184,7 @@ func TestPhaseConstants(t *testing.T) {
 	}
 }
 
-// TestFinalizerConstant verifies the finalizer name.
+// TestFinalizerConstant verifies the stable finalizer name.
 func TestFinalizerConstant(t *testing.T) {
 	if cetirunv1alpha1.Finalizer != "cetirun.microsoft.com/finalizer" {
 		t.Errorf("unexpected finalizer: %s", cetirunv1alpha1.Finalizer)
@@ -204,7 +204,7 @@ func TestReconcile_PodNotReady_StaysProvisioning(t *testing.T) {
 
 	helmFake := &fakeHelmClient{}
 
-	r := &controller.OpenClawInstanceReconciler{
+	r := &controller.AgentReconciler{
 		Client:            fakeClient,
 		Scheme:            s,
 		EventRecorder:     record.NewFakeRecorder(10),
@@ -226,7 +226,7 @@ func TestReconcile_PodNotReady_StaysProvisioning(t *testing.T) {
 	}
 
 	// Fetch updated CR.
-	updated := &cetirunv1alpha1.OpenClawInstance{}
+	updated := &cetirunv1alpha1.Agent{}
 	if err := fakeClient.Get(context.Background(), types.NamespacedName{Name: alias}, updated); err != nil {
 		t.Fatalf("failed to get updated CR: %v", err)
 	}
@@ -259,7 +259,7 @@ func TestReconcile_PodReady_MarksReady(t *testing.T) {
 
 	helmFake := &fakeHelmClient{}
 
-	r := &controller.OpenClawInstanceReconciler{
+	r := &controller.AgentReconciler{
 		Client:            fakeClient,
 		Scheme:            s,
 		EventRecorder:     record.NewFakeRecorder(10),
@@ -280,7 +280,7 @@ func TestReconcile_PodReady_MarksReady(t *testing.T) {
 		t.Errorf("expected RequeueAfter=10m, got %v", result.RequeueAfter)
 	}
 
-	updated := &cetirunv1alpha1.OpenClawInstance{}
+	updated := &cetirunv1alpha1.Agent{}
 	if err := fakeClient.Get(context.Background(), types.NamespacedName{Name: alias}, updated); err != nil {
 		t.Fatalf("failed to get updated CR: %v", err)
 	}
@@ -350,7 +350,7 @@ func TestReconcile_RolloutIncomplete_StaysProvisioning(t *testing.T) {
 				WithStatusSubresource(cr).
 				Build()
 
-			r := &controller.OpenClawInstanceReconciler{
+			r := &controller.AgentReconciler{
 				Client:            fakeClient,
 				Scheme:            s,
 				EventRecorder:     record.NewFakeRecorder(10),
@@ -371,7 +371,7 @@ func TestReconcile_RolloutIncomplete_StaysProvisioning(t *testing.T) {
 				t.Errorf("expected RequeueAfter=15s, got %v", result.RequeueAfter)
 			}
 
-			updated := &cetirunv1alpha1.OpenClawInstance{}
+			updated := &cetirunv1alpha1.Agent{}
 			if err := fakeClient.Get(context.Background(), types.NamespacedName{Name: alias}, updated); err != nil {
 				t.Fatalf("failed to get updated CR: %v", err)
 			}
@@ -404,7 +404,7 @@ func TestReconcile_StatefulSetNotFound_Requeues(t *testing.T) {
 
 	helmFake := &fakeHelmClient{}
 
-	r := &controller.OpenClawInstanceReconciler{
+	r := &controller.AgentReconciler{
 		Client:            fakeClient,
 		Scheme:            s,
 		EventRecorder:     record.NewFakeRecorder(10),
@@ -425,7 +425,7 @@ func TestReconcile_StatefulSetNotFound_Requeues(t *testing.T) {
 		t.Errorf("expected RequeueAfter=15s, got %v", result.RequeueAfter)
 	}
 
-	updated := &cetirunv1alpha1.OpenClawInstance{}
+	updated := &cetirunv1alpha1.Agent{}
 	if err := fakeClient.Get(context.Background(), types.NamespacedName{Name: alias}, updated); err != nil {
 		t.Fatalf("failed to get updated CR: %v", err)
 	}
@@ -469,7 +469,7 @@ func TestReconcile_AlreadyDeployed_SkipsHelm(t *testing.T) {
 
 	helmFake := &fakeHelmClient{}
 
-	r := &controller.OpenClawInstanceReconciler{
+	r := &controller.AgentReconciler{
 		Client:            fakeClient,
 		Scheme:            s,
 		EventRecorder:     record.NewFakeRecorder(10),
@@ -494,7 +494,7 @@ func TestReconcile_AlreadyDeployed_SkipsHelm(t *testing.T) {
 		t.Error("expected HelmClient.InstallOrUpgrade NOT to be called, but it was")
 	}
 
-	updated := &cetirunv1alpha1.OpenClawInstance{}
+	updated := &cetirunv1alpha1.Agent{}
 	if err := fakeClient.Get(context.Background(), types.NamespacedName{Name: alias}, updated); err != nil {
 		t.Fatalf("failed to get updated CR: %v", err)
 	}
@@ -558,7 +558,7 @@ func TestReconcile_SecretChanged_TriggersHelm(t *testing.T) {
 
 	helmFake := &fakeHelmClient{}
 
-	r := &controller.OpenClawInstanceReconciler{
+	r := &controller.AgentReconciler{
 		Client:            fakeClient,
 		Scheme:            s,
 		EventRecorder:     record.NewFakeRecorder(10),
@@ -625,7 +625,7 @@ func TestReconcile_ReadyInstanceBackfillsCetiRunAuthKey(t *testing.T) {
 		WithStatusSubresource(cr).
 		Build()
 	helmFake := &fakeHelmClient{}
-	r := &controller.OpenClawInstanceReconciler{
+	r := &controller.AgentReconciler{
 		Client:            fakeClient,
 		Scheme:            s,
 		EventRecorder:     record.NewFakeRecorder(10),
@@ -675,7 +675,7 @@ func TestReconcile_RejectsReservedUIInstance(t *testing.T) {
 		WithStatusSubresource(cr).
 		Build()
 	helmFake := &fakeHelmClient{}
-	r := &controller.OpenClawInstanceReconciler{
+	r := &controller.AgentReconciler{
 		Client:            fakeClient,
 		Scheme:            s,
 		EventRecorder:     record.NewFakeRecorder(10),
@@ -696,7 +696,7 @@ func TestReconcile_RejectsReservedUIInstance(t *testing.T) {
 		t.Fatal("VirtualService for reserved instance was not deleted")
 	}
 
-	updated := &cetirunv1alpha1.OpenClawInstance{}
+	updated := &cetirunv1alpha1.Agent{}
 	if err := fakeClient.Get(context.Background(), types.NamespacedName{Name: alias}, updated); err != nil {
 		t.Fatalf("get reserved instance: %v", err)
 	}
@@ -708,7 +708,7 @@ func TestReconcile_RejectsReservedUIInstance(t *testing.T) {
 // computeOperatorHash reproduces the operatorConfigHash logic for test seeding.
 // The azureTeamsConfig variadic matches the operator's configHash method, which
 // appends Azure config (subscriptionID, resourceGroup, botNamePrefix, tenantID,
-// oidcIssuerURL) followed by the referenced OpenClawTeam's ResourceVersion to
+// oidcIssuerURL) followed by the referenced Team's ResourceVersion to
 // the hash so Teams-enabled instances and team-referenced instances can use the
 // skip-cache.
 func computeOperatorHash(domainSuffix, secretHash, skillsStorageAccount, cetirunHelmValuesHash, chartRegistry string, azureTeamsConfig ...string) string {
@@ -764,7 +764,7 @@ func TestReconcile_EmptyVersion_Backfills(t *testing.T) {
 
 	helmFake := &fakeHelmClient{}
 
-	r := &controller.OpenClawInstanceReconciler{
+	r := &controller.AgentReconciler{
 		Client:            fakeClient,
 		Scheme:            s,
 		EventRecorder:     record.NewFakeRecorder(10),
@@ -791,7 +791,7 @@ func TestReconcile_EmptyVersion_Backfills(t *testing.T) {
 	}
 
 	// Verify the CR's spec.helm.version was backfilled.
-	updated := &cetirunv1alpha1.OpenClawInstance{}
+	updated := &cetirunv1alpha1.Agent{}
 	if err := fakeClient.Get(context.Background(), types.NamespacedName{Name: alias}, updated); err != nil {
 		t.Fatalf("failed to get updated CR: %v", err)
 	}
@@ -818,7 +818,7 @@ func TestReconcile_VersionSet_PassesToHelm(t *testing.T) {
 
 	helmFake := &fakeHelmClient{}
 
-	r := &controller.OpenClawInstanceReconciler{
+	r := &controller.AgentReconciler{
 		Client:            fakeClient,
 		Scheme:            s,
 		EventRecorder:     record.NewFakeRecorder(10),
@@ -853,8 +853,8 @@ func TestConditionTailscaleReady(t *testing.T) {
 
 // TestTailscaleSpec_TypeConstruction verifies CRD struct with Tailscale fields.
 func TestTailscaleSpec_TypeConstruction(t *testing.T) {
-	instance := &cetirunv1alpha1.OpenClawInstance{
-		Spec: cetirunv1alpha1.OpenClawInstanceSpec{
+	instance := &cetirunv1alpha1.Agent{
+		Spec: cetirunv1alpha1.AgentSpec{
 			User: cetirunv1alpha1.UserSpec{
 				Alias:       "alice",
 				DisplayName: "Alice Smith",
@@ -875,8 +875,8 @@ func TestTailscaleSpec_TypeConstruction(t *testing.T) {
 	}
 
 	// Verify nil Tailscale is valid (feature disabled).
-	instanceNoTS := &cetirunv1alpha1.OpenClawInstance{
-		Spec: cetirunv1alpha1.OpenClawInstanceSpec{
+	instanceNoTS := &cetirunv1alpha1.Agent{
+		Spec: cetirunv1alpha1.AgentSpec{
 			User: cetirunv1alpha1.UserSpec{
 				Alias:       "bob",
 				DisplayName: "Bob",
@@ -908,7 +908,7 @@ func TestReconcile_Suspended_MarksSuspendedPhase(t *testing.T) {
 
 	helmFake := &fakeHelmClient{}
 
-	r := &controller.OpenClawInstanceReconciler{
+	r := &controller.AgentReconciler{
 		Client:            fakeClient,
 		Scheme:            s,
 		EventRecorder:     record.NewFakeRecorder(10),
@@ -935,7 +935,7 @@ func TestReconcile_Suspended_MarksSuspendedPhase(t *testing.T) {
 	}
 
 	// Fetch updated CR and verify status.
-	updated := &cetirunv1alpha1.OpenClawInstance{}
+	updated := &cetirunv1alpha1.Agent{}
 	if err := fakeClient.Get(context.Background(), types.NamespacedName{Name: alias}, updated); err != nil {
 		t.Fatalf("failed to get updated CR: %v", err)
 	}
@@ -984,7 +984,7 @@ func TestReconcile_Unsuspend_MarksReady(t *testing.T) {
 
 	helmFake := &fakeHelmClient{}
 
-	r := &controller.OpenClawInstanceReconciler{
+	r := &controller.AgentReconciler{
 		Client:            fakeClient,
 		Scheme:            s,
 		EventRecorder:     record.NewFakeRecorder(10),
@@ -1005,7 +1005,7 @@ func TestReconcile_Unsuspend_MarksReady(t *testing.T) {
 		t.Errorf("expected RequeueAfter=10m, got %v", result.RequeueAfter)
 	}
 
-	updated := &cetirunv1alpha1.OpenClawInstance{}
+	updated := &cetirunv1alpha1.Agent{}
 	if err := fakeClient.Get(context.Background(), types.NamespacedName{Name: alias}, updated); err != nil {
 		t.Fatalf("failed to get updated CR: %v", err)
 	}
@@ -1043,7 +1043,7 @@ func TestReconcile_SuspendedSkipCache(t *testing.T) {
 
 	helmFake := &fakeHelmClient{}
 
-	r := &controller.OpenClawInstanceReconciler{
+	r := &controller.AgentReconciler{
 		Client:            fakeClient,
 		Scheme:            s,
 		EventRecorder:     record.NewFakeRecorder(10),

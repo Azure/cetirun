@@ -1,16 +1,16 @@
 # CRD Reference & Platform Topology
 
-OpenClawInstance CRD specification, namespace layout, service ports, and Kubernetes API permissions.
+Agent CRD specification, namespace layout, service ports, and Kubernetes API permissions.
 
 ---
 
-## 1. OpenClawInstance CRD
+## 1. Agent CRD
 
 ### Full Specification
 
 ```yaml
 apiVersion: cetirun.microsoft.com/v1alpha1
-kind: OpenClawInstance
+kind: Agent
 metadata:
   name: <alias>                     # Must match spec.user.alias
 spec:
@@ -123,7 +123,7 @@ status:
 
 ## 2. What the Operator Creates Per Instance
 
-When the operator reconciles an `OpenClawInstance` CR, it creates:
+When the operator reconciles an `Agent` CR, it creates:
 
 | Resource | Name Pattern | Namespace |
 |----------|-------------|-----------|
@@ -201,7 +201,7 @@ AdminClaw's `adminclaw-admin` ClusterRole grants the following permissions:
 
 | Resource | API Group | Verbs | Purpose |
 |----------|-----------|-------|---------|
-| `OpenClawInstance` | `cetirun.microsoft.com/v1alpha1` | get, list, watch, create, update, patch | Instance lifecycle (**no delete**) |
+| `Agent` | `cetirun.microsoft.com/v1alpha1` | get, list, watch, create, update, patch | Instance lifecycle (**no delete**) |
 | `Namespace` | core/v1 | get, list, watch, create | Instance namespace provisioning (**no delete**) |
 | `Pod` | core/v1 | get, list, watch, delete | Diagnostics and remediation (restart) |
 | `Pod/exec` | core/v1 | create | Diagnostics and storage cleanup |
@@ -219,7 +219,7 @@ AdminClaw's `adminclaw-admin` ClusterRole grants the following permissions:
 
 ### Key Constraints
 
-- **No `delete` on `OpenClawInstance`**: This is intentional. Instance deletion must go through another principal.
+- **No `delete` on `Agent`**: This is intentional. Instance deletion must go through another principal.
 - **No `delete` on Namespaces, Secrets, or VirtualServices**: Overwrite/re-create instead of delete. Namespace lifecycle is managed by the operator.
 - **No `create`/`update` on Deployments**: AdminClaw cannot modify operator or portal deployments.
 - **No write access to RBAC resources**: Prevents privilege escalation.
@@ -247,7 +247,7 @@ The `spec.msteams` field configures Microsoft Teams bot integration for an insta
 
 ```yaml
 apiVersion: cetirun.microsoft.com/v1alpha1
-kind: OpenClawInstance
+kind: Agent
 metadata:
   name: bob
 spec:
@@ -275,4 +275,4 @@ spec:
 | Extra volumes (certificate only) | Mounts cert Secret at `/etc/msteams-cert/tls.pem` |
 | Azure Workload Identity (managedIdentity only) | Annotated ServiceAccount; IMDS remains blocked by NetworkPolicy |
 
-See [MS Teams Setup Guide](../../../docs/guides/msteams.md) for full setup instructions.
+See [MS Teams Setup Guide](../../../../../docs/guides/msteams.md) for full setup instructions.

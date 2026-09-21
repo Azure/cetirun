@@ -183,10 +183,10 @@ kubectl apply -f app/cetirun-operator/test/config/sample-alice.yaml
 
 ```bash
 # CR status (phase, conditions, accessUrl)
-kubectl get openclawinstance alice -w
+kubectl get agent alice -w
 
 # Detailed view with events
-kubectl describe openclawinstance alice
+kubectl describe agent alice
 
 # Operator logs
 kubectl logs -n cetirun-system deployment/cetirun-operator -f
@@ -294,7 +294,7 @@ kubectl get virtualservice cetirun-alice -n cetirun-alice -o yaml
 ## Step 5 — Test Deletion
 
 ```bash
-kubectl delete openclawinstance alice
+kubectl delete agent alice
 ```
 
 Expected cleanup sequence (visible in operator logs):
@@ -307,7 +307,7 @@ Expected cleanup sequence (visible in operator logs):
 ```bash
 # Confirm everything is gone
 kubectl get namespace cetirun-alice        # NotFound
-kubectl get openclawinstance alice         # NotFound
+kubectl get agent alice         # NotFound
 helm list --namespace cetirun-alice        # empty
 ```
 
@@ -317,7 +317,7 @@ helm list --namespace cetirun-alice        # empty
 
 ```bash
 # Delete all test instances (triggers finalizer cleanup for each)
-kubectl delete openclawinstance --all
+kubectl delete agent --all
 
 # Uninstall operator (removes Deployment, ServiceAccount, ClusterRole, ClusterRoleBinding)
 helm uninstall cetirun-operator --namespace cetirun-system
@@ -326,7 +326,7 @@ helm uninstall cetirun-operator --namespace cetirun-system
 kubectl delete namespace cetirun-system
 
 # Remove cluster prerequisites (only if decommissioning the operator entirely)
-kubectl delete crd openclawinstances.cetirun.microsoft.com
+kubectl delete crd agents.cetirun.microsoft.com
 kubectl delete storageclass azureblob-nfs-premium
 ```
 
@@ -342,5 +342,5 @@ kubectl delete storageclass azureblob-nfs-premium
 | PVC unbound / pod Pending | `kubectl describe pvc -n cetirun-<alias>`; StorageClass may not exist — run `deploy/deploy.sh --storageclass-only` or override via `spec.helm.values` |
 | Pod crashes on startup | Check `kubectl describe pod -n cetirun-system`; likely image pull or secret mount issue |
 | `couldn't find key OPENCLAW_GATEWAY_TOKEN in Secret` | The `gateway-token` secret must use `OPENCLAW_GATEWAY_TOKEN` as the key name. If you pre-created the secret manually, recreate it: `kubectl create secret generic gateway-token -n cetirun-<alias> --from-literal=OPENCLAW_GATEWAY_TOKEN=<token>` |
-| CR stuck with finalizer after `kubectl delete` | Check operator logs; if operator is down, manually remove finalizer: `kubectl patch openclawinstance <name> -p '{"metadata":{"finalizers":[]}}' --type=merge` |
+| CR stuck with finalizer after `kubectl delete` | Check operator logs; if operator is down, manually remove finalizer: `kubectl patch agent <name> -p '{"metadata":{"finalizers":[]}}' --type=merge` |
 | GitHub Copilot auth not working | Each engineer must run `copilot-auth` (or `openclaw models auth login-github-copilot`) inside their OpenClaw pod to authenticate with GitHub Copilot. |

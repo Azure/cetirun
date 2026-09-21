@@ -24,7 +24,7 @@ type Config struct {
 	// NoticeBanner is an optional message displayed as a banner in the portal UI.
 	// Empty string means no banner.
 	NoticeBanner string
-	// MaxInstancesPerUser is the maximum number of OpenClawInstances a single user may create.
+	// MaxInstancesPerUser is the maximum number of Agents a single user may create.
 	// 0 means unlimited. Defaults to 1.
 	MaxInstancesPerUser int
 	// AllowedAgentTypes controls which agent types are offered in the portal create form.

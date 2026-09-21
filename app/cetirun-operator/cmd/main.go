@@ -169,7 +169,7 @@ func main() {
 
 	helmClient := helmclient.NewClient(chartRef)
 
-	if err = (&controller.OpenClawInstanceReconciler{
+	if err = (&controller.AgentReconciler{
 		Client:               mgr.GetClient(),
 		Scheme:               mgr.GetScheme(),
 		EventRecorder:        mgr.GetEventRecorderFor("cetirun-operator"),
@@ -191,7 +191,7 @@ func main() {
 		AzureServiceTreeID:   azureServiceTreeID,
 		AzureOIDCIssuerURL:   azureOIDCIssuerURL,
 	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "OpenClawInstance")
+		setupLog.Error(err, "unable to create controller", "controller", "Agent")
 		os.Exit(1)
 	}
 

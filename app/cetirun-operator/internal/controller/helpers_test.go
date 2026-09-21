@@ -54,7 +54,7 @@ func TestOperatorConfigHash_Deterministic(t *testing.T) {
 }
 
 func TestConfigHash_IncludesDefaultModelOnlyWhenRendered(t *testing.T) {
-	reconciler := &OpenClawInstanceReconciler{DefaultModel: "gpt-6-astra"}
+	reconciler := &AgentReconciler{DefaultModel: "gpt-6-astra"}
 	instance := newTestInstance("alice", "Alice", "", "gateway-token")
 
 	first := reconciler.configHash(instance, nil, "secret", "")
@@ -81,11 +81,11 @@ func TestConfigHash_IncludesDefaultModelOnlyWhenRendered(t *testing.T) {
 	}
 }
 
-// newTestInstance returns a minimal OpenClawInstance for use in tests.
-func newTestInstance(alias, displayName, team, gatewaySecret string) *cetirunv1alpha1.OpenClawInstance {
-	return &cetirunv1alpha1.OpenClawInstance{
+// newTestInstance returns a minimal Agent for use in tests.
+func newTestInstance(alias, displayName, team, gatewaySecret string) *cetirunv1alpha1.Agent {
+	return &cetirunv1alpha1.Agent{
 		ObjectMeta: metav1.ObjectMeta{Name: alias},
-		Spec: cetirunv1alpha1.OpenClawInstanceSpec{
+		Spec: cetirunv1alpha1.AgentSpec{
 			User: cetirunv1alpha1.UserSpec{
 				Alias:       alias,
 				DisplayName: displayName,
@@ -1239,11 +1239,11 @@ func TestAccessURLPathBased(t *testing.T) {
 }
 
 func TestBuildVirtualServicePathBased(t *testing.T) {
-	instance := &cetirunv1alpha1.OpenClawInstance{
+	instance := &cetirunv1alpha1.Agent{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "alice-work",
 		},
-		Spec: cetirunv1alpha1.OpenClawInstanceSpec{
+		Spec: cetirunv1alpha1.AgentSpec{
 			User: cetirunv1alpha1.UserSpec{Alias: "alice"},
 		},
 	}
@@ -1349,7 +1349,7 @@ func TestBuildHelmValues_NotSuspendedOmitsReplicaCount(t *testing.T) {
 func TestComputeEffectiveSkills(t *testing.T) {
 	cases := []struct {
 		name   string
-		team   *cetirunv1alpha1.OpenClawTeam
+		team   *cetirunv1alpha1.Team
 		add    []string
 		remove []string
 		want   []string
@@ -1360,8 +1360,8 @@ func TestComputeEffectiveSkills(t *testing.T) {
 		},
 		{
 			name: "team skills only",
-			team: &cetirunv1alpha1.OpenClawTeam{
-				Spec: cetirunv1alpha1.OpenClawTeamSpec{Skills: []string{"npm:fetch", "@anthropic/fetch"}},
+			team: &cetirunv1alpha1.Team{
+				Spec: cetirunv1alpha1.TeamSpec{Skills: []string{"npm:fetch", "@anthropic/fetch"}},
 			},
 			want: []string{"@anthropic/fetch", "npm:fetch"},
 		},
@@ -1372,8 +1372,8 @@ func TestComputeEffectiveSkills(t *testing.T) {
 		},
 		{
 			name: "team + add + remove",
-			team: &cetirunv1alpha1.OpenClawTeam{
-				Spec: cetirunv1alpha1.OpenClawTeamSpec{Skills: []string{"@anthropic/fetch", "npm:extra"}},
+			team: &cetirunv1alpha1.Team{
+				Spec: cetirunv1alpha1.TeamSpec{Skills: []string{"@anthropic/fetch", "npm:extra"}},
 			},
 			add:    []string{"npm:matrix"},
 			remove: []string{"npm:extra"},
@@ -1429,8 +1429,8 @@ func TestBuildHelmValues_WithTeam(t *testing.T) {
 	inst.Spec.Helm.Values["secrets"] = runtime.RawExtension{
 		Raw: []byte(`{"model":"claude-sonnet-4.5"}`),
 	}
-	team := &cetirunv1alpha1.OpenClawTeam{
-		Spec: cetirunv1alpha1.OpenClawTeamSpec{
+	team := &cetirunv1alpha1.Team{
+		Spec: cetirunv1alpha1.TeamSpec{
 			Defaults: cetirunv1alpha1.TeamDefaultsSpec{
 				Provider: "anthropic",
 			},
@@ -1515,8 +1515,8 @@ func TestBuildHelmValues_SkillOverrides(t *testing.T) {
 		Add:    []string{"npm:extra"},
 		Remove: []string{"npm:dropped"},
 	}
-	team := &cetirunv1alpha1.OpenClawTeam{
-		Spec: cetirunv1alpha1.OpenClawTeamSpec{
+	team := &cetirunv1alpha1.Team{
+		Spec: cetirunv1alpha1.TeamSpec{
 			Skills: []string{"npm:dropped", "@anthropic/fetch"},
 		},
 	}
@@ -1543,8 +1543,8 @@ func TestBuildHelmValues_SkillOverrides(t *testing.T) {
 func TestBuildHelmValues_WithTeam_Hermes(t *testing.T) {
 	inst := newTestInstance("bob", "Bob", "", "gateway-token")
 	inst.Spec.AgentType = cetirunv1alpha1.AgentTypeHermes
-	team := &cetirunv1alpha1.OpenClawTeam{
-		Spec: cetirunv1alpha1.OpenClawTeamSpec{
+	team := &cetirunv1alpha1.Team{
+		Spec: cetirunv1alpha1.TeamSpec{
 			Defaults: cetirunv1alpha1.TeamDefaultsSpec{
 				Provider: "anthropic",
 			},

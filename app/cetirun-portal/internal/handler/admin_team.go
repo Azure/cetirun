@@ -16,7 +16,7 @@ import (
 	"github.com/Azure/CetiRun/app/cetirun-portal/internal/kube"
 )
 
-// AdminTeamHandler implements CRUD for OpenClawTeam resources under
+// AdminTeamHandler implements CRUD for Team resources under
 // /api/v1/admin/teams. Authorization is enforced by an upstream middleware
 // (auth.RequireAdmin); this handler does not check the admin flag itself.
 type AdminTeamHandler struct {
@@ -37,7 +37,7 @@ type TeamSkillStorageDTO struct {
 	MountPath        string `json:"mountPath,omitempty"`
 }
 
-// TeamDTO is the JSON shape for OpenClawTeam admin endpoints.
+// TeamDTO is the JSON shape for Team admin endpoints.
 type TeamDTO struct {
 	Name            string               `json:"name"`
 	Role            string               `json:"role,omitempty"`
@@ -60,7 +60,7 @@ type TeamUpsertRequest struct {
 	SkillStorage    *TeamSkillStorageDTO `json:"skillStorage,omitempty"`
 }
 
-func toTeamDTO(t *cetirunv1alpha1.OpenClawTeam) TeamDTO {
+func toTeamDTO(t *cetirunv1alpha1.Team) TeamDTO {
 	dto := TeamDTO{
 		Name:            t.Name,
 		Role:            t.Spec.MemberContext.Role,
@@ -82,8 +82,8 @@ func toTeamDTO(t *cetirunv1alpha1.OpenClawTeam) TeamDTO {
 	return dto
 }
 
-func toTeamSpec(req TeamUpsertRequest) cetirunv1alpha1.OpenClawTeamSpec {
-	spec := cetirunv1alpha1.OpenClawTeamSpec{
+func toTeamSpec(req TeamUpsertRequest) cetirunv1alpha1.TeamSpec {
+	spec := cetirunv1alpha1.TeamSpec{
 		MemberContext: cetirunv1alpha1.TeamContextSpec{
 			Role:        req.Role,
 			Description: req.Description,
@@ -109,7 +109,7 @@ func toTeamSpec(req TeamUpsertRequest) cetirunv1alpha1.OpenClawTeamSpec {
 // validateSkillStorage returns a non-empty error message when the optional
 // skillStorage block is present but missing CRD-required fields. The fields
 // resourceGroup, storageAccount, containerName are marked required in the
-// OpenClawTeam CRD, so accepting empty values would persist an invalid spec.
+// Team CRD, so accepting empty values would persist an invalid spec.
 func validateSkillStorage(s *TeamSkillStorageDTO) string {
 	if s == nil {
 		return ""
@@ -176,7 +176,7 @@ func (h *AdminTeamHandler) CreateTeam(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_skill_storage", msg)
 		return
 	}
-	team := &cetirunv1alpha1.OpenClawTeam{
+	team := &cetirunv1alpha1.Team{
 		ObjectMeta: metav1.ObjectMeta{Name: req.Name},
 		Spec:       toTeamSpec(req),
 	}

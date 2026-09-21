@@ -523,7 +523,7 @@ func (h *InstanceHandler) GetInstance(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if kube.IsNotFound(err) {
 			writeError(w, http.StatusNotFound, "instance_not_found",
-				"No OpenClaw instance found for user "+claims.Alias)
+				"No agent found for user "+claims.Alias)
 			return
 		}
 		slog.Error("Failed to get instance", "alias", claims.Alias, "error", err)
@@ -701,7 +701,7 @@ func (h *InstanceHandler) UpdateInstance(w http.ResponseWriter, r *http.Request)
 	if err != nil {
 		if kube.IsNotFound(err) {
 			writeError(w, http.StatusNotFound, "instance_not_found",
-				"No OpenClaw instance found for user "+claims.Alias)
+				"No agent found for user "+claims.Alias)
 			return
 		}
 		slog.Error("Failed to update instance", "alias", claims.Alias, "error", err)
@@ -730,7 +730,7 @@ func (h *InstanceHandler) DeleteInstance(w http.ResponseWriter, r *http.Request)
 	if err != nil {
 		if kube.IsNotFound(err) {
 			writeError(w, http.StatusNotFound, "instance_not_found",
-				"No OpenClaw instance found for user "+claims.Alias)
+				"No agent found for user "+claims.Alias)
 			return
 		}
 		slog.Error("Failed to delete instance", "alias", claims.Alias, "error", err)
@@ -752,7 +752,7 @@ func (h *InstanceHandler) UpgradeInstance(w http.ResponseWriter, r *http.Request
 	if _, err := h.Kube.GetInstance(r.Context(), claims.Alias); err != nil {
 		if kube.IsNotFound(err) {
 			writeError(w, http.StatusNotFound, "instance_not_found",
-				"No OpenClaw instance found for user "+claims.Alias)
+				"No agent found for user "+claims.Alias)
 			return
 		}
 		slog.Error("Failed to get instance", "alias", claims.Alias, "error", err)
@@ -778,7 +778,7 @@ func (h *InstanceHandler) UpgradeInstance(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, resp)
 }
 
-func (h *InstanceHandler) toInstanceResponse(ctx context.Context, instance *cetirunv1alpha1.OpenClawInstance) (InstanceResponse, error) {
+func (h *InstanceHandler) toInstanceResponse(ctx context.Context, instance *cetirunv1alpha1.Agent) (InstanceResponse, error) {
 	resp := InstanceResponse{
 		Alias:        instance.Spec.User.Alias,
 		InstanceName: instance.Name,
@@ -885,7 +885,7 @@ func (h *InstanceHandler) GetInstanceStatus(w http.ResponseWriter, r *http.Reque
 	if err != nil {
 		if kube.IsNotFound(err) {
 			writeError(w, http.StatusNotFound, "instance_not_found",
-				"No OpenClaw instance found for user "+claims.Alias)
+				"No agent found for user "+claims.Alias)
 			return
 		}
 		slog.Error("Failed to get instance", "alias", claims.Alias, "error", err)
@@ -948,7 +948,7 @@ func (h *InstanceHandler) DownloadTeamsApp(w http.ResponseWriter, r *http.Reques
 	if err != nil {
 		if kube.IsNotFound(err) {
 			writeError(w, http.StatusNotFound, "instance_not_found",
-				"No OpenClaw instance found for user "+claims.Alias)
+				"No agent found for user "+claims.Alias)
 			return
 		}
 		slog.Error("Failed to get instance", "alias", claims.Alias, "error", err)
@@ -972,7 +972,7 @@ func (h *InstanceHandler) DownloadTeamsApp(w http.ResponseWriter, r *http.Reques
 }
 
 // serveTeamsApp builds and writes the Teams app ZIP for the given instance.
-func (h *InstanceHandler) serveTeamsApp(w http.ResponseWriter, instance *cetirunv1alpha1.OpenClawInstance) {
+func (h *InstanceHandler) serveTeamsApp(w http.ResponseWriter, instance *cetirunv1alpha1.Agent) {
 	appID := instance.Status.MSTeams.AppID
 	displayName := instance.Spec.User.DisplayName
 
@@ -1079,7 +1079,7 @@ func addFileToZip(zw *zip.Writer, name string, data []byte) error {
 	return err
 }
 
-func teamsStateOrUnknown(instance *cetirunv1alpha1.OpenClawInstance) string {
+func teamsStateOrUnknown(instance *cetirunv1alpha1.Agent) string {
 	if instance.Status.MSTeams != nil && instance.Status.MSTeams.State != "" {
 		return instance.Status.MSTeams.State
 	}

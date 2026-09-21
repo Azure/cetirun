@@ -4,7 +4,7 @@
 # token rotation, config updates, VirtualService re-apply, PVC expansion).
 # Key safety constraints: no delete on CRs, no RBAC writes, no admission writes.
 #
-# Applied by deploy/setup.sh before the OpenClawInstance CR (uses envsubst for NAMESPACE).
+# Applied by deploy/setup.sh before the Agent CR (uses envsubst for NAMESPACE).
 # SA name must match the chart fullname: openclaw-admin-cetirun
 apiVersion: v1
 kind: ServiceAccount
@@ -18,7 +18,7 @@ metadata:
 # ClusterRole: broad read access across the cluster for monitoring/diagnostics,
 # with targeted write permissions only where remediation playbooks require them.
 # Key safety constraints:
-#   - NO delete on openclawinstances (instance deletion requires another principal)
+#   - NO delete on agents (instance deletion requires another principal)
 #   - NO write on RBAC resources (prevents privilege escalation)
 #   - NO write on admission, CRDs, certificates, scheduling, nodes, storage classes
 #   - Write permissions are scoped to specific resources needed for auto-remediation

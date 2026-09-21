@@ -1,4 +1,4 @@
-# Example: OpenClawTeam + OpenClawInstance with skill inheritance
+# Example: Team + Agent with skill inheritance
 #
 # Apply order:
 #   kubectl apply -f sample-team.yaml
@@ -9,7 +9,7 @@
 
 ---
 apiVersion: cetirun.microsoft.com/v1alpha1
-kind: OpenClawTeam
+kind: Team
 metadata:
   name: platform
 spec:
@@ -27,7 +27,7 @@ spec:
 ---
 # Instance A: inherits all team skills, no customization
 apiVersion: cetirun.microsoft.com/v1alpha1
-kind: OpenClawInstance
+kind: Agent
 metadata:
   name: alice
 spec:
@@ -50,7 +50,7 @@ spec:
 ---
 # Instance B: adds a personal skill, opts out of the shared PVC
 apiVersion: cetirun.microsoft.com/v1alpha1
-kind: OpenClawInstance
+kind: Agent
 metadata:
   name: bob
 spec:

@@ -35,7 +35,7 @@ export function AdminLayout() {
           Teams
         </NavLink>
         <NavLink to="/admin/instances" style={navStyle}>
-          Instances
+          Agents
         </NavLink>
         <span
           style={{

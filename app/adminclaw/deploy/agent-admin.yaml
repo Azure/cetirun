@@ -1,4 +1,4 @@
-# AdminClaw — OpenClawInstance CR for operator-managed deployment.
+# AdminClaw — Agent CR for operator-managed deployment.
 # The operator will:
 #   1. Ensure namespace cetirun-admin exists (with Istio sidecar label)
 #   2. Create gateway token Secret (gateway-token)
@@ -11,7 +11,7 @@
 #   - ClusterRole/ClusterRoleBinding adminclaw-admin (via deploy/rbac.yaml)
 #   - Secret gateway-token with OPENCLAW_GATEWAY_TOKEN + MODEL_API_KEY (via setup.sh)
 apiVersion: cetirun.microsoft.com/v1alpha1
-kind: OpenClawInstance
+kind: Agent
 metadata:
   name: admin
 spec:

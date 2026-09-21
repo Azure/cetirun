@@ -65,11 +65,11 @@ export function CreateForm({ onCreated }: { onCreated?: () => void }) {
       style={{ display: "flex", flexDirection: "column", gap: 16, marginTop: 16 }}
     >
       <Field
-        label="Instance Name (optional)"
+        label="Agent Name (optional)"
         hint={
           instanceName
             ? `CR name will be: <your-alias>-${instanceName} (e.g. alice-${instanceName})`
-            : "Leave blank to use your alias as the instance name. Lowercase letters, digits, hyphens only."
+            : "Leave blank to use your alias as the agent name. Lowercase letters, digits, hyphens only."
         }
       >
         <Input
@@ -143,7 +143,7 @@ export function CreateForm({ onCreated }: { onCreated?: () => void }) {
           allowedAgentTypes.length === 0
         }
       >
-        {createMutation.isPending ? "Creating..." : "Create Instance"}
+        {createMutation.isPending ? "Creating..." : "Create Agent"}
       </Button>
 
       {createMutation.error && (

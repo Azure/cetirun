@@ -23,7 +23,7 @@ func (h *HealthHandler) Liveness(w http.ResponseWriter, r *http.Request) {
 
 // Readiness pings the Kubernetes API server to verify connectivity.
 func (h *HealthHandler) Readiness(w http.ResponseWriter, r *http.Request) {
-	list := &cetirunv1alpha1.OpenClawInstanceList{}
+	list := &cetirunv1alpha1.AgentList{}
 	if err := h.KubeClient.List(r.Context(), list, client.Limit(1)); err != nil {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		w.Write([]byte("kubernetes API unavailable"))

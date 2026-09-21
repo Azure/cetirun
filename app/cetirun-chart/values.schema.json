@@ -682,7 +682,7 @@
         },
         "user": {
             "type": "object",
-            "description": "User identity, typically populated by the operator from OpenClawInstance CR spec.user. Templates USER.md in the ConfigMap.",
+            "description": "User identity, typically populated by the operator from Agent CR spec.user. Templates USER.md in the ConfigMap.",
             "properties": {
                 "alias": {
                     "type": "string",

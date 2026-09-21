@@ -23,9 +23,9 @@ func newAdminTeamHandler(objs ...client.Object) *AdminTeamHandler {
 }
 
 func TestAdminTeam_List(t *testing.T) {
-	team := &cetirunv1alpha1.OpenClawTeam{
+	team := &cetirunv1alpha1.Team{
 		ObjectMeta: metav1.ObjectMeta{Name: "aks"},
-		Spec: cetirunv1alpha1.OpenClawTeamSpec{
+		Spec: cetirunv1alpha1.TeamSpec{
 			MemberContext: cetirunv1alpha1.TeamContextSpec{Role: "AKS Engineer"},
 			Defaults:      cetirunv1alpha1.TeamDefaultsSpec{Provider: "github_copilot"},
 			Skills:        []string{"@anthropic/mcp-server-fetch"},
@@ -50,7 +50,7 @@ func TestAdminTeam_List(t *testing.T) {
 }
 
 func TestAdminTeam_Get(t *testing.T) {
-	h := newAdminTeamHandler(&cetirunv1alpha1.OpenClawTeam{
+	h := newAdminTeamHandler(&cetirunv1alpha1.Team{
 		ObjectMeta: metav1.ObjectMeta{Name: "aks"},
 	})
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/teams/aks", nil)
@@ -127,7 +127,7 @@ func TestAdminTeam_Create_InvalidSkillStorage(t *testing.T) {
 }
 
 func TestAdminTeam_Update_InvalidSkillStorage(t *testing.T) {
-	h := newAdminTeamHandler(&cetirunv1alpha1.OpenClawTeam{
+	h := newAdminTeamHandler(&cetirunv1alpha1.Team{
 		ObjectMeta: metav1.ObjectMeta{Name: "aks"},
 	})
 	body, _ := json.Marshal(TeamUpsertRequest{
@@ -143,9 +143,9 @@ func TestAdminTeam_Update_InvalidSkillStorage(t *testing.T) {
 }
 
 func TestAdminTeam_Update(t *testing.T) {
-	h := newAdminTeamHandler(&cetirunv1alpha1.OpenClawTeam{
+	h := newAdminTeamHandler(&cetirunv1alpha1.Team{
 		ObjectMeta: metav1.ObjectMeta{Name: "aks"},
-		Spec: cetirunv1alpha1.OpenClawTeamSpec{
+		Spec: cetirunv1alpha1.TeamSpec{
 			MemberContext: cetirunv1alpha1.TeamContextSpec{Role: "old"},
 		},
 	})
@@ -165,7 +165,7 @@ func TestAdminTeam_Update(t *testing.T) {
 }
 
 func TestAdminTeam_Delete(t *testing.T) {
-	h := newAdminTeamHandler(&cetirunv1alpha1.OpenClawTeam{
+	h := newAdminTeamHandler(&cetirunv1alpha1.Team{
 		ObjectMeta: metav1.ObjectMeta{Name: "aks"},
 	})
 	req := httptest.NewRequest(http.MethodDelete, "/api/v1/admin/teams/aks", nil)

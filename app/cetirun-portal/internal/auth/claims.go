@@ -12,7 +12,7 @@ import (
 // Claims represents the authenticated user extracted from OAuth2 Proxy headers.
 type Claims struct {
 	// Alias is the user's short name, extracted from the X-Auth-Request-Preferred-Username
-	// header by stripping the @domain.com suffix. Used as the OpenClawInstance name.
+	// header by stripping the @domain.com suffix. Used as the Agent name.
 	Alias string
 
 	// DisplayName is a human-readable identifier for the user, derived from

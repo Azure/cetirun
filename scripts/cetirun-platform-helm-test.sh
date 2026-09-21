@@ -19,8 +19,8 @@ fi
 helm dependency build --skip-refresh "${chart_dir}" > /dev/null
 
 for crd_file in \
-  cetirun.microsoft.com_openclawinstances.yaml \
-  cetirun.microsoft.com_openclawteams.yaml; do
+  cetirun.microsoft.com_agents.yaml \
+  cetirun.microsoft.com_teams.yaml; do
   if ! cmp -s "${crd_source_dir}/${crd_file}" "${crd_chart_dir}/${crd_file}"; then
     echo "FAIL: chart CRD ${crd_file} does not match its generated source" >&2
     exit 1
@@ -29,7 +29,7 @@ done
 
 echo "==> helm template operator CRDs"
 output=$(helm template operator "${operator_chart_dir}" --include-crds)
-for crd_name in openclawinstances.cetirun.microsoft.com openclawteams.cetirun.microsoft.com; do
+for crd_name in agents.cetirun.microsoft.com teams.cetirun.microsoft.com; do
   grep -q "name: ${crd_name}" <<< "${output}" || {
     echo "FAIL: operator chart did not render CRD ${crd_name}" >&2
     exit 1
@@ -60,7 +60,7 @@ grep -q 'namespace: default' <<< "${output}" || {
   echo "FAIL: portal was not rendered into the release namespace" >&2
   exit 1
 }
-for crd_name in openclawinstances.cetirun.microsoft.com openclawteams.cetirun.microsoft.com; do
+for crd_name in agents.cetirun.microsoft.com teams.cetirun.microsoft.com; do
   grep -q "name: ${crd_name}" <<< "${output}" || {
     echo "FAIL: platform chart did not render CRD ${crd_name}" >&2
     exit 1

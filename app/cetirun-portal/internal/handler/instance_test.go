@@ -37,14 +37,14 @@ func withClaims(r *http.Request, alias, displayName, email string) *http.Request
 	return r.WithContext(ctx)
 }
 
-func sampleInstance() *cetirunv1alpha1.OpenClawInstance {
+func sampleInstance() *cetirunv1alpha1.Agent {
 	reconcileTime := metav1.NewTime(time.Date(2024, 1, 15, 12, 0, 0, 0, time.UTC))
-	return &cetirunv1alpha1.OpenClawInstance{
+	return &cetirunv1alpha1.Agent{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:              "alice",
 			CreationTimestamp: metav1.NewTime(time.Date(2024, 1, 15, 10, 0, 0, 0, time.UTC)),
 		},
-		Spec: cetirunv1alpha1.OpenClawInstanceSpec{
+		Spec: cetirunv1alpha1.AgentSpec{
 			User: cetirunv1alpha1.UserSpec{
 				Alias:       "alice",
 				DisplayName: "Alice Smith",
@@ -52,7 +52,7 @@ func sampleInstance() *cetirunv1alpha1.OpenClawInstance {
 				Email:       "alice@microsoft.com",
 			},
 		},
-		Status: cetirunv1alpha1.OpenClawInstanceStatus{
+		Status: cetirunv1alpha1.AgentStatus{
 			Phase:             "Ready",
 			Namespace:         "cetirun-alice",
 			AccessURL:         "https://alice.cetirun.example.com",
@@ -542,7 +542,7 @@ func TestCreateInstance_WithTailscaleAuthKey(t *testing.T) {
 	}
 
 	// Verify the CR has Tailscale spec set.
-	instance := &cetirunv1alpha1.OpenClawInstance{}
+	instance := &cetirunv1alpha1.Agent{}
 	if err := fc.Get(context.Background(), client.ObjectKey{Name: "alice"}, instance); err != nil {
 		t.Fatalf("expected instance to exist: %v", err)
 	}
@@ -1089,7 +1089,7 @@ func TestUpdateInstance_DisableTailscale(t *testing.T) {
 	}
 
 	// Verify the CR no longer has Tailscale spec.
-	updated := &cetirunv1alpha1.OpenClawInstance{}
+	updated := &cetirunv1alpha1.Agent{}
 	if err := fc.Get(context.Background(), client.ObjectKey{Name: "alice"}, updated); err != nil {
 		t.Fatalf("failed to get updated instance: %v", err)
 	}
@@ -1160,7 +1160,7 @@ func TestUpgradeInstance_Success(t *testing.T) {
 	}
 
 	// Verify the CR was updated.
-	updated := &cetirunv1alpha1.OpenClawInstance{}
+	updated := &cetirunv1alpha1.Agent{}
 	if err := fc.Get(context.Background(), client.ObjectKey{Name: "alice"}, updated); err != nil {
 		t.Fatalf("failed to get updated instance: %v", err)
 	}

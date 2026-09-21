@@ -29,12 +29,12 @@ func newFakeClient(objs ...client.Object) client.Client {
 	return fake.NewClientBuilder().WithScheme(newScheme()).WithObjects(objs...).Build()
 }
 
-func sampleInstance() *cetirunv1alpha1.OpenClawInstance {
-	return &cetirunv1alpha1.OpenClawInstance{
+func sampleInstance() *cetirunv1alpha1.Agent {
+	return &cetirunv1alpha1.Agent{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "alice",
 		},
-		Spec: cetirunv1alpha1.OpenClawInstanceSpec{
+		Spec: cetirunv1alpha1.AgentSpec{
 			GatewayTokenSecretRef: "gateway-token",
 			User: cetirunv1alpha1.UserSpec{
 				Alias:       "alice",
@@ -657,9 +657,9 @@ func TestTeamCRUD(t *testing.T) {
 	ctx := context.Background()
 
 	// Create
-	created, err := c.CreateTeam(ctx, &cetirunv1alpha1.OpenClawTeam{
+	created, err := c.CreateTeam(ctx, &cetirunv1alpha1.Team{
 		ObjectMeta: metav1.ObjectMeta{Name: "aks"},
-		Spec: cetirunv1alpha1.OpenClawTeamSpec{
+		Spec: cetirunv1alpha1.TeamSpec{
 			Defaults: cetirunv1alpha1.TeamDefaultsSpec{Provider: "github_copilot"},
 		},
 	})
@@ -689,7 +689,7 @@ func TestTeamCRUD(t *testing.T) {
 	}
 
 	// Update
-	updated, err := c.UpdateTeamSpec(ctx, "aks", cetirunv1alpha1.OpenClawTeamSpec{
+	updated, err := c.UpdateTeamSpec(ctx, "aks", cetirunv1alpha1.TeamSpec{
 		MemberContext: cetirunv1alpha1.TeamContextSpec{Role: "AKS Engineer"},
 	})
 	if err != nil {
