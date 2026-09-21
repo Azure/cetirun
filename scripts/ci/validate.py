@@ -181,6 +181,11 @@ def chart_gate(root):
         root,
         env={**offline_env(), "CHART_DIR": str(platform_chart)},
     )
+    run(
+        ["bash", str(require_file(root / "scripts/cetirun-istio-helm-test.sh"))],
+        root,
+        env={**offline_env(), "CHART_DIR": str(root / "infra/istio")},
+    )
 
 
 def bicep_gate(root):

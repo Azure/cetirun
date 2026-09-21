@@ -18,6 +18,7 @@
 #   TEST_ALIAS            — Instance alias           (default: johnreese)
 #   AGENT_TYPE            — Agent type               (default: openclaw)
 #   TEST_NAMESPACE        — Operator namespace        (default: cetirun-system)
+#   PORTAL_NAMESPACE      — Portal namespace          (default: TEST_NAMESPACE)
 #   READY_TIMEOUT         — Seconds to wait for Ready (default: 600)
 #   DOMAIN                — Base domain for routing   (auto-detected from operator Helm values)
 #   EXPECTED_IMAGE_TAG    — If set, verify agent pod uses this image tag
@@ -28,6 +29,7 @@ set -euo pipefail
 TEST_ALIAS="${TEST_ALIAS:-johnreese}"
 AGENT_TYPE="${AGENT_TYPE:-openclaw}"
 TEST_NAMESPACE="${TEST_NAMESPACE:-cetirun-system}"
+PORTAL_NAMESPACE="${PORTAL_NAMESPACE:-${TEST_NAMESPACE}}"
 READY_TIMEOUT="${READY_TIMEOUT:-600}"
 INSTANCE_NS="cetirun-${TEST_ALIAS}"
 
@@ -59,6 +61,7 @@ echo ""
 echo "Test alias:    ${TEST_ALIAS}"
 echo "Agent type:    ${AGENT_TYPE}"
 echo "Operator NS:   ${TEST_NAMESPACE}"
+echo "Portal NS:     ${PORTAL_NAMESPACE}"
 echo "Instance NS:   ${INSTANCE_NS}"
 echo "Ready timeout: ${READY_TIMEOUT}s"
 echo ""
@@ -92,9 +95,9 @@ fi
 echo "    Operator running (${OPERATOR_PODS} pod(s))."
 
 # Check portal is running
-PORTAL_PODS=$(kubectl get pods -n cetirun-portal --field-selector=status.phase=Running -o name 2>/dev/null | wc -l || echo 0)
+PORTAL_PODS=$(kubectl get pods -n "${PORTAL_NAMESPACE}" --field-selector=status.phase=Running -o name 2>/dev/null | wc -l || echo 0)
 if (( PORTAL_PODS == 0 )); then
-  echo "ERROR: No running portal pods found in cetirun-portal namespace." >&2
+  echo "ERROR: No running portal pods found in ${PORTAL_NAMESPACE}." >&2
   exit 1
 fi
 echo "    Portal running (${PORTAL_PODS} pod(s))."
@@ -533,7 +536,7 @@ done
 ADMIN_ALIASES=$(helm get values cetirun-istio -n cetirun-istio -o json 2>/dev/null \
   | jq -r '.authPolicy.adminAliases // [] | .[]' 2>/dev/null || echo "")
 if [[ -n "${ADMIN_ALIASES}" ]]; then
-  PORTAL_ADMINS_CM=$(kubectl get configmap cetirun-portal-admins -n cetirun-portal \
+  PORTAL_ADMINS_CM=$(kubectl get configmap cetirun-portal-admins -n "${PORTAL_NAMESPACE}" \
     -o jsonpath='{.data.aliases}' 2>/dev/null || echo "")
   if [[ -n "${PORTAL_ADMINS_CM}" ]]; then
     pass "cetirun-portal-admins ConfigMap exists"

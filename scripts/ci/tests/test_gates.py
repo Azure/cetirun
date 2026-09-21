@@ -94,6 +94,7 @@ class GateTests(unittest.TestCase):
         (self.root / "scripts").mkdir()
         (self.root / "scripts/cetirun-helm-test.sh").write_text("# fixture")
         (self.root / "scripts/cetirun-platform-helm-test.sh").write_text("# fixture")
+        (self.root / "scripts/cetirun-istio-helm-test.sh").write_text("# fixture")
         with patch.object(validate, "run") as run:
             validate.chart_gate(self.root)
         commands = [call.args[0] for call in run.call_args_list]
@@ -102,6 +103,7 @@ class GateTests(unittest.TestCase):
         self.assertEqual(len({c[3] for c in commands if c[:2] == ["helm", "lint"]}), 5)
         self.assertTrue(all("--strict" in c for c in commands if c[1] == "lint"))
         self.assertEqual(sum(c[:2] == ["helm", "dependency"] for c in commands), 1)
+        self.assertEqual(sum(c[:2] == ["bash", str(self.root / "scripts/cetirun-istio-helm-test.sh")] for c in commands), 1)
         self.assertEqual(commands[-1][0], "bash")
 
     def test_offline_go_environment_cannot_inherit_network_defaults(self):

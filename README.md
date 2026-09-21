@@ -25,8 +25,7 @@ CetiRun deploys on an AKS cluster. Each team member gets a dedicated namespace (
 |                        ├── OpenClaw Gateway :18789                                 |
 |                        └── PVC: /home/vibe (Azure Blob NFS)                       |
 |                                                                                   |
-|  cetirun-system NS     CetiRun Operator                                           |
-|  cetirun-portal NS     CetiRun Portal                                             |
+|  cetirun-system NS     CetiRun Operator + Portal                                  |
 +-----------------------------------------------------------------------------------+
          |                                    |
          v                                    v
