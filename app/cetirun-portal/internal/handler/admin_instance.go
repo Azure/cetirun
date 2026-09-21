@@ -7,12 +7,12 @@ import (
 	"log/slog"
 	"net/http"
 
-	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	cetirunv1beta1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1beta1"
 	"github.com/Azure/CetiRun/app/cetirun-portal/internal/kube"
 )
 
 // AdminInstanceHandler exposes a cluster-wide read-only view of
-// OpenClawInstance resources for admin users. Modifications still go through
+// Agent resources for admin users. Modifications still go through
 // the user-scoped /api/v1/instances endpoints in InstanceHandler.
 type AdminInstanceHandler struct {
 	Kube *kube.Client
@@ -59,14 +59,14 @@ func (h *AdminInstanceHandler) ListAllInstances(w http.ResponseWriter, r *http.R
 
 // instanceTeam returns the effective team for an instance — the top-level
 // spec.team takes precedence over the legacy spec.user.team.
-func instanceTeam(ins *cetirunv1alpha1.OpenClawInstance) string {
+func instanceTeam(ins *cetirunv1beta1.Agent) string {
 	if ins.Spec.Team != "" {
 		return ins.Spec.Team
 	}
 	return ins.Spec.User.Team
 }
 
-func isReady(ins *cetirunv1alpha1.OpenClawInstance) bool {
+func isReady(ins *cetirunv1beta1.Agent) bool {
 	for _, c := range ins.Status.Conditions {
 		if c.Type == "Ready" {
 			return c.Status == "True"

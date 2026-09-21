@@ -355,20 +355,20 @@ hermes:
   gateway:
     enabled: true
 
-# -- User identity (typically populated by the operator from OpenClawInstance CR spec.user)
+# -- User identity (typically populated by the operator from Agent CR spec.user)
 user:
   # -- User's short alias. Commonly used as part of the namespace name: cetirun-<alias>.
   # When left empty, the operator or platform may derive it from other context.
   alias: ""
   # -- User's human-friendly display name, shown in UIs and logs where applicable.
   displayName: ""
-  # -- Logical team name. Populated by the operator from OpenClawInstance spec.
+  # -- Logical team name. Populated by the operator from Agent spec.
   team: ""
   # -- User's role. When non-empty, injected into USER.md Role field.
-  # Set by the operator when an OpenClawTeam with memberContext.role is referenced.
+  # Set by the operator when an Team with memberContext.role is referenced.
   role: ""
   # -- User context lines. When non-empty, injected as Notes bullet list in USER.md.
-  # Set by the operator when an OpenClawTeam with memberContext.description is referenced.
+  # Set by the operator when an Team with memberContext.description is referenced.
   description: []
   # -- Base domain for instance access URLs. Used to template the access URL in USER.md.
   # Set this to your deployment domain (e.g. "example.com").

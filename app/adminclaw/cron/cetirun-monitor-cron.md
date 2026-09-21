@@ -9,8 +9,8 @@ You are an CetiRun platform monitor. Execute the following steps in order.
 Run these kubectl commands to collect status:
 
 ```bash
-# 1a. All OpenClawInstance CRs (top-level status)
-kubectl get openclawinstances -A -o wide
+# 1a. All Agent CRs (top-level status)
+kubectl get agents -A -o wide
 
 # 1b. StatefulSets and their pods in every cetirun-<alias> namespace
 kubectl get statefulsets -A -o wide | grep cetirun

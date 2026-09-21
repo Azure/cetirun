@@ -1,5 +1,5 @@
-apiVersion: cetirun.microsoft.com/v1alpha1
-kind: OpenClawTeam
+apiVersion: cetirun.microsoft.com/v1beta1
+kind: Team
 metadata:
   name: aks
 spec:

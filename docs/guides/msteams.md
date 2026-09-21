@@ -51,8 +51,8 @@ Uses Azure Workload Identity — no secrets to manage. The operator creates a Se
 2. Configure the CR:
 
 ```yaml
-apiVersion: cetirun.microsoft.com/v1alpha1
-kind: OpenClawInstance
+apiVersion: cetirun.microsoft.com/v1beta1
+kind: Agent
 metadata:
   name: alice
 spec:
@@ -94,8 +94,8 @@ openssl x509 -in cert.pem -fingerprint -noout | tr -d ':' | cut -d= -f2
 4. Configure the CR:
 
 ```yaml
-apiVersion: cetirun.microsoft.com/v1alpha1
-kind: OpenClawInstance
+apiVersion: cetirun.microsoft.com/v1beta1
+kind: Agent
 metadata:
   name: alice
 spec:

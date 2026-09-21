@@ -15,16 +15,16 @@ A list of user aliases with optional config overrides (displayName, team, email,
 ```
 1. Validate each alias:
    - Format: ^[a-z][a-z0-9-]{0,62}$
-   - Not already provisioned: kubectl get openclawinstance <alias>
+   - Not already provisioned: kubectl get agent <alias>
    - No naming collisions with reserved names
 
 2. Pre-flight checks:
    - Cluster resources: verify node capacity and storage availability
    - Operator is running: kubectl get deployment -n cetirun-system
 
-3. Create OpenClawInstance CRs (max 3 concurrent):
-   apiVersion: cetirun.microsoft.com/v1alpha1
-   kind: OpenClawInstance
+3. Create Agent CRs (max 3 concurrent):
+   apiVersion: cetirun.microsoft.com/v1beta1
+   kind: Agent
    metadata:
      name: <alias>
    spec:
@@ -40,7 +40,7 @@ A list of user aliases with optional config overrides (displayName, team, email,
 4. Monitor CR status.phase transitions:
    Pending → Provisioning → Ready (or Failed)
    - Poll every 10s, timeout after 10min per instance
-   - Use: kubectl get openclawinstance <alias> -o jsonpath='{.status.phase}'
+   - Use: kubectl get agent <alias> -o jsonpath='{.status.phase}'
 
 5. Post-verify each Ready instance:
    a. Pod is Running and Ready:
@@ -84,12 +84,12 @@ A list of user aliases with optional config overrides (displayName, team, email,
 
 ```
 1. List all instances:
-   kubectl get openclawinstances.cetirun.microsoft.com -o wide
+   kubectl get agents.cetirun.microsoft.com -o wide
 
 2. For each instance, evaluate:
    a. Phase: Pending / Provisioning / Ready / Failed / Deleting
    b. Conditions: Ready, HelmDeployed, IngressReady, PodReady, TailscaleReady
-      kubectl get openclawinstance <alias> -o jsonpath='{.status.conditions}'
+      kubectl get agent <alias> -o jsonpath='{.status.conditions}'
    c. StatefulSet readiness:
       kubectl get sts -n cetirun-<alias>
    d. Pod status (Running, restarts, OOMKills):
@@ -138,7 +138,7 @@ A list of user aliases with optional config overrides (displayName, team, email,
    a. Verify new chart version exists in OCI registry
    b. Operator is running and healthy
    c. No instances currently in Provisioning or Failed state:
-      kubectl get openclawinstances -o jsonpath='{range .items[?(@.status.phase!="Ready")]}{.metadata.name}{"\t"}{.status.phase}{"\n"}{end}'
+      kubectl get agents -o jsonpath='{range .items[?(@.status.phase!="Ready")]}{.metadata.name}{"\t"}{.status.phase}{"\n"}{end}'
 ```
 
 ### Canary Phase
@@ -146,7 +146,7 @@ A list of user aliases with optional config overrides (displayName, team, email,
 ```
 3. Select 2 canary instances (prefer non-critical or admin-owned)
 4. Update CR:
-   kubectl patch openclawinstance <canary> --type=merge -p '{"spec":{"helm":{"version":"<new-version>"}}}'
+   kubectl patch agent <canary> --type=merge -p '{"spec":{"helm":{"version":"<new-version>"}}}'
 5. Monitor reconciliation:
    - Watch phase transitions
    - Check all conditions reach True
@@ -195,10 +195,10 @@ Decommissioning removes an instance while preserving data by default.
 2. Pre-decommission:
    a. Record current state for audit log
 
-3. Delete the OpenClawInstance CR:
+3. Delete the Agent CR:
    NOTE: AdminClaw cannot delete CRs (RBAC restriction).
    Instruct the admin to run:
-     kubectl delete openclawinstance <alias>
+     kubectl delete agent <alias>
    Or request another principal with delete permissions to do so.
 
 4. Monitor teardown:
@@ -227,7 +227,7 @@ To change instance configuration (e.g., resource limits):
 ```
 1. Identify the target field in spec.helm.values
 2. Patch the CR:
-   kubectl patch openclawinstance <alias> --type=merge \
+   kubectl patch agent <alias> --type=merge \
      -p '{"spec":{"helm":{"values":{<key>:<value>}}}}'
 3. Monitor operator reconciliation
 4. Verify the change took effect in the running pod

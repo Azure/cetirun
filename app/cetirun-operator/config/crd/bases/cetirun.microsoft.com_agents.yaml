@@ -4,16 +4,16 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.21.0
-  name: openclawinstances.cetirun.microsoft.com
+  name: agents.cetirun.microsoft.com
 spec:
   group: cetirun.microsoft.com
   names:
-    kind: OpenClawInstance
-    listKind: OpenClawInstanceList
-    plural: openclawinstances
+    kind: Agent
+    listKind: AgentList
+    plural: agents
     shortNames:
-    - oci
-    singular: openclawinstance
+    - cagent
+    singular: agent
   scope: Cluster
   versions:
   - additionalPrinterColumns:
@@ -32,10 +32,10 @@ spec:
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
-    name: v1alpha1
+    name: v1beta1
     schema:
       openAPIV3Schema:
-        description: OpenClawInstance is the Schema for the openclawinstances API.
+        description: Agent is a cluster-scoped, long-lived agent environment.
         properties:
           apiVersion:
             description: |-
@@ -55,7 +55,7 @@ spec:
           metadata:
             type: object
           spec:
-            description: OpenClawInstanceSpec defines the desired state of OpenClawInstance.
+            description: AgentSpec defines the desired state of Agent.
             properties:
               agentType:
                 default: openclaw
@@ -68,12 +68,6 @@ spec:
                 description: |-
                   GatewayTokenSecretRef is the name of the Secret the operator will create (or use) for the OpenClaw gateway token.
                   The Secret is created in the instance namespace (cetirun-<alias>).
-                type: string
-              model:
-                description: |-
-                  Model is the GitHub Copilot model ID for this instance. When empty, the
-                  operator deployment's configured default model is used.
-                maxLength: 256
                 type: string
               helm:
                 description: Helm chart configuration overrides.
@@ -100,6 +94,12 @@ spec:
                       To upgrade an instance, update this field to the desired version.
                     type: string
                 type: object
+              model:
+                description: |-
+                  Model is the GitHub Copilot model ID for this instance. When empty, the
+                  operator deployment's configured default model is used.
+                maxLength: 256
+                type: string
               msteams:
                 description: |-
                   MSTeams configures Microsoft Teams bot integration for this instance.
@@ -189,7 +189,7 @@ spec:
                 type: object
               team:
                 description: |-
-                  Team is the name of the OpenClawTeam this instance belongs to.
+                  Team is the name of the Team this instance belongs to.
                   The operator merges team defaults (user context, AI model, skills) into
                   the instance configuration. Per-instance fields take precedence.
                 type: string
@@ -223,7 +223,7 @@ spec:
             - user
             type: object
           status:
-            description: OpenClawInstanceStatus defines the observed state of OpenClawInstance.
+            description: AgentStatus defines the observed state of Agent.
             properties:
               accessUrl:
                 description: |-

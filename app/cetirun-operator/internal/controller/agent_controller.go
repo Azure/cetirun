@@ -30,22 +30,22 @@ import (
 	"github.com/go-logr/logr"
 	istiov1beta1 "istio.io/client-go/pkg/apis/networking/v1beta1"
 
-	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	cetirunv1beta1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1beta1"
 )
 
-// OpenClawInstanceReconciler reconciles OpenClawInstance objects.
+// AgentReconciler reconciles Agent objects.
 //
-// +kubebuilder:rbac:groups=cetirun.microsoft.com,resources=openclawinstances,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=cetirun.microsoft.com,resources=openclawinstances/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=cetirun.microsoft.com,resources=openclawinstances/finalizers,verbs=update
-// +kubebuilder:rbac:groups=cetirun.microsoft.com,resources=openclawteams,verbs=get;list;watch
-// +kubebuilder:rbac:groups=cetirun.microsoft.com,resources=openclawteams/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=cetirun.microsoft.com,resources=agents,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=cetirun.microsoft.com,resources=agents/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=cetirun.microsoft.com,resources=agents/finalizers,verbs=update
+// +kubebuilder:rbac:groups=cetirun.microsoft.com,resources=teams,verbs=get;list;watch
+// +kubebuilder:rbac:groups=cetirun.microsoft.com,resources=teams/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups=networking.istio.io,resources=virtualservices;sidecars,verbs=get;list;watch;create;update;patch;delete
-type OpenClawInstanceReconciler struct {
+type AgentReconciler struct {
 	client.Client
 	Scheme               *runtime.Scheme
 	EventRecorder        record.EventRecorder
@@ -74,19 +74,19 @@ type OpenClawInstanceReconciler struct {
 }
 
 // SetupWithManager registers the reconciler with the controller manager.
-// instanceTeamIndex is the field index used to look up OpenClawInstances by
+// instanceTeamIndex is the field index used to look up Agents by
 // spec.team without scanning the full cluster on every team event.
 const instanceTeamIndex = "spec.team"
 
 const gatewaySecretResourceVersionAnnotation = "cetirun.microsoft.com/gateway-secret-resource-version"
 
-func (r *OpenClawInstanceReconciler) SetupWithManager(mgr ctrl.Manager) error {
+func (r *AgentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if err := mgr.GetFieldIndexer().IndexField(
 		context.Background(),
-		&cetirunv1alpha1.OpenClawInstance{},
+		&cetirunv1beta1.Agent{},
 		instanceTeamIndex,
 		func(obj client.Object) []string {
-			inst, ok := obj.(*cetirunv1alpha1.OpenClawInstance)
+			inst, ok := obj.(*cetirunv1beta1.Agent)
 			if !ok || inst.Spec.Team == "" {
 				return nil
 			}
@@ -96,9 +96,9 @@ func (r *OpenClawInstanceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		return fmt.Errorf("index instance by spec.team: %w", err)
 	}
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&cetirunv1alpha1.OpenClawInstance{}).
+		For(&cetirunv1beta1.Agent{}).
 		Watches(
-			&cetirunv1alpha1.OpenClawTeam{},
+			&cetirunv1beta1.Team{},
 			handler.EnqueueRequestsFromMapFunc(r.enqueueInstancesForTeam),
 		).
 		WithOptions(crcontroller.Options{MaxConcurrentReconciles: 4}).
@@ -106,17 +106,17 @@ func (r *OpenClawInstanceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 }
 
 // Reconcile implements the reconciliation loop.
-func (r *OpenClawInstanceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx).WithValues("name", req.Name)
 
 	// 1. Fetch the CR.
-	instance := &cetirunv1alpha1.OpenClawInstance{}
+	instance := &cetirunv1beta1.Agent{}
 	if err := r.Get(ctx, req.NamespacedName, instance); err != nil {
 		if errors.IsNotFound(err) {
-			logger.V(1).Info("OpenClawInstance not found, skipping")
+			logger.V(1).Info("Agent not found, skipping")
 			return ctrl.Result{}, nil
 		}
-		return ctrl.Result{}, fmt.Errorf("get OpenClawInstance: %w", err)
+		return ctrl.Result{}, fmt.Errorf("get Agent: %w", err)
 	}
 
 	// 2. Handle deletion.
@@ -135,9 +135,9 @@ func (r *OpenClawInstanceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	}
 
 	// 3. Ensure finalizer.
-	if !controllerutil.ContainsFinalizer(instance, cetirunv1alpha1.Finalizer) {
+	if !controllerutil.ContainsFinalizer(instance, cetirunv1beta1.Finalizer) {
 		logger.V(1).Info("Adding finalizer", "alias", instance.Spec.User.Alias)
-		controllerutil.AddFinalizer(instance, cetirunv1alpha1.Finalizer)
+		controllerutil.AddFinalizer(instance, cetirunv1beta1.Finalizer)
 		if err := r.Update(ctx, instance); err != nil {
 			return ctrl.Result{}, fmt.Errorf("add finalizer: %w", err)
 		}
@@ -156,17 +156,17 @@ func (r *OpenClawInstanceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return ctrl.Result{Requeue: true}, nil
 	}
 
-	// 3b. Resolve OpenClawTeam if referenced.
-	var team *cetirunv1alpha1.OpenClawTeam
+	// 3b. Resolve Team if referenced.
+	var team *cetirunv1beta1.Team
 	if instance.Spec.Team != "" {
-		team = &cetirunv1alpha1.OpenClawTeam{}
+		team = &cetirunv1beta1.Team{}
 		if err := r.Get(ctx, types.NamespacedName{Name: instance.Spec.Team}, team); err != nil {
 			if errors.IsNotFound(err) {
 				return r.failWith(ctx, instance,
 					"TeamNotFound",
-					fmt.Sprintf("referenced OpenClawTeam %q not found", instance.Spec.Team))
+					fmt.Sprintf("referenced Team %q not found", instance.Spec.Team))
 			}
-			return ctrl.Result{}, fmt.Errorf("get OpenClawTeam %s: %w", instance.Spec.Team, err)
+			return ctrl.Result{}, fmt.Errorf("get Team %s: %w", instance.Spec.Team, err)
 		}
 	}
 
@@ -178,7 +178,7 @@ func (r *OpenClawInstanceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	// skip cache and trigger a full reconcile with Helm upgrade.
 	gwSecretHash := ""
 	gatewaySecretResourceVersion := ""
-	if instance.Status.Phase == cetirunv1alpha1.PhaseReady || instance.Status.Phase == cetirunv1alpha1.PhaseSuspended {
+	if instance.Status.Phase == cetirunv1beta1.PhaseReady || instance.Status.Phase == cetirunv1beta1.PhaseSuspended {
 		gwSecret := &corev1.Secret{}
 		gwSecretKey := types.NamespacedName{
 			Namespace: instanceNamespace(instance.Name),
@@ -215,14 +215,14 @@ func (r *OpenClawInstanceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 			// The canonical native UI route is controller-owned state. Keep it
 			// current even when the instance otherwise qualifies for the lightweight
 			// reconcile path after an operator upgrade.
-			if instance.Status.Phase == cetirunv1alpha1.PhaseReady {
+			if instance.Status.Phase == cetirunv1beta1.PhaseReady {
 				canonicalAccessURL := accessURLPathBased(instance.Name, r.DomainSuffix)
 				if instance.Status.AccessURL != canonicalAccessURL {
 					instance.Status.AccessURL = canonicalAccessURL
 					statusChanged = true
 				}
 			}
-			if instance.Status.Phase == cetirunv1alpha1.PhaseSuspended {
+			if instance.Status.Phase == cetirunv1beta1.PhaseSuspended {
 				vsName := virtualServiceName(instance.Name)
 				nsCheck := instanceNamespace(instance.Name)
 				vs := &istiov1beta1.VirtualService{}
@@ -235,14 +235,14 @@ func (r *OpenClawInstanceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 					logger.Error(err, "failed to check VirtualService for suspended instance", "alias", instance.Spec.User.Alias)
 				}
 			} else {
-				prevIngressReady := isConditionTrue(instance.Status.Conditions, cetirunv1alpha1.ConditionIngressReady)
+				prevIngressReady := isConditionTrue(instance.Status.Conditions, cetirunv1beta1.ConditionIngressReady)
 				if err := r.ensureVirtualService(ctx, instance); err != nil {
 					logger.Error(err, "VirtualService update failed (lightweight reconcile)", "alias", instance.Spec.User.Alias)
-					setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionIngressReady,
+					setCondition(&instance.Status.Conditions, cetirunv1beta1.ConditionIngressReady,
 						metav1.ConditionFalse, "VirtualServiceFailed", err.Error())
 					statusChanged = statusChanged || prevIngressReady
 				} else {
-					setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionIngressReady,
+					setCondition(&instance.Status.Conditions, cetirunv1beta1.ConditionIngressReady,
 						metav1.ConditionTrue, "VirtualServiceCreated", "Istio ingress configured")
 					statusChanged = statusChanged || !prevIngressReady
 				}
@@ -260,9 +260,9 @@ func (r *OpenClawInstanceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	}
 
 	// 5. Set phase to Provisioning if still Pending (or empty).
-	if instance.Status.Phase == "" || instance.Status.Phase == cetirunv1alpha1.PhasePending {
+	if instance.Status.Phase == "" || instance.Status.Phase == cetirunv1beta1.PhasePending {
 		logger.V(1).Info("Setting phase to Provisioning", "alias", instance.Spec.User.Alias, "currentPhase", instance.Status.Phase)
-		if err := r.setPhase(ctx, instance, cetirunv1alpha1.PhaseProvisioning); err != nil {
+		if err := r.setPhase(ctx, instance, cetirunv1beta1.PhaseProvisioning); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
@@ -273,17 +273,17 @@ func (r *OpenClawInstanceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	// will happen. We only set the phase in-memory here; it will be persisted
 	// by the next updateStatus call (after Helm install or on error), avoiding
 	// an extra status write that would trigger a redundant reconcile.
-	if instance.Status.Phase == cetirunv1alpha1.PhaseReady || instance.Status.Phase == cetirunv1alpha1.PhaseSuspended {
-		instance.Status.Phase = cetirunv1alpha1.PhaseProvisioning
+	if instance.Status.Phase == cetirunv1beta1.PhaseReady || instance.Status.Phase == cetirunv1beta1.PhaseSuspended {
+		instance.Status.Phase = cetirunv1beta1.PhaseProvisioning
 	}
 
 	alias := instance.Spec.User.Alias
 	ns := instanceNamespace(instance.Name)
 	releaseName := helmReleaseName(instance.Name)
 
-	logger.Info("Reconciling OpenClawInstance", "alias", alias, "generation", instance.Generation)
+	logger.Info("Reconciling Agent", "alias", alias, "generation", instance.Generation)
 	r.EventRecorder.Eventf(instance, corev1.EventTypeNormal, "InstanceCreating",
-		"Creating OpenClaw instance for user %s", alias)
+		"Creating agent for user %s", alias)
 
 	// 6. Ensure namespace.
 	logger.V(1).Info("Ensuring namespace", "namespace", ns)
@@ -303,7 +303,7 @@ func (r *OpenClawInstanceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	logger.V(1).Info("Ensuring gateway token secret", "alias", alias)
 	if err := r.ensureGatewayToken(ctx, instance); err != nil {
 		logger.Error(err, "failed to ensure gateway token", "alias", alias)
-		setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionReady,
+		setCondition(&instance.Status.Conditions, cetirunv1beta1.ConditionReady,
 			metav1.ConditionFalse, "GatewayTokenError", err.Error())
 		_ = r.updateStatus(ctx, instance)
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
@@ -315,16 +315,16 @@ func (r *OpenClawInstanceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	// to find TAILSCALE_AUTH_KEY via its secretKeyRef.
 	if err := r.ensureTailscaleAuthKey(ctx, instance); err != nil {
 		logger.Error(err, "failed to ensure Tailscale auth key", "alias", alias)
-		setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionTailscaleReady,
+		setCondition(&instance.Status.Conditions, cetirunv1beta1.ConditionTailscaleReady,
 			metav1.ConditionFalse, "TailscaleAuthKeyFailed", err.Error())
 		_ = r.updateStatus(ctx, instance)
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 	if instance.Spec.Tailscale != nil {
-		setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionTailscaleReady,
+		setCondition(&instance.Status.Conditions, cetirunv1beta1.ConditionTailscaleReady,
 			metav1.ConditionTrue, "TailscaleAuthKeyReady", "Tailscale auth key written to gateway Secret")
 	} else {
-		setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionTailscaleReady,
+		setCondition(&instance.Status.Conditions, cetirunv1beta1.ConditionTailscaleReady,
 			metav1.ConditionFalse, "TailscaleDisabled", "Tailscale is not configured")
 	}
 
@@ -367,7 +367,7 @@ func (r *OpenClawInstanceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 			gatewaySecretResourceVersion = gwSecret.ResourceVersion
 		}
 	}
-	alreadyDeployed := isConditionTrue(instance.Status.Conditions, cetirunv1alpha1.ConditionHelmDeployed) &&
+	alreadyDeployed := isConditionTrue(instance.Status.Conditions, cetirunv1beta1.ConditionHelmDeployed) &&
 		instance.Status.ObservedGeneration == instance.Generation &&
 		instance.Status.ObservedOperatorHash == r.configHash(instance, team, gwSecretHash, teamResourceVersion(team))
 	helmValues, err := buildHelmValues(instance, team, r.DomainSuffix, r.SkillsStorageAccount, r.CetiRunHelmValues, r.ChartRegistry, r.DefaultModel)
@@ -387,13 +387,13 @@ func (r *OpenClawInstanceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		logger.Info("Installing/upgrading Helm chart", "release", releaseName, "namespace", ns)
 		if err := r.HelmClient.InstallOrUpgrade(ns, releaseName, helmValues, instance.Spec.Helm.Version); err != nil {
 			logger.Error(err, "Helm install/upgrade failed", "release", releaseName)
-			setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionHelmDeployed,
+			setCondition(&instance.Status.Conditions, cetirunv1beta1.ConditionHelmDeployed,
 				metav1.ConditionFalse, "HelmInstallFailed", err.Error())
 			_ = r.updateStatus(ctx, instance)
 			return ctrl.Result{RequeueAfter: 60 * time.Second}, err
 		}
 		logger.Info("Helm chart installed/upgraded successfully", "release", releaseName)
-		setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionHelmDeployed,
+		setCondition(&instance.Status.Conditions, cetirunv1beta1.ConditionHelmDeployed,
 			metav1.ConditionTrue, "ChartInstalled", "Helm chart successfully installed")
 		// Record generation and operator hash immediately so that subsequent reconciles
 		// (e.g. while polling for pod readiness) can skip the Helm install.
@@ -431,10 +431,10 @@ func (r *OpenClawInstanceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 			}
 		}
 		if vsDeleteErr != nil {
-			setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionIngressReady,
+			setCondition(&instance.Status.Conditions, cetirunv1beta1.ConditionIngressReady,
 				metav1.ConditionFalse, "SuspendIngressRemovalFailed",
 				fmt.Sprintf("Failed to remove VirtualService %q: %v", vsName, vsDeleteErr))
-			setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionReady,
+			setCondition(&instance.Status.Conditions, cetirunv1beta1.ConditionReady,
 				metav1.ConditionFalse, "SuspendIngressRemovalFailed",
 				"Instance suspend waiting for ingress removal to succeed")
 			now := metav1.Now()
@@ -447,14 +447,14 @@ func (r *OpenClawInstanceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 			}
 			return ctrl.Result{RequeueAfter: 30 * time.Second}, vsDeleteErr
 		}
-		setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionIngressReady,
+		setCondition(&instance.Status.Conditions, cetirunv1beta1.ConditionIngressReady,
 			metav1.ConditionFalse, "Suspended", "Ingress removed — instance is suspended")
-		setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionPodReady,
+		setCondition(&instance.Status.Conditions, cetirunv1beta1.ConditionPodReady,
 			metav1.ConditionFalse, "Suspended", "Pod scaled to zero — instance is suspended")
-		setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionReady,
+		setCondition(&instance.Status.Conditions, cetirunv1beta1.ConditionReady,
 			metav1.ConditionFalse, "InstanceSuspended", "Instance is suspended")
 		now := metav1.Now()
-		instance.Status.Phase = cetirunv1alpha1.PhaseSuspended
+		instance.Status.Phase = cetirunv1beta1.PhaseSuspended
 		instance.Status.Namespace = ns
 		instance.Status.HelmReleaseName = releaseName
 		instance.Status.LastReconcileTime = &now
@@ -478,11 +478,11 @@ func (r *OpenClawInstanceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	logger.V(1).Info("Ensuring VirtualService", "alias", alias)
 	if err := r.ensureVirtualService(ctx, instance); err != nil {
 		logger.Error(err, "VirtualService creation/update failed (best-effort)", "alias", alias)
-		setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionIngressReady,
+		setCondition(&instance.Status.Conditions, cetirunv1beta1.ConditionIngressReady,
 			metav1.ConditionFalse, "VirtualServiceFailed", err.Error())
 	} else {
 		logger.V(1).Info("VirtualService ensured", "alias", alias)
-		setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionIngressReady,
+		setCondition(&instance.Status.Conditions, cetirunv1beta1.ConditionIngressReady,
 			metav1.ConditionTrue, "VirtualServiceCreated", "Istio ingress configured")
 		r.EventRecorder.Eventf(instance, corev1.EventTypeNormal, "IngressConfigured",
 			"Istio VirtualService created, instance accessible at %s", accessURLPathBased(instance.Name, r.DomainSuffix))
@@ -495,17 +495,17 @@ func (r *OpenClawInstanceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	if err := r.Get(ctx, stsKey, sts); err != nil {
 		if errors.IsNotFound(err) {
 			logger.Info("StatefulSet not found yet, requeueing", "name", stsName, "namespace", ns)
-			setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionPodReady,
+			setCondition(&instance.Status.Conditions, cetirunv1beta1.ConditionPodReady,
 				metav1.ConditionFalse, "StatefulSetNotFound", fmt.Sprintf("StatefulSet %s not found", stsName))
-			setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionReady,
+			setCondition(&instance.Status.Conditions, cetirunv1beta1.ConditionReady,
 				metav1.ConditionFalse, "PodNotReady", "StatefulSet not found")
 			_ = r.updateStatus(ctx, instance)
 			return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
 		}
 		logger.Error(err, "Failed to get StatefulSet", "name", stsName, "namespace", ns)
-		setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionPodReady,
+		setCondition(&instance.Status.Conditions, cetirunv1beta1.ConditionPodReady,
 			metav1.ConditionFalse, "StatefulSetGetFailed", fmt.Sprintf("Failed to get StatefulSet %s: %v", stsName, err))
-		setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionReady,
+		setCondition(&instance.Status.Conditions, cetirunv1beta1.ConditionReady,
 			metav1.ConditionFalse, "PodNotReady", "Failed to get StatefulSet")
 		_ = r.updateStatus(ctx, instance)
 		return ctrl.Result{}, err
@@ -526,35 +526,35 @@ func (r *OpenClawInstanceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 			"desiredReplicas", desiredReplicas,
 			"stsGeneration", sts.Generation,
 			"stsObservedGeneration", sts.Status.ObservedGeneration)
-		setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionPodReady,
+		setCondition(&instance.Status.Conditions, cetirunv1beta1.ConditionPodReady,
 			metav1.ConditionFalse, "PodNotReady",
 			fmt.Sprintf("Waiting for rollout (ready: %d, updated: %d, desired: %d)",
 				sts.Status.ReadyReplicas, sts.Status.UpdatedReplicas, desiredReplicas))
-		setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionReady,
+		setCondition(&instance.Status.Conditions, cetirunv1beta1.ConditionReady,
 			metav1.ConditionFalse, "PodNotReady", "StatefulSet rollout not complete")
-		instance.Status.Phase = cetirunv1alpha1.PhaseProvisioning
+		instance.Status.Phase = cetirunv1beta1.PhaseProvisioning
 		_ = r.updateStatus(ctx, instance)
 		return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
 	}
 
-	setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionPodReady,
+	setCondition(&instance.Status.Conditions, cetirunv1beta1.ConditionPodReady,
 		metav1.ConditionTrue, "PodReady", "StatefulSet pod is running and ready")
 
 	// 12. Mark Ready.
 	now := metav1.Now()
-	instance.Status.Phase = cetirunv1alpha1.PhaseReady
+	instance.Status.Phase = cetirunv1beta1.PhaseReady
 	instance.Status.AccessURL = accessURLPathBased(instance.Name, r.DomainSuffix)
 	instance.Status.Namespace = ns
 	instance.Status.HelmReleaseName = releaseName
 	instance.Status.LastReconcileTime = &now
-	setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionReady,
+	setCondition(&instance.Status.Conditions, cetirunv1beta1.ConditionReady,
 		metav1.ConditionTrue, "InstanceReady", "Instance is fully operational")
 	if err := r.updateStatus(ctx, instance); err != nil {
 		logger.Error(err, "Failed to update status to Ready", "alias", alias)
 		return ctrl.Result{}, err
 	}
 
-	r.EventRecorder.Event(instance, corev1.EventTypeNormal, "InstanceReady", "OpenClaw instance fully operational")
+	r.EventRecorder.Event(instance, corev1.EventTypeNormal, "InstanceReady", "Agent fully operational")
 	logger.Info("Reconciliation complete", "alias", alias, "accessURL", accessURLPathBased(instance.Name, r.DomainSuffix))
 	requeueAfter := 10 * time.Minute
 	if teamsRequeueAfter > 0 && teamsRequeueAfter < requeueAfter {
@@ -564,19 +564,19 @@ func (r *OpenClawInstanceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 }
 
 // handleDelete performs cleanup and removes the finalizer.
-func (r *OpenClawInstanceReconciler) handleDelete(ctx context.Context, instance *cetirunv1alpha1.OpenClawInstance) (ctrl.Result, error) {
+func (r *AgentReconciler) handleDelete(ctx context.Context, instance *cetirunv1beta1.Agent) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 	alias := instance.Spec.User.Alias
 
-	if !controllerutil.ContainsFinalizer(instance, cetirunv1alpha1.Finalizer) {
+	if !controllerutil.ContainsFinalizer(instance, cetirunv1beta1.Finalizer) {
 		return ctrl.Result{}, nil
 	}
 
-	logger.Info("Deleting OpenClawInstance", "alias", alias)
+	logger.Info("Deleting Agent", "alias", alias)
 	r.EventRecorder.Eventf(instance, corev1.EventTypeNormal, "InstanceDeleting",
 		"Starting cleanup for instance %s", alias)
 
-	if err := r.setPhase(ctx, instance, cetirunv1alpha1.PhaseDeleting); err != nil {
+	if err := r.setPhase(ctx, instance, cetirunv1beta1.PhaseDeleting); err != nil {
 		logger.Error(err, "failed to set phase Deleting")
 	}
 
@@ -633,7 +633,7 @@ func (r *OpenClawInstanceReconciler) handleDelete(ctx context.Context, instance 
 	}
 
 	// Remove finalizer.
-	controllerutil.RemoveFinalizer(instance, cetirunv1alpha1.Finalizer)
+	controllerutil.RemoveFinalizer(instance, cetirunv1beta1.Finalizer)
 	logger.V(1).Info("Removing finalizer", "alias", alias)
 	if err := r.Update(ctx, instance); err != nil {
 		if errors.IsNotFound(err) {
@@ -655,7 +655,7 @@ func (r *OpenClawInstanceReconciler) handleDelete(ctx context.Context, instance 
 // This replaces the equivalent cluster-wide rules that were previously in the ClusterRole,
 // scoping Secrets/ConfigMaps/Services/StatefulSets/PVCs/ServiceAccounts access to only
 // the namespaces this operator actually manages.
-func (r *OpenClawInstanceReconciler) ensureNamespacedRBAC(ctx context.Context, ns string) error {
+func (r *AgentReconciler) ensureNamespacedRBAC(ctx context.Context, ns string) error {
 	logger := log.FromContext(ctx)
 	const roleName = "cetirun-operator-ns-role"
 	const bindingName = "cetirun-operator-ns-rolebinding"
@@ -761,7 +761,7 @@ func (r *OpenClawInstanceReconciler) ensureNamespacedRBAC(ctx context.Context, n
 // If IstioRevision is explicitly set, it is returned directly. Otherwise, the
 // revision is auto-detected once from the AKS managed Istio control plane by
 // listing ConfigMaps in aks-istio-system with the istio.io/rev label.
-func (r *OpenClawInstanceReconciler) resolveIstioRevision(ctx context.Context) string {
+func (r *AgentReconciler) resolveIstioRevision(ctx context.Context) string {
 	if r.IstioRevision != "" {
 		return r.IstioRevision
 	}
@@ -830,7 +830,7 @@ func (r *OpenClawInstanceReconciler) resolveIstioRevision(ctx context.Context) s
 }
 
 // ensureNamespace creates the instance namespace if it does not already exist.
-func (r *OpenClawInstanceReconciler) ensureNamespace(ctx context.Context, ns, alias string) error {
+func (r *AgentReconciler) ensureNamespace(ctx context.Context, ns, alias string) error {
 	logger := log.FromContext(ctx)
 	desiredLabels := map[string]string{
 		"app.kubernetes.io/name":       "cetirun",
@@ -885,7 +885,7 @@ func (r *OpenClawInstanceReconciler) ensureNamespace(ctx context.Context, ns, al
 
 // ensureGatewayToken creates the gateway token Secret if it doesn't exist,
 // and ensures MSTEAMS credential keys are populated when spec.msteams is configured.
-func (r *OpenClawInstanceReconciler) ensureGatewayToken(ctx context.Context, instance *cetirunv1alpha1.OpenClawInstance) error {
+func (r *AgentReconciler) ensureGatewayToken(ctx context.Context, instance *cetirunv1beta1.Agent) error {
 	logger := log.FromContext(ctx)
 	alias := instance.Spec.User.Alias
 	ns := instanceNamespace(instance.Name)
@@ -927,7 +927,7 @@ func (r *OpenClawInstanceReconciler) ensureGatewayToken(ctx context.Context, ins
 			"CETIRUN_AUTH_KEY":       []byte(authKey),
 		},
 	}
-	if instance.Spec.AgentType == cetirunv1alpha1.AgentTypeHermes {
+	if instance.Spec.AgentType == cetirunv1beta1.AgentTypeHermes {
 		apiKey, err := generateRandomToken(32)
 		if err != nil {
 			return err
@@ -959,7 +959,7 @@ func (r *OpenClawInstanceReconciler) ensureGatewayToken(ctx context.Context, ins
 	return nil
 }
 
-func (r *OpenClawInstanceReconciler) ensureExistingGatewayToken(ctx context.Context, logger logr.Logger, instance *cetirunv1alpha1.OpenClawInstance, secret *corev1.Secret) error {
+func (r *AgentReconciler) ensureExistingGatewayToken(ctx context.Context, logger logr.Logger, instance *cetirunv1beta1.Agent, secret *corev1.Secret) error {
 	if err := r.ensureCetiRunAuthKey(ctx, logger, secret); err != nil {
 		return err
 	}
@@ -971,7 +971,7 @@ func (r *OpenClawInstanceReconciler) ensureExistingGatewayToken(ctx context.Cont
 
 // ensureCetiRunAuthKey adds the bearer key used by the in-pod cetirun-auth
 // service to operator-managed Secrets created before that key was introduced.
-func (r *OpenClawInstanceReconciler) ensureCetiRunAuthKey(ctx context.Context, logger logr.Logger, secret *corev1.Secret) error {
+func (r *AgentReconciler) ensureCetiRunAuthKey(ctx context.Context, logger logr.Logger, secret *corev1.Secret) error {
 	if secret.Data == nil {
 		secret.Data = map[string][]byte{}
 	}
@@ -992,8 +992,8 @@ func (r *OpenClawInstanceReconciler) ensureCetiRunAuthKey(ctx context.Context, l
 
 // ensureHermesSecretKeys patches the gateway-token Secret with API_SERVER_KEY and hermes.env
 // when a Hermes instance uses an operator-managed existingSecret.
-func (r *OpenClawInstanceReconciler) ensureHermesSecretKeys(ctx context.Context, logger logr.Logger, secret *corev1.Secret, instance *cetirunv1alpha1.OpenClawInstance) error {
-	if instance.Spec.AgentType != cetirunv1alpha1.AgentTypeHermes {
+func (r *AgentReconciler) ensureHermesSecretKeys(ctx context.Context, logger logr.Logger, secret *corev1.Secret, instance *cetirunv1beta1.Agent) error {
+	if instance.Spec.AgentType != cetirunv1beta1.AgentTypeHermes {
 		return nil
 	}
 	if secret.Data == nil {
@@ -1084,7 +1084,7 @@ func secretEnvValue(data map[string][]byte, key string) string {
 
 // ensureMSTeamsSecretKeys patches the gateway-token Secret with MSTEAMS_APP_ID and
 // MSTEAMS_TENANT_ID when Teams is enabled and the values differ or are missing.
-func (r *OpenClawInstanceReconciler) ensureMSTeamsSecretKeys(ctx context.Context, logger logr.Logger, secret *corev1.Secret, instance *cetirunv1alpha1.OpenClawInstance) error {
+func (r *AgentReconciler) ensureMSTeamsSecretKeys(ctx context.Context, logger logr.Logger, secret *corev1.Secret, instance *cetirunv1beta1.Agent) error {
 	if instance.Spec.MSTeams == nil || !instance.Spec.MSTeams.Enabled {
 		return nil
 	}
@@ -1112,7 +1112,7 @@ func (r *OpenClawInstanceReconciler) ensureMSTeamsSecretKeys(ctx context.Context
 }
 
 // ensureVirtualService creates or updates the Istio VirtualService for this instance.
-func (r *OpenClawInstanceReconciler) ensureVirtualService(ctx context.Context, instance *cetirunv1alpha1.OpenClawInstance) error {
+func (r *AgentReconciler) ensureVirtualService(ctx context.Context, instance *cetirunv1beta1.Agent) error {
 	logger := log.FromContext(ctx)
 	desired := buildVirtualService(instance, r.DomainSuffix, r.IstioGateway)
 	vsName := virtualServiceName(instance.Name)
@@ -1146,7 +1146,7 @@ func (r *OpenClawInstanceReconciler) ensureVirtualService(ctx context.Context, i
 
 // rejectReservedUIInstance removes the externally routable VirtualService for
 // an instance whose name conflicts with the native /ui/<instance>/ namespace.
-func (r *OpenClawInstanceReconciler) rejectReservedUIInstance(ctx context.Context, instance *cetirunv1alpha1.OpenClawInstance) (ctrl.Result, error) {
+func (r *AgentReconciler) rejectReservedUIInstance(ctx context.Context, instance *cetirunv1beta1.Agent) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 	vsName := virtualServiceName(instance.Name)
 	vs := &istiov1beta1.VirtualService{}
@@ -1170,7 +1170,7 @@ func (r *OpenClawInstanceReconciler) rejectReservedUIInstance(ctx context.Contex
 // The chart's Secret template is skipped when secrets.existingSecret is set, so
 // we must write TAILSCALE_AUTH_KEY directly into the gateway token Secret.
 // No-op if spec.Tailscale is nil.
-func (r *OpenClawInstanceReconciler) ensureTailscaleAuthKey(ctx context.Context, instance *cetirunv1alpha1.OpenClawInstance) error {
+func (r *AgentReconciler) ensureTailscaleAuthKey(ctx context.Context, instance *cetirunv1beta1.Agent) error {
 	ns := instanceNamespace(instance.Name)
 	gwSecretName := instance.Spec.GatewayTokenSecretRef
 
@@ -1183,10 +1183,10 @@ func (r *OpenClawInstanceReconciler) ensureTailscaleAuthKey(ctx context.Context,
 			}
 			return fmt.Errorf("get gateway secret %s/%s: %w", ns, gwSecretName, err)
 		}
-		if _, exists := gwSecret.Data[cetirunv1alpha1.TailscaleAuthKeyField]; exists {
-			delete(gwSecret.Data, cetirunv1alpha1.TailscaleAuthKeyField)
+		if _, exists := gwSecret.Data[cetirunv1beta1.TailscaleAuthKeyField]; exists {
+			delete(gwSecret.Data, cetirunv1beta1.TailscaleAuthKeyField)
 			if err := r.Update(ctx, gwSecret); err != nil {
-				return fmt.Errorf("remove %s from gateway secret: %w", cetirunv1alpha1.TailscaleAuthKeyField, err)
+				return fmt.Errorf("remove %s from gateway secret: %w", cetirunv1beta1.TailscaleAuthKeyField, err)
 			}
 		}
 		return nil
@@ -1198,9 +1198,9 @@ func (r *OpenClawInstanceReconciler) ensureTailscaleAuthKey(ctx context.Context,
 	if err := r.Get(ctx, types.NamespacedName{Namespace: ns, Name: tsSecretName}, tsSecret); err != nil {
 		return fmt.Errorf("get Tailscale auth key secret %s/%s: %w", ns, tsSecretName, err)
 	}
-	authKey, ok := tsSecret.Data[cetirunv1alpha1.TailscaleAuthKeyField]
+	authKey, ok := tsSecret.Data[cetirunv1beta1.TailscaleAuthKeyField]
 	if !ok || len(authKey) == 0 {
-		return fmt.Errorf("secret %s/%s missing or empty key %q", ns, tsSecretName, cetirunv1alpha1.TailscaleAuthKeyField)
+		return fmt.Errorf("secret %s/%s missing or empty key %q", ns, tsSecretName, cetirunv1beta1.TailscaleAuthKeyField)
 	}
 
 	// Patch the auth key into the gateway token Secret.
@@ -1211,23 +1211,23 @@ func (r *OpenClawInstanceReconciler) ensureTailscaleAuthKey(ctx context.Context,
 	if gwSecret.Data == nil {
 		gwSecret.Data = make(map[string][]byte)
 	}
-	if string(gwSecret.Data[cetirunv1alpha1.TailscaleAuthKeyField]) != string(authKey) {
-		gwSecret.Data[cetirunv1alpha1.TailscaleAuthKeyField] = authKey
+	if string(gwSecret.Data[cetirunv1beta1.TailscaleAuthKeyField]) != string(authKey) {
+		gwSecret.Data[cetirunv1beta1.TailscaleAuthKeyField] = authKey
 		if err := r.Update(ctx, gwSecret); err != nil {
-			return fmt.Errorf("patch %s into gateway secret: %w", cetirunv1alpha1.TailscaleAuthKeyField, err)
+			return fmt.Errorf("patch %s into gateway secret: %w", cetirunv1beta1.TailscaleAuthKeyField, err)
 		}
 	}
 	return nil
 }
 
 // setPhase updates only the Phase field in the CR status.
-func (r *OpenClawInstanceReconciler) setPhase(ctx context.Context, instance *cetirunv1alpha1.OpenClawInstance, phase string) error {
+func (r *AgentReconciler) setPhase(ctx context.Context, instance *cetirunv1beta1.Agent, phase string) error {
 	instance.Status.Phase = phase
 	return r.updateStatus(ctx, instance)
 }
 
 // updateStatus patches the CR status sub-resource.
-func (r *OpenClawInstanceReconciler) updateStatus(ctx context.Context, instance *cetirunv1alpha1.OpenClawInstance) error {
+func (r *AgentReconciler) updateStatus(ctx context.Context, instance *cetirunv1beta1.Agent) error {
 	if err := r.Status().Update(ctx, instance); err != nil {
 		return fmt.Errorf("update status: %w", err)
 	}
@@ -1239,23 +1239,23 @@ func (r *OpenClawInstanceReconciler) updateStatus(ctx context.Context, instance 
 // and instead use exponential back-off. For now this is acceptable (back-off is still retried).
 // If precise retry intervals are needed, change the return to (ctrl.Result{RequeueAfter: ...}, nil)
 // and log the error explicitly.
-func (r *OpenClawInstanceReconciler) failWith(ctx context.Context, instance *cetirunv1alpha1.OpenClawInstance, reason, message string) (ctrl.Result, error) {
-	instance.Status.Phase = cetirunv1alpha1.PhaseFailed
-	setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionReady,
+func (r *AgentReconciler) failWith(ctx context.Context, instance *cetirunv1beta1.Agent, reason, message string) (ctrl.Result, error) {
+	instance.Status.Phase = cetirunv1beta1.PhaseFailed
+	setCondition(&instance.Status.Conditions, cetirunv1beta1.ConditionReady,
 		metav1.ConditionFalse, reason, message)
 	_ = r.updateStatus(ctx, instance)
 	r.EventRecorder.Event(instance, corev1.EventTypeWarning, reason, message)
 	return ctrl.Result{RequeueAfter: 60 * time.Second}, fmt.Errorf("%s: %s", reason, message)
 }
 
-// enqueueInstancesForTeam maps an OpenClawTeam event to reconcile requests for
-// all OpenClawInstances that reference the team via spec.team.
-func (r *OpenClawInstanceReconciler) enqueueInstancesForTeam(ctx context.Context, obj client.Object) []reconcile.Request {
-	team, ok := obj.(*cetirunv1alpha1.OpenClawTeam)
+// enqueueInstancesForTeam maps an Team event to reconcile requests for
+// all Agents that reference the team via spec.team.
+func (r *AgentReconciler) enqueueInstancesForTeam(ctx context.Context, obj client.Object) []reconcile.Request {
+	team, ok := obj.(*cetirunv1beta1.Team)
 	if !ok {
 		return nil
 	}
-	list := &cetirunv1alpha1.OpenClawInstanceList{}
+	list := &cetirunv1beta1.AgentList{}
 	if err := r.List(ctx, list, client.MatchingFields{instanceTeamIndex: team.Name}); err != nil {
 		log.FromContext(ctx).Error(err, "failed to list instances for team watch", "team", team.Name)
 		return nil

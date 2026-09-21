@@ -38,9 +38,9 @@ export function InstanceListPage() {
           marginBottom: 24,
         }}
       >
-        <Title1>My Instances</Title1>
+        <Title1>My Agents</Title1>
         <Tooltip
-          content={`Limit of ${maxInstances} instance${maxInstances > 1 ? "s" : ""} reached`}
+          content={`Limit of ${maxInstances} agent${maxInstances > 1 ? "s" : ""} reached`}
           relationship="description"
           visible={atLimit ? undefined : false}
         >
@@ -50,16 +50,16 @@ export function InstanceListPage() {
             disabled={atLimit}
             onClick={() => setShowCreate(true)}
           >
-            New Instance
+            New Agent
           </Button>
         </Tooltip>
       </div>
 
-      {isLoading && <Spinner label="Loading instances..." />}
+      {isLoading && <Spinner label="Loading agents..." />}
 
       {error && (
         <MessageBar intent="error">
-          Failed to load instances: {(error as Error).message}
+          Failed to load agents: {(error as Error).message}
         </MessageBar>
       )}
 
@@ -77,7 +77,7 @@ export function InstanceListPage() {
 
       {instances && instances.length === 0 && !showCreate && (
         <MessageBar intent="info">
-          You don&apos;t have any instances yet. Create one to get started.
+          You don&apos;t have any agents yet. Create one to get started.
         </MessageBar>
       )}
 

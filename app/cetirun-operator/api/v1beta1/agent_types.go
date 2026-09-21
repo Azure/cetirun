@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-package v1alpha1
+package v1beta1
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -29,11 +29,8 @@ type SkillOverrideSpec struct {
 	Remove []string `json:"remove,omitempty"`
 }
 
-// TODO: rename OpenClawInstance → CetiRunInstance (CRD kind + Go types).
-// Requires CRD migration strategy for existing clusters (dual-CRD or delete+recreate).
-
-// OpenClawInstanceSpec defines the desired state of OpenClawInstance.
-type OpenClawInstanceSpec struct {
+// AgentSpec defines the desired state of Agent.
+type AgentSpec struct {
 	// AgentType selects the AI agent framework for this instance.
 	// +kubebuilder:validation:Enum=openclaw;hermes
 	// +kubebuilder:default=openclaw
@@ -44,7 +41,7 @@ type OpenClawInstanceSpec struct {
 	// +kubebuilder:validation:Required
 	User UserSpec `json:"user"`
 
-	// Team is the name of the OpenClawTeam this instance belongs to.
+	// Team is the name of the Team this instance belongs to.
 	// The operator merges team defaults (user context, AI model, skills) into
 	// the instance configuration. Per-instance fields take precedence.
 	// +optional
@@ -150,8 +147,8 @@ type HelmSpec struct {
 	Values map[string]runtime.RawExtension `json:"values,omitempty"`
 }
 
-// OpenClawInstanceStatus defines the observed state of OpenClawInstance.
-type OpenClawInstanceStatus struct {
+// AgentStatus defines the observed state of Agent.
+type AgentStatus struct {
 	// Conditions contains the latest available observations of the instance's state.
 	// +optional
 	// +listType=map
@@ -234,33 +231,33 @@ const Finalizer = "cetirun.microsoft.com/finalizer"
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:scope=Cluster,shortName=oci
+// +kubebuilder:resource:path=agents,scope=Cluster,shortName=cagent,singular=agent
 // +kubebuilder:printcolumn:name="Alias",type=string,JSONPath=`.spec.user.alias`
 // +kubebuilder:printcolumn:name="Agent",type=string,JSONPath=`.spec.agentType`
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
 // +kubebuilder:printcolumn:name="AccessURL",type=string,JSONPath=`.status.accessUrl`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
-// OpenClawInstance is the Schema for the openclawinstances API.
-type OpenClawInstance struct {
+// Agent is a cluster-scoped, long-lived agent environment.
+type Agent struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec   OpenClawInstanceSpec   `json:"spec,omitempty"`
-	Status OpenClawInstanceStatus `json:"status,omitempty"`
+	Spec   AgentSpec   `json:"spec,omitempty"`
+	Status AgentStatus `json:"status,omitempty"`
 }
 
 // +kubebuilder:object:root=true
 
-// OpenClawInstanceList contains a list of OpenClawInstance.
-type OpenClawInstanceList struct {
+// AgentList contains a list of Agent.
+type AgentList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
-	Items           []OpenClawInstance `json:"items"`
+	Items           []Agent `json:"items"`
 }
 
 func init() {
-	SchemeBuilder.Register(&OpenClawInstance{}, &OpenClawInstanceList{})
+	SchemeBuilder.Register(&Agent{}, &AgentList{})
 }
 
 // MSTeamsSpec configures Microsoft Teams bot integration.

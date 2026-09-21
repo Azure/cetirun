@@ -6,10 +6,10 @@ metadata:
     {{- include "cetirun-portal.labels" . | nindent 4 }}
 rules:
   - apiGroups: ["cetirun.microsoft.com"]
-    resources: ["openclawinstances"]
+    resources: ["agents"]
     verbs: ["get", "list", "create", "update", "patch", "delete"]
   - apiGroups: ["cetirun.microsoft.com"]
-    resources: ["openclawteams"]
+    resources: ["teams"]
     verbs: ["get", "list", "create", "update", "patch", "delete"]
   - apiGroups: [""]
     resources: ["secrets"]

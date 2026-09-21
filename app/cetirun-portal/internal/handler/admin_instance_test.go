@@ -11,35 +11,35 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	cetirunv1beta1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1beta1"
 	"github.com/Azure/CetiRun/app/cetirun-portal/internal/kube"
 )
 
 func TestAdminInstance_ListAll(t *testing.T) {
 	c := newFakeClient(
-		&cetirunv1alpha1.OpenClawInstance{
+		&cetirunv1beta1.Agent{
 			ObjectMeta: metav1.ObjectMeta{Name: "alice"},
-			Spec: cetirunv1alpha1.OpenClawInstanceSpec{
+			Spec: cetirunv1beta1.AgentSpec{
 				AgentType: "openclaw",
 				Team:      "aks",
-				User: cetirunv1alpha1.UserSpec{
+				User: cetirunv1beta1.UserSpec{
 					Alias: "alice", DisplayName: "Alice", Email: "alice@example.com",
 				},
 			},
-			Status: cetirunv1alpha1.OpenClawInstanceStatus{
+			Status: cetirunv1beta1.AgentStatus{
 				Phase: "Ready",
 				Conditions: []metav1.Condition{
 					{Type: "Ready", Status: "True"},
 				},
 			},
 		},
-		&cetirunv1alpha1.OpenClawInstance{
+		&cetirunv1beta1.Agent{
 			ObjectMeta: metav1.ObjectMeta{Name: "bob"},
-			Spec: cetirunv1alpha1.OpenClawInstanceSpec{
+			Spec: cetirunv1beta1.AgentSpec{
 				AgentType: "openclaw",
-				User:      cetirunv1alpha1.UserSpec{Alias: "bob", Team: "legacy"},
+				User:      cetirunv1beta1.UserSpec{Alias: "bob", Team: "legacy"},
 			},
-			Status: cetirunv1alpha1.OpenClawInstanceStatus{Phase: "Pending"},
+			Status: cetirunv1beta1.AgentStatus{Phase: "Pending"},
 		},
 	)
 	h := &AdminInstanceHandler{Kube: kube.NewClient(c)}

@@ -319,7 +319,7 @@ migrate_openclaw_home() {
 }
 
 # Sync TEAM.md from ConfigMap on every start. Overwrites the PVC copy so that
-# OpenClawTeam edits propagate to running instances. When the ConfigMap source
+# Team edits propagate to running instances. When the ConfigMap source
 # is missing or empty (no team / cleared team), remove the PVC TEAM.md to avoid
 # stale team context.
 sync_team_md() {

@@ -14,7 +14,7 @@ import (
 	istioapiv1beta1 "istio.io/api/networking/v1beta1"
 	istiov1beta1 "istio.io/client-go/pkg/apis/networking/v1beta1"
 
-	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	cetirunv1beta1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1beta1"
 )
 
 // TestOperatorConfigHash_Uniqueness verifies that different config combinations produce different hashes.
@@ -54,7 +54,7 @@ func TestOperatorConfigHash_Deterministic(t *testing.T) {
 }
 
 func TestConfigHash_IncludesDefaultModelOnlyWhenRendered(t *testing.T) {
-	reconciler := &OpenClawInstanceReconciler{DefaultModel: "gpt-6-astra"}
+	reconciler := &AgentReconciler{DefaultModel: "gpt-6-astra"}
 	instance := newTestInstance("alice", "Alice", "", "gateway-token")
 
 	first := reconciler.configHash(instance, nil, "secret", "")
@@ -81,18 +81,18 @@ func TestConfigHash_IncludesDefaultModelOnlyWhenRendered(t *testing.T) {
 	}
 }
 
-// newTestInstance returns a minimal OpenClawInstance for use in tests.
-func newTestInstance(alias, displayName, team, gatewaySecret string) *cetirunv1alpha1.OpenClawInstance {
-	return &cetirunv1alpha1.OpenClawInstance{
+// newTestInstance returns a minimal Agent for use in tests.
+func newTestInstance(alias, displayName, team, gatewaySecret string) *cetirunv1beta1.Agent {
+	return &cetirunv1beta1.Agent{
 		ObjectMeta: metav1.ObjectMeta{Name: alias},
-		Spec: cetirunv1alpha1.OpenClawInstanceSpec{
-			User: cetirunv1alpha1.UserSpec{
+		Spec: cetirunv1beta1.AgentSpec{
+			User: cetirunv1beta1.UserSpec{
 				Alias:       alias,
 				DisplayName: displayName,
 				Team:        team,
 			},
 			GatewayTokenSecretRef: gatewaySecret,
-			Helm:                  cetirunv1alpha1.HelmSpec{Values: map[string]runtime.RawExtension{}},
+			Helm:                  cetirunv1beta1.HelmSpec{Values: map[string]runtime.RawExtension{}},
 		},
 	}
 }
@@ -138,13 +138,13 @@ func TestBuildHelmValues_NonCopilotProviderPreservesHelmModel(t *testing.T) {
 
 func TestBuildHelmValues_AgentType(t *testing.T) {
 	instance := newTestInstance("alice", "Alice Smith", "aks-core", "gateway-token")
-	instance.Spec.AgentType = cetirunv1alpha1.AgentTypeHermes
+	instance.Spec.AgentType = cetirunv1beta1.AgentTypeHermes
 	values, err := buildHelmValues(instance, nil, "example.com", "", nil, "")
 	if err != nil {
 		t.Fatalf("buildHelmValues error: %v", err)
 	}
-	if got := values["agentType"]; got != cetirunv1alpha1.AgentTypeHermes {
-		t.Errorf("agentType = %q, want %q", got, cetirunv1alpha1.AgentTypeHermes)
+	if got := values["agentType"]; got != cetirunv1beta1.AgentTypeHermes {
+		t.Errorf("agentType = %q, want %q", got, cetirunv1beta1.AgentTypeHermes)
 	}
 }
 
@@ -170,7 +170,7 @@ func TestBuildHelmValues_OpenClawControlUIBasePath(t *testing.T) {
 
 func TestBuildHelmValues_HermesDoesNotSetOpenClawControlUIBasePath(t *testing.T) {
 	instance := newTestInstance("alice", "Alice Smith", "aks-core", "gateway-token")
-	instance.Spec.AgentType = cetirunv1alpha1.AgentTypeHermes
+	instance.Spec.AgentType = cetirunv1beta1.AgentTypeHermes
 
 	values, err := buildHelmValues(instance, nil, "example.com", "", nil, "")
 	if err != nil {
@@ -268,7 +268,7 @@ func TestIsConditionTrue(t *testing.T) {
 // tailscaleAuthKey into Helm values.
 func TestBuildHelmValues_NoTailscaleInHelmValues(t *testing.T) {
 	instance := newTestInstance("alice", "Alice Smith", "aks-core", "gateway-token")
-	instance.Spec.Tailscale = &cetirunv1alpha1.TailscaleSpec{
+	instance.Spec.Tailscale = &cetirunv1beta1.TailscaleSpec{
 		AuthKeySecretRef: "tailscale-secret",
 	}
 
@@ -359,7 +359,7 @@ func TestBuildHelmValues_NetworkPolicyIstioNamespaces(t *testing.T) {
 // tailscale.serve=true is injected into the Helm values.
 func TestBuildHelmValues_TailscaleServeEnabled(t *testing.T) {
 	instance := newTestInstance("alice", "Alice Smith", "aks-core", "gateway-token")
-	instance.Spec.Tailscale = &cetirunv1alpha1.TailscaleSpec{
+	instance.Spec.Tailscale = &cetirunv1beta1.TailscaleSpec{
 		AuthKeySecretRef: "tailscale-secret",
 	}
 
@@ -398,7 +398,7 @@ func TestBuildHelmValues_NoTailscaleWhenNotConfigured(t *testing.T) {
 // additional tailscale-related Helm values alongside the operator default.
 func TestBuildHelmValues_TailscaleServeOverriddenByHelmValues(t *testing.T) {
 	instance := newTestInstance("alice", "Alice Smith", "aks-core", "gateway-token")
-	instance.Spec.Tailscale = &cetirunv1alpha1.TailscaleSpec{
+	instance.Spec.Tailscale = &cetirunv1beta1.TailscaleSpec{
 		AuthKeySecretRef: "tailscale-secret",
 	}
 	// User override: set tailscale.hostname via helm.values
@@ -568,7 +568,7 @@ func TestBuildVirtualService_UsesConfiguredGateway(t *testing.T) {
 func TestBuildVirtualService_HermesRoutes(t *testing.T) {
 	instance := newTestInstance("alice", "Alice Smith", "aks-core", "gateway-token")
 	instance.Name = "alice"
-	instance.Spec.AgentType = cetirunv1alpha1.AgentTypeHermes
+	instance.Spec.AgentType = cetirunv1beta1.AgentTypeHermes
 
 	vs := buildVirtualService(instance, "example.com", DefaultIstioGateway)
 
@@ -918,7 +918,7 @@ func TestBuildHelmValues_ImageRepositoryNotSetWhenNoChartRegistry(t *testing.T) 
 // chartRegistry is set and Teams is enabled, image.repository is set without tagSuffix.
 func TestBuildHelmValues_ImageRepositoryMergedWithTeams(t *testing.T) {
 	instance := newTestInstance("bob", "Bob Builder", "aks-ai", "gateway-token")
-	instance.Spec.MSTeams = &cetirunv1alpha1.MSTeamsSpec{
+	instance.Spec.MSTeams = &cetirunv1beta1.MSTeamsSpec{
 		Enabled: true,
 		AppID:   "test-app-id",
 	}
@@ -945,7 +945,7 @@ func TestBuildHelmValues_ImageRepositoryMergedWithTeams(t *testing.T) {
 func TestBuildVirtualService_MSTeamsRoute(t *testing.T) {
 	instance := newTestInstance("bob", "Bob Builder", "aks-ai", "gateway-token")
 	instance.Name = "bob"
-	instance.Spec.MSTeams = &cetirunv1alpha1.MSTeamsSpec{
+	instance.Spec.MSTeams = &cetirunv1beta1.MSTeamsSpec{
 		Enabled:  true,
 		AppID:    "00000000-0000-0000-0000-000000000001",
 		TenantID: "00000000-0000-0000-0000-000000000002",
@@ -1000,7 +1000,7 @@ func TestBuildVirtualService_NoMSTeamsRoute(t *testing.T) {
 func TestBuildVirtualService_WebhookRouteIsPerInstance(t *testing.T) {
 	teams := newTestInstance("bob", "Bob Builder", "aks-ai", "gateway-token")
 	teams.Name = "bob"
-	teams.Spec.MSTeams = &cetirunv1alpha1.MSTeamsSpec{Enabled: true}
+	teams.Spec.MSTeams = &cetirunv1beta1.MSTeamsSpec{Enabled: true}
 
 	plain := newTestInstance("alice", "Alice Smith", "aks-core", "gateway-token")
 	plain.Name = "alice"
@@ -1037,7 +1037,7 @@ func TestBuildVirtualService_WebhookRouteIsPerInstance(t *testing.T) {
 
 func TestBuildHelmValues_MSTeamsManagedIdentity(t *testing.T) {
 	instance := newTestInstance("bob", "Bob Builder", "aks-ai", "gateway-token")
-	instance.Spec.MSTeams = &cetirunv1alpha1.MSTeamsSpec{
+	instance.Spec.MSTeams = &cetirunv1beta1.MSTeamsSpec{
 		Enabled:  true,
 		AppID:    "00000000-0000-0000-0000-000000000001",
 		TenantID: "00000000-0000-0000-0000-000000000002",
@@ -1075,7 +1075,7 @@ func TestBuildHelmValues_MSTeamsCertificate(t *testing.T) {
 	// Certificate auth type has been removed; this test now verifies that
 	// Teams with Enabled=true always uses managedIdentity.
 	instance := newTestInstance("carol", "Carol Cert", "aks-ai", "gateway-token")
-	instance.Spec.MSTeams = &cetirunv1alpha1.MSTeamsSpec{
+	instance.Spec.MSTeams = &cetirunv1beta1.MSTeamsSpec{
 		Enabled:  true,
 		AppID:    "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
 		TenantID: "00000000-0000-0000-0000-000000000002",
@@ -1104,7 +1104,7 @@ func TestBuildHelmValues_MSTeamsCertificate(t *testing.T) {
 // without a chartRegistry, no image override is injected (no tagSuffix, no repository).
 func TestBuildHelmValues_TeamsNoImageTagSuffix(t *testing.T) {
 	instance := newTestInstance("alice", "Alice Smith", "aks-core", "gateway-token")
-	instance.Spec.MSTeams = &cetirunv1alpha1.MSTeamsSpec{
+	instance.Spec.MSTeams = &cetirunv1beta1.MSTeamsSpec{
 		Enabled: true,
 		AppID:   "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
 	}
@@ -1141,7 +1141,7 @@ func TestBuildHelmValues_NoTeamsNoImageTag(t *testing.T) {
 // disabled to avoid deploying a ServiceAccount with an empty client-id annotation.
 func TestBuildHelmValues_TeamsEmptyAppID(t *testing.T) {
 	instance := newTestInstance("dave", "Dave Auto", "aks-ai", "gateway-token")
-	instance.Spec.MSTeams = &cetirunv1alpha1.MSTeamsSpec{
+	instance.Spec.MSTeams = &cetirunv1beta1.MSTeamsSpec{
 		Enabled: true,
 		AppID:   "", // auto-provisioned — not yet resolved
 	}
@@ -1168,11 +1168,11 @@ func TestBuildHelmValues_TeamsEmptyAppID(t *testing.T) {
 // appId is used for azureWorkloadIdentity.
 func TestBuildHelmValues_TeamsStatusAppID(t *testing.T) {
 	instance := newTestInstance("eve", "Eve Auto", "aks-ai", "gateway-token")
-	instance.Spec.MSTeams = &cetirunv1alpha1.MSTeamsSpec{
+	instance.Spec.MSTeams = &cetirunv1beta1.MSTeamsSpec{
 		Enabled: true,
 		AppID:   "", // empty in spec
 	}
-	instance.Status.MSTeams = &cetirunv1alpha1.MSTeamsStatus{
+	instance.Status.MSTeams = &cetirunv1beta1.MSTeamsStatus{
 		AppID: "resolved-app-id-from-status",
 	}
 
@@ -1239,12 +1239,12 @@ func TestAccessURLPathBased(t *testing.T) {
 }
 
 func TestBuildVirtualServicePathBased(t *testing.T) {
-	instance := &cetirunv1alpha1.OpenClawInstance{
+	instance := &cetirunv1beta1.Agent{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "alice-work",
 		},
-		Spec: cetirunv1alpha1.OpenClawInstanceSpec{
-			User: cetirunv1alpha1.UserSpec{Alias: "alice"},
+		Spec: cetirunv1beta1.AgentSpec{
+			User: cetirunv1beta1.UserSpec{Alias: "alice"},
 		},
 	}
 	domain := "cetirun.example.com"
@@ -1349,7 +1349,7 @@ func TestBuildHelmValues_NotSuspendedOmitsReplicaCount(t *testing.T) {
 func TestComputeEffectiveSkills(t *testing.T) {
 	cases := []struct {
 		name   string
-		team   *cetirunv1alpha1.OpenClawTeam
+		team   *cetirunv1beta1.Team
 		add    []string
 		remove []string
 		want   []string
@@ -1360,8 +1360,8 @@ func TestComputeEffectiveSkills(t *testing.T) {
 		},
 		{
 			name: "team skills only",
-			team: &cetirunv1alpha1.OpenClawTeam{
-				Spec: cetirunv1alpha1.OpenClawTeamSpec{Skills: []string{"npm:fetch", "@anthropic/fetch"}},
+			team: &cetirunv1beta1.Team{
+				Spec: cetirunv1beta1.TeamSpec{Skills: []string{"npm:fetch", "@anthropic/fetch"}},
 			},
 			want: []string{"@anthropic/fetch", "npm:fetch"},
 		},
@@ -1372,8 +1372,8 @@ func TestComputeEffectiveSkills(t *testing.T) {
 		},
 		{
 			name: "team + add + remove",
-			team: &cetirunv1alpha1.OpenClawTeam{
-				Spec: cetirunv1alpha1.OpenClawTeamSpec{Skills: []string{"@anthropic/fetch", "npm:extra"}},
+			team: &cetirunv1beta1.Team{
+				Spec: cetirunv1beta1.TeamSpec{Skills: []string{"@anthropic/fetch", "npm:extra"}},
 			},
 			add:    []string{"npm:matrix"},
 			remove: []string{"npm:extra"},
@@ -1429,17 +1429,17 @@ func TestBuildHelmValues_WithTeam(t *testing.T) {
 	inst.Spec.Helm.Values["secrets"] = runtime.RawExtension{
 		Raw: []byte(`{"model":"claude-sonnet-4.5"}`),
 	}
-	team := &cetirunv1alpha1.OpenClawTeam{
-		Spec: cetirunv1alpha1.OpenClawTeamSpec{
-			Defaults: cetirunv1alpha1.TeamDefaultsSpec{
+	team := &cetirunv1beta1.Team{
+		Spec: cetirunv1beta1.TeamSpec{
+			Defaults: cetirunv1beta1.TeamDefaultsSpec{
 				Provider: "anthropic",
 			},
-			MemberContext: cetirunv1alpha1.TeamContextSpec{
+			MemberContext: cetirunv1beta1.TeamContextSpec{
 				Role:        "Platform Engineer",
 				Description: []string{"Owns infra layer"},
 			},
 			Skills: []string{"npm:matrix", "@anthropic/fetch"},
-			SkillStorage: &cetirunv1alpha1.SkillStorageSpec{
+			SkillStorage: &cetirunv1beta1.SkillStorageSpec{
 				ResourceGroup:  "rg-platform",
 				StorageAccount: "platformskills",
 				ContainerName:  "skills",
@@ -1511,12 +1511,12 @@ func TestBuildHelmValues_NilTeam_Unchanged(t *testing.T) {
 func TestBuildHelmValues_SkillOverrides(t *testing.T) {
 	inst := newTestInstance("alice", "Alice", "", "gw")
 	inst.Spec.Team = "platform"
-	inst.Spec.SkillOverrides = cetirunv1alpha1.SkillOverrideSpec{
+	inst.Spec.SkillOverrides = cetirunv1beta1.SkillOverrideSpec{
 		Add:    []string{"npm:extra"},
 		Remove: []string{"npm:dropped"},
 	}
-	team := &cetirunv1alpha1.OpenClawTeam{
-		Spec: cetirunv1alpha1.OpenClawTeamSpec{
+	team := &cetirunv1beta1.Team{
+		Spec: cetirunv1beta1.TeamSpec{
 			Skills: []string{"npm:dropped", "@anthropic/fetch"},
 		},
 	}
@@ -1542,18 +1542,18 @@ func TestBuildHelmValues_SkillOverrides(t *testing.T) {
 // so the operator must not branch on agentType when applying team data.
 func TestBuildHelmValues_WithTeam_Hermes(t *testing.T) {
 	inst := newTestInstance("bob", "Bob", "", "gateway-token")
-	inst.Spec.AgentType = cetirunv1alpha1.AgentTypeHermes
-	team := &cetirunv1alpha1.OpenClawTeam{
-		Spec: cetirunv1alpha1.OpenClawTeamSpec{
-			Defaults: cetirunv1alpha1.TeamDefaultsSpec{
+	inst.Spec.AgentType = cetirunv1beta1.AgentTypeHermes
+	team := &cetirunv1beta1.Team{
+		Spec: cetirunv1beta1.TeamSpec{
+			Defaults: cetirunv1beta1.TeamDefaultsSpec{
 				Provider: "anthropic",
 			},
-			MemberContext: cetirunv1alpha1.TeamContextSpec{
+			MemberContext: cetirunv1beta1.TeamContextSpec{
 				Role:        "SRE",
 				Description: []string{"On-call rotation B", "Owns ingest pipeline"},
 			},
 			Skills: []string{"npm:matrix"},
-			SkillStorage: &cetirunv1alpha1.SkillStorageSpec{
+			SkillStorage: &cetirunv1beta1.SkillStorageSpec{
 				ResourceGroup:  "rg-shared",
 				StorageAccount: "sharedskills",
 				ContainerName:  "skills",
@@ -1567,7 +1567,7 @@ func TestBuildHelmValues_WithTeam_Hermes(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if vals["agentType"] != cetirunv1alpha1.AgentTypeHermes {
+	if vals["agentType"] != cetirunv1beta1.AgentTypeHermes {
 		t.Errorf("agentType = %v, want hermes", vals["agentType"])
 	}
 

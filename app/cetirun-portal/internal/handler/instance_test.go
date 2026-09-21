@@ -18,7 +18,7 @@ import (
 	"github.com/Azure/CetiRun/app/cetirun-portal/internal/config"
 	"github.com/Azure/CetiRun/app/cetirun-portal/internal/kube"
 
-	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	cetirunv1beta1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1beta1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -37,22 +37,22 @@ func withClaims(r *http.Request, alias, displayName, email string) *http.Request
 	return r.WithContext(ctx)
 }
 
-func sampleInstance() *cetirunv1alpha1.OpenClawInstance {
+func sampleInstance() *cetirunv1beta1.Agent {
 	reconcileTime := metav1.NewTime(time.Date(2024, 1, 15, 12, 0, 0, 0, time.UTC))
-	return &cetirunv1alpha1.OpenClawInstance{
+	return &cetirunv1beta1.Agent{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:              "alice",
 			CreationTimestamp: metav1.NewTime(time.Date(2024, 1, 15, 10, 0, 0, 0, time.UTC)),
 		},
-		Spec: cetirunv1alpha1.OpenClawInstanceSpec{
-			User: cetirunv1alpha1.UserSpec{
+		Spec: cetirunv1beta1.AgentSpec{
+			User: cetirunv1beta1.UserSpec{
 				Alias:       "alice",
 				DisplayName: "Alice Smith",
 				Team:        "aks",
 				Email:       "alice@microsoft.com",
 			},
 		},
-		Status: cetirunv1alpha1.OpenClawInstanceStatus{
+		Status: cetirunv1beta1.AgentStatus{
 			Phase:             "Ready",
 			Namespace:         "cetirun-alice",
 			AccessURL:         "https://alice.cetirun.example.com",
@@ -542,7 +542,7 @@ func TestCreateInstance_WithTailscaleAuthKey(t *testing.T) {
 	}
 
 	// Verify the CR has Tailscale spec set.
-	instance := &cetirunv1alpha1.OpenClawInstance{}
+	instance := &cetirunv1beta1.Agent{}
 	if err := fc.Get(context.Background(), client.ObjectKey{Name: "alice"}, instance); err != nil {
 		t.Fatalf("expected instance to exist: %v", err)
 	}
@@ -558,7 +558,7 @@ func TestToInstanceResponse_WithTailscaleAuthKey(t *testing.T) {
 	instance := sampleInstance()
 	instance.Status.Phase = "Ready"
 	instance.Spec.GatewayTokenSecretRef = "gateway-token"
-	instance.Spec.Tailscale = &cetirunv1alpha1.TailscaleSpec{
+	instance.Spec.Tailscale = &cetirunv1beta1.TailscaleSpec{
 		AuthKeySecretRef: "tailscale-auth",
 	}
 
@@ -595,7 +595,7 @@ func TestToInstanceResponse_WithTailscaleAuthKey(t *testing.T) {
 
 func TestToInstanceResponse_HermesAPIServerKey(t *testing.T) {
 	instance := sampleInstance()
-	instance.Spec.AgentType = cetirunv1alpha1.AgentTypeHermes
+	instance.Spec.AgentType = cetirunv1beta1.AgentTypeHermes
 	instance.Status.Phase = "Ready"
 	instance.Spec.GatewayTokenSecretRef = "gateway-token"
 
@@ -633,7 +633,7 @@ func TestToInstanceResponse_HermesAPIServerKey(t *testing.T) {
 // exposing API_SERVER_KEY, which OpenClaw does not use).
 func TestToInstanceResponse_OpenClawCetiRunAuthKey(t *testing.T) {
 	instance := sampleInstance()
-	instance.Spec.AgentType = cetirunv1alpha1.AgentTypeOpenClaw
+	instance.Spec.AgentType = cetirunv1beta1.AgentTypeOpenClaw
 	instance.Status.Phase = "Ready"
 	instance.Spec.GatewayTokenSecretRef = "gateway-token"
 
@@ -666,7 +666,7 @@ func TestToInstanceResponse_TailscaleSecretMissing(t *testing.T) {
 	instance := sampleInstance()
 	instance.Status.Phase = "Ready"
 	instance.Spec.GatewayTokenSecretRef = "gateway-token"
-	instance.Spec.Tailscale = &cetirunv1alpha1.TailscaleSpec{
+	instance.Spec.Tailscale = &cetirunv1beta1.TailscaleSpec{
 		AuthKeySecretRef: "tailscale-auth",
 	}
 
@@ -1069,7 +1069,7 @@ func TestUpdateInstance_WithTailscaleAuthKey(t *testing.T) {
 
 func TestUpdateInstance_DisableTailscale(t *testing.T) {
 	instance := sampleInstance()
-	instance.Spec.Tailscale = &cetirunv1alpha1.TailscaleSpec{AuthKeySecretRef: "tailscale-auth"}
+	instance.Spec.Tailscale = &cetirunv1beta1.TailscaleSpec{AuthKeySecretRef: "tailscale-auth"}
 	fc := newFakeClient(instance)
 	h := &InstanceHandler{
 		Kube: kube.NewClient(fc),
@@ -1089,7 +1089,7 @@ func TestUpdateInstance_DisableTailscale(t *testing.T) {
 	}
 
 	// Verify the CR no longer has Tailscale spec.
-	updated := &cetirunv1alpha1.OpenClawInstance{}
+	updated := &cetirunv1beta1.Agent{}
 	if err := fc.Get(context.Background(), client.ObjectKey{Name: "alice"}, updated); err != nil {
 		t.Fatalf("failed to get updated instance: %v", err)
 	}
@@ -1160,7 +1160,7 @@ func TestUpgradeInstance_Success(t *testing.T) {
 	}
 
 	// Verify the CR was updated.
-	updated := &cetirunv1alpha1.OpenClawInstance{}
+	updated := &cetirunv1beta1.Agent{}
 	if err := fc.Get(context.Background(), client.ObjectKey{Name: "alice"}, updated); err != nil {
 		t.Fatalf("failed to get updated instance: %v", err)
 	}
@@ -1443,8 +1443,8 @@ func TestDownloadTeamsApp_TeamsDisabled(t *testing.T) {
 
 func TestDownloadTeamsApp_TeamsNotReady(t *testing.T) {
 	instance := sampleInstance()
-	instance.Spec.MSTeams = &cetirunv1alpha1.MSTeamsSpec{Enabled: true}
-	instance.Status.MSTeams = &cetirunv1alpha1.MSTeamsStatus{
+	instance.Spec.MSTeams = &cetirunv1beta1.MSTeamsSpec{Enabled: true}
+	instance.Status.MSTeams = &cetirunv1beta1.MSTeamsStatus{
 		State:   "Provisioning",
 		Message: "Working on it",
 	}
@@ -1464,8 +1464,8 @@ func TestDownloadTeamsApp_TeamsNotReady(t *testing.T) {
 
 func TestDownloadTeamsApp_Success(t *testing.T) {
 	instance := sampleInstance()
-	instance.Spec.MSTeams = &cetirunv1alpha1.MSTeamsSpec{Enabled: true}
-	instance.Status.MSTeams = &cetirunv1alpha1.MSTeamsStatus{
+	instance.Spec.MSTeams = &cetirunv1beta1.MSTeamsSpec{Enabled: true}
+	instance.Status.MSTeams = &cetirunv1beta1.MSTeamsStatus{
 		State: "Ready",
 		AppID: "00000000-0000-0000-0000-000000000003",
 	}
@@ -1686,7 +1686,7 @@ func TestToInstanceResponse_TeamsStatusWithoutVersionGate(t *testing.T) {
 			instance.Status.Phase = "Pending" // avoid token fetch
 			instance.Spec.Helm.Version = tt.version
 			if tt.teams {
-				instance.Spec.MSTeams = &cetirunv1alpha1.MSTeamsSpec{Enabled: true}
+				instance.Spec.MSTeams = &cetirunv1beta1.MSTeamsSpec{Enabled: true}
 			}
 
 			h := &InstanceHandler{Kube: kube.NewClient(newFakeClient())}

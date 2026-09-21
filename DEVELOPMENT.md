@@ -195,14 +195,20 @@ See [the header helper commands](scripts/README.md#license-headers) for adding
 missing headers. Review authorship first: third-party and generated/scaffold
 exceptions in `scripts/license_headers.py` must retain their own notices.
 
-- Operator API definitions live in `app/cetirun-operator/api/v1alpha1/`.
+- Operator API definitions live in `app/cetirun-operator/api/v1beta1/`.
   `zz_generated.deepcopy.go` and the YAML under `config/crd/bases/` are generated
   from those types. Include regenerated artifacts with their source changes.
-- The operator's current `make manifests` invokes `controller-gen@latest` for
-  CRD and RBAC generation. It is not pinned, is not an offline check, and does
-  not regenerate deepcopy code. Agree on a specific generator version and
-  invocation with the reviewer for API changes; do not silently run an
-  unpinned generator or hand-edit generated output.
+- The operator requires `controller-gen v0.21.0`. Install it separately with
+  `go install sigs.k8s.io/controller-tools/cmd/controller-gen@v0.21.0` when
+  network setup is authorized, then run
+  `GOPROXY=off GOSUMDB=off GOTOOLCHAIN=local make -C app/cetirun-operator generate manifests`.
+  Set `CONTROLLER_GEN=/path/to/controller-gen` if it is not on PATH. These
+  targets check the version and regenerate deepcopy methods and CRD YAML,
+  including the Operator chart's CRD copies, without downloading tools.
+  `make -C app/cetirun-operator check-crds` checks the packaged copies.
+  Review generator upgrades separately. Operator,
+  Portal, and operations-agent RBAC remain source Helm/YAML files and must
+  name the matching API resources; do not hand-edit generated output.
 - Helm files under `templates/` are source templates. Rendered Kubernetes
   manifests are validation output, not replacements for those templates.
 - Keep `go.mod` and `go.sum` together when dependencies change. Keep the portal's

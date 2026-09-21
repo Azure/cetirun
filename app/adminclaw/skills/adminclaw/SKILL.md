@@ -38,10 +38,10 @@ The `adminclaw-admin` ClusterRole grants:
   - Namespaces: `create` (instance provisioning)
   - Events: `create`, `patch` (audit logging)
   - VirtualServices: `create`, `update`, `patch` (re-apply standard routing)
-  - OpenClawInstance CRs: `create`, `update`, `patch` — but **no `delete`**
+  - Agent CRs: `create`, `update`, `patch` — but **no `delete`**
 
 **Hard denials enforced by RBAC** (not just prompt constraints):
-- No `delete` on `openclawinstances` — instance deletion requires another principal
+- No `delete` on `agents` — instance deletion requires another principal
 - No write on RBAC resources — prevents privilege escalation
 - No write on admission webhooks, CRDs, certificates, scheduling, nodes, storage classes
 - No `delete` on namespaces, secrets, or any cluster infrastructure
@@ -50,7 +50,7 @@ The `adminclaw-admin` ClusterRole grants:
 
 | Component | Namespace | How AdminClaw Interacts |
 |-----------|-----------|------------------------|
-| CetiRun Operator | `cetirun-system` | Create `OpenClawInstance` CRs; operator reconciles them. Read operator logs/events for diagnostics. Never modify the operator directly. |
+| CetiRun Operator | `cetirun-system` | Create `Agent` CRs; operator reconciles them. Read operator logs/events for diagnostics. Never modify the operator directly. |
 | Portal | `cetirun-portal` | Monitor health. Can bypass portal for direct CR creation via kubectl. |
 | Istio Ingress | `aks-istio-ingress` | Validate VirtualService routing and gateway health. Never modify Istio infrastructure. |
 | Engineer Instances | `cetirun-<alias>` | Read access for monitoring; targeted write for remediation (pod restart, secret rotation, VirtualService re-apply). |
@@ -75,7 +75,7 @@ AdminClaw is deployed with `execRestriction.enabled: false`, allowing unrestrict
 These are hard constraints. Violating any of them causes real damage.
 Items marked 🔒 are enforced at the RBAC level — you will get a Forbidden error.
 
-- 🔒 **Delete `OpenClawInstance` CRs** — blocked at RBAC level
+- 🔒 **Delete `Agent` CRs** — blocked at RBAC level
 - 🔒 **Delete namespaces** — blocked at RBAC level; namespace lifecycle is managed by the operator
 - 🔒 **Modify RBAC resources** (Roles, ClusterRoles, Bindings) — blocked at RBAC level; prevents privilege escalation
 - 🔒 **Modify admission webhooks or CRDs** — blocked at RBAC level
@@ -167,7 +167,7 @@ Read references/remediation-playbooks.md
 
 ### CRD Fields & Platform Topology
 
-**Capabilities**: Construct and interpret `OpenClawInstance` CRs, understand namespace layout, service ports, and Kubernetes API permissions.
+**Capabilities**: Construct and interpret `Agent` CRs, understand namespace layout, service ports, and Kubernetes API permissions.
 
 **When to read**: Constructing or interpreting CRs, validating instance configuration, checking what API resources are available.
 

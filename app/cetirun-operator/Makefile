@@ -9,12 +9,14 @@ IMG ?= cetirun.azurecr.io/cetirun-operator:latest
 # Go build settings
 GOFLAGS ?=
 CGO_ENABLED ?= 0
+CONTROLLER_GEN_VERSION := v0.21.0
+CONTROLLER_GEN ?= controller-gen
 
-.PHONY: all build test vet fmt lint docker-build docker-push install-crd manifests sync-crds check-crds
+.PHONY: all build test vet fmt lint docker-build docker-push install-crd generate manifests check-controller-gen sync-crds check-crds
 
 CRD_SOURCE_DIR := config/crd/bases
 CRD_CHART_DIR := chart/crds
-CRD_FILES := cetirun.microsoft.com_openclawinstances.yaml cetirun.microsoft.com_openclawteams.yaml
+CRD_FILES := cetirun.microsoft.com_agents.yaml cetirun.microsoft.com_teams.yaml
 
 all: build
 
@@ -47,10 +49,13 @@ docker-build:
 docker-push:
 	docker push $(IMG)
 
-## Generate CRD YAML (requires controller-gen)
-manifests:
-	go run sigs.k8s.io/controller-tools/cmd/controller-gen@latest \
-		crd rbac:roleName=cetirun-operator-manager-role paths="./..." \
+## Generate DeepCopy methods from API types
+generate: check-controller-gen
+	$(CONTROLLER_GEN) object paths="./api/..."
+
+## Generate CRD YAML from API types; chart RBAC remains a source template
+manifests: check-controller-gen
+	$(CONTROLLER_GEN) crd paths="./api/..." \
 		output:crd:artifacts:config=$(CRD_SOURCE_DIR)
 	$(MAKE) sync-crds
 
@@ -61,9 +66,13 @@ sync-crds:
 
 ## Verify that the chart packages the generated CRDs without drift.
 check-crds:
-	@for file in $(CRD_FILES); do \
+	@set -e; for file in $(CRD_FILES); do \
 		diff -u $(CRD_SOURCE_DIR)/$$file $(CRD_CHART_DIR)/$$file; \
 	done
+
+check-controller-gen:
+	@test "$$($(CONTROLLER_GEN) --version)" = "Version: $(CONTROLLER_GEN_VERSION)" || \
+		{ echo "Install controller-gen $(CONTROLLER_GEN_VERSION) or set CONTROLLER_GEN to its path" >&2; exit 1; }
 
 ## Clean build artifacts
 clean:

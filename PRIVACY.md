@@ -33,7 +33,7 @@ reviewing them.
 Source: [portal claims](app/cetirun-portal/internal/auth/claims.go),
 [authentication middleware](app/cetirun-portal/internal/auth/middleware.go),
 [instance handlers](app/cetirun-portal/internal/handler/instance.go),
-[instance API types](app/cetirun-operator/api/v1alpha1/openclawinstance_types.go),
+[instance API types](app/cetirun-operator/api/v1beta1/agent_types.go),
 [agent configuration templates](app/cetirun-chart/templates/_agent-openclaw.tpl),
 and [Hermes configuration templates](app/cetirun-chart/templates/_agent-hermes.tpl).
 
@@ -67,7 +67,7 @@ Source: [chart defaults](app/cetirun-chart/values.yaml),
 [OpenClaw entrypoint](app/cetirun-chart/configs/entrypoint.sh),
 [Hermes entrypoint](app/cetirun-chart/configs/hermes-entrypoint.sh),
 [portal handlers](app/cetirun-portal/internal/handler/instance.go),
-[operator reconciliation](app/cetirun-operator/internal/controller/openclawinstance_controller.go),
+[operator reconciliation](app/cetirun-operator/internal/controller/agent_controller.go),
 and [Teams adapter](app/cetirun-chart/plugins/platforms/cetirun_teams/adapter.py).
 
 ### Infrastructure collection and traffic metadata
@@ -190,7 +190,7 @@ Source: [OAuth2 Proxy configuration](infra/istio/templates/ingress/oauth2-proxy-
 [theme storage](app/cetirun-portal/web/src/context/ThemeContext.tsx),
 [desktop process configuration](app/cetirun-chart/configs/desktop-entrypoint.sh),
 [volume mounts and retention](app/cetirun-chart/templates/statefulset.yaml),
-[instance deletion](app/cetirun-operator/internal/controller/openclawinstance_controller.go),
+[instance deletion](app/cetirun-operator/internal/controller/agent_controller.go),
 and [Log Analytics configuration](infra/cluster/modules/aks-cluster.bicep).
 
 ## Deployment operator checklist

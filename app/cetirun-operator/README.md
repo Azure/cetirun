@@ -1,12 +1,41 @@
 # cetirun-operator
 
-Kubernetes operator that manages the lifecycle of OpenClaw instances via the `OpenClawInstance` CRD (`cetirun.microsoft.com/v1alpha1`).
+Kubernetes operator that manages long-lived OpenClaw and Hermes agents via
+`Agent` and `Team` resources in `cetirun.microsoft.com/v1beta1`.
+
+## API contract
+
+| Kind | Resource | CRD name | Short name | Scope |
+| --- | --- | --- | --- | --- |
+| `Agent` | `agents` | `agents.cetirun.microsoft.com` | `cagent` | Cluster |
+| `Team` | `teams` | `teams.cetirun.microsoft.com` | `cteam` | Cluster |
+
+An Agent is a long-lived, user-owned environment, not a template or a single
+execution. A Team supplies common configuration and skills, not shared access
+to members' private data. Pod replacement does not create a new Agent.
+
+This API replaces `OpenClawInstance` and `OpenClawTeam` in
+`cetirun.microsoft.com/v1alpha1`. It is a breaking resource-name and API-version
+change, not an in-place conversion or an existing-cluster upgrade procedure.
+The operator and Portal register only the new API. Installing the new CRDs
+does not convert, adopt, or delete old objects.
+
+Do not delete legacy CRs or CRDs as a migration shortcut: the old finalizer
+may uninstall workloads and delete their namespaces, and deleting a CRD
+removes its stored objects. Existing environments need a separately reviewed
+data-retention and ownership-handover plan.
+
+This change preserves the existing spec/status fields, cluster scope, finalizer,
+namespace/release naming and PVC behavior. It does not implement the separate
+`spec.agent` configuration redesign; this source snapshot still uses
+`spec.agentType`. The Kubernetes CRD definition itself continues to use
+`apiextensions.k8s.io/v1`.
 
 ## Responsibilities
 
-- Watch for `OpenClawInstance` CR create/update/delete events
+- Watch for `Agent` CR create/update/delete events
 - Generate authentication tokens (Gateway Token) on CR creation
-- Deploy the OpenClaw Helm chart into per-engineer namespace (`cetirun-<alias>`)
+- Deploy the runtime Helm chart into per-agent namespaces (`cetirun-<name>`)
 - Configure Istio VirtualService for path-based routing (`https://<domain>/<instance>`)
 - Update CR status with access URL
 - Clean up resources via finalizers on CR deletion
@@ -15,7 +44,7 @@ Kubernetes operator that manages the lifecycle of OpenClaw instances via the `Op
 
 ```
 cetirun-operator/
-├── api/          # CRD type definitions (v1alpha1)
+├── api/v1beta1/  # Agent and Team API types and generated DeepCopy methods
 ├── cmd/          # Main entry point
 ├── internal/     # Reconciler logic
 ├── chart/        # Helm chart for deploying the operator to cetirun-system namespace
@@ -104,7 +133,7 @@ helm pull oci://cetirun.azurecr.io/helm/cetirun-operator --version 0.1.0
 
 ## Related TODO Items
 
-- #12: Define OpenClawInstance CRD
+- #12: Define Agent CRD
 - #13: Implement operator scaffold with Create reconciler
 - #14: Implement Update/Delete reconcilers with finalizers
 - #15: Auto-generate and inject credentials

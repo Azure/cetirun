@@ -14,7 +14,7 @@ import (
 
 	"github.com/Azure/CetiRun/app/cetirun-portal/internal/kube"
 
-	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	cetirunv1beta1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1beta1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -72,7 +72,7 @@ func TestToInstanceResponse_TailscaleLogging(t *testing.T) {
 				instance := sampleInstance()
 				instance.Status.Phase = phase
 				instance.Spec.GatewayTokenSecretRef = "gateway-token"
-				instance.Spec.Tailscale = &cetirunv1alpha1.TailscaleSpec{
+				instance.Spec.Tailscale = &cetirunv1beta1.TailscaleSpec{
 					AuthKeySecretRef: secretName,
 				}
 				gatewaySecret := &corev1.Secret{

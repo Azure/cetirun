@@ -7,7 +7,7 @@ import (
 	"context"
 	"testing"
 
-	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	cetirunv1beta1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1beta1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -21,7 +21,7 @@ import (
 func newScheme() *runtime.Scheme {
 	scheme := runtime.NewScheme()
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
-	utilruntime.Must(cetirunv1alpha1.AddToScheme(scheme))
+	utilruntime.Must(cetirunv1beta1.AddToScheme(scheme))
 	return scheme
 }
 
@@ -29,14 +29,14 @@ func newFakeClient(objs ...client.Object) client.Client {
 	return fake.NewClientBuilder().WithScheme(newScheme()).WithObjects(objs...).Build()
 }
 
-func sampleInstance() *cetirunv1alpha1.OpenClawInstance {
-	return &cetirunv1alpha1.OpenClawInstance{
+func sampleInstance() *cetirunv1beta1.Agent {
+	return &cetirunv1beta1.Agent{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "alice",
 		},
-		Spec: cetirunv1alpha1.OpenClawInstanceSpec{
+		Spec: cetirunv1beta1.AgentSpec{
 			GatewayTokenSecretRef: "gateway-token",
-			User: cetirunv1alpha1.UserSpec{
+			User: cetirunv1beta1.UserSpec{
 				Alias:       "alice",
 				DisplayName: "Alice Smith",
 				Team:        "aks-core",
@@ -387,7 +387,7 @@ func TestUpdateInstance_EnableTailscale(t *testing.T) {
 
 func TestUpdateInstance_DisableTailscale(t *testing.T) {
 	inst := sampleInstance()
-	inst.Spec.Tailscale = &cetirunv1alpha1.TailscaleSpec{AuthKeySecretRef: "tailscale-auth"}
+	inst.Spec.Tailscale = &cetirunv1beta1.TailscaleSpec{AuthKeySecretRef: "tailscale-auth"}
 	fc := newFakeClient(inst)
 	c := NewClient(fc)
 
@@ -454,7 +454,7 @@ func TestUpdateInstance_EnableTeams(t *testing.T) {
 
 func TestUpdateInstance_DisableTeams(t *testing.T) {
 	inst := sampleInstance()
-	inst.Spec.MSTeams = &cetirunv1alpha1.MSTeamsSpec{Enabled: true}
+	inst.Spec.MSTeams = &cetirunv1beta1.MSTeamsSpec{Enabled: true}
 	fc := newFakeClient(inst)
 	c := NewClient(fc)
 
@@ -657,10 +657,10 @@ func TestTeamCRUD(t *testing.T) {
 	ctx := context.Background()
 
 	// Create
-	created, err := c.CreateTeam(ctx, &cetirunv1alpha1.OpenClawTeam{
+	created, err := c.CreateTeam(ctx, &cetirunv1beta1.Team{
 		ObjectMeta: metav1.ObjectMeta{Name: "aks"},
-		Spec: cetirunv1alpha1.OpenClawTeamSpec{
-			Defaults: cetirunv1alpha1.TeamDefaultsSpec{Provider: "github_copilot"},
+		Spec: cetirunv1beta1.TeamSpec{
+			Defaults: cetirunv1beta1.TeamDefaultsSpec{Provider: "github_copilot"},
 		},
 	})
 	if err != nil {
@@ -689,8 +689,8 @@ func TestTeamCRUD(t *testing.T) {
 	}
 
 	// Update
-	updated, err := c.UpdateTeamSpec(ctx, "aks", cetirunv1alpha1.OpenClawTeamSpec{
-		MemberContext: cetirunv1alpha1.TeamContextSpec{Role: "AKS Engineer"},
+	updated, err := c.UpdateTeamSpec(ctx, "aks", cetirunv1beta1.TeamSpec{
+		MemberContext: cetirunv1beta1.TeamContextSpec{Role: "AKS Engineer"},
 	})
 	if err != nil {
 		t.Fatalf("UpdateTeamSpec: %v", err)

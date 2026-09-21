@@ -37,7 +37,7 @@ func TestResolveIstioRevision_AutoDetectsSingleRevision(t *testing.T) {
 		},
 	}
 
-	reconciler := &OpenClawInstanceReconciler{
+	reconciler := &AgentReconciler{
 		Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(cm).Build(),
 	}
 
@@ -70,7 +70,7 @@ func TestEnsureNamespace_AppliesIstioRevisionLabel(t *testing.T) {
 		},
 	}
 
-	reconciler := &OpenClawInstanceReconciler{
+	reconciler := &AgentReconciler{
 		Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(cm, existingNS).Build(),
 	}
 

@@ -43,11 +43,11 @@ kubectl create secret generic tailscale-auth -n cetirun-<alias> \
   --from-literal=TAILSCALE_AUTH_KEY="tskey-auth-kXXXX..."
 ```
 
-OpenClawInstance CR:
+Agent CR:
 
 ```yaml
-apiVersion: cetirun.microsoft.com/v1alpha1
-kind: OpenClawInstance
+apiVersion: cetirun.microsoft.com/v1beta1
+kind: Agent
 metadata:
   name: <alias>
 spec:

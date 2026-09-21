@@ -32,9 +32,9 @@ EXCLUSIONS = {
         "Helm-style scaffold; exact provenance not recorded; see NOTICE",
     "infra/istio/templates/_helpers.tpl":
         "Helm-style scaffold; exact provenance not recorded; see NOTICE",
-    "app/cetirun-operator/api/v1alpha1/groupversion_info.go":
+    "app/cetirun-operator/api/v1beta1/groupversion_info.go":
         "Kubebuilder-style scaffold; exact provenance not recorded; see NOTICE",
-    "app/cetirun-operator/api/v1alpha1/zz_generated.deepcopy.go":
+    "app/cetirun-operator/api/v1beta1/zz_generated.deepcopy.go":
         "controller-gen output; do not hand-edit generated code",
     "app/cetirun-portal/web/src/vite-env.d.ts":
         "Vite client type-reference scaffold",

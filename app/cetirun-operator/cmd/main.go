@@ -31,7 +31,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
-	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	cetirunv1beta1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1beta1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/controller"
 	helmclient "github.com/Azure/CetiRun/app/cetirun-operator/internal/helm"
 )
@@ -43,7 +43,7 @@ var (
 
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
-	utilruntime.Must(cetirunv1alpha1.AddToScheme(scheme))
+	utilruntime.Must(cetirunv1beta1.AddToScheme(scheme))
 	// Register Istio networking types for VirtualService management.
 	utilruntime.Must(istiov1beta1.AddToScheme(scheme))
 }
@@ -169,7 +169,7 @@ func main() {
 
 	helmClient := helmclient.NewClient(chartRef)
 
-	if err = (&controller.OpenClawInstanceReconciler{
+	if err = (&controller.AgentReconciler{
 		Client:               mgr.GetClient(),
 		Scheme:               mgr.GetScheme(),
 		EventRecorder:        mgr.GetEventRecorderFor("cetirun-operator"),
@@ -191,7 +191,7 @@ func main() {
 		AzureServiceTreeID:   azureServiceTreeID,
 		AzureOIDCIssuerURL:   azureOIDCIssuerURL,
 	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "OpenClawInstance")
+		setupLog.Error(err, "unable to create controller", "controller", "Agent")
 		os.Exit(1)
 	}
 

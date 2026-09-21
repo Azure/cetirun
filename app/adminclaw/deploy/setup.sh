@@ -2,13 +2,13 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 
-# setup.sh — Deploy AdminClaw via OpenClawInstance CR (operator-managed).
+# setup.sh — Deploy AdminClaw via Agent CR (operator-managed).
 #
 # This script handles pre-requisites that the operator cannot manage:
 #   1. Create the namespace (needed before SA and Secret can be created)
 #   2. Apply RBAC (BYO ServiceAccount + ClusterRole + ClusterRoleBinding)
 #   3. Create the gateway token Secret
-#   4. Apply the OpenClawInstance CR
+#   4. Apply the Agent CR
 #
 # The operator then takes over and:
 #   - Labels the namespace with Istio sidecar revision
@@ -146,10 +146,10 @@ kubectl create secret generic "${GATEWAY_SECRET_NAME}" \
 echo "Gateway Token Secret ${GATEWAY_SECRET_NAME} ready."
 
 #-----------------------------------------------------------------------
-# Step 4: Apply OpenClawInstance CR
+# Step 4: Apply Agent CR
 #-----------------------------------------------------------------------
 echo ""
-echo "--- Applying OpenClawInstance CR ---"
+echo "--- Applying Agent CR ---"
 export ENABLE_SKILLS
 export MODEL_API_BASE
 export WORKLOAD_IDENTITY_CLIENT_ID="${WORKLOAD_IDENTITY_CLIENT_ID:-}"
@@ -159,9 +159,9 @@ else
   export WORKLOAD_IDENTITY_ENABLED=false
 fi
 envsubst '${ENABLE_SKILLS} ${MODEL_API_BASE} ${WORKLOAD_IDENTITY_ENABLED} ${WORKLOAD_IDENTITY_CLIENT_ID}' \
-  < "${SCRIPT_DIR}/openclawinstance-admin.yaml" \
+  < "${SCRIPT_DIR}/agent-admin.yaml" \
   | kubectl apply -f -
-echo "OpenClawInstance 'admin' applied (skills=${ENABLE_SKILLS}, apiBase=${MODEL_API_BASE}, workloadIdentity=${WORKLOAD_IDENTITY_ENABLED})."
+echo "Agent 'admin' applied (skills=${ENABLE_SKILLS}, apiBase=${MODEL_API_BASE}, workloadIdentity=${WORKLOAD_IDENTITY_ENABLED})."
 
 #-----------------------------------------------------------------------
 # Done
@@ -172,7 +172,7 @@ echo " Pre-requisites applied. Operator will now reconcile."
 echo "==========================================="
 echo ""
 echo "Watch progress:"
-echo "  kubectl get openclawinstance admin -w"
+echo "  kubectl get agent admin -w"
 echo ""
 echo "Verify (after Ready):"
 echo "  kubectl get sts openclaw-admin-cetirun -n ${NAMESPACE}"

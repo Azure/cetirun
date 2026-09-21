@@ -37,7 +37,7 @@ CetiRun deploys on an AKS cluster. Each team member gets a dedicated namespace (
 | Component | Location | Purpose |
 | --- | --- | --- |
 | **Agent Runtime** | `app/cetirun-chart/` | OpenClaw or Hermes instance (StatefulSet) with persistent storage, Chrome, and pre-installed CLI tools |
-| **CetiRun Operator** | `app/cetirun-operator/` | Manages instance lifecycle via `OpenClawInstance` CRD — provisions namespaces, Helm releases, and ingress |
+| **CetiRun Operator** | `app/cetirun-operator/` | Manages instance lifecycle via `Agent` CRD — provisions namespaces, Helm releases, and ingress |
 | **CetiRun Portal** | `app/cetirun-portal/` | Admin dashboard (React + Go) for creating, managing, and monitoring instances |
 | **AdminClaw** | `app/adminclaw/` | Admin deployment tools and platform operations skill |
 | **Istio Auth** | `infra/istio/` | OAuth2 Proxy + Istio Gateway + EnvoyFilters for Azure AD authentication and per-engineer authorization |
@@ -89,13 +89,16 @@ REGISTRY=cetirun.azurecr.io CHART_VERSION=0.1.0 \
   deploy/deploy.sh
 ```
 
-### Create an Instance
+### Create an Agent
 
-Once the operator is running, create instances via the CRD:
+Once the operator is running, create long-lived agents via the CRD. The
+`cetirun.microsoft.com/v1beta1` API exposes `Agent` and `Team`; see the
+[API contract and existing-cluster limitations](app/cetirun-operator/README.md#api-contract)
+before using it with an older installation.
 
 ```yaml
-apiVersion: cetirun.microsoft.com/v1alpha1
-kind: OpenClawInstance
+apiVersion: cetirun.microsoft.com/v1beta1
+kind: Agent
 metadata:
   name: alice
 spec:

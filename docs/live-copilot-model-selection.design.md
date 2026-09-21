@@ -10,7 +10,7 @@ backward compatibility with the former image-embedded model list.
 - Let an instance owner select a GitHub Copilot model in the Portal.
 - Discover the choices from the instance owner's current GitHub Copilot
   entitlement instead of shipping a stale, global list in the agent image.
-- Persist the selection declaratively in the `OpenClawInstance` custom
+- Persist the selection declaratively in the `Agent` custom
   resource, so it survives pod recreation and is reconciled by the operator.
 - Permit a model ID to be entered manually when discovery is unavailable.
 - Provide a deployment-wide default for instances without an explicit choice.
@@ -67,7 +67,7 @@ Portal invalidates both authentication-status and model-catalog caches.
 
 ## API and persistence
 
-`OpenClawInstance.spec.model` is an optional GitHub Copilot model ID with a
+`Agent.spec.model` is an optional GitHub Copilot model ID with a
 maximum length of 256 characters. Portal create and update APIs expose it as
 `model` only when the effective provider is GitHub Copilot.
 

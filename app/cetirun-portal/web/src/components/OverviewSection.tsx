@@ -270,11 +270,11 @@ export function OverviewSection({ instance }: { instance: Instance }) {
       {instance.phase === "Suspended" && (
         <div style={{ display: "flex", alignItems: "center", gap: 8, padding: 12, borderRadius: tokens.borderRadiusMedium, backgroundColor: tokens.colorPaletteYellowBackground2, marginBottom: 8 }}>
           <Warning20Regular style={{ color: tokens.colorPaletteYellowForeground2, flexShrink: 0 }} />
-          <Text size={200}>This instance has been paused. Contact your administrator to restore access.</Text>
+          <Text size={200}>This agent has been paused. Contact your administrator to restore access.</Text>
         </div>
       )}
 
-      {instance.phase === "Provisioning" && <Spinner size="small" label="Provisioning your instance..." />}
+      {instance.phase === "Provisioning" && <Spinner size="small" label="Provisioning your agent..." />}
 
       {agentCredential && (
         <div style={{ marginTop: 8, marginBottom: 8, display: "flex", alignItems: "center", gap: 8 }}>
@@ -313,21 +313,21 @@ export function OverviewSection({ instance }: { instance: Instance }) {
               {upgradeMutation.isPending ? "Upgrading..." : "Upgrade to Latest"}
             </Button>
           )}
-          <Button appearance="secondary" icon={<Edit20Regular />} onClick={openEditDialog} disabled={updateMutation.isPending}>Edit Instance</Button>
+          <Button appearance="secondary" icon={<Edit20Regular />} onClick={openEditDialog} disabled={updateMutation.isPending}>Edit Agent</Button>
           <Button appearance="secondary" onClick={() => setConfirmOpen(true)} disabled={deleteMutation.isPending}>
-            {deleteMutation.isPending ? "Deleting..." : "Delete Instance"}
+            {deleteMutation.isPending ? "Deleting..." : "Delete Agent"}
           </Button>
         </div>
       )}
 
       {upgradeMutation.isError && (
         <Text size={200} style={{ color: tokens.colorStatusDangerForeground1 }}>
-          {upgradeMutation.error?.message || "Failed to upgrade instance"}
+          {upgradeMutation.error?.message || "Failed to upgrade agent"}
         </Text>
       )}
       {deleteMutation.isError && (
         <Text size={200} style={{ color: tokens.colorStatusDangerForeground1 }}>
-          {deleteMutation.error?.message || "Failed to delete instance"}
+          {deleteMutation.error?.message || "Failed to delete agent"}
         </Text>
       )}
 
@@ -335,8 +335,8 @@ export function OverviewSection({ instance }: { instance: Instance }) {
       <Dialog open={confirmOpen} onOpenChange={(_, data) => setConfirmOpen(data.open)}>
         <DialogSurface>
           <DialogBody>
-            <DialogTitle>Delete Instance</DialogTitle>
-            <DialogContent>Are you sure you want to delete this instance? This action cannot be undone.</DialogContent>
+            <DialogTitle>Delete Agent</DialogTitle>
+            <DialogContent>Are you sure you want to delete this agent? This action cannot be undone.</DialogContent>
             <DialogActions>
               <Button appearance="secondary" onClick={() => setConfirmOpen(false)} disabled={deleteMutation.isPending}>Cancel</Button>
               <Button appearance="primary" style={{ backgroundColor: tokens.colorStatusDangerBackground3 }} disabled={deleteMutation.isPending} onClick={() => { deleteMutation.mutate(undefined, { onSuccess: () => navigate("/") }); setConfirmOpen(false); }}>Delete</Button>
@@ -349,7 +349,7 @@ export function OverviewSection({ instance }: { instance: Instance }) {
       <Dialog open={editOpen} onOpenChange={(_, data) => setEditOpen(data.open)}>
         <DialogSurface>
           <DialogBody>
-            <DialogTitle>Edit Instance</DialogTitle>
+            <DialogTitle>Edit Agent</DialogTitle>
             <DialogContent>
               <div style={{ display: "flex", flexDirection: "column", gap: 16, paddingTop: 8 }}>
                 <Field label="Display Name">
@@ -379,7 +379,7 @@ export function OverviewSection({ instance }: { instance: Instance }) {
                 </div>
                 {updateMutation.isError && (
                   <Text style={{ color: tokens.colorStatusDangerForeground1 }}>
-                    {updateMutation.error?.message || "Failed to update instance"}
+                    {updateMutation.error?.message || "Failed to update agent"}
                   </Text>
                 )}
               </div>
@@ -451,7 +451,7 @@ export function OverviewSection({ instance }: { instance: Instance }) {
                   <Warning20Regular style={{ color: tokens.colorStatusWarningForeground1, flexShrink: 0, marginTop: 2 }} />
                   <div>
                     <Text weight="semibold" size={300}>2. Do not add to public teams</Text><br />
-                    <Text size={200}>This app is linked to your CetiRun instance which may contain your login sessions. Only install it in private chats or trusted groups.</Text>
+                    <Text size={200}>This app is linked to your CetiRun agent which may contain your login sessions. Only install it in private chats or trusted groups.</Text>
                   </div>
                 </div>
                 <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
