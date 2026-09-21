@@ -12,7 +12,7 @@ spec:
     listKind: AgentList
     plural: agents
     shortNames:
-    - cagent
+    - cra
     singular: agent
   scope: Cluster
   versions:

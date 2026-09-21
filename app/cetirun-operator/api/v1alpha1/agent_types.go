@@ -231,7 +231,7 @@ const Finalizer = "cetirun.microsoft.com/finalizer"
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:path=agents,scope=Cluster,shortName=cagent,singular=agent
+// +kubebuilder:resource:path=agents,scope=Cluster,shortName=cra,singular=agent
 // +kubebuilder:printcolumn:name="Alias",type=string,JSONPath=`.spec.user.alias`
 // +kubebuilder:printcolumn:name="Agent",type=string,JSONPath=`.spec.agentType`
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`

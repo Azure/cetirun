@@ -7,8 +7,8 @@ Kubernetes operator that manages long-lived OpenClaw and Hermes agents via
 
 | Kind | Resource | CRD name | Short name | Scope |
 | --- | --- | --- | --- | --- |
-| `Agent` | `agents` | `agents.cetirun.microsoft.com` | `cagent` | Cluster |
-| `Team` | `teams` | `teams.cetirun.microsoft.com` | `cteam` | Cluster |
+| `Agent` | `agents` | `agents.cetirun.microsoft.com` | `cra` | Cluster |
+| `Team` | `teams` | `teams.cetirun.microsoft.com` | `crt` | Cluster |
 
 An Agent is a long-lived, user-owned environment, not a template or a single
 execution. A Team supplies common configuration and skills, not shared access

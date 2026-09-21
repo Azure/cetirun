@@ -97,7 +97,7 @@ type TeamStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:path=teams,scope=Cluster,shortName=cteam,singular=team
+// +kubebuilder:resource:path=teams,scope=Cluster,shortName=crt,singular=team
 // +kubebuilder:printcolumn:name="Role",type=string,JSONPath=`.spec.memberContext.role`
 // +kubebuilder:printcolumn:name="Provider",type=string,JSONPath=`.spec.defaults.provider`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`

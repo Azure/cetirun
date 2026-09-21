@@ -12,7 +12,7 @@ spec:
     listKind: TeamList
     plural: teams
     shortNames:
-    - cteam
+    - crt
     singular: team
   scope: Cluster
   versions:

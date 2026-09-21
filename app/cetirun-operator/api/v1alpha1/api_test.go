@@ -112,8 +112,8 @@ func TestGeneratedCRDContract(t *testing.T) {
 		t.Fatalf("packaged CRD inventory: %v, err=%v; want exactly Agent and Team", chartFiles, err)
 	}
 	for _, tc := range []struct{ kind, plural, singular, short string }{
-		{"Agent", "agents", "agent", "cagent"},
-		{"Team", "teams", "team", "cteam"},
+		{"Agent", "agents", "agent", "cra"},
+		{"Team", "teams", "team", "crt"},
 	} {
 		t.Run(tc.kind, func(t *testing.T) {
 			name := tc.plural + ".cetirun.microsoft.com"
