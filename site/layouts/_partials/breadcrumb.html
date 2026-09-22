@@ -1,0 +1,18 @@
+<!--
+Copyright (c) Microsoft Corporation.
+Licensed under the MIT License.
+-->
+{{ $current := . }}
+{{ with partial "navigation-module.html" . }}
+  {{ $root := site.GetPage .page }}
+  <nav aria-label="Breadcrumb">
+    <ol class="breadcrumb">
+      {{ if eq $current $root }}
+        <li class="breadcrumb-item active" aria-current="page">{{ .title }}</li>
+      {{ else }}
+        <li class="breadcrumb-item"><a href="{{ $root.RelPermalink }}">{{ .title }}</a></li>
+        <li class="breadcrumb-item active" aria-current="page">{{ $current.LinkTitle }}</li>
+      {{ end }}
+    </ol>
+  </nav>
+{{ end }}

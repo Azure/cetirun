@@ -1,0 +1,115 @@
+---
+title: "Configuration and skills"
+description: "Understand team defaults, instance overrides, model selection, and shared skills."
+weight: 20
+---
+
+## Configuration order
+
+The operator builds Helm values in this order:
+
+1. Controller defaults, including the instance Secret, identity, home volume,
+   and AKS Istio namespaces.
+2. Deployment-wide `cetirun.helmValues` / `CETIRUN_HELM_VALUES`.
+3. Referenced `Team` provider, member context, and skills.
+4. Controller-derived integration settings and image repositories.
+5. Per-instance `spec.helm.values`.
+6. Enforced OpenClaw native UI base path and Copilot model selection.
+
+Nested maps merge; arrays replace rather than append. Arbitrary Helm overrides
+are a privileged configuration surface. Do not assume a team default enforces
+a security policy against instance overrides. The reconciler also adds the
+gateway Secret's resource version to pod annotations so credential changes can
+roll the workload.
+
+The CRD declares each top-level `spec.helm.values` entry as an
+object. Use map-shaped overrides such as `secrets`, `persistence`, or `skills`.
+Top-level scalars and arrays from a standalone values file are rejected by API
+admission, even though the controller can merge them internally. See the
+[CRD reference](../../reference/crds/).
+
+For GitHub Copilot, `spec.model` wins; otherwise the deployment’s default model
+is used. Other providers take their model from Helm values. See
+[model selection](../../guides/models/).
+
+## Teams
+
+An instance references a `Team` by `spec.team`. Teams can set:
+
+- The default provider.
+- Role and context rendered for the selected runtime.
+- Up to 20 default skill identifiers.
+- A shared Blob storage location for read-only skills.
+
+The team resource is distinct from **Microsoft Teams**, which is an optional
+messaging integration. A team reference does not verify organizational
+membership or grant shared access to another user's instance.
+
+## Runtime files and updates
+
+Chart configuration is merged into the persistent home during pod
+initialization, with chart-specified keys taking precedence over existing
+runtime configuration. Unspecified runtime keys can survive. This does not make
+every file continuously synchronized:
+
+| File | Update behavior |
+| --- | --- |
+| OpenClaw `.openclaw/openclaw.json` | Deep-merged from the ConfigMap at initialization |
+| OpenClaw `.openclaw/workspace/USER.md` | Seeded for a new home; an initialized home keeps its existing copy |
+| Hermes `.hermes/config.yaml` | Deep-merged from the ConfigMap at initialization |
+| Hermes `.hermes/memories/USER.md` | Seeded if missing on first initialization |
+| Hermes `.hermes/memories/TEAM.md` | Synchronized from rendered team context at every initialization; removed when context is empty |
+
+A team update can roll member pods, but it does not overwrite an existing
+OpenClaw `USER.md`. Inspect the runtime file to confirm that a context change
+has reached the agent.
+
+Sources: [OpenClaw initializer]({{< repo "app/cetirun-chart/configs/init-home.sh" >}})
+and [Hermes initializer]({{< repo "app/cetirun-chart/configs/hermes-init-home.sh" >}}).
+
+## Skills
+
+Skills are directories with a `SKILL.md` entry point. User workspace skills live
+on the persistent home; team-shared material can be mounted at
+`/home/vibe/.aks/skills` read-only. Runtime-specific configuration determines how
+the agent discovers and prioritizes these directories.
+
+The operator computes `(team skills ∪ add) − remove`, sorts the result, and
+deduplicates it. Removal wins when an identifier appears in both override
+lists. Each list is limited to 20 entries. `npm:` identifiers are passed to the
+chart's npm installer with the prefix removed. Other identifiers populate
+`skills.clawHub`; these entries are not installed.
+
+Npm packages are installed under `/home/vibe/.cetirun/skills/npm/`; the templates
+add those directories to OpenClaw's `skills.load.extraDirs` or Hermes's
+`skills.external_dirs`. The init container runs only when `skills.npm` is
+non-empty. It prunes unrequested package directories when it runs, but an empty
+list does not itself clean up packages already on the home volume. Similarly,
+an empty effective team list does not clear separately configured Helm skill
+lists. This mechanism is configuration, not a skill-denial policy.
+
+Runtime npm installation uses `skills.npmRegistry`, which defaults to
+`https://registry.npmjs.org/`. Override it with an approved reachable mirror
+when required by your environment.
+
+The OpenClaw Azure DevOps Git credential helper configures `dev.azure.com`.
+`openclaw.git.azureDevOps.enabled: false` skips setup without deleting existing
+configuration. Configure additional hosts in the instance's Git configuration;
+initialization preserves those entries.
+
+Team `skillStorage` enables a static PV/PVC against an existing Blob container;
+it does not create the Azure account or populate skills. Shared storage defaults
+are NFS, `azureblob-nfs-premium`, `100Gi`, and `/home/vibe/.aks/skills` unless
+overridden. Arrange the CSI driver, storage permissions, and network access.
+
+For shared storage, `skills.protocol`, `skills.secretName`, and
+`skills.mountOptions` become static PV settings. They cannot be changed in place
+by a Helm upgrade. Provision and verify replacement storage before retiring
+the original. See [storage operations](../../operations/storage/).
+
+Source: [Helm value builder]({{< repo "app/cetirun-operator/internal/controller/helpers.go" >}})
+and [chart values]({{< repo "app/cetirun-chart/values.yaml" >}}).
+Installation details: [npm initializer]({{< repo "app/cetirun-chart/configs/init-skills.sh" >}}),
+[OpenClaw templates]({{< repo "app/cetirun-chart/templates/_agent-openclaw.tpl" >}}),
+[Hermes templates]({{< repo "app/cetirun-chart/templates/_agent-hermes.tpl" >}}),
+and [shared PV]({{< repo "app/cetirun-chart/templates/shared-skills-pv.yaml" >}}).

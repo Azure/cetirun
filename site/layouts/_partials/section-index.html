@@ -1,0 +1,17 @@
+<!--
+Copyright (c) Microsoft Corporation.
+Licensed under the MIT License.
+-->
+{{ if and (not .Params.no_list) .Pages }}
+{{ $module := partial "navigation-module.html" . }}
+<div class="section-index">
+  {{ range .Pages.ByWeight }}
+  {{ if eq (partial "navigation-module.html" .).id $module.id }}
+  <section class="entry">
+    <h2><a href="{{ .RelPermalink }}">{{ .Title }}</a></h2>
+    <p>{{ .Description }}</p>
+  </section>
+  {{ end }}
+  {{ end }}
+</div>
+{{ end }}

@@ -1,0 +1,96 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+baseURL = "https://azure.github.io/cetirun/"
+title = "CetiRun"
+defaultContentLanguage = "en"
+defaultContentLanguageInSubdir = false
+disableKinds = ["taxonomy", "term", "RSS"]
+enableRobotsTXT = true
+
+[languages.en]
+  label = "English"
+  locale = "en-US"
+  contentDir = "content/en"
+
+[menu]
+  [[menu.main]]
+    identifier = "overview"
+    name = "Overview"
+    pageRef = "/docs/overview"
+    weight = 10
+  [[menu.main]]
+    identifier = "user-guide"
+    name = "User Guide"
+    pageRef = "/docs/user-guide"
+    weight = 20
+  [[menu.main]]
+    identifier = "operations"
+    name = "Operations"
+    pageRef = "/docs/operations"
+    weight = 30
+  [[menu.main]]
+    identifier = "reference"
+    name = "Reference"
+    pageRef = "/docs/reference"
+    weight = 40
+  [[menu.main]]
+    identifier = "contributing"
+    name = "Contributing"
+    pageRef = "/docs/contributing"
+    weight = 50
+  [[menu.main]]
+    identifier = "github"
+    name = "GitHub"
+    url = "https://github.com/Azure/cetirun"
+    weight = 90
+
+[markup]
+  [markup.highlight]
+    style = "github-dark"
+  [markup.goldmark.renderer]
+    unsafe = false
+
+[params]
+  description = "CetiRun is an open-source managed runtime for hosting AI agents and AI applications."
+  github_repo = "https://github.com/Azure/cetirun"
+  github_project_repo = "https://github.com/Azure/cetirun"
+  github_subdir = "site"
+  github_branch = "main"
+  copyright = "Microsoft"
+  offlineSearch = true
+  offlineSearchSummaryLength = 100
+  offlineSearchMaxResults = 12
+  disable_search = false
+  [params.ui]
+    navbar_logo = false
+    sidebar_menu_compact = true
+    sidebar_menu_foldable = true
+    sidebar_root_enabled = false
+    sidebar_search_disable = false
+    showLightDarkModeMenu = true
+    footer_about_enable = false
+    [params.ui.feedback]
+      enable = false
+
+[module]
+  proxy = ""
+  [module.hugoVersion]
+    extended = true
+    min = "0.164.0"
+  [[module.imports]]
+    path = "github.com/google/docsy/theme"
+  [[module.mounts]]
+    source = "content/en"
+    target = "content"
+  [[module.mounts]]
+    source = "assets"
+    target = "assets"
+  [[module.mounts]]
+    source = "../docs/logo.jpg"
+    target = "static/images/logo.jpg"
+  [[module.mounts]]
+    source = "node_modules/jquery/dist/jquery.min.js"
+    target = "assets/vendor/jquery.min.js"
+  [[module.mounts]]
+    source = "node_modules/lunr/lunr.min.js"
+    target = "assets/vendor/lunr.min.js"

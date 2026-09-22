@@ -1,0 +1,26 @@
+<!--
+Copyright (c) Microsoft Corporation.
+Licensed under the MIT License.
+-->
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>{{ if not .IsHome }}{{ .Title }} | {{ end }}{{ site.Title }}</title>
+<meta name="description" content="{{ .Description | default site.Params.description }}">
+<link rel="canonical" href="{{ .Permalink }}">
+{{ if hugo.IsServer }}<meta name="robots" content="noindex, nofollow">{{ end }}
+<script>
+  (() => {
+    let theme = "auto";
+    try { theme = localStorage.getItem("td-color-theme") || theme; } catch {}
+    if (theme === "auto") theme = matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+    document.documentElement.setAttribute("data-bs-theme", theme);
+  })();
+</script>
+{{ partial "favicons.html" . }}
+{{ partial "head-css.html" . }}
+{{ range slice "vendor/jquery.min.js" "vendor/lunr.min.js" }}
+  {{ with resources.Get . | fingerprint }}
+    <script src="{{ .RelPermalink }}" integrity="{{ .Data.Integrity }}" crossorigin="anonymous"></script>
+  {{ end }}
+{{ end }}

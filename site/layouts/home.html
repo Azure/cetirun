@@ -1,0 +1,75 @@
+{{ define "main" }}
+<!--
+Copyright (c) Microsoft Corporation.
+Licensed under the MIT License.
+-->
+<div class="cr-home">
+  <section class="cr-hero" aria-labelledby="hero-title">
+    <div class="cr-hero-copy">
+      <p class="cr-eyebrow">Open source · Kubernetes-native · Your infrastructure</p>
+      <h1 id="hero-title">Your agents.<br>Your <em>infrastructure.</em></h1>
+      <p class="cr-mission">{{ .Description }}</p>
+      <p class="cr-lead">Give engineers dedicated, persistent workspaces for software development, code review, incident investigation, and knowledge discovery.</p>
+      <div class="cr-actions">
+        <a class="cr-button cr-primary" href="{{ "docs/getting-started/" | relURL }}">Get started <span aria-hidden="true">↗</span></a>
+        <a class="cr-button" href="{{ "docs/overview/" | relURL }}">Explore the platform <span aria-hidden="true">→</span></a>
+      </div>
+      <p class="cr-caption">Operated on Azure Kubernetes Service (AKS).</p>
+    </div>
+    <div class="cr-hero-art">
+      <img src="{{ "images/logo.jpg" | relURL }}" alt="CetiRun logo: an orbit around a blue C and an agent robot" width="1254" height="1254" fetchpriority="high">
+      <div class="cr-art-caption"><span class="cr-dot" aria-hidden="true"></span> A shared platform. A home for each instance.</div>
+    </div>
+  </section>
+  <section class="cr-paths" aria-labelledby="paths-title">
+    <div class="cr-section-heading">
+      <p class="cr-eyebrow">Find your starting point</p>
+      <h2 id="paths-title">For engineers. For platform teams.</h2>
+    </div>
+    <div class="cr-grid">
+      <a class="cr-card" href="{{ "docs/getting-started/first-instance/" | relURL }}">
+        <span class="cr-card-number" aria-hidden="true">01 / BUILD</span>
+        <h3>An AI partner for engineers</h3>
+        <p>Gather context and execute tasks in a dedicated workspace that persists between sessions.</p>
+        <span class="cr-card-link">Your first instance <span aria-hidden="true">→</span></span>
+      </a>
+      <a class="cr-card" href="{{ "docs/getting-started/platform/" | relURL }}">
+        <span class="cr-card-number" aria-hidden="true">02 / OPERATE</span>
+        <h3>A foundation for platform teams</h3>
+        <p>Deploy, isolate, and operate agent workloads on AKS with shared controls and managed lifecycle operations.</p>
+        <span class="cr-card-link">Install CetiRun <span aria-hidden="true">→</span></span>
+      </a>
+      <a class="cr-card" href="{{ "docs/concepts/configuration/" | relURL }}">
+        <span class="cr-card-number" aria-hidden="true">03 / EXTEND</span>
+        <h3>Your tools and knowledge</h3>
+        <p>Use extensible skills to connect agents to your organization's tools and knowledge sources.</p>
+        <span class="cr-card-link">Configuration and skills <span aria-hidden="true">→</span></span>
+      </a>
+    </div>
+  </section>
+  <section class="cr-foundation" aria-labelledby="foundation-title">
+    <div>
+      <p class="cr-eyebrow">Existing harnesses. Common controls.</p>
+      <h2 id="foundation-title">Native agents.<br>Shared platform controls.</h2>
+      <p>CetiRun integrates existing agent harnesses, including OpenClaw and Hermes, rather than defining a new reasoning framework.</p>
+      <p>A Kubernetes operator brings together persistent workspaces, sandbox isolation, enterprise identity and access control, team-level configuration, shared skills, and runtime logging.</p>
+      <p class="cr-caption">Hardware isolation and audit coverage depend on the deployed runtime, policies, and logging configuration. <a href="{{ "docs/security/" | relURL }}">Understand these boundaries.</a></p>
+      <a class="cr-text-link" href="{{ "docs/concepts/architecture/" | relURL }}">Understand the architecture <span aria-hidden="true">→</span></a>
+    </div>
+    <ol class="cr-flow" aria-label="Platform responsibilities">
+      <li><span class="cr-flow-step" aria-hidden="true">1</span><div><h3>Deploy</h3><p>Operator-managed, persistent workspaces</p></div></li>
+      <li><span class="cr-flow-step" aria-hidden="true">2</span><div><h3>Isolate</h3><p>Sandbox, identity, and access policies</p></div></li>
+      <li><span class="cr-flow-step" aria-hidden="true">3</span><div><h3>Connect</h3><p>Native agent chat, terminal, and browser access through a self-service portal</p></div></li>
+    </ol>
+  </section>
+  <section class="cr-explore" aria-labelledby="explore-title">
+    <h2 id="explore-title">Keep the next step close.</h2>
+    <div class="cr-quicklinks">
+      <a href="{{ "docs/user-guide/" | relURL }}">User Guide <span aria-hidden="true">↗</span></a>
+      <a href="{{ "docs/operations/" | relURL }}">Operations <span aria-hidden="true">↗</span></a>
+      <a href="{{ "docs/reference/" | relURL }}">Reference <span aria-hidden="true">↗</span></a>
+      <a href="{{ "docs/contributing/" | relURL }}">Contributing <span aria-hidden="true">↗</span></a>
+    </div>
+  </section>
+</div>
+{{ end }}

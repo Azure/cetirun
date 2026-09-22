@@ -6,135 +6,63 @@
 
 CetiRun is an open-source managed runtime for hosting AI agents and AI applications.
 
-It provides isolated, persistent instances on a shared AKS cluster, with authenticated access and managed lifecycle operations. The current runtime supports [OpenClaw](https://github.com/openclaw/openclaw) and [Hermes](https://github.com/NousResearch/hermes-agent) agents, with a Kubernetes operator and self-service portal for deployment and management.
+CetiRun hosts [OpenClaw](https://github.com/openclaw/openclaw)
+and [Hermes](https://github.com/NousResearch/hermes-agent) on AKS. A Kubernetes
+operator manages persistent agents, and a self-service portal provides
+authenticated access and lifecycle operations.
 
-## Architecture
+## Documentation
 
-CetiRun deploys on an AKS cluster. Each team member gets a dedicated namespace (`cetirun-<alias>`) containing an OpenClaw or Hermes StatefulSet.
-
-```
-+-----------------------------------------------------------------------------------+
-|                              AKS Cluster                                          |
-|                                                                                   |
-|  aks-istio-ingress     Istio Gateway + AuthorizationPolicy + EnvoyFilters         |
-|                        Host-based routing: <alias>.<your-domain>                  |
-|                                                                                   |
-|  cetirun-istio NS      OAuth2 Proxy (Azure AD authentication)                     |
-|                                                                                   |
-|  cetirun-<alias> NS    OpenClaw Pod (StatefulSet)                                 |
-|                        ├── OpenClaw Gateway :18789                                 |
-|                        └── PVC: /home/vibe (Azure Blob NFS)                       |
-|                                                                                   |
-|  cetirun-system NS     CetiRun Operator + Portal                                  |
-+-----------------------------------------------------------------------------------+
-         |                                    |
-         v                                    v
-  GitHub Copilot API                  Knowledge RAG Engine
-```
-
-### Components
-
-| Component | Location | Purpose |
-| --- | --- | --- |
-| **Agent Runtime** | `app/cetirun-chart/` | OpenClaw or Hermes instance (StatefulSet) with persistent storage, Chrome, and pre-installed CLI tools |
-| **CetiRun Operator** | `app/cetirun-operator/` | Manages instance lifecycle via `Agent` CRD — provisions namespaces, Helm releases, and ingress |
-| **CetiRun Portal** | `app/cetirun-portal/` | Admin dashboard (React + Go) for creating, managing, and monitoring instances |
-| **AdminClaw** | `app/adminclaw/` | Admin deployment tools and platform operations skill |
-| **Istio Auth** | `infra/istio/` | OAuth2 Proxy + Istio Gateway + EnvoyFilters for Azure AD authentication and per-engineer authorization |
-| **Infrastructure** | `infra/` | Bicep templates for AKS cluster and Azure Blob NFS storage |
-
-## Getting Started
-
-### Prerequisites
-
-- An AKS cluster with:
-  - [Istio addon](https://learn.microsoft.com/en-us/azure/aks/istio-about) enabled with external ingress gateway
-  - [Blob CSI driver](https://learn.microsoft.com/en-us/azure/aks/azure-blob-csi) enabled
-  - OIDC issuer enabled (for workload identity)
-- Azure Blob Storage account (Premium, NFS v3)
-- Azure Container Registry (ACR)
-- Entra ID (Azure AD) app registration for OAuth2 authentication
-- Wildcard DNS record pointing to the Istio ingress gateway
-- TLS certificate for your domain (stored in Azure Key Vault)
-
-### Deploy Infrastructure
+The reader documentation lives in the [Hugo/Docsy site](site/README.md).
+Preview it locally:
 
 ```bash
-# Provision AKS cluster
-RESOURCE_GROUP=my-rg LOCATION=westeurope \
-  ./infra/cluster/deploy.sh
-
-# Provision blob storage for skills and persistent volumes
-RESOURCE_GROUP=my-rg AKS_CLUSTER_NAME=my-cluster \
-  ./infra/storage/deploy.sh
-
-# Deploy Istio auth (OAuth2 Proxy + Gateway)
-CLIENT_ID=<app-id> TENANT_ID=<tenant-id> ALLOWED_GROUPS=<group-oids> \
-DOMAIN=example.com KEY_VAULT_NAME=my-kv RESOURCE_GROUP=my-rg \
-AKS_CLUSTER_NAME=my-cluster \
-  ./infra/istio/deploy.sh
+make -C site serve
 ```
 
-### Deploy Components
+Open `http://localhost:1313/cetirun/`. Run `make -C site check` to build and
+validate the site. See the [site guide](site/README.md) for tool prerequisites
+and an existing-Hugo override. After dependency setup, the root
+`make docs-check` runs the offline documentation gate. This does not deploy
+a public website.
 
-```bash
-# Deploy operator
-cd app/cetirun-operator
-REGISTRY=cetirun.azurecr.io CHART_VERSION=0.1.0 DOMAIN=example.com \
-  deploy/deploy.sh
-
-# Deploy portal
-cd app/cetirun-portal
-REGISTRY=cetirun.azurecr.io CHART_VERSION=0.1.0 \
-  deploy/deploy.sh
-```
-
-### Create an Agent
-
-Once the operator is running, create long-lived agents via the CRD. The
-`cetirun.microsoft.com/v1alpha1` API exposes `Agent` and `Team`; see the
-[API contract and existing-cluster limitations](app/cetirun-operator/README.md#api-contract)
-before using it with an older installation.
-
-```yaml
-apiVersion: cetirun.microsoft.com/v1alpha1
-kind: Agent
-metadata:
-  name: alice
-spec:
-  gatewayTokenSecretRef: "gateway-token"
-  user:
-    alias: alice
-    displayName: "Alice"
-    team: platform
-```
-
-Or use the Portal UI at `https://<your-domain>/`.
-
-## Skills
-
-Skills are the primary extensibility mechanism — directories containing a `SKILL.md` file with YAML frontmatter and natural language instructions.
-
-### Skill Loading Precedence
-
-1. **Workspace skills** — per-engineer custom skills on the PVC (private)
-2. **Shared skills** — mounted from Azure Blob NFS at `~/.aks/skills/` (read-only)
-
-You can populate shared skills by uploading skill directories to the Azure Blob Storage container configured in the OpenClaw Helm chart values.
-
-## Security
-
-| Layer | Description |
+| Start here | Documentation |
 | --- | --- |
-| **Azure AD (Entra ID)** | Group-based access control |
-| **Per-engineer authorization** | OAuth2 Proxy validates alias matches hostname — no cross-instance access |
-| **Credential isolation** | Credentials managed via `openclaw models auth`, isolated per instance |
-| **Network policies** | Default deny-all; allow only Istio ingress, DNS, and external HTTPS (RFC 1918 blocked) |
-| **Namespace isolation** | Each engineer gets a fully isolated namespace |
+| Understand the runtime | [Overview](site/content/en/docs/overview/_index.md) |
+| See planned improvements | [Roadmap](site/content/en/docs/overview/roadmap.md) |
+| Create a workspace and use agents | [User Guide](site/content/en/docs/user-guide/_index.md) |
+| Prepare a platform | [Install CetiRun](site/content/en/docs/getting-started/platform.md) |
+| Configure and troubleshoot a deployment | [Operations](site/content/en/docs/operations/_index.md) |
+| Look up resource fields and Helm values | [Reference](site/content/en/docs/reference/_index.md) |
+| Develop, test, or improve documentation | [Contributing](site/content/en/docs/contributing/_index.md) |
+| Understand security and data flow | [Security](site/content/en/docs/security/_index.md) |
 
-## Contributing
+## Components
 
-Contributions are welcome. For changes more complex than typos, please submit an issue first to discuss the approach.
+| Source | Purpose |
+| --- | --- |
+| [app/cetirun-platform](app/cetirun-platform/README.md) | Umbrella chart for the operator and portal |
+| [app/cetirun-chart](app/cetirun-chart/README.md) | Agent StatefulSet, persistent storage, desktop, terminal, and logging |
+| [app/cetirun-operator](app/cetirun-operator/README.md) | Agent/Team custom resources and lifecycle reconciliation |
+| [app/cetirun-portal](app/cetirun-portal) | Go backend and React self-service frontend |
+| [app/adminclaw](app/adminclaw) | Administrative deployment material and operations skills |
+| [infra](infra/README.md) | AKS, Blob NFS, and shared Istio authentication |
+| [scripts](scripts/README.md) | Local validation, build, and connected helper entrypoints |
+
+Cloud deployment requires configured identity, DNS, TLS, storage, capacity,
+and accessible images/charts. Local rendering is not a cloud installation.
+See the [platform checklist](site/content/en/docs/getting-started/platform.md).
+The Kubernetes API exposes `Agent` and `Team`; review the
+[API contract](app/cetirun-operator/README.md#api-contract) before updating
+an older installation.
+
+## Contributing and security
+
+Start with the [contributor guide](site/content/en/docs/contributing/_index.md).
+Report vulnerabilities using [SECURITY.md](SECURITY.md), without sharing
+credentials or private deployment data in a public issue.
+Read [PRIVACY.md](PRIVACY.md) for runtime data handling and [NOTICE](NOTICE)
+for third-party attributions and unresolved distribution work.
 
 ## License
 
