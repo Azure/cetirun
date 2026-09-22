@@ -1,0 +1,19 @@
+<!--
+Copyright (c) Microsoft Corporation.
+Licensed under the MIT License.
+-->
+<!doctype html>
+<html lang="{{ site.Language.Locale | default "en" }}" class="no-js" data-theme-init>
+  <head>{{ partial "head.html" . }}</head>
+  <body class="td-{{ .Kind }}">
+    <a class="cr-skip" href="#main-content">Skip to main content</a>
+    <header>{{ partial "navbar.html" . }}</header>
+    <div class="container-fluid td-default td-outer">
+      <main class="td-main" id="main-content" tabindex="-1">
+        {{ block "main" . }}{{ end }}
+      </main>
+      {{ partial "footer.html" . }}
+    </div>
+    {{ partial "scripts.html" . }}
+  </body>
+</html>

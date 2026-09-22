@@ -1,0 +1,17 @@
+<!--
+Copyright (c) Microsoft Corporation.
+Licensed under the MIT License.
+-->
+{{- $path := .Path -}}
+{{- $module := dict -}}
+{{- range hugo.Data.navigation.modules -}}
+  {{- $candidate := . -}}
+  {{- $paths := .extra_paths | default slice -}}
+  {{- range .groups -}}
+    {{- $paths = $paths | collections.Append .pages -}}
+  {{- end -}}
+  {{- if in $paths $path -}}
+    {{- $module = $candidate -}}
+  {{- end -}}
+{{- end -}}
+{{- return $module -}}

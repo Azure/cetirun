@@ -1,0 +1,8 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+.bin/
+.hugo_build.lock
+node_modules/
+public/
+resources/
+__pycache__/

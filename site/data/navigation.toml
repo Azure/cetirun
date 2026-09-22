@@ -1,0 +1,97 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+# Assign each documentation page to exactly one module without changing its URL.
+
+[[modules]]
+  id = "overview"
+  title = "Overview"
+  page = "/docs/overview"
+  extra_paths = ["/docs"]
+  [[modules.groups]]
+    title = ""
+    pages = [
+      "/docs/overview",
+      "/docs/concepts",
+      "/docs/concepts/architecture",
+      "/docs/security",
+      "/docs/overview/roadmap",
+    ]
+
+[[modules]]
+  id = "user-guide"
+  title = "User Guide"
+  page = "/docs/user-guide"
+  [[modules.groups]]
+    title = ""
+    pages = ["/docs/user-guide"]
+  [[modules.groups]]
+    title = "Get Started"
+    pages = [
+      "/docs/getting-started",
+      "/docs/getting-started/first-instance",
+    ]
+  [[modules.groups]]
+    title = "Using Agents"
+    pages = [
+      "/docs/guides",
+      "/docs/guides/models",
+      "/docs/guides/lifecycle",
+    ]
+  [[modules.groups]]
+    title = "Integrations"
+    pages = [
+      "/docs/guides/msteams",
+      "/docs/guides/tailscale",
+    ]
+
+[[modules]]
+  id = "operations"
+  title = "Operations"
+  page = "/docs/operations"
+  extra_paths = ["/docs/guidances"]
+  [[modules.groups]]
+    title = ""
+    pages = ["/docs/operations"]
+  [[modules.groups]]
+    title = "Install"
+    pages = [
+      "/docs/getting-started/platform",
+      "/docs/operations/infrastructure",
+    ]
+  [[modules.groups]]
+    title = "Configuration"
+    pages = [
+      "/docs/concepts/configuration",
+      "/docs/guides/teams",
+      "/docs/operations/storage",
+      "/docs/operations/istio",
+    ]
+  [[modules.groups]]
+    title = "Troubleshooting"
+    pages = ["/docs/operations/troubleshooting"]
+
+[[modules]]
+  id = "reference"
+  title = "Reference"
+  page = "/docs/reference"
+  [[modules.groups]]
+    title = ""
+    pages = [
+      "/docs/reference",
+      "/docs/reference/crds",
+      "/docs/reference/helm",
+      "/docs/reference/scripts",
+    ]
+
+[[modules]]
+  id = "contributing"
+  title = "Contributing"
+  page = "/docs/contributing"
+  [[modules.groups]]
+    title = ""
+    pages = [
+      "/docs/contributing",
+      "/docs/contributing/development",
+      "/docs/getting-started/local-checks",
+      "/docs/contributing/site",
+    ]

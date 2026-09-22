@@ -1,0 +1,255 @@
+---
+title: "Install CetiRun"
+description: "Prepare AKS, identity, networking, and storage, then install the operator and portal."
+weight: 30
+---
+
+Install CetiRun on an AKS cluster with identity, networking, storage, and
+registry access configured for your organization.
+
+> **Warning:** Deployment scripts create or update cloud and cluster resources.
+> Review the scripts, target subscription, Kubernetes context, costs, and
+> access policies before running them.
+
+For local chart validation without deploying resources, use
+[Local checks](../local-checks/).
+
+## Prepare the environment
+
+| Requirement | Why it matters |
+| --- | --- |
+| AKS with managed Istio and an external ingress gateway | Shared authentication and instance routing |
+| OIDC issuer and Workload Identity | Federated identity for OAuth2 Proxy and optional Teams |
+| Blob CSI and `azureblob-nfs-premium` StorageClass | Operator-default persistent home volumes |
+| A compatible `kata-vm-isolation` RuntimeClass | Default agent chart sandbox; do not silently remove it |
+| Enforced Kubernetes NetworkPolicy and required admission APIs | Runtime isolation rules and the default exec-denial policy |
+| Accessible images and versioned OCI agent chart | Operator fetches the agent chart, then nodes pull images |
+| Entra ID app, allowed groups, federated credential | Portal login and group-based admission |
+| Apex DNS and a matching TLS certificate; wildcard names if used | Portal, instance routes, and apex `/oauth2/callback` |
+| Helm, kubectl, Azure CLI/Bicep, jq, OpenSSL | Deployment helpers |
+
+The chart does not declare a general minimum Kubernetes version, but its
+default `execRestriction.enabled: true` renders
+`admissionregistration.k8s.io/v1` `ValidatingAdmissionPolicy` and binding
+resources. The source documents Kubernetes 1.30+ for that feature. Check the
+actual API availability and authorization to create these cluster-scoped
+resources, plus Istio `VirtualService` and `Sidecar` APIs. Do not infer support
+for an arbitrary Kubernetes distribution from a successful render.
+
+Sources: [runtime values]({{< repo "app/cetirun-chart/values.yaml" >}}),
+[exec policy]({{< repo "app/cetirun-chart/templates/deny-exec-policy.yaml" >}}),
+and [operator RBAC]({{< repo "app/cetirun-operator/chart/templates/clusterrole.yaml" >}}).
+The chart does not create the RuntimeClass, CSI driver, or Istio control plane.
+
+## 1. Review infrastructure inputs
+
+[Infrastructure](../../operations/infrastructure/) covers the
+Bicep inputs and helper side effects. The cluster and storage helpers expect
+operator-authored `.bicepparam` files, which are not included in the repository.
+Set `PARAM_FILE` explicitly to your reviewed file.
+
+The cluster helper installs or updates an Azure CLI extension, registers a
+preview feature, provisions infrastructure, enables Gateway API, and overwrites
+the selected kubeconfig entry. Node-pool defaults are not sized for a small
+demonstration environment.
+
+## 2. Configure authentication and storage
+
+Follow [Istio authentication](../../operations/istio/) and
+[persistent storage](../../operations/storage/). The identity redirect URI is
+`https://<domain>/oauth2/callback`. Portal and native-instance routes
+use paths on the apex domain. The Gateway also accepts wildcard hosts, but
+that does not create a VirtualService for each subdomain. Configure DNS and
+certificates for the hosts you actually serve; a wildcard certificate alone
+does not cover the apex.
+The Gateway references `cetirun-tls` in its configured namespace
+(`aks-istio-ingress` by default). Setting
+`tls.enabled: false` only disables chart-managed Secret creation, not TLS.
+Configure the `oauth2-proxy` external authorization provider in the managed
+Istio shared ConfigMap; direct Helm installation does not do that patch.
+
+Do not expose the portal until authentication, ownership checks, and namespace
+sidecar injection are verified. The shared filter calls the portal on port 8081;
+that port is exempt from mTLS and must be restricted by its NetworkPolicy.
+
+Shared skills storage is optional and separate from instance home PVCs. Review
+`networkPolicy.allowedInternalCIDRs` rather than inheriting its
+environment-specific exception. If npm skills are enabled, set
+`skills.npmRegistry` to your approved reachable registry. Neither an Istio
+ServiceEntry nor the built-in egress blacklist is a complete outbound allowlist.
+
+## 3. Install the operator and portal
+
+For a new installation, the platform chart packages the operator and portal
+into one release. Independent component charts are also available. Do not
+install both over the same resources: the umbrella does not adopt resources
+owned by standalone Helm releases.
+
+Supply your own accessible registry and tested artifact versions. Registry
+defaults in source are deployment configuration, not a public artifact catalog.
+Check each independent artifact path:
+
+- The workstation's Helm client must be able to fetch operator/portal OCI
+  charts unless you select their local charts.
+- The running operator must be able to fetch the runtime OCI chart. For a
+  private registry, `acrDockerSecret` mounts a `kubernetes.io/dockerconfigjson`
+  Secret from the operator namespace into its Helm client.
+- Nodes must be able to pull operator, portal, selected agent, desktop, and
+  OAuth2 Proxy images. Node registry permissions do not supply credentials to
+  the operator's Helm client. Runtime `imagePullSecrets` must exist in each
+  instance namespace; the controller does not distribute them for you.
+
+The operator chart declares `imagePullSecrets` but does not render
+it into its Deployment. That value cannot supply operator image-pull
+credentials; verify the actual node/service-account pull path separately.
+
+### Platform chart
+
+The umbrella installs both components in `cetirun-system` by default. Configure
+the independent Istio release to reach that portal before installation, using
+`PORTAL_AUTH_NAMESPACE=cetirun-system` with its deployment helper. See
+[portal ownership endpoint](../../operations/istio/#portal-ownership-endpoint).
+The platform chart does not install Istio, certificates, credentials, agents,
+or retained agent data.
+
+Prepare a private values file with tested image and runtime-chart versions,
+for example:
+
+```yaml
+cetirun-operator:
+  image:
+    repository: registry.example.com/cetirun-operator
+    tag: example-build
+  cetirun:
+    chart:
+      repoURL: oci://registry.example.com/helm/cetirun
+      version: 0.1.0
+cetirun-portal:
+  image:
+    repository: registry.example.com/cetirun-portal
+    tag: example-build
+  noticeBanner: ""
+```
+
+These are placeholders, not published artifacts. Add the reviewed model,
+registry credentials, administrator list, storage, and runtime settings for
+your environment. After completing the prerequisites:
+
+```bash
+DOMAIN=example.com VALUES_FILE=/absolute/path/platform-values.yaml \
+  bash scripts/cetirun-platform-deploy.sh
+```
+
+The helper checks Istio resources and OAuth2 Proxy readiness, builds the local
+chart dependencies, creates and labels the target namespace for sidecar
+injection, installs the release, and waits for the rendered operator/portal
+Deployments. It does not verify end-to-end login or agent readiness.
+`ISTIO_REVISION` overrides revision detection.
+
+For a custom gateway, use `ISTIO_GATEWAY_NAMESPACE` and `ISTIO_GATEWAY_NAME`
+for its resource, and `ISTIO_INGRESS_NAMESPACE` and
+`ISTIO_GATEWAY_SERVICE_ACCOUNT` for the gateway workload. The helper aligns
+the portal route, ownership policy, and agent NetworkPolicy with these inputs.
+See [platform values](../../reference/helm/#platform-chart).
+
+### Independent component charts
+
+Render the operator chart locally with example values:
+
+```bash
+helm template cetirun-operator app/cetirun-operator/chart \
+  --namespace cetirun-system \
+  --set-string domainSuffix=example.com \
+  --set-string image.repository=registry.example.com/cetirun-operator \
+  --set-string image.tag=example-build \
+  --set-string cetirun.chart.repoURL=oci://registry.example.com/helm/cetirun \
+  --set-string cetirun.chart.version=0.1.0 > /dev/null
+```
+
+This render runs without cluster or registry access. Check artifact availability
+and rollout status during installation. See
+[runtime rendering](../../reference/helm/#offline-rendering) for the agent chart.
+
+After completing the prerequisites, run the deployment scripts from the
+repository root. Replace all example values before running these commands:
+
+```bash
+REGISTRY=registry.example.com CHART_VERSION=0.1.0 IMAGE_TAG=example-build \
+CETIRUN_CHART_VERSION=0.1.0 DOMAIN=example.com \
+  bash app/cetirun-operator/deploy/deploy.sh
+
+REGISTRY=registry.example.com CHART_VERSION=0.1.0 IMAGE_TAG=example-build \
+ISTIO_HOST=example.com ISTIO_REV=your-installed-istio-revision \
+NOTICE_BANNER="" \
+  bash app/cetirun-portal/deploy/deploy.sh
+```
+
+Replace every example value. `0.1.0` is the chart's source version, not a
+claim that an artifact exists at your registry; `example-build` is not a
+published image tag. Prefer verified image digests through `IMAGE_DIGEST`.
+`CHART_VERSION` selects the component chart; `CETIRUN_CHART_VERSION` selects the
+runtime chart; `IMAGE_TAG`/`IMAGE_DIGEST` pin only the component being installed,
+not the runtime images.
+
+The [operator helper]({{< repo "app/cetirun-operator/deploy/deploy.sh" >}})
+checks the StorageClass and shared gateway before installing the operator.
+The operator chart bundles both CRDs and Helm installs them on the first
+installation; Helm does not upgrade or delete CRDs. Review
+[API compatibility](../../reference/crds/#existing-installations) before
+upgrading an existing installation. The
+[portal helper]({{< repo "app/cetirun-portal/deploy/deploy.sh" >}})
+expects the operator/CRDs to be prepared separately and labels its namespace
+for Istio injection. Set `ISTIO_REV` to the actual installed revision instead of
+its built-in `asm-1-27`. Supply `ISTIO_HOST` explicitly: the helper also reads
+it in its final summary. Neither helper waits for the operator or portal rollout.
+
+`LOCAL_CHART=1` selects the local operator or portal chart. It does **not** make
+the installation offline: images and the operator-managed agent chart still
+need to be available.
+
+Review [chart configuration](../../reference/helm/) for image pins, OCI pull
+credentials, deployment-wide Helm values, default model, admin aliases, and
+portal features. Configure these explicitly before serving users. The operator
+helper supports simple extra `HELM_SET_ARGS`; the portal helper does not.
+Use a separately reviewed direct Helm install with a private values file for
+settings not exposed by a helper, retaining all CRD, gateway, namespace-label,
+and authentication prerequisites.
+
+The default namespaces and resource names are cross-component contracts.
+Changing them also requires reviewing the shared chart's `portalAuth` service
+address, gateway namespace/service-account policies, and controller routing.
+An available `NAMESPACE` or `RELEASE_NAME` override does not establish that
+every consumer is reconfigured automatically.
+In particular, the operator helper's `NAMESPACE` does not override the chart's
+`namespace` value. A non-default installation must set both consistently.
+The Portal's [Upgrade action](../../guides/lifecycle/#pin-and-update-a-chart) also
+looks up the fixed `cetirun-system/cetirun-operator` Deployment; changing those
+Helm settings does not reconfigure this lookup.
+
+## 4. Verify the deployment
+
+Check the installed resources using the platform chart's default namespace:
+
+```bash
+kubectl get runtimeclass kata-vm-isolation
+kubectl get storageclass azureblob-nfs-premium
+kubectl get csidriver blob.csi.azure.com
+kubectl get crd agents.cetirun.microsoft.com teams.cetirun.microsoft.com
+kubectl get gateway.networking.istio.io cetirun-gateway -n aks-istio-ingress
+kubectl rollout status deployment/cetirun-operator -n cetirun-system --timeout=120s
+kubectl rollout status deployment/cetirun-portal -n cetirun-system --timeout=120s
+```
+
+The standalone portal helper defaults to namespace `cetirun-portal`; use that
+namespace instead when verifying an independent installation.
+
+Check pod sidecar injection as well as namespace labels. With permission to
+create a test instance, verify TLS coverage, Entra login and sign-out, rejection
+of cross-owner access, persistent storage, and provider login. Review the
+[sign-out route mismatch](../../operations/istio/#prepare-identity-dns-and-tls).
+Test both successful and denied requests, and inspect `IngressReady` independently of
+`Ready`. Then give users the portal address and
+[first-instance guide](../first-instance/).
+
+Test Teams, Tailscale, shared storage, and cloud log collection separately
+before enabling them for users.

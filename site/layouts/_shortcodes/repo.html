@@ -1,0 +1,7 @@
+<!--
+Copyright (c) Microsoft Corporation.
+Licensed under the MIT License.
+-->
+{{- $path := .Get 0 -}}
+{{- $kind := .Get 1 | default "blob" -}}
+{{- printf "%s/%s/%s/%s" site.Params.github_repo $kind site.Params.github_branch $path -}}

@@ -1,0 +1,31 @@
+<!--
+Copyright (c) Microsoft Corporation.
+Licensed under the MIT License.
+-->
+<!doctype html>
+<html lang="{{ site.Language.Locale | default "en" }}" class="no-js" data-theme-init>
+  <head>{{ partial "head.html" . }}</head>
+  <body class="td-{{ .Kind }}">
+    <a class="cr-skip" href="#main-content">Skip to main content</a>
+    <header>{{ partial "navbar.html" . }}</header>
+    <div class="container-fluid td-outer">
+      <div class="td-main">
+        <div class="row flex-xl-nowrap">
+          <aside class="col-12 col-md-3 col-xl-2 td-sidebar d-print-none" aria-label="Documentation navigation">
+            {{ partial "sidebar.html" . }}
+          </aside>
+          <aside class="td-sidebar-toc" aria-label="On this page">
+            {{ partial "page-meta-links.html" . }}
+            {{ partial "toc.html" . }}
+          </aside>
+          <main class="col-12 col-md-9 col-xl-8 ps-md-5" id="main-content" tabindex="-1">
+            {{ partial "breadcrumb.html" . }}
+            {{ block "main" . }}{{ end }}
+          </main>
+        </div>
+      </div>
+      {{ partial "footer.html" . }}
+    </div>
+    {{ partial "scripts.html" . }}
+  </body>
+</html>
