@@ -10,21 +10,18 @@ updates:
         patterns:
           - "github/codeql-action/*"
 
-  # Dockerfiles
+  # Dockerfiles. Shared image updates must stay atomic because the CI toolchain
+  # contract requires every Go builder to use the same digest.
   - package-ecosystem: "docker"
-    directory: "/app/cetirun-chart"
+    directories:
+      - "/app/cetirun-chart"
+      - "/app/cetirun-operator"
+      - "/app/cetirun-portal"
     schedule:
       interval: "weekly"
-
-  - package-ecosystem: "docker"
-    directory: "/app/cetirun-operator"
-    schedule:
-      interval: "weekly"
-
-  - package-ecosystem: "docker"
-    directory: "/app/cetirun-portal"
-    schedule:
-      interval: "weekly"
+    groups:
+      docker-images:
+        group-by: "dependency-name"
 
   # Portal imports operator through a local replace. Update their dependency
   # graphs together, including dependencies that are indirect in the consumer.

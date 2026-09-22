@@ -2,7 +2,7 @@
 # Licensed under the MIT License.
 
 ARG AZURELINUX_BASE=mcr.microsoft.com/azurelinux/base/core:3.0@sha256:1c56f09437dfc2910faad39abaaed336265d246cf183e2adb362d4cb3b881ab6
-ARG GO_BUILD_IMAGE=mcr.microsoft.com/oss/go/microsoft/golang:1.26.8@sha256:1c312e239157abd92e3eb83091ac5febb914b57eb117af7faa46659109632bdd
+ARG GO_BUILD_IMAGE=mcr.microsoft.com/oss/go/microsoft/golang:1.26.8@sha256:5ef73864bf3795d1a5514e59b388028ad80190d7ba48f62f872328db9689e38d
 
 # ── Install Node.js 25 from official tarball ───────────────────
 # Azure Linux repos only have nodejs20/nodejs24. Node 25 is required
