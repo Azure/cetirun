@@ -181,12 +181,12 @@ func generateRandomToken(byteLen int) (string, error) {
 // Merge order (later wins): controller defaults → cetirunHelmValues → team
 // context/skills → per-instance spec.helm.values → controller-enforced model.
 func buildHelmValues(instance *cetirunv1alpha1.Agent, team *cetirunv1alpha1.Team, domainSuffix string, skillsStorageAccount string, cetirunHelmValues map[string]interface{}, chartRegistry string, defaultModels ...string) (map[string]interface{}, error) {
+	if err := validateAgentRuntime(instance.Spec.Agent); err != nil {
+		return nil, err
+	}
 	alias := instance.Spec.User.Alias
 	spec := instance.Spec
-	agentType := spec.AgentType
-	if agentType == "" {
-		agentType = cetirunv1alpha1.AgentTypeOpenClaw
-	}
+	agentType := spec.Agent.Type
 	// userTeam falls back to spec.team when user.team is unset, so the team
 	// label propagates into USER.md / extraEnv even when callers only set the
 	// top-level team reference.
@@ -196,7 +196,7 @@ func buildHelmValues(instance *cetirunv1alpha1.Agent, team *cetirunv1alpha1.Team
 	}
 
 	values := map[string]interface{}{
-		"agentType": agentType,
+		"agentType": string(agentType),
 		// Point to the pre-created gateway token secret.
 		// The chart maps provider names into each agent's native config shape.
 		"secrets": map[string]interface{}{
@@ -405,8 +405,13 @@ func buildHelmValues(instance *cetirunv1alpha1.Agent, team *cetirunv1alpha1.Team
 		if err := json.Unmarshal(rawExt.Raw, &v); err != nil {
 			return nil, fmt.Errorf("unmarshal helm.values[%s]: %w", k, err)
 		}
+		if k == "agentType" && v != string(agentType) {
+			return nil, fmt.Errorf("helm.values.agentType must not override spec.agent.type")
+		}
 		values[k] = deepMerge(values[k], v)
 	}
+	// Deployment-level chart defaults cannot select a different integration.
+	values["agentType"] = string(agentType)
 
 	// The native OpenClaw Control UI must know the externally visible UI
 	// prefix so it emits prefixed asset, API, media, and WebSocket URLs. This is
@@ -561,10 +566,7 @@ func buildVirtualService(instance *cetirunv1alpha1.Agent, domainSuffix, gateway 
 	svcHost := fmt.Sprintf("%s.%s.svc.cluster.local", instanceServiceName(name), ns)
 	instancePrefix := "/" + name
 	uiPrefix := "/ui/" + name
-	agentType := instance.Spec.AgentType
-	if agentType == "" {
-		agentType = cetirunv1alpha1.AgentTypeOpenClaw
-	}
+	agentType := instance.Spec.Agent.Type
 
 	makeRoute := func(matchPrefix, rewriteURI string, port uint32, timeoutSecs int64) *istioapiv1beta1.HTTPRoute {
 		route := &istioapiv1beta1.HTTPRoute{

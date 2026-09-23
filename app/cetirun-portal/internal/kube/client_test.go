@@ -83,6 +83,9 @@ func TestCreateInstance_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateInstance failed: %v", err)
 	}
+	if instance.Spec.Agent.Type != cetirunv1alpha1.AgentTypeHermes {
+		t.Fatalf("Portal must default spec.agent.type to hermes, got %q", instance.Spec.Agent.Type)
+	}
 	if instance.Name != "bob" {
 		t.Errorf("Name = %q, want %q", instance.Name, "bob")
 	}

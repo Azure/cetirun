@@ -9,7 +9,7 @@ import (
 	"strings"
 )
 
-var defaultAllowedAgentTypes = []string{"openclaw", "hermes"}
+var defaultAllowedAgentTypes = []string{"hermes", "openclaw"}
 
 // Config holds all runtime configuration for the portal.
 type Config struct {

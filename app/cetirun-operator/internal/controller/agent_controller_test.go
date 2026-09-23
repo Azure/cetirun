@@ -14,12 +14,14 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -72,6 +74,7 @@ func newCR(alias string, phase string, conditions []metav1.Condition, generation
 			Finalizers: []string{cetirunv1alpha1.Finalizer},
 		},
 		Spec: cetirunv1alpha1.AgentSpec{
+			Agent: cetirunv1alpha1.HarnessSpec{Type: cetirunv1alpha1.AgentTypeOpenClaw},
 			User: cetirunv1alpha1.UserSpec{
 				Alias:       alias,
 				DisplayName: "Test User",
@@ -167,6 +170,48 @@ func findCondition(conditions []metav1.Condition, condType string) *metav1.Condi
 
 // --- Tests ---
 
+func TestReconcile_UnsupportedAgentDoesNotProvision(t *testing.T) {
+	for _, typ := range []cetirunv1alpha1.AgentType{"", "unknown", cetirunv1alpha1.AgentTypeCustom} {
+		t.Run(string(typ), func(t *testing.T) {
+			cr := newCR("example-agent", "", nil, 1, 0, "")
+			cr.Spec.Agent = cetirunv1alpha1.HarnessSpec{
+				Type: typ, Image: ptr.To("registry.example.com/agent:1"),
+				RegistrySecretRef: &cetirunv1alpha1.RegistrySecretRef{Name: "source"},
+			}
+			cr.Spec.GatewayTokenSecretRef = ""
+			s := testScheme()
+			kube := fake.NewClientBuilder().WithScheme(s).WithObjects(cr).
+				WithStatusSubresource(cr).Build()
+			helm := &fakeHelmClient{}
+			r := &controller.AgentReconciler{
+				Client: kube, Scheme: s, HelmClient: helm,
+				EventRecorder: record.NewFakeRecorder(10),
+			}
+			_, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: cr.Name}})
+			if err == nil || helm.installCalled {
+				t.Fatal("unsupported agent must fail before Helm is called")
+			}
+			ns := &corev1.Namespace{}
+			err = kube.Get(context.Background(), types.NamespacedName{Name: "cetirun-" + cr.Name}, ns)
+			if !apierrors.IsNotFound(err) {
+				t.Fatalf("must not create runtime namespace, got %v", err)
+			}
+			secrets := &corev1.SecretList{}
+			if err := kube.List(context.Background(), secrets); err != nil || len(secrets.Items) != 0 {
+				t.Fatalf("must not create mixed or registry Secrets: %v", err)
+			}
+			got := &cetirunv1alpha1.Agent{}
+			if err := kube.Get(context.Background(), types.NamespacedName{Name: cr.Name}, got); err != nil {
+				t.Fatal(err)
+			}
+			condition := findCondition(got.Status.Conditions, cetirunv1alpha1.ConditionAgentConfigReady)
+			if condition == nil || condition.Status != metav1.ConditionFalse || condition.Reason != "AgentRuntimeNotImplemented" {
+				t.Fatalf("missing explicit runtime boundary condition: %v", condition)
+			}
+		})
+	}
+}
+
 // TestPhaseConstants verifies phase constant values.
 func TestPhaseConstants(t *testing.T) {
 	phases := []string{
@@ -250,6 +295,11 @@ func TestReconcile_PodReady_MarksReady(t *testing.T) {
 	alias := "bob"
 
 	cr := newCR(alias, cetirunv1alpha1.PhaseProvisioning, nil, 1, 0, "")
+	cr.Status.Conditions = []metav1.Condition{{
+		Type: cetirunv1alpha1.ConditionAgentConfigReady, Status: metav1.ConditionFalse,
+		Reason: "AgentRuntimeNotImplemented", Message: "A removed override was unsupported",
+		LastTransitionTime: metav1.Now(),
+	}}
 	s := testScheme()
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(s).
@@ -286,6 +336,9 @@ func TestReconcile_PodReady_MarksReady(t *testing.T) {
 	}
 	if updated.Status.Phase != cetirunv1alpha1.PhaseReady {
 		t.Errorf("expected phase=%s, got %s", cetirunv1alpha1.PhaseReady, updated.Status.Phase)
+	}
+	if condition := findCondition(updated.Status.Conditions, cetirunv1alpha1.ConditionAgentConfigReady); condition != nil {
+		t.Fatal("resolved runtime gate must not leave a stale failure condition")
 	}
 
 	podReady := findCondition(updated.Status.Conditions, cetirunv1alpha1.ConditionPodReady)

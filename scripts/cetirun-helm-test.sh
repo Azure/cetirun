@@ -38,6 +38,25 @@ for values_file in "${values_files[@]}"; do
   fi
 done
 
+# Defaults and explicit selections must agree across config, image and ports.
+echo "==> helm template ${release_name} ${chart_dir} (default Hermes)"
+output=$(helm_template "${release_name}" "${chart_dir}")
+grep -q 'hermes-config.yaml' <<< "$output" || { echo "FAIL: default is not Hermes" >&2; exit 1; }
+grep -q 'containerPort: 8642' <<< "$output" || { echo "FAIL: default Hermes API port missing" >&2; exit 1; }
+if grep -q '^  openclaw.json: |' <<< "$output"; then
+  echo "FAIL: default must not render OpenClaw config" >&2; exit 1
+fi
+
+echo "==> helm template ${release_name} ${chart_dir} (agentType omitted)"
+output=$(helm_template "${release_name}" "${chart_dir}" --set agentType=null)
+grep -q 'hermes-config.yaml' <<< "$output" || { echo "FAIL: omitted agentType must use Hermes" >&2; exit 1; }
+
+echo "==> helm template ${release_name} ${chart_dir} (explicit OpenClaw)"
+output=$(helm_template "${release_name}" "${chart_dir}" --set agentType=openclaw \
+  --set secrets.openclawGatewayToken=lint-token)
+grep -q 'openclaw.json' <<< "$output" || { echo "FAIL: explicit OpenClaw config missing" >&2; exit 1; }
+grep -q 'containerPort: 18789' <<< "$output" || { echo "FAIL: explicit OpenClaw port missing" >&2; exit 1; }
+
 # Test variant: Hermes renders API port, native config, and no OpenClaw doctor init.
 echo "==> helm template ${release_name} ${chart_dir} (agentType=hermes, rendered surface)"
 output=$(helm_template "${release_name}" "${chart_dir}" -f "${chart_dir}/values.yaml" \
@@ -90,6 +109,7 @@ fi
 # Test variant: ttyd port collision with gateway (should fail)
 echo "==> helm template ${release_name} ${chart_dir} (ttyd.port=18789, expect failure)"
 if helm_template "${release_name}" "${chart_dir}" -f "${chart_dir}/values.yaml" \
+  --set agentType=openclaw \
   --set secrets.openclawGatewayToken=lint-token \
   --set ttyd.enabled=true \
   --set ttyd.port=18789 2>/dev/null; then

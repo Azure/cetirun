@@ -263,7 +263,7 @@ spec:
           command: ["/bin/sh", "/etc/cetirun/session-logger.sh"]
           env:
             - name: AGENT_TYPE
-              value: {{ .Values.agentType | default "openclaw" | quote }}
+              value: {{ .Values.agentType | default "hermes" | quote }}
             - name: SCAN_INTERVAL
               value: {{ .Values.logger.scanInterval | quote }}
           resources:

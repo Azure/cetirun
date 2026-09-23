@@ -12,7 +12,7 @@
 
 set -e
 
-AGENT_TYPE="${AGENT_TYPE:-openclaw}"
+AGENT_TYPE="${AGENT_TYPE:-hermes}"
 SCAN_INTERVAL="${SCAN_INTERVAL:-30}"
 MAX_FILES="${MAX_FILES:-50}"
 

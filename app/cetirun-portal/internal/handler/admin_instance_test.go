@@ -20,8 +20,8 @@ func TestAdminInstance_ListAll(t *testing.T) {
 		&cetirunv1alpha1.Agent{
 			ObjectMeta: metav1.ObjectMeta{Name: "alice"},
 			Spec: cetirunv1alpha1.AgentSpec{
-				AgentType: "openclaw",
-				Team:      "aks",
+				Agent: cetirunv1alpha1.HarnessSpec{Type: cetirunv1alpha1.AgentTypeOpenClaw},
+				Team:  "aks",
 				User: cetirunv1alpha1.UserSpec{
 					Alias: "alice", DisplayName: "Alice", Email: "alice@example.com",
 				},
@@ -36,8 +36,8 @@ func TestAdminInstance_ListAll(t *testing.T) {
 		&cetirunv1alpha1.Agent{
 			ObjectMeta: metav1.ObjectMeta{Name: "bob"},
 			Spec: cetirunv1alpha1.AgentSpec{
-				AgentType: "openclaw",
-				User:      cetirunv1alpha1.UserSpec{Alias: "bob", Team: "legacy"},
+				Agent: cetirunv1alpha1.HarnessSpec{Type: cetirunv1alpha1.AgentTypeOpenClaw},
+				User:  cetirunv1alpha1.UserSpec{Alias: "bob", Team: "legacy"},
 			},
 			Status: cetirunv1alpha1.AgentStatus{Phase: "Pending"},
 		},

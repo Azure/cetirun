@@ -30,12 +30,11 @@ type SkillOverrideSpec struct {
 }
 
 // AgentSpec defines the desired state of Agent.
+// +kubebuilder:validation:XValidation:rule="self.agent.type == 'custom' ? !has(self.gatewayTokenSecretRef) : has(self.gatewayTokenSecretRef)",message="gatewayTokenSecretRef is required for built-in agents and forbidden for custom agents",fieldPath=".gatewayTokenSecretRef"
 type AgentSpec struct {
-	// AgentType selects the AI agent framework for this instance.
-	// +kubebuilder:validation:Enum=openclaw;hermes
-	// +kubebuilder:default=openclaw
-	// +optional
-	AgentType string `json:"agentType,omitempty"`
+	// Agent is the required per-instance Agent configuration.
+	// +required
+	Agent HarnessSpec `json:"agent"`
 
 	// User information for this instance.
 	// +kubebuilder:validation:Required
@@ -59,10 +58,13 @@ type AgentSpec struct {
 	// +optional
 	SkillOverrides SkillOverrideSpec `json:"skillOverrides,omitempty"`
 
-	// GatewayTokenSecretRef is the name of the Secret the operator will create (or use) for the OpenClaw gateway token.
-	// The Secret is created in the instance namespace (cetirun-<alias>).
-	// +kubebuilder:validation:Required
-	GatewayTokenSecretRef string `json:"gatewayTokenSecretRef"`
+	// GatewayTokenSecretRef names the built-in Agent's multi-purpose Secret
+	// in the instance namespace. Required for openclaw/hermes and forbidden for
+	// custom; it is not the model-access or registry credential.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	// +optional
+	GatewayTokenSecretRef string `json:"gatewayTokenSecretRef,omitempty"`
 
 	// Tailscale configures the Tailscale mesh VPN sidecar for this instance.
 	// When set, the operator reads the auth key from the referenced Secret
@@ -194,12 +196,13 @@ type AgentStatus struct {
 
 // Condition type constants.
 const (
-	ConditionReady          = "Ready"
-	ConditionHelmDeployed   = "HelmDeployed"
-	ConditionIngressReady   = "IngressReady"
-	ConditionPodReady       = "PodReady"
-	ConditionTailscaleReady = "TailscaleReady"
-	ConditionTeamsReady     = "TeamsReady"
+	ConditionReady            = "Ready"
+	ConditionHelmDeployed     = "HelmDeployed"
+	ConditionIngressReady     = "IngressReady"
+	ConditionPodReady         = "PodReady"
+	ConditionTailscaleReady   = "TailscaleReady"
+	ConditionTeamsReady       = "TeamsReady"
+	ConditionAgentConfigReady = "AgentConfigReady"
 )
 
 // MSTeams state constants.
@@ -220,12 +223,6 @@ const (
 	PhaseSuspended    = "Suspended"
 )
 
-// Agent type constants.
-const (
-	AgentTypeOpenClaw = "openclaw"
-	AgentTypeHermes   = "hermes"
-)
-
 // Finalizer name used by the operator.
 const Finalizer = "cetirun.microsoft.com/finalizer"
 
@@ -233,7 +230,7 @@ const Finalizer = "cetirun.microsoft.com/finalizer"
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:path=agents,scope=Cluster,shortName=cra,singular=agent
 // +kubebuilder:printcolumn:name="Alias",type=string,JSONPath=`.spec.user.alias`
-// +kubebuilder:printcolumn:name="Agent",type=string,JSONPath=`.spec.agentType`
+// +kubebuilder:printcolumn:name="Agent",type=string,JSONPath=`.spec.agent.type`
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
 // +kubebuilder:printcolumn:name="AccessURL",type=string,JSONPath=`.status.accessUrl`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
@@ -243,7 +240,8 @@ type Agent struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec   AgentSpec   `json:"spec,omitempty"`
+	// +required
+	Spec   AgentSpec   `json:"spec"`
 	Status AgentStatus `json:"status,omitempty"`
 }
 

@@ -16,7 +16,7 @@
 #
 # Environment variables:
 #   TEST_ALIAS            — Instance alias           (default: johnreese)
-#   AGENT_TYPE            — Agent type               (default: openclaw)
+#   AGENT_TYPE            — Agent type               (default: hermes)
 #   TEST_NAMESPACE        — Operator namespace        (default: cetirun-system)
 #   PORTAL_NAMESPACE      — Portal namespace          (default: cetirun-portal; set to TEST_NAMESPACE for umbrella)
 #   READY_TIMEOUT         — Seconds to wait for Ready (default: 600)
@@ -27,7 +27,7 @@
 set -euo pipefail
 
 TEST_ALIAS="${TEST_ALIAS:-johnreese}"
-AGENT_TYPE="${AGENT_TYPE:-openclaw}"
+AGENT_TYPE="${AGENT_TYPE:-hermes}"
 TEST_NAMESPACE="${TEST_NAMESPACE:-cetirun-system}"
 PORTAL_NAMESPACE="${PORTAL_NAMESPACE:-cetirun-portal}"
 READY_TIMEOUT="${READY_TIMEOUT:-600}"
@@ -148,7 +148,8 @@ kind: Agent
 metadata:
   name: ${TEST_ALIAS}
 spec:
-  agentType: ${AGENT_TYPE}
+  agent:
+    type: ${AGENT_TYPE}
   gatewayTokenSecretRef: "gateway-token"
   user:
     alias: ${TEST_ALIAS}

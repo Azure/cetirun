@@ -12,7 +12,7 @@
 #
 # The operator then takes over and:
 #   - Labels the namespace with Istio sidecar revision
-#   - Deploys the openclaw Helm chart
+#   - Deploys the Hermes runtime through the CetiRun Helm chart
 #   - Creates the VirtualService
 #
 # Required env vars:
@@ -113,8 +113,8 @@ fi
 #-----------------------------------------------------------------------
 # Step 3: Create Gateway Token Secret (with optional GATEWAY_TOKEN)
 #
-# Pre-create the gateway-token Secret so the operator skips its own
-# creation (ensureGatewayToken is a no-op when the Secret exists).
+# Pre-create the gateway-token Secret with the supplied credentials.
+# The operator preserves them and adds required native keys such as Hermes API_SERVER_KEY.
 # Operators may optionally provide a fixed gateway token via the
 # GATEWAY_TOKEN environment variable; if unset, an existing token is
 # reused when present, otherwise a new OPENCLAW_GATEWAY_TOKEN is generated.

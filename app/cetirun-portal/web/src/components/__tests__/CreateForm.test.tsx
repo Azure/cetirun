@@ -64,7 +64,7 @@ describe("CreateForm", () => {
     expect(screen.getByText("Create Agent")).toBeInTheDocument();
   });
 
-  it("submits without team (optional)", async () => {
+  it("defaults to Hermes even when OpenClaw is listed first", async () => {
     const user = userEvent.setup();
     renderWithQuery(<CreateForm />);
 
@@ -76,7 +76,7 @@ describe("CreateForm", () => {
 
     expect(mockMutate).toHaveBeenCalledWith({
       instanceName: "my-instance",
-      agentType: "openclaw",
+      agentType: "hermes",
       displayName: undefined,
       team: undefined,
       gatewayToken: undefined,
@@ -101,7 +101,7 @@ describe("CreateForm", () => {
 
     expect(mockMutate).toHaveBeenCalledWith({
       instanceName: "my-instance",
-      agentType: "openclaw",
+      agentType: "hermes",
       displayName: undefined,
       team: "platform",
       gatewayToken: undefined,
@@ -139,7 +139,7 @@ describe("CreateForm", () => {
 
     expect(mockMutate).toHaveBeenCalledWith({
       instanceName: "my-instance",
-      agentType: "openclaw",
+      agentType: "hermes",
       displayName: "Custom Name",
       team: "security",
       gatewayToken: "my-gw-token",
@@ -148,19 +148,19 @@ describe("CreateForm", () => {
     });
   });
 
-  it("submits with selected agent type", async () => {
+  it("preserves an explicit OpenClaw selection", async () => {
     const user = userEvent.setup();
     renderWithQuery(<CreateForm />);
 
     await user.selectOptions(
       screen.getByRole("combobox", { name: /Agent Type/ }),
-      "hermes",
+      "openclaw",
     );
     await user.click(screen.getByText("Create Agent"));
 
     expect(mockMutate).toHaveBeenCalledWith({
       instanceName: undefined,
-      agentType: "hermes",
+      agentType: "openclaw",
       displayName: undefined,
       team: undefined,
       gatewayToken: undefined,
@@ -171,17 +171,17 @@ describe("CreateForm", () => {
 
   it("uses the only allowed agent type", async () => {
     const user = userEvent.setup();
-    mockFeatures.data = { tailscaleEnabled: true, allowedAgentTypes: ["hermes"] };
+    mockFeatures.data = { tailscaleEnabled: true, allowedAgentTypes: ["openclaw"] };
     renderWithQuery(<CreateForm />);
 
     const agentTypeSelect = screen.getByRole("combobox", { name: /Agent Type/ });
-    await waitFor(() => expect(agentTypeSelect).toHaveValue("hermes"));
+    await waitFor(() => expect(agentTypeSelect).toHaveValue("openclaw"));
     expect(agentTypeSelect).toBeDisabled();
     await user.click(screen.getByText("Create Agent"));
 
     expect(mockMutate).toHaveBeenCalledWith({
       instanceName: undefined,
-      agentType: "hermes",
+      agentType: "openclaw",
       displayName: undefined,
       team: undefined,
       gatewayToken: undefined,

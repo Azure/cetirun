@@ -76,11 +76,15 @@ func TestLoad(t *testing.T) {
 
 func TestLoad_Defaults(t *testing.T) {
 	os.Unsetenv("LISTEN_ADDR")
+	t.Setenv("ALLOWED_AGENT_TYPES", "")
 
 	cfg := Load()
 
 	if cfg.ListenAddr != ":8080" {
 		t.Errorf("ListenAddr = %q, want default %q", cfg.ListenAddr, ":8080")
+	}
+	if !reflect.DeepEqual(cfg.AllowedAgentTypes, []string{"hermes", "openclaw"}) {
+		t.Errorf("AllowedAgentTypes = %v, want Hermes first", cfg.AllowedAgentTypes)
 	}
 }
 

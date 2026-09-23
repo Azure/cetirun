@@ -14,6 +14,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -132,6 +133,16 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	// breaking change; no migration path exists for the reserved legacy name.
 	if instance.Name == "ui" {
 		return r.rejectReservedUIInstance(ctx, instance)
+	}
+
+	if err := validateAgentRuntime(instance.Spec.Agent); err != nil {
+		setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionAgentConfigReady,
+			metav1.ConditionFalse, "AgentRuntimeNotImplemented", err.Error())
+		return r.failWith(ctx, instance, "AgentRuntimeNotImplemented", err.Error())
+	}
+	if condition := meta.FindStatusCondition(instance.Status.Conditions, cetirunv1alpha1.ConditionAgentConfigReady); condition != nil &&
+		condition.Reason == "AgentRuntimeNotImplemented" {
+		meta.RemoveStatusCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionAgentConfigReady)
 	}
 
 	// 3. Ensure finalizer.
@@ -927,7 +938,7 @@ func (r *AgentReconciler) ensureGatewayToken(ctx context.Context, instance *ceti
 			"CETIRUN_AUTH_KEY":       []byte(authKey),
 		},
 	}
-	if instance.Spec.AgentType == cetirunv1alpha1.AgentTypeHermes {
+	if instance.Spec.Agent.Type == cetirunv1alpha1.AgentTypeHermes {
 		apiKey, err := generateRandomToken(32)
 		if err != nil {
 			return err
@@ -993,7 +1004,7 @@ func (r *AgentReconciler) ensureCetiRunAuthKey(ctx context.Context, logger logr.
 // ensureHermesSecretKeys patches the gateway-token Secret with API_SERVER_KEY and hermes.env
 // when a Hermes instance uses an operator-managed existingSecret.
 func (r *AgentReconciler) ensureHermesSecretKeys(ctx context.Context, logger logr.Logger, secret *corev1.Secret, instance *cetirunv1alpha1.Agent) error {
-	if instance.Spec.AgentType != cetirunv1alpha1.AgentTypeHermes {
+	if instance.Spec.Agent.Type != cetirunv1alpha1.AgentTypeHermes {
 		return nil
 	}
 	if secret.Data == nil {

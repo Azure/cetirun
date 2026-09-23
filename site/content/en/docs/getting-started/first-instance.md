@@ -20,7 +20,8 @@ only a placeholder.
 ## Create through the portal
 
 1. Open the portal and sign in.
-2. Choose **New Agent**, then an agent type allowed by the deployment.
+2. Choose **New Agent**. Hermes is selected by default when allowed by the
+   deployment; select OpenClaw explicitly if needed.
 3. Enter an optional instance-name suffix and display name. The owner alias
    comes from your authenticated identity, not a field you choose. Leaving the
    name empty uses your alias; a suffix such as `example` produces
@@ -57,7 +58,8 @@ kind: Agent
 metadata:
   name: alice-example
 spec:
-  agentType: openclaw
+  agent:
+    type: hermes
   gatewayTokenSecretRef: gateway-token
   user:
     alias: alice
@@ -67,6 +69,9 @@ spec:
 Keep `metadata.name` and `spec.user.alias` stable. The former determines the
 instance namespace, Helm release, and URL path; the latter determines
 ownership. Do not use `ui`, which the controller reserves.
+
+`spec.agent` is required; omitting its `type` defaults to Hermes. The effective
+type and runtime username cannot change after creation.
 
 Validate the manifest against the cluster's installed CRD without saving it:
 

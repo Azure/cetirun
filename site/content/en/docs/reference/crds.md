@@ -29,10 +29,11 @@ uninstall workloads and delete namespaces; deleting a CRD removes its stored
 objects. Review data retention and resource ownership before handing an
 existing installation over to the new API.
 
-The `spec` and `status` fields, cluster scope, finalizer, namespace/release
-names, and PVC behavior are retained. Select the harness with `spec.agentType`;
-there is no `spec.agent` configuration field. Helm installs packaged CRDs on
-first installation but does not upgrade or delete them.
+The cluster scope, finalizer, namespace/release names, and PVC behavior are
+retained. Harness configuration uses required `spec.agent`; the old
+`spec.agentType` field is not supported. There is no automatic resource
+conversion or field migration. Helm installs packaged CRDs on first
+installation but does not upgrade or delete them.
 
 ## Agent
 
@@ -42,8 +43,13 @@ first installation but does not upgrade or delete them.
 | `user.displayName` | Required display name |
 | `user.email` | Optional email |
 | `user.team` | Optional user-context label; does not select a team resource. Use `team` for that reference |
-| `gatewayTokenSecretRef` | Required name of the Secret the operator creates or uses in the instance namespace |
-| `agentType` | `openclaw` (default) or `hermes` |
+| `gatewayTokenSecretRef` | Required native Secret name for Hermes/OpenClaw; forbidden for Custom |
+| `agent` | Required Harness configuration object |
+| `agent.type` | `hermes` (default), `openclaw`, or `custom`; immutable |
+| `agent.image` | Required for Custom; once set, cannot be cleared. Built-in image resolution requires runtime support |
+| `agent.registrySecretRef.name` | Optional source credential reference; no namespace, key, or inline credentials |
+| `agent.username` | Defaults to `vibe`; immutable, non-root image username |
+| `agent.port` | Optional HTTP port, 1–65535; omitted for Custom means no platform HTTP entry |
 | `team` | Name of a `Team` |
 | `model` | Optional Copilot model ID, at most 256 characters |
 | `skillOverrides.add` / `remove` | Set-like skill lists, at most 20 per list; effective IDs are `(team ∪ add) − remove` |
@@ -67,6 +73,11 @@ schema acceptance to establish safe routing.
 
 See [first instance](../../getting-started/first-instance/) for minimal YAML and
 [Teams](../../guides/msteams/) for the optional cloud integration.
+
+The API accepts the Harness fields above, but the operator rejects Custom and
+explicit image, port, registry, or non-default username settings with
+`AgentRuntimeNotImplemented` before provisioning. See the
+[Agent Harness contract](../agent-harness/) for the runtime boundary.
 
 ### Helm-value admission
 
@@ -112,7 +123,11 @@ check does not prove that an override will reconcile successfully.
 | `lastReconcileTime` | Timestamp written by full Ready/suspension handling; can also be written while suspension ingress removal is failing |
 | `msteams` | Teams state, message, resolved app and bot resource identifiers |
 
-Condition types include `Ready`, `HelmDeployed`, `IngressReady`, `PodReady`,
+`AgentConfigReady=False` with reason `AgentRuntimeNotImplemented` reports a
+setting that cannot yet be provisioned. The API does not expose a separate
+`status.agent` structure.
+
+Other condition types include `Ready`, `HelmDeployed`, `IngressReady`, `PodReady`,
 `TailscaleReady`, and `TeamsReady`. Check them independently; overall readiness
 can be true while ingress creation or Teams provisioning failed.
 `TailscaleReady` reports that the key was copied, not that a node joined the
