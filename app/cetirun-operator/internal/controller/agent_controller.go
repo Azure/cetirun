@@ -32,6 +32,8 @@ import (
 	istiov1beta1 "istio.io/client-go/pkg/apis/networking/v1beta1"
 
 	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/agents/builtin"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/helm"
 )
 
 // AgentReconciler reconciles Agent objects.
@@ -181,6 +183,21 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		}
 	}
 
+	var prepared *helm.PreparedRelease
+	if instance.Spec.Agent.Image == nil || instance.Spec.Agent.Port == nil {
+		var err error
+		prepared, err = r.prepareAgent(instance, team)
+		if err != nil {
+			return r.rejectAgentConfig(ctx, instance, err)
+		}
+		if pinAgentDefaults(&instance.Spec.Agent, prepared.Agent) {
+			if err := r.Update(ctx, instance); err != nil {
+				return ctrl.Result{}, fmt.Errorf("pin agent defaults: %w", err)
+			}
+			return ctrl.Result{Requeue: true}, nil
+		}
+	}
+
 	// 4. If already Ready and nothing has changed, skip the full reconcile.
 	// This prevents a status-update loop: LastReconcileTime always differs,
 	// which triggers a new watch event, which triggers another reconcile.
@@ -267,6 +284,14 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 				logger.V(1).Info("Instance already at steady state with no changes, skipping reconcile", "alias", instance.Spec.User.Alias, "phase", instance.Status.Phase)
 				return ctrl.Result{RequeueAfter: 10 * time.Minute}, nil
 			}
+		}
+	}
+
+	if prepared == nil {
+		var err error
+		prepared, err = r.prepareAgent(instance, team)
+		if err != nil {
+			return r.rejectAgentConfig(ctx, instance, err)
 		}
 	}
 
@@ -381,10 +406,26 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	alreadyDeployed := isConditionTrue(instance.Status.Conditions, cetirunv1alpha1.ConditionHelmDeployed) &&
 		instance.Status.ObservedGeneration == instance.Generation &&
 		instance.Status.ObservedOperatorHash == r.configHash(instance, team, gwSecretHash, teamResourceVersion(team))
+	// Teams may have resolved its application ID and Tailscale its auth key.
+	// Rebuild from current bindings without reloading the versioned chart.
 	helmValues, err := buildHelmValues(instance, team, r.DomainSuffix, r.SkillsStorageAccount, r.CetiRunHelmValues, r.ChartRegistry, r.DefaultModel)
 	if err != nil {
-		return r.failWith(ctx, instance, "HelmInstallFailed", fmt.Sprintf("build helm values: %v", err))
+		return r.rejectAgentConfig(ctx, instance, err)
 	}
+	{
+		secret := &corev1.Secret{}
+		if err := r.Get(ctx, types.NamespacedName{Namespace: ns, Name: instance.Spec.GatewayTokenSecretRef}, secret); err != nil {
+			return ctrl.Result{}, fmt.Errorf("read native integration bindings: %w", err)
+		}
+		helmValues["agentRequest"].(map[string]any)["tailscaleEnabled"] = len(secret.Data["TAILSCALE_AUTH_KEY"]) > 0
+	}
+	prepared, err = r.HelmClient.Refresh(prepared, helmValues)
+	if err != nil {
+		return r.rejectAgentConfig(ctx, instance, err)
+	}
+	setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionAgentConfigReady,
+		metav1.ConditionTrue, "AgentConfigResolved", "Built-in Harness configuration resolved")
+	helmValues = prepared.Values
 	// existingSecret is not rendered by the chart and therefore cannot
 	// contribute to checksum/secret. Its resourceVersion is non-sensitive and
 	// changes on every Secret update, so include it in the Pod template to roll
@@ -396,7 +437,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	}
 	if !alreadyDeployed {
 		logger.Info("Installing/upgrading Helm chart", "release", releaseName, "namespace", ns)
-		if err := r.HelmClient.InstallOrUpgrade(ns, releaseName, helmValues, instance.Spec.Helm.Version); err != nil {
+		if err := r.HelmClient.InstallOrUpgrade(ns, releaseName, prepared); err != nil {
 			logger.Error(err, "Helm install/upgrade failed", "release", releaseName)
 			setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionHelmDeployed,
 				metav1.ConditionFalse, "HelmInstallFailed", err.Error())
@@ -938,13 +979,18 @@ func (r *AgentReconciler) ensureGatewayToken(ctx context.Context, instance *ceti
 			"CETIRUN_AUTH_KEY":       []byte(authKey),
 		},
 	}
-	if instance.Spec.Agent.Type == cetirunv1alpha1.AgentTypeHermes {
+	h, err := builtin.NewRegistry().Lookup(string(instance.Spec.Agent.Type))
+	if err != nil {
+		return err
+	}
+	descriptor := h.Describe()
+	if descriptor.EnvironmentFile != "" {
 		apiKey, err := generateRandomToken(32)
 		if err != nil {
 			return err
 		}
-		secret.Data["API_SERVER_KEY"] = []byte(apiKey)
-		secret.Data["hermes.env"] = []byte(renderHermesEnv(secret.Data, apiKey, hermesCORSOrigins(r.DomainSuffix)))
+		secret.Data[descriptor.NativeSecretKey] = []byte(apiKey)
+		secret.Data[descriptor.EnvironmentFile] = []byte(renderHermesEnv(secret.Data, apiKey, hermesCORSOrigins(r.DomainSuffix)))
 	}
 	// Seed MSTEAMS keys on initial creation (only when Teams is enabled and values are known).
 	if instance.Spec.MSTeams != nil && instance.Spec.MSTeams.Enabled {
@@ -1004,26 +1050,31 @@ func (r *AgentReconciler) ensureCetiRunAuthKey(ctx context.Context, logger logr.
 // ensureHermesSecretKeys patches the gateway-token Secret with API_SERVER_KEY and hermes.env
 // when a Hermes instance uses an operator-managed existingSecret.
 func (r *AgentReconciler) ensureHermesSecretKeys(ctx context.Context, logger logr.Logger, secret *corev1.Secret, instance *cetirunv1alpha1.Agent) error {
-	if instance.Spec.Agent.Type != cetirunv1alpha1.AgentTypeHermes {
+	h, err := builtin.NewRegistry().Lookup(string(instance.Spec.Agent.Type))
+	if err != nil {
+		return err
+	}
+	descriptor := h.Describe()
+	if descriptor.EnvironmentFile == "" {
 		return nil
 	}
 	if secret.Data == nil {
 		secret.Data = map[string][]byte{}
 	}
 	needsUpdate := false
-	apiKey := string(secret.Data["API_SERVER_KEY"])
+	apiKey := string(secret.Data[descriptor.NativeSecretKey])
 	if apiKey == "" {
 		var err error
 		apiKey, err = generateRandomToken(32)
 		if err != nil {
 			return err
 		}
-		secret.Data["API_SERVER_KEY"] = []byte(apiKey)
+		secret.Data[descriptor.NativeSecretKey] = []byte(apiKey)
 		needsUpdate = true
 	}
 	hermesEnv := renderHermesEnv(secret.Data, apiKey, hermesCORSOrigins(r.DomainSuffix))
-	if string(secret.Data["hermes.env"]) != hermesEnv {
-		secret.Data["hermes.env"] = []byte(hermesEnv)
+	if string(secret.Data[descriptor.EnvironmentFile]) != hermesEnv {
+		secret.Data[descriptor.EnvironmentFile] = []byte(hermesEnv)
 		needsUpdate = true
 	}
 	if !needsUpdate {
@@ -1126,6 +1177,9 @@ func (r *AgentReconciler) ensureMSTeamsSecretKeys(ctx context.Context, logger lo
 func (r *AgentReconciler) ensureVirtualService(ctx context.Context, instance *cetirunv1alpha1.Agent) error {
 	logger := log.FromContext(ctx)
 	desired := buildVirtualService(instance, r.DomainSuffix, r.IstioGateway)
+	if desired == nil {
+		return fmt.Errorf("unsupported Agent native access")
+	}
 	vsName := virtualServiceName(instance.Name)
 	vsNS := instanceNamespace(instance.Name)
 

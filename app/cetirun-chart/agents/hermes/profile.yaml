@@ -1,0 +1,5 @@
+contractVersion: v1
+nativeVersion: "0.16.0"
+port: 8642
+# Additional exact image references validated with this profile.
+qualifiedImages: []

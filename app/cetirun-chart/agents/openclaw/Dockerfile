@@ -64,9 +64,9 @@ RUN openclaw plugins install "npm:@openclaw/msteams@${OPENCLAW_VERSION}" && \
     npm cache clean --force
 
 # Seed OpenClaw personality files into the workspace skeleton.
-COPY --chown=vibe:vibe personality/openclaw/ /home/vibe/.openclaw/workspace/
+COPY --chown=vibe:vibe agents/openclaw/personality/ /home/vibe/.openclaw/workspace/
 
-COPY --chown=vibe:vibe configs/entrypoint.sh /usr/local/bin/entrypoint.sh
+COPY --chown=vibe:vibe agents/openclaw/bootstrap/entrypoint.sh /usr/local/bin/entrypoint.sh
 
 # In-pod auth helper service (shared with Hermes). Runs in its own tiny Python
 # venv so we don't pollute the system Python; venv lives outside /home/vibe so

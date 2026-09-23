@@ -20,7 +20,11 @@ class GoToolchainTests(unittest.TestCase):
             ["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
             cwd=ROOT,
         )
-        cls.paths = {ROOT / path.decode() for path in output.split(b"\0") if path}
+        cls.paths = {
+            ROOT / path.decode()
+            for path in output.split(b"\0")
+            if path and (ROOT / path.decode()).is_file()
+        }
 
     def test_security_floor(self):
         self.assertRegex(self.version, r"^\d+\.\d+\.\d+$")

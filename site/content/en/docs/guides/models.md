@@ -87,8 +87,8 @@ Avoid credentials in command-line arguments or checked-in values. Review
 and [operator Secret handling]({{< repo "app/cetirun-operator/internal/controller/agent_controller.go" >}})
 for the runtime's required gateway, auth-helper, and API-server keys. A Copilot
 `spec.model` does not override another provider's Helm model. The
-[OpenClaw]({{< repo "app/cetirun-chart/templates/_agent-openclaw.tpl" >}})
-and [Hermes]({{< repo "app/cetirun-chart/templates/_agent-hermes.tpl" >}})
+[OpenClaw]({{< repo "app/cetirun-chart/templates/agents/openclaw/_runtime.tpl" >}})
+and [Hermes]({{< repo "app/cetirun-chart/templates/agents/hermes/_runtime.tpl" >}})
 templates are the source for provider rendering.
 
 ## Catalog architecture

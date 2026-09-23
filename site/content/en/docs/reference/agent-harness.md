@@ -7,9 +7,10 @@ weight: 15
 Agent Harness defines configuration for Hermes, OpenClaw and bring-your-own
 (BYO) images without replacing native reasoning, tools, conversations or context.
 
-> **Availability:** The CRD accepts the configuration below. The operator runs
-> built-ins with their default runtime settings, but rejects Custom, explicit
-> image/port/registry settings, and non-default usernames before provisioning.
+> **Availability:** The CRD accepts the configuration below.
+> Hermes and OpenClaw run through the shared Harness interface. Operator pins
+> their image and port from the selected runtime chart before provisioning.
+> Custom, registry references and non-default usernames remain unsupported.
 > The BYO requirements describe the image contract, not an installation procedure.
 
 ## Configuration
@@ -47,6 +48,45 @@ Policy controls allowed types and images separately. Other user images use
 Custom; an arbitrary image cannot claim built-in compatibility. The API exposes
 no UID/GID, command, environment or volume overrides.
 
+## Built-in runtime profiles
+
+Each runtime chart includes a versioned profile and native configuration assets
+under `agents/hermes/` and `agents/openclaw/`. Operator resolves omitted images
+and ports from that chart, writes them to the Agent, then reconciles the saved
+configuration. Chart version and image version remain separate.
+
+An image override must match the profile's default image or an exact entry in
+its `qualifiedImages` list. This compatibility check does not replace image
+authorization policy. Port overrides must not collide with native helper,
+dashboard, desktop, terminal or enabled Teams ports.
+
+Use `spec.agent.image` and `spec.agent.port`, not the old image or primary-port
+Helm values. `runtime` and `agentRequest` are reserved platform inputs.
+Other supported deployment values keep their existing scope.
+
+The Go adapters return configuration and endpoint descriptions; they do not
+operate Kubernetes, execute Agent code, or manage conversations. Standalone
+Helm uses the same native configuration assets. Native authentication, user
+files and resource names retain their existing roles.
+
+## Initialization
+
+The init container uses the selected Agent image, with its image HOME visible
+and the home PVC mounted at `/home-data`. It copies image HOME once, then writes
+`.cetirun-home-seeded` on the PVC. Later Pod initializations skip that copy but
+still apply Go-generated configuration and run the Agent's native preparation.
+The main container mounts the same PVC at HOME and keeps its native entrypoint.
+
+Nonempty, unrecognized homes fail rather than being overwritten. An interrupted
+seed is tracked separately and can resume only with the same immutable image.
+Existing native initialization records prevent reseeding established homes.
+These records are not authorization or ownership evidence.
+
+Required configuration errors preserve the affected files and stop startup.
+Routine initialization does not import old OAuth credentials or migrate between
+Agent types. Existing credentials and the native authentication helpers remain
+available.
+
 ## Private registries
 
 The registry contract assigns write-only credential input and source Secret
@@ -64,8 +104,16 @@ does not prove a pull succeeds.
 
 BYO images must provide a foreground entrypoint and numeric non-root
 `USER <uid>:<gid>` matching `username`. The runtime contract requires HOME on an
-independently retained, writable PVC. Keep programs and bootstrap templates
-outside HOME; initialize empty homes without overwriting user data.
+independently retained, writable PVC. Image HOME may contain configuration and
+dependencies for the first copy. Updating the image does not refresh files
+already copied into the PVC; plan dependency or data migrations separately.
+
+The initial BYO contract requires `sh`, `cp` and the basic tools used by the
+common initializer, including `mkdir`, `mv`, `rm`, `chmod`, `mktemp`, `find` and
+`cmp`. Copying must preserve hidden files, executable bits and symlinks without
+following links outside HOME. Missing tools fail initialization; the platform
+does not install them or elevate privileges. Custom is not required to provide
+Python, jq, npm, kubectl or a platform-specific hook.
 
 The BYO contract reserves `$HOME/.agents/skills` for read-only approved skills.
 It requires `cetirun-memory` and canonical `AGENTS.md` context independently of
@@ -106,5 +154,6 @@ stop old writers, and verify storage handover. Private PVCs must survive compute
 replacement. Read [Lifecycle](../../guides/lifecycle/) before changing or deleting
 an existing instance; namespace deletion removes its PVCs.
 
-No new Harness, Run or Session CRD is introduced. Unsupported runtime settings
-fail with `AgentRuntimeNotImplemented` before provisioning.
+No new Harness, Run or Session CRD is introduced. Unsupported runtime features
+fail with `AgentRuntimeNotImplemented`; invalid profiles, images and port
+combinations fail with `AgentConfigInvalid` before workload deployment.

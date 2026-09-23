@@ -5,6 +5,19 @@ Expand the name of the chart.
 {{- default .Chart.Name .Values.nameOverride | trunc 63 | trimSuffix "-" }}
 {{- end }}
 
+{{- define "cetirun.agent.type" -}}
+{{- $type := .Values.agentType | default "hermes" -}}
+{{- if not (has $type (list "hermes" "openclaw")) -}}
+{{- fail (printf "unsupported agentType %q" $type) -}}
+{{- end -}}
+{{- if .Values.runtime -}}
+{{- if or (ne .Values.runtime.contractVersion "v1") (ne .Values.runtime.agent.type $type) -}}
+{{- fail "runtime contract/type mismatch" -}}
+{{- end -}}
+{{- end -}}
+{{- $type -}}
+{{- end }}
+
 {{/*
 Create a default fully qualified app name.
 We truncate at 63 chars because some Kubernetes name fields are limited to this (by the DNS naming spec).
@@ -94,15 +107,7 @@ Create the name of the PVC to use
 Validate that required secrets are provided when not using existing secret
 */}}
 {{- define "cetirun.validateSecrets" -}}
-{{- $agentType := .Values.agentType | default "hermes" -}}
-{{- if not (has $agentType (list "openclaw" "hermes")) -}}
-{{- fail (printf "agentType must be one of: openclaw, hermes; got %q" $agentType) -}}
-{{- end -}}
-{{- if and (eq $agentType "openclaw") (not .Values.secrets.existingSecret) }}
-{{- if not .Values.secrets.openclawGatewayToken }}
-{{- fail "secrets.openclawGatewayToken is required when not using an existing secret" }}
-{{- end }}
-{{- end }}
+{{- include (printf "cetirun.agent.%s.validateSecrets" (include "cetirun.agent.type" .)) . -}}
 {{- end }}
 
 {{/*
@@ -131,47 +136,14 @@ Validate autoscaling settings for single-instance app
 Validate port consistency between service.targetPort and openclaw.config.gateway.port
 */}}
 {{- define "cetirun.validatePorts" -}}
-{{- if eq (.Values.agentType | default "hermes") "hermes" -}}
-{{- $apiPort := int .Values.hermes.env.API_SERVER_PORT -}}
-{{- if eq $apiPort 9119 -}}
-{{- fail "hermes API port must not collide with dashboard port (9119)" }}
-{{- end -}}
-{{- if eq (int .Values.msteamsWebhookPort) 9119 -}}
-{{- fail "MS Teams webhook port must not collide with Hermes dashboard port (9119)" }}
-{{- end -}}
-{{- if and .Values.desktop.enabled (eq $apiPort 6080) -}}
-{{- fail "hermes API port must not collide with noVNC port (6080)" }}
-{{- end -}}
-{{- else -}}
-{{- if ne (int .Values.service.targetPort) (int .Values.openclaw.config.gateway.port) -}}
-{{- fail (printf "service.targetPort (%d) must match openclaw.config.gateway.port (%d)" (int .Values.service.targetPort) (int .Values.openclaw.config.gateway.port)) }}
-{{- end -}}
-{{- end -}}
+{{- include (printf "cetirun.agent.%s.validatePorts" (include "cetirun.agent.type" .)) . -}}
 {{- end }}
 
 {{/*
 Validate ttyd port does not collide with gateway or noVNC ports
 */}}
 {{- define "cetirun.validateTtydPort" -}}
-{{- if .Values.ttyd.enabled -}}
-{{- if eq (.Values.agentType | default "hermes") "hermes" -}}
-{{- $apiPort := int .Values.hermes.env.API_SERVER_PORT -}}
-{{- $ttydPort := int .Values.ttyd.port -}}
-{{- if eq $ttydPort 9119 -}}
-{{- fail "ttyd.port (9119) must not collide with Hermes dashboard port (9119)" }}
-{{- end -}}
-{{- if eq $ttydPort $apiPort -}}
-{{- fail (printf "ttyd.port (%d) must not collide with hermes API port (%d)" $ttydPort $apiPort) }}
-{{- end -}}
-{{- if and .Values.desktop.enabled (eq $ttydPort 6080) -}}
-{{- fail "ttyd.port (6080) must not collide with noVNC port (6080)" }}
-{{- end -}}
-{{- else -}}
-{{- if or (eq (int .Values.ttyd.port) (int .Values.service.targetPort)) (eq (int .Values.ttyd.port) 6080) -}}
-{{- fail (printf "ttyd.port (%d) must not collide with gateway port (%d) or noVNC port (6080)" (int .Values.ttyd.port) (int .Values.service.targetPort)) }}
-{{- end -}}
-{{- end -}}
-{{- end -}}
+{{- include (printf "cetirun.agent.%s.validateTtydPort" (include "cetirun.agent.type" .)) . -}}
 {{- end }}
 
 {{/*
@@ -252,16 +224,10 @@ When image.digest is set, produces: repository:tag@digest
 Otherwise: repository:tag
 */}}
 {{- define "cetirun.image" -}}
-{{- if eq (.Values.agentType | default "hermes") "hermes" -}}
-{{- $repo := .Values.hermes.image.repository -}}
-{{- $tag := .Values.hermes.image.tag | default .Chart.AppVersion -}}
-{{- $digest := .Values.hermes.image.digest -}}
-{{ $repo }}:{{ $tag }}{{ if $digest }}@{{ $digest }}{{ end }}
+{{- if .Values.runtime -}}
+{{ .Values.runtime.agent.image }}
 {{- else -}}
-{{- $repo := .Values.image.repository | default .Values.openclaw.image.repository | default "cetirun.azurecr.io/openclaw-gateway" -}}
-{{- $tag := .Values.image.tag | default .Values.openclaw.image.tag | default .Chart.AppVersion -}}
-{{- $digest := .Values.image.digest | default .Values.openclaw.image.digest -}}
-{{ $repo }}:{{ $tag }}{{ if $digest }}@{{ $digest }}{{ end }}
+{{- include (printf "cetirun.agent.%s.image" (include "cetirun.agent.type" .)) . -}}
 {{- end -}}
 {{- end }}
 
@@ -269,11 +235,7 @@ Otherwise: repository:tag
 Container image pull policy for the selected agent image.
 */}}
 {{- define "cetirun.imagePullPolicy" -}}
-{{- if eq (.Values.agentType | default "hermes") "hermes" -}}
-{{ .Values.hermes.image.pullPolicy | default .Values.image.pullPolicy | default "Always" }}
-{{- else -}}
-{{ .Values.image.pullPolicy | default .Values.openclaw.image.pullPolicy | default "Always" }}
-{{- end }}
+{{- include (printf "cetirun.agent.%s.imagePullPolicy" (include "cetirun.agent.type" .)) . -}}
 {{- end }}
 
 {{/*
@@ -295,9 +257,7 @@ Validate that browser attach-only mode does not point at the local desktop
 CDP endpoint when the desktop sidecar is disabled.
 */}}
 {{- define "cetirun.validateDesktopBrowserConfig" -}}
-{{- if and (eq (.Values.agentType | default "hermes") "openclaw") (not .Values.desktop.enabled) (dig "browser" "enabled" true .Values.openclaw.config) (dig "browser" "attachOnly" false .Values.openclaw.config) -}}
-{{- fail "desktop.enabled=false is incompatible with browser.attachOnly=true; enable the desktop sidecar or set openclaw.config.browser.attachOnly=false" -}}
-{{- end -}}
+{{- include (printf "cetirun.agent.%s.validateDesktopBrowserConfig" (include "cetirun.agent.type" .)) . -}}
 {{- end }}
 
 {{/*
@@ -319,110 +279,95 @@ These dispatch to the appropriate agent-specific template based on .Values.agent
 Dispatcher: init containers
 */}}
 {{- define "cetirun.agent.initContainers" -}}
-{{- if eq (.Values.agentType | default "hermes") "hermes" -}}
-{{- include "cetirun.agent.hermes.initContainers" . -}}
-{{- else -}}
-{{- include "cetirun.agent.openclaw.initContainers" . -}}
-{{- end -}}
+{{- include (printf "cetirun.agent.%s.initContainers" (include "cetirun.agent.type" .)) . -}}
 {{- end }}
 
 {{/*
 Dispatcher: container args
 */}}
 {{- define "cetirun.agent.args" -}}
-{{- if eq (.Values.agentType | default "hermes") "hermes" -}}
-{{- include "cetirun.agent.hermes.args" . -}}
-{{- else -}}
-{{- include "cetirun.agent.openclaw.args" . -}}
-{{- end -}}
+{{- include (printf "cetirun.agent.%s.args" (include "cetirun.agent.type" .)) . -}}
 {{- end }}
 
 {{/*
 Dispatcher: container ports
 */}}
 {{- define "cetirun.agent.ports" -}}
-{{- if eq (.Values.agentType | default "hermes") "hermes" -}}
-{{- include "cetirun.agent.hermes.ports" . -}}
+{{- if .Values.runtime -}}
+{{- range .Values.runtime.ports }}
+- name: {{ .name }}
+  containerPort: {{ .number }}
+  protocol: TCP
+{{- end }}
 {{- else -}}
-{{- include "cetirun.agent.openclaw.ports" . -}}
-{{- end -}}
+{{- include (printf "cetirun.agent.%s.ports" (include "cetirun.agent.type" .)) . -}}
+{{- end }}
 {{- end }}
 
 {{/*
 Dispatcher: container env vars (agent-specific)
 */}}
 {{- define "cetirun.agent.envVars" -}}
-{{- if eq (.Values.agentType | default "hermes") "hermes" -}}
-{{- include "cetirun.agent.hermes.envVars" . -}}
-{{- else -}}
-{{- include "cetirun.agent.openclaw.envVars" . -}}
-{{- end -}}
+{{- include (printf "cetirun.agent.%s.envVars" (include "cetirun.agent.type" .)) . -}}
 {{- end }}
 
 {{/*
 Dispatcher: liveness/readiness probe path and port
 */}}
 {{- define "cetirun.agent.probePathPort" -}}
-{{- if eq (.Values.agentType | default "hermes") "hermes" -}}
-{{- include "cetirun.agent.hermes.probePathPort" . -}}
+{{- if .Values.runtime -}}
+path: {{ .Values.runtime.http.healthPath }}
+port: {{ .Values.runtime.http.portName }}
 {{- else -}}
-{{- include "cetirun.agent.openclaw.probePathPort" . -}}
-{{- end -}}
+{{- include (printf "cetirun.agent.%s.probePathPort" (include "cetirun.agent.type" .)) . -}}
+{{- end }}
 {{- end }}
 
 {{/*
 Dispatcher: startup probe path and port
 */}}
 {{- define "cetirun.agent.startupProbePathPort" -}}
-{{- if eq (.Values.agentType | default "hermes") "hermes" -}}
-{{- include "cetirun.agent.hermes.startupProbePathPort" . -}}
+{{- if .Values.runtime -}}
+path: {{ .Values.runtime.http.startupPath }}
+port: {{ .Values.runtime.http.portName }}
 {{- else -}}
-{{- include "cetirun.agent.openclaw.startupProbePathPort" . -}}
-{{- end -}}
+{{- include (printf "cetirun.agent.%s.startupProbePathPort" (include "cetirun.agent.type" .)) . -}}
+{{- end }}
 {{- end }}
 
 {{/*
 Dispatcher: Tailscale serve port
 */}}
 {{- define "cetirun.agent.tailscaleServePort" -}}
-{{- if eq (.Values.agentType | default "hermes") "hermes" -}}
-{{- include "cetirun.agent.hermes.tailscaleServePort" . -}}
-{{- else -}}
-{{- include "cetirun.agent.openclaw.tailscaleServePort" . -}}
-{{- end -}}
+{{- include (printf "cetirun.agent.%s.tailscaleServePort" (include "cetirun.agent.type" .)) . -}}
 {{- end }}
 
 {{/*
 Dispatcher: logger volumeMount
 */}}
 {{- define "cetirun.agent.loggerVolumeMount" -}}
-{{- if eq (.Values.agentType | default "hermes") "hermes" -}}
-{{- include "cetirun.agent.hermes.loggerVolumeMount" . -}}
-{{- else -}}
-{{- include "cetirun.agent.openclaw.loggerVolumeMount" . -}}
-{{- end -}}
+{{- include (printf "cetirun.agent.%s.loggerVolumeMount" (include "cetirun.agent.type" .)) . -}}
 {{- end }}
 
 {{/*
 Dispatcher: service ports
 */}}
 {{- define "cetirun.agent.servicePorts" -}}
-{{- if eq (.Values.agentType | default "hermes") "hermes" -}}
-{{- include "cetirun.agent.hermes.servicePorts" . -}}
-{{- else -}}
-{{- include "cetirun.agent.openclaw.servicePorts" . -}}
-{{- end -}}
+{{- include (printf "cetirun.agent.%s.servicePorts" (include "cetirun.agent.type" .)) . -}}
 {{- end }}
 
 {{/*
 Dispatcher: network policy ingress ports
 */}}
 {{- define "cetirun.agent.networkPolicyIngressPorts" -}}
-{{- if eq (.Values.agentType | default "hermes") "hermes" -}}
-{{- include "cetirun.agent.hermes.networkPolicyIngressPorts" . -}}
+{{- if .Values.runtime -}}
+{{- range .Values.runtime.ports }}
+- protocol: TCP
+  port: {{ .number }}
+{{- end }}
 {{- else -}}
-{{- include "cetirun.agent.openclaw.networkPolicyIngressPorts" . -}}
-{{- end -}}
+{{- include (printf "cetirun.agent.%s.networkPolicyIngressPorts" (include "cetirun.agent.type" .)) . -}}
+{{- end }}
 {{- end }}
 
 {{/*
@@ -496,18 +441,12 @@ agents to extend their skill load path. Sanitization mirrors init-skills.sh:
 Dispatcher: configmap data
 */}}
 {{- define "cetirun.agent.configmapData" -}}
-{{- if eq (.Values.agentType | default "hermes") "hermes" -}}
-{{- include "cetirun.agent.hermes.configmapData" . -}}
-{{- else -}}
-{{- include "cetirun.agent.openclaw.configmapData" . -}}
-{{- end -}}
+{{- include (printf "cetirun.agent.%s.configmapData" (include "cetirun.agent.type" .)) . -}}
 {{- end }}
 
 {{/*
 Dispatcher: secret data
 */}}
 {{- define "cetirun.agent.secretData" -}}
-{{- if eq (.Values.agentType | default "hermes") "hermes" -}}
-{{- include "cetirun.agent.hermes.secretData" . -}}
-{{- end -}}
+{{- include (printf "cetirun.agent.%s.secretData" (include "cetirun.agent.type" .)) . -}}
 {{- end }}

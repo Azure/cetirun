@@ -6,7 +6,7 @@
 These import gateway.* (via adapter.py) so they only run inside the Hermes
 image, e.g.:
 
-    python -m pytest plugins/platforms/cetirun_teams/test_adapter.py -v
+    python -m pytest agents/hermes/plugins/platforms/cetirun_teams/test_adapter.py -v
 """
 
 import asyncio

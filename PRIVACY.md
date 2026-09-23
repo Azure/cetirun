@@ -34,8 +34,8 @@ Source: [portal claims](app/cetirun-portal/internal/auth/claims.go),
 [authentication middleware](app/cetirun-portal/internal/auth/middleware.go),
 [instance handlers](app/cetirun-portal/internal/handler/instance.go),
 [instance API types](app/cetirun-operator/api/v1alpha1/agent_types.go),
-[agent configuration templates](app/cetirun-chart/templates/_agent-openclaw.tpl),
-and [Hermes configuration templates](app/cetirun-chart/templates/_agent-hermes.tpl).
+[agent configuration templates](app/cetirun-chart/templates/agents/openclaw/_runtime.tpl),
+and [Hermes configuration templates](app/cetirun-chart/templates/agents/hermes/_runtime.tpl).
 
 ## Logging and metrics
 
@@ -64,11 +64,11 @@ stdout/stderr.
 
 Source: [chart defaults](app/cetirun-chart/values.yaml),
 [session logger](app/cetirun-chart/configs/session-logger.sh),
-[OpenClaw entrypoint](app/cetirun-chart/configs/entrypoint.sh),
-[Hermes entrypoint](app/cetirun-chart/configs/hermes-entrypoint.sh),
+[OpenClaw entrypoint](app/cetirun-chart/agents/openclaw/bootstrap/entrypoint.sh),
+[Hermes entrypoint](app/cetirun-chart/agents/hermes/bootstrap/hermes-entrypoint.sh),
 [portal handlers](app/cetirun-portal/internal/handler/instance.go),
 [operator reconciliation](app/cetirun-operator/internal/controller/agent_controller.go),
-and [Teams adapter](app/cetirun-chart/plugins/platforms/cetirun_teams/adapter.py).
+and [Teams adapter](app/cetirun-chart/agents/hermes/plugins/platforms/cetirun_teams/adapter.py).
 
 ### Infrastructure collection and traffic metadata
 
@@ -147,8 +147,8 @@ controls independently.
 Source: [auth helper](app/cetirun-chart/configs/cetirun-auth-service.py),
 [Graph client](app/cetirun-operator/internal/azure/graphclient.go),
 [Bot Service client](app/cetirun-operator/internal/azure/botservice.go),
-[Teams authentication](app/cetirun-chart/plugins/platforms/cetirun_teams/auth.py),
-[Teams adapter](app/cetirun-chart/plugins/platforms/cetirun_teams/adapter.py),
+[Teams authentication](app/cetirun-chart/agents/hermes/plugins/platforms/cetirun_teams/auth.py),
+[Teams adapter](app/cetirun-chart/agents/hermes/plugins/platforms/cetirun_teams/adapter.py),
 [base image recipe](app/cetirun-chart/Dockerfile.base),
 [desktop recipe](app/cetirun-chart/Dockerfile.desktop),
 [skill initialization](app/cetirun-chart/configs/init-skills.sh),

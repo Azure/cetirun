@@ -3,6 +3,55 @@ Copyright (c) Microsoft Corporation.
 Licensed under the MIT License.
 */}}
 
+{{- define "cetirun.agent.hermes.validateSecrets" -}}{{- end }}
+{{- define "cetirun.agent.hermes.validateDesktopBrowserConfig" -}}{{- end }}
+
+{{- define "cetirun.agent.hermes.validatePorts" -}}
+{{- $apiPort := int .Values.hermes.env.API_SERVER_PORT -}}
+{{- if and .Values.desktop.enabled (eq $apiPort 5900) -}}
+{{- fail "hermes API port must not collide with desktop VNC port (5900)" }}
+{{- end -}}
+{{- if eq $apiPort 9119 -}}
+{{- fail "hermes API port must not collide with dashboard port (9119)" }}
+{{- end -}}
+{{- if eq (int .Values.msteamsWebhookPort) 9119 -}}
+{{- fail "MS Teams webhook port must not collide with Hermes dashboard port (9119)" }}
+{{- end -}}
+{{- if and .Values.desktop.enabled (eq $apiPort 6080) -}}
+{{- fail "hermes API port must not collide with noVNC port (6080)" }}
+{{- end -}}
+{{- end }}
+
+{{- define "cetirun.agent.hermes.validateTtydPort" -}}
+{{- if .Values.ttyd.enabled -}}
+{{- $apiPort := int .Values.hermes.env.API_SERVER_PORT -}}
+{{- $ttydPort := int .Values.ttyd.port -}}
+{{- if and .Values.desktop.enabled (eq $ttydPort 5900) -}}
+{{- fail "ttyd.port must not collide with desktop VNC port (5900)" }}
+{{- end -}}
+{{- if eq $ttydPort 9119 -}}
+{{- fail "ttyd.port (9119) must not collide with Hermes dashboard port (9119)" }}
+{{- end -}}
+{{- if eq $ttydPort $apiPort -}}
+{{- fail (printf "ttyd.port (%d) must not collide with hermes API port (%d)" $ttydPort $apiPort) }}
+{{- end -}}
+{{- if and .Values.desktop.enabled (eq $ttydPort 6080) -}}
+{{- fail "ttyd.port (6080) must not collide with noVNC port (6080)" }}
+{{- end -}}
+{{- end -}}
+{{- end }}
+
+{{- define "cetirun.agent.hermes.image" -}}
+{{- $repo := .Values.hermes.image.repository -}}
+{{- $tag := .Values.hermes.image.tag | default .Chart.AppVersion -}}
+{{- $digest := .Values.hermes.image.digest -}}
+{{ $repo }}:{{ $tag }}{{ if $digest }}@{{ $digest }}{{ end }}
+{{- end }}
+
+{{- define "cetirun.agent.hermes.imagePullPolicy" -}}
+{{ .Values.hermes.image.pullPolicy | default .Values.image.pullPolicy | default "Always" }}
+{{- end }}
+
 {{/*
 Hermes agent-specific named templates.
 These are called by dispatcher templates in _helpers.tpl based on .Values.agentType.
@@ -26,6 +75,8 @@ Hermes init containers
       type: RuntimeDefault
   command: ["/bin/sh", "/etc/cetirun/hermes-init-home.sh"]
   env:
+    - name: CETIRUN_INIT_IMAGE
+      value: {{ include "cetirun.image" . | quote }}
     - name: HERMES_HOME
       value: "/home/vibe/.hermes"
   volumeMounts:
@@ -161,52 +212,14 @@ Hermes configmap data
 */}}
 {{- define "cetirun.agent.hermes.configmapData" }}
   hermes-config.yaml: |
-    {{- $config := deepCopy .Values.hermes.config }}
-    {{- $provider := .Values.secrets.provider | default "github_copilot" }}
-    {{- $hermesProvider := "copilot" }}
-    {{- if eq $provider "openai" }}
-    {{- $hermesProvider = "openai" }}
-    {{- else if eq $provider "anthropic" }}
-    {{- $hermesProvider = "anthropic" }}
+    {{- if .Values.runtime }}
+{{ index .Values.runtime.configFiles "hermes-config.yaml" | indent 4 }}
+    {{- else }}
+    {{- $context := dict "Values" .Values "Chart" .Chart "SkillDirs" (include "cetirun.npmSkillDirs" . | fromJsonArray) "TailscaleEnabled" (include "cetirun.tailscaleEnabled" .) }}
+{{ tpl (.Files.Get "agents/hermes/config/native.tpl") $context | trim | indent 4 }}
     {{- end }}
-    {{- $model := required "secrets.model must be set by the CetiRun operator or Helm values" .Values.secrets.model }}
-    {{- $_ := set $config "model" (dict "default" $model "provider" $hermesProvider) }}
-    {{- $msteamsAuthType := default "" .Values.msteamsAuthType }}
-    {{- $teamsConfigured :=
-        or
-          (and
-            (gt (int .Values.msteamsWebhookPort) 0)
-            .Values.secrets.msteamsAppId
-            .Values.secrets.msteamsTenantId
-            (or
-              (and (or (eq $msteamsAuthType "") (eq $msteamsAuthType "secret")) .Values.secrets.msteamsAppPassword)
-              (or (eq $msteamsAuthType "managedIdentity") (eq $msteamsAuthType "certificate"))
-            )
-          )
-          (and (gt (int .Values.msteamsWebhookPort) 0) .Values.secrets.existingSecret)
-    }}
-    {{- if $teamsConfigured }}
-    {{- $platforms := dig "platforms" (dict) $config }}
-    {{- $cetirunTeams := dict "enabled" true "extra" (dict "port" (int .Values.msteamsWebhookPort)) }}
-    {{- $_ := set $platforms "cetirun_teams" $cetirunTeams }}
-    {{- $_ := set $config "platforms" $platforms }}
-    {{- end }}
-    {{- if .Values.skills.shared }}
-    {{- $skills := dig "skills" (dict) $config }}
-    {{- $existingDirs := dig "external_dirs" (list) $skills }}
-    {{- $_ := set $skills "external_dirs" (append $existingDirs .Values.skills.mountPath | uniq) }}
-    {{- $_ := set $config "skills" $skills }}
-    {{- end }}
-    {{- if .Values.skills.npm }}
-    {{- $skills := dig "skills" (dict) $config }}
-    {{- $existingDirs := dig "external_dirs" (list) $skills }}
-    {{- $npmDirs := include "cetirun.npmSkillDirs" . | fromJsonArray }}
-    {{- $_ := set $skills "external_dirs" (concat $existingDirs $npmDirs | uniq) }}
-    {{- $_ := set $config "skills" $skills }}
-    {{- end }}
-{{ $config | toYaml | indent 4 }}
   hermes-soul.md: |
-{{ .Files.Get "personality/hermes/SOUL.md" | indent 4 }}
+{{ .Files.Get "agents/hermes/personality/SOUL.md" | indent 4 }}
   hermes-user.md: |
     § Name: {{ .Values.user.displayName | default "" }}
     § Alias: {{ .Values.user.alias | default "" }}
@@ -226,11 +239,13 @@ Hermes configmap data
     {{- end }}
     {{- end }}
   hermes-init-home.sh: |
-{{ .Files.Get "configs/hermes-init-home.sh" | indent 4 }}
+{{ .Files.Get "agents/hermes/bootstrap/hermes-init-home.sh" | indent 4 }}
+  hermes-apply-config.py: |
+{{ .Files.Get "agents/hermes/bootstrap/hermes-apply-config.py" | indent 4 }}
   init-skills.sh: |
 {{ .Files.Get "configs/init-skills.sh" | indent 4 }}
   hermes-auth.sh: |
-{{ .Files.Get "configs/hermes-auth.sh" | indent 4 }}
+{{ .Files.Get "agents/hermes/bootstrap/hermes-auth.sh" | indent 4 }}
   session-logger.sh: |
 {{ .Files.Get "configs/session-logger.sh" | indent 4 }}
 {{- end }}
