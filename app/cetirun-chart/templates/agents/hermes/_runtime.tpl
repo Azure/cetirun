@@ -42,8 +42,11 @@ Licensed under the MIT License.
 {{- end }}
 
 {{- define "cetirun.agent.hermes.image" -}}
+{{- $registry := include "cetirun.registry" . -}}
+{{- $version := include "cetirun.version" . -}}
 {{- $repo := .Values.hermes.image.repository -}}
-{{- $tag := .Values.hermes.image.tag | default .Chart.AppVersion -}}
+{{- if $registry }}{{- $repo = printf "%s/hermes-gateway" $registry -}}{{- end -}}
+{{- $tag := $version | default .Values.hermes.image.tag | default .Chart.AppVersion -}}
 {{- $digest := .Values.hermes.image.digest -}}
 {{ $repo }}:{{ $tag }}{{ if $digest }}@{{ $digest }}{{ end }}
 {{- end }}

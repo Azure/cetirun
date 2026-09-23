@@ -5,7 +5,7 @@ metadata:
   namespace: {{ .Values.namespace }}
   labels:
     app.kubernetes.io/name: cetirun-operator
-    app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+    app.kubernetes.io/version: {{ include "cetirun-operator.version" . | default .Chart.AppVersion | quote }}
     app.kubernetes.io/managed-by: {{ .Release.Service }}
 spec:
   replicas: {{ .Values.replicaCount }}
@@ -16,7 +16,7 @@ spec:
     metadata:
       labels:
         app.kubernetes.io/name: cetirun-operator
-        app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+        app.kubernetes.io/version: {{ include "cetirun-operator.version" . | default .Chart.AppVersion | quote }}
         {{- if .Values.azure.clientId }}
         azure.workload.identity/use: "true"
         {{- end }}
@@ -36,8 +36,8 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args:
             - --leader-elect={{ .Values.leaderElection }}
-            - --chart-repo-url={{ .Values.cetirun.chart.repoURL }}
-            - --chart-version={{ .Values.cetirun.chart.version }}
+            - --chart-repo-url={{ include "cetirun-operator.chartRepoURL" . }}
+            - --chart-version={{ include "cetirun-operator.chartVersion" . }}
             - --domain-suffix={{ .Values.domainSuffix }}
             - {{ printf "--istio-gateway=%s" .Values.istioGateway | quote }}
             - {{ printf "--default-model=%s" .Values.cetirun.defaultModel | quote }}

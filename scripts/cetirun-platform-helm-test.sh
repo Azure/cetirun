@@ -67,6 +67,27 @@ for crd_name in agents.cetirun.microsoft.com teams.cetirun.microsoft.com; do
   }
 done
 
+echo "==> helm template platform (shared registry and version)"
+output=$(helm template platform "${chart_dir}" "${base_args[@]}" \
+  --set-string global.registry=registry.example.com \
+  --set-string global.version=9.8.7)
+grep -q 'image: "registry.example.com/cetirun-operator:9.8.7"' <<< "${output}" || {
+  echo "FAIL: operator image did not inherit global release coordinates" >&2
+  exit 1
+}
+grep -q 'image: "registry.example.com/cetirun-portal:9.8.7"' <<< "${output}" || {
+  echo "FAIL: portal image did not inherit global release coordinates" >&2
+  exit 1
+}
+grep -q -- '--chart-repo-url=oci://registry.example.com/helm/cetirun' <<< "${output}" || {
+  echo "FAIL: operator Runtime Chart URL did not inherit global.registry" >&2
+  exit 1
+}
+grep -q -- '--chart-version=9.8.7' <<< "${output}" || {
+  echo "FAIL: operator Runtime Chart version did not inherit global.version" >&2
+  exit 1
+}
+
 echo "==> helm template platform (custom gateway)"
 output=$(helm template platform "${chart_dir}" "${base_args[@]}" \
   --set-string cetirun-operator.istioGateway=gateway-resources/custom-gateway \

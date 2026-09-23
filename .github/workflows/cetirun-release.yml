@@ -66,6 +66,10 @@ jobs:
             echo "ERROR: Chart.yaml version '${chart_version}' does not match tag version '${version}'" >&2
             errors=1
           fi
+          if [ "${app_version}" != "${version}" ]; then
+            echo "ERROR: Chart.yaml appVersion '${app_version}' does not match tag version '${version}'" >&2
+            errors=1
+          fi
           if [ "${errors}" -ne 0 ]; then
             exit 1
           fi
@@ -90,6 +94,8 @@ jobs:
           push: false
           tags: cetirun-base:validation
           build-args: |
+            VERSION=${{ steps.version.outputs.version }}
+            GIT_SHA=${{ github.sha }}
             NPM_REGISTRY=${{ env.NPM_REGISTRY }}
 
       - name: Build OpenClaw image (no push)
@@ -99,6 +105,8 @@ jobs:
           file: app/cetirun-chart/agents/openclaw/Dockerfile
           push: false
           build-args: |
+            VERSION=${{ steps.version.outputs.version }}
+            GIT_SHA=${{ github.sha }}
             BASE_IMAGE=cetirun-base:validation
             NPM_REGISTRY=${{ env.OPENCLAW_NPM_REGISTRY }}
           tags: openclaw-gateway:validation
@@ -110,6 +118,8 @@ jobs:
           file: app/cetirun-chart/agents/hermes/Dockerfile
           push: false
           build-args: |
+            VERSION=${{ steps.version.outputs.version }}
+            GIT_SHA=${{ github.sha }}
             BASE_IMAGE=cetirun-base:validation
           tags: hermes-gateway:validation
 
@@ -119,6 +129,9 @@ jobs:
           context: app/cetirun-chart
           file: app/cetirun-chart/Dockerfile.desktop
           push: false
+          build-args: |
+            VERSION=${{ steps.version.outputs.version }}
+            GIT_SHA=${{ github.sha }}
           tags: cetirun-desktop:validation
 
   release:
@@ -157,6 +170,8 @@ jobs:
           provenance: true
           sbom: true
           build-args: |
+            VERSION=${{ needs.validate.outputs.version }}
+            GIT_SHA=${{ github.sha }}
             NPM_REGISTRY=${{ env.NPM_REGISTRY }}
           tags: |
             ${{ secrets.ACR_REGISTRY }}/cetirun-base:${{ needs.validate.outputs.version }}
@@ -172,6 +187,8 @@ jobs:
           provenance: true
           sbom: true
           build-args: |
+            VERSION=${{ needs.validate.outputs.version }}
+            GIT_SHA=${{ github.sha }}
             BASE_IMAGE=${{ secrets.ACR_REGISTRY }}/cetirun-base:${{ needs.validate.outputs.version }}
             NPM_REGISTRY=${{ env.OPENCLAW_NPM_REGISTRY }}
           tags: |
@@ -188,6 +205,8 @@ jobs:
           provenance: true
           sbom: true
           build-args: |
+            VERSION=${{ needs.validate.outputs.version }}
+            GIT_SHA=${{ github.sha }}
             BASE_IMAGE=${{ secrets.ACR_REGISTRY }}/cetirun-base:${{ needs.validate.outputs.version }}
           tags: |
             ${{ secrets.ACR_REGISTRY }}/hermes-gateway:${{ needs.validate.outputs.version }}
@@ -202,6 +221,9 @@ jobs:
           push: true
           provenance: true
           sbom: true
+          build-args: |
+            VERSION=${{ needs.validate.outputs.version }}
+            GIT_SHA=${{ github.sha }}
           tags: |
             ${{ secrets.ACR_REGISTRY }}/cetirun-desktop:${{ needs.validate.outputs.version }}
             ${{ secrets.ACR_REGISTRY }}/cetirun-desktop:latest
@@ -212,6 +234,7 @@ jobs:
       - name: Package and push Helm chart
         env:
           REGISTRY: ${{ secrets.ACR_REGISTRY }}
+          VERSION: ${{ needs.validate.outputs.version }}
           VERIFY_PULL: "true"
         run: scripts/cetirun-helm-release.sh
 
@@ -266,6 +289,7 @@ jobs:
       - name: Package and push Helm chart to stage ACR
         env:
           REGISTRY: ${{ secrets.E2E_ACR_REGISTRY }}
+          VERSION: ${{ needs.validate.outputs.version }}
           VERIFY_PULL: "true"
         run: scripts/cetirun-helm-release.sh
 

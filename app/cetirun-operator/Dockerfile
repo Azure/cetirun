@@ -1,8 +1,13 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 
+ARG VERSION=dev
+ARG GIT_SHA=unknown
+
 # Build stage
 FROM mcr.microsoft.com/oss/go/microsoft/golang:1.26.8-1@sha256:5ef73864bf3795d1a5514e59b388028ad80190d7ba48f62f872328db9689e38d AS builder
+ARG VERSION
+ARG GIT_SHA
 
 WORKDIR /workspace
 
@@ -14,11 +19,20 @@ RUN go mod download
 COPY app/cetirun-operator/ .
 
 # Build the manager binary.
-RUN GOOS=linux go build -a -o manager ./cmd/main.go
+RUN GOOS=linux go build -a \
+    -ldflags "-X github.com/Azure/CetiRun/app/cetirun-operator/internal/buildinfo.Version=${VERSION} -X github.com/Azure/CetiRun/app/cetirun-operator/internal/buildinfo.Commit=${GIT_SHA}" \
+    -o manager ./cmd/main.go
 
 # ──────────────────────────────────────────────
 # Runtime stage
 FROM mcr.microsoft.com/azurelinux/distroless/base:3.0@sha256:4377af4aa7a810b7d59f691eae5066895a71aa3eee4cfb4eba527bbebff16479
+ARG VERSION
+ARG GIT_SHA
+
+LABEL org.opencontainers.image.source="https://github.com/Azure/CetiRun"
+LABEL org.opencontainers.image.version="${VERSION}"
+LABEL org.opencontainers.image.revision="${GIT_SHA}"
+LABEL org.opencontainers.image.licenses="MIT"
 
 WORKDIR /
 

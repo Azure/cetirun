@@ -75,6 +75,7 @@ jobs:
       - name: Package and push Helm chart to prod ACR
         env:
           REGISTRY: ${{ secrets.ACR_REGISTRY }}
+          VERSION: ${{ needs.validate.outputs.version }}
           VERIFY_PULL: "true"
         run: scripts/istio-helm-release.sh
 
@@ -84,6 +85,7 @@ jobs:
       - name: Package and push Helm chart to stage ACR
         env:
           REGISTRY: ${{ secrets.E2E_ACR_REGISTRY }}
+          VERSION: ${{ needs.validate.outputs.version }}
           VERIFY_PULL: "true"
         run: scripts/istio-helm-release.sh
 

@@ -1,3 +1,13 @@
+# -- Shared release coordinates. An umbrella chart can set these once for all
+# CetiRun subcharts.
+global:
+  # -- Optional registry hostname override for the Portal image.
+  # Empty preserves image.repository below.
+  registry: ""
+  # -- Optional shared image and component version override.
+  # Empty preserves image.tag and Chart.appVersion defaults.
+  version: ""
+
 # -- Number of portal replicas.
 replicaCount: 2
 

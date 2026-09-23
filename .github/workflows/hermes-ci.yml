@@ -52,6 +52,8 @@ jobs:
           provenance: true
           sbom: true
           build-args: |
+            VERSION=${{ steps.tag.outputs.tag }}
+            GIT_SHA=${{ github.sha }}
             BASE_IMAGE=${{ secrets.ACR_REGISTRY }}/cetirun-base:latest
           tags: |
             ${{ secrets.ACR_REGISTRY }}/hermes-gateway:${{ steps.tag.outputs.tag }}

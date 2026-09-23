@@ -126,6 +126,9 @@ jobs:
           push: true
           provenance: true
           sbom: true
+          build-args: |
+            VERSION=${{ needs.validate.outputs.version }}
+            GIT_SHA=${{ github.sha }}
           tags: |
             ${{ secrets.ACR_REGISTRY }}/cetirun-operator:${{ needs.validate.outputs.version }}
             ${{ secrets.ACR_REGISTRY }}/cetirun-operator:latest
@@ -136,6 +139,7 @@ jobs:
       - name: Package and push Helm chart
         env:
           REGISTRY: ${{ secrets.ACR_REGISTRY }}
+          VERSION: ${{ needs.validate.outputs.version }}
           VERIFY_PULL: "true"
         run: scripts/operator-helm-release.sh
 
@@ -163,6 +167,7 @@ jobs:
       - name: Package and push Helm chart to stage ACR
         env:
           REGISTRY: ${{ secrets.E2E_ACR_REGISTRY }}
+          VERSION: ${{ needs.validate.outputs.version }}
           VERIFY_PULL: "true"
         run: scripts/operator-helm-release.sh
 

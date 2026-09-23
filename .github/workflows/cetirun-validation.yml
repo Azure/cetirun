@@ -34,8 +34,8 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Check Python syntax and offline helper regressions
-        run: make python-check ci-test
+      - name: Check release metadata, Python syntax, and offline helper regressions
+        run: make version-check python-check ci-test
 
   python-tests:
     name: CetiRun auth and Teams tests

@@ -9,7 +9,9 @@ repo_root="$(cd "$script_dir/.." && pwd)"
 
 registry="${REGISTRY:-cetirun.azurecr.io}"
 image_name="${IMAGE_NAME:-openclaw-gateway}"
-image_tag="${IMAGE_TAG:-latest}"
+release_version="${VERSION:-$("${script_dir}/cetirun-release-metadata.sh" version)}"
+image_tag="${IMAGE_TAG:-${release_version}}"
+git_sha="${GIT_SHA:-$(git -C "${repo_root}" rev-parse HEAD 2>/dev/null || echo unknown)}"
 push="${PUSH:-false}"
 context_dir="${repo_root}/app/cetirun-chart"
 dockerfile="${DOCKERFILE:-agents/openclaw/Dockerfile}"
@@ -27,6 +29,10 @@ npm_registry_args=(--build-arg "NPM_REGISTRY=${npm_registry}")
 # explicitly select their own package proxy with PYPI_INDEX_URL.
 pypi_index_url="${PYPI_INDEX_URL:-https://pypi.org/simple/}"
 pypi_index_args=(--build-arg "PYPI_INDEX_URL=${pypi_index_url}")
+release_build_args=(
+  --build-arg "VERSION=${image_tag}"
+  --build-arg "GIT_SHA=${git_sha}"
+)
 
 # Preserve the separate OpenClaw override for deployments using different mirrors.
 openclaw_npm_registry="${OPENCLAW_NPM_REGISTRY:-https://registry.npmjs.org/}"
@@ -47,6 +53,7 @@ if [ "${build_base}" = "true" ]; then
     --platform linux/amd64
     -f "${context_dir}/Dockerfile.base"
     -t "${base_image_ref}"
+    "${release_build_args[@]}"
     "${npm_registry_args[@]}"
     "${pypi_index_args[@]}"
     "${common_output_args[@]}"
@@ -69,6 +76,7 @@ build_args=(
   -f "${context_dir}/${dockerfile}"
   -t "${image_ref}"
   --build-arg "BASE_IMAGE=${base_image_ref}"
+  "${release_build_args[@]}"
   "${image_npm_registry_args[@]}"
   "${common_output_args[@]}"
 )
@@ -88,6 +96,7 @@ if [ "${build_hermes}" = "true" ]; then
     -f "${context_dir}/agents/hermes/Dockerfile"
     -t "${hermes_image_ref}"
     --build-arg "BASE_IMAGE=${base_image_ref}"
+    "${release_build_args[@]}"
     "${npm_registry_args[@]}"
     "${pypi_index_args[@]}"
     "${common_output_args[@]}"
@@ -106,6 +115,7 @@ if [ "${build_desktop}" = "true" ]; then
     --platform linux/amd64
     -f "${context_dir}/Dockerfile.desktop"
     -t "${desktop_image_ref}"
+    "${release_build_args[@]}"
     "${common_output_args[@]}"
   )
   if [ "${push}" = "true" ]; then

@@ -4,6 +4,25 @@
     "title": "CetiRun Helm Chart Values Schema",
     "description": "JSON Schema for validating CetiRun agent chart values",
     "properties": {
+        "global": {
+            "type": "object",
+            "description": "Shared release coordinates inherited from an umbrella chart",
+            "properties": {
+                "registry": {
+                    "type": "string",
+                    "description": "Optional registry hostname override for all CetiRun images",
+                    "default": ""
+                },
+                "version": {
+                    "type": "string",
+                    "description": "Shared image and component version; empty defaults to Chart appVersion",
+                    "default": ""
+                }
+            },
+            "required": [
+                "registry"
+            ]
+        },
         "agentType": {
             "type": "string",
             "description": "Agent framework to run in this instance",

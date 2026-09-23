@@ -147,6 +147,8 @@ jobs:
           provenance: true
           sbom: true
           build-args: |
+            VERSION=${{ needs.validate.outputs.version }}
+            GIT_SHA=${{ github.sha }}
             NPM_REGISTRY=${{ env.NPM_CONFIG_REGISTRY }}
           tags: |
             ${{ secrets.ACR_REGISTRY }}/cetirun-portal:${{ needs.validate.outputs.version }}
@@ -158,6 +160,7 @@ jobs:
       - name: Package and push Helm chart
         env:
           REGISTRY: ${{ secrets.ACR_REGISTRY }}
+          VERSION: ${{ needs.validate.outputs.version }}
           VERIFY_PULL: "true"
         run: scripts/portal-helm-release.sh
 
@@ -185,6 +188,7 @@ jobs:
       - name: Package and push Helm chart to stage ACR
         env:
           REGISTRY: ${{ secrets.E2E_ACR_REGISTRY }}
+          VERSION: ${{ needs.validate.outputs.version }}
           VERIFY_PULL: "true"
         run: scripts/portal-helm-release.sh
 

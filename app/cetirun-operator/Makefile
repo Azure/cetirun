@@ -9,6 +9,10 @@ IMG ?= cetirun.azurecr.io/cetirun-operator:latest
 # Go build settings
 GOFLAGS ?=
 CGO_ENABLED ?= 0
+VERSION ?= dev
+GIT_SHA ?= $(shell git rev-parse HEAD 2>/dev/null || echo unknown)
+LDFLAGS := -X github.com/Azure/CetiRun/app/cetirun-operator/internal/buildinfo.Version=$(VERSION) \
+	-X github.com/Azure/CetiRun/app/cetirun-operator/internal/buildinfo.Commit=$(GIT_SHA)
 CONTROLLER_GEN_VERSION := v0.21.0
 CONTROLLER_GEN ?= controller-gen
 
@@ -24,7 +28,7 @@ all: build
 
 ## Build the operator binary
 build:
-	CGO_ENABLED=$(CGO_ENABLED) go build $(GOFLAGS) -o bin/manager ./cmd/main.go
+	CGO_ENABLED=$(CGO_ENABLED) go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o bin/manager ./cmd/main.go
 
 ## Run unit tests
 test:
@@ -45,7 +49,8 @@ deps:
 
 ## Build the Docker image
 docker-build:
-	docker build -f Dockerfile -t $(IMG) ../../
+	docker build -f Dockerfile -t $(IMG) \
+		--build-arg VERSION=$(VERSION) --build-arg GIT_SHA=$(GIT_SHA) ../../
 
 ## Push the Docker image
 docker-push:

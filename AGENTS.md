@@ -37,6 +37,21 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md), [DEVELOPMENT.md](DEVELOPMENT.md), and
 - Keep build output, caches, local configuration, and unrelated formatting out
   of the diff.
 
+## Versioning and publishing
+
+- `app/cetirun-chart/Chart.yaml` is the default release-version source. For an
+  official version change, run `make set-version VERSION=X.Y.Z`; do not update
+  individual Chart, Go, Portal, or Teams version fields by hand.
+- Validate the synchronized source with `make check`. Operator and Portal Go
+  binaries receive the release version and Git commit during Makefile, Docker,
+  and release-workflow builds.
+- After explicit authorization and registry authentication, publish everything
+  with `make publish REGISTRY=registry.example.com`. Use `make publish-images`
+  or `make publish-charts` when only one artifact class is requested.
+- Publishing pushes six images and five OCI Helm charts and verifies Chart
+  pulls. It does not log in to the registry, deploy to Kubernetes, or authorize
+  changing another registry or environment.
+
 ## Public-data and review boundary
 
 - Use synthetic fixtures and public example domains. Do not add credentials,

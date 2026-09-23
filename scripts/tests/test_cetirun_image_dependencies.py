@@ -109,11 +109,13 @@ class ImageDependencyTests(unittest.TestCase):
 
     def test_plugin_install_and_identity_cleanup_failure_handling(self):
         content = (CHART / "agents/openclaw/Dockerfile").read_text()
-        install = re.search(
-            r"^RUN (openclaw plugins install.*)$",
+        match = re.search(
+            r"^RUN (.*openclaw plugins install.*)$",
             content.replace("\\\n", ""),
             re.MULTILINE,
-        )[1]
+        )
+        self.assertIsNotNone(match)
+        install = match[1]
         self.assertIn("(openclaw doctor --fix --non-interactive --yes || true)", install)
         self.assertIn("rm -rf /home/vibe/.openclaw/identity", install)
         self.assertIn("rm -f /home/vibe/.openclaw/openclaw.json", install)

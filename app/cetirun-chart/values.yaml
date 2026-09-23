@@ -2,6 +2,16 @@
 # This is a YAML-formatted file.
 # Declare variables to be passed into your templates.
 
+# -- Shared release coordinates. Parent charts can set these once and Helm
+# propagates them to subcharts through the global values namespace.
+global:
+  # -- Optional registry hostname override for all CetiRun images.
+  # Empty preserves the component repository defaults below.
+  registry: ""
+  # -- Optional shared image and component version override.
+  # Empty preserves component tags and Chart.appVersion defaults.
+  version: ""
+
 # -- Agent framework to run in this instance: openclaw or hermes
 agentType: hermes
 

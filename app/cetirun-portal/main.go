@@ -6,6 +6,8 @@ package main
 import (
 	"context"
 	"embed"
+	"flag"
+	"fmt"
 	"io/fs"
 	"log/slog"
 	"net/http"
@@ -22,6 +24,7 @@ import (
 
 	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-portal/internal/auth"
+	"github.com/Azure/CetiRun/app/cetirun-portal/internal/buildinfo"
 	"github.com/Azure/CetiRun/app/cetirun-portal/internal/config"
 	"github.com/Azure/CetiRun/app/cetirun-portal/internal/handler"
 	"github.com/Azure/CetiRun/app/cetirun-portal/internal/kube"
@@ -32,8 +35,16 @@ import (
 var staticFiles embed.FS
 
 func main() {
+	showVersion := flag.Bool("version", false, "Print version information and exit.")
+	flag.Parse()
+	if *showVersion {
+		fmt.Printf("cetirun-portal %s (%s)\n", buildinfo.Version, buildinfo.Commit)
+		return
+	}
+
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	slog.SetDefault(logger)
+	slog.Info("Starting CetiRun Portal", "version", buildinfo.Version, "commit", buildinfo.Commit)
 
 	cfg := config.Load()
 

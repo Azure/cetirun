@@ -37,6 +37,18 @@ If release name contains chart name it will be used as a full name.
 {{- end }}
 
 {{/*
+Shared registry and version defaults. Explicit component image values remain
+higher-priority overrides.
+*/}}
+{{- define "cetirun.registry" -}}
+{{- .Values.global.registry | trimSuffix "/" -}}
+{{- end }}
+
+{{- define "cetirun.version" -}}
+{{- .Values.global.version -}}
+{{- end }}
+
+{{/*
 Create chart name and version as used by the chart label.
 */}}
 {{- define "cetirun.chart" -}}
@@ -49,8 +61,9 @@ Common labels
 {{- define "cetirun.labels" -}}
 helm.sh/chart: {{ include "cetirun.chart" . }}
 {{ include "cetirun.selectorLabels" . }}
-{{- if .Chart.AppVersion }}
-app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+{{- $version := include "cetirun.version" . | default .Chart.AppVersion }}
+{{- if $version }}
+app.kubernetes.io/version: {{ $version | quote }}
 {{- end }}
 app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- end }}
@@ -267,7 +280,12 @@ Otherwise: repository:tag
 */}}
 {{- define "cetirun.desktopImage" -}}
 {{- include "cetirun.validateDesktopBrowserConfig" . -}}
-{{ .Values.desktop.image.repository }}:{{ .Values.desktop.image.tag | default .Chart.AppVersion }}{{ if .Values.desktop.image.digest }}@{{ .Values.desktop.image.digest }}{{ end }}
+{{- $registry := include "cetirun.registry" . -}}
+{{- $version := include "cetirun.version" . -}}
+{{- $repo := .Values.desktop.image.repository -}}
+{{- if $registry }}{{- $repo = printf "%s/cetirun-desktop" $registry -}}{{- end -}}
+{{- $tag := $version | default .Values.desktop.image.tag | default .Chart.AppVersion -}}
+{{ $repo }}:{{ $tag }}{{ if .Values.desktop.image.digest }}@{{ .Values.desktop.image.digest }}{{ end }}
 {{- end }}
 
 {{/*

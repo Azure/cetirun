@@ -25,7 +25,9 @@ if [ ! -f "${chart_dir}/Chart.yaml" ]; then
 fi
 
 chart_name="$(awk -F': *' '$1=="name" {print $2; exit}' "${chart_dir}/Chart.yaml")"
-chart_version="${CHART_VERSION:-$(awk -F': *' '$1=="version" {print $2; exit}' "${chart_dir}/Chart.yaml")}"
+release_version="${VERSION:-$("${script_dir}/cetirun-release-metadata.sh" version)}"
+chart_version="${CHART_VERSION:-${release_version}}"
+app_version="${APP_VERSION:-${release_version}}"
 if [ -z "${chart_name}" ] || [ -z "${chart_version}" ]; then
   echo "ERROR: Failed to parse chart name or version" >&2
   exit 1
@@ -50,7 +52,8 @@ helm lint --strict "${chart_dir}" \
   --set-string cetirun-portal.istio.host=portal.example.invalid
 
 echo "==> Packaging Helm chart (${chart_name} v${chart_version})"
-helm package "${chart_dir}" --destination "${package_dir}" --version "${chart_version}"
+helm package "${chart_dir}" --destination "${package_dir}" \
+  --version "${chart_version}" --app-version "${app_version}"
 chart_archive="${package_dir}/${chart_name}-${chart_version}.tgz"
 if [ ! -f "${chart_archive}" ]; then
   echo "ERROR: Helm package artifact not found at ${chart_archive}" >&2
