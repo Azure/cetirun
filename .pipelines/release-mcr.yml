@@ -1,6 +1,5 @@
-# This pipeline intentionally validates a unified release without publishing it.
-# Enable the commented future publishing flow only in an explicit follow-up
-# change after MCR onboarding is complete.
+# This pipeline validates and publishes a unified CetiRun release to the MCR
+# backing ACR after the corresponding MCR repositories are onboarded.
 
 name: cetirun-release-$(Date:yyyyMMdd)$(Rev:.r)
 
@@ -19,11 +18,18 @@ parameters:
     displayName: Release version for a manual branch validation run
     type: string
     default: ""
+  - name: forcePublish
+    displayName: Overwrite existing version tags (manual runs only)
+    type: boolean
+    default: false
 
 pool:
-  vmImage: ubuntu-latest
+  name: 1es-aks-ai-runtime-ado-southcentralus
 
 variables:
+  azureServiceConnection: aks ai runtime - prod
+  acrName: aksmcrimagescommon
+  repositoryPrefix: public/aks/ai-runtime/cetirun
   localRegistry: local.cetirun.invalid
   DOCKER_DEFAULT_PLATFORM: linux/amd64
 
@@ -52,11 +58,24 @@ steps:
         exit 1
       fi
 
+      force_publish="$(tr '[:upper:]' '[:lower:]' <<<"${FORCE_PUBLISH_INPUT}")"
+      if [[ "${force_publish}" != "true" && "${force_publish}" != "false" ]]; then
+        echo "ERROR: forcePublish must be true or false." >&2
+        exit 1
+      fi
+      if [[ "${force_publish}" == "true" && "${BUILD_REASON}" != "Manual" ]]; then
+        echo "ERROR: forcePublish is allowed only for manual runs." >&2
+        exit 1
+      fi
+
       echo "##vso[task.setvariable variable=releaseVersion]${release_version}"
+      echo "##vso[task.setvariable variable=forcePublish]${force_publish}"
       echo "Resolved unified release version: ${release_version}"
     displayName: Resolve and validate unified release version
     env:
       RELEASE_VERSION_INPUT: ${{ parameters.releaseVersion }}
+      FORCE_PUBLISH_INPUT: ${{ parameters.forcePublish }}
+      BUILD_REASON: $(Build.Reason)
 
   - bash: |
       set -euo pipefail
@@ -86,8 +105,10 @@ steps:
       }
 
       validate_chart app/cetirun-chart/Chart.yaml
+      validate_chart infra/istio/Chart.yaml
       validate_chart app/cetirun-operator/chart/Chart.yaml
       validate_chart app/cetirun-portal/chart/Chart.yaml
+      validate_chart app/cetirun-platform/Chart.yaml
     displayName: Validate all chart versions
     env:
       RELEASE_VERSION: $(releaseVersion)
@@ -106,11 +127,19 @@ steps:
 
       bash scripts/cetirun-helm-lint.sh
       bash scripts/cetirun-helm-test.sh
+      bash scripts/cetirun-platform-helm-test.sh
 
       echo "==> helm package app/cetirun-chart"
       helm package app/cetirun-chart --destination "${package_dir}" \
         --version "${RELEASE_VERSION}" --app-version "${RELEASE_VERSION}"
       test -f "${package_dir}/cetirun-${RELEASE_VERSION}.tgz"
+
+      echo "==> helm lint infra/istio"
+      helm lint infra/istio
+      echo "==> helm package infra/istio"
+      helm package infra/istio --destination "${package_dir}" \
+        --version "${RELEASE_VERSION}" --app-version "${RELEASE_VERSION}"
+      test -f "${package_dir}/cetirun-istio-${RELEASE_VERSION}.tgz"
 
       for chart_dir in app/cetirun-operator/chart app/cetirun-portal/chart; do
         chart_name="$(awk -F': *' '$1 == "name" { print $2; exit }' "${chart_dir}/Chart.yaml")"
@@ -123,6 +152,25 @@ steps:
           --version "${RELEASE_VERSION}" --app-version "${RELEASE_VERSION}"
         test -f "${package_dir}/${chart_name}-${RELEASE_VERSION}.tgz"
       done
+
+      platform_chart="app/cetirun-platform"
+      platform_name="cetirun-platform"
+      echo "==> helm dependency build ${platform_chart}"
+      helm dependency build --skip-refresh "${platform_chart}"
+      echo "==> helm lint ${platform_chart}"
+      helm lint --strict "${platform_chart}" \
+        --set istio.enabled=true \
+        --set-string cetirun-operator.domainSuffix=platform.example.invalid \
+        --set-string cetirun-portal.istio.host=portal.example.invalid
+      echo "==> helm template ${platform_name} ${platform_chart}"
+      helm template "${platform_name}" "${platform_chart}" --include-crds \
+        --set istio.enabled=true \
+        --set-string cetirun-operator.domainSuffix=platform.example.invalid \
+        --set-string cetirun-portal.istio.host=portal.example.invalid > /dev/null
+      echo "==> helm package ${platform_chart}"
+      helm package "${platform_chart}" --destination "${package_dir}" \
+        --version "${RELEASE_VERSION}" --app-version "${RELEASE_VERSION}"
+      test -f "${package_dir}/${platform_name}-${RELEASE_VERSION}.tgz"
     displayName: Lint, template, and package all charts
     env:
       AGENT_TEMPDIRECTORY: $(Agent.TempDirectory)
@@ -164,50 +212,124 @@ steps:
       LOCAL_REGISTRY: $(localRegistry)
       RELEASE_VERSION: $(releaseVersion)
 
-  # FUTURE PUBLISHING (DISABLED): Enable only in an explicit follow-up change
-  # after MCR onboarding. This pipeline currently has no Azure service
-  # connection, ACR credentials, registry login, or publishing commands.
-  # Future public target: mcr.microsoft.com/aks/cetirun.
-  #
-  # - bash: |
-  #     set -euo pipefail
-  #     acr_name="aksmcrimagescommon"
-  #     registry="${acr_name}.azurecr.io"
-  #     repository_prefix="public/aks/cetirun"
-  #     image_artifacts=(cetirun-base openclaw-gateway hermes-gateway cetirun-desktop cetirun-operator cetirun-portal)
-  #     chart_artifacts=(cetirun cetirun-operator cetirun-portal)
-  #
-  #     # Preflight immutability before publishing any versioned artifact.
-  #     for artifact in "${image_artifacts[@]}"; do
-  #       image_repository="${repository_prefix}/${artifact}"
-  #       if az acr repository show-tags --name "${acr_name}" --repository "${image_repository}" --query "[?@=='${RELEASE_VERSION}']" --output tsv | grep -qx "${RELEASE_VERSION}"; then
-  #         echo "ERROR: ${registry}/${image_repository}:${RELEASE_VERSION} already exists." >&2
-  #         exit 1
-  #       fi
-  #     done
-  #     for chart in "${chart_artifacts[@]}"; do
-  #       chart_repository="${repository_prefix}/helm/${chart}"
-  #       if az acr repository show-tags --name "${acr_name}" --repository "${chart_repository}" --query "[?@=='${RELEASE_VERSION}']" --output tsv | grep -qx "${RELEASE_VERSION}"; then
-  #         echo "ERROR: oci://${registry}/${chart_repository}:${RELEASE_VERSION} already exists." >&2
-  #         exit 1
-  #       fi
-  #     done
-  #
-  #     # Push versioned images and charts, then verify their digests and OCI pulls.
-  #     for artifact in "${image_artifacts[@]}"; do
-  #       versioned_image="${registry}/${repository_prefix}/${artifact}:${RELEASE_VERSION}"
-  #       docker tag "${LOCAL_REGISTRY}/${artifact}:${RELEASE_VERSION}" "${versioned_image}"
-  #       docker push "${versioned_image}"
-  #       docker buildx imagetools inspect "${versioned_image}"
-  #     done
-  #     for chart in "${chart_artifacts[@]}"; do
-  #       chart_path="oci://${registry}/${repository_prefix}/helm/${chart}"
-  #       helm push "${AGENT_TEMPDIRECTORY}/cetirun-chart-packages/${chart}-${RELEASE_VERSION}.tgz" "oci://${registry}/${repository_prefix}/helm"
-  #       helm pull "${chart_path}" --version "${RELEASE_VERSION}" --destination "${AGENT_TEMPDIRECTORY}/verified-charts"
-  #     done
-  #
-  #     # Update image latest only after every versioned image and chart succeeds.
-  #     for artifact in "${image_artifacts[@]}"; do
-  #       docker buildx imagetools create --tag "${registry}/${repository_prefix}/${artifact}:latest" "${registry}/${repository_prefix}/${artifact}:${RELEASE_VERSION}"
-  #     done
-  #   displayName: Disabled future MCR publishing
+  - task: AzureCLI@2
+    displayName: Publish and verify MCR artifacts
+    inputs:
+      azureSubscription: $(azureServiceConnection)
+      scriptType: bash
+      scriptLocation: inlineScript
+      inlineScript: |
+        set -euo pipefail
+
+        registry="${ACR_NAME}.azurecr.io"
+        image_artifacts=(openclaw-gateway hermes-gateway cetirun-desktop cetirun-operator cetirun-portal)
+        chart_artifacts=(cetirun cetirun-istio cetirun-operator cetirun-portal cetirun-platform)
+
+        repository_tag_exists() {
+          local repository="$1"
+          local error_file
+          local tags
+          error_file="$(mktemp)"
+
+          if tags="$(az acr repository show-tags \
+            --name "${ACR_NAME}" \
+            --repository "${repository}" \
+            --output tsv 2>"${error_file}")"; then
+            rm -f "${error_file}"
+            grep -Fxq "${RELEASE_VERSION}" <<<"${tags}"
+            return
+          fi
+
+          if grep -Eqi 'NAME_UNKNOWN|repository.*(not found|does not exist)' "${error_file}"; then
+            rm -f "${error_file}"
+            return 1
+          fi
+
+          cat "${error_file}" >&2
+          rm -f "${error_file}"
+          return 2
+        }
+
+        require_new_tag() {
+          local repository="$1"
+          local result
+          if repository_tag_exists "${repository}"; then
+            echo "ERROR: ${registry}/${repository}:${RELEASE_VERSION} already exists." >&2
+            return 1
+          else
+            result="$?"
+          fi
+          if [ "${result}" -ne 1 ]; then
+            echo "ERROR: could not check whether ${registry}/${repository}:${RELEASE_VERSION} exists." >&2
+            return "${result}"
+          fi
+          return 0
+        }
+
+        az acr login --name "${ACR_NAME}"
+
+        if [[ "${FORCE_PUBLISH}" == "true" ]]; then
+          echo "WARNING: overwriting ${RELEASE_VERSION} tags from a manual run after each replacement push succeeds."
+        else
+          # Preflight all immutable version tags before publishing any artifact.
+          for artifact in "${image_artifacts[@]}"; do
+            require_new_tag "${REPOSITORY_PREFIX}/${artifact}"
+          done
+          for chart in "${chart_artifacts[@]}"; do
+            require_new_tag "${REPOSITORY_PREFIX}/helm/${chart}"
+          done
+        fi
+
+        for artifact in "${image_artifacts[@]}"; do
+          repository="${REPOSITORY_PREFIX}/${artifact}"
+          versioned_image="${registry}/${repository}:${RELEASE_VERSION}"
+          docker tag "${LOCAL_REGISTRY}/${artifact}:${RELEASE_VERSION}" "${versioned_image}"
+          docker push "${versioned_image}"
+          docker buildx imagetools inspect "${versioned_image}" > /dev/null
+
+          digest="$(az acr repository show \
+            --name "${ACR_NAME}" \
+            --image "${repository}:${RELEASE_VERSION}" \
+            --query digest \
+            --output tsv)"
+          if [ -z "${digest}" ]; then
+            echo "ERROR: published image verification returned no digest for ${versioned_image}." >&2
+            exit 1
+          fi
+          echo "Published and verified ${versioned_image} at ${digest}."
+        done
+
+        export PATH="${HELM_BIN}:${PATH}"
+        package_dir="${AGENT_TEMPDIRECTORY}/cetirun-chart-packages"
+        verify_dir="$(mktemp -d)"
+        trap 'rm -rf "${verify_dir}"' EXIT
+        chart_destination="oci://${registry}/${REPOSITORY_PREFIX}/helm"
+        for chart in "${chart_artifacts[@]}"; do
+          archive="${package_dir}/${chart}-${RELEASE_VERSION}.tgz"
+          if [ ! -f "${archive}" ]; then
+            echo "ERROR: expected chart package not found: ${archive}." >&2
+            exit 1
+          fi
+          helm push "${archive}" "${chart_destination}"
+          helm pull "${chart_destination}/${chart}" \
+            --version "${RELEASE_VERSION}" \
+            --destination "${verify_dir}"
+          echo "Published and verified ${chart_destination}/${chart}:${RELEASE_VERSION}."
+        done
+
+        # Publish mutable latest tags only after every versioned image and chart succeeds.
+        for artifact in "${image_artifacts[@]}"; do
+          repository="${REPOSITORY_PREFIX}/${artifact}"
+          versioned_image="${registry}/${repository}:${RELEASE_VERSION}"
+          latest_image="${registry}/${repository}:latest"
+          docker buildx imagetools create --tag "${latest_image}" "${versioned_image}"
+          docker buildx imagetools inspect "${latest_image}" > /dev/null
+        done
+    env:
+      ACR_NAME: $(acrName)
+      AGENT_TEMPDIRECTORY: $(Agent.TempDirectory)
+      HELM_BIN: $(helmBin)
+      LOCAL_REGISTRY: $(localRegistry)
+      FORCE_PUBLISH: $(forcePublish)
+      RELEASE_VERSION: $(releaseVersion)
+      REPOSITORY_PREFIX: $(repositoryPrefix)
