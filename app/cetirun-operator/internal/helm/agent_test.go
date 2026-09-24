@@ -1,0 +1,386 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
+package helm
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"reflect"
+	"strings"
+	"testing"
+
+	"helm.sh/helm/v3/pkg/chart"
+	"helm.sh/helm/v3/pkg/chart/loader"
+	"helm.sh/helm/v3/pkg/chartutil"
+	"helm.sh/helm/v3/pkg/engine"
+	"sigs.k8s.io/yaml"
+)
+
+func testChart(t *testing.T) *chart.Chart {
+	t.Helper()
+	chrt, err := loader.Load("../../../cetirun-chart")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return chrt
+}
+
+func sampleInput(typ, provider string, integrations bool) map[string]any {
+	v := map[string]any{
+		"agentType":    typ,
+		"agentRequest": map[string]any{"type": typ},
+		"secrets": map[string]any{
+			"existingSecret": "test-secret", "provider": provider, "model": "test-model",
+			"apiBase": "https://models.example.com/v1", "authMode": "api-key",
+		},
+	}
+	if integrations {
+		v["skills"] = map[string]any{
+			"shared": true, "resourceGroup": "test", "storageAccount": "test",
+			"containerName": "skills", "npm": []any{"@example/skill@1.0.0", "example-skill@2.0.0"},
+		}
+		v["msteamsWebhookPort"] = 3978
+		v["msteamsAuthType"] = "managedIdentity"
+		v["ttyd"] = map[string]any{"enabled": true}
+		v["tailscale"] = map[string]any{"relaxGatewayAuth": true}
+		secrets := v["secrets"].(map[string]any)
+		for _, key := range []string{"tailscaleAuthKey", "telegramBotToken", "slackBotToken", "slackAppToken", "discordBotToken", "feishuAppId", "feishuAppSecret", "braveApiKey", "perplexityApiKey"} {
+			secrets[key] = "test-value"
+		}
+	}
+	return v
+}
+
+type renderBaseline struct {
+	Native map[string]any    `json:"native"`
+	Hashes map[string]string `json:"manifestHashes"`
+}
+
+func renderSnapshot(t *testing.T, chrt *chart.Chart, values map[string]any) renderBaseline {
+	t.Helper()
+	options := chartutil.ReleaseOptions{Name: "openclaw-example", Namespace: "cetirun-example", Revision: 1, IsInstall: true}
+	renderValues, err := chartutil.ToRenderValues(chrt, values, options, chartutil.DefaultCapabilities)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rendered, err := engine.Render(chrt, renderValues)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := renderBaseline{Native: map[string]any{}, Hashes: map[string]string{}}
+	for filename, content := range rendered {
+		if strings.HasSuffix(filename, "NOTES.txt") || strings.TrimSpace(content) == "" {
+			continue
+		}
+		// Compare the pre-refactor manifests except the intentionally rewritten
+		// init assets and seed-image binding, covered by TestInitRuntimeWiring
+		// and the executable initialization tests.
+		var objects []any
+		for _, doc := range strings.Split(content, "\n---") {
+			var obj map[string]any
+			if err := yaml.Unmarshal([]byte(doc), &obj); err != nil {
+				t.Fatalf("%s: %v", filename, err)
+			}
+			if obj == nil {
+				continue
+			}
+			if obj["kind"] == "ConfigMap" {
+				data := object(obj["data"])
+				for _, key := range []string{"init-home.sh", "hermes-init-home.sh", "init-home-common.sh", "hermes-apply-config.py"} {
+					delete(data, key)
+				}
+				for _, key := range []string{"openclaw.json", "hermes-config.yaml"} {
+					if source, ok := data[key].(string); ok {
+						var native map[string]any
+						if err := yaml.Unmarshal([]byte(source), &native); err != nil {
+							t.Fatal(err)
+						}
+						data[key] = native
+						out.Native[key] = native
+					}
+				}
+			}
+			if obj["kind"] == "StatefulSet" {
+				template := object(object(obj["spec"])["template"])
+				annotations := object(object(template["metadata"])["annotations"])
+				delete(annotations, "checksum/config")
+				for _, container := range array(object(template["spec"])["initContainers"]) {
+					c := object(container)
+					if c["name"] != "init-home-data" {
+						continue
+					}
+					var env []any
+					for _, item := range array(c["env"]) {
+						if object(item)["name"] != "CETIRUN_INIT_IMAGE" {
+							env = append(env, item)
+						}
+					}
+					if len(env) == 0 {
+						delete(c, "env")
+					} else {
+						c["env"] = env
+					}
+				}
+			}
+			objects = append(objects, obj)
+		}
+		raw, err := json.Marshal(objects)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sum := sha256.Sum256(raw)
+		out.Hashes[filepath.Base(filename)] = hex.EncodeToString(sum[:])
+	}
+	return out
+}
+
+func TestInitRuntimeWiring(t *testing.T) {
+	for _, typ := range []string{"hermes", "openclaw"} {
+		chrt := testChart(t)
+		prepared, err := PrepareChart(chrt, sampleInput(typ, "openai", true))
+		if err != nil {
+			t.Fatal(err)
+		}
+		values, err := chartutil.ToRenderValues(chrt, prepared.Values,
+			chartutil.ReleaseOptions{Name: "example", Namespace: "example", IsInstall: true}, chartutil.DefaultCapabilities)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rendered, err := engine.Render(chrt, values)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var stateful, config map[string]any
+		if err := yaml.Unmarshal([]byte(rendered["cetirun/templates/statefulset.yaml"]), &stateful); err != nil {
+			t.Fatal(err)
+		}
+		if err := yaml.Unmarshal([]byte(rendered["cetirun/templates/configmap.yaml"]), &config); err != nil {
+			t.Fatal(err)
+		}
+		data := object(config["data"])
+		if data["init-home-common.sh"] != string(asset(chrt, "configs/init-home-common.sh")) {
+			t.Fatal("common init asset missing or truncated")
+		}
+		if typ == "hermes" && data["hermes-apply-config.py"] != string(asset(chrt, "agents/hermes/bootstrap/hermes-apply-config.py")) {
+			t.Fatal("Hermes file applier missing or truncated")
+		}
+		pod := object(object(object(stateful["spec"])["template"])["spec"])
+		image := object(array(pod["containers"])[0])["image"]
+		init := array(pod["initContainers"])
+		names := []string{}
+		for _, item := range init {
+			c := object(item)
+			names = append(names, text(c["name"]))
+			if c["image"] != image {
+				t.Fatalf("%s init image differs from main image", c["name"])
+			}
+		}
+		want := []string{"init-home-data", "init-skills"}
+		if typ == "openclaw" {
+			want = []string{"init-home-data", "doctor", "init-skills"}
+		}
+		if !reflect.DeepEqual(names, want) {
+			t.Fatalf("%s init order: %v", typ, names)
+		}
+		seed := object(init[0])
+		bound := false
+		for _, item := range array(seed["env"]) {
+			if object(item)["name"] == "CETIRUN_INIT_IMAGE" {
+				bound = object(item)["value"] == image
+			}
+		}
+		if !bound {
+			t.Fatal("seed image identity is not bound to the selected image")
+		}
+		for _, item := range array(seed["volumeMounts"]) {
+			if object(item)["name"] == "data" && object(item)["mountPath"] != "/home-data" {
+				t.Fatal("seed volume shadows image HOME")
+			}
+		}
+	}
+}
+
+func TestNativeRenderBaseline(t *testing.T) {
+	chrt := testChart(t)
+	baselineChart := os.Getenv("HARNESS_BASELINE_CHART")
+	if baselineChart != "" {
+		var err error
+		chrt, err = loader.Load(baselineChart)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, typ := range []string{"hermes", "openclaw"} {
+		for _, provider := range []string{"github_copilot", "openai", "anthropic"} {
+			for _, enabled := range []bool{false, true} {
+				name := typ + "-" + provider
+				if enabled {
+					name += "-integrations"
+				}
+				t.Run(name, func(t *testing.T) {
+					input := sampleInput(typ, provider, enabled)
+					path := filepath.Join("testdata", "harness", name+".json")
+					if baselineChart != "" {
+						snapshot := renderSnapshot(t, chrt, input)
+						raw, err := json.MarshalIndent(snapshot, "", "  ")
+						if err != nil {
+							t.Fatal(err)
+						}
+						if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+							t.Fatal(err)
+						}
+						if err := os.WriteFile(path, append(raw, '\n'), 0644); err != nil {
+							t.Fatal(err)
+						}
+						return
+					}
+					raw, err := os.ReadFile(path)
+					if err != nil {
+						t.Fatal(err)
+					}
+					var want renderBaseline
+					if err := json.Unmarshal(raw, &want); err != nil {
+						t.Fatal(err)
+					}
+					before, _ := json.Marshal(input)
+					prepared, err := PrepareChart(chrt, input)
+					if err != nil {
+						t.Fatal(err)
+					}
+					after, _ := json.Marshal(input)
+					if string(before) != string(after) {
+						t.Fatal("PrepareChart mutated input")
+					}
+					for mode, values := range map[string]map[string]any{"prepared": prepared.Values, "standalone": input} {
+						got := renderSnapshot(t, chrt, values)
+						if !reflect.DeepEqual(got.Native, want.Native) {
+							t.Errorf("%s native config differs from pre-refactor baseline", mode)
+						}
+						for file, hash := range want.Hashes {
+							if got.Hashes[file] != hash {
+								t.Errorf("%s %s differs from pre-refactor manifest", mode, file)
+							}
+						}
+						if len(got.Hashes) != len(want.Hashes) {
+							t.Errorf("%s manifest inventory changed", mode)
+						}
+					}
+					repeated, err := PrepareChart(chrt, input)
+					if err != nil || !reflect.DeepEqual(prepared.Values, repeated.Values) {
+						t.Fatal("non-deterministic preparation")
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestRuntimeProfileValidation(t *testing.T) {
+	for _, typ := range []string{"hermes", "openclaw"} {
+		t.Run(typ, func(t *testing.T) {
+			chrt := testChart(t)
+			input := sampleInput(typ, "openai", false)
+			prepared, err := PrepareChart(chrt, input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if prepared.Agent.Image != "cetirun.azurecr.io/"+typ+"-gateway:0.1.0" || prepared.Agent.Username != "vibe" {
+				t.Fatalf("wrong profile defaults: %+v", prepared.Agent)
+			}
+			request := input["agentRequest"].(map[string]any)
+			request["image"] = prepared.Agent.Image
+			request["port"] = 8080
+			prepared, err = PrepareChart(chrt, input)
+			if err != nil || prepared.Agent.Port != 8080 {
+				t.Fatalf("qualified image and non-conflicting port: %v", err)
+			}
+			renderSnapshot(t, chrt, prepared.Values)
+			for _, port := range []int{18790, 5900, 6080, 18800, -1, 65536} {
+				request["port"] = port
+				if _, err := PrepareChart(chrt, input); err == nil {
+					t.Errorf("invalid/conflicting port %d accepted", port)
+				}
+			}
+			request["port"] = 5900
+			input["desktop"] = map[string]any{"enabled": false}
+			if typ == "openclaw" {
+				input["openclaw"] = map[string]any{"config": map[string]any{"browser": map[string]any{"attachOnly": false}}}
+			}
+			prepared, err = PrepareChart(chrt, input)
+			if err != nil || prepared.Agent.Port != 5900 {
+				t.Fatalf("disabled desktop should release port 5900: %v", err)
+			}
+			renderSnapshot(t, chrt, prepared.Values)
+			request["port"] = 8080
+			request["image"] = "registry.example.com/unqualified:1"
+			if _, err := PrepareChart(chrt, input); err == nil {
+				t.Fatal("unqualified image accepted")
+			}
+			delete(request, "image")
+			input["runtime"] = map[string]any{"agent": map[string]any{"image": "injected"}}
+			if _, err := PrepareChart(chrt, input); err == nil {
+				t.Fatal("injected plan accepted")
+			}
+		})
+	}
+	for _, typ := range []string{"", "unknown", "custom"} {
+		if _, err := PrepareChart(testChart(t), sampleInput(typ, "openai", false)); err == nil {
+			t.Errorf("unsupported type %q accepted", typ)
+		}
+	}
+}
+
+func TestNativePreferencesAndCredentialBoundary(t *testing.T) {
+	for _, typ := range []string{"hermes", "openclaw"} {
+		input := sampleInput(typ, "openai", true)
+		input["secrets"].(map[string]any)["apiKey"] = "secret-test-sentinel"
+		input[typ] = map[string]any{"config": map[string]any{"logging": map[string]any{"level": "debug"}}}
+		prepared, err := PrepareChart(testChart(t), input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		runtime := prepared.Values["runtime"].(map[string]any)
+		raw, err := json.Marshal(runtime)
+		if err != nil || strings.Contains(string(raw), "secret-test-sentinel") {
+			t.Fatal("credential value reached the runtime contribution")
+		}
+		files := runtime["configFiles"].(map[string]any)
+		for _, content := range files {
+			var config map[string]any
+			if err := yaml.Unmarshal([]byte(content.(string)), &config); err != nil {
+				t.Fatal(err)
+			}
+			if object(config["logging"])["level"] != "debug" {
+				t.Fatal("native preference was lost")
+			}
+		}
+		input[typ] = map[string]any{"config": "invalid"}
+		if _, err := PrepareChart(testChart(t), input); err == nil {
+			t.Fatal("malformed native config was silently discarded")
+		}
+	}
+}
+
+func TestMissingProfileAndQualifiedImage(t *testing.T) {
+	input := sampleInput("hermes", "openai", false)
+	chrt := testChart(t)
+	override := "registry.example.com/hermes:qualified"
+	for _, file := range chrt.Files {
+		if file.Name == "agents/hermes/profile.yaml" {
+			file.Data = []byte("contractVersion: v1\nnativeVersion: \"0.16.0\"\nport: 8642\nqualifiedImages:\n- " + override + "\n")
+		}
+	}
+	input["agentRequest"].(map[string]any)["image"] = override
+	prepared, err := PrepareChart(chrt, input)
+	if err != nil || prepared.Agent.Image != override {
+		t.Fatalf("exact qualified override was not honored: %v", err)
+	}
+	chrt.Files = nil
+	if _, err := PrepareChart(chrt, input); err == nil {
+		t.Fatal("chart without a profile fell through to legacy rendering")
+	}
+}

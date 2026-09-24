@@ -8,9 +8,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
+	"helm.sh/helm/v3/pkg/chart/loader"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
@@ -29,6 +31,7 @@ import (
 
 	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/controller"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/helm"
 )
 
 // --- Fake HelmClient ---
@@ -38,12 +41,114 @@ type fakeHelmClient struct {
 	installErr       error
 	lastChartVersion string
 	lastValues       map[string]interface{}
+	useHarness       bool
 }
 
-func (f *fakeHelmClient) InstallOrUpgrade(namespace, releaseName string, values map[string]any, chartVersion string) error {
+func (f *fakeHelmClient) Prepare(namespace string, values map[string]any, chartVersion string) (*helm.PreparedRelease, error) {
+	if f.useHarness {
+		chrt, err := loader.Load("../../../cetirun-chart")
+		if err != nil {
+			return nil, err
+		}
+		chrt.Metadata.Version = chartVersion
+		return helm.PrepareChart(chrt, values)
+	}
+	return &helm.PreparedRelease{Values: values, ChartVersion: chartVersion}, nil
+}
+
+func (f *fakeHelmClient) Refresh(prepared *helm.PreparedRelease, values map[string]any) (*helm.PreparedRelease, error) {
+	if f.useHarness {
+		return prepared.Rebuild(values)
+	}
+	prepared.Values = values
+	return prepared, nil
+}
+
+func TestReconcileBuiltinHarnessPinsThenDeploys(t *testing.T) {
+	for _, typ := range []cetirunv1alpha1.AgentType{cetirunv1alpha1.AgentTypeHermes, cetirunv1alpha1.AgentTypeOpenClaw} {
+		t.Run(string(typ), func(t *testing.T) {
+			cr := newCR("example", cetirunv1alpha1.PhasePending, nil, 1, 0, "")
+			cr.Spec.Agent.Type = typ
+			scheme := testScheme()
+			client := fake.NewClientBuilder().WithScheme(scheme).
+				WithStatusSubresource(&cetirunv1alpha1.Agent{}).WithObjects(cr).Build()
+			hc := &fakeHelmClient{useHarness: true}
+			r := &controller.AgentReconciler{
+				Client: client, Scheme: scheme, HelmClient: hc, DefaultModel: "test-model",
+				EventRecorder: record.NewFakeRecorder(100), DomainSuffix: "example.com", IstioRevision: "test",
+			}
+			req := ctrl.Request{NamespacedName: types.NamespacedName{Name: cr.Name}}
+			result, err := r.Reconcile(context.Background(), req)
+			if err != nil || !result.Requeue || hc.installCalled {
+				t.Fatalf("pinning must requeue without deployment: %+v %v", result, err)
+			}
+			current := &cetirunv1alpha1.Agent{}
+			if err := client.Get(context.Background(), req.NamespacedName, current); err != nil {
+				t.Fatal(err)
+			}
+			if current.Spec.Agent.Image == nil || current.Spec.Agent.Port == nil {
+				t.Fatal("image and port were not persisted")
+			}
+			ns := &corev1.Namespace{}
+			if err := client.Get(context.Background(), types.NamespacedName{Name: "cetirun-example"}, ns); !apierrors.IsNotFound(err) {
+				t.Fatalf("namespace created before pinning completed: %v", err)
+			}
+			if _, err := r.Reconcile(context.Background(), req); err != nil {
+				t.Fatal(err)
+			}
+			if !hc.installCalled || hc.lastValues["runtime"] == nil {
+				t.Fatal("built-in did not deploy through the Harness runtime plan")
+			}
+			runtime := hc.lastValues["runtime"].(map[string]any)
+			agent := runtime["agent"].(map[string]any)
+			if agent["image"] != *current.Spec.Agent.Image || agent["type"] != string(typ) {
+				t.Fatalf("deployed runtime differs from pinned configuration: %v", agent)
+			}
+			if hc.lastValues["agentRequest"] != nil {
+				t.Fatal("internal request leaked into release values")
+			}
+		})
+	}
+}
+
+func TestReconcileInvalidHarnessPreservesWorkload(t *testing.T) {
+	for _, invalid := range []cetirunv1alpha1.HarnessSpec{
+		{Type: cetirunv1alpha1.AgentTypeHermes, Port: ptr.To[int32](18790)},
+		{Type: cetirunv1alpha1.AgentTypeOpenClaw, Image: ptr.To("registry.example.com/unqualified:1")},
+	} {
+		cr := newCR("example", cetirunv1alpha1.PhaseReady, nil, 2, 1, "")
+		cr.Spec.Agent = invalid
+		scheme := testScheme()
+		sts := statefulSet("example", 1)
+		client := fake.NewClientBuilder().WithScheme(scheme).
+			WithStatusSubresource(&cetirunv1alpha1.Agent{}).WithObjects(cr, sts).Build()
+		hc := &fakeHelmClient{useHarness: true}
+		r := &controller.AgentReconciler{
+			Client: client, Scheme: scheme, HelmClient: hc, DefaultModel: "test-model",
+			EventRecorder: record.NewFakeRecorder(100),
+		}
+		_, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: cr.Name}})
+		if err == nil || !strings.Contains(err.Error(), "AgentConfigInvalid") {
+			t.Fatalf("expected explicit configuration rejection, got %v", err)
+		}
+		if hc.installCalled {
+			t.Fatal("invalid configuration reached Helm apply")
+		}
+		current := &appsv1.StatefulSet{}
+		if err := client.Get(context.Background(), types.NamespacedName{Namespace: sts.Namespace, Name: sts.Name}, current); err != nil || *current.Spec.Replicas != 1 {
+			t.Fatalf("existing workload was changed: %v", err)
+		}
+		ns := &corev1.Namespace{}
+		if err := client.Get(context.Background(), types.NamespacedName{Name: "cetirun-example"}, ns); !apierrors.IsNotFound(err) {
+			t.Fatal("invalid configuration created a namespace")
+		}
+	}
+}
+
+func (f *fakeHelmClient) InstallOrUpgrade(namespace, releaseName string, prepared *helm.PreparedRelease) error {
 	f.installCalled = true
-	f.lastChartVersion = chartVersion
-	f.lastValues = values
+	f.lastChartVersion = prepared.ChartVersion
+	f.lastValues = prepared.Values
 	return f.installErr
 }
 
@@ -337,8 +442,9 @@ func TestReconcile_PodReady_MarksReady(t *testing.T) {
 	if updated.Status.Phase != cetirunv1alpha1.PhaseReady {
 		t.Errorf("expected phase=%s, got %s", cetirunv1alpha1.PhaseReady, updated.Status.Phase)
 	}
-	if condition := findCondition(updated.Status.Conditions, cetirunv1alpha1.ConditionAgentConfigReady); condition != nil {
-		t.Fatal("resolved runtime gate must not leave a stale failure condition")
+	if condition := findCondition(updated.Status.Conditions, cetirunv1alpha1.ConditionAgentConfigReady); condition == nil ||
+		condition.Status != metav1.ConditionTrue || condition.Reason != "AgentConfigResolved" {
+		t.Fatal("resolved runtime must replace the stale failure condition")
 	}
 
 	podReady := findCondition(updated.Status.Conditions, cetirunv1alpha1.ConditionPodReady)

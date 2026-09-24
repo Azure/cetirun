@@ -54,16 +54,20 @@ settings and validation, inspect that file and
 | `azureWorkloadIdentity.enabled` | `false`; requires cluster and federated trust configuration |
 | `azureWorkloadIdentity.clientId` | Empty |
 
-Agent image pull policy is `Always`; empty tags resolve from chart `appVersion`.
-Repository defaults are deployment-specific. The operator normally derives
-agent and desktop repositories from its OCI chart registry host, using
-`/openclaw-gateway`, `/hermes-gateway`, and `/cetirun-desktop`. Those repository
-assignments occur after deployment-wide `cetirun.helmValues`; a global
-repository override there is overwritten, while per-instance Helm values are
-applied later. Tags and digests are separate from the registry assignment.
-Configure and pin your own accessible artifacts; a value in this file is not a
-public release guarantee. Prefer the per-agent image objects over the generic
+For standalone Helm, Agent image pull policy is `Always`; empty tags resolve
+from chart `appVersion`. Prefer the per-agent image objects over the generic
 OpenClaw `image` alias, whose non-empty fields take precedence.
+
+For operator-managed Agents, use a qualified `spec.agent.image` override or
+leave it unset for the selected chart profile's default. Generic `image` and
+selected-native image objects in deployment or instance Helm overrides are
+rejected. The operator derives default Agent repositories from its chart
+registry host and pins the resolved image on the Agent.
+
+The desktop image remains a separate Helm setting. Its repository defaults
+to `<chart-registry>/cetirun-desktop`; per-instance `desktop.image` overrides
+remain available. Configure accessible artifacts and pin their versions:
+repository defaults are not a public release guarantee.
 
 The chart only references `imagePullSecrets`; it does not create or copy them.
 The operator's `acrDockerSecret` is for OCI chart pulls, not a runtime image
@@ -102,10 +106,13 @@ the StatefulSet. Do not assume a named service account is token-free.
 Both agents expose the CetiRun authentication helper on `18790`. Hermes also
 exposes its native dashboard on `9119`; the operator routes native UI requests
 to that dashboard, not the Hermes API. These ports are defined in
-[agent helpers]({{< repo "app/cetirun-chart/templates/_agent-hermes.tpl" >}})
+[agent helpers]({{< repo "app/cetirun-chart/templates/agents/hermes/_runtime.tpl" >}})
 and [controller routing]({{< repo "app/cetirun-operator/internal/controller/helpers.go" >}}).
-Changing a runtime port does not automatically update the controller's route
-constants. Preserve the shared contract unless both sides are reviewed.
+For operator-managed Agents, use `spec.agent.port`: the operator applies the
+resolved primary port to the runtime and its primary Istio routes. Primary-port
+overrides through `service.port`, `service.targetPort` or native Helm settings
+are rejected. Standalone Helm still uses the settings in this table. Native
+helper and dashboard ports remain part of the qualified integration profile.
 
 The desktop runs Chrome, Xvfb, Fluxbox, x11vnc, and websockify in a separate
 container. OpenClaw attaches to Chrome; the configured browser is headed and
@@ -218,8 +225,8 @@ Model/provider values are rendered into the selected agent’s native format.
 OpenClaw uses `/health` for startup and `/healthz` for **both** liveness and
 readiness, on the gateway port. Hermes uses `/health` for all three probes on
 the API port. Neither verifies model entitlement or the native dashboard.
-Sources: [OpenClaw helpers]({{< repo "app/cetirun-chart/templates/_agent-openclaw.tpl" >}}),
-[Hermes helpers]({{< repo "app/cetirun-chart/templates/_agent-hermes.tpl" >}}), and
+Sources: [OpenClaw helpers]({{< repo "app/cetirun-chart/templates/agents/openclaw/_runtime.tpl" >}}),
+[Hermes helpers]({{< repo "app/cetirun-chart/templates/agents/hermes/_runtime.tpl" >}}), and
 [StatefulSet]({{< repo "app/cetirun-chart/templates/statefulset.yaml" >}}).
 
 ### Network, logging, and extensions

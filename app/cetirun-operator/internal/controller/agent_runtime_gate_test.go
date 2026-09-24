@@ -22,8 +22,9 @@ func TestAgentRuntimeGate(t *testing.T) {
 		{"missing type", api.HarnessSpec{}, false},
 		{"unknown type", api.HarnessSpec{Type: "unknown"}, false},
 		{"custom", api.HarnessSpec{Type: api.AgentTypeCustom, Image: ptr.To("registry.example.com/agent:1")}, false},
-		{"image override", api.HarnessSpec{Type: api.AgentTypeHermes, Image: ptr.To("registry.example.com/agent:1")}, false},
-		{"port override", api.HarnessSpec{Type: api.AgentTypeOpenClaw, Port: ptr.To[int32](8080)}, false},
+		// Qualification is performed against the selected chart during Prepare.
+		{"image override", api.HarnessSpec{Type: api.AgentTypeHermes, Image: ptr.To("registry.example.com/agent:1")}, true},
+		{"port override", api.HarnessSpec{Type: api.AgentTypeOpenClaw, Port: ptr.To[int32](8080)}, true},
 		{"registry reference", api.HarnessSpec{Type: api.AgentTypeOpenClaw, RegistrySecretRef: &api.RegistrySecretRef{Name: "source"}}, false},
 		{"username override", api.HarnessSpec{Type: api.AgentTypeOpenClaw, Username: ptr.To("alice")}, false},
 	}
@@ -54,5 +55,46 @@ func TestAgentTypeCannotBeOverriddenByHelm(t *testing.T) {
 		if _, err := buildHelmValues(instance, nil, "example.com", "", nil, ""); err == nil {
 			t.Errorf("conflicting helm.values.agentType accepted: %s", raw)
 		}
+	}
+}
+
+func TestRuntimePlanCannotBeOverriddenByHelm(t *testing.T) {
+	for key, raw := range map[string]string{
+		"runtime":      `{"agent":{"image":"injected"}}`,
+		"agentRequest": `{"type":"custom"}`,
+		"image":        `{"repository":"other"}`,
+		"hermes":       `{"image":{"tag":"other"}}`,
+		"service":      `{"targetPort":8080}`,
+	} {
+		instance := newTestInstance("example", "Example", "", "gateway-token")
+		instance.Spec.Agent.Type = api.AgentTypeHermes
+		instance.Spec.Helm.Values[key] = runtime.RawExtension{Raw: []byte(raw)}
+		if _, err := buildHelmValues(instance, nil, "example.com", "", nil, ""); err == nil {
+			t.Errorf("protected %s override accepted", key)
+		}
+	}
+}
+
+func TestNativeRoutesUsePinnedPort(t *testing.T) {
+	for _, typ := range []api.AgentType{api.AgentTypeHermes, api.AgentTypeOpenClaw} {
+		instance := newTestInstance("example", "Example", "", "gateway-token")
+		instance.Spec.Agent = api.HarnessSpec{Type: typ, Port: ptr.To[int32](8080)}
+		vs := buildVirtualService(instance, "example.com", "")
+		found := false
+		for _, route := range vs.Spec.Http {
+			for _, destination := range route.Route {
+				if destination.Destination.Port.Number == 8080 {
+					found = true
+				}
+			}
+		}
+		if !found {
+			t.Errorf("%s route ignored spec.agent.port", typ)
+		}
+	}
+	instance := newTestInstance("example", "Example", "", "gateway-token")
+	instance.Spec.Agent.Type = "unknown"
+	if buildVirtualService(instance, "example.com", "") != nil {
+		t.Fatal("unknown type inherited a native route")
 	}
 }

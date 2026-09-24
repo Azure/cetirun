@@ -131,9 +131,9 @@ Use reviewed deployment values or another approved environment configuration.
 The [CRD's Helm-value shape limitation](../../reference/crds/#helm-value-admission)
 matters when expressing per-instance scalar or array overrides.
 
-Sources: [OpenClaw template]({{< repo "app/cetirun-chart/templates/_agent-openclaw.tpl" >}}),
-[OpenClaw initializer]({{< repo "app/cetirun-chart/configs/init-home.sh" >}}),
-[Hermes adapter]({{< repo "app/cetirun-chart/plugins/platforms/cetirun_teams/adapter.py" >}}),
+Sources: [OpenClaw template]({{< repo "app/cetirun-chart/templates/agents/openclaw/_runtime.tpl" >}}),
+[OpenClaw initializer]({{< repo "app/cetirun-chart/agents/openclaw/bootstrap/init-home.sh" >}}),
+[Hermes adapter]({{< repo "app/cetirun-chart/agents/hermes/plugins/platforms/cetirun_teams/adapter.py" >}}),
 and [environment mapping]({{< repo "app/cetirun-chart/templates/statefulset.yaml" >}}).
 
 ### Certificate and password values are not supported CRD workflows
@@ -144,7 +144,7 @@ uses `DefaultAzureCredential`, with no certificate-path or thumbprint handling.
 Use the operator-managed Workload Identity flow. Certificate and app-password
 authentication are not supported operator-managed workflows; setting chart
 values or mounting a certificate does not enable them. See the
-[Hermes auth code]({{< repo "app/cetirun-chart/plugins/platforms/cetirun_teams/auth.py" >}}).
+[Hermes auth code]({{< repo "app/cetirun-chart/agents/hermes/plugins/platforms/cetirun_teams/auth.py" >}}).
 
 ## Webhook authentication
 

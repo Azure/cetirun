@@ -39,7 +39,10 @@ while IFS= read -r line || [ -n "$line" ]; do
   esac
   key="${line%%=*}"
   value="${line#*=}"
-  export "$key=$value"
+  # Explicit process bindings take precedence over a retained HOME .env.
+  if [ -z "${!key+x}" ]; then
+    export "$key=$value"
+  fi
 done < "$HERMES_HOME/.env"
 
 # CETIRUN_AUTH_KEY is the bearer key for the in-pod cetirun-auth helper. The

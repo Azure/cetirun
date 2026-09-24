@@ -32,8 +32,8 @@ Probe paths differ by runtime:
 
 These are pod probes, not checks of Entra login, model entitlement, Teams
 delivery, or tailnet reachability. See the
-[OpenClaw]({{< repo "app/cetirun-chart/templates/_agent-openclaw.tpl" >}})
-and [Hermes]({{< repo "app/cetirun-chart/templates/_agent-hermes.tpl" >}})
+[OpenClaw]({{< repo "app/cetirun-chart/templates/agents/openclaw/_runtime.tpl" >}})
+and [Hermes]({{< repo "app/cetirun-chart/templates/agents/hermes/_runtime.tpl" >}})
 probe templates.
 
 ## Suspend and resume
@@ -85,6 +85,16 @@ operator also annotates the pod template with the gateway Secret's resource
 version on a full reconcile, so environment-backed credential updates can
 restart the workload. Direct Secret edits might not trigger reconciliation;
 use the supported update path.
+
+HOME seeding is separate from an image or configuration update. Once
+`.cetirun-home-seeded` exists on the home PVC, a new image does not recopy its
+HOME or update dependencies previously copied there. Managed configuration
+continues to apply during Pod initialization.
+
+Do not remove initialization records to force an upgrade. A nonempty home
+without a recognized record fails safely; interrupted seeding requires the
+same immutable source image. Review the recorded state, existing files and
+recovery copies before performing explicit maintenance.
 
 ## Delete only with a recovery plan
 

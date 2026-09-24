@@ -265,6 +265,14 @@ class PythonSafetyTests(unittest.TestCase):
 class WorkflowContractTests(unittest.TestCase):
     """Check small cross-file invariants; actionlint handles YAML/Actions semantics."""
 
+    def test_runtime_image_smoke_selects_only_the_auth_unittest_suite(self):
+        text = (validate.ROOT / ".github/workflows/docker-build-validate.yml").read_text()
+        commands = re.findall(r"openclaw-gateway:validation -m unittest discover[^\n]+", text)
+        self.assertEqual(
+            commands,
+            ["openclaw-gateway:validation -m unittest discover -s /tests -p test_auth_service.py -v"],
+        )
+
     def test_owned_actions_are_sha_pinned_and_default_to_read_only(self):
         for name in validate.WORKFLOWS:
             with self.subTest(workflow=name):
@@ -354,7 +362,7 @@ class WorkflowContractTests(unittest.TestCase):
                 self.assertGreaterEqual(tuple(map(int, version.groups())), minimum)
                 if package == "aiohttp":
                     image = (
-                        validate.ROOT / "app/cetirun-chart/Dockerfile.openclaw"
+                        validate.ROOT / "app/cetirun-chart/agents/openclaw/Dockerfile"
                     ).read_text()
                     self.assertIn(
                         "ARG CETIRUN_AUTH_AIOHTTP_VERSION="

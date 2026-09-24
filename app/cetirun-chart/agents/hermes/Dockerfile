@@ -33,15 +33,15 @@ RUN uv venv /usr/local/lib/hermes-agent --python python3 && \
 
 # Install cetirun-teams platform plugin into Hermes's bundled plugin path.
 # Hermes discovers platform plugins at <site-packages>/plugins/platforms/<name>/.
-COPY --chown=vibe:vibe plugins/platforms/cetirun_teams/ /tmp/cetirun_teams_plugin/
+COPY --chown=vibe:vibe agents/hermes/plugins/platforms/cetirun_teams/ /tmp/cetirun_teams_plugin/
 RUN PLUGINS_DIR=$(/usr/local/lib/hermes-agent/bin/python -c \
       "import plugins; import pathlib; print(pathlib.Path(plugins.__path__[0]) / 'platforms')") && \
     cp -a /tmp/cetirun_teams_plugin "${PLUGINS_DIR}/cetirun_teams" && \
     rm -rf /tmp/cetirun_teams_plugin
-COPY --chown=vibe:vibe configs/hermes-auth.sh /usr/local/share/cetirun/hermes-auth.sh
-COPY --chown=vibe:vibe configs/hermes-copilot-auth.py /usr/local/share/cetirun/hermes-copilot-auth.py
+COPY --chown=vibe:vibe agents/hermes/bootstrap/hermes-auth.sh /usr/local/share/cetirun/hermes-auth.sh
+COPY --chown=vibe:vibe agents/hermes/bootstrap/hermes-copilot-auth.py /usr/local/share/cetirun/hermes-copilot-auth.py
 COPY --chown=vibe:vibe configs/cetirun-auth-service.py /usr/local/share/cetirun/cetirun-auth-service.py
-COPY --chown=vibe:vibe configs/hermes-entrypoint.sh /usr/local/bin/hermes-entrypoint.sh
+COPY --chown=vibe:vibe agents/hermes/bootstrap/hermes-entrypoint.sh /usr/local/bin/hermes-entrypoint.sh
 RUN chmod 755 /usr/local/bin/hermes-entrypoint.sh \
     /usr/local/share/cetirun/hermes-auth.sh \
     /usr/local/share/cetirun/hermes-copilot-auth.py \

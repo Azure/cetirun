@@ -25,7 +25,7 @@ class ImageDependencyTests(unittest.TestCase):
                 "MSGPACK_VERSION": "1.2.1",
                 "SETUPTOOLS_VERSION": "80.10.2",
             },
-            "Dockerfile.openclaw": {
+            "agents/openclaw/Dockerfile": {
                 "OPENCLAW_VERSION": "2026.6.35",
                 "CETIRUN_AUTH_AIOHTTP_VERSION": "3.14.3",
             },
@@ -108,7 +108,7 @@ class ImageDependencyTests(unittest.TestCase):
         self.assertIn("|| exit 1;", install)
 
     def test_plugin_install_and_identity_cleanup_failure_handling(self):
-        content = (CHART / "Dockerfile.openclaw").read_text()
+        content = (CHART / "agents/openclaw/Dockerfile").read_text()
         install = re.search(
             r"^RUN (openclaw plugins install.*)$",
             content.replace("\\\n", ""),

@@ -255,7 +255,7 @@ def _openclaw_write_auth_profile(token: str) -> None:
     ``profiles["github-copilot:github"].token`` — NOT from the ``.env`` file.
     Setting ``OPENCLAW_GITHUB_TOKEN`` alone is insufficient.
 
-    This mirrors the merge logic in ``configs/init-home.sh``
+    This mirrors the merge logic in ``agents/openclaw/bootstrap/init-home.sh``
     ``migrate_agent_auth_profiles``: for every existing agent dir, merge a
     ``{"type": "token", "provider": "github-copilot", "token": ...}`` profile
     into the file; if no agent dir exists yet, seed ``main/agent/``.

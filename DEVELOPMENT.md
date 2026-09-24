@@ -173,9 +173,17 @@ resources. They do not validate every chart in the repository or prove that a
 live deployment works.
 
 The Python command tests repository helpers with local fixtures. It does not
-run the Teams runtime plugin suite. That suite imports Hermes runtime modules
-and pytest; it needs an environment providing those dependencies. Keep any
-live Teams or other service integration test separate and explicitly authorized.
+run the Auth/Teams and native initialization suite. For that suite, prepare the
+locked dependencies in `scripts/ci/requirements.txt` separately, then run
+`make python-test`. It executes the real init scripts against synthetic HOME
+directories and uses test doubles for Hermes interfaces, cloud credentials
+and network calls. OpenClaw initialization tests also require `jq`.
+Keep live Agent, Teams or other service integration tests separately authorized.
+
+Operator rendering tests retain the original native configuration and resource
+baselines. Rewritten init assets and `CETIRUN_INIT_IMAGE` are checked separately
+by wiring tests and executable initialization tests. Do not replace baseline
+fixtures with changed output merely to make a regression pass.
 
 ### Documentation
 

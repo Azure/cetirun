@@ -20,6 +20,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/agents/builtin"
 )
 
 const (
@@ -182,6 +183,9 @@ func generateRandomToken(byteLen int) (string, error) {
 // context/skills → per-instance spec.helm.values → controller-enforced model.
 func buildHelmValues(instance *cetirunv1alpha1.Agent, team *cetirunv1alpha1.Team, domainSuffix string, skillsStorageAccount string, cetirunHelmValues map[string]interface{}, chartRegistry string, defaultModels ...string) (map[string]interface{}, error) {
 	if err := validateAgentRuntime(instance.Spec.Agent); err != nil {
+		return nil, err
+	}
+	if err := validateRuntimeOverrides(cetirunHelmValues, string(instance.Spec.Agent.Type)); err != nil {
 		return nil, err
 	}
 	alias := instance.Spec.User.Alias
@@ -408,6 +412,9 @@ func buildHelmValues(instance *cetirunv1alpha1.Agent, team *cetirunv1alpha1.Team
 		if k == "agentType" && v != string(agentType) {
 			return nil, fmt.Errorf("helm.values.agentType must not override spec.agent.type")
 		}
+		if err := validateRuntimeOverrides(map[string]any{k: v}, string(agentType)); err != nil {
+			return nil, err
+		}
 		values[k] = deepMerge(values[k], v)
 	}
 	// Deployment-level chart defaults cannot select a different integration.
@@ -416,8 +423,9 @@ func buildHelmValues(instance *cetirunv1alpha1.Agent, team *cetirunv1alpha1.Team
 	// The native OpenClaw Control UI must know the externally visible UI
 	// prefix so it emits prefixed asset, API, media, and WebSocket URLs. This is
 	// platform routing and must not be overridden by user Helm values.
-	if agentType == cetirunv1alpha1.AgentTypeOpenClaw {
-		values["openclaw"] = deepMerge(values["openclaw"], map[string]interface{}{
+	h, _ := builtin.NewRegistry().Lookup(string(agentType))
+	if h.Describe().PreserveUIPrefix {
+		values[string(agentType)] = deepMerge(values[string(agentType)], map[string]interface{}{
 			"config": map[string]interface{}{
 				"gateway": map[string]interface{}{
 					"controlUi": map[string]interface{}{
@@ -453,6 +461,7 @@ func buildHelmValues(instance *cetirunv1alpha1.Agent, team *cetirunv1alpha1.Team
 		}
 	}
 
+	values["agentRequest"] = runtimeRequest(instance, chartRegistry)
 	return values, nil
 }
 
@@ -567,6 +576,16 @@ func buildVirtualService(instance *cetirunv1alpha1.Agent, domainSuffix, gateway 
 	instancePrefix := "/" + name
 	uiPrefix := "/ui/" + name
 	agentType := instance.Spec.Agent.Type
+	h, err := builtin.NewRegistry().Lookup(string(agentType))
+	if err != nil {
+		// Unknown types never get an OpenClaw route.
+		return nil
+	}
+	descriptor := h.Describe()
+	primaryPort := uint32(descriptor.DefaultPort)
+	if instance.Spec.Agent.Port != nil {
+		primaryPort = uint32(*instance.Spec.Agent.Port)
+	}
 
 	makeRoute := func(matchPrefix, rewriteURI string, port uint32, timeoutSecs int64) *istioapiv1beta1.HTTPRoute {
 		route := &istioapiv1beta1.HTTPRoute{
@@ -624,15 +643,15 @@ func buildVirtualService(instance *cetirunv1alpha1.Agent, domainSuffix, gateway 
 		makeRedirect(instancePrefix + "/desktop"),
 		makeRedirect(instancePrefix + "/term"),
 	}
-	if agentType == cetirunv1alpha1.AgentTypeHermes {
+	if descriptor.DashboardPort != 0 {
 		routes = append(routes,
-			makeRoute(uiPrefix+"/v1", "/v1", hermesAPIPort, 300),
-			makeRoute(uiPrefix+"/health", "/health", hermesAPIPort, 0),
+			makeRoute(uiPrefix+"/v1", "/v1", primaryPort, 300),
+			makeRoute(uiPrefix+descriptor.HealthPath, descriptor.HealthPath, primaryPort, 0),
 			makeRoute(instancePrefix+"/cetirun-auth/", "/", cetirunAuthPort, 60),
 			makeRoute(instancePrefix+"/desktop", "/desktop", novncPort, 0),
 			makeRoute(instancePrefix+"/term", "/term", ttydPort, 0),
 		)
-		dashboardRoute := makeRoute(uiPrefix+"/", "/", hermesDashboardPort, 0)
+		dashboardRoute := makeRoute(uiPrefix+"/", "/", uint32(descriptor.DashboardPort), 0)
 		dashboardRoute.Headers = &istioapiv1beta1.Headers{
 			Request: &istioapiv1beta1.Headers_HeaderOperations{
 				Add: map[string]string{"x-forwarded-prefix": uiPrefix},
@@ -645,7 +664,7 @@ func buildVirtualService(instance *cetirunv1alpha1.Agent, domainSuffix, gateway 
 		// canonical HTTP redirect for /ui/<instance>, but route an Upgrade request
 		// on that exact path directly to the gateway because WebSockets cannot
 		// follow a 301 redirect.
-		routes = append([]*istioapiv1beta1.HTTPRoute{makeWebSocketRoute(uiPrefix, openclawPort)}, routes...)
+		routes = append([]*istioapiv1beta1.HTTPRoute{makeWebSocketRoute(uiPrefix, primaryPort)}, routes...)
 		routes = append(routes,
 			makeRoute(instancePrefix+"/cetirun-auth/", "/", cetirunAuthPort, 60),
 			makeRoute(instancePrefix+"/desktop", "/desktop", novncPort, 0),
@@ -656,7 +675,7 @@ func buildVirtualService(instance *cetirunv1alpha1.Agent, domainSuffix, gateway 
 				}},
 				Route: []*istioapiv1beta1.HTTPRouteDestination{{Destination: &istioapiv1beta1.Destination{
 					Host: svcHost,
-					Port: &istioapiv1beta1.PortSelector{Number: openclawPort},
+					Port: &istioapiv1beta1.PortSelector{Number: primaryPort},
 				}}},
 				Timeout: durationpb.New(300 * time.Second),
 				Retries: &istioapiv1beta1.HTTPRetry{Attempts: 3, PerTryTimeout: durationpb.New(100 * time.Second)},

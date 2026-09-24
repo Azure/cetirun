@@ -100,7 +100,9 @@ def files(root, suffix):
         root,
         capture=True,
     )
-    return sorted({root / p for p in output.split("\0") if p.endswith(suffix)})
+    return sorted(
+        {root / p for p in output.split("\0") if p.endswith(suffix) and (root / p).is_file()}
+    )
 
 
 @contextmanager
@@ -239,7 +241,7 @@ def workflow_gate(root):
 def python_tests(root):
     for source in (
         "app/cetirun-chart/tests/test_auth_service.py",
-        "app/cetirun-chart/plugins/platforms/cetirun_teams/test_adapter.py",
+        "app/cetirun-chart/agents/hermes/plugins/platforms/cetirun_teams/test_adapter.py",
         "scripts/ci/python_safety.py",
     ):
         require_file(root / source)
@@ -270,7 +272,7 @@ def python_tests(root):
             "no:cacheprovider",
             "-q",
             "app/cetirun-chart/tests",
-            "app/cetirun-chart/plugins/platforms/cetirun_teams/test_adapter.py",
+            "app/cetirun-chart/agents/hermes/plugins/platforms/cetirun_teams/test_adapter.py",
         ],
         root,
         env=env,

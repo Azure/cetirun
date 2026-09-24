@@ -15,6 +15,8 @@ The operator builds Helm values in this order:
 4. Controller-derived integration settings and image repositories.
 5. Per-instance `spec.helm.values`.
 6. Enforced Agent type, OpenClaw native UI base path and Copilot model selection.
+7. The selected Harness profile resolves image and port, then builds native
+   configuration for the chart's reserved `runtime` input.
 
 Nested maps merge; arrays replace rather than append. Arbitrary Helm overrides
 are a privileged configuration surface. Do not assume a team default enforces
@@ -25,6 +27,10 @@ roll the workload.
 Select the Harness through `spec.agent.type`, defaulting to Hermes. Helm values
 cannot select a different type. See [Agent Harness](../../reference/agent-harness/)
 for the other fields and supported runtime settings.
+
+Agent image and primary-port overrides belong in `spec.agent`, not
+`spec.helm.values`. The controller also rejects `runtime` and `agentRequest`
+overrides; these are generated platform inputs.
 
 The CRD declares each top-level `spec.helm.values` entry as an
 object. Use map-shaped overrides such as `secrets`, `persistence`, or `skills`.
@@ -51,7 +57,12 @@ membership or grant shared access to another user's instance.
 
 ## Runtime files and updates
 
-Chart configuration is merged into the persistent home during pod
+Initialization first checks tools and seeds image HOME into the PVC if it has
+not been copied before. The shared `.cetirun-home-seeded` flag controls only
+that copy. Native preparation, configuration application, integration setup and
+verification run afterward; a flag does not skip those stages.
+
+Go-generated configuration is merged into the persistent home during pod
 initialization, with chart-specified keys taking precedence over existing
 runtime configuration. Unspecified runtime keys can survive. This does not make
 every file continuously synchronized:
@@ -64,12 +75,23 @@ every file continuously synchronized:
 | Hermes `.hermes/memories/USER.md` | Seeded if missing on first initialization |
 | Hermes `.hermes/memories/TEAM.md` | Synchronized from rendered team context at every initialization; removed when context is empty |
 
+JSON/YAML and environment-file updates validate inputs before replacing files.
+Malformed existing files are preserved and initialization fails; they are not
+replaced with empty defaults. Replacement is atomic per file, not a transaction
+across all files. A failed native initialization resumes without recopying HOME.
+
+OpenClaw doctor remains an optional init container after native preparation.
+Configured npm skill installation follows it; Hermes proceeds directly from
+native preparation to the optional npm step. No step performs cross-Agent
+migration or scans old credential stores as part of routine initialization.
+
 A team update can roll member pods, but it does not overwrite an existing
 OpenClaw `USER.md`. Inspect the runtime file to confirm that a context change
 has reached the agent.
 
-Sources: [OpenClaw initializer]({{< repo "app/cetirun-chart/configs/init-home.sh" >}})
-and [Hermes initializer]({{< repo "app/cetirun-chart/configs/hermes-init-home.sh" >}}).
+Sources: [common initialization]({{< repo "app/cetirun-chart/configs/init-home-common.sh" >}}),
+[OpenClaw initializer]({{< repo "app/cetirun-chart/agents/openclaw/bootstrap/init-home.sh" >}})
+and [Hermes initializer]({{< repo "app/cetirun-chart/agents/hermes/bootstrap/hermes-init-home.sh" >}}).
 
 ## Skills
 
@@ -114,6 +136,6 @@ the original. See [storage operations](../../operations/storage/).
 Source: [Helm value builder]({{< repo "app/cetirun-operator/internal/controller/helpers.go" >}})
 and [chart values]({{< repo "app/cetirun-chart/values.yaml" >}}).
 Installation details: [npm initializer]({{< repo "app/cetirun-chart/configs/init-skills.sh" >}}),
-[OpenClaw templates]({{< repo "app/cetirun-chart/templates/_agent-openclaw.tpl" >}}),
-[Hermes templates]({{< repo "app/cetirun-chart/templates/_agent-hermes.tpl" >}}),
+[OpenClaw templates]({{< repo "app/cetirun-chart/templates/agents/openclaw/_runtime.tpl" >}}),
+[Hermes templates]({{< repo "app/cetirun-chart/templates/agents/hermes/_runtime.tpl" >}}),
 and [shared PV]({{< repo "app/cetirun-chart/templates/shared-skills-pv.yaml" >}}).

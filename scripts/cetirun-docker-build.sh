@@ -12,7 +12,7 @@ image_name="${IMAGE_NAME:-openclaw-gateway}"
 image_tag="${IMAGE_TAG:-latest}"
 push="${PUSH:-false}"
 context_dir="${repo_root}/app/cetirun-chart"
-dockerfile="${DOCKERFILE:-Dockerfile.openclaw}"
+dockerfile="${DOCKERFILE:-agents/openclaw/Dockerfile}"
 build_base="${BUILD_BASE:-true}"
 build_desktop="${BUILD_DESKTOP:-true}"
 build_hermes="${BUILD_HERMES:-false}"
@@ -60,7 +60,7 @@ if [ "${build_base}" = "true" ]; then
 fi
 
 image_npm_registry_args=("${npm_registry_args[@]}")
-if [ "${dockerfile##*/}" = "Dockerfile.openclaw" ]; then
+if [ "${dockerfile}" = "agents/openclaw/Dockerfile" ]; then
   image_npm_registry_args=("${openclaw_npm_registry_args[@]}")
 fi
 
@@ -85,7 +85,7 @@ if [ "${build_hermes}" = "true" ]; then
   hermes_image_ref="${registry}/hermes-gateway:${image_tag}"
   hermes_build_args=(
     --platform linux/amd64
-    -f "${context_dir}/Dockerfile.hermes"
+    -f "${context_dir}/agents/hermes/Dockerfile"
     -t "${hermes_image_ref}"
     --build-arg "BASE_IMAGE=${base_image_ref}"
     "${npm_registry_args[@]}"
@@ -93,9 +93,9 @@ if [ "${build_hermes}" = "true" ]; then
     "${common_output_args[@]}"
   )
   if [ "${push}" = "true" ]; then
-    echo "==> Building and pushing ${hermes_image_ref} from ${context_dir} (Dockerfile.hermes)"
+    echo "==> Building and pushing ${hermes_image_ref} from ${context_dir} (agents/hermes/Dockerfile)"
   else
-    echo "==> Building ${hermes_image_ref} from ${context_dir} (Dockerfile.hermes)"
+    echo "==> Building ${hermes_image_ref} from ${context_dir} (agents/hermes/Dockerfile)"
   fi
   docker buildx build "${hermes_build_args[@]}" "${context_dir}"
 fi

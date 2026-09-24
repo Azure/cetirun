@@ -157,19 +157,30 @@ func dockerConfigFile() string {
 	return ""
 }
 
-// InstallOrUpgrade installs a new Helm release or upgrades an existing one.
-// Wait is intentionally disabled: the operator does not block on pod readiness —
-// it only ensures the chart resources are submitted to the API server.
-func (c *Client) InstallOrUpgrade(namespace, releaseName string, values map[string]interface{}, chartVersion string) error {
+// Prepare loads the selected chart and builds its native Agent configuration.
+func (c *Client) Prepare(namespace string, values map[string]any, chartVersion string) (*PreparedRelease, error) {
 	cfg, err := actionConfig(namespace)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	chrt, err := c.loadChart(cfg, namespace, chartVersion)
 	if err != nil {
+		return nil, err
+	}
+	return PrepareChart(chrt, values)
+}
+
+// InstallOrUpgrade applies the already-prepared chart without waiting for Pod readiness.
+func (c *Client) InstallOrUpgrade(namespace, releaseName string, prepared *PreparedRelease) error {
+	if prepared == nil || prepared.chart == nil {
+		return fmt.Errorf("release must be prepared before installation")
+	}
+	cfg, err := actionConfig(namespace)
+	if err != nil {
 		return err
 	}
+	chrt, values := prepared.chart, prepared.Values
 
 	// TODO: ReleaseExists calls actionConfig (and thus InClusterConfig) a second time.
 	// Refactor InstallOrUpgrade to pass cfg into ReleaseExists to avoid the duplicate
@@ -205,6 +216,10 @@ func (c *Client) InstallOrUpgrade(namespace, releaseName string, values map[stri
 		}
 	}
 	return nil
+}
+
+func (c *Client) Refresh(prepared *PreparedRelease, values map[string]any) (*PreparedRelease, error) {
+	return prepared.Rebuild(values)
 }
 
 // Uninstall removes a Helm release.

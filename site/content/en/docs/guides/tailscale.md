@@ -120,8 +120,8 @@ Sources: [portal Secret updates]({{< repo "app/cetirun-portal/internal/kube/clie
 [operator reconciliation]({{< repo "app/cetirun-operator/internal/controller/agent_controller.go" >}}),
 [chart enablement]({{< repo "app/cetirun-chart/templates/_helpers.tpl" >}}),
 [StatefulSet]({{< repo "app/cetirun-chart/templates/statefulset.yaml" >}}),
-[OpenClaw startup]({{< repo "app/cetirun-chart/configs/entrypoint.sh" >}}),
-and [Hermes startup]({{< repo "app/cetirun-chart/configs/hermes-entrypoint.sh" >}}).
+[OpenClaw startup]({{< repo "app/cetirun-chart/agents/openclaw/bootstrap/entrypoint.sh" >}}),
+and [Hermes startup]({{< repo "app/cetirun-chart/agents/hermes/bootstrap/hermes-entrypoint.sh" >}}).
 
 Offline `helm template` cannot read a cluster Secret through Helm `lookup`.
 A render using only `existingSecret` does not validate Tailscale enablement;

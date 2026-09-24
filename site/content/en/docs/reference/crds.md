@@ -46,7 +46,7 @@ installation but does not upgrade or delete them.
 | `gatewayTokenSecretRef` | Required native Secret name for Hermes/OpenClaw; forbidden for Custom |
 | `agent` | Required Harness configuration object |
 | `agent.type` | `hermes` (default), `openclaw`, or `custom`; immutable |
-| `agent.image` | Required for Custom; once set, cannot be cleared. Built-in image resolution requires runtime support |
+| `agent.image` | Required for Custom; once set, cannot be cleared. Built-in defaults are pinned from the selected chart |
 | `agent.registrySecretRef.name` | Optional source credential reference; no namespace, key, or inline credentials |
 | `agent.username` | Defaults to `vibe`; immutable, non-root image username |
 | `agent.port` | Optional HTTP port, 1–65535; omitted for Custom means no platform HTTP entry |
@@ -74,8 +74,8 @@ schema acceptance to establish safe routing.
 See [first instance](../../getting-started/first-instance/) for minimal YAML and
 [Teams](../../guides/msteams/) for the optional cloud integration.
 
-The API accepts the Harness fields above, but the operator rejects Custom and
-explicit image, port, registry, or non-default username settings with
+The operator resolves built-in images and ports through the Harness interface.
+It rejects Custom, registry references and non-default username settings with
 `AgentRuntimeNotImplemented` before provisioning. See the
 [Agent Harness contract](../agent-harness/) for the runtime boundary.
 
@@ -124,7 +124,9 @@ check does not prove that an override will reconcile successfully.
 | `msteams` | Teams state, message, resolved app and bot resource identifiers |
 
 `AgentConfigReady=False` with reason `AgentRuntimeNotImplemented` reports a
-setting that cannot yet be provisioned. The API does not expose a separate
+setting that cannot yet be provisioned. `AgentConfigInvalid` reports rejected
+profile, image or port settings; `AgentConfigResolved` reports a prepared
+built-in configuration, not runtime readiness. The API does not expose a separate
 `status.agent` structure.
 
 Other condition types include `Ready`, `HelmDeployed`, `IngressReady`, `PodReady`,

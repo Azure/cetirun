@@ -62,4 +62,4 @@ configuration instead of waiting for a team-wide Ready condition.
 Sources: [team event handling]({{< repo "app/cetirun-operator/internal/controller/agent_controller.go" >}}),
 [team defaults and skills]({{< repo "app/cetirun-operator/internal/controller/helpers.go" >}}),
 [admin team handlers]({{< repo "app/cetirun-portal/internal/handler/admin_team.go" >}}),
-and [runtime initialization]({{< repo "app/cetirun-chart/configs/hermes-init-home.sh" >}}).
+and [runtime initialization]({{< repo "app/cetirun-chart/agents/hermes/bootstrap/hermes-init-home.sh" >}}).
