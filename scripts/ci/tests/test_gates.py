@@ -85,7 +85,7 @@ class GateTests(unittest.TestCase):
                 validate.chart_gate(self.root)
         run.assert_not_called()
 
-    def test_all_five_charts_and_both_runtime_types_are_checked(self):
+    def test_all_six_charts_and_both_runtime_types_are_checked(self):
         for directory, _ in validate.CHARTS:
             chart = self.root / directory
             chart.mkdir(parents=True, exist_ok=True)
@@ -95,12 +95,13 @@ class GateTests(unittest.TestCase):
         (self.root / "scripts/cetirun-helm-test.sh").write_text("# fixture")
         (self.root / "scripts/cetirun-platform-helm-test.sh").write_text("# fixture")
         (self.root / "scripts/cetirun-istio-helm-test.sh").write_text("# fixture")
+        (self.root / "scripts/cetirun-credential-service-helm-test.sh").write_text("# fixture")
         with patch.object(validate, "run") as run:
             validate.chart_gate(self.root)
         commands = [call.args[0] for call in run.call_args_list]
-        self.assertEqual(sum(c[:2] == ["helm", "lint"] for c in commands), 6)
-        self.assertEqual(sum(c[:2] == ["helm", "template"] for c in commands), 6)
-        self.assertEqual(len({c[3] for c in commands if c[:2] == ["helm", "lint"]}), 5)
+        self.assertEqual(sum(c[:2] == ["helm", "lint"] for c in commands), 7)
+        self.assertEqual(sum(c[:2] == ["helm", "template"] for c in commands), 7)
+        self.assertEqual(len({c[3] for c in commands if c[:2] == ["helm", "lint"]}), 6)
         self.assertTrue(all("--strict" in c for c in commands if c[1] == "lint"))
         self.assertEqual(sum(c[:2] == ["helm", "dependency"] for c in commands), 1)
         self.assertEqual(sum(c[:2] == ["bash", str(self.root / "scripts/cetirun-istio-helm-test.sh")] for c in commands), 1)
@@ -291,8 +292,10 @@ class WorkflowContractTests(unittest.TestCase):
         for expected in (
             "Operator Go checks",
             "Portal Go checks",
+            "Credential Service Go checks",
             "Operator image CVEs",
             "Portal image CVEs",
+            "Credential Service image CVEs",
         ):
             self.assertIn(expected, names)
 

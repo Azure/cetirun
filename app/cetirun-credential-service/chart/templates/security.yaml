@@ -1,0 +1,51 @@
+{{- if .Values.istio.enabled }}
+apiVersion: security.istio.io/v1
+kind: PeerAuthentication
+metadata:
+  name: {{ include "cetirun-credential-service.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "cetirun-credential-service.selectorLabels" . | nindent 6 }}
+  mtls:
+    mode: STRICT
+---
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: {{ include "cetirun-credential-service.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "cetirun-credential-service.selectorLabels" . | nindent 6 }}
+  action: ALLOW
+  rules:
+    - from:
+        - source:
+            principals:
+              - cluster.local/ns/{{ .Values.portal.namespace }}/sa/{{ .Values.portal.serviceAccount }}
+      to:
+        - operation:
+            paths: ["/internal/v1/*", "/healthz", "/readyz"]
+    - from:
+        - source:
+            principals:
+              - cluster.local/ns/{{ .Values.operator.namespace }}/sa/{{ .Values.operator.serviceAccount }}
+      to:
+        - operation:
+            methods: ["DELETE"]
+            # Istio StringMatch supports a trailing prefix wildcard. The Go
+            # ServeMux still exposes only the exact bounded cleanup route.
+            paths: ["/operator/v1/instances/*"]
+    - from:
+        - source:
+            # Istio string matching supports a trailing prefix wildcard. The
+            # Broker still maps the exact mTLS namespace + ServiceAccount to a
+            # single Agent CR before serving any request.
+            namespaces: ["cetirun-*"]
+      to:
+        - operation:
+            paths: ["/v1/*"]
+{{- end }}

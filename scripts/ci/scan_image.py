@@ -16,7 +16,11 @@ TRIVY = (
     "mcr.microsoft.com/oss/v2/aquasecurity/trivy:v0.68.2"
     "@sha256:493766e398dcdb680b4084ba396139c495466f4229698b5da7be79d61fa5f5b3"
 )
-IMAGES = ("cetirun-operator:validation", "cetirun-portal:validation")
+IMAGES = (
+    "cetirun-operator:validation",
+    "cetirun-portal:validation",
+    "cetirun-credential-service:validation",
+)
 
 
 def main(argv=None):

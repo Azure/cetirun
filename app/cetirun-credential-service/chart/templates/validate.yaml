@@ -1,0 +1,13 @@
+{{- $identity := .Values.agentIdentity -}}
+{{- range $name, $value := dict "tenantId" $identity.tenantId "blueprintClientId" $identity.blueprintClientId "authorizationClientId" $identity.authorizationClientId "encryptionClientId" $identity.encryptionClientId "keyVaultKeyUrl" $identity.keyVaultKeyUrl "redirectUri" $identity.redirectUri "portalOrigin" $identity.portalOrigin "portalBaseUrl" $identity.portalBaseUrl -}}
+{{- if empty $value }}{{ fail (printf "agentIdentity.%s is required" $name) }}{{ end -}}
+{{- end -}}
+{{- if not (hasPrefix "https://" $identity.redirectUri) }}{{ fail "agentIdentity.redirectUri must use HTTPS" }}{{ end -}}
+{{- if not (hasPrefix "https://" $identity.portalOrigin) }}{{ fail "agentIdentity.portalOrigin must use HTTPS" }}{{ end -}}
+{{- if not (hasPrefix "https://" $identity.portalBaseUrl) }}{{ fail "agentIdentity.portalBaseUrl must use HTTPS" }}{{ end -}}
+{{- if not (hasPrefix "https://" $identity.keyVaultKeyUrl) }}{{ fail "agentIdentity.keyVaultKeyUrl must use HTTPS" }}{{ end -}}
+{{- if not .Values.serviceAccount.create }}{{ fail "Credential Service requires a dedicated ServiceAccount" }}{{ end -}}
+{{- if not .Values.istio.enabled }}{{ fail "Credential Service requires Istio mTLS authorization" }}{{ end -}}
+{{- if not .Values.istio.sidecarInjection }}{{ fail "istio.sidecarInjection must be true to confirm that the release namespace has injection enabled" }}{{ end -}}
+{{- if empty .Values.istio.revision }}{{ fail "istio.revision is required for revision-based sidecar injection" }}{{ end -}}
+{{- if or (empty .Values.operator.namespace) (empty .Values.operator.serviceAccount) }}{{ fail "operator namespace and ServiceAccount are required" }}{{ end -}}
