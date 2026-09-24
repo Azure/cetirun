@@ -1,12 +1,18 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 
+ARG VERSION=dev
+ARG GIT_SHA=unknown
 ARG BASE_IMAGE=cetirun.azurecr.io/cetirun-base:latest
 
 FROM ${BASE_IMAGE}
+ARG VERSION
+ARG GIT_SHA
 
 LABEL org.opencontainers.image.source="https://github.com/Azure/CetiRun"
 LABEL org.opencontainers.image.description="CetiRun Hermes gateway image"
+LABEL org.opencontainers.image.version="${VERSION}"
+LABEL org.opencontainers.image.revision="${GIT_SHA}"
 LABEL org.opencontainers.image.licenses="MIT"
 
 # v0.16.0 — pinned by PyPI wheel SHA256 for supply-chain integrity
@@ -21,15 +27,26 @@ ENV PATH=/usr/local/lib/hermes-agent/bin:$PATH
 ARG AZURE_IDENTITY_VERSION=1.19.0
 ARG PYJWT_VERSION=2.10.1
 
-RUN uv venv /usr/local/lib/hermes-agent --python python3 && \
-    printf '%s\n' "hermes-agent[all]==${HERMES_VERSION} --hash=sha256:${HERMES_WHEEL_SHA256}" > /tmp/requirements.txt && \
-    uv pip install --python /usr/local/lib/hermes-agent/bin/python \
+RUN python3 -m venv /usr/local/lib/hermes-agent && \
+    mkdir -p /tmp/hermes-wheel && \
+    /usr/local/lib/hermes-agent/bin/python -m pip download \
       --index-url "${PYPI_INDEX_URL}" \
-      -r /tmp/requirements.txt && \
-    rm -f /tmp/requirements.txt && \
-    uv pip install --python /usr/local/lib/hermes-agent/bin/python \
+      --no-deps \
+      --only-binary=:all: \
+      --dest /tmp/hermes-wheel \
+      "hermes-agent==${HERMES_VERSION}" && \
+    HERMES_WHEEL=$(find /tmp/hermes-wheel -maxdepth 1 -type f -name 'hermes_agent-*.whl' -print -quit) && \
+    test -n "${HERMES_WHEEL}" && \
+    echo "${HERMES_WHEEL_SHA256}  ${HERMES_WHEEL}" | sha256sum --check && \
+    /usr/local/lib/hermes-agent/bin/python -m pip install --no-cache-dir --no-deps \
+      "${HERMES_WHEEL}" && \
+    /usr/local/lib/hermes-agent/bin/python -m pip install --no-cache-dir \
       --index-url "${PYPI_INDEX_URL}" \
-      "azure-identity==${AZURE_IDENTITY_VERSION}" "pyjwt[crypto]==${PYJWT_VERSION}"
+      "hermes-agent[all]==${HERMES_VERSION}" && \
+    /usr/local/lib/hermes-agent/bin/python -m pip install --no-cache-dir \
+      --index-url "${PYPI_INDEX_URL}" \
+      "azure-identity==${AZURE_IDENTITY_VERSION}" "pyjwt[crypto]==${PYJWT_VERSION}" && \
+    rm -rf /tmp/hermes-wheel
 
 # Install cetirun-teams platform plugin into Hermes's bundled plugin path.
 # Hermes discovers platform plugins at <site-packages>/plugins/platforms/<name>/.

@@ -18,7 +18,9 @@ repo_root="$(cd "$script_dir/.." && pwd)"
 
 registry="${REGISTRY:-cetirun.azurecr.io}"
 image_name="${IMAGE_NAME:-cetirun-portal}"
-image_tag="${IMAGE_TAG:-latest}"
+release_version="${VERSION:-$("${script_dir}/cetirun-release-metadata.sh" version)}"
+image_tag="${IMAGE_TAG:-${release_version}}"
+git_sha="${GIT_SHA:-$(git -C "${repo_root}" rev-parse HEAD 2>/dev/null || echo unknown)}"
 push="${PUSH:-false}"
 dockerfile="${repo_root}/app/cetirun-portal/Dockerfile"
 npm_registry="${NPM_REGISTRY:-https://registry.npmjs.org/}"
@@ -28,6 +30,8 @@ image_ref="${registry}/${image_name}:${image_tag}"
 build_args=(
   -f "${dockerfile}"
   -t "${image_ref}"
+  --build-arg "VERSION=${image_tag}"
+  --build-arg "GIT_SHA=${git_sha}"
 )
 build_args+=(--build-arg "NPM_REGISTRY=${npm_registry}")
 

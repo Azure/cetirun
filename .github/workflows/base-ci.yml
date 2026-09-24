@@ -56,6 +56,8 @@ jobs:
           provenance: true
           sbom: true
           build-args: |
+            VERSION=${{ steps.tag.outputs.tag }}
+            GIT_SHA=${{ github.sha }}
             NPM_REGISTRY=${{ env.NPM_REGISTRY }}
           tags: |
             ${{ secrets.ACR_REGISTRY }}/cetirun-base:${{ steps.tag.outputs.tag }}

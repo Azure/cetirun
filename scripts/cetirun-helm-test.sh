@@ -51,11 +51,35 @@ echo "==> helm template ${release_name} ${chart_dir} (agentType omitted)"
 output=$(helm_template "${release_name}" "${chart_dir}" --set agentType=null)
 grep -q 'hermes-config.yaml' <<< "$output" || { echo "FAIL: omitted agentType must use Hermes" >&2; exit 1; }
 
+echo "==> helm template ${release_name} ${chart_dir} (shared registry and version)"
+output=$(helm_template "${release_name}" "${chart_dir}" \
+  --set-string global.registry=registry.example.com \
+  --set-string global.version=9.8.7)
+grep -q 'image: "registry.example.com/hermes-gateway:9.8.7"' <<< "$output" || {
+  echo "FAIL: Hermes image did not use global.registry and global.version" >&2
+  exit 1
+}
+grep -q 'image: "registry.example.com/cetirun-desktop:9.8.7"' <<< "$output" || {
+  echo "FAIL: desktop image did not use global.registry and global.version" >&2
+  exit 1
+}
+
 echo "==> helm template ${release_name} ${chart_dir} (explicit OpenClaw)"
 output=$(helm_template "${release_name}" "${chart_dir}" --set agentType=openclaw \
   --set secrets.openclawGatewayToken=lint-token)
 grep -q 'openclaw.json' <<< "$output" || { echo "FAIL: explicit OpenClaw config missing" >&2; exit 1; }
 grep -q 'containerPort: 18789' <<< "$output" || { echo "FAIL: explicit OpenClaw port missing" >&2; exit 1; }
+
+echo "==> helm template ${release_name} ${chart_dir} (OpenClaw shared registry and version)"
+output=$(helm_template "${release_name}" "${chart_dir}" \
+  --set agentType=openclaw \
+  --set secrets.openclawGatewayToken=lint-token \
+  --set-string global.registry=registry.example.com \
+  --set-string global.version=9.8.7)
+grep -q 'image: "registry.example.com/openclaw-gateway:9.8.7"' <<< "$output" || {
+  echo "FAIL: OpenClaw image did not use global.registry and global.version" >&2
+  exit 1
+}
 
 # Test variant: Hermes renders API port, native config, and no OpenClaw doctor init.
 echo "==> helm template ${release_name} ${chart_dir} (agentType=hermes, rendered surface)"

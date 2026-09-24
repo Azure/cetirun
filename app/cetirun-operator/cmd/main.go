@@ -8,6 +8,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"flag"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -32,6 +33,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/buildinfo"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/controller"
 	helmclient "github.com/Azure/CetiRun/app/cetirun-operator/internal/helm"
 )
@@ -57,6 +59,7 @@ func main() {
 	var domainSuffix string
 	var istioGateway string
 	var defaultModel string
+	var showVersion bool
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "Address the metric endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "Address the probe endpoint binds to.")
@@ -71,14 +74,20 @@ func main() {
 	flag.StringVar(&istioGateway, "istio-gateway", controller.DefaultIstioGateway,
 		"Istio Gateway namespace/name used by instance VirtualServices.")
 	flag.StringVar(&defaultModel, "default-model", "gpt-6-astra", "Default GitHub Copilot model for instances without spec.model.")
+	flag.BoolVar(&showVersion, "version", false, "Print version information and exit.")
 
 	opts := zap.Options{
 		Development: true,
 	}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
+	if showVersion {
+		fmt.Printf("cetirun-operator %s (%s)\n", buildinfo.Version, buildinfo.Commit)
+		return
+	}
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+	setupLog.Info("Starting CetiRun Operator", "version", buildinfo.Version, "commit", buildinfo.Commit)
 
 	// Support environment variable overrides for chart configuration.
 	if url := os.Getenv("CETIRUN_CHART_REPO_URL"); url != "" {

@@ -4,6 +4,10 @@
 IMAGE_REPO ?= ghcr.io/azure/cetirun-portal
 IMAGE_TAG  ?= latest
 NPM_REGISTRY ?= https://registry.npmjs.org/
+VERSION ?= dev
+GIT_SHA ?= $(shell git rev-parse HEAD 2>/dev/null || echo unknown)
+LDFLAGS := -X github.com/Azure/CetiRun/app/cetirun-portal/internal/buildinfo.Version=$(VERSION) \
+	-X github.com/Azure/CetiRun/app/cetirun-portal/internal/buildinfo.Commit=$(GIT_SHA)
 
 ##@ Development
 
@@ -30,7 +34,7 @@ run: frontend-build backend-run ## Build frontend and run backend
 
 .PHONY: build
 build: ## Build Go binary (assumes web/dist already exists)
-	CGO_ENABLED=0 go build -o bin/portal .
+	CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o bin/portal .
 
 .PHONY: test
 test: ## Run Go tests
@@ -43,7 +47,9 @@ lint: ## Run linters
 
 .PHONY: docker-build
 docker-build: ## Build Docker image (run from repo root)
-	docker build --build-arg NPM_REGISTRY=$(NPM_REGISTRY) -t $(IMAGE_REPO):$(IMAGE_TAG) -f Dockerfile ../..
+	docker build --build-arg NPM_REGISTRY=$(NPM_REGISTRY) \
+		--build-arg VERSION=$(VERSION) --build-arg GIT_SHA=$(GIT_SHA) \
+		-t $(IMAGE_REPO):$(IMAGE_TAG) -f Dockerfile ../..
 
 .PHONY: docker-push
 docker-push: ## Push Docker image

@@ -1,5 +1,15 @@
 # Default values for cetirun-operator chart.
 
+# -- Shared release coordinates. An umbrella chart can set these once for all
+# CetiRun subcharts.
+global:
+  # -- Optional registry hostname override for all CetiRun images and charts.
+  # Empty preserves the component defaults below.
+  registry: ""
+  # -- Optional shared image and chart version override.
+  # Empty preserves the component and Chart.appVersion defaults below.
+  version: ""
+
 # -- Number of operator replicas (leader election keeps only one active).
 replicaCount: 2
 

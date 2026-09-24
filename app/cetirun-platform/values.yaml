@@ -1,6 +1,16 @@
 # CetiRun platform umbrella defaults. This chart deliberately does not own
 # managed Istio, credentials, certificates, agent instances, or their data.
 
+# -- Shared release coordinates propagated automatically to the Operator and
+# Portal subcharts.
+global:
+  # -- Optional registry hostname override propagated to all CetiRun subcharts.
+  # Empty preserves each subchart's existing repository defaults.
+  registry: ""
+  # -- Optional image and chart version override propagated to all subcharts.
+  # Empty preserves each synchronized subchart's existing version defaults.
+  version: ""
+
 istio:
   # A separately managed cetirun-istio release must be ready before installing
   # this chart. The deployment helper checks these references against the API.

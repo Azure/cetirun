@@ -24,7 +24,9 @@ if [ ! -f "${chart_dir}/Chart.yaml" ]; then
 fi
 
 chart_name="$(awk -F': *' '$1=="name" {print $2; exit}' "${chart_dir}/Chart.yaml")"
-chart_version="${CHART_VERSION:-$(awk -F': *' '$1=="version" {print $2; exit}' "${chart_dir}/Chart.yaml")}"
+release_version="${VERSION:-$("${script_dir}/cetirun-release-metadata.sh" version)}"
+chart_version="${CHART_VERSION:-${release_version}}"
+app_version="${APP_VERSION:-${release_version}}"
 
 if [ -z "${chart_name}" ] || [ -z "${chart_version}" ]; then
   echo "ERROR: Failed to parse chart name/version from ${chart_dir}/Chart.yaml" >&2
@@ -53,8 +55,7 @@ else
 fi
 
 echo "==> Packaging Helm chart (${chart_name} v${chart_version})"
-PACKAGE_ARGS=("${chart_dir}" --destination "${package_dir}" --version "${chart_version}")
-[ -n "${APP_VERSION:-}" ] && PACKAGE_ARGS+=(--app-version "${APP_VERSION}")
+PACKAGE_ARGS=("${chart_dir}" --destination "${package_dir}" --version "${chart_version}" --app-version "${app_version}")
 helm package "${PACKAGE_ARGS[@]}"
 
 if [ ! -f "${chart_archive}" ]; then

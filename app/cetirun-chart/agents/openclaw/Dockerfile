@@ -1,6 +1,8 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 
+ARG VERSION=dev
+ARG GIT_SHA=unknown
 ARG BASE_IMAGE=cetirun.azurecr.io/cetirun-base:latest
 ARG OPENCLAW_VERSION=2026.6.35
 
@@ -16,9 +18,13 @@ RUN npm config set registry "${NPM_REGISTRY}" && \
     npm --min-release-age=0 pack "openclaw@${OPENCLAW_VERSION}" --pack-destination /home/vibe/openclaw-pack
 
 FROM ${BASE_IMAGE}
+ARG VERSION
+ARG GIT_SHA
 
 LABEL org.opencontainers.image.source="https://github.com/Azure/CetiRun"
 LABEL org.opencontainers.image.description="CetiRun OpenClaw gateway image"
+LABEL org.opencontainers.image.version="${VERSION}"
+LABEL org.opencontainers.image.revision="${GIT_SHA}"
 LABEL org.opencontainers.image.licenses="MIT"
 
 ARG OPENCLAW_VERSION
@@ -51,7 +57,20 @@ RUN mkdir -p /usr/local/share/openclaw-extensions /usr/local/share/openclaw-npm 
 # After install, prune non-linux-x64 optional platform binaries that openclaw
 # plugins install pulls for all architectures (~2.5 GB of unnecessary files).
 # Remove generated identity in the same layer so instances do not share a device key.
-RUN openclaw plugins install "npm:@openclaw/msteams@${OPENCLAW_VERSION}" && \
+# Warm ACPX dependencies outside OpenClaw's five-minute installer timeout.
+RUN npm --min-release-age=0 install \
+      --prefix /tmp/openclaw-acpx-prefetch \
+      --omit=dev \
+      --omit=peer \
+      --legacy-peer-deps \
+      --ignore-scripts \
+      --no-audit \
+      --no-fund \
+      --package-lock=false \
+      --save=false \
+      "@openclaw/acpx@${OPENCLAW_VERSION}" && \
+    rm -rf /tmp/openclaw-acpx-prefetch && \
+    openclaw plugins install "npm:@openclaw/msteams@${OPENCLAW_VERSION}" && \
     openclaw plugins install "npm:@openclaw/acpx@${OPENCLAW_VERSION}" && \
     find /usr/local/share/openclaw-npm -type d \( \
       -name "*-darwin-*" -o -name "*-win32-*" \
@@ -74,9 +93,10 @@ COPY --chown=vibe:vibe agents/openclaw/bootstrap/entrypoint.sh /usr/local/bin/en
 ARG CETIRUN_AUTH_AIOHTTP_VERSION=3.14.3
 ARG CETIRUN_AUTH_PYYAML_VERSION=6.0.2
 USER root
-RUN /home/vibe/.local/bin/uv venv /usr/local/lib/cetirun-auth --python python3 && \
-    /home/vibe/.local/bin/uv pip install \
-      --python /usr/local/lib/cetirun-auth/bin/python \
+RUN python3 -m venv /usr/local/lib/cetirun-auth && \
+    /usr/local/lib/cetirun-auth/bin/python -m pip install \
+      --no-cache-dir \
+      --root-user-action=ignore \
       "aiohttp==${CETIRUN_AUTH_AIOHTTP_VERSION}" \
       "pyyaml==${CETIRUN_AUTH_PYYAML_VERSION}"
 COPY --chown=vibe:vibe configs/cetirun-auth-service.py /usr/local/share/cetirun/cetirun-auth-service.py

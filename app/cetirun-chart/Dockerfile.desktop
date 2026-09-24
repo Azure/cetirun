@@ -8,6 +8,9 @@
 # Build strategy: X11 GUI stack compiled from source on Azure Linux 3.0.
 # Azure Linux ships X11 dev headers but not server-side applications.
 
+ARG VERSION=dev
+ARG GIT_SHA=unknown
+
 # ── Stage 1: Build X11 GUI binaries ───────────────────────────────
 ARG AZURELINUX_BASE=mcr.microsoft.com/azurelinux/base/core:3.0@sha256:1c56f09437dfc2910faad39abaaed336265d246cf183e2adb362d4cb3b881ab6
 FROM ${AZURELINUX_BASE} AS desktop-builder
@@ -121,9 +124,13 @@ RUN curl -fsSL "https://github.com/LibVNC/x11vnc/archive/${X11VNC_VERSION}.tar.g
 
 # ── Stage 2: Runtime ──────────────────────────────────────────────
 FROM ${AZURELINUX_BASE}
+ARG VERSION
+ARG GIT_SHA
 
 LABEL org.opencontainers.image.source="https://github.com/Azure/CetiRun"
 LABEL org.opencontainers.image.description="CetiRun desktop sidecar — headed Chrome + noVNC"
+LABEL org.opencontainers.image.version="${VERSION}"
+LABEL org.opencontainers.image.revision="${GIT_SHA}"
 LABEL org.opencontainers.image.licenses="MIT"
 
 # Runtime X11 shared libraries and tools

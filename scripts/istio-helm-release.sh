@@ -30,7 +30,8 @@ if [ ! -f "${chart_dir}/Chart.yaml" ]; then
 fi
 
 chart_name="$(awk -F': *' '$1=="name" {print $2; exit}' "${chart_dir}/Chart.yaml")"
-chart_version="${CHART_VERSION:-$(awk -F': *' '$1=="version" {print $2; exit}' "${chart_dir}/Chart.yaml")}"
+release_version="${VERSION:-$("${script_dir}/cetirun-release-metadata.sh" version)}"
+chart_version="${CHART_VERSION:-${release_version}}"
 
 if [ -z "${chart_name}" ] || [ -z "${chart_version}" ]; then
   echo "ERROR: Failed to parse chart name/version from ${chart_dir}/Chart.yaml" >&2

@@ -1,6 +1,8 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 
+ARG VERSION=dev
+ARG GIT_SHA=unknown
 ARG AZURELINUX_BASE=mcr.microsoft.com/azurelinux/base/core:3.0@sha256:1c56f09437dfc2910faad39abaaed336265d246cf183e2adb362d4cb3b881ab6
 ARG GO_BUILD_IMAGE=mcr.microsoft.com/oss/go/microsoft/golang:1.26.8@sha256:5ef73864bf3795d1a5514e59b388028ad80190d7ba48f62f872328db9689e38d
 
@@ -70,9 +72,13 @@ RUN GOFLAGS="-trimpath" CGO_ENABLED=0 GOEXPERIMENT=ms_nocgo_opensslcrypto \
 
 # ── Main image ──────────────────────────────────────────────────
 FROM ${AZURELINUX_BASE}
+ARG VERSION
+ARG GIT_SHA
 
 LABEL org.opencontainers.image.source="https://github.com/Azure/CetiRun"
 LABEL org.opencontainers.image.description="CetiRun shared agent base image"
+LABEL org.opencontainers.image.version="${VERSION}"
+LABEL org.opencontainers.image.revision="${GIT_SHA}"
 LABEL org.opencontainers.image.licenses="MIT"
 
 ARG TZ=UTC

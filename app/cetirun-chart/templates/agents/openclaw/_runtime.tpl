@@ -36,8 +36,11 @@ Licensed under the MIT License.
 {{- end }}
 
 {{- define "cetirun.agent.openclaw.image" -}}
+{{- $registry := include "cetirun.registry" . -}}
+{{- $version := include "cetirun.version" . -}}
 {{- $repo := .Values.image.repository | default .Values.openclaw.image.repository | default "cetirun.azurecr.io/openclaw-gateway" -}}
-{{- $tag := .Values.image.tag | default .Values.openclaw.image.tag | default .Chart.AppVersion -}}
+{{- if $registry }}{{- $repo = printf "%s/openclaw-gateway" $registry -}}{{- end -}}
+{{- $tag := $version | default .Values.image.tag | default .Values.openclaw.image.tag | default .Chart.AppVersion -}}
 {{- $digest := .Values.image.digest | default .Values.openclaw.image.digest -}}
 {{ $repo }}:{{ $tag }}{{ if $digest }}@{{ $digest }}{{ end }}
 {{- end }}
