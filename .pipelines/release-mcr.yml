@@ -266,35 +266,10 @@ steps:
           return 0
         }
 
-        remove_existing_tag() {
-          local repository="$1"
-          local result
-          if repository_tag_exists "${repository}"; then
-            az acr repository untag \
-              --name "${ACR_NAME}" \
-              --image "${repository}:${RELEASE_VERSION}"
-            echo "Removed existing tag ${registry}/${repository}:${RELEASE_VERSION}."
-            return 0
-          else
-            result="$?"
-          fi
-          if [ "${result}" -ne 1 ]; then
-            echo "ERROR: could not check whether ${registry}/${repository}:${RELEASE_VERSION} exists." >&2
-            return "${result}"
-          fi
-          return 0
-        }
-
         az acr login --name "${ACR_NAME}"
 
         if [[ "${FORCE_PUBLISH}" == "true" ]]; then
-          echo "WARNING: overwriting ${RELEASE_VERSION} tags from a manual run."
-          for artifact in "${image_artifacts[@]}"; do
-            remove_existing_tag "${REPOSITORY_PREFIX}/${artifact}"
-          done
-          for chart in "${chart_artifacts[@]}"; do
-            remove_existing_tag "${REPOSITORY_PREFIX}/helm/${chart}"
-          done
+          echo "WARNING: overwriting ${RELEASE_VERSION} tags from a manual run after each replacement push succeeds."
         else
           # Preflight all immutable version tags before publishing any artifact.
           for artifact in "${image_artifacts[@]}"; do
