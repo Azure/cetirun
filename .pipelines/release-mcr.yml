@@ -58,7 +58,7 @@ steps:
         exit 1
       fi
 
-      force_publish="${FORCE_PUBLISH_INPUT}"
+      force_publish="$(tr '[:upper:]' '[:lower:]' <<<"${FORCE_PUBLISH_INPUT}")"
       if [[ "${force_publish}" != "true" && "${force_publish}" != "false" ]]; then
         echo "ERROR: forcePublish must be true or false." >&2
         exit 1
