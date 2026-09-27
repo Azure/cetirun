@@ -211,8 +211,34 @@ class CustomExampleTests(unittest.TestCase):
     def test_https_keeps_certificate_and_hostname_verification(self):
         connection = AGENT.GatewayConnection(AGENT.urlsplit("https://gateway.example.com/v1"), None)
         self.assertEqual(connection.port, 443)
+        self.assertGreaterEqual(connection.tls.minimum_version, ssl.TLSVersion.TLSv1_2)
         self.assertEqual(connection.tls.verify_mode, ssl.CERT_REQUIRED)
         self.assertTrue(connection.tls.check_hostname)
+        connection.close()
+
+    def test_https_enforces_tls_floor_without_weakening_stricter_defaults(self):
+        for calls in (None, Mock()):
+            for minimum in (ssl.TLSVersion.MINIMUM_SUPPORTED, ssl.TLSVersion.TLSv1,
+                            ssl.TLSVersion.TLSv1_1, ssl.TLSVersion.TLSv1_2, ssl.TLSVersion.TLSv1_3):
+                with self.subTest(cancellable=calls is not None, minimum=minimum):
+                    context = Mock(spec=ssl.SSLContext, minimum_version=minimum,
+                        maximum_version=ssl.TLSVersion.MAXIMUM_SUPPORTED,
+                        verify_mode=ssl.CERT_REQUIRED, check_hostname=True)
+                    with patch.object(AGENT.ssl, "create_default_context", return_value=context):
+                        connection = AGENT.GatewayConnection(AGENT.urlsplit("https://gateway.example.com/v1"), calls)
+                    self.assertIs(connection.tls, context)
+                    self.assertEqual(context.minimum_version, max(minimum, ssl.TLSVersion.TLSv1_2))
+                    self.assertEqual(context.maximum_version, ssl.TLSVersion.MAXIMUM_SUPPORTED)
+                    self.assertEqual(context.verify_mode, ssl.CERT_REQUIRED)
+                    self.assertTrue(context.check_hostname)
+                    connection.close()
+
+    def test_http_does_not_create_tls_context(self):
+        with patch.object(AGENT.ssl, "create_default_context") as create_context:
+            connection = AGENT.GatewayConnection(AGENT.urlsplit("http://gateway.example.com/v1"), None)
+        create_context.assert_not_called()
+        self.assertIsNone(connection.tls)
+        self.assertEqual(connection.port, 80)
         connection.close()
 
     def test_cancel_closes_pending_tcp_socket(self):

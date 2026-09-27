@@ -44,8 +44,9 @@ The tests verify:
 - Non-streaming output saved in private HOME, normal streaming, interruption,
   cancellation during silent upstream work (including before headers), errors
   and no automatic request replay.
-- Cancellation during TCP connection and TLS handshake, while retaining default
-  certificate and hostname verification.
+- TLS 1.2 or newer for HTTPS Gateway connections, preserving stricter TLS
+  defaults and certificate and hostname verification.
+- Cancellation during TCP connection and TLS handshake.
 - Complete SSE chunk/termination structure and explicit rejection of unsupported
   request fields, including tools and tool selection.
 - A headless one-shot check using the same model/context environment.

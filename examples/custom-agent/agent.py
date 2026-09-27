@@ -148,6 +148,8 @@ class GatewayConnection(http.client.HTTPConnection):
         super().__init__(endpoint.hostname, endpoint.port or (443 if endpoint.scheme == "https" else 80), timeout=5)
         self.calls = calls
         self.tls = ssl.create_default_context() if endpoint.scheme == "https" else None
+        if self.tls is not None and self.tls.minimum_version < ssl.TLSVersion.TLSv1_2:
+            self.tls.minimum_version = ssl.TLSVersion.TLSv1_2
 
     def connect(self):
         if self.calls:
