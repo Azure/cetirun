@@ -66,6 +66,10 @@ spec:
             - name: CETIRUN_HELM_VALUES
               value: {{ .Values.cetirun.helmValues | toJson | quote }}
             {{- end }}
+            {{- if .Values.customRuntime.enabled }}
+            - name: CETIRUN_CUSTOM_RUNTIME
+              value: {{ .Values.customRuntime | toJson | quote }}
+            {{- end }}
             {{- if .Values.azure.subscriptionId }}
             - name: AZURE_SUBSCRIPTION_ID
               value: {{ .Values.azure.subscriptionId | quote }}

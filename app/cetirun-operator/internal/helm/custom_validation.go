@@ -277,6 +277,10 @@ func (p *PreparedRelease) validateCustomObject(obj map[string]any, kind, name st
 				return fail()
 			}
 		}
+		if kind == "PersistentVolume" && (objectMeta.Namespace != "" ||
+			objectMeta.Annotations["pv.kubernetes.io/provisioned-by"] != "blob.csi.azure.com") {
+			return fail()
+		}
 		return nil
 	}
 	switch kind {
@@ -421,24 +425,20 @@ func (p *PreparedRelease) validateCustomObject(obj map[string]any, kind, name st
 				return fail()
 			}
 		}
-		env := []corev1.EnvVar{
-			{Name: "HOME", Value: p.Agent.HomeDir},
-			{Name: "OPENAI_BASE_URL", Value: b.Model.BaseURL},
-			{Name: "OPENAI_API_KEY", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
-				LocalObjectReference: corev1.LocalObjectReference{Name: b.Model.Name}, Key: b.Model.Key,
-			}}},
+		env := []corev1.EnvVar{{Name: "HOME", Value: p.Agent.HomeDir}}
+		if !b.AgentManagedModel {
+			env = append(env,
+				corev1.EnvVar{Name: "OPENAI_BASE_URL", Value: b.Model.BaseURL},
+				corev1.EnvVar{Name: "OPENAI_API_KEY", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: b.Model.Name}, Key: b.Model.Key,
+				}}})
 		}
 		if p.Agent.Port != nil {
 			env = append(env, corev1.EnvVar{Name: "PORT", Value: strconv.Itoa(int(*p.Agent.Port))})
 		}
 		if main.Name != p.chart.Name() || init.Name != "init-home-data" || len(main.Command) != 0 ||
 			!reflect.DeepEqual(init.Command, []string{"/bin/sh", "/etc/cetirun/custom-init-home.sh"}) ||
-			!reflect.DeepEqual(main.Env, env) || !reflect.DeepEqual(init.Env, []corev1.EnvVar{
-			{Name: "SOURCE_HOME", Value: p.Agent.HomeDir}, {Name: "TARGET_HOME", Value: "/home-data"},
-			{Name: "CETIRUN_INIT_IMAGE", Value: p.Agent.Image},
-			{Name: "CETIRUN_INIT_COMMON", Value: "/etc/cetirun/init-home-common.sh"},
-			{Name: "CETIRUN_CONTEXT_DIR", Value: "/etc/cetirun-context"},
-		}) {
+			!reflect.DeepEqual(main.Env, env) || !reflect.DeepEqual(init.Env, p.customInitEnv()) {
 			return fail()
 		}
 		for _, c := range []corev1.Container{main, init} {
@@ -451,13 +451,15 @@ func (p *PreparedRelease) validateCustomObject(obj map[string]any, kind, name st
 		if p.desktopEnabled() {
 			volumes = append(volumes, corev1.Volume{Name: "tmp-desktop", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}})
 		}
-		if !reflect.DeepEqual(main.VolumeMounts, []corev1.VolumeMount{
-			{Name: "data", MountPath: p.Agent.HomeDir}, {Name: "context", MountPath: p.Agent.HomeDir + "/.agents", ReadOnly: true},
-			{Name: "tmp", MountPath: "/tmp"},
-		}) || !reflect.DeepEqual(init.VolumeMounts, []corev1.VolumeMount{
-			{Name: "data", MountPath: "/home-data"}, {Name: "config", MountPath: "/etc/cetirun", ReadOnly: true},
-			{Name: "context", MountPath: "/etc/cetirun-context", ReadOnly: true}, {Name: "tmp", MountPath: "/tmp"},
-		}) || !reflect.DeepEqual(pod.Volumes, volumes) {
+		if p.sharedSkillsEnabled() {
+			_, pvc := p.sharedSkillsNames(b.Namespace.Name)
+			volumes = append(volumes,
+				corev1.Volume{Name: "shared-skills", VolumeSource: corev1.VolumeSource{
+					PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: pvc, ReadOnly: true}}},
+				corev1.Volume{Name: "context-view", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}})
+		}
+		if !reflect.DeepEqual(main.VolumeMounts, p.customMainMounts()) ||
+			!reflect.DeepEqual(init.VolumeMounts, p.customInitMounts()) || !reflect.DeepEqual(pod.Volumes, volumes) {
 			return fail()
 		}
 		if p.Agent.Port == nil {

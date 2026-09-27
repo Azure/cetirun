@@ -27,7 +27,7 @@ Licensed under the MIT License.
 {{- if not .Values.runtime -}}{{- fail "Custom requires a platform-prepared runtime plan" -}}{{- end -}}
 {{- $r := .Values.runtime -}}
 {{- if or (ne $r.contractVersion "v1") (ne $r.agent.type "custom") -}}{{- fail "Invalid Custom runtime contract" -}}{{- end -}}
-{{- if or (not $r.agent.image) (not $r.agent.home) (not $r.bindings.home.name) (not $r.bindings.context.name) (not $r.bindings.model.name) (not $r.planHash) -}}
+{{- if or (not $r.agent.image) (not $r.agent.home) (not $r.bindings.home.name) (not $r.bindings.context.name) (and (not $r.bindings.agentManagedModel) (not $r.bindings.model.name)) (not $r.planHash) -}}
 {{- fail "Custom requires image, model, HOME and context bindings" -}}
 {{- end -}}
 {{- if ne $r.bindings.namespace.name .Release.Namespace -}}{{- fail "Custom binding namespace mismatch" -}}{{- end -}}
@@ -108,6 +108,12 @@ spec:
               value: /etc/cetirun/init-home-common.sh
             - name: CETIRUN_CONTEXT_DIR
               value: /etc/cetirun-context
+            {{- if .Values.skills.shared }}
+            - name: CETIRUN_SHARED_SKILLS_DIR
+              value: /etc/cetirun-shared-skills
+            - name: CETIRUN_CONTEXT_VIEW
+              value: /etc/cetirun-context-view
+            {{- end }}
           volumeMounts:
             - name: data
               mountPath: /home-data
@@ -119,6 +125,13 @@ spec:
               readOnly: true
             - name: tmp
               mountPath: /tmp
+            {{- if .Values.skills.shared }}
+            - name: shared-skills
+              mountPath: /etc/cetirun-shared-skills
+              readOnly: true
+            - name: context-view
+              mountPath: /etc/cetirun-context-view
+            {{- end }}
       containers:
         - name: {{ .Chart.Name }}
           image: {{ $r.agent.image | quote }}
@@ -162,9 +175,12 @@ spec:
           volumeMounts:
             - name: data
               mountPath: {{ $r.agent.home | quote }}
-            - name: context
+            - name: {{ ternary "context-view" "context" .Values.skills.shared }}
               mountPath: {{ printf "%s/.agents" $r.agent.home | quote }}
               readOnly: true
+              {{- if .Values.skills.shared }}
+              subPath: current
+              {{- end }}
             - name: tmp
               mountPath: /tmp
         {{- if .Values.desktop.enabled }}
@@ -188,6 +204,14 @@ spec:
             name: {{ include "cetirun.configMapName" . }}
             defaultMode: 0444
         {{- include "cetirun.platform.temporaryVolumes" . | nindent 8 }}
+        {{- if .Values.skills.shared }}
+        - name: shared-skills
+          persistentVolumeClaim:
+            claimName: {{ include "cetirun.sharedSkillsPVCName" . }}
+            readOnly: true
+        - name: context-view
+          emptyDir: {}
+        {{- end }}
 ---
 apiVersion: v1
 kind: ServiceAccount

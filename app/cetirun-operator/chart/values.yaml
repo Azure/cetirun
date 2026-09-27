@@ -55,7 +55,7 @@ cetirun:
     # -- OCI registry URL.
     repoURL: oci://cetirun.azurecr.io/helm/cetirun
     # -- Chart version to deploy.
-    version: "0.1.0"
+    version: "0.1.1"
   # -- Operator-level Helm value overrides applied to every CetiRun instance.
   # Merged on top of the operator's hardcoded defaults but beneath
   # per-instance spec.helm.values, so instances can still override them.
@@ -102,6 +102,35 @@ serviceAccount:
 # Empty string (default) means use the chart's built-in default.
 # Deprecated: use cetirun.helmValues.skills.storageAccount instead.
 skillsStorageAccount: ""
+
+# -- Opt-in provisioning for approved Custom images with their own model login.
+# No Gateway credentials are generated or imported. Configure exact image
+# digests and qualify the image UID/GID against this HOME storage before enabling.
+customRuntime:
+  enabled: false
+  agentManagedModel: false
+  approvedImages: []
+  storageClass: azureblob-nfs-premium
+  storageSize: 20Gi
+  accessMode: ReadWriteMany
+  fsGroup: 1024
+  context:
+    AGENTS.md: |
+      # CetiRun agent context
+      Work within the owner's requested scope. Approved skills are available
+      under $HOME/.agents/skills. Read a relevant SKILL.md before using it.
+      This context and the skills view are read-only. Preserve user files.
+      Use cetirun-memory for durable notes in private HOME. Do not put credentials
+      or private session content into shared skills.
+    skills/cetirun-memory/SKILL.md: |
+      ---
+      name: cetirun-memory
+      description: Preserve useful owner-approved notes in the instance's private HOME.
+      ---
+      Store durable notes under $HOME/memory. Read relevant existing notes before
+      extending them. Preserve unrelated notes and distinguish facts from assumptions.
+      Do not store passwords, tokens or authentication responses. Never write memory
+      into the read-only skills directory or shared storage.
 
 # -- Azure configuration for Teams auto-provisioning.
 # Only required when instances use msteams.enabled=true.

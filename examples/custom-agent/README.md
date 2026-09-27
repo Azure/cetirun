@@ -5,9 +5,10 @@ environment and optional HTTP contracts. It reads the approved context files,
 discovers a model through a mock Gateway, and forwards a single request.
 It is not a production agent, reasoning loop, Chat UI or history service.
 
-The default operator does not yet have a production `CustomBindingProvider`.
-A Custom Agent therefore waits for platform bindings. The example does not
-create those bindings or enable Custom in a cluster.
+Custom provisioning is disabled by default. This synthetic example requires
+platform Gateway bindings and does not create them. The separate
+[Pi example](../pi-agent/README.md) uses the Operator's opt-in Kubernetes provider
+for explicitly approved images with their own model authentication.
 
 Custom inherits the platform desktop and shared network, exec, disruption and
 mesh controls. Desktop is enabled by default even when the Agent has no HTTP
@@ -134,9 +135,44 @@ object UIDs/revisions and file presence, while the context owner is responsible
 for provenance and approval. The ConfigMap representation has Kubernetes size
 limits and is intended for bounded text snapshots, not dependency bundles.
 
+Custom also accepts the platform's `skills.shared` configuration and Team
+`skillStorage`, using the same Blob CSI PV/PVC templates as the built-in agents.
+The source claim is mounted read-only in the Custom init container. Init copies
+the approved ConfigMap and shared skills into a per-Pod temporary volume and
+publishes the completed view at `$HOME/.agents`, read-only in the Agent.
+Shared top-level skill names must not collide with canonical context skills;
+in particular, they cannot replace `cetirun-memory`. A failed copy is not
+published and can retry without resetting HOME or changing either source.
+
+The view is stable across init retries and rebuilt on a new Pod. Editing files
+in shared storage does not hot-reload an existing view; use a controlled Pod
+replacement after publishing approved content. The copy needs enough local
+ephemeral storage for the selected shared tree. This view is a per-Pod snapshot,
+not a transactional snapshot of concurrent NFS writes.
+
+Custom's discovery path is fixed at `$HOME/.agents/skills`; `skills.mountPath`
+remains the native discovery setting. Runtime `npm`/`clawHub` installation is
+not supported in arbitrary Custom images. Nonempty package selections, including
+Team defaults and per-Agent additions after removals, report
+`SkillsMaterializationPending` rather than being ignored. Configure the published
+shared/context files instead of runtime package selections when using Custom.
+
+To test the copy and read-only mounts without a Gateway or image build, explicitly
+select an already-cached shell image:
+
+```bash
+CETIRUN_SKILLS_TEST_IMAGE=local-shell-image:tested \
+  python3 -B -m unittest discover -s scripts/tests -p test_custom_skills_container.py -v
+```
+
+This optional check uses the image's local ID, disables container networking,
+drops capabilities, and runs as the non-root caller's UID/GID. It checks writable
+private HOME and read-only shared/Agent views, not the selected image's full
+Custom contract, Kubernetes mounts or Blob CSI behavior.
+
 No receipt may come from `spec.helm.values`. The platform supplies shared
 network/exec/disruption/scaling settings, Pod annotations, RuntimeClass,
-nodeSelector, affinity, tolerations, topology spread and Desktop configuration.
+nodeSelector, affinity, tolerations, topology spread, skills storage and Desktop configuration.
 Per-Agent overrides accept resources and Desktop enablement, logging, resolution
 and resources. The explicit platform allowlist still rejects unrelated keys;
 inapplicable global native settings are not silently consumed. The adapter
@@ -220,10 +256,11 @@ adopting resources by name. A never-bound Agent can finalize without deleting
 foreign resources. Namespace deletion still removes its PVCs; this does not
 change the requirement to back up data before deleting an Agent.
 
-Registry credentials, Portal forms, Chat UI, chatproxy, production Gateway/Key
-issuance, context publication and storage coordination are not implemented here.
-The operator's default provider remains unset rather than synthesizing these
-dependencies from native tokens or tenant-controlled annotations.
+Registry credentials, Portal forms, Chat UI, chatproxy and production Gateway/Key
+issuance are not implemented here. The opt-in Kubernetes provider can provision
+HOME/context and coordinate same-image Pod replacements for approved image-owned
+authentication. Gateway-backed examples still require their capability provider;
+they never fall back to native tokens or tenant-controlled annotations.
 
 ## Failure diagnosis and recovery
 

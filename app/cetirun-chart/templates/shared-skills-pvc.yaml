@@ -1,4 +1,4 @@
-{{- if and (ne (include "cetirun.agent.type" .) "custom") .Values.skills.shared }}
+{{- if .Values.skills.shared }}
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -10,7 +10,7 @@ spec:
     - ReadWriteMany
   resources:
     requests:
-      storage: {{ .Values.skills.storageSize }}
-  storageClassName: {{ .Values.skills.storageClassName }}
+      storage: {{ .Values.skills.storageSize | quote }}
+  storageClassName: {{ .Values.skills.storageClassName | quote }}
   volumeName: {{ include "cetirun.sharedSkillsPVName" . }}
 {{- end }}

@@ -1031,7 +1031,7 @@ func TestTailscaleSpec_TypeConstruction(t *testing.T) {
 			User: cetirunv1alpha1.UserSpec{
 				Alias:       "alice",
 				DisplayName: "Alice Smith",
-				Team:        "aks-core",
+				Team:        "example-team",
 			},
 			GatewayTokenSecretRef: "gateway-token",
 			Tailscale: &cetirunv1alpha1.TailscaleSpec{
@@ -1053,7 +1053,7 @@ func TestTailscaleSpec_TypeConstruction(t *testing.T) {
 			User: cetirunv1alpha1.UserSpec{
 				Alias:       "bob",
 				DisplayName: "Bob",
-				Team:        "aks-core",
+				Team:        "example-team",
 			},
 			GatewayTokenSecretRef: "gateway-token",
 		},

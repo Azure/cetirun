@@ -6,13 +6,13 @@ ARG GIT_SHA=unknown
 ARG AZURELINUX_BASE=mcr.microsoft.com/azurelinux/base/core:3.0@sha256:1c56f09437dfc2910faad39abaaed336265d246cf183e2adb362d4cb3b881ab6
 ARG GO_BUILD_IMAGE=mcr.microsoft.com/oss/go/microsoft/golang:1.26.8@sha256:5ef73864bf3795d1a5514e59b388028ad80190d7ba48f62f872328db9689e38d
 
-# ── Install Node.js 25 from official tarball ───────────────────
-# Azure Linux repos only have nodejs20/nodejs24. Node 25 is required
-# because openclaw doctor hangs on Node 24 (upstream Node.js regression).
+# ── Install Node.js 24 from official tarball ───────────────────
+# Keep the LTS line accepted by OpenClaw's dependencies.
+# Qualify openclaw doctor when changing this pin; earlier Node 24 builds hung.
 FROM ${AZURELINUX_BASE} AS node-install
-ARG NODE_VERSION=25.9.0
-ARG NODE_SHA256_X64=1d8db7d6e291d167e8c467ae4094be175e1a0b3969c7ae1f8955b9f7824f7b2e
-ARG NODE_SHA256_ARM64=bf007bf0dcc2fddd90888fde374a1ad33c1ab2ca2ad324c645dd7aed0f9f1460
+ARG NODE_VERSION=24.19.0
+ARG NODE_SHA256_X64=14b342e71204f811bde6153be8e04b62aef63c236fef92b55f9c83154b409647
+ARG NODE_SHA256_ARM64=01443c1e1a29e531ccad5a46fefa6df490d2189c49f7955904aecdbb0fe86fdc
 RUN tdnf install -y ca-certificates curl tar xz libgcc-atomic && tdnf clean all
 RUN UNAME_M=$(uname -m) && \
     if [ "$UNAME_M" = "x86_64" ]; then NODE_ARCH="x64"; NODE_SHA256="${NODE_SHA256_X64}"; \
@@ -85,7 +85,7 @@ ARG TZ=UTC
 ARG NPM_REGISTRY=https://registry.npmjs.org/
 ENV TZ="$TZ"
 
-# Install Node.js 25 from the build stage (libgcc-atomic provides libatomic.so.1 required by Node 25)
+# Install Node.js from the build stage; libgcc-atomic provides libatomic.so.1.
 # Copy entire /usr/local prefix to preserve npm/npx symlinks
 COPY --from=node-install /usr/local/ /usr/local/
 
@@ -94,6 +94,7 @@ RUN tdnf install -y \
   bind-utils \
   ca-certificates \
   curl \
+  diffutils \
   git \
   gnupg2 \
   iptables \
@@ -116,6 +117,10 @@ RUN tdnf install -y \
   zsh \
   && tdnf update -y \
   && tdnf clean all
+
+RUN for tool in sh cp mkdir mv rm chmod mktemp find cmp; do \
+      command -v "$tool" >/dev/null 2>&1 || exit 1; \
+    done
 
 # Fix CVE-2026-33671: picomatch 4.0.3 bundled inside npm's own tinyglobby dep.
 # npm overrides can't reach npm's internal node_modules, so replace in-place.
@@ -259,7 +264,7 @@ RUN mkdir -p /home/vibe/.local/bin && \
     rm -rf /tmp/uv*
 
 # Install Claude Code into same local prefix so CVE overrides from cve-overrides.json apply.
-ARG CLAUDE_CODE_VERSION=2.1.120
+ARG CLAUDE_CODE_VERSION=2.1.163
 RUN mkdir -p /usr/local/share/npm-global/bin && \
     cd /usr/local/share/npm-global/lib && \
     npm install @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} && \

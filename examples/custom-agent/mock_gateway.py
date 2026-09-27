@@ -34,6 +34,16 @@ def make_server(port=0, expected_context=None):
                 return False
             return True
 
+        def observe_disconnect(self):
+            self.connection.settimeout(2)
+            try:
+                if self.connection.recv(1) == b"":
+                    self.server.disconnected.set()
+            except (BrokenPipeError, ConnectionResetError):
+                self.server.disconnected.set()
+            except socket.timeout:
+                pass
+
         def do_GET(self):
             if not self.authorized():
                 return
@@ -71,14 +81,7 @@ def make_server(port=0, expected_context=None):
                     self.wfile.write(b'data: {"choices":[{"delta":{"content":"started"}}]}\n\n')
                     self.wfile.flush()
                 self.server.stream_started.set()
-                self.connection.settimeout(2)
-                try:
-                    if self.connection.recv(1) == b"":
-                        self.server.disconnected.set()
-                except (BrokenPipeError, ConnectionResetError):
-                    self.server.disconnected.set()
-                except socket.timeout:
-                    pass
+                self.observe_disconnect()
                 return
             if body.get("stream"):
                 self.send_response(200)
@@ -103,6 +106,10 @@ def make_server(port=0, expected_context=None):
                             self.wfile.flush()
                     except (BrokenPipeError, ConnectionResetError):
                         self.server.disconnected.set()
+                    else:
+                        # Buffered writes can finish before the peer close is
+                        # delivered. Require EOF/reset instead of a write error.
+                        self.observe_disconnect()
                     return
                 self.wfile.write(b"data: " + chunk({}, "stop") + b"\n\ndata: [DONE]\n\n")
             else:

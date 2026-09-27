@@ -94,9 +94,7 @@ spec:
                 end
                 if not instance_name or instance_name == "" then return end
 
-                -- Extract both alias (email local part) and full email for ownership check.
-                -- Some users have alias == email local part (guwe), others don't (Pengfei.Ni vs peni).
-                -- Portal accepts if either matches.
+                -- Send both identities: the owner's alias may differ from the email local part.
                 local email = request_handle:headers():get("x-auth-request-email") or ""
                 if email == "" then
                   email = request_handle:headers():get("x-auth-request-preferred-username") or ""

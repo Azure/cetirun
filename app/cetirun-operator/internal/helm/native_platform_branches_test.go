@@ -30,6 +30,7 @@ func nativePlatformBranches(t *testing.T, directory string) map[string]map[strin
 						if err != nil {
 							t.Fatal(err)
 						}
+						useNativeBaselineVersion(ch)
 						input := sampleInput(typ, "openai", false)
 						input["desktop"] = map[string]any{"enabled": desktop}
 						input["ttyd"] = map[string]any{"enabled": terminal}

@@ -86,6 +86,9 @@ func prepareCustomChart(chrt *chart.Chart, input map[string]any, request AgentRe
 	// terminal inside the Agent's execution environment without replacing its
 	// ENTRYPOINT/CMD or assuming the image contains ttyd and a particular shell.
 	ensureObject(coalesced, "ttyd")["enabled"] = false
+	// Custom publishes the approved view at its contract path, independent of
+	// the native agents' discovery paths retained in shared platform settings.
+	ensureObject(coalesced, "skills")["mountPath"] = agent.HomeDir + "/.agents/skills"
 	if err := validateCustomPlatformValues(coalesced, agent); err != nil {
 		return nil, err
 	}

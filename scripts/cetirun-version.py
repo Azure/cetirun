@@ -46,7 +46,7 @@ def set_version(version):
         ("app/cetirun-operator/chart/Chart.yaml", True, False),
         ("app/cetirun-portal/chart/Chart.yaml", True, False),
         ("app/cetirun-platform/Chart.yaml", True, True),
-        ("infra/istio/Chart.yaml", False, False),
+        ("infra/istio/Chart.yaml", True, False),
     )
     for relative, has_app_version, has_dependencies in charts:
         path = ROOT / relative
@@ -121,7 +121,7 @@ def check_version(version):
         ("app/cetirun-operator/chart/Chart.yaml", True),
         ("app/cetirun-portal/chart/Chart.yaml", True),
         ("app/cetirun-platform/Chart.yaml", True),
-        ("infra/istio/Chart.yaml", False),
+        ("infra/istio/Chart.yaml", True),
     )
     for relative, has_app_version in charts:
         path = ROOT / relative

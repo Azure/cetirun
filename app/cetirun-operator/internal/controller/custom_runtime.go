@@ -80,16 +80,22 @@ func (r *AgentReconciler) customWaiting(ctx context.Context, instance *api.Agent
 	return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 }
 
-func customOverrides(instance *api.Agent, defaults map[string]any) (map[string]any, error) {
+func (r *AgentReconciler) customOverrides(instance *api.Agent, team *api.Team) (map[string]any, error) {
 	if instance.Spec.GatewayTokenSecretRef != "" || instance.Spec.Tailscale != nil || instance.Spec.MSTeams != nil {
 		return nil, fmt.Errorf("UnsupportedFeature: Custom does not support native credentials, Tailscale or Teams")
 	}
-	if err := runtimebindings.ValidateOverrides(defaults); err != nil {
+	if err := runtimebindings.ValidateOverrides(r.CetiRunHelmValues); err != nil {
 		return nil, fmt.Errorf("CETIRUN_HELM_VALUES platform configuration: %w", err)
 	}
 	values := platformRuntimeDefaults(instance.Name)
-	for key, value := range defaults {
+	for key, value := range r.CetiRunHelmValues {
 		values[key] = deepMerge(values[key], value)
+	}
+	if err := applySkillValues(values, team, instance.Spec.SkillOverrides, r.SkillsStorageAccount); err != nil {
+		return nil, err
+	}
+	if err := runtimebindings.ValidateCustomSkills(values["skills"]); err != nil {
+		return nil, err
 	}
 	local := map[string]any{}
 	for key, raw := range instance.Spec.Helm.Values {
@@ -128,7 +134,7 @@ func (r *AgentReconciler) reconcileCustom(ctx context.Context, instance *api.Age
 	if instance.Spec.Suspended {
 		return r.suspendCustom(ctx, instance)
 	}
-	values, err := customOverrides(instance, r.CetiRunHelmValues)
+	values, err := r.customOverrides(instance, team)
 	if err != nil {
 		return r.rejectCustomConfig(ctx, instance, err)
 	}
@@ -376,13 +382,15 @@ func (r *AgentReconciler) validateCustomObjects(ctx context.Context, instance *a
 	key := func(name string) types.NamespacedName {
 		return types.NamespacedName{Namespace: b.Namespace.Name, Name: name}
 	}
-	secret := &corev1.Secret{}
-	if err := r.customReader().Get(ctx, key(b.Model.Name), secret); err != nil || !referenceMatches(secret, b.Model.ObjectReference) ||
-		secret.Type != corev1.SecretTypeOpaque || len(secret.Data) != 1 || len(secret.Data[b.Model.Key]) == 0 {
-		return fmt.Errorf("ModelBindingInvalid: dedicated instance model Secret is unavailable or changed")
-	}
-	if !hasAgentOwner(secret, instance) {
-		return fmt.Errorf("ModelBindingInvalid: Secret owner does not match Agent UID")
+	if !b.AgentManagedModel {
+		secret := &corev1.Secret{}
+		if err := r.customReader().Get(ctx, key(b.Model.Name), secret); err != nil || !referenceMatches(secret, b.Model.ObjectReference) ||
+			secret.Type != corev1.SecretTypeOpaque || len(secret.Data) != 1 || len(secret.Data[b.Model.Key]) == 0 {
+			return fmt.Errorf("ModelBindingInvalid: dedicated instance model Secret is unavailable or changed")
+		}
+		if !hasAgentOwner(secret, instance) {
+			return fmt.Errorf("ModelBindingInvalid: Secret owner does not match Agent UID")
+		}
 	}
 	home := &corev1.PersistentVolumeClaim{}
 	if err := r.customReader().Get(ctx, key(b.Home.Name), home); err != nil || !referenceMatches(home, b.Home.ObjectReference) ||

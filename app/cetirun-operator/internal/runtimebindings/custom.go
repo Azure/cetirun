@@ -61,13 +61,18 @@ type Custom struct {
 	ApprovedType   string          `json:"approvedType"`
 	ApprovedImage  string          `json:"approvedImage"`
 	PolicyRevision string          `json:"policyRevision"`
-	Model          ModelAccess     `json:"model"`
-	Home           Home            `json:"home"`
-	Context        Context         `json:"context"`
-	Network        Network         `json:"network"`
+	// Only a trusted platform provider can approve image-owned authentication.
+	AgentManagedModel bool        `json:"agentManagedModel,omitempty"`
+	Model             ModelAccess `json:"model"`
+	Home              Home        `json:"home"`
+	Context           Context     `json:"context"`
+	Network           Network     `json:"network"`
 }
 
 func (b Custom) HarnessBindings() agents.Bindings {
+	if b.AgentManagedModel {
+		return agents.Bindings{AgentManagedModel: true, ContextRevision: b.Context.Revision}
+	}
 	return agents.Bindings{
 		Model:           agents.ModelBinding{BaseURL: b.Model.BaseURL, CredentialSlot: "model", Revision: b.Model.Revision},
 		ContextRevision: b.Context.Revision,
@@ -95,17 +100,41 @@ func (b Custom) Validate(agent agents.ResolvedAgent) error {
 		b.ApprovedType != "custom" || b.ApprovedImage != agent.Image || b.PolicyRevision == "" {
 		return fmt.Errorf("PolicyBindingPending: exact Agent and image approval is required")
 	}
-	if !validReference(b.Model.ObjectReference) || len(validation.IsConfigMapKey(b.Model.Key)) != 0 {
+	if b.AgentManagedModel {
+		if b.Model != (ModelAccess{}) || b.Network.Gateway.Namespace != "" ||
+			len(b.Network.Gateway.PodLabels) != 0 || b.Network.GatewayPort != 0 {
+			return fmt.Errorf("ModelBindingInvalid: agent-managed access cannot inherit Gateway credentials or peers")
+		}
+	} else if !validReference(b.Model.ObjectReference) || len(validation.IsConfigMapKey(b.Model.Key)) != 0 {
 		return fmt.Errorf("ModelBindingPending: versioned instance Secret reference is required")
 	}
 	if !validReference(b.Home.ObjectReference) || b.Home.FSGroup < 1 || b.Home.FSGroup > 2147483647 {
 		return fmt.Errorf("HomeBindingPending: approved persistent HOME and volume permissions are required")
 	}
-	if !validReference(b.Context.ObjectReference) || len(b.Context.Files) > 256 {
+	if !validReference(b.Context.ObjectReference) {
 		return fmt.Errorf("ContextBindingPending: approved immutable context is required")
 	}
+	if err := ValidateContextFiles(b.Context.Files); err != nil {
+		return err
+	}
+	if b.Network.Revision == "" || !validPeer(b.Network.DNS) ||
+		(!b.AgentManagedModel && (!validPeer(b.Network.Gateway) || b.Network.GatewayPort < 1 || b.Network.GatewayPort > 65535)) {
+		return fmt.Errorf("NetworkBindingPending: approved Gateway and DNS peers are required")
+	}
+	for _, peer := range b.Network.Callers {
+		if !validPeer(peer) {
+			return fmt.Errorf("NetworkBindingInvalid: callers require a namespace and pod selector")
+		}
+	}
+	return agents.ValidatePortableBindings(b.HarnessBindings())
+}
+
+func ValidateContextFiles(files map[string]string) error {
+	if len(files) > 256 {
+		return fmt.Errorf("ContextBindingInvalid: too many context files")
+	}
 	seen := map[string]bool{}
-	for key, file := range b.Context.Files {
+	for key, file := range files {
 		if len(validation.IsConfigMapKey(key)) != 0 || file == "" || len(file) > 512 ||
 			path.Clean(file) != file || strings.ContainsAny(file, "\\\x00\r\n") ||
 			(file != "AGENTS.md" && !strings.HasPrefix(file, "skills/")) ||
@@ -124,16 +153,7 @@ func (b Custom) Validate(agent agents.ResolvedAgent) error {
 	if !seen["AGENTS.md"] || !seen["skills/cetirun-memory/SKILL.md"] {
 		return fmt.Errorf("ContextBindingPending: canonical AGENTS.md and cetirun-memory are required")
 	}
-	if b.Network.Revision == "" || !validPeer(b.Network.Gateway) || !validPeer(b.Network.DNS) ||
-		b.Network.GatewayPort < 1 || b.Network.GatewayPort > 65535 {
-		return fmt.Errorf("NetworkBindingPending: approved Gateway and DNS peers are required")
-	}
-	for _, peer := range b.Network.Callers {
-		if !validPeer(peer) {
-			return fmt.Errorf("NetworkBindingInvalid: callers require a namespace and pod selector")
-		}
-	}
-	return agents.ValidatePortableBindings(b.HarnessBindings())
+	return nil
 }
 
 // ValidateOverrides deliberately keeps the Custom override surface small.
@@ -159,6 +179,9 @@ func ValidateOverrides(values map[string]any) error {
 			}
 		}
 	}
+	if err := ValidateCustomSkills(values["skills"]); err != nil {
+		return err
+	}
 	return ValidateScheduling(values)
 }
 
@@ -168,6 +191,7 @@ var customPlatformKeys = map[string]bool{
 	"tolerations": true, "topologySpreadConstraints": true, "desktop": true, "podAnnotations": true, "global": true,
 	"networkPolicy": false, "sidecarScope": false, "execRestriction": false,
 	"podDisruptionBudget": false, "autoscaling": false, "ttyd": false,
+	"skills": true,
 }
 
 // PlatformValues selects supported shared settings for the Custom plan hash.
@@ -199,6 +223,17 @@ func WorkloadValues(values map[string]any) map[string]any {
 	if desktop["enabled"] != true {
 		delete(selected, "desktop")
 		delete(selected, "global")
+	}
+	skills, _ := values["skills"].(map[string]any)
+	if skills["shared"] != true {
+		delete(selected, "skills")
+	} else {
+		mounted := map[string]any{}
+		for _, key := range []string{"shared", "storageClassName", "protocol", "secretName", "mountOptions",
+			"resourceGroup", "storageAccount", "containerName", "storageSize"} {
+			mounted[key] = skills[key]
+		}
+		selected["skills"] = mounted
 	}
 	return selected
 }

@@ -16,9 +16,21 @@ def version_tuple(value):
 
 
 class ImageDependencyTests(unittest.TestCase):
+    def test_base_image_provides_common_initializer_tools(self):
+        content = (CHART / "Dockerfile.base").read_text()
+        common = (CHART / "configs/init-home-common.sh").read_text()
+        required = re.search(r"for tool in ([^;]+); do", common)
+        checked = re.search(r"RUN for tool in ([^;]+); do", content)
+        self.assertIsNotNone(required)
+        self.assertIsNotNone(checked)
+        self.assertEqual(set(checked[1].split()), {"sh", *required[1].split()})
+        self.assertRegex(content, r"(?m)^  diffutils \\\s*$")
+        self.assertIn('command -v "$tool" >/dev/null 2>&1 || exit 1;', content)
+
     def test_fixed_image_inputs(self):
         minimums = {
             "Dockerfile.base": {
+                "CLAUDE_CODE_VERSION": "2.1.163",
                 "GH_VERSION": "2.95.0",
                 "KUBECTL_VERSION": "1.36.4",
                 "TAILSCALE_VERSION": "1.100.0",
@@ -39,6 +51,20 @@ class ImageDependencyTests(unittest.TestCase):
                     self.assertGreaterEqual(
                         version_tuple(match[1]), version_tuple(minimum)
                     )
+
+    def test_node_release_and_architecture_checksums(self):
+        content = (CHART / "Dockerfile.base").read_text()
+        expected = {
+            "NODE_VERSION": "24.19.0",
+            "NODE_SHA256_X64": "14b342e71204f811bde6153be8e04b62aef63c236fef92b55f9c83154b409647",
+            "NODE_SHA256_ARM64": "01443c1e1a29e531ccad5a46fefa6df490d2189c49f7955904aecdbb0fe86fdc",
+        }
+        for argument, value in expected.items():
+            with self.subTest(argument=argument):
+                self.assertIn(f"ARG {argument}={value}\n", content)
+        self.assertIn('NODE_ARCH="x64"; NODE_SHA256="${NODE_SHA256_X64}"', content)
+        self.assertIn('NODE_ARCH="arm64"; NODE_SHA256="${NODE_SHA256_ARM64}"', content)
+        self.assertIn('echo "${NODE_SHA256}  /tmp/node.tar.xz" | sha256sum --check', content)
 
     def test_npm_fixes_preserve_dependency_major_versions(self):
         overrides = json.loads((CHART / "configs/cve-overrides.json").read_text())[

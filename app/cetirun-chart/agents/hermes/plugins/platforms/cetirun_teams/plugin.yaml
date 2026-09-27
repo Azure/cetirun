@@ -1,7 +1,7 @@
 name: cetirun_teams
 label: Microsoft Teams (Workload Identity)
 kind: platform
-version: 0.1.0
+version: 0.1.1
 description: Microsoft Teams adapter with Azure Workload Identity auth for CetiRun
 requires_env:
   - name: MSTEAMS_APP_ID

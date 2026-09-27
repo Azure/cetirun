@@ -38,7 +38,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # OCI chart / deploy defaults (override via environment variables)
 REGISTRY="${REGISTRY:-cetirun.azurecr.io}"
 CHART_REF="oci://${REGISTRY}/helm/cetirun-portal"
-CHART_VERSION="${CHART_VERSION:-0.1.0}"
+CHART_VERSION="${CHART_VERSION:-0.1.1}"
 NAMESPACE="${NAMESPACE:-cetirun-portal}"
 RELEASE_NAME="${RELEASE_NAME:-cetirun-portal}"
 IMAGE_REPO="${IMAGE_REPO:-${REGISTRY}/cetirun-portal}"

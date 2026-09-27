@@ -268,48 +268,8 @@ func buildHelmValues(instance *cetirunv1alpha1.Agent, team *cetirunv1alpha1.Team
 		}
 	}
 
-	// Apply Team shared skill storage → chart's skills.shared mode.
-	// Operator maps team.SkillStorage to the chart's existing
-	// skills.{shared,resourceGroup,storageAccount,containerName,...} fields, which
-	// auto-provision a PV+PVC per instance namespace pointing at the same
-	// Azure Blob NFS container.
-	if team != nil && team.Spec.SkillStorage != nil {
-		s := team.Spec.SkillStorage
-		storage := map[string]interface{}{
-			"shared":         true,
-			"resourceGroup":  s.ResourceGroup,
-			"storageAccount": s.StorageAccount,
-			"containerName":  s.ContainerName,
-		}
-		if s.StorageClassName != "" {
-			storage["storageClassName"] = s.StorageClassName
-		}
-		if s.StorageSize != "" {
-			storage["storageSize"] = s.StorageSize
-		}
-		if s.MountPath != "" {
-			storage["mountPath"] = s.MountPath
-		}
-		values["skills"] = deepMerge(values["skills"], storage)
-	}
-
-	// Compute and apply effective skills (team base + instance overrides).
-	effective := computeEffectiveSkills(team, instance.Spec.SkillOverrides.Add, instance.Spec.SkillOverrides.Remove)
-	if len(effective) > 0 {
-		npmSkills, clawHubSkills, classifyErr := classifySkills(effective)
-		if classifyErr != nil {
-			return nil, fmt.Errorf("classify skills: %w", classifyErr)
-		}
-		skillsPatch := map[string]interface{}{}
-		if len(npmSkills) > 0 {
-			skillsPatch["npm"] = stringsToInterfaces(npmSkills)
-		}
-		if len(clawHubSkills) > 0 {
-			skillsPatch["clawHub"] = stringsToInterfaces(clawHubSkills)
-		}
-		if len(skillsPatch) > 0 {
-			values["skills"] = deepMerge(values["skills"], skillsPatch)
-		}
+	if err := applySkillValues(values, team, instance.Spec.SkillOverrides, skillsStorageAccount); err != nil {
+		return nil, err
 	}
 
 	// Scale to zero when the instance is suspended (access restriction).
@@ -325,15 +285,6 @@ func buildHelmValues(instance *cetirunv1alpha1.Agent, team *cetirunv1alpha1.Team
 		values["tailscale"] = map[string]interface{}{
 			"serve": true,
 		}
-	}
-
-	// Override skills storage account if configured at the operator level.
-	// Deprecated: use cetirunHelmValues with skills.storageAccount instead.
-	// Kept for backward compatibility; takes precedence over cetirunHelmValues.skills.storageAccount.
-	if skillsStorageAccount != "" {
-		values["skills"] = deepMerge(values["skills"], map[string]interface{}{
-			"storageAccount": skillsStorageAccount,
-		})
 	}
 
 	// Override image repositories to match the operator's chart registry.

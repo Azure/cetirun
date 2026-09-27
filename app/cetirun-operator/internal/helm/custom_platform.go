@@ -61,6 +61,9 @@ func (p *PreparedRelease) setCustomCapabilities(capabilities *chartutil.Capabili
 }
 
 func validateCustomPlatformValues(values map[string]any, agent agents.ResolvedAgent) error {
+	if err := validateCustomSkillValues(values); err != nil {
+		return err
+	}
 	var annotations map[string]string
 	if err := decodeObject(values["podAnnotations"], &annotations); err != nil {
 		return fmt.Errorf("podAnnotations must contain string values")
@@ -195,7 +198,7 @@ type platformObject struct {
 // Re-enabling a shared template must not turn final validation into a kind-only allowlist.
 func (p *PreparedRelease) customPlatformObjects(namespace string) map[string]platformObject {
 	name := text(p.Values["fullnameOverride"])
-	objects := map[string]platformObject{}
+	objects := p.customSkillsObjects(namespace)
 	if object(p.Values["execRestriction"])["enabled"] == true {
 		policyName := name + "-" + namespace + "-deny-exec"
 		objects["ValidatingAdmissionPolicy"] = platformObject{"admissionregistration.k8s.io/v1", policyName, map[string]any{
@@ -251,7 +254,9 @@ func (p *PreparedRelease) customPlatformObjects(namespace string) map[string]pla
 		}
 		hosts = append(hosts, array(scope["additionalEgressHosts"])...)
 		bindings := object(object(p.Values["runtime"])["bindings"])
-		hosts = append(hosts, text(object(object(bindings["network"])["gateway"])["namespace"])+"/*")
+		if bindings["agentManagedModel"] != true {
+			hosts = append(hosts, text(object(object(bindings["network"])["gateway"])["namespace"])+"/*")
+		}
 		objects["Sidecar"] = platformObject{p.sidecarAPIVersion, name, map[string]any{
 			"workloadSelector": map[string]any{"labels": customLabels(p.chart.Name(), p.releaseName)},
 			"egress":           []any{map[string]any{"hosts": hosts}},
@@ -325,12 +330,16 @@ func (p *PreparedRelease) customNetwork(n runtimebindings.Network) networkv1.Net
 		PolicyTypes: []networkv1.PolicyType{networkv1.PolicyTypeIngress, networkv1.PolicyTypeEgress},
 		Ingress:     []networkv1.NetworkPolicyIngressRule{},
 		Egress: []networkv1.NetworkPolicyEgressRule{
-			{To: []networkv1.NetworkPolicyPeer{boundPeer(n.Gateway)}, Ports: []networkv1.NetworkPolicyPort{tcp(n.GatewayPort)}},
 			{To: []networkv1.NetworkPolicyPeer{peer(text(config["dnsNamespace"]))}, Ports: []networkv1.NetworkPolicyPort{
 				{Protocol: ptr.To(corev1.ProtocolUDP), Port: ptr.To(intstr.FromInt32(53))}, tcp(53),
 			}},
 			{To: []networkv1.NetworkPolicyPeer{peer(text(config["istioNamespace"]))}, Ports: []networkv1.NetworkPolicyPort{tcp(15012)}},
 		},
+	}
+	if n.Gateway.Namespace != "" {
+		spec.Egress = append([]networkv1.NetworkPolicyEgressRule{{
+			To: []networkv1.NetworkPolicyPeer{boundPeer(n.Gateway)}, Ports: []networkv1.NetworkPolicyPort{tcp(n.GatewayPort)},
+		}}, spec.Egress...)
 	}
 	if p.desktopEnabled() {
 		namespace := text(config["istioIngressNamespace"])

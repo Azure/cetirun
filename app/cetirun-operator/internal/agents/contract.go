@@ -50,16 +50,17 @@ type ResolvedAgent struct {
 // Bindings contains only non-sensitive, platform-selected inputs. ConfigTemplate
 // is an asset in the selected chart, never a user-supplied Helm value.
 type Bindings struct {
-	ProfileID       string
-	ChartVersion    string
-	NativeConfig    map[string]any
-	NativeOptions   map[string]any
-	Model           ModelBinding
-	Skills          SkillsBinding
-	Integrations    Integrations
-	ConfigTemplate  string
-	ReservedPorts   []PortBinding
-	ContextRevision string
+	ProfileID         string
+	ChartVersion      string
+	NativeConfig      map[string]any
+	NativeOptions     map[string]any
+	Model             ModelBinding
+	Skills            SkillsBinding
+	Integrations      Integrations
+	ConfigTemplate    string
+	ReservedPorts     []PortBinding
+	ContextRevision   string
+	AgentManagedModel bool
 }
 
 type ModelBinding struct {

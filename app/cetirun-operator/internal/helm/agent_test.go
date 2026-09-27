@@ -29,6 +29,13 @@ func testChart(t *testing.T) *chart.Chart {
 	return chrt
 }
 
+func useNativeBaselineVersion(chrt *chart.Chart) {
+	// Keep the original fixtures independent of release-version changes.
+	// TestNativeReleaseVersionWiring checks the current release separately.
+	chrt.Metadata.Version = "0.1.0"
+	chrt.Metadata.AppVersion = "0.1.0"
+}
+
 func sampleInput(typ, provider string, integrations bool) map[string]any {
 	v := map[string]any{
 		"agentType":    typ,
@@ -214,6 +221,7 @@ func TestNativeRenderBaseline(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	useNativeBaselineVersion(chrt)
 	for _, typ := range []string{"hermes", "openclaw"} {
 		for _, provider := range []string{"github_copilot", "openai", "anthropic"} {
 			for _, enabled := range []bool{false, true} {
@@ -288,7 +296,7 @@ func TestRuntimeProfileValidation(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if prepared.Agent.Image != "cetirun.azurecr.io/"+typ+"-gateway:0.1.0" || prepared.Agent.Username != "vibe" {
+			if prepared.Agent.Image != "cetirun.azurecr.io/"+typ+"-gateway:"+chrt.Metadata.AppVersion || prepared.Agent.Username != "vibe" {
 				t.Fatalf("wrong profile defaults: %+v", prepared.Agent)
 			}
 			request := input["agentRequest"].(map[string]any)
@@ -330,6 +338,66 @@ func TestRuntimeProfileValidation(t *testing.T) {
 	for _, typ := range []string{"", "unknown", "custom"} {
 		if _, err := PrepareChart(testChart(t), sampleInput(typ, "openai", false)); err == nil {
 			t.Errorf("unsupported type %q accepted", typ)
+		}
+	}
+}
+
+func TestNativeReleaseVersionWiring(t *testing.T) {
+	currentVersion := testChart(t).Metadata.Version
+	for _, typ := range []string{"hermes", "openclaw"} {
+		for _, version := range []string{currentVersion, "9.8.7"} {
+			t.Run(typ+"/"+version, func(t *testing.T) {
+				chrt := testChart(t)
+				chrt.Metadata.Version = version
+				chrt.Metadata.AppVersion = version
+				input := sampleInput(typ, "openai", true)
+				prepared, err := PrepareChart(chrt, input)
+				if err != nil {
+					t.Fatal(err)
+				}
+				wantImage := "cetirun.azurecr.io/" + typ + "-gateway:" + version
+				if prepared.ChartVersion != version || prepared.Agent.Image != wantImage {
+					t.Fatal("prepared runtime does not use the release version")
+				}
+				for mode, input := range map[string]map[string]any{"prepared": prepared.Values, "standalone": input} {
+					values, err := chartutil.ToRenderValues(chrt, input,
+						chartutil.ReleaseOptions{Name: "example", Namespace: "example", IsInstall: true}, chartutil.DefaultCapabilities)
+					if err != nil {
+						t.Fatal(err)
+					}
+					rendered, err := engine.Render(chrt, values)
+					if err != nil {
+						t.Fatal(err)
+					}
+					var stateful map[string]any
+					if err := yaml.Unmarshal([]byte(rendered["cetirun/templates/statefulset.yaml"]), &stateful); err != nil {
+						t.Fatal(err)
+					}
+					labels := object(object(stateful["metadata"])["labels"])
+					if labels["helm.sh/chart"] != "cetirun-"+version || labels["app.kubernetes.io/version"] != version {
+						t.Errorf("%s release labels do not use %s", mode, version)
+					}
+					pod := object(object(object(stateful["spec"])["template"])["spec"])
+					images := map[string]string{}
+					for _, item := range array(pod["containers"]) {
+						container := object(item)
+						images[text(container["name"])] = text(container["image"])
+					}
+					for name, want := range map[string]string{
+						"cetirun": wantImage,
+						"desktop": "cetirun.azurecr.io/cetirun-desktop:" + version,
+					} {
+						if images[name] != want {
+							t.Errorf("%s %s image: got %q, want %q", mode, name, images[name], want)
+						}
+					}
+					for _, item := range array(pod["initContainers"]) {
+						if object(item)["image"] != wantImage {
+							t.Errorf("%s init image does not use %s", mode, version)
+						}
+					}
+				}
+			})
 		}
 	}
 }

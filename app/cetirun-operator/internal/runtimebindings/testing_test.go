@@ -12,10 +12,13 @@ import (
 func TestRejectCustomOverrideInjection(t *testing.T) {
 	for _, key := range []string{"runtime", "customBindings", "agentRequest", "command", "initContainers", "sidecars",
 		"extraEnv", "extraEnvFrom", "podSecurityContext", "securityContext", "extraVolumes", "extraVolumeMounts",
-		"secrets", "imagePullSecrets", "logger", "service", "ingress", "skills", "persistence"} {
+		"secrets", "imagePullSecrets", "logger", "service", "ingress", "persistence"} {
 		if err := ValidateOverrides(map[string]any{key: nil}); err == nil {
 			t.Errorf("accepted %s", key)
 		}
+	}
+	if err := ValidateOverrides(map[string]any{"skills": map[string]any{"command": "injected"}}); err == nil {
+		t.Fatal("accepted an unsupported skills field")
 	}
 }
 

@@ -3,7 +3,8 @@
 
 import type { Instance } from "../types/instance";
 
-export function agentTypeLabel(type: string): string {
+export function agentTypeLabel(type?: string): string {
+  if (!type) return "—";
   switch (type) {
     case "openclaw": return "OpenClaw";
     case "hermes": return "Hermes";

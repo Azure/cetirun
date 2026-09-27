@@ -1175,7 +1175,7 @@
                 },
                 "novncPathPrefix": {
                     "type": "string",
-                    "description": "noVNC WebSocket path prefix injected by the operator (e.g. 'guwe-g/desktop/'). Written into the auto-connect redirect as ?path=<prefix>websockify.",
+                    "description": "noVNC WebSocket path prefix injected by the operator (e.g. 'example-agent/desktop/'). Written into the auto-connect redirect as ?path=<prefix>websockify.",
                     "default": ""
                 },
                 "logging": {

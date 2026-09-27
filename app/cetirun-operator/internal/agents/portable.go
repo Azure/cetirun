@@ -9,6 +9,15 @@ import (
 )
 
 func ValidatePortableBindings(bindings Bindings) error {
+	if bindings.ContextRevision == "" {
+		return fmt.Errorf("ContextBindingPending: approved context is required")
+	}
+	if bindings.AgentManagedModel {
+		if bindings.Model != (ModelBinding{}) {
+			return fmt.Errorf("ModelBindingInvalid: agent-managed access cannot carry platform credentials")
+		}
+		return nil
+	}
 	base, err := url.Parse(bindings.Model.BaseURL)
 	if err != nil || base.Host == "" || (base.Scheme != "http" && base.Scheme != "https") ||
 		base.User != nil || base.RawQuery != "" || base.Fragment != "" {
@@ -16,9 +25,6 @@ func ValidatePortableBindings(bindings Bindings) error {
 	}
 	if bindings.Model.CredentialSlot != "model" || bindings.Model.Revision == "" {
 		return fmt.Errorf("ModelBindingPending: instance model access is required")
-	}
-	if bindings.ContextRevision == "" {
-		return fmt.Errorf("ContextBindingPending: approved context is required")
 	}
 	return nil
 }

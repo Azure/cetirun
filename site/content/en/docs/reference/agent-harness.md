@@ -76,9 +76,9 @@ files and resource names retain their existing roles.
 
 Custom uses its own Go adapter and chart branch. It does not require a built-in
 profile, native provider, configuration template or preferred model name.
-The main container preserves the image's ENTRYPOINT/CMD. Its environment receives
-`HOME`, `OPENAI_BASE_URL`, a Secret-backed `OPENAI_API_KEY`, and `PORT` only when
-the Agent declares an HTTP port. Init does not receive the model credential.
+The main container preserves the image's ENTRYPOINT/CMD. Gateway-backed instances
+receive `HOME`, `OPENAI_BASE_URL`, a Secret-backed `OPENAI_API_KEY`, and `PORT`
+when the Agent declares an HTTP port. Init does not receive the model credential.
 
 The operator consumes an internal `CustomBindingProvider`, supplied by the
 platform capability owners. Its receipts identify the exact Agent UID,
@@ -92,11 +92,34 @@ changed or foreign objects report `CustomBindingRejected`; unsupported registry
 references and native integrations remain rejected. No placeholder credentials
 or native-secret fallback can start the workload.
 
+Administrators can explicitly enable `customRuntime` in the Operator chart for
+qualified image digests that manage their own model authentication. This
+Kubernetes provider provisions the namespace, HOME and canonical context and
+coordinates same-image Pod replacements. It does not inject Gateway variables
+or issue model credentials. Missing Gateway bindings never select this mode
+automatically. The [Pi example]({{< repo "examples/pi-agent/README.md" >}}) uses
+native GitHub Copilot login through this opt-in path.
+
 The approved context snapshot is mounted read-only at `$HOME/.agents`, including
 `skills/cetirun-memory/SKILL.md` and canonical `AGENTS.md`. A same-named image
 directory cannot make that view writable. Private memory stays elsewhere in
 the instance HOME. The initial snapshot format is an immutable ConfigMap with
 explicit key-to-path mappings; it is not a package installer or skill marketplace.
+
+With platform `skills.shared` or Team `skillStorage`, Custom uses the same
+Blob CSI PV/PVC templates as the built-in runtimes. Init reads its claim without
+writing it and combines its skills with the approved ConfigMap in a per-Pod
+temporary volume. The Agent receives only the completed, read-only view at
+`$HOME/.agents`. Shared skills cannot replace canonical skills such as
+`cetirun-memory`, and copying does not alter the user's HOME.
+
+The view is rebuilt when a new Pod starts, not when shared files change.
+Publish approved content before a controlled replacement and allow enough
+ephemeral storage for the copy. Concurrent changes to the shared source are
+not a transactional snapshot. Custom keeps its canonical discovery path
+instead of inheriting the native `skills.mountPath`.
+Nonempty npm/ClawHub package selections require prior materialization and
+report `SkillsMaterializationPending`; Custom does not run package installers.
 
 Custom keeps the shared platform desktop, NetworkPolicy, exec restriction,
 PodDisruptionBudget and Istio discovery scope under their platform settings.
@@ -146,8 +169,9 @@ and the home PVC mounted at `/home-data`. It copies image HOME once, then writes
 `.cetirun-home-seeded` on the PVC. Later Pod initializations skip that copy but
 still apply Go-generated configuration and run the selected Agent's preparation.
 The main container mounts the same PVC at HOME and keeps its native entrypoint.
-Custom uses the same fixed initialization stages, with explicit empty native
-configuration and integration stages. It never loads another Harness's stages.
+Custom uses the same fixed initialization stages, with an empty native
+configuration stage and shared-context preparation when enabled. It never
+loads another Harness's stages.
 
 Nonempty, unrecognized homes fail rather than being overwritten. An interrupted
 seed is tracked separately and can resume only with the same immutable image.

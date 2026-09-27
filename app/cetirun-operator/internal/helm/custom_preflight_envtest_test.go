@@ -79,6 +79,27 @@ func TestCustomServerPreflightAndOperatorRBAC(t *testing.T) {
 	if _, err := client.AppsV1().StatefulSets(namespace).Get(ctx, text(p.Values["fullnameOverride"]), metav1.GetOptions{}); !apierrors.IsNotFound(err) {
 		t.Fatalf("preflight persisted a workload: %v", err)
 	}
+	t.Run("shared skills API dry-run", func(t *testing.T) {
+		input := customInput(nil)
+		input["skills"] = sharedSkillValues()
+		shared, err := prepareChart(testChart(t), input, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := shared.prepareCustomAction(cfg, namespace, shared.releaseName); err != nil {
+			t.Fatal(err)
+		}
+		if err := shared.validateCustomAPI(ctx, config); err != nil {
+			t.Fatalf("shared-skills dry-run rejected: %v", err)
+		}
+		pv, pvc := shared.sharedSkillsNames(namespace)
+		if _, err := client.CoreV1().PersistentVolumes().Get(ctx, pv, metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+			t.Fatalf("dry-run persisted shared PV: %v", err)
+		}
+		if _, err := client.CoreV1().PersistentVolumeClaims(namespace).Get(ctx, pvc, metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+			t.Fatalf("dry-run persisted shared PVC: %v", err)
+		}
+	})
 
 	// The invalid metric is accepted by local structural checks but not by the
 	// API's semantic validation. No workload exists before or after this call.
@@ -156,7 +177,8 @@ func TestCustomServerPreflightAndOperatorRBAC(t *testing.T) {
 		group, resource, verb string
 		allowed               bool
 	}{{"", "pods", "list", true}, {"", "pods", "create", false}, {"policy", "poddisruptionbudgets", "create", true},
-		{"autoscaling", "horizontalpodautoscalers", "patch", true}} {
+		{"autoscaling", "horizontalpodautoscalers", "patch", true},
+		{"", "persistentvolumes", "create", true}, {"", "persistentvolumeclaims", "create", true}} {
 		review, err := client.AuthorizationV1().SubjectAccessReviews().Create(ctx, &authorizationv1.SubjectAccessReview{Spec: authorizationv1.SubjectAccessReviewSpec{
 			User:               "system:serviceaccount:cetirun-system:operator-test",
 			ResourceAttributes: &authorizationv1.ResourceAttributes{Namespace: namespace, Group: check.group, Resource: check.resource, Verb: check.verb},
