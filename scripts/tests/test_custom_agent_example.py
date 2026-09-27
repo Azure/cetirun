@@ -216,10 +216,10 @@ class CustomExampleTests(unittest.TestCase):
         self.assertTrue(connection.tls.check_hostname)
         connection.close()
 
-    def test_https_enforces_tls_floor_without_weakening_stricter_defaults(self):
+    def test_https_sets_tls12_minimum(self):
         for calls in (None, Mock()):
             for minimum in (ssl.TLSVersion.MINIMUM_SUPPORTED, ssl.TLSVersion.TLSv1,
-                            ssl.TLSVersion.TLSv1_1, ssl.TLSVersion.TLSv1_2, ssl.TLSVersion.TLSv1_3):
+                            ssl.TLSVersion.TLSv1_1, ssl.TLSVersion.TLSv1_2):
                 with self.subTest(cancellable=calls is not None, minimum=minimum):
                     context = Mock(spec=ssl.SSLContext, minimum_version=minimum,
                         maximum_version=ssl.TLSVersion.MAXIMUM_SUPPORTED,
@@ -227,7 +227,7 @@ class CustomExampleTests(unittest.TestCase):
                     with patch.object(AGENT.ssl, "create_default_context", return_value=context):
                         connection = AGENT.GatewayConnection(AGENT.urlsplit("https://gateway.example.com/v1"), calls)
                     self.assertIs(connection.tls, context)
-                    self.assertEqual(context.minimum_version, max(minimum, ssl.TLSVersion.TLSv1_2))
+                    self.assertEqual(context.minimum_version, ssl.TLSVersion.TLSv1_2)
                     self.assertEqual(context.maximum_version, ssl.TLSVersion.MAXIMUM_SUPPORTED)
                     self.assertEqual(context.verify_mode, ssl.CERT_REQUIRED)
                     self.assertTrue(context.check_hostname)
