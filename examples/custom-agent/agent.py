@@ -149,8 +149,9 @@ class GatewayConnection(http.client.HTTPConnection):
         self.calls = calls
         self.tls = None
         if endpoint.scheme == "https":
-            self.tls = ssl.create_default_context()
-            self.tls.minimum_version = ssl.TLSVersion.TLSv1_2
+            context = ssl.create_default_context()
+            context.minimum_version = ssl.TLSVersion.TLSv1_2
+            self.tls = context
 
     def connect(self):
         if self.calls:
