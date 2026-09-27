@@ -6,7 +6,9 @@ package kube
 import (
 	"context"
 	cryptorand "crypto/rand"
+	stderrors "errors"
 	"fmt"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -20,6 +22,20 @@ import (
 
 	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 )
+
+var ErrUnsupportedCustomUpdate = stderrors.New("Custom does not support Gateway Token, Teams or Tailscale updates")
+
+func IsUnsupportedCustomUpdate(err error) bool {
+	return stderrors.Is(err, ErrUnsupportedCustomUpdate)
+}
+
+func validateInstanceUpdate(instance *cetirunv1alpha1.Agent, opts UpdateInstanceOpts) error {
+	if instance.Spec.Agent.Type == cetirunv1alpha1.AgentTypeCustom &&
+		(opts.GatewayToken != nil || opts.TailscaleAuthKey != nil || opts.TeamsEnabled != nil) {
+		return ErrUnsupportedCustomUpdate
+	}
+	return nil
+}
 
 // AnnotationSecretUpdatedAt is set on the CR when a Secret is updated,
 // triggering a reconcile even when the CR spec (generation) hasn't changed.
@@ -45,6 +61,7 @@ type Client struct {
 	chartVersionVal string
 	chartVersionErr error
 	chartVersionExp time.Time
+	operatorDomain  string
 }
 
 // NewClient creates a new kube Client.
@@ -272,7 +289,11 @@ func (c *Client) ensureNamespace(ctx context.Context, ns, alias string) error {
 // RetryOnConflict loop to handle races with operator status updates.
 func (c *Client) UpdateInstance(ctx context.Context, alias string, opts UpdateInstanceOpts) (*cetirunv1alpha1.Agent, error) {
 	// Pre-flight: verify the instance exists.
-	if _, err := c.GetInstance(ctx, alias); err != nil {
+	existing, err := c.GetInstance(ctx, alias)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateInstanceUpdate(existing, opts); err != nil {
 		return nil, err
 	}
 
@@ -305,9 +326,12 @@ func (c *Client) UpdateInstance(ctx context.Context, alias string, opts UpdateIn
 
 	// Update the CR with RetryOnConflict to handle races with operator.
 	var result *cetirunv1alpha1.Agent
-	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+	err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		instance, err := c.GetInstance(ctx, alias)
 		if err != nil {
+			return err
+		}
+		if err := validateInstanceUpdate(instance, opts); err != nil {
 			return err
 		}
 
@@ -385,6 +409,9 @@ func (c *Client) UpdateInstanceByName(ctx context.Context, instanceName string, 
 	if err != nil {
 		return nil, err
 	}
+	if err := validateInstanceUpdate(existing, opts); err != nil {
+		return nil, err
+	}
 	alias := existing.Spec.User.Alias
 	ns := fmt.Sprintf("cetirun-%s", instanceName)
 	secretsUpdated := false
@@ -416,6 +443,9 @@ func (c *Client) UpdateInstanceByName(ctx context.Context, instanceName string, 
 	err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		instance, err := c.GetInstanceByName(ctx, instanceName)
 		if err != nil {
+			return err
+		}
+		if err := validateInstanceUpdate(instance, opts); err != nil {
 			return err
 		}
 		crChanged := false
@@ -668,22 +698,46 @@ func (c *Client) GetOperatorChartVersion(ctx context.Context) (string, error) {
 }
 
 func (c *Client) fetchOperatorChartVersion(ctx context.Context) (string, error) {
+	c.operatorDomain = ""
 	deploy := &appsv1.Deployment{}
 	key := client.ObjectKey{Namespace: "cetirun-system", Name: "cetirun-operator"}
 	if err := c.client.Get(ctx, key, deploy); err != nil {
 		return "", fmt.Errorf("get operator deployment: %w", err)
 	}
+	version := ""
 	for _, container := range deploy.Spec.Template.Spec.Containers {
 		if container.Name != "manager" {
 			continue
 		}
 		for _, arg := range container.Args {
 			if strings.HasPrefix(arg, "--chart-version=") {
-				return strings.TrimPrefix(arg, "--chart-version="), nil
+				version = strings.TrimPrefix(arg, "--chart-version=")
+			}
+			if strings.HasPrefix(arg, "--domain-suffix=") {
+				c.operatorDomain = strings.TrimPrefix(arg, "--domain-suffix=")
 			}
 		}
 	}
+	if version != "" {
+		return version, nil
+	}
 	return "", fmt.Errorf("--chart-version not found in operator deployment args")
+}
+
+// Reuse the same cached deployment observation as chart-version discovery.
+// The gateway may have a different origin from the Portal itself.
+func (c *Client) GetOperatorDomainSuffix(ctx context.Context) (string, error) {
+	if _, err := c.GetOperatorChartVersion(ctx); err != nil {
+		return "", err
+	}
+	c.chartVersionMu.RLock()
+	domain := c.operatorDomain
+	c.chartVersionMu.RUnlock()
+	parsed, err := url.Parse("https://" + domain)
+	if err != nil || domain == "" || parsed.Host != domain || parsed.User != nil || parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", fmt.Errorf("operator domain-suffix is unavailable or invalid")
+	}
+	return domain, nil
 }
 
 // GetEvents returns K8s Events related to an Agent CR.

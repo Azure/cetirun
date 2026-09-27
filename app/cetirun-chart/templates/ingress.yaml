@@ -1,4 +1,4 @@
-{{- if .Values.ingress.enabled -}}
+{{- if and (ne (include "cetirun.agent.type" .) "custom") .Values.ingress.enabled -}}
 {{- $fullName := include "cetirun.fullname" . -}}
 {{- $svcPort := .Values.service.port -}}
 {{- $apiVersion := include "cetirun.ingress.apiVersion" . -}}

@@ -284,7 +284,7 @@ fi
 echo "==> helm template ${release_name} ${chart_dir} (runtimeClassName=kata-vm-isolation, default)"
 output=$(helm_template "${release_name}" "${chart_dir}" -f "${chart_dir}/values.yaml" \
   --set secrets.openclawGatewayToken=lint-token)
-grep -q 'runtimeClassName: kata-vm-isolation' <<< "$output" || { echo "FAIL: runtimeClassName not found in default render" >&2; exit 1; }
+grep -Eq 'runtimeClassName: "?kata-vm-isolation"?$' <<< "$output" || { echo "FAIL: runtimeClassName not found in default render" >&2; exit 1; }
 
 # Test variant: runtimeClassName disabled (empty string)
 echo "==> helm template ${release_name} ${chart_dir} (runtimeClassName empty)"

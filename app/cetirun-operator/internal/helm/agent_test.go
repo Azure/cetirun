@@ -295,7 +295,7 @@ func TestRuntimeProfileValidation(t *testing.T) {
 			request["image"] = prepared.Agent.Image
 			request["port"] = 8080
 			prepared, err = PrepareChart(chrt, input)
-			if err != nil || prepared.Agent.Port != 8080 {
+			if err != nil || prepared.Agent.Port == nil || *prepared.Agent.Port != 8080 {
 				t.Fatalf("qualified image and non-conflicting port: %v", err)
 			}
 			renderSnapshot(t, chrt, prepared.Values)
@@ -311,7 +311,7 @@ func TestRuntimeProfileValidation(t *testing.T) {
 				input["openclaw"] = map[string]any{"config": map[string]any{"browser": map[string]any{"attachOnly": false}}}
 			}
 			prepared, err = PrepareChart(chrt, input)
-			if err != nil || prepared.Agent.Port != 5900 {
+			if err != nil || prepared.Agent.Port == nil || *prepared.Agent.Port != 5900 {
 				t.Fatalf("disabled desktop should release port 5900: %v", err)
 			}
 			renderSnapshot(t, chrt, prepared.Values)

@@ -1,3 +1,4 @@
+{{- if or (ne (include "cetirun.agent.type" .) "custom") .Values.runtime.http .Values.desktop.enabled }}
 apiVersion: v1
 kind: Service
 metadata:
@@ -18,7 +19,7 @@ spec:
       protocol: TCP
       name: novnc
     {{- end }}
-    {{- if .Values.ttyd.enabled }}
+    {{- if and .Values.ttyd.enabled (ne (include "cetirun.agent.type" .) "custom") }}
     - port: {{ .Values.ttyd.port }}
       targetPort: {{ .Values.ttyd.port }}
       protocol: TCP
@@ -32,3 +33,4 @@ spec:
     {{- end }}
   selector:
     {{- include "cetirun.selectorLabels" . | nindent 4 }}
+{{- end }}

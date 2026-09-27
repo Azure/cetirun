@@ -14,6 +14,7 @@ const DEFAULT_AGENT_TYPES: AgentType[] = ["hermes", "openclaw"];
 const AGENT_TYPE_LABELS: Record<AgentType, string> = {
   openclaw: "OpenClaw",
   hermes: "Hermes",
+  custom: "Custom",
 };
 
 export function CreateForm({ onCreated }: { onCreated?: () => void }) {

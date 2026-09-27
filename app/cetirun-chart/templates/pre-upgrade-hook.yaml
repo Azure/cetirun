@@ -1,3 +1,4 @@
+{{- if ne (include "cetirun.agent.type" .) "custom" }}
 {{/*
 Pre-upgrade/pre-rollback hook: orphan-delete the StatefulSet when immutable fields have changed.
 Kubernetes forbids in-place updates to StatefulSet spec fields other than replicas,
@@ -187,3 +188,4 @@ spec:
             limits:
               cpu: 100m
               memory: 64Mi
+{{- end }}

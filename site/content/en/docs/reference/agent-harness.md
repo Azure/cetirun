@@ -10,8 +10,11 @@ Agent Harness defines configuration for Hermes, OpenClaw and bring-your-own
 > **Availability:** The CRD accepts the configuration below.
 > Hermes and OpenClaw run through the shared Harness interface. Operator pins
 > their image and port from the selected runtime chart before provisioning.
-> Custom, registry references and non-default usernames remain unsupported.
-> The BYO requirements describe the image contract, not an installation procedure.
+> Custom has a separate runtime implementation, but the default operator waits
+> for platform bindings; no production binding provider is wired in.
+> Registry references remain unsupported. Custom supports non-default usernames;
+> built-in profiles still require `vibe`. The BYO requirements are not a
+> self-service installation procedure.
 
 ## Configuration
 
@@ -36,7 +39,7 @@ spec:
 | `image` | Required for Custom. Built-ins use a pinned platform default or a qualified override. Once set, it cannot be cleared. Prefer production digests. |
 | `registrySecretRef` | Optional Portal-managed source Secret reference containing only `name`. |
 | `username` | Existing non-root image user, default `vibe`, with HOME at `/home/<username>`; immutable. |
-| `port` | Optional HTTP port, 1–65535. Without it, Custom has no platform HTTP service, Chat UI or HTTP probe. Built-ins retain qualified native defaults. |
+| `port` | Optional Agent HTTP port, 1–65535. Without it, Custom has no Agent HTTP endpoint, Chat UI or HTTP probe. Platform desktop access is independent. Built-ins retain qualified native defaults. |
 
 `spec.agent` remains required; `agent: {}` selects Hermes. `spec.model`,
 ownership, Team, skills, storage, resources, Helm settings and lifecycle stay
@@ -69,13 +72,82 @@ operate Kubernetes, execute Agent code, or manage conversations. Standalone
 Helm uses the same native configuration assets. Native authentication, user
 files and resource names retain their existing roles.
 
+## Custom runtime
+
+Custom uses its own Go adapter and chart branch. It does not require a built-in
+profile, native provider, configuration template or preferred model name.
+The main container preserves the image's ENTRYPOINT/CMD. Its environment receives
+`HOME`, `OPENAI_BASE_URL`, a Secret-backed `OPENAI_API_KEY`, and `PORT` only when
+the Agent declares an HTTP port. Init does not receive the model credential.
+
+The operator consumes an internal `CustomBindingProvider`, supplied by the
+platform capability owners. Its receipts identify the exact Agent UID,
+generation and image, namespace, model Secret, retained HOME PVC, immutable
+context snapshot, network peers and their revisions. The controller checks
+these references against the actual objects. It does not create a Gateway,
+issue Virtual Keys, publish approved skills or invent a storage handoff.
+
+Without the provider, an Agent reports `CustomBindingsPending`. Missing,
+changed or foreign objects report `CustomBindingRejected`; unsupported registry
+references and native integrations remain rejected. No placeholder credentials
+or native-secret fallback can start the workload.
+
+The approved context snapshot is mounted read-only at `$HOME/.agents`, including
+`skills/cetirun-memory/SKILL.md` and canonical `AGENTS.md`. A same-named image
+directory cannot make that view writable. Private memory stays elsewhere in
+the instance HOME. The initial snapshot format is an immutable ConfigMap with
+explicit key-to-path mappings; it is not a package installer or skill marketplace.
+
+Custom keeps the shared platform desktop, NetworkPolicy, exec restriction,
+PodDisruptionBudget and Istio discovery scope under their platform settings.
+The desktop is enabled by default, including when the Agent has no HTTP port.
+Its gateway route uses the existing platform authentication and instance
+authorization; it does not expose the Custom chat endpoint or invent a native
+Agent UI. Suspension removes the desktop route.
+
+ttyd is temporarily disabled for Custom. Enabling it requires a defined way to
+supply its tools and start it inside the Agent's own execution environment
+without replacing ENTRYPOINT/CMD. A terminal in another container that only
+shares HOME is not equivalent.
+
+Custom does not run a native authentication helper, doctor, session logger,
+Teams, Tailscale or the native upgrade hook. The Agent and HOME init containers
+inherit the image's numeric non-root identity, with the approved volume group
+applied by Kubernetes. The shared desktop keeps its platform image, UID 1024
+and `/home/vibe` mount, which exposes the same PVC as the Agent's resolved HOME.
+Image/filesystem compatibility,
+including access by both identities, still requires qualification.
+
+The platform configures shared controls, desktop settings, resources, node
+selection, affinity, tolerations, topology spread and RuntimeClass. Per-Agent Helm overrides accept resource requests
+and limits plus desktop enablement, logging, resolution and resources; desktop
+image selection and URL wiring remain platform-owned.
+Raw commands, containers, envFrom, identity, volumes, Secret references and
+native feature settings are rejected. The final manifest check covers every
+rendered object, not just the main container.
+
+Preflight runs in the actual Helm action context. The controller seals validated
+objects as canonical JSON before handoff and applies only that snapshot, with
+hooks and CRDs disabled. Strict decoding rejects unknown, duplicate and
+ambiguously converted fields. Server-side dry-run checks the exact objects
+before stopping a workload, including API validation and access permissions.
+Local checks also cover resources, PDB values, CIDRs, annotations and scheduling.
+An Agent HTTP endpoint requires NetworkPolicy to be enabled because it has no
+application-level Chat token; a disabled policy is not silently overridden.
+
+The [synthetic example and qualification commands]({{< repo "examples/custom-agent/README.md" >}})
+exercise this path without a paid model. They do not establish production
+Gateway availability, skill provenance, network isolation or storage compatibility.
+
 ## Initialization
 
 The init container uses the selected Agent image, with its image HOME visible
 and the home PVC mounted at `/home-data`. It copies image HOME once, then writes
 `.cetirun-home-seeded` on the PVC. Later Pod initializations skip that copy but
-still apply Go-generated configuration and run the Agent's native preparation.
+still apply Go-generated configuration and run the selected Agent's preparation.
 The main container mounts the same PVC at HOME and keeps its native entrypoint.
+Custom uses the same fixed initialization stages, with explicit empty native
+configuration and integration stages. It never loads another Harness's stages.
 
 Nonempty, unrecognized homes fail rather than being overwritten. An interrupted
 seed is tracked separately and can resume only with the same immutable image.
@@ -116,7 +188,7 @@ does not install them or elevate privileges. Custom is not required to provide
 Python, jq, npm, kubectl or a platform-specific hook.
 
 The BYO contract reserves `$HOME/.agents/skills` for read-only approved skills.
-It requires `cetirun-memory` and canonical `AGENTS.md` context independently of
+It requires `cetirun-memory` and canonical `$HOME/.agents/AGENTS.md` independently of
 Team selection. Images load them through native discovery or prompt/bootstrap
 adaptation; private memory and native sessions stay instance-local. Existing
 built-in skill locations are described in [Configuration and skills](../../concepts/configuration/).
@@ -137,7 +209,8 @@ Custom images with `port` receive `PORT` and serve these routes on that port:
 | `GET /v1/models` | Model identifiers accepted by this Agent's chat endpoint, not the Gateway catalog. |
 | `GET /healthz` | HTTP startup/readiness: `200` with `{"status":"ok"}`, without model or tool calls. |
 
-Requests follow browser → authenticated Chat UI backend → private Agent Service.
+The intended Chat UI path is browser → authenticated Chat UI backend → private
+Agent Service. This runtime does not implement Chat UI, chatproxy or history storage.
 Custom endpoints need no application-level Chat token; the platform enforces
 user authorization and network isolation. Built-ins retain native API
 authentication. Never forward the outbound `OPENAI_API_KEY` to a chat endpoint.
@@ -157,3 +230,54 @@ an existing instance; namespace deletion removes its PVCs.
 No new Harness, Run or Session CRD is introduced. Unsupported runtime features
 fail with `AgentRuntimeNotImplemented`; invalid profiles, images and port
 combinations fail with `AgentConfigInvalid` before workload deployment.
+
+The shared network rules retain the platform's configured external-egress and
+internal-CIDR settings, DNS and Istio control-plane access. Custom adds the
+approved Gateway peer and internal Agent HTTP callers. Desktop ingress is
+allowed through the platform gateway; the Agent HTTP port is not added to that
+public route. NetworkPolicy configuration alone does not prove Gateway-only
+model egress or live mesh enforcement.
+
+Custom uses `OnDelete` and excludes the built-in orphan-delete hook.
+Changing an image, model/context projection or Pod configuration waits for
+`CustomMaintenancePending` until the platform authorizes handoff, the old
+StatefulSet is stopped and no active Pod still references HOME. The controller
+does not force-delete Pods, detach volumes or reset initialization records.
+Only changes to the actual Pod/model/context inputs require writer handoff.
+Platform-object changes such as NetworkPolicy, PDB or exec controls are applied
+without stopping an unchanged Agent Pod. OnDelete readiness uses observed
+generation and updated/ready replica counts, not convergence of currentRevision.
+Identical inputs producing different rendered output report `RendererDrift`.
+Suspension can request zero replicas even while bindings are unavailable.
+
+Apply approval is a lease with validity and completion checks, bound to both
+input and output digests. The controller rechecks the live Agent's generation
+and pause/deletion state before applying. If Helm succeeds but status writing
+fails, a matching successful Helm record restores status without another stop.
+
+A separate operator-owned outbox records each apply operation before approval.
+It retains the outcome until the provider acknowledges completion. Recovery
+uses the same operation ID through `ResumeApply`, including after a controller
+restart or a change to the desired configuration. It never repeats Helm merely
+to release coordination. Providers must support durable, idempotent completion
+for that ID. Pending completion does not prevent requesting suspension; cleanup
+waits for it to finish.
+
+RuntimeClass names and node-selector label syntax are checked before handoff,
+including values inherited from Chart defaults. Their existence and actual
+runtime compatibility still require platform qualification.
+
+Custom ownership receipts live in the operator namespace and retain the
+approved Agent, namespace and HOME UIDs. Cleanup uses that receipt and a
+namespace UID precondition, not user annotations or a derived name alone.
+Missing/conflicting ownership blocks cleanup. Never-bound instances do not
+delete foreign namespaces. Deleting an owned namespace still deletes its PVCs;
+the receipt does not replace a data backup.
+
+With no port, `Ready` describes the running process, not HTTP health, a successful
+model call or recovered sessions. With a port, probes use `/healthz`; protocol
+qualification checks the exact JSON response separately from Kubernetes probes.
+Neither mode publishes a native Agent UI URL in the Agent CR's `status.accessUrl`.
+Portal derives the independent Desktop entry from the platform gateway domain
+and instance name after the route is configured; it does not assume the Portal
+and gateway share an origin.

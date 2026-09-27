@@ -4,10 +4,12 @@
 package helm
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"helm.sh/helm/v3/pkg/action"
 	"helm.sh/helm/v3/pkg/chart"
@@ -168,7 +170,25 @@ func (c *Client) Prepare(namespace string, values map[string]any, chartVersion s
 	if err != nil {
 		return nil, err
 	}
-	return PrepareChart(chrt, values)
+	prepared, err := prepareChart(chrt, values, false)
+	if err != nil {
+		return nil, configurationError(err)
+	}
+	if prepared.custom {
+		if err := prepared.prepareCustomAction(cfg, namespace, prepared.releaseName); err != nil {
+			return nil, err
+		}
+		config, err := cfg.RESTClientGetter.ToRESTConfig()
+		if err != nil {
+			return nil, err
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := prepared.validateCustomAPI(ctx, config); err != nil {
+			return nil, err
+		}
+	}
+	return prepared, nil
 }
 
 // InstallOrUpgrade applies the already-prepared chart without waiting for Pod readiness.
@@ -176,9 +196,18 @@ func (c *Client) InstallOrUpgrade(namespace, releaseName string, prepared *Prepa
 	if prepared == nil || prepared.chart == nil {
 		return fmt.Errorf("release must be prepared before installation")
 	}
+	if err := prepared.ValidateCustom(namespace, releaseName); err != nil {
+		return err
+	}
+	if prepared.custom && !prepared.apiValidated {
+		return fmt.Errorf("Custom application requires successful API preflight")
+	}
 	cfg, err := actionConfig(namespace)
 	if err != nil {
 		return err
+	}
+	if prepared.custom {
+		return prepared.installOrUpgradeCustom(cfg, namespace, releaseName)
 	}
 	chrt, values := prepared.chart, prepared.Values
 

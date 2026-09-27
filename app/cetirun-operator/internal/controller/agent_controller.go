@@ -6,6 +6,8 @@ package controller
 import (
 	"context"
 	"fmt"
+	"google.golang.org/protobuf/proto"
+	"maps"
 	"strings"
 	"sync"
 	"time"
@@ -47,9 +49,13 @@ import (
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
+// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list
+// +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=networking.istio.io,resources=virtualservices;sidecars,verbs=get;list;watch;create;update;patch;delete
 type AgentReconciler struct {
 	client.Client
+	APIReader            client.Reader
 	Scheme               *runtime.Scheme
 	EventRecorder        record.EventRecorder
 	HelmClient           HelmInstaller
@@ -63,6 +69,7 @@ type AgentReconciler struct {
 	CetiRunHelmValues    map[string]interface{} // Operator-level Helm value overrides for all instances
 	ChartRegistry        string                 // OCI registry host (e.g. "registry.example.com"), derived from chart repo URL
 	DefaultModel         string                 // Default GitHub Copilot model when spec.model is empty
+	CustomBindings       CustomBindingProvider
 
 	// Azure config for Teams auto-provisioning.
 	AzureSubscriptionID string
@@ -74,6 +81,7 @@ type AgentReconciler struct {
 
 	istioMu          sync.Mutex
 	istioRevResolved string
+	customPlans      sync.Map
 }
 
 // SetupWithManager registers the reconciler with the controller manager.
@@ -84,6 +92,9 @@ const instanceTeamIndex = "spec.team"
 const gatewaySecretResourceVersionAnnotation = "cetirun.microsoft.com/gateway-secret-resource-version"
 
 func (r *AgentReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	if r.APIReader == nil {
+		r.APIReader = mgr.GetAPIReader()
+	}
 	if err := mgr.GetFieldIndexer().IndexField(
 		context.Background(),
 		&cetirunv1alpha1.Agent{},
@@ -116,6 +127,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	instance := &cetirunv1alpha1.Agent{}
 	if err := r.Get(ctx, req.NamespacedName, instance); err != nil {
 		if errors.IsNotFound(err) {
+			r.customPlans.Delete(req.Name)
 			logger.V(1).Info("Agent not found, skipping")
 			return ctrl.Result{}, nil
 		}
@@ -124,6 +136,9 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 
 	// 2. Handle deletion.
 	if !instance.DeletionTimestamp.IsZero() {
+		if instance.Spec.Agent.Type == cetirunv1alpha1.AgentTypeCustom {
+			return r.deleteCustom(ctx, instance)
+		}
 		logger.V(1).Info("DeletionTimestamp set, entering delete handler", "alias", instance.Spec.User.Alias)
 		return r.handleDelete(ctx, instance)
 	}
@@ -135,6 +150,15 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	// breaking change; no migration path exists for the reserved legacy name.
 	if instance.Name == "ui" {
 		return r.rejectReservedUIInstance(ctx, instance)
+	}
+
+	if instance.Spec.Agent.Type == cetirunv1alpha1.AgentTypeCustom && instance.Spec.Suspended {
+		return r.suspendCustom(ctx, instance)
+	}
+	if instance.Spec.Agent.Type == cetirunv1alpha1.AgentTypeCustom {
+		if err := r.retryCustomCompletion(ctx, instance); err != nil {
+			return r.customWaiting(ctx, instance, "CustomCompletionPending", "Waiting to acknowledge the previous apply outcome")
+		}
 	}
 
 	if err := validateAgentRuntime(instance.Spec.Agent); err != nil {
@@ -181,6 +205,10 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 			}
 			return ctrl.Result{}, fmt.Errorf("get Team %s: %w", instance.Spec.Team, err)
 		}
+	}
+
+	if instance.Spec.Agent.Type == cetirunv1alpha1.AgentTypeCustom {
+		return r.reconcileCustom(ctx, instance, team)
 	}
 
 	var prepared *helm.PreparedRelease
@@ -1198,11 +1226,26 @@ func (r *AgentReconciler) ensureVirtualService(ctx context.Context, instance *ce
 
 	// Update existing VirtualService by patching it with the desired spec fields.
 	// We avoid direct struct assignment because the proto message contains a sync.Mutex.
+	if instance.Spec.Agent.Type == cetirunv1alpha1.AgentTypeCustom && !hasAgentOwner(existing, instance) {
+		return fmt.Errorf("Custom platform route belongs to another owner")
+	}
+	ownedAnnotationsMatch := instance.Spec.Agent.Type != cetirunv1alpha1.AgentTypeCustom ||
+		existing.Annotations[customAgentUID] == string(instance.UID)
+	if proto.Equal(&existing.Spec, &desired.Spec) && maps.Equal(existing.Labels, desired.Labels) && ownedAnnotationsMatch {
+		return nil
+	}
 	logger.V(1).Info("Updating VirtualService", "name", vsName, "namespace", vsNS)
 	existing.Spec.Hosts = desired.Spec.Hosts
 	existing.Spec.Gateways = desired.Spec.Gateways
 	existing.Spec.Http = desired.Spec.Http
 	existing.Labels = desired.Labels
+	if instance.Spec.Agent.Type == cetirunv1alpha1.AgentTypeCustom {
+		if existing.Annotations == nil {
+			existing.Annotations = map[string]string{}
+		}
+		existing.Annotations[customAgentUID] = string(instance.UID)
+		existing.Spec.ExportTo = desired.Spec.ExportTo
+	}
 	if err := r.Update(ctx, existing); err != nil {
 		return fmt.Errorf("update VirtualService: %w", err)
 	}

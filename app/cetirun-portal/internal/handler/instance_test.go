@@ -651,6 +651,39 @@ func TestToInstanceResponse_HermesAPIServerKey(t *testing.T) {
 	}
 }
 
+func TestToInstanceResponse_CustomDesktopWithoutNativeCredentials(t *testing.T) {
+	instance := sampleInstance()
+	instance.Spec.Agent.Type = cetirunv1alpha1.AgentTypeCustom
+	instance.Spec.GatewayTokenSecretRef = "native-secret"
+	instance.Status.AccessURL = ""
+	instance.Status.Conditions = append(instance.Status.Conditions, metav1.Condition{
+		Type: cetirunv1alpha1.ConditionIngressReady, Status: metav1.ConditionTrue,
+	})
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "cetirun-alice", Name: "native-secret"},
+		Data: map[string][]byte{
+			"OPENCLAW_GATEWAY_TOKEN": []byte("dummy-native-token"),
+			"API_SERVER_KEY":         []byte("dummy-api-key"),
+			"CETIRUN_AUTH_KEY":       []byte("dummy-auth-key"),
+		},
+	}
+	operator := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Namespace: "cetirun-system", Name: "cetirun-operator"},
+		Spec: appsv1.DeploymentSpec{Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{Containers: []corev1.Container{
+			{Name: "manager", Args: []string{"--chart-version=1.0.0", "--domain-suffix=platform.example.com"}},
+		}}}}}
+	h := &InstanceHandler{Kube: kube.NewClient(newFakeClient(instance, secret, operator))}
+	resp, err := h.toInstanceResponse(context.Background(), instance)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.AccessURL != "https://platform.example.com/alice/desktop/" || resp.AgentType != "custom" || instance.Status.AccessURL != "" {
+		t.Fatal("Custom platform access was lost")
+	}
+	if resp.GatewayToken != "" || resp.APIServerKey != "" || resp.CetiRunAuthKey != "" {
+		t.Fatal("Custom response exposed native credentials")
+	}
+}
+
 // TestToInstanceResponse_OpenClawCetiRunAuthKey verifies that OpenClaw
 // instances also surface the in-pod cetirun-auth helper key (without
 // exposing API_SERVER_KEY, which OpenClaw does not use).

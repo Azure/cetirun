@@ -39,7 +39,7 @@ import { useFeatures } from "../hooks/useFeatures";
 import { GITHUB_COPILOT_PROVIDER, useEffectiveTeamProvider } from "../hooks/useTeams";
 import { downloadTeamsApp } from "../api/instance";
 import type { Instance, UpdateInstanceRequest } from "../types/instance";
-import { agentUIUrl, phaseBadgeColor } from "../utils/instance";
+import { agentTypeLabel, agentUIUrl, phaseBadgeColor } from "../utils/instance";
 import { TeamPicker } from "./TeamPicker";
 import { StatusTab } from "./StatusTab";
 import { CopilotAuthBlock } from "./CopilotAuthBlock";
@@ -194,6 +194,7 @@ export function OverviewSection({ instance }: { instance: Instance }) {
 
   const agentCredential = instance.agentType === "hermes" ? instance.apiServerKey : instance.gatewayToken;
   const agentCredentialLabel = instance.agentType === "hermes" ? "Hermes API Server Key" : "Gateway Token";
+  const nativeIntegrations = instance.agentType !== "custom";
 
   const handleCopyAgentCredential = useCallback(() => {
     navigator.clipboard.writeText(agentCredential ?? "").then(() => {
@@ -231,10 +232,12 @@ export function OverviewSection({ instance }: { instance: Instance }) {
     const req: UpdateInstanceRequest = {};
     if (editDisplayName !== instance.displayName) req.displayName = editDisplayName;
     if (editTeam && editTeam !== instance.team) req.team = editTeam;
-    if (editGatewayToken) req.gatewayToken = editGatewayToken;
-    if (editUsesGitHubCopilot && editModel.trim() !== (instance.model ?? "")) req.model = editModel.trim();
-    if (disableTailscale) { req.tailscaleAuthKey = ""; } else if (editTailscaleAuthKey) { req.tailscaleAuthKey = editTailscaleAuthKey; }
-    if (editTeamsEnabled !== (instance.teamsEnabled ?? false)) req.teamsEnabled = editTeamsEnabled;
+    if (nativeIntegrations) {
+      if (editGatewayToken) req.gatewayToken = editGatewayToken;
+      if (editUsesGitHubCopilot && editModel.trim() !== (instance.model ?? "")) req.model = editModel.trim();
+      if (disableTailscale) { req.tailscaleAuthKey = ""; } else if (editTailscaleAuthKey) { req.tailscaleAuthKey = editTailscaleAuthKey; }
+      if (editTeamsEnabled !== (instance.teamsEnabled ?? false)) req.teamsEnabled = editTeamsEnabled;
+    }
     if (Object.keys(req).length === 0) { setEditOpen(false); return; }
     updateMutation.mutate(req, { onSuccess: () => setEditOpen(false) });
   };
@@ -260,7 +263,7 @@ export function OverviewSection({ instance }: { instance: Instance }) {
       {selectedTab === "overview" && (<>
       {/* Header */}
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
-        <Text size={600} weight="semibold">{instance.displayName}&apos;s {instance.agentType === "hermes" ? "Hermes" : "OpenClaw"}</Text>
+        <Text size={600} weight="semibold">{instance.displayName}&apos;s {agentTypeLabel(instance.agentType)}</Text>
         <Badge appearance="filled" color={phaseBadgeColor[instance.phase] ?? "informative"}>{instance.phase}</Badge>
       </div>
       <Text size={300} style={{ color: tokens.colorNeutralForeground3, marginBottom: 16, display: "block" }}>
@@ -356,11 +359,11 @@ export function OverviewSection({ instance }: { instance: Instance }) {
                   <Input value={editDisplayName} onChange={(_, data) => setEditDisplayName(data.value)} />
                 </Field>
                 <TeamPicker value={editTeam} onChange={setEditTeam} />
-                {editUsesGitHubCopilot && <CopilotModelPicker instance={instance} value={editModel} onChange={setEditModel} allowDefault />}
-                <Field label="Gateway Token">
+                {nativeIntegrations && editUsesGitHubCopilot && <CopilotModelPicker instance={instance} value={editModel} onChange={setEditModel} allowDefault />}
+                {nativeIntegrations && <Field label="Gateway Token">
                   <Input type="password" autoComplete="off" value={editGatewayToken} onChange={(_, data) => setEditGatewayToken(data.value)} placeholder="Leave empty to keep unchanged" />
-                </Field>
-                {features?.tailscaleEnabled && (
+                </Field>}
+                {nativeIntegrations && features?.tailscaleEnabled && (
                   <>
                     <Field label="Tailscale Auth Key">
                       <Input type="password" autoComplete="off" value={editTailscaleAuthKey} onChange={(_, data) => setEditTailscaleAuthKey(data.value)} placeholder="Leave empty to keep unchanged" disabled={disableTailscale} />
@@ -370,13 +373,13 @@ export function OverviewSection({ instance }: { instance: Instance }) {
                     )}
                   </>
                 )}
-                <Switch checked={editTeamsEnabled} onChange={(_, data) => setEditTeamsEnabled(!!data.checked)} label="Enable Microsoft Teams Integration" />
-                <div style={{ display: "flex", alignItems: "flex-start", gap: 8, padding: "10px 12px", borderRadius: tokens.borderRadiusMedium, backgroundColor: tokens.colorNeutralBackground1Hover }}>
+                {nativeIntegrations && <Switch checked={editTeamsEnabled} onChange={(_, data) => setEditTeamsEnabled(!!data.checked)} label="Enable Microsoft Teams Integration" />}
+                {nativeIntegrations && <div style={{ display: "flex", alignItems: "flex-start", gap: 8, padding: "10px 12px", borderRadius: tokens.borderRadiusMedium, backgroundColor: tokens.colorNeutralBackground1Hover }}>
                   <Info20Regular style={{ color: tokens.colorBrandForeground1, flexShrink: 0, marginTop: 2 }} />
                   <Text size={200}>
                     Updating the model, Gateway Token{features?.tailscaleEnabled ? " or Tailscale Auth Key" : ""} will restart the gateway. The access link may be temporarily unavailable during this process.
                   </Text>
-                </div>
+                </div>}
                 {updateMutation.isError && (
                   <Text style={{ color: tokens.colorStatusDangerForeground1 }}>
                     {updateMutation.error?.message || "Failed to update agent"}

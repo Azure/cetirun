@@ -16,6 +16,7 @@ import {
   Text,
 } from "@fluentui/react-components";
 import { listAllInstances, type AdminInstanceSummary } from "../../api/adminInstance";
+import { agentTypeLabel } from "../../utils/instance";
 
 function formatAge(createdAt?: string): string {
   if (!createdAt) return "—";
@@ -72,7 +73,7 @@ export function InstanceListPage() {
                 <TableCell>{ins.team || "—"}</TableCell>
                 <TableCell>
                   <Badge appearance="outline">
-                    {ins.agentType === "hermes" ? "Hermes" : "OpenClaw"}
+                    {agentTypeLabel(ins.agentType)}
                   </Badge>
                 </TableCell>
                 <TableCell>

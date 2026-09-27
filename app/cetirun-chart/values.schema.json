@@ -28,7 +28,8 @@
             "description": "Agent framework to run in this instance",
             "enum": [
                 "openclaw",
-                "hermes"
+                "hermes",
+                "custom"
             ],
             "default": "hermes"
         },

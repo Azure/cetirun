@@ -23,13 +23,31 @@ type AgentRequest struct {
 	Registry         string `json:"registry,omitempty"`
 	UIPrefix         string `json:"uiPrefix,omitempty"`
 	TailscaleEnabled bool   `json:"tailscaleEnabled,omitempty"`
+	ReleaseName      string `json:"releaseName,omitempty"`
 }
 
 type PreparedRelease struct {
-	Values       map[string]any
-	Agent        agents.ResolvedAgent
-	ChartVersion string
-	chart        *chart.Chart
+	Values            map[string]any
+	Agent             agents.ResolvedAgent
+	ChartVersion      string
+	PlanHash          string
+	WorkloadHash      string
+	basePlanHash      string
+	releaseName       string
+	manifestHash      string
+	manifest          []byte
+	sealedInput       string
+	actionRevision    int
+	custom            bool
+	chart             *chart.Chart
+	sidecarAPIVersion string
+	pdbAPIVersion     string
+	apiValidated      bool
+}
+
+// CacheKey includes actual rendered output as well as the consumed inputs.
+func (p *PreparedRelease) CacheKey() string {
+	return p.PlanHash + ":" + p.manifestHash
 }
 
 // Rebuild uses the same loaded chart after platform integration bindings have
@@ -44,6 +62,11 @@ func (p *PreparedRelease) Rebuild(input map[string]any) (*PreparedRelease, error
 // PrepareChart is also used by offline rendering tests. It has no Kubernetes or
 // Helm actions; chart loading and applying the prepared result stay in Client.
 func PrepareChart(chrt *chart.Chart, input map[string]any) (*PreparedRelease, error) {
+	prepared, err := prepareChart(chrt, input, true)
+	return prepared, configurationError(err)
+}
+
+func prepareChart(chrt *chart.Chart, input map[string]any, validateRender bool) (*PreparedRelease, error) {
 	if input["runtime"] != nil {
 		return nil, fmt.Errorf("runtime is reserved for the platform")
 	}
@@ -60,6 +83,9 @@ func PrepareChart(chrt *chart.Chart, input map[string]any) (*PreparedRelease, er
 		return nil, err
 	}
 	descriptor := harness.Describe()
+	if descriptor.Type == "custom" {
+		return prepareCustomChart(chrt, input, request, validateRender)
+	}
 	profile, err := loadRuntimeProfile(chrt, descriptor, request.Registry)
 	if err != nil {
 		return nil, err
@@ -80,14 +106,14 @@ func PrepareChart(chrt *chart.Chart, input map[string]any) (*PreparedRelease, er
 	config := object(native["config"])
 	if descriptor.PreserveUIPrefix {
 		gateway := ensureObject(config, "gateway")
-		gateway["port"] = resolved.Port
+		gateway["port"] = *resolved.Port
 		if request.UIPrefix != "" {
 			ensureObject(gateway, "controlUi")["basePath"] = request.UIPrefix
 		}
-		ensureObject(values, "service")["port"] = resolved.Port
-		ensureObject(values, "service")["targetPort"] = resolved.Port
+		ensureObject(values, "service")["port"] = *resolved.Port
+		ensureObject(values, "service")["targetPort"] = *resolved.Port
 	} else {
-		ensureObject(native, "env")["API_SERVER_PORT"] = strconv.Itoa(int(resolved.Port))
+		ensureObject(native, "env")["API_SERVER_PORT"] = strconv.Itoa(int(*resolved.Port))
 	}
 	native["config"] = config
 	values[descriptor.Type] = native

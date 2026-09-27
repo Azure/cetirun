@@ -92,8 +92,9 @@ func pinAgentDefaults(spec *api.HarnessSpec, resolved agents.ResolvedAgent) bool
 		spec.Image = &resolved.Image
 		changed = true
 	}
-	if spec.Port == nil && resolved.Port != 0 {
-		spec.Port = &resolved.Port
+	if spec.Port == nil && resolved.Port != nil {
+		port := *resolved.Port
+		spec.Port = &port
 		changed = true
 	}
 	return changed

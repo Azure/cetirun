@@ -26,8 +26,9 @@ import (
 )
 
 var (
-	instances dynamic.ResourceInterface
-	nextID    atomic.Int64
+	instances  dynamic.ResourceInterface
+	coreClient dynamic.Interface
+	nextID     atomic.Int64
 )
 
 func TestMain(m *testing.M) {
@@ -62,6 +63,7 @@ func TestMain(m *testing.M) {
 	instances = client.Resource(schema.GroupVersionResource{
 		Group: "cetirun.microsoft.com", Version: "v1alpha1", Resource: "agents",
 	})
+	coreClient = client
 	code := m.Run()
 	if err := env.Stop(); err != nil {
 		fmt.Fprintln(os.Stderr, "stop isolated API server:", err)

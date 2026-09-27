@@ -1,4 +1,4 @@
-{{- if .Values.skills.shared }}
+{{- if and (ne (include "cetirun.agent.type" .) "custom") .Values.skills.shared }}
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:

@@ -15,6 +15,7 @@ spec:
 
   # -- Ingress: allow only Istio ingress gateway
   ingress:
+    {{- if or (ne (include "cetirun.agent.type" .) "custom") .Values.desktop.enabled }}
     - from:
         - namespaceSelector:
             matchLabels:
@@ -25,7 +26,7 @@ spec:
         - protocol: TCP
           port: 6080
         {{- end }}
-        {{- if .Values.ttyd.enabled }}
+        {{- if and .Values.ttyd.enabled (ne (include "cetirun.agent.type" .) "custom") }}
         - protocol: TCP
           port: {{ .Values.ttyd.port }}
         {{- end }}
@@ -33,9 +34,30 @@ spec:
         - protocol: TCP
           port: {{ .Values.msteamsWebhookPort }}
         {{- end }}
+    {{- end }}
+    {{- with (.Values.runtime | default dict).bindings }}
+    {{- if and $.Values.runtime.http .network.callers }}
+    - from:
+        {{- range .network.callers }}
+        - {{ include "cetirun.custom.peer" . | nindent 10 | trim }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: {{ $.Values.runtime.agent.port }}
+    {{- else if not $.Values.desktop.enabled }}
+    []
+    {{- end }}
+    {{- end }}
 
   # -- Egress: default deny-all with explicit allows
   egress:
+    {{- with (.Values.runtime | default dict).bindings }}
+    - to:
+        - {{ include "cetirun.custom.peer" .network.gateway | nindent 10 | trim }}
+      ports:
+        - protocol: TCP
+          port: {{ .network.gatewayPort }}
+    {{- end }}
     # 1. DNS — allow kube-dns for name resolution
     - to:
         - namespaceSelector:

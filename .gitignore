@@ -62,3 +62,6 @@ terraform.tfvars
 
 # Build output
 tmp/
+
+# Synthetic canonical context is an example asset, not local agent instructions.
+!examples/custom-agent/context/AGENTS.md

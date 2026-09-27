@@ -25,5 +25,8 @@ spec:
         {{- range .Values.sidecarScope.additionalEgressHosts }}
         - {{ . | quote }}
         {{- end }}
+        {{- with (.Values.runtime | default dict).bindings }}
+        - {{ printf "%s/*" .network.gateway.namespace | quote }}
+        {{- end }}
 {{- end }}
 {{- end }}

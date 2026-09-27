@@ -1,4 +1,4 @@
-{{- if and .Values.serviceAccount.create .Values.serviceAccount.role (not .Values.serviceAccount.name) }}
+{{- if and (ne (include "cetirun.agent.type" .) "custom") .Values.serviceAccount.create .Values.serviceAccount.role (not .Values.serviceAccount.name) }}
 {{- if or (eq .Values.serviceAccount.role "view") (eq .Values.serviceAccount.role "cluster-admin") }}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

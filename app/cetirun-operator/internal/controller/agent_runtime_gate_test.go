@@ -11,7 +11,7 @@ import (
 	"k8s.io/utils/ptr"
 )
 
-func TestAgentRuntimeGate(t *testing.T) {
+func TestBuiltinValueBuilderRuntimeGate(t *testing.T) {
 	tests := []struct {
 		name  string
 		agent api.HarnessSpec
@@ -40,6 +40,18 @@ func TestAgentRuntimeGate(t *testing.T) {
 				t.Fatal("unsupported agent must not render built-in Helm values")
 			}
 		})
+	}
+}
+
+func TestCustomRuntimeGateKeepsRegistryRestriction(t *testing.T) {
+	agent := api.HarnessSpec{Type: api.AgentTypeCustom, Image: ptr.To("registry.example.com/agent:1"),
+		Username: ptr.To("worker")}
+	if err := validateAgentRuntime(agent); err != nil {
+		t.Fatal(err)
+	}
+	agent.RegistrySecretRef = &api.RegistrySecretRef{Name: "source"}
+	if err := validateAgentRuntime(agent); err == nil {
+		t.Fatal("unimplemented registry workflow was accepted")
 	}
 }
 
@@ -96,5 +108,17 @@ func TestNativeRoutesUsePinnedPort(t *testing.T) {
 	instance.Spec.Agent.Type = "unknown"
 	if buildVirtualService(instance, "example.com", "") != nil {
 		t.Fatal("unknown type inherited a native route")
+	}
+	instance.Spec.Agent.Type = api.AgentTypeCustom
+	route := buildVirtualService(instance, "example.com", "")
+	if route == nil {
+		t.Fatal("Custom lost platform desktop access")
+	}
+	for _, rule := range route.Spec.Http {
+		for _, destination := range rule.Route {
+			if destination.Destination.Port.Number != novncPort {
+				t.Fatal("Custom inherited a native Agent or terminal route")
+			}
+		}
 	}
 }
