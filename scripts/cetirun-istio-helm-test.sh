@@ -36,6 +36,22 @@ assert_ownership_target() {
 echo "==> helm template cetirun-istio (standalone portal default)"
 output=$(helm template cetirun-istio "${chart_dir}" "${base_args[@]}")
 assert_ownership_target "${output}" "cetirun-portal.cetirun-portal.svc.cluster.local"
+grep -Fq 'local EXEMPT_EXACT_PATHS = {"/healthz", "/readyz", "/favicon.ico"}' <<< "${output}" || {
+  echo "FAIL: health and readiness exemptions must be exact paths" >&2
+  exit 1
+}
+grep -Fq 'local EXEMPT_PATH_PREFIXES = {"/oauth2", "/api", "/internal", "/assets", "/instances", "/admin"}' <<< "${output}" || {
+  echo "FAIL: Portal subtree exemptions are missing" >&2
+  exit 1
+}
+grep -Fq 'return path == prefix or path:sub(1, #prefix + 1) == prefix .. "/"' <<< "${output}" || {
+  echo "FAIL: Portal subtree exemptions do not enforce a path-segment boundary" >&2
+  exit 1
+}
+if grep -Fq 'local EXEMPT_PREFIXES =' <<< "${output}"; then
+  echo "FAIL: legacy string-prefix exemptions can shadow valid instance names" >&2
+  exit 1
+fi
 grep -Fq 'local PORTAL_COOKIE_NAME = "_cetirun_oauth2"' <<< "${output}" || {
   echo "FAIL: ownership filter did not identify the Portal session cookie" >&2
   exit 1

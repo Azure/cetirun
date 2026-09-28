@@ -47,7 +47,8 @@ spec:
           typed_config:
             "@type": type.googleapis.com/envoy.extensions.filters.http.lua.v3.Lua
             inline_code: |
-              local EXEMPT_PREFIXES = {"/oauth2", "/api/", "/internal/", "/healthz", "/readyz", "/assets/", "/favicon.ico", "/instances/", "/admin/"}
+              local EXEMPT_EXACT_PATHS = {"/healthz", "/readyz", "/favicon.ico"}
+              local EXEMPT_PATH_PREFIXES = {"/oauth2", "/api", "/internal", "/assets", "/instances", "/admin"}
               local EXEMPT_SUFFIXES = {
               {{- range .Values.authPolicy.webhookBypassPaths }}
                 "{{ . }}",
@@ -136,6 +137,10 @@ spec:
                 return false
               end
 
+              function has_path_segment_prefix(path, prefix)
+                return path == prefix or path:sub(1, #prefix + 1) == prefix .. "/"
+              end
+
               function is_webhook_path(path, authority)
                 local host = request_host(authority)
                 if host == PORTAL_DOMAIN then
@@ -170,12 +175,14 @@ spec:
                   return method == "POST" and is_webhook_path(path, authority)
                 end
                 if path == "/" or path == "" then return true end
-                -- Exact match for /admin (the trailing-slash subtree is in EXEMPT_PREFIXES).
-                -- Listing /admin as a prefix would also exempt /adminfoo and shadow any
-                -- instance whose name starts with "admin".
-                if path == "/admin" then return true end
-                for _, prefix in ipairs(EXEMPT_PREFIXES) do
-                  if path:sub(1, #prefix) == prefix then return true end
+                for _, exact_path in ipairs(EXEMPT_EXACT_PATHS) do
+                  if path == exact_path then return true end
+                end
+                -- Portal subtrees match only at a complete path-segment boundary.
+                -- Otherwise a valid instance such as healthz-demo or admin-tools
+                -- could bypass ownership verification and credential isolation.
+                for _, prefix in ipairs(EXEMPT_PATH_PREFIXES) do
+                  if has_path_segment_prefix(path, prefix) then return true end
                 end
                 -- Exact webhook route shapes skip the ownership check only for POST.
                 -- Real Teams webhook calls are POST and carry no oauth2 identity; the

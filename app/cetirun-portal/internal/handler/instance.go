@@ -36,9 +36,10 @@ var validInstanceNameSuffix = regexp.MustCompile(`^[a-z][a-z0-9-]*[a-z0-9]$|^[a-
 // reservedInstanceNames are names that collide with one of the gateway-level
 // path tokens. The collision surfaces are:
 //
-//   - EnvoyFilter EXEMPT_PREFIXES (infra/istio/templates/ingress/envoy-filter-alias.yaml):
-//     paths beginning with these prefixes skip the ownership check. An instance with
-//     a matching name would let any authenticated user reach the pod (oauth2, api,
+//   - EnvoyFilter gateway path tokens
+//     (infra/istio/templates/ingress/envoy-filter-alias.yaml): exact Portal paths and
+//     complete path-segment subtrees skip the ownership check. An instance using one
+//     of the same bare names would collide with that Portal route (oauth2, api,
 //     internal, healthz, readyz, assets, instances, admin).
 //   - Portal SPA top-level routes (app/cetirun-portal/web/src/App.tsx): the portal
 //     serves these paths itself, so an instance with that name would be unreachable
