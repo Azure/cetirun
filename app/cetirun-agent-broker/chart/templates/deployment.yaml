@@ -1,0 +1,142 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "cetirun-agent-broker.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "cetirun-agent-broker.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "cetirun-agent-broker.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "cetirun-agent-broker.selectorLabels" . | nindent 8 }}
+        azure.workload.identity/use: "true"
+        istio.io/rev: {{ .Values.istio.revision | quote }}
+      annotations:
+        sidecar.istio.io/inject: {{ .Values.istio.sidecarInjection | quote }}
+    spec:
+      serviceAccountName: {{ include "cetirun-agent-broker.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        fsGroup: 65532
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: broker
+          image: {{ include "cetirun-agent-broker.image" (dict "repository" .Values.image.repository "tag" .Values.image.tag "digest" .Values.image.digest "defaultTag" .Chart.AppVersion) | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: ENTRA_TENANT_ID
+              value: {{ .Values.agentIdentity.tenantId | quote }}
+            - name: AGENT_ID_BLUEPRINT_CLIENT_ID
+              value: {{ .Values.agentIdentity.blueprintClientId | quote }}
+            - name: AGENT_ID_AUTHORIZATION_CLIENT_ID
+              value: {{ .Values.agentIdentity.authorizationClientId | quote }}
+            - name: AGENT_ID_REDIRECT_URI
+              value: {{ .Values.agentIdentity.redirectUri | quote }}
+            - name: PORTAL_ORIGIN
+              value: {{ .Values.agentIdentity.portalOrigin | quote }}
+            - name: PORTAL_BASE_URL
+              value: {{ .Values.agentIdentity.portalBaseUrl | quote }}
+            - name: KEY_VAULT_KEY_URL
+              value: {{ .Values.agentIdentity.keyVaultKeyUrl | quote }}
+            - name: AZURE_CLIENT_ID
+              value: {{ .Values.agentIdentity.encryptionClientId | quote }}
+            - name: AUTHORIZATION_STORE_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: ENTRA_SDK_URL
+              value: http://127.0.0.1:5000
+            - name: KUBERNETES_TOKEN_FILE
+              value: /var/run/cetirun/kubernetes/token
+            - name: KUBERNETES_CA_FILE
+              value: /var/run/cetirun/kubernetes/ca.crt
+            - name: OPERATOR_NAMESPACE
+              value: {{ .Values.operator.namespace | quote }}
+            - name: OPERATOR_SERVICE_ACCOUNT
+              value: {{ .Values.operator.serviceAccount | quote }}
+          volumeMounts:
+            - name: kubernetes-api-credential
+              mountPath: /var/run/cetirun/kubernetes
+              readOnly: true
+          readinessProbe:
+            httpGet: {path: /readyz, port: http}
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: ["ALL"]}
+            readOnlyRootFilesystem: true
+          resources:
+            {{- toYaml .Values.resources.broker | nindent 12 }}
+        - name: auth-sdk
+          image: {{ include "cetirun-agent-broker.image" (dict "repository" .Values.authSDK.repository "tag" .Values.authSDK.tag "digest" .Values.authSDK.digest "defaultTag" "1.0.0-azurelinux3.0-distroless") | quote }}
+          imagePullPolicy: {{ .Values.authSDK.pullPolicy }}
+          env:
+            - name: AzureAd__Instance
+              value: https://login.microsoftonline.com/
+            - name: AzureAd__TenantId
+              value: {{ .Values.agentIdentity.tenantId | quote }}
+            - name: AzureAd__ClientId
+              value: {{ .Values.agentIdentity.blueprintClientId | quote }}
+            - name: AzureAd__Audience
+              value: {{ .Values.agentIdentity.blueprintClientId | quote }}
+            - name: AzureAd__ClientCredentials__0__SourceType
+              value: SignedAssertionFilePath
+            - name: AzureAd__ClientCredentials__0__SignedAssertionFilePath
+              value: $(AZURE_FEDERATED_TOKEN_FILE)
+            - name: DownstreamApis__AzureResourceManager__BaseUrl
+              value: https://management.azure.com/
+            {{- range $index, $scope := .Values.agentIdentity.armScopes }}
+            - name: DownstreamApis__AzureResourceManager__Scopes__{{ $index }}
+              value: {{ $scope | quote }}
+            {{- end }}
+            - name: ASPNETCORE_URLS
+              value: http://127.0.0.1:5000
+            - name: Logging__LogLevel__Default
+              value: Warning
+          volumeMounts:
+            - name: auth-sdk-keys
+              mountPath: /app/keys
+            - name: auth-sdk-tmp
+              mountPath: /tmp
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: ["ALL"]}
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 1654
+            runAsGroup: 1654
+          resources:
+            {{- toYaml .Values.resources.authSDK | nindent 12 }}
+      volumes:
+        - name: auth-sdk-keys
+          emptyDir:
+            medium: Memory
+            sizeLimit: 16Mi
+        - name: auth-sdk-tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 16Mi
+        - name: kubernetes-api-credential
+          projected:
+            defaultMode: 0440
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  expirationSeconds: 3600
+              - configMap:
+                  name: kube-root-ca.crt
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
