@@ -286,9 +286,12 @@ remain rejected. Orphan propagation does not change the namespace/PVC deletion
 policy described above; it is not a data-retention mechanism.
 
 The example caps concurrent connections at 32 and bounds request/JSON-response/
-SSE-event sizes at 1 MiB/4 MiB/256 KiB. Busy connections receive 429; client reads
-and response headers time out after 30 seconds, while stream idle reads allow
-120 seconds. HTTP and headless modes both handle termination signals.
+SSE-event sizes at 1 MiB/4 MiB/256 KiB. Busy connections receive a 429 response
+at connection admission, before the server reads a request, then close. A client
+still uploading can observe a broken pipe instead; the overload test reads the
+admission response directly and verifies no request handler or Gateway work ran.
+Client reads and response headers time out after 30 seconds, while stream idle
+reads allow 120 seconds. HTTP and headless modes both handle termination signals.
 Source qualification runs the Custom and shared HOME suites, uses fresh context
 nonces, and checks actual context bytes reaching the mock. It does not qualify
 arbitrary Agent reasoning, real model behavior, CNI/mesh or CSI permissions.

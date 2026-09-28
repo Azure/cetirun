@@ -2,6 +2,7 @@
 # Licensed under the MIT License.
 
 import importlib.util
+import http.client
 import json
 import io
 import os
@@ -277,11 +278,18 @@ class CustomExampleTests(unittest.TestCase):
         self.server.slots = threading.BoundedSemaphore(1)
         self.server.slots.acquire()
         try:
-            with self.assertRaises(urllib.error.HTTPError) as result:
-                self.completion()
-            self.assertEqual(result.exception.code, 429)
-            self.assertIsInstance(json.load(result.exception)["error"], dict)
-            result.exception.close()
+            # Admission rejects before reading a request; an upload can race
+            # the close and raise BrokenPipeError before urllib reads the 429.
+            with patch.object(self.server, "finish_request", wraps=self.server.finish_request) as handler:
+                with socket.create_connection(("127.0.0.1", self.server.server_port), timeout=5) as connection:
+                    with http.client.HTTPResponse(connection) as response:
+                        response.begin()
+                        self.assertEqual(response.status, 429)
+                        self.assertEqual(response.getheader("Content-Type"), "application/json")
+                        self.assertEqual(response.getheader("Connection"), "close")
+                        self.assertEqual(json.load(response), {
+                            "error": {"type": "rate_limit_error", "message": "Concurrent request limit"}})
+                handler.assert_not_called()
             self.assertEqual(self.gateway.requests, [])
         finally:
             self.server.slots.release()
