@@ -1,0 +1,11 @@
+{{/*
+Render-time preconditions. This template produces no output; it exists so that
+invalid configurations fail at install or upgrade with a message naming the
+offending value, rather than producing a Gateway that starts and misbehaves.
+*/}}
+{{- if or .Release.IsInstall .Release.IsUpgrade -}}
+{{- include "cetirun-gateway.validateModels" . -}}
+{{- include "cetirun-gateway.validateRedis" . -}}
+{{- include "cetirun-gateway.validateDatabase" . -}}
+{{- include "cetirun-gateway.validateProviderCredentials" . -}}
+{{- end -}}

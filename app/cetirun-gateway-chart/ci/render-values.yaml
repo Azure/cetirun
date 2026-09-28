@@ -1,0 +1,31 @@
+# Test values for offline chart rendering. Not a deployment configuration.
+#
+# Points at upstream rather than MCR, which is where testing gets its image
+# until MCR onboarding is done. The digest is left at the chart default: a
+# mirror preserves it, so the same digest is correct in both registries.
+image:
+  repository: ghcr.io/berriai/litellm
+
+replicaCount: 2
+
+models:
+  - model_name: gpt-4o
+    litellm_params:
+      model: azure/my-gpt-4o-deployment
+      api_base: https://example.openai.azure.com/
+      api_key: os.environ/AZURE_PROD_KEY
+  - model_name: claude-sonnet
+    litellm_params:
+      model: anthropic/claude-sonnet-4
+      api_key: os.environ/ANTHROPIC_KEY
+
+providerCredentials:
+  existingSecret: gateway-provider-keys
+
+postgresql:
+  urlSecret:
+    existingSecret: gateway-database
+
+redis:
+  host: gateway-redis.example.invalid
+  port: 6379

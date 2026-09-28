@@ -1,0 +1,270 @@
+# Default values for the CetiRun AI Gateway.
+# This is a YAML-formatted file.
+#
+# The Gateway is a LiteLLM proxy that gives agents a single endpoint for model
+# access. It installs on its own: nothing here depends on the CetiRun operator,
+# portal or agent chart.
+
+# -- Number of Gateway replicas. More than one requires Redis; see the redis
+# section for why this is not optional.
+replicaCount: 2
+
+# -- Gateway container image.
+#
+# This is upstream LiteLLM, unmodified. We do not build it: the requirement is
+# to distribute from MCR, not to change anything, so the image is mirrored there
+# with its manifest intact. Keeping the upstream digest is what lets anyone
+# verify that what we ship is unmodified.
+#
+# Because a mirror preserves the digest, the same `digest` value is valid
+# against the upstream registry and against MCR. Only `repository` differs, so
+# testing before MCR onboarding overrides that one field.
+image:
+  # -- Image repository. Pending MCR onboarding; until then, override this with
+  # ghcr.io/berriai/litellm for testing.
+  repository: mcr.microsoft.com/aks/cetirun/cetirun-ai-gateway
+  # -- Image pull policy
+  pullPolicy: IfNotPresent
+  # -- Image tag. Pinned rather than tracking a moving tag: `latest` and
+  # `main-latest` are explicitly not used.
+  tag: v1.101.0
+  # -- Image digest. Set alongside the tag so the reference is exact, and so a
+  # mirrored copy can be checked against the upstream one.
+  digest: sha256:d295634e09c648dcdb72c4cc2dd226f5fb87823a73e88cbbed6f205e4deb044b
+
+# -- Image pull secrets for private registries
+imagePullSecrets: []
+
+# -- String to override the default name
+nameOverride: ""
+
+# -- String to override the default fullname
+fullnameOverride: ""
+
+# -- Models exposed by this Gateway, in LiteLLM's own `model_list` format so
+# administrators can follow upstream provider documentation directly.
+#
+# At least one model is required. Installing with an empty list is rejected
+# rather than producing a Gateway that starts and then fails every request.
+#
+# `model_name` is what a client asks for. `litellm_params.model` is what the
+# Gateway sends to the provider, carrying a prefix that selects the handler.
+# Keep credentials out of this list: reference them as `os.environ/NAME` and
+# supply the value through providerCredentials below.
+#
+# Names beginning with `cetirun-` are reserved for models the CetiRun operator
+# registers automatically, and are rejected here.
+#
+# Example:
+#   models:
+#     - model_name: gpt-4o
+#       litellm_params:
+#         model: azure/my-gpt-4o-deployment
+#         api_base: https://example.openai.azure.com/
+#         api_key: os.environ/AZURE_PROD_KEY
+#         # Must support the Responses API: agents' tool calls are sent there.
+#         api_version: "2025-04-01-preview"
+#       model_info:
+#         # A price is required; see blockUnpricedModels below.
+#         base_model: azure/gpt-4o
+#     - model_name: claude-sonnet
+#       litellm_params:
+#         model: anthropic/claude-sonnet-4
+#         api_key: os.environ/ANTHROPIC_KEY
+models: []
+
+# -- Reject requests to models whose price LiteLLM does not know.
+#
+# On by default, and worth understanding before turning it off.
+#
+# LiteLLM computes spend from a built-in price table. A model missing from it
+# costs zero, and budget checks are skipped entirely for zero-cost models. So a
+# budget set on a virtual key silently does nothing.
+#
+# This is not an edge case: an Azure OpenAI deployment name such as
+# `my-gpt4-prod` is not in the price table, which is the ordinary way to
+# configure Azure. Measured against a real deployment, a $0.0001 budget allowed
+# every request.
+#
+# With this on, such a request is refused with a message naming the model and
+# telling the administrator to declare pricing. Failing at the first request is
+# better than never enforcing a budget that somebody thinks is in place.
+#
+# To use such a model, price it rather than turning this off. Either name the
+# model the deployment runs, so LiteLLM prices it from its own table:
+#
+#   model_info:
+#     base_model: azure/gpt-4o
+#
+# or declare the prices yourself:
+#
+#   model_info:
+#     input_cost_per_token: 0.000005
+#     output_cost_per_token: 0.000015
+blockUnpricedModels: true
+
+# -- Provider API keys, surfaced to the proxy as environment variables and
+# referenced from the model list as `os.environ/NAME`.
+providerCredentials:
+  # -- Name of a Secret you create and own. Every key in it becomes an
+  # environment variable of the same name. This is the supported path for any
+  # installation whose credentials matter.
+  existingSecret: ""
+  # -- Inline credentials, for evaluation only. Values are written into a
+  # chart-managed Secret and are visible to anyone who can read the release.
+  inline: {}
+
+# -- Gateway platform credentials. These are distinct from provider keys and
+# from the virtual keys that agents use.
+auth:
+  # -- Admin API key for LiteLLM's management API. Generated with an `sk-`
+  # prefix, like LiteLLM's other keys, and preserved across upgrades when no
+  # existing Secret is given.
+  masterKey:
+    # -- Name of a Secret holding the master key
+    existingSecret: ""
+    # -- Key within that Secret
+    key: master-key
+
+  # -- Encrypts provider credentials that LiteLLM stores in its database.
+  #
+  # THIS VALUE MUST NEVER CHANGE. There is no rotation path: when it changes,
+  # the proxy starts normally and reports healthy while every model stored in
+  # the database silently disappears. Restoring the original value recovers
+  # them, so the real risk is losing it rather than rotating it.
+  #
+  # When no existing Secret is given the chart generates one and reads it back
+  # on upgrade, so it survives. Supplying your own Secret is still recommended
+  # for anything you intend to keep.
+  saltKey:
+    # -- Name of a Secret holding the salt key
+    existingSecret: ""
+    # -- Key within that Secret
+    key: salt-key
+
+  # -- Sign-in for LiteLLM's built-in admin console.
+  adminUI:
+    # -- Enable the admin console. It is served on the same port as the API and
+    # is reached with `kubectl port-forward`; the chart creates no Ingress.
+    # Turning it off hides the console rather than removing it; see the README.
+    enabled: true
+    # -- Console username
+    username: admin
+    # -- Console password. Kept separate from the master key on purpose: when
+    # LiteLLM has no UI password it accepts the master key instead, which turns
+    # a console sign-in into full management API access.
+    passwordSecret:
+      # -- Name of a Secret holding the console password
+      existingSecret: ""
+      # -- Key within that Secret
+      key: ui-password
+
+# -- PostgreSQL holds virtual keys, spend records and models added through the
+# console. It is required.
+postgresql:
+  # -- Connection URL, in the form postgresql://user:password@host:5432/dbname
+  urlSecret:
+    # -- Name of a Secret holding the connection URL
+    existingSecret: ""
+    # -- Key within that Secret
+    key: database-url
+
+# -- Redis coordinates budget and rate-limit state between replicas.
+#
+# This is not a performance option. Each replica otherwise tracks its own copy
+# of a key's budget, so with two replicas a $100 budget permits $200 of spend.
+# Recording is unaffected - spend totals and usage reporting stay accurate
+# without it - but enforcement is not.
+#
+# Required whenever replicaCount is above 1. The chart rejects that combination
+# rather than installing something that looks healthy and overspends.
+#
+# Nothing durable lives here: the record of spend is in PostgreSQL and Redis
+# only holds in-flight coordination, so it needs no persistence or backup.
+redis:
+  # -- Redis or Valkey hostname
+  host: ""
+  # -- Redis port
+  port: 6379
+  # -- Password, if the server requires one
+  passwordSecret:
+    # -- Name of a Secret holding the Redis password
+    existingSecret: ""
+    # -- Key within that Secret
+    key: redis-password
+
+# -- Service exposing the Gateway inside the cluster
+service:
+  # -- Service type. The Gateway is an internal endpoint; exposing it is the
+  # administrator's decision, so the chart creates no Ingress.
+  type: ClusterIP
+  # -- Service port
+  port: 4000
+
+# -- Service account configuration
+serviceAccount:
+  # -- Specifies whether a service account should be created
+  create: true
+  # -- Annotations to add to the service account
+  annotations: {}
+  # -- The name of the service account to use. Generated from the fullname
+  # template when empty.
+  name: ""
+
+# -- Run database migrations from a pre-install and pre-upgrade hook, so that
+# replicas never race each other to migrate. Proxy pods start with schema
+# updates disabled while this is on.
+migrations:
+  # -- Enable the migration hook
+  enabled: true
+
+# -- Annotations to add to the Gateway pods
+podAnnotations: {}
+
+# -- Pod-level security context
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 1000
+
+# -- Container-level security context
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: false
+  capabilities:
+    drop:
+      - ALL
+  seccompProfile:
+    type: RuntimeDefault
+
+# -- Resource requests and limits
+resources: {}
+
+# -- Liveness probe settings
+livenessProbe:
+  initialDelaySeconds: 30
+  periodSeconds: 20
+  timeoutSeconds: 5
+  failureThreshold: 6
+
+# -- Readiness probe settings
+readinessProbe:
+  initialDelaySeconds: 10
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 6
+
+# -- Seconds a replica being replaced or evicted may keep serving requests it
+# has already accepted. LiteLLM finishes them on SIGTERM with no limit of its
+# own, so a response still running when this expires is cut off. A replica with
+# nothing in flight exits within seconds, whatever the value.
+terminationGracePeriodSeconds: 600
+
+# -- Node selector for pod assignment
+nodeSelector: {}
+
+# -- Tolerations for pod assignment
+tolerations: []
+
+# -- Affinity rules for pod assignment
+affinity: {}

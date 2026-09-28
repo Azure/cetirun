@@ -1,0 +1,90 @@
+{{/*
+  Database migrations.
+
+  LiteLLM applies migrations on startup by default. With more than one replica
+  that means several pods racing to migrate the same schema, so the work is
+  moved into a hook that runs once before the proxies start, and the proxies are
+  started with schema updates disabled.
+*/}}
+{{- if .Values.migrations.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "cetirun-gateway.fullname" . }}-migrate
+  labels:
+    {{- include "cetirun-gateway.labels" . | nindent 4 }}
+    app.kubernetes.io/component: migration
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-10"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        {{- include "cetirun-gateway.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: migration
+    spec:
+      restartPolicy: Never
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- /* No serviceAccountName. This runs as a pre-install hook, before the
+             chart's ServiceAccount exists, so referencing it would block the
+             hook from ever scheduling. The job talks to PostgreSQL and needs no
+             Kubernetes identity. */}}
+      automountServiceAccountToken: false
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: migrate
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: {{ include "cetirun-gateway.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - sh
+            - -c
+            - |
+              set -eu
+
+              # The image ships several copies of schema.prisma and only some
+              # of them have a migrations directory beside them. Pointing at a
+              # copy without one is the dangerous case: `prisma migrate deploy`
+              # finds nothing to apply, exits zero, and leaves an empty
+              # database behind a successful install. The proxy then starts,
+              # passes its readiness probe, serves models from the config file,
+              # and fails on anything that touches a table.
+              #
+              # So the schema is located by the presence of migrations rather
+              # than by a path, which also survives the interpreter version
+              # moving in the image.
+              schema=""
+              for candidate in \
+                /app/litellm-proxy-extras/litellm_proxy_extras/schema.prisma \
+                /app/.venv/lib/python*/site-packages/litellm_proxy_extras/schema.prisma \
+                /app/schema.prisma
+              do
+                [ -f "$candidate" ] || continue
+                count=$(ls "$(dirname "$candidate")/migrations" 2>/dev/null | wc -l)
+                if [ "$count" -gt 0 ]; then
+                  schema="$candidate"
+                  echo "using $schema with $count migrations"
+                  break
+                fi
+                echo "skipping $candidate: no migrations beside it"
+              done
+
+              if [ -z "$schema" ]; then
+                echo "no schema.prisma with migrations found in this image" >&2
+                exit 1
+              fi
+
+              prisma migrate deploy --schema "$schema"
+          env:
+            {{- include "cetirun-gateway.databaseEnv" . | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+{{- end }}

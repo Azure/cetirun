@@ -91,6 +91,7 @@ The name, fullname, chart, label, selector, and service-account helpers in
 app/cetirun-chart/templates/_helpers.tpl contain adapted Helm chart scaffolding.
 Related Helm-style helpers are present in:
 
+    app/cetirun-gateway-chart/templates/_helpers.tpl
     app/cetirun-operator/chart/templates/_helpers.tpl
     app/cetirun-portal/chart/templates/_helpers.tpl
     infra/istio/templates/_helpers.tpl
@@ -105,7 +106,7 @@ https://github.com/helm/helm/blob/v3.17.3/LICENSE
 Local variants use CetiRun names and application-specific additions. The exact
 scaffolding version and derivation history of every template are not recorded;
 the reference version is a comparison source, not an asserted import version.
-All four helpers are excluded from automatic Microsoft/MIT header insertion.
+All five helpers are excluded from automatic Microsoft/MIT header insertion.
 Chart YAML and NOTES.txt are not covered by the source-header checker; their
 scaffold provenance also needs preservation when packaging charts. The Apache
 License text is reproduced below.

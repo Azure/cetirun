@@ -1,0 +1,74 @@
+{{/*
+  Generated LiteLLM configuration.
+
+  The model list is passed through unchanged, so an administrator can follow
+  upstream provider documentation directly and we do not have to track every
+  provider parameter LiteLLM supports.
+
+  The chart writes as little as possible into the settings blocks below. Editing
+  any field of one of these blocks in the admin console persists the whole block
+  to the database, after which the database wins on every key in it and values
+  from this file stop taking effect. The fewer keys here, the smaller that
+  surface.
+*/}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "cetirun-gateway.configMapName" . }}
+  labels:
+    {{- include "cetirun-gateway.labels" . | nindent 4 }}
+data:
+  config.yaml: |
+    model_list:
+      {{- toYaml .Values.models | nindent 6 }}
+
+    general_settings:
+      # Required for the management API and the admin console to persist models.
+      store_model_in_db: true
+
+    litellm_settings:
+      # No retries in the Gateway. LiteLLM retries a failed upstream call twice
+      # by default, and agents retry on their own, so the two multiply: one
+      # failing request was measured at three upstream calls, which an agent
+      # retrying twice itself would turn into nine. Retrying a 429 makes rate
+      # limiting worse. Errors go straight back to the caller, which decides.
+      num_retries: 0
+      {{- if .Values.blockUnpricedModels }}
+      # A model missing from LiteLLM's price table costs zero, and budget checks
+      # are skipped for zero-cost models, so a budget on a key silently does
+      # nothing. Azure OpenAI deployment names are not in that table, which
+      # makes this the ordinary case rather than an edge one.
+      block_requests_for_models_without_pricing: true
+      {{- end }}
+    {{- if .Values.redis.host }}
+      # Redis is declared here for coordination, not for caching responses.
+      #
+      # Budgets and rate limits are only shared across replicas once LiteLLM's
+      # cache is Redis-backed, so the cache has to be configured. But enabling
+      # it also caches responses by default: an identical request is answered
+      # from Redis, recorded at zero spend, not counted against the budget, and
+      # shared across every caller who sends the same content. An agent that
+      # retries after a bad answer gets the same bad answer back.
+      #
+      # default_off keeps the Redis-backed coordination and turns response
+      # caching into something a request has to ask for.
+      cache: true
+      cache_params:
+        type: redis
+        mode: default_off
+        host: {{ .Values.redis.host | quote }}
+        port: {{ .Values.redis.port }}
+        {{- if .Values.redis.passwordSecret.existingSecret }}
+        password: os.environ/REDIS_PASSWORD
+        {{- end }}
+
+    # Redis has to be declared in both blocks. Configuring only litellm_settings
+    # leaves router coordination unset: budgets keep doubling across replicas
+    # while the deployment looks correctly configured and Redis stays empty.
+    router_settings:
+      redis_host: {{ .Values.redis.host | quote }}
+      redis_port: {{ .Values.redis.port }}
+      {{- if .Values.redis.passwordSecret.existingSecret }}
+      redis_password: os.environ/REDIS_PASSWORD
+      {{- end }}
+    {{- end }}
