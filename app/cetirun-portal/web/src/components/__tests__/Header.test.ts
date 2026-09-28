@@ -16,10 +16,10 @@ function loc(overrides: Partial<Parameters<typeof buildSignOutUrl>[0]> = {}) {
 }
 
 describe("buildSignOutUrl", () => {
-  it("prepends oauth2. to the apex host", () => {
+  it("uses same-origin sign-out for the apex host", () => {
     const url = buildSignOutUrl(loc());
     expect(url).toBe(
-      "https://oauth2.example.com/oauth2/sign_out?rd=https%3A%2F%2Fexample.com%2F",
+      "/oauth2/sign_out?rd=https%3A%2F%2Fexample.com%2F",
     );
   });
 
@@ -60,12 +60,19 @@ describe("buildSignOutUrl", () => {
     expect(url).toMatch(/^\/oauth2\/sign_out\?rd=/);
   });
 
-  it("prepends oauth2. for any FQDN host", () => {
+  it("uses same-origin sign-out for subdomains", () => {
     const url = buildSignOutUrl(
       loc({ host: "alice.example.com" }),
     );
-    expect(url).toContain(
-      "https://oauth2.alice.example.com/oauth2/sign_out",
+    expect(url).toBe(
+      "/oauth2/sign_out?rd=https%3A%2F%2Falice.example.com%2F",
+    );
+  });
+
+  it("preserves the return-to port", () => {
+    const url = buildSignOutUrl(loc({ host: "portal.example.com:8443" }));
+    expect(url).toBe(
+      "/oauth2/sign_out?rd=https%3A%2F%2Fportal.example.com%3A8443%2F",
     );
   });
 });

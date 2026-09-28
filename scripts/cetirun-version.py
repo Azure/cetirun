@@ -12,7 +12,7 @@ import sys
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SEMVER = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
+VERSION_PREFIX = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?!\d)")
 PENDING_UPDATES = {}
 
 
@@ -181,7 +181,7 @@ def parse_args():
     subparsers.add_parser("get", help="print the Runtime Chart version")
     for command in ("set", "check"):
         subparser = subparsers.add_parser(command)
-        subparser.add_argument("version")
+        subparser.add_argument("version", help="X.Y.Z with an optional suffix, e.g. 0.1.0-dev.1")
     return parser.parse_args()
 
 
@@ -190,8 +190,8 @@ def main():
     if args.command == "get":
         print(top_level_yaml(ROOT / "app/cetirun-chart/Chart.yaml", "version"))
         return 0
-    if not SEMVER.fullmatch(args.version):
-        raise ValueError(f"{args.version!r} is not SemVer X.Y.Z")
+    if not VERSION_PREFIX.match(args.version):
+        raise ValueError(f"{args.version!r} must start with X.Y.Z")
     if args.command == "set":
         set_version(args.version)
     else:
