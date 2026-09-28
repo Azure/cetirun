@@ -81,16 +81,41 @@ required-field migration, an admission webhook, or authorization for deployment.
 Agent into the governed path.
 
 The controller holds Agents that request Sandbox governance, belong to a Team
-with governance settings, or already have Sandbox status. It never passes them
-to built-in or Custom runtime preparation or application. It removes their
-known route and requests zero
-replicas for an existing workload while retaining its home PVC, reports
-`SandboxReady=False`, and preserves any last-applied binding. Clearing the new
-spec fields does not silently release an existing hold. Stop/removal failures
-are reported and retried. Custom shutdown uses the existing ownership checks,
+with governance settings, or already have Sandbox status or a hold finalizer.
+It never passes them to built-in or Custom runtime preparation or application.
+Before workload changes it persists a dedicated hold finalizer, which also
+keeps newly held Agents available for cleanup. Clearing spec fields cannot
+release that recorded hold, even if a later status write fails. If the initial
+finalizer write fails, no workload changes are attempted; an unpersisted request
+is not a durable hold.
+
+For resources with verified ownership it removes the route and requests zero
+replicas while retaining home storage. It reports `SandboxReady=False` and
+preserves any last-applied binding. Explicit suspension remains `Suspended`;
+shutdown/removal/completion failures are reported as failures and retried.
+Built-in resources require an Agent UID owner reference and non-conflicting
+ownership/release metadata. Older resources without that evidence are not
+automatically adopted or stopped: the hold reports an ownership error requiring
+reviewed recovery. Route and namespace deletes use UID/resourceVersion
+preconditions. Custom shutdown uses the existing ownership checks,
 preserves external home storage, and retries prior apply-completion records
-without preparing a new workload. Existing Custom suspension and deletion remain
-available when governance is not selected.
+without preparing a new workload.
+
+Held built-in deletion removes only a verified Agent-owned namespace, waits for
+its disappearance before removing finalizers, and never runs Helm uninstall
+hooks. Unknown ownership leaves deletion pending for recovery. Deletion removes
+namespace contents; home retention during a hold does not promise retention
+after an explicit Agent deletion. Custom deletion retains its existing receipt
+and completion checks.
+
+Portal Team edits preserve governance fields that the Portal does not expose.
+Portal creation registers the cleanup finalizer and binds only namespaces it
+newly created to the persisted Agent UID. Existing namespaces are not adopted.
+The Portal chart grants namespace `patch` for this ownership write, in addition
+to its existing `get`/`create` permissions; deploy the matching RBAC with the
+Portal binary.
+If that ownership write fails, creation reports an error and the Agent remains
+tracked for recovery; it must not be retried as an unrelated new Agent.
 
 This hold is a development activation guard, not an enforcement adapter or a
 fence for an unreachable node. Do not adopt existing live workloads until

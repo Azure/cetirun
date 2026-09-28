@@ -4,11 +4,15 @@
 package handler
 
 import (
+	"context"
+
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 )
@@ -30,5 +34,10 @@ func newFakeClient(objs ...client.Object) client.Client {
 	if len(objs) > 0 {
 		builder = builder.WithObjects(objs...)
 	}
-	return builder.Build()
+	return builder.WithInterceptorFuncs(interceptor.Funcs{Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+		if obj.GetUID() == "" {
+			obj.SetUID(types.UID("test-" + obj.GetName()))
+		}
+		return c.Create(ctx, obj, opts...)
+	}}).Build()
 }

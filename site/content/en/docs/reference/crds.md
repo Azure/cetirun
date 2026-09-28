@@ -207,6 +207,21 @@ shutdown and route removal without claiming a node fence or advancing applied
 status. Custom shutdown preserves its ownership checks and pending completion
 recovery. Existing unbound runtime behavior is unchanged.
 
+The controller records a hold finalizer before changing workloads, so a failed
+status update cannot release the recorded hold. Explicit suspension remains
+`Suspended` unless shutdown fails. Built-in resources without verifiable
+Agent-UID ownership are left untouched and require recovery; matching resource
+names alone are insufficient. Deleting a held built-in Agent removes only its
+verified namespace, without Helm uninstall hooks, and retains finalizers until
+cleanup completes. Home storage is retained during a hold, not after explicit
+namespace deletion.
+
+Portal Team edits preserve the governance bindings even though the Portal does
+not yet expose them. Portal binds newly created namespaces to the Agent for
+cleanup, but does not adopt pre-existing namespaces. Ownership-write failures
+are reported and require recovery of the tracked Agent. The matching Portal
+chart adds namespace `patch` permission for this ownership write.
+
 The new binding fields remain optional solely to preserve unbound resources
 during additive staging. The pure resolver requires complete, compatible
 bindings and explicit UID authorization. Admission, enforcement observation,

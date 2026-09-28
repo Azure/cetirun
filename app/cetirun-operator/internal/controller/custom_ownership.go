@@ -195,6 +195,7 @@ func (r *AgentReconciler) finishCustomDeletion(ctx context.Context, instance *ap
 	}
 	controllerutil.RemoveFinalizer(instance, api.Finalizer)
 	controllerutil.RemoveFinalizer(instance, customOwnershipFinalizer)
+	controllerutil.RemoveFinalizer(instance, sandboxHoldFinalizer)
 	if err := r.Update(ctx, instance); err != nil && !apierrors.IsNotFound(err) {
 		return ctrl.Result{}, err
 	}

@@ -151,6 +151,9 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		if instance.Spec.Agent.Type == cetirunv1alpha1.AgentTypeCustom {
 			return r.deleteCustom(ctx, instance)
 		}
+		if sandboxRequested(instance, nil) {
+			return r.deleteSandboxBuiltin(ctx, instance)
+		}
 		logger.V(1).Info("DeletionTimestamp set, entering delete handler", "alias", instance.Spec.User.Alias)
 		return r.handleDelete(ctx, instance)
 	}

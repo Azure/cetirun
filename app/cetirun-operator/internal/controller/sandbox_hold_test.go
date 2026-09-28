@@ -105,6 +105,7 @@ func TestSandboxHoldStopsExistingWorkloadAndPreservesHome(t *testing.T) {
 		WhenDeleted: appsv1.RetainPersistentVolumeClaimRetentionPolicyType,
 	}
 	route := &istiov1beta1.VirtualService{ObjectMeta: metav1.ObjectMeta{Name: "cetirun-" + agent.Name, Namespace: "cetirun-" + agent.Name}}
+	ownSandboxResources(agent, sts, route)
 	client := fake.NewClientBuilder().WithScheme(testScheme()).WithStatusSubresource(agent).WithObjects(agent, instanceNamespace(agent.Name), sts, route).Build()
 	helm := &fakeHelmClient{}
 	reconciler := &controller.AgentReconciler{Client: client, HelmClient: helm, EventRecorder: record.NewFakeRecorder(10)}
@@ -200,6 +201,7 @@ func TestSandboxHoldFailureStaysVisible(t *testing.T) {
 			agent.Spec.SandboxRef = "standard"
 			sts := statefulSet(agent.Name, 1)
 			route := &istiov1beta1.VirtualService{ObjectMeta: metav1.ObjectMeta{Name: "cetirun-" + agent.Name, Namespace: "cetirun-" + agent.Name}}
+			ownSandboxResources(agent, sts, route)
 			fakeClient := fake.NewClientBuilder().WithScheme(testScheme()).WithStatusSubresource(agent).WithObjects(agent, instanceNamespace(agent.Name), sts, route).Build()
 			failure := errors.New("synthetic hold failure")
 			helm := &fakeHelmClient{}
@@ -240,6 +242,7 @@ func TestSandboxHoldRetainsHomeForAlreadyScaledWorkload(t *testing.T) {
 	sts.Spec.PersistentVolumeClaimRetentionPolicy = &appsv1.StatefulSetPersistentVolumeClaimRetentionPolicy{
 		WhenScaled: appsv1.DeletePersistentVolumeClaimRetentionPolicyType,
 	}
+	ownSandboxResources(agent, sts)
 	client := fake.NewClientBuilder().WithScheme(testScheme()).WithStatusSubresource(agent).WithObjects(agent, instanceNamespace(agent.Name), sts).Build()
 	reconciler := &controller.AgentReconciler{Client: client}
 	if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: agent.Name}}); err != nil {
@@ -432,14 +435,16 @@ func (h *sandboxHoldDeletionHelmClient) Uninstall(string, string) error {
 	return nil
 }
 
-func TestSandboxHoldDoesNotBlockExistingDeletionPath(t *testing.T) {
+func TestSandboxHoldUsesOwnershipSafeDeletion(t *testing.T) {
 	agent := newCR("alice-work", cetirunv1alpha1.PhaseFailed, nil, 1, 0, "")
 	agent.Spec.SandboxRef = "standard"
 	now := metav1.Now()
 	agent.DeletionTimestamp = &now
+	namespace := instanceNamespace(agent.Name)
+	ownSandboxResources(agent, namespace)
 	scheme := testScheme()
 	client := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(agent).
-		WithObjects(agent, instanceNamespace(agent.Name)).Build()
+		WithObjects(agent, namespace).Build()
 	helm := &sandboxHoldDeletionHelmClient{}
 	reconciler := &controller.AgentReconciler{
 		Client: client, Scheme: scheme, HelmClient: helm, EventRecorder: record.NewFakeRecorder(10),
@@ -448,10 +453,26 @@ func TestSandboxHoldDoesNotBlockExistingDeletionPath(t *testing.T) {
 	if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: key}); err != nil {
 		t.Fatal(err)
 	}
-	if helm.installCalled || !helm.uninstallCalled {
-		t.Fatal("sandbox hold intercepted deletion instead of allowing existing cleanup")
+	if helm.installCalled || helm.uninstallCalled {
+		t.Fatal("sandbox-held deletion must not run Helm or uninstall hooks")
 	}
+	if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: key}); err != nil {
+		t.Fatal(err)
+	}
+
 	if err := client.Get(context.Background(), key, &cetirunv1alpha1.Agent{}); !apierrors.IsNotFound(err) {
 		t.Fatalf("deletion did not remove the existing finalizer: %v", err)
+	}
+}
+
+func ownSandboxResources(agent *cetirunv1alpha1.Agent, objects ...client.Object) {
+	if agent.UID == "" {
+		agent.UID = types.UID(agent.Name + "-uid")
+	}
+	for _, object := range objects {
+		object.SetUID(types.UID(object.GetName() + "-uid"))
+		object.SetOwnerReferences([]metav1.OwnerReference{{
+			APIVersion: cetirunv1alpha1.GroupVersion.String(), Kind: "Agent", Name: agent.Name, UID: agent.UID,
+		}})
 	}
 }

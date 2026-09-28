@@ -5,9 +5,11 @@ package handler
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -161,6 +163,34 @@ func TestAdminTeam_Update(t *testing.T) {
 	_ = json.NewDecoder(w.Body).Decode(&got)
 	if got.Role != "new" {
 		t.Errorf("role = %q, want new", got.Role)
+	}
+}
+
+func TestAdminTeamUpdatePreservesGovernance(t *testing.T) {
+	team := &cetirunv1alpha1.Team{
+		ObjectMeta: metav1.ObjectMeta{Name: "governed"},
+		Spec: cetirunv1alpha1.TeamSpec{
+			NormalAgentPolicyRef: "normal", AdminAgentPolicyRef: "admin",
+			SandboxRefs: []string{"standard", "restricted"}, DefaultSandboxRef: "standard",
+			MemberContext: cetirunv1alpha1.TeamContextSpec{Role: "old"},
+		},
+	}
+	h := newAdminTeamHandler(team)
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/admin/teams/governed", bytes.NewBufferString(`{"role":"new"}`))
+	req.SetPathValue("name", team.Name)
+	w := httptest.NewRecorder()
+	h.UpdateTeam(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", w.Code, w.Body.String())
+	}
+	got, err := h.Kube.GetTeam(context.Background(), team.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := team.Spec.DeepCopy()
+	want.MemberContext.Role = "new"
+	if !reflect.DeepEqual(got.Spec, *want) {
+		t.Fatalf("ordinary Portal edit changed governance: got %+v, want %+v", got.Spec, *want)
 	}
 }
 

@@ -200,7 +200,7 @@ func (h *AdminTeamHandler) CreateTeam(w http.ResponseWriter, r *http.Request) {
 }
 
 // UpdateTeam handles PUT /api/v1/admin/teams/{name}. The request body
-// replaces the entire spec.
+// replaces the Portal-editable fields, not Sandbox governance bindings.
 func (h *AdminTeamHandler) UpdateTeam(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	if !teamNamePattern.MatchString(name) {
