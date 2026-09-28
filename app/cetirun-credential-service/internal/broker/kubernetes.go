@@ -193,9 +193,9 @@ func (k *kubeClient) getAgent(ctx context.Context, name string) (Agent, error) {
 		OwnerObjectID:  document.Metadata.Annotations["agentidentity.cetirun.microsoft.com/owner-object-id"],
 		ServiceAccount: workloadServiceAccount(document.Metadata.Name),
 	}
-	if document.Status.Phase == "Ready" && document.Spec.AgentIdentity != nil && document.Spec.AgentIdentity.Enabled && document.Status.AgentIdentity != nil {
-		agent.AgentIdentityReady = document.Status.AgentIdentity.Phase == "Ready"
+	if document.Spec.AgentIdentity != nil && document.Spec.AgentIdentity.Enabled && document.Status.AgentIdentity != nil {
 		agent.AgentIdentityClientID = document.Status.AgentIdentity.ClientID
+		agent.AgentIdentityReady = document.Status.Phase == "Ready" && document.Status.AgentIdentity.Phase == "Ready"
 	}
 	if agent.UID == "" || agent.Namespace == "" {
 		return Agent{}, errors.New("Agent resource is not ready")

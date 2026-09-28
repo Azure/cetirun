@@ -117,9 +117,6 @@ func (s *Server) portalAgent(r *http.Request) (Agent, error) {
 	if r.PathValue("uid") != "" && subtle.ConstantTimeCompare([]byte(r.PathValue("uid")), []byte(agent.UID)) != 1 {
 		return Agent{}, errors.New("instance UID does not match")
 	}
-	if !agent.AgentIdentityReady || !uuidPattern.MatchString(agent.AgentIdentityClientID) {
-		return Agent{}, errors.New("Agent Identity is not ready")
-	}
 	return agent, nil
 }
 
@@ -156,7 +153,7 @@ func (s *Server) portalStatus(w http.ResponseWriter, r *http.Request) {
 func (s *Server) portalStart(w http.ResponseWriter, r *http.Request) {
 	correlationID := correlationID(r)
 	agent, err := s.portalAgent(r)
-	if err != nil {
+	if err != nil || !agent.AgentIdentityReady || !uuidPattern.MatchString(agent.AgentIdentityClientID) {
 		writeAPIError(w, http.StatusForbidden, "forbidden", "The instance owner binding is invalid", correlationID)
 		return
 	}
@@ -610,7 +607,21 @@ func (s *Server) withAzure(w http.ResponseWriter, r *http.Request, operation fun
 	}
 	now := time.Now().UTC()
 	current.LastUsed = &now
-	_ = s.store.putRecord(r.Context(), current, currentVersion)
+	if err := s.store.putRecord(r.Context(), current, currentVersion); err != nil {
+		if errors.Is(err, errConflict) {
+			latest, _, reloadErr := s.store.getRecord(r.Context(), agent.UID)
+			if errors.Is(reloadErr, errNotFound) || (reloadErr == nil && (latest.Revoked || latest.Generation != generation)) {
+				writeAPIError(w, http.StatusUnauthorized, "authorization_required", "The connection was ended", correlationID)
+				return
+			}
+			if reloadErr == nil {
+				writeAPIError(w, http.StatusConflict, "conflict", "Authorization state changed; retry", correlationID)
+				return
+			}
+		}
+		writeAPIError(w, http.StatusServiceUnavailable, "dependency_unavailable", "Authorization state could not be updated", correlationID)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": result.Items, "truncated": result.Truncated, "correlationId": correlationID})
 }
 

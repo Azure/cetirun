@@ -36,6 +36,7 @@ type recordAPIFixture struct {
 	mu              sync.Mutex
 	secret          *secretDocument
 	resourceVersion int
+	agentPhase      string
 }
 
 func (f *recordAPIFixture) handler(w http.ResponseWriter, r *http.Request) {
@@ -104,6 +105,10 @@ func (f *recordAPIFixture) storeSecret(w http.ResponseWriter, r *http.Request, s
 }
 
 func (f *recordAPIFixture) agentDocument() map[string]any {
+	phase := f.agentPhase
+	if phase == "" {
+		phase = "Ready"
+	}
 	return map[string]any{
 		"metadata": map[string]any{
 			"name": testAgentName, "uid": testAgentUID,
@@ -117,7 +122,7 @@ func (f *recordAPIFixture) agentDocument() map[string]any {
 			"agentIdentity": map[string]any{"enabled": true},
 		},
 		"status": map[string]any{
-			"phase": "Ready", "namespace": "cetirun-owner",
+			"phase": phase, "namespace": "cetirun-owner",
 			"agentIdentity": map[string]any{"phase": "Ready", "clientId": testAgentClientID},
 		},
 	}
@@ -245,6 +250,34 @@ func TestPortalEndPersistsTombstoneWhenAuthorizationRecordIsMissing(t *testing.T
 	}
 }
 
+func TestPortalEndRevokesAuthorizationWhenAgentIsNotReady(t *testing.T) {
+	store, fixture, closeServer := newRecordTestStore(t)
+	defer closeServer()
+	if err := store.putRecord(context.Background(), connectedRecord(), ""); err != nil {
+		t.Fatal(err)
+	}
+	fixture.agentPhase = "Failed"
+	server := &Server{cfg: Config{}, store: store, mux: http.NewServeMux()}
+	server.routes()
+	req := httptest.NewRequest(http.MethodDelete, "/internal/v1/instances/"+testAgentUID+"/authorization", nil)
+	req.Header.Set("X-CetiRun-Instance-UID", testAgentUID)
+	req.Header.Set("X-CetiRun-Instance-Name", testAgentName)
+	req.Header.Set("X-CetiRun-Owner-Tenant-ID", testOwnerTenantID)
+	req.Header.Set("X-CetiRun-Owner-Object-ID", testOwnerObjectID)
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, req)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", response.Code, http.StatusOK, response.Body.String())
+	}
+	record, _, err := store.getRecord(context.Background(), testAgentUID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.Generation != 8 || !record.Revoked || record.Tokens != nil {
+		t.Fatalf("End did not revoke the authorization: %#v", record)
+	}
+}
+
 func TestRevocationRejectsStaleCallbackAndRefreshWrites(t *testing.T) {
 	for _, mutation := range []struct {
 		name  string
@@ -335,6 +368,66 @@ func TestAzureResponseIsDiscardedWhenConnectionEndsInFlight(t *testing.T) {
 	}
 	if strings.Contains(response.Body.String(), "must-not-be-returned") {
 		t.Fatal("Azure response escaped after the authorization generation was revoked")
+	}
+}
+
+func TestAzureResponseIsDiscardedWhenConnectionEndsDuringFinalWrite(t *testing.T) {
+	store, _, closeKube := newRecordTestStore(t)
+	defer closeKube()
+	if err := store.putRecord(context.Background(), connectedRecord(), ""); err != nil {
+		t.Fatal(err)
+	}
+	authSDK := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/Validate":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"tid": testOwnerTenantID, "oid": testOwnerObjectID, "aud": testBlueprintID,
+				"azp": testAuthorizationID, "scp": "access_agent",
+			})
+		case "/AuthorizationHeader/AzureResourceManager":
+			_ = json.NewEncoder(w).Encode(map[string]string{"authorizationHeader": "Bearer delegated-token"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer authSDK.Close()
+	revokeStore := *store
+	baseTransport := store.client.Transport
+	var revokeOnce sync.Once
+	store.client = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		var revokeErr error
+		if r.Method == http.MethodPut {
+			revokeOnce.Do(func() {
+				revokeErr = revokeStore.revokeRecord(r.Context(), Agent{
+					Name: testAgentName, UID: testAgentUID, OwnerTenantID: testOwnerTenantID,
+					OwnerObjectID: testOwnerObjectID, AgentIdentityClientID: testAgentClientID,
+				})
+			})
+			if revokeErr != nil {
+				return nil, revokeErr
+			}
+		}
+		return baseTransport.RoundTrip(r)
+	})}
+	server := &Server{
+		cfg:     Config{BlueprintClientID: testBlueprintID, AuthorizationClientID: testAuthorizationID},
+		store:   store,
+		authSDK: &authSDKClient{baseURL: authSDK.URL, client: authSDK.Client()},
+	}
+	req := httptest.NewRequest(http.MethodGet, "/v1/azure/subscriptions", nil)
+	req.Header.Set("X-Forwarded-Client-Cert", "URI=spiffe://cluster.local/ns/cetirun-owner/sa/openclaw-agent-a-cetirun")
+	response := httptest.NewRecorder()
+	server.withAzure(response, req, func(_ context.Context, authorization string) (azureResult, error) {
+		if authorization != "Bearer delegated-token" {
+			t.Fatalf("unexpected delegated authorization")
+		}
+		return azureResult{Items: []map[string]any{{"name": "must-not-be-returned"}}}, nil
+	})
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d: %s", response.Code, http.StatusUnauthorized, response.Body.String())
+	}
+	if strings.Contains(response.Body.String(), "must-not-be-returned") {
+		t.Fatal("Azure response escaped after revocation won the final write")
 	}
 }
 
