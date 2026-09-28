@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import { render, screen } from "@testing-library/react";
+import { render, screen, fireEvent } from "@testing-library/react";
 import { describe, it, expect, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -64,6 +64,15 @@ describe("OverviewSection", () => {
   it("shows gateway token row", () => {
     renderInRouter(<OverviewSection instance={baseInstance} />);
     expect(screen.getByText(/Gateway Token/i)).toBeInTheDocument();
+  });
+
+  it("does not offer native integration edits to Custom", () => {
+    renderInRouter(<OverviewSection instance={{ ...baseInstance, agentType: "custom", gatewayToken: undefined }} />);
+    fireEvent.click(screen.getByRole("button", { name: "Edit Agent" }));
+    expect(screen.queryByLabelText("Gateway Token")).toBeNull();
+    expect(screen.queryByLabelText("Tailscale Auth Key")).toBeNull();
+    expect(screen.queryByLabelText("Enable Microsoft Teams Integration")).toBeNull();
+    expect(screen.queryByText(/will restart the gateway/)).toBeNull();
   });
 
   it("shows the Hermes API server key instead of the OpenClaw token", () => {

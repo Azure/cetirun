@@ -19,7 +19,7 @@ spec:
   user:
     alias: string                   # Required. Pattern: ^[a-z][a-z0-9-]{0,62}$
     displayName: string             # Required. Human-readable name
-    team: string                    # Required. Team identifier (e.g., "aks-core")
+    team: string                    # Required. Team identifier (e.g., "example-team")
     email: string                   # Optional. Notification email
   gatewayTokenSecretRef: string     # Required for built-ins. Native authentication Secret.
   tailscale:                        # Optional.

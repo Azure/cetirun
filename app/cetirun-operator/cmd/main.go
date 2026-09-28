@@ -68,7 +68,7 @@ func main() {
 			"Enabling this will ensure there is only one active controller manager.")
 	flag.StringVar(&chartRepoURL, "chart-repo-url", "oci://cetirun.azurecr.io/helm/cetirun",
 		"OCI registry URL for the CetiRun Helm chart.")
-	flag.StringVar(&chartVersion, "chart-version", "0.1.0",
+	flag.StringVar(&chartVersion, "chart-version", "0.1.1",
 		"Version of the CetiRun Helm chart to deploy.")
 	flag.StringVar(&domainSuffix, "domain-suffix", "", "Base domain suffix for instance access URLs.")
 	flag.StringVar(&istioGateway, "istio-gateway", controller.DefaultIstioGateway,
@@ -178,7 +178,12 @@ func main() {
 
 	helmClient := helmclient.NewClient(chartRef)
 
-	if err = (&controller.AgentReconciler{
+	customConfig, err := controller.ParseCustomRuntimeConfig(os.Getenv("CETIRUN_CUSTOM_RUNTIME"))
+	if err != nil {
+		setupLog.Error(err, "invalid Custom runtime configuration")
+		os.Exit(1)
+	}
+	agentReconciler := &controller.AgentReconciler{
 		Client:               mgr.GetClient(),
 		Scheme:               mgr.GetScheme(),
 		EventRecorder:        mgr.GetEventRecorderFor("cetirun-operator"),
@@ -199,7 +204,11 @@ func main() {
 		AzureTenantID:        azureTenantID,
 		AzureServiceTreeID:   azureServiceTreeID,
 		AzureOIDCIssuerURL:   azureOIDCIssuerURL,
-	}).SetupWithManager(mgr); err != nil {
+	}
+	if customConfig.Enabled {
+		agentReconciler.CustomBindings = controller.NewKubernetesCustomBindings(agentReconciler, customConfig)
+	}
+	if err = agentReconciler.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Agent")
 		os.Exit(1)
 	}

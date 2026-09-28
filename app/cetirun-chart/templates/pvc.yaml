@@ -1,3 +1,4 @@
+{{- if ne (include "cetirun.agent.type" .) "custom" }}
 {{/*
   PVC template for OpenClaw.
   Note: When using StatefulSet with volumeClaimTemplates (the default), this PVC is not created.
@@ -29,4 +30,5 @@ spec:
   resources:
     requests:
       storage: {{ .Values.persistence.size }}
+{{- end }}
 {{- end }}

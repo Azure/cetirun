@@ -11,5 +11,6 @@ type HelmInstaller interface {
 	Prepare(namespace string, values map[string]any, chartVersion string) (*helm.PreparedRelease, error)
 	Refresh(prepared *helm.PreparedRelease, values map[string]any) (*helm.PreparedRelease, error)
 	InstallOrUpgrade(namespace, releaseName string, prepared *helm.PreparedRelease) error
+	CustomApplied(namespace, releaseName string, prepared *helm.PreparedRelease) (bool, error)
 	Uninstall(namespace, releaseName string) error
 }

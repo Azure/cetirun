@@ -30,23 +30,9 @@ rules:
     resources: ["namespaces"]
     verbs: ["get", "list", "watch", "create", "update", "delete"]
 
-  # RBAC delegation (principle of least privilege):
-  # The operator does NOT have cluster-wide access to Secrets, ConfigMaps, Services,
-  # StatefulSets, PVCs, or ServiceAccounts. Instead, during each reconcile it
-  # dynamically creates a namespaced Role + RoleBinding in cetirun-<alias>, granting
-  # itself those permissions only within that one namespace (see ensureNamespacedRBAC
-  # in agent_controller.go). This limits blast radius if the operator SA
-  # is compromised — it cannot read secrets from unrelated namespaces.
-  #
-  # "list" and "watch" are required here so that controller-runtime's informer cache
-  # can start up (it lists and watches all resource types it manages at startup).
-  #
-  # NOTE: Kubernetes privilege-escalation prevention requires that a principal can only
-  # grant permissions it already holds. The operator therefore needs these permissions
-  # in its ClusterRole even though it only *uses* them in the per-instance namespaces.
-  # The security boundary is enforced by the namespaced Role — the operator cannot act
-  # on these resources in any namespace that does NOT have an cetirun-operator-ns-role
-  # RoleBinding, which it only creates for namespaces it manages.
+  # The operator also creates per-instance Roles. This ClusterRole grants its
+  # own permissions cluster-wide; those Roles do not narrow this grant. Runtime
+  # ownership and namespace checks still apply before acting on bound resources.
   - apiGroups: ["rbac.authorization.k8s.io"]
     resources: ["roles", "rolebindings"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
@@ -66,6 +52,15 @@ rules:
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: ["apps"]
     resources: ["statefulsets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: ["policy"]
+    resources: ["poddisruptionbudgets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 
   # PersistentVolumes (cluster-scoped, created by the openclaw chart for shared-skills)

@@ -42,9 +42,16 @@ type fakeHelmClient struct {
 	lastChartVersion string
 	lastValues       map[string]interface{}
 	useHarness       bool
+	appliedKey       string
+	prepareCalls     int
+	prepareErr       error
 }
 
 func (f *fakeHelmClient) Prepare(namespace string, values map[string]any, chartVersion string) (*helm.PreparedRelease, error) {
+	f.prepareCalls++
+	if f.prepareErr != nil {
+		return nil, f.prepareErr
+	}
 	if f.useHarness {
 		chrt, err := loader.Load("../../../cetirun-chart")
 		if err != nil {
@@ -149,7 +156,14 @@ func (f *fakeHelmClient) InstallOrUpgrade(namespace, releaseName string, prepare
 	f.installCalled = true
 	f.lastChartVersion = prepared.ChartVersion
 	f.lastValues = prepared.Values
+	if f.installErr == nil {
+		f.appliedKey = prepared.CacheKey()
+	}
 	return f.installErr
+}
+
+func (f *fakeHelmClient) CustomApplied(namespace, releaseName string, prepared *helm.PreparedRelease) (bool, error) {
+	return f.appliedKey != "" && f.appliedKey == prepared.CacheKey(), nil
 }
 
 func (f *fakeHelmClient) Uninstall(namespace, releaseName string) error {
@@ -1017,7 +1031,7 @@ func TestTailscaleSpec_TypeConstruction(t *testing.T) {
 			User: cetirunv1alpha1.UserSpec{
 				Alias:       "alice",
 				DisplayName: "Alice Smith",
-				Team:        "aks-core",
+				Team:        "example-team",
 			},
 			GatewayTokenSecretRef: "gateway-token",
 			Tailscale: &cetirunv1alpha1.TailscaleSpec{
@@ -1039,7 +1053,7 @@ func TestTailscaleSpec_TypeConstruction(t *testing.T) {
 			User: cetirunv1alpha1.UserSpec{
 				Alias:       "bob",
 				DisplayName: "Bob",
-				Team:        "aks-core",
+				Team:        "example-team",
 			},
 			GatewayTokenSecretRef: "gateway-token",
 		},

@@ -1,3 +1,16 @@
+{{- if eq (include "cetirun.agent.type" .) "custom" }}
+Custom runtime resources are rendered for {{ .Release.Name }}.
+{{- if .Values.runtime.http }}
+The Agent HTTP endpoint is internal only. No Chat UI or native Agent UI is provided.
+{{- else }}
+This Agent has no HTTP endpoint or HTTP readiness probe.
+{{- end }}
+{{- if .Values.desktop.enabled }}
+The platform desktop remains available through its authenticated gateway route.
+{{- end }}
+ttyd is temporarily disabled for Custom Agents pending a terminal integration review.
+Model access, context use, image identity and storage qualification are separate checks.
+{{- else }}
 Thank you for installing {{ .Chart.Name }}!
 
 Your release is named {{ .Release.Name }}.
@@ -42,4 +55,5 @@ Web Terminal (ttyd):
   kubectl --namespace {{ .Release.Namespace }} port-forward $POD_NAME {{ .Values.ttyd.port }}:{{ .Values.ttyd.port }}
 
   Then open http://localhost:{{ .Values.ttyd.port }} in your browser.
+{{- end }}
 {{- end }}

@@ -124,7 +124,7 @@ func Build(agent ResolvedAgent, bindings Bindings, descriptor Descriptor) (Contr
 	if err != nil {
 		return Contribution{}, err
 	}
-	ports := []PortBinding{{Name: descriptor.PortName, Number: agent.Port}}
+	ports := []PortBinding{{Name: descriptor.PortName, Number: *agent.Port}}
 	if descriptor.DashboardPort != 0 {
 		ports = append(ports, PortBinding{Name: "dashboard", Number: descriptor.DashboardPort})
 	}
@@ -134,7 +134,7 @@ func Build(agent ResolvedAgent, bindings Bindings, descriptor Descriptor) (Contr
 		ProfileID:   bindings.ProfileID,
 		ConfigFiles: map[string]string{descriptor.ConfigFile: config},
 		Ports:       ports,
-		HTTP: HTTPBinding{
+		HTTP: &HTTPBinding{
 			PortName:    descriptor.PortName,
 			HealthPath:  descriptor.HealthPath,
 			StartupPath: descriptor.StartupPath,

@@ -12,7 +12,7 @@ import {
 } from "@fluentui/react-icons";
 import { useInstanceByNameQuery } from "../hooks/useInstance";
 import { OverviewSection } from "../components/OverviewSection";
-import { agentUIUrl, instanceGatewayUrl, phaseBadgeColor } from "../utils/instance";
+import { agentUIUrl, instanceGatewayUrl, phaseBadgeColor, terminalUrl } from "../utils/instance";
 
 type NavItem = {
   section: string;
@@ -88,7 +88,7 @@ export function WorkspacePage() {
             const externalUrl = item.external === "agent"
               ? agentUrl
               : item.external === "terminal"
-                ? gatewayUrl && `${gatewayUrl}/term`
+                ? instance && terminalUrl(instance)
                 : item.external === "desktop"
                   ? gatewayUrl && `${gatewayUrl}/desktop`
                   : undefined;

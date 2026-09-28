@@ -1,4 +1,7 @@
-{{- if or .Release.IsInstall .Release.IsUpgrade -}}
+{{- if eq (include "cetirun.agent.type" .) "custom" -}}
+{{- include "cetirun.custom.validate" . -}}
+{{- include "cetirun.validateAutoscaling" . -}}
+{{- else if or .Release.IsInstall .Release.IsUpgrade -}}
 {{- include "cetirun.validateSecrets" . -}}
 {{- include "cetirun.validateAutoscaling" . -}}
 {{- include "cetirun.validatePorts" . -}}

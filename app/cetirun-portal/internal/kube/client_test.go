@@ -39,8 +39,8 @@ func sampleInstance() *cetirunv1alpha1.Agent {
 			User: cetirunv1alpha1.UserSpec{
 				Alias:       "alice",
 				DisplayName: "Alice Smith",
-				Team:        "aks-core",
-				Email:       "alice@microsoft.com",
+				Team:        "example-team",
+				Email:       "alice@example.com",
 			},
 		},
 	}
@@ -79,7 +79,7 @@ func TestCreateInstance_Success(t *testing.T) {
 	fc := newFakeClient()
 	c := NewClient(fc)
 
-	instance, err := c.CreateInstance(context.Background(), "bob", "Bob Jones", "aks-networking", "bob@microsoft.com", "", "", "", "", "", false)
+	instance, err := c.CreateInstance(context.Background(), "bob", "Bob Jones", "other-team", "bob@example.com", "", "", "", "", "", false)
 	if err != nil {
 		t.Fatalf("CreateInstance failed: %v", err)
 	}
@@ -92,8 +92,8 @@ func TestCreateInstance_Success(t *testing.T) {
 	if instance.Spec.User.DisplayName != "Bob Jones" {
 		t.Errorf("DisplayName = %q, want %q", instance.Spec.User.DisplayName, "Bob Jones")
 	}
-	if instance.Spec.User.Team != "aks-networking" {
-		t.Errorf("Team = %q, want %q", instance.Spec.User.Team, "aks-networking")
+	if instance.Spec.User.Team != "other-team" {
+		t.Errorf("Team = %q, want %q", instance.Spec.User.Team, "other-team")
 	}
 	if instance.Spec.GatewayTokenSecretRef != "gateway-token" {
 		t.Errorf("GatewayTokenSecretRef = %q, want %q", instance.Spec.GatewayTokenSecretRef, "gateway-token")
@@ -107,8 +107,8 @@ func TestCreateInstance_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetInstance after create failed: %v", err)
 	}
-	if got.Spec.User.Email != "bob@microsoft.com" {
-		t.Errorf("Email = %q, want %q", got.Spec.User.Email, "bob@microsoft.com")
+	if got.Spec.User.Email != "bob@example.com" {
+		t.Errorf("Email = %q, want %q", got.Spec.User.Email, "bob@example.com")
 	}
 }
 
@@ -116,7 +116,7 @@ func TestCreateAndClearInstanceModel(t *testing.T) {
 	fc := newFakeClient()
 	c := NewClient(fc)
 
-	instance, err := c.CreateInstance(context.Background(), "bob", "Bob Jones", "aks-networking", "bob@microsoft.com", "", "", "", "", "gpt-5.4", false)
+	instance, err := c.CreateInstance(context.Background(), "bob", "Bob Jones", "other-team", "bob@example.com", "", "", "", "", "gpt-5.4", false)
 	if err != nil {
 		t.Fatalf("CreateInstance failed: %v", err)
 	}
@@ -138,7 +138,7 @@ func TestCreateInstance_AlreadyExists(t *testing.T) {
 	fc := newFakeClient(sampleInstance())
 	c := NewClient(fc)
 
-	_, err := c.CreateInstance(context.Background(), "alice", "Alice Smith", "aks-core", "alice@microsoft.com", "", "", "", "", "", false)
+	_, err := c.CreateInstance(context.Background(), "alice", "Alice Smith", "example-team", "alice@example.com", "", "", "", "", "", false)
 	if err == nil {
 		t.Fatal("expected error for duplicate instance")
 	}
@@ -151,7 +151,7 @@ func TestCreateInstance_WithGatewayToken(t *testing.T) {
 	fc := newFakeClient()
 	c := NewClient(fc)
 
-	instance, err := c.CreateInstance(context.Background(), "bob", "Bob Jones", "aks-networking", "bob@microsoft.com", "", "", "my-token", "", "", false)
+	instance, err := c.CreateInstance(context.Background(), "bob", "Bob Jones", "other-team", "bob@example.com", "", "", "my-token", "", "", false)
 	if err != nil {
 		t.Fatalf("CreateInstance failed: %v", err)
 	}
@@ -174,7 +174,7 @@ func TestCreateInstance_WithTailscaleAuthKey(t *testing.T) {
 	fc := newFakeClient()
 	c := NewClient(fc)
 
-	instance, err := c.CreateInstance(context.Background(), "bob", "Bob Jones", "aks-networking", "bob@microsoft.com", "", "", "", "tskey-auth-xxx", "", false)
+	instance, err := c.CreateInstance(context.Background(), "bob", "Bob Jones", "other-team", "bob@example.com", "", "", "", "tskey-auth-xxx", "", false)
 	if err != nil {
 		t.Fatalf("CreateInstance failed: %v", err)
 	}
@@ -200,7 +200,7 @@ func TestCreateInstance_WithBothSecrets(t *testing.T) {
 	fc := newFakeClient()
 	c := NewClient(fc)
 
-	instance, err := c.CreateInstance(context.Background(), "bob", "Bob Jones", "aks-networking", "bob@microsoft.com", "", "", "my-token", "tskey-auth-xxx", "", false)
+	instance, err := c.CreateInstance(context.Background(), "bob", "Bob Jones", "other-team", "bob@example.com", "", "", "my-token", "tskey-auth-xxx", "", false)
 	if err != nil {
 		t.Fatalf("CreateInstance failed: %v", err)
 	}
@@ -306,7 +306,7 @@ func TestUpdateInstance_DisplayNameAndTeam(t *testing.T) {
 	c := NewClient(fc)
 
 	displayName := "Alice Updated"
-	team := "aks-networking"
+	team := "other-team"
 	instance, err := c.UpdateInstance(context.Background(), "alice", UpdateInstanceOpts{
 		DisplayName: &displayName,
 		Team:        &team,
@@ -317,8 +317,8 @@ func TestUpdateInstance_DisplayNameAndTeam(t *testing.T) {
 	if instance.Spec.User.DisplayName != "Alice Updated" {
 		t.Errorf("DisplayName = %q, want %q", instance.Spec.User.DisplayName, "Alice Updated")
 	}
-	if instance.Spec.User.Team != "aks-networking" {
-		t.Errorf("Team = %q, want %q", instance.Spec.User.Team, "aks-networking")
+	if instance.Spec.User.Team != "other-team" {
+		t.Errorf("Team = %q, want %q", instance.Spec.User.Team, "other-team")
 	}
 
 	// Verify persisted.

@@ -101,7 +101,7 @@ func newTestInstance(alias, displayName, team, gatewaySecret string) *cetirunv1a
 // TestBuildHelmValues_CopilotProvider verifies the configured deployment
 // default is used when an instance does not select a model.
 func TestBuildHelmValues_CopilotProvider(t *testing.T) {
-	instance := newTestInstance("alice", "Alice Smith", "aks-core", "gateway-token")
+	instance := newTestInstance("alice", "Alice Smith", "example-team", "gateway-token")
 	values, err := buildHelmValues(instance, nil, "example.com", "", nil, "", "gpt-5.4")
 	if err != nil {
 		t.Fatalf("buildHelmValues error: %v", err)
@@ -138,7 +138,7 @@ func TestBuildHelmValues_NonCopilotProviderPreservesHelmModel(t *testing.T) {
 }
 
 func TestBuildHelmValues_AgentType(t *testing.T) {
-	instance := newTestInstance("alice", "Alice Smith", "aks-core", "gateway-token")
+	instance := newTestInstance("alice", "Alice Smith", "example-team", "gateway-token")
 	instance.Spec.Agent.Type = cetirunv1alpha1.AgentTypeHermes
 	values, err := buildHelmValues(instance, nil, "example.com", "", nil, "")
 	if err != nil {
@@ -150,7 +150,7 @@ func TestBuildHelmValues_AgentType(t *testing.T) {
 }
 
 func TestBuildHelmValues_OpenClawControlUIBasePath(t *testing.T) {
-	instance := newTestInstance("alice", "Alice Smith", "aks-core", "gateway-token")
+	instance := newTestInstance("alice", "Alice Smith", "example-team", "gateway-token")
 	instance.Name = "alice-work"
 	instance.Spec.Helm.Values["openclaw"] = runtime.RawExtension{
 		Raw: []byte(`{"config":{"gateway":{"controlUi":{"basePath":"/user-value"}}}}`),
@@ -170,7 +170,7 @@ func TestBuildHelmValues_OpenClawControlUIBasePath(t *testing.T) {
 }
 
 func TestBuildHelmValues_HermesDoesNotSetOpenClawControlUIBasePath(t *testing.T) {
-	instance := newTestInstance("alice", "Alice Smith", "aks-core", "gateway-token")
+	instance := newTestInstance("alice", "Alice Smith", "example-team", "gateway-token")
 	instance.Spec.Agent.Type = cetirunv1alpha1.AgentTypeHermes
 
 	values, err := buildHelmValues(instance, nil, "example.com", "", nil, "")
@@ -185,7 +185,7 @@ func TestBuildHelmValues_HermesDoesNotSetOpenClawControlUIBasePath(t *testing.T)
 // TestBuildHelmValues_NoApiKeyOrBase verifies that apiKey and apiBase are not set
 // (GitHub Copilot uses OAuth device flow, not API keys).
 func TestBuildHelmValues_NoApiKeyOrBase(t *testing.T) {
-	instance := newTestInstance("alice", "Alice Smith", "aks-core", "gateway-token")
+	instance := newTestInstance("alice", "Alice Smith", "example-team", "gateway-token")
 	values, err := buildHelmValues(instance, nil, "example.com", "", nil, "")
 	if err != nil {
 		t.Fatalf("buildHelmValues error: %v", err)
@@ -205,7 +205,7 @@ func TestBuildHelmValues_NoApiKeyOrBase(t *testing.T) {
 // TestBuildHelmValues_NoMemorySearchModel verifies that adding the Control UI
 // base path does not set a memory-search model (the chart owns that setting).
 func TestBuildHelmValues_NoMemorySearchModel(t *testing.T) {
-	instance := newTestInstance("alice", "Alice Smith", "aks-core", "gateway-token")
+	instance := newTestInstance("alice", "Alice Smith", "example-team", "gateway-token")
 	values, err := buildHelmValues(instance, nil, "example.com", "", nil, "")
 	if err != nil {
 		t.Fatalf("buildHelmValues error: %v", err)
@@ -268,7 +268,7 @@ func TestIsConditionTrue(t *testing.T) {
 // TestBuildHelmValues_NoTailscaleInHelmValues verifies that buildHelmValues never injects
 // tailscaleAuthKey into Helm values.
 func TestBuildHelmValues_NoTailscaleInHelmValues(t *testing.T) {
-	instance := newTestInstance("alice", "Alice Smith", "aks-core", "gateway-token")
+	instance := newTestInstance("alice", "Alice Smith", "example-team", "gateway-token")
 	instance.Spec.Tailscale = &cetirunv1alpha1.TailscaleSpec{
 		AuthKeySecretRef: "tailscale-secret",
 	}
@@ -290,7 +290,7 @@ func TestBuildHelmValues_NoTailscaleInHelmValues(t *testing.T) {
 // TestBuildHelmValues_UserIdentityPropagated verifies that spec.user fields are
 // passed through as Helm user.* values for USER.md templating in the ConfigMap.
 func TestBuildHelmValues_UserIdentityPropagated(t *testing.T) {
-	instance := newTestInstance("peni", "Peni Kangaloo", "aks-networking", "gateway-token")
+	instance := newTestInstance("example-user", "Example User", "other-team", "gateway-token")
 	values, err := buildHelmValues(instance, nil, "example.com", "", nil, "")
 	if err != nil {
 		t.Fatalf("buildHelmValues returned error: %v", err)
@@ -300,14 +300,14 @@ func TestBuildHelmValues_UserIdentityPropagated(t *testing.T) {
 	if !ok {
 		t.Fatal("values[\"user\"] missing or wrong type")
 	}
-	if got := user["alias"]; got != "peni" {
-		t.Errorf("user.alias = %q, want %q", got, "peni")
+	if got := user["alias"]; got != "example-user" {
+		t.Errorf("user.alias = %q, want %q", got, "example-user")
 	}
-	if got := user["displayName"]; got != "Peni Kangaloo" {
-		t.Errorf("user.displayName = %q, want %q", got, "Peni Kangaloo")
+	if got := user["displayName"]; got != "Example User" {
+		t.Errorf("user.displayName = %q, want %q", got, "Example User")
 	}
-	if got := user["team"]; got != "aks-networking" {
-		t.Errorf("user.team = %q, want %q", got, "aks-networking")
+	if got := user["team"]; got != "other-team" {
+		t.Errorf("user.team = %q, want %q", got, "other-team")
 	}
 	if got := user["baseDomain"]; got != "example.com" {
 		t.Errorf("user.baseDomain = %q, want %q", got, "example.com")
@@ -317,7 +317,7 @@ func TestBuildHelmValues_UserIdentityPropagated(t *testing.T) {
 // TestBuildHelmValues_ProviderDefaults verifies that secrets.provider and
 // secrets.model are set to configured GitHub Copilot defaults.
 func TestBuildHelmValues_ProviderDefaults(t *testing.T) {
-	instance := newTestInstance("alice", "Alice Smith", "aks-core", "gateway-token")
+	instance := newTestInstance("alice", "Alice Smith", "example-team", "gateway-token")
 	values, err := buildHelmValues(instance, nil, "example.com", "", nil, "", "gpt-5.4")
 	if err != nil {
 		t.Fatalf("buildHelmValues returned error: %v", err)
@@ -338,7 +338,7 @@ func TestBuildHelmValues_ProviderDefaults(t *testing.T) {
 // TestBuildHelmValues_NetworkPolicyIstioNamespaces verifies that AKS-specific
 // Istio namespace values are set for the NetworkPolicy.
 func TestBuildHelmValues_NetworkPolicyIstioNamespaces(t *testing.T) {
-	instance := newTestInstance("alice", "Alice Smith", "aks-core", "gateway-token")
+	instance := newTestInstance("alice", "Alice Smith", "example-team", "gateway-token")
 	values, err := buildHelmValues(instance, nil, "example.com", "", nil, "")
 	if err != nil {
 		t.Fatalf("buildHelmValues returned error: %v", err)
@@ -359,7 +359,7 @@ func TestBuildHelmValues_NetworkPolicyIstioNamespaces(t *testing.T) {
 // TestBuildHelmValues_TailscaleServeEnabled verifies that when spec.Tailscale is set,
 // tailscale.serve=true is injected into the Helm values.
 func TestBuildHelmValues_TailscaleServeEnabled(t *testing.T) {
-	instance := newTestInstance("alice", "Alice Smith", "aks-core", "gateway-token")
+	instance := newTestInstance("alice", "Alice Smith", "example-team", "gateway-token")
 	instance.Spec.Tailscale = &cetirunv1alpha1.TailscaleSpec{
 		AuthKeySecretRef: "tailscale-secret",
 	}
@@ -381,7 +381,7 @@ func TestBuildHelmValues_TailscaleServeEnabled(t *testing.T) {
 // TestBuildHelmValues_NoTailscaleWhenNotConfigured verifies that when spec.Tailscale is nil,
 // no tailscale key appears in the Helm values.
 func TestBuildHelmValues_NoTailscaleWhenNotConfigured(t *testing.T) {
-	instance := newTestInstance("alice", "Alice Smith", "aks-core", "gateway-token")
+	instance := newTestInstance("alice", "Alice Smith", "example-team", "gateway-token")
 	// spec.Tailscale is nil by default from newTestInstance
 
 	values, err := buildHelmValues(instance, nil, "example.com", "", nil, "")
@@ -398,7 +398,7 @@ func TestBuildHelmValues_NoTailscaleWhenNotConfigured(t *testing.T) {
 // helm.values can deep-merge with the auto-injected tailscale.serve=true, e.g. to add
 // additional tailscale-related Helm values alongside the operator default.
 func TestBuildHelmValues_TailscaleServeOverriddenByHelmValues(t *testing.T) {
-	instance := newTestInstance("alice", "Alice Smith", "aks-core", "gateway-token")
+	instance := newTestInstance("alice", "Alice Smith", "example-team", "gateway-token")
 	instance.Spec.Tailscale = &cetirunv1alpha1.TailscaleSpec{
 		AuthKeySecretRef: "tailscale-secret",
 	}
@@ -453,7 +453,7 @@ func assertWebhookDenyRoute(t *testing.T, r *istioapiv1beta1.HTTPRoute, wantPath
 // /<instanceName>/cetirun-auth/ → in-pod auth helper (port 18790, rewrite to /),
 // /ui/<instanceName>/ → OpenClaw Gateway (port 18789, URI preserved for basePath).
 func TestBuildVirtualService_Routes(t *testing.T) {
-	instance := newTestInstance("alice", "Alice Smith", "aks-core", "gateway-token")
+	instance := newTestInstance("alice", "Alice Smith", "example-team", "gateway-token")
 	instance.Name = "alice"
 	domainSuffix := "example.com"
 
@@ -557,7 +557,7 @@ func TestBuildVirtualService_Routes(t *testing.T) {
 }
 
 func TestBuildVirtualService_UsesConfiguredGateway(t *testing.T) {
-	instance := newTestInstance("alice", "Alice Smith", "aks-core", "gateway-token")
+	instance := newTestInstance("alice", "Alice Smith", "example-team", "gateway-token")
 	configuredGateway := "custom-namespace/custom-gateway"
 
 	vs := buildVirtualService(instance, "example.com", configuredGateway)
@@ -567,7 +567,7 @@ func TestBuildVirtualService_UsesConfiguredGateway(t *testing.T) {
 }
 
 func TestBuildVirtualService_HermesRoutes(t *testing.T) {
-	instance := newTestInstance("alice", "Alice Smith", "aks-core", "gateway-token")
+	instance := newTestInstance("alice", "Alice Smith", "example-team", "gateway-token")
 	instance.Name = "alice"
 	instance.Spec.Agent.Type = cetirunv1alpha1.AgentTypeHermes
 
@@ -672,7 +672,7 @@ func TestSecretContentHash(t *testing.T) {
 }
 
 func TestBuildHelmValues_SkillsStorageAccountOverride(t *testing.T) {
-	instance := newTestInstance("alice", "Alice Smith", "aks-core", "gateway-token")
+	instance := newTestInstance("alice", "Alice Smith", "example-team", "gateway-token")
 
 	values, err := buildHelmValues(instance, nil, "example.com", "cetirunskills", nil, "")
 	if err != nil {
@@ -690,7 +690,7 @@ func TestBuildHelmValues_SkillsStorageAccountOverride(t *testing.T) {
 }
 
 func TestBuildHelmValues_NoSkillsStorageAccountWhenEmpty(t *testing.T) {
-	instance := newTestInstance("alice", "Alice Smith", "aks-core", "gateway-token")
+	instance := newTestInstance("alice", "Alice Smith", "example-team", "gateway-token")
 
 	values, err := buildHelmValues(instance, nil, "example.com", "", nil, "")
 	if err != nil {
@@ -704,7 +704,7 @@ func TestBuildHelmValues_NoSkillsStorageAccountWhenEmpty(t *testing.T) {
 }
 
 func TestBuildHelmValues_InstanceOverridesSkillsStorageAccount(t *testing.T) {
-	instance := newTestInstance("alice", "Alice Smith", "aks-core", "gateway-token")
+	instance := newTestInstance("alice", "Alice Smith", "example-team", "gateway-token")
 	instance.Spec.Helm.Values = map[string]runtime.RawExtension{
 		"skills": {Raw: []byte(`{"storageAccount":"custom-account"}`)},
 	}
@@ -748,7 +748,7 @@ func TestOperatorConfigHash_IncludesSkillsStorageAccount(t *testing.T) {
 // TestBuildHelmValues_CetiRunHelmValues verifies that operator-level helm values
 // are merged between hardcoded defaults and per-instance overrides.
 func TestBuildHelmValues_CetiRunHelmValues(t *testing.T) {
-	instance := newTestInstance("alice", "Alice Smith", "aks-core", "gateway-token")
+	instance := newTestInstance("alice", "Alice Smith", "example-team", "gateway-token")
 
 	operatorValues := map[string]interface{}{
 		"skills": map[string]interface{}{
@@ -781,7 +781,7 @@ func TestBuildHelmValues_CetiRunHelmValues(t *testing.T) {
 // TestBuildHelmValues_CetiRunHelmValuesOverriddenByInstance verifies that
 // per-instance spec.helm.values takes precedence over operator-level values.
 func TestBuildHelmValues_CetiRunHelmValuesOverriddenByInstance(t *testing.T) {
-	instance := newTestInstance("alice", "Alice Smith", "aks-core", "gateway-token")
+	instance := newTestInstance("alice", "Alice Smith", "example-team", "gateway-token")
 	instance.Spec.Helm.Values = map[string]runtime.RawExtension{
 		"skills": {Raw: []byte(`{"storageAccount":"custom-account","shared":false}`)},
 	}
@@ -819,7 +819,7 @@ func TestBuildHelmValues_CetiRunHelmValuesOverriddenByInstance(t *testing.T) {
 // TestBuildHelmValues_SkillsStorageAccountOverridesCetiRunHelmValues verifies that
 // the legacy SKILLS_STORAGE_ACCOUNT takes precedence over cetirunHelmValues.skills.storageAccount.
 func TestBuildHelmValues_SkillsStorageAccountOverridesCetiRunHelmValues(t *testing.T) {
-	instance := newTestInstance("alice", "Alice Smith", "aks-core", "gateway-token")
+	instance := newTestInstance("alice", "Alice Smith", "example-team", "gateway-token")
 
 	operatorValues := map[string]interface{}{
 		"skills": map[string]interface{}{
@@ -869,7 +869,7 @@ func TestOperatorConfigHash_IncludesCetiRunHelmValues(t *testing.T) {
 // TestBuildHelmValues_ImageRepositoryFromChartRegistry verifies that when chartRegistry
 // is set, agent image repositories are overridden to pull from the correct ACR.
 func TestBuildHelmValues_ImageRepositoryFromChartRegistry(t *testing.T) {
-	instance := newTestInstance("alice", "Alice Smith", "aks-core", "gateway-token")
+	instance := newTestInstance("alice", "Alice Smith", "example-team", "gateway-token")
 	values, err := buildHelmValues(instance, nil, "example.com", "", nil, "registry.example.com")
 	if err != nil {
 		t.Fatalf("buildHelmValues error: %v", err)
@@ -901,7 +901,7 @@ func TestBuildHelmValues_ImageRepositoryFromChartRegistry(t *testing.T) {
 // TestBuildHelmValues_ImageRepositoryNotSetWhenNoChartRegistry verifies that when
 // chartRegistry is empty, image.repository is not overridden (uses chart default).
 func TestBuildHelmValues_ImageRepositoryNotSetWhenNoChartRegistry(t *testing.T) {
-	instance := newTestInstance("alice", "Alice Smith", "aks-core", "gateway-token")
+	instance := newTestInstance("alice", "Alice Smith", "example-team", "gateway-token")
 	values, err := buildHelmValues(instance, nil, "example.com", "", nil, "")
 	if err != nil {
 		t.Fatalf("buildHelmValues error: %v", err)
@@ -979,7 +979,7 @@ func TestBuildVirtualService_MSTeamsRoute(t *testing.T) {
 }
 
 func TestBuildVirtualService_NoMSTeamsRoute(t *testing.T) {
-	instance := newTestInstance("alice", "Alice Smith", "aks-core", "gateway-token")
+	instance := newTestInstance("alice", "Alice Smith", "example-team", "gateway-token")
 	instance.Name = "alice"
 	vs := buildVirtualService(instance, "example.com", DefaultIstioGateway)
 
@@ -1003,7 +1003,7 @@ func TestBuildVirtualService_WebhookRouteIsPerInstance(t *testing.T) {
 	teams.Name = "bob"
 	teams.Spec.MSTeams = &cetirunv1alpha1.MSTeamsSpec{Enabled: true}
 
-	plain := newTestInstance("alice", "Alice Smith", "aks-core", "gateway-token")
+	plain := newTestInstance("alice", "Alice Smith", "example-team", "gateway-token")
 	plain.Name = "alice"
 
 	teamsVS := buildVirtualService(teams, "example.com", DefaultIstioGateway)
@@ -1104,7 +1104,7 @@ func TestBuildHelmValues_MSTeamsCertificate(t *testing.T) {
 // TestBuildHelmValues_TeamsNoImageTagSuffix verifies that when MSTeams is enabled
 // without a chartRegistry, no image override is injected (no tagSuffix, no repository).
 func TestBuildHelmValues_TeamsNoImageTagSuffix(t *testing.T) {
-	instance := newTestInstance("alice", "Alice Smith", "aks-core", "gateway-token")
+	instance := newTestInstance("alice", "Alice Smith", "example-team", "gateway-token")
 	instance.Spec.MSTeams = &cetirunv1alpha1.MSTeamsSpec{
 		Enabled: true,
 		AppID:   "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
@@ -1125,7 +1125,7 @@ func TestBuildHelmValues_TeamsNoImageTagSuffix(t *testing.T) {
 // TestBuildHelmValues_NoTeamsNoImageTag verifies that when MSTeams is not enabled,
 // no image override is set (chart uses appVersion by default).
 func TestBuildHelmValues_NoTeamsNoImageTag(t *testing.T) {
-	instance := newTestInstance("alice", "Alice Smith", "aks-core", "gateway-token")
+	instance := newTestInstance("alice", "Alice Smith", "example-team", "gateway-token")
 
 	values, err := buildHelmValues(instance, nil, "example.com", "", nil, "")
 	if err != nil {
@@ -1197,7 +1197,7 @@ func TestBuildHelmValues_TeamsStatusAppID(t *testing.T) {
 // TestBuildHelmValues_SuspendedSetsReplicaCountZero verifies that when
 // spec.suspended is true, replicaCount is set to 0.
 func TestBuildHelmValues_SuspendedSetsReplicaCountZero(t *testing.T) {
-	instance := newTestInstance("frank", "Frank Suspended", "aks-core", "gateway-token")
+	instance := newTestInstance("frank", "Frank Suspended", "example-team", "gateway-token")
 	instance.Spec.Suspended = true
 
 	vals, err := buildHelmValues(instance, nil, "example.com", "", nil, "")
@@ -1335,7 +1335,7 @@ func TestInstanceNamespaceByName(t *testing.T) {
 // spec.suspended is false (default), replicaCount is not set by the
 // operator, allowing the chart default (1) to apply.
 func TestBuildHelmValues_NotSuspendedOmitsReplicaCount(t *testing.T) {
-	instance := newTestInstance("grace", "Grace Active", "aks-core", "gateway-token")
+	instance := newTestInstance("grace", "Grace Active", "example-team", "gateway-token")
 	// Suspended is false by default (zero value).
 
 	vals, err := buildHelmValues(instance, nil, "example.com", "", nil, "")

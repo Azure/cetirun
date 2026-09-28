@@ -25,6 +25,7 @@ import (
 	"github.com/Azure/CetiRun/app/cetirun-portal/internal/kube"
 
 	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // validInstanceNameSuffix matches a valid user-supplied instance name suffix:
@@ -286,6 +287,10 @@ func (h *InstanceHandler) UpdateInstanceByName(w http.ResponseWriter, r *http.Re
 
 	instance, err := h.Kube.UpdateInstanceByName(r.Context(), name, opts)
 	if err != nil {
+		if kube.IsUnsupportedCustomUpdate(err) {
+			writeError(w, http.StatusBadRequest, "unsupported_custom_feature", err.Error())
+			return
+		}
 		if kube.IsNotFound(err) {
 			writeError(w, http.StatusNotFound, "instance_not_found", "Instance not found: "+name)
 			return
@@ -699,6 +704,10 @@ func (h *InstanceHandler) UpdateInstance(w http.ResponseWriter, r *http.Request)
 
 	instance, err := h.Kube.UpdateInstance(r.Context(), claims.Alias, opts)
 	if err != nil {
+		if kube.IsUnsupportedCustomUpdate(err) {
+			writeError(w, http.StatusBadRequest, "unsupported_custom_feature", err.Error())
+			return
+		}
 		if kube.IsNotFound(err) {
 			writeError(w, http.StatusNotFound, "instance_not_found",
 				"No agent found for user "+claims.Alias)
@@ -812,7 +821,8 @@ func (h *InstanceHandler) toInstanceResponse(ctx context.Context, instance *ceti
 	}
 
 	// Get gateway token and access URL for Ready or Provisioning instances
-	if instance.Status.Phase == "Ready" || instance.Status.Phase == "Provisioning" {
+	if instance.Spec.Agent.Type != cetirunv1alpha1.AgentTypeCustom &&
+		(instance.Status.Phase == "Ready" || instance.Status.Phase == "Provisioning") {
 		ns := instance.Status.Namespace
 		token, err := h.Kube.GetGatewayToken(ctx, ns, instance.Spec.GatewayTokenSecretRef)
 		if err != nil {
@@ -855,9 +865,20 @@ func (h *InstanceHandler) toInstanceResponse(ctx context.Context, instance *ceti
 				resp.TailscaleAuthKey = tsKey
 			}
 		}
-	} else {
+	} else if instance.Spec.Agent.Type != cetirunv1alpha1.AgentTypeCustom {
 		// For non-Ready/Provisioning states, return original URL (without token)
 		resp.AccessURL = instance.Status.AccessURL
+	}
+	if instance.Spec.Agent.Type == cetirunv1alpha1.AgentTypeCustom &&
+		(instance.Status.Phase == "Ready" || instance.Status.Phase == "Provisioning") {
+		for _, condition := range instance.Status.Conditions {
+			if condition.Type == cetirunv1alpha1.ConditionIngressReady && condition.Status == metav1.ConditionTrue {
+				if domain, err := h.Kube.GetOperatorDomainSuffix(ctx); err == nil {
+					resp.AccessURL = fmt.Sprintf("https://%s/%s/desktop/", domain, instance.Name)
+				}
+				break
+			}
+		}
 	}
 
 	// Teams integration status

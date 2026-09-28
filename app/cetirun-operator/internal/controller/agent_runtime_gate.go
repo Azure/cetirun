@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/agents"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/agents/builtin"
 )
 
@@ -24,6 +25,17 @@ func validateAgentRuntime(agent cetirunv1alpha1.HarnessSpec) error {
 	}
 	if agent.Image != nil && *agent.Image == "" {
 		return fmt.Errorf("spec.agent.image must not be empty")
+	}
+	if agent.Type == cetirunv1alpha1.AgentTypeCustom {
+		request := agents.Request{Type: "custom", Port: agent.Port}
+		if agent.Image != nil {
+			request.Image = *agent.Image
+		}
+		if agent.Username != nil {
+			request.Username = *agent.Username
+		}
+		_, err := agents.ResolveCustom(request)
+		return err
 	}
 	if agent.Username != nil && *agent.Username != cetirunv1alpha1.DefaultAgentUsername {
 		return fmt.Errorf("non-default spec.agent.username requires Agent runtime support that is not implemented")

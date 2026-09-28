@@ -37,7 +37,7 @@ describe("getInstance", () => {
     const instanceData = {
       alias: "alice",
       displayName: "Alice",
-      team: "aks-core",
+      team: "example-team",
       phase: "Ready",
       createdAt: "2024-01-15T10:00:00Z",
     };
@@ -87,7 +87,7 @@ describe("createInstance", () => {
     const createdInstance = {
       alias: "alice",
       displayName: "Alice",
-      team: "aks-core",
+      team: "example-team",
       phase: "Pending",
       createdAt: "2024-01-15T10:00:00Z",
     };
@@ -100,12 +100,12 @@ describe("createInstance", () => {
       }),
     );
 
-    const result = await createInstance({ team: "aks-core" });
+    const result = await createInstance({ team: "example-team" });
 
     expect(result).toEqual(createdInstance);
     expect(fetch).toHaveBeenCalledWith("/api/v1/instance", expect.objectContaining({
       method: "POST",
-      body: JSON.stringify({ team: "aks-core" }),
+      body: JSON.stringify({ team: "example-team" }),
     }));
   });
 
@@ -120,7 +120,7 @@ describe("createInstance", () => {
       }),
     );
 
-    await expect(createInstance({ team: "aks-core" })).rejects.toThrow(
+    await expect(createInstance({ team: "example-team" })).rejects.toThrow(
       "Instance already exists"
     );
   });
@@ -185,7 +185,7 @@ describe("updateInstance", () => {
     const updatedInstance = {
       alias: "alice",
       displayName: "Alice Updated",
-      team: "aks-networking",
+      team: "other-team",
       phase: "Ready",
       createdAt: "2024-01-15T10:00:00Z",
     };
@@ -198,12 +198,12 @@ describe("updateInstance", () => {
       }),
     );
 
-    const result = await updateInstance({ displayName: "Alice Updated", team: "aks-networking" });
+    const result = await updateInstance({ displayName: "Alice Updated", team: "other-team" });
 
     expect(result).toEqual(updatedInstance);
     expect(fetch).toHaveBeenCalledWith("/api/v1/instance", expect.objectContaining({
       method: "PATCH",
-      body: JSON.stringify({ displayName: "Alice Updated", team: "aks-networking" }),
+      body: JSON.stringify({ displayName: "Alice Updated", team: "other-team" }),
     }));
   });
 
@@ -247,7 +247,7 @@ describe("upgradeInstance", () => {
     const upgradedInstance = {
       alias: "alice",
       displayName: "Alice",
-      team: "aks-core",
+      team: "example-team",
       phase: "Ready",
       createdAt: "2024-01-15T10:00:00Z",
       upgradeAvailable: false,

@@ -1,3 +1,4 @@
+{{- if ne (include "cetirun.agent.type" .) "custom" }}
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -16,29 +17,9 @@ spec:
       {{- include "cetirun.selectorLabels" . | nindent 6 }}
   template:
     metadata:
-      annotations:
-        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") $ | sha256sum }}
-        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") $ | sha256sum }}
-        {{- with .Values.podAnnotations }}
-        {{- toYaml . | nindent 8 }}
-        {{- end }}
-      labels:
-        {{- include "cetirun.selectorLabels" . | nindent 8 }}
-        {{- if .Values.azureWorkloadIdentity.enabled }}
-        azure.workload.identity/use: "true"
-        {{- end }}
+      {{- include "cetirun.platform.podMetadata" . | nindent 6 }}
     spec:
-      {{- if .Values.runtimeClassName }}
-      runtimeClassName: {{ .Values.runtimeClassName }}
-      {{- end }}
-      {{- with .Values.imagePullSecrets }}
-      imagePullSecrets:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
-      serviceAccountName: {{ include "cetirun.serviceAccountName" . }}
-      automountServiceAccountToken: {{ or (not (empty .Values.serviceAccount.role)) (not (empty .Values.serviceAccount.name)) .Values.azureWorkloadIdentity.enabled }}
-      securityContext:
-        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- include "cetirun.platform.podSettings" . | nindent 6 }}
       initContainers:
         {{- include "cetirun.agent.initContainers" . | nindent 8 }}
       {{- with .Values.initContainers }}
@@ -208,43 +189,7 @@ spec:
             {{- toYaml . | nindent 8 }}
           {{- end }}
         {{- if .Values.desktop.enabled }}
-        - name: desktop
-          image: "{{ include "cetirun.desktopImage" . }}"
-          imagePullPolicy: {{ .Values.desktop.image.pullPolicy }}
-          securityContext:
-            runAsUser: 1024
-            runAsNonRoot: true
-            readOnlyRootFilesystem: false
-            allowPrivilegeEscalation: false
-            seccompProfile:
-              type: RuntimeDefault
-          ports:
-            - name: novnc
-              containerPort: 6080
-              protocol: TCP
-            - name: chrome-cdp
-              containerPort: 18800
-              protocol: TCP
-          env:
-            - name: DISPLAY_NUM
-              value: "99"
-            - name: SCREEN_RESOLUTION
-              value: {{ .Values.desktop.screenResolution | quote }}
-            - name: VNC_PORT
-              value: "5900"
-            - name: NOVNC_PORT
-              value: "6080"
-            - name: NOVNC_PATH_PREFIX
-              value: {{ .Values.desktop.novncPathPrefix | quote }}
-            - name: DESKTOP_LOGGING
-              value: {{ .Values.desktop.logging | quote }}
-          resources:
-            {{- toYaml .Values.desktop.resources | nindent 12 }}
-          volumeMounts:
-            - name: data
-              mountPath: /home/vibe
-            - name: tmp-desktop
-              mountPath: /tmp
+        {{- include "cetirun.platform.desktop" . | nindent 8 }}
         {{- end }}
         {{- if .Values.logger.enabled }}
         - name: logger
@@ -277,12 +222,7 @@ spec:
               mountPath: /tmp
         {{- end }}
       volumes:
-        - name: tmp
-          emptyDir: {}
-        {{- if .Values.desktop.enabled }}
-        - name: tmp-desktop
-          emptyDir: {}
-        {{- end }}
+        {{- include "cetirun.platform.temporaryVolumes" . | nindent 8 }}
         - name: config
           configMap:
             name: {{ include "cetirun.configMapName" . }}
@@ -316,22 +256,6 @@ spec:
         {{- with .Values.extraVolumes }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
-      {{- with .Values.nodeSelector }}
-      nodeSelector:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
-      {{- with .Values.affinity }}
-      affinity:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
-      {{- with .Values.tolerations }}
-      tolerations:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
-      {{- with .Values.topologySpreadConstraints }}
-      topologySpreadConstraints:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
   {{- if and .Values.persistence.enabled (not .Values.persistence.existingClaim) .Values.persistence.useStatefulSetVolumeClaim }}
   {{- if semverCompare ">=1.25-0" .Capabilities.KubeVersion.Version }}
   persistentVolumeClaimRetentionPolicy:
@@ -362,3 +286,4 @@ spec:
           requests:
             storage: {{ .Values.persistence.size }}
   {{- end }}
+{{- end }}

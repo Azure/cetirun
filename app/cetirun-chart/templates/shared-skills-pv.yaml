@@ -9,11 +9,11 @@ metadata:
     pv.kubernetes.io/provisioned-by: blob.csi.azure.com
 spec:
   capacity:
-    storage: {{ .Values.skills.storageSize }}
+    storage: {{ .Values.skills.storageSize | quote }}
   accessModes:
     - ReadWriteMany
   persistentVolumeReclaimPolicy: Retain
-  storageClassName: {{ .Values.skills.storageClassName }}
+  storageClassName: {{ .Values.skills.storageClassName | quote }}
   {{- with .Values.skills.mountOptions }}
   mountOptions:
     {{- toYaml . | nindent 4 }}
@@ -25,13 +25,13 @@ spec:
     driver: blob.csi.azure.com
     volumeHandle: {{ include "cetirun.sharedSkillsPVName" . }}
     volumeAttributes:
-      resourceGroup: {{ .Values.skills.resourceGroup }}
-      storageAccount: {{ .Values.skills.storageAccount }}
-      containerName: {{ .Values.skills.containerName }}
-      protocol: {{ .Values.skills.protocol | default "nfs" }}
+      resourceGroup: {{ .Values.skills.resourceGroup | quote }}
+      storageAccount: {{ .Values.skills.storageAccount | quote }}
+      containerName: {{ .Values.skills.containerName | quote }}
+      protocol: {{ .Values.skills.protocol | default "nfs" | quote }}
     {{- if ne (.Values.skills.protocol | default "nfs") "nfs" }}
     nodeStageSecretRef:
-      name: {{ required "skills.secretName is required for Blob Fuse mounts" .Values.skills.secretName }}
+      name: {{ required "skills.secretName is required for Blob Fuse mounts" .Values.skills.secretName | quote }}
       namespace: {{ .Release.Namespace }}
     {{- end }}
 {{- end }}

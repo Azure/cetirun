@@ -185,6 +185,20 @@ baselines. Rewritten init assets and `CETIRUN_INIT_IMAGE` are checked separately
 by wiring tests and executable initialization tests. Do not replace baseline
 fixtures with changed output merely to make a regression pass.
 
+Custom runtime tests run through the same Go and Python suites. They cover
+typed platform bindings, both HTTP and headless rendering, final manifest
+validation, the common HOME initializer, and a local mock Gateway:
+
+```bash
+python3 -B examples/custom-agent/qualify.py
+```
+
+This source-level qualification starts only loopback mock servers and uses
+synthetic files and credentials. It does not run Docker or contact a model
+provider. The optional container mode requires a separate, explicit invocation;
+see [the example](examples/custom-agent/README.md). No production Custom binding
+provider is configured by these tests.
+
 ### Documentation
 
 Check relative links, heading anchors, examples, and the commands you changed.

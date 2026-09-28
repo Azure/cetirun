@@ -7,7 +7,7 @@ Expand the name of the chart.
 
 {{- define "cetirun.agent.type" -}}
 {{- $type := .Values.agentType | default "hermes" -}}
-{{- if not (has $type (list "hermes" "openclaw")) -}}
+{{- if not (has $type (list "hermes" "openclaw" "custom")) -}}
 {{- fail (printf "unsupported agentType %q" $type) -}}
 {{- end -}}
 {{- if .Values.runtime -}}
@@ -378,7 +378,9 @@ Dispatcher: service ports
 Dispatcher: network policy ingress ports
 */}}
 {{- define "cetirun.agent.networkPolicyIngressPorts" -}}
-{{- if .Values.runtime -}}
+{{- if eq (include "cetirun.agent.type" .) "custom" -}}
+{{- include "cetirun.agent.custom.networkPolicyIngressPorts" . -}}
+{{- else if .Values.runtime -}}
 {{- range .Values.runtime.ports }}
 - protocol: TCP
   port: {{ .number }}

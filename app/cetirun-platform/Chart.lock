@@ -1,9 +1,9 @@
 dependencies:
 - name: cetirun-operator
   repository: file://../cetirun-operator/chart
-  version: 0.1.0
+  version: 0.1.1
 - name: cetirun-portal
   repository: file://../cetirun-portal/chart
-  version: 0.1.0
-digest: sha256:3e456969e7c061badc5a6b3b66e5003d8cba3eee560fdf129dcb1b5ece710bb0
-generated: "2026-09-18T15:56:32.209478773+08:00"
+  version: 0.1.1
+digest: sha256:2d8d56a2c8ae3a04bc4e6e44c6bb2710bf75bd95467b33bc9e022aa19c5ca7bd
+generated: "2026-09-27T13:42:44.437783674+08:00"

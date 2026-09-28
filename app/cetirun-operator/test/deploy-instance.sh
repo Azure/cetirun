@@ -7,7 +7,7 @@
 #
 # Usage:
 #   ./deploy-instance.sh
-#   ALIAS=alice DISPLAY_NAME="Alice Smith" EMAIL=alice@example.com TEAM=aks-core ./deploy-instance.sh
+#   ALIAS=alice DISPLAY_NAME="Alice Smith" EMAIL=alice@example.com TEAM=example-team ./deploy-instance.sh
 set -euo pipefail
 
 SUBSCRIPTION="${AZURE_SUBSCRIPTION_ID:?AZURE_SUBSCRIPTION_ID is required}"

@@ -18,6 +18,7 @@ import { Add20Regular } from "@fluentui/react-icons";
 import { useInstancesQuery } from "../hooks/useInstance";
 import { useFeatures } from "../hooks/useFeatures";
 import { CreateForm } from "../components/CreateForm";
+import { agentTypeLabel } from "../utils/instance";
 
 export function InstanceListPage() {
   const navigate = useNavigate();
@@ -93,7 +94,7 @@ export function InstanceListPage() {
               description={<Text size={300}>{inst.displayName}</Text>}
               action={
                 <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                  <Badge appearance="outline">{inst.agentType === "hermes" ? "Hermes" : "OpenClaw"}</Badge>
+                  <Badge appearance="outline">{agentTypeLabel(inst.agentType)}</Badge>
                   <Badge
                     appearance="filled"
                     color={inst.phase === "Ready" ? "success" : "warning"}

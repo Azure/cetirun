@@ -49,6 +49,23 @@ class HomeInitializationTests(unittest.TestCase):
     def seeded(self):
         return (self.target / ".cetirun-home-seeded").is_file()
 
+    def test_lost_found_shape(self):
+        for kind in ("directory", "file", "symlink"):
+            with self.subTest(kind=kind):
+                target = self.root / ("lost-" + kind)
+                target.mkdir()
+                entry = target / "lost+found"
+                if kind == "directory":
+                    entry.mkdir()
+                    (entry / "orphan").write_text("retained")
+                elif kind == "file":
+                    entry.write_text("retained")
+                else:
+                    entry.symlink_to(self.source)
+                result = self.run_init(env={**self.env, "TARGET_HOME": str(target)})
+                self.assertEqual(result.returncode == 0, kind == "directory", result.stderr)
+                self.assertEqual((target / ".cetirun-home-seeded").exists(), kind == "directory")
+
     def test_first_copy_preserves_hidden_files_executable_and_links(self):
         (self.source / ".config").mkdir()
         (self.source / ".config/settings").write_text("image")

@@ -29,6 +29,8 @@ Probe paths differ by runtime:
 | --- | --- | --- |
 | OpenClaw | `/health` on the gateway port, 18789 by default | `/healthz` on the gateway port |
 | Hermes | `/health` on the API port, 8642 by default | `/health` on the API port |
+| Custom with a port | `/healthz` on the declared port | Readiness uses `/healthz`; no liveness probe |
+| Headless Custom | None | No HTTP probes |
 
 These are pod probes, not checks of Entra login, model entitlement, Teams
 delivery, or tailnet reachability. See the
@@ -96,9 +98,28 @@ without a recognized record fails safely; interrupted seeding requires the
 same immutable source image. Review the recorded state, existing files and
 recovery copies before performing explicit maintenance.
 
+Custom updates use a separate `OnDelete` path. They require approved model,
+HOME and context bindings plus an explicit storage/lifecycle handoff. The old
+StatefulSet must be stopped and no active Pod may still reference HOME before
+the new plan is applied. The operator does not perform the handoff itself or
+use the built-in orphan-delete hook. Model Key and context revision changes
+go through the same gate; process environment does not refresh in place.
+
+The default operator has no production Custom binding provider and reports
+`CustomBindingsPending`. A Custom process has no native UI URL, including when
+its internal HTTP Service exists. See [Agent Harness](../../reference/agent-harness/#custom-runtime)
+for the implementation boundary and synthetic qualification tests.
+
 ## Delete only with a recovery plan
 
-Deleting an `Agent` invokes finalizer cleanup: it attempts Teams
+Custom cleanup requires the Operator's durable ownership receipt. A never-bound
+Custom does not delete resources merely because their names match. For a bound
+Custom, cleanup verifies the recorded namespace UID before deletion and waits
+for it to disappear; it does not execute Helm uninstall hooks. Missing records
+or changed ownership block cleanup. Do not remove these finalizers to bypass
+the ownership check.
+
+Deleting a built-in `Agent` invokes finalizer cleanup: it attempts Teams
 cleanup and Helm uninstall, then route and namespace deletion. Some cleanup
 errors are logged without blocking finalizer removal, and namespace deletion
 is asynchronous. A disappeared custom resource therefore does not prove that

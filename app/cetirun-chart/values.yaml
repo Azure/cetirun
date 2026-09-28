@@ -506,7 +506,7 @@ desktop:
     tag: ""
     # -- Image digest for pinning to an exact image
     digest: ""
-  # -- noVNC WebSocket path prefix injected by the operator (e.g. "guwe-g/desktop/").
+  # -- noVNC WebSocket path prefix injected by the operator (e.g. "example-agent/desktop/").
   # Used in the auto-connect redirect: ?path=<novncPathPrefix>websockify
   novncPathPrefix: ""
   # -- Route x11vnc and websockify output to container stderr (visible via kubectl logs).

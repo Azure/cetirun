@@ -96,6 +96,23 @@ describe("WorkspacePage", () => {
     mockInstance.agentType = "openclaw";
   });
 
+  it("keeps Custom desktop access without inventing a native UI or terminal", () => {
+    const previousConditions = mockInstance.conditions;
+    mockInstance.agentType = "custom";
+    mockInstance.accessUrl = "https://gateway.example.com/testuser/desktop/";
+    mockInstance.conditions = [{ type: "IngressReady", status: "True", reason: "PlatformDesktopConfigured", message: "" }];
+    try {
+      renderAt("/instances/testuser/overview");
+      expect(screen.getByRole("link", { name: "Desktop" })).toHaveAttribute("href", "https://gateway.example.com/testuser/desktop");
+      expect(screen.getByText("Agent UI").closest("a")).not.toHaveAttribute("href");
+      expect(screen.getByText("Terminal").closest("a")).not.toHaveAttribute("href");
+    } finally {
+      mockInstance.agentType = "openclaw";
+      mockInstance.accessUrl = "https://example.com/ui/testuser/";
+      mockInstance.conditions = previousConditions;
+    }
+  });
+
   it("disables standalone instance services until the instance is ready", () => {
     mockInstance.phase = "Provisioning";
     renderAt("/instances/testuser/overview");

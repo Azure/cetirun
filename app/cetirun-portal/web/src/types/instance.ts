@@ -7,7 +7,7 @@ export interface TeamSummary {
   provider: string;
 }
 
-export type AgentType = "openclaw" | "hermes";
+export type AgentType = "openclaw" | "hermes" | "custom";
 
 export interface Instance {
   instanceName: string;

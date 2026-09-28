@@ -182,6 +182,9 @@ func generateRandomToken(byteLen int) (string, error) {
 // Merge order (later wins): controller defaults → cetirunHelmValues → team
 // context/skills → per-instance spec.helm.values → controller-enforced model.
 func buildHelmValues(instance *cetirunv1alpha1.Agent, team *cetirunv1alpha1.Team, domainSuffix string, skillsStorageAccount string, cetirunHelmValues map[string]interface{}, chartRegistry string, defaultModels ...string) (map[string]interface{}, error) {
+	if instance.Spec.Agent.Type == cetirunv1alpha1.AgentTypeCustom {
+		return nil, fmt.Errorf("Custom requires its own platform binding and runtime plan")
+	}
 	if err := validateAgentRuntime(instance.Spec.Agent); err != nil {
 		return nil, err
 	}
@@ -231,17 +234,9 @@ func buildHelmValues(instance *cetirunv1alpha1.Agent, team *cetirunv1alpha1.Team
 			"accessMode":   "ReadWriteMany",
 			"size":         "20Gi",
 		},
-		// NetworkPolicy: AKS managed Istio places istiod in aks-istio-system and
-		// the ingress gateway in aks-istio-ingress (different from upstream istio-system).
-		"networkPolicy": map[string]interface{}{
-			"istioNamespace":        "aks-istio-system",
-			"istioIngressNamespace": "aks-istio-ingress",
-		},
-		// Desktop sidecar: inject the noVNC WebSocket path prefix so the
-		// auto-connect redirect includes ?path=<instance>/desktop/websockify.
-		"desktop": map[string]interface{}{
-			"novncPathPrefix": instance.Name + "/desktop/",
-		},
+	}
+	for key, value := range platformRuntimeDefaults(instance.Name) {
+		values[key] = value
 	}
 
 	// Operator-level Helm value overrides (from CETIRUN_HELM_VALUES).
@@ -273,48 +268,8 @@ func buildHelmValues(instance *cetirunv1alpha1.Agent, team *cetirunv1alpha1.Team
 		}
 	}
 
-	// Apply Team shared skill storage → chart's skills.shared mode.
-	// Operator maps team.SkillStorage to the chart's existing
-	// skills.{shared,resourceGroup,storageAccount,containerName,...} fields, which
-	// auto-provision a PV+PVC per instance namespace pointing at the same
-	// Azure Blob NFS container.
-	if team != nil && team.Spec.SkillStorage != nil {
-		s := team.Spec.SkillStorage
-		storage := map[string]interface{}{
-			"shared":         true,
-			"resourceGroup":  s.ResourceGroup,
-			"storageAccount": s.StorageAccount,
-			"containerName":  s.ContainerName,
-		}
-		if s.StorageClassName != "" {
-			storage["storageClassName"] = s.StorageClassName
-		}
-		if s.StorageSize != "" {
-			storage["storageSize"] = s.StorageSize
-		}
-		if s.MountPath != "" {
-			storage["mountPath"] = s.MountPath
-		}
-		values["skills"] = deepMerge(values["skills"], storage)
-	}
-
-	// Compute and apply effective skills (team base + instance overrides).
-	effective := computeEffectiveSkills(team, instance.Spec.SkillOverrides.Add, instance.Spec.SkillOverrides.Remove)
-	if len(effective) > 0 {
-		npmSkills, clawHubSkills, classifyErr := classifySkills(effective)
-		if classifyErr != nil {
-			return nil, fmt.Errorf("classify skills: %w", classifyErr)
-		}
-		skillsPatch := map[string]interface{}{}
-		if len(npmSkills) > 0 {
-			skillsPatch["npm"] = stringsToInterfaces(npmSkills)
-		}
-		if len(clawHubSkills) > 0 {
-			skillsPatch["clawHub"] = stringsToInterfaces(clawHubSkills)
-		}
-		if len(skillsPatch) > 0 {
-			values["skills"] = deepMerge(values["skills"], skillsPatch)
-		}
+	if err := applySkillValues(values, team, instance.Spec.SkillOverrides, skillsStorageAccount); err != nil {
+		return nil, err
 	}
 
 	// Scale to zero when the instance is suspended (access restriction).
@@ -330,15 +285,6 @@ func buildHelmValues(instance *cetirunv1alpha1.Agent, team *cetirunv1alpha1.Team
 		values["tailscale"] = map[string]interface{}{
 			"serve": true,
 		}
-	}
-
-	// Override skills storage account if configured at the operator level.
-	// Deprecated: use cetirunHelmValues with skills.storageAccount instead.
-	// Kept for backward compatibility; takes precedence over cetirunHelmValues.skills.storageAccount.
-	if skillsStorageAccount != "" {
-		values["skills"] = deepMerge(values["skills"], map[string]interface{}{
-			"storageAccount": skillsStorageAccount,
-		})
 	}
 
 	// Override image repositories to match the operator's chart registry.
@@ -463,6 +409,15 @@ func buildHelmValues(instance *cetirunv1alpha1.Agent, team *cetirunv1alpha1.Team
 
 	values["agentRequest"] = runtimeRequest(instance, chartRegistry)
 	return values, nil
+}
+
+func platformRuntimeDefaults(name string) map[string]any {
+	return map[string]any{
+		"networkPolicy": map[string]any{
+			"istioNamespace": "aks-istio-system", "istioIngressNamespace": "aks-istio-ingress",
+		},
+		"desktop": map[string]any{"novncPathPrefix": name + "/desktop/"},
+	}
 }
 
 // deepMerge recursively merges override into base.
@@ -643,7 +598,12 @@ func buildVirtualService(instance *cetirunv1alpha1.Agent, domainSuffix, gateway 
 		makeRedirect(instancePrefix + "/desktop"),
 		makeRedirect(instancePrefix + "/term"),
 	}
-	if descriptor.DashboardPort != 0 {
+	if agentType == cetirunv1alpha1.AgentTypeCustom {
+		routes = []*istioapiv1beta1.HTTPRoute{
+			makeRedirect(instancePrefix + "/desktop"),
+			makeRoute(instancePrefix+"/desktop/", "/desktop/", novncPort, 0),
+		}
+	} else if descriptor.DashboardPort != 0 {
 		routes = append(routes,
 			makeRoute(uiPrefix+"/v1", "/v1", primaryPort, 300),
 			makeRoute(uiPrefix+descriptor.HealthPath, descriptor.HealthPath, primaryPort, 0),
@@ -737,7 +697,7 @@ func buildVirtualService(instance *cetirunv1alpha1.Agent, domainSuffix, gateway 
 	}
 	routes = append([]*istioapiv1beta1.HTTPRoute{webhookRoute}, routes...)
 
-	return &istiov1beta1.VirtualService{
+	desired := &istiov1beta1.VirtualService{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      virtualServiceName(name),
 			Namespace: ns,
@@ -753,6 +713,13 @@ func buildVirtualService(instance *cetirunv1alpha1.Agent, domainSuffix, gateway 
 			Http:     routes,
 		},
 	}
+	if agentType == cetirunv1alpha1.AgentTypeCustom {
+		desired.Annotations = map[string]string{customAgentUID: string(instance.UID)}
+		desired.OwnerReferences = []metav1.OwnerReference{
+			*metav1.NewControllerRef(instance, cetirunv1alpha1.GroupVersion.WithKind("Agent")),
+		}
+	}
+	return desired
 }
 
 // setCondition upserts a metav1.Condition into the conditions slice.

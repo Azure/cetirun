@@ -259,8 +259,8 @@ output=$(helm_template "${release_name}" "${chart_dir}" -f "${chart_dir}/values.
   --set skills.protocol=fuse2 \
   --set skills.secretName=blobfuse-staging \
   --set 'skills.mountOptions[0]=-o allow_other')
-grep -q 'protocol: fuse2' <<< "$output" || { echo "FAIL: Fuse2 protocol not rendered for shared skills" >&2; exit 1; }
-grep -q 'name: blobfuse-staging' <<< "$output" || { echo "FAIL: Blobfuse staging Secret not rendered" >&2; exit 1; }
+grep -Eq 'protocol: "?fuse2"?$' <<< "$output" || { echo "FAIL: Fuse2 protocol not rendered for shared skills" >&2; exit 1; }
+grep -Eq 'name: "?blobfuse-staging"?$' <<< "$output" || { echo "FAIL: Blobfuse staging Secret not rendered" >&2; exit 1; }
 grep -q -- '- -o allow_other' <<< "$output" || { echo "FAIL: Blobfuse mount option not rendered" >&2; exit 1; }
 
 # Test variant: Blobfuse shared skills require their node-stage Secret.
@@ -284,7 +284,7 @@ fi
 echo "==> helm template ${release_name} ${chart_dir} (runtimeClassName=kata-vm-isolation, default)"
 output=$(helm_template "${release_name}" "${chart_dir}" -f "${chart_dir}/values.yaml" \
   --set secrets.openclawGatewayToken=lint-token)
-grep -q 'runtimeClassName: kata-vm-isolation' <<< "$output" || { echo "FAIL: runtimeClassName not found in default render" >&2; exit 1; }
+grep -Eq 'runtimeClassName: "?kata-vm-isolation"?$' <<< "$output" || { echo "FAIL: runtimeClassName not found in default render" >&2; exit 1; }
 
 # Test variant: runtimeClassName disabled (empty string)
 echo "==> helm template ${release_name} ${chart_dir} (runtimeClassName empty)"
