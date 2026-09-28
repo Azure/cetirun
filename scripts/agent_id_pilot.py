@@ -994,12 +994,10 @@ def cleanup_deployment(args: argparse.Namespace) -> None:
         deployment.pop("keyVault", None)
         save_state(state_path, state)
     encryption = deployment.get("encryptionIdentity", {})
-    if isinstance(encryption, dict) and deployment.get("encryptionIdentityName"):
+    if isinstance(encryption, dict) and encryption.get("resourceId"):
         _run_no_output(
             [
-                "az", "identity", "delete", "--subscription", str(deployment["subscriptionId"]),
-                "--resource-group", str(deployment["resourceGroup"]),
-                "--name", str(deployment["encryptionIdentityName"]),
+                "az", "identity", "delete", "--ids", str(encryption["resourceId"]),
             ]
         )
         deployment.pop("encryptionIdentity", None)
