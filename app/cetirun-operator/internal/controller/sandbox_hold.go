@@ -186,6 +186,11 @@ func (r *AgentReconciler) deleteSandboxBuiltin(ctx context.Context, agent *cetir
 	if err := r.stopSandboxBuiltin(ctx, agent); err != nil {
 		return ctrl.Result{}, err
 	}
+	if agentIdentityRequested(agent) || agent.Status.AgentIdentity != nil {
+		if err := r.deleteAgentIdentity(ctx, agent); err != nil {
+			return ctrl.Result{}, fmt.Errorf("clean up sandbox-held Agent Identity: %w", err)
+		}
+	}
 	ns := &corev1.Namespace{}
 	err := r.customReader().Get(ctx, types.NamespacedName{Name: instanceNamespace(agent.Name)}, ns)
 	if apierrors.IsNotFound(err) {

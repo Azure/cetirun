@@ -215,6 +215,8 @@ names alone are insufficient. Deleting a held built-in Agent removes only its
 verified namespace, without Helm uninstall hooks, and retains finalizers until
 cleanup completes. Home storage is retained during a hold, not after explicit
 namespace deletion.
+Agent Identity authorization and directory cleanup remains a blocking deletion
+step for held built-in Agents, including when the runtime namespace is absent.
 
 Portal Team edits preserve the governance bindings even though the Portal does
 not yet expose them. Portal binds newly created namespaces to the Agent for

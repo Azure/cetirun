@@ -107,6 +107,9 @@ hooks. Unknown ownership leaves deletion pending for recovery. Deletion removes
 namespace contents; home retention during a hold does not promise retention
 after an explicit Agent deletion. Custom deletion retains its existing receipt
 and completion checks.
+For held built-in Agents, Agent Identity authorization and directory cleanup
+must also succeed before namespace deletion or finalizer removal, even if the
+runtime namespace is already absent or the identity feature was deselected.
 
 Portal Team edits preserve governance fields that the Portal does not expose.
 Portal creation registers the cleanup finalizer and binds only namespaces it
