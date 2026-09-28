@@ -13,10 +13,12 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
 
 func newScheme() *runtime.Scheme {
@@ -27,7 +29,13 @@ func newScheme() *runtime.Scheme {
 }
 
 func newFakeClient(objs ...client.Object) client.Client {
-	return fake.NewClientBuilder().WithScheme(newScheme()).WithObjects(objs...).Build()
+	return fake.NewClientBuilder().WithScheme(newScheme()).WithObjects(objs...).
+		WithInterceptorFuncs(interceptor.Funcs{Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+			if obj.GetUID() == "" {
+				obj.SetUID(types.UID("test-" + obj.GetName()))
+			}
+			return c.Create(ctx, obj, opts...)
+		}}).Build()
 }
 
 func sampleInstance() *cetirunv1alpha1.Agent {

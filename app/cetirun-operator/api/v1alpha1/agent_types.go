@@ -6,6 +6,7 @@ package v1alpha1
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 )
 
 // SkillOverrideSpec defines per-instance skill customization as a delta against team defaults.
@@ -46,6 +47,19 @@ type AgentSpec struct {
 	// the instance configuration. Per-instance fields take precedence.
 	// +optional
 	Team string `json:"team,omitempty"`
+
+	// SandboxRef selects a Sandbox permitted by the Team.
+	// Temporarily optional for legacy Agents; sandbox binding validation requires it.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`
+	// +optional
+	SandboxRef string `json:"sandboxRef,omitempty"`
+
+	// PolicyClass selects the administrator-assigned Team policy slot.
+	// +kubebuilder:default=normal
+	// +optional
+	PolicyClass AgentPolicyClass `json:"policyClass,omitempty"`
 
 	// Model is the GitHub Copilot model ID for this instance. When empty, the
 	// operator deployment's configured default model is used.
@@ -204,6 +218,10 @@ type AgentStatus struct {
 	// It never contains user tokens, authorization caches, or credentials.
 	// +optional
 	AgentIdentity *AgentIdentityStatus `json:"agentIdentity,omitempty"`
+
+	// Sandbox records the last fully enforced binding, not a pending selection.
+	// +optional
+	Sandbox *SandboxStatus `json:"sandbox,omitempty"`
 }
 
 // AgentIdentitySpec exposes only the feature switch. Tenant, Blueprint,
@@ -253,6 +271,26 @@ type AgentIdentityStatus struct {
 	Reason string `json:"reason,omitempty"`
 }
 
+// SandboxStatus records the binding and revision last verified for an Agent.
+type SandboxStatus struct {
+	// +kubebuilder:validation:Type=string
+	// +kubebuilder:validation:MinLength=1
+	TeamUID types.UID `json:"teamUID"`
+
+	// +kubebuilder:validation:Type=string
+	// +kubebuilder:validation:MinLength=1
+	SandboxUID types.UID `json:"sandboxUID"`
+
+	PolicyClass AgentPolicyClass `json:"policyClass"`
+
+	// +kubebuilder:validation:Type=string
+	// +kubebuilder:validation:MinLength=1
+	AgentPolicyUID types.UID `json:"agentPolicyUID"`
+
+	// +kubebuilder:validation:MinLength=1
+	AppliedRevision string `json:"appliedRevision"`
+}
+
 // Condition type constants.
 const (
 	ConditionReady              = "Ready"
@@ -263,6 +301,7 @@ const (
 	ConditionTeamsReady         = "TeamsReady"
 	ConditionAgentConfigReady   = "AgentConfigReady"
 	ConditionAgentIdentityReady = "AgentIdentityReady"
+	ConditionSandboxReady       = "SandboxReady"
 )
 
 // Agent Identity lifecycle phases.

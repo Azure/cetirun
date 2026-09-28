@@ -151,6 +151,9 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		if instance.Spec.Agent.Type == cetirunv1alpha1.AgentTypeCustom {
 			return r.deleteCustom(ctx, instance)
 		}
+		if sandboxRequested(instance, nil) {
+			return r.deleteSandboxBuiltin(ctx, instance)
+		}
 		logger.V(1).Info("DeletionTimestamp set, entering delete handler", "alias", instance.Spec.User.Alias)
 		return r.handleDelete(ctx, instance)
 	}
@@ -162,6 +165,22 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	// breaking change; no migration path exists for the reserved legacy name.
 	if instance.Name == "ui" {
 		return r.rejectReservedUIInstance(ctx, instance)
+	}
+
+	if sandboxRequested(instance, nil) {
+		return r.holdSandbox(ctx, instance)
+	}
+
+	// Inspect Team governance before runtime recovery can retain a Ready state.
+	// Lookup errors are handled below so Custom suspension/recovery stays available.
+	var team *cetirunv1alpha1.Team
+	var teamErr error
+	if instance.Spec.Team != "" {
+		team = &cetirunv1alpha1.Team{}
+		teamErr = r.Get(ctx, types.NamespacedName{Name: instance.Spec.Team}, team)
+	}
+	if teamErr == nil && sandboxRequested(instance, team) {
+		return r.holdSandbox(ctx, instance)
 	}
 
 	if instance.Spec.Agent.Type == cetirunv1alpha1.AgentTypeCustom && instance.Spec.Suspended {
@@ -205,18 +224,14 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		return ctrl.Result{Requeue: true}, nil
 	}
 
-	// 3b. Resolve Team if referenced.
-	var team *cetirunv1alpha1.Team
-	if instance.Spec.Team != "" {
-		team = &cetirunv1alpha1.Team{}
-		if err := r.Get(ctx, types.NamespacedName{Name: instance.Spec.Team}, team); err != nil {
-			if errors.IsNotFound(err) {
-				return r.failWith(ctx, instance,
-					"TeamNotFound",
-					fmt.Sprintf("referenced Team %q not found", instance.Spec.Team))
-			}
-			return ctrl.Result{}, fmt.Errorf("get Team %s: %w", instance.Spec.Team, err)
+	// 3b. Require the referenced Team before workload preparation.
+	if teamErr != nil {
+		if errors.IsNotFound(teamErr) {
+			return r.failWith(ctx, instance,
+				"TeamNotFound",
+				fmt.Sprintf("referenced Team %q not found", instance.Spec.Team))
 		}
+		return ctrl.Result{}, fmt.Errorf("get Team %s: %w", instance.Spec.Team, teamErr)
 	}
 
 	if instance.Spec.Agent.Type == cetirunv1alpha1.AgentTypeCustom {

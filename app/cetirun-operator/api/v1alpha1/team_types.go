@@ -9,6 +9,37 @@ import (
 
 // TeamSpec defines team-wide configuration applied to every member instance.
 type TeamSpec struct {
+	// NormalAgentPolicyRef names the policy for normal-class Agents.
+	// Required sandbox bindings remain optional for legacy Teams until pure binding validation.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`
+	// +optional
+	NormalAgentPolicyRef string `json:"normalAgentPolicyRef,omitempty"`
+
+	// AdminAgentPolicyRef optionally names the policy for admin-class Agents.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`
+	// +optional
+	AdminAgentPolicyRef string `json:"adminAgentPolicyRef,omitempty"`
+
+	// SandboxRefs lists the Sandboxes permitted for this Team.
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:items:MinLength=1
+	// +kubebuilder:validation:items:MaxLength=253
+	// +kubebuilder:validation:items:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`
+	// +listType=set
+	// +optional
+	SandboxRefs []string `json:"sandboxRefs,omitempty"`
+
+	// DefaultSandboxRef selects a listed Sandbox for newly created Agents.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`
+	// +optional
+	DefaultSandboxRef string `json:"defaultSandboxRef,omitempty"`
+
 	// MemberContext defines the team context injected into USER.md for every member instance.
 	// +optional
 	MemberContext TeamContextSpec `json:"memberContext,omitempty"`

@@ -1,17 +1,18 @@
 ---
 title: "Custom resources"
-description: "Agent and Team in cetirun.microsoft.com/v1alpha1."
+description: "Agent, Team, Sandbox and AgentPolicy in cetirun.microsoft.com/v1alpha1."
 weight: 10
 ---
 
-Both resources are **cluster-scoped**. Their API group is
-`cetirun.microsoft.com/v1alpha1`; the kinds are `Agent` and
-`Team`. Do not add `metadata.namespace`.
+All four resources are **cluster-scoped**. Their API group is
+`cetirun.microsoft.com/v1alpha1`. Do not add `metadata.namespace`.
 
 | Kind | Resource | CRD name | Short name |
 | --- | --- | --- | --- |
 | `Agent` | `agents` | `agents.cetirun.microsoft.com` | `cra` |
 | `Team` | `teams` | `teams.cetirun.microsoft.com` | `crt` |
+| `Sandbox` | `sandboxes` | `sandboxes.cetirun.microsoft.com` | `crs` |
+| `AgentPolicy` | `agentpolicies` | `agentpolicies.cetirun.microsoft.com` | `crp` |
 
 An Agent is a long-lived, user-owned environment, not an execution or template.
 A Team supplies shared configuration and skills, not shared access to private
@@ -20,9 +21,9 @@ data. Pod replacement does not create a new Agent.
 ## Existing installations
 
 Older installations may contain `OpenClawInstance` and `OpenClawTeam` objects
-in the same API group and version. The operator and portal register only
-`Agent` and `Team`. Installing their CRDs does not convert, adopt, or delete
-legacy objects.
+in the same API group and version. The operator and portal no longer register
+those legacy kinds. Installing the current CRDs does not convert, adopt, or delete
+legacy objects. Sandbox governance is an inactive foundation, not a migration.
 
 Do not delete legacy CRs or CRDs as an upgrade shortcut. Old finalizers can
 uninstall workloads and delete namespaces; deleting a CRD removes its stored
@@ -51,6 +52,8 @@ installation but does not upgrade or delete them.
 | `agent.username` | Defaults to `vibe`; immutable, non-root image username |
 | `agent.port` | Optional HTTP port, 1–65535; omitted for Custom means no platform HTTP entry |
 | `team` | Name of a `Team` |
+| `sandboxRef` | Optional during additive staging; governed resolution requires a permitted Team Sandbox |
+| `policyClass` | `normal` (default) or administrator-assigned `admin`; the default alone does not enable governance |
 | `model` | Optional Copilot model ID, at most 256 characters |
 | `skillOverrides.add` / `remove` | Set-like skill lists, at most 20 per list; effective IDs are `(team ∪ add) − remove` |
 | `helm.version` | Agent chart pin; backfilled from the operator default on first reconciliation |
@@ -122,6 +125,7 @@ check does not prove that an override will reconcile successfully.
 | `observedOperatorHash` | Applied configuration fingerprint used by the reconciliation cache, including the gateway Secret content hash and referenced team's resource version |
 | `lastReconcileTime` | Timestamp written by full Ready/suspension handling; can also be written while suspension ingress removal is failing |
 | `msteams` | Teams state, message, resolved app and bot resource identifiers |
+| `sandbox` | Last verified binding: `teamUID`, `sandboxUID`, `policyClass`, `agentPolicyUID`, `appliedRevision`; omitted before successful enforcement |
 
 `AgentConfigReady=False` with reason `AgentRuntimeNotImplemented` reports a
 setting that cannot yet be provisioned. `AgentConfigInvalid` reports rejected
@@ -152,6 +156,10 @@ not material to paste into a public bug report.
 
 | Field under `spec` | Contract |
 | --- | --- |
+| `normalAgentPolicyRef` | Normal-class policy; required by governed resolution, optional only for additive staging |
+| `adminAgentPolicyRef` | Optional admin-class policy; never falls back to the normal policy |
+| `sandboxRefs` | Unique permitted Sandbox names; must be nonempty for governed resolution |
+| `defaultSandboxRef` | Listed Sandbox selected at Agent creation, not a later implicit reselection |
 | `memberContext.role` | Role rendered into runtime-specific team context |
 | `memberContext.description` | Context lines, at most 20 |
 | `defaults.provider` | String without a CRD enum; chart supports `github_copilot`, `openai`, `anthropic`; instance Helm settings take precedence |
@@ -184,12 +192,54 @@ only passed to the reserved `skills.clawHub` list, not installed. Shared storage
 uses chart-level protocol and mount options; those are not fields on
 `skillStorage`. See [configuration and skills](../../concepts/configuration/).
 
+## Sandbox and AgentPolicy foundations
+
+`Sandbox` describes the prepared `kata` or `gvisor` runtime, Agent/helper
+resource budgets, private home storage and scratch. `AgentPolicy` describes
+selection constraints, read-only root filesystem, network and ingress controls,
+and optional Kubernetes or Entra identity intent. Configuration references and
+schema acceptance do not grant access or prove enforcement.
+
+Sandbox execution is **not enabled**. Agents selecting these bindings, including
+through their Team, are held before built-in or Custom runtime preparation.
+`SandboxReady=False` reports the inactive path; the controller requests compute
+shutdown and route removal without claiming a node fence or advancing applied
+status. Custom shutdown preserves its ownership checks and pending completion
+recovery. Existing unbound runtime behavior is unchanged.
+
+The controller records a hold finalizer before changing workloads, so a failed
+status update cannot release the recorded hold. Explicit suspension remains
+`Suspended` unless shutdown fails. Built-in resources without verifiable
+Agent-UID ownership are left untouched and require recovery; matching resource
+names alone are insufficient. Deleting a held built-in Agent removes only its
+verified namespace, without Helm uninstall hooks, and retains finalizers until
+cleanup completes. Home storage is retained during a hold, not after explicit
+namespace deletion.
+Agent Identity authorization and directory cleanup remains a blocking deletion
+step for held built-in Agents, including when the runtime namespace is absent.
+
+Portal Team edits preserve the governance bindings even though the Portal does
+not yet expose them. Portal binds newly created namespaces to the Agent for
+cleanup, but does not adopt pre-existing namespaces. Ownership-write failures
+are reported and require recovery of the tracked Agent. The matching Portal
+chart adds namespace `patch` permission for this ownership write.
+
+The new binding fields remain optional solely to preserve unbound resources
+during additive staging. The pure resolver requires complete, compatible
+bindings and explicit UID authorization. Admission, enforcement observation,
+protected rendering and production adoption still need implementation and
+qualification. See the
+[operator foundation notes]({{< repo "app/cetirun-operator/README.md" >}})
+for validation and feasibility boundaries.
+
 ## Schema and implementation
 
 API validation uses these schemas:
 
 - [Agent CRD]({{< repo "app/cetirun-operator/config/crd/bases/cetirun.microsoft.com_agents.yaml" >}})
 - [Team CRD]({{< repo "app/cetirun-operator/config/crd/bases/cetirun.microsoft.com_teams.yaml" >}})
+- [Sandbox CRD]({{< repo "app/cetirun-operator/config/crd/bases/cetirun.microsoft.com_sandboxes.yaml" >}})
+- [AgentPolicy CRD]({{< repo "app/cetirun-operator/config/crd/bases/cetirun.microsoft.com_agentpolicies.yaml" >}})
 - [Go API types]({{< repo "app/cetirun-operator/api/v1alpha1" "tree" >}})
 - [Reconciler and status writes]({{< repo "app/cetirun-operator/internal/controller/agent_controller.go" >}})
 - [Helm value and route builder]({{< repo "app/cetirun-operator/internal/controller/helpers.go" >}})

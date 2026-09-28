@@ -6,6 +6,10 @@ package controller
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"slices"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -22,6 +26,7 @@ import (
 	istiov1beta1 "istio.io/client-go/pkg/apis/networking/v1beta1"
 
 	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/azure"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/helm"
 )
 
@@ -175,4 +180,118 @@ func findStatusCondition(conditions []metav1.Condition, conditionType string) *m
 		}
 	}
 	return nil
+}
+
+func TestSandboxHeldDeletionPreservesAgentIdentityCleanup(t *testing.T) {
+	for _, failure := range []string{"none", "authorization", "directory", "spec-removed"} {
+		for _, namespacePresent := range []bool{true, false} {
+			name := failure + map[bool]string{true: "/namespace-present", false: "/namespace-absent"}[namespacePresent]
+			t.Run(name, func(t *testing.T) {
+				ctx := context.Background()
+				instance := newAgentIdentityTestInstance()
+				instance.Spec.Agent.Type = cetirunv1alpha1.AgentTypeOpenClaw
+				instance.Spec.SandboxRef = "standard"
+				instance.Finalizers = []string{cetirunv1alpha1.Finalizer, sandboxHoldFinalizer}
+				instance.Status.AgentIdentity = &cetirunv1alpha1.AgentIdentityStatus{
+					Phase: cetirunv1alpha1.AgentIdentityPhaseReady, ClientID: testAgentIdentityClientID,
+					ObjectID: testAgentIdentityObjectID, DisplayName: testAgentIdentityDisplayName(),
+				}
+				if failure == "spec-removed" {
+					instance.Spec.AgentIdentity = nil
+				}
+				directory := &fakeAgentIdentityDirectory{byObject: &azure.ServicePrincipal{
+					ID: testAgentIdentityObjectID, AppID: testAgentIdentityClientID,
+					DisplayName: testAgentIdentityDisplayName(), AgentIdentityBlueprintID: testAgentIdentityBlueprintID,
+				}}
+				if failure == "directory" {
+					directory.deleteErr = errors.New("synthetic directory failure")
+				}
+				reconciler := newAgentIdentityTestReconciler(t, instance, directory)
+				if err := clientgoscheme.AddToScheme(reconciler.Client.Scheme()); err != nil {
+					t.Fatal(err)
+				}
+				if err := istiov1beta1.AddToScheme(reconciler.Client.Scheme()); err != nil {
+					t.Fatal(err)
+				}
+				namespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
+					Name: instanceNamespace(instance.Name), UID: "namespace-uid",
+					OwnerReferences: []metav1.OwnerReference{{
+						APIVersion: cetirunv1alpha1.GroupVersion.String(), Kind: "Agent", Name: instance.Name, UID: instance.UID,
+					}},
+				}}
+				if namespacePresent {
+					if err := reconciler.Create(ctx, namespace); err != nil {
+						t.Fatal(err)
+					}
+				}
+				var brokerStatus, brokerCalls atomic.Int32
+				brokerStatus.Store(http.StatusNoContent)
+				if failure == "authorization" {
+					brokerStatus.Store(http.StatusServiceUnavailable)
+				}
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+					brokerCalls.Add(1)
+					if req.Method != http.MethodDelete || req.URL.Path != "/operator/v1/instances/"+testAgentIdentityInstanceUID+"/authorization" {
+						t.Errorf("unexpected authorization cleanup request: %s %s", req.Method, req.URL.Path)
+					}
+					w.WriteHeader(int(brokerStatus.Load()))
+				}))
+				t.Cleanup(server.Close)
+				reconciler.AgentIdentityBrokerURL = server.URL
+				reconciler.AgentIdentityHTTPClient = server.Client()
+				directory.onDelete = func(objectID string) {
+					if objectID != testAgentIdentityObjectID || brokerCalls.Load() == 0 || brokerStatus.Load() != http.StatusNoContent {
+						t.Error("directory deletion bypassed canonical ownership or authorization cleanup")
+					}
+					if directory.deleteErr == nil {
+						directory.byObject = nil
+					}
+				}
+				if err := reconciler.Delete(ctx, instance); err != nil {
+					t.Fatal(err)
+				}
+				req := ctrl.Request{NamespacedName: types.NamespacedName{Name: instance.Name}}
+				_, err := reconciler.Reconcile(ctx, req)
+				wantFailure := failure == "authorization" || failure == "directory"
+				if (err != nil) != wantFailure {
+					t.Fatalf("identity cleanup failure was bypassed: %v", err)
+				}
+				if wantFailure {
+					stored := &cetirunv1alpha1.Agent{}
+					if err := reconciler.Get(ctx, req.NamespacedName, stored); err != nil ||
+						!slices.Contains(stored.Finalizers, sandboxHoldFinalizer) || !slices.Contains(stored.Finalizers, cetirunv1alpha1.Finalizer) {
+						t.Fatalf("cleanup failure released finalizers: %v", err)
+					}
+					if namespacePresent {
+						if err := reconciler.Get(ctx, types.NamespacedName{Name: namespace.Name}, namespace); err != nil {
+							t.Fatalf("namespace removed before identity cleanup succeeded: %v", err)
+						}
+					}
+					if failure == "authorization" && directory.deleteCalls != 0 {
+						t.Fatal("directory deletion preceded authorization cleanup")
+					}
+				}
+				brokerStatus.Store(http.StatusNoContent)
+				directory.deleteErr = nil
+				for range 3 {
+					if _, err := reconciler.Reconcile(ctx, req); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if err := reconciler.Get(ctx, req.NamespacedName, &cetirunv1alpha1.Agent{}); !apierrors.IsNotFound(err) {
+					t.Fatalf("Agent cleanup did not converge: %v", err)
+				}
+				if err := reconciler.Get(ctx, types.NamespacedName{Name: namespace.Name}, namespace); !apierrors.IsNotFound(err) {
+					t.Fatalf("namespace cleanup did not converge: %v", err)
+				}
+				wantDeletes := 1
+				if failure == "directory" {
+					wantDeletes = 2
+				}
+				if brokerCalls.Load() == 0 || directory.deleteCalls != wantDeletes || directory.createCalls != 0 {
+					t.Fatalf("identity cleanup skipped or provisioned: broker=%d deletes=%d creates=%d", brokerCalls.Load(), directory.deleteCalls, directory.createCalls)
+				}
+			})
+		}
+	}
 }

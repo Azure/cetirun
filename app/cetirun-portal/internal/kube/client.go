@@ -100,10 +100,13 @@ func (c *Client) CreateInstance(ctx context.Context, alias, displayName, team, e
 		agentType = string(cetirunv1alpha1.DefaultAgentType)
 	}
 	ns := fmt.Sprintf("cetirun-%s", instanceName)
+	var createdNamespace *corev1.Namespace
 
 	// Pre-create secrets if provided.
 	if gatewayToken != "" || tailscaleAuthKey != "" {
-		if err := c.ensureNamespace(ctx, ns, alias); err != nil {
+		var err error
+		createdNamespace, err = c.createNamespace(ctx, ns, alias)
+		if err != nil {
 			return nil, fmt.Errorf("ensure namespace %s: %w", ns, err)
 		}
 	}
@@ -124,7 +127,8 @@ func (c *Client) CreateInstance(ctx context.Context, alias, displayName, team, e
 
 	instance := &cetirunv1alpha1.Agent{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: instanceName,
+			Name:       instanceName,
+			Finalizers: []string{cetirunv1alpha1.Finalizer},
 		},
 		Spec: cetirunv1alpha1.AgentSpec{
 			Agent:                 cetirunv1alpha1.HarnessSpec{Type: cetirunv1alpha1.AgentType(agentType)},
@@ -159,6 +163,11 @@ func (c *Client) CreateInstance(ctx context.Context, alias, displayName, team, e
 	}
 	if err := c.client.Create(ctx, instance, client.FieldValidation(metav1.FieldValidationStrict)); err != nil {
 		return nil, err
+	}
+	if createdNamespace != nil {
+		if err := c.bindCreatedNamespace(ctx, createdNamespace, instance); err != nil {
+			return nil, fmt.Errorf("Agent created but namespace ownership could not be recorded; cleanup requires recovery: %w", err)
+		}
 	}
 	return instance, nil
 }
@@ -278,13 +287,20 @@ func (c *Client) GetTailscaleAuthKey(ctx context.Context, namespace, secretName 
 
 // ensureNamespace creates the instance namespace if it doesn't already exist.
 func (c *Client) ensureNamespace(ctx context.Context, ns, alias string) error {
+	_, err := c.createNamespace(ctx, ns, alias)
+	return err
+}
+
+// createNamespace returns only a namespace created by this call, never an
+// existing namespace that a same-named Agent might otherwise adopt.
+func (c *Client) createNamespace(ctx context.Context, ns, alias string) (*corev1.Namespace, error) {
 	nsObj := &corev1.Namespace{}
 	err := c.client.Get(ctx, client.ObjectKey{Name: ns}, nsObj)
 	if err == nil {
-		return nil // already exists
+		return nil, nil
 	}
 	if !errors.IsNotFound(err) {
-		return fmt.Errorf("get namespace %s: %w", ns, err)
+		return nil, fmt.Errorf("get namespace %s: %w", ns, err)
 	}
 	nsObj = &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
@@ -296,10 +312,35 @@ func (c *Client) ensureNamespace(ctx context.Context, ns, alias string) error {
 			},
 		},
 	}
-	if err := c.client.Create(ctx, nsObj); err != nil && !errors.IsAlreadyExists(err) {
-		return err
+	if err := c.client.Create(ctx, nsObj); err != nil {
+		return nil, client.IgnoreAlreadyExists(err)
 	}
-	return nil
+	return nsObj, nil
+}
+
+func (c *Client) bindCreatedNamespace(ctx context.Context, created *corev1.Namespace, agent *cetirunv1alpha1.Agent) error {
+	if created.UID == "" || agent.UID == "" {
+		return fmt.Errorf("namespace and Agent must have persisted UIDs")
+	}
+	owner := metav1.OwnerReference{APIVersion: cetirunv1alpha1.GroupVersion.String(), Kind: "Agent", Name: agent.Name, UID: agent.UID}
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		current := &corev1.Namespace{}
+		if err := c.client.Get(ctx, client.ObjectKeyFromObject(created), current); err != nil {
+			return err
+		}
+		if current.UID != created.UID || !current.DeletionTimestamp.IsZero() {
+			return fmt.Errorf("newly created namespace was replaced or is deleting")
+		}
+		if len(current.OwnerReferences) != 0 {
+			if len(current.OwnerReferences) == 1 && current.OwnerReferences[0] == owner {
+				return nil
+			}
+			return fmt.Errorf("newly created namespace already has another owner")
+		}
+		before := current.DeepCopy()
+		current.OwnerReferences = []metav1.OwnerReference{owner}
+		return c.client.Patch(ctx, current, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{}))
+	})
 }
 
 // UpdateInstance updates an existing Agent CR and its associated Secrets.
@@ -842,8 +883,8 @@ func (c *Client) CreateTeam(ctx context.Context, team *cetirunv1alpha1.Team) (*c
 	return team, nil
 }
 
-// UpdateTeamSpec replaces an existing Team's spec, retrying on
-// conflict.
+// UpdateTeamSpec replaces the Portal-editable fields, preserving governance
+// fields from the latest stored Team on every conflict retry.
 func (c *Client) UpdateTeamSpec(ctx context.Context, name string, newSpec cetirunv1alpha1.TeamSpec) (*cetirunv1alpha1.Team, error) {
 	var result *cetirunv1alpha1.Team
 	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
@@ -851,7 +892,11 @@ func (c *Client) UpdateTeamSpec(ctx context.Context, name string, newSpec cetiru
 		if err != nil {
 			return err
 		}
-		team.Spec = newSpec
+		editable := newSpec.DeepCopy()
+		team.Spec.MemberContext = editable.MemberContext
+		team.Spec.Defaults = editable.Defaults
+		team.Spec.Skills = editable.Skills
+		team.Spec.SkillStorage = editable.SkillStorage
 		if err := c.client.Update(ctx, team); err != nil {
 			return fmt.Errorf("update team: %w", err)
 		}

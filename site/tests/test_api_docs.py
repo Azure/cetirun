@@ -1,7 +1,7 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 
-"""Keep executable documentation aligned with the Agent and Team API."""
+"""Keep executable documentation aligned with the CetiRun resource API."""
 
 import re
 import unittest
@@ -23,7 +23,7 @@ class ApiDocumentationTests(unittest.TestCase):
                 examples.append(page)
                 with self.subTest(page=page.name):
                     self.assertIn("apiVersion: cetirun.microsoft.com/v1alpha1\n", block)
-                    self.assertRegex(block, r"(?m)^kind: (Agent|Team)$")
+                    self.assertRegex(block, r"(?m)^kind: (Agent|Team|Sandbox|AgentPolicy)$")
                     self.assertNotRegex(block, r"(?m)^  namespace:")
                     if re.search(r"(?m)^kind: Agent$", block):
                         self.assertRegex(block, r"(?m)^  agent:")
@@ -44,6 +44,8 @@ class ApiDocumentationTests(unittest.TestCase):
         for kind, plural, short in (
             ("Agent", "agents", "cra"),
             ("Team", "teams", "crt"),
+            ("Sandbox", "sandboxes", "crs"),
+            ("AgentPolicy", "agentpolicies", "crp"),
         ):
             with self.subTest(kind=kind):
                 name = f"cetirun.microsoft.com_{plural}.yaml"

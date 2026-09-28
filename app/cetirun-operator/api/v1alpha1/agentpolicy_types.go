@@ -1,0 +1,208 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
+package v1alpha1
+
+import (
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+)
+
+// +kubebuilder:validation:Enum=normal;admin
+type AgentPolicyClass string
+
+const (
+	AgentPolicyClassNormal AgentPolicyClass = "normal"
+	AgentPolicyClassAdmin  AgentPolicyClass = "admin"
+)
+
+// AgentPolicySpec defines controls independently of runtime selection.
+type AgentPolicySpec struct {
+	// +kubebuilder:default={}
+	// +optional
+	SandboxSelection SandboxSelectionPolicy `json:"sandboxSelection,omitempty"`
+
+	// +kubebuilder:default={}
+	// +optional
+	Security AgentPolicySecurity `json:"security,omitempty"`
+
+	// +kubebuilder:default={}
+	// +optional
+	Network AgentPolicyNetwork `json:"network,omitempty"`
+
+	// KubernetesAccess requires separate authorization; its presence grants nothing.
+	// +optional
+	KubernetesAccess *AgentPolicyAdminKubernetesAccess `json:"kubernetesAccess,omitempty"`
+
+	// +kubebuilder:default={}
+	// +optional
+	EntraID AgentPolicyEntraID `json:"entraID,omitempty"`
+}
+
+type SandboxSelectionPolicy struct {
+	// +kubebuilder:default=false
+	// +optional
+	AllowMultiple bool `json:"allowMultiple,omitempty"`
+}
+
+type AgentPolicySecurity struct {
+	// +kubebuilder:default=true
+	// +optional
+	ReadOnlyRootFilesystem *bool `json:"readOnlyRootFilesystem,omitempty"`
+}
+
+type AgentPolicyNetwork struct {
+	// +kubebuilder:default={}
+	// +listType=atomic
+	// +optional
+	BlockedCIDRs []string `json:"blockedCIDRs,omitempty"`
+
+	// BlockedFQDNs contains exact lowercase ASCII hostnames, not URLs or IPs.
+	// +kubebuilder:validation:items:MinLength=1
+	// +kubebuilder:validation:items:MaxLength=253
+	// +kubebuilder:validation:items:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`
+	// +kubebuilder:default={}
+	// +listType=atomic
+	// +optional
+	BlockedFQDNs []string `json:"blockedFQDNs,omitempty"`
+
+	// +kubebuilder:default={}
+	// +listType=atomic
+	// +optional
+	BlockedPorts []AgentPolicyPort `json:"blockedPorts,omitempty"`
+
+	// +kubebuilder:default={}
+	// +listType=atomic
+	// +optional
+	AllowedInternalCIDRs []AgentPolicyCIDRRule `json:"allowedInternalCIDRs,omitempty"`
+
+	// +kubebuilder:default={}
+	// +optional
+	Ingress AgentPolicyIngress `json:"ingress,omitempty"`
+}
+
+type AgentPolicyCIDRRule struct {
+	// +kubebuilder:validation:MinLength=1
+	CIDR string `json:"cidr"`
+
+	// +kubebuilder:validation:MinItems=1
+	// +listType=atomic
+	Ports []AgentPolicyPort `json:"ports"`
+}
+
+type AgentPolicyPort struct {
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=65535
+	Port int32 `json:"port"`
+
+	// +kubebuilder:validation:Enum=TCP;UDP;SCTP
+	// +kubebuilder:default=TCP
+	// +optional
+	Protocol corev1.Protocol `json:"protocol,omitempty"`
+}
+
+// +kubebuilder:validation:Enum=authenticated;disabled
+type AgentPolicyIngressMode string
+
+const (
+	AgentPolicyIngressAuthenticated AgentPolicyIngressMode = "authenticated"
+	AgentPolicyIngressDisabled      AgentPolicyIngressMode = "disabled"
+)
+
+// +kubebuilder:validation:XValidation:rule="!has(self.mode) || self.mode != 'disabled' || !has(self.requireMTLS) || !self.requireMTLS",message="disabled ingress cannot require mTLS"
+type AgentPolicyIngress struct {
+	// +kubebuilder:default=authenticated
+	// +optional
+	Mode AgentPolicyIngressMode `json:"mode,omitempty"`
+
+	// +kubebuilder:default=false
+	// +optional
+	RequireMTLS bool `json:"requireMTLS,omitempty"`
+}
+
+// +kubebuilder:validation:XValidation:rule="(has(self.roleBindings) && size(self.roleBindings) > 0) || (has(self.clusterRoleBindings) && size(self.clusterRoleBindings) > 0)",message="at least one explicit RBAC grant is required"
+type AgentPolicyAdminKubernetesAccess struct {
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`
+	ServiceAccountName string `json:"serviceAccountName"`
+
+	// +listType=atomic
+	// +optional
+	RoleBindings []AgentPolicyRoleBinding `json:"roleBindings,omitempty"`
+
+	// +listType=atomic
+	// +optional
+	ClusterRoleBindings []AgentPolicyClusterRoleBinding `json:"clusterRoleBindings,omitempty"`
+}
+
+type AgentPolicyRoleBinding struct {
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
+	Namespace string `json:"namespace"`
+
+	// ClusterRoleName is an explicit Kubernetes path-segment name.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:Pattern=`^[^/%]+$`
+	// +kubebuilder:validation:XValidation:rule="self != '.' && self != '..'",message="a ClusterRole name cannot be '.' or '..'"
+	ClusterRoleName string `json:"clusterRoleName"`
+}
+
+type AgentPolicyClusterRoleBinding struct {
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:Pattern=`^[^/%]+$`
+	// +kubebuilder:validation:XValidation:rule="self != '.' && self != '..'",message="a ClusterRole name cannot be '.' or '..'"
+	ClusterRoleName string `json:"clusterRoleName"`
+}
+
+type AgentPolicyEntraID struct {
+	// +kubebuilder:default=false
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+}
+
+const ConditionAgentPolicyAccepted = "Accepted"
+
+// AgentPolicyStatus reports configuration acceptance, not Agent enforcement.
+type AgentPolicyStatus struct {
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+
+	// +listType=map
+	// +listMapKey=type
+	// +optional
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
+}
+
+// +kubebuilder:object:root=true
+// +kubebuilder:subresource:status
+// +kubebuilder:resource:path=agentpolicies,scope=Cluster,shortName=crp,singular=agentpolicy
+// +kubebuilder:printcolumn:name="Accepted",type=string,JSONPath=`.status.conditions[?(@.type=="Accepted")].status`
+// +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
+
+type AgentPolicy struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+
+	// Default objects allow nested defaults to apply even when spec is omitted.
+	// +kubebuilder:default={}
+	// +optional
+	Spec AgentPolicySpec `json:"spec,omitempty"`
+
+	// +optional
+	Status AgentPolicyStatus `json:"status,omitempty"`
+}
+
+// +kubebuilder:object:root=true
+
+type AgentPolicyList struct {
+	metav1.TypeMeta `json:",inline"`
+	metav1.ListMeta `json:"metadata,omitempty"`
+	Items           []AgentPolicy `json:"items"`
+}
+
+func init() {
+	SchemeBuilder.Register(&AgentPolicy{}, &AgentPolicyList{})
+}
