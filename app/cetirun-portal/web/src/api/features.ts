@@ -3,7 +3,7 @@
 
 import type { Features } from "../types/features";
 
-const FAIL_CLOSED: Features = { tailscaleEnabled: false, maxInstancesPerUser: 1, allowedAgentTypes: [] };
+const FAIL_CLOSED: Features = { tailscaleEnabled: false, agentIdentityEnabled: false, maxInstancesPerUser: 1, allowedAgentTypes: [] };
 
 export async function getFeatures(): Promise<Features> {
   try {

@@ -126,13 +126,17 @@ func TestAgentSerialization(t *testing.T) {
 
 func TestAgentDeepCopy(t *testing.T) {
 	instance := &api.Agent{
-		Spec: api.AgentSpec{Agent: api.HarnessSpec{
-			Type: api.AgentTypeCustom, Image: ptr.To("registry.example.com/agent:1"),
-			Username: ptr.To("vibe"), Port: ptr.To[int32](8080),
-			RegistrySecretRef: &api.RegistrySecretRef{Name: "source"},
-		}},
+		Spec: api.AgentSpec{
+			Agent: api.HarnessSpec{
+				Type: api.AgentTypeCustom, Image: ptr.To("registry.example.com/agent:1"),
+				Username: ptr.To("vibe"), Port: ptr.To[int32](8080),
+				RegistrySecretRef: &api.RegistrySecretRef{Name: "source"},
+			},
+			AgentIdentity: &api.AgentIdentitySpec{Enabled: true},
+		},
 		Status: api.AgentStatus{
-			MSTeams: &api.MSTeamsStatus{AppNotFoundSince: &metav1.Time{}},
+			MSTeams:       &api.MSTeamsStatus{AppNotFoundSince: &metav1.Time{}},
+			AgentIdentity: &api.AgentIdentityStatus{LastVerifiedTime: &metav1.Time{}},
 		},
 	}
 	copy := instance.DeepCopy()
@@ -140,12 +144,16 @@ func TestAgentDeepCopy(t *testing.T) {
 	*copy.Spec.Agent.Username = "other"
 	*copy.Spec.Agent.Port = 9090
 	copy.Spec.Agent.RegistrySecretRef.Name = "other"
+	copy.Spec.AgentIdentity.Enabled = false
 	copy.Status.MSTeams.AppNotFoundSince.Time = metav1.Now().Time
+	copy.Status.AgentIdentity.LastVerifiedTime.Time = metav1.Now().Time
 	if *instance.Spec.Agent.Image != "registry.example.com/agent:1" ||
 		*instance.Spec.Agent.Username != "vibe" ||
 		*instance.Spec.Agent.Port != 8080 ||
 		instance.Spec.Agent.RegistrySecretRef.Name != "source" ||
-		!instance.Status.MSTeams.AppNotFoundSince.IsZero() {
+		!instance.Spec.AgentIdentity.Enabled ||
+		!instance.Status.MSTeams.AppNotFoundSince.IsZero() ||
+		!instance.Status.AgentIdentity.LastVerifiedTime.IsZero() {
 		t.Fatal("deep copy shares mutable fields with the original")
 	}
 	list := (&api.AgentList{Items: []api.Agent{*instance}}).DeepCopy()
@@ -209,10 +217,22 @@ func TestGeneratedAgentSchema(t *testing.T) {
 	if slices.Contains(spec.Required, "gatewayTokenSecretRef") || len(spec.XValidations) == 0 {
 		t.Fatal("built-in credential requirement must be conditional")
 	}
-	for _, name := range []string{"model", "user", "team", "skillOverrides", "helm", "suspended"} {
+	for _, name := range []string{"model", "user", "team", "skillOverrides", "agentIdentity", "helm", "suspended"} {
 		if _, exists := spec.Properties[name]; !exists {
 			t.Errorf("independent spec.%s missing", name)
 		}
+	}
+	foundCustomAgentIdentityGate := false
+	for _, validation := range spec.XValidations {
+		if strings.Contains(validation.Rule, "!has(self.agentIdentity.enabled)") &&
+			strings.Contains(validation.Rule, "!self.agentIdentity.enabled") &&
+			strings.Contains(validation.Rule, "self.agent.type != 'custom'") {
+			foundCustomAgentIdentityGate = true
+			break
+		}
+	}
+	if !foundCustomAgentIdentityGate {
+		t.Fatal("schema must reject Agent Identity for custom agents")
 	}
 	for _, column := range crd.Spec.Versions[0].AdditionalPrinterColumns {
 		if column.Name == "Agent" {

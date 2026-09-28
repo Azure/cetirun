@@ -98,6 +98,18 @@ serviceAccount:
   name: cetirun-operator-controller-manager
   annotations: {}
 
+# -- Microsoft Entra Agent Identity lifecycle configuration. The feature is
+# deployment-scoped and remains disabled unless every required field is set.
+agentIdentity:
+  enabled: false
+  # Keep lifecycle credentials available while existing identities are being
+  # disabled or deleted after creation has been turned off.
+  cleanupEnabled: false
+  tenantId: ""
+  blueprintClientId: ""
+  namePrefix: "cetirun-agent"
+  brokerURL: "http://cetirun-agent-broker.cetirun-credentials.svc.cluster.local:8080"
+
 # -- Override the chart's default skills storage account.
 # Empty string (default) means use the chart's built-in default.
 # Deprecated: use cetirun.helmValues.skills.storageAccount instead.

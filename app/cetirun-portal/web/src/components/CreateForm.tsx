@@ -26,6 +26,7 @@ export function CreateForm({ onCreated }: { onCreated?: () => void }) {
   const [tailscaleAuthKey, setTailscaleAuthKey] = useState("");
   const [model, setModel] = useState("");
   const [teamsEnabled, setTeamsEnabled] = useState(false);
+  const [agentIdentityEnabled, setAgentIdentityEnabled] = useState(false);
   const createMutation = useCreateInstance({ onSuccess: onCreated });
   const { data: features, isLoading: featuresLoading } = useFeatures();
   const effectiveProvider = useEffectiveTeamProvider(team);
@@ -46,6 +47,10 @@ export function CreateForm({ onCreated }: { onCreated?: () => void }) {
     if (!usesGitHubCopilot) setModel("");
   }, [usesGitHubCopilot]);
 
+  useEffect(() => {
+    if (!features?.agentIdentityEnabled || agentType === "custom") setAgentIdentityEnabled(false);
+  }, [agentType, features?.agentIdentityEnabled]);
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     createMutation.mutate({
@@ -57,6 +62,7 @@ export function CreateForm({ onCreated }: { onCreated?: () => void }) {
       tailscaleAuthKey: tailscaleAuthKey || undefined,
       model: usesGitHubCopilot ? model.trim() || undefined : undefined,
       teamsEnabled: teamsEnabled || undefined,
+      agentIdentityEnabled: agentIdentityEnabled || undefined,
     });
   };
 
@@ -134,6 +140,14 @@ export function CreateForm({ onCreated }: { onCreated?: () => void }) {
         onChange={(_, data) => setTeamsEnabled(!!data.checked)}
         label="Enable Microsoft Teams Integration"
       />
+
+      {features?.agentIdentityEnabled && agentType !== "custom" && (
+        <Switch
+          checked={agentIdentityEnabled}
+          onChange={(_, data) => setAgentIdentityEnabled(!!data.checked)}
+          label="Enable Microsoft Entra Agent Identity"
+        />
+      )}
 
       <Button
         type="submit"

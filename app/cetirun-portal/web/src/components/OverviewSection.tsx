@@ -44,6 +44,7 @@ import { TeamPicker } from "./TeamPicker";
 import { StatusTab } from "./StatusTab";
 import { CopilotAuthBlock } from "./CopilotAuthBlock";
 import { CopilotModelPicker } from "./CopilotModelPicker";
+import { AgentAuthorizationBlock } from "./AgentAuthorizationBlock";
 
 const dialogListStyle: React.CSSProperties = {
   margin: "4px 0 0 0",
@@ -304,6 +305,8 @@ export function OverviewSection({ instance }: { instance: Instance }) {
       {nativeAgentUIUrl && instance.phase !== "Suspended" && (
         <CopilotAuthBlock instance={instance} />
       )}
+
+      {features?.agentIdentityEnabled && <AgentAuthorizationBlock instance={instance} />}
 
       {instance.teamsEnabled && (
         <TeamsStatusSection instance={instance} onDownload={openTeamsDownloadDialog} onShowInstructions={() => setTeamsInstructionsOpen(true)} />

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"google.golang.org/protobuf/proto"
 	"maps"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -78,6 +79,17 @@ type AgentReconciler struct {
 	AzureTenantID       string
 	AzureServiceTreeID  string // optional serviceManagementReference for app creation
 	AzureOIDCIssuerURL  string // auto-detected from cluster at startup
+
+	// Microsoft Entra Agent Identity deployment configuration.
+	AgentIdentityEnabled           bool
+	AgentIdentityTenantID          string
+	AgentIdentityBlueprintClientID string
+	AgentIdentityNamePrefix        string
+	AgentIdentityBrokerURL         string
+	AgentIdentityHTTPClient        *http.Client
+	// agentIdentityGraphClientFactory is test-only dependency injection. A nil
+	// factory constructs the deployment's workload-identity-backed Graph client.
+	agentIdentityGraphClientFactory func() (agentIdentityDirectoryClient, error)
 
 	istioMu          sync.Mutex
 	istioRevResolved string
@@ -211,6 +223,22 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		return r.reconcileCustom(ctx, instance, team)
 	}
 
+	// Persist the Agent Identity provisioning intent before any workload
+	// preparation. This preserves a canonical binding and create checkpoint
+	// across generation changes and transient downstream failures.
+	if agentIdentityRequested(instance) && (instance.Status.AgentIdentity == nil || instance.Status.AgentIdentity.ObservedGeneration != instance.Generation) {
+		status := ensureAgentIdentityStatus(instance)
+		status.Phase = cetirunv1alpha1.AgentIdentityPhaseProvisioning
+		status.ObservedGeneration = instance.Generation
+		status.Reason = ""
+		setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionAgentIdentityReady,
+			metav1.ConditionFalse, "Provisioning", "Agent Identity provisioning intent is recorded")
+		if err := r.updateStatus(ctx, instance); err != nil {
+			return ctrl.Result{}, fmt.Errorf("persist Agent Identity provisioning intent: %w", err)
+		}
+		return ctrl.Result{Requeue: true}, nil
+	}
+
 	var prepared *helm.PreparedRelease
 	if instance.Spec.Agent.Image == nil || instance.Spec.Agent.Port == nil {
 		var err error
@@ -259,7 +287,9 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 			gwSecretHash = secretContentHash(gwSecret.Data)
 		}
 
+		identityVerificationDue := agentIdentityVerificationDue(instance, time.Now())
 		if instance.Status.ObservedGeneration == instance.Generation &&
+			!identityVerificationDue &&
 			instance.Status.ObservedOperatorHash == r.configHash(instance, team, gwSecretHash, teamResourceVersion(team)) {
 			// Lightweight: ensure VirtualService is up to date (may change after operator upgrade).
 			// Update ConditionIngressReady so CR status reflects the actual VS state.
@@ -413,6 +443,34 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		}
 	}
 
+	// Reconcile the per-instance Agent Identity before rendering the workload.
+	// The Broker reads only the canonical binding persisted in CR status.
+	var agentIdentityRequeueAfter time.Duration
+	if instance.Spec.AgentIdentity != nil || instance.Status.AgentIdentity != nil {
+		logger.Info("Reconciling Agent Identity", "instance", instance.Name)
+		if err := r.reconcileAgentIdentity(ctx, instance); err != nil {
+			logger.Error(err, "Agent Identity reconciliation failed", "instance", instance.Name)
+			reason := "ReconcileFailed"
+			if instance.Status.AgentIdentity != nil && instance.Status.AgentIdentity.Reason != "" {
+				reason = instance.Status.AgentIdentity.Reason
+			}
+			setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionAgentIdentityReady,
+				metav1.ConditionFalse, reason, "Agent Identity is not ready")
+			_ = r.updateStatus(ctx, instance)
+			if !instance.Spec.Suspended {
+				return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+			}
+			// Suspension is a safety boundary and must not depend on directory
+			// availability. Continue to scale the workload to zero and remove
+			// ingress, while retaining the identity error for a separate retry.
+			agentIdentityRequeueAfter = 30 * time.Second
+		}
+		if agentIdentityRequested(instance) && instance.Status.AgentIdentity != nil && instance.Status.AgentIdentity.Phase == cetirunv1alpha1.AgentIdentityPhaseReady {
+			now := metav1.Now()
+			instance.Status.AgentIdentity.LastVerifiedTime = &now
+		}
+	}
+
 	// 9. Install / upgrade Helm chart (skip if already deployed at this generation).
 	// We check HelmDeployed condition + generation + operator hash rather than Phase,
 	// because Phase may be Provisioning while waiting for the StatefulSet pod to become
@@ -547,6 +605,9 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		if teamsRequeueAfter > 0 && teamsRequeueAfter < requeueAfter {
 			requeueAfter = teamsRequeueAfter
 		}
+		if agentIdentityRequeueAfter > 0 && agentIdentityRequeueAfter < requeueAfter {
+			requeueAfter = agentIdentityRequeueAfter
+		}
 		return ctrl.Result{RequeueAfter: requeueAfter}, nil
 	}
 
@@ -665,6 +726,15 @@ func (r *AgentReconciler) handleDelete(ctx context.Context, instance *cetirunv1a
 
 	// Delete Teams Azure resources (best-effort, never blocks deletion).
 	r.deleteTeams(ctx, instance)
+
+	// Agent Identity cleanup is blocking. Removing the finalizer before the
+	// authorization record and directory principal are gone would orphan them.
+	if agentIdentityRequested(instance) || instance.Status.AgentIdentity != nil {
+		if err := r.deleteAgentIdentity(ctx, instance); err != nil {
+			logger.Error(err, "Agent Identity cleanup failed; retaining finalizer", "instance", instance.Name)
+			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+		}
+	}
 
 	// Helm uninstall.
 	logger.Info("Uninstalling Helm release", "release", releaseName, "namespace", ns)

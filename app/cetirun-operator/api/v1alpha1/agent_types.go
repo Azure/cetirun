@@ -31,6 +31,7 @@ type SkillOverrideSpec struct {
 
 // AgentSpec defines the desired state of Agent.
 // +kubebuilder:validation:XValidation:rule="self.agent.type == 'custom' ? !has(self.gatewayTokenSecretRef) : has(self.gatewayTokenSecretRef)",message="gatewayTokenSecretRef is required for built-in agents and forbidden for custom agents",fieldPath=".gatewayTokenSecretRef"
+// +kubebuilder:validation:XValidation:rule="!has(self.agentIdentity) || !has(self.agentIdentity.enabled) || !self.agentIdentity.enabled || self.agent.type != 'custom'",message="agentIdentity is not supported for custom agents",fieldPath=".agentIdentity"
 type AgentSpec struct {
 	// Agent is the required per-instance Agent configuration.
 	// +required
@@ -57,6 +58,12 @@ type AgentSpec struct {
 	// specific team skills from this instance.
 	// +optional
 	SkillOverrides SkillOverrideSpec `json:"skillOverrides,omitempty"`
+
+	// AgentIdentity enables the Microsoft Entra Agent Identity integration for
+	// this instance. Identity identifiers and owner claims are platform-managed
+	// and are deliberately not accepted in spec.
+	// +optional
+	AgentIdentity *AgentIdentitySpec `json:"agentIdentity,omitempty"`
 
 	// GatewayTokenSecretRef names the built-in Agent's multi-purpose Secret
 	// in the instance namespace. Required for openclaw/hermes and forbidden for
@@ -192,17 +199,80 @@ type AgentStatus struct {
 	// MSTeams reports the observed state of Teams integration resources.
 	// +optional
 	MSTeams *MSTeamsStatus `json:"msteams,omitempty"`
+
+	// AgentIdentity reports the platform-managed Entra identity lifecycle.
+	// It never contains user tokens, authorization caches, or credentials.
+	// +optional
+	AgentIdentity *AgentIdentityStatus `json:"agentIdentity,omitempty"`
+}
+
+// AgentIdentitySpec exposes only the feature switch. Tenant, Blueprint,
+// owner, and credential settings are controlled by the CetiRun deployment.
+type AgentIdentitySpec struct {
+	// Enabled requests a dedicated Agent Identity for this instance.
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+}
+
+// AgentIdentityStatus reports non-secret identity lifecycle information.
+type AgentIdentityStatus struct {
+	// Phase is the current Agent Identity lifecycle phase.
+	// +kubebuilder:validation:Enum=Disabled;Provisioning;Ready;Degraded;Failed;Deleting
+	// +optional
+	Phase string `json:"phase,omitempty"`
+
+	// ClientID is the public application identifier of the Agent Identity.
+	// +optional
+	ClientID string `json:"clientId,omitempty"`
+
+	// ObjectID is the directory object identifier used for deterministic cleanup.
+	// It is platform-managed and is not a credential.
+	// +optional
+	ObjectID string `json:"objectId,omitempty"`
+
+	// DisplayName is the immutable directory display name bound to this Agent
+	// Identity. It remains stable if the deployment name prefix changes.
+	// +optional
+	DisplayName string `json:"displayName,omitempty"`
+
+	// CreationAttempted records a durable create checkpoint, which prevents a
+	// retry after an unknown request outcome from creating a second identity.
+	// +optional
+	CreationAttempted bool `json:"creationAttempted,omitempty"`
+
+	// ObservedGeneration is the Agent generation reconciled into this status.
+	// +optional
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+
+	// LastVerifiedTime records the most recent canonical directory verification.
+	// +optional
+	LastVerifiedTime *metav1.Time `json:"lastVerifiedTime,omitempty"`
+
+	// Reason is a stable, non-sensitive machine-readable status reason.
+	// +optional
+	Reason string `json:"reason,omitempty"`
 }
 
 // Condition type constants.
 const (
-	ConditionReady            = "Ready"
-	ConditionHelmDeployed     = "HelmDeployed"
-	ConditionIngressReady     = "IngressReady"
-	ConditionPodReady         = "PodReady"
-	ConditionTailscaleReady   = "TailscaleReady"
-	ConditionTeamsReady       = "TeamsReady"
-	ConditionAgentConfigReady = "AgentConfigReady"
+	ConditionReady              = "Ready"
+	ConditionHelmDeployed       = "HelmDeployed"
+	ConditionIngressReady       = "IngressReady"
+	ConditionPodReady           = "PodReady"
+	ConditionTailscaleReady     = "TailscaleReady"
+	ConditionTeamsReady         = "TeamsReady"
+	ConditionAgentConfigReady   = "AgentConfigReady"
+	ConditionAgentIdentityReady = "AgentIdentityReady"
+)
+
+// Agent Identity lifecycle phases.
+const (
+	AgentIdentityPhaseDisabled     = "Disabled"
+	AgentIdentityPhaseProvisioning = "Provisioning"
+	AgentIdentityPhaseReady        = "Ready"
+	AgentIdentityPhaseDegraded     = "Degraded"
+	AgentIdentityPhaseFailed       = "Failed"
+	AgentIdentityPhaseDeleting     = "Deleting"
 )
 
 // MSTeams state constants.
@@ -225,6 +295,13 @@ const (
 
 // Finalizer name used by the operator.
 const Finalizer = "cetirun.microsoft.com/finalizer"
+
+// Owner binding annotations are written only by trusted platform code from
+// verified Entra ID-token claims.
+const (
+	AnnotationOwnerTenantID = "agentidentity.cetirun.microsoft.com/owner-tenant-id"
+	AnnotationOwnerObjectID = "agentidentity.cetirun.microsoft.com/owner-object-id"
+)
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status

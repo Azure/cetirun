@@ -128,6 +128,17 @@ spec:
                 - fieldPath: .image
                   message: a pinned image cannot be removed
                   rule: '!has(oldSelf.image) || has(self.image)'
+              agentIdentity:
+                description: |-
+                  AgentIdentity enables the Microsoft Entra Agent Identity integration for
+                  this instance. Identity identifiers and owner claims are platform-managed
+                  and are deliberately not accepted in spec.
+                properties:
+                  enabled:
+                    description: Enabled requests a dedicated Agent Identity for this
+                      instance.
+                    type: boolean
+                type: object
               gatewayTokenSecretRef:
                 description: |-
                   GatewayTokenSecretRef names the built-in Agent's multi-purpose Secret
@@ -295,6 +306,10 @@ spec:
                 for custom agents
               rule: 'self.agent.type == ''custom'' ? !has(self.gatewayTokenSecretRef)
                 : has(self.gatewayTokenSecretRef)'
+            - fieldPath: .agentIdentity
+              message: agentIdentity is not supported for custom agents
+              rule: '!has(self.agentIdentity) || !has(self.agentIdentity.enabled)
+                || !self.agentIdentity.enabled || self.agent.type != ''custom'''
           status:
             description: AgentStatus defines the observed state of Agent.
             properties:
@@ -303,6 +318,55 @@ spec:
                   AccessURL is the HTTPS endpoint for the instance's native agent UI.
                   Example: "https://cetirun.example.com/ui/alice/"
                 type: string
+              agentIdentity:
+                description: |-
+                  AgentIdentity reports the platform-managed Entra identity lifecycle.
+                  It never contains user tokens, authorization caches, or credentials.
+                properties:
+                  clientId:
+                    description: ClientID is the public application identifier of
+                      the Agent Identity.
+                    type: string
+                  creationAttempted:
+                    description: |-
+                      CreationAttempted records a durable create checkpoint, which prevents a
+                      retry after an unknown request outcome from creating a second identity.
+                    type: boolean
+                  displayName:
+                    description: |-
+                      DisplayName is the immutable directory display name bound to this Agent
+                      Identity. It remains stable if the deployment name prefix changes.
+                    type: string
+                  lastVerifiedTime:
+                    description: LastVerifiedTime records the most recent canonical
+                      directory verification.
+                    format: date-time
+                    type: string
+                  objectId:
+                    description: |-
+                      ObjectID is the directory object identifier used for deterministic cleanup.
+                      It is platform-managed and is not a credential.
+                    type: string
+                  observedGeneration:
+                    description: ObservedGeneration is the Agent generation reconciled
+                      into this status.
+                    format: int64
+                    type: integer
+                  phase:
+                    description: Phase is the current Agent Identity lifecycle phase.
+                    enum:
+                    - Disabled
+                    - Provisioning
+                    - Ready
+                    - Degraded
+                    - Failed
+                    - Deleting
+                    type: string
+                  reason:
+                    description: Reason is a stable, non-sensitive machine-readable
+                      status reason.
+                    type: string
+                type: object
               conditions:
                 description: Conditions contains the latest available observations
                   of the instance's state.

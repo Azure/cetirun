@@ -158,6 +158,16 @@ func main() {
 	azureBotNamePrefix := os.Getenv("AZURE_BOT_NAME_PREFIX")
 	azureTenantID := os.Getenv("AZURE_TENANT_ID")
 	azureServiceTreeID := os.Getenv("AZURE_SERVICE_TREE_ID")
+	agentIdentityEnabled := strings.EqualFold(os.Getenv("AGENT_ID_ENABLED"), "true")
+	agentIdentityCleanupEnabled := strings.EqualFold(os.Getenv("AGENT_ID_CLEANUP_ENABLED"), "true")
+	agentIdentityTenantID := os.Getenv("AGENT_ID_TENANT_ID")
+	agentIdentityBlueprintClientID := os.Getenv("AGENT_ID_BLUEPRINT_CLIENT_ID")
+	agentIdentityNamePrefix := getEnvOrDefault("AGENT_ID_NAME_PREFIX", "cetirun-agent")
+	agentIdentityBrokerURL := os.Getenv("AGENT_ID_BROKER_URL")
+	if (agentIdentityEnabled || agentIdentityCleanupEnabled) && (agentIdentityTenantID == "" || agentIdentityBlueprintClientID == "" || agentIdentityBrokerURL == "") {
+		setupLog.Info("Agent Identity requires tenant ID, Blueprint client ID, and Broker URL")
+		os.Exit(1)
+	}
 
 	// Auto-detect OIDC issuer URL from the cluster.
 	azureOIDCIssuerURL := detectOIDCIssuer(setupLog)
@@ -184,26 +194,31 @@ func main() {
 		os.Exit(1)
 	}
 	agentReconciler := &controller.AgentReconciler{
-		Client:               mgr.GetClient(),
-		Scheme:               mgr.GetScheme(),
-		EventRecorder:        mgr.GetEventRecorderFor("cetirun-operator"),
-		HelmClient:           helmClient,
-		OperatorNamespace:    getEnvOrDefault("OPERATOR_NAMESPACE", "cetirun-system"),
-		OperatorSAName:       getEnvOrDefault("OPERATOR_SA_NAME", "cetirun-operator-controller-manager"),
-		ChartVersion:         chartVersion,
-		IstioRevision:        istioRevision,
-		IstioGateway:         istioGateway,
-		DomainSuffix:         domainSuffix,
-		SkillsStorageAccount: skillsStorageAccount,
-		CetiRunHelmValues:    cetirunHelmValues,
-		ChartRegistry:        chartRegistry,
-		DefaultModel:         defaultModel,
-		AzureSubscriptionID:  azureSubscriptionID,
-		AzureResourceGroup:   azureResourceGroup,
-		AzureBotNamePrefix:   azureBotNamePrefix,
-		AzureTenantID:        azureTenantID,
-		AzureServiceTreeID:   azureServiceTreeID,
-		AzureOIDCIssuerURL:   azureOIDCIssuerURL,
+		Client:                         mgr.GetClient(),
+		Scheme:                         mgr.GetScheme(),
+		EventRecorder:                  mgr.GetEventRecorderFor("cetirun-operator"),
+		HelmClient:                     helmClient,
+		OperatorNamespace:              getEnvOrDefault("OPERATOR_NAMESPACE", "cetirun-system"),
+		OperatorSAName:                 getEnvOrDefault("OPERATOR_SA_NAME", "cetirun-operator-controller-manager"),
+		ChartVersion:                   chartVersion,
+		IstioRevision:                  istioRevision,
+		IstioGateway:                   istioGateway,
+		DomainSuffix:                   domainSuffix,
+		SkillsStorageAccount:           skillsStorageAccount,
+		CetiRunHelmValues:              cetirunHelmValues,
+		ChartRegistry:                  chartRegistry,
+		DefaultModel:                   defaultModel,
+		AzureSubscriptionID:            azureSubscriptionID,
+		AzureResourceGroup:             azureResourceGroup,
+		AzureBotNamePrefix:             azureBotNamePrefix,
+		AzureTenantID:                  azureTenantID,
+		AzureServiceTreeID:             azureServiceTreeID,
+		AzureOIDCIssuerURL:             azureOIDCIssuerURL,
+		AgentIdentityEnabled:           agentIdentityEnabled,
+		AgentIdentityTenantID:          agentIdentityTenantID,
+		AgentIdentityBlueprintClientID: agentIdentityBlueprintClientID,
+		AgentIdentityNamePrefix:        agentIdentityNamePrefix,
+		AgentIdentityBrokerURL:         agentIdentityBrokerURL,
 	}
 	if customConfig.Enabled {
 		agentReconciler.CustomBindings = controller.NewKubernetesCustomBindings(agentReconciler, customConfig)

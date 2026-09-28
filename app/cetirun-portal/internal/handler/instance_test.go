@@ -37,6 +37,17 @@ func withClaims(r *http.Request, alias, displayName, email string) *http.Request
 	return r.WithContext(ctx)
 }
 
+func withAgentIdentityClaims(r *http.Request, alias, tenantID, objectID string) *http.Request {
+	claims := auth.Claims{
+		Alias:       alias,
+		DisplayName: alias + "@example.com",
+		Email:       alias + "@example.com",
+		TenantID:    tenantID,
+		ObjectID:    objectID,
+	}
+	return r.WithContext(auth.NewContext(r.Context(), claims))
+}
+
 func sampleInstance() *cetirunv1alpha1.Agent {
 	reconcileTime := metav1.NewTime(time.Date(2024, 1, 15, 12, 0, 0, 0, time.UTC))
 	return &cetirunv1alpha1.Agent{
@@ -116,6 +127,37 @@ func TestToInstanceResponse(t *testing.T) {
 	}
 	if resp.Conditions[0].Status != "True" {
 		t.Errorf("Conditions[0].Status = %q, want %q", resp.Conditions[0].Status, "True")
+	}
+}
+
+func TestToInstanceResponseExposesOnlyAgentIdentityLifecycle(t *testing.T) {
+	instance := sampleInstance()
+	instance.Status.Phase = "Pending"
+	instance.Spec.AgentIdentity = &cetirunv1alpha1.AgentIdentitySpec{Enabled: true}
+	instance.Status.AgentIdentity = &cetirunv1alpha1.AgentIdentityStatus{
+		Phase:    cetirunv1alpha1.AgentIdentityPhaseReady,
+		Reason:   "AgentIdentityReady",
+		ClientID: "11111111-1111-1111-1111-111111111111",
+		ObjectID: "22222222-2222-2222-2222-222222222222",
+	}
+	h := &InstanceHandler{Kube: kube.NewClient(newFakeClient())}
+
+	response, err := h.toInstanceResponse(context.Background(), instance)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.AgentIdentity == nil || !response.AgentIdentity.Enabled ||
+		response.AgentIdentity.Phase != cetirunv1alpha1.AgentIdentityPhaseReady ||
+		response.AgentIdentity.Reason != "AgentIdentityReady" {
+		t.Fatalf("AgentIdentity response = %#v", response.AgentIdentity)
+	}
+	payload, err := json.Marshal(response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(payload), instance.Status.AgentIdentity.ClientID) ||
+		strings.Contains(string(payload), instance.Status.AgentIdentity.ObjectID) {
+		t.Fatalf("response exposed directory identifiers: %s", payload)
 	}
 }
 
@@ -291,6 +333,66 @@ func TestCreateInstance_ExplicitOpenClaw(t *testing.T) {
 	}
 	if resp.AgentType != "openclaw" {
 		t.Fatalf("explicit AgentType changed: %q", resp.AgentType)
+	}
+}
+
+func TestCreateInstanceAgentIdentityRequiresEnabledFeature(t *testing.T) {
+	h := &InstanceHandler{Kube: kube.NewClient(newFakeClient())}
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/instance", strings.NewReader(`{"agentIdentityEnabled":true}`))
+	req = withAgentIdentityClaims(req, "alice", "11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222")
+	w := httptest.NewRecorder()
+
+	h.CreateInstance(w, req)
+
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "feature_disabled") {
+		t.Fatalf("response = %d %s, want feature_disabled", w.Code, w.Body.String())
+	}
+}
+
+func TestCreateInstanceAgentIdentityRequiresVerifiedOwner(t *testing.T) {
+	h := &InstanceHandler{
+		Kube:   kube.NewClient(newFakeClient()),
+		Config: config.Config{AgentIdentityEnabled: true},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/instance", strings.NewReader(`{"agentIdentityEnabled":true}`))
+	req = withClaims(req, "alice", "Alice Smith", "alice@example.com")
+	w := httptest.NewRecorder()
+
+	h.CreateInstance(w, req)
+
+	if w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "verified_owner_required") {
+		t.Fatalf("response = %d %s, want verified_owner_required", w.Code, w.Body.String())
+	}
+}
+
+func TestCreateInstanceAgentIdentityBindsVerifiedOwner(t *testing.T) {
+	const tenantID = "11111111-1111-1111-1111-111111111111"
+	const objectID = "22222222-2222-2222-2222-222222222222"
+	h := &InstanceHandler{
+		Kube:   kube.NewClient(newFakeClient()),
+		Config: config.Config{AgentIdentityEnabled: true},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/instance", strings.NewReader(`{"agentIdentityEnabled":true}`))
+	req = withAgentIdentityClaims(req, "alice", tenantID, objectID)
+	w := httptest.NewRecorder()
+
+	h.CreateInstance(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("response = %d %s, want created", w.Code, w.Body.String())
+	}
+	instance, err := h.Kube.GetInstance(context.Background(), "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if instance.Spec.AgentIdentity == nil || !instance.Spec.AgentIdentity.Enabled {
+		t.Fatal("Agent Identity was not enabled on the created instance")
+	}
+	if got := instance.Annotations[cetirunv1alpha1.AnnotationOwnerTenantID]; got != tenantID {
+		t.Fatalf("owner tenant annotation = %q, want %q", got, tenantID)
+	}
+	if got := instance.Annotations[cetirunv1alpha1.AnnotationOwnerObjectID]; got != objectID {
+		t.Fatalf("owner object annotation = %q, want %q", got, objectID)
 	}
 }
 

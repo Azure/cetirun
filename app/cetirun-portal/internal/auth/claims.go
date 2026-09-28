@@ -23,10 +23,21 @@ type Claims struct {
 	// Email is the user's email from the X-Auth-Request-Email header.
 	Email string
 
+	// LoginHint is preferably Entra's opaque optional login_hint claim from the
+	// verified Portal ID token. Older app registrations fall back to the
+	// tenant-facing preferred username. It only guides interactive sign-in and
+	// is never accepted as proof of identity.
+	LoginHint string
+
 	// IsAdmin is true when the user's alias matches the configured admin
 	// allowlist. Used by the RequireAdmin middleware and the /api/v1/me
 	// endpoint to gate the admin portal.
 	IsAdmin bool
+
+	// TenantID and ObjectID are taken only from a cryptographically verified
+	// Entra ID token. They are empty when Agent Identity is disabled.
+	TenantID string
+	ObjectID string
 }
 
 type claimsKey struct{}
@@ -45,6 +56,7 @@ func ClaimsFromContext(ctx context.Context) (Claims, bool) {
 // DNS-1123 label pattern: start with letter, end with letter or digit,
 // middle can contain letters, digits, or hyphens. Max 63 chars.
 var aliasPattern = regexp.MustCompile(`^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$`)
+var canonicalID = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
 // aliasFromUPN extracts the alias from a UPN like "alice@example.com"
 // and converts it to lowercase. Returns empty string if the result doesn't

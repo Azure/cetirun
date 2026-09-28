@@ -29,17 +29,32 @@ type Config struct {
 	MaxInstancesPerUser int
 	// AllowedAgentTypes controls which agent types are offered in the portal create form.
 	AllowedAgentTypes []string
+	// AgentIdentityEnabled requires cryptographically verified Entra owner
+	// claims and exposes the per-instance authorization experience.
+	AgentIdentityEnabled bool
+	// EntraTenantID and PortalClientID identify the issuer and audience of the
+	// ID token passed by oauth2-proxy to the Portal backend.
+	EntraTenantID  string
+	PortalClientID string
+	// AgentIdentityBrokerURL is an internal cluster URL, never browser-visible.
+	AgentIdentityBrokerURL string
+	PortalOrigin           string
 }
 
 // Load reads configuration from environment variables.
 func Load() Config {
 	return Config{
-		ListenAddr:          envOrDefault("LISTEN_ADDR", ":8080"),
-		InternalListenAddr:  envOrDefault("INTERNAL_LISTEN_ADDR", ":8081"),
-		TailscaleEnabled:    os.Getenv("FEATURE_TAILSCALE_ENABLED") == "true",
-		NoticeBanner:        os.Getenv("NOTICE_BANNER"),
-		MaxInstancesPerUser: envOrDefaultInt("MAX_INSTANCES_PER_USER", 1),
-		AllowedAgentTypes:   envOrDefaultAgentTypes("ALLOWED_AGENT_TYPES", defaultAllowedAgentTypes),
+		ListenAddr:             envOrDefault("LISTEN_ADDR", ":8080"),
+		InternalListenAddr:     envOrDefault("INTERNAL_LISTEN_ADDR", ":8081"),
+		TailscaleEnabled:       os.Getenv("FEATURE_TAILSCALE_ENABLED") == "true",
+		NoticeBanner:           os.Getenv("NOTICE_BANNER"),
+		MaxInstancesPerUser:    envOrDefaultInt("MAX_INSTANCES_PER_USER", 1),
+		AllowedAgentTypes:      envOrDefaultAgentTypes("ALLOWED_AGENT_TYPES", defaultAllowedAgentTypes),
+		AgentIdentityEnabled:   os.Getenv("FEATURE_AGENT_IDENTITY_ENABLED") == "true",
+		EntraTenantID:          envOrDefault("ENTRA_TENANT_ID", ""),
+		PortalClientID:         envOrDefault("PORTAL_OIDC_CLIENT_ID", ""),
+		AgentIdentityBrokerURL: envOrDefault("AGENT_ID_BROKER_URL", "http://cetirun-agent-broker.cetirun-credentials.svc.cluster.local:8080"),
+		PortalOrigin:           envOrDefault("PORTAL_ORIGIN", ""),
 	}
 }
 
