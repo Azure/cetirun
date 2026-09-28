@@ -64,38 +64,47 @@ var reservedInstanceNames = map[string]struct{}{
 
 // CreateInstanceRequest is the JSON body for POST /api/v1/instance.
 type CreateInstanceRequest struct {
-	InstanceName     string `json:"instanceName,omitempty"`
-	AgentType        string `json:"agentType,omitempty"`
-	DisplayName      string `json:"displayName,omitempty"`
-	Team             string `json:"team"`
-	GatewayToken     string `json:"gatewayToken,omitempty"`
-	TailscaleAuthKey string `json:"tailscaleAuthKey,omitempty"`
-	Model            string `json:"model,omitempty"`
-	TeamsEnabled     bool   `json:"teamsEnabled,omitempty"`
+	InstanceName         string `json:"instanceName,omitempty"`
+	AgentType            string `json:"agentType,omitempty"`
+	DisplayName          string `json:"displayName,omitempty"`
+	Team                 string `json:"team"`
+	GatewayToken         string `json:"gatewayToken,omitempty"`
+	TailscaleAuthKey     string `json:"tailscaleAuthKey,omitempty"`
+	Model                string `json:"model,omitempty"`
+	TeamsEnabled         bool   `json:"teamsEnabled,omitempty"`
+	AgentIdentityEnabled bool   `json:"agentIdentityEnabled,omitempty"`
 }
 
 // InstanceResponse is the JSON response for GET /api/v1/instance.
 type InstanceResponse struct {
-	Alias            string            `json:"alias"`
-	InstanceName     string            `json:"instanceName"`
-	AgentType        string            `json:"agentType"`
-	DisplayName      string            `json:"displayName"`
-	Team             string            `json:"team"`
-	Model            string            `json:"model,omitempty"`
-	Phase            string            `json:"phase"`
-	AccessURL        string            `json:"accessUrl,omitempty"`        // Access URL (token is returned separately via GatewayToken)
-	GatewayToken     string            `json:"gatewayToken,omitempty"`     // Separate gateway token for display, when available
-	APIServerKey     string            `json:"apiServerKey,omitempty"`     // Hermes API server key for display, when available
-	CetiRunAuthKey   string            `json:"cetirunAuthKey,omitempty"`   // Bearer key for the in-pod cetirun-auth helper (both agent types)
-	TailscaleAuthKey string            `json:"tailscaleAuthKey,omitempty"` // Tailscale auth key for display, when available
-	Conditions       []ConditionStatus `json:"conditions,omitempty"`
-	CreatedAt        string            `json:"createdAt"`
-	LastReconciled   string            `json:"lastReconciled,omitempty"`
-	UpgradeAvailable bool              `json:"upgradeAvailable"`
-	TeamsEnabled     bool              `json:"teamsEnabled"`
-	TeamsState       string            `json:"teamsState,omitempty"`   // Provisioning | PendingAppRegistration | Ready | Failed | Deleting
-	TeamsAppID       string            `json:"teamsAppId,omitempty"`   // Azure AD Application ID for sideloading
-	TeamsMessage     string            `json:"teamsMessage,omitempty"` // Human-readable Teams status detail
+	Alias            string                 `json:"alias"`
+	InstanceName     string                 `json:"instanceName"`
+	AgentType        string                 `json:"agentType"`
+	DisplayName      string                 `json:"displayName"`
+	Team             string                 `json:"team"`
+	Model            string                 `json:"model,omitempty"`
+	Phase            string                 `json:"phase"`
+	AccessURL        string                 `json:"accessUrl,omitempty"`        // Access URL (token is returned separately via GatewayToken)
+	GatewayToken     string                 `json:"gatewayToken,omitempty"`     // Separate gateway token for display, when available
+	APIServerKey     string                 `json:"apiServerKey,omitempty"`     // Hermes API server key for display, when available
+	CetiRunAuthKey   string                 `json:"cetirunAuthKey,omitempty"`   // Bearer key for the in-pod cetirun-auth helper (both agent types)
+	TailscaleAuthKey string                 `json:"tailscaleAuthKey,omitempty"` // Tailscale auth key for display, when available
+	Conditions       []ConditionStatus      `json:"conditions,omitempty"`
+	CreatedAt        string                 `json:"createdAt"`
+	LastReconciled   string                 `json:"lastReconciled,omitempty"`
+	UpgradeAvailable bool                   `json:"upgradeAvailable"`
+	TeamsEnabled     bool                   `json:"teamsEnabled"`
+	TeamsState       string                 `json:"teamsState,omitempty"`   // Provisioning | PendingAppRegistration | Ready | Failed | Deleting
+	TeamsAppID       string                 `json:"teamsAppId,omitempty"`   // Azure AD Application ID for sideloading
+	TeamsMessage     string                 `json:"teamsMessage,omitempty"` // Human-readable Teams status detail
+	AgentIdentity    *AgentIdentityResponse `json:"agentIdentity,omitempty"`
+}
+
+// AgentIdentityResponse contains only non-sensitive lifecycle information.
+type AgentIdentityResponse struct {
+	Enabled bool   `json:"enabled"`
+	Phase   string `json:"phase,omitempty"`
+	Reason  string `json:"reason,omitempty"`
 }
 
 // ConditionStatus is a simplified view of a Kubernetes condition.
@@ -574,6 +583,14 @@ func (h *InstanceHandler) CreateInstance(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusBadRequest, "feature_disabled", "Tailscale feature is not enabled")
 		return
 	}
+	if req.AgentIdentityEnabled && !h.Config.AgentIdentityEnabled {
+		writeError(w, http.StatusBadRequest, "feature_disabled", "Agent Identity is not enabled for this deployment")
+		return
+	}
+	if req.AgentIdentityEnabled && (claims.TenantID == "" || claims.ObjectID == "") {
+		writeError(w, http.StatusForbidden, "verified_owner_required", "A verified Microsoft Entra owner identity is required")
+		return
+	}
 	if len(strings.TrimSpace(req.Model)) > 256 {
 		writeError(w, http.StatusBadRequest, "invalid_model", "model must be 256 characters or fewer")
 		return
@@ -621,7 +638,11 @@ func (h *InstanceHandler) CreateInstance(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
-	instance, err := h.Kube.CreateInstance(r.Context(), claims.Alias, displayName, req.Team, claims.Email, instanceName, string(agentType), req.GatewayToken, req.TailscaleAuthKey, strings.TrimSpace(req.Model), req.TeamsEnabled)
+	instance, err := h.Kube.CreateInstance(r.Context(), claims.Alias, displayName, req.Team, claims.Email, instanceName, string(agentType), req.GatewayToken, req.TailscaleAuthKey, strings.TrimSpace(req.Model), req.TeamsEnabled, kube.CreateInstanceOptions{
+		AgentIdentityEnabled: req.AgentIdentityEnabled,
+		OwnerTenantID:        claims.TenantID,
+		OwnerObjectID:        claims.ObjectID,
+	})
 	if err != nil {
 		if kube.IsAlreadyExists(err) {
 			writeError(w, http.StatusConflict, "instance_exists",
@@ -889,6 +910,13 @@ func (h *InstanceHandler) toInstanceResponse(ctx context.Context, instance *ceti
 		resp.TeamsState = instance.Status.MSTeams.State
 		resp.TeamsAppID = instance.Status.MSTeams.AppID
 		resp.TeamsMessage = instance.Status.MSTeams.Message
+	}
+	if instance.Spec.AgentIdentity != nil {
+		resp.AgentIdentity = &AgentIdentityResponse{Enabled: instance.Spec.AgentIdentity.Enabled}
+		if instance.Status.AgentIdentity != nil {
+			resp.AgentIdentity.Phase = instance.Status.AgentIdentity.Phase
+			resp.AgentIdentity.Reason = instance.Status.AgentIdentity.Reason
+		}
 	}
 
 	return resp, nil

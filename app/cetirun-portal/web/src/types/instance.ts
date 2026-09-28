@@ -31,6 +31,11 @@ export interface Instance {
   teamsState?: "Provisioning" | "PendingAppRegistration" | "Ready" | "Failed" | "Deleting";
   teamsAppId?: string;
   teamsMessage?: string;
+  agentIdentity?: {
+    enabled: boolean;
+    phase?: "Disabled" | "Provisioning" | "Ready" | "Degraded" | "Failed" | "Deleting";
+    reason?: string;
+  };
 }
 
 export interface ConditionStatus {
@@ -49,6 +54,7 @@ export interface CreateInstanceRequest {
   tailscaleAuthKey?: string;
   model?: string;
   teamsEnabled?: boolean;
+  agentIdentityEnabled?: boolean;
 }
 
 export interface UpdateInstanceRequest {

@@ -540,6 +540,13 @@ func (r *AgentReconciler) configHash(instance *cetirunv1alpha1.Agent, team *ceti
 		r.AzureSubscriptionID, r.AzureResourceGroup, r.AzureBotNamePrefix,
 		r.AzureTenantID, r.AzureOIDCIssuerURL,
 	}
+	// Preserve the existing hash for deployments and Agents that do not use
+	// Agent Identity. This prevents an unrelated operator upgrade from rolling
+	// every workload when the feature remains disabled.
+	if r.AgentIdentityEnabled || agentIdentityRequested(instance) || instance.Status.AgentIdentity != nil {
+		config = append(config, r.AgentIdentityTenantID, r.AgentIdentityBlueprintClientID,
+			r.AgentIdentityNamePrefix, r.AgentIdentityBrokerURL)
+	}
 	// A configured default affects only GitHub Copilot instances without a
 	// per-instance model. Include it only for those instances so changing the
 	// default does not restart explicitly configured or non-Copilot instances.

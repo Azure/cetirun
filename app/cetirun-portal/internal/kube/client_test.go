@@ -5,6 +5,7 @@ package kube
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
@@ -109,6 +110,35 @@ func TestCreateInstance_Success(t *testing.T) {
 	}
 	if got.Spec.User.Email != "bob@example.com" {
 		t.Errorf("Email = %q, want %q", got.Spec.User.Email, "bob@example.com")
+	}
+}
+
+func TestCreateInstanceAgentIdentityRequiresOwner(t *testing.T) {
+	c := NewClient(newFakeClient())
+
+	_, err := c.CreateInstance(context.Background(), "bob", "Bob Jones", "other-team", "bob@example.com", "", "", "", "", "", false,
+		CreateInstanceOptions{AgentIdentityEnabled: true})
+	if err == nil || !strings.Contains(err.Error(), "verified owner identity") {
+		t.Fatalf("CreateInstance() error = %v, want verified owner identity error", err)
+	}
+}
+
+func TestCreateInstanceAgentIdentityPersistsOwnerBinding(t *testing.T) {
+	const tenantID = "11111111-1111-1111-1111-111111111111"
+	const objectID = "22222222-2222-2222-2222-222222222222"
+	c := NewClient(newFakeClient())
+
+	instance, err := c.CreateInstance(context.Background(), "bob", "Bob Jones", "other-team", "bob@example.com", "", "", "", "", "", false,
+		CreateInstanceOptions{AgentIdentityEnabled: true, OwnerTenantID: tenantID, OwnerObjectID: objectID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if instance.Spec.AgentIdentity == nil || !instance.Spec.AgentIdentity.Enabled {
+		t.Fatal("Agent Identity was not enabled")
+	}
+	if instance.Annotations[cetirunv1alpha1.AnnotationOwnerTenantID] != tenantID ||
+		instance.Annotations[cetirunv1alpha1.AnnotationOwnerObjectID] != objectID {
+		t.Fatalf("owner annotations = %#v", instance.Annotations)
 	}
 }
 

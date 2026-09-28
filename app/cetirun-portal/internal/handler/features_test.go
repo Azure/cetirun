@@ -16,9 +16,10 @@ import (
 func TestGetFeatures(t *testing.T) {
 	h := &FeaturesHandler{
 		Config: config.Config{
-			TailscaleEnabled:    true,
-			MaxInstancesPerUser: 2,
-			AllowedAgentTypes:   []string{"hermes"},
+			TailscaleEnabled:     true,
+			AgentIdentityEnabled: true,
+			MaxInstancesPerUser:  2,
+			AllowedAgentTypes:    []string{"hermes"},
 		},
 	}
 
@@ -36,6 +37,9 @@ func TestGetFeatures(t *testing.T) {
 	}
 	if !resp.TailscaleEnabled {
 		t.Errorf("tailscaleEnabled = false, want true")
+	}
+	if !resp.AgentIdentityEnabled {
+		t.Errorf("agentIdentityEnabled = false, want true")
 	}
 	if resp.MaxInstancesPerUser != 2 {
 		t.Errorf("maxInstancesPerUser = %d, want 2", resp.MaxInstancesPerUser)

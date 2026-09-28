@@ -17,7 +17,7 @@ spec:
       labels:
         app.kubernetes.io/name: cetirun-operator
         app.kubernetes.io/version: {{ include "cetirun-operator.version" . | default .Chart.AppVersion | quote }}
-        {{- if .Values.azure.clientId }}
+        {{- if or .Values.azure.clientId .Values.agentIdentity.enabled .Values.agentIdentity.cleanupEnabled }}
         azure.workload.identity/use: "true"
         {{- end }}
       {{- with .Values.podAnnotations }}
@@ -93,6 +93,20 @@ spec:
             {{- if .Values.azure.ficIssuerIds }}
             - name: FIC_ISSUER_IDS
               value: {{ .Values.azure.ficIssuerIds | quote }}
+            {{- end }}
+            - name: AGENT_ID_ENABLED
+              value: {{ .Values.agentIdentity.enabled | quote }}
+            - name: AGENT_ID_CLEANUP_ENABLED
+              value: {{ .Values.agentIdentity.cleanupEnabled | quote }}
+            {{- if or .Values.agentIdentity.enabled .Values.agentIdentity.cleanupEnabled }}
+            - name: AGENT_ID_TENANT_ID
+              value: {{ required "agentIdentity.tenantId is required for Agent Identity lifecycle operations" .Values.agentIdentity.tenantId | quote }}
+            - name: AGENT_ID_BLUEPRINT_CLIENT_ID
+              value: {{ required "agentIdentity.blueprintClientId is required for Agent Identity lifecycle operations" .Values.agentIdentity.blueprintClientId | quote }}
+            - name: AGENT_ID_NAME_PREFIX
+              value: {{ .Values.agentIdentity.namePrefix | quote }}
+            - name: AGENT_ID_BROKER_URL
+              value: {{ required "agentIdentity.brokerURL is required for Agent Identity lifecycle operations" .Values.agentIdentity.brokerURL | quote }}
             {{- end }}
             - name: KUBE_FEATURE_WatchListClient
               value: "false"

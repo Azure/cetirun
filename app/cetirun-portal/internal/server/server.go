@@ -22,6 +22,7 @@ func New(
 	adminInstanceHandler *handler.AdminInstanceHandler,
 	authMiddleware func(http.Handler) http.Handler,
 	requireAdmin func(http.Handler) http.Handler,
+	agentAuthorizationHandlers ...*handler.AgentAuthorizationHandler,
 ) *http.ServeMux {
 	mux := http.NewServeMux()
 
@@ -56,6 +57,13 @@ func New(
 	api.HandleFunc("GET /api/v1/instances/{name}/status", instanceHandler.GetInstanceStatusByName)
 	api.HandleFunc("GET /api/v1/instances/{name}/teams-app", instanceHandler.DownloadTeamsAppByName)
 	api.HandleFunc("GET /api/v1/teams", instanceHandler.ListTeams)
+	if len(agentAuthorizationHandlers) > 0 && agentAuthorizationHandlers[0] != nil {
+		agentAuthorizationHandler := agentAuthorizationHandlers[0]
+		api.HandleFunc("GET /api/v1/instances/{name}/agent-authorization", agentAuthorizationHandler.Status)
+		api.HandleFunc("POST /api/v1/instances/{name}/agent-authorization/start", agentAuthorizationHandler.Start)
+		api.HandleFunc("DELETE /api/v1/instances/{name}/agent-authorization", agentAuthorizationHandler.End)
+		mux.HandleFunc("POST /api/v1/agent-authorization/callback", agentAuthorizationHandler.Callback)
+	}
 
 	// Admin API: gated by RequireAdmin (in addition to the auth middleware
 	// applied to the entire /api/ subtree). Mounted on a child mux so

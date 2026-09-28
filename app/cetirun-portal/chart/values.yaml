@@ -95,3 +95,10 @@ features:
   allowedAgentTypes:
     - hermes
     - openclaw
+  # -- Enable the Microsoft Entra Agent Identity authorization experience.
+  agentIdentityEnabled: false
+
+agentIdentity:
+  tenantId: ""
+  portalClientId: ""
+  brokerURL: "http://cetirun-agent-broker.cetirun-credentials.svc.cluster.local:8080"

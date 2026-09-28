@@ -52,6 +52,14 @@ type UpdateInstanceOpts struct {
 	Model            *string // nil = no change, "" = use deployment default
 }
 
+// CreateInstanceOptions contains security-sensitive platform-derived fields.
+// Callers must never populate owner identifiers from request JSON.
+type CreateInstanceOptions struct {
+	AgentIdentityEnabled bool
+	OwnerTenantID        string
+	OwnerObjectID        string
+}
+
 const chartVersionTTL = 5 * time.Minute
 
 // Client wraps controller-runtime client for Agent operations.
@@ -84,7 +92,7 @@ func (c *Client) GetInstance(ctx context.Context, alias string) (*cetirunv1alpha
 // if empty it defaults to alias (backward-compatible single-instance behaviour).
 // If gatewayToken or tailscaleAuthKey are non-empty, it pre-creates the
 // corresponding Secrets in the instance namespace before creating the CR.
-func (c *Client) CreateInstance(ctx context.Context, alias, displayName, team, email, instanceName, agentType, gatewayToken, tailscaleAuthKey, model string, teamsEnabled bool) (*cetirunv1alpha1.Agent, error) {
+func (c *Client) CreateInstance(ctx context.Context, alias, displayName, team, email, instanceName, agentType, gatewayToken, tailscaleAuthKey, model string, teamsEnabled bool, optional ...CreateInstanceOptions) (*cetirunv1alpha1.Agent, error) {
 	if instanceName == "" {
 		instanceName = alias
 	}
@@ -130,6 +138,16 @@ func (c *Client) CreateInstance(ctx context.Context, alias, displayName, team, e
 				Email:       email,
 			},
 		},
+	}
+	if len(optional) > 0 && optional[0].AgentIdentityEnabled {
+		if optional[0].OwnerTenantID == "" || optional[0].OwnerObjectID == "" {
+			return nil, fmt.Errorf("verified owner identity is required for Agent Identity")
+		}
+		instance.Annotations = map[string]string{
+			cetirunv1alpha1.AnnotationOwnerTenantID: optional[0].OwnerTenantID,
+			cetirunv1alpha1.AnnotationOwnerObjectID: optional[0].OwnerObjectID,
+		}
+		instance.Spec.AgentIdentity = &cetirunv1alpha1.AgentIdentitySpec{Enabled: true}
 	}
 	if tailscaleAuthKey != "" {
 		instance.Spec.Tailscale = &cetirunv1alpha1.TailscaleSpec{

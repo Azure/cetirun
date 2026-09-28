@@ -4,10 +4,13 @@
 package auth
 
 import (
+	"crypto/rand"
+	"crypto/rsa"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func TestWriteError(t *testing.T) {
@@ -37,6 +40,42 @@ func TestWriteError(t *testing.T) {
 	}
 	if errObj["message"] != "test message" {
 		t.Errorf("error message = %v, want %q", errObj["message"], "test message")
+	}
+}
+
+func TestMiddlewareUsesPortalOnlyIdentityTokenHeader(t *testing.T) {
+	tenant := "11111111-1111-1111-1111-111111111111"
+	client := "22222222-2222-2222-2222-222222222222"
+	object := "33333333-3333-3333-3333-333333333333"
+	verifier, err := NewOIDCVerifier(tenant, client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifier.keys["test-key"] = &key.PublicKey
+	verifier.fetched = time.Now()
+	token := signedToken(t, key, map[string]any{
+		"iss": "https://login.microsoftonline.com/" + tenant + "/v2.0",
+		"aud": client, "tid": tenant, "oid": object,
+		"login_hint": "opaque-login-hint==",
+		"nbf":        time.Now().Add(-time.Minute).Unix(), "exp": time.Now().Add(time.Minute).Unix(),
+	})
+	var captured Claims
+	handler := Middleware(nil, verifier)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		captured, _ = ClaimsFromContext(r.Context())
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	req := httptest.NewRequest(http.MethodGet, "/api/test", nil)
+	req.Header.Set("X-Auth-Request-Preferred-Username", "alice@example.com")
+	req.Header.Set(portalIdentityTokenHeader, "Bearer "+token)
+	req.Header.Set("Authorization", "Bearer client-controlled-value")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusNoContent || captured.TenantID != tenant || captured.ObjectID != object || captured.LoginHint != "opaque-login-hint==" {
+		t.Fatalf("Portal-only identity token was not verified: status=%d claims=%#v", w.Code, captured)
 	}
 }
 
@@ -82,6 +121,30 @@ func TestMiddleware_ValidAuthHeaders(t *testing.T) {
 	}
 	if capturedClaims.DisplayName != "alice@example.com" {
 		t.Errorf("displayName = %q, want %q", capturedClaims.DisplayName, "alice@example.com")
+	}
+	if capturedClaims.LoginHint != "alice@example.com" {
+		t.Errorf("loginHint = %q, want %q", capturedClaims.LoginHint, "alice@example.com")
+	}
+}
+
+func TestMiddleware_LoginHintPrefersTenantUsernameOverEmail(t *testing.T) {
+	var capturedClaims Claims
+	handler := Middleware(nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedClaims, _ = ClaimsFromContext(r.Context())
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/test", nil)
+	req.Header.Set("X-Auth-Request-Preferred-Username", "tenant-user@example.onmicrosoft.com")
+	req.Header.Set("X-Auth-Request-Email", "alternate@example.com")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, req)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
+	}
+	if capturedClaims.LoginHint != "tenant-user@example.onmicrosoft.com" {
+		t.Errorf("loginHint = %q, want tenant preferred username", capturedClaims.LoginHint)
 	}
 }
 

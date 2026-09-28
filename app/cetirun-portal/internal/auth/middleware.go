@@ -5,8 +5,12 @@ package auth
 
 import (
 	"encoding/json"
+	"log/slog"
 	"net/http"
+	"strings"
 )
+
+const portalIdentityTokenHeader = "X-CetiRun-Portal-ID-Token"
 
 // Middleware returns an HTTP middleware that extracts user info from OAuth2 Proxy headers.
 // Group-based authorization is enforced by OAuth2 Proxy at the gateway level
@@ -14,7 +18,11 @@ import (
 //
 // admins is the set of aliases granted admin privileges. If nil/empty, no
 // user is admin.
-func Middleware(admins AdminSet) func(http.Handler) http.Handler {
+func Middleware(admins AdminSet, verifiers ...*OIDCVerifier) func(http.Handler) http.Handler {
+	var verifier *OIDCVerifier
+	if len(verifiers) > 0 {
+		verifier = verifiers[0]
+	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// OAuth2 Proxy sets these headers after successful authentication.
@@ -59,7 +67,30 @@ func Middleware(admins AdminSet) func(http.Handler) http.Handler {
 				Alias:       alias,
 				DisplayName: displayName,
 				Email:       email,
+				LoginHint:   identity,
 				IsAdmin:     admins.Contains(alias),
+			}
+			if verifier != nil {
+				authorization := r.Header.Get(portalIdentityTokenHeader)
+				if !strings.HasPrefix(authorization, "Bearer ") {
+					slog.Warn("Portal identity token rejected", "reason", "missing")
+					writeError(w, http.StatusUnauthorized, "identity_token_missing", "Missing trusted identity token from OAuth2 Proxy")
+					return
+				}
+				identity, err := verifier.Verify(r.Context(), strings.TrimPrefix(authorization, "Bearer "))
+				if err != nil {
+					// OIDCVerifier returns bounded diagnostic strings and never embeds the
+					// token or claim values. Keep request headers and user identity out of
+					// authentication failure logs.
+					slog.Warn("Portal identity token rejected", "reason", "invalid", "detail", err.Error())
+					writeError(w, http.StatusUnauthorized, "identity_token_invalid", "Trusted identity token validation failed")
+					return
+				}
+				claims.TenantID = identity.TenantID
+				claims.ObjectID = identity.ObjectID
+				if identity.LoginHint != "" {
+					claims.LoginHint = identity.LoginHint
+				}
 			}
 
 			ctx := NewContext(r.Context(), claims)

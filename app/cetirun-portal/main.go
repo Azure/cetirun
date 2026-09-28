@@ -80,8 +80,17 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Create auth middleware (uses OAuth2 Proxy headers).
-	authMiddleware := auth.Middleware(admins)
+	// Create auth middleware. Agent Identity requires a signed Entra ID token
+	// from oauth2-proxy in addition to display-only identity headers.
+	var oidcVerifier *auth.OIDCVerifier
+	if cfg.AgentIdentityEnabled {
+		oidcVerifier, err = auth.NewOIDCVerifier(cfg.EntraTenantID, cfg.PortalClientID)
+		if err != nil {
+			slog.Error("Invalid Agent Identity OIDC configuration", "error", err)
+			os.Exit(1)
+		}
+	}
+	authMiddleware := auth.Middleware(admins, oidcVerifier)
 	requireAdmin := auth.RequireAdmin()
 
 	// Create handlers.
@@ -93,6 +102,10 @@ func main() {
 	meHandler := &handler.MeHandler{}
 	adminTeamHandler := &handler.AdminTeamHandler{Kube: kubeClient}
 	adminInstanceHandler := &handler.AdminInstanceHandler{Kube: kubeClient}
+	var agentAuthorizationHandler *handler.AgentAuthorizationHandler
+	if cfg.AgentIdentityEnabled {
+		agentAuthorizationHandler = handler.NewAgentAuthorizationHandler(kubeClient, cfg.AgentIdentityBrokerURL, cfg.PortalOrigin)
+	}
 
 	// Serve embedded SPA.
 	dist, err := fs.Sub(staticFiles, "web/dist")
@@ -102,7 +115,7 @@ func main() {
 	}
 
 	// Build and start public server.
-	mux := server.New(dist, instanceHandler, healthHandler, featuresHandler, configHandler, meHandler, adminTeamHandler, adminInstanceHandler, authMiddleware, requireAdmin)
+	mux := server.New(dist, instanceHandler, healthHandler, featuresHandler, configHandler, meHandler, adminTeamHandler, adminInstanceHandler, authMiddleware, requireAdmin, agentAuthorizationHandler)
 	srv := &http.Server{
 		Addr:    cfg.ListenAddr,
 		Handler: mux,
