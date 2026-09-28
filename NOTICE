@@ -163,6 +163,11 @@ copyright, attribution, and source-distribution obligations where applicable.
   differently licensed web assets. Google Chrome is distributed under its own
   terms. Review corresponding-source and notice requirements for the actual
   desktop image, including source modifications made by the Dockerfile.
+* app/cetirun-ai-gateway/Dockerfile installs LiteLLM (MIT) and the Python
+  packages pinned in app/cetirun-ai-gateway/requirements.txt, Node.js, and
+  the Prisma CLI and engines fetched at build time. It deliberately omits
+  litellm-enterprise, which carries the BerriAI Enterprise License. The
+  bundled PostgreSQL and Valkey run their own Azure Linux images from MCR.
 * The portal binary embeds a frontend bundle built from
   app/cetirun-portal/web/package-lock.json. Its generated JavaScript notice
   accompanies that bundle and includes installed production dependencies and
