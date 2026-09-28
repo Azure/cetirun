@@ -19,7 +19,7 @@ TRIVY = (
 IMAGES = (
     "cetirun-operator:validation",
     "cetirun-portal:validation",
-    "cetirun-credential-service:validation",
+    "cetirun-agent-broker:validation",
 )
 
 

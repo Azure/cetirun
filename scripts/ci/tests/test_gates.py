@@ -95,7 +95,7 @@ class GateTests(unittest.TestCase):
         (self.root / "scripts/cetirun-helm-test.sh").write_text("# fixture")
         (self.root / "scripts/cetirun-platform-helm-test.sh").write_text("# fixture")
         (self.root / "scripts/cetirun-istio-helm-test.sh").write_text("# fixture")
-        (self.root / "scripts/cetirun-credential-service-helm-test.sh").write_text("# fixture")
+        (self.root / "scripts/cetirun-agent-broker-helm-test.sh").write_text("# fixture")
         with patch.object(validate, "run") as run:
             validate.chart_gate(self.root)
         commands = [call.args[0] for call in run.call_args_list]
@@ -292,10 +292,10 @@ class WorkflowContractTests(unittest.TestCase):
         for expected in (
             "Operator Go checks",
             "Portal Go checks",
-            "Credential Service Go checks",
+            "Agent Identity Broker Go checks",
             "Operator image CVEs",
             "Portal image CVEs",
-            "Credential Service image CVEs",
+            "Agent Identity Broker image CVEs",
         ):
             self.assertIn(expected, names)
 

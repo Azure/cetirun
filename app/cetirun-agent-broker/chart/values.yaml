@@ -1,7 +1,7 @@
 replicaCount: 2
 
 image:
-  repository: ghcr.io/azure/cetirun-credential-service
+  repository: ghcr.io/azure/cetirun-agent-broker
   # Empty defaults to .Chart.AppVersion.
   tag: ""
   # When set, produces repository:tag@digest.
@@ -17,7 +17,7 @@ authSDK:
 
 serviceAccount:
   create: true
-  name: cetirun-credential-service
+  name: cetirun-agent-broker
   annotations: {}
 
 service:

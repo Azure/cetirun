@@ -15,11 +15,11 @@ import tempfile
 
 
 ROOT = Path(__file__).resolve().parents[2]
-MODULES = ("operator", "portal", "credential-service")
+MODULES = ("operator", "portal", "agent-broker")
 WORKFLOWS = (
     "operator-ci.yml",
     "portal-ci.yml",
-    "credential-service-ci.yml",
+    "agent-broker-ci.yml",
     "helm-lint-test.yml",
     "docker-build-validate.yml",
     "codeql.yml",
@@ -38,7 +38,7 @@ CHARTS = (
     ("app/cetirun-operator/chart", ()),
     ("app/cetirun-portal/chart", ("istio.host=portal.example.invalid",)),
     (
-        "app/cetirun-credential-service/chart",
+        "app/cetirun-agent-broker/chart",
         (
             "agentIdentity.tenantId=11111111-1111-1111-1111-111111111111",
             "agentIdentity.blueprintClientId=22222222-2222-2222-2222-222222222222",
@@ -206,11 +206,11 @@ def chart_gate(root):
         env={**offline_env(), "CHART_DIR": str(root / "infra/istio")},
     )
     run(
-        ["bash", str(require_file(root / "scripts/cetirun-credential-service-helm-test.sh"))],
+        ["bash", str(require_file(root / "scripts/cetirun-agent-broker-helm-test.sh"))],
         root,
         env={
             **offline_env(),
-            "CHART_DIR": str(root / "app/cetirun-credential-service/chart"),
+            "CHART_DIR": str(root / "app/cetirun-agent-broker/chart"),
         },
     )
 

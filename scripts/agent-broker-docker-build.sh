@@ -10,8 +10,8 @@ script_dir="$(cd "$(dirname "$0")" && pwd)"
 repo_root="$(cd "${script_dir}/.." && pwd)"
 registry="${REGISTRY:-cetirun.azurecr.io}"
 image_tag="${IMAGE_TAG:-latest}"
-image_ref="${registry}/cetirun-credential-service:${image_tag}"
-args=(-f "${repo_root}/app/cetirun-credential-service/Dockerfile" -t "${image_ref}")
+image_ref="${registry}/cetirun-agent-broker:${image_tag}"
+args=(-f "${repo_root}/app/cetirun-agent-broker/Dockerfile" -t "${image_ref}")
 if [[ "${PUSH:-false}" == true ]]; then
   args+=(--platform linux/amd64 --push)
   if docker buildx inspect --bootstrap 2>/dev/null | grep -q 'Driver:.*docker-container'; then

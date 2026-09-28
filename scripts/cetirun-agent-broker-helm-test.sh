@@ -6,7 +6,7 @@ set -euo pipefail
 
 script_dir="$(cd "$(dirname "$0")" && pwd)"
 repo_root="$(cd "${script_dir}/.." && pwd)"
-chart_dir="${CHART_DIR:-${repo_root}/app/cetirun-credential-service/chart}"
+chart_dir="${CHART_DIR:-${repo_root}/app/cetirun-agent-broker/chart}"
 values=(
   --set-string agentIdentity.tenantId=11111111-1111-1111-1111-111111111111
   --set-string agentIdentity.blueprintClientId=22222222-2222-2222-2222-222222222222
@@ -20,18 +20,18 @@ values=(
   --set istio.sidecarInjection=true
 )
 
-output="$(helm template credential-test "${chart_dir}" "${values[@]}")"
+output="$(helm template broker-test "${chart_dir}" "${values[@]}")"
 grep -Fq 'automountServiceAccountToken: false' <<<"${output}"
 grep -Fq 'istio.io/rev: "asm-example"' <<<"${output}"
-grep -Fq 'image: "ghcr.io/azure/cetirun-credential-service:0.1.0"' <<<"${output}"
+grep -Fq 'image: "ghcr.io/azure/cetirun-agent-broker:0.1.0"' <<<"${output}"
 grep -Fq 'image: "mcr.microsoft.com/entra-sdk/auth-sidecar:1.0.0-azurelinux3.0-distroless@sha256:b3e6204abb87daa9c414dcade11f16060e030d114b81ecbd8bd2a7346e107523"' <<<"${output}"
 if grep -Fq ':latest' <<<"${output}"; then
   echo "FAIL: chart rendered a latest image tag" >&2
   exit 1
 fi
 
-digest_output="$(helm template credential-test "${chart_dir}" "${values[@]}" --set-string image.tag=test --set-string image.digest=sha256:1111111111111111111111111111111111111111111111111111111111111111 --set-string authSDK.tag=test --set-string authSDK.digest=sha256:2222222222222222222222222222222222222222222222222222222222222222)"
-grep -Fq 'image: "ghcr.io/azure/cetirun-credential-service:test@sha256:1111111111111111111111111111111111111111111111111111111111111111"' <<<"${digest_output}"
+digest_output="$(helm template broker-test "${chart_dir}" "${values[@]}" --set-string image.tag=test --set-string image.digest=sha256:1111111111111111111111111111111111111111111111111111111111111111 --set-string authSDK.tag=test --set-string authSDK.digest=sha256:2222222222222222222222222222222222222222222222222222222222222222)"
+grep -Fq 'image: "ghcr.io/azure/cetirun-agent-broker:test@sha256:1111111111111111111111111111111111111111111111111111111111111111"' <<<"${digest_output}"
 grep -Fq 'image: "mcr.microsoft.com/entra-sdk/auth-sidecar:test@sha256:2222222222222222222222222222222222222222222222222222222222222222"' <<<"${digest_output}"
 
 # Only the Broker receives the short-lived Kubernetes API credential. The
@@ -56,11 +56,11 @@ grep -Fq 'runAsNonRoot: true' <<<"${auth_sdk_security_context}"
 grep -Fq 'runAsUser: 1654' <<<"${auth_sdk_security_context}"
 grep -Fq 'runAsGroup: 1654' <<<"${auth_sdk_security_context}"
 
-if helm template credential-test "${chart_dir}" "${values[@]}" --set istio.enabled=false >/dev/null 2>&1; then
-  echo "FAIL: chart allowed Credential Service without Istio authorization" >&2
+if helm template broker-test "${chart_dir}" "${values[@]}" --set istio.enabled=false >/dev/null 2>&1; then
+  echo "FAIL: chart allowed Agent Identity Broker without Istio authorization" >&2
   exit 1
 fi
-if helm template credential-test "${chart_dir}" "${values[@]}" --set istio.sidecarInjection=false >/dev/null 2>&1; then
+if helm template broker-test "${chart_dir}" "${values[@]}" --set istio.sidecarInjection=false >/dev/null 2>&1; then
   echo "FAIL: chart allowed unconfirmed sidecar injection" >&2
   exit 1
 fi

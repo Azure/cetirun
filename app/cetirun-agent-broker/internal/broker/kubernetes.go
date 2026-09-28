@@ -323,7 +323,7 @@ func (k *kubeClient) putRecord(ctx context.Context, record *AuthorizationRecord,
 		return err
 	}
 	labels := map[string]string{
-		"app.kubernetes.io/managed-by":                        "cetirun-credential-service",
+		"app.kubernetes.io/managed-by":                        "cetirun-agent-broker",
 		"agentidentity.cetirun.microsoft.com/instance-uid":    record.InstanceUID,
 		"agentidentity.cetirun.microsoft.com/instance-name":   record.InstanceName,
 		"agentidentity.cetirun.microsoft.com/owner-tenant":    record.OwnerTenantID,

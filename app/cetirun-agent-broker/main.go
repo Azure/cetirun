@@ -9,7 +9,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/Azure/CetiRun/app/cetirun-credential-service/internal/broker"
+	"github.com/Azure/CetiRun/app/cetirun-agent-broker/internal/broker"
 )
 
 func main() {
@@ -24,7 +24,7 @@ func main() {
 		os.Exit(1)
 	}
 	server := &http.Server{Addr: cfg.ListenAddress, Handler: service.Handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second}
-	slog.Info("Credential Service listening", "address", cfg.ListenAddress)
+	slog.Info("Agent Identity Broker listening", "address", cfg.ListenAddress)
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		slog.Error("serve", "error", err)
 		os.Exit(1)

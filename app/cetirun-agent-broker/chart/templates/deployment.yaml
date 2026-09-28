@@ -1,25 +1,25 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "cetirun-credential-service.fullname" . }}
+  name: {{ include "cetirun-agent-broker.fullname" . }}
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "cetirun-credential-service.labels" . | nindent 4 }}
+    {{- include "cetirun-agent-broker.labels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.replicaCount }}
   selector:
     matchLabels:
-      {{- include "cetirun-credential-service.selectorLabels" . | nindent 6 }}
+      {{- include "cetirun-agent-broker.selectorLabels" . | nindent 6 }}
   template:
     metadata:
       labels:
-        {{- include "cetirun-credential-service.selectorLabels" . | nindent 8 }}
+        {{- include "cetirun-agent-broker.selectorLabels" . | nindent 8 }}
         azure.workload.identity/use: "true"
         istio.io/rev: {{ .Values.istio.revision | quote }}
       annotations:
         sidecar.istio.io/inject: {{ .Values.istio.sidecarInjection | quote }}
     spec:
-      serviceAccountName: {{ include "cetirun-credential-service.serviceAccountName" . }}
+      serviceAccountName: {{ include "cetirun-agent-broker.serviceAccountName" . }}
       automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
@@ -29,7 +29,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: broker
-          image: {{ include "cetirun-credential-service.image" (dict "repository" .Values.image.repository "tag" .Values.image.tag "digest" .Values.image.digest "defaultTag" .Chart.AppVersion) | quote }}
+          image: {{ include "cetirun-agent-broker.image" (dict "repository" .Values.image.repository "tag" .Values.image.tag "digest" .Values.image.digest "defaultTag" .Chart.AppVersion) | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           ports:
             - name: http
@@ -80,7 +80,7 @@ spec:
           resources:
             {{- toYaml .Values.resources.broker | nindent 12 }}
         - name: auth-sdk
-          image: {{ include "cetirun-credential-service.image" (dict "repository" .Values.authSDK.repository "tag" .Values.authSDK.tag "digest" .Values.authSDK.digest "defaultTag" "1.0.0-azurelinux3.0-distroless") | quote }}
+          image: {{ include "cetirun-agent-broker.image" (dict "repository" .Values.authSDK.repository "tag" .Values.authSDK.tag "digest" .Values.authSDK.digest "defaultTag" "1.0.0-azurelinux3.0-distroless") | quote }}
           imagePullPolicy: {{ .Values.authSDK.pullPolicy }}
           env:
             - name: AzureAd__Instance

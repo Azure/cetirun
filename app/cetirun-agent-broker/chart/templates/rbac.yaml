@@ -1,9 +1,9 @@
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: {{ include "cetirun-credential-service.fullname" . }}
+  name: {{ include "cetirun-agent-broker.fullname" . }}
   labels:
-    {{- include "cetirun-credential-service.labels" . | nindent 4 }}
+    {{- include "cetirun-agent-broker.labels" . | nindent 4 }}
 rules:
   - apiGroups: ["cetirun.microsoft.com"]
     resources: ["agents"]
@@ -12,25 +12,25 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: {{ include "cetirun-credential-service.fullname" . }}
+  name: {{ include "cetirun-agent-broker.fullname" . }}
   labels:
-    {{- include "cetirun-credential-service.labels" . | nindent 4 }}
+    {{- include "cetirun-agent-broker.labels" . | nindent 4 }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: {{ include "cetirun-credential-service.fullname" . }}
+  name: {{ include "cetirun-agent-broker.fullname" . }}
 subjects:
   - kind: ServiceAccount
-    name: {{ include "cetirun-credential-service.serviceAccountName" . }}
+    name: {{ include "cetirun-agent-broker.serviceAccountName" . }}
     namespace: {{ .Release.Namespace }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: {{ include "cetirun-credential-service.fullname" . }}-records
+  name: {{ include "cetirun-agent-broker.fullname" . }}-records
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "cetirun-credential-service.labels" . | nindent 4 }}
+    {{- include "cetirun-agent-broker.labels" . | nindent 4 }}
 rules:
   - apiGroups: [""]
     resources: ["secrets"]
@@ -39,15 +39,15 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: {{ include "cetirun-credential-service.fullname" . }}-records
+  name: {{ include "cetirun-agent-broker.fullname" . }}-records
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "cetirun-credential-service.labels" . | nindent 4 }}
+    {{- include "cetirun-agent-broker.labels" . | nindent 4 }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
-  name: {{ include "cetirun-credential-service.fullname" . }}-records
+  name: {{ include "cetirun-agent-broker.fullname" . }}-records
 subjects:
   - kind: ServiceAccount
-    name: {{ include "cetirun-credential-service.serviceAccountName" . }}
+    name: {{ include "cetirun-agent-broker.serviceAccountName" . }}
     namespace: {{ .Release.Namespace }}

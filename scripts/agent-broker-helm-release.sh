@@ -5,7 +5,7 @@
 set -euo pipefail
 script_dir="$(cd "$(dirname "$0")" && pwd)"
 repo_root="$(cd "${script_dir}/.." && pwd)"
-chart_dir="${CHART_DIR:-${repo_root}/app/cetirun-credential-service/chart}"
+chart_dir="${CHART_DIR:-${repo_root}/app/cetirun-agent-broker/chart}"
 registry="${REGISTRY:-cetirun.azurecr.io}"
 chart_namespace="${CHART_NAMESPACE:-helm}"
 chart_version="${CHART_VERSION:?Set CHART_VERSION}"
@@ -26,9 +26,9 @@ helm lint "${chart_dir}" \
 package_args=("${chart_dir}" --destination "${package_dir}" --version "${chart_version}")
 [[ -n "${APP_VERSION:-}" ]] && package_args+=(--app-version "${APP_VERSION}")
 helm package "${package_args[@]}" >/dev/null
-helm push "${package_dir}/cetirun-credential-service-${chart_version}.tgz" "oci://${registry}/${chart_namespace}"
+helm push "${package_dir}/cetirun-agent-broker-${chart_version}.tgz" "oci://${registry}/${chart_namespace}"
 if [[ "${VERIFY_PULL:-false}" == true ]]; then
   verify_dir="$(mktemp -d)"
-  helm pull "oci://${registry}/${chart_namespace}/cetirun-credential-service" --version "${chart_version}" --destination "${verify_dir}"
+  helm pull "oci://${registry}/${chart_namespace}/cetirun-agent-broker" --version "${chart_version}" --destination "${verify_dir}"
   rm -rf "${verify_dir}"
 fi

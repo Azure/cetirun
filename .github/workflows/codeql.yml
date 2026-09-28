@@ -71,7 +71,7 @@ jobs:
           touch app/cetirun-portal/web/dist/.keep
           (cd app/cetirun-operator && go build -a ./...)
           (cd app/cetirun-portal && go build -a ./...)
-          (cd app/cetirun-credential-service && go build -a ./...)
+          (cd app/cetirun-agent-broker && go build -a ./...)
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@1c5b675653bb5c22dbe9b12b556ec555138e09fd # v4.38.1

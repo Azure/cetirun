@@ -12,6 +12,7 @@ network access.
 | `app/cetirun-operator/` | Go Kubernetes operator, API types, and generated CRDs |
 | `app/cetirun-portal/` | Go portal backend and its Helm chart |
 | `app/cetirun-portal/web/` | React and TypeScript portal frontend |
+| `app/cetirun-agent-broker/` | Agent Identity authorization sessions and allowlisted downstream tool execution |
 | `app/cetirun-chart/` | Runtime Helm chart, container definitions, and runtime plugins |
 | `infra/` | Infrastructure definitions and Istio configuration |
 | `scripts/` | Component validation and operational helpers |
@@ -40,7 +41,7 @@ available for alternate mirrors. Image tags, chart versions, and the
 Install tools only for the component you are changing:
 
 - Git, Bash, and Make for repository commands.
-- Go 1.26.8, matching `.go-version`, both module minimums, and the pinned
+- Go 1.26.8, matching `.go-version`, all module minimums, and the pinned
   Microsoft Go builder images.
 - Node.js 24 and npm for the portal frontend, matching its CI configuration.
 - Helm for local chart linting and rendering.
@@ -58,6 +59,7 @@ For Go components, fetch dependencies once when network access is available:
 ```bash
 go -C app/cetirun-operator mod download
 go -C app/cetirun-portal mod download
+go -C app/cetirun-agent-broker mod download
 ```
 
 Install the frontend's locked dependencies from the public npm registry:
@@ -152,6 +154,23 @@ portal binary. Do not treat a placeholder embed directory as a frontend build.
 The current portal `make lint` target calls `npm run lint`, but the frontend
 does not define that script. Use Go vet, formatting checks, and the frontend
 build above until a working lint entry point is added.
+
+### Agent Identity Broker
+
+The Agent Identity Broker is the trusted boundary that retains OBO
+authorization state and executes allowlisted downstream tool operations without
+returning tokens or authorization headers to agent workloads. Run its Go and
+chart checks with:
+
+```bash
+go -C app/cetirun-agent-broker test ./... -count=1
+go -C app/cetirun-agent-broker vet ./...
+make -C app/cetirun-agent-broker build
+bash scripts/cetirun-agent-broker-helm-test.sh
+```
+
+These are offline checks. They do not call Microsoft Entra, the Auth SDK, Key
+Vault, ARM, Resource Graph, or a Kubernetes cluster.
 
 `npm --prefix app/cetirun-portal/web run dev` starts a local frontend server.
 Its API proxy expects a backend on localhost and injects development identity
