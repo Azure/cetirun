@@ -96,7 +96,7 @@ class GateTests(unittest.TestCase):
         (self.root / "scripts/cetirun-platform-helm-test.sh").write_text("# fixture")
         (self.root / "scripts/cetirun-istio-helm-test.sh").write_text("# fixture")
         (self.root / "scripts/cetirun-agent-broker-helm-test.sh").write_text("# fixture")
-        (self.root / "scripts/gateway-helm-test.sh").write_text("# fixture")
+        (self.root / "scripts/cetirun-ai-gateway-helm-test.sh").write_text("# fixture")
         with patch.object(validate, "run") as run:
             validate.chart_gate(self.root)
         commands = [call.args[0] for call in run.call_args_list]
@@ -113,7 +113,7 @@ class GateTests(unittest.TestCase):
                 "cetirun-platform-helm-test.sh",
                 "cetirun-istio-helm-test.sh",
                 "cetirun-agent-broker-helm-test.sh",
-                "gateway-helm-test.sh",
+                "cetirun-ai-gateway-helm-test.sh",
             ],
         )
 

@@ -3,34 +3,34 @@
 #
 # The Gateway is a LiteLLM proxy that gives agents a single endpoint for model
 # access. It installs on its own: nothing here depends on the CetiRun operator,
-# portal or agent chart.
+# portal or agent chart. With the defaults it also brings its own PostgreSQL
+# and Valkey, so a working Gateway needs nothing but a model list.
+
+# -- Values the cetirun-platform umbrella chart propagates to its subcharts.
+global:
+  # -- Registry host override. When set, the image becomes
+  # <registry>/cetirun-ai-gateway, the same convention as the other CetiRun
+  # charts.
+  registry: ""
+  # -- Image tag override. Empty uses image.tag, then the chart appVersion.
+  version: ""
 
 # -- Number of Gateway replicas. More than one requires Redis; see the redis
-# section for why this is not optional.
+# section for why this is not optional. The bundled Valkey provides it.
 replicaCount: 2
 
-# -- Gateway container image.
-#
-# This is upstream LiteLLM, unmodified. We do not build it: the requirement is
-# to distribute from MCR, not to change anything, so the image is mirrored there
-# with its manifest intact. Keeping the upstream digest is what lets anyone
-# verify that what we ship is unmodified.
-#
-# Because a mirror preserves the digest, the same `digest` value is valid
-# against the upstream registry and against MCR. Only `repository` differs, so
-# testing before MCR onboarding overrides that one field.
+# -- Gateway container image: open-source LiteLLM on Azure Linux, built from
+# app/cetirun-ai-gateway. The same image serves the per-agent Copilot proxy.
 image:
-  # -- Image repository. Pending MCR onboarding; until then, override this with
-  # ghcr.io/berriai/litellm for testing.
-  repository: mcr.microsoft.com/aks/cetirun/cetirun-ai-gateway
+  # -- Image repository. global.registry, when set, replaces the registry host.
+  repository: cetirun.azurecr.io/cetirun-ai-gateway
   # -- Image pull policy
   pullPolicy: IfNotPresent
-  # -- Image tag. Pinned rather than tracking a moving tag: `latest` and
-  # `main-latest` are explicitly not used.
-  tag: v1.101.0
-  # -- Image digest. Set alongside the tag so the reference is exact, and so a
-  # mirrored copy can be checked against the upstream one.
-  digest: sha256:d295634e09c648dcdb72c4cc2dd226f5fb87823a73e88cbbed6f205e4deb044b
+  # -- Image tag. Empty uses global.version, then the chart appVersion, which
+  # the unified CetiRun release keeps equal to the image version.
+  tag: ""
+  # -- Image digest. When set, the reference is pinned to exactly this image.
+  digest: ""
 
 # -- Image pull secrets for private registries
 imagePullSecrets: []
@@ -160,9 +160,35 @@ auth:
       key: ui-password
 
 # -- PostgreSQL holds virtual keys, spend records and models added through the
-# console. It is required.
+# console. It is required: bundled, or your own.
 postgresql:
-  # -- Connection URL, in the form postgresql://user:password@host:5432/dbname
+  # -- A single-instance PostgreSQL deployed with the Gateway, on a persistent
+  # volume. Suitable for evaluation, demos and small installations; for
+  # anything that needs backups or high availability, disable it and point
+  # urlSecret at a managed database.
+  #
+  # Its password is generated, kept on uninstall and reused by the next
+  # install, like the salt key: the volume outlives the release, and a new
+  # password would lock the Gateway out of its own data.
+  bundled:
+    # -- Deploy the bundled PostgreSQL
+    enabled: true
+    # -- PostgreSQL image, from MCR, pinned by digest
+    image:
+      repository: mcr.microsoft.com/azurelinux/base/postgres
+      tag: "16"
+      digest: sha256:704bb1636af09043b9fc4ae49b33188d6429405b87d28d227953152730f4db79
+    # -- Persistent volume for the database
+    persistence:
+      # -- Volume size
+      size: 8Gi
+      # -- Storage class. Empty uses the cluster default.
+      storageClass: ""
+    # -- Resource requests and limits
+    resources: {}
+  # -- Your own PostgreSQL, when bundled.enabled is false. The connection URL,
+  # in the form postgresql://user:password@host:5432/dbname, is read from a
+  # Secret you create.
   urlSecret:
     # -- Name of a Secret holding the connection URL
     existingSecret: ""
@@ -182,11 +208,24 @@ postgresql:
 # Nothing durable lives here: the record of spend is in PostgreSQL and Redis
 # only holds in-flight coordination, so it needs no persistence or backup.
 redis:
-  # -- Redis or Valkey hostname
+  # -- A single-instance Valkey, the Redis-compatible server, deployed with the
+  # Gateway. Password-protected, with no persistence, since it holds nothing
+  # durable. Disable it to use your own Redis or Valkey through host.
+  bundled:
+    # -- Deploy the bundled Valkey
+    enabled: true
+    # -- Valkey image, from MCR, pinned by digest
+    image:
+      repository: mcr.microsoft.com/azurelinux/base/valkey
+      tag: "8"
+      digest: sha256:1f9457e9e325de0301c85d0c18765777820e06290c03849545868b4d22781496
+    # -- Resource requests and limits
+    resources: {}
+  # -- Your own Redis or Valkey hostname, when bundled.enabled is false
   host: ""
-  # -- Redis port
+  # -- Its port
   port: 6379
-  # -- Password, if the server requires one
+  # -- Its password, if the server requires one
   passwordSecret:
     # -- Name of a Secret holding the Redis password
     existingSecret: ""
@@ -211,21 +250,22 @@ serviceAccount:
   # template when empty.
   name: ""
 
-# -- Run database migrations from a pre-install and pre-upgrade hook, so that
-# replicas never race each other to migrate. Proxy pods start with schema
-# updates disabled while this is on.
+# -- Apply database migrations from an init container in each Gateway pod,
+# before the proxy starts. Pods take turns, so replicas never migrate at the
+# same time, and the proxies start with schema updates disabled.
 migrations:
-  # -- Enable the migration hook
+  # -- Enable the migrate init container
   enabled: true
 
 # -- Annotations to add to the Gateway pods
 podAnnotations: {}
 
-# -- Pod-level security context
+# -- Pod-level security context. The image runs as its nonroot user.
 podSecurityContext:
   runAsNonRoot: true
-  runAsUser: 1000
-  fsGroup: 1000
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
 
 # -- Container-level security context
 securityContext:

@@ -53,14 +53,13 @@ CHARTS = (
         ),
     ),
     (
-        "app/cetirun-gateway-chart",
+        "app/cetirun-ai-gateway/chart",
         (
             "models[0].model_name=lint-model",
+            # Only models: the defaults bundle PostgreSQL and Valkey, so this
+            # keeps the default path under test. ci/render-values.yaml
+            # covers external dependencies in the release lint.
             "models[0].litellm_params.model=openai/lint-model",
-            "postgresql.urlSecret.existingSecret=lint-database",
-            # The default replicaCount is above one, which the chart requires
-            # Redis for. Supplying a host keeps the default path under test.
-            "redis.host=lint-redis.example.invalid",
         ),
     ),
     (
@@ -225,9 +224,9 @@ def chart_gate(root):
         },
     )
     run(
-        ["bash", str(require_file(root / "scripts/gateway-helm-test.sh"))],
+        ["bash", str(require_file(root / "scripts/cetirun-ai-gateway-helm-test.sh"))],
         root,
-        env={**offline_env(), "CHART_DIR": str(root / "app/cetirun-gateway-chart")},
+        env={**offline_env(), "CHART_DIR": str(root / "app/cetirun-ai-gateway/chart")},
     )
 
 

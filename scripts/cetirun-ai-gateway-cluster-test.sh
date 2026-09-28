@@ -3,36 +3,37 @@
 # Licensed under the MIT License.
 
 # Install-and-upgrade test for the CetiRun AI Gateway chart, against a real
-# cluster. Needs kubectl pointed at a cluster, plus helm, curl and jq.
+# cluster, with the chart's defaults: the CetiRun image and the bundled
+# PostgreSQL and Valkey. Needs kubectl pointed at a cluster that already has
+# the image (IMAGE_REPOSITORY:IMAGE_TAG), plus helm, curl and jq.
 #
 # This exists because the offline render suite cannot see ordering or runtime
-# behaviour. Three bugs got past it, all rendering cleanly and passing every
-# assertion: a pre-install hook naming a ServiceAccount that did not exist yet,
-# the same hook reading a Secret that did not exist yet, and a migration that
-# exited zero without creating any of LiteLLM's tables. A fourth only showed up
-# here: the Redis wiring switched on response caching, so identical requests
-# were answered from cache, across callers, instead of reaching the model. Each
-# check below is tied to something that has actually gone wrong, or to a claim
-# the chart makes that only a running cluster can confirm.
+# behaviour. Bugs got past it that all rendered cleanly: a migration hook that
+# could never start, a migration that exited zero without creating any of
+# LiteLLM's tables, Redis wiring that answered identical requests from cache
+# across callers, and an uninstall that deleted the salt key while the database
+# kept everything encrypted with it. Each check below is tied to something that
+# has actually gone wrong, or to a claim the chart makes that only a running
+# cluster can confirm.
 #
-# Five checks have been verified by putting the original problem back and
-# confirming the test fails at the check meant to catch it: the empty
-# migration, response caching, the deleted auth Secret, retries, and the
-# default grace period.
+# Checks have been verified by putting the original problem back and
+# confirming the test fails at the check meant to catch it.
 #
 # Everything runs against a deterministic mock provider, so no provider account
-# or credential is involved.
+# or credential is involved. The mock runs in the Gateway image, which has
+# Python, so the test pulls nothing beyond the chart's own images.
 
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "$0")" && pwd)"
 repo_root="$(cd "$script_dir/.." && pwd)"
-chart_dir="${CHART_DIR:-${repo_root}/app/cetirun-gateway-chart}"
+chart_dir="${CHART_DIR:-${repo_root}/app/cetirun-ai-gateway/chart}"
 namespace="${NAMESPACE:-gateway-cluster-test}"
 release_name="${RELEASE_NAME:-gateway}"
-# Upstream until MCR onboarding is done. The chart's pinned digest is valid for
-# both, because a mirror preserves it.
-image_repository="${IMAGE_REPOSITORY:-ghcr.io/berriai/litellm}"
+# The image under test, built and loaded into the cluster beforehand. The
+# workflow builds it with scripts/ai-gateway-docker-build.sh.
+image_repository="${IMAGE_REPOSITORY:-local.cetirun.invalid/cetirun-ai-gateway}"
+image_tag="${IMAGE_TAG:-cluster-test}"
 keep="${KEEP:-false}"
 
 for tool in kubectl helm curl jq; do
@@ -49,6 +50,8 @@ fi
 
 work_dir="$(mktemp -d)"
 forward_pids=()
+fullname="${release_name}-cetirun-ai-gateway"
+postgresql_pod="${fullname}-postgresql-0"
 
 stop_forwards() {
   for pid in "${forward_pids[@]}"; do
@@ -80,18 +83,10 @@ pass() {
 
 # ----- Fixtures -------------------------------------------------------------
 
-echo "==> Deploying fixtures into ${namespace}"
+echo "==> Deploying the mock provider into ${namespace}"
 kubectl create namespace "${namespace}" >/dev/null
 
-kubectl apply -n "${namespace}" -f - >/dev/null <<'EOF'
-apiVersion: v1
-kind: Secret
-metadata:
-  name: gateway-database
-type: Opaque
-stringData:
-  database-url: postgresql://litellm:litellm@postgres:5432/litellm
----
+kubectl apply -n "${namespace}" -f - >/dev/null <<EOF
 apiVersion: v1
 kind: Secret
 metadata:
@@ -99,68 +94,6 @@ metadata:
 type: Opaque
 stringData:
   MOCK_PROVIDER_KEY: sk-mock-not-a-real-key
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: postgres
-spec:
-  replicas: 1
-  selector:
-    matchLabels: {app: postgres}
-  template:
-    metadata:
-      labels: {app: postgres}
-    spec:
-      containers:
-        - name: postgres
-          image: postgres:16-alpine
-          env:
-            - {name: POSTGRES_USER, value: litellm}
-            - {name: POSTGRES_PASSWORD, value: litellm}
-            - {name: POSTGRES_DB, value: litellm}
-          readinessProbe:
-            exec:
-              command: ["pg_isready", "-U", "litellm", "-d", "litellm"]
-            periodSeconds: 3
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: postgres
-spec:
-  selector: {app: postgres}
-  ports:
-    - port: 5432
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: redis
-spec:
-  replicas: 1
-  selector:
-    matchLabels: {app: redis}
-  template:
-    metadata:
-      labels: {app: redis}
-    spec:
-      containers:
-        - name: redis
-          image: redis:7-alpine
-          readinessProbe:
-            exec:
-              command: ["redis-cli", "ping"]
-            periodSeconds: 3
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: redis
-spec:
-  selector: {app: redis}
-  ports:
-    - port: 6379
 ---
 # OpenAI-compatible backend that always reports 1000 prompt and 1000
 # completion tokens, so spend per request is exact. A request whose content
@@ -225,10 +158,11 @@ spec:
     spec:
       containers:
         - name: mock
-          image: python:3.12-alpine
-          command: ["python", "/app/mock_provider.py"]
+          image: ${image_repository}:${image_tag}
+          imagePullPolicy: IfNotPresent
+          command: ["python", "/mock/mock_provider.py"]
           volumeMounts:
-            - {name: src, mountPath: /app}
+            - {name: src, mountPath: /mock}
       volumes:
         - name: src
           configMap: {name: mock-provider}
@@ -243,14 +177,18 @@ spec:
     - port: 8080
 EOF
 
-kubectl wait --for=condition=available deployment --all -n "${namespace}" --timeout=300s >/dev/null
-pass "PostgreSQL, Redis and the mock provider are running"
+kubectl wait --for=condition=available deployment/mock-provider -n "${namespace}" --timeout=300s >/dev/null \
+  || fail "the mock provider did not start; is ${image_repository}:${image_tag} loaded into the cluster?"
+mock_pod="$(kubectl get pods -n "${namespace}" -l app=mock-provider -o jsonpath='{.items[0].metadata.name}')"
+pass "mock provider running"
 
+# The chart's defaults, plus the image under test and the models. PostgreSQL
+# and Valkey are the bundled ones.
 values_file="${work_dir}/values.yaml"
 cat > "${values_file}" <<EOF
 image:
   repository: ${image_repository}
-replicaCount: 2
+  tag: ${image_tag}
 models:
   # Priced, so it is served and budgets apply to it.
   - model_name: mock-priced
@@ -269,20 +207,12 @@ models:
       api_key: os.environ/MOCK_PROVIDER_KEY
 providerCredentials:
   existingSecret: gateway-provider-keys
-postgresql:
-  urlSecret:
-    existingSecret: gateway-database
-redis:
-  host: redis
-  port: 6379
 EOF
 
 # ----- Helpers against the running Gateway ----------------------------------
 
-fullname="${release_name}-cetirun-gateway"
-
-secret_value() {
-  kubectl get secret "${fullname}-auth" -n "${namespace}" -o "jsonpath={.data.$1}" | base64 -d
+secret_value() {  # secret_value KEY [SECRET]
+  kubectl get secret "${2:-${fullname}-auth}" -n "${namespace}" -o "jsonpath={.data.$1}" | base64 -d
 }
 
 # Counts LiteLLM's own tables, not every table. `prisma migrate deploy` creates
@@ -290,11 +220,25 @@ secret_value() {
 # all tables passes on exactly the empty database this check exists to catch.
 # That was found by putting the original bug back and watching the check pass.
 litellm_table_count() {
-  local pod
-  pod="$(kubectl get pods -n "${namespace}" -l app=postgres -o jsonpath='{.items[0].metadata.name}')"
-  kubectl exec -n "${namespace}" "${pod}" -- \
+  kubectl exec -n "${namespace}" "${postgresql_pod}" -- \
     psql -U litellm -d litellm -tAc \
     "SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_name LIKE 'LiteLLM\_%'"
+}
+
+# Runs Python in the mock pod, which uses the Gateway image and so has the
+# PostgreSQL and Redis clients: a second pod on the cluster network, the way a
+# Gateway replica reaches the bundled services.
+in_mock_pod() {
+  kubectl exec -n "${namespace}" "${mock_pod}" -- python -c "$1" "${@:2}"
+}
+
+gateway_pods() {
+  kubectl get pods -n "${namespace}" \
+    -l "app.kubernetes.io/instance=${release_name},app.kubernetes.io/name=cetirun-ai-gateway,app.kubernetes.io/component=gateway" \
+    -o json | jq -r '.items[]
+      | select(.metadata.deletionTimestamp == null)
+      | select(any(.status.conditions[]?; .type == "Ready" and .status == "True"))
+      | .metadata.name'
 }
 
 # Forward each Gateway pod on its own local port. A port-forward to the Service
@@ -302,17 +246,11 @@ litellm_table_count() {
 # indistinguishable from a single replica.
 #
 # Pods are chosen by readiness rather than phase: after an upgrade the old pods
-# are still in phase Running while they terminate. The migration hook shares the
-# selector labels, so it is excluded by component.
+# are still in phase Running while they terminate.
 forward_pods() {
   stop_forwards
   local pods port=18101
-  mapfile -t pods < <(kubectl get pods -n "${namespace}" \
-    -l "app.kubernetes.io/instance=${release_name},app.kubernetes.io/name=cetirun-gateway,app.kubernetes.io/component!=migration" \
-    -o json | jq -r '.items[]
-      | select(.metadata.deletionTimestamp == null)
-      | select(any(.status.conditions[]?; .type == "Ready" and .status == "True"))
-      | .metadata.name')
+  mapfile -t pods < <(gateway_pods)
   if [ "${#pods[@]}" -lt 2 ]; then
     fail "expected two ready Gateway pods, found ${#pods[@]}"
   fi
@@ -351,6 +289,11 @@ served_from_cache() {
   tr -d '\r' < "${work_dir}/last.headers" | grep -qi '^x-litellm-cache-key:'
 }
 
+# The start of the last response, for failure messages.
+last_body() {
+  head -c 300 "${work_dir}/last.json" 2>/dev/null | tr -d '\n'
+}
+
 api_post() {
   local port="$1" path="$2" body="$3"
   curl -fs -m 30 -X POST "http://127.0.0.1:${port}${path}" \
@@ -359,13 +302,13 @@ api_post() {
 
 # ----- Install ---------------------------------------------------------------
 
-# A pre-install hook that names a chart-managed ServiceAccount or Secret can
-# never start, so the install hangs until this timeout. Reaching the next line
-# is the check.
+# One command, no prior setup beyond the provider key: the chart brings its own
+# PostgreSQL and Valkey. The Gateway pods migrate in an init container, waiting
+# for the database, which starts in the same release.
 echo "==> Installing ${release_name}"
 helm install "${release_name}" "${chart_dir}" -n "${namespace}" -f "${values_file}" \
   --wait --timeout 10m >/dev/null || fail "install did not complete"
-pass "install completed, including the migration hook"
+pass "install completed with the bundled PostgreSQL and Valkey"
 
 # The migration once exited zero against a schema copy with no migrations beside
 # it, leaving no LiteLLM tables behind a successful install. The proxies still
@@ -375,19 +318,61 @@ tables="$(litellm_table_count)"
 [ "${tables}" -gt 0 ] || fail "install reported success but none of LiteLLM's tables exist"
 pass "migrations applied (${tables} LiteLLM tables)"
 
+# Two replicas start together and both run the migrate init container. If they
+# migrated at the same time, one could be killed by PostgreSQL's deadlock
+# detection partway through and leave a failed migration behind, which blocks
+# every later deploy. They take turns.
+failed_migrations="$(kubectl exec -n "${namespace}" "${postgresql_pod}" -- psql -U litellm -d litellm -tAc \
+  'SELECT count(*) FROM _prisma_migrations WHERE finished_at IS NULL OR rolled_back_at IS NOT NULL')"
+[ "${failed_migrations}" = "0" ] || fail "${failed_migrations} migrations failed or were rolled back"
+pass "replicas migrated one after the other, with no failed migration"
+
+gateway_pod="$(gateway_pods | head -n 1 || true)"
+[ "$(kubectl exec -n "${namespace}" "${gateway_pod}" -c gateway -- id -u)" = "65532" ] \
+  || fail "the Gateway does not run as the image's nonroot user"
+pass "the Gateway runs as a non-root user"
+
 master_key="$(secret_value master-key)"
 salt_before="$(secret_value salt-key)"
 [ -n "${salt_before}" ] || fail "no salt key was generated"
+db_password_before="$(secret_value password "${fullname}-postgresql")"
 
 forward_pods
 port_a="${pod_ports[0]}"
 port_b="${pod_ports[1]}"
 pass "both replicas reachable individually"
 
+# The bundled services are reachable across the cluster network. Local
+# connections inside the PostgreSQL container are trusted, so its password is
+# only meaningful for the connections a Gateway pod makes, and that is what is
+# checked, from another pod.
+echo "==> The bundled PostgreSQL and Valkey require their passwords"
+pg_wrong="$(in_mock_pod '
+import sys, psycopg
+try:
+    psycopg.connect(f"postgresql://litellm:wrong-password@{sys.argv[1]}:5432/litellm", connect_timeout=10).close()
+    print("accepted")
+except psycopg.OperationalError as error:
+    print("refused" if "password authentication failed" in str(error) else f"error: {error}")
+' "${fullname}-postgresql")"
+[ "${pg_wrong}" = "refused" ] || fail "the bundled PostgreSQL did not refuse a wrong password from another pod (${pg_wrong})"
+valkey_open="$(in_mock_pod '
+import sys, redis
+try:
+    redis.Redis(host=sys.argv[1], port=6379, socket_timeout=10).ping()
+    print("accepted")
+except redis.exceptions.AuthenticationError:
+    print("refused")
+except redis.exceptions.ResponseError as error:
+    print("refused" if "NOAUTH" in str(error) else f"error: {error}")
+' "${fullname}-valkey")"
+[ "${valkey_open}" = "refused" ] || fail "the bundled Valkey answered without a password (${valkey_open})"
+pass "a wrong PostgreSQL password and a password-less Valkey client are refused"
+
 # ----- Behaviour -------------------------------------------------------------
 
 echo "==> End-to-end request"
-[ "$(chat "${port_a}" "${master_key}" mock-priced)" = "200" ] || fail "request to a priced model failed"
+[ "$(chat "${port_a}" "${master_key}" mock-priced)" = "200" ] || fail "request to a priced model failed: $(last_body)"
 grep -q 'mock-ok' "${work_dir}/last.json" || fail "response did not come from the backend"
 pass "request reached the backend and returned"
 
@@ -417,9 +402,7 @@ pass "unpriced model refused with 403"
 echo "==> Upstream failures are not retried"
 status="$(chat "${port_a}" "${master_key}" mock-priced fail429)"
 [ "${status}" = "429" ] || fail "an upstream 429 reached the client as ${status}"
-mock_pod="$(kubectl get pods -n "${namespace}" -l app=mock-provider -o jsonpath='{.items[0].metadata.name}')"
-attempts="$(kubectl exec -n "${namespace}" "${mock_pod}" -- \
-  python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8080/stats').read().decode())" \
+attempts="$(in_mock_pod "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8080/stats').read().decode())" \
   | jq -r .failed)"
 [ "${attempts}" = "1" ] || fail "one failing request produced ${attempts} upstream attempts; the Gateway is retrying"
 pass "an upstream 429 went straight back to the client, one attempt"
@@ -427,6 +410,7 @@ pass "an upstream 429 went straight back to the client, one attempt"
 # Without shared state each replica enforces its own copy of a budget, so two
 # replicas allow twice the configured spend. Alternating between the two pods
 # directly is what makes this a test of coordination rather than of one pod.
+# Here the shared state is the bundled Valkey, with its password.
 echo "==> A budget holds across replicas"
 virtual_key="$(api_post "${port_a}" /key/generate '{"models":["mock-priced"],"max_budget":0.10}' | jq -r .key)" \
   || fail "could not create a virtual key through the management API"
@@ -451,7 +435,7 @@ pass "\$0.10 budget allowed ${allowed} requests across both replicas"
 echo "==> A database-backed model"
 api_post "${port_a}" /model/new '{"model_name":"mock-db","litellm_params":{"model":"openai/mock-model","api_base":"http://mock-provider:8080","api_key":"sk-literal-encrypted-at-rest"},"model_info":{"input_cost_per_token":0.00001,"output_cost_per_token":0.00001}}' >/dev/null \
   || fail "could not add a model through the management API"
-[ "$(chat "${port_a}" "${master_key}" mock-db)" = "200" ] || fail "database-backed model was not served"
+[ "$(chat "${port_a}" "${master_key}" mock-db)" = "200" ] || fail "database-backed model was not served: $(last_body)"
 pass "model added through the management API and served"
 
 # LiteLLM finishes requests in flight when it is stopped, with no limit of its
@@ -461,12 +445,9 @@ pass "model added through the management API and served"
 # inside the cluster to the pod's own address, as a client's connection does
 # once the Service has routed it, and outlasts the default by a clear margin.
 echo "==> A stopping replica finishes the request it is serving"
-target_pod="$(kubectl get pods -n "${namespace}" \
-  -l "app.kubernetes.io/instance=${release_name},app.kubernetes.io/name=cetirun-gateway,app.kubernetes.io/component!=migration" \
-  -o jsonpath='{.items[0].metadata.name}')"
+target_pod="$(gateway_pods | head -n 1 || true)"
 target_ip="$(kubectl get pod "${target_pod}" -n "${namespace}" -o jsonpath='{.status.podIP}')"
-mock_pod="$(kubectl get pods -n "${namespace}" -l app=mock-provider -o jsonpath='{.items[0].metadata.name}')"
-kubectl exec -n "${namespace}" "${mock_pod}" -- python -c '
+in_mock_pod '
 import json, sys, urllib.error, urllib.request
 body = {"model": "mock-priced", "messages": [{"role": "user", "content": "sleep45"}]}
 req = urllib.request.Request(sys.argv[1], data=json.dumps(body).encode(),
@@ -512,27 +493,36 @@ pass "upgrade completed"
 
 [ "$(secret_value salt-key)" = "${salt_before}" ] || fail "the salt key changed across upgrade"
 [ "$(secret_value master-key)" = "${master_key}" ] || fail "the master key changed across upgrade"
-pass "salt key and master key unchanged"
+[ "$(secret_value password "${fullname}-postgresql")" = "${db_password_before}" ] \
+  || fail "the bundled PostgreSQL's password changed across upgrade"
+pass "salt key, master key and database password unchanged"
 
 forward_pods
 port_a="${pod_ports[0]}"
 [ "$(chat "${port_a}" "${master_key}" mock-db)" = "200" ] \
-  || fail "database-backed model stopped working after upgrade; stored credentials may be unreadable"
+  || fail "database-backed model stopped working after upgrade; stored credentials may be unreadable: $(last_body)"
 pass "database-backed model still decrypts and serves after upgrade"
 
 # ----- Uninstall and install again -------------------------------------------
 
-# The database outlives the release. When helm uninstall removed the auth
-# Secret, the next install generated a new salt key against the old database:
-# every database-backed model vanished from the model list, the previous master
-# key stopped working, and only a log warning said why. The Secret is now kept on
-# uninstall, so the reinstall's lookup finds and reuses it.
+# The database outlives the release: the bundled PostgreSQL's volume is kept on
+# uninstall, like an external database would be. When helm uninstall removed
+# the auth Secret, the next install generated a new salt key against the old
+# data: every database-backed model vanished from the model list, the previous
+# master key stopped working, and only a log warning said why. The PostgreSQL
+# password has the same property, since the kept data was initialised with it.
+# Both Secrets are kept, so the reinstall's lookups find and reuse them.
 echo "==> Uninstalling and installing again"
 stop_forwards
+pvc_before="$(kubectl get pvc "data-${postgresql_pod}" -n "${namespace}" -o jsonpath='{.metadata.uid}')"
 helm uninstall "${release_name}" -n "${namespace}" --wait >/dev/null || fail "uninstall did not complete"
 kubectl get secret "${fullname}-auth" -n "${namespace}" >/dev/null 2>&1 \
   || fail "helm uninstall deleted the auth Secret; the next install would generate a new salt key"
-pass "auth Secret kept on uninstall"
+kubectl get secret "${fullname}-postgresql" -n "${namespace}" >/dev/null 2>&1 \
+  || fail "helm uninstall deleted the bundled PostgreSQL's Secret; the next install would be locked out of the kept data"
+[ "$(kubectl get pvc "data-${postgresql_pod}" -n "${namespace}" -o jsonpath='{.metadata.uid}' 2>/dev/null)" = "${pvc_before}" ] \
+  || fail "helm uninstall deleted the bundled PostgreSQL's volume"
+pass "auth Secret, database Secret and database volume kept on uninstall"
 
 helm install "${release_name}" "${chart_dir}" -n "${namespace}" -f "${values_file}" \
   --wait --timeout 10m >/dev/null || fail "install after uninstall did not complete"
@@ -543,7 +533,7 @@ pass "salt key and master key reused by the new install"
 forward_pods
 port_a="${pod_ports[0]}"
 [ "$(chat "${port_a}" "${master_key}" mock-db)" = "200" ] \
-  || fail "database-backed model stopped working after uninstall and install"
-pass "database-backed model still decrypts and serves"
+  || fail "database-backed model stopped working after uninstall and install: $(last_body)"
+pass "the kept database was found again, and its model decrypts and serves"
 
 echo "All Gateway cluster checks passed."

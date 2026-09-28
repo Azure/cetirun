@@ -13,7 +13,7 @@ set -euo pipefail
 
 script_dir="$(cd "$(dirname "$0")" && pwd)"
 repo_root="$(cd "$script_dir/.." && pwd)"
-chart_dir="${CHART_DIR:-${repo_root}/app/cetirun-gateway-chart}"
+chart_dir="${CHART_DIR:-${repo_root}/app/cetirun-ai-gateway/chart}"
 release_name="${RELEASE_NAME:-gateway}"
 
 if [ ! -f "${chart_dir}/Chart.yaml" ]; then
@@ -21,11 +21,20 @@ if [ ! -f "${chart_dir}/Chart.yaml" ]; then
   exit 1
 fi
 
-# A usable baseline. Individual scenarios override parts of it.
+fullname="${release_name}-cetirun-ai-gateway"
+app_version="$(awk -F': *' '$1=="appVersion" {gsub(/"/, "", $2); print $2; exit}' "${chart_dir}/Chart.yaml")"
+
+# A usable baseline: the defaults, which bundle PostgreSQL and Valkey, plus the
+# one thing an administrator always has to supply.
 base_args=(
   --set-string "models[0].model_name=lint-model"
   --set-string "models[0].litellm_params.model=openai/lint-model"
+)
+# The production path: an external database and Redis.
+external_args=(
+  --set "postgresql.bundled.enabled=false"
   --set-string "postgresql.urlSecret.existingSecret=lint-database"
+  --set "redis.bundled.enabled=false"
   --set-string "redis.host=lint-redis.example.invalid"
 )
 
@@ -60,10 +69,16 @@ assert_rejected() {
   fi
 }
 
+# The initContainers block of the Gateway Deployment.
+init_block() {
+  awk '/^      initContainers:/{f=1} /^      containers:/{f=0} f' <<< "$1"
+}
+
 # ----- Baseline render -----
 
 echo "==> helm template ${release_name} ${chart_dir} (baseline)"
 output="$(render)"
+external="$(render "${external_args[@]}")"
 assert_contains "kind: Deployment" "Deployment is rendered" "${output}"
 assert_contains "kind: Service" "Service is rendered" "${output}"
 assert_contains "kind: ConfigMap" "ConfigMap is rendered" "${output}"
@@ -72,17 +87,18 @@ assert_contains "\- \-\-config" "the config path is passed explicitly" "${output
 
 # ----- Required inputs -----
 
-echo "==> expected rejections for missing required input"
+echo "==> expected rejections for missing or conflicting input"
 
 # A Gateway with no models starts and then fails every request, so this is
 # rejected at install instead.
 assert_rejected "empty model list" --set "models=null"
-
 assert_rejected "missing litellm_params.model" --set-string "models[0].litellm_params.model="
-
-assert_rejected "missing database secret" --set-string "postgresql.urlSecret.existingSecret="
-
-assert_rejected "both provider credential sources" --set-string "providerCredentials.existingSecret=a" --set-string "providerCredentials.inline.B=c"
+assert_rejected "no database at all" --set "postgresql.bundled.enabled=false"
+assert_rejected "an external database while the bundled one is on" \
+  --set-string "postgresql.urlSecret.existingSecret=lint-database"
+assert_rejected "an external Redis while the bundled one is on" --set-string "redis.host=r.example.invalid"
+assert_rejected "both provider credential sources" \
+  --set-string "providerCredentials.existingSecret=a" --set-string "providerCredentials.inline.B=c"
 
 # ----- Reserved model-name prefix -----
 
@@ -94,36 +110,51 @@ echo "==> reserved model-name prefix"
 assert_rejected "reserved cetirun- prefix" --set-string "models[0].model_name=cetirun-gpt4"
 assert_rejected "reserved prefix in another case" --set-string "models[0].model_name=CetiRun-gpt4"
 
+# ----- Image -----
+
+# The Gateway runs our own image, built from app/cetirun-ai-gateway, and follows
+# the other CetiRun charts in taking its registry and version from the umbrella
+# chart's global values.
+echo "==> the Gateway runs the CetiRun image"
+assert_contains "image: cetirun.azurecr.io/cetirun-ai-gateway:${app_version}$" \
+  "the default image is cetirun-ai-gateway at the chart's appVersion" "${output}"
+assert_absent "berriai" "no upstream LiteLLM image is referenced" "${output}"
+umbrella="$(render --set-string global.registry=registry.example.invalid/ --set-string global.version=9.9.9)"
+assert_contains "image: registry.example.invalid/cetirun-ai-gateway:9.9.9$" \
+  "global.registry and global.version select the image" "${umbrella}"
+pinned="$(render --set-string image.digest=sha256:0000000000000000000000000000000000000000000000000000000000000000)"
+assert_contains "cetirun-ai-gateway:${app_version}@sha256:0000" "a digest pins the image" "${pinned}"
+
+echo "==> the Gateway runs as a non-root user"
+gateway_pod="$(render -s templates/deployment.yaml)"
+assert_contains "runAsNonRoot: true" "the Gateway pods refuse to run as root" "${gateway_pod}"
+assert_contains "runAsUser: 65532" "the Gateway pods run as the image's nonroot user" "${gateway_pod}"
+
 # ----- Redis and replicas -----
 
 # Without shared state each replica enforces its own copy of every budget and
 # rate limit, so a limit is multiplied by the replica count. Measured: a $0.10
 # budget permitted $0.20 across two replicas.
 echo "==> Redis is required above one replica"
-if helm template "${release_name}" "${chart_dir}" \
-    --set-string "models[0].model_name=lint-model" \
-    --set-string "models[0].litellm_params.model=openai/lint-model" \
-    --set-string "postgresql.urlSecret.existingSecret=lint-database" \
-    --set replicaCount=2 > /dev/null 2>&1; then
-  echo "FAIL: two replicas without Redis should have been rejected" >&2
-  exit 1
-fi
+assert_rejected "two replicas without Redis" --set "redis.bundled.enabled=false" --set replicaCount=2
 
 echo "==> a single replica does not require Redis"
-single="$(helm template "${release_name}" "${chart_dir}" \
-  --set-string "models[0].model_name=lint-model" \
-  --set-string "models[0].litellm_params.model=openai/lint-model" \
-  --set-string "postgresql.urlSecret.existingSecret=lint-database" \
-  --set replicaCount=1)"
+single="$(render --set "redis.bundled.enabled=false" --set replicaCount=1)"
 assert_contains "replicas: 1" "single replica renders" "${single}"
-assert_absent "redis_host" "no Redis configuration without a host" "${single}"
+assert_absent "redis_host" "no Redis configuration without Redis" "${single}"
+assert_absent "component: valkey" "no Valkey without Redis" "${single}"
 
 # Redis declared in only one block is inert: it stays unused while budgets keep
 # doubling, and the deployment still looks correctly configured. Both blocks
-# have to be present.
+# have to be present, and both have to carry the password.
 echo "==> Redis is wired into both configuration blocks"
-assert_contains "redis_host:" "router_settings carries Redis" "${output}"
+assert_contains "redis_host: \"${fullname}-valkey\"" "router_settings points at the bundled Valkey" "${output}"
 assert_contains "type: redis" "litellm_settings carries the Redis cache block" "${output}"
+assert_contains "host: \"${fullname}-valkey\"" "the cache block points at the bundled Valkey" "${output}"
+assert_contains "redis_password: os.environ/REDIS_PASSWORD" "router_settings carries the password" "${output}"
+assert_contains "password: os.environ/REDIS_PASSWORD" "the cache block carries the password" "${output}"
+assert_contains "name: REDIS_PASSWORD" "the proxy receives the Valkey password" "${output}"
+assert_contains "redis_host: \"lint-redis.example.invalid\"" "an external Redis is used when configured" "${external}"
 
 # The Redis-backed cache is what makes budgets coordinate across replicas, but
 # at its default it also answers identical requests from Redis, at zero spend,
@@ -165,35 +196,91 @@ assert_absent "block_requests_for_models_without_pricing" \
 
 # ----- Migrations -----
 
-# Several replicas applying migrations at once race each other, so the work
-# moves to a hook and the proxies start with schema updates disabled.
-echo "==> migrations run from a hook, not from the proxies"
-assert_contains "helm.sh/hook: pre-install,pre-upgrade" "migration job is a hook" "${output}"
-assert_contains "DISABLE_SCHEMA_UPDATE" "proxies do not migrate" "${output}"
-
-# A pre-install hook runs before the chart's ordinary resources exist, so it
-# cannot reference any of them: naming the chart's ServiceAccount stops the pod
-# being scheduled, and mounting the chart's Secret leaves the container stuck in
-# CreateContainerConfigError. Either way the install hangs until it times out.
-# Rendering shows every object and cannot reveal the ordering, so the hook's
-# references are checked directly.
-job_manifest="$(render -s templates/migration-job.yaml)"
-if grep -q 'serviceAccountName' <<< "${job_manifest}"; then
-  echo "FAIL: the migration hook names a ServiceAccount that does not exist when it runs" >&2
-  exit 1
-fi
-if grep -qE 'name: .*-auth$' <<< "${job_manifest}"; then
-  echo "FAIL: the migration hook reads a chart-managed Secret that does not exist when it runs" >&2
-  exit 1
-fi
-assert_contains "DATABASE_URL" "the migration hook gets the database connection" "${job_manifest}"
-if grep -q 'LITELLM_SALT_KEY' <<< "${job_manifest}"; then
-  echo "FAIL: the migration hook asks for credentials it does not need" >&2
-  exit 1
-fi
+# Migrations run in an init container of every Gateway pod, and the image makes
+# pods take turns. A pre-install hook, the earlier design, runs before the
+# release's own resources exist, so it cannot reach the bundled PostgreSQL; and
+# when it referenced the chart's ServiceAccount or Secret the install hung. No
+# hook is rendered at all.
+echo "==> migrations run in an init container, not a hook"
+init="$(init_block "${gateway_pod}")"
+assert_contains "name: migrate" "the Gateway pods migrate before starting" "${init}"
+assert_contains "\- migrate$" "the init container runs the image's migrate command" "${init}"
+assert_contains "name: DATABASE_URL" "the migrate init container gets the database connection" "${init}"
+assert_absent "LITELLM_SALT_KEY" "the migrate init container gets no credential it does not need" "${init}"
+assert_absent "LITELLM_MASTER_KEY" "the migrate init container gets no credential it does not need" "${init}"
+assert_contains "DISABLE_SCHEMA_UPDATE" "proxies do not migrate on startup" "${output}"
+assert_absent "helm.sh/hook" "no Helm hook is rendered" "${output}"
+assert_absent "helm.sh/hook" "no Helm hook is rendered with external dependencies" "${external}"
 
 migrations_off="$(render --set migrations.enabled=false)"
-assert_absent "DISABLE_SCHEMA_UPDATE" "proxies migrate when the hook is disabled" "${migrations_off}"
+assert_absent "DISABLE_SCHEMA_UPDATE" "proxies migrate when the init container is disabled" "${migrations_off}"
+assert_absent "initContainers:" "no migrate init container when disabled" \
+  "$(render --set migrations.enabled=false -s templates/deployment.yaml)"
+
+# ----- Bundled PostgreSQL and Valkey -----
+
+echo "==> PostgreSQL and Valkey are bundled by default"
+assert_contains "kind: StatefulSet" "the bundled PostgreSQL is a StatefulSet" "${output}"
+assert_contains "volumeClaimTemplates:" "the bundled PostgreSQL keeps its data on a volume" "${output}"
+# The PostgreSQL image declares its data directory a volume. Mounted anywhere
+# else, the claim sat unused while the runtime gave that path an anonymous
+# volume, discarded with each container: every restart of the pod began from an
+# empty database. Only an install-level test showed it; this keeps the mount
+# where the data actually goes, and on a subdirectory that initdb accepts.
+postgresql="$(render -s templates/postgresql.yaml)"
+assert_contains "mountPath: /var/lib/postgresql/data$" \
+  "the claim is mounted at the image's declared data directory" "${postgresql}"
+assert_contains "subPath: data$" \
+  "the data sits in a subdirectory, so a formatted disk's lost+found does not stop initdb" "${postgresql}"
+assert_contains "image: mcr.microsoft.com/azurelinux/base/postgres:" "PostgreSQL comes from MCR" "${output}"
+assert_contains "image: mcr.microsoft.com/azurelinux/base/valkey:" "Valkey comes from MCR" "${output}"
+assert_contains "\- --requirepass" "the bundled Valkey requires a password" "${output}"
+db_ref="$(grep -A4 'name: DATABASE_URL' <<< "${output}")"
+assert_contains "name: ${fullname}-postgresql" "the proxy connects to the bundled PostgreSQL" "${db_ref}"
+assert_contains "key: database-url" "the connection URL comes from the bundled PostgreSQL's Secret" "${db_ref}"
+
+echo "==> an external database and Redis replace the bundled ones"
+assert_absent "kind: StatefulSet" "no bundled PostgreSQL with an external database" "${external}"
+assert_absent "component: valkey" "no bundled Valkey with an external Redis" "${external}"
+assert_contains "name: lint-database" "the administrator's database Secret is referenced" "${external}"
+
+# The bundled pods share the release's name and instance labels. Selecting the
+# Gateway by those alone put the PostgreSQL and Valkey pods behind the Gateway
+# Service, so a share of API traffic went to them. Each pod template's labels
+# are compared with the Service selector.
+echo "==> the Gateway Service selects only the Gateway pods"
+selector="$(render -s templates/service.yaml | awk '/^  selector:/{f=1; next} f && /^    /{sub(/^ +/, ""); print; next} f{f=0}')"
+[ -n "${selector}" ] || { echo "FAIL: the Gateway Service has no selector" >&2; exit 1; }
+matching=0
+while IFS= read -r template; do
+  [ -n "${template}" ] || continue
+  labels="$(render -s "templates/${template}" | awk '
+    /^  template:/{t=1} t && /^      labels:/{l=1; next}
+    l && /^        [^ ]/{sub(/^ +/, ""); print; next} l{l=0; t=0}')"
+  all=true
+  while IFS= read -r pair; do
+    grep -qxF -- "${pair}" <<< "${labels}" || all=false
+  done <<< "${selector}"
+  if [ "${all}" = "true" ]; then
+    [ "${template}" = "deployment.yaml" ] || { echo "FAIL: the Gateway Service also selects the pods of ${template}" >&2; exit 1; }
+    matching=$((matching + 1))
+  fi
+done < <(printf '%s\n' deployment.yaml postgresql.yaml valkey.yaml)
+[ "${matching}" -eq 1 ] || { echo "FAIL: the Gateway Service does not select the Gateway pods" >&2; exit 1; }
+
+# The bundled PostgreSQL's volume outlives the release, and PostgreSQL keeps the
+# password it was initialised with. A password regenerated on upgrade or
+# reinstall would lock the Gateway out of its own data, so the Secret is read
+# back and kept, like the salt key. lookup returns nothing under helm template,
+# so this checks the source; the cluster test checks the behaviour.
+echo "==> the bundled dependencies' passwords are read back and kept"
+dependency_secrets="$(render -s templates/secret-dependencies.yaml)"
+assert_contains "helm.sh/resource-policy: keep" "the dependency Secrets are kept on uninstall" "${dependency_secrets}"
+dependency_template="${chart_dir}/templates/secret-dependencies.yaml"
+if [ "$(grep -c 'lookup "v1" "Secret"' "${dependency_template}")" -lt 2 ]; then
+  echo "FAIL: a dependency Secret is regenerated instead of read back; the next upgrade would change its password" >&2
+  exit 1
+fi
 
 # ----- Credentials -----
 

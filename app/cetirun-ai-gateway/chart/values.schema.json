@@ -4,20 +4,28 @@
     "title": "CetiRun AI Gateway Helm Chart Values Schema",
     "description": "JSON Schema for validating CetiRun AI Gateway chart values",
     "properties": {
+        "global": {
+            "type": "object",
+            "description": "Values propagated by the cetirun-platform umbrella chart",
+            "properties": {
+                "registry": {"type": "string", "description": "Registry host override for the Gateway image", "default": ""},
+                "version": {"type": "string", "description": "Image tag override", "default": ""}
+            }
+        },
         "replicaCount": {
             "type": "integer",
-            "description": "Number of Gateway replicas. Above 1 requires redis.host.",
+            "description": "Number of Gateway replicas. Above 1 requires Redis: the bundled Valkey or redis.host.",
             "minimum": 1,
             "default": 2
         },
         "image": {
             "type": "object",
-            "description": "Gateway container image. Upstream LiteLLM, unmodified, mirrored to MCR rather than rebuilt.",
+            "description": "Gateway container image: open-source LiteLLM on Azure Linux, built from app/cetirun-ai-gateway",
             "properties": {
                 "repository": {
                     "type": "string",
-                    "description": "Image repository",
-                    "default": "mcr.microsoft.com/aks/cetirun/cetirun-ai-gateway"
+                    "description": "Image repository. global.registry, when set, replaces the registry host.",
+                    "default": "cetirun.azurecr.io/cetirun-ai-gateway"
                 },
                 "pullPolicy": {
                     "type": "string",
@@ -27,12 +35,12 @@
                 },
                 "tag": {
                     "type": "string",
-                    "description": "Image tag, defaulting to the chart appVersion when empty",
-                    "default": "v1.101.0"
+                    "description": "Image tag. Empty uses global.version, then the chart appVersion.",
+                    "default": ""
                 },
                 "digest": {
                     "type": "string",
-                    "description": "Image digest. A mirror preserves it, so the same value is valid against the upstream registry and MCR.",
+                    "description": "Image digest. When set, the reference is pinned to exactly this image.",
                     "default": ""
                 }
             },
@@ -146,10 +154,28 @@
         },
         "postgresql": {
             "type": "object",
-            "description": "PostgreSQL holds virtual keys, spend records and models added through the console",
+            "description": "PostgreSQL holds virtual keys, spend records and models added through the console. Bundled by default, or your own through urlSecret.",
             "properties": {
+                "bundled": {
+                    "type": "object",
+                    "description": "Single-instance PostgreSQL deployed with the Gateway, on a persistent volume",
+                    "properties": {
+                        "enabled": {"type": "boolean", "default": true},
+                        "image": {"$ref": "#/definitions/dependencyImage"},
+                        "persistence": {
+                            "type": "object",
+                            "properties": {
+                                "size": {"type": "string", "default": "8Gi"},
+                                "storageClass": {"type": "string", "default": ""}
+                            }
+                        },
+                        "resources": {"type": "object", "default": {}}
+                    },
+                    "required": ["enabled"]
+                },
                 "urlSecret": {
                     "type": "object",
+                    "description": "Secret holding the connection URL of your own PostgreSQL, used when bundled.enabled is false",
                     "properties": {
                         "existingSecret": {"type": "string", "default": ""},
                         "key": {"type": "string", "default": "database-url"}
@@ -157,12 +183,22 @@
                     "required": ["key"]
                 }
             },
-            "required": ["urlSecret"]
+            "required": ["bundled", "urlSecret"]
         },
         "redis": {
             "type": "object",
-            "description": "Coordinates budget and rate-limit state between replicas. Required above one replica.",
+            "description": "Coordinates budget and rate-limit state between replicas. Required above one replica. Bundled Valkey by default, or your own through host.",
             "properties": {
+                "bundled": {
+                    "type": "object",
+                    "description": "Single-instance Valkey deployed with the Gateway, password protected, no persistence",
+                    "properties": {
+                        "enabled": {"type": "boolean", "default": true},
+                        "image": {"$ref": "#/definitions/dependencyImage"},
+                        "resources": {"type": "object", "default": {}}
+                    },
+                    "required": ["enabled"]
+                },
                 "host": {"type": "string", "default": ""},
                 "port": {"type": "integer", "minimum": 1, "maximum": 65535, "default": 6379},
                 "passwordSecret": {
@@ -172,7 +208,8 @@
                         "key": {"type": "string", "default": "redis-password"}
                     }
                 }
-            }
+            },
+            "required": ["bundled"]
         },
         "service": {
             "type": "object",
@@ -195,7 +232,7 @@
         },
         "migrations": {
             "type": "object",
-            "description": "Run database migrations from a hook so replicas do not race each other",
+            "description": "Apply database migrations from an init container in each Gateway pod; pods take turns",
             "properties": {
                 "enabled": {"type": "boolean", "default": true}
             }
@@ -215,5 +252,17 @@
         "nodeSelector": {"type": "object", "default": {}},
         "tolerations": {"type": "array", "default": []},
         "affinity": {"type": "object", "default": {}}
+    },
+    "definitions": {
+        "dependencyImage": {
+            "type": "object",
+            "description": "Image of a bundled dependency, pinned by tag and optional digest",
+            "properties": {
+                "repository": {"type": "string", "minLength": 1},
+                "tag": {"type": "string", "minLength": 1},
+                "digest": {"type": "string", "default": ""}
+            },
+            "required": ["repository", "tag"]
+        }
     }
 }

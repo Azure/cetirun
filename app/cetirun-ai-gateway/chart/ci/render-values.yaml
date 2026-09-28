@@ -1,11 +1,8 @@
 # Test values for offline chart rendering. Not a deployment configuration.
 #
-# Points at upstream rather than MCR, which is where testing gets its image
-# until MCR onboarding is done. The digest is left at the chart default: a
-# mirror preserves it, so the same digest is correct in both registries.
-image:
-  repository: ghcr.io/berriai/litellm
-
+# The chart's defaults bundle PostgreSQL and Valkey. These values exercise the
+# other path, the one a production install takes: an external database and an
+# external Redis, both through administrator-owned Secrets.
 replicaCount: 2
 
 models:
@@ -23,9 +20,15 @@ providerCredentials:
   existingSecret: gateway-provider-keys
 
 postgresql:
+  bundled:
+    enabled: false
   urlSecret:
     existingSecret: gateway-database
 
 redis:
+  bundled:
+    enabled: false
   host: gateway-redis.example.invalid
   port: 6379
+  passwordSecret:
+    existingSecret: gateway-redis

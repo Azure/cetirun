@@ -4,28 +4,22 @@ Licensed under the MIT License.
 */}}
 
 {{/*
-Database connection only.
-
-Used by the migration hook, which runs before any chart-managed resource exists.
-A pre-install hook cannot reference the chart's own Secret or ServiceAccount:
-the pod is rejected or never scheduled, and the install hangs until it times
-out. The administrator's database Secret is fine because they created it.
-
-Schema migration needs no other credential.
+Database connection only: all that schema migration needs, so it is all the
+migrate init container gets.
 */}}
-{{- define "cetirun-gateway.databaseEnv" -}}
+{{- define "cetirun-ai-gateway.databaseEnv" -}}
 - name: DATABASE_URL
   valueFrom:
     secretKeyRef:
-      name: {{ .Values.postgresql.urlSecret.existingSecret }}
-      key: {{ .Values.postgresql.urlSecret.key }}
+      name: {{ include "cetirun-ai-gateway.databaseUrlSecret" . }}
+      key: {{ include "cetirun-ai-gateway.databaseUrlKey" . }}
 {{- end }}
 
 {{/*
 Everything the proxy needs, including credentials held in chart-managed Secrets.
 */}}
-{{- define "cetirun-gateway.commonEnv" -}}
-{{ include "cetirun-gateway.databaseEnv" . }}
+{{- define "cetirun-ai-gateway.commonEnv" -}}
+{{ include "cetirun-ai-gateway.databaseEnv" . }}
 - name: LITELLM_MASTER_KEY
   valueFrom:
     secretKeyRef:
@@ -33,7 +27,7 @@ Everything the proxy needs, including credentials held in chart-managed Secrets.
       name: {{ .Values.auth.masterKey.existingSecret }}
       key: {{ .Values.auth.masterKey.key }}
       {{- else }}
-      name: {{ include "cetirun-gateway.secretName" . }}
+      name: {{ include "cetirun-ai-gateway.secretName" . }}
       key: master-key
       {{- end }}
 - name: LITELLM_SALT_KEY
@@ -43,17 +37,18 @@ Everything the proxy needs, including credentials held in chart-managed Secrets.
       name: {{ .Values.auth.saltKey.existingSecret }}
       key: {{ .Values.auth.saltKey.key }}
       {{- else }}
-      name: {{ include "cetirun-gateway.secretName" . }}
+      name: {{ include "cetirun-ai-gateway.secretName" . }}
       key: salt-key
       {{- end }}
 {{- end }}
 
-{{- define "cetirun-gateway.proxyEnv" -}}
-{{ include "cetirun-gateway.commonEnv" . }}
+{{- define "cetirun-ai-gateway.proxyEnv" -}}
+{{ include "cetirun-ai-gateway.commonEnv" . }}
 - name: STORE_MODEL_IN_DB
   value: "True"
 {{- if .Values.migrations.enabled }}
-{{- /* The migration hook owns schema changes, so proxies must not race it. */}}
+{{- /* The migrate init container owns schema changes, so proxies must not
+       migrate on startup as well. */}}
 - name: DISABLE_SCHEMA_UPDATE
   value: "True"
 {{- end }}
@@ -67,18 +62,18 @@ Everything the proxy needs, including credentials held in chart-managed Secrets.
       name: {{ .Values.auth.adminUI.passwordSecret.existingSecret }}
       key: {{ .Values.auth.adminUI.passwordSecret.key }}
       {{- else }}
-      name: {{ include "cetirun-gateway.secretName" . }}
+      name: {{ include "cetirun-ai-gateway.secretName" . }}
       key: ui-password
       {{- end }}
 {{- else }}
 - name: DISABLE_ADMIN_UI
   value: "True"
 {{- end }}
-{{- if .Values.redis.passwordSecret.existingSecret }}
+{{- if include "cetirun-ai-gateway.redisPasswordSecret" . }}
 - name: REDIS_PASSWORD
   valueFrom:
     secretKeyRef:
-      name: {{ .Values.redis.passwordSecret.existingSecret }}
-      key: {{ .Values.redis.passwordSecret.key }}
+      name: {{ include "cetirun-ai-gateway.redisPasswordSecret" . }}
+      key: {{ include "cetirun-ai-gateway.redisPasswordKey" . }}
 {{- end }}
 {{- end }}

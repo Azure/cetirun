@@ -8,15 +8,16 @@ install it, configure provider keys, and point those agents at the result.
 
 ## Install
 
-```bash
-kubectl create secret generic gateway-database \
-  --from-literal=database-url='postgresql://user:password@postgres:5432/litellm'
+One command. With the defaults the chart brings its own PostgreSQL and Valkey,
+so the only inputs are the models and their keys:
 
+```bash
 kubectl create secret generic gateway-provider-keys \
   --from-literal=AZURE_PROD_KEY='...' \
   --from-literal=ANTHROPIC_KEY='...'
 
-helm install gateway ./app/cetirun-gateway-chart -f my-values.yaml
+helm install gateway oci://<registry>/helm/cetirun-ai-gateway --version <version> \
+  --set global.registry=<registry> -f my-values.yaml
 ```
 
 A minimal `my-values.yaml`:
@@ -34,14 +35,10 @@ models:
 
 providerCredentials:
   existingSecret: gateway-provider-keys
-
-postgresql:
-  urlSecret:
-    existingSecret: gateway-database
-
-redis:
-  host: my-redis
 ```
+
+`<registry>` is where the CetiRun images and charts are published. The master
+key, salt key and console password are generated; see [Credentials](#credentials).
 
 At least one model is required. Installing with an empty list is rejected rather
 than producing a Gateway that starts and then fails every request.
@@ -75,6 +72,42 @@ replication.
 
 What the Gateway does when either one is unavailable is described under
 [Availability](#availability).
+
+### Bundled or your own
+
+By default both are bundled: a single PostgreSQL on a persistent volume and a
+single password-protected Valkey, from the Azure Linux images on MCR. That is
+enough for evaluation, demos and small installations.
+
+For anything that needs backups or high availability, use managed services
+instead:
+
+```yaml
+postgresql:
+  bundled:
+    enabled: false
+  urlSecret:
+    existingSecret: gateway-database   # key database-url: postgresql://...
+
+redis:
+  bundled:
+    enabled: false
+  host: my-redis.example.com
+  passwordSecret:
+    existingSecret: gateway-redis      # key redis-password
+```
+
+The bundled PostgreSQL behaves like an external database across the release's
+lifecycle. `helm uninstall` keeps its volume and its password Secret, so an
+install under the same release name finds the data again: measured, a model
+added through the console before the uninstall was served after it. To discard
+the data, delete the volume claim (`data-<release>-cetirun-ai-gateway-postgresql-0`)
+and the `-postgresql` and `-auth` Secrets yourself.
+
+Local connections inside the PostgreSQL container are trusted, as in the
+upstream image; connections from other pods need the password. Measured: a
+wrong password from another pod is refused, and Valkey refuses a client without
+one.
 
 ### Response caching is off
 
@@ -279,7 +312,7 @@ creates no Ingress; reach it through a port-forward. Resource names are prefixed
 with the release name, so for a release called `gateway`:
 
 ```bash
-kubectl port-forward svc/gateway-cetirun-gateway 4000:4000
+kubectl port-forward svc/gateway-cetirun-ai-gateway 4000:4000
 ```
 
 Then open <http://localhost:4000/ui>.
@@ -348,7 +381,8 @@ Reading them back relies on Helm's `lookup`, which returns nothing when a chart
 is rendered with `helm template`: two renders produced two different salt keys.
 Argo CD renders charts that way, so under it every sync would generate new
 values, salt key included. With Argo CD, or any tool that renders with
-`helm template`, supply all three through existing Secrets.
+`helm template`, supply all three through existing Secrets, and use an external
+PostgreSQL, whose bundled counterpart generates its password the same way.
 
 ### Changing a credential takes a restart
 
@@ -357,7 +391,7 @@ After changing a provider key, the master key or the console password in a
 Secret, restart it:
 
 ```bash
-kubectl rollout restart deployment/gateway-cetirun-gateway
+kubectl rollout restart deployment/gateway-cetirun-ai-gateway
 ```
 
 Measured: a minute after a provider key changed in its Secret, both replicas
@@ -386,13 +420,13 @@ The chart preserves its generated value across upgrades. What it cannot protect
 against is the Secret being deleted, so back it up:
 
 ```bash
-kubectl get secret gateway-cetirun-gateway-auth -o jsonpath='{.data.salt-key}' | base64 -d
+kubectl get secret gateway-cetirun-ai-gateway-auth -o jsonpath='{.data.salt-key}' | base64 -d
 ```
 
 In PowerShell, where `base64` is not available:
 
 ```powershell
-$v = kubectl get secret gateway-cetirun-gateway-auth -o jsonpath='{.data.salt-key}'
+$v = kubectl get secret gateway-cetirun-ai-gateway-auth -o jsonpath='{.data.salt-key}'
 [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($v))
 ```
 
@@ -406,9 +440,9 @@ was refused with 401.
 To recover, write the original value back into the chart's Secret and restart:
 
 ```bash
-kubectl patch secret gateway-cetirun-gateway-auth --type merge -p \
+kubectl patch secret gateway-cetirun-ai-gateway-auth --type merge -p \
   "{\"data\":{\"salt-key\":\"$(printf '%s' "$SALT_KEY" | base64)\"}}"
-kubectl rollout restart deployment/gateway-cetirun-gateway
+kubectl rollout restart deployment/gateway-cetirun-ai-gateway
 ```
 
 with `$SALT_KEY` holding the value you backed up. Restore `master-key` the same
@@ -421,12 +455,12 @@ model count before and after, or assert the Secret is unchanged.
 
 ### Uninstalling keeps the credentials Secret
 
-`helm uninstall` leaves `<release>-cetirun-gateway-auth` in place, and a later
+`helm uninstall` leaves `<release>-cetirun-ai-gateway-auth` in place, and a later
 `helm install` under the same release name and namespace picks it up again.
 
-This is deliberate. PostgreSQL is not part of the release and outlives it, so
-before the Secret was kept, an uninstall followed by an install generated a new
-salt key against the old database. Measured:
+This is deliberate. The database outlives the release, whether it is external or
+the bundled one's volume, so before the Secret was kept, an uninstall followed
+by an install generated a new salt key against the old database. Measured:
 
 | After uninstall and install | Secret deleted | Secret kept |
 | --- | --- | --- |
@@ -445,13 +479,15 @@ database leaves every console-added model permanently unreadable.
 
 ### Upgrading LiteLLM
 
-Change `image.tag` and `image.digest` together and upgrade. The migration hook
-runs before the new pods start and applies the new version's migrations.
+Rebuild the image for the new release (see [Image](#image)) and upgrade. Each new
+Gateway pod applies the new version's migrations in its init container before
+the proxy starts.
 
-Measured from `v1.101.0` to `v1.102.0` with data in place: six migrations
-applied, virtual keys and their spend preserved, models added through the
-console still decrypted and served, and a budget partly spent before the upgrade
-was enforced exactly after it.
+Measured from `v1.101.0` to `v1.102.0` with data in place, on the upstream
+image before the chart moved to its own: six migrations applied, virtual keys
+and their spend preserved, models added through the console still decrypted and
+served, and a budget partly spent before the upgrade was enforced exactly after
+it.
 
 ### Rolling back
 
@@ -570,72 +606,87 @@ lost is bounded by what the Gateway serves meanwhile, which the 503s keep small.
 
 ## Migrations
 
-LiteLLM applies migrations on startup by default, which means several replicas
-racing to migrate the same schema. The chart instead runs them from a
-`pre-install,pre-upgrade` hook and starts the proxies with `DISABLE_SCHEMA_UPDATE`
-set.
+LiteLLM applies migrations on startup by default. The chart instead runs them in
+an init container of each Gateway pod, with the image's `migrate` command, and
+starts the proxies with `DISABLE_SCHEMA_UPDATE` set.
+
+Pods take turns. Two migrations running at once were measured to deadlock:
+prisma waits for its own lock inside an open transaction, and one of LiteLLM's
+migrations builds an index concurrently, which waits for every open
+transaction. PostgreSQL resolves that by killing one of them, which can leave a
+failed migration that blocks every later deploy. So `migrate` first takes a
+PostgreSQL advisory lock of its own, polling without holding a transaction open.
+Measured with two pods started together: the second waited, then found nothing
+left to apply.
+
+An init container, unlike the pre-install hook this chart used before, can wait
+for a database that is still starting, which the bundled PostgreSQL is on first
+install. `migrate` waits up to ten minutes for it.
 
 Set `migrations.enabled: false` to return to startup migrations, which is only
 appropriate at a single replica.
 
 ## Image
 
-The Gateway runs upstream LiteLLM, unmodified.
+The Gateway runs `cetirun-ai-gateway`, built from `app/cetirun-ai-gateway` and
+published with the other CetiRun images. It is open-source LiteLLM, installed as
+pinned packages on the Azure Linux Python base from MCR, running as the
+non-root user 65532.
 
-We do not build it. The requirement is to distribute from MCR rather than a
-public registry, not to change anything, so the image is mirrored with its
-manifest intact. Keeping the upstream digest is what lets anyone verify that
-what we ship is unmodified, which a rebuild would lose for no benefit.
+- `requirements.txt` is the exact package set of the upstream LiteLLM image for
+  the same release, installed with `--no-deps`, so nothing else is pulled in.
+  Two differences, both deliberate: `litellm-enterprise`, which carries the
+  BerriAI Enterprise License, is left out, and two backports that Python 3.12
+  needs are added. The build fails if the enterprise package is present.
+- The prisma CLI and engines are installed at build time, so migrations need
+  neither npm nor network access. Measured on a network with no route out:
+  migrations applied and the proxy became ready.
+- `cetirun-ai-gateway migrate` applies migrations; any other arguments start
+  the proxy. Starting never touches a database, because the same image serves
+  the per-agent Copilot proxy, which has none.
 
-The same image also serves the per-agent Copilot proxy in V2, which is the same
-LiteLLM with a different configuration: a single replica, no database, and one
-user's credential. Only the deployment differs.
+To move to a new LiteLLM release, regenerate `requirements.txt` from that
+release's upstream image, rebuild, and let the build's `pip check` name any
+backport the new set needs.
 
-The pinned version is `v1.101.0`, digest
-`sha256:d295634e09c648dcdb72c4cc2dd226f5fb87823a73e88cbbed6f205e4deb044b`. It
-was chosen over the then-current `v1.102.0`, released a day earlier, for a week
-of soak.
-
-Because a mirror preserves the digest, the same `image.digest` is correct in
-both registries. Testing before MCR onboarding overrides only the repository:
-
-```yaml
-image:
-  repository: ghcr.io/berriai/litellm
-```
+With `global.registry` set, the chart uses `<registry>/cetirun-ai-gateway`, the
+same convention as the other CetiRun charts; `image.digest` pins an exact build.
 
 ## Testing
 
 ```bash
-bash scripts/gateway-helm-test.sh       # offline render assertions
-bash scripts/gateway-cluster-test.sh    # install and upgrade on a real cluster
+bash scripts/cetirun-ai-gateway-helm-test.sh       # offline render assertions
+bash scripts/cetirun-ai-gateway-cluster-test.sh    # install and upgrade on a real cluster
 ```
 
 The render assertions need no cluster and run in `make chart-check`.
 
-The cluster test needs kubectl pointed at a disposable cluster, plus helm, curl
-and jq. It deploys PostgreSQL, Redis and a mock provider, installs the chart
-with two replicas, exercises it, upgrades it, and checks what survived. It runs
-in CI on kind for any change to the chart.
+The cluster test needs kubectl pointed at a disposable cluster that already has
+the image, plus helm, curl and jq. It deploys a mock provider, installs the
+chart with its defaults, including the bundled PostgreSQL and Valkey, exercises
+it, upgrades it, uninstalls and reinstalls it, and checks what survived. It runs
+in CI on kind for any change to the image or the chart, with the image built
+from the same commit.
 
-It exists because the render assertions stayed green through five real bugs:
-two hook-ordering failures, a migration that succeeded without creating any of
+It exists because the render assertions stayed green through real bugs: two
+hook-ordering failures, a migration that succeeded without creating any of
 LiteLLM's tables, a Redis configuration that answered identical requests from
 cache across callers, and an uninstall that deleted the salt key while the
-database kept everything encrypted with it. It also checks two behaviours only a
-running Gateway can show: that an upstream failure is not retried, and that a
-replica shutting down finishes the request it is serving.
+database kept everything encrypted with it. It also checks behaviours only a
+running Gateway can show: that an upstream failure is not retried, that a
+replica shutting down finishes the request it is serving, that replicas
+migrate in turn, and that the bundled services refuse clients without their
+passwords.
 
-Five checks were confirmed by putting the original problem back and watching the
-test fail at the check meant to catch it: the empty migration, response caching,
-the deleted Secret, retries, and the default grace period. Doing that also
-exposed a weakness in the test itself, since fixed: counting every table passed
-on an empty database, because migration creates its own bookkeeping table even
-when it applies nothing.
+Its checks were confirmed by putting each original problem back and watching
+the test fail at the check meant to catch it. Doing that also exposed a
+weakness in the test itself, since fixed: counting every table passed on an
+empty database, because migration creates its own bookkeeping table even when
+it applies nothing.
 
 ## Known gaps
 
-Both are in the reporting layer, and neither is explained yet.
+Recorded and deferred: none of these stops the Gateway from serving agents.
 
 **Per-request logs are incomplete with Redis configured.** In
 `LiteLLM_SpendLogs`, failed requests were recorded but successful ones mostly
@@ -655,3 +706,21 @@ uses, non-streaming, with and without cache hits, each request's charge matched
 the model's rates to the token. What is not: that a streamed agent session's
 recorded spend equals the sum of those per-request costs. Settling it needs
 per-request logs, which is the first gap.
+
+**Not in the chart yet.** Redis TLS, which Azure Cache for Redis requires; a
+PodDisruptionBudget and anti-affinity; and LiteLLM's routing, fallback and
+health-check settings. LiteLLM supports all of them. Measured on the current
+settings: with one of two endpoints behind a model name unreachable, 6 of 30
+requests failed, and adding a fallback group recovered all 30.
+
+**Prices are not pinned to the image.** LiteLLM fetches its price table from
+GitHub at startup and falls back to the copy it ships with when that fails, so
+a restart can change what `base_model` pricing resolves to. Set
+`LITELLM_LOCAL_MODEL_COST_MAP=True` to use the shipped copy only.
+
+**GitOps.** Generated credentials rely on Helm's `lookup`, which returns nothing
+under `helm template`, so tools that render that way, such as Argo CD, must
+supply the master key, salt key and console password through existing Secrets,
+and use an external PostgreSQL: the bundled one's password is generated the
+same way, with no option to supply it, and a changed password locks the
+Gateway out of data initialised with the old one.

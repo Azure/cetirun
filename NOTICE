@@ -91,7 +91,7 @@ The name, fullname, chart, label, selector, and service-account helpers in
 app/cetirun-chart/templates/_helpers.tpl contain adapted Helm chart scaffolding.
 Related Helm-style helpers are present in:
 
-    app/cetirun-gateway-chart/templates/_helpers.tpl
+    app/cetirun-ai-gateway/chart/templates/_helpers.tpl
     app/cetirun-operator/chart/templates/_helpers.tpl
     app/cetirun-portal/chart/templates/_helpers.tpl
     infra/istio/templates/_helpers.tpl
