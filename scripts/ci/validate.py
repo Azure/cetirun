@@ -15,10 +15,11 @@ import tempfile
 
 
 ROOT = Path(__file__).resolve().parents[2]
-MODULES = ("operator", "portal")
+MODULES = ("operator", "portal", "agent-broker")
 WORKFLOWS = (
     "operator-ci.yml",
     "portal-ci.yml",
+    "agent-broker-ci.yml",
     "helm-lint-test.yml",
     "docker-build-validate.yml",
     "codeql.yml",
@@ -36,6 +37,21 @@ CHARTS = (
     ("app/cetirun-chart", ("agentType=hermes", "secrets.model=lint-model")),
     ("app/cetirun-operator/chart", ()),
     ("app/cetirun-portal/chart", ("istio.host=portal.example.invalid",)),
+    (
+        "app/cetirun-agent-broker/chart",
+        (
+            "agentIdentity.tenantId=11111111-1111-1111-1111-111111111111",
+            "agentIdentity.blueprintClientId=22222222-2222-2222-2222-222222222222",
+            "agentIdentity.authorizationClientId=33333333-3333-3333-3333-333333333333",
+            "agentIdentity.encryptionClientId=44444444-4444-4444-4444-444444444444",
+            "agentIdentity.keyVaultKeyUrl=https://example.vault.azure.net/keys/cache/version",
+            "agentIdentity.redirectUri=https://portal.example.invalid/api/v1/agent-authorization/callback",
+            "agentIdentity.portalOrigin=https://portal.example.invalid",
+            "agentIdentity.portalBaseUrl=https://portal.example.invalid",
+            "istio.sidecarInjection=true",
+            "istio.revision=asm-example",
+        ),
+    ),
     (
         "infra/istio",
         (
@@ -109,13 +125,13 @@ def files(root, suffix):
 def go_directory(root, component):
     module = root / f"app/cetirun-{component}"
     require_file(module / "go.mod")
-    if component == "operator" or (module / "web/dist").is_dir():
+    if component != "portal" or (module / "web/dist").is_dir():
         yield module
         return
     # Go embeds the frontend. Use a disposable source copy when it is not built,
     # without writing a placeholder over a developer's frontend or source files.
     with tempfile.TemporaryDirectory(prefix="cetirun-go-") as temp:
-        for name in MODULES:
+        for name in ("operator", "portal"):
             shutil.copytree(
                 root / f"app/cetirun-{name}",
                 Path(temp) / f"cetirun-{name}",
@@ -188,6 +204,14 @@ def chart_gate(root):
         ["bash", str(require_file(root / "scripts/cetirun-istio-helm-test.sh"))],
         root,
         env={**offline_env(), "CHART_DIR": str(root / "infra/istio")},
+    )
+    run(
+        ["bash", str(require_file(root / "scripts/cetirun-agent-broker-helm-test.sh"))],
+        root,
+        env={
+            **offline_env(),
+            "CHART_DIR": str(root / "app/cetirun-agent-broker/chart"),
+        },
     )
 
 

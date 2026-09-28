@@ -1,0 +1,67 @@
+replicaCount: 2
+
+image:
+  repository: ghcr.io/azure/cetirun-agent-broker
+  # Empty defaults to .Chart.AppVersion.
+  tag: ""
+  # When set, produces repository:tag@digest.
+  digest: ""
+  pullPolicy: IfNotPresent
+
+authSDK:
+  repository: mcr.microsoft.com/entra-sdk/auth-sidecar
+  tag: 1.0.0-azurelinux3.0-distroless
+  # Pinned digest for the tag above. Update tag and digest together.
+  digest: sha256:b3e6204abb87daa9c414dcade11f16060e030d114b81ecbd8bd2a7346e107523
+  pullPolicy: IfNotPresent
+
+serviceAccount:
+  create: true
+  name: cetirun-agent-broker
+  annotations: {}
+
+service:
+  port: 8080
+
+agentIdentity:
+  tenantId: ""
+  blueprintClientId: ""
+  authorizationClientId: ""
+  encryptionClientId: ""
+  keyVaultKeyUrl: ""
+  redirectUri: ""
+  portalOrigin: ""
+  portalBaseUrl: ""
+  armScopes:
+    - https://management.azure.com/user_impersonation
+
+portal:
+  namespace: cetirun-portal
+  serviceAccount: cetirun-portal
+
+operator:
+  namespace: cetirun-system
+  serviceAccount: cetirun-operator-controller-manager
+
+istio:
+  enabled: true
+  # Confirms that the release namespace is labeled for sidecar injection.
+  sidecarInjection: false
+  # AKS managed Istio revision selected for this workload and namespace.
+  revision: ""
+
+resources:
+  broker:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+  authSDK:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
