@@ -323,7 +323,7 @@ func TestRevocationRejectsStaleCallbackAndRefreshWrites(t *testing.T) {
 	}
 }
 
-func TestAzureResponseIsDiscardedWhenConnectionEndsInFlight(t *testing.T) {
+func TestCredentialIsNotReturnedWhenConnectionEndsDuringExchange(t *testing.T) {
 	store, _, closeKube := newRecordTestStore(t)
 	defer closeKube()
 	if err := store.putRecord(context.Background(), connectedRecord(), ""); err != nil {
@@ -337,6 +337,14 @@ func TestAzureResponseIsDiscardedWhenConnectionEndsInFlight(t *testing.T) {
 				"azp": testAuthorizationID, "scp": "access_agent",
 			})
 		case "/AuthorizationHeader/AzureResourceManager":
+			if err := store.revokeRecord(context.Background(), Agent{
+				Name: testAgentName, UID: testAgentUID, OwnerTenantID: testOwnerTenantID,
+				OwnerObjectID: testOwnerObjectID, AgentIdentityClientID: testAgentClientID,
+			}); err != nil {
+				t.Error(err)
+				http.Error(w, "revoke failed", http.StatusInternalServerError)
+				return
+			}
 			_ = json.NewEncoder(w).Encode(map[string]string{"authorizationHeader": "Bearer delegated-token"})
 		default:
 			http.NotFound(w, r)
@@ -348,30 +356,19 @@ func TestAzureResponseIsDiscardedWhenConnectionEndsInFlight(t *testing.T) {
 		store:   store,
 		authSDK: &authSDKClient{baseURL: authSDK.URL, client: authSDK.Client()},
 	}
-	req := httptest.NewRequest(http.MethodGet, "/v1/azure/subscriptions", nil)
+	req := httptest.NewRequest(http.MethodPost, "/v1/credentials/issue", strings.NewReader(`{"service":"azure-resource-manager"}`))
 	req.Header.Set("X-Forwarded-Client-Cert", "URI=spiffe://cluster.local/ns/cetirun-owner/sa/openclaw-agent-a-cetirun")
 	response := httptest.NewRecorder()
-	server.withAzure(response, req, func(_ context.Context, authorization string) (azureResult, error) {
-		if authorization != "Bearer delegated-token" {
-			t.Fatalf("unexpected delegated authorization")
-		}
-		if err := store.revokeRecord(context.Background(), Agent{
-			Name: testAgentName, UID: testAgentUID, OwnerTenantID: testOwnerTenantID,
-			OwnerObjectID: testOwnerObjectID, AgentIdentityClientID: testAgentClientID,
-		}); err != nil {
-			t.Fatal(err)
-		}
-		return azureResult{Items: []map[string]any{{"name": "must-not-be-returned"}}}, nil
-	})
+	server.issueCredential(response, req)
 	if response.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want %d: %s", response.Code, http.StatusUnauthorized, response.Body.String())
 	}
-	if strings.Contains(response.Body.String(), "must-not-be-returned") {
-		t.Fatal("Azure response escaped after the authorization generation was revoked")
+	if strings.Contains(response.Body.String(), "delegated-token") {
+		t.Fatal("credential escaped after the authorization generation was revoked")
 	}
 }
 
-func TestAzureResponseIsDiscardedWhenConnectionEndsDuringFinalWrite(t *testing.T) {
+func TestCredentialIsNotReturnedWhenConnectionEndsDuringFinalWrite(t *testing.T) {
 	store, _, closeKube := newRecordTestStore(t)
 	defer closeKube()
 	if err := store.putRecord(context.Background(), connectedRecord(), ""); err != nil {
@@ -414,24 +411,19 @@ func TestAzureResponseIsDiscardedWhenConnectionEndsDuringFinalWrite(t *testing.T
 		store:   store,
 		authSDK: &authSDKClient{baseURL: authSDK.URL, client: authSDK.Client()},
 	}
-	req := httptest.NewRequest(http.MethodGet, "/v1/azure/subscriptions", nil)
+	req := httptest.NewRequest(http.MethodPost, "/v1/credentials/issue", strings.NewReader(`{"service":"azure-resource-manager"}`))
 	req.Header.Set("X-Forwarded-Client-Cert", "URI=spiffe://cluster.local/ns/cetirun-owner/sa/openclaw-agent-a-cetirun")
 	response := httptest.NewRecorder()
-	server.withAzure(response, req, func(_ context.Context, authorization string) (azureResult, error) {
-		if authorization != "Bearer delegated-token" {
-			t.Fatalf("unexpected delegated authorization")
-		}
-		return azureResult{Items: []map[string]any{{"name": "must-not-be-returned"}}}, nil
-	})
+	server.issueCredential(response, req)
 	if response.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want %d: %s", response.Code, http.StatusUnauthorized, response.Body.String())
 	}
-	if strings.Contains(response.Body.String(), "must-not-be-returned") {
-		t.Fatal("Azure response escaped after revocation won the final write")
+	if strings.Contains(response.Body.String(), "delegated-token") {
+		t.Fatal("credential escaped after revocation won the final write")
 	}
 }
 
-func TestAzureSuccessResponseIncludesRootTruncated(t *testing.T) {
+func TestCredentialIssueReturnsOnlyDownstreamToken(t *testing.T) {
 	store, _, closeKube := newRecordTestStore(t)
 	defer closeKube()
 	if err := store.putRecord(context.Background(), connectedRecord(), ""); err != nil {
@@ -456,27 +448,32 @@ func TestAzureSuccessResponseIncludesRootTruncated(t *testing.T) {
 		store:   store,
 		authSDK: &authSDKClient{baseURL: authSDK.URL, client: authSDK.Client()},
 	}
-	req := httptest.NewRequest(http.MethodGet, "/v1/azure/subscriptions", nil)
+	req := httptest.NewRequest(http.MethodPost, "/v1/credentials/issue", strings.NewReader(`{"service":"azure-resource-manager"}`))
 	req.Header.Set("X-Forwarded-Client-Cert", "URI=spiffe://cluster.local/ns/cetirun-owner/sa/openclaw-agent-a-cetirun")
 	response := httptest.NewRecorder()
-	server.withAzure(response, req, func(_ context.Context, authorization string) (azureResult, error) {
-		if authorization != "Bearer delegated-token" {
-			t.Fatalf("unexpected delegated authorization")
-		}
-		return azureResult{Items: []map[string]any{{"subscriptionId": "synthetic"}}, Truncated: true}, nil
-	})
+	requestSecurityHeaders(http.HandlerFunc(server.issueCredential)).ServeHTTP(response, req)
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d: %s", response.Code, http.StatusOK, response.Body.String())
 	}
-	var payload map[string]any
+	if response.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("credential response Cache-Control = %q, want no-store", response.Header().Get("Cache-Control"))
+	}
+	var payload map[string]string
 	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
 		t.Fatal(err)
 	}
-	if payload["truncated"] != true {
-		t.Fatalf("response has truncated=%#v, want true", payload["truncated"])
+	if payload["tokenType"] != "Bearer" || payload["accessToken"] != "delegated-token" || payload["correlationId"] == "" {
+		t.Fatalf("unexpected credential response: %#v", payload)
 	}
-	if _, ok := payload["items"].([]any); !ok {
-		t.Fatalf("response has non-list items=%#v", payload["items"])
+	if _, found := payload["authorizationHeader"]; found {
+		t.Fatal("response exposed a reusable authorization header")
+	}
+	record, _, err := store.getRecord(context.Background(), testAgentUID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.LastUsed == nil {
+		t.Fatal("successful credential issuance did not update last used")
 	}
 }
 
@@ -592,33 +589,28 @@ func TestCallbackCannotOverwriteReconnectTransactionAfterTokenExchange(t *testin
 	}
 }
 
-func TestAzureRequestValidationReturnsInvalidRequest(t *testing.T) {
+func TestCredentialRequestValidation(t *testing.T) {
 	server := &Server{mux: http.NewServeMux()}
 	server.routes()
 	cases := []struct {
 		name string
-		path string
 		body string
+		code string
 	}{
 		{
-			name: "invalid resource group subscription",
-			path: "/v1/azure/resource-groups/list",
-			body: `{"subscription":"not-a-uuid"}`,
+			name: "unsupported service",
+			body: `{"service":"microsoft-graph"}`,
+			code: "unsupported_service",
 		},
 		{
-			name: "unsafe resource search filter",
-			path: "/v1/azure/resources/search",
-			body: `{"subscriptions":["11111111-1111-1111-1111-111111111111"],"type":"x' | project secret"}`,
-		},
-		{
-			name: "oversized resource search filter",
-			path: "/v1/azure/resources/search",
-			body: `{"subscriptions":["11111111-1111-1111-1111-111111111111"],"location":"` + strings.Repeat("a", 257) + `"}`,
+			name: "caller-selected scope",
+			body: `{"service":"azure-resource-manager","scope":"https://example.invalid/.default"}`,
+			code: "invalid_request",
 		},
 	}
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
-			request := httptest.NewRequest(http.MethodPost, test.path, strings.NewReader(test.body))
+			request := httptest.NewRequest(http.MethodPost, "/v1/credentials/issue", strings.NewReader(test.body))
 			response := httptest.NewRecorder()
 			server.Handler().ServeHTTP(response, request)
 			if response.Code != http.StatusBadRequest {
@@ -628,11 +620,49 @@ func TestAzureRequestValidationReturnsInvalidRequest(t *testing.T) {
 			if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
 				t.Fatalf("decode response: %v", err)
 			}
-			if payload.Error.Code != "invalid_request" {
-				t.Fatalf("error code = %q, want invalid_request", payload.Error.Code)
+			if payload.Error.Code != test.code {
+				t.Fatalf("error code = %q, want %s", payload.Error.Code, test.code)
 			}
 		})
 	}
+	request := httptest.NewRequest(http.MethodGet, "/v1/azure/subscriptions", nil)
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("removed Azure tool route returned %d, want 404", response.Code)
+	}
+}
+
+func TestCredentialIssueRequiresVerifiedConnectedWorkload(t *testing.T) {
+	t.Run("missing workload identity", func(t *testing.T) {
+		server := &Server{}
+		request := httptest.NewRequest(http.MethodPost, "/v1/credentials/issue", strings.NewReader(`{"service":"azure-resource-manager"}`))
+		response := httptest.NewRecorder()
+		server.issueCredential(response, request)
+		if response.Code != http.StatusForbidden {
+			t.Fatalf("status = %d, want %d: %s", response.Code, http.StatusForbidden, response.Body.String())
+		}
+	})
+
+	t.Run("disconnected workload", func(t *testing.T) {
+		store, _, closeKube := newRecordTestStore(t)
+		defer closeKube()
+		server := &Server{store: store}
+		request := httptest.NewRequest(http.MethodPost, "/v1/credentials/issue", strings.NewReader(`{"service":"azure-resource-manager"}`))
+		request.Header.Set("X-Forwarded-Client-Cert", "URI=spiffe://cluster.local/ns/cetirun-owner/sa/openclaw-agent-a-cetirun")
+		response := httptest.NewRecorder()
+		server.issueCredential(response, request)
+		if response.Code != http.StatusUnauthorized {
+			t.Fatalf("status = %d, want %d: %s", response.Code, http.StatusUnauthorized, response.Body.String())
+		}
+		var payload apiError
+		if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload.Error.Code != "authorization_required" {
+			t.Fatalf("error code = %q, want authorization_required", payload.Error.Code)
+		}
+	})
 }
 
 func TestCallbackLookupRateLimitStopsBeforeKubernetesLookup(t *testing.T) {

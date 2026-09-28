@@ -18,7 +18,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"path"
 	"strings"
 )
 
@@ -429,12 +428,4 @@ func dnsLabel(value string) bool {
 		return false
 	}
 	return true
-}
-
-func normalizeResourceID(value string) (string, error) {
-	value = path.Clean("/" + strings.TrimSpace(value))
-	if !strings.HasPrefix(strings.ToLower(value), "/subscriptions/") || strings.ContainsAny(value, "?#") || len(value) > 1024 {
-		return "", errors.New("resource ID is invalid")
-	}
-	return value, nil
 }

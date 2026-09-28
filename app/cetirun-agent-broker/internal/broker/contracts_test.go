@@ -256,30 +256,18 @@ func TestAuthorizationRecordMustMatchCurrentAgent(t *testing.T) {
 	}
 }
 
-func TestResourceIDAndFilters(t *testing.T) {
-	if got, err := normalizeResourceID("/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/example/providers/Microsoft.Compute/virtualMachines/vm1"); err != nil || !strings.HasPrefix(got, "/subscriptions/") {
-		t.Fatalf("valid resource ID rejected: %q %v", got, err)
+func TestAccessTokenFromAuthorizationHeader(t *testing.T) {
+	token, err := accessTokenFromAuthorizationHeader("Bearer synthetic-token")
+	if err != nil || token != "synthetic-token" {
+		t.Fatalf("valid bearer credential rejected: token=%q err=%v", token, err)
 	}
-	for _, value := range []string{"https://management.azure.com/subscriptions/x", "/tenants/x", "/subscriptions/x?api-version=1"} {
-		if _, err := normalizeResourceID(value); err == nil {
-			t.Fatalf("invalid resource ID accepted: %q", value)
-		}
-	}
-	if filterValuePattern.MatchString("x' | project secret") {
-		t.Fatal("KQL metacharacters must be rejected")
-	}
-	validFilters := resourceFilters{
-		Subscriptions: []string{"11111111-1111-1111-1111-111111111111"},
-		Type:          "Microsoft.Compute/virtualMachines",
-	}
-	if err := validateResourceFilters(validFilters); err != nil {
-		t.Fatalf("valid resource filters rejected: %v", err)
-	}
-	for _, value := range []string{"x' | project secret", strings.Repeat("a", 257)} {
-		invalidFilters := validFilters
-		invalidFilters.Type = value
-		if err := validateResourceFilters(invalidFilters); err == nil {
-			t.Fatalf("invalid resource filter accepted: %q", value)
+	for _, value := range []string{
+		"", "Basic synthetic-token", "bearer synthetic-token", "Bearer ",
+		"Bearer token with spaces", "Bearer token\nsecond-header",
+		"Bearer " + strings.Repeat("a", (32<<10)+1),
+	} {
+		if _, err := accessTokenFromAuthorizationHeader(value); err == nil {
+			t.Fatalf("invalid bearer credential accepted: %q", value)
 		}
 	}
 }

@@ -12,7 +12,7 @@ network access.
 | `app/cetirun-operator/` | Go Kubernetes operator, API types, and generated CRDs |
 | `app/cetirun-portal/` | Go portal backend and its Helm chart |
 | `app/cetirun-portal/web/` | React and TypeScript portal frontend |
-| `app/cetirun-agent-broker/` | Agent Identity authorization sessions and allowlisted downstream tool execution |
+| `app/cetirun-agent-broker/` | Agent Identity authorization sessions and workload-bound short-lived credential issuance |
 | `app/cetirun-chart/` | Runtime Helm chart, container definitions, and runtime plugins |
 | `infra/` | Infrastructure definitions and Istio configuration |
 | `scripts/` | Component validation and operational helpers |
@@ -157,10 +157,11 @@ build above until a working lint entry point is added.
 
 ### Agent Identity Broker
 
-The Agent Identity Broker is the trusted boundary that retains OBO
-authorization state and executes allowlisted downstream tool operations without
-returning tokens or authorization headers to agent workloads. Run its Go and
-chart checks with:
+The Agent Identity Broker retains OBO authorization state, validates the
+instance workload binding, and issues a short-lived credential for a fixed
+downstream service. Service-specific tools run in the Agent workload and must
+keep that credential out of model context, logs, files, command arguments, and
+environment variables. Run the Broker's Go and chart checks with:
 
 ```bash
 go -C app/cetirun-agent-broker test ./... -count=1

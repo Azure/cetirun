@@ -28,7 +28,6 @@ type Server struct {
 	store   *kubeClient
 	oauth   *oauthClient
 	authSDK *authSDKClient
-	azure   *azureClient
 	mux     *http.ServeMux
 
 	callbackMu                sync.Mutex
@@ -47,8 +46,8 @@ func NewServer(cfg Config) (*Server, error) {
 	}
 	s := &Server{
 		cfg: cfg, store: store, oauth: newOAuthClient(cfg),
-		authSDK: newAuthSDKClient(cfg), azure: newAzureClient(cfg.RequestTimeout),
-		mux: http.NewServeMux(),
+		authSDK: newAuthSDKClient(cfg),
+		mux:     http.NewServeMux(),
 	}
 	s.routes()
 	return s, nil
@@ -78,10 +77,7 @@ func (s *Server) routes() {
 
 	s.mux.HandleFunc("GET /v1/auth/status", s.agentStatus)
 	s.mux.HandleFunc("POST /v1/auth/start-link", s.agentStartLink)
-	s.mux.HandleFunc("GET /v1/azure/subscriptions", s.azureSubscriptions)
-	s.mux.HandleFunc("POST /v1/azure/resource-groups/list", s.azureResourceGroups)
-	s.mux.HandleFunc("POST /v1/azure/resources/search", s.azureResourcesSearch)
-	s.mux.HandleFunc("POST /v1/azure/resource/show", s.azureResourceShow)
+	s.mux.HandleFunc("POST /v1/credentials/issue", s.issueCredential)
 }
 
 func requestSecurityHeaders(next http.Handler) http.Handler {
@@ -547,8 +543,18 @@ func (s *Server) agentStartLink(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"actionUrl": link, "correlationId": correlationID})
 }
 
-func (s *Server) withAzure(w http.ResponseWriter, r *http.Request, operation func(context.Context, string) (azureResult, error)) {
+func (s *Server) issueCredential(w http.ResponseWriter, r *http.Request) {
 	correlationID := correlationID(r)
+	var input struct {
+		Service string `json:"service"`
+	}
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	if input.Service != "azure-resource-manager" {
+		writeAPIError(w, http.StatusBadRequest, "unsupported_service", "The requested credential service is not supported", correlationID)
+		return
+	}
 	agent, err := s.workloadAgent(r)
 	if err != nil {
 		writeAPIError(w, http.StatusForbidden, "forbidden", "Verified instance workload identity is required", correlationID)
@@ -590,18 +596,13 @@ func (s *Server) withAzure(w http.ResponseWriter, r *http.Request, operation fun
 		s.writeDependencyError(w, err, correlationID)
 		return
 	}
-	current, currentVersion, err := s.store.getRecord(r.Context(), agent.UID)
-	if err != nil || current.Revoked || current.Generation != generation {
-		writeAPIError(w, http.StatusUnauthorized, "authorization_required", "The connection was ended", correlationID)
-		return
-	}
-	result, err := operation(r.Context(), authorization)
+	token, err := accessTokenFromAuthorizationHeader(authorization)
 	if err != nil {
 		s.writeDependencyError(w, err, correlationID)
 		return
 	}
-	latest, _, err := s.store.getRecord(r.Context(), agent.UID)
-	if err != nil || latest.Revoked || latest.Generation != generation {
+	current, currentVersion, err := s.store.getRecord(r.Context(), agent.UID)
+	if err != nil || current.Revoked || current.Generation != generation {
 		writeAPIError(w, http.StatusUnauthorized, "authorization_required", "The connection was ended", correlationID)
 		return
 	}
@@ -622,63 +623,27 @@ func (s *Server) withAzure(w http.ResponseWriter, r *http.Request, operation fun
 		writeAPIError(w, http.StatusServiceUnavailable, "dependency_unavailable", "Authorization state could not be updated", correlationID)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": result.Items, "truncated": result.Truncated, "correlationId": correlationID})
-}
-
-func (s *Server) azureSubscriptions(w http.ResponseWriter, r *http.Request) {
-	s.withAzure(w, r, func(ctx context.Context, auth string) (azureResult, error) { return s.azure.subscriptions(ctx, auth) })
-}
-
-func (s *Server) azureResourceGroups(w http.ResponseWriter, r *http.Request) {
-	var input struct {
-		Subscription string `json:"subscription"`
-	}
-	if !decodeJSON(w, r, &input) {
-		return
-	}
-	if err := validateSubscriptionID(input.Subscription); err != nil {
-		writeAPIError(w, http.StatusBadRequest, "invalid_request", "The subscription ID is invalid", correlationID(r))
-		return
-	}
-	s.withAzure(w, r, func(ctx context.Context, auth string) (azureResult, error) {
-		return s.azure.resourceGroups(ctx, auth, input.Subscription)
+	// This response deliberately crosses the Broker/workload boundary. The
+	// supported CLI must keep the token in process memory and must never print,
+	// persist, or place it in model context. Disconnect prevents future issuance
+	// but cannot revoke a bearer token that has already crossed this boundary.
+	writeJSON(w, http.StatusOK, map[string]string{
+		"tokenType":     "Bearer",
+		"accessToken":   token,
+		"correlationId": correlationID,
 	})
 }
 
-func (s *Server) azureResourcesSearch(w http.ResponseWriter, r *http.Request) {
-	var input resourceFilters
-	if !decodeJSON(w, r, &input) {
-		return
+func accessTokenFromAuthorizationHeader(authorization string) (string, error) {
+	const prefix = "Bearer "
+	if !strings.HasPrefix(authorization, prefix) {
+		return "", errors.New("Auth SDK returned an invalid credential")
 	}
-	if err := validateResourceFilters(input); err != nil {
-		writeAPIError(w, http.StatusBadRequest, "invalid_request", "The resource filters are invalid", correlationID(r))
-		return
+	token := strings.TrimPrefix(authorization, prefix)
+	if token == "" || len(token) > 32<<10 || strings.ContainsAny(token, " \t\r\n") {
+		return "", errors.New("Auth SDK returned an invalid credential")
 	}
-	s.withAzure(w, r, func(ctx context.Context, auth string) (azureResult, error) {
-		return s.azure.resources(ctx, auth, input, "")
-	})
-}
-
-func (s *Server) azureResourceShow(w http.ResponseWriter, r *http.Request) {
-	var input struct {
-		ID string `json:"id"`
-	}
-	if !decodeJSON(w, r, &input) {
-		return
-	}
-	canonicalID, err := normalizeResourceID(input.ID)
-	if err != nil {
-		writeAPIError(w, http.StatusBadRequest, "invalid_request", "The resource ID is invalid", correlationID(r))
-		return
-	}
-	parts := strings.Split(strings.Trim(canonicalID, "/"), "/")
-	if len(parts) < 2 || !uuidPattern.MatchString(parts[1]) {
-		writeAPIError(w, http.StatusBadRequest, "invalid_request", "The resource ID is invalid", correlationID(r))
-		return
-	}
-	s.withAzure(w, r, func(ctx context.Context, auth string) (azureResult, error) {
-		return s.azure.resources(ctx, auth, resourceFilters{Subscriptions: []string{parts[1]}}, canonicalID)
-	})
+	return token, nil
 }
 
 func decodeJSON(w http.ResponseWriter, r *http.Request, target any) bool {
@@ -699,9 +664,7 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, target any) bool {
 func (s *Server) writeDependencyError(w http.ResponseWriter, err error, correlationID string) {
 	switch {
 	case errors.Is(err, errDownstreamForbidden):
-		writeAPIError(w, http.StatusForbidden, "forbidden", "Azure denied the delegated request", correlationID)
-	case errors.Is(err, errThrottled):
-		writeAPIError(w, http.StatusTooManyRequests, "throttled", "Azure throttled the request", correlationID)
+		writeAPIError(w, http.StatusForbidden, "forbidden", "The delegated credential request was denied", correlationID)
 	default:
 		slog.Warn("Agent Identity dependency failed", "correlationId", correlationID, "category", fmt.Sprintf("%T", err))
 		writeAPIError(w, http.StatusServiceUnavailable, "dependency_unavailable", "The Agent Identity dependency is unavailable", correlationID)
