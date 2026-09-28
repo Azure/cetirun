@@ -18,12 +18,6 @@ function isThemeMode(value: string): value is ThemeMode {
   return (THEME_MODES as string[]).includes(value);
 }
 
-/**
- * Build the OAuth2 sign-out redirect URL for the current page.
- *
- * Production: <domain> → oauth2.<domain>/oauth2/sign_out
- * Local dev / non-FQDN: relative /oauth2/sign_out
- */
 export function buildSignOutUrl(location: {
   protocol: string;
   host: string;
@@ -33,20 +27,7 @@ export function buildSignOutUrl(location: {
 }): string {
   const { protocol, host, pathname, search, hash } = location;
   const returnTo = `${protocol}//${host}${pathname}${search}${hash}`;
-
-  const hostnameOnly = host.split(":")[0];
-  const isLocal =
-    hostnameOnly === "localhost" ||
-    !hostnameOnly.includes(".") ||
-    /^\d{1,3}(\.\d{1,3}){3}$/.test(hostnameOnly) ||
-    hostnameOnly.startsWith("[");
-
-  if (isLocal) {
-    return `/oauth2/sign_out?rd=${encodeURIComponent(returnTo)}`;
-  }
-
-  const oauth2Host = `oauth2.${hostnameOnly}`;
-  return `${protocol}//${oauth2Host}/oauth2/sign_out?rd=${encodeURIComponent(returnTo)}`;
+  return `/oauth2/sign_out?rd=${encodeURIComponent(returnTo)}`;
 }
 
 export function Header() {

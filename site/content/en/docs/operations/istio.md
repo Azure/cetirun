@@ -29,13 +29,14 @@ sets the apex callback, and its
 routes apex `/oauth2` requests. An `oauth2.<domain>` exemption in the values
 does **not** create a working callback route on that host.
 
-> **Sign-out limitation:** The
-> [portal's Sign out action]({{< repo "app/cetirun-portal/web/src/components/Header.tsx" >}})
-> uses `oauth2.<domain>` for public hostnames, but the Istio chart serves OAuth
-> on the apex. Deployment summaries and Helm notes also list the subdomain
-> without creating its route. Verify that **Sign out** clears the session and
-> resolve the route mismatch with your platform administrator. Adding DNS alone
-> does not create an HTTP route.
+The [portal's Sign out action]({{< repo "app/cetirun-portal/web/src/components/Header.tsx" >}})
+uses `/oauth2/sign_out` on the current origin, matching the apex route above.
+It passes the current page as the URL-encoded `rd` return address. After
+deployment, verify that **Sign out** clears the application session and that
+subsequent protected requests go through authentication again.
+
+Deployment summaries and Helm notes may still list `oauth2.<domain>` without
+creating a route for that host. Adding DNS alone does not create an HTTP route.
 
 The chart does not issue or renew certificates. The helper can read supplied
 PEM files, decode PFX content, read a PFX file, or download a certificate from

@@ -246,7 +246,7 @@ namespace instead when verifying an independent installation.
 Check pod sidecar injection as well as namespace labels. With permission to
 create a test instance, verify TLS coverage, Entra login and sign-out, rejection
 of cross-owner access, persistent storage, and provider login. Review the
-[sign-out route mismatch](../../operations/istio/#prepare-identity-dns-and-tls).
+[same-origin sign-out checks](../../operations/istio/#prepare-identity-dns-and-tls).
 Test both successful and denied requests, and inspect `IngressReady` independently of
 `Ready`. Then give users the portal address and
 [first-instance guide](../first-instance/).

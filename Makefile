@@ -22,7 +22,7 @@ help:
 	@echo "  make lint        Headers, Go vet, TypeScript, Python, Helm, Bicep, shell, workflows"
 	@echo "  make docs-check  Run make -C site check (separate from check)"
 	@echo "Release:"
-	@echo "  make set-version VERSION=X.Y.Z"
+	@echo "  make set-version VERSION=<version>  (e.g. 0.1.0-dev.1)"
 	@echo "  make build-images REGISTRY=<registry> [VERSION=X.Y.Z]"
 	@echo "  make publish REGISTRY=<registry> [VERSION=X.Y.Z]"
 	@echo "Prerequisites: Go from .go-version, Node 24 + npm ci, scripts/ci/requirements.txt,"
