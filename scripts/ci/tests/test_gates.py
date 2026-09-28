@@ -85,7 +85,7 @@ class GateTests(unittest.TestCase):
                 validate.chart_gate(self.root)
         run.assert_not_called()
 
-    def test_all_six_charts_and_both_runtime_types_are_checked(self):
+    def test_all_seven_charts_and_both_runtime_types_are_checked(self):
         for directory, _ in validate.CHARTS:
             chart = self.root / directory
             chart.mkdir(parents=True, exist_ok=True)
@@ -96,16 +96,26 @@ class GateTests(unittest.TestCase):
         (self.root / "scripts/cetirun-platform-helm-test.sh").write_text("# fixture")
         (self.root / "scripts/cetirun-istio-helm-test.sh").write_text("# fixture")
         (self.root / "scripts/cetirun-agent-broker-helm-test.sh").write_text("# fixture")
+        (self.root / "scripts/gateway-helm-test.sh").write_text("# fixture")
         with patch.object(validate, "run") as run:
             validate.chart_gate(self.root)
         commands = [call.args[0] for call in run.call_args_list]
-        self.assertEqual(sum(c[:2] == ["helm", "lint"] for c in commands), 7)
-        self.assertEqual(sum(c[:2] == ["helm", "template"] for c in commands), 7)
-        self.assertEqual(len({c[3] for c in commands if c[:2] == ["helm", "lint"]}), 6)
+        self.assertEqual(sum(c[:2] == ["helm", "lint"] for c in commands), 8)
+        self.assertEqual(sum(c[:2] == ["helm", "template"] for c in commands), 8)
+        self.assertEqual(len({c[3] for c in commands if c[:2] == ["helm", "lint"]}), 7)
         self.assertTrue(all("--strict" in c for c in commands if c[1] == "lint"))
         self.assertEqual(sum(c[:2] == ["helm", "dependency"] for c in commands), 1)
         self.assertEqual(sum(c[:2] == ["bash", str(self.root / "scripts/cetirun-istio-helm-test.sh")] for c in commands), 1)
-        self.assertEqual(commands[-1][0], "bash")
+        self.assertEqual(
+            [Path(c[1]).name for c in commands if c[0] == "bash"],
+            [
+                "cetirun-helm-test.sh",
+                "cetirun-platform-helm-test.sh",
+                "cetirun-istio-helm-test.sh",
+                "cetirun-agent-broker-helm-test.sh",
+                "gateway-helm-test.sh",
+            ],
+        )
 
     def test_offline_go_environment_cannot_inherit_network_defaults(self):
         with patch.dict(
