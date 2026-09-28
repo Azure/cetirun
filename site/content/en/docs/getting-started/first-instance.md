@@ -11,11 +11,10 @@ ID group, and an account with the model provider you intend to use. Ask your
 administrator for the actual portal URL; `https://example.com/` in these docs is
 only a placeholder.
 
-> **Sign-out limitation:** The portal sends **Sign out** requests to an
-> `oauth2` subdomain, while the Istio chart serves `/oauth2` on the main domain.
-> Ask your administrator to verify session logout before use. See
-> [Istio authentication](../../operations/istio/#prepare-identity-dns-and-tls)
-> for the routing requirements.
+The portal's **Sign out** action uses `/oauth2/sign_out` on the portal origin.
+Your administrator should verify session clearing as part of deployment; see
+[Istio authentication](../../operations/istio/#prepare-identity-dns-and-tls)
+for the routing requirements.
 
 ## Create through the portal
 

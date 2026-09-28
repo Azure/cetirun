@@ -12,7 +12,13 @@ import sys
 
 
 ROOT = Path(__file__).resolve().parents[1]
-VERSION_PREFIX = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?!\d)")
+# The version is also an image tag, so build metadata is not supported.
+NUMBER = r"(?:0|[1-9][0-9]*)"
+PRERELEASE_IDENTIFIER = rf"(?:{NUMBER}|[0-9]*[A-Za-z-][0-9A-Za-z-]*)"
+VERSION_PATTERN = re.compile(
+    rf"{NUMBER}\.{NUMBER}\.{NUMBER}"
+    rf"(?:-{PRERELEASE_IDENTIFIER}(?:\.{PRERELEASE_IDENTIFIER})*)?"
+)
 PENDING_UPDATES = {}
 
 
@@ -181,7 +187,7 @@ def parse_args():
     subparsers.add_parser("get", help="print the Runtime Chart version")
     for command in ("set", "check"):
         subparser = subparsers.add_parser(command)
-        subparser.add_argument("version", help="X.Y.Z with an optional suffix, e.g. 0.1.0-dev.1")
+        subparser.add_argument("version", help="X.Y.Z[-prerelease], e.g. 0.1.0-dev.1; no +build metadata")
     return parser.parse_args()
 
 
@@ -190,8 +196,11 @@ def main():
     if args.command == "get":
         print(top_level_yaml(ROOT / "app/cetirun-chart/Chart.yaml", "version"))
         return 0
-    if not VERSION_PREFIX.match(args.version):
-        raise ValueError(f"{args.version!r} must start with X.Y.Z")
+    if len(args.version) > 128 or not VERSION_PATTERN.fullmatch(args.version):
+        raise ValueError(
+            f"{args.version!r} must be X.Y.Z or X.Y.Z-prerelease "
+            "(at most 128 characters, without build metadata)"
+        )
     if args.command == "set":
         set_version(args.version)
     else:
