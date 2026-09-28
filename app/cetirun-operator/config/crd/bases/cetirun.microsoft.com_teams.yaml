@@ -55,6 +55,20 @@ spec:
             description: TeamSpec defines team-wide configuration applied to every
               member instance.
             properties:
+              adminAgentPolicyRef:
+                description: AdminAgentPolicyRef optionally names the policy for admin-class
+                  Agents.
+                maxLength: 253
+                minLength: 1
+                pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                type: string
+              defaultSandboxRef:
+                description: DefaultSandboxRef selects a listed Sandbox for newly
+                  created Agents.
+                maxLength: 253
+                minLength: 1
+                pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                type: string
               defaults:
                 description: |-
                   Defaults sets the default AI provider for all team members.
@@ -80,6 +94,24 @@ spec:
                     description: Role is the team member's role, e.g. "Engineer".
                     type: string
                 type: object
+              normalAgentPolicyRef:
+                description: |-
+                  NormalAgentPolicyRef names the policy for normal-class Agents.
+                  Required sandbox bindings remain optional for legacy Teams until pure binding validation.
+                maxLength: 253
+                minLength: 1
+                pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                type: string
+              sandboxRefs:
+                description: SandboxRefs lists the Sandboxes permitted for this Team.
+                items:
+                  maxLength: 253
+                  minLength: 1
+                  pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                  type: string
+                minItems: 1
+                type: array
+                x-kubernetes-list-type: set
               skillStorage:
                 description: |-
                   SkillStorage describes a shared Azure Blob NFS container that the operator

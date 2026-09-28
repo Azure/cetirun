@@ -210,6 +210,22 @@ spec:
                     format: int32
                     type: integer
                 type: object
+              policyClass:
+                default: normal
+                description: PolicyClass selects the administrator-assigned Team policy
+                  slot.
+                enum:
+                - normal
+                - admin
+                type: string
+              sandboxRef:
+                description: |-
+                  SandboxRef selects a Sandbox permitted by the Team.
+                  Temporarily optional for legacy Agents; sandbox binding validation requires it.
+                maxLength: 253
+                minLength: 1
+                pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                type: string
               skillOverrides:
                 description: |-
                   SkillOverrides customizes the set of skills installed for this instance.
@@ -503,6 +519,46 @@ spec:
                 - Deleting
                 - Suspended
                 type: string
+              sandbox:
+                description: Sandbox records the last fully enforced binding, not
+                  a pending selection.
+                properties:
+                  agentPolicyUID:
+                    description: |-
+                      UID is a type that holds unique ID values, including UUIDs.  Because we
+                      don't ONLY use UUIDs, this is an alias to string.  Being a type captures
+                      intent and helps make sure that UIDs and names do not get conflated.
+                    minLength: 1
+                    type: string
+                  appliedRevision:
+                    minLength: 1
+                    type: string
+                  policyClass:
+                    enum:
+                    - normal
+                    - admin
+                    type: string
+                  sandboxUID:
+                    description: |-
+                      UID is a type that holds unique ID values, including UUIDs.  Because we
+                      don't ONLY use UUIDs, this is an alias to string.  Being a type captures
+                      intent and helps make sure that UIDs and names do not get conflated.
+                    minLength: 1
+                    type: string
+                  teamUID:
+                    description: |-
+                      UID is a type that holds unique ID values, including UUIDs.  Because we
+                      don't ONLY use UUIDs, this is an alias to string.  Being a type captures
+                      intent and helps make sure that UIDs and names do not get conflated.
+                    minLength: 1
+                    type: string
+                required:
+                - agentPolicyUID
+                - appliedRevision
+                - policyClass
+                - sandboxUID
+                - teamUID
+                type: object
             type: object
         required:
         - spec

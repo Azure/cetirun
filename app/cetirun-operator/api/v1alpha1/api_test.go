@@ -34,6 +34,8 @@ func TestAPIRegistration(t *testing.T) {
 	for kind, object := range map[string]runtime.Object{
 		"Agent": &Agent{}, "AgentList": &AgentList{},
 		"Team": &Team{}, "TeamList": &TeamList{},
+		"Sandbox": &Sandbox{}, "SandboxList": &SandboxList{},
+		"AgentPolicy": &AgentPolicy{}, "AgentPolicyList": &AgentPolicyList{},
 	} {
 		t.Run(kind, func(t *testing.T) {
 			kinds, unversioned, err := scheme.ObjectKinds(object)
@@ -54,7 +56,7 @@ func TestAPIRegistration(t *testing.T) {
 			}
 		}
 	}
-	for _, kind := range []string{"Agent", "AgentList", "Team", "TeamList"} {
+	for _, kind := range []string{"Agent", "AgentList", "Team", "TeamList", "Sandbox", "SandboxList", "AgentPolicy", "AgentPolicyList"} {
 		if scheme.Recognizes(schema.GroupVersionKind{Group: GroupVersion.Group, Version: "v1beta1", Kind: kind}) {
 			t.Errorf("unexpected beta API for %s", kind)
 		}
@@ -75,6 +77,14 @@ func TestAPIWireFormat(t *testing.T) {
 		"Team": &Team{ObjectMeta: metav1.ObjectMeta{Name: "example-team"}},
 		"TeamList": &TeamList{Items: []Team{
 			{ObjectMeta: metav1.ObjectMeta{Name: "example-team"}},
+		}},
+		"Sandbox": &Sandbox{ObjectMeta: metav1.ObjectMeta{Name: "example-sandbox"}},
+		"SandboxList": &SandboxList{Items: []Sandbox{
+			{ObjectMeta: metav1.ObjectMeta{Name: "example-sandbox"}},
+		}},
+		"AgentPolicy": &AgentPolicy{ObjectMeta: metav1.ObjectMeta{Name: "example-policy"}},
+		"AgentPolicyList": &AgentPolicyList{Items: []AgentPolicy{
+			{ObjectMeta: metav1.ObjectMeta{Name: "example-policy"}},
 		}},
 	} {
 		t.Run(kind, func(t *testing.T) {
@@ -103,17 +113,19 @@ func TestAPIWireFormat(t *testing.T) {
 func TestGeneratedCRDContract(t *testing.T) {
 	directory := filepath.Join("..", "..", "config", "crd", "bases")
 	files, err := filepath.Glob(filepath.Join(directory, "*.yaml"))
-	if err != nil || len(files) != 2 {
-		t.Fatalf("CRD inventory: %v, err=%v; want exactly Agent and Team", files, err)
+	if err != nil || len(files) != 4 {
+		t.Fatalf("CRD inventory: %v, err=%v; want Agent, Team, Sandbox and AgentPolicy", files, err)
 	}
 	chartDirectory := filepath.Join("..", "..", "chart", "crds")
 	chartFiles, err := filepath.Glob(filepath.Join(chartDirectory, "*.yaml"))
-	if err != nil || len(chartFiles) != 2 {
-		t.Fatalf("packaged CRD inventory: %v, err=%v; want exactly Agent and Team", chartFiles, err)
+	if err != nil || len(chartFiles) != 4 {
+		t.Fatalf("packaged CRD inventory: %v, err=%v; want Agent, Team, Sandbox and AgentPolicy", chartFiles, err)
 	}
 	for _, tc := range []struct{ kind, plural, singular, short string }{
 		{"Agent", "agents", "agent", "cra"},
 		{"Team", "teams", "team", "crt"},
+		{"Sandbox", "sandboxes", "sandbox", "crs"},
+		{"AgentPolicy", "agentpolicies", "agentpolicy", "crp"},
 	} {
 		t.Run(tc.kind, func(t *testing.T) {
 			name := tc.plural + ".cetirun.microsoft.com"
@@ -169,25 +181,32 @@ func TestDeepCopyIsolation(t *testing.T) {
 				"example": {Raw: []byte(`{"enabled":true}`)},
 			}},
 		},
-		Status: AgentStatus{Conditions: []metav1.Condition{{Type: "Ready"}}},
+		Status: AgentStatus{
+			Conditions: []metav1.Condition{{Type: "Ready"}},
+			Sandbox:    &SandboxStatus{AppliedRevision: "example-revision"},
+		},
 	}
 	copy := agent.DeepCopy()
 	copy.Labels["team"] = "other"
 	copy.Spec.SkillOverrides.Add[0] = "other"
 	copy.Spec.Helm.Values["example"].Raw[0] = 'x'
 	copy.Status.Conditions[0].Type = "Other"
+	copy.Status.Sandbox.AppliedRevision = "other"
 	if agent.Labels["team"] != "example" || agent.Spec.SkillOverrides.Add[0] != "example-skill" ||
-		string(agent.Spec.Helm.Values["example"].Raw) != `{"enabled":true}` || agent.Status.Conditions[0].Type != "Ready" {
+		string(agent.Spec.Helm.Values["example"].Raw) != `{"enabled":true}` || agent.Status.Conditions[0].Type != "Ready" ||
+		agent.Status.Sandbox.AppliedRevision != "example-revision" {
 		t.Fatal("Agent DeepCopy shares mutable state")
 	}
 	team := &Team{Spec: TeamSpec{
 		Skills:       []string{"example-skill"},
 		SkillStorage: &SkillStorageSpec{ContainerName: "example"},
+		SandboxRefs:  []string{"example-sandbox"},
 	}}
 	teamCopy := team.DeepCopy()
 	teamCopy.Spec.Skills[0] = "other"
 	teamCopy.Spec.SkillStorage.ContainerName = "other"
-	if team.Spec.Skills[0] != "example-skill" || team.Spec.SkillStorage.ContainerName != "example" {
+	teamCopy.Spec.SandboxRefs[0] = "other"
+	if team.Spec.Skills[0] != "example-skill" || team.Spec.SkillStorage.ContainerName != "example" || team.Spec.SandboxRefs[0] != "example-sandbox" {
 		t.Fatal("Team DeepCopy shares mutable state")
 	}
 }
