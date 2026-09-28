@@ -7,13 +7,14 @@
 # minus litellm-enterprise. That package carries the BerriAI Enterprise License,
 # which allows production use only with a BerriAI subscription; the Gateway uses
 # the open-source proxy only, which imports it only inside try blocks. Keeping
-# everything else identical keeps the tested dependency set. The one addition
-# is the short block at the end: backports that Python 3.12 needs and the
-# upstream image, on Python 3.13, does not.
+# everything else identical keeps the tested dependency set. Two exceptions:
+# the short block at the end, backports that Python 3.12 needs and the
+# upstream image, on Python 3.13, does not; and security updates, marked
+# inline, where the upstream version has a known high or critical advisory.
 #
 # When moving to a new LiteLLM release, regenerate this list from that release's
 # image rather than editing versions by hand, then let `pip check` in the build
-# name any backport the new set needs.
+# name any backport the new set needs, and dependency review any advisory.
 a2a-sdk==1.1.0
 aiofiles==24.1.0
 aiohappyeyeballs==2.6.1
@@ -22,7 +23,8 @@ aiosignal==1.4.0
 annotated-doc==0.0.4
 annotated-types==0.7.0
 anthropic==0.84.0
-anyio==4.13.0
+# Upstream has 4.13.0: GHSA-82r6-8w77-94w6, critical, fixed in 4.14.2.
+anyio==4.14.2
 APScheduler==3.11.2
 asgiref==3.11.1
 attrs==26.1.0

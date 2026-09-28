@@ -635,9 +635,11 @@ non-root user 65532.
 
 - `requirements.txt` is the exact package set of the upstream LiteLLM image for
   the same release, installed with `--no-deps`, so nothing else is pulled in.
-  Two differences, both deliberate: `litellm-enterprise`, which carries the
-  BerriAI Enterprise License, is left out, and two backports that Python 3.12
-  needs are added. The build fails if the enterprise package is present.
+  The differences are deliberate: `litellm-enterprise`, which carries the
+  BerriAI Enterprise License, is left out; two backports that Python 3.12
+  needs are added; and a package with a high or critical advisory is moved to
+  its patched version, marked in the file (so far `anyio`, for
+  GHSA-82r6-8w77-94w6). The build fails if the enterprise package is present.
 - The prisma CLI and engines are installed at build time, so migrations need
   neither npm nor network access. Measured on a network with no route out:
   migrations applied and the proxy became ready.
@@ -647,7 +649,8 @@ non-root user 65532.
 
 To move to a new LiteLLM release, regenerate `requirements.txt` from that
 release's upstream image, rebuild, and let the build's `pip check` name any
-backport the new set needs.
+backport the new set needs. Pull-request dependency review then flags any
+package with a high or critical advisory.
 
 With `global.registry` set, the chart uses `<registry>/cetirun-ai-gateway`, the
 same convention as the other CetiRun charts; `image.digest` pins an exact build.
