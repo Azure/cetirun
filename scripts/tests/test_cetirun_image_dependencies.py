@@ -91,6 +91,20 @@ class ImageDependencyTests(unittest.TestCase):
                 self.assertGreaterEqual(version, version_tuple(minimum))
         self.assertNotIn("protobufjs", overrides)
 
+        base = (CHART / "Dockerfile.base").read_text()
+        self.assertIn(
+            "UNDICI_DIR=/usr/local/lib/node_modules/npm/node_modules/undici", base
+        )
+        self.assertIn(
+            'npm pack undici@6.27.0 --quiet --registry "${NPM_REGISTRY}"',
+            base,
+        )
+        self.assertIn(
+            "test \"$(node -p 'require(\"./package.json\").version')\" "
+            '= "6.27.0"',
+            base,
+        )
+
     def test_azure_cli_private_python_packages_are_updated(self):
         content = (CHART / "Dockerfile.base").read_text()
         install = content.split("# Install Azure CLI", 1)[1].split(

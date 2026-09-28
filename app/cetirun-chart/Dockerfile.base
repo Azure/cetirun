@@ -130,6 +130,17 @@ RUN cd /usr/local/lib/node_modules/npm/node_modules/tinyglobby/node_modules/pico
     tar xzf picomatch-4.0.4.tgz --strip-components=1 && \
     rm -f picomatch-4.0.4.tgz
 
+# Fix CVE-2026-12151 when the Node release bundles undici 6.26.0 inside npm.
+# npm overrides can't reach npm's internal node_modules, so replace in-place.
+RUN UNDICI_DIR=/usr/local/lib/node_modules/npm/node_modules/undici && \
+    if [ -d "${UNDICI_DIR}" ]; then \
+      cd "${UNDICI_DIR}" && \
+      npm pack undici@6.27.0 --quiet --registry "${NPM_REGISTRY}" && \
+      tar xzf undici-6.27.0.tgz --strip-components=1 && \
+      rm -f undici-6.27.0.tgz && \
+      test "$(node -p 'require("./package.json").version')" = "6.27.0"; \
+    fi
+
 # Install GitHub CLI and kubectl from fixed-toolchain build stages.
 COPY --from=gh-build /out/gh /usr/local/bin/gh
 COPY --from=kubectl-build /out/kubectl /usr/local/bin/kubectl
