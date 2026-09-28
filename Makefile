@@ -55,11 +55,13 @@ build-images:
 	REGISTRY="$(REGISTRY)" VERSION="$(VERSION)" GIT_SHA="$(GIT_SHA)" PUSH=false BUILD_HERMES=true scripts/cetirun-docker-build.sh
 	REGISTRY="$(REGISTRY)" VERSION="$(VERSION)" GIT_SHA="$(GIT_SHA)" PUSH=false scripts/operator-docker-build.sh
 	REGISTRY="$(REGISTRY)" VERSION="$(VERSION)" GIT_SHA="$(GIT_SHA)" PUSH=false scripts/portal-docker-build.sh
+	REGISTRY="$(REGISTRY)" VERSION="$(VERSION)" GIT_SHA="$(GIT_SHA)" PUSH=false scripts/ai-gateway-docker-build.sh
 
 publish-images: require-registry version-check
 	REGISTRY="$(REGISTRY)" VERSION="$(VERSION)" GIT_SHA="$(GIT_SHA)" PUSH=true BUILD_HERMES=true scripts/cetirun-docker-build.sh
 	REGISTRY="$(REGISTRY)" VERSION="$(VERSION)" GIT_SHA="$(GIT_SHA)" PUSH=true scripts/operator-docker-build.sh
 	REGISTRY="$(REGISTRY)" VERSION="$(VERSION)" GIT_SHA="$(GIT_SHA)" PUSH=true scripts/portal-docker-build.sh
+	REGISTRY="$(REGISTRY)" VERSION="$(VERSION)" GIT_SHA="$(GIT_SHA)" PUSH=true scripts/ai-gateway-docker-build.sh
 
 publish-charts: require-registry version-check
 	REGISTRY="$(REGISTRY)" VERSION="$(VERSION)" VERIFY_PULL="$(VERIFY_PULL)" scripts/cetirun-helm-release.sh
@@ -67,5 +69,6 @@ publish-charts: require-registry version-check
 	REGISTRY="$(REGISTRY)" VERSION="$(VERSION)" VERIFY_PULL="$(VERIFY_PULL)" scripts/portal-helm-release.sh
 	REGISTRY="$(REGISTRY)" VERSION="$(VERSION)" VERIFY_PULL="$(VERIFY_PULL)" scripts/platform-helm-release.sh
 	REGISTRY="$(REGISTRY)" VERSION="$(VERSION)" VERIFY_PULL="$(VERIFY_PULL)" scripts/istio-helm-release.sh
+	REGISTRY="$(REGISTRY)" VERSION="$(VERSION)" VERIFY_PULL="$(VERIFY_PULL)" scripts/ai-gateway-helm-release.sh
 
 publish: publish-images publish-charts
