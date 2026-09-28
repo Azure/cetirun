@@ -103,10 +103,12 @@ class HttpClient:
                 status_code = response.status
         except error.HTTPError as exc:
             body = exc.read(65536)
-            raise PilotError(
-                f"HTTP {exc.code} from {parse.urlsplit(url).netloc} "
-                f"({_safe_error_code(body)})"
-            ) from None
+            status_code = exc.code
+            if status_code not in expected:
+                raise PilotError(
+                    f"HTTP {status_code} from {parse.urlsplit(url).netloc} "
+                    f"({_safe_error_code(body)})"
+                ) from None
         except (error.URLError, TimeoutError) as exc:
             raise PilotError(f"request to {parse.urlsplit(url).netloc} failed") from exc
         if status_code not in expected:
@@ -916,6 +918,7 @@ def provision_deployment(args: argparse.Namespace) -> None:
         )
         _az_json(
             "identity", "federated-credential", operation,
+            "--subscription", args.subscription_id,
             "--resource-group", args.resource_group,
             "--identity-name", args.encryption_identity_name,
             "--name", f"{prefix}-broker",
@@ -999,8 +1002,11 @@ def provision_deployment(args: argparse.Namespace) -> None:
 def cleanup_deployment(args: argparse.Namespace) -> None:
     state_path = validate_state_path(args.state_file)
     state = load_state(state_path)
-    deployment = state.get("deployment")
-    if not isinstance(deployment, dict) or not deployment:
+    deployment = state.get("deployment", {})
+    provisioning = state.get("provisioningClient", {})
+    if not isinstance(deployment, dict) or not isinstance(provisioning, dict):
+        raise PilotError("cleanup state has an invalid shape")
+    if not deployment and not provisioning:
         print("No deployment Agent ID resources are recorded.")
         return
     graph = _operator_graph(state)
@@ -1056,38 +1062,34 @@ def cleanup_deployment(args: argparse.Namespace) -> None:
         )
         deployment.pop("encryptionIdentity", None)
         save_state(state_path, state)
-    state["deployment"] = {}
-    save_state(state_path, state)
-
-    provisioning = state.get("provisioningClient", {})
-    if isinstance(provisioning, dict):
-        permission_grant_id = provisioning.get("permissionGrantObjectId")
-        if permission_grant_id:
-            graph.call(
-                "DELETE",
-                f"/oauth2PermissionGrants/{validate_graph_id(str(permission_grant_id), 'provisioning permission grant ID')}",
-                expected=(204, 404),
-            )
-            provisioning.pop("permissionGrantObjectId", None)
-            save_state(state_path, state)
-        principal_id = provisioning.get("servicePrincipalObjectId")
-        if principal_id:
-            graph.call(
-                "DELETE",
-                f"/servicePrincipals/{validate_uuid(str(principal_id), 'provisioning principal object ID')}",
-                expected=(204, 404),
-            )
-            provisioning.pop("servicePrincipalObjectId", None)
-            save_state(state_path, state)
-        application_id = provisioning.get("applicationObjectId")
-        if application_id:
-            graph.call(
-                "DELETE",
-                f"/applications/{validate_uuid(str(application_id), 'provisioning application object ID')}",
-                expected=(204, 404),
-            )
-        state["provisioningClient"] = {}
+    permission_grant_id = provisioning.get("permissionGrantObjectId")
+    if permission_grant_id:
+        graph.call(
+            "DELETE",
+            f"/oauth2PermissionGrants/{validate_graph_id(str(permission_grant_id), 'provisioning permission grant ID')}",
+            expected=(204, 404),
+        )
+        provisioning.pop("permissionGrantObjectId", None)
         save_state(state_path, state)
+    principal_id = provisioning.get("servicePrincipalObjectId")
+    if principal_id:
+        graph.call(
+            "DELETE",
+            f"/servicePrincipals/{validate_uuid(str(principal_id), 'provisioning principal object ID')}",
+            expected=(204, 404),
+        )
+        provisioning.pop("servicePrincipalObjectId", None)
+        save_state(state_path, state)
+    application_id = provisioning.get("applicationObjectId")
+    if application_id:
+        graph.call(
+            "DELETE",
+            f"/applications/{validate_uuid(str(application_id), 'provisioning application object ID')}",
+            expected=(204, 404),
+        )
+    state["deployment"] = {}
+    state["provisioningClient"] = {}
+    save_state(state_path, state)
     print("Recorded deployment Agent ID and provisioning resources were deleted; Key Vault soft-delete retention still applies.")
 
 

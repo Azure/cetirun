@@ -126,6 +126,22 @@ class AgentIDPilotTests(unittest.TestCase):
         self.assertIn("Authorization_RequestDenied", message)
         self.assertNotIn("token-and-private-object-id", message)
 
+    def test_http_client_accepts_expected_404_for_cleanup_retry(self):
+        http_error = pilot.error.HTTPError(
+            "https://graph.microsoft.com/v1.0/applications/synthetic",
+            404,
+            "Not Found",
+            {},
+            mock.Mock(read=mock.Mock(return_value=b"")),
+        )
+        with mock.patch.object(pilot.request, "urlopen", side_effect=http_error):
+            result = pilot.HttpClient().call(
+                "DELETE",
+                "https://graph.microsoft.com/v1.0/applications/synthetic",
+                expected=(204, 404),
+            )
+        self.assertEqual(result, {})
+
     def test_oauth_error_code_is_safely_extracted(self):
         body = b'{"error":"authorization_pending","error_description":"private"}'
         self.assertEqual(pilot._safe_error_code(body), "authorization_pending")
@@ -222,6 +238,57 @@ class AgentIDPilotTests(unittest.TestCase):
             )
             self.assertEqual(pilot.load_state(path)["provisioningClient"], {})
 
+    def test_cleanup_retries_incomplete_provisioning_client_deletion(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "state.json"
+            pilot.save_state(
+                path,
+                {
+                    "schema": 1,
+                    "tenantId": "00000000-0000-4000-8000-000000000001",
+                    "deployment": {
+                        "subscriptionId": "00000000-0000-4000-8000-000000000002"
+                    },
+                    "provisioningClient": {
+                        "clientId": "00000000-0000-4000-8000-000000000003",
+                        "permissionGrantObjectId": "opaque-graph_grant.id~4",
+                        "servicePrincipalObjectId": "00000000-0000-4000-8000-000000000005",
+                        "applicationObjectId": "00000000-0000-4000-8000-000000000006",
+                    },
+                },
+            )
+            first_graph = mock.Mock()
+            first_graph.call.side_effect = [
+                {},
+                {},
+                pilot.PilotError("synthetic application deletion failure"),
+            ]
+            second_graph = mock.Mock()
+            with mock.patch.object(
+                pilot, "_operator_graph", side_effect=[first_graph, second_graph]
+            ):
+                with self.assertRaisesRegex(
+                    pilot.PilotError, "synthetic application deletion failure"
+                ):
+                    pilot.cleanup_deployment(argparse.Namespace(state_file=path))
+
+                partial = pilot.load_state(path)
+                self.assertTrue(partial["deployment"])
+                self.assertEqual(
+                    partial["provisioningClient"]["applicationObjectId"],
+                    "00000000-0000-4000-8000-000000000006",
+                )
+                pilot.cleanup_deployment(argparse.Namespace(state_file=path))
+
+            second_graph.call.assert_called_once_with(
+                "DELETE",
+                "/applications/00000000-0000-4000-8000-000000000006",
+                expected=(204, 404),
+            )
+            cleaned = pilot.load_state(path)
+            self.assertEqual(cleaned["deployment"], {})
+            self.assertEqual(cleaned["provisioningClient"], {})
+
     def test_cleanup_skips_unrecorded_identity_after_early_provisioning_failure(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "state.json"
@@ -312,6 +379,89 @@ class AgentIDPilotTests(unittest.TestCase):
             )
             operator_graph.assert_not_called()
             self.assertNotIn("deployment", pilot.load_state(path))
+
+    def test_encryption_federated_credential_uses_requested_subscription(self):
+        for operation, previously_created in (("create", False), ("update", True)):
+            with self.subTest(operation=operation):
+                with tempfile.TemporaryDirectory() as directory:
+                    path = Path(directory) / "state.json"
+                    args = self._deployment_args(path)
+                    args.resume = True
+                    deployment = {
+                        "prefix": args.prefix,
+                        "subscriptionId": args.subscription_id,
+                        "resourceGroup": args.resource_group,
+                        "location": args.location,
+                        "oidcIssuer": args.oidc_issuer,
+                        "portalOrigin": args.portal_origin,
+                        "agentBrokerNamespace": args.agent_broker_namespace,
+                        "agentBrokerServiceAccount": args.agent_broker_service_account,
+                        "operatorNamespace": args.operator_namespace,
+                        "operatorServiceAccount": args.operator_service_account,
+                        "encryptionIdentityName": args.encryption_identity_name,
+                        "keyVaultName": args.key_vault_name,
+                        "ownerObjectId": "00000000-0000-4000-8000-000000000010",
+                        "armPermissionGrantId": "synthetic-grant",
+                        "blueprint": {
+                            "objectId": "00000000-0000-4000-8000-000000000013",
+                            "clientId": "00000000-0000-4000-8000-000000000014",
+                            "scopeId": "00000000-0000-4000-8000-000000000015",
+                            "principalObjectId": "00000000-0000-4000-8000-000000000016",
+                            "authorizationPropertiesConfigured": True,
+                            "armInheritanceCreated": True,
+                            "federatedCredentialId": "synthetic-broker-fic",
+                            "federatedCredentialIssuer": args.oidc_issuer,
+                            "operatorFederatedCredentialId": "synthetic-operator-fic",
+                            "operatorFederatedCredentialIssuer": args.oidc_issuer,
+                        },
+                        "authorizationClient": {
+                            "objectId": "00000000-0000-4000-8000-000000000017",
+                            "clientId": "00000000-0000-4000-8000-000000000018",
+                            "principalObjectId": "00000000-0000-4000-8000-000000000019",
+                            "federatedCredentialId": "synthetic-authorization-fic",
+                            "federatedCredentialIssuer": args.oidc_issuer,
+                        },
+                        "encryptionIdentity": {
+                            "resourceId": pilot._managed_identity_resource_id(
+                                args.subscription_id,
+                                args.resource_group,
+                                args.encryption_identity_name,
+                            ),
+                            "clientId": "00000000-0000-4000-8000-000000000011",
+                            "principalId": "00000000-0000-4000-8000-000000000012",
+                            "federatedCredentialCreated": previously_created,
+                        },
+                    }
+                    pilot.save_state(path, {"schema": 1, "deployment": deployment})
+
+                    def az_json(*arguments):
+                        if arguments[:3] == (
+                            "identity",
+                            "federated-credential",
+                            operation,
+                        ):
+                            return {}
+                        raise pilot.PilotError("stop after federated credential")
+
+                    with mock.patch.object(
+                        pilot, "_az_json", side_effect=az_json
+                    ) as az_json_mock:
+                        with self.assertRaisesRegex(
+                            pilot.PilotError, "stop after federated credential"
+                        ):
+                            pilot.provision_deployment(args)
+
+                    federated_call = az_json_mock.call_args_list[0].args
+                    self.assertEqual(
+                        federated_call[:5],
+                        (
+                            "identity",
+                            "federated-credential",
+                            operation,
+                            "--subscription",
+                            args.subscription_id,
+                        ),
+                    )
 
     def test_graph_permission_catalog_encodes_odata_query(self):
         graph = mock.Mock()
