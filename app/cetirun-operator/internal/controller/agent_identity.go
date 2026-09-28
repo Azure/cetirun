@@ -445,11 +445,24 @@ func (r *AgentReconciler) deleteAgentIdentity(ctx context.Context, instance *cet
 			if !strings.EqualFold(identity.AgentIdentityBlueprintID, r.AgentIdentityBlueprintClientID) {
 				return fmt.Errorf("Agent Identity cleanup found an identity from another Blueprint")
 			}
+			if identity.DisplayName != displayName || !canonicalUUID.MatchString(identity.AppID) || !canonicalUUID.MatchString(identity.ID) {
+				return fmt.Errorf("Agent Identity cleanup found an invalid canonical binding")
+			}
 			if status != nil && status.ClientID != "" && !strings.EqualFold(identity.AppID, status.ClientID) {
 				return fmt.Errorf("Agent Identity cleanup found an unexpected identity")
 			}
 			if status != nil && status.ObjectID != "" && !strings.EqualFold(identity.ID, status.ObjectID) {
 				return fmt.Errorf("Agent Identity cleanup object ID does not match status")
+			}
+			// Persist the recovered canonical binding before issuing DELETE. If the
+			// directory accepts the delete but its response is lost, the next
+			// reconcile can use the object-ID path and treat NotFound as completed.
+			status.ClientID = identity.AppID
+			status.ObjectID = identity.ID
+			status.DisplayName = displayName
+			status.CreationAttempted = false
+			if err := r.updateStatus(ctx, instance); err != nil {
+				return fmt.Errorf("persist recovered Agent Identity cleanup binding: %w", err)
 			}
 			if err := graph.DeleteServicePrincipal(ctx, identity.ID); err != nil {
 				return err

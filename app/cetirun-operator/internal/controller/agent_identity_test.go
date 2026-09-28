@@ -44,9 +44,11 @@ type fakeAgentIdentityDirectory struct {
 	lastLookupDisplayName string
 	createCalls           int
 	deleteCalls           int
+	deleteErr             error
 	createResult          *azure.ServicePrincipal
 	createErr             error
 	onCreate              func()
+	onDelete              func(string)
 }
 
 func (f *fakeAgentIdentityDirectory) CreateAgentIdentity(context.Context, string, string, string) (*azure.ServicePrincipal, error) {
@@ -79,9 +81,12 @@ func (w *conflictOnceStatusWriter) Update(ctx context.Context, object client.Obj
 	return w.SubResourceWriter.Update(ctx, object, options...)
 }
 
-func (f *fakeAgentIdentityDirectory) DeleteServicePrincipal(context.Context, string) error {
+func (f *fakeAgentIdentityDirectory) DeleteServicePrincipal(_ context.Context, objectID string) error {
 	f.deleteCalls++
-	return nil
+	if f.onDelete != nil {
+		f.onDelete(objectID)
+	}
+	return f.deleteErr
 }
 
 func (f *fakeAgentIdentityDirectory) GetAgentIdentity(context.Context, string) (*azure.ServicePrincipal, error) {
@@ -586,4 +591,72 @@ func TestDeleteAgentIdentityUnknownCreateZeroMatchRetainsCheckpoint(t *testing.T
 	if status == nil || status.Phase == cetirunv1alpha1.AgentIdentityPhaseDisabled || !status.CreationAttempted || status.DisplayName != historicalName {
 		t.Fatalf("cleanup changed unknown create checkpoint: %#v", status)
 	}
+}
+
+func TestDeleteAgentIdentityPersistsRecoveredBindingBeforeDelete(t *testing.T) {
+	instance := newAgentIdentityTestInstance()
+	historicalName := "historical-prefix-" + testAgentIdentityInstanceUID
+	instance.Status.AgentIdentity = &cetirunv1alpha1.AgentIdentityStatus{
+		CreationAttempted: true,
+		DisplayName:       historicalName,
+	}
+	recovered := azure.ServicePrincipal{
+		ID:                       testAgentIdentityObjectID,
+		AppID:                    testAgentIdentityClientID,
+		DisplayName:              historicalName,
+		AgentIdentityBlueprintID: testAgentIdentityBlueprintID,
+	}
+	directory := &fakeAgentIdentityDirectory{
+		matches:   []azure.ServicePrincipal{recovered},
+		deleteErr: errors.New("synthetic lost delete response"),
+	}
+	reconciler := newAgentIdentityTestReconciler(t, instance, directory)
+	reconciler.AgentIdentityBrokerURL = newSuccessfulAuthorizationCleanupServer(t, reconciler)
+	directory.onDelete = func(objectID string) {
+		if objectID != testAgentIdentityObjectID {
+			t.Fatalf("deleted object %q, want %q", objectID, testAgentIdentityObjectID)
+		}
+		stored := &cetirunv1alpha1.Agent{}
+		if err := reconciler.Get(context.Background(), types.NamespacedName{Name: instance.Name}, stored); err != nil {
+			t.Fatal(err)
+		}
+		status := stored.Status.AgentIdentity
+		if status == nil || status.ClientID != testAgentIdentityClientID || status.ObjectID != testAgentIdentityObjectID || status.DisplayName != historicalName || status.CreationAttempted {
+			t.Fatalf("canonical binding was not durable before DELETE: %#v", status)
+		}
+	}
+
+	if err := reconciler.deleteAgentIdentity(context.Background(), instance); err == nil {
+		t.Fatal("expected the lost delete response to keep cleanup retryable")
+	}
+	if directory.deleteCalls != 1 {
+		t.Fatalf("expected one delete attempt, got %d", directory.deleteCalls)
+	}
+
+	stored := &cetirunv1alpha1.Agent{}
+	if err := reconciler.Get(context.Background(), types.NamespacedName{Name: instance.Name}, stored); err != nil {
+		t.Fatal(err)
+	}
+	directory.matches = nil
+	directory.byObject = nil
+	directory.deleteErr = nil
+	if err := reconciler.deleteAgentIdentity(context.Background(), stored); err != nil {
+		t.Fatalf("retry did not treat the absent canonical principal as deleted: %v", err)
+	}
+	if directory.lookupCalls != 1 || directory.getObjectCalls != 1 || directory.deleteCalls != 1 {
+		t.Fatalf("retry did not use the canonical object path: lookup=%d object=%d delete=%d", directory.lookupCalls, directory.getObjectCalls, directory.deleteCalls)
+	}
+}
+
+func newSuccessfulAuthorizationCleanupServer(t *testing.T, reconciler *AgentReconciler) string {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete {
+			t.Errorf("unexpected authorization cleanup method %q", r.Method)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(server.Close)
+	reconciler.AgentIdentityHTTPClient = server.Client()
+	return server.URL
 }

@@ -445,6 +445,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 
 	// Reconcile the per-instance Agent Identity before rendering the workload.
 	// The Broker reads only the canonical binding persisted in CR status.
+	var agentIdentityRequeueAfter time.Duration
 	if instance.Spec.AgentIdentity != nil || instance.Status.AgentIdentity != nil {
 		logger.Info("Reconciling Agent Identity", "instance", instance.Name)
 		if err := r.reconcileAgentIdentity(ctx, instance); err != nil {
@@ -456,7 +457,13 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 			setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionAgentIdentityReady,
 				metav1.ConditionFalse, reason, "Agent Identity is not ready")
 			_ = r.updateStatus(ctx, instance)
-			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+			if !instance.Spec.Suspended {
+				return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+			}
+			// Suspension is a safety boundary and must not depend on directory
+			// availability. Continue to scale the workload to zero and remove
+			// ingress, while retaining the identity error for a separate retry.
+			agentIdentityRequeueAfter = 30 * time.Second
 		}
 		if agentIdentityRequested(instance) && instance.Status.AgentIdentity != nil && instance.Status.AgentIdentity.Phase == cetirunv1alpha1.AgentIdentityPhaseReady {
 			now := metav1.Now()
@@ -597,6 +604,9 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		requeueAfter := 10 * time.Minute
 		if teamsRequeueAfter > 0 && teamsRequeueAfter < requeueAfter {
 			requeueAfter = teamsRequeueAfter
+		}
+		if agentIdentityRequeueAfter > 0 && agentIdentityRequeueAfter < requeueAfter {
+			requeueAfter = agentIdentityRequeueAfter
 		}
 		return ctrl.Result{RequeueAfter: requeueAfter}, nil
 	}
