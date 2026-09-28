@@ -34,6 +34,7 @@
     title = "Using Agents"
     pages = [
       "/docs/guides",
+      "/docs/guides/agent-identity",
       "/docs/guides/models",
       "/docs/guides/lifecycle",
     ]

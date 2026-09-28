@@ -49,6 +49,14 @@ func validateRuntimeOverrides(values map[string]any, agentType string) error {
 	if _, ok := values["image"]; ok {
 		return fmt.Errorf("helm.values.image must use spec.agent.image")
 	}
+	if extraEnv, ok := values["extraEnv"].([]any); ok {
+		for _, item := range extraEnv {
+			entry, _ := item.(map[string]any)
+			if entry["name"] == "CETIRUN_AGENT_BROKER_URL" {
+				return fmt.Errorf("helm.values.extraEnv contains a platform-reserved environment variable")
+			}
+		}
+	}
 	if native, ok := values[agentType].(map[string]any); ok {
 		if _, ok := native["image"]; ok {
 			return fmt.Errorf("native image overrides must use spec.agent.image")

@@ -53,8 +53,122 @@ spec:
                 "{{ . }}",
               {{- end }}
               }
+              local LEGACY_SUBDOMAIN_WEBHOOK_PATHS = {
+              {{- range .Values.authPolicy.legacySubdomainWebhookBypassPaths }}
+                "{{ . }}",
+              {{- end }}
+              }
+              local APEX_POST_BYPASS_PATHS = {
+              {{- range .Values.authPolicy.apexPostBypassPaths }}
+                "{{ . }}",
+              {{- end }}
+              }
+              local SHARED_HOST_PREFIXES = {
+              {{- range .Values.authPolicy.aliasExemptPrefixes }}
+                "{{ . }}",
+              {{- end }}
+              }
+              local PORTAL_DOMAIN = "{{ .Values.domain | lower }}"
+              local PORTAL_COOKIE_NAME = "_cetirun_oauth2"
+              local CETIRUN_AUTH_KEY_HEADER = "x-cetirun-auth-key"
 
-              function is_exempt(path, method)
+              function is_portal_cookie_name(name)
+                if not name then return false end
+                return name == PORTAL_COOKIE_NAME or
+                  name:match("^" .. PORTAL_COOKIE_NAME .. "_%d+$") ~= nil
+              end
+
+              function strip_portal_session_cookie(request_handle)
+                local headers = request_handle:headers()
+                local cookie_header = headers:get("cookie")
+                if not cookie_header or cookie_header == "" then return end
+                local retained = {}
+                local removed = false
+                for item in cookie_header:gmatch("[^;]+") do
+                  local cookie = item:match("^%s*(.-)%s*$")
+                  local name = cookie:match("^([^=]+)=")
+                  if name then name = name:match("^%s*(.-)%s*$") end
+                  if is_portal_cookie_name(name) then
+                    removed = true
+                  elseif cookie ~= "" then
+                    table.insert(retained, cookie)
+                  end
+                end
+                if not removed then return end
+                if #retained == 0 then
+                  headers:remove("cookie")
+                else
+                  headers:replace("cookie", table.concat(retained, "; "))
+                end
+              end
+
+              function is_cetirun_auth_path(path)
+                return path:match("^/[^/]+/cetirun%-auth/") ~= nil or
+                  path:match("^/cetirun%-auth/") ~= nil
+              end
+
+              function request_host(authority)
+                local value = (authority or ""):lower()
+                local host = value:match("^([^:]+)$")
+                if not host then host = value:match("^([^:]+):%d+$") end
+                if not host then return "" end
+                if host:sub(-1) == "." then host = host:sub(1, -2) end
+                return host
+              end
+
+              function legacy_instance_name(authority)
+                local host = request_host(authority)
+                local suffix = "." .. PORTAL_DOMAIN
+                if host == PORTAL_DOMAIN or host:sub(-#suffix) ~= suffix then return nil end
+                local instance = host:sub(1, #host - #suffix)
+                if instance:find("%.") or not (
+                  instance:match("^[a-z0-9]$") or
+                  instance:match("^[a-z0-9][a-z0-9-]*[a-z0-9]$")
+                ) then return nil end
+                return instance
+              end
+
+              function is_shared_host(authority)
+                local host = request_host(authority)
+                for _, prefix in ipairs(SHARED_HOST_PREFIXES) do
+                  if host == prefix .. "." .. PORTAL_DOMAIN then return true end
+                end
+                return false
+              end
+
+              function is_webhook_path(path, authority)
+                local host = request_host(authority)
+                if host == PORTAL_DOMAIN then
+                  for _, template in ipairs(EXEMPT_SUFFIXES) do
+                    if template == "/{*}/api/messages" and
+                      path:match("^/[^/]+/api/messages$") then return true end
+                  end
+                  return false
+                end
+                if host:sub(-(#PORTAL_DOMAIN + 1)) == "." .. PORTAL_DOMAIN then
+                  for _, exact_path in ipairs(LEGACY_SUBDOMAIN_WEBHOOK_PATHS) do
+                    if path == exact_path then return true end
+                  end
+                end
+                return false
+              end
+
+              function forward_cetirun_auth_key(request_handle, path)
+                local headers = request_handle:headers()
+                local key = headers:get(CETIRUN_AUTH_KEY_HEADER)
+                headers:remove(CETIRUN_AUTH_KEY_HEADER)
+                headers:remove("authorization")
+                if is_cetirun_auth_path(path) and key and #key <= 128 and
+                  key:match("^[A-Za-z0-9_+/=-]+$") then
+                  headers:replace("authorization", "Bearer " .. key)
+                end
+              end
+
+              function is_exempt(path, method, authority)
+                if is_shared_host(authority) then return true end
+                if request_host(authority) ~= PORTAL_DOMAIN then
+                  return method == "POST" and is_webhook_path(path, authority)
+                end
                 if path == "/" or path == "" then return true end
                 -- Exact match for /admin (the trailing-slash subtree is in EXEMPT_PREFIXES).
                 -- Listing /admin as a prefix would also exempt /adminfoo and shadow any
@@ -63,16 +177,24 @@ spec:
                 for _, prefix in ipairs(EXEMPT_PREFIXES) do
                   if path:sub(1, #prefix) == prefix then return true end
                 end
-                -- Webhook suffixes (e.g. */api/messages) skip the ownership check only for
-                -- POST. Real Teams webhook calls are POST and carry no oauth2 identity; the
+                -- Exact webhook route shapes skip the ownership check only for POST.
+                -- Real Teams webhook calls are POST and carry no oauth2 identity; the
                 -- application validates the Bot Framework JWT. Non-POST requests to the same
                 -- suffix must NOT skip ownership (they keep the authenticated user's identity),
                 -- matching the POST-only oauth2 bypass in the AuthorizationPolicy method guard.
-                if method == "POST" then
-                  for _, suffix in ipairs(EXEMPT_SUFFIXES) do
-                    local s = suffix:match("^%*(.+)") or suffix
-                    if path:sub(-#s) == s then return true end
-                  end
+                if method == "POST" and is_webhook_path(path, authority) then return true end
+                return false
+              end
+
+              function is_anonymous_apex_bypass(path, method, authority)
+                if request_host(authority) ~= PORTAL_DOMAIN then return false end
+                if path:match("^/oauth2/") or path == "/healthz" or path == "/readyz" then
+                  return true
+                end
+                if method ~= "POST" then return false end
+                if is_webhook_path(path, authority) then return true end
+                for _, exact_path in ipairs(APEX_POST_BYPASS_PATHS) do
+                  if path == exact_path then return true end
                 end
                 return false
               end
@@ -80,21 +202,72 @@ spec:
               function envoy_on_request(request_handle)
                 local path = request_handle:headers():get(":path") or "/"
                 local method = request_handle:headers():get(":method") or ""
+                local authority = request_handle:headers():get(":authority") or ""
                 -- Strip query string for path matching
                 local path_only = path:match("^([^?]+)") or "/"
 
-                if is_exempt(path_only, method) then return end
+                -- This filter runs after ext-auth (the X-Auth-Request-* headers
+                -- above are ext-auth response headers). Never trust a client-
+                -- supplied Portal token header. For Portal routes, move the
+                -- oauth2-proxy ID token out of Authorization; for Agent routes,
+                -- remove it before the router selects an instance workload.
+                request_handle:headers():remove("x-cetirun-portal-id-token")
+                if is_exempt(path_only, method, authority) then
+                  -- POST webhook bypasses carry a Bot Framework Authorization
+                  -- header and route to an Agent, so preserve that path exactly.
+                  local is_webhook = false
+                  if method == "POST" then
+                    is_webhook = is_webhook_path(path_only, authority)
+                  end
+                  if request_host(authority) == PORTAL_DOMAIN and not is_webhook then
+                    if not is_anonymous_apex_bypass(path_only, method, authority) then
+                      local id_token = request_handle:headers():get("authorization")
+                      if id_token and id_token ~= "" then
+                        request_handle:headers():replace("x-cetirun-portal-id-token", id_token)
+                      end
+                    end
+                    request_handle:headers():remove("authorization")
+                    request_handle:headers():remove(CETIRUN_AUTH_KEY_HEADER)
+                  elseif is_webhook then
+                    -- Webhook routes preserve the Bot Framework Authorization
+                    -- header, but an unrelated Portal session must never be
+                    -- forwarded into the Agent workload.
+                    strip_portal_session_cookie(request_handle)
+                    request_handle:headers():remove(CETIRUN_AUTH_KEY_HEADER)
+                    request_handle:headers():remove("x-auth-request-user")
+                    request_handle:headers():remove("x-auth-request-email")
+                    request_handle:headers():remove("x-auth-request-preferred-username")
+                  else
+                    -- Shared service hosts have their own authentication
+                    -- contract. Never reinterpret their Authorization header
+                    -- as a Portal identity or an instance helper key.
+                    request_handle:headers():remove(CETIRUN_AUTH_KEY_HEADER)
+                  end
+                  return
+                end
 
                 -- Native agent UIs are namespaced below /ui/<instance>/.
                 -- All other instance services (terminal, desktop, Teams webhook)
                 -- retain the instance name as their first path segment.
-                local instance_name = path_only:match("^/ui/([^/]+)")
-                if not instance_name then
-                  instance_name = path_only:match("^/([^/]+)")
+                local host = request_host(authority)
+                local instance_name = nil
+                if host == PORTAL_DOMAIN then
+                  instance_name = path_only:match("^/ui/([^/]+)")
+                  if not instance_name then
+                    instance_name = path_only:match("^/([^/]+)")
+                  end
+                else
+                  instance_name = legacy_instance_name(authority)
+                  if not instance_name then
+                    request_handle:respond({[":status"] = "403"}, "Forbidden: invalid instance host")
+                    return
+                  end
                 end
                 if not instance_name or instance_name == "" then return end
 
-                -- Send both identities: the owner's alias may differ from the email local part.
+                -- Extract both alias (email local part) and full email for ownership check.
+                -- Directory aliases do not always equal the email local part, so the
+                -- Portal accepts either verified representation.
                 local email = request_handle:headers():get("x-auth-request-email") or ""
                 if email == "" then
                   email = request_handle:headers():get("x-auth-request-preferred-username") or ""
@@ -123,5 +296,14 @@ spec:
                 local status = headers and headers[":status"] or "500"
                 if status ~= "200" then
                   request_handle:respond({[":status"] = "403"}, "Forbidden: " .. email .. " does not own " .. instance_name)
+                  return
                 end
+                -- Portal authentication is complete and ownership has been
+                -- verified. Remove only the Portal session cookie before routing
+                -- to the instance; preserve cookies owned by the Agent UI.
+                strip_portal_session_cookie(request_handle)
+                -- OAuth2 Proxy owns Authorization. Restore the instance helper's
+                -- bearer credential from its dedicated browser header only for
+                -- the cetirun-auth route, after the ownership check succeeds.
+                forward_cetirun_auth_key(request_handle, path_only)
               end

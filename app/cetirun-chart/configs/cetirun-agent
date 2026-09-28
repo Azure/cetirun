@@ -1,0 +1,477 @@
+#!/usr/bin/env python3
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+"""Typed Agent Identity client for bounded Azure read-only operations."""
+
+import argparse
+import json
+import os
+import re
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+
+
+BROKER_URL_PATTERN = re.compile(
+    r"http://[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
+    r"\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
+    r"\.svc\.cluster\.local(?::([0-9]{1,5}))?"
+)
+SUBSCRIPTION_PATTERN = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
+ERROR_CODE_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+FILTER_VALUE_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._()/ :+-]{0,255}$")
+ARM_BASE_URL = "https://management.azure.com"
+ARM_HOST = "management.azure.com"
+MAX_RESPONSE_BYTES = 2 << 20
+MAX_RESULT_ITEMS = 100
+MAX_ARM_PAGES = 20
+HTTP_TIMEOUT_SECONDS = 20
+
+
+class InvalidRequestError(ValueError):
+    """The user supplied arguments outside the typed CLI contract."""
+
+
+class BrokerConfigurationError(RuntimeError):
+    """The operator-injected Broker endpoint is unavailable or unsafe."""
+
+
+class CLIArgumentParser(argparse.ArgumentParser):
+    def error(self, _message: str) -> None:
+        raise InvalidRequestError("command arguments are invalid")
+
+
+class NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def no_proxy_opener():
+    return urllib.request.build_opener(
+        urllib.request.ProxyHandler({}), NoRedirectHandler
+    )
+
+
+BROKER_OPENER = no_proxy_opener()
+AZURE_OPENER = no_proxy_opener()
+
+
+def broker_url() -> str:
+    base = os.environ.get("CETIRUN_AGENT_BROKER_URL", "").rstrip("/")
+    match = BROKER_URL_PATTERN.fullmatch(base)
+    if not match or (
+        match.group(1) is not None and not 1 <= int(match.group(1)) <= 65535
+    ):
+        raise BrokerConfigurationError("Broker endpoint is not configured")
+    return base
+
+
+def is_subscription_id(value: str) -> bool:
+    return bool(SUBSCRIPTION_PATTERN.fullmatch(value))
+
+
+def validate_resource_id(resource_id: str) -> str:
+    canonical = resource_id.strip()
+    if (
+        not canonical.startswith("/")
+        or len(canonical) > 1024
+        or "?" in canonical
+        or "#" in canonical
+        or "//" in canonical
+        or "\\" in canonical
+        or any(ord(character) < 0x20 or ord(character) == 0x7F for character in canonical)
+    ):
+        raise InvalidRequestError("resource ID must be a canonical Azure resource ID")
+    parts = canonical.strip("/").split("/")
+    if (
+        len(parts) < 2
+        or parts[0].lower() != "subscriptions"
+        or not is_subscription_id(parts[1])
+        or any(not part or part in {".", ".."} for part in parts)
+    ):
+        raise InvalidRequestError("resource ID must start with /subscriptions/<id>")
+    return canonical
+
+
+def validate_filters(subscriptions: list[str], values: list[str | None]) -> None:
+    if (
+        not 1 <= len(subscriptions) <= 20
+        or len(set(subscriptions)) != len(subscriptions)
+        or any(not is_subscription_id(item) for item in subscriptions)
+        or any(value is not None and not FILTER_VALUE_PATTERN.fullmatch(value) for value in values)
+    ):
+        raise InvalidRequestError("resource search has invalid typed filters")
+
+
+def decode_json(response: object) -> dict:
+    data = response.read(MAX_RESPONSE_BYTES + 1)
+    if len(data) > MAX_RESPONSE_BYTES:
+        raise ValueError("response is too large")
+    payload = json.loads(data)
+    if not isinstance(payload, dict):
+        raise ValueError("response must be a JSON object")
+    return payload
+
+
+def safe_broker_error(payload: object) -> dict:
+    if not isinstance(payload, dict) or not isinstance(payload.get("error"), dict):
+        return {"code": "dependency_unavailable", "message": "Broker request failed"}
+    error = payload["error"]
+    code, message = error.get("code"), error.get("message")
+    if (
+        not isinstance(code, str)
+        or not ERROR_CODE_PATTERN.fullmatch(code)
+        or not isinstance(message, str)
+        or not message
+        or len(message) > 1024
+    ):
+        return {"code": "dependency_unavailable", "message": "Broker request failed"}
+    safe = {"code": code, "message": message}
+    correlation_id = error.get("correlationId")
+    if isinstance(correlation_id, str) and 0 < len(correlation_id) <= 128:
+        safe["correlationId"] = correlation_id
+    return safe
+
+
+def fail(error: dict) -> None:
+    print(json.dumps({"error": error}, separators=(",", ":")), file=sys.stderr)
+    raise SystemExit(2)
+
+
+def broker_call(method: str, path: str, body: dict | None = None) -> dict:
+    if (method, path) not in {
+        ("GET", "/v1/auth/status"),
+        ("POST", "/v1/auth/start-link"),
+        ("POST", "/v1/credentials/issue"),
+    }:
+        raise InvalidRequestError("unsupported Broker operation")
+    if path == "/v1/credentials/issue":
+        if body != {"service": "azure-resource-manager"}:
+            raise InvalidRequestError("invalid credential request")
+    elif body is not None:
+        raise InvalidRequestError("authentication operations do not accept a body")
+    encoded = None if body is None else json.dumps(body, separators=(",", ":")).encode()
+    request = urllib.request.Request(broker_url() + path, data=encoded, method=method)
+    request.add_header("Accept", "application/json")
+    if encoded is not None:
+        request.add_header("Content-Type", "application/json")
+    try:
+        with BROKER_OPENER.open(request, timeout=HTTP_TIMEOUT_SECONDS) as response:
+            return decode_json(response)
+    except urllib.error.HTTPError as exc:
+        try:
+            fail(safe_broker_error(decode_json(exc)))
+        except (ValueError, TypeError, UnicodeDecodeError):
+            fail({"code": "dependency_unavailable", "message": "Broker request failed"})
+    except (urllib.error.URLError, TimeoutError, OSError):
+        fail({"code": "dependency_unavailable", "message": "Broker is unavailable"})
+    except (ValueError, TypeError, UnicodeDecodeError):
+        fail({"code": "dependency_unavailable", "message": "Broker returned an invalid response"})
+    raise AssertionError("unreachable")
+
+
+def issue_arm_token() -> str:
+    payload = broker_call(
+        "POST", "/v1/credentials/issue", {"service": "azure-resource-manager"}
+    )
+    token_type, token = payload.get("tokenType"), payload.get("accessToken")
+    if (
+        token_type != "Bearer"
+        or not isinstance(token, str)
+        or not token
+        or len(token) > 32 << 10
+        or any(character.isspace() for character in token)
+    ):
+        fail(
+            {
+                "code": "dependency_unavailable",
+                "message": "Broker returned an invalid credential",
+            }
+        )
+    return token
+
+
+def azure_error(status: int) -> None:
+    if status in (401, 403):
+        fail({"code": "forbidden", "message": "Azure denied the delegated request"})
+    if status == 429:
+        fail({"code": "throttled", "message": "Azure throttled the delegated request"})
+    fail({"code": "dependency_unavailable", "message": "Azure is unavailable"})
+
+
+def azure_call(method: str, endpoint: str, token: str, body: dict | None = None) -> dict:
+    parsed = urllib.parse.urlsplit(endpoint)
+    if (
+        parsed.scheme != "https"
+        or parsed.hostname != ARM_HOST
+        or parsed.port is not None
+        or parsed.username is not None
+        or parsed.fragment
+    ):
+        raise InvalidRequestError("Azure endpoint is outside the fixed service boundary")
+    encoded = None if body is None else json.dumps(body, separators=(",", ":")).encode()
+    request = urllib.request.Request(endpoint, data=encoded, method=method)
+    request.add_header("Accept", "application/json")
+    request.add_header("Authorization", "Bearer " + token)
+    if encoded is not None:
+        request.add_header("Content-Type", "application/json")
+    try:
+        with AZURE_OPENER.open(request, timeout=HTTP_TIMEOUT_SECONDS) as response:
+            return decode_json(response)
+    except urllib.error.HTTPError as exc:
+        azure_error(exc.code)
+    except (urllib.error.URLError, TimeoutError, OSError):
+        fail({"code": "dependency_unavailable", "message": "Azure is unavailable"})
+    except (ValueError, TypeError, UnicodeDecodeError):
+        fail({"code": "dependency_unavailable", "message": "Azure returned an invalid response"})
+    raise AssertionError("unreachable")
+
+
+def bounded_string(value: object, maximum: int) -> str | None:
+    return value[:maximum] if isinstance(value, str) else None
+
+
+def valid_next_link(raw: object, expected_path: str) -> str:
+    if not isinstance(raw, str):
+        raise ValueError("invalid continuation link")
+    parsed = urllib.parse.urlsplit(raw)
+    if (
+        parsed.scheme != "https"
+        or parsed.hostname != ARM_HOST
+        or parsed.port is not None
+        or parsed.username is not None
+        or parsed.fragment
+        or parsed.path.lower() != expected_path.lower()
+    ):
+        raise ValueError("invalid continuation link")
+    return raw
+
+
+def list_arm(token: str, endpoint: str, expected_path: str, fields: dict[str, int]) -> dict:
+    items = []
+    for _page in range(MAX_ARM_PAGES):
+        response = azure_call("GET", endpoint, token)
+        values = response.get("value")
+        if not isinstance(values, list):
+            fail({"code": "dependency_unavailable", "message": "Azure returned an invalid response"})
+        for raw in values:
+            if not isinstance(raw, dict):
+                continue
+            item = {}
+            for field, maximum in fields.items():
+                value = bounded_string(raw.get(field), maximum)
+                if value is not None:
+                    item[field] = value
+            items.append(item)
+            if len(items) > MAX_RESULT_ITEMS:
+                return {"items": items[:MAX_RESULT_ITEMS], "truncated": True}
+        next_link = response.get("nextLink")
+        if not next_link:
+            return {"items": items, "truncated": False}
+        if len(items) == MAX_RESULT_ITEMS:
+            return {"items": items, "truncated": True}
+        try:
+            endpoint = valid_next_link(next_link, expected_path)
+        except ValueError:
+            fail({"code": "dependency_unavailable", "message": "Azure returned an invalid response"})
+    return {"items": items, "truncated": True}
+
+
+def subscriptions(token: str) -> dict:
+    return list_arm(
+        token,
+        ARM_BASE_URL + "/subscriptions?api-version=2022-12-01",
+        "/subscriptions",
+        {"subscriptionId": 64, "displayName": 256, "state": 64},
+    )
+
+
+def resource_groups(token: str, subscription: str) -> dict:
+    if not is_subscription_id(subscription):
+        raise InvalidRequestError("subscription ID is invalid")
+    path = f"/subscriptions/{subscription}/resourcegroups"
+    return list_arm(
+        token,
+        ARM_BASE_URL + path + "?api-version=2021-04-01",
+        path,
+        {"id": 1024, "name": 256, "location": 128},
+    )
+
+
+def kql_literal(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("'", "\\'")
+
+
+def filter_resource(raw: object) -> dict | None:
+    if not isinstance(raw, dict):
+        return None
+    item = {}
+    for field in (
+        "id",
+        "name",
+        "type",
+        "location",
+        "resourceGroup",
+        "subscriptionId",
+        "kind",
+    ):
+        value = bounded_string(raw.get(field), 1024)
+        if value is not None:
+            item[field] = value
+    sku = raw.get("sku")
+    if isinstance(sku, dict):
+        filtered_sku = {}
+        for field in ("name", "tier", "size", "family"):
+            value = bounded_string(sku.get(field), 128)
+            if value is not None:
+                filtered_sku[field] = value
+        item["sku"] = filtered_sku
+    return item
+
+
+def resources(
+    token: str,
+    selected_subscriptions: list[str],
+    resource_group: str | None = None,
+    resource_type: str | None = None,
+    location: str | None = None,
+    state: str | None = None,
+    resource_id: str | None = None,
+) -> dict:
+    validate_filters(
+        selected_subscriptions, [resource_group, resource_type, location, state]
+    )
+    query = "Resources"
+    if resource_id is not None:
+        query += " | where id =~ '" + kql_literal(validate_resource_id(resource_id)) + "'"
+    else:
+        clauses = []
+        for field, value in (
+            ("resourceGroup", resource_group),
+            ("type", resource_type),
+            ("location", location),
+        ):
+            if value:
+                clauses.append(f"{field} =~ '{kql_literal(value)}'")
+        if state:
+            clauses.append(
+                "tostring(properties.extended.instanceView.powerState.code) =~ '"
+                + kql_literal(state)
+                + "'"
+            )
+        for clause in sorted(clauses):
+            query += " | where " + clause
+    query += " | project id, name, type, location, resourceGroup, subscriptionId, kind, sku | limit 101"
+    response = azure_call(
+        "POST",
+        ARM_BASE_URL
+        + "/providers/Microsoft.ResourceGraph/resources?api-version=2022-10-01",
+        token,
+        {
+            "subscriptions": selected_subscriptions,
+            "query": query,
+            "options": {"resultFormat": "objectArray", "$top": MAX_RESULT_ITEMS + 1},
+        },
+    )
+    data = response.get("data")
+    if not isinstance(data, list):
+        fail({"code": "dependency_unavailable", "message": "Azure returned an invalid response"})
+    items = []
+    for raw in data[:MAX_RESULT_ITEMS]:
+        item = filter_resource(raw)
+        if item is not None:
+            items.append(item)
+    return {
+        "items": items,
+        "truncated": resource_id is None and len(data) > MAX_RESULT_ITEMS,
+    }
+
+
+def parser() -> argparse.ArgumentParser:
+    root = CLIArgumentParser(prog="cetirun-agent", description="CetiRun typed Agent Identity tools")
+    groups = root.add_subparsers(dest="group", required=True)
+    auth = groups.add_parser("auth")
+    auth_commands = auth.add_subparsers(dest="command", required=True)
+    auth_commands.add_parser("status")
+    auth_commands.add_parser("start")
+    azure = groups.add_parser("azure")
+    azure_commands = azure.add_subparsers(dest="command", required=True)
+    subscriptions_parser = azure_commands.add_parser("subscriptions")
+    subscriptions_parser.add_subparsers(dest="operation", required=True).add_parser("list")
+    groups_parser = azure_commands.add_parser("resource-groups")
+    groups_list = groups_parser.add_subparsers(dest="operation", required=True).add_parser("list")
+    groups_list.add_argument("--subscription", required=True)
+    resources_parser = azure_commands.add_parser("resources")
+    search = resources_parser.add_subparsers(dest="operation", required=True).add_parser("search")
+    search.add_argument("--subscription", action="append", required=True, dest="subscriptions")
+    search.add_argument("--resource-group")
+    search.add_argument("--type")
+    search.add_argument("--location")
+    search.add_argument("--state")
+    resource = azure_commands.add_parser("resource")
+    show = resource.add_subparsers(dest="operation", required=True).add_parser("show")
+    show.add_argument("--id", required=True)
+    return root
+
+
+def main() -> int:
+    try:
+        args = parser().parse_args()
+        if args.group == "auth":
+            result = broker_call(
+                "GET" if args.command == "status" else "POST",
+                "/v1/auth/status" if args.command == "status" else "/v1/auth/start-link",
+            )
+        else:
+            # Reject malformed typed arguments before asking the Broker for a
+            # credential. This keeps invalid model-generated requests from
+            # consuming or exposing an otherwise usable delegated session.
+            if args.command == "resource-groups" and not is_subscription_id(
+                args.subscription
+            ):
+                raise InvalidRequestError("subscription ID is invalid")
+            if args.command == "resources":
+                validate_filters(
+                    args.subscriptions,
+                    [args.resource_group, args.type, args.location, args.state],
+                )
+            resource_id = None
+            if args.command == "resource":
+                resource_id = validate_resource_id(args.id)
+            token = issue_arm_token()
+            if args.command == "subscriptions":
+                result = subscriptions(token)
+            elif args.command == "resource-groups":
+                result = resource_groups(token, args.subscription)
+            elif args.command == "resources":
+                result = resources(
+                    token,
+                    args.subscriptions,
+                    args.resource_group,
+                    args.type,
+                    args.location,
+                    args.state,
+                )
+            else:
+                subscription = resource_id.strip("/").split("/")[1]
+                result = resources(token, [subscription], resource_id=resource_id)
+    except InvalidRequestError:
+        fail({"code": "invalid_request", "message": "The command arguments are invalid"})
+    except BrokerConfigurationError:
+        fail(
+            {
+                "code": "dependency_unavailable",
+                "message": "Broker configuration is unavailable",
+            }
+        )
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

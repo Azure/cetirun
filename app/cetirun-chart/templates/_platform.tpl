@@ -83,7 +83,7 @@ imagePullSecrets:
   {{- toYaml . | nindent 2 }}
 {{- end }}
 serviceAccountName: {{ include "cetirun.serviceAccountName" . }}
-automountServiceAccountToken: {{ or (not (empty .Values.serviceAccount.role)) (not (empty .Values.serviceAccount.name)) .Values.azureWorkloadIdentity.enabled }}
+automountServiceAccountToken: {{ include "cetirun.automountServiceAccountToken" . }}
 securityContext:
   {{- toYaml .Values.podSecurityContext | nindent 2 }}
 {{- end }}

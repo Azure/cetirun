@@ -535,6 +535,8 @@ func resolveDesiredAppID(instance *cetirunv1alpha1.Agent) string {
 // (defaults / memberContext / skills / skillStorage) invalidate the cache so
 // the watch-driven re-enqueue actually re-runs buildHelmValues with the new
 // team data instead of being short-circuited.
+const agentIdentityRuntimeRevision = "runtime-v1"
+
 func (r *AgentReconciler) configHash(instance *cetirunv1alpha1.Agent, team *cetirunv1alpha1.Team, gwSecretHash, teamRV string) string {
 	config := []string{
 		r.AzureSubscriptionID, r.AzureResourceGroup, r.AzureBotNamePrefix,
@@ -546,6 +548,9 @@ func (r *AgentReconciler) configHash(instance *cetirunv1alpha1.Agent, team *ceti
 	if r.AgentIdentityEnabled || agentIdentityRequested(instance) || instance.Status.AgentIdentity != nil {
 		config = append(config, r.AgentIdentityTenantID, r.AgentIdentityBlueprintClientID,
 			r.AgentIdentityNamePrefix, r.AgentIdentityBrokerURL)
+	}
+	if agentIdentityRequested(instance) || instance.Status.AgentIdentity != nil {
+		config = append(config, agentIdentityRuntimeRevision)
 	}
 	// A configured default affects only GitHub Copilot instances without a
 	// per-instance model. Include it only for those instances so changing the

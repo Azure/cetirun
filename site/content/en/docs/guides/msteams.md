@@ -148,13 +148,14 @@ values or mounting a certificate does not enable them. See the
 
 ## Webhook authentication
 
-The shared Istio policy exempts **POST** requests matching `*/api/messages`
-from OAuth2 Proxy. The Bot adapter must authenticate the Bot Framework request.
-Other methods still go through OAuth2 Proxy.
+The shared Istio policy exempts **POST** requests matching exactly
+`/<instance>/api/messages` on the apex host, plus exact `/api/messages` on a
+legacy instance subdomain, from OAuth2 Proxy. The Bot adapter must authenticate
+the Bot Framework request. Other methods still go through OAuth2 Proxy.
 
 Per-instance VirtualServices route enabled bots to the listener; a disabled
 instance gets an explicit 404 deny route **while its VirtualService exists**.
-A suspended or nonexistent instance has no such route. The shared suffix
+A suspended or nonexistent instance has no such route. The shared path-template
 exception still applies, so a request can fall through to the portal's SPA
 response. That response is not bot readiness. This static exception is not a
 per-instance allowlist. Do not add broad anonymous paths to make a failing bot

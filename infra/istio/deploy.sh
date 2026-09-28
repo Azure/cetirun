@@ -58,7 +58,7 @@ fi
 : "${TENANT_ID:?TENANT_ID must be set to the Azure AD tenant ID}"
 : "${ALLOWED_GROUPS:?ALLOWED_GROUPS must be set to comma-separated Entra group object IDs}"
 
-REQUIRED_CMDS=(helm kubectl jq openssl)
+REQUIRED_CMDS=(helm kubectl jq openssl python3)
 if [[ -z "${SKIP_AZ_VALIDATION:-}" ]]; then
   REQUIRED_CMDS+=(az)
 fi
@@ -312,56 +312,15 @@ CONFIGMAP="istio-shared-configmap-${REVISION}"
 echo "Istio revision: ${REVISION}"
 echo "ConfigMap: ${CONFIGMAP} (aks-istio-system)"
 
-EXISTING_MESH=$(kubectl get configmap "${CONFIGMAP}" -n aks-istio-system \
-  -o jsonpath='{.data.mesh}' 2>/dev/null || echo "")
-
-if echo "$EXISTING_MESH" | grep -q "oauth2-proxy"; then
-  echo "ext_authz provider already configured — skipping."
-else
-  PROVIDER_ENTRY=$(cat <<'EOF'
-- name: oauth2-proxy
-  envoyExtAuthzHttp:
-    service: oauth2-proxy.cetirun-istio.svc.cluster.local
-    port: 4180
-    includeRequestHeadersInCheck:
-    - cookie
-    - authorization
-    - x-auth-request-redirect
-    headersToUpstreamOnAllow:
-    - x-auth-request-user
-    - x-auth-request-email
-    - x-auth-request-preferred-username
-    headersToDownstreamOnDeny:
-    - set-cookie
-    - location
-    statusOnError: "403"
-EOF
-)
-
-  if [[ -z "$EXISTING_MESH" ]]; then
-    MERGED_MESH=$(printf 'extensionProviders:\n%s' "$PROVIDER_ENTRY")
-  elif echo "$EXISTING_MESH" | grep -q '^extensionProviders:'; then
-    MERGED_MESH=$(echo "$EXISTING_MESH" | awk -v entry="$PROVIDER_ENTRY" '
-      /^extensionProviders:/ { print; print entry; next }
-      { print }
-    ')
-  else
-    MERGED_MESH=$(printf '%s\nextensionProviders:\n%s' "$EXISTING_MESH" "$PROVIDER_ENTRY")
-  fi
-
-  if kubectl get configmap "${CONFIGMAP}" -n aks-istio-system &>/dev/null; then
-    echo "Patching existing configmap..."
-    kubectl get configmap "${CONFIGMAP}" -n aks-istio-system -o json \
-      | jq --arg mesh "$MERGED_MESH" '.data.mesh = $mesh' \
-      | kubectl apply -f -
-  else
-    echo "Creating shared configmap..."
-    kubectl create configmap "${CONFIGMAP}" -n aks-istio-system \
-      --from-literal=mesh="${MERGED_MESH}" \
-      --dry-run=client -o yaml | kubectl apply -f -
-  fi
-  echo "ext_authz provider configured."
-fi
+# Provider creation and header reconciliation share one resourceVersion CAS.
+# On a conflict the helper reloads the ConfigMap and recomputes the complete
+# change, so an AKS addon or administrator update cannot be overwritten by a
+# stale mesh snapshot.
+echo "Reconciling the oauth2-proxy extension provider..."
+python3 "${SCRIPT_DIR}/../../scripts/ensure-oauth2-proxy-id-token-header.py" \
+  --namespace aks-istio-system \
+  --name "${CONFIGMAP}"
+echo "ext_authz provider configured."
 
 #-----------------------------------------------------------------------
 # Summary

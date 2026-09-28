@@ -22,6 +22,10 @@ spec:
         # Istio ingress gateway (when separate from istiod)
         - "{{ . }}/*"
         {{- end }}
+        {{- if .Values.agentIdentity.enabled }}
+        # Deployment-level Agent Identity Broker.
+        - "{{ .Values.networkPolicy.agentIdentityBrokerNamespace }}/*"
+        {{- end }}
         {{- range .Values.sidecarScope.additionalEgressHosts }}
         - {{ . | quote }}
         {{- end }}

@@ -84,6 +84,8 @@ RUN npm --min-release-age=0 install \
 
 # Seed OpenClaw personality files into the workspace skeleton.
 COPY --chown=vibe:vibe agents/openclaw/personality/ /home/vibe/.openclaw/workspace/
+COPY --chown=vibe:vibe skills/azure/ /home/vibe/.openclaw/skills/azure/
+COPY --chown=vibe:vibe configs/cetirun-agent /usr/local/bin/cetirun-agent
 
 COPY --chown=vibe:vibe agents/openclaw/bootstrap/entrypoint.sh /usr/local/bin/entrypoint.sh
 
@@ -100,7 +102,10 @@ RUN python3 -m venv /usr/local/lib/cetirun-auth && \
       "aiohttp==${CETIRUN_AUTH_AIOHTTP_VERSION}" \
       "pyyaml==${CETIRUN_AUTH_PYYAML_VERSION}"
 COPY --chown=vibe:vibe configs/cetirun-auth-service.py /usr/local/share/cetirun/cetirun-auth-service.py
-RUN chmod 755 /usr/local/share/cetirun/cetirun-auth-service.py
+COPY --chown=vibe:vibe configs/builtin-skill-sync.sh /usr/local/share/cetirun/builtin-skill-sync.sh
+RUN chmod 755 /usr/local/share/cetirun/cetirun-auth-service.py \
+    /usr/local/share/cetirun/builtin-skill-sync.sh \
+    /usr/local/bin/cetirun-agent
 USER vibe
 
 EXPOSE 18789 7681 3978 18790

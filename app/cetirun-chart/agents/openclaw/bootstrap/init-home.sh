@@ -11,6 +11,7 @@ SOURCE_HOME=${SOURCE_HOME:-/home/vibe}
 TARGET_HOME=${TARGET_HOME:-/home-data}
 RUNTIME_HOME=${RUNTIME_HOME:-/home/vibe}
 CETIRUN_CONFIG_DIR=${CETIRUN_CONFIG_DIR:-/etc/cetirun}
+CETIRUN_BUILTIN_SKILL_SYNC=${CETIRUN_BUILTIN_SKILL_SYNC:-/usr/local/share/cetirun/builtin-skill-sync.sh}
 LEGACY_HOME_MARKER=.openclaw/.initialized
 . "$CETIRUN_CONFIG_DIR/init-home-common.sh"
 
@@ -23,6 +24,10 @@ agent_check_requirements() {
       init_error "OpenClawInputMissing"
       return 1
     }
+  [ -f "$CETIRUN_BUILTIN_SKILL_SYNC" ] || {
+    init_error "OpenClawInputMissing: builtin-skill-sync.sh"
+    return 1
+  }
 }
 
 agent_prepare_home() {
@@ -112,6 +117,13 @@ install_image_skills() (
   done
 )
 
+sync_managed_image_skills() {
+  . "$CETIRUN_BUILTIN_SKILL_SYNC"
+  cetirun_sync_builtin_skills \
+    "$SOURCE_HOME/.openclaw/skills" \
+    "$(home_path .openclaw/skills)"
+}
+
 setup_azdevops_git_credential() (
   set -e
   [ "${AZDEVOPS_GIT_CREDENTIAL_ENABLED:-false}" = true ] || exit 0
@@ -140,6 +152,7 @@ SCRIPT
 
 agent_prepare_integrations() {
   prepare_plugin_link
+  sync_managed_image_skills
   install_image_skills
   home_atomic_copy "$CETIRUN_CONFIG_DIR/openclaw-auth.sh" .local/bin/copilot-auth 755
   setup_azdevops_git_credential
