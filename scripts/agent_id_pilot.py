@@ -617,6 +617,42 @@ def _az_json(*arguments: str) -> dict[str, Any]:
     return _run_json(["az", *arguments, "-o", "json"])
 
 
+def _managed_identity_resource_id(
+    subscription_id: str, resource_group: str, identity_name: str
+) -> str:
+    return (
+        f"/subscriptions/{subscription_id}/resourceGroups/{resource_group}/"
+        f"providers/Microsoft.ManagedIdentity/userAssignedIdentities/{identity_name}"
+    )
+
+
+def _require_unclaimed_identity_name(
+    subscription_id: str, resource_group: str, identity_name: str
+) -> None:
+    response = _az_json(
+        "identity", "list",
+        "--subscription", subscription_id,
+        "--resource-group", resource_group,
+        "--query", "{identities: @}",
+    )
+    identities = response.get("identities")
+    if not isinstance(identities, list) or any(
+        not isinstance(identity, dict) for identity in identities
+    ):
+        raise PilotError("Azure returned an invalid managed identity inventory")
+    expected_id = _managed_identity_resource_id(
+        subscription_id, resource_group, identity_name
+    ).casefold()
+    if any(
+        str(identity.get("name", "")).casefold() == identity_name.casefold()
+        or str(identity.get("id", "")).casefold() == expected_id
+        for identity in identities
+    ):
+        raise PilotError(
+            "encryption identity already exists without a deployment ownership record"
+        )
+
+
 def _run_no_output(command: list[str]) -> None:
     try:
         subprocess.run(
@@ -674,10 +710,22 @@ def provision_deployment(args: argparse.Namespace) -> None:
         ]
         if mismatches:
             raise PilotError("resume arguments do not match recorded deployment")
+        encryption = deployment.get("encryptionIdentity")
+        if not isinstance(encryption, dict) or not encryption.get("resourceId"):
+            _require_unclaimed_identity_name(
+                args.subscription_id,
+                args.resource_group,
+                args.encryption_identity_name,
+            )
         if deployment.get("oidcIssuer") != requested["oidcIssuer"]:
             deployment["oidcIssuer"] = requested["oidcIssuer"]
             save_state(state_path, state)
     else:
+        _require_unclaimed_identity_name(
+            args.subscription_id,
+            args.resource_group,
+            args.encryption_identity_name,
+        )
         deployment = requested
         state["deployment"] = deployment
         save_state(state_path, state)
@@ -843,14 +891,20 @@ def provision_deployment(args: argparse.Namespace) -> None:
         save_state(state_path, state)
 
     encryption = deployment.get("encryptionIdentity")
-    if not isinstance(encryption, dict) or not encryption:
+    if not isinstance(encryption, dict) or not encryption.get("resourceId"):
         created = _az_json(
             "identity", "create", "--subscription", args.subscription_id,
             "--resource-group", args.resource_group, "--name", args.encryption_identity_name,
             "--location", args.location,
         )
+        resource_id = str(created.get("id", ""))
+        expected_resource_id = _managed_identity_resource_id(
+            args.subscription_id, args.resource_group, args.encryption_identity_name
+        )
+        if resource_id.casefold() != expected_resource_id.casefold():
+            raise PilotError("encryption identity returned an unexpected resource ID")
         encryption = {
-            "resourceId": str(created.get("id", "")),
+            "resourceId": resource_id,
             "clientId": validate_uuid(str(created.get("clientId", "")), "encryption identity client ID"),
             "principalId": validate_uuid(str(created.get("principalId", "")), "encryption identity principal ID"),
         }

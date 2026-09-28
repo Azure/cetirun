@@ -231,8 +231,13 @@ class AgentIDPilotTests(unittest.TestCase):
                 "_operator_graph",
                 side_effect=pilot.PilotError("synthetic Graph failure"),
             ):
-                with self.assertRaisesRegex(pilot.PilotError, "synthetic Graph failure"):
-                    pilot.provision_deployment(self._deployment_args(path))
+                with mock.patch.object(
+                    pilot, "_az_json", return_value={"identities": []}
+                ):
+                    with self.assertRaisesRegex(
+                        pilot.PilotError, "synthetic Graph failure"
+                    ):
+                        pilot.provision_deployment(self._deployment_args(path))
 
             self.assertNotIn(
                 "encryptionIdentity", pilot.load_state(path)["deployment"]
@@ -270,6 +275,43 @@ class AgentIDPilotTests(unittest.TestCase):
             run_no_output.assert_called_once_with(
                 ["az", "identity", "delete", "--ids", resource_id]
             )
+
+    def test_provisioning_rejects_preexisting_unowned_identity(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "state.json"
+            pilot.save_state(path, {"schema": 1})
+            args = self._deployment_args(path)
+            resource_id = pilot._managed_identity_resource_id(
+                args.subscription_id,
+                args.resource_group,
+                args.encryption_identity_name,
+            )
+            with mock.patch.object(
+                pilot,
+                "_az_json",
+                return_value={
+                    "identities": [
+                        {
+                            "id": resource_id,
+                            "name": args.encryption_identity_name,
+                        }
+                    ]
+                },
+            ) as az_json:
+                with mock.patch.object(pilot, "_operator_graph") as operator_graph:
+                    with self.assertRaisesRegex(
+                        pilot.PilotError, "without a deployment ownership record"
+                    ):
+                        pilot.provision_deployment(args)
+
+            az_json.assert_called_once_with(
+                "identity", "list",
+                "--subscription", args.subscription_id,
+                "--resource-group", args.resource_group,
+                "--query", "{identities: @}",
+            )
+            operator_graph.assert_not_called()
+            self.assertNotIn("deployment", pilot.load_state(path))
 
     def test_graph_permission_catalog_encodes_odata_query(self):
         graph = mock.Mock()
