@@ -71,8 +71,8 @@ class AgentIDPilotTests(unittest.TestCase):
             location="example-region",
             oidc_issuer="https://issuer.example.test/cluster",
             portal_origin="https://portal.example.test",
-            credential_namespace="cetirun-credentials",
-            credential_service_account="cetirun-credential-service",
+            agent_broker_namespace="cetirun-agent-broker",
+            agent_broker_service_account="cetirun-agent-broker",
             operator_namespace="cetirun-system",
             operator_service_account="cetirun-operator-controller-manager",
             encryption_identity_name="synthetic-encryption",
@@ -529,8 +529,8 @@ class AgentIDPilotTests(unittest.TestCase):
                 "--location", "example-region",
                 "--oidc-issuer", "https://issuer.example.test/cluster",
                 "--portal-origin", "https://portal.example.test",
-                "--credential-namespace", "cetirun-credentials",
-                "--credential-service-account", "cetirun-credential-service",
+                "--agent-broker-namespace", "cetirun-agent-broker",
+                "--agent-broker-service-account", "cetirun-agent-broker",
                 "--operator-namespace", "cetirun-system",
                 "--operator-service-account", "cetirun-operator-controller-manager",
                 "--encryption-identity-name", "synthetic-encryption",
@@ -552,7 +552,7 @@ class AgentIDPilotTests(unittest.TestCase):
             application,
             name="synthetic-credential",
             issuer="https://issuer.example.test/cluster/",
-            subject="system:serviceaccount:cetirun-credentials:cetirun-credential-service",
+            subject="system:serviceaccount:cetirun-agent-broker:cetirun-agent-broker",
         )
         create = graph.call.call_args_list[1]
         self.assertEqual(
@@ -561,7 +561,7 @@ class AgentIDPilotTests(unittest.TestCase):
         )
         self.assertEqual(
             create.kwargs["body"]["subject"],
-            "system:serviceaccount:cetirun-credentials:cetirun-credential-service",
+            "system:serviceaccount:cetirun-agent-broker:cetirun-agent-broker",
         )
         self.assertEqual(create.kwargs["body"]["audiences"], [pilot.TOKEN_EXCHANGE_AUDIENCE])
         self.assertEqual(
