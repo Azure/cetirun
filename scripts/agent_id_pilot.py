@@ -635,8 +635,8 @@ def provision_deployment(args: argparse.Namespace) -> None:
     state = load_state(state_path)
     prefix = validate_prefix(args.prefix or str(state.get("prefix", "")))
     for value, name in (
-        (args.credential_namespace, "credential namespace"),
-        (args.credential_service_account, "credential ServiceAccount"),
+        (args.agent_broker_namespace, "Agent Identity Broker namespace"),
+        (args.agent_broker_service_account, "Agent Identity Broker ServiceAccount"),
         (args.operator_namespace, "operator namespace"),
         (args.operator_service_account, "operator ServiceAccount"),
     ):
@@ -649,8 +649,8 @@ def provision_deployment(args: argparse.Namespace) -> None:
         "location": args.location,
         "oidcIssuer": args.oidc_issuer,
         "portalOrigin": args.portal_origin.rstrip("/"),
-        "credentialNamespace": args.credential_namespace,
-        "credentialServiceAccount": args.credential_service_account,
+        "agentBrokerNamespace": args.agent_broker_namespace,
+        "agentBrokerServiceAccount": args.agent_broker_service_account,
         "operatorNamespace": args.operator_namespace,
         "operatorServiceAccount": args.operator_service_account,
         "encryptionIdentityName": args.encryption_identity_name,
@@ -808,12 +808,12 @@ def provision_deployment(args: argparse.Namespace) -> None:
         )
         save_state(state_path, state)
 
-    credential_subject = f"system:serviceaccount:{args.credential_namespace}:{args.credential_service_account}"
+    broker_subject = f"system:serviceaccount:{args.agent_broker_namespace}:{args.agent_broker_service_account}"
     operator_subject = f"system:serviceaccount:{args.operator_namespace}:{args.operator_service_account}"
     if blueprint.get("federatedCredentialIssuer") != args.oidc_issuer:
         _ensure_blueprint_fic(
-            graph, blueprint, name=f"{prefix}-credential",
-            issuer=args.oidc_issuer, subject=credential_subject
+            graph, blueprint, name=f"{prefix}-broker",
+            issuer=args.oidc_issuer, subject=broker_subject
         )
         save_state(state_path, state)
     # _ensure_blueprint_fic stores one legacy marker, so use the generic exact helper
@@ -838,7 +838,7 @@ def provision_deployment(args: argparse.Namespace) -> None:
             authorization,
             name=f"{prefix}-authorization",
             issuer=args.oidc_issuer,
-            subject=credential_subject,
+            subject=broker_subject,
         )
         save_state(state_path, state)
 
@@ -864,9 +864,9 @@ def provision_deployment(args: argparse.Namespace) -> None:
             "identity", "federated-credential", operation,
             "--resource-group", args.resource_group,
             "--identity-name", args.encryption_identity_name,
-            "--name", f"{prefix}-credential",
+            "--name", f"{prefix}-broker",
             "--issuer", args.oidc_issuer,
-            "--subject", credential_subject,
+            "--subject", broker_subject,
             "--audiences", TOKEN_EXCHANGE_AUDIENCE,
         )
         encryption["federatedCredentialCreated"] = True
@@ -994,12 +994,10 @@ def cleanup_deployment(args: argparse.Namespace) -> None:
         deployment.pop("keyVault", None)
         save_state(state_path, state)
     encryption = deployment.get("encryptionIdentity", {})
-    if isinstance(encryption, dict) and deployment.get("encryptionIdentityName"):
+    if isinstance(encryption, dict) and encryption.get("resourceId"):
         _run_no_output(
             [
-                "az", "identity", "delete", "--subscription", str(deployment["subscriptionId"]),
-                "--resource-group", str(deployment["resourceGroup"]),
-                "--name", str(deployment["encryptionIdentityName"]),
+                "az", "identity", "delete", "--ids", str(encryption["resourceId"]),
             ]
         )
         deployment.pop("encryptionIdentity", None)
@@ -1695,8 +1693,8 @@ def parser() -> argparse.ArgumentParser:
     deployment_parser.add_argument("--location", required=True)
     deployment_parser.add_argument("--oidc-issuer", required=True)
     deployment_parser.add_argument("--portal-origin", required=True)
-    deployment_parser.add_argument("--credential-namespace", required=True)
-    deployment_parser.add_argument("--credential-service-account", required=True)
+    deployment_parser.add_argument("--agent-broker-namespace", required=True)
+    deployment_parser.add_argument("--agent-broker-service-account", required=True)
     deployment_parser.add_argument("--operator-namespace", required=True)
     deployment_parser.add_argument("--operator-service-account", required=True)
     deployment_parser.add_argument("--encryption-identity-name", required=True)

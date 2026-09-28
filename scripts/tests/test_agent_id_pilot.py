@@ -61,6 +61,24 @@ class AgentIDPilotTests(unittest.TestCase):
             },
         }
 
+    def _deployment_args(self, state_file):
+        return argparse.Namespace(
+            state_file=state_file,
+            prefix="synthetic-pilot",
+            resume=False,
+            subscription_id="00000000-0000-4000-8000-000000000001",
+            resource_group="synthetic-rg",
+            location="example-region",
+            oidc_issuer="https://issuer.example.test/cluster",
+            portal_origin="https://portal.example.test",
+            agent_broker_namespace="cetirun-agent-broker",
+            agent_broker_service_account="cetirun-agent-broker",
+            operator_namespace="cetirun-system",
+            operator_service_account="cetirun-operator-controller-manager",
+            encryption_identity_name="synthetic-encryption",
+            key_vault_name="synthetickeyvault",
+        )
+
     def test_state_file_must_be_outside_checkout(self):
         with self.assertRaisesRegex(pilot.PilotError, "outside"):
             pilot.validate_state_path(pilot.ROOT / "state.json")
@@ -203,6 +221,55 @@ class AgentIDPilotTests(unittest.TestCase):
                 ],
             )
             self.assertEqual(pilot.load_state(path)["provisioningClient"], {})
+
+    def test_cleanup_skips_unrecorded_identity_after_early_provisioning_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "state.json"
+            pilot.save_state(path, {"schema": 1})
+            with mock.patch.object(
+                pilot,
+                "_operator_graph",
+                side_effect=pilot.PilotError("synthetic Graph failure"),
+            ):
+                with self.assertRaisesRegex(pilot.PilotError, "synthetic Graph failure"):
+                    pilot.provision_deployment(self._deployment_args(path))
+
+            self.assertNotIn(
+                "encryptionIdentity", pilot.load_state(path)["deployment"]
+            )
+            graph = mock.Mock()
+            with mock.patch.object(pilot, "_operator_graph", return_value=graph):
+                with mock.patch.object(pilot, "_run_no_output") as run_no_output:
+                    pilot.cleanup_deployment(argparse.Namespace(state_file=path))
+            run_no_output.assert_not_called()
+
+    def test_cleanup_deletes_recorded_identity_by_resource_id(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "state.json"
+            resource_id = (
+                "/subscriptions/00000000-0000-4000-8000-000000000001/"
+                "resourceGroups/synthetic-rg/providers/Microsoft.ManagedIdentity/"
+                "userAssignedIdentities/synthetic-encryption"
+            )
+            pilot.save_state(
+                path,
+                {
+                    "schema": 1,
+                    "deployment": {
+                        "subscriptionId": "00000000-0000-4000-8000-000000000001",
+                        "resourceGroup": "synthetic-rg",
+                        "encryptionIdentityName": "untrusted-input-name",
+                        "encryptionIdentity": {"resourceId": resource_id},
+                    },
+                },
+            )
+            graph = mock.Mock()
+            with mock.patch.object(pilot, "_operator_graph", return_value=graph):
+                with mock.patch.object(pilot, "_run_no_output") as run_no_output:
+                    pilot.cleanup_deployment(argparse.Namespace(state_file=path))
+            run_no_output.assert_called_once_with(
+                ["az", "identity", "delete", "--ids", resource_id]
+            )
 
     def test_graph_permission_catalog_encodes_odata_query(self):
         graph = mock.Mock()
@@ -462,8 +529,8 @@ class AgentIDPilotTests(unittest.TestCase):
                 "--location", "example-region",
                 "--oidc-issuer", "https://issuer.example.test/cluster",
                 "--portal-origin", "https://portal.example.test",
-                "--credential-namespace", "cetirun-credentials",
-                "--credential-service-account", "cetirun-credential-service",
+                "--agent-broker-namespace", "cetirun-agent-broker",
+                "--agent-broker-service-account", "cetirun-agent-broker",
                 "--operator-namespace", "cetirun-system",
                 "--operator-service-account", "cetirun-operator-controller-manager",
                 "--encryption-identity-name", "synthetic-encryption",
@@ -485,7 +552,7 @@ class AgentIDPilotTests(unittest.TestCase):
             application,
             name="synthetic-credential",
             issuer="https://issuer.example.test/cluster/",
-            subject="system:serviceaccount:cetirun-credentials:cetirun-credential-service",
+            subject="system:serviceaccount:cetirun-agent-broker:cetirun-agent-broker",
         )
         create = graph.call.call_args_list[1]
         self.assertEqual(
@@ -494,7 +561,7 @@ class AgentIDPilotTests(unittest.TestCase):
         )
         self.assertEqual(
             create.kwargs["body"]["subject"],
-            "system:serviceaccount:cetirun-credentials:cetirun-credential-service",
+            "system:serviceaccount:cetirun-agent-broker:cetirun-agent-broker",
         )
         self.assertEqual(create.kwargs["body"]["audiences"], [pilot.TOKEN_EXCHANGE_AUDIENCE])
         self.assertEqual(
