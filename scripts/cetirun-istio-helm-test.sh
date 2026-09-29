@@ -96,12 +96,12 @@ grep -Fq 'key:match("^[A-Za-z0-9_+/=-]+$") ~= nil' <<< "${output}" || {
   echo "FAIL: ownership filter did not accept existing standard Base64 auth keys" >&2
   exit 1
 }
-[[ "$(grep -Fc 'request_handle:headers():remove(CETIRUN_AUTH_KEY_HEADER)' <<< "${output}")" == 3 ]] || {
-  echo "FAIL: exempt Portal, webhook, and shared routes must remove the instance auth header" >&2
+[[ "$(grep -Fc 'request_handle:headers():remove(CETIRUN_AUTH_KEY_HEADER)' <<< "${output}")" == 4 ]] || {
+  echo "FAIL: fallback, Portal, webhook, and shared routes must remove the instance auth header" >&2
   exit 1
 }
-[[ "$(grep -Fc 'request_handle:headers():remove(AGENT_API_KEY_HEADER)' <<< "${output}")" == 3 ]] || {
-  echo "FAIL: exempt Portal, webhook, and shared routes must remove the native Agent API header" >&2
+[[ "$(grep -Fc 'request_handle:headers():remove(AGENT_API_KEY_HEADER)' <<< "${output}")" == 4 ]] || {
+  echo "FAIL: fallback, Portal, webhook, and shared routes must remove the native Agent API header" >&2
   exit 1
 }
 grep -Fq -- '- --scope=openid email profile' <<< "${output}" || {

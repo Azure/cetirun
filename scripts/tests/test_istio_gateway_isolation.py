@@ -130,7 +130,12 @@ class IstioGatewayIsolationTests(unittest.TestCase):
             self.source.count(
                 'request_handle:headers():remove(AGENT_API_KEY_HEADER)'
             ),
-            3,
+            4,
+        )
+        self.assertIn(
+            'if not instance_name or instance_name == "" then\n'
+            '                  -- Do not let credentials reach a fallback route',
+            self.source,
         )
 
 
