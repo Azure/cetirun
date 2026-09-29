@@ -91,6 +91,18 @@ agentIdentity:
   enabled: false
   brokerURL: ""
 
+# -- Platform AI Gateway access. The CetiRun operator sets these values for
+# Agents whose model traffic goes through the Gateway; they are not user
+# settings. When enabled, the openai provider reads its key from the Secret
+# below instead of MODEL_API_KEY, and egress to the Gateway pods in
+# networkPolicy.gatewayNamespace on networkPolicy.gatewayPort is allowed.
+aiGateway:
+  enabled: false
+  # -- Secret in the release namespace holding this Agent's virtual key
+  keySecretName: ""
+  # -- Key within that Secret
+  keySecretKey: api-key
+
 # -- Pod annotations
 podAnnotations: {}
 
@@ -569,6 +581,10 @@ networkPolicy:
   dnsNamespace: kube-system
   # -- Namespace hosting the deployment-level Agent Identity Broker.
   agentIdentityBrokerNamespace: cetirun-credentials
+  # -- Namespace of the platform AI Gateway, used when aiGateway.enabled.
+  gatewayNamespace: cetirun-system
+  # -- Service port of the platform AI Gateway.
+  gatewayPort: 4000
   # -- CIDRs to block from external egress.
   # kube-dns is allowed via namespace selectors
   # regardless of these blocks.

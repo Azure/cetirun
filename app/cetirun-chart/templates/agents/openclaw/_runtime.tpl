@@ -175,9 +175,15 @@ OpenClaw container env vars (agent-specific only)
 - name: OPENAI_API_KEY
   valueFrom:
     secretKeyRef:
+      {{- if (.Values.aiGateway | default dict).enabled }}
+      # This Agent's AI Gateway virtual key, managed by the CetiRun operator.
+      name: {{ .Values.aiGateway.keySecretName }}
+      key: {{ .Values.aiGateway.keySecretKey | default "api-key" }}
+      {{- else }}
       name: {{ include "cetirun.secretName" . }}
       key: MODEL_API_KEY
       optional: true
+      {{- end }}
 {{- else if eq (.Values.secrets.provider | default "github_copilot") "anthropic" }}
 - name: ANTHROPIC_API_KEY
   valueFrom:

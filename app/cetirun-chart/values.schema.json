@@ -201,6 +201,27 @@
                 }
             }
         },
+        "aiGateway": {
+            "type": "object",
+            "description": "Operator-owned platform AI Gateway access for the Agent's model traffic",
+            "additionalProperties": false,
+            "properties": {
+                "enabled": {
+                    "type": "boolean",
+                    "default": false
+                },
+                "keySecretName": {
+                    "type": "string",
+                    "description": "Secret in the release namespace holding the Agent's virtual key",
+                    "default": ""
+                },
+                "keySecretKey": {
+                    "type": "string",
+                    "description": "Key within the virtual key Secret",
+                    "default": "api-key"
+                }
+            }
+        },
         "podAnnotations": {
             "type": "object",
             "description": "Pod annotations",
@@ -1273,12 +1294,12 @@
                 },
                 "gatewayNamespace": {
                     "type": "string",
-                    "description": "Namespace of centralized LiteLLM gateway (egress)",
-                    "default": "cetirun-gateway"
+                    "description": "Namespace of the platform AI Gateway, for egress when aiGateway.enabled",
+                    "default": "cetirun-system"
                 },
                 "gatewayPort": {
                     "type": "integer",
-                    "description": "Port of centralized LiteLLM gateway",
+                    "description": "Service port of the platform AI Gateway",
                     "minimum": 1,
                     "maximum": 65535,
                     "default": 4000

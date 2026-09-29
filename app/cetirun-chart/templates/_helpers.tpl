@@ -166,6 +166,35 @@ Validate Azure Workload Identity prerequisites
 {{- end -}}
 {{- end }}
 
+{{/* Validate the platform AI Gateway wiring set by the CetiRun operator. */}}
+{{- define "cetirun.validateAIGateway" -}}
+{{- if (.Values.aiGateway | default dict).enabled -}}
+{{- if ne (include "cetirun.agent.type" .) "openclaw" -}}
+{{- fail "aiGateway.enabled is supported only for OpenClaw" -}}
+{{- end -}}
+{{- if ne (.Values.secrets.provider | default "github_copilot") "openai" -}}
+{{- fail "aiGateway.enabled requires secrets.provider=openai" -}}
+{{- end -}}
+{{- if not (regexMatch "^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$" (.Values.aiGateway.keySecretName | default "")) -}}
+{{- fail "aiGateway.keySecretName must name a Secret in the release namespace" -}}
+{{- end -}}
+{{- if not .Values.networkPolicy.enabled -}}
+{{- fail "aiGateway.enabled requires networkPolicy.enabled" -}}
+{{- end -}}
+{{- if not .Values.sidecarScope.enabled -}}
+{{- fail "aiGateway.enabled requires sidecarScope.enabled" -}}
+{{- end -}}
+{{- if not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" (.Values.networkPolicy.gatewayNamespace | default "")) -}}
+{{- fail "aiGateway.enabled requires networkPolicy.gatewayNamespace" -}}
+{{- end -}}
+{{- range .Values.extraEnv -}}
+{{- if has (get . "name") (list "OPENAI_API_KEY" "OPENAI_BASE_URL") -}}
+{{- fail "OPENAI_API_KEY and OPENAI_BASE_URL are reserved when aiGateway.enabled" -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end }}
+
 {{/*
 Validate autoscaling settings for single-instance app
 */}}
