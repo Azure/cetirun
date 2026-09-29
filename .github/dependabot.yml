@@ -14,6 +14,7 @@ updates:
   # contract requires every Go builder to use the same digest.
   - package-ecosystem: "docker"
     directories:
+      - "/app/cetirun-agent-broker"
       - "/app/cetirun-chart"
       - "/app/cetirun-operator"
       - "/app/cetirun-portal"
@@ -27,6 +28,7 @@ updates:
   # graphs together, including dependencies that are indirect in the consumer.
   - package-ecosystem: "gomod"
     directories:
+      - "/app/cetirun-agent-broker"
       - "/app/cetirun-operator"
       - "/app/cetirun-portal"
     schedule:

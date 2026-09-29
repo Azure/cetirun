@@ -40,6 +40,19 @@ jobs:
           cache: "npm"
           cache-dependency-path: app/cetirun-portal/web/package-lock.json
 
+      - name: Check version-pinned license supplements
+        id: license-supplements
+        run: npm run licenses:check-updates -- --output "$RUNNER_TEMP/portal-license-update.patch"
+
+      - name: Save proposed license supplement update for review
+        if: failure() && steps.license-supplements.outcome == 'failure'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: portal-license-update
+          path: ${{ runner.temp }}/portal-license-update.patch
+          if-no-files-found: ignore
+          retention-days: 7
+
       - name: Install dependencies
         run: npm ci
 

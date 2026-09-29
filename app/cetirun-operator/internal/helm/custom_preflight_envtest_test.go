@@ -173,6 +173,19 @@ func TestCustomServerPreflightAndOperatorRBAC(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The authorizer observes new roles and bindings asynchronously. Wait for a
+	// positive grant before asserting either allowed or forbidden operations.
+	grantCtx, cancelGrant := context.WithTimeout(ctx, 5*time.Second)
+	defer cancelGrant()
+	grant, err := waitForRBACGrant(grantCtx, 50*time.Millisecond, func(ctx context.Context) (*authorizationv1.SubjectAccessReview, error) {
+		return client.AuthorizationV1().SubjectAccessReviews().Create(ctx, &authorizationv1.SubjectAccessReview{Spec: authorizationv1.SubjectAccessReviewSpec{
+			User:               "system:serviceaccount:cetirun-system:operator-test",
+			ResourceAttributes: &authorizationv1.ResourceAttributes{Namespace: namespace, Resource: "pods", Verb: "list"},
+		}}, metav1.CreateOptions{})
+	})
+	if err != nil {
+		t.Fatalf("RBAC grant did not become ready: %v; last review: %+v", err, grant)
+	}
 	for _, check := range []struct {
 		group, resource, verb string
 		allowed               bool
