@@ -1,0 +1,91 @@
+name: AI Gateway Cluster Test
+
+# Install-and-upgrade test for the AI Gateway on a real cluster, with the image
+# built from this commit and the chart's defaults, including the bundled
+# PostgreSQL and Valkey.
+#
+# `make chart-check` already renders and asserts the chart on every pull
+# request, but rendering cannot see ordering or runtime behaviour. Bugs got past
+# it, including an install that succeeded on an empty database and a Redis
+# configuration that answered identical requests from cache across callers.
+# This is the check that catches that class.
+#
+# Scoped to changes that can affect it, because it builds an image and takes
+# several minutes.
+
+on:
+  pull_request:
+    paths:
+      - "app/cetirun-ai-gateway/**"
+      - "scripts/ai-gateway-docker-build.sh"
+      - "scripts/cetirun-ai-gateway-cluster-test.sh"
+      - ".github/workflows/ai-gateway-cluster-test.yml"
+  push:
+    branches:
+      - "main"
+    paths:
+      - "app/cetirun-ai-gateway/**"
+      - "scripts/ai-gateway-docker-build.sh"
+      - "scripts/cetirun-ai-gateway-cluster-test.sh"
+      - ".github/workflows/ai-gateway-cluster-test.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: ai-gateway-cluster-test-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  cluster-test:
+    name: Install and upgrade on kind
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install pinned Helm
+        run: |
+          python3 scripts/ci/install_tools.py --bin-dir "$RUNNER_TEMP/cetirun-tools" helm
+          echo "$RUNNER_TEMP/cetirun-tools" >> "$GITHUB_PATH"
+
+      # The same build as a release, loaded locally rather than pushed.
+      - name: Build the Gateway image
+        env:
+          REGISTRY: local.cetirun.invalid
+          IMAGE_TAG: cluster-test
+          PUSH: "false"
+        run: bash scripts/ai-gateway-docker-build.sh
+
+      - name: Create kind cluster
+        uses: helm/kind-action@06c1ae10762d3b9c1644e7fe69596ae519e015a2 # v1.15.0
+        with:
+          version: v0.33.0
+          cluster_name: gateway-test
+          wait: 120s
+
+      - name: Load the image into kind
+        run: kind load docker-image local.cetirun.invalid/cetirun-ai-gateway:cluster-test --name gateway-test
+
+      # Runs against a mock provider, so no provider account or secret is used.
+      # KEEP leaves the namespace in place so the diagnostics step below has
+      # something to read; the kind cluster goes away with the runner anyway.
+      - name: Install, exercise and upgrade the Gateway
+        env:
+          KEEP: "true"
+        run: bash scripts/cetirun-ai-gateway-cluster-test.sh
+
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          kubectl get pods -A -o wide || true
+          kubectl get events -n gateway-cluster-test --sort-by=.lastTimestamp || true
+          for pod in $(kubectl get pods -n gateway-cluster-test -o name 2>/dev/null); do
+            echo "=== ${pod} ==="
+            kubectl logs -n gateway-cluster-test "${pod}" --all-containers --tail=100 || true
+          done

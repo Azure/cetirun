@@ -50,6 +50,7 @@ VERSION_FILES = (
     "app/cetirun-platform/Chart.yaml",
     "app/cetirun-platform/Chart.lock",
     "infra/istio/Chart.yaml",
+    "app/cetirun-ai-gateway/chart/Chart.yaml",
     "app/cetirun-operator/chart/values.yaml",
     "app/cetirun-operator/cmd/main.go",
     "app/cetirun-operator/deploy/deploy.sh",

@@ -1,0 +1,66 @@
+The CetiRun AI Gateway is installed as {{ include "cetirun-ai-gateway.fullname" . }}.
+
+Endpoint, reachable from inside the cluster:
+
+  http://{{ include "cetirun-ai-gateway.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}
+
+Models configured at install: {{ len .Values.models }}
+{{- range .Values.models }}
+  - {{ .model_name }}
+{{- end }}
+
+{{- if .Values.auth.adminUI.enabled }}
+
+Admin console. The chart creates no Ingress, so reach it through a port-forward:
+
+  kubectl --namespace {{ .Release.Namespace }} port-forward svc/{{ include "cetirun-ai-gateway.fullname" . }} {{ .Values.service.port }}:{{ .Values.service.port }}
+
+Then open http://localhost:{{ .Values.service.port }}/ui and sign in as {{ .Values.auth.adminUI.username }}.
+{{- if not .Values.auth.adminUI.passwordSecret.existingSecret }}
+
+  kubectl --namespace {{ .Release.Namespace }} get secret {{ include "cetirun-ai-gateway.secretName" . }} -o jsonpath='{.data.ui-password}' | base64 -d
+{{- end }}
+{{- end }}
+
+{{- if not .Values.auth.masterKey.existingSecret }}
+
+Admin API key, for the management API:
+
+  kubectl --namespace {{ .Release.Namespace }} get secret {{ include "cetirun-ai-gateway.secretName" . }} -o jsonpath='{.data.master-key}' | base64 -d
+{{- end }}
+
+{{- if not .Values.auth.saltKey.existingSecret }}
+
+The chart generated a salt key and will preserve it across upgrades. It encrypts
+provider credentials stored in the database and cannot be rotated: if the Secret
+{{ include "cetirun-ai-gateway.secretName" . }} is deleted, every model added
+through the console becomes unreadable and the Gateway will not tell you. Back
+it up:
+
+  kubectl --namespace {{ .Release.Namespace }} get secret {{ include "cetirun-ai-gateway.secretName" . }} -o jsonpath='{.data.salt-key}' | base64 -d
+
+For the same reason, `helm uninstall` leaves that Secret in place, and a later
+install under this release name reuses it. Delete it yourself only if you are
+discarding the database as well.
+{{- end }}
+
+{{- if .Values.postgresql.bundled.enabled }}
+
+PostgreSQL is bundled: {{ include "cetirun-ai-gateway.postgresqlName" . }}, one instance on a
+persistent volume. `helm uninstall` keeps the volume and its password Secret, so
+a later install under this release name finds the data again. For anything
+that needs backups or high availability, use a managed database instead
+(postgresql.bundled.enabled=false and postgresql.urlSecret).
+{{- end }}
+
+{{- if .Values.redis.bundled.enabled }}
+
+Valkey, the Redis-compatible server, is bundled: {{ include "cetirun-ai-gateway.valkeyName" . }}.
+It holds only in-flight coordination, so it has no persistence.
+{{- else if eq (int .Values.replicaCount) 1 }}
+
+Running a single replica, so Redis is not required. Before scaling up, enable
+the bundled Valkey or set redis.host: each replica otherwise keeps its own copy
+of every key budget and rate limit, which multiplies the effective limit by the
+replica count.
+{{- end }}

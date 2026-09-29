@@ -26,6 +26,8 @@ UTF8_BOM = b"\xef\xbb\xbf"
 EXCLUSIONS = {
     "app/cetirun-chart/templates/_helpers.tpl":
         "Helm scaffold-derived helpers; see NOTICE",
+    "app/cetirun-ai-gateway/chart/templates/_helpers.tpl":
+        "Helm scaffold-derived helpers; see NOTICE",
     "app/cetirun-operator/chart/templates/_helpers.tpl":
         "Helm-style scaffold; exact provenance not recorded; see NOTICE",
     "app/cetirun-portal/chart/templates/_helpers.tpl":
