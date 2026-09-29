@@ -6,8 +6,10 @@
  *
  * Frontend talks directly to the per-instance pod (Hermes or OpenClaw) via the
  * Istio-routed prefix ``${baseUrl}/cetirun-auth/...``. Authentication uses the
- * dedicated ``CETIRUN_AUTH_KEY`` bearer token (surfaced as
- * ``cetirunAuthKey`` on the instance API response); the legacy
+ * dedicated ``CETIRUN_AUTH_KEY`` credential (surfaced as ``cetirunAuthKey``
+ * on the instance API response) over ``X-CetiRun-Auth-Key``. The ingress
+ * converts that header to the helper's bearer-token contract only after it
+ * verifies instance ownership; the legacy
  * ``API_SERVER_KEY`` is still accepted server-side as a fallback for older
  * Hermes deployments.
  */
@@ -58,7 +60,7 @@ function authUrl(baseUrl: string, path: string): string {
 
 function authHeaders(apiKey: string): HeadersInit {
   return {
-    Authorization: `Bearer ${apiKey}`,
+    "X-CetiRun-Auth-Key": apiKey,
     Accept: "application/json",
   };
 }

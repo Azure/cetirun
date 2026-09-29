@@ -2,8 +2,10 @@
 # Licensed under the MIT License.
 
 import json
+import os
 import re
 import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -16,6 +18,40 @@ def version_tuple(value):
 
 
 class ImageDependencyTests(unittest.TestCase):
+    def _docker_build_arguments(self, **overrides):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            log_path = temp / "docker-arguments.log"
+            docker = temp / "docker"
+            docker.write_text(
+                "#!/usr/bin/env sh\n"
+                'printf "%s\\n" "$*" >> "$CETIRUN_DOCKER_ARGUMENTS"\n'
+                'if [ "$1" = "buildx" ] && [ "$2" = "inspect" ]; then exit 1; fi\n'
+            )
+            docker.chmod(0o755)
+            environment = os.environ.copy()
+            environment.update(
+                {
+                    "BUILD_BASE": "false",
+                    "BUILD_DESKTOP": "false",
+                    "GIT_SHA": "test-sha",
+                    "PUSH": "false",
+                    "VERSION": "test-version",
+                    "CETIRUN_DOCKER_ARGUMENTS": str(log_path),
+                    "PATH": f"{temp}{os.pathsep}{environment['PATH']}",
+                }
+            )
+            environment.update(overrides)
+            result = subprocess.run(
+                [ROOT / "scripts" / "cetirun-docker-build.sh"],
+                capture_output=True,
+                text=True,
+                check=False,
+                env=environment,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return log_path.read_text()
+
     def test_base_image_provides_common_initializer_tools(self):
         content = (CHART / "Dockerfile.base").read_text()
         common = (CHART / "configs/init-home-common.sh").read_text()
@@ -259,6 +295,14 @@ class ImageDependencyTests(unittest.TestCase):
                     self.assertIn("-rf /home/vibe/.openclaw/identity", result.stdout)
                     self.assertIn("-f /home/vibe/.openclaw/openclaw.json", result.stdout)
 
+    def test_runtime_build_receives_the_configured_python_index(self):
+        index = "https://packages.example.invalid/simple/"
+        arguments = self._docker_build_arguments(
+            BUILD_IMAGE="true",
+            BUILD_HERMES="false",
+            PYPI_INDEX_URL=index,
+        )
+        self.assertIn(f"--build-arg PYPI_INDEX_URL={index}", arguments)
 
 if __name__ == "__main__":
     unittest.main()

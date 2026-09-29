@@ -65,6 +65,9 @@ serviceAccount:
   # Only applies when using chart-created service account (name is not set).
   # When set, automounts the service account token automatically.
   role: ""
+  # -- Explicitly control the default Kubernetes API token mount. Null preserves
+  # historical behavior. The operator forces false for Agent Identity workloads.
+  automountToken: null
 
 # -- Azure Workload Identity configuration
 # Enables Azure AD workload identity for the pod, allowing passwordless
@@ -76,6 +79,12 @@ azureWorkloadIdentity:
   enabled: false
   # -- Client ID of the User-Assigned Managed Identity
   clientId: ""
+
+# -- Typed Microsoft Entra Agent Identity Broker integration. The operator owns
+# these values; an instance workload must not select its Broker endpoint.
+agentIdentity:
+  enabled: false
+  brokerURL: ""
 
 # -- Pod annotations
 podAnnotations: {}
@@ -553,6 +562,8 @@ networkPolicy:
   # istioIngressNamespace: ""
   # -- Namespace where kube-dns runs (egress DNS)
   dnsNamespace: kube-system
+  # -- Namespace hosting the deployment-level Agent Identity Broker.
+  agentIdentityBrokerNamespace: cetirun-credentials
   # -- CIDRs to block from external egress.
   # kube-dns is allowed via namespace selectors
   # regardless of these blocks.

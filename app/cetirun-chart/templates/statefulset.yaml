@@ -63,6 +63,10 @@ spec:
             # errors before IPv4 can connect. Force IPv4-first to avoid this.
             - name: NODE_OPTIONS
               value: "--dns-result-order=ipv4first"
+            {{- if .Values.agentIdentity.enabled }}
+            - name: CETIRUN_AGENT_BROKER_URL
+              value: {{ .Values.agentIdentity.brokerURL | quote }}
+            {{- end }}
             {{- include "cetirun.agent.envVars" . | nindent 12 }}
             {{- if gt (int .Values.msteamsWebhookPort) 0 }}
             - name: MSTEAMS_WEBHOOK_PORT

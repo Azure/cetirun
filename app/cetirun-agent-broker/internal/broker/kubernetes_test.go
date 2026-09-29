@@ -6,6 +6,7 @@ package broker
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -40,5 +41,13 @@ func TestWorkloadServiceAccountUsesInstanceName(t *testing.T) {
 	}
 	if got := workloadServiceAccount("a-very-long-instance-name-that-needs-to-be-truncated-at-the-dns-limit"); len(got) > 63 || got[len(got)-1] == '-' {
 		t.Fatalf("workload ServiceAccount is not a valid bounded name: %q", got)
+	}
+	for length, want := range map[int]string{
+		46: "openclaw-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-cetirun",
+		47: "openclaw-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-cetiru",
+	} {
+		if got := workloadServiceAccount(strings.Repeat("a", length)); got != want {
+			t.Fatalf("workloadServiceAccount(%d chars) = %q, want %q", length, got, want)
+		}
 	}
 }

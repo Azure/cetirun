@@ -423,6 +423,149 @@ func TestCredentialIsNotReturnedWhenConnectionEndsDuringFinalWrite(t *testing.T)
 	}
 }
 
+func TestCredentialIsReturnedWhenConcurrentAuditWriteWins(t *testing.T) {
+	store, _, closeKube := newRecordTestStore(t)
+	defer closeKube()
+	if err := store.putRecord(context.Background(), connectedRecord(), ""); err != nil {
+		t.Fatal(err)
+	}
+	authSDK := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/Validate":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"tid": testOwnerTenantID, "oid": testOwnerObjectID, "aud": testBlueprintID,
+				"azp": testAuthorizationID, "scp": "access_agent",
+			})
+		case "/AuthorizationHeader/AzureResourceManager":
+			_ = json.NewEncoder(w).Encode(map[string]string{"authorizationHeader": "Bearer delegated-token"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer authSDK.Close()
+	concurrentStore := *store
+	baseTransport := store.client.Transport
+	var updateOnce sync.Once
+	store.client = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		var updateErr error
+		if r.Method == http.MethodPut {
+			updateOnce.Do(func() {
+				record, version, err := concurrentStore.getRecord(r.Context(), testAgentUID)
+				if err != nil {
+					updateErr = err
+					return
+				}
+				now := time.Now().UTC()
+				record.LastUsed = &now
+				updateErr = concurrentStore.putRecord(r.Context(), record, version)
+			})
+			if updateErr != nil {
+				return nil, updateErr
+			}
+		}
+		return baseTransport.RoundTrip(r)
+	})}
+	server := &Server{
+		cfg:     Config{BlueprintClientID: testBlueprintID, AuthorizationClientID: testAuthorizationID},
+		store:   store,
+		authSDK: &authSDKClient{baseURL: authSDK.URL, client: authSDK.Client()},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/credentials/issue", strings.NewReader(`{"service":"azure-resource-manager"}`))
+	req.Header.Set("X-Forwarded-Client-Cert", "URI=spiffe://cluster.local/ns/cetirun-owner/sa/openclaw-agent-a-cetirun")
+	response := httptest.NewRecorder()
+	server.issueCredential(response, req)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", response.Code, http.StatusOK, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), "delegated-token") {
+		t.Fatal("credential was lost after a concurrent audit update")
+	}
+}
+
+func TestCredentialAdoptsConcurrentRefreshOfSameGeneration(t *testing.T) {
+	store, _, closeKube := newRecordTestStore(t)
+	defer closeKube()
+	record := connectedRecord()
+	record.Tokens.ExpiresAt = time.Now().Add(time.Minute)
+	if err := store.putRecord(context.Background(), record, ""); err != nil {
+		t.Fatal(err)
+	}
+	assertionFile := filepath.Join(t.TempDir(), "federated-token")
+	if err := os.WriteFile(assertionFile, []byte("synthetic-assertion"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	oauth := &oauthClient{
+		cfg: Config{
+			TenantID: testOwnerTenantID, AuthorizationClientID: testAuthorizationID,
+			FederatedTokenFile: assertionFile,
+		},
+		client: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK, Header: make(http.Header),
+				Body: io.NopCloser(strings.NewReader(`{"access_token":"losing-refresh","refresh_token":"losing-refresh-token","expires_in":3600}`)),
+			}, nil
+		})},
+	}
+	authSDK := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/Validate":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"tid": testOwnerTenantID, "oid": testOwnerObjectID, "aud": testBlueprintID,
+				"azp": testAuthorizationID, "scp": "access_agent",
+			})
+		case "/AuthorizationHeader/AzureResourceManager":
+			if got := r.Header.Get("Authorization"); got != "Bearer winning-refresh" {
+				t.Errorf("Auth SDK Authorization = %q, want concurrent winning token", got)
+				http.Error(w, "unexpected synthetic token", http.StatusUnauthorized)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]string{"authorizationHeader": "Bearer delegated-token"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer authSDK.Close()
+	concurrentStore := *store
+	baseTransport := store.client.Transport
+	var refreshOnce sync.Once
+	store.client = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		var refreshErr error
+		if r.Method == http.MethodPut {
+			refreshOnce.Do(func() {
+				latest, version, err := concurrentStore.getRecord(r.Context(), testAgentUID)
+				if err != nil {
+					refreshErr = err
+					return
+				}
+				latest.Tokens = &TokenCache{
+					AccessToken: "winning-refresh", RefreshToken: "winning-refresh-token",
+					ExpiresAt: time.Now().Add(time.Hour),
+				}
+				refreshErr = concurrentStore.putRecord(r.Context(), latest, version)
+			})
+			if refreshErr != nil {
+				return nil, refreshErr
+			}
+		}
+		return baseTransport.RoundTrip(r)
+	})}
+	server := &Server{
+		cfg:   Config{BlueprintClientID: testBlueprintID, AuthorizationClientID: testAuthorizationID},
+		store: store, oauth: oauth,
+		authSDK: &authSDKClient{baseURL: authSDK.URL, client: authSDK.Client()},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/credentials/issue", strings.NewReader(`{"service":"azure-resource-manager"}`))
+	req.Header.Set("X-Forwarded-Client-Cert", "URI=spiffe://cluster.local/ns/cetirun-owner/sa/openclaw-agent-a-cetirun")
+	response := httptest.NewRecorder()
+	server.issueCredential(response, req)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", response.Code, http.StatusOK, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), "delegated-token") {
+		t.Fatal("credential was lost after adopting a concurrent refresh")
+	}
+}
+
 func TestCredentialIssueReturnsOnlyDownstreamToken(t *testing.T) {
 	store, _, closeKube := newRecordTestStore(t)
 	defer closeKube()

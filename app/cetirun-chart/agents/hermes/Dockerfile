@@ -164,8 +164,13 @@ ENV PATH=/usr/local/lib/hermes-agent/venv/bin:$PATH
 COPY --chown=vibe:vibe agents/hermes/bootstrap/hermes-auth.sh /usr/local/share/cetirun/hermes-auth.sh
 COPY --chown=vibe:vibe agents/hermes/bootstrap/hermes-copilot-auth.py /usr/local/share/cetirun/hermes-copilot-auth.py
 COPY --chown=vibe:vibe configs/cetirun-auth-service.py /usr/local/share/cetirun/cetirun-auth-service.py
+COPY --chown=vibe:vibe configs/builtin-skill-sync.sh /usr/local/share/cetirun/builtin-skill-sync.sh
 COPY --chown=vibe:vibe agents/hermes/bootstrap/hermes-entrypoint.sh /usr/local/bin/hermes-entrypoint.sh
+COPY --chown=vibe:vibe configs/cetirun-agent /usr/local/bin/cetirun-agent
+COPY --chown=vibe:vibe skills/azure/ /home/vibe/.hermes/skills/azure/
 RUN chmod 755 /usr/local/bin/hermes-entrypoint.sh \
+    /usr/local/bin/cetirun-agent \
+    /usr/local/share/cetirun/builtin-skill-sync.sh \
     /usr/local/share/cetirun/hermes-auth.sh \
     /usr/local/share/cetirun/cetirun-auth-service.py
 

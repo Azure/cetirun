@@ -16,8 +16,10 @@ push="${PUSH:-false}"
 context_dir="${repo_root}/app/cetirun-chart"
 dockerfile="${DOCKERFILE:-agents/openclaw/Dockerfile}"
 build_base="${BUILD_BASE:-true}"
+build_image="${BUILD_IMAGE:-true}"
 build_desktop="${BUILD_DESKTOP:-true}"
 build_hermes="${BUILD_HERMES:-false}"
+build_network="${BUILD_NETWORK:-}"
 
 image_ref="${registry}/${image_name}:${image_tag}"
 base_image_ref="${BASE_IMAGE:-${registry}/cetirun-base:${image_tag}}"
@@ -39,6 +41,12 @@ openclaw_npm_registry="${OPENCLAW_NPM_REGISTRY:-https://registry.npmjs.org/}"
 openclaw_npm_registry_args=(--build-arg "NPM_REGISTRY=${openclaw_npm_registry}")
 
 common_output_args=()
+if [ -n "${build_network}" ]; then
+  case "${build_network}" in
+    default|host|none) common_output_args+=(--network "${build_network}") ;;
+    *) echo "BUILD_NETWORK must be default, host, or none" >&2; exit 1 ;;
+  esac
+fi
 if docker buildx inspect --bootstrap 2>/dev/null | grep -q 'Driver:.*docker-container'; then
   common_output_args+=(--provenance=true --sbom=true)
 fi
@@ -71,23 +79,25 @@ if [ "${dockerfile}" = "agents/openclaw/Dockerfile" ]; then
   image_npm_registry_args=("${openclaw_npm_registry_args[@]}")
 fi
 
-build_args=(
-  --platform linux/amd64
-  -f "${context_dir}/${dockerfile}"
-  -t "${image_ref}"
-  --build-arg "BASE_IMAGE=${base_image_ref}"
-  "${release_build_args[@]}"
-  "${image_npm_registry_args[@]}"
-  "${common_output_args[@]}"
-)
+if [ "${build_image}" = "true" ]; then
+  build_args=(
+    --platform linux/amd64
+    -f "${context_dir}/${dockerfile}"
+    -t "${image_ref}"
+    --build-arg "BASE_IMAGE=${base_image_ref}"
+    "${release_build_args[@]}"
+    "${image_npm_registry_args[@]}"
+    "${pypi_index_args[@]}"
+    "${common_output_args[@]}"
+  )
+  if [ "${push}" = "true" ]; then
+    echo "==> Building and pushing ${image_ref} from ${context_dir} (${dockerfile})"
+  else
+    echo "==> Building ${image_ref} from ${context_dir} (${dockerfile})"
+  fi
 
-if [ "${push}" = "true" ]; then
-  echo "==> Building and pushing ${image_ref} from ${context_dir} (${dockerfile})"
-else
-  echo "==> Building ${image_ref} from ${context_dir} (${dockerfile})"
+  docker buildx build "${build_args[@]}" "${context_dir}"
 fi
-
-docker buildx build "${build_args[@]}" "${context_dir}"
 
 if [ "${build_hermes}" = "true" ]; then
   hermes_image_ref="${registry}/hermes-gateway:${image_tag}"

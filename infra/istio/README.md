@@ -12,6 +12,12 @@ and logging controls. The operator manages per-instance VirtualServices.
 A manual Helm install requires separate external authorization configuration.
 Neither the chart nor helper issues or renews TLS certificates.
 
+Install the deployment helper's pinned Python dependency before running it:
+
+```bash
+python3 -m pip install --requirement infra/istio/requirements.txt
+```
+
 ## Portal ownership endpoint
 
 For the platform umbrella, set `PORTAL_AUTH_NAMESPACE=cetirun-system` before

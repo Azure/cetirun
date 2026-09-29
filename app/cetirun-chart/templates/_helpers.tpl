@@ -87,6 +87,15 @@ Create the name of the service account to use
 {{- end }}
 {{- end }}
 
+{{/* Resolve the default Kubernetes API token mount with an explicit override. */}}
+{{- define "cetirun.automountServiceAccountToken" -}}
+{{- if kindIs "bool" .Values.serviceAccount.automountToken -}}
+{{ .Values.serviceAccount.automountToken }}
+{{- else -}}
+{{ or (not (empty .Values.serviceAccount.role)) (not (empty .Values.serviceAccount.name)) .Values.azureWorkloadIdentity.enabled }}
+{{- end -}}
+{{- end }}
+
 {{/*
 Create the name of the secret to use
 */}}
@@ -130,6 +139,29 @@ Validate Azure Workload Identity prerequisites
 {{- if .Values.azureWorkloadIdentity.enabled -}}
 {{- if and (not .Values.serviceAccount.create) (not .Values.serviceAccount.name) -}}
 {{- fail "azureWorkloadIdentity.enabled requires serviceAccount.create=true or serviceAccount.name (a pre-annotated BYO service account)" }}
+{{- end -}}
+{{- end -}}
+{{- end }}
+
+{{/* Validate the fixed in-cluster Agent Identity Broker boundary. */}}
+{{- define "cetirun.validateAgentIdentity" -}}
+{{- if .Values.agentIdentity.enabled -}}
+{{- if gt (len (include "cetirun.serviceAccountName" .)) 63 -}}
+{{- fail "agentIdentity.enabled requires a ServiceAccount name no longer than 63 characters" -}}
+{{- end -}}
+{{- if not (regexMatch "^http://[a-z0-9-]+\\.[a-z0-9-]+\\.svc\\.cluster\\.local:8080$" .Values.agentIdentity.brokerURL) -}}
+{{- fail "agentIdentity.brokerURL must be an in-cluster HTTP service URL on port 8080" -}}
+{{- end -}}
+{{- if not .Values.sidecarScope.enabled -}}
+{{- fail "agentIdentity.enabled requires sidecarScope.enabled" -}}
+{{- end -}}
+{{- if not .Values.networkPolicy.enabled -}}
+{{- fail "agentIdentity.enabled requires networkPolicy.enabled" -}}
+{{- end -}}
+{{- range .Values.extraEnv -}}
+{{- if eq (get . "name") "CETIRUN_AGENT_BROKER_URL" -}}
+{{- fail "CETIRUN_AGENT_BROKER_URL is reserved when agentIdentity.enabled" -}}
+{{- end -}}
 {{- end -}}
 {{- end -}}
 {{- end }}

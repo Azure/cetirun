@@ -95,6 +95,80 @@ if grep -q 'command: \["openclaw", "doctor"' <<< "$output"; then
   echo "FAIL: OpenClaw doctor init should not render for Hermes" >&2; exit 1
 fi
 
+# Agent Identity injects only the typed Broker endpoint, keeps the default
+# Kubernetes API token unmounted, and allows only Broker egress.
+for agent_type in openclaw hermes; do
+  echo "==> helm template ${release_name} ${chart_dir} (agentType=${agent_type}, agentIdentity.enabled=true)"
+  agent_identity_output=$(helm_template "${release_name}" "${chart_dir}" -f "${chart_dir}/values.yaml" \
+    --set agentType="${agent_type}" \
+    --set secrets.openclawGatewayToken=lint-token \
+    --set serviceAccount.create=true \
+    --set serviceAccount.name=agent-workload \
+    --set serviceAccount.automountToken=false \
+    --set agentIdentity.enabled=true \
+    --set agentIdentity.brokerURL=http://cetirun-agent-broker.cetirun-credentials.svc.cluster.local:8080)
+  grep -q 'name: CETIRUN_AGENT_BROKER_URL' <<< "$agent_identity_output" || { echo "FAIL: Agent Identity Broker environment variable missing for ${agent_type}" >&2; exit 1; }
+  grep -q 'value: "http://cetirun-agent-broker.cetirun-credentials.svc.cluster.local:8080"' <<< "$agent_identity_output" || { echo "FAIL: Agent Identity Broker URL missing for ${agent_type}" >&2; exit 1; }
+  grep -q 'kubernetes.io/metadata.name: cetirun-credentials' <<< "$agent_identity_output" || { echo "FAIL: Agent Identity Broker network policy missing for ${agent_type}" >&2; exit 1; }
+  grep -q 'app.kubernetes.io/name: cetirun-agent-broker' <<< "$agent_identity_output" || { echo "FAIL: Agent Identity Broker pod selector missing for ${agent_type}" >&2; exit 1; }
+  grep -q 'automountServiceAccountToken: false' <<< "$agent_identity_output" || { echo "FAIL: default Kubernetes token must be disabled for ${agent_type}" >&2; exit 1; }
+  if grep -q 'AGENT_IDENTITY_CLIENT_ID' <<< "$agent_identity_output"; then
+    echo "FAIL: Agent Identity client ID must not be exposed to ${agent_type}" >&2; exit 1
+  fi
+done
+
+echo "==> helm template ${release_name} ${chart_dir} (long BYO ServiceAccount without Agent Identity)"
+long_instance_name="$(printf 'a%.0s' {1..47})"
+long_service_account="openclaw-${long_instance_name}-cetirun"
+service_account_output=$(helm_template "${release_name}" "${chart_dir}" \
+  --show-only templates/statefulset.yaml \
+  --set serviceAccount.create=false \
+  --set-string serviceAccount.name="${long_service_account}")
+grep -Fq "serviceAccountName: ${long_service_account}" <<< "${service_account_output}" || {
+  echo "FAIL: explicit BYO ServiceAccount name was not preserved" >&2
+  exit 1
+}
+
+echo "==> helm template ${release_name} ${chart_dir} (long Agent Identity ServiceAccount, expect failure)"
+if helm_template "${release_name}" "${chart_dir}" \
+  --set serviceAccount.create=true \
+  --set-string serviceAccount.name="${long_service_account}" \
+  --set agentIdentity.enabled=true \
+  --set agentIdentity.brokerURL=http://cetirun-agent-broker.cetirun-credentials.svc.cluster.local:8080 2>/dev/null; then
+  echo "FAIL: Agent Identity accepted a ServiceAccount name longer than 63 characters" >&2
+  exit 1
+fi
+
+echo "==> helm template ${release_name} ${chart_dir} (invalid Agent Identity Broker URL, expect failure)"
+if helm_template "${release_name}" "${chart_dir}" -f "${chart_dir}/values.yaml" \
+  --set agentType=hermes \
+  --set agentIdentity.enabled=true \
+  --set agentIdentity.brokerURL=https://broker.example.invalid 2>/dev/null; then
+  echo "FAIL: external Agent Identity Broker URL should have been rejected" >&2; exit 1
+fi
+
+for required_setting in sidecarScope.enabled networkPolicy.enabled; do
+  echo "==> helm template ${release_name} ${chart_dir} (Agent Identity with ${required_setting}=false, expect failure)"
+  if helm_template "${release_name}" "${chart_dir}" -f "${chart_dir}/values.yaml" \
+    --set agentType=hermes \
+    --set agentIdentity.enabled=true \
+    --set agentIdentity.brokerURL=http://cetirun-agent-broker.cetirun-credentials.svc.cluster.local:8080 \
+    --set "${required_setting}=false" 2>/dev/null; then
+    echo "FAIL: Agent Identity accepted ${required_setting}=false" >&2
+    exit 1
+  fi
+done
+
+echo "==> helm template ${release_name} ${chart_dir} (reserved Agent Identity environment variable, expect failure)"
+if helm_template "${release_name}" "${chart_dir}" -f "${chart_dir}/values.yaml" \
+  --set agentType=hermes \
+  --set agentIdentity.enabled=true \
+  --set agentIdentity.brokerURL=http://cetirun-agent-broker.cetirun-credentials.svc.cluster.local:8080 \
+  --set extraEnv[0].name=CETIRUN_AGENT_BROKER_URL \
+  --set extraEnv[0].value=http://evil.default.svc.cluster.local:8080 2>/dev/null; then
+  echo "FAIL: reserved Agent Identity environment variable should have been rejected" >&2; exit 1
+fi
+
 # Test variant: existing secret
 echo "==> helm template ${release_name} ${chart_dir} (secrets.existingSecret=my-secret)"
 helm_template "${release_name}" "${chart_dir}" -f "${chart_dir}/values.yaml" \
