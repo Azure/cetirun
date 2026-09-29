@@ -10,7 +10,7 @@
 # Prerequisites:
 #   - AKS cluster with Istio addon enabled and external ingress gateway running
 #   - kubectl context pointing to the target cluster
-#   - helm, az, jq, kubectl installed
+#   - helm, az, jq, kubectl, and Python with PyYAML installed
 #   - Entra ID app registration created (see README.md)
 #
 # Required environment variables:
@@ -68,6 +68,10 @@ for CMD in "${REQUIRED_CMDS[@]}"; do
     exit 1
   fi
 done
+if ! python3 -c "import yaml" 2>/dev/null; then
+  echo "ERROR: PyYAML is required. Install infra/istio/requirements.txt." >&2
+  exit 1
+fi
 
 AKS_CLUSTER_NAME="${AKS_CLUSTER_NAME:?AKS_CLUSTER_NAME is required}"
 RESOURCE_GROUP="${RESOURCE_GROUP:?RESOURCE_GROUP is required}"

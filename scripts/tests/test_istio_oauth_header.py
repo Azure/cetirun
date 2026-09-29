@@ -16,13 +16,23 @@ SPEC.loader.exec_module(module)
 
 
 class OAuthHeaderTest(unittest.TestCase):
+    def provider(self, mesh_text, name="oauth2-proxy"):
+        providers = module._load_mesh(mesh_text).get("extensionProviders", [])
+        matches = [provider for provider in providers if provider.get("name") == name]
+        self.assertEqual(len(matches), 1)
+        return matches[0]
+
     def test_adds_provider_without_replacing_existing_mesh_settings(self):
         source = "trustDomain: cluster.local\ndefaultConfig:\n  tracing: {}\n"
         result, changed = module.ensure_provider(source)
         self.assertTrue(changed)
-        self.assertIn(source, result)
-        self.assertIn("- name: oauth2-proxy", result)
-        self.assertIn("- authorization", result)
+        mesh = module._load_mesh(result)
+        self.assertEqual(mesh["trustDomain"], "cluster.local")
+        self.assertEqual(mesh["defaultConfig"], {"tracing": {}})
+        self.assertIn(
+            "authorization",
+            self.provider(result)["envoyExtAuthzHttp"]["headersToUpstreamOnAllow"],
+        )
         repeated, changed_again = module.ensure_provider(result)
         self.assertFalse(changed_again)
         self.assertEqual(repeated, result)
@@ -35,9 +45,10 @@ trustDomain: cluster.local
 """
         result, changed = module.ensure_provider(source)
         self.assertTrue(changed)
-        self.assertEqual(result.count("- name: oauth2-proxy\n"), 1)
-        self.assertIn("- name: oauth2-proxy-v2", result)
-        self.assertIn("trustDomain: cluster.local", result)
+        mesh = module._load_mesh(result)
+        self.assertEqual(len(mesh["extensionProviders"]), 2)
+        self.assertEqual(self.provider(result, "oauth2-proxy-v2")["envoyExtAuthzHttp"], {})
+        self.assertEqual(mesh["trustDomain"], "cluster.local")
 
     def test_converts_inline_empty_extension_provider_list(self):
         source = "extensionProviders: []\ntrustDomain: cluster.local\n"
@@ -50,16 +61,18 @@ trustDomain: cluster.local
         self.assertFalse(changed_again)
         self.assertEqual(repeated, result)
 
-    def test_preserves_comment_when_converting_inline_empty_provider_list(self):
-        source = "extensionProviders: [] # initially empty\n"
+    def test_structured_rewrite_preserves_existing_mesh_values(self):
+        source = "extensionProviders: []\ntrustDomain: example.test\ndefaultConfig:\n  tracing: {}\n"
         result, changed = module.ensure_provider(source)
         self.assertTrue(changed)
-        self.assertIn("extensionProviders: # initially empty\n", result)
+        mesh = module._load_mesh(result)
+        self.assertEqual(mesh["trustDomain"], "example.test")
+        self.assertEqual(mesh["defaultConfig"], {"tracing": {}})
 
     def test_rejects_unsupported_inline_extension_provider_values(self):
         for value in ("{}", "[existing]", "{existing: provider}"):
             with self.subTest(value=value):
-                with self.assertRaisesRegex(RuntimeError, "inline configuration is unsupported"):
+                with self.assertRaisesRegex(RuntimeError, "Istio extensionProviders"):
                     module.ensure_provider(f"extensionProviders: {value}\n")
 
     def test_configmap_patch_uses_resource_version_precondition(self):
@@ -87,10 +100,10 @@ trustDomain: cluster.local
 """
         result, changed = module.ensure_header(source)
         self.assertTrue(changed)
-        self.assertIn("    - authorization", result)
-        self.assertIn("- x-auth-request-user", result)
+        headers = self.provider(result)["envoyExtAuthzHttp"]["headersToUpstreamOnAllow"]
+        self.assertEqual(headers, ["x-auth-request-user", "authorization"])
 
-    def test_preserves_indentless_sequence_style(self):
+    def test_accepts_indentless_sequence_style(self):
         source = """extensionProviders:
 - name: oauth2-proxy
   envoyExtAuthzHttp:
@@ -101,13 +114,12 @@ trustDomain: cluster.local
 """
         result, changed = module.ensure_header(source)
         self.assertTrue(changed)
-        self.assertIn(
-            "    headersToUpstreamOnAllow:\n"
-            "    - x-auth-request-user\n"
-            "    - authorization\n"
-            "    headersToDownstreamOnDeny:",
-            result,
+        ext_authz = self.provider(result)["envoyExtAuthzHttp"]
+        self.assertEqual(
+            ext_authz["headersToUpstreamOnAllow"],
+            ["x-auth-request-user", "authorization"],
         )
+        self.assertEqual(ext_authz["headersToDownstreamOnDeny"], ["location"])
 
     def test_is_idempotent(self):
         source = """extensionProviders:
@@ -129,24 +141,42 @@ trustDomain: cluster.local
 """
         result, changed = module.ensure_header(source)
         self.assertTrue(changed)
-        self.assertIn(
-            "    headersToUpstreamOnAllow:\n"
-            "      - authorization\n"
-            "    statusOnError:",
-            result,
-        )
+        ext_authz = self.provider(result)["envoyExtAuthzHttp"]
+        self.assertEqual(ext_authz["headersToUpstreamOnAllow"], ["authorization"])
+        self.assertEqual(ext_authz["statusOnError"], "403")
         repeated, changed_again = module.ensure_header(result)
         self.assertFalse(changed_again)
         self.assertEqual(repeated, result)
 
-    def test_rejects_nonempty_inline_header_list(self):
+    def test_updates_nonempty_inline_header_list(self):
         source = """extensionProviders:
 - name: oauth2-proxy
   envoyExtAuthzHttp:
     headersToUpstreamOnAllow: [x-auth-request-user]
 """
-        with self.assertRaisesRegex(RuntimeError, "upstream header configuration is invalid"):
-            module.ensure_header(source)
+        result, changed = module.ensure_header(source)
+        self.assertTrue(changed)
+        headers = self.provider(result)["envoyExtAuthzHttp"]["headersToUpstreamOnAllow"]
+        self.assertEqual(headers, ["x-auth-request-user", "authorization"])
+
+    def test_recognizes_provider_when_name_follows_ext_authz(self):
+        source = """extensionProviders:
+- envoyExtAuthzHttp:
+    service: oauth2-proxy.example.svc.cluster.local
+    headersToUpstreamOnAllow:
+    - x-auth-request-user
+  name: oauth2-proxy
+"""
+        result, changed = module.ensure_provider(source)
+        self.assertTrue(changed)
+        mesh = module._load_mesh(result)
+        self.assertEqual(len(mesh["extensionProviders"]), 1)
+        ext_authz = self.provider(result)["envoyExtAuthzHttp"]
+        self.assertEqual(ext_authz["service"], "oauth2-proxy.example.svc.cluster.local")
+        self.assertEqual(
+            ext_authz["headersToUpstreamOnAllow"],
+            ["x-auth-request-user", "authorization"],
+        )
 
     def test_recognizes_unquoted_and_quoted_canonical_provider_names(self):
         for name in ("oauth2-proxy", '"oauth2-proxy"', "'oauth2-proxy'"):
@@ -171,9 +201,13 @@ trustDomain: cluster.local
 """
         result, changed = module.ensure_header(source)
         self.assertTrue(changed)
-        near_prefix, canonical = result.split("- name: oauth2-proxy\n", maxsplit=1)
-        self.assertIn("headersToUpstreamOnAllow: []", near_prefix)
-        self.assertIn("headersToUpstreamOnAllow:\n      - authorization", canonical)
+        near_prefix = self.provider(result, "oauth2-proxy-v2")
+        canonical = self.provider(result)
+        self.assertEqual(near_prefix["envoyExtAuthzHttp"]["headersToUpstreamOnAllow"], [])
+        self.assertEqual(
+            canonical["envoyExtAuthzHttp"]["headersToUpstreamOnAllow"],
+            ["authorization"],
+        )
 
     def test_rejects_near_prefix_without_a_canonical_provider(self):
         source = """extensionProviders:
@@ -195,8 +229,9 @@ trustDomain: cluster.local
 """
         result, changed = module.ensure_header(source)
         self.assertTrue(changed)
-        self.assertIn("    headersToUpstreamOnAllow:\n      - authorization\n", result)
-        self.assertIn("    headersToDownstreamOnDeny:\n", result)
+        ext_authz = self.provider(result)["envoyExtAuthzHttp"]
+        self.assertEqual(ext_authz["headersToUpstreamOnAllow"], ["authorization"])
+        self.assertEqual(ext_authz["headersToDownstreamOnDeny"], ["location"])
         repeated, changed_again = module.ensure_header(result)
         self.assertFalse(changed_again)
         self.assertEqual(repeated, result)
@@ -210,6 +245,11 @@ trustDomain: cluster.local
 """
         with self.assertRaisesRegex(RuntimeError, "resolved exactly"):
             module.ensure_header(source)
+
+    def test_rejects_duplicate_top_level_mapping_keys(self):
+        source = "extensionProviders: []\nextensionProviders: []\n"
+        with self.assertRaisesRegex(RuntimeError, "mesh configuration is invalid"):
+            module.ensure_provider(source)
 
     def test_conflict_retry_recomputes_from_the_latest_mesh(self):
         configmaps = iter(
@@ -329,6 +369,7 @@ trustDomain: cluster.local
     def test_deploy_uses_one_cas_reconciler_for_provider_and_headers(self):
         deploy = DEPLOY_SCRIPT.read_text(encoding="utf-8")
         self.assertEqual(deploy.count("ensure-oauth2-proxy-id-token-header.py"), 1)
+        self.assertIn('python3 -c "import yaml"', deploy)
         self.assertNotIn("MERGED_MESH", deploy)
         self.assertNotIn("kubectl apply -f -", deploy)
 

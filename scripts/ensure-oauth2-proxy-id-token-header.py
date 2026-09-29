@@ -7,165 +7,137 @@
 import argparse
 import json
 import os
-import re
 import subprocess
 import tempfile
 
+import yaml
+from yaml.constructor import ConstructorError
+from yaml.resolver import BaseResolver
 
-OAUTH2_PROXY_PROVIDER_NAME = re.compile(
-    r"^[ \t]*-[ \t]+name:[ \t]*(?:oauth2-proxy|\"oauth2-proxy\"|'oauth2-proxy')(?:[ \t]+#.*)?[ \t]*$"
-)
 MAX_PATCH_ATTEMPTS = 5
-OAUTH2_PROXY_PROVIDER = """- name: oauth2-proxy
-  envoyExtAuthzHttp:
-    service: oauth2-proxy.cetirun-istio.svc.cluster.local
-    port: 4180
-    includeRequestHeadersInCheck:
-    - cookie
-    - authorization
-    - x-auth-request-redirect
-    headersToUpstreamOnAllow:
-    - x-auth-request-user
-    - x-auth-request-email
-    - x-auth-request-preferred-username
-    - authorization
-    headersToDownstreamOnDeny:
-    - set-cookie
-    - location
-    statusOnError: "403"
-"""
-EXTENSION_PROVIDERS_ENTRY = re.compile(
-    r"^extensionProviders:[ \t]*(.*?)(?:\r?\n)?$"
+
+
+class UniqueKeyLoader(yaml.SafeLoader):
+    """Safe YAML loader that rejects ambiguous duplicate mapping keys."""
+
+
+def _construct_unique_mapping(loader, node, deep=False):
+    loader.flatten_mapping(node)
+    mapping = {}
+    for key_node, value_node in node.value:
+        key = loader.construct_object(key_node, deep=deep)
+        try:
+            duplicate = key in mapping
+        except TypeError as exc:
+            raise ConstructorError(
+                "while constructing a mapping",
+                node.start_mark,
+                "found an unhashable key",
+                key_node.start_mark,
+            ) from exc
+        if duplicate:
+            raise ConstructorError(
+                "while constructing a mapping",
+                node.start_mark,
+                f"found duplicate key {key!r}",
+                key_node.start_mark,
+            )
+        mapping[key] = loader.construct_object(value_node, deep=deep)
+    return mapping
+
+
+UniqueKeyLoader.add_constructor(
+    BaseResolver.DEFAULT_MAPPING_TAG, _construct_unique_mapping
 )
+
+
+def _oauth2_proxy_provider() -> dict:
+    return {
+        "name": "oauth2-proxy",
+        "envoyExtAuthzHttp": {
+            "service": "oauth2-proxy.cetirun-istio.svc.cluster.local",
+            "port": 4180,
+            "includeRequestHeadersInCheck": [
+                "cookie",
+                "authorization",
+                "x-auth-request-redirect",
+            ],
+            "headersToUpstreamOnAllow": [
+                "x-auth-request-user",
+                "x-auth-request-email",
+                "x-auth-request-preferred-username",
+                "authorization",
+            ],
+            "headersToDownstreamOnDeny": ["set-cookie", "location"],
+            "statusOnError": "403",
+        },
+    }
+
+
+def _load_mesh(mesh_text: str) -> dict:
+    if not isinstance(mesh_text, str):
+        raise RuntimeError("Istio mesh configuration is invalid")
+    if not mesh_text.strip():
+        return {}
+    try:
+        documents = list(yaml.load_all(mesh_text, Loader=UniqueKeyLoader))
+    except yaml.YAMLError as exc:
+        raise RuntimeError("Istio mesh configuration is invalid") from exc
+    if len(documents) != 1:
+        raise RuntimeError("Istio mesh configuration must contain one document")
+    mesh = documents[0]
+    if mesh is None:
+        return {}
+    if not isinstance(mesh, dict):
+        raise RuntimeError("Istio mesh configuration must be a mapping")
+    return mesh
+
+
+def _dump_mesh(mesh: dict) -> str:
+    return yaml.safe_dump(mesh, default_flow_style=False, sort_keys=False)
+
+
+def _ensure_provider(mesh_text: str, add_missing: bool) -> tuple[str, bool]:
+    mesh = _load_mesh(mesh_text)
+    providers = mesh.get("extensionProviders")
+    if providers is None:
+        providers = []
+        mesh["extensionProviders"] = providers
+    if not isinstance(providers, list):
+        raise RuntimeError("Istio extensionProviders configuration must be a list")
+    if not all(isinstance(provider, dict) for provider in providers):
+        raise RuntimeError("Istio extensionProviders entries must be mappings")
+
+    matches = [
+        provider for provider in providers if provider.get("name") == "oauth2-proxy"
+    ]
+    if len(matches) > 1 or (not matches and not add_missing):
+        raise RuntimeError("oauth2-proxy extension provider was not resolved exactly")
+    if not matches:
+        providers.append(_oauth2_proxy_provider())
+        return _dump_mesh(mesh), True
+
+    ext_authz = matches[0].get("envoyExtAuthzHttp")
+    if not isinstance(ext_authz, dict):
+        raise RuntimeError("oauth2-proxy ext_authz configuration is invalid")
+    headers = ext_authz.get("headersToUpstreamOnAllow")
+    if headers is None:
+        headers = []
+        ext_authz["headersToUpstreamOnAllow"] = headers
+    if not isinstance(headers, list) or not all(isinstance(item, str) for item in headers):
+        raise RuntimeError("oauth2-proxy upstream header configuration is invalid")
+    if "authorization" in headers:
+        return mesh_text, False
+    headers.append("authorization")
+    return _dump_mesh(mesh), True
 
 
 def ensure_header(mesh_text: str) -> tuple[str, bool]:
-    lines = mesh_text.splitlines(keepends=True)
-    provider_starts = [
-        index
-        for index, line in enumerate(lines)
-        if OAUTH2_PROXY_PROVIDER_NAME.match(line.rstrip("\r\n"))
-    ]
-    if len(provider_starts) != 1:
-        raise RuntimeError("oauth2-proxy extension provider was not resolved exactly")
-    start = provider_starts[0]
-    provider_indent = len(lines[start]) - len(lines[start].lstrip())
-    end = len(lines)
-    for index in range(start + 1, len(lines)):
-        stripped = lines[index].lstrip()
-        indent = len(lines[index]) - len(stripped)
-        if indent == provider_indent and stripped.startswith("- name:"):
-            end = index
-            break
-    ext_authz_lines = [
-        index
-        for index in range(start, end)
-        if lines[index].strip() == "envoyExtAuthzHttp:"
-    ]
-    if len(ext_authz_lines) != 1:
-        raise RuntimeError("oauth2-proxy ext_authz configuration is invalid")
-    ext_authz = ext_authz_lines[0]
-    ext_authz_indent = len(lines[ext_authz]) - len(lines[ext_authz].lstrip())
-    ext_authz_end = end
-    for index in range(ext_authz + 1, end):
-        stripped = lines[index].lstrip()
-        indent = len(lines[index]) - len(stripped)
-        if stripped and indent <= ext_authz_indent:
-            ext_authz_end = index
-            break
-
-    header_key = "headersToUpstreamOnAllow:"
-    header_lines = [
-        index
-        for index in range(ext_authz + 1, ext_authz_end)
-        if lines[index].lstrip().startswith(header_key)
-    ]
-    if len(header_lines) > 1:
-        raise RuntimeError("oauth2-proxy upstream header configuration is invalid")
-    if not header_lines:
-        newline = "\r\n" if any(line.endswith("\r\n") for line in lines) else "\n"
-        header_indent = " " * (ext_authz_indent + 2)
-        item_indent = " " * (ext_authz_indent + 4)
-        lines[ext_authz_end:ext_authz_end] = [
-            f"{header_indent}headersToUpstreamOnAllow:{newline}",
-            f"{item_indent}- authorization{newline}",
-        ]
-        return "".join(lines), True
-
-    header = header_lines[0]
-    header_indent = len(lines[header]) - len(lines[header].lstrip())
-    header_value = lines[header].strip()
-    if header_value == f"{header_key} []":
-        newline = "\r\n" if lines[header].endswith("\r\n") else "\n"
-        lines[header:header + 1] = [
-            f"{' ' * header_indent}{header_key}{newline}",
-            f"{' ' * (header_indent + 2)}- authorization{newline}",
-        ]
-        return "".join(lines), True
-    if header_value != header_key:
-        raise RuntimeError("oauth2-proxy upstream header configuration is invalid")
-
-    insert_at = header + 1
-    item_indent = " " * (header_indent + 2)
-    for index in range(header + 1, ext_authz_end):
-        stripped = lines[index].lstrip()
-        indent = len(lines[index]) - len(stripped)
-        if stripped.startswith("-"):
-            # YAML permits an "indentless" sequence whose dash has the same
-            # indentation as the containing mapping key.
-            if indent < header_indent:
-                break
-            if stripped[1:].strip() == "authorization":
-                return mesh_text, False
-            item_indent = lines[index][:indent]
-            insert_at = index + 1
-            continue
-        if stripped and indent <= header_indent:
-            break
-    lines.insert(insert_at, f"{item_indent}- authorization\n")
-    return "".join(lines), True
+    return _ensure_provider(mesh_text, add_missing=False)
 
 
 def ensure_provider(mesh_text: str) -> tuple[str, bool]:
-    provider_count = sum(
-        1
-        for line in mesh_text.splitlines()
-        if OAUTH2_PROXY_PROVIDER_NAME.match(line)
-    )
-    if provider_count > 1:
-        raise RuntimeError("oauth2-proxy extension provider was not resolved exactly")
-    if provider_count == 1:
-        return ensure_header(mesh_text)
-
-    newline = "\r\n" if "\r\n" in mesh_text else "\n"
-    provider = OAUTH2_PROXY_PROVIDER.replace("\n", newline)
-    lines = mesh_text.splitlines(keepends=True)
-    keys = [
-        (index, EXTENSION_PROVIDERS_ENTRY.match(line))
-        for index, line in enumerate(lines)
-        if EXTENSION_PROVIDERS_ENTRY.match(line)
-    ]
-    if len(keys) > 1:
-        raise RuntimeError("Istio extensionProviders configuration is ambiguous")
-    if keys:
-        index, match = keys[0]
-        value = match.group(1).strip()
-        if value and not value.startswith("#"):
-            empty_list = re.fullmatch(r"\[\](?:[ \t]+(#.*))?", value)
-            if not empty_list:
-                raise RuntimeError(
-                    "Istio extensionProviders inline configuration is unsupported"
-                )
-            comment = empty_list.group(1)
-            suffix = f" {comment}" if comment else ""
-            lines[index] = f"extensionProviders:{suffix}{newline}"
-        lines.insert(index + 1, provider)
-        updated = "".join(lines)
-    else:
-        separator = "" if not mesh_text or mesh_text.endswith(("\n", "\r")) else newline
-        updated = f"{mesh_text}{separator}extensionProviders:{newline}{provider}"
-    reconciled, _ = ensure_header(updated)
-    return reconciled, True
+    return _ensure_provider(mesh_text, add_missing=True)
 
 
 def configmap_patch(configmap: dict) -> tuple[dict, bool]:

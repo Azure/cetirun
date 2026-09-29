@@ -51,7 +51,14 @@ Secret is not a usable TLS deployment.
 ## Deploy helper inputs
 
 [infra/istio/deploy.sh]({{< repo "infra/istio/deploy.sh" >}})
-requires Bash, Helm, kubectl, jq, OpenSSL, and these inputs for its normal path:
+requires Bash, Helm, kubectl, jq, OpenSSL, Python 3, and the pinned PyYAML
+dependency. Install the Python dependency before deployment:
+
+```bash
+python3 -m pip install --requirement infra/istio/requirements.txt
+```
+
+The helper also requires these inputs for its normal path:
 
 | Variable | Purpose |
 | --- | --- |
@@ -83,10 +90,13 @@ verify the actual target. `SKIP_AZ_VALIDATION` skips Azure and context checks
 and the subscription-ID requirement; it still needs the other required inputs
 and supplied certificate material. It is not a dry-run flag.
 
-The patch chooses the revision on the first matching Istiod pod and skips its
-write if the existing mesh text contains `oauth2-proxy`. This is not validation
-of an existing provider's configuration or every active revision. Check both
-during Istio upgrades.
+The patch chooses the revision on the first matching Istiod pod, parses the
+mesh configuration as YAML, and requires at most one provider named exactly
+`oauth2-proxy`. It adds a missing provider or adds `authorization` to that
+provider's upstream header list. The update uses the ConfigMap
+`resourceVersion` as a compare-and-swap precondition and retries against the
+latest mesh configuration after conflicts. Check every active revision during
+Istio upgrades; revision discovery still selects the first matching Istiod pod.
 
 ## Direct Helm installation
 
