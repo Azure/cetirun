@@ -31,6 +31,7 @@ func TestBindingsRejectUnapprovedInputs(t *testing.T) {
 	cases := map[string]func(*Custom){
 		"missing model":   func(b *Custom) { b.Model.UID = "" },
 		"missing home":    func(b *Custom) { b.Home.Name = "" },
+		"missing claim":   func(b *Custom) { b.Home.Claim = nil },
 		"root group":      func(b *Custom) { b.Home.FSGroup = 0 },
 		"wrong image":     func(b *Custom) { b.ApprovedImage = "example.com/other:1" },
 		"wrong type":      func(b *Custom) { b.ApprovedType = "hermes" },
@@ -53,6 +54,24 @@ func TestBindingsRejectUnapprovedInputs(t *testing.T) {
 	}
 }
 
+func TestHomePlanDoesNotRequirePVCIdentity(t *testing.T) {
+	agent, _ := agents.ResolveCustom(agents.Request{Type: "custom", Image: "example.com/agent:1"})
+	b := testBindings()
+	if err := b.Validate(agent); err != nil {
+		t.Fatalf("Chart-owned HOME required a pre-existing PVC: %v", err)
+	}
+	for _, claim := range []HomeClaim{
+		{StorageClass: "", StorageSize: "100Gi", AccessMode: "ReadWriteOnce"},
+		{StorageClass: "default", StorageSize: "0", AccessMode: "ReadWriteOnce"},
+		{StorageClass: "default", StorageSize: "100Gi", AccessMode: "ReadOnlyMany"},
+	} {
+		b.Home.Claim = &claim
+		if err := b.Validate(agent); err == nil {
+			t.Fatal("invalid HOME claim template was accepted")
+		}
+	}
+}
+
 func testBindings() Custom {
 	ref := func(name string) ObjectReference {
 		return ObjectReference{Name: name, UID: name + "-uid", Revision: "1"}
@@ -61,7 +80,8 @@ func testBindings() Custom {
 		AgentName: "example", AgentUID: "agent-uid", Generation: 1, Namespace: ref("cetirun-example"), ApprovedType: "custom",
 		ApprovedImage: "example.com/agent:1", PolicyRevision: "policy-1",
 		Model: ModelAccess{ObjectReference: ref("model"), BaseURL: "http://gateway.example.com/v1", Key: "key"},
-		Home:  Home{ObjectReference: ref("home"), FSGroup: 2000},
+		Home: Home{Name: "home", FSGroup: 2000,
+			Claim: &HomeClaim{StorageClass: "default", StorageSize: "100Gi", AccessMode: "ReadWriteOnce"}},
 		Context: Context{ObjectReference: ref("context"), Files: map[string]string{
 			"canonical": "AGENTS.md", "memory": "skills/cetirun-memory/SKILL.md"}},
 		Network: Network{Revision: "network-1", Gateway: Peer{Namespace: "models", PodLabels: map[string]string{"app": "gateway"}}, GatewayPort: 8080,

@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"time"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
@@ -29,13 +30,13 @@ const customOwnershipFinalizer = "cetirun.microsoft.com/custom-runtime-ownership
 // Kept in the operator namespace, never in tenant-writable Agent annotations.
 // This is an ownership receipt, not a claim that Helm or a Pod is ready.
 type customOwnership struct {
-	AgentName    string    `json:"agentName"`
-	AgentUID     types.UID `json:"agentUID"`
-	Namespace    string    `json:"namespace"`
-	NamespaceUID types.UID `json:"namespaceUID"`
-	Release      string    `json:"release"`
-	Home         string    `json:"home"`
-	HomeUID      types.UID `json:"homeUID"`
+	AgentName    string                     `json:"agentName"`
+	AgentUID     types.UID                  `json:"agentUID"`
+	Namespace    string                     `json:"namespace"`
+	NamespaceUID types.UID                  `json:"namespaceUID"`
+	Release      string                     `json:"release"`
+	Home         string                     `json:"home"`
+	HomeClaim    *runtimebindings.HomeClaim `json:"homeClaim"`
 }
 
 func (r *AgentReconciler) ownershipKey(instance *api.Agent) types.NamespacedName {
@@ -61,8 +62,11 @@ func (r *AgentReconciler) readCustomOwnership(ctx context.Context, instance *api
 		json.Unmarshal([]byte(record.Data["ownership"]), &receipt) != nil ||
 		receipt.AgentUID != instance.UID || receipt.AgentName != instance.Name ||
 		receipt.Namespace != instanceNamespace(instance.Name) || receipt.Release != helmReleaseName(instance.Name) ||
-		receipt.NamespaceUID == "" || receipt.Home == "" || receipt.HomeUID == "" {
+		receipt.NamespaceUID == "" || receipt.Home == "" || receipt.HomeClaim == nil {
 		return nil, fmt.Errorf("Custom ownership record is invalid")
+	}
+	if err := receipt.HomeClaim.Validate(); err != nil {
+		return nil, fmt.Errorf("Custom ownership storage is invalid: %w", err)
 	}
 	return &receipt, nil
 }
@@ -73,7 +77,7 @@ func (r *AgentReconciler) ensureCustomOwnership(ctx context.Context, instance *a
 	}
 	want := customOwnership{AgentName: instance.Name, AgentUID: instance.UID,
 		Namespace: bindings.Namespace.Name, NamespaceUID: types.UID(bindings.Namespace.UID),
-		Release: helmReleaseName(instance.Name), Home: bindings.Home.Name, HomeUID: types.UID(bindings.Home.UID)}
+		Release: helmReleaseName(instance.Name), Home: bindings.Home.Name, HomeClaim: bindings.Home.Claim}
 	if want.Namespace == r.ownershipKey(instance).Namespace {
 		return fmt.Errorf("Custom runtime cannot use the operator namespace")
 	}
@@ -97,7 +101,7 @@ func (r *AgentReconciler) ensureCustomOwnership(ctx context.Context, instance *a
 		}
 	} else if err != nil {
 		return err
-	} else if *got != want {
+	} else if !reflect.DeepEqual(*got, want) {
 		return fmt.Errorf("Custom namespace or HOME ownership changed")
 	}
 	if !controllerutil.ContainsFinalizer(instance, customOwnershipFinalizer) {

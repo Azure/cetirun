@@ -12,8 +12,13 @@ import (
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/controller"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/runtimebindings"
+	"helm.sh/helm/v3/pkg/chart/loader"
+	"helm.sh/helm/v3/pkg/chartutil"
+	"helm.sh/helm/v3/pkg/engine"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	storagev1 "k8s.io/api/storage/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
@@ -21,6 +26,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/yaml"
 )
 
 type customProvider struct {
@@ -30,6 +36,147 @@ type customProvider struct {
 	approve   func(*appsv1.StatefulSet) error
 	leaseErr  error
 	completed []controller.CustomApplyOutcome
+}
+
+type provisioningClient struct{ client.Client }
+
+func (c provisioningClient) Create(ctx context.Context, obj client.Object, opts ...client.CreateOption) error {
+	if obj.GetUID() == "" {
+		obj.SetUID(types.UID("synthetic-" + obj.GetName()))
+	}
+	return c.Client.Create(ctx, obj, opts...)
+}
+
+func TestCustomReconcileCreatesHomeInOneChartCall(t *testing.T) {
+	ctx := context.Background()
+	cr, _, _ := customFixture("disk-agent", nil)
+	scheme := testScheme()
+	sc := &storagev1.StorageClass{ObjectMeta: metav1.ObjectMeta{Name: "default"},
+		Provisioner: "disk.csi.azure.com", VolumeBindingMode: ptr.To(storagev1.VolumeBindingWaitForFirstConsumer)}
+	c := provisioningClient{fake.NewClientBuilder().WithScheme(scheme).
+		WithStatusSubresource(&api.Agent{}, &corev1.PersistentVolumeClaim{}, &appsv1.StatefulSet{}).
+		WithObjects(cr, sc).Build()}
+	hc := &fakeHelmClient{useHarness: true}
+	r := &controller.AgentReconciler{Client: c, APIReader: c, Scheme: scheme, HelmClient: hc,
+		OperatorNamespace: "cetirun-system", OperatorSAName: "operator-test", IstioRevision: "asm-test",
+		EventRecorder: record.NewFakeRecorder(100)}
+	r.CustomBindings = controller.NewKubernetesCustomBindings(r, controller.CustomRuntimeConfig{
+		Enabled: true, AgentManagedModel: true, ApprovedImages: []string{*cr.Spec.Agent.Image},
+		StorageClass: "default", StorageSize: "100Gi", AccessMode: "ReadWriteOnce", FSGroup: 1024,
+		Context: map[string]string{"AGENTS.md": "approved context", "skills/cetirun-memory/SKILL.md": "approved memory"},
+	})
+	request := ctrl.Request{NamespacedName: types.NamespacedName{Name: cr.Name}}
+	reconcile := func(allowConflict bool) {
+		t.Helper()
+		if _, err := r.Reconcile(ctx, request); err != nil && !(allowConflict && apierrors.IsConflict(err)) {
+			t.Fatal(err)
+		}
+		if err := c.Get(ctx, request.NamespacedName, cr); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reconcile(true)
+	if hc.installCalled {
+		t.Fatal("workload applied before the ownership receipt was observed")
+	}
+	oldWriter := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "old-writer", Namespace: "cetirun-disk-agent"},
+		Spec: corev1.PodSpec{Volumes: []corev1.Volume{{Name: "data", VolumeSource: corev1.VolumeSource{
+			PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: "data-openclaw-disk-agent-cetirun-0"},
+		}}}}}
+	if err := c.Create(ctx, oldWriter); err != nil {
+		t.Fatal(err)
+	}
+	reconcile(false)
+	if hc.installCalled {
+		t.Fatal("pending HOME bypassed old-writer shutdown")
+	}
+	if err := c.Delete(ctx, oldWriter); err != nil {
+		t.Fatal(err)
+	}
+	reconcile(false)
+	if !hc.installCalled || cr.Status.Phase != api.PhaseProvisioning {
+		t.Fatalf("pending HOME did not reach consumer creation: applied=%v status=%+v", hc.installCalled, cr.Status)
+	}
+	home := &corev1.PersistentVolumeClaim{}
+	homeKey := types.NamespacedName{Namespace: "cetirun-disk-agent", Name: "data-openclaw-disk-agent-cetirun-0"}
+	if err := c.Get(ctx, homeKey, home); !apierrors.IsNotFound(err) {
+		t.Fatalf("operator created a PVC before the StatefulSet controller: %v", err)
+	}
+	workloadHash := hc.lastValues["runtime"].(map[string]any)["workloadHash"].(string)
+	chart, err := loader.Load("../../../cetirun-chart")
+	if err != nil {
+		t.Fatal(err)
+	}
+	values, err := chartutil.ToRenderValues(chart, hc.lastValues, chartutil.ReleaseOptions{
+		Name: "openclaw-disk-agent", Namespace: homeKey.Namespace, IsInstall: true,
+	}, chartutil.DefaultCapabilities)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rendered, err := engine.Render(chart, values)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sts := &appsv1.StatefulSet{}
+	if err := yaml.Unmarshal([]byte(strings.Split(rendered["cetirun/templates/custom-runtime.yaml"], "\n---")[0]), sts); err != nil {
+		t.Fatal(err)
+	}
+	sts.Namespace = homeKey.Namespace
+	if len(sts.Spec.VolumeClaimTemplates) != 1 || sts.Spec.VolumeClaimTemplates[0].Name != "data" {
+		t.Fatal("Chart did not declare exactly one HOME claim template")
+	}
+	if err := c.Create(ctx, sts); err != nil {
+		t.Fatal(err)
+	}
+	sts.Status = appsv1.StatefulSetStatus{ObservedGeneration: sts.Generation, ReadyReplicas: 1, UpdatedReplicas: 1}
+	if err := c.Status().Update(ctx, sts); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate StatefulSet/CSI controllers; the Operator must never create this PVC.
+	home = sts.Spec.VolumeClaimTemplates[0].DeepCopy()
+	home.Name, home.Namespace = "data-"+sts.Name+"-0", sts.Namespace
+	if err := c.Create(ctx, home); err != nil {
+		t.Fatal(err)
+	}
+	homeUID := home.UID
+	hc.installCalled = false
+	reconcile(false)
+	if hc.installCalled || cr.Status.Phase == api.PhaseReady {
+		t.Fatal("pending HOME was reapplied or reported Ready")
+	}
+	home.Spec.VolumeName = "synthetic-disk"
+	if err := c.Update(ctx, home); err != nil {
+		t.Fatal(err)
+	}
+	home.Status.Phase = corev1.ClaimBound
+	if err := c.Status().Update(ctx, home); err != nil {
+		t.Fatal(err)
+	}
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "consumer", Namespace: home.Namespace},
+		Spec: corev1.PodSpec{Volumes: []corev1.Volume{{Name: "data", VolumeSource: corev1.VolumeSource{
+			PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: home.Name},
+		}}}}}
+	if err := c.Create(ctx, pod); err != nil {
+		t.Fatal(err)
+	}
+	reconcile(false)
+	if cr.Status.Phase != api.PhaseReady {
+		t.Fatalf("bound HOME did not become ready: %+v", cr.Status)
+	}
+	if hc.lastValues["runtime"].(map[string]any)["workloadHash"] != workloadHash {
+		t.Fatal("CSI binding changed the workload plan")
+	}
+	if err := c.Get(ctx, client.ObjectKeyFromObject(sts), sts); err != nil || *sts.Spec.Replicas != 1 {
+		t.Fatal("CSI binding stopped the first consumer")
+	}
+	if err := c.Get(ctx, homeKey, home); err != nil || home.UID != homeUID || len(home.OwnerReferences) != 0 {
+		t.Fatal("CSI binding replaced or re-owned HOME")
+	}
+	hc.installCalled = false
+	reconcile(false)
+	if hc.installCalled || hc.installCalls != 1 {
+		t.Fatalf("initial provisioning must use one Chart call, got %d", hc.installCalls)
+	}
 }
 
 func (p *customProvider) Resolve(context.Context, *api.Agent, *api.Team) (runtimebindings.Custom, error) {
@@ -74,7 +221,8 @@ func customFixture(name string, port *int32) (*api.Agent, runtimebindings.Custom
 		AgentName: name, AgentUID: string(cr.UID), Generation: 1, Namespace: ref("cetirun-" + name),
 		ApprovedType: "custom", ApprovedImage: image, PolicyRevision: "policy-1",
 		Model: runtimebindings.ModelAccess{ObjectReference: ref(name + "-model"), Key: "api-key", BaseURL: "http://gateway.models.svc/v1"},
-		Home:  runtimebindings.Home{ObjectReference: ref(name + "-home"), FSGroup: 2000},
+		Home: runtimebindings.Home{Name: "data-openclaw-" + name + "-cetirun-0", FSGroup: 2000,
+			Claim: &runtimebindings.HomeClaim{StorageClass: "default", StorageSize: "100Gi", AccessMode: "ReadWriteOnce"}},
 		Context: runtimebindings.Context{ObjectReference: ref(name + "-context"), Files: map[string]string{
 			"canonical": "AGENTS.md", "memory": "skills/cetirun-memory/SKILL.md",
 		}},
@@ -90,11 +238,13 @@ func customFixture(name string, port *int32) (*api.Agent, runtimebindings.Custom
 	nsMeta.Namespace = ""
 	secret := &corev1.Secret{ObjectMeta: meta(b.Model.ObjectReference), Type: corev1.SecretTypeOpaque, Data: map[string][]byte{"api-key": []byte("sk-dummy")}}
 	secret.OwnerReferences = []metav1.OwnerReference{{APIVersion: api.GroupVersion.String(), Kind: "Agent", Name: cr.Name, UID: cr.UID}}
+	home := &corev1.PersistentVolumeClaim{ObjectMeta: meta(ref(b.Home.Name)), Spec: b.Home.Claim.PVCSpec(),
+		Status: corev1.PersistentVolumeClaimStatus{Phase: corev1.ClaimBound}}
+	home.Annotations = map[string]string{"cetirun.microsoft.com/agent-uid": string(cr.UID)}
+	home.Spec.VolumeName = name + "-volume"
 	return cr, b, []client.Object{
 		cr, &corev1.Namespace{ObjectMeta: nsMeta}, secret,
-		&corev1.PersistentVolumeClaim{ObjectMeta: meta(b.Home.ObjectReference),
-			Spec:   corev1.PersistentVolumeClaimSpec{VolumeName: name + "-volume"},
-			Status: corev1.PersistentVolumeClaimStatus{Phase: corev1.ClaimBound}},
+		home,
 		&corev1.ConfigMap{ObjectMeta: meta(b.Context.ObjectReference), Immutable: ptr.To(true),
 			Data: map[string]string{"canonical": "synthetic canonical contract", "memory": "synthetic memory skill"}},
 	}
@@ -136,7 +286,7 @@ func TestCustomReconcileUsesBindingsNotNativeSecrets(t *testing.T) {
 		sts.Status.UpdateRevision = "revision-1"
 		sts.OwnerReferences = []metav1.OwnerReference{{APIVersion: api.GroupVersion.String(), Kind: "Agent", Name: cr.Name, UID: cr.UID}}
 		sts.Annotations = map[string]string{
-			"cetirun.microsoft.com/agent-uid": string(cr.UID), "cetirun.microsoft.com/home-uid": b.Home.UID,
+			"cetirun.microsoft.com/agent-uid":        string(cr.UID),
 			"cetirun.microsoft.com/custom-plan-hash": hc.lastValues["runtime"].(map[string]any)["workloadHash"].(string),
 		}
 		if err := c.Create(context.Background(), sts); err != nil {
@@ -244,7 +394,7 @@ func TestCustomReconcileRejectsUnreadyOrForeignBindings(t *testing.T) {
 			}
 			home := &corev1.PersistentVolumeClaim{}
 			if err := c.Get(context.Background(), types.NamespacedName{Namespace: b.Namespace.Name, Name: b.Home.Name}, home); err != nil ||
-				string(home.UID) != b.Home.UID || len(home.OwnerReferences) != 0 {
+				string(home.UID) != b.Home.Name+"-uid" || len(home.OwnerReferences) != 0 {
 				t.Fatal("rejected plan changed or claimed HOME")
 			}
 		})
@@ -315,7 +465,7 @@ func TestCustomRendererDriftDoesNotReplaceWorkload(t *testing.T) {
 	sts := statefulSet(cr.Name, 1)
 	sts.OwnerReferences = []metav1.OwnerReference{{APIVersion: api.GroupVersion.String(), Kind: "Agent", Name: cr.Name, UID: cr.UID}}
 	sts.Annotations = map[string]string{"cetirun.microsoft.com/agent-uid": string(cr.UID),
-		"cetirun.microsoft.com/home-uid": b.Home.UID, "cetirun.microsoft.com/custom-plan-hash": plan}
+		"cetirun.microsoft.com/custom-plan-hash": plan}
 	if err := c.Create(context.Background(), sts); err != nil {
 		t.Fatal(err)
 	}

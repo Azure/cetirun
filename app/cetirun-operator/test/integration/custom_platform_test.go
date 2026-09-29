@@ -42,7 +42,8 @@ func TestCustomSharedPlatformObjectsMatchAPI(t *testing.T) {
 	bindings := runtimebindings.Custom{
 		AgentName: "example", AgentUID: "example-uid", Generation: 1, Namespace: ref(namespace),
 		ApprovedType: "custom", ApprovedImage: image, PolicyRevision: "1",
-		Home:  runtimebindings.Home{ObjectReference: ref("home"), FSGroup: 2000},
+		Home: runtimebindings.Home{Name: "data-custom-platform-example-0", FSGroup: 2000,
+			Claim: &runtimebindings.HomeClaim{StorageClass: "default", StorageSize: "100Gi", AccessMode: "ReadWriteOnce"}},
 		Model: runtimebindings.ModelAccess{ObjectReference: ref("model"), Key: "key", BaseURL: "http://gateway.models.svc/v1"},
 		Context: runtimebindings.Context{ObjectReference: ref("context"), Files: map[string]string{
 			"canonical": "AGENTS.md", "memory": "skills/cetirun-memory/SKILL.md",

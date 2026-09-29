@@ -259,6 +259,39 @@ func TestBuildHelmValues_AgentType(t *testing.T) {
 	}
 }
 
+func TestBuildHelmValues_HomeStorage(t *testing.T) {
+	for _, agentType := range []cetirunv1alpha1.AgentType{cetirunv1alpha1.AgentTypeHermes, cetirunv1alpha1.AgentTypeOpenClaw} {
+		for _, test := range []struct {
+			name     string
+			global   map[string]interface{}
+			local    string
+			expected map[string]interface{}
+		}{
+			{"defaults", nil, "", map[string]interface{}{"storageClass": "default", "accessMode": "ReadWriteOnce", "size": "100Gi"}},
+			{"operator override", map[string]interface{}{"persistence": map[string]interface{}{"size": "200Gi"}}, "",
+				map[string]interface{}{"storageClass": "default", "accessMode": "ReadWriteOnce", "size": "200Gi"}},
+			{"instance override", map[string]interface{}{"persistence": map[string]interface{}{"size": "200Gi"}},
+				`{"storageClass":"approved-home","accessMode":"ReadWriteMany"}`,
+				map[string]interface{}{"storageClass": "approved-home", "accessMode": "ReadWriteMany", "size": "200Gi"}},
+		} {
+			t.Run(string(agentType)+"/"+test.name, func(t *testing.T) {
+				instance := newTestInstance("alice", "Alice", "", "gateway-token")
+				instance.Spec.Agent.Type = agentType
+				if test.local != "" {
+					instance.Spec.Helm.Values["persistence"] = runtime.RawExtension{Raw: []byte(test.local)}
+				}
+				values, err := buildHelmValues(instance, nil, "example.com", "", test.global, "")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !reflect.DeepEqual(values["persistence"], test.expected) {
+					t.Errorf("persistence = %v, want %v", values["persistence"], test.expected)
+				}
+			})
+		}
+	}
+}
+
 func TestBuildHelmValues_OpenClawControlUIBasePath(t *testing.T) {
 	instance := newTestInstance("alice", "Alice Smith", "example-team", "gateway-token")
 	instance.Name = "alice-work"

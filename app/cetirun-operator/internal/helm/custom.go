@@ -25,6 +25,9 @@ func prepareCustomChart(chrt *chart.Chart, input map[string]any, request AgentRe
 	if !ok {
 		return nil, fmt.Errorf("CustomBindingsPending: platform bindings are required")
 	}
+	if bindings.Home.Name != "data-"+text(input["fullnameOverride"])+"-0" {
+		return nil, fmt.Errorf("Custom HOME name does not match its StatefulSet claim template")
+	}
 	overrides := map[string]any{}
 	for key, value := range input {
 		switch key {
@@ -151,6 +154,7 @@ func prepareCustomChart(chrt *chart.Chart, input map[string]any, request AgentRe
 
 func customWorkloadDigest(chrt *chart.Chart, agent agents.ResolvedAgent, bindings runtimebindings.Custom, contribution agents.Contribution, values map[string]any) (string, error) {
 	settings := runtimebindings.WorkloadValues(values)
+	home := map[string]any{"name": bindings.Home.Name, "fsGroup": bindings.Home.FSGroup, "claim": bindings.Home.Claim}
 	desktop := object(values["desktop"])
 	if desktop["enabled"] == true {
 		settings["desktopVersion"] = chrt.Metadata.AppVersion
@@ -158,7 +162,7 @@ func customWorkloadDigest(chrt *chart.Chart, agent agents.ResolvedAgent, binding
 	data, err := json.Marshal(map[string]any{
 		"agent": agent, "contribution": contribution, "settings": settings,
 		"agentUID": bindings.AgentUID,
-		"home":     map[string]any{"name": bindings.Home.Name, "uid": bindings.Home.UID, "fsGroup": bindings.Home.FSGroup},
+		"home":     home,
 		"model":    bindings.Model, "context": bindings.Context,
 		"commonInit": string(asset(chrt, "configs/init-home-common.sh")),
 		"customInit": string(asset(chrt, "agents/custom/bootstrap/init-home.sh")),

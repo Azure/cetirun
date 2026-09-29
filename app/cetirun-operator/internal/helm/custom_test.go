@@ -21,7 +21,8 @@ func customInput(port any) map[string]any {
 		AgentName: "example", AgentUID: "example-uid", Generation: 1, Namespace: ref("cetirun-example"),
 		ApprovedType: "custom", ApprovedImage: image, PolicyRevision: "policy-1",
 		Model: runtimebindings.ModelAccess{ObjectReference: ref("model"), BaseURL: "http://gateway.models.svc/v1", Key: "api-key"},
-		Home:  runtimebindings.Home{ObjectReference: ref("home"), FSGroup: 2000},
+		Home: runtimebindings.Home{Name: "data-openclaw-example-cetirun-0", FSGroup: 2000,
+			Claim: &runtimebindings.HomeClaim{StorageClass: "default", StorageSize: "100Gi", AccessMode: "ReadWriteOnce"}},
 		Context: runtimebindings.Context{ObjectReference: ref("context"), Files: map[string]string{
 			"canonical": "AGENTS.md", "memory": "skills/cetirun-memory/SKILL.md", "example": "skills/example/SKILL.md",
 		}},

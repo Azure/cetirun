@@ -20,7 +20,9 @@ func TestCustomScalarLikeBindingNames(t *testing.T) {
 			bindings := input["customBindings"].(runtimebindings.Custom)
 			bindings.AgentName = name
 			bindings.Model.Name, bindings.Model.Key = name, name
-			bindings.Home.Name, bindings.Context.Name = name, name
+			bindings.Home.Name = "data-openclaw-" + name + "-cetirun-0"
+			bindings.Home.Claim.StorageClass = name
+			bindings.Context.Name = name
 			bindings.Namespace.Name = "cetirun-" + name
 			input["customBindings"] = bindings
 			input["fullnameOverride"] = "openclaw-" + name + "-cetirun"

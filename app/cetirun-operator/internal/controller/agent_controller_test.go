@@ -38,6 +38,7 @@ import (
 
 type fakeHelmClient struct {
 	installCalled    bool
+	installCalls     int
 	installErr       error
 	lastChartVersion string
 	lastValues       map[string]interface{}
@@ -154,6 +155,7 @@ func TestReconcileInvalidHarnessPreservesWorkload(t *testing.T) {
 
 func (f *fakeHelmClient) InstallOrUpgrade(namespace, releaseName string, prepared *helm.PreparedRelease) error {
 	f.installCalled = true
+	f.installCalls++
 	f.lastChartVersion = prepared.ChartVersion
 	f.lastValues = prepared.Values
 	if f.installErr == nil {

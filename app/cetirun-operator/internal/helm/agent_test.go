@@ -231,6 +231,8 @@ func TestNativeRenderBaseline(t *testing.T) {
 				}
 				t.Run(name, func(t *testing.T) {
 					input := sampleInput(typ, provider, enabled)
+					// Pin the original StorageClass input; defaults are tested separately.
+					input["persistence"] = map[string]any{"storageClass": ""}
 					path := filepath.Join("testdata", "harness", name+".json")
 					if baselineChart != "" {
 						snapshot := renderSnapshot(t, chrt, input)

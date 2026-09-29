@@ -6,10 +6,13 @@ package controller
 import (
 	"context"
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/runtimebindings"
+	"helm.sh/helm/v3/pkg/chart/loader"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
@@ -72,32 +75,24 @@ func readyProvider(t *testing.T) (*KubernetesCustomBindings, *api.Agent) {
 	p, instance := providerFixture(t)
 	ctx := context.Background()
 	if _, err := p.Resolve(ctx, instance, nil); err == nil {
-		t.Fatal("unbound storage was approved")
+		t.Fatal("namespace ownership was not recorded first")
 	}
 	if err := p.reconciler.Get(ctx, client.ObjectKeyFromObject(instance), instance); err != nil {
-		t.Fatal(err)
-	}
-	pvc := &corev1.PersistentVolumeClaim{}
-	key := types.NamespacedName{Namespace: instanceNamespace(instance.Name), Name: "data-" + instanceServiceName(instance.Name) + "-0"}
-	if err := p.reconciler.Get(ctx, key, pvc); err != nil {
-		t.Fatal(err)
-	}
-	pvc.Spec.VolumeName = "synthetic-bound-volume"
-	if err := p.reconciler.Update(ctx, pvc); err != nil {
-		t.Fatal(err)
-	}
-	pvc.Status.Phase = corev1.ClaimBound
-	if err := p.reconciler.Status().Update(ctx, pvc); err != nil {
 		t.Fatal(err)
 	}
 	b, err := p.Resolve(ctx, instance, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
+	simulateChartHome(t, p, instance, b, true)
+	b, err = p.Resolve(ctx, instance, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !b.AgentManagedModel || b.Model.Name != "" || b.Network.GatewayPort != 0 {
 		t.Fatal("provider invented platform model access")
 	}
-	if err := p.reconciler.validateCustomObjects(ctx, instance, b); err != nil {
+	if bound, err := p.reconciler.validateCustomObjects(ctx, instance, b); err != nil || !bound {
 		t.Fatal(err)
 	}
 	secrets := &corev1.SecretList{}
@@ -105,6 +100,27 @@ func readyProvider(t *testing.T) (*KubernetesCustomBindings, *api.Agent) {
 		t.Fatal("image-owned auth created a model Secret")
 	}
 	return p, instance
+}
+
+func simulateChartHome(t *testing.T, p *KubernetesCustomBindings, instance *api.Agent, b runtimebindings.Custom, bound bool) *corev1.PersistentVolumeClaim {
+	t.Helper()
+	// The fake client has no StatefulSet or CSI controller; simulate their output.
+	home := &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: b.Home.Name, Namespace: b.Namespace.Name,
+		Annotations: map[string]string{customAgentUID: string(instance.UID)}}, Spec: b.Home.Claim.PVCSpec()}
+	if bound {
+		home.Spec.VolumeName = "synthetic-bound-volume"
+	}
+	if err := p.reconciler.Create(context.Background(), home); err != nil {
+		t.Fatal(err)
+	}
+	home.Status.Phase = corev1.ClaimPending
+	if bound {
+		home.Status.Phase = corev1.ClaimBound
+	}
+	if err := p.reconciler.Status().Update(context.Background(), home); err != nil {
+		t.Fatal(err)
+	}
+	return home
 }
 
 func TestKubernetesCustomProvisioning(t *testing.T) {
@@ -115,8 +131,155 @@ func TestKubernetesCustomProvisioning(t *testing.T) {
 		t.Fatal(err)
 	}
 	second, err := p.Resolve(ctx, instance, nil)
-	if err != nil || first.Context.ObjectReference != second.Context.ObjectReference || first.Home != second.Home {
+	if err != nil || first.Context.ObjectReference != second.Context.ObjectReference || !reflect.DeepEqual(first.Home, second.Home) {
 		t.Fatal("unchanged provisioning replaced HOME or context")
+	}
+}
+
+func pendingHomeProvider(t *testing.T) (*KubernetesCustomBindings, *api.Agent) {
+	t.Helper()
+	p, instance := providerFixture(t)
+	chart, err := loader.Load("../../chart")
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(chart.Values["customRuntime"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var defaults CustomRuntimeConfig
+	if err := json.Unmarshal(raw, &defaults); err != nil {
+		t.Fatal(err)
+	}
+	if defaults.Enabled || defaults.StorageClass != "default" || defaults.StorageSize != "100Gi" || defaults.AccessMode != "ReadWriteOnce" {
+		t.Fatalf("unexpected Custom HOME defaults: %+v", defaults)
+	}
+	defaults.Enabled, defaults.AgentManagedModel, defaults.ApprovedImages = true, true, p.config.ApprovedImages
+	p = NewKubernetesCustomBindings(p.reconciler, defaults)
+	ctx := context.Background()
+	if _, err := p.Resolve(ctx, instance, nil); err == nil || !strings.Contains(err.Error(), "ownership recorded") {
+		t.Fatalf("first resolve must persist ownership before approving HOME: %v", err)
+	}
+	if err := p.reconciler.Get(ctx, client.ObjectKeyFromObject(instance), instance); err != nil {
+		t.Fatal(err)
+	}
+	return p, instance
+}
+
+func TestKubernetesCustomHomeIsCreatedByChart(t *testing.T) {
+	p, instance := pendingHomeProvider(t)
+	ctx := context.Background()
+	b, err := p.Resolve(ctx, instance, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bound, err := p.reconciler.validateCustomObjects(ctx, instance, b); err != nil || bound {
+		t.Fatalf("owned pending HOME should allow a consumer, but not report bound: %v %v", bound, err)
+	}
+	claims := &corev1.PersistentVolumeClaimList{}
+	if err := p.reconciler.List(ctx, claims); err != nil || len(claims.Items) != 0 {
+		t.Fatal("operator pre-created a HOME PVC")
+	}
+	if b.Home.Claim == nil ||
+		b.Home.Claim.StorageClass != "default" || b.Home.Claim.StorageSize != "100Gi" || b.Home.Claim.AccessMode != "ReadWriteOnce" {
+		t.Fatalf("unexpected HOME plan: %+v", b.Home)
+	}
+	home := simulateChartHome(t, p, instance, b, false)
+	if ready, err := p.reconciler.validateCustomObjects(ctx, instance, b); err != nil || ready {
+		t.Fatalf("pending HOME was rejected or marked ready: %v %v", ready, err)
+	}
+	home.Spec.VolumeName = "synthetic-disk"
+	if err := p.reconciler.Update(ctx, home); err != nil {
+		t.Fatal(err)
+	}
+	home.Status.Phase = corev1.ClaimBound
+	if err := p.reconciler.Status().Update(ctx, home); err != nil {
+		t.Fatal(err)
+	}
+	bound, err := p.Resolve(ctx, instance, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(bound.Home, b.Home) || bound.Context.ObjectReference != b.Context.ObjectReference {
+		t.Fatal("CSI binding replaced HOME or context")
+	}
+	if ready, err := p.reconciler.validateCustomObjects(ctx, instance, bound); err != nil || !ready {
+		t.Fatalf("bound HOME was not ready: %v %v", ready, err)
+	}
+	if ready, err := p.reconciler.validateCustomObjects(ctx, instance, b); err != nil || !ready {
+		t.Fatal("PVC binding should not invalidate the name-based plan")
+	}
+}
+
+func TestKubernetesCustomRejectsDifferentStorageProfile(t *testing.T) {
+	p, instance := readyProvider(t)
+	ctx := context.Background()
+	before, err := p.Resolve(ctx, instance, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := p.config
+	cfg.StorageClass, cfg.StorageSize, cfg.AccessMode = "default", "100Gi", "ReadWriteOnce"
+	updated := NewKubernetesCustomBindings(p.reconciler, cfg)
+	if _, err := updated.Resolve(ctx, instance, nil); err == nil {
+		t.Fatal("HOME with a different storage profile was accepted")
+	}
+	home := &corev1.PersistentVolumeClaim{}
+	if err := p.reconciler.Get(ctx, types.NamespacedName{Namespace: before.Namespace.Name, Name: before.Home.Name}, home); err != nil {
+		t.Fatal(err)
+	}
+	if !before.Home.Claim.Matches(home) {
+		t.Fatal("rejected storage profile modified HOME")
+	}
+	if err := p.reconciler.Delete(ctx, home); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := updated.Resolve(ctx, instance, nil); err == nil {
+		t.Fatal("missing HOME permitted an outdated storage profile")
+	}
+	if err := p.reconciler.Get(ctx, client.ObjectKeyFromObject(home), home); !apierrors.IsNotFound(err) {
+		t.Fatal("rejected storage profile created a replacement PVC")
+	}
+}
+
+func TestCustomHomeRejectsForeignOrChangedStorage(t *testing.T) {
+	for _, name := range []string{"wrong class", "foreign annotation", "owner reference", "lost", "deleting"} {
+		t.Run(name, func(t *testing.T) {
+			p, instance := pendingHomeProvider(t)
+			ctx := context.Background()
+			b, err := p.Resolve(ctx, instance, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			home := simulateChartHome(t, p, instance, b, false)
+			switch name {
+			case "wrong class":
+				home.Spec.StorageClassName = ptr.To("missing")
+			case "foreign annotation":
+				home.Annotations[customAgentUID] = "another-agent"
+			case "owner reference":
+				home.OwnerReferences = []metav1.OwnerReference{{Kind: "Agent", UID: "another-agent"}}
+			case "lost":
+				home.Status.Phase = corev1.ClaimLost
+			case "deleting":
+				home.Finalizers = []string{"test/retain"}
+			}
+			if name == "lost" {
+				if err := p.reconciler.Status().Update(ctx, home); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := p.reconciler.Update(ctx, home); err != nil {
+				t.Fatal(err)
+			}
+			if name == "deleting" {
+				if err := p.reconciler.Delete(ctx, home); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := p.reconciler.validateCustomObjects(ctx, instance, b); err == nil {
+				t.Fatal("unverified HOME was approved")
+			}
+		})
 	}
 }
 
@@ -153,7 +316,7 @@ func TestKubernetesCustomRejectsUnapprovedAndForeignResources(t *testing.T) {
 	}
 }
 
-func TestKubernetesCustomDoesNotRecreateRetainedHome(t *testing.T) {
+func TestKubernetesCustomLeavesMissingChartHomeToStatefulSet(t *testing.T) {
 	p, instance := readyProvider(t)
 	ctx := context.Background()
 	receipt, err := p.reconciler.readCustomOwnership(ctx, instance)
@@ -168,8 +331,8 @@ func TestKubernetesCustomDoesNotRecreateRetainedHome(t *testing.T) {
 	if err := p.reconciler.Delete(ctx, home); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := p.Resolve(ctx, instance, nil); err == nil {
-		t.Fatal("missing retained HOME was recreated")
+	if bindings, err := p.Resolve(ctx, instance, nil); err != nil || bindings.Home.Claim == nil {
+		t.Fatalf("missing chart-owned HOME lost its claim template: %v", err)
 	}
 	claims := &corev1.PersistentVolumeClaimList{}
 	_ = p.reconciler.List(ctx, claims)
@@ -178,12 +341,63 @@ func TestKubernetesCustomDoesNotRecreateRetainedHome(t *testing.T) {
 	}
 }
 
+func TestKubernetesCustomHomeIgnoresPVCUID(t *testing.T) {
+	p, instance := readyProvider(t)
+	ctx := context.Background()
+	first, err := p.Resolve(ctx, instance, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := &corev1.PersistentVolumeClaim{}
+	if err := p.reconciler.Get(ctx, types.NamespacedName{Namespace: first.Namespace.Name, Name: first.Home.Name}, home); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.reconciler.Delete(ctx, home); err != nil {
+		t.Fatal(err)
+	}
+	home.UID, home.ResourceVersion = "replacement-home", ""
+	if err := p.reconciler.Create(ctx, home); err != nil {
+		t.Fatal(err)
+	}
+	second, err := p.Resolve(ctx, instance, nil)
+	if err != nil {
+		t.Fatalf("same-name PVC was rejected by its new UID: %v", err)
+	}
+	if bound, err := p.reconciler.validateCustomObjects(ctx, instance, first); err != nil || !bound {
+		t.Fatalf("PVC UID is still enforced: %v", err)
+	}
+	if !reflect.DeepEqual(second.Home, first.Home) {
+		t.Fatal("PVC UID or resourceVersion changed the HOME binding")
+	}
+}
+
+func TestKubernetesCustomRejectsOwnershipWithoutClaim(t *testing.T) {
+	p, instance := providerFixture(t)
+	receipt := customOwnership{AgentName: instance.Name, AgentUID: instance.UID,
+		Namespace: instanceNamespace(instance.Name), NamespaceUID: "namespace-uid",
+		Release: helmReleaseName(instance.Name), Home: "data-" + instanceServiceName(instance.Name) + "-0"}
+	raw, err := json.Marshal(receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := p.reconciler.ownershipKey(instance)
+	record := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace,
+		OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(instance, api.GroupVersion.WithKind("Agent"))}},
+		Immutable: ptr.To(true), Data: map[string]string{"ownership": string(raw)}}
+	if err := p.reconciler.Create(context.Background(), record); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Resolve(context.Background(), instance, nil); err == nil {
+		t.Fatal("ownership without a HOME claim template was accepted")
+	}
+}
+
 func TestKubernetesCustomLeasePersistsAcrossRestart(t *testing.T) {
 	p, instance := readyProvider(t)
 	ctx := context.Background()
 	b, _ := p.Resolve(ctx, instance, nil)
 	sts := &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: instanceServiceName(instance.Name), Namespace: b.Namespace.Name,
-		Annotations:     map[string]string{customAgentUID: string(instance.UID), customHomeUID: b.Home.UID},
+		Annotations:     map[string]string{customAgentUID: string(instance.UID)},
 		OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(instance, api.GroupVersion.WithKind("Agent"))}},
 		Spec: appsv1.StatefulSetSpec{Replicas: ptr.To[int32](1), Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{
 			Containers: []corev1.Container{{Name: "cetirun", Image: *instance.Spec.Agent.Image}},
@@ -232,6 +446,8 @@ func TestCustomRuntimeConfigRequiresExplicitApproval(t *testing.T) {
 		func(c *CustomRuntimeConfig) { c.AgentManagedModel = false },
 		func(c *CustomRuntimeConfig) { c.ApprovedImages = []string{"registry.example.com/pi:latest"} },
 		func(c *CustomRuntimeConfig) { c.FSGroup = 0 },
+		func(c *CustomRuntimeConfig) { c.StorageSize = "0" },
+		func(c *CustomRuntimeConfig) { c.AccessMode = "ReadOnlyMany" },
 		func(c *CustomRuntimeConfig) { c.Context["../private"] = "bad" },
 	} {
 		data, _ := json.Marshal(p.config)
