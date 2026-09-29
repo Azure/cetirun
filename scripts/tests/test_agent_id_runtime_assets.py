@@ -217,6 +217,31 @@ class AgentIDRuntimeAssetTests(unittest.TestCase):
                 )
                 self.assertIn("not an image-recognized managed revision", result.stderr)
 
+    def test_sync_preserves_managed_skill_with_newline_in_user_filename(self):
+        for runtime in ("openclaw", "hermes"):
+            with self.subTest(runtime=runtime), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                source = root / "image" / f".{runtime}" / "skills"
+                destination = root / "pvc" / f".{runtime}" / "skills"
+                old_payload = "old managed payload\n"
+                self._write_managed_skill(
+                    source,
+                    "new managed payload\n",
+                    version="2",
+                    previous_payloads=(old_payload,),
+                )
+                self._write_managed_skill(destination, old_payload, version="1")
+                user_file = destination / "azure" / "notes\n.md"
+                user_file.write_text("user content\n", encoding="utf-8")
+
+                result = self._sync(source, destination)
+
+                self.assertEqual(result.returncode, 0, result.stderr)
+                preserved = destination / "azure"
+                self.assertEqual((preserved / "SKILL.md").read_text(), old_payload)
+                self.assertEqual(user_file.read_text(), "user content\n")
+                self.assertIn("preserving customized managed skill", result.stderr)
+
     @staticmethod
     def _manifest(skill_dir):
         values = {}

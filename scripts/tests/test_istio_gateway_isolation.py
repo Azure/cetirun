@@ -92,7 +92,7 @@ class IstioGatewayIsolationTests(unittest.TestCase):
             "strip_portal_session_cookie(request_handle)", fail_closed
         )
         helper_auth = self.source.index(
-            "forward_cetirun_auth_key(request_handle, path_only)", cookie_removal
+            "forward_instance_key(request_handle, path_only, authority)", cookie_removal
         )
 
         self.assertLess(token_removal, exempt_branch)
@@ -101,6 +101,37 @@ class IstioGatewayIsolationTests(unittest.TestCase):
         self.assertLess(ownership_check, fail_closed)
         self.assertLess(fail_closed, cookie_removal)
         self.assertLess(cookie_removal, helper_auth)
+
+    def test_helper_and_native_api_credentials_use_separate_route_bound_headers(self):
+        self.assertIn(
+            'local CETIRUN_AUTH_KEY_HEADER = "x-cetirun-auth-key"', self.source
+        )
+        self.assertIn(
+            'local AGENT_API_KEY_HEADER = "x-cetirun-agent-api-key"', self.source
+        )
+        self.assertIn(
+            'path:match("^/ui/[^/]+/v1/models$") ~= nil', self.source
+        )
+        self.assertIn(
+            'path:match("^/ui/[^/]+/v1/chat/completions$") ~= nil', self.source
+        )
+        self.assertIn(
+            'return path == "/v1/models" or path == "/v1/chat/completions"',
+            self.source,
+        )
+        self.assertIn(
+            "if is_cetirun_auth_path(path) and valid_instance_key(auth_key) then\n"
+            '                  headers:replace("authorization", "Bearer " .. auth_key)\n'
+            "                elseif is_native_agent_api_path(path, authority) and valid_instance_key(api_key) then\n"
+            '                  headers:replace("authorization", "Bearer " .. api_key)',
+            self.source,
+        )
+        self.assertEqual(
+            self.source.count(
+                'request_handle:headers():remove(AGENT_API_KEY_HEADER)'
+            ),
+            3,
+        )
 
 
 if __name__ == "__main__":

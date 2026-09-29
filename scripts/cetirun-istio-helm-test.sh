@@ -72,20 +72,36 @@ grep -Fq 'local CETIRUN_AUTH_KEY_HEADER = "x-cetirun-auth-key"' <<< "${output}" 
   echo "FAIL: ownership filter did not define the instance auth transport header" >&2
   exit 1
 }
+grep -Fq 'local AGENT_API_KEY_HEADER = "x-cetirun-agent-api-key"' <<< "${output}" || {
+  echo "FAIL: ownership filter did not define the native Agent API transport header" >&2
+  exit 1
+}
 grep -Fq 'return path:match("^/[^/]+/cetirun%-auth/") ~= nil' <<< "${output}" || {
   echo "FAIL: ownership filter did not restrict instance auth forwarding by route" >&2
   exit 1
 }
-grep -Fq 'headers:replace("authorization", "Bearer " .. key)' <<< "${output}" || {
-  echo "FAIL: ownership filter did not restore the instance bearer credential" >&2
+grep -Fq 'headers:replace("authorization", "Bearer " .. auth_key)' <<< "${output}" || {
+  echo "FAIL: ownership filter did not restore the helper bearer credential" >&2
   exit 1
 }
-grep -Fq 'key:match("^[A-Za-z0-9_+/=-]+$")' <<< "${output}" || {
+grep -Fq 'headers:replace("authorization", "Bearer " .. api_key)' <<< "${output}" || {
+  echo "FAIL: ownership filter did not restore the native Agent API bearer credential" >&2
+  exit 1
+}
+grep -Fq 'path:match("^/ui/[^/]+/v1/chat/completions$") ~= nil' <<< "${output}" || {
+  echo "FAIL: native Agent API credential is not restricted to retained API routes" >&2
+  exit 1
+}
+grep -Fq 'key:match("^[A-Za-z0-9_+/=-]+$") ~= nil' <<< "${output}" || {
   echo "FAIL: ownership filter did not accept existing standard Base64 auth keys" >&2
   exit 1
 }
 [[ "$(grep -Fc 'request_handle:headers():remove(CETIRUN_AUTH_KEY_HEADER)' <<< "${output}")" == 3 ]] || {
   echo "FAIL: exempt Portal, webhook, and shared routes must remove the instance auth header" >&2
+  exit 1
+}
+[[ "$(grep -Fc 'request_handle:headers():remove(AGENT_API_KEY_HEADER)' <<< "${output}")" == 3 ]] || {
+  echo "FAIL: exempt Portal, webhook, and shared routes must remove the native Agent API header" >&2
   exit 1
 }
 grep -Fq -- '- --scope=openid email profile' <<< "${output}" || {

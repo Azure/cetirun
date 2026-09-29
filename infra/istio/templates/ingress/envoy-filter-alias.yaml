@@ -72,6 +72,7 @@ spec:
               local PORTAL_DOMAIN = "{{ .Values.domain | lower }}"
               local PORTAL_COOKIE_NAME = "_cetirun_oauth2"
               local CETIRUN_AUTH_KEY_HEADER = "x-cetirun-auth-key"
+              local AGENT_API_KEY_HEADER = "x-cetirun-agent-api-key"
 
               function is_portal_cookie_name(name)
                 if not name then return false end
@@ -106,6 +107,14 @@ spec:
               function is_cetirun_auth_path(path)
                 return path:match("^/[^/]+/cetirun%-auth/") ~= nil or
                   path:match("^/cetirun%-auth/") ~= nil
+              end
+
+              function is_native_agent_api_path(path, authority)
+                if request_host(authority) == PORTAL_DOMAIN then
+                  return path:match("^/ui/[^/]+/v1/models$") ~= nil or
+                    path:match("^/ui/[^/]+/v1/chat/completions$") ~= nil
+                end
+                return path == "/v1/models" or path == "/v1/chat/completions"
               end
 
               function request_host(authority)
@@ -158,14 +167,21 @@ spec:
                 return false
               end
 
-              function forward_cetirun_auth_key(request_handle, path)
+              function valid_instance_key(key)
+                return key and #key <= 128 and key:match("^[A-Za-z0-9_+/=-]+$") ~= nil
+              end
+
+              function forward_instance_key(request_handle, path, authority)
                 local headers = request_handle:headers()
-                local key = headers:get(CETIRUN_AUTH_KEY_HEADER)
+                local auth_key = headers:get(CETIRUN_AUTH_KEY_HEADER)
+                local api_key = headers:get(AGENT_API_KEY_HEADER)
                 headers:remove(CETIRUN_AUTH_KEY_HEADER)
+                headers:remove(AGENT_API_KEY_HEADER)
                 headers:remove("authorization")
-                if is_cetirun_auth_path(path) and key and #key <= 128 and
-                  key:match("^[A-Za-z0-9_+/=-]+$") then
-                  headers:replace("authorization", "Bearer " .. key)
+                if is_cetirun_auth_path(path) and valid_instance_key(auth_key) then
+                  headers:replace("authorization", "Bearer " .. auth_key)
+                elseif is_native_agent_api_path(path, authority) and valid_instance_key(api_key) then
+                  headers:replace("authorization", "Bearer " .. api_key)
                 end
               end
 
@@ -235,12 +251,14 @@ spec:
                     end
                     request_handle:headers():remove("authorization")
                     request_handle:headers():remove(CETIRUN_AUTH_KEY_HEADER)
+                    request_handle:headers():remove(AGENT_API_KEY_HEADER)
                   elseif is_webhook then
                     -- Webhook routes preserve the Bot Framework Authorization
                     -- header, but an unrelated Portal session must never be
                     -- forwarded into the Agent workload.
                     strip_portal_session_cookie(request_handle)
                     request_handle:headers():remove(CETIRUN_AUTH_KEY_HEADER)
+                    request_handle:headers():remove(AGENT_API_KEY_HEADER)
                     request_handle:headers():remove("x-auth-request-user")
                     request_handle:headers():remove("x-auth-request-email")
                     request_handle:headers():remove("x-auth-request-preferred-username")
@@ -249,6 +267,7 @@ spec:
                     -- contract. Never reinterpret their Authorization header
                     -- as a Portal identity or an instance helper key.
                     request_handle:headers():remove(CETIRUN_AUTH_KEY_HEADER)
+                    request_handle:headers():remove(AGENT_API_KEY_HEADER)
                   end
                   return
                 end
@@ -309,8 +328,8 @@ spec:
                 -- verified. Remove only the Portal session cookie before routing
                 -- to the instance; preserve cookies owned by the Agent UI.
                 strip_portal_session_cookie(request_handle)
-                -- OAuth2 Proxy owns Authorization. Restore the instance helper's
-                -- bearer credential from its dedicated browser header only for
-                -- the cetirun-auth route, after the ownership check succeeds.
-                forward_cetirun_auth_key(request_handle, path_only)
+                -- OAuth2 Proxy owns Authorization. Restore a workload bearer
+                -- from its purpose-specific transport header only after the
+                -- ownership check succeeds and only on its exact route family.
+                forward_instance_key(request_handle, path_only, authority)
               end

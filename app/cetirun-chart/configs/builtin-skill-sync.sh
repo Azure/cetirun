@@ -15,27 +15,75 @@ CETIRUN_MANAGED_SKILL_MANIFEST=".cetirun-managed-skill"
 
 cetirun_skill_checksum() {
   skill_dir="$1"
-  (
-    cd "$skill_dir" || exit 1
-    if find . -mindepth 1 ! -name "$CETIRUN_MANAGED_SKILL_MANIFEST" \
-      \( -type l -o ! \( -type d -o -type f \) \) -print -quit | grep -q .; then
-      exit 1
-    fi
-    find . -mindepth 1 ! -name "$CETIRUN_MANAGED_SKILL_MANIFEST" -print \
-      | LC_ALL=C sort \
-      | while IFS= read -r entry; do
-          if [ -d "$entry" ]; then
-            printf 'd %s\n' "$entry"
-          elif [ -f "$entry" ]; then
-            digest=$(sha256sum "$entry" | sed 's/[[:space:]].*$//') || exit 1
-            printf 'f %s %s\n' "$entry" "$digest"
-          else
-            exit 1
-          fi
-        done \
-      | sha256sum \
-      | sed 's/[[:space:]].*$//'
-  )
+  # Python is part of the shared runtime base. Keep path handling byte-safe and
+  # print a checksum only after the complete tree has been validated. The
+  # manifest format is line-oriented, so names containing its record
+  # delimiters are rejected rather than serialized ambiguously.
+  python3 - "$skill_dir" "$CETIRUN_MANAGED_SKILL_MANIFEST" <<'PY'
+import hashlib
+import os
+import stat
+import sys
+
+
+root = os.fsencode(sys.argv[1])
+manifest_name = os.fsencode(sys.argv[2])
+entries = []
+
+
+def fail_walk(error):
+    raise error
+
+
+try:
+    root_metadata = os.lstat(root)
+    if not stat.S_ISDIR(root_metadata.st_mode):
+        raise ValueError("managed skill root is not a directory")
+    for current, directories, files in os.walk(
+        root, topdown=True, onerror=fail_walk, followlinks=False
+    ):
+        names = list(directories) + list(files)
+        for name in names:
+            if name == manifest_name:
+                continue
+            path = os.path.join(current, name)
+            relative = b"./" + os.path.relpath(path, root)
+            if b"\n" in relative or b"\r" in relative:
+                raise ValueError("managed skill path contains a record delimiter")
+            metadata = os.lstat(path)
+            if stat.S_ISDIR(metadata.st_mode):
+                entries.append((relative, b"d", path))
+            elif stat.S_ISREG(metadata.st_mode):
+                entries.append((relative, b"f", path))
+            else:
+                raise ValueError("managed skill contains an unsupported entry")
+
+    payload = hashlib.sha256()
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    for relative, kind, path in sorted(entries, key=lambda entry: entry[0]):
+        if kind == b"d":
+            payload.update(b"d " + relative + b"\n")
+            continue
+        content = hashlib.sha256()
+        descriptor = os.open(path, os.O_RDONLY | nofollow)
+        try:
+            if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+                raise ValueError("managed skill file changed during validation")
+            while True:
+                chunk = os.read(descriptor, 1024 * 1024)
+                if not chunk:
+                    break
+                content.update(chunk)
+        finally:
+            os.close(descriptor)
+        payload.update(
+            b"f " + relative + b" " + content.hexdigest().encode("ascii") + b"\n"
+        )
+except (OSError, ValueError):
+    sys.exit(1)
+
+print(payload.hexdigest())
+PY
 }
 
 cetirun_managed_skill_metadata() {
@@ -105,7 +153,11 @@ cetirun_install_managed_skill() {
   source_metadata_rest=${source_metadata#*|}
   source_version=${source_metadata_rest%%|*}
   source_checksum=${source_metadata_rest#*|}
-  [ "$(cetirun_skill_checksum "$source_skill")" = "$source_checksum" ] || {
+  source_actual_checksum=$(cetirun_skill_checksum "$source_skill") || {
+    echo "[cetirun-builtins] WARNING: image skill ${skill_directory_name} could not be checksummed; no PVC skill was changed." >&2
+    return 0
+  }
+  [ "$source_actual_checksum" = "$source_checksum" ] || {
     echo "[cetirun-builtins] WARNING: image skill ${skill_directory_name} checksum does not match its manifest; no PVC skill was changed." >&2
     return 0
   }
@@ -128,8 +180,9 @@ cetirun_install_managed_skill() {
     destination_metadata_rest=${destination_metadata#*|}
     destination_version=${destination_metadata_rest%%|*}
     destination_checksum=${destination_metadata_rest#*|}
-    if [ "$destination_skill_id" != "azure-readonly" ] || \
-      [ "$(cetirun_skill_checksum "$destination_skill" 2>/dev/null || true)" != "$destination_checksum" ]; then
+    if ! destination_actual_checksum=$(cetirun_skill_checksum "$destination_skill" 2>/dev/null) || \
+      [ "$destination_skill_id" != "azure-readonly" ] || \
+      [ "$destination_actual_checksum" != "$destination_checksum" ]; then
       echo "[cetirun-builtins] WARNING: preserving customized managed skill ${skill_directory_name}; its checksum no longer matches its manifest." >&2
       return 0
     fi
@@ -144,7 +197,10 @@ cetirun_install_managed_skill() {
       return 0
     fi
   else
-    destination_checksum=$(cetirun_skill_checksum "$destination_skill" 2>/dev/null || true)
+    if ! destination_checksum=$(cetirun_skill_checksum "$destination_skill" 2>/dev/null); then
+      echo "[cetirun-builtins] WARNING: preserving conflicting ${skill_directory_name}; its payload could not be checksummed." >&2
+      return 0
+    fi
     if cetirun_is_recognized_managed_checksum \
       "$source_skill" "$destination_checksum" "$source_checksum"; then
       echo "[cetirun-builtins] Adopting the recognized legacy managed skill: ${skill_directory_name}"
