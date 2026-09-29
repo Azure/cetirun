@@ -61,7 +61,7 @@ import revision. Preserve the upstream notice:
 
 The OpenClaw runtime version selected by agents/openclaw/Dockerfile has a separate
 notice, which must accompany that runtime and its own incorporated material:
-https://github.com/openclaw/openclaw/blob/v2026.6.35/LICENSE
+https://github.com/openclaw/openclaw/blob/v2026.9.6/LICENSE
 
     Copyright (c) 2026 OpenClaw Foundation
 
@@ -151,8 +151,9 @@ copyright, attribution, and source-distribution obligations where applicable.
   applicable notices; a binary COPY is not evidence that those notices ship.
   Commercial/service terms for installed tools are not granted by CetiRun's MIT
   license.
-* agents/openclaw/Dockerfile adds OpenClaw, ClawHub, the OpenClaw Teams and ACP
-  extensions, and Python auth-helper dependencies.
+* agents/openclaw/Dockerfile adds OpenClaw, ClawHub, the OpenClaw ACP, Brave,
+  Discord, Feishu, Microsoft Teams, Perplexity, and Slack extensions, and Python
+  auth-helper dependencies.
 * agents/hermes/Dockerfile installs the checksum-pinned Hermes Agent
   v2026.9.24 source release, its checked-in uv/npm dependency locks, and the
   upstream-pinned SQLite compatibility library. CetiRun's Teams plugin is added

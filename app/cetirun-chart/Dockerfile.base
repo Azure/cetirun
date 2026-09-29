@@ -125,14 +125,6 @@ RUN for tool in sh cp mkdir mv rm chmod mktemp find cmp; do \
       command -v "$tool" >/dev/null 2>&1 || exit 1; \
     done
 
-# Fix CVE-2026-33671: picomatch 4.0.3 bundled inside npm's own tinyglobby dep.
-# npm overrides can't reach npm's internal node_modules, so replace in-place.
-# NPM_REGISTRY keeps this retrieval compatible with enterprise package feeds.
-RUN cd /usr/local/lib/node_modules/npm/node_modules/tinyglobby/node_modules/picomatch && \
-    npm pack picomatch@4.0.4 --quiet --registry "${NPM_REGISTRY}" && \
-    tar xzf picomatch-4.0.4.tgz --strip-components=1 && \
-    rm -f picomatch-4.0.4.tgz
-
 # Fix CVE-2026-12151 when the Node release bundles undici 6.26.0 inside npm.
 # npm overrides can't reach npm's internal node_modules, so replace in-place.
 RUN UNDICI_DIR=/usr/local/lib/node_modules/npm/node_modules/undici && \
@@ -160,13 +152,6 @@ RUN tdnf install -y azure-cli && \
     AZ_SITE=$(sed -n 's/.*PYTHONPATH="\([^"]*\)".*/\1/p' /usr/bin/az | head -n 1) && \
     AZ_SITE=$(printf '%s\n' "$AZ_SITE" | sed 's#\$bin_dir#/usr/bin#g') && \
     AZ_SITE=$(realpath "$AZ_SITE") && \
-    rm -rf "${AZ_SITE}/urllib3" "${AZ_SITE}"/urllib3-*.dist-info && \
-    rm -rf "${AZ_SITE}/msgpack" "${AZ_SITE}"/msgpack-*.dist-info && \
-    rm -rf "${AZ_SITE}/setuptools" "${AZ_SITE}"/setuptools-*.dist-info && \
-    python3 -m pip install --no-cache-dir --break-system-packages --root-user-action=ignore \
-      --index-url "${PYPI_INDEX_URL}" \
-      --upgrade --target "${AZ_SITE}" urllib3==2.7.0 \
-      "msgpack==${MSGPACK_VERSION}" "setuptools==${SETUPTOOLS_VERSION}" && \
     SYSTEM_PIP_VENDOR=$(python3 -c 'from pathlib import Path; import pip._vendor; print(Path(pip._vendor.__file__).parent.resolve())') && \
     for PIP_VENDOR in "${SYSTEM_PIP_VENDOR}" "${AZ_SITE}/pip/_vendor"; do \
       test -f "${PIP_VENDOR}/vendor.txt" && \
@@ -250,21 +235,29 @@ COPY --chown=vibe:vibe .npmrc /home/vibe/.npmrc
 RUN npm config set registry "${NPM_REGISTRY}" && \
     npm config set replace-registry-host npmjs
 
-# CVE overrides — single source of truth for transitive dependency fixes.
-# Add new CVE remediations to this file instead of writing shell sweeps.
+# npm dependency policy for the shared tool installation root.
+# Add narrowly scoped CVE overrides here only when pinned upstreams still need them.
 COPY --chown=vibe:vibe configs/cve-overrides.json /usr/local/share/npm-global/lib/package.json
 
-# Install common npm global tools with CVE overrides applied via package.json.
-# Uses local install (not -g) so npm respects the overrides field.
+# Install common npm global tools from the shared dependency-policy package root.
+# Uses local install (not -g) so npm respects any future overrides.
 # Pin Codex to avoid prerelease platform-package resolution changes breaking image builds.
 ARG CODEX_VERSION=0.153.0
+ARG OPENCODE_VERSION=1.18.33
 RUN mkdir -p /usr/local/share/npm-global/bin && \
     cd /usr/local/share/npm-global/lib && \
-    npm install @openai/codex@${CODEX_VERSION} opencode-ai && \
+    npm install @openai/codex@${CODEX_VERSION} opencode-ai@${OPENCODE_VERSION} && \
     for b in node_modules/.bin/*; do \
       [ -L "$b" ] && ln -sf "$(readlink -f "$b")" /usr/local/share/npm-global/bin/$(basename "$b"); \
     done && \
     npm cache clean --force
+
+# npm 11.16+ blocks undeclared lifecycle scripts. OpenCode's reviewed
+# postinstall selects and verifies the already-installed target-platform binary.
+RUN cd /usr/local/share/npm-global/lib && \
+    npm pkg set 'allowScripts.opencode-ai=true' --json && \
+    npm rebuild opencode-ai && \
+    test "$(opencode --version)" = "${OPENCODE_VERSION}"
 
 # Install uv (pinned version with checksum verification — avoids curl|bash)
 ARG UV_VERSION=0.11.13
@@ -277,7 +270,7 @@ RUN mkdir -p /home/vibe/.local/bin && \
     install -m 755 /tmp/uv-x86_64-unknown-linux-gnu/uvx /home/vibe/.local/bin/uvx && \
     rm -rf /tmp/uv*
 
-# Install Claude Code into same local prefix so CVE overrides from cve-overrides.json apply.
+# Install Claude Code into the same local prefix so it shares dependency policy.
 ARG CLAUDE_CODE_VERSION=2.1.163
 RUN mkdir -p /usr/local/share/npm-global/bin && \
     cd /usr/local/share/npm-global/lib && \
@@ -291,6 +284,11 @@ RUN mkdir -p /usr/local/share/npm-global/bin && \
     else \
       echo '{"hasCompletedOnboarding": true}' > ~/.claude.json; \
     fi
+
+RUN cd /usr/local/share/npm-global/lib && \
+    npm pkg set 'allowScripts[@anthropic-ai/claude-code]=true' --json && \
+    npm rebuild @anthropic-ai/claude-code && \
+    claude --version | grep -F "${CLAUDE_CODE_VERSION}"
 
 # Create config directories and symlink shared skills for opencode and codex
 RUN mkdir -p /home/vibe/.codex /home/vibe/.kube /home/vibe/.config/opencode && \

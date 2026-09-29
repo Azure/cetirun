@@ -49,7 +49,6 @@ def agent(request, tmp_path):
             "channels": {"msteams": {"enabled": True}},
         }))
         (config / "user-md").write_text("Example User")
-        (config / "acpx-config.json").write_text('{"agents": {}}')
         script = CHART / "agents/openclaw/bootstrap/init-home.sh"
         config_file = target / ".openclaw/openclaw.json"
     else:
@@ -106,6 +105,7 @@ def test_native_first_start_and_repeat_preserve_user_files(agent):
         user = agent["target"] / ".openclaw/workspace/USER.md"
         assert read_config(agent)["channels"]["msteams"]["allowFrom"] == ["00000000-0000-0000-0000-000000000000"]
         assert (agent["target"] / ".openclaw/npm").is_symlink()
+        assert not (agent["target"] / ".acpx/config.json").exists()
     else:
         user = agent["target"] / ".hermes/memories/USER.md"
         assert "TEAM.md" in user.read_text()

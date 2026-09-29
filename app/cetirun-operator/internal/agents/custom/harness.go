@@ -13,7 +13,7 @@ import (
 type Harness struct{}
 
 func (Harness) Describe() agents.Descriptor {
-	return agents.Descriptor{Type: "custom", PortName: "http", HealthPath: "/healthz", StartupPath: "/healthz"}
+	return agents.Descriptor{Type: "custom", PortName: "http", HealthPath: "/healthz", ReadinessPath: "/healthz", StartupPath: "/healthz"}
 }
 
 func (Harness) Validate(agent agents.ResolvedAgent, bindings agents.Bindings) error {
@@ -44,7 +44,7 @@ func (h Harness) Build(agent agents.ResolvedAgent, bindings agents.Bindings) (ag
 	if agent.Port != nil {
 		c.Environment = append(c.Environment, agents.EnvironmentValue{Name: "PORT", Value: strconv.Itoa(int(*agent.Port))})
 		c.Ports = []agents.PortBinding{{Name: "http", Number: *agent.Port}}
-		c.HTTP = &agents.HTTPBinding{PortName: "http", HealthPath: "/healthz", StartupPath: "/healthz",
+		c.HTTP = &agents.HTTPBinding{PortName: "http", HealthPath: "/healthz", ReadinessPath: "/healthz", StartupPath: "/healthz",
 			ChatPath: "/v1/chat/completions", ModelsPath: "/v1/models"}
 	}
 	return c, nil

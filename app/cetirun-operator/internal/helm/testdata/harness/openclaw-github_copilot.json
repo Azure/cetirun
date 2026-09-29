@@ -12,15 +12,7 @@
         "dispatch": {
           "enabled": true
         },
-        "enabled": true,
-        "maxConcurrentSessions": 8,
-        "runtime": {
-          "ttlMinutes": 120
-        },
-        "stream": {
-          "coalesceIdleMs": 300,
-          "maxChunkChars": 1200
-        }
+        "enabled": true
       },
       "agents": {
         "defaults": {
@@ -28,15 +20,16 @@
             "memoryFlush": {
               "enabled": true,
               "softThresholdTokens": 4000
-            },
-            "reserveTokensFloor": 20000
-          },
-          "memorySearch": {
-            "enabled": false
+            }
           },
           "model": {
             "fallbacks": [],
             "primary": "github-copilot/test-model"
+          },
+          "modelPolicy": {
+            "allow": [
+              "github-copilot/test-model"
+            ]
           },
           "models": {
             "github-copilot/test-model": {}
@@ -54,46 +47,44 @@
       },
       "browser": {
         "attachOnly": true,
-        "color": "#FF4500",
         "defaultProfile": "openclaw",
         "enabled": true,
         "headless": false,
         "noSandbox": true,
         "profiles": {
           "openclaw": {
-            "cdpPort": 18800,
-            "color": "#FF4500"
+            "cdpPort": 18800
           }
         },
-        "remoteCdpHandshakeTimeoutMs": 3000,
-        "remoteCdpTimeoutMs": 1500,
         "ssrfPolicy": {
           "dangerouslyAllowPrivateNetwork": true
         }
       },
-      "channels": {
-        "telegram": {
-          "network": {
-            "autoSelectFamily": false
-          }
-        }
-      },
       "gateway": {
         "controlUi": {
-          "dangerouslyAllowHostHeaderOriginFallback": true,
-          "dangerouslyDisableDeviceAuth": true
+          "dangerouslyAllowHostHeaderOriginFallback": true
         },
         "mode": "local",
-        "port": 18789
+        "port": 18789,
+        "trustedProxies": [
+          "127.0.0.6"
+        ]
       },
       "logging": {
         "level": "info"
+      },
+      "memory": {
+        "search": {
+          "enabled": false,
+          "rememberAcrossConversations": false
+        }
       },
       "meta": {
         "lastTouchedVersion": "0.1.0"
       },
       "plugins": {
         "allow": [
+          "github",
           "acpx"
         ],
         "entries": {
@@ -102,6 +93,9 @@
               "nonInteractivePermissions": "deny",
               "permissionMode": "approve-all"
             },
+            "enabled": true
+          },
+          "github": {
             "enabled": true
           }
         }
@@ -118,11 +112,11 @@
     }
   },
   "manifestHashes": {
-    "configmap.yaml": "53ce2ed21fdbe3886ad3f4f0f72e3b45b7450229d747ef990a266ee1125b585b",
+    "configmap.yaml": "6521fd9f48848308f24d6ca9cd5831037278cc4319c797ffd9c91daa9d9a6aab",
     "deny-exec-policy.yaml": "7dd9900c6cb720cda23eae4abebcdd68e7d868d91be7df00bac133f63acb4267",
     "networkpolicy.yaml": "3f5bd08e96470dcf976b98106eb0679b3a293e893ffeb17cf9ea1740e11ad53b",
     "pre-upgrade-hook.yaml": "06438617ca6f50d2ea5d2e0e898f95cad13438e19e07b141c52a7b19725f60fc",
     "service.yaml": "0e521e16c134f8dc5cf3cf8b117a6b5f456705a2cd214e1d2a46bdbc9dbf391c",
-    "statefulset.yaml": "4ec1845c9c46f2f38a89be30d8f9d8612836fe74b325a79db057b983bfee2667"
+    "statefulset.yaml": "10c8e02702f5e279212d58f8dc6e9ed6b29a8fb5e0a97aefd97fb30736411d9e"
   }
 }

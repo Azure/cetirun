@@ -3,24 +3,39 @@ Copyright (c) Microsoft Corporation.
 Licensed under the MIT License.
 */}}
 {{- $config := deepCopy .Values.openclaw.config }}
+{{- /* CetiRun owns Tailscale Serve outside OpenClaw and forwards it to the
+   ordinary Gateway listener over loopback. OpenClaw requires the immediate
+   proxy source to be trusted before applying normal token and device auth. */}}
+{{- if .TailscaleEnabled }}
+{{- $gateway := dig "gateway" (dict) $config }}
+{{- $trustedProxies := dig "trustedProxies" (list) $gateway }}
+{{- if not (has "127.0.0.1" $trustedProxies) }}
+{{- $_ := set $gateway "trustedProxies" (append $trustedProxies "127.0.0.1") }}
+{{- end }}
+{{- $_ := set $config "gateway" $gateway }}
+{{- end }}
 {{- /* Model provider auth profile and default model.
    Supports: github_copilot (token-based), openai (api-key), anthropic (api-key). */}}
 {{- $provider := .Values.secrets.provider | default "github_copilot" }}
 {{- $model := required "secrets.model must be set by the CetiRun operator or Helm values" .Values.secrets.model }}
 {{- $authMode := .Values.secrets.authMode }}
+{{- $authProfileMode := $authMode }}
+{{- if eq $authProfileMode "api-key" }}
+{{- $authProfileMode = "api_key" }}
+{{- end }}
 {{- $auth := dig "auth" (dict) $config }}
 {{- if eq $provider "github_copilot" }}
 {{- $_ := set $auth "profiles" (dict "github-copilot:github" (dict "provider" "github-copilot" "mode" "token")) }}
 {{- else if eq $provider "openai" }}
 {{- $profile := dict "provider" "openai" }}
-{{- if $authMode }}
-{{- $_ := set $profile "mode" $authMode }}
+{{- if $authProfileMode }}
+{{- $_ := set $profile "mode" $authProfileMode }}
 {{- end }}
 {{- $_ := set $auth "profiles" (dict "openai:default" $profile) }}
 {{- else if eq $provider "anthropic" }}
 {{- $profile := dict "provider" "anthropic" }}
-{{- if $authMode }}
-{{- $_ := set $profile "mode" $authMode }}
+{{- if $authProfileMode }}
+{{- $_ := set $profile "mode" $authProfileMode }}
 {{- end }}
 {{- $_ := set $auth "profiles" (dict "anthropic:default" $profile) }}
 {{- end }}
@@ -29,7 +44,7 @@ Licensed under the MIT License.
 {{- $providerPrefix := $provider | replace "_" "-" }}
 {{- $modelFull := printf "%s/%s" $providerPrefix $model }}
 {{- /* Default model and compaction settings */}}
-{{- $compaction := dict "reserveTokensFloor" (int 20000) "memoryFlush" (dict "enabled" true "softThresholdTokens" (int 4000)) }}
+{{- $compaction := dict "memoryFlush" (dict "enabled" true "softThresholdTokens" (int 4000)) }}
 {{- $modelConfig := dict }}
 {{- $agentsCurrent := dig "agents" (dict) $config }}
 {{- $defaultsCurrent := dig "defaults" (dict) $agentsCurrent }}
@@ -42,9 +57,11 @@ Licensed under the MIT License.
 {{- $_ := set $modelsDict . (dict) }}
 {{- end }}
 {{- $_ := set $defaultsCurrent "models" $modelsDict }}
+{{- $_ := set $defaultsCurrent "modelPolicy" (dict "allow" (concat (list $modelFull) $fallbacks)) }}
 {{- else }}
 {{- $_ := set $defaultsCurrent "model" (dict "primary" $modelFull) }}
 {{- $_ := set $defaultsCurrent "models" (dict $modelFull $modelConfig) }}
+{{- $_ := set $defaultsCurrent "modelPolicy" (dict "allow" (list $modelFull)) }}
 {{- end }}
 {{- $_ := set $agentsCurrent "defaults" $defaultsCurrent }}
 {{- $_ := set $config "agents" $agentsCurrent }}
@@ -67,8 +84,9 @@ Licensed under the MIT License.
 {{- $_ := set $tools "sessions" $sessions }}
 {{- $_ := set $config "tools" $tools }}
 {{- /* Enable web search when Brave or Perplexity API key is configured */}}
+{{- $webSearchProvider := "" }}
 {{- if or .Values.secrets.braveApiKey .Values.secrets.perplexityApiKey }}
-{{- $webSearchProvider := "brave" }}
+{{- $webSearchProvider = "brave" }}
 {{- if .Values.secrets.perplexityApiKey }}
 {{- $webSearchProvider = "perplexity" }}
 {{- end }}
@@ -81,17 +99,43 @@ Licensed under the MIT License.
 {{- end }}
 {{- $pluginEntries := dig "plugins" "entries" (dict) $config }}
 {{- $pluginsAllow := dig "plugins" "allow" (list) $config }}
+{{- /* GitHub link previews and document reads moved from core into the bundled
+   github plugin. Keep the prior behavior unless the user explicitly disables it. */}}
+{{- if not (hasKey $pluginEntries "github") }}
+{{- $_ := set $pluginEntries "github" (dict "enabled" true) }}
+{{- end }}
+{{- if not (has "github" $pluginsAllow) }}
+{{- $pluginsAllow = append $pluginsAllow "github" }}
+{{- end }}
+{{- if $webSearchProvider }}
+{{- $_ := set $pluginEntries $webSearchProvider (dict "enabled" true) }}
+{{- if not (has $webSearchProvider $pluginsAllow) }}
+{{- $pluginsAllow = append $pluginsAllow $webSearchProvider }}
+{{- end }}
+{{- end }}
 {{- if or .Values.secrets.telegramBotToken .Values.secrets.telegramTokenFile }}
 {{- $_ := set $pluginEntries "telegram" (dict "enabled" true) }}
+{{- if not (has "telegram" $pluginsAllow) }}
+{{- $pluginsAllow = append $pluginsAllow "telegram" }}
+{{- end }}
 {{- end }}
 {{- if and .Values.secrets.slackBotToken .Values.secrets.slackAppToken }}
 {{- $_ := set $pluginEntries "slack" (dict "enabled" true) }}
+{{- if not (has "slack" $pluginsAllow) }}
+{{- $pluginsAllow = append $pluginsAllow "slack" }}
+{{- end }}
 {{- end }}
 {{- if .Values.secrets.discordBotToken }}
 {{- $_ := set $pluginEntries "discord" (dict "enabled" true) }}
+{{- if not (has "discord" $pluginsAllow) }}
+{{- $pluginsAllow = append $pluginsAllow "discord" }}
+{{- end }}
 {{- end }}
 {{- if and .Values.secrets.feishuAppId .Values.secrets.feishuAppSecret }}
 {{- $_ := set $pluginEntries "feishu" (dict "enabled" true) }}
+{{- if not (has "feishu" $pluginsAllow) }}
+{{- $pluginsAllow = append $pluginsAllow "feishu" }}
+{{- end }}
 {{- end }}
 {{- $msteamsAuthType := default "" .Values.msteamsAuthType }}
 {{- if or
@@ -114,6 +158,9 @@ Licensed under the MIT License.
   "permissionMode" .Values.openclaw.acpx.permissionMode
   "nonInteractivePermissions" .Values.openclaw.acpx.nonInteractivePermissions
 }}
+{{- if .Values.openclaw.acpx.agents }}
+{{- $_ := set $acpxConfig "agents" .Values.openclaw.acpx.agents }}
+{{- end }}
 {{- $_ := set $pluginEntries "acpx" (dict "enabled" true "config" $acpxConfig) }}
 {{- /* Explicitly allow the acpx plugin to suppress non-bundled plugin warnings */}}
 {{- if not (has "acpx" $pluginsAllow) }}
@@ -125,14 +172,6 @@ Licensed under the MIT License.
   "backend" .Values.openclaw.acpx.backend
   "defaultAgent" .Values.openclaw.acpx.defaultAgent
   "allowedAgents" .Values.openclaw.acpx.allowedAgents
-  "maxConcurrentSessions" (.Values.openclaw.acpx.maxConcurrentSessions | int)
-  "stream" (dict
-    "coalesceIdleMs" (.Values.openclaw.acpx.stream.coalesceIdleMs | int)
-    "maxChunkChars" (.Values.openclaw.acpx.stream.maxChunkChars | int)
-  )
-  "runtime" (dict
-    "ttlMinutes" (.Values.openclaw.acpx.runtime.ttlMinutes | int)
-  )
 }}
 {{- $_ := set $config "acp" $acp }}
 {{- end }}
@@ -157,6 +196,7 @@ Licensed under the MIT License.
    autoSelectFamily at the config level so it applies to both gateway
    and embedded agent modes. */}}
 {{- $channels := dig "channels" (dict) $config }}
+{{- if or .Values.secrets.telegramBotToken .Values.secrets.telegramTokenFile (hasKey $channels "telegram") }}
 {{- $telegram := dig "telegram" (dict) $channels }}
 {{- $network := dig "network" (dict) $telegram }}
 {{- $_ := set $network "autoSelectFamily" false }}
@@ -166,6 +206,7 @@ Licensed under the MIT License.
 {{- $_ := set $telegram "tokenFile" .Values.secrets.telegramTokenFile }}
 {{- end }}
 {{- $_ := set $channels "telegram" $telegram }}
+{{- end }}
 {{- /* Set groupPolicy=open for Slack when Slack plugin is configured */}}
 {{- if or (and .Values.secrets.slackBotToken .Values.secrets.slackAppToken) (dig "plugins" "slack" "enabled" false .Values.openclaw) }}
 {{- $slack := dig "slack" (dict) $channels }}
@@ -182,13 +223,14 @@ Licensed under the MIT License.
 {{- $_ := set $msteams "webhook" (dict "port" (int $.Values.msteamsWebhookPort) "path" "/api/messages") }}
 {{- $_ := set $channels "msteams" $msteams }}
 {{- end }}
+{{- if $channels }}
 {{- $_ := set $config "channels" $channels }}
+{{- end }}
 {{- if .Values.skills.shared }}
 {{- $skills := dig "skills" (dict) $config }}
 {{- $load := dig "load" (dict) $skills }}
 {{- $_ := set $load "extraDirs" (list .Values.skills.mountPath) }}
 {{- $_ := set $load "watch" true }}
-{{- $_ := set $load "watchDebounceMs" (int 250) }}
 {{- $_ := set $skills "load" $load }}
 {{- $_ := set $config "skills" $skills }}
 {{- end }}
@@ -199,21 +241,8 @@ Licensed under the MIT License.
 {{- $npmDirs := .SkillDirs }}
 {{- $_ := set $load "extraDirs" (concat $existingDirs $npmDirs) }}
 {{- $_ := set $load "watch" true }}
-{{- $_ := set $load "watchDebounceMs" (int 250) }}
 {{- $_ := set $skills "load" $load }}
 {{- $_ := set $config "skills" $skills }}
-{{- end }}
-{{- /* Relax gateway auth when Tailscale is enabled and relaxGatewayAuth is true.
-   Tailscale provides its own authentication layer, so the gateway doesn't need
-   additional device auth for access via the tailnet. Only enable this when no
-   non-tailnet ingress path exists (ingress disabled, network policy enforced). */}}
-{{- if and .TailscaleEnabled .Values.tailscale.relaxGatewayAuth }}
-{{- $gw := dig "gateway" (dict) $config }}
-{{- $cui := dig "controlUi" (dict) $gw }}
-{{- $_ := set $cui "allowInsecureAuth" true }}
-{{- $_ := set $cui "dangerouslyDisableDeviceAuth" true }}
-{{- $_ := set $gw "controlUi" $cui }}
-{{- $_ := set $config "gateway" $gw }}
 {{- end }}
 {{- /* Add meta block so the config observer does not flag this as anomalous.
    OpenClaw uses meta.lastTouchedVersion to track the last writer. */}}

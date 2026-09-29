@@ -21,9 +21,10 @@ OAuth flow are identical.
 
 Token handling stays inside the pod: when the OAuth flow finishes, this
 service writes the token into the agent's own dotenv file
-(``~/.hermes/.env`` or ``~/.openclaw/.env``) and runs
-``supervisorctl restart <agent-program>`` so the gateway picks up the new
-credential without restarting the pod.
+(``~/.hermes/.env`` or ``~/.openclaw/.env``). For OpenClaw it also pipes the
+token to OpenClaw's credential command so the canonical SQLite auth store is
+updated. It then runs ``supervisorctl restart <agent-program>`` so the gateway
+picks up the new credential without restarting the pod.
 
 Bearer auth: every /v1/* request requires
 ``Authorization: Bearer ${CETIRUN_AUTH_KEY}``. For backward compatibility
@@ -101,6 +102,9 @@ LISTEN_PORT = int(os.environ.get("CETIRUN_AUTH_PORT", "18790"))
 SUPERVISOR_CONF = os.environ.get("SUPERVISOR_CONF", "/tmp/supervisord.conf")
 
 AGENT_TYPE = os.environ.get("CETIRUN_AGENT_TYPE", "hermes").strip().lower()
+OPENCLAW_CLI = os.environ.get("OPENCLAW_CLI", "openclaw").strip() or "openclaw"
+OPENCLAW_COPILOT_PROFILE_ID = "github-copilot:github"
+OPENCLAW_AUTH_COMMAND_TIMEOUT = 30
 
 
 # ─── Agent profile ─────────────────────────────────────────────────────────
@@ -243,89 +247,58 @@ def _openclaw_env_file() -> Path:
     return _openclaw_state_dir() / ".env"
 
 
-def _openclaw_agents_dir() -> Path:
-    return _openclaw_state_dir() / "agents"
-
-
-def _openclaw_write_auth_profile(token: str) -> None:
-    """Write the github-copilot token into each agent's auth-profiles.json.
-
-    OpenClaw's chat runtime reads the Copilot token from
-    ``~/.openclaw/agents/<agent>/agent/auth-profiles.json`` under
-    ``profiles["github-copilot:github"].token`` — NOT from the ``.env`` file.
-    Setting ``OPENCLAW_GITHUB_TOKEN`` alone is insufficient.
-
-    This mirrors the merge logic in ``agents/openclaw/bootstrap/init-home.sh``
-    ``migrate_agent_auth_profiles``: for every existing agent dir, merge a
-    ``{"type": "token", "provider": "github-copilot", "token": ...}`` profile
-    into the file; if no agent dir exists yet, seed ``main/agent/``.
-    """
-    agents_dir = _openclaw_agents_dir()
-    agents_dir.mkdir(parents=True, exist_ok=True)
-
-    profile = {
-        "type": "token",
-        "provider": "github-copilot",
-        "token": token,
-    }
-
-    agent_subdirs = [p for p in agents_dir.iterdir() if p.is_dir()] if agents_dir.exists() else []
-    if not agent_subdirs:
-        # Seed the default "main" agent on first login.
-        (agents_dir / "main" / "agent").mkdir(parents=True, exist_ok=True)
-        agent_subdirs = [agents_dir / "main"]
-
-    for agent_root in agent_subdirs:
-        agent_dir = agent_root / "agent"
-        agent_dir.mkdir(parents=True, exist_ok=True)
-        auth_file = agent_dir / "auth-profiles.json"
-
-        data: Dict[str, Any] = {"version": 1, "profiles": {}}
-        if auth_file.exists():
-            try:
-                with auth_file.open("r", encoding="utf-8") as f:
-                    loaded = json.load(f) or {}
-                if isinstance(loaded, dict):
-                    data = loaded
-                    if not isinstance(data.get("profiles"), dict):
-                        data["profiles"] = {}
-                    data.setdefault("version", 1)
-            except (OSError, json.JSONDecodeError) as exc:
-                logger.warning("auth-profiles.json at %s unreadable, rewriting: %s", auth_file, exc)
-
-        data["profiles"]["github-copilot:github"] = profile
-        _atomic_write(auth_file, json.dumps(data, indent=2) + "\n")
-        logger.info("github-copilot profile written to %s", auth_file)
+def _run_openclaw_auth_command(
+    arguments: list[str], *, stdin: Optional[str] = None
+) -> subprocess.CompletedProcess[str]:
+    """Run an OpenClaw auth command without exposing credential input."""
+    try:
+        result = subprocess.run(
+            [OPENCLAW_CLI, *arguments],
+            input=stdin,
+            capture_output=True,
+            text=True,
+            timeout=OPENCLAW_AUTH_COMMAND_TIMEOUT,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        logger.warning("OpenClaw auth command could not run: %s", type(exc).__name__)
+        raise RuntimeError("OpenClaw credential command failed") from exc
+    if result.returncode != 0:
+        logger.warning(
+            "OpenClaw auth command exited with status %s", result.returncode
+        )
+        raise RuntimeError("OpenClaw credential command failed")
+    return result
 
 
 def _openclaw_save_token(token: str) -> None:
     """Persist the Copilot token for OpenClaw.
 
-    Writes two locations:
-
-    1. ``~/.openclaw/.env`` — sets ``OPENCLAW_GITHUB_TOKEN``. This is what the
-       documented precedence chain (OPENCLAW_GITHUB_TOKEN → COPILOT_GITHUB_TOKEN
-       → GH_TOKEN → GITHUB_TOKEN) reads for environment-based lookups.
-    2. ``~/.openclaw/agents/*/agent/auth-profiles.json`` — sets the
-       ``github-copilot:github`` profile. The OpenClaw chat runtime reads from
-       here; without it the gateway raises ``FailoverError: No API key found
-       for provider "github-copilot"`` even with the env var set.
-
-    The lower-priority ``COPILOT_GITHUB_TOKEN`` is cleared from .env to avoid
-    surprising staleness after re-authentication.
+    OpenClaw 2026.9.6 stores runtime auth profiles in SQLite and no longer reads
+    ``auth-profiles.json``. Use its supported stdin-based writer, then retain
+    ``COPILOT_GITHUB_TOKEN`` in the trusted state dotenv file for this helper's
+    live model-catalog request and OpenClaw's documented environment fallback.
     """
+    _run_openclaw_auth_command(
+        [
+            "models",
+            "auth",
+            "paste-token",
+            "--provider",
+            "github-copilot",
+            "--profile-id",
+            OPENCLAW_COPILOT_PROFILE_ID,
+            "--agent",
+            "main",
+        ],
+        stdin=token + "\n",
+    )
+
     path = _openclaw_env_file()
     entries = _read_dotenv(path)
-    entries["OPENCLAW_GITHUB_TOKEN"] = token
-    entries.pop("COPILOT_GITHUB_TOKEN", None)
+    entries["COPILOT_GITHUB_TOKEN"] = token
+    entries.pop("OPENCLAW_GITHUB_TOKEN", None)
     _write_dotenv(path, entries)
-    logger.info("OPENCLAW_GITHUB_TOKEN saved to %s", path)
-
-    try:
-        _openclaw_write_auth_profile(token)
-    except Exception as exc:  # noqa: BLE001 — env file save already succeeded
-        logger.exception("failed to write auth-profiles.json: %s", exc)
-        raise
+    logger.info("COPILOT_GITHUB_TOKEN saved to %s", path)
 
 
 def _openclaw_read_provider_and_model() -> Dict[str, str]:
@@ -366,64 +339,42 @@ def _openclaw_read_provider_and_model() -> Dict[str, str]:
 
 
 def _openclaw_is_authenticated() -> bool:
-    """Check that *both* persistence locations have a token.
-
-    The OpenClaw runtime only reads ``auth-profiles.json``; the env file is a
-    redundancy for env-var-aware tooling. We require both because a stale env
-    var with no profile would still report "logged in" from the user's POV
-    while chat fails. Likewise a profile written without an env var means we
-    were called before the user even ran login here.
-    """
-    entries = _read_dotenv(_openclaw_env_file())
-    env_ok = any(
-        entries.get(var)
-        for var in (
-            "OPENCLAW_GITHUB_TOKEN",
-            "COPILOT_GITHUB_TOKEN",
-            "GH_TOKEN",
-            "GITHUB_TOKEN",
+    """Check the helper token and OpenClaw's redacted auth-profile inventory."""
+    if not _openclaw_read_token():
+        return False
+    try:
+        result = _run_openclaw_auth_command(
+            [
+                "models",
+                "auth",
+                "list",
+                "--provider",
+                "github-copilot",
+                "--agent",
+                "main",
+                "--json",
+            ]
         )
+        payload = json.loads(result.stdout)
+    except (RuntimeError, json.JSONDecodeError, TypeError) as exc:
+        logger.debug("failed to inspect OpenClaw auth profiles: %s", type(exc).__name__)
+        return False
+    profiles = payload.get("profiles") if isinstance(payload, dict) else None
+    return isinstance(profiles, list) and any(
+        isinstance(profile, dict)
+        and profile.get("id") == OPENCLAW_COPILOT_PROFILE_ID
+        and profile.get("provider") == "github-copilot"
+        and profile.get("type") in {"token", "oauth"}
+        for profile in profiles
     )
-    if not env_ok:
-        return False
-
-    agents_dir = _openclaw_agents_dir()
-    if not agents_dir.exists():
-        return False
-    for agent_root in agents_dir.iterdir():
-        auth_file = agent_root / "agent" / "auth-profiles.json"
-        if not auth_file.is_file():
-            continue
-        try:
-            with auth_file.open("r", encoding="utf-8") as f:
-                data = json.load(f) or {}
-        except (OSError, json.JSONDecodeError):
-            continue
-        profiles = data.get("profiles") if isinstance(data, dict) else None
-        if isinstance(profiles, dict):
-            entry = profiles.get("github-copilot:github")
-            if isinstance(entry, dict) and entry.get("token"):
-                return True
-    return False
 
 
 def _openclaw_read_token() -> str:
     """Read the active OpenClaw Copilot credential without exposing it."""
-    agents_dir = _openclaw_agents_dir()
-    if agents_dir.exists():
-        for agent_root in agents_dir.iterdir():
-            auth_file = agent_root / "agent" / "auth-profiles.json"
-            try:
-                with auth_file.open("r", encoding="utf-8") as f:
-                    data = json.load(f) or {}
-                profile = data.get("profiles", {}).get("github-copilot:github", {})
-                token = profile.get("token", "") if isinstance(profile, dict) else ""
-                if isinstance(token, str) and token:
-                    return token
-            except (OSError, json.JSONDecodeError, AttributeError):
-                continue
     entries = _read_dotenv(_openclaw_env_file())
-    for key in ("OPENCLAW_GITHUB_TOKEN", "COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"):
+    # OPENCLAW_GITHUB_TOKEN is a one-release compatibility read for CetiRun
+    # homes created before OpenClaw standardized on COPILOT_GITHUB_TOKEN.
+    for key in ("COPILOT_GITHUB_TOKEN", "OPENCLAW_GITHUB_TOKEN"):
         if entries.get(key):
             return entries[key]
     return ""
@@ -437,7 +388,7 @@ def _resolve_profile(agent: str) -> AgentProfile:
         return AgentProfile(
             name="openclaw",
             env_file=_openclaw_env_file(),
-            token_env_var="OPENCLAW_GITHUB_TOKEN",
+            token_env_var="COPILOT_GITHUB_TOKEN",
             supervisord_program=os.environ.get(
                 "CETIRUN_GATEWAY_PROGRAM", "openclaw"
             ),

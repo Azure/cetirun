@@ -151,7 +151,7 @@ TAILSCALE
 #!/bin/bash
 sleep 10
 echo "tailscale-serve: running tailscale serve..."
-sudo tailscale serve --bg "http://localhost:${TAILSCALE_SERVE_PORT}"
+sudo tailscale serve --bg "http://127.0.0.1:${TAILSCALE_SERVE_PORT}"
 echo "tailscale-serve: serve configured successfully"
 TSSERVE_SCRIPT
     chmod +x /tmp/tailscale-serve.sh

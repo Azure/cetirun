@@ -67,6 +67,7 @@ class ImageDependencyTests(unittest.TestCase):
         minimums = {
             "Dockerfile.base": {
                 "CLAUDE_CODE_VERSION": "2.1.163",
+                "OPENCODE_VERSION": "1.18.33",
                 "GH_VERSION": "2.95.0",
                 "KUBECTL_VERSION": "1.36.4",
                 "TAILSCALE_VERSION": "1.100.0",
@@ -74,7 +75,9 @@ class ImageDependencyTests(unittest.TestCase):
                 "SETUPTOOLS_VERSION": "80.10.2",
             },
             "agents/openclaw/Dockerfile": {
-                "OPENCLAW_VERSION": "2026.6.35",
+                "OPENCLAW_VERSION": "2026.9.6",
+                "CLAWHUB_VERSION": "0.23.3",
+                "CLAWHUB_UNDICI_VERSION": "7.29.1",
                 "CETIRUN_AUTH_AIOHTTP_VERSION": "3.14.3",
             },
             "agents/hermes/Dockerfile": {
@@ -90,6 +93,42 @@ class ImageDependencyTests(unittest.TestCase):
                     self.assertGreaterEqual(
                         version_tuple(match[1]), version_tuple(minimum)
                     )
+
+    def test_openclaw_config_uses_current_schema_contracts(self):
+        template = (CHART / "agents/openclaw/config/native.tpl").read_text()
+        entrypoint = (
+            CHART / "agents/openclaw/bootstrap/entrypoint.sh"
+        ).read_text()
+        values = (CHART / "values.yaml").read_text()
+        schema = json.loads((CHART / "values.schema.json").read_text())
+
+        self.assertIn('set $defaultsCurrent "modelPolicy"', template)
+        self.assertIn('set $pluginEntries "github"', template)
+        self.assertIn("rememberAcrossConversations: false", values)
+        self.assertIn('trustedProxies:\n        - "127.0.0.6"', values)
+        self.assertIn(
+            'tailscale serve --bg "http://127.0.0.1:${TAILSCALE_SERVE_PORT}"',
+            entrypoint,
+        )
+        self.assertNotIn('tailscale serve --bg "http://localhost:', entrypoint)
+        self.assertNotIn(
+            "memorySearch", schema["properties"]["openclaw"]["properties"]
+        )
+
+        retired_fields = (
+            "reserveTokensFloor",
+            "maxConcurrentSessions",
+            "coalesceIdleMs",
+            "maxChunkChars",
+            "ttlMinutes",
+            "remoteCdpTimeoutMs",
+            "remoteCdpHandshakeTimeoutMs",
+            "watchDebounceMs",
+        )
+        for field in retired_fields:
+            with self.subTest(field=field):
+                self.assertNotIn(field, template)
+                self.assertNotIn(field, values)
 
     def test_hermes_uses_official_locked_source_install(self):
         content = (CHART / "agents/hermes/Dockerfile").read_text()
@@ -178,35 +217,31 @@ class ImageDependencyTests(unittest.TestCase):
         self.assertIn('NODE_ARCH="arm64"; NODE_SHA256="${NODE_SHA256_ARM64}"', content)
         self.assertIn('echo "${NODE_SHA256}  /tmp/node.tar.xz" | sha256sum --check', content)
 
-    def test_npm_fixes_preserve_dependency_major_versions(self):
+    def test_npm_overrides_are_empty_after_dependency_upgrades(self):
         overrides = json.loads((CHART / "configs/cve-overrides.json").read_text())[
             "overrides"
         ]
-        minimums = {
-            "form-data@2": "2.5.6",
-            "form-data@3": "3.0.5",
-            "form-data@4": "4.0.6",
-            "protobufjs@7": "7.6.1",
-            "protobufjs@8": "8.4.1",
-            "undici@6": "6.27.0",
-            "undici@7": "7.28.0",
-            "undici@8": "8.5.0",
-            "ws@8": "8.21.0",
-        }
-        for package, minimum in minimums.items():
-            with self.subTest(package=package):
-                self.assertIn(package, overrides)
-                spec = overrides[package]
-                self.assertRegex(spec, r"^\^\d+\.\d+\.\d+$")
-                version = version_tuple(spec[1:])
-                self.assertEqual(version[0], version_tuple(minimum)[0])
-                self.assertGreaterEqual(version, version_tuple(minimum))
-        self.assertNotIn("protobufjs", overrides)
+        self.assertEqual(overrides, {})
 
         base = (CHART / "Dockerfile.base").read_text()
+        self.assertNotIn("tinyglobby/node_modules/picomatch", base)
         self.assertIn(
             "UNDICI_DIR=/usr/local/lib/node_modules/npm/node_modules/undici", base
         )
+        self.assertIn("npm pkg set 'allowScripts.opencode-ai=true' --json", base)
+        self.assertIn("npm rebuild opencode-ai", base)
+        self.assertIn('test "$(opencode --version)" = "${OPENCODE_VERSION}"', base)
+        self.assertIn(
+            "npm pkg set 'allowScripts[@anthropic-ai/claude-code]=true' --json",
+            base,
+        )
+        self.assertIn("npm rebuild @anthropic-ai/claude-code", base)
+        self.assertIn('claude --version | grep -F "${CLAUDE_CODE_VERSION}"', base)
+
+        openclaw = (CHART / "agents/openclaw/Dockerfile").read_text()
+        self.assertIn('npm pkg set "overrides[undici@7]=${CLAWHUB_UNDICI_VERSION}"', openclaw)
+        self.assertIn('npm ls "undici@${CLAWHUB_UNDICI_VERSION}" --all', openclaw)
+        self.assertIn("! npm ls undici@7.29.0 --all", openclaw)
         self.assertIn(
             'npm pack undici@6.27.0 --quiet --registry "${NPM_REGISTRY}"',
             base,
@@ -217,18 +252,15 @@ class ImageDependencyTests(unittest.TestCase):
             base,
         )
 
-    def test_azure_cli_private_python_packages_are_updated(self):
+    def test_azure_cli_top_level_packages_are_not_replaced(self):
         content = (CHART / "Dockerfile.base").read_text()
         install = content.split("# Install Azure CLI", 1)[1].split(
             "# Install ripgrep", 1
         )[0]
-        for package in ("msgpack", "setuptools"):
-            with self.subTest(package=package):
-                self.assertIn(f"{package}==${{{package.upper()}_VERSION}}", install)
-                self.assertIn(f'"${{AZ_SITE}}/{package}"', install)
-                self.assertIn(f'"${{AZ_SITE}}"/{package}-*.dist-info', install)
-        self.assertIn('--target "${AZ_SITE}"', install)
-        self.assertIn("--upgrade", install)
+        self.assertNotIn('rm -rf "${AZ_SITE}/urllib3"', install)
+        self.assertNotIn('rm -rf "${AZ_SITE}/msgpack"', install)
+        self.assertNotIn('rm -rf "${AZ_SITE}/setuptools"', install)
+        self.assertNotIn('--target "${AZ_SITE}"', install)
 
     def test_pip_vendor_payloads_and_manifest_are_updated_together(self):
         content = (CHART / "Dockerfile.base").read_text()
@@ -261,6 +293,43 @@ class ImageDependencyTests(unittest.TestCase):
 
     def test_plugin_install_and_identity_cleanup_failure_handling(self):
         content = (CHART / "agents/openclaw/Dockerfile").read_text()
+        self.assertNotIn("OPENCLAW_PLUGIN_STAGE_DIR", content)
+        self.assertIn("npm pkg set 'allowScripts.openclaw=true' --json", content)
+        self.assertIn("npm pkg delete allowScripts.openclaw", content)
+        self.assertIn("npm approve-scripts openclaw", content)
+        self.assertIn("npm rebuild openclaw", content)
+        self.assertIn(
+            "test ! -e node_modules/openclaw/.openclaw-lifecycle-pending", content
+        )
+        self.assertIn("ARG OPENCLAW_TARBALL_INTEGRITY=sha512-", content)
+        self.assertIn('view "openclaw@${OPENCLAW_VERSION}" dist.tarball dist.integrity', content)
+        self.assertIn('crypto.createHash("sha512")', content)
+        self.assertNotIn("npm --min-release-age=0 pack", content)
+        self.assertIn(
+            "source=/home/vibe/openclaw-pack/openclaw.tgz,target=/tmp/openclaw.tgz,ro",
+            content,
+        )
+        self.assertNotIn("openclaw-2026.9.6.tgz", content)
+        self.assertIn("--prefix /tmp/openclaw-plugin-prefetch", content)
+        expected_plugins = (
+            "acpx",
+            "brave-plugin",
+            "discord",
+            "feishu",
+            "msteams",
+            "perplexity-plugin",
+            "slack",
+        )
+        for plugin in expected_plugins:
+            with self.subTest(plugin=plugin):
+                package = f"@openclaw/{plugin}@${{OPENCLAW_VERSION}}"
+                self.assertIn(f'"{package}"', content)
+                self.assertIn(f'openclaw plugins install "npm:{package}"', content)
+        self.assertLess(
+            content.index("--prefix /tmp/openclaw-plugin-prefetch"),
+            content.index('openclaw plugins install "npm:@openclaw/acpx'),
+        )
+        self.assertNotIn("openclaw doctor --fix", content)
         match = re.search(
             r"^RUN (.*openclaw plugins install.*)$",
             content.replace("\\\n", ""),
@@ -268,11 +337,11 @@ class ImageDependencyTests(unittest.TestCase):
         )
         self.assertIsNotNone(match)
         install = match[1]
-        self.assertIn("(openclaw doctor --fix --non-interactive --yes || true)", install)
         self.assertIn("rm -rf /home/vibe/.openclaw/identity", install)
         self.assertIn("rm -f /home/vibe/.openclaw/openclaw.json", install)
         self.assertNotIn("\nRUN openclaw doctor", content)
-        for fail_at, cleanup_exit in ((0, 0), (1, 0), (2, 0), (3, 0), (0, 1), (3, 1)):
+        cases = [(fail_at, 0) for fail_at in range(8)] + [(0, 1), (7, 1)]
+        for fail_at, cleanup_exit in cases:
             with self.subTest(fail_at=fail_at, cleanup_exit=cleanup_exit):
                 mocks = (
                     "calls=0\n"
@@ -288,7 +357,7 @@ class ImageDependencyTests(unittest.TestCase):
                     text=True,
                     check=False,
                 )
-                if fail_at in (1, 2) or cleanup_exit:
+                if fail_at or cleanup_exit:
                     self.assertNotEqual(result.returncode, 0, result.stderr)
                 else:
                     self.assertEqual(result.returncode, 0, result.stderr)

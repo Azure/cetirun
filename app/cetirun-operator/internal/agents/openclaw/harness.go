@@ -10,7 +10,7 @@ type Harness struct{}
 func (Harness) Describe() agents.Descriptor {
 	return agents.Descriptor{
 		Type: "openclaw", ConfigFile: "openclaw.json", PortName: "gateway",
-		DefaultPort: 18789, HealthPath: "/healthz", StartupPath: "/health",
+		DefaultPort: 18789, HealthPath: "/healthz", ReadinessPath: "/readyz", StartupPath: "/startupz",
 		PreserveUIPrefix: true, NativeSecretKey: "OPENCLAW_GATEWAY_TOKEN",
 	}
 }

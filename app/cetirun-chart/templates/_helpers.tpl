@@ -374,6 +374,18 @@ port: {{ .Values.runtime.http.portName }}
 {{- end }}
 
 {{/*
+Dispatcher: readiness probe path and port
+*/}}
+{{- define "cetirun.agent.readinessProbePathPort" -}}
+{{- if .Values.runtime -}}
+path: {{ default .Values.runtime.http.healthPath .Values.runtime.http.readinessPath }}
+port: {{ .Values.runtime.http.portName }}
+{{- else -}}
+{{- include (printf "cetirun.agent.%s.readinessProbePathPort" (include "cetirun.agent.type" .)) . -}}
+{{- end }}
+{{- end }}
+
+{{/*
 Dispatcher: startup probe path and port
 */}}
 {{- define "cetirun.agent.startupProbePathPort" -}}
