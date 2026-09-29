@@ -53,8 +53,14 @@ fi
 
 work_dir="$(mktemp -d)"
 forward_pids=()
-fullname="${release_name}-cetirun-ai-gateway"
-postgresql_pod="${fullname}-postgresql-0"
+# Resource names are read from the cluster once the release exists, by
+# discover_names below, rather than rebuilt here: the chart shortens long names
+# and uses the release name alone when it already contains the chart's, and a
+# copy of those rules in the test would drift from the chart's.
+fullname=""
+postgresql_name=""
+postgresql_pod=""
+valkey_name=""
 # Set only once this run has created the namespace. Cleanup deletes the
 # namespace and the release in it, so it needs that ownership first: an
 # existing namespace, and everything in it, must never be touched.
@@ -245,7 +251,7 @@ in_mock_pod() {
 
 gateway_pods() {
   kubectl get pods -n "${namespace}" \
-    -l "app.kubernetes.io/instance=${release_name},app.kubernetes.io/name=cetirun-ai-gateway,app.kubernetes.io/component=gateway" \
+    -l "app.kubernetes.io/instance=${release_name},app.kubernetes.io/component=gateway" \
     -o json | jq -r '.items[]
       | select(.metadata.deletionTimestamp == null)
       | select(any(.status.conditions[]?; .type == "Ready" and .status == "True"))
@@ -311,6 +317,22 @@ api_post() {
     -H "Authorization: Bearer ${master_key}" -H 'Content-Type: application/json' -d "${body}"
 }
 
+# The Gateway Deployment carries the chart's fullname, which also prefixes the
+# auth Secret; the bundled services are found by their component label.
+discover_names() {
+  local selector="app.kubernetes.io/instance=${release_name}"
+  fullname="$(kubectl get deployments -n "${namespace}" -l "${selector}" -o json | jq -r '.items[]
+    | select(.spec.selector.matchLabels["app.kubernetes.io/component"] == "gateway") | .metadata.name')"
+  postgresql_name="$(kubectl get statefulsets -n "${namespace}" -l "${selector},app.kubernetes.io/component=postgresql" \
+    -o jsonpath='{.items[0].metadata.name}')"
+  valkey_name="$(kubectl get services -n "${namespace}" -l "${selector},app.kubernetes.io/component=valkey" \
+    -o jsonpath='{.items[0].metadata.name}')"
+  [ -n "${fullname}" ] && [ -n "${postgresql_name}" ] && [ -n "${valkey_name}" ] \
+    || fail "could not find the release's Gateway, PostgreSQL and Valkey by their labels"
+  postgresql_pod="${postgresql_name}-0"
+  echo "  names: ${fullname} (${#fullname}), ${postgresql_name} (${#postgresql_name}), ${valkey_name} (${#valkey_name})"
+}
+
 # ----- Install ---------------------------------------------------------------
 
 # One command, no prior setup beyond the provider key: the chart brings its own
@@ -320,6 +342,7 @@ echo "==> Installing ${release_name}"
 helm install "${release_name}" "${chart_dir}" -n "${namespace}" -f "${values_file}" \
   --wait --timeout 10m >/dev/null || fail "install did not complete"
 pass "install completed with the bundled PostgreSQL and Valkey"
+discover_names
 
 # The migration once exited zero against a schema copy with no migrations beside
 # it, leaving no LiteLLM tables behind a successful install. The proxies still
@@ -346,7 +369,7 @@ pass "the Gateway runs as a non-root user"
 master_key="$(secret_value master-key)"
 salt_before="$(secret_value salt-key)"
 [ -n "${salt_before}" ] || fail "no salt key was generated"
-db_password_before="$(secret_value password "${fullname}-postgresql")"
+db_password_before="$(secret_value password "${postgresql_name}")"
 
 forward_pods
 port_a="${pod_ports[0]}"
@@ -365,7 +388,7 @@ try:
     print("accepted")
 except psycopg.OperationalError as error:
     print("refused" if "password authentication failed" in str(error) else f"error: {error}")
-' "${fullname}-postgresql")"
+' "${postgresql_name}")"
 [ "${pg_wrong}" = "refused" ] || fail "the bundled PostgreSQL did not refuse a wrong password from another pod (${pg_wrong})"
 valkey_open="$(in_mock_pod '
 import sys, redis
@@ -376,7 +399,7 @@ except redis.exceptions.AuthenticationError:
     print("refused")
 except redis.exceptions.ResponseError as error:
     print("refused" if "NOAUTH" in str(error) else f"error: {error}")
-' "${fullname}-valkey")"
+' "${valkey_name}")"
 [ "${valkey_open}" = "refused" ] || fail "the bundled Valkey answered without a password (${valkey_open})"
 pass "a wrong PostgreSQL password and a password-less Valkey client are refused"
 
@@ -504,7 +527,7 @@ pass "upgrade completed"
 
 [ "$(secret_value salt-key)" = "${salt_before}" ] || fail "the salt key changed across upgrade"
 [ "$(secret_value master-key)" = "${master_key}" ] || fail "the master key changed across upgrade"
-[ "$(secret_value password "${fullname}-postgresql")" = "${db_password_before}" ] \
+[ "$(secret_value password "${postgresql_name}")" = "${db_password_before}" ] \
   || fail "the bundled PostgreSQL's password changed across upgrade"
 pass "salt key, master key and database password unchanged"
 
@@ -529,7 +552,7 @@ pvc_before="$(kubectl get pvc "data-${postgresql_pod}" -n "${namespace}" -o json
 helm uninstall "${release_name}" -n "${namespace}" --wait >/dev/null || fail "uninstall did not complete"
 kubectl get secret "${fullname}-auth" -n "${namespace}" >/dev/null 2>&1 \
   || fail "helm uninstall deleted the auth Secret; the next install would generate a new salt key"
-kubectl get secret "${fullname}-postgresql" -n "${namespace}" >/dev/null 2>&1 \
+kubectl get secret "${postgresql_name}" -n "${namespace}" >/dev/null 2>&1 \
   || fail "helm uninstall deleted the bundled PostgreSQL's Secret; the next install would be locked out of the kept data"
 [ "$(kubectl get pvc "data-${postgresql_pod}" -n "${namespace}" -o jsonpath='{.metadata.uid}' 2>/dev/null)" = "${pvc_before}" ] \
   || fail "helm uninstall deleted the bundled PostgreSQL's volume"

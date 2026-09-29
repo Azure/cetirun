@@ -21,7 +21,6 @@ if [ ! -f "${chart_dir}/Chart.yaml" ]; then
   exit 1
 fi
 
-fullname="${release_name}-cetirun-ai-gateway"
 app_version="$(awk -F': *' '$1=="appVersion" {gsub(/"/, "", $2); print $2; exit}' "${chart_dir}/Chart.yaml")"
 
 # A usable baseline: the defaults, which bundle PostgreSQL and Valkey, plus the
@@ -74,6 +73,29 @@ init_block() {
   awk '/^      initContainers:/{f=1} /^      containers:/{f=0} f' <<< "$1"
 }
 
+# object_name KIND COMPONENT RENDER: the name of the rendered object of that
+# kind whose own labels carry app.kubernetes.io/component=COMPONENT. Prints
+# one line: awk runs END even after exit, so END checks whether it printed.
+object_name() {
+  awk -v kind="$1" -v component="$2" '
+    /^---/ { if (k == kind && c) { print n; found = 1; exit } k = ""; n = ""; c = 0; meta = 0; next }
+    /^kind: / { k = $2 }
+    /^metadata:/ { meta = 1; next }
+    /^[^ ]/ { meta = 0 }
+    meta && /^  name: / && n == "" { n = $2 }
+    meta && /^    app\.kubernetes\.io\/component: / && $2 == component { c = 1 }
+    END { if (!found && k == kind && c) print n }' <<< "$3"
+}
+
+# A name read from the render must be a single word. grep reads a pattern with
+# a newline as two alternatives, so a doubled name would still match.
+single_name() {  # single_name NAME DESCRIPTION
+  if [ -z "$1" ] || [[ "$1" =~ [[:space:]] ]]; then
+    echo "FAIL: ${2} is not a single name: '${1}'" >&2
+    exit 1
+  fi
+}
+
 # ----- Baseline render -----
 
 echo "==> helm template ${release_name} ${chart_dir} (baseline)"
@@ -84,6 +106,14 @@ assert_contains "kind: Service" "Service is rendered" "${output}"
 assert_contains "kind: ConfigMap" "ConfigMap is rendered" "${output}"
 assert_contains "model_name: lint-model" "configured model reaches the LiteLLM config" "${output}"
 assert_contains "\- \-\-config" "the config path is passed explicitly" "${output}"
+
+# Names are read from the rendered objects rather than rebuilt here: the chart
+# shortens long names, and uses the release name alone when it already
+# contains the chart's, so RELEASE_NAME can be any valid release name.
+postgresql_name="$(object_name StatefulSet postgresql "${output}")"
+valkey_name="$(object_name Service valkey "${output}")"
+single_name "${postgresql_name}" "the bundled PostgreSQL in the default render"
+single_name "${valkey_name}" "the bundled Valkey in the default render"
 
 # ----- Required inputs -----
 
@@ -148,9 +178,9 @@ assert_absent "component: valkey" "no Valkey without Redis" "${single}"
 # doubling, and the deployment still looks correctly configured. Both blocks
 # have to be present, and both have to carry the password.
 echo "==> Redis is wired into both configuration blocks"
-assert_contains "redis_host: \"${fullname}-valkey\"" "router_settings points at the bundled Valkey" "${output}"
+assert_contains "redis_host: \"${valkey_name}\"" "router_settings points at the bundled Valkey" "${output}"
 assert_contains "type: redis" "litellm_settings carries the Redis cache block" "${output}"
-assert_contains "host: \"${fullname}-valkey\"" "the cache block points at the bundled Valkey" "${output}"
+assert_contains "host: \"${valkey_name}\"" "the cache block points at the bundled Valkey" "${output}"
 assert_contains "redis_password: os.environ/REDIS_PASSWORD" "router_settings carries the password" "${output}"
 assert_contains "password: os.environ/REDIS_PASSWORD" "the cache block carries the password" "${output}"
 assert_contains "name: REDIS_PASSWORD" "the proxy receives the Valkey password" "${output}"
@@ -236,7 +266,7 @@ assert_contains "image: mcr.microsoft.com/azurelinux/base/postgres:" "PostgreSQL
 assert_contains "image: mcr.microsoft.com/azurelinux/base/valkey:" "Valkey comes from MCR" "${output}"
 assert_contains "\- --requirepass" "the bundled Valkey requires a password" "${output}"
 db_ref="$(grep -A4 'name: DATABASE_URL' <<< "${output}")"
-assert_contains "name: ${fullname}-postgresql" "the proxy connects to the bundled PostgreSQL" "${db_ref}"
+assert_contains "name: ${postgresql_name}$" "the proxy connects to the bundled PostgreSQL" "${db_ref}"
 assert_contains "key: database-url" "the connection URL comes from the bundled PostgreSQL's Secret" "${db_ref}"
 
 echo "==> an external database and Redis replace the bundled ones"
@@ -289,19 +319,16 @@ fi
 # nine. The Gateway then waits for its database indefinitely. Long release
 # names are shortened to fit, with a hash that keeps two of them apart.
 echo "==> long release names still fit the bundled PostgreSQL and Valkey"
-bundled_name() {  # bundled_name RENDER postgresql|valkey
-  awk -v want="$2" '
-    want == "postgresql" && /^kind: StatefulSet/ {s=1}
-    s && /^  name: / {print $2; exit}
-    want == "valkey" && /redis_host:/ {gsub(/"/, "", $2); print $2; exit}' <<< "$1"
-}
 long_release="release-name-long-enough-to-need-shortening"
 long_one="$(helm template "${long_release}-one" "${chart_dir}" "${base_args[@]}")"
 long_two="$(helm template "${long_release}-two" "${chart_dir}" "${base_args[@]}")"
-pg_one="$(bundled_name "${long_one}" postgresql)"
-pg_two="$(bundled_name "${long_two}" postgresql)"
-valkey_one="$(bundled_name "${long_one}" valkey)"
-valkey_two="$(bundled_name "${long_two}" valkey)"
+pg_one="$(object_name StatefulSet postgresql "${long_one}")"
+pg_two="$(object_name StatefulSet postgresql "${long_two}")"
+valkey_one="$(object_name Service valkey "${long_one}")"
+valkey_two="$(object_name Service valkey "${long_two}")"
+for name in "${pg_one}" "${pg_two}" "${valkey_one}" "${valkey_two}"; do
+  single_name "${name}" "a bundled resource of a long release name"
+done
 for name in "${pg_one}" "${pg_two}"; do
   [ -n "${name}" ] && [ "${#name}" -le 52 ] || {
     echo "FAIL: the bundled PostgreSQL is named '${name}' (${#name} characters); above 52 Kubernetes creates no pod for it" >&2
@@ -320,6 +347,17 @@ if [ "${pg_one}" = "${pg_two}" ] || [ "${valkey_one}" = "${valkey_two}" ]; then
 fi
 assert_contains "name: ${pg_one}$" "the Gateway connects to the shortened PostgreSQL name" \
   "$(grep -A4 'name: DATABASE_URL' <<< "${long_one}")"
+assert_contains "redis_host: \"${valkey_one}\"" "the Gateway connects to the shortened Valkey name" "${long_one}"
+
+# Names that fit are never shortened. The data volume's claim is named after
+# the StatefulSet, so renaming it in an upgrade would start an empty database
+# and leave the data behind on the old claim.
+default_names="$(helm template gateway "${chart_dir}" "${base_args[@]}")"
+if [ "$(object_name StatefulSet postgresql "${default_names}")" != "gateway-cetirun-ai-gateway-postgresql" ] \
+  || [ "$(object_name Service valkey "${default_names}")" != "gateway-cetirun-ai-gateway-valkey" ]; then
+  echo "FAIL: the default release's bundled resources were renamed; an upgrade would leave the data on the old volume" >&2
+  exit 1
+fi
 
 # Under helm template, which GitOps tools such as Argo CD use, lookup returns
 # nothing, so a generated Valkey password changed with every render. Neither
@@ -329,7 +367,7 @@ assert_contains "name: ${pg_one}$" "the Gateway connects to the shortened Postgr
 # configuration renders the same way every time.
 echo "==> the bundled Valkey can take its password from an existing Secret"
 valkey_env="$(render -s templates/valkey.yaml | grep -A4 'name: VALKEY_PASSWORD')"
-assert_contains "name: ${fullname}-valkey$" "by default the bundled Valkey uses the generated password" "${valkey_env}"
+assert_contains "name: ${valkey_name}$" "by default the bundled Valkey uses the generated password" "${valkey_env}"
 supplied=(--set-string "redis.passwordSecret.existingSecret=lint-redis")
 valkey_env="$(render "${supplied[@]}" -s templates/valkey.yaml | grep -A4 'name: VALKEY_PASSWORD')"
 assert_contains "name: lint-redis$" "the bundled Valkey reads a supplied password Secret" "${valkey_env}"

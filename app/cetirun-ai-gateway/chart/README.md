@@ -100,11 +100,33 @@ redis:
 The bundled PostgreSQL behaves like an external database across the release's
 lifecycle. `helm uninstall` keeps its volume and its password Secret, so an
 install under the same release name finds the data again: measured, a model
-added through the console before the uninstall was served after it. To discard
-the data, delete the volume claim (`data-<release>-cetirun-ai-gateway-postgresql-0`)
-and the `-postgresql` and `-auth` Secrets yourself. With a long release name
-the bundled resources' names are shortened and carry a hash instead;
-`kubectl get pvc -l app.kubernetes.io/instance=<release>` finds the claim.
+added through the console before the uninstall was served after it.
+
+To discard the data, delete what `helm uninstall` left behind yourself: the
+volume claim, and the `-auth`, `-postgresql` and, when the chart generated one,
+`-valkey` Secrets. All of them carry the release's instance label:
+
+```bash
+kubectl get pvc,secret -l app.kubernetes.io/instance=<release>
+```
+
+For a release called `gateway` the claim is
+`data-gateway-cetirun-ai-gateway-postgresql-0`. With a long release name the
+bundled resources' names are shortened and carry a hash instead.
+
+The volume's size and storage class are fixed at install. A StatefulSet's
+volume claim template cannot be changed, so Kubernetes refuses an upgrade that
+changes `postgresql.bundled.persistence.size` or `storageClass`: measured,
+going from 8Gi to 16Gi failed with `spec.volumeClaimTemplates` and left the
+release marked failed until an upgrade with the original values restored it. To
+grow the database, expand the claim itself and keep `persistence.size` as it
+was. That works when the claim's storage class allows expansion
+(`allowVolumeExpansion: true`), as the AKS built-in classes do:
+
+```bash
+kubectl patch pvc data-gateway-cetirun-ai-gateway-postgresql-0 \
+  -p '{"spec":{"resources":{"requests":{"storage":"16Gi"}}}}'
+```
 
 Local connections inside the PostgreSQL container are trusted, as in the
 upstream image; connections from other pods need the password. Measured: a
