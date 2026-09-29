@@ -102,6 +102,13 @@ type AgentReconciler struct {
 	// factory constructs the deployment's workload-identity-backed Graph client.
 	agentIdentityGraphClientFactory func() (agentIdentityDirectoryClient, error)
 
+	// AI Gateway deployment configuration for per-Agent virtual keys.
+	AIGateway           AIGatewayConfig
+	AIGatewayHTTPClient *http.Client
+	// aiGatewayClientFactory is test-only dependency injection. A nil factory
+	// reads the master key Secret and calls the configured Gateway.
+	aiGatewayClientFactory func(context.Context) (aiGatewayKeyClient, error)
+
 	istioMu          sync.Mutex
 	istioRevResolved string
 	customPlans      sync.Map
@@ -374,8 +381,9 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		}
 
 		identityVerificationDue := agentIdentityVerificationDue(instance, time.Now())
+		aiGatewayDue := aiGatewayVerificationDue(instance, r.AIGateway.Enabled, time.Now())
 		if instance.Status.ObservedGeneration == instance.Generation &&
-			!identityVerificationDue &&
+			!identityVerificationDue && !aiGatewayDue &&
 			instance.Status.ObservedOperatorHash == r.configHash(instance, team, gwSecretHash, teamResourceVersion(team)) {
 			// Lightweight: ensure VirtualService is up to date (may change after operator upgrade).
 			// Update ConditionIngressReady so CR status reflects the actual VS state.
@@ -557,6 +565,29 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		}
 	}
 
+	// Reconcile the Agent's AI Gateway virtual key before rendering the
+	// workload: an Agent routed through the Gateway needs its key at startup.
+	var aiGatewayRequeueAfter time.Duration
+	if r.AIGateway.Enabled {
+		chartSupported := prepared.SupportsValue(aiGatewayChartValue)
+		if err := r.reconcileAIGateway(ctx, instance, team, chartSupported); err != nil {
+			logger.Error(err, "AI Gateway virtual key reconciliation failed", "instance", instance.Name)
+			_ = r.updateStatus(ctx, instance)
+			if r.aiGatewayRequired(instance, team) && chartSupported && !r.aiGatewayRouted(instance) && !instance.Spec.Suspended {
+				// Never provisioned: do not start an Agent that would be
+				// routed through the Gateway without its key.
+				return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+			}
+			// A previously provisioned key keeps working through a Gateway
+			// outage, and unrouted Agents do not depend on the key yet.
+			aiGatewayRequeueAfter = 30 * time.Second
+		}
+	} else if instance.Status.AIGateway != nil && instance.Status.AIGateway.Routed {
+		// The deployment turned the feature off: stop routing. Existing keys
+		// stay in the Gateway until the Agent is deleted.
+		instance.Status.AIGateway.Routed = false
+	}
+
 	// 9. Install / upgrade Helm chart (skip if already deployed at this generation).
 	// We check HelmDeployed condition + generation + operator hash rather than Phase,
 	// because Phase may be Provisioning while waiting for the StatefulSet pod to become
@@ -585,6 +616,9 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		BrokerURL: r.AgentIdentityBrokerURL,
 	})
 	if err != nil {
+		return r.rejectAgentConfig(ctx, instance, err)
+	}
+	if err := r.applyAIGatewayValues(helmValues, instance); err != nil {
 		return r.rejectAgentConfig(ctx, instance, err)
 	}
 	{
@@ -717,6 +751,9 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		if agentIdentityRequeueAfter > 0 && agentIdentityRequeueAfter < requeueAfter {
 			requeueAfter = agentIdentityRequeueAfter
 		}
+		if aiGatewayRequeueAfter > 0 && aiGatewayRequeueAfter < requeueAfter {
+			requeueAfter = aiGatewayRequeueAfter
+		}
 		return ctrl.Result{RequeueAfter: requeueAfter}, nil
 	}
 
@@ -810,6 +847,9 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	if teamsRequeueAfter > 0 && teamsRequeueAfter < requeueAfter {
 		requeueAfter = teamsRequeueAfter
 	}
+	if aiGatewayRequeueAfter > 0 && aiGatewayRequeueAfter < requeueAfter {
+		requeueAfter = aiGatewayRequeueAfter
+	}
 	return ctrl.Result{RequeueAfter: requeueAfter}, nil
 }
 
@@ -843,6 +883,13 @@ func (r *AgentReconciler) handleDelete(ctx context.Context, instance *cetirunv1a
 			logger.Error(err, "Agent Identity cleanup failed; retaining finalizer", "instance", instance.Name)
 			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 		}
+	}
+
+	// AI Gateway key revocation is blocking for the same reason, and runs
+	// before the workload is removed so the key cannot outlive the Agent.
+	if err := r.deleteAIGatewayKey(ctx, instance); err != nil {
+		logger.Error(err, "AI Gateway key revocation failed; retaining finalizer", "instance", instance.Name)
+		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 
 	// Helm uninstall.

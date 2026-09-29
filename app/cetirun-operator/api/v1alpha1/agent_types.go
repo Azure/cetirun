@@ -219,6 +219,11 @@ type AgentStatus struct {
 	// +optional
 	AgentIdentity *AgentIdentityStatus `json:"agentIdentity,omitempty"`
 
+	// AIGateway reports the Agent's AI Gateway virtual key. It never contains
+	// the key itself.
+	// +optional
+	AIGateway *AIGatewayStatus `json:"aiGateway,omitempty"`
+
 	// Sandbox records the last fully enforced binding, not a pending selection.
 	// +optional
 	Sandbox *SandboxStatus `json:"sandbox,omitempty"`
@@ -282,6 +287,53 @@ type AgentIdentityStatus struct {
 	Reason string `json:"reason,omitempty"`
 }
 
+// AIGatewayStatus reports non-secret information about the virtual key the
+// operator manages for this Agent in the platform AI Gateway.
+type AIGatewayStatus struct {
+	// Phase is the current virtual key lifecycle phase.
+	// +kubebuilder:validation:Enum=Provisioning;Ready;Degraded;Deleting
+	// +optional
+	Phase string `json:"phase,omitempty"`
+
+	// KeyAlias is the Gateway alias of the virtual key. It is derived from the
+	// Agent UID and does not change for the life of the Agent.
+	// +optional
+	KeyAlias string `json:"keyAlias,omitempty"`
+
+	// KeyID identifies the current key value without revealing it: the first
+	// characters of the key's SHA-256 hash, which is how the Gateway stores it.
+	// +optional
+	KeyID string `json:"keyId,omitempty"`
+
+	// KeySecretName names the Secret in the instance namespace that holds the
+	// virtual key.
+	// +optional
+	KeySecretName string `json:"keySecretName,omitempty"`
+
+	// AccessGroups are the Gateway model access groups granted to the key.
+	// +listType=set
+	// +optional
+	AccessGroups []string `json:"accessGroups,omitempty"`
+
+	// Routed reports whether the Agent's model traffic is configured to use
+	// the Gateway.
+	// +optional
+	Routed bool `json:"routed,omitempty"`
+
+	// ObservedGeneration is the Agent generation reconciled into this status.
+	// +optional
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+
+	// LastVerifiedTime records the most recent successful check of the key in
+	// the Gateway.
+	// +optional
+	LastVerifiedTime *metav1.Time `json:"lastVerifiedTime,omitempty"`
+
+	// Reason is a stable, non-sensitive machine-readable status reason.
+	// +optional
+	Reason string `json:"reason,omitempty"`
+}
+
 // SandboxStatus records the binding and revision last verified for an Agent.
 type SandboxStatus struct {
 	// +kubebuilder:validation:Type=string
@@ -312,10 +364,19 @@ const (
 	ConditionTeamsReady               = "TeamsReady"
 	ConditionAgentConfigReady         = "AgentConfigReady"
 	ConditionAgentIdentityReady       = "AgentIdentityReady"
+	ConditionAIGatewayReady           = "AIGatewayReady"
 	ConditionSandboxReady             = "SandboxReady"
 	ConditionDesktopConfigured        = "DesktopConfigured"
 	ConditionTerminalConfigured       = "TerminalConfigured"
 	ConditionRegistryCredentialsReady = "RegistryCredentialsReady"
+)
+
+// AI Gateway virtual key lifecycle phases.
+const (
+	AIGatewayPhaseProvisioning = "Provisioning"
+	AIGatewayPhaseReady        = "Ready"
+	AIGatewayPhaseDegraded     = "Degraded"
+	AIGatewayPhaseDeleting     = "Deleting"
 )
 
 // Agent Identity lifecycle phases.

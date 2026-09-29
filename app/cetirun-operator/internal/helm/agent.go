@@ -56,6 +56,17 @@ func (p *PreparedRelease) CacheKey() string {
 	return p.PlanHash + ":" + p.manifestHash
 }
 
+// SupportsValue reports whether the loaded chart declares a top-level value.
+// The controller uses it before relying on a value that older pinned chart
+// versions would silently ignore.
+func (p *PreparedRelease) SupportsValue(name string) bool {
+	if p == nil || p.chart == nil {
+		return false
+	}
+	_, ok := p.chart.Values[name]
+	return ok
+}
+
 // Rebuild uses the same loaded chart after platform integration bindings have
 // been resolved. It never pulls a second, potentially changed chart.
 func (p *PreparedRelease) Rebuild(input map[string]any) (*PreparedRelease, error) {

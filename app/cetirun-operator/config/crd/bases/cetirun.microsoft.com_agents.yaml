@@ -397,6 +397,62 @@ spec:
                       status reason.
                     type: string
                 type: object
+              aiGateway:
+                description: |-
+                  AIGateway reports the Agent's AI Gateway virtual key. It never contains
+                  the key itself.
+                properties:
+                  accessGroups:
+                    description: AccessGroups are the Gateway model access groups
+                      granted to the key.
+                    items:
+                      type: string
+                    type: array
+                    x-kubernetes-list-type: set
+                  keyAlias:
+                    description: |-
+                      KeyAlias is the Gateway alias of the virtual key. It is derived from the
+                      Agent UID and does not change for the life of the Agent.
+                    type: string
+                  keyId:
+                    description: |-
+                      KeyID identifies the current key value without revealing it: the first
+                      characters of the key's SHA-256 hash, which is how the Gateway stores it.
+                    type: string
+                  keySecretName:
+                    description: |-
+                      KeySecretName names the Secret in the instance namespace that holds the
+                      virtual key.
+                    type: string
+                  lastVerifiedTime:
+                    description: |-
+                      LastVerifiedTime records the most recent successful check of the key in
+                      the Gateway.
+                    format: date-time
+                    type: string
+                  observedGeneration:
+                    description: ObservedGeneration is the Agent generation reconciled
+                      into this status.
+                    format: int64
+                    type: integer
+                  phase:
+                    description: Phase is the current virtual key lifecycle phase.
+                    enum:
+                    - Provisioning
+                    - Ready
+                    - Degraded
+                    - Deleting
+                    type: string
+                  reason:
+                    description: Reason is a stable, non-sensitive machine-readable
+                      status reason.
+                    type: string
+                  routed:
+                    description: |-
+                      Routed reports whether the Agent's model traffic is configured to use
+                      the Gateway.
+                    type: boolean
+                type: object
               conditions:
                 description: Conditions contains the latest available observations
                   of the instance's state.

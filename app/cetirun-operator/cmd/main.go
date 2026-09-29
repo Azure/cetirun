@@ -210,6 +210,15 @@ func main() {
 		setupLog.Info("Agent Identity requires tenant ID, Blueprint client ID, and Broker URL")
 		os.Exit(1)
 	}
+	aiGatewayConfig, err := controller.ParseAIGatewayConfig(os.Getenv)
+	if err != nil {
+		setupLog.Error(err, "invalid AI Gateway configuration")
+		os.Exit(1)
+	}
+	if aiGatewayConfig.Enabled {
+		setupLog.Info("AI Gateway virtual keys enabled", "url", aiGatewayConfig.URL,
+			"defaultModel", aiGatewayConfig.DefaultModel, "sharedModelTeams", aiGatewayConfig.SharedModelTeams)
+	}
 
 	// Auto-detect OIDC issuer URL from the cluster.
 	azureOIDCIssuerURL := detectOIDCIssuer(setupLog)
@@ -269,6 +278,7 @@ func main() {
 		AgentIdentityBlueprintClientID: agentIdentityBlueprintClientID,
 		AgentIdentityNamePrefix:        agentIdentityNamePrefix,
 		AgentIdentityBrokerURL:         agentIdentityBrokerURL,
+		AIGateway:                      aiGatewayConfig,
 	}
 	if customConfig.Enabled {
 		agentReconciler.CustomBindings = controller.NewKubernetesCustomBindings(agentReconciler, customConfig)

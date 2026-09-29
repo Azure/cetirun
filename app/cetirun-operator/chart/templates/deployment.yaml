@@ -115,6 +115,22 @@ spec:
             - name: AGENT_ID_BROKER_URL
               value: {{ required "agentIdentity.brokerURL is required for Agent Identity lifecycle operations" .Values.agentIdentity.brokerURL | quote }}
             {{- end }}
+            - name: AI_GATEWAY_ENABLED
+              value: {{ .Values.aiGateway.enabled | quote }}
+            {{- if or .Values.aiGateway.enabled .Values.aiGateway.url }}
+            - name: AI_GATEWAY_URL
+              value: {{ required "aiGateway.url is required when aiGateway.enabled" .Values.aiGateway.url | quote }}
+            - name: AI_GATEWAY_MASTER_KEY_SECRET
+              value: {{ required "aiGateway.masterKeySecret.name is required" .Values.aiGateway.masterKeySecret.name | quote }}
+            - name: AI_GATEWAY_MASTER_KEY_SECRET_KEY
+              value: {{ .Values.aiGateway.masterKeySecret.key | quote }}
+            - name: AI_GATEWAY_DEFAULT_BUDGET
+              value: {{ .Values.aiGateway.defaultBudget | toString | quote }}
+            - name: AI_GATEWAY_DEFAULT_MODEL
+              value: {{ .Values.aiGateway.defaultModel | quote }}
+            - name: AI_GATEWAY_SHARED_MODEL_TEAMS
+              value: {{ join "," .Values.aiGateway.sharedModelTeams | quote }}
+            {{- end }}
             - name: KUBE_FEATURE_WatchListClient
               value: "false"
             {{- if .Values.acrDockerSecret }}

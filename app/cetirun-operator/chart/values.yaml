@@ -191,6 +191,29 @@ agentIdentity:
   namePrefix: "cetirun-agent"
   brokerURL: "http://cetirun-agent-broker.cetirun-credentials.svc.cluster.local:8080"
 
+# -- Platform AI Gateway integration: the operator gives each built-in Agent
+# its own virtual key and, for Agents in sharedModelTeams, routes OpenClaw
+# model traffic through the Gateway. Off by default. Keys are revoked when an
+# Agent is deleted as long as url and the master key Secret are set, including
+# after enabled is turned off.
+aiGateway:
+  enabled: false
+  # -- In-cluster Gateway URL: http://<service>.<namespace>.svc.cluster.local:<port>
+  url: "http://cetirun-ai-gateway.cetirun-system.svc.cluster.local:4000"
+  # -- Secret in the operator namespace that holds the Gateway master key.
+  masterKeySecret:
+    name: cetirun-ai-gateway-auth
+    key: master-key
+  # -- Monthly budget in US dollars written when a key is created. Changes an
+  # administrator makes later in the Gateway are kept.
+  defaultBudget: 10
+  # -- Model configured on Agents that use the Gateway. Place it in the
+  # cetirun-shared access group (model_info.access_groups) in the Gateway.
+  defaultModel: ""
+  # -- Teams whose Agents may use the Gateway models in the cetirun-shared
+  # access group. Keys of other Agents grant no model yet.
+  sharedModelTeams: []
+
 # -- Override the chart's default skills storage account.
 # Empty string (default) means use the chart's built-in default.
 # Deprecated: use cetirun.helmValues.skills.storageAccount instead.
