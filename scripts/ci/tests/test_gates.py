@@ -210,7 +210,7 @@ class ToolTests(unittest.TestCase):
                 entries = install_tools.plan(
                     manifest, list(manifest), Path(temp), "Linux", machine
                 )
-                self.assertEqual(len(entries), 4)
+                self.assertEqual(len(entries), 7)
                 self.assertTrue(all(len(entry[2]) == 64 for entry in entries))
 
     def test_bad_input_is_rejected_before_network(self):

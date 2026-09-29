@@ -1,0 +1,28 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
+package sandbox
+
+import (
+	"slices"
+
+	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"k8s.io/apimachinery/pkg/api/meta"
+)
+
+const HoldFinalizer = "cetirun.microsoft.com/sandbox-hold"
+
+// Requested detects governance intent, not a valid or enforced binding.
+func Requested(agent *api.Agent, team *api.Team) bool {
+	if agent != nil && (slices.Contains(agent.Finalizers, HoldFinalizer) || agent.Spec.SandboxRef != "" ||
+		(agent.Spec.PolicyClass != "" && agent.Spec.PolicyClass != api.AgentPolicyClassNormal) ||
+		agent.Status.Sandbox != nil || meta.FindStatusCondition(agent.Status.Conditions, api.ConditionSandboxReady) != nil) {
+		return true
+	}
+	return TeamGoverned(team)
+}
+
+func TeamGoverned(team *api.Team) bool {
+	return team != nil && (team.Spec.NormalAgentPolicyRef != "" || team.Spec.AdminAgentPolicyRef != "" ||
+		len(team.Spec.SandboxRefs) != 0 || team.Spec.DefaultSandboxRef != "")
+}

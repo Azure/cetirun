@@ -1,0 +1,228 @@
+{{- $admission := .Values.sandboxAdmission -}}
+{{- if and $admission.enforce (not $admission.enabled) -}}
+{{- fail "sandboxAdmission.enforce requires sandboxAdmission.enabled=true" -}}
+{{- end -}}
+{{- if $admission.enabled -}}
+{{- if or (not (regexMatch "^[0-9]+$" (toString $admission.replicaCount))) (lt (int64 $admission.replicaCount) 2) -}}
+{{- fail "sandboxAdmission.replicaCount must be an integer >= 2" -}}
+{{- end -}}
+{{- $tlsSecretName := required "sandboxAdmission.tlsSecretName is required when enabled" ($admission.tlsSecretName | trim) -}}
+{{- range $field, $identities := dict "adminUsers" $admission.adminUsers "adminGroups" $admission.adminGroups -}}
+{{- if not (kindIs "slice" $identities) -}}
+{{- fail (printf "sandboxAdmission.%s must be a list of nonempty strings" $field) -}}
+{{- end -}}
+{{- range $identity := $identities -}}
+{{- if not (kindIs "string" $identity) -}}
+{{- fail (printf "sandboxAdmission.%s must contain nonempty strings" $field) -}}
+{{- end -}}
+{{- if or (eq (trim $identity) "") (ne (trim $identity) $identity) -}}
+{{- fail (printf "sandboxAdmission.%s must contain nonempty strings without surrounding whitespace" $field) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- if and (empty $admission.adminUsers) (empty $admission.adminGroups) -}}
+{{- fail "sandboxAdmission requires at least one adminUsers or adminGroups entry when enabled" -}}
+{{- end -}}
+{{- if eq .Values.serviceAccount.name "cetirun-sandbox-admission" -}}
+{{- fail "sandboxAdmission must not use the operator controller service account" -}}
+{{- end -}}
+{{- $controllerNamespace := required "namespace is required for sandboxAdmission controller identity" .Values.namespace -}}
+{{- $controllerServiceAccount := required "serviceAccount.name is required for sandboxAdmission controller identity" .Values.serviceAccount.name -}}
+{{- if or (ne $controllerNamespace (trim $controllerNamespace)) (ne $controllerServiceAccount (trim $controllerServiceAccount)) -}}
+{{- fail "namespace and serviceAccount.name must not contain surrounding whitespace" -}}
+{{- end -}}
+{{- $controllerUsername := printf "system:serviceaccount:%s:%s" $controllerNamespace $controllerServiceAccount -}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cetirun-sandbox-admission
+  namespace: {{ .Values.namespace | quote }}
+  labels:
+    app.kubernetes.io/name: cetirun-sandbox-admission
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cetirun-sandbox-admission
+  labels:
+    app.kubernetes.io/name: cetirun-sandbox-admission
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+rules:
+  - apiGroups: ["cetirun.microsoft.com"]
+    resources: ["agents", "teams", "sandboxes", "agentpolicies"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cetirun-sandbox-admission
+  labels:
+    app.kubernetes.io/name: cetirun-sandbox-admission
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cetirun-sandbox-admission
+subjects:
+  - kind: ServiceAccount
+    name: cetirun-sandbox-admission
+    namespace: {{ .Values.namespace | quote }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cetirun-sandbox-admission
+  namespace: {{ .Values.namespace | quote }}
+  labels:
+    app.kubernetes.io/name: cetirun-sandbox-admission
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: cetirun-sandbox-admission
+  ports:
+    - name: admission
+      port: 443
+      targetPort: admission
+      protocol: TCP
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: cetirun-sandbox-admission
+  namespace: {{ .Values.namespace | quote }}
+  labels:
+    app.kubernetes.io/name: cetirun-sandbox-admission
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: cetirun-sandbox-admission
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cetirun-sandbox-admission
+  namespace: {{ .Values.namespace | quote }}
+  labels:
+    app.kubernetes.io/name: cetirun-sandbox-admission
+    app.kubernetes.io/version: {{ include "cetirun-operator.version" . | default .Chart.AppVersion | quote }}
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  replicas: {{ $admission.replicaCount }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: cetirun-sandbox-admission
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: cetirun-sandbox-admission
+        app.kubernetes.io/version: {{ include "cetirun-operator.version" . | default .Chart.AppVersion | quote }}
+      annotations:
+        sidecar.istio.io/inject: "false"
+    spec:
+      serviceAccountName: cetirun-sandbox-admission
+      automountServiceAccountToken: true
+      enableServiceLinks: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: cetirun-sandbox-admission
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: cetirun-sandbox-admission
+      containers:
+        - name: admission
+          image: "{{ include "cetirun-operator.image" . }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - --mode=sandbox-admission
+            - --admission-cert-dir=/var/run/cetirun-admission
+            - --admission-port=9443
+            - --health-probe-bind-address=:8081
+            - --metrics-bind-address=:8080
+            - --leader-elect=false
+          env:
+            - name: CETIRUN_SANDBOX_ADMISSION
+              value: {{ dict "adminUsers" $admission.adminUsers "adminGroups" $admission.adminGroups "controllerUsername" $controllerUsername | toJson | quote }}
+          ports:
+            - name: admission
+              containerPort: 9443
+              protocol: TCP
+            - name: health
+              containerPort: 8081
+              protocol: TCP
+            - name: metrics
+              containerPort: 8080
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            {{- toYaml $admission.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: admission-tls
+              mountPath: /var/run/cetirun-admission
+              readOnly: true
+      volumes:
+        - name: admission-tls
+          secret:
+            secretName: {{ $tlsSecretName | quote }}
+            defaultMode: 0440
+            items:
+              - key: tls.crt
+                path: tls.crt
+              - key: tls.key
+                path: tls.key
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

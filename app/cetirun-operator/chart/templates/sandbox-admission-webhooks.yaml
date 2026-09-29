@@ -1,0 +1,149 @@
+{{- $admission := .Values.sandboxAdmission -}}
+{{- if $admission.enforce -}}
+{{- if not (semverCompare ">=1.30.0-0" .Capabilities.KubeVersion.Version) -}}
+{{- fail "sandboxAdmission.enforce requires Kubernetes >= 1.30 for native matchConditions" -}}
+{{- end -}}
+{{- $encodedCA := required "sandboxAdmission.caBundle is required when enforce=true" $admission.caBundle -}}
+{{- $encodedCA = regexReplaceAll "[\\r\\n]" $encodedCA "" -}}
+{{- $decodedCA := b64dec $encodedCA -}}
+{{- if ne (b64enc $decodedCA) $encodedCA -}}
+{{- fail "sandboxAdmission.caBundle must be a base64-encoded PEM certificate bundle" -}}
+{{- end -}}
+{{- $certificatePattern := "-----BEGIN CERTIFICATE-----\\r?\\n(?:[A-Za-z0-9+/=]+\\r?\\n)+-----END CERTIFICATE-----" -}}
+{{- $certificates := regexFindAll $certificatePattern $decodedCA -1 -}}
+{{- if or (empty $certificates) (ne (trim (regexReplaceAll $certificatePattern $decodedCA "")) "") -}}
+{{- fail "sandboxAdmission.caBundle must be a base64-encoded PEM certificate bundle" -}}
+{{- end -}}
+{{- range $certificate := $certificates -}}
+{{- $body := regexReplaceAll "-----BEGIN CERTIFICATE-----|-----END CERTIFICATE-----|[[:space:]]" $certificate "" -}}
+{{- if or (empty $body) (ne (b64enc (b64dec $body)) $body) -}}
+{{- fail "sandboxAdmission.caBundle contains invalid PEM certificate encoding" -}}
+{{- end -}}
+{{- end -}}
+{{- $controllerUsername := printf "system:serviceaccount:%s:%s" .Values.namespace .Values.serviceAccount.name -}}
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: cetirun-sandbox-admission
+  labels:
+    app.kubernetes.io/name: cetirun-sandbox-admission
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+webhooks:
+  - name: sandbox-configuration.cetirun.microsoft.com
+    admissionReviewVersions: ["v1"]
+    sideEffects: None
+    failurePolicy: Fail
+    timeoutSeconds: 2
+    matchPolicy: Equivalent
+    clientConfig:
+      caBundle: {{ $encodedCA | quote }}
+      service:
+        name: cetirun-sandbox-admission
+        namespace: {{ .Values.namespace | quote }}
+        path: /validate-sandbox-configuration
+        port: 443
+    rules:
+      - operations: ["CREATE", "UPDATE"]
+        apiGroups: ["cetirun.microsoft.com"]
+        apiVersions: ["v1alpha1"]
+        resources: ["agents", "teams", "sandboxes", "agentpolicies"]
+        scope: Cluster
+      - operations: ["DELETE"]
+        apiGroups: ["cetirun.microsoft.com"]
+        apiVersions: ["v1alpha1"]
+        resources: ["teams", "sandboxes", "agentpolicies"]
+        scope: Cluster
+    matchConditions:
+      - name: controller-cleanup-only
+        expression: >-
+          !(
+            request.operation == "UPDATE" &&
+            request.resource.group == "cetirun.microsoft.com" &&
+            request.resource.resource == "agents" &&
+            (has(request.subResource) ? request.subResource : "") == "" &&
+            request.userInfo.username == {{ $controllerUsername | toJson }} &&
+            object != null && oldObject != null &&
+            has(oldObject.metadata.deletionTimestamp) &&
+            oldObject.metadata.deletionTimestamp != null &&
+            (has(object.apiVersion) ? object.apiVersion : "") ==
+              (has(oldObject.apiVersion) ? oldObject.apiVersion : "") &&
+            (has(object.kind) ? object.kind : "") ==
+              (has(oldObject.kind) ? oldObject.kind : "") &&
+            (has(object.spec) ? object.spec : {}) ==
+              (has(oldObject.spec) ? oldObject.spec : {}) &&
+            (has(object.status) ? object.status : {}) ==
+              (has(oldObject.status) ? oldObject.status : {}) &&
+            (has(object.metadata.name) ? object.metadata.name : "") ==
+              (has(oldObject.metadata.name) ? oldObject.metadata.name : "") &&
+            (has(object.metadata.namespace) ? object.metadata.namespace : "") ==
+              (has(oldObject.metadata.namespace) ? oldObject.metadata.namespace : "") &&
+            (has(object.metadata.uid) ? object.metadata.uid : "") ==
+              (has(oldObject.metadata.uid) ? oldObject.metadata.uid : "") &&
+            (has(object.metadata.labels) ? object.metadata.labels : {}) ==
+              (has(oldObject.metadata.labels) ? oldObject.metadata.labels : {}) &&
+            (has(object.metadata.annotations) ? object.metadata.annotations : {}) ==
+              (has(oldObject.metadata.annotations) ? oldObject.metadata.annotations : {}) &&
+            (has(object.metadata.ownerReferences) ? object.metadata.ownerReferences : []) ==
+              (has(oldObject.metadata.ownerReferences) ? oldObject.metadata.ownerReferences : []) &&
+            (has(object.metadata.deletionTimestamp) ? object.metadata.deletionTimestamp : null) ==
+              (has(oldObject.metadata.deletionTimestamp) ? oldObject.metadata.deletionTimestamp : null) &&
+            (has(object.metadata.deletionGracePeriodSeconds) ? object.metadata.deletionGracePeriodSeconds : null) ==
+              (has(oldObject.metadata.deletionGracePeriodSeconds) ? oldObject.metadata.deletionGracePeriodSeconds : null) &&
+            (has(object.metadata.generateName) ? object.metadata.generateName : "") ==
+              (has(oldObject.metadata.generateName) ? oldObject.metadata.generateName : "") &&
+            (has(object.metadata.creationTimestamp) ? object.metadata.creationTimestamp : null) ==
+              (has(oldObject.metadata.creationTimestamp) ? oldObject.metadata.creationTimestamp : null) &&
+            (has(object.metadata.generation) ? object.metadata.generation : 0) ==
+              (has(oldObject.metadata.generation) ? oldObject.metadata.generation : 0) &&
+            (has(object.metadata.resourceVersion) ? object.metadata.resourceVersion : "") ==
+              (has(oldObject.metadata.resourceVersion) ? oldObject.metadata.resourceVersion : "") &&
+            (has(object.metadata.selfLink) ? object.metadata.selfLink : "") ==
+              (has(oldObject.metadata.selfLink) ? oldObject.metadata.selfLink : "") &&
+            size(has(object.metadata.finalizers) ? object.metadata.finalizers : []) <
+              size(has(oldObject.metadata.finalizers) ? oldObject.metadata.finalizers : []) &&
+            (has(object.metadata.finalizers) ? object.metadata.finalizers : []).all(
+              finalizer, finalizer in (has(oldObject.metadata.finalizers) ? oldObject.metadata.finalizers : [])
+            ) &&
+            (has(oldObject.metadata.finalizers) ? oldObject.metadata.finalizers : []).exists(
+              finalizer, !(finalizer in (has(object.metadata.finalizers) ? object.metadata.finalizers : []))
+            ) &&
+            (has(oldObject.metadata.finalizers) ? oldObject.metadata.finalizers : []).all(
+              finalizer,
+              finalizer in (has(object.metadata.finalizers) ? object.metadata.finalizers : []) ||
+              finalizer in [
+                "cetirun.microsoft.com/finalizer",
+                "cetirun.microsoft.com/sandbox-hold",
+                "cetirun.microsoft.com/custom-runtime-ownership",
+                "cetirun.microsoft.com/custom-apply-completion"
+              ]
+            )
+          )
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: cetirun-sandbox-admission
+  labels:
+    app.kubernetes.io/name: cetirun-sandbox-admission
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+webhooks:
+  - name: sandbox-agent.cetirun.microsoft.com
+    admissionReviewVersions: ["v1"]
+    sideEffects: None
+    failurePolicy: Fail
+    timeoutSeconds: 2
+    matchPolicy: Equivalent
+    clientConfig:
+      caBundle: {{ $encodedCA | quote }}
+      service:
+        name: cetirun-sandbox-admission
+        namespace: {{ .Values.namespace | quote }}
+        path: /mutate-sandbox-agent
+        port: 443
+    rules:
+      - operations: ["CREATE"]
+        apiGroups: ["cetirun.microsoft.com"]
+        apiVersions: ["v1alpha1"]
+        resources: ["agents"]
+        scope: Cluster
+{{- end }}

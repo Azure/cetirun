@@ -1,0 +1,406 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
+package sandboxadmission
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"slices"
+	"strings"
+	"testing"
+
+	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
+	admissionv1 "k8s.io/api/admission/v1"
+	authenticationv1 "k8s.io/api/authentication/v1"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
+)
+
+const testController = "system:serviceaccount:operator-test:controller"
+
+func testConfig() Config {
+	return Config{AdminUsers: []string{"administrator"}, AdminGroups: []string{"governance-test-admins"}, ControllerUsername: testController}
+}
+
+type fixture struct {
+	handler *Handler
+	client  client.Client
+	agent   *api.Agent
+	team    *api.Team
+	box     *api.Sandbox
+	policy  *api.AgentPolicy
+}
+
+func newFixture(t *testing.T) fixture {
+	t.Helper()
+	scheme := runtime.NewScheme()
+	if err := api.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	resources := api.SandboxContainerResources{
+		Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("1"), corev1.ResourceMemory: resource.MustParse("1Gi"),
+			corev1.ResourceEphemeralStorage: resource.MustParse("1Gi")},
+		Limits: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("2"), corev1.ResourceMemory: resource.MustParse("2Gi"),
+			corev1.ResourceEphemeralStorage: resource.MustParse("2Gi")},
+	}
+	box := &api.Sandbox{
+		ObjectMeta: metav1.ObjectMeta{Name: "standard", UID: "sandbox-uid", ResourceVersion: "1"},
+		Spec: api.SandboxSpec{
+			Resources: api.SandboxResources{Agent: resources, Helpers: resources},
+			Storage: api.SandboxStorage{
+				Home:    api.SandboxHomeStorage{StorageClassName: "test-home", Size: resource.MustParse("10Gi"), AccessMode: corev1.ReadWriteOncePod},
+				Scratch: api.SandboxScratchStorage{SizeLimit: resource.MustParse("1Gi")},
+			},
+		},
+	}
+	policy := &api.AgentPolicy{ObjectMeta: metav1.ObjectMeta{Name: "normal", UID: "policy-uid", ResourceVersion: "1"}}
+	team := &api.Team{
+		ObjectMeta: metav1.ObjectMeta{Name: "engineering", UID: "team-uid", ResourceVersion: "1"},
+		Spec:       api.TeamSpec{NormalAgentPolicyRef: policy.Name, SandboxRefs: []string{box.Name}, DefaultSandboxRef: box.Name},
+	}
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(box, policy, team).Build()
+	handler, err := NewHandler(cl, testConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler.registrations = map[api.SandboxType]sandbox.Registration{
+		api.SandboxKata: {Available: true, Capabilities: sandbox.Capabilities{
+			RuntimeClassName: "test-kata", Revision: "synthetic-test-only",
+			HostResourceLimits: true, ReadOnlyRootFilesystem: true,
+			HomeAccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOncePod},
+			IPFamilies:      []corev1.IPFamily{corev1.IPv4Protocol}, Protocols: []corev1.Protocol{corev1.ProtocolTCP},
+			GuestExternalNetwork: true, DenyPrecedence: true, NodeTraffic: true, DNSIPRestrictions: true,
+			BlockedPorts: true, AuthenticatedIngress: true, DisabledIngress: true, EnforcementObservation: true, RestrictiveFailure: true,
+		}},
+	}
+	agent := &api.Agent{
+		ObjectMeta: metav1.ObjectMeta{Name: "alice-work", UID: "agent-uid", ResourceVersion: "1", Finalizers: []string{api.Finalizer}},
+		Spec: api.AgentSpec{
+			Agent: api.HarnessSpec{Type: api.AgentTypeHermes}, User: api.UserSpec{Alias: "alice"},
+			GatewayTokenSecretRef: "gateway-token", Team: team.Name, SandboxRef: box.Name, PolicyClass: api.AgentPolicyClassNormal,
+		},
+	}
+	return fixture{handler, cl, agent, team, box, policy}
+}
+
+func requestFor(t *testing.T, operation admissionv1.Operation, object, old client.Object, username string) admission.Request {
+	t.Helper()
+	var resourceName, kind string
+	switch object.(type) {
+	case *api.Agent:
+		resourceName, kind = "agents", "Agent"
+	case *api.Team:
+		resourceName, kind = "teams", "Team"
+	case *api.Sandbox:
+		resourceName, kind = "sandboxes", "Sandbox"
+	case *api.AgentPolicy:
+		resourceName, kind = "agentpolicies", "AgentPolicy"
+	default:
+		t.Fatal("unsupported fixture")
+	}
+	raw := func(value client.Object) runtime.RawExtension {
+		if value == nil {
+			return runtime.RawExtension{}
+		}
+		data, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return runtime.RawExtension{Raw: data}
+	}
+	request := admission.Request{AdmissionRequest: admissionv1.AdmissionRequest{
+		UID: "request-uid", Name: object.GetName(), Operation: operation,
+		Resource: metav1.GroupVersionResource{Group: api.GroupVersion.Group, Version: api.GroupVersion.Version, Resource: resourceName},
+		Kind:     metav1.GroupVersionKind{Group: api.GroupVersion.Group, Version: api.GroupVersion.Version, Kind: kind},
+		UserInfo: authenticationv1.UserInfo{Username: username}, Object: raw(object), OldObject: raw(old),
+	}}
+	if operation == admissionv1.Delete {
+		request.OldObject, request.Object = request.Object, runtime.RawExtension{}
+	}
+	return request
+}
+
+func requireResponse(t *testing.T, response admission.Response, allowed bool, message string) {
+	t.Helper()
+	if response.Allowed != allowed || (message != "" && (response.Result == nil || !strings.Contains(response.Result.Message, message))) {
+		t.Fatalf("want allowed=%v containing %q, got %#v", allowed, message, response.AdmissionResponse)
+	}
+}
+
+func TestExplicitAdmissionAuthority(t *testing.T) {
+	for _, resourceName := range []string{"agent", "team", "sandbox", "policy"} {
+		t.Run(resourceName, func(t *testing.T) {
+			f := newFixture(t)
+			objects := map[string]client.Object{"agent": f.agent, "team": f.team, "sandbox": f.box, "policy": f.policy}
+			for _, user := range []string{"member", testController, "system:anonymous"} {
+				req := requestFor(t, admissionv1.Create, objects[resourceName], nil, user)
+				requireResponse(t, f.handler.Validate(context.Background(), req), false, "administrator")
+			}
+			for _, user := range []string{"administrator", "group-administrator"} {
+				req := requestFor(t, admissionv1.Create, objects[resourceName], nil, user)
+				if user == "group-administrator" {
+					req.UserInfo.Groups = []string{"governance-test-admins"}
+				}
+				requireResponse(t, f.handler.Validate(context.Background(), req), true, "")
+			}
+		})
+	}
+}
+
+func TestCreationDefaultsNeverPromoteAdministrators(t *testing.T) {
+	f := newFixture(t)
+	f.agent.Spec.SandboxRef, f.agent.Spec.PolicyClass = "", ""
+	req := requestFor(t, admissionv1.Create, f.agent, nil, "administrator")
+	response := f.handler.DefaultAgent(context.Background(), req)
+	requireResponse(t, response, true, "")
+	if len(response.Patches) != 2 || response.Patches[0].Path != "/spec/sandboxRef" || response.Patches[0].Value != "standard" ||
+		response.Patches[1].Path != "/spec/policyClass" || response.Patches[1].Value != api.AgentPolicyClassNormal {
+		t.Fatalf("unexpected selection patch: %#v", response.Patches)
+	}
+	f.agent.Spec.PolicyClass = api.AgentPolicyClassAdmin
+	req = requestFor(t, admissionv1.Create, f.agent, nil, "administrator")
+	requireResponse(t, f.handler.DefaultAgent(context.Background(), req), false, "adminAgentPolicyRef")
+
+	f.agent.Spec.PolicyClass = api.AgentPolicyClassNormal
+	req = requestFor(t, admissionv1.Update, f.agent, f.agent.DeepCopy(), "administrator")
+	requireResponse(t, f.handler.DefaultAgent(context.Background(), req), false, "creation")
+	requireResponse(t, f.handler.Validate(context.Background(), req), false, "never re-defaulted")
+}
+
+func TestLegacyBehaviorAndTeamEdits(t *testing.T) {
+	f := newFixture(t)
+	f.agent.Spec.Team, f.agent.Spec.SandboxRef = "", ""
+	req := requestFor(t, admissionv1.Create, f.agent, nil, "portal")
+	requireResponse(t, f.handler.Validate(context.Background(), req), true, "legacy")
+	response := f.handler.DefaultAgent(context.Background(), req)
+	requireResponse(t, response, true, "legacy")
+	if len(response.Patches) != 0 {
+		t.Fatal("legacy Agent must not acquire Sandbox bindings")
+	}
+	team := f.team.DeepCopy()
+	team.Spec.MemberContext.Role = "updated application context"
+	f.handler.registrations = nil
+	req = requestFor(t, admissionv1.Update, team, f.team, "portal")
+	requireResponse(t, f.handler.Validate(context.Background(), req), true, "unchanged")
+	team.Spec.DefaultSandboxRef = "different"
+	req = requestFor(t, admissionv1.Update, team, f.team, "portal")
+	requireResponse(t, f.handler.Validate(context.Background(), req), false, "administrator")
+}
+
+func TestAbsentQualificationFailsClosed(t *testing.T) {
+	f := newFixture(t)
+	handler, err := NewHandler(f.client, testConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, object := range []client.Object{f.agent, f.team} {
+		req := requestFor(t, admissionv1.Create, object, nil, "administrator")
+		requireResponse(t, handler.Validate(context.Background(), req), false, "registrations")
+	}
+}
+
+func TestTeamReferenceAndCompatibilityValidation(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		edit func(*testing.T, *fixture)
+		want string
+	}{
+		{"missing policy", func(_ *testing.T, f *fixture) { f.team.Spec.NormalAgentPolicyRef = "missing" }, "Not found"},
+		{"missing default", func(_ *testing.T, f *fixture) { f.team.Spec.DefaultSandboxRef = "missing" }, "sandboxRefs"},
+		{"duplicate selections", func(_ *testing.T, f *fixture) { f.team.Spec.SandboxRefs = append(f.team.Spec.SandboxRefs, "standard") }, "Duplicate"},
+		{"multiple denied by either policy", func(t *testing.T, f *fixture) {
+			box := f.box.DeepCopy()
+			box.Name, box.UID, box.ResourceVersion = "second", "second-uid", ""
+			if err := f.client.Create(context.Background(), box); err != nil {
+				t.Fatal(err)
+			}
+			f.team.Spec.SandboxRefs = append(f.team.Spec.SandboxRefs, box.Name)
+		}, "only one"},
+		{"normal grants forbidden", func(t *testing.T, f *fixture) {
+			f.policy.Spec.KubernetesAccess = &api.AgentPolicyAdminKubernetesAccess{
+				ServiceAccountName: "agent-admin", ClusterRoleBindings: []api.AgentPolicyClusterRoleBinding{{ClusterRoleName: "read-only"}},
+			}
+			if err := f.client.Update(context.Background(), f.policy); err != nil {
+				t.Fatal(err)
+			}
+		}, "normal policy"},
+		{"unsupported optional FQDN", func(t *testing.T, f *fixture) {
+			f.policy.Spec.Network.BlockedFQDNs = []string{"blocked.example.com"}
+			if err := f.client.Update(context.Background(), f.policy); err != nil {
+				t.Fatal(err)
+			}
+		}, "incompatible"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newFixture(t)
+			test.edit(t, &f)
+			req := requestFor(t, admissionv1.Create, f.team, nil, "administrator")
+			requireResponse(t, f.handler.Validate(context.Background(), req), false, test.want)
+		})
+	}
+	t.Run("candidate Team has no UID yet", func(t *testing.T) {
+		f := newFixture(t)
+		f.team.UID, f.team.ResourceVersion = "", ""
+		req := requestFor(t, admissionv1.Create, f.team, nil, "administrator")
+		requireResponse(t, f.handler.Validate(context.Background(), req), true, "")
+	})
+}
+
+func TestReferencingConsumersBlockInvalidation(t *testing.T) {
+	f := newFixture(t)
+	f.agent.ResourceVersion = ""
+	if err := f.client.Create(context.Background(), f.agent); err != nil {
+		t.Fatal(err)
+	}
+	for _, object := range []client.Object{f.team, f.box, f.policy} {
+		req := requestFor(t, admissionv1.Delete, object, nil, "administrator")
+		requireResponse(t, f.handler.Validate(context.Background(), req), false, "")
+	}
+	oldPolicy := f.policy.DeepCopy()
+	f.policy.Spec.Network.BlockedFQDNs = []string{"blocked.example.com"}
+	req := requestFor(t, admissionv1.Update, f.policy, oldPolicy, "administrator")
+	requireResponse(t, f.handler.Validate(context.Background(), req), false, "referencing Team")
+
+	team := f.team.DeepCopy()
+	team.Spec = api.TeamSpec{}
+	req = requestFor(t, admissionv1.Update, team, f.team, "administrator")
+	requireResponse(t, f.handler.Validate(context.Background(), req), false, "referencing Agent")
+}
+
+func TestConfigurationUpdatesCheckEveryReferencingTeam(t *testing.T) {
+	f := newFixture(t)
+	other := f.team.DeepCopy()
+	other.Name, other.UID, other.ResourceVersion = "other-team", "other-team-uid", ""
+	other.Spec.NormalAgentPolicyRef, other.Spec.AdminAgentPolicyRef = "", f.policy.Name
+	if err := f.client.Create(context.Background(), other); err != nil {
+		t.Fatal(err)
+	}
+	candidate := f.policy.DeepCopy()
+	candidate.Spec.Security.ReadOnlyRootFilesystem = new(false)
+	req := requestFor(t, admissionv1.Update, candidate, f.policy, "administrator")
+	requireResponse(t, f.handler.Validate(context.Background(), req), false, "referencing Team")
+}
+
+func TestGovernanceCannotBeClearedIntoLegacyExecution(t *testing.T) {
+	for _, held := range []bool{false, true} {
+		t.Run(fmt.Sprintf("held=%v", held), func(t *testing.T) {
+			f := newFixture(t)
+			old := f.agent.DeepCopy()
+			old.Spec.SandboxRef = ""
+			if held {
+				old.Finalizers = append(old.Finalizers, sandbox.HoldFinalizer)
+			}
+			candidate := old.DeepCopy()
+			candidate.Spec.Team = ""
+			req := requestFor(t, admissionv1.Update, candidate, old, "administrator")
+			requireResponse(t, f.handler.Validate(context.Background(), req), false, "")
+		})
+	}
+}
+
+type unavailableReader struct{}
+
+func (unavailableReader) Get(context.Context, client.ObjectKey, client.Object, ...client.GetOption) error {
+	return fmt.Errorf("synthetic API unavailability")
+}
+
+func (unavailableReader) List(context.Context, client.ObjectList, ...client.ListOption) error {
+	return fmt.Errorf("synthetic API unavailability")
+}
+
+func TestDependencyFailureAndCleanupBoundary(t *testing.T) {
+	f := newFixture(t)
+	f.handler.reader = unavailableReader{}
+	req := requestFor(t, admissionv1.Create, f.agent, nil, "administrator")
+	response := f.handler.Validate(context.Background(), req)
+	requireResponse(t, response, false, "dependencies are unavailable")
+	if response.Result.Code != 503 {
+		t.Fatal("dependency failures must not look like configuration validity")
+	}
+	old := f.agent.DeepCopy()
+	old.Finalizers = append(old.Finalizers, sandbox.HoldFinalizer, "example.com/other-controller")
+	now := metav1.Now()
+	old.DeletionTimestamp = &now
+	candidate := old.DeepCopy()
+	candidate.Finalizers = []string{"example.com/other-controller"}
+	req = requestFor(t, admissionv1.Update, candidate, old, testController)
+	requireResponse(t, f.handler.Validate(context.Background(), req), true, "lifecycle metadata")
+	for _, edit := range []func(*api.Agent){
+		func(a *api.Agent) { a.Spec.Model = "changed" },
+		func(a *api.Agent) { a.Labels = map[string]string{"changed": "true"} },
+		func(a *api.Agent) { a.Annotations = map[string]string{"changed": "true"} },
+		func(a *api.Agent) { a.Status.Phase = api.PhaseReady },
+		func(a *api.Agent) { a.Finalizers = nil },
+		func(a *api.Agent) {
+			a.Finalizers = append(a.Finalizers, "cetirun.microsoft.com/custom-runtime-ownership")
+		},
+	} {
+		changed := candidate.DeepCopy()
+		edit(changed)
+		req = requestFor(t, admissionv1.Update, changed, old, testController)
+		requireResponse(t, f.handler.Validate(context.Background(), req), false, "")
+	}
+	req = requestFor(t, admissionv1.Update, candidate, old, "administrator")
+	requireResponse(t, f.handler.Validate(context.Background(), req), false, "finalizers")
+	req = requestFor(t, admissionv1.Delete, old, nil, "member")
+	requireResponse(t, f.handler.Validate(context.Background(), req), true, "deletion")
+	req = requestFor(t, admissionv1.Update, candidate, old, testController)
+	req.SubResource = "status"
+	requireResponse(t, f.handler.Validate(context.Background(), req), true, "RBAC")
+}
+
+func TestControllerCanPersistHoldWithoutReferenceLookups(t *testing.T) {
+	f := newFixture(t)
+	f.handler.reader = unavailableReader{}
+	candidate := f.agent.DeepCopy()
+	candidate.Finalizers = append(candidate.Finalizers, sandbox.HoldFinalizer)
+	req := requestFor(t, admissionv1.Update, candidate, f.agent, testController)
+	requireResponse(t, f.handler.Validate(context.Background(), req), true, "")
+	req = requestFor(t, admissionv1.Update, f.agent, candidate, testController)
+	requireResponse(t, f.handler.Validate(context.Background(), req), false, "finalizers")
+}
+
+func TestMalformedAdmissionRequestsAreRejected(t *testing.T) {
+	f := newFixture(t)
+	for _, edit := range []func(*admission.Request){
+		func(r *admission.Request) { r.Resource.Resource = "unknown" },
+		func(r *admission.Request) { r.Namespace = "unexpected" },
+		func(r *admission.Request) { r.Kind.Kind = "Team" },
+		func(r *admission.Request) { r.Object.Raw = []byte(`{"metadata":{"name":"wrong"}}`) },
+		func(r *admission.Request) {
+			r.Object.Raw = []byte(`{"metadata":{"name":"alice-work"},"spec":{"unknown":true}}`)
+		},
+		func(r *admission.Request) { r.Object.Raw = []byte(`{} {}`) },
+		func(r *admission.Request) { r.Operation = admissionv1.Connect },
+	} {
+		req := requestFor(t, admissionv1.Create, f.agent, nil, "administrator")
+		edit(&req)
+		requireResponse(t, f.handler.Validate(context.Background(), req), false, "")
+	}
+}
+
+func TestAdmissionConfigValidation(t *testing.T) {
+	for _, raw := range []string{
+		`{}`, `null`, `{"adminUsers":["administrator"],"controllerUsername":"*","unknown":1}`,
+		`{"adminUsers":["administrator"],"controllerUsername":"controller"}`,
+		`{"adminGroups":["system:authenticated"],"controllerUsername":"system:serviceaccount:test:controller"}`,
+		`{"adminUsers":[""],"controllerUsername":"system:serviceaccount:test:controller"}`,
+		`{"adminUsers":["administrator"],"controllerUsername":"system:serviceaccount:test:controller"} {}`,
+	} {
+		if _, err := ParseConfig(raw); err == nil {
+			t.Fatalf("accepted invalid config: %s", raw)
+		}
+	}
+	config, err := ParseConfig(`{"adminUsers":["administrator"],"controllerUsername":"system:serviceaccount:test:controller"}`)
+	if err != nil || !slices.Equal(config.AdminUsers, []string{"administrator"}) {
+		t.Fatalf("valid config rejected: %v", err)
+	}
+}
