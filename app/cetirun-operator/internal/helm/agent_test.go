@@ -439,7 +439,7 @@ func TestMissingProfileAndQualifiedImage(t *testing.T) {
 	override := "registry.example.com/hermes:qualified"
 	for _, file := range chrt.Files {
 		if file.Name == "agents/hermes/profile.yaml" {
-			file.Data = []byte("contractVersion: v1\nnativeVersion: \"0.16.0\"\nport: 8642\nqualifiedImages:\n- " + override + "\n")
+			file.Data = []byte("contractVersion: v1\nnativeVersion: \"0.21.5\"\nport: 8642\nqualifiedImages:\n- " + override + "\n")
 		}
 	}
 	input["agentRequest"].(map[string]any)["image"] = override

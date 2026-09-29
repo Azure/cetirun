@@ -79,8 +79,10 @@ not proof that ingress works.
 
 OpenClaw keeps `/ui/<instance>` in its gateway requests; an exact WebSocket
 upgrade at that path is routed without an HTTP redirect. Hermes Dashboard
-receives an `x-forwarded-prefix` header. Neither routing rule establishes
-compatibility with every OpenAI-style inference endpoint.
+receives an `x-forwarded-prefix` header. After the platform sign-in, Hermes also
+requires its application login: use `cetirun` as the username and the
+instance's Hermes API / Dashboard key as the password. Neither routing rule
+establishes compatibility with every OpenAI-style inference endpoint.
 
 The instance VirtualService lives in the instance namespace and references the
 operator's `istioGateway`, defaulting to `aks-istio-ingress/cetirun-gateway`.

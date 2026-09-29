@@ -41,6 +41,9 @@ class ImageDependencyTests(unittest.TestCase):
                 "OPENCLAW_VERSION": "2026.6.35",
                 "CETIRUN_AUTH_AIOHTTP_VERSION": "3.14.3",
             },
+            "agents/hermes/Dockerfile": {
+                "HERMES_VERSION": "0.21.5",
+            },
         }
         for filename, arguments in minimums.items():
             content = (CHART / filename).read_text()
@@ -51,6 +54,79 @@ class ImageDependencyTests(unittest.TestCase):
                     self.assertGreaterEqual(
                         version_tuple(match[1]), version_tuple(minimum)
                     )
+
+    def test_hermes_uses_official_locked_source_install(self):
+        content = (CHART / "agents/hermes/Dockerfile").read_text()
+        expected = {
+            "HERMES_RELEASE": "2026.9.24",
+            "HERMES_GIT_SHA": "f97608f178d1ffeca59860195ab7da295f7c8e5f",
+            "HERMES_SOURCE_SHA256": (
+                "15b15ce4e6ec8ea424a081823709d1e17"
+                "f0943e7b42b59597d24ebb94cbd1742"
+            ),
+            "HERMES_UV_IMAGE": (
+                "ghcr.io/astral-sh/uv:0.11.6@sha256:"
+                "43cb71695fcad1516c2fbe0f56e500184c42d8bce838d9f64593b8aff2c16298"
+            ),
+            "HERMES_NODE_IMAGE": (
+                "node:26-bookworm-slim@sha256:"
+                "9e6f9357d371591e32ab6f2d8a26d63bdd0d17c29eee3f4f3e7e454d9634bf73"
+            ),
+            "HERMES_SQLITE_VERSION": "3530400",
+            "HERMES_SQLITE_SHA256": (
+                "0e9483900e92cd5de8fd48d16bf9200145a61f7fd"
+                "5be542a5ac81d8a9516eb9c"
+            ),
+        }
+        for argument, value in expected.items():
+            with self.subTest(argument=argument):
+                self.assertIn(f"ARG {argument}={value}\n", content)
+
+        self.assertIn(
+            "codeload.github.com/NousResearch/hermes-agent/tar.gz/refs/tags/"
+            "v${HERMES_RELEASE}",
+            content,
+        )
+        self.assertIn(
+            'echo "${HERMES_SOURCE_SHA256}  /tmp/hermes-agent.tar.gz" '
+            "| sha256sum --check",
+            content,
+        )
+        self.assertIn(
+            "uv sync --python /usr/bin/python3 --frozen --extra all", content
+        )
+        self.assertIn("--extra anthropic", content)
+        self.assertIn("--extra azure-identity", content)
+        self.assertIn(
+            "COPY --from=hermes-uv /uv /usr/local/bin/uv",
+            content,
+        )
+        self.assertIn("FROM --platform=$BUILDPLATFORM ${HERMES_NODE_IMAGE}", content)
+        self.assertIn(
+            "COPY --from=hermes-ui-build --chown=vibe:vibe", content
+        )
+        self.assertIn(
+            "COPY --from=hermes-sqlite-build "
+            "/opt/sqlite-fixed/lib/libsqlite3.so.3.53.4",
+            content,
+        )
+        self.assertIn("npm --prefix web run build", content)
+        self.assertIn("npm --prefix ui-tui run build", content)
+        self.assertIn("printf '%s\\n' docker > .install_method", content)
+        self.assertIn("/etc/hermes/image-provenance.json", content)
+        self.assertNotIn("HERMES_WHEEL_SHA256", content)
+        self.assertNotIn('"hermes-agent[all]==${HERMES_VERSION}"', content)
+        self.assertNotIn("PLUGINS_DIR=", content)
+
+    def test_hermes_sqlite_build_has_kernel_headers(self):
+        content = (CHART / "agents/hermes/Dockerfile").read_text()
+        sqlite_build = content.split("AS hermes-sqlite-build", 1)[1].split(
+            "FROM --platform=", 1
+        )[0]
+        self.assertRegex(sqlite_build, r"tdnf install -y [^\n]*\bkernel-headers\b")
+        self.assertIn("-DSQLITE_ENABLE_FTS5", sqlite_build)
+        self.assertIn("-DSQLITE_THREADSAFE=1", sqlite_build)
+        self.assertNotIn("cc-test", sqlite_build)
 
     def test_node_release_and_architecture_checksums(self):
         content = (CHART / "Dockerfile.base").read_text()

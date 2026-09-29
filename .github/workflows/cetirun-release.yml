@@ -18,10 +18,11 @@ concurrency:
 permissions:
   contents: read
 
-# Package registries can be overridden independently for general and OpenClaw builds.
+# Package registries can be overridden independently for npm and Python builds.
 env:
   NPM_REGISTRY: ${{ vars.NPM_REGISTRY || 'https://registry.npmjs.org/' }}
   OPENCLAW_NPM_REGISTRY: ${{ vars.OPENCLAW_NPM_REGISTRY || 'https://registry.npmjs.org/' }}
+  PYPI_INDEX_URL: ${{ vars.PYPI_INDEX_URL || 'https://pypi.org/simple/' }}
 
 jobs:
   validate:
@@ -116,11 +117,14 @@ jobs:
         with:
           context: app/cetirun-chart
           file: app/cetirun-chart/agents/hermes/Dockerfile
+          platforms: linux/amd64
           push: false
           build-args: |
             VERSION=${{ steps.version.outputs.version }}
             GIT_SHA=${{ github.sha }}
             BASE_IMAGE=cetirun-base:validation
+            NPM_REGISTRY=${{ env.NPM_REGISTRY }}
+            PYPI_INDEX_URL=${{ env.PYPI_INDEX_URL }}
           tags: hermes-gateway:validation
 
       - name: Build desktop sidecar image (no push)
@@ -208,6 +212,8 @@ jobs:
             VERSION=${{ needs.validate.outputs.version }}
             GIT_SHA=${{ github.sha }}
             BASE_IMAGE=${{ secrets.ACR_REGISTRY }}/cetirun-base:${{ needs.validate.outputs.version }}
+            NPM_REGISTRY=${{ env.NPM_REGISTRY }}
+            PYPI_INDEX_URL=${{ env.PYPI_INDEX_URL }}
           tags: |
             ${{ secrets.ACR_REGISTRY }}/hermes-gateway:${{ needs.validate.outputs.version }}
             ${{ secrets.ACR_REGISTRY }}/hermes-gateway:latest

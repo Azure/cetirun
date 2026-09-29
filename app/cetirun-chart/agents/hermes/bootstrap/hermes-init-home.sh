@@ -12,7 +12,7 @@ TARGET_HOME=${TARGET_HOME:-/home-data}
 CETIRUN_CONFIG_DIR=${CETIRUN_CONFIG_DIR:-/etc/cetirun}
 CETIRUN_SECRET_DIR=${CETIRUN_SECRET_DIR:-/etc/cetirun-secrets}
 LEGACY_HOME_MARKER=.hermes/.initialized
-PYTHON_BIN=${HERMES_PYTHON:-/usr/local/lib/hermes-agent/bin/python}
+PYTHON_BIN=${HERMES_PYTHON:-/usr/local/lib/hermes-agent/venv/bin/python}
 if [ ! -x "$PYTHON_BIN" ]; then PYTHON_BIN=python3; fi
 . "$CETIRUN_CONFIG_DIR/init-home-common.sh"
 
@@ -29,7 +29,7 @@ agent_check_requirements() {
 }
 
 agent_prepare_home() {
-  for directory in .hermes .hermes/memories .hermes/skills .hermes/sessions .hermes/logs .hermes/cron .local/bin; do
+  for directory in .hermes .hermes/lazy-packages .hermes/memories .hermes/skills .hermes/sessions .hermes/logs .hermes/cron .local/bin; do
     home_ensure_dir "$directory"
   done
   marker=$(home_path "$LEGACY_HOME_MARKER")

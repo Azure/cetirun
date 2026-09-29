@@ -197,6 +197,13 @@ does not authenticate the user to a model provider. With a standalone existing
 Secret, provide the required keys yourself. A successful render does not check
 their presence.
 
+Hermes 0.21.5 requires an authentication provider when its Dashboard binds to
+a non-loopback address. CetiRun enables Hermes' built-in password provider:
+the username is `cetirun`, `API_SERVER_KEY` is the Dashboard password, and
+`CETIRUN_AUTH_KEY` signs Dashboard sessions. The outer Istio OAuth2 Proxy still
+controls access to the instance route; the Hermes login is an additional
+application-level gate.
+
 Chart-generated auth keys use live Secret lookup for reuse on upgrade. Offline
 rendering cannot preserve live keys and must not be used to rotate them.
 [Model selection](../../guides/models/) explains provider-specific precedence;

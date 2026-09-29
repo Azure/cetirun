@@ -5,7 +5,7 @@
 set -e
 
 export HERMES_HOME="${HERMES_HOME:-/home/vibe/.hermes}"
-PYTHON_BIN="${HERMES_PYTHON:-/usr/local/lib/hermes-agent/bin/python}"
+PYTHON_BIN="${HERMES_PYTHON:-/usr/local/lib/hermes-agent/venv/bin/python}"
 if [ ! -x "$PYTHON_BIN" ]; then
   PYTHON_BIN="python3"
 fi
@@ -52,6 +52,12 @@ done < "$HERMES_HOME/.env"
 export CETIRUN_AUTH_KEY="${CETIRUN_AUTH_KEY:-${API_SERVER_KEY:-}}"
 export CETIRUN_AGENT_TYPE="${CETIRUN_AGENT_TYPE:-hermes}"
 
+# Keep image-only upgrades compatible with charts predating Dashboard auth.
+export HERMES_DASHBOARD_HOST="${HERMES_DASHBOARD_HOST:-0.0.0.0}"
+export HERMES_DASHBOARD_BASIC_AUTH_USERNAME="${HERMES_DASHBOARD_BASIC_AUTH_USERNAME:-cetirun}"
+export HERMES_DASHBOARD_BASIC_AUTH_PASSWORD="${HERMES_DASHBOARD_BASIC_AUTH_PASSWORD:-${API_SERVER_KEY:-}}"
+export HERMES_DASHBOARD_BASIC_AUTH_SECRET="${HERMES_DASHBOARD_BASIC_AUTH_SECRET:-${CETIRUN_AUTH_KEY:-}}"
+
 cat > /tmp/supervisord.conf << EOF
 [unix_http_server]
 file=/tmp/supervisor.sock
@@ -69,7 +75,7 @@ logfile_maxbytes=0
 pidfile=/tmp/supervisord.pid
 
 [program:cetirun-auth]
-command=/usr/local/lib/hermes-agent/bin/python /usr/local/share/cetirun/cetirun-auth-service.py
+command=/usr/local/lib/hermes-agent/venv/bin/python /usr/local/share/cetirun/cetirun-auth-service.py
 priority=20
 autorestart=true
 startretries=5
@@ -80,7 +86,7 @@ stderr_logfile=/dev/stderr
 stderr_logfile_maxbytes=0
 
 [program:hermes-gateway]
-command=/bin/bash -lc 'mkdir -p "$HERMES_HOME/logs"; exec hermes gateway run --replace --accept-hooks 2>&1 | tee -a "$HERMES_HOME/logs/gateway.log"'
+command=hermes gateway run --replace --accept-hooks --external-supervisor
 priority=40
 autorestart=true
 stopasgroup=true
@@ -98,12 +104,12 @@ if [ "${HERMES_DASHBOARD_ENABLED:-true}" = "true" ]; then
     echo "ERROR: HERMES_DASHBOARD_PORT must be a number between 1024 and 65535, got '${HERMES_DASHBOARD_PORT}'" >&2
     exit 1
   fi
-  # The dashboard is protected by the existing oauth2-proxy and NetworkPolicy.
+  # Dashboard auth supplements the existing oauth2-proxy and NetworkPolicy.
   # Never expose port 9119 directly outside the cluster.
   cat >> /tmp/supervisord.conf << 'DASHBOARD_EOF'
 
 [program:hermes-dashboard]
-command=hermes dashboard --host 0.0.0.0 --port %(ENV_HERMES_DASHBOARD_PORT)s --no-open --skip-build --insecure
+command=hermes dashboard --host %(ENV_HERMES_DASHBOARD_HOST)s --port %(ENV_HERMES_DASHBOARD_PORT)s --no-open --skip-build
 priority=30
 autorestart=true
 startretries=5

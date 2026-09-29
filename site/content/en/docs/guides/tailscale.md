@@ -94,8 +94,9 @@ inside the main container; it is not a separate Tailscale sidecar.
 | Hermes | `http://localhost:8642` | API server using `API_SERVER_KEY`, not the Dashboard on 9119 |
 
 The tailnet URL is therefore not another copy of the portal, browser terminal,
-or desktop. Do not expose the Hermes Dashboard directly: it is started with
-`--insecure` and depends on the platform access path.
+or desktop. Do not expose the Hermes Dashboard directly. Hermes 0.21.5 rejects
+an unauthenticated non-loopback Dashboard; CetiRun configures its built-in
+password provider in addition to the platform access path.
 
 The container uses kernel networking, creates `/dev/net/tun`, and the chart
 adds `NET_ADMIN` for Tailscale. Review those privileges alongside the

@@ -152,9 +152,10 @@ copyright, attribution, and source-distribution obligations where applicable.
   license.
 * agents/openclaw/Dockerfile adds OpenClaw, ClawHub, the OpenClaw Teams and ACP
   extensions, and Python auth-helper dependencies.
-* agents/hermes/Dockerfile adds hermes-agent[all], Azure Identity, PyJWT and their
-  dependencies. CetiRun's Teams plugin is separate from the installed Hermes
-  distribution.
+* agents/hermes/Dockerfile installs the checksum-pinned Hermes Agent
+  v2026.9.24 source release, its checked-in uv/npm dependency locks, and the
+  upstream-pinned SQLite compatibility library. CetiRun's Teams plugin is added
+  separately to that source tree.
 * Dockerfile.desktop builds or installs Xorg/Xvfb, Fluxbox, LibVNCServer,
   x11vnc, supervisor, websockify, noVNC, Noto CJK fonts, Google Chrome, and
   system libraries. This is not an MIT-only software stack. In particular,

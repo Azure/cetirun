@@ -5,6 +5,8 @@ The chart deploys an OpenClaw or Hermes instance. Read the
 for settings and defaults, and the
 [local checks guide](../../site/content/en/docs/getting-started/local-checks.md)
 for credential-free rendering.
+Maintainers updating the bundled Hermes release should also follow
+[the Hermes runtime upgrade procedure](agents/hermes/README.md).
 
 `values.yaml`, `values.schema.json`, and `templates/` are the source of truth.
 Operator-resolved values differ from standalone chart defaults. A local render
