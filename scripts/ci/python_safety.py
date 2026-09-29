@@ -7,6 +7,7 @@ integration, Azure token acquisition, or live Bot Framework/JWKS endpoints.
 """
 
 import ipaddress
+import os
 import socket
 import sys
 from types import ModuleType
@@ -41,15 +42,20 @@ def hermes_modules():
     for name in (
         "gateway",
         "gateway.platforms",
+        "gateway.platforms._shared",
         "gateway.config",
         "gateway.platform_registry",
     ):
         modules[name] = ModuleType(name)
     modules["gateway"].__path__ = []
+    modules["gateway.platforms"].__path__ = []
     modules["gateway.platforms"].__dict__.update(
         BasePlatformAdapter=UnusedHermesInterface,
         MessageEvent=UnusedHermesInterface,
         SendResult=UnusedHermesInterface,
+    )
+    modules["gateway.platforms._shared"].get_scoped_secret = (
+        lambda name, default=None, **_kwargs: os.environ.get(name, default)
     )
     modules["gateway.config"].Platform = str
     modules["gateway.platform_registry"].__dict__.update(

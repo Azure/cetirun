@@ -112,12 +112,15 @@ The agent helper builds for `linux/amd64`. Its inputs include:
 | `BUILD_HERMES` | Default `false` |
 | `NPM_REGISTRY` | Registry used for most build stages |
 | `OPENCLAW_NPM_REGISTRY` | Separate OpenClaw package registry |
-| `PYPI_INDEX_URL` | Python package index for the Hermes build |
+| `PYPI_INDEX_URL` | Default Python package index supplied to Hermes' locked `uv` install |
 
 `NPM_REGISTRY` and `OPENCLAW_NPM_REGISTRY` default to
 `https://registry.npmjs.org/`. Runtime skill installation separately uses
-`skills.npmRegistry` with the same public default. `PYPI_INDEX_URL` defaults
-to `https://pypi.org/simple/`. Use approved alternate mirrors when needed.
+`skills.npmRegistry` with the same public default. The Hermes image downloads a
+checksum-pinned upstream source tag, installs its checked-in `uv.lock`, and
+builds the upstream Dashboard and TUI assets. `PYPI_INDEX_URL` defaults to
+`https://pypi.org/simple/`; an alternate index must contain the exact locked
+artifacts.
 
 ## Connected deployment helpers
 

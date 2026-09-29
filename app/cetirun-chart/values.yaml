@@ -347,7 +347,7 @@ hermes:
     browser:
       cdp_url: "http://127.0.0.1:18800"
     memory:
-      char_limit: 2200
+      memory_char_limit: 2200
       user_char_limit: 1375
     security:
       redact_secrets: true

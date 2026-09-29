@@ -112,6 +112,8 @@ the operator's default chart version alone does not upgrade existing instances.
 Open the URL in `status.accessUrl`. `Ready` reports workload readiness
 independently of ingress. `IngressReady=True` confirms VirtualService
 reconciliation; verify TLS, sign-in, and model-provider access separately.
+For Hermes, sign in to the native Dashboard with username `cetirun` and the
+Hermes API / Dashboard key shown on the instance Overview page.
 
 ## Keep your workspace
 

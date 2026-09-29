@@ -194,7 +194,7 @@ export function OverviewSection({ instance }: { instance: Instance }) {
   }, [closeTeamsDownloadDialog, instance.instanceName]);
 
   const agentCredential = instance.agentType === "hermes" ? instance.apiServerKey : instance.gatewayToken;
-  const agentCredentialLabel = instance.agentType === "hermes" ? "Hermes API Server Key" : "Gateway Token";
+  const agentCredentialLabel = instance.agentType === "hermes" ? "Hermes API / Dashboard Key (user: cetirun)" : "Gateway Token";
   const nativeIntegrations = instance.agentType !== "custom";
 
   const handleCopyAgentCredential = useCallback(() => {
