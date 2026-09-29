@@ -276,6 +276,17 @@ class PythonSafetyTests(unittest.TestCase):
 class WorkflowContractTests(unittest.TestCase):
     """Check small cross-file invariants; actionlint handles YAML/Actions semantics."""
 
+    def test_license_update_helper_only_proposes_a_patch(self):
+        text = (validate.ROOT / ".github/workflows/portal-ci.yml").read_text()
+        self.assertIn('npm run licenses:check-updates -- --output "$RUNNER_TEMP/portal-license-update.patch"', text)
+        self.assertIn("steps.license-supplements.outcome == 'failure'", text)
+        self.assertIn("name: portal-license-update", text)
+        self.assertLess(text.index("Check version-pinned license supplements"), text.index("Install dependencies"))
+        self.assertNotIn(": write", text)
+        self.assertNotIn("pull_request_target:", text)
+        self.assertNotIn("continue-on-error:", text)
+        self.assertNotRegex(text, r"git (?:apply|commit|push)")
+
     def test_runtime_image_smoke_selects_only_the_auth_unittest_suite(self):
         text = (validate.ROOT / ".github/workflows/docker-build-validate.yml").read_text()
         commands = re.findall(r"openclaw-gateway:validation -m unittest discover[^\n]+", text)
