@@ -7,6 +7,7 @@ package runtimebindings
 
 import (
 	"fmt"
+	"net/netip"
 	"path"
 	"strings"
 
@@ -45,11 +46,17 @@ type Peer struct {
 }
 
 type Network struct {
-	Revision    string `json:"revision"`
-	Callers     []Peer `json:"callers"`
-	Gateway     Peer   `json:"gateway"`
-	GatewayPort int32  `json:"gatewayPort"`
-	DNS         Peer   `json:"dns"`
+	Revision    string              `json:"revision"`
+	Callers     []Peer              `json:"callers"`
+	Gateway     Peer                `json:"gateway"`
+	GatewayPort int32               `json:"gatewayPort"`
+	DNS         Peer                `json:"dns"`
+	APIServer   []APIServerEndpoint `json:"apiServer,omitempty"`
+}
+
+type APIServerEndpoint struct {
+	IP   string `json:"ip"`
+	Port int32  `json:"port"`
 }
 
 // Custom is returned only after policy and capability owners approve these
@@ -133,6 +140,16 @@ func (b Custom) Validate(agent agents.ResolvedAgent) error {
 			return fmt.Errorf("NetworkBindingInvalid: callers require a namespace and pod selector")
 		}
 	}
+	if len(b.Network.APIServer) > 64 {
+		return fmt.Errorf("NetworkBindingInvalid: too many API server endpoints")
+	}
+	for _, endpoint := range b.Network.APIServer {
+		address, err := netip.ParseAddr(endpoint.IP)
+		if err != nil || address.IsUnspecified() || address.IsMulticast() ||
+			endpoint.Port < 1 || endpoint.Port > 65535 {
+			return fmt.Errorf("NetworkBindingInvalid: exact API server addresses and ports are required")
+		}
+	}
 	return agents.ValidatePortableBindings(b.HarnessBindings())
 }
 
@@ -206,8 +223,7 @@ var customPlatformKeys = map[string]bool{
 func PlatformValues(values map[string]any) map[string]any {
 	selected := map[string]any{}
 	for key := range customPlatformKeys {
-		// ttyd is not consumed by Custom until its integration is revisited.
-		if key == "ttyd" {
+		if key == "ttyd" && !terminalEnabled(values) {
 			continue
 		}
 		if value, ok := values[key]; ok {
@@ -243,4 +259,9 @@ func WorkloadValues(values map[string]any) map[string]any {
 		selected["skills"] = mounted
 	}
 	return selected
+}
+
+func terminalEnabled(values map[string]any) bool {
+	terminal, _ := values["ttyd"].(map[string]any)
+	return terminal["enabled"] == true
 }

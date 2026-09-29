@@ -39,7 +39,7 @@ spec:
 | `image` | Required for Custom. Built-ins use a pinned platform default or a qualified override. Once set, it cannot be cleared. Prefer production digests. |
 | `registrySecretRef` | Optional Portal-managed source Secret reference containing only `name`. |
 | `username` | Existing non-root image user, default `vibe`, with HOME at `/home/<username>`; immutable. |
-| `port` | Optional Agent HTTP port, 1–65535. Without it, Custom has no Agent HTTP endpoint, Chat UI or HTTP probe. Platform desktop access is independent. Built-ins retain qualified native defaults. |
+| `port` | Optional Agent HTTP port, 1–65535. Without it, Custom has no Agent HTTP endpoint, Chat UI or HTTP probe. Platform desktop and terminal access are independent. Built-ins retain qualified native defaults. |
 
 `spec.agent` remains required; `agent: {}` selects Hermes. `spec.model`,
 ownership, Team, skills, storage, resources, Helm settings and lifecycle stay
@@ -126,12 +126,42 @@ PodDisruptionBudget and Istio discovery scope under their platform settings.
 The desktop is enabled by default, including when the Agent has no HTTP port.
 Its gateway route uses the existing platform authentication and instance
 authorization; it does not expose the Custom chat endpoint or invent a native
-Agent UI. Suspension removes the desktop route.
+Agent UI. Desktop and Terminal can be enabled independently.
 
-ttyd is temporarily disabled for Custom. Enabling it requires a defined way to
-supply its tools and start it inside the Agent's own execution environment
-without replacing ENTRYPOINT/CMD. A terminal in another container that only
-shares HOME is not equivalent.
+Custom uses a separate `cetirun-terminal` Deployment and Service from the
+runtime Chart. The dedicated image is built with
+`app/cetirun-operator/Dockerfile.terminal`; it does not reuse the Operator image.
+The Service uses `ttyd.port` (7681 by default), while the browser keeps the
+authenticated `/<instance>/term/` path. There is no terminal port field in the
+Agent CRD. Set `spec.helm.values.ttyd.enabled: false` to disable an instance's
+terminal. Charts from before this terminal integration keep their previous
+Custom behavior.
+
+The terminal opens a Kubernetes exec session in the Agent's main container.
+Its entrypoint checks that container for `zsh`, then `bash`, then `sh`; it
+reports a missing terminal and fails if none can run. It repeats discovery
+after container replacement. The Agent image retains its own ENTRYPOINT/CMD
+and does not need to start ttyd. The terminal Pod does not mount Agent HOME,
+share its process namespace or receive model credentials.
+
+The Operator prepares instance-scoped read roles; the Chart binds the terminal
+ServiceAccount and deploys its workload. A fixed exec role and the instance's
+admission policy restrict requests to the named Pod, main container and
+approved shell/probe commands. Gateway authentication, instance ownership,
+Agent UID and suspension/deletion checks remain required. Terminal ingress
+also requires the configured gateway identity through Istio; its separate
+NetworkPolicy limits outbound access to discovered API server addresses,
+DNS and the mesh control plane.
+
+The Portal enables Terminal only after its owned Deployment becomes ready.
+Suspension, deletion and a Sandbox hold stop the terminal and withdraw its route.
+Pod replacement waits and opens a new exec session without replaying queued
+input. Normal shell exit and authorization failure stop reconnecting. An
+ambiguous connection failure against the same running container ends the
+session rather than silently duplicating it. Browser reconnection cannot
+restore a terminated process; use the Agent's own session persistence where
+available. These behaviors require qualification with the target CNI, mesh,
+runtime and image; a configured route is not an interactive acceptance test.
 
 Custom does not run a native authentication helper, doctor, session logger,
 Teams, Tailscale or the native upgrade hook. The Agent and HOME init containers
@@ -142,9 +172,10 @@ Image/filesystem compatibility,
 including access by both identities, still requires qualification.
 
 The platform configures shared controls, desktop settings, resources, node
-selection, affinity, tolerations, topology spread and RuntimeClass. Per-Agent Helm overrides accept resource requests
-and limits plus desktop enablement, logging, resolution and resources; desktop
-image selection and URL wiring remain platform-owned.
+selection, affinity, tolerations, topology spread and RuntimeClass. Per-Agent
+Helm overrides accept resource requests and limits, `ttyd.enabled`, and desktop
+enablement, logging, resolution and resources. Terminal and desktop images,
+terminal ports, gateway identity and URL wiring remain platform-owned.
 Raw commands, containers, envFrom, identity, volumes, Secret references and
 native feature settings are rejected. The final manifest check covers every
 rendered object, not just the main container.

@@ -33,6 +33,7 @@ func customInput(port any) map[string]any {
 		},
 	}
 	return map[string]any{
+		"ttyd":      map[string]any{"enabled": false},
 		"agentType": "custom", "customBindings": b, "fullnameOverride": "openclaw-example-cetirun",
 		"agentRequest": map[string]any{"type": "custom", "image": image, "username": "worker", "port": port, "releaseName": "openclaw-example"},
 	}

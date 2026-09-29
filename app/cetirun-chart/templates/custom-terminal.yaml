@@ -1,0 +1,16 @@
+{{- /*
+Copyright (c) Microsoft Corporation.
+Licensed under the MIT License.
+
+The Operator supplies typed, validated platform resources. Custom images do
+not supply these objects and cannot override their permissions or targets.
+*/ -}}
+{{- if and (eq (include "cetirun.agent.type" .) "custom") .Values.ttyd.enabled }}
+{{- if not .Values.runtime.terminalResources }}
+{{- fail "Custom terminal requires a platform-prepared terminal plan" }}
+{{- end }}
+{{- range .Values.runtime.terminalResources }}
+---
+{{ toYaml . }}
+{{- end }}
+{{- end }}

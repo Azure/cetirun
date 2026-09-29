@@ -101,6 +101,31 @@ For a disconnected Go check with dependencies already cached, prefix the
 command with `GOPROXY=off GOTOOLCHAIN=local GOFLAGS=-mod=readonly`. A missing
 toolchain or dependency should fail the check, not trigger an implicit download.
 
+### Custom terminal
+
+The Custom terminal uses its own image and
+`app/cetirun-operator/Dockerfile.terminal`. Its Go entrypoint shares the Operator
+module so it can use the same Agent API types, but runs as a separate
+Deployment with its own ServiceAccount. It does not start the Operator.
+
+```bash
+go -C app/cetirun-operator test ./internal/terminal -count=1
+node --test app/cetirun-operator/internal/terminal/reconnect.test.cjs
+make -C app/cetirun-operator build-terminal
+```
+
+Image building is a separate step and can download pinned base images and Go
+dependencies:
+
+```bash
+REGISTRY=registry.example.com PUSH=false bash scripts/terminal-docker-build.sh
+```
+
+`make build-images` and `make publish-images` include `cetirun-terminal`.
+Neither local tests nor image building exercises a cluster exec, model login,
+real gateway authentication or Pod restart. Use separately authorized
+environment tests for those paths.
+
 ### Portal
 
 For a frontend change, run the tests and production build:

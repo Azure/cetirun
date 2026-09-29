@@ -895,8 +895,9 @@ func (h *InstanceHandler) toInstanceResponse(ctx context.Context, instance *ceti
 		(instance.Status.Phase == "Ready" || instance.Status.Phase == "Provisioning") {
 		for _, condition := range instance.Status.Conditions {
 			if condition.Type == cetirunv1alpha1.ConditionIngressReady && condition.Status == metav1.ConditionTrue {
-				if domain, err := h.Kube.GetOperatorDomainSuffix(ctx); err == nil {
-					resp.AccessURL = fmt.Sprintf("https://%s/%s/desktop/", domain, instance.Name)
+				service := customAccessService(instance.Status.Conditions)
+				if domain, err := h.Kube.GetOperatorDomainSuffix(ctx); err == nil && service != "" {
+					resp.AccessURL = fmt.Sprintf("https://%s/%s/%s/", domain, instance.Name, service)
 				}
 				break
 			}
@@ -921,6 +922,26 @@ func (h *InstanceHandler) toInstanceResponse(ctx context.Context, instance *ceti
 	}
 
 	return resp, nil
+}
+
+func customAccessService(conditions []metav1.Condition) string {
+	desktop, terminal := true, false
+	for _, condition := range conditions {
+		switch condition.Type {
+		case cetirunv1alpha1.ConditionDesktopConfigured:
+			desktop = condition.Status == metav1.ConditionTrue
+		case cetirunv1alpha1.ConditionTerminalConfigured:
+			terminal = condition.Status == metav1.ConditionTrue
+		}
+	}
+	if desktop {
+		// Older operators report only IngressReady for their desktop route.
+		return "desktop"
+	}
+	if terminal {
+		return "term"
+	}
+	return ""
 }
 
 // GetInstanceStatus handles GET /api/v1/instance/status.

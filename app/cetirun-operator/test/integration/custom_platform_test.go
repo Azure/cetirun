@@ -60,6 +60,7 @@ func TestCustomSharedPlatformObjectsMatchAPI(t *testing.T) {
 	prepared, err := helm.PrepareChart(ch, map[string]any{
 		"agentType": "custom", "customBindings": bindings, "fullnameOverride": "custom-platform-example",
 		"agentRequest":        map[string]any{"type": "custom", "image": image, "username": "worker", "releaseName": "example"},
+		"ttyd":                map[string]any{"enabled": false},
 		"podDisruptionBudget": map[string]any{"enabled": true},
 		"autoscaling":         map[string]any{"enabled": true, "minReplicas": 1, "maxReplicas": 1},
 	})

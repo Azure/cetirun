@@ -22,6 +22,7 @@ import (
 
 	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/agents/builtin"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/terminal"
 )
 
 const (
@@ -581,7 +582,7 @@ func classifySkills(skills []string) (npm []string, clawHub []string, err error)
 //
 // The instance name is not used as a top-level native UI route, which keeps it isolated
 // from Portal SPA routes such as /instances/<name>.
-func buildVirtualService(instance *cetirunv1alpha1.Agent, domainSuffix, gateway string) *istiov1beta1.VirtualService {
+func buildVirtualService(instance *cetirunv1alpha1.Agent, domainSuffix, gateway string, access ...customAccess) *istiov1beta1.VirtualService {
 	if gateway == "" {
 		gateway = DefaultIstioGateway
 	}
@@ -659,9 +660,27 @@ func buildVirtualService(instance *cetirunv1alpha1.Agent, domainSuffix, gateway 
 		makeRedirect(instancePrefix + "/term"),
 	}
 	if agentType == cetirunv1alpha1.AgentTypeCustom {
-		routes = []*istioapiv1beta1.HTTPRoute{
-			makeRedirect(instancePrefix + "/desktop"),
-			makeRoute(instancePrefix+"/desktop/", "/desktop/", novncPort, 0),
+		services := customAccess{desktop: true}
+		if len(access) > 0 {
+			services = access[0]
+		}
+		routes = nil
+		if services.desktop {
+			routes = append(routes,
+				makeRedirect(instancePrefix+"/desktop"),
+				makeRoute(instancePrefix+"/desktop/", "/desktop/", novncPort, 0))
+		}
+		if services.terminal {
+			port := services.terminalPort
+			if port == 0 {
+				port = ttydPort
+			}
+			route := makeRoute(instancePrefix+"/term/", "/term/", port, 0)
+			route.Route[0].Destination.Host = fmt.Sprintf("%s.%s.svc.cluster.local",
+				terminal.WorkloadName(instanceServiceName(name)), ns)
+			routes = append(routes,
+				makeRedirect(instancePrefix+"/term"),
+				route)
 		}
 	} else if descriptor.DashboardPort != 0 {
 		routes = append(routes,

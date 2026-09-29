@@ -302,6 +302,8 @@ const (
 	ConditionAgentConfigReady   = "AgentConfigReady"
 	ConditionAgentIdentityReady = "AgentIdentityReady"
 	ConditionSandboxReady       = "SandboxReady"
+	ConditionDesktopConfigured  = "DesktopConfigured"
+	ConditionTerminalConfigured = "TerminalConfigured"
 )
 
 // Agent Identity lifecycle phases.

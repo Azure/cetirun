@@ -276,7 +276,7 @@ func TestCustomDesktopDisableAndEnableCleansRoute(t *testing.T) {
 	for _, enabled := range []bool{false, true} {
 		current := s.current()
 		current.Generation++
-		current.Spec.Helm.Values = map[string]runtime.RawExtension{"desktop": {Raw: []byte(fmt.Sprintf(`{"enabled":%v}`, enabled))}}
+		current.Spec.Helm.Values["desktop"] = runtime.RawExtension{Raw: []byte(fmt.Sprintf(`{"enabled":%v}`, enabled))}
 		if err := s.client.Update(context.Background(), current); err != nil {
 			t.Fatal(err)
 		}

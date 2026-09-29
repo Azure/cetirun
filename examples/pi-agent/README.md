@@ -1,74 +1,81 @@
 # Pi Custom Agent
 
-This example runs the real Pi coding agent through
-`@earendil-works/pi-coding-agent`, pinned to **0.87.1** with an npm lockfile.
-Upstream source: `earendil-works/pi`, tag `v0.87.1`,
-`packages/coding-agent`. It uses Pi's read, bash, edit, write, grep, find and ls
-tools rather than forwarding a prompt to a synthetic model.
+Run [Pi](https://github.com/earendil-works/pi/tree/v0.87.1/packages/coding-agent)
+in CetiRun, with its native terminal UI and an OpenAI-compatible HTTP adapter.
+The example pins `@earendil-works/pi-coding-agent` to **0.87.1**. It uses Pi's
+real tools; it does not provide a Web Chat UI.
 
-The example uses Pi's native GitHub Copilot OAuth while CetiRun's AI Gateway
-is unavailable. Credentials stay in this instance's private
-`$HOME/.pi/agent/auth.json`. It does not import Hermes/OpenClaw credentials,
-create a fake Virtual Key, or require `OPENAI_BASE_URL`/`OPENAI_API_KEY`.
-The administrator must explicitly enable this image-owned authentication mode.
-A missing required Gateway binding does not select it automatically.
+## HTTP interfaces
 
-## Runtime and isolation
+Set `spec.agent.port: 8080`. The platform passes that value as `PORT`; the image
+starts its HTTP server on `0.0.0.0:PORT`.
 
-The image declares `USER 1024:1024` and `HOME=/home/vibe`, matching the platform
-Desktop identity. Pi works in `$HOME/workspace`; files and credentials survive
-Pod replacement through the HOME PVC. The platform supplies the read-only
-`$HOME/.agents` context and skills. Pi discovers those files through its SDK,
-without loading arbitrary global extensions or installing skills at startup.
+| Interface | Implementation |
+| --- | --- |
+| `GET /healthz` | Returns process readiness without calling a model. |
+| `GET /v1/models` | Lists the Copilot models available to this instance. |
+| `POST /v1/chat/completions` | Accepts text messages and optional SSE streaming; runs Pi's read, bash, edit, write, grep, find and ls tools. |
 
-Set `spec.agent.port: 8080`. The example implements:
+[agent-api.mjs](agent-api.mjs) contains all three routes. It accepts one HTTP
+chat request at a time, with a two-minute deadline and an eight-tool-call
+budget. HTTP history is reconstructed from each request in memory, separate
+from native TUI history. Automatic model retries and compaction are disabled.
+See the [Custom Agent contract](../../docs/agent-harness-contract.md) for the
+platform requirements beyond this example.
 
-- `GET /healthz`: process readiness without a model request;
-- `GET /v1/models`: Copilot models available to this instance;
-- `POST /v1/chat/completions`: text messages, optional SSE streaming and Pi tools.
+## Code map
 
-Requests run one at a time, with a two-minute deadline and an eight-tool-call
-budget. Automatic retries and compaction are disabled. The HTTP adapter
-reconstructs the supplied text history in an in-memory Pi session; it does not
-implement a Chat UI or persistent HTTP conversation store.
+| File | Responsibility |
+| --- | --- |
+| [server.mjs](server.mjs) | Image entrypoint: start the API and private auth listener; stop them on shutdown. |
+| [agent-api.mjs](agent-api.mjs) | HTTP contract, input validation, streaming, limits and cancellation. |
+| [pi-runtime.mjs](pi-runtime.mjs) | Pi SDK sessions, model discovery and tool execution. |
+| [pi-resources.mjs](pi-resources.mjs) | Load approved context and skills without global extensions or runtime package installation. |
+| [pi-tui.mjs](pi-tui.mjs) | Start Pi's native interactive mode with the same context and private auth directory. |
+| [auth-api.mjs](auth-api.mjs), [copilot-auth.mjs](copilot-auth.mjs) | Loopback-only login/status/cancel API and its operations CLI. |
+| [http.mjs](http.mjs) | Shared HTTP I/O and server lifecycle helpers. |
+| [Dockerfile](Dockerfile) | Install pinned dependencies and tools, expose `pi-tui`, and run the HTTP entrypoint as a non-root user. |
 
-The authentication service binds only `127.0.0.1:9099` in the Pod. It is not
-included in the Service or public ingress. An administrator uses the bundled
-CLI through an approved operations channel, as described below. Authentication
-requests require a dedicated header and reject browser Origin headers and
-foreign Host names. No token is returned through these APIs or written to
-ordinary logs.
-`PI_TELEMETRY=0` disables Pi's install telemetry.
+The auth listener is private to the Pod at `127.0.0.1:9099`; never expose it
+through a Service or ingress. From an approved operations channel inside the
+Agent container, `node /opt/cetirun-pi/copilot-auth.mjs --help` describes its CLI.
+Credentials stay in `$HOME/.pi/agent/auth.json` and are not returned by the API
+or copied from another Agent. Do not disable exec restrictions to reach it.
 
-Desktop, NetworkPolicy, exec restriction, Istio scope and storage ownership
-remain platform-managed. ttyd stays disabled for Custom Agents.
-This example does not provide a Portal login action or its own Chat UI.
-Desktop access does not complete Copilot authentication.
+## Build the image
 
-## Build
-
-Build the updated CetiRun base image first; it must contain the common
-initializer's tools, including `cmp` from `diffutils`.
+Run from `examples/pi-agent`:
 
 ```bash
 npm ci --ignore-scripts --no-audit --no-fund
 npm test
 npm run check
-docker buildx build --platform linux/amd64 --load \
-  --build-arg BASE_IMAGE=registry.example.com/cetirun-base:0.1.1 \
-  --build-arg VERSION=0.1.1 --build-arg GIT_SHA=<source-sha> \
-  -t registry.example.com/cetirun-pi-example:0.1.1 .
+docker buildx build --platform linux/amd64 --load -t pi-example:local .
 ```
 
-Run this from `examples/pi-agent`. Record the source commit, any uncommitted
-patch digest, and the resulting image digest. Publishing the example is a
-separate image operation; it is not added to the platform's six-image release.
-Do not overwrite an existing release tag.
+The Dockerfile uses the CetiRun base image for common HOME-initialization tools,
+installs the locked SDK plus checksum-pinned `fd`, and verifies required tools
+at build time. It declares `USER 1024:1024`, `HOME=/home/vibe`, and keeps the
+application outside the HOME mount at `/opt/cetirun-pi`. Telemetry and automatic
+Pi catalog/update checks are disabled; explicit OAuth and model calls still work.
 
-## Enable approved Custom provisioning
+To adapt this example, keep that image layout, the three HTTP routes and a
+runnable shell/TUI command. Do not add ttyd or Kubernetes credentials to the
+Agent image. A different base image must satisfy the initializer contract and
+the Dockerfile's dependency checks. Publish under a new tag, record the source
+and image digest, and use that digest below; publishing is a separate operation.
 
-The Operator's `customRuntime` configuration is disabled by default. An
-administrator enables it only for qualified image digests:
+## Deploy an approved instance
+
+Use an Operator/runtime Chart release that includes the Custom terminal and
+its published `cetirun-terminal` image. The Operator provisions the terminal
+ServiceAccount, restricted exec access, routing and storage. Keep the existing
+gateway configuration; `ttyd.gatewayServiceAccount` must match its identity.
+
+An administrator must enable Custom provisioning and approve the exact image.
+This example explicitly uses Pi-owned model authentication while the platform
+Gateway is unavailable; missing Gateway credentials never enable it implicitly.
+Merge these settings into the platform values:
 
 ```yaml
 cetirun-operator:
@@ -76,37 +83,25 @@ cetirun-operator:
     enabled: true
     agentManagedModel: true
     approvedImages:
-      - registry.example.com/cetirun-pi-example@sha256:<published-digest>
+      - registry.example.com/pi-example@sha256:<published-digest>
     storageClass: default
     storageSize: 100Gi
     accessMode: ReadWriteOnce
     fsGroup: 1024
 ```
 
-Keep existing platform values, identity and ingress configuration. The Operator
-prepares the namespace, canonical context and HOME claim template, then installs
-the Custom chart once. The StatefulSet controller creates the PVC and Pod from
-that release. Agent and namespace ownership checks remain in place; HOME does
-not require a pre-existing PVC or UID.
-The default context includes `cetirun-memory`; platform and Team shared skills
-continue through the shared Skills path.
+The Operator prepares the namespace, canonical context and HOME claim template
+in one Chart installation. The StatefulSet creates the PVC and Pod; a
+pre-existing PVC or UID is not required. The default context includes
+`cetirun-memory`, alongside approved platform and Team shared skills.
 
-The AKS `default` StorageClass uses Azure Disk with `WaitForFirstConsumer`.
-Scheduling the Agent Pod triggers volume binding. Ready requires a Bound HOME
-and a ready workload. Immediate-binding storage uses the same deployment flow.
-Qualify CSI permissions and mesh behavior separately. Custom HOME must match
-the configured storage profile and the instance's recorded claim template.
-Changing these settings does not migrate or resize existing claims.
+On AKS, `default` uses Azure Disk with `WaitForFirstConsumer`: scheduling the
+Pod triggers binding. Ready requires both a Bound HOME and a ready workload.
+The claim must match the configured storage profile; changing that profile
+does not migrate or resize an existing HOME. Storage handoff and CSI/mesh
+qualification follow the [Custom example](../custom-agent/README.md#platform-integration).
 
-During Pod-affecting updates, the provider persists an exclusive operation,
-scales down the owned StatefulSet, and waits for HOME-using Pods to exit.
-Completion is idempotent across Operator restarts. Unknown Helm outcomes retain
-the completion outbox for explicit recovery; they are not retried as a new apply.
-Image changes on an existing HOME require separate compatibility qualification.
-Deleting an Agent follows the existing namespace/PVC deletion policy.
-
-Create a **new** Custom Agent with an approved owner and the published digest.
-Do not change a built-in Agent's type or manually provision its namespace/PVC:
+Create a new Agent, replacing the owner, digest and Chart version:
 
 ```yaml
 apiVersion: cetirun.microsoft.com/v1alpha1
@@ -119,84 +114,58 @@ spec:
     displayName: Example User
   agent:
     type: custom
-    image: registry.example.com/cetirun-pi-example@sha256:<published-digest>
+    image: registry.example.com/pi-example@sha256:<published-digest>
     username: vibe
     port: 8080
   helm:
-    version: "0.1.1"
+    version: "<terminal-enabled-chart-version>"
+    values:
+      ttyd:
+        enabled: true
 ```
 
-This template is not a ready-to-apply environment manifest: replace the owner,
-digest and target context with approved values.
+The platform creates the namespace and PVCs. Do not change an existing Agent's
+type or manually create its storage. Image changes on an existing HOME require
+separate compatibility qualification. Deleting an Agent deletes its namespace
+and PVCs; it is not a restart procedure.
 
-## Copilot authentication
+Only `ttyd.enabled` is an instance override. Terminal image, port and gateway
+identity belong in the Operator's platform values, not `spec.helm.values`.
+Desktop is independent: `spec.helm.values.desktop.enabled: false` disables
+Desktop without disabling Terminal.
 
-Use an operations identity already approved for the target Agent. Confirm the
-context, namespace and Pod before running the bundled CLI in the `cetirun`
-container:
+## Open Pi from the Portal
+
+Open the instance, select **Terminal**, and run:
 
 ```bash
-kubectl --context <approved-context> -n <agent-namespace> \
-  exec <agent-pod> -c cetirun -- \
-  node /opt/cetirun-pi/copilot-auth.mjs status
+pi-tui          # Continue the most recent saved native session
+pi-tui --new    # Or start a new session
 ```
 
-Ordinary exec access may be denied by platform policy. If no approved channel
-is available, stop and ask the administrator; do not disable exec restrictions,
-broaden permissions or expose port 9099 through a Service or ingress.
+The platform's `cetirun-terminal` service opens a shell in the Agent container,
+trying `zsh`, `bash`, then `sh`. This image does not install or start ttyd.
+The browser uses `/<instance>/term/`; the terminal Service defaults to port 7681,
+separate from the Agent's HTTP port.
 
-Pi's native login may enable otherwise unconfigured Copilot models on the
-account. After approving that behavior, start login through the same channel:
+For model access, approve Pi's Copilot model-policy updates before using
+`/login github-copilot`, then select a model with `/model`. Complete the GitHub
+device flow with your own approved account. Terminal access does not log you in
+to Copilot; this example has no Portal model-login action.
 
-```bash
-kubectl --context <approved-context> -n <agent-namespace> \
-  exec <agent-pod> -c cetirun -- \
-  node /opt/cetirun-pi/copilot-auth.mjs login --allow-model-policy-updates
-```
+Pi works in `$HOME/workspace`. Credentials and saved sessions stay in the
+private HOME PVC under `.pi/agent`; context and skills come from read-only
+`.agents`. Pi saves a new native session after its first assistant response,
+so an empty or shell-only session is not a persistence test. Pod replacement
+opens a new shell; run `pi-tui` again to reopen a saved session.
 
-Complete the displayed GitHub device-code flow yourself using the approved
-account. Never paste tokens into chat, Helm values or Kubernetes manifests.
+## Validate
 
-Run the same CLI with `cancel` instead of `login --allow-model-policy-updates`
-to cancel a pending device flow. The example does not expose an automatic
-credential migration or logout/delete workflow.
+The Node tests cover the HTTP adapter, CLI entrypoint and real SDK resource
+discovery without OAuth or model calls. In a separately authorized environment,
+verify Portal → Terminal → `pi-tui`, execute a synthetic `!printf` command, then
+check terminal reconnection and a synthetic HOME file after Pod replacement.
 
-If the cluster permits port-forwarding and its container runtime supports
-forwarding to Pod loopback, the CLI can also run from this example directory:
-
-```bash
-kubectl --context <approved-context> -n <agent-namespace> \
-  port-forward --address 127.0.0.1 pod/<agent-pod> 9099:9099 8080:8080
-# In a second terminal:
-node copilot-auth.mjs status
-```
-
-Verify `status` before using `login` over that connection. Do not assume this
-route works for a sandboxed runtime such as Kata. `PI_AUTH_PORT` changes the
-CLI's local destination port, not the authentication service's listening port.
-
-## Validation
-
-The Node tests use synthetic HTTP adapters except for the real SDK
-context/Skills-discovery check. They do not perform OAuth or inference.
-Live Copilot login, model-policy changes, model requests and Portal
-interactions require separate validation; they are not established by these
-tests or a Ready Agent.
-
-For live validation, first check `/healthz`, the private auth status, and the
-actual model IDs returned by `/v1/models`. After approving a model and request
-budget, send one synthetic task. The following command runs inside the
-`cetirun` container through the approved operations channel, or locally when a
-working loopback port-forward to port 8080 has been established:
-
-```bash
-curl --fail --silent --show-error http://127.0.0.1:8080/v1/chat/completions \
-  -H 'Content-Type: application/json' \
-  --data '{"model":"<approved-copilot-model>","messages":[{"role":"user","content":"Read the cetirun-memory skill. Write a short synthetic validation note under memory, and report the exact file path. Do not read credentials or unrelated files."}]}'
-```
-
-Check actual tool execution and the resulting private file, not merely the
-assistant's claim. Verify streaming and cancellation separately, then confirm
-HOME and login persistence after an approved pause/resume or Pod replacement.
-Keep logs and test messages private and synthetic. Readiness does not establish
-successful Copilot authentication, tool execution, or CSI qualification.
+Copilot login, model calls, streaming/cancellation and saved model-session
+recovery need separate live checks with an approved account and request budget.
+Ready status, a working terminal or passing offline tests do not establish them.

@@ -47,12 +47,24 @@ export function agentUIUrl(instance: Pick<Instance, "agentType" | "accessUrl">):
   return `${baseUrl}/`;
 }
 
-export function terminalUrl(instance: Pick<Instance, "agentType" | "instanceName" | "accessUrl">): string | undefined {
-  // TODO: Re-visit ttyd for Custom Agents after its execution environment and
-  // startup contract are defined. A shared-HOME sidecar is not the Agent shell.
-  if (instance.agentType === "custom") return undefined;
+type InstanceAccess = Pick<Instance, "agentType" | "instanceName" | "accessUrl"> & Partial<Pick<Instance, "conditions">>;
+
+export function terminalUrl(instance: InstanceAccess): string | undefined {
+  if (instance.agentType === "custom" &&
+    !instance.conditions?.some((condition) => condition.type === "TerminalConfigured" && condition.status === "True")) {
+    return undefined;
+  }
   const baseUrl = instanceGatewayUrl(instance);
   return baseUrl ? `${baseUrl}/term` : undefined;
+}
+
+export function desktopUrl(instance: InstanceAccess): string | undefined {
+  if (instance.agentType === "custom") {
+    const desktop = instance.conditions?.find((condition) => condition.type === "DesktopConfigured");
+    if (desktop && desktop.status !== "True") return undefined;
+  }
+  const baseUrl = instanceGatewayUrl(instance);
+  return baseUrl ? `${baseUrl}/desktop` : undefined;
 }
 
 /**

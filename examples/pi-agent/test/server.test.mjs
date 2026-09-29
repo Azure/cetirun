@@ -3,7 +3,8 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createServers, validateChat } from "../server.mjs";
+import { createServers } from "../server.mjs";
+import { validateChat } from "../agent-api.mjs";
 
 async function fixture(t, overrides = {}) {
   let calls = 0;

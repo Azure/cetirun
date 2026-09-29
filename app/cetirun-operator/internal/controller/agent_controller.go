@@ -123,6 +123,7 @@ func (r *AgentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	}
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&cetirunv1alpha1.Agent{}).
+		Owns(&appsv1.Deployment{}).
 		Watches(
 			&cetirunv1alpha1.Team{},
 			handler.EnqueueRequestsFromMapFunc(r.enqueueInstancesForTeam),
@@ -844,7 +845,7 @@ func (r *AgentReconciler) ensureNamespacedRBAC(ctx context.Context, ns string) e
 			},
 			{
 				APIGroups: []string{"apps"},
-				Resources: []string{"statefulsets"},
+				Resources: []string{"statefulsets", "deployments"},
 				Verbs:     []string{"get", "list", "watch", "create", "update", "patch", "delete"},
 			},
 			{
@@ -865,6 +866,11 @@ func (r *AgentReconciler) ensureNamespacedRBAC(ctx context.Context, ns string) e
 			{
 				APIGroups: []string{"networking.istio.io"},
 				Resources: []string{"virtualservices", "sidecars"},
+				Verbs:     []string{"get", "list", "watch", "create", "update", "patch", "delete"},
+			},
+			{
+				APIGroups: []string{"security.istio.io"},
+				Resources: []string{"authorizationpolicies", "peerauthentications"},
 				Verbs:     []string{"get", "list", "watch", "create", "update", "patch", "delete"},
 			},
 		},
@@ -1290,9 +1296,9 @@ func (r *AgentReconciler) ensureMSTeamsSecretKeys(ctx context.Context, logger lo
 }
 
 // ensureVirtualService creates or updates the Istio VirtualService for this instance.
-func (r *AgentReconciler) ensureVirtualService(ctx context.Context, instance *cetirunv1alpha1.Agent) error {
+func (r *AgentReconciler) ensureVirtualService(ctx context.Context, instance *cetirunv1alpha1.Agent, access ...customAccess) error {
 	logger := log.FromContext(ctx)
-	desired := buildVirtualService(instance, r.DomainSuffix, r.IstioGateway)
+	desired := buildVirtualService(instance, r.DomainSuffix, r.IstioGateway, access...)
 	if desired == nil {
 		return fmt.Errorf("unsupported Agent native access")
 	}
