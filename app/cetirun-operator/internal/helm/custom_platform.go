@@ -38,6 +38,7 @@ func (p *PreparedRelease) setCustomCapabilities(capabilities *chartutil.Capabili
 		if object(p.Values["podDisruptionBudget"])["enabled"] == true {
 			selected["pdb"] = p.pdbAPIVersion
 		}
+		selected["homeRetention"] = strconv.FormatBool(p.homeRetention)
 		raw, _ := json.Marshal(selected)
 		sum := sha256.Sum256(raw)
 		p.PlanHash = hex.EncodeToString(sum[:])
@@ -45,12 +46,15 @@ func (p *PreparedRelease) setCustomCapabilities(capabilities *chartutil.Capabili
 	}()
 	p.sidecarAPIVersion = ""
 	p.pdbAPIVersion = "policy/v1beta1"
+	p.homeRetention = false
 	if capabilities == nil {
 		return
 	}
-	if version, err := semver.NewVersion(capabilities.KubeVersion.Version); err == nil &&
-		!version.LessThan(semver.MustParse("1.21.0")) {
-		p.pdbAPIVersion = "policy/v1"
+	if version, err := semver.NewVersion(capabilities.KubeVersion.Version); err == nil {
+		if !version.LessThan(semver.MustParse("1.21.0")) {
+			p.pdbAPIVersion = "policy/v1"
+		}
+		p.homeRetention = !version.LessThan(semver.MustParse("1.25.0"))
 	}
 	for _, version := range []string{"networking.istio.io/v1", "networking.istio.io/v1beta1"} {
 		if capabilities.APIVersions.Has(version + "/Sidecar") {

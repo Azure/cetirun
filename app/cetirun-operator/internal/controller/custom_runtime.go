@@ -27,13 +27,12 @@ import (
 
 const (
 	customAgentUID = "cetirun.microsoft.com/agent-uid"
-	customHomeUID  = "cetirun.microsoft.com/home-uid"
 	customPlanHash = "cetirun.microsoft.com/custom-plan-hash"
 )
 
 // CustomBindingProvider is implemented by the platform capability owners, not
 // by a Harness or a tenant. Resolve authorizes the exact Agent generation and
-// image, namespace, model Secret, retained HOME, immutable context and peers.
+// image, namespace, model Secret, HOME name/claim template, immutable context and peers.
 // ApproveApply performs old-writer shutdown and storage handoff for this exact
 // plan: scale the supplied StatefulSet to zero without changing its UID, owner
 // or protected annotations, and wait for Pods referencing HOME to terminate.
@@ -163,7 +162,8 @@ func (r *AgentReconciler) reconcileCustom(ctx context.Context, instance *api.Age
 	if err := bindings.Validate(resolved); err != nil {
 		return r.customWaiting(ctx, instance, "CustomBindingRejected", err.Error())
 	}
-	if err := r.validateCustomObjects(ctx, instance, bindings); err != nil {
+	homeBound, err := r.validateCustomObjects(ctx, instance, bindings)
+	if err != nil {
 		return r.customWaiting(ctx, instance, "CustomBindingRejected", err.Error())
 	}
 	values["agentType"] = "custom"
@@ -203,7 +203,7 @@ func (r *AgentReconciler) reconcileCustom(ctx context.Context, instance *api.Age
 		return r.customPreparationFailed(ctx, instance, err)
 	}
 	if current != nil && (!hasAgentOwner(current, instance) || current.Annotations[customAgentUID] != string(instance.UID) ||
-		current.Annotations[customHomeUID] != bindings.Home.UID || !current.DeletionTimestamp.IsZero()) {
+		!current.DeletionTimestamp.IsZero()) {
 		return r.customWaiting(ctx, instance, "CustomOwnershipConflict", "Existing workload or HOME ownership is not confirmed")
 	}
 	if err := r.ensureCustomOwnership(ctx, instance, bindings, current); err != nil {
@@ -257,16 +257,15 @@ func (r *AgentReconciler) reconcileCustom(ctx context.Context, instance *api.Age
 				if err := r.customReader().Get(ctx, client.ObjectKeyFromObject(current), stopped); err != nil ||
 					stopped.UID != current.UID || stopped.Spec.Replicas == nil || *stopped.Spec.Replicas != 0 ||
 					!stopped.DeletionTimestamp.IsZero() || stopped.Annotations[customAgentUID] != string(instance.UID) ||
-					stopped.Annotations[customHomeUID] != bindings.Home.UID || !hasAgentOwner(stopped, instance) {
+					!hasAgentOwner(stopped, instance) {
 					return r.customWaiting(ctx, instance, "CustomMaintenancePending", "Existing workload must be stopped without changing its ownership")
 				}
 			}
 			if err := r.noCustomWriters(ctx, bindings); err != nil {
 				return r.customWaiting(ctx, instance, "CustomMaintenancePending", err.Error())
 			}
-			// Re-read consumed objects after handoff so a rotated Key or replaced
-			// PVC cannot be applied using stale receipt revisions.
-			if err := r.validateCustomObjects(ctx, instance, bindings); err != nil {
+			// Re-read credentials, namespace, context and HOME specification after handoff.
+			if _, err := r.validateCustomObjects(ctx, instance, bindings); err != nil {
 				return r.customWaiting(ctx, instance, "CustomBindingRejected", err.Error())
 			}
 			if err := r.checkCustomGeneration(ctx, instance); err != nil {
@@ -325,7 +324,7 @@ func (r *AgentReconciler) reconcileCustom(ctx context.Context, instance *api.Age
 				"PlatformDesktopDisabled", "Platform desktop is disabled; no native Agent UI or public Chat route")
 		}
 	}
-	ready := customPodReady(current)
+	ready := homeBound && customPodReady(current)
 	instance.Status.Phase = api.PhaseProvisioning
 	status, reason, message := metav1.ConditionFalse, "CustomPodPending", "Waiting for the applied Custom Pod"
 	if ready {
@@ -374,10 +373,13 @@ func (r *AgentReconciler) checkCustomGeneration(ctx context.Context, expected *a
 	return nil
 }
 
-func (r *AgentReconciler) validateCustomObjects(ctx context.Context, instance *api.Agent, b runtimebindings.Custom) error {
+func (r *AgentReconciler) validateCustomObjects(ctx context.Context, instance *api.Agent, b runtimebindings.Custom) (bool, error) {
+	if b.Home.Claim == nil {
+		return false, fmt.Errorf("HomeBindingInvalid: approved HOME claim template is required")
+	}
 	ns := &corev1.Namespace{}
 	if err := r.customReader().Get(ctx, types.NamespacedName{Name: b.Namespace.Name}, ns); err != nil || !referenceMatches(ns, b.Namespace) {
-		return fmt.Errorf("NamespaceBindingInvalid: approved namespace is unavailable or changed")
+		return false, fmt.Errorf("NamespaceBindingInvalid: approved namespace is unavailable or changed")
 	}
 	key := func(name string) types.NamespacedName {
 		return types.NamespacedName{Namespace: b.Namespace.Name, Name: name}
@@ -386,35 +388,43 @@ func (r *AgentReconciler) validateCustomObjects(ctx context.Context, instance *a
 		secret := &corev1.Secret{}
 		if err := r.customReader().Get(ctx, key(b.Model.Name), secret); err != nil || !referenceMatches(secret, b.Model.ObjectReference) ||
 			secret.Type != corev1.SecretTypeOpaque || len(secret.Data) != 1 || len(secret.Data[b.Model.Key]) == 0 {
-			return fmt.Errorf("ModelBindingInvalid: dedicated instance model Secret is unavailable or changed")
+			return false, fmt.Errorf("ModelBindingInvalid: dedicated instance model Secret is unavailable or changed")
 		}
 		if !hasAgentOwner(secret, instance) {
-			return fmt.Errorf("ModelBindingInvalid: Secret owner does not match Agent UID")
+			return false, fmt.Errorf("ModelBindingInvalid: Secret owner does not match Agent UID")
 		}
 	}
 	home := &corev1.PersistentVolumeClaim{}
-	if err := r.customReader().Get(ctx, key(b.Home.Name), home); err != nil || !referenceMatches(home, b.Home.ObjectReference) ||
-		home.Status.Phase != corev1.ClaimBound || home.Spec.VolumeName == "" {
-		return fmt.Errorf("HomeBindingInvalid: approved persistent HOME is unavailable or changed")
-	}
-	// Retained PVC ownership comes from the storage owner's receipt. Never add
-	// an Agent ownerReference (which would introduce deletion-time GC).
-	for _, owner := range home.OwnerReferences {
-		if owner.Kind == "Agent" && owner.UID != instance.UID {
-			return fmt.Errorf("HomeBindingInvalid: PVC belongs to another Agent")
+	homeBound := false
+	if err := r.customReader().Get(ctx, key(b.Home.Name), home); apierrors.IsNotFound(err) {
+		// StatefulSet volumeClaimTemplates creates HOME with the first Pod.
+	} else if err != nil {
+		return false, fmt.Errorf("HomeBindingInvalid: approved persistent HOME is unavailable")
+	} else {
+		if !home.DeletionTimestamp.IsZero() || home.Status.Phase == corev1.ClaimLost {
+			return false, fmt.Errorf("HomeBindingInvalid: approved HOME is deleting or lost")
 		}
+		if home.Annotations[customAgentUID] != string(instance.UID) || !b.Home.Claim.Matches(home) {
+			return false, fmt.Errorf("HomeBindingInvalid: HOME ownership or storage specification changed")
+		}
+		for _, owner := range home.OwnerReferences {
+			if owner.Kind == "Agent" && owner.UID != instance.UID {
+				return false, fmt.Errorf("HomeBindingInvalid: PVC belongs to another Agent")
+			}
+		}
+		homeBound = home.Status.Phase == corev1.ClaimBound && home.Spec.VolumeName != ""
 	}
 	context := &corev1.ConfigMap{}
 	if err := r.customReader().Get(ctx, key(b.Context.Name), context); err != nil || !referenceMatches(context, b.Context.ObjectReference) ||
 		context.Immutable == nil || !*context.Immutable {
-		return fmt.Errorf("ContextBindingInvalid: approved immutable snapshot is unavailable or changed")
+		return false, fmt.Errorf("ContextBindingInvalid: approved immutable snapshot is unavailable or changed")
 	}
 	for key := range b.Context.Files {
 		if context.Data[key] == "" {
-			return fmt.Errorf("ContextBindingInvalid: approved context file is missing or empty")
+			return false, fmt.Errorf("ContextBindingInvalid: approved context file is missing or empty")
 		}
 	}
-	return nil
+	return homeBound, nil
 }
 
 func (r *AgentReconciler) noCustomWriters(ctx context.Context, b runtimebindings.Custom) error {

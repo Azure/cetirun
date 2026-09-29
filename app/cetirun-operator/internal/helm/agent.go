@@ -42,6 +42,7 @@ type PreparedRelease struct {
 	chart             *chart.Chart
 	sidecarAPIVersion string
 	pdbAPIVersion     string
+	homeRetention     bool
 	apiValidated      bool
 }
 

@@ -77,22 +77,26 @@ cetirun-operator:
     agentManagedModel: true
     approvedImages:
       - registry.example.com/cetirun-pi-example@sha256:<published-digest>
-    storageClass: azureblob-nfs-premium
-    storageSize: 20Gi
-    accessMode: ReadWriteMany
+    storageClass: default
+    storageSize: 100Gi
+    accessMode: ReadWriteOnce
     fsGroup: 1024
 ```
 
 Keep existing platform values, identity and ingress configuration. The Operator
-creates the dedicated namespace and HOME claim, waits for CSI binding, publishes
-its configured canonical context, and records actual resource UIDs before
-applying the Custom chart. Missing or foreign resources are not adopted by name.
+prepares the namespace, canonical context and HOME claim template, then installs
+the Custom chart once. The StatefulSet controller creates the PVC and Pod from
+that release. Agent and namespace ownership checks remain in place; HOME does
+not require a pre-existing PVC or UID.
 The default context includes `cetirun-memory`; platform and Team shared skills
 continue through the shared Skills path.
 
-Provisioning requires a StorageClass that can bind before the consumer Pod is
-created. A `WaitForFirstConsumer` class does not satisfy this provider's initial
-binding gate. Qualify CSI permissions and mesh behavior separately.
+The AKS `default` StorageClass uses Azure Disk with `WaitForFirstConsumer`.
+Scheduling the Agent Pod triggers volume binding. Ready requires a Bound HOME
+and a ready workload. Immediate-binding storage uses the same deployment flow.
+Qualify CSI permissions and mesh behavior separately. Custom HOME must match
+the configured storage profile and the instance's recorded claim template.
+Changing these settings does not migrate or resize existing claims.
 
 During Pod-affecting updates, the provider persists an exclusive operation,
 scales down the owned StatefulSet, and waits for HOME-using Pods to exit.

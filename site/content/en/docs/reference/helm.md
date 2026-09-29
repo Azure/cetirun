@@ -154,7 +154,7 @@ to the main agent; the default agent request alone is 4 CPU and 8 GiB.
 | Value | Standalone chart default |
 | --- | --- |
 | `persistence.enabled` | `true` |
-| `persistence.storageClass` | Empty; cluster default |
+| `persistence.storageClass` | `default` (Azure Disk on AKS) |
 | `persistence.accessMode` | `ReadWriteOnce` |
 | `persistence.size` | `100Gi` |
 | `persistence.existingClaim` | Empty |
@@ -162,9 +162,13 @@ to the main agent; the default agent request alone is 4 CPU and 8 GiB.
 | `persistence.retainPolicy` | `Retain` |
 | `persistence.useStatefulSetVolumeClaim` | `true` |
 
-The operator overrides the home defaults to `azureblob-nfs-premium`,
-`ReadWriteMany`, and `20Gi`. See [storage](../../operations/storage/) for shared
-skills and recovery. An existing claim must be in the runtime namespace.
+The operator and opt-in Custom provider use the same home defaults:
+`default`, `ReadWriteOnce`, and `100Gi`. An empty `persistence.storageClass`
+selects the cluster's default class instead of the class named `default`.
+See [storage](../../operations/storage/) for shared skills and recovery.
+Custom uses its approved HOME claim template rather than `persistence.*`
+overrides. For standalone and built-in agents, an existing claim must be in
+the runtime namespace.
 Disabling persistence uses `emptyDir` unless an existing claim is supplied.
 `Retain` controls StatefulSet claim retention, not namespace deletion or the
 underlying PV's reclaim policy.

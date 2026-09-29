@@ -346,7 +346,7 @@ func TestSandboxHoldCustomRuntimePreservesOwnership(t *testing.T) {
 			}
 			home := &corev1.PersistentVolumeClaim{}
 			if err := client.Get(context.Background(), types.NamespacedName{Name: bindings.Home.Name, Namespace: bindings.Namespace.Name}, home); err != nil ||
-				string(home.UID) != bindings.Home.UID {
+				string(home.UID) != bindings.Home.Name+"-uid" {
 				t.Fatalf("Custom hold must retain external HOME: %v", err)
 			}
 		})

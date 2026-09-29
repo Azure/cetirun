@@ -27,7 +27,7 @@ Licensed under the MIT License.
 {{- if not .Values.runtime -}}{{- fail "Custom requires a platform-prepared runtime plan" -}}{{- end -}}
 {{- $r := .Values.runtime -}}
 {{- if or (ne $r.contractVersion "v1") (ne $r.agent.type "custom") -}}{{- fail "Invalid Custom runtime contract" -}}{{- end -}}
-{{- if or (not $r.agent.image) (not $r.agent.home) (not $r.bindings.home.name) (not $r.bindings.context.name) (and (not $r.bindings.agentManagedModel) (not $r.bindings.model.name)) (not $r.planHash) -}}
+{{- if or (not $r.agent.image) (not $r.agent.home) (not $r.bindings.home.name) (not $r.bindings.home.claim) (not $r.bindings.context.name) (and (not $r.bindings.agentManagedModel) (not $r.bindings.model.name)) (not $r.planHash) -}}
 {{- fail "Custom requires image, model, HOME and context bindings" -}}
 {{- end -}}
 {{- if ne $r.bindings.namespace.name .Release.Namespace -}}{{- fail "Custom binding namespace mismatch" -}}{{- end -}}
@@ -75,7 +75,6 @@ metadata:
     {{- include "cetirun.labels" . | nindent 4 }}
   annotations:
     cetirun.microsoft.com/agent-uid: {{ $b.agentUID | quote }}
-    cetirun.microsoft.com/home-uid: {{ $b.home.uid | quote }}
     cetirun.microsoft.com/custom-plan-hash: {{ $r.workloadHash | quote }}
 spec:
   replicas: {{ .Values.replicaCount }}
@@ -187,9 +186,6 @@ spec:
         {{- include "cetirun.platform.desktop" . | nindent 8 }}
         {{- end }}
       volumes:
-        - name: data
-          persistentVolumeClaim:
-            claimName: {{ $b.home.name | quote }}
         - name: context
           configMap:
             name: {{ $b.context.name | quote }}
@@ -212,6 +208,25 @@ spec:
         - name: context-view
           emptyDir: {}
         {{- end }}
+  {{- if semverCompare ">=1.25-0" .Capabilities.KubeVersion.Version }}
+  persistentVolumeClaimRetentionPolicy:
+    whenDeleted: Retain
+    whenScaled: Retain
+  {{- end }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          {{- include "cetirun.selectorLabels" . | nindent 10 }}
+        annotations:
+          cetirun.microsoft.com/agent-uid: {{ $b.agentUID | quote }}
+      spec:
+        accessModes:
+          - {{ $b.home.claim.accessMode }}
+        storageClassName: {{ $b.home.claim.storageClass | quote }}
+        resources:
+          requests:
+            storage: {{ $b.home.claim.storageSize | quote }}
 ---
 apiVersion: v1
 kind: ServiceAccount

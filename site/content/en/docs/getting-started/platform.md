@@ -20,7 +20,8 @@ For local chart validation without deploying resources, use
 | --- | --- |
 | AKS with managed Istio and an external ingress gateway | Shared authentication and instance routing |
 | OIDC issuer and Workload Identity | Federated identity for OAuth2 Proxy and optional Teams |
-| Blob CSI and `azureblob-nfs-premium` StorageClass | Operator-default persistent home volumes |
+| Azure Disk CSI and the `default` StorageClass | Default persistent HOME volumes |
+| Blob CSI and `azureblob-nfs-premium` StorageClass, when shared skills are enabled | Optional shared skills volumes |
 | A compatible `kata-vm-isolation` RuntimeClass | Default agent chart sandbox; do not silently remove it |
 | Enforced Kubernetes NetworkPolicy and required admission APIs | Runtime isolation rules and the default exec-denial policy |
 | Accessible images and versioned OCI agent chart | Operator fetches the agent chart, then nodes pull images |
@@ -232,13 +233,16 @@ Check the installed resources using the platform chart's default namespace:
 
 ```bash
 kubectl get runtimeclass kata-vm-isolation
-kubectl get storageclass azureblob-nfs-premium
-kubectl get csidriver blob.csi.azure.com
+kubectl get storageclass default
+kubectl get csidriver disk.csi.azure.com
 kubectl get crd agents.cetirun.microsoft.com teams.cetirun.microsoft.com
 kubectl get gateway.networking.istio.io cetirun-gateway -n aks-istio-ingress
 kubectl rollout status deployment/cetirun-operator -n cetirun-system --timeout=120s
 kubectl rollout status deployment/cetirun-portal -n cetirun-system --timeout=120s
 ```
+
+When shared skills are enabled, also check `azureblob-nfs-premium` and the
+`blob.csi.azure.com` CSI driver. HOME storage does not require Blob CSI.
 
 The standalone portal helper defaults to namespace `cetirun-portal`; use that
 namespace instead when verifying an independent installation.

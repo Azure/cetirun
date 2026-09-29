@@ -224,8 +224,8 @@ sidecars: []
 persistence:
   # -- Enable persistent storage
   enabled: true
-  # -- Storage class name (empty for default)
-  storageClass: ""
+  # -- Storage class name ("default" uses Azure Disk on AKS; empty uses the cluster default)
+  storageClass: default
   # -- Access mode for the PVC
   accessMode: ReadWriteOnce
   # -- Size of the persistent volume

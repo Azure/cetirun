@@ -50,9 +50,8 @@ const (
 	// msteamsWebhookPort is the default port the MS Teams webhook listener runs on.
 	msteamsWebhookPort = 3978
 
-	// defaultStorageClass is the CetiRun cluster standard StorageClass for instance home volumes.
-	// Applied by deploy/storageclass.yaml. Override via spec.helm.values.persistence.storageClass.
-	defaultStorageClass = "azureblob-nfs-premium"
+	// Override via spec.helm.values.persistence.storageClass.
+	defaultStorageClass = "default"
 )
 
 // instanceNamespace returns the Kubernetes namespace for a given alias.
@@ -245,12 +244,10 @@ func buildHelmValuesCore(instance *cetirunv1alpha1.Agent, team *cetirunv1alpha1.
 			map[string]interface{}{"name": "CETIRUN_USER_TEAM", "value": userTeam},
 		},
 		// Persistent home volume.
-		// storageClass defaults to azureblob-nfs-premium (the CetiRun cluster standard).
-		// Override via spec.helm.values.persistence.storageClass if needed.
 		"persistence": map[string]interface{}{
 			"storageClass": defaultStorageClass,
-			"accessMode":   "ReadWriteMany",
-			"size":         "20Gi",
+			"accessMode":   "ReadWriteOnce",
+			"size":         "100Gi",
 		},
 	}
 	for key, value := range platformRuntimeDefaults(instance.Name) {

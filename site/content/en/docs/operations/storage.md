@@ -1,6 +1,6 @@
 ---
 title: "Storage"
-description: "Configure persistent workspaces, shared skills, and Azure Blob NFS storage."
+description: "Configure Azure Disk home volumes and shared Azure Blob skills storage."
 weight: 20
 ---
 
@@ -9,10 +9,11 @@ volumes for shared skills.
 
 ## Two storage purposes
 
-An instance’s `/home/vibe` holds private workspace state. The operator defaults
-to a 20 GiB `ReadWriteMany` claim using `azureblob-nfs-premium`. The standalone
-chart instead defaults to 100 GiB, `ReadWriteOnce`, and the cluster’s default
-StorageClass. Do not confuse chart defaults with operator-resolved values.
+An instance’s `/home/vibe` holds private workspace state. The operator,
+standalone runtime chart, and opt-in Custom provider all default to a `100Gi`
+`ReadWriteOnce` home claim using the StorageClass named `default`. On AKS,
+this class uses Azure Disk. An empty `persistence.storageClass` instead lets
+Kubernetes choose the cluster's default class, which can have a different name.
 The namespace is `cetirun-<metadata.name>`, not necessarily the owner's alias.
 
 Sources: [controller values]({{< repo "app/cetirun-operator/internal/controller/helpers.go" >}}),
@@ -21,6 +22,27 @@ Sources: [controller values]({{< repo "app/cetirun-operator/internal/controller/
 
 Shared skills use a separate static PV/PVC, mounted read-only by the agent,
 when `skills.shared` is enabled or a team supplies `skillStorage`.
+Their defaults remain `azureblob-nfs-premium`, `ReadWriteMany`, and `100Gi`;
+`skills.shared` is disabled by default.
+
+## Home provisioning
+
+Hermes, OpenClaw, and Custom instances create HOME through the runtime chart's
+StatefulSet `volumeClaimTemplates`. A single Helm installation submits the
+StatefulSet, whose controller creates the PVC and Pod.
+
+The operator can prepare the release before the PVC exists. For
+`WaitForFirstConsumer`, scheduling the Agent Pod triggers volume binding.
+Ready requires a Bound HOME and a ready workload. Custom checks the namespace,
+claim name, Agent ownership and storage specification, not the PVC UID. It
+requires an approved claim template; a pre-created HOME PVC is not an
+alternative provisioning path.
+
+The default changes do not migrate or resize existing claims. Preserve explicit
+storage settings for existing built-in instances when upgrading. Custom HOME
+must match the configured storage profile and the instance's recorded claim
+template. Changing an existing claim's storage class or size still needs a
+separate approved migration or expansion.
 
 ## Provision shared Blob NFS
 
@@ -118,6 +140,9 @@ With the default StatefulSet claim templates, the value
 or scaled down. The template emits that retention field only for a rendered
 Kubernetes version of at least 1.25. This setting does not override a PV's
 reclaim policy or protect a PVC from namespace deletion.
+The AKS `default` StorageClass normally uses a `Delete` reclaim policy, so
+deleting a HOME PVC can also delete its Azure Disk. Check the actual PV policy
+and arrange a backup before deleting an instance.
 
 The [instance deletion handler]({{< repo "app/cetirun-operator/internal/controller/agent_controller.go" >}})
 uninstalls Helm and deletes the entire instance namespace, including PVCs.

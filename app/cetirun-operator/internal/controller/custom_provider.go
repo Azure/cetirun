@@ -19,10 +19,8 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -62,14 +60,12 @@ func ParseCustomRuntimeConfig(raw string) (CustomRuntimeConfig, error) {
 			return cfg, fmt.Errorf("Custom approvedImages must use immutable sha256 references")
 		}
 	}
-	if len(validation.IsDNS1123Subdomain(cfg.StorageClass)) != 0 ||
-		(cfg.AccessMode != "ReadWriteMany" && cfg.AccessMode != "ReadWriteOnce") ||
-		cfg.FSGroup < 1 || cfg.FSGroup > 2147483647 {
+	if cfg.FSGroup < 1 || cfg.FSGroup > 2147483647 {
 		return cfg, fmt.Errorf("Custom provisioning requires explicit qualified storage and a non-root fsGroup")
 	}
-	size, err := resource.ParseQuantity(cfg.StorageSize)
-	if err != nil || size.Sign() <= 0 {
-		return cfg, fmt.Errorf("invalid Custom HOME storageSize")
+	storage := runtimebindings.HomeClaim{StorageClass: cfg.StorageClass, StorageSize: cfg.StorageSize, AccessMode: cfg.AccessMode}
+	if err := storage.Validate(); err != nil {
+		return cfg, err
 	}
 	if cfg.Context["AGENTS.md"] == "" || cfg.Context["skills/cetirun-memory/SKILL.md"] == "" || len(raw) > 64*1024 {
 		return cfg, fmt.Errorf("Custom provisioning requires bounded canonical context and cetirun-memory")
@@ -168,52 +164,43 @@ func (p *KubernetesCustomBindings) Resolve(ctx context.Context, instance *api.Ag
 	}
 	home := &corev1.PersistentVolumeClaim{}
 	homeKey := types.NamespacedName{Namespace: ns.Name, Name: "data-" + instanceServiceName(instance.Name) + "-0"}
+	claim := &runtimebindings.HomeClaim{StorageClass: p.config.StorageClass, StorageSize: p.config.StorageSize, AccessMode: p.config.AccessMode}
+	homeBinding := runtimebindings.Home{Name: homeKey.Name, FSGroup: p.config.FSGroup, Claim: claim}
+	if ownership != nil {
+		if ownership.Home != homeKey.Name {
+			return b, fmt.Errorf("Custom HOME name changed")
+		}
+		if !claim.Matches(&corev1.PersistentVolumeClaim{Spec: ownership.HomeClaim.PVCSpec()}) {
+			return b, fmt.Errorf("Custom HOME migration or resize requires separate storage approval")
+		}
+		homeBinding.Claim = ownership.HomeClaim
+	}
 	if err := r.customReader().Get(ctx, homeKey, home); apierrors.IsNotFound(err) {
-		if ownership != nil {
-			return b, fmt.Errorf("retained Custom HOME is missing; automatic replacement is forbidden")
-		}
-		home = &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: homeKey.Name, Namespace: ns.Name,
-			Annotations: map[string]string{customAgentUID: string(instance.UID)}},
-			Spec: corev1.PersistentVolumeClaimSpec{StorageClassName: ptr.To(p.config.StorageClass),
-				AccessModes: []corev1.PersistentVolumeAccessMode{corev1.PersistentVolumeAccessMode(p.config.AccessMode)},
-				Resources: corev1.VolumeResourceRequirements{Requests: corev1.ResourceList{
-					corev1.ResourceStorage: resource.MustParse(p.config.StorageSize),
-				}}}}
-		if err := r.Create(ctx, home); err != nil {
-			return b, err
-		}
+		// The StatefulSet controller creates HOME from the approved template.
 	} else if err != nil {
 		return b, err
-	}
-	if ownership != nil && (home.UID != ownership.HomeUID || home.Name != ownership.Home) {
-		return b, fmt.Errorf("Custom HOME UID changed")
-	}
-	if home.Annotations[customAgentUID] != string(instance.UID) || !home.DeletionTimestamp.IsZero() ||
-		len(home.OwnerReferences) != 0 || ptr.Deref(home.Spec.StorageClassName, "") != p.config.StorageClass ||
-		!slices.Equal(home.Spec.AccessModes, []corev1.PersistentVolumeAccessMode{corev1.PersistentVolumeAccessMode(p.config.AccessMode)}) {
-		return b, fmt.Errorf("Custom HOME is foreign or does not match approved storage")
-	}
-	size := home.Spec.Resources.Requests[corev1.ResourceStorage]
-	if size.Cmp(resource.MustParse(p.config.StorageSize)) != 0 {
-		return b, fmt.Errorf("Custom HOME resize requires separate storage approval")
+	} else {
+		if ownership == nil || home.Annotations[customAgentUID] != string(instance.UID) ||
+			!home.DeletionTimestamp.IsZero() || len(home.OwnerReferences) != 0 || home.Status.Phase == corev1.ClaimLost {
+			return b, fmt.Errorf("Custom HOME is unowned, deleting or lost")
+		}
+		if !homeBinding.Claim.Matches(home) {
+			return b, fmt.Errorf("Custom HOME migration or resize requires separate storage approval")
+		}
 	}
 	b = runtimebindings.Custom{AgentName: instance.Name, AgentUID: string(instance.UID), Generation: instance.Generation,
 		Namespace: objectReference(ns), ApprovedType: "custom", ApprovedImage: *instance.Spec.Agent.Image,
 		PolicyRevision: p.revision, AgentManagedModel: true,
-		Home: runtimebindings.Home{ObjectReference: objectReference(home), FSGroup: p.config.FSGroup},
+		Home: homeBinding,
 		Network: runtimebindings.Network{Revision: p.revision,
 			DNS: runtimebindings.Peer{Namespace: "kube-system", PodLabels: map[string]string{"k8s-app": "kube-dns"}}}}
-	// Record ownership even while CSI is provisioning, so deletion does not
-	// strand an already-created HOME merely because it never became Bound.
+	// Record ownership before Helm so failed installations can still be cleaned up.
 	hadOwnership := controllerutil.ContainsFinalizer(instance, customOwnershipFinalizer)
 	if err := r.ensureCustomOwnership(ctx, instance, b, nil); err != nil {
 		return b, err
 	}
 	if !hadOwnership {
 		return b, fmt.Errorf("Custom ownership recorded; waiting for the next observation")
-	}
-	if home.Status.Phase != corev1.ClaimBound || home.Spec.VolumeName == "" {
-		return b, fmt.Errorf("Custom HOME is waiting for CSI binding")
 	}
 	files := p.config.contextFiles()
 	data := map[string]string{}
@@ -338,7 +325,7 @@ func (p *KubernetesCustomBindings) ApproveApply(ctx context.Context, instance *a
 	}
 	if err := r.noCustomWriters(ctx, runtimebindings.Custom{
 		Namespace: runtimebindings.ObjectReference{Name: ownership.Namespace},
-		Home:      runtimebindings.Home{ObjectReference: runtimebindings.ObjectReference{Name: ownership.Home}},
+		Home:      runtimebindings.Home{Name: ownership.Home},
 	}); err != nil {
 		return nil, err
 	}

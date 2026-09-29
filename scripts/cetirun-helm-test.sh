@@ -46,6 +46,30 @@ grep -q 'containerPort: 8642' <<< "$output" || { echo "FAIL: default Hermes API 
 if grep -q '^  openclaw.json: |' <<< "$output"; then
   echo "FAIL: default must not render OpenClaw config" >&2; exit 1
 fi
+if grep -q '^kind: PersistentVolume' <<< "$output"; then
+  echo "FAIL: shared skills storage must remain disabled by default" >&2; exit 1
+fi
+
+for agent_type in hermes openclaw; do
+  echo "==> ${agent_type}: default HOME storage"
+  output=$(helm_template "$release_name" "$chart_dir" --set "agentType=$agent_type" \
+    --set secrets.existingSecret=lint-secret --show-only templates/statefulset.yaml)
+  for expected in 'storageClassName: default' 'storage: 100Gi' '- ReadWriteOnce' \
+    'whenDeleted: Retain' 'whenScaled: Retain'; do
+    grep -Fq -- "$expected" <<< "$output" || {
+      echo "FAIL: HOME default missing: $expected" >&2; exit 1
+    }
+  done
+  echo "==> ${agent_type}: standalone HOME PVC defaults"
+  output=$(helm_template "$release_name" "$chart_dir" --set "agentType=$agent_type" \
+    --set secrets.existingSecret=lint-secret --set persistence.useStatefulSetVolumeClaim=false \
+    --show-only templates/pvc.yaml)
+  for expected in 'storageClassName: default' 'storage: 100Gi' '- ReadWriteOnce'; do
+    grep -Fq -- "$expected" <<< "$output" || {
+      echo "FAIL: standalone HOME default missing: $expected" >&2; exit 1
+    }
+  done
+done
 
 echo "==> helm template ${release_name} ${chart_dir} (agentType omitted)"
 output=$(helm_template "${release_name}" "${chart_dir}" --set agentType=null)
@@ -319,6 +343,17 @@ fi
 # ---------------------------------------------------------------------------
 # Shared skills Azure Blob CSI tests
 # ---------------------------------------------------------------------------
+
+echo "==> shared skills retain their Blob NFS defaults"
+output=$(helm_template "$release_name" "$chart_dir" --set skills.shared=true \
+  --set skills.resourceGroup=lint-rg --set skills.storageAccount=lintstorage \
+  --show-only templates/shared-skills-pv.yaml --show-only templates/shared-skills-pvc.yaml)
+for expected in 'storageClassName: "azureblob-nfs-premium"' 'storage: "100Gi"' \
+  '- ReadWriteMany' 'persistentVolumeReclaimPolicy: Retain' 'protocol: "nfs"'; do
+  grep -Fq -- "$expected" <<< "$output" || {
+    echo "FAIL: shared skills default changed: $expected" >&2; exit 1
+  }
+done
 
 # Test variant: Blobfuse2 shared skills render the CSI protocol, staging Secret,
 # and static mount options.

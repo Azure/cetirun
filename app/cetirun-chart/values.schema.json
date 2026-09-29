@@ -463,8 +463,8 @@
                 },
                 "storageClass": {
                     "type": "string",
-                    "description": "Storage class name (empty for default)",
-                    "default": ""
+                    "description": "Storage class name (default uses Azure Disk on AKS; empty uses the cluster default)",
+                    "default": "default"
                 },
                 "accessMode": {
                     "type": "string",
