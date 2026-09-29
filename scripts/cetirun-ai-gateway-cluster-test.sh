@@ -7,6 +7,9 @@
 # PostgreSQL and Valkey. Needs kubectl pointed at a cluster that already has
 # the image (IMAGE_REPOSITORY:IMAGE_TAG), plus helm, curl and jq.
 #
+# The test creates NAMESPACE and deletes it when it finishes, unless KEEP=true.
+# It refuses a namespace that already exists and leaves it untouched.
+#
 # This exists because the offline render suite cannot see ordering or runtime
 # behaviour. Bugs got past it that all rendered cleanly: a migration hook that
 # could never start, a migration that exited zero without creating any of
@@ -52,6 +55,10 @@ work_dir="$(mktemp -d)"
 forward_pids=()
 fullname="${release_name}-cetirun-ai-gateway"
 postgresql_pod="${fullname}-postgresql-0"
+# Set only once this run has created the namespace. Cleanup deletes the
+# namespace and the release in it, so it needs that ownership first: an
+# existing namespace, and everything in it, must never be touched.
+namespace_created=false
 
 stop_forwards() {
   for pid in "${forward_pids[@]}"; do
@@ -62,7 +69,7 @@ stop_forwards() {
 
 cleanup() {
   stop_forwards
-  if [ "${keep}" != "true" ]; then
+  if [ "${keep}" != "true" ] && [ "${namespace_created}" = "true" ]; then
     helm uninstall "${release_name}" -n "${namespace}" >/dev/null 2>&1 || true
     kubectl delete namespace "${namespace}" --wait=false >/dev/null 2>&1 || true
   fi
@@ -84,7 +91,11 @@ pass() {
 # ----- Fixtures -------------------------------------------------------------
 
 echo "==> Deploying the mock provider into ${namespace}"
-kubectl create namespace "${namespace}" >/dev/null
+if ! kubectl create namespace "${namespace}" >/dev/null; then
+  echo "ERROR: could not create namespace ${namespace}. The test deletes its namespace when it finishes, so it only runs in one it creates; set NAMESPACE to an unused name." >&2
+  exit 1
+fi
+namespace_created=true
 
 kubectl apply -n "${namespace}" -f - >/dev/null <<EOF
 apiVersion: v1

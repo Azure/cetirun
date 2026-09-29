@@ -3,6 +3,9 @@
   protected, with persistence off. It only coordinates in-flight budget and
   rate-limit state between replicas; the record of spend is in PostgreSQL, so
   a restart loses nothing that matters.
+
+  The password comes from redis.passwordSecret when set, otherwise from the
+  Secret the chart generates; the Gateway reads the same one.
 */}}
 {{- if .Values.redis.bundled.enabled }}
 {{- $name := include "cetirun-ai-gateway.valkeyName" . }}
@@ -62,8 +65,8 @@ spec:
             - name: VALKEY_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: {{ $name }}
-                  key: password
+                  name: {{ include "cetirun-ai-gateway.redisPasswordSecret" . }}
+                  key: {{ include "cetirun-ai-gateway.redisPasswordKey" . }}
           args:
             - valkey-server
             - --requirepass

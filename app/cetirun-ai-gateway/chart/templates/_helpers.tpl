@@ -128,15 +128,40 @@ Name of the Secret holding inline provider credentials.
 {{- end }}
 
 {{/*
-Names of the bundled PostgreSQL and Valkey resources. Truncated so the suffix
-always fits in 63 characters.
+Name of a bundled dependency's resources: <fullname>-<suffix>, at most .max
+characters. A name that would be longer keeps as much of the fullname as fits
+and adds a hash of the whole fullname, so two long release names that share a
+prefix still get different names. Names that fit are unchanged.
+
+Called with (dict "context" $ "suffix" "postgresql" "max" 52).
 */}}
-{{- define "cetirun-ai-gateway.postgresqlName" -}}
-{{- printf "%s-postgresql" (include "cetirun-ai-gateway.fullname" . | trunc 52 | trimSuffix "-") }}
+{{- define "cetirun-ai-gateway.bundledName" -}}
+{{- $fullname := include "cetirun-ai-gateway.fullname" .context -}}
+{{- $name := printf "%s-%s" $fullname .suffix -}}
+{{- if gt (len $name) (int .max) -}}
+{{- $keep := int (sub (int .max) (add (len .suffix) 10)) -}}
+{{- $name = printf "%s-%s-%s" ($fullname | trunc $keep | trimSuffix "-") ($fullname | sha256sum | trunc 8) .suffix -}}
+{{- end -}}
+{{- $name -}}
 {{- end }}
 
+{{/*
+The bundled PostgreSQL is a StatefulSet. Its pods carry the label
+controller-revision-hash=<name>-<hash>, where the hash has up to ten
+characters and a label value at most 63, so the name has at most 52. Measured
+on Kubernetes 1.37: from 54 characters no pod was created, and 53 only worked
+because that revision's hash had nine. The pod's own name, <name>-0, allows
+more.
+*/}}
+{{- define "cetirun-ai-gateway.postgresqlName" -}}
+{{- include "cetirun-ai-gateway.bundledName" (dict "context" . "suffix" "postgresql" "max" 52) }}
+{{- end }}
+
+{{/*
+The bundled Valkey is a Deployment and a Service, which allow 63.
+*/}}
 {{- define "cetirun-ai-gateway.valkeyName" -}}
-{{- printf "%s-valkey" (include "cetirun-ai-gateway.fullname" . | trunc 56 | trimSuffix "-") }}
+{{- include "cetirun-ai-gateway.bundledName" (dict "context" . "suffix" "valkey" "max" 63) }}
 {{- end }}
 
 {{/*
@@ -175,18 +200,28 @@ Redis coordination: bundled Valkey, an external server, or none.
 {{- end }}
 
 {{/*
-Secret and key holding the Redis password, empty when there is none.
+Secret and key holding the Redis password, empty when there is none. The
+administrator's redis.passwordSecret wins, for the bundled Valkey too, so both
+Valkey and the Gateway read one stable value; otherwise the bundled Valkey uses
+the Secret the chart generates for it.
 */}}
 {{- define "cetirun-ai-gateway.redisPasswordSecret" -}}
-{{- if .Values.redis.bundled.enabled }}
-{{- include "cetirun-ai-gateway.valkeyName" . }}
-{{- else }}
+{{- if .Values.redis.passwordSecret.existingSecret }}
 {{- .Values.redis.passwordSecret.existingSecret }}
+{{- else if .Values.redis.bundled.enabled }}
+{{- include "cetirun-ai-gateway.valkeyName" . }}
 {{- end }}
 {{- end }}
 
 {{- define "cetirun-ai-gateway.redisPasswordKey" -}}
-{{- if .Values.redis.bundled.enabled }}password{{ else }}{{ .Values.redis.passwordSecret.key }}{{ end }}
+{{- if .Values.redis.passwordSecret.existingSecret }}{{ .Values.redis.passwordSecret.key }}{{ else if .Values.redis.bundled.enabled }}password{{ end }}
+{{- end }}
+
+{{/*
+Whether the chart generates the bundled Valkey's password.
+*/}}
+{{- define "cetirun-ai-gateway.generateValkeyPassword" -}}
+{{- if and .Values.redis.bundled.enabled (not .Values.redis.passwordSecret.existingSecret) }}true{{ end }}
 {{- end }}
 
 {{/*

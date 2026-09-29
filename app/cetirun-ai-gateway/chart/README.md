@@ -102,7 +102,9 @@ lifecycle. `helm uninstall` keeps its volume and its password Secret, so an
 install under the same release name finds the data again: measured, a model
 added through the console before the uninstall was served after it. To discard
 the data, delete the volume claim (`data-<release>-cetirun-ai-gateway-postgresql-0`)
-and the `-postgresql` and `-auth` Secrets yourself.
+and the `-postgresql` and `-auth` Secrets yourself. With a long release name
+the bundled resources' names are shortened and carry a hash instead;
+`kubectl get pvc -l app.kubernetes.io/instance=<release>` finds the claim.
 
 Local connections inside the PostgreSQL container are trusted, as in the
 upstream image; connections from other pods need the password. Measured: a
@@ -384,6 +386,14 @@ values, salt key included. With Argo CD, or any tool that renders with
 `helm template`, supply all three through existing Secrets, and use an external
 PostgreSQL, whose bundled counterpart generates its password the same way.
 
+The bundled Valkey's password is generated the same way too. Supply it through
+`redis.passwordSecret`, or use your own Redis: a password generated anew at
+each render updates the Secret without restarting Valkey or the Gateway, so the
+next restart of only one of them leaves the two with different passwords, and
+budgets stop being shared across replicas. With `redis.passwordSecret` set,
+the chart generates no Valkey password, and Valkey and the Gateway both read
+yours.
+
 ### Changing a credential takes a restart
 
 The Gateway reads its credentials from environment variables when it starts.
@@ -402,6 +412,15 @@ for this purpose.
 
 Inline credentials (`providerCredentials.inline`) are the exception: the chart
 restarts the pods itself when an inline value changes.
+
+A Redis password from `redis.passwordSecret` is read at startup as well, and
+with the bundled Valkey the server reads it too. After changing it, restart
+both; until both have restarted, budgets are not shared across replicas:
+
+```bash
+kubectl rollout restart deployment/gateway-cetirun-ai-gateway-valkey
+kubectl rollout restart deployment/gateway-cetirun-ai-gateway
+```
 
 ## Upgrade contract
 
@@ -665,7 +684,10 @@ bash scripts/cetirun-ai-gateway-cluster-test.sh    # install and upgrade on a re
 The render assertions need no cluster and run in `make chart-check`.
 
 The cluster test needs kubectl pointed at a disposable cluster that already has
-the image, plus helm, curl and jq. It deploys a mock provider, installs the
+the image, plus helm, curl and jq. It creates its own namespace (`NAMESPACE`,
+default `gateway-cluster-test`) and deletes it afterwards; it refuses a
+namespace that already exists and leaves it as it was. It deploys a mock
+provider, installs the
 chart with its defaults, including the bundled PostgreSQL and Valkey, exercises
 it, upgrades it, uninstalls and reinstalls it, and checks what survived. It runs
 in CI on kind for any change to the image or the chart, with the image built
@@ -724,6 +746,7 @@ a restart can change what `base_model` pricing resolves to. Set
 **GitOps.** Generated credentials rely on Helm's `lookup`, which returns nothing
 under `helm template`, so tools that render that way, such as Argo CD, must
 supply the master key, salt key and console password through existing Secrets,
-and use an external PostgreSQL: the bundled one's password is generated the
-same way, with no option to supply it, and a changed password locks the
-Gateway out of data initialised with the old one.
+supply the bundled Valkey's password through `redis.passwordSecret` or use
+their own Redis, and use an external PostgreSQL: the bundled one's password is
+generated the same way, with no option to supply it, and a changed password
+locks the Gateway out of data initialised with the old one.

@@ -211,6 +211,8 @@ redis:
   # -- A single-instance Valkey, the Redis-compatible server, deployed with the
   # Gateway. Password-protected, with no persistence, since it holds nothing
   # durable. Disable it to use your own Redis or Valkey through host.
+  #
+  # Its password is generated unless passwordSecret below supplies one.
   bundled:
     # -- Deploy the bundled Valkey
     enabled: true
@@ -225,7 +227,13 @@ redis:
   host: ""
   # -- Its port
   port: 6379
-  # -- Its password, if the server requires one
+  # -- The Redis password, from a Secret you create. For your own server, set
+  # it if the server requires one. For the bundled Valkey it replaces the
+  # generated password: Valkey and the Gateway both read it from this Secret.
+  # Required with the bundled Valkey when the chart is rendered with
+  # helm template, as Argo CD does, since a generated password would change
+  # with every render. After changing the value, restart Valkey and the
+  # Gateway.
   passwordSecret:
     # -- Name of a Secret holding the Redis password
     existingSecret: ""

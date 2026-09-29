@@ -203,6 +203,7 @@
                 "port": {"type": "integer", "minimum": 1, "maximum": 65535, "default": 6379},
                 "passwordSecret": {
                     "type": "object",
+                    "description": "Secret holding the Redis password: your own server's, or the bundled Valkey's in place of a generated one. Required for the bundled Valkey when the chart is rendered with helm template.",
                     "properties": {
                         "existingSecret": {"type": "string", "default": ""},
                         "key": {"type": "string", "default": "redis-password"}

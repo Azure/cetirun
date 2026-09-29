@@ -282,6 +282,75 @@ if [ "$(grep -c 'lookup "v1" "Secret"' "${dependency_template}")" -lt 2 ]; then
   exit 1
 fi
 
+# The bundled PostgreSQL is a StatefulSet, whose pods carry the label
+# controller-revision-hash=<name>-<hash>. The hash has up to ten characters and
+# a label value at most 63, so above 52 characters Kubernetes creates no pod:
+# measured on 1.37, none from 54 characters, and 53 only while the hash had
+# nine. The Gateway then waits for its database indefinitely. Long release
+# names are shortened to fit, with a hash that keeps two of them apart.
+echo "==> long release names still fit the bundled PostgreSQL and Valkey"
+bundled_name() {  # bundled_name RENDER postgresql|valkey
+  awk -v want="$2" '
+    want == "postgresql" && /^kind: StatefulSet/ {s=1}
+    s && /^  name: / {print $2; exit}
+    want == "valkey" && /redis_host:/ {gsub(/"/, "", $2); print $2; exit}' <<< "$1"
+}
+long_release="release-name-long-enough-to-need-shortening"
+long_one="$(helm template "${long_release}-one" "${chart_dir}" "${base_args[@]}")"
+long_two="$(helm template "${long_release}-two" "${chart_dir}" "${base_args[@]}")"
+pg_one="$(bundled_name "${long_one}" postgresql)"
+pg_two="$(bundled_name "${long_two}" postgresql)"
+valkey_one="$(bundled_name "${long_one}" valkey)"
+valkey_two="$(bundled_name "${long_two}" valkey)"
+for name in "${pg_one}" "${pg_two}"; do
+  [ -n "${name}" ] && [ "${#name}" -le 52 ] || {
+    echo "FAIL: the bundled PostgreSQL is named '${name}' (${#name} characters); above 52 Kubernetes creates no pod for it" >&2
+    exit 1
+  }
+done
+for name in "${valkey_one}" "${valkey_two}"; do
+  [ -n "${name}" ] && [ "${#name}" -le 63 ] || {
+    echo "FAIL: the bundled Valkey is named '${name}' (${#name} characters), more than a Service name allows" >&2
+    exit 1
+  }
+done
+if [ "${pg_one}" = "${pg_two}" ] || [ "${valkey_one}" = "${valkey_two}" ]; then
+  echo "FAIL: two long release names sharing a prefix get the same bundled resource names" >&2
+  exit 1
+fi
+assert_contains "name: ${pg_one}$" "the Gateway connects to the shortened PostgreSQL name" \
+  "$(grep -A4 'name: DATABASE_URL' <<< "${long_one}")"
+
+# Under helm template, which GitOps tools such as Argo CD use, lookup returns
+# nothing, so a generated Valkey password changed with every render. Neither
+# Valkey nor the Gateway restarts when only that Secret changes, so the next
+# restart of just one of them left the two with different passwords.
+# redis.passwordSecret serves the bundled Valkey too, and the documented GitOps
+# configuration renders the same way every time.
+echo "==> the bundled Valkey can take its password from an existing Secret"
+valkey_env="$(render -s templates/valkey.yaml | grep -A4 'name: VALKEY_PASSWORD')"
+assert_contains "name: ${fullname}-valkey$" "by default the bundled Valkey uses the generated password" "${valkey_env}"
+supplied=(--set-string "redis.passwordSecret.existingSecret=lint-redis")
+valkey_env="$(render "${supplied[@]}" -s templates/valkey.yaml | grep -A4 'name: VALKEY_PASSWORD')"
+assert_contains "name: lint-redis$" "the bundled Valkey reads a supplied password Secret" "${valkey_env}"
+assert_contains "key: redis-password$" "the bundled Valkey reads the supplied Secret's key" "${valkey_env}"
+redis_env="$(render "${supplied[@]}" -s templates/deployment.yaml | grep -A4 'name: REDIS_PASSWORD')"
+assert_contains "name: lint-redis$" "the Gateway reads the same supplied Secret as Valkey" "${redis_env}"
+assert_absent "component: valkey" "no Valkey password is generated when one is supplied" \
+  "$(render "${supplied[@]}" -s templates/secret-dependencies.yaml)"
+gitops_args=(
+  "${supplied[@]}"
+  --set-string "auth.masterKey.existingSecret=lint-auth"
+  --set-string "auth.saltKey.existingSecret=lint-auth"
+  --set-string "auth.adminUI.passwordSecret.existingSecret=lint-auth"
+  --set "postgresql.bundled.enabled=false"
+  --set-string "postgresql.urlSecret.existingSecret=lint-database"
+)
+if [ "$(render "${gitops_args[@]}")" != "$(render "${gitops_args[@]}")" ]; then
+  echo "FAIL: the documented GitOps configuration renders differently each time; every sync would change a credential" >&2
+  exit 1
+fi
+
 # ----- Credentials -----
 
 echo "==> platform credentials"
