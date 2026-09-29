@@ -16,6 +16,7 @@ import (
 	admissionv1 "k8s.io/api/admission/v1"
 	authenticationv1 "k8s.io/api/authentication/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -193,6 +194,222 @@ func TestLegacyBehaviorAndTeamEdits(t *testing.T) {
 	team.Spec.DefaultSandboxRef = "different"
 	req = requestFor(t, admissionv1.Update, team, f.team, "portal")
 	requireResponse(t, f.handler.Validate(context.Background(), req), false, "administrator")
+}
+
+func TestLegacyTeamDeletionPreservesExistingAuthorization(t *testing.T) {
+	for _, user := range []string{"portal", testController, "administrator"} {
+		t.Run(user, func(t *testing.T) {
+			f := newFixture(t)
+			f.team.Spec = api.TeamSpec{}
+			f.agent.Spec.SandboxRef = ""
+			f.agent.ResourceVersion = ""
+			if err := f.client.Create(context.Background(), f.agent); err != nil {
+				t.Fatal(err)
+			}
+			req := requestFor(t, admissionv1.Delete, f.team, nil, user)
+			requireResponse(t, f.handler.Validate(context.Background(), req), true, "legacy")
+			f.handler.reader = unavailableReader{}
+			requireResponse(t, f.handler.Validate(context.Background(), req), true, "legacy")
+		})
+	}
+}
+
+func TestTeamRemovalProtectsInheritedGovernance(t *testing.T) {
+	f := newFixture(t)
+	f.agent.Spec.SandboxRef = ""
+	f.agent.ResourceVersion = ""
+	f.agent.Finalizers = nil
+	if err := f.client.Create(context.Background(), f.agent); err != nil {
+		t.Fatal(err)
+	}
+	ungoverned := f.team.DeepCopy()
+	ungoverned.Spec = api.TeamSpec{}
+	for _, req := range []admission.Request{
+		requestFor(t, admissionv1.Delete, f.team, nil, "administrator"),
+		requestFor(t, admissionv1.Update, ungoverned, f.team, "administrator"),
+	} {
+		requireResponse(t, f.handler.Validate(context.Background(), req), false, "inherited governance")
+		requireResponse(t, f.handler.Validate(context.Background(), req), false, f.agent.Name)
+	}
+	if err := f.client.Delete(context.Background(), f.agent); err != nil {
+		t.Fatal(err)
+	}
+	req := requestFor(t, admissionv1.Update, ungoverned, f.team, "administrator")
+	requireResponse(t, f.handler.Validate(context.Background(), req), true, "unreferenced")
+}
+
+func TestMissingCreateDefaultNamesTheMutatingWebhook(t *testing.T) {
+	f := newFixture(t)
+	f.agent.Spec.SandboxRef = ""
+	req := requestFor(t, admissionv1.Create, f.agent, nil, "administrator")
+	requireResponse(t, f.handler.Validate(context.Background(), req), false, "creation-defaulting webhook")
+}
+
+func TestUnknownVersionFieldsDoNotBypassValidationOrBlockKnownObjects(t *testing.T) {
+	f := newFixture(t)
+	for _, object := range []client.Object{f.agent, f.team, f.box, f.policy} {
+		t.Run(fmt.Sprintf("%T", object), func(t *testing.T) {
+			known := requestFor(t, admissionv1.Create, object, nil, "administrator")
+			req := known
+			var raw map[string]any
+			if err := json.Unmarshal(req.Object.Raw, &raw); err != nil {
+				t.Fatal(err)
+			}
+			spec, ok := raw["spec"].(map[string]any)
+			if !ok {
+				t.Fatal("fixture omitted spec")
+			}
+			spec["futureGovernance"] = true
+			var err error
+			req.Object.Raw, err = json.Marshal(raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			response := f.handler.Validate(context.Background(), req)
+			requireResponse(t, response, false, `unknown field "futureGovernance"`)
+			if response.Result.Code != 400 {
+				t.Fatal("unrecognized policy fields must explicitly fail closed")
+			}
+			requireResponse(t, f.handler.Validate(context.Background(), known), true, "")
+		})
+	}
+}
+
+type observedReader struct {
+	client.Reader
+	gets []string
+	list func(context.Context, client.ObjectList, ...client.ListOption) error
+}
+
+func (r *observedReader) Get(ctx context.Context, key client.ObjectKey, object client.Object, options ...client.GetOption) error {
+	r.gets = append(r.gets, fmt.Sprintf("%T/%s", object, key.Name))
+	return r.Reader.Get(ctx, key, object, options...)
+}
+
+func (r *observedReader) List(ctx context.Context, list client.ObjectList, options ...client.ListOption) error {
+	return r.list(ctx, list, options...)
+}
+
+func TestAgentValidationReadsOnlyNamedReferencesAndRefreshesEachRequest(t *testing.T) {
+	f := newFixture(t)
+	reader := &observedReader{Reader: f.client, list: func(context.Context, client.ObjectList, ...client.ListOption) error {
+		t.Fatal("Agent validation must not list any collection")
+		return nil
+	}}
+	f.handler.reader = reader
+	req := requestFor(t, admissionv1.Create, f.agent, nil, "administrator")
+	requireResponse(t, f.handler.Validate(context.Background(), req), true, "")
+	if !slices.Equal(reader.gets, []string{"*v1alpha1.Team/engineering", "*v1alpha1.Sandbox/standard", "*v1alpha1.AgentPolicy/normal"}) {
+		t.Fatalf("unexpected reads: %v", reader.gets)
+	}
+	f.policy.Spec.Network.BlockedFQDNs = []string{"blocked.example.com"}
+	if err := f.client.Update(context.Background(), f.policy); err != nil {
+		t.Fatal(err)
+	}
+	requireResponse(t, f.handler.Validate(context.Background(), req), false, "incompatible")
+	if len(reader.gets) != 6 {
+		t.Fatal("validation reused a previous request's references")
+	}
+}
+
+func TestConsumerPaginationChecksLaterPagesAndErrors(t *testing.T) {
+	for _, scenario := range []string{"team consumers", "policy references", "sandbox selections", "shared validation", "expired page"} {
+		t.Run(scenario, func(t *testing.T) {
+			f := newFixture(t)
+			pages := 0
+			reader := &observedReader{Reader: f.client}
+			reader.list = func(ctx context.Context, list client.ObjectList, options ...client.ListOption) error {
+				opts := (&client.ListOptions{}).ApplyOptions(options)
+				if opts.Limit != referencePageSize {
+					t.Fatalf("unbounded reference list: %#v", opts)
+				}
+				if scenario == "sandbox selections" {
+					if teams, ok := list.(*api.TeamList); ok {
+						*teams = api.TeamList{}
+						return nil
+					}
+				}
+				pages++
+				switch opts.Continue {
+				case "":
+					switch page := list.(type) {
+					case *api.AgentList:
+						*page = api.AgentList{}
+					case *api.TeamList:
+						*page = api.TeamList{}
+					default:
+						t.Fatalf("unexpected collection read: %T", list)
+					}
+					list.SetContinue("next-page")
+				case "next-page":
+					if scenario == "expired page" {
+						return apierrors.NewResourceExpired("synthetic continuation expiration")
+					}
+					switch page := list.(type) {
+					case *api.AgentList:
+						*page = api.AgentList{Items: []api.Agent{*f.agent.DeepCopy()}}
+					case *api.TeamList:
+						*page = api.TeamList{Items: []api.Team{*f.team.DeepCopy()}}
+					}
+				default:
+					t.Fatalf("unexpected continuation: %q", opts.Continue)
+				}
+				return nil
+			}
+			f.handler.reader = reader
+			object := client.Object(f.team)
+			operation := admissionv1.Delete
+			var old client.Object
+			want := f.agent.Name
+			switch scenario {
+			case "policy references", "expired page":
+				object, want = f.policy, f.team.Name
+			case "sandbox selections":
+				object = f.box
+			case "shared validation":
+				old = f.policy.DeepCopy()
+				f.policy.Spec.Network.BlockedFQDNs = []string{"blocked.example.com"}
+				object, operation, want = f.policy, admissionv1.Update, f.team.Name
+			}
+			if scenario == "expired page" {
+				want = "dependencies are unavailable"
+			}
+			req := requestFor(t, operation, object, old, "administrator")
+			response := f.handler.Validate(context.Background(), req)
+			requireResponse(t, response, false, want)
+			if scenario == "expired page" && response.Result.Code != 503 {
+				t.Fatal("expired continuation must not produce partial success")
+			}
+			if pages != 2 {
+				t.Fatalf("expected both bounded pages, got %d", pages)
+			}
+		})
+	}
+}
+
+func TestSharedValidationReusesOnlyRequestLocalReferences(t *testing.T) {
+	f := newFixture(t)
+	reader := &observedReader{Reader: f.client}
+	reader.list = func(_ context.Context, list client.ObjectList, options ...client.ListOption) error {
+		page, ok := list.(*api.TeamList)
+		if !ok {
+			t.Fatalf("unexpected collection read: %T", list)
+		}
+		opts := (&client.ListOptions{}).ApplyOptions(options)
+		*page = api.TeamList{Items: []api.Team{*f.team.DeepCopy()}}
+		if opts.Continue == "" {
+			page.Continue = "next"
+		} else {
+			page.Items[0].Name = "second-team"
+		}
+		return nil
+	}
+	f.handler.reader = reader
+	req := requestFor(t, admissionv1.Update, f.policy, f.policy.DeepCopy(), "administrator")
+	requireResponse(t, f.handler.Validate(context.Background(), req), true, "")
+	if !slices.Equal(reader.gets, []string{"*v1alpha1.Sandbox/standard"}) {
+		t.Fatalf("shared references were not deduplicated, or candidate was fetched instead: %v", reader.gets)
+	}
 }
 
 func TestAbsentQualificationFailsClosed(t *testing.T) {

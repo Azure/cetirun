@@ -87,8 +87,10 @@ func ValidateTeam(team *cetirunv1alpha1.Team, resources Resources, registrations
 		return field.ErrorList{field.Required(field.NewPath("team"), "referenced Team is missing")}
 	}
 	errs := validateIdentity(team.ObjectMeta, team.Name, field.NewPath("team"))
-	errs = append(errs, ValidateTeamConfiguration(team.Spec, resources, registrations)...)
-	return errs
+	if len(errs) != 0 {
+		return errs
+	}
+	return ValidateTeamConfiguration(team.Spec, resources, registrations)
 }
 
 // ValidateTeamConfiguration also accepts a candidate Team that has not yet been

@@ -34,6 +34,7 @@ import (
 	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -76,7 +77,7 @@ func TestAdmissionAPIServerBoundaries(t *testing.T) {
 		}
 	})
 	scheme := runtime.NewScheme()
-	for _, add := range []func(*runtime.Scheme) error{api.AddToScheme, corev1.AddToScheme, rbacv1.AddToScheme, admissionregistrationv1.AddToScheme} {
+	for _, add := range []func(*runtime.Scheme) error{api.AddToScheme, corev1.AddToScheme, rbacv1.AddToScheme, admissionregistrationv1.AddToScheme, apiextensionsv1.AddToScheme} {
 		if err := add(scheme); err != nil {
 			t.Fatal(err)
 		}
@@ -217,6 +218,35 @@ func TestAdmissionAPIServerBoundaries(t *testing.T) {
 			t.Fatal("creation defaults were not persisted, or human authority elevated the workload")
 		}
 	})
+	t.Run("dry run performs defaulting and validation without persistence", func(t *testing.T) {
+		agent := newAgent("dry-run-governed", true)
+		if err := cl.Create(ctx, agent, client.DryRunAll); err != nil {
+			t.Fatal(err)
+		}
+		if agent.Spec.SandboxRef != f.box.Name || agent.Spec.PolicyClass != api.AgentPolicyClassNormal {
+			t.Fatal("dry run did not apply normal creation defaults")
+		}
+		if err := cl.Get(ctx, client.ObjectKeyFromObject(agent), &api.Agent{}); !apierrors.IsNotFound(err) {
+			t.Fatalf("dry-run Agent persisted: %v", err)
+		}
+	})
+	t.Run("legacy Team deletion preserves member-authorized behavior", func(t *testing.T) {
+		team := &api.Team{ObjectMeta: metav1.ObjectMeta{Name: "legacy-delete-team"}}
+		if err := member.Create(ctx, team); err != nil {
+			t.Fatal(err)
+		}
+		agent := newAgent("legacy-team-member", false)
+		agent.Spec.Team = team.Name
+		if err := member.Create(ctx, agent); err != nil {
+			t.Fatal(err)
+		}
+		if err := member.Delete(ctx, team); err != nil {
+			t.Fatal("legacy Team deletion gained Sandbox authority or consumer requirements:", err)
+		}
+		if err := cl.Get(ctx, client.ObjectKeyFromObject(agent), &api.Agent{}); err != nil {
+			t.Fatal("legacy Team deletion removed its Agent:", err)
+		}
+	})
 	t.Run("member cannot create governance or write status despite broad spec RBAC", func(t *testing.T) {
 		agent := newAgent("member-governed", true)
 		if err := member.Create(ctx, agent); !apierrors.IsForbidden(err) || !strings.Contains(err.Error(), "administrator") {
@@ -244,6 +274,38 @@ func TestAdmissionAPIServerBoundaries(t *testing.T) {
 		}
 		if err := cl.Create(ctx, obj, client.FieldValidation(metav1.FieldValidationStrict)); !apierrors.IsBadRequest(err) {
 			t.Fatalf("unknown field was not explicitly rejected: %v", err)
+		}
+	})
+	t.Run("newer CRD fields fail explicitly while known writes remain available", func(t *testing.T) {
+		var crd apiextensionsv1.CustomResourceDefinition
+		if err := cl.Get(ctx, client.ObjectKey{Name: "agentpolicies." + api.GroupVersion.Group}, &crd); err != nil {
+			t.Fatal(err)
+		}
+		for i := range crd.Spec.Versions {
+			schema := crd.Spec.Versions[i].Schema.OpenAPIV3Schema
+			spec := schema.Properties["spec"]
+			spec.Properties["futureGovernance"] = apiextensionsv1.JSONSchemaProps{Type: "boolean"}
+			schema.Properties["spec"] = spec
+		}
+		if err := cl.Update(ctx, &crd); err != nil {
+			t.Fatal(err)
+		}
+		obj := &unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": api.GroupVersion.String(), "kind": "AgentPolicy",
+			"metadata": map[string]any{"name": "future-policy"},
+			"spec":     map[string]any{"futureGovernance": true},
+		}}
+		if err := wait.PollUntilContextTimeout(ctx, 50*time.Millisecond, 10*time.Second, true, func(ctx context.Context) (bool, error) {
+			before := calls.Load()
+			err := cl.Create(ctx, obj.DeepCopy(), client.DryRunAll, client.FieldValidation(metav1.FieldValidationStrict))
+			return err != nil && calls.Load() > before && strings.Contains(err.Error(), `unknown field "futureGovernance"`), nil
+		}); err != nil {
+			t.Fatal("older admission did not explicitly reject a field admitted by the newer schema:", err)
+		}
+		known := &api.AgentPolicy{ObjectMeta: metav1.ObjectMeta{Name: "known-during-skew"}}
+		create(known)
+		if err := cl.Delete(ctx, known); err != nil {
+			t.Fatal("known-field objects must remain writable during skew:", err)
 		}
 	})
 	t.Run("shared config deletion remains guarded", func(t *testing.T) {

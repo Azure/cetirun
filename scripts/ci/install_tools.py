@@ -24,6 +24,31 @@ from urllib.request import urlopen
 
 
 MANIFEST = Path(__file__).with_name("tools.json")
+# The pinned envtest + Helm binaries total about 233 MiB; leave bounded headroom.
+MAX_DOWNLOAD_BYTES = 128 * 1024 * 1024
+MAX_MEMBER_BYTES = 128 * 1024 * 1024
+MAX_TOTAL_BYTES = 384 * 1024 * 1024
+
+
+def check_size(size, limit, description):
+    if size < 0:
+        raise ValueError(f"Invalid {description} size: {size}")
+    if size > limit:
+        raise ValueError(f"{description} exceeds {limit}-byte size limit")
+
+
+def download_bytes(response):
+    length = response.headers.get("Content-Length")
+    if length is not None:
+        try:
+            length = int(length)
+        except ValueError as error:
+            raise ValueError("Invalid tool download Content-Length") from error
+        check_size(length, MAX_DOWNLOAD_BYTES, "Tool download")
+    # Never trust a missing or understated Content-Length to bound this read.
+    data = response.read(MAX_DOWNLOAD_BYTES + 1)
+    check_size(len(data), MAX_DOWNLOAD_BYTES, "Tool download")
+    return data
 
 
 def archive_member(member):
@@ -37,19 +62,27 @@ def archive_member(member):
     return member
 
 
-def binaries_bytes(data, checksum, members):
+def binaries_bytes(data, checksum, members, *, max_total_bytes=None):
+    check_size(len(data), MAX_DOWNLOAD_BYTES, "Tool download")
     if hashlib.sha256(data).hexdigest() != checksum:
         raise ValueError("Tool download SHA256 mismatch")
+    if max_total_bytes is None:
+        max_total_bytes = MAX_TOTAL_BYTES
+    max_total_bytes = min(max_total_bytes, MAX_TOTAL_BYTES)
     binaries = {}
+    total_bytes = 0
     requested = {archive_member(member) for member in members if member is not None}
     if None in members:
+        check_size(len(data), MAX_MEMBER_BYTES, "Raw tool")
+        total_bytes = len(data)
+        check_size(total_bytes, max_total_bytes, "Selected tool payload total")
         binaries[None] = data
     if not requested:
         return binaries
     # Read only explicitly named regular files, never extract archive paths.
     with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as archive:
         entries = {}
-        for entry in archive.getmembers():
+        for entry in archive:
             if entry.name not in requested:
                 continue
             if not entry.isfile():
@@ -58,11 +91,20 @@ def binaries_bytes(data, checksum, members):
                 )
             if entry.name in entries:
                 raise ValueError(f"Duplicate tool archive member: {entry.name}")
+            check_size(entry.size, MAX_MEMBER_BYTES, f"Tool archive member {entry.name}")
+            total_bytes += entry.size
+            check_size(total_bytes, max_total_bytes, "Selected tool payload total")
             entries[entry.name] = entry
         for member in requested:
             if member not in entries:
                 raise ValueError(f"Missing tool archive member: {member}")
-            binaries[member] = archive.extractfile(entries[member]).read()
+        # Validate every selected size before allocating any member payload.
+        for member, entry in entries.items():
+            with archive.extractfile(entry) as source:
+                payload = source.read(entry.size)
+            if len(payload) != entry.size:
+                raise ValueError(f"Incomplete tool archive member: {member}")
+            binaries[member] = payload
     return binaries
 
 
@@ -185,13 +227,17 @@ def main(argv=None):
         for output, url, checksum, member in entries:
             downloads.setdefault((url, checksum), []).append((output, member))
         binaries = {}
+        remaining_bytes = MAX_TOTAL_BYTES
         for (url, checksum), outputs in downloads.items():
             names = ", ".join(output.name for output, _ in outputs)
             print(f"Installing {names} from {url}", flush=True)
             with urlopen(url, timeout=45) as response:
                 data = binaries_bytes(
-                    response.read(), checksum, [member for _, member in outputs]
+                    download_bytes(response), checksum,
+                    [member for _, member in outputs],
+                    max_total_bytes=remaining_bytes,
                 )
+            remaining_bytes -= sum(len(payload) for payload in data.values())
             for output, member in outputs:
                 binaries[output] = data[member]
         write_binaries(destination, binaries)

@@ -102,11 +102,22 @@ serviceAccount:
 # provide a qualified Sandbox capability registration.
 sandboxAdmission:
   # -- Deploy the independent, read-only admission server first.
+  # Requires Kubernetes >= 1.37, the validated admission minimum. The server
+  # uses native lifecycle sleep for an image-independent shutdown delay.
   enabled: false
   # -- Install fail-closed webhooks only after the server and TLS are ready.
-  # Requires Kubernetes >= 1.30 for native admission matchConditions.
+  # Requires Kubernetes >= 1.37, including native admission matchConditions.
   enforce: false
+  # -- Timeout for each fail-closed webhook call; integer 1..30 when enforce=true.
+  timeoutSeconds: 10
   replicaCount: 2
+  # -- Optional existing platform-managed PriorityClass. No class is created
+  # or selected automatically.
+  priorityClassName: ""
+  # -- Admission-only placement; never inherits the operator's placement.
+  nodeSelector: {}
+  affinity: {}
+  tolerations: []
   # -- Existing platform-issued TLS Secret in namespace, containing tls.crt and
   # tls.key. The certificate must cover cetirun-sandbox-admission.<namespace>.svc.
   # This chart does not issue certificates or install cert-manager.

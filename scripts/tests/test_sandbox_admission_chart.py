@@ -75,7 +75,7 @@ class SandboxAdmissionChartTests(unittest.TestCase):
     def enforced_values(self, **overrides):
         return self.server_values(enforce=True, caBundle=self.ca_bundle, **overrides)
 
-    def helm(self, admission=None, *, values=None, kube_version="1.30.0", lint=False):
+    def helm(self, admission=None, *, values=None, kube_version="1.37.0", lint=False):
         inputs = dict(values or {})
         if admission is not None:
             inputs["sandboxAdmission"] = admission
@@ -117,15 +117,15 @@ class SandboxAdmissionChartTests(unittest.TestCase):
             {
                 "enabled": False, "enforce": False, "replicaCount": 1,
                 "tlsSecretName": "", "caBundle": "unused",
-                "adminUsers": [], "adminGroups": [],
+                "adminUsers": [], "adminGroups": [], "timeoutSeconds": 0,
             },
             kube_version="1.29.0",
         )
         self.assertEqual(disabled, default)
 
     def test_bootstrap_deploys_server_without_webhooks_or_certificate_issuance(self):
-        default = self.render(kube_version="1.29.0")
-        bootstrap = self.render(self.server_values(), kube_version="1.29.0")
+        default = self.render()
+        bootstrap = self.render(self.server_values())
         for identity, document in default.items():
             self.assertEqual(bootstrap[identity], document)
         self.assertEqual(set(bootstrap) - set(default), {
@@ -162,11 +162,13 @@ class SandboxAdmissionChartTests(unittest.TestCase):
         self.assertEqual(pod["serviceAccountName"], NAME)
         self.assertTrue(pod["automountServiceAccountToken"])
         self.assertFalse(pod["enableServiceLinks"])
+        self.assertEqual(pod["terminationGracePeriodSeconds"], 50)
         self.assertEqual(len(pod["containers"]), 1)
         self.assertNotIn("initContainers", pod)
         self.assertNotIn("hostNetwork", pod)
         self.assertNotIn("hostPID", pod)
         container = pod["containers"][0]
+        self.assertEqual(container["lifecycle"], {"preStop": {"sleep": {"seconds": 10}}})
         controller = documents[("Deployment", "cetirun-operator")]["spec"]["template"]["spec"]["containers"][0]
         self.assertEqual(container["image"], controller["image"])
         self.assertEqual(container["args"], [
@@ -221,7 +223,7 @@ class SandboxAdmissionChartTests(unittest.TestCase):
         }])
 
     def test_high_availability_selectors_and_rollouts(self):
-        for replicas in (2, 3):
+        for replicas in (2, 3, 5):
             with self.subTest(replicas=replicas):
                 documents = self.render(self.server_values(replicaCount=replicas))
                 deployment = documents[("Deployment", NAME)]["spec"]
@@ -234,7 +236,7 @@ class SandboxAdmissionChartTests(unittest.TestCase):
                 for key, value in selector["matchLabels"].items():
                     self.assertEqual(deployment["template"]["metadata"]["labels"][key], value)
                 pdb = documents[("PodDisruptionBudget", NAME)]["spec"]
-                self.assertEqual(pdb, {"minAvailable": 1, "selector": selector})
+                self.assertEqual(pdb, {"minAvailable": replicas - 1, "selector": selector})
                 spreads = deployment["template"]["spec"]["topologySpreadConstraints"]
                 self.assertEqual(
                     {spread["topologyKey"] for spread in spreads},
@@ -243,7 +245,45 @@ class SandboxAdmissionChartTests(unittest.TestCase):
                 for spread in spreads:
                     self.assertEqual(spread["maxSkew"], 1)
                     self.assertEqual(spread["labelSelector"], selector)
+                    # Without minDomains, a single eligible hostname is not
+                    # inherently unsatisfiable: replicas can share that domain.
+                    self.assertNotIn("minDomains", spread)
                 self.assertEqual(spreads[0]["whenUnsatisfiable"], "DoNotSchedule")
+                self.assertEqual(spreads[1]["whenUnsatisfiable"], "ScheduleAnyway")
+
+    def test_priority_class_is_optional_and_never_created(self):
+        for priority in (None, "", "synthetic-admission-critical"):
+            with self.subTest(priority=priority):
+                overrides = {} if priority is None else {"priorityClassName": priority}
+                documents = self.render(self.server_values(**overrides))
+                pod = documents[("Deployment", NAME)]["spec"]["template"]["spec"]
+                if priority:
+                    self.assertEqual(pod["priorityClassName"], priority)
+                else:
+                    self.assertNotIn("priorityClassName", pod)
+                self.assertNotIn("PriorityClass", {kind for kind, _ in documents})
+                controller = documents[("Deployment", "cetirun-operator")]["spec"]["template"]["spec"]
+                self.assertNotIn("priorityClassName", controller)
+
+    def test_admission_placement_does_not_inherit_controller_values(self):
+        placement = {
+            "nodeSelector": {"example.com/pool": "controller"},
+            "tolerations": [{"key": "example.com/controller", "operator": "Exists"}],
+            "affinity": {
+                "podAffinity": {"requiredDuringSchedulingIgnoredDuringExecution": [{
+                    "labelSelector": {"matchLabels": {"app.kubernetes.io/name": "cetirun-operator"}},
+                    "topologyKey": "kubernetes.io/hostname",
+                }]},
+            },
+        }
+        for overrides in ({}, {"nodeSelector": {}, "affinity": {}, "tolerations": []}):
+            with self.subTest(overrides=overrides):
+                documents = self.render(self.server_values(**overrides), values=placement)
+                pod = documents[("Deployment", NAME)]["spec"]["template"]["spec"]
+                controller = documents[("Deployment", "cetirun-operator")]["spec"]["template"]["spec"]
+                for field, value in placement.items():
+                    self.assertNotIn(field, pod)
+                    self.assertEqual(controller[field], value)
 
     def test_placement_and_image_overrides_do_not_import_controller_credentials(self):
         values = {
@@ -269,6 +309,23 @@ class SandboxAdmissionChartTests(unittest.TestCase):
                 "azure.workload.identity/inject-proxy-sidecar": "true",
                 "example.com/controller-only": "true",
             },
+            "nodeSelector": {"kubernetes.io/os": "linux", "example.com/pool": "controller"},
+            "tolerations": [{"key": "example.com/controller", "operator": "Exists"}],
+            "affinity": {
+                "nodeAffinity": {"requiredDuringSchedulingIgnoredDuringExecution": {
+                    "nodeSelectorTerms": [{
+                        "matchExpressions": [{
+                            "key": "example.com/pool", "operator": "In", "values": ["controller"],
+                        }],
+                    }],
+                }},
+            },
+        }
+        resources = {
+            "requests": {"cpu": "200m", "memory": "192Mi"},
+            "limits": {"cpu": "1", "memory": "512Mi"},
+        }
+        placement = {
             "nodeSelector": {"kubernetes.io/os": "linux", "example.com/pool": "admission"},
             "tolerations": [{"key": "example.com/admission", "operator": "Exists"}],
             "affinity": {
@@ -281,16 +338,18 @@ class SandboxAdmissionChartTests(unittest.TestCase):
                 }},
             },
         }
-        resources = {
-            "requests": {"cpu": "200m", "memory": "192Mi"},
-            "limits": {"cpu": "1", "memory": "512Mi"},
-        }
-        documents = self.render(self.enforced_values(resources=resources), values=values)
+        documents = self.render(
+            self.enforced_values(resources=resources, **placement), values=values,
+        )
         deployment = documents[("Deployment", NAME)]
         self.assertEqual(deployment["metadata"]["namespace"], "synthetic-platform")
         pod = deployment["spec"]["template"]["spec"]
-        for field in ("imagePullSecrets", "nodeSelector", "tolerations", "affinity"):
-            self.assertEqual(pod[field], values[field])
+        self.assertEqual(pod["imagePullSecrets"], values["imagePullSecrets"])
+        controller = documents[("Deployment", "cetirun-operator")]["spec"]["template"]["spec"]
+        for field, value in placement.items():
+            self.assertEqual(pod[field], value)
+            self.assertEqual(controller[field], values[field])
+            self.assertNotEqual(pod[field], controller[field])
         self.assertEqual(pod["serviceAccountName"], NAME)
         metadata = deployment["spec"]["template"]["metadata"]
         self.assertNotIn("azure.workload.identity/use", metadata["labels"])
@@ -337,7 +396,7 @@ class SandboxAdmissionChartTests(unittest.TestCase):
                 self.assertEqual(webhook["admissionReviewVersions"], ["v1"])
                 self.assertEqual(webhook["sideEffects"], "None")
                 self.assertEqual(webhook["failurePolicy"], "Fail")
-                self.assertEqual(webhook["timeoutSeconds"], 2)
+                self.assertEqual(webhook["timeoutSeconds"], 10)
                 self.assertEqual(webhook["matchPolicy"], "Equivalent")
                 self.assertNotIn("namespaceSelector", webhook)
                 self.assertNotIn("objectSelector", webhook)
@@ -361,6 +420,30 @@ class SandboxAdmissionChartTests(unittest.TestCase):
                 else:
                     self.assertNotIn("matchConditions", webhook)
                 self.assertEqual(operations, expected)
+
+    def test_enforcement_renders_exact_webhook_timeouts_including_bounds(self):
+        for timeout in (1, 2, 10, 20, 30):
+            with self.subTest(timeout=timeout):
+                documents = self.render(self.enforced_values(timeoutSeconds=timeout))
+                for kind in ("ValidatingWebhookConfiguration", "MutatingWebhookConfiguration"):
+                    webhook = documents[(kind, NAME)]["webhooks"][0]
+                    self.assertEqual(webhook["timeoutSeconds"], timeout)
+                    self.assertIs(type(webhook["timeoutSeconds"]), int)
+                    self.assertEqual(webhook["failurePolicy"], "Fail")
+
+    def test_enforcement_rejects_invalid_webhook_timeouts(self):
+        for timeout in (0, -1, 31, 0.5, 1.5, "", "invalid", "1.5", True, False, None, [], {}):
+            with self.subTest(timeout=timeout):
+                self.assert_rejected(
+                    self.enforced_values(timeoutSeconds=timeout),
+                    "sandboxAdmission.timeoutSeconds must be an integer between 1 and 30",
+                )
+
+    def test_webhook_timeout_is_only_validated_when_enforcing(self):
+        self.render({"enabled": False, "enforce": False, "timeoutSeconds": 0}, kube_version="1.29.0")
+        documents = self.render(self.server_values(timeoutSeconds=0))
+        for kind in ("ValidatingWebhookConfiguration", "MutatingWebhookConfiguration"):
+            self.assertNotIn((kind, NAME), documents)
 
     def test_cleanup_condition_defaults_omitted_request_subresource(self):
         documents = self.render(self.enforced_values())
@@ -441,12 +524,17 @@ class SandboxAdmissionChartTests(unittest.TestCase):
             with self.subTest(values=values):
                 self.assert_rejected(self.server_values(), "controller identity", values=values)
 
-    def test_kubernetes_version_gate_only_applies_to_enforcement(self):
-        self.render(self.server_values(), kube_version="1.29.0")
-        self.render(kube_version="1.29.0")
-        self.assert_rejected(self.enforced_values(), "Kubernetes >= 1.30", kube_version="1.29.9")
-        for version in ("1.30.0", "1.30.1-gke.1", "1.31.0"):
+    def test_kubernetes_version_gate_applies_to_bootstrap_and_enforcement(self):
+        for version in ("1.29.0", "1.30.0", "1.36.9"):
             with self.subTest(version=version):
+                self.render(kube_version=version)
+                self.render({"enabled": False, "enforce": False}, kube_version=version)
+                for admission in (self.server_values(), self.enforced_values()):
+                    with self.subTest(enforcing=admission.get("enforce", False)):
+                        self.assert_rejected(admission, "Kubernetes >= 1.37", kube_version=version)
+        for version in ("1.37.0", "1.37.1-gke.1", "1.38.0"):
+            with self.subTest(version=version):
+                self.render(self.server_values(), kube_version=version)
                 self.render(self.enforced_values(), kube_version=version)
 
     def test_enforcement_rejects_missing_or_malformed_ca_bundle(self):

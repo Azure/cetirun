@@ -213,6 +213,28 @@ class ToolTests(unittest.TestCase):
                 self.assertEqual(len(entries), 7)
                 self.assertTrue(all(len(entry[2]) == 64 for entry in entries))
 
+    def test_helm_provenance_covers_both_linux_architectures_and_stays_on_v3(self):
+        manifest = json.loads(install_tools.MANIFEST.read_text())
+        helm = manifest["helm"]
+        self.assertTrue(helm["version"].startswith("3."))
+        self.assertEqual(
+            helm["source"], f"https://github.com/helm/helm/releases/tag/v{helm['version']}"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            for machine, arch in (("x86_64", "amd64"), ("aarch64", "arm64")):
+                with self.subTest(arch=arch):
+                    self.assertEqual(
+                        install_tools.plan(manifest, ["helm"], Path(directory), "Linux", machine),
+                        [
+                            (
+                                Path(directory) / "helm",
+                                f"https://get.helm.sh/helm-v{helm['version']}-linux-{arch}.tar.gz",
+                                helm["sha256"][arch],
+                                f"linux-{arch}/helm",
+                            )
+                        ],
+                    )
+
     def test_bad_input_is_rejected_before_network(self):
         with tempfile.TemporaryDirectory() as temp:
             directory = Path(temp)
@@ -265,6 +287,29 @@ class PythonSafetyTests(unittest.TestCase):
 
 class WorkflowContractTests(unittest.TestCase):
     """Check small cross-file invariants; actionlint handles YAML/Actions semantics."""
+
+    def test_operator_envtest_and_helm_use_manifest_installer_without_duplicate_pins(self):
+        text = (validate.ROOT / ".github/workflows/operator-ci.yml").read_text()
+        manifest = json.loads(install_tools.MANIFEST.read_text())
+        command = (
+            'python3 -B ../../scripts/ci/install_tools.py --bin-dir "$tools_dir" envtest helm'
+        )
+        self.assertIn("working-directory: app/cetirun-operator", text)
+        self.assertIn(
+            'tools_dir="$RUNNER_TEMP/cetirun-admission-tools-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"',
+            text,
+        )
+        self.assertIn(command, text)
+        self.assertLess(text.index(command), text.index("run: make test-envtest"))
+        self.assertIn('echo "$tools_dir" >> "$GITHUB_PATH"', text)
+        self.assertIn('echo "KUBEBUILDER_ASSETS=$tools_dir" >> "$GITHUB_ENV"', text)
+        self.assertNotRegex(text, r"\b(?:curl|tar|sha256sum)\b")
+        for tool in ("envtest", "helm"):
+            with self.subTest(tool=tool):
+                spec = manifest[tool]
+                self.assertNotIn(spec["version"], text)
+                for checksum in spec["sha256"].values():
+                    self.assertNotIn(checksum, text)
 
     def test_runtime_image_smoke_selects_only_the_auth_unittest_suite(self):
         text = (validate.ROOT / ".github/workflows/docker-build-validate.yml").read_text()

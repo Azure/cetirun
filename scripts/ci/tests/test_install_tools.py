@@ -40,6 +40,17 @@ def archive_bytes(entries):
     return buffer.getvalue()
 
 
+class Download(io.BytesIO):
+    def __init__(self, data, length=None):
+        super().__init__(data)
+        self.headers = {} if length is None else {"Content-Length": str(length)}
+        self.read_sizes = []
+
+    def read(self, size=-1):
+        self.read_sizes.append(size)
+        return super().read(size)
+
+
 class InstallerTests(unittest.TestCase):
     def setUp(self):
         directory = tempfile.TemporaryDirectory(prefix="cetirun-installer-test-")
@@ -69,7 +80,7 @@ class InstallerTests(unittest.TestCase):
             patch.object(
                 install_tools,
                 "urlopen",
-                side_effect=fetch or (lambda *a, **kw: io.BytesIO(self.data)),
+                side_effect=fetch or (lambda *a, **kw: Download(self.data)),
             ) as download,
             redirect_stdout(io.StringIO()),
             redirect_stderr(stderr),
@@ -133,6 +144,123 @@ class InstallerTests(unittest.TestCase):
             self.assertEqual(stat.S_IMODE(binary.stat().st_mode), 0o755)
         self.assertEqual(sentinel.read_bytes(), b"keep")
 
+    def test_oversized_content_length_fails_without_reading_body(self):
+        limit = len(self.data)
+        response = Download(self.data, length=limit + 1)
+        with (
+            patch.object(install_tools, "MAX_DOWNLOAD_BYTES", limit),
+            patch.object(install_tools, "binaries_bytes") as parse,
+        ):
+            result, _, error = self.install(fetch=lambda *a, **kw: response)
+        self.assertEqual(result, 1)
+        self.assertIn("Tool download exceeds", error)
+        self.assertEqual(response.read_sizes, [])
+        parse.assert_not_called()
+        self.assert_no_outputs()
+
+    def test_oversized_body_is_bounded_despite_missing_or_understated_length(self):
+        limit = len(self.data) - 1
+        for length in (None, 1, limit):
+            with self.subTest(length=length):
+                response = Download(self.data, length=length)
+                with (
+                    patch.object(install_tools, "MAX_DOWNLOAD_BYTES", limit),
+                    patch.object(install_tools, "binaries_bytes") as parse,
+                ):
+                    result, _, error = self.install(fetch=lambda *a, **kw: response)
+                self.assertEqual(result, 1)
+                self.assertIn("Tool download exceeds", error)
+                self.assertEqual(response.read_sizes, [limit + 1])
+                parse.assert_not_called()
+                self.assert_no_outputs()
+
+    def test_invalid_content_length_fails_without_reading_body(self):
+        for length in ("invalid", -1):
+            with self.subTest(length=length):
+                response = Download(self.data, length=length)
+                result, _, error = self.install(fetch=lambda *a, **kw: response)
+                self.assertEqual(result, 1)
+                self.assertIn("Invalid", error)
+                self.assertEqual(response.read_sizes, [])
+                self.assert_no_outputs()
+
+    def test_download_member_and_total_limits_allow_exact_boundaries(self):
+        response = Download(self.data, length=len(self.data))
+        with (
+            patch.object(install_tools, "MAX_DOWNLOAD_BYTES", len(self.data)),
+            patch.object(install_tools, "MAX_MEMBER_BYTES", max(map(len, PAYLOADS.values()))),
+            patch.object(install_tools, "MAX_TOTAL_BYTES", sum(map(len, PAYLOADS.values()))),
+        ):
+            result, _, error = self.install(fetch=lambda *a, **kw: response)
+        self.assertEqual(result, 0, error)
+        self.assertEqual(response.read_sizes, [len(self.data) + 1])
+        for name, member in MEMBERS.items():
+            self.assertEqual((self.destination / name).read_bytes(), PAYLOADS[member])
+
+    def test_member_declared_sizes_fail_before_any_member_payload_is_read(self):
+        limit = max(map(len, PAYLOADS.values()))
+        entry = tarfile.TarInfo(MEMBERS["kubectl"])
+        entry.size = limit + 1
+        self.data = archive_bytes({**PAYLOADS, entry.name: entry}.items())
+        with (
+            patch.object(install_tools, "MAX_MEMBER_BYTES", limit),
+            patch.object(tarfile.TarFile, "extractfile") as extract,
+        ):
+            result, _, error = self.install()
+        self.assertEqual(result, 1)
+        self.assertIn("Tool archive member", error)
+        self.assertIn("size limit", error)
+        extract.assert_not_called()
+        self.assert_no_outputs()
+
+    def test_total_declared_size_fails_before_any_member_payload_is_read(self):
+        limit = sum(map(len, PAYLOADS.values())) - 1
+        with (
+            patch.object(install_tools, "MAX_TOTAL_BYTES", limit),
+            patch.object(tarfile.TarFile, "extractfile") as extract,
+        ):
+            result, _, error = self.install()
+        self.assertEqual(result, 1)
+        self.assertIn("Selected tool payload total exceeds", error)
+        extract.assert_not_called()
+        self.assert_no_outputs()
+
+    def test_later_download_uses_remaining_total_budget_before_reading_members(self):
+        later = self.spec(
+            url="https://example.com/legacy.tar.gz", member=MEMBERS["kubectl"]
+        )
+        del later["members"]
+        limit = sum(map(len, PAYLOADS.values())) + len(b"kubectl") - 1
+        original_extract = tarfile.TarFile.extractfile
+        with (
+            patch.object(install_tools, "MAX_TOTAL_BYTES", limit),
+            patch.object(
+                tarfile.TarFile, "extractfile", autospec=True, side_effect=original_extract
+            ) as extract,
+        ):
+            result, download, error = self.install(
+                {"envtest": self.spec(), "legacy": later}, ("envtest", "legacy")
+            )
+        self.assertEqual(result, 1)
+        self.assertIn("Selected tool payload total exceeds", error)
+        self.assertEqual(download.call_count, 2)
+        self.assertEqual(extract.call_count, len(MEMBERS))
+        self.assert_no_outputs()
+
+    def test_raw_and_legacy_apis_enforce_size_limits(self):
+        raw = b"standalone binary"
+        checksum = hashlib.sha256(raw).hexdigest()
+        for constant in ("MAX_DOWNLOAD_BYTES", "MAX_MEMBER_BYTES", "MAX_TOTAL_BYTES"):
+            with self.subTest(limit=constant):
+                with patch.object(install_tools, constant, len(raw) - 1):
+                    with self.assertRaisesRegex(ValueError, "size limit"):
+                        install_tools.binary_bytes(raw, checksum)
+        with patch.object(install_tools, "MAX_MEMBER_BYTES", len(b"etcd") - 1):
+            with self.assertRaisesRegex(ValueError, "Tool archive member.*size limit"):
+                install_tools.binary_bytes(
+                    self.data, hashlib.sha256(self.data).hexdigest(), MEMBERS["etcd"]
+                )
+
     def test_legacy_member_and_raw_tools_keep_plan_and_binary_api(self):
         raw = b"standalone binary"
         raw_spec = self.spec(data=raw)
@@ -167,7 +295,7 @@ class InstallerTests(unittest.TestCase):
         )
         result, download, error = self.install(
             manifest, ("raw", "legacy"),
-            lambda url, **kw: io.BytesIO(raw if "/raw-" in url else self.data),
+            lambda url, **kw: Download(raw if "/raw-" in url else self.data),
         )
         self.assertEqual(result, 0, error)
         self.assertEqual(download.call_count, 2)
@@ -402,7 +530,7 @@ class InstallerTests(unittest.TestCase):
         def fetch(url, **kwargs):
             if url.endswith("/raw"):
                 raise URLError("synthetic download failure")
-            return io.BytesIO(self.data)
+            return Download(self.data)
 
         result, download, error = self.install(
             {"envtest": self.spec(), "raw": raw_spec}, ("envtest", "raw"), fetch
@@ -416,7 +544,7 @@ class InstallerTests(unittest.TestCase):
         def fetch(*args, **kwargs):
             self.destination.mkdir()
             (self.destination / "kubectl").write_bytes(b"concurrent binary")
-            return io.BytesIO(self.data)
+            return Download(self.data)
 
         result, _, error = self.install(fetch=fetch)
         self.assertEqual(result, 1)
@@ -430,7 +558,7 @@ class InstallerTests(unittest.TestCase):
 
         def fetch(*args, **kwargs):
             self.destination.symlink_to(target, target_is_directory=True)
-            return io.BytesIO(self.data)
+            return Download(self.data)
 
         result, _, error = self.install(fetch=fetch)
         self.assertEqual(result, 1)

@@ -3,6 +3,9 @@
 {{- fail "sandboxAdmission.enforce requires sandboxAdmission.enabled=true" -}}
 {{- end -}}
 {{- if $admission.enabled -}}
+{{- if not (semverCompare ">=1.37.0-0" .Capabilities.KubeVersion.Version) -}}
+{{- fail "sandboxAdmission.enabled requires Kubernetes >= 1.37 (validated admission minimum)" -}}
+{{- end -}}
 {{- if or (not (regexMatch "^[0-9]+$" (toString $admission.replicaCount))) (lt (int64 $admission.replicaCount) 2) -}}
 {{- fail "sandboxAdmission.replicaCount must be an integer >= 2" -}}
 {{- end -}}
@@ -96,7 +99,7 @@ metadata:
     app.kubernetes.io/name: cetirun-sandbox-admission
     app.kubernetes.io/managed-by: {{ .Release.Service }}
 spec:
-  minAvailable: 1
+  minAvailable: {{ sub (int64 $admission.replicaCount) 1 }}
   selector:
     matchLabels:
       app.kubernetes.io/name: cetirun-sandbox-admission
@@ -131,6 +134,10 @@ spec:
       serviceAccountName: cetirun-sandbox-admission
       automountServiceAccountToken: true
       enableServiceLinks: false
+      terminationGracePeriodSeconds: 50
+      {{- with $admission.priorityClassName }}
+      priorityClassName: {{ . | quote }}
+      {{- end }}
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
@@ -191,6 +198,10 @@ spec:
               port: health
             initialDelaySeconds: 5
             periodSeconds: 10
+          lifecycle:
+            preStop:
+              sleep:
+                seconds: 10
           resources:
             {{- toYaml $admission.resources | nindent 12 }}
           securityContext:
@@ -213,15 +224,15 @@ spec:
                 path: tls.crt
               - key: tls.key
                 path: tls.key
-      {{- with .Values.nodeSelector }}
+      {{- with $admission.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with .Values.affinity }}
+      {{- with $admission.affinity }}
       affinity:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with .Values.tolerations }}
+      {{- with $admission.tolerations }}
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}

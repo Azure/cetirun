@@ -233,6 +233,12 @@ It is disabled by default and supplies no production capability registrations:
 governed bindings remain rejected without qualified support, and runtime
 execution remains held. Enforced webhook rules make matched legacy writes
 depend on service availability too.
+Admission is currently gated to Kubernetes 1.37+. Legacy Team deletion retains
+its RBAC behavior; removing a governed Team's bindings requires its members to
+be rebound to another governed Team or deleted, including members that inherit
+governance without an explicit Agent binding.
+For schema upgrades, roll out compatible admission binaries to all replicas
+before adding new schema fields/defaults, and apply CRD upgrades explicitly.
 
 Governed member Team assignment, pending UID authorization, final-Pod admission,
 rollout barriers, enforcement observation, protected rendering and production

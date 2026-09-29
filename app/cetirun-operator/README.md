@@ -135,6 +135,10 @@ independent HTTPS admission process, not runtime controllers or leader election.
 It uses uncached API reads and a separate ServiceAccount with only `get`/`list`
 access to the four configuration kinds. It does not mount operator cloud
 credentials, registry credentials, or workload Secrets.
+Agent validation fetches only its Team and that Team's named Sandbox/policy
+references. Shared-configuration checks scan consumers in pages of 200, reuse
+named reference reads only within the current request, and fail on incomplete
+or expired page reads. There is no cross-request reference cache.
 
 The chart defaults `sandboxAdmission.enabled` and `sandboxAdmission.enforce` to
 `false`. Default installations retain their existing behavior. Enabling the
@@ -151,12 +155,23 @@ This increment implements:
 - Creation-only Agent selection defaulting, followed by validation against the
   current Team. Existing Agents are never silently re-defaulted. Governed member
   creation is rejected until trusted Portal Team assignment is implemented.
+  Mutation and validation are installed together: Kubernetes runs mutation
+  first, including for dry runs. Validation rejects a missing selection rather
+  than assuming that a default was persisted.
 - Shared normalization and compatibility validation, including every referencing
   Team on Sandbox/policy edits, and reference checks before shared deletion.
   Ordinary Portal Team context edits can preserve unchanged governance.
+  Deleting an ungoverned Team retains the existing RBAC boundary, even with
+  member Agents. Removing governance from, or deleting, a governed Team requires
+  rebinding its members to another governed Team or deleting them first.
+  Members inherit governance even without an explicit Agent `sandboxRef`;
+  clearing the Team fields must not release those Agents into legacy execution.
 - Protected lifecycle finalizers. Only the configured controller identity may
   change known lifecycle finalizers in a metadata-only update; it has no blanket
   exemption for spec changes. Removal also requires an already-deleting Agent.
+  The legacy controller's chart-version and Harness image/port pinning writes
+  remain behind the execution hold. A future governed path must authorize those
+  specific writes or move them into authorized creation before releasing it.
 
 There are **no production capability registrations**. Standalone Sandbox and
 AgentPolicy definitions can be validated, but governed Team/Agent bindings are
@@ -171,9 +186,34 @@ changes, coordinate rollout barriers, or permit governed execution. Reference
 reads are checks against current objects, not an atomic cross-resource
 transaction. Those boundaries must be completed before production adoption.
 
+#### Schema and binary upgrades
+
+Admission deliberately rejects object fields the serving binary does not
+understand. The API server's schema validation cannot prove that an older
+webhook enforces a newly introduced policy field. Do not treat an unknown field
+as allowed or disable fail-closed validation to work around version skew.
+
+For additive upgrades, roll out a backward-compatible admission binary to
+**all replicas first**, verify readiness and existing-field requests, then apply
+the matching CRDs explicitly, and only then use newly introduced fields.
+Helm does not upgrade files under `crds/`. A default added by a newer schema can
+reach admission even if clients do not explicitly send it, so applying that
+schema before every serving replica understands it is unsupported.
+Rollback to an older binary requires first removing unsupported fields and
+defaults through a reviewed migration while the newer validator still runs.
+Breaking schema changes require a separately reviewed transition.
+
+API-server tests simulate a newer schema and an older handler: objects carrying
+the unrecognized field are rejected explicitly, while known-field objects
+remain writable. This is not an exemption for new policy semantics.
+
 #### Availability and bootstrap
 
-Use an explicitly authorized environment and platform certificate issuer:
+Use an explicitly authorized environment and platform certificate issuer.
+Admission is currently gated to Kubernetes 1.37+, matching the tested minor
+version; native match-condition support alone does not qualify older versions.
+Only one operator/admission installation per cluster is supported by the fixed
+cluster-scoped resource names.
 
 1. Provision a `kubernetes.io/tls` Secret containing `tls.crt` and `tls.key` for
    `cetirun-sandbox-admission.<operator-namespace>.svc`. Supply its name through
@@ -183,20 +223,40 @@ Use an explicitly authorized environment and platform certificate issuer:
    `enabled=true, enforce=false`. Verify TLS, readiness, API read permissions,
    two available replicas and their placement. The chart supplies a disruption
    budget and spreading constraints; rendering does not establish availability.
+   Use a waiting rollout and request-path checks before the next step; an
+   initial install with both switches enabled is not a supported bootstrap.
 3. Supply the issuer's base64 PEM CA bundle as `sandboxAdmission.caBundle`.
-   After request-path verification, enable `enforce=true` on Kubernetes 1.30+
-   (the native match-condition API minimum; local integration tests use 1.37).
-   The configurations use `failurePolicy: Fail` and a two-second deadline.
+   After request-path verification, enable `enforce=true`.
+   The configurations use `failurePolicy: Fail` and
+   `sandboxAdmission.timeoutSeconds` (default 10; integer range 1-30).
+   Measure request latency at the intended configuration/Agent count; a larger
+   deadline bounds waiting but does not establish a capacity guarantee.
    Neither flag enables runtime execution.
 4. During CA rotation, first trust both old and new CAs, rotate the mounted pair,
    verify every replica serves the new certificate, then retire the old CA.
-   Each new TLS handshake loads the current pair; invalid or expired material
-   fails the handshake and readiness instead of relying on a filesystem watcher
-   to keep cached material current. Existing TLS connections may outlive a
-   certificate replacement.
+   Each new TLS handshake reads the current pair and reuses the parsed
+   certificate only when its contents match. Validity is checked every time;
+   invalid, missing or expired material fails the handshake and readiness.
+   Neither a filesystem watcher nor unchanged modification times can authorize
+   stale cached material. Existing TLS connections may outlive replacement.
+
+Scheduling uses independent `sandboxAdmission.nodeSelector`, `affinity` and
+`tolerations`, not the controller's placement. An optional `priorityClassName`
+must name an existing, platform-approved PriorityClass; the chart does not
+automatically assign system-critical priority. Spread constraints do not
+guarantee distinct hosts when only one eligible topology domain exists, so
+verify actual placement on at least two eligible hosts for availability.
+The disruption budget permits voluntary disruptions only while at least
+`replicaCount - 1` replicas remain available.
+A native 10-second preStop sleep allows endpoint changes to propagate before
+shutdown; the process has a 35-second manager shutdown budget within a
+50-second Pod termination grace period, covering the maximum webhook deadline.
+These settings reduce rollout races; live endpoint-drain and replica-loss
+testing is still required.
 
 The rules do not intercept their own Deployment, Service, RBAC or certificate
-Secret. They exclude configuration `/status`, Agent DELETE and Pod DELETE.
+Secret. They exclude configuration `/status` and Agent DELETE.
+There are no Pod admission rules in this increment, including on Pod deletion.
 Status writes still require appropriate Kubernetes RBAC.
 
 An API-server-side match condition also excludes **only** the exact controller's
@@ -208,6 +268,37 @@ webhook is unavailable; shared-configuration deletion and other matched writes
 fail closed. Repair the service or certificate rather than weakening the rules
 or manually stripping finalizers. Any exceptional rollback needs a separately
 reviewed recovery procedure while starts remain held.
+
+#### Monitoring and platform boundaries
+
+The controller-runtime server exports `controller_runtime_webhook_latency_seconds`,
+`controller_runtime_webhook_requests_total` and
+`controller_runtime_webhook_requests_in_flight`. Since admission denials are
+usually carried in HTTP 200 responses, use
+`cetirun_sandbox_admission_decisions_total` for bounded `allowed`, `denied`,
+`invalid_request` and `dependency_error` outcomes by handler.
+`cetirun_sandbox_admission_certificate_not_after_seconds` reports the current
+serving certificate's Unix expiry time (zero for unreadable/unparseable
+material); on admission pods, alert on zero, expiry approaching, dependency
+errors and sustained request latency approaching the configured deadline.
+No object names or arbitrary error strings become metric labels.
+
+The serving certificate metric does **not** verify the CA bundle configured in
+the API server, its expiry, or hostname/trust alignment. Before enabling
+enforcement and during every rotation, the platform must check those separately
+and verify an actual API-server request through every serving replica. CA
+injection is not installed or assumed; the issuer and trusted CA value remain
+platform-managed.
+
+The TLS listener authenticates the server, not the API-server client. A direct
+request cannot apply an object, but it can exercise validation and consume API
+reads. Metrics are also served on a plaintext, unauthenticated Pod port.
+Before production enforcement, qualify cluster-specific network restrictions
+for API-server access, node health probes and authorized metrics scrapers, or
+an explicitly configured API-server client-certificate arrangement. No generic
+NetworkPolicy is installed here: guessing control-plane source addresses can
+block the fail-closed webhook itself. Keep these production gates separate from
+local loopback and chart tests.
 
 ### Enforcement feasibility baseline
 

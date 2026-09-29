@@ -71,7 +71,8 @@ func (h *Handler) Validate(ctx context.Context, request admission.Request) admis
 			return admission.Allowed("Team governance is unchanged")
 		}
 	}
-	if team, ok := object.(*api.Team); ok && request.Operation == admissionv1.Create && !sandbox.TeamGoverned(team) {
+	if team, ok := object.(*api.Team); ok &&
+		(request.Operation == admissionv1.Create || request.Operation == admissionv1.Delete) && !sandbox.TeamGoverned(team) {
 		return admission.Allowed("legacy Team")
 	}
 	if !h.config.administrator(request.UserInfo) {
@@ -89,7 +90,7 @@ func (h *Handler) Validate(ctx context.Context, request admission.Request) admis
 			}
 			return admission.Allowed("unreferenced Team governance removed")
 		}
-		resources, err := h.resources(ctx)
+		resources, err := h.resources(ctx, candidate.Spec, sandbox.Resources{})
 		if err != nil {
 			return dependencyError(ctx, err)
 		}
@@ -188,9 +189,12 @@ func (h *Handler) validateAgent(ctx context.Context, request admission.Request, 
 		return admission.Denied(err.Error())
 	}
 	if spec.SandboxRef != agent.Spec.SandboxRef {
+		if request.Operation == admissionv1.Create {
+			return admission.Denied(fmt.Sprintf("Agent %q is missing spec.sandboxRef; the creation-defaulting webhook must set Team %q's default before validation", agent.Name, team.Name))
+		}
 		return admission.Denied("spec.sandboxRef must be persisted at creation; existing Agents are never re-defaulted")
 	}
-	resources, err := h.resources(ctx)
+	resources, err := h.resources(ctx, team.Spec, sandbox.Resources{})
 	if err != nil {
 		return dependencyError(ctx, err)
 	}
@@ -200,23 +204,42 @@ func (h *Handler) validateAgent(ctx context.Context, request admission.Request, 
 	return admission.Allowed("configuration is valid; Sandbox execution remains held")
 }
 
-func (h *Handler) resources(ctx context.Context) (sandbox.Resources, error) {
-	var boxes api.SandboxList
-	var policies api.AgentPolicyList
-	if err := h.reader.List(ctx, &boxes); err != nil {
-		return sandbox.Resources{}, err
+// Reuse only within one admission request, never across requests. Reference
+// checks must not accept a policy from a stale informer or TTL cache.
+func (h *Handler) resources(ctx context.Context, spec api.TeamSpec, resources sandbox.Resources) (sandbox.Resources, error) {
+	if resources.Sandboxes == nil {
+		resources.Sandboxes = make(map[string]*api.Sandbox)
 	}
-	if err := h.reader.List(ctx, &policies); err != nil {
-		return sandbox.Resources{}, err
+	if resources.AgentPolicies == nil {
+		resources.AgentPolicies = make(map[string]*api.AgentPolicy)
 	}
-	resources := sandbox.Resources{
-		Sandboxes: make(map[string]*api.Sandbox), AgentPolicies: make(map[string]*api.AgentPolicy),
+	for _, name := range spec.SandboxRefs {
+		if _, read := resources.Sandboxes[name]; name == "" || read {
+			continue
+		}
+		var box api.Sandbox
+		if err := h.reader.Get(ctx, client.ObjectKey{Name: name}, &box); err != nil {
+			if !apierrors.IsNotFound(err) {
+				return sandbox.Resources{}, err
+			}
+			resources.Sandboxes[name] = nil
+			continue
+		}
+		resources.Sandboxes[name] = &box
 	}
-	for i := range boxes.Items {
-		resources.Sandboxes[boxes.Items[i].Name] = &boxes.Items[i]
-	}
-	for i := range policies.Items {
-		resources.AgentPolicies[policies.Items[i].Name] = &policies.Items[i]
+	for _, name := range []string{spec.NormalAgentPolicyRef, spec.AdminAgentPolicyRef} {
+		if _, read := resources.AgentPolicies[name]; name == "" || read {
+			continue
+		}
+		var policy api.AgentPolicy
+		if err := h.reader.Get(ctx, client.ObjectKey{Name: name}, &policy); err != nil {
+			if !apierrors.IsNotFound(err) {
+				return sandbox.Resources{}, err
+			}
+			resources.AgentPolicies[name] = nil
+			continue
+		}
+		resources.AgentPolicies[name] = &policy
 	}
 	return resources, nil
 }
@@ -237,50 +260,51 @@ func (h *Handler) team(ctx context.Context, name string) (*api.Team, error) {
 
 func (h *Handler) checkTeamConsumers(ctx context.Context, team *api.Team, removing bool) admission.Response {
 	var agents api.AgentList
-	if err := h.reader.List(ctx, &agents); err != nil {
-		return dependencyError(ctx, err)
-	}
-	for _, agent := range agents.Items {
-		if agent.Spec.Team != team.Name {
-			continue
+	return h.checkPages(ctx, &agents, func() admission.Response {
+		for _, agent := range agents.Items {
+			if agent.Spec.Team != team.Name {
+				continue
+			}
+			if removing {
+				return admission.Denied(fmt.Sprintf("Team %q still governs referencing Agent %q, including inherited governance; rebind it to another governed Team or delete it before removing Team governance", team.Name, agent.Name))
+			}
+			if (agent.Spec.SandboxRef != "" && !slices.Contains(team.Spec.SandboxRefs, agent.Spec.SandboxRef)) ||
+				(agent.Spec.PolicyClass == api.AgentPolicyClassAdmin && team.Spec.AdminAgentPolicyRef == "") {
+				return admission.Denied(fmt.Sprintf("Team %q change would invalidate referencing Agent %q; rebind or delete its consumers first", team.Name, agent.Name))
+			}
 		}
-		if removing || (agent.Spec.SandboxRef != "" && !slices.Contains(team.Spec.SandboxRefs, agent.Spec.SandboxRef)) ||
-			(agent.Spec.PolicyClass == api.AgentPolicyClassAdmin && team.Spec.AdminAgentPolicyRef == "") {
-			return admission.Denied("Team change would invalidate a referencing Agent; rebind or delete its consumers first")
-		}
-	}
-	return admission.Allowed("Team bindings preserve existing consumers")
+		return admission.Allowed("Team bindings preserve existing consumers")
+	})
 }
 
 func (h *Handler) checkReferencingTeams(ctx context.Context, candidate client.Object) admission.Response {
 	var teams api.TeamList
-	if err := h.reader.List(ctx, &teams); err != nil {
-		return dependencyError(ctx, err)
+	resources := sandbox.Resources{
+		Sandboxes: make(map[string]*api.Sandbox), AgentPolicies: make(map[string]*api.AgentPolicy),
 	}
-	var resources sandbox.Resources
-	for i := range teams.Items {
-		team := &teams.Items[i]
-		if !references(team, candidate) {
-			continue
-		}
-		if resources.Sandboxes == nil {
+	switch object := candidate.(type) {
+	case *api.Sandbox:
+		resources.Sandboxes[object.Name] = object
+	case *api.AgentPolicy:
+		resources.AgentPolicies[object.Name] = object
+	}
+	return h.checkPages(ctx, &teams, func() admission.Response {
+		for i := range teams.Items {
+			team := &teams.Items[i]
+			if !references(team, candidate) {
+				continue
+			}
 			var err error
-			resources, err = h.resources(ctx)
+			resources, err = h.resources(ctx, team.Spec, resources)
 			if err != nil {
 				return dependencyError(ctx, err)
 			}
-			switch object := candidate.(type) {
-			case *api.Sandbox:
-				resources.Sandboxes[object.Name] = object
-			case *api.AgentPolicy:
-				resources.AgentPolicies[object.Name] = object
+			if errs := sandbox.ValidateTeam(team, resources, h.registrations); len(errs) != 0 {
+				return admission.Denied(fmt.Sprintf("configuration %q would invalidate referencing Team %q: %v", candidate.GetName(), team.Name, errs.ToAggregate()))
 			}
 		}
-		if errs := sandbox.ValidateTeam(team, resources, h.registrations); len(errs) != 0 {
-			return admission.Denied(fmt.Sprintf("configuration would invalidate a referencing Team: %v", errs.ToAggregate()))
-		}
-	}
-	return admission.Allowed("configuration is valid for its referencing Teams")
+		return admission.Allowed("configuration is valid for its referencing Teams")
+	})
 }
 
 func (h *Handler) validateDeletion(ctx context.Context, object client.Object) admission.Response {
@@ -288,27 +312,47 @@ func (h *Handler) validateDeletion(ctx context.Context, object client.Object) ad
 		return h.checkTeamConsumers(ctx, team, true)
 	}
 	var teams api.TeamList
-	if err := h.reader.List(ctx, &teams); err != nil {
-		return dependencyError(ctx, err)
-	}
-	for i := range teams.Items {
-		if references(&teams.Items[i], object) {
-			return admission.Denied("configuration is still referenced by a Team")
+	response := h.checkPages(ctx, &teams, func() admission.Response {
+		for i := range teams.Items {
+			if references(&teams.Items[i], object) {
+				return admission.Denied(fmt.Sprintf("configuration %q is still referenced by Team %q", object.GetName(), teams.Items[i].Name))
+			}
 		}
+		return admission.Allowed("no referencing Teams")
+	})
+	if !response.Allowed {
+		return response
 	}
 	// Check dangling direct Agent selections as well as Team references.
 	if box, ok := object.(*api.Sandbox); ok {
 		var agents api.AgentList
-		if err := h.reader.List(ctx, &agents); err != nil {
-			return dependencyError(ctx, err)
-		}
-		for _, agent := range agents.Items {
-			if agent.Spec.SandboxRef == box.Name {
-				return admission.Denied("Sandbox is still referenced by an Agent")
+		return h.checkPages(ctx, &agents, func() admission.Response {
+			for _, agent := range agents.Items {
+				if agent.Spec.SandboxRef == box.Name {
+					return admission.Denied(fmt.Sprintf("Sandbox %q is still referenced by Agent %q", box.Name, agent.Name))
+				}
 			}
-		}
+			return admission.Allowed("Sandbox has no remaining references")
+		})
 	}
 	return admission.Allowed("configuration has no remaining references")
+}
+
+const referencePageSize = 200
+
+func (h *Handler) checkPages(ctx context.Context, list client.ObjectList, check func() admission.Response) admission.Response {
+	for continuation := ""; ; continuation = list.GetContinue() {
+		if err := ctx.Err(); err != nil {
+			return dependencyError(ctx, err)
+		}
+		if err := h.reader.List(ctx, list, client.Limit(referencePageSize), client.Continue(continuation)); err != nil {
+			return dependencyError(ctx, err)
+		}
+		response := check()
+		if !response.Allowed || list.GetContinue() == "" {
+			return response
+		}
+	}
 }
 
 func references(team *api.Team, object client.Object) bool {

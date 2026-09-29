@@ -260,7 +260,9 @@ exceptions in `scripts/license_headers.py` must retain their own notices.
   to render the actual admission matching rules. The target starts isolated
   API server/etcd processes with RBAC, refuses missing binaries and never uses
   an existing cluster. Loopback TLS tests cover the independent serving process
-  and certificate replacement. Normal `go test ./...` runs unit and
+  and certificate replacement. Version-skew fixtures verify that fields known
+  only to a newer CRD fail closed at the older handler without blocking
+  known-field requests. Normal `go test ./...` runs unit and
   schema/serialization tests, not envtest.
   The checksum-pinned Linux amd64/arm64 bundle can be provisioned into a new
   task-local directory after a missing-tool failure:
