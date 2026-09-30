@@ -560,7 +560,8 @@ func testServingProcess(t *testing.T, restConfig *rest.Config, agent *api.Agent)
 	go func() {
 		done <- Run(ctx, restConfig, testConfig(), ServerOptions{
 			CertDirectory: directory, Host: "127.0.0.1", Port: port, MetricsAddress: "0",
-			ProbeAddress: fmt.Sprintf("127.0.0.1:%d", healthPort),
+			ProbeAddress:      fmt.Sprintf("127.0.0.1:%d", healthPort),
+			PodStateNamespace: "operator-state",
 		})
 	}()
 	t.Cleanup(func() {
@@ -617,6 +618,31 @@ func testServingProcess(t *testing.T, restConfig *rest.Config, agent *api.Agent)
 		return probe(first.serial), nil
 	}); err != nil {
 		t.Fatalf("TLS admission process did not become responsive: %v; last probe: %v", err, probeError)
+	}
+	podReview := admissionv1.AdmissionReview{
+		TypeMeta: review.TypeMeta,
+		Request: &admissionv1.AdmissionRequest{
+			UID: "pod-route-probe", Operation: admissionv1.Delete, Name: "unused", Namespace: "workload",
+			Kind:     metav1.GroupVersionKind{Version: "v1", Kind: "Pod"},
+			Resource: metav1.GroupVersionResource{Version: "v1", Resource: "pods"},
+		},
+	}
+	podBody, err := json.Marshal(podReview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	podResponse, err := httpClient.Post(fmt.Sprintf("https://127.0.0.1:%d%s", port, PodValidationPath),
+		"application/json", bytes.NewReader(podBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer podResponse.Body.Close()
+	var podResult admissionv1.AdmissionReview
+	if err := json.NewDecoder(podResponse.Body).Decode(&podResult); err != nil ||
+		podResponse.StatusCode != http.StatusOK || podResult.Response == nil ||
+		!podResult.Response.Allowed || podResult.Response.UID != podReview.Request.UID {
+		t.Fatalf("optional Pod endpoint was not served by the independent process: HTTP %d, %+v, %v",
+			podResponse.StatusCode, podResult.Response, err)
 	}
 	healthClient := &http.Client{Timeout: time.Second}
 	readiness := func() int {

@@ -3,6 +3,10 @@ apiVersion: apps/v1
 kind: StatefulSet
 metadata:
   name: {{ include "cetirun.fullname" . }}
+  {{- with .Values.sandboxWorkload }}
+  ownerReferences:
+    {{- toYaml .ownerReferences | nindent 4 }}
+  {{- end }}
   labels:
     {{- include "cetirun.labels" . | nindent 4 }}
   {{- with .Values.podAnnotations }}
@@ -133,6 +137,11 @@ spec:
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
+            {{- with .Values.sandboxWorkload }}
+            {{- with .identityEnvironment }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+            {{- end }}
           {{- with .Values.extraEnvFrom }}
           envFrom:
             {{- toYaml . | nindent 12 }}
@@ -189,6 +198,11 @@ spec:
             {{- with .Values.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
+            {{- with .Values.sandboxWorkload }}
+            {{- with .identityMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+            {{- end }}
           {{- with .Values.sidecars }}
             {{- toYaml . | nindent 8 }}
           {{- end }}
@@ -200,6 +214,9 @@ spec:
           image: "{{ include "cetirun.image" . }}"
           imagePullPolicy: {{ include "cetirun.imagePullPolicy" . }}
           securityContext:
+            {{- if .Values.sandboxWorkload }}
+            {{- toYaml .Values.sandboxWorkload.securityContext | nindent 12 }}
+            {{- else }}
             allowPrivilegeEscalation: false
             capabilities:
               drop:
@@ -209,6 +226,7 @@ spec:
             readOnlyRootFilesystem: true
             seccompProfile:
               type: RuntimeDefault
+            {{- end }}
           command: ["/bin/sh", "/etc/cetirun/session-logger.sh"]
           env:
             - name: AGENT_TYPE
@@ -252,6 +270,9 @@ spec:
         - name: shared-skills
           persistentVolumeClaim:
             claimName: {{ include "cetirun.sharedSkillsPVCName" . }}
+            {{- if .Values.sandboxWorkload }}
+            readOnly: true
+            {{- end }}
         {{- end }}
         {{- if (include "cetirun.tailscaleEnabled" .) }}
         - name: tailscale-state
@@ -259,6 +280,11 @@ spec:
         {{- end }}
         {{- with .Values.extraVolumes }}
         {{- toYaml . | nindent 8 }}
+        {{- end }}
+        {{- with .Values.sandboxWorkload }}
+        {{- with .identityVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
         {{- end }}
   {{- if and .Values.persistence.enabled (not .Values.persistence.existingClaim) .Values.persistence.useStatefulSetVolumeClaim }}
   {{- if semverCompare ">=1.25-0" .Capabilities.KubeVersion.Version }}

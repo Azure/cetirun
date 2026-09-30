@@ -62,6 +62,9 @@ OpenClaw init containers
   image: "{{ include "cetirun.image" . }}"
   imagePullPolicy: {{ include "cetirun.imagePullPolicy" . }}
   securityContext:
+    {{- if .Values.sandboxWorkload }}
+    {{- toYaml .Values.sandboxWorkload.securityContext | nindent 4 }}
+    {{- else }}
     runAsUser: 1024
     runAsNonRoot: true
     allowPrivilegeEscalation: false
@@ -70,6 +73,11 @@ OpenClaw init containers
         - ALL
     seccompProfile:
       type: RuntimeDefault
+    {{- end }}
+  {{- with .Values.sandboxWorkload }}
+  resources:
+    {{- toYaml .helperResources | nindent 4 }}
+  {{- end }}
   command: ["/bin/sh", "/etc/cetirun/init-home.sh"]
   env:
     - name: CETIRUN_INIT_IMAGE
@@ -91,6 +99,9 @@ OpenClaw init containers
   image: "{{ include "cetirun.image" . }}"
   imagePullPolicy: {{ include "cetirun.imagePullPolicy" . }}
   securityContext:
+    {{- if .Values.sandboxWorkload }}
+    {{- toYaml .Values.sandboxWorkload.securityContext | nindent 4 }}
+    {{- else }}
     runAsUser: 1024
     runAsNonRoot: true
     allowPrivilegeEscalation: false
@@ -99,6 +110,11 @@ OpenClaw init containers
         - ALL
     seccompProfile:
       type: RuntimeDefault
+    {{- end }}
+  {{- with .Values.sandboxWorkload }}
+  resources:
+    {{- toYaml .helperResources | nindent 4 }}
+  {{- end }}
   command: ["openclaw", "doctor", "--fix", "--non-interactive", "--yes"]
   env:
     - name: OPENCLAW_STATE_DIR

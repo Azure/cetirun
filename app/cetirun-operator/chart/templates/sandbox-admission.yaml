@@ -1,4 +1,10 @@
 {{- $admission := .Values.sandboxAdmission -}}
+{{- if not (kindIs "bool" $admission.podsEnabled) -}}
+{{- fail "sandboxAdmission.podsEnabled must be a boolean" -}}
+{{- end -}}
+{{- if and $admission.podsEnabled (not $admission.enabled) -}}
+{{- fail "sandboxAdmission.podsEnabled requires sandboxAdmission.enabled=true" -}}
+{{- end -}}
 {{- if and $admission.enforce (not $admission.enabled) -}}
 {{- fail "sandboxAdmission.enforce requires sandboxAdmission.enabled=true" -}}
 {{- end -}}
@@ -101,6 +107,26 @@ rules:
   - apiGroups: ["cetirun.microsoft.com"]
     resources: ["agents", "teams", "sandboxes", "agentpolicies"]
     verbs: ["get", "list"]
+  {{- if $admission.podsEnabled }}
+  - apiGroups: [""]
+    resources: ["namespaces", "pods", "persistentvolumeclaims", "serviceaccounts"]
+    verbs: ["get"]
+  - apiGroups: ["apps"]
+    resources: ["statefulsets"]
+    verbs: ["get"]
+  - apiGroups: ["node.k8s.io"]
+    resources: ["runtimeclasses"]
+    verbs: ["get"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["roles", "rolebindings", "clusterroles", "clusterrolebindings"]
+    verbs: ["get"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["get"]
+  - apiGroups: ["cilium.io"]
+    resources: ["ciliumnetworkpolicies"]
+    verbs: ["get"]
+  {{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -117,6 +143,32 @@ subjects:
   - kind: ServiceAccount
     name: cetirun-sandbox-admission
     namespace: {{ .Values.namespace | quote }}
+{{- if $admission.podsEnabled }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: cetirun-sandbox-admission-pod-state
+  namespace: {{ .Values.namespace | quote }}
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: cetirun-sandbox-admission-pod-state
+  namespace: {{ .Values.namespace | quote }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: cetirun-sandbox-admission-pod-state
+subjects:
+  - kind: ServiceAccount
+    name: cetirun-sandbox-admission
+    namespace: {{ .Values.namespace | quote }}
+{{- end }}
 ---
 apiVersion: v1
 kind: Service
@@ -219,6 +271,9 @@ spec:
             - --health-probe-bind-address=:8081
             - --metrics-bind-address=:8080
             - --leader-elect=false
+            {{- if $admission.podsEnabled }}
+            - {{ printf "--admission-pod-state-namespace=%s" .Values.namespace | quote }}
+            {{- end }}
           env:
             - name: CETIRUN_SANDBOX_ADMISSION
               value: {{ $config | toJson | quote }}

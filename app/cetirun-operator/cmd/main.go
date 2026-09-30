@@ -64,10 +64,12 @@ func main() {
 	var mode string
 	var admissionCertDir string
 	var admissionPort int
+	var admissionPodStateNamespace string
 
 	flag.StringVar(&mode, "mode", "operator", "Process mode: operator or sandbox-admission.")
 	flag.StringVar(&admissionCertDir, "admission-cert-dir", "", "Directory containing platform-issued tls.crt and tls.key for Sandbox admission.")
 	flag.IntVar(&admissionPort, "admission-port", 9443, "Sandbox admission HTTPS port.")
+	flag.StringVar(&admissionPodStateNamespace, "admission-pod-state-namespace", "", "Protected controller state namespace for optional Sandbox Pod admission.")
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "Address the metric endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "Address the probe endpoint binds to.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
@@ -104,6 +106,7 @@ func main() {
 			"version", buildinfo.Version, "commit", buildinfo.Commit)
 		if err := sandboxadmission.Run(ctrl.SetupSignalHandler(), ctrl.GetConfigOrDie(), config, sandboxadmission.ServerOptions{
 			CertDirectory: admissionCertDir, Port: admissionPort, MetricsAddress: metricsAddr, ProbeAddress: probeAddr,
+			PodStateNamespace: admissionPodStateNamespace,
 		}); err != nil {
 			setupLog.Error(err, "Sandbox admission server failed")
 			os.Exit(1)

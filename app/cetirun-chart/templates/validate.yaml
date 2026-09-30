@@ -1,3 +1,6 @@
+{{- if .Values.sandboxWorkload -}}
+{{- include "cetirun.sandbox.validate" . -}}
+{{- end -}}
 {{- if eq (include "cetirun.agent.type" .) "custom" -}}
 {{- include "cetirun.custom.validate" . -}}
 {{- include "cetirun.validateAutoscaling" . -}}

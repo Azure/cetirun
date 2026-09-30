@@ -11,8 +11,10 @@ import (
 
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/agents"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/agents/builtin"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
 	"helm.sh/helm/v3/pkg/chart"
 	"helm.sh/helm/v3/pkg/chartutil"
+	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/yaml"
 )
 
@@ -44,6 +46,8 @@ type PreparedRelease struct {
 	pdbAPIVersion     string
 	homeRetention     bool
 	apiValidated      bool
+	sandboxBundle     *sandboxworkload.Bundle
+	sandboxTemplate   *corev1.PodTemplateSpec
 }
 
 // CacheKey includes actual rendered output as well as the consumed inputs.
@@ -57,6 +61,9 @@ func (p *PreparedRelease) Rebuild(input map[string]any) (*PreparedRelease, error
 	if p.chart == nil {
 		return nil, fmt.Errorf("prepared release has no chart")
 	}
+	if p.sandboxBundle != nil {
+		return nil, fmt.Errorf("Sandbox rebuild requires separately validated user inputs and a current bundle")
+	}
 	return PrepareChart(p.chart, input)
 }
 
@@ -68,6 +75,13 @@ func PrepareChart(chrt *chart.Chart, input map[string]any) (*PreparedRelease, er
 }
 
 func prepareChart(chrt *chart.Chart, input map[string]any, validateRender bool) (*PreparedRelease, error) {
+	if input[sandboxworkload.ValuesKey] != nil {
+		return nil, fmt.Errorf("sandboxWorkload is reserved for the protected Sandbox renderer")
+	}
+	return prepareRuntimeChart(chrt, input, validateRender)
+}
+
+func prepareRuntimeChart(chrt *chart.Chart, input map[string]any, validateRender bool) (*PreparedRelease, error) {
 	if input["runtime"] != nil {
 		return nil, fmt.Errorf("runtime is reserved for the platform")
 	}

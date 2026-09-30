@@ -108,6 +108,10 @@ sandboxAdmission:
   # -- Install fail-closed webhooks only after the server and TLS are ready.
   # Requires Kubernetes >= 1.37, including native admission matchConditions.
   enforce: false
+  # -- Serve and enforce final-Pod checks in controller-marked namespaces.
+  # Requires configuration enforcement and immutable namespace protection.
+  # Expectations are read from this operator's namespace; execution stays held.
+  podsEnabled: false
   # -- Timeout for each fail-closed webhook call; integer 1..30 when enforce=true.
   timeoutSeconds: 10
   replicaCount: 2

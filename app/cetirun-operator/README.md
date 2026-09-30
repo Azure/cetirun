@@ -133,15 +133,18 @@ cannot concurrently recreate a held workload.
 The operator image also supports `--mode=sandbox-admission`. This starts an
 independent HTTPS admission process, not runtime controllers or leader election.
 It uses uncached API reads and a separate ServiceAccount with only `get`/`list`
-access to the four configuration kinds. It does not mount operator cloud
+access to the four configuration kinds by default. Optional Pod admission adds
+read access to workload prerequisites and namespace-scoped controller state,
+not cluster-wide Secret or ConfigMap access. It does not mount operator cloud
 credentials, registry credentials, or workload Secrets.
 Agent validation fetches only its Team and that Team's named Sandbox/policy
 references. Shared-configuration checks scan consumers in pages of 200, reuse
 named reference reads only within the current request, and fail on incomplete
 or expired page reads. There is no cross-request reference cache.
 
-The chart defaults `sandboxAdmission.enabled` and `sandboxAdmission.enforce` to
-`false`. Default installations retain their existing behavior. Enabling the
+The chart defaults `sandboxAdmission.enabled`, `sandboxAdmission.enforce` and
+`sandboxAdmission.podsEnabled` to `false`. Default installations retain their
+existing runtime behavior. Enabling the
 server does not install webhook rules; `enforce` is a separate bootstrap step.
 Once enforced, even legacy Agent writes depend on webhook availability, although
 healthy admission leaves their Sandbox selection unchanged.
@@ -192,12 +195,12 @@ rejected without a qualified registration. The tests inject synthetic
 registrations; enabling this process does not make those production evidence
 or release the controller hold.
 
-This is configuration admission, not complete governed-Pod admission. It does
-not yet validate final Pod/extra-container contents, serialize concurrent
-shared-configuration changes, coordinate rollout barriers, or permit governed
-execution. Reference reads are checks against current objects, not an atomic
-cross-resource transaction. Those boundaries must be completed before
-production adoption.
+Protected rendering, final-Pod checks and policy compilation are available as
+separate held preparation paths, described below. They do not serialize
+concurrent shared-configuration changes, coordinate rollout/start barriers,
+produce enforcement observations, or permit governed execution. Reference reads
+are checks against current objects, not an atomic cross-resource transaction.
+Those boundaries must be completed before production adoption.
 
 #### Trusted Team assignments and explicit reauthorization
 
@@ -229,7 +232,28 @@ necessarily generation; consumers must not rely only on generation changes.
 `sandboxbinding.Read` reads the persisted authorization through an uncached
 reader; the shared resolver must then compare it with fresh references.
 
-#### Policy controls and status
+#### Protected preparation, controls and status
+
+The preparation chain is `sandboxbinding.Read` -> `sandbox.Resolve` ->
+`sandboxpolicy.Compile` -> `sandboxworkload.ControlsFromPlan`/`Build` ->
+`helm.PrepareSandboxChart`. The existing chart/renderer prepares OpenClaw and
+Hermes; it does not introduce another runtime renderer. Generic user values are
+validated before merging, and the protected bundle is applied last. The
+`sandboxWorkload` chart values are compiler-owned outputs, not a user activation
+switch. Governed Custom rendering is explicitly unsupported by this slice.
+
+Prepared manifests protect resource accounting (including init/helper containers
+and RuntimeClass overhead), runtime/security settings, owned HOME, read-only
+skills, scratch mounts and identity projections. Existing HOME and skills claims
+must match their trusted bindings. An incompatible storage or StatefulSet
+transition fails explicitly; no live writer-exclusion or data-adoption guarantee
+is inferred from rendering. Prepared Sandbox releases remain at zero replicas,
+and the Helm install/upgrade path refuses to apply them.
+
+Protected Pods use `DNSPolicy=None` with exactly the compiler's one to three
+distinct resolver IPs. No fallback resolvers, search suffixes or DNS options are
+added. User overrides and final-Pod DNS changes reject rather than silently
+changing the trusted network binding.
 
 The candidate Azure CNI Overlay/Cilium compiler emits explicit network controls
 and per-Agent identity resources from trusted topology and grant inventories.
@@ -255,6 +279,43 @@ these conditions remain `Unknown`, not ready. Indexed configuration watches
 requeue referencing Agents, including pending bindings. Per-Agent status helpers
 require matching current binding/revision/Pod/node/epoch and fresh guest-external
 observation, preserve applied history on failure, and do not release the hold.
+
+#### Optional final-Pod admission
+
+With `sandboxAdmission.podsEnabled=true`, the server registers
+`/validate-sandbox-pods` and reads expectation ConfigMaps in the operator
+namespace. Deploy this server setting before enabling enforcement. Once
+`enforce=true`, the chart also installs final-Pod matching and native namespace
+protection. Configuration admission must remain enforced for the UID records
+used by Pod admission to be authoritative.
+
+Only the exact configured controller may initialize a protected namespace with
+`cetirun.microsoft.com/sandbox-protected: "true"`, the matching `agent-name` and
+`agent-uid` annotations under `cetirun.microsoft.com/`, and one canonical Agent
+owner reference. The marker, identity and ownership become immutable, including
+for that controller and namespace status/finalize updates. The operator/state
+namespace cannot receive the marker. Native validation does not depend on the
+webhook being available.
+
+Matching uses marker presence, not mutable Pod labels. Each request rechecks the
+live namespace/Agent ownership, durable authorization, exact controller-owned
+expectation, source UIDs/resource versions, StatefulSet revision/template, storage
+and RuntimeClass. Missing/stale state, suspension or either execution hold denies
+the request. All container, init-container, ephemeral-container and resize paths
+are checked. Pod DELETE and `/status` remain outside the webhook; unmarked
+platform/repair namespaces remain outside its matching.
+
+Controller state must be writable only by the trusted controller. The chart
+grants admission ConfigMap reads only in that state namespace. Required workload
+Secret/ConfigMap metadata reads need separately scoped, name-restricted RBAC in
+the protected workload namespaces; the chart deliberately does not grant blanket
+cluster-wide access. Missing source permissions fail closed. No deployment is
+qualified by these packaging defaults.
+
+The separate platform Copilot helper template/ownership contract is not defined
+yet; there is no label-, namespace- or ServiceAccount-only helper exemption.
+Protected preparation and expectation creation remain held until the separate
+lifecycle/start-barrier and enforcement-observation integration is qualified.
 
 #### Schema and binary upgrades
 

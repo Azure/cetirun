@@ -7,12 +7,16 @@ Licensed under the MIT License.
   image: "{{ include "cetirun.desktopImage" . }}"
   imagePullPolicy: {{ .Values.desktop.image.pullPolicy }}
   securityContext:
+    {{- if .Values.sandboxWorkload }}
+    {{- toYaml .Values.sandboxWorkload.securityContext | nindent 4 }}
+    {{- else }}
     runAsUser: 1024
     runAsNonRoot: true
     readOnlyRootFilesystem: false
     allowPrivilegeEscalation: false
     seccompProfile:
       type: RuntimeDefault
+    {{- end }}
   ports:
     - name: novnc
       containerPort: 6080
@@ -38,7 +42,7 @@ Licensed under the MIT License.
   volumeMounts:
     - name: data
       mountPath: /home/vibe
-    - name: tmp-desktop
+    - name: {{ if .Values.sandboxWorkload }}tmp{{ else }}tmp-desktop{{ end }}
       mountPath: /tmp
 {{- end }}
 
@@ -58,6 +62,9 @@ annotations:
   {{- end }}
 labels:
   {{- include "cetirun.selectorLabels" . | nindent 2 }}
+  {{- with .Values.sandboxWorkload }}
+  {{- toYaml .podLabels | nindent 2 }}
+  {{- end }}
   {{- if and (not $bindings) .Values.azureWorkloadIdentity.enabled }}
   azure.workload.identity/use: "true"
   {{- end }}
@@ -65,6 +72,15 @@ labels:
 
 {{- define "cetirun.platform.podSettings" -}}
 {{- $bindings := (.Values.runtime | default dict).bindings -}}
+{{- if .Values.sandboxWorkload }}
+resources:
+  {{- toYaml .Values.sandboxWorkload.podResources | nindent 2 }}
+enableServiceLinks: false
+shareProcessNamespace: false
+dnsPolicy: None
+dnsConfig:
+  {{- toYaml .Values.sandboxWorkload.dnsConfig | nindent 2 }}
+{{- end }}
 {{- with .Values.runtimeClassName }}
 runtimeClassName: {{ . | quote }}
 {{- end }}
@@ -92,8 +108,13 @@ securityContext:
 
 {{- define "cetirun.platform.temporaryVolumes" -}}
 - name: tmp
+  {{- if .Values.sandboxWorkload }}
+  emptyDir:
+    sizeLimit: {{ .Values.sandboxWorkload.scratchSizeLimit | quote }}
+  {{- else }}
   emptyDir: {}
-{{- if .Values.desktop.enabled }}
+  {{- end }}
+{{- if and .Values.desktop.enabled (not .Values.sandboxWorkload) }}
 - name: tmp-desktop
   emptyDir: {}
 {{- end }}
