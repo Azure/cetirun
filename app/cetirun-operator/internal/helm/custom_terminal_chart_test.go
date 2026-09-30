@@ -6,6 +6,7 @@ package helm
 import (
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -126,6 +127,62 @@ func TestCustomTerminalChangesDoNotRestartAgent(t *testing.T) {
 	}
 	if enabled.WorkloadHash != customPort.WorkloadHash {
 		t.Fatal("terminal port changed Agent workload")
+	}
+	name := "StatefulSet/" + text(input["fullnameOverride"])
+	template := func(p *PreparedRelease) any {
+		return object(manifestObjects(t, p)[name]["spec"])["template"]
+	}
+	if !reflect.DeepEqual(template(disabled), template(enabled)) || !reflect.DeepEqual(template(enabled), template(customPort)) {
+		t.Fatal("terminal configuration changed the Agent Pod template")
+	}
+}
+
+func TestCustomChartVersionDoesNotChangePodTemplate(t *testing.T) {
+	chrt := testChart(t)
+	before, err := PrepareChart(chrt, terminalInput(8080))
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := "StatefulSet/" + text(before.Values["fullnameOverride"])
+	oldTemplate := object(manifestObjects(t, before)[name]["spec"])["template"]
+	chrt.Metadata.Version = "0.1.99"
+	after, err := PrepareChart(chrt, terminalInput(8080))
+	if err != nil {
+		t.Fatal(err)
+	}
+	newTemplate := object(manifestObjects(t, after)[name]["spec"])["template"]
+	if before.WorkloadHash != after.WorkloadHash || !reflect.DeepEqual(oldTemplate, newTemplate) {
+		t.Fatal("Chart version alone changed the Custom Pod template")
+	}
+}
+
+func TestCustomConfigChecksumTracksInitializerChanges(t *testing.T) {
+	for _, path := range []string{"configs/init-home-common.sh", "agents/custom/bootstrap/init-home.sh"} {
+		t.Run(path, func(t *testing.T) {
+			chrt := testChart(t)
+			before, err := PrepareChart(chrt, terminalInput(8080))
+			if err != nil {
+				t.Fatal(err)
+			}
+			name := "StatefulSet/" + text(before.Values["fullnameOverride"])
+			checksum := func(p *PreparedRelease) any {
+				template := object(object(manifestObjects(t, p)[name]["spec"])["template"])
+				return object(object(template["metadata"])["annotations"])["checksum/config"]
+			}
+			oldChecksum := checksum(before)
+			for _, file := range chrt.Files {
+				if file.Name == path {
+					file.Data = append(file.Data, []byte("\n# Changed initializer\n")...)
+				}
+			}
+			after, err := PrepareChart(chrt, terminalInput(8080))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if before.WorkloadHash == after.WorkloadHash || oldChecksum == checksum(after) {
+				t.Fatal("initializer change did not update both workload and config hashes")
+			}
+		})
 	}
 }
 
