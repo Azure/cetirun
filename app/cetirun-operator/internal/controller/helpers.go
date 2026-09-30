@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"sort"
 	"strings"
 	"time"
@@ -49,9 +50,8 @@ const (
 	// msteamsWebhookPort is the default port the MS Teams webhook listener runs on.
 	msteamsWebhookPort = 3978
 
-	// defaultStorageClass is the CetiRun cluster standard StorageClass for instance home volumes.
-	// Applied by deploy/storageclass.yaml. Override via spec.helm.values.persistence.storageClass.
-	defaultStorageClass = "azureblob-nfs-premium"
+	// Override via spec.helm.values.persistence.storageClass.
+	defaultStorageClass = "default"
 )
 
 // instanceNamespace returns the Kubernetes namespace for a given alias.
@@ -74,7 +74,11 @@ func helmReleaseName(alias string) string {
 // TODO: will become "cetirun-<alias>" after helmReleaseName migration (since
 // "cetirun-<alias>" contains "cetirun", fullname collapses to release name).
 func instanceServiceName(alias string) string {
-	return fmt.Sprintf("openclaw-%s-cetirun", alias)
+	name := fmt.Sprintf("openclaw-%s-cetirun", alias)
+	if len(name) > 63 {
+		name = name[:63]
+	}
+	return strings.TrimRight(name, "-")
 }
 
 // accessURL returns the HTTPS URL for the given instance alias.
@@ -181,7 +185,20 @@ func generateRandomToken(byteLen int) (string, error) {
 // default.
 // Merge order (later wins): controller defaults → cetirunHelmValues → team
 // context/skills → per-instance spec.helm.values → controller-enforced model.
+type AgentIdentityHelmConfig struct {
+	Enabled   bool
+	BrokerURL string
+}
+
 func buildHelmValues(instance *cetirunv1alpha1.Agent, team *cetirunv1alpha1.Team, domainSuffix string, skillsStorageAccount string, cetirunHelmValues map[string]interface{}, chartRegistry string, defaultModels ...string) (map[string]interface{}, error) {
+	return buildHelmValuesCore(instance, team, domainSuffix, skillsStorageAccount, cetirunHelmValues, chartRegistry, AgentIdentityHelmConfig{}, defaultModels...)
+}
+
+func buildHelmValuesWithAgentIdentity(instance *cetirunv1alpha1.Agent, team *cetirunv1alpha1.Team, domainSuffix string, skillsStorageAccount string, cetirunHelmValues map[string]interface{}, chartRegistry, defaultModel string, agentIdentityConfig AgentIdentityHelmConfig) (map[string]interface{}, error) {
+	return buildHelmValuesCore(instance, team, domainSuffix, skillsStorageAccount, cetirunHelmValues, chartRegistry, agentIdentityConfig, defaultModel)
+}
+
+func buildHelmValuesCore(instance *cetirunv1alpha1.Agent, team *cetirunv1alpha1.Team, domainSuffix string, skillsStorageAccount string, cetirunHelmValues map[string]interface{}, chartRegistry string, agentIdentityConfig AgentIdentityHelmConfig, defaultModels ...string) (map[string]interface{}, error) {
 	if instance.Spec.Agent.Type == cetirunv1alpha1.AgentTypeCustom {
 		return nil, fmt.Errorf("Custom requires its own platform binding and runtime plan")
 	}
@@ -227,12 +244,10 @@ func buildHelmValues(instance *cetirunv1alpha1.Agent, team *cetirunv1alpha1.Team
 			map[string]interface{}{"name": "CETIRUN_USER_TEAM", "value": userTeam},
 		},
 		// Persistent home volume.
-		// storageClass defaults to azureblob-nfs-premium (the CetiRun cluster standard).
-		// Override via spec.helm.values.persistence.storageClass if needed.
 		"persistence": map[string]interface{}{
 			"storageClass": defaultStorageClass,
-			"accessMode":   "ReadWriteMany",
-			"size":         "20Gi",
+			"accessMode":   "ReadWriteOnce",
+			"size":         "100Gi",
 		},
 	}
 	for key, value := range platformRuntimeDefaults(instance.Name) {
@@ -280,7 +295,8 @@ func buildHelmValues(instance *cetirunv1alpha1.Agent, team *cetirunv1alpha1.Team
 	}
 
 	// When Tailscale is enabled, turn on tailscale serve by default so that the
-	// gateway is accessible via HTTPS on the tailnet (device identity is automatic).
+	// gateway is accessible via HTTPS on the tailnet. Gateway token and device
+	// authentication still apply.
 	if spec.Tailscale != nil {
 		values["tailscale"] = map[string]interface{}{
 			"serve": true,
@@ -408,7 +424,51 @@ func buildHelmValues(instance *cetirunv1alpha1.Agent, team *cetirunv1alpha1.Team
 	}
 
 	values["agentRequest"] = runtimeRequest(instance, chartRegistry)
+
+	// Agent Identity values are controller-owned and applied after arbitrary
+	// per-instance Helm overrides. The workload cannot select a Broker endpoint,
+	// service account, Kubernetes role, or default token mount.
+	values["agentIdentity"] = map[string]interface{}{"enabled": false, "brokerURL": ""}
+	if agentIdentityRequested(instance) && agentIdentityConfig.Enabled &&
+		instance.Status.AgentIdentity != nil &&
+		instance.Status.AgentIdentity.Phase == cetirunv1alpha1.AgentIdentityPhaseReady {
+		namespace, err := agentIdentityBrokerNamespace(agentIdentityConfig.BrokerURL)
+		if err != nil {
+			return nil, err
+		}
+		values["agentIdentity"] = map[string]interface{}{
+			"enabled":   true,
+			"brokerURL": agentIdentityConfig.BrokerURL,
+		}
+		values["serviceAccount"] = deepMerge(values["serviceAccount"], map[string]interface{}{
+			"create":         true,
+			"name":           instanceServiceName(instance.Name),
+			"role":           "",
+			"automountToken": false,
+		})
+		networkPolicy, _ := values["networkPolicy"].(map[string]interface{})
+		if networkPolicy == nil {
+			networkPolicy = map[string]interface{}{}
+		}
+		networkPolicy["agentIdentityBrokerNamespace"] = namespace
+		values["networkPolicy"] = networkPolicy
+	}
 	return values, nil
+}
+
+func agentIdentityBrokerNamespace(raw string) (string, error) {
+	endpoint, err := url.Parse(raw)
+	if err != nil || endpoint.Scheme != "http" || endpoint.Port() != "8080" ||
+		endpoint.User != nil || endpoint.Path != "" || endpoint.RawQuery != "" ||
+		endpoint.Fragment != "" {
+		return "", fmt.Errorf("Agent Identity Broker URL must be an in-cluster HTTP service URL on port 8080")
+	}
+	parts := strings.Split(endpoint.Hostname(), ".")
+	if len(parts) != 5 || parts[0] == "" || parts[1] == "" ||
+		parts[2] != "svc" || parts[3] != "cluster" || parts[4] != "local" {
+		return "", fmt.Errorf("Agent Identity Broker URL must use service.namespace.svc.cluster.local")
+	}
+	return parts[1], nil
 }
 
 func platformRuntimeDefaults(name string) map[string]any {
@@ -646,7 +706,7 @@ func buildVirtualService(instance *cetirunv1alpha1.Agent, domainSuffix, gateway 
 	// MS Teams webhook at POST /<instanceName>/api/messages.
 	//
 	// The gateway AuthorizationPolicy statically bypasses oauth2-proxy for POST
-	// */api/messages on every instance, so this exact path is reachable anonymously at
+	// /{*}/api/messages on the apex host, so this exact path is reachable anonymously at
 	// the routing layer. For instances that have a live VirtualService we narrow that
 	// bypass back to Teams-enabled instances here:
 	//   - Teams enabled  → route the webhook POST to the msteams webhook port.
@@ -662,7 +722,7 @@ func buildVirtualService(instance *cetirunv1alpha1.Agent, domainSuffix, gateway 
 	// otherwise) is the backstop in those windows.
 	//
 	// Either route is prepended so it is first-match within this per-instance
-	// VirtualService. It must never be expressed as a shared/global */api/messages rule:
+	// VirtualService. It must never be expressed as a shared/global suffix rule:
 	// cross-VirtualService route precedence on a shared host is not a safe contract and a
 	// global rule could shadow other instances.
 	webhookMatch := []*istioapiv1beta1.HTTPMatchRequest{

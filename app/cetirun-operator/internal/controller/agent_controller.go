@@ -512,7 +512,10 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		instance.Status.ObservedOperatorHash == r.configHash(instance, team, gwSecretHash, teamResourceVersion(team))
 	// Teams may have resolved its application ID and Tailscale its auth key.
 	// Rebuild from current bindings without reloading the versioned chart.
-	helmValues, err := buildHelmValues(instance, team, r.DomainSuffix, r.SkillsStorageAccount, r.CetiRunHelmValues, r.ChartRegistry, r.DefaultModel)
+	helmValues, err := buildHelmValuesWithAgentIdentity(instance, team, r.DomainSuffix, r.SkillsStorageAccount, r.CetiRunHelmValues, r.ChartRegistry, r.DefaultModel, AgentIdentityHelmConfig{
+		Enabled:   r.AgentIdentityEnabled,
+		BrokerURL: r.AgentIdentityBrokerURL,
+	})
 	if err != nil {
 		return r.rejectAgentConfig(ctx, instance, err)
 	}

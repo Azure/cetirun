@@ -182,7 +182,7 @@ func TestCustomSuccessfulApplyRecoversStatusWithoutHandoff(t *testing.T) {
 	sts := statefulSet(cr.Name, 1)
 	sts.OwnerReferences = []metav1.OwnerReference{{APIVersion: api.GroupVersion.String(), Kind: "Agent", Name: cr.Name, UID: cr.UID}}
 	sts.Annotations = map[string]string{"cetirun.microsoft.com/agent-uid": string(cr.UID),
-		"cetirun.microsoft.com/home-uid": b.Home.UID, "cetirun.microsoft.com/custom-plan-hash": h.lastValues["runtime"].(map[string]any)["workloadHash"].(string)}
+		"cetirun.microsoft.com/custom-plan-hash": h.lastValues["runtime"].(map[string]any)["workloadHash"].(string)}
 	sts.Status.CurrentRevision, sts.Status.UpdateRevision = "same-plan", "same-plan"
 	if err := c.Create(ctx, sts); err != nil {
 		t.Fatal(err)

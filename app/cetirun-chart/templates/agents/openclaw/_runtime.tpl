@@ -191,7 +191,7 @@ OpenClaw container env vars (agent-specific only)
 {{- end }}
 
 {{/*
-OpenClaw liveness/readiness probe path and port
+OpenClaw liveness probe path and port
 */}}
 {{- define "cetirun.agent.openclaw.probePathPort" -}}
 path: /healthz
@@ -199,10 +199,18 @@ port: gateway
 {{- end }}
 
 {{/*
+OpenClaw readiness probe path and port
+*/}}
+{{- define "cetirun.agent.openclaw.readinessProbePathPort" -}}
+path: /readyz
+port: gateway
+{{- end }}
+
+{{/*
 OpenClaw startup probe path and port
 */}}
 {{- define "cetirun.agent.openclaw.startupProbePathPort" -}}
-path: /health
+path: /startupz
 port: gateway
 {{- end }}
 
@@ -293,14 +301,6 @@ OpenClaw configmap data
     ---
 
     _Update this as you learn more about them._
-  {{- if .Values.openclaw.acpx.enabled }}
-  acpx-config.json: |
-    {{- $acpxAgents := dict }}
-    {{- range $name, $agent := .Values.openclaw.acpx.agents }}
-    {{- $_ := set $acpxAgents $name $agent }}
-    {{- end }}
-{{ dict "agents" $acpxAgents | toPrettyJson | indent 4 }}
-{{ end }}
   init-home.sh: |
 {{ .Files.Get "agents/openclaw/bootstrap/init-home.sh" | indent 4 }}
   init-skills.sh: |

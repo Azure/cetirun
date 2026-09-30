@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/runtimebindings"
 	"helm.sh/helm/v3/pkg/action"
 	"helm.sh/helm/v3/pkg/chart/loader"
 	"helm.sh/helm/v3/pkg/chartutil"
@@ -125,20 +126,46 @@ func TestCustomServerPreflightAndOperatorRBAC(t *testing.T) {
 
 	// Updating an existing resource must also remain a dry-run.
 	name := text(p.Values["fullnameOverride"])
-	existing := &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
-		Spec: appsv1.StatefulSetSpec{Replicas: ptr.To[int32](1), ServiceName: name,
-			UpdateStrategy: appsv1.StatefulSetUpdateStrategy{Type: appsv1.OnDeleteStatefulSetStrategyType},
-			Selector:       &metav1.LabelSelector{MatchLabels: customLabels(p.chart.Name(), p.releaseName)},
-			Template: corev1.PodTemplateSpec{ObjectMeta: metav1.ObjectMeta{Labels: customLabels(p.chart.Name(), p.releaseName)},
-				Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "existing", Image: "registry.example.com/existing:1"}}}}}}
-	if _, err := client.AppsV1().StatefulSets(namespace).Create(ctx, existing, metav1.CreateOptions{}); err != nil {
+	var existing appsv1.StatefulSet
+	if err := decodeObject(platformRender(t, p, cfg.Capabilities)["StatefulSet"], &existing); err != nil {
+		t.Fatal(err)
+	}
+	const existingImage = "registry.example.com/existing:1"
+	existing.Spec.Template.Spec.Containers[0].Image = existingImage
+	existing.Annotations["meta.helm.sh/release-name"] = p.releaseName
+	existing.Annotations["meta.helm.sh/release-namespace"] = namespace
+	created, err := client.AppsV1().StatefulSets(namespace).Create(ctx, &existing, metav1.CreateOptions{})
+	if err != nil {
 		t.Fatal(err)
 	}
 	if err := p.validateCustomAPI(ctx, config); err != nil {
 		t.Fatal(err)
 	}
+	for testName, mutate := range map[string]func(*runtimebindings.HomeClaim){
+		"HOME template size is immutable":          func(claim *runtimebindings.HomeClaim) { claim.StorageSize = "200Gi" },
+		"HOME template storage class is immutable": func(claim *runtimebindings.HomeClaim) { claim.StorageClass = "other" },
+		"HOME template access mode is immutable":   func(claim *runtimebindings.HomeClaim) { claim.AccessMode = "ReadWriteMany" },
+	} {
+		t.Run(testName, func(t *testing.T) {
+			input := customInput(8080)
+			bindings := input["customBindings"].(runtimebindings.Custom)
+			mutate(bindings.Home.Claim)
+			input["customBindings"] = bindings
+			update, err := prepareChart(testChart(t), input, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := update.prepareCustomAction(cfg, namespace, update.releaseName); err != nil {
+				t.Fatal(err)
+			}
+			if err := update.validateCustomAPI(ctx, config); err == nil || !IsConfigurationError(err) ||
+				!strings.Contains(err.Error(), "spec.volumeClaimTemplates") || update.apiValidated {
+				t.Fatalf("immutable HOME template update passed preflight or failed for another reason: %v", err)
+			}
+		})
+	}
 	unchanged, err := client.AppsV1().StatefulSets(namespace).Get(ctx, name, metav1.GetOptions{})
-	if err != nil || unchanged.Spec.Template.Spec.Containers[0].Name != "existing" {
+	if err != nil || unchanged.ResourceVersion != created.ResourceVersion || unchanged.Spec.Template.Spec.Containers[0].Image != existingImage {
 		t.Fatalf("dry-run patched live workload: %v", err)
 	}
 
@@ -172,6 +199,19 @@ func TestCustomServerPreflightAndOperatorRBAC(t *testing.T) {
 	}, metav1.CreateOptions{})
 	if err != nil {
 		t.Fatal(err)
+	}
+	// The authorizer observes new roles and bindings asynchronously. Wait for a
+	// positive grant before asserting either allowed or forbidden operations.
+	grantCtx, cancelGrant := context.WithTimeout(ctx, 5*time.Second)
+	defer cancelGrant()
+	grant, err := waitForRBACGrant(grantCtx, 50*time.Millisecond, func(ctx context.Context) (*authorizationv1.SubjectAccessReview, error) {
+		return client.AuthorizationV1().SubjectAccessReviews().Create(ctx, &authorizationv1.SubjectAccessReview{Spec: authorizationv1.SubjectAccessReviewSpec{
+			User:               "system:serviceaccount:cetirun-system:operator-test",
+			ResourceAttributes: &authorizationv1.ResourceAttributes{Namespace: namespace, Resource: "pods", Verb: "list"},
+		}}, metav1.CreateOptions{})
+	})
+	if err != nil {
+		t.Fatalf("RBAC grant did not become ready: %v; last review: %+v", err, grant)
 	}
 	for _, check := range []struct {
 		group, resource, verb string

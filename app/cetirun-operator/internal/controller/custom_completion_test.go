@@ -204,7 +204,6 @@ func (s *completionScenario) observeApplied() {
 	sts := statefulSet(s.agent.Name, 1)
 	sts.OwnerReferences = []metav1.OwnerReference{{APIVersion: api.GroupVersion.String(), Kind: "Agent", Name: s.agent.Name, UID: s.agent.UID}}
 	sts.Annotations = map[string]string{"cetirun.microsoft.com/agent-uid": string(s.agent.UID),
-		"cetirun.microsoft.com/home-uid":         s.provider.bindings.Home.UID,
 		"cetirun.microsoft.com/custom-plan-hash": s.helm.lastValues["runtime"].(map[string]any)["workloadHash"].(string)}
 	sts.Status.CurrentRevision, sts.Status.UpdateRevision = "applied", "applied"
 	if err := s.client.Create(context.Background(), sts); err != nil {

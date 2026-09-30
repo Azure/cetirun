@@ -20,3 +20,17 @@ Lua-safe domain pattern (dots escaped as %.).
 {{- define "cetirun-istio.luaDomainPattern" -}}
 {{- .Values.domain | replace "." "%." }}
 {{- end }}
+
+{{/* Keep anonymous Teams webhook bypasses on exact route shapes only. */}}
+{{- define "cetirun-istio.validateWebhookBypasses" -}}
+{{- range .Values.authPolicy.webhookBypassPaths -}}
+{{- if ne . "/{*}/api/messages" -}}
+{{- fail "authPolicy.webhookBypassPaths supports only /{*}/api/messages" -}}
+{{- end -}}
+{{- end -}}
+{{- range .Values.authPolicy.legacySubdomainWebhookBypassPaths -}}
+{{- if ne . "/api/messages" -}}
+{{- fail "authPolicy.legacySubdomainWebhookBypassPaths supports only /api/messages" -}}
+{{- end -}}
+{{- end -}}
+{{- end }}

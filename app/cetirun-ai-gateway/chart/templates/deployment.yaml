@@ -1,0 +1,113 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "cetirun-ai-gateway.fullname" . }}
+  labels:
+    {{- include "cetirun-ai-gateway.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "cetirun-ai-gateway.gatewaySelectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        {{- /* Roll the pods when the generated configuration changes. */}}
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- if and .Values.providerCredentials.inline (not .Values.providerCredentials.existingSecret) }}
+        {{- /* Credentials reach the proxy as environment variables, read once at
+        startup. Without this, changing an inline value updated the Secret while
+        every pod went on sending the old key. */}}
+        checksum/providers: {{ include (print $.Template.BasePath "/secret-providers.yaml") . | sha256sum }}
+        {{- end }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "cetirun-ai-gateway.gatewaySelectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "cetirun-ai-gateway.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- /* LiteLLM finishes requests in flight on SIGTERM and sets no limit of
+      its own, so this decides whether a long response survives a rollout. */}}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      {{- if .Values.migrations.enabled }}
+      {{- /* Migrations run before the proxy starts, in every pod. prisma holds a
+      PostgreSQL advisory lock while it migrates, so pods starting together wait
+      for each other and the later ones find nothing left to apply. Unlike a
+      pre-install hook, an init container can wait for a database that is still
+      starting: the bundled PostgreSQL does not yet exist when such a hook runs.
+      It gets the database connection and nothing else. */}}
+      initContainers:
+        - name: migrate
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: {{ include "cetirun-ai-gateway.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - migrate
+          env:
+            {{- include "cetirun-ai-gateway.databaseEnv" . | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      {{- end }}
+      containers:
+        - name: gateway
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: {{ include "cetirun-ai-gateway.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- /* --config has no documented default; it is always passed. */}}
+          args:
+            - --config
+            - /etc/litellm/config.yaml
+            - --port
+            - {{ .Values.service.port | quote }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.port }}
+              protocol: TCP
+          env:
+            {{- include "cetirun-ai-gateway.proxyEnv" . | nindent 12 }}
+          {{- if or .Values.providerCredentials.existingSecret .Values.providerCredentials.inline }}
+          envFrom:
+            - secretRef:
+                name: {{ include "cetirun-ai-gateway.providerSecretName" . }}
+          {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /health/liveliness
+              port: http
+            {{- toYaml .Values.livenessProbe | nindent 12 }}
+          readinessProbe:
+            httpGet:
+              path: /health/readiness
+              port: http
+            {{- toYaml .Values.readinessProbe | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/litellm
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "cetirun-ai-gateway.configMapName" . }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

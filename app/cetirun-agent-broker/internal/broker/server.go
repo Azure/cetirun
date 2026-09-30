@@ -583,10 +583,30 @@ func (s *Server) issueCredential(w http.ResponseWriter, r *http.Request) {
 		}
 		record.LastRenewed = &now
 		if err := s.store.putRecord(r.Context(), record, version); err != nil {
-			writeAPIError(w, http.StatusConflict, "conflict", "Authorization state changed; retry", correlationID)
-			return
+			if !errors.Is(err, errConflict) {
+				writeAPIError(w, http.StatusConflict, "conflict", "Authorization state changed; retry", correlationID)
+				return
+			}
+			latest, _, reloadErr := s.store.getRecord(r.Context(), agent.UID)
+			if errors.Is(reloadErr, errNotFound) ||
+				(reloadErr == nil && (latest.Revoked || latest.Generation != generation)) {
+				writeAPIError(w, http.StatusUnauthorized, "authorization_required", "The connection was ended", correlationID)
+				return
+			}
+			if reloadErr != nil || !recordMatchesAgent(latest, agent) ||
+				latest.Tokens == nil || latest.Tokens.AccessToken == "" ||
+				latest.Tokens.RefreshToken == "" || time.Until(latest.Tokens.ExpiresAt) < 2*time.Minute {
+				writeAPIError(w, http.StatusConflict, "conflict", "Authorization state changed; retry", correlationID)
+				return
+			}
+			// A parallel request already refreshed this live authorization
+			// generation. Adopt its cache rather than rejecting normal
+			// concurrent tool calls. Revocation and generation changes were
+			// rejected above before any downstream credential is requested.
+			record = latest
 		}
 	}
+
 	if err := s.authSDK.validate(r.Context(), record.Tokens.AccessToken, record.OwnerTenantID, s.cfg.BlueprintClientID, s.cfg.AuthorizationClientID, record.OwnerObjectID); err != nil {
 		writeAPIError(w, http.StatusUnauthorized, "interaction_required", "Reconnect Microsoft Entra in the CetiRun Portal", correlationID)
 		return
@@ -609,20 +629,25 @@ func (s *Server) issueCredential(w http.ResponseWriter, r *http.Request) {
 	now := time.Now().UTC()
 	current.LastUsed = &now
 	if err := s.store.putRecord(r.Context(), current, currentVersion); err != nil {
-		if errors.Is(err, errConflict) {
-			latest, _, reloadErr := s.store.getRecord(r.Context(), agent.UID)
-			if errors.Is(reloadErr, errNotFound) || (reloadErr == nil && (latest.Revoked || latest.Generation != generation)) {
-				writeAPIError(w, http.StatusUnauthorized, "authorization_required", "The connection was ended", correlationID)
-				return
-			}
-			if reloadErr == nil {
-				writeAPIError(w, http.StatusConflict, "conflict", "Authorization state changed; retry", correlationID)
-				return
-			}
+		if !errors.Is(err, errConflict) {
+			writeAPIError(w, http.StatusServiceUnavailable, "dependency_unavailable", "Authorization state could not be updated", correlationID)
+			return
 		}
-		writeAPIError(w, http.StatusServiceUnavailable, "dependency_unavailable", "Authorization state could not be updated", correlationID)
-		return
+		latest, _, reloadErr := s.store.getRecord(r.Context(), agent.UID)
+		if errors.Is(reloadErr, errNotFound) || (reloadErr == nil && (latest.Revoked || latest.Generation != generation)) {
+			writeAPIError(w, http.StatusUnauthorized, "authorization_required", "The connection was ended", correlationID)
+			return
+		}
+		if reloadErr != nil || !recordMatchesAgent(latest, agent) {
+			writeAPIError(w, http.StatusServiceUnavailable, "dependency_unavailable", "Authorization state could not be updated", correlationID)
+			return
+		}
+		// Another request updated the same live authorization generation.
+		// Its successful CAS is a sufficient final revocation barrier; the
+		// LastUsed timestamp is audit metadata and need not make otherwise
+		// valid parallel credential issuance fail.
 	}
+
 	// This response deliberately crosses the Broker/workload boundary. The
 	// supported CLI must keep the token in process memory and must never print,
 	// persist, or place it in model context. Disconnect prevents future issuance

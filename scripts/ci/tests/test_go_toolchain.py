@@ -75,11 +75,55 @@ class GoToolchainTests(unittest.TestCase):
         self.assertTrue(
             {
                 "app/cetirun-chart/Dockerfile.base",
+                "app/cetirun-agent-broker/Dockerfile",
                 "app/cetirun-operator/Dockerfile",
                 "app/cetirun-portal/Dockerfile",
             }.issubset(builders)
         )
         self.assertEqual(len(digests), 1)
+
+    def dependabot_directories(self, ecosystem):
+        text = (ROOT / ".github/dependabot.yml").read_text()
+        block = re.search(
+            rf'(?ms)^  - package-ecosystem: "{ecosystem}"\n(.*?)(?=^  - package-ecosystem:|\Z)',
+            text,
+        )
+        self.assertIsNotNone(block, f"Missing Dependabot ecosystem: {ecosystem}")
+        directories = re.search(r"(?ms)^    directories:\n(.*?)(?=^    \S)", block[1])
+        self.assertIsNotNone(directories)
+        return set(re.findall(r'^      - "([^"\n]+)"$', directories[1], re.MULTILINE)), block[1]
+
+    def test_dependabot_covers_and_can_parse_every_go_builder(self):
+        directories, block = self.dependabot_directories("docker")
+        self.assertIn('group-by: "dependency-name"', block)
+        for path in sorted(self.paths):
+            if path.name != "Dockerfile" and not path.name.startswith("Dockerfile."):
+                continue
+            text = path.read_text()
+            images = GO_IMAGE.findall(text)
+            if not images:
+                continue
+            with self.subTest(path=path.relative_to(ROOT)):
+                self.assertIn("/" + path.parent.relative_to(ROOT).as_posix(), directories)
+                visible_images = GO_IMAGE.findall("\n".join(
+                    line for line in text.splitlines() if line.startswith("FROM ")
+                ))
+                self.assertEqual(images, visible_images, "Dependabot cannot update images hidden in ARGs")
+
+    def test_dependabot_covers_all_application_go_modules(self):
+        directories, block = self.dependabot_directories("gomod")
+        self.assertIn('dependency-type: "all"', block)
+        for path in sorted(self.paths):
+            if path.name == "go.mod" and path.relative_to(ROOT).parts[0] == "app":
+                with self.subTest(path=path.relative_to(ROOT)):
+                    self.assertIn("/" + path.parent.relative_to(ROOT).as_posix(), directories)
+
+    def test_runtime_go_override_defaults_to_the_discoverable_stage(self):
+        text = (ROOT / "app/cetirun-chart/Dockerfile.base").read_text()
+        self.assertEqual(re.findall(r"(?m)^ARG GO_BUILD_IMAGE=(\S+)$", text), ["go-toolchain"])
+        self.assertRegex(text, r"(?m)^FROM \S+golang:\S+ AS go-toolchain$")
+        stages = re.findall(r"(?m)^FROM \$\{GO_BUILD_IMAGE\} AS (\S+)$", text)
+        self.assertEqual(stages, ["tailscale-build", "gh-build", "kubectl-build"])
 
 
 if __name__ == "__main__":

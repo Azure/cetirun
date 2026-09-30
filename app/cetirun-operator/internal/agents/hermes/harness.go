@@ -10,7 +10,7 @@ type Harness struct{}
 func (Harness) Describe() agents.Descriptor {
 	return agents.Descriptor{
 		Type: "hermes", ConfigFile: "hermes-config.yaml", PortName: "api",
-		DefaultPort: 8642, DashboardPort: 9119, HealthPath: "/health", StartupPath: "/health",
+		DefaultPort: 8642, DashboardPort: 9119, HealthPath: "/health", ReadinessPath: "/health", StartupPath: "/health",
 		NativeSecretKey: "API_SERVER_KEY", EnvironmentFile: "hermes.env",
 	}
 }

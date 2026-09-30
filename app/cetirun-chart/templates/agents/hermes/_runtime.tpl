@@ -125,8 +125,22 @@ Hermes container env vars (agent-specific only)
   value: "/home/vibe/.hermes"
 - name: HERMES_DASHBOARD_ENABLED
   value: "true"
+- name: HERMES_DASHBOARD_HOST
+  value: "0.0.0.0"
 - name: HERMES_DASHBOARD_PORT
   value: "9119"
+- name: HERMES_DASHBOARD_BASIC_AUTH_USERNAME
+  value: "cetirun"
+- name: HERMES_DASHBOARD_BASIC_AUTH_PASSWORD
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "cetirun.secretName" . }}
+      key: API_SERVER_KEY
+- name: HERMES_DASHBOARD_BASIC_AUTH_SECRET
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "cetirun.secretName" . }}
+      key: CETIRUN_AUTH_KEY
 - name: API_SERVER_ENABLED
   value: {{ .Values.hermes.env.API_SERVER_ENABLED | quote }}
 - name: API_SERVER_HOST
@@ -148,9 +162,17 @@ Hermes container env vars (agent-specific only)
 {{- end }}
 
 {{/*
-Hermes liveness/readiness probe path and port
+Hermes liveness probe path and port
 */}}
 {{- define "cetirun.agent.hermes.probePathPort" -}}
+path: /health
+port: api
+{{- end }}
+
+{{/*
+Hermes readiness probe path and port
+*/}}
+{{- define "cetirun.agent.hermes.readinessProbePathPort" -}}
 path: /health
 port: api
 {{- end }}

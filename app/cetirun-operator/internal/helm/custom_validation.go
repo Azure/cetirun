@@ -317,8 +317,19 @@ func (p *PreparedRelease) validateCustomObject(obj map[string]any, kind, name st
 			return fail()
 		}
 	case "StatefulSet":
-		if obj["apiVersion"] != "apps/v1" || !onlyKeys(object(obj["spec"]), "replicas", "serviceName", "selector", "template", "updateStrategy") {
+		if obj["apiVersion"] != "apps/v1" || !onlyKeys(object(obj["spec"]), "replicas", "serviceName", "selector", "template", "updateStrategy", "volumeClaimTemplates", "persistentVolumeClaimRetentionPolicy") {
 			return fail()
+		}
+		claims := []corev1.PersistentVolumeClaim{{ObjectMeta: metav1.ObjectMeta{
+			Name: "data", Labels: customLabels(p.chart.Name(), p.releaseName),
+			Annotations: map[string]string{"cetirun.microsoft.com/agent-uid": b.AgentUID},
+		}, Spec: b.Home.Claim.PVCSpec()}}
+		var retention *appsv1.StatefulSetPersistentVolumeClaimRetentionPolicy
+		if p.homeRetention {
+			retention = &appsv1.StatefulSetPersistentVolumeClaimRetentionPolicy{
+				WhenDeleted: appsv1.RetainPersistentVolumeClaimRetentionPolicyType,
+				WhenScaled:  appsv1.RetainPersistentVolumeClaimRetentionPolicyType,
+			}
 		}
 		var sts appsv1.StatefulSet
 		if decodeObject(obj, &sts) != nil || sts.Spec.Replicas == nil ||
@@ -327,11 +338,14 @@ func (p *PreparedRelease) validateCustomObject(obj map[string]any, kind, name st
 			sts.Spec.Selector == nil || !reflect.DeepEqual(sts.Spec.Selector.MatchLabels, customLabels(p.chart.Name(), p.releaseName)) {
 			return fail()
 		}
+		if !equality.Semantic.DeepEqual(sts.Spec.VolumeClaimTemplates, claims) ||
+			!reflect.DeepEqual(sts.Spec.PersistentVolumeClaimRetentionPolicy, retention) {
+			return fail()
+		}
 		if !reflect.DeepEqual(sts.OwnerReferences, []metav1.OwnerReference{{
 			APIVersion: "cetirun.microsoft.com/v1alpha1", Kind: "Agent", Name: b.AgentName, UID: types.UID(b.AgentUID),
 			Controller: ptr.To(true), BlockOwnerDeletion: ptr.To(true),
 		}}) || sts.Annotations["cetirun.microsoft.com/agent-uid"] != b.AgentUID ||
-			sts.Annotations["cetirun.microsoft.com/home-uid"] != b.Home.UID ||
 			sts.Annotations["cetirun.microsoft.com/custom-plan-hash"] != p.WorkloadHash {
 			return fail()
 		}
@@ -514,7 +528,7 @@ func (p *PreparedRelease) customContribution() (agents.Contribution, error) {
 		valid = valid && value.HTTP == nil && len(value.Ports) == 0
 	} else {
 		valid = valid && reflect.DeepEqual(value.Ports, []agents.PortBinding{{Name: "http", Number: *p.Agent.Port}}) &&
-			reflect.DeepEqual(value.HTTP, &agents.HTTPBinding{PortName: "http", HealthPath: "/healthz", StartupPath: "/healthz",
+			reflect.DeepEqual(value.HTTP, &agents.HTTPBinding{PortName: "http", HealthPath: "/healthz", ReadinessPath: "/healthz", StartupPath: "/healthz",
 				ChatPath: "/v1/chat/completions", ModelsPath: "/v1/models"})
 	}
 	if !valid {
@@ -534,7 +548,6 @@ func customVolumes(name string, b runtimebindings.Custom) []corev1.Volume {
 		items = append(items, corev1.KeyToPath{Key: key, Path: b.Context.Files[key]})
 	}
 	return []corev1.Volume{
-		{Name: "data", VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: b.Home.Name}}},
 		{Name: "context", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{
 			LocalObjectReference: corev1.LocalObjectReference{Name: b.Context.Name}, DefaultMode: ptr.To[int32](0444), Items: items,
 		}}},

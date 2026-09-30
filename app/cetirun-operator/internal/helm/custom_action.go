@@ -94,7 +94,7 @@ func (p *PreparedRelease) ownsRelease(rel *release.Release, namespace, name stri
 	return expected["agentUID"] != nil && rel.Name == name && rel.Namespace == namespace &&
 		actual["agentUID"] == expected["agentUID"] && actual["agentName"] == expected["agentName"] &&
 		object(actual["namespace"])["uid"] == object(expected["namespace"])["uid"] &&
-		object(actual["home"])["uid"] == object(expected["home"])["uid"]
+		object(actual["home"])["name"] == object(expected["home"])["name"]
 }
 
 func (p *PreparedRelease) installOrUpgradeCustom(cfg *action.Configuration, namespace, name string) error {

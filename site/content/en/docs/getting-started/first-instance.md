@@ -28,11 +28,16 @@ for the routing requirements.
    empty to let the platform generate it. For GitHub Copilot,
    leave the model at the deployment default or enter an authorized model ID.
    Live discovery requires an existing, authenticated instance.
+   Select **Microsoft Entra Agent Identity** only when the deployment has
+   enabled it and you need delegated Azure access.
 4. Select **Create Agent** and wait for provisioning. An administrator can inspect
    individual readiness conditions if the instance does not become ready.
 5. Use the portal’s access action to open the instance, then complete the
    provider login. For Copilot, use the portal’s device-login flow.
 6. [Choose a model](../../guides/models/) from the live catalog after login.
+7. If Agent Identity was enabled, use the instance overview to
+   [connect Microsoft Entra](../../guides/agent-identity/) before asking the
+   Agent to inspect Azure resources.
 
 The deployment controls which agent types are offered, whether Tailscale is
 visible, and how many instances each user may create. The portal chart defaults
@@ -112,6 +117,8 @@ the operator's default chart version alone does not upgrade existing instances.
 Open the URL in `status.accessUrl`. `Ready` reports workload readiness
 independently of ingress. `IngressReady=True` confirms VirtualService
 reconciliation; verify TLS, sign-in, and model-provider access separately.
+For Hermes, sign in to the native Dashboard with username `cetirun` and the
+Hermes API / Dashboard key shown on the instance Overview page.
 
 ## Keep your workspace
 

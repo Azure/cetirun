@@ -42,6 +42,7 @@ type PreparedRelease struct {
 	chart             *chart.Chart
 	sidecarAPIVersion string
 	pdbAPIVersion     string
+	homeRetention     bool
 	apiValidated      bool
 }
 
@@ -133,7 +134,6 @@ func prepareChart(chrt *chart.Chart, input map[string]any, validateRender bool) 
 		TeamsPort:         number(values["msteamsWebhookPort"]),
 		TeamsAuthType:     text(values["msteamsAuthType"]),
 		Tailscale:         request.TailscaleEnabled || present(secrets["tailscaleAuthKey"]),
-		RelaxGatewayAuth:  object(values["tailscale"])["relaxGatewayAuth"] == true,
 	}
 	provider := text(secrets["provider"])
 	if provider == "" {

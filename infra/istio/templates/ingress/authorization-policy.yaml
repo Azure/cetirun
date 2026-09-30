@@ -1,3 +1,4 @@
+{{- include "cetirun-istio.validateWebhookBypasses" . -}}
 apiVersion: security.istio.io/v1
 kind: AuthorizationPolicy
 metadata:
@@ -12,7 +13,7 @@ spec:
   action: CUSTOM
   provider:
     name: oauth2-proxy
-  # webhookBypassPaths (e.g. "*/api/messages") is a STATIC Bot Framework webhook
+  # webhookBypassPaths is a one-segment apex Bot Framework webhook template.
   # exception, NOT a per-instance allowlist. It exempts webhook-shaped requests from
   # oauth2-proxy because Teams webhook calls carry a Bot Framework JWT instead of an
   # oauth2 session. Per-instance enable/disable is enforced by operator-owned
@@ -35,13 +36,14 @@ spec:
               - "{{ . }}.{{ $.Values.domain }}"
             {{- end }}
             {{- end }}
-            {{- if .Values.authPolicy.webhookBypassPaths }}
+            {{- if .Values.authPolicy.legacySubdomainWebhookBypassPaths }}
             notPaths:
-            {{- range .Values.authPolicy.webhookBypassPaths }}
+            {{- range .Values.authPolicy.legacySubdomainWebhookBypassPaths }}
               - "{{ . }}"
             {{- end }}
             {{- end }}
-    # Rule 2 — apex host: normal traffic authenticates; static base + webhook suffixes bypass.
+    # Rule 2 — apex host: normal traffic authenticates; static base, webhook
+    # suffixes, and apex-only callbacks bypass.
     - to:
         - operation:
             hosts:
@@ -53,9 +55,11 @@ spec:
               {{- range .Values.authPolicy.webhookBypassPaths }}
               - "{{ . }}"
               {{- end }}
-    {{- if .Values.authPolicy.webhookBypassPaths }}
-    # Rule 3 — apex host method guard: non-POST requests to the webhook suffix are NOT
-    # bypassed (they match this rule and go through oauth2-proxy). Only POST bypasses.
+              {{- range .Values.authPolicy.apexPostBypassPaths }}
+              - "{{ . }}"
+              {{- end }}
+    {{- if or .Values.authPolicy.webhookBypassPaths .Values.authPolicy.apexPostBypassPaths }}
+    # Rule 3 — apex host method guard: only POST bypasses these paths.
     - to:
         - operation:
             hosts:
@@ -64,8 +68,13 @@ spec:
             {{- range .Values.authPolicy.webhookBypassPaths }}
               - "{{ . }}"
             {{- end }}
+            {{- range .Values.authPolicy.apexPostBypassPaths }}
+              - "{{ . }}"
+            {{- end }}
             notMethods:
               - "POST"
+    {{- end }}
+    {{- if .Values.authPolicy.legacySubdomainWebhookBypassPaths }}
     # Rule 4 — subdomain host method guard (legacy subdomain instances). Remove together
     # with the subdomain webhook bypass once all instances use the apex path model.
     - to:
@@ -79,7 +88,7 @@ spec:
             {{- end }}
             {{- end }}
             paths:
-            {{- range .Values.authPolicy.webhookBypassPaths }}
+            {{- range .Values.authPolicy.legacySubdomainWebhookBypassPaths }}
               - "{{ . }}"
             {{- end }}
             notMethods:

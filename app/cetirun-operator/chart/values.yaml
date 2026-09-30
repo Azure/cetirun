@@ -162,9 +162,9 @@ customRuntime:
   enabled: false
   agentManagedModel: false
   approvedImages: []
-  storageClass: azureblob-nfs-premium
-  storageSize: 20Gi
-  accessMode: ReadWriteMany
+  storageClass: default
+  storageSize: 100Gi
+  accessMode: ReadWriteOnce
   fsGroup: 1024
   context:
     AGENTS.md: |

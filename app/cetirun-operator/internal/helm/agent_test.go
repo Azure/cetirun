@@ -53,10 +53,14 @@ func sampleInput(typ, provider string, integrations bool) map[string]any {
 		v["msteamsWebhookPort"] = 3978
 		v["msteamsAuthType"] = "managedIdentity"
 		v["ttyd"] = map[string]any{"enabled": true}
-		v["tailscale"] = map[string]any{"relaxGatewayAuth": true}
 		secrets := v["secrets"].(map[string]any)
-		for _, key := range []string{"tailscaleAuthKey", "telegramBotToken", "slackBotToken", "slackAppToken", "discordBotToken", "feishuAppId", "feishuAppSecret", "braveApiKey", "perplexityApiKey"} {
+		for _, key := range []string{"tailscaleAuthKey", "telegramBotToken", "slackBotToken", "slackAppToken", "discordBotToken", "feishuAppId", "feishuAppSecret"} {
 			secrets[key] = "test-value"
+		}
+		if provider == "github_copilot" {
+			secrets["braveApiKey"] = "test-value"
+		} else {
+			secrets["perplexityApiKey"] = "test-value"
 		}
 	}
 	return v
@@ -231,6 +235,8 @@ func TestNativeRenderBaseline(t *testing.T) {
 				}
 				t.Run(name, func(t *testing.T) {
 					input := sampleInput(typ, provider, enabled)
+					// Pin the original StorageClass input; defaults are tested separately.
+					input["persistence"] = map[string]any{"storageClass": ""}
 					path := filepath.Join("testdata", "harness", name+".json")
 					if baselineChart != "" {
 						snapshot := renderSnapshot(t, chrt, input)
@@ -433,13 +439,84 @@ func TestNativePreferencesAndCredentialBoundary(t *testing.T) {
 	}
 }
 
+func TestOpenClawTailscaleTrustsServeLoopback(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		enabled bool
+		want    []any
+	}{
+		{name: "disabled", want: []any{"127.0.0.6"}},
+		{name: "enabled", enabled: true, want: []any{"127.0.0.6", "127.0.0.1"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			input := sampleInput("openclaw", "openai", false)
+			if test.enabled {
+				input["secrets"].(map[string]any)["tailscaleAuthKey"] = "test-value"
+			}
+			chrt := testChart(t)
+			prepared, err := PrepareChart(chrt, input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			files := object(object(prepared.Values["runtime"])["configFiles"])
+			var preparedConfig map[string]any
+			if err := yaml.Unmarshal([]byte(text(files["openclaw.json"])), &preparedConfig); err != nil {
+				t.Fatal(err)
+			}
+			standaloneConfig := object(renderSnapshot(t, chrt, input).Native["openclaw.json"])
+			for mode, config := range map[string]map[string]any{
+				"prepared":   preparedConfig,
+				"standalone": standaloneConfig,
+			} {
+				got := array(object(config["gateway"])["trustedProxies"])
+				if !reflect.DeepEqual(got, test.want) {
+					t.Errorf("%s trusted proxies: got %v, want %v", mode, got, test.want)
+				}
+			}
+		})
+	}
+}
+
+func TestOpenClawAcpxAgentOverridesUsePluginConfig(t *testing.T) {
+	input := sampleInput("openclaw", "openai", false)
+	input["openclaw"] = map[string]any{
+		"acpx": map[string]any{
+			"agents": map[string]any{
+				"codex": map[string]any{
+					"command": "custom-codex",
+					"args":    []any{"--flag", "value with spaces"},
+				},
+			},
+		},
+	}
+	prepared, err := PrepareChart(testChart(t), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime := object(prepared.Values["runtime"])
+	files := object(runtime["configFiles"])
+	var config map[string]any
+	if err := yaml.Unmarshal([]byte(text(files["openclaw.json"])), &config); err != nil {
+		t.Fatal(err)
+	}
+	plugins := object(config["plugins"])
+	entries := object(plugins["entries"])
+	acpx := object(entries["acpx"])
+	pluginConfig := object(acpx["config"])
+	agents := object(pluginConfig["agents"])
+	codex := object(agents["codex"])
+	if codex["command"] != "custom-codex" || !reflect.DeepEqual(codex["args"], []any{"--flag", "value with spaces"}) {
+		t.Fatalf("ACPX agent override was not rendered into plugin config: %#v", codex)
+	}
+}
+
 func TestMissingProfileAndQualifiedImage(t *testing.T) {
 	input := sampleInput("hermes", "openai", false)
 	chrt := testChart(t)
 	override := "registry.example.com/hermes:qualified"
 	for _, file := range chrt.Files {
 		if file.Name == "agents/hermes/profile.yaml" {
-			file.Data = []byte("contractVersion: v1\nnativeVersion: \"0.16.0\"\nport: 8642\nqualifiedImages:\n- " + override + "\n")
+			file.Data = []byte("contractVersion: v1\nnativeVersion: \"0.21.5\"\nport: 8642\nqualifiedImages:\n- " + override + "\n")
 		}
 	}
 	input["agentRequest"].(map[string]any)["image"] = override

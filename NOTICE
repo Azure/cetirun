@@ -61,7 +61,7 @@ import revision. Preserve the upstream notice:
 
 The OpenClaw runtime version selected by agents/openclaw/Dockerfile has a separate
 notice, which must accompany that runtime and its own incorporated material:
-https://github.com/openclaw/openclaw/blob/v2026.6.35/LICENSE
+https://github.com/openclaw/openclaw/blob/v2026.9.6/LICENSE
 
     Copyright (c) 2026 OpenClaw Foundation
 
@@ -91,6 +91,7 @@ The name, fullname, chart, label, selector, and service-account helpers in
 app/cetirun-chart/templates/_helpers.tpl contain adapted Helm chart scaffolding.
 Related Helm-style helpers are present in:
 
+    app/cetirun-ai-gateway/chart/templates/_helpers.tpl
     app/cetirun-operator/chart/templates/_helpers.tpl
     app/cetirun-portal/chart/templates/_helpers.tpl
     infra/istio/templates/_helpers.tpl
@@ -105,7 +106,7 @@ https://github.com/helm/helm/blob/v3.17.3/LICENSE
 Local variants use CetiRun names and application-specific additions. The exact
 scaffolding version and derivation history of every template are not recorded;
 the reference version is a comparison source, not an asserted import version.
-All four helpers are excluded from automatic Microsoft/MIT header insertion.
+All five helpers are excluded from automatic Microsoft/MIT header insertion.
 Chart YAML and NOTES.txt are not covered by the source-header checker; their
 scaffold provenance also needs preservation when packaging charts. The Apache
 License text is reproduced below.
@@ -150,11 +151,13 @@ copyright, attribution, and source-distribution obligations where applicable.
   applicable notices; a binary COPY is not evidence that those notices ship.
   Commercial/service terms for installed tools are not granted by CetiRun's MIT
   license.
-* agents/openclaw/Dockerfile adds OpenClaw, ClawHub, the OpenClaw Teams and ACP
-  extensions, and Python auth-helper dependencies.
-* agents/hermes/Dockerfile adds hermes-agent[all], Azure Identity, PyJWT and their
-  dependencies. CetiRun's Teams plugin is separate from the installed Hermes
-  distribution.
+* agents/openclaw/Dockerfile adds OpenClaw, ClawHub, the OpenClaw ACP, Brave,
+  Discord, Feishu, Microsoft Teams, Perplexity, and Slack extensions, and Python
+  auth-helper dependencies.
+* agents/hermes/Dockerfile installs the checksum-pinned Hermes Agent
+  v2026.9.24 source release, its checked-in uv/npm dependency locks, and the
+  upstream-pinned SQLite compatibility library. CetiRun's Teams plugin is added
+  separately to that source tree.
 * Dockerfile.desktop builds or installs Xorg/Xvfb, Fluxbox, LibVNCServer,
   x11vnc, supervisor, websockify, noVNC, Noto CJK fonts, Google Chrome, and
   system libraries. This is not an MIT-only software stack. In particular,
@@ -162,6 +165,11 @@ copyright, attribution, and source-distribution obligations where applicable.
   differently licensed web assets. Google Chrome is distributed under its own
   terms. Review corresponding-source and notice requirements for the actual
   desktop image, including source modifications made by the Dockerfile.
+* app/cetirun-ai-gateway/Dockerfile installs LiteLLM (MIT) and the Python
+  packages pinned in app/cetirun-ai-gateway/requirements.txt, Node.js, and
+  the Prisma CLI and engines fetched at build time. It deliberately omits
+  litellm-enterprise, which carries the BerriAI Enterprise License. The
+  bundled PostgreSQL and Valkey run their own Azure Linux images from MCR.
 * The portal binary embeds a frontend bundle built from
   app/cetirun-portal/web/package-lock.json. Its generated JavaScript notice
   accompanies that bundle and includes installed production dependencies and

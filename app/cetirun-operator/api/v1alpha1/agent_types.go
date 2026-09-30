@@ -90,7 +90,7 @@ type AgentSpec struct {
 	// Tailscale configures the Tailscale mesh VPN sidecar for this instance.
 	// When set, the operator reads the auth key from the referenced Secret
 	// and passes it to the OpenClaw Helm chart. Other Tailscale settings
-	// (hostname, serve, relaxGatewayAuth) use chart defaults and can be
+	// (hostname and serve) use chart defaults and can be
 	// overridden via spec.helm.values if needed.
 	// +optional
 	Tailscale *TailscaleSpec `json:"tailscale,omitempty"`

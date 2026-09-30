@@ -13,6 +13,10 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  NPM_REGISTRY: ${{ vars.NPM_REGISTRY || 'https://registry.npmjs.org/' }}
+  PYPI_INDEX_URL: ${{ vars.PYPI_INDEX_URL || 'https://pypi.org/simple/' }}
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -55,6 +59,8 @@ jobs:
             VERSION=${{ steps.tag.outputs.tag }}
             GIT_SHA=${{ github.sha }}
             BASE_IMAGE=${{ secrets.ACR_REGISTRY }}/cetirun-base:latest
+            NPM_REGISTRY=${{ env.NPM_REGISTRY }}
+            PYPI_INDEX_URL=${{ env.PYPI_INDEX_URL }}
           tags: |
             ${{ secrets.ACR_REGISTRY }}/hermes-gateway:${{ steps.tag.outputs.tag }}
             ${{ secrets.ACR_REGISTRY }}/hermes-gateway:latest

@@ -13,7 +13,7 @@
         "threshold": 0.5
       },
       "memory": {
-        "char_limit": 2200,
+        "memory_char_limit": 2200,
         "user_char_limit": 1375
       },
       "model": {
@@ -44,13 +44,13 @@
     }
   },
   "manifestHashes": {
-    "configmap.yaml": "fd377fd5ac4ccac76ad471840b892667adafbfa7f3df189407dac3c8a8b5317b",
+    "configmap.yaml": "79ced2ee41caa0eb5eb656ece7b436d8ddecbe3b8d50bb401d3d1a85cab2b12d",
     "deny-exec-policy.yaml": "7dd9900c6cb720cda23eae4abebcdd68e7d868d91be7df00bac133f63acb4267",
     "networkpolicy.yaml": "4cd4253a96c0b77886a4e3ce5caccb167caa735f57fbc4a56dd2a1eaa78b3559",
     "pre-upgrade-hook.yaml": "c70e9f82a181759993f2ea33f7d02cc5add4f5d90622134d0b881222fc0f63ee",
     "service.yaml": "79bd3fd5838661d245592bd87a57c56be6a7a05c7f7c63568494bc08c2d45642",
     "shared-skills-pv.yaml": "38c08b871f0dfe5237fff4c92fd6622e54c9b81edec9bcb10c79f68075035e77",
     "shared-skills-pvc.yaml": "d5af7044cd33fb9d6ddacb1d23aa2fbcc17d0ddcbfa42f9e10f2a7103ab75d7d",
-    "statefulset.yaml": "6d28a6c69b255ebf254567d3a3e0da03f5e83cf184cc315e5b2fae6df734612e"
+    "statefulset.yaml": "99044986ef18eb5e0af33352ca9d8818ca792b9ec58ef78f14586b935d5bc626"
   }
 }

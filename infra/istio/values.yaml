@@ -38,9 +38,9 @@ authPolicy:
     - oauth2
     - llmapi
 
-  # Static webhook path suffix(es) exempted from OAuth2 Proxy authentication — for POST only.
+  # Static one-segment apex webhook URI template exempted from OAuth2 Proxy — for POST only.
   # This is a STATIC Bot Framework webhook exception, NOT a per-instance allowlist: a single
-  # "*/api/messages" entry covers every instance. Per-instance enable/disable is enforced by
+  # "/{*}/api/messages" covers exactly /<instance>/api/messages. Per-instance enable/disable is enforced by
   # operator-owned VirtualService routes (a Teams route for enabled instances; an explicit deny
   # route for everyone else) — do NOT add concrete per-instance paths here.
   # Only POST requests to these suffixes bypass auth (real Teams webhook calls are POST and carry
@@ -48,7 +48,19 @@ authPolicy:
   # requests to the same suffix back through OAuth2 Proxy, so the suffix is not a generic anonymous
   # bypass. To disable the bypass entirely, set this to an empty list: webhookBypassPaths: []
   webhookBypassPaths:
-    - "*/api/messages"
+    - "/{*}/api/messages"
+
+  # Exact POST-only webhook path retained for legacy instance subdomains.
+  legacySubdomainWebhookBypassPaths:
+    - "/api/messages"
+
+  # POST-only unauthenticated callbacks that are valid on the apex Portal host
+  # and must never be exempted on legacy instance subdomains.
+  apexPostBypassPaths:
+    # Entra posts the one-time authorization code directly to the Portal. The
+    # Portal handler accepts form_post only and the Broker validates hashed
+    # state, PKCE, nonce, owner claims, expiry, and single consumption.
+    - "/api/v1/agent-authorization/callback"
 
   # Prefixes exempted from Lua alias validation but still require OAuth2 Proxy auth.
   # Use for shared services that aren't tied to a specific user alias.
@@ -80,6 +92,24 @@ oauth2Proxy:
     tag: v7.14.3
     digest: sha256:d8d9ebd17da2c46f76586c1af524b5c56ef8c9620b3a191108216982ac2634a5
   replicas: 2
+  # Entra ID does not guarantee an email claim for local tenant users. Use the
+  # tenant-facing UPN so those users can establish a Portal session. Set email
+  # only when the tenant is known to emit that claim for every allowed user.
+  emailClaim: preferred_username
+  # Cookie-only sessions cannot safely carry an Entra refresh token because
+  # the resulting request header can exceed common 8 KiB limits. They expire
+  # before the ID token instead. Configure Redis for refreshable sessions.
+  sessionStore:
+    type: cookie
+    redis:
+      connectionURL: ""
+      existingSecret: ""
+      passwordKey: redis-password
+  cookie:
+    expire: "45m"
+  redis:
+    cookieExpire: "8h"
+    cookieRefresh: "30m"
   resources:
     requests:
       cpu: 100m

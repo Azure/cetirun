@@ -1,0 +1,269 @@
+{
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "title": "CetiRun AI Gateway Helm Chart Values Schema",
+    "description": "JSON Schema for validating CetiRun AI Gateway chart values",
+    "properties": {
+        "global": {
+            "type": "object",
+            "description": "Values propagated by the cetirun-platform umbrella chart",
+            "properties": {
+                "registry": {"type": "string", "description": "Registry host override for the Gateway image", "default": ""},
+                "version": {"type": "string", "description": "Image tag override", "default": ""}
+            }
+        },
+        "replicaCount": {
+            "type": "integer",
+            "description": "Number of Gateway replicas. Above 1 requires Redis: the bundled Valkey or redis.host.",
+            "minimum": 1,
+            "default": 2
+        },
+        "image": {
+            "type": "object",
+            "description": "Gateway container image: open-source LiteLLM on Azure Linux, built from app/cetirun-ai-gateway",
+            "properties": {
+                "repository": {
+                    "type": "string",
+                    "description": "Image repository. global.registry, when set, replaces the registry host.",
+                    "default": "cetirun.azurecr.io/cetirun-ai-gateway"
+                },
+                "pullPolicy": {
+                    "type": "string",
+                    "description": "Image pull policy",
+                    "enum": ["Always", "IfNotPresent", "Never"],
+                    "default": "IfNotPresent"
+                },
+                "tag": {
+                    "type": "string",
+                    "description": "Image tag. Empty uses global.version, then the chart appVersion.",
+                    "default": ""
+                },
+                "digest": {
+                    "type": "string",
+                    "description": "Image digest. When set, the reference is pinned to exactly this image.",
+                    "default": ""
+                }
+            },
+            "required": ["repository", "pullPolicy"]
+        },
+        "imagePullSecrets": {
+            "type": "array",
+            "description": "Image pull secrets for private registries",
+            "items": {"type": "object"},
+            "default": []
+        },
+        "nameOverride": {
+            "type": "string",
+            "description": "String to override the default name",
+            "default": ""
+        },
+        "fullnameOverride": {
+            "type": "string",
+            "description": "String to override the default fullname",
+            "default": ""
+        },
+        "models": {
+            "type": "array",
+            "description": "Models exposed by this Gateway, in LiteLLM model_list format. At least one entry is required at install; presence is enforced by the chart templates so the failure carries a usable message. Names beginning with cetirun- are reserved.",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "model_name": {
+                        "type": "string",
+                        "description": "Name a client asks for",
+                        "minLength": 1
+                    },
+                    "litellm_params": {
+                        "type": "object",
+                        "description": "Parameters passed to LiteLLM, including the provider-prefixed model and a credential reference",
+                        "properties": {
+                            "model": {
+                                "type": "string",
+                                "description": "Provider-prefixed model sent upstream",
+                                "minLength": 1
+                            }
+                        },
+                        "required": ["model"]
+                    },
+                    "model_info": {
+                        "type": "object",
+                        "description": "Optional metadata, including per-token pricing"
+                    }
+                },
+                "required": ["model_name", "litellm_params"]
+            }
+        },
+        "blockUnpricedModels": {
+            "type": "boolean",
+            "description": "Refuse requests to models whose price LiteLLM does not know. A model missing from the price table costs zero, and budget checks are skipped for zero-cost models, so a budget would silently not apply. Azure OpenAI deployment names are not in that table.",
+            "default": true
+        },
+        "providerCredentials": {
+            "type": "object",
+            "description": "Provider API keys, surfaced as environment variables and referenced from models as os.environ/NAME",
+            "properties": {
+                "existingSecret": {
+                    "type": "string",
+                    "description": "Name of an administrator-owned Secret holding provider keys",
+                    "default": ""
+                },
+                "inline": {
+                    "type": "object",
+                    "description": "Inline credentials, for evaluation only",
+                    "additionalProperties": {"type": "string"},
+                    "default": {}
+                }
+            }
+        },
+        "auth": {
+            "type": "object",
+            "description": "Gateway platform credentials, distinct from provider keys and agent virtual keys",
+            "properties": {
+                "masterKey": {
+                    "type": "object",
+                    "description": "Admin API key for the LiteLLM management API",
+                    "properties": {
+                        "existingSecret": {"type": "string", "default": ""},
+                        "key": {"type": "string", "default": "master-key"}
+                    }
+                },
+                "saltKey": {
+                    "type": "object",
+                    "description": "Encrypts provider credentials stored in the database. Must never change: there is no rotation path, and losing it makes stored models unreadable.",
+                    "properties": {
+                        "existingSecret": {"type": "string", "default": ""},
+                        "key": {"type": "string", "default": "salt-key"}
+                    }
+                },
+                "adminUI": {
+                    "type": "object",
+                    "description": "LiteLLM built-in admin console",
+                    "properties": {
+                        "enabled": {"type": "boolean", "default": true},
+                        "username": {"type": "string", "default": "admin"},
+                        "passwordSecret": {
+                            "type": "object",
+                            "properties": {
+                                "existingSecret": {"type": "string", "default": ""},
+                                "key": {"type": "string", "default": "ui-password"}
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "postgresql": {
+            "type": "object",
+            "description": "PostgreSQL holds virtual keys, spend records and models added through the console. Bundled by default, or your own through urlSecret.",
+            "properties": {
+                "bundled": {
+                    "type": "object",
+                    "description": "Single-instance PostgreSQL deployed with the Gateway, on a persistent volume",
+                    "properties": {
+                        "enabled": {"type": "boolean", "default": true},
+                        "image": {"$ref": "#/definitions/dependencyImage"},
+                        "persistence": {
+                            "type": "object",
+                            "properties": {
+                                "size": {"type": "string", "default": "8Gi"},
+                                "storageClass": {"type": "string", "default": ""}
+                            }
+                        },
+                        "resources": {"type": "object", "default": {}}
+                    },
+                    "required": ["enabled"]
+                },
+                "urlSecret": {
+                    "type": "object",
+                    "description": "Secret holding the connection URL of your own PostgreSQL, used when bundled.enabled is false",
+                    "properties": {
+                        "existingSecret": {"type": "string", "default": ""},
+                        "key": {"type": "string", "default": "database-url"}
+                    },
+                    "required": ["key"]
+                }
+            },
+            "required": ["bundled", "urlSecret"]
+        },
+        "redis": {
+            "type": "object",
+            "description": "Coordinates budget and rate-limit state between replicas. Required above one replica. Bundled Valkey by default, or your own through host.",
+            "properties": {
+                "bundled": {
+                    "type": "object",
+                    "description": "Single-instance Valkey deployed with the Gateway, password protected, no persistence",
+                    "properties": {
+                        "enabled": {"type": "boolean", "default": true},
+                        "image": {"$ref": "#/definitions/dependencyImage"},
+                        "resources": {"type": "object", "default": {}}
+                    },
+                    "required": ["enabled"]
+                },
+                "host": {"type": "string", "default": ""},
+                "port": {"type": "integer", "minimum": 1, "maximum": 65535, "default": 6379},
+                "passwordSecret": {
+                    "type": "object",
+                    "description": "Secret holding the Redis password: your own server's, or the bundled Valkey's in place of a generated one. Required for the bundled Valkey when the chart is rendered with helm template.",
+                    "properties": {
+                        "existingSecret": {"type": "string", "default": ""},
+                        "key": {"type": "string", "default": "redis-password"}
+                    }
+                }
+            },
+            "required": ["bundled"]
+        },
+        "service": {
+            "type": "object",
+            "properties": {
+                "type": {
+                    "type": "string",
+                    "enum": ["ClusterIP", "NodePort", "LoadBalancer"],
+                    "default": "ClusterIP"
+                },
+                "port": {"type": "integer", "minimum": 1, "maximum": 65535, "default": 4000}
+            }
+        },
+        "serviceAccount": {
+            "type": "object",
+            "properties": {
+                "create": {"type": "boolean", "default": true},
+                "annotations": {"type": "object", "default": {}},
+                "name": {"type": "string", "default": ""}
+            }
+        },
+        "migrations": {
+            "type": "object",
+            "description": "Apply database migrations from an init container in each Gateway pod; pods take turns",
+            "properties": {
+                "enabled": {"type": "boolean", "default": true}
+            }
+        },
+        "podAnnotations": {"type": "object", "default": {}},
+        "podSecurityContext": {"type": "object"},
+        "securityContext": {"type": "object"},
+        "resources": {"type": "object", "default": {}},
+        "livenessProbe": {"type": "object"},
+        "readinessProbe": {"type": "object"},
+        "terminationGracePeriodSeconds": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 600,
+            "description": "How long a stopping replica may spend finishing requests it has already accepted"
+        },
+        "nodeSelector": {"type": "object", "default": {}},
+        "tolerations": {"type": "array", "default": []},
+        "affinity": {"type": "object", "default": {}}
+    },
+    "definitions": {
+        "dependencyImage": {
+            "type": "object",
+            "description": "Image of a bundled dependency, pinned by tag and optional digest",
+            "properties": {
+                "repository": {"type": "string", "minLength": 1},
+                "tag": {"type": "string", "minLength": 1},
+                "digest": {"type": "string", "default": ""}
+            },
+            "required": ["repository", "tag"]
+        }
+    }
+}

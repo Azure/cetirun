@@ -154,7 +154,7 @@ to the main agent; the default agent request alone is 4 CPU and 8 GiB.
 | Value | Standalone chart default |
 | --- | --- |
 | `persistence.enabled` | `true` |
-| `persistence.storageClass` | Empty; cluster default |
+| `persistence.storageClass` | `default` (Azure Disk on AKS) |
 | `persistence.accessMode` | `ReadWriteOnce` |
 | `persistence.size` | `100Gi` |
 | `persistence.existingClaim` | Empty |
@@ -162,9 +162,13 @@ to the main agent; the default agent request alone is 4 CPU and 8 GiB.
 | `persistence.retainPolicy` | `Retain` |
 | `persistence.useStatefulSetVolumeClaim` | `true` |
 
-The operator overrides the home defaults to `azureblob-nfs-premium`,
-`ReadWriteMany`, and `20Gi`. See [storage](../../operations/storage/) for shared
-skills and recovery. An existing claim must be in the runtime namespace.
+The operator and opt-in Custom provider use the same home defaults:
+`default`, `ReadWriteOnce`, and `100Gi`. An empty `persistence.storageClass`
+selects the cluster's default class instead of the class named `default`.
+See [storage](../../operations/storage/) for shared skills and recovery.
+Custom uses its approved HOME claim template rather than `persistence.*`
+overrides. For standalone and built-in agents, an existing claim must be in
+the runtime namespace.
 Disabling persistence uses `emptyDir` unless an existing claim is supplied.
 `Retain` controls StatefulSet claim retention, not namespace deletion or the
 underlying PV's reclaim policy.
@@ -197,6 +201,13 @@ does not authenticate the user to a model provider. With a standalone existing
 Secret, provide the required keys yourself. A successful render does not check
 their presence.
 
+Hermes 0.21.5 requires an authentication provider when its Dashboard binds to
+a non-loopback address. CetiRun enables Hermes' built-in password provider:
+the username is `cetirun`, `API_SERVER_KEY` is the Dashboard password, and
+`CETIRUN_AUTH_KEY` signs Dashboard sessions. The outer Istio OAuth2 Proxy still
+controls access to the instance route; the Hermes login is an additional
+application-level gate.
+
 Chart-generated auth keys use live Secret lookup for reuse on upgrade. Offline
 rendering cannot preserve live keys and must not be used to rotate them.
 [Model selection](../../guides/models/) explains provider-specific precedence;
@@ -205,13 +216,13 @@ for OpenAI/Anthropic, configure both the provider's model and credentials.
 ### Agent configuration and health
 
 `openclaw.config` supplies the native configuration. Browser support is enabled,
-`headless` is false, CDP connection timeout is 1500 ms, and logging is `info`.
+`headless` is false, the gateway attaches to the desktop CDP profile, and logging is `info`.
 The chart enables the OpenClaw doctor init step through `openclaw.doctor.enabled`.
 It runs `openclaw doctor --fix --non-interactive --yes` on the persistent home;
 this is a startup mutation, not a read-only diagnostic. The `doctor.enabled`
 alias must also be true for it to run. Hermes does not run this init container.
-`openclaw.acpx` configures the bundled agent communication plugin; review its
-permissions and allowed adapters before use.
+`openclaw.acpx` configures the installed agent communication plugin; review its
+permissions, allowed adapters, and optional command overrides before use.
 
 `hermes.config`, `hermes.env`, and `hermes.gateway` configure Hermes.
 Model/provider values are rendered into the selected agent’s native format.
@@ -222,9 +233,9 @@ Model/provider values are rendered into the selected agent’s native format.
 | Readiness | `true` | 30s | 30s | 10s | 6 |
 | Startup | `true` | 10s | 10s | 5s | 30 |
 
-OpenClaw uses `/health` for startup and `/healthz` for **both** liveness and
-readiness, on the gateway port. Hermes uses `/health` for all three probes on
-the API port. Neither verifies model entitlement or the native dashboard.
+OpenClaw uses `/startupz`, `/healthz`, and `/readyz` for startup, liveness, and
+readiness respectively, on the gateway port. Hermes uses `/health` for all three
+probes on the API port. Neither verifies model entitlement or the native dashboard.
 Sources: [OpenClaw helpers]({{< repo "app/cetirun-chart/templates/agents/openclaw/_runtime.tpl" >}}),
 [Hermes helpers]({{< repo "app/cetirun-chart/templates/agents/hermes/_runtime.tpl" >}}), and
 [StatefulSet]({{< repo "app/cetirun-chart/templates/statefulset.yaml" >}}).
@@ -248,7 +259,6 @@ Sources: [OpenClaw helpers]({{< repo "app/cetirun-chart/templates/agents/opencla
 | `skills.npmRegistry` | Environment-specific feed; explicitly select your approved reachable registry |
 | `execRestriction.enabled` | `true`; renders a cluster-scoped policy denying `pods/exec` in this namespace |
 | `tailscale.hostname`, `tailscale.serve` | `cetirun`, `false`; operator enables Serve for Tailscale instances |
-| `tailscale.relaxGatewayAuth` | `false`; keep it false with non-tailnet ingress |
 
 NetworkPolicy allows gateway ingress, DNS, Istiod, approved internal exceptions,
 and other external IPv4 traffic. Gateway ingress is selected by namespace, not

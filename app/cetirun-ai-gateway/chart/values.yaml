@@ -1,0 +1,318 @@
+# Default values for the CetiRun AI Gateway.
+# This is a YAML-formatted file.
+#
+# The Gateway is a LiteLLM proxy that gives agents a single endpoint for model
+# access. It installs on its own: nothing here depends on the CetiRun operator,
+# portal or agent chart. With the defaults it also brings its own PostgreSQL
+# and Valkey, so a working Gateway needs nothing but a model list.
+
+# -- Values the cetirun-platform umbrella chart propagates to its subcharts.
+global:
+  # -- Registry host override. When set, the image becomes
+  # <registry>/cetirun-ai-gateway, the same convention as the other CetiRun
+  # charts.
+  registry: ""
+  # -- Image tag override. Empty uses image.tag, then the chart appVersion.
+  version: ""
+
+# -- Number of Gateway replicas. More than one requires Redis; see the redis
+# section for why this is not optional. The bundled Valkey provides it.
+replicaCount: 2
+
+# -- Gateway container image: open-source LiteLLM on Azure Linux, built from
+# app/cetirun-ai-gateway. The same image serves the per-agent Copilot proxy.
+image:
+  # -- Image repository. global.registry, when set, replaces the registry host.
+  repository: cetirun.azurecr.io/cetirun-ai-gateway
+  # -- Image pull policy
+  pullPolicy: IfNotPresent
+  # -- Image tag. Empty uses global.version, then the chart appVersion, which
+  # the unified CetiRun release keeps equal to the image version.
+  tag: ""
+  # -- Image digest. When set, the reference is pinned to exactly this image.
+  digest: ""
+
+# -- Image pull secrets for private registries
+imagePullSecrets: []
+
+# -- String to override the default name
+nameOverride: ""
+
+# -- String to override the default fullname
+fullnameOverride: ""
+
+# -- Models exposed by this Gateway, in LiteLLM's own `model_list` format so
+# administrators can follow upstream provider documentation directly.
+#
+# At least one model is required. Installing with an empty list is rejected
+# rather than producing a Gateway that starts and then fails every request.
+#
+# `model_name` is what a client asks for. `litellm_params.model` is what the
+# Gateway sends to the provider, carrying a prefix that selects the handler.
+# Keep credentials out of this list: reference them as `os.environ/NAME` and
+# supply the value through providerCredentials below.
+#
+# Names beginning with `cetirun-` are reserved for models the CetiRun operator
+# registers automatically, and are rejected here.
+#
+# Example:
+#   models:
+#     - model_name: gpt-4o
+#       litellm_params:
+#         model: azure/my-gpt-4o-deployment
+#         api_base: https://example.openai.azure.com/
+#         api_key: os.environ/AZURE_PROD_KEY
+#         # Must support the Responses API: agents' tool calls are sent there.
+#         api_version: "2025-04-01-preview"
+#       model_info:
+#         # A price is required; see blockUnpricedModels below.
+#         base_model: azure/gpt-4o
+#     - model_name: claude-sonnet
+#       litellm_params:
+#         model: anthropic/claude-sonnet-4
+#         api_key: os.environ/ANTHROPIC_KEY
+models: []
+
+# -- Reject requests to models whose price LiteLLM does not know.
+#
+# On by default, and worth understanding before turning it off.
+#
+# LiteLLM computes spend from a built-in price table. A model missing from it
+# costs zero, and budget checks are skipped entirely for zero-cost models. So a
+# budget set on a virtual key silently does nothing.
+#
+# This is not an edge case: an Azure OpenAI deployment name such as
+# `my-gpt4-prod` is not in the price table, which is the ordinary way to
+# configure Azure. Measured against a real deployment, a $0.0001 budget allowed
+# every request.
+#
+# With this on, such a request is refused with a message naming the model and
+# telling the administrator to declare pricing. Failing at the first request is
+# better than never enforcing a budget that somebody thinks is in place.
+#
+# To use such a model, price it rather than turning this off. Either name the
+# model the deployment runs, so LiteLLM prices it from its own table:
+#
+#   model_info:
+#     base_model: azure/gpt-4o
+#
+# or declare the prices yourself:
+#
+#   model_info:
+#     input_cost_per_token: 0.000005
+#     output_cost_per_token: 0.000015
+blockUnpricedModels: true
+
+# -- Provider API keys, surfaced to the proxy as environment variables and
+# referenced from the model list as `os.environ/NAME`.
+providerCredentials:
+  # -- Name of a Secret you create and own. Every key in it becomes an
+  # environment variable of the same name. This is the supported path for any
+  # installation whose credentials matter.
+  existingSecret: ""
+  # -- Inline credentials, for evaluation only. Values are written into a
+  # chart-managed Secret and are visible to anyone who can read the release.
+  inline: {}
+
+# -- Gateway platform credentials. These are distinct from provider keys and
+# from the virtual keys that agents use.
+auth:
+  # -- Admin API key for LiteLLM's management API. Generated with an `sk-`
+  # prefix, like LiteLLM's other keys, and preserved across upgrades when no
+  # existing Secret is given.
+  masterKey:
+    # -- Name of a Secret holding the master key
+    existingSecret: ""
+    # -- Key within that Secret
+    key: master-key
+
+  # -- Encrypts provider credentials that LiteLLM stores in its database.
+  #
+  # THIS VALUE MUST NEVER CHANGE. There is no rotation path: when it changes,
+  # the proxy starts normally and reports healthy while every model stored in
+  # the database silently disappears. Restoring the original value recovers
+  # them, so the real risk is losing it rather than rotating it.
+  #
+  # When no existing Secret is given the chart generates one and reads it back
+  # on upgrade, so it survives. Supplying your own Secret is still recommended
+  # for anything you intend to keep.
+  saltKey:
+    # -- Name of a Secret holding the salt key
+    existingSecret: ""
+    # -- Key within that Secret
+    key: salt-key
+
+  # -- Sign-in for LiteLLM's built-in admin console.
+  adminUI:
+    # -- Enable the admin console. It is served on the same port as the API and
+    # is reached with `kubectl port-forward`; the chart creates no Ingress.
+    # Turning it off hides the console rather than removing it; see the README.
+    enabled: true
+    # -- Console username
+    username: admin
+    # -- Console password. Kept separate from the master key on purpose: when
+    # LiteLLM has no UI password it accepts the master key instead, which turns
+    # a console sign-in into full management API access.
+    passwordSecret:
+      # -- Name of a Secret holding the console password
+      existingSecret: ""
+      # -- Key within that Secret
+      key: ui-password
+
+# -- PostgreSQL holds virtual keys, spend records and models added through the
+# console. It is required: bundled, or your own.
+postgresql:
+  # -- A single-instance PostgreSQL deployed with the Gateway, on a persistent
+  # volume. Suitable for evaluation, demos and small installations; for
+  # anything that needs backups or high availability, disable it and point
+  # urlSecret at a managed database.
+  #
+  # Its password is generated, kept on uninstall and reused by the next
+  # install, like the salt key: the volume outlives the release, and a new
+  # password would lock the Gateway out of its own data.
+  bundled:
+    # -- Deploy the bundled PostgreSQL
+    enabled: true
+    # -- PostgreSQL image, from MCR, pinned by digest
+    image:
+      repository: mcr.microsoft.com/azurelinux/base/postgres
+      tag: "16"
+      digest: sha256:704bb1636af09043b9fc4ae49b33188d6429405b87d28d227953152730f4db79
+    # -- Persistent volume for the database
+    persistence:
+      # -- Volume size
+      size: 8Gi
+      # -- Storage class. Empty uses the cluster default.
+      storageClass: ""
+    # -- Resource requests and limits
+    resources: {}
+  # -- Your own PostgreSQL, when bundled.enabled is false. The connection URL,
+  # in the form postgresql://user:password@host:5432/dbname, is read from a
+  # Secret you create.
+  urlSecret:
+    # -- Name of a Secret holding the connection URL
+    existingSecret: ""
+    # -- Key within that Secret
+    key: database-url
+
+# -- Redis coordinates budget and rate-limit state between replicas.
+#
+# This is not a performance option. Each replica otherwise tracks its own copy
+# of a key's budget, so with two replicas a $100 budget permits $200 of spend.
+# Recording is unaffected - spend totals and usage reporting stay accurate
+# without it - but enforcement is not.
+#
+# Required whenever replicaCount is above 1. The chart rejects that combination
+# rather than installing something that looks healthy and overspends.
+#
+# Nothing durable lives here: the record of spend is in PostgreSQL and Redis
+# only holds in-flight coordination, so it needs no persistence or backup.
+redis:
+  # -- A single-instance Valkey, the Redis-compatible server, deployed with the
+  # Gateway. Password-protected, with no persistence, since it holds nothing
+  # durable. Disable it to use your own Redis or Valkey through host.
+  #
+  # Its password is generated unless passwordSecret below supplies one.
+  bundled:
+    # -- Deploy the bundled Valkey
+    enabled: true
+    # -- Valkey image, from MCR, pinned by digest
+    image:
+      repository: mcr.microsoft.com/azurelinux/base/valkey
+      tag: "8"
+      digest: sha256:1f9457e9e325de0301c85d0c18765777820e06290c03849545868b4d22781496
+    # -- Resource requests and limits
+    resources: {}
+  # -- Your own Redis or Valkey hostname, when bundled.enabled is false
+  host: ""
+  # -- Its port
+  port: 6379
+  # -- The Redis password, from a Secret you create. For your own server, set
+  # it if the server requires one. For the bundled Valkey it replaces the
+  # generated password: Valkey and the Gateway both read it from this Secret.
+  # Required with the bundled Valkey when the chart is rendered with
+  # helm template, as Argo CD does, since a generated password would change
+  # with every render. After changing the value, restart Valkey and the
+  # Gateway.
+  passwordSecret:
+    # -- Name of a Secret holding the Redis password
+    existingSecret: ""
+    # -- Key within that Secret
+    key: redis-password
+
+# -- Service exposing the Gateway inside the cluster
+service:
+  # -- Service type. The Gateway is an internal endpoint; exposing it is the
+  # administrator's decision, so the chart creates no Ingress.
+  type: ClusterIP
+  # -- Service port
+  port: 4000
+
+# -- Service account configuration
+serviceAccount:
+  # -- Specifies whether a service account should be created
+  create: true
+  # -- Annotations to add to the service account
+  annotations: {}
+  # -- The name of the service account to use. Generated from the fullname
+  # template when empty.
+  name: ""
+
+# -- Apply database migrations from an init container in each Gateway pod,
+# before the proxy starts. Pods take turns, so replicas never migrate at the
+# same time, and the proxies start with schema updates disabled.
+migrations:
+  # -- Enable the migrate init container
+  enabled: true
+
+# -- Annotations to add to the Gateway pods
+podAnnotations: {}
+
+# -- Pod-level security context. The image runs as its nonroot user.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+
+# -- Container-level security context
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: false
+  capabilities:
+    drop:
+      - ALL
+  seccompProfile:
+    type: RuntimeDefault
+
+# -- Resource requests and limits
+resources: {}
+
+# -- Liveness probe settings
+livenessProbe:
+  initialDelaySeconds: 30
+  periodSeconds: 20
+  timeoutSeconds: 5
+  failureThreshold: 6
+
+# -- Readiness probe settings
+readinessProbe:
+  initialDelaySeconds: 10
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 6
+
+# -- Seconds a replica being replaced or evicted may keep serving requests it
+# has already accepted. LiteLLM finishes them on SIGTERM with no limit of its
+# own, so a response still running when this expires is cut off. A replica with
+# nothing in flight exits within seconds, whatever the value.
+terminationGracePeriodSeconds: 600
+
+# -- Node selector for pod assignment
+nodeSelector: {}
+
+# -- Tolerations for pod assignment
+tolerations: []
+
+# -- Affinity rules for pod assignment
+affinity: {}

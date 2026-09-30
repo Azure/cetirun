@@ -9,7 +9,8 @@ This document describes how to manually deploy and test the `cetirun-operator` a
 | `kubectl` configured to target cluster | `kubectl get nodes` should succeed |
 | Operator image built and pushed |  |
 | Istio installed (optional) | VirtualService tests require it; skip if absent |
-| Azure Blob CSI driver enabled | Required for `azureblob-nfs-premium` StorageClass — see Step 0 |
+| Azure Disk CSI driver and `default` StorageClass | Required for default HOME volumes — see Step 0 |
+| Azure Blob CSI driver enabled (optional) | Required when enabling shared Blob skills storage |
 | Dedicated workload nodepool | Node with label `workload=openclaw` and taint `workload=openclaw:NoSchedule` — see Step 0 |
 
 ---
@@ -18,10 +19,18 @@ This document describes how to manually deploy and test the `cetirun-operator` a
 
 These steps are required once when setting up a new AKS cluster for cetirun-operator.
 
-### 0a. Enable Azure Blob CSI Driver
+### 0a. Check HOME Storage and Optional Shared Skills
 
-The `azureblob-nfs-premium` StorageClass requires the Azure Blob CSI driver, which is not
-enabled by default on AKS. Enable it via the AKS blob storage addon:
+HOME defaults to `default`, `100Gi`, and `ReadWriteOnce`. On AKS, this is an
+Azure Disk class with `WaitForFirstConsumer` binding:
+
+```bash
+kubectl get storageclass default
+kubectl get csidriver disk.csi.azure.com
+```
+
+Shared skills still use `azureblob-nfs-premium`. If shared skills are enabled
+and the Blob CSI driver is missing, enable the AKS blob storage addon:
 
 ```bash
 az aks update \
@@ -152,13 +161,13 @@ helm install cetirun-operator app/cetirun-operator/chart \
 # Disable shared skills via spec.helm.values in the instance CR (see sample-alice.yaml)
 ```
 
-> **Testing on a non-CetiRun cluster?** If `azureblob-nfs-premium` does not exist,
+> **Testing on another cluster?** If a StorageClass named `default` does not exist,
 > override the StorageClass when creating instances via `spec.helm.values`:
 > ```yaml
 > helm:
 >   values:
 >     persistence:
->       storageClass: "default"   # replace with an available StorageClass
+>       storageClass: "approved-home"   # replace with an available StorageClass
 > ```
 
 ### Verify deployment
@@ -327,8 +336,11 @@ kubectl delete namespace cetirun-system
 
 # Remove cluster prerequisites (only if decommissioning the operator entirely)
 kubectl delete crd agents.cetirun.microsoft.com
-kubectl delete storageclass azureblob-nfs-premium
 ```
+
+Do not delete the cluster-managed `default` StorageClass or shared skills
+storage as part of operator cleanup. The default Azure Disk reclaim policy
+can delete disks when their PVCs are deleted; preserve any required test data.
 
 ---
 
@@ -337,9 +349,9 @@ kubectl delete storageclass azureblob-nfs-premium
 | Symptom | Check |
 |---------|-------|
 | Pod stuck in `Provisioning` | Check operator logs for Helm install errors |
-| `HelmInstallFailed` condition | `helm status openclaw-<alias> --namespace cetirun-<alias>`; check chart path inside image |
+| `HelmInstallFailed` condition | `helm status openclaw-<alias> --namespace cetirun-<alias>`; check the configured OCI chart reference and pull access |
 | `VirtualServiceFailed` condition | Expected if Istio is not installed; safe to ignore for non-ingress testing |
-| PVC unbound / pod Pending | `kubectl describe pvc -n cetirun-<alias>`; StorageClass may not exist — run `deploy/deploy.sh --storageclass-only` or override via `spec.helm.values` |
+| PVC unbound / pod Pending | `kubectl describe pvc -n cetirun-<alias>`; check the StorageClass and Pod scheduling events. `WaitForFirstConsumer` needs a schedulable Pod; review storage overrides if the class is absent. |
 | Pod crashes on startup | Check `kubectl describe pod -n cetirun-system`; likely image pull or secret mount issue |
 | `couldn't find key OPENCLAW_GATEWAY_TOKEN in Secret` | The `gateway-token` secret must use `OPENCLAW_GATEWAY_TOKEN` as the key name. If you pre-created the secret manually, recreate it: `kubectl create secret generic gateway-token -n cetirun-<alias> --from-literal=OPENCLAW_GATEWAY_TOKEN=<token>` |
 | CR stuck with finalizer after `kubectl delete` | Check operator logs; if operator is down, manually remove finalizer: `kubectl patch agent <name> -p '{"metadata":{"finalizers":[]}}' --type=merge` |

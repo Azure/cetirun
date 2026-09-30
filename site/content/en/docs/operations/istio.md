@@ -14,7 +14,10 @@ mesh-wide egress resources.
 1. Enable AKS managed Istio and its external ingress gateway.
 2. Configure an Entra app for the OAuth2 callback
    `https://<domain>/oauth2/callback` (for example,
-   `https://example.com/oauth2/callback`).
+   `https://example.com/oauth2/callback`). Add the `login_hint` optional claim
+   to this app's ID tokens when Agent Identity is enabled. Entra defines this
+   opaque claim as the reliable value for carrying SSO into another app,
+   including B2B guest and cross-tenant scenarios.
 3. Configure application-assigned group claims and the permitted group IDs.
 4. Configure federated trust for
    `system:serviceaccount:cetirun-istio:oauth2-proxy` and the cluster’s OIDC issuer.
@@ -30,13 +33,8 @@ routes apex `/oauth2` requests. An `oauth2.<domain>` exemption in the values
 does **not** create a working callback route on that host.
 
 The [portal's Sign out action]({{< repo "app/cetirun-portal/web/src/components/Header.tsx" >}})
-uses `/oauth2/sign_out` on the current origin, matching the apex route above.
-It passes the current page as the URL-encoded `rd` return address. After
-deployment, verify that **Sign out** clears the application session and that
-subsequent protected requests go through authentication again.
-
-Deployment summaries and Helm notes may still list `oauth2.<domain>` without
-creating a route for that host. Adding DNS alone does not create an HTTP route.
+uses the apex `/oauth2/sign_out` route and returns the user to the page from
+which they signed out.
 
 The chart does not issue or renew certificates. The helper can read supplied
 PEM files, decode PFX content, read a PFX file, or download a certificate from
@@ -53,7 +51,14 @@ Secret is not a usable TLS deployment.
 ## Deploy helper inputs
 
 [infra/istio/deploy.sh]({{< repo "infra/istio/deploy.sh" >}})
-requires Bash, Helm, kubectl, jq, OpenSSL, and these inputs for its normal path:
+requires Bash, Helm, kubectl, jq, OpenSSL, Python 3, and the pinned PyYAML
+dependency. Install the Python dependency before deployment:
+
+```bash
+python3 -m pip install --requirement infra/istio/requirements.txt
+```
+
+The helper also requires these inputs for its normal path:
 
 | Variable | Purpose |
 | --- | --- |
@@ -85,10 +90,13 @@ verify the actual target. `SKIP_AZ_VALIDATION` skips Azure and context checks
 and the subscription-ID requirement; it still needs the other required inputs
 and supplied certificate material. It is not a dry-run flag.
 
-The patch chooses the revision on the first matching Istiod pod and skips its
-write if the existing mesh text contains `oauth2-proxy`. This is not validation
-of an existing provider's configuration or every active revision. Check both
-during Istio upgrades.
+The patch chooses the revision on the first matching Istiod pod, parses the
+mesh configuration as YAML, and requires at most one provider named exactly
+`oauth2-proxy`. It adds a missing provider or adds `authorization` to that
+provider's upstream header list. The update uses the ConfigMap
+`resourceVersion` as a compare-and-swap precondition and retries against the
+latest mesh configuration after conflicts. Check every active revision during
+Istio upgrades; revision discovery still selects the first matching Istiod pod.
 
 ## Direct Helm installation
 
@@ -120,6 +128,39 @@ first installation. Offline `helm template` cannot look up that Secret and can
 generate a different cookie key. Do not use an offline rendered Secret to
 update a live release.
 
+### OAuth session storage
+
+The default `oauth2Proxy.sessionStore.type: cookie` mode does not request
+`offline_access`. Its 45-minute cookie lifetime ends before the Entra ID token
+expires, so users must sign in again instead of carrying a refresh token in an
+encrypted browser cookie. Refresh-token cookies can exceed common 8 KiB request
+header limits and break otherwise unrelated Portal actions.
+
+For refreshable sessions, provision Redis separately and configure the chart
+to reference it:
+
+```yaml
+oauth2Proxy:
+  sessionStore:
+    type: redis
+    redis:
+      connectionURL: redis://oauth-session.example.svc.cluster.local:6379/0
+      existingSecret: oauth-session-credentials
+      passwordKey: redis-password
+```
+
+Redis mode requests `offline_access`, stores the session server-side, refreshes
+it every 30 minutes, and keeps only a short session key in the browser. The
+chart does not deploy, persist, back up, or secure Redis. Use an environment-
+appropriate highly available service, NetworkPolicy, encryption in transit,
+and a pre-created Secret. Keep credentials out of `connectionURL` and Helm
+values; OAuth2 Proxy reads the password from the referenced Secret.
+
+After rotating the referenced Redis password Secret, reconcile the Istio Helm
+release. The chart hashes the live Secret data into the OAuth2 Proxy Pod
+template, so that Helm reconciliation rolls the Pods and loads the new
+password. A Secret update by itself does not restart existing Pods.
+
 ## Authentication and ownership
 
 ```text
@@ -127,11 +168,60 @@ Browser → gateway → redirect header → OAuth2 Proxy / Entra login
         → ownership filter → portal or instance VirtualService
 ```
 
+OAuth2 Proxy uses Entra's `preferred_username` as its email claim by default.
+Local tenant users are not guaranteed to receive an `email` claim, while the
+tenant-facing UPN remains available for Portal identity headers. Set
+`oauth2Proxy.emailClaim: email` only when every allowed user in the tenant is
+known to receive that claim. This selection is a login identifier; instance
+ownership and Agent authorization continue to use the verified tenant and
+object IDs from the signed ID token.
+
+When the Portal ID token includes Entra's optional `login_hint` claim, the
+Portal passes that opaque value to the separate Agent authorization client.
+It falls back to `preferred_username` only for app registrations that have not
+enabled the optional claim. The authorization request does not force an account
+picker, allowing Entra to reuse the hinted Portal session. The hint selects a
+sign-in session; it is never an authorization key. The callback must still
+match the instance owner's verified tenant and object IDs, so enabling the
+claim does not relax owner isolation.
+
+The Agent authorization client requests both the OIDC `openid` and `profile`
+scopes. Entra's `profile` scope supplies the immutable object ID used by the
+callback owner check; `openid` alone does not guarantee that claim. Do not
+replace the object-ID check with a username or email fallback.
+
+For authenticated Portal routes, OAuth2 Proxy returns its validated ID token in
+the internal `Authorization` header. The gateway filter first removes any
+client-supplied `X-CetiRun-Portal-ID-Token`, then moves the validated token to
+that header only for the Portal and removes `Authorization`. Agent routes
+receive neither the Portal ID token nor its authorization header. The Portal
+verifies the token signature, issuer, audience, tenant, object ID, and
+timestamps before using it for Agent authorization ownership.
+
+The deployment helper also reconciles `authorization` in the canonical
+oauth2-proxy ext-auth provider's `headersToUpstreamOnAllow`. This step is
+required when upgrading an older shared Istio ConfigMap; Helm cannot modify
+that AKS-managed ConfigMap.
+
 The ownership filter extracts the instance from `/ui/<instance>/` or
 the first path segment for other instance services, then calls the portal's
-internal ownership endpoint. It does not compare a subdomain with an owner
-alias. The portal namespace requires actual sidecar injection, enforced
+internal ownership endpoint. Before forwarding a normal or webhook request to
+an instance workload, it removes the `_cetirun_oauth2` Portal session cookie
+(including chunk suffixes) while retaining cookies owned by the Agent UI.
+Portal routes retain the Portal cookie. The filter does not compare a subdomain
+with an owner alias. The portal namespace requires actual sidecar injection, enforced
 NetworkPolicy, and its chart's authorization policy.
+
+Portal calls to an instance's `cetirun-auth` helper use the dedicated
+`X-CetiRun-Auth-Key` browser header because OAuth2 Proxy owns `Authorization`.
+Only after the ownership check succeeds, the filter converts that header to an
+internal bearer credential for `/<instance>/cetirun-auth/*`. It removes the
+dedicated header on Portal, webhook, and other Agent routes. Hermes native API
+clients similarly carry `API_SERVER_KEY` in `X-CetiRun-Agent-API-Key`; the
+filter converts it to a bearer credential only for the owned
+`/ui/<instance>/v1/models` and `/ui/<instance>/v1/chat/completions` routes (and
+their legacy instance-subdomain forms). The two transport headers are never
+interchangeable and are removed from every unrelated route.
 Portal port 8080 uses strict mTLS and gateway service-account identity. Port
 8081 deliberately disables mTLS for the Lua ownership call and relies on the
 gateway-namespace NetworkPolicy restriction; do not describe it as an
@@ -170,30 +260,33 @@ does not reconfigure the independent Istio release. See the
 | --- | --- |
 | `authPolicy.authExemptPrefixes` | Host prefixes bypassing OAuth2 Proxy |
 | `authPolicy.aliasExemptPrefixes` | Present in values, but unused by the ownership filter |
-| `authPolicy.webhookBypassPaths` | POST-only webhook suffix exceptions |
+| `authPolicy.webhookBypassPaths` | POST-only apex `/<instance>/api/messages` template |
+| `authPolicy.legacySubdomainWebhookBypassPaths` | Exact POST-only `/api/messages` path on legacy instance subdomains |
 
-Both prefix lists contain `oauth2` and `llmapi`, but only `authExemptPrefixes`
-is consumed by the templates. It bypasses OAuth2 Proxy for those
-subdomain hosts. Review whether they are needed; `aliasExemptPrefixes` is not
-a working ownership-policy control. These values do not install an LLM gateway
-or provide model request authorization.
+Both prefix lists contain `oauth2` and `llmapi`. `authExemptPrefixes` bypasses
+OAuth2 Proxy for those subdomain hosts, while `aliasExemptPrefixes` prevents
+the ownership filter from interpreting those shared hosts as instance names.
+Review whether they are needed. These values do not install an LLM gateway or
+provide model request authorization.
 
 The [authorization policy]({{< repo "infra/istio/templates/ingress/authorization-policy.yaml" >}})
 also exempts apex `/oauth2/*`, `/healthz`, and `/readyz`. The ownership filter's
 static portal-path exclusions are separate from OAuth exemptions; skipping
 an ownership call does not by itself skip sign-in.
 
-The webhook default is `["*/api/messages"]`, **not** an unrestricted path
-exemption. For a live per-instance VirtualService, the exact
+The apex webhook default is `["/{*}/api/messages"]`. Istio's `{*}` URI
+template matches exactly one path segment, so only
+`POST /<instance>/api/messages` is exempted. The legacy subdomain exception is
+the exact path `/api/messages`; neither setting is a suffix wildcard. For a
+live per-instance VirtualService, the exact
 `POST /<instance>/api/messages` route goes to the Teams webhook if enabled,
 or returns 404 if disabled. Non-POST requests to the suffix go through
 OAuth2 Proxy.
 
-The shared suffix exception is broader than those exact per-instance routes:
-suspended or nonexistent instances have no such VirtualService. Do not promise
-a fixed 404 or a Bot adapter for every matching URL. See the
+Suspended or nonexistent instances have no per-instance VirtualService. Do not
+promise a fixed 404 or a Bot adapter for every matching URL. See the
 [route implementation]({{< repo "app/cetirun-operator/internal/controller/helpers.go" >}}).
-Set `authPolicy.webhookBypassPaths: []` to remove the suffix exception entirely.
+Set both webhook bypass lists to `[]` to remove the exceptions entirely.
 Applications behind exceptions must perform their own request authentication.
 
 ## Egress and logging

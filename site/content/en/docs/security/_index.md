@@ -38,15 +38,17 @@ used by your deployment.
 - [Teams webhook exceptions](../guides/msteams/) rely on application-level Bot
   Framework authentication instead of a user's OAuth session.
   [Tailscale](../guides/tailscale/) adds another access path; configuring it
-  does not remove public ingress. Keep `tailscale.relaxGatewayAuth: false`
-  when other ingress paths exist.
+  does not remove public ingress or the Gateway's own authentication.
 
-The ownership filter defines its own fixed path exemptions and takes POST-only
-webhook suffix exceptions from `authPolicy.webhookBypassPaths`. The Istio
-templates do not consume `authPolicy.aliasExemptPrefixes` from the chart values
-or `authPolicy.adminAliases` supplied by the
-[deployment helper]({{< repo "infra/istio/deploy.sh" >}}). Setting those values
-does not configure alias exemptions or an administrator ownership bypass.
+The ownership filter defines its own fixed path exemptions and takes the
+POST-only one-segment apex webhook template from
+`authPolicy.webhookBypassPaths`; the legacy subdomain exception is an exact
+path. The Istio
+templates consume `authPolicy.aliasExemptPrefixes` only to distinguish explicit
+shared subdomain hosts from legacy instance subdomains. They do not consume
+`authPolicy.adminAliases` supplied by the
+[deployment helper]({{< repo "infra/istio/deploy.sh" >}}); setting it does not
+configure an administrator ownership bypass.
 
 The [chart defaults]({{< repo "app/cetirun-chart/values.yaml" >}}) select
 `runtimeClassName: kata-vm-isolation`; the cluster must supply the matching

@@ -17,6 +17,7 @@ import httpx
 from aiohttp import web
 
 from gateway.platforms import BasePlatformAdapter, MessageEvent, SendResult
+from gateway.platforms._shared import get_scoped_secret
 from gateway.config import Platform
 from .auth import BotTokenProvider, InboundJwtValidator, BOT_FRAMEWORK_SCOPE
 
@@ -247,21 +248,29 @@ async def _standalone_send(
 
 
 def _load_allowlist() -> set[str]:
-    raw = (os.environ.get(ALLOWED_USERS_ENV, "") + "," +
-           os.environ.get(GLOBAL_ALLOWED_USERS_ENV, ""))
+    raw = (
+        get_scoped_secret(ALLOWED_USERS_ENV, "")
+        + ","
+        + get_scoped_secret(GLOBAL_ALLOWED_USERS_ENV, "")
+    )
     return {entry.strip() for entry in raw.split(",") if entry.strip()}
 
 
 class CetiRunTeamsAdapter(BasePlatformAdapter):
     def __init__(self, config):
         super().__init__(config, Platform("cetirun_teams"))
-        extra = config.extra if hasattr(config, "extra") else {}
-        self._app_id = os.environ.get("MSTEAMS_APP_ID") or extra.get("app_id", "")
+        extra = getattr(config, "extra", {}) or {}
+        self._app_id = get_scoped_secret("MSTEAMS_APP_ID", "") or extra.get(
+            "app_id", ""
+        )
         if not self._app_id:
             raise ValueError("MSTEAMS_APP_ID is required")
-        self._tenant_id = os.environ.get("MSTEAMS_TENANT_ID") or extra.get("tenant_id")
+        self._tenant_id = get_scoped_secret(
+            "MSTEAMS_TENANT_ID", ""
+        ) or extra.get("tenant_id")
         self._port = int(
-            os.environ.get("MSTEAMS_WEBHOOK_PORT") or extra.get("port", 3978)
+            get_scoped_secret("MSTEAMS_WEBHOOK_PORT", "")
+            or extra.get("port", 3978)
         )
         self._token_provider = BotTokenProvider()
         self._jwt_validator = InboundJwtValidator(self._app_id, self._tenant_id)
@@ -273,7 +282,8 @@ class CetiRunTeamsAdapter(BasePlatformAdapter):
     def name(self) -> str:
         return "cetirun_teams"
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
+        del is_reconnect
         app = web.Application()
         app.router.add_get("/health", self._handle_health)
         app.router.add_post("/api/messages", self._handle_webhook)
@@ -425,8 +435,10 @@ class CetiRunTeamsAdapter(BasePlatformAdapter):
         chat_id: str,
         content: str,
         reply_to: Optional[str] = None,
+        metadata: Optional[dict] = None,
         **kwargs,
     ) -> SendResult:
+        del metadata, kwargs
         if len(content) > MAX_MESSAGE_LENGTH:
             content = content[: MAX_MESSAGE_LENGTH - len(TRUNCATION_SUFFIX)] + TRUNCATION_SUFFIX
 
@@ -453,7 +465,8 @@ class CetiRunTeamsAdapter(BasePlatformAdapter):
         logger.error("Failed to send Teams message: %s", error_msg)
         return SendResult(success=False, error=error_msg)
 
-    async def send_typing(self, chat_id: str):
+    async def send_typing(self, chat_id: str, metadata: Optional[dict] = None):
+        del metadata
         try:
             await self._post_activity(chat_id, {"type": "typing"})
         except Exception as e:

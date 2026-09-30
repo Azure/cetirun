@@ -11,8 +11,9 @@ SOURCE_HOME=${SOURCE_HOME:-/home/vibe}
 TARGET_HOME=${TARGET_HOME:-/home-data}
 CETIRUN_CONFIG_DIR=${CETIRUN_CONFIG_DIR:-/etc/cetirun}
 CETIRUN_SECRET_DIR=${CETIRUN_SECRET_DIR:-/etc/cetirun-secrets}
+CETIRUN_BUILTIN_SKILL_SYNC=${CETIRUN_BUILTIN_SKILL_SYNC:-/usr/local/share/cetirun/builtin-skill-sync.sh}
 LEGACY_HOME_MARKER=.hermes/.initialized
-PYTHON_BIN=${HERMES_PYTHON:-/usr/local/lib/hermes-agent/bin/python}
+PYTHON_BIN=${HERMES_PYTHON:-/usr/local/lib/hermes-agent/venv/bin/python}
 if [ ! -x "$PYTHON_BIN" ]; then PYTHON_BIN=python3; fi
 . "$CETIRUN_CONFIG_DIR/init-home-common.sh"
 
@@ -25,11 +26,15 @@ agent_check_requirements() {
   for file in hermes-config.yaml hermes-auth.sh hermes-apply-config.py; do
     [ -f "$CETIRUN_CONFIG_DIR/$file" ] || { init_error "HermesInputMissing: $file"; return 1; }
   done
+  [ -f "$CETIRUN_BUILTIN_SKILL_SYNC" ] || {
+    init_error "HermesInputMissing: builtin-skill-sync.sh"
+    return 1
+  }
   [ -f "$CETIRUN_SECRET_DIR/hermes.env" ] || { init_error "HermesEnvironmentMissing"; return 1; }
 }
 
 agent_prepare_home() {
-  for directory in .hermes .hermes/memories .hermes/skills .hermes/sessions .hermes/logs .hermes/cron .local/bin; do
+  for directory in .hermes .hermes/lazy-packages .hermes/memories .hermes/skills .hermes/sessions .hermes/logs .hermes/cron .local/bin; do
     home_ensure_dir "$directory"
   done
   marker=$(home_path "$LEGACY_HOME_MARKER")
@@ -68,6 +73,10 @@ agent_apply_config() {
 }
 
 agent_prepare_integrations() {
+  . "$CETIRUN_BUILTIN_SKILL_SYNC"
+  cetirun_sync_builtin_skills \
+    "$SOURCE_HOME/.hermes/skills" \
+    "$(home_path .hermes/skills)"
   home_atomic_copy "$CETIRUN_CONFIG_DIR/hermes-auth.sh" .local/bin/copilot-auth 755
   team=$(home_path .hermes/memories/TEAM.md)
   if [ -s "$CETIRUN_CONFIG_DIR/hermes-team.md" ]; then

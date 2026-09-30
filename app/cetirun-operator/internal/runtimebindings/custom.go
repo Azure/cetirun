@@ -27,8 +27,9 @@ type ModelAccess struct {
 }
 
 type Home struct {
-	ObjectReference
-	FSGroup int64 `json:"fsGroup"`
+	Name    string     `json:"name"`
+	FSGroup int64      `json:"fsGroup"`
+	Claim   *HomeClaim `json:"claim"`
 }
 
 // Context is an immutable ConfigMap snapshot. Files maps keys to paths under
@@ -108,8 +109,14 @@ func (b Custom) Validate(agent agents.ResolvedAgent) error {
 	} else if !validReference(b.Model.ObjectReference) || len(validation.IsConfigMapKey(b.Model.Key)) != 0 {
 		return fmt.Errorf("ModelBindingPending: versioned instance Secret reference is required")
 	}
-	if !validReference(b.Home.ObjectReference) || b.Home.FSGroup < 1 || b.Home.FSGroup > 2147483647 {
-		return fmt.Errorf("HomeBindingPending: approved persistent HOME and volume permissions are required")
+	if len(validation.IsDNS1123Subdomain(b.Home.Name)) != 0 || b.Home.FSGroup < 1 || b.Home.FSGroup > 2147483647 {
+		return fmt.Errorf("HomeBindingPending: approved HOME name and volume permissions are required")
+	}
+	if b.Home.Claim == nil {
+		return fmt.Errorf("HomeBindingPending: approved HOME claim template is required")
+	}
+	if err := b.Home.Claim.Validate(); err != nil {
+		return err
 	}
 	if !validReference(b.Context.ObjectReference) {
 		return fmt.Errorf("ContextBindingPending: approved immutable context is required")

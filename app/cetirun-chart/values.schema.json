@@ -129,6 +129,11 @@
                         "cluster-admin"
                     ],
                     "default": ""
+                },
+                "automountToken": {
+                    "type": ["boolean", "null"],
+                    "description": "Explicitly control the default Kubernetes API token mount. Null preserves historical behavior.",
+                    "default": null
                 }
             }
         },
@@ -144,6 +149,20 @@
                 "clientId": {
                     "type": "string",
                     "description": "Client ID of the User-Assigned Managed Identity",
+                    "default": ""
+                }
+            }
+        },
+        "agentIdentity": {
+            "type": "object",
+            "description": "Operator-owned Microsoft Entra Agent Identity Broker integration",
+            "properties": {
+                "enabled": {
+                    "type": "boolean",
+                    "default": false
+                },
+                "brokerURL": {
+                    "type": "string",
                     "default": ""
                 }
             }
@@ -444,8 +463,8 @@
                 },
                 "storageClass": {
                     "type": "string",
-                    "description": "Storage class name (empty for default)",
-                    "default": ""
+                    "description": "Storage class name (default uses Azure Disk on AKS; empty uses the cluster default)",
+                    "default": "default"
                 },
                 "accessMode": {
                     "type": "string",
@@ -579,40 +598,6 @@
                                     "default": true
                                 }
                             }
-                        }
-                    }
-                },
-                "memorySearch": {
-                    "type": "object",
-                    "description": "Memory search configuration (semantic search over conversation history). Only enabled when both baseUrl and apiKey are provided.",
-                    "properties": {
-                        "provider": {
-                            "type": "string",
-                            "description": "Embedding provider",
-                            "default": "openai"
-                        },
-                        "model": {
-                            "type": "string",
-                            "description": "Embedding model",
-                            "default": "text-embedding-3-small"
-                        },
-                        "baseUrl": {
-                            "type": "string",
-                            "description": "Remote embedding service URL (required to enable memory search)",
-                            "default": ""
-                        },
-                        "apiKey": {
-                            "type": "string",
-                            "description": "API key for the remote embedding service (required to enable memory search). Note: stored in ConfigMap, not Secret. For production, use external secret management.",
-                            "default": ""
-                        },
-                        "extraPaths": {
-                            "type": "array",
-                            "description": "Extra paths to index for memory search",
-                            "items": {
-                                "type": "string"
-                            },
-                            "default": []
                         }
                     }
                 }
@@ -897,11 +882,6 @@
                 "serve": {
                     "type": "boolean",
                     "description": "Enable tailscale serve to proxy the gateway with Tailscale HTTPS",
-                    "default": false
-                },
-                "relaxGatewayAuth": {
-                    "type": "boolean",
-                    "description": "Relax gateway auth (allowInsecureAuth, dangerouslyDisableDeviceAuth) when Tailscale is enabled. Only enable when Tailscale is the sole access path.",
                     "default": false
                 }
             }
@@ -1227,6 +1207,11 @@
                     "type": "string",
                     "description": "Namespace of kube-dns (egress DNS)",
                     "default": "kube-system"
+                },
+                "agentIdentityBrokerNamespace": {
+                    "type": "string",
+                    "description": "Namespace hosting the deployment-level Agent Identity Broker",
+                    "default": "cetirun-credentials"
                 },
                 "gatewayNamespace": {
                     "type": "string",

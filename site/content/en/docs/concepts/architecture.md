@@ -79,8 +79,10 @@ not proof that ingress works.
 
 OpenClaw keeps `/ui/<instance>` in its gateway requests; an exact WebSocket
 upgrade at that path is routed without an HTTP redirect. Hermes Dashboard
-receives an `x-forwarded-prefix` header. Neither routing rule establishes
-compatibility with every OpenAI-style inference endpoint.
+receives an `x-forwarded-prefix` header. After the platform sign-in, Hermes also
+requires its application login: use `cetirun` as the username and the
+instance's Hermes API / Dashboard key as the password. Neither routing rule
+establishes compatibility with every OpenAI-style inference endpoint.
 
 The instance VirtualService lives in the instance namespace and references the
 operator's `istioGateway`, defaulting to `aks-istio-ingress/cetirun-gateway`.
@@ -115,9 +117,9 @@ and [exec policy]({{< repo "app/cetirun-chart/templates/deny-exec-policy.yaml" >
 ## A persistent home is not a backup
 
 With persistence enabled, the runtime mounts its home volume at `/home/vibe`
-for files, agent configuration, and credentials. Operator defaults request
-`20Gi`, `ReadWriteMany`, and `azureblob-nfs-premium`; the standalone chart
-defaults to `100Gi`, `ReadWriteOnce`, and no explicit StorageClass. Shared skills
+for files, agent configuration, and credentials. The operator, standalone chart,
+and opt-in Custom provider default to `100Gi`, `ReadWriteOnce`, and the
+StorageClass named `default` (Azure Disk on AKS). Shared skills
 can be mounted separately and read-only. Pod restarts can preserve that home;
 namespace deletion removes PVC objects. Storage reclaim behavior and tested
 backups determine recoverability.

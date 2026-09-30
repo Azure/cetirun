@@ -94,15 +94,16 @@ inside the main container; it is not a separate Tailscale sidecar.
 | Hermes | `http://localhost:8642` | API server using `API_SERVER_KEY`, not the Dashboard on 9119 |
 
 The tailnet URL is therefore not another copy of the portal, browser terminal,
-or desktop. Do not expose the Hermes Dashboard directly: it is started with
-`--insecure` and depends on the platform access path.
+or desktop. Do not expose the Hermes Dashboard directly. Hermes 0.21.5 rejects
+an unauthenticated non-loopback Dashboard; CetiRun configures its built-in
+password provider in addition to the platform access path.
 
 The container uses kernel networking, creates `/dev/net/tun`, and the chart
 adds `NET_ADMIN` for Tailscale. Review those privileges alongside the
-RuntimeClass and network policy.
-Keep `tailscale.relaxGatewayAuth: false`. Enabling it can weaken gateway
-authentication on non-tailnet access paths too; this setting is consumed by
-the OpenClaw template, not by Hermes.
+RuntimeClass and network policy. CetiRun runs Tailscale Serve outside OpenClaw,
+so Gateway token and device authentication remain required on this access path.
+When Tailscale is enabled, the generated OpenClaw configuration trusts only the
+in-container Serve proxy's exact `127.0.0.1` source.
 
 ## If it does not connect
 

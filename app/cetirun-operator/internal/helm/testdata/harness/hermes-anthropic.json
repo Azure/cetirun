@@ -13,7 +13,7 @@
         "threshold": 0.5
       },
       "memory": {
-        "char_limit": 2200,
+        "memory_char_limit": 2200,
         "user_char_limit": 1375
       },
       "model": {
@@ -34,11 +34,11 @@
     }
   },
   "manifestHashes": {
-    "configmap.yaml": "81acfbca3f35e9a952cf969994113490af8d7c6795676fed43fc34b9379c8b52",
+    "configmap.yaml": "78f1bd3dced5474d43a63cd83f9557bdd6b88611f3a7b49f67cc673d4ce08422",
     "deny-exec-policy.yaml": "7dd9900c6cb720cda23eae4abebcdd68e7d868d91be7df00bac133f63acb4267",
     "networkpolicy.yaml": "587fc15149d71dbad452024d351b82a3c6e0851a2381b57e105cd0b3dd7e78cb",
     "pre-upgrade-hook.yaml": "c70e9f82a181759993f2ea33f7d02cc5add4f5d90622134d0b881222fc0f63ee",
     "service.yaml": "2c46a85b6298b43a6f088229526deb02862d931d21b81a601f61113e8a341269",
-    "statefulset.yaml": "ea37917e5bc6123dcf7afb970b8d0897d7257553d02be05423b1990d3ae467dc"
+    "statefulset.yaml": "98b6e7b617395429d43e02ac0b5a770731587f0c6886998e5e67e339aea22494"
   }
 }

@@ -85,7 +85,7 @@ class GateTests(unittest.TestCase):
                 validate.chart_gate(self.root)
         run.assert_not_called()
 
-    def test_all_six_charts_and_both_runtime_types_are_checked(self):
+    def test_all_seven_charts_and_both_runtime_types_are_checked(self):
         for directory, _ in validate.CHARTS:
             chart = self.root / directory
             chart.mkdir(parents=True, exist_ok=True)
@@ -96,16 +96,26 @@ class GateTests(unittest.TestCase):
         (self.root / "scripts/cetirun-platform-helm-test.sh").write_text("# fixture")
         (self.root / "scripts/cetirun-istio-helm-test.sh").write_text("# fixture")
         (self.root / "scripts/cetirun-agent-broker-helm-test.sh").write_text("# fixture")
+        (self.root / "scripts/cetirun-ai-gateway-helm-test.sh").write_text("# fixture")
         with patch.object(validate, "run") as run:
             validate.chart_gate(self.root)
         commands = [call.args[0] for call in run.call_args_list]
-        self.assertEqual(sum(c[:2] == ["helm", "lint"] for c in commands), 7)
-        self.assertEqual(sum(c[:2] == ["helm", "template"] for c in commands), 7)
-        self.assertEqual(len({c[3] for c in commands if c[:2] == ["helm", "lint"]}), 6)
+        self.assertEqual(sum(c[:2] == ["helm", "lint"] for c in commands), 8)
+        self.assertEqual(sum(c[:2] == ["helm", "template"] for c in commands), 8)
+        self.assertEqual(len({c[3] for c in commands if c[:2] == ["helm", "lint"]}), 7)
         self.assertTrue(all("--strict" in c for c in commands if c[1] == "lint"))
         self.assertEqual(sum(c[:2] == ["helm", "dependency"] for c in commands), 1)
         self.assertEqual(sum(c[:2] == ["bash", str(self.root / "scripts/cetirun-istio-helm-test.sh")] for c in commands), 1)
-        self.assertEqual(commands[-1][0], "bash")
+        self.assertEqual(
+            [Path(c[1]).name for c in commands if c[0] == "bash"],
+            [
+                "cetirun-helm-test.sh",
+                "cetirun-platform-helm-test.sh",
+                "cetirun-istio-helm-test.sh",
+                "cetirun-agent-broker-helm-test.sh",
+                "cetirun-ai-gateway-helm-test.sh",
+            ],
+        )
 
     def test_offline_go_environment_cannot_inherit_network_defaults(self):
         with patch.dict(
@@ -310,6 +320,17 @@ class WorkflowContractTests(unittest.TestCase):
                 self.assertNotIn(spec["version"], text)
                 for checksum in spec["sha256"].values():
                     self.assertNotIn(checksum, text)
+
+    def test_license_update_helper_only_proposes_a_patch(self):
+        text = (validate.ROOT / ".github/workflows/portal-ci.yml").read_text()
+        self.assertIn('npm run licenses:check-updates -- --output "$RUNNER_TEMP/portal-license-update.patch"', text)
+        self.assertIn("steps.license-supplements.outcome == 'failure'", text)
+        self.assertIn("name: portal-license-update", text)
+        self.assertLess(text.index("Check version-pinned license supplements"), text.index("Install dependencies"))
+        self.assertNotIn(": write", text)
+        self.assertNotIn("pull_request_target:", text)
+        self.assertNotIn("continue-on-error:", text)
+        self.assertNotRegex(text, r"git (?:apply|commit|push)")
 
     def test_runtime_image_smoke_selects_only_the_auth_unittest_suite(self):
         text = (validate.ROOT / ".github/workflows/docker-build-validate.yml").read_text()

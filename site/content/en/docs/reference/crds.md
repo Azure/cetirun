@@ -95,8 +95,8 @@ helm:
   values:
     persistence:
       storageClass: approved-storage-class
-      accessMode: ReadWriteMany
-      size: 20Gi
+      accessMode: ReadWriteOnce
+      size: 100Gi
     secrets:
       provider: openai
       model: your-authorized-model-id

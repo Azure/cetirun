@@ -81,6 +81,30 @@ func TestConfigHash_IncludesDefaultModelOnlyWhenRendered(t *testing.T) {
 	}
 }
 
+func TestConfigHashInvalidatesPreRuntimeAgentIdentityWiring(t *testing.T) {
+	reconciler := &AgentReconciler{
+		AgentIdentityEnabled:           true,
+		AgentIdentityTenantID:          "11111111-1111-1111-1111-111111111111",
+		AgentIdentityBlueprintClientID: "22222222-2222-2222-2222-222222222222",
+		AgentIdentityNamePrefix:        "cetirun",
+		AgentIdentityBrokerURL:         "http://cetirun-agent-broker.cetirun-credentials.svc.cluster.local:8080",
+	}
+	instance := newTestInstance("alice", "Alice", "", "gateway-token")
+	instance.Spec.AgentIdentity = &cetirunv1alpha1.AgentIdentitySpec{Enabled: true}
+	legacy := operatorConfigHash(
+		reconciler.DomainSuffix, "secret", reconciler.SkillsStorageAccount,
+		hashCetiRunHelmValues(reconciler.CetiRunHelmValues), reconciler.ChartRegistry,
+		reconciler.AzureSubscriptionID, reconciler.AzureResourceGroup,
+		reconciler.AzureBotNamePrefix, reconciler.AzureTenantID,
+		reconciler.AzureOIDCIssuerURL, reconciler.AgentIdentityTenantID,
+		reconciler.AgentIdentityBlueprintClientID, reconciler.AgentIdentityNamePrefix,
+		reconciler.AgentIdentityBrokerURL, "",
+	)
+	if current := reconciler.configHash(instance, nil, "secret", ""); current == legacy {
+		t.Fatal("Agent Identity runtime revision must invalidate the pre-wiring skip cache")
+	}
+}
+
 // newTestInstance returns a minimal Agent for use in tests.
 func newTestInstance(alias, displayName, team, gatewaySecret string) *cetirunv1alpha1.Agent {
 	return &cetirunv1alpha1.Agent{
@@ -95,6 +119,92 @@ func newTestInstance(alias, displayName, team, gatewaySecret string) *cetirunv1a
 			GatewayTokenSecretRef: gatewaySecret,
 			Helm:                  cetirunv1alpha1.HelmSpec{Values: map[string]runtime.RawExtension{}},
 		},
+	}
+}
+
+func TestBuildHelmValuesWithAgentIdentityUsesControllerOwnedBroker(t *testing.T) {
+	instance := newTestInstance("alice", "Alice", "", "gateway-token")
+	instance.Name = "alice-hermes-v1"
+	instance.Spec.AgentIdentity = &cetirunv1alpha1.AgentIdentitySpec{Enabled: true}
+	instance.Status.AgentIdentity = &cetirunv1alpha1.AgentIdentityStatus{
+		Phase:    cetirunv1alpha1.AgentIdentityPhaseReady,
+		ClientID: "11111111-1111-1111-1111-111111111111",
+		ObjectID: "22222222-2222-2222-2222-222222222222",
+	}
+	instance.Spec.Helm.Values["agentIdentity"] = runtime.RawExtension{Raw: []byte(`{"enabled":false,"brokerURL":"http://evil.default.svc.cluster.local:8080"}`)}
+	instance.Spec.Helm.Values["serviceAccount"] = runtime.RawExtension{Raw: []byte(`{"create":false,"name":"attacker-selected","role":"cluster-admin","automountToken":true}`)}
+	values, err := buildHelmValuesWithAgentIdentity(
+		instance, nil, "example.com", "", nil, "", "gpt-5.4",
+		AgentIdentityHelmConfig{
+			Enabled:   true,
+			BrokerURL: "http://cetirun-agent-broker.cetirun-credentials.svc.cluster.local:8080",
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity := values["agentIdentity"].(map[string]interface{})
+	if identity["enabled"] != true ||
+		identity["brokerURL"] != "http://cetirun-agent-broker.cetirun-credentials.svc.cluster.local:8080" {
+		t.Fatalf("controller-owned Agent Identity values were not enforced: %#v", identity)
+	}
+	serviceAccount := values["serviceAccount"].(map[string]interface{})
+	if serviceAccount["create"] != true ||
+		serviceAccount["name"] != instanceServiceName(instance.Name) ||
+		serviceAccount["role"] != "" ||
+		serviceAccount["automountToken"] != false {
+		t.Fatalf("controller-owned ServiceAccount values were not enforced: %#v", serviceAccount)
+	}
+	networkPolicy := values["networkPolicy"].(map[string]interface{})
+	if networkPolicy["agentIdentityBrokerNamespace"] != "cetirun-credentials" {
+		t.Fatalf("Broker namespace = %#v", networkPolicy["agentIdentityBrokerNamespace"])
+	}
+}
+
+func TestInstanceServiceNameMatchesChartAndBrokerBoundary(t *testing.T) {
+	for length, want := range map[int]string{
+		46: "openclaw-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-cetirun",
+		47: "openclaw-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-cetiru",
+	} {
+		got := instanceServiceName(strings.Repeat("a", length))
+		if got != want || len(got) > 63 || strings.HasSuffix(got, "-") {
+			t.Fatalf("instanceServiceName(%d chars) = %q", length, got)
+		}
+	}
+}
+
+func TestBuildHelmValuesCannotEnableAgentIdentityOutsideReadyDeployment(t *testing.T) {
+	instance := newTestInstance("alice", "Alice", "", "gateway-token")
+	instance.Spec.AgentIdentity = &cetirunv1alpha1.AgentIdentitySpec{Enabled: true}
+	instance.Status.AgentIdentity = &cetirunv1alpha1.AgentIdentityStatus{
+		Phase: cetirunv1alpha1.AgentIdentityPhaseReady,
+	}
+	instance.Spec.Helm.Values["agentIdentity"] = runtime.RawExtension{Raw: []byte(`{"enabled":true,"brokerURL":"http://evil.default.svc.cluster.local:8080"}`)}
+	for name, config := range map[string]AgentIdentityHelmConfig{
+		"deployment disabled": {},
+		"invalid Broker URL": {
+			Enabled:   true,
+			BrokerURL: "https://broker.example.invalid",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			values, err := buildHelmValuesWithAgentIdentity(
+				instance, nil, "example.com", "", nil, "", "gpt-5.4", config,
+			)
+			if name == "invalid Broker URL" {
+				if err == nil {
+					t.Fatal("invalid Broker URL was accepted")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			identity := values["agentIdentity"].(map[string]interface{})
+			if identity["enabled"] != false || identity["brokerURL"] != "" {
+				t.Fatalf("disabled deployment accepted Agent Identity override: %#v", identity)
+			}
+		})
 	}
 }
 
@@ -146,6 +256,39 @@ func TestBuildHelmValues_AgentType(t *testing.T) {
 	}
 	if got := values["agentType"]; got != string(cetirunv1alpha1.AgentTypeHermes) {
 		t.Errorf("agentType = %q, want %q", got, cetirunv1alpha1.AgentTypeHermes)
+	}
+}
+
+func TestBuildHelmValues_HomeStorage(t *testing.T) {
+	for _, agentType := range []cetirunv1alpha1.AgentType{cetirunv1alpha1.AgentTypeHermes, cetirunv1alpha1.AgentTypeOpenClaw} {
+		for _, test := range []struct {
+			name     string
+			global   map[string]interface{}
+			local    string
+			expected map[string]interface{}
+		}{
+			{"defaults", nil, "", map[string]interface{}{"storageClass": "default", "accessMode": "ReadWriteOnce", "size": "100Gi"}},
+			{"operator override", map[string]interface{}{"persistence": map[string]interface{}{"size": "200Gi"}}, "",
+				map[string]interface{}{"storageClass": "default", "accessMode": "ReadWriteOnce", "size": "200Gi"}},
+			{"instance override", map[string]interface{}{"persistence": map[string]interface{}{"size": "200Gi"}},
+				`{"storageClass":"approved-home","accessMode":"ReadWriteMany"}`,
+				map[string]interface{}{"storageClass": "approved-home", "accessMode": "ReadWriteMany", "size": "200Gi"}},
+		} {
+			t.Run(string(agentType)+"/"+test.name, func(t *testing.T) {
+				instance := newTestInstance("alice", "Alice", "", "gateway-token")
+				instance.Spec.Agent.Type = agentType
+				if test.local != "" {
+					instance.Spec.Helm.Values["persistence"] = runtime.RawExtension{Raw: []byte(test.local)}
+				}
+				values, err := buildHelmValues(instance, nil, "example.com", "", test.global, "")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !reflect.DeepEqual(values["persistence"], test.expected) {
+					t.Errorf("persistence = %v, want %v", values["persistence"], test.expected)
+				}
+			})
+		}
 	}
 }
 
@@ -995,7 +1138,7 @@ func TestBuildVirtualService_NoMSTeamsRoute(t *testing.T) {
 
 // TestBuildVirtualService_WebhookRouteIsPerInstance verifies the webhook route (Teams
 // or deny) is scoped to the instance's own path and lives only in that instance's
-// VirtualService — never as a shared/global */api/messages rule that could shadow
+// VirtualService — never as a shared/global suffix rule that could shadow
 // another instance. A Teams-enabled instance and a non-Teams instance must each carry
 // their own exact-path route bound to their own apex VirtualService.
 func TestBuildVirtualService_WebhookRouteIsPerInstance(t *testing.T) {
@@ -1026,7 +1169,7 @@ func TestBuildVirtualService_WebhookRouteIsPerInstance(t *testing.T) {
 		t.Error("non-teams instance webhook route must direct-respond (deny)")
 	}
 
-	// No route may use a wildcard/global */api/messages match that would span instances.
+	// No route may use a wildcard/global suffix match that would span instances.
 	for _, vs := range []*istiov1beta1.VirtualService{teamsVS, plainVS} {
 		for i, r := range vs.Spec.Http {
 			if exact := r.Match[0].GetUri().GetExact(); strings.Contains(exact, "*") {

@@ -29,6 +29,11 @@ def agent(request, tmp_path):
     (source / "dependency").write_text("image dependency")
     (source / "dependency").chmod(0o755)
     shutil.copy(CHART / "configs/init-home-common.sh", config)
+    shutil.copytree(
+        CHART / "skills/azure",
+        source / f".{kind}/skills/azure",
+        dirs_exist_ok=True,
+    )
     (config / f"{kind}-auth.sh").write_text("#!/bin/sh\nexit 0\n")
     command_log = tmp_path / "commands"
     for command in ("git", "curl", "az", "hermes"):
@@ -44,7 +49,6 @@ def agent(request, tmp_path):
             "channels": {"msteams": {"enabled": True}},
         }))
         (config / "user-md").write_text("Example User")
-        (config / "acpx-config.json").write_text('{"agents": {}}')
         script = CHART / "agents/openclaw/bootstrap/init-home.sh"
         config_file = target / ".openclaw/openclaw.json"
     else:
@@ -65,6 +69,7 @@ def agent(request, tmp_path):
             SOURCE_HOME=str(source), TARGET_HOME=str(target),
             CETIRUN_CONFIG_DIR=str(config), CETIRUN_SECRET_DIR=str(secrets),
             HERMES_PYTHON=sys.executable, CETIRUN_INIT_IMAGE=IMAGE,
+            CETIRUN_BUILTIN_SKILL_SYNC=str(CHART / "configs/builtin-skill-sync.sh"),
             AZDEVOPS_GIT_CREDENTIAL_ENABLED="false",
             COMMAND_LOG=str(command_log), PATH=str(binaries) + os.pathsep + os.environ["PATH"],
         ),
@@ -93,10 +98,14 @@ def test_native_first_start_and_repeat_preserve_user_files(agent):
     assert (agent["target"] / ".cetirun-home-seeded").is_file()
     helper = agent["target"] / ".local/bin/copilot-auth"
     assert helper.stat().st_mode & 0o777 == 0o755
+    assert (
+        agent["target"] / f'.{agent["kind"]}/skills/azure/SKILL.md'
+    ).read_text() == (CHART / "skills/azure/SKILL.md").read_text()
     if agent["kind"] == "openclaw":
         user = agent["target"] / ".openclaw/workspace/USER.md"
         assert read_config(agent)["channels"]["msteams"]["allowFrom"] == ["00000000-0000-0000-0000-000000000000"]
         assert (agent["target"] / ".openclaw/npm").is_symlink()
+        assert not (agent["target"] / ".acpx/config.json").exists()
     else:
         user = agent["target"] / ".hermes/memories/USER.md"
         assert "TEAM.md" in user.read_text()

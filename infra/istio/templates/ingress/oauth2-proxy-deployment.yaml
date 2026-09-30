@@ -1,6 +1,33 @@
 {{- $clientId := required "clientId is required for OAuth2 Proxy OIDC configuration" .Values.clientId -}}
 {{- $tenantId := required "tenantId is required for OAuth2 Proxy OIDC configuration" .Values.tenantId -}}
 {{- $allowedGroups := required "allowedGroups is required for OAuth2 Proxy group authorization" .Values.allowedGroups -}}
+{{- $sessionStore := default (dict) (get .Values.oauth2Proxy "sessionStore") -}}
+{{- $redisSession := default (dict) (get $sessionStore "redis") -}}
+{{- $cookieSettings := default (dict) (get .Values.oauth2Proxy "cookie") -}}
+{{- $redisSettings := default (dict) (get .Values.oauth2Proxy "redis") -}}
+{{- $oidcEmailClaim := default "preferred_username" (get .Values.oauth2Proxy "emailClaim") -}}
+{{- $sessionStoreType := default "cookie" (get $sessionStore "type") -}}
+{{- $redisConnectionURL := get $redisSession "connectionURL" -}}
+{{- $redisExistingSecret := get $redisSession "existingSecret" -}}
+{{- $redisPasswordKey := default "redis-password" (get $redisSession "passwordKey") -}}
+{{- $redisSecretData := dict -}}
+{{- $cookieExpire := default "45m" (get $cookieSettings "expire") -}}
+{{- $redisCookieExpire := default "8h" (get $redisSettings "cookieExpire") -}}
+{{- $redisCookieRefresh := default "30m" (get $redisSettings "cookieRefresh") -}}
+{{- if not (has $sessionStoreType (list "cookie" "redis")) -}}
+{{- fail "oauth2Proxy.sessionStore.type must be cookie or redis" -}}
+{{- end -}}
+{{- if not (has $oidcEmailClaim (list "preferred_username" "email")) -}}
+{{- fail "oauth2Proxy.emailClaim must be preferred_username or email" -}}
+{{- end -}}
+{{- if eq $sessionStoreType "redis" -}}
+{{- $_ := required "oauth2Proxy.sessionStore.redis.connectionURL is required for Redis sessions" $redisConnectionURL -}}
+{{- $_ := required "oauth2Proxy.sessionStore.redis.existingSecret is required for Redis sessions" $redisExistingSecret -}}
+{{- $redisSecret := lookup "v1" "Secret" .Release.Namespace $redisExistingSecret -}}
+{{- if and $redisSecret $redisSecret.data -}}
+{{- $redisSecretData = $redisSecret.data -}}
+{{- end -}}
+{{- end -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -16,6 +43,10 @@ spec:
       app: oauth2-proxy
   template:
     metadata:
+      {{- if eq $sessionStoreType "redis" }}
+      annotations:
+        checksum/redis-session-credentials: {{ toJson $redisSecretData | sha256sum | quote }}
+      {{- end }}
       labels:
         app: oauth2-proxy
         azure.workload.identity/use: "true"
@@ -37,10 +68,18 @@ spec:
                 secretKeyRef:
                   name: oauth2-proxy-credentials
                   key: cookie-secret
+            {{- if eq $sessionStoreType "redis" }}
+            - name: OAUTH2_PROXY_REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $redisExistingSecret }}
+                  key: {{ $redisPasswordKey }}
+            {{- end }}
           args:
             - --http-address=0.0.0.0:4180
             - --provider=entra-id
             - --oidc-issuer-url=https://login.microsoftonline.com/{{ $tenantId }}/v2.0
+            - --oidc-email-claim={{ $oidcEmailClaim }}
             - --client-id={{ $clientId }}
             - --redirect-url=https://{{ .Values.domain }}/oauth2/callback
             - --entra-id-federated-token-auth
@@ -49,7 +88,14 @@ spec:
             - --cookie-name=_cetirun_oauth2
             - --cookie-secure=true
             - --cookie-samesite=lax
-            - --cookie-expire=8h
+            {{- if eq $sessionStoreType "redis" }}
+            - --cookie-expire={{ $redisCookieExpire }}
+            - --cookie-refresh={{ $redisCookieRefresh }}
+            - --session-store-type=redis
+            - --redis-connection-url={{ $redisConnectionURL }}
+            {{- else }}
+            - --cookie-expire={{ $cookieExpire }}
+            {{- end }}
             - --email-domain={{ .Values.emailDomain }}
             - --skip-provider-button=true
             {{- range (splitList "," $allowedGroups) }}
@@ -57,12 +103,21 @@ spec:
             - --allowed-group={{ . | trim }}
             {{- end }}
             {{- end }}
+            {{- if eq $sessionStoreType "redis" }}
+            - --scope=openid email profile offline_access
+            {{- else }}
             - --scope=openid email profile
+            {{- end }}
             - --upstream=static://200
             - --reverse-proxy=true
             - --set-xauthrequest=true
             - --whitelist-domain={{ .Values.domain }}
             - --pass-access-token=false
+            # Return the validated OIDC ID token to Envoy. The ingress Lua
+            # filter moves it into a Portal-only header and removes Authorization
+            # before routing, so Agent workloads never receive this token.
+            - --pass-authorization-header=true
+            - --set-authorization-header=true
             - --skip-jwt-bearer-tokens=true
             - --silence-ping-logging=true
             - --footer=-

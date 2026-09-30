@@ -65,6 +65,9 @@ serviceAccount:
   # Only applies when using chart-created service account (name is not set).
   # When set, automounts the service account token automatically.
   role: ""
+  # -- Explicitly control the default Kubernetes API token mount. Null preserves
+  # historical behavior. The operator forces false for Agent Identity workloads.
+  automountToken: null
 
 # -- Azure Workload Identity configuration
 # Enables Azure AD workload identity for the pod, allowing passwordless
@@ -76,6 +79,12 @@ azureWorkloadIdentity:
   enabled: false
   # -- Client ID of the User-Assigned Managed Identity
   clientId: ""
+
+# -- Typed Microsoft Entra Agent Identity Broker integration. The operator owns
+# these values; an instance workload must not select its Broker endpoint.
+agentIdentity:
+  enabled: false
+  brokerURL: ""
 
 # -- Pod annotations
 podAnnotations: {}
@@ -215,8 +224,8 @@ sidecars: []
 persistence:
   # -- Enable persistent storage
   enabled: true
-  # -- Storage class name (empty for default)
-  storageClass: ""
+  # -- Storage class name ("default" uses Azure Disk on AKS; empty uses the cluster default)
+  storageClass: default
   # -- Access mode for the PVC
   accessMode: ReadWriteOnce
   # -- Size of the persistent volume
@@ -247,27 +256,29 @@ openclaw:
     gateway:
       mode: local
       port: 18789
+      # Istio's same-Pod inbound Envoy connects to the application from this
+      # exact loopback address and overwrites forwarded-client headers.
+      trustedProxies:
+        - "127.0.0.6"
       controlUi:
         dangerouslyAllowHostHeaderOriginFallback: true
-        dangerouslyDisableDeviceAuth: true
     logging:
       level: "info"
     # -- Disable startup version check (prevents network call at launch)
     update:
       checkOnStart: false
+    memory:
+      search:
+        enabled: false
+        rememberAcrossConversations: false
     # -- Agent defaults
     agents:
       defaults:
         verboseDefault: "on"
-        memorySearch:
-          enabled: false
     # -- Browser configuration for headed Chrome (GUI visible via noVNC).
     # Chrome runs in the desktop sidecar; gateway connects via CDP (attachOnly).
     browser:
       enabled: true
-      remoteCdpTimeoutMs: 1500
-      remoteCdpHandshakeTimeoutMs: 3000
-      color: "#FF4500"
       headless: false
       noSandbox: true
       attachOnly: true
@@ -275,11 +286,10 @@ openclaw:
       profiles:
         openclaw:
           cdpPort: 18800
-          color: "#FF4500"
       ssrfPolicy:
         dangerouslyAllowPrivateNetwork: true
   # -- ACPX plugin configuration (Agent Communication Protocol eXtensions).
-  # acpx is bundled with openclaw — no separate installation needed.
+  # The CetiRun OpenClaw image installs the matching ACPX package.
   # See https://docs.openclaw.ai/tools/acp-agents for full documentation.
   acpx:
     # -- Enable ACPX plugin and ACP configuration
@@ -296,25 +306,13 @@ openclaw:
       - claude
       - codex
       - opencode
-    # -- Maximum number of concurrent ACP sessions
-    maxConcurrentSessions: 8
-    # -- Stream coalescing settings for real-time output
-    stream:
-      coalesceIdleMs: 300
-      maxChunkChars: 1200
-    # -- Session runtime defaults
-    runtime:
-      ttlMinutes: 120
     # -- ACPX plugin permission mode (approve-all, approve-reads, or deny-all)
     permissionMode: "approve-all"
     # -- How to handle permission prompts without a TTY (fail or deny).
     # "deny" allows graceful degradation; "fail" aborts the session on prompts.
     nonInteractivePermissions: "deny"
-    # -- Per-agent command overrides for ~/.acpx/config.json.
-    # Use this to pin specific ACP adapter packages or custom commands.
-    agents:
-      codex:
-        command: "npx @zed-industries/codex-acp@0.9.2"
+    # -- Per-agent command overrides for the embedded ACPX runtime.
+    agents: {}
 
   # -- Git credential configuration for Azure DevOps.
   # When enabled, the init container installs a credential helper script
@@ -347,7 +345,7 @@ hermes:
     browser:
       cdp_url: "http://127.0.0.1:18800"
     memory:
-      char_limit: 2200
+      memory_char_limit: 2200
       user_char_limit: 1375
     security:
       redact_secrets: true
@@ -464,12 +462,6 @@ tailscale:
   # -- Enable `tailscale serve` to proxy the gateway with Tailscale HTTPS.
   # When true, the gateway port is automatically used as the serve target.
   serve: false
-  # -- Relax gateway authentication when Tailscale is enabled.
-  # Sets allowInsecureAuth and dangerouslyDisableDeviceAuth so the gateway
-  # is accessible via HTTP on the Tailscale IP without device auth.
-  # Only enable when Tailscale is the sole access path (no ingress, network policy on).
-  # WARNING: enabling this with non-tailnet ingress paths bypasses gateway auth.
-  relaxGatewayAuth: false
 
 # -- Session logger sidecar configuration.
 # Tails session JSONL files to stdout so Container Insights (Azure Monitor)
@@ -553,6 +545,8 @@ networkPolicy:
   # istioIngressNamespace: ""
   # -- Namespace where kube-dns runs (egress DNS)
   dnsNamespace: kube-system
+  # -- Namespace hosting the deployment-level Agent Identity Broker.
+  agentIdentityBrokerNamespace: cetirun-credentials
   # -- CIDRs to block from external egress.
   # kube-dns is allowed via namespace selectors
   # regardless of these blocks.

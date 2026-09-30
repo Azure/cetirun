@@ -10,17 +10,71 @@ image, e.g.:
 """
 
 import asyncio
+import inspect
 import json
 from collections import OrderedDict
+from unittest.mock import AsyncMock
 
 import pytest
 
 from . import adapter as A
+from . import create_adapter, is_connected, register, standalone_send
 
 TRUSTED = "https://smba.trafficmanager.net/teams/"
 CONV = "19:abc123@thread.tacv2;messageid=1000000000001"
 CONV_BASE = "19:abc123@thread.tacv2"
 OTHER_THREAD = "19:abc123@thread.tacv2;messageid=1000000000002"
+
+
+def test_registers_through_plugin_context():
+    registered = {}
+
+    class Context:
+        def register_platform(self, **kwargs):
+            registered.update(kwargs)
+
+    register(Context())
+    assert registered["name"] == "cetirun_teams"
+    assert registered["adapter_factory"] is create_adapter
+    assert registered["standalone_sender_fn"] is standalone_send
+    assert registered["validate_config"] is is_connected
+    assert registered["is_connected"] is is_connected
+
+
+def test_factory_creates_the_adapter_when_called(monkeypatch):
+    config = object()
+    adapter = object()
+
+    def factory(received):
+        assert received is config
+        return adapter
+
+    monkeypatch.setattr(A, "CetiRunTeamsAdapter", factory)
+    assert create_adapter(config) is adapter
+
+
+def test_standalone_factory_forwards_the_send_contract(monkeypatch):
+    config = object()
+    sender = AsyncMock(return_value={"success": True})
+    monkeypatch.setattr(A, "_standalone_send", sender)
+    result = asyncio.run(standalone_send(config, CONV, "hello", thread_id="thread"))
+    assert result == {"success": True}
+    sender.assert_awaited_once_with(config, CONV, "hello", thread_id="thread")
+
+
+def test_platform_is_not_connected_without_an_app_id(monkeypatch):
+    monkeypatch.delenv("MSTEAMS_APP_ID", raising=False)
+    config = type("Config", (), {"extra": {}})()
+    assert not is_connected(config)
+    config.extra["app_id"] = "configured-app"
+    assert is_connected(config)
+
+
+def test_adapter_signatures_match_current_hermes_contract():
+    connect = inspect.signature(A.CetiRunTeamsAdapter.connect)
+    send_typing = inspect.signature(A.CetiRunTeamsAdapter.send_typing)
+    assert connect.parameters["is_reconnect"].kind is inspect.Parameter.KEYWORD_ONLY
+    assert "metadata" in send_typing.parameters
 
 
 @pytest.fixture

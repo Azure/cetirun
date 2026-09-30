@@ -12,15 +12,7 @@
         "dispatch": {
           "enabled": true
         },
-        "enabled": true,
-        "maxConcurrentSessions": 8,
-        "runtime": {
-          "ttlMinutes": 120
-        },
-        "stream": {
-          "coalesceIdleMs": 300,
-          "maxChunkChars": 1200
-        }
+        "enabled": true
       },
       "agents": {
         "defaults": {
@@ -28,15 +20,16 @@
             "memoryFlush": {
               "enabled": true,
               "softThresholdTokens": 4000
-            },
-            "reserveTokensFloor": 20000
-          },
-          "memorySearch": {
-            "enabled": false
+            }
           },
           "model": {
             "fallbacks": [],
             "primary": "github-copilot/test-model"
+          },
+          "modelPolicy": {
+            "allow": [
+              "github-copilot/test-model"
+            ]
           },
           "models": {
             "github-copilot/test-model": {}
@@ -54,19 +47,15 @@
       },
       "browser": {
         "attachOnly": true,
-        "color": "#FF4500",
         "defaultProfile": "openclaw",
         "enabled": true,
         "headless": false,
         "noSandbox": true,
         "profiles": {
           "openclaw": {
-            "cdpPort": 18800,
-            "color": "#FF4500"
+            "cdpPort": 18800
           }
         },
-        "remoteCdpHandshakeTimeoutMs": 3000,
-        "remoteCdpTimeoutMs": 1500,
         "ssrfPolicy": {
           "dangerouslyAllowPrivateNetwork": true
         }
@@ -93,21 +82,35 @@
       },
       "gateway": {
         "controlUi": {
-          "allowInsecureAuth": true,
-          "dangerouslyAllowHostHeaderOriginFallback": true,
-          "dangerouslyDisableDeviceAuth": true
+          "dangerouslyAllowHostHeaderOriginFallback": true
         },
         "mode": "local",
-        "port": 18789
+        "port": 18789,
+        "trustedProxies": [
+          "127.0.0.6",
+          "127.0.0.1"
+        ]
       },
       "logging": {
         "level": "info"
+      },
+      "memory": {
+        "search": {
+          "enabled": false,
+          "rememberAcrossConversations": false
+        }
       },
       "meta": {
         "lastTouchedVersion": "0.1.0"
       },
       "plugins": {
         "allow": [
+          "github",
+          "brave",
+          "telegram",
+          "slack",
+          "discord",
+          "feishu",
           "acpx",
           "msteams"
         ],
@@ -119,10 +122,16 @@
             },
             "enabled": true
           },
+          "brave": {
+            "enabled": true
+          },
           "discord": {
             "enabled": true
           },
           "feishu": {
+            "enabled": true
+          },
+          "github": {
             "enabled": true
           },
           "msteams": {
@@ -143,8 +152,7 @@
             "/home/vibe/.cetirun/skills/npm/@example__skill",
             "/home/vibe/.cetirun/skills/npm/example-skill"
           ],
-          "watch": true,
-          "watchDebounceMs": 250
+          "watch": true
         }
       },
       "tools": {
@@ -155,7 +163,7 @@
         "web": {
           "search": {
             "enabled": true,
-            "provider": "perplexity"
+            "provider": "brave"
           }
         }
       },
@@ -165,13 +173,13 @@
     }
   },
   "manifestHashes": {
-    "configmap.yaml": "e1c802c0ab5ceb66cef3cd4134085ed23b755d520229471a516a56393a273d8d",
+    "configmap.yaml": "07dba6df6eedf8e392791b43aa547679a52736bfe0864d65f77e6b9947113130",
     "deny-exec-policy.yaml": "7dd9900c6cb720cda23eae4abebcdd68e7d868d91be7df00bac133f63acb4267",
     "networkpolicy.yaml": "6e6daab385ee395ace40d6677ebc9ba26d9a5df8da62b8cf447fcd15818c1644",
     "pre-upgrade-hook.yaml": "06438617ca6f50d2ea5d2e0e898f95cad13438e19e07b141c52a7b19725f60fc",
     "service.yaml": "dcfd18b807bd496a41124356859059a9db89b86d5fde460591bbd4275d4aca22",
     "shared-skills-pv.yaml": "38c08b871f0dfe5237fff4c92fd6622e54c9b81edec9bcb10c79f68075035e77",
     "shared-skills-pvc.yaml": "d5af7044cd33fb9d6ddacb1d23aa2fbcc17d0ddcbfa42f9e10f2a7103ab75d7d",
-    "statefulset.yaml": "27a6939e3a2717f726c944734151dc7a463c1e1eb4e239bb729061000f2f9bd6"
+    "statefulset.yaml": "b5512211cfc41eb968f824a092b19d2c32d39b0637c2d2b9b2904ef40d4282a6"
   }
 }

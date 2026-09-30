@@ -128,6 +128,13 @@ checksum-verified supplement is recorded in `web/licenses/supplements.json`.
 Review supplements when updating dependencies; do not reuse old version
 approvals. `npm test` includes offline generator regressions.
 
+Portal CI checks known supplement versions before installing dependencies.
+When a version needs a new entry, it verifies the public upstream metadata and
+unchanged attribution files, then saves a proposed `portal-license-update`
+patch for review. CI does not apply the patch or relax the build check. See the
+[supplement update procedure](app/cetirun-portal/web/licenses/README.md) for the
+local command, manual-review cases, and tarball checks.
+
 To inspect the notice without building the frontend, after `npm ci`:
 
 ```bash
@@ -192,10 +199,12 @@ including invalid-value cases. They use dummy inputs and do not install
 resources. They do not validate every chart in the repository or prove that a
 live deployment works.
 
-The Python command tests repository helpers with local fixtures. It does not
-run the Auth/Teams and native initialization suite. For that suite, prepare the
-locked dependencies in `scripts/ci/requirements.txt` separately, then run
-`make python-test`. It executes the real init scripts against synthetic HOME
+The Python command tests repository helpers with local fixtures. The Istio mesh
+reconciliation tests require the pinned PyYAML dependency in
+`infra/istio/requirements.txt`. It does not run the Auth/Teams and native
+initialization suite. For that suite, prepare the locked dependencies in
+`scripts/ci/requirements.txt` separately, then run `make python-test`. It
+executes the real init scripts against synthetic HOME
 directories and uses test doubles for Hermes interfaces, cloud credentials
 and network calls. OpenClaw initialization tests also require `jq`.
 Keep live Agent, Teams or other service integration tests separately authorized.
@@ -280,6 +289,13 @@ exceptions in `scripts/license_headers.py` must retain their own notices.
   manifests are validation output, not replacements for those templates.
 - Keep `go.mod` and `go.sum` together when dependencies change. Keep the portal's
   `package.json` and `package-lock.json` consistent; use `npm ci` for installation.
+- Dependabot groups shared Go builder updates across the application
+  directories. The runtime base exposes its default image in the `go-toolchain`
+  stage; `GO_BUILD_IMAGE` still accepts an explicit override. New Go components
+  must be included in the Docker and Go module update directories. CI checks
+  that every Go builder is discoverable and shares the pinned digest.
+  A Go release upgrade also needs matching changes to `.go-version` and every
+  module's `go` directive; grouping Docker updates does not make those changes.
 - Do not commit binaries, `web/dist`, `node_modules`, Python caches or virtual
   environments, coverage output, rendered secrets, or local configuration.
 - Preserve third-party copyright, license, and source attribution.

@@ -69,15 +69,12 @@ kubectl cluster-info --request-timeout=5s > /dev/null
 
 # ── StorageClass ──────────────────────────────────────────────────────────────
 echo ""
-if kubectl get storageclass azureblob-nfs-premium &>/dev/null; then
-  echo "==> StorageClass azureblob-nfs-premium already exists — skipping."
+if kubectl get storageclass default &>/dev/null; then
+  echo "==> HOME StorageClass default exists."
 else
-  echo "ERROR: StorageClass azureblob-nfs-premium not found."
-  echo "The Azure Blob CSI driver must be enabled on the AKS cluster:"
-  echo ""
-  echo "    az aks update -g <resource-group> -n <cluster-name> --enable-blob-driver"
-  echo ""
-  echo "Once enabled, AKS will automatically create the azureblob-nfs-premium StorageClass."
+  echo "ERROR: HOME StorageClass default not found."
+  echo "AKS supplies this class through the Azure Disk CSI driver."
+  echo "Review the cluster storage configuration before deploying."
   exit 1
 fi
 
