@@ -229,6 +229,33 @@ necessarily generation; consumers must not rely only on generation changes.
 `sandboxbinding.Read` reads the persisted authorization through an uncached
 reader; the shared resolver must then compare it with fresh references.
 
+#### Policy controls and status
+
+The candidate Azure CNI Overlay/Cilium compiler emits explicit network controls
+and per-Agent identity resources from trusted topology and grant inventories.
+Gateway endpoints/ports come from that inventory, not hardcoded defaults or
+policy-supplied destinations. Conflicting required destinations reject. FQDN
+blocking and mTLS remain unsupported and reject rather than becoming no-ops.
+The effective compiled revision includes topology, identity and role-content
+changes; use it rather than only the base resolver revision.
+
+Ordinary workloads keep the default ServiceAccount without token automount.
+Approved Kubernetes API and Entra identities use separate audience-bound token
+projections; Entra-only identity does not implicitly authorize Kubernetes access.
+The compiler does not provision or revoke cloud identities. RBAC revocation
+helpers require authoritative UID/ownership checks and confirmed absence, and
+preserve shared roles/accounts. Persisting a grant inventory before writes and
+integrating retryable revocation into every finalizer path are still lifecycle
+requirements, not satisfied by rediscovering currently visible bindings alone.
+
+The operator registers Sandbox and AgentPolicy configuration reconcilers.
+Sandbox `Ready` describes prerequisites; AgentPolicy `Accepted` describes
+configuration validity/support. Without a qualified platform snapshot source,
+these conditions remain `Unknown`, not ready. Indexed configuration watches
+requeue referencing Agents, including pending bindings. Per-Agent status helpers
+require matching current binding/revision/Pod/node/epoch and fresh guest-external
+observation, preserve applied history on failure, and do not release the hold.
+
 #### Schema and binary upgrades
 
 Admission deliberately rejects object fields the serving binary does not

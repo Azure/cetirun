@@ -46,6 +46,10 @@ import (
 // +kubebuilder:rbac:groups=cetirun.microsoft.com,resources=agents/finalizers,verbs=update
 // +kubebuilder:rbac:groups=cetirun.microsoft.com,resources=teams,verbs=get;list;watch
 // +kubebuilder:rbac:groups=cetirun.microsoft.com,resources=teams/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=cetirun.microsoft.com,resources=sandboxes;agentpolicies,verbs=get;list;watch
+// +kubebuilder:rbac:groups=cetirun.microsoft.com,resources=sandboxes/status;agentpolicies/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=node.k8s.io,resources=runtimeclasses,verbs=get
+// +kubebuilder:rbac:groups=storage.k8s.io,resources=storageclasses,verbs=get
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
@@ -121,11 +125,22 @@ func (r *AgentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	); err != nil {
 		return fmt.Errorf("index instance by spec.team: %w", err)
 	}
+	if err := indexSandboxDependencies(context.Background(), mgr.GetFieldIndexer()); err != nil {
+		return err
+	}
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&cetirunv1alpha1.Agent{}).
 		Watches(
 			&cetirunv1alpha1.Team{},
 			handler.EnqueueRequestsFromMapFunc(r.enqueueInstancesForTeam),
+		).
+		Watches(
+			&cetirunv1alpha1.Sandbox{},
+			handler.EnqueueRequestsFromMapFunc(r.enqueueInstancesForSandbox),
+		).
+		Watches(
+			&cetirunv1alpha1.AgentPolicy{},
+			handler.EnqueueRequestsFromMapFunc(r.enqueueInstancesForAgentPolicy),
 		).
 		WithOptions(crcontroller.Options{MaxConcurrentReconciles: 4}).
 		Complete(r)

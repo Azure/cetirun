@@ -155,6 +155,22 @@ class SandboxAdmissionChartTests(unittest.TestCase):
             if identity[0] == "ClusterRoleBinding" and identity[1] != NAME:
                 self.assertNotIn(NAME, [subject["name"] for subject in document["subjects"]])
 
+    def test_operator_can_observe_configuration_and_publish_only_status(self):
+        role = self.render()[("ClusterRole", "cetirun-operator-manager-role")]
+        for resource in ("sandboxes", "agentpolicies"):
+            rules = [
+                rule for rule in role["rules"]
+                if API_GROUP in rule["apiGroups"] and resource in rule["resources"]
+            ]
+            self.assertEqual(len(rules), 1)
+            self.assertEqual(rules[0]["verbs"], ["get", "list", "watch"])
+            status_rules = [
+                rule for rule in role["rules"]
+                if API_GROUP in rule["apiGroups"] and f"{resource}/status" in rule["resources"]
+            ]
+            self.assertEqual(len(status_rules), 1)
+            self.assertEqual(status_rules[0]["verbs"], ["get", "update", "patch"])
+
     def test_deployment_contract_tls_and_security_contexts(self):
         documents = self.render(self.server_values())
         deployment = documents[("Deployment", NAME)]
