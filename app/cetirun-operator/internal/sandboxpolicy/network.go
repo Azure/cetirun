@@ -39,7 +39,7 @@ type addressGrant struct {
 	Ports  []api.AgentPolicyPort
 }
 
-// Cilium's allow-rule schema limits each toPorts[].ports array to 40 entries.
+// Cilium validates both allow and deny toPorts[].ports arrays against this limit.
 const maxPortsPerRule = 40
 
 func canonicalPlatform(input Platform, capabilities sandbox.Capabilities) (Platform, error) {
@@ -640,13 +640,20 @@ func canonicalPorts(ports []api.AgentPolicyPort, capabilities sandbox.Capabiliti
 }
 
 func portRules(ports []api.AgentPolicyPort) []PortRule {
-	rules := []PortRule{{}}
-	for _, port := range ports {
-		if len(rules[len(rules)-1].Ports) == maxPortsPerRule {
-			rules = append(rules, PortRule{})
-		}
-		rule := &rules[len(rules)-1]
-		rule.Ports = append(rule.Ports, PortRange{Port: strconv.Itoa(int(port.Port)), Protocol: port.Protocol})
+	ranges := make([]PortRange, len(ports))
+	for i, port := range ports {
+		ranges[i] = PortRange{Port: strconv.Itoa(int(port.Port)), Protocol: port.Protocol}
+	}
+	return boundedPortRules(ranges)
+}
+
+func boundedPortRules(ports []PortRange) []PortRule {
+	if len(ports) == 0 {
+		return []PortRule{{}}
+	}
+	rules := make([]PortRule, 0, (len(ports)+maxPortsPerRule-1)/maxPortsPerRule)
+	for group := range slices.Chunk(ports, maxPortsPerRule) {
+		rules = append(rules, PortRule{Ports: group})
 	}
 	return rules
 }
@@ -674,7 +681,7 @@ func deniedPorts(allowed []api.AgentPolicyPort) []PortRule {
 			start = port + 1
 		}
 	}
-	return []PortRule{rule}
+	return boundedPortRules(rule.Ports)
 }
 
 func peerSelector(peer Peer) metav1.LabelSelector {
