@@ -211,5 +211,6 @@ ENV DISPLAY=:99
 EXPOSE 6080 18800
 
 COPY --chown=vibe:vibe configs/desktop-entrypoint.sh /usr/local/bin/desktop-entrypoint.sh
+RUN chmod 755 /usr/local/bin/desktop-entrypoint.sh
 
 ENTRYPOINT [ "/usr/local/bin/desktop-entrypoint.sh" ]
