@@ -124,9 +124,15 @@ func (b *Bundle) validateContainer(container corev1.Container, image string) err
 			return fmt.Errorf("%s has a duplicate environment name", container.Name)
 		}
 		seen[env.Name] = true
-		if env.ValueFrom != nil && env.ValueFrom.SecretKeyRef != nil &&
-			!slices.Contains(b.input.AuthorizedSecrets, env.ValueFrom.SecretKeyRef.Name) {
-			return fmt.Errorf("%s references an unauthorized Secret", container.Name)
+		if env.ValueFrom != nil {
+			source := env.ValueFrom
+			if env.Value != "" || source.SecretKeyRef == nil || source.ConfigMapKeyRef != nil ||
+				source.FieldRef != nil || source.ResourceFieldRef != nil {
+				return fmt.Errorf("%s contains an unsupported environment source", container.Name)
+			}
+			if !slices.Contains(b.input.AuthorizedSecrets, source.SecretKeyRef.Name) {
+				return fmt.Errorf("%s references an unauthorized Secret", container.Name)
+			}
 		}
 	}
 	mounts := []corev1.VolumeMount{

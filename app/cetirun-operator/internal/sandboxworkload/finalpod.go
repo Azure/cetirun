@@ -4,15 +4,25 @@
 package sandboxworkload
 
 import (
+	"encoding/json"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 )
+
+// PodMismatchError exposes bounded field paths only, never either Pod's values.
+type PodMismatchError struct{ Fields []string }
+
+func (e *PodMismatchError) Error() string {
+	return "final Pod differs from the protected template at " + strings.Join(e.Fields, ", ")
+}
 
 // ValidatePod compares every final PodSpec field, not just selected security
 // fields, with a controller-owned chart-rendered expectation. Only documented
@@ -40,9 +50,14 @@ func ValidatePod(pod *corev1.Pod, expected Expectation) error {
 		APIVersion: "apps/v1", Kind: "StatefulSet", Name: expected.Workload.Name, UID: expected.Workload.UID,
 		Controller: ptr.To(true), BlockOwnerDeletion: ptr.To(true),
 	}
-	if !equality.Semantic.DeepEqual(pod.OwnerReferences, []metav1.OwnerReference{owner}) ||
-		len(pod.Finalizers) != 0 || !equalJSON(pod.Annotations, expected.Template.Annotations) {
-		return fmt.Errorf("Pod ownership or protected metadata differs from the expected workload")
+	if !equality.Semantic.DeepEqual(pod.OwnerReferences, []metav1.OwnerReference{owner}) {
+		return &PodMismatchError{[]string{"metadata.ownerReferences"}}
+	}
+	if len(pod.Finalizers) != 0 {
+		return &PodMismatchError{[]string{"metadata.finalizers"}}
+	}
+	if !equalJSON(pod.Annotations, expected.Template.Annotations) {
+		return &PodMismatchError{[]string{"metadata.annotations"}}
 	}
 	labels := map[string]string{}
 	for key, value := range expected.Template.Labels {
@@ -54,17 +69,60 @@ func ValidatePod(pod *corev1.Pod, expected Expectation) error {
 		labels["controller-revision-hash"] = expected.ControllerRevision
 	}
 	if !equality.Semantic.DeepEqual(pod.Labels, labels) {
-		return fmt.Errorf("Pod selectors or controller revision do not match authoritative state")
+		return &PodMismatchError{[]string{"metadata.labels"}}
 	}
 	want := expected.Template.Spec.DeepCopy()
 	want.Hostname, want.Subdomain, want.Overhead = name, expected.Workload.Name, expected.Overhead.DeepCopy()
 	got := pod.Spec.DeepCopy()
-	defaultPod(want)
-	defaultPod(got)
+	if err := defaultPod(want); err != nil {
+		return fmt.Errorf("normalize expected Pod: %w", err)
+	}
+	if err := defaultPod(got); err != nil {
+		return fmt.Errorf("normalize final Pod: %w", err)
+	}
 	if !equality.Semantic.DeepEqual(want, got) {
-		return fmt.Errorf("final Pod differs from the protected chart template")
+		var fields []string
+		podDifferencePaths(reflect.ValueOf(want), reflect.ValueOf(got), "spec", &fields)
+		return &PodMismatchError{fields}
 	}
 	return nil
+}
+
+func podDifferencePaths(a, b reflect.Value, path string, fields *[]string) {
+	if len(*fields) >= 8 || equality.Semantic.DeepEqual(a.Interface(), b.Interface()) {
+		return
+	}
+	switch a.Kind() {
+	case reflect.Pointer:
+		if !a.IsNil() && !b.IsNil() {
+			podDifferencePaths(a.Elem(), b.Elem(), path, fields)
+			return
+		}
+	case reflect.Struct:
+		if !a.Type().Implements(reflect.TypeFor[json.Marshaler]()) &&
+			!reflect.PointerTo(a.Type()).Implements(reflect.TypeFor[json.Marshaler]()) {
+			before := len(*fields)
+			for i := range a.NumField() {
+				field := a.Type().Field(i)
+				name := strings.Split(field.Tag.Get("json"), ",")[0]
+				if field.IsExported() && name != "" && name != "-" {
+					podDifferencePaths(a.Field(i), b.Field(i), path+"."+name, fields)
+				}
+			}
+			if len(*fields) != before {
+				return
+			}
+		}
+	case reflect.Slice:
+		if a.Len() == b.Len() && a.IsNil() == b.IsNil() {
+			for i := range a.Len() {
+				podDifferencePaths(a.Index(i), b.Index(i), fmt.Sprintf("%s[%d]", path, i), fields)
+			}
+			return
+		}
+	}
+	// Maps are leaves: user-controlled map keys are not diagnostic field names.
+	*fields = append(*fields, path)
 }
 
 func validateExpectedInventory(spec corev1.PodSpec) error {
@@ -165,13 +223,14 @@ func PodSourceReferences(spec corev1.PodSpec, namespace string) []SourceReferenc
 
 func SamePodTemplate(actual, expected corev1.PodTemplateSpec) bool {
 	a, b := actual.DeepCopy(), expected.DeepCopy()
-	defaultPod(&a.Spec)
-	defaultPod(&b.Spec)
+	if defaultPod(&a.Spec) != nil || defaultPod(&b.Spec) != nil {
+		return false
+	}
 	return equalJSON(a.Labels, b.Labels) && equalJSON(a.Annotations, b.Annotations) &&
 		len(a.Finalizers) == 0 && len(a.OwnerReferences) == 0 && equality.Semantic.DeepEqual(a.Spec, b.Spec)
 }
 
-func defaultPod(spec *corev1.PodSpec) {
+func defaultPod(spec *corev1.PodSpec) error {
 	if spec.RestartPolicy == "" {
 		spec.RestartPolicy = corev1.RestartPolicyAlways
 	}
@@ -210,6 +269,19 @@ func defaultPod(spec *corev1.PodSpec) {
 		if source.Projected != nil && source.Projected.DefaultMode == nil {
 			source.Projected.DefaultMode = ptr.To(int32(0644))
 		}
+		if source.DownwardAPI != nil {
+			if source.DownwardAPI.DefaultMode == nil {
+				source.DownwardAPI.DefaultMode = ptr.To(int32(0644))
+			}
+			defaultDownwardItems(source.DownwardAPI.Items)
+		}
+		if source.Projected != nil {
+			for _, projection := range source.Projected.Sources {
+				if projection.DownwardAPI != nil {
+					defaultDownwardItems(projection.DownwardAPI.Items)
+				}
+			}
+		}
 	}
 	for _, key := range []string{"node.kubernetes.io/not-ready", "node.kubernetes.io/unreachable"} {
 		found := false
@@ -227,8 +299,26 @@ func defaultPod(spec *corev1.PodSpec) {
 	})
 	// JSON's omitempty makes zero-length slices/maps equivalent to omitted
 	// fields, without discarding any non-empty or newly added Pod field.
-	if normalized, err := clone(*spec); err == nil {
-		*spec = normalized
+	normalized, err := clone(*spec)
+	if err != nil {
+		return err
+	}
+	*spec = normalized
+	return nil
+}
+
+func defaultDownwardItems(items []corev1.DownwardAPIVolumeFile) {
+	for i := range items {
+		defaultFieldSelectors(items[i].FieldRef, items[i].ResourceFieldRef)
+	}
+}
+
+func defaultFieldSelectors(field *corev1.ObjectFieldSelector, resourceField *corev1.ResourceFieldSelector) {
+	if field != nil && field.APIVersion == "" {
+		field.APIVersion = "v1"
+	}
+	if resourceField != nil && resourceField.Divisor.IsZero() {
+		resourceField.Divisor = resource.MustParse("1")
 	}
 }
 
@@ -245,6 +335,11 @@ func defaultContainer(container *corev1.Container) {
 	}
 	if container.TerminationMessagePolicy == "" {
 		container.TerminationMessagePolicy = corev1.TerminationMessageReadFile
+	}
+	for _, env := range container.Env {
+		if env.ValueFrom != nil {
+			defaultFieldSelectors(env.ValueFrom.FieldRef, env.ValueFrom.ResourceFieldRef)
+		}
 	}
 	for i := range container.Ports {
 		if container.Ports[i].Protocol == "" {

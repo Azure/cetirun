@@ -34,6 +34,7 @@ type ServerOptions struct {
 	MetricsAddress    string
 	ProbeAddress      string
 	PodStateNamespace string
+	PodRequestTimeout time.Duration
 }
 
 // Run serves only admission. It never starts runtime reconcilers, participates
@@ -87,7 +88,9 @@ func Run(ctx context.Context, restConfig *rest.Config, config Config, options Se
 	server.Register(ValidationPath, &admission.Webhook{Handler: instrumentAdmission("validate", handler.Validate)})
 	server.Register(DefaultingPath, &admission.Webhook{Handler: instrumentAdmission("default", handler.DefaultAgent)})
 	if options.PodStateNamespace != "" {
-		podHandler, err := NewPodHandler(manager.GetAPIReader(), PodConfig{StateNamespace: options.PodStateNamespace})
+		podHandler, err := NewPodHandler(manager.GetAPIReader(), PodConfig{
+			StateNamespace: options.PodStateNamespace, RequestTimeout: options.PodRequestTimeout,
+		})
 		if err != nil {
 			return err
 		}

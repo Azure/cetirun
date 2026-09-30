@@ -239,6 +239,48 @@ func TestSandboxFinalPodRequiresProtectedExpectedDNS(t *testing.T) {
 	}
 }
 
+func TestSandboxRejectsUnsupportedEnvironmentSourcesAtBothBoundaries(t *testing.T) {
+	prepared, bundle, _ := sandboxRender(t, "hermes", true)
+	template, err := prepared.SandboxTemplate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, source := range []*corev1.EnvVarSource{
+		{ConfigMapKeyRef: &corev1.ConfigMapKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: "unapproved"}, Key: "example"}},
+		{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.name"}},
+		{ResourceFieldRef: &corev1.ResourceFieldSelector{Resource: "limits.cpu"}},
+		{},
+	} {
+		changed := template.DeepCopy()
+		changed.Spec.Containers[0].Env = append(changed.Spec.Containers[0].Env, corev1.EnvVar{Name: "UNSUPPORTED", ValueFrom: source})
+		if err := bundle.ValidateTemplate(changed, prepared.Agent.Image); err == nil {
+			t.Fatal("rendered template accepted an unsupported environment source")
+		}
+	}
+	input := sampleInput("hermes", "openai", false)
+	input["secrets"].(map[string]any)["existingSecret"] = "runtime-secret"
+	for _, reference := range []map[string]any{
+		{"configMapKeyRef": map[string]any{"name": "unapproved", "key": "example"}},
+		{"fieldRef": map[string]any{"fieldPath": "metadata.name"}},
+		{"resourceFieldRef": map[string]any{"resource": "limits.cpu"}},
+	} {
+		user := map[string]any{"extraEnv": []any{map[string]any{"name": "UNSUPPORTED", "valueFrom": reference}}}
+		if _, err := PrepareSandboxChart(testChart(t), input, user, bundle); err == nil {
+			t.Fatal("tenant values accepted an unsupported environment source")
+		}
+	}
+	for _, user := range []map[string]any{
+		{"tailscale": map[string]any{"enabled": true}},
+		{"sidecars": []any{map[string]any{"name": "unapproved", "image": "example.com/helper:v1"}}},
+		{"initContainers": []any{map[string]any{"name": "unapproved", "image": "example.com/helper:v1"}}},
+		{"extraVolumes": []any{map[string]any{"name": "unapproved", "hostPath": map[string]any{"path": "/example"}}}},
+	} {
+		if _, err := PrepareSandboxChart(testChart(t), input, user, bundle); err == nil {
+			t.Fatal("tenant chart extension bypassed the protected values allow-list")
+		}
+	}
+}
+
 func TestSandboxCompilerIdentityProjectionRendering(t *testing.T) {
 	for _, typ := range []string{"openclaw", "hermes"} {
 		t.Run(typ, func(t *testing.T) {

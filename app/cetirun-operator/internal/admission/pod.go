@@ -8,9 +8,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"slices"
+	"sync"
+	"time"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
@@ -21,19 +24,23 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	nodev1 "k8s.io/api/node/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 	strictjson "sigs.k8s.io/json"
 )
 
 const (
-	PodValidationPath = "/validate-sandbox-pods"
-	PodExpectationKey = "expectation.json"
+	PodValidationPath        = "/validate-sandbox-pods"
+	PodExpectationKey        = "expectation.json"
+	DefaultPodRequestTimeout = 8 * time.Second
+	podSourceReadConcurrency = 4
 )
 
 type PodConfig struct {
@@ -41,6 +48,9 @@ type PodConfig struct {
 	// It must not be an Agent workload namespace. Admission matching must
 	// independently protect that boundary and exclude its own repair resources.
 	StateNamespace string
+	// RequestTimeout covers all authoritative reads, not each individual GET.
+	// The chart reserves 20% of the webhook timeout for transport and response.
+	RequestTimeout time.Duration
 }
 
 type PodHandler struct {
@@ -57,6 +67,12 @@ func (h *PodHandler) Handle(ctx context.Context, request admission.Request) admi
 func NewPodHandler(reader client.Reader, config PodConfig) (*PodHandler, error) {
 	if reader == nil || config.StateNamespace == "" || len(validation.IsDNS1123Label(config.StateNamespace)) != 0 {
 		return nil, fmt.Errorf("Pod admission requires an uncached reader and protected controller state namespace")
+	}
+	if config.RequestTimeout == 0 {
+		config.RequestTimeout = DefaultPodRequestTimeout
+	}
+	if config.RequestTimeout <= 0 || config.RequestTimeout >= 30*time.Second {
+		return nil, fmt.Errorf("Pod admission request timeout must be positive and less than 30 seconds")
 	}
 	return &PodHandler{reader: reader, config: config}, nil
 }
@@ -99,34 +115,42 @@ func (h *PodHandler) Validate(ctx context.Context, request admission.Request) ad
 	if request.Operation == admissionv1.Delete || request.SubResource == "status" {
 		return admission.Allowed("Pod deletion and status remain independent of governance admission")
 	}
+	if request.Resource.Group == "" && request.Resource.Resource == "pods" && request.Resource.Version == "v1" &&
+		request.Operation == admissionv1.Connect && slices.Contains([]string{"exec", "attach", "portforward"}, request.SubResource) {
+		// CONNECT carries an options object, not a Pod. It must not depend on
+		// workload expectations or inherit a controller/administrator exemption.
+		return rejectPod(ctx, request, podDenied("ConnectForbidden", "interactive access to protected Pods is not supported"))
+	}
 	if request.Resource.Group != "" || request.Resource.Resource != "pods" || request.Resource.Version != "v1" ||
 		(request.Operation != admissionv1.Create && request.Operation != admissionv1.Update) ||
 		(request.SubResource != "" && request.SubResource != "ephemeralcontainers" && request.SubResource != "resize") {
-		return admission.Denied("unsupported protected Pod request")
+		return rejectPod(ctx, request, podDenied("UnsupportedRequest", "unsupported protected Pod request"))
 	}
+	ctx, cancel := context.WithTimeout(ctx, h.config.RequestTimeout)
+	defer cancel()
 	var pod corev1.Pod
 	if err := decodePod(request.Object.Raw, &pod); err != nil || pod.Namespace != request.Namespace || request.Namespace == "" ||
 		(request.Name != "" && request.Name != pod.Name) {
-		return admission.Errored(http.StatusBadRequest, fmt.Errorf("invalid or ambiguous protected Pod"))
+		return rejectPod(ctx, request, &podFailure{http.StatusBadRequest, "InvalidPod", "invalid or ambiguous protected Pod"})
 	}
-	expected, state, err := h.readExpectation(ctx, request.Namespace)
-	if err != nil {
-		return admission.Errored(http.StatusServiceUnavailable, fmt.Errorf("authoritative protected Pod expectations are unavailable"))
+	expected, state, failure := h.readExpectation(ctx, request.Namespace)
+	if failure != nil {
+		return rejectPod(ctx, request, failure)
 	}
 	agent, binding, err := sandboxbinding.Read(ctx, h.reader, client.ObjectKey{Name: expected.Agent.Name})
 	if err != nil || agent.UID != expected.Agent.UID || agent.Generation != expected.AgentGeneration ||
 		binding != expected.Binding || expected.Binding.AgentUID != expected.Agent.UID {
-		return admission.Denied("Pod binding is missing, stale or no longer authorized")
+		return rejectPod(ctx, request, podDenied("BindingUnauthorized", "Pod binding is missing, stale or no longer authorized"))
 	}
 	if expected.ExecutionHeld || agent.Spec.Suspended || slices.Contains(agent.Finalizers, sandbox.HoldFinalizer) {
-		return admission.Denied(sandboxworkload.ErrExecutionHeld.Error())
+		return rejectPod(ctx, request, podDenied("ExecutionHeld", sandboxworkload.ErrExecutionHeld.Error()))
 	}
-	if err := h.validatePodSources(ctx, expected, agent); err != nil {
-		return admission.Denied("Pod source identities or revisions are missing or stale")
+	if failure := h.validatePodSources(ctx, expected, agent); failure != nil {
+		return rejectPod(ctx, request, failure)
 	}
 	workload := &appsv1.StatefulSet{}
 	if err := h.reader.Get(ctx, client.ObjectKey{Namespace: expected.Namespace.Name, Name: expected.Workload.Name}, workload); err != nil {
-		return admission.Errored(http.StatusServiceUnavailable, fmt.Errorf("authoritative workload is unavailable"))
+		return rejectPod(ctx, request, podReadFailure("Workload", err))
 	}
 	owner := sandboxworkload.AgentOwner(agent.Name, agent.UID)
 	if workload.UID != expected.Workload.UID || !workload.DeletionTimestamp.IsZero() ||
@@ -136,36 +160,46 @@ func (h *PodHandler) Validate(ctx context.Context, request admission.Request) ad
 		ptr.Deref(workload.Spec.Replicas, 0) != 1 || workload.Spec.ServiceName != workload.Name ||
 		len(workload.Spec.VolumeClaimTemplates) != 0 ||
 		!sandboxworkload.SamePodTemplate(workload.Spec.Template, expected.Template) {
-		return admission.Denied("current workload ownership, lifecycle intent or template differs from the expectation")
+		return rejectPod(ctx, request, podDenied("WorkloadMismatch", "current workload ownership, lifecycle intent or template differs from the expectation"))
 	}
 	if expected.ControllerRevision != workload.Status.UpdateRevision || expected.ControllerRevision == "" {
-		return admission.Denied("StatefulSet controller revision has not been observed")
+		return rejectPod(ctx, request, podDenied("ControllerRevisionUnobserved", "StatefulSet controller revision has not been observed"))
 	}
 	if request.Operation == admissionv1.Update {
 		var old corev1.Pod
 		if err := decodePod(request.OldObject.Raw, &old); err != nil {
-			return admission.Errored(http.StatusBadRequest, fmt.Errorf("invalid previous Pod"))
+			return rejectPod(ctx, request, &podFailure{http.StatusBadRequest, "InvalidPreviousPod", "invalid previous Pod"})
 		}
 		current := &corev1.Pod{}
 		if err := h.reader.Get(ctx, client.ObjectKeyFromObject(&pod), current); err != nil {
-			return admission.Errored(http.StatusServiceUnavailable, fmt.Errorf("authoritative previous Pod is unavailable"))
+			return rejectPod(ctx, request, podReadFailure("PreviousPod", err))
 		}
 		if pod.UID == "" || current.UID != pod.UID || old.UID != current.UID || old.ResourceVersion != current.ResourceVersion ||
 			pod.ResourceVersion != current.ResourceVersion || old.Name != pod.Name || old.Namespace != pod.Namespace ||
 			old.Spec.NodeName != current.Spec.NodeName {
-			return admission.Denied("Pod update does not match the authoritative previous UID and revision")
+			return rejectPod(ctx, request, podDenied("PreviousPodMismatch", "Pod update does not match the authoritative previous UID and revision"))
 		}
 		// Scheduling is only grandfathered from the persisted Pod, not supplied
 		// by a new Pod or inferred from its caller, labels or ServiceAccount.
 		expected.Template.Spec.NodeName = current.Spec.NodeName
 	}
 	if err := sandboxworkload.ValidatePod(&pod, expected); err != nil {
-		return admission.Denied(err.Error())
+		message := "Pod does not match the protected workload contract"
+		var mismatch *sandboxworkload.PodMismatchError
+		if errors.As(err, &mismatch) {
+			message = mismatch.Error()
+		}
+		return rejectPod(ctx, request, podDenied("TemplateMismatch", message))
 	}
 	currentState := &corev1.ConfigMap{}
-	if err := h.reader.Get(ctx, client.ObjectKeyFromObject(state), currentState); err != nil ||
-		currentState.UID != state.UID || currentState.ResourceVersion != state.ResourceVersion {
-		return admission.Denied("Pod expectation changed during validation")
+	if err := h.reader.Get(ctx, client.ObjectKeyFromObject(state), currentState); err != nil {
+		return rejectPod(ctx, request, podReadFailure("Expectation", err))
+	}
+	if currentState.UID != state.UID || currentState.ResourceVersion != state.ResourceVersion {
+		return rejectPod(ctx, request, podDenied("ExpectationChanged", "Pod expectation changed during validation"))
+	}
+	if ctx.Err() != nil {
+		return rejectPod(ctx, request, podReadFailure("Expectation", ctx.Err()))
 	}
 	return admission.Allowed("final Pod matches current controller-owned expectations")
 }
@@ -178,26 +212,29 @@ func decodePod(raw []byte, target *corev1.Pod) error {
 	return nil
 }
 
-func (h *PodHandler) readExpectation(ctx context.Context, namespace string) (sandboxworkload.Expectation, *corev1.ConfigMap, error) {
+func (h *PodHandler) readExpectation(ctx context.Context, namespace string) (sandboxworkload.Expectation, *corev1.ConfigMap, *podFailure) {
 	var expected sandboxworkload.Expectation
 	if namespace == h.config.StateNamespace {
-		return expected, nil, fmt.Errorf("controller state is not an Agent namespace")
+		return expected, nil, podDenied("ControllerNamespace", "controller state is not an Agent namespace")
 	}
 	ns := &corev1.Namespace{}
 	if err := h.reader.Get(ctx, client.ObjectKey{Name: namespace}, ns); err != nil {
-		return expected, nil, err
+		return expected, nil, podReadFailure("Namespace", err)
 	}
 	if ns.UID == "" || !ns.DeletionTimestamp.IsZero() ||
 		ns.Labels[sandboxworkload.ProtectedNamespaceLabel] != "true" {
-		return expected, nil, fmt.Errorf("namespace is unprotected, absent or terminating")
+		return expected, nil, podDenied("NamespaceInactive", "namespace is unprotected, absent or terminating")
 	}
 	state := &corev1.ConfigMap{}
 	if err := h.reader.Get(ctx, client.ObjectKey{Namespace: h.config.StateNamespace, Name: PodExpectationName(namespace, ns.UID)}, state); err != nil {
-		return expected, nil, err
+		return expected, nil, podReadFailure("Expectation", err)
 	}
 	raw := state.Data[PodExpectationKey]
+	if len(raw) == 0 || len(raw) > 512*1024 {
+		return expected, nil, podDenied("ExpectationInvalid", "controller expectation is empty or exceeds the size limit")
+	}
 	problems, err := strictjson.UnmarshalStrict([]byte(raw), &expected)
-	if err != nil || len(problems) != 0 || len(raw) == 0 || len(raw) > 512*1024 ||
+	if err != nil || len(problems) != 0 ||
 		len(state.Data) != 1 || len(state.BinaryData) != 0 || state.UID == "" || state.ResourceVersion == "" ||
 		!state.DeletionTimestamp.IsZero() || expected.Version != sandboxworkload.ContractVersion ||
 		expected.Namespace.Name != ns.Name || expected.Namespace.UID != ns.UID ||
@@ -206,19 +243,19 @@ func (h *PodHandler) readExpectation(ctx context.Context, namespace string) (san
 		state.Annotations[sandboxworkload.RevisionAnnotation] != expected.Revision ||
 		state.Annotations[sandboxworkload.AgentUIDAnnotation] != string(expected.Agent.UID) ||
 		!equality.Semantic.DeepEqual(state.OwnerReferences, []metav1.OwnerReference{sandboxworkload.AgentOwner(expected.Agent.Name, expected.Agent.UID)}) {
-		return expected, nil, fmt.Errorf("invalid controller-owned expectation")
+		return expected, nil, podDenied("ExpectationInvalid", "invalid controller-owned expectation")
 	}
 	if ns.Annotations[sandboxworkload.AgentNameAnnotation] != expected.Agent.Name ||
 		ns.Annotations[sandboxworkload.AgentUIDAnnotation] != string(expected.Agent.UID) ||
 		!equality.Semantic.DeepEqual(ns.OwnerReferences, []metav1.OwnerReference{sandboxworkload.AgentOwner(expected.Agent.Name, expected.Agent.UID)}) {
-		return expected, nil, fmt.Errorf("namespace ownership differs from the controller-owned expectation")
+		return expected, nil, podDenied("NamespaceOwnershipChanged", "namespace ownership differs from the controller-owned expectation")
 	}
 	return expected, state, nil
 }
 
-func (h *PodHandler) validatePodSources(ctx context.Context, expected sandboxworkload.Expectation, agent *api.Agent) error {
+func (h *PodHandler) validatePodSources(ctx context.Context, expected sandboxworkload.Expectation, agent *api.Agent) *podFailure {
 	if len(expected.Sources) < 9 || len(expected.Sources) > 128 {
-		return fmt.Errorf("incomplete source inventory")
+		return podDenied("SourceInventoryInvalid", "source inventory must contain 9 to 128 identities")
 	}
 	type objectKey struct{ version, kind, namespace, name string }
 	required := map[objectKey]types.UID{
@@ -243,23 +280,14 @@ func (h *PodHandler) validatePodSources(ctx context.Context, expected sandboxwor
 	for _, source := range expected.Sources {
 		key := objectKey{source.APIVersion, source.Kind, source.Namespace, source.Name}
 		if source.UID == "" || source.ResourceVersion == "" || source.Name == "" || seen[key] {
-			return fmt.Errorf("invalid source identity")
+			return podDenied("SourceInventoryInvalid", "source identities must be complete and unique")
 		}
-		version, err := schema.ParseGroupVersion(source.APIVersion)
-		if err != nil {
-			return err
-		}
-		object := &metav1.PartialObjectMetadata{TypeMeta: metav1.TypeMeta{APIVersion: source.APIVersion, Kind: source.Kind}}
-		object.SetGroupVersionKind(version.WithKind(source.Kind))
-		if err := h.reader.Get(ctx, client.ObjectKey{Namespace: source.Namespace, Name: source.Name}, object); err != nil {
-			return err
-		}
-		if object.UID != source.UID || object.ResourceVersion != source.ResourceVersion || !object.DeletionTimestamp.IsZero() {
-			return fmt.Errorf("source changed")
+		if _, err := schema.ParseGroupVersion(source.APIVersion); err != nil || source.Kind == "" {
+			return podDenied("SourceInventoryInvalid", "source inventory contains an invalid resource kind or version")
 		}
 		if uid, exists := required[key]; exists {
-			if uid != "" && uid != object.UID {
-				return fmt.Errorf("required source binding changed")
+			if uid != "" && uid != source.UID {
+				return podDenied("SourceBindingChanged", "required source binding differs from the expectation")
 			}
 			delete(required, key)
 		}
@@ -267,26 +295,106 @@ func (h *PodHandler) validatePodSources(ctx context.Context, expected sandboxwor
 			source.Namespace == "" && source.UID == expected.Binding.AgentPolicyUID {
 			policy = true
 		}
-		if source.APIVersion == "v1" && source.Kind == "PersistentVolumeClaim" &&
-			source.Namespace == expected.Namespace.Name && source.Name == expected.Home.Name &&
-			object.Annotations[sandboxworkload.AgentUIDAnnotation] != string(expected.Agent.UID) {
-			return fmt.Errorf("HOME ownership changed")
-		}
 		seen[key] = true
 	}
 	if len(required) != 0 || !policy {
-		return fmt.Errorf("required source identities are missing")
+		return podDenied("SourceInventoryIncomplete", "required source identities are missing")
 	}
-	runtimeClass := &nodev1.RuntimeClass{}
-	if err := h.reader.Get(ctx, client.ObjectKey{Name: ptr.Deref(expected.Template.Spec.RuntimeClassName, "")}, runtimeClass); err != nil {
-		return err
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var firstFailure *podFailure
+	var once sync.Once
+	var workers sync.WaitGroup
+	for worker := range podSourceReadConcurrency {
+		workers.Go(func() {
+			for i := worker; i < len(expected.Sources); i += podSourceReadConcurrency {
+				if ctx.Err() != nil {
+					return
+				}
+				if failure := h.readPodSource(ctx, expected, expected.Sources[i]); failure != nil {
+					failure.message = fmt.Sprintf("expectation.sources[%d]: %s", i, failure.message)
+					once.Do(func() {
+						firstFailure = failure
+						cancel()
+					})
+					return
+				}
+			}
+		})
 	}
-	var overhead corev1.ResourceList
-	if runtimeClass.Overhead != nil && len(runtimeClass.Overhead.PodFixed) != 0 {
-		overhead = runtimeClass.Overhead.PodFixed
+	workers.Wait()
+	if firstFailure != nil {
+		return firstFailure
 	}
-	if !equality.Semantic.DeepEqual(overhead, expected.Overhead) {
-		return fmt.Errorf("RuntimeClass overhead changed")
+	if ctx.Err() != nil {
+		return podReadFailure("Source", ctx.Err())
 	}
 	return nil
+}
+
+func (h *PodHandler) readPodSource(ctx context.Context, expected sandboxworkload.Expectation, source sandboxworkload.SourceReference) *podFailure {
+	var object client.Object = &metav1.PartialObjectMetadata{TypeMeta: metav1.TypeMeta{APIVersion: source.APIVersion, Kind: source.Kind}}
+	var runtimeClass *nodev1.RuntimeClass
+	if source.APIVersion == "node.k8s.io/v1" && source.Kind == "RuntimeClass" && source.Namespace == "" &&
+		source.Name == ptr.Deref(expected.Template.Spec.RuntimeClassName, "") {
+		runtimeClass = &nodev1.RuntimeClass{}
+		object = runtimeClass
+	}
+	if err := h.reader.Get(ctx, client.ObjectKey{Namespace: source.Namespace, Name: source.Name}, object); err != nil {
+		return podReadFailure("Source", err)
+	}
+	if object.GetUID() != source.UID || object.GetResourceVersion() != source.ResourceVersion || !object.GetDeletionTimestamp().IsZero() {
+		return podDenied("SourceChanged", "a source UID or revision changed, or the source is terminating")
+	}
+	if source.APIVersion == "v1" && source.Kind == "PersistentVolumeClaim" &&
+		source.Namespace == expected.Namespace.Name && source.Name == expected.Home.Name &&
+		object.GetAnnotations()[sandboxworkload.AgentUIDAnnotation] != string(expected.Agent.UID) {
+		return podDenied("HomeOwnershipChanged", "HOME ownership differs from the expected Agent")
+	}
+	if runtimeClass != nil {
+		var overhead corev1.ResourceList
+		if runtimeClass.Overhead != nil && len(runtimeClass.Overhead.PodFixed) != 0 {
+			overhead = runtimeClass.Overhead.PodFixed
+		}
+		if !equality.Semantic.DeepEqual(overhead, expected.Overhead) {
+			return podDenied("RuntimeClassChanged", "RuntimeClass overhead differs from the expectation")
+		}
+	}
+	return nil
+}
+
+type podFailure struct {
+	code    int32
+	reason  string
+	message string
+}
+
+func (f *podFailure) Error() string { return f.reason + ": " + f.message }
+
+func podDenied(reason, message string) *podFailure {
+	return &podFailure{http.StatusForbidden, reason, message}
+}
+
+func podReadFailure(stage string, err error) *podFailure {
+	if apierrors.IsNotFound(err) {
+		return podDenied(stage+"Missing", "a required "+stage+" object is missing")
+	}
+	return &podFailure{http.StatusServiceUnavailable, stage + "ReadFailed", "an authoritative " + stage + " read failed"}
+}
+
+func rejectPod(ctx context.Context, request admission.Request, failure *podFailure) admission.Response {
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		failure = &podFailure{http.StatusGatewayTimeout, "RequestDeadlineExceeded", "authoritative validation exceeded its request budget"}
+	} else if errors.Is(ctx.Err(), context.Canceled) {
+		failure = &podFailure{http.StatusServiceUnavailable, "RequestCanceled", "authoritative validation was canceled"}
+	}
+	// Reasons and diagnostics contain no source values, object diffs or raw API
+	// errors. In particular, environment and Secret data must never be logged.
+	log.FromContext(ctx).Info("Protected Pod admission rejected", "reason", failure.reason,
+		"diagnostic", failure.message, "operation", request.Operation, "subresource", request.SubResource)
+	podAdmissionDenials.WithLabelValues(failure.reason).Inc()
+	if failure.code == http.StatusForbidden {
+		return admission.Denied(failure.Error())
+	}
+	return admission.Errored(failure.code, failure)
 }

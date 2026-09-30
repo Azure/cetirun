@@ -370,6 +370,44 @@ the request. All container, init-container, ephemeral-container and resize paths
 are checked. Pod DELETE and `/status` remain outside the webhook; unmarked
 platform/repair namespaces remain outside its matching.
 
+CONNECT requests for `pods/exec`, `pods/attach` and `pods/portforward` are denied
+in protected namespaces, independently of expectations and without an
+administrator or controller exemption. The protected runtime chart does not
+install the legacy per-release exec policy; the namespace-scoped admission
+guard replaces it. Kubernetes RBAC must also restrict access to these
+subresources. This guard does not change access to unmarked workloads.
+
+Protected namespaces must be excluded from unrelated Pod mutators, including
+sidecar/identity injectors and metadata-rewriting policies. Validation compares
+the complete specification and protected metadata after supported API defaults;
+unknown annotations and labels are not harmless by definition. For a mutating
+webhook, combine its existing namespace requirements with this exclusion:
+
+```yaml
+namespaceSelector:
+  matchExpressions:
+    - key: cetirun.microsoft.com/sandbox-protected
+      operator: DoesNotExist
+```
+
+Before enforcement, inspect the actual matching rules, namespace/object
+selectors and match conditions of every relevant mutator, including native
+mutation policies. Verify supported templates through the API-server request
+path in the target environment. The presence of an unrelated webhook alone is
+not a conflict, and the Istio opt-out is not a general mutation exemption.
+API-server round-trip tests cover current native templates and explicit
+DownwardAPI/field-selector defaults; this is not cross-version qualification.
+
+Denials include stable reason codes (for example `SourceChanged`,
+`ExpectationMissing`, `TemplateMismatch` or `RequestDeadlineExceeded`).
+Structured logs and `cetirun_sandbox_pod_admission_denials_total{reason=...}`
+use bounded reasons. Template diagnostics expose at most eight field paths,
+not environment values, Secret contents, map keys or raw API errors. Correct
+the trusted source/expectation or incompatible mutator rather than disabling
+validation. Source GETs are uncached, cancellation-aware and limited to four
+concurrent reads per request. The chart supplies a total validation budget of
+80% of `timeoutSeconds`, retaining the final expectation revision check.
+
 Controller state must be writable only by the trusted controller. The chart
 grants admission ConfigMap reads only in that state namespace. Required workload
 Secret/ConfigMap metadata reads need separately scoped, name-restricted RBAC in
@@ -381,6 +419,12 @@ The separate platform Copilot helper template/ownership contract is not defined
 yet; there is no label-, namespace- or ServiceAccount-only helper exemption.
 Protected preparation and expectation creation remain held until the separate
 lifecycle/start-barrier and enforcement-observation integration is qualified.
+There is no production expectation producer in this increment. `podsEnabled`
+alone only registers the endpoint; `enforce` installs matching for marked
+namespaces, not every Pod in the cluster. Do not mark namespaces or enable a
+governed start path until the producer, scoped read permissions, source
+refresh/revocation and workload lifecycle are qualified together. A chart
+version, readiness probe or manually authored expectation is not that evidence.
 
 #### Schema and binary upgrades
 
@@ -452,7 +496,8 @@ testing is still required.
 
 The rules do not intercept their own Deployment, Service, RBAC or certificate
 Secret. They exclude configuration `/status` and Agent DELETE.
-There are no Pod admission rules in this increment, including on Pod deletion.
+Optional protected Pod rules are installed only with `podsEnabled=true` and
+`enforce=true`; they always exclude Pod deletion and `/status`.
 Status writes still require appropriate Kubernetes RBAC.
 
 An API-server-side match condition also excludes **only** the exact controller's

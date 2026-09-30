@@ -32,6 +32,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
@@ -214,23 +215,11 @@ func TestPodAdmissionAPIServerBoundaries(t *testing.T) {
 		webhook.ServeHTTP(w, r)
 	}))
 	t.Cleanup(server.Close)
-	url := server.URL + PodValidationPath
-	rules := &admissionregistrationv1.ValidatingWebhookConfiguration{
-		ObjectMeta: metav1.ObjectMeta{Name: "sandbox-pod-test"},
-		Webhooks: []admissionregistrationv1.ValidatingWebhook{{
-			Name: "sandbox-pods.example.com", AdmissionReviewVersions: []string{"v1"},
-			ClientConfig: admissionregistrationv1.WebhookClientConfig{
-				URL: &url, CABundle: pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw}),
-			},
-			FailurePolicy: ptr.To(admissionregistrationv1.Fail), SideEffects: ptr.To(admissionregistrationv1.SideEffectClassNone),
-			TimeoutSeconds:  ptr.To(int32(2)),
-			MatchConditions: []admissionregistrationv1.MatchCondition{{Name: "test-workload", Expression: "request.namespace == 'cetirun-example'"}},
-			Rules: []admissionregistrationv1.RuleWithOperations{{
-				Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Create, admissionregistrationv1.Update},
-				Rule:       admissionregistrationv1.Rule{APIGroups: []string{""}, APIVersions: []string{"v1"}, Resources: []string{"pods", "pods/ephemeralcontainers", "pods/resize"}},
-			}},
-		}},
-	}
+	ca := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw})
+	_, _, rules := renderedPodAdmission(t, ca)
+	rules.Webhooks[0].ClientConfig.Service = nil
+	rules.Webhooks[0].ClientConfig.URL = ptr.To(server.URL + PodValidationPath)
+	rules.Webhooks[0].TimeoutSeconds = ptr.To(int32(2))
 	create(rules)
 	var probeError error
 	if err := wait.PollUntilContextTimeout(ctx, 100*time.Millisecond, 20*time.Second, true, func(ctx context.Context) (bool, error) {
@@ -246,6 +235,55 @@ func TestPodAdmissionAPIServerBoundaries(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("webhook did not reject probe: %v; calls=%d; last=%v", err, calls.Load(), probeError)
 	}
+	var inject atomic.Bool
+	inject.Store(true)
+	var mutationCalls atomic.Int64
+	mutator := &admission.Webhook{Handler: admission.HandlerFunc(func(_ context.Context, request admission.Request) admission.Response {
+		mutationCalls.Add(1)
+		if !inject.Load() {
+			return admission.Allowed("synthetic mutator excluded")
+		}
+		var pod corev1.Pod
+		if err := json.Unmarshal(request.Object.Raw, &pod); err != nil {
+			return admission.Errored(http.StatusBadRequest, err)
+		}
+		if pod.Annotations == nil {
+			pod.Annotations = map[string]string{}
+		}
+		pod.Annotations["example.com/injected"] = "synthetic-mutator-value"
+		raw, err := json.Marshal(pod)
+		if err != nil {
+			return admission.Errored(http.StatusInternalServerError, err)
+		}
+		return admission.PatchResponseFromRaw(request.Object.Raw, raw)
+	})}
+	mutatorServer := httptest.NewTLSServer(mutator)
+	t.Cleanup(mutatorServer.Close)
+	create(&admissionregistrationv1.MutatingWebhookConfiguration{
+		ObjectMeta: metav1.ObjectMeta{Name: "synthetic-pod-mutator"},
+		Webhooks: []admissionregistrationv1.MutatingWebhook{{
+			Name: "synthetic-pod-mutator.example.com", AdmissionReviewVersions: []string{"v1"},
+			ClientConfig: admissionregistrationv1.WebhookClientConfig{
+				URL: ptr.To(mutatorServer.URL), CABundle: pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: mutatorServer.Certificate().Raw}),
+			},
+			FailurePolicy: ptr.To(admissionregistrationv1.Fail), SideEffects: ptr.To(admissionregistrationv1.SideEffectClassNone),
+			TimeoutSeconds: ptr.To(int32(2)), NamespaceSelector: rules.Webhooks[0].NamespaceSelector.DeepCopy(),
+			Rules: []admissionregistrationv1.RuleWithOperations{{
+				Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Create},
+				Rule:       admissionregistrationv1.Rule{APIGroups: []string{""}, APIVersions: []string{"v1"}, Resources: []string{"pods"}},
+			}},
+		}},
+	})
+	if err := wait.PollUntilContextTimeout(ctx, 100*time.Millisecond, 20*time.Second, true, func(ctx context.Context) (bool, error) {
+		probe := testfixture.Pod(expected)
+		probe.Spec.Overhead = nil
+		err := cl.Create(ctx, probe, client.DryRunAll)
+		return mutationCalls.Load() > 0 && err != nil && strings.Contains(err.Error(), "TemplateMismatch") &&
+			strings.Contains(err.Error(), "metadata.annotations") && !strings.Contains(err.Error(), "synthetic-mutator-value"), nil
+	}); err != nil {
+		t.Fatalf("third-party mutation was not safely diagnosed: %v", err)
+	}
+	inject.Store(false)
 	foreignDNS := testfixture.Pod(expected)
 	foreignDNS.Spec.Overhead = nil
 	foreignDNS.Spec.DNSConfig.Nameservers = []string{"192.0.2.53"}
@@ -262,12 +300,37 @@ func TestPodAdmissionAPIServerBoundaries(t *testing.T) {
 		len(pod.Spec.DNSConfig.Nameservers) != 1 || pod.Spec.DNSConfig.Nameservers[0] != "10.96.0.10" {
 		t.Fatal("API defaulting replaced the protected DNS configuration")
 	}
+	clientset, err := kubernetes.NewForConfig(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, method := range []string{http.MethodGet, http.MethodPost} {
+		for _, subresource := range []string{"exec", "attach", "portforward"} {
+			before := calls.Load()
+			request := clientset.CoreV1().RESTClient().Verb(method).Namespace(pod.Namespace).
+				Resource("pods").Name(pod.Name).SubResource(subresource)
+			switch subresource {
+			case "exec":
+				request.Param("command", "true").Param("container", "cetirun").Param("stdout", "true")
+			case "attach":
+				request.Param("container", "cetirun").Param("stdout", "true")
+			case "portforward":
+				request.Param("ports", "8080")
+			}
+			err := request.Do(ctx).Error()
+			if err == nil || !strings.Contains(err.Error(), "ConnectForbidden") || calls.Load() <= before {
+				t.Fatalf("%s %s bypassed the rendered CONNECT guard: %v", method, subresource, err)
+			}
+		}
+	}
+	t.Run("API defaulting fixed point", func(t *testing.T) { testPodAPIDefaulting(t, ctx, cl) })
 	helper := testfixture.Pod(expected)
 	helper.Name, helper.Spec.Overhead = "copilot-helper", nil
 	helper.Annotations[w.KindAnnotation] = "copilot-helper"
 	if err := cl.Create(ctx, helper); err == nil {
 		t.Fatal("undeclared helper bypassed final-Pod admission")
 	}
+
 	unavailable.Store(true)
 	rejected := testfixture.Pod(expected)
 	rejected.Name, rejected.Spec.Overhead = "outage-probe", nil
@@ -293,5 +356,55 @@ func TestPodAdmissionAPIServerBoundaries(t *testing.T) {
 	missing.Spec.Overhead = nil
 	if err := cl.Create(ctx, missing); err == nil {
 		t.Fatal("missing persisted expectations allowed creation")
+	}
+}
+
+func testPodAPIDefaulting(t *testing.T, ctx context.Context, cl client.Client) {
+	t.Helper()
+	if err := cl.Create(ctx, &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: "defaulting-runner", Namespace: "operator-state"}}); err != nil {
+		t.Fatal(err)
+	}
+	items := []corev1.DownwardAPIVolumeFile{
+		{Path: "name", FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.name"}},
+		{Path: "cpu", ResourceFieldRef: &corev1.ResourceFieldSelector{ContainerName: "example", Resource: "limits.cpu"}},
+	}
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "defaulting-example", Namespace: "operator-state"},
+		Spec: corev1.PodSpec{
+			ServiceAccountName: "defaulting-runner", AutomountServiceAccountToken: ptr.To(false), EnableServiceLinks: ptr.To(false),
+			SecurityContext: &corev1.PodSecurityContext{},
+			Containers: []corev1.Container{{
+				Name: "example", Image: "example.com/agent:v1",
+				Resources: corev1.ResourceRequirements{
+					Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("100m")},
+					Limits:   corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("100m")},
+				},
+				Env: []corev1.EnvVar{
+					{Name: "POD_NAME", ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.name"}}},
+					{Name: "CPU", ValueFrom: &corev1.EnvVarSource{ResourceFieldRef: &corev1.ResourceFieldSelector{Resource: "limits.cpu"}}},
+				},
+			}},
+			Volumes: []corev1.Volume{
+				{Name: "downward", VolumeSource: corev1.VolumeSource{DownwardAPI: &corev1.DownwardAPIVolumeSource{Items: items}}},
+				{Name: "projected", VolumeSource: corev1.VolumeSource{Projected: &corev1.ProjectedVolumeSource{
+					Sources: []corev1.VolumeProjection{{DownwardAPI: &corev1.DownwardAPIProjection{Items: items}}},
+				}}},
+			},
+		},
+	}
+	expected := corev1.PodTemplateSpec{Spec: *pod.Spec.DeepCopy()}
+	if err := cl.Create(ctx, pod); err != nil {
+		t.Fatal(err)
+	}
+	actual := corev1.PodTemplateSpec{ObjectMeta: pod.ObjectMeta, Spec: pod.Spec}
+	if !w.SamePodTemplate(actual, expected) {
+		t.Fatal("representative API-defaulted Pod does not match the normalized template")
+	}
+	if !w.SamePodTemplate(actual, actual) {
+		t.Fatal("API-defaulted template normalization is not a fixed point")
+	}
+	actual.Spec.Volumes[0].DownwardAPI.DefaultMode = ptr.To(int32(0400))
+	if w.SamePodTemplate(actual, expected) {
+		t.Fatal("normalization ignored an explicit volume-mode change")
 	}
 }

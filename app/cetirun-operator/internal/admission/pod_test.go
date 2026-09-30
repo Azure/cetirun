@@ -10,7 +10,10 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/helm"
@@ -18,9 +21,11 @@ import (
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxbinding"
 	w "github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload/testfixture"
+	"github.com/go-logr/logr/funcr"
 	"helm.sh/helm/v3/pkg/chart/loader"
 	admissionv1 "k8s.io/api/admission/v1"
 	appsv1 "k8s.io/api/apps/v1"
+	authenticationv1 "k8s.io/api/authentication/v1"
 	corev1 "k8s.io/api/core/v1"
 	nodev1 "k8s.io/api/node/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
@@ -29,6 +34,7 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 )
 
@@ -322,6 +328,217 @@ func TestPodCleanupDoesNotReadDependencies(t *testing.T) {
 	}
 	if reader.calls != 0 {
 		t.Fatal("cleanup/status consulted dependencies")
+	}
+}
+
+func TestPodConnectHasNoCallerOrStateExemption(t *testing.T) {
+	reader := &unavailablePodReader{}
+	handler, err := NewPodHandler(reader, PodConfig{StateNamespace: "operator-state"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, caller := range []string{"member@example.com", "admin@example.com",
+		"system:serviceaccount:cetirun-system:cetirun-operator-controller-manager",
+		"system:serviceaccount:cetirun-admin:openclaw-admin-cetirun"} {
+		for _, subresource := range []string{"exec", "attach", "portforward"} {
+			request := admission.Request{AdmissionRequest: admissionv1.AdmissionRequest{
+				Operation: admissionv1.Connect, Namespace: "protected-example", Name: "example-0",
+				Resource: metav1.GroupVersionResource{Version: "v1", Resource: "pods"}, SubResource: subresource,
+				UserInfo: authenticationv1.UserInfo{Username: caller, Groups: []string{"system:masters"}},
+				Object:   runtime.RawExtension{Raw: []byte(`{"apiVersion":"v1","kind":"PodExecOptions","command":["true"]}`)},
+			}}
+			response := handler.Validate(context.Background(), request)
+			if response.Allowed || response.Result.Code != http.StatusForbidden || !strings.Contains(response.Result.Message, "ConnectForbidden") {
+				t.Fatalf("CONNECT %s for %s did not fail closed: %+v", subresource, caller, response.Result)
+			}
+		}
+	}
+	if reader.calls != 0 {
+		t.Fatal("CONNECT protection consulted expectations or API dependencies")
+	}
+}
+
+type blockingPodReader struct {
+	client.Reader
+	entered     chan struct{}
+	release     chan struct{}
+	sourcesOnly bool
+	failName    string
+	active      atomic.Int32
+	maximum     atomic.Int32
+	canceled    atomic.Int32
+}
+
+func (r *blockingPodReader) Get(ctx context.Context, key client.ObjectKey, object client.Object, options ...client.GetOption) error {
+	if r.sourcesOnly {
+		_, metadata := object.(*metav1.PartialObjectMetadata)
+		_, runtimeClass := object.(*nodev1.RuntimeClass)
+		if !metadata && !runtimeClass {
+			return r.Reader.Get(ctx, key, object, options...)
+		}
+	}
+	active := r.active.Add(1)
+	defer r.active.Add(-1)
+	for maximum := r.maximum.Load(); active > maximum; maximum = r.maximum.Load() {
+		if r.maximum.CompareAndSwap(maximum, active) {
+			break
+		}
+	}
+	r.entered <- struct{}{}
+	if r.failName != "" && key.Name != r.failName {
+		<-ctx.Done()
+		r.canceled.Add(1)
+		return ctx.Err()
+	}
+	select {
+	case <-ctx.Done():
+		r.canceled.Add(1)
+		return ctx.Err()
+	case <-r.release:
+	}
+	if r.failName != "" {
+		return fmt.Errorf("synthetic-sensitive-reader-error")
+	}
+	return r.Reader.Get(ctx, key, object, options...)
+}
+
+func TestPodSourcesUseBoundedConcurrencyAndCancelOnFailure(t *testing.T) {
+	for _, fail := range []bool{false, true} {
+		t.Run(fmt.Sprintf("failure=%t", fail), func(t *testing.T) {
+			f := newPodFixture(t)
+			reader := &blockingPodReader{Reader: f.client, entered: make(chan struct{}, 128), release: make(chan struct{})}
+			if fail {
+				reader.failName = f.expected.Sources[0].Name
+			}
+			f.handler.reader = reader
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			done := make(chan *podFailure, 1)
+			go func() { done <- f.handler.validatePodSources(ctx, f.expected, f.fixture.Agent) }()
+			for range podSourceReadConcurrency {
+				select {
+				case <-reader.entered:
+				case <-ctx.Done():
+					t.Fatal("source reads did not run concurrently")
+				}
+			}
+			if reader.active.Load() != podSourceReadConcurrency {
+				t.Fatal("source reads exceeded or did not fill the concurrency bound")
+			}
+			close(reader.release)
+			select {
+			case failure := <-done:
+				if fail {
+					if failure == nil || failure.reason != "SourceReadFailed" || strings.Contains(failure.Error(), "sensitive") {
+						t.Fatalf("source read failed without a safe reason: %v", failure)
+					}
+					if reader.canceled.Load() != podSourceReadConcurrency-1 {
+						t.Fatal("source failure did not cancel outstanding sibling reads")
+					}
+				} else if failure != nil {
+					t.Fatal(failure)
+				}
+			case <-ctx.Done():
+				t.Fatal("source workers did not finish after success or cancellation")
+			}
+			if reader.maximum.Load() != podSourceReadConcurrency || reader.active.Load() != 0 {
+				t.Fatal("source reads exceeded the bound or left workers running")
+			}
+		})
+	}
+}
+
+func TestPodValidationDeadlineCoversAllReadStages(t *testing.T) {
+	for _, sourcesOnly := range []bool{false, true} {
+		t.Run(fmt.Sprintf("sources-only=%t", sourcesOnly), func(t *testing.T) {
+			f := newPodFixture(t)
+			reader := &blockingPodReader{
+				Reader: f.client, entered: make(chan struct{}, 128), release: make(chan struct{}), sourcesOnly: sourcesOnly,
+			}
+			handler, err := NewPodHandler(reader, PodConfig{StateNamespace: "operator-state", RequestTimeout: 30 * time.Millisecond})
+			if err != nil {
+				t.Fatal(err)
+			}
+			response := handler.Validate(context.Background(), podRequest(t, f.pod, admissionv1.Create, nil))
+			if response.Allowed || response.Result.Code != http.StatusGatewayTimeout ||
+				!strings.Contains(response.Result.Message, "RequestDeadlineExceeded") {
+				t.Fatalf("request did not honor its total validation budget: %+v", response.Result)
+			}
+			if reader.canceled.Load() == 0 || reader.active.Load() != 0 {
+				t.Fatal("deadline did not cancel and join in-flight reads")
+			}
+			if sourcesOnly && reader.maximum.Load() != podSourceReadConcurrency {
+				t.Fatal("deadline fixture did not exercise concurrent source reads")
+			}
+		})
+	}
+	for _, timeout := range []time.Duration{-1, 30 * time.Second, time.Minute} {
+		if _, err := NewPodHandler(&unavailablePodReader{}, PodConfig{StateNamespace: "operator-state", RequestTimeout: timeout}); err == nil {
+			t.Fatal("invalid request timeout accepted")
+		}
+	}
+}
+
+func TestPodDiagnosticsExposePathsWithoutValues(t *testing.T) {
+	f := newPodFixture(t)
+	f.pod.Spec.Containers[0].Env = append(f.pod.Spec.Containers[0].Env,
+		corev1.EnvVar{Name: "SYNTHETIC_PRIVATE_KEY_NAME", Value: "synthetic-sensitive-env-value"})
+	var output strings.Builder
+	ctx := log.IntoContext(context.Background(), funcr.New(func(prefix, message string) {
+		output.WriteString(prefix + message)
+	}, funcr.Options{}))
+	response := f.handler.Validate(ctx, podRequest(t, f.pod, admissionv1.Create, nil))
+	if response.Allowed || !strings.Contains(response.Result.Message, "TemplateMismatch") ||
+		!strings.Contains(response.Result.Message, "spec.containers[0].env") {
+		t.Fatalf("missing safe field-path diagnostic: %+v", response.Result)
+	}
+	if !strings.Contains(output.String(), "TemplateMismatch") || !strings.Contains(output.String(), "spec.containers[0].env") {
+		t.Fatal("structured rejection log is missing the reason and field path")
+	}
+	for _, sensitive := range []string{"SYNTHETIC_PRIVATE_KEY_NAME", "synthetic-sensitive-env-value"} {
+		if strings.Contains(output.String()+response.Result.Message, sensitive) {
+			t.Fatal("diagnostic disclosed a field value")
+		}
+	}
+	if err := f.client.Delete(ctx, f.state); err != nil {
+		t.Fatal(err)
+	}
+	response = f.handler.Validate(ctx, podRequest(t, f.pod, admissionv1.Create, nil))
+	if response.Allowed || !strings.Contains(response.Result.Message, "ExpectationMissing") {
+		t.Fatalf("missing expectation was not distinguishable: %+v", response.Result)
+	}
+	response = rejectPod(ctx, podRequest(t, f.pod, admissionv1.Create, nil),
+		podReadFailure("Source", fmt.Errorf("synthetic-sensitive-reader-error")))
+	if response.Allowed || response.Result.Code != http.StatusServiceUnavailable ||
+		strings.Contains(output.String()+response.Result.Message, "synthetic-sensitive-reader-error") {
+		t.Fatal("raw API error was not replaced with a safe read-failure diagnostic")
+	}
+}
+
+type changingPodExpectationReader struct {
+	client.Reader
+	stateReads atomic.Int32
+}
+
+func (r *changingPodExpectationReader) Get(ctx context.Context, key client.ObjectKey, object client.Object, options ...client.GetOption) error {
+	if err := r.Reader.Get(ctx, key, object, options...); err != nil {
+		return err
+	}
+	if key.Namespace == "operator-state" {
+		if _, ok := object.(*corev1.ConfigMap); ok && r.stateReads.Add(1) == 2 {
+			object.SetResourceVersion("changed-during-validation")
+		}
+	}
+	return nil
+}
+
+func TestPodValidationRetainsFinalExpectationFence(t *testing.T) {
+	f := newPodFixture(t)
+	reader := &changingPodExpectationReader{Reader: f.client}
+	f.handler.reader = reader
+	response := f.handler.Validate(context.Background(), podRequest(t, f.pod, admissionv1.Create, nil))
+	if response.Allowed || reader.stateReads.Load() != 2 || !strings.Contains(response.Result.Message, "ExpectationChanged") {
+		t.Fatalf("changed expectation bypassed the final state fence: %+v", response.Result)
 	}
 }
 

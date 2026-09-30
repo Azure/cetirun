@@ -273,6 +273,9 @@ spec:
             - --leader-elect=false
             {{- if $admission.podsEnabled }}
             - {{ printf "--admission-pod-state-namespace=%s" .Values.namespace | quote }}
+            {{- if $admission.enforce }}
+            - {{ printf "--admission-pod-timeout=%dms" (mul 800 (int64 $admission.timeoutSeconds)) | quote }}
+            {{- end }}
             {{- end }}
           env:
             - name: CETIRUN_SANDBOX_ADMISSION

@@ -172,9 +172,11 @@ func (b *Bundle) Apply(values map[string]any) (map[string]any, error) {
 		"topologySpreadConstraints": []any{},
 		"autoscaling":               map[string]any{"enabled": false},
 		"ingress":                   map[string]any{"enabled": false},
-		"execRestriction":           map[string]any{"enabled": false},
-		"podDisruptionBudget":       map[string]any{"enabled": false},
-		"tailscale":                 map[string]any{"enabled": false, "serve": false},
+		// Protected namespaces use the operator's CONNECT guard instead of
+		// the legacy per-release exec policy and its caller exemption.
+		"execRestriction":     map[string]any{"enabled": false},
+		"podDisruptionBudget": map[string]any{"enabled": false},
+		"tailscale":           map[string]any{"enabled": false, "serve": false},
 		ValuesKey: map[string]any{
 			"contractVersion": ContractVersion, "executionHeld": true,
 			"podLabels":    labels,

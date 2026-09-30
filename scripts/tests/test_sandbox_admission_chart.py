@@ -502,6 +502,9 @@ class SandboxAdmissionChartTests(unittest.TestCase):
         self.assertEqual(webhook["rules"], [{
             "operations": ["CREATE", "UPDATE"], "apiGroups": [""], "apiVersions": ["v1"],
             "resources": ["pods", "pods/ephemeralcontainers", "pods/resize"], "scope": "Namespaced",
+        }, {
+            "operations": ["CONNECT"], "apiGroups": [""], "apiVersions": ["v1"],
+            "resources": ["pods/exec", "pods/attach", "pods/portforward"], "scope": "Namespaced",
         }])
         policy = documents[("ValidatingAdmissionPolicy", "cetirun-sandbox-namespace")]["spec"]
         self.assertEqual(policy["failurePolicy"], "Fail")
@@ -516,6 +519,18 @@ class SandboxAdmissionChartTests(unittest.TestCase):
         self.assertIn('request.userInfo.username == "system:serviceaccount:cetirun-system:cetirun-operator-controller-manager"', expressions)
         self.assertIn('object.metadata.name != "cetirun-system"', expressions)
         self.assertIn("variables.owners == variables.oldOwners", expressions)
+
+    def test_pod_request_budget_reserves_transport_time(self):
+        for timeout in (1, 2, 10, 20, 30):
+            with self.subTest(timeout=timeout):
+                documents = self.render(self.enforced_values(podsEnabled=True, timeoutSeconds=timeout))
+                container = documents[("Deployment", NAME)]["spec"]["template"]["spec"]["containers"][0]
+                self.assertIn(f"--admission-pod-timeout={timeout * 800}ms", container["args"])
+                webhook = documents[("ValidatingWebhookConfiguration", "cetirun-sandbox-pods")]["webhooks"][0]
+                self.assertEqual(webhook["timeoutSeconds"], timeout)
+        documents = self.render(self.server_values(podsEnabled=True, timeoutSeconds=0))
+        args = documents[("Deployment", NAME)]["spec"]["template"]["spec"]["containers"][0]["args"]
+        self.assertFalse(any(arg.startswith("--admission-pod-timeout=") for arg in args))
 
     def test_enforcement_renders_exact_webhook_timeouts_including_bounds(self):
         for timeout in (1, 2, 10, 20, 30):

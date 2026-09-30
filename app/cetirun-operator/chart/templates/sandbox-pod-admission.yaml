@@ -109,4 +109,9 @@ webhooks:
         apiVersions: ["v1"]
         resources: ["pods", "pods/ephemeralcontainers", "pods/resize"]
         scope: Namespaced
+      - operations: ["CONNECT"]
+        apiGroups: [""]
+        apiVersions: ["v1"]
+        resources: ["pods/exec", "pods/attach", "pods/portforward"]
+        scope: Namespaced
 {{- end }}
