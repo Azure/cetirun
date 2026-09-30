@@ -298,6 +298,9 @@ exceptions in `scripts/license_headers.py` must retain their own notices.
   only to a newer CRD fail closed at the older handler without blocking
   known-field requests. Normal `go test ./...` runs unit and
   schema/serialization tests, not envtest.
+  The same target tests trusted Team assignment and metadata-only UID
+  reauthorization through the rendered webhooks. These are isolated API-server
+  tests, not runtime qualification or permission to lift the execution hold.
   The checksum-pinned Linux amd64/arm64 bundle can be provisioned into a new
   task-local directory after a missing-tool failure:
 

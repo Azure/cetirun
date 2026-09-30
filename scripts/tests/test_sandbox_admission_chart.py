@@ -156,6 +156,34 @@ class SandboxAdmissionChartTests(unittest.TestCase):
             if identity[0] == "ClusterRoleBinding" and identity[1] != NAME:
                 self.assertNotIn(NAME, [subject["name"] for subject in document["subjects"]])
 
+    def test_operator_can_observe_configuration_and_publish_only_status(self):
+        role = self.render()[("ClusterRole", "cetirun-operator-manager-role")]
+        for resource in ("sandboxes", "agentpolicies"):
+            rules = [
+                rule for rule in role["rules"]
+                if API_GROUP in rule["apiGroups"] and resource in rule["resources"]
+            ]
+            self.assertEqual(len(rules), 1)
+            self.assertEqual(rules[0]["verbs"], ["get", "list", "watch"])
+            status_rules = [
+                rule for rule in role["rules"]
+                if API_GROUP in rule["apiGroups"] and f"{resource}/status" in rule["resources"]
+            ]
+            self.assertEqual(len(status_rules), 1)
+            self.assertEqual(status_rules[0]["verbs"], ["get", "update", "patch"])
+        for rule in role["rules"]:
+            self.assertIsInstance(rule["apiGroups"], list)
+            self.assertIsInstance(rule["resources"], list)
+        grant_rules = [
+            rule for rule in role["rules"]
+            if any(group == "rbac.authorization.k8s.io" for group in rule["apiGroups"])
+            and "clusterroles" in rule["resources"]
+        ]
+        self.assertEqual(grant_rules, [{
+            "apiGroups": ["rbac.authorization.k8s.io"],
+            "resources": ["clusterroles"], "verbs": ["get"],
+        }])
+
     def test_deployment_contract_tls_and_security_contexts(self):
         documents = self.render(self.server_values())
         deployment = documents[("Deployment", NAME)]
@@ -414,13 +442,38 @@ class SandboxAdmissionChartTests(unittest.TestCase):
                         (operation, resource)
                         for operation in rule["operations"] for resource in rule["resources"]
                     )
-                expected = {("CREATE", "agents")}
+                expected = {("CREATE", "agents"), ("UPDATE", "agents")}
                 if kind == "ValidatingWebhookConfiguration":
                     expected = {(operation, resource) for operation in ("CREATE", "UPDATE") for resource in RESOURCES}
                     expected.update(("DELETE", resource) for resource in RESOURCES if resource != "agents")
                 else:
-                    self.assertNotIn("matchConditions", webhook)
+                    self.assertEqual(webhook["reinvocationPolicy"], "Never")
+                    self.assertEqual(
+                        webhook["matchConditions"],
+                        documents[("ValidatingWebhookConfiguration", NAME)]["webhooks"][0]["matchConditions"],
+                    )
                 self.assertEqual(operations, expected)
+
+    def test_trusted_team_assignments_are_serialized_without_inference(self):
+        assignments = [
+            {"team": "research", "users": ["member@example.com"], "groups": ["researchers"]},
+            {"team": "operations", "groups": ["operators"]},
+        ]
+        documents = self.render(self.server_values(teamAssignments=assignments))
+        container = documents[("Deployment", NAME)]["spec"]["template"]["spec"]["containers"][0]
+        config = json.loads(container["env"][0]["value"])
+        self.assertEqual(config["teamAssignments"], assignments)
+        for invalid in (
+            "research", [{}], ["research"], [{"team": "research"}],
+            [{"team": "Invalid", "users": ["member@example.com"]}],
+            [{"team": "research", "users": "member@example.com"}],
+            [{"team": "research", "users": [], "groups": ""}],
+            [{"team": "research", "groups": ["system:authenticated"]}],
+            [{"team": "research", "users": ["*"]}],
+            [{"team": "research", "users": ["member@example.com"], "admin": True}],
+        ):
+            with self.subTest(invalid=invalid):
+                self.assert_rejected(self.server_values(teamAssignments=invalid), "sandboxAdmission.teamAssignments")
 
     def test_enforcement_renders_exact_webhook_timeouts_including_bounds(self):
         for timeout in (1, 2, 10, 20, 30):

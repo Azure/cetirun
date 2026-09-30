@@ -11,7 +11,7 @@ import (
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
-	jsonpatch "gomodules.xyz/jsonpatch/v2"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxbinding"
 	admissionv1 "k8s.io/api/admission/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -42,6 +42,11 @@ func NewHandler(reader client.Reader, config Config) (*Handler, error) {
 	}
 	config.AdminUsers = slices.Clone(config.AdminUsers)
 	config.AdminGroups = slices.Clone(config.AdminGroups)
+	config.TeamAssignments = slices.Clone(config.TeamAssignments)
+	for i := range config.TeamAssignments {
+		config.TeamAssignments[i].Users = slices.Clone(config.TeamAssignments[i].Users)
+		config.TeamAssignments[i].Groups = slices.Clone(config.TeamAssignments[i].Groups)
+	}
 	// Production registrations remain absent until the enforcement adapter and
 	// its qualified evidence source exist. Configuration is not proof of support.
 	return &Handler{reader: reader, config: config}, nil
@@ -115,36 +120,18 @@ func (h *Handler) Validate(ctx context.Context, request admission.Request) admis
 }
 
 func (h *Handler) DefaultAgent(ctx context.Context, request admission.Request) admission.Response {
-	if request.Operation != admissionv1.Create || request.Resource.Resource != "agents" {
-		return admission.Denied("Sandbox selection defaulting applies only to Agent creation")
+	if (request.Operation != admissionv1.Create && request.Operation != admissionv1.Update) || request.Resource.Resource != "agents" {
+		return admission.Denied("Sandbox selection defaulting applies to Agent creation or explicit update reauthorization")
 	}
-	object, _, err := decodeRequest(request)
+	object, old, err := decodeRequest(request)
 	if err != nil {
 		return admission.Errored(http.StatusBadRequest, err)
 	}
 	agent := object.(*api.Agent)
-	team, err := h.team(ctx, agent.Spec.Team)
-	if err != nil {
-		return dependencyError(ctx, err)
+	if old != nil {
+		return h.reauthorizeAgent(ctx, request, agent, old.(*api.Agent))
 	}
-	if !sandbox.Requested(agent, team) {
-		return admission.Allowed("legacy Agent")
-	}
-	if !h.config.administrator(request.UserInfo) {
-		return admission.Denied("governed Agent creation requires an administrator; member Team assignment is not enabled")
-	}
-	spec, err := sandbox.DefaultAgentSelection(agent.Spec, team)
-	if err != nil {
-		return admission.Denied(err.Error())
-	}
-	var patches []jsonpatch.JsonPatchOperation
-	if spec.SandboxRef != agent.Spec.SandboxRef {
-		patches = append(patches, jsonpatch.JsonPatchOperation{Operation: "add", Path: "/spec/sandboxRef", Value: spec.SandboxRef})
-	}
-	if spec.PolicyClass != agent.Spec.PolicyClass {
-		patches = append(patches, jsonpatch.JsonPatchOperation{Operation: "add", Path: "/spec/policyClass", Value: spec.PolicyClass})
-	}
-	return admission.Patched("persist creation-time Sandbox selection", patches...)
+	return h.defaultAgentCreation(ctx, request, agent)
 }
 
 func (h *Handler) validateAgent(ctx context.Context, request admission.Request, agent, old *api.Agent) admission.Response {
@@ -163,11 +150,29 @@ func (h *Handler) validateAgent(ctx context.Context, request admission.Request, 
 			}
 		}
 	}
+	if err := h.protectedAuthorization(request, agent, old); err != nil {
+		return admission.Denied(err.Error())
+	}
+	assigned := ""
+	if old == nil {
+		name, assignment, err := h.creationTeam(request, agent)
+		if err != nil {
+			return admission.Denied(err.Error())
+		}
+		if name != agent.Spec.Team {
+			return admission.Denied("the creation-defaulting webhook must persist the authenticated Team assignment")
+		}
+		assigned = assignment
+	}
 	team, err := h.team(ctx, agent.Spec.Team)
 	if err != nil {
 		return dependencyError(ctx, err)
 	}
-	if !sandbox.Requested(agent, team) && !sandbox.Requested(old, nil) {
+	if assigned != "" && team == nil {
+		return admission.Denied("the administratively assigned Team does not exist")
+	}
+	if !sandbox.Requested(agent, team) && !sandbox.Requested(old, nil) &&
+		!sandboxbinding.Present(agent) && !sandboxbinding.Present(old) {
 		if old != nil && old.Spec.Team != agent.Spec.Team {
 			previousTeam, err := h.team(ctx, old.Spec.Team)
 			if err != nil {
@@ -180,32 +185,45 @@ func (h *Handler) validateAgent(ctx context.Context, request admission.Request, 
 		return admission.Allowed("legacy Agent")
 	}
 	if !h.config.administrator(request.UserInfo) {
-		return admission.Denied("governed Agent writes require an explicitly authorized administrator")
+		if err := h.memberAuthority(request, agent); err != nil {
+			return admission.Denied(err.Error())
+		}
+		if old != nil && !sameAgentSelection(agent, old) {
+			return admission.Denied("members cannot change a governed Agent's Team, policy class or Sandbox binding")
+		}
 	}
+	resources, response := h.agentAuthorizationResources(ctx, request.Operation, agent, team)
+	if !response.Allowed {
+		return response
+	}
+	return h.validateAgentAuthorization(request, agent, old, team, resources)
+}
+
+func (h *Handler) agentAuthorizationResources(ctx context.Context, operation admissionv1.Operation, agent *api.Agent, team *api.Team) (sandbox.Resources, admission.Response) {
 	if !sandbox.TeamGoverned(team) {
-		return admission.Denied("governed Agents require a governed Team; clearing bindings does not release a hold")
+		return sandbox.Resources{}, admission.Denied("governed Agents require a governed Team; clearing bindings does not release a hold")
 	}
 	if team.DeletionTimestamp != nil {
-		return admission.Denied("a terminating Team cannot authorize a governed Agent")
+		return sandbox.Resources{}, admission.Denied("a terminating Team cannot authorize a governed Agent")
 	}
 	spec, err := sandbox.DefaultAgentSelection(agent.Spec, team)
 	if err != nil {
-		return admission.Denied(err.Error())
+		return sandbox.Resources{}, admission.Denied(err.Error())
 	}
-	if spec.SandboxRef != agent.Spec.SandboxRef {
-		if request.Operation == admissionv1.Create {
-			return admission.Denied(fmt.Sprintf("Agent %q is missing spec.sandboxRef; the creation-defaulting webhook must set Team %q's default before validation", agent.Name, team.Name))
+	if spec.SandboxRef != agent.Spec.SandboxRef || spec.PolicyClass != agent.Spec.PolicyClass {
+		if operation == admissionv1.Create {
+			return sandbox.Resources{}, admission.Denied(fmt.Sprintf("Agent %q is missing its persisted selection; the creation-defaulting webhook must set Team %q's defaults before validation", agent.Name, team.Name))
 		}
-		return admission.Denied("spec.sandboxRef must be persisted at creation; existing Agents are never re-defaulted")
+		return sandbox.Resources{}, admission.Denied("spec.sandboxRef and spec.policyClass must be persisted at creation; existing Agents are never re-defaulted")
 	}
 	resources, err := h.resources(ctx, team.Spec, sandbox.Resources{})
 	if err != nil {
-		return dependencyError(ctx, err)
+		return sandbox.Resources{}, dependencyError(ctx, err)
 	}
 	if errs := sandbox.ValidateTeam(team, resources, h.registrations); len(errs) != 0 {
-		return admission.Denied(errs.ToAggregate().Error())
+		return sandbox.Resources{}, admission.Denied(errs.ToAggregate().Error())
 	}
-	return admission.Allowed("configuration is valid; Sandbox execution remains held")
+	return resources, admission.Allowed("")
 }
 
 // Reuse only within one admission request, never across requests. Reference

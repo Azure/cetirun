@@ -202,10 +202,11 @@ func (r *AgentReconciler) finishCustomDeletion(ctx context.Context, instance *ap
 	} else if !apierrors.IsNotFound(err) {
 		return ctrl.Result{}, err
 	}
+	base := instance.DeepCopy()
 	controllerutil.RemoveFinalizer(instance, api.Finalizer)
 	controllerutil.RemoveFinalizer(instance, customOwnershipFinalizer)
 	controllerutil.RemoveFinalizer(instance, sandboxHoldFinalizer)
-	if err := r.Update(ctx, instance); err != nil && !apierrors.IsNotFound(err) {
+	if err := r.Patch(ctx, instance, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil && !apierrors.IsNotFound(err) {
 		return ctrl.Result{}, err
 	}
 	// Agent GC removes the operator-owned receipt only after finalization.

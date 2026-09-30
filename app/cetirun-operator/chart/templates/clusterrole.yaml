@@ -25,6 +25,23 @@ rules:
     resources: ["teams/status"]
     verbs: ["get", "update", "patch"]
 
+  # Shared Sandbox configuration and controller-owned conditions.
+  - apiGroups: ["cetirun.microsoft.com"]
+    resources: ["sandboxes", "agentpolicies"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["cetirun.microsoft.com"]
+    resources: ["sandboxes/status", "agentpolicies/status"]
+    verbs: ["get", "update", "patch"]
+  - apiGroups: ["node.k8s.io"]
+    resources: ["runtimeclasses"]
+    verbs: ["get"]
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["storageclasses"]
+    verbs: ["get"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["clusterroles"]
+    verbs: ["get"]
+
   # Namespaces
   - apiGroups: [""]
     resources: ["namespaces"]
