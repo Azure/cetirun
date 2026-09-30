@@ -42,8 +42,9 @@ func (r *AgentReconciler) holdSandbox(ctx context.Context, agent *cetirunv1alpha
 	// Persist intent independently of status before any workload side effects.
 	// The finalizer also keeps newly held Agents available for safe cleanup.
 	if !controllerutil.ContainsFinalizer(agent, sandboxHoldFinalizer) {
+		base := agent.DeepCopy()
 		controllerutil.AddFinalizer(agent, sandboxHoldFinalizer)
-		if err := r.Update(ctx, agent); err != nil {
+		if err := r.Patch(ctx, agent, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
 			return ctrl.Result{}, fmt.Errorf("persist Sandbox hold: %w", err)
 		}
 	}
@@ -190,9 +191,10 @@ func (r *AgentReconciler) deleteSandboxBuiltin(ctx context.Context, agent *cetir
 	ns := &corev1.Namespace{}
 	err := r.customReader().Get(ctx, types.NamespacedName{Name: instanceNamespace(agent.Name)}, ns)
 	if apierrors.IsNotFound(err) {
+		base := agent.DeepCopy()
 		controllerutil.RemoveFinalizer(agent, sandboxHoldFinalizer)
 		controllerutil.RemoveFinalizer(agent, cetirunv1alpha1.Finalizer)
-		return ctrl.Result{}, client.IgnoreNotFound(r.Update(ctx, agent))
+		return ctrl.Result{}, client.IgnoreNotFound(r.Patch(ctx, agent, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})))
 	}
 	if err != nil {
 		return ctrl.Result{}, err

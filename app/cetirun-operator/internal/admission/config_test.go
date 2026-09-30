@@ -4,7 +4,9 @@
 package sandboxadmission
 
 import (
+	"errors"
 	"slices"
+	"strings"
 	"testing"
 
 	authenticationv1 "k8s.io/api/authentication/v1"
@@ -46,6 +48,9 @@ func TestAuthenticatedTeamAssignmentIsDeterministicAndFailClosed(t *testing.T) {
 		{Team: "engineering", Users: []string{"member"}, Groups: []string{"engineering-members"}},
 		{Team: "other", Groups: []string{"other-members"}},
 	}
+	if err := config.Validate(); err != nil {
+		t.Fatalf("static configuration cannot determine authenticated group overlap: %v", err)
+	}
 	for _, test := range []struct {
 		name string
 		user authenticationv1.UserInfo
@@ -70,7 +75,40 @@ func TestAuthenticatedTeamAssignmentIsDeterministicAndFailClosed(t *testing.T) {
 			if (err != nil) != test.err || team != test.team {
 				t.Fatalf("got Team=%q, err=%v", team, err)
 			}
+			if test.err && !errors.Is(err, errTeamAssignmentConflict) {
+				t.Fatalf("conflict lacks the stable configuration reason: %v", err)
+			}
 		})
+	}
+}
+
+func TestTeamAssignmentConflictGuidanceDoesNotDiscloseMemberships(t *testing.T) {
+	config := testConfig()
+	config.TeamAssignments = []TeamAssignment{
+		{Team: "first-team", Users: []string{"synthetic-caller"}, Groups: []string{"first-group"}},
+		{Team: "second-team", Groups: []string{"second-group"}},
+	}
+	user := authenticationv1.UserInfo{Username: "synthetic-caller", Groups: []string{"first-group", "second-group"}}
+	for range 2 {
+		if err := config.Validate(); err != nil {
+			t.Fatal(err)
+		}
+		team, err := config.assignedTeam(user)
+		if team != "" || !errors.Is(err, errTeamAssignmentConflict) {
+			t.Fatalf("ambiguous assignment did not fail closed: Team=%q, err=%v", team, err)
+		}
+		for _, guidance := range []string{"TeamAssignmentConflict:", "administrator", "sandboxAdmission.teamAssignments", "identity-provider", "one Team"} {
+			if !strings.Contains(err.Error(), guidance) {
+				t.Fatalf("conflict lacks actionable guidance %q: %v", guidance, err)
+			}
+		}
+		for _, identity := range []string{user.Username, "first-group", "second-group", "first-team", "second-team"} {
+			if strings.Contains(err.Error(), identity) {
+				t.Fatalf("conflict diagnostic disclosed request-specific membership %q", identity)
+			}
+		}
+		slices.Reverse(config.TeamAssignments)
+		slices.Reverse(user.Groups)
 	}
 }
 
