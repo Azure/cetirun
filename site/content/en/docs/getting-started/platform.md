@@ -147,6 +147,14 @@ injection, installs the release, and waits for the rendered operator/portal
 Deployments. It does not verify end-to-end login or agent readiness.
 `ISTIO_REVISION` overrides revision detection.
 
+Helm creates the operator's CRDs only on the first installation, so the helper
+applies them itself when the operator is part of the release. CRDs that do not
+exist yet are created right after the install or upgrade, so a new operator
+that watches a new kind can start. Changes to existing CRDs are applied once
+the operator rollout finishes, after admission already runs the matching
+binary. Downgrades are not handled; see
+[API compatibility](../../reference/crds/#existing-installations).
+
 For a custom gateway, use `ISTIO_GATEWAY_NAMESPACE` and `ISTIO_GATEWAY_NAME`
 for its resource, and `ISTIO_INGRESS_NAMESPACE` and
 `ISTIO_GATEWAY_SERVICE_ACCOUNT` for the gateway workload. The helper aligns

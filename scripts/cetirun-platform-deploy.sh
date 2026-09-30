@@ -86,8 +86,34 @@ deployment_is_rendered() {
   ' <<< "${rendered_manifest}"
 }
 
+# Helm creates the CRDs under crds/ on the first installation only and never
+# upgrades them, so apply them from the chart in the order the operator's schema
+# upgrade rules require (app/cetirun-operator/README.md, "Schema and binary
+# upgrades"):
+#   1. Create CRDs that do not exist yet now, so a new operator that watches a
+#      new kind can start.
+#   2. Apply changes to existing CRDs only after every operator replica runs the
+#      new binary, so admission understands a schema before it is served.
+crds_manifest=""
+if deployment_is_rendered cetirun-operator; then
+  crds_manifest="$(helm show crds "${chart_dir}")"
+  create_output=""
+  if ! create_output="$(kubectl create -f - <<< "${crds_manifest}" 2>&1)"; then
+    if grep -v -e 'AlreadyExists' -e ' created$' -e '^Warning:' <<< "${create_output}" | grep -q .; then
+      printf '%s\n' "${create_output}" >&2
+      exit 1
+    fi
+  fi
+  grep ' created$' <<< "${create_output}" || true
+fi
+
 for deployment_name in cetirun-operator cetirun-portal; do
   if deployment_is_rendered "${deployment_name}"; then
     kubectl rollout status "deployment/${deployment_name}" -n "${namespace}" --timeout=180s
   fi
 done
+
+if [ -n "${crds_manifest}" ]; then
+  kubectl apply --server-side --force-conflicts --field-manager=cetirun-platform-deploy \
+    -f - <<< "${crds_manifest}"
+fi
