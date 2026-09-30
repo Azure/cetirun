@@ -9,6 +9,7 @@ import (
 	stderrors "errors"
 	"fmt"
 	"net/url"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -17,22 +18,53 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"github.com/Azure/CetiRun/app/cetirun-portal/internal/agentconfig"
 )
 
 var ErrUnsupportedCustomUpdate = stderrors.New("Custom does not support Gateway Token, Teams or Tailscale updates")
+var ErrInstanceChanged = stderrors.New("Agent changed or was replaced; reload before saving")
+var ErrInstanceDeleting = stderrors.New("Agent is being deleted")
+var ErrCustomImageChange = stderrors.New("Custom image changes require separate HOME compatibility qualification")
+var ErrOperatorConfigurationUnavailable = stderrors.New("Operator release configuration is unavailable")
 
 func IsUnsupportedCustomUpdate(err error) bool {
 	return stderrors.Is(err, ErrUnsupportedCustomUpdate)
 }
 
 func validateInstanceUpdate(instance *cetirunv1alpha1.Agent, opts UpdateInstanceOpts) error {
+	if !instance.DeletionTimestamp.IsZero() {
+		return ErrInstanceDeleting
+	}
+	if opts.ExpectedUID != "" && instance.UID != opts.ExpectedUID ||
+		opts.ExpectedResourceVersion != "" && instance.ResourceVersion != opts.ExpectedResourceVersion {
+		return ErrInstanceChanged
+	}
+	if opts.Authorize != nil {
+		if err := opts.Authorize(instance); err != nil {
+			return err
+		}
+	}
 	if instance.Spec.Agent.Type == cetirunv1alpha1.AgentTypeCustom &&
 		(opts.GatewayToken != nil || opts.TailscaleAuthKey != nil || opts.TeamsEnabled != nil) {
 		return ErrUnsupportedCustomUpdate
+	}
+	if opts.Agent != nil {
+		if err := agentconfig.Validate(*opts.Agent); err != nil {
+			return err
+		}
+		previous := agentconfig.Defaults(instance.Spec.Agent)
+		if opts.Agent.Type != previous.Type || *opts.Agent.Username != *previous.Username ||
+			previous.Image != nil && opts.Agent.Image == nil {
+			return fmt.Errorf("agent identity and pinned image must be preserved")
+		}
+		if previous.Type == cetirunv1alpha1.AgentTypeCustom && !reflect.DeepEqual(previous.Image, opts.Agent.Image) {
+			return ErrCustomImageChange
+		}
 	}
 	return nil
 }
@@ -44,12 +76,21 @@ const AnnotationSecretUpdatedAt = "cetirun.microsoft.com/secret-updated-at"
 // UpdateInstanceOpts specifies which fields to update on an existing instance.
 // nil pointer = no change; non-nil = apply the pointed-to value.
 type UpdateInstanceOpts struct {
-	DisplayName      *string // nil = no change
-	Team             *string // nil = no change
-	GatewayToken     *string // nil = no change, non-empty = update
-	TailscaleAuthKey *string // nil = no change, "" = disable tailscale, non-empty = update/enable
-	TeamsEnabled     *bool   // nil = no change
-	Model            *string // nil = no change, "" = use deployment default
+	Agent                   *cetirunv1alpha1.HarnessSpec
+	ExpectedUID             types.UID
+	ExpectedResourceVersion string
+	Authorize               func(*cetirunv1alpha1.Agent) error
+	DisplayName             *string // nil = no change
+	Team                    *string // nil = no change
+	GatewayToken            *string // nil = no change, non-empty = update
+	TailscaleAuthKey        *string // nil = no change, "" = disable tailscale, non-empty = update/enable
+	TeamsEnabled            *bool   // nil = no change
+	Model                   *string // nil = no change, "" = use deployment default
+}
+
+type InstanceVersion struct {
+	UID             types.UID `json:"uid"`
+	ResourceVersion string    `json:"resourceVersion"`
 }
 
 // CreateInstanceOptions contains security-sensitive platform-derived fields.
@@ -88,16 +129,23 @@ func (c *Client) GetInstance(ctx context.Context, alias string) (*cetirunv1alpha
 }
 
 // CreateInstance creates a new Agent CR.
-// instanceName is the logical name for the instance (spec.instanceName and CR name);
-// if empty it defaults to alias (backward-compatible single-instance behaviour).
+// instanceName is metadata.name; an empty value uses the caller's alias.
 // If gatewayToken or tailscaleAuthKey are non-empty, it pre-creates the
 // corresponding Secrets in the instance namespace before creating the CR.
-func (c *Client) CreateInstance(ctx context.Context, alias, displayName, team, email, instanceName, agentType, gatewayToken, tailscaleAuthKey, model string, teamsEnabled bool, optional ...CreateInstanceOptions) (*cetirunv1alpha1.Agent, error) {
+func (c *Client) CreateInstance(ctx context.Context, alias, displayName, team, email, instanceName string, agent cetirunv1alpha1.HarnessSpec, gatewayToken, tailscaleAuthKey, model string, teamsEnabled bool, optional ...CreateInstanceOptions) (*cetirunv1alpha1.Agent, error) {
 	if instanceName == "" {
 		instanceName = alias
 	}
-	if agentType == "" {
-		agentType = string(cetirunv1alpha1.DefaultAgentType)
+	agent = agentconfig.Defaults(agent)
+	if err := agentconfig.Validate(agent); err != nil {
+		return nil, err
+	}
+	identityEnabled := len(optional) > 0 && optional[0].AgentIdentityEnabled
+	if agent.Type == cetirunv1alpha1.AgentTypeCustom && (gatewayToken != "" || tailscaleAuthKey != "" || teamsEnabled || identityEnabled) {
+		return nil, ErrUnsupportedCustomUpdate
+	}
+	if identityEnabled && (optional[0].OwnerTenantID == "" || optional[0].OwnerObjectID == "") {
+		return nil, fmt.Errorf("verified owner identity is required for Agent Identity")
 	}
 	ns := fmt.Sprintf("cetirun-%s", instanceName)
 	var createdNamespace *corev1.Namespace
@@ -131,10 +179,9 @@ func (c *Client) CreateInstance(ctx context.Context, alias, displayName, team, e
 			Finalizers: []string{cetirunv1alpha1.Finalizer},
 		},
 		Spec: cetirunv1alpha1.AgentSpec{
-			Agent:                 cetirunv1alpha1.HarnessSpec{Type: cetirunv1alpha1.AgentType(agentType)},
-			Model:                 strings.TrimSpace(model),
-			GatewayTokenSecretRef: "gateway-token",
-			Team:                  team,
+			Agent: agent,
+			Model: strings.TrimSpace(model),
+			Team:  team,
 			User: cetirunv1alpha1.UserSpec{
 				Alias:       alias,
 				DisplayName: displayName,
@@ -143,14 +190,16 @@ func (c *Client) CreateInstance(ctx context.Context, alias, displayName, team, e
 			},
 		},
 	}
-	if len(optional) > 0 && optional[0].AgentIdentityEnabled {
-		if optional[0].OwnerTenantID == "" || optional[0].OwnerObjectID == "" {
-			return nil, fmt.Errorf("verified owner identity is required for Agent Identity")
-		}
+	if agent.Type != cetirunv1alpha1.AgentTypeCustom {
+		instance.Spec.GatewayTokenSecretRef = "gateway-token"
+	}
+	if len(optional) > 0 && optional[0].OwnerTenantID != "" && optional[0].OwnerObjectID != "" {
 		instance.Annotations = map[string]string{
 			cetirunv1alpha1.AnnotationOwnerTenantID: optional[0].OwnerTenantID,
 			cetirunv1alpha1.AnnotationOwnerObjectID: optional[0].OwnerObjectID,
 		}
+	}
+	if identityEnabled {
 		instance.Spec.AgentIdentity = &cetirunv1alpha1.AgentIdentitySpec{Enabled: true}
 	}
 	if tailscaleAuthKey != "" {
@@ -182,13 +231,18 @@ func (c *Client) DeleteInstance(ctx context.Context, alias string) error {
 	return c.client.Delete(ctx, instance)
 }
 
-// DeleteInstanceByName deletes an Agent whose spec.instanceName matches instanceName.
-func (c *Client) DeleteInstanceByName(ctx context.Context, instanceName string) error {
+// DeleteInstanceByName deletes an Agent by metadata.name with object preconditions.
+func (c *Client) DeleteInstanceByName(ctx context.Context, instanceName string, versions ...InstanceVersion) error {
 	instance, err := c.GetInstanceByName(ctx, instanceName)
 	if err != nil {
 		return err
 	}
-	return c.client.Delete(ctx, instance)
+	if len(versions) > 0 {
+		if err := validateInstanceUpdate(instance, UpdateInstanceOpts{ExpectedUID: versions[0].UID, ExpectedResourceVersion: versions[0].ResourceVersion}); err != nil {
+			return err
+		}
+	}
+	return c.client.Delete(ctx, instance, client.Preconditions{UID: &instance.UID, ResourceVersion: &instance.ResourceVersion})
 }
 
 // IsNotFound returns true if the error is a Kubernetes not-found error.
@@ -347,116 +401,7 @@ func (c *Client) bindCreatedNamespace(ctx context.Context, created *corev1.Names
 // Secrets are updated first (idempotent), then the CR is updated inside a
 // RetryOnConflict loop to handle races with operator status updates.
 func (c *Client) UpdateInstance(ctx context.Context, alias string, opts UpdateInstanceOpts) (*cetirunv1alpha1.Agent, error) {
-	// Pre-flight: verify the instance exists.
-	existing, err := c.GetInstance(ctx, alias)
-	if err != nil {
-		return nil, err
-	}
-	if err := validateInstanceUpdate(existing, opts); err != nil {
-		return nil, err
-	}
-
-	ns := fmt.Sprintf("cetirun-%s", alias)
-	secretsUpdated := false
-
-	// Update Secrets outside the retry loop (idempotent operations).
-	if opts.GatewayToken != nil && *opts.GatewayToken != "" {
-		if err := c.ensureNamespace(ctx, ns, alias); err != nil {
-			return nil, fmt.Errorf("ensure namespace %s: %w", ns, err)
-		}
-		if err := c.createOrUpdateSecret(ctx, ns, "gateway-token", map[string][]byte{
-			"OPENCLAW_GATEWAY_TOKEN": []byte(*opts.GatewayToken),
-		}); err != nil {
-			return nil, fmt.Errorf("update gateway-token secret: %w", err)
-		}
-		secretsUpdated = true
-	}
-	if opts.TailscaleAuthKey != nil && *opts.TailscaleAuthKey != "" {
-		if err := c.ensureNamespace(ctx, ns, alias); err != nil {
-			return nil, fmt.Errorf("ensure namespace %s: %w", ns, err)
-		}
-		if err := c.createOrUpdateSecret(ctx, ns, "tailscale-auth", map[string][]byte{
-			"TAILSCALE_AUTH_KEY": []byte(*opts.TailscaleAuthKey),
-		}); err != nil {
-			return nil, fmt.Errorf("update tailscale-auth secret: %w", err)
-		}
-		secretsUpdated = true
-	}
-
-	// Update the CR with RetryOnConflict to handle races with operator.
-	var result *cetirunv1alpha1.Agent
-	err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		instance, err := c.GetInstance(ctx, alias)
-		if err != nil {
-			return err
-		}
-		if err := validateInstanceUpdate(instance, opts); err != nil {
-			return err
-		}
-
-		crChanged := false
-
-		if opts.DisplayName != nil {
-			instance.Spec.User.DisplayName = *opts.DisplayName
-			crChanged = true
-		}
-		if opts.Team != nil {
-			instance.Spec.User.Team = *opts.Team
-			crChanged = true
-		}
-		if opts.GatewayToken != nil && *opts.GatewayToken != "" {
-			touchSecretAnnotation(instance)
-			crChanged = true
-		}
-		if opts.TailscaleAuthKey != nil {
-			if *opts.TailscaleAuthKey != "" {
-				if instance.Spec.Tailscale == nil {
-					instance.Spec.Tailscale = &cetirunv1alpha1.TailscaleSpec{
-						AuthKeySecretRef: "tailscale-auth",
-					}
-				}
-				touchSecretAnnotation(instance)
-				crChanged = true
-			} else {
-				// Disable tailscale.
-				instance.Spec.Tailscale = nil
-				crChanged = true
-			}
-		}
-		if opts.TeamsEnabled != nil {
-			if *opts.TeamsEnabled {
-				if instance.Spec.MSTeams == nil {
-					instance.Spec.MSTeams = &cetirunv1alpha1.MSTeamsSpec{}
-				}
-				instance.Spec.MSTeams.Enabled = true
-			} else {
-				instance.Spec.MSTeams = nil
-			}
-			crChanged = true
-		}
-		if opts.Model != nil {
-			instance.Spec.Model = strings.TrimSpace(*opts.Model)
-			crChanged = true
-		}
-		if secretsUpdated && !crChanged {
-			touchSecretAnnotation(instance)
-			crChanged = true
-		}
-
-		if crChanged {
-			if err := c.client.Update(ctx, instance); err != nil {
-				return fmt.Errorf("update instance: %w", err)
-			}
-		}
-
-		result = instance
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	return result, nil
+	return c.UpdateInstanceByName(ctx, alias, opts)
 }
 
 // UpdateInstanceByName updates an Agent looked up by metadata.name.
@@ -470,6 +415,9 @@ func (c *Client) UpdateInstanceByName(ctx context.Context, instanceName string, 
 	}
 	if err := validateInstanceUpdate(existing, opts); err != nil {
 		return nil, err
+	}
+	if opts.ExpectedUID == "" {
+		opts.ExpectedUID = existing.UID
 	}
 	alias := existing.Spec.User.Alias
 	ns := fmt.Sprintf("cetirun-%s", instanceName)
@@ -508,12 +456,17 @@ func (c *Client) UpdateInstanceByName(ctx context.Context, instanceName string, 
 			return err
 		}
 		crChanged := false
+		if opts.Agent != nil {
+			instance.Spec.Agent = *opts.Agent.DeepCopy()
+			crChanged = true
+		}
 
 		if opts.DisplayName != nil {
 			instance.Spec.User.DisplayName = *opts.DisplayName
 			crChanged = true
 		}
 		if opts.Team != nil {
+			instance.Spec.Team = *opts.Team
 			instance.Spec.User.Team = *opts.Team
 			crChanged = true
 		}
@@ -556,7 +509,7 @@ func (c *Client) UpdateInstanceByName(ctx context.Context, instanceName string, 
 		}
 
 		if crChanged {
-			if err := c.client.Update(ctx, instance); err != nil {
+			if err := c.client.Update(ctx, instance, client.FieldValidation(metav1.FieldValidationStrict)); err != nil {
 				return fmt.Errorf("update instance: %w", err)
 			}
 		}
@@ -569,11 +522,11 @@ func (c *Client) UpdateInstanceByName(ctx context.Context, instanceName string, 
 	return result, nil
 }
 
-// UpgradeInstanceByName upgrades an Agent looked up by spec.instanceName.
-func (c *Client) UpgradeInstanceByName(ctx context.Context, instanceName string) (*cetirunv1alpha1.Agent, error) {
+// UpgradeInstanceByName upgrades an Agent looked up by metadata.name.
+func (c *Client) UpgradeInstanceByName(ctx context.Context, instanceName string, versions ...InstanceVersion) (*cetirunv1alpha1.Agent, error) {
 	latestVersion, err := c.GetOperatorChartVersion(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("get latest chart version: %w", err)
+		return nil, fmt.Errorf("%w: %v", ErrOperatorConfigurationUnavailable, err)
 	}
 	var result *cetirunv1alpha1.Agent
 	err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
@@ -581,12 +534,17 @@ func (c *Client) UpgradeInstanceByName(ctx context.Context, instanceName string)
 		if err != nil {
 			return err
 		}
+		if len(versions) > 0 {
+			if err := validateInstanceUpdate(instance, UpdateInstanceOpts{ExpectedUID: versions[0].UID, ExpectedResourceVersion: versions[0].ResourceVersion}); err != nil {
+				return err
+			}
+		}
 		if instance.Spec.Helm.Version == latestVersion {
 			result = instance
 			return nil
 		}
 		instance.Spec.Helm.Version = latestVersion
-		if err := c.client.Update(ctx, instance); err != nil {
+		if err := c.client.Update(ctx, instance, client.FieldValidation(metav1.FieldValidationStrict)); err != nil {
 			return fmt.Errorf("update instance: %w", err)
 		}
 		result = instance
@@ -699,9 +657,6 @@ func randAlphaNum(n int) (string, error) {
 func (c *Client) GetInstanceByName(ctx context.Context, instanceName string) (*cetirunv1alpha1.Agent, error) {
 	instance := &cetirunv1alpha1.Agent{}
 	if err := c.client.Get(ctx, client.ObjectKey{Name: instanceName}, instance); err != nil {
-		if errors.IsNotFound(err) {
-			return nil, fmt.Errorf("instance %q not found", instanceName)
-		}
 		return nil, err
 	}
 	return instance, nil

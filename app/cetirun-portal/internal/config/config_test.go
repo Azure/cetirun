@@ -130,3 +130,18 @@ func TestEnvOrDefaultAgentTypes(t *testing.T) {
 		})
 	}
 }
+
+func TestCustomTypeCanBeOptedIn(t *testing.T) {
+	t.Setenv("ALLOWED_AGENT_TYPES", "hermes,custom")
+	t.Setenv("FEATURE_AGENT_IDENTITY_ENABLED", "false")
+	cfg := Load()
+	if !cfg.AgentTypeAllowed("custom") || cfg.AgentTypeAllowed("openclaw") {
+		t.Fatal("configured type availability was not enforced")
+	}
+	if cfg.AgentIdentityEnabled {
+		t.Fatal("Custom type availability enabled Agent Identity")
+	}
+	if (Config{}).AgentTypeAllowed("custom") || !(Config{}).AgentTypeAllowed("hermes") {
+		t.Fatal("default type availability changed")
+	}
+}

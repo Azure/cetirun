@@ -5,6 +5,7 @@ package config
 
 import (
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -27,7 +28,7 @@ type Config struct {
 	// MaxInstancesPerUser is the maximum number of Agents a single user may create.
 	// 0 means unlimited. Defaults to 1.
 	MaxInstancesPerUser int
-	// AllowedAgentTypes controls which agent types are offered in the portal create form.
+	// AllowedAgentTypes controls type availability in the form and backend.
 	AllowedAgentTypes []string
 	// AgentIdentityEnabled requires cryptographically verified Entra owner
 	// claims and exposes the per-instance authorization experience.
@@ -58,6 +59,14 @@ func Load() Config {
 	}
 }
 
+func (c Config) AgentTypeAllowed(kind string) bool {
+	allowed := c.AllowedAgentTypes
+	if allowed == nil {
+		allowed = defaultAllowedAgentTypes
+	}
+	return slices.Contains(allowed, kind)
+}
+
 func envOrDefault(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
@@ -84,7 +93,7 @@ func envOrDefaultAgentTypes(key string, fallback []string) []string {
 	agentTypes := []string{}
 	for _, item := range strings.Split(v, ",") {
 		agentType := strings.TrimSpace(strings.ToLower(item))
-		if seen[agentType] || (agentType != "openclaw" && agentType != "hermes") {
+		if seen[agentType] || (agentType != "openclaw" && agentType != "hermes" && agentType != "custom") {
 			continue
 		}
 		seen[agentType] = true

@@ -377,16 +377,17 @@ Source: [portal values]({{< repo "app/cetirun-portal/chart/values.yaml" >}}).
 | `admins.aliases` | Explicit administrator aliases |
 | `features.tailscaleEnabled` | `false` |
 | `features.maxInstancesPerUser` | `1`; `0` means unlimited |
-| `features.allowedAgentTypes` | `hermes`, `openclaw`; new agents default to Hermes when allowed |
+| `features.allowedAgentTypes` | Defaults to `hermes`, `openclaw`; also accepts opt-in `custom`. Checked by both the form and backend |
 | `noticeBanner` | Set your deployment notice explicitly or clear it |
 | `image`, `imagePullSecrets` | Portal image pin and pull access |
 
-`features.allowedAgentTypes` controls the advertised UI choices, not a
-server-side deployment allowlist. The create handler accepts its hard-coded
-`openclaw`/`hermes` enum without enforcing the configured list. In contrast,
-the Tailscale feature flag and per-user instance limit have server-side checks.
-Do not treat all feature settings as equivalent authorization controls.
-Source: [instance creation]({{< repo "app/cetirun-portal/internal/handler/instance.go" >}}).
+The backend enforces `features.allowedAgentTypes`, the Tailscale feature flag
+and the per-user instance limit. Custom uses the existing Portal login and
+instance-ownership checks; it does not require a separate admission grant.
+Per-user and Team-specific type and image policy is deferred to AgentPolicy.
+See [Portal self-service](../agent-harness/#portal-self-service) for the request
+contract and configuration. Operator runtime qualifications and Sandbox
+admission remain separate checks.
 
 `istio.sidecarInjection: true` is only a chart validation assertion; it does
 not label the namespace or inject a running pod. The deploy helper labels the

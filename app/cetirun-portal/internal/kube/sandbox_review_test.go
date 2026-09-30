@@ -69,7 +69,7 @@ func TestPortalCreatedNamespaceBelongsToNewAgent(t *testing.T) {
 				objects = append(objects, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "cetirun-example", UID: "foreign-namespace"}})
 			}
 			c := newFakeClient(objects...)
-			agent, err := NewClient(c).CreateInstance(context.Background(), "example", "Example", "", "", "", "", "dummy-token", "", "", false)
+			agent, err := NewClient(c).CreateInstance(context.Background(), "example", "Example", "", "", "", api.HarnessSpec{}, "dummy-token", "", "", false)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -117,7 +117,7 @@ func TestPortalOwnershipWriteFailureKeepsAgentForRecovery(t *testing.T) {
 				return fmt.Errorf("synthetic ownership write failure")
 			},
 		}).Build()
-	if _, err := NewClient(c).CreateInstance(context.Background(), "example", "Example", "", "", "", "", "dummy-token", "", "", false); err == nil {
+	if _, err := NewClient(c).CreateInstance(context.Background(), "example", "Example", "", "", "", api.HarnessSpec{}, "dummy-token", "", "", false); err == nil {
 		t.Fatal("ownership error was hidden")
 	}
 	agent := &api.Agent{}

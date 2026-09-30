@@ -38,9 +38,8 @@ import { useDeleteInstanceByName, useUpdateInstanceByName, useUpgradeInstanceByN
 import { useFeatures } from "../hooks/useFeatures";
 import { GITHUB_COPILOT_PROVIDER, useEffectiveTeamProvider } from "../hooks/useTeams";
 import { downloadTeamsApp } from "../api/instance";
-import type { Instance, UpdateInstanceRequest } from "../types/instance";
+import type { Instance, InstanceVersion, UpdateInstanceRequest } from "../types/instance";
 import { agentTypeLabel, agentUIUrl, phaseBadgeColor } from "../utils/instance";
-import { TeamPicker } from "./TeamPicker";
 import { StatusTab } from "./StatusTab";
 import { CopilotAuthBlock } from "./CopilotAuthBlock";
 import { CopilotModelPicker } from "./CopilotModelPicker";
@@ -134,7 +133,7 @@ export function OverviewSection({ instance }: { instance: Instance }) {
   const upgradeMutation = useUpgradeInstanceByName(instance.instanceName);
   const { data: features } = useFeatures();
   const [selectedTab, setSelectedTab] = useState<string>("overview");
-  const statusQuery = useInstanceStatusByNameQuery(instance.instanceName, selectedTab === "status");
+  const statusQuery = useInstanceStatusByNameQuery(instance.instanceName, selectedTab === "status", instance.uid);
   const [showAgentCredential, setShowAgentCredential] = useState(false);
   const [showTailscaleKey, setShowTailscaleKey] = useState(false);
   const [copiedAgentCredential, setCopiedAgentCredential] = useState(false);
@@ -142,6 +141,7 @@ export function OverviewSection({ instance }: { instance: Instance }) {
   const copiedAgentCredentialTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const copiedTailscaleKeyTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [deleteVersion, setDeleteVersion] = useState<InstanceVersion>({ uid: instance.uid, resourceVersion: instance.resourceVersion });
   const [editOpen, setEditOpen] = useState(false);
   const [teamsDownloadOpen, setTeamsDownloadOpen] = useState(false);
   const [teamsCountdown, setTeamsCountdown] = useState(10);
@@ -155,6 +155,10 @@ export function OverviewSection({ instance }: { instance: Instance }) {
   const [editModel, setEditModel] = useState(instance.model ?? "");
   const [disableTailscale, setDisableTailscale] = useState(false);
   const [editTeamsEnabled, setEditTeamsEnabled] = useState(false);
+  const [editSnapshot, setEditSnapshot] = useState<Instance | null>(null);
+  const [editImage, setEditImage] = useState("");
+  const [editPort, setEditPort] = useState("");
+  const [editValidationError, setEditValidationError] = useState("");
   const effectiveEditProvider = useEffectiveTeamProvider(editTeam);
   const editUsesGitHubCopilot = effectiveEditProvider === GITHUB_COPILOT_PROVIDER;
 
@@ -193,9 +197,9 @@ export function OverviewSection({ instance }: { instance: Instance }) {
     }
   }, [closeTeamsDownloadDialog, instance.instanceName]);
 
-  const agentCredential = instance.agentType === "hermes" ? instance.apiServerKey : instance.gatewayToken;
-  const agentCredentialLabel = instance.agentType === "hermes" ? "Hermes API / Dashboard Key (user: cetirun)" : "Gateway Token";
-  const nativeIntegrations = instance.agentType !== "custom";
+  const agentCredential = instance.agent.type === "custom" ? undefined : instance.agent.type === "hermes" ? instance.apiServerKey : instance.gatewayToken;
+  const agentCredentialLabel = instance.agent.type === "hermes" ? "Hermes API / Dashboard Key (user: cetirun)" : "Gateway Token";
+  const nativeIntegrations = instance.agent.type !== "custom";
 
   const handleCopyAgentCredential = useCallback(() => {
     navigator.clipboard.writeText(agentCredential ?? "").then(() => {
@@ -215,6 +219,10 @@ export function OverviewSection({ instance }: { instance: Instance }) {
 
   const openEditDialog = () => {
     updateMutation.reset();
+    setEditSnapshot(instance);
+    setEditImage(instance.agent.image ?? "");
+    setEditPort(instance.agent.port?.toString() ?? "");
+    setEditValidationError("");
     setEditDisplayName(instance.displayName);
     setEditTeam(instance.team);
     setEditGatewayToken("");
@@ -230,16 +238,26 @@ export function OverviewSection({ instance }: { instance: Instance }) {
   }, [editUsesGitHubCopilot]);
 
   const handleEditSave = () => {
-    const req: UpdateInstanceRequest = {};
-    if (editDisplayName !== instance.displayName) req.displayName = editDisplayName;
-    if (editTeam && editTeam !== instance.team) req.team = editTeam;
+    const original = editSnapshot ?? instance;
+    const req: UpdateInstanceRequest = { uid: original.uid, resourceVersion: original.resourceVersion };
+    const agent: NonNullable<UpdateInstanceRequest["agent"]> = {};
+    const port = editPort.trim() === "" ? null : Number(editPort);
+    if (port !== null && (!Number.isInteger(port) || port < 1 || port > 65535)) {
+      setEditValidationError("HTTP port must be an integer between 1 and 65535, or left blank.");
+      return;
+    }
+    setEditValidationError("");
+    if (port !== (original.agent.port ?? null)) agent.port = port;
+    if (nativeIntegrations && editImage.trim() !== (original.agent.image ?? "")) agent.image = editImage.trim() || null;
+    if (Object.keys(agent).length) req.agent = agent;
+    if (editDisplayName.trim() !== original.displayName) req.displayName = editDisplayName.trim();
+    if (nativeIntegrations && editUsesGitHubCopilot && editModel.trim() !== (original.model ?? "")) req.model = editModel.trim();
     if (nativeIntegrations) {
       if (editGatewayToken) req.gatewayToken = editGatewayToken;
-      if (editUsesGitHubCopilot && editModel.trim() !== (instance.model ?? "")) req.model = editModel.trim();
       if (disableTailscale) { req.tailscaleAuthKey = ""; } else if (editTailscaleAuthKey) { req.tailscaleAuthKey = editTailscaleAuthKey; }
-      if (editTeamsEnabled !== (instance.teamsEnabled ?? false)) req.teamsEnabled = editTeamsEnabled;
+      if (editTeamsEnabled !== (original.teamsEnabled ?? false)) req.teamsEnabled = editTeamsEnabled;
     }
-    if (Object.keys(req).length === 0) { setEditOpen(false); return; }
+    if (Object.keys(req).length === 2) { setEditOpen(false); return; }
     updateMutation.mutate(req, { onSuccess: () => setEditOpen(false) });
   };
 
@@ -264,13 +282,18 @@ export function OverviewSection({ instance }: { instance: Instance }) {
       {selectedTab === "overview" && (<>
       {/* Header */}
       <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 12, marginBottom: 16 }}>
-        <Text size={600} weight="semibold" style={{ minWidth: 0, overflowWrap: "anywhere" }}>{instance.displayName}&apos;s {agentTypeLabel(instance.agentType)}</Text>
+        <Text as="h1" size={600} weight="semibold" style={{ minWidth: 0, margin: 0, overflowWrap: "anywhere" }}>{instance.displayName.trim() || instance.instanceName}</Text>
         <Badge appearance="filled" color={phaseBadgeColor[instance.phase] ?? "informative"}>{instance.phase}</Badge>
       </div>
       <Text size={300} style={{ color: tokens.colorNeutralForeground3, marginBottom: 16, display: "block" }}>
-        Alias: {instance.alias}{instance.team ? ` | Team: ${instance.team}` : ""}
+        Agent: {instance.instanceName} | Owner: {instance.alias}{instance.team ? ` | Team: ${instance.team}` : ""}
       </Text>
-
+      <div aria-label="Requested Agent configuration" style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 16, overflowWrap: "anywhere" }}>
+        <Text>Type: {agentTypeLabel(instance.agent.type)}</Text>
+        <Text>Image: {instance.agent.image ?? "Platform default (not yet pinned)"}</Text>
+        <Text>Username: {instance.agent.username ?? "vibe"}</Text>
+        <Text>HTTP port: {instance.agent.port ?? (instance.agent.type === "custom" ? "Headless" : "Platform default")}</Text>
+      </div>
       {instance.phase === "Suspended" && (
         <div style={{ display: "flex", alignItems: "center", gap: 8, padding: 12, borderRadius: tokens.borderRadiusMedium, backgroundColor: tokens.colorPaletteYellowBackground2, marginBottom: 8 }}>
           <Warning20Regular style={{ color: tokens.colorPaletteYellowForeground2, flexShrink: 0 }} />
@@ -306,7 +329,7 @@ export function OverviewSection({ instance }: { instance: Instance }) {
         <CopilotAuthBlock instance={instance} />
       )}
 
-      {features?.agentIdentityEnabled && <AgentAuthorizationBlock instance={instance} />}
+      {nativeIntegrations && features?.agentIdentityEnabled && <AgentAuthorizationBlock instance={instance} />}
 
       {instance.teamsEnabled && (
         <TeamsStatusSection instance={instance} onDownload={openTeamsDownloadDialog} onShowInstructions={() => setTeamsInstructionsOpen(true)} />
@@ -315,12 +338,12 @@ export function OverviewSection({ instance }: { instance: Instance }) {
       {instance.phase !== "Deleting" && (
         <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 8 }}>
           {instance.upgradeAvailable && (
-            <Button appearance="primary" icon={<ArrowSync20Regular />} onClick={() => upgradeMutation.mutate()} disabled={upgradeMutation.isPending}>
+            <Button appearance="primary" icon={<ArrowSync20Regular />} onClick={() => upgradeMutation.mutate(instance)} disabled={upgradeMutation.isPending}>
               {upgradeMutation.isPending ? "Upgrading..." : "Upgrade to Latest"}
             </Button>
           )}
           <Button appearance="secondary" icon={<Edit20Regular />} onClick={openEditDialog} disabled={updateMutation.isPending}>Edit Agent</Button>
-          <Button appearance="secondary" onClick={() => setConfirmOpen(true)} disabled={deleteMutation.isPending}>
+          <Button appearance="secondary" onClick={() => { setDeleteVersion({ uid: instance.uid, resourceVersion: instance.resourceVersion }); setConfirmOpen(true); }} disabled={deleteMutation.isPending}>
             {deleteMutation.isPending ? "Deleting..." : "Delete Agent"}
           </Button>
         </div>
@@ -342,10 +365,13 @@ export function OverviewSection({ instance }: { instance: Instance }) {
         <DialogSurface>
           <DialogBody>
             <DialogTitle>Delete Agent</DialogTitle>
-            <DialogContent>Are you sure you want to delete this agent? This action cannot be undone.</DialogContent>
+            <DialogContent>
+              Are you sure you want to delete this agent? This action cannot be undone.
+              {deleteMutation.isError && <Text block style={{ color: tokens.colorStatusDangerForeground1 }}>{deleteMutation.error?.message || "Failed to delete agent"}</Text>}
+            </DialogContent>
             <DialogActions>
               <Button appearance="secondary" onClick={() => setConfirmOpen(false)} disabled={deleteMutation.isPending}>Cancel</Button>
-              <Button appearance="primary" style={{ backgroundColor: tokens.colorStatusDangerBackground3 }} disabled={deleteMutation.isPending} onClick={() => { deleteMutation.mutate(undefined, { onSuccess: () => navigate("/") }); setConfirmOpen(false); }}>Delete</Button>
+              <Button appearance="primary" style={{ backgroundColor: tokens.colorStatusDangerBackground3 }} disabled={deleteMutation.isPending} onClick={() => deleteMutation.mutate(deleteVersion, { onSuccess: () => navigate("/") })}>Delete</Button>
             </DialogActions>
           </DialogBody>
         </DialogSurface>
@@ -358,10 +384,22 @@ export function OverviewSection({ instance }: { instance: Instance }) {
             <DialogTitle>Edit Agent</DialogTitle>
             <DialogContent>
               <div style={{ display: "flex", flexDirection: "column", gap: 16, paddingTop: 8 }}>
-                <Field label="Display Name">
+                <Field label="Display Name" hint="Leave blank to display the Agent name.">
                   <Input value={editDisplayName} onChange={(_, data) => setEditDisplayName(data.value)} />
                 </Field>
-                <TeamPicker value={editTeam} onChange={setEditTeam} />
+                <Field label="Team" hint="Team reassignment is an administrator operation on a suspended Agent.">
+                  <Input value={editTeam || "(none)"} readOnly />
+                </Field>
+                <Field label="Agent Type"><Input value={agentTypeLabel(instance.agent.type)} readOnly /></Field>
+                <Field label="Agent Username" hint="The image user cannot change after creation.">
+                  <Input value={instance.agent.username ?? "vibe"} readOnly />
+                </Field>
+                <Field label="Agent Image" hint={nativeIntegrations ? "Overrides require platform approval and Harness compatibility. A pinned image cannot be cleared." : "Custom image changes require separate HOME compatibility qualification and are not available here."}>
+                  <Input value={editImage} readOnly={!nativeIntegrations} onChange={(_, data) => setEditImage(data.value)} maxLength={2048} />
+                </Field>
+                <Field label="HTTP Port (optional)" hint={nativeIntegrations ? "Leave blank to restore the pinned runtime version's default." : "Leave blank to remove the Agent HTTP endpoint. Terminal and Desktop are independent."}>
+                  <Input type="number" min={1} max={65535} step={1} value={editPort} onChange={(_, data) => setEditPort(data.value)} />
+                </Field>
                 {nativeIntegrations && editUsesGitHubCopilot && <CopilotModelPicker instance={instance} value={editModel} onChange={setEditModel} allowDefault />}
                 {nativeIntegrations && <Field label="Gateway Token">
                   <Input type="password" autoComplete="off" value={editGatewayToken} onChange={(_, data) => setEditGatewayToken(data.value)} placeholder="Leave empty to keep unchanged" />
@@ -383,6 +421,7 @@ export function OverviewSection({ instance }: { instance: Instance }) {
                     Updating the model, Gateway Token{features?.tailscaleEnabled ? " or Tailscale Auth Key" : ""} will restart the gateway. The access link may be temporarily unavailable during this process.
                   </Text>
                 </div>}
+                {editValidationError && <Text style={{ color: tokens.colorStatusDangerForeground1 }}>{editValidationError}</Text>}
                 {updateMutation.isError && (
                   <Text style={{ color: tokens.colorStatusDangerForeground1 }}>
                     {updateMutation.error?.message || "Failed to update agent"}

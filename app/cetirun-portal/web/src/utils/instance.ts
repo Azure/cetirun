@@ -40,17 +40,17 @@ export function parseBaseUrl(accessUrl: string | undefined): string | undefined 
  *
  * Each supported agent serves its browser-native UI below /ui/<instanceName>.
  */
-export function agentUIUrl(instance: Pick<Instance, "agentType" | "accessUrl">): string | undefined {
-  if (instance.agentType === "custom") return undefined;
+export function agentUIUrl(instance: Pick<Instance, "agent" | "accessUrl">): string | undefined {
+  if (instance.agent.type === "custom") return undefined;
   const baseUrl = parseBaseUrl(instance.accessUrl);
   if (!baseUrl) return undefined;
   return `${baseUrl}/`;
 }
 
-type InstanceAccess = Pick<Instance, "agentType" | "instanceName" | "accessUrl"> & Partial<Pick<Instance, "conditions">>;
+type InstanceAccess = Pick<Instance, "agent" | "instanceName" | "accessUrl"> & Partial<Pick<Instance, "conditions">>;
 
 export function terminalUrl(instance: InstanceAccess): string | undefined {
-  if (instance.agentType === "custom" &&
+  if (instance.agent.type === "custom" &&
     !instance.conditions?.some((condition) => condition.type === "TerminalConfigured" && condition.status === "True")) {
     return undefined;
   }
@@ -59,7 +59,7 @@ export function terminalUrl(instance: InstanceAccess): string | undefined {
 }
 
 export function desktopUrl(instance: InstanceAccess): string | undefined {
-  if (instance.agentType === "custom") {
+  if (instance.agent?.type === "custom") {
     const desktop = instance.conditions?.find((condition) => condition.type === "DesktopConfigured");
     if (desktop && desktop.status !== "True") return undefined;
   }
@@ -73,11 +73,11 @@ export function desktopUrl(instance: InstanceAccess): string | undefined {
  * intentionally separate from the agent's browser-native /ui route.
  */
 export function instanceGatewayUrl(
-  instance: Pick<Instance, "instanceName" | "accessUrl"> & Partial<Pick<Instance, "agentType" | "conditions">>,
+  instance: Pick<Instance, "instanceName" | "accessUrl"> & Partial<Pick<Instance, "agent" | "conditions">>,
   platformOrigin?: string,
 ): string | undefined {
   let source = instance.accessUrl;
-  if (instance.agentType === "custom") {
+  if (instance.agent?.type === "custom") {
     if (!instance.conditions?.some((condition) => condition.type === "IngressReady" && condition.status === "True")) return undefined;
     source = instance.accessUrl || platformOrigin;
   }

@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 import { apiFetch } from "./fetch";
+import type { AgentConfig } from "../types/instance";
 
 export interface AdminInstanceSummary {
   name: string;
@@ -9,7 +10,8 @@ export interface AdminInstanceSummary {
   displayName?: string;
   email?: string;
   team?: string;
-  agentType?: string;
+  agent: AgentConfig;
+  uid: string;
   phase?: string;
   ready: boolean;
   createdAt: string;

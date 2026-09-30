@@ -100,12 +100,12 @@ describe("createInstance", () => {
       }),
     );
 
-    const result = await createInstance({ team: "example-team" });
+    const result = await createInstance({ agent: {}, team: "example-team" });
 
     expect(result).toEqual(createdInstance);
-    expect(fetch).toHaveBeenCalledWith("/api/v1/instance", expect.objectContaining({
+    expect(fetch).toHaveBeenCalledWith("/api/v1/instances", expect.objectContaining({
       method: "POST",
-      body: JSON.stringify({ team: "example-team" }),
+      body: JSON.stringify({ agent: {}, team: "example-team" }),
     }));
   });
 
@@ -120,7 +120,7 @@ describe("createInstance", () => {
       }),
     );
 
-    await expect(createInstance({ team: "example-team" })).rejects.toThrow(
+    await expect(createInstance({ agent: {}, team: "example-team" })).rejects.toThrow(
       "Instance already exists"
     );
   });
@@ -136,7 +136,7 @@ describe("deleteInstanceByName", () => {
       mockResponse({ ok: true, status: 202, contentType: null }),
     );
 
-    await expect(deleteInstanceByName("abc")).resolves.toBeUndefined();
+    await expect(deleteInstanceByName("abc", { uid: "agent-uid", resourceVersion: "7" })).resolves.toBeUndefined();
     expect(fetch).toHaveBeenCalledWith(
       "/api/v1/instances/abc",
       expect.objectContaining({ method: "DELETE" }),
@@ -148,7 +148,7 @@ describe("deleteInstanceByName", () => {
       mockResponse({ ok: false, status: 404 }),
     );
 
-    await expect(deleteInstanceByName("abc")).resolves.toBeUndefined();
+    await expect(deleteInstanceByName("abc", { uid: "agent-uid", resourceVersion: "7" })).resolves.toBeUndefined();
   });
 
   it("throws with JSON error message on failure", async () => {
@@ -160,7 +160,7 @@ describe("deleteInstanceByName", () => {
       text: () => Promise.resolve(JSON.stringify({ error: { message: "internal server error" } })),
     });
 
-    await expect(deleteInstanceByName("abc")).rejects.toThrow("internal server error");
+    await expect(deleteInstanceByName("abc", { uid: "agent-uid", resourceVersion: "7" })).rejects.toThrow("internal server error");
   });
 
   it("falls back to plain-text error message when body is not JSON", async () => {
@@ -172,7 +172,7 @@ describe("deleteInstanceByName", () => {
       text: () => Promise.resolve("Forbidden"),
     });
 
-    await expect(deleteInstanceByName("abc")).rejects.toThrow("Forbidden");
+    await expect(deleteInstanceByName("abc", { uid: "agent-uid", resourceVersion: "7" })).rejects.toThrow("Forbidden");
   });
 });
 
@@ -198,12 +198,12 @@ describe("updateInstance", () => {
       }),
     );
 
-    const result = await updateInstance({ displayName: "Alice Updated", team: "other-team" });
+    const result = await updateInstance({ uid: "agent-uid", resourceVersion: "7", displayName: "Alice Updated", team: "other-team" });
 
     expect(result).toEqual(updatedInstance);
     expect(fetch).toHaveBeenCalledWith("/api/v1/instance", expect.objectContaining({
       method: "PATCH",
-      body: JSON.stringify({ displayName: "Alice Updated", team: "other-team" }),
+      body: JSON.stringify({ uid: "agent-uid", resourceVersion: "7", displayName: "Alice Updated", team: "other-team" }),
     }));
   });
 
@@ -218,7 +218,7 @@ describe("updateInstance", () => {
       }),
     );
 
-    await expect(updateInstance({ team: "" })).rejects.toThrow(
+    await expect(updateInstance({ uid: "agent-uid", resourceVersion: "7", team: "" })).rejects.toThrow(
       "team must be non-empty when provided"
     );
   });
@@ -232,7 +232,7 @@ describe("updateInstance", () => {
       }),
     );
 
-    await expect(updateInstance({ displayName: "X" })).rejects.toThrow(
+    await expect(updateInstance({ uid: "agent-uid", resourceVersion: "7", displayName: "X" })).rejects.toThrow(
       "Failed to update instance"
     );
   });
@@ -261,7 +261,7 @@ describe("upgradeInstance", () => {
       }),
     );
 
-    const result = await upgradeInstance();
+    const result = await upgradeInstance({ uid: "agent-uid", resourceVersion: "7" });
 
     expect(result).toEqual(upgradedInstance);
     expect(fetch).toHaveBeenCalledWith("/api/v1/instance/upgrade", expect.objectContaining({
@@ -280,7 +280,7 @@ describe("upgradeInstance", () => {
       }),
     );
 
-    await expect(upgradeInstance()).rejects.toThrow("Failed to upgrade instance");
+    await expect(upgradeInstance({ uid: "agent-uid", resourceVersion: "7" })).rejects.toThrow("Failed to upgrade instance");
   });
 
   it("throws with default message when no server message", async () => {
@@ -292,7 +292,7 @@ describe("upgradeInstance", () => {
       }),
     );
 
-    await expect(upgradeInstance()).rejects.toThrow("Failed to upgrade instance");
+    await expect(upgradeInstance({ uid: "agent-uid", resourceVersion: "7" })).rejects.toThrow("Failed to upgrade instance");
   });
 });
 
@@ -347,6 +347,6 @@ describe("apiFetch session expiry detection", () => {
       mockResponse({ ok: true, status: 202, contentType: null }),
     );
 
-    await expect(deleteInstanceByName("abc")).resolves.toBeUndefined();
+    await expect(deleteInstanceByName("abc", { uid: "agent-uid", resourceVersion: "7" })).resolves.toBeUndefined();
   });
 });

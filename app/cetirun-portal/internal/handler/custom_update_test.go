@@ -8,6 +8,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
@@ -19,6 +20,7 @@ import (
 func TestCustomNativeUpdatesHaveNoSideEffects(t *testing.T) {
 	for _, byName := range []bool{false, true} {
 		for _, body := range []string{`{"gatewayToken":"sk-dummy"}`, `{"tailscaleAuthKey":"sk-dummy"}`, `{"teamsEnabled":true}`, `{"teamsEnabled":false}`} {
+			body = strings.Replace(body, "{", `{"uid":"agent-alice","resourceVersion":"1",`, 1)
 			instance := sampleInstance()
 			instance.Spec.Agent.Type = api.AgentTypeCustom
 			fc := newFakeClient(instance)
@@ -53,7 +55,7 @@ func TestCustomOrdinaryUpdateRemainsAvailable(t *testing.T) {
 	instance.Spec.Agent.Type = api.AgentTypeCustom
 	fc := newFakeClient(instance)
 	h := &InstanceHandler{Kube: kube.NewClient(fc), Config: config.Config{}}
-	request := withClaims(httptest.NewRequest(http.MethodPatch, "/api/v1/instance", bytes.NewBufferString(`{"displayName":"Updated"}`)), "alice", "Example", "alice@example.com")
+	request := withClaims(httptest.NewRequest(http.MethodPatch, "/api/v1/instance", bytes.NewBufferString(`{"uid":"agent-alice","resourceVersion":"1","displayName":"Updated"}`)), "alice", "Example", "alice@example.com")
 	response := httptest.NewRecorder()
 	h.UpdateInstance(response, request)
 	if response.Code != http.StatusOK {

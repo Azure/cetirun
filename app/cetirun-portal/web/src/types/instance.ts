@@ -9,9 +9,24 @@ export interface TeamSummary {
 
 export type AgentType = "openclaw" | "hermes" | "custom";
 
-export interface Instance {
+export interface AgentConfig {
+  type: AgentType;
+  image?: string;
+  username?: string;
+  port?: number;
+  registrySecretRef?: { name: string };
+}
+
+export interface InstanceVersion {
+  uid: string;
+  resourceVersion: string;
+}
+
+export interface Instance extends InstanceVersion {
   instanceName: string;
-  agentType: AgentType;
+  agent: AgentConfig;
+  generation?: number;
+  observedGeneration?: number;
   alias: string;
   displayName: string;
   team: string;
@@ -47,7 +62,7 @@ export interface ConditionStatus {
 
 export interface CreateInstanceRequest {
   instanceName?: string;
-  agentType?: AgentType;
+  agent: Omit<AgentConfig, "registrySecretRef" | "type"> & { type?: AgentType };
   displayName?: string;
   team?: string;
   gatewayToken?: string;
@@ -57,7 +72,13 @@ export interface CreateInstanceRequest {
   agentIdentityEnabled?: boolean;
 }
 
-export interface UpdateInstanceRequest {
+export interface UpdateInstanceRequest extends InstanceVersion {
+  agent?: {
+    type?: AgentType;
+    image?: string | null;
+    username?: string;
+    port?: number | null;
+  };
   displayName?: string;
   team?: string;
   gatewayToken?: string;

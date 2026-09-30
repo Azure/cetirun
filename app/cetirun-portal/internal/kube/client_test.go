@@ -88,7 +88,7 @@ func TestCreateInstance_Success(t *testing.T) {
 	fc := newFakeClient()
 	c := NewClient(fc)
 
-	instance, err := c.CreateInstance(context.Background(), "bob", "Bob Jones", "other-team", "bob@example.com", "", "", "", "", "", false)
+	instance, err := c.CreateInstance(context.Background(), "bob", "Bob Jones", "other-team", "bob@example.com", "", cetirunv1alpha1.HarnessSpec{}, "", "", "", false)
 	if err != nil {
 		t.Fatalf("CreateInstance failed: %v", err)
 	}
@@ -124,7 +124,7 @@ func TestCreateInstance_Success(t *testing.T) {
 func TestCreateInstanceAgentIdentityRequiresOwner(t *testing.T) {
 	c := NewClient(newFakeClient())
 
-	_, err := c.CreateInstance(context.Background(), "bob", "Bob Jones", "other-team", "bob@example.com", "", "", "", "", "", false,
+	_, err := c.CreateInstance(context.Background(), "bob", "Bob Jones", "other-team", "bob@example.com", "", cetirunv1alpha1.HarnessSpec{}, "", "", "", false,
 		CreateInstanceOptions{AgentIdentityEnabled: true})
 	if err == nil || !strings.Contains(err.Error(), "verified owner identity") {
 		t.Fatalf("CreateInstance() error = %v, want verified owner identity error", err)
@@ -136,7 +136,7 @@ func TestCreateInstanceAgentIdentityPersistsOwnerBinding(t *testing.T) {
 	const objectID = "22222222-2222-2222-2222-222222222222"
 	c := NewClient(newFakeClient())
 
-	instance, err := c.CreateInstance(context.Background(), "bob", "Bob Jones", "other-team", "bob@example.com", "", "", "", "", "", false,
+	instance, err := c.CreateInstance(context.Background(), "bob", "Bob Jones", "other-team", "bob@example.com", "", cetirunv1alpha1.HarnessSpec{}, "", "", "", false,
 		CreateInstanceOptions{AgentIdentityEnabled: true, OwnerTenantID: tenantID, OwnerObjectID: objectID})
 	if err != nil {
 		t.Fatal(err)
@@ -154,7 +154,7 @@ func TestCreateAndClearInstanceModel(t *testing.T) {
 	fc := newFakeClient()
 	c := NewClient(fc)
 
-	instance, err := c.CreateInstance(context.Background(), "bob", "Bob Jones", "other-team", "bob@example.com", "", "", "", "", "gpt-5.4", false)
+	instance, err := c.CreateInstance(context.Background(), "bob", "Bob Jones", "other-team", "bob@example.com", "", cetirunv1alpha1.HarnessSpec{}, "", "", "gpt-5.4", false)
 	if err != nil {
 		t.Fatalf("CreateInstance failed: %v", err)
 	}
@@ -176,7 +176,7 @@ func TestCreateInstance_AlreadyExists(t *testing.T) {
 	fc := newFakeClient(sampleInstance())
 	c := NewClient(fc)
 
-	_, err := c.CreateInstance(context.Background(), "alice", "Alice Smith", "example-team", "alice@example.com", "", "", "", "", "", false)
+	_, err := c.CreateInstance(context.Background(), "alice", "Alice Smith", "example-team", "alice@example.com", "", cetirunv1alpha1.HarnessSpec{}, "", "", "", false)
 	if err == nil {
 		t.Fatal("expected error for duplicate instance")
 	}
@@ -189,7 +189,7 @@ func TestCreateInstance_WithGatewayToken(t *testing.T) {
 	fc := newFakeClient()
 	c := NewClient(fc)
 
-	instance, err := c.CreateInstance(context.Background(), "bob", "Bob Jones", "other-team", "bob@example.com", "", "", "my-token", "", "", false)
+	instance, err := c.CreateInstance(context.Background(), "bob", "Bob Jones", "other-team", "bob@example.com", "", cetirunv1alpha1.HarnessSpec{}, "my-token", "", "", false)
 	if err != nil {
 		t.Fatalf("CreateInstance failed: %v", err)
 	}
@@ -212,7 +212,7 @@ func TestCreateInstance_WithTailscaleAuthKey(t *testing.T) {
 	fc := newFakeClient()
 	c := NewClient(fc)
 
-	instance, err := c.CreateInstance(context.Background(), "bob", "Bob Jones", "other-team", "bob@example.com", "", "", "", "tskey-auth-xxx", "", false)
+	instance, err := c.CreateInstance(context.Background(), "bob", "Bob Jones", "other-team", "bob@example.com", "", cetirunv1alpha1.HarnessSpec{}, "", "tskey-auth-xxx", "", false)
 	if err != nil {
 		t.Fatalf("CreateInstance failed: %v", err)
 	}
@@ -238,7 +238,7 @@ func TestCreateInstance_WithBothSecrets(t *testing.T) {
 	fc := newFakeClient()
 	c := NewClient(fc)
 
-	instance, err := c.CreateInstance(context.Background(), "bob", "Bob Jones", "other-team", "bob@example.com", "", "", "my-token", "tskey-auth-xxx", "", false)
+	instance, err := c.CreateInstance(context.Background(), "bob", "Bob Jones", "other-team", "bob@example.com", "", cetirunv1alpha1.HarnessSpec{}, "my-token", "tskey-auth-xxx", "", false)
 	if err != nil {
 		t.Fatalf("CreateInstance failed: %v", err)
 	}

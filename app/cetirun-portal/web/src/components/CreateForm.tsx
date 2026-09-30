@@ -20,6 +20,10 @@ const AGENT_TYPE_LABELS: Record<AgentType, string> = {
 export function CreateForm({ onCreated }: { onCreated?: () => void }) {
   const [instanceName, setInstanceName] = useState("");
   const [agentType, setAgentType] = useState<AgentType>("hermes");
+  const [image, setImage] = useState("");
+  const [username, setUsername] = useState("vibe");
+  const [port, setPort] = useState("");
+  const [validationError, setValidationError] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [team, setTeam] = useState("");
   const [gatewayToken, setGatewayToken] = useState("");
@@ -30,7 +34,8 @@ export function CreateForm({ onCreated }: { onCreated?: () => void }) {
   const createMutation = useCreateInstance({ onSuccess: onCreated });
   const { data: features, isLoading: featuresLoading } = useFeatures();
   const effectiveProvider = useEffectiveTeamProvider(team);
-  const usesGitHubCopilot = effectiveProvider === GITHUB_COPILOT_PROVIDER;
+  const custom = agentType === "custom";
+  const usesGitHubCopilot = !custom && effectiveProvider === GITHUB_COPILOT_PROVIDER;
 
   const allowedAgentTypes = useMemo(
     () => features?.allowedAgentTypes ?? DEFAULT_AGENT_TYPES,
@@ -53,16 +58,28 @@ export function CreateForm({ onCreated }: { onCreated?: () => void }) {
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    const httpPort = port.trim() === "" ? undefined : Number(port);
+    if (custom && (!image.trim() || !/^[a-z_][a-z0-9_-]{0,31}$/.test(username) || username === "root")) {
+      setValidationError("Custom requires an image and an existing non-root image username.");
+      return;
+    }
+    if (custom && httpPort !== undefined && (!Number.isInteger(httpPort) || httpPort < 1 || httpPort > 65535)) {
+      setValidationError("HTTP port must be an integer between 1 and 65535, or left blank for a headless Agent.");
+      return;
+    }
+    setValidationError("");
     createMutation.mutate({
       instanceName: instanceName || undefined,
-      agentType,
+      agent: custom
+        ? { type: agentType, image: image.trim(), username, ...(httpPort === undefined ? {} : { port: httpPort }) }
+        : { type: agentType },
       displayName: displayName || undefined,
       team: team || undefined,
-      gatewayToken: gatewayToken || undefined,
-      tailscaleAuthKey: tailscaleAuthKey || undefined,
+      gatewayToken: !custom ? gatewayToken || undefined : undefined,
+      tailscaleAuthKey: !custom ? tailscaleAuthKey || undefined : undefined,
       model: usesGitHubCopilot ? model.trim() || undefined : undefined,
-      teamsEnabled: teamsEnabled || undefined,
-      agentIdentityEnabled: agentIdentityEnabled || undefined,
+      teamsEnabled: !custom ? teamsEnabled || undefined : undefined,
+      agentIdentityEnabled: !custom ? agentIdentityEnabled || undefined : undefined,
     });
   };
 
@@ -83,7 +100,7 @@ export function CreateForm({ onCreated }: { onCreated?: () => void }) {
           value={instanceName}
           onChange={(_, data) => setInstanceName(data.value)}
           placeholder="e.g. my-project (leave blank for default)"
-          pattern="[a-z][a-z0-9-]*"
+          pattern={"[a-z](?:[a-z0-9\\-]*[a-z0-9])?"}
         />
       </Field>
 
@@ -91,7 +108,15 @@ export function CreateForm({ onCreated }: { onCreated?: () => void }) {
         <Select
           value={allowedAgentTypes.includes(agentType) ? agentType : ""}
           disabled={allowedAgentTypes.length <= 1}
-          onChange={(event) => setAgentType(event.target.value as AgentType)}
+          onChange={(event) => {
+            setAgentType(event.target.value as AgentType);
+            setModel("");
+            setGatewayToken("");
+            setTailscaleAuthKey("");
+            setTeamsEnabled(false);
+            setAgentIdentityEnabled(false);
+            setValidationError("");
+          }}
         >
           {allowedAgentTypes.map((type) => (
             <option key={type} value={type}>
@@ -100,6 +125,23 @@ export function CreateForm({ onCreated }: { onCreated?: () => void }) {
           ))}
         </Select>
       </Field>
+
+      {custom && (
+        <>
+          <MessageBar intent="info">
+            Model setup and login remain with the image. Registry credentials and image changes after creation are managed separately.
+          </MessageBar>
+          <Field label="Agent Image" required hint="Use an image supported by the configured runtime. The image keeps its own entrypoint.">
+            <Input value={image} onChange={(_, data) => setImage(data.value)} required maxLength={2048} placeholder="registry.example.com/team/agent@sha256:…" />
+          </Field>
+          <Field label="Agent Username" required hint="An existing non-root user in the image; HOME is /home/<username>. This cannot change after creation.">
+            <Input value={username} onChange={(_, data) => setUsername(data.value)} required maxLength={32} pattern={"[a-z_][a-z0-9_\\-]{0,31}"} />
+          </Field>
+          <Field label="HTTP Port (optional)" hint="Leave blank for headless operation. Platform Terminal and Desktop do not need this port.">
+            <Input type="number" min={1} max={65535} step={1} value={port} onChange={(_, data) => setPort(data.value)} placeholder="e.g. 8080" />
+          </Field>
+        </>
+      )}
 
       <Field label="Display Name (optional)">
         <Input
@@ -113,7 +155,7 @@ export function CreateForm({ onCreated }: { onCreated?: () => void }) {
 
       {usesGitHubCopilot && <CopilotModelPicker value={model} onChange={setModel} />}
 
-      <Field label="Gateway Token (optional)">
+      {!custom && <Field label="Gateway Token (optional)">
         <Input
           type="password"
           autoComplete="off"
@@ -121,9 +163,9 @@ export function CreateForm({ onCreated }: { onCreated?: () => void }) {
           onChange={(_, data) => setGatewayToken(data.value)}
           placeholder="Leave empty to auto-generate"
         />
-      </Field>
+      </Field>}
 
-      {features?.tailscaleEnabled && (
+      {!custom && features?.tailscaleEnabled && (
         <Field label="Tailscale Auth Key (optional)">
           <Input
             type="password"
@@ -135,11 +177,11 @@ export function CreateForm({ onCreated }: { onCreated?: () => void }) {
         </Field>
       )}
 
-      <Switch
+      {!custom && <Switch
         checked={teamsEnabled}
         onChange={(_, data) => setTeamsEnabled(!!data.checked)}
         label="Enable Microsoft Teams Integration"
-      />
+      />}
 
       {features?.agentIdentityEnabled && agentType !== "custom" && (
         <Switch
@@ -161,6 +203,7 @@ export function CreateForm({ onCreated }: { onCreated?: () => void }) {
         {createMutation.isPending ? "Creating..." : "Create Agent"}
       </Button>
 
+      {validationError && <MessageBar intent="error">{validationError}</MessageBar>}
       {createMutation.error && (
         <MessageBar intent="error">
           {(createMutation.error as Error).message}
