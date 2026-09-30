@@ -216,6 +216,9 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	// 3a. Backfill spec.helm.version if empty.
 	// This pins the chart version on the CR so that future operator upgrades
 	// do not automatically roll out a new chart (avoiding pod restarts).
+	// Governed Agents stop at holdSandbox above. Before enabling that path,
+	// authorize version/image/port pinning narrowly; admission rejects controller
+	// spec writes and must not gain a blanket controller exemption.
 	if instance.Spec.Helm.Version == "" {
 		instance.Spec.Helm.Version = r.ChartVersion
 		if err := r.Update(ctx, instance); err != nil {

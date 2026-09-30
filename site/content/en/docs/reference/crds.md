@@ -226,11 +226,25 @@ chart adds namespace `patch` permission for this ownership write.
 
 The new binding fields remain optional solely to preserve unbound resources
 during additive staging. The pure resolver requires complete, compatible
-bindings and explicit UID authorization. Admission, enforcement observation,
-protected rendering and production adoption still need implementation and
-qualification. See the
+bindings and explicit UID authorization. An optional independent configuration
+admission service now validates governed writes and references, persists
+creation-only selection defaults, and protects cleanup during webhook outages.
+It is disabled by default and supplies no production capability registrations:
+governed bindings remain rejected without qualified support, and runtime
+execution remains held. Enforced webhook rules make matched legacy writes
+depend on service availability too.
+Admission is currently gated to Kubernetes 1.37+. Legacy Team deletion retains
+its RBAC behavior; removing a governed Team's bindings requires its members to
+be rebound to another governed Team or deleted, including members that inherit
+governance without an explicit Agent binding.
+For schema upgrades, roll out compatible admission binaries to all replicas
+before adding new schema fields/defaults, and apply CRD upgrades explicitly.
+
+Governed member Team assignment, pending UID authorization, final-Pod admission,
+rollout barriers, enforcement observation, protected rendering and production
+adoption still need implementation and qualification. See the
 [operator foundation notes]({{< repo "app/cetirun-operator/README.md" >}})
-for validation and feasibility boundaries.
+for the staged admission bootstrap, authority and validation boundaries.
 
 ## Schema and implementation
 

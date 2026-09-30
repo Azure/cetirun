@@ -98,6 +98,46 @@ serviceAccount:
   name: cetirun-operator-controller-manager
   annotations: {}
 
+# -- Configuration admission only; this does not enable governed execution or
+# provide a qualified Sandbox capability registration.
+sandboxAdmission:
+  # -- Deploy the independent, read-only admission server first.
+  # Requires Kubernetes >= 1.37, the validated admission minimum. The server
+  # uses native lifecycle sleep for an image-independent shutdown delay.
+  enabled: false
+  # -- Install fail-closed webhooks only after the server and TLS are ready.
+  # Requires Kubernetes >= 1.37, including native admission matchConditions.
+  enforce: false
+  # -- Timeout for each fail-closed webhook call; integer 1..30 when enforce=true.
+  timeoutSeconds: 10
+  replicaCount: 2
+  # -- Optional existing platform-managed PriorityClass. No class is created
+  # or selected automatically.
+  priorityClassName: ""
+  # -- Admission-only placement; never inherits the operator's placement.
+  nodeSelector: {}
+  affinity: {}
+  tolerations: []
+  # -- Existing platform-issued TLS Secret in namespace, containing tls.crt and
+  # tls.key. The certificate must cover cetirun-sandbox-admission.<namespace>.svc.
+  # This chart does not issue certificates or install cert-manager.
+  tlsSecretName: ""
+  # -- Base64-encoded PEM CA bundle supplied by the platform issuer. Required
+  # when enforce=true. Helm checks encoding/framing, not certificate trust,
+  # expiry, CA constraints, or the serving certificate's subject names.
+  caBundle: ""
+  # -- Exact authenticated Kubernetes usernames/groups allowed to administer
+  # configuration. At least one nonempty list is required even before enforce.
+  adminUsers: []
+  adminGroups: []
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+
 # -- Microsoft Entra Agent Identity lifecycle configuration. The feature is
 # deployment-scoped and remains disabled unless every required field is set.
 agentIdentity:

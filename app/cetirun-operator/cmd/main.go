@@ -33,6 +33,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	sandboxadmission "github.com/Azure/CetiRun/app/cetirun-operator/internal/admission"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/buildinfo"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/controller"
 	helmclient "github.com/Azure/CetiRun/app/cetirun-operator/internal/helm"
@@ -60,7 +61,13 @@ func main() {
 	var istioGateway string
 	var defaultModel string
 	var showVersion bool
+	var mode string
+	var admissionCertDir string
+	var admissionPort int
 
+	flag.StringVar(&mode, "mode", "operator", "Process mode: operator or sandbox-admission.")
+	flag.StringVar(&admissionCertDir, "admission-cert-dir", "", "Directory containing platform-issued tls.crt and tls.key for Sandbox admission.")
+	flag.IntVar(&admissionPort, "admission-port", 9443, "Sandbox admission HTTPS port.")
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "Address the metric endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "Address the probe endpoint binds to.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
@@ -87,6 +94,26 @@ func main() {
 	}
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+	if mode == "sandbox-admission" {
+		config, err := sandboxadmission.ParseConfig(os.Getenv("CETIRUN_SANDBOX_ADMISSION"))
+		if err != nil {
+			setupLog.Error(err, "invalid Sandbox admission configuration")
+			os.Exit(1)
+		}
+		setupLog.Info("Starting Sandbox configuration admission; runtime execution remains disabled",
+			"version", buildinfo.Version, "commit", buildinfo.Commit)
+		if err := sandboxadmission.Run(ctrl.SetupSignalHandler(), ctrl.GetConfigOrDie(), config, sandboxadmission.ServerOptions{
+			CertDirectory: admissionCertDir, Port: admissionPort, MetricsAddress: metricsAddr, ProbeAddress: probeAddr,
+		}); err != nil {
+			setupLog.Error(err, "Sandbox admission server failed")
+			os.Exit(1)
+		}
+		return
+	}
+	if mode != "operator" {
+		setupLog.Error(fmt.Errorf("unsupported process mode"), "mode must be operator or sandbox-admission")
+		os.Exit(1)
+	}
 	setupLog.Info("Starting CetiRun Operator", "version", buildinfo.Version, "commit", buildinfo.Commit)
 
 	// Support environment variable overrides for chart configuration.

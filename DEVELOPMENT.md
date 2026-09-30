@@ -287,11 +287,29 @@ exceptions in `scripts/license_headers.py` must retain their own notices.
   Review generator upgrades separately. Operator,
   Portal, and operations-agent RBAC remain source Helm/YAML files and must
   name the matching API resources; do not hand-edit generated output.
-- Agent API defaulting, strict decoding and CEL transitions are covered by
+- Agent API defaulting, strict decoding and CEL transitions, plus Sandbox
+  configuration admission and its outage/cleanup boundary, are covered by
   `make -C app/cetirun-operator test-envtest`. Set `KUBEBUILDER_ASSETS` to local
-  Kubernetes 1.37 test binaries prepared separately. The target starts isolated
-  API server/etcd processes, refuses missing binaries and never uses a cluster.
-  Normal `go test ./...` runs the schema/serialization tests, not envtest.
+  Kubernetes 1.37 test binaries prepared separately; Helm 3 is also required
+  to render the actual admission matching rules. The target starts isolated
+  API server/etcd processes with RBAC, refuses missing binaries and never uses
+  an existing cluster. Loopback TLS tests cover the independent serving process
+  and certificate replacement. Version-skew fixtures verify that fields known
+  only to a newer CRD fail closed at the older handler without blocking
+  known-field requests. Normal `go test ./...` runs unit and
+  schema/serialization tests, not envtest.
+  The checksum-pinned Linux amd64/arm64 bundle can be provisioned into a new
+  task-local directory after a missing-tool failure:
+
+  ```bash
+  # Networked setup, separate from offline validation; refuses overwrites.
+  python3 -B scripts/ci/install_tools.py --bin-dir /tmp/cetirun-envtest-1.37.0 envtest
+  KUBEBUILDER_ASSETS=/tmp/cetirun-envtest-1.37.0 \
+    make -C app/cetirun-operator test-envtest
+  ```
+
+  This installs only the manifest-pinned `kube-apiserver`, `etcd` and `kubectl`
+  binaries, not a cluster, global tool replacement or a runtime qualification.
 - Helm files under `templates/` are source templates. Rendered Kubernetes
   manifests are validation output, not replacements for those templates.
 - Keep `go.mod` and `go.sum` together when dependencies change. Keep the portal's

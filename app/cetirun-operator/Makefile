@@ -96,7 +96,7 @@ verify-generated: generate manifests
 ## Uses only a local API server and etcd; never connects to an existing cluster.
 test-envtest:
 	@test -n "$(KUBEBUILDER_ASSETS)" && test -x "$(KUBEBUILDER_ASSETS)/kube-apiserver" && test -x "$(KUBEBUILDER_ASSETS)/etcd" || { echo "Set KUBEBUILDER_ASSETS to preinstalled envtest binaries"; exit 1; }
-	USE_EXISTING_CLUSTER=false go test -tags=envtest ./test/integration ./internal/helm -count=1 -v
+	USE_EXISTING_CLUSTER=false go test -tags=envtest ./test/integration ./internal/helm ./internal/admission -count=1 -v
 
 ## Clean build artifacts
 clean:
