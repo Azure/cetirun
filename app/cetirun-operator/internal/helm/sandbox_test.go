@@ -323,7 +323,9 @@ func TestSandboxCompilerIdentityProjectionRendering(t *testing.T) {
 				},
 				Topology: sandboxpolicy.Topology{
 					Revision: "synthetic-only", ManagedPeersComplete: true,
-					DNS: []sandboxpolicy.Peer{{Name: "dns", Namespace: "platform-dns", UID: "dns-uid", IPs: []string{"10.96.0.54", "10.96.0.53"}}},
+					DNSResolverIPs: []string{"10.96.0.54", "10.96.0.53"},
+					DNS: []sandboxpolicy.Peer{{Name: "dns", Namespace: "platform-dns", UID: "dns-uid",
+						IPs: []string{"10.96.0.54", "10.96.0.53", "10.244.0.11", "10.244.0.12", "10.244.0.13"}}},
 					Gateway: []sandboxpolicy.Destination{{
 						Peer:  sandboxpolicy.Peer{Name: "gateway", Namespace: "platform-gateway", UID: "gateway-uid", IPs: []string{"10.96.0.20"}},
 						Ports: []api.AgentPolicyPort{{Port: 8443, Protocol: corev1.ProtocolTCP}},
@@ -381,6 +383,7 @@ func TestSandboxCompilerIdentityProjectionRendering(t *testing.T) {
 			}
 			if template.Spec.DNSPolicy != corev1.DNSNone || template.Spec.DNSConfig == nil ||
 				!slices.Equal(template.Spec.DNSConfig.Nameservers, plan.Network.DNSIPs) ||
+				!slices.Equal(template.Spec.DNSConfig.Nameservers, []string{"10.96.0.53", "10.96.0.54"}) ||
 				len(template.Spec.DNSConfig.Searches) != 0 || len(template.Spec.DNSConfig.Options) != 0 {
 				t.Fatal("Pod DNS differs from the compiler's effective trusted topology")
 			}

@@ -66,6 +66,9 @@ func TestControlInputBudgetThresholds(t *testing.T) {
 		{"peer IPs", func(count int) (api.AgentPolicySpec, Platform) {
 			return api.AgentPolicySpec{}, Platform{Topology: Topology{Peers: []Peer{{IPs: make([]string, count-1)}}}}
 		}},
+		{"DNS resolver IPs", func(count int) (api.AgentPolicySpec, Platform) {
+			return api.AgentPolicySpec{}, Platform{Topology: Topology{DNSResolverIPs: make([]string, count)}}
+		}},
 		{"role contents", func(count int) (api.AgentPolicySpec, Platform) {
 			return api.AgentPolicySpec{}, Platform{Grants: []ApprovedGrant{{Rules: []rbacv1.PolicyRule{{Verbs: make([]string, count-2)}}}}}
 		}},
@@ -84,9 +87,9 @@ func TestControlInputBudgetThresholds(t *testing.T) {
 
 func TestCompileBoundsRawInputsBeforeNormalization(t *testing.T) {
 	input := compilerFixture()
-	// The fixture supplies five CIDRs, DNS (peer+IP), and three destinations
-	// (peer+IP+port). Duplicate policy entries still consume the raw-input budget.
-	input.Resolution.AgentPolicy.Network.BlockedCIDRs = slices.Repeat([]string{"198.51.100.0/24"}, MaxControlInputEntries-16)
+	// The fixture supplies five CIDRs, DNS (resolver+peer+IP), and three
+	// destinations (peer+IP+port). Duplicates still consume the raw-input budget.
+	input.Resolution.AgentPolicy.Network.BlockedCIDRs = slices.Repeat([]string{"198.51.100.0/24"}, MaxControlInputEntries-17)
 	mustCompile(t, input)
 	input.Resolution.AgentPolicy.Network.BlockedCIDRs = append(input.Resolution.AgentPolicy.Network.BlockedCIDRs, "198.51.100.0/24")
 	if plan, err := Compile(input); plan != nil || !errors.Is(err, ErrConflict) || !strings.Contains(err.Error(), "control input") {

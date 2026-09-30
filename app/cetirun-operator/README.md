@@ -294,6 +294,14 @@ blocking and mTLS remain unsupported and reject rather than becoming no-ops.
 The effective compiled revision includes topology, identity and role-content
 changes; use it rather than only the base resolver revision.
 
+The trusted topology must explicitly supply `DNSResolverIPs`, the one to three
+distinct Pod resolver addresses, separately from `DNS` peer membership.
+Resolvers must belong to approved DNS peers and use qualified IP families.
+Missing or unapproved resolvers reject; the compiler does not infer them from
+backend addresses or truncate the inventory. DNS peers retain all Service and
+backend IPs for network allowances and DNS deny exemptions. Adding backend
+replicas therefore changes the enforcement revision, not the Pod's nameservers.
+
 The current egress posture permits public IP destinations except explicit
 exclusions, while restricting private, cluster, node, metadata and management
 ranges and qualifying required DNS/Gateway destinations. It is not a
@@ -309,6 +317,10 @@ serialized Cilium policy, including ownership/revision metadata. The
 [budget accounting](internal/sandboxpolicy/limits.go) bounds work before
 expansion as well as final output size. Exceeding a limit rejects the plan;
 entries are never silently truncated to obtain a successful result.
+Independently of those budgets, emitted allow-port groups contain at most 40
+entries per `toPorts[].ports` array to match Cilium's allow-rule schema. Grouping
+happens after port sets are combined, including overlapping internal CIDRs and
+merged managed-peer destinations; it preserves all allowed ports and protocols.
 
 Ordinary workloads keep the default ServiceAccount without token automount.
 Approved Kubernetes API and Entra identities use separate audience-bound token
