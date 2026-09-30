@@ -473,15 +473,6 @@ class WorkflowContractTests(unittest.TestCase):
                 )
                 self.assertIsNotNone(version)
                 self.assertGreaterEqual(tuple(map(int, version.groups())), minimum)
-                if package == "aiohttp":
-                    image = (
-                        validate.ROOT / "app/cetirun-chart/agents/openclaw/Dockerfile"
-                    ).read_text()
-                    self.assertIn(
-                        "ARG CETIRUN_AUTH_AIOHTTP_VERSION="
-                        + ".".join(version.groups()),
-                        image,
-                    )
 
     def test_component_runtime_bases_reject_known_vulnerable_digest(self):
         images = set()

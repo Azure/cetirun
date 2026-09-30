@@ -142,6 +142,6 @@ RUN --mount=from=openclaw-source,source=/home/vibe/openclaw-pack/openclaw.tgz,ta
     npm ls "undici@${CLAWHUB_UNDICI_VERSION}" --all >/dev/null && \
     ! npm ls undici@7.29.0 --all >/dev/null 2>&1
 
-EXPOSE 18789 7681 3978 18790
+EXPOSE 18789 7681 3978
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
