@@ -60,11 +60,31 @@ func (p *PreparedRelease) CacheKey() string {
 // The controller uses it before relying on a value that older pinned chart
 // versions would silently ignore.
 func (p *PreparedRelease) SupportsValue(name string) bool {
-	if p == nil || p.chart == nil {
+	return p.SupportsValuePath(name)
+}
+
+// SupportsValuePath reports whether the loaded chart declares a nested value,
+// such as aiGateway.models.
+func (p *PreparedRelease) SupportsValuePath(path ...string) bool {
+	if p == nil || p.chart == nil || len(path) == 0 {
 		return false
 	}
-	_, ok := p.chart.Values[name]
-	return ok
+	current := map[string]any(p.chart.Values)
+	for i, name := range path {
+		value, ok := current[name]
+		if !ok {
+			return false
+		}
+		if i == len(path)-1 {
+			return true
+		}
+		next, ok := value.(map[string]any)
+		if !ok {
+			return false
+		}
+		current = next
+	}
+	return false
 }
 
 // Rebuild uses the same loaded chart after platform integration bindings have
@@ -168,16 +188,27 @@ func prepareRuntimeChart(chrt *chart.Chart, input map[string]any, validateRender
 	if provider == "" {
 		provider = "github_copilot"
 	}
+	gateway := object(values["aiGateway"])
+	var gatewayModels []agents.GatewayModel
+	for _, item := range array(gateway["models"]) {
+		model := object(item)
+		gatewayModels = append(gatewayModels, agents.GatewayModel{
+			ID: text(model["id"]), Name: text(model["name"]),
+			ContextWindow: integer(model["contextWindow"]), MaxTokens: integer(model["maxTokens"]),
+		})
+	}
 	bindings := agents.Bindings{
 		ProfileID:     profile.ID,
 		ChartVersion:  chrt.Metadata.Version,
 		NativeConfig:  config,
 		NativeOptions: map[string]any{"acpx": native["acpx"], "plugins": native["plugins"]},
 		Model: agents.ModelBinding{
-			Provider: provider,
-			Name:     text(secrets["model"]),
-			BaseURL:  text(secrets["apiBase"]),
-			AuthMode: text(secrets["authMode"]),
+			Provider:      provider,
+			Name:          text(secrets["model"]),
+			BaseURL:       text(secrets["apiBase"]),
+			AuthMode:      text(secrets["authMode"]),
+			Gateway:       gateway["enabled"] == true,
+			GatewayModels: gatewayModels,
 		},
 		Skills: agents.SkillsBinding{
 			Shared:    skills["shared"] == true,
@@ -185,6 +216,10 @@ func prepareRuntimeChart(chrt *chart.Chart, input map[string]any, validateRender
 		},
 		Integrations:   integrations,
 		ConfigTemplate: string(asset(chrt, "agents/"+descriptor.Type+"/config/native.tpl")),
+		// OpenClaw in a chart with the per-Agent Copilot proxy signs in
+		// through the Portal and carries no in-agent helper.
+		NoSignInHelper: descriptor.Type == "openclaw" &&
+			(&PreparedRelease{chart: chrt}).SupportsValuePath("aiGateway", "copilotProxy"),
 	}
 	// dig expects missing optional maps rather than explicit null.
 	for key, value := range bindings.NativeOptions {
@@ -329,6 +364,23 @@ func present(value any) bool { return text(value) != "" }
 func number(value any) int32 {
 	n, _ := strconv.ParseInt(strings.TrimSpace(fmt.Sprint(value)), 10, 32)
 	return int32(n)
+}
+
+// integer reads a whole number that may have been round-tripped through
+// JSON as a float, where fmt would print large values in exponent form.
+func integer(value any) int64 {
+	switch v := value.(type) {
+	case float64:
+		return int64(v)
+	case int:
+		return int64(v)
+	case int64:
+		return v
+	case json.Number:
+		n, _ := v.Int64()
+		return n
+	}
+	return 0
 }
 
 func array(value any) []any {

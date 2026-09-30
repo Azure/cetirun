@@ -148,9 +148,6 @@ OpenClaw container ports (agent-specific only)
 - name: gateway
   containerPort: {{ .Values.service.targetPort }}
   protocol: TCP
-- name: cetirun-auth
-  containerPort: 18790
-  protocol: TCP
 {{- end }}
 
 {{/*
@@ -201,15 +198,6 @@ OpenClaw container env vars (agent-specific only)
 # Config file path
 - name: OPENCLAW_CONFIG_PATH
   value: "/home/vibe/.openclaw/openclaw.json"
-# Bearer key for the in-pod cetirun-auth helper service used by the
-# Portal "Copilot Auth" UI. Auto-generated and preserved across upgrades.
-- name: CETIRUN_AUTH_KEY
-  valueFrom:
-    secretKeyRef:
-      name: {{ include "cetirun.secretName" . }}
-      key: CETIRUN_AUTH_KEY
-- name: CETIRUN_AGENT_TYPE
-  value: "openclaw"
 {{- end }}
 
 {{/*
@@ -266,10 +254,6 @@ OpenClaw service ports (agent-specific only)
   nodePort: {{ . }}
   {{- end }}
   {{- end }}
-- port: 18790
-  targetPort: cetirun-auth
-  protocol: TCP
-  name: cetirun-auth
 {{- end }}
 
 {{/*
@@ -278,8 +262,6 @@ OpenClaw networkpolicy ingress ports (agent-specific only)
 {{- define "cetirun.agent.openclaw.networkPolicyIngressPorts" -}}
 - protocol: TCP
   port: {{ .Values.service.targetPort }}
-- protocol: TCP
-  port: 18790
 {{- end }}
 
 {{/*
@@ -327,8 +309,6 @@ OpenClaw configmap data
 {{ .Files.Get "agents/openclaw/bootstrap/init-home.sh" | indent 4 }}
   init-skills.sh: |
 {{ .Files.Get "configs/init-skills.sh" | indent 4 }}
-  openclaw-auth.sh: |
-{{ .Files.Get "agents/openclaw/bootstrap/openclaw-auth.sh" | indent 4 }}
   session-logger.sh: |
 {{ .Files.Get "configs/session-logger.sh" | indent 4 }}
 {{- end }}

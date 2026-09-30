@@ -5,13 +5,17 @@ package controller
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -29,16 +33,23 @@ const (
 	// gateway-token Secret, which the Portal reads for browser-facing values.
 	aiGatewayKeySecretName  = "ai-gateway-virtual-key"
 	aiGatewayKeySecretField = "api-key"
-	// aiGatewaySharedAccessGroup is the Gateway access group for models shared
-	// with the Teams listed in the operator configuration. Administrators
-	// assign shared models to it with model_info.access_groups.
-	aiGatewaySharedAccessGroup    = "cetirun-shared"
+	// aiGatewaySharedAccessGroup is the Gateway access group of the models
+	// administrators share with every Agent. Administrators assign a model to
+	// it with model_info.access_groups.
+	aiGatewaySharedAccessGroup = "cetirun-shared"
+	// aiGatewayTeamPrefix prefixes the Gateway team of a CetiRun Team.
+	aiGatewayTeamPrefix           = "cetirun-team-"
 	aiGatewayBudgetDuration       = "1mo"
 	aiGatewayVerificationInterval = 10 * time.Minute
+	aiGatewayOwnerCacheTTL        = time.Hour
 	aiGatewayKeyIDLength          = 12
 	aiGatewayAgentUIDLabel        = "cetirun.microsoft.com/agent-uid"
 	aiGatewayKeyAliasAnnotation   = "cetirun.microsoft.com/ai-gateway-key-alias"
 	aiGatewayKeyIDPodAnnotation   = "cetirun.microsoft.com/ai-gateway-key-id"
+	// Placeholder default models for an Agent without any model yet. The
+	// Agent's configuration needs a default; the Portal explains the state.
+	aiGatewaySignInRequiredModel = aiGatewayCopilotModelPrefix + "sign-in-required"
+	aiGatewayNoModelsModel       = "no-models-available"
 )
 
 // AIGatewayConfig is the deployment-level AI Gateway integration. With
@@ -56,10 +67,12 @@ type AIGatewayConfig struct {
 	// DefaultBudget is the monthly budget in US dollars written when a key is
 	// created. Later changes made in the Gateway are not overwritten.
 	DefaultBudget float64
-	// DefaultModel is the model configured on Agents that use the Gateway.
+	// DefaultModel is the preferred default model of Agents that use the
+	// Gateway when the Agent names none, or names one it cannot use.
 	DefaultModel string
-	// SharedModelTeams lists the Teams whose Agents may use shared models.
-	SharedModelTeams []string
+	// CopilotProxyImage is the image of the per-Agent GitHub Copilot proxy,
+	// the Gateway image. Empty turns GitHub Copilot off for every Agent.
+	CopilotProxyImage string
 }
 
 // ParseAIGatewayConfig reads the operator's AI Gateway settings from the
@@ -71,14 +84,10 @@ func ParseAIGatewayConfig(getenv func(string) string) (AIGatewayConfig, error) {
 		MasterKeySecretName: strings.TrimSpace(getenv("AI_GATEWAY_MASTER_KEY_SECRET")),
 		MasterKeySecretKey:  strings.TrimSpace(getenv("AI_GATEWAY_MASTER_KEY_SECRET_KEY")),
 		DefaultModel:        strings.TrimSpace(getenv("AI_GATEWAY_DEFAULT_MODEL")),
+		CopilotProxyImage:   strings.TrimSpace(getenv("AI_GATEWAY_COPILOT_PROXY_IMAGE")),
 	}
 	if cfg.MasterKeySecretKey == "" {
 		cfg.MasterKeySecretKey = "master-key"
-	}
-	for _, team := range strings.Split(getenv("AI_GATEWAY_SHARED_MODEL_TEAMS"), ",") {
-		if team = strings.TrimSpace(team); team != "" && !slices.Contains(cfg.SharedModelTeams, team) {
-			cfg.SharedModelTeams = append(cfg.SharedModelTeams, team)
-		}
 	}
 	if raw := strings.TrimSpace(getenv("AI_GATEWAY_DEFAULT_BUDGET")); raw != "" {
 		budget, err := strconv.ParseFloat(raw, 64)
@@ -86,6 +95,9 @@ func ParseAIGatewayConfig(getenv func(string) string) (AIGatewayConfig, error) {
 			return AIGatewayConfig{}, fmt.Errorf("AI_GATEWAY_DEFAULT_BUDGET must be a positive number of US dollars")
 		}
 		cfg.DefaultBudget = budget
+	}
+	if cfg.CopilotProxyImage != "" && !validImageReference(cfg.CopilotProxyImage) {
+		return AIGatewayConfig{}, fmt.Errorf("AI_GATEWAY_COPILOT_PROXY_IMAGE must be an image reference with a tag or digest")
 	}
 	if !cfg.Enabled && cfg.URL == "" {
 		return cfg, nil
@@ -131,8 +143,16 @@ type aiGatewayKeyClient interface {
 	GetKey(context.Context, string) (*aigateway.Key, error)
 	GenerateKey(context.Context, aigateway.GenerateRequest) error
 	UpdateKeyModels(context.Context, string, []string) error
+	UpdateKeyOwner(context.Context, string, string, string) error
 	DeleteKeys(context.Context, []string) error
 	DeleteKeyByAlias(context.Context, string) error
+	EnsureTeam(context.Context, string, string, map[string]string) error
+	EnsureUser(context.Context, string, map[string]string) error
+	EnsureTeamMember(context.Context, string, string) error
+	ListModels(context.Context) ([]aigateway.Deployment, error)
+	AddModel(context.Context, aigateway.ModelRequest) error
+	DeleteModel(context.Context, string) error
+	PricedModels(context.Context) (map[string]bool, error)
 }
 
 func (r *AgentReconciler) aiGatewayClient(ctx context.Context) (aiGatewayKeyClient, error) {
@@ -165,11 +185,28 @@ func aiGatewayKeyAlias(instance *cetirunv1alpha1.Agent) string {
 	return fmt.Sprintf("cetirun-%s-%s", instance.Name, instance.UID)
 }
 
-func (r *AgentReconciler) aiGatewayAccessGroups(team *cetirunv1alpha1.Team) []string {
-	if team != nil && slices.Contains(r.AIGateway.SharedModelTeams, team.Name) {
-		return []string{aiGatewaySharedAccessGroup}
+// aiGatewayTeamID is the Gateway team of a CetiRun Team. Keys of Agents in
+// the Team belong to it, which gives administrators a Team total and per-Team
+// usage in the Gateway.
+func aiGatewayTeamID(team string) string {
+	if team == "" {
+		return ""
 	}
-	return nil
+	return aiGatewayTeamPrefix + team
+}
+
+// aiGatewayAccessGroups are the groups the Agent's key is granted: the shared
+// models unless the owner turned them off, and the Agent's own Copilot models.
+func (r *AgentReconciler) aiGatewayAccessGroups(instance *cetirunv1alpha1.Agent, copilot bool) []string {
+	var groups []string
+	if instance.Spec.SharedModelsEnabled() {
+		groups = append(groups, aiGatewaySharedAccessGroup)
+	}
+	if copilot {
+		groups = append(groups, copilotAccessGroup(instance))
+	}
+	slices.Sort(groups)
+	return groups
 }
 
 // aiGatewayKeyModels converts access groups to the key's model list. The
@@ -184,26 +221,52 @@ func aiGatewayKeyModels(groups []string) []string {
 	return models
 }
 
-// aiGatewayHarnessSupported reports whether the built-in harness honours a
-// custom OpenAI-compatible base URL. Hermes does not yet (its native config
-// ignores secrets.apiBase), so Hermes Agents get a key but keep their
-// current provider.
+// aiGatewayHarnessSupported reports whether the built-in harness is wired to
+// the Gateway: its configuration takes the Gateway endpoint, the key and the
+// model list, and it no longer carries its own Copilot login. Hermes is not
+// yet, so Hermes Agents get a key but keep their current provider.
 func aiGatewayHarnessSupported(agentType cetirunv1alpha1.AgentType) bool {
 	return agentType == cetirunv1alpha1.AgentTypeOpenClaw
 }
 
-// aiGatewayChartValue is the agent chart value that wires the key and the
-// Gateway egress. Chart versions without it would ignore routing values, so
-// Agents pinned to them are not routed.
-const aiGatewayChartValue = "aiGateway"
+// aiGatewayChartValue and aiGatewayChartModelsValue are the agent chart
+// values that wire the key, the model list and the Copilot proxy. Chart
+// versions without them would ignore or reject routing values, so Agents
+// pinned to them are not routed.
+const (
+	aiGatewayChartValue        = "aiGateway"
+	aiGatewayChartModelsValue  = "models"
+	aiGatewayChartCopilotValue = "copilotProxy"
+)
+
+// validImageReference accepts repository:tag, repository@sha256:<digest> or
+// both, without whitespace.
+func validImageReference(ref string) bool {
+	if ref == "" || strings.ContainsAny(ref, " \t\r\n\"'") {
+		return false
+	}
+	name, digest, hasDigest := strings.Cut(ref, "@")
+	if hasDigest && !digestPattern.MatchString(digest) {
+		return false
+	}
+	tagged := strings.LastIndex(name, ":") > strings.LastIndex(name, "/")
+	return name != "" && (tagged || hasDigest)
+}
+
+var digestPattern = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
 
 // aiGatewayRequired reports whether the deployment wants this Agent's model
-// traffic on the Gateway: the feature is on, a model is configured, the
-// harness supports a custom endpoint, and the Agent's Team may use shared
-// models. Chart support and a provisioned key are checked separately.
-func (r *AgentReconciler) aiGatewayRequired(instance *cetirunv1alpha1.Agent, team *cetirunv1alpha1.Team) bool {
-	return r.AIGateway.Enabled && r.AIGateway.DefaultModel != "" &&
-		aiGatewayHarnessSupported(instance.Spec.Agent.Type) && len(r.aiGatewayAccessGroups(team)) > 0
+// traffic on the Gateway. Chart support and a provisioned key are checked
+// separately.
+func (r *AgentReconciler) aiGatewayRequired(instance *cetirunv1alpha1.Agent) bool {
+	return r.AIGateway.Enabled && aiGatewayHarnessSupported(instance.Spec.Agent.Type)
+}
+
+// aiGatewayCopilotWanted reports whether the Agent gets a GitHub Copilot
+// proxy once routed: the owner kept the switch on and the deployment
+// configured the proxy image.
+func (r *AgentReconciler) aiGatewayCopilotWanted(instance *cetirunv1alpha1.Agent) bool {
+	return r.aiGatewayRequired(instance) && r.AIGateway.CopilotProxyImage != "" && instance.Spec.GitHubCopilotEnabled()
 }
 
 // aiGatewayRouted reports the routing decision recorded by the last
@@ -212,6 +275,12 @@ func (r *AgentReconciler) aiGatewayRequired(instance *cetirunv1alpha1.Agent, tea
 func (r *AgentReconciler) aiGatewayRouted(instance *cetirunv1alpha1.Agent) bool {
 	status := instance.Status.AIGateway
 	return r.AIGateway.Enabled && status != nil && status.Routed && status.KeyID != "" && status.KeySecretName != ""
+}
+
+// aiGatewayCopilotActive reports whether the routed Agent runs a Copilot
+// proxy, as recorded by the last key reconcile.
+func (r *AgentReconciler) aiGatewayCopilotActive(instance *cetirunv1alpha1.Agent) bool {
+	return r.aiGatewayRouted(instance) && r.aiGatewayCopilotWanted(instance) && instance.Status.AIGateway.Copilot != nil
 }
 
 func aiGatewayVerificationDue(instance *cetirunv1alpha1.Agent, enabled bool, now time.Time) bool {
@@ -241,14 +310,67 @@ func aiGatewayDegraded(instance *cetirunv1alpha1.Agent, reason string, err error
 	return err
 }
 
+// aiGatewayOwnerCache remembers Gateway teams, users and memberships the
+// operator already ensured, so a steady reconcile does not repeat the calls.
+type aiGatewayOwnerCache struct {
+	mu      sync.Mutex
+	ensured map[string]time.Time
+}
+
+func (c *aiGatewayOwnerCache) fresh(key string, now time.Time) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	at, ok := c.ensured[key]
+	return ok && now.Sub(at) < aiGatewayOwnerCacheTTL
+}
+
+func (c *aiGatewayOwnerCache) mark(key string, now time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.ensured == nil {
+		c.ensured = map[string]time.Time{}
+	}
+	c.ensured[key] = now
+}
+
+// ensureAIGatewayOwner makes sure the Gateway team of the Agent's Team, the
+// owner's Gateway user and the membership exist. Keys carry both, so usage
+// can be read per Team and per user, and a Team total applies to every
+// Agent in the Team. It returns the team and user IDs for the key.
+func (r *AgentReconciler) ensureAIGatewayOwner(ctx context.Context, client aiGatewayKeyClient, instance *cetirunv1alpha1.Agent) (string, string, error) {
+	now := time.Now()
+	teamID := aiGatewayTeamID(instance.Spec.Team)
+	userID := instance.Spec.User.Alias
+	if teamID != "" && !r.aiGatewayOwners.fresh("team:"+teamID, now) {
+		if err := client.EnsureTeam(ctx, teamID, instance.Spec.Team, map[string]string{"cetirun_team": instance.Spec.Team}); err != nil {
+			return "", "", fmt.Errorf("ensure Gateway team %s: %w", teamID, err)
+		}
+		r.aiGatewayOwners.mark("team:"+teamID, now)
+	}
+	if userID != "" && !r.aiGatewayOwners.fresh("user:"+userID, now) {
+		if err := client.EnsureUser(ctx, userID, map[string]string{"cetirun_user": userID}); err != nil {
+			return "", "", fmt.Errorf("ensure Gateway user %s: %w", userID, err)
+		}
+		r.aiGatewayOwners.mark("user:"+userID, now)
+	}
+	if teamID != "" && userID != "" && !r.aiGatewayOwners.fresh("member:"+teamID+"/"+userID, now) {
+		if err := client.EnsureTeamMember(ctx, teamID, userID); err != nil {
+			return "", "", fmt.Errorf("add Gateway user %s to team %s: %w", userID, teamID, err)
+		}
+		r.aiGatewayOwners.mark("member:"+teamID+"/"+userID, now)
+	}
+	return teamID, userID, nil
+}
+
 // reconcileAIGateway makes sure the Agent's virtual key exists in the Gateway
-// with the desired access groups. The key value is written to the instance
-// Secret before the create request, so an unknown create outcome is resolved
-// by looking the value up instead of creating a second key. The budget is
-// written only at creation: administrators may change it in the Gateway.
-// chartSupported reports whether the Agent's pinned chart can route model
-// traffic through the Gateway.
-func (r *AgentReconciler) reconcileAIGateway(ctx context.Context, instance *cetirunv1alpha1.Agent, team *cetirunv1alpha1.Team, chartSupported bool) error {
+// with the desired access groups, team and user, and reconciles the Agent's
+// Copilot proxy registrations and model list. The key value is written to the
+// instance Secret before the create request, so an unknown create outcome is
+// resolved by looking the value up instead of creating a second key. The
+// budget is written only at creation: administrators may change it in the
+// Gateway. chartSupported reports whether the Agent's pinned chart can route
+// model traffic through the Gateway.
+func (r *AgentReconciler) reconcileAIGateway(ctx context.Context, instance *cetirunv1alpha1.Agent, chartSupported bool) error {
 	status := ensureAIGatewayStatus(instance)
 	status.KeyAlias = aiGatewayKeyAlias(instance)
 	status.KeySecretName = aiGatewayKeySecretName
@@ -256,12 +378,18 @@ func (r *AgentReconciler) reconcileAIGateway(ctx context.Context, instance *ceti
 	if status.Phase == "" {
 		status.Phase = cetirunv1alpha1.AIGatewayPhaseProvisioning
 	}
-	groups := r.aiGatewayAccessGroups(team)
+	routed := r.aiGatewayRequired(instance) && chartSupported
+	copilot := routed && r.aiGatewayCopilotWanted(instance)
+	groups := r.aiGatewayAccessGroups(instance, copilot)
 	models := aiGatewayKeyModels(groups)
 
 	client, err := r.aiGatewayClient(ctx)
 	if err != nil {
 		return aiGatewayDegraded(instance, "GatewayConfigUnavailable", err)
+	}
+	teamID, userID, err := r.ensureAIGatewayOwner(ctx, client, instance)
+	if err != nil {
+		return aiGatewayDegraded(instance, "GatewayOwnerFailed", err)
 	}
 	value, err := r.ensureAIGatewayKeySecret(ctx, instance, false)
 	if err != nil {
@@ -277,6 +405,7 @@ func (r *AgentReconciler) reconcileAIGateway(ctx context.Context, instance *ceti
 		request := aigateway.GenerateRequest{
 			Key: value, Alias: status.KeyAlias, Models: models,
 			MaxBudget: r.AIGateway.DefaultBudget, BudgetDuration: aiGatewayBudgetDuration,
+			TeamID: teamID, UserID: userID,
 			Metadata: map[string]string{
 				"cetirun_agent": instance.Name, "cetirun_agent_uid": string(instance.UID),
 				"cetirun_user": instance.Spec.User.Alias, "cetirun_team": instance.Spec.Team,
@@ -304,22 +433,46 @@ func (r *AgentReconciler) reconcileAIGateway(ctx context.Context, instance *ceti
 		}
 		return aiGatewayDegraded(instance, "KeyAliasMismatch",
 			fmt.Errorf("the virtual key Secret held a key with another alias; a new key will be created"))
-	case !slices.Equal(sortedCopy(key.Models), models):
-		if err := client.UpdateKeyModels(ctx, token, models); err != nil {
-			return aiGatewayDegraded(instance, "KeyUpdateFailed", err)
+	default:
+		if !slices.Equal(sortedCopy(key.Models), models) {
+			if err := client.UpdateKeyModels(ctx, token, models); err != nil {
+				return aiGatewayDegraded(instance, "KeyUpdateFailed", err)
+			}
+			r.EventRecorder.Eventf(instance, corev1.EventTypeNormal, "AIGatewayKeyUpdated",
+				"Updated AI Gateway virtual key %s access to %s", status.KeyAlias, strings.Join(models, ","))
 		}
-		r.EventRecorder.Eventf(instance, corev1.EventTypeNormal, "AIGatewayKeyUpdated",
-			"Updated AI Gateway virtual key %s access to %s", status.KeyAlias, strings.Join(models, ","))
+		if key.TeamID != teamID || key.UserID != userID {
+			if err := client.UpdateKeyOwner(ctx, token, teamID, userID); err != nil {
+				return aiGatewayDegraded(instance, "KeyUpdateFailed", err)
+			}
+		}
 	}
 	now := metav1.Now()
 	status.KeyID = token[:aiGatewayKeyIDLength]
 	status.AccessGroups = groups
+	status.Team = teamID
 	status.Phase = cetirunv1alpha1.AIGatewayPhaseReady
 	status.Reason = ""
 	status.LastVerifiedTime = &now
-	status.Routed = r.aiGatewayRequired(instance, team) && chartSupported
+	status.Routed = routed
+
+	// Copilot registration problems are reported on the Copilot status and
+	// never block the key: shared models keep working.
+	r.reconcileAIGatewayCopilot(ctx, client, instance, copilot)
+	r.refreshAIGatewayCatalog(ctx, client)
+	if routed {
+		entries, defaultModel := r.aiGatewayModelEntries(instance)
+		status.Models = make([]string, 0, len(entries))
+		for _, entry := range entries {
+			status.Models = append(status.Models, entry.ID)
+		}
+		status.DefaultModel = defaultModel
+	} else {
+		status.Models, status.DefaultModel = nil, ""
+	}
+
 	message := "AI Gateway virtual key is ready"
-	if r.aiGatewayRequired(instance, team) && !chartSupported {
+	if r.aiGatewayRequired(instance) && !chartSupported {
 		message = "AI Gateway virtual key is ready; the Agent's chart version cannot route model traffic through the Gateway"
 	}
 	setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionAIGatewayReady,
@@ -337,15 +490,23 @@ func sortedCopy(values []string) []string {
 // when needed. A Secret written for another Agent UID, or holding a value in
 // an unexpected form, gets a new value; replace forces a new value.
 func (r *AgentReconciler) ensureAIGatewayKeySecret(ctx context.Context, instance *cetirunv1alpha1.Agent, replace bool) (string, error) {
-	key := types.NamespacedName{Namespace: instanceNamespace(instance.Name), Name: aiGatewayKeySecretName}
+	return r.ensureAgentOwnedValue(ctx, instance, aiGatewayKeySecretName, aiGatewayKeySecretField, replace,
+		map[string]string{aiGatewayKeyAliasAnnotation: aiGatewayKeyAlias(instance)})
+}
+
+// ensureAgentOwnedValue keeps a generated sk- value in an operator-owned
+// instance-namespace Secret labelled with the Agent UID. A Secret of another
+// Agent UID, or one holding a malformed value, gets a new value.
+func (r *AgentReconciler) ensureAgentOwnedValue(ctx context.Context, instance *cetirunv1alpha1.Agent, name, field string, replace bool, annotations map[string]string) (string, error) {
+	key := types.NamespacedName{Namespace: instanceNamespace(instance.Name), Name: name}
 	secret := &corev1.Secret{}
 	err := r.Get(ctx, key, secret)
 	if err != nil && !apierrors.IsNotFound(err) {
-		return "", fmt.Errorf("get AI Gateway key Secret: %w", err)
+		return "", fmt.Errorf("get Secret %s: %w", name, err)
 	}
 	exists := err == nil
 	if exists && !replace {
-		value := string(secret.Data[aiGatewayKeySecretField])
+		value := string(secret.Data[field])
 		if secret.Labels[aiGatewayAgentUIDLabel] == string(instance.UID) && aigateway.ValidKeyValue(value) {
 			return value, nil
 		}
@@ -354,37 +515,43 @@ func (r *AgentReconciler) ensureAIGatewayKeySecret(ctx context.Context, instance
 	if err != nil {
 		return "", err
 	}
+	labelAgentSecret(secret, instance)
+	if secret.Annotations == nil {
+		secret.Annotations = map[string]string{}
+	}
+	for k, v := range annotations {
+		secret.Annotations[k] = v
+	}
+	secret.Type = corev1.SecretTypeOpaque
+	secret.Data = map[string][]byte{field: []byte(value)}
+	if exists {
+		if err := r.Update(ctx, secret); err != nil {
+			return "", fmt.Errorf("replace Secret %s: %w", name, err)
+		}
+		return value, nil
+	}
+	secret.Name, secret.Namespace = key.Name, key.Namespace
+	if err := r.Create(ctx, secret); err != nil {
+		return "", fmt.Errorf("create Secret %s: %w", name, err)
+	}
+	return value, nil
+}
+
+func labelAgentSecret(secret *corev1.Secret, instance *cetirunv1alpha1.Agent) {
 	if secret.Labels == nil {
 		secret.Labels = map[string]string{}
 	}
 	secret.Labels["app.kubernetes.io/managed-by"] = "cetirun-operator"
 	secret.Labels["app.kubernetes.io/instance"] = instance.Spec.User.Alias
 	secret.Labels[aiGatewayAgentUIDLabel] = string(instance.UID)
-	if secret.Annotations == nil {
-		secret.Annotations = map[string]string{}
-	}
-	secret.Annotations[aiGatewayKeyAliasAnnotation] = aiGatewayKeyAlias(instance)
-	secret.Type = corev1.SecretTypeOpaque
-	secret.Data = map[string][]byte{aiGatewayKeySecretField: []byte(value)}
-	if exists {
-		if err := r.Update(ctx, secret); err != nil {
-			return "", fmt.Errorf("replace AI Gateway key Secret: %w", err)
-		}
-		return value, nil
-	}
-	secret.Name, secret.Namespace = key.Name, key.Namespace
-	if err := r.Create(ctx, secret); err != nil {
-		return "", fmt.Errorf("create AI Gateway key Secret: %w", err)
-	}
-	return value, nil
 }
 
-// deleteAIGatewayKey revokes the Agent's key before its workload and
-// namespace are removed. Revocation is by the UID-derived alias and, when the
-// Secret is still readable, by the key itself, so a key is removed even if an
-// administrator renamed it. Deletion is blocked while revocation fails; when
-// the Gateway is not configured at all there is nothing to call, which is
-// reported as a warning event.
+// deleteAIGatewayKey revokes the Agent's key and removes its Copilot model
+// registrations before its workload and namespace are removed. Revocation is
+// by the UID-derived alias and, when the Secret is still readable, by the key
+// itself, so a key is removed even if an administrator renamed it. Deletion
+// is blocked while revocation fails; when the Gateway is not configured at
+// all there is nothing to call, which is reported as a warning event.
 func (r *AgentReconciler) deleteAIGatewayKey(ctx context.Context, instance *cetirunv1alpha1.Agent) error {
 	if instance.Status.AIGateway == nil && !r.AIGateway.Enabled {
 		return nil
@@ -405,6 +572,9 @@ func (r *AgentReconciler) deleteAIGatewayKey(ctx context.Context, instance *ceti
 	client, err := r.aiGatewayClient(ctx)
 	if err != nil {
 		return err
+	}
+	if err := r.deleteCopilotRegistrations(ctx, client, instance); err != nil {
+		return fmt.Errorf("remove Copilot model registrations: %w", err)
 	}
 	secret := &corev1.Secret{}
 	err = r.Get(ctx, types.NamespacedName{Namespace: instanceNamespace(instance.Name), Name: aiGatewayKeySecretName}, secret)
@@ -428,7 +598,7 @@ func (r *AgentReconciler) deleteAIGatewayKey(ctx context.Context, instance *ceti
 
 // applyAIGatewayValues renders the controller-owned model access values. It
 // runs after per-instance Helm values, so a routed Agent cannot select
-// another provider, endpoint, or key.
+// another provider, endpoint, key or proxy.
 func (r *AgentReconciler) applyAIGatewayValues(values map[string]any, instance *cetirunv1alpha1.Agent) error {
 	values["aiGateway"] = map[string]any{"enabled": false, "keySecretName": "", "keySecretKey": aiGatewayKeySecretField}
 	if !r.aiGatewayRouted(instance) {
@@ -438,14 +608,36 @@ func (r *AgentReconciler) applyAIGatewayValues(values map[string]any, instance *
 	if err != nil {
 		return err
 	}
+	entries, defaultModel := r.aiGatewayModelEntries(instance)
+	models := make([]any, 0, len(entries))
+	for _, entry := range entries {
+		model := map[string]any{"id": entry.ID, "name": entry.Name}
+		if entry.ContextWindow > 0 {
+			model["contextWindow"] = entry.ContextWindow
+		}
+		if entry.MaxTokens > 0 {
+			model["maxTokens"] = entry.MaxTokens
+		}
+		models = append(models, model)
+	}
 	values["secrets"] = deepMerge(values["secrets"], map[string]any{
 		"provider": "openai",
 		"authMode": "api_key",
 		"apiBase":  r.AIGateway.URL + "/v1",
-		"model":    r.AIGateway.DefaultModel,
+		"model":    defaultModel,
 	})
+	proxy := map[string]any{"enabled": false}
+	if r.aiGatewayCopilotActive(instance) {
+		proxy = map[string]any{
+			"enabled":             true,
+			"image":               r.AIGateway.CopilotProxyImage,
+			"masterKeySecretName": aiGatewayProxySecretName,
+			"tokenSecretName":     cetirunv1alpha1.CopilotTokenSecretName,
+		}
+	}
 	values["aiGateway"] = map[string]any{
 		"enabled": true, "keySecretName": aiGatewayKeySecretName, "keySecretKey": aiGatewayKeySecretField,
+		"models": models, "copilotProxy": proxy,
 	}
 	values["networkPolicy"] = deepMerge(values["networkPolicy"], map[string]any{
 		"gatewayNamespace": namespace, "gatewayPort": port,
@@ -460,16 +652,29 @@ func (r *AgentReconciler) applyAIGatewayValues(values map[string]any, instance *
 
 // aiGatewayRevision is the part of the operator configuration hash that
 // affects the Agent's model access. It covers the desired routing, so a
-// configuration change triggers a full reconcile, and the recorded routing
-// and key, so a new key rolls the workload. It is empty for deployments that
-// never enabled the feature, which keeps their existing hashes unchanged.
-func (r *AgentReconciler) aiGatewayRevision(instance *cetirunv1alpha1.Agent, team *cetirunv1alpha1.Team) string {
+// configuration change triggers a full reconcile; the recorded routing, key
+// and model list, so a new key or model list rolls the workload; and what the
+// next reconcile would change, the Portal's Copilot model list and the shared
+// models in the Gateway, so those changes are not skipped. It is empty for
+// deployments that never enabled the feature, which keeps their hashes.
+func (r *AgentReconciler) aiGatewayRevision(instance *cetirunv1alpha1.Agent) string {
 	if !r.AIGateway.Enabled && instance.Status.AIGateway == nil {
 		return ""
 	}
-	parts := []string{"ai-gateway", strconv.FormatBool(r.aiGatewayRequired(instance, team))}
+	parts := []string{"ai-gateway", strconv.FormatBool(r.aiGatewayRequired(instance)),
+		strconv.FormatBool(instance.Spec.SharedModelsEnabled()), strconv.FormatBool(r.aiGatewayCopilotWanted(instance)),
+		instance.Spec.Team}
 	if r.aiGatewayRouted(instance) {
-		parts = append(parts, "routed", r.AIGateway.URL, r.AIGateway.DefaultModel, instance.Status.AIGateway.KeyID)
+		status := instance.Status.AIGateway
+		parts = append(parts, "routed", r.AIGateway.URL, status.KeyID, status.DefaultModel, strings.Join(status.Models, ","),
+			strconv.FormatBool(r.aiGatewayCopilotActive(instance)), r.AIGateway.CopilotProxyImage)
+	}
+	if annotation := instance.Annotations[cetirunv1alpha1.AnnotationCopilotModels]; annotation != "" {
+		sum := sha256.Sum256([]byte(annotation))
+		parts = append(parts, "copilot-models", hex.EncodeToString(sum[:8]))
+	}
+	if shared, known := r.aiGatewayCatalog.sharedNames(); known && instance.Spec.SharedModelsEnabled() {
+		parts = append(parts, "shared", strings.Join(shared, ","))
 	}
 	return strings.Join(parts, "|")
 }

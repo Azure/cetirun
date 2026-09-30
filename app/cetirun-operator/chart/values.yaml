@@ -192,10 +192,12 @@ agentIdentity:
   brokerURL: "http://cetirun-agent-broker.cetirun-credentials.svc.cluster.local:8080"
 
 # -- Platform AI Gateway integration: the operator gives each built-in Agent
-# its own virtual key and, for Agents in sharedModelTeams, routes OpenClaw
-# model traffic through the Gateway. Off by default. Keys are revoked when an
-# Agent is deleted as long as url and the master key Secret are set, including
-# after enabled is turned off.
+# its own virtual key and routes OpenClaw model traffic through the Gateway:
+# the shared models every Agent may use and, per Agent, a GitHub Copilot proxy
+# for the owner's account. Off here; the cetirun-platform chart turns it on
+# with the Gateway it installs. Keys are revoked when an Agent is deleted as
+# long as url and the master key Secret are set, including after enabled is
+# turned off.
 aiGateway:
   enabled: false
   # -- In-cluster Gateway URL: http://<service>.<namespace>.svc.cluster.local:<port>
@@ -207,12 +209,18 @@ aiGateway:
   # -- Monthly budget in US dollars written when a key is created. Changes an
   # administrator makes later in the Gateway are kept.
   defaultBudget: 10
-  # -- Model configured on Agents that use the Gateway. Place it in the
-  # cetirun-shared access group (model_info.access_groups) in the Gateway.
+  # -- Preferred default model of Agents that name none. Agents fall back to
+  # the first model available to them when it is not.
   defaultModel: ""
-  # -- Teams whose Agents may use the Gateway models in the cetirun-shared
-  # access group. Keys of other Agents grant no model yet.
-  sharedModelTeams: []
+  # -- Per-Agent GitHub Copilot proxy. Agents keep it unless their owner
+  # turns GitHub Copilot off. It runs the AI Gateway image.
+  copilotProxy:
+    enabled: true
+    image:
+      repository: cetirun.azurecr.io/cetirun-ai-gateway
+      # -- Defaults to the release version.
+      tag: ""
+      digest: ""
 
 # -- Override the chart's default skills storage account.
 # Empty string (default) means use the chart's built-in default.

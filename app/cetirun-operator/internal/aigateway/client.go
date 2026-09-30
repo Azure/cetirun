@@ -61,6 +61,8 @@ type Key struct {
 	MaxBudget      *float64
 	BudgetDuration string
 	Blocked        bool
+	TeamID         string
+	UserID         string
 }
 
 // GenerateRequest creates a key with a caller-chosen value, which lets the
@@ -73,6 +75,10 @@ type GenerateRequest struct {
 	MaxBudget      float64
 	BudgetDuration string
 	Metadata       map[string]string
+	// TeamID and UserID attribute the key's spend to a Gateway team and
+	// user. The team must exist; the user need not.
+	TeamID string
+	UserID string
 }
 
 // Client calls the Gateway management API with the master key.
@@ -130,6 +136,8 @@ func (c *Client) GetKey(ctx context.Context, token string) (*Key, error) {
 			MaxBudget      *float64 `json:"max_budget"`
 			BudgetDuration string   `json:"budget_duration"`
 			Blocked        *bool    `json:"blocked"`
+			TeamID         *string  `json:"team_id"`
+			UserID         *string  `json:"user_id"`
 		} `json:"info"`
 	}
 	status, err := c.do(ctx, http.MethodGet, "/key/info?"+query.Encode(), nil, &response)
@@ -143,7 +151,15 @@ func (c *Client) GetKey(ctx context.Context, token string) (*Key, error) {
 	return &Key{
 		Alias: info.KeyAlias, Models: info.Models, MaxBudget: info.MaxBudget,
 		BudgetDuration: info.BudgetDuration, Blocked: info.Blocked != nil && *info.Blocked,
+		TeamID: deref(info.TeamID), UserID: deref(info.UserID),
 	}, nil
+}
+
+func deref(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
 }
 
 // GenerateKey creates a key. It returns ErrAliasExists when the alias is taken.
@@ -167,6 +183,12 @@ func (c *Client) GenerateKey(ctx context.Context, req GenerateRequest) error {
 	if req.BudgetDuration != "" {
 		body["budget_duration"] = req.BudgetDuration
 	}
+	if req.TeamID != "" {
+		body["team_id"] = req.TeamID
+	}
+	if req.UserID != "" {
+		body["user_id"] = req.UserID
+	}
 	status, err := c.do(ctx, http.MethodPost, "/key/generate", body, nil)
 	var apiErr *APIError
 	if status == http.StatusBadRequest && errors.As(err, &apiErr) && strings.Contains(apiErr.Message, "already exists") {
@@ -183,6 +205,176 @@ func (c *Client) UpdateKeyModels(ctx context.Context, token string, models []str
 	}
 	_, err := c.do(ctx, http.MethodPost, "/key/update", map[string]any{"key": token, "models": models}, nil)
 	return err
+}
+
+// UpdateKeyOwner moves the key identified by token to another team and user.
+// An empty team or user clears it. The Gateway requires the key's user to be
+// a member of the new team.
+func (c *Client) UpdateKeyOwner(ctx context.Context, token, teamID, userID string) error {
+	body := map[string]any{"key": token, "team_id": nil, "user_id": nil}
+	if teamID != "" {
+		body["team_id"] = teamID
+	}
+	if userID != "" {
+		body["user_id"] = userID
+	}
+	_, err := c.do(ctx, http.MethodPost, "/key/update", body, nil)
+	return err
+}
+
+// EnsureTeam creates a team with an empty model list, which leaves model
+// access to each key, unless a team with that ID exists.
+func (c *Client) EnsureTeam(ctx context.Context, teamID, alias string, metadata map[string]string) error {
+	status, err := c.do(ctx, http.MethodPost, "/team/new", map[string]any{
+		"team_id": teamID, "team_alias": alias, "models": []string{}, "metadata": metadata,
+	}, nil)
+	var apiErr *APIError
+	if status == http.StatusBadRequest && errors.As(err, &apiErr) && strings.Contains(apiErr.Message, "already exists") {
+		return nil
+	}
+	return err
+}
+
+// EnsureUser creates a user without a key of its own, unless it exists.
+func (c *Client) EnsureUser(ctx context.Context, userID string, metadata map[string]string) error {
+	status, err := c.do(ctx, http.MethodPost, "/user/new", map[string]any{
+		"user_id": userID, "user_alias": userID, "auto_create_key": false, "metadata": metadata,
+	}, nil)
+	var apiErr *APIError
+	if status == http.StatusConflict || (errors.As(err, &apiErr) && strings.Contains(apiErr.Message, "already exists")) {
+		return nil
+	}
+	return err
+}
+
+// EnsureTeamMember adds the user to the team as a member, unless it is one.
+func (c *Client) EnsureTeamMember(ctx context.Context, teamID, userID string) error {
+	status, err := c.do(ctx, http.MethodPost, "/team/member_add", map[string]any{
+		"team_id": teamID, "member": map[string]any{"role": "user", "user_id": userID},
+	}, nil)
+	var apiErr *APIError
+	if status == http.StatusBadRequest && errors.As(err, &apiErr) && strings.Contains(apiErr.Message, "already in team") {
+		return nil
+	}
+	return err
+}
+
+// Deployment is the non-secret subset of a model deployment.
+type Deployment struct {
+	ID              string
+	ModelName       string
+	AccessGroups    []string
+	FromDatabase    bool
+	MaxInputTokens  int64
+	MaxOutputTokens int64
+	Priced          bool
+}
+
+// ListModels returns every model deployment the Gateway serves.
+func (c *Client) ListModels(ctx context.Context) ([]Deployment, error) {
+	var response struct {
+		Data []struct {
+			ModelName string `json:"model_name"`
+			ModelInfo struct {
+				ID                 string   `json:"id"`
+				AccessGroups       []string `json:"access_groups"`
+				DBModel            bool     `json:"db_model"`
+				MaxInputTokens     *float64 `json:"max_input_tokens"`
+				MaxOutputTokens    *float64 `json:"max_output_tokens"`
+				InputCostPerToken  *float64 `json:"input_cost_per_token"`
+				OutputCostPerToken *float64 `json:"output_cost_per_token"`
+			} `json:"model_info"`
+		} `json:"data"`
+	}
+	if _, err := c.doLimit(ctx, http.MethodGet, "/model/info", nil, &response, listLimit); err != nil {
+		return nil, err
+	}
+	deployments := make([]Deployment, 0, len(response.Data))
+	for _, item := range response.Data {
+		info := item.ModelInfo
+		deployments = append(deployments, Deployment{
+			ID: info.ID, ModelName: item.ModelName, AccessGroups: info.AccessGroups, FromDatabase: info.DBModel,
+			MaxInputTokens: tokens(info.MaxInputTokens), MaxOutputTokens: tokens(info.MaxOutputTokens),
+			Priced: positive(info.InputCostPerToken) || positive(info.OutputCostPerToken),
+		})
+	}
+	return deployments, nil
+}
+
+func tokens(value *float64) int64 {
+	if value == nil || *value <= 0 {
+		return 0
+	}
+	return int64(*value)
+}
+
+func positive(value *float64) bool { return value != nil && *value > 0 }
+
+// ModelRequest registers a deployment behind a LiteLLM-compatible endpoint.
+type ModelRequest struct {
+	// ID is the caller-chosen deployment ID, which makes registration
+	// traceable and removal possible without a lookup.
+	ID        string
+	ModelName string
+	// Model is LiteLLM's provider-prefixed model, such as litellm_proxy/gpt-5.
+	Model        string
+	APIBase      string
+	APIKey       string
+	AccessGroups []string
+	// BaseModel names the price-table entry when Model's own name has none.
+	BaseModel string
+}
+
+// AddModel registers a deployment. The Gateway rejects a second deployment
+// with the same ID.
+func (c *Client) AddModel(ctx context.Context, req ModelRequest) error {
+	if req.ID == "" || req.ModelName == "" || req.Model == "" {
+		return fmt.Errorf("model ID, name and provider model are required")
+	}
+	info := map[string]any{"id": req.ID, "access_groups": req.AccessGroups}
+	if req.BaseModel != "" {
+		info["base_model"] = req.BaseModel
+	}
+	params := map[string]any{"model": req.Model, "api_base": req.APIBase}
+	if req.APIKey != "" {
+		params["api_key"] = req.APIKey
+	}
+	_, err := c.do(ctx, http.MethodPost, "/model/new", map[string]any{
+		"model_name": req.ModelName, "litellm_params": params, "model_info": info,
+	}, nil)
+	return err
+}
+
+// DeleteModel removes the deployment with the given ID. A deployment that
+// does not exist is treated as already deleted.
+func (c *Client) DeleteModel(ctx context.Context, id string) error {
+	status, err := c.do(ctx, http.MethodPost, "/model/delete", map[string]any{"id": id}, nil)
+	var apiErr *APIError
+	if status == http.StatusNotFound ||
+		(status == http.StatusBadRequest && errors.As(err, &apiErr) && strings.Contains(apiErr.Message, "not found")) {
+		return nil
+	}
+	return err
+}
+
+// PricedModels returns the names in the Gateway's model price table that
+// carry a price. It is how a caller picks a base model for a deployment whose
+// own name the table does not know.
+func (c *Client) PricedModels(ctx context.Context) (map[string]bool, error) {
+	var table map[string]struct {
+		InputCostPerToken  *float64 `json:"input_cost_per_token"`
+		OutputCostPerToken *float64 `json:"output_cost_per_token"`
+	}
+	if _, err := c.doLimit(ctx, http.MethodGet, "/public/litellm_model_cost_map", nil, &table, listLimit); err != nil {
+		return nil, err
+	}
+	priced := make(map[string]bool, len(table))
+	for name, entry := range table {
+		if positive(entry.InputCostPerToken) || positive(entry.OutputCostPerToken) {
+			priced[name] = true
+		}
+	}
+	return priced, nil
 }
 
 // DeleteKeys deletes the keys identified by tokens. Keys that do not exist
@@ -208,7 +400,15 @@ func (c *Client) DeleteKeyByAlias(ctx context.Context, alias string) error {
 	return err
 }
 
+// listLimit bounds list responses, such as every model deployment or the
+// price table, which outgrow the limit for single-object responses.
+const listLimit = 64 << 20
+
 func (c *Client) do(ctx context.Context, method, path string, body any, out any) (int, error) {
+	return c.doLimit(ctx, method, path, body, out, 1<<20)
+}
+
+func (c *Client) doLimit(ctx context.Context, method, path string, body any, out any, limit int64) (int, error) {
 	var reader io.Reader
 	if body != nil {
 		raw, err := json.Marshal(body)
@@ -230,7 +430,7 @@ func (c *Client) do(ctx context.Context, method, path string, body any, out any)
 		return 0, fmt.Errorf("call AI Gateway %s: %w", strings.SplitN(path, "?", 2)[0], redactError(err))
 	}
 	defer resp.Body.Close()
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, limit))
 	if err != nil {
 		return resp.StatusCode, fmt.Errorf("read AI Gateway response: %w", err)
 	}

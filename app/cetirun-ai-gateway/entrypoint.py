@@ -3,8 +3,10 @@
 # Licensed under the MIT License.
 """Entrypoint of the CetiRun AI Gateway image.
 
-``cetirun-ai-gateway migrate`` applies LiteLLM's database migrations. Any other
-arguments start the LiteLLM proxy with them.
+``cetirun-ai-gateway migrate`` applies LiteLLM's database migrations.
+``cetirun-ai-gateway copilot-proxy ...`` runs the per-Agent GitHub Copilot
+proxy with the remaining arguments. Any other arguments start the LiteLLM
+proxy with them.
 
 Starting the proxy never touches a database by itself. The same image serves
 the shared Gateway, which has PostgreSQL, and the per-agent Copilot proxy, which
@@ -25,6 +27,11 @@ MIGRATION_LOCK_KEY = 0x4345544952554E  # "CETIRUN"
 # Query parameters libpq understands with the same meaning prisma gives them.
 # The rest, such as connection_limit or schema, are prisma's own.
 LIBPQ_PARAMETERS = {"sslmode", "connect_timeout", "application_name"}
+
+# An address nothing listens on. The Copilot proxy points LiteLLM's own
+# device-code sign-in here: signing in is the Portal's job, and a request that
+# reached GitHub from the proxy would hang waiting for a user who is not there.
+DISABLED_URL = "http://127.0.0.1:9/disabled"
 
 
 def migrations_schema():
@@ -105,10 +112,61 @@ def migrate():
     sys.exit(result.returncode)
 
 
+def token_present(path):
+    try:
+        return bool(pathlib.Path(path).read_text(encoding="utf-8").strip())
+    except OSError:
+        return False
+
+
+def copilot_proxy_environment(token_file, environ):
+    """The environment LiteLLM's github_copilot provider needs.
+
+    It reads the owner's GitHub token from the file the Portal's Secret
+    provides and exchanges it for short-lived Copilot tokens, which it caches
+    in GITHUB_COPILOT_TOKEN_DIR. A token replaced in the Secret is read at the
+    next exchange, without a restart.
+    """
+    env = dict(environ)
+    env["GITHUB_COPILOT_ACCESS_TOKEN_FILE"] = token_file
+    env.setdefault("GITHUB_COPILOT_TOKEN_DIR", "/var/cache/copilot")
+    env["GITHUB_COPILOT_DEVICE_CODE_URL"] = DISABLED_URL
+    env["GITHUB_COPILOT_ACCESS_TOKEN_URL"] = DISABLED_URL
+    # The proxy's own price table is irrelevant, the Gateway prices every call,
+    # and fetching it from the internet at start is not wanted.
+    env.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
+    return env
+
+
+def copilot_proxy(args):
+    """Run the per-Agent GitHub Copilot proxy once the owner has signed in.
+
+    Until the token exists there is nothing to serve, so the proxy waits and
+    stays unready; the operator registers the Agent's Copilot routes only once
+    the proxy is ready.
+    """
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(128 + signal.SIGTERM))
+    token_file = os.environ.get("COPILOT_TOKEN_FILE", "/var/run/copilot/access-token")
+    interval = float(os.environ.get("COPILOT_TOKEN_POLL_SECONDS", "2"))
+    waiting = False
+    while not token_present(token_file):
+        if not waiting:
+            print(f"waiting for the GitHub Copilot sign-in at {token_file}", flush=True)
+            waiting = True
+        time.sleep(interval)
+    print("GitHub Copilot token present; starting the proxy", flush=True)
+    os.execvpe("litellm", ["litellm", *args], copilot_proxy_environment(token_file, os.environ))
+
+
 def main():
-    args = sys.argv[1:]
+    main_with(sys.argv[1:])
+
+
+def main_with(args):
     if args[:1] == ["migrate"]:
         migrate()
+    if args[:1] == ["copilot-proxy"]:
+        copilot_proxy(args[1:])
     os.execvp("litellm", ["litellm", *args])
 
 

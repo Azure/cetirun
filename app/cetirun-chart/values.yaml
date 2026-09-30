@@ -102,6 +102,30 @@ aiGateway:
   keySecretName: ""
   # -- Key within that Secret
   keySecretKey: api-key
+  # -- Models the Gateway offers this Agent: id (the Gateway model name),
+  # name, and optionally contextWindow and maxTokens. The Agent is configured
+  # with all of them; secrets.model names the default.
+  models: []
+  # -- Per-Agent GitHub Copilot proxy: a small LiteLLM, in its own Pod, that
+  # holds the owner's Copilot sign-in. Only the Gateway reaches it; the Agent
+  # reaches Copilot models through the Gateway with its own key.
+  copilotProxy:
+    enabled: false
+    # -- Proxy image: the AI Gateway image
+    image: ""
+    # -- Secret holding the proxy's master key (key master-key), which the
+    # Gateway's routes to the proxy carry
+    masterKeySecretName: ""
+    # -- Secret holding the owner's GitHub token (key access-token), written
+    # by the Portal at sign-in. The proxy waits for it.
+    tokenSecretName: ""
+    # -- Proxy container resources
+    resources:
+      requests:
+        cpu: 50m
+        memory: 256Mi
+      limits:
+        memory: 1Gi
 
 # -- Pod annotations
 podAnnotations: {}

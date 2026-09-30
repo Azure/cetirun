@@ -28,9 +28,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	crcontroller "sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	"github.com/go-logr/logr"
 	istiov1beta1 "istio.io/client-go/pkg/apis/networking/v1beta1"
@@ -108,6 +110,13 @@ type AgentReconciler struct {
 	// aiGatewayClientFactory is test-only dependency injection. A nil factory
 	// reads the master key Secret and calls the configured Gateway.
 	aiGatewayClientFactory func(context.Context) (aiGatewayKeyClient, error)
+	// aiGatewayCatalog is the operator's view of the Gateway's models, kept
+	// fresh by reconciles and the catalog publisher.
+	aiGatewayCatalog aiGatewayCatalog
+	aiGatewayOwners  aiGatewayOwnerCache
+	aiGatewayPrices  aiGatewayPriceCache
+	// aiGatewayEvents queues Agents after a shared-model change.
+	aiGatewayEvents chan event.GenericEvent
 
 	istioMu          sync.Mutex
 	istioRevResolved string
@@ -151,7 +160,7 @@ func (r *AgentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if err := indexSandboxDependencies(context.Background(), mgr.GetFieldIndexer()); err != nil {
 		return err
 	}
-	return ctrl.NewControllerManagedBy(mgr).
+	builder := ctrl.NewControllerManagedBy(mgr).
 		For(&cetirunv1alpha1.Agent{}).
 		Owns(&appsv1.Deployment{}).
 		WatchesMetadata(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.enqueueRegistrySecret)).
@@ -166,7 +175,17 @@ func (r *AgentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(
 			&cetirunv1alpha1.AgentPolicy{},
 			handler.EnqueueRequestsFromMapFunc(r.enqueueInstancesForAgentPolicy),
-		).
+		)
+	if r.AIGateway.Enabled {
+		if r.aiGatewayEvents == nil {
+			r.aiGatewayEvents = make(chan event.GenericEvent, 1024)
+		}
+		builder = builder.WatchesRawSource(source.Channel(r.aiGatewayEvents, &handler.EnqueueRequestForObject{}))
+		if err := mgr.Add(&AIGatewayCatalogPublisher{Reconciler: r}); err != nil {
+			return fmt.Errorf("add AI Gateway catalog publisher: %w", err)
+		}
+	}
+	return builder.
 		WithOptions(crcontroller.Options{MaxConcurrentReconciles: 4}).
 		Complete(r)
 }
@@ -569,11 +588,12 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	// workload: an Agent routed through the Gateway needs its key at startup.
 	var aiGatewayRequeueAfter time.Duration
 	if r.AIGateway.Enabled {
-		chartSupported := prepared.SupportsValue(aiGatewayChartValue)
-		if err := r.reconcileAIGateway(ctx, instance, team, chartSupported); err != nil {
+		chartSupported := prepared.SupportsValuePath(aiGatewayChartValue, aiGatewayChartModelsValue) &&
+			prepared.SupportsValuePath(aiGatewayChartValue, aiGatewayChartCopilotValue)
+		if err := r.reconcileAIGateway(ctx, instance, chartSupported); err != nil {
 			logger.Error(err, "AI Gateway virtual key reconciliation failed", "instance", instance.Name)
 			_ = r.updateStatus(ctx, instance)
-			if r.aiGatewayRequired(instance, team) && chartSupported && !r.aiGatewayRouted(instance) && !instance.Spec.Suspended {
+			if r.aiGatewayRequired(instance) && chartSupported && !r.aiGatewayRouted(instance) && !instance.Spec.Suspended {
 				// Never provisioned: do not start an Agent that would be
 				// routed through the Gateway without its key.
 				return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
@@ -581,6 +601,9 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 			// A previously provisioned key keeps working through a Gateway
 			// outage, and unrouted Agents do not depend on the key yet.
 			aiGatewayRequeueAfter = 30 * time.Second
+		} else if copilot := instance.Status.AIGateway.Copilot; copilot != nil &&
+			(copilot.Phase == cetirunv1alpha1.AIGatewayCopilotPhaseDegraded || copilot.Phase == cetirunv1alpha1.AIGatewayCopilotPhaseStarting) {
+			aiGatewayRequeueAfter = 15 * time.Second
 		}
 	} else if instance.Status.AIGateway != nil && instance.Status.AIGateway.Routed {
 		// The deployment turned the feature off: stop routing. Existing keys

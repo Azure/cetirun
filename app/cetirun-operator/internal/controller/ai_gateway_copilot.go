@@ -1,0 +1,495 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
+package controller
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"regexp"
+	"slices"
+	"sort"
+	"strings"
+	"sync"
+	"time"
+
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/log"
+
+	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/aigateway"
+)
+
+const (
+	// aiGatewayCopilotGroupPrefix prefixes the access group of one Agent's
+	// Copilot models. The Agent UID follows, so no other key is granted it
+	// and a same-name replacement starts with an empty group.
+	aiGatewayCopilotGroupPrefix = "cetirun-copilot-"
+	// aiGatewayCopilotModelPrefix prefixes the names Copilot models get in the
+	// Gateway, so they never share a name with an administrator's shared model.
+	aiGatewayCopilotModelPrefix = "copilot/"
+	// aiGatewayProxySecretName holds the master key of the Agent's Copilot
+	// proxy. The Gateway's routes to the proxy carry it.
+	aiGatewayProxySecretName  = "ai-gateway-copilot-proxy"
+	aiGatewayProxySecretField = "master-key"
+	aiGatewayProxyPort        = 4000
+	// aiGatewayMaxCopilotModels bounds how many models one account registers.
+	aiGatewayMaxCopilotModels = 128
+	aiGatewayPriceCacheTTL    = time.Hour
+)
+
+// copilotModelID is the form of Copilot model IDs the operator registers.
+// It keeps IDs usable in Gateway model names and deployment IDs.
+var copilotModelID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$`)
+
+func copilotAccessGroup(instance *cetirunv1alpha1.Agent) string {
+	return aiGatewayCopilotGroupPrefix + string(instance.UID)
+}
+
+// copilotProxyServiceName mirrors the agent chart's name for the proxy
+// Service: the release name with a suffix, cut to a DNS label.
+func copilotProxyServiceName(instance *cetirunv1alpha1.Agent) string {
+	name := helmReleaseName(instance.Name) + "-copilot-proxy"
+	if len(name) > 63 {
+		name = name[:63]
+	}
+	return strings.TrimRight(name, "-")
+}
+
+func copilotProxyURL(instance *cetirunv1alpha1.Agent) string {
+	return fmt.Sprintf("http://%s.%s.svc.cluster.local:%d", copilotProxyServiceName(instance), instanceNamespace(instance.Name), aiGatewayProxyPort)
+}
+
+// parseCopilotModels reads the Portal's model list for the owner's Copilot
+// account. Entries with an unusable ID are dropped; the rest are sorted and
+// deduplicated so the result does not depend on the account's ordering.
+func parseCopilotModels(annotation string) ([]cetirunv1alpha1.CopilotModel, error) {
+	if strings.TrimSpace(annotation) == "" {
+		return nil, nil
+	}
+	var models []cetirunv1alpha1.CopilotModel
+	if err := json.Unmarshal([]byte(annotation), &models); err != nil {
+		return nil, fmt.Errorf("the Copilot model list is not valid JSON")
+	}
+	seen := map[string]bool{}
+	var out []cetirunv1alpha1.CopilotModel
+	for _, model := range models {
+		if !copilotModelID.MatchString(model.ID) || seen[model.ID] {
+			continue
+		}
+		seen[model.ID] = true
+		if model.ContextWindow < 0 {
+			model.ContextWindow = 0
+		}
+		if model.MaxOutputTokens < 0 {
+			model.MaxOutputTokens = 0
+		}
+		out = append(out, model)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	if len(out) > aiGatewayMaxCopilotModels {
+		out = out[:aiGatewayMaxCopilotModels]
+	}
+	return out, nil
+}
+
+// copilotBaseModel picks the price-table entry for a Copilot model: its own
+// name, the name with dots as dashes (Copilot writes claude-sonnet-4.5, the
+// table claude-sonnet-4-5), then the same names under a provider prefix,
+// github_copilot first. The Gateway refuses a route without a price, and a
+// zero price would leave the key's budget unenforced, so a model without an
+// entry is not registered.
+func copilotBaseModel(id string, priced map[string]bool) (string, bool) {
+	dashed := strings.ReplaceAll(id, ".", "-")
+	for _, candidate := range []string{id, dashed, "github_copilot/" + id, "github_copilot/" + dashed} {
+		if priced[candidate] {
+			return candidate, true
+		}
+	}
+	var prefixed []string
+	for name := range priced {
+		if strings.HasSuffix(name, "/"+id) || strings.HasSuffix(name, "/"+dashed) {
+			prefixed = append(prefixed, name)
+		}
+	}
+	if len(prefixed) == 0 {
+		return "", false
+	}
+	slices.Sort(prefixed)
+	return prefixed[0], true
+}
+
+// aiGatewayPriceCache holds the Gateway's priced model names for an hour.
+type aiGatewayPriceCache struct {
+	mu     sync.Mutex
+	at     time.Time
+	priced map[string]bool
+}
+
+func (r *AgentReconciler) pricedModels(ctx context.Context, client aiGatewayKeyClient) (map[string]bool, error) {
+	r.aiGatewayPrices.mu.Lock()
+	defer r.aiGatewayPrices.mu.Unlock()
+	if r.aiGatewayPrices.priced != nil && time.Since(r.aiGatewayPrices.at) < aiGatewayPriceCacheTTL {
+		return r.aiGatewayPrices.priced, nil
+	}
+	priced, err := client.PricedModels(ctx)
+	if err != nil {
+		if r.aiGatewayPrices.priced != nil {
+			return r.aiGatewayPrices.priced, nil
+		}
+		return nil, err
+	}
+	r.aiGatewayPrices.priced, r.aiGatewayPrices.at = priced, time.Now()
+	return priced, nil
+}
+
+// copilotRegistration is one Copilot model route the Agent should have.
+type copilotRegistration struct {
+	request aigateway.ModelRequest
+	model   cetirunv1alpha1.CopilotModel
+}
+
+// copilotRegistrationID names a route by the Agent UID, the model and a
+// revision of everything the route carries, so a changed proxy address, key
+// or price entry replaces the route instead of leaving a stale one.
+func copilotRegistrationID(instance *cetirunv1alpha1.Agent, model, revision string) string {
+	return fmt.Sprintf("%s%s-%s-%s", aiGatewayCopilotGroupPrefix, instance.UID, model, revision)
+}
+
+func copilotRevision(parts ...string) string {
+	sum := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
+	return hex.EncodeToString(sum[:])[:8]
+}
+
+// reconcileAIGatewayCopilot keeps the Agent's Copilot proxy credentials and
+// model routes in line with the owner's sign-in. The proxy reads the token
+// Secret, which the Portal writes; the Portal also records the account's
+// models on the Agent. Each model becomes a Gateway route to this Agent's
+// proxy in the Agent's own access group. Problems are reported on the
+// Copilot status; they never fail the key reconcile.
+func (r *AgentReconciler) reconcileAIGatewayCopilot(ctx context.Context, client aiGatewayKeyClient, instance *cetirunv1alpha1.Agent, active bool) {
+	logger := log.FromContext(ctx)
+	status := instance.Status.AIGateway
+	if !active {
+		if status.Copilot == nil {
+			return
+		}
+		if err := r.deleteCopilotRegistrations(ctx, client, instance); err != nil {
+			status.Copilot.Phase = cetirunv1alpha1.AIGatewayCopilotPhaseDegraded
+			status.Copilot.Reason = "RouteRemovalFailed"
+			logger.Error(err, "removing Copilot model routes failed", "instance", instance.Name)
+			return
+		}
+		for _, name := range []string{cetirunv1alpha1.CopilotTokenSecretName, aiGatewayProxySecretName} {
+			if err := r.deleteAgentSecret(ctx, instance, name); err != nil {
+				logger.Error(err, "removing Copilot Secret failed", "instance", instance.Name, "secret", name)
+				return
+			}
+		}
+		status.Copilot = nil
+		return
+	}
+	if status.Copilot == nil {
+		status.Copilot = &cetirunv1alpha1.AIGatewayCopilotStatus{}
+	}
+	copilot := status.Copilot
+	copilot.AccessGroup = copilotAccessGroup(instance)
+	degraded := func(reason string, err error) {
+		copilot.Phase = cetirunv1alpha1.AIGatewayCopilotPhaseDegraded
+		copilot.Reason = reason
+		logger.Error(err, "GitHub Copilot proxy reconcile failed", "instance", instance.Name, "reason", reason)
+	}
+
+	proxyKey, err := r.ensureAgentOwnedValue(ctx, instance, aiGatewayProxySecretName, aiGatewayProxySecretField, false, nil)
+	if err != nil {
+		degraded("ProxySecretFailed", err)
+		return
+	}
+	signedIn, err := r.ensureCopilotTokenSecret(ctx, instance)
+	if err != nil {
+		degraded("TokenSecretFailed", err)
+		return
+	}
+	var wanted []cetirunv1alpha1.CopilotModel
+	if signedIn {
+		wanted, err = parseCopilotModels(instance.Annotations[cetirunv1alpha1.AnnotationCopilotModels])
+		if err != nil {
+			degraded("ModelListInvalid", err)
+			return
+		}
+	}
+
+	desired := map[string]copilotRegistration{}
+	var unpriced []string
+	if len(wanted) > 0 {
+		priced, err := r.pricedModels(ctx, client)
+		if err != nil {
+			degraded("PriceTableUnavailable", err)
+			return
+		}
+		proxyURL := copilotProxyURL(instance)
+		for _, model := range wanted {
+			base, ok := copilotBaseModel(model.ID, priced)
+			if !ok {
+				unpriced = append(unpriced, model.ID)
+				continue
+			}
+			id := copilotRegistrationID(instance, model.ID, copilotRevision(proxyURL, proxyKey, base))
+			desired[id] = copilotRegistration{model: model, request: aigateway.ModelRequest{
+				ID: id, ModelName: aiGatewayCopilotModelPrefix + model.ID, Model: "litellm_proxy/" + model.ID,
+				APIBase: proxyURL, APIKey: proxyKey, AccessGroups: []string{copilot.AccessGroup}, BaseModel: base,
+			}}
+		}
+	}
+
+	// Remove routes no longer wanted, then add the missing ones. A route the
+	// Gateway lost is re-added when the catalog shows it gone. New routes wait
+	// for the proxy to be ready: it starts serving only once it has read the
+	// sign-in, and a route to a proxy that is not up fails the Agent's calls.
+	proxyReady := len(desired) == 0 || r.copilotProxyReady(ctx, instance)
+	var registered []string
+	var failed error
+	pending := false
+	for _, id := range copilot.Registered {
+		if _, ok := desired[id]; ok {
+			continue
+		}
+		if err := client.DeleteModel(ctx, id); err != nil {
+			failed = err
+			registered = append(registered, id)
+			continue
+		}
+		r.aiGatewayCatalog.noteDeleted(id)
+	}
+	ids := make([]string, 0, len(desired))
+	for id := range desired {
+		ids = append(ids, id)
+	}
+	slices.Sort(ids)
+	var names []string
+	for _, id := range ids {
+		registration := desired[id]
+		present, known := r.aiGatewayCatalog.has(id)
+		if slices.Contains(copilot.Registered, id) && (!known || present) {
+			registered = append(registered, id)
+			names = append(names, registration.request.ModelName)
+			continue
+		}
+		if !proxyReady {
+			pending = true
+			continue
+		}
+		err := client.AddModel(ctx, registration.request)
+		if err != nil {
+			// An earlier add may have succeeded without being recorded.
+			// Replace it rather than guess.
+			if deleteErr := client.DeleteModel(ctx, id); deleteErr == nil {
+				err = client.AddModel(ctx, registration.request)
+			}
+		}
+		if err != nil {
+			failed = err
+			continue
+		}
+		r.aiGatewayCatalog.noteAdded(id, registration.request.AccessGroups)
+		registered = append(registered, id)
+		names = append(names, registration.request.ModelName)
+	}
+	slices.Sort(registered)
+	slices.Sort(names)
+	slices.Sort(unpriced)
+	copilot.Registered = registered
+	copilot.Models = names
+	copilot.Unpriced = unpriced
+	switch {
+	case failed != nil:
+		degraded("RouteRegistrationFailed", failed)
+	case !signedIn:
+		copilot.Phase = cetirunv1alpha1.AIGatewayCopilotPhaseSignInRequired
+		copilot.Reason = ""
+	case len(wanted) == 0:
+		copilot.Phase = cetirunv1alpha1.AIGatewayCopilotPhaseDegraded
+		copilot.Reason = "ModelListMissing"
+	case pending:
+		copilot.Phase = cetirunv1alpha1.AIGatewayCopilotPhaseStarting
+		copilot.Reason = "ProxyStarting"
+	default:
+		copilot.Phase = cetirunv1alpha1.AIGatewayCopilotPhaseReady
+		copilot.Reason = ""
+	}
+}
+
+// copilotProxyReady reports whether the Agent's Copilot proxy has a ready
+// replica, that is, it read the sign-in and serves requests.
+func (r *AgentReconciler) copilotProxyReady(ctx context.Context, instance *cetirunv1alpha1.Agent) bool {
+	deployment := &appsv1.Deployment{}
+	key := types.NamespacedName{Namespace: instanceNamespace(instance.Name), Name: copilotProxyServiceName(instance)}
+	if err := r.Get(ctx, key, deployment); err != nil {
+		return false
+	}
+	return deployment.Status.ReadyReplicas > 0
+}
+
+// deleteCopilotRegistrations removes every Copilot route recorded for the
+// Agent, and any route of its access group the catalog still shows.
+func (r *AgentReconciler) deleteCopilotRegistrations(ctx context.Context, client aiGatewayKeyClient, instance *cetirunv1alpha1.Agent) error {
+	ids := map[string]bool{}
+	if status := instance.Status.AIGateway; status != nil && status.Copilot != nil {
+		for _, id := range status.Copilot.Registered {
+			ids[id] = true
+		}
+	}
+	for _, id := range r.aiGatewayCatalog.groupDeployments(copilotAccessGroup(instance)) {
+		ids[id] = true
+	}
+	var remaining []string
+	var firstErr error
+	for id := range ids {
+		if err := client.DeleteModel(ctx, id); err != nil {
+			remaining = append(remaining, id)
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		r.aiGatewayCatalog.noteDeleted(id)
+	}
+	if status := instance.Status.AIGateway; status != nil && status.Copilot != nil {
+		slices.Sort(remaining)
+		status.Copilot.Registered = remaining
+		if firstErr == nil {
+			status.Copilot.Models = nil
+		}
+	}
+	return firstErr
+}
+
+// ensureCopilotTokenSecret creates the empty token Secret the proxy mounts,
+// so the proxy starts and waits for the owner's sign-in. It reports whether
+// the Portal has written a token. A Secret left by an earlier Agent of the
+// same name is cleared: its token belongs to that Agent's sign-in.
+func (r *AgentReconciler) ensureCopilotTokenSecret(ctx context.Context, instance *cetirunv1alpha1.Agent) (bool, error) {
+	key := types.NamespacedName{Namespace: instanceNamespace(instance.Name), Name: cetirunv1alpha1.CopilotTokenSecretName}
+	secret := &corev1.Secret{}
+	err := r.Get(ctx, key, secret)
+	if apierrors.IsNotFound(err) {
+		secret = &corev1.Secret{Type: corev1.SecretTypeOpaque}
+		secret.Name, secret.Namespace = key.Name, key.Namespace
+		labelAgentSecret(secret, instance)
+		if err := r.Create(ctx, secret); err != nil && !apierrors.IsAlreadyExists(err) {
+			return false, fmt.Errorf("create Copilot token Secret: %w", err)
+		}
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("get Copilot token Secret: %w", err)
+	}
+	if secret.Labels[aiGatewayAgentUIDLabel] != string(instance.UID) {
+		labelAgentSecret(secret, instance)
+		secret.Data = nil
+		if err := r.Update(ctx, secret); err != nil {
+			return false, fmt.Errorf("reset Copilot token Secret: %w", err)
+		}
+		return false, nil
+	}
+	return strings.TrimSpace(string(secret.Data[cetirunv1alpha1.CopilotTokenSecretKey])) != "", nil
+}
+
+func (r *AgentReconciler) deleteAgentSecret(ctx context.Context, instance *cetirunv1alpha1.Agent, name string) error {
+	secret := &corev1.Secret{}
+	err := r.Get(ctx, types.NamespacedName{Namespace: instanceNamespace(instance.Name), Name: name}, secret)
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if secret.Labels[aiGatewayAgentUIDLabel] != string(instance.UID) {
+		return nil
+	}
+	if err := r.Delete(ctx, secret); err != nil && !apierrors.IsNotFound(err) {
+		return err
+	}
+	return nil
+}
+
+// aiGatewayModelEntry is one model in the Agent's configuration.
+type aiGatewayModelEntry struct {
+	ID            string
+	Name          string
+	ContextWindow int64
+	MaxTokens     int64
+}
+
+// aiGatewayModelEntries lists the models the Agent is configured with and its
+// default: the shared models when the owner kept them, from the Gateway
+// catalog, then the Agent's registered Copilot models. The default is the
+// Agent's own choice when available, then the deployment default, then the
+// first shared model, then the first Copilot model. An Agent without models
+// gets a placeholder its configuration requires; the Portal explains it.
+func (r *AgentReconciler) aiGatewayModelEntries(instance *cetirunv1alpha1.Agent) ([]aiGatewayModelEntry, string) {
+	var entries []aiGatewayModelEntry
+	var shared, copilot []string
+	status := instance.Status.AIGateway
+	if instance.Spec.SharedModelsEnabled() {
+		if models, known := r.aiGatewayCatalog.shared(); known {
+			for _, model := range models {
+				entries = append(entries, aiGatewayModelEntry{
+					ID: model.Name, Name: model.Name, ContextWindow: model.ContextWindow, MaxTokens: model.MaxOutputTokens,
+				})
+				shared = append(shared, model.Name)
+			}
+		} else if status != nil {
+			// Without a catalog, keep the shared models last configured.
+			for _, name := range status.Models {
+				if !strings.HasPrefix(name, aiGatewayCopilotModelPrefix) && name != aiGatewayNoModelsModel {
+					entries = append(entries, aiGatewayModelEntry{ID: name, Name: name})
+					shared = append(shared, name)
+				}
+			}
+		}
+	}
+	if r.aiGatewayCopilotWanted(instance) && status != nil && status.Copilot != nil {
+		limits := map[string]cetirunv1alpha1.CopilotModel{}
+		if models, err := parseCopilotModels(instance.Annotations[cetirunv1alpha1.AnnotationCopilotModels]); err == nil {
+			for _, model := range models {
+				limits[aiGatewayCopilotModelPrefix+model.ID] = model
+			}
+		}
+		for _, name := range status.Copilot.Models {
+			model := limits[name]
+			display := model.Name
+			if display == "" {
+				display = strings.TrimPrefix(name, aiGatewayCopilotModelPrefix)
+			}
+			entries = append(entries, aiGatewayModelEntry{
+				ID: name, Name: display + " (GitHub Copilot)", ContextWindow: model.ContextWindow, MaxTokens: model.MaxOutputTokens,
+			})
+			copilot = append(copilot, name)
+		}
+	}
+	available := func(name string) bool {
+		return name != "" && (slices.Contains(shared, name) || slices.Contains(copilot, name))
+	}
+	switch {
+	case available(strings.TrimSpace(instance.Spec.Model)):
+		return entries, strings.TrimSpace(instance.Spec.Model)
+	case available(r.AIGateway.DefaultModel):
+		return entries, r.AIGateway.DefaultModel
+	case len(shared) > 0:
+		return entries, shared[0]
+	case len(copilot) > 0:
+		return entries, copilot[0]
+	}
+	placeholder := aiGatewayNoModelsModel
+	if r.aiGatewayCopilotWanted(instance) {
+		placeholder = aiGatewaySignInRequiredModel
+	}
+	return append(entries, aiGatewayModelEntry{ID: placeholder, Name: placeholder}), placeholder
+}

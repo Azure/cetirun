@@ -219,6 +219,35 @@
                     "type": "string",
                     "description": "Key within the virtual key Secret",
                     "default": "api-key"
+                },
+                "models": {
+                    "type": "array",
+                    "description": "Models the Gateway offers the Agent",
+                    "default": [],
+                    "maxItems": 256,
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": ["id"],
+                        "properties": {
+                            "id": {"type": "string", "minLength": 1, "maxLength": 256},
+                            "name": {"type": "string", "maxLength": 256},
+                            "contextWindow": {"type": "integer", "minimum": 0},
+                            "maxTokens": {"type": "integer", "minimum": 0}
+                        }
+                    }
+                },
+                "copilotProxy": {
+                    "type": "object",
+                    "description": "Operator-owned per-Agent GitHub Copilot proxy",
+                    "additionalProperties": false,
+                    "properties": {
+                        "enabled": {"type": "boolean", "default": false},
+                        "image": {"type": "string", "default": ""},
+                        "masterKeySecretName": {"type": "string", "default": ""},
+                        "tokenSecretName": {"type": "string", "default": ""},
+                        "resources": {"type": "object"}
+                    }
                 }
             }
         },

@@ -472,6 +472,13 @@ func agentIdentityBrokerNamespace(raw string) (string, error) {
 	return parts[1], nil
 }
 
+// aiGatewayRoutedStatus reports whether the Agent's recorded routing sends
+// model traffic through the AI Gateway. Such an Agent carries no in-agent
+// sign-in helper, so its ingress has no route to one.
+func aiGatewayRoutedStatus(instance *cetirunv1alpha1.Agent) bool {
+	return instance.Status.AIGateway != nil && instance.Status.AIGateway.Routed
+}
+
 func platformRuntimeDefaults(name string) map[string]any {
 	return map[string]any{
 		"networkPolicy": map[string]any{
@@ -689,7 +696,11 @@ func buildVirtualService(instance *cetirunv1alpha1.Agent, domainSuffix, gateway 
 		routes = append(routes,
 			makeRoute(uiPrefix+"/v1", "/v1", primaryPort, 300),
 			makeRoute(uiPrefix+descriptor.HealthPath, descriptor.HealthPath, primaryPort, 0),
-			makeRoute(instancePrefix+"/cetirun-auth/", "/", cetirunAuthPort, 60),
+		)
+		if !aiGatewayRoutedStatus(instance) {
+			routes = append(routes, makeRoute(instancePrefix+"/cetirun-auth/", "/", cetirunAuthPort, 60))
+		}
+		routes = append(routes,
 			makeRoute(instancePrefix+"/desktop", "/desktop", novncPort, 0),
 			makeRoute(instancePrefix+"/term", "/term", ttydPort, 0),
 		)
@@ -707,8 +718,10 @@ func buildVirtualService(instance *cetirunv1alpha1.Agent, domainSuffix, gateway 
 		// on that exact path directly to the gateway because WebSockets cannot
 		// follow a 301 redirect.
 		routes = append([]*istioapiv1beta1.HTTPRoute{makeWebSocketRoute(uiPrefix, primaryPort)}, routes...)
+		if !aiGatewayRoutedStatus(instance) {
+			routes = append(routes, makeRoute(instancePrefix+"/cetirun-auth/", "/", cetirunAuthPort, 60))
+		}
 		routes = append(routes,
-			makeRoute(instancePrefix+"/cetirun-auth/", "/", cetirunAuthPort, 60),
 			makeRoute(instancePrefix+"/desktop", "/desktop", novncPort, 0),
 			makeRoute(instancePrefix+"/term", "/term", ttydPort, 0),
 			&istioapiv1beta1.HTTPRoute{

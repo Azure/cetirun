@@ -91,3 +91,19 @@ Otherwise: repository:tag
 {{- toJson $config -}}
 {{- end -}}
 {{- end }}
+
+{{/*
+Image of the per-Agent GitHub Copilot proxy: the AI Gateway image, from the
+same registry and release as the rest of CetiRun. Empty when the proxy is off.
+*/}}
+{{- define "cetirun-operator.copilotProxyImage" -}}
+{{- $proxy := .Values.aiGateway.copilotProxy | default dict -}}
+{{- if $proxy.enabled -}}
+{{- $image := $proxy.image | default dict -}}
+{{- $registry := include "cetirun-operator.registry" . -}}
+{{- $repo := $image.repository | default "cetirun.azurecr.io/cetirun-ai-gateway" -}}
+{{- if $registry }}{{- $repo = printf "%s/cetirun-ai-gateway" $registry -}}{{- end -}}
+{{- $tag := include "cetirun-operator.version" . | default $image.tag | default .Chart.AppVersion -}}
+{{ $repo }}:{{ $tag }}{{ if $image.digest }}@{{ $image.digest }}{{ end }}
+{{- end -}}
+{{- end }}

@@ -128,8 +128,8 @@ spec:
               value: {{ .Values.aiGateway.defaultBudget | toString | quote }}
             - name: AI_GATEWAY_DEFAULT_MODEL
               value: {{ .Values.aiGateway.defaultModel | quote }}
-            - name: AI_GATEWAY_SHARED_MODEL_TEAMS
-              value: {{ join "," .Values.aiGateway.sharedModelTeams | quote }}
+            - name: AI_GATEWAY_COPILOT_PROXY_IMAGE
+              value: {{ include "cetirun-operator.copilotProxyImage" . | quote }}
             {{- end }}
             - name: KUBE_FEATURE_WatchListClient
               value: "false"
