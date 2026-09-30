@@ -281,6 +281,13 @@ transition fails explicitly; no live writer-exclusion or data-adoption guarantee
 is inferred from rendering. Prepared Sandbox releases remain at zero replicas,
 and the Helm install/upgrade path refuses to apply them.
 
+When the desktop helper is enabled, it uses a separate `tmp-desktop` emptyDir
+for `/tmp`; the Agent retains `tmp`. Both volumes carry the Sandbox scratch
+size limit, and the existing container/Pod resource accounting is unchanged.
+This keeps their Supervisor configuration, socket and PID files independent.
+The protected inventory rejects shared, missing, unbounded or modified scratch
+mounts/volumes. Disabling desktop omits its scratch volume.
+
 Protected Pods use `DNSPolicy=None` with exactly the compiler's one to three
 distinct resolver IPs. No fallback resolvers, search suffixes or DNS options are
 added. User overrides and final-Pod DNS changes reject rather than silently
@@ -383,6 +390,15 @@ and RuntimeClass. Missing/stale state, suspension or either execution hold denie
 the request. All container, init-container, ephemeral-container and resize paths
 are checked. Pod DELETE and `/status` remain outside the webhook; unmarked
 platform/repair namespaces remain outside its matching.
+
+The exact Kubernetes garbage-collector identities `system:kube-controller-manager`
+and `system:serviceaccount:kube-system:generic-garbage-collector` may remove only
+`foregroundDeletion` from an already terminating Pod. This narrow update is
+excluded by webhook matching and handled without controller-state reads, so
+missing/stale expectations, execution holds and webhook outages do not prevent
+finalization. All other Pod fields and finalizers must remain unchanged, apart
+from server-managed `managedFields`. This does not grant either identity a
+general admission exemption.
 
 CONNECT requests for `pods/exec`, `pods/attach` and `pods/portforward` are denied
 in protected namespaces, independently of expectations and without an

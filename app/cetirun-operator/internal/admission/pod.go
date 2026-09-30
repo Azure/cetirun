@@ -110,7 +110,8 @@ func PodExpectationObject(stateNamespace string, expected sandboxworkload.Expect
 
 // Validate has no namespace-wide or platform-helper exemption. The API server
 // must send only protected namespaces here; matching is a separate repair-safe
-// control. Missing/stale controller state denies all protected writes.
+// control. Missing/stale controller state denies protected writes except the
+// garbage collector's finalizer-only completion of an already deleting Pod.
 func (h *PodHandler) Validate(ctx context.Context, request admission.Request) admission.Response {
 	if request.Operation == admissionv1.Delete || request.SubResource == "status" {
 		return admission.Allowed("Pod deletion and status remain independent of governance admission")
@@ -132,6 +133,9 @@ func (h *PodHandler) Validate(ctx context.Context, request admission.Request) ad
 	if err := decodePod(request.Object.Raw, &pod); err != nil || pod.Namespace != request.Namespace || request.Namespace == "" ||
 		(request.Name != "" && request.Name != pod.Name) {
 		return rejectPod(ctx, request, &podFailure{http.StatusBadRequest, "InvalidPod", "invalid or ambiguous protected Pod"})
+	}
+	if podGarbageCollectorFinalizerUpdate(request, &pod) {
+		return admission.Allowed("garbage collector Pod finalization remains independent of governance admission")
 	}
 	expected, state, failure := h.readExpectation(ctx, request.Namespace)
 	if failure != nil {
@@ -210,6 +214,25 @@ func decodePod(raw []byte, target *corev1.Pod) error {
 		return fmt.Errorf("invalid Pod representation")
 	}
 	return nil
+}
+
+func podGarbageCollectorFinalizerUpdate(request admission.Request, pod *corev1.Pod) bool {
+	// Keep this boundary aligned with the rendered Pod webhook match condition:
+	// the API server must also permit this exact cleanup when serving is down.
+	if request.Operation != admissionv1.Update || request.SubResource != "" || request.RequestSubResource != "" ||
+		request.Resource != (metav1.GroupVersionResource{Version: "v1", Resource: "pods"}) ||
+		request.Kind != (metav1.GroupVersionKind{Version: "v1", Kind: "Pod"}) ||
+		(request.RequestResource != nil && *request.RequestResource != request.Resource) ||
+		(request.RequestKind != nil && *request.RequestKind != request.Kind) ||
+		request.Namespace == "" || request.Namespace != pod.Namespace ||
+		request.Name == "" || request.Name != pod.Name || pod.UID == "" || pod.ResourceVersion == "" {
+		return false
+	}
+	var old corev1.Pod
+	if err := decodePod(request.OldObject.Raw, &old); err != nil {
+		return false
+	}
+	return garbageCollectorFinalizerUpdate(request, pod, &old)
 }
 
 func (h *PodHandler) readExpectation(ctx context.Context, namespace string) (sandboxworkload.Expectation, *corev1.ConfigMap, *podFailure) {

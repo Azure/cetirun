@@ -92,6 +92,8 @@ webhooks:
     failurePolicy: Fail
     timeoutSeconds: {{ int64 $admission.timeoutSeconds }}
     matchPolicy: Equivalent
+    matchConditions:
+      {{- include "cetirun-operator.sandboxPodCleanupMatch" . | nindent 6 }}
     namespaceSelector:
       matchExpressions:
         - key: cetirun.microsoft.com/sandbox-protected

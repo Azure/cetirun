@@ -42,7 +42,7 @@ Licensed under the MIT License.
   volumeMounts:
     - name: data
       mountPath: /home/vibe
-    - name: {{ if .Values.sandboxWorkload }}tmp{{ else }}tmp-desktop{{ end }}
+    - name: tmp-desktop
       mountPath: /tmp
 {{- end }}
 
@@ -114,9 +114,14 @@ securityContext:
   {{- else }}
   emptyDir: {}
   {{- end }}
-{{- if and .Values.desktop.enabled (not .Values.sandboxWorkload) }}
+{{- if .Values.desktop.enabled }}
 - name: tmp-desktop
+  {{- if .Values.sandboxWorkload }}
+  emptyDir:
+    sizeLimit: {{ .Values.sandboxWorkload.scratchSizeLimit | quote }}
+  {{- else }}
   emptyDir: {}
+  {{- end }}
 {{- end }}
 {{- end }}
 

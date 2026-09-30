@@ -535,6 +535,62 @@ class SandboxAdmissionChartTests(unittest.TestCase):
         args = documents[("Deployment", NAME)]["spec"]["template"]["spec"]["containers"][0]["args"]
         self.assertFalse(any(arg.startswith("--admission-pod-timeout=") for arg in args))
 
+    def test_pod_cleanup_condition_only_excludes_exact_gc_finalization(self):
+        documents = self.render(self.enforced_values(podsEnabled=True))
+        webhook = documents[("ValidatingWebhookConfiguration", "cetirun-sandbox-pods")]["webhooks"][0]
+        conditions = webhook["matchConditions"]
+        self.assertEqual([condition["name"] for condition in conditions], ["garbage-collector-cleanup-only"])
+        expression = " ".join(conditions[0]["expression"].split())
+        self.assertTrue(expression.startswith("!("), expression)
+        self.assertTrue(expression.endswith(")"), expression)
+        self.assertLessEqual(len(conditions[0]["expression"]), 5 * 1024)
+        for fragment in (
+            'request.operation == "UPDATE"',
+            'request.resource.group == ""',
+            'request.resource.version == "v1"',
+            'request.resource.resource == "pods"',
+            'request.kind.group == ""',
+            'request.kind.version == "v1"',
+            'request.kind.kind == "Pod"',
+            '(has(request.subResource) ? request.subResource : "") == ""',
+            '(has(request.requestSubResource) ? request.requestSubResource : "") == ""',
+            '(!has(request.requestResource) || request.requestResource == request.resource)',
+            '(!has(request.requestKind) || request.requestKind == request.kind)',
+            'object != null && oldObject != null',
+            'object.apiVersion == "v1" && object.kind == "Pod"',
+            'has(request.namespace) && request.namespace != ""',
+            'has(request.name) && request.name != ""',
+            'object.metadata.namespace == request.namespace',
+            'object.metadata.name == request.name',
+            'has(object.metadata.uid) && object.metadata.uid != ""',
+            'has(object.metadata.resourceVersion) && object.metadata.resourceVersion != ""',
+            'has(oldObject.metadata.deletionTimestamp)',
+            'oldObject.metadata.deletionTimestamp != null',
+        ):
+            self.assertIn(fragment + " &&", expression)
+        self.assertIn(
+            'request.userInfo.username in [ "system:kube-controller-manager", '
+            '"system:serviceaccount:kube-system:generic-garbage-collector" ] &&',
+            expression,
+        )
+        self.assertNotIn("request.userInfo.groups", expression)
+        self.assertNotIn("admin@example.com", expression)
+        self.assertNotIn("cetirun-operator-controller-manager", expression)
+        # Map-wide comparison catches additions/removals, including unknown
+        # top-level, spec, status and metadata fields rather than an allowlist.
+        for fragment in (
+            'object.all(field, field == "metadata" || (field in oldObject && object[field] == oldObject[field]) )',
+            'oldObject.all(field, field == "metadata" || field in object)',
+            'object.metadata.all(field, field in ["finalizers", "managedFields"] || '
+            '(field in oldObject.metadata && object.metadata[field] == oldObject.metadata[field]) )',
+            'oldObject.metadata.all(field, field in ["finalizers", "managedFields"] || field in object.metadata )',
+            'size(oldObject.metadata.finalizers.filter(finalizer, finalizer == "foregroundDeletion")) == 1',
+            '(has(object.metadata.finalizers) ? object.metadata.finalizers : []) == '
+            'oldObject.metadata.finalizers.filter(finalizer, finalizer != "foregroundDeletion")',
+        ):
+            self.assertIn(fragment, expression)
+        self.assertEqual(webhook["failurePolicy"], "Fail")
+
     def test_enforcement_renders_exact_webhook_timeouts_including_bounds(self):
         for timeout in (1, 2, 10, 20, 30):
             with self.subTest(timeout=timeout):

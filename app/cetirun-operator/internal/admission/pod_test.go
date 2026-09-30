@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -326,8 +327,289 @@ func TestPodCleanupDoesNotReadDependencies(t *testing.T) {
 			t.Fatal("Pod cleanup/status depended on the webhook's resource reader")
 		}
 	}
+	for _, username := range []string{
+		"system:kube-controller-manager",
+		"system:serviceaccount:kube-system:generic-garbage-collector",
+	} {
+		pod, old := podFinalizationPair()
+		request := podRequest(t, pod, admissionv1.Update, old)
+		request.UserInfo.Username = username
+		if response := handler.Validate(context.Background(), request); !response.Allowed {
+			t.Fatalf("GC finalization consulted unavailable dependencies: %+v", response.Result)
+		}
+	}
 	if reader.calls != 0 {
-		t.Fatal("cleanup/status consulted dependencies")
+		t.Fatal("cleanup/status/GC finalization consulted dependencies")
+	}
+}
+
+func podFinalizationPair() (*corev1.Pod, *corev1.Pod) {
+	old := &corev1.Pod{
+		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Pod"},
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "cleanup-0", Namespace: "protected-example", UID: "pod-uid", ResourceVersion: "7",
+			DeletionTimestamp: ptr.To(metav1.NewTime(time.Unix(1700000000, 0))),
+			Finalizers:        []string{"example.com/first", metav1.FinalizerDeleteDependents, "example.com/last"},
+			Labels:            map[string]string{"example.com/workload": "cleanup"},
+			Annotations:       map[string]string{"example.com/revision": "original"},
+		},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{{Name: "agent", Image: "example.com/agent:v1"}},
+		},
+		Status: corev1.PodStatus{Phase: corev1.PodPending},
+	}
+	pod := old.DeepCopy()
+	pod.Finalizers = []string{"example.com/first", "example.com/last"}
+	return pod, old
+}
+
+type countingPodReader struct {
+	client.Reader
+	calls atomic.Int64
+}
+
+func (r *countingPodReader) Get(ctx context.Context, key client.ObjectKey, object client.Object, options ...client.GetOption) error {
+	r.calls.Add(1)
+	return r.Reader.Get(ctx, key, object, options...)
+}
+
+func (r *countingPodReader) List(ctx context.Context, objects client.ObjectList, options ...client.ListOption) error {
+	r.calls.Add(1)
+	return r.Reader.List(ctx, objects, options...)
+}
+
+func TestPodGarbageCollectorCleanupIgnoresBrokenAuthority(t *testing.T) {
+	for _, state := range []string{"missing expectation", "stale expectation", "held expectation", "reader outage"} {
+		t.Run(state, func(t *testing.T) {
+			f := newPodFixture(t)
+			ctx := context.Background()
+			switch state {
+			case "missing expectation":
+				if err := f.client.Delete(ctx, f.state); err != nil {
+					t.Fatal(err)
+				}
+			case "stale expectation", "held expectation":
+				if state == "stale expectation" {
+					f.expected.AgentGeneration++
+				} else {
+					f.expected.ExecutionHeld = true
+				}
+				raw, err := json.Marshal(f.expected)
+				if err != nil {
+					t.Fatal(err)
+				}
+				f.state.Data[PodExpectationKey] = string(raw)
+				if err := f.client.Update(ctx, f.state); err != nil {
+					t.Fatal(err)
+				}
+			case "reader outage":
+				f.handler.reader = &unavailablePodReader{}
+			}
+			for _, username := range []string{
+				"system:kube-controller-manager",
+				"system:serviceaccount:kube-system:generic-garbage-collector",
+			} {
+				request := podRequest(t, f.pod, admissionv1.Create, nil)
+				request.UserInfo.Username = username
+				if response := f.handler.Validate(ctx, request); response.Allowed {
+					t.Fatal("GC identity bypassed broken authority for Pod creation")
+				}
+				reader := &countingPodReader{Reader: f.handler.reader}
+				handler, err := NewPodHandler(reader, f.handler.config)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, retainOthers := range []bool{false, true} {
+					pod, old := podFinalizationPair()
+					pod.Namespace, old.Namespace = f.pod.Namespace, f.pod.Namespace
+					if !retainOthers {
+						old.Finalizers, pod.Finalizers = []string{metav1.FinalizerDeleteDependents}, nil
+					}
+					// API-server field ownership changes are intentionally ignored.
+					pod.ManagedFields = []metav1.ManagedFieldsEntry{{
+						Manager: "garbage-collector", Operation: metav1.ManagedFieldsOperationUpdate,
+						APIVersion: "v1", FieldsType: "FieldsV1",
+						FieldsV1: &metav1.FieldsV1{Raw: []byte(`{"f:metadata":{"f:finalizers":{}}}`)},
+					}}
+					request = podRequest(t, pod, admissionv1.Update, old)
+					request.UserInfo.Username = username
+					request.RequestKind, request.RequestResource = &request.Kind, &request.Resource
+					if response := handler.Validate(ctx, request); !response.Allowed {
+						t.Fatalf("GC cleanup depended on %s: %+v", state, response.Result)
+					}
+				}
+				if reader.calls.Load() != 0 {
+					t.Fatalf("GC cleanup read %s dependencies", state)
+				}
+			}
+		})
+	}
+}
+
+func podCleanupObjectMutations() map[string]func(*corev1.Pod, *corev1.Pod) {
+	return map[string]func(*corev1.Pod, *corev1.Pod){
+		"spec":                 func(p, _ *corev1.Pod) { p.Spec.Containers[0].Image = "example.com/other:v1" },
+		"status":               func(p, _ *corev1.Pod) { p.Status.Phase = corev1.PodRunning },
+		"labels":               func(p, _ *corev1.Pod) { p.Labels["example.com/workload"] = "changed" },
+		"annotations":          func(p, _ *corev1.Pod) { p.Annotations["example.com/revision"] = "changed" },
+		"owner references":     func(p, _ *corev1.Pod) { p.OwnerReferences = []metav1.OwnerReference{{UID: "other"}} },
+		"old name":             func(_, old *corev1.Pod) { old.Name = "other" },
+		"old namespace":        func(_, old *corev1.Pod) { old.Namespace = "other" },
+		"UID":                  func(p, _ *corev1.Pod) { p.UID = "other" },
+		"resource version":     func(p, _ *corev1.Pod) { p.ResourceVersion = "8" },
+		"generation":           func(p, _ *corev1.Pod) { p.Generation++ },
+		"generate name":        func(p, _ *corev1.Pod) { p.GenerateName = "other-" },
+		"self link":            func(p, _ *corev1.Pod) { p.SelfLink = "/other" },
+		"creation timestamp":   func(p, _ *corev1.Pod) { p.CreationTimestamp = metav1.NewTime(time.Unix(1600000000, 0)) },
+		"deletion timestamp":   func(p, _ *corev1.Pod) { p.DeletionTimestamp = ptr.To(metav1.NewTime(time.Unix(1700000001, 0))) },
+		"deletion grace":       func(p, _ *corev1.Pod) { p.DeletionGracePeriodSeconds = ptr.To[int64](0) },
+		"not terminating":      func(p, old *corev1.Pod) { p.DeletionTimestamp, old.DeletionTimestamp = nil, nil },
+		"missing UID":          func(p, old *corev1.Pod) { p.UID, old.UID = "", "" },
+		"missing revision":     func(p, old *corev1.Pod) { p.ResourceVersion, old.ResourceVersion = "", "" },
+		"no finalizer removal": func(p, old *corev1.Pod) { p.Finalizers = slices.Clone(old.Finalizers) },
+		"remove other":         func(p, _ *corev1.Pod) { p.Finalizers = p.Finalizers[:1] },
+		"add other":            func(p, _ *corev1.Pod) { p.Finalizers = append(p.Finalizers, "example.com/extra") },
+		"reorder others":       func(p, _ *corev1.Pod) { slices.Reverse(p.Finalizers) },
+		"replace other":        func(p, _ *corev1.Pod) { p.Finalizers[0] = "example.com/replacement" },
+		"duplicate foreground": func(_, old *corev1.Pod) { old.Finalizers = append(old.Finalizers, metav1.FinalizerDeleteDependents) },
+		"no foreground":        func(_, old *corev1.Pod) { old.Finalizers = []string{"example.com/first", "example.com/last"} },
+	}
+}
+
+func TestPodGarbageCollectorCleanupRejectsOtherChanges(t *testing.T) {
+	for name, mutate := range podCleanupObjectMutations() {
+		t.Run(name, func(t *testing.T) {
+			pod, old := podFinalizationPair()
+			mutate(pod, old)
+			request := podRequest(t, pod, admissionv1.Update, old)
+			request.UserInfo.Username = "system:kube-controller-manager"
+			handler, err := NewPodHandler(&unavailablePodReader{}, PodConfig{StateNamespace: "operator-state"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if response := handler.Validate(context.Background(), request); response.Allowed {
+				t.Fatalf("%s bypassed Pod governance as GC cleanup", name)
+			}
+		})
+	}
+}
+
+func TestPodGarbageCollectorCleanupRejectsOtherCallersAndRequestShapes(t *testing.T) {
+	pod, old := podFinalizationPair()
+	handler, err := NewPodHandler(&unavailablePodReader{}, PodConfig{StateNamespace: "operator-state"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, username := range []string{
+		"", "member@example.com", "admin@example.com",
+		"system:serviceaccount:cetirun-system:cetirun-operator-controller-manager",
+		"system:kube-controller-manager-extra", "System:kube-controller-manager",
+		"system:serviceaccount:other:generic-garbage-collector",
+		"system:serviceaccount:kube-system:generic-garbage-collector-extra",
+	} {
+		t.Run(username, func(t *testing.T) {
+			request := podRequest(t, pod, admissionv1.Update, old)
+			request.UserInfo = authenticationv1.UserInfo{Username: username, Groups: []string{"system:masters", "system:serviceaccounts"}}
+			if response := handler.Validate(context.Background(), request); response.Allowed {
+				t.Fatal("non-GC caller bypassed normal Pod admission")
+			}
+		})
+	}
+	for name, mutate := range podCleanupRequestMutations() {
+		t.Run(name, func(t *testing.T) {
+			request := podRequest(t, pod, admissionv1.Update, old)
+			request.UserInfo.Username = "system:kube-controller-manager"
+			mutate(&request)
+			if response := handler.Validate(context.Background(), request); response.Allowed {
+				t.Fatal("invalid or non-main UPDATE request bypassed normal admission")
+			}
+		})
+	}
+	for _, subresource := range []string{"status", "finalize"} {
+		request := podRequest(t, pod, admissionv1.Update, old)
+		request.UserInfo.Username, request.SubResource = "system:kube-controller-manager", subresource
+		if podGarbageCollectorFinalizerUpdate(request, pod) {
+			t.Fatal("GC exception matched a subresource")
+		}
+	}
+}
+
+func podCleanupRequestMutations() map[string]func(*admission.Request) {
+	return map[string]func(*admission.Request){
+		"create":               func(r *admission.Request) { r.Operation = admissionv1.Create },
+		"connect":              func(r *admission.Request) { r.Operation, r.SubResource = admissionv1.Connect, "exec" },
+		"unknown operation":    func(r *admission.Request) { r.Operation = "UNKNOWN" },
+		"ephemeral containers": func(r *admission.Request) { r.SubResource = "ephemeralcontainers" },
+		"resize":               func(r *admission.Request) { r.SubResource = "resize" },
+		"unknown subresource":  func(r *admission.Request) { r.SubResource = "finalize" },
+		"original subresource": func(r *admission.Request) { r.RequestSubResource = "resize" },
+		"resource":             func(r *admission.Request) { r.Resource.Resource = "secrets" },
+		"resource group":       func(r *admission.Request) { r.Resource.Group = "other.example.com" },
+		"resource version":     func(r *admission.Request) { r.Resource.Version = "v2" },
+		"kind":                 func(r *admission.Request) { r.Kind.Kind = "Secret" },
+		"kind group":           func(r *admission.Request) { r.Kind.Group = "other.example.com" },
+		"kind version":         func(r *admission.Request) { r.Kind.Version = "v2" },
+		"original resource": func(r *admission.Request) {
+			r.RequestResource = &metav1.GroupVersionResource{Version: "v1", Resource: "secrets"}
+		},
+		"original kind":        func(r *admission.Request) { r.RequestKind = &metav1.GroupVersionKind{Version: "v1", Kind: "Secret"} },
+		"missing request name": func(r *admission.Request) { r.Name = "" },
+		"request name":         func(r *admission.Request) { r.Name = "other" },
+		"missing namespace":    func(r *admission.Request) { r.Namespace = "" },
+		"request namespace":    func(r *admission.Request) { r.Namespace = "other" },
+		"missing previous Pod": func(r *admission.Request) { r.OldObject.Raw = nil },
+		"null previous Pod":    func(r *admission.Request) { r.OldObject.Raw = []byte("null") },
+		"missing current Pod":  func(r *admission.Request) { r.Object.Raw = nil },
+		"null current Pod":     func(r *admission.Request) { r.Object.Raw = []byte("null") },
+	}
+}
+
+func TestPodGarbageCollectorCleanupDecodesBothPodsStrictly(t *testing.T) {
+	for _, previous := range []bool{false, true} {
+		for name, mutate := range map[string]func([]byte) []byte{
+			"unknown top level": func(raw []byte) []byte {
+				return bytes.Replace(raw, []byte(`"spec":`), []byte(`"futureField":true,"spec":`), 1)
+			},
+			"unknown spec": func(raw []byte) []byte {
+				return bytes.Replace(raw, []byte(`"spec":{`), []byte(`"spec":{"futureField":true,`), 1)
+			},
+			"unknown metadata": func(raw []byte) []byte {
+				return bytes.Replace(raw, []byte(`"metadata":{`), []byte(`"metadata":{"futureField":true,`), 1)
+			},
+			"unknown status": func(raw []byte) []byte {
+				return bytes.Replace(raw, []byte(`"status":{`), []byte(`"status":{"futureField":true,`), 1)
+			},
+			"duplicate field": func(raw []byte) []byte {
+				return bytes.Replace(raw, []byte(`"kind":"Pod"`), []byte(`"kind":"Pod","kind":"Pod"`), 1)
+			},
+			"wrong kind": func(raw []byte) []byte {
+				return bytes.Replace(raw, []byte(`"kind":"Pod"`), []byte(`"kind":"Secret"`), 1)
+			},
+			"wrong api version": func(raw []byte) []byte {
+				return bytes.Replace(raw, []byte(`"apiVersion":"v1"`), []byte(`"apiVersion":"v2"`), 1)
+			},
+			"trailing object":  func(raw []byte) []byte { return append(raw, []byte(`{}`)...) },
+			"malformed object": func(raw []byte) []byte { return raw[:len(raw)-1] },
+			"array":            func([]byte) []byte { return []byte(`[]`) },
+		} {
+			t.Run(fmt.Sprintf("previous=%t/%s", previous, name), func(t *testing.T) {
+				pod, old := podFinalizationPair()
+				request := podRequest(t, pod, admissionv1.Update, old)
+				request.UserInfo.Username = "system:kube-controller-manager"
+				if previous {
+					request.OldObject.Raw = mutate(request.OldObject.Raw)
+				} else {
+					request.Object.Raw = mutate(request.Object.Raw)
+				}
+				handler, err := NewPodHandler(&unavailablePodReader{}, PodConfig{StateNamespace: "operator-state"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if response := handler.Validate(context.Background(), request); response.Allowed {
+					t.Fatal("invalid raw Pod representation received the GC exemption")
+				}
+			})
+		}
 	}
 }
 
@@ -339,7 +621,9 @@ func TestPodConnectHasNoCallerOrStateExemption(t *testing.T) {
 	}
 	for _, caller := range []string{"member@example.com", "admin@example.com",
 		"system:serviceaccount:cetirun-system:cetirun-operator-controller-manager",
-		"system:serviceaccount:cetirun-admin:openclaw-admin-cetirun"} {
+		"system:serviceaccount:cetirun-admin:openclaw-admin-cetirun",
+		"system:kube-controller-manager",
+		"system:serviceaccount:kube-system:generic-garbage-collector"} {
 		for _, subresource := range []string{"exec", "attach", "portforward"} {
 			request := admission.Request{AdmissionRequest: admissionv1.AdmissionRequest{
 				Operation: admissionv1.Connect, Namespace: "protected-example", Name: "example-0",

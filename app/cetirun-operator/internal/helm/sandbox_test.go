@@ -22,9 +22,10 @@ import (
 	"k8s.io/utils/ptr"
 )
 
-func sandboxRender(t *testing.T, typ string, readOnly bool) (*PreparedRelease, *w.Bundle, w.Expectation) {
+func sandboxRender(t *testing.T, typ string, readOnly, desktop bool) (*PreparedRelease, *w.Bundle, w.Expectation) {
 	t.Helper()
 	fixture := testfixture.New(typ)
+	fixture.Input.Helpers.Desktop = desktop
 	fixture.Input.Resolution.AgentPolicy.Security.ReadOnlyRootFilesystem = ptr.To(readOnly)
 	bundle, err := w.Build(fixture.Input)
 	if err != nil {
@@ -53,7 +54,7 @@ func TestSandboxNativeProtectedRendering(t *testing.T) {
 	for _, typ := range []string{"openclaw", "hermes"} {
 		for _, readOnly := range []bool{true, false} {
 			t.Run(typ+map[bool]string{true: "/readonly", false: "/writable-root"}[readOnly], func(t *testing.T) {
-				prepared, bundle, expected := sandboxRender(t, typ, readOnly)
+				prepared, bundle, expected := sandboxRender(t, typ, readOnly, true)
 				template, err := prepared.SandboxTemplate()
 				if err != nil {
 					t.Fatal(err)
@@ -91,6 +92,60 @@ func TestSandboxNativeProtectedRendering(t *testing.T) {
 					t.Fatalf("a render-only Sandbox plan reached an apply path: %v", err)
 				}
 			})
+		}
+	}
+}
+
+func TestSandboxDesktopScratchIsolation(t *testing.T) {
+	for _, typ := range []string{"openclaw", "hermes"} {
+		for _, readOnly := range []bool{true, false} {
+			for _, desktop := range []bool{true, false} {
+				name := typ + map[bool]string{true: "/readonly", false: "/writable-root"}[readOnly] +
+					map[bool]string{true: "/desktop", false: "/no-desktop"}[desktop]
+				t.Run(name, func(t *testing.T) {
+					prepared, bundle, expected := sandboxRender(t, typ, readOnly, desktop)
+					template, err := prepared.SandboxTemplate()
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := bundle.ValidateTemplate(template, prepared.Agent.Image); err != nil {
+						t.Fatal(err)
+					}
+					mounts := map[string]string{}
+					for _, container := range template.Spec.Containers {
+						if container.Name != "cetirun" && container.Name != "desktop" {
+							continue
+						}
+						for _, mount := range container.VolumeMounts {
+							if mount.MountPath == "/tmp" {
+								mounts[container.Name] = mount.Name
+							}
+						}
+					}
+					if mounts["cetirun"] != "tmp" ||
+						(desktop && mounts["desktop"] != "tmp-desktop") ||
+						(!desktop && mounts["desktop"] != "") {
+						t.Fatalf("desktop scratch is not isolated or unexpectedly present: %v", mounts)
+					}
+					found := map[string]bool{}
+					for _, volume := range template.Spec.Volumes {
+						if volume.Name != "tmp" && volume.Name != "tmp-desktop" {
+							continue
+						}
+						found[volume.Name] = true
+						if volume.EmptyDir == nil || volume.EmptyDir.Medium != "" || volume.EmptyDir.SizeLimit == nil ||
+							volume.EmptyDir.SizeLimit.Cmp(resource.MustParse("1Gi")) != 0 {
+							t.Fatalf("scratch volume %s is not bounded by the Sandbox limit", volume.Name)
+						}
+					}
+					if !found["tmp"] || found["tmp-desktop"] != desktop {
+						t.Fatalf("unexpected scratch volume inventory: %v", found)
+					}
+					if err := w.ValidatePod(testfixture.Pod(expected), expected); err != nil {
+						t.Fatalf("isolated desktop template failed final Pod validation: %v", err)
+					}
+				})
+			}
 		}
 	}
 }
@@ -136,7 +191,7 @@ func TestSandboxAllowsModelAndAuthorizedSecretWithoutOverrides(t *testing.T) {
 }
 
 func TestSandboxFinalPodRejectsInjectedPaths(t *testing.T) {
-	_, _, expected := sandboxRender(t, "openclaw", true)
+	_, _, expected := sandboxRender(t, "openclaw", true, true)
 	cases := map[string]func(*corev1.Pod){
 		"main privilege":   func(p *corev1.Pod) { p.Spec.Containers[0].SecurityContext.Privileged = ptr.To(true) },
 		"init privilege":   func(p *corev1.Pod) { p.Spec.InitContainers[0].SecurityContext.AllowPrivilegeEscalation = ptr.To(true) },
@@ -185,8 +240,35 @@ func TestSandboxFinalPodRejectsInjectedPaths(t *testing.T) {
 		"mount injection": func(p *corev1.Pod) {
 			p.Spec.Containers[0].VolumeMounts = append(p.Spec.Containers[0].VolumeMounts, corev1.VolumeMount{Name: "data", MountPath: "/etc"})
 		},
-		"skills writable":  func(p *corev1.Pod) { p.Spec.Containers[0].VolumeMounts[3].ReadOnly = false },
-		"home replacement": func(p *corev1.Pod) { p.Spec.Volumes[3].PersistentVolumeClaim.ClaimName = "foreign" },
+		"skills writable": func(p *corev1.Pod) { p.Spec.Containers[0].VolumeMounts[3].ReadOnly = false },
+		"home replacement": func(p *corev1.Pod) {
+			for i := range p.Spec.Volumes {
+				if p.Spec.Volumes[i].Name == "data" {
+					p.Spec.Volumes[i].PersistentVolumeClaim.ClaimName = "foreign"
+				}
+			}
+		},
+		"shared desktop scratch": func(p *corev1.Pod) {
+			for i := range p.Spec.Containers[1].VolumeMounts {
+				if p.Spec.Containers[1].VolumeMounts[i].MountPath == "/tmp" {
+					p.Spec.Containers[1].VolumeMounts[i].Name = "tmp"
+				}
+			}
+		},
+		"unbounded desktop scratch": func(p *corev1.Pod) {
+			for i := range p.Spec.Volumes {
+				if p.Spec.Volumes[i].Name == "tmp-desktop" {
+					p.Spec.Volumes[i].EmptyDir.SizeLimit = nil
+				}
+			}
+		},
+		"oversized desktop scratch": func(p *corev1.Pod) {
+			for i := range p.Spec.Volumes {
+				if p.Spec.Volumes[i].Name == "tmp-desktop" {
+					p.Spec.Volumes[i].EmptyDir.SizeLimit = ptr.To(resource.MustParse("2Gi"))
+				}
+			}
+		},
 		"host volume": func(p *corev1.Pod) {
 			p.Spec.Volumes = append(p.Spec.Volumes, corev1.Volume{Name: "host", VolumeSource: corev1.VolumeSource{HostPath: &corev1.HostPathVolumeSource{Path: "/"}}})
 		},
@@ -195,7 +277,13 @@ func TestSandboxFinalPodRejectsInjectedPaths(t *testing.T) {
 		"environment": func(p *corev1.Pod) {
 			p.Spec.Containers[0].Env = append(p.Spec.Containers[0].Env, corev1.EnvVar{Name: "HOME", Value: "/root"})
 		},
-		"secret reference":      func(p *corev1.Pod) { p.Spec.Volumes[2].Secret.SecretName = "foreign" },
+		"secret reference": func(p *corev1.Pod) {
+			for i := range p.Spec.Volumes {
+				if p.Spec.Volumes[i].Name == "secrets" {
+					p.Spec.Volumes[i].Secret.SecretName = "foreign"
+				}
+			}
+		},
 		"helper classification": func(p *corev1.Pod) { p.Annotations[w.KindAnnotation] = "copilot-helper" },
 		"owner UID":             func(p *corev1.Pod) { p.OwnerReferences[0].UID = "foreign" },
 		"revision":              func(p *corev1.Pod) { p.Annotations[w.RevisionAnnotation] = "stale" },
@@ -217,7 +305,7 @@ func TestSandboxFinalPodRejectsInjectedPaths(t *testing.T) {
 }
 
 func TestSandboxFinalPodRequiresProtectedExpectedDNS(t *testing.T) {
-	_, _, expected := sandboxRender(t, "hermes", true)
+	_, _, expected := sandboxRender(t, "hermes", true, true)
 	for name, mutate := range map[string]func(*corev1.PodSpec){
 		"default policy": func(spec *corev1.PodSpec) { spec.DNSPolicy = corev1.DNSClusterFirst },
 		"missing config": func(spec *corev1.PodSpec) { spec.DNSConfig = nil },
@@ -240,7 +328,7 @@ func TestSandboxFinalPodRequiresProtectedExpectedDNS(t *testing.T) {
 }
 
 func TestSandboxRejectsUnsupportedEnvironmentSourcesAtBothBoundaries(t *testing.T) {
-	prepared, bundle, _ := sandboxRender(t, "hermes", true)
+	prepared, bundle, _ := sandboxRender(t, "hermes", true, true)
 	template, err := prepared.SandboxTemplate()
 	if err != nil {
 		t.Fatal(err)
@@ -550,6 +638,8 @@ func TestSandboxChartCannotInventHelperOrMount(t *testing.T) {
 		{"mountPath: /home/vibe\n", "mountPath: /root\n"},
 		{"automountServiceAccountToken: {{ include \"cetirun.automountServiceAccountToken\" . }}", "automountServiceAccountToken: true"},
 		{"dnsPolicy: None", "dnsPolicy: ClusterFirst"},
+		{"- name: tmp-desktop\n      mountPath: /tmp", "- name: tmp\n      mountPath: /tmp"},
+		{"sizeLimit: {{ .Values.sandboxWorkload.scratchSizeLimit | quote }}", "sizeLimit: 2Gi"},
 		{"{{- toYaml .Values.sandboxWorkload.dnsConfig | nindent 2 }}", "{{- toYaml (dict \"nameservers\" (list \"192.0.2.53\")) | nindent 2 }}"},
 	} {
 		chrt := testChart(t)

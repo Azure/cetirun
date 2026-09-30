@@ -176,6 +176,7 @@ func (b *Bundle) validateContainer(container corev1.Container, image string) err
 			return fmt.Errorf("unapproved logger helper")
 		}
 	case "desktop":
+		mounts[1].Name = "tmp-desktop"
 		if len(container.Command) != 0 || len(container.Args) != 0 {
 			return fmt.Errorf("unapproved desktop entrypoint")
 		}
@@ -216,9 +217,15 @@ func (b *Bundle) validateVolumes(volumes []corev1.Volume) error {
 			LocalObjectReference: corev1.LocalObjectReference{Name: b.input.WorkloadName + "-config"},
 		}}},
 	}
+	if b.input.Helpers.Desktop {
+		wanted["tmp-desktop"] = corev1.Volume{Name: "tmp-desktop", VolumeSource: corev1.VolumeSource{
+			EmptyDir: &corev1.EmptyDirVolumeSource{SizeLimit: ptr.To(b.input.Resolution.Sandbox.Storage.Scratch.SizeLimit)},
+		}}
+	}
 	for _, volume := range b.input.Controls.Volumes {
 		wanted[volume.Name] = volume
 	}
+	expectedCount := len(wanted) + 1
 	for _, volume := range volumes {
 		if volume.Name == "secrets" {
 			if volume.Secret == nil || !slices.Contains(b.input.AuthorizedSecrets, volume.Secret.SecretName) {
@@ -235,7 +242,7 @@ func (b *Bundle) validateVolumes(volumes []corev1.Volume) error {
 		}
 		delete(wanted, volume.Name)
 	}
-	if len(wanted) != 0 || len(volumes) != 5+len(b.input.Controls.Volumes) {
+	if len(wanted) != 0 || len(volumes) != expectedCount {
 		return fmt.Errorf("Pod volume inventory is incomplete or contains duplicates")
 	}
 	return nil
