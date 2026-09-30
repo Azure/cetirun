@@ -140,7 +140,8 @@ COPY --chown=vibe:vibe configs/cetirun-auth-service.py /usr/local/share/cetirun/
 COPY --chown=vibe:vibe configs/builtin-skill-sync.sh /usr/local/share/cetirun/builtin-skill-sync.sh
 RUN chmod 755 /usr/local/share/cetirun/cetirun-auth-service.py \
     /usr/local/share/cetirun/builtin-skill-sync.sh \
-    /usr/local/bin/cetirun-agent
+    /usr/local/bin/cetirun-agent \
+    /usr/local/bin/entrypoint.sh
 USER vibe
 
 # ClawHub 0.23.3 and OpenAI 7.x still resolve undici 7.29.0
