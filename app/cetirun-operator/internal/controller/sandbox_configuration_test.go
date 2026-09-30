@@ -6,12 +6,15 @@ package controller_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	nodev1 "k8s.io/api/node/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	storagev1 "k8s.io/api/storage/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -98,7 +101,7 @@ func sandboxConfigurationFixture() (*api.Sandbox, controller.SandboxConfiguratio
 func configurationScheme(t *testing.T) *runtime.Scheme {
 	t.Helper()
 	scheme := runtime.NewScheme()
-	for _, add := range []func(*runtime.Scheme) error{api.AddToScheme, nodev1.AddToScheme, storagev1.AddToScheme} {
+	for _, add := range []func(*runtime.Scheme) error{api.AddToScheme, nodev1.AddToScheme, rbacv1.AddToScheme, storagev1.AddToScheme} {
 		if err := add(scheme); err != nil {
 			t.Fatal(err)
 		}
@@ -254,7 +257,12 @@ func TestAgentPolicyAcceptedIsConfigurationOnly(t *testing.T) {
 				Source: controller.SandboxConfigurationSourceFunc(func(context.Context) (controller.SandboxConfigurationSnapshot, error) { return snapshot, nil }),
 			}
 			request := ctrl.Request{NamespacedName: types.NamespacedName{Name: policy.Name}}
-			if _, err := r.Reconcile(context.Background(), request); err != nil {
+			_, err := r.Reconcile(context.Background(), request)
+			if tc.name == "unavailable topology" {
+				if !errors.Is(err, sandboxpolicy.ErrUnavailable) {
+					t.Fatal("unavailable topology must retain retryable classification", err)
+				}
+			} else if err != nil {
 				t.Fatal(err)
 			}
 			actual := &api.AgentPolicy{}
@@ -265,6 +273,10 @@ func TestAgentPolicyAcceptedIsConfigurationOnly(t *testing.T) {
 			if condition == nil || condition.Status != tc.status || condition.Reason != tc.reason ||
 				condition.ObservedGeneration != policy.Generation || actual.Status.ObservedGeneration != policy.Generation {
 				t.Fatalf("unexpected policy configuration condition: %+v", actual.Status)
+			}
+			if condition.Status == metav1.ConditionTrue &&
+				(!strings.Contains(condition.Message, "Standalone policy support") || !strings.Contains(condition.Message, "are not assessed")) {
+				t.Fatal("standalone acceptance overstates workload readiness", condition.Message)
 			}
 			if err := c.Get(context.Background(), client.ObjectKeyFromObject(agent), agent); err != nil {
 				t.Fatal(err)
@@ -308,6 +320,295 @@ func TestConfigurationReadFailureAndStatusFailureAreNotSuccess(t *testing.T) {
 	if current.Status.Conditions[0].Status != metav1.ConditionUnknown {
 		t.Fatal("failed status write appeared committed")
 	}
+}
+
+func TestAgentPolicyConfigurationPreservesRegistrationFailureCauses(t *testing.T) {
+	for _, unavailable := range []api.SandboxType{api.SandboxGVisor, api.SandboxKata} {
+		t.Run(string(unavailable), func(t *testing.T) {
+			_, snapshot, _ := sandboxConfigurationFixture()
+			snapshot.Registrations[api.SandboxGVisor] = snapshot.Registrations[api.SandboxKata]
+			snapshot.Platforms[api.SandboxGVisor] = snapshot.Platforms[api.SandboxKata]
+			for kind, registration := range snapshot.Registrations {
+				if kind == unavailable {
+					delete(snapshot.Platforms, kind)
+				} else {
+					registration.Capabilities.GuestExternalNetwork = false
+					snapshot.Registrations[kind] = registration
+				}
+			}
+			policy := &api.AgentPolicy{ObjectMeta: metav1.ObjectMeta{Name: "example-policy", UID: "example-policy-uid"}}
+			c := fake.NewClientBuilder().WithScheme(configurationScheme(t)).WithStatusSubresource(policy).WithObjects(policy).Build()
+			r := &controller.AgentPolicyReconciler{
+				Client: c, Now: func() time.Time { return snapshot.ObservedAt },
+				Source: controller.SandboxConfigurationSourceFunc(func(context.Context) (controller.SandboxConfigurationSnapshot, error) { return snapshot, nil }),
+			}
+			result, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(policy)})
+			if !errors.Is(err, sandboxpolicy.ErrUnavailable) || !errors.Is(err, sandboxpolicy.ErrUnsupportedControl) || result.RequeueAfter != 0 {
+				t.Fatalf("registration failure order lost causes or bypassed backoff: %+v, %v", result, err)
+			}
+			if err := c.Get(context.Background(), client.ObjectKeyFromObject(policy), policy); err != nil {
+				t.Fatal(err)
+			}
+			condition := apimeta.FindStatusCondition(policy.Status.Conditions, api.ConditionAgentPolicyAccepted)
+			if condition == nil || condition.Status != metav1.ConditionUnknown || condition.Reason != "PrerequisitesUnavailable" {
+				t.Fatal("a terminal registration masked unavailable evidence", condition)
+			}
+		})
+	}
+}
+
+func configurationGrantFixture() (*api.AgentPolicy, controller.SandboxConfigurationSnapshot, *rbacv1.ClusterRole) {
+	_, snapshot, _ := sandboxConfigurationFixture()
+	policy := &api.AgentPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: "example-policy", UID: "example-policy-uid", Generation: 3},
+		Spec: api.AgentPolicySpec{KubernetesAccess: &api.AgentPolicyAdminKubernetesAccess{
+			ServiceAccountName: "example-admin",
+			RoleBindings:       []api.AgentPolicyRoleBinding{{Namespace: "operations", ClusterRoleName: "example-view"}},
+		}},
+	}
+	role := &rbacv1.ClusterRole{
+		ObjectMeta: metav1.ObjectMeta{Name: "example-view", UID: "example-role-uid", ResourceVersion: "7"},
+		Rules:      []rbacv1.PolicyRule{{APIGroups: []string{""}, Resources: []string{"pods"}, Verbs: []string{"get"}}},
+	}
+	platform := snapshot.Platforms[api.SandboxKata]
+	platform.KubernetesAudience = "https://kubernetes.default.svc"
+	platform.Topology.KubernetesAPI = []sandboxpolicy.Destination{{
+		Peer:  sandboxpolicy.Peer{Name: "api", UID: "example-api-uid", IPs: []string{"203.0.113.10"}},
+		Ports: []api.AgentPolicyPort{{Port: 6443, Protocol: corev1.ProtocolTCP}},
+	}}
+	platform.Grants = []sandboxpolicy.ApprovedGrant{{
+		PolicyUID: policy.UID, Namespace: "operations",
+		RoleRef: rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: role.Name},
+		RoleUID: role.UID, RoleResourceVersion: role.ResourceVersion, Revision: "synthetic-approval", Rules: role.DeepCopy().Rules,
+	}}
+	snapshot.Platforms[api.SandboxKata] = platform
+	return policy, snapshot, role
+}
+
+func TestAgentPolicyConfigurationVerifiesAuthoritativeRoleObservations(t *testing.T) {
+	failure := errors.New("synthetic authoritative role read failure")
+	for _, tc := range []struct {
+		name   string
+		mutate func(*rbacv1.ClusterRole)
+		status metav1.ConditionStatus
+		reason string
+	}{
+		{"approved", func(*rbacv1.ClusterRole) {}, metav1.ConditionTrue, "PolicyAccepted"},
+		{"rules changed", func(r *rbacv1.ClusterRole) { r.Rules[0].Resources = []string{"secrets"} }, metav1.ConditionFalse, "UnapprovedGrant"},
+		{"UID changed", func(r *rbacv1.ClusterRole) { r.UID = "replacement-role" }, metav1.ConditionFalse, "UnapprovedGrant"},
+		{"RV changed", func(r *rbacv1.ClusterRole) { r.ResourceVersion = "8" }, metav1.ConditionFalse, "UnapprovedGrant"},
+		{"missing", func(*rbacv1.ClusterRole) {}, metav1.ConditionFalse, "UnapprovedGrant"},
+		{"read failure", func(*rbacv1.ClusterRole) {}, metav1.ConditionUnknown, "PrerequisitesUnavailable"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			policy, snapshot, role := configurationGrantFixture()
+			scheme := configurationScheme(t)
+			cached := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(policy).WithObjects(policy, role.DeepCopy()).Build()
+			tc.mutate(role)
+			var objects []client.Object
+			if tc.name != "missing" {
+				objects = append(objects, role)
+			}
+			direct := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).Build()
+			reader := &configurationPrerequisiteReader{Reader: direct}
+			if tc.name == "read failure" {
+				reader.failure = failure
+			}
+			r := &controller.AgentPolicyReconciler{
+				Client: cached, APIReader: reader, Now: func() time.Time { return snapshot.ObservedAt },
+				Source: controller.SandboxConfigurationSourceFunc(func(context.Context) (controller.SandboxConfigurationSnapshot, error) { return snapshot, nil }),
+			}
+			result, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(policy)})
+			if tc.name == "read failure" {
+				if !errors.Is(err, sandboxpolicy.ErrUnavailable) || !errors.Is(err, failure) || result.RequeueAfter != 0 {
+					t.Fatalf("read failure lost causes/backoff: %+v, %v", result, err)
+				}
+			} else if err != nil || result.RequeueAfter <= 0 {
+				t.Fatalf("configuration assessment: %+v, %v", result, err)
+			}
+			if err := cached.Get(context.Background(), client.ObjectKeyFromObject(policy), policy); err != nil {
+				t.Fatal(err)
+			}
+			condition := apimeta.FindStatusCondition(policy.Status.Conditions, api.ConditionAgentPolicyAccepted)
+			if condition == nil || condition.Status != tc.status || condition.Reason != tc.reason {
+				t.Fatal("cached approved role masked authoritative observation", condition)
+			}
+		})
+	}
+}
+
+func TestSandboxConfigurationUsesCacheOnlyForPrimaryObject(t *testing.T) {
+	object, snapshot, prerequisites := sandboxConfigurationFixture()
+	scheme := configurationScheme(t)
+	cached := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(object).
+		WithObjects(append([]client.Object{object}, prerequisites...)...).Build()
+	prerequisites[0] = prerequisites[0].DeepCopyObject().(client.Object)
+	prerequisites[0].SetUID("replacement-runtime")
+	direct := fake.NewClientBuilder().WithScheme(scheme).WithObjects(prerequisites...).Build()
+	r := &controller.SandboxReconciler{
+		Client: cached, APIReader: &configurationPrerequisiteReader{Reader: direct}, Now: func() time.Time { return snapshot.ObservedAt },
+		Source: controller.SandboxConfigurationSourceFunc(func(context.Context) (controller.SandboxConfigurationSnapshot, error) { return snapshot, nil }),
+	}
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(object)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cached.Get(context.Background(), client.ObjectKeyFromObject(object), object); err != nil {
+		t.Fatal(err)
+	}
+	condition := apimeta.FindStatusCondition(object.Status.Conditions, api.ConditionReady)
+	if condition == nil || condition.Status != metav1.ConditionFalse || condition.Reason != "ReferenceChanged" {
+		t.Fatal("cached prerequisite identity became authoritative success", condition)
+	}
+}
+
+func TestConfigurationStalePrimaryCannotPublishAcceptance(t *testing.T) {
+	for _, kind := range []string{"Sandbox", "AgentPolicy"} {
+		t.Run(kind, func(t *testing.T) {
+			object, snapshot, prerequisites := sandboxConfigurationFixture()
+			policy := &api.AgentPolicy{ObjectMeta: metav1.ObjectMeta{Name: "example-policy", UID: "example-policy-uid", Generation: 1}}
+			base := fake.NewClientBuilder().WithScheme(configurationScheme(t)).WithStatusSubresource(object, policy).
+				WithObjects(append([]client.Object{object, policy}, prerequisites...)...).Build()
+			ctx := context.Background()
+			if err := base.Get(ctx, client.ObjectKeyFromObject(object), object); err != nil {
+				t.Fatal(err)
+			}
+			if err := base.Get(ctx, client.ObjectKeyFromObject(policy), policy); err != nil {
+				t.Fatal(err)
+			}
+			cached := &configurationStaleClient{Client: base, sandbox: object.DeepCopy(), policy: policy.DeepCopy()}
+			source := controller.SandboxConfigurationSourceFunc(func(context.Context) (controller.SandboxConfigurationSnapshot, error) { return snapshot, nil })
+			var request ctrl.Request
+			var reconcile func(context.Context, ctrl.Request) (ctrl.Result, error)
+			if kind == "Sandbox" {
+				object.Generation++
+				object.Spec.Storage.Home.StorageClassName = "unapproved-home"
+				if err := base.Update(ctx, object); err != nil {
+					t.Fatal(err)
+				}
+				r := &controller.SandboxReconciler{Client: cached, APIReader: base, Source: source, Now: func() time.Time { return snapshot.ObservedAt }}
+				request, reconcile = ctrl.Request{NamespacedName: client.ObjectKeyFromObject(object)}, r.Reconcile
+			} else {
+				policy.Generation++
+				policy.Spec.Network.BlockedPorts = []api.AgentPolicyPort{{Port: 53}}
+				if err := base.Update(ctx, policy); err != nil {
+					t.Fatal(err)
+				}
+				r := &controller.AgentPolicyReconciler{Client: cached, APIReader: base, Source: source, Now: func() time.Time { return snapshot.ObservedAt }}
+				request, reconcile = ctrl.Request{NamespacedName: client.ObjectKeyFromObject(policy)}, r.Reconcile
+			}
+			if _, err := reconcile(ctx, request); !apierrors.IsConflict(err) {
+				t.Fatal("stale primary observation was allowed to publish success", err)
+			}
+			if err := base.Get(ctx, client.ObjectKeyFromObject(object), object); err != nil {
+				t.Fatal(err)
+			}
+			if err := base.Get(ctx, client.ObjectKeyFromObject(policy), policy); err != nil {
+				t.Fatal(err)
+			}
+			if len(object.Status.Conditions) != 0 || len(policy.Status.Conditions) != 0 {
+				t.Fatal("stale status was persisted for a newer primary generation")
+			}
+		})
+	}
+}
+
+func TestConfigurationSnapshotMustRemainFreshThroughAssessment(t *testing.T) {
+	for _, kind := range []string{"Sandbox", "AgentPolicy"} {
+		t.Run(kind, func(t *testing.T) {
+			object, snapshot, prerequisites := sandboxConfigurationFixture()
+			policy := &api.AgentPolicy{ObjectMeta: metav1.ObjectMeta{Name: "example-policy", UID: "example-policy-uid"}}
+			c := fake.NewClientBuilder().WithScheme(configurationScheme(t)).WithStatusSubresource(object, policy).
+				WithObjects(append([]client.Object{object, policy}, prerequisites...)...).Build()
+			now := snapshot.ObservedAt
+			source := controller.SandboxConfigurationSourceFunc(func(context.Context) (controller.SandboxConfigurationSnapshot, error) {
+				now = snapshot.ObservedAt.Add(30 * time.Second)
+				return snapshot, nil
+			})
+			var err error
+			var result ctrl.Result
+			if kind == "Sandbox" {
+				r := &controller.SandboxReconciler{Client: c, Source: source, Now: func() time.Time { return now }}
+				result, err = r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(object)})
+			} else {
+				r := &controller.AgentPolicyReconciler{Client: c, Source: source, Now: func() time.Time { return now }}
+				result, err = r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(policy)})
+			}
+			if !errors.Is(err, sandboxpolicy.ErrUnavailable) || result.RequeueAfter != 0 {
+				t.Fatalf("expired evidence became periodic success: %+v, %v", result, err)
+			}
+			if err := c.Get(context.Background(), client.ObjectKeyFromObject(object), object); err != nil {
+				t.Fatal(err)
+			}
+			if err := c.Get(context.Background(), client.ObjectKeyFromObject(policy), policy); err != nil {
+				t.Fatal(err)
+			}
+			conditions := object.Status.Conditions
+			if kind == "AgentPolicy" {
+				conditions = policy.Status.Conditions
+			}
+			if len(conditions) != 1 || conditions[0].Status != metav1.ConditionUnknown {
+				t.Fatal("freshness loss during assessment was not reported", conditions)
+			}
+		})
+	}
+}
+
+func TestConfigurationPreservesObservationAndStatusErrors(t *testing.T) {
+	object, snapshot, _ := sandboxConfigurationFixture()
+	policy := &api.AgentPolicy{ObjectMeta: metav1.ObjectMeta{Name: "example-policy", UID: "example-policy-uid"}}
+	base := fake.NewClientBuilder().WithScheme(configurationScheme(t)).WithStatusSubresource(object, policy).WithObjects(object, policy).Build()
+	observationFailure, statusFailure := errors.New("synthetic observation failure"), errors.New("synthetic status failure")
+	c := &configurationErrorClient{Client: base, failure: statusFailure}
+	source := controller.SandboxConfigurationSourceFunc(func(context.Context) (controller.SandboxConfigurationSnapshot, error) {
+		return controller.SandboxConfigurationSnapshot{}, observationFailure
+	})
+	reconcilers := []struct {
+		key       client.ObjectKey
+		reconcile func(context.Context, ctrl.Request) (ctrl.Result, error)
+	}{
+		{client.ObjectKeyFromObject(object), (&controller.SandboxReconciler{Client: c, Source: source, Now: func() time.Time { return snapshot.ObservedAt }}).Reconcile},
+		{client.ObjectKeyFromObject(policy), (&controller.AgentPolicyReconciler{Client: c, Source: source, Now: func() time.Time { return snapshot.ObservedAt }}).Reconcile},
+	}
+	for _, reconciler := range reconcilers {
+		result, err := reconciler.reconcile(context.Background(), ctrl.Request{NamespacedName: reconciler.key})
+		if !errors.Is(err, observationFailure) || !errors.Is(err, statusFailure) || result.RequeueAfter != 0 {
+			t.Fatalf("failed status write masked observation failure: %+v, %v", result, err)
+		}
+	}
+}
+
+type configurationPrerequisiteReader struct {
+	client.Reader
+	failure error
+}
+
+func (r *configurationPrerequisiteReader) Get(ctx context.Context, key client.ObjectKey, object client.Object, options ...client.GetOption) error {
+	switch object.(type) {
+	case *api.Sandbox, *api.AgentPolicy:
+		return errors.New("primary configuration object bypassed the cache")
+	}
+	if r.failure != nil {
+		return r.failure
+	}
+	return r.Reader.Get(ctx, key, object, options...)
+}
+
+type configurationStaleClient struct {
+	client.Client
+	sandbox *api.Sandbox
+	policy  *api.AgentPolicy
+}
+
+func (c *configurationStaleClient) Get(ctx context.Context, key client.ObjectKey, object client.Object, options ...client.GetOption) error {
+	switch object := object.(type) {
+	case *api.Sandbox:
+		*object = *c.sandbox.DeepCopy()
+		return nil
+	case *api.AgentPolicy:
+		*object = *c.policy.DeepCopy()
+		return nil
+	}
+	return c.Client.Get(ctx, key, object, options...)
 }
 
 type configurationErrorReader struct {

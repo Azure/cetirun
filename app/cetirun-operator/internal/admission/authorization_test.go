@@ -197,6 +197,24 @@ func TestValidationCannotStandInForMissingCreationMutation(t *testing.T) {
 	requireResponse(t, f.handler.Validate(context.Background(), req), false, "current UID authorization")
 }
 
+func TestTeamAssignmentConflictsHaveTheSameSafeAdmissionDiagnostic(t *testing.T) {
+	f := assignedFixture(t)
+	old := admitAgent(t, f.handler, requestFor(t, admissionv1.Create, f.agent, nil, "member"))
+	f.handler.config.TeamAssignments = append(f.handler.config.TeamAssignments,
+		TeamAssignment{Team: "other-team", Groups: []string{"other-members"}})
+	for _, operation := range []admissionv1.Operation{admissionv1.Create, admissionv1.Update} {
+		req := requestFor(t, operation, f.agent, nil, "member")
+		if operation == admissionv1.Update {
+			req = requestFor(t, operation, old.DeepCopy(), old, "member")
+		}
+		req.UserInfo.Groups = []string{"engineering-members", "other-members"}
+		if operation == admissionv1.Create {
+			requireResponse(t, f.handler.DefaultAgent(context.Background(), req), false, errTeamAssignmentConflict.Error())
+		}
+		requireResponse(t, f.handler.Validate(context.Background(), req), false, errTeamAssignmentConflict.Error())
+	}
+}
+
 func TestCallersCannotTransplantOrRewriteProtectedAuthorization(t *testing.T) {
 	for _, user := range []string{"member", "administrator", testController} {
 		for _, key := range []string{sandboxbinding.AuthorizationAnnotation, sandboxbinding.ReauthorizeAnnotation} {
@@ -493,23 +511,35 @@ func TestReauthorizationFailurePreservesThePreviousRecord(t *testing.T) {
 func TestAuthenticatedCleanupCannotSmuggleAuthorizationEdits(t *testing.T) {
 	f := assignedFixture(t)
 	old := admitAgent(t, f.handler, requestFor(t, admissionv1.Create, f.agent, nil, "member"))
+	reauthorized := old.DeepCopy()
+	requestReauthorization(t, f.handler, reauthorized, "before-deletion")
+	old = admitAgent(t, f.handler, requestFor(t, admissionv1.Update, reauthorized, old, "administrator"))
 	now := metav1.Now()
 	old.DeletionTimestamp = &now
-	old.Finalizers = []string{api.Finalizer, metav1.FinalizerDeleteDependents}
+	old.Finalizers = []string{api.Finalizer, sandbox.HoldFinalizer, metav1.FinalizerDeleteDependents}
 	for _, user := range []string{testController, "system:kube-controller-manager"} {
 		candidate := old.DeepCopy()
 		if user == testController {
-			candidate.Finalizers = []string{metav1.FinalizerDeleteDependents}
+			candidate.Finalizers = []string{sandbox.HoldFinalizer, metav1.FinalizerDeleteDependents}
 		} else {
-			candidate.Finalizers = []string{api.Finalizer}
+			candidate.Finalizers = []string{api.Finalizer, sandbox.HoldFinalizer}
 		}
 		f.handler.reader = unavailableReader{}
 		req := requestFor(t, admissionv1.Update, candidate, old, user)
 		requireResponse(t, f.handler.DefaultAgent(context.Background(), req), true, "")
 		requireResponse(t, f.handler.Validate(context.Background(), req), true, "")
-		candidate.Annotations[sandboxbinding.AuthorizationAnnotation] = "forged"
-		req = requestFor(t, admissionv1.Update, candidate, old, user)
-		requireResponse(t, f.handler.DefaultAgent(context.Background(), req), false, "")
-		requireResponse(t, f.handler.Validate(context.Background(), req), false, "")
+		for _, edit := range []func(*api.Agent){
+			func(a *api.Agent) { a.Annotations[sandboxbinding.AuthorizationAnnotation] = "forged" },
+			func(a *api.Agent) { delete(a.Annotations, sandboxbinding.AuthorizationAnnotation) },
+			func(a *api.Agent) { delete(a.Annotations, sandboxbinding.ReauthorizeAnnotation) },
+			func(a *api.Agent) { a.Annotations[sandboxbinding.ReauthorizeAnnotation] += " " },
+			func(a *api.Agent) { a.Annotations = nil },
+		} {
+			smuggled := candidate.DeepCopy()
+			edit(smuggled)
+			req = requestFor(t, admissionv1.Update, smuggled, old, user)
+			requireResponse(t, f.handler.DefaultAgent(context.Background(), req), false, "")
+			requireResponse(t, f.handler.Validate(context.Background(), req), false, "")
+		}
 	}
 }

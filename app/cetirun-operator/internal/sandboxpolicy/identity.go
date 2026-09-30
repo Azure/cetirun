@@ -56,9 +56,13 @@ func compileIdentity(input CompileInput) (IdentityPlan, []ApprovedGrant, *Approv
 	}
 	plan.ServiceAccountName = approval.ServiceAccountName
 	automount := false
+	metadata, err := ownedMetadata(input, plan.ServiceAccountName, input.Namespace)
+	if err != nil {
+		return plan, nil, nil, err
+	}
 	plan.ServiceAccount = &corev1.ServiceAccount{
 		TypeMeta:                     metav1.TypeMeta{APIVersion: "v1", Kind: "ServiceAccount"},
-		ObjectMeta:                   ownedMetadata(input, plan.ServiceAccountName, input.Namespace),
+		ObjectMeta:                   metadata,
 		AutomountServiceAccountToken: &automount,
 	}
 	if policy.KubernetesAccess != nil {
@@ -86,12 +90,18 @@ func compileIdentity(input CompileInput) (IdentityPlan, []ApprovedGrant, *Approv
 		})
 		subject := rbacv1.Subject{Kind: "ServiceAccount", Name: plan.ServiceAccountName, Namespace: input.Namespace}
 		for _, grant := range grants {
-			grantRevision, _ := digest(grant)
-			hash, _ := digest(struct {
+			grantRevision, err := digest(grant)
+			if err != nil {
+				return plan, nil, nil, err
+			}
+			hash, err := digest(struct {
 				AgentUID  types.UID
 				Namespace string
 				RoleRef   rbacv1.RoleRef
 			}{input.Resolution.Binding.AgentUID, grant.Namespace, grant.RoleRef})
+			if err != nil {
+				return plan, nil, nil, err
+			}
 			name := "sandbox-" + hash[:32]
 			ref := BindingReference{
 				Name: name, Namespace: grant.Namespace, AgentName: input.AgentName,
@@ -99,7 +109,10 @@ func compileIdentity(input CompileInput) (IdentityPlan, []ApprovedGrant, *Approv
 				ServiceAccountName: plan.ServiceAccountName, ServiceAccountNamespace: input.Namespace,
 				GrantRevision: grantRevision,
 			}
-			metadata := ownedMetadata(input, name, grant.Namespace)
+			metadata, err := ownedMetadata(input, name, grant.Namespace)
+			if err != nil {
+				return plan, nil, nil, err
+			}
 			metadata.Annotations[GrantRevisionAnnotation] = grantRevision
 			if grant.Namespace == "" {
 				ref.Kind = "ClusterRoleBinding"
@@ -178,23 +191,31 @@ func approvedGrants(policyUID types.UID, access *api.AgentPolicyAdminKubernetesA
 			}
 			match = &candidate
 		}
-		if match == nil || match.RoleUID == "" || match.Revision == "" || len(match.Rules) == 0 {
-			return nil, fmt.Errorf("%w: explicit role contents and scope approval are required", ErrUnapprovedGrant)
+		if match == nil || match.RoleUID == "" || match.RoleResourceVersion == "" || match.Revision == "" || len(match.Rules) == 0 {
+			return nil, fmt.Errorf("%w: explicit role UID, resourceVersion, contents and scope approval are required", ErrUnapprovedGrant)
 		}
 		copy := *match
-		copy.Rules = slices.Clone(match.Rules)
-		for i := range copy.Rules {
-			rule := &copy.Rules[i]
-			rule.APIGroups = sortedUnique(rule.APIGroups)
-			rule.Resources = sortedUnique(rule.Resources)
-			rule.ResourceNames = sortedUnique(rule.ResourceNames)
-			rule.NonResourceURLs = sortedUnique(rule.NonResourceURLs)
-			rule.Verbs = sortedUnique(rule.Verbs)
+		var err error
+		copy.Rules, err = canonicalRoleRules(match.Rules)
+		if err != nil {
+			return nil, err
 		}
-		copy.Rules = canonicalObjects(copy.Rules)
 		approved = append(approved, copy)
 	}
-	return canonicalObjects(approved), nil
+	return canonicalObjects(approved)
+}
+
+func canonicalRoleRules(rules []rbacv1.PolicyRule) ([]rbacv1.PolicyRule, error) {
+	result := slices.Clone(rules)
+	for i := range result {
+		rule := &result[i]
+		rule.APIGroups = sortedUnique(rule.APIGroups)
+		rule.Resources = sortedUnique(rule.Resources)
+		rule.ResourceNames = sortedUnique(rule.ResourceNames)
+		rule.NonResourceURLs = sortedUnique(rule.NonResourceURLs)
+		rule.Verbs = sortedUnique(rule.Verbs)
+	}
+	return canonicalObjects(result)
 }
 
 func tokenSettings(platform Platform) (int64, error) {

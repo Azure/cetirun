@@ -41,6 +41,9 @@ type addressGrant struct {
 
 func canonicalPlatform(input Platform, capabilities sandbox.Capabilities) (Platform, error) {
 	var platform Platform
+	if err := validateControlInput(api.AgentPolicySpec{}, input); err != nil {
+		return platform, err
+	}
 	encoded, err := json.Marshal(input)
 	if err != nil {
 		return platform, err
@@ -122,7 +125,10 @@ func canonicalPlatform(input Platform, capabilities sandbox.Capabilities) (Platf
 			return platform, err
 		}
 	}
-	topology.DNS = canonicalObjects(topology.DNS)
+	topology.DNS, err = canonicalObjects(topology.DNS)
+	if err != nil {
+		return platform, err
+	}
 	for _, destinations := range []*[]Destination{&topology.Gateway, &topology.Ingress, &topology.KubernetesAPI} {
 		for i := range *destinations {
 			dest := &(*destinations)[i]
@@ -136,18 +142,27 @@ func canonicalPlatform(input Platform, capabilities sandbox.Capabilities) (Platf
 		}
 		merged := make(map[string]Destination)
 		for _, destination := range *destinations {
-			peerKey, _ := json.Marshal(destination.Peer)
+			peerKey, err := json.Marshal(destination.Peer)
+			if err != nil {
+				return platform, fmt.Errorf("encode destination peer: %w", err)
+			}
 			current := merged[string(peerKey)]
 			current.Peer = destination.Peer
 			current.Ports = append(current.Ports, destination.Ports...)
-			current.Ports = canonicalObjects(current.Ports)
+			current.Ports, err = canonicalObjects(current.Ports)
+			if err != nil {
+				return platform, err
+			}
 			merged[string(peerKey)] = current
 		}
 		*destinations = nil
 		for _, destination := range merged {
 			*destinations = append(*destinations, destination)
 		}
-		*destinations = canonicalObjects(*destinations)
+		*destinations, err = canonicalObjects(*destinations)
+		if err != nil {
+			return platform, err
+		}
 	}
 	allPeers := slices.Clone(topology.Peers)
 	allPeers = append(allPeers, topology.DNS...)
@@ -161,7 +176,10 @@ func canonicalPlatform(input Platform, capabilities sandbox.Capabilities) (Platf
 			return platform, err
 		}
 	}
-	allPeers = canonicalObjects(allPeers)
+	allPeers, err = canonicalObjects(allPeers)
+	if err != nil {
+		return platform, err
+	}
 	seenUIDs, seenIPs := map[string]bool{}, map[string]string{}
 	for _, peer := range allPeers {
 		if seenUIDs[string(peer.UID)] {
@@ -186,9 +204,12 @@ func ValidatePlatform(platform Platform, capabilities sandbox.Capabilities) erro
 	if err != nil {
 		return err
 	}
-	policy, _ := sandbox.NormalizeAgentPolicy(api.AgentPolicySpec{
+	policy, errs := sandbox.NormalizeAgentPolicy(api.AgentPolicySpec{
 		Network: api.AgentPolicyNetwork{Ingress: api.AgentPolicyIngress{Mode: api.AgentPolicyIngressDisabled}},
 	})
+	if len(errs) != 0 {
+		return errs.ToAggregate()
+	}
 	_, err = compileNetwork(CompileInput{
 		AgentName: "configuration", Namespace: "configuration",
 		Resolution: sandbox.Resolution{
@@ -302,31 +323,57 @@ func compileNetwork(input CompileInput) (NetworkPlan, error) {
 		EnableDefaultDeny: DefaultDeny{Ingress: true, Egress: true},
 		Ingress:           []IngressRule{}, IngressDeny: []IngressRule{}, Egress: []EgressRule{}, EgressDeny: []EgressRule{},
 	}
+	budget := networkRuleBudget{}
+	// Public-internet egress is intentionally permitted except for explicit
+	// exclusions/denies below. Default-deny is not an internet allow-list; only
+	// approved peers and ports are exceptions to internal-network isolation.
 	for _, root := range familyRoots(capabilities) {
-		spec.Egress = append(spec.Egress, EgressRule{ToCIDRSet: cidrExcept(root, internal)})
+		ranges := cidrExcept(root, internal)
+		if len(ranges) == 0 {
+			return plan, fmt.Errorf("%w: internal CIDRs cover the entire %s address space", ErrConflict, root)
+		}
+		if err := budget.egress(&spec.Egress, EgressRule{ToCIDRSet: ranges}); err != nil {
+			return plan, err
+		}
 	}
 	for _, cidr := range internal {
 		if ranges := cidrExcept(cidr, exceptions); len(ranges) != 0 {
-			spec.EgressDeny = append(spec.EgressDeny, EgressRule{ToCIDRSet: ranges})
+			if err := budget.egress(&spec.EgressDeny, EgressRule{ToCIDRSet: ranges}); err != nil {
+				return plan, err
+			}
 		}
 	}
-	spec.EgressDeny = append(spec.EgressDeny,
+	if err := budget.egress(&spec.EgressDeny,
 		EgressRule{ToCIDRSet: cidrRules(hardDenied)},
 		EgressRule{ToEntities: []string{"host", "remote-node"}},
-	)
+	); err != nil {
+		return plan, err
+	}
 	for _, prefix := range blockedCIDRs {
-		spec.EgressDeny = append(spec.EgressDeny, EgressRule{ToCIDRSet: []CIDRRule{{CIDR: prefix.String()}}})
+		if err := budget.egress(&spec.EgressDeny, EgressRule{ToCIDRSet: []CIDRRule{{CIDR: prefix.String()}}}); err != nil {
+			return plan, err
+		}
 	}
 	if len(blockedPorts) != 0 {
-		spec.EgressDeny = append(spec.EgressDeny, EgressRule{ToEntities: []string{"all"}, ToPorts: portRules(blockedPorts)})
+		if err := budget.egress(&spec.EgressDeny, EgressRule{ToEntities: []string{"all"}, ToPorts: portRules(blockedPorts)}); err != nil {
+			return plan, err
+		}
 	}
-	for _, sector := range partitionGrants(grants, capabilities) {
-		spec.Egress = append(spec.Egress, EgressRule{
+	sectors, err := partitionGrants(grants, capabilities)
+	if err != nil {
+		return plan, err
+	}
+	for _, sector := range sectors {
+		if err := budget.egress(&spec.Egress, EgressRule{
 			ToCIDRSet: []CIDRRule{{CIDR: sector.Prefix.String()}}, ToPorts: portRules(sector.Ports),
-		})
-		spec.EgressDeny = append(spec.EgressDeny, EgressRule{
+		}); err != nil {
+			return plan, err
+		}
+		if err := budget.egress(&spec.EgressDeny, EgressRule{
 			ToCIDRSet: []CIDRRule{{CIDR: sector.Prefix.String()}}, ToPorts: deniedPorts(sector.Ports),
-		})
+		}); err != nil {
+			return plan, err
+		}
 	}
 	var allowedPeers, dnsPeers []Peer
 	for _, peer := range topology.Peers {
@@ -342,29 +389,49 @@ func compileNetwork(input CompileInput) (NetworkPlan, error) {
 		}
 		allowedPeers = append(allowedPeers, peer)
 		selector := []metav1.LabelSelector{peerSelector(peer)}
-		spec.Egress = append(spec.Egress, EgressRule{ToEndpoints: selector, ToPorts: portRules(ports)})
-		spec.EgressDeny = append(spec.EgressDeny, EgressRule{ToEndpoints: selector, ToPorts: deniedPorts(ports)})
+		if err := budget.egress(&spec.Egress, EgressRule{ToEndpoints: selector, ToPorts: portRules(ports)}); err != nil {
+			return plan, err
+		}
+		if err := budget.egress(&spec.EgressDeny, EgressRule{ToEndpoints: selector, ToPorts: deniedPorts(ports)}); err != nil {
+			return plan, err
+		}
 	}
 	for _, peer := range topology.DNS {
 		if peer.Namespace != "" {
 			dnsPeers = append(dnsPeers, peer)
 		}
 	}
-	for _, selector := range excludingPeers(allowedPeers) {
-		spec.EgressDeny = append(spec.EgressDeny, EgressRule{ToEndpoints: []metav1.LabelSelector{selector}})
+	selectors, err := excludingPeers(allowedPeers)
+	if err != nil {
+		return plan, err
+	}
+	for _, selector := range selectors {
+		if err := budget.egress(&spec.EgressDeny, EgressRule{ToEndpoints: []metav1.LabelSelector{selector}}); err != nil {
+			return plan, err
+		}
 	}
 	for _, root := range familyRoots(capabilities) {
-		spec.EgressDeny = append(spec.EgressDeny, EgressRule{
+		if err := budget.egress(&spec.EgressDeny, EgressRule{
 			ToCIDRSet: cidrExcept(root, ipCIDRs(plan.DNSIPs)), ToPorts: portRules(dnsPorts),
-		})
+		}); err != nil {
+			return plan, err
+		}
 	}
-	for _, selector := range excludingPeers(dnsPeers) {
-		spec.EgressDeny = append(spec.EgressDeny, EgressRule{
+	selectors, err = excludingPeers(dnsPeers)
+	if err != nil {
+		return plan, err
+	}
+	for _, selector := range selectors {
+		if err := budget.egress(&spec.EgressDeny, EgressRule{
 			ToEndpoints: []metav1.LabelSelector{selector}, ToPorts: portRules(dnsPorts),
-		})
+		}); err != nil {
+			return plan, err
+		}
 	}
 	if policy.Network.Ingress.Mode == api.AgentPolicyIngressDisabled {
-		spec.IngressDeny = append(spec.IngressDeny, IngressRule{FromEntities: []string{"all"}})
+		if err := budget.ingress(&spec.IngressDeny, IngressRule{FromEntities: []string{"all"}}); err != nil {
+			return plan, err
+		}
 	} else {
 		if len(topology.Ingress) == 0 {
 			return plan, fmt.Errorf("%w: authenticated ingress requires a registered authenticating Gateway", ErrUnavailable)
@@ -376,22 +443,51 @@ func compileNetwork(input CompileInput) (NetworkPlan, error) {
 			}
 			ingressPeers = append(ingressPeers, destination.Peer)
 			selector := []metav1.LabelSelector{peerSelector(destination.Peer)}
-			spec.Ingress = append(spec.Ingress, IngressRule{FromEndpoints: selector, ToPorts: portRules(destination.Ports)})
-			spec.IngressDeny = append(spec.IngressDeny, IngressRule{FromEndpoints: selector, ToPorts: deniedPorts(destination.Ports)})
+			if err := budget.ingress(&spec.Ingress, IngressRule{FromEndpoints: selector, ToPorts: portRules(destination.Ports)}); err != nil {
+				return plan, err
+			}
+			if err := budget.ingress(&spec.IngressDeny, IngressRule{FromEndpoints: selector, ToPorts: deniedPorts(destination.Ports)}); err != nil {
+				return plan, err
+			}
 		}
-		for _, selector := range excludingPeers(ingressPeers) {
-			spec.IngressDeny = append(spec.IngressDeny, IngressRule{FromEndpoints: []metav1.LabelSelector{selector}})
+		selectors, err := excludingPeers(ingressPeers)
+		if err != nil {
+			return plan, err
 		}
-		spec.IngressDeny = append(spec.IngressDeny, IngressRule{FromEntities: []string{"world", "host", "remote-node"}})
+		for _, selector := range selectors {
+			if err := budget.ingress(&spec.IngressDeny, IngressRule{FromEndpoints: []metav1.LabelSelector{selector}}); err != nil {
+				return plan, err
+			}
+		}
+		if err := budget.ingress(&spec.IngressDeny, IngressRule{FromEntities: []string{"world", "host", "remote-node"}}); err != nil {
+			return plan, err
+		}
 	}
-	spec.Egress, spec.EgressDeny = canonicalObjects(spec.Egress), canonicalObjects(spec.EgressDeny)
-	spec.Ingress, spec.IngressDeny = canonicalObjects(spec.Ingress), canonicalObjects(spec.IngressDeny)
-	name, _ := digest(input.Resolution.Binding.AgentUID)
+	for _, rules := range []*[]EgressRule{&spec.Egress, &spec.EgressDeny} {
+		*rules, err = canonicalObjects(*rules)
+		if err != nil {
+			return plan, err
+		}
+	}
+	for _, rules := range []*[]IngressRule{&spec.Ingress, &spec.IngressDeny} {
+		*rules, err = canonicalObjects(*rules)
+		if err != nil {
+			return plan, err
+		}
+	}
+	name, err := digest(input.Resolution.Binding.AgentUID)
+	if err != nil {
+		return plan, err
+	}
+	metadata, err := ownedMetadata(input, "sandbox-"+name[:32], input.Namespace)
+	if err != nil {
+		return plan, err
+	}
 	plan.Policy = CiliumNetworkPolicy{
 		TypeMeta:   metav1.TypeMeta{APIVersion: "cilium.io/v2", Kind: "CiliumNetworkPolicy"},
-		ObjectMeta: ownedMetadata(input, "sandbox-"+name[:32], input.Namespace), Spec: spec,
+		ObjectMeta: metadata, Spec: spec,
 	}
-	return plan, nil
+	return plan, validateNetworkPolicySize(plan.Policy)
 }
 
 func parsePrefix(raw string, capabilities sandbox.Capabilities) (netip.Prefix, error) {
@@ -508,7 +604,7 @@ func canonicalPorts(ports []api.AgentPolicyPort, capabilities sandbox.Capabiliti
 			return nil, fmt.Errorf("%w: destination protocol is not qualified", ErrUnsupportedControl)
 		}
 	}
-	return canonicalObjects(result), nil
+	return canonicalObjects(result)
 }
 
 func portRules(ports []api.AgentPolicyPort) []PortRule {
@@ -552,7 +648,7 @@ func peerSelector(peer Peer) metav1.LabelSelector {
 	}}
 }
 
-func excludingPeers(peers []Peer) []metav1.LabelSelector {
+func excludingPeers(peers []Peer) ([]metav1.LabelSelector, error) {
 	var uids []string
 	var selectors []metav1.LabelSelector
 	for _, peer := range peers {
@@ -567,7 +663,7 @@ func excludingPeers(peers []Peer) []metav1.LabelSelector {
 	if len(uids) == 0 {
 		return []metav1.LabelSelector{{MatchExpressions: []metav1.LabelSelectorRequirement{{
 			Key: "k8s:io.kubernetes.pod.namespace", Operator: metav1.LabelSelectorOpExists,
-		}}}}
+		}}}}, nil
 	}
 	selectors = append(selectors, metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{
 		{Key: "k8s:io.kubernetes.pod.namespace", Operator: metav1.LabelSelectorOpExists},
@@ -593,7 +689,11 @@ func managedPeerPorts(peer Peer, grants []addressGrant, blocks []netip.Prefix, b
 			}
 			ports = slices.DeleteFunc(ports, func(port api.AgentPolicyPort) bool { return slices.Contains(blockedPorts, port) })
 		}
-		ports = canonicalObjects(ports)
+		var err error
+		ports, err = canonicalObjects(ports)
+		if err != nil {
+			return nil, err
+		}
 		if i > 0 && !slices.Equal(ports, previous) {
 			return nil, fmt.Errorf("%w: managed peer addresses require inconsistent controls", ErrUnsupportedControl)
 		}
@@ -604,10 +704,14 @@ func managedPeerPorts(peer Peer, grants []addressGrant, blocks []netip.Prefix, b
 
 // Partition overlapping internal exceptions before producing port complements;
 // otherwise the deny for one rule would incorrectly override a sibling allow.
-func partitionGrants(grants []addressGrant, capabilities sandbox.Capabilities) []addressGrant {
+func partitionGrants(grants []addressGrant, capabilities sandbox.Capabilities) ([]addressGrant, error) {
 	var result []addressGrant
-	var visit func(netip.Prefix, []addressGrant)
-	visit = func(prefix netip.Prefix, candidates []addressGrant) {
+	remaining := MaxNetworkPartitionWork
+	var visit func(netip.Prefix, []addressGrant) error
+	visit = func(prefix netip.Prefix, candidates []addressGrant) error {
+		if err := consumeBudget(&remaining, 1+len(candidates), "network partition work"); err != nil {
+			return err
+		}
 		var overlaps []addressGrant
 		var ports []api.AgentPolicyPort
 		partial := false
@@ -617,17 +721,27 @@ func partitionGrants(grants []addressGrant, capabilities sandbox.Capabilities) [
 			}
 			overlaps = append(overlaps, candidate)
 			if candidate.Prefix.Bits() <= prefix.Bits() {
+				if err := consumeBudget(&remaining, len(candidate.Ports), "network partition work"); err != nil {
+					return err
+				}
 				ports = append(ports, candidate.Ports...)
 			} else {
 				partial = true
 			}
 		}
 		if len(overlaps) == 0 {
-			return
+			return nil
 		}
 		if !partial {
-			result = append(result, addressGrant{prefix, canonicalObjects(ports)})
-			return
+			if len(result) == MaxNetworkRules/2 {
+				return fmt.Errorf("%w: partitioned grants exceed the network rule budget", ErrConflict)
+			}
+			canonical, err := canonicalObjects(ports)
+			if err != nil {
+				return err
+			}
+			result = append(result, addressGrant{prefix, canonical})
+			return nil
 		}
 		bits := prefix.Bits() + 1
 		left := netip.PrefixFrom(prefix.Addr(), bits)
@@ -641,11 +755,15 @@ func partitionGrants(grants []addressGrant, capabilities sandbox.Capabilities) [
 			bytes[(bits-1)/8] |= 1 << (7 - ((bits - 1) % 8))
 			right = netip.AddrFrom16(bytes)
 		}
-		visit(left, overlaps)
-		visit(netip.PrefixFrom(right, bits), overlaps)
+		if err := visit(left, overlaps); err != nil {
+			return err
+		}
+		return visit(netip.PrefixFrom(right, bits), overlaps)
 	}
 	for _, root := range familyRoots(capabilities) {
-		visit(netip.MustParsePrefix(root), grants)
+		if err := visit(netip.MustParsePrefix(root), grants); err != nil {
+			return nil, err
+		}
 	}
-	return result
+	return result, nil
 }

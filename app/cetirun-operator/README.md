@@ -221,6 +221,37 @@ RBAC permissions or access to the `admin` workload policy class. An unassigned
 caller cannot create or update a governed member Agent. Do not map a shared
 Portal ServiceAccount as if it identified the individual human caller.
 
+`TeamAssignmentConflict` means the authenticated user's effective memberships
+match more than one configured Team. Administrators must review both the
+assignment configuration and identity-provider memberships; there is no
+user-over-group or first-match precedence. Static configuration validation cannot
+discover overlapping live memberships. The diagnostic does not disclose users,
+groups or matched Team names.
+
+For recovery after reference deletion or replacement, restore the required
+configuration or explicitly select valid replacement references, then authorize
+the exact current UIDs with a fresh administrator request. The Agent UID and
+execution hold are retained, including when several references change together.
+Missing references are not grounds for clearing authorization or falling back
+to legacy execution. Consumed reauthorization requests remain replay state;
+do not strip either protected annotation as ordinary metadata cleanup.
+
+Server-side apply owns individual annotation keys. Desired manifests should omit
+the admission-owned authorization and reauthorization keys, rather than copying
+them from a live-object export. Repeated applies and removal of ordinary,
+application-owned annotations preserve governance. If a field manager has
+already claimed protected keys, an administrator can establish another manager's
+ownership of their exact unchanged values before the original manager omits
+them. This is an ownership handoff, not authorization removal; forcing apply
+cannot bypass admission, and changing a binding still requires the explicit
+reauthorization protocol below.
+
+The controller persists hold and cleanup finalizers using optimistic,
+metadata-only patches. These preserve sparse server-side-applied specifications
+without a typed full-object rewrite. Finalization still requires the exact
+controller and narrow lifecycle transition; it does not exempt specification,
+status or protected-annotation changes.
+
 Admission stamps `cetirun.microsoft.com/sandbox-authorization` during creation.
 Callers cannot supply, copy, remove or directly rewrite that record. Existing
 unrecorded governed Agents and changed reference UIDs require an administrator
@@ -263,6 +294,22 @@ blocking and mTLS remain unsupported and reject rather than becoming no-ops.
 The effective compiled revision includes topology, identity and role-content
 changes; use it rather than only the base resolver revision.
 
+The current egress posture permits public IP destinations except explicit
+exclusions, while restricting private, cluster, node, metadata and management
+ranges and qualifying required DNS/Gateway destinations. It is not a
+public-destination allow-list. Cilium default-deny establishes isolation for
+unmatched traffic; it does not remove the compiler's explicit public-egress
+rules. Whole-address-space exclusions fail compilation rather than producing
+an empty allow rule. Cilium selectors use source-qualified keys such as `k8s:`;
+their JSON shape is not a Kubernetes API-machinery label-selector contract.
+
+Network compilation has fixed budgets: 1,024 input entries, 32,768 partition
+work units, 2,048 rules, 16,384 expanded entries and 512 KiB for the complete
+serialized Cilium policy, including ownership/revision metadata. The
+[budget accounting](internal/sandboxpolicy/limits.go) bounds work before
+expansion as well as final output size. Exceeding a limit rejects the plan;
+entries are never silently truncated to obtain a successful result.
+
 Ordinary workloads keep the default ServiceAccount without token automount.
 Approved Kubernetes API and Entra identities use separate audience-bound token
 projections; Entra-only identity does not implicitly authorize Kubernetes access.
@@ -272,6 +319,18 @@ preserve shared roles/accounts. Persisting a grant inventory before writes and
 integrating retryable revocation into every finalizer path are still lifecycle
 requirements, not satisfied by rediscovering currently visible bindings alone.
 
+Each approved grant must carry the live ClusterRole UID, resource version and
+normalized rules; the approval's `Revision` is a separate administrative
+revision, not a substitute for an API observation. Configuration assessment
+calls [`VerifyPolicyGrants`](internal/sandboxpolicy/grants.go) through the
+authoritative reader. Trusted snapshot producers and future workload
+application boundaries must also verify immediately before consuming grants,
+invalidate changed observations and coordinate revocation on drift. The
+compiler remains a pure transformation and cannot detect a later role edit.
+Explicitly approved wildcard or Secret access is not silently rewritten.
+The operator gains only `get` access to ClusterRoles for this check, not
+role editing, binding or escalation authority.
+
 The operator registers Sandbox and AgentPolicy configuration reconcilers.
 Sandbox `Ready` describes prerequisites; AgentPolicy `Accepted` describes
 configuration validity/support. Without a qualified platform snapshot source,
@@ -279,6 +338,12 @@ these conditions remain `Unknown`, not ready. Indexed configuration watches
 requeue referencing Agents, including pending bindings. Per-Agent status helpers
 require matching current binding/revision/Pod/node/epoch and fresh guest-external
 observation, preserve applied history on failure, and do not release the hold.
+`Accepted` does not establish compatibility with a particular Sandbox or a
+ready-to-run workload. Reconciliation uses the cache for its primary
+configuration object, but authoritative reads for prerequisites and grants.
+Successful refreshes are jittered between 50% and 62.5% of the remaining
+snapshot freshness window; failures retain controller backoff. No production
+snapshot source is installed by these helpers.
 
 #### Optional final-Pod admission
 

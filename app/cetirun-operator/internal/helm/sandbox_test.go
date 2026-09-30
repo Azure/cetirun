@@ -306,7 +306,7 @@ func TestSandboxCompilerIdentityProjectionRendering(t *testing.T) {
 				{"example-reader", "approved-tools"}, {"example-cluster-reader", ""},
 			} {
 				platform.Grants = append(platform.Grants, sandboxpolicy.ApprovedGrant{
-					PolicyUID: policy.UID, Namespace: grant.namespace, RoleUID: "role-uid", Revision: "synthetic-only",
+					PolicyUID: policy.UID, Namespace: grant.namespace, RoleUID: "role-uid", RoleResourceVersion: "1", Revision: "synthetic-only",
 					RoleRef: rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: grant.name},
 					Rules:   []rbacv1.PolicyRule{{APIGroups: []string{""}, Resources: []string{"pods"}, Verbs: []string{"get"}}},
 				})

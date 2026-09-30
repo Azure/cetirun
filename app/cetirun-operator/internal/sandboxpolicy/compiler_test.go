@@ -108,10 +108,10 @@ func adminFixture() CompileInput {
 	}}
 	input.Platform.Grants = []ApprovedGrant{
 		{PolicyUID: input.Resolution.Binding.AgentPolicyUID, Namespace: "operations", RoleUID: "example-view-uid",
-			Revision: "synthetic-view", RoleRef: rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: "view"},
+			RoleResourceVersion: "1", Revision: "synthetic-view", RoleRef: rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: "view"},
 			Rules: []rbacv1.PolicyRule{{APIGroups: []string{""}, Resources: []string{"pods"}, Verbs: []string{"get", "list"}}}},
 		{PolicyUID: input.Resolution.Binding.AgentPolicyUID, RoleUID: "example-nodes-uid",
-			Revision: "synthetic-nodes", RoleRef: rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: "read-nodes"},
+			RoleResourceVersion: "2", Revision: "synthetic-nodes", RoleRef: rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: "read-nodes"},
 			Rules: []rbacv1.PolicyRule{{APIGroups: []string{""}, Resources: []string{"nodes"}, Verbs: []string{"get"}}}},
 	}
 	return input
@@ -323,6 +323,7 @@ func TestCompileEffectiveTopologyAndGrantChanges(t *testing.T) {
 		}},
 		{"role contents without version change", func(i *CompileInput) { i.Platform.Grants[0].Rules[0].Resources = []string{"configmaps"} }},
 		{"role recreated", func(i *CompileInput) { i.Platform.Grants[0].RoleUID = "replacement-role" }},
+		{"role resourceVersion", func(i *CompileInput) { i.Platform.Grants[0].RoleResourceVersion = "3" }},
 		{"identity approval", func(i *CompileInput) { i.Platform.Identities[0].Revision = "replacement-identity" }},
 		{"API audience", func(i *CompileInput) { i.Platform.KubernetesAudience = "https://api.example.com" }},
 	} {
@@ -414,6 +415,7 @@ func TestCompileRejectsUnapprovedAndIncompatibleIdentity(t *testing.T) {
 		{"Role is not ClusterRole alias", func(i *CompileInput) { i.Platform.Grants[0].RoleRef.Kind = "Role" }},
 		{"missing role contents", func(i *CompileInput) { i.Platform.Grants[0].Rules = nil }},
 		{"missing role identity", func(i *CompileInput) { i.Platform.Grants[0].RoleUID = "" }},
+		{"missing role resourceVersion", func(i *CompileInput) { i.Platform.Grants[0].RoleResourceVersion = "" }},
 		{"duplicate grant", func(i *CompileInput) { i.Platform.Grants = append(i.Platform.Grants, i.Platform.Grants[0]) }},
 		{"no per-Agent identity", func(i *CompileInput) { i.Platform.Identities = nil }},
 		{"wrong Agent identity", func(i *CompileInput) { i.Platform.Identities[0].AgentUID = "foreign-agent" }},

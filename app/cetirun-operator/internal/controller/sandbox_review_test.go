@@ -87,13 +87,13 @@ func TestSandboxHoldPersistsBeforeEffectsAndSurvivesStatusFailure(t *testing.T) 
 			c := fake.NewClientBuilder().WithScheme(testScheme()).WithStatusSubresource(agent).
 				WithObjects(agent, instanceNamespace(agent.Name), sts, route).
 				WithInterceptorFuncs(interceptor.Funcs{
-					Update: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
-						if failIntent {
-							return injected
-						}
-						return c.Update(ctx, obj, opts...)
-					},
 					Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+						if _, intent := obj.(*api.Agent); intent {
+							if failIntent {
+								return injected
+							}
+							return c.Patch(ctx, obj, patch, opts...)
+						}
 						effects++
 						persisted := &api.Agent{}
 						if err := c.Get(ctx, client.ObjectKeyFromObject(agent), persisted); err != nil ||

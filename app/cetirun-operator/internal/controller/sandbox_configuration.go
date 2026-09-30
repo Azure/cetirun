@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"reflect"
 	"slices"
 	"time"
@@ -48,6 +49,9 @@ type SandboxConfigurationSnapshot struct {
 
 type SandboxConfigurationSource interface {
 	// Snapshot returns an immutable, atomically captured support inventory.
+	// Grant approvals bind role UID, resourceVersion and normalized rules.
+	// Sources must verify them with authoritative reads before reuse for a
+	// workload; policy assessment below independently verifies requested grants.
 	Snapshot(context.Context) (SandboxConfigurationSnapshot, error)
 }
 
@@ -96,129 +100,160 @@ func (r *AgentPolicyReconciler) SetupWithManager(mgr ctrl.Manager) error {
 func (r *SandboxReconciler) Reconcile(ctx context.Context, request ctrl.Request) (ctrl.Result, error) {
 	object := &api.Sandbox{}
 	reader := configurationReader(r.APIReader, r.Client)
-	if err := reader.Get(ctx, request.NamespacedName, object); err != nil {
+	if err := r.Get(ctx, request.NamespacedName, object); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	before := object.DeepCopy()
 	now := configurationNow(r.Now)
-	condition, observeErr := r.assess(ctx, reader, object, now)
+	condition, observedAt, observeErr := r.assess(ctx, reader, object, now)
+	now = configurationNow(r.Now)
+	if observeErr == nil && !observedAt.IsZero() {
+		if err := configurationSnapshotTime(observedAt, now, r.MaxSnapshotAge); err != nil {
+			condition, observeErr = configurationErrorCondition(err), err
+		}
+	}
 	condition.Type, condition.ObservedGeneration = api.ConditionReady, object.Generation
 	condition.LastTransitionTime = metav1.NewTime(now)
 	apimeta.SetStatusCondition(&object.Status.Conditions, condition)
 	object.Status.ObservedGeneration = object.Generation
 	if !reflect.DeepEqual(before.Status, object.Status) {
 		if err := r.Status().Patch(ctx, object, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{})); err != nil {
-			return ctrl.Result{}, fmt.Errorf("update Sandbox prerequisite status: %w", err)
+			return ctrl.Result{}, errors.Join(observeErr, fmt.Errorf("update Sandbox prerequisite status: %w", err))
 		}
 	}
-	return ctrl.Result{RequeueAfter: configurationRefresh(r.MaxSnapshotAge)}, observeErr
+	if observeErr != nil {
+		return ctrl.Result{}, observeErr
+	}
+	return ctrl.Result{RequeueAfter: configurationRefresh(r.MaxSnapshotAge, now, observedAt)}, nil
 }
 
 func (r *AgentPolicyReconciler) Reconcile(ctx context.Context, request ctrl.Request) (ctrl.Result, error) {
 	object := &api.AgentPolicy{}
 	reader := configurationReader(r.APIReader, r.Client)
-	if err := reader.Get(ctx, request.NamespacedName, object); err != nil {
+	if err := r.Get(ctx, request.NamespacedName, object); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	before := object.DeepCopy()
 	now := configurationNow(r.Now)
-	condition, observeErr := r.assess(ctx, object, now)
+	condition, observedAt, observeErr := r.assess(ctx, reader, object, now)
+	now = configurationNow(r.Now)
+	if observeErr == nil && !observedAt.IsZero() {
+		if err := configurationSnapshotTime(observedAt, now, r.MaxSnapshotAge); err != nil {
+			condition, observeErr = configurationErrorCondition(err), err
+		}
+	}
 	condition.Type, condition.ObservedGeneration = api.ConditionAgentPolicyAccepted, object.Generation
 	condition.LastTransitionTime = metav1.NewTime(now)
 	apimeta.SetStatusCondition(&object.Status.Conditions, condition)
 	object.Status.ObservedGeneration = object.Generation
 	if !reflect.DeepEqual(before.Status, object.Status) {
 		if err := r.Status().Patch(ctx, object, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{})); err != nil {
-			return ctrl.Result{}, fmt.Errorf("update AgentPolicy configuration status: %w", err)
+			return ctrl.Result{}, errors.Join(observeErr, fmt.Errorf("update AgentPolicy configuration status: %w", err))
 		}
 	}
-	return ctrl.Result{RequeueAfter: configurationRefresh(r.MaxSnapshotAge)}, observeErr
+	if observeErr != nil {
+		return ctrl.Result{}, observeErr
+	}
+	return ctrl.Result{RequeueAfter: configurationRefresh(r.MaxSnapshotAge, now, observedAt)}, nil
 }
 
-func (r *SandboxReconciler) assess(ctx context.Context, reader client.Reader, object *api.Sandbox, now time.Time) (metav1.Condition, error) {
+func (r *SandboxReconciler) assess(ctx context.Context, reader client.Reader, object *api.Sandbox, now time.Time) (metav1.Condition, time.Time, error) {
 	if !object.DeletionTimestamp.IsZero() {
-		return configurationCondition(metav1.ConditionFalse, "Terminating", "Sandbox configuration is terminating."), nil
+		return configurationCondition(metav1.ConditionFalse, "Terminating", "Sandbox configuration is terminating."), time.Time{}, nil
 	}
 	spec, errs := sandbox.NormalizeSandbox(object.Spec)
 	if len(errs) != 0 {
-		return configurationCondition(metav1.ConditionFalse, "InvalidConfiguration", "Sandbox configuration is invalid."), nil
+		return configurationCondition(metav1.ConditionFalse, "InvalidConfiguration", "Sandbox configuration is invalid."), time.Time{}, nil
 	}
 	snapshot, err := configurationSnapshot(ctx, r.Source, now, r.MaxSnapshotAge)
 	if err != nil {
-		return configurationCondition(metav1.ConditionUnknown, "PrerequisitesUnavailable", "Current platform prerequisite state is unavailable."), err
+		return configurationCondition(metav1.ConditionUnknown, "PrerequisitesUnavailable", "Current platform prerequisite state is unavailable."), time.Time{}, err
 	}
 	registration, exists := snapshot.Registrations[spec.Type]
 	if !exists || !runtimePrerequisitesSupported(spec, registration.Capabilities) {
-		return configurationCondition(metav1.ConditionFalse, "UnsupportedControl", "Sandbox runtime and mandatory controls are not qualified."), nil
+		return configurationCondition(metav1.ConditionFalse, "UnsupportedControl", "Sandbox runtime and mandatory controls are not qualified."), snapshot.ObservedAt, nil
 	}
 	if !registration.Available {
-		return configurationCondition(metav1.ConditionFalse, "RuntimeUnavailable", "The registered Sandbox runtime is unavailable."), nil
+		return configurationCondition(metav1.ConditionFalse, "RuntimeUnavailable", "The registered Sandbox runtime is unavailable."), snapshot.ObservedAt, nil
 	}
 	platform, exists := snapshot.Platforms[spec.Type]
 	if !exists {
-		return configurationCondition(metav1.ConditionUnknown, "PrerequisitesUnavailable", "Trusted network topology and grants are unavailable."), nil
+		return configurationCondition(metav1.ConditionUnknown, "PrerequisitesUnavailable", "Trusted network topology and grants are unavailable."), snapshot.ObservedAt, nil
 	}
 	if err := sandboxpolicy.ValidatePlatform(platform, registration.Capabilities); err != nil {
-		return configurationErrorCondition(err), nil
+		return configurationErrorCondition(err), snapshot.ObservedAt, nil
 	}
 	runtimeName := registration.Capabilities.RuntimeClassName
 	expectedRuntime, exists := snapshot.RuntimeClasses[runtimeName]
 	if !exists || expectedRuntime.UID == "" || expectedRuntime.Handler == "" {
-		return configurationCondition(metav1.ConditionUnknown, "PrerequisitesUnavailable", "RuntimeClass identity approval is unavailable."), nil
+		return configurationCondition(metav1.ConditionUnknown, "PrerequisitesUnavailable", "RuntimeClass identity approval is unavailable."), snapshot.ObservedAt, nil
 	}
 	runtimeClass := &nodev1.RuntimeClass{}
 	if err := reader.Get(ctx, types.NamespacedName{Name: runtimeName}, runtimeClass); err != nil {
-		return prerequisiteReadError(err)
+		condition, readErr := prerequisiteReadError(err)
+		return condition, snapshot.ObservedAt, readErr
 	}
 	if runtimeClass.UID != expectedRuntime.UID || runtimeClass.Handler != expectedRuntime.Handler ||
 		!runtimeClass.DeletionTimestamp.IsZero() {
-		return configurationCondition(metav1.ConditionFalse, "ReferenceChanged", "RuntimeClass no longer matches the approved prerequisite."), nil
+		return configurationCondition(metav1.ConditionFalse, "ReferenceChanged", "RuntimeClass no longer matches the approved prerequisite."), snapshot.ObservedAt, nil
 	}
 	expectedStorage, exists := snapshot.StorageClasses[spec.Storage.Home.StorageClassName]
 	if !exists || expectedStorage.UID == "" || expectedStorage.Provisioner == "" {
-		return configurationCondition(metav1.ConditionFalse, "UnapprovedStorage", "The home StorageClass is not approved."), nil
+		return configurationCondition(metav1.ConditionFalse, "UnapprovedStorage", "The home StorageClass is not approved."), snapshot.ObservedAt, nil
 	}
 	storageClass := &storagev1.StorageClass{}
 	if err := reader.Get(ctx, types.NamespacedName{Name: spec.Storage.Home.StorageClassName}, storageClass); err != nil {
-		return prerequisiteReadError(err)
+		condition, readErr := prerequisiteReadError(err)
+		return condition, snapshot.ObservedAt, readErr
 	}
 	if storageClass.UID != expectedStorage.UID || storageClass.Provisioner != expectedStorage.Provisioner ||
 		!storageClass.DeletionTimestamp.IsZero() {
-		return configurationCondition(metav1.ConditionFalse, "ReferenceChanged", "StorageClass no longer matches the approved prerequisite."), nil
+		return configurationCondition(metav1.ConditionFalse, "ReferenceChanged", "StorageClass no longer matches the approved prerequisite."), snapshot.ObservedAt, nil
 	}
-	return configurationCondition(metav1.ConditionTrue, "PrerequisitesReady", "Registered runtime, storage and control prerequisites are available; Agent enforcement is checked separately."), nil
+	return configurationCondition(metav1.ConditionTrue, "PrerequisitesReady", "Registered runtime, storage and control prerequisites are available; Agent enforcement is checked separately."), snapshot.ObservedAt, nil
 }
 
-func (r *AgentPolicyReconciler) assess(ctx context.Context, object *api.AgentPolicy, now time.Time) (metav1.Condition, error) {
+func (r *AgentPolicyReconciler) assess(ctx context.Context, reader client.Reader, object *api.AgentPolicy, now time.Time) (metav1.Condition, time.Time, error) {
 	if !object.DeletionTimestamp.IsZero() {
-		return configurationCondition(metav1.ConditionFalse, "Terminating", "AgentPolicy configuration is terminating."), nil
+		return configurationCondition(metav1.ConditionFalse, "Terminating", "AgentPolicy configuration is terminating."), time.Time{}, nil
 	}
 	if _, errs := sandbox.NormalizeAgentPolicy(object.Spec); len(errs) != 0 {
-		return configurationCondition(metav1.ConditionFalse, "InvalidConfiguration", "AgentPolicy configuration is invalid."), nil
+		return configurationCondition(metav1.ConditionFalse, "InvalidConfiguration", "AgentPolicy configuration is invalid."), time.Time{}, nil
 	}
 	snapshot, err := configurationSnapshot(ctx, r.Source, now, r.MaxSnapshotAge)
 	if err != nil {
-		return configurationCondition(metav1.ConditionUnknown, "PrerequisitesUnavailable", "Current platform support inventory is unavailable."), err
+		return configurationCondition(metav1.ConditionUnknown, "PrerequisitesUnavailable", "Current platform support inventory is unavailable."), time.Time{}, err
 	}
 	keys := make([]api.SandboxType, 0, len(snapshot.Registrations))
 	for key := range snapshot.Registrations {
 		keys = append(keys, key)
 	}
 	slices.Sort(keys)
-	var unsupported error = sandboxpolicy.ErrUnsupportedControl
+	var failures []error
 	for _, key := range keys {
 		platform, exists := snapshot.Platforms[key]
 		if !exists {
-			unsupported = sandboxpolicy.ErrUnavailable
+			failures = append(failures, fmt.Errorf("registration %s: %w: platform inventory is missing", key, sandboxpolicy.ErrUnavailable))
 			continue
 		}
 		err := sandboxpolicy.ValidatePolicyConfiguration(object, snapshot.Registrations[key].Capabilities, platform)
 		if err == nil {
-			return configurationCondition(metav1.ConditionTrue, "PolicyAccepted", "Policy controls and grants are valid for a registered adapter; this does not report per-Agent enforcement."), nil
+			err = sandboxpolicy.VerifyPolicyGrants(ctx, reader, object, platform.Grants)
 		}
-		unsupported = err
+		if err == nil {
+			return configurationCondition(metav1.ConditionTrue, "PolicyAccepted", "Standalone policy support and requested role approvals match a registered adapter; Sandbox compatibility, home access and per-Agent enforcement are not assessed."), snapshot.ObservedAt, nil
+		}
+		failures = append(failures, fmt.Errorf("registration %s: %w", key, err))
 	}
-	return configurationErrorCondition(unsupported), nil
+	if len(failures) == 0 {
+		failures = append(failures, sandboxpolicy.ErrUnsupportedControl)
+	}
+	unsupported := errors.Join(failures...)
+	condition := configurationErrorCondition(unsupported)
+	if errors.Is(unsupported, sandboxpolicy.ErrUnavailable) {
+		return condition, snapshot.ObservedAt, unsupported
+	}
+	return condition, snapshot.ObservedAt, nil
 }
 
 func runtimePrerequisitesSupported(spec api.SandboxSpec, capabilities sandbox.Capabilities) bool {
@@ -258,6 +293,9 @@ func configurationReader(reader client.Reader, fallback client.Client) client.Re
 	if reader != nil {
 		return reader
 	}
+	// Standalone/offline callers may supply a direct client. Manager setup always
+	// installs its uncached APIReader for identity checks; primary CRs use Client
+	// and optimistic status patches, not the authoritative prerequisite reader.
 	return fallback
 }
 
@@ -268,11 +306,21 @@ func configurationNow(clock func() time.Time) time.Time {
 	return time.Now()
 }
 
-func configurationRefresh(maxAge time.Duration) time.Duration {
+// Successful assessments refresh in [1/2, 5/8] of the snapshot's remaining
+// lifetime. Errors use controller-runtime backoff, not this periodic requeue.
+func configurationRefresh(maxAge time.Duration, now, observedAt time.Time) time.Duration {
 	if maxAge <= 0 {
 		maxAge = 30 * time.Second
 	}
-	return maxAge / 2
+	remaining := maxAge
+	if !observedAt.IsZero() {
+		remaining -= now.Sub(observedAt)
+	}
+	base, jitter := remaining/2, remaining/8
+	if jitter > 0 {
+		base += time.Duration(rand.Int64N(int64(jitter) + 1))
+	}
+	return max(time.Nanosecond, base)
 }
 
 func configurationSnapshot(ctx context.Context, source SandboxConfigurationSource, now time.Time, maxAge time.Duration) (SandboxConfigurationSnapshot, error) {
@@ -283,11 +331,18 @@ func configurationSnapshot(ctx context.Context, source SandboxConfigurationSourc
 	if err != nil {
 		return SandboxConfigurationSnapshot{}, err
 	}
+	if err := configurationSnapshotTime(snapshot.ObservedAt, now, maxAge); err != nil {
+		return SandboxConfigurationSnapshot{}, err
+	}
+	return snapshot, nil
+}
+
+func configurationSnapshotTime(observedAt, now time.Time, maxAge time.Duration) error {
 	if maxAge <= 0 {
 		maxAge = 30 * time.Second
 	}
-	if now.IsZero() || snapshot.ObservedAt.IsZero() || snapshot.ObservedAt.After(now) || now.Sub(snapshot.ObservedAt) > maxAge {
-		return SandboxConfigurationSnapshot{}, fmt.Errorf("%w: platform snapshot is stale or incomplete", sandboxpolicy.ErrUnavailable)
+	if now.IsZero() || observedAt.IsZero() || observedAt.After(now) || now.Sub(observedAt) >= maxAge {
+		return fmt.Errorf("%w: platform snapshot is stale or incomplete", sandboxpolicy.ErrUnavailable)
 	}
-	return snapshot, nil
+	return nil
 }
