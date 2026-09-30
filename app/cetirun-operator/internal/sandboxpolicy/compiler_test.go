@@ -503,22 +503,7 @@ func syntheticEgressAllowed(spec CiliumPolicySpec, rawIP string, peer *Peer, por
 			return false
 		}
 
-		if len(rule.ToPorts) == 0 {
-			return true
-		}
-		for _, group := range rule.ToPorts {
-			for _, allowed := range group.Ports {
-				start, _ := strconv.Atoi(allowed.Port)
-				end := allowed.EndPort
-				if end == 0 {
-					end = int32(start)
-				}
-				if protocol == allowed.Protocol && port >= int32(start) && port <= end {
-					return true
-				}
-			}
-		}
-		return false
+		return syntheticPortsMatch(rule.ToPorts, port, protocol)
 	}
 	for _, rule := range spec.EgressDeny {
 		if matches(rule) {
@@ -528,6 +513,25 @@ func syntheticEgressAllowed(spec CiliumPolicySpec, rawIP string, peer *Peer, por
 	for _, rule := range spec.Egress {
 		if matches(rule) {
 			return true
+		}
+	}
+	return false
+}
+
+func syntheticPortsMatch(groups []PortRule, port int32, protocol corev1.Protocol) bool {
+	if len(groups) == 0 {
+		return true
+	}
+	for _, group := range groups {
+		for _, allowed := range group.Ports {
+			start, _ := strconv.Atoi(allowed.Port)
+			end := allowed.EndPort
+			if end == 0 {
+				end = int32(start)
+			}
+			if protocol == allowed.Protocol && port >= int32(start) && port <= end {
+				return true
+			}
 		}
 	}
 	return false

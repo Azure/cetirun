@@ -141,7 +141,7 @@ func TestCompileCanonicalDNSResolverSelection(t *testing.T) {
 	}
 }
 
-func requireBoundedAllowPortArrays(t *testing.T, plan *Plan) {
+func requireBoundedPortArrays(t *testing.T, plan *Plan) {
 	t.Helper()
 	raw, err := json.Marshal(plan.Resources[0].Object)
 	if err != nil {
@@ -155,7 +155,7 @@ func requireBoundedAllowPortArrays(t *testing.T, plan *Plan) {
 		t.Helper()
 		for _, group := range groups {
 			if len(group.Ports) == 0 || len(group.Ports) > 40 {
-				t.Fatalf("emitted allow-port array has %d entries; Cilium permits at most 40", len(group.Ports))
+				t.Fatalf("emitted port array has %d entries; Cilium permits at most 40", len(group.Ports))
 			}
 		}
 	}
@@ -163,6 +163,12 @@ func requireBoundedAllowPortArrays(t *testing.T, plan *Plan) {
 		check(rule.ToPorts)
 	}
 	for _, rule := range policy.Spec.Ingress {
+		check(rule.ToPorts)
+	}
+	for _, rule := range policy.Spec.EgressDeny {
+		check(rule.ToPorts)
+	}
+	for _, rule := range policy.Spec.IngressDeny {
 		check(rule.ToPorts)
 	}
 }
@@ -191,7 +197,7 @@ func TestCompileBoundsAllowPortGroupsWithoutChangingPermissions(t *testing.T) {
 			peer := Peer{Name: "internal", Namespace: "applications", UID: "example-internal", IPs: []string{"10.20.1.7"}}
 			input.Platform.Topology.Peers = []Peer{peer}
 			plan := mustCompile(t, input)
-			requireBoundedAllowPortArrays(t, plan)
+			requireBoundedPortArrays(t, plan)
 			found := false
 			for _, rule := range plan.Network.Policy.Spec.Egress {
 				if len(rule.ToCIDRSet) == 1 && rule.ToCIDRSet[0].CIDR == "10.20.0.0/16" {
@@ -221,9 +227,70 @@ func TestCompileBoundsAllowPortGroupsWithoutChangingPermissions(t *testing.T) {
 			}
 			input.Resolution.AgentPolicy.Network.BlockedPorts = []api.AgentPolicyPort{ports[0]}
 			blocked := mustCompile(t, input)
-			requireBoundedAllowPortArrays(t, blocked)
+			requireBoundedPortArrays(t, blocked)
 			if syntheticEgressAllowed(blocked.Network.Policy.Spec, peer.IPs[0], &peer, ports[0].Port, ports[0].Protocol) {
 				t.Fatal("port grouping bypassed explicit deny precedence")
+			}
+		})
+	}
+}
+
+func TestCompileBoundsFragmentedDenyPortGroups(t *testing.T) {
+	for _, count := range []int{37, 38, 40, 77, 78} {
+		t.Run(strconv.Itoa(count), func(t *testing.T) {
+			input := compilerFixture()
+			ports := testTCPPorts(1000, count)
+			for i := range ports {
+				ports[i].Port += int32(i)
+			}
+			input.Resolution.AgentPolicy.Network.AllowedInternalCIDRs = []api.AgentPolicyCIDRRule{{CIDR: "10.20.0.0/16", Ports: ports}}
+			peer := Peer{Name: "internal", Namespace: "applications", UID: "example-internal", IPs: []string{"10.20.1.7"}}
+			input.Platform.Topology.Peers = []Peer{peer}
+			plan := mustCompile(t, input)
+			requireBoundedPortArrays(t, plan)
+			found := false
+			for _, rule := range plan.Network.Policy.Spec.EgressDeny {
+				if len(rule.ToCIDRSet) == 1 && rule.ToCIDRSet[0].CIDR == "10.20.0.0/16" {
+					found = true
+					entries := 0
+					for _, group := range rule.ToPorts {
+						entries += len(group.Ports)
+					}
+					if entries != count+3 || len(rule.ToPorts) != (count+3+39)/40 {
+						t.Fatalf("fragmented complement was lost or incorrectly grouped: %+v", rule.ToPorts)
+					}
+				}
+			}
+			if !found {
+				t.Fatal("internal CIDR complementary deny is missing")
+			}
+			probes := []int32{1, 65535}
+			for port := int32(999); port <= 1000+2*int32(count); port++ {
+				probes = append(probes, port)
+			}
+			for _, identity := range []*Peer{nil, &peer} {
+				for _, port := range probes {
+					for _, protocol := range []corev1.Protocol{corev1.ProtocolTCP, corev1.ProtocolUDP, corev1.ProtocolSCTP} {
+						want := protocol == corev1.ProtocolTCP && port >= 1000 && port < 1000+2*int32(count) && port%2 == 0
+						if syntheticEgressAllowed(plan.Network.Policy.Spec, peer.IPs[0], identity, port, protocol) != want {
+							t.Fatalf("grouping changed fragmented permission for %d/%s", port, protocol)
+						}
+					}
+				}
+			}
+			slices.Reverse(input.Resolution.AgentPolicy.Network.AllowedInternalCIDRs[0].Ports)
+			reordered := mustCompile(t, input)
+			if plan.Revision != reordered.Revision || !reflect.DeepEqual(plan.Resources, reordered.Resources) {
+				t.Fatal("fragmented port ordering changed output or revision")
+			}
+			input.Resolution.AgentPolicy.Network.BlockedPorts = []api.AgentPolicyPort{{Port: 1000, Protocol: corev1.ProtocolTCP}}
+			blocked := mustCompile(t, input)
+			requireBoundedPortArrays(t, blocked)
+			for _, identity := range []*Peer{nil, &peer} {
+				if syntheticEgressAllowed(blocked.Network.Policy.Spec, peer.IPs[0], identity, 1000, corev1.ProtocolTCP) ||
+					!syntheticEgressAllowed(blocked.Network.Policy.Spec, peer.IPs[0], identity, 1002, corev1.ProtocolTCP) {
+					t.Fatal("explicit deny changed neighboring fragmented permissions")
+				}
 			}
 		})
 	}
@@ -238,7 +305,7 @@ func TestCompileChunksPortsAfterOverlappingCIDRUnion(t *testing.T) {
 	peer := Peer{Name: "internal", Namespace: "applications", UID: "example-internal", IPs: []string{"10.20.1.7"}}
 	input.Platform.Topology.Peers = []Peer{peer}
 	plan := mustCompile(t, input)
-	requireBoundedAllowPortArrays(t, plan)
+	requireBoundedPortArrays(t, plan)
 	for port := int32(999); port <= 1042; port++ {
 		for _, identity := range []*Peer{nil, &peer} {
 			want := port >= 1000 && port <= 1041
@@ -264,13 +331,17 @@ func TestCompileChunksMergedGatewayAPIAndIngressPorts(t *testing.T) {
 			case "Ingress":
 				destinations = &input.Platform.Topology.Ingress
 			}
+			ports := testTCPPorts(1000, 41)
+			for i := range ports {
+				ports[i].Port += int32(i)
+			}
 			first := (*destinations)[0]
-			first.Ports = testTCPPorts(1000, 21)
+			first.Ports = ports[:21]
 			second := first
-			second.Ports = testTCPPorts(1021, 20)
+			second.Ports = ports[21:]
 			*destinations = []Destination{first, second}
 			plan := mustCompile(t, input)
-			requireBoundedAllowPortArrays(t, plan)
+			requireBoundedPortArrays(t, plan)
 			if direction == "Ingress" {
 				rules := plan.Network.Policy.Spec.Ingress
 				if len(rules) != 1 || len(rules[0].ToPorts) != 2 {
@@ -285,9 +356,26 @@ func TestCompileChunksMergedGatewayAPIAndIngressPorts(t *testing.T) {
 				if len(got) != 41 {
 					t.Fatal("ingress grouping lost or duplicated ports")
 				}
-				for _, port := range testTCPPorts(1000, 41) {
+				for _, port := range ports {
 					if !got[PortRange{Port: fmt.Sprint(port.Port), Protocol: port.Protocol}] {
 						t.Fatal("ingress grouping changed the allowed port set")
+					}
+				}
+				var denies []PortRule
+				for _, rule := range plan.Network.Policy.Spec.IngressDeny {
+					denies = append(denies, rule.ToPorts...)
+				}
+				if len(denies) != 2 {
+					t.Fatal("fragmented ingress complement was not split into two groups")
+				}
+				for port := int32(999); port <= 1081; port++ {
+					for _, protocol := range []corev1.Protocol{corev1.ProtocolTCP, corev1.ProtocolUDP, corev1.ProtocolSCTP} {
+						want := protocol == corev1.ProtocolTCP && port >= 1000 && port <= 1080 && port%2 == 0
+						allowed := syntheticPortsMatch(rules[0].ToPorts, port, protocol)
+						denied := syntheticPortsMatch(denies, port, protocol)
+						if allowed != want || denied == want {
+							t.Fatalf("ingress grouping changed fragmented permission for %d/%s", port, protocol)
+						}
 					}
 				}
 			} else {
@@ -295,8 +383,8 @@ func TestCompileChunksMergedGatewayAPIAndIngressPorts(t *testing.T) {
 				if first.Peer.Namespace != "" {
 					peer = &first.Peer
 				}
-				for port := int32(999); port <= 1041; port++ {
-					want := port >= 1000 && port <= 1040
+				for port := int32(999); port <= 1081; port++ {
+					want := port >= 1000 && port <= 1080 && port%2 == 0
 					if syntheticEgressAllowed(plan.Network.Policy.Spec, first.Peer.IPs[0], peer, port, corev1.ProtocolTCP) != want {
 						t.Fatalf("merged required destination changed permission for %d", port)
 					}

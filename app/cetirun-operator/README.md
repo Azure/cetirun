@@ -317,10 +317,12 @@ serialized Cilium policy, including ownership/revision metadata. The
 [budget accounting](internal/sandboxpolicy/limits.go) bounds work before
 expansion as well as final output size. Exceeding a limit rejects the plan;
 entries are never silently truncated to obtain a successful result.
-Independently of those budgets, emitted allow-port groups contain at most 40
-entries per `toPorts[].ports` array to match Cilium's allow-rule schema. Grouping
-happens after port sets are combined, including overlapping internal CIDRs and
-merged managed-peer destinations; it preserves all allowed ports and protocols.
+Independently of those budgets, emitted allow and deny groups contain at most
+40 entries per `toPorts[].ports` array to match Cilium's validation limits.
+Grouping happens after port sets are combined and complementary deny ranges
+are computed, including overlapping internal CIDRs and merged managed-peer
+destinations. It preserves the complete allowed and denied port/protocol sets,
+including fragmented ranges; no entries are truncated.
 
 Ordinary workloads keep the default ServiceAccount without token automount.
 Approved Kubernetes API and Entra identities use separate audience-bound token
