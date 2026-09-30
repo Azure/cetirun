@@ -158,6 +158,8 @@ This increment implements:
   Mutation and validation are installed together: Kubernetes runs mutation
   first, including for dry runs. Validation rejects a missing selection rather
   than assuming that a default was persisted.
+  Agent creation using `metadata.generateName` is accepted before the API server
+  assigns a name; once assigned, the object and admission request names must match.
 - Shared normalization and compatibility validation, including every referencing
   Team on Sandbox/policy edits, and reference checks before shared deletion.
   Ordinary Portal Team context edits can preserve unchanged governance.
@@ -169,6 +171,10 @@ This increment implements:
 - Protected lifecycle finalizers. Only the configured controller identity may
   change known lifecycle finalizers in a metadata-only update; it has no blanket
   exemption for spec changes. Removal also requires an already-deleting Agent.
+  Kubernetes' exact authenticated controller-manager or generic
+  garbage-collector username may remove only the built-in `foregroundDeletion`
+  finalizer from an already terminating object in an otherwise metadata-only
+  update.
   The legacy controller's chart-version and Harness image/port pinning writes
   remain behind the execution hold. A future governed path must authorize those
   specific writes or move them into authorized creation before releasing it.

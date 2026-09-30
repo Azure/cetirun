@@ -176,6 +176,41 @@ func TestCreationDefaultsNeverPromoteAdministrators(t *testing.T) {
 	requireResponse(t, f.handler.Validate(context.Background(), req), false, "never re-defaulted")
 }
 
+func TestGeneratedNameCreatesRemainValidBeforeAndAfterNameAssignment(t *testing.T) {
+	for _, governed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("governed=%v", governed), func(t *testing.T) {
+			f := newFixture(t)
+			agent := f.agent.DeepCopy()
+			agent.Name, agent.GenerateName, agent.UID, agent.ResourceVersion = "", "generated-agent-", "", ""
+			agent.Spec.SandboxRef, agent.Spec.PolicyClass = "", ""
+			if !governed {
+				agent.Spec.Team = ""
+			}
+			req := requestFor(t, admissionv1.Create, agent, nil, "administrator")
+			response := f.handler.DefaultAgent(context.Background(), req)
+			requireResponse(t, response, true, "")
+			if governed {
+				if len(response.Patches) != 2 {
+					t.Fatalf("governed generated-name creation did not receive defaults: %#v", response.Patches)
+				}
+				agent.Spec.SandboxRef, agent.Spec.PolicyClass = f.box.Name, api.AgentPolicyClassNormal
+			} else if len(response.Patches) != 0 {
+				t.Fatalf("legacy generated-name creation acquired defaults: %#v", response.Patches)
+			}
+			requireResponse(t, f.handler.Validate(context.Background(), requestFor(t, admissionv1.Create, agent, nil, "administrator")), true, "")
+
+			agent.Name = "generated-agent-abcde"
+			requireResponse(t, f.handler.Validate(context.Background(), requestFor(t, admissionv1.Create, agent, nil, "administrator")), true, "")
+			mismatch := requestFor(t, admissionv1.Create, agent, nil, "administrator")
+			mismatch.Name = "different-name"
+			requireResponse(t, f.handler.Validate(context.Background(), mismatch), false, "identity")
+
+			agent.Name, agent.GenerateName = "", ""
+			requireResponse(t, f.handler.Validate(context.Background(), requestFor(t, admissionv1.Create, agent, nil, "administrator")), false, "identity")
+		})
+	}
+}
+
 func TestLegacyBehaviorAndTeamEdits(t *testing.T) {
 	f := newFixture(t)
 	f.agent.Spec.Team, f.agent.Spec.SandboxRef = "", ""
@@ -194,6 +229,87 @@ func TestLegacyBehaviorAndTeamEdits(t *testing.T) {
 	team.Spec.DefaultSandboxRef = "different"
 	req = requestFor(t, admissionv1.Update, team, f.team, "portal")
 	requireResponse(t, f.handler.Validate(context.Background(), req), false, "administrator")
+}
+
+func TestGarbageCollectorCanOnlyRemoveForegroundDeletionMetadata(t *testing.T) {
+	for _, username := range []string{
+		"system:kube-controller-manager",
+		"system:serviceaccount:kube-system:generic-garbage-collector",
+	} {
+		for _, fixtureObject := range []string{"Agent", "Sandbox", "AgentPolicy"} {
+			t.Run(username+"/"+fixtureObject, func(t *testing.T) {
+				f := newFixture(t)
+				objects := map[string]client.Object{"Agent": f.agent, "Sandbox": f.box, "AgentPolicy": f.policy}
+				old := objects[fixtureObject].DeepCopyObject().(client.Object)
+				now := metav1.Now()
+				old.SetDeletionTimestamp(&now)
+				old.SetFinalizers(append(old.GetFinalizers(), metav1.FinalizerDeleteDependents))
+				object := old.DeepCopyObject().(client.Object)
+				object.SetFinalizers(slices.DeleteFunc(object.GetFinalizers(), func(value string) bool {
+					return value == metav1.FinalizerDeleteDependents
+				}))
+				req := requestFor(t, admissionv1.Update, object, old, username)
+				requireResponse(t, f.handler.Validate(context.Background(), req), true, "garbage collector")
+			})
+		}
+	}
+
+	f := newFixture(t)
+	now := metav1.Now()
+	oldPolicy := f.policy.DeepCopy()
+	oldPolicy.SetDeletionTimestamp(&now)
+	oldPolicy.SetFinalizers([]string{metav1.FinalizerDeleteDependents})
+	changedPolicy := oldPolicy.DeepCopy()
+	changedPolicy.Finalizers = nil
+	changedPolicy.Spec.Network.BlockedFQDNs = []string{"blocked.example.com"}
+	req := requestFor(t, admissionv1.Update, changedPolicy, oldPolicy, "system:kube-controller-manager")
+	requireResponse(t, f.handler.Validate(context.Background(), req), false, "administrator")
+
+	nonCollector := oldPolicy.DeepCopy()
+	nonCollector.Finalizers = nil
+	req = requestFor(t, admissionv1.Update, nonCollector, oldPolicy, "member")
+	requireResponse(t, f.handler.Validate(context.Background(), req), false, "administrator")
+
+	oldAgent := f.agent.DeepCopy()
+	oldAgent.SetDeletionTimestamp(&now)
+	oldAgent.SetFinalizers([]string{api.Finalizer, metav1.FinalizerDeleteDependents})
+	removedApplicationFinalizer := oldAgent.DeepCopy()
+	removedApplicationFinalizer.Finalizers = nil
+	req = requestFor(t, admissionv1.Update, removedApplicationFinalizer, oldAgent, "system:kube-controller-manager")
+	requireResponse(t, f.handler.Validate(context.Background(), req), false, "controller lifecycle finalizers")
+}
+
+func TestGarbageCollectorRejectsOtherFinalizerUpdates(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		old  []string
+		new  []string
+		live bool
+	}{
+		{name: "no finalizers"},
+		{name: "no foreground finalizer", old: []string{"example.com/keep"}, new: []string{"example.com/keep"}},
+		{name: "unchanged", old: []string{metav1.FinalizerDeleteDependents}, new: []string{metav1.FinalizerDeleteDependents}},
+		{name: "not terminating", old: []string{metav1.FinalizerDeleteDependents}, live: true},
+		{name: "added finalizer", old: []string{metav1.FinalizerDeleteDependents}, new: []string{"example.com/keep"}},
+		{name: "removed another finalizer", old: []string{metav1.FinalizerDeleteDependents, "example.com/keep"}},
+		{name: "reordered finalizers", old: []string{"example.com/first", metav1.FinalizerDeleteDependents, "example.com/second"},
+			new: []string{"example.com/second", "example.com/first"}},
+		{name: "duplicate foreground finalizers", old: []string{metav1.FinalizerDeleteDependents, metav1.FinalizerDeleteDependents}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newFixture(t)
+			old := f.policy.DeepCopy()
+			old.Finalizers = test.old
+			if !test.live {
+				now := metav1.Now()
+				old.DeletionTimestamp = &now
+			}
+			object := old.DeepCopy()
+			object.Finalizers = test.new
+			req := requestFor(t, admissionv1.Update, object, old, "system:kube-controller-manager")
+			requireResponse(t, f.handler.Validate(context.Background(), req), false, "administrator")
+		})
+	}
 }
 
 func TestLegacyTeamDeletionPreservesExistingAuthorization(t *testing.T) {

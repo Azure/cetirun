@@ -218,6 +218,29 @@ func TestAdmissionAPIServerBoundaries(t *testing.T) {
 			t.Fatal("creation defaults were not persisted, or human authority elevated the workload")
 		}
 	})
+	t.Run("generated names pass mutation and validation before assignment", func(t *testing.T) {
+		for _, governed := range []bool{false, true} {
+			agent := newAgent("", governed)
+			agent.GenerateName = "generated-agent-"
+			writer := member
+			if governed {
+				writer = cl
+			}
+			if err := writer.Create(ctx, agent); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.HasPrefix(agent.Name, agent.GenerateName) {
+				t.Fatalf("API server did not assign the requested generated name: %q", agent.Name)
+			}
+			if governed && (agent.Spec.SandboxRef != f.box.Name || agent.Spec.PolicyClass != api.AgentPolicyClassNormal) {
+				t.Fatal("governed generated-name Agent did not persist creation defaults")
+			}
+			if !governed && (agent.Spec.Team != "" || agent.Spec.SandboxRef != "" ||
+				agent.Spec.PolicyClass != api.AgentPolicyClassNormal) {
+				t.Fatal("legacy generated-name Agent did not preserve the schema-only normal policy default")
+			}
+		}
+	})
 	t.Run("dry run performs defaulting and validation without persistence", func(t *testing.T) {
 		agent := newAgent("dry-run-governed", true)
 		if err := cl.Create(ctx, agent, client.DryRunAll); err != nil {
@@ -311,6 +334,65 @@ func TestAdmissionAPIServerBoundaries(t *testing.T) {
 	t.Run("shared config deletion remains guarded", func(t *testing.T) {
 		if err := cl.Delete(ctx, f.policy); !apierrors.IsForbidden(err) || !strings.Contains(err.Error(), "referenced") {
 			t.Fatalf("referenced policy deletion was not rejected: %v", err)
+		}
+	})
+	t.Run("foreground deletion permits only garbage collector finalization", func(t *testing.T) {
+		// Envtest has no garbage collector; authenticated clients issue its finalizer patch.
+		for i, username := range []string{
+			"system:kube-controller-manager",
+			"system:serviceaccount:kube-system:generic-garbage-collector",
+		} {
+			collector := userClient(username, false)
+			policy := &api.AgentPolicy{ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("gc-policy-%d", i)}}
+			if err := collector.Create(ctx, policy.DeepCopy()); !apierrors.IsForbidden(err) || !strings.Contains(err.Error(), "administrator") {
+				t.Fatalf("garbage collector acquired configuration administration: %v", err)
+			}
+			box := f.box.DeepCopy()
+			box.ObjectMeta = metav1.ObjectMeta{Name: fmt.Sprintf("gc-sandbox-%d", i)}
+			for _, object := range []client.Object{box, policy, newAgent(fmt.Sprintf("gc-agent-%d", i), true)} {
+				t.Run(object.GetName(), func(t *testing.T) {
+					if err := cl.Create(ctx, object); err != nil {
+						t.Fatal(err)
+					}
+					key := client.ObjectKeyFromObject(object)
+					if err := cl.Delete(ctx, object, client.PropagationPolicy(metav1.DeletePropagationForeground)); err != nil {
+						t.Fatal(err)
+					}
+					if err := cl.Get(ctx, key, object); err != nil {
+						t.Fatal(err)
+					}
+					if object.GetDeletionTimestamp().IsZero() || !slices.Contains(object.GetFinalizers(), metav1.FinalizerDeleteDependents) {
+						t.Fatal("foreground deletion did not persist the built-in finalizer")
+					}
+					candidate := object.DeepCopyObject().(client.Object)
+					candidate.SetFinalizers(slices.DeleteFunc(candidate.GetFinalizers(), func(value string) bool {
+						return value == metav1.FinalizerDeleteDependents
+					}))
+					patch := client.MergeFromWithOptions(object, client.MergeFromWithOptimisticLock{})
+					if err := member.Patch(ctx, candidate, patch); !apierrors.IsForbidden(err) || !strings.Contains(err.Error(), "administrator") {
+						t.Fatalf("ordinary member could finalize governed configuration: %v", err)
+					}
+					if err := collector.Patch(ctx, candidate, patch); err != nil {
+						t.Fatalf("garbage collector could not remove foregroundDeletion: %v", err)
+					}
+					if agent, ok := candidate.(*api.Agent); ok {
+						if err := cl.Get(ctx, key, agent); err != nil {
+							t.Fatal(err)
+						}
+						if !slices.Equal(agent.Finalizers, []string{api.Finalizer}) || agent.Spec.SandboxRef != f.box.Name {
+							t.Fatal("garbage collector changed the Agent's application finalizer or Sandbox binding")
+						}
+						before := agent.DeepCopy()
+						agent.Finalizers = nil
+						if err := controller.Patch(ctx, agent, client.MergeFrom(before)); err != nil {
+							t.Fatal("CetiRun controller could not complete application cleanup:", err)
+						}
+					}
+					if err := cl.Get(ctx, key, object); !apierrors.IsNotFound(err) {
+						t.Fatalf("foreground deletion did not complete: %v", err)
+					}
+				})
+			}
 		}
 	})
 

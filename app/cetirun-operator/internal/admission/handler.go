@@ -15,6 +15,7 @@ import (
 	admissionv1 "k8s.io/api/admission/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -56,6 +57,9 @@ func (h *Handler) Validate(ctx context.Context, request admission.Request) admis
 	object, old, err := decodeRequest(request)
 	if err != nil {
 		return admission.Errored(http.StatusBadRequest, err)
+	}
+	if garbageCollectorFinalizerUpdate(request, object, old) {
+		return admission.Allowed("Kubernetes garbage collector metadata only")
 	}
 	if agent, ok := object.(*api.Agent); ok {
 		var previous *api.Agent
@@ -387,6 +391,38 @@ func changedLifecycleFinalizers(a, b []string) bool {
 	return false
 }
 
+func garbageCollectorFinalizerUpdate(request admission.Request, object, old client.Object) bool {
+	if request.Operation != admissionv1.Update || old == nil || old.GetDeletionTimestamp().IsZero() ||
+		!slices.Contains([]string{
+			"system:kube-controller-manager",
+			"system:serviceaccount:kube-system:generic-garbage-collector",
+		}, request.UserInfo.Username) {
+		return false
+	}
+	a := object.DeepCopyObject().(client.Object)
+	b := old.DeepCopyObject().(client.Object)
+	a.SetFinalizers(nil)
+	b.SetFinalizers(nil)
+	a.SetManagedFields(nil)
+	b.SetManagedFields(nil)
+	if !equality.Semantic.DeepEqual(a, b) {
+		return false
+	}
+	expectedFinalizers := make([]string, 0, len(old.GetFinalizers()))
+	foundForegroundDeletion := false
+	for _, value := range old.GetFinalizers() {
+		if value != metav1.FinalizerDeleteDependents {
+			expectedFinalizers = append(expectedFinalizers, value)
+			continue
+		}
+		if foundForegroundDeletion {
+			return false
+		}
+		foundForegroundDeletion = true
+	}
+	return foundForegroundDeletion && slices.Equal(object.GetFinalizers(), expectedFinalizers)
+}
+
 func controllerFinalizerUpdate(agent, old *api.Agent) bool {
 	a, b := agent.DeepCopy(), old.DeepCopy()
 	a.Finalizers, b.Finalizers = nil, nil
@@ -443,7 +479,10 @@ func decodeRequest(request admission.Request) (client.Object, client.Object, err
 		if err := decodeStrict(raw.Raw, object); err != nil {
 			return nil, fmt.Errorf("invalid %s: %w", kind, err)
 		}
-		if object.GetName() == "" || object.GetName() != request.Name || object.GetNamespace() != "" {
+		assignedName := object.GetName() != "" && object.GetName() == request.Name
+		generatedNameCreate := request.Operation == admissionv1.Create && request.Name == "" &&
+			object.GetName() == "" && object.GetGenerateName() != ""
+		if (!assignedName && !generatedNameCreate) || object.GetNamespace() != "" {
 			return nil, fmt.Errorf("admitted object identity does not match the request")
 		}
 		return object, nil
