@@ -139,6 +139,7 @@ assert_rejected "both provider credential sources" \
 echo "==> reserved model-name prefix"
 assert_rejected "reserved cetirun- prefix" --set-string "models[0].model_name=cetirun-gpt4"
 assert_rejected "reserved prefix in another case" --set-string "models[0].model_name=CetiRun-gpt4"
+assert_rejected "reserved copilot/ prefix" --set-string "models[0].model_name=copilot/gpt-5"
 
 # ----- Image -----
 

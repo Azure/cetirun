@@ -28,6 +28,17 @@ export interface CopilotLogin {
   message?: string;
 }
 
+/** An error response from the Portal, with its HTTP status. */
+export class PortalError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "PortalError";
+    this.status = status;
+  }
+}
+
 async function errorMessage(response: Response, fallback: string): Promise<string> {
   try {
     const body = await response.json();
@@ -49,13 +60,17 @@ function loginPath(instanceName: string): string {
 
 export async function startCopilotLogin(instanceName: string): Promise<CopilotLogin> {
   const response = await apiFetch(loginPath(instanceName), { method: "POST" });
-  if (!response.ok) throw new Error(await errorMessage(response, "Failed to start the GitHub Copilot sign-in"));
+  if (!response.ok) {
+    throw new PortalError(await errorMessage(response, "Failed to start the GitHub Copilot sign-in"), response.status);
+  }
   return response.json();
 }
 
 export async function pollCopilotLogin(instanceName: string): Promise<CopilotLogin> {
   const response = await apiFetch(loginPath(instanceName));
-  if (!response.ok) throw new Error(await errorMessage(response, "Failed to check the GitHub Copilot sign-in"));
+  if (!response.ok) {
+    throw new PortalError(await errorMessage(response, "Failed to check the GitHub Copilot sign-in"), response.status);
+  }
   return response.json();
 }
 

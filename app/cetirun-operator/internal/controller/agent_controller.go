@@ -400,7 +400,8 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		}
 
 		identityVerificationDue := agentIdentityVerificationDue(instance, time.Now())
-		aiGatewayDue := aiGatewayVerificationDue(instance, r.AIGateway.Enabled, time.Now())
+		aiGatewayDue := aiGatewayVerificationDue(instance, r.AIGateway.Enabled, time.Now()) ||
+			aiGatewayCopilotPending(instance, r.AIGateway.Enabled)
 		if instance.Status.ObservedGeneration == instance.Generation &&
 			!identityVerificationDue && !aiGatewayDue &&
 			instance.Status.ObservedOperatorHash == r.configHash(instance, team, gwSecretHash, teamResourceVersion(team)) {

@@ -7,6 +7,7 @@ import {
   cancelCopilotLogin,
   getAIGatewayCatalog,
   pollCopilotLogin,
+  PortalError,
   startCopilotLogin,
   type CopilotLogin,
 } from "../api/aiGateway";
@@ -22,29 +23,42 @@ export function useAIGatewayCatalog(enabled: boolean) {
 
 const MIN_POLL_SECONDS = 5;
 
+function message(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/** A client error (4xx) will not go away by polling again. */
+function isFinal(err: unknown): boolean {
+  return err instanceof PortalError && err.status >= 400 && err.status < 500;
+}
+
 /**
  * Runs the Portal's GitHub Copilot sign-in for an Agent: start, poll at the
  * interval GitHub asks for, cancel. The Portal backend keeps the sign-in, so
- * a reload can resume it by polling.
+ * when `resume` is set a sign-in still pending after a reload is picked up.
  */
-export function useCopilotGatewayLogin(instanceName: string) {
+export function useCopilotGatewayLogin(instanceName: string, resume = false) {
   const queryClient = useQueryClient();
   const [login, setLogin] = useState<CopilotLogin | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  // Each start, cancel or reset begins a new generation; a poll answered for
+  // an earlier one is dropped instead of reopening a closed sign-in.
+  const generation = useRef(0);
   const active = useRef(true);
 
   useEffect(() => {
     active.current = true;
     return () => {
       active.current = false;
+      generation.current += 1;
       clearTimeout(timer.current);
     };
   }, []);
 
   const schedule = useCallback(
-    (current: CopilotLogin) => {
+    (current: CopilotLogin, gen: number) => {
       clearTimeout(timer.current);
       if (current.state !== "pending") {
         if (current.state === "succeeded") {
@@ -52,52 +66,73 @@ export function useCopilotGatewayLogin(instanceName: string) {
         }
         return;
       }
+      if (current.expiresAt && Date.parse(current.expiresAt) < Date.now() - MIN_POLL_SECONDS * 1000) {
+        // Let the Portal report the expiry once more, then stop.
+        return;
+      }
       const seconds = Math.max(current.interval ?? MIN_POLL_SECONDS, MIN_POLL_SECONDS);
       timer.current = setTimeout(async () => {
         try {
           const next = await pollCopilotLogin(instanceName);
-          if (!active.current) return;
+          if (!active.current || gen !== generation.current) return;
           setLogin(next);
           setError(null);
-          schedule(next);
+          schedule(next, gen);
         } catch (err) {
-          if (!active.current) return;
-          setError(err instanceof Error ? err.message : String(err));
-          // Keep trying while GitHub still accepts the code.
-          schedule(current);
+          if (!active.current || gen !== generation.current) return;
+          setError(message(err));
+          if (!isFinal(err)) schedule(current, gen);
         }
       }, seconds * 1000);
     },
     [instanceName, queryClient],
   );
 
+  useEffect(() => {
+    if (!resume) return;
+    const gen = generation.current;
+    pollCopilotLogin(instanceName)
+      .then((current) => {
+        if (!active.current || gen !== generation.current || current.state !== "pending") return;
+        setLogin(current);
+        schedule(current, gen);
+      })
+      .catch(() => {
+        // Nothing to resume.
+      });
+  }, [instanceName, resume, schedule]);
+
   const start = useCallback(async () => {
+    const gen = ++generation.current;
+    clearTimeout(timer.current);
     setBusy(true);
     setError(null);
     try {
       const started = await startCopilotLogin(instanceName);
-      if (!active.current) return;
+      if (!active.current || gen !== generation.current) return;
       setLogin(started);
-      schedule(started);
+      schedule(started, gen);
     } catch (err) {
-      if (active.current) setError(err instanceof Error ? err.message : String(err));
+      if (active.current && gen === generation.current) setError(message(err));
     } finally {
       if (active.current) setBusy(false);
     }
   }, [instanceName, schedule]);
 
   const cancel = useCallback(async () => {
+    generation.current += 1;
     clearTimeout(timer.current);
     setLogin(null);
     setError(null);
     try {
       await cancelCopilotLogin(instanceName);
     } catch (err) {
-      if (active.current) setError(err instanceof Error ? err.message : String(err));
+      if (active.current) setError(message(err));
     }
   }, [instanceName]);
 
   const reset = useCallback(() => {
+    generation.current += 1;
     clearTimeout(timer.current);
     setLogin(null);
     setError(null);

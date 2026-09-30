@@ -1185,3 +1185,151 @@ func TestReconcileDoesNotStartRoutedAgentWithoutKey(t *testing.T) {
 		t.Fatalf("a routed Agent must wait for its key: installs=%d result=%+v", chart.installs, result)
 	}
 }
+
+func TestAIGatewayVerificationTimeMovesOnlyWhenDue(t *testing.T) {
+	agent := aiGatewayTestAgent(testAIGatewayTeam)
+	r, _, _ := aiGatewayTestReconciler(t, agent, aiGatewayNamespace())
+	if err := r.reconcileAIGateway(context.Background(), agent, true); err != nil {
+		t.Fatal(err)
+	}
+	first := agent.Status.AIGateway.LastVerifiedTime
+	if first == nil {
+		t.Fatal("the first pass records the verification")
+	}
+	// A pass that was not due, such as one while the Agent is still
+	// provisioning, must not change the status: a changed status re-queues
+	// the Agent at once.
+	earlier := metav1.NewTime(time.Now().Add(-time.Minute).Truncate(time.Second))
+	agent.Status.AIGateway.LastVerifiedTime = &earlier
+	if err := r.reconcileAIGateway(context.Background(), agent, true); err != nil {
+		t.Fatal(err)
+	}
+	if !agent.Status.AIGateway.LastVerifiedTime.Equal(&earlier) {
+		t.Fatalf("verification time moved on a pass that was not due: %v", agent.Status.AIGateway.LastVerifiedTime)
+	}
+	stale := metav1.NewTime(time.Now().Add(-2 * aiGatewayVerificationInterval))
+	agent.Status.AIGateway.LastVerifiedTime = &stale
+	if err := r.reconcileAIGateway(context.Background(), agent, true); err != nil {
+		t.Fatal(err)
+	}
+	if !agent.Status.AIGateway.LastVerifiedTime.After(stale.Time) {
+		t.Fatal("a due verification must record its time")
+	}
+}
+
+func TestAIGatewayCopilotPendingKeepsReconciling(t *testing.T) {
+	agent := aiGatewayTestAgent(testAIGatewayTeam)
+	now := metav1.Now()
+	agent.Status.AIGateway = &cetirunv1alpha1.AIGatewayStatus{Phase: cetirunv1alpha1.AIGatewayPhaseReady, LastVerifiedTime: &now}
+	if aiGatewayVerificationDue(agent, true, time.Now()) {
+		t.Fatal("a fresh key verification is not due")
+	}
+	for phase, want := range map[string]bool{
+		cetirunv1alpha1.AIGatewayCopilotPhaseSignInRequired: false,
+		cetirunv1alpha1.AIGatewayCopilotPhaseStarting:       true,
+		cetirunv1alpha1.AIGatewayCopilotPhaseDegraded:       true,
+		cetirunv1alpha1.AIGatewayCopilotPhaseReady:          false,
+	} {
+		agent.Status.AIGateway.Copilot = &cetirunv1alpha1.AIGatewayCopilotStatus{Phase: phase}
+		if got := aiGatewayCopilotPending(agent, true); got != want {
+			t.Errorf("phase %s: pending=%v, want %v", phase, got, want)
+		}
+		if aiGatewayCopilotPending(agent, false) {
+			t.Errorf("phase %s: nothing is pending with the Gateway off", phase)
+		}
+	}
+}
+
+func TestAIGatewayRevisionFollowsEverySignIn(t *testing.T) {
+	agent := aiGatewayTestAgent(testAIGatewayTeam)
+	r, _, _ := aiGatewayTestReconciler(t, agent)
+	agent.Annotations = map[string]string{cetirunv1alpha1.AnnotationCopilotModels: testCopilotModels}
+	before := r.aiGatewayRevision(agent)
+	agent.Annotations[cetirunv1alpha1.AnnotationCopilotSignedInAt] = "2026-10-01T08:00:00Z"
+	first := r.aiGatewayRevision(agent)
+	agent.Annotations[cetirunv1alpha1.AnnotationCopilotSignedInAt] = "2026-10-01T08:05:00Z"
+	second := r.aiGatewayRevision(agent)
+	if before == first || first == second {
+		t.Fatal("a sign-in with an unchanged model list must still change the revision")
+	}
+}
+
+func TestCopilotTokenIsReadPastTheCache(t *testing.T) {
+	agent := aiGatewayTestAgent(testAIGatewayTeam)
+	r, kube, _ := aiGatewayTestReconciler(t, agent, aiGatewayNamespace())
+	if signedIn, err := r.ensureCopilotTokenSecret(context.Background(), agent); err != nil || signedIn {
+		t.Fatalf("first pass creates an empty Secret: signedIn=%v err=%v", signedIn, err)
+	}
+	// The cache still shows the empty Secret; the API server has the token.
+	fresh := readSecret(t, kube, cetirunv1alpha1.CopilotTokenSecretName).DeepCopy()
+	fresh.Data = map[string][]byte{cetirunv1alpha1.CopilotTokenSecretKey: []byte("gho_synthetic")}
+	scheme := runtime.NewScheme()
+	if err := clientgoscheme.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	r.APIReader = fake.NewClientBuilder().WithScheme(scheme).WithObjects(fresh).Build()
+	if signedIn, err := r.ensureCopilotTokenSecret(context.Background(), agent); err != nil || !signedIn {
+		t.Fatalf("the token written by the Portal must be seen: signedIn=%v err=%v", signedIn, err)
+	}
+}
+
+func TestAIGatewayCatalogLeavesOutUnusableSharedNames(t *testing.T) {
+	var catalog aiGatewayCatalog
+	changed, skipped := catalog.update([]aigateway.Deployment{
+		{ID: "a", ModelName: "gpt-6", AccessGroups: []string{aiGatewaySharedAccessGroup}},
+		{ID: "b", ModelName: "openai/*", AccessGroups: []string{aiGatewaySharedAccessGroup}},
+		{ID: "c", ModelName: "copilot/gpt-5.5", AccessGroups: []string{aiGatewaySharedAccessGroup}},
+		{ID: "d", ModelName: "has space", AccessGroups: []string{aiGatewaySharedAccessGroup}},
+	}, time.Now())
+	names, _ := catalog.sharedNames()
+	if !changed || strings.Join(names, ",") != "gpt-6" || len(skipped) != 3 {
+		t.Fatalf("names=%v skipped=%v changed=%v", names, skipped, changed)
+	}
+}
+
+func TestAIGatewayCatalogSeedsFromThePublishedCatalogDuringAnOutage(t *testing.T) {
+	published := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: cetirunv1alpha1.AIGatewayCatalogConfigMap, Namespace: "cetirun-system"},
+		Data: map[string]string{cetirunv1alpha1.AIGatewayCatalogKey: `{"sharedModels":[{"name":"` + testSharedModelOne +
+			`","contextWindow":1000000,"maxOutputTokens":32768}]}`},
+	}
+	r, _, _ := aiGatewayTestReconciler(t, published)
+	failing := &failingListGateway{fakeAIGateway: newFakeAIGateway()}
+	if r.refreshAIGatewayCatalogWithin(context.Background(), failing, 0) {
+		t.Fatal("a failed listing reports no change")
+	}
+	shared, known := r.aiGatewayCatalog.shared()
+	if !known || len(shared) != 1 || shared[0].ContextWindow != 1000000 {
+		t.Fatalf("the published catalog stands in, with its limits: %+v known=%v", shared, known)
+	}
+	if _, known := r.aiGatewayCatalog.has("cfg-1"); known {
+		t.Fatal("a seeded catalog does not claim to know the Gateway's deployments")
+	}
+	// The first real listing with the same shared models is not a change,
+	// so Agents are not re-rendered when the Gateway comes back.
+	if r.refreshAIGatewayCatalogWithin(context.Background(), failing.fakeAIGateway, 0) {
+		t.Fatal("recovery with unchanged shared models must not count as a change")
+	}
+}
+
+type failingListGateway struct{ *fakeAIGateway }
+
+func (f *failingListGateway) ListModels(context.Context) ([]aigateway.Deployment, error) {
+	return nil, errors.New("gateway unavailable")
+}
+
+func TestDeleteAIGatewayKeyDoesNotHoldDeletionWhenTheGatewayIsOff(t *testing.T) {
+	agent := aiGatewayTestAgent(testAIGatewayTeam)
+	agent.Status.AIGateway = &cetirunv1alpha1.AIGatewayStatus{Phase: cetirunv1alpha1.AIGatewayPhaseReady}
+	r, _, gateway := aiGatewayTestReconciler(t, agent, aiGatewayNamespace())
+	gateway.deleteErr = errors.New("gateway gone")
+	r.AIGateway.Enabled = false
+	if err := r.deleteAIGatewayKey(context.Background(), agent); err != nil {
+		t.Fatalf("with the Gateway turned off, deletion must not wait for it: %v", err)
+	}
+	r.AIGateway.Enabled = true
+	agent.Status.AIGateway.Phase = cetirunv1alpha1.AIGatewayPhaseReady
+	if err := r.deleteAIGatewayKey(context.Background(), agent); err == nil {
+		t.Fatal("with the Gateway on, a failed revocation must hold the deletion")
+	}
+}

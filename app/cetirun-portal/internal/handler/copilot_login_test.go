@@ -184,6 +184,9 @@ func TestCopilotLoginStoresTokenAndModels(t *testing.T) {
 		len(models) != 2 || models[0].ID != "gpt-5.5" || models[0].ContextWindow != 400000 || models[1].ID != "claude-sonnet-4.5" {
 		t.Fatalf("annotation models = %+v (%v)", models, err)
 	}
+	if f.agent().Annotations[cetirunv1alpha1.AnnotationCopilotSignedInAt] == "" {
+		t.Fatal("the sign-in time must be recorded for the operator")
+	}
 	login = f.secret(copilotLoginSecretName)
 	if _, ok := login.Data[loginDeviceCode]; ok || string(login.Data[loginState]) != "succeeded" {
 		t.Fatalf("finished login Secret = %v", login.Data)

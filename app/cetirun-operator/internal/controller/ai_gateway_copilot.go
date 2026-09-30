@@ -377,7 +377,10 @@ func (r *AgentReconciler) deleteCopilotRegistrations(ctx context.Context, client
 func (r *AgentReconciler) ensureCopilotTokenSecret(ctx context.Context, instance *cetirunv1alpha1.Agent) (bool, error) {
 	key := types.NamespacedName{Namespace: instanceNamespace(instance.Name), Name: cetirunv1alpha1.CopilotTokenSecretName}
 	secret := &corev1.Secret{}
-	err := r.Get(ctx, key, secret)
+	// Read past the cache: the Portal writes the token just before the
+	// Agent annotation that wakes this reconcile, and a lagging cache would
+	// record the sign-in as missing.
+	err := r.customReader().Get(ctx, key, secret)
 	if apierrors.IsNotFound(err) {
 		secret = &corev1.Secret{Type: corev1.SecretTypeOpaque}
 		secret.Name, secret.Namespace = key.Name, key.Namespace

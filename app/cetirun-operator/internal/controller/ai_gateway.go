@@ -294,6 +294,18 @@ func aiGatewayVerificationDue(instance *cetirunv1alpha1.Agent, enabled bool, now
 	return now.Sub(status.LastVerifiedTime.Time) >= aiGatewayVerificationInterval
 }
 
+// aiGatewayCopilotPending reports a Copilot proxy that is starting or failed
+// to register its models. Such an Agent is reconciled on its short requeue
+// rather than waiting for the next key verification.
+func aiGatewayCopilotPending(instance *cetirunv1alpha1.Agent, enabled bool) bool {
+	status := instance.Status.AIGateway
+	if !enabled || status == nil || status.Copilot == nil {
+		return false
+	}
+	phase := status.Copilot.Phase
+	return phase == cetirunv1alpha1.AIGatewayCopilotPhaseStarting || phase == cetirunv1alpha1.AIGatewayCopilotPhaseDegraded
+}
+
 func ensureAIGatewayStatus(instance *cetirunv1alpha1.Agent) *cetirunv1alpha1.AIGatewayStatus {
 	if instance.Status.AIGateway == nil {
 		instance.Status.AIGateway = &cetirunv1alpha1.AIGatewayStatus{}
@@ -371,6 +383,9 @@ func (r *AgentReconciler) ensureAIGatewayOwner(ctx context.Context, client aiGat
 // Gateway. chartSupported reports whether the Agent's pinned chart can route
 // model traffic through the Gateway.
 func (r *AgentReconciler) reconcileAIGateway(ctx context.Context, instance *cetirunv1alpha1.Agent, chartSupported bool) error {
+	// Only a due verification moves the verification time: a status that
+	// changed on every pass would re-queue the Agent at once, again and again.
+	verificationDue := aiGatewayVerificationDue(instance, true, time.Now())
 	status := ensureAIGatewayStatus(instance)
 	status.KeyAlias = aiGatewayKeyAlias(instance)
 	status.KeySecretName = aiGatewayKeySecretName
@@ -453,7 +468,9 @@ func (r *AgentReconciler) reconcileAIGateway(ctx context.Context, instance *ceti
 	status.Team = teamID
 	status.Phase = cetirunv1alpha1.AIGatewayPhaseReady
 	status.Reason = ""
-	status.LastVerifiedTime = &now
+	if verificationDue || status.LastVerifiedTime == nil {
+		status.LastVerifiedTime = &now
+	}
 	status.Routed = routed
 
 	// Copilot registration problems are reported on the Copilot status and
@@ -556,6 +573,18 @@ func (r *AgentReconciler) deleteAIGatewayKey(ctx context.Context, instance *ceti
 	if instance.Status.AIGateway == nil && !r.AIGateway.Enabled {
 		return nil
 	}
+	err := r.revokeAIGatewayKey(ctx, instance)
+	if err != nil && !r.AIGateway.Enabled {
+		// The deployment turned the Gateway off, possibly removing it: do not
+		// hold the Agent's deletion on a Gateway that may never return.
+		r.EventRecorder.Eventf(instance, corev1.EventTypeWarning, "AIGatewayKeyNotRevoked",
+			"The AI Gateway is disabled and the Agent's virtual key %s could not be revoked; remove it in the Gateway", aiGatewayKeyAlias(instance))
+		return nil
+	}
+	return err
+}
+
+func (r *AgentReconciler) revokeAIGatewayKey(ctx context.Context, instance *cetirunv1alpha1.Agent) error {
 	if !r.AIGateway.configured() {
 		r.EventRecorder.Event(instance, corev1.EventTypeWarning, "AIGatewayKeyNotRevoked",
 			"The AI Gateway is not configured, so the Agent's virtual key could not be revoked")
@@ -672,6 +701,11 @@ func (r *AgentReconciler) aiGatewayRevision(instance *cetirunv1alpha1.Agent) str
 	if annotation := instance.Annotations[cetirunv1alpha1.AnnotationCopilotModels]; annotation != "" {
 		sum := sha256.Sum256([]byte(annotation))
 		parts = append(parts, "copilot-models", hex.EncodeToString(sum[:8]))
+	}
+	// Every sign-in changes this, so a repeated sign-in with an unchanged
+	// model list still reaches the operator.
+	if signedIn := instance.Annotations[cetirunv1alpha1.AnnotationCopilotSignedInAt]; signedIn != "" {
+		parts = append(parts, "copilot-signed-in", signedIn)
 	}
 	if shared, known := r.aiGatewayCatalog.sharedNames(); known && instance.Spec.SharedModelsEnabled() {
 		parts = append(parts, "shared", strings.Join(shared, ","))

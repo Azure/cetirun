@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	stderrors "errors"
 	"fmt"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -57,8 +58,9 @@ func IsConflict(err error) bool {
 	return errors.IsConflict(err)
 }
 
-// SetCopilotModels records the owner's GitHub Copilot models on the Agent
-// for the operator. It writes only when the Agent still has the given UID.
+// SetCopilotModels records the owner's GitHub Copilot models and the time of
+// the sign-in on the Agent for the operator. It writes only when the Agent
+// still has the given UID.
 func (c *Client) SetCopilotModels(ctx context.Context, instanceName string, uid types.UID, models []cetirunv1alpha1.CopilotModel) error {
 	raw, err := json.Marshal(models)
 	if err != nil {
@@ -75,10 +77,10 @@ func (c *Client) SetCopilotModels(ctx context.Context, instanceName string, uid 
 		if instance.Annotations == nil {
 			instance.Annotations = map[string]string{}
 		}
-		if instance.Annotations[cetirunv1alpha1.AnnotationCopilotModels] == string(raw) {
-			return nil
-		}
 		instance.Annotations[cetirunv1alpha1.AnnotationCopilotModels] = string(raw)
+		// A new value on every sign-in wakes the operator even when the
+		// account's models did not change.
+		instance.Annotations[cetirunv1alpha1.AnnotationCopilotSignedInAt] = time.Now().UTC().Format(time.RFC3339Nano)
 		return c.client.Update(ctx, instance)
 	})
 }

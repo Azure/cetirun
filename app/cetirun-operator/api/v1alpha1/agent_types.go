@@ -437,6 +437,10 @@ const (
 	// AnnotationCopilotModels holds the JSON list of models the owner's
 	// Copilot account offers, written by the Portal after sign-in.
 	AnnotationCopilotModels = "cetirun.microsoft.com/copilot-models"
+	// AnnotationCopilotSignedInAt records when the Portal last stored a
+	// GitHub Copilot sign-in, so every sign-in reaches the operator even when
+	// the model list is unchanged.
+	AnnotationCopilotSignedInAt = "cetirun.microsoft.com/copilot-signed-in-at"
 	// CopilotTokenSecretName is the instance-namespace Secret holding the
 	// owner's GitHub token for the Copilot proxy. The operator creates it
 	// empty; the Portal writes the token.

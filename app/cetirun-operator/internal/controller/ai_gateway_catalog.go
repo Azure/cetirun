@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"slices"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -43,6 +44,11 @@ type aiGatewayCatalog struct {
 	refreshMu sync.Mutex
 	mu        sync.RWMutex
 	known     bool
+	// seeded marks shared models taken from the published catalog while the
+	// Gateway could not be listed, such as at operator start during a
+	// Gateway outage: Agents keep their model lists instead of losing the
+	// limits and being restarted twice.
+	seeded    bool
 	fetchedAt time.Time
 	sharedSet []aiGatewayCatalogModel
 	ids       map[string]bool
@@ -59,7 +65,8 @@ func (c *aiGatewayCatalog) age(now time.Time) time.Duration {
 }
 
 // update replaces the view and reports whether the shared models changed.
-func (c *aiGatewayCatalog) update(deployments []aigateway.Deployment, now time.Time) bool {
+func (c *aiGatewayCatalog) update(deployments []aigateway.Deployment, now time.Time) (bool, []string) {
+	var skipped []string
 	ids := map[string]bool{}
 	groups := map[string][]string{}
 	byName := map[string]aiGatewayCatalogModel{}
@@ -69,6 +76,10 @@ func (c *aiGatewayCatalog) update(deployments []aigateway.Deployment, now time.T
 			groups[group] = append(groups[group], deployment.ID)
 		}
 		if !slices.Contains(deployment.AccessGroups, aiGatewaySharedAccessGroup) {
+			continue
+		}
+		if !aiGatewaySharedModelUsable(deployment.ModelName) {
+			skipped = append(skipped, deployment.ModelName)
 			continue
 		}
 		model := byName[deployment.ModelName]
@@ -86,9 +97,30 @@ func (c *aiGatewayCatalog) update(deployments []aigateway.Deployment, now time.T
 	sort.Slice(shared, func(i, j int) bool { return shared[i].Name < shared[j].Name })
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	changed := !c.known || !slices.Equal(c.sharedSet, shared)
-	c.known, c.fetchedAt, c.sharedSet, c.ids, c.groups = true, now, shared, ids, groups
-	return changed
+	changed := !(c.known || c.seeded) || !slices.Equal(c.sharedSet, shared)
+	c.known, c.seeded, c.fetchedAt, c.sharedSet, c.ids, c.groups = true, false, now, shared, ids, groups
+	return changed, skipped
+}
+
+// seed takes shared models from the published catalog until the Gateway can
+// be listed. It never replaces a listed view.
+func (c *aiGatewayCatalog) seed(shared []aiGatewayCatalogModel) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.known || c.seeded {
+		return
+	}
+	c.sharedSet, c.seeded = slices.Clone(shared), true
+}
+
+// aiGatewaySharedModelUsable reports whether a shared model name can be given
+// to Agents: the agent chart rejects names with the provider prefix Agents
+// use, and the Copilot prefix belongs to the Agents' own Copilot routes.
+func aiGatewaySharedModelUsable(name string) bool {
+	if name == "" || strings.ContainsAny(name, " \t\r\n") {
+		return false
+	}
+	return !strings.HasPrefix(name, "openai/") && !strings.HasPrefix(name, aiGatewayCopilotModelPrefix)
 }
 
 func smallerPositive(current, next int64) int64 {
@@ -104,7 +136,7 @@ func smallerPositive(current, next int64) int64 {
 func (c *aiGatewayCatalog) shared() ([]aiGatewayCatalogModel, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return slices.Clone(c.sharedSet), c.known
+	return slices.Clone(c.sharedSet), c.known || c.seeded
 }
 
 func (c *aiGatewayCatalog) sharedNames() ([]string, bool) {
@@ -114,7 +146,7 @@ func (c *aiGatewayCatalog) sharedNames() ([]string, bool) {
 	for _, model := range c.sharedSet {
 		names = append(names, model.Name)
 	}
-	return names, c.known
+	return names, c.known || c.seeded
 }
 
 // has reports whether a deployment ID exists, and whether the catalog knows.
@@ -171,9 +203,39 @@ func (r *AgentReconciler) refreshAIGatewayCatalogWithin(ctx context.Context, cli
 	deployments, err := client.ListModels(ctx)
 	if err != nil {
 		log.FromContext(ctx).Error(err, "listing AI Gateway models failed; keeping the previous catalog")
+		r.seedAIGatewayCatalog(ctx)
 		return false
 	}
-	return catalog.update(deployments, time.Now())
+	changed, skipped := catalog.update(deployments, time.Now())
+	if len(skipped) > 0 {
+		log.FromContext(ctx).Info("shared models with names Agents cannot use are left out", "models", skipped)
+	}
+	return changed
+}
+
+// seedAIGatewayCatalog loads the last published shared models, once, when the
+// Gateway cannot be listed and nothing is known yet.
+func (r *AgentReconciler) seedAIGatewayCatalog(ctx context.Context) {
+	if _, known := r.aiGatewayCatalog.shared(); known {
+		return
+	}
+	configMap := &corev1.ConfigMap{}
+	key := types.NamespacedName{Namespace: r.catalogNamespace(), Name: cetirunv1alpha1.AIGatewayCatalogConfigMap}
+	if err := r.Get(ctx, key, configMap); err != nil {
+		return
+	}
+	var catalog cetirunv1alpha1.AIGatewayCatalog
+	if err := json.Unmarshal([]byte(configMap.Data[cetirunv1alpha1.AIGatewayCatalogKey]), &catalog); err != nil {
+		return
+	}
+	r.aiGatewayCatalog.seed(catalog.SharedModels)
+}
+
+func (r *AgentReconciler) catalogNamespace() string {
+	if r.OperatorNamespace == "" {
+		return "cetirun-system"
+	}
+	return r.OperatorNamespace
 }
 
 func (r *AgentReconciler) refreshAIGatewayCatalog(ctx context.Context, client aiGatewayKeyClient) {
@@ -234,10 +296,7 @@ func (r *AgentReconciler) publishAIGatewayCatalog(ctx context.Context, maxAge ti
 }
 
 func (r *AgentReconciler) writeAIGatewayCatalog(ctx context.Context, shared []aiGatewayCatalogModel) error {
-	namespace := r.OperatorNamespace
-	if namespace == "" {
-		namespace = "cetirun-system"
-	}
+	namespace := r.catalogNamespace()
 	if shared == nil {
 		shared = []aiGatewayCatalogModel{}
 	}

@@ -244,6 +244,8 @@ deployment, so this fails at install rather than at the first request.
 {{- end }}
 {{- if hasPrefix "cetirun-" (lower .model_name) }}
 {{- fail (printf "model_name %s uses the reserved cetirun- prefix. That prefix belongs to models the CetiRun operator registers automatically; a collision would serve both under one name and split traffic between them." .model_name) }}
+{{- else if hasPrefix "copilot/" (lower .model_name) }}
+{{- fail (printf "model_name %s uses the reserved copilot/ prefix. That prefix belongs to the GitHub Copilot models the CetiRun operator registers for each Agent; a collision would serve both under one name and split traffic between them." .model_name) }}
 {{- end }}
 {{- end }}
 {{- end }}

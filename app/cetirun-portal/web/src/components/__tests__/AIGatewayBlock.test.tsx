@@ -14,7 +14,10 @@ const api = vi.hoisted(() => ({
   cancelCopilotLogin: vi.fn(),
   getAIGatewayCatalog: vi.fn(),
 }));
-vi.mock("../../api/aiGateway", () => api);
+vi.mock("../../api/aiGateway", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../api/aiGateway")>()),
+  ...api,
+}));
 
 const mockUpdate = vi.fn();
 vi.mock("../../hooks/useInstance", () => ({
@@ -59,6 +62,8 @@ describe("AIGatewayBlock", () => {
   beforeEach(() => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     Object.values(api).forEach((fn) => fn.mockReset());
+    // Nothing to resume unless a test says otherwise.
+    api.pollCopilotLogin.mockResolvedValue({ state: "none" });
     mockUpdate.mockReset();
   });
   afterEach(() => {
@@ -93,6 +98,7 @@ describe("AIGatewayBlock", () => {
       state: "pending", userCode: "ABCD-1234", verificationUri: "https://github.com/login/device", interval: 5,
     });
     api.pollCopilotLogin
+      .mockResolvedValueOnce({ state: "none" })
       .mockResolvedValueOnce({ state: "pending", userCode: "ABCD-1234", verificationUri: "https://github.com/login/device", interval: 5 })
       .mockResolvedValueOnce({ state: "succeeded", message: "Signed in to GitHub Copilot: 2 models." });
     renderBlock(instance());
@@ -102,7 +108,8 @@ describe("AIGatewayBlock", () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(5_000);
     });
-    expect(api.pollCopilotLogin).toHaveBeenCalledTimes(1);
+    // One poll on mount to resume, then one per interval.
+    expect(api.pollCopilotLogin).toHaveBeenCalledTimes(2);
     await act(async () => {
       await vi.advanceTimersByTimeAsync(5_000);
     });
@@ -110,7 +117,7 @@ describe("AIGatewayBlock", () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(30_000);
     });
-    expect(api.pollCopilotLogin).toHaveBeenCalledTimes(2);
+    expect(api.pollCopilotLogin).toHaveBeenCalledTimes(3);
   });
 
   it("cancels a pending sign-in", async () => {
@@ -127,7 +134,8 @@ describe("AIGatewayBlock", () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(10_000);
     });
-    expect(api.pollCopilotLogin).not.toHaveBeenCalled();
+    // Only the poll on mount; none after the cancel.
+    expect(api.pollCopilotLogin).toHaveBeenCalledTimes(1);
   });
 
   it("reports a failed start", async () => {
@@ -142,5 +150,61 @@ describe("AIGatewayBlock", () => {
     renderBlock(instance({ copilot: { phase: "Ready", models: ["copilot/gpt-5.5"], unpriced: ["mystery-model"] } }));
     expect(screen.getByText(/no price for them: mystery-model/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Sign in again" })).toBeInTheDocument();
+  });
+
+  it("resumes a sign-in still pending after a reload", async () => {
+    api.pollCopilotLogin.mockResolvedValue({
+      state: "pending", userCode: "KLMN-4321", verificationUri: "https://github.com/login/device", interval: 5,
+    });
+    renderBlock(instance());
+    expect(await screen.findByText("KLMN-4321")).toBeInTheDocument();
+    expect(api.startCopilotLogin).not.toHaveBeenCalled();
+  });
+
+  it("stops polling when the Portal refuses the sign-in", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const { PortalError } = await vi.importActual<typeof import("../../api/aiGateway")>("../../api/aiGateway");
+    api.startCopilotLogin.mockResolvedValue({
+      state: "pending", userCode: "ABCD-1234", verificationUri: "https://github.com/login/device", interval: 5,
+    });
+    renderBlock(instance());
+    await act(async () => {
+      await Promise.resolve();
+    });
+    api.pollCopilotLogin.mockRejectedValue(new PortalError("GitHub Copilot is not enabled for this agent", 409));
+    await user.click(screen.getByRole("button", { name: "Sign in with GitHub" }));
+    await screen.findByText("ABCD-1234");
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+    // The poll on mount, then a single refused poll.
+    expect(api.pollCopilotLogin).toHaveBeenCalledTimes(2);
+    expect(screen.getByText("GitHub Copilot is not enabled for this agent")).toBeInTheDocument();
+  });
+
+  it("drops a poll answered after the sign-in was cancelled", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    api.startCopilotLogin.mockResolvedValue({
+      state: "pending", userCode: "WXYZ-9876", verificationUri: "https://github.com/login/device", interval: 5,
+    });
+    api.cancelCopilotLogin.mockResolvedValue(undefined);
+    renderBlock(instance());
+    await act(async () => {
+      await Promise.resolve();
+    });
+    let answer: (value: unknown) => void = () => {};
+    api.pollCopilotLogin.mockImplementationOnce(() => new Promise((resolve) => { answer = resolve; }));
+    await user.click(screen.getByRole("button", { name: "Sign in with GitHub" }));
+    await screen.findByText("WXYZ-9876");
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    await act(async () => {
+      answer({ state: "pending", userCode: "WXYZ-9876", verificationUri: "https://github.com/login/device", interval: 5 });
+      await vi.advanceTimersByTimeAsync(10_000);
+    });
+    expect(screen.queryByText("WXYZ-9876")).not.toBeInTheDocument();
+    expect(api.pollCopilotLogin).toHaveBeenCalledTimes(2);
   });
 });

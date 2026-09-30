@@ -40,7 +40,8 @@ export function AIGatewayBlock({ instance }: { instance: Instance }) {
   const gateway = instance.aiGateway;
   const name = instance.instanceName;
   const queryClient = useQueryClient();
-  const login = useCopilotGatewayLogin(name);
+  // Resume a sign-in still pending when the page was reloaded.
+  const login = useCopilotGatewayLogin(name, !!gateway?.routed && !!gateway.copilot);
   const update = useUpdateInstanceByName(name);
   const [defaultModel, setDefaultModel] = useState(gateway?.defaultModel ?? "");
   const [copied, setCopied] = useState(false);
@@ -54,12 +55,18 @@ export function AIGatewayBlock({ instance }: { instance: Instance }) {
     if (login.login?.state === "succeeded") setSignedInAt(Date.now());
   }, [login.login?.state]);
 
+  // The refresh after a sign-in ends with its window even if nothing else
+  // re-renders the page.
+  useEffect(() => {
+    if (signedInAt === null) return;
+    const id = setTimeout(() => setSignedInAt(null), REFRESH_WINDOW_MS);
+    return () => clearTimeout(id);
+  }, [signedInAt]);
+
   const copilotPhase = gateway?.copilot?.phase;
   // Keep the page current while the proxy picks up a sign-in and the
   // operator registers the account's models.
-  const refreshing =
-    copilotPhase === "Starting" ||
-    (signedInAt !== null && copilotPhase !== "Ready" && Date.now() - signedInAt < REFRESH_WINDOW_MS);
+  const refreshing = copilotPhase === "Starting" || (signedInAt !== null && copilotPhase !== "Ready");
   useEffect(() => {
     if (!refreshing) return;
     const id = setInterval(() => {
