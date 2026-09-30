@@ -67,7 +67,12 @@ jobs:
         run: make test-envtest
 
       - name: Run go build
-        run: CGO_ENABLED=0 go build -o bin/manager ./cmd/main.go
+        run: |
+          CGO_ENABLED=0 go build -o bin/manager ./cmd/main.go
+          CGO_ENABLED=0 go build -o bin/terminal ./cmd/terminal
+
+      - name: Test terminal reconnect client
+        run: node --test internal/terminal/reconnect.test.cjs
 
       - name: Install govulncheck
         env:
@@ -111,3 +116,32 @@ jobs:
 
       - name: Gate image on fixable high and critical CVEs
         run: python3 scripts/ci/scan_image.py --image cetirun-operator:validation
+
+  terminal-image:
+    name: Terminal image CVEs
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Build terminal image (no push)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: app/cetirun-operator/Dockerfile.terminal
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: cetirun-terminal:validation
+          cache-from: type=gha,scope=cetirun-terminal
+          cache-to: type=gha,mode=max,scope=cetirun-terminal
+
+      - name: Gate terminal image on fixable high and critical CVEs
+        run: python3 scripts/ci/scan_image.py --image cetirun-terminal:validation

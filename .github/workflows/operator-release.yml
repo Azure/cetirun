@@ -80,7 +80,9 @@ jobs:
 
       - name: Run go build
         working-directory: app/cetirun-operator
-        run: CGO_ENABLED=0 go build -o bin/manager ./cmd/main.go
+        run: |
+          CGO_ENABLED=0 go build -o bin/manager ./cmd/main.go
+          CGO_ENABLED=0 go build -o bin/terminal ./cmd/terminal
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
@@ -93,6 +95,15 @@ jobs:
           platforms: linux/amd64
           push: false
           tags: cetirun-operator:validation
+
+      - name: Build terminal image (no push)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: app/cetirun-operator/Dockerfile.terminal
+          platforms: linux/amd64
+          push: false
+          tags: cetirun-terminal:validation
 
       - name: Helm lint
         run: helm lint app/cetirun-operator/chart
@@ -133,6 +144,22 @@ jobs:
             ${{ secrets.ACR_REGISTRY }}/cetirun-operator:${{ needs.validate.outputs.version }}
             ${{ secrets.ACR_REGISTRY }}/cetirun-operator:latest
 
+      - name: Build and push terminal image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: app/cetirun-operator/Dockerfile.terminal
+          platforms: linux/amd64
+          push: true
+          provenance: true
+          sbom: true
+          build-args: |
+            VERSION=${{ needs.validate.outputs.version }}
+            GIT_SHA=${{ github.sha }}
+          tags: |
+            ${{ secrets.ACR_REGISTRY }}/cetirun-terminal:${{ needs.validate.outputs.version }}
+            ${{ secrets.ACR_REGISTRY }}/cetirun-terminal:latest
+
       - name: Log in to prod Helm OCI registry
         run: echo "${{ secrets.ACR_PASSWORD }}" | helm registry login "${{ secrets.ACR_REGISTRY }}" --username "${{ secrets.ACR_USERNAME }}" --password-stdin
 
@@ -160,6 +187,10 @@ jobs:
             --tag "${{ secrets.E2E_ACR_REGISTRY }}/cetirun-operator:${VERSION}" \
             --tag "${{ secrets.E2E_ACR_REGISTRY }}/cetirun-operator:latest" \
             "${{ secrets.ACR_REGISTRY }}/cetirun-operator:${VERSION}"
+          docker buildx imagetools create \
+            --tag "${{ secrets.E2E_ACR_REGISTRY }}/cetirun-terminal:${VERSION}" \
+            --tag "${{ secrets.E2E_ACR_REGISTRY }}/cetirun-terminal:latest" \
+            "${{ secrets.ACR_REGISTRY }}/cetirun-terminal:${VERSION}"
 
       - name: Log in to stage Helm OCI registry
         run: echo "${{ secrets.E2E_ACR_PASSWORD }}" | helm registry login "${{ secrets.E2E_ACR_REGISTRY }}" --username "${{ secrets.E2E_ACR_USERNAME }}" --password-stdin
@@ -177,12 +208,16 @@ jobs:
           ACR_TEST_REGISTRY: ${{ secrets.E2E_ACR_REGISTRY }}
         run: |
           version="${{ needs.validate.outputs.version }}"
-          echo "## Operator Release Summary" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "**Version:** ${version}" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "### Artifacts" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Docker image (prod): \`${ACR_REGISTRY}/cetirun-operator:${version}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Docker image (test): \`${ACR_TEST_REGISTRY}/cetirun-operator:${version}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Helm chart (prod): \`helm pull oci://${ACR_REGISTRY}/helm/cetirun-operator --version ${version}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Helm chart (test): \`helm pull oci://${ACR_TEST_REGISTRY}/helm/cetirun-operator --version ${version}\`" >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "## Operator Release Summary"
+            echo ""
+            echo "**Version:** ${version}"
+            echo ""
+            echo "### Artifacts"
+            echo "- Docker image (prod): \`${ACR_REGISTRY}/cetirun-operator:${version}\`"
+            echo "- Docker image (test): \`${ACR_TEST_REGISTRY}/cetirun-operator:${version}\`"
+            echo "- Terminal image (prod): \`${ACR_REGISTRY}/cetirun-terminal:${version}\`"
+            echo "- Terminal image (test): \`${ACR_TEST_REGISTRY}/cetirun-terminal:${version}\`"
+            echo "- Helm chart (prod): \`helm pull oci://${ACR_REGISTRY}/helm/cetirun-operator --version ${version}\`"
+            echo "- Helm chart (test): \`helm pull oci://${ACR_TEST_REGISTRY}/helm/cetirun-operator --version ${version}\`"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -393,9 +393,12 @@ class WorkflowContractTests(unittest.TestCase):
     def test_scans_reuse_each_component_build(self):
         for component in validate.MODULES:
             text = (validate.ROOT / f".github/workflows/{component}-ci.yml").read_text()
-            self.assertEqual(text.count("uses: docker/build-push-action@"), 1)
-            self.assertIn("load: true", text)
-            self.assertIn(f"scan_image.py --image cetirun-{component}:validation", text)
+            images = [component, "terminal"] if component == "operator" else [component]
+            self.assertEqual(text.count("uses: docker/build-push-action@"), len(images))
+            self.assertEqual(text.count("load: true"), len(images))
+            for image in images:
+                self.assertEqual(text.count(f"tags: cetirun-{image}:validation"), 1)
+                self.assertEqual(text.count(f"scan_image.py --image cetirun-{image}:validation"), 1)
             self.assertIn("golang.org/x/vuln/cmd/govulncheck@v1.8.0", text)
             self.assertIn(
                 "run: '\"$RUNNER_TEMP/cetirun-tools/govulncheck\" ./...'", text

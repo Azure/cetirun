@@ -165,7 +165,7 @@
                         "persistence": {
                             "type": "object",
                             "properties": {
-                                "size": {"type": "string", "default": "8Gi"},
+                                "size": {"type": "string", "default": "100Gi"},
                                 "storageClass": {"type": "string", "default": ""}
                             }
                         },

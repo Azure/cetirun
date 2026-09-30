@@ -12,6 +12,7 @@ import (
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/agents"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/agents/custom"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/runtimebindings"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/terminal"
 	"helm.sh/helm/v3/pkg/chart"
 	"helm.sh/helm/v3/pkg/chartutil"
 )
@@ -85,10 +86,15 @@ func prepareCustomChart(chrt *chart.Chart, input map[string]any, request AgentRe
 	if err := runtimebindings.ValidateScheduling(coalesced); err != nil {
 		return nil, err
 	}
-	// TODO: Re-visit ttyd for Custom Agents. Decide how to supply and start the
-	// terminal inside the Agent's execution environment without replacing its
-	// ENTRYPOINT/CMD or assuming the image contains ttyd and a particular shell.
-	ensureObject(coalesced, "ttyd")["enabled"] = false
+	// Custom terminals are platform workloads. The Agent image retains its
+	// entrypoint, environment and declared HTTP port.
+	ensureObject(coalesced, "ttyd")["shell"] = "/bin/sh"
+	// Older runtime Charts have no terminal image/plan support. Preserve their
+	// existing Custom behavior rather than enabling a missing workload.
+	if object(object(chrt.Values["ttyd"])["image"])["repository"] == nil {
+		ensureObject(coalesced, "ttyd")["enabled"] = false
+		bindings.Network.APIServer = nil
+	}
 	// Custom publishes the approved view at its contract path, independent of
 	// the native agents' discovery paths retained in shared platform settings.
 	ensureObject(coalesced, "skills")["mountPath"] = agent.HomeDir + "/.agents/skills"
@@ -114,6 +120,17 @@ func prepareCustomChart(chrt *chart.Chart, input map[string]any, request AgentRe
 	runtime["bindings"] = receipts
 	runtime["contractVersion"] = "v1"
 	coalesced["runtime"] = runtime
+	terminalPlan := &PreparedRelease{Values: coalesced, Agent: agent, chart: chrt, releaseName: request.ReleaseName}
+	terminalResources, err := terminalPlan.terminalObjects(bindings)
+	if err != nil {
+		return nil, err
+	}
+	if len(terminalResources) > 0 {
+		runtime["terminalResources"] = terminalResources
+		fullname := text(coalesced["fullnameOverride"])
+		runtime["terminalExecRule"] = terminal.AdmissionExpression(
+			bindings.Namespace.Name, fullname+"-0", chrt.Name(), terminal.WorkloadName(fullname), bindings.AgentUID)
+	}
 	workloadHash, err := customWorkloadDigest(chrt, agent, bindings, contribution, coalesced)
 	if err != nil {
 		return nil, err

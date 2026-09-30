@@ -54,12 +54,14 @@ set-version:
 build-images:
 	REGISTRY="$(REGISTRY)" VERSION="$(VERSION)" GIT_SHA="$(GIT_SHA)" PUSH=false BUILD_HERMES=true scripts/cetirun-docker-build.sh
 	REGISTRY="$(REGISTRY)" VERSION="$(VERSION)" GIT_SHA="$(GIT_SHA)" PUSH=false scripts/operator-docker-build.sh
+	REGISTRY="$(REGISTRY)" VERSION="$(VERSION)" GIT_SHA="$(GIT_SHA)" PUSH=false bash scripts/terminal-docker-build.sh
 	REGISTRY="$(REGISTRY)" VERSION="$(VERSION)" GIT_SHA="$(GIT_SHA)" PUSH=false scripts/portal-docker-build.sh
 	REGISTRY="$(REGISTRY)" VERSION="$(VERSION)" GIT_SHA="$(GIT_SHA)" PUSH=false scripts/ai-gateway-docker-build.sh
 
 publish-images: require-registry version-check
 	REGISTRY="$(REGISTRY)" VERSION="$(VERSION)" GIT_SHA="$(GIT_SHA)" PUSH=true BUILD_HERMES=true scripts/cetirun-docker-build.sh
 	REGISTRY="$(REGISTRY)" VERSION="$(VERSION)" GIT_SHA="$(GIT_SHA)" PUSH=true scripts/operator-docker-build.sh
+	REGISTRY="$(REGISTRY)" VERSION="$(VERSION)" GIT_SHA="$(GIT_SHA)" PUSH=true bash scripts/terminal-docker-build.sh
 	REGISTRY="$(REGISTRY)" VERSION="$(VERSION)" GIT_SHA="$(GIT_SHA)" PUSH=true scripts/portal-docker-build.sh
 	REGISTRY="$(REGISTRY)" VERSION="$(VERSION)" GIT_SHA="$(GIT_SHA)" PUSH=true scripts/ai-gateway-docker-build.sh
 

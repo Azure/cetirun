@@ -6,7 +6,7 @@
   "license": "MIT",
   "scripts": {
     "test": "node --test test/*.test.mjs",
-    "check": "node --check server.mjs && node --check pi-runtime.mjs && node --check copilot-auth.mjs"
+    "check": "node --check server.mjs && node --check agent-api.mjs && node --check auth-api.mjs && node --check http.mjs && node --check pi-runtime.mjs && node --check pi-resources.mjs && node --check pi-tui.mjs && node --check copilot-auth.mjs"
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "0.87.1"

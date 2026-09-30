@@ -455,6 +455,23 @@ ttyd:
   # -- Base path prefix for ttyd web UI (passed as --base-path flag).
   # Required so ttyd generates correct WebSocket URLs when served behind a path prefix.
   basePath: /term
+  # -- Custom Agents use an isolated terminal workload and this dedicated image.
+  image:
+    repository: cetirun.azurecr.io/cetirun-terminal
+    tag: ""
+    digest: ""
+    pullPolicy: IfNotPresent
+  # -- Maximum lifetime before a browser terminal must authenticate again.
+  sessionSeconds: 1800
+  # -- Ingress gateway identity allowed to reach the Custom terminal.
+  gatewayServiceAccount: aks-istio-ingressgateway-external
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
 
 # -- Tailscale configuration
 # Enabled automatically when secrets.tailscaleAuthKey is set.

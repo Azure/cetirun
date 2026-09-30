@@ -30,7 +30,12 @@ spec:
       matchLabels:
         kubernetes.io/metadata.name: {{ .Release.Namespace }}
   validations:
+    {{- if and (eq (include "cetirun.agent.type" .) "custom") .Values.ttyd.enabled }}
+    - expression: {{ required "Custom terminal requires a prepared exec rule" .Values.runtime.terminalExecRule | quote }}
+      reason: Forbidden
+    {{- else }}
     - expression: "false"
+    {{- end }}
       message: "kubectl exec is not allowed on openclaw pods"
 ---
 apiVersion: admissionregistration.k8s.io/v1

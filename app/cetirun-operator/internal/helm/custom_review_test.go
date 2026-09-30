@@ -96,7 +96,7 @@ func TestCustomWorkloadHashClassifiesInputs(t *testing.T) {
 		value    any
 		workload bool
 	}{
-		{"ttyd", map[string]any{"port": 9000, "shell": "/bin/sh"}, false},
+		{"ttyd", map[string]any{"enabled": false, "port": 9000, "shell": "/bin/sh"}, false},
 		{"networkPolicy", map[string]any{"blockedCIDRs": []any{"10.0.0.0/8"}}, false},
 		{"podDisruptionBudget", map[string]any{"enabled": true}, false},
 		{"podAnnotations", map[string]any{"example.com/rollout": "new"}, true},
@@ -113,7 +113,7 @@ func TestCustomWorkloadHashClassifiesInputs(t *testing.T) {
 			t.Fatalf("%s workload classification incorrect", test.key)
 		}
 		if test.key == "ttyd" && next.PlanHash != first.PlanHash {
-			t.Fatal("unused ttyd settings changed the full plan")
+			t.Fatal("disabled ttyd settings changed the full plan")
 		}
 	}
 }

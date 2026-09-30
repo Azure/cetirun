@@ -246,7 +246,7 @@ export function OverviewSection({ instance }: { instance: Instance }) {
   const nativeAgentUIUrl = agentUIUrl(instance);
 
   return (
-    <div style={{ padding: 24, overflowY: "auto", flex: 1 }}>
+    <div style={{ padding: 24, overflowY: "auto", flex: 1, minWidth: 0 }}>
       <TabList
         size="medium"
         selectedValue={selectedTab}
@@ -263,8 +263,8 @@ export function OverviewSection({ instance }: { instance: Instance }) {
 
       {selectedTab === "overview" && (<>
       {/* Header */}
-      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
-        <Text size={600} weight="semibold">{instance.displayName}&apos;s {agentTypeLabel(instance.agentType)}</Text>
+      <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 12, marginBottom: 16 }}>
+        <Text size={600} weight="semibold" style={{ minWidth: 0, overflowWrap: "anywhere" }}>{instance.displayName}&apos;s {agentTypeLabel(instance.agentType)}</Text>
         <Badge appearance="filled" color={phaseBadgeColor[instance.phase] ?? "informative"}>{instance.phase}</Badge>
       </div>
       <Text size={300} style={{ color: tokens.colorNeutralForeground3, marginBottom: 16, display: "block" }}>
@@ -313,7 +313,7 @@ export function OverviewSection({ instance }: { instance: Instance }) {
       )}
 
       {instance.phase !== "Deleting" && (
-        <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 8 }}>
           {instance.upgradeAvailable && (
             <Button appearance="primary" icon={<ArrowSync20Regular />} onClick={() => upgradeMutation.mutate()} disabled={upgradeMutation.isPending}>
               {upgradeMutation.isPending ? "Upgrading..." : "Upgrade to Latest"}

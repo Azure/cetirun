@@ -53,9 +53,7 @@ func TestCustomDesktopAccessAndSuspension(t *testing.T) {
 func TestCustomDesktopCanBeDisabledWithoutLosingControls(t *testing.T) {
 	s := newCompletionScenario(t)
 	current := s.current()
-	current.Spec.Helm.Values = map[string]runtime.RawExtension{
-		"desktop": {Raw: []byte(`{"enabled":false}`)},
-	}
+	current.Spec.Helm.Values["desktop"] = runtime.RawExtension{Raw: []byte(`{"enabled":false}`)}
 	if err := s.client.Update(context.Background(), current); err != nil {
 		t.Fatal(err)
 	}

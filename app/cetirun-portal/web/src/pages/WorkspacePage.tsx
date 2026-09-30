@@ -12,7 +12,7 @@ import {
 } from "@fluentui/react-icons";
 import { useInstanceByNameQuery } from "../hooks/useInstance";
 import { OverviewSection } from "../components/OverviewSection";
-import { agentUIUrl, instanceGatewayUrl, phaseBadgeColor, terminalUrl } from "../utils/instance";
+import { agentUIUrl, desktopUrl, phaseBadgeColor, terminalUrl } from "../utils/instance";
 
 type NavItem = {
   section: string;
@@ -26,8 +26,6 @@ const NAV_ITEMS: NavItem[] = [
   { section: "agent-ui", label: "Agent UI", icon: <Chat20Regular />, external: "agent" },
   { section: "terminal", label: "Terminal", icon: <WindowConsole20Regular />, external: "terminal" },
   { section: "desktop", label: "Desktop", icon: <Desktop20Regular />, external: "desktop" },
-  // { section: "status",   label: "Status",   icon: <Status20Regular /> },
-  // { section: "settings", label: "Settings", icon: <Settings20Regular />, bottom: true },
 ];
 
 const VALID_SECTIONS = ["overview"] as const;
@@ -42,8 +40,11 @@ export function WorkspacePage() {
     return <Navigate to={`/instances/${instanceName}/overview`} replace />;
   }
 
-  const gatewayUrl = instance ? instanceGatewayUrl(instance) : undefined;
-  const agentUrl = instance ? agentUIUrl(instance) : undefined;
+  const externalUrls = {
+    agent: instance ? agentUIUrl(instance) : undefined,
+    terminal: instance ? terminalUrl(instance) : undefined,
+    desktop: instance ? desktopUrl(instance) : undefined,
+  };
 
   return (
     <div style={{ display: "flex", height: "100%", overflow: "hidden" }}>
@@ -85,13 +86,7 @@ export function WorkspacePage() {
         {/* Nav items */}
         <div style={{ flex: 1, padding: "8px 0" }}>
           {NAV_ITEMS.map((item) => {
-            const externalUrl = item.external === "agent"
-              ? agentUrl
-              : item.external === "terminal"
-                ? instance && terminalUrl(instance)
-                : item.external === "desktop"
-                  ? gatewayUrl && `${gatewayUrl}/desktop`
-                  : undefined;
+            const externalUrl = item.external ? externalUrls[item.external] : undefined;
             const externalDisabled = Boolean(item.external) && (instance?.phase !== "Ready" || !externalUrl);
 
             return (
@@ -119,7 +114,7 @@ export function WorkspacePage() {
       </div>
 
       {/* Content area */}
-      <div style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column" }}>
+      <div style={{ flex: 1, minWidth: 0, overflow: "hidden", display: "flex", flexDirection: "column" }}>
         {isLoading && (
           <div style={{ padding: 24 }}>
             <Text>Loading...</Text>

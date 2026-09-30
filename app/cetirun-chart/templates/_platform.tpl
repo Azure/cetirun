@@ -49,12 +49,14 @@ Licensed under the MIT License.
 {{- define "cetirun.platform.podMetadata" -}}
 {{- $bindings := (.Values.runtime | default dict).bindings -}}
 annotations:
-  checksum/config: {{ include (print .Template.BasePath "/configmap.yaml") . | sha256sum }}
   {{- if $bindings }}
+  {{/* Chart labels must not create an unapplied OnDelete Pod revision. */}}
+  checksum/config: {{ (include (print .Template.BasePath "/configmap.yaml") . | fromYaml).data | toJson | sha256sum }}
   cetirun.microsoft.com/custom-plan-hash: {{ .Values.runtime.workloadHash | quote }}
   cetirun.microsoft.com/model-revision: {{ $bindings.model.revision | quote }}
   cetirun.microsoft.com/context-revision: {{ $bindings.context.revision | quote }}
   {{- else }}
+  checksum/config: {{ include (print .Template.BasePath "/configmap.yaml") . | sha256sum }}
   checksum/secret: {{ include (print .Template.BasePath "/secret.yaml") . | sha256sum }}
   {{- end }}
   {{- with .Values.podAnnotations }}

@@ -56,7 +56,10 @@ func (r *AgentReconciler) holdSandbox(ctx context.Context, agent *cetirunv1alpha
 		if err := r.stopCustomWorkload(ctx, agent); err != nil {
 			failures = append(failures, fmt.Errorf("stop sandbox-held Custom workload: %w", err))
 		}
-		if err := r.removeCustomDesktopRoute(ctx, agent); err != nil {
+		if err := r.stopCustomTerminal(ctx, agent); err != nil {
+			failures = append(failures, fmt.Errorf("stop sandbox-held Custom terminal: %w", err))
+		}
+		if err := r.removeCustomPlatformRoute(ctx, agent); err != nil {
 			failures = append(failures, fmt.Errorf("remove sandbox-held Custom route: %w", err))
 		}
 		if err := r.retryCustomCompletion(ctx, agent); err != nil {
@@ -80,7 +83,12 @@ func (r *AgentReconciler) holdSandbox(ctx context.Context, agent *cetirunv1alpha
 		message = "Sandbox execution remains disabled, but workload shutdown, route removal or prior apply completion failed; retrying."
 	}
 	agent.Status.AccessURL = ""
-	for _, conditionType := range []string{cetirunv1alpha1.ConditionSandboxReady, cetirunv1alpha1.ConditionReady} {
+	conditions := []string{cetirunv1alpha1.ConditionSandboxReady, cetirunv1alpha1.ConditionReady}
+	if agent.Spec.Agent.Type == cetirunv1alpha1.AgentTypeCustom {
+		conditions = append(conditions, cetirunv1alpha1.ConditionIngressReady,
+			cetirunv1alpha1.ConditionDesktopConfigured, cetirunv1alpha1.ConditionTerminalConfigured)
+	}
+	for _, conditionType := range conditions {
 		apimeta.SetStatusCondition(&agent.Status.Conditions, metav1.Condition{
 			Type: conditionType, Status: metav1.ConditionFalse,
 			ObservedGeneration: agent.Generation, Reason: reason, Message: message,

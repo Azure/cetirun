@@ -119,6 +119,14 @@ func (r *AgentReconciler) customOverrides(instance *api.Agent, team *api.Team) (
 					return nil, fmt.Errorf("UnsupportedFeature: Custom instance desktop.%s is platform-owned", field)
 				}
 			}
+		} else if key == "ttyd" {
+			settings, ok := local[key].(map[string]any)
+			if !ok || len(settings) != 1 {
+				return nil, fmt.Errorf("Custom instance ttyd accepts only enabled")
+			}
+			if _, ok := settings["enabled"].(bool); !ok {
+				return nil, fmt.Errorf("Custom instance ttyd.enabled must be a boolean")
+			}
 		} else if key != "resources" {
 			return nil, fmt.Errorf("UnsupportedFeature: Custom instance helm.values.%s is not supported", key)
 		}
@@ -166,10 +174,28 @@ func (r *AgentReconciler) reconcileCustom(ctx context.Context, instance *api.Age
 	if err != nil {
 		return r.customWaiting(ctx, instance, "CustomBindingRejected", err.Error())
 	}
+	if customTerminalRequested(values) && len(bindings.Network.APIServer) == 0 {
+		requestCtx, cancel := context.WithTimeout(ctx, customProviderTimeout)
+		bindings.Network.APIServer, err = r.terminalAPIEndpoints(requestCtx)
+		cancel()
+		// A legacy Chart does not need this binding. New terminal Charts reject
+		// an absent binding before any resources are applied.
+		if err != nil {
+			bindings.Network.APIServer = nil
+		}
+	}
+	if customTerminalRequested(values) {
+		if err := r.ensureTerminalReadRoles(ctx, instance); err != nil {
+			return r.customWaiting(ctx, instance, "TerminalRBACBindingPending", "Terminal read roles are not ready or have foreign ownership")
+		}
+	}
 	values["agentType"] = "custom"
 	desktop := map[string]any{"novncPathPrefix": instance.Name + "/desktop/"}
 	if r.ChartRegistry != "" {
 		desktop["image"] = map[string]any{"repository": r.ChartRegistry + "/cetirun-desktop"}
+		values["ttyd"] = deepMerge(values["ttyd"], map[string]any{
+			"image": map[string]any{"repository": r.ChartRegistry + "/cetirun-terminal"},
+		})
 	}
 	values["desktop"] = deepMerge(values["desktop"], desktop)
 	values["agentRequest"] = runtimeRequest(instance, "")
@@ -306,24 +332,11 @@ func (r *AgentReconciler) reconcileCustom(ctx context.Context, instance *api.Age
 	instance.Status.HelmReleaseName = helmReleaseName(instance.Name)
 	setCondition(&instance.Status.Conditions, api.ConditionAgentConfigReady, metav1.ConditionTrue,
 		"CustomConfigResolved", "Custom runtime bindings and plan validated")
-	desktopEnabled := prepared.Values["desktop"].(map[string]any)["enabled"] == true
-	if desktopEnabled {
-		if err := r.ensureVirtualService(ctx, instance); err != nil {
-			setCondition(&instance.Status.Conditions, api.ConditionIngressReady, metav1.ConditionFalse,
-				"PlatformRouteUnavailable", err.Error())
-		} else {
-			setCondition(&instance.Status.Conditions, api.ConditionIngressReady, metav1.ConditionTrue,
-				"PlatformDesktopConfigured", "Platform desktop route configured; no native Agent UI or public Chat route")
-		}
-	} else {
-		if err := r.removeCustomDesktopRoute(ctx, instance); err != nil {
-			setCondition(&instance.Status.Conditions, api.ConditionIngressReady, metav1.ConditionFalse,
-				"PlatformRouteRemovalFailed", err.Error())
-		} else {
-			setCondition(&instance.Status.Conditions, api.ConditionIngressReady, metav1.ConditionFalse,
-				"PlatformDesktopDisabled", "Platform desktop is disabled; no native Agent UI or public Chat route")
-		}
-	}
+	r.configureCustomAccess(ctx, instance, customAccess{
+		desktop:      prepared.Values["desktop"].(map[string]any)["enabled"] == true,
+		terminal:     prepared.Values["ttyd"].(map[string]any)["enabled"] == true,
+		terminalPort: uint32(prepared.CustomTerminalPort()),
+	})
 	ready := homeBound && customPodReady(current)
 	instance.Status.Phase = api.PhaseProvisioning
 	status, reason, message := metav1.ConditionFalse, "CustomPodPending", "Waiting for the applied Custom Pod"
@@ -448,15 +461,20 @@ func (r *AgentReconciler) noCustomWriters(ctx context.Context, b runtimebindings
 func (r *AgentReconciler) suspendCustom(ctx context.Context, instance *api.Agent) (ctrl.Result, error) {
 	previous := instance.DeepCopy().Status
 	stopErr := r.stopCustomWorkload(ctx, instance)
-	routeErr := r.removeCustomDesktopRoute(ctx, instance)
+	terminalErr := r.stopCustomTerminal(ctx, instance)
+	routeErr := r.removeCustomPlatformRoute(ctx, instance)
 	instance.Status.AccessURL = ""
 	instance.Status.Phase = api.PhaseSuspended
 	if stopErr != nil {
 		instance.Status.Phase = api.PhasePending
 	}
+	if terminalErr != nil {
+		instance.Status.Phase = api.PhasePending
+	}
 	setCondition(&instance.Status.Conditions, api.ConditionReady, metav1.ConditionFalse, "InstanceSuspended", "Custom workload requested to scale to zero")
 	setCondition(&instance.Status.Conditions, api.ConditionPodReady, metav1.ConditionFalse, "Suspended", "Suspension requested; writer shutdown requires separate observation")
 	setCondition(&instance.Status.Conditions, api.ConditionIngressReady, metav1.ConditionFalse, "Suspended", "Platform access removed")
+	setCustomServiceConditions(instance, customAccess{}, metav1.ConditionFalse, "Suspended")
 	if routeErr != nil {
 		setCondition(&instance.Status.Conditions, api.ConditionIngressReady, metav1.ConditionFalse,
 			"SuspendIngressRemovalFailed", routeErr.Error())
@@ -475,13 +493,16 @@ func (r *AgentReconciler) suspendCustom(ctx context.Context, instance *api.Agent
 	if stopErr != nil {
 		return ctrl.Result{}, stopErr
 	}
+	if terminalErr != nil {
+		return ctrl.Result{}, terminalErr
+	}
 	if routeErr != nil {
 		return ctrl.Result{}, routeErr
 	}
 	return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 }
 
-func (r *AgentReconciler) removeCustomDesktopRoute(ctx context.Context, instance *api.Agent) error {
+func (r *AgentReconciler) removeCustomPlatformRoute(ctx context.Context, instance *api.Agent) error {
 	route := &istiov1beta1.VirtualService{}
 	key := types.NamespacedName{Namespace: instanceNamespace(instance.Name), Name: virtualServiceName(instance.Name)}
 	if err := r.customReader().Get(ctx, key, route); err != nil {

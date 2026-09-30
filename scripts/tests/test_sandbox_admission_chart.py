@@ -111,6 +111,7 @@ class SandboxAdmissionChartTests(unittest.TestCase):
             ("Deployment", "cetirun-operator"),
             ("ServiceAccount", "cetirun-operator-controller-manager"),
             ("ClusterRole", "cetirun-operator-manager-role"),
+            ("ClusterRole", "cetirun-terminal-exec"),
             ("ClusterRoleBinding", "cetirun-operator-manager-rolebinding"),
         })
         disabled = self.render(
@@ -173,14 +174,22 @@ class SandboxAdmissionChartTests(unittest.TestCase):
         for rule in role["rules"]:
             self.assertIsInstance(rule["apiGroups"], list)
             self.assertIsInstance(rule["resources"], list)
-        grant_rules = [
+        clusterrole_rules = [
             rule for rule in role["rules"]
             if any(group == "rbac.authorization.k8s.io" for group in rule["apiGroups"])
             and "clusterroles" in rule["resources"]
         ]
-        self.assertEqual(grant_rules, [{
+        self.assertEqual(clusterrole_rules, [{
             "apiGroups": ["rbac.authorization.k8s.io"],
             "resources": ["clusterroles"], "verbs": ["get"],
+        }, {
+            "apiGroups": ["rbac.authorization.k8s.io"],
+            "resources": ["clusterroles", "clusterrolebindings"],
+            "verbs": ["get", "list", "watch", "create", "update", "patch", "delete"],
+        }, {
+            "apiGroups": ["rbac.authorization.k8s.io"],
+            "resources": ["clusterroles"],
+            "resourceNames": ["cetirun-terminal-exec"], "verbs": ["bind"],
         }])
 
     def test_deployment_contract_tls_and_security_contexts(self):
