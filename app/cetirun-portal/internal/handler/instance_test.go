@@ -446,6 +446,46 @@ func TestCreateInstance_ModelTooLongRejected(t *testing.T) {
 	}
 }
 
+func TestCreateInstance_NameLength(t *testing.T) {
+	// "alice-" is 6 characters, so the suffix length sets the total.
+	cases := []struct {
+		name   string
+		alias  string
+		suffix string
+		want   int
+	}{
+		{name: "35 characters with suffix", alias: "alice", suffix: strings.Repeat("a", 29), want: http.StatusCreated},
+		{name: "36 characters with suffix", alias: "alice", suffix: strings.Repeat("a", 30), want: http.StatusBadRequest},
+		{name: "55 characters with suffix", alias: "alice", suffix: strings.Repeat("a", 49), want: http.StatusBadRequest},
+		{name: "35-character alias alone", alias: strings.Repeat("b", 35), want: http.StatusCreated},
+		{name: "36-character alias alone", alias: strings.Repeat("b", 36), want: http.StatusBadRequest},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := &InstanceHandler{Kube: kube.NewClient(newFakeClient())}
+			bodyBytes, _ := json.Marshal(CreateInstanceRequest{Team: "aks", InstanceName: tc.suffix})
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/instance", bytes.NewReader(bodyBytes))
+			req = withClaims(req, tc.alias, "Test User", tc.alias+"@microsoft.com")
+			w := httptest.NewRecorder()
+			h.CreateInstance(w, req)
+
+			if w.Code != tc.want {
+				t.Fatalf("status = %d, want %d (body=%s)", w.Code, tc.want, w.Body.String())
+			}
+			if tc.want != http.StatusBadRequest {
+				return
+			}
+			var resp ErrorResponse
+			if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if resp.Error.Code != "name_too_long" {
+				t.Errorf("error code = %q, want name_too_long", resp.Error.Code)
+			}
+		})
+	}
+}
+
 func TestCreateInstance_ReservedName(t *testing.T) {
 	// Each reserved name collides with either an EnvoyFilter gateway path token or
 	// a portal SPA top-level route. Prefixing or suffixing a reserved token remains
