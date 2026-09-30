@@ -282,8 +282,10 @@ def test_hermes_atomic_replace_failure(tmp_path, monkeypatch):
     ("#!/bin/sh\necho my own script\n", True),
 ])
 def test_openclaw_removes_only_the_retired_copilot_helper(agent, content, kept):
+    # A HOME an earlier release initialized, restarted with this one.
+    assert run(agent).returncode == 0
     helper = agent["target"] / ".local/bin/copilot-auth"
-    helper.parent.mkdir(parents=True)
+    helper.parent.mkdir(parents=True, exist_ok=True)
     helper.write_text(content)
     result = run(agent)
     assert result.returncode == 0, result.stderr
