@@ -90,8 +90,8 @@ deployment_is_rendered() {
 # upgrades them, so apply them from the chart in the order the operator's schema
 # upgrade rules require (app/cetirun-operator/README.md, "Schema and binary
 # upgrades"):
-#   1. Create CRDs that do not exist yet now, so a new operator that watches a
-#      new kind can start.
+#   1. Create CRDs that do not exist yet now, so a new kind is served before
+#      the new operator uses it.
 #   2. Apply changes to existing CRDs only after every operator replica runs the
 #      new binary, so admission understands a schema before it is served.
 crds_manifest=""

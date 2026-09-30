@@ -149,9 +149,9 @@ Deployments. It does not verify end-to-end login or agent readiness.
 
 Helm creates the operator's CRDs only on the first installation, so the helper
 applies them itself when the operator is part of the release. CRDs that do not
-exist yet are created right after the install or upgrade, so a new operator
-that watches a new kind can start. Changes to existing CRDs are applied once
-the operator rollout finishes, after admission already runs the matching
+exist yet are created right after the install or upgrade, so a new kind is
+served before the new operator uses it. Changes to existing CRDs are applied
+once the operator rollout finishes, after admission already runs the matching
 binary. Downgrades are not handled; see
 [API compatibility](../../reference/crds/#existing-installations).
 
