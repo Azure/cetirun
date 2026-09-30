@@ -252,6 +252,12 @@ resource aksCluster 'Microsoft.ContainerService/managedClusters@2026-01-01' = {
               mode: istioIngressGatewayType
             }
           ]
+          // Agents run in Kata VM-isolated pods. With CNIChaining, the
+          // istio-validation init container in those pods keeps failing and
+          // the agent never starts; InitContainers redirects traffic from
+          // inside the pod instead. Set explicitly so a new cluster does not
+          // depend on the service default.
+          proxyRedirectionMechanism: 'InitContainers'
         }
       }
       mode: 'Istio'
