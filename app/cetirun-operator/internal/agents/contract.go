@@ -17,6 +17,7 @@ type Descriptor struct {
 	PortName         string
 	DefaultPort      int32
 	HealthPath       string
+	ReadinessPath    string
 	StartupPath      string
 	DashboardPort    int32
 	PreserveUIPrefix bool
@@ -95,7 +96,6 @@ type Integrations struct {
 	TeamsPort         int32
 	TeamsAuthType     string
 	Tailscale         bool
-	RelaxGatewayAuth  bool
 }
 
 type Contribution struct {
@@ -120,9 +120,10 @@ type PortBinding struct {
 }
 
 type HTTPBinding struct {
-	PortName    string `json:"portName"`
-	HealthPath  string `json:"healthPath"`
-	StartupPath string `json:"startupPath"`
-	ChatPath    string `json:"chatPath,omitempty"`
-	ModelsPath  string `json:"modelsPath,omitempty"`
+	PortName      string `json:"portName"`
+	HealthPath    string `json:"healthPath"`
+	ReadinessPath string `json:"readinessPath,omitempty"`
+	StartupPath   string `json:"startupPath"`
+	ChatPath      string `json:"chatPath,omitempty"`
+	ModelsPath    string `json:"modelsPath,omitempty"`
 }

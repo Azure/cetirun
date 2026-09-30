@@ -100,10 +100,10 @@ password provider in addition to the platform access path.
 
 The container uses kernel networking, creates `/dev/net/tun`, and the chart
 adds `NET_ADMIN` for Tailscale. Review those privileges alongside the
-RuntimeClass and network policy.
-Keep `tailscale.relaxGatewayAuth: false`. Enabling it can weaken gateway
-authentication on non-tailnet access paths too; this setting is consumed by
-the OpenClaw template, not by Hermes.
+RuntimeClass and network policy. CetiRun runs Tailscale Serve outside OpenClaw,
+so Gateway token and device authentication remain required on this access path.
+When Tailscale is enabled, the generated OpenClaw configuration trusts only the
+in-container Serve proxy's exact `127.0.0.1` source.
 
 ## If it does not connect
 

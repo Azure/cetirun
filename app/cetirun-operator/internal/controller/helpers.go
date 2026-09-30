@@ -295,7 +295,8 @@ func buildHelmValuesCore(instance *cetirunv1alpha1.Agent, team *cetirunv1alpha1.
 	}
 
 	// When Tailscale is enabled, turn on tailscale serve by default so that the
-	// gateway is accessible via HTTPS on the tailnet (device identity is automatic).
+	// gateway is accessible via HTTPS on the tailnet. Gateway token and device
+	// authentication still apply.
 	if spec.Tailscale != nil {
 		values["tailscale"] = map[string]interface{}{
 			"serve": true,

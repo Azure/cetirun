@@ -38,8 +38,7 @@ used by your deployment.
 - [Teams webhook exceptions](../guides/msteams/) rely on application-level Bot
   Framework authentication instead of a user's OAuth session.
   [Tailscale](../guides/tailscale/) adds another access path; configuring it
-  does not remove public ingress. Keep `tailscale.relaxGatewayAuth: false`
-  when other ingress paths exist.
+  does not remove public ingress or the Gateway's own authentication.
 
 The ownership filter defines its own fixed path exemptions and takes the
 POST-only one-segment apex webhook template from

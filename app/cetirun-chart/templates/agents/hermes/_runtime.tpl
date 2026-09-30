@@ -162,9 +162,17 @@ Hermes container env vars (agent-specific only)
 {{- end }}
 
 {{/*
-Hermes liveness/readiness probe path and port
+Hermes liveness probe path and port
 */}}
 {{- define "cetirun.agent.hermes.probePathPort" -}}
+path: /health
+port: api
+{{- end }}
+
+{{/*
+Hermes readiness probe path and port
+*/}}
+{{- define "cetirun.agent.hermes.readinessProbePathPort" -}}
 path: /health
 port: api
 {{- end }}

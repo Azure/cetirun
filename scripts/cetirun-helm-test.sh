@@ -93,6 +93,9 @@ output=$(helm_template "${release_name}" "${chart_dir}" --set agentType=openclaw
   --set secrets.openclawGatewayToken=lint-token)
 grep -q 'openclaw.json' <<< "$output" || { echo "FAIL: explicit OpenClaw config missing" >&2; exit 1; }
 grep -q 'containerPort: 18789' <<< "$output" || { echo "FAIL: explicit OpenClaw port missing" >&2; exit 1; }
+grep -q 'path: /healthz' <<< "$output" || { echo "FAIL: OpenClaw liveness probe path missing" >&2; exit 1; }
+grep -q 'path: /readyz' <<< "$output" || { echo "FAIL: OpenClaw readiness probe path missing" >&2; exit 1; }
+grep -q 'path: /startupz' <<< "$output" || { echo "FAIL: OpenClaw startup probe path missing" >&2; exit 1; }
 
 echo "==> helm template ${release_name} ${chart_dir} (OpenClaw shared registry and version)"
 output=$(helm_template "${release_name}" "${chart_dir}" \

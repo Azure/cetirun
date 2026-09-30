@@ -216,13 +216,13 @@ for OpenAI/Anthropic, configure both the provider's model and credentials.
 ### Agent configuration and health
 
 `openclaw.config` supplies the native configuration. Browser support is enabled,
-`headless` is false, CDP connection timeout is 1500 ms, and logging is `info`.
+`headless` is false, the gateway attaches to the desktop CDP profile, and logging is `info`.
 The chart enables the OpenClaw doctor init step through `openclaw.doctor.enabled`.
 It runs `openclaw doctor --fix --non-interactive --yes` on the persistent home;
 this is a startup mutation, not a read-only diagnostic. The `doctor.enabled`
 alias must also be true for it to run. Hermes does not run this init container.
-`openclaw.acpx` configures the bundled agent communication plugin; review its
-permissions and allowed adapters before use.
+`openclaw.acpx` configures the installed agent communication plugin; review its
+permissions, allowed adapters, and optional command overrides before use.
 
 `hermes.config`, `hermes.env`, and `hermes.gateway` configure Hermes.
 Model/provider values are rendered into the selected agent’s native format.
@@ -233,9 +233,9 @@ Model/provider values are rendered into the selected agent’s native format.
 | Readiness | `true` | 30s | 30s | 10s | 6 |
 | Startup | `true` | 10s | 10s | 5s | 30 |
 
-OpenClaw uses `/health` for startup and `/healthz` for **both** liveness and
-readiness, on the gateway port. Hermes uses `/health` for all three probes on
-the API port. Neither verifies model entitlement or the native dashboard.
+OpenClaw uses `/startupz`, `/healthz`, and `/readyz` for startup, liveness, and
+readiness respectively, on the gateway port. Hermes uses `/health` for all three
+probes on the API port. Neither verifies model entitlement or the native dashboard.
 Sources: [OpenClaw helpers]({{< repo "app/cetirun-chart/templates/agents/openclaw/_runtime.tpl" >}}),
 [Hermes helpers]({{< repo "app/cetirun-chart/templates/agents/hermes/_runtime.tpl" >}}), and
 [StatefulSet]({{< repo "app/cetirun-chart/templates/statefulset.yaml" >}}).
@@ -259,7 +259,6 @@ Sources: [OpenClaw helpers]({{< repo "app/cetirun-chart/templates/agents/opencla
 | `skills.npmRegistry` | Environment-specific feed; explicitly select your approved reachable registry |
 | `execRestriction.enabled` | `true`; renders a cluster-scoped policy denying `pods/exec` in this namespace |
 | `tailscale.hostname`, `tailscale.serve` | `cetirun`, `false`; operator enables Serve for Tailscale instances |
-| `tailscale.relaxGatewayAuth` | `false`; keep it false with non-tailnet ingress |
 
 NetworkPolicy allows gateway ingress, DNS, Istiod, approved internal exceptions,
 and other external IPv4 traffic. Gateway ingress is selected by namespace, not

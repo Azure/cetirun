@@ -528,7 +528,7 @@ func (p *PreparedRelease) customContribution() (agents.Contribution, error) {
 		valid = valid && value.HTTP == nil && len(value.Ports) == 0
 	} else {
 		valid = valid && reflect.DeepEqual(value.Ports, []agents.PortBinding{{Name: "http", Number: *p.Agent.Port}}) &&
-			reflect.DeepEqual(value.HTTP, &agents.HTTPBinding{PortName: "http", HealthPath: "/healthz", StartupPath: "/healthz",
+			reflect.DeepEqual(value.HTTP, &agents.HTTPBinding{PortName: "http", HealthPath: "/healthz", ReadinessPath: "/healthz", StartupPath: "/healthz",
 				ChatPath: "/v1/chat/completions", ModelsPath: "/v1/models"})
 	}
 	if !valid {

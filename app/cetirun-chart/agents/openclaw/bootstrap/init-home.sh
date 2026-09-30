@@ -44,11 +44,6 @@ agent_prepare_home() {
       home_atomic_copy "$CETIRUN_CONFIG_DIR/user-md" .openclaw/workspace/USER.md 600
     fi
   fi
-  acpx_file=$(home_path .acpx/config.json)
-  if [ -f "$CETIRUN_CONFIG_DIR/acpx-config.json" ] && [ ! -e "$acpx_file" ]; then
-    jq -e 'type == "object"' "$CETIRUN_CONFIG_DIR/acpx-config.json" >/dev/null
-    home_atomic_copy "$CETIRUN_CONFIG_DIR/acpx-config.json" .acpx/config.json 600
-  fi
 }
 
 agent_apply_config() (

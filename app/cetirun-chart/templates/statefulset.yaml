@@ -150,7 +150,7 @@ spec:
           {{- if .Values.readinessProbe.enabled }}
           readinessProbe:
             httpGet:
-              {{- include "cetirun.agent.probePathPort" . | nindent 14 }}
+              {{- include "cetirun.agent.readinessProbePathPort" . | nindent 14 }}
             initialDelaySeconds: {{ .Values.readinessProbe.initialDelaySeconds }}
             periodSeconds: {{ .Values.readinessProbe.periodSeconds }}
             timeoutSeconds: {{ .Values.readinessProbe.timeoutSeconds }}

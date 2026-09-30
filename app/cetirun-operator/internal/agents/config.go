@@ -36,7 +36,7 @@ func nativeTemplateFunctions() template.FuncMap {
 	funcs := template.FuncMap{}
 	for _, name := range []string{
 		"deepCopy", "default", "dict", "list", "dig", "set", "int", "replace",
-		"append", "concat", "uniq", "has",
+		"append", "concat", "uniq", "has", "hasKey",
 	} {
 		funcs[name] = available[name]
 	}
@@ -91,9 +91,6 @@ func nativeTemplateContext(agent ResolvedAgent, bindings Bindings) map[string]an
 		},
 		"msteamsAuthType":    integrations.TeamsAuthType,
 		"msteamsWebhookPort": integrations.TeamsPort,
-		"tailscale": map[string]any{
-			"relaxGatewayAuth": integrations.RelaxGatewayAuth,
-		},
 	}
 	return map[string]any{
 		"Values":           values,
@@ -135,9 +132,10 @@ func Build(agent ResolvedAgent, bindings Bindings, descriptor Descriptor) (Contr
 		ConfigFiles: map[string]string{descriptor.ConfigFile: config},
 		Ports:       ports,
 		HTTP: &HTTPBinding{
-			PortName:    descriptor.PortName,
-			HealthPath:  descriptor.HealthPath,
-			StartupPath: descriptor.StartupPath,
+			PortName:      descriptor.PortName,
+			HealthPath:    descriptor.HealthPath,
+			ReadinessPath: descriptor.ReadinessPath,
+			StartupPath:   descriptor.StartupPath,
 		},
 	}, nil
 }
