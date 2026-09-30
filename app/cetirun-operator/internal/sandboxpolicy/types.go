@@ -68,18 +68,21 @@ type Destination struct {
 // Peers is the complete managed-peer inventory needed to translate internal
 // CIDRs to Cilium endpoint identities. Its revision changes with membership.
 type Topology struct {
-	Revision             string        `json:"revision"`
-	ManagedPeersComplete bool          `json:"managedPeersComplete"`
-	DNS                  []Peer        `json:"dns"`
-	Gateway              []Destination `json:"gateway"`
-	Ingress              []Destination `json:"ingress,omitempty"`
-	KubernetesAPI        []Destination `json:"kubernetesAPI,omitempty"`
-	Peers                []Peer        `json:"peers,omitempty"`
-	PodCIDRs             []string      `json:"podCIDRs"`
-	ServiceCIDRs         []string      `json:"serviceCIDRs"`
-	NodeCIDRs            []string      `json:"nodeCIDRs"`
-	ManagementCIDRs      []string      `json:"managementCIDRs"`
-	MetadataCIDRs        []string      `json:"metadataCIDRs"`
+	Revision             string `json:"revision"`
+	ManagedPeersComplete bool   `json:"managedPeersComplete"`
+	// DNSResolverIPs selects one to three Pod nameservers from the approved DNS
+	// peers. DNS retains all Service/backend IPs needed for network enforcement.
+	DNSResolverIPs  []string      `json:"dnsResolverIPs"`
+	DNS             []Peer        `json:"dns"`
+	Gateway         []Destination `json:"gateway"`
+	Ingress         []Destination `json:"ingress,omitempty"`
+	KubernetesAPI   []Destination `json:"kubernetesAPI,omitempty"`
+	Peers           []Peer        `json:"peers,omitempty"`
+	PodCIDRs        []string      `json:"podCIDRs"`
+	ServiceCIDRs    []string      `json:"serviceCIDRs"`
+	NodeCIDRs       []string      `json:"nodeCIDRs"`
+	ManagementCIDRs []string      `json:"managementCIDRs"`
+	MetadataCIDRs   []string      `json:"metadataCIDRs"`
 }
 
 // ApprovedGrant approves exactly one role and binding scope for one policy UID.

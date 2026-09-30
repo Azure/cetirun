@@ -39,6 +39,9 @@ type addressGrant struct {
 	Ports  []api.AgentPolicyPort
 }
 
+// Cilium's allow-rule schema limits each toPorts[].ports array to 40 entries.
+const maxPortsPerRule = 40
+
 func canonicalPlatform(input Platform, capabilities sandbox.Capabilities) (Platform, error) {
 	var platform Platform
 	if err := validateControlInput(api.AgentPolicySpec{}, input); err != nil {
@@ -101,6 +104,16 @@ func canonicalPlatform(input Platform, capabilities sandbox.Capabilities) (Platf
 	if len(topology.DNS) == 0 || len(topology.Gateway) == 0 {
 		return platform, fmt.Errorf("%w: required DNS and Gateway bindings must be resolved", ErrUnavailable)
 	}
+	normalizeIP := func(raw string) (string, error) {
+		address, err := netip.ParseAddr(raw)
+		if err != nil || address.Is4In6() || address.Zone() != "" {
+			return "", fmt.Errorf("%w: a resolved endpoint contains an invalid IP address", ErrUnavailable)
+		}
+		if !supportedFamily(address, capabilities) {
+			return "", fmt.Errorf("%w: a resolved IP family is not qualified", ErrUnsupportedControl)
+		}
+		return address.String(), nil
+	}
 	normalizePeer := func(peer *Peer) error {
 		if len(validation.IsDNS1123Subdomain(peer.Name)) != 0 || peer.UID == "" ||
 			len(validation.IsValidLabelValue(string(peer.UID))) != 0 ||
@@ -108,22 +121,40 @@ func canonicalPlatform(input Platform, capabilities sandbox.Capabilities) (Platf
 			return fmt.Errorf("%w: peers require names, immutable UIDs, valid namespaces and resolved IPs", ErrUnavailable)
 		}
 		for i, raw := range peer.IPs {
-			address, err := netip.ParseAddr(raw)
-			if err != nil || address.Is4In6() || address.Zone() != "" {
-				return fmt.Errorf("%w: a peer contains an invalid IP address", ErrUnavailable)
+			address, err := normalizeIP(raw)
+			if err != nil {
+				return err
 			}
-			if !supportedFamily(address, capabilities) {
-				return fmt.Errorf("%w: a peer IP family is not qualified", ErrUnsupportedControl)
-			}
-			peer.IPs[i] = address.String()
+			peer.IPs[i] = address
 		}
 		peer.IPs = sortedUnique(peer.IPs)
 		return nil
 	}
+	dnsIPs := map[string]bool{}
 	for i := range topology.DNS {
 		if err := normalizePeer(&topology.DNS[i]); err != nil {
 			return platform, err
 		}
+		for _, ip := range topology.DNS[i].IPs {
+			dnsIPs[ip] = true
+		}
+	}
+	if len(topology.DNSResolverIPs) == 0 {
+		return platform, fmt.Errorf("%w: explicit Pod DNS resolver addresses are required", ErrUnavailable)
+	}
+	for i, raw := range topology.DNSResolverIPs {
+		address, err := normalizeIP(raw)
+		if err != nil {
+			return platform, err
+		}
+		if !dnsIPs[address] {
+			return platform, fmt.Errorf("%w: each Pod resolver must belong to an approved DNS peer", ErrUnavailable)
+		}
+		topology.DNSResolverIPs[i] = address
+	}
+	topology.DNSResolverIPs = sortedUnique(topology.DNSResolverIPs)
+	if len(topology.DNSResolverIPs) > 3 {
+		return platform, fmt.Errorf("%w: the protected Pod can configure at most three DNS server IPs", ErrUnsupportedControl)
 	}
 	topology.DNS, err = canonicalObjects(topology.DNS)
 	if err != nil {
@@ -222,14 +253,15 @@ func ValidatePlatform(platform Platform, capabilities sandbox.Capabilities) erro
 
 func compileNetwork(input CompileInput) (NetworkPlan, error) {
 	policy, capabilities, topology := input.Resolution.AgentPolicy, input.Resolution.Capabilities, input.Platform.Topology
-	plan := NetworkPlan{Adapter: input.Platform.Adapter.Name, IngressMode: policy.Network.Ingress.Mode}
+	plan := NetworkPlan{
+		Adapter: input.Platform.Adapter.Name, IngressMode: policy.Network.Ingress.Mode,
+		DNSIPs: slices.Clone(topology.DNSResolverIPs),
+	}
+	var dnsIPs []string
 	for _, peer := range topology.DNS {
-		plan.DNSIPs = append(plan.DNSIPs, peer.IPs...)
+		dnsIPs = append(dnsIPs, peer.IPs...)
 	}
-	plan.DNSIPs = sortedUnique(plan.DNSIPs)
-	if len(plan.DNSIPs) > 3 {
-		return plan, fmt.Errorf("%w: the protected Pod can configure at most three DNS server IPs", ErrUnsupportedControl)
-	}
+	dnsIPs = sortedUnique(dnsIPs)
 	hardDenied := append(slices.Clone(mandatoryCIDRs), topology.NodeCIDRs...)
 	hardDenied = append(hardDenied, topology.ManagementCIDRs...)
 	hardDenied = append(hardDenied, topology.MetadataCIDRs...)
@@ -290,7 +322,7 @@ func compileNetwork(input CompileInput) (NetworkPlan, error) {
 			}
 			if port.Port == 53 && (port.Protocol == corev1.ProtocolTCP || port.Protocol == corev1.ProtocolUDP) {
 				for _, ip := range destination.Peer.IPs {
-					if !slices.Contains(plan.DNSIPs, ip) {
+					if !slices.Contains(dnsIPs, ip) {
 						return plan, fmt.Errorf("%w: port 53 is reserved to the approved DNS peers", ErrConflict)
 					}
 				}
@@ -412,7 +444,7 @@ func compileNetwork(input CompileInput) (NetworkPlan, error) {
 	}
 	for _, root := range familyRoots(capabilities) {
 		if err := budget.egress(&spec.EgressDeny, EgressRule{
-			ToCIDRSet: cidrExcept(root, ipCIDRs(plan.DNSIPs)), ToPorts: portRules(dnsPorts),
+			ToCIDRSet: cidrExcept(root, ipCIDRs(dnsIPs)), ToPorts: portRules(dnsPorts),
 		}); err != nil {
 			return plan, err
 		}
@@ -608,11 +640,15 @@ func canonicalPorts(ports []api.AgentPolicyPort, capabilities sandbox.Capabiliti
 }
 
 func portRules(ports []api.AgentPolicyPort) []PortRule {
-	rule := PortRule{}
+	rules := []PortRule{{}}
 	for _, port := range ports {
+		if len(rules[len(rules)-1].Ports) == maxPortsPerRule {
+			rules = append(rules, PortRule{})
+		}
+		rule := &rules[len(rules)-1]
 		rule.Ports = append(rule.Ports, PortRange{Port: strconv.Itoa(int(port.Port)), Protocol: port.Protocol})
 	}
-	return []PortRule{rule}
+	return rules
 }
 
 func deniedPorts(allowed []api.AgentPolicyPort) []PortRule {

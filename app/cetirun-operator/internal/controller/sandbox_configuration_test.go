@@ -67,8 +67,9 @@ func sandboxConfigurationFixture() (*api.Sandbox, controller.SandboxConfiguratio
 			Revision: "synthetic-topology", ManagedPeersComplete: true,
 			PodCIDRs: []string{"10.244.0.0/16"}, ServiceCIDRs: []string{"10.96.0.0/12"},
 			NodeCIDRs: []string{"192.168.0.0/16"}, ManagementCIDRs: []string{"10.1.0.0/16"},
-			MetadataCIDRs: []string{"169.254.169.254/32"},
-			DNS:           []sandboxpolicy.Peer{{Name: "dns", Namespace: "kube-system", UID: "example-dns", IPs: []string{"10.96.0.10"}}},
+			MetadataCIDRs:  []string{"169.254.169.254/32"},
+			DNSResolverIPs: []string{"10.96.0.10"},
+			DNS:            []sandboxpolicy.Peer{{Name: "dns", Namespace: "kube-system", UID: "example-dns", IPs: []string{"10.96.0.10"}}},
 			Gateway: []sandboxpolicy.Destination{{
 				Peer:  sandboxpolicy.Peer{Name: "gateway", Namespace: "platform", UID: "example-gateway", IPs: []string{"10.96.1.50"}},
 				Ports: []api.AgentPolicyPort{{Port: 8443, Protocol: corev1.ProtocolTCP}},

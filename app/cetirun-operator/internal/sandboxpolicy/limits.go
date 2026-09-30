@@ -45,6 +45,7 @@ func validateControlInput(policy api.AgentPolicySpec, platform Platform) error {
 		len(network.BlockedCIDRs), len(network.BlockedFQDNs), len(network.BlockedPorts), len(network.AllowedInternalCIDRs),
 		len(topology.PodCIDRs), len(topology.ServiceCIDRs), len(topology.NodeCIDRs),
 		len(topology.ManagementCIDRs), len(topology.MetadataCIDRs),
+		len(topology.DNSResolverIPs),
 		len(platform.Identities), len(platform.Grants),
 	} {
 		if err := take(count); err != nil {
