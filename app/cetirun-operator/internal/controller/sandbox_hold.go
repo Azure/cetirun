@@ -24,18 +24,13 @@ import (
 	istiov1beta1 "istio.io/client-go/pkg/apis/networking/v1beta1"
 
 	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
 )
 
-const sandboxHoldFinalizer = "cetirun.microsoft.com/sandbox-hold"
+const sandboxHoldFinalizer = sandbox.HoldFinalizer
 
 func sandboxRequested(agent *cetirunv1alpha1.Agent, team *cetirunv1alpha1.Team) bool {
-	if controllerutil.ContainsFinalizer(agent, sandboxHoldFinalizer) || agent.Spec.SandboxRef != "" ||
-		(agent.Spec.PolicyClass != "" && agent.Spec.PolicyClass != cetirunv1alpha1.AgentPolicyClassNormal) ||
-		agent.Status.Sandbox != nil || apimeta.FindStatusCondition(agent.Status.Conditions, cetirunv1alpha1.ConditionSandboxReady) != nil {
-		return true
-	}
-	return team != nil && (team.Spec.NormalAgentPolicyRef != "" || team.Spec.AdminAgentPolicyRef != "" ||
-		len(team.Spec.SandboxRefs) != 0 || team.Spec.DefaultSandboxRef != "")
+	return sandbox.Requested(agent, team)
 }
 
 // holdSandbox prevents runtime renderers from ignoring new governance fields.

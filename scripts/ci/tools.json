@@ -32,12 +32,26 @@
   },
   "helm": {
     "version": "3.22.0",
-    "source": "https://get.helm.sh/helm-v3.22.0-linux-amd64.tar.gz.sha256sum",
+    "source": "https://github.com/helm/helm/releases/tag/v3.22.0",
     "url": "https://get.helm.sh/helm-v3.22.0-linux-{arch}.tar.gz",
     "member": "linux-{arch}/helm",
     "sha256": {
       "amd64": "1e4ab49e429626cf6c6958d914248b78c9730803c2751b87627e171dc800e7bb",
       "arm64": "f14e804dfee240f55525b667488fe9adca349e63e00c9af634c0beb1421ac310"
+    }
+  },
+  "envtest": {
+    "version": "1.37.0",
+    "source": "https://github.com/kubernetes-sigs/controller-tools/releases/tag/envtest-v1.37.0",
+    "url": "https://github.com/kubernetes-sigs/controller-tools/releases/download/envtest-v1.37.0/envtest-v1.37.0-linux-{arch}.tar.gz",
+    "members": {
+      "kube-apiserver": "controller-tools/envtest/kube-apiserver",
+      "etcd": "controller-tools/envtest/etcd",
+      "kubectl": "controller-tools/envtest/kubectl"
+    },
+    "sha256": {
+      "amd64": "f03faedfc68d2a78cee5cb02618bb44e7f67044f4c5fc957f72d3307fda61a9c",
+      "arm64": "ff2a0cdcadd0a6b3181faa4758e28fc63b774d2e40f29f62645dd7fa0b881a2c"
     }
   }
 }

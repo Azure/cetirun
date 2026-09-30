@@ -87,10 +87,20 @@ func ValidateTeam(team *cetirunv1alpha1.Team, resources Resources, registrations
 		return field.ErrorList{field.Required(field.NewPath("team"), "referenced Team is missing")}
 	}
 	errs := validateIdentity(team.ObjectMeta, team.Name, field.NewPath("team"))
-	errs = append(errs, validateTeamSpec(team.Spec)...)
 	if len(errs) != 0 {
 		return errs
 	}
+	return ValidateTeamConfiguration(team.Spec, resources, registrations)
+}
+
+// ValidateTeamConfiguration also accepts a candidate Team that has not yet been
+// assigned a UID. Every referenced configuration must already be persisted.
+func ValidateTeamConfiguration(spec cetirunv1alpha1.TeamSpec, resources Resources, registrations map[cetirunv1alpha1.SandboxType]Registration) field.ErrorList {
+	errs := validateTeamSpec(spec)
+	if len(errs) != 0 {
+		return errs
+	}
+	team := &cetirunv1alpha1.Team{Spec: spec}
 
 	sandboxes := make(map[string]cetirunv1alpha1.SandboxSpec, len(team.Spec.SandboxRefs))
 	for _, name := range team.Spec.SandboxRefs {

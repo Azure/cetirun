@@ -99,6 +99,16 @@ func mustResolve(t *testing.T, input ResolveInput) *Resolution {
 	return result
 }
 
+func TestValidateTeamStopsAtInvalidPersistedIdentity(t *testing.T) {
+	input := resolverFixture()
+	input.Team.UID = ""
+	input.Team.Spec.NormalAgentPolicyRef = "missing-policy"
+	errs := ValidateTeam(input.Team, Resources{}, nil)
+	if len(errs) != 1 || errs[0].Field != "team.metadata.uid" {
+		t.Fatalf("invalid identity should not produce unrelated reference errors: %v", errs)
+	}
+}
+
 func TestResolveDefaultsAndIsolation(t *testing.T) {
 	input := resolverFixture()
 	beforeAgent := input.Agent.DeepCopy()
