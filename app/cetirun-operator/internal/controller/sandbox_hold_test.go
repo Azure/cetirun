@@ -5,7 +5,10 @@ package controller_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"slices"
 	"testing"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -22,7 +25,86 @@ import (
 
 	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/controller"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
 )
+
+type sandboxFinalizerPatchClient struct {
+	client.Client
+	patches int
+}
+
+func (c *sandboxFinalizerPatchClient) Update(ctx context.Context, object client.Object, options ...client.UpdateOption) error {
+	if _, ok := object.(*cetirunv1alpha1.Agent); ok {
+		return fmt.Errorf("Sandbox finalizers must not rewrite the complete Agent")
+	}
+	return c.Client.Update(ctx, object, options...)
+}
+
+func (c *sandboxFinalizerPatchClient) Patch(ctx context.Context, object client.Object, patch client.Patch, options ...client.PatchOption) error {
+	if _, ok := object.(*cetirunv1alpha1.Agent); ok {
+		raw, err := patch.Data(object)
+		if err != nil {
+			return err
+		}
+		var body struct {
+			Metadata struct {
+				ResourceVersion string   `json:"resourceVersion"`
+				Finalizers      []string `json:"finalizers"`
+			} `json:"metadata"`
+		}
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &fields); err != nil {
+			return err
+		}
+		if err := json.Unmarshal(raw, &body); err != nil {
+			return err
+		}
+		if len(fields) != 1 || fields["metadata"] == nil ||
+			body.Metadata.ResourceVersion == "" || body.Metadata.ResourceVersion != object.GetResourceVersion() {
+			return fmt.Errorf("Sandbox finalizer patch is not metadata-only and optimistic")
+		}
+		c.patches++
+	}
+	return c.Client.Patch(ctx, object, patch, options...)
+}
+
+func TestSandboxFinalizersUseOptimisticMetadataOnlyPatches(t *testing.T) {
+	for _, typ := range []cetirunv1alpha1.AgentType{cetirunv1alpha1.AgentTypeOpenClaw, cetirunv1alpha1.AgentTypeHermes, cetirunv1alpha1.AgentTypeCustom} {
+		t.Run(string(typ), func(t *testing.T) {
+			ctx := context.Background()
+			agent := newCR("patch-example", cetirunv1alpha1.PhasePending, nil, 1, 0, "")
+			agent.Spec.SandboxRef, agent.Spec.Agent.Type = "standard", typ
+			agent.Finalizers = append(agent.Finalizers, "example.com/retain")
+			backing := fake.NewClientBuilder().WithScheme(testScheme()).WithStatusSubresource(agent).WithObjects(agent).Build()
+			writer := &sandboxFinalizerPatchClient{Client: backing}
+			reconciler := &controller.AgentReconciler{Client: writer, EventRecorder: record.NewFakeRecorder(10)}
+			request := ctrl.Request{NamespacedName: types.NamespacedName{Name: agent.Name}}
+			if _, err := reconciler.Reconcile(ctx, request); err != nil {
+				t.Fatal(err)
+			}
+			current := &cetirunv1alpha1.Agent{}
+			if err := backing.Get(ctx, request.NamespacedName, current); err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Contains(current.Finalizers, sandbox.HoldFinalizer) || writer.patches != 1 {
+				t.Fatal("hold did not persist through a metadata-only patch")
+			}
+			if err := backing.Delete(ctx, current); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := reconciler.Reconcile(ctx, request); err != nil {
+				t.Fatal(err)
+			}
+			if err := backing.Get(ctx, request.NamespacedName, current); err != nil {
+				t.Fatal(err)
+			}
+			if writer.patches != 2 || !slices.Equal(current.Finalizers, []string{"example.com/retain"}) ||
+				current.Spec.SandboxRef != "standard" {
+				t.Fatal("finalizer cleanup rewrote governance or removed a foreign finalizer")
+			}
+		})
+	}
+}
 
 func TestSandboxOptInDoesNotRunLegacyHelm(t *testing.T) {
 	for _, tc := range []struct {

@@ -7,17 +7,21 @@ package sandboxadmission
 
 import (
 	"context"
+	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	operatorcontroller "github.com/Azure/CetiRun/app/cetirun-operator/internal/controller"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxbinding"
 	admissionv1 "k8s.io/api/admission/v1"
@@ -27,9 +31,11 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/rest"
 	"k8s.io/utils/ptr"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
@@ -92,9 +98,15 @@ func TestAuthorizationAPIServerBindings(t *testing.T) {
 		role := &rbacv1.ClusterRole{
 			ObjectMeta: metav1.ObjectMeta{GenerateName: "authorization-test-"},
 			Rules: []rbacv1.PolicyRule{{
-				APIGroups: []string{api.GroupVersion.Group}, Resources: []string{"agents", "teams", "sandboxes", "agentpolicies"},
+				APIGroups: []string{api.GroupVersion.Group}, Resources: []string{"agents"},
 				Verbs: []string{"get", "list", "create", "update", "patch", "delete"},
 			}},
+		}
+		if name == testController {
+			role.Rules = append(role.Rules,
+				rbacv1.PolicyRule{APIGroups: []string{""}, Resources: []string{"namespaces"}, Verbs: []string{"get"}},
+				rbacv1.PolicyRule{APIGroups: []string{api.GroupVersion.Group}, Resources: []string{"agents/status"}, Verbs: []string{"get", "update", "patch"}},
+			)
 		}
 		create(role)
 		create(&rbacv1.ClusterRoleBinding{
@@ -108,11 +120,68 @@ func TestAuthorizationAPIServerBindings(t *testing.T) {
 	groupMember := userClient("assigned-group-member", "engineering-members")
 	outsider := userClient("unassigned-member")
 	conflicted := userClient("conflicting-member", "engineering-members", "other-members")
+	reauthorizer := userClient("administrator")
+	controller := userClient(testController)
 	f := newFixture(t)
 	for _, object := range []client.Object{f.box, f.policy, f.team} {
 		object.SetUID("")
 		object.SetResourceVersion("")
 		create(object)
+	}
+	recoveries := []struct {
+		name     string
+		missing  []string
+		reselect bool
+		fixture
+	}{
+		{name: "replace-all", missing: []string{"Team", "Sandbox", "AgentPolicy"}},
+		{name: "restore-sandbox", missing: []string{"Sandbox"}},
+		{name: "reselect-team", missing: []string{"Team"}, reselect: true},
+		{name: "reselect-policy", missing: []string{"AgentPolicy"}, reselect: true},
+	}
+	// Seed a restore state before admission enrollment. Active admission forbids
+	// deleting referenced resources; every repair below uses the rendered hooks.
+	for i := range recoveries {
+		recovery := &recoveries[i]
+		recovery.box = f.box.DeepCopy()
+		recovery.box.ObjectMeta = metav1.ObjectMeta{Name: recovery.name + "-box"}
+		recovery.policy = f.policy.DeepCopy()
+		recovery.policy.ObjectMeta = metav1.ObjectMeta{Name: recovery.name + "-policy"}
+		recovery.team = f.team.DeepCopy()
+		recovery.team.ObjectMeta = metav1.ObjectMeta{Name: recovery.name + "-team"}
+		recovery.team.Spec.SandboxRefs = []string{recovery.box.Name}
+		recovery.team.Spec.DefaultSandboxRef = recovery.box.Name
+		recovery.team.Spec.NormalAgentPolicyRef = recovery.policy.Name
+		for _, object := range []client.Object{recovery.box, recovery.policy, recovery.team} {
+			create(object)
+		}
+		recovery.agent = f.agent.DeepCopy()
+		recovery.agent.ObjectMeta = metav1.ObjectMeta{Name: recovery.name + "-agent", Finalizers: []string{api.Finalizer}}
+		recovery.agent.Spec.Team, recovery.agent.Spec.SandboxRef = recovery.team.Name, recovery.box.Name
+		stampFixtureAuthorization(t, recovery.fixture)
+		create(recovery.agent)
+		binding, err := sandboxbinding.AuthorizedBinding(recovery.agent)
+		if err != nil {
+			t.Fatal(err)
+		}
+		request, err := sandboxbinding.FormatReauthorization("before-restore", binding)
+		if err != nil {
+			t.Fatal(err)
+		}
+		recovery.agent.Annotations[sandboxbinding.ReauthorizeAnnotation] = request
+		if err := admin.Update(ctx, recovery.agent, client.FieldOwner("restored-authorization")); err != nil {
+			t.Fatal(err)
+		}
+		objects := map[string]client.Object{"Team": recovery.team, "Sandbox": recovery.box, "AgentPolicy": recovery.policy}
+		for _, kind := range recovery.missing {
+			object := objects[kind]
+			if err := admin.Delete(ctx, object); err != nil {
+				t.Fatal(err)
+			}
+			if err := admin.Get(ctx, client.ObjectKeyFromObject(object), object); !apierrors.IsNotFound(err) {
+				t.Fatalf("restore fixture still has its original %s: %v", kind, err)
+			}
+		}
 	}
 	config := testConfig()
 	config.AdminGroups = []string{"system:masters"}
@@ -221,7 +290,11 @@ func TestAuthorizationAPIServerBindings(t *testing.T) {
 			agent := newAgent("denied-" + name)
 			agent.Spec.Team = f.team.Name
 			agent.Labels = map[string]string{"team": f.team.Name, "role": "admin"}
-			denied(writer.Create(ctx, agent))
+			err := writer.Create(ctx, agent)
+			denied(err)
+			if name == "conflicted" && !strings.Contains(err.Error(), errTeamAssignmentConflict.Error()) {
+				t.Fatalf("API-server denial omitted the stable assignment guidance: %v", err)
+			}
 		}
 		for name, edit := range map[string]func(*api.Agent){
 			"team":  func(a *api.Agent) { a.Spec.Team = "caller-team" },
@@ -384,4 +457,453 @@ func TestAuthorizationAPIServerBindings(t *testing.T) {
 		agent.Spec.SandboxRef = ""
 		denied(admin.Update(ctx, agent))
 	})
+	t.Run("missing references recover without clearing protected authority or the execution hold", func(t *testing.T) {
+		for _, recovery := range recoveries {
+			t.Run(recovery.name, func(t *testing.T) {
+				key := client.ObjectKeyFromObject(recovery.agent)
+				original, err := sandboxbinding.AuthorizedBinding(recovery.agent)
+				if err != nil {
+					t.Fatal(err)
+				}
+				readHeld := func(expected sandbox.Binding, record, request string) *api.Agent {
+					t.Helper()
+					stored, binding, err := sandboxbinding.Read(ctx, admin, key)
+					if err != nil || binding != expected || stored.Annotations[sandboxbinding.AuthorizationAnnotation] != record ||
+						stored.Annotations[sandboxbinding.ReauthorizeAnnotation] != request {
+						t.Fatalf("durable authorization changed unexpectedly: binding=%v, err=%v", binding, err)
+					}
+					if !slices.Contains(stored.Finalizers, sandbox.HoldFinalizer) || !sandbox.Requested(stored, nil) || stored.Status.Sandbox != nil {
+						t.Fatal("recovery lost the sticky hold or claimed enforcement")
+					}
+					return stored
+				}
+				held := recovery.agent.DeepCopy()
+				held.Finalizers = append(held.Finalizers, sandbox.HoldFinalizer)
+				requireAuthorizationDenied(t, reauthorizer.Update(ctx, held.DeepCopy()))
+				requireAuthorizationDenied(t, member.Update(ctx, held.DeepCopy()))
+				smuggled := held.DeepCopy()
+				delete(smuggled.Annotations, sandboxbinding.AuthorizationAnnotation)
+				requireAuthorizationDenied(t, controller.Update(ctx, smuggled))
+				if err := controller.Update(ctx, held); err != nil {
+					t.Fatal("exact controller finalizer-only update could not persist a hold with missing references:", err)
+				}
+				oldRecord, oldRequest := held.Annotations[sandboxbinding.AuthorizationAnnotation], held.Annotations[sandboxbinding.ReauthorizeAnnotation]
+				before := readHeld(original, oldRecord, oldRequest)
+				team, err := handler.team(ctx, before.Spec.Team)
+				if err != nil {
+					t.Fatal(err)
+				}
+				resources := sandbox.Resources{}
+				if team != nil {
+					resources, err = handler.resources(ctx, team.Spec, resources)
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+				if _, err := sandbox.Resolve(sandbox.ResolveInput{
+					Agent: before, Team: team, Resources: resources, Registrations: handler.registrations, AuthorizedBinding: original,
+				}); err == nil {
+					t.Fatal("missing references resolved as an executable configuration")
+				}
+				request, err := sandboxbinding.FormatReauthorization("repair-before-references", original)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, edit := range []func(*api.Agent){
+					func(a *api.Agent) { a.Spec.Model = "ordinary-update" },
+					func(a *api.Agent) { a.Annotations[sandboxbinding.ReauthorizeAnnotation] = request },
+					func(a *api.Agent) { delete(a.Annotations, sandboxbinding.AuthorizationAnnotation) },
+					func(a *api.Agent) { a.Annotations[sandboxbinding.AuthorizationAnnotation] = "caller-authored" },
+					func(a *api.Agent) { delete(a.Annotations, sandboxbinding.ReauthorizeAnnotation) },
+					func(a *api.Agent) { a.Annotations = nil },
+					func(a *api.Agent) {
+						a.Spec.Team, a.Spec.SandboxRef, a.Spec.PolicyClass = "", "", ""
+					},
+					func(a *api.Agent) {
+						delete(a.Annotations, sandboxbinding.AuthorizationAnnotation)
+						a.Annotations[sandboxbinding.ReauthorizeAnnotation] = request
+					},
+				} {
+					candidate := before.DeepCopy()
+					edit(candidate)
+					requireAuthorizationDenied(t, reauthorizer.Update(ctx, candidate))
+					readHeld(original, oldRecord, oldRequest)
+				}
+				candidate := before.DeepCopy()
+				if recovery.reselect {
+					if slices.Contains(recovery.missing, "Team") {
+						candidate.Spec.Team, candidate.Spec.SandboxRef = f.team.Name, f.box.Name
+					} else {
+						recovery.team.Spec.NormalAgentPolicyRef = f.policy.Name
+						if err := admin.Update(ctx, recovery.team); err != nil {
+							t.Fatal("could not repair the missing policy by selecting a live policy:", err)
+						}
+					}
+				} else {
+					for _, item := range []struct {
+						kind   string
+						object client.Object
+					}{{"Sandbox", recovery.box}, {"AgentPolicy", recovery.policy}, {"Team", recovery.team}} {
+						if !slices.Contains(recovery.missing, item.kind) {
+							continue
+						}
+						item.object.SetUID("")
+						item.object.SetResourceVersion("")
+						item.object.SetManagedFields(nil)
+						create(item.object)
+					}
+				}
+				requireAuthorizationDenied(t, reauthorizer.Update(ctx, candidate.DeepCopy()))
+				readHeld(original, oldRecord, oldRequest)
+				requestReauthorization(t, handler, candidate, "repair-"+recovery.name)
+				intent, err := sandboxbinding.ParseReauthorization(candidate.Annotations[sandboxbinding.ReauthorizeAnnotation])
+				if err != nil {
+					t.Fatal(err)
+				}
+				target := intent.Binding
+				if target == original || target.AgentUID != original.AgentUID {
+					t.Fatal("repair must change reference identity without replacing the Agent")
+				}
+				if recovery.name == "replace-all" &&
+					(target.TeamUID == original.TeamUID || target.SandboxUID == original.SandboxUID || target.AgentPolicyUID == original.AgentPolicyUID) {
+					t.Fatal("simultaneous replacement did not assign new Team, Sandbox and AgentPolicy UIDs")
+				}
+				team, err = handler.team(ctx, candidate.Spec.Team)
+				if err != nil {
+					t.Fatal(err)
+				}
+				resources, err = handler.resources(ctx, team.Spec, sandbox.Resources{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				input := sandbox.ResolveInput{
+					Agent: candidate, Team: team, Resources: resources, Registrations: handler.registrations, AuthorizedBinding: original,
+				}
+				if _, err := sandbox.Resolve(input); !errors.Is(err, sandbox.ErrUnauthorizedBinding) {
+					t.Fatalf("restoring or reselecting references implicitly renewed authorization: %v", err)
+				}
+				requireAuthorizationDenied(t, member.Update(ctx, candidate.DeepCopy()))
+				requireAuthorizationDenied(t, controller.Update(ctx, candidate.DeepCopy()))
+				stale := candidate.DeepCopy()
+				stale.Annotations[sandboxbinding.ReauthorizeAnnotation] = request
+				requireAuthorizationDenied(t, reauthorizer.Update(ctx, stale))
+				readHeld(original, oldRecord, oldRequest)
+				if recovery.name == "replace-all" {
+					patch, marshalErr := json.Marshal(map[string]any{
+						"apiVersion": api.GroupVersion.String(), "kind": "Agent",
+						"metadata": map[string]any{"name": candidate.Name, "annotations": map[string]string{
+							sandboxbinding.ReauthorizeAnnotation: candidate.Annotations[sandboxbinding.ReauthorizeAnnotation],
+						}},
+					})
+					if marshalErr != nil {
+						t.Fatal(marshalErr)
+					}
+					err = reauthorizer.Patch(ctx, candidate.DeepCopy(), client.RawPatch(types.ApplyPatchType, patch), client.FieldOwner("binding-recovery"))
+					if !apierrors.IsConflict(err) {
+						t.Fatalf("reauthorization should initially conflict with the restored request's field manager: %v", err)
+					}
+					requireAuthorizationDenied(t, member.Patch(ctx, candidate.DeepCopy(), client.RawPatch(types.ApplyPatchType, patch),
+						client.FieldOwner("binding-recovery"), client.ForceOwnership))
+					readHeld(original, oldRecord, oldRequest)
+					err = reauthorizer.Patch(ctx, candidate, client.RawPatch(types.ApplyPatchType, patch),
+						client.FieldOwner("binding-recovery"), client.ForceOwnership)
+				} else {
+					err = reauthorizer.Update(ctx, candidate)
+				}
+				if err != nil {
+					t.Fatal("explicit current-UID administrator reauthorization failed:", err)
+				}
+				stored := readHeld(target, candidate.Annotations[sandboxbinding.AuthorizationAnnotation], candidate.Annotations[sandboxbinding.ReauthorizeAnnotation])
+				if sameAgentSelection(stored, before) && stored.Generation != before.Generation {
+					t.Fatal("metadata-only recovery unexpectedly changed the Agent generation")
+				}
+				input.Agent, input.AuthorizedBinding = stored, target
+				if _, err := sandbox.Resolve(input); err != nil {
+					t.Fatal("repaired authorization did not resolve with current references:", err)
+				}
+				for _, edit := range []func(*api.Agent){
+					func(a *api.Agent) { a.Annotations[sandboxbinding.AuthorizationAnnotation] = oldRecord },
+					func(a *api.Agent) { a.Annotations[sandboxbinding.ReauthorizeAnnotation] = oldRequest },
+					func(a *api.Agent) { a.Annotations[sandboxbinding.ReauthorizeAnnotation] += " " },
+					func(a *api.Agent) { delete(a.Annotations, sandboxbinding.ReauthorizeAnnotation) },
+					func(a *api.Agent) { a.Annotations = nil },
+				} {
+					rollback := stored.DeepCopy()
+					edit(rollback)
+					requireAuthorizationDenied(t, reauthorizer.Update(ctx, rollback))
+				}
+				stored.Spec.Model = "recovered-application"
+				if err := reauthorizer.Update(ctx, stored); err != nil {
+					t.Fatal("repaired Agent could not accept an ordinary update:", err)
+				}
+				readHeld(target, stored.Annotations[sandboxbinding.AuthorizationAnnotation], stored.Annotations[sandboxbinding.ReauthorizeAnnotation])
+			})
+		}
+	})
+	t.Run("server-side apply owns annotation keys rather than the whole map", func(t *testing.T) {
+		for _, mode := range []string{"create-defaults", "create-explicit", "adopt-existing", "legacy"} {
+			t.Run(mode, func(t *testing.T) {
+				name := "apply-" + mode
+				annotations := map[string]any{"example.com/gitops-note": "initial"}
+				spec := map[string]any{
+					"agent": map[string]any{"type": api.AgentTypeHermes}, "user": map[string]any{"alias": "alice", "displayName": ""},
+					"gatewayTokenSecretRef": "gateway-token",
+				}
+				manifest := map[string]any{
+					"apiVersion": api.GroupVersion.String(), "kind": "Agent",
+					"metadata": map[string]any{"name": name, "annotations": annotations, "finalizers": []string{api.Finalizer}},
+					"spec":     spec,
+				}
+				if mode == "create-explicit" {
+					spec["team"], spec["sandboxRef"], spec["policyClass"] = f.team.Name, f.box.Name, api.AgentPolicyClassNormal
+				}
+				if mode == "adopt-existing" {
+					if err := member.Create(ctx, newAgent(name), client.FieldOwner("agent-bootstrap")); err != nil {
+						t.Fatal(err)
+					}
+				}
+				apply := func(writer client.Client, manager string, body map[string]any, force bool) (*api.Agent, error) {
+					t.Helper()
+					raw, err := json.Marshal(body)
+					if err != nil {
+						t.Fatal(err)
+					}
+					agent := &api.Agent{ObjectMeta: metav1.ObjectMeta{Name: name}}
+					options := []client.PatchOption{client.FieldOwner(manager)}
+					if force {
+						options = append(options, client.ForceOwnership)
+					}
+					err = writer.Patch(ctx, agent, client.RawPatch(types.ApplyPatchType, raw), options...)
+					return agent, err
+				}
+				metadataApply := func(values map[string]any) map[string]any {
+					metadata := map[string]any{"name": name}
+					if values != nil {
+						metadata["annotations"] = values
+					}
+					return map[string]any{
+						"apiVersion": api.GroupVersion.String(), "kind": "Agent",
+						"metadata": metadata,
+					}
+				}
+				writer := member
+				if mode == "legacy" {
+					writer = outsider
+				}
+				applied, err := apply(writer, "gitops", manifest, false)
+				if err != nil {
+					t.Fatal("initial server-side apply failed:", err)
+				}
+				if mode == "legacy" {
+					for range 2 {
+						if sandboxbinding.Present(applied) || sandbox.Requested(applied, nil) || applied.Spec.Team != "" {
+							t.Fatal("unassigned legacy apply acquired Sandbox authority")
+						}
+						delete(annotations, "example.com/gitops-note")
+						spec["model"] = "legacy-model"
+						applied, err = apply(writer, "gitops", manifest, false)
+						if err != nil {
+							t.Fatal("legacy server-side apply regressed:", err)
+						}
+					}
+					for _, key := range []string{sandboxbinding.AuthorizationAnnotation, sandboxbinding.ReauthorizeAnnotation} {
+						_, err := apply(writer, "legacy-forgery", metadataApply(map[string]any{key: ""}), true)
+						requireAuthorizationDenied(t, err)
+					}
+					return
+				}
+				binding, err := sandboxbinding.AuthorizedBinding(applied)
+				if err != nil {
+					t.Fatal(err)
+				}
+				record := applied.Annotations[sandboxbinding.AuthorizationAnnotation]
+				if owners := authorizationAnnotationManagers(t, applied, sandboxbinding.AuthorizationAnnotation); slices.Contains(owners, "gitops:Apply") {
+					t.Fatalf("the applying manager unexpectedly owns an admission-injected annotation: %v", owners)
+				}
+				if owners := authorizationAnnotationManagers(t, applied, "example.com/gitops-note"); !slices.Equal(owners, []string{"gitops:Apply"}) {
+					t.Fatalf("declared annotation was not owned by its applying manager: %v", owners)
+				}
+				for range 2 {
+					applied, err = apply(member, "gitops", manifest, false)
+					if err != nil {
+						t.Fatal("repeating the same manifest removed admission-owned fields:", err)
+					}
+					if applied.Annotations[sandboxbinding.AuthorizationAnnotation] != record {
+						t.Fatal("repeated apply regenerated authorization")
+					}
+				}
+				reconciler := &operatorcontroller.AgentReconciler{Client: controller, APIReader: controller}
+				if _, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: applied.Name}}); err != nil {
+					t.Fatal("controller could not hold a sparse server-side-applied Agent:", err)
+				}
+				if err := admin.Get(ctx, client.ObjectKeyFromObject(applied), applied); err != nil {
+					t.Fatal(err)
+				}
+				if !slices.Contains(applied.Finalizers, sandbox.HoldFinalizer) {
+					t.Fatal("controller did not retain the execution hold")
+				}
+				annotations["example.com/gitops-note"], spec["model"] = "updated", "gitops-application-model"
+				applied, err = apply(member, "gitops", manifest, false)
+				if err != nil {
+					t.Fatal("applying application-owned fields failed:", err)
+				}
+				observer := metadataApply(map[string]any{"example.com/observer": "preserve"})
+				if _, err := apply(groupMember, "observer", observer, false); err != nil {
+					t.Fatal(err)
+				}
+				delete(annotations, "example.com/gitops-note")
+				applied, err = apply(member, "gitops", manifest, false)
+				if err != nil {
+					t.Fatal("omitting an owned ordinary annotation removed protected or separately owned keys:", err)
+				}
+				if _, found := applied.Annotations["example.com/gitops-note"]; found ||
+					applied.Annotations["example.com/observer"] != "preserve" ||
+					applied.Annotations[sandboxbinding.AuthorizationAnnotation] != record {
+					t.Fatal("server-side apply did not reconcile annotation keys independently")
+				}
+				annotations["example.com/observer"] = "conflicting-value"
+				_, err = apply(member, "gitops", manifest, false)
+				delete(annotations, "example.com/observer")
+				if !apierrors.IsConflict(err) {
+					t.Fatalf("changing another manager's annotation should conflict before admission: %v", err)
+				}
+				intent, err := sandboxbinding.FormatReauthorization("apply-authorization-1", binding)
+				if err != nil {
+					t.Fatal(err)
+				}
+				adminManifest := metadataApply(map[string]any{sandboxbinding.ReauthorizeAnnotation: intent})
+				if _, err := apply(member, "binding-administrator", adminManifest, false); err == nil {
+					t.Fatal("a field-manager name conferred administrator authority")
+				} else {
+					requireAuthorizationDenied(t, err)
+				}
+				applied, err = apply(reauthorizer, "binding-administrator", adminManifest, false)
+				if err != nil {
+					t.Fatal("explicit administrator SSA reauthorization failed:", err)
+				}
+				if owners := authorizationAnnotationManagers(t, applied, sandboxbinding.ReauthorizeAnnotation); !slices.Equal(owners, []string{"binding-administrator:Apply"}) {
+					t.Fatalf("reauthorization intent was not owned by its applying administrator manager: %v", owners)
+				}
+				for range 2 {
+					if _, err := apply(reauthorizer, "binding-administrator", adminManifest, false); err != nil {
+						t.Fatal("unchanged explicit intent was not an idempotent apply:", err)
+					}
+					applied, err = apply(member, "gitops", manifest, false)
+					if err != nil {
+						t.Fatal("ordinary GitOps apply attempted to remove another manager's authorization request:", err)
+					}
+				}
+				if applied.Annotations[sandboxbinding.AuthorizationAnnotation] != record ||
+					applied.Annotations[sandboxbinding.ReauthorizeAnnotation] != intent ||
+					!slices.Contains(applied.Finalizers, sandbox.HoldFinalizer) || applied.Status.Sandbox != nil {
+					t.Fatal("repeated apply changed authorization or released the execution hold")
+				}
+				wrongBinding := binding
+				wrongBinding.AgentUID = "another-agent-uid"
+				wrongIntent, err := sandboxbinding.FormatReauthorization("apply-wrong-target", wrongBinding)
+				if err != nil {
+					t.Fatal(err)
+				}
+				// Explicit takeover and deletion remain subject to admission even
+				// with force ownership; field-manager names are not identities.
+				for _, values := range []map[string]any{
+					{sandboxbinding.AuthorizationAnnotation: nil},
+					{sandboxbinding.AuthorizationAnnotation: "caller-authored"},
+					{sandboxbinding.ReauthorizeAnnotation: nil},
+					{sandboxbinding.AuthorizationAnnotation: nil, sandboxbinding.ReauthorizeAnnotation: nil},
+					{sandboxbinding.ReauthorizeAnnotation: intent + " "},
+					{sandboxbinding.ReauthorizeAnnotation: wrongIntent},
+				} {
+					for _, writer := range []client.Client{member, reauthorizer, controller} {
+						_, err := apply(writer, "forced-takeover", metadataApply(values), true)
+						requireAuthorizationDenied(t, err)
+					}
+				}
+				_, err = apply(reauthorizer, "binding-administrator", metadataApply(nil), false)
+				requireAuthorizationDenied(t, err)
+				// Exporting live annotations into desired state claims those keys.
+				// Omitting a solely owned protected key then attempts deletion.
+				annotations[sandboxbinding.AuthorizationAnnotation], annotations[sandboxbinding.ReauthorizeAnnotation] = record, intent
+				applied, err = apply(member, "gitops", manifest, false)
+				if err != nil {
+					t.Fatal("applying unchanged live metadata could not share ownership:", err)
+				}
+				for _, key := range []string{sandboxbinding.AuthorizationAnnotation, sandboxbinding.ReauthorizeAnnotation} {
+					if owners := authorizationAnnotationManagers(t, applied, key); !slices.Contains(owners, "gitops:Apply") {
+						t.Fatalf("declaring protected key %q did not claim it: %v", key, owners)
+					}
+					delete(annotations, key)
+				}
+				for _, force := range []bool{false, true} {
+					_, err := apply(member, "gitops", manifest, force)
+					requireAuthorizationDenied(t, err)
+				}
+				// An administrator can establish a separate owner for the exact
+				// current values before GitOps relinquishes them, without deleting
+				// authority, replay state, or the hold.
+				custodian := metadataApply(map[string]any{
+					sandboxbinding.AuthorizationAnnotation: record, sandboxbinding.ReauthorizeAnnotation: intent,
+				})
+				if _, err := apply(reauthorizer, "binding-custodian", custodian, false); err != nil {
+					t.Fatal("protected annotation ownership could not be handed off unchanged:", err)
+				}
+				for range 2 {
+					applied, err = apply(member, "gitops", manifest, false)
+					if err != nil {
+						t.Fatal("GitOps could not relinquish shared protected fields:", err)
+					}
+				}
+				for _, key := range []string{sandboxbinding.AuthorizationAnnotation, sandboxbinding.ReauthorizeAnnotation} {
+					owners := authorizationAnnotationManagers(t, applied, key)
+					if slices.Contains(owners, "gitops:Apply") || !slices.Contains(owners, "binding-custodian:Apply") {
+						t.Fatalf("protected field %q ownership did not transfer without removal: %v", key, owners)
+					}
+				}
+				stored, actual, err := sandboxbinding.Read(ctx, admin, client.ObjectKey{Name: name})
+				if err != nil || actual != binding || stored.Annotations[sandboxbinding.AuthorizationAnnotation] != record ||
+					stored.Annotations[sandboxbinding.ReauthorizeAnnotation] != intent ||
+					!slices.Contains(stored.Finalizers, sandbox.HoldFinalizer) {
+					t.Fatalf("denied SSA changed protected state: binding=%v, err=%v", actual, err)
+				}
+				if err := admin.Delete(ctx, stored); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: name}}); err != nil {
+					t.Fatal("controller could not finalize a sparse server-side-applied Agent:", err)
+				}
+				if err := admin.Get(ctx, client.ObjectKey{Name: name}, &api.Agent{}); !apierrors.IsNotFound(err) {
+					t.Fatalf("metadata-only controller cleanup left the sparse Agent terminating: %v", err)
+				}
+			})
+		}
+	})
+}
+
+func requireAuthorizationDenied(t *testing.T, err error) {
+	t.Helper()
+	if !apierrors.IsForbidden(err) {
+		t.Fatalf("expected admission denial despite Agent write RBAC, got %v", err)
+	}
+}
+
+func authorizationAnnotationManagers(t *testing.T, agent *api.Agent, key string) []string {
+	t.Helper()
+	var managers []string
+	for _, entry := range agent.ManagedFields {
+		if entry.FieldsV1 == nil {
+			continue
+		}
+		var fields map[string]any
+		if err := json.Unmarshal(entry.FieldsV1.Raw, &fields); err != nil {
+			t.Fatal(err)
+		}
+		for _, field := range []string{"f:metadata", "f:annotations", "f:" + key} {
+			fields, _ = fields[field].(map[string]any)
+		}
+		if fields != nil {
+			managers = append(managers, entry.Manager+":"+string(entry.Operation))
+		}
+	}
+	slices.Sort(managers)
+	return managers
 }

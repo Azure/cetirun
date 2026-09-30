@@ -218,6 +218,37 @@ RBAC permissions or access to the `admin` workload policy class. An unassigned
 caller cannot create or update a governed member Agent. Do not map a shared
 Portal ServiceAccount as if it identified the individual human caller.
 
+`TeamAssignmentConflict` means the authenticated user's effective memberships
+match more than one configured Team. Administrators must review both the
+assignment configuration and identity-provider memberships; there is no
+user-over-group or first-match precedence. Static configuration validation cannot
+discover overlapping live memberships. The diagnostic does not disclose users,
+groups or matched Team names.
+
+For recovery after reference deletion or replacement, restore the required
+configuration or explicitly select valid replacement references, then authorize
+the exact current UIDs with a fresh administrator request. The Agent UID and
+execution hold are retained, including when several references change together.
+Missing references are not grounds for clearing authorization or falling back
+to legacy execution. Consumed reauthorization requests remain replay state;
+do not strip either protected annotation as ordinary metadata cleanup.
+
+Server-side apply owns individual annotation keys. Desired manifests should omit
+the admission-owned authorization and reauthorization keys, rather than copying
+them from a live-object export. Repeated applies and removal of ordinary,
+application-owned annotations preserve governance. If a field manager has
+already claimed protected keys, an administrator can establish another manager's
+ownership of their exact unchanged values before the original manager omits
+them. This is an ownership handoff, not authorization removal; forcing apply
+cannot bypass admission, and changing a binding still requires the explicit
+reauthorization protocol below.
+
+The controller persists hold and cleanup finalizers using optimistic,
+metadata-only patches. These preserve sparse server-side-applied specifications
+without a typed full-object rewrite. Finalization still requires the exact
+controller and narrow lifecycle transition; it does not exempt specification,
+status or protected-annotation changes.
+
 Admission stamps `cetirun.microsoft.com/sandbox-authorization` during creation.
 Callers cannot supply, copy, remove or directly rewrite that record. Existing
 unrecorded governed Agents and changed reference UIDs require an administrator

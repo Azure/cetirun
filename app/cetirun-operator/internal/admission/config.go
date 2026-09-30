@@ -6,6 +6,7 @@ package sandboxadmission
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"slices"
@@ -14,6 +15,9 @@ import (
 	authenticationv1 "k8s.io/api/authentication/v1"
 	"k8s.io/apimachinery/pkg/util/validation"
 )
+
+var errTeamAssignmentConflict = errors.New("TeamAssignmentConflict: authenticated membership matches multiple Teams; " +
+	"ask an administrator to review sandboxAdmission.teamAssignments and identity-provider memberships so all matching users and groups resolve to one Team")
 
 type Config struct {
 	AdminUsers         []string         `json:"adminUsers"`
@@ -24,7 +28,8 @@ type Config struct {
 
 // TeamAssignment is administrative creation context, not Agent/Portal input.
 // All matching users and groups must agree on one Team; there is no precedence
-// rule that lets a request choose between conflicting memberships.
+// rule that lets a request choose between conflicting memberships. Group overlap
+// is checked per request because static configuration cannot establish membership.
 type TeamAssignment struct {
 	Team   string   `json:"team"`
 	Users  []string `json:"users,omitempty"`
@@ -117,7 +122,7 @@ func (c Config) assignedTeam(user authenticationv1.UserInfo) (string, error) {
 			continue
 		}
 		if team != "" && team != assignment.Team {
-			return "", fmt.Errorf("authenticated identity matches conflicting administrative Team assignments")
+			return "", errTeamAssignmentConflict
 		}
 		team = assignment.Team
 	}
