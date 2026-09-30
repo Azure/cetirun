@@ -1043,11 +1043,11 @@ func TestAIGatewayCatalogPublishesSharedModels(t *testing.T) {
 	)
 	r.publishAIGatewayCatalog(context.Background(), 0)
 	configMap := &corev1.ConfigMap{}
-	if err := kube.Get(context.Background(), types.NamespacedName{Namespace: "cetirun-system", Name: AIGatewayCatalogConfigMap}, configMap); err != nil {
+	if err := kube.Get(context.Background(), types.NamespacedName{Namespace: "cetirun-system", Name: cetirunv1alpha1.AIGatewayCatalogConfigMap}, configMap); err != nil {
 		t.Fatal(err)
 	}
-	var catalog AIGatewayCatalog
-	if err := json.Unmarshal([]byte(configMap.Data[AIGatewayCatalogKey]), &catalog); err != nil {
+	var catalog cetirunv1alpha1.AIGatewayCatalog
+	if err := json.Unmarshal([]byte(configMap.Data[cetirunv1alpha1.AIGatewayCatalogKey]), &catalog); err != nil {
 		t.Fatal(err)
 	}
 	if len(catalog.SharedModels) != 1 || catalog.SharedModels[0].Name != testSharedModelOne || catalog.SharedModels[0].ContextWindow != 200000 {
@@ -1055,7 +1055,7 @@ func TestAIGatewayCatalogPublishesSharedModels(t *testing.T) {
 	}
 	resourceVersion := configMap.ResourceVersion
 	r.publishAIGatewayCatalog(context.Background(), 0)
-	if err := kube.Get(context.Background(), types.NamespacedName{Namespace: "cetirun-system", Name: AIGatewayCatalogConfigMap}, configMap); err != nil {
+	if err := kube.Get(context.Background(), types.NamespacedName{Namespace: "cetirun-system", Name: cetirunv1alpha1.AIGatewayCatalogConfigMap}, configMap); err != nil {
 		t.Fatal(err)
 	}
 	if configMap.ResourceVersion != resourceVersion {

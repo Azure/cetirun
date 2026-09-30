@@ -212,6 +212,10 @@ spec:
                       Gateway. Defaults to true.
                     type: boolean
                 type: object
+                x-kubernetes-validations:
+                - message: sharedModels and githubCopilot cannot both be false
+                  rule: '!has(self.sharedModels) || self.sharedModels || !has(self.githubCopilot)
+                    || self.githubCopilot'
               msteams:
                 description: |-
                   MSTeams configures Microsoft Teams bot integration for this instance.

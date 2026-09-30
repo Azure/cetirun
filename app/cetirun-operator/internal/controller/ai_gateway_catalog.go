@@ -25,11 +25,6 @@ import (
 )
 
 const (
-	// AIGatewayCatalogConfigMap is the operator-namespace ConfigMap listing
-	// the shared models, for the Portal. It holds names and limits only.
-	AIGatewayCatalogConfigMap = "cetirun-ai-gateway-catalog"
-	// AIGatewayCatalogKey is its data key.
-	AIGatewayCatalogKey = "catalog.json"
 	// aiGatewayCatalogMaxAge is how old a catalog a reconcile accepts before
 	// listing the Gateway's models again.
 	aiGatewayCatalogMaxAge = time.Minute
@@ -38,18 +33,10 @@ const (
 	aiGatewayCatalogInterval = 2 * time.Minute
 )
 
-// aiGatewayCatalogModel is one shared model: a model name with the limits
-// the Gateway knows for it.
-type aiGatewayCatalogModel struct {
-	Name            string `json:"name"`
-	ContextWindow   int64  `json:"contextWindow,omitempty"`
-	MaxOutputTokens int64  `json:"maxOutputTokens,omitempty"`
-}
+// aiGatewayCatalogModel is one shared model with its limits; the Portal reads
+// the same shape from the published catalog.
+type aiGatewayCatalogModel = cetirunv1alpha1.AIGatewayCatalogModel
 
-// AIGatewayCatalog is what the Portal reads from the catalog ConfigMap.
-type AIGatewayCatalog struct {
-	SharedModels []aiGatewayCatalogModel `json:"sharedModels"`
-}
 
 // aiGatewayCatalog is the operator's view of the Gateway's model
 // deployments. The zero value knows nothing yet.
@@ -255,11 +242,11 @@ func (r *AgentReconciler) writeAIGatewayCatalog(ctx context.Context, shared []ai
 	if shared == nil {
 		shared = []aiGatewayCatalogModel{}
 	}
-	raw, err := json.Marshal(AIGatewayCatalog{SharedModels: shared})
+	raw, err := json.Marshal(cetirunv1alpha1.AIGatewayCatalog{SharedModels: shared})
 	if err != nil {
 		return err
 	}
-	key := types.NamespacedName{Namespace: namespace, Name: AIGatewayCatalogConfigMap}
+	key := types.NamespacedName{Namespace: namespace, Name: cetirunv1alpha1.AIGatewayCatalogConfigMap}
 	configMap := &corev1.ConfigMap{}
 	err = r.Get(ctx, key, configMap)
 	if apierrors.IsNotFound(err) {
@@ -267,20 +254,20 @@ func (r *AgentReconciler) writeAIGatewayCatalog(ctx context.Context, shared []ai
 			ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace, Labels: map[string]string{
 				"app.kubernetes.io/managed-by": "cetirun-operator", "app.kubernetes.io/component": "ai-gateway-catalog",
 			}},
-			Data: map[string]string{AIGatewayCatalogKey: string(raw)},
+			Data: map[string]string{cetirunv1alpha1.AIGatewayCatalogKey: string(raw)},
 		}
 		return r.Create(ctx, configMap)
 	}
 	if err != nil {
 		return fmt.Errorf("get catalog ConfigMap: %w", err)
 	}
-	if configMap.Data[AIGatewayCatalogKey] == string(raw) {
+	if configMap.Data[cetirunv1alpha1.AIGatewayCatalogKey] == string(raw) {
 		return nil
 	}
 	if configMap.Data == nil {
 		configMap.Data = map[string]string{}
 	}
-	configMap.Data[AIGatewayCatalogKey] = string(raw)
+	configMap.Data[cetirunv1alpha1.AIGatewayCatalogKey] = string(raw)
 	return r.Update(ctx, configMap)
 }
 

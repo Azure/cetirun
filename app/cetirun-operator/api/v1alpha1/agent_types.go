@@ -136,7 +136,8 @@ type TailscaleSpec struct {
 const TailscaleAuthKeyField = "TAILSCALE_AUTH_KEY"
 
 // ModelAccessSpec selects the Agent's model sources in the AI Gateway. A
-// field left unset counts as true.
+// field left unset counts as true, and at least one source stays on.
+// +kubebuilder:validation:XValidation:rule="!has(self.sharedModels) || self.sharedModels || !has(self.githubCopilot) || self.githubCopilot",message="sharedModels and githubCopilot cannot both be false"
 type ModelAccessSpec struct {
 	// SharedModels grants the models administrators share through the AI
 	// Gateway. Defaults to true.
@@ -450,6 +451,33 @@ type CopilotModel struct {
 	ID string `json:"id"`
 	// Name is the display name.
 	Name string `json:"name,omitempty"`
+	// ContextWindow is the model's context window in tokens.
+	ContextWindow int64 `json:"contextWindow,omitempty"`
+	// MaxOutputTokens is the model's output limit in tokens.
+	MaxOutputTokens int64 `json:"maxOutputTokens,omitempty"`
+}
+
+// The catalog the operator publishes for the Portal: a ConfigMap in the
+// operator namespace listing the shared models with their limits. It holds no
+// credentials or addresses.
+const (
+	// AIGatewayCatalogConfigMap is the name of the catalog ConfigMap.
+	AIGatewayCatalogConfigMap = "cetirun-ai-gateway-catalog"
+	// AIGatewayCatalogKey is the data key holding the catalog as JSON.
+	AIGatewayCatalogKey = "catalog.json"
+)
+
+// AIGatewayCatalog is the content of the catalog ConfigMap.
+type AIGatewayCatalog struct {
+	// SharedModels are the models every Agent with shared models can use.
+	SharedModels []AIGatewayCatalogModel `json:"sharedModels"`
+}
+
+// AIGatewayCatalogModel is one shared model with the limits the Gateway
+// knows for it.
+type AIGatewayCatalogModel struct {
+	// Name is the model name as Agents use it.
+	Name string `json:"name"`
 	// ContextWindow is the model's context window in tokens.
 	ContextWindow int64 `json:"contextWindow,omitempty"`
 	// MaxOutputTokens is the model's output limit in tokens.
