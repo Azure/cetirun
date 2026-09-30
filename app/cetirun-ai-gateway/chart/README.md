@@ -114,7 +114,9 @@ For a release called `gateway` the claim is
 `data-gateway-cetirun-ai-gateway-postgresql-0`. With a long release name the
 bundled resources' names are shortened and carry a hash instead.
 
-The volume's size and storage class are fixed at install. A StatefulSet's
+The volume's size and storage class are fixed at install. The default size is
+100Gi: the database keeps the spend log of every agent using the Gateway, so it
+grows with the number of agents and how long they run. A StatefulSet's
 volume claim template cannot be changed, so Kubernetes refuses an upgrade that
 changes `postgresql.bundled.persistence.size` or `storageClass`: measured,
 going from 8Gi to 16Gi failed with `spec.volumeClaimTemplates` and left the
@@ -125,7 +127,7 @@ was. That works when the claim's storage class allows expansion
 
 ```bash
 kubectl patch pvc data-gateway-cetirun-ai-gateway-postgresql-0 \
-  -p '{"spec":{"resources":{"requests":{"storage":"16Gi"}}}}'
+  -p '{"spec":{"resources":{"requests":{"storage":"200Gi"}}}}'
 ```
 
 Local connections inside the PostgreSQL container are trusted, as in the
