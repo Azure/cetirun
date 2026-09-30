@@ -279,6 +279,72 @@ func TestRunnerStopsOnDenialAndNormalExit(t *testing.T) {
 	}
 }
 
+func TestRunnerRechecksTargetWhenExecEndsBeforeMonitor(t *testing.T) {
+	for _, result := range []error{nil, clientexec.CodeExitError{Err: errors.New("terminated"), Code: 137}, io.EOF} {
+		t.Run(fmt.Sprint(result), func(t *testing.T) {
+			var mu sync.Mutex
+			current := Snapshot{PodUID: "pod-1", ContainerID: "container-1"}
+			execs := 0
+			f := &fakeBackend{agent: testAgent()}
+			f.resolve = func(context.Context, Identity) (Snapshot, error) {
+				mu.Lock()
+				defer mu.Unlock()
+				return current, nil
+			}
+			f.exec = func(context.Context, string, Streams) error {
+				execs++
+				if execs == 1 {
+					mu.Lock()
+					current = Snapshot{PodUID: "pod-2", ContainerID: "container-2"}
+					mu.Unlock()
+					return result
+				}
+				return nil
+			}
+			out := &lockedBuffer{}
+			runner := NewRunner(f, Streams{In: strings.NewReader(""), Out: out})
+			runner.CheckInterval = time.Hour
+			err := runner.Run(context.Background(), Session{Identity: Identity{Value: "alice"}, Expires: time.Now().Add(time.Second)})
+			if err != nil || execs != 2 {
+				t.Fatalf("replacement treated as a user exit: execs=%d err=%v", execs, err)
+			}
+			if !strings.Contains(out.String(), "Input is discarded") || !strings.Contains(out.String(), "Opening a new terminal") {
+				t.Fatal("reconnection did not explain the lost session and input")
+			}
+		})
+	}
+}
+
+func TestRunnerDoesNotReconnectWhenExitTargetCannotBeConfirmed(t *testing.T) {
+	for _, failure := range []error{ErrDenied, errors.New("API unavailable")} {
+		execs := 0
+		var mu sync.Mutex
+		exited := false
+		f := &fakeBackend{agent: testAgent()}
+		f.resolve = func(context.Context, Identity) (Snapshot, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			if exited {
+				return Snapshot{}, failure
+			}
+			return Snapshot{PodUID: "pod", ContainerID: "container"}, nil
+		}
+		f.exec = func(context.Context, string, Streams) error {
+			execs++
+			mu.Lock()
+			exited = true
+			mu.Unlock()
+			return nil
+		}
+		runner := NewRunner(f, Streams{In: strings.NewReader(""), Out: io.Discard})
+		runner.CheckInterval = time.Hour
+		err := runner.Run(context.Background(), Session{Identity: Identity{Value: "alice"}, Expires: time.Now().Add(time.Second)})
+		if err == nil || execs != 1 {
+			t.Fatalf("unconfirmed target after exit: execs=%d err=%v", execs, err)
+		}
+	}
+}
+
 func TestSizeQueueUsesLatestDimensions(t *testing.T) {
 	want := remotecommand.TerminalSize{Width: 120, Height: 40}
 	queue := &SizeQueue{

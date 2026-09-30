@@ -61,6 +61,12 @@ func (r *Runner) Run(ctx context.Context, session Session) error {
 	go r.Gate.Pump(r.Streams.In)
 	delay := r.RetryMin
 	waiting := false
+	markWaiting := func() {
+		if !waiting {
+			fmt.Fprintln(r.Streams.Out, "\r\nWaiting for the agent. Input is discarded while reconnecting.")
+			waiting = true
+		}
+	}
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -70,10 +76,7 @@ func (r *Runner) Run(ctx context.Context, session Session) error {
 			return ErrDenied
 		}
 		if err != nil {
-			if !waiting {
-				fmt.Fprintln(r.Streams.Out, "\r\nWaiting for the agent. Input is discarded while reconnecting.")
-				waiting = true
-			}
+			markWaiting()
 			if err := wait(ctx, delay); err != nil {
 				return err
 			}
@@ -130,24 +133,25 @@ func (r *Runner) Run(ctx context.Context, session Session) error {
 		if denied(err) || denied(cause) {
 			return ErrDenied
 		}
-		var exit clientexec.ExitError
-		if cause == nil && (err == nil || errors.As(err, &exit)) {
-			return err // An intentional exit is not an instruction to open another shell.
-		}
 		if errors.Is(cause, ErrRestarted) {
-			waiting = true
+			markWaiting()
 			continue
 		}
-		// Retry a lost stream only after confirming that the old container is
-		// gone. An ambiguous transport failure must not duplicate a live exec.
+		// Pod termination can return an exit code before the monitor observes it.
+		// Recheck the target before distinguishing replacement from a user exit.
 		current, resolveErr := r.resolve(ctx, session.Identity)
 		if denied(resolveErr) {
 			return ErrDenied
 		}
 		if errors.Is(resolveErr, ErrWaiting) || (resolveErr == nil && current != target) {
-			waiting = true
+			markWaiting()
 			continue
 		}
+		var exit clientexec.ExitError
+		if cause == nil && resolveErr == nil && (err == nil || errors.As(err, &exit)) {
+			return err
+		}
+		// An ambiguous transport failure must not duplicate a live exec.
 		return fmt.Errorf("terminal connection ended; reconnect to open a new terminal")
 	}
 }
