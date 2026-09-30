@@ -4,6 +4,7 @@
 package sandboxpolicy
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -36,7 +37,7 @@ func RevokeBindingsWithReader(ctx context.Context, reader client.Reader, writer 
 		return fmt.Errorf("%w: authoritative binding reader and writer are required", ErrUnavailable)
 	}
 	var failures []error
-	for _, ref := range canonicalObjects(slices.Clone(inventory)) {
+	for _, ref := range canonicalBindingReferences(inventory) {
 		if err := revokeBinding(ctx, reader, writer, ref); err != nil {
 			failures = append(failures, err)
 		}
@@ -131,7 +132,25 @@ func ObsoleteBindings(previous, desired []BindingReference) []BindingReference {
 			obsolete = append(obsolete, old)
 		}
 	}
-	return canonicalObjects(obsolete)
+	return canonicalBindingReferences(obsolete)
+}
+
+// BindingReference is entirely comparable; sorting it does not need JSON or an
+// error-returning change to the durable revocation inventory API.
+func canonicalBindingReferences(values []BindingReference) []BindingReference {
+	result := slices.Clone(values)
+	slices.SortFunc(result, func(a, b BindingReference) int {
+		return cmp.Or(
+			cmp.Compare(a.Kind, b.Kind), cmp.Compare(a.Namespace, b.Namespace),
+			cmp.Compare(a.Name, b.Name), cmp.Compare(a.UID, b.UID),
+			cmp.Compare(a.AgentName, b.AgentName), cmp.Compare(a.AgentUID, b.AgentUID),
+			cmp.Compare(a.ServiceAccountName, b.ServiceAccountName),
+			cmp.Compare(a.ServiceAccountNamespace, b.ServiceAccountNamespace),
+			cmp.Compare(a.RoleRef.APIGroup, b.RoleRef.APIGroup), cmp.Compare(a.RoleRef.Kind, b.RoleRef.Kind),
+			cmp.Compare(a.RoleRef.Name, b.RoleRef.Name), cmp.Compare(a.GrantRevision, b.GrantRevision),
+		)
+	})
+	return slices.Compact(result)
 }
 
 // OwnedBindingInventory supports restart/deletion recovery across namespaces.
@@ -185,5 +204,5 @@ func OwnedBindingInventory(ctx context.Context, c client.Reader, agentName strin
 			return nil, err
 		}
 	}
-	return canonicalObjects(inventory), nil
+	return canonicalBindingReferences(inventory), nil
 }

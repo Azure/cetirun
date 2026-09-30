@@ -4,6 +4,7 @@
 package sandboxpolicy
 
 import (
+	"cmp"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -32,6 +33,9 @@ func Compile(input CompileInput) (*Plan, error) {
 		len(validation.IsDNS1123Label(input.Namespace)) != 0 ||
 		len(validation.IsValidLabelValue(string(binding.AgentUID))) != 0 {
 		return nil, fmt.Errorf("valid Agent name, UID label and workload namespace are required")
+	}
+	if err := validateControlInput(resolution.AgentPolicy, input.Platform); err != nil {
+		return nil, err
 	}
 	normalizedSandbox, sandboxErrors := sandbox.NormalizeSandbox(resolution.Sandbox)
 	normalizedPolicy, policyErrors := sandbox.NormalizeAgentPolicy(resolution.AgentPolicy)
@@ -94,6 +98,9 @@ func Compile(input CompileInput) (*Plan, error) {
 		return nil, err
 	}
 	plan.Network.Policy.Annotations[RevisionAnnotation] = plan.Revision
+	if err := validateNetworkPolicySize(plan.Network.Policy); err != nil {
+		return nil, err
+	}
 	resource, err := manifest(plan.Network.Policy)
 	if err != nil {
 		return nil, err
@@ -126,12 +133,16 @@ func Compile(input CompileInput) (*Plan, error) {
 	return plan, nil
 }
 
-// ValidatePolicyConfiguration checks configuration support and exact role
-// approvals. Per-Agent identity approval and enforcement are deliberately not
-// inferred here; an Accepted policy is not an execution permit.
+// ValidatePolicyConfiguration checks standalone policy support and recorded
+// role approvals against platform topology, without a selected Sandbox or live
+// role reads. It does not validate Sandbox compatibility, home access, per-Agent
+// identity or enforcement. An Accepted policy is not an execution permit.
 func ValidatePolicyConfiguration(policy *api.AgentPolicy, capabilities sandbox.Capabilities, platform Platform) error {
 	if policy == nil || policy.UID == "" || !policy.DeletionTimestamp.IsZero() {
 		return fmt.Errorf("%w: a persisted non-terminating policy is required", ErrUnavailable)
+	}
+	if err := validateControlInput(policy.Spec, platform); err != nil {
+		return err
 	}
 	normalized, errs := sandbox.NormalizeAgentPolicy(policy.Spec)
 	if len(errs) != 0 {
@@ -166,6 +177,10 @@ func ValidatePolicyConfiguration(policy *api.AgentPolicy, capabilities sandbox.C
 }
 
 func supportedPolicy(policy api.AgentPolicySpec, capabilities sandbox.Capabilities) error {
+	if policy.Security.ReadOnlyRootFilesystem == nil ||
+		(policy.Network.Ingress.Mode != api.AgentPolicyIngressAuthenticated && policy.Network.Ingress.Mode != api.AgentPolicyIngressDisabled) {
+		return fmt.Errorf("%w: policy must be normalized before support evaluation", ErrUnsupportedControl)
+	}
 	if len(policy.Network.BlockedFQDNs) != 0 {
 		return fmt.Errorf("%w: full FQDN blocking is not implemented by the selected adapter", ErrUnsupportedControl)
 	}
@@ -188,8 +203,11 @@ func supportedPolicy(policy api.AgentPolicySpec, capabilities sandbox.Capabiliti
 	return nil
 }
 
-func ownedMetadata(input CompileInput, name, namespace string) metav1.ObjectMeta {
-	binding, _ := json.Marshal(input.Resolution.Binding)
+func ownedMetadata(input CompileInput, name, namespace string) (metav1.ObjectMeta, error) {
+	binding, err := json.Marshal(input.Resolution.Binding)
+	if err != nil {
+		return metav1.ObjectMeta{}, fmt.Errorf("encode sandbox binding metadata: %w", err)
+	}
 	controller, block := true, true
 	return metav1.ObjectMeta{
 		Name: name, Namespace: namespace,
@@ -199,7 +217,7 @@ func ownedMetadata(input CompileInput, name, namespace string) metav1.ObjectMeta
 			APIVersion: api.GroupVersion.String(), Kind: "Agent", Name: input.AgentName,
 			UID: input.Resolution.Binding.AgentUID, Controller: &controller, BlockOwnerDeletion: &block,
 		}},
-	}
+	}, nil
 }
 
 func digest(value any) (string, error) {
@@ -229,20 +247,29 @@ func sortedUnique[S ~[]E, E ~string](values S) S {
 	return slices.Compact(result)
 }
 
-func canonicalObjects[T any](values []T) []T {
-	key := func(value T) string {
-		data, _ := json.Marshal(value)
-		return string(data)
+func canonicalObjects[T any](values []T) ([]T, error) {
+	type entry struct {
+		value T
+		key   string
 	}
-	slices.SortFunc(values, func(a, b T) int {
-		x, y := key(a), key(b)
-		if x < y {
-			return -1
+	entries := make([]entry, len(values))
+	for i, value := range values {
+		data, err := json.Marshal(value)
+		if err != nil {
+			return nil, fmt.Errorf("encode canonical sandbox control: %w", err)
 		}
-		if x > y {
-			return 1
-		}
-		return 0
+		entries[i] = entry{value: value, key: string(data)}
+	}
+	slices.SortFunc(entries, func(a, b entry) int {
+		return cmp.Compare(a.key, b.key)
 	})
-	return slices.CompactFunc(values, func(a, b T) bool { return key(a) == key(b) })
+	result := slices.Clone(values)
+	count := 0
+	for i, entry := range entries {
+		if i == 0 || entry.key != entries[i-1].key {
+			result[count] = entry.value
+			count++
+		}
+	}
+	return result[:count], nil
 }

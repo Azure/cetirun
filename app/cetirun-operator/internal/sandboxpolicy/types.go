@@ -83,16 +83,21 @@ type Topology struct {
 }
 
 // ApprovedGrant approves exactly one role and binding scope for one policy UID.
-// Rules and RoleUID are the observed approved role contents, not just its name.
+// RoleUID, RoleResourceVersion and normalized Rules must match an authoritative
+// ClusterRole read at the trusted snapshot boundary (see VerifyPolicyGrants).
+// Revision identifies the approval, not the Kubernetes resourceVersion. Compile
+// only consumes this evidence; it does not observe live roles or authorize use of
+// a stale snapshot. Approval may explicitly include wildcard or secret access.
 // An empty Namespace authorizes a ClusterRoleBinding. The current policy API
 // requests ClusterRoles only; a Role inventory entry never aliases a ClusterRole.
 type ApprovedGrant struct {
-	PolicyUID types.UID           `json:"policyUID"`
-	Namespace string              `json:"namespace,omitempty"`
-	RoleRef   rbacv1.RoleRef      `json:"roleRef"`
-	RoleUID   types.UID           `json:"roleUID"`
-	Revision  string              `json:"revision"`
-	Rules     []rbacv1.PolicyRule `json:"rules"`
+	PolicyUID           types.UID           `json:"policyUID"`
+	Namespace           string              `json:"namespace,omitempty"`
+	RoleRef             rbacv1.RoleRef      `json:"roleRef"`
+	RoleUID             types.UID           `json:"roleUID"`
+	RoleResourceVersion string              `json:"roleResourceVersion"`
+	Revision            string              `json:"revision"`
+	Rules               []rbacv1.PolicyRule `json:"rules"`
 }
 
 // ApprovedIdentity is per-Agent authorization, not cloud provisioning.
@@ -177,6 +182,10 @@ type BindingReference struct {
 
 // These types intentionally model only the supported subset of Cilium's API.
 // In particular, no FQDN deny or guest-external mTLS is implied by an empty rule.
+// All metav1.LabelSelector fields below are ONLY the JSON shape of Cilium
+// EndpointSelectors: their k8s:-prefixed keys are Cilium source-qualified labels,
+// not Kubernetes label keys. Do not pass them to LabelSelectorAsSelector or
+// Kubernetes label-selector validation; interpretation belongs to Cilium.
 type CiliumNetworkPolicy struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata"`

@@ -270,6 +270,22 @@ blocking and mTLS remain unsupported and reject rather than becoming no-ops.
 The effective compiled revision includes topology, identity and role-content
 changes; use it rather than only the base resolver revision.
 
+The current egress posture permits public IP destinations except explicit
+exclusions, while restricting private, cluster, node, metadata and management
+ranges and qualifying required DNS/Gateway destinations. It is not a
+public-destination allow-list. Cilium default-deny establishes isolation for
+unmatched traffic; it does not remove the compiler's explicit public-egress
+rules. Whole-address-space exclusions fail compilation rather than producing
+an empty allow rule. Cilium selectors use source-qualified keys such as `k8s:`;
+their JSON shape is not a Kubernetes API-machinery label-selector contract.
+
+Network compilation has fixed budgets: 1,024 input entries, 32,768 partition
+work units, 2,048 rules, 16,384 expanded entries and 512 KiB for the complete
+serialized Cilium policy, including ownership/revision metadata. The
+[budget accounting](internal/sandboxpolicy/limits.go) bounds work before
+expansion as well as final output size. Exceeding a limit rejects the plan;
+entries are never silently truncated to obtain a successful result.
+
 Ordinary workloads keep the default ServiceAccount without token automount.
 Approved Kubernetes API and Entra identities use separate audience-bound token
 projections; Entra-only identity does not implicitly authorize Kubernetes access.
@@ -279,6 +295,18 @@ preserve shared roles/accounts. Persisting a grant inventory before writes and
 integrating retryable revocation into every finalizer path are still lifecycle
 requirements, not satisfied by rediscovering currently visible bindings alone.
 
+Each approved grant must carry the live ClusterRole UID, resource version and
+normalized rules; the approval's `Revision` is a separate administrative
+revision, not a substitute for an API observation. Configuration assessment
+calls [`VerifyPolicyGrants`](internal/sandboxpolicy/grants.go) through the
+authoritative reader. Trusted snapshot producers and future workload
+application boundaries must also verify immediately before consuming grants,
+invalidate changed observations and coordinate revocation on drift. The
+compiler remains a pure transformation and cannot detect a later role edit.
+Explicitly approved wildcard or Secret access is not silently rewritten.
+The operator gains only `get` access to ClusterRoles for this check, not
+role editing, binding or escalation authority.
+
 The operator registers Sandbox and AgentPolicy configuration reconcilers.
 Sandbox `Ready` describes prerequisites; AgentPolicy `Accepted` describes
 configuration validity/support. Without a qualified platform snapshot source,
@@ -286,6 +314,12 @@ these conditions remain `Unknown`, not ready. Indexed configuration watches
 requeue referencing Agents, including pending bindings. Per-Agent status helpers
 require matching current binding/revision/Pod/node/epoch and fresh guest-external
 observation, preserve applied history on failure, and do not release the hold.
+`Accepted` does not establish compatibility with a particular Sandbox or a
+ready-to-run workload. Reconciliation uses the cache for its primary
+configuration object, but authoritative reads for prerequisites and grants.
+Successful refreshes are jittered between 50% and 62.5% of the remaining
+snapshot freshness window; failures retain controller backoff. No production
+snapshot source is installed by these helpers.
 
 #### Schema and binary upgrades
 
