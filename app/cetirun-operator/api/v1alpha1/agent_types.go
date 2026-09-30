@@ -445,6 +445,18 @@ const (
 	CopilotTokenSecretKey = "access-token"
 )
 
+// Model names the AI Gateway gives an Agent.
+const (
+	// AIGatewayCopilotModelPrefix prefixes the Gateway names of an Agent's
+	// GitHub Copilot models, such as copilot/gpt-5.5.
+	AIGatewayCopilotModelPrefix = "copilot/"
+	// AIGatewaySignInRequiredModel and AIGatewayNoModelsModel are the
+	// placeholder default models of an Agent without any model yet: its
+	// configuration needs a default, and the Portal explains the state.
+	AIGatewaySignInRequiredModel = AIGatewayCopilotModelPrefix + "sign-in-required"
+	AIGatewayNoModelsModel       = "no-models-available"
+)
+
 // CopilotModel is one entry of the AnnotationCopilotModels list.
 type CopilotModel struct {
 	// ID is the Copilot model ID, such as gpt-5.5.

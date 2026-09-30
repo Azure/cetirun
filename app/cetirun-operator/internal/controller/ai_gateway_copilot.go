@@ -33,7 +33,7 @@ const (
 	aiGatewayCopilotGroupPrefix = "cetirun-copilot-"
 	// aiGatewayCopilotModelPrefix prefixes the names Copilot models get in the
 	// Gateway, so they never share a name with an administrator's shared model.
-	aiGatewayCopilotModelPrefix = "copilot/"
+	aiGatewayCopilotModelPrefix = cetirunv1alpha1.AIGatewayCopilotModelPrefix
 	// aiGatewayProxySecretName holds the master key of the Agent's Copilot
 	// proxy. The Gateway's routes to the proxy carry it.
 	aiGatewayProxySecretName  = "ai-gateway-copilot-proxy"

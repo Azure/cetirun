@@ -48,8 +48,8 @@ const (
 	aiGatewayKeyIDPodAnnotation   = "cetirun.microsoft.com/ai-gateway-key-id"
 	// Placeholder default models for an Agent without any model yet. The
 	// Agent's configuration needs a default; the Portal explains the state.
-	aiGatewaySignInRequiredModel = aiGatewayCopilotModelPrefix + "sign-in-required"
-	aiGatewayNoModelsModel       = "no-models-available"
+	aiGatewaySignInRequiredModel = cetirunv1alpha1.AIGatewaySignInRequiredModel
+	aiGatewayNoModelsModel       = cetirunv1alpha1.AIGatewayNoModelsModel
 )
 
 // AIGatewayConfig is the deployment-level AI Gateway integration. With

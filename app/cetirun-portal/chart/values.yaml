@@ -102,6 +102,15 @@ features:
     - openclaw
   # -- Enable the Microsoft Entra Agent Identity authorization experience.
   agentIdentityEnabled: false
+  # -- Expose the platform AI Gateway: model sources for new OpenClaw Agents,
+  # the GitHub Copilot sign-in and each Agent's model list. Agents then need a
+  # Team. Enable it together with the operator's aiGateway.enabled.
+  aiGatewayEnabled: false
+
+aiGateway:
+  # -- Namespace where the operator publishes the shared-model catalog (the
+  # operator's namespace).
+  catalogNamespace: cetirun-system
 
 agentIdentity:
   tenantId: ""

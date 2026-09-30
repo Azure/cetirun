@@ -37,7 +37,6 @@ const (
 // the same shape from the published catalog.
 type aiGatewayCatalogModel = cetirunv1alpha1.AIGatewayCatalogModel
 
-
 // aiGatewayCatalog is the operator's view of the Gateway's model
 // deployments. The zero value knows nothing yet.
 type aiGatewayCatalog struct {
