@@ -172,8 +172,11 @@ templates or in `helm get values` output.
 
 ### Reserved names
 
-Model names beginning with `cetirun-` are rejected. That prefix belongs to models
-the CetiRun operator registers automatically.
+Model names beginning with `cetirun-` or `copilot/` are rejected. Those prefixes
+belong to models the CetiRun operator registers automatically: `copilot/<model>`
+names each Agent's GitHub Copilot models. Shared models added through the console
+with these prefixes, or with a provider prefix such as `openai/`, are not given
+to Agents.
 
 The reservation exists because adding a model under a name that already exists
 does not replace the original. Both are served under the same name and traffic

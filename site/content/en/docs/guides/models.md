@@ -7,7 +7,41 @@ weight: 10
 Select a GitHub Copilot model in the portal, or configure an OpenAI or
 Anthropic model through Helm values.
 
+## Models through the AI Gateway
+
+When the deployment enables the platform AI Gateway (`aiGateway.enabled` in the
+operator chart and `features.aiGatewayEnabled` in the portal chart), OpenClaw
+instances take all their models from the Gateway, from two sources:
+
+- **Shared models** are the models an administrator configures in the Gateway
+  with the access group `cetirun-shared`. They keep the administrator's names.
+- **GitHub Copilot** models come from the owner's own Copilot subscription,
+  through a small proxy per instance that only the Gateway can reach. They
+  appear as `copilot/<model>`.
+
+The create form offers both sources, on by default. At least one stays on:
+GitHub Copilot stays on while shared models are off or none is available. Every
+new instance needs a Team while the Gateway is enabled.
+
+To add Copilot models, open the instance and choose **Sign in with GitHub**. The
+portal runs the GitHub device-code sign-in, stores the token for the instance's
+proxy, and records the account's chat models. They appear once the proxy has
+started, usually within a few minutes. A model the Gateway has no price for is
+listed as not offered: it would escape the instance's budget.
+
+Each instance has its own virtual key with a monthly budget. The instance page
+lists its models and sets the default. When an administrator adds or removes a
+shared model, the operator updates every instance that uses shared models,
+which restarts them.
+
+Sources: [operator reconcile]({{< repo "app/cetirun-operator/internal/controller/ai_gateway.go" >}}),
+[Copilot proxy template]({{< repo "app/cetirun-chart/templates/copilot-proxy.yaml" >}}),
+and [portal sign-in]({{< repo "app/cetirun-portal/internal/handler/copilot_login.go" >}}).
+
 ## GitHub Copilot in the portal
+
+Instances routed through the AI Gateway use the sign-in above instead of the
+flow in this section.
 
 An existing instance can discover models using the Copilot account signed in
 on that instance. The frontend requires a `Ready` OpenClaw or Hermes instance,
