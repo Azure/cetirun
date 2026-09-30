@@ -170,9 +170,12 @@ class SandboxAdmissionChartTests(unittest.TestCase):
             ]
             self.assertEqual(len(status_rules), 1)
             self.assertEqual(status_rules[0]["verbs"], ["get", "update", "patch"])
+        for rule in role["rules"]:
+            self.assertIsInstance(rule["apiGroups"], list)
+            self.assertIsInstance(rule["resources"], list)
         grant_rules = [
             rule for rule in role["rules"]
-            if "rbac.authorization.k8s.io" in rule["apiGroups"]
+            if any(group == "rbac.authorization.k8s.io" for group in rule["apiGroups"])
             and "clusterroles" in rule["resources"]
         ]
         self.assertEqual(grant_rules, [{
