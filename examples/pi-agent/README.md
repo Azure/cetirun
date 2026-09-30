@@ -73,9 +73,9 @@ ServiceAccount, restricted exec access, routing and storage. Keep the existing
 gateway configuration; `ttyd.gatewayServiceAccount` must match its identity.
 
 An administrator must enable Custom provisioning and approve the exact image.
-This example explicitly uses Pi-owned model authentication while the platform
-Gateway is unavailable; missing Gateway credentials never enable it implicitly.
-Merge these settings into the platform values:
+This example opts into Pi-owned model authentication; missing Gateway
+credentials never enable that mode implicitly. Merge these settings into the
+platform values:
 
 ```yaml
 cetirun-operator:
