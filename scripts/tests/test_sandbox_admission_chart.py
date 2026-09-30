@@ -413,13 +413,38 @@ class SandboxAdmissionChartTests(unittest.TestCase):
                         (operation, resource)
                         for operation in rule["operations"] for resource in rule["resources"]
                     )
-                expected = {("CREATE", "agents")}
+                expected = {("CREATE", "agents"), ("UPDATE", "agents")}
                 if kind == "ValidatingWebhookConfiguration":
                     expected = {(operation, resource) for operation in ("CREATE", "UPDATE") for resource in RESOURCES}
                     expected.update(("DELETE", resource) for resource in RESOURCES if resource != "agents")
                 else:
-                    self.assertNotIn("matchConditions", webhook)
+                    self.assertEqual(webhook["reinvocationPolicy"], "Never")
+                    self.assertEqual(
+                        webhook["matchConditions"],
+                        documents[("ValidatingWebhookConfiguration", NAME)]["webhooks"][0]["matchConditions"],
+                    )
                 self.assertEqual(operations, expected)
+
+    def test_trusted_team_assignments_are_serialized_without_inference(self):
+        assignments = [
+            {"team": "research", "users": ["member@example.com"], "groups": ["researchers"]},
+            {"team": "operations", "groups": ["operators"]},
+        ]
+        documents = self.render(self.server_values(teamAssignments=assignments))
+        container = documents[("Deployment", NAME)]["spec"]["template"]["spec"]["containers"][0]
+        config = json.loads(container["env"][0]["value"])
+        self.assertEqual(config["teamAssignments"], assignments)
+        for invalid in (
+            "research", [{}], ["research"], [{"team": "research"}],
+            [{"team": "Invalid", "users": ["member@example.com"]}],
+            [{"team": "research", "users": "member@example.com"}],
+            [{"team": "research", "users": [], "groups": ""}],
+            [{"team": "research", "groups": ["system:authenticated"]}],
+            [{"team": "research", "users": ["*"]}],
+            [{"team": "research", "users": ["member@example.com"], "admin": True}],
+        ):
+            with self.subTest(invalid=invalid):
+                self.assert_rejected(self.server_values(teamAssignments=invalid), "sandboxAdmission.teamAssignments")
 
     def test_enforcement_renders_exact_webhook_timeouts_including_bounds(self):
         for timeout in (1, 2, 10, 20, 30):

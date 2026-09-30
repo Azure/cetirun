@@ -25,12 +25,13 @@ import (
 
 	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxbinding"
 )
 
 const sandboxHoldFinalizer = sandbox.HoldFinalizer
 
 func sandboxRequested(agent *cetirunv1alpha1.Agent, team *cetirunv1alpha1.Team) bool {
-	return sandbox.Requested(agent, team)
+	return sandbox.Requested(agent, team) || sandboxbinding.Present(agent)
 }
 
 // holdSandbox prevents runtime renderers from ignoring new governance fields.

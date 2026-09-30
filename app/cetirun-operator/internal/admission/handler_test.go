@@ -146,6 +146,9 @@ func TestExplicitAdmissionAuthority(t *testing.T) {
 				requireResponse(t, f.handler.Validate(context.Background(), req), false, "administrator")
 			}
 			for _, user := range []string{"administrator", "group-administrator"} {
+				if resourceName == "agent" {
+					stampFixtureAuthorization(t, f)
+				}
 				req := requestFor(t, admissionv1.Create, objects[resourceName], nil, user)
 				if user == "group-administrator" {
 					req.UserInfo.Groups = []string{"governance-test-admins"}
@@ -162,7 +165,7 @@ func TestCreationDefaultsNeverPromoteAdministrators(t *testing.T) {
 	req := requestFor(t, admissionv1.Create, f.agent, nil, "administrator")
 	response := f.handler.DefaultAgent(context.Background(), req)
 	requireResponse(t, response, true, "")
-	if len(response.Patches) != 2 || response.Patches[0].Path != "/spec/sandboxRef" || response.Patches[0].Value != "standard" ||
+	if len(response.Patches) != 3 || response.Patches[0].Path != "/spec/sandboxRef" || response.Patches[0].Value != "standard" ||
 		response.Patches[1].Path != "/spec/policyClass" || response.Patches[1].Value != api.AgentPolicyClassNormal {
 		t.Fatalf("unexpected selection patch: %#v", response.Patches)
 	}
@@ -172,7 +175,7 @@ func TestCreationDefaultsNeverPromoteAdministrators(t *testing.T) {
 
 	f.agent.Spec.PolicyClass = api.AgentPolicyClassNormal
 	req = requestFor(t, admissionv1.Update, f.agent, f.agent.DeepCopy(), "administrator")
-	requireResponse(t, f.handler.DefaultAgent(context.Background(), req), false, "creation")
+	requireResponse(t, f.handler.DefaultAgent(context.Background(), req), true, "never re-default")
 	requireResponse(t, f.handler.Validate(context.Background(), req), false, "never re-defaulted")
 }
 
@@ -190,10 +193,10 @@ func TestGeneratedNameCreatesRemainValidBeforeAndAfterNameAssignment(t *testing.
 			response := f.handler.DefaultAgent(context.Background(), req)
 			requireResponse(t, response, true, "")
 			if governed {
-				if len(response.Patches) != 2 {
+				if len(response.Patches) != 3 {
 					t.Fatalf("governed generated-name creation did not receive defaults: %#v", response.Patches)
 				}
-				agent.Spec.SandboxRef, agent.Spec.PolicyClass = f.box.Name, api.AgentPolicyClassNormal
+				agent, _ = applyAgentPatches(t, req, response)
 			} else if len(response.Patches) != 0 {
 				t.Fatalf("legacy generated-name creation acquired defaults: %#v", response.Patches)
 			}
@@ -363,6 +366,7 @@ func TestMissingCreateDefaultNamesTheMutatingWebhook(t *testing.T) {
 
 func TestUnknownVersionFieldsDoNotBypassValidationOrBlockKnownObjects(t *testing.T) {
 	f := newFixture(t)
+	stampFixtureAuthorization(t, f)
 	for _, object := range []client.Object{f.agent, f.team, f.box, f.policy} {
 		t.Run(fmt.Sprintf("%T", object), func(t *testing.T) {
 			known := requestFor(t, admissionv1.Create, object, nil, "administrator")
@@ -408,6 +412,7 @@ func (r *observedReader) List(ctx context.Context, list client.ObjectList, optio
 
 func TestAgentValidationReadsOnlyNamedReferencesAndRefreshesEachRequest(t *testing.T) {
 	f := newFixture(t)
+	stampFixtureAuthorization(t, f)
 	reader := &observedReader{Reader: f.client, list: func(context.Context, client.ObjectList, ...client.ListOption) error {
 		t.Fatal("Agent validation must not list any collection")
 		return nil

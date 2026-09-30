@@ -148,18 +148,25 @@ healthy admission leaves their Sandbox selection unchanged.
 
 This increment implements:
 
-- Explicit administrator usernames/groups for governed Agent writes and shared
-  governance configuration. Kubernetes RBAC must also authorize the operation.
+- Explicit administrator usernames/groups for shared governance configuration,
+  and trusted Team assignments for normal-class member Agents. Kubernetes RBAC
+  must also authorize the operation.
   Portal administrators do not automatically acquire this independent authority.
   A human administrator's Agent still defaults to the `normal` policy class.
 - Creation-only Agent selection defaulting, followed by validation against the
   current Team. Existing Agents are never silently re-defaulted. Governed member
-  creation is rejected until trusted Portal Team assignment is implemented.
+  writes require an exact authenticated identity-to-Team assignment; Portal
+  identity propagation is a separate integration and is not inferred here.
   Mutation and validation are installed together: Kubernetes runs mutation
   first, including for dry runs. Validation rejects a missing selection rather
   than assuming that a default was persisted.
   Agent creation using `metadata.generateName` is accepted before the API server
   assigns a name; once assigned, the object and admission request names must match.
+- Durable admission-owned Team/Sandbox/selected-policy UID authorization on the
+  Agent, independent of last-applied status. Same-name replacement never grants
+  authority to the new UID. The mutator also handles explicit administrator
+  reauthorization on UPDATE, without reapplying creation defaults. Mutation uses
+  `reinvocationPolicy: Never`; both webhooks share the native cleanup exclusion.
 - Shared normalization and compatibility validation, including every referencing
   Team on Sandbox/policy edits, and reference checks before shared deletion.
   Ordinary Portal Team context edits can preserve unchanged governance.
@@ -186,11 +193,41 @@ registrations; enabling this process does not make those production evidence
 or release the controller hold.
 
 This is configuration admission, not complete governed-Pod admission. It does
-not yet validate final Pod/extra-container contents, assign member Teams,
-authorize a pending UID binding, serialize concurrent shared-configuration
-changes, coordinate rollout barriers, or permit governed execution. Reference
-reads are checks against current objects, not an atomic cross-resource
-transaction. Those boundaries must be completed before production adoption.
+not yet validate final Pod/extra-container contents, serialize concurrent
+shared-configuration changes, coordinate rollout barriers, or permit governed
+execution. Reference reads are checks against current objects, not an atomic
+cross-resource transaction. Those boundaries must be completed before
+production adoption.
+
+#### Trusted Team assignments and explicit reauthorization
+
+Configure assignments administratively, using the Kubernetes authenticated
+identity rather than an Agent field or a Portal role:
+
+```yaml
+sandboxAdmission:
+  teamAssignments:
+    - team: research
+      users: ["member@example.com"]
+      groups: ["research-members"]
+```
+
+Every matching user/group must identify the same Team; conflicting memberships
+reject instead of picking a precedence order. Assignments do not grant Kubernetes
+RBAC permissions or access to the `admin` workload policy class. An unassigned
+caller cannot create or update a governed member Agent. Do not map a shared
+Portal ServiceAccount as if it identified the individual human caller.
+
+Admission stamps `cetirun.microsoft.com/sandbox-authorization` during creation.
+Callers cannot supply, copy, remove or directly rewrite that record. Existing
+unrecorded governed Agents and changed reference UIDs require an administrator
+to update `cetirun.microsoft.com/sandbox-reauthorize` with a fresh `requestID`
+and the exact current `binding` tuple: Agent, Team, Sandbox and AgentPolicy UIDs,
+plus policy class. The mutator validates that request and replaces the snapshot
+atomically with the Agent update. Reauthorization changes metadata, not
+necessarily generation; consumers must not rely only on generation changes.
+`sandboxbinding.Read` reads the persisted authorization through an uncached
+reader; the shared resolver must then compare it with fresh references.
 
 #### Schema and binary upgrades
 

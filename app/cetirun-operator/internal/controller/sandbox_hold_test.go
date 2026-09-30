@@ -48,6 +48,12 @@ func TestSandboxOptInDoesNotRunLegacyHelm(t *testing.T) {
 		{"sticky hold after fields cleared", func(a *cetirunv1alpha1.Agent, _ *cetirunv1alpha1.Team) {
 			a.Status.Conditions = []metav1.Condition{{Type: cetirunv1alpha1.ConditionSandboxReady, Status: metav1.ConditionFalse}}
 		}},
+		{"authorization metadata without selection", func(a *cetirunv1alpha1.Agent, _ *cetirunv1alpha1.Team) {
+			a.Annotations = map[string]string{"cetirun.microsoft.com/sandbox-authorization": ""}
+		}},
+		{"reauthorization metadata without selection", func(a *cetirunv1alpha1.Agent, _ *cetirunv1alpha1.Team) {
+			a.Annotations = map[string]string{"cetirun.microsoft.com/sandbox-reauthorize": "malformed"}
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			agent := newCR("alice-work", cetirunv1alpha1.PhasePending, nil, 1, 0, "")

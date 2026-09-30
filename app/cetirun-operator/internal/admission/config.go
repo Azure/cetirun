@@ -16,9 +16,19 @@ import (
 )
 
 type Config struct {
-	AdminUsers         []string `json:"adminUsers"`
-	AdminGroups        []string `json:"adminGroups"`
-	ControllerUsername string   `json:"controllerUsername"`
+	AdminUsers         []string         `json:"adminUsers"`
+	AdminGroups        []string         `json:"adminGroups"`
+	ControllerUsername string           `json:"controllerUsername"`
+	TeamAssignments    []TeamAssignment `json:"teamAssignments,omitempty"`
+}
+
+// TeamAssignment is administrative creation context, not Agent/Portal input.
+// All matching users and groups must agree on one Team; there is no precedence
+// rule that lets a request choose between conflicting memberships.
+type TeamAssignment struct {
+	Team   string   `json:"team"`
+	Users  []string `json:"users,omitempty"`
+	Groups []string `json:"groups,omitempty"`
 }
 
 func ParseConfig(raw string) (Config, error) {
@@ -35,13 +45,13 @@ func (c Config) Validate() error {
 	}
 	for _, values := range [][]string{c.AdminUsers, c.AdminGroups} {
 		for _, value := range values {
-			if value == "" || strings.TrimSpace(value) != value || strings.Contains(value, "*") {
+			if !exactIdentity(value) {
 				return fmt.Errorf("Sandbox admission administrators must be exact, nonempty identities")
 			}
 		}
 	}
 	for _, group := range c.AdminGroups {
-		if group == "system:authenticated" || group == "system:unauthenticated" || strings.HasPrefix(group, "system:serviceaccounts") {
+		if blanketGroup(group) {
 			return fmt.Errorf("Sandbox admission cannot grant administration to a blanket authentication or service-account group")
 		}
 	}
@@ -50,11 +60,36 @@ func (c Config) Validate() error {
 		len(validation.IsDNS1123Label(parts[2])) != 0 || len(validation.IsDNS1123Subdomain(parts[3])) != 0 {
 		return fmt.Errorf("Sandbox admission controllerUsername must identify one namespaced service account")
 	}
+	teams, users, groups := map[string]bool{}, map[string]string{}, map[string]string{}
+	for _, assignment := range c.TeamAssignments {
+		if len(validation.IsDNS1123Subdomain(assignment.Team)) != 0 || teams[assignment.Team] {
+			return fmt.Errorf("Sandbox admission Team assignments require unique, valid Team names")
+		}
+		teams[assignment.Team] = true
+		if len(assignment.Users)+len(assignment.Groups) == 0 {
+			return fmt.Errorf("Sandbox admission Team assignments require explicit users or groups")
+		}
+		for _, set := range []struct {
+			values []string
+			seen   map[string]string
+			group  bool
+		}{{assignment.Users, users, false}, {assignment.Groups, groups, true}} {
+			for _, identity := range set.values {
+				if !exactIdentity(identity) || (set.group && blanketGroup(identity)) {
+					return fmt.Errorf("Sandbox admission Team assignments require exact authenticated identities, not blanket groups")
+				}
+				if _, found := set.seen[identity]; found {
+					return fmt.Errorf("Sandbox admission Team assignments repeat an identity")
+				}
+				set.seen[identity] = assignment.Team
+			}
+		}
+	}
 	return nil
 }
 
 func (c Config) administrator(user authenticationv1.UserInfo) bool {
-	if user.Username == "" || user.Username == "system:anonymous" {
+	if !authenticated(user) {
 		return false
 	}
 	if slices.Contains(c.AdminUsers, user.Username) {
@@ -66,6 +101,40 @@ func (c Config) administrator(user authenticationv1.UserInfo) bool {
 		}
 	}
 	return false
+}
+
+func (c Config) assignedTeam(user authenticationv1.UserInfo) (string, error) {
+	if !authenticated(user) {
+		return "", nil
+	}
+	team := ""
+	for _, assignment := range c.TeamAssignments {
+		matches := slices.Contains(assignment.Users, user.Username)
+		for _, group := range user.Groups {
+			matches = matches || slices.Contains(assignment.Groups, group)
+		}
+		if !matches {
+			continue
+		}
+		if team != "" && team != assignment.Team {
+			return "", fmt.Errorf("authenticated identity matches conflicting administrative Team assignments")
+		}
+		team = assignment.Team
+	}
+	return team, nil
+}
+
+func authenticated(user authenticationv1.UserInfo) bool {
+	return exactIdentity(user.Username) && !slices.Contains(user.Groups, "system:unauthenticated")
+}
+
+func exactIdentity(value string) bool {
+	return value != "" && value != "system:anonymous" && strings.TrimSpace(value) == value &&
+		!strings.ContainsAny(value, "*\r\n\t")
+}
+
+func blanketGroup(value string) bool {
+	return value == "system:authenticated" || value == "system:unauthenticated" || strings.HasPrefix(value, "system:serviceaccounts")
 }
 
 func decodeStrict(raw []byte, object any) error {
