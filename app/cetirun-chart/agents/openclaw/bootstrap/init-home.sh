@@ -167,7 +167,7 @@ agent_prepare_integrations() {
 # installed, so it does not suggest a login that no longer applies.
 remove_retired_copilot_helper() {
   helper=$(home_path .local/bin/copilot-auth)
-  if [ -f "$helper" ] && [ ! -L "$helper" ] && grep -q 'copilot-auth - Authenticate GitHub Copilot for OpenClaw' "$helper"; then
+  if [ -f "$helper" ] && [ ! -L "$helper" ] && grep -q 'Authenticate GitHub Copilot for OpenClaw' "$helper"; then
     rm -f "$helper"
   fi
 }

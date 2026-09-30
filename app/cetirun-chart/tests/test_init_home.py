@@ -34,7 +34,8 @@ def agent(request, tmp_path):
         source / f".{kind}/skills/azure",
         dirs_exist_ok=True,
     )
-    (config / f"{kind}-auth.sh").write_text("#!/bin/sh\nexit 0\n")
+    if kind == "hermes":
+        (config / "hermes-auth.sh").write_text("#!/bin/sh\nexit 0\n")
     command_log = tmp_path / "commands"
     for command in ("git", "curl", "az", "hermes"):
         stub = binaries / command
@@ -97,7 +98,11 @@ def test_native_first_start_and_repeat_preserve_user_files(agent):
     assert native_marker(agent).is_file()
     assert (agent["target"] / ".cetirun-home-seeded").is_file()
     helper = agent["target"] / ".local/bin/copilot-auth"
-    assert helper.stat().st_mode & 0o777 == 0o755
+    if agent["kind"] == "hermes":
+        assert helper.stat().st_mode & 0o777 == 0o755
+    else:
+        # OpenClaw's models come through the AI Gateway; no in-agent sign-in.
+        assert not helper.exists()
     assert (
         agent["target"] / f'.{agent["kind"]}/skills/azure/SKILL.md'
     ).read_text() == (CHART / "skills/azure/SKILL.md").read_text()
@@ -268,3 +273,18 @@ def test_hermes_atomic_replace_failure(tmp_path, monkeypatch):
         module.replace_file(dest, "new")
     assert dest.read_text() == "original"
     assert sorted(path.name for path in tmp_path.iterdir()) == ["config.yaml"]
+
+
+@pytest.mark.parametrize("agent", ["openclaw"], indirect=True)
+@pytest.mark.parametrize(("content", "kept"), [
+    # The header of the helper earlier releases installed.
+    ("#!/bin/sh\nset -e\n\n# copilot-auth \u2014 Authenticate GitHub Copilot for OpenClaw.\n", False),
+    ("#!/bin/sh\necho my own script\n", True),
+])
+def test_openclaw_removes_only_the_retired_copilot_helper(agent, content, kept):
+    helper = agent["target"] / ".local/bin/copilot-auth"
+    helper.parent.mkdir(parents=True)
+    helper.write_text(content)
+    result = run(agent)
+    assert result.returncode == 0, result.stderr
+    assert helper.exists() == kept
