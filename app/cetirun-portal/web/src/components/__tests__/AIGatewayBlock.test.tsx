@@ -188,23 +188,30 @@ describe("AIGatewayBlock", () => {
       state: "pending", userCode: "WXYZ-9876", verificationUri: "https://github.com/login/device", interval: 5,
     });
     api.cancelCopilotLogin.mockResolvedValue(undefined);
+    // Nothing to resume on mount; later polls stay unanswered until released.
+    const unanswered: Array<(value: unknown) => void> = [];
+    let started = false;
+    api.pollCopilotLogin.mockImplementation(() =>
+      started ? new Promise((resolve) => unanswered.push(resolve)) : Promise.resolve({ state: "none" }),
+    );
     renderBlock(instance());
     await act(async () => {
       await Promise.resolve();
     });
-    let answer: (value: unknown) => void = () => {};
-    api.pollCopilotLogin.mockImplementationOnce(() => new Promise((resolve) => { answer = resolve; }));
+    started = true;
     await user.click(screen.getByRole("button", { name: "Sign in with GitHub" }));
     await screen.findByText("WXYZ-9876");
     await act(async () => {
       await vi.advanceTimersByTimeAsync(5_000);
     });
+    expect(unanswered).toHaveLength(1);
     await user.click(screen.getByRole("button", { name: "Cancel" }));
+    const pollsAtCancel = api.pollCopilotLogin.mock.calls.length;
     await act(async () => {
-      answer({ state: "pending", userCode: "WXYZ-9876", verificationUri: "https://github.com/login/device", interval: 5 });
+      unanswered[0]({ state: "pending", userCode: "WXYZ-9876", verificationUri: "https://github.com/login/device", interval: 5 });
       await vi.advanceTimersByTimeAsync(10_000);
     });
     expect(screen.queryByText("WXYZ-9876")).not.toBeInTheDocument();
-    expect(api.pollCopilotLogin).toHaveBeenCalledTimes(2);
+    expect(api.pollCopilotLogin.mock.calls.length).toBe(pollsAtCancel);
   });
 });
