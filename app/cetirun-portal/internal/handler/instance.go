@@ -33,6 +33,17 @@ import (
 // lowercase letters, digits, and hyphens in between.
 var validInstanceNameSuffix = regexp.MustCompile(`^[a-z][a-z0-9-]*[a-z0-9]$|^[a-z]$`)
 
+// maxInstanceNameLength is the longest instance name whose agent can start.
+// The operator names the agent StatefulSet "openclaw-<instance>-cetirun", 17
+// characters longer than the instance name, and Kubernetes labels each of its
+// pods with controller-revision-hash=<StatefulSet name>-<hash of up to 10
+// characters>. A label value holds at most 63 characters, so the StatefulSet
+// name has to fit in 52 and the instance name in 35. Longer names produce an
+// agent whose pod is never created, and from 45 characters Helm rejects the
+// release name. The limit also keeps the namespace "cetirun-<instance>" within
+// the 63 characters of a DNS label.
+const maxInstanceNameLength = 35
+
 // reservedInstanceNames are names that collide with one of the gateway-level
 // path tokens. The collision surfaces are:
 //
@@ -607,9 +618,9 @@ func (h *InstanceHandler) CreateInstance(w http.ResponseWriter, r *http.Request)
 		}
 		instanceName = claims.Alias + "-" + req.InstanceName
 	}
-	// Namespace must be a DNS label (max 63 chars): "cetirun-" (8) + instanceName.
-	if len("cetirun-"+instanceName) > 63 {
-		writeError(w, http.StatusBadRequest, "name_too_long", fmt.Sprintf("Instance name too long: 'cetirun-%s' exceeds 63 characters", instanceName))
+	// See maxInstanceNameLength for where the limit comes from.
+	if len(instanceName) > maxInstanceNameLength {
+		writeError(w, http.StatusBadRequest, "name_too_long", fmt.Sprintf("Instance name too long: '%s' has %d characters, the limit is %d", instanceName, len(instanceName), maxInstanceNameLength))
 		return
 	}
 	// Reject reserved instance names that collide with gateway-level routing or
