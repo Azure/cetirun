@@ -114,7 +114,7 @@ export function WorkspacePage() {
       </div>
 
       {/* Content area */}
-      <div style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column" }}>
+      <div style={{ flex: 1, minWidth: 0, overflow: "hidden", display: "flex", flexDirection: "column" }}>
         {isLoading && (
           <div style={{ padding: 24 }}>
             <Text>Loading...</Text>
