@@ -69,6 +69,14 @@ func NewServer(cfg Config, reader AgentReader, socket string) *Server {
 		},
 	}
 	proxy.ModifyResponse = func(response *http.Response) error {
+		if response.StatusCode == http.StatusSwitchingProtocols && strings.EqualFold(response.Header.Get("Upgrade"), "websocket") {
+			stream, ok := response.Body.(io.ReadWriteCloser)
+			if !ok {
+				return fmt.Errorf("terminal upgrade has no duplex stream")
+			}
+			response.Body = &terminalWebSocket{ReadWriteCloser: stream}
+			return nil
+		}
 		if response.StatusCode != http.StatusOK ||
 			!strings.HasPrefix(response.Header.Get("Content-Type"), "text/html") {
 			return nil
