@@ -118,6 +118,7 @@ jobs:
             -v /var/run/docker.sock:/var/run/docker.sock \
             mcr.microsoft.com/oss/v2/aquasecurity/trivy:v0.68.2@sha256:493766e398dcdb680b4084ba396139c495466f4229698b5da7be79d61fa5f5b3 \
             image \
+            --timeout 10m \
             --format table \
             --exit-code 1 \
             --severity CRITICAL,HIGH \
@@ -130,6 +131,7 @@ jobs:
             -v /var/run/docker.sock:/var/run/docker.sock \
             mcr.microsoft.com/oss/v2/aquasecurity/trivy:v0.68.2@sha256:493766e398dcdb680b4084ba396139c495466f4229698b5da7be79d61fa5f5b3 \
             image \
+            --timeout 10m \
             --format table \
             --exit-code 1 \
             --severity CRITICAL \
@@ -142,6 +144,7 @@ jobs:
             -v /var/run/docker.sock:/var/run/docker.sock \
             mcr.microsoft.com/oss/v2/aquasecurity/trivy:v0.68.2@sha256:493766e398dcdb680b4084ba396139c495466f4229698b5da7be79d61fa5f5b3 \
             image \
+            --timeout 10m \
             --format table \
             --exit-code 1 \
             --severity CRITICAL \
@@ -157,6 +160,7 @@ jobs:
             -v "${{ github.workspace }}:/workspace" \
             mcr.microsoft.com/oss/v2/aquasecurity/trivy:v0.68.2@sha256:493766e398dcdb680b4084ba396139c495466f4229698b5da7be79d61fa5f5b3 \
             image \
+            --timeout 10m \
             --format sarif \
             --output /workspace/trivy-results.sarif \
             --severity CRITICAL,HIGH \
@@ -181,6 +185,7 @@ jobs:
             -v "${{ github.workspace }}:/workspace" \
             mcr.microsoft.com/oss/v2/aquasecurity/trivy:v0.68.2@sha256:493766e398dcdb680b4084ba396139c495466f4229698b5da7be79d61fa5f5b3 \
             image \
+            --timeout 10m \
             --format json \
             --output /workspace/trivy-results.json \
             --severity CRITICAL,HIGH \

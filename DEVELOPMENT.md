@@ -199,6 +199,12 @@ including invalid-value cases. They use dummy inputs and do not install
 resources. They do not validate every chart in the repository or prove that a
 live deployment works.
 
+The [Runtime image CVEs workflow](.github/workflows/docker-build-validate.yml)
+uses an explicit ten-minute Trivy timeout per runtime image scan, within its
+existing job time limit. Scan errors and timeouts still fail the vulnerability
+gates; severity thresholds and enabled scanners are unchanged. These image
+builds/scans run in CI, not as part of the offline commands above.
+
 The Python command tests repository helpers with local fixtures. The Istio mesh
 reconciliation tests require the pinned PyYAML dependency in
 `infra/istio/requirements.txt`. It does not run the Auth/Teams and native
