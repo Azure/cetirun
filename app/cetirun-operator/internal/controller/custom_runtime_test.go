@@ -20,6 +20,7 @@ import (
 	storagev1 "k8s.io/api/storage/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
@@ -214,6 +215,7 @@ func customFixture(name string, port *int32) (*api.Agent, runtimebindings.Custom
 	image := "registry.example.com/agent@sha256:" + strings.Repeat("a", 64)
 	cr.Spec.Agent = api.HarnessSpec{Type: api.AgentTypeCustom, Image: ptr.To(image), Username: ptr.To("worker"), Port: port}
 	cr.Spec.GatewayTokenSecretRef = ""
+	cr.Spec.Helm.Values = map[string]runtime.RawExtension{"ttyd": {Raw: []byte(`{"enabled":false}`)}}
 	ref := func(name string) runtimebindings.ObjectReference {
 		return runtimebindings.ObjectReference{Name: name, UID: name + "-uid", Revision: "1"}
 	}

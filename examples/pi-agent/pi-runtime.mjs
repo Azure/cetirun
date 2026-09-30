@@ -1,42 +1,20 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import { mkdir, readFile } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import {
-  createAgentSession, createExtensionRuntime, loadSkillsFromDir,
-  ModelRuntime, SessionManager, SettingsManager,
+  createAgentSession, ModelRuntime, SessionManager, SettingsManager,
 } from "@earendil-works/pi-coding-agent";
+import { approvedResources } from "./pi-resources.mjs";
 
 export const PROVIDER = "github-copilot";
+export const PI_TOOLS = ["read", "bash", "edit", "write", "grep", "find", "ls"];
+const HTTP_TOOL_BUDGET = 8;
 
-export async function approvedResources(home) {
-  const root = path.join(home, ".agents");
-  const canonical = path.join(root, "AGENTS.md");
-  const content = await readFile(canonical, "utf8");
-  const skills = loadSkillsFromDir({ dir: path.join(root, "skills"), source: "cetirun" });
-  if (!content.trim() || !skills.skills.some((skill) => skill.name === "cetirun-memory")) {
-    throw new Error("Canonical context and cetirun-memory are required");
-  }
-  const extensions = { extensions: [], errors: [], runtime: createExtensionRuntime() };
-  return {
-    getExtensions: () => extensions,
-    getSkills: () => skills,
-    getPrompts: () => ({ prompts: [], diagnostics: [] }),
-    getThemes: () => ({ themes: [], diagnostics: [] }),
-    getAgentsFiles: () => ({ agentsFiles: [{ path: canonical, content }] }),
-    getSystemPrompt: () => undefined,
-    getSystemPromptSource: () => undefined,
-    getAppendSystemPrompt: () => [],
-    getAppendSystemPromptSources: () => [],
-    extendResources: () => {},
-    reload: async () => {},
-  };
-}
-
-export async function createPiRuntime(home) {
+/** Shared inputs for HTTP and TUI; neither loads arbitrary HOME extensions. */
+export async function createPiServices(home, cwd = path.join(home, "workspace")) {
   const agentDir = path.join(home, ".pi", "agent");
-  const cwd = path.join(home, "workspace");
   await mkdir(agentDir, { recursive: true, mode: 0o700 });
   await mkdir(cwd, { recursive: true, mode: 0o700 });
   const resourceLoader = await approvedResources(home);
@@ -46,10 +24,24 @@ export async function createPiRuntime(home) {
     allowModelNetwork: false,
     refreshOnCreate: false,
   });
+  const settingsManager = SettingsManager.inMemory({
+    defaultProvider: PROVIDER,
+    retry: { enabled: false },
+    enableInstallTelemetry: false,
+  });
+  return { cwd, agentDir, modelRuntime, resourceLoader, settingsManager, diagnostics: [] };
+}
+
+/** Adapt the real Pi SDK to agent-api.mjs and the optional local auth helper. */
+export async function createPiRuntime(home) {
+  const services = await createPiServices(home);
+  const { cwd, agentDir, modelRuntime, resourceLoader } = services;
+
   async function availableModels(signal) {
     await modelRuntime.refresh({ allowNetwork: false, providers: [PROVIDER], signal });
     return modelRuntime.getAvailable(PROVIDER, { signal });
   }
+
   return {
     skills: () => resourceLoader.getSkills().skills.map(({ name }) => name),
     async authenticated() {
@@ -59,74 +51,92 @@ export async function createPiRuntime(home) {
       return (await availableModels(signal)).map(({ id }) => id);
     },
     async login(signal, notify) {
-      // Pi stores and refreshes its own credential. Never return it over HTTP.
       await modelRuntime.login(PROVIDER, "oauth", {
         signal,
         prompt: async () => "",
         notify: (event) => {
-          if (event.type === "device_code") {
-            const url = new URL(event.verificationUri);
-            if (url.protocol !== "https:" || url.hostname !== "github.com") {
-              throw new Error("Unexpected GitHub verification URL");
-            }
-            notify({ state: "awaiting-device", userCode: event.userCode, verificationUri: url.href });
+          if (event.type !== "device_code") return;
+          const url = new URL(event.verificationUri);
+          if (url.protocol !== "https:" || url.hostname !== "github.com") {
+            throw new Error("Unexpected GitHub verification URL");
           }
+          // Return only the user-facing device flow, never the stored credential.
+          notify({ state: "awaiting-device", userCode: event.userCode, verificationUri: url.href });
         },
       });
     },
     async run({ model: id, messages, signal, onText }) {
-      const available = await availableModels(signal);
-      const model = available.find((candidate) => candidate.id === id);
+      const model = (await availableModels(signal)).find((candidate) => candidate.id === id);
       if (!model) throw new Error("Requested Copilot model is unavailable");
-      const manager = SessionManager.inMemory(cwd);
-      const system = messages.filter((message) => message.role === "system").map((message) => message.content);
-      const conversation = messages.filter((message) => message.role !== "system");
-      for (const message of conversation.slice(0, -1)) {
-        if (message.role === "user") {
-          manager.appendMessage({ role: "user", content: message.content, timestamp: Date.now() });
-        } else {
-          manager.appendMessage({
-            role: "assistant", content: [{ type: "text", text: message.content }],
-            api: model.api, provider: model.provider, model: model.id, stopReason: "stop", timestamp: Date.now(),
-            usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
-              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
-          });
-        }
-      }
-      const loader = { ...resourceLoader, getAppendSystemPrompt: () => system };
+
+      const { sessionManager, prompt, systemPrompt } = replayHTTPHistory(cwd, model, messages);
       const { session } = await createAgentSession({
-        cwd, agentDir, model, modelRuntime, resourceLoader: loader, sessionManager: manager,
-        tools: ["read", "bash", "edit", "write", "grep", "find", "ls"],
+        cwd, agentDir, model, modelRuntime, sessionManager,
+        resourceLoader: { ...resourceLoader, getAppendSystemPrompt: () => systemPrompt },
+        tools: PI_TOOLS,
         settingsManager: SettingsManager.inMemory({
-          compaction: { enabled: false }, retry: { enabled: false }, enableInstallTelemetry: false,
+          compaction: { enabled: false },
+          retry: { enabled: false },
+          enableInstallTelemetry: false,
         }),
       });
-      let toolCalls = 0;
-      let limitExceeded = false;
-      const abort = () => { void session.abort().catch(() => {}); };
-      signal.addEventListener("abort", abort, { once: true });
-      const unsubscribe = session.subscribe((event) => {
-        if (event.type === "tool_execution_start" && ++toolCalls > 8) {
-          limitExceeded = true;
-          abort();
-        }
-        if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
-          onText?.(event.assistantMessageEvent.delta);
-        }
-      });
       try {
-        signal.throwIfAborted();
-        await session.prompt(conversation.at(-1).content);
-        signal.throwIfAborted();
-        if (limitExceeded) throw new Error("Example tool budget exceeded");
-        const last = session.messages.findLast((message) => message.role === "assistant");
-        if (!last || ["error", "aborted"].includes(last.stopReason)) throw new Error("Pi run did not complete");
-        return { text: session.getLastAssistantText() ?? "", toolCalls };
+        return await runHTTPPrompt(session, prompt, signal, onText);
       } finally {
-        signal.removeEventListener("abort", abort);
-        unsubscribe();
         session.dispose();
       }
     },
   };
+}
+
+// HTTP callers own their history. Do not append it to a native TUI session.
+function replayHTTPHistory(cwd, model, messages) {
+  const sessionManager = SessionManager.inMemory(cwd);
+  const systemPrompt = messages.filter((message) => message.role === "system").map((message) => message.content);
+  const conversation = messages.filter((message) => message.role !== "system");
+  for (const message of conversation.slice(0, -1)) {
+    if (message.role === "user") {
+      sessionManager.appendMessage({ role: "user", content: message.content, timestamp: Date.now() });
+    } else {
+      sessionManager.appendMessage({
+        role: "assistant",
+        content: [{ type: "text", text: message.content }],
+        api: model.api, provider: model.provider, model: model.id,
+        stopReason: "stop", timestamp: Date.now(),
+        usage: {
+          input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+        },
+      });
+    }
+  }
+  return { sessionManager, systemPrompt, prompt: conversation.at(-1).content };
+}
+
+async function runHTTPPrompt(session, prompt, signal, onText) {
+  let toolCalls = 0;
+  let limitExceeded = false;
+  const abort = () => { void session.abort().catch(() => {}); };
+  signal.addEventListener("abort", abort);
+  const unsubscribe = session.subscribe((event) => {
+    if (event.type === "tool_execution_start" && ++toolCalls > HTTP_TOOL_BUDGET) {
+      limitExceeded = true;
+      abort();
+    }
+    if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
+      onText?.(event.assistantMessageEvent.delta);
+    }
+  });
+  try {
+    signal.throwIfAborted();
+    await session.prompt(prompt);
+    signal.throwIfAborted();
+    if (limitExceeded) throw new Error("Example tool budget exceeded");
+    const last = session.messages.findLast((message) => message.role === "assistant");
+    if (!last || ["error", "aborted"].includes(last.stopReason)) throw new Error("Pi run did not complete");
+    return { text: session.getLastAssistantText() ?? "", toolCalls };
+  } finally {
+    signal.removeEventListener("abort", abort);
+    unsubscribe();
+  }
 }

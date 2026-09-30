@@ -19,6 +19,7 @@ const mockInstance: Instance = {
   gatewayToken: "tok-abc",
   upgradeAvailable: false,
   teamsEnabled: false,
+  createdAt: "2026-01-01T00:00:00Z",
 };
 
 vi.mock("../hooks/useInstance", () => ({
@@ -120,5 +121,25 @@ describe("WorkspacePage", () => {
     expect(screen.getByText("Terminal")).toHaveAttribute("aria-disabled", "true");
     expect(screen.getByText("Desktop")).toHaveAttribute("aria-disabled", "true");
     mockInstance.phase = "Ready";
+  });
+
+  it("enables the owned Custom terminal without enabling native UI or desktop", () => {
+    const previous = { ...mockInstance };
+    mockInstance.agentType = "custom";
+    mockInstance.accessUrl = "https://gateway.example.com/testuser/term/";
+    mockInstance.conditions = [
+      { type: "IngressReady", status: "True", reason: "", message: "" },
+      { type: "TerminalConfigured", status: "True", reason: "", message: "" },
+      { type: "DesktopConfigured", status: "False", reason: "", message: "" },
+    ];
+    try {
+      renderAt("/instances/testuser/overview");
+      expect(screen.getByRole("link", { name: "Terminal" })).toHaveAttribute("href", "https://gateway.example.com/testuser/term");
+      expect(screen.getByText("Agent UI").closest("a")).not.toHaveAttribute("href");
+      expect(screen.getByText("Desktop").closest("a")).not.toHaveAttribute("href");
+    } finally {
+      Object.assign(mockInstance, previous);
+      mockInstance.conditions = previous.conditions;
+    }
   });
 });

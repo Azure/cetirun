@@ -6,7 +6,8 @@ import test from "node:test";
 import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { approvedResources, createPiRuntime } from "../pi-runtime.mjs";
+import { approvedResources } from "../pi-resources.mjs";
+import { createPiRuntime } from "../pi-runtime.mjs";
 import { createAgentSession, ModelRuntime, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 
 test("the real Pi SDK discovers approved context without model credentials", async (t) => {

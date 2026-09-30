@@ -36,6 +36,14 @@ rules:
   - apiGroups: ["rbac.authorization.k8s.io"]
     resources: ["roles", "rolebindings"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Per-Agent terminal readers contain only get on the named Agent resource.
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["clusterroles", "clusterrolebindings"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["clusterroles"]
+    resourceNames: ["cetirun-terminal-exec"]
+    verbs: ["bind"]
 
   # Batch Jobs (pre-upgrade hook creates Jobs in instance namespaces)
   - apiGroups: ["batch"]
@@ -51,11 +59,18 @@ rules:
     resources: ["secrets", "configmaps", "services", "persistentvolumeclaims", "serviceaccounts"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: ["apps"]
-    resources: ["statefulsets"]
+    resources: ["statefulsets", "deployments"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["endpoints"]
+    resourceNames: ["kubernetes"]
+    verbs: ["get"]
+  - apiGroups: ["discovery.k8s.io"]
+    resources: ["endpointslices"]
+    verbs: ["list"]
   - apiGroups: ["policy"]
     resources: ["poddisruptionbudgets"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
@@ -76,6 +91,9 @@ rules:
   # Istio VirtualServices + Sidecar (egress scope)
   - apiGroups: ["networking.istio.io"]
     resources: ["virtualservices", "sidecars"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["security.istio.io"]
+    resources: ["authorizationpolicies", "peerauthentications"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 
   # ValidatingAdmissionPolicy (cluster-scoped, created by the openclaw chart to block kubectl exec)

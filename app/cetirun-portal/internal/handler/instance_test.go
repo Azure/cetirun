@@ -753,6 +753,34 @@ func TestToInstanceResponse_HermesAPIServerKey(t *testing.T) {
 	}
 }
 
+func TestCustomAccessService(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		desktop  metav1.ConditionStatus
+		terminal metav1.ConditionStatus
+		want     string
+	}{
+		{"legacy desktop", "", "", "desktop"},
+		{"terminal only", metav1.ConditionFalse, metav1.ConditionTrue, "term"},
+		{"both ready", metav1.ConditionTrue, metav1.ConditionTrue, "desktop"},
+		{"both disabled", metav1.ConditionFalse, metav1.ConditionFalse, ""},
+		{"terminal pending", metav1.ConditionFalse, metav1.ConditionUnknown, ""},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var conditions []metav1.Condition
+			if test.desktop != "" {
+				conditions = append(conditions, metav1.Condition{Type: cetirunv1alpha1.ConditionDesktopConfigured, Status: test.desktop})
+			}
+			if test.terminal != "" {
+				conditions = append(conditions, metav1.Condition{Type: cetirunv1alpha1.ConditionTerminalConfigured, Status: test.terminal})
+			}
+			if got := customAccessService(conditions); got != test.want {
+				t.Fatalf("service=%q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
 func TestToInstanceResponse_CustomDesktopWithoutNativeCredentials(t *testing.T) {
 	instance := sampleInstance()
 	instance.Spec.Agent.Type = cetirunv1alpha1.AgentTypeCustom

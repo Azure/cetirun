@@ -48,7 +48,7 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md), [DEVELOPMENT.md](DEVELOPMENT.md), and
 - After explicit authorization and registry authentication, publish everything
   with `make publish REGISTRY=registry.example.com`. Use `make publish-images`
   or `make publish-charts` when only one artifact class is requested.
-- Publishing pushes seven images and six OCI Helm charts and verifies Chart
+- Publishing pushes eight images and six OCI Helm charts and verifies Chart
   pulls. It does not log in to the registry, deploy to Kubernetes, or authorize
   changing another registry or environment.
 

@@ -100,6 +100,9 @@ func (r *AgentReconciler) rejectCustomConfig(ctx context.Context, instance *api.
 }
 
 func (r *AgentReconciler) customPreparationFailed(ctx context.Context, instance *api.Agent, err error) (ctrl.Result, error) {
+	if errors.Is(err, helm.ErrTerminalAPIBindingPending) {
+		return r.customWaiting(ctx, instance, "TerminalAPIBindingPending", "Waiting for API server network endpoints")
+	}
 	if helm.IsConfigurationError(err) {
 		return r.rejectCustomConfig(ctx, instance, err)
 	}

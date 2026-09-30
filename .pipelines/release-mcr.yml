@@ -197,9 +197,14 @@ steps:
       REGISTRY="${LOCAL_REGISTRY}" \
       IMAGE_TAG="${RELEASE_VERSION}" \
       PUSH=false \
+      bash scripts/terminal-docker-build.sh
+
+      REGISTRY="${LOCAL_REGISTRY}" \
+      IMAGE_TAG="${RELEASE_VERSION}" \
+      PUSH=false \
       bash scripts/portal-docker-build.sh
 
-      for image in cetirun-base openclaw-gateway hermes-gateway cetirun-desktop cetirun-operator cetirun-portal; do
+      for image in cetirun-base openclaw-gateway hermes-gateway cetirun-desktop cetirun-operator cetirun-terminal cetirun-portal; do
         docker image inspect "${LOCAL_REGISTRY}/${image}:${RELEASE_VERSION}" > /dev/null
         image_platform="$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "${LOCAL_REGISTRY}/${image}:${RELEASE_VERSION}")"
         if [ "${image_platform}" != linux/amd64 ]; then
@@ -207,7 +212,7 @@ steps:
           exit 1
         fi
       done
-    displayName: Build six Linux AMD64 images locally
+    displayName: Build Linux AMD64 release images locally
     env:
       LOCAL_REGISTRY: $(localRegistry)
       RELEASE_VERSION: $(releaseVersion)
@@ -222,7 +227,7 @@ steps:
         set -euo pipefail
 
         registry="${ACR_NAME}.azurecr.io"
-        image_artifacts=(openclaw-gateway hermes-gateway cetirun-desktop cetirun-operator cetirun-portal)
+        image_artifacts=(openclaw-gateway hermes-gateway cetirun-desktop cetirun-operator cetirun-terminal cetirun-portal)
         chart_artifacts=(cetirun cetirun-istio cetirun-operator cetirun-portal cetirun-platform)
 
         repository_tag_exists() {

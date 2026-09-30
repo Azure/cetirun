@@ -16,7 +16,7 @@ LDFLAGS := -X github.com/Azure/CetiRun/app/cetirun-operator/internal/buildinfo.V
 CONTROLLER_GEN_VERSION := v0.21.0
 CONTROLLER_GEN ?= controller-gen
 
-.PHONY: all build test vet fmt lint docker-build docker-push install-crd \
+.PHONY: all build build-terminal test vet fmt lint docker-build docker-push install-crd \
 	tools generate manifests check-controller-gen sync-crds check-crds \
 	verify-generated test-envtest
 
@@ -30,6 +30,10 @@ all: build
 ## Build the operator binary
 build:
 	CGO_ENABLED=$(CGO_ENABLED) go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o bin/manager ./cmd/main.go
+
+## Build the independent Custom terminal entrypoint
+build-terminal:
+	CGO_ENABLED=$(CGO_ENABLED) go build $(GOFLAGS) -o bin/terminal ./cmd/terminal
 
 ## Run unit tests
 test:

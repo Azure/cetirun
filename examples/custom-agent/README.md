@@ -16,9 +16,11 @@ port. The Agent need not provide a native web UI. Desktop keeps its platform
 image, UID 1024 and `/home/vibe` mount; the Agent mounts the same PVC at its own
 HOME path. Both runtime identities need qualified PVC permissions.
 
-ttyd remains temporarily disabled. TODO: Re-visit ttyd for Custom Agents,
-including tool delivery and startup inside the Agent's execution environment.
-A separate container sharing HOME is not an equivalent Agent terminal.
+The platform's separate `cetirun-terminal` service opens a restricted Kubernetes
+exec session in the Agent container. The image only needs `zsh`, `bash` or `sh`;
+it does not install ttyd or share its HOME with the terminal service. Terminal
+and Desktop can be enabled independently. See the
+[Pi example](../pi-agent/README.md) for a native TUI and terminal-enabled deployment.
 
 ## Source qualification
 
@@ -174,8 +176,9 @@ Custom contract, Kubernetes mounts or Blob CSI behavior.
 No receipt may come from `spec.helm.values`. The platform supplies shared
 network/exec/disruption/scaling settings, Pod annotations, RuntimeClass,
 nodeSelector, affinity, tolerations, topology spread, skills storage and Desktop configuration.
-Per-Agent overrides accept resources and Desktop enablement, logging, resolution
-and resources. The explicit platform allowlist still rejects unrelated keys;
+Per-Agent overrides accept resources, `ttyd.enabled`, and Desktop enablement,
+logging, resolution and resources. Terminal images, ports and gateway identity
+remain platform-owned. The explicit platform allowlist still rejects unrelated keys;
 inapplicable global native settings are not silently consumed. The adapter
 never selects arbitrary Secrets, volumes, service accounts, commands or sidecars.
 
@@ -213,7 +216,7 @@ An unallocated operation can only acknowledge `not-started` after the provider
 confirms no lease was granted.
 
 A separate workload digest covers the actual Agent/init, model/context and Pod
-inputs. Changes only to NetworkPolicy, exec controls, PDB/HPA, mesh scope,
+inputs. Changes only to Terminal, NetworkPolicy, exec controls, PDB/HPA, mesh scope,
 generation or namespace/HOME receipt metadata do not acquire a writer lease.
 They still pass plan validation and API dry-run before being applied. Disabled
 ttyd options do not enter either digest. Relevant cluster API selections enter

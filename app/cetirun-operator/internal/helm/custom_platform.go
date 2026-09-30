@@ -13,6 +13,7 @@ import (
 
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/agents"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/runtimebindings"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/terminal"
 	"github.com/Masterminds/semver/v3"
 	"helm.sh/helm/v3/pkg/chartutil"
 	corev1 "k8s.io/api/core/v1"
@@ -65,6 +66,9 @@ func (p *PreparedRelease) setCustomCapabilities(capabilities *chartutil.Capabili
 }
 
 func validateCustomPlatformValues(values map[string]any, agent agents.ResolvedAgent) error {
+	if err := validateTerminalValues(values); err != nil {
+		return err
+	}
 	if err := validateCustomSkillValues(values); err != nil {
 		return err
 	}
@@ -78,6 +82,17 @@ func validateCustomPlatformValues(values map[string]any, agent agents.ResolvedAg
 	network := object(values["networkPolicy"])
 	if agent.Port != nil && network["enabled"] != true {
 		return fmt.Errorf("Custom HTTP requires networkPolicy.enabled=true: its Agent endpoint has no application token")
+	}
+	if object(values["ttyd"])["enabled"] == true {
+		if network["enabled"] != true {
+			return fmt.Errorf("Custom terminal requires networkPolicy.enabled=true")
+		}
+		if object(values["execRestriction"])["enabled"] != true {
+			return fmt.Errorf("Custom terminal requires execRestriction.enabled=true")
+		}
+		if text(object(values["ttyd"])["basePath"]) != terminal.BasePath {
+			return fmt.Errorf("Custom terminal must use the platform base path")
+		}
 	}
 	if network["enabled"] == true {
 		for _, entry := range array(network["blockedCIDRs"]) {
@@ -132,6 +147,10 @@ func validateCustomPlatformValues(values map[string]any, agent agents.ResolvedAg
 
 func (p *PreparedRelease) desktopEnabled() bool {
 	return object(p.Values["desktop"])["enabled"] == true
+}
+
+func (p *PreparedRelease) terminalEnabled() bool {
+	return object(p.Values["ttyd"])["enabled"] == true
 }
 
 func (p *PreparedRelease) desktopContainer() corev1.Container {
@@ -205,6 +224,13 @@ func (p *PreparedRelease) customPlatformObjects(namespace string) map[string]pla
 	objects := p.customSkillsObjects(namespace)
 	if object(p.Values["execRestriction"])["enabled"] == true {
 		policyName := name + "-" + namespace + "-deny-exec"
+		validation := map[string]any{"expression": "false", "message": "kubectl exec is not allowed on openclaw pods"}
+		if p.terminalEnabled() {
+			bindings := object(object(p.Values["runtime"])["bindings"])
+			validation["expression"] = terminal.AdmissionExpression(namespace, name+"-0", p.chart.Name(),
+				terminal.WorkloadName(name), text(bindings["agentUID"]))
+			validation["reason"] = "Forbidden"
+		}
 		objects["ValidatingAdmissionPolicy"] = platformObject{"admissionregistration.k8s.io/v1", policyName, map[string]any{
 			"failurePolicy": "Fail",
 			"matchConditions": []any{map[string]any{"name": "exclude-adminclaw",
@@ -214,7 +240,7 @@ func (p *PreparedRelease) customPlatformObjects(namespace string) map[string]pla
 					"operations": []string{"CONNECT"}, "resources": []string{"pods/exec"}}},
 				"namespaceSelector": map[string]any{"matchLabels": map[string]string{"kubernetes.io/metadata.name": namespace}},
 			},
-			"validations": []any{map[string]any{"expression": "false", "message": "kubectl exec is not allowed on openclaw pods"}},
+			"validations": []any{validation},
 		}}
 		objects["ValidatingAdmissionPolicyBinding"] = platformObject{"admissionregistration.k8s.io/v1", policyName,
 			map[string]any{"policyName": policyName, "validationActions": []string{"Deny"}}}

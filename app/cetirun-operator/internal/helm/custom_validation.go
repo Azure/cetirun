@@ -110,6 +110,16 @@ func (p *PreparedRelease) validateCustomManifest(namespace, release string, mani
 	}
 	seen := map[string]bool{}
 	platformObjects := p.customPlatformObjects(namespace)
+	terminalObjects, err := p.terminalObjects(bindings)
+	if err != nil {
+		return err
+	}
+	expectedTerminal := map[string]map[string]any{}
+	seenTerminal := map[string]bool{}
+	for _, object := range terminalObjects {
+		key := text(object["kind"]) + "/" + text(object["metadata"].(map[string]any)["name"])
+		expectedTerminal[key] = object
+	}
 	manifests := map[string]any{}
 	var canonical bytes.Buffer
 	decoder := kubeyaml.NewYAMLReader(bufio.NewReader(bytes.NewReader(manifest)))
@@ -137,25 +147,36 @@ func (p *PreparedRelease) validateCustomManifest(namespace, release string, mani
 		}
 		kind := text(obj["kind"])
 		meta := object(obj["metadata"])
-		if seen[kind] || object(meta["annotations"])["helm.sh/hook"] != nil ||
+		key := kind + "/" + text(meta["name"])
+		if object(meta["annotations"])["helm.sh/hook"] != nil ||
 			(text(meta["namespace"]) != "" && meta["namespace"] != namespace) {
 			return fmt.Errorf("unexpected duplicate, hook or namespace in custom manifest")
 		}
-		seen[kind] = true
-		wantName := name
-		if kind == "ConfigMap" {
-			wantName += "-config"
+		if expected, ok := expectedTerminal[key]; ok {
+			if seenTerminal[key] || !sameJSON(obj, expected) {
+				return fmt.Errorf("Custom terminal %s violates the platform plan", key)
+			}
+			seenTerminal[key] = true
+		} else {
+			if seen[kind] {
+				return fmt.Errorf("unexpected duplicate kind in custom manifest")
+			}
+			seen[kind] = true
+			wantName := name
+			if kind == "ConfigMap" {
+				wantName += "-config"
+			}
+			if expected, ok := platformObjects[kind]; ok {
+				wantName = expected.name
+			}
+			if meta["name"] != wantName {
+				return fmt.Errorf("unexpected custom resource name")
+			}
+			if err := p.validateCustomObject(obj, kind, name, bindings); err != nil {
+				return err
+			}
 		}
-		if expected, ok := platformObjects[kind]; ok {
-			wantName = expected.name
-		}
-		if meta["name"] != wantName {
-			return fmt.Errorf("unexpected custom resource name")
-		}
-		if err := p.validateCustomObject(obj, kind, name, bindings); err != nil {
-			return err
-		}
-		manifests[kind] = obj
+		manifests[key] = obj
 		encoded, err := json.Marshal(obj)
 		if err != nil {
 			return err
@@ -172,6 +193,11 @@ func (p *PreparedRelease) validateCustomManifest(namespace, release string, mani
 	for kind := range platformObjects {
 		if !seen[kind] {
 			return fmt.Errorf("custom manifest missing platform %s", kind)
+		}
+	}
+	for key := range expectedTerminal {
+		if !seenTerminal[key] {
+			return fmt.Errorf("Custom manifest missing terminal %s", key)
 		}
 	}
 	if seen["NetworkPolicy"] != (object(p.Values["networkPolicy"])["enabled"] == true) {
@@ -476,21 +502,23 @@ func (p *PreparedRelease) validateCustomObject(obj map[string]any, kind, name st
 			!reflect.DeepEqual(init.VolumeMounts, p.customInitMounts()) || !reflect.DeepEqual(pod.Volumes, volumes) {
 			return fail()
 		}
+		contribution, err := p.customContribution()
+		if err != nil {
+			return fail()
+		}
+		var ports []corev1.ContainerPort
+		for _, port := range contribution.Ports {
+			ports = append(ports, corev1.ContainerPort{Name: port.Name, ContainerPort: port.Number, Protocol: corev1.ProtocolTCP})
+		}
+		if !reflect.DeepEqual(main.Ports, ports) {
+			return fail()
+		}
 		if p.Agent.Port == nil {
-			if len(main.Ports) != 0 || main.StartupProbe != nil || main.ReadinessProbe != nil {
+			if main.StartupProbe != nil || main.ReadinessProbe != nil {
 				return fail()
 			}
 		} else {
-			contribution, err := p.customContribution()
-			if err != nil {
-				return fail()
-			}
-			var ports []corev1.ContainerPort
-			for _, port := range contribution.Ports {
-				ports = append(ports, corev1.ContainerPort{Name: port.Name, ContainerPort: port.Number, Protocol: corev1.ProtocolTCP})
-			}
-			if !reflect.DeepEqual(main.Ports, ports) ||
-				!reflect.DeepEqual(main.StartupProbe, customProbe(contribution.HTTP.StartupPath, contribution.HTTP.PortName, 5, 60)) ||
+			if !reflect.DeepEqual(main.StartupProbe, customProbe(contribution.HTTP.StartupPath, contribution.HTTP.PortName, 5, 60)) ||
 				!reflect.DeepEqual(main.ReadinessProbe, customProbe(contribution.HTTP.HealthPath, contribution.HTTP.PortName, 10, 0)) {
 				return fail()
 			}
@@ -514,23 +542,27 @@ func customProbe(path, port string, period, failures int32) *corev1.Probe {
 func (p *PreparedRelease) customContribution() (agents.Contribution, error) {
 	var value struct {
 		agents.Contribution
-		Bindings        runtimebindings.Custom `json:"bindings"`
-		ContractVersion string                 `json:"contractVersion"`
-		PlanHash        string                 `json:"planHash"`
-		WorkloadHash    string                 `json:"workloadHash"`
+		Bindings          runtimebindings.Custom `json:"bindings"`
+		ContractVersion   string                 `json:"contractVersion"`
+		PlanHash          string                 `json:"planHash"`
+		WorkloadHash      string                 `json:"workloadHash"`
+		TerminalResources []map[string]any       `json:"terminalResources,omitempty"`
+		TerminalExecRule  string                 `json:"terminalExecRule,omitempty"`
 	}
 	if err := decodeObject(p.Values["runtime"], &value); err != nil {
 		return agents.Contribution{}, err
 	}
 	valid := value.ContractVersion == "v1" && reflect.DeepEqual(value.Agent, p.Agent) &&
 		len(value.ConfigFiles) == 0 && value.ProfileID == ""
+	expectedPorts := []agents.PortBinding{}
 	if p.Agent.Port == nil {
-		valid = valid && value.HTTP == nil && len(value.Ports) == 0
+		valid = valid && value.HTTP == nil
 	} else {
-		valid = valid && reflect.DeepEqual(value.Ports, []agents.PortBinding{{Name: "http", Number: *p.Agent.Port}}) &&
-			reflect.DeepEqual(value.HTTP, &agents.HTTPBinding{PortName: "http", HealthPath: "/healthz", ReadinessPath: "/healthz", StartupPath: "/healthz",
-				ChatPath: "/v1/chat/completions", ModelsPath: "/v1/models"})
+		expectedPorts = append(expectedPorts, agents.PortBinding{Name: "http", Number: *p.Agent.Port})
+		valid = valid && reflect.DeepEqual(value.HTTP, &agents.HTTPBinding{PortName: "http", HealthPath: "/healthz", ReadinessPath: "/healthz", StartupPath: "/healthz",
+			ChatPath: "/v1/chat/completions", ModelsPath: "/v1/models"})
 	}
+	valid = valid && reflect.DeepEqual(value.Ports, expectedPorts)
 	if !valid {
 		return agents.Contribution{}, fmt.Errorf("Custom contribution violates the v1 runtime contract")
 	}

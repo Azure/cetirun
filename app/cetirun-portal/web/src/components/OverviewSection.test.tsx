@@ -61,6 +61,12 @@ describe("OverviewSection", () => {
     expect(screen.queryByRole("button", { name: "Edit Instance" })).toBeNull();
   });
 
+  it("allows headings and actions to wrap in narrow panels", () => {
+    renderInRouter(<OverviewSection instance={{ ...baseInstance, upgradeAvailable: true }} />);
+    expect(screen.getByText("Test User's OpenClaw").parentElement).toHaveStyle({ flexWrap: "wrap" });
+    expect(screen.getByRole("button", { name: "Edit Agent" }).parentElement).toHaveStyle({ flexWrap: "wrap" });
+  });
+
   it("shows gateway token row", () => {
     renderInRouter(<OverviewSection instance={baseInstance} />);
     expect(screen.getByText(/Gateway Token/i)).toBeInTheDocument();

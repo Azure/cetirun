@@ -117,12 +117,14 @@ func (r *AgentReconciler) deleteCustom(ctx context.Context, instance *api.Agent)
 	r.customPlans.Delete(instance.Name)
 	previous := instance.DeepCopy().Status
 	stopErr := r.stopCustomWorkload(ctx, instance)
-	routeErr := r.removeCustomDesktopRoute(ctx, instance)
+	terminalErr := r.stopCustomTerminal(ctx, instance)
+	routeErr := r.removeCustomPlatformRoute(ctx, instance)
 	instance.Status.Phase = api.PhaseDeleting
 	instance.Status.AccessURL = ""
 	setCondition(&instance.Status.Conditions, api.ConditionReady, metav1.ConditionFalse, "InstanceDeleting", "Deletion requested")
 	setCondition(&instance.Status.Conditions, api.ConditionPodReady, metav1.ConditionFalse, "InstanceDeleting", "Workload stop requested")
 	setCondition(&instance.Status.Conditions, api.ConditionIngressReady, metav1.ConditionFalse, "InstanceDeleting", "Access removal requested")
+	setCustomServiceConditions(instance, customAccess{}, metav1.ConditionFalse, "InstanceDeleting")
 	if stopErr != nil {
 		setCondition(&instance.Status.Conditions, api.ConditionPodReady, metav1.ConditionFalse, "CustomStopBlocked", stopErr.Error())
 	}
@@ -134,6 +136,9 @@ func (r *AgentReconciler) deleteCustom(ctx context.Context, instance *api.Agent)
 	}
 	if stopErr != nil {
 		return ctrl.Result{}, stopErr
+	}
+	if terminalErr != nil {
+		return ctrl.Result{}, terminalErr
 	}
 	if routeErr != nil {
 		return ctrl.Result{}, routeErr

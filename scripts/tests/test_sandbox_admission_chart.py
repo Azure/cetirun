@@ -111,6 +111,7 @@ class SandboxAdmissionChartTests(unittest.TestCase):
             ("Deployment", "cetirun-operator"),
             ("ServiceAccount", "cetirun-operator-controller-manager"),
             ("ClusterRole", "cetirun-operator-manager-role"),
+            ("ClusterRole", "cetirun-terminal-exec"),
             ("ClusterRoleBinding", "cetirun-operator-manager-rolebinding"),
         })
         disabled = self.render(

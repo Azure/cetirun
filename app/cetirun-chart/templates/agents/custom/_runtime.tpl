@@ -150,13 +150,15 @@ spec:
               value: {{ .value | quote }}
               {{- end }}
             {{- end }}
-          {{- if $r.http }}
+          {{- if $r.ports }}
           ports:
             {{- range $r.ports }}
             - name: {{ .name | quote }}
               containerPort: {{ .number }}
               protocol: TCP
             {{- end }}
+          {{- end }}
+          {{- if $r.http }}
           startupProbe:
             httpGet:
               path: {{ $r.http.startupPath | quote }}
