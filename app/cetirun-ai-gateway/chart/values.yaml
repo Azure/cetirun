@@ -180,8 +180,10 @@ postgresql:
       digest: sha256:704bb1636af09043b9fc4ae49b33188d6429405b87d28d227953152730f4db79
     # -- Persistent volume for the database
     persistence:
-      # -- Volume size
-      size: 8Gi
+      # -- Volume size. The database keeps the spend log of every agent that
+      # uses the Gateway, and the size is fixed at install (see the chart
+      # README), so the default leaves room to grow.
+      size: 100Gi
       # -- Storage class. Empty uses the cluster default.
       storageClass: ""
     # -- Resource requests and limits
