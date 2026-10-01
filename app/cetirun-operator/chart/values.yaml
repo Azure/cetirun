@@ -101,6 +101,9 @@ serviceAccount:
 # -- Configuration admission only; this does not enable governed execution or
 # provide a qualified Sandbox capability registration.
 sandboxAdmission:
+  # -- CR object decoding: compatible tolerates fields from a newer schema;
+  # strict rejects them. Authorization, Pod checks and server config stay strict.
+  validationMode: compatible
   # -- Deploy the independent, read-only admission server first.
   # Requires Kubernetes >= 1.37, the validated admission minimum. The server
   # uses native lifecycle sleep for an image-independent shutdown delay.

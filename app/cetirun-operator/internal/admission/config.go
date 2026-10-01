@@ -19,7 +19,13 @@ import (
 var errTeamAssignmentConflict = errors.New("TeamAssignmentConflict: authenticated membership matches multiple Teams; " +
 	"ask an administrator to review sandboxAdmission.teamAssignments and identity-provider memberships so all matching users and groups resolve to one Team")
 
+const (
+	ValidationCompatible = "compatible"
+	ValidationStrict     = "strict"
+)
+
 type Config struct {
+	ValidationMode     string           `json:"validationMode,omitempty"`
 	AdminUsers         []string         `json:"adminUsers"`
 	AdminGroups        []string         `json:"adminGroups"`
 	ControllerUsername string           `json:"controllerUsername"`
@@ -45,6 +51,9 @@ func ParseConfig(raw string) (Config, error) {
 }
 
 func (c Config) Validate() error {
+	if c.ValidationMode != "" && c.ValidationMode != ValidationCompatible && c.ValidationMode != ValidationStrict {
+		return fmt.Errorf("Sandbox admission validationMode must be compatible or strict")
+	}
 	if len(c.AdminUsers)+len(c.AdminGroups) == 0 {
 		return fmt.Errorf("Sandbox admission requires an explicit administrator allowlist")
 	}
@@ -143,8 +152,15 @@ func blanketGroup(value string) bool {
 }
 
 func decodeStrict(raw []byte, object any) error {
+	return decodeJSON(raw, object, true)
+}
+
+func decodeJSON(raw []byte, object any, strict bool) error {
 	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.DisallowUnknownFields()
+	decoder.UseNumber()
+	if strict {
+		decoder.DisallowUnknownFields()
+	}
 	if err := decoder.Decode(object); err != nil {
 		return err
 	}

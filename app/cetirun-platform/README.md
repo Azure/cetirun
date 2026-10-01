@@ -4,8 +4,8 @@
 It does not install AKS managed Istio, the CetiRun Istio release, certificates,
 credentials, Agent Instances, or retained Agent data.
 
-The bundled Operator chart installs the CetiRun CRDs before its other resources
-on the first Helm installation. Use values which explicitly confirm the
+The bundled Operator chart manages the four CetiRun CRDs as Helm templates,
+including schema upgrades. Use values which explicitly confirm the
 separately installed Istio prerequisites:
 
 ```bash
@@ -43,9 +43,15 @@ in a namespace other than its Gateway resource. Also set
 that gateway workload's namespace; otherwise the instance NetworkPolicies block
 ingress traffic.
 
-Helm creates CRDs from a chart's `crds/` directory but deliberately does not
-upgrade or delete them. Upgrade CRD schemas through an explicit, reviewed
-migration before upgrading the Operator chart.
+Helm upgrades the CRD templates with this release; no separate CRD apply script
+is required for compatible changes. The `helm.sh/resource-policy: keep`
+annotation retains CRDs and their objects on uninstall. It does not protect
+against an incompatible schema change or downgrade. The Operator chart defaults
+`sandboxAdmission.validationMode` to `compatible`, retaining known validation and
+authorization checks while tolerating newer CR fields. See the
+[schema and binary upgrade contract](../cetirun-operator/README.md#schema-and-binary-upgrades).
+Previously unmanaged CRDs and cross-release ownership transfers still require
+a separately reviewed handover; this chart does not forcibly adopt them.
 
 The deployment helper accepts `ISTIO_GATEWAY_NAME` and
 `ISTIO_GATEWAY_NAMESPACE` for the Gateway resource, and

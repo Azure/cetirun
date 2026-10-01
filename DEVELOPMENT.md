@@ -286,23 +286,27 @@ exceptions in `scripts/license_headers.py` must retain their own notices.
   or set `CONTROLLER_GEN` to its absolute path, then run
   `GOPROXY=off GOSUMDB=off GOTOOLCHAIN=local make -C app/cetirun-operator generate manifests`.
   These targets check the version and regenerate deepcopy methods and CRD YAML,
-  including the Operator chart's CRD copies, without downloading tools.
+  including the Operator chart's copies under `chart/templates/crds/`, without
+  downloading tools. The API type metadata markers generate CRD retention
+  annotations; do not add those by editing generated YAML.
   `make -C app/cetirun-operator check-crds` checks the packaged copies.
   `verify-generated` reruns generation and checks both copies and deepcopy
   against Git.
   Review generator upgrades separately. Operator,
   Portal, and operations-agent RBAC remain source Helm/YAML files and must
   name the matching API resources; do not hand-edit generated output.
-- Agent API defaulting, strict decoding and CEL transitions, plus Sandbox
+- Agent API defaulting, compatible/strict decoding and CEL transitions, plus Sandbox
   configuration admission and its outage/cleanup boundary, are covered by
   `make -C app/cetirun-operator test-envtest`. Set `KUBEBUILDER_ASSETS` to local
-  Kubernetes 1.37 test binaries prepared separately; Helm 3 is also required
+  Kubernetes 1.37 test binaries prepared separately; Helm 3 or 4 is also required
   to render the actual admission matching rules. The target starts isolated
   API server/etcd processes with RBAC, refuses missing binaries and never uses
   an existing cluster. Loopback TLS tests cover the independent serving process
-  and certificate replacement. Version-skew fixtures verify that fields known
-  only to a newer CRD fail closed at the older handler without blocking
-  known-field requests. Normal `go test ./...` runs unit and
+  and certificate replacement. Version-skew fixtures compare strict rejection
+  with compatible handling of new status fields. Helm tests upgrade retained
+  CRD templates while requests continue, then verify retention on uninstall.
+  Controller tests verify unknown status preservation and resource-version
+  conflict handling. Normal `go test ./...` runs unit and
   schema/serialization tests, not envtest.
   The same target also tests trusted Team assignment and metadata-only UID
   reauthorization through the rendered webhooks, final-Pod validation, and the

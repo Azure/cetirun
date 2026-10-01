@@ -194,8 +194,11 @@ not the runtime images.
 
 The [operator helper]({{< repo "app/cetirun-operator/deploy/deploy.sh" >}})
 checks the StorageClass and shared gateway before installing the operator.
-The operator chart bundles both CRDs and Helm installs them on the first
-installation; Helm does not upgrade or delete CRDs. Review
+The operator chart bundles all four CRDs as ordinary templates. Helm upgrades the CRDs
+with the release, and their retention annotation keeps them on uninstall.
+The default compatible admission mode tolerates newer CR fields without
+disabling existing validation or authorization. No external CRD apply script is
+needed for compatible schema changes. Review
 [API compatibility](../../reference/crds/#existing-installations) before
 upgrading an existing installation. The
 [portal helper]({{< repo "app/cetirun-portal/deploy/deploy.sh" >}})

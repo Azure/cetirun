@@ -28,7 +28,7 @@ import (
 const testController = "system:serviceaccount:operator-test:controller"
 
 func testConfig() Config {
-	return Config{AdminUsers: []string{"administrator"}, AdminGroups: []string{"governance-test-admins"}, ControllerUsername: testController}
+	return Config{ValidationMode: ValidationStrict, AdminUsers: []string{"administrator"}, AdminGroups: []string{"governance-test-admins"}, ControllerUsername: testController}
 }
 
 type fixture struct {

@@ -21,7 +21,7 @@ CONTROLLER_GEN ?= controller-gen
 	verify-generated test-envtest
 
 CRD_SOURCE_DIR := config/crd/bases
-CRD_CHART_DIR := chart/crds
+CRD_CHART_DIR := chart/templates/crds
 CRD_FILES := cetirun.microsoft.com_agents.yaml cetirun.microsoft.com_teams.yaml \
 	cetirun.microsoft.com_sandboxes.yaml cetirun.microsoft.com_agentpolicies.yaml
 
@@ -75,7 +75,7 @@ manifests: check-controller-gen
 		output:crd:artifacts:config=$(CRD_SOURCE_DIR)
 	$(MAKE) sync-crds
 
-## Copy generated CRDs into the Helm chart's standard CRD directory.
+## Copy generated CRDs into Helm-managed templates.
 sync-crds:
 	mkdir -p $(CRD_CHART_DIR)
 	cp $(addprefix $(CRD_SOURCE_DIR)/,$(CRD_FILES)) $(CRD_CHART_DIR)/
@@ -96,7 +96,7 @@ verify-generated: generate manifests
 ## Uses only a local API server and etcd; never connects to an existing cluster.
 test-envtest:
 	@test -n "$(KUBEBUILDER_ASSETS)" && test -x "$(KUBEBUILDER_ASSETS)/kube-apiserver" && test -x "$(KUBEBUILDER_ASSETS)/etcd" || { echo "Set KUBEBUILDER_ASSETS to preinstalled envtest binaries"; exit 1; }
-	USE_EXISTING_CLUSTER=false go test -tags=envtest ./test/integration ./internal/helm ./internal/admission -count=1 -v
+	USE_EXISTING_CLUSTER=false go test -tags=envtest ./test/integration ./internal/helm ./internal/admission ./internal/controller -count=1 -v
 
 ## Clean build artifacts
 clean:

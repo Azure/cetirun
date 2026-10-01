@@ -33,7 +33,7 @@ OFFLINE_ENV = {
 }
 
 
-@unittest.skipUnless(shutil.which("helm"), "requires Helm 3")
+@unittest.skipUnless(shutil.which("helm"), "requires Helm 3 or 4")
 class SandboxAdmissionChartTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -41,8 +41,8 @@ class SandboxAdmissionChartTests(unittest.TestCase):
             ["helm", "version", "--short"], cwd=ROOT, env=OFFLINE_ENV,
             text=True, capture_output=True, check=True, timeout=30,
         ).stdout
-        if not version.startswith("v3."):
-            raise RuntimeError("Sandbox chart tests require Helm 3 on PATH")
+        if not version.startswith(("v3.", "v4.")):
+            raise RuntimeError("Sandbox chart tests require Helm 3 or 4 on PATH")
         if shutil.which("openssl") is None:
             raise RuntimeError("Sandbox chart tests require OpenSSL for synthetic CA fixtures")
         # The synthetic key and certificate stay in memory, never in repository files.
@@ -113,6 +113,7 @@ class SandboxAdmissionChartTests(unittest.TestCase):
             ("ClusterRole", "cetirun-operator-manager-role"),
             ("ClusterRole", "cetirun-terminal-exec"),
             ("ClusterRoleBinding", "cetirun-operator-manager-rolebinding"),
+            *(("CustomResourceDefinition", f"{resource}.{API_GROUP}") for resource in RESOURCES),
         })
         disabled = self.render(
             {
@@ -135,6 +136,32 @@ class SandboxAdmissionChartTests(unittest.TestCase):
                 "ClusterRoleBinding", "PodDisruptionBudget",
             )
         })
+
+    def test_crds_are_retained_ordinary_templates(self):
+        documents = self.render()
+        for resource in RESOURCES:
+            definition = documents[("CustomResourceDefinition", f"{resource}.{API_GROUP}")]
+            self.assertEqual(definition["metadata"]["annotations"]["helm.sh/resource-policy"], "keep")
+            self.assertNotIn("helm.sh/hook", definition["metadata"]["annotations"])
+        result = subprocess.run(
+            ["helm", "show", "crds", str(CHART)], cwd=ROOT, env=OFFLINE_ENV,
+            text=True, capture_output=True, check=True, timeout=30,
+        )
+        self.assertEqual(result.stdout.strip(), "")
+
+    def test_validation_mode_is_explicit_without_changing_webhook_failure_policy(self):
+        for mode in ("compatible", "strict"):
+            with self.subTest(mode=mode):
+                documents = self.render(self.enforced_values(validationMode=mode))
+                container = documents[("Deployment", NAME)]["spec"]["template"]["spec"]["containers"][0]
+                config = json.loads(next(item["value"] for item in container["env"] if item["name"] == "CETIRUN_SANDBOX_ADMISSION"))
+                self.assertEqual(config["validationMode"], mode)
+                for kind in ("MutatingWebhookConfiguration", "ValidatingWebhookConfiguration"):
+                    for hook in documents[(kind, NAME)]["webhooks"]:
+                        self.assertEqual(hook["failurePolicy"], "Fail")
+        for invalid in ("ignore", "", True, 1):
+            with self.subTest(invalid=invalid):
+                self.assert_rejected(self.server_values(validationMode=invalid), "validationMode must be compatible or strict")
 
     def test_read_only_rbac_uses_dedicated_service_account(self):
         documents = self.render(self.server_values())
@@ -221,6 +248,7 @@ class SandboxAdmissionChartTests(unittest.TestCase):
             "adminUsers": ["admin@example.com"],
             "adminGroups": [],
             "controllerUsername": "system:serviceaccount:cetirun-system:cetirun-operator-controller-manager",
+            "validationMode": "compatible",
         })
         self.assertNotIn("envFrom", container)
         self.assertEqual(container["volumeMounts"], [{

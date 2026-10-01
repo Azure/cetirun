@@ -9,6 +9,9 @@
 {{- fail "sandboxAdmission.enforce requires sandboxAdmission.enabled=true" -}}
 {{- end -}}
 {{- if $admission.enabled -}}
+{{- if not (has $admission.validationMode (list "compatible" "strict")) -}}
+{{- fail "sandboxAdmission.validationMode must be compatible or strict" -}}
+{{- end -}}
 {{- if not (semverCompare ">=1.37.0-0" .Capabilities.KubeVersion.Version) -}}
 {{- fail "sandboxAdmission.enabled requires Kubernetes >= 1.37 (validated admission minimum)" -}}
 {{- end -}}
@@ -41,7 +44,7 @@
 {{- fail "namespace and serviceAccount.name must not contain surrounding whitespace" -}}
 {{- end -}}
 {{- $controllerUsername := printf "system:serviceaccount:%s:%s" $controllerNamespace $controllerServiceAccount -}}
-{{- $config := dict "adminUsers" $admission.adminUsers "adminGroups" $admission.adminGroups "controllerUsername" $controllerUsername -}}
+{{- $config := dict "adminUsers" $admission.adminUsers "adminGroups" $admission.adminGroups "controllerUsername" $controllerUsername "validationMode" $admission.validationMode -}}
 {{- if not (kindIs "slice" $admission.teamAssignments) -}}
 {{- fail "sandboxAdmission.teamAssignments must be a list" -}}
 {{- end -}}

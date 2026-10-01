@@ -73,12 +73,12 @@ type conflictOnceStatusWriter struct {
 	parent *conflictOnceStatusClient
 }
 
-func (w *conflictOnceStatusWriter) Update(ctx context.Context, object client.Object, options ...client.SubResourceUpdateOption) error {
+func (w *conflictOnceStatusWriter) Patch(ctx context.Context, object client.Object, patch client.Patch, options ...client.SubResourcePatchOption) error {
 	if w.parent.conflictsRemaining > 0 {
 		w.parent.conflictsRemaining--
 		return apierrors.NewConflict(schema.GroupResource{Group: cetirunv1alpha1.GroupVersion.Group, Resource: "agents"}, object.GetName(), errors.New("synthetic status conflict"))
 	}
-	return w.SubResourceWriter.Update(ctx, object, options...)
+	return w.SubResourceWriter.Patch(ctx, object, patch, options...)
 }
 
 func (f *fakeAgentIdentityDirectory) DeleteServicePrincipal(_ context.Context, objectID string) error {

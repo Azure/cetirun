@@ -50,7 +50,7 @@ class ApiDocumentationTests(unittest.TestCase):
             with self.subTest(kind=kind):
                 name = f"cetirun.microsoft.com_{plural}.yaml"
                 source = REPO / "app/cetirun-operator/config/crd/bases" / name
-                packaged = REPO / "app/cetirun-operator/chart/crds" / name
+                packaged = REPO / "app/cetirun-operator/chart/templates/crds" / name
                 self.assertEqual(source.read_bytes(), packaged.read_bytes())
                 schema = source.read_text()
                 self.assertIn(f"    kind: {kind}\n", schema)
@@ -66,7 +66,7 @@ class ApiDocumentationTests(unittest.TestCase):
         reference = (SITE / "content/en/docs/reference/crds.md").read_text()
         self.assertIn("scripts/cetirun-platform-deploy.sh", install)
         self.assertIn("PORTAL_AUTH_NAMESPACE=cetirun-system", install)
-        self.assertIn("Helm does not upgrade or delete CRDs", install)
+        self.assertIn("Helm upgrades the CRDs", install)
         self.assertIn("does not convert, adopt, or delete", reference)
 
     def test_portal_creation_labels_match_source(self):

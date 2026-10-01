@@ -9,7 +9,7 @@ repo_root="$(cd "$script_dir/.." && pwd)"
 chart_dir="${CHART_DIR:-${repo_root}/app/cetirun-platform}"
 operator_chart_dir="${repo_root}/app/cetirun-operator/chart"
 crd_source_dir="${repo_root}/app/cetirun-operator/config/crd/bases"
-crd_chart_dir="${operator_chart_dir}/crds"
+crd_chart_dir="${operator_chart_dir}/templates/crds"
 
 if [ ! -f "${chart_dir}/Chart.yaml" ]; then
   echo "ERROR: Chart.yaml not found in ${chart_dir}" >&2
@@ -30,7 +30,7 @@ for crd_file in \
 done
 
 echo "==> helm template operator CRDs"
-output=$(helm template operator "${operator_chart_dir}" --include-crds)
+output=$(helm template operator "${operator_chart_dir}")
 for crd_name in agents.cetirun.microsoft.com teams.cetirun.microsoft.com \
   sandboxes.cetirun.microsoft.com agentpolicies.cetirun.microsoft.com; do
   grep -q "name: ${crd_name}" <<< "${output}" || {
@@ -50,7 +50,7 @@ echo "==> helm lint ${chart_dir} (default platform)"
 helm lint --strict "${chart_dir}" "${base_args[@]}"
 
 echo "==> helm template platform (default platform)"
-output=$(helm template platform "${chart_dir}" --include-crds "${base_args[@]}")
+output=$(helm template platform "${chart_dir}" "${base_args[@]}")
 grep -q 'name: cetirun-operator' <<< "${output}" || {
   echo "FAIL: operator was not rendered" >&2
   exit 1

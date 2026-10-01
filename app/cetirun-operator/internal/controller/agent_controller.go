@@ -1448,9 +1448,27 @@ func (r *AgentReconciler) setPhase(ctx context.Context, instance *cetirunv1alpha
 
 // updateStatus patches the CR status sub-resource.
 func (r *AgentReconciler) updateStatus(ctx context.Context, instance *cetirunv1alpha1.Agent) error {
-	if err := r.Status().Update(ctx, instance); err != nil {
+	reader := r.APIReader
+	if reader == nil {
+		reader = r.Client
+	}
+	current := &cetirunv1alpha1.Agent{}
+	if err := reader.Get(ctx, client.ObjectKeyFromObject(instance), current); err != nil {
+		return fmt.Errorf("read Agent before status patch: %w", err)
+	}
+	// Callers already changed their typed status. Read the same revision to
+	// construct a delta without deleting fields introduced by a newer binary.
+	if instance.ResourceVersion == "" || current.ResourceVersion != instance.ResourceVersion || current.UID != instance.UID {
+		return errors.NewConflict(cetirunv1alpha1.GroupVersion.WithResource("agents").GroupResource(), instance.Name,
+			fmt.Errorf("Agent changed before its status could be patched"))
+	}
+	before := current.DeepCopy()
+	current.Status = *instance.Status.DeepCopy()
+	if err := r.Status().Patch(ctx, current, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{})); err != nil {
 		return fmt.Errorf("update status: %w", err)
 	}
+	instance.Status = current.Status
+	instance.ResourceVersion = current.ResourceVersion
 	return nil
 }
 

@@ -6,7 +6,7 @@
 #
 # Checks cluster-level prerequisites (StorageClass + Istio Gateway) and then
 # installs the operator from the OCI chart published in ACR. The chart installs
-# CetiRun CRDs on its first installation.
+# CetiRun CRD templates on installation and upgrade.
 # Every step is idempotent and safe to re-run.
 #
 # Requires: kubectl and helm configured to target the correct cluster,
