@@ -5,9 +5,6 @@ package sandboxadmission
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -38,7 +35,7 @@ import (
 
 const (
 	PodValidationPath        = "/validate-sandbox-pods"
-	PodExpectationKey        = "expectation.json"
+	PodExpectationKey        = sandboxworkload.PodExpectationKey
 	DefaultPodRequestTimeout = 8 * time.Second
 	podSourceReadConcurrency = 4
 )
@@ -78,34 +75,14 @@ func NewPodHandler(reader client.Reader, config PodConfig) (*PodHandler, error) 
 }
 
 func PodExpectationName(namespace string, uid types.UID) string {
-	sum := sha256.Sum256([]byte(namespace + "\x00" + string(uid)))
-	return "sandbox-pod-" + hex.EncodeToString(sum[:20])
+	return sandboxworkload.PodExpectationName(namespace, uid)
 }
 
 // PodExpectationObject produces controller state, not an execution permit.
 // The Bundle's Expect method always starts held. Persisting this object requires
 // separate controller authorization and must never be exposed as a tenant API.
 func PodExpectationObject(stateNamespace string, expected sandboxworkload.Expectation) (*corev1.ConfigMap, error) {
-	if stateNamespace == "" || stateNamespace == expected.Namespace.Name ||
-		expected.Version != sandboxworkload.ContractVersion || expected.Agent.Name == "" || expected.Agent.UID == "" ||
-		expected.Namespace.Name == "" || expected.Namespace.UID == "" {
-		return nil, fmt.Errorf("invalid controller-owned Pod expectation")
-	}
-	raw, err := json.Marshal(expected)
-	if err != nil {
-		return nil, err
-	}
-	return &corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{
-			Namespace: stateNamespace, Name: PodExpectationName(expected.Namespace.Name, expected.Namespace.UID),
-			OwnerReferences: []metav1.OwnerReference{sandboxworkload.AgentOwner(expected.Agent.Name, expected.Agent.UID)},
-			Annotations: map[string]string{
-				sandboxworkload.RevisionAnnotation: expected.Revision,
-				sandboxworkload.AgentUIDAnnotation: string(expected.Agent.UID),
-			},
-		},
-		Data: map[string]string{PodExpectationKey: string(raw)},
-	}, nil
+	return sandboxworkload.PodExpectationObject(stateNamespace, expected)
 }
 
 // Validate has no namespace-wide or platform-helper exemption. The API server

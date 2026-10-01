@@ -22,6 +22,7 @@ RESOURCES = ["agents", "teams", "sandboxes", "agentpolicies"]
 FINALIZERS = [
     f"{API_GROUP}/finalizer",
     f"{API_GROUP}/sandbox-hold",
+    f"{API_GROUP}/sandbox-preparation",
     f"{API_GROUP}/custom-runtime-ownership",
     f"{API_GROUP}/custom-apply-completion",
 ]
@@ -527,6 +528,9 @@ class SandboxAdmissionChartTests(unittest.TestCase):
             self.assertNotIn("secrets", rule["resources"])
             self.assertNotIn("configmaps", rule["resources"])
             self.assertNotIn("*", rule["resources"])
+        self.assertIn({
+            "apiGroups": ["storage.k8s.io"], "resources": ["storageclasses"], "verbs": ["get"],
+        }, documents[("ClusterRole", NAME)]["rules"])
         self.assert_rejected({"podsEnabled": True}, "podsEnabled requires sandboxAdmission.enabled")
         self.assert_rejected(self.server_values(podsEnabled="true"), "podsEnabled must be a boolean")
 

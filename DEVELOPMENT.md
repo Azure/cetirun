@@ -313,6 +313,15 @@ exceptions in `scripts/license_headers.py` must retain their own notices.
   native namespace marker/ownership guard (including webhook outages and
   namespace status/finalize updates). These are isolated API-server tests, not
   runtime/Cilium/CSI qualification or permission to lift the execution hold.
+  The focused `make -C app/cetirun-operator test-sandbox-integration` target
+  exercises the native Sandbox/AgentPolicy controller preparation chain with
+  synthetic platform inventory, real API object identities/defaulting and held
+  admission expectations. It stages OpenClaw/Hermes resources at zero replicas;
+  it does not start containers, install a production provider, or deploy to an
+  existing cluster. Normal unit tests also cover stale inputs, metadata-only
+  refresh/reauthorization, partial writes, restart, grant revocation, suspension
+  and ordered cleanup. See the [operator integration boundary](app/cetirun-operator/README.md#held-controller-integration)
+  for the platform prerequisites and remaining start/observation gates.
   The checksum-pinned Linux amd64/arm64 bundle can be provisioned into a new
   task-local directory after a missing-tool failure:
 

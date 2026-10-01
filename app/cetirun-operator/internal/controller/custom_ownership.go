@@ -115,6 +115,9 @@ func (r *AgentReconciler) ensureCustomOwnership(ctx context.Context, instance *a
 }
 
 func (r *AgentReconciler) deleteCustom(ctx context.Context, instance *api.Agent) (ctrl.Result, error) {
+	if err := r.revokeSandboxPreparationGrants(ctx, instance); err != nil {
+		return ctrl.Result{}, err
+	}
 	r.customPlans.Delete(instance.Name)
 	previous := instance.DeepCopy().Status
 	stopErr := r.stopCustomWorkload(ctx, instance)
@@ -143,6 +146,9 @@ func (r *AgentReconciler) deleteCustom(ctx context.Context, instance *api.Agent)
 	}
 	if routeErr != nil {
 		return ctrl.Result{}, routeErr
+	}
+	if err := r.checkSandboxPreparationCleanup(ctx, instance); err != nil {
+		return ctrl.Result{}, err
 	}
 	if err := r.retryCustomCompletion(ctx, instance); err != nil {
 		return ctrl.Result{}, err
@@ -189,6 +195,9 @@ func (r *AgentReconciler) deleteCustom(ctx context.Context, instance *api.Agent)
 }
 
 func (r *AgentReconciler) finishCustomDeletion(ctx context.Context, instance *api.Agent) (ctrl.Result, error) {
+	if err := r.finishSandboxPreparation(ctx, instance); err != nil {
+		return ctrl.Result{}, err
+	}
 	record := &corev1.ConfigMap{}
 	if err := r.customReader().Get(ctx, r.ownershipKey(instance), record); err == nil {
 		if !hasCustomRecordOwner(record, instance) {

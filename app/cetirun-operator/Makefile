@@ -18,7 +18,7 @@ CONTROLLER_GEN ?= controller-gen
 
 .PHONY: all build build-terminal test vet fmt lint docker-build docker-push install-crd \
 	tools generate manifests check-controller-gen sync-crds check-crds \
-	verify-generated test-envtest
+	verify-generated test-envtest test-sandbox-integration
 
 CRD_SOURCE_DIR := config/crd/bases
 CRD_CHART_DIR := chart/templates/crds
@@ -97,6 +97,11 @@ verify-generated: generate manifests
 test-envtest:
 	@test -n "$(KUBEBUILDER_ASSETS)" && test -x "$(KUBEBUILDER_ASSETS)/kube-apiserver" && test -x "$(KUBEBUILDER_ASSETS)/etcd" || { echo "Set KUBEBUILDER_ASSETS to preinstalled envtest binaries"; exit 1; }
 	USE_EXISTING_CLUSTER=false go test -tags=envtest ./test/integration ./internal/helm ./internal/admission ./internal/controller -count=1 -v
+
+## Local held Sandbox integration; synthetic providers are not runtime qualification.
+test-sandbox-integration:
+	@test -n "$(KUBEBUILDER_ASSETS)" && test -x "$(KUBEBUILDER_ASSETS)/kube-apiserver" && test -x "$(KUBEBUILDER_ASSETS)/etcd" || { echo "Set KUBEBUILDER_ASSETS to preinstalled envtest binaries"; exit 1; }
+	USE_EXISTING_CLUSTER=false go test -tags=envtest ./test/integration -run TestSandboxPreparation -count=1 -v
 
 ## Clean build artifacts
 clean:

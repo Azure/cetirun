@@ -50,6 +50,12 @@ func (r *AgentReconciler) holdSandbox(ctx context.Context, agent *cetirunv1alpha
 	}
 	before := agent.DeepCopy().Status
 	var failures []error
+	prepare := r.SandboxPreparation != nil && !agent.Spec.Suspended && agent.Spec.Agent.Type != cetirunv1alpha1.AgentTypeCustom
+	if !prepare {
+		if err := r.revokeSandboxPreparationGrants(ctx, agent); err != nil {
+			failures = append(failures, err)
+		}
+	}
 
 	if agent.Spec.Agent.Type == cetirunv1alpha1.AgentTypeCustom {
 		r.customPlans.Delete(agent.Name)
@@ -68,6 +74,21 @@ func (r *AgentReconciler) holdSandbox(ctx context.Context, agent *cetirunv1alpha
 	} else if err := r.stopSandboxBuiltin(ctx, agent); err != nil {
 		failures = append(failures, err)
 	}
+	if prepare {
+		if len(failures) == 0 {
+			if agent.Status.AccessURL != "" || agent.Status.Phase == cetirunv1alpha1.PhaseReady ||
+				apimeta.IsStatusConditionTrue(agent.Status.Conditions, cetirunv1alpha1.ConditionReady) ||
+				apimeta.IsStatusConditionTrue(agent.Status.Conditions, cetirunv1alpha1.ConditionSandboxReady) {
+				if err := r.sandboxPreparationStatus(ctx, agent, false); err != nil {
+					return ctrl.Result{}, err
+				}
+			}
+			return r.reconcileSandboxPreparation(ctx, agent)
+		}
+		if err := r.revokeSandboxPreparationGrants(ctx, agent); err != nil {
+			failures = append(failures, err)
+		}
+	}
 
 	reason := "UnsupportedControl"
 	message := "Sandbox execution is not enabled: a qualified enforcement adapter and admission are required; workload execution is held."
@@ -84,6 +105,9 @@ func (r *AgentReconciler) holdSandbox(ctx context.Context, agent *cetirunv1alpha
 	}
 	agent.Status.AccessURL = ""
 	conditions := []string{cetirunv1alpha1.ConditionSandboxReady, cetirunv1alpha1.ConditionReady}
+	if controllerutil.ContainsFinalizer(agent, sandbox.PreparationFinalizer) {
+		conditions = append(conditions, cetirunv1alpha1.ConditionAgentConfigReady)
+	}
 	if agent.Spec.Agent.Type == cetirunv1alpha1.AgentTypeCustom {
 		conditions = append(conditions, cetirunv1alpha1.ConditionIngressReady,
 			cetirunv1alpha1.ConditionDesktopConfigured, cetirunv1alpha1.ConditionTerminalConfigured)
@@ -179,16 +203,34 @@ func (r *AgentReconciler) stopSandboxBuiltin(ctx context.Context, agent *cetirun
 }
 
 func (r *AgentReconciler) deleteSandboxBuiltin(ctx context.Context, agent *cetirunv1alpha1.Agent) (ctrl.Result, error) {
+	if err := r.refreshSandboxCleanupAgent(ctx, agent); err != nil {
+		return ctrl.Result{}, err
+	}
 	before := agent.DeepCopy().Status
 	agent.Status.Phase = cetirunv1alpha1.PhaseDeleting
 	agent.Status.AccessURL = ""
-	setCondition(&agent.Status.Conditions, cetirunv1alpha1.ConditionReady, metav1.ConditionFalse, "InstanceDeleting", "Sandbox-held Agent cleanup requested")
+	conditions := []string{cetirunv1alpha1.ConditionReady, cetirunv1alpha1.ConditionSandboxReady}
+	if controllerutil.ContainsFinalizer(agent, sandbox.PreparationFinalizer) {
+		conditions = append(conditions, cetirunv1alpha1.ConditionAgentConfigReady)
+	}
+	for _, kind := range conditions {
+		apimeta.SetStatusCondition(&agent.Status.Conditions, metav1.Condition{
+			Type: kind, Status: metav1.ConditionFalse, ObservedGeneration: agent.Generation,
+			Reason: "InstanceDeleting", Message: "Sandbox-held Agent cleanup requested",
+		})
+	}
 	if !reflect.DeepEqual(before, agent.Status) {
 		if err := r.updateStatus(ctx, agent); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
+	if err := r.revokeSandboxPreparationGrants(ctx, agent); err != nil {
+		return ctrl.Result{}, err
+	}
 	if err := r.stopSandboxBuiltin(ctx, agent); err != nil {
+		return ctrl.Result{}, err
+	}
+	if err := r.checkSandboxPreparationCleanup(ctx, agent); err != nil {
 		return ctrl.Result{}, err
 	}
 	if agentIdentityRequested(agent) || agent.Status.AgentIdentity != nil {
@@ -199,6 +241,9 @@ func (r *AgentReconciler) deleteSandboxBuiltin(ctx context.Context, agent *cetir
 	ns := &corev1.Namespace{}
 	err := r.customReader().Get(ctx, types.NamespacedName{Name: instanceNamespace(agent.Name)}, ns)
 	if apierrors.IsNotFound(err) {
+		if err := r.finishSandboxPreparation(ctx, agent); err != nil {
+			return ctrl.Result{}, err
+		}
 		base := agent.DeepCopy()
 		controllerutil.RemoveFinalizer(agent, sandboxHoldFinalizer)
 		controllerutil.RemoveFinalizer(agent, cetirunv1alpha1.Finalizer)

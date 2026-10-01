@@ -1,0 +1,267 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
+package controller
+
+import (
+	"context"
+	"fmt"
+	"slices"
+
+	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+	nodev1 "k8s.io/api/node/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
+	storagev1 "k8s.io/api/storage/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+)
+
+func (r *AgentReconciler) sandboxPreparationInput(ctx context.Context, attempt *sandboxPreparationAttempt) error {
+	inputs := attempt.prerequisites
+	agent := attempt.agent
+	config := r.SandboxPreparation
+	if err := configurationSnapshotTime(inputs.ObservedAt, configurationNow(config.Now), config.MaxSnapshotAge); err != nil {
+		return err
+	}
+	if inputs.AgentUID != agent.UID || inputs.AgentGeneration != agent.Generation || inputs.Revision == "" ||
+		inputs.ChartVersion == "" || (agent.Spec.Helm.Version != "" && agent.Spec.Helm.Version != inputs.ChartVersion) ||
+		inputs.NamespaceUID == "" || inputs.RuntimeSecret.Name == "" || inputs.RuntimeSecret.UID == "" ||
+		agent.Spec.GatewayTokenSecretRef != inputs.RuntimeSecret.Name {
+		return fmt.Errorf("Sandbox prerequisites must authorize this Agent generation, chart and runtime Secret")
+	}
+	namespace := &corev1.Namespace{}
+	if err := r.APIReader.Get(ctx, client.ObjectKey{Name: instanceNamespace(agent.Name)}, namespace); err != nil {
+		return err
+	}
+	owner := []metav1.OwnerReference{sandboxworkload.AgentOwner(agent.Name, agent.UID)}
+	if namespace.UID != inputs.NamespaceUID || namespace.Name == r.OperatorNamespace ||
+		!namespace.DeletionTimestamp.IsZero() ||
+		namespace.Labels[sandboxworkload.ProtectedNamespaceLabel] != "true" ||
+		namespace.Annotations[sandboxworkload.AgentNameAnnotation] != agent.Name ||
+		namespace.Annotations[sandboxworkload.AgentUIDAnnotation] != string(agent.UID) ||
+		!equality.Semantic.DeepEqual(namespace.OwnerReferences, owner) {
+		return fmt.Errorf("Sandbox namespace protection or UID ownership is not established")
+	}
+	home, skills := &corev1.PersistentVolumeClaim{}, &corev1.PersistentVolumeClaim{}
+	for _, claim := range []struct {
+		expected sandboxworkload.ObjectIdentity
+		object   *corev1.PersistentVolumeClaim
+	}{{inputs.Home, home}, {inputs.Skills, skills}} {
+		if claim.expected.Name == "" || claim.expected.UID == "" {
+			return fmt.Errorf("Sandbox HOME and skills require explicit persisted identities")
+		}
+		if err := r.APIReader.Get(ctx, client.ObjectKey{Namespace: namespace.Name, Name: claim.expected.Name}, claim.object); err != nil {
+			return err
+		}
+		if claim.object.UID != claim.expected.UID || !claim.object.DeletionTimestamp.IsZero() {
+			return fmt.Errorf("Sandbox storage UID changed or storage is terminating")
+		}
+	}
+	secret := &metav1.PartialObjectMetadata{TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Secret"}}
+	if err := r.APIReader.Get(ctx, client.ObjectKey{Namespace: namespace.Name, Name: inputs.RuntimeSecret.Name}, secret); err != nil {
+		return err
+	}
+	if secret.UID != inputs.RuntimeSecret.UID || !secret.DeletionTimestamp.IsZero() {
+		return fmt.Errorf("Sandbox runtime Secret approval no longer matches")
+	}
+	runtimeClass := &nodev1.RuntimeClass{}
+	if err := r.APIReader.Get(ctx, client.ObjectKey{Name: attempt.resolution.Capabilities.RuntimeClassName}, runtimeClass); err != nil {
+		return err
+	}
+	registered := attempt.configuration.RuntimeClasses[runtimeClass.Name]
+	if registered.UID != runtimeClass.UID || registered.Handler != runtimeClass.Handler || !runtimeClass.DeletionTimestamp.IsZero() {
+		return fmt.Errorf("Sandbox RuntimeClass approval changed")
+	}
+	storageClass := &storagev1.StorageClass{}
+	if err := r.APIReader.Get(ctx, client.ObjectKey{Name: attempt.resolution.Sandbox.Storage.Home.StorageClassName}, storageClass); err != nil {
+		return err
+	}
+	storage := attempt.configuration.StorageClasses[storageClass.Name]
+	if storage.UID != storageClass.UID || storage.Provisioner != storageClass.Provisioner || !storageClass.DeletionTimestamp.IsZero() {
+		return fmt.Errorf("Sandbox StorageClass approval changed")
+	}
+	attempt.input = sandboxworkload.Input{
+		Resolution: attempt.resolution, AgentName: agent.Name, AgentGeneration: agent.Generation,
+		AgentType: string(agent.Spec.Agent.Type), WorkloadName: instanceServiceName(agent.Name), ReleaseName: helmReleaseName(agent.Name),
+		Namespace: sandboxworkload.ObjectIdentity{Name: namespace.Name, UID: namespace.UID},
+		Home:      home, Skills: skills, RuntimeClass: runtimeClass,
+		Helpers: inputs.Helpers, AuthorizedSecrets: []string{inputs.RuntimeSecret.Name},
+	}
+	attempt.sources = append(attempt.sources,
+		sandboxSource(namespace, "v1", "Namespace"),
+		sandboxSource(home, "v1", "PersistentVolumeClaim"),
+		sandboxSource(skills, "v1", "PersistentVolumeClaim"),
+		sandboxSource(secret, "v1", "Secret"),
+		sandboxSource(runtimeClass, "node.k8s.io/v1", "RuntimeClass"),
+		sandboxSource(storageClass, "storage.k8s.io/v1", "StorageClass"),
+	)
+	return r.verifySandboxSources(ctx, attempt.sources)
+}
+
+func sandboxSource(object client.Object, version, kind string) sandboxworkload.SourceReference {
+	return sandboxworkload.SourceReference{
+		APIVersion: version, Kind: kind, Namespace: object.GetNamespace(), Name: object.GetName(),
+		UID: object.GetUID(), ResourceVersion: object.GetResourceVersion(),
+	}
+}
+
+func sandboxSourceKey(source sandboxworkload.SourceReference) string {
+	return source.APIVersion + "/" + source.Kind + "/" + source.Namespace + "/" + source.Name
+}
+
+func (r *AgentReconciler) readSandboxSource(ctx context.Context, source sandboxworkload.SourceReference) (sandboxworkload.SourceReference, error) {
+	object := &metav1.PartialObjectMetadata{TypeMeta: metav1.TypeMeta{APIVersion: source.APIVersion, Kind: source.Kind}}
+	if err := r.APIReader.Get(ctx, client.ObjectKey{Namespace: source.Namespace, Name: source.Name}, object); err != nil {
+		return source, err
+	}
+	if object.UID == "" || object.ResourceVersion == "" || !object.DeletionTimestamp.IsZero() {
+		return source, fmt.Errorf("Sandbox source %s is not persisted or is terminating", sandboxSourceKey(source))
+	}
+	if (source.UID != "" && object.UID != source.UID) ||
+		(source.ResourceVersion != "" && object.ResourceVersion != source.ResourceVersion) {
+		return source, fmt.Errorf("Sandbox source %s changed", sandboxSourceKey(source))
+	}
+	return sandboxSource(object, source.APIVersion, source.Kind), nil
+}
+
+func (r *AgentReconciler) verifySandboxSources(ctx context.Context, sources []sandboxworkload.SourceReference) error {
+	if len(sources) == 0 || len(sources) > 128 {
+		return fmt.Errorf("Sandbox source inventory exceeds the supported bound")
+	}
+	seen := map[string]bool{}
+	for _, source := range sources {
+		key := sandboxSourceKey(source)
+		if source.UID == "" || source.ResourceVersion == "" || seen[key] {
+			return fmt.Errorf("Sandbox source identities must be complete and unique")
+		}
+		seen[key] = true
+		if _, err := r.readSandboxSource(ctx, source); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (r *AgentReconciler) publishSandboxExpectation(ctx context.Context, attempt *sandboxPreparationAttempt,
+	bundle *sandboxworkload.Bundle, template *corev1.PodTemplateSpec, role *rbacv1.Role, binding *rbacv1.RoleBinding,
+	check func(context.Context) error,
+) error {
+	workload := &appsv1.StatefulSet{}
+	if err := r.APIReader.Get(ctx, client.ObjectKey{Namespace: attempt.input.Namespace.Name, Name: attempt.input.WorkloadName}, workload); err != nil {
+		return err
+	}
+	owner := []metav1.OwnerReference{sandboxworkload.AgentOwner(attempt.agent.Name, attempt.agent.UID)}
+	if !workload.DeletionTimestamp.IsZero() || !equality.Semantic.DeepEqual(workload.OwnerReferences, owner) ||
+		ptr.Deref(workload.Spec.Replicas, -1) != 0 || len(workload.Spec.VolumeClaimTemplates) != 0 ||
+		workload.Annotations[sandboxworkload.AgentUIDAnnotation] != string(attempt.agent.UID) ||
+		workload.Annotations[sandboxworkload.RevisionAnnotation] != attempt.plan.Revision ||
+		!sandboxworkload.SamePodTemplate(workload.Spec.Template, *template) {
+		return fmt.Errorf("Sandbox staged workload is not the exact owned, held template")
+	}
+	candidates := slices.Clone(attempt.sources)
+	candidates = append(candidates,
+		sandboxworkload.SourceReference{APIVersion: api.GroupVersion.String(), Kind: "Agent", Name: attempt.agent.Name, UID: attempt.agent.UID},
+		sandboxSource(workload, "apps/v1", "StatefulSet"),
+		sandboxworkload.SourceReference{APIVersion: rbacv1.SchemeGroupVersion.String(), Kind: "Role", Namespace: role.Namespace, Name: role.Name},
+		sandboxworkload.SourceReference{APIVersion: rbacv1.SchemeGroupVersion.String(), Kind: "RoleBinding", Namespace: binding.Namespace, Name: binding.Name},
+	)
+	candidates = append(candidates, sandboxworkload.PodSourceReferences(workload.Spec.Template.Spec, workload.Namespace)...)
+	for _, object := range attempt.plan.Resources {
+		candidates = append(candidates, sandboxworkload.SourceReference{
+			APIVersion: object.GetAPIVersion(), Kind: object.GetKind(), Namespace: object.GetNamespace(), Name: object.GetName(),
+		})
+	}
+	for _, grant := range attempt.configuration.Platforms[attempt.resolution.Sandbox.Type].Grants {
+		if grant.PolicyUID == attempt.resolution.Binding.AgentPolicyUID {
+			candidates = append(candidates, sandboxworkload.SourceReference{
+				APIVersion: rbacv1.SchemeGroupVersion.String(), Kind: "ClusterRole", Name: grant.RoleRef.Name,
+				UID: grant.RoleUID, ResourceVersion: grant.RoleResourceVersion,
+			})
+		}
+	}
+	sources := make([]sandboxworkload.SourceReference, 0, len(candidates))
+	seen := map[string]sandboxworkload.SourceReference{}
+	for _, candidate := range candidates {
+		key := sandboxSourceKey(candidate)
+		if old, exists := seen[key]; exists {
+			if (candidate.UID != "" && candidate.UID != old.UID) ||
+				(candidate.ResourceVersion != "" && candidate.ResourceVersion != old.ResourceVersion) {
+				return fmt.Errorf("Sandbox source inventory contains conflicting snapshots")
+			}
+			continue
+		}
+		source, err := r.readSandboxSource(ctx, candidate)
+		if err != nil {
+			return err
+		}
+		seen[key] = source
+		sources = append(sources, source)
+	}
+	if len(sources) < 9 || len(sources) > 128 {
+		return fmt.Errorf("Sandbox Pod source inventory must contain 9 to 128 identities")
+	}
+	slices.SortFunc(sources, func(a, b sandboxworkload.SourceReference) int {
+		if sandboxSourceKey(a) < sandboxSourceKey(b) {
+			return -1
+		}
+		if sandboxSourceKey(a) > sandboxSourceKey(b) {
+			return 1
+		}
+		return 0
+	})
+	// The live template was compared with supported API defaults above. Keep
+	// the sealed template as the protected contract, not API-added defaults.
+	expected, err := bundle.Expect(*template, workload, sources)
+	if err != nil {
+		return err
+	}
+	expected.ControllerRevision = workload.Status.UpdateRevision
+	object, err := sandboxworkload.PodExpectationObject(r.OperatorNamespace, expected)
+	if err != nil {
+		return err
+	}
+	if len(object.Data[sandboxworkload.PodExpectationKey]) > 512*1024 {
+		return fmt.Errorf("Sandbox Pod expectation exceeds the admission size bound")
+	}
+	if err := check(ctx); err != nil {
+		return err
+	}
+	if err := r.verifySandboxSources(ctx, sources); err != nil {
+		return err
+	}
+	current := &corev1.ConfigMap{}
+	err = r.APIReader.Get(ctx, client.ObjectKeyFromObject(object), current)
+	if apierrors.IsNotFound(err) {
+		if err := r.Create(ctx, object); err != nil {
+			return err
+		}
+	} else if err != nil {
+		return err
+	} else {
+		if !current.DeletionTimestamp.IsZero() || !equality.Semantic.DeepEqual(current.OwnerReferences, owner) ||
+			current.Annotations[sandboxworkload.AgentUIDAnnotation] != string(attempt.agent.UID) {
+			return fmt.Errorf("Sandbox Pod expectation has foreign or terminating ownership")
+		}
+		if !equality.Semantic.DeepEqual(current.Data, object.Data) ||
+			current.Annotations[sandboxworkload.RevisionAnnotation] != expected.Revision || len(current.BinaryData) != 0 {
+			base := current.DeepCopy()
+			current.Data, current.BinaryData = object.Data, nil
+			current.Annotations[sandboxworkload.RevisionAnnotation] = expected.Revision
+			if err := r.Patch(ctx, current, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
+				return err
+			}
+		}
+	}
+	// An expectation remains held even if a source races this last check.
+	// Report the race and retry rather than claiming preparation succeeded.
+	if err := check(ctx); err != nil {
+		return err
+	}
+	return r.verifySandboxSources(ctx, sources)
+}

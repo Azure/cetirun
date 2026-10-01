@@ -37,6 +37,7 @@ import (
 	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/agents/builtin"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/helm"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
 )
 
 // AgentReconciler reconciles Agent objects.
@@ -75,6 +76,7 @@ type AgentReconciler struct {
 	ChartRegistry        string                 // OCI registry host (e.g. "registry.example.com"), derived from chart repo URL
 	DefaultModel         string                 // Default GitHub Copilot model when spec.model is empty
 	CustomBindings       CustomBindingProvider
+	SandboxPreparation   *SandboxPreparation
 
 	// Azure config for Teams auto-provisioning.
 	AzureSubscriptionID string
@@ -164,6 +166,9 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 
 	// 2. Handle deletion.
 	if !instance.DeletionTimestamp.IsZero() {
+		if controllerutil.ContainsFinalizer(instance, sandbox.PreparationFinalizer) {
+			return r.deleteSandboxBuiltin(ctx, instance)
+		}
 		if instance.Spec.Agent.Type == cetirunv1alpha1.AgentTypeCustom {
 			return r.deleteCustom(ctx, instance)
 		}

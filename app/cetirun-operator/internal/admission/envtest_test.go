@@ -399,7 +399,7 @@ func TestAdmissionAPIServerBoundaries(t *testing.T) {
 	cleanup := newAgent("cleanup-agent", false)
 	cleanup.Finalizers = append(cleanup.Finalizers, "example.com/another-controller")
 	create(cleanup)
-	cleanup.Finalizers = append(cleanup.Finalizers, sandbox.HoldFinalizer)
+	cleanup.Finalizers = append(cleanup.Finalizers, sandbox.HoldFinalizer, sandbox.PreparationFinalizer)
 	if err := controller.Update(ctx, cleanup); err != nil {
 		t.Fatal("controller could not persist the initial hold:", err)
 	}
