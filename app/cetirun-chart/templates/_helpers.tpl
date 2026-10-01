@@ -212,6 +212,11 @@ Validate Azure Workload Identity prerequisites
 {{- if not (regexMatch "^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$" ($proxy.tokenSecretName | default "")) -}}
 {{- fail "aiGateway.copilotProxy.tokenSecretName must name a Secret in the release namespace" -}}
 {{- end -}}
+{{- range ($proxy.responsesModels | default list) -}}
+{{- if not (regexMatch "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$" (printf "%v" .)) -}}
+{{- fail "aiGateway.copilotProxy.responsesModels must be GitHub Copilot model IDs" -}}
+{{- end -}}
+{{- end -}}
 {{- end -}}
 {{- end -}}
 {{- end }}
@@ -242,6 +247,15 @@ offers, under its own name. The Gateway decides which ones the Agent may use.
 */}}
 {{- define "cetirun.copilotProxyConfig" -}}
 model_list:
+  {{- /* GitHub Copilot serves some models only through the Responses API.
+     Naming them lets LiteLLM bridge chat completion requests to it. */}}
+  {{- range ((.Values.aiGateway.copilotProxy).responsesModels | default list) }}
+  - model_name: {{ . | quote }}
+    litellm_params:
+      model: {{ printf "github_copilot/%s" . | quote }}
+    model_info:
+      mode: responses
+  {{- end }}
   - model_name: "*"
     litellm_params:
       model: "github_copilot/*"

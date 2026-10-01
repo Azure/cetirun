@@ -645,6 +645,9 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	if err := r.applyAIGatewayValues(helmValues, instance); err != nil {
 		return r.rejectAgentConfig(ctx, instance, err)
 	}
+	if prepared.SupportsValuePath(aiGatewayChartValue, aiGatewayChartCopilotValue, aiGatewayChartResponsesValue) {
+		r.applyCopilotResponsesModels(helmValues, instance)
+	}
 	{
 		secret := &corev1.Secret{}
 		if err := r.Get(ctx, types.NamespacedName{Namespace: ns, Name: instance.Spec.GatewayTokenSecretRef}, secret); err != nil {

@@ -112,18 +112,21 @@ func copilotBaseModel(id string, priced map[string]bool) (string, bool) {
 			return candidate, true
 		}
 	}
-	var prefixed []string
-	for name := range priced {
-		if strings.HasSuffix(name, "/"+id) || strings.HasSuffix(name, "/"+dashed) {
-			prefixed = append(prefixed, name)
+	// Then the model vendor's own entry. Resellers' entries are not list
+	// prices, so a model priced only by them is left unpriced.
+	for _, vendor := range copilotModelVendors {
+		for _, name := range []string{vendor + "/" + id, vendor + "/" + dashed} {
+			if priced[name] {
+				return name, true
+			}
 		}
 	}
-	if len(prefixed) == 0 {
-		return "", false
-	}
-	slices.Sort(prefixed)
-	return prefixed[0], true
+	return "", false
 }
+
+// copilotModelVendors are the price-table providers that are the vendors of
+// the models GitHub Copilot serves, in the order they are tried.
+var copilotModelVendors = []string{"openai", "anthropic", "gemini", "xai", "mistral", "deepseek"}
 
 // aiGatewayPriceCache holds the Gateway's priced model names for an hour.
 type aiGatewayPriceCache struct {

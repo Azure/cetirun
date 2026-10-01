@@ -237,6 +237,9 @@ const (
 	aiGatewayChartValue        = "aiGateway"
 	aiGatewayChartModelsValue  = "models"
 	aiGatewayChartCopilotValue = "copilotProxy"
+	// aiGatewayChartResponsesValue lists the Copilot models the proxy must
+	// reach through the Responses API; older charts do not declare it.
+	aiGatewayChartResponsesValue = "responsesModels"
 )
 
 // validImageReference accepts repository:tag, repository@sha256:<digest> or
@@ -677,6 +680,32 @@ func (r *AgentReconciler) applyAIGatewayValues(values map[string]any, instance *
 		aiGatewayKeyIDPodAnnotation: instance.Status.AIGateway.KeyID,
 	})
 	return nil
+}
+
+// applyCopilotResponsesModels tells the Agent's Copilot proxy which of its
+// registered models GitHub Copilot serves only through the Responses API, so
+// the proxy bridges the chat completion requests agents send for them.
+func (r *AgentReconciler) applyCopilotResponsesModels(values map[string]any, instance *cetirunv1alpha1.Agent) {
+	gateway, _ := values["aiGateway"].(map[string]any)
+	proxy, _ := gateway["copilotProxy"].(map[string]any)
+	if proxy == nil || proxy["enabled"] != true {
+		return
+	}
+	registered := map[string]bool{}
+	if status := instance.Status.AIGateway; status != nil && status.Copilot != nil {
+		for _, name := range status.Copilot.Models {
+			registered[strings.TrimPrefix(name, aiGatewayCopilotModelPrefix)] = true
+		}
+	}
+	models, _ := parseCopilotModels(instance.Annotations[cetirunv1alpha1.AnnotationCopilotModels])
+	ids := []any{}
+	for _, model := range models {
+		if model.ResponsesOnly && registered[model.ID] {
+			ids = append(ids, model.ID)
+		}
+	}
+	slices.SortFunc(ids, func(a, b any) int { return strings.Compare(a.(string), b.(string)) })
+	proxy["responsesModels"] = ids
 }
 
 // aiGatewayRevision is the part of the operator configuration hash that

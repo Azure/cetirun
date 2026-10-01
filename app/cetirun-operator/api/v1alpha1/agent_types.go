@@ -471,6 +471,10 @@ type CopilotModel struct {
 	ContextWindow int64 `json:"contextWindow,omitempty"`
 	// MaxOutputTokens is the model's output limit in tokens.
 	MaxOutputTokens int64 `json:"maxOutputTokens,omitempty"`
+	// ResponsesOnly marks a model GitHub Copilot serves only through the
+	// Responses API, not chat completions. The Copilot proxy bridges chat
+	// requests for it.
+	ResponsesOnly bool `json:"responsesOnly,omitempty"`
 }
 
 // The catalog the operator publishes for the Portal: a ConfigMap in the

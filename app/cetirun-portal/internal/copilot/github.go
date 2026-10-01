@@ -55,6 +55,12 @@ var chatEndpoints = map[string]bool{
 	"/v1/messages": true, "/messages": true,
 }
 
+// completionsEndpoints serve chat completions, the API agents call.
+var completionsEndpoints = map[string]bool{"/v1/chat/completions": true, "/chat/completions": true}
+
+// responsesEndpoints serve the Responses API.
+var responsesEndpoints = map[string]bool{"/v1/responses": true, "/responses": true}
+
 // ErrNoCopilot reports a GitHub account that GitHub Copilot does not accept.
 var ErrNoCopilot = errors.New("this GitHub account cannot use GitHub Copilot")
 
@@ -307,14 +313,15 @@ func ParseModels(body []byte) ([]cetirunv1alpha1.CopilotModel, error) {
 		if m.Policy != nil && strings.EqualFold(m.Policy.State, "disabled") {
 			continue
 		}
-		if len(m.SupportedEndpoints) > 0 {
-			chat := false
-			for _, endpoint := range m.SupportedEndpoints {
-				chat = chat || chatEndpoints[strings.ToLower(strings.TrimRight(strings.TrimSpace(endpoint), "/"))]
-			}
-			if !chat {
-				continue
-			}
+		chat, completions, responses := false, false, false
+		for _, raw := range m.SupportedEndpoints {
+			endpoint := strings.ToLower(strings.TrimRight(strings.TrimSpace(raw), "/"))
+			chat = chat || chatEndpoints[endpoint]
+			completions = completions || completionsEndpoints[endpoint]
+			responses = responses || responsesEndpoints[endpoint]
+		}
+		if len(m.SupportedEndpoints) > 0 && !chat {
+			continue
 		}
 		contextWindow := m.Capabilities.Limits.MaxContextWindowTokens
 		if contextWindow <= 0 {
@@ -326,6 +333,8 @@ func ParseModels(body []byte) ([]cetirunv1alpha1.CopilotModel, error) {
 		}
 		models = append(models, cetirunv1alpha1.CopilotModel{
 			ID: id, Name: name, ContextWindow: max(contextWindow, 0), MaxOutputTokens: max(m.Capabilities.Limits.MaxOutputTokens, 0),
+			// Copilot refuses chat completions for these; the proxy bridges.
+			ResponsesOnly: responses && !completions,
 		})
 		seen[id] = true
 		if len(models) == MaxModels {

@@ -1006,10 +1006,15 @@ func TestParseAIGatewayConfig(t *testing.T) {
 }
 
 func TestCopilotBaseModel(t *testing.T) {
-	priced := map[string]bool{"gpt-5.5": true, "claude-sonnet-4-5": true, "github_copilot/gpt-9": true, "xai/grok-code-fast-1": true, "vertex_ai/grok-code-fast-1": true}
+	priced := map[string]bool{"gpt-5.5": true, "claude-sonnet-4-5": true, "github_copilot/gpt-9": true,
+		"xai/grok-code-fast-1": true, "vertex_ai/grok-code-fast-1": true, "aihubmix/grok-code-fast-1": true,
+		"openrouter/x-ai/grok-9": true, "aihubmix/grok-9": true, "gemini/gemini-9-flash": true}
 	for id, want := range map[string]string{
 		"gpt-5.5": "gpt-5.5", "claude-sonnet-4.5": "claude-sonnet-4-5", "gpt-9": "github_copilot/gpt-9",
-		"grok-code-fast-1": "vertex_ai/grok-code-fast-1", "unknown-1": "",
+		// The vendor's own entry, never a reseller's, whatever sorts first.
+		"grok-code-fast-1": "xai/grok-code-fast-1", "gemini-9-flash": "gemini/gemini-9-flash",
+		// Priced only by resellers: not a list price.
+		"grok-9": "", "unknown-1": "",
 	} {
 		got, ok := copilotBaseModel(id, priced)
 		if got != want || ok != (want != "") {
@@ -1331,5 +1336,27 @@ func TestDeleteAIGatewayKeyDoesNotHoldDeletionWhenTheGatewayIsOff(t *testing.T) 
 	agent.Status.AIGateway.Phase = cetirunv1alpha1.AIGatewayPhaseReady
 	if err := r.deleteAIGatewayKey(context.Background(), agent); err == nil {
 		t.Fatal("with the Gateway on, a failed revocation must hold the deletion")
+	}
+}
+
+func TestCopilotResponsesModelsReachTheProxy(t *testing.T) {
+	agent := aiGatewayTestAgent(testAIGatewayTeam)
+	agent.Annotations = map[string]string{cetirunv1alpha1.AnnotationCopilotModels: `[
+		{"id":"gpt-5.5","responsesOnly":true},{"id":"claude-sonnet-4.5"},{"id":"gpt-6-sol","responsesOnly":true}]`}
+	agent.Status.AIGateway = &cetirunv1alpha1.AIGatewayStatus{Copilot: &cetirunv1alpha1.AIGatewayCopilotStatus{
+		// gpt-6-sol is not registered, for example for lack of a price.
+		Models: []string{"copilot/claude-sonnet-4.5", "copilot/gpt-5.5"},
+	}}
+	r, _, _ := aiGatewayTestReconciler(t, agent)
+	values := map[string]any{"aiGateway": map[string]any{"copilotProxy": map[string]any{"enabled": true}}}
+	r.applyCopilotResponsesModels(values, agent)
+	got := values["aiGateway"].(map[string]any)["copilotProxy"].(map[string]any)["responsesModels"]
+	if !slices.Equal(got.([]any), []any{"gpt-5.5"}) {
+		t.Fatalf("responsesModels = %v, want the registered responses-only models", got)
+	}
+	off := map[string]any{"aiGateway": map[string]any{"copilotProxy": map[string]any{"enabled": false}}}
+	r.applyCopilotResponsesModels(off, agent)
+	if _, set := off["aiGateway"].(map[string]any)["copilotProxy"].(map[string]any)["responsesModels"]; set {
+		t.Fatal("an Agent without a proxy gets no proxy models")
 	}
 }

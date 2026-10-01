@@ -119,6 +119,9 @@ aiGateway:
     # -- Secret holding the owner's GitHub token (key access-token), written
     # by the Portal at sign-in. The proxy waits for it.
     tokenSecretName: ""
+    # -- Copilot models served only through the Responses API. The proxy
+    # bridges chat completion requests for them.
+    responsesModels: []
     # -- Proxy container resources
     resources:
       requests:

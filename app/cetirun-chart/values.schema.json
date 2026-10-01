@@ -246,6 +246,12 @@
                         "image": {"type": "string", "default": ""},
                         "masterKeySecretName": {"type": "string", "default": ""},
                         "tokenSecretName": {"type": "string", "default": ""},
+                        "responsesModels": {
+                            "type": "array",
+                            "description": "Copilot models served only through the Responses API",
+                            "items": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$"},
+                            "default": []
+                        },
                         "resources": {"type": "object"}
                     }
                 }

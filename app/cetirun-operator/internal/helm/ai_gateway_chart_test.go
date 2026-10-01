@@ -127,3 +127,32 @@ func TestAIGatewayChartRejectsUnsupportedWiring(t *testing.T) {
 		})
 	}
 }
+
+func TestAIGatewayChartBridgesResponsesOnlyCopilotModels(t *testing.T) {
+	input := aiGatewayInput("openclaw", "openai")
+	input["aiGateway"].(map[string]any)["copilotProxy"] = map[string]any{
+		"enabled": true, "image": "registry.example.com/cetirun-ai-gateway:1.0.0",
+		"masterKeySecretName": "ai-gateway-copilot-proxy", "tokenSecretName": "github-copilot-token",
+		"responsesModels": []any{"gpt-5.5"},
+	}
+	rendered, err := renderAIGateway(t, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxy := rendered["cetirun/templates/copilot-proxy.yaml"]
+	for _, want := range []string{
+		`- model_name: "gpt-5.5"`, `model: "github_copilot/gpt-5.5"`, "mode: responses",
+		`- model_name: "*"`, `model: "github_copilot/*"`,
+	} {
+		if !strings.Contains(proxy, want) {
+			t.Errorf("proxy configuration lacks %q", want)
+		}
+	}
+	if strings.Index(proxy, `"gpt-5.5"`) > strings.Index(proxy, `model_name: "*"`) {
+		t.Error("the named model must come before the wildcard")
+	}
+	input["aiGateway"].(map[string]any)["copilotProxy"].(map[string]any)["responsesModels"] = []any{"../etc"}
+	if _, err := renderAIGateway(t, input); err == nil {
+		t.Fatal("a model ID that is not a Copilot model ID must be rejected")
+	}
+}
