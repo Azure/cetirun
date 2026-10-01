@@ -638,9 +638,21 @@ func TestPodAdmissionAPIServerBoundaries(t *testing.T) {
 		t.Fatal(err)
 	}
 	expected.ExecutionHeld, expected.ControllerRevision = false, workload.Status.UpdateRevision
-	// Refresh each actual source UID/RV; no credentials or external cluster are
-	// read. The API client requests metadata only, including Secret metadata.
+	// Refresh persisted identities; the Agent pins intent, other sources pin
+	// metadata versions. No Secret contents or external cluster are read.
 	for _, source := range f.expected.Sources {
+		if source.IsAgent() {
+			agent := &api.Agent{}
+			if err := cl.Get(ctx, client.ObjectKey{Name: source.Name}, agent); err != nil {
+				t.Fatal(err)
+			}
+			current, err := w.AgentSourceReference(agent)
+			if err != nil {
+				t.Fatal(err)
+			}
+			expected.Sources = append(expected.Sources, current)
+			continue
+		}
 		object := &metav1.PartialObjectMetadata{TypeMeta: metav1.TypeMeta{APIVersion: source.APIVersion, Kind: source.Kind}}
 		if err := cl.Get(ctx, client.ObjectKey{Namespace: source.Namespace, Name: source.Name}, object); err != nil {
 			t.Fatal(err)
@@ -754,6 +766,63 @@ func TestPodAdmissionAPIServerBoundaries(t *testing.T) {
 		len(pod.Spec.DNSConfig.Nameservers) != 1 || pod.Spec.DNSConfig.Nameservers[0] != "10.96.0.10" {
 		t.Fatal("API defaulting replaced the protected DNS configuration")
 	}
+	t.Run("status-churn-and-metadata-reauthorization", func(t *testing.T) {
+		agent := &api.Agent{}
+		if err := cl.Get(ctx, client.ObjectKeyFromObject(f.fixture.Agent), agent); err != nil {
+			t.Fatal(err)
+		}
+		oldVersion, generation, expectationVersion := agent.ResourceVersion, agent.Generation, state.ResourceVersion
+		agent.Status.Phase = api.PhasePending
+		if err := cl.Status().Update(ctx, agent); err != nil {
+			t.Fatal(err)
+		}
+		if agent.ResourceVersion == oldVersion || agent.Generation != generation {
+			t.Fatal("status update did not preserve generation while changing resourceVersion")
+		}
+		if err := cl.Update(ctx, pod.DeepCopy(), client.DryRunAll); err != nil {
+			t.Fatalf("status-only change invalidated the protected Pod: %v", err)
+		}
+		if err := cl.Get(ctx, client.ObjectKeyFromObject(state), state); err != nil {
+			t.Fatal(err)
+		}
+		if state.ResourceVersion != expectationVersion {
+			t.Fatal("status-only admission required republishing the expectation")
+		}
+		reauthorize, err := sandboxbinding.FormatReauthorization("synthetic-new-intent", expected.Binding)
+		if err != nil {
+			t.Fatal(err)
+		}
+		agent.Annotations[sandboxbinding.ReauthorizeAnnotation] = reauthorize
+		if err := cl.Update(ctx, agent); err != nil {
+			t.Fatal(err)
+		}
+		if agent.Generation != generation {
+			t.Fatal("reauthorization fixture changed generation")
+		}
+		if err := cl.Update(ctx, pod.DeepCopy(), client.DryRunAll); err == nil || !strings.Contains(err.Error(), "SourceChanged") {
+			t.Fatalf("metadata-only reauthorization reused stale intent: %v", err)
+		}
+		current, err := w.AgentSourceReference(agent)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i := range expected.Sources {
+			if expected.Sources[i].IsAgent() {
+				expected.Sources[i] = current
+			}
+		}
+		raw, err := json.Marshal(expected)
+		if err != nil {
+			t.Fatal(err)
+		}
+		state.Data[PodExpectationKey] = string(raw)
+		if err := cl.Update(ctx, state); err != nil {
+			t.Fatal(err)
+		}
+		if err := cl.Update(ctx, pod.DeepCopy(), client.DryRunAll); err != nil {
+			t.Fatalf("fresh explicit intent did not restore admission: %v", err)
+		}
+	})
 	clientset, err := kubernetes.NewForConfig(cfg)
 	if err != nil {
 		t.Fatal(err)

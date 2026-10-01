@@ -105,7 +105,7 @@ func (r *SandboxReconciler) Reconcile(ctx context.Context, request ctrl.Request)
 	}
 	before := object.DeepCopy()
 	now := configurationNow(r.Now)
-	condition, observedAt, observeErr := r.assess(ctx, reader, object, now)
+	condition, observedAt, observeErr := assessSandboxPrerequisites(ctx, reader, object, r.Source, r.MaxSnapshotAge, now)
 	now = configurationNow(r.Now)
 	if observeErr == nil && !observedAt.IsZero() {
 		if err := configurationSnapshotTime(observedAt, now, r.MaxSnapshotAge); err != nil {
@@ -157,7 +157,9 @@ func (r *AgentPolicyReconciler) Reconcile(ctx context.Context, request ctrl.Requ
 	return ctrl.Result{RequeueAfter: configurationRefresh(r.MaxSnapshotAge, now, observedAt)}, nil
 }
 
-func (r *SandboxReconciler) assess(ctx context.Context, reader client.Reader, object *api.Sandbox, now time.Time) (metav1.Condition, time.Time, error) {
+func assessSandboxPrerequisites(ctx context.Context, reader client.Reader, object *api.Sandbox,
+	source SandboxConfigurationSource, maxAge time.Duration, now time.Time,
+) (metav1.Condition, time.Time, error) {
 	if !object.DeletionTimestamp.IsZero() {
 		return configurationCondition(metav1.ConditionFalse, "Terminating", "Sandbox configuration is terminating."), time.Time{}, nil
 	}
@@ -165,7 +167,7 @@ func (r *SandboxReconciler) assess(ctx context.Context, reader client.Reader, ob
 	if len(errs) != 0 {
 		return configurationCondition(metav1.ConditionFalse, "InvalidConfiguration", "Sandbox configuration is invalid."), time.Time{}, nil
 	}
-	snapshot, err := configurationSnapshot(ctx, r.Source, now, r.MaxSnapshotAge)
+	snapshot, err := configurationSnapshot(ctx, source, now, maxAge)
 	if err != nil {
 		return configurationCondition(metav1.ConditionUnknown, "PrerequisitesUnavailable", "Current platform prerequisite state is unavailable."), time.Time{}, err
 	}

@@ -40,6 +40,60 @@ import (
 
 var errSandboxActionTest = errors.New("synthetic held action failure")
 
+func TestSandboxStageDigestIsReadOnlyAndDetectsReleaseDrift(t *testing.T) {
+	prepared, _, _ := sandboxRender(t, "hermes", true, false)
+	cfg, kubeClient, store := sandboxActionConfig()
+	input := prepared.sandboxBundle.Identity()
+	ctx := context.Background()
+	if _, err := sandboxStageDigest(ctx, cfg, input.Namespace.Name, input.ReleaseName); err == nil {
+		t.Fatal("missing release returned a usable identity")
+	}
+	if err := prepared.stageSandbox(ctx, cfg, input.Namespace.Name, input.ReleaseName, func(context.Context) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	writes, reads := store.writes, kubeClient.reads
+	first, err := sandboxStageDigest(ctx, cfg, input.Namespace.Name, input.ReleaseName)
+	if err != nil || len(first) != 64 {
+		t.Fatalf("deployed release identity unavailable: %q %v", first, err)
+	}
+	second, err := sandboxStageDigest(ctx, cfg, input.Namespace.Name, input.ReleaseName)
+	if err != nil || first != second || store.writes != writes || kubeClient.reads != reads {
+		t.Fatal("read-only release inspection wrote state, read workload objects or returned an unstable identity")
+	}
+	current, err := cfg.Releases.Last(input.ReleaseName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current.Info.Description = "synthetic changed release metadata"
+	if err := cfg.Releases.Update(current); err != nil {
+		t.Fatal(err)
+	}
+	changed, err := sandboxStageDigest(ctx, cfg, input.Namespace.Name, input.ReleaseName)
+	if err != nil || changed == first {
+		t.Fatal("release-store drift was hidden")
+	}
+	for _, status := range []release.Status{release.StatusFailed, release.StatusPendingUpgrade, release.StatusUninstalled} {
+		current.Info.Status = status
+		if err := cfg.Releases.Update(current); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := sandboxStageDigest(ctx, cfg, input.Namespace.Name, input.ReleaseName); err == nil {
+			t.Fatalf("release status %s was reusable", status)
+		}
+	}
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, err := sandboxStageDigest(canceled, cfg, input.Namespace.Name, input.ReleaseName); !errors.Is(err, context.Canceled) {
+		t.Fatal("release inspection ignored cancellation:", err)
+	}
+	if _, err := sandboxStageDigest(ctx, nil, input.Namespace.Name, input.ReleaseName); err == nil {
+		t.Fatal("missing release store was accepted")
+	}
+	if _, err := (&Client{}).SandboxStageDigest(nil, "", ""); err == nil {
+		t.Fatal("invalid release inspection reached configuration loading")
+	}
+}
+
 // Unlike driver.Memory's pointer storage, API-backed Helm storage serializes
 // releases. Copies also make final-status write failures observable in tests.
 type sandboxActionStorage struct {

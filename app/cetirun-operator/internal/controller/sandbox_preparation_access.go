@@ -27,10 +27,11 @@ func (r *AgentReconciler) sandboxGrantJournal() *sandboxpolicy.GrantJournalStore
 }
 
 func (r *AgentReconciler) sandboxPreparationStateNeeded(agent *api.Agent) bool {
-	// Minimal legacy/hold-only reconcilers have no state namespace. Do not
-	// invent one or require new permissions unless preparation is tracked.
-	return r.OperatorNamespace != "" || r.SandboxPreparation != nil ||
-		controllerutil.ContainsFinalizer(agent, sandbox.PreparationFinalizer)
+	// A namespace alone does not enable preparation. During deletion the hold
+	// also protects retries after the preparation marker has been released.
+	cleanupPending := !agent.DeletionTimestamp.IsZero() && controllerutil.ContainsFinalizer(agent, sandbox.HoldFinalizer)
+	return controllerutil.ContainsFinalizer(agent, sandbox.PreparationFinalizer) ||
+		(r.OperatorNamespace != "" && (r.SandboxPreparation != nil || cleanupPending))
 }
 
 func (r *AgentReconciler) revokeSandboxPreparationGrants(ctx context.Context, agent *api.Agent) error {

@@ -50,7 +50,7 @@ func (r *AgentReconciler) holdSandbox(ctx context.Context, agent *cetirunv1alpha
 	}
 	before := agent.DeepCopy().Status
 	var failures []error
-	prepare := r.SandboxPreparation != nil && !agent.Spec.Suspended && agent.Spec.Agent.Type != cetirunv1alpha1.AgentTypeCustom
+	prepare := r.SandboxPreparation != nil && !agent.Spec.Suspended && sandboxPreparationSupported(agent)
 	if !prepare {
 		if err := r.revokeSandboxPreparationGrants(ctx, agent); err != nil {
 			failures = append(failures, err)
@@ -79,7 +79,7 @@ func (r *AgentReconciler) holdSandbox(ctx context.Context, agent *cetirunv1alpha
 			if agent.Status.AccessURL != "" || agent.Status.Phase == cetirunv1alpha1.PhaseReady ||
 				apimeta.IsStatusConditionTrue(agent.Status.Conditions, cetirunv1alpha1.ConditionReady) ||
 				apimeta.IsStatusConditionTrue(agent.Status.Conditions, cetirunv1alpha1.ConditionSandboxReady) {
-				if err := r.sandboxPreparationStatus(ctx, agent, false); err != nil {
+				if err := r.sandboxPreparationStatus(ctx, agent, false, nil); err != nil {
 					return ctrl.Result{}, err
 				}
 			}
@@ -92,6 +92,9 @@ func (r *AgentReconciler) holdSandbox(ctx context.Context, agent *cetirunv1alpha
 
 	reason := "UnsupportedControl"
 	message := "Sandbox execution is not enabled: a qualified enforcement adapter and admission are required; workload execution is held."
+	if r.SandboxPreparation != nil && !sandboxPreparationSupported(agent) {
+		message = "This Agent type or cloud/sidecar integration is not supported by native Sandbox preparation; execution remains held."
+	}
 	agent.Status.Phase = cetirunv1alpha1.PhaseFailed
 	if agent.Spec.Suspended {
 		agent.Status.Phase = cetirunv1alpha1.PhaseSuspended

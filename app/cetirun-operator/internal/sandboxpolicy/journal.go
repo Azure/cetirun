@@ -136,8 +136,13 @@ func (s GrantJournalStore) Record(ctx context.Context, agentName string, agentUI
 	for _, ref := range merged {
 		refs = append(refs, ref)
 	}
+	previousData := cm.Data[GrantJournalDataKey]
 	if err := setJournalReferences(cm, agentName, agentUID, refs); err != nil {
 		return err
+	}
+	if !creating && cm.Data[GrantJournalDataKey] == previousData {
+		// The authoritative read already validated this protected inventory.
+		return nil
 	}
 	originalUID := cm.UID
 	if creating {

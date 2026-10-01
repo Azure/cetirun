@@ -223,6 +223,102 @@ func TestGrantJournalRestartAndWriteAheadUnion(t *testing.T) {
 	assertJournalProtection(t, store, writer.Client, plan)
 }
 
+func TestGrantJournalRecordRequestCounts(t *testing.T) {
+	plan, store, writer := journalFixture(t)
+	desired := plan.Identity.Bindings
+	known := slices.Clone(desired)
+	for i := range known {
+		known[i].UID = journalBindingObject(t, writer.Client, known[i]).GetUID()
+	}
+	partlyKnown := slices.Clone(desired)
+	partlyKnown[0].UID = known[0].UID
+	reordered := slices.Clone(known)
+	slices.Reverse(reordered)
+	changed := desired[0]
+	changed.Name = "changed-grant"
+	changed.GrantRevision = strings.Repeat("a", 64)
+	merged := append(slices.Clone(known), changed)
+	baseReader := store.APIReader
+	reads := 0
+	store.APIReader = journalTestReader{Reader: baseReader, get: func(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+		reads++
+		return baseReader.Get(ctx, key, obj, opts...)
+	}}
+	for _, tc := range []struct {
+		name                    string
+		desired, want           []BindingReference
+		reads, creates, updates int
+	}{
+		{"initialize empty", nil, nil, 2, 1, 0},
+		{"repeat empty", nil, nil, 1, 0, 0},
+		{"explicit empty", []BindingReference{}, nil, 1, 0, 0},
+		{"first binding", desired[:1], desired[:1], 2, 0, 1},
+		{"additional bindings", desired[1:], desired, 2, 0, 1},
+		{"repeat write-ahead inventory", desired, desired, 1, 0, 0},
+		{"first UID", known[:1], partlyKnown, 2, 0, 1},
+		{"remaining UIDs", known[1:], known, 2, 0, 1},
+		{"repeat known inventory", known, known, 1, 0, 0},
+		{"repeat again", known, known, 1, 0, 0},
+		{"reordered", reordered, known, 1, 0, 0},
+		{"subset", known[:1], known, 1, 0, 0},
+		{"empty UIDs", desired, known, 1, 0, 0},
+		{"subset with empty UIDs", desired[1:], known, 1, 0, 0},
+		{"nil desired", nil, known, 1, 0, 0},
+		{"empty desired", []BindingReference{}, known, 1, 0, 0},
+		{"changed inventory", []BindingReference{changed}, merged, 2, 0, 1},
+		{"repeat changed inventory retains obsolete bindings", []BindingReference{changed}, merged, 1, 0, 0},
+	} {
+		if !t.Run(tc.name, func(t *testing.T) {
+			beforeReads, beforeCreates, beforeUpdates := reads, writer.creates, writer.updates
+			var before *corev1.ConfigMap
+			if tc.creates == 0 && tc.updates == 0 {
+				before = readJournalCM(t, store, writer.Client, plan)
+			}
+			recordJournal(t, store, plan, tc.desired)
+			if reads-beforeReads != tc.reads || writer.creates-beforeCreates != tc.creates ||
+				writer.updates-beforeUpdates != tc.updates || writer.deletes != 0 || writer.reads != 0 {
+				t.Fatalf("Record requests: gets=%d creates=%d updates=%d deletes=%d cached reads=%d; want gets=%d creates=%d updates=%d and no other effects",
+					reads-beforeReads, writer.creates-beforeCreates, writer.updates-beforeUpdates, writer.deletes, writer.reads,
+					tc.reads, tc.creates, tc.updates)
+			}
+			if before != nil && !reflect.DeepEqual(before, readJournalCM(t, store, writer.Client, plan)) {
+				t.Fatal("unchanged inventory modified the journal")
+			}
+			assertJournalInventory(t, store, plan, tc.want)
+			assertJournalProtection(t, store, writer.Client, plan)
+		}) {
+			return
+		}
+	}
+}
+
+func TestGrantJournalRecordCanonicalizesStoredPayload(t *testing.T) {
+	plan, store, writer := journalFixture(t)
+	recordJournal(t, store, plan, plan.Identity.Bindings)
+	cm := readJournalCM(t, store, writer.Client, plan)
+	canonical := cm.Data[GrantJournalDataKey]
+	cm.Data[GrantJournalDataKey] = "\n " + canonical + "\n"
+	if err := writer.Client.Update(context.Background(), cm); err != nil {
+		t.Fatal(err)
+	}
+	baseReader := store.APIReader
+	reads := 0
+	store.APIReader = journalTestReader{Reader: baseReader, get: func(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+		reads++
+		return baseReader.Get(ctx, key, obj, opts...)
+	}}
+	recordJournal(t, store, plan, plan.Identity.Bindings)
+	if reads != 2 || writer.creates != 1 || writer.updates != 1 || writer.deletes != 0 || writer.reads != 0 {
+		t.Fatalf("canonicalization requests: gets=%d creates=%d updates=%d deletes=%d cached reads=%d",
+			reads, writer.creates, writer.updates, writer.deletes, writer.reads)
+	}
+	if got := readJournalCM(t, store, writer.Client, plan).Data[GrantJournalDataKey]; got != canonical {
+		t.Fatalf("stored payload is not canonical: %q", got)
+	}
+	assertJournalInventory(t, store, plan, plan.Identity.Bindings)
+	assertJournalProtection(t, store, writer.Client, plan)
+}
+
 func TestGrantJournalNameIsStableUIDBoundAndDNSValid(t *testing.T) {
 	for _, uid := range []types.UID{"example-agent-uid", "replacement-agent-uid", "a"} {
 		name := GrantJournalName(uid)
@@ -557,7 +653,9 @@ func TestGrantJournalRejectsCorruptOrForeignStateBeforeEffects(t *testing.T) {
 			plan, store, writer := journalFixture(t)
 			recordJournal(t, store, plan, plan.Identity.Bindings)
 			baseReader := store.APIReader
+			reads := 0
 			store.APIReader = journalTestReader{Reader: baseReader, get: func(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				reads++
 				if err := baseReader.Get(ctx, key, obj, opts...); err != nil {
 					return err
 				}
@@ -570,18 +668,28 @@ func TestGrantJournalRejectsCorruptOrForeignStateBeforeEffects(t *testing.T) {
 			if _, err := store.Read(context.Background(), plan.AgentName, plan.Binding.AgentUID); err == nil {
 				t.Fatal("corrupt journal was read as valid inventory")
 			}
+			if reads != 1 {
+				t.Fatalf("corrupt journal Read used %d authoritative reads, want 1", reads)
+			}
 			for _, operation := range []func() error{
 				func() error { return store.Record(context.Background(), plan.AgentName, plan.Binding.AgentUID, nil) },
+				func() error {
+					return store.Record(context.Background(), plan.AgentName, plan.Binding.AgentUID, plan.Identity.Bindings)
+				},
 				func() error {
 					return store.Revoke(context.Background(), plan.AgentName, plan.Binding.AgentUID, plan.Identity.Bindings)
 				},
 				func() error { return store.Delete(context.Background(), plan.AgentName, plan.Binding.AgentUID) },
 			} {
+				beforeReads := reads
 				if err := operation(); err == nil {
 					t.Fatal("operation accepted corrupt journal state")
 				}
+				if reads-beforeReads != 1 {
+					t.Fatalf("corrupt journal operation used %d authoritative reads, want 1", reads-beforeReads)
+				}
 			}
-			if writer.updates != updates || writer.deletes != 0 {
+			if writer.creates != 1 || writer.updates != updates || writer.deletes != 0 || writer.reads != 0 {
 				t.Fatal("corrupt journal caused a write or binding effect")
 			}
 			assertJournalProtection(t, store, writer.Client, plan)
@@ -1259,7 +1367,13 @@ func TestGrantJournalPersistenceFailuresRetainInventory(t *testing.T) {
 			if operation == "Revoke" {
 				err = store.Revoke(ctx, plan.AgentName, plan.Binding.AgentUID, plan.Identity.Bindings)
 			} else {
-				err = store.Record(ctx, plan.AgentName, plan.Binding.AgentUID, nil)
+				var desired []BindingReference
+				if operation == "Record" {
+					ref := plan.Identity.Bindings[0]
+					ref.UID = journalBindingObject(t, writer.Client, ref).GetUID()
+					desired = []BindingReference{ref}
+				}
+				err = store.Record(ctx, plan.AgentName, plan.Binding.AgentUID, desired)
 			}
 			if !errors.Is(err, failure) {
 				t.Fatal("persistence failure was lost", err)

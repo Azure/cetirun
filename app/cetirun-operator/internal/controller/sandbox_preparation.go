@@ -10,7 +10,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"reflect"
 	"slices"
 	"time"
 
@@ -21,6 +20,7 @@ import (
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxpolicy"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -60,6 +60,7 @@ type SandboxPreparationSource interface {
 type SandboxHelmInstaller interface {
 	PrepareSandbox(string, map[string]any, map[string]any, string, *sandboxworkload.Bundle) (*helm.PreparedRelease, error)
 	StageSandbox(context.Context, string, string, *helm.PreparedRelease, func(context.Context) error) error
+	SandboxStageDigest(context.Context, string, string) (string, error)
 }
 
 // SandboxPreparation wires held provisioning only. No production source is
@@ -74,14 +75,21 @@ type SandboxPreparation struct {
 }
 
 type sandboxPreparationAttempt struct {
-	agent         *api.Agent
-	team          *api.Team
-	resolution    *sandbox.Resolution
-	configuration SandboxConfigurationSnapshot
-	prerequisites SandboxPrerequisites
-	input         sandboxworkload.Input
-	plan          *sandboxpolicy.Plan
-	sources       []sandboxworkload.SourceReference
+	agent          *api.Agent
+	team           *api.Team
+	resolution     *sandbox.Resolution
+	configuration  SandboxConfigurationSnapshot
+	prerequisites  SandboxPrerequisites
+	input          sandboxworkload.Input
+	plan           *sandboxpolicy.Plan
+	sources        []sandboxworkload.SourceReference
+	platformValues map[string]any
+	userValues     map[string]any
+}
+
+func sandboxPreparationSupported(agent *api.Agent) bool {
+	return (agent.Spec.Agent.Type == api.AgentTypeOpenClaw || agent.Spec.Agent.Type == api.AgentTypeHermes) &&
+		agent.Spec.Tailscale == nil && agent.Spec.MSTeams == nil && !agentIdentityRequested(agent)
 }
 
 func (r *AgentReconciler) reconcileSandboxPreparation(ctx context.Context, agent *api.Agent) (ctrl.Result, error) {
@@ -94,12 +102,34 @@ func (r *AgentReconciler) reconcileSandboxPreparation(ctx context.Context, agent
 		cleanupContext, cancelCleanup := context.WithTimeout(ctx, 10*time.Second)
 		defer cancelCleanup()
 		cleanupErr := r.revokeSandboxPreparationGrants(cleanupContext, agent)
-		statusErr := r.sandboxPreparationStatus(cleanupContext, agent, false)
+		statusErr := r.sandboxPreparationStatus(cleanupContext, agent, false, err)
+		if sandboxPreparationUnsupportedError(err) && cleanupErr == nil && statusErr == nil {
+			log.FromContext(ctx).Info("Unsupported Sandbox preparation remains held", "agent", agent.Name)
+			return ctrl.Result{RequeueAfter: time.Minute}, nil
+		}
 		err = errors.Join(err, cleanupErr, statusErr)
 		log.FromContext(ctx).Error(err, "Sandbox preparation remains held", "agent", agent.Name)
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
+}
+
+func sandboxPreparationUnsupportedError(err error) bool {
+	// A joined outage must not disappear into a clean unsupported hold.
+	switch cause := err.(type) {
+	case interface{ Unwrap() []error }:
+		causes := cause.Unwrap()
+		for _, nested := range causes {
+			if !sandboxPreparationUnsupportedError(nested) {
+				return false
+			}
+		}
+		return len(causes) != 0
+	case interface{ Unwrap() error }:
+		return sandboxPreparationUnsupportedError(cause.Unwrap())
+	default:
+		return errors.Is(err, sandboxpolicy.ErrUnsupportedControl)
+	}
 }
 
 func (r *AgentReconciler) prepareSandboxHeld(ctx context.Context, requested *api.Agent) error {
@@ -131,6 +161,13 @@ func (r *AgentReconciler) prepareSandboxHeld(ctx context.Context, requested *api
 	if err := sandboxpolicy.VerifyPolicyGrants(ctx, r.APIReader, selected, platform.Grants); err != nil {
 		return err
 	}
+	attempt.platformValues, attempt.userValues, err = r.sandboxHelmValues(attempt.agent, attempt.team)
+	if err != nil {
+		return err
+	}
+	if reused, err := r.reuseSandboxPreparation(ctx, attempt); err != nil || reused {
+		return err
+	}
 	attempt.plan, err = sandboxpolicy.Compile(sandboxpolicy.CompileInput{
 		Resolution: *attempt.resolution, AgentName: attempt.agent.Name,
 		Namespace: attempt.input.Namespace.Name, Platform: platform,
@@ -146,12 +183,8 @@ func (r *AgentReconciler) prepareSandboxHeld(ctx context.Context, requested *api
 	if err != nil {
 		return err
 	}
-	platformValues, userValues, err := r.sandboxHelmValues(attempt.agent, attempt.team)
-	if err != nil {
-		return err
-	}
-	prepared, err := config.Installer.PrepareSandbox(attempt.input.Namespace.Name, platformValues,
-		userValues, prerequisites.ChartVersion, bundle)
+	prepared, err := config.Installer.PrepareSandbox(attempt.input.Namespace.Name, attempt.platformValues,
+		attempt.userValues, prerequisites.ChartVersion, bundle)
 	if err != nil {
 		return err
 	}
@@ -214,12 +247,14 @@ func (r *AgentReconciler) prepareSandboxHeld(ctx context.Context, requested *api
 	if err := journal.Record(ctx, attempt.agent.Name, attempt.agent.UID, confirmed); err != nil {
 		return err
 	}
-	// Write status before capturing the Agent resourceVersion. Otherwise our
-	// own status patch immediately invalidates the admission expectation.
-	if err := r.sandboxPreparationStatus(ctx, attempt.agent, true); err != nil {
+	if err := r.sandboxPreparationStatus(ctx, attempt.agent, true, nil); err != nil {
 		return err
 	}
-	return r.publishSandboxExpectation(ctx, attempt, bundle, template, role, binding, check)
+	stageDigest, err := config.Installer.SandboxStageDigest(ctx, attempt.input.Namespace.Name, attempt.input.ReleaseName)
+	if err != nil {
+		return err
+	}
+	return r.publishSandboxExpectation(ctx, attempt, bundle, template, role, binding, confirmed, stageDigest, check)
 }
 
 func (r *AgentReconciler) resolveSandboxPreparation(ctx context.Context, requested *api.Agent) (*sandboxPreparationAttempt, error) {
@@ -267,11 +302,9 @@ func (r *AgentReconciler) resolveSandboxPreparation(ctx context.Context, request
 	if err != nil {
 		return nil, err
 	}
-	assessor := &SandboxReconciler{
-		Source:         SandboxConfigurationSourceFunc(func(context.Context) (SandboxConfigurationSnapshot, error) { return snapshot, nil }),
-		MaxSnapshotAge: config.MaxSnapshotAge,
-	}
-	condition, _, err := assessor.assess(ctx, r.APIReader, resources.Sandboxes[agent.Spec.SandboxRef], configurationNow(config.Now))
+	condition, _, err := assessSandboxPrerequisites(ctx, r.APIReader, resources.Sandboxes[agent.Spec.SandboxRef],
+		SandboxConfigurationSourceFunc(func(context.Context) (SandboxConfigurationSnapshot, error) { return snapshot, nil }),
+		config.MaxSnapshotAge, configurationNow(config.Now))
 	if err != nil {
 		return nil, err
 	}
@@ -300,8 +333,9 @@ func (r *AgentReconciler) sandboxPreparationGuard(attempt *sandboxPreparationAtt
 	prerequisites.ObservedAt = time.Time{}
 	snapshotKey, snapshotErr := sandboxPreparationDigest(snapshot)
 	prerequisitesKey, prerequisitesErr := sandboxPreparationDigest(prerequisites)
+	agentSource, agentErr := sandboxworkload.AgentSourceReference(attempt.agent)
 	return func(ctx context.Context) error {
-		if err := errors.Join(snapshotErr, prerequisitesErr); err != nil {
+		if err := errors.Join(snapshotErr, prerequisitesErr, agentErr); err != nil {
 			return err
 		}
 		if err := ctx.Err(); err != nil {
@@ -319,10 +353,14 @@ func (r *AgentReconciler) sandboxPreparationGuard(attempt *sandboxPreparationAtt
 			return err
 		}
 		if agent.UID != attempt.agent.UID || agent.Generation != attempt.agent.Generation ||
-			!reflect.DeepEqual(agent.Spec, attempt.agent.Spec) || binding != attempt.resolution.Binding ||
+			!equality.Semantic.DeepEqual(agent.Spec, attempt.agent.Spec) || binding != attempt.resolution.Binding ||
 			agent.Spec.Suspended || !controllerutil.ContainsFinalizer(agent, sandbox.HoldFinalizer) ||
 			!controllerutil.ContainsFinalizer(agent, sandbox.PreparationFinalizer) {
 			return fmt.Errorf("Sandbox preparation intent changed")
+		}
+		currentAgentSource, err := sandboxworkload.AgentSourceReference(agent)
+		if err != nil || currentAgentSource != agentSource {
+			return fmt.Errorf("Sandbox preparation authorization or lifecycle intent changed")
 		}
 		current, err := configurationSnapshot(ctx, config.Configuration, now, config.MaxSnapshotAge)
 		if err != nil {
@@ -365,24 +403,30 @@ func (r *AgentReconciler) sandboxPreparationGuard(attempt *sandboxPreparationAtt
 		if len(sandboxpolicy.ObsoleteBindings(desired, recorded)) != 0 {
 			return fmt.Errorf("Sandbox grants are not durably recorded")
 		}
-		if err := config.Prerequisites.CheckQuiesced(ctx, agent.DeepCopy(), attempt.prerequisites); err != nil {
-			return fmt.Errorf("Sandbox old-writer fence is unconfirmed: %w", err)
-		}
-		var pods corev1.PodList
-		if err := r.APIReader.List(ctx, &pods, client.InNamespace(attempt.input.Namespace.Name)); err != nil {
-			return err
-		}
-		if len(pods.Items) != 0 {
-			return fmt.Errorf("Sandbox preparation waits for all old Pods, including terminating Pods, to disappear")
-		}
-		if err := configurationSnapshotTime(attempt.configuration.ObservedAt, configurationNow(config.Now), config.MaxSnapshotAge); err != nil {
-			return err
-		}
-		if err := configurationSnapshotTime(attempt.prerequisites.ObservedAt, configurationNow(config.Now), config.MaxSnapshotAge); err != nil {
-			return err
-		}
-		return ctx.Err()
+		return r.checkSandboxPreparationQuiesced(ctx, attempt)
 	}
+}
+
+func (r *AgentReconciler) checkSandboxPreparationQuiesced(ctx context.Context, attempt *sandboxPreparationAttempt) error {
+	config := r.SandboxPreparation
+	if err := config.Prerequisites.CheckQuiesced(ctx, attempt.agent.DeepCopy(), attempt.prerequisites); err != nil {
+		return fmt.Errorf("Sandbox old-writer fence is unconfirmed: %w", err)
+	}
+	var pods corev1.PodList
+	if err := r.APIReader.List(ctx, &pods, client.InNamespace(attempt.input.Namespace.Name), client.Limit(1)); err != nil {
+		return err
+	}
+	if len(pods.Items) != 0 {
+		return fmt.Errorf("Sandbox preparation waits for all old Pods, including terminating Pods, to disappear")
+	}
+	now := configurationNow(config.Now)
+	if err := configurationSnapshotTime(attempt.configuration.ObservedAt, now, config.MaxSnapshotAge); err != nil {
+		return err
+	}
+	if err := configurationSnapshotTime(attempt.prerequisites.ObservedAt, now, config.MaxSnapshotAge); err != nil {
+		return err
+	}
+	return ctx.Err()
 }
 
 func sandboxPreparationDigest(value any) (string, error) {
@@ -412,7 +456,7 @@ func (r *AgentReconciler) sandboxHelmValues(agent *api.Agent, team *api.Team) (m
 	return platform, user, nil
 }
 
-func (r *AgentReconciler) sandboxPreparationStatus(ctx context.Context, expected *api.Agent, prepared bool) error {
+func (r *AgentReconciler) sandboxPreparationStatus(ctx context.Context, expected *api.Agent, prepared bool, cause error) error {
 	agent := &api.Agent{}
 	if err := r.customReader().Get(ctx, client.ObjectKeyFromObject(expected), agent); err != nil {
 		return err
@@ -428,6 +472,9 @@ func (r *AgentReconciler) sandboxPreparationStatus(ctx context.Context, expected
 	if prepared {
 		reason, message = "SandboxPrepared", "Native resources and controls are prepared at zero replicas; qualified start and enforcement observation are still required."
 		configStatus = metav1.ConditionTrue
+	} else if sandboxPreparationUnsupportedError(cause) {
+		agent.Status.Phase = api.PhaseFailed
+		reason, message = "UnsupportedControl", "A requested control is not supported by native Sandbox preparation; execution remains held."
 	}
 	for _, kind := range []string{api.ConditionReady, api.ConditionSandboxReady, api.ConditionAgentConfigReady} {
 		status := metav1.ConditionFalse
@@ -438,7 +485,7 @@ func (r *AgentReconciler) sandboxPreparationStatus(ctx context.Context, expected
 			Type: kind, Status: status, ObservedGeneration: agent.Generation, Reason: reason, Message: message,
 		})
 	}
-	if reflect.DeepEqual(base.Status, agent.Status) {
+	if equality.Semantic.DeepEqual(base.Status, agent.Status) {
 		return nil
 	}
 	return r.Status().Patch(ctx, agent, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{}))

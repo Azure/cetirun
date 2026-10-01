@@ -6,6 +6,7 @@ package controller_test
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -53,11 +54,13 @@ type preparationSource struct {
 	resolveErr error
 	fenceErr   error
 	fences     int
+	resolves   int
 	onFence    func()
 	onResolve  func()
 }
 
 func (s *preparationSource) Resolve(context.Context, *api.Agent, *api.Team) (controller.SandboxPrerequisites, error) {
+	s.resolves++
 	if s.onResolve != nil {
 		s.onResolve()
 	}
@@ -73,15 +76,20 @@ func (s *preparationSource) CheckQuiesced(context.Context, *api.Agent, controlle
 }
 
 type preparationInstaller struct {
-	client   client.Client
-	chart    *chart.Chart
-	stages   int
-	fail     error
-	after    func(context.Context) error
-	prepared *helm.PreparedRelease
+	client      client.Client
+	chart       *chart.Chart
+	stages      int
+	renders     int
+	digestReads int
+	stageDigest string
+	digestErr   error
+	fail        error
+	after       func(context.Context) error
+	prepared    *helm.PreparedRelease
 }
 
 func (i *preparationInstaller) PrepareSandbox(_ string, platform, user map[string]any, version string, bundle *sandboxworkload.Bundle) (*helm.PreparedRelease, error) {
+	i.renders++
 	if version != i.chart.Metadata.Version {
 		return nil, fmt.Errorf("test chart version differs")
 	}
@@ -139,7 +147,25 @@ func (i *preparationInstaller) StageSandbox(ctx context.Context, _, _ string, pr
 			return err
 		}
 	}
-	return check(ctx)
+	if err := check(ctx); err != nil {
+		return err
+	}
+	i.stageDigest = fmt.Sprintf("%x", sha256.Sum256(manifest))
+	return nil
+}
+
+func (i *preparationInstaller) SandboxStageDigest(ctx context.Context, _, _ string) (string, error) {
+	i.digestReads++
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if i.digestErr != nil {
+		return "", i.digestErr
+	}
+	if i.stageDigest == "" {
+		return "", fmt.Errorf("synthetic held release is unavailable")
+	}
+	return i.stageDigest, nil
 }
 
 type preparationFixture struct {
@@ -788,8 +814,11 @@ func assertSandboxPrepared(t *testing.T, f *preparationFixture) {
 		t.Fatal("prepared workload can execute or recreate HOME")
 	}
 	for _, source := range expected.Sources {
-		if source.Kind == "Agent" && source.ResourceVersion != agent.ResourceVersion {
-			t.Fatal("status write invalidated the new expectation")
+		if source.IsAgent() {
+			current, err := sandboxworkload.AgentSourceReference(agent)
+			if err != nil || source != current || source.ResourceVersion != "" {
+				t.Fatal("Agent intent snapshot is stale or depends on status resourceVersion")
+			}
 		}
 	}
 	journal := &sandboxpolicy.GrantJournalStore{Client: f.client, APIReader: f.client, Namespace: "cetirun-system"}

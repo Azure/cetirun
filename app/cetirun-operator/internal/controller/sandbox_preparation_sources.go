@@ -5,10 +5,12 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxpolicy"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -21,6 +23,8 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
+
+var errSandboxSourceChanged = errors.New("Sandbox source identity changed")
 
 func (r *AgentReconciler) sandboxPreparationInput(ctx context.Context, attempt *sandboxPreparationAttempt) error {
 	inputs := attempt.prerequisites
@@ -101,7 +105,9 @@ func (r *AgentReconciler) sandboxPreparationInput(ctx context.Context, attempt *
 		sandboxSource(runtimeClass, "node.k8s.io/v1", "RuntimeClass"),
 		sandboxSource(storageClass, "storage.k8s.io/v1", "StorageClass"),
 	)
-	return r.verifySandboxSources(ctx, attempt.sources)
+	// Recheck captured versions before applying grants/workloads or accepting
+	// read-only reuse; durable bookkeeping can precede those checks.
+	return nil
 }
 
 func sandboxSource(object client.Object, version, kind string) sandboxworkload.SourceReference {
@@ -116,16 +122,32 @@ func sandboxSourceKey(source sandboxworkload.SourceReference) string {
 }
 
 func (r *AgentReconciler) readSandboxSource(ctx context.Context, source sandboxworkload.SourceReference) (sandboxworkload.SourceReference, error) {
+	if source.IsAgent() {
+		agent := &api.Agent{}
+		if err := r.APIReader.Get(ctx, client.ObjectKey{Name: source.Name}, agent); err != nil {
+			return source, err
+		}
+		current, err := sandboxworkload.AgentSourceReference(agent)
+		if err != nil {
+			return source, err
+		}
+		if source.ResourceVersion != "" || (source.UID != "" && source.UID != current.UID) ||
+			(source.Generation != 0 && source.Generation != current.Generation) ||
+			(source.IntentDigest != "" && source.IntentDigest != current.IntentDigest) {
+			return source, fmt.Errorf("%w: %s", errSandboxSourceChanged, sandboxSourceKey(source))
+		}
+		return current, nil
+	}
 	object := &metav1.PartialObjectMetadata{TypeMeta: metav1.TypeMeta{APIVersion: source.APIVersion, Kind: source.Kind}}
 	if err := r.APIReader.Get(ctx, client.ObjectKey{Namespace: source.Namespace, Name: source.Name}, object); err != nil {
 		return source, err
 	}
 	if object.UID == "" || object.ResourceVersion == "" || !object.DeletionTimestamp.IsZero() {
-		return source, fmt.Errorf("Sandbox source %s is not persisted or is terminating", sandboxSourceKey(source))
+		return source, fmt.Errorf("%w: %s is not persisted or is terminating", errSandboxSourceChanged, sandboxSourceKey(source))
 	}
 	if (source.UID != "" && object.UID != source.UID) ||
 		(source.ResourceVersion != "" && object.ResourceVersion != source.ResourceVersion) {
-		return source, fmt.Errorf("Sandbox source %s changed", sandboxSourceKey(source))
+		return source, fmt.Errorf("%w: %s", errSandboxSourceChanged, sandboxSourceKey(source))
 	}
 	return sandboxSource(object, source.APIVersion, source.Kind), nil
 }
@@ -137,7 +159,7 @@ func (r *AgentReconciler) verifySandboxSources(ctx context.Context, sources []sa
 	seen := map[string]bool{}
 	for _, source := range sources {
 		key := sandboxSourceKey(source)
-		if source.UID == "" || source.ResourceVersion == "" || seen[key] {
+		if !source.ValidIdentity() || seen[key] {
 			return fmt.Errorf("Sandbox source identities must be complete and unique")
 		}
 		seen[key] = true
@@ -150,6 +172,7 @@ func (r *AgentReconciler) verifySandboxSources(ctx context.Context, sources []sa
 
 func (r *AgentReconciler) publishSandboxExpectation(ctx context.Context, attempt *sandboxPreparationAttempt,
 	bundle *sandboxworkload.Bundle, template *corev1.PodTemplateSpec, role *rbacv1.Role, binding *rbacv1.RoleBinding,
+	bindings []sandboxpolicy.BindingReference, stageDigest string,
 	check func(context.Context) error,
 ) error {
 	workload := &appsv1.StatefulSet{}
@@ -165,8 +188,12 @@ func (r *AgentReconciler) publishSandboxExpectation(ctx context.Context, attempt
 		return fmt.Errorf("Sandbox staged workload is not the exact owned, held template")
 	}
 	candidates := slices.Clone(attempt.sources)
+	agentSource, err := sandboxworkload.AgentSourceReference(attempt.agent)
+	if err != nil {
+		return err
+	}
 	candidates = append(candidates,
-		sandboxworkload.SourceReference{APIVersion: api.GroupVersion.String(), Kind: "Agent", Name: attempt.agent.Name, UID: attempt.agent.UID},
+		agentSource,
 		sandboxSource(workload, "apps/v1", "StatefulSet"),
 		sandboxworkload.SourceReference{APIVersion: rbacv1.SchemeGroupVersion.String(), Kind: "Role", Namespace: role.Namespace, Name: role.Name},
 		sandboxworkload.SourceReference{APIVersion: rbacv1.SchemeGroupVersion.String(), Kind: "RoleBinding", Namespace: binding.Namespace, Name: binding.Name},
@@ -191,7 +218,9 @@ func (r *AgentReconciler) publishSandboxExpectation(ctx context.Context, attempt
 		key := sandboxSourceKey(candidate)
 		if old, exists := seen[key]; exists {
 			if (candidate.UID != "" && candidate.UID != old.UID) ||
-				(candidate.ResourceVersion != "" && candidate.ResourceVersion != old.ResourceVersion) {
+				(candidate.ResourceVersion != "" && candidate.ResourceVersion != old.ResourceVersion) ||
+				(candidate.Generation != 0 && candidate.Generation != old.Generation) ||
+				(candidate.IntentDigest != "" && candidate.IntentDigest != old.IntentDigest) {
 				return fmt.Errorf("Sandbox source inventory contains conflicting snapshots")
 			}
 			continue
@@ -229,6 +258,11 @@ func (r *AgentReconciler) publishSandboxExpectation(ctx context.Context, attempt
 	if len(object.Data[sandboxworkload.PodExpectationKey]) > 512*1024 {
 		return fmt.Errorf("Sandbox Pod expectation exceeds the admission size bound")
 	}
+	digest, err := r.sandboxPreparationReuseDigest(ctx, attempt, expected, bindings, stageDigest)
+	if err != nil {
+		return err
+	}
+	object.Annotations[sandboxPreparationDigestAnnotation] = digest
 	if err := check(ctx); err != nil {
 		return err
 	}
@@ -249,10 +283,12 @@ func (r *AgentReconciler) publishSandboxExpectation(ctx context.Context, attempt
 			return fmt.Errorf("Sandbox Pod expectation has foreign or terminating ownership")
 		}
 		if !equality.Semantic.DeepEqual(current.Data, object.Data) ||
-			current.Annotations[sandboxworkload.RevisionAnnotation] != expected.Revision || len(current.BinaryData) != 0 {
+			current.Annotations[sandboxworkload.RevisionAnnotation] != expected.Revision ||
+			current.Annotations[sandboxPreparationDigestAnnotation] != digest || len(current.BinaryData) != 0 {
 			base := current.DeepCopy()
 			current.Data, current.BinaryData = object.Data, nil
 			current.Annotations[sandboxworkload.RevisionAnnotation] = expected.Revision
+			current.Annotations[sandboxPreparationDigestAnnotation] = digest
 			if err := r.Patch(ctx, current, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
 				return err
 			}

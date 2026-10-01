@@ -72,25 +72,71 @@ func (c *Client) StageSandbox(ctx context.Context, namespace, name string, prepa
 	if err := sandboxStageArguments(ctx, namespace, name, prepared, check); err != nil {
 		return err
 	}
-	cfg, err := actionConfig(namespace)
+	cfg, err := sandboxActionConfiguration(ctx, namespace)
 	if err != nil {
 		return err
+	}
+	return prepared.stageSandbox(ctx, cfg, namespace, name, check)
+}
+
+// SandboxStageDigest reads the current deployed Helm record without changing it.
+// It detects release-store drift for held preparation reuse, not enforcement.
+func (c *Client) SandboxStageDigest(ctx context.Context, namespace, name string) (string, error) {
+	if ctx == nil || namespace == "" || name == "" {
+		return "", fmt.Errorf("Sandbox release inspection requires a context, namespace and name")
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	cfg, err := sandboxActionConfiguration(ctx, namespace)
+	if err != nil {
+		return "", err
+	}
+	return sandboxStageDigest(ctx, cfg, namespace, name)
+}
+
+func sandboxStageDigest(ctx context.Context, cfg *action.Configuration, namespace, name string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if cfg == nil || cfg.Releases == nil {
+		return "", fmt.Errorf("Sandbox release inspection requires release storage")
+	}
+	current, err := cfg.Releases.Last(name)
+	if err != nil {
+		return "", fmt.Errorf("read staged Sandbox release: %w", err)
+	}
+	if current == nil || current.Info == nil || current.Name != name || current.Namespace != namespace ||
+		current.Info.Status != release.StatusDeployed {
+		return "", fmt.Errorf("Sandbox release is not deployed; guarded recovery is required")
+	}
+	raw, err := json.Marshal(current)
+	if err != nil {
+		return "", fmt.Errorf("encode staged Sandbox release identity: %w", err)
+	}
+	return sandboxBytesHash(raw), ctx.Err()
+}
+
+func sandboxActionConfiguration(ctx context.Context, namespace string) (*action.Configuration, error) {
+	cfg, err := actionConfig(namespace)
+	if err != nil {
+		return nil, err
 	}
 	// Helm's resource helpers and release driver use background contexts, and
 	// RunWithContext alone permits writes after cancellation. Bind their HTTP
 	// requests as well, without changing the client's configuration globally.
 	config, err := cfg.RESTClientGetter.ToRESTConfig()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	config = rest.CopyConfig(config)
 	config.Wrap(func(base http.RoundTripper) http.RoundTripper {
 		return sandboxContextTransport{ctx: ctx, base: base}
 	})
 	if err := cfg.Init(restClientGetter(config, namespace), namespace, "secret", cfg.Log); err != nil {
-		return err
+		return nil, err
 	}
-	return prepared.stageSandbox(ctx, cfg, namespace, name, check)
+	return cfg, nil
 }
 
 func sandboxStageArguments(ctx context.Context, namespace, name string, p *PreparedRelease, check func(context.Context) error) error {

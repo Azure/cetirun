@@ -282,7 +282,7 @@ func (b *Bundle) Expect(template corev1.PodTemplateSpec, workload *appsv1.Statef
 		return Expectation{}, err
 	}
 	return Expectation{
-		Version: ContractVersion, Binding: b.input.Resolution.Binding, Revision: b.input.Controls.Revision,
+		Version: ExpectationVersion, Binding: b.input.Resolution.Binding, Revision: b.input.Controls.Revision,
 		Agent: ObjectIdentity{Name: b.input.AgentName, UID: b.input.Resolution.Binding.AgentUID}, AgentGeneration: b.input.AgentGeneration,
 		Namespace: b.input.Namespace, Workload: ObjectIdentity{Name: workload.Name, UID: workload.UID},
 		WorkloadKind: AgentWorkload, ExecutionHeld: true, Template: *template.DeepCopy(), Overhead: b.Overhead(),

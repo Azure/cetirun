@@ -236,7 +236,7 @@ func (h *PodHandler) readExpectation(ctx context.Context, namespace string) (san
 	problems, err := strictjson.UnmarshalStrict([]byte(raw), &expected)
 	if err != nil || len(problems) != 0 ||
 		len(state.Data) != 1 || len(state.BinaryData) != 0 || state.UID == "" || state.ResourceVersion == "" ||
-		!state.DeletionTimestamp.IsZero() || expected.Version != sandboxworkload.ContractVersion ||
+		!state.DeletionTimestamp.IsZero() || expected.Version != sandboxworkload.ExpectationVersion ||
 		expected.Namespace.Name != ns.Name || expected.Namespace.UID != ns.UID ||
 		expected.WorkloadKind != sandboxworkload.AgentWorkload || expected.Workload.Name == "" || expected.Workload.UID == "" ||
 		expected.Agent.Name == "" || expected.Agent.UID == "" || expected.Revision == "" ||
@@ -279,8 +279,11 @@ func (h *PodHandler) validatePodSources(ctx context.Context, expected sandboxwor
 	policy := false
 	for _, source := range expected.Sources {
 		key := objectKey{source.APIVersion, source.Kind, source.Namespace, source.Name}
-		if source.UID == "" || source.ResourceVersion == "" || source.Name == "" || seen[key] {
+		if !source.ValidIdentity() || seen[key] {
 			return podDenied("SourceInventoryInvalid", "source identities must be complete and unique")
+		}
+		if source.IsAgent() && (source.Name != expected.Agent.Name || source.Generation != expected.AgentGeneration) {
+			return podDenied("SourceBindingChanged", "Agent intent differs from the expectation")
 		}
 		if _, err := schema.ParseGroupVersion(source.APIVersion); err != nil || source.Kind == "" {
 			return podDenied("SourceInventoryInvalid", "source inventory contains an invalid resource kind or version")
@@ -333,6 +336,17 @@ func (h *PodHandler) validatePodSources(ctx context.Context, expected sandboxwor
 }
 
 func (h *PodHandler) readPodSource(ctx context.Context, expected sandboxworkload.Expectation, source sandboxworkload.SourceReference) *podFailure {
+	if source.IsAgent() {
+		agent := &api.Agent{}
+		if err := h.reader.Get(ctx, client.ObjectKey{Name: source.Name}, agent); err != nil {
+			return podReadFailure("Source", err)
+		}
+		current, err := sandboxworkload.AgentSourceReference(agent)
+		if err != nil || current != source {
+			return podDenied("SourceChanged", "Agent identity, authorization or lifecycle intent changed")
+		}
+		return nil
+	}
 	var object client.Object = &metav1.PartialObjectMetadata{TypeMeta: metav1.TypeMeta{APIVersion: source.APIVersion, Kind: source.Kind}}
 	var runtimeClass *nodev1.RuntimeClass
 	if source.APIVersion == "node.k8s.io/v1" && source.Kind == "RuntimeClass" && source.Namespace == "" &&

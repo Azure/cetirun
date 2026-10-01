@@ -82,7 +82,7 @@ func PrepareSandboxChart(chrt *chart.Chart, platform, user map[string]any, bundl
 		return nil, err
 	}
 	prepared.sandboxBundle, prepared.releaseName = bundle, input.ReleaseName
-	if err := prepared.validateSandboxRender(); err != nil {
+	if err := prepared.prepareAndValidateSandboxRender(); err != nil {
 		return nil, configurationError(err)
 	}
 	prepared.sealedInput = prepared.inputDigest()
@@ -105,7 +105,9 @@ func (p *PreparedRelease) SandboxManifest() ([]byte, error) {
 	return slices.Clone(p.manifest), nil
 }
 
-func (p *PreparedRelease) validateSandboxRender() error {
+// prepareAndValidateSandboxRender normalizes native namespace and ownership
+// before validating and sealing the complete manifest.
+func (p *PreparedRelease) prepareAndValidateSandboxRender() error {
 	input := p.sandboxBundle.Identity()
 	values, err := chartutil.ToRenderValues(p.chart, p.Values, chartutil.ReleaseOptions{
 		Name: input.ReleaseName, Namespace: input.Namespace.Name, IsInstall: true, Revision: 1,

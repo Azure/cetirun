@@ -26,7 +26,7 @@ func PodExpectationName(namespace string, uid types.UID) string {
 // implementations. Expect always starts held; persistence cannot lift a hold.
 func PodExpectationObject(stateNamespace string, expected Expectation) (*corev1.ConfigMap, error) {
 	if stateNamespace == "" || stateNamespace == expected.Namespace.Name ||
-		expected.Version != ContractVersion || expected.Agent.Name == "" || expected.Agent.UID == "" ||
+		expected.Version != ExpectationVersion || expected.Agent.Name == "" || expected.Agent.UID == "" ||
 		expected.Namespace.Name == "" || expected.Namespace.UID == "" {
 		return nil, fmt.Errorf("invalid controller-owned Pod expectation")
 	}

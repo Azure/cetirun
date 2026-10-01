@@ -8,6 +8,7 @@ package integration_test
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -135,7 +136,7 @@ func TestSandboxPreparation(t *testing.T) {
 				currentReceipt, _ := f.readReceipt(t)
 				if currentJournal.UID != journal.UID || currentReceipt.UID != receipt.UID ||
 					len(currentRefs) != 1 || currentRefs[0].UID != firstBindingUID ||
-					restarted.Workload != first.Workload || f.installer.stageCalls != 1 {
+					restarted.Workload != first.Workload || f.installer.stageCalls != 0 {
 					t.Fatal("a fresh reconciler failed to reuse API-persisted identities")
 				}
 				f.assertAdmissionHeld(t, restarted)
@@ -143,6 +144,7 @@ func TestSandboxPreparation(t *testing.T) {
 
 			t.Run("post-staging-failure-revokes-and-retries", func(t *testing.T) {
 				injected := errors.New("synthetic post-staging response failure")
+				f.source.prerequisites.Revision = "synthetic-changed-prerequisites"
 				f.installer.afterStageError = injected
 				if _, err := f.reconciler.Reconcile(h.ctx, f.request()); !errors.Is(err, injected) {
 					t.Fatalf("expected injected post-staging failure, got %v", err)
@@ -588,6 +590,7 @@ type localPreparationInstaller struct {
 	guardsBefore, guardsAfter int
 	beforeStage               func()
 	afterStageError           error
+	stageDigest               string
 }
 
 func (i *localPreparationInstaller) PrepareSandbox(namespace string, platform, user map[string]any, version string, bundle *w.Bundle) (*helm.PreparedRelease, error) {
@@ -655,12 +658,30 @@ func (i *localPreparationInstaller) StageSandbox(ctx context.Context, namespace,
 		return err
 	}
 	i.guardsAfter++
+	if i.afterStageError == nil {
+		i.stageDigest = fmt.Sprintf("%x", sha256.Sum256(manifest))
+	}
 	return i.afterStageError
+}
+
+func (i *localPreparationInstaller) SandboxStageDigest(ctx context.Context, _, _ string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if i.stageDigest == "" {
+		return "", errors.New("synthetic held release is unavailable")
+	}
+	return i.stageDigest, nil
 }
 
 func (f *preparationCase) restart() {
 	f.source = &syntheticPreparationSource{configuration: f.source.configuration, prerequisites: f.source.prerequisites}
-	f.installer = &localPreparationInstaller{client: f.h.client, chart: f.h.chart}
+	// Preserve only the synthetic release-store identity, not a prepared render.
+	installer := &localPreparationInstaller{client: f.h.client, chart: f.h.chart}
+	if f.installer != nil {
+		installer.stageDigest = f.installer.stageDigest
+	}
+	f.installer = installer
 	f.reconciler = &controller.AgentReconciler{
 		Client: f.h.client, APIReader: f.h.client, Scheme: f.h.scheme,
 		OperatorNamespace: preparationStateNamespace, DomainSuffix: "example.com",
@@ -826,10 +847,17 @@ func (f *preparationCase) assertPrepared(t *testing.T) w.Expectation {
 	seen := map[string]bool{}
 	for _, source := range expected.Sources {
 		key := source.APIVersion + "/" + source.Kind + "/" + source.Namespace + "/" + source.Name
-		if source.UID == "" || source.ResourceVersion == "" || seen[key] {
-			t.Fatalf("source does not have one exact persisted UID/RV: %s", key)
+		if !source.ValidIdentity() || seen[key] {
+			t.Fatalf("source does not have one exact persisted identity: %s", key)
 		}
 		seen[key] = true
+		if source.IsAgent() {
+			current, err := w.AgentSourceReference(f.agent(t))
+			if err != nil || source != current || source.ResourceVersion != "" {
+				t.Fatalf("Agent source does not match authorization-relevant intent: %v", err)
+			}
+			continue
+		}
 		metadata := &metav1.PartialObjectMetadata{TypeMeta: metav1.TypeMeta{APIVersion: source.APIVersion, Kind: source.Kind}}
 		f.h.get(t, client.ObjectKey{Namespace: source.Namespace, Name: source.Name}, metadata)
 		if metadata.UID != source.UID || metadata.ResourceVersion != source.ResourceVersion {

@@ -318,9 +318,16 @@ exceptions in `scripts/license_headers.py` must retain their own notices.
   synthetic platform inventory, real API object identities/defaulting and held
   admission expectations. It stages OpenClaw/Hermes resources at zero replicas;
   it does not start containers, install a production provider, or deploy to an
-  existing cluster. Normal unit tests also cover stale inputs, metadata-only
+  existing cluster. These injected controller paths are not reachable from the
+  currently shipped operator configuration. Later provider wiring needs its
+  own behavior-change review and live qualification.
+  Normal unit tests also cover stale inputs, metadata-only
   refresh/reauthorization, partial writes, restart, grant revocation, suspension
-  and ordered cleanup. See the [operator integration boundary](app/cetirun-operator/README.md#held-controller-integration)
+  and ordered cleanup. Regression tests count read/write requests for unchanged
+  preparation and ensure Agent status changes do not invalidate authorization
+  intent, while generation changes, reauthorization and lifecycle holds do.
+  The versioned expectation transition is fail-closed; it does not change CRDs.
+  See the [operator integration boundary](app/cetirun-operator/README.md#held-controller-integration)
   for the platform prerequisites and remaining start/observation gates.
   The checksum-pinned Linux amd64/arm64 bundle can be provisioned into a new
   task-local directory after a missing-tool failure:

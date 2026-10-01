@@ -293,7 +293,15 @@ connects the components without treating a successful render as enforcement.
 This is an internal platform integration seam, **not a tenant activation flag**.
 The stock operator installs neither a preparation provider nor qualified
 production registrations. With no provider, governed Agents retain their
-existing execution hold.
+existing execution hold. The integration tests inject dependencies into code
+that the shipped operator binary cannot currently reach. Wiring these providers
+later is a behavior change requiring independent review and qualification, not
+merely a constructor change or evidence supplied by the current test results.
+An operator namespace alone does not enable preparation or routine state reads
+for untracked Agents. Existing preparation markers still require cleanup when
+a provider is disabled. Deletion also probes state while the hold finalizer
+remains, so interrupted finalization is not lost after the preparation marker
+has already been released.
 
 A trusted integration must provide:
 
@@ -309,13 +317,14 @@ A trusted integration must provide:
   support cleanup using the persisted prior namespace/HOME tuple after
   suspension, reference deletion and restart. A Kubernetes scale request or an
   empty Pod list is not this evidence.
-- A held Helm installer, an explicit protected state namespace, and the
+- A held Helm installer with authoritative, read-only release-store inspection,
+  an explicit protected state namespace, and the
   dedicated admission ServiceAccount. There is no trusted-source fallback to
   Agent status or arbitrary tenant ConfigMaps.
 
-For each attempt the controller resolves every referenced Team slot, verifies
-current runtime/storage/grant approvals, compiles controls, and renders the
-native chart. It then persists ownership and write-ahead grant inventory before
+The controller resolves every referenced Team slot and verifies current
+runtime/storage/grant approvals. New or changed preparation compiles controls
+and renders the native chart. It persists ownership and write-ahead grant inventory before
 any grants or workloads are applied. Old grants are revoked and observed absent;
 fresh source checks, qualified quiescence and Pod absence guard held staging.
 Source-read RBAC gives admission only `get` on the named workload Secrets and
@@ -323,14 +332,45 @@ ConfigMaps, not blanket namespace Secret reads.
 
 After staging, the controller records binding-object UIDs and an
 `ExecutionHeld=true` Pod expectation in the operator namespace. Source
-UID/resourceVersion snapshots include the Agent, Team, referenced configurations,
+UID/resourceVersion snapshots include the Team, referenced configurations,
 RuntimeClass/StorageClass, namespace, claims, Pod sources and compiled controls.
-Agent status is written before capturing its resourceVersion. Successful
-attempts refresh every 15 seconds, so metadata-only source changes and explicit
-reauthorization are not missed when Agent generation is unchanged.
+The Agent instead pins UID, generation, and a digest of its spec, protected
+authorization/reauthorization metadata and lifecycle holds. Status writes and
+unrelated labels/annotations do not invalidate it; metadata-only reauthorization
+still does. This is expectation format `v2`, separate from the unchanged render
+contract. Old expectations fail closed until the controller rebuilds them;
+upgrade controller and admission together, without editing stored JSON or
+lifting holds to bypass version checks.
+
+Successful attempts refresh every 15 seconds, so source changes, prerequisite
+expiry and explicit reauthorization are not missed. An unchanged attempt uses
+a controller-owned digest of approved inputs, rendering values, confirmed grant
+inventory, the expectation, native Service identity and deployed Helm record.
+It rechecks source identities, qualified fencing and Pod absence, but does not
+render, stage, rewrite journals or republish expectations. Changing any of
+these inputs returns to the guarded preparation path; missing/corrupt durable
+inventory or unavailable authority remains an error. All mutation guards in
+the controller and Helm action remain in place.
+
+The ordinary/admin fake-client regression fixtures measure 38/44 controller
+read calls on unchanged attempts, versus 153/182 through the full path, with
+zero writes, one release-store inspection and one fence check. These are
+regression budgets, not production throughput measurements; providers and
+release storage may perform additional requests. Inventories remain bounded
+to 128 sources and 512 KiB per expectation, with a one-Pod existence query.
+No production fleet size is qualified. Activation review must establish a
+measured capacity limit and evaluate additional dependency watches alongside
+the existing Agent/Team/Sandbox/AgentPolicy watches and expiry polling.
+
 `AgentConfigReady=True` with reason `SandboxPrepared` means **held preparation
 only**: `SandboxReady` and `Ready` remain false, the access URL is empty, and
 applied-binding history is not advanced.
+
+Tailscale, Teams, workload identity and governed Custom configurations remain
+unsupported by this native path. They retain an explanatory `UnsupportedControl`
+hold and bounded requeue instead of a permanent preparation-error loop. Existing
+grants are revoked if a previously prepared Agent transitions to one of them.
+An unsupported result does not suppress source, cleanup or status-write failures.
 
 Partial writes, stale sources, suspension and provider disablement revoke
 recorded grants while retaining the hold and recovery state. Deletion revokes
@@ -354,6 +394,35 @@ retired non-binding controls, shared-configuration reservations, authorized
 starts, Pod/node/epoch observations and route publication still require their
 qualified lifecycle integrations. Pending or incompatible Helm releases fail
 closed for coordinated recovery rather than being adopted or force-unlocked.
+
+**Manual recovery after forced finalizer removal.** Do not force-remove Agent
+or state finalizers as routine cleanup. If an Agent disappears outside the
+normal lifecycle, its journal and preparation receipt deliberately retain
+their finalizers and may block state-namespace deletion. There is no automatic
+orphan reaper. A separately authorized recovery must:
+
+1. Preserve and strictly validate the original Agent UID, journal/receipt
+   identities, complete grant inventory and recorded namespace/HOME tuple.
+   Missing or corrupt evidence is not permission to substitute empty state.
+2. Compare any current same-name Agent by UID. A replacement is unrelated and
+   must not be adopted or have its resources removed. A matching terminating
+   Agent should use normal controller cleanup.
+3. Quiesce in-flight grant writers and obtain the platform's qualified fence
+   for the original writers. Agent absence, operator shutdown, scale-to-zero
+   and an empty Pod list are not sufficient evidence.
+4. Revoke every recorded binding, including obsolete entries, after checking
+   owner UID, role, subject and revision. Pin the actual object UID/version when
+   an inventory entry predates UID confirmation. Use deletion preconditions
+   and authoritative absence checks; terminating or replaced bindings remain
+   unresolved. Discovery supplements but never replaces durable inventory.
+5. Persist only confirmed removals with resourceVersion checks. After empty
+   inventory, continued fencing and original namespace/lifecycle cleanup are
+   confirmed, release only the journal's own finalizer and confirm deletion.
+   Handle the receipt separately under its original identity; preserve foreign
+   finalizers. Do not finalize the entire operator namespace to discard state.
+
+This procedure is not a tested live recovery tool. Shared-environment activation
+needs a reviewed and qualified orphan-recovery mechanism.
 
 When the desktop helper is enabled, it uses a separate `tmp-desktop` emptyDir
 for `/tmp`; the Agent retains `tmp`. Both volumes carry the Sandbox scratch
@@ -417,7 +486,9 @@ retryable revocation into hold, suspension and deletion paths. Its protected
 ConfigMap survives foreground owner deletion, uses resourceVersion CAS, and is
 bounded to 1,024 references and 512 KiB. Discovering visible bindings is never
 treated as complete cleanup inventory. This does not provide cloud-identity
-revocation or authorize execution.
+revocation or authorize execution. Recording unchanged canonical inventory uses
+one authoritative read and no write or confirming read; real changes retain the
+write-and-confirm path and never discard an already recorded binding UID.
 
 Each approved grant must carry the live ClusterRole UID, resource version and
 normalized rules; the approval's `Revision` is a separate administrative
