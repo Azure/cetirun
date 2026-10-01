@@ -1360,3 +1360,30 @@ func TestCopilotResponsesModelsReachTheProxy(t *testing.T) {
 		t.Fatal("an Agent without a proxy gets no proxy models")
 	}
 }
+
+func TestReconcileAIGatewayRecreatesOwnerWhenTheGatewayLostItsData(t *testing.T) {
+	agent := aiGatewayTestAgent(testAIGatewayTeam)
+	r, _, gateway := aiGatewayTestReconciler(t, agent, aiGatewayNamespace())
+	if err := r.reconcileAIGateway(context.Background(), agent, true); err != nil {
+		t.Fatal(err)
+	}
+	team := aiGatewayTeamPrefix + testAIGatewayTeam
+	if !gateway.teams[team] || !gateway.users["alice"] || !gateway.members[team+"/alice"] {
+		t.Fatalf("first pass must create the owner: teams=%v users=%v members=%v", gateway.teams, gateway.users, gateway.members)
+	}
+	// The Gateway's database is replaced: keys, teams and users are gone,
+	// while the operator still remembers having created the owner.
+	gateway.keys = map[string]*aigateway.Key{}
+	gateway.teams, gateway.users, gateway.members = map[string]bool{}, map[string]bool{}, map[string]bool{}
+	stale := metav1.NewTime(time.Now().Add(-2 * aiGatewayVerificationInterval))
+	agent.Status.AIGateway.LastVerifiedTime = &stale
+	if err := r.reconcileAIGateway(context.Background(), agent, true); err != nil {
+		t.Fatal(err)
+	}
+	if len(gateway.keys) != 1 {
+		t.Fatalf("the key must be created again, got %d keys", len(gateway.keys))
+	}
+	if !gateway.teams[team] || !gateway.users["alice"] || !gateway.members[team+"/alice"] {
+		t.Fatalf("the owner must be created again with the key: teams=%v users=%v members=%v", gateway.teams, gateway.users, gateway.members)
+	}
+}

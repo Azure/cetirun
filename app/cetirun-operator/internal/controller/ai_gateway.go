@@ -351,24 +351,25 @@ func (c *aiGatewayOwnerCache) mark(key string, now time.Time) {
 // ensureAIGatewayOwner makes sure the Gateway team of the Agent's Team, the
 // owner's Gateway user and the membership exist. Keys carry both, so usage
 // can be read per Team and per user, and a Team total applies to every
-// Agent in the Team. It returns the team and user IDs for the key.
-func (r *AgentReconciler) ensureAIGatewayOwner(ctx context.Context, client aiGatewayKeyClient, instance *cetirunv1alpha1.Agent) (string, string, error) {
+// Agent in the Team. It returns the team and user IDs for the key. force
+// ignores what the cache says was already ensured.
+func (r *AgentReconciler) ensureAIGatewayOwner(ctx context.Context, client aiGatewayKeyClient, instance *cetirunv1alpha1.Agent, force bool) (string, string, error) {
 	now := time.Now()
 	teamID := aiGatewayTeamID(instance.Spec.Team)
 	userID := instance.Spec.User.Alias
-	if teamID != "" && !r.aiGatewayOwners.fresh("team:"+teamID, now) {
+	if teamID != "" && (force || !r.aiGatewayOwners.fresh("team:"+teamID, now)) {
 		if err := client.EnsureTeam(ctx, teamID, instance.Spec.Team, map[string]string{"cetirun_team": instance.Spec.Team}); err != nil {
 			return "", "", fmt.Errorf("ensure Gateway team %s: %w", teamID, err)
 		}
 		r.aiGatewayOwners.mark("team:"+teamID, now)
 	}
-	if userID != "" && !r.aiGatewayOwners.fresh("user:"+userID, now) {
+	if userID != "" && (force || !r.aiGatewayOwners.fresh("user:"+userID, now)) {
 		if err := client.EnsureUser(ctx, userID, map[string]string{"cetirun_user": userID}); err != nil {
 			return "", "", fmt.Errorf("ensure Gateway user %s: %w", userID, err)
 		}
 		r.aiGatewayOwners.mark("user:"+userID, now)
 	}
-	if teamID != "" && userID != "" && !r.aiGatewayOwners.fresh("member:"+teamID+"/"+userID, now) {
+	if teamID != "" && userID != "" && (force || !r.aiGatewayOwners.fresh("member:"+teamID+"/"+userID, now)) {
 		if err := client.EnsureTeamMember(ctx, teamID, userID); err != nil {
 			return "", "", fmt.Errorf("add Gateway user %s to team %s: %w", userID, teamID, err)
 		}
@@ -405,7 +406,7 @@ func (r *AgentReconciler) reconcileAIGateway(ctx context.Context, instance *ceti
 	if err != nil {
 		return aiGatewayDegraded(instance, "GatewayConfigUnavailable", err)
 	}
-	teamID, userID, err := r.ensureAIGatewayOwner(ctx, client, instance)
+	teamID, userID, err := r.ensureAIGatewayOwner(ctx, client, instance, false)
 	if err != nil {
 		return aiGatewayDegraded(instance, "GatewayOwnerFailed", err)
 	}
@@ -420,6 +421,11 @@ func (r *AgentReconciler) reconcileAIGateway(ctx context.Context, instance *ceti
 	}
 	switch {
 	case key == nil:
+		// A missing key can mean the Gateway lost its data, teams and users
+		// included: ensure the owner again before creating the key.
+		if _, _, err := r.ensureAIGatewayOwner(ctx, client, instance, true); err != nil {
+			return aiGatewayDegraded(instance, "GatewayOwnerFailed", err)
+		}
 		request := aigateway.GenerateRequest{
 			Key: value, Alias: status.KeyAlias, Models: models,
 			MaxBudget: r.AIGateway.DefaultBudget, BudgetDuration: aiGatewayBudgetDuration,
