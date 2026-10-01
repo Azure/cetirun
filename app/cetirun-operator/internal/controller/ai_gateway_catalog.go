@@ -245,7 +245,8 @@ func (r *AgentReconciler) refreshAIGatewayCatalog(ctx context.Context, client ai
 }
 
 // AIGatewayCatalogPublisher keeps the catalog fresh, publishes the shared
-// models for the Portal and reconciles Agents when the shared models change.
+// models for the Portal and reconciles Agents when the shared models change
+// or their Copilot routes go missing.
 type AIGatewayCatalogPublisher struct {
 	Reconciler *AgentReconciler
 	Interval   time.Duration
@@ -286,6 +287,7 @@ func (r *AgentReconciler) publishAIGatewayCatalog(ctx context.Context, maxAge ti
 	if r.refreshAIGatewayCatalogWithin(ctx, client, maxAge) {
 		r.notifyAIGatewayCatalogChanged(ctx)
 	}
+	r.notifyAIGatewayRoutesLost(ctx)
 	shared, known := r.aiGatewayCatalog.shared()
 	if !known {
 		return
@@ -333,17 +335,48 @@ func (r *AgentReconciler) writeAIGatewayCatalog(ctx context.Context, shared []ai
 // Gateway, so a new or removed shared model reaches Agent configurations
 // without waiting for the periodic verification.
 func (r *AgentReconciler) notifyAIGatewayCatalogChanged(ctx context.Context) {
+	r.notifyAIGatewayAgents(ctx, "an AI Gateway catalog change", func(agent *cetirunv1alpha1.Agent) bool {
+		return agent.Status.AIGateway != nil && agent.Status.AIGateway.Routed && agent.Spec.SharedModelsEnabled()
+	})
+}
+
+// notifyAIGatewayRoutesLost queues every Agent whose recorded Copilot routes
+// the Gateway no longer has, such as after it lost its data. Its reconcile
+// adds them again, and creates the key again if that is gone too. Without
+// this, an Agent without shared models hears of the loss from no catalog
+// change and waits for its periodic verification.
+func (r *AgentReconciler) notifyAIGatewayRoutesLost(ctx context.Context) {
+	r.notifyAIGatewayAgents(ctx, "a check for lost Copilot routes", r.copilotRoutesLost)
+}
+
+// copilotRoutesLost reports whether a listed catalog lacks one of the Agent's
+// recorded Copilot routes. Routes of a deleted Agent are on their way out.
+func (r *AgentReconciler) copilotRoutesLost(agent *cetirunv1alpha1.Agent) bool {
+	status := agent.Status.AIGateway
+	if status == nil || status.Copilot == nil || !agent.DeletionTimestamp.IsZero() {
+		return false
+	}
+	for _, id := range status.Copilot.Registered {
+		if present, known := r.aiGatewayCatalog.has(id); known && !present {
+			return true
+		}
+	}
+	return false
+}
+
+// notifyAIGatewayAgents queues the Agents pick selects.
+func (r *AgentReconciler) notifyAIGatewayAgents(ctx context.Context, after string, pick func(*cetirunv1alpha1.Agent) bool) {
 	if r.aiGatewayEvents == nil {
 		return
 	}
 	agents := &cetirunv1alpha1.AgentList{}
 	if err := r.List(ctx, agents); err != nil {
-		log.FromContext(ctx).Error(err, "listing Agents after an AI Gateway catalog change failed")
+		log.FromContext(ctx).Error(err, "listing Agents failed", "after", after)
 		return
 	}
 	for i := range agents.Items {
 		agent := &agents.Items[i]
-		if agent.Status.AIGateway == nil || !agent.Status.AIGateway.Routed || !agent.Spec.SharedModelsEnabled() {
+		if !pick(agent) {
 			continue
 		}
 		select {

@@ -26,6 +26,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 
 	istiov1beta1 "istio.io/client-go/pkg/apis/networking/v1beta1"
 
@@ -1065,6 +1066,58 @@ func TestAIGatewayCatalogPublishesSharedModels(t *testing.T) {
 	}
 	if configMap.ResourceVersion != resourceVersion {
 		t.Fatal("an unchanged catalog must not be rewritten")
+	}
+}
+
+func TestAIGatewayCatalogQueuesAgentsWhoseCopilotRoutesAreGone(t *testing.T) {
+	copilotOnly := func(name, uid string) (*cetirunv1alpha1.Agent, string) {
+		agent := routedAgent()
+		agent.Name, agent.UID = name, types.UID(uid)
+		shared, copilot := false, true
+		agent.Spec.ModelAccess = &cetirunv1alpha1.ModelAccessSpec{SharedModels: &shared, GitHubCopilot: &copilot}
+		route := copilotRegistrationID(agent, "gpt-5.5", "0123abcd")
+		agent.Status.AIGateway.Models = []string{"copilot/gpt-5.5"}
+		agent.Status.AIGateway.DefaultModel = "copilot/gpt-5.5"
+		agent.Status.AIGateway.Copilot = &cetirunv1alpha1.AIGatewayCopilotStatus{
+			Phase: cetirunv1alpha1.AIGatewayCopilotPhaseReady, AccessGroup: copilotAccessGroup(agent),
+			Registered: []string{route}, Models: []string{"copilot/gpt-5.5"},
+		}
+		return agent, route
+	}
+	lost, lostRoute := copilotOnly("lost", "uid-lost")
+	kept, keptRoute := copilotOnly("kept", "uid-kept")
+	r, _, gateway := aiGatewayTestReconciler(t, lost, kept, routedAgent())
+	gateway.models[keptRoute] = aigateway.ModelRequest{ID: keptRoute, ModelName: "copilot/gpt-5.5", AccessGroups: []string{copilotAccessGroup(kept)}}
+	r.aiGatewayEvents = make(chan event.GenericEvent, 8)
+	queued := func() []string {
+		var names []string
+		for {
+			select {
+			case queuedEvent := <-r.aiGatewayEvents:
+				names = append(names, queuedEvent.Object.GetName())
+			default:
+				slices.Sort(names)
+				return names
+			}
+		}
+	}
+
+	// The first listing is a catalog change, which queues the Agent with
+	// shared models, and it shows that one route is gone.
+	r.publishAIGatewayCatalog(context.Background(), 0)
+	if got := queued(); !slices.Equal(got, []string{"alice", "lost"}) {
+		t.Fatalf("first pass queued %v, want the shared-model Agent and the Agent that lost its route", got)
+	}
+	// The catalog is unchanged now: only the Agent without its route is
+	// queued, again on every pass until the route is back.
+	r.publishAIGatewayCatalog(context.Background(), 0)
+	if got := queued(); !slices.Equal(got, []string{"lost"}) {
+		t.Fatalf("second pass queued %v, want only the Agent that lost its route", got)
+	}
+	gateway.models[lostRoute] = aigateway.ModelRequest{ID: lostRoute, ModelName: "copilot/gpt-5.5", AccessGroups: []string{copilotAccessGroup(lost)}}
+	r.publishAIGatewayCatalog(context.Background(), 0)
+	if got := queued(); len(got) != 0 {
+		t.Fatalf("queued %v once the route was back", got)
 	}
 }
 
