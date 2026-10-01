@@ -40,8 +40,9 @@ providerCredentials:
 `<registry>` is where the CetiRun images and charts are published. The master
 key, salt key and console password are generated; see [Credentials](#credentials).
 
-At least one model is required. Installing with an empty list is rejected rather
-than producing a Gateway that starts and then fails every request.
+The model list can be empty. Administrators can add models through the console
+later, and with CetiRun a deployment may rely only on the GitHub Copilot models the
+operator registers for each Agent.
 
 The last two lines of the model entry are not optional in practice. Without a
 price the model is refused, and for newer Azure models an older `api_version`

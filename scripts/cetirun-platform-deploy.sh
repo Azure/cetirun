@@ -91,3 +91,7 @@ for deployment_name in cetirun-operator cetirun-portal; do
     kubectl rollout status "deployment/${deployment_name}" -n "${namespace}" --timeout=180s
   fi
 done
+# The bundled AI Gateway migrates its database before it starts serving.
+if deployment_is_rendered cetirun-ai-gateway; then
+  kubectl rollout status deployment/cetirun-ai-gateway -n "${namespace}" --timeout=600s
+fi

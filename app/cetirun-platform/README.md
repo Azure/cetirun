@@ -1,8 +1,8 @@
 # CetiRun Platform chart
 
-`cetirun-platform` packages the Operator and Portal into one Helm release.
-It does not install AKS managed Istio, the CetiRun Istio release, certificates,
-credentials, Agent Instances, or retained Agent data.
+`cetirun-platform` packages the Operator, the Portal and the AI Gateway into one
+Helm release. It does not install AKS managed Istio, the CetiRun Istio release,
+certificates, credentials, Agent Instances, or retained Agent data.
 
 The bundled Operator chart manages the four CetiRun CRDs as Helm templates,
 including schema upgrades. Use values which explicitly confirm the
@@ -68,3 +68,46 @@ PORTAL_AUTH_NAMESPACE=cetirun-system ./infra/istio/deploy.sh
 Each component chart remains independently installable. Moving existing
 standalone releases into this umbrella requires a separately planned handover;
 the chart never adopts resources owned by another release.
+
+## AI Gateway
+
+Built-in Agents take their models from the AI Gateway, so the platform requires
+it: the chart refuses to install with `cetirun-operator.aiGateway.enabled` or
+`cetirun-portal.features.aiGatewayEnabled` turned off. By default the release
+also installs the Gateway with its PostgreSQL and Valkey, named
+`cetirun-ai-gateway`, in the release namespace, which must be the operator's
+namespace: the operator reads the Gateway master key from there. See the
+[Gateway chart](../cetirun-ai-gateway/chart/README.md) for its settings, under
+`cetirun-ai-gateway` here.
+
+Shared models are optional. Without them Agents use their owners' GitHub
+Copilot. Add them in `cetirun-ai-gateway.models` with provider keys from
+`cetirun-ai-gateway.providerCredentials`, or later in the Gateway console with
+the access group `cetirun-shared`:
+
+```bash
+kubectl get secret cetirun-ai-gateway-auth -n cetirun-system \
+  -o jsonpath='{.data.ui-password}' | base64 -d; echo
+kubectl port-forward -n cetirun-system svc/cetirun-ai-gateway 4000:4000
+```
+
+Then open <http://localhost:4000/ui> and sign in as `admin`.
+
+A Gateway installed separately can be used instead: set
+`cetirun-ai-gateway.enabled=false` and install it in the operator namespace
+under the name `cetirun-ai-gateway`. Elsewhere, set
+`cetirun-operator.aiGateway.url` to it and copy its master key into the
+operator namespace as the `cetirun-ai-gateway-auth` Secret.
+
+New Agents need a Team. Create one before users create Agents, in the Portal's
+administration pages or with a manifest:
+
+```bash
+kubectl apply -f - <<'EOF'
+apiVersion: cetirun.microsoft.com/v1alpha1
+kind: Team
+metadata:
+  name: example-team
+spec: {}
+EOF
+```

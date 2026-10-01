@@ -5,5 +5,8 @@ dependencies:
 - name: cetirun-portal
   repository: file://../cetirun-portal/chart
   version: 0.1.1
-digest: sha256:2d8d56a2c8ae3a04bc4e6e44c6bb2710bf75bd95467b33bc9e022aa19c5ca7bd
-generated: "2026-09-27T13:42:44.437783674+08:00"
+- name: cetirun-ai-gateway
+  repository: file://../cetirun-ai-gateway/chart
+  version: 0.1.1
+digest: sha256:0a7b30bdab93d834b811c47fb65ab4a551d694276343ece88256615261867c84
+generated: "2026-10-01T05:27:30.10789839Z"

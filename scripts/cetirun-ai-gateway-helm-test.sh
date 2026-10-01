@@ -23,8 +23,8 @@ fi
 
 app_version="$(awk -F': *' '$1=="appVersion" {gsub(/"/, "", $2); print $2; exit}' "${chart_dir}/Chart.yaml")"
 
-# A usable baseline: the defaults, which bundle PostgreSQL and Valkey, plus the
-# one thing an administrator always has to supply.
+# A usable baseline: the defaults, which bundle PostgreSQL and Valkey, plus one
+# model configured at install.
 base_args=(
   --set-string "models[0].model_name=lint-model"
   --set-string "models[0].litellm_params.model=openai/lint-model"
@@ -117,11 +117,18 @@ single_name "${valkey_name}" "the bundled Valkey in the default render"
 
 # ----- Required inputs -----
 
+# ----- No models at install -----
+
+# A Gateway can start without models: administrators add them through the
+# console later, and a CetiRun deployment may use only the GitHub Copilot
+# models the operator registers for each Agent.
+echo "==> a Gateway without models renders"
+no_models="$(helm template "${release_name}" "${chart_dir}")"
+assert_contains "model_list:" "the configuration still lists models" "${no_models}"
+assert_absent "model_name:" "no model is configured" "${no_models}"
+
 echo "==> expected rejections for missing or conflicting input"
 
-# A Gateway with no models starts and then fails every request, so this is
-# rejected at install instead.
-assert_rejected "empty model list" --set "models=null"
 assert_rejected "missing litellm_params.model" --set-string "models[0].litellm_params.model="
 assert_rejected "no database at all" --set "postgresql.bundled.enabled=false"
 assert_rejected "an external database while the bundled one is on" \

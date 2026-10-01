@@ -39,8 +39,11 @@ for crd_name in agents.cetirun.microsoft.com teams.cetirun.microsoft.com \
   }
 done
 
+# The deployment helper installs the platform into the operator's namespace,
+# where the bundled AI Gateway must run too.
 base_args=(
   -f "${chart_dir}/values.yaml"
+  --namespace cetirun-system
   --set istio.enabled=true
   --set-string cetirun-operator.domainSuffix=platform.example.invalid
   --set-string cetirun-portal.istio.host=portal.example.invalid
@@ -59,10 +62,24 @@ grep -q 'name: cetirun-portal' <<< "${output}" || {
   echo "FAIL: portal was not rendered" >&2
   exit 1
 }
-grep -q 'namespace: default' <<< "${output}" || {
-  echo "FAIL: portal was not rendered into the release namespace" >&2
+grep -q 'name: cetirun-ai-gateway$' <<< "${output}" || {
+  echo "FAIL: the AI Gateway was not rendered" >&2
   exit 1
 }
+grep -q 'name: cetirun-ai-gateway-auth$' <<< "${output}" || {
+  echo "FAIL: the AI Gateway master key Secret does not have the name the operator reads" >&2
+  exit 1
+}
+grep -A1 'name: AI_GATEWAY_URL' <<< "${output}" | grep -q 'http://cetirun-ai-gateway.cetirun-system.svc.cluster.local:4000' || {
+  echo "FAIL: the operator does not use the bundled AI Gateway" >&2
+  exit 1
+}
+for flag in AI_GATEWAY_ENABLED FEATURE_AI_GATEWAY_ENABLED; do
+  grep -A1 "name: ${flag}$" <<< "${output}" | grep -q 'value: "true"' || {
+    echo "FAIL: ${flag} is not on" >&2
+    exit 1
+  }
+done
 for crd_name in agents.cetirun.microsoft.com teams.cetirun.microsoft.com \
   sandboxes.cetirun.microsoft.com agentpolicies.cetirun.microsoft.com; do
   grep -q "name: ${crd_name}" <<< "${output}" || {
@@ -81,6 +98,10 @@ grep -q 'image: "registry.example.com/cetirun-operator:9.8.7"' <<< "${output}" |
 }
 grep -q 'image: "registry.example.com/cetirun-portal:9.8.7"' <<< "${output}" || {
   echo "FAIL: portal image did not inherit global release coordinates" >&2
+  exit 1
+}
+grep -q 'image: registry.example.com/cetirun-ai-gateway:9.8.7' <<< "${output}" || {
+  echo "FAIL: AI Gateway image did not inherit global release coordinates" >&2
   exit 1
 }
 grep -q -- '--chart-repo-url=oci://registry.example.com/helm/cetirun' <<< "${output}" || {
@@ -134,8 +155,46 @@ if grep -q 'name: cetirun-operator' <<< "${output}"; then
   exit 1
 fi
 
+echo "==> helm template platform (AI Gateway installed separately)"
+# Without the bundled Gateway the release namespace is free, and the Portal
+# still follows it while the operator keeps its own namespace.
+output=$(helm template platform "${chart_dir}" -f "${chart_dir}/values.yaml" --namespace portal-ns \
+  --set istio.enabled=true \
+  --set-string cetirun-operator.domainSuffix=platform.example.invalid \
+  --set-string cetirun-portal.istio.host=portal.example.invalid \
+  --set cetirun-ai-gateway.enabled=false)
+if grep -q 'cetirun-ai-gateway-postgresql' <<< "${output}"; then
+  echo "FAIL: the AI Gateway rendered while disabled" >&2
+  exit 1
+fi
+grep -q 'namespace: portal-ns' <<< "${output}" || {
+  echo "FAIL: portal was not rendered into the release namespace" >&2
+  exit 1
+}
+grep -A1 'name: AI_GATEWAY_ENABLED' <<< "${output}" | grep -q 'value: "true"' || {
+  echo "FAIL: the operator must use a separately installed AI Gateway" >&2
+  exit 1
+}
+
+for flag in cetirun-operator.aiGateway.enabled cetirun-portal.features.aiGatewayEnabled; do
+  echo "==> helm template platform (${flag}=false, expect failure)"
+  if helm template platform "${chart_dir}" "${base_args[@]}" --set "${flag}=false" 2>/dev/null; then
+    echo "FAIL: platform rendered with ${flag}=false" >&2
+    exit 1
+  fi
+done
+
+echo "==> helm template platform (AI Gateway outside the operator namespace, expect failure)"
+if helm template platform "${chart_dir}" -f "${chart_dir}/values.yaml" --namespace other-ns \
+  --set istio.enabled=true \
+  --set-string cetirun-operator.domainSuffix=platform.example.invalid \
+  --set-string cetirun-portal.istio.host=portal.example.invalid 2>/dev/null; then
+  echo "FAIL: platform rendered the AI Gateway outside the operator namespace" >&2
+  exit 1
+fi
+
 echo "==> helm template platform (missing Istio confirmation, expect failure)"
-if helm template platform "${chart_dir}" \
+if helm template platform "${chart_dir}" --namespace cetirun-system \
   --set-string cetirun-operator.domainSuffix=platform.example.invalid \
   --set-string cetirun-portal.istio.host=portal.example.invalid 2>/dev/null; then
   echo "FAIL: platform rendered without Istio confirmation" >&2
@@ -143,7 +202,7 @@ if helm template platform "${chart_dir}" \
 fi
 
 echo "==> helm template platform (missing portal hostname, expect failure)"
-if helm template platform "${chart_dir}" \
+if helm template platform "${chart_dir}" --namespace cetirun-system \
   --set istio.enabled=true \
   --set-string cetirun-operator.domainSuffix=platform.example.invalid 2>/dev/null; then
   echo "FAIL: platform rendered without portal hostname" >&2
@@ -158,7 +217,7 @@ if helm template platform "${chart_dir}" "${base_args[@]}" \
 fi
 
 echo "==> helm template platform (missing operator domain suffix, expect failure)"
-if helm template platform "${chart_dir}" \
+if helm template platform "${chart_dir}" --namespace cetirun-system \
   --set istio.enabled=true \
   --set-string cetirun-portal.istio.host=portal.example.invalid 2>/dev/null; then
   echo "FAIL: platform rendered without operator domain suffix" >&2
@@ -166,7 +225,7 @@ if helm template platform "${chart_dir}" \
 fi
 
 echo "==> helm template platform (missing operator gateway, expect failure)"
-if helm template platform "${chart_dir}" \
+if helm template platform "${chart_dir}" --namespace cetirun-system \
   --set istio.enabled=true \
   --set-string cetirun-operator.domainSuffix=platform.example.invalid \
   --set-string cetirun-operator.istioGateway= \
@@ -176,7 +235,7 @@ if helm template platform "${chart_dir}" \
 fi
 
 echo "==> helm template platform (malformed operator gateway, expect failure)"
-if helm template platform "${chart_dir}" \
+if helm template platform "${chart_dir}" --namespace cetirun-system \
   --set istio.enabled=true \
   --set-string cetirun-operator.domainSuffix=platform.example.invalid \
   --set-string cetirun-operator.istioGateway=not-a-qualified-gateway \

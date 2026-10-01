@@ -30,3 +30,13 @@
 {{- if and $portal.enabled (not $portal.istio.gatewayServiceAccount) }}
 {{- fail "cetirun-portal.istio.gatewayServiceAccount is required when cetirun-portal is enabled" }}
 {{- end }}
+{{- $gateway := index .Values "cetirun-ai-gateway" }}
+{{- if and $operator.enabled (not (($operator.aiGateway | default dict).enabled)) }}
+{{- fail "cetirun-operator.aiGateway.enabled must be true: built-in Agents take their models from the AI Gateway" }}
+{{- end }}
+{{- if and $portal.enabled (not (($portal.features | default dict).aiGatewayEnabled)) }}
+{{- fail "cetirun-portal.features.aiGatewayEnabled must be true: the Portal offers the AI Gateway's model sources and the GitHub Copilot sign-in" }}
+{{- end }}
+{{- if and $gateway.enabled $operator.enabled (ne .Release.Namespace $operator.namespace) }}
+{{- fail (printf "the AI Gateway is installed in the release namespace %s, but cetirun-operator.namespace is %s: the operator reads the Gateway master key from its own namespace, so install both in the same namespace" .Release.Namespace $operator.namespace) }}
+{{- end }}

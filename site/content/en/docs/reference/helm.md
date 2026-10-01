@@ -292,16 +292,19 @@ read-only or privilege-escalation-disabled.
 ## Platform chart
 
 Source: [platform values]({{< repo "app/cetirun-platform/values.yaml" >}}).
-The umbrella packages the operator and portal. Their values are nested under
-`cetirun-operator` and `cetirun-portal`; runtime agent values remain under
-`cetirun-operator.cetirun.helmValues`.
+The umbrella packages the operator, the portal and the AI Gateway. Their values
+are nested under `cetirun-operator`, `cetirun-portal` and `cetirun-ai-gateway`;
+runtime agent values remain under `cetirun-operator.cetirun.helmValues`.
 
 | Value | Purpose / default |
 | --- | --- |
 | `istio.enabled` | `false`; must be `true` to acknowledge the separately installed Istio prerequisites, not to install Istio |
 | `istio.oauth2Proxy.name`, `namespace` | `oauth2-proxy`, `cetirun-istio`; checked by the deployment helper |
 | `cetirun-operator.enabled`, `cetirun-portal.enabled` | `true`; each component can be disabled |
-| `cetirun-operator.namespace` | `cetirun-system`; align with the Helm release namespace |
+| `cetirun-operator.namespace` | `cetirun-system`; align with the Helm release namespace, which the bundled AI Gateway requires |
+| `cetirun-ai-gateway.enabled` | `true`; turn it off only when a Gateway is installed separately in the operator namespace |
+| `cetirun-ai-gateway.models` | `[]`; shared models every Agent can use. Empty is valid: Agents then use their owners' GitHub Copilot |
+| `cetirun-operator.aiGateway.enabled`, `cetirun-portal.features.aiGatewayEnabled` | `true`; required, the chart refuses to install with either off |
 | `cetirun-operator.domainSuffix`, `cetirun-portal.istio.host` | Required deployment domain for enabled components |
 | `cetirun-operator.istioGateway`, `cetirun-portal.istio.gateway` | Matching Gateway resource in `namespace/name` form |
 | `cetirun-operator.cetirun.helmValues.networkPolicy.istioIngressNamespace` | Namespace containing the gateway workload allowed to reach agents |

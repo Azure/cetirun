@@ -78,6 +78,9 @@ CHARTS = (
             "istio.enabled=true",
             "cetirun-operator.domainSuffix=platform.example.invalid",
             "cetirun-portal.istio.host=portal.example.invalid",
+            # Rendered in the default namespace: the bundled AI Gateway must
+            # share the operator's namespace.
+            "cetirun-operator.namespace=default",
         ),
     ),
 )

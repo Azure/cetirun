@@ -199,16 +199,22 @@ agentIdentity:
 # long as url and the master key Secret are set, including after enabled is
 # turned off.
 aiGateway:
-  enabled: false
-  # -- In-cluster Gateway URL: http://<service>.<namespace>.svc.cluster.local:<port>
-  url: "http://cetirun-ai-gateway.cetirun-system.svc.cluster.local:4000"
-  # -- Secret in the operator namespace that holds the Gateway master key.
+  # -- Built-in Agents take their models from the platform AI Gateway. The
+  # platform chart requires it; turning it off leaves them without models.
+  enabled: true
+  # -- In-cluster Gateway URL: http://<service>.<namespace>.svc.cluster.local:<port>.
+  # Empty means the Gateway named cetirun-ai-gateway in the operator namespace,
+  # where the platform chart installs it.
+  url: ""
+  # -- Secret in the operator namespace that holds the Gateway master key. A
+  # Gateway installed separately must run in the operator namespace, or its
+  # master key Secret must be copied there.
   masterKeySecret:
     name: cetirun-ai-gateway-auth
     key: master-key
   # -- Monthly budget in US dollars written when a key is created. Changes an
   # administrator makes later in the Gateway are kept.
-  defaultBudget: 10
+  defaultBudget: 10000
   # -- Preferred default model of Agents that name none. Agents fall back to
   # the first model available to them when it is not.
   defaultModel: ""
