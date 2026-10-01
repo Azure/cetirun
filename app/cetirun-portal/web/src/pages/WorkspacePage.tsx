@@ -41,9 +41,9 @@ export function WorkspacePage() {
   }
 
   const externalUrls = {
-    agent: instance ? agentUIUrl(instance) : undefined,
-    terminal: instance ? terminalUrl(instance) : undefined,
-    desktop: instance ? desktopUrl(instance) : undefined,
+    agent: instance && !isError ? agentUIUrl(instance) : undefined,
+    terminal: instance && !isError ? terminalUrl(instance) : undefined,
+    desktop: instance && !isError ? desktopUrl(instance) : undefined,
   };
 
   return (
@@ -73,7 +73,7 @@ export function WorkspacePage() {
 
         {/* Instance name + phase */}
         <div style={{ padding: "12px 16px", borderBottom: `1px solid ${tokens.colorNeutralStroke1}` }}>
-          <Text weight="semibold" size={300}>{instanceName}</Text>
+          <Text weight="semibold" size={300} style={{ overflowWrap: "anywhere" }}>{instance?.displayName.trim() || instanceName}</Text>
           {instance && (
             <div style={{ marginTop: 4 }}>
               <Badge appearance="filled" color={phaseBadgeColor[instance.phase] ?? "informative"} size="small">
@@ -133,7 +133,7 @@ export function WorkspacePage() {
           </div>
         )}
 
-        {instance && section === "overview" && <OverviewSection instance={instance} />}
+        {instance && !isError && section === "overview" && <OverviewSection key={instance.uid} instance={instance} />}
 
       </div>
     </div>

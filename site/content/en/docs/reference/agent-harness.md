@@ -13,8 +13,8 @@ Agent Harness defines configuration for Hermes, OpenClaw and bring-your-own
 > Custom has a separate runtime implementation, but the default operator waits
 > for platform bindings; no production binding provider is wired in.
 > Registry references remain unsupported. Custom supports non-default usernames;
-> built-in profiles still require `vibe`. The BYO requirements are not a
-> self-service installation procedure.
+> built-in profiles still require `vibe`. Portal self-service is also opt-in;
+> a default installation does not enable Custom creation or provisioning.
 
 ## Configuration
 
@@ -336,3 +336,82 @@ Neither mode publishes a native Agent UI URL in the Agent CR's `status.accessUrl
 Portal derives the independent Desktop entry from the platform gateway domain
 and instance name after the route is configured; it does not assume the Portal
 and gateway share an origin.
+
+## Portal self-service
+
+The Portal creates and edits generic Custom Agents. It does not require an
+image-specific login helper, change the image's entrypoint, or manage its own
+model credentials. Custom Terminal and Desktop use the existing platform access
+boundary and remain independent of the optional Agent HTTP port.
+
+Management requests and responses use a nested `agent` object. The old
+`agentType` input, unknown fields and duplicate JSON fields are rejected on
+both the `/api/v1/instance` and `/api/v1/instances` routes. For example:
+
+```json
+{
+  "instanceName": "research",
+  "displayName": "Research Assistant",
+  "agent": {
+    "type": "custom",
+    "image": "registry.example.com/team/assistant@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "username": "vibe"
+  }
+}
+```
+
+Custom requires an image accepted by the configured runtime. Omitting
+`username` selects `vibe`; omitting `port` creates a headless Agent. `model`
+remains independent of `agent` in the API. The current image-owned Custom runtime
+does not use it to select a model, so Custom forms leave model setup and login
+to the image. Custom requests must omit
+Gateway Token, Tailscale, Microsoft Teams and Agent Identity settings, including
+empty or false values. No built-in credential Secret is created for Custom.
+
+The instance heading displays its nonblank Display Name, falling back to the
+Agent's name. An owner can clear Display Name with an empty string.
+
+### Enabling Custom self-service
+
+Custom is absent from the default Portal type list. An administrator enables
+it in the [Portal chart](../helm/#portal-chart):
+
+```yaml
+features:
+  allowedAgentTypes: [hermes, openclaw, custom]
+```
+
+Custom uses the existing Portal login and instance-ownership checks. Enabling
+the type does not enable Agent Identity or require a separate Portal admission
+grant. The backend still checks the type flag, instance limits and request
+fields, including immutable fields and concurrent-update preconditions.
+
+Per-user and Team-specific type and image restrictions are deferred to
+AgentPolicy; this management flow does not implement them. The Operator's
+existing runtime image approvals, profile compatibility and reserved-port
+checks remain in effect. Portal creation does not bypass those checks or
+release a Sandbox hold.
+
+### Editing and concurrent changes
+
+GET responses include `uid`, `resourceVersion`, `generation` and
+`observedGeneration`. PATCH, DELETE and upgrade requests must include the UID
+and resource version from the object the user viewed. A stale version or
+same-name replacement returns a conflict; reread and review the current object
+before retrying. The Portal does not replay a stale edit automatically.
+
+An omitted field leaves its value unchanged. `agent.port: null` removes a
+Custom HTTP endpoint or restores a built-in version's qualified default.
+`agent.type` and the effective `agent.username` cannot change; a pinned image
+cannot be cleared. Cross-image Custom updates remain blocked until HOME
+compatibility is separately qualified. The UI makes the Custom image read-only.
+Team reassignment requires an administrator and a suspended Agent; ordinary
+edits preserve the effective Team and its governance bindings.
+
+The displayed configuration is the requested configuration. A saved request
+does not establish new runtime readiness.
+
+Registry credentials and `registrySecretRef` mutations are not part of this
+management flow. Custom Chat proxy/UI/history and image-specific authentication
+also remain separate. The Portal does not present a Custom native Agent UI or
+Copilot helper merely because an HTTP port is configured.

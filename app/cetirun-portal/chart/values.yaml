@@ -91,7 +91,7 @@ features:
   tailscaleEnabled: false
   # -- Maximum number of Agents a user may create. 0 = unlimited.
   maxInstancesPerUser: 1
-  # -- Agent types users can create from the portal. Supported values: openclaw, hermes.
+  # -- Agent types users can create. Add custom to enable Custom self-service.
   allowedAgentTypes:
     - hermes
     - openclaw

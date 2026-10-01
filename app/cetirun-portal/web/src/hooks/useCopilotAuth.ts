@@ -32,7 +32,7 @@ const ACTIVE_LOGIN_POLL_MS = 3_000;
  */
 export function isCopilotAuthSupported(instance: Instance | undefined): boolean {
   if (!instance) return false;
-  if (instance.agentType !== "hermes" && instance.agentType !== "openclaw") return false;
+  if (instance.agent.type !== "hermes" && instance.agent.type !== "openclaw") return false;
   if (instance.phase !== "Ready") return false;
   if (!instance.cetirunAuthKey) return false;
   if (!instanceGatewayUrl(instance)) return false;

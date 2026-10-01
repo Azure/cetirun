@@ -30,7 +30,7 @@ export function InstanceListPage() {
   const atLimit = maxInstances > 0 && (instances?.length ?? 0) >= maxInstances;
 
   return (
-    <div>
+    <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: 24 }}>
       <div
         style={{
           display: "flex",
@@ -94,7 +94,7 @@ export function InstanceListPage() {
               description={<Text size={300}>{inst.displayName}</Text>}
               action={
                 <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                  <Badge appearance="outline">{agentTypeLabel(inst.agentType)}</Badge>
+                  <Badge appearance="outline">{agentTypeLabel(inst.agent.type)}</Badge>
                   <Badge
                     appearance="filled"
                     color={inst.phase === "Ready" ? "success" : "warning"}

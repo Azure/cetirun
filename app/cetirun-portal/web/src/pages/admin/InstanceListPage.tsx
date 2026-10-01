@@ -73,7 +73,7 @@ export function InstanceListPage() {
                 <TableCell>{ins.team || "—"}</TableCell>
                 <TableCell>
                   <Badge appearance="outline">
-                    {agentTypeLabel(ins.agentType)}
+                    {agentTypeLabel(ins.agent.type)}
                   </Badge>
                 </TableCell>
                 <TableCell>

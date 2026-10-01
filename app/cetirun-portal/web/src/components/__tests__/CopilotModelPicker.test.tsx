@@ -25,8 +25,10 @@ vi.mock("../../hooks/useCopilotAuth", () => ({
 }));
 
 const instance: Instance = {
+  uid: "test-agent-uid",
+  resourceVersion: "1",
   instanceName: "alice",
-  agentType: "openclaw",
+  agent: { type: "openclaw" },
   alias: "alice",
   displayName: "Alice",
   team: "",

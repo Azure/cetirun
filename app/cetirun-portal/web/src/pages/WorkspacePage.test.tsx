@@ -9,8 +9,10 @@ import { WorkspacePage } from "./WorkspacePage";
 import type { Instance } from "../types/instance";
 
 const mockInstance: Instance = {
+  uid: "test-agent-uid",
+  resourceVersion: "1",
   instanceName: "testuser",
-  agentType: "openclaw",
+  agent: { type: "openclaw" },
   displayName: "Test User",
   alias: "testuser",
   team: "aks",
@@ -55,9 +57,9 @@ function renderAt(path: string) {
 }
 
 describe("WorkspacePage", () => {
-  it("shows instance name in sidebar", () => {
+  it("shows the display name in the sidebar and heading", () => {
     renderAt("/instances/testuser/overview");
-    expect(screen.getByText("testuser")).toBeInTheDocument();
+    expect(screen.getAllByText("Test User")).toHaveLength(2);
   });
 
   it("shows all nav items", () => {
@@ -70,17 +72,17 @@ describe("WorkspacePage", () => {
 
   it("renders overview section by default", () => {
     renderAt("/instances/testuser/overview");
-    expect(screen.getByText(/Test User/)).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Test User" })).toBeInTheDocument();
   });
 
   it("redirects /instances/:instanceName to /instances/:instanceName/overview", () => {
     renderAt("/instances/testuser");
-    expect(screen.getByText(/Test User/)).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Test User" })).toBeInTheDocument();
   });
 
   it("redirects unknown section to overview", () => {
     renderAt("/instances/testuser/unknown-section");
-    expect(screen.getByText(/Test User/)).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Test User" })).toBeInTheDocument();
   });
 
   it("links to standalone instance services when the instance is ready", () => {
@@ -91,15 +93,15 @@ describe("WorkspacePage", () => {
   });
 
   it("links Hermes instances to their native dashboard", () => {
-    mockInstance.agentType = "hermes";
+    mockInstance.agent.type = "hermes";
     renderAt("/instances/testuser/overview");
     expect(screen.getByRole("link", { name: "Agent UI" })).toHaveAttribute("href", "https://example.com/ui/testuser/");
-    mockInstance.agentType = "openclaw";
+    mockInstance.agent.type = "openclaw";
   });
 
   it("keeps Custom desktop access without inventing a native UI or terminal", () => {
     const previousConditions = mockInstance.conditions;
-    mockInstance.agentType = "custom";
+    mockInstance.agent.type = "custom";
     mockInstance.accessUrl = "https://gateway.example.com/testuser/desktop/";
     mockInstance.conditions = [{ type: "IngressReady", status: "True", reason: "PlatformDesktopConfigured", message: "" }];
     try {
@@ -108,7 +110,7 @@ describe("WorkspacePage", () => {
       expect(screen.getByText("Agent UI").closest("a")).not.toHaveAttribute("href");
       expect(screen.getByText("Terminal").closest("a")).not.toHaveAttribute("href");
     } finally {
-      mockInstance.agentType = "openclaw";
+      mockInstance.agent.type = "openclaw";
       mockInstance.accessUrl = "https://example.com/ui/testuser/";
       mockInstance.conditions = previousConditions;
     }
@@ -124,8 +126,8 @@ describe("WorkspacePage", () => {
   });
 
   it("enables the owned Custom terminal without enabling native UI or desktop", () => {
-    const previous = { ...mockInstance };
-    mockInstance.agentType = "custom";
+    const previous = { ...mockInstance, agent: { ...mockInstance.agent } };
+    mockInstance.agent.type = "custom";
     mockInstance.accessUrl = "https://gateway.example.com/testuser/term/";
     mockInstance.conditions = [
       { type: "IngressReady", status: "True", reason: "", message: "" },

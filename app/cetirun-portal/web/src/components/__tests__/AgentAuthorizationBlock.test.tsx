@@ -23,8 +23,10 @@ vi.mock("../../hooks/useAgentAuthorization", () => ({
 }));
 
 const instance: Instance = {
+  uid: "test-agent-uid",
+  resourceVersion: "1",
   instanceName: "agent-a",
-  agentType: "hermes",
+  agent: { type: "hermes" },
   alias: "owner",
   displayName: "Agent A",
   team: "",

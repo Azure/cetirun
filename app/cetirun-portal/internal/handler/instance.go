@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"reflect"
 	"regexp"
 	"sort"
 	"strings"
@@ -19,6 +18,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 
+	"github.com/Azure/CetiRun/app/cetirun-portal/internal/agentconfig"
 	"github.com/Azure/CetiRun/app/cetirun-portal/internal/auth"
 	"github.com/Azure/CetiRun/app/cetirun-portal/internal/config"
 	"github.com/Azure/CetiRun/app/cetirun-portal/internal/handler/teamsapp"
@@ -76,40 +76,44 @@ var reservedInstanceNames = map[string]struct{}{
 
 // CreateInstanceRequest is the JSON body for POST /api/v1/instance.
 type CreateInstanceRequest struct {
-	InstanceName         string `json:"instanceName,omitempty"`
-	AgentType            string `json:"agentType,omitempty"`
-	DisplayName          string `json:"displayName,omitempty"`
-	Team                 string `json:"team"`
-	GatewayToken         string `json:"gatewayToken,omitempty"`
-	TailscaleAuthKey     string `json:"tailscaleAuthKey,omitempty"`
-	Model                string `json:"model,omitempty"`
-	TeamsEnabled         bool   `json:"teamsEnabled,omitempty"`
-	AgentIdentityEnabled bool   `json:"agentIdentityEnabled,omitempty"`
+	InstanceName         string             `json:"instanceName,omitempty"`
+	Agent                *agentconfig.Input `json:"agent"`
+	DisplayName          string             `json:"displayName,omitempty"`
+	Team                 string             `json:"team"`
+	GatewayToken         string             `json:"gatewayToken,omitempty"`
+	TailscaleAuthKey     string             `json:"tailscaleAuthKey,omitempty"`
+	Model                string             `json:"model,omitempty"`
+	TeamsEnabled         bool               `json:"teamsEnabled,omitempty"`
+	AgentIdentityEnabled bool               `json:"agentIdentityEnabled,omitempty"`
 }
 
 // InstanceResponse is the JSON response for GET /api/v1/instance.
 type InstanceResponse struct {
-	Alias            string                 `json:"alias"`
-	InstanceName     string                 `json:"instanceName"`
-	AgentType        string                 `json:"agentType"`
-	DisplayName      string                 `json:"displayName"`
-	Team             string                 `json:"team"`
-	Model            string                 `json:"model,omitempty"`
-	Phase            string                 `json:"phase"`
-	AccessURL        string                 `json:"accessUrl,omitempty"`        // Access URL (token is returned separately via GatewayToken)
-	GatewayToken     string                 `json:"gatewayToken,omitempty"`     // Separate gateway token for display, when available
-	APIServerKey     string                 `json:"apiServerKey,omitempty"`     // Hermes API server key for display, when available
-	CetiRunAuthKey   string                 `json:"cetirunAuthKey,omitempty"`   // Bearer key for the in-pod cetirun-auth helper (both agent types)
-	TailscaleAuthKey string                 `json:"tailscaleAuthKey,omitempty"` // Tailscale auth key for display, when available
-	Conditions       []ConditionStatus      `json:"conditions,omitempty"`
-	CreatedAt        string                 `json:"createdAt"`
-	LastReconciled   string                 `json:"lastReconciled,omitempty"`
-	UpgradeAvailable bool                   `json:"upgradeAvailable"`
-	TeamsEnabled     bool                   `json:"teamsEnabled"`
-	TeamsState       string                 `json:"teamsState,omitempty"`   // Provisioning | PendingAppRegistration | Ready | Failed | Deleting
-	TeamsAppID       string                 `json:"teamsAppId,omitempty"`   // Azure AD Application ID for sideloading
-	TeamsMessage     string                 `json:"teamsMessage,omitempty"` // Human-readable Teams status detail
-	AgentIdentity    *AgentIdentityResponse `json:"agentIdentity,omitempty"`
+	Alias              string                      `json:"alias"`
+	InstanceName       string                      `json:"instanceName"`
+	Agent              cetirunv1alpha1.HarnessSpec `json:"agent"`
+	UID                string                      `json:"uid"`
+	ResourceVersion    string                      `json:"resourceVersion"`
+	Generation         int64                       `json:"generation"`
+	ObservedGeneration int64                       `json:"observedGeneration"`
+	DisplayName        string                      `json:"displayName"`
+	Team               string                      `json:"team"`
+	Model              string                      `json:"model,omitempty"`
+	Phase              string                      `json:"phase"`
+	AccessURL          string                      `json:"accessUrl,omitempty"`        // Access URL (token is returned separately via GatewayToken)
+	GatewayToken       string                      `json:"gatewayToken,omitempty"`     // Separate gateway token for display, when available
+	APIServerKey       string                      `json:"apiServerKey,omitempty"`     // Hermes API server key for display, when available
+	CetiRunAuthKey     string                      `json:"cetirunAuthKey,omitempty"`   // Bearer key for the in-pod cetirun-auth helper (both agent types)
+	TailscaleAuthKey   string                      `json:"tailscaleAuthKey,omitempty"` // Tailscale auth key for display, when available
+	Conditions         []ConditionStatus           `json:"conditions,omitempty"`
+	CreatedAt          string                      `json:"createdAt"`
+	LastReconciled     string                      `json:"lastReconciled,omitempty"`
+	UpgradeAvailable   bool                        `json:"upgradeAvailable"`
+	TeamsEnabled       bool                        `json:"teamsEnabled"`
+	TeamsState         string                      `json:"teamsState,omitempty"`   // Provisioning | PendingAppRegistration | Ready | Failed | Deleting
+	TeamsAppID         string                      `json:"teamsAppId,omitempty"`   // Azure AD Application ID for sideloading
+	TeamsMessage       string                      `json:"teamsMessage,omitempty"` // Human-readable Teams status detail
+	AgentIdentity      *AgentIdentityResponse      `json:"agentIdentity,omitempty"`
 }
 
 // AgentIdentityResponse contains only non-sensitive lifecycle information.
@@ -194,7 +198,7 @@ func (h *InstanceHandler) ListInstances(w http.ResponseWriter, r *http.Request) 
 	var responses []InstanceResponse
 	for i := range instances {
 		inst := &instances[i]
-		if !strings.EqualFold(inst.Spec.User.Alias, claims.Alias) {
+		if !ownsInstance(inst, claims) {
 			continue
 		}
 		resp, err := h.toInstanceResponse(r.Context(), inst)
@@ -228,7 +232,7 @@ func (h *InstanceHandler) GetInstanceByName(w http.ResponseWriter, r *http.Reque
 		http.Error(w, fmt.Sprintf("instance not found: %v", err), http.StatusNotFound)
 		return
 	}
-	if !strings.EqualFold(instance.Spec.User.Alias, claims.Alias) {
+	if !ownsInstance(instance, claims) {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
@@ -242,93 +246,9 @@ func (h *InstanceHandler) GetInstanceByName(w http.ResponseWriter, r *http.Reque
 }
 
 // UpdateInstanceByName handles PATCH /api/v1/instances/{name}.
-// It reads {name}, verifies ownership, then delegates to the alias-based update.
+// Both route shapes share the same ownership and version checks.
 func (h *InstanceHandler) UpdateInstanceByName(w http.ResponseWriter, r *http.Request) {
-	claims, ok := auth.ClaimsFromContext(r.Context())
-	if !ok {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return
-	}
-	name := r.PathValue("name")
-	if name == "" {
-		http.Error(w, "missing instance name", http.StatusBadRequest)
-		return
-	}
-
-	var req UpdateInstanceRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_body", "Invalid JSON body")
-		return
-	}
-	if allNilPointers(req) {
-		writeError(w, http.StatusBadRequest, "no_fields", "At least one field must be provided for update")
-		return
-	}
-
-	if req.DisplayName != nil && *req.DisplayName == "" {
-		writeError(w, http.StatusBadRequest, "invalid_display_name", "displayName must be non-empty when provided")
-		return
-	}
-	if req.Team != nil && *req.Team == "" {
-		writeError(w, http.StatusBadRequest, "invalid_team", "team must be non-empty when provided")
-		return
-	}
-	if req.GatewayToken != nil && *req.GatewayToken == "" {
-		writeError(w, http.StatusBadRequest, "invalid_gateway_token", "gatewayToken must be non-empty when provided")
-		return
-	}
-	if req.Model != nil && len(strings.TrimSpace(*req.Model)) > 256 {
-		writeError(w, http.StatusBadRequest, "invalid_model", "model must be 256 characters or fewer")
-		return
-	}
-	if req.TailscaleAuthKey != nil && *req.TailscaleAuthKey != "" && !h.Config.TailscaleEnabled {
-		writeError(w, http.StatusBadRequest, "feature_disabled", "Tailscale feature is not enabled")
-		return
-	}
-
-	// Verify ownership before updating.
-	existing, err := h.Kube.GetInstanceByName(r.Context(), name)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("instance not found: %v", err), http.StatusNotFound)
-		return
-	}
-	if !strings.EqualFold(existing.Spec.User.Alias, claims.Alias) {
-		http.Error(w, "forbidden", http.StatusForbidden)
-		return
-	}
-
-	opts := kube.UpdateInstanceOpts{
-		DisplayName:      req.DisplayName,
-		Team:             req.Team,
-		GatewayToken:     req.GatewayToken,
-		TailscaleAuthKey: req.TailscaleAuthKey,
-		TeamsEnabled:     req.TeamsEnabled,
-		Model:            req.Model,
-	}
-
-	instance, err := h.Kube.UpdateInstanceByName(r.Context(), name, opts)
-	if err != nil {
-		if kube.IsUnsupportedCustomUpdate(err) {
-			writeError(w, http.StatusBadRequest, "unsupported_custom_feature", err.Error())
-			return
-		}
-		if kube.IsNotFound(err) {
-			writeError(w, http.StatusNotFound, "instance_not_found", "Instance not found: "+name)
-			return
-		}
-		slog.Error("Failed to update instance", "name", name, "error", err)
-		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to update instance")
-		return
-	}
-
-	resp, err := h.toInstanceResponse(r.Context(), instance)
-	if err != nil {
-		slog.Error("Failed to build instance response", "name", name, "error", err)
-		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to build response")
-		return
-	}
-
-	writeJSON(w, http.StatusOK, resp)
+	h.updateInstance(w, r, r.PathValue("name"))
 }
 
 // DeleteInstanceByName handles DELETE /api/v1/instances/{name}.
@@ -349,18 +269,17 @@ func (h *InstanceHandler) DeleteInstanceByName(w http.ResponseWriter, r *http.Re
 		http.Error(w, fmt.Sprintf("instance not found: %v", err), http.StatusNotFound)
 		return
 	}
-	if !strings.EqualFold(instance.Spec.User.Alias, claims.Alias) {
+	if !ownsInstance(instance, claims) {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
 
-	if err := h.Kube.DeleteInstanceByName(r.Context(), name); err != nil {
-		if kube.IsNotFound(err) {
-			writeError(w, http.StatusNotFound, "instance_not_found", "Instance not found: "+name)
-			return
-		}
-		slog.Error("Failed to delete instance", "name", name, "error", err)
-		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to delete instance")
+	version, ok := h.readInstanceVersion(w, r)
+	if !ok {
+		return
+	}
+	if err := h.Kube.DeleteInstanceByName(r.Context(), name, version); err != nil {
+		writeManagementError(w, err)
 		return
 	}
 
@@ -385,15 +304,24 @@ func (h *InstanceHandler) UpgradeInstanceByName(w http.ResponseWriter, r *http.R
 		http.Error(w, fmt.Sprintf("instance not found: %v", err), http.StatusNotFound)
 		return
 	}
-	if !strings.EqualFold(existing.Spec.User.Alias, claims.Alias) {
+	if !ownsInstance(existing, claims) {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
+	if existing.Spec.Agent.Type == cetirunv1alpha1.AgentTypeCustom {
+		if err := h.validateAgentType(existing.Spec.Agent.Type); err != nil {
+			writeManagementError(w, err)
+			return
+		}
+	}
 
-	instance, err := h.Kube.UpgradeInstanceByName(r.Context(), name)
+	version, ok := h.readInstanceVersion(w, r)
+	if !ok {
+		return
+	}
+	instance, err := h.Kube.UpgradeInstanceByName(r.Context(), name, version)
 	if err != nil {
-		slog.Error("Failed to upgrade instance", "name", name, "error", err)
-		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to upgrade instance")
+		writeManagementError(w, err)
 		return
 	}
 
@@ -425,7 +353,7 @@ func (h *InstanceHandler) GetInstanceStatusByName(w http.ResponseWriter, r *http
 		http.Error(w, fmt.Sprintf("instance not found: %v", err), http.StatusNotFound)
 		return
 	}
-	if !strings.EqualFold(instance.Spec.User.Alias, claims.Alias) {
+	if !ownsInstance(instance, claims) {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
@@ -489,7 +417,7 @@ func (h *InstanceHandler) DownloadTeamsAppByName(w http.ResponseWriter, r *http.
 		http.Error(w, fmt.Sprintf("instance not found: %v", err), http.StatusNotFound)
 		return
 	}
-	if !strings.EqualFold(instance.Spec.User.Alias, claims.Alias) {
+	if !ownsInstance(instance, claims) {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
@@ -544,36 +472,24 @@ func (h *InstanceHandler) InternalAuth(w http.ResponseWriter, r *http.Request) {
 // GetInstance handles GET /api/v1/instance.
 func (h *InstanceHandler) GetInstance(w http.ResponseWriter, r *http.Request) {
 	claims, _ := auth.ClaimsFromContext(r.Context())
-
-	instance, err := h.Kube.GetInstance(r.Context(), claims.Alias)
-	if err != nil {
-		if kube.IsNotFound(err) {
-			writeError(w, http.StatusNotFound, "instance_not_found",
-				"No agent found for user "+claims.Alias)
-			return
-		}
-		slog.Error("Failed to get instance", "alias", claims.Alias, "error", err)
-		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to get instance")
-		return
-	}
-
-	resp, err := h.toInstanceResponse(r.Context(), instance)
-	if err != nil {
-		slog.Error("Failed to build instance response", "alias", claims.Alias, "error", err)
-		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to build response")
-		return
-	}
-
-	writeJSON(w, http.StatusOK, resp)
+	r.SetPathValue("name", claims.Alias)
+	h.GetInstanceByName(w, r)
 }
 
 // CreateInstance handles POST /api/v1/instance.
 func (h *InstanceHandler) CreateInstance(w http.ResponseWriter, r *http.Request) {
-	claims, _ := auth.ClaimsFromContext(r.Context())
+	claims, ok := auth.ClaimsFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "not_authenticated", "Authentication is required")
+		return
+	}
+	if !h.validManagementOrigin(w, r) {
+		return
+	}
 
 	var req CreateInstanceRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_body", "Invalid JSON body")
+	fields, ok := decodeManagementRequest(w, r, &req)
+	if !ok {
 		return
 	}
 
@@ -582,12 +498,21 @@ func (h *InstanceHandler) CreateInstance(w http.ResponseWriter, r *http.Request)
 		displayName = claims.DisplayName
 	}
 
-	agentType := cetirunv1alpha1.AgentType(req.AgentType)
-	if agentType == "" {
-		agentType = cetirunv1alpha1.DefaultAgentType
+	if req.Agent == nil {
+		writeError(w, http.StatusBadRequest, "invalid_agent", "agent is required; use an object with type, image, username and optional port")
+		return
 	}
-	if agentType != cetirunv1alpha1.AgentTypeOpenClaw && agentType != cetirunv1alpha1.AgentTypeHermes {
-		writeError(w, http.StatusBadRequest, "invalid_agent_type", "agentType must be openclaw or hermes")
+	agent, err := req.Agent.Create()
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_agent", err.Error())
+		return
+	}
+	if agent.Type == cetirunv1alpha1.AgentTypeCustom && hasNativeCreateFields(fields) {
+		writeError(w, http.StatusBadRequest, "unsupported_custom_feature", "Custom does not accept Gateway Token, Teams, Tailscale or Agent Identity settings")
+		return
+	}
+	if err := h.validateAgentType(agent.Type); err != nil {
+		writeManagementError(w, err)
 		return
 	}
 
@@ -639,7 +564,7 @@ func (h *InstanceHandler) CreateInstance(w http.ResponseWriter, r *http.Request)
 		}
 		count := 0
 		for _, inst := range all {
-			if strings.EqualFold(inst.Spec.User.Alias, claims.Alias) {
+			if ownsInstance(&inst, claims) {
 				count++
 			}
 		}
@@ -650,7 +575,7 @@ func (h *InstanceHandler) CreateInstance(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
-	instance, err := h.Kube.CreateInstance(r.Context(), claims.Alias, displayName, req.Team, claims.Email, instanceName, string(agentType), req.GatewayToken, req.TailscaleAuthKey, strings.TrimSpace(req.Model), req.TeamsEnabled, kube.CreateInstanceOptions{
+	instance, err := h.Kube.CreateInstance(r.Context(), claims.Alias, displayName, req.Team, claims.Email, instanceName, agent, req.GatewayToken, req.TailscaleAuthKey, strings.TrimSpace(req.Model), req.TeamsEnabled, kube.CreateInstanceOptions{
 		AgentIdentityEnabled: req.AgentIdentityEnabled,
 		OwnerTenantID:        claims.TenantID,
 		OwnerObjectID:        claims.ObjectID,
@@ -661,8 +586,7 @@ func (h *InstanceHandler) CreateInstance(w http.ResponseWriter, r *http.Request)
 				"Instance already exists for user "+claims.Alias)
 			return
 		}
-		slog.Error("Failed to create instance", "alias", claims.Alias, "error", err)
-		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to create instance")
+		writeManagementError(w, err)
 		return
 	}
 
@@ -679,157 +603,54 @@ func (h *InstanceHandler) CreateInstance(w http.ResponseWriter, r *http.Request)
 
 // UpdateInstanceRequest is the JSON body for PATCH /api/v1/instance.
 type UpdateInstanceRequest struct {
-	DisplayName      *string `json:"displayName"`      // nil = no change
-	Team             *string `json:"team"`             // nil = no change, "" = rejected
-	GatewayToken     *string `json:"gatewayToken"`     // nil = no change, "" = rejected
-	TailscaleAuthKey *string `json:"tailscaleAuthKey"` // nil = no change, "" = disable, non-empty = update
-	TeamsEnabled     *bool   `json:"teamsEnabled"`     // nil = no change
-	Model            *string `json:"model"`            // nil = no change, "" = deployment default
+	UID              string             `json:"uid"`
+	ResourceVersion  string             `json:"resourceVersion"`
+	Agent            *agentconfig.Input `json:"agent,omitempty"`
+	DisplayName      *string            `json:"displayName,omitempty"`
+	Team             *string            `json:"team,omitempty"`
+	GatewayToken     *string            `json:"gatewayToken,omitempty"`
+	TailscaleAuthKey *string            `json:"tailscaleAuthKey,omitempty"`
+	TeamsEnabled     *bool              `json:"teamsEnabled,omitempty"`
+	Model            *string            `json:"model,omitempty"`
 }
 
 // UpdateInstance handles PATCH /api/v1/instance.
 func (h *InstanceHandler) UpdateInstance(w http.ResponseWriter, r *http.Request) {
 	claims, _ := auth.ClaimsFromContext(r.Context())
-
-	var req UpdateInstanceRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_body", "Invalid JSON body")
-		return
-	}
-
-	// Reject empty update requests (no fields provided).
-	if allNilPointers(req) {
-		writeError(w, http.StatusBadRequest, "no_fields", "At least one field must be provided for update")
-		return
-	}
-
-	// Validate: displayName, team and gatewayToken must be non-empty if provided.
-	if req.DisplayName != nil && *req.DisplayName == "" {
-		writeError(w, http.StatusBadRequest, "invalid_display_name", "displayName must be non-empty when provided")
-		return
-	}
-	if req.Team != nil && *req.Team == "" {
-		writeError(w, http.StatusBadRequest, "invalid_team", "team must be non-empty when provided")
-		return
-	}
-	if req.GatewayToken != nil && *req.GatewayToken == "" {
-		writeError(w, http.StatusBadRequest, "invalid_gateway_token", "gatewayToken must be non-empty when provided")
-		return
-	}
-	if req.Model != nil && len(strings.TrimSpace(*req.Model)) > 256 {
-		writeError(w, http.StatusBadRequest, "invalid_model", "model must be 256 characters or fewer")
-		return
-	}
-
-	if req.TailscaleAuthKey != nil && *req.TailscaleAuthKey != "" && !h.Config.TailscaleEnabled {
-		writeError(w, http.StatusBadRequest, "feature_disabled", "Tailscale feature is not enabled")
-		return
-	}
-
-	opts := kube.UpdateInstanceOpts{
-		DisplayName:      req.DisplayName,
-		Team:             req.Team,
-		GatewayToken:     req.GatewayToken,
-		TailscaleAuthKey: req.TailscaleAuthKey,
-		TeamsEnabled:     req.TeamsEnabled,
-		Model:            req.Model,
-	}
-
-	instance, err := h.Kube.UpdateInstance(r.Context(), claims.Alias, opts)
-	if err != nil {
-		if kube.IsUnsupportedCustomUpdate(err) {
-			writeError(w, http.StatusBadRequest, "unsupported_custom_feature", err.Error())
-			return
-		}
-		if kube.IsNotFound(err) {
-			writeError(w, http.StatusNotFound, "instance_not_found",
-				"No agent found for user "+claims.Alias)
-			return
-		}
-		slog.Error("Failed to update instance", "alias", claims.Alias, "error", err)
-		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to update instance")
-		return
-	}
-
-	resp, err := h.toInstanceResponse(r.Context(), instance)
-	if err != nil {
-		slog.Error("Failed to build instance response", "alias", claims.Alias, "error", err)
-		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to build response")
-		return
-	}
-
-	var changed []string
-	changed = nonNilPointerFields(req)
-	slog.Info("Instance updated", "alias", claims.Alias, "fields", changed)
-	writeJSON(w, http.StatusOK, resp)
+	h.updateInstance(w, r, claims.Alias)
 }
 
 // DeleteInstance handles DELETE /api/v1/instance.
 func (h *InstanceHandler) DeleteInstance(w http.ResponseWriter, r *http.Request) {
 	claims, _ := auth.ClaimsFromContext(r.Context())
-
-	err := h.Kube.DeleteInstance(r.Context(), claims.Alias)
-	if err != nil {
-		if kube.IsNotFound(err) {
-			writeError(w, http.StatusNotFound, "instance_not_found",
-				"No agent found for user "+claims.Alias)
-			return
-		}
-		slog.Error("Failed to delete instance", "alias", claims.Alias, "error", err)
-		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to delete instance")
-		return
-	}
-
-	slog.Info("Instance deleted", "alias", claims.Alias)
-	w.WriteHeader(http.StatusAccepted)
+	r.SetPathValue("name", claims.Alias)
+	h.DeleteInstanceByName(w, r)
 }
 
 // UpgradeInstance handles POST /api/v1/instance/upgrade.
 func (h *InstanceHandler) UpgradeInstance(w http.ResponseWriter, r *http.Request) {
 	claims, _ := auth.ClaimsFromContext(r.Context())
-
-	// Verify the instance exists before attempting upgrade, so we can
-	// distinguish "instance not found" (404) from other not-found errors
-	// (e.g. operator deployment missing → 500).
-	if _, err := h.Kube.GetInstance(r.Context(), claims.Alias); err != nil {
-		if kube.IsNotFound(err) {
-			writeError(w, http.StatusNotFound, "instance_not_found",
-				"No agent found for user "+claims.Alias)
-			return
-		}
-		slog.Error("Failed to get instance", "alias", claims.Alias, "error", err)
-		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to get instance")
-		return
-	}
-
-	instance, err := h.Kube.UpgradeInstance(r.Context(), claims.Alias)
-	if err != nil {
-		slog.Error("Failed to upgrade instance", "alias", claims.Alias, "error", err)
-		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to upgrade instance")
-		return
-	}
-
-	resp, err := h.toInstanceResponse(r.Context(), instance)
-	if err != nil {
-		slog.Error("Failed to build instance response", "alias", claims.Alias, "error", err)
-		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to build response")
-		return
-	}
-
-	slog.Info("Instance upgraded", "alias", claims.Alias)
-	writeJSON(w, http.StatusOK, resp)
+	r.SetPathValue("name", claims.Alias)
+	h.UpgradeInstanceByName(w, r)
 }
 
 func (h *InstanceHandler) toInstanceResponse(ctx context.Context, instance *cetirunv1alpha1.Agent) (InstanceResponse, error) {
 	resp := InstanceResponse{
-		Alias:        instance.Spec.User.Alias,
-		InstanceName: instance.Name,
-		AgentType:    string(instance.Spec.Agent.Type),
-		DisplayName:  instance.Spec.User.DisplayName,
-		Team:         instance.Spec.User.Team,
-		Model:        instance.Spec.Model,
-		Phase:        instance.Status.Phase,
-		CreatedAt:    instance.CreationTimestamp.UTC().Format("2006-01-02T15:04:05Z"),
+		Alias:              instance.Spec.User.Alias,
+		InstanceName:       instance.Name,
+		Agent:              agentconfig.Defaults(instance.Spec.Agent),
+		UID:                string(instance.UID),
+		ResourceVersion:    instance.ResourceVersion,
+		Generation:         instance.Generation,
+		ObservedGeneration: instance.Status.ObservedGeneration,
+		DisplayName:        instance.Spec.User.DisplayName,
+		Team:               instanceTeam(instance),
+		Model:              instance.Spec.Model,
+		Phase:              instance.Status.Phase,
+		CreatedAt:          instance.CreationTimestamp.UTC().Format("2006-01-02T15:04:05Z"),
+	}
+	if resp.Phase == "" {
+		resp.Phase = "Pending"
 	}
 	if instance.Status.LastReconcileTime != nil {
 		resp.LastReconciled = instance.Status.LastReconcileTime.UTC().Format("2006-01-02T15:04:05Z")
@@ -958,62 +779,8 @@ func customAccessService(conditions []metav1.Condition) string {
 // GetInstanceStatus handles GET /api/v1/instance/status.
 func (h *InstanceHandler) GetInstanceStatus(w http.ResponseWriter, r *http.Request) {
 	claims, _ := auth.ClaimsFromContext(r.Context())
-
-	instance, err := h.Kube.GetInstance(r.Context(), claims.Alias)
-	if err != nil {
-		if kube.IsNotFound(err) {
-			writeError(w, http.StatusNotFound, "instance_not_found",
-				"No agent found for user "+claims.Alias)
-			return
-		}
-		slog.Error("Failed to get instance", "alias", claims.Alias, "error", err)
-		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to get instance")
-		return
-	}
-
-	ns := fmt.Sprintf("cetirun-%s", claims.Alias)
-	resp := StatusResponse{
-		Conditions: []ConditionStatus{},
-		Events:     []EventItem{},
-		NsEvents:   []EventItem{},
-		Pods:       []PodStatus{},
-	}
-
-	// Conditions from the CR
-	for _, c := range instance.Status.Conditions {
-		resp.Conditions = append(resp.Conditions, ConditionStatus{
-			Type:    c.Type,
-			Status:  string(c.Status),
-			Reason:  c.Reason,
-			Message: c.Message,
-		})
-	}
-
-	// CR-level events
-	crEvents, err := h.Kube.GetEvents(r.Context(), claims.Alias)
-	if err != nil {
-		slog.Warn("Failed to get CR events", "alias", claims.Alias, "error", err)
-	} else {
-		resp.Events = toEventItems(crEvents)
-	}
-
-	// Namespace-level events
-	nsEvents, err := h.Kube.GetNamespaceEvents(r.Context(), ns)
-	if err != nil {
-		slog.Warn("Failed to get namespace events", "namespace", ns, "error", err)
-	} else {
-		resp.NsEvents = toEventItems(nsEvents)
-	}
-
-	// Pods
-	pods, err := h.Kube.GetPods(r.Context(), ns)
-	if err != nil {
-		slog.Warn("Failed to get pods", "namespace", ns, "error", err)
-	} else {
-		resp.Pods = toPodStatuses(pods)
-	}
-
-	writeJSON(w, http.StatusOK, resp)
+	r.SetPathValue("name", claims.Alias)
+	h.GetInstanceStatusByName(w, r)
 }
 
 // DownloadTeamsApp handles GET /api/v1/instance/teams-app.
@@ -1021,32 +788,8 @@ func (h *InstanceHandler) GetInstanceStatus(w http.ResponseWriter, r *http.Reque
 // and display name substituted, plus bot icons.
 func (h *InstanceHandler) DownloadTeamsApp(w http.ResponseWriter, r *http.Request) {
 	claims, _ := auth.ClaimsFromContext(r.Context())
-
-	instance, err := h.Kube.GetInstance(r.Context(), claims.Alias)
-	if err != nil {
-		if kube.IsNotFound(err) {
-			writeError(w, http.StatusNotFound, "instance_not_found",
-				"No agent found for user "+claims.Alias)
-			return
-		}
-		slog.Error("Failed to get instance", "alias", claims.Alias, "error", err)
-		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to get instance")
-		return
-	}
-
-	if instance.Spec.MSTeams == nil || !instance.Spec.MSTeams.Enabled {
-		writeError(w, http.StatusNotFound, "teams_not_enabled",
-			"Teams integration is not enabled on this instance")
-		return
-	}
-
-	if instance.Status.MSTeams == nil || instance.Status.MSTeams.State != "Ready" || instance.Status.MSTeams.AppID == "" {
-		writeError(w, http.StatusConflict, "teams_not_ready",
-			"Teams integration is not yet ready. Current state: "+teamsStateOrUnknown(instance))
-		return
-	}
-
-	h.serveTeamsApp(w, instance)
+	r.SetPathValue("name", claims.Alias)
+	h.DownloadTeamsAppByName(w, r)
 }
 
 // serveTeamsApp builds and writes the Teams app ZIP for the given instance.
@@ -1237,47 +980,6 @@ func writeError(w http.ResponseWriter, status int, code, message string) {
 			Message: message,
 		},
 	})
-}
-
-// allNilPointers reports whether every field in a struct is a nil pointer.
-// It is used to detect empty PATCH requests.
-func allNilPointers(v any) bool {
-	rv := reflect.ValueOf(v)
-	if rv.Kind() == reflect.Ptr {
-		rv = rv.Elem()
-	}
-	for i := 0; i < rv.NumField(); i++ {
-		f := rv.Field(i)
-		if f.Kind() == reflect.Ptr && !f.IsNil() {
-			return false
-		}
-	}
-	return true
-}
-
-// nonNilPointerFields returns the json tag names of all non-nil pointer fields
-// in a struct. Used to build audit log field lists without logging values.
-func nonNilPointerFields(v any) []string {
-	rv := reflect.ValueOf(v)
-	rt := reflect.TypeOf(v)
-	if rv.Kind() == reflect.Ptr {
-		rv = rv.Elem()
-		rt = rt.Elem()
-	}
-	var fields []string
-	for i := 0; i < rv.NumField(); i++ {
-		f := rv.Field(i)
-		if f.Kind() != reflect.Ptr || f.IsNil() {
-			continue
-		}
-		tag := rt.Field(i).Tag.Get("json")
-		name, _, _ := strings.Cut(tag, ",")
-		if name == "" || name == "-" {
-			name = rt.Field(i).Name
-		}
-		fields = append(fields, name)
-	}
-	return fields
 }
 
 // ListTeams handles GET /api/v1/teams.

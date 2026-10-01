@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import type { Instance, CreateInstanceRequest, UpdateInstanceRequest, StatusResponse } from "../types/instance";
+import type { Instance, InstanceVersion, CreateInstanceRequest, UpdateInstanceRequest, StatusResponse } from "../types/instance";
 import { apiFetch } from "./fetch";
 
 export type InstanceResponse = Instance;
@@ -14,7 +14,7 @@ export async function getInstance(): Promise<Instance | null> {
 }
 
 export async function createInstance(req: CreateInstanceRequest): Promise<Instance> {
-  const response = await apiFetch("/api/v1/instance", {
+  const response = await apiFetch("/api/v1/instances", {
     method: "POST",
     body: JSON.stringify(req),
   });
@@ -37,8 +37,10 @@ export async function updateInstance(req: UpdateInstanceRequest): Promise<Instan
   return response.json();
 }
 
-export async function upgradeInstance(): Promise<Instance> {
-  const response = await apiFetch("/api/v1/instance/upgrade", { method: "POST" });
+export async function upgradeInstance(version: InstanceVersion): Promise<Instance> {
+  const response = await apiFetch("/api/v1/instance/upgrade", {
+    method: "POST", body: JSON.stringify({ uid: version.uid, resourceVersion: version.resourceVersion }),
+  });
   if (!response.ok) {
     const err = await response.json();
     throw new Error(err.error?.message || "Failed to upgrade instance");
@@ -95,8 +97,10 @@ export async function downloadTeamsApp(instanceName: string): Promise<void> {
   }, 0);
 }
 
-export async function upgradeInstanceByName(name: string): Promise<Instance> {
-  const response = await apiFetch(`/api/v1/instances/${encodeURIComponent(name)}/upgrade`, { method: "POST" });
+export async function upgradeInstanceByName(name: string, version: InstanceVersion): Promise<Instance> {
+  const response = await apiFetch(`/api/v1/instances/${encodeURIComponent(name)}/upgrade`, {
+    method: "POST", body: JSON.stringify({ uid: version.uid, resourceVersion: version.resourceVersion }),
+  });
   if (!response.ok) {
     const err = await response.json();
     throw new Error(err.error?.message || "Failed to upgrade instance");
@@ -130,9 +134,10 @@ export async function fetchInstanceByName(name: string): Promise<InstanceRespons
   return response.json();
 }
 
-export async function deleteInstanceByName(name: string): Promise<void> {
+export async function deleteInstanceByName(name: string, version: InstanceVersion): Promise<void> {
   const response = await apiFetch(`/api/v1/instances/${encodeURIComponent(name)}`, {
     method: "DELETE",
+    body: JSON.stringify({ uid: version.uid, resourceVersion: version.resourceVersion }),
   });
   if (!response.ok && response.status !== 404) {
     const text = await response.text().catch(() => "");

@@ -19,8 +19,8 @@ describe("agentTypeLabel", () => {
 });
 
 describe("Custom platform access", () => {
-  const instance: Pick<Instance, "agentType" | "instanceName" | "accessUrl" | "conditions"> = {
-    agentType: "custom",
+  const instance: Pick<Instance, "agent" | "instanceName" | "accessUrl" | "conditions"> = {
+    agent: { type: "custom" },
     instanceName: "alice",
     accessUrl: "https://gateway.example.com/alice/term/",
     conditions: [

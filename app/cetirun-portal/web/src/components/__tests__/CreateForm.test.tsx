@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { CreateForm } from "../CreateForm";
@@ -54,6 +54,36 @@ describe("CreateForm", () => {
     };
   });
 
+  it("creates a generic headless Custom Agent without native settings", async () => {
+    mockFeatures.data.allowedAgentTypes = ["hermes", "custom"];
+    const user = userEvent.setup();
+    renderWithQuery(<CreateForm />);
+    await user.type(screen.getByLabelText("Gateway Token (optional)"), "sk-dummy");
+    await user.click(screen.getByLabelText("Enable Microsoft Teams Integration"));
+    await user.selectOptions(screen.getByRole("combobox", { name: "Agent Type" }), "custom");
+    const image = "registry.example.com/team/assistant@sha256:" + "a".repeat(64);
+    await user.type(screen.getByLabelText(/Agent Image/), image);
+    expect(screen.getByLabelText(/Agent Username/)).toHaveValue("vibe");
+    expect(screen.queryByLabelText("Gateway Token (optional)")).toBeNull();
+    expect(screen.queryByLabelText("Enable Microsoft Teams Integration")).toBeNull();
+    expect(screen.queryByLabelText("Tailscale Auth Key (optional)")).toBeNull();
+    expect(screen.queryByLabelText("Model (optional)")).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Create Agent" }));
+    expect(mockMutate).toHaveBeenCalledOnce();
+    expect(JSON.parse(JSON.stringify(mockMutate.mock.calls[0][0]))).toEqual({ agent: { type: "custom", image, username: "vibe" } });
+  });
+
+  it("validates the Custom HTTP port before submitting", async () => {
+    mockFeatures.data.allowedAgentTypes = ["custom"];
+    const user = userEvent.setup();
+    renderWithQuery(<CreateForm />);
+    await user.type(await screen.findByLabelText(/Agent Image/), "registry.example.com/assistant:1");
+    fireEvent.change(screen.getByLabelText("HTTP Port (optional)"), { target: { value: "65536" } });
+    fireEvent.submit(screen.getByRole("button", { name: "Create Agent" }).closest("form")!);
+    expect(mockMutate).not.toHaveBeenCalled();
+    expect(screen.getByText(/HTTP port must be an integer/)).toBeInTheDocument();
+  });
+
   it("renders form fields", () => {
     renderWithQuery(<CreateForm />);
 
@@ -76,7 +106,7 @@ describe("CreateForm", () => {
 
     expect(mockMutate).toHaveBeenCalledWith({
       instanceName: "my-instance",
-      agentType: "hermes",
+      agent: { type: "hermes" },
       displayName: undefined,
       team: undefined,
       gatewayToken: undefined,
@@ -101,7 +131,7 @@ describe("CreateForm", () => {
 
     expect(mockMutate).toHaveBeenCalledWith({
       instanceName: "my-instance",
-      agentType: "hermes",
+      agent: { type: "hermes" },
       displayName: undefined,
       team: "platform",
       gatewayToken: undefined,
@@ -139,7 +169,7 @@ describe("CreateForm", () => {
 
     expect(mockMutate).toHaveBeenCalledWith({
       instanceName: "my-instance",
-      agentType: "hermes",
+      agent: { type: "hermes" },
       displayName: "Custom Name",
       team: "security",
       gatewayToken: "my-gw-token",
@@ -160,7 +190,7 @@ describe("CreateForm", () => {
 
     expect(mockMutate).toHaveBeenCalledWith({
       instanceName: undefined,
-      agentType: "openclaw",
+      agent: { type: "openclaw" },
       displayName: undefined,
       team: undefined,
       gatewayToken: undefined,
@@ -181,7 +211,7 @@ describe("CreateForm", () => {
 
     expect(mockMutate).toHaveBeenCalledWith({
       instanceName: undefined,
-      agentType: "openclaw",
+      agent: { type: "openclaw" },
       displayName: undefined,
       team: undefined,
       gatewayToken: undefined,

@@ -8,6 +8,7 @@ import (
 	"net/http"
 
 	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"github.com/Azure/CetiRun/app/cetirun-portal/internal/agentconfig"
 	"github.com/Azure/CetiRun/app/cetirun-portal/internal/kube"
 )
 
@@ -20,15 +21,16 @@ type AdminInstanceHandler struct {
 
 // AdminInstanceSummary is the row shape for the admin instances list.
 type AdminInstanceSummary struct {
-	Name        string `json:"name"`
-	Alias       string `json:"alias"`
-	DisplayName string `json:"displayName,omitempty"`
-	Email       string `json:"email,omitempty"`
-	Team        string `json:"team,omitempty"`
-	AgentType   string `json:"agentType,omitempty"`
-	Phase       string `json:"phase,omitempty"`
-	Ready       bool   `json:"ready"`
-	CreatedAt   string `json:"createdAt"`
+	Name        string                      `json:"name"`
+	Alias       string                      `json:"alias"`
+	DisplayName string                      `json:"displayName,omitempty"`
+	Email       string                      `json:"email,omitempty"`
+	Team        string                      `json:"team,omitempty"`
+	Agent       cetirunv1alpha1.HarnessSpec `json:"agent"`
+	UID         string                      `json:"uid"`
+	Phase       string                      `json:"phase,omitempty"`
+	Ready       bool                        `json:"ready"`
+	CreatedAt   string                      `json:"createdAt"`
 }
 
 // ListAllInstances handles GET /api/v1/admin/instances.
@@ -48,7 +50,8 @@ func (h *AdminInstanceHandler) ListAllInstances(w http.ResponseWriter, r *http.R
 			DisplayName: ins.Spec.User.DisplayName,
 			Email:       ins.Spec.User.Email,
 			Team:        instanceTeam(ins),
-			AgentType:   string(ins.Spec.Agent.Type),
+			Agent:       agentconfig.Defaults(ins.Spec.Agent),
+			UID:         string(ins.UID),
 			Phase:       ins.Status.Phase,
 			Ready:       isReady(ins),
 			CreatedAt:   ins.CreationTimestamp.UTC().Format("2006-01-02T15:04:05Z"),

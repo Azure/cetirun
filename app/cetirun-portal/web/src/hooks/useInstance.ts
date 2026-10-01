@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMe } from "../context/MeContext";
 import {
   getInstance,
   createInstance,
@@ -15,14 +16,21 @@ import {
   fetchInstances,
   fetchInstanceByName,
 } from "../api/instance";
-import type { CreateInstanceRequest, UpdateInstanceRequest } from "../types/instance";
+import type { InstanceVersion, CreateInstanceRequest, UpdateInstanceRequest } from "../types/instance";
 
 const INSTANCE_KEY = ["instance"] as const;
 
+function useViewerKey() {
+  const { me, error } = useMe();
+  return me && !error ? `${me.alias}:${me.email.toLowerCase()}` : undefined;
+}
+
 export function useInstanceQuery() {
+  const viewer = useViewerKey();
   return useQuery({
-    queryKey: INSTANCE_KEY,
+    queryKey: [...INSTANCE_KEY, viewer],
     queryFn: () => getInstance(),
+    enabled: Boolean(viewer),
     refetchInterval: (query) => {
       // Stop polling when the session has expired to avoid wasting resources.
       if (query.state.error?.message.includes("Session expired")) return false;
@@ -63,7 +71,7 @@ export function useDeleteInstanceByName(name: string) {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: () => deleteInstanceByName(name),
+    mutationFn: (version: InstanceVersion) => deleteInstanceByName(name, version),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: INSTANCE_KEY });
       queryClient.invalidateQueries({ queryKey: ["instance", name] });
@@ -99,7 +107,7 @@ export function useUpgradeInstance() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: () => upgradeInstance(),
+    mutationFn: (version: InstanceVersion) => upgradeInstance(version),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: INSTANCE_KEY });
     },
@@ -110,7 +118,7 @@ export function useUpgradeInstanceByName(name: string) {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: () => upgradeInstanceByName(name),
+    mutationFn: (version: InstanceVersion) => upgradeInstanceByName(name, version),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["instance", name] });
       queryClient.invalidateQueries({ queryKey: ["instance", name, "status"] });
@@ -120,10 +128,11 @@ export function useUpgradeInstanceByName(name: string) {
 }
 
 export function useInstanceStatusQuery(enabled: boolean) {
+  const viewer = useViewerKey();
   return useQuery({
-    queryKey: ["instance", "status"],
+    queryKey: ["instance", "status", viewer],
     queryFn: () => getInstanceStatus(),
-    enabled,
+    enabled: enabled && Boolean(viewer),
     refetchInterval: (query) => {
       if (query.state.error?.message.includes("Session expired")) return false;
       return 10_000;
@@ -136,11 +145,12 @@ export function useInstanceStatusQuery(enabled: boolean) {
   });
 }
 
-export function useInstanceStatusByNameQuery(name: string, enabled: boolean) {
+export function useInstanceStatusByNameQuery(name: string, enabled: boolean, uid?: string) {
+  const viewer = useViewerKey();
   return useQuery({
-    queryKey: ["instance", name, "status"],
+    queryKey: ["instance", name, "status", viewer, uid],
     queryFn: () => getInstanceStatusByName(name),
-    enabled,
+    enabled: enabled && Boolean(viewer) && Boolean(uid),
     refetchInterval: (query) => {
       if (query.state.error?.message.includes("Session expired")) return false;
       return 10_000;
@@ -154,16 +164,32 @@ export function useInstanceStatusByNameQuery(name: string, enabled: boolean) {
 }
 
 export function useInstancesQuery() {
+  const viewer = useViewerKey();
   return useQuery({
-    queryKey: ["instances"],
+    queryKey: ["instances", viewer],
     queryFn: fetchInstances,
+    enabled: Boolean(viewer),
+    refetchInterval: (query) => {
+      if (query.state.error?.message.includes("Session expired")) return false;
+      return query.state.data?.some((instance) => instance.phase === "Pending" || instance.phase === "Provisioning" ||
+        instance.phase === "Deleting" || (instance.generation ?? 0) > (instance.observedGeneration ?? 0)) ? 5_000 : 30_000;
+    },
+    retry: (count, error) => !error.message.includes("Session expired") && count < 1,
   });
 }
 
 export function useInstanceByNameQuery(name: string | undefined) {
+  const viewer = useViewerKey();
   return useQuery({
-    queryKey: ["instance", name],
+    queryKey: ["instance", name, viewer],
     queryFn: () => fetchInstanceByName(name!),
-    enabled: !!name,
+    enabled: !!name && Boolean(viewer),
+    refetchInterval: (query) => {
+      if (query.state.error?.message.includes("Session expired")) return false;
+      const instance = query.state.data;
+      return instance && (instance.phase === "Pending" || instance.phase === "Provisioning" || instance.phase === "Deleting" ||
+        (instance.generation ?? 0) > (instance.observedGeneration ?? 0)) ? 5_000 : 30_000;
+    },
+    retry: (count, error) => !error.message.includes("Session expired") && count < 1,
   });
 }
