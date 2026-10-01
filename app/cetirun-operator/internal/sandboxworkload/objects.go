@@ -1,0 +1,141 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
+package sandboxworkload
+
+import (
+	"encoding/json"
+	"fmt"
+	"strings"
+
+	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxpolicy"
+	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+)
+
+type grantScope struct {
+	namespace string
+	role      string
+}
+
+// This checks the compiler's resource contract, not platform grant approval,
+// role contents, identity issuance or the network rules themselves.
+func validateObjects(input Input) error {
+	c := input.Controls
+	access := input.Resolution.AgentPolicy.KubernetesAccess
+	grants := map[grantScope]bool{}
+	if access != nil {
+		if c.Binding.PolicyClass != api.AgentPolicyClassAdmin || access.ServiceAccountName != c.ServiceAccountName {
+			return fmt.Errorf("compiled Kubernetes bindings require the selected admin ServiceAccount")
+		}
+		for _, grant := range access.RoleBindings {
+			grants[grantScope{namespace: grant.Namespace, role: grant.ClusterRoleName}] = false
+		}
+		for _, grant := range access.ClusterRoleBindings {
+			grants[grantScope{role: grant.ClusterRoleName}] = false
+		}
+	}
+	dedicated := access != nil || input.Resolution.AgentPolicy.EntraID.Enabled
+	if !dedicated && (c.ServiceAccountName != "default" || len(c.Volumes)+len(c.VolumeMounts)+len(c.Environment) != 0) {
+		return fmt.Errorf("ordinary workloads cannot acquire a dedicated identity or projections")
+	}
+	binding, err := json.Marshal(c.Binding)
+	if err != nil {
+		return err
+	}
+	owner := []metav1.OwnerReference{AgentOwner(input.AgentName, c.Binding.AgentUID)}
+	objects := map[string]bool{}
+	network, serviceAccounts := 0, 0
+	for _, object := range c.Objects {
+		kind := object.GetAPIVersion() + "/" + object.GetKind()
+		key := kind + "/" + object.GetNamespace() + "/" + object.GetName()
+		if objects[key] || object.GetName() == "" || !equality.Semantic.DeepEqual(object.GetOwnerReferences(), owner) ||
+			object.GetLabels()[sandboxpolicy.AgentUIDLabel] != string(c.Binding.AgentUID) ||
+			object.GetAnnotations()[sandboxpolicy.BindingAnnotation] != string(binding) ||
+			object.GetAnnotations()[sandboxpolicy.RevisionAnnotation] != c.Revision {
+			return fmt.Errorf("compiler resource identity, ownership or binding revision is invalid")
+		}
+		for annotation := range object.GetAnnotations() {
+			if strings.HasPrefix(annotation, "helm.sh/") {
+				return fmt.Errorf("compiler resources cannot contain Helm hooks")
+			}
+		}
+		switch kind {
+		case "cilium.io/v2/CiliumNetworkPolicy":
+			var policy sandboxpolicy.CiliumNetworkPolicy
+			if err := runtime.DefaultUnstructuredConverter.FromUnstructuredWithValidation(object.Object, &policy, true); err != nil {
+				return fmt.Errorf("invalid compiler network resource: %w", err)
+			}
+			if policy.Namespace != input.Namespace.Name ||
+				!equality.Semantic.DeepEqual(policy.Spec.EndpointSelector, metav1.LabelSelector{MatchLabels: map[string]string{
+					"k8s:" + sandboxpolicy.AgentUIDLabel: string(c.Binding.AgentUID), "k8s:io.kubernetes.pod.namespace": input.Namespace.Name,
+				}}) {
+				return fmt.Errorf("compiler network scope must select only the bound workload")
+			}
+			network++
+		case "v1/ServiceAccount":
+			var account corev1.ServiceAccount
+			if err := runtime.DefaultUnstructuredConverter.FromUnstructuredWithValidation(object.Object, &account, true); err != nil {
+				return fmt.Errorf("invalid compiler ServiceAccount: %w", err)
+			}
+			if !dedicated || account.Name == "default" || account.Name != c.ServiceAccountName || account.Namespace != input.Namespace.Name ||
+				account.AutomountServiceAccountToken == nil || *account.AutomountServiceAccountToken ||
+				len(account.Secrets) != 0 || len(account.ImagePullSecrets) != 0 {
+				return fmt.Errorf("compiler must emit only the bound dedicated ServiceAccount without implicit token or pull credentials")
+			}
+			serviceAccounts++
+		case "rbac.authorization.k8s.io/v1/RoleBinding":
+			var grant rbacv1.RoleBinding
+			if err := runtime.DefaultUnstructuredConverter.FromUnstructuredWithValidation(object.Object, &grant, true); err != nil {
+				return fmt.Errorf("invalid compiler RoleBinding: %w", err)
+			}
+			if grant.Namespace == "" {
+				return fmt.Errorf("compiled RoleBinding requires its explicit requested namespace")
+			}
+			if err := validateGrant(input, grant.ObjectMeta, grant.RoleRef, grant.Subjects, grants); err != nil {
+				return err
+			}
+		case "rbac.authorization.k8s.io/v1/ClusterRoleBinding":
+			var grant rbacv1.ClusterRoleBinding
+			if err := runtime.DefaultUnstructuredConverter.FromUnstructuredWithValidation(object.Object, &grant, true); err != nil {
+				return fmt.Errorf("invalid compiler ClusterRoleBinding: %w", err)
+			}
+			if grant.Namespace != "" {
+				return fmt.Errorf("compiled ClusterRoleBinding must be cluster-scoped")
+			}
+			if err := validateGrant(input, grant.ObjectMeta, grant.RoleRef, grant.Subjects, grants); err != nil {
+				return err
+			}
+		default:
+			return fmt.Errorf("unsupported compiler resource kind %s", kind)
+		}
+		objects[key] = true
+	}
+	if network != 1 || (dedicated && serviceAccounts != 1) {
+		return fmt.Errorf("compiler resource inventory is incomplete or duplicated")
+	}
+	for _, present := range grants {
+		if !present {
+			return fmt.Errorf("compiler resource inventory omits a requested Kubernetes binding")
+		}
+	}
+	return nil
+}
+
+func validateGrant(input Input, metadata metav1.ObjectMeta, role rbacv1.RoleRef, subjects []rbacv1.Subject, grants map[grantScope]bool) error {
+	expected := []rbacv1.Subject{{Kind: "ServiceAccount", Name: input.Controls.ServiceAccountName, Namespace: input.Namespace.Name}}
+	if !equality.Semantic.DeepEqual(subjects, expected) || role.APIGroup != rbacv1.GroupName || role.Kind != "ClusterRole" ||
+		metadata.Annotations[sandboxpolicy.GrantRevisionAnnotation] == "" {
+		return fmt.Errorf("compiler binding must use the exact workload subject and a pinned ClusterRole")
+	}
+	scope := grantScope{namespace: metadata.Namespace, role: role.Name}
+	if consumed, requested := grants[scope]; !requested || consumed {
+		return fmt.Errorf("compiler binding changes or duplicates the requested ClusterRole scope")
+	}
+	grants[scope] = true
+	return nil
+}

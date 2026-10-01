@@ -17,6 +17,10 @@ var (
 		Name: "cetirun_sandbox_admission_decisions_total",
 		Help: "Sandbox admission decisions by handler and bounded outcome, including denials returned over HTTP 200.",
 	}, []string{"handler", "outcome"})
+	podAdmissionDenials = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "cetirun_sandbox_pod_admission_denials_total",
+		Help: "Protected Pod admission denials by bounded reason code, without source identities or values.",
+	}, []string{"reason"})
 	servingCertificateExpiry = prometheus.NewGauge(prometheus.GaugeOpts{
 		Name: "cetirun_sandbox_admission_certificate_not_after_seconds",
 		Help: "Unix expiry time of the current serving certificate; zero when serving material cannot be read or parsed.",
@@ -24,7 +28,7 @@ var (
 )
 
 func init() {
-	metrics.Registry.MustRegister(admissionDecisions, servingCertificateExpiry)
+	metrics.Registry.MustRegister(admissionDecisions, podAdmissionDenials, servingCertificateExpiry)
 }
 
 func instrumentAdmission(name string, handler admission.HandlerFunc) admission.HandlerFunc {

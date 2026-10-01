@@ -1,0 +1,258 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
+package helm
+
+import (
+	"bufio"
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"io"
+	"slices"
+	"strings"
+
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
+	"helm.sh/helm/v3/pkg/chart"
+	"helm.sh/helm/v3/pkg/chartutil"
+	"helm.sh/helm/v3/pkg/engine"
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	kubeyaml "k8s.io/apimachinery/pkg/util/yaml"
+	"k8s.io/utils/ptr"
+	"sigs.k8s.io/yaml"
+)
+
+// PrepareSandboxChart keeps override provenance until validation, applies the
+// complete protected bundle last, and uses the existing native Helm renderer.
+// The result is a held preview: InstallOrUpgrade explicitly refuses to apply it.
+func PrepareSandboxChart(chrt *chart.Chart, platform, user map[string]any, bundle *sandboxworkload.Bundle) (*PreparedRelease, error) {
+	if bundle == nil || chrt == nil || chrt.Metadata == nil || chrt.Metadata.Name != "cetirun" || len(chrt.CRDObjects()) != 0 {
+		return nil, fmt.Errorf("Sandbox requires a native chart and a resolved protected bundle")
+	}
+	if platform[sandboxworkload.ValuesKey] != nil || platform["runtime"] != nil {
+		return nil, fmt.Errorf("protected runtime values cannot be supplied as Helm inputs")
+	}
+	input := bundle.Identity()
+	if err := sandboxworkload.ValidateUserValues(user, input.AuthorizedSecrets); err != nil {
+		return nil, err
+	}
+	var request AgentRequest
+	if err := decodeObject(platform["agentRequest"], &request); err != nil || request.Type != input.AgentType {
+		return nil, fmt.Errorf("native request does not match the Sandbox bundle")
+	}
+	if request.TailscaleEnabled || present(object(platform["secrets"])["tailscaleAuthKey"]) {
+		return nil, fmt.Errorf("Tailscale is unsupported by the sidecar-free Sandbox contract")
+	}
+	raw, err := json.Marshal(platform)
+	if err != nil {
+		return nil, err
+	}
+	var merged map[string]any
+	if err := json.Unmarshal(raw, &merged); err != nil {
+		return nil, err
+	}
+	// CoalesceTables gives the already-validated user map priority; it is never
+	// allowed to see an unvalidated user extension path.
+	raw, err = json.Marshal(user)
+	if err != nil {
+		return nil, err
+	}
+	var overrides map[string]any
+	if err := json.Unmarshal(raw, &overrides); err != nil {
+		return nil, err
+	}
+	merged = chartutil.CoalesceTables(overrides, merged)
+	merged, err = bundle.Apply(merged)
+	if err != nil {
+		return nil, err
+	}
+	prepared, err := prepareRuntimeChart(chrt, merged, false)
+	if err != nil {
+		return nil, configurationError(err)
+	}
+	prepared.Values, err = bundle.Apply(prepared.Values)
+	if err != nil {
+		return nil, err
+	}
+	prepared.sandboxBundle, prepared.releaseName = bundle, input.ReleaseName
+	if err := prepared.validateSandboxRender(); err != nil {
+		return nil, configurationError(err)
+	}
+	prepared.sealedInput = prepared.inputDigest()
+	return prepared, nil
+}
+
+// SandboxTemplate returns a copy of the chart-rendered template. It has no
+// owner/Pod UID and cannot be used as an execution or enforcement observation.
+func (p *PreparedRelease) SandboxTemplate() (*corev1.PodTemplateSpec, error) {
+	if p.sandboxBundle == nil || p.sandboxTemplate == nil || p.sealedInput != p.inputDigest() {
+		return nil, fmt.Errorf("Sandbox render is absent or changed after validation")
+	}
+	return p.sandboxTemplate.DeepCopy(), nil
+}
+
+func (p *PreparedRelease) SandboxManifest() ([]byte, error) {
+	if _, err := p.SandboxTemplate(); err != nil {
+		return nil, err
+	}
+	return slices.Clone(p.manifest), nil
+}
+
+func (p *PreparedRelease) validateSandboxRender() error {
+	input := p.sandboxBundle.Identity()
+	values, err := chartutil.ToRenderValues(p.chart, p.Values, chartutil.ReleaseOptions{
+		Name: input.ReleaseName, Namespace: input.Namespace.Name, IsInstall: true, Revision: 1,
+	}, chartutil.DefaultCapabilities)
+	if err != nil {
+		return err
+	}
+	rendered, err := engine.Render(p.chart, values)
+	if err != nil {
+		return fmt.Errorf("Sandbox chart render failed: %w", err)
+	}
+	compiled := map[string]unstructured.Unstructured{}
+	for _, object := range input.Controls.Objects {
+		compiled[sandboxObjectKey(object)] = object
+	}
+	files := make([]string, 0, len(rendered))
+	for file := range rendered {
+		if !strings.HasSuffix(file, "/NOTES.txt") {
+			files = append(files, file)
+		}
+	}
+	slices.Sort(files)
+	seen, native := map[string]bool{}, map[string]bool{}
+	var manifest bytes.Buffer
+	for _, file := range files {
+		reader := kubeyaml.NewYAMLReader(bufio.NewReader(strings.NewReader(rendered[file])))
+		for {
+			document, err := reader.Read()
+			if err == io.EOF {
+				break
+			}
+			if err != nil || validateYAMLKeys(document) != nil {
+				return fmt.Errorf("invalid or ambiguous Sandbox manifest")
+			}
+			raw, err := yaml.YAMLToJSONStrict(document)
+			if err != nil {
+				return fmt.Errorf("invalid Sandbox YAML")
+			}
+			var object unstructured.Unstructured
+			if err := json.Unmarshal(raw, &object.Object); err != nil {
+				return err
+			}
+			if len(object.Object) == 0 {
+				continue
+			}
+			_, exactCompilerObject := compiled[sandboxObjectKey(object)]
+			if !exactCompilerObject && object.GetNamespace() == "" {
+				object.SetNamespace(input.Namespace.Name)
+			}
+			key := sandboxObjectKey(object)
+			if seen[key] {
+				return fmt.Errorf("duplicate Sandbox object")
+			}
+			seen[key] = true
+			for annotation := range object.GetAnnotations() {
+				if strings.HasPrefix(annotation, "helm.sh/") {
+					return fmt.Errorf("Sandbox rendering cannot contain lifecycle hooks")
+				}
+			}
+			if expected, exists := compiled[key]; exists {
+				want, wantErr := json.Marshal(expected.Object)
+				got, gotErr := json.Marshal(object.Object)
+				if wantErr != nil || gotErr != nil || !bytes.Equal(want, got) {
+					return fmt.Errorf("rendered compiler resource differs from the approved output")
+				}
+				delete(compiled, key)
+			} else {
+				if object.GetNamespace() != input.Namespace.Name {
+					return fmt.Errorf("foreign native Sandbox object")
+				}
+				if native[object.GetKind()] {
+					return fmt.Errorf("unexpected additional native Sandbox object")
+				}
+				if err := p.validateSandboxNative(object); err != nil {
+					return err
+				}
+				native[object.GetKind()] = true
+			}
+			raw, err = json.Marshal(object.Object)
+			if err != nil {
+				return err
+			}
+			manifest.WriteString("---\n")
+			manifest.Write(raw)
+			manifest.WriteByte('\n')
+		}
+	}
+	if len(compiled) != 0 || !native["StatefulSet"] || !native["ConfigMap"] || !native["Service"] {
+		return fmt.Errorf("Sandbox render omitted a required workload or compiler resource")
+	}
+	p.manifest = slices.Clone(manifest.Bytes())
+	sum := sha256.Sum256(p.manifest)
+	p.manifestHash, p.PlanHash = hex.EncodeToString(sum[:]), input.Controls.Revision
+	p.WorkloadHash = p.manifestHash
+	return nil
+}
+
+func sandboxObjectKey(object unstructured.Unstructured) string {
+	return object.GetAPIVersion() + "/" + object.GetKind() + "/" + object.GetNamespace() + "/" + object.GetName()
+}
+
+func (p *PreparedRelease) validateSandboxNative(object unstructured.Unstructured) error {
+	input := p.sandboxBundle.Identity()
+	name := input.WorkloadName
+	switch object.GetAPIVersion() + "/" + object.GetKind() {
+	case "apps/v1/StatefulSet":
+		var stateful appsv1.StatefulSet
+		if err := decodeObject(object.Object, &stateful); err != nil {
+			return err
+		}
+		owner := sandboxworkload.AgentOwner(input.AgentName, input.Resolution.Binding.AgentUID)
+		if stateful.Name != name || ptr.Deref(stateful.Spec.Replicas, -1) != 0 ||
+			stateful.Spec.ServiceName != name || len(stateful.Spec.VolumeClaimTemplates) != 0 ||
+			!equality.Semantic.DeepEqual(stateful.OwnerReferences, []metav1.OwnerReference{owner}) ||
+			stateful.Spec.Selector == nil || len(stateful.Spec.Selector.MatchExpressions) != 0 {
+			return fmt.Errorf("Sandbox StatefulSet identity, hold or HOME was modified")
+		}
+		for key, value := range stateful.Spec.Selector.MatchLabels {
+			if stateful.Spec.Template.Labels[key] != value {
+				return fmt.Errorf("Sandbox selector differs from the Pod template")
+			}
+		}
+		if len(stateful.Spec.Selector.MatchLabels) == 0 {
+			return fmt.Errorf("Sandbox workload selector cannot be empty")
+		}
+		if err := p.sandboxBundle.ValidateTemplate(&stateful.Spec.Template, p.Agent.Image); err != nil {
+			return err
+		}
+		p.sandboxTemplate = stateful.Spec.Template.DeepCopy()
+	case "v1/ConfigMap":
+		var config corev1.ConfigMap
+		if err := decodeObject(object.Object, &config); err != nil || config.Name != name+"-config" || len(config.BinaryData) != 0 {
+			return fmt.Errorf("unexpected native Sandbox configuration")
+		}
+	case "v1/Service":
+		var service corev1.Service
+		if err := decodeObject(object.Object, &service); err != nil || service.Name != name ||
+			service.Spec.Type != corev1.ServiceTypeClusterIP || len(service.Spec.ExternalIPs) != 0 ||
+			service.Spec.ExternalName != "" || service.Spec.LoadBalancerIP != "" || service.Spec.LoadBalancerClass != nil {
+			return fmt.Errorf("Sandbox Service must remain a private ClusterIP")
+		}
+		for _, port := range service.Spec.Ports {
+			if port.NodePort != 0 {
+				return fmt.Errorf("Sandbox cannot expose a NodePort")
+			}
+		}
+	default:
+		return fmt.Errorf("unexpected Sandbox object %s", object.GetKind())
+	}
+	return nil
+}

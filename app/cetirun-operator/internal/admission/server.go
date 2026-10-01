@@ -17,6 +17,7 @@ import (
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"k8s.io/apimachinery/pkg/runtime"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -27,11 +28,13 @@ import (
 )
 
 type ServerOptions struct {
-	CertDirectory  string
-	Host           string
-	Port           int
-	MetricsAddress string
-	ProbeAddress   string
+	CertDirectory     string
+	Host              string
+	Port              int
+	MetricsAddress    string
+	ProbeAddress      string
+	PodStateNamespace string
+	PodRequestTimeout time.Duration
 }
 
 // Run serves only admission. It never starts runtime reconcilers, participates
@@ -48,6 +51,9 @@ func Run(ctx context.Context, restConfig *rest.Config, config Config, options Se
 		return err
 	}
 	scheme := runtime.NewScheme()
+	if err := clientgoscheme.AddToScheme(scheme); err != nil {
+		return err
+	}
 	if err := api.AddToScheme(scheme); err != nil {
 		return err
 	}
@@ -81,6 +87,15 @@ func Run(ctx context.Context, restConfig *rest.Config, config Config, options Se
 	}
 	server.Register(ValidationPath, &admission.Webhook{Handler: instrumentAdmission("validate", handler.Validate)})
 	server.Register(DefaultingPath, &admission.Webhook{Handler: instrumentAdmission("default", handler.DefaultAgent)})
+	if options.PodStateNamespace != "" {
+		podHandler, err := NewPodHandler(manager.GetAPIReader(), PodConfig{
+			StateNamespace: options.PodStateNamespace, RequestTimeout: options.PodRequestTimeout,
+		})
+		if err != nil {
+			return err
+		}
+		server.Register(PodValidationPath, &admission.Webhook{Handler: instrumentAdmission("pod", podHandler.Validate)})
+	}
 	if err := manager.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		return err
 	}

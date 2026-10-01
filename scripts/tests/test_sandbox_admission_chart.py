@@ -174,14 +174,22 @@ class SandboxAdmissionChartTests(unittest.TestCase):
         for rule in role["rules"]:
             self.assertIsInstance(rule["apiGroups"], list)
             self.assertIsInstance(rule["resources"], list)
-        grant_rules = [
+        clusterrole_rules = [
             rule for rule in role["rules"]
             if any(group == "rbac.authorization.k8s.io" for group in rule["apiGroups"])
             and "clusterroles" in rule["resources"]
         ]
-        self.assertEqual(grant_rules, [{
+        self.assertEqual(clusterrole_rules, [{
             "apiGroups": ["rbac.authorization.k8s.io"],
             "resources": ["clusterroles"], "verbs": ["get"],
+        }, {
+            "apiGroups": ["rbac.authorization.k8s.io"],
+            "resources": ["clusterroles", "clusterrolebindings"],
+            "verbs": ["get", "list", "watch", "create", "update", "patch", "delete"],
+        }, {
+            "apiGroups": ["rbac.authorization.k8s.io"],
+            "resources": ["clusterroles"],
+            "resourceNames": ["cetirun-terminal-exec"], "verbs": ["bind"],
         }])
 
     def test_deployment_contract_tls_and_security_contexts(self):
@@ -474,6 +482,123 @@ class SandboxAdmissionChartTests(unittest.TestCase):
         ):
             with self.subTest(invalid=invalid):
                 self.assert_rejected(self.server_values(teamAssignments=invalid), "sandboxAdmission.teamAssignments")
+
+    def test_pod_bootstrap_scopes_state_reads_without_installing_rules(self):
+        documents = self.render(self.server_values(podsEnabled=True))
+        self.assertNotIn(("ValidatingWebhookConfiguration", "cetirun-sandbox-pods"), documents)
+        self.assertNotIn(("ValidatingAdmissionPolicy", "cetirun-sandbox-namespace"), documents)
+        container = documents[("Deployment", NAME)]["spec"]["template"]["spec"]["containers"][0]
+        self.assertIn("--admission-pod-state-namespace=cetirun-system", container["args"])
+        role = documents[("Role", "cetirun-sandbox-admission-pod-state")]
+        self.assertEqual(role["metadata"]["namespace"], "cetirun-system")
+        self.assertEqual(role["rules"], [{
+            "apiGroups": [""], "resources": ["configmaps"], "verbs": ["get"],
+        }])
+        for rule in documents[("ClusterRole", NAME)]["rules"]:
+            self.assertTrue(set(rule["verbs"]) <= {"get", "list"})
+            self.assertNotIn("secrets", rule["resources"])
+            self.assertNotIn("configmaps", rule["resources"])
+            self.assertNotIn("*", rule["resources"])
+        self.assert_rejected({"podsEnabled": True}, "podsEnabled requires sandboxAdmission.enabled")
+        self.assert_rejected(self.server_values(podsEnabled="true"), "podsEnabled must be a boolean")
+
+    def test_pod_rules_use_immutable_namespace_routing_not_pod_labels(self):
+        documents = self.render(self.enforced_values(podsEnabled=True))
+        webhook = documents[("ValidatingWebhookConfiguration", "cetirun-sandbox-pods")]["webhooks"][0]
+        self.assertEqual(webhook["failurePolicy"], "Fail")
+        self.assertEqual(webhook["clientConfig"]["service"]["path"], "/validate-sandbox-pods")
+        self.assertEqual(webhook["namespaceSelector"], {
+            "matchExpressions": [{"key": f"{API_GROUP}/sandbox-protected", "operator": "Exists"}],
+        })
+        self.assertNotIn("objectSelector", webhook)
+        self.assertEqual(webhook["rules"], [{
+            "operations": ["CREATE", "UPDATE"], "apiGroups": [""], "apiVersions": ["v1"],
+            "resources": ["pods", "pods/ephemeralcontainers", "pods/resize"], "scope": "Namespaced",
+        }, {
+            "operations": ["CONNECT"], "apiGroups": [""], "apiVersions": ["v1"],
+            "resources": ["pods/exec", "pods/attach", "pods/portforward"], "scope": "Namespaced",
+        }])
+        policy = documents[("ValidatingAdmissionPolicy", "cetirun-sandbox-namespace")]["spec"]
+        self.assertEqual(policy["failurePolicy"], "Fail")
+        self.assertEqual(policy["matchConstraints"]["resourceRules"][0]["resources"],
+                         ["namespaces", "namespaces/status", "namespaces/finalize"])
+        self.assertEqual(policy["matchConstraints"]["resourceRules"][0]["operations"], ["CREATE", "UPDATE"])
+        self.assertEqual(
+            documents[("ValidatingAdmissionPolicyBinding", "cetirun-sandbox-namespace")]["spec"],
+            {"policyName": "cetirun-sandbox-namespace", "validationActions": ["Deny"]},
+        )
+        expressions = "\n".join(rule["expression"] for rule in policy["validations"])
+        self.assertIn('request.userInfo.username == "system:serviceaccount:cetirun-system:cetirun-operator-controller-manager"', expressions)
+        self.assertIn('object.metadata.name != "cetirun-system"', expressions)
+        self.assertIn("variables.owners == variables.oldOwners", expressions)
+
+    def test_pod_request_budget_reserves_transport_time(self):
+        for timeout in (1, 2, 10, 20, 30):
+            with self.subTest(timeout=timeout):
+                documents = self.render(self.enforced_values(podsEnabled=True, timeoutSeconds=timeout))
+                container = documents[("Deployment", NAME)]["spec"]["template"]["spec"]["containers"][0]
+                self.assertIn(f"--admission-pod-timeout={timeout * 800}ms", container["args"])
+                webhook = documents[("ValidatingWebhookConfiguration", "cetirun-sandbox-pods")]["webhooks"][0]
+                self.assertEqual(webhook["timeoutSeconds"], timeout)
+        documents = self.render(self.server_values(podsEnabled=True, timeoutSeconds=0))
+        args = documents[("Deployment", NAME)]["spec"]["template"]["spec"]["containers"][0]["args"]
+        self.assertFalse(any(arg.startswith("--admission-pod-timeout=") for arg in args))
+
+    def test_pod_cleanup_condition_only_excludes_exact_gc_finalization(self):
+        documents = self.render(self.enforced_values(podsEnabled=True))
+        webhook = documents[("ValidatingWebhookConfiguration", "cetirun-sandbox-pods")]["webhooks"][0]
+        conditions = webhook["matchConditions"]
+        self.assertEqual([condition["name"] for condition in conditions], ["garbage-collector-cleanup-only"])
+        expression = " ".join(conditions[0]["expression"].split())
+        self.assertTrue(expression.startswith("!("), expression)
+        self.assertTrue(expression.endswith(")"), expression)
+        self.assertLessEqual(len(conditions[0]["expression"]), 5 * 1024)
+        for fragment in (
+            'request.operation == "UPDATE"',
+            'request.resource.group == ""',
+            'request.resource.version == "v1"',
+            'request.resource.resource == "pods"',
+            'request.kind.group == ""',
+            'request.kind.version == "v1"',
+            'request.kind.kind == "Pod"',
+            '(has(request.subResource) ? request.subResource : "") == ""',
+            '(has(request.requestSubResource) ? request.requestSubResource : "") == ""',
+            '(!has(request.requestResource) || request.requestResource == request.resource)',
+            '(!has(request.requestKind) || request.requestKind == request.kind)',
+            'object != null && oldObject != null',
+            'object.apiVersion == "v1" && object.kind == "Pod"',
+            'has(request.namespace) && request.namespace != ""',
+            'has(request.name) && request.name != ""',
+            'object.metadata.namespace == request.namespace',
+            'object.metadata.name == request.name',
+            'has(object.metadata.uid) && object.metadata.uid != ""',
+            'has(object.metadata.resourceVersion) && object.metadata.resourceVersion != ""',
+            'has(oldObject.metadata.deletionTimestamp)',
+            'oldObject.metadata.deletionTimestamp != null',
+        ):
+            self.assertIn(fragment + " &&", expression)
+        self.assertIn(
+            'request.userInfo.username in [ "system:kube-controller-manager", '
+            '"system:serviceaccount:kube-system:generic-garbage-collector" ] &&',
+            expression,
+        )
+        self.assertNotIn("request.userInfo.groups", expression)
+        self.assertNotIn("admin@example.com", expression)
+        self.assertNotIn("cetirun-operator-controller-manager", expression)
+        # Map-wide comparison catches additions/removals, including unknown
+        # top-level, spec, status and metadata fields rather than an allowlist.
+        for fragment in (
+            'object.all(field, field == "metadata" || (field in oldObject && object[field] == oldObject[field]) )',
+            'oldObject.all(field, field == "metadata" || field in object)',
+            'object.metadata.all(field, field in ["finalizers", "managedFields"] || '
+            '(field in oldObject.metadata && object.metadata[field] == oldObject.metadata[field]) )',
+            'oldObject.metadata.all(field, field in ["finalizers", "managedFields"] || field in object.metadata )',
+            'size(oldObject.metadata.finalizers.filter(finalizer, finalizer == "foregroundDeletion")) == 1',
+            '(has(object.metadata.finalizers) ? object.metadata.finalizers : []) == '
+            'oldObject.metadata.finalizers.filter(finalizer, finalizer != "foregroundDeletion")',
+        ):
+            self.assertIn(fragment, expression)
+        self.assertEqual(webhook["failurePolicy"], "Fail")
 
     def test_enforcement_renders_exact_webhook_timeouts_including_bounds(self):
         for timeout in (1, 2, 10, 20, 30):

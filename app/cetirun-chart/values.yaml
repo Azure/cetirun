@@ -22,6 +22,11 @@ replicaCount: 1
 # -- Kubernetes RuntimeClass for pod sandboxing (e.g. kata-vm-isolation for AKS Pod Sandboxing)
 runtimeClassName: "kata-vm-isolation"
 
+# -- Internal, resolver/compiler-owned protected render contract. Never a user
+# override. A populated contract only renders held workloads; it cannot enable
+# execution. Legacy runtimes leave this null.
+sandboxWorkload: null
+
 # -- Deprecated OpenClaw image alias. Prefer openclaw.image.
 image:
   # -- Image repository
@@ -587,6 +592,9 @@ networkPolicy:
 skills:
   # -- Enable shared skills PV/PVC
   shared: false
+  # -- Use a separately owned skills PVC without creating a PV or PVC.
+  # Native protected rendering sets this only when adopting an existing claim.
+  # existingClaim: ""
   # -- StorageClass for the shared skills PV/PVC
   storageClassName: azureblob-nfs-premium
   # -- Install-time-only Blob CSI protocol. Use fuse2 for HTTPS-only storage accounts.

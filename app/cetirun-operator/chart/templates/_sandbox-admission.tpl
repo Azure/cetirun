@@ -68,3 +68,55 @@ Licensed under the MIT License.
       )
     )
 {{- end -}}
+
+{{/*
+Keep this GC-only exception aligned with podGarbageCollectorFinalizerUpdate.
+Compare every object/metadata key, including fields introduced by newer API
+servers; only finalizers and server-managed managedFields may differ.
+*/}}
+{{- define "cetirun-operator.sandboxPodCleanupMatch" -}}
+- name: garbage-collector-cleanup-only
+  expression: >-
+    !(
+      request.operation == "UPDATE" &&
+      request.resource.group == "" &&
+      request.resource.version == "v1" &&
+      request.resource.resource == "pods" &&
+      request.kind.group == "" &&
+      request.kind.version == "v1" &&
+      request.kind.kind == "Pod" &&
+      (has(request.subResource) ? request.subResource : "") == "" &&
+      (has(request.requestSubResource) ? request.requestSubResource : "") == "" &&
+      (!has(request.requestResource) || request.requestResource == request.resource) &&
+      (!has(request.requestKind) || request.requestKind == request.kind) &&
+      request.userInfo.username in [
+        "system:kube-controller-manager",
+        "system:serviceaccount:kube-system:generic-garbage-collector"
+      ] &&
+      object != null && oldObject != null &&
+      object.apiVersion == "v1" && object.kind == "Pod" &&
+      has(request.namespace) && request.namespace != "" &&
+      has(request.name) && request.name != "" &&
+      object.metadata.namespace == request.namespace &&
+      object.metadata.name == request.name &&
+      has(object.metadata.uid) && object.metadata.uid != "" &&
+      has(object.metadata.resourceVersion) && object.metadata.resourceVersion != "" &&
+      has(oldObject.metadata.deletionTimestamp) &&
+      oldObject.metadata.deletionTimestamp != null &&
+      object.all(field,
+        field == "metadata" || (field in oldObject && object[field] == oldObject[field])
+      ) &&
+      oldObject.all(field, field == "metadata" || field in object) &&
+      object.metadata.all(field,
+        field in ["finalizers", "managedFields"] ||
+        (field in oldObject.metadata && object.metadata[field] == oldObject.metadata[field])
+      ) &&
+      oldObject.metadata.all(field,
+        field in ["finalizers", "managedFields"] || field in object.metadata
+      ) &&
+      has(oldObject.metadata.finalizers) &&
+      size(oldObject.metadata.finalizers.filter(finalizer, finalizer == "foregroundDeletion")) == 1 &&
+      (has(object.metadata.finalizers) ? object.metadata.finalizers : []) ==
+        oldObject.metadata.finalizers.filter(finalizer, finalizer != "foregroundDeletion")
+    )
+{{- end -}}

@@ -219,7 +219,7 @@ Return true if the ingress supports pathType
 Validate shared skills configuration
 */}}
 {{- define "cetirun.validateSkills" -}}
-{{- if .Values.skills.shared -}}
+{{- if and .Values.skills.shared (not .Values.skills.existingClaim) -}}
 {{- if not .Values.skills.resourceGroup -}}
 {{- fail "skills.resourceGroup is required when skills.shared is true" }}
 {{- end -}}
@@ -249,6 +249,7 @@ non-empty TAILSCALE_AUTH_KEY (covers helm-upgrade and operator-managed
 scenarios where the key is written directly into the Secret).
 */}}
 {{- define "cetirun.tailscaleEnabled" -}}
+{{- if not .Values.sandboxWorkload -}}
 {{- if .Values.secrets.tailscaleAuthKey -}}
 true
 {{- else -}}
@@ -258,6 +259,7 @@ true
 {{- $key := index $existingSecret.data "TAILSCALE_AUTH_KEY" | default "" -}}
 {{- if $key -}}
 true
+{{- end -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}
@@ -294,7 +296,11 @@ Shared skills PV name (cluster-scoped, globally unique).
 Shared skills PVC name (namespace-scoped).
 */}}
 {{- define "cetirun.sharedSkillsPVCName" -}}
+{{- if .Values.skills.existingClaim -}}
+{{- .Values.skills.existingClaim -}}
+{{- else -}}
 {{- printf "%s-shared-skills" (include "cetirun.fullname" .) | trunc 63 | trimSuffix "-" }}
+{{- end -}}
 {{- end }}
 
 {{/*

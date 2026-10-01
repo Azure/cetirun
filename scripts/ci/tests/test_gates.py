@@ -340,6 +340,31 @@ class WorkflowContractTests(unittest.TestCase):
             ["openclaw-gateway:validation -m unittest discover -s /tests -p test_auth_service.py -v"],
         )
 
+    def test_runtime_scans_extend_timeout_without_weakening_policy(self):
+        text = (validate.ROOT / ".github/workflows/docker-build-validate.yml").read_text()
+        scans = {
+            step.splitlines()[0]: step
+            for step in text.split("\n      - name: ")[1:]
+            if "            image \\\n" in step
+        }
+        self.assertEqual(len(scans), 5)
+        for name, step in scans.items():
+            with self.subTest(step=name):
+                self.assertEqual(step.count("--timeout 10m"), 1)
+                self.assertIn("--ignore-unfixed", step)
+                self.assertNotRegex(step, r"--(?:scanners|skip-dirs|skip-files)\b")
+        gates = {
+            "Scan image for vulnerabilities (Trivy)": "CRITICAL,HIGH",
+            "Scan Hermes image for vulnerabilities (Trivy)": "CRITICAL",
+            "Scan desktop image for vulnerabilities (Trivy)": "CRITICAL",
+        }
+        for name, severity in gates.items():
+            with self.subTest(gate=name):
+                self.assertIn("--exit-code 1", scans[name])
+                self.assertIn(f"--severity {severity} \\", scans[name])
+                self.assertNotIn("continue-on-error:", scans[name])
+                self.assertNotIn("\n        if:", scans[name])
+
     def test_owned_actions_are_sha_pinned_and_default_to_read_only(self):
         for name in validate.WORKFLOWS:
             with self.subTest(workflow=name):

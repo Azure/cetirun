@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
 	"helm.sh/helm/v3/pkg/action"
 	"helm.sh/helm/v3/pkg/chart"
 	"helm.sh/helm/v3/pkg/chart/loader"
@@ -195,6 +196,9 @@ func (c *Client) Prepare(namespace string, values map[string]any, chartVersion s
 func (c *Client) InstallOrUpgrade(namespace, releaseName string, prepared *PreparedRelease) error {
 	if prepared == nil || prepared.chart == nil {
 		return fmt.Errorf("release must be prepared before installation")
+	}
+	if prepared.sandboxBundle != nil || prepared.Values[sandboxworkload.ValuesKey] != nil {
+		return sandboxworkload.ErrExecutionHeld
 	}
 	if err := prepared.ValidateCustom(namespace, releaseName); err != nil {
 		return err
