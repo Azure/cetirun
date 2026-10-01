@@ -35,7 +35,9 @@ ownership-handover plan. See the
 Source layout: `api/` defines the types, `config/crd/bases/` contains schemas,
 `internal/` contains reconciliation and Helm/Azure integration, and `chart/`
 deploys the operator. The chart packages CRDs under `chart/crds/`; Helm installs
-them initially but does not upgrade or delete them. Follow
+them initially but does not upgrade or delete them, so `deploy/deploy.sh` and the
+platform helper apply them around each upgrade in the order described in
+[Schema and binary upgrades](#schema-and-binary-upgrades). Follow
 [DEVELOPMENT.md](../../DEVELOPMENT.md#generated-files-and-dependencies) for
 pinned generation commands.
 

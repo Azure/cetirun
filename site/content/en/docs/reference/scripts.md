@@ -131,11 +131,13 @@ artifacts.
 - `infra/istio/deploy.sh`: identity/TLS, Helm, and shared mesh configuration;
   see [Istio](../../operations/istio/).
 - `scripts/cetirun-platform-deploy.sh`: verify independent Istio prerequisites,
-  label the target namespace, install the operator/portal umbrella, wait for
-  its deployments, and apply the operator's CRDs: new ones before the wait,
-  changes to existing ones after it.
+  label the target namespace, install the operator/portal umbrella, and wait for
+  its deployments. It applies the operator's CRDs around the upgrade: new ones
+  before it, changes to existing ones after the operator and Sandbox admission
+  roll out and before the portal wait.
 - `app/cetirun-operator/deploy/deploy.sh`: check StorageClass/gateway prerequisites,
-  then install the operator chart with its packaged CRDs.
+  install the operator chart, and apply its CRDs in the same order.
+- `scripts/operator-crds.sh`: the CRD steps both helpers source.
 - `app/cetirun-portal/deploy/deploy.sh`: portal namespace injection and Helm.
 
 Operator deployment inputs include `REGISTRY`, `CHART_VERSION`, `NAMESPACE`,

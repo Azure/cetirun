@@ -73,47 +73,25 @@ helm_args+=(
   --set-string "cetirun-portal.istio.gatewayNamespace=${ingress_namespace}"
   --set-string "cetirun-portal.istio.gatewayServiceAccount=${gateway_service_account}"
 )
+
+# The operator's CRDs are applied around the upgrade in the order
+# scripts/operator-crds.sh describes. Render the release first to learn whether
+# it includes the operator.
+# shellcheck source=scripts/operator-crds.sh
+. "${script_dir}/operator-crds.sh"
+planned_manifest="$(helm "${helm_args[@]}" --dry-run=server)"
+crds_manifest=""
+if manifest_has_deployment "${planned_manifest}" cetirun-operator; then
+  crds_manifest="$(helm show crds "${chart_dir}")"
+  create_missing_crds "${crds_manifest}"
+fi
+
 helm "${helm_args[@]}"
 
 rendered_manifest="$(helm get manifest "${release_name}" --namespace "${namespace}")"
-deployment_is_rendered() {
-  local deployment_name="$1"
-  awk -v name="${deployment_name}" '
-    $0 == "---" { kind = ""; next }
-    $1 == "kind:" { kind = $2; next }
-    kind == "Deployment" && $1 == "name:" && $2 == name { found = 1; exit }
-    END { exit !found }
-  ' <<< "${rendered_manifest}"
-}
-
-# Helm creates the CRDs under crds/ on the first installation only and never
-# upgrades them, so apply them from the chart in the order the operator's schema
-# upgrade rules require (app/cetirun-operator/README.md, "Schema and binary
-# upgrades"):
-#   1. Create CRDs that do not exist yet now, so a new kind is served before
-#      the new operator uses it.
-#   2. Apply changes to existing CRDs only after every operator replica runs the
-#      new binary, so admission understands a schema before it is served.
-crds_manifest=""
-if deployment_is_rendered cetirun-operator; then
-  crds_manifest="$(helm show crds "${chart_dir}")"
-  create_output=""
-  if ! create_output="$(kubectl create -f - <<< "${crds_manifest}" 2>&1)"; then
-    if grep -v -e 'AlreadyExists' -e ' created$' -e '^Warning:' <<< "${create_output}" | grep -q .; then
-      printf '%s\n' "${create_output}" >&2
-      exit 1
-    fi
-  fi
-  grep ' created$' <<< "${create_output}" || true
+if manifest_has_deployment "${rendered_manifest}" cetirun-operator; then
+  finish_crd_upgrade "${namespace}" "${rendered_manifest}" "${crds_manifest}" cetirun-platform-deploy
 fi
-
-for deployment_name in cetirun-operator cetirun-portal; do
-  if deployment_is_rendered "${deployment_name}"; then
-    kubectl rollout status "deployment/${deployment_name}" -n "${namespace}" --timeout=180s
-  fi
-done
-
-if [ -n "${crds_manifest}" ]; then
-  kubectl apply --server-side --force-conflicts --field-manager=cetirun-platform-deploy \
-    -f - <<< "${crds_manifest}"
+if manifest_has_deployment "${rendered_manifest}" cetirun-portal; then
+  kubectl rollout status deployment/cetirun-portal -n "${namespace}" --timeout=180s
 fi

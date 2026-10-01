@@ -5,8 +5,10 @@
 # deploy.sh — One-command deploy for CetiRun Operator.
 #
 # Checks cluster-level prerequisites (StorageClass + Istio Gateway) and then
-# installs the operator from the OCI chart published in ACR. The chart installs
-# CetiRun CRDs on its first installation.
+# installs the operator from the OCI chart published in ACR. Helm creates the
+# chart's CRDs on the first installation only, so the helper applies them
+# around every install or upgrade (see scripts/operator-crds.sh) and waits for
+# the operator and, when enabled, Sandbox admission to roll out.
 # Every step is idempotent and safe to re-run.
 #
 # Requires: kubectl and helm configured to target the correct cluster,
@@ -40,6 +42,8 @@ for cmd in kubectl helm; do
 done
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/operator-crds.sh
+. "${SCRIPT_DIR}/../../../scripts/operator-crds.sh"
 
 # OCI chart / deploy defaults (override via environment variables)
 REGISTRY="${REGISTRY:-cetirun.azurecr.io}"
@@ -105,15 +109,16 @@ echo "==> Creating namespace ${NAMESPACE} (if not exists)..."
 kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
 
 echo ""
-HELM_ARGS=()
+CHART_ARGS=()
 if [ -n "${LOCAL_CHART:-}" ]; then
   CHART_SOURCE="$SCRIPT_DIR/../chart"
   echo "==> Installing/upgrading Helm release '${RELEASE_NAME}' from local chart ${CHART_SOURCE}..."
-  HELM_ARGS+=("$CHART_SOURCE")
+  CHART_ARGS+=("$CHART_SOURCE")
 else
   echo "==> Installing/upgrading Helm release '${RELEASE_NAME}' from ${CHART_REF}:${CHART_VERSION}..."
-  HELM_ARGS+=("$CHART_REF" --version "$CHART_VERSION")
+  CHART_ARGS+=("$CHART_REF" --version "$CHART_VERSION")
 fi
+HELM_ARGS=("${CHART_ARGS[@]}")
 HELM_ARGS+=(--set "image.repository=${IMAGE_REPO}")
 HELM_ARGS+=(--set-string "istioGateway=${ISTIO_GATEWAY}")
 HELM_ARGS+=(--set-string "cetirun.helmValues.networkPolicy.istioIngressNamespace=${ISTIO_INGRESS_NAMESPACE}")
@@ -125,8 +130,17 @@ HELM_ARGS+=(--set "cetirun.chart.repoURL=${CETIRUN_REPO_URL}")
 for kv in ${HELM_SET_ARGS:-}; do
   HELM_ARGS+=(--set "$kv")
 done
+# CRDs the cluster does not have yet are created before the upgrade; changes
+# to existing ones wait for the rollout below.
+CRDS_MANIFEST="$(helm show crds "${CHART_ARGS[@]}")"
+create_missing_crds "$CRDS_MANIFEST"
 helm upgrade --install "$RELEASE_NAME" "${HELM_ARGS[@]}" \
   --namespace "$NAMESPACE"
+
+echo ""
+echo "==> Waiting for the operator to roll out, then applying CRD changes..."
+RENDERED_MANIFEST="$(helm get manifest "$RELEASE_NAME" --namespace "$NAMESPACE")"
+finish_crd_upgrade "$NAMESPACE" "$RENDERED_MANIFEST" "$CRDS_MANIFEST" cetirun-operator-deploy
 
 echo ""
 echo "==> Deploy complete."

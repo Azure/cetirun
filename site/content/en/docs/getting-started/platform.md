@@ -143,16 +143,27 @@ DOMAIN=example.com VALUES_FILE=/absolute/path/platform-values.yaml \
 
 The helper checks Istio resources and OAuth2 Proxy readiness, builds the local
 chart dependencies, creates and labels the target namespace for sidecar
-injection, installs the release, and waits for the rendered operator/portal
-Deployments. It does not verify end-to-end login or agent readiness.
-`ISTIO_REVISION` overrides revision detection.
+injection, installs the release, and waits for the rendered operator, Sandbox
+admission and portal Deployments. It does not verify end-to-end login or agent
+readiness. `ISTIO_REVISION` overrides revision detection. The helper renders
+the release with `helm upgrade --dry-run=server` first, which needs Helm 3.13
+or later.
 
 Helm creates the operator's CRDs only on the first installation, so the helper
-applies them itself when the operator is part of the release. CRDs that do not
-exist yet are created right after the install or upgrade, so a new kind is
-served before the new operator uses it. Changes to existing CRDs are applied
-once the operator rollout finishes, after admission already runs the matching
-binary. Downgrades are not handled; see
+applies them itself when the operator is part of the release, in this order:
+
+1. CRDs that do not exist yet are created before the install or upgrade, so a
+   new kind is served before the new operator uses it.
+2. Changes to existing CRDs are applied once the operator rollout, and the
+   Sandbox admission rollout when admission is enabled, finish, so admission
+   already runs the matching binary.
+3. The helper then waits for the portal, which may write fields only the new
+   schema has.
+
+If a rollout fails or times out, the helper stops and leaves the existing CRDs
+unchanged, while the new operator or portal may already run against them. Fix
+the rollout and run the helper again; every step can be repeated. Downgrades
+are not handled; see
 [API compatibility](../../reference/crds/#existing-installations).
 
 For a custom gateway, use `ISTIO_GATEWAY_NAMESPACE` and `ISTIO_GATEWAY_NAME`
@@ -202,8 +213,10 @@ not the runtime images.
 
 The [operator helper]({{< repo "app/cetirun-operator/deploy/deploy.sh" >}})
 checks the StorageClass and shared gateway before installing the operator.
-The operator chart bundles both CRDs and Helm installs them on the first
-installation; Helm does not upgrade or delete CRDs. Review
+The operator chart bundles its CRDs and Helm installs them on the first
+installation; Helm does not upgrade or delete CRDs. The helper applies them on
+every install or upgrade in the same order as the platform helper, without the
+portal step. Review
 [API compatibility](../../reference/crds/#existing-installations) before
 upgrading an existing installation. The
 [portal helper]({{< repo "app/cetirun-portal/deploy/deploy.sh" >}})

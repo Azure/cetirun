@@ -44,8 +44,13 @@ that gateway workload's namespace; otherwise the instance NetworkPolicies block
 ingress traffic.
 
 Helm creates CRDs from a chart's `crds/` directory but deliberately does not
-upgrade or delete them. Upgrade CRD schemas through an explicit, reviewed
-migration before upgrading the Operator chart.
+upgrade or delete them. The deployment helper applies the Operator's CRDs around
+the upgrade in the order the Operator's
+[schema upgrade rules](../cetirun-operator/README.md#schema-and-binary-upgrades)
+require: it creates missing CRDs before the upgrade and applies changes to
+existing ones only after the Operator, and Sandbox admission when enabled, have
+rolled out. When upgrading without the helper, follow the same order; never
+apply changes to existing CRDs before admission runs the matching binary.
 
 The deployment helper accepts `ISTIO_GATEWAY_NAME` and
 `ISTIO_GATEWAY_NAMESPACE` for the Gateway resource, and
