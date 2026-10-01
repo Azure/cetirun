@@ -48,7 +48,42 @@ exit 2
 
 KUBECTL = r"""#!/usr/bin/env bash
 case "$1" in
-  cluster-info|get|label) exit 0 ;;
+  cluster-info|label) exit 0 ;;
+  get)
+    if [ "$2" = deployment ] && [[ "$*" == *".spec.selector.matchLabels"* ]]; then
+      printf 'app.kubernetes.io/instance=example,app.kubernetes.io/name=%s,' "$3"
+      exit 0
+    fi
+    if [ "$2" = pods ]; then
+      while [ "$#" -gt 0 ]; do
+        [ "$1" != -l ] || echo "list pods $2" >> "${CALLS}"
+        shift
+      done
+      printf '%s' "${TERMINATING_PODS:-}"
+    fi
+    exit 0 ;;
+  wait)
+    if [[ " $* " == *" --for=condition=Established "* ]]; then
+      cat >/dev/null
+      echo "wait established" >> "${CALLS}"
+      if [ -n "${FAIL_ESTABLISHED:-}" ]; then
+        echo 'error: timed out waiting for the condition on customresourcedefinitions/sandboxes.example.com' >&2
+        exit 1
+      fi
+      exit 0
+    fi
+    if [[ " $* " == *" --for=delete "* ]]; then
+      pods=()
+      for arg in "$@"; do
+        [[ "${arg}" != pod/* ]] || pods+=("${arg}")
+      done
+      echo "wait deleted ${pods[*]}" >> "${CALLS}"
+      if [ -n "${FAIL_POD_EXIT:-}" ]; then
+        echo "error: timed out waiting for the condition on pods/${pods[0]#pod/}" >&2
+        exit 1
+      fi
+      exit 0
+    fi ;;
   rollout)
     name="${3#deployment/}"
     echo "rollout ${name}" >> "${CALLS}"
@@ -80,6 +115,8 @@ exit 2
 """
 
 ALL = "cetirun-operator cetirun-sandbox-admission cetirun-portal"
+ADMISSION_PODS = "list pods app.kubernetes.io/instance=example,app.kubernetes.io/name=cetirun-sandbox-admission"
+APPLY = "apply crds: apply --server-side --force-conflicts --field-manager={} -f -"
 
 
 class DeployCRDOrderTests(unittest.TestCase):
@@ -125,17 +162,48 @@ class DeployCRDOrderTests(unittest.TestCase):
     def test_platform_applies_crd_changes_after_admission_and_before_portal(self):
         result, calls = self.platform(DEPLOYMENTS=ALL)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(calls[:7], [
+        self.assertEqual(calls, [
             "helm plan",
             "helm show crds",
             "create crds",
+            "wait established",
             "helm upgrade",
             "rollout cetirun-operator",
             "rollout cetirun-sandbox-admission",
-            "apply crds: apply --server-side --force-conflicts --field-manager=cetirun-platform-deploy -f -",
+            ADMISSION_PODS,
+            APPLY.format("cetirun-platform-deploy"),
+            "rollout cetirun-portal",
         ])
-        self.assertEqual(calls[7:], ["rollout cetirun-portal"])
         self.assertIn("sandboxes.example.com created", result.stdout)
+
+    def test_platform_stops_before_the_upgrade_when_new_crds_are_not_established(self):
+        result, calls = self.platform(DEPLOYMENTS=ALL, FAIL_ESTABLISHED="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("not every operator CRD is Established", result.stderr)
+        self.assertEqual(calls, ["helm plan", "helm show crds", "create crds", "wait established"])
+
+    def test_platform_waits_for_replaced_admission_pods_before_applying_crd_changes(self):
+        result, calls = self.platform(
+            DEPLOYMENTS=ALL, TERMINATING_PODS="pod/admission-old-1 pod/admission-old-2 ",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(calls[6:], [
+            "rollout cetirun-sandbox-admission",
+            ADMISSION_PODS,
+            "wait deleted pod/admission-old-1 pod/admission-old-2",
+            APPLY.format("cetirun-platform-deploy"),
+            "rollout cetirun-portal",
+        ])
+        self.assertIn("Waiting for the replaced cetirun-sandbox-admission Pods to exit", result.stdout)
+
+    def test_platform_leaves_crds_unchanged_when_replaced_admission_pods_do_not_exit(self):
+        result, calls = self.platform(
+            DEPLOYMENTS=ALL, TERMINATING_PODS="pod/admission-old-1 ", FAIL_POD_EXIT="1",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("existing CRDs were left unchanged", result.stderr)
+        self.assertEqual(calls[-1], "wait deleted pod/admission-old-1")
+        self.assertFalse([call for call in calls if call.startswith("apply crds")])
 
     def test_platform_leaves_crds_unchanged_when_admission_does_not_roll_out(self):
         result, calls = self.platform(DEPLOYMENTS=ALL, FAIL_ROLLOUT="cetirun-sandbox-admission")
@@ -152,8 +220,9 @@ class DeployCRDOrderTests(unittest.TestCase):
         result, calls = self.platform(DEPLOYMENTS="cetirun-operator cetirun-portal")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(calls[4:], [
+            "helm upgrade",
             "rollout cetirun-operator",
-            "apply crds: apply --server-side --force-conflicts --field-manager=cetirun-platform-deploy -f -",
+            APPLY.format("cetirun-platform-deploy"),
             "rollout cetirun-portal",
         ])
 
@@ -174,11 +243,29 @@ class DeployCRDOrderTests(unittest.TestCase):
         self.assertEqual(calls, [
             "helm show crds",
             "create crds",
+            "wait established",
             "helm upgrade",
             "rollout cetirun-operator",
             "rollout cetirun-sandbox-admission",
-            "apply crds: apply --server-side --force-conflicts --field-manager=cetirun-operator-deploy -f -",
+            ADMISSION_PODS,
+            APPLY.format("cetirun-operator-deploy"),
         ])
+
+    def test_operator_helper_stops_before_the_upgrade_when_new_crds_are_not_established(self):
+        result, calls = self.operator(
+            DEPLOYMENTS="cetirun-operator cetirun-sandbox-admission", FAIL_ESTABLISHED="1",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(calls, ["helm show crds", "create crds", "wait established"])
+
+    def test_operator_helper_leaves_crds_unchanged_when_replaced_admission_pods_do_not_exit(self):
+        result, calls = self.operator(
+            DEPLOYMENTS="cetirun-operator cetirun-sandbox-admission",
+            TERMINATING_PODS="pod/admission-old-1 ", FAIL_POD_EXIT="1",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(calls[-1], "wait deleted pod/admission-old-1")
+        self.assertFalse([call for call in calls if call.startswith("apply crds")])
 
     def test_operator_helper_leaves_crds_unchanged_when_admission_does_not_roll_out(self):
         result, calls = self.operator(

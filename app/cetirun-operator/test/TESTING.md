@@ -157,7 +157,8 @@ helm install cetirun-operator app/cetirun-operator/chart \
 # The chart's crds/ directory creates CetiRun CRDs on first installation.
 # Helm does not upgrade or delete CRDs. deploy/deploy.sh applies them around an
 # upgrade; with plain helm, apply changes to existing CRDs only after the operator
-# and Sandbox admission have rolled out (README, "Schema and binary upgrades").
+# and Sandbox admission have rolled out and the replaced admission Pods have
+# exited (README, "Schema and binary upgrades").
 
 # Test cluster without access to the shared skills storage account (cetirunskills):
 # Disable shared skills via spec.helm.values in the instance CR (see sample-alice.yaml)

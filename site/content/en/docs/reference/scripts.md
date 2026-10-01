@@ -133,8 +133,9 @@ artifacts.
 - `scripts/cetirun-platform-deploy.sh`: verify independent Istio prerequisites,
   label the target namespace, install the operator/portal umbrella, and wait for
   its deployments. It applies the operator's CRDs around the upgrade: new ones
-  before it, changes to existing ones after the operator and Sandbox admission
-  roll out and before the portal wait.
+  before it, once they are established; changes to existing ones after the
+  operator and Sandbox admission roll out and the replaced admission Pods exit,
+  and before the portal wait.
 - `app/cetirun-operator/deploy/deploy.sh`: check StorageClass/gateway prerequisites,
   install the operator chart, and apply its CRDs in the same order.
 - `scripts/operator-crds.sh`: the CRD steps both helpers source.

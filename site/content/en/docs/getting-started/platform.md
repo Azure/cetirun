@@ -152,18 +152,22 @@ or later.
 Helm creates the operator's CRDs only on the first installation, so the helper
 applies them itself when the operator is part of the release, in this order:
 
-1. CRDs that do not exist yet are created before the install or upgrade, so a
-   new kind is served before the new operator uses it.
+1. CRDs that do not exist yet are created before the install or upgrade, and
+   the helper waits until they are `Established`, so a new kind is served
+   before the new operator uses it.
 2. Changes to existing CRDs are applied once the operator rollout, and the
-   Sandbox admission rollout when admission is enabled, finish, so admission
-   already runs the matching binary.
+   Sandbox admission rollout when admission is enabled, finish. The helper also
+   waits for the admission Pods the rollout replaced to exit, because they keep
+   serving existing connections while they shut down. Only the matching binary
+   then validates requests.
 3. The helper then waits for the portal, which may write fields only the new
    schema has.
 
-If a rollout fails or times out, the helper stops and leaves the existing CRDs
-unchanged, while the new operator or portal may already run against them. Fix
-the rollout and run the helper again; every step can be repeated. Downgrades
-are not handled; see
+If a CRD does not become `Established`, the helper stops before the install or
+upgrade. If a rollout fails or times out, or a replaced admission Pod does not
+exit, the helper stops and leaves the existing CRDs unchanged, while the new
+operator or portal may already run against them. Fix the cause and run the
+helper again; every step can be repeated. Downgrades are not handled; see
 [API compatibility](../../reference/crds/#existing-installations).
 
 For a custom gateway, use `ISTIO_GATEWAY_NAMESPACE` and `ISTIO_GATEWAY_NAME`

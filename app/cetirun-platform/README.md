@@ -47,10 +47,12 @@ Helm creates CRDs from a chart's `crds/` directory but deliberately does not
 upgrade or delete them. The deployment helper applies the Operator's CRDs around
 the upgrade in the order the Operator's
 [schema upgrade rules](../cetirun-operator/README.md#schema-and-binary-upgrades)
-require: it creates missing CRDs before the upgrade and applies changes to
-existing ones only after the Operator, and Sandbox admission when enabled, have
-rolled out. When upgrading without the helper, follow the same order; never
-apply changes to existing CRDs before admission runs the matching binary.
+require: it creates missing CRDs before the upgrade and waits until they are
+established, and it applies changes to existing ones only after the Operator,
+and Sandbox admission when enabled, have rolled out and the admission Pods the
+rollout replaced have exited. When upgrading without the helper, follow the
+same order; never apply changes to existing CRDs while an admission Pod,
+including one that is still shutting down, runs an older binary.
 
 The deployment helper accepts `ISTIO_GATEWAY_NAME` and
 `ISTIO_GATEWAY_NAMESPACE` for the Gateway resource, and
