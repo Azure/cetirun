@@ -11,7 +11,7 @@ import (
 	"testing"
 
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/runtimebindings"
-	"github.com/Azure/CetiRun/app/cetirun-operator/internal/terminal"
+	"github.com/Azure/CetiRun/app/internal/terminalpolicy"
 	corev1 "k8s.io/api/core/v1"
 )
 
@@ -57,7 +57,7 @@ func TestCustomTerminalIsAnIsolatedChartWorkload(t *testing.T) {
 						t.Fatal(err)
 					}
 					objects := manifestObjects(t, p)
-					name := terminal.WorkloadName(text(input["fullnameOverride"]))
+					name := terminalpolicy.WorkloadName(text(input["fullnameOverride"]))
 					deployment := objects["Deployment/"+name]
 					if (deployment != nil) != enabled {
 						t.Fatal("terminal deployment does not follow the switch")

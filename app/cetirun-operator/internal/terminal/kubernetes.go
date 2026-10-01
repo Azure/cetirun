@@ -10,6 +10,7 @@ import (
 	"net/http"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"github.com/Azure/CetiRun/app/internal/terminalpolicy"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -138,7 +139,7 @@ func (k *Kubernetes) DetectShell(ctx context.Context) (string, error) {
 }
 
 func (k *Kubernetes) Exec(ctx context.Context, shell string, streams Streams) error {
-	command, err := shellCommand(shell)
+	command, err := terminalpolicy.ShellCommand(shell)
 	if err != nil {
 		return err
 	}

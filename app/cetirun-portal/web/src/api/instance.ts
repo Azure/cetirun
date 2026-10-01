@@ -6,6 +6,14 @@ import { apiFetch } from "./fetch";
 
 export type InstanceResponse = Instance;
 
+export class CreateInstanceError extends Error {
+  instanceName?: string;
+  constructor(message: string, instanceName?: string) {
+    super(message);
+    this.instanceName = instanceName;
+  }
+}
+
 export async function getInstance(): Promise<Instance | null> {
   const response = await apiFetch("/api/v1/instance");
   if (response.status === 404) return null;
@@ -14,13 +22,15 @@ export async function getInstance(): Promise<Instance | null> {
 }
 
 export async function createInstance(req: CreateInstanceRequest): Promise<Instance> {
+  const { requestId, ...body } = req;
   const response = await apiFetch("/api/v1/instances", {
     method: "POST",
-    body: JSON.stringify(req),
+    headers: requestId ? { "Idempotency-Key": requestId } : undefined,
+    body: JSON.stringify(body),
   });
   if (!response.ok) {
     const err = await response.json();
-    throw new Error(err.error?.message || "Failed to create instance");
+    throw new CreateInstanceError(err.error?.message || "Failed to create instance", err.instanceName);
   }
   return response.json();
 }

@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	corev1 "k8s.io/api/core/v1"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can use them.
@@ -28,6 +29,7 @@ import (
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
@@ -37,6 +39,7 @@ import (
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/buildinfo"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/controller"
 	helmclient "github.com/Azure/CetiRun/app/cetirun-operator/internal/helm"
+	"github.com/Azure/CetiRun/app/internal/registryauth"
 )
 
 var (
@@ -206,6 +209,7 @@ func main() {
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme: scheme,
+		Client: client.Options{Cache: &client.CacheOptions{DisableFor: []client.Object{&corev1.Secret{}}}},
 		Metrics: metricsserver.Options{
 			BindAddress: metricsAddr,
 		},
@@ -240,6 +244,7 @@ func main() {
 		CetiRunHelmValues:              cetirunHelmValues,
 		ChartRegistry:                  chartRegistry,
 		DefaultModel:                   defaultModel,
+		RegistryCredentialNamespace:    getEnvOrDefault("REGISTRY_CREDENTIAL_NAMESPACE", registryauth.DefaultNamespace),
 		AzureSubscriptionID:            azureSubscriptionID,
 		AzureResourceGroup:             azureResourceGroup,
 		AzureBotNamePrefix:             azureBotNamePrefix,

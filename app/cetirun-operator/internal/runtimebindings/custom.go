@@ -75,6 +75,8 @@ type Custom struct {
 	Home              Home        `json:"home"`
 	Context           Context     `json:"context"`
 	Network           Network     `json:"network"`
+	// Only the Registry synchronizer supplies this stable, namespace-local name.
+	PullSecretName string `json:"pullSecretName,omitempty"`
 }
 
 func (b Custom) HarnessBindings() agents.Bindings {
@@ -104,6 +106,10 @@ func validPeer(peer Peer) bool {
 }
 
 func (b Custom) Validate(agent agents.ResolvedAgent) error {
+	if b.PullSecretName != "" && (len(validation.IsDNS1123Label(b.PullSecretName)) != 0 ||
+		b.PullSecretName != "registry-pull-"+strings.ReplaceAll(b.AgentUID, "-", "")) {
+		return fmt.Errorf("RegistryBindingInvalid: pull Secret must belong to this Agent UID")
+	}
 	if len(validation.IsDNS1123Subdomain(b.AgentName)) != 0 || b.AgentUID == "" || b.Generation < 1 || !validReference(b.Namespace) ||
 		b.ApprovedType != "custom" || b.ApprovedImage != agent.Image || b.PolicyRevision == "" {
 		return fmt.Errorf("PolicyBindingPending: exact Agent and image approval is required")

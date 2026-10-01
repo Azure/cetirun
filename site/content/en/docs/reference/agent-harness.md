@@ -12,8 +12,9 @@ Agent Harness defines configuration for Hermes, OpenClaw and bring-your-own
 > their image and port from the selected runtime chart before provisioning.
 > Custom has a separate runtime implementation, but the default operator waits
 > for platform bindings; no production binding provider is wired in.
-> Registry references remain unsupported. Custom supports non-default usernames;
-> built-in profiles still require `vibe`. Portal self-service is also opt-in;
+> Private images use Portal-managed Registry credentials and the Operator's
+> credential synchronizer. Custom supports non-default usernames; built-in
+> profiles still require `vibe`. Portal self-service is also opt-in;
 > a default installation does not enable Custom creation or provisioning.
 
 ## Configuration
@@ -64,7 +65,7 @@ authorization policy. Port overrides must not collide with native helper,
 dashboard, desktop, terminal or enabled Teams ports.
 
 Use `spec.agent.image` and `spec.agent.port`, not the old image or primary-port
-Helm values. `runtime` and `agentRequest` are reserved platform inputs.
+Helm values. `runtime`, `agentRequest` and managed `imagePullSecrets` are reserved platform inputs.
 Other supported deployment values keep their existing scope.
 
 The Go adapters return configuration and endpoint descriptions; they do not
@@ -88,8 +89,8 @@ these references against the actual objects. It does not create a Gateway,
 issue Virtual Keys, publish approved skills or invent a storage handoff.
 
 Without the provider, an Agent reports `CustomBindingsPending`. Missing,
-changed or foreign objects report `CustomBindingRejected`; unsupported registry
-references and native integrations remain rejected. No placeholder credentials
+changed or foreign objects report `CustomBindingRejected`. Registry references
+use the separate credential synchronizer; native integrations remain rejected. No placeholder credentials
 or native-secret fallback can start the workload.
 
 Administrators can explicitly enable `customRuntime` in the Operator chart for
@@ -216,16 +217,115 @@ available.
 
 ## Private registries
 
-The registry contract assigns write-only credential input and source Secret
-storage to Portal. Operator verifies the Agent UID and copies the credentials
-to a local pull Secret for Pod `imagePullSecrets`. Users do not pre-create
-runtime namespaces or Secrets. Credential input and synchronization are not
-enabled by the CRD reference alone.
+Portal accepts a write-only Registry username and password or token. It creates
+the Agent before saving a `kubernetes.io/dockerconfigjson` source Secret, owned
+by the actual Agent UID. Operator validates that owner, the single registry host
+derived from the image, and workload permissions before copying it into the
+runtime namespace. The local name is `registry-pull-<uid-without-hyphens>`.
+Users do not pre-create runtime namespaces or Secrets.
 
-Credentials stay out of CRDs, responses, Helm values, logs and Agent containers.
-Rotation synchronizes subsequent pulls without restarting the Agent solely for
-that change. Retries and cleanup remain tied to the Agent UID; synchronization
-does not prove a pull succeeds.
+### Installation and API
+
+The Operator chart owns the separate `cetirun-registry-credentials` namespace
+and retains it on chart removal. It must not be shared with the Agent Identity
+Broker or runtime workloads. Both components accept
+`REGISTRY_CREDENTIAL_NAMESPACE`; the umbrella chart sets
+`global.registryCredentialNamespace` once. Standalone installations must set
+matching `registryCredentials.namespace` values. Only the Operator chart creates
+the namespace. Runtime charts must advertise the
+`cetirun.microsoft.com/registry-credentials: v1` annotation; older pinned charts
+must be upgraded before attaching credentials.
+
+| Operation | Contract |
+| --- | --- |
+| `POST /api/v1/instances` | Nested `agent` input and optional `registryAuth: {username, password}`. Private creation requires an explicit qualified image and a stable `Idempotency-Key` header. |
+| `PUT /api/v1/instances/{name}/registry-auth` | Replace with a complete username and password/token. Use `If-Match: "<uid>/<resourceVersion>"` from a fresh instance response. |
+| `DELETE /api/v1/instances/{name}/registry-auth` | Use the same precondition. Detach the reference; Operator removes the future Pod binding before deleting this UID's copies. |
+| `GET /api/v1/instances/{name}` | Return `agent`, `uid`, `resourceVersion`, `registryAuthConfigured` and conditions, never Registry credential data. |
+
+Create requests reject the old `agentType` field and user-selected Secret names,
+namespaces or registry login URLs. Ordinary instance PATCH uses `uid` and
+`resourceVersion` in its JSON body, as do instance deletion and upgrade. This
+management precondition is separate from the Registry endpoint's `If-Match`.
+PATCH accepts image and port updates inside `agent`: omitted fields are preserved
+and a null port clears the override. A pinned image cannot be cleared; type and
+username are immutable. Custom image changes remain blocked until HOME
+compatibility is qualified. Credentials and references cannot change through
+ordinary PATCH.
+
+The same credential controls work during Custom self-service creation and on
+existing Custom instances. Overview shows the Registry credentials section only
+while private-registry authentication is enabled, including when saving the
+source credentials is still pending. Removing the credentials hides the whole
+section; synchronization diagnostics remain available in Status. The deployment's
+allowed types and image approval still apply. Registry credentials do not enable
+native integrations or provide model authentication for a Custom image.
+
+If source persistence fails after Agent creation, the response identifies the
+existing instance. Retry the same creation request, including its request ID and
+settings, or manage credentials on that instance. The retry is recognized before
+the instance quota check and never replaces a saved source. Creation failure does
+not delete the Agent, namespace or HOME. A concurrent mutation returns a conflict;
+refresh before retrying, and never submit a masked or empty password.
+
+Credentials stay out of CRDs, responses, Helm values, logs, Agent environments
+and HOME. Portal clears credential fields after submission or cancellation and
+does not retain them in mutation caches. Source persistence, synchronization and
+successful image pulling are separate states. `RegistryCredentialsReady` records
+copy readiness; a bad password, unavailable registry or missing image can still
+leave the Pod unready. An image cached on a node is not an authentication test.
+
+### Rotation and recovery
+
+Content rotation updates the same local Secret without entering a rollout.
+Adding or removing the reference updates future Pod templates without replacing
+a healthy Pod. Native StatefulSets use an `OnDelete` update for that limited
+case; a later chart, image or runtime configuration change explicitly restores
+`RollingUpdate` and clears the credential-only readiness marker. A chart change
+is never classified as credential-only, even when its values are unchanged.
+An initial image-pull failure is different: a Pod that never ran an Agent
+and lacks the new pull reference is replaced using UID and resource-version
+preconditions. Its StatefulSet and PVCs are retained. A Pod that is healthy or
+has already run a workload is not replaced by this recovery path. Identical
+retries of an applied native release skip upgrade hooks.
+
+New built-in namespaces record their Agent UID at creation, before Pod readiness.
+An existing unowned namespace is not adopted based on its name alone; it needs
+a trusted prior namespace/release status binding. Custom retains its existing
+writer-coordination rules. Suspension remains available when credentials cannot
+be synchronized, without pulling a chart or starting an upgrade hook. Native
+ingress cleanup validates the UID-owned namespace and managed route labels;
+it does not require Custom-only ownership annotations. Deletion and same-name
+recreation use actual Agent UIDs and do not reuse another instance's source.
+These operations do not revoke the external Registry account or change PVC
+retention policy.
+
+### Permissions
+
+The permission gate checks effective ServiceAccount authorization, including
+named Role/ClusterRole grants, indirect workload creation and service-account
+token issuance. Incompatible access or failed authorization checks block saving
+or copying credentials; the platform does not silently rewrite existing grants.
+The platform Custom Terminal's own-namespace exec permission is accepted only
+after checking its Agent UID ownership and the exact fail-closed admission rule
+and Deny binding that restrict exec to the Agent's main container and approved
+shell commands. This exception never applies to an Agent runtime identity,
+cross-namespace exec, Secret access, token issuance or admission-policy changes.
+Portal and Operator need the packaged RBAC inspection and SubjectAccessReview
+permissions, including reads of the terminal ServiceAccount and admission
+objects. Reviews are deduplicated within each check and run with at most eight
+requests in flight; authorization results are not cached across checks.
+Existing broad control-plane grants are not narrowed by this
+feature. Operator also needs Pod deletion permission for the bounded initial-pull
+recovery above; no such permission is granted to Agent workloads. Privileged
+containers and unqualified added capabilities are rejected. Container setuid
+support alone is not treated as host privilege; API authorization and credential
+mounts are checked separately.
+Administrators must also keep tenant Kubernetes identities out of both
+credential locations, protect node access, configure Secret encryption at rest
+and backups, and prevent request-body logging at proxies or tracing collectors.
+Registry mutations perform live authorization reviews; API capacity and latency
+at the deployment's instance count require environment qualification.
 
 ## Image, storage and model access
 

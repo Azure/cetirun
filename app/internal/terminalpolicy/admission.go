@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-package terminal
+package terminalpolicy
 
 import (
 	"encoding/json"
@@ -13,7 +13,7 @@ func AdmissionExpression(namespace, pod, container, account, agentUID string) st
 	probes, shells := []string{}, []string{}
 	for _, candidate := range ShellCandidates() {
 		probe, _ := json.Marshal(candidate.Probe)
-		command, _ := shellCommand(candidate.Name)
+		command, _ := ShellCommand(candidate.Name)
 		shell, _ := json.Marshal(command)
 		probes = append(probes, "object.command == "+string(probe))
 		shells = append(shells, "object.command == "+string(shell))

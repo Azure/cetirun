@@ -4,6 +4,7 @@
 package terminal
 
 import (
+	"github.com/Azure/CetiRun/app/internal/terminalpolicy"
 	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -25,11 +26,11 @@ func ReadRoles(namespace, workload, agentName, agentUID string) (*rbacv1.Role, *
 			}},
 		}
 	}
-	role := &rbacv1.Role{ObjectMeta: meta(WorkloadName(workload), namespace), Rules: []rbacv1.PolicyRule{
+	role := &rbacv1.Role{ObjectMeta: meta(terminalpolicy.WorkloadName(workload), namespace), Rules: []rbacv1.PolicyRule{
 		{APIGroups: []string{""}, Resources: []string{"pods"}, ResourceNames: []string{workload + "-0"}, Verbs: []string{"get"}},
 		{APIGroups: []string{"apps"}, Resources: []string{"statefulsets"}, ResourceNames: []string{workload}, Verbs: []string{"get"}},
 	}}
-	reader := &rbacv1.ClusterRole{ObjectMeta: meta(AgentReaderName(agentUID), ""), Rules: []rbacv1.PolicyRule{{
+	reader := &rbacv1.ClusterRole{ObjectMeta: meta(terminalpolicy.AgentReaderName(agentUID), ""), Rules: []rbacv1.PolicyRule{{
 		APIGroups: []string{"cetirun.microsoft.com"}, Resources: []string{"agents"}, ResourceNames: []string{agentName}, Verbs: []string{"get"},
 	}}}
 	return role, reader

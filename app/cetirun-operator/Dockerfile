@@ -11,19 +11,21 @@ ARG GIT_SHA
 ARG TARGETOS
 ARG TARGETARCH
 
-WORKDIR /workspace
+WORKDIR /workspace/app/cetirun-operator
 
 # Copy go module files and download dependencies first (layer caching).
 COPY app/cetirun-operator/go.mod app/cetirun-operator/go.sum ./
+COPY app/internal/go.mod app/internal/go.sum ../internal/
 RUN go mod download
 
 # Copy operator source.
 COPY app/cetirun-operator/ .
+COPY app/internal/ ../internal/
 
 # Build the manager binary.
 RUN CGO_ENABLED=0 GOEXPERIMENT=ms_nocgo_opensslcrypto GOOS="${TARGETOS}" GOARCH="${TARGETARCH}" go build -a \
     -ldflags "-X github.com/Azure/CetiRun/app/cetirun-operator/internal/buildinfo.Version=${VERSION} -X github.com/Azure/CetiRun/app/cetirun-operator/internal/buildinfo.Commit=${GIT_SHA}" \
-    -o manager ./cmd/main.go
+    -o /manager ./cmd/main.go
 
 # ──────────────────────────────────────────────
 # Runtime stage
@@ -39,7 +41,7 @@ LABEL org.opencontainers.image.licenses="MIT"
 WORKDIR /
 
 # Copy the compiled binary.
-COPY --from=builder /workspace/manager /manager
+COPY --from=builder /manager /manager
 
 # Chart is now pulled from OCI registry at runtime.
 # No bundled chart in the image.

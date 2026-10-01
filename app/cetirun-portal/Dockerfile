@@ -23,8 +23,9 @@ ARG GIT_SHA
 ARG TARGETOS
 ARG TARGETARCH
 WORKDIR /workspace
-# Copy operator module (needed for CRD types via replace directive).
+# Copy local modules needed for API types and internal contracts.
 COPY app/cetirun-operator/ app/cetirun-operator/
+COPY app/internal/ app/internal/
 # Copy portal module.
 COPY app/cetirun-portal/go.mod app/cetirun-portal/go.sum app/cetirun-portal/
 WORKDIR /workspace/app/cetirun-portal

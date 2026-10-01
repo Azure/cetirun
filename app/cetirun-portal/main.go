@@ -95,6 +95,7 @@ func main() {
 
 	// Create handlers.
 	kubeClient := kube.NewClient(k8sClient)
+	kubeClient.SetRegistryCredentialNamespace(cfg.RegistryCredentialNamespace)
 	instanceHandler := &handler.InstanceHandler{Kube: kubeClient, Config: cfg}
 	healthHandler := &handler.HealthHandler{KubeClient: k8sClient}
 	featuresHandler := &handler.FeaturesHandler{Config: cfg}

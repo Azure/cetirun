@@ -13,6 +13,7 @@ import (
 
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/runtimebindings"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/terminal"
+	"github.com/Azure/CetiRun/app/internal/terminalpolicy"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkv1 "k8s.io/api/networking/v1"
@@ -88,8 +89,8 @@ func (p *PreparedRelease) terminalObjects(b runtimebindings.Custom) ([]map[strin
 		return nil, ErrTerminalAPIBindingPending
 	}
 	fullname := text(p.Values["fullnameOverride"])
-	name := terminal.WorkloadName(fullname)
-	readerName := terminal.AgentReaderName(b.AgentUID)
+	name := terminalpolicy.WorkloadName(fullname)
+	readerName := terminalpolicy.AgentReaderName(b.AgentUID)
 	labels := map[string]string{
 		"app.kubernetes.io/name":     "cetirun-terminal",
 		"app.kubernetes.io/instance": p.releaseName,

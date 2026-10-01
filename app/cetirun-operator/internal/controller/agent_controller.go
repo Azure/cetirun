@@ -6,12 +6,13 @@ package controller
 import (
 	"context"
 	"fmt"
-	"google.golang.org/protobuf/proto"
 	"maps"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
+
+	"google.golang.org/protobuf/proto"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -37,6 +38,7 @@ import (
 	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/agents/builtin"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/helm"
+	"github.com/Azure/CetiRun/app/internal/registryauth"
 )
 
 // AgentReconciler reconciles Agent objects.
@@ -52,29 +54,32 @@ import (
 // +kubebuilder:rbac:groups=storage.k8s.io,resources=storageclasses,verbs=get
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles;clusterrolebindings,verbs=get;list
+// +kubebuilder:rbac:groups=authorization.k8s.io,resources=subjectaccessreviews,verbs=create
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
-// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list
+// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;delete
 // +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=networking.istio.io,resources=virtualservices;sidecars,verbs=get;list;watch;create;update;patch;delete
 type AgentReconciler struct {
 	client.Client
-	APIReader            client.Reader
-	Scheme               *runtime.Scheme
-	EventRecorder        record.EventRecorder
-	HelmClient           HelmInstaller
-	OperatorNamespace    string
-	OperatorSAName       string
-	ChartVersion         string
-	IstioRevision        string // explicit override; if empty, auto-detected from aks-istio-system
-	IstioGateway         string // namespace/name of the Gateway used by instance VirtualServices
-	DomainSuffix         string
-	SkillsStorageAccount string
-	CetiRunHelmValues    map[string]interface{} // Operator-level Helm value overrides for all instances
-	ChartRegistry        string                 // OCI registry host (e.g. "registry.example.com"), derived from chart repo URL
-	DefaultModel         string                 // Default GitHub Copilot model when spec.model is empty
-	CustomBindings       CustomBindingProvider
+	APIReader                   client.Reader
+	Scheme                      *runtime.Scheme
+	EventRecorder               record.EventRecorder
+	HelmClient                  HelmInstaller
+	OperatorNamespace           string
+	OperatorSAName              string
+	ChartVersion                string
+	IstioRevision               string // explicit override; if empty, auto-detected from aks-istio-system
+	IstioGateway                string // namespace/name of the Gateway used by instance VirtualServices
+	DomainSuffix                string
+	SkillsStorageAccount        string
+	CetiRunHelmValues           map[string]interface{} // Operator-level Helm value overrides for all instances
+	ChartRegistry               string                 // OCI registry host (e.g. "registry.example.com"), derived from chart repo URL
+	DefaultModel                string                 // Default GitHub Copilot model when spec.model is empty
+	CustomBindings              CustomBindingProvider
+	RegistryCredentialNamespace string
 
 	// Azure config for Teams auto-provisioning.
 	AzureSubscriptionID string
@@ -111,6 +116,15 @@ func (r *AgentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if r.APIReader == nil {
 		r.APIReader = mgr.GetAPIReader()
 	}
+	if err := mgr.GetFieldIndexer().IndexField(context.Background(), &cetirunv1alpha1.Agent{}, registrySourceIndex, func(obj client.Object) []string {
+		agent := obj.(*cetirunv1alpha1.Agent)
+		if agent.Spec.Agent.RegistrySecretRef == nil {
+			return nil
+		}
+		return []string{agent.Spec.Agent.RegistrySecretRef.Name}
+	}); err != nil {
+		return err
+	}
 	if err := mgr.GetFieldIndexer().IndexField(
 		context.Background(),
 		&cetirunv1alpha1.Agent{},
@@ -131,6 +145,7 @@ func (r *AgentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&cetirunv1alpha1.Agent{}).
 		Owns(&appsv1.Deployment{}).
+		WatchesMetadata(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.enqueueRegistrySecret)).
 		Watches(
 			&cetirunv1alpha1.Team{},
 			handler.EnqueueRequestsFromMapFunc(r.enqueueInstancesForTeam),
@@ -164,6 +179,9 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 
 	// 2. Handle deletion.
 	if !instance.DeletionTimestamp.IsZero() {
+		if err := r.cleanupRegistryCredentials(ctx, instance, true); err != nil {
+			return r.registryWaiting(ctx, instance, "RegistryCleanupPending")
+		}
 		if instance.Spec.Agent.Type == cetirunv1alpha1.AgentTypeCustom {
 			return r.deleteCustom(ctx, instance)
 		}
@@ -202,10 +220,16 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	if instance.Spec.Agent.Type == cetirunv1alpha1.AgentTypeCustom && instance.Spec.Suspended {
 		return r.suspendCustom(ctx, instance)
 	}
+	if instance.Spec.Agent.Type != cetirunv1alpha1.AgentTypeCustom && instance.Spec.Suspended && registryManaged(instance) {
+		return r.suspendRegistryBuiltin(ctx, instance)
+	}
 	if instance.Spec.Agent.Type == cetirunv1alpha1.AgentTypeCustom {
 		if err := r.retryCustomCompletion(ctx, instance); err != nil {
 			return r.customWaiting(ctx, instance, "CustomCompletionPending", "Waiting to acknowledge the previous apply outcome")
 		}
+	}
+	if err := r.removeRegistryCredentials(ctx, instance); err != nil {
+		return r.registryWaiting(ctx, instance, "RegistryCleanupPending")
 	}
 
 	if err := validateAgentRuntime(instance.Spec.Agent); err != nil {
@@ -273,6 +297,21 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 			return ctrl.Result{}, fmt.Errorf("persist Agent Identity provisioning intent: %w", err)
 		}
 		return ctrl.Result{Requeue: true}, nil
+	}
+
+	if instance.Spec.Agent.RegistrySecretRef != nil && instance.Spec.Agent.Image != nil && !instance.Spec.Suspended {
+		// Credential rotation must not pull the runtime chart or enter Helm.
+		values, err := buildHelmValues(instance, team, r.DomainSuffix, r.SkillsStorageAccount, r.CetiRunHelmValues, r.ChartRegistry, r.DefaultModel)
+		if err != nil {
+			return r.registryWaiting(ctx, instance, "RegistryRuntimeConfigRejected")
+		}
+		sa, err := registryServiceAccount(values, instanceServiceName(instance.Name))
+		if err != nil {
+			return r.registryWaiting(ctx, instance, "RegistryIsolationUnverified")
+		}
+		if _, err := r.syncRegistryCredentials(ctx, instance, sa); err != nil {
+			return r.registryWaiting(ctx, instance, err.Error())
+		}
 	}
 
 	var prepared *helm.PreparedRelease
@@ -418,7 +457,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 
 	// 6. Ensure namespace.
 	logger.V(1).Info("Ensuring namespace", "namespace", ns)
-	if err := r.ensureNamespace(ctx, ns, alias); err != nil {
+	if err := r.ensureNamespace(ctx, ns, alias, instance); err != nil {
 		return r.failWith(ctx, instance, "ProvisioningFailed", fmt.Sprintf("ensure namespace: %v", err))
 	}
 
@@ -552,6 +591,15 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionAgentConfigReady,
 		metav1.ConditionTrue, "AgentConfigResolved", "Built-in Harness configuration resolved")
 	helmValues = prepared.Values
+	if instance.Spec.Agent.RegistrySecretRef != nil {
+		sa, err := registryServiceAccount(helmValues, instanceServiceName(instance.Name))
+		if err != nil {
+			return r.registryWaiting(ctx, instance, "RegistryIsolationUnverified")
+		}
+		if err := registryauth.CheckIsolation(ctx, r.registryClient(), r.registryNamespace(), ns, sa, instance.Spec.Agent.RegistrySecretRef.Name); err != nil {
+			return r.registryWaiting(ctx, instance, "RegistryIsolationUnverified")
+		}
+	}
 	// existingSecret is not rendered by the chart and therefore cannot
 	// contribute to checksum/secret. Its resourceVersion is non-sensitive and
 	// changes on every Secret update, so include it in the Pod template to roll
@@ -562,6 +610,9 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		})
 	}
 	if !alreadyDeployed {
+		if err := r.checkRegistryIntent(ctx, instance); err != nil {
+			return ctrl.Result{Requeue: true}, nil
+		}
 		logger.Info("Installing/upgrading Helm chart", "release", releaseName, "namespace", ns)
 		if err := r.HelmClient.InstallOrUpgrade(ns, releaseName, prepared); err != nil {
 			logger.Error(err, "Helm install/upgrade failed", "release", releaseName)
@@ -581,6 +632,14 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 			"Helm chart openclaw installed in namespace %s", ns)
 	} else {
 		logger.V(1).Info("Skipping Helm install, already deployed at current generation", "release", releaseName)
+	}
+	if registryManaged(instance) {
+		if err := r.cleanupRegistryCredentials(ctx, instance, false); err != nil {
+			return r.registryWaiting(ctx, instance, "RegistryCleanupPending")
+		}
+	}
+	if err := r.recoverRegistryPull(ctx, instance); err != nil {
+		return ctrl.Result{}, err
 	}
 
 	// 10. Handle suspended instances.
@@ -696,9 +755,9 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	if sts.Spec.Replicas != nil {
 		desiredReplicas = *sts.Spec.Replicas
 	}
-	rolloutComplete := sts.Status.UpdatedReplicas >= desiredReplicas &&
+	rolloutComplete := (sts.Status.UpdatedReplicas >= desiredReplicas || registryOnlyRollout(sts)) &&
 		sts.Status.ReadyReplicas >= desiredReplicas &&
-		sts.Status.ObservedGeneration >= sts.Generation
+		(sts.Status.ObservedGeneration >= sts.Generation || registryOnlyRollout(sts))
 	if !rolloutComplete {
 		logger.Info("StatefulSet rollout not complete, requeueing",
 			"statefulset", stsName,
@@ -1026,7 +1085,7 @@ func (r *AgentReconciler) resolveIstioRevision(ctx context.Context) string {
 }
 
 // ensureNamespace creates the instance namespace if it does not already exist.
-func (r *AgentReconciler) ensureNamespace(ctx context.Context, ns, alias string) error {
+func (r *AgentReconciler) ensureNamespace(ctx context.Context, ns, alias string, owner ...*cetirunv1alpha1.Agent) error {
 	logger := log.FromContext(ctx)
 	desiredLabels := map[string]string{
 		"app.kubernetes.io/name":       "cetirun",
@@ -1072,6 +1131,9 @@ func (r *AgentReconciler) ensureNamespace(ctx context.Context, ns, alias string)
 			Name:   ns,
 			Labels: desiredLabels,
 		},
+	}
+	if len(owner) > 0 && owner[0] != nil && owner[0].UID != "" {
+		nsObj.OwnerReferences = []metav1.OwnerReference{registryauth.Owner(owner[0])}
 	}
 	if err := r.Create(ctx, nsObj); err != nil && !errors.IsAlreadyExists(err) {
 		return fmt.Errorf("create namespace %s: %w", ns, err)

@@ -36,6 +36,12 @@ spec:
               containerPort: 8081
               protocol: TCP
           env:
+            - name: REGISTRY_CREDENTIAL_NAMESPACE
+              value: {{ default .Values.registryCredentials.namespace .Values.global.registryCredentialNamespace | quote }}
+            {{- if .Values.istio.host }}
+            - name: PORTAL_ORIGIN
+              value: {{ printf "https://%s" .Values.istio.host | quote }}
+            {{- end }}
             - name: LISTEN_ADDR
               value: ":8080"
             - name: INTERNAL_LISTEN_ADDR
@@ -55,8 +61,7 @@ spec:
               value: {{ required "agentIdentity.portalClientId is required when Agent Identity is enabled" .Values.agentIdentity.portalClientId | quote }}
             - name: AGENT_ID_BROKER_URL
               value: {{ required "agentIdentity.brokerURL is required when Agent Identity is enabled" .Values.agentIdentity.brokerURL | quote }}
-            - name: PORTAL_ORIGIN
-              value: {{ printf "https://%s" (required "istio.host is required when Agent Identity is enabled" .Values.istio.host) | quote }}
+            {{- $_ := required "istio.host is required when Agent Identity is enabled" .Values.istio.host }}
             {{- end }}
             - name: ADMIN_ALIASES_FILE
               value: /etc/cetirun-portal/admins/aliases

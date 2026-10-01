@@ -9,12 +9,25 @@ metadata:
   {{- end }}
   labels:
     {{- include "cetirun.labels" . | nindent 4 }}
-  {{- with .Values.podAnnotations }}
   annotations:
+    {{- with .Values.podAnnotations }}
     {{- toYaml . | nindent 4 }}
-  {{- end }}
+    {{- end }}
+    {{- if ((.Values.runtime | default dict).preserveRunningPod) }}
+    cetirun.microsoft.com/registry-binding-only: "true"
+    {{- else }}
+    cetirun.microsoft.com/registry-binding-only: "false"
+    {{- end }}
 spec:
   replicas: {{ .Values.replicaCount }}
+  {{- if ((.Values.runtime | default dict).preserveRunningPod) }}
+  updateStrategy:
+    type: OnDelete
+    rollingUpdate: null
+  {{- else }}
+  updateStrategy:
+    type: RollingUpdate
+  {{- end }}
   serviceName: {{ include "cetirun.fullname" . }}
   selector:
     matchLabels:

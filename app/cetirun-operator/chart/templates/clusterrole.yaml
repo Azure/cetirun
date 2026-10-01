@@ -45,8 +45,11 @@ rules:
   # Namespaces
   - apiGroups: [""]
     resources: ["namespaces"]
-    verbs: ["get", "list", "watch", "create", "update", "delete"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 
+  - apiGroups: ["authorization.k8s.io"]
+    resources: ["subjectaccessreviews"]
+    verbs: ["create"]
   # The operator also creates per-instance Roles. This ClusterRole grants its
   # own permissions cluster-wide; those Roles do not narrow this grant. Runtime
   # ownership and namespace checks still apply before acting on bound resources.
@@ -80,7 +83,7 @@ rules:
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: [""]
     resources: ["pods"]
-    verbs: ["get", "list"]
+    verbs: ["get", "list", "delete"]
   - apiGroups: [""]
     resources: ["endpoints"]
     resourceNames: ["kubernetes"]

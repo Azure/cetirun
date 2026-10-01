@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor, fireEvent } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { CreateForm } from "../CreateForm";
@@ -16,11 +16,12 @@ vi.mock("../../hooks/useFeatures", () => ({
 }));
 
 const mockMutate = vi.fn();
+const mockCreateOptions = vi.hoisted(() => ({ onSettled: undefined as undefined | (() => void) }));
 vi.mock("../../hooks/useInstance", () => ({
-  useCreateInstance: () => ({
-    mutate: mockMutate,
-    isPending: false,
-  }),
+  useCreateInstance: (options: { onSettled?: () => void }) => {
+    mockCreateOptions.onSettled = options.onSettled;
+    return { mutate: mockMutate, isPending: false };
+  },
 }));
 
 const mockTeams = vi.hoisted(() => ({
@@ -82,6 +83,36 @@ describe("CreateForm", () => {
     fireEvent.submit(screen.getByRole("button", { name: "Create Agent" }).closest("form")!);
     expect(mockMutate).not.toHaveBeenCalled();
     expect(screen.getByText(/HTTP port must be an integer/)).toBeInTheDocument();
+  });
+
+  it.each(["hermes", "custom"])("creates a private %s image with a stable retry ID and clears credentials", async (type) => {
+    mockFeatures.data.allowedAgentTypes = [type];
+    const user = userEvent.setup();
+    renderWithQuery(<CreateForm />);
+    const image = "registry.example.com/team/assistant:1";
+    await user.type(await screen.findByLabelText(/Agent Image/), image);
+    await user.click(screen.getByLabelText("Use private registry credentials"));
+    await user.type(screen.getByLabelText(/Registry username/), "synthetic-user");
+    await user.type(screen.getByLabelText(/Registry password or token/), "synthetic-token");
+    await user.click(screen.getByRole("button", { name: "Create Agent" }));
+    const first = mockMutate.mock.calls[0][0];
+    expect(first.agent).toMatchObject({ type, image });
+    expect(first.registryAuth).toEqual({ username: "synthetic-user", password: "synthetic-token" });
+    expect(first.requestId).toMatch(/^[a-zA-Z0-9_-]{16,128}$/);
+    if (type === "custom") {
+      expect(first.agent).toEqual({ type, image, username: "vibe" });
+      expect(JSON.parse(JSON.stringify(first))).not.toHaveProperty("gatewayToken");
+    }
+    act(() => mockCreateOptions.onSettled?.());
+    expect(screen.getByLabelText(/Registry username/)).toHaveValue("");
+    expect(screen.getByLabelText(/Registry password or token/)).toHaveValue("");
+    await user.type(screen.getByLabelText(/Registry username/), "synthetic-user");
+    await user.type(screen.getByLabelText(/Registry password or token/), "synthetic-token");
+    await user.click(screen.getByRole("button", { name: "Create Agent" }));
+    expect(mockMutate.mock.calls[1][0].requestId).toBe(first.requestId);
+    await user.click(screen.getByLabelText("Use private registry credentials"));
+    await user.click(screen.getByLabelText("Use private registry credentials"));
+    expect(screen.getByLabelText(/Registry password or token/)).toHaveValue("");
   });
 
   it("renders form fields", () => {

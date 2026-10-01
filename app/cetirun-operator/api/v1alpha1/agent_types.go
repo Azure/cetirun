@@ -222,6 +222,17 @@ type AgentStatus struct {
 	// Sandbox records the last fully enforced binding, not a pending selection.
 	// +optional
 	Sandbox *SandboxStatus `json:"sandbox,omitempty"`
+
+	// RegistryCredentials records the objects verified by the last sync, not
+	// proof that a node can pull the image.
+	// +optional
+	RegistryCredentials *RegistryCredentialsStatus `json:"registryCredentials,omitempty"`
+}
+
+type RegistryCredentialsStatus struct {
+	SourceUID             string `json:"sourceUID"`
+	SourceResourceVersion string `json:"sourceResourceVersion"`
+	PullSecretUID         string `json:"pullSecretUID"`
 }
 
 // AgentIdentitySpec exposes only the feature switch. Tenant, Blueprint,
@@ -293,17 +304,18 @@ type SandboxStatus struct {
 
 // Condition type constants.
 const (
-	ConditionReady              = "Ready"
-	ConditionHelmDeployed       = "HelmDeployed"
-	ConditionIngressReady       = "IngressReady"
-	ConditionPodReady           = "PodReady"
-	ConditionTailscaleReady     = "TailscaleReady"
-	ConditionTeamsReady         = "TeamsReady"
-	ConditionAgentConfigReady   = "AgentConfigReady"
-	ConditionAgentIdentityReady = "AgentIdentityReady"
-	ConditionSandboxReady       = "SandboxReady"
-	ConditionDesktopConfigured  = "DesktopConfigured"
-	ConditionTerminalConfigured = "TerminalConfigured"
+	ConditionReady                    = "Ready"
+	ConditionHelmDeployed             = "HelmDeployed"
+	ConditionIngressReady             = "IngressReady"
+	ConditionPodReady                 = "PodReady"
+	ConditionTailscaleReady           = "TailscaleReady"
+	ConditionTeamsReady               = "TeamsReady"
+	ConditionAgentConfigReady         = "AgentConfigReady"
+	ConditionAgentIdentityReady       = "AgentIdentityReady"
+	ConditionSandboxReady             = "SandboxReady"
+	ConditionDesktopConfigured        = "DesktopConfigured"
+	ConditionTerminalConfigured       = "TerminalConfigured"
+	ConditionRegistryCredentialsReady = "RegistryCredentialsReady"
 )
 
 // Agent Identity lifecycle phases.

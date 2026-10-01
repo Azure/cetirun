@@ -22,9 +22,15 @@ export interface InstanceVersion {
   resourceVersion: string;
 }
 
+export interface RegistryAuth {
+  username: string;
+  password: string;
+}
+
 export interface Instance extends InstanceVersion {
   instanceName: string;
   agent: AgentConfig;
+  registryAuthConfigured?: boolean;
   generation?: number;
   observedGeneration?: number;
   alias: string;
@@ -63,6 +69,8 @@ export interface ConditionStatus {
 export interface CreateInstanceRequest {
   instanceName?: string;
   agent: Omit<AgentConfig, "registrySecretRef" | "type"> & { type?: AgentType };
+  registryAuth?: RegistryAuth;
+  requestId?: string;
   displayName?: string;
   team?: string;
   gatewayToken?: string;
