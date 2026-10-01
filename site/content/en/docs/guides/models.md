@@ -9,9 +9,9 @@ Anthropic model through Helm values.
 
 ## Models through the AI Gateway
 
-When the deployment enables the platform AI Gateway (`aiGateway.enabled` in the
-operator chart and `features.aiGatewayEnabled` in the portal chart), OpenClaw
-instances take all their models from the Gateway, from two sources:
+The platform AI Gateway is part of every platform installation: the operator's
+`aiGateway.enabled` and the portal's `features.aiGatewayEnabled` are required.
+OpenClaw instances take all their models from the Gateway, from two sources:
 
 - **Shared models** are the models an administrator configures in the Gateway
   with the access group `cetirun-shared`. They keep the administrator's names.
@@ -21,7 +21,7 @@ instances take all their models from the Gateway, from two sources:
 
 The create form offers both sources, on by default. At least one stays on:
 GitHub Copilot stays on while shared models are off or none is available. Every
-new instance needs a Team while the Gateway is enabled.
+new instance needs a Team.
 
 To add Copilot models, open the instance and choose **Sign in with GitHub**. The
 portal runs the GitHub device-code sign-in, stores the token for the instance's
