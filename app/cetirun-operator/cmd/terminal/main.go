@@ -72,7 +72,7 @@ func run() error {
 		}
 	}
 	changes := make(chan os.Signal, 1)
-	signal.Notify(changes, syscall.SIGWINCH)
+	notifyResize(changes)
 	defer signal.Stop(changes)
 	go func() {
 		for {

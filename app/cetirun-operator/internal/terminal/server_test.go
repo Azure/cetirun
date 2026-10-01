@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -16,7 +17,14 @@ import (
 
 func proxyFixture(t *testing.T, handler http.HandlerFunc) (*Server, *httptest.Server) {
 	t.Helper()
-	socket := filepath.Join(t.TempDir(), "ttyd.sock")
+	// A Unix socket path must fit in 108 bytes. t.TempDir() embeds the test
+	// name, which makes the path longer than that on Windows.
+	dir, err := os.MkdirTemp("", "tty")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	socket := filepath.Join(dir, "ttyd.sock")
 	listener, err := net.Listen("unix", socket)
 	if err != nil {
 		t.Fatal(err)
