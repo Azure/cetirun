@@ -1275,6 +1275,97 @@ func TestAIGatewayVerificationTimeMovesOnlyWhenDue(t *testing.T) {
 	}
 }
 
+// An Agent queued because the Gateway lost its Copilot routes must not take
+// the lightweight pass, which skips the Gateway until the next verification.
+func TestLostCopilotRouteMakesTheFullReconcileDue(t *testing.T) {
+	agent := routedAgent()
+	now := metav1.Now()
+	route := copilotRegistrationID(agent, "gpt-5.5", "0123abcd")
+	agent.Status.AIGateway.LastVerifiedTime = &now
+	agent.Status.AIGateway.Copilot = &cetirunv1alpha1.AIGatewayCopilotStatus{
+		Phase: cetirunv1alpha1.AIGatewayCopilotPhaseReady, AccessGroup: copilotAccessGroup(agent),
+		Registered: []string{route}, Models: []string{"copilot/gpt-5.5"},
+	}
+	r, _, gateway := aiGatewayTestReconciler(t, agent)
+	if r.aiGatewayReconcileDue(agent, time.Now()) {
+		t.Fatal("a fresh verification is not due while nothing is known about the routes")
+	}
+	gateway.models[route] = aigateway.ModelRequest{ID: route, ModelName: "copilot/gpt-5.5", AccessGroups: []string{copilotAccessGroup(agent)}}
+	r.refreshAIGatewayCatalogWithin(context.Background(), gateway, 0)
+	if r.aiGatewayReconcileDue(agent, time.Now()) {
+		t.Fatal("an Agent whose routes the Gateway has waits for its verification")
+	}
+	delete(gateway.models, route)
+	r.refreshAIGatewayCatalogWithin(context.Background(), gateway, 0)
+	if !r.aiGatewayReconcileDue(agent, time.Now()) {
+		t.Fatal("an Agent whose route the Gateway lost must get the full reconcile now")
+	}
+	r.AIGateway.Enabled = false
+	if r.aiGatewayReconcileDue(agent, time.Now()) {
+		t.Fatal("nothing is due with the Gateway off")
+	}
+}
+
+// The whole path of a lost route: the catalog refresh shows it gone, and the
+// Agent's next reconcile adds it back although its verification is not due.
+func TestReconcileRestoresLostCopilotRoutesBeforeTheVerification(t *testing.T) {
+	agent := aiGatewayTestAgent(testAIGatewayTeam)
+	r, kube, gateway := aiGatewayTestReconciler(t, agent, aiGatewayTestTeam(testAIGatewayTeam))
+	r.HelmClient = &chartHelm{}
+	ctx := context.Background()
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: agent.Name}}
+	current := func() *cetirunv1alpha1.Agent {
+		t.Helper()
+		got := &cetirunv1alpha1.Agent{}
+		if err := kube.Get(ctx, req.NamespacedName, got); err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	reconcile := func(times int) {
+		t.Helper()
+		for i := 0; i < times; i++ {
+			if _, err := r.Reconcile(ctx, req); err != nil {
+				t.Fatalf("reconcile: %v", err)
+			}
+		}
+	}
+	reconcile(3)
+	signedIn := current()
+	signIn(t, kube, signedIn, testCopilotModels)
+	if err := kube.Update(ctx, signedIn); err != nil {
+		t.Fatal(err)
+	}
+	if err := kube.Create(ctx, readyProxy(1)); err != nil {
+		t.Fatal(err)
+	}
+	reconcile(3)
+	routes := len(gateway.models)
+	if routes == 0 {
+		t.Fatalf("no Copilot routes registered: %+v", current().Status.AIGateway.Copilot)
+	}
+	// Only a Ready Agent qualifies for the lightweight pass; the fake Helm
+	// client starts no Pods, so mark it Ready as the workload would.
+	ready := current()
+	ready.Status.Phase = cetirunv1alpha1.PhaseReady
+	if err := kube.Status().Update(ctx, ready); err != nil {
+		t.Fatal(err)
+	}
+	reconcile(1)
+	verified := current().Status.AIGateway.LastVerifiedTime
+
+	// The Gateway loses the routes, and the catalog refresh sees it.
+	gateway.models = map[string]aigateway.ModelRequest{}
+	r.refreshAIGatewayCatalogWithin(ctx, gateway, 0)
+	reconcile(1)
+	if len(gateway.models) != routes {
+		t.Fatalf("the reconcile restored %d of %d routes", len(gateway.models), routes)
+	}
+	if after := current().Status.AIGateway.LastVerifiedTime; !after.Equal(verified) {
+		t.Fatalf("restoring the routes is not a verification, yet its time moved: %v -> %v", verified, after)
+	}
+}
+
 func TestAIGatewayCopilotPendingKeepsReconciling(t *testing.T) {
 	agent := aiGatewayTestAgent(testAIGatewayTeam)
 	now := metav1.Now()

@@ -297,6 +297,18 @@ func aiGatewayVerificationDue(instance *cetirunv1alpha1.Agent, enabled bool, now
 	return now.Sub(status.LastVerifiedTime.Time) >= aiGatewayVerificationInterval
 }
 
+// aiGatewayReconcileDue reports whether the Agent needs the full Gateway
+// reconcile now rather than the lightweight pass: its key verification is
+// due, its Copilot proxy is starting or failed, or the Gateway no longer has
+// one of its Copilot routes. Without the last, an Agent queued because its
+// routes are gone would take the lightweight pass and wait for the
+// verification after all.
+func (r *AgentReconciler) aiGatewayReconcileDue(instance *cetirunv1alpha1.Agent, now time.Time) bool {
+	enabled := r.AIGateway.Enabled
+	return aiGatewayVerificationDue(instance, enabled, now) || aiGatewayCopilotPending(instance, enabled) ||
+		enabled && r.copilotRoutesLost(instance)
+}
+
 // aiGatewayCopilotPending reports a Copilot proxy that is starting or failed
 // to register its models. Such an Agent is reconciled on its short requeue
 // rather than waiting for the next key verification.
