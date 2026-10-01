@@ -446,6 +446,37 @@ kubectl rollout restart deployment/gateway-cetirun-ai-gateway-valkey
 kubectl rollout restart deployment/gateway-cetirun-ai-gateway
 ```
 
+The bundled PostgreSQL's password takes one more step. The database applies
+`POSTGRES_PASSWORD` only when it initializes an empty volume, so changing the
+Secret alone leaves the `litellm` role on its old password, and the Gateway's
+next Pods cannot connect. Change the role first, then the Secret, which holds
+the password twice, then restart the Gateway. A hex password needs no escaping
+in the database URL:
+
+```bash
+password="$(openssl rand -hex 24)"
+printf "ALTER ROLE litellm WITH PASSWORD '%s';\n" "$password" |
+  kubectl exec -i gateway-cetirun-ai-gateway-postgresql-0 -c postgresql -- \
+    psql -U litellm -d litellm -v ON_ERROR_STOP=1 -f -
+url="$(kubectl get secret gateway-cetirun-ai-gateway-postgresql \
+  -o jsonpath='{.data.database-url}' | base64 -d |
+  sed -E "s#^(postgresql://litellm:)[^@]*@#\1${password}@#")"
+b64() { printf '%s' "$1" | base64 | tr -d '\n'; }
+kubectl patch secret gateway-cetirun-ai-gateway-postgresql --type merge \
+  -p "{\"data\":{\"password\":\"$(b64 "$password")\",\"database-url\":\"$(b64 "$url")\"}}"
+kubectl rollout restart deployment/gateway-cetirun-ai-gateway
+```
+
+The password reaches `psql` on its standard input, not as an argument, so it
+does not show in process listings. `psql` connects over the Pod's local
+socket, which the bundled database trusts. Connections the Gateway already
+holds keep working until the restart.
+
+Measured on AKS: requests kept working throughout, the restarted Gateway
+connected with the new password, the database refused other passwords over the
+network, a restart of the database Pod kept its data, and a later
+`helm upgrade` kept the new password, because the chart reads the Secret back.
+
 ## Upgrade contract
 
 ### The salt key must never change
