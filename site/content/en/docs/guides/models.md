@@ -31,8 +31,14 @@ listed as not offered: it would escape the instance's budget.
 
 Each instance has its own virtual key with a monthly budget. The instance page
 lists its models and sets the default. When an administrator adds or removes a
-shared model, the operator updates every instance that uses shared models,
-which restarts them.
+shared model, or changes its limits, the operator updates every instance that
+uses shared models, which restarts them.
+
+An instance's configuration lists at most 256 models. Its GitHub Copilot
+models, at most 128, all stay; shared models fill the rest in name order, and
+the instance's default model and the deployment's default are kept. The
+operator reports the shared models it leaves out in an `AIGatewayModelsLimited`
+event on the Agent.
 
 Sources: [operator reconcile]({{< repo "app/cetirun-operator/internal/controller/ai_gateway.go" >}}),
 [Copilot proxy template]({{< repo "app/cetirun-chart/templates/copilot-proxy.yaml" >}}),

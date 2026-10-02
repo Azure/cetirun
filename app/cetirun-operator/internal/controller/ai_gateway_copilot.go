@@ -436,30 +436,38 @@ type aiGatewayModelEntry struct {
 	MaxTokens     int64
 }
 
+// aiGatewayMaxModels is the most models an Agent's configuration lists, the
+// agent chart's limit on aiGateway.models.
+const aiGatewayMaxModels = 256
+
 // aiGatewayModelEntries lists the models the Agent is configured with and its
 // default: the shared models when the owner kept them, from the Gateway
 // catalog, then the Agent's registered Copilot models. The default is the
 // Agent's own choice when available, then the deployment default, then the
 // first shared model, then the first Copilot model. An Agent without models
 // gets a placeholder its configuration requires; the Portal explains it.
-func (r *AgentReconciler) aiGatewayModelEntries(instance *cetirunv1alpha1.Agent) ([]aiGatewayModelEntry, string) {
-	var entries []aiGatewayModelEntry
-	var shared, copilot []string
+//
+// The configuration lists at most aiGatewayMaxModels models. The owner's
+// Copilot models, of which registration keeps at most
+// aiGatewayMaxCopilotModels, all stay; shared models fill the rest in name
+// order, the Agent's own choice and the deployment default first. The names
+// of the shared models left out are returned. The Agent's key still reaches
+// them; only its configuration does not list them.
+func (r *AgentReconciler) aiGatewayModelEntries(instance *cetirunv1alpha1.Agent) ([]aiGatewayModelEntry, string, []string) {
+	var sharedEntries, copilotEntries []aiGatewayModelEntry
 	status := instance.Status.AIGateway
 	if instance.Spec.SharedModelsEnabled() {
 		if models, known := r.aiGatewayCatalog.shared(); known {
 			for _, model := range models {
-				entries = append(entries, aiGatewayModelEntry{
+				sharedEntries = append(sharedEntries, aiGatewayModelEntry{
 					ID: model.Name, Name: model.Name, ContextWindow: model.ContextWindow, MaxTokens: model.MaxOutputTokens,
 				})
-				shared = append(shared, model.Name)
 			}
 		} else if status != nil {
 			// Without a catalog, keep the shared models last configured.
 			for _, name := range status.Models {
 				if !strings.HasPrefix(name, aiGatewayCopilotModelPrefix) && name != aiGatewayNoModelsModel {
-					entries = append(entries, aiGatewayModelEntry{ID: name, Name: name})
-					shared = append(shared, name)
+					sharedEntries = append(sharedEntries, aiGatewayModelEntry{ID: name, Name: name})
 				}
 			}
 		}
@@ -472,33 +480,76 @@ func (r *AgentReconciler) aiGatewayModelEntries(instance *cetirunv1alpha1.Agent)
 			}
 		}
 		for _, name := range status.Copilot.Models {
+			if len(copilotEntries) == aiGatewayMaxCopilotModels {
+				break
+			}
 			model := limits[name]
 			display := model.Name
 			if display == "" {
 				display = strings.TrimPrefix(name, aiGatewayCopilotModelPrefix)
 			}
-			entries = append(entries, aiGatewayModelEntry{
+			copilotEntries = append(copilotEntries, aiGatewayModelEntry{
 				ID: name, Name: display + " (GitHub Copilot)", ContextWindow: model.ContextWindow, MaxTokens: model.MaxOutputTokens,
 			})
-			copilot = append(copilot, name)
 		}
 	}
+	sharedEntries, omitted := keepSharedModels(sharedEntries, aiGatewayMaxModels-len(copilotEntries),
+		strings.TrimSpace(instance.Spec.Model), r.AIGateway.DefaultModel)
+	var shared, copilot []string
+	for _, entry := range sharedEntries {
+		shared = append(shared, entry.ID)
+	}
+	for _, entry := range copilotEntries {
+		copilot = append(copilot, entry.ID)
+	}
+	entries := append(sharedEntries, copilotEntries...)
 	available := func(name string) bool {
 		return name != "" && (slices.Contains(shared, name) || slices.Contains(copilot, name))
 	}
 	switch {
 	case available(strings.TrimSpace(instance.Spec.Model)):
-		return entries, strings.TrimSpace(instance.Spec.Model)
+		return entries, strings.TrimSpace(instance.Spec.Model), omitted
 	case available(r.AIGateway.DefaultModel):
-		return entries, r.AIGateway.DefaultModel
+		return entries, r.AIGateway.DefaultModel, omitted
 	case len(shared) > 0:
-		return entries, shared[0]
+		return entries, shared[0], omitted
 	case len(copilot) > 0:
-		return entries, copilot[0]
+		return entries, copilot[0], omitted
 	}
 	placeholder := aiGatewayNoModelsModel
 	if r.aiGatewayCopilotWanted(instance) {
 		placeholder = aiGatewaySignInRequiredModel
 	}
-	return append(entries, aiGatewayModelEntry{ID: placeholder, Name: placeholder}), placeholder
+	return append(entries, aiGatewayModelEntry{ID: placeholder, Name: placeholder}), placeholder, omitted
+}
+
+// keepSharedModels keeps at most room of the shared models: the preferred
+// ones first, then the others in their order. The kept models stay in their
+// order; the names of the others are returned.
+func keepSharedModels(models []aiGatewayModelEntry, room int, preferred ...string) ([]aiGatewayModelEntry, []string) {
+	if len(models) <= room {
+		return models, nil
+	}
+	keep := map[string]bool{}
+	for _, name := range preferred {
+		if len(keep) < room && slices.ContainsFunc(models, func(model aiGatewayModelEntry) bool { return model.ID == name }) {
+			keep[name] = true
+		}
+	}
+	for _, model := range models {
+		if len(keep) >= room {
+			break
+		}
+		keep[model.ID] = true
+	}
+	var kept []aiGatewayModelEntry
+	var omitted []string
+	for _, model := range models {
+		if keep[model.ID] {
+			kept = append(kept, model)
+		} else {
+			omitted = append(omitted, model.ID)
+		}
+	}
+	return kept, omitted
 }

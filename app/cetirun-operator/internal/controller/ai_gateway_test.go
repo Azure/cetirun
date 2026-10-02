@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -739,28 +740,138 @@ func TestAIGatewayModelEntriesChooseDefault(t *testing.T) {
 	agent.Status.AIGateway.Copilot = &cetirunv1alpha1.AIGatewayCopilotStatus{Models: []string{"copilot/gpt-5.5"}}
 	agent.Annotations = map[string]string{cetirunv1alpha1.AnnotationCopilotModels: testCopilotModels}
 
-	entries, def := r.aiGatewayModelEntries(agent)
+	entries, def, _ := r.aiGatewayModelEntries(agent)
 	if def != testSharedModelOne || len(entries) != 2 || entries[1].ID != "copilot/gpt-5.5" ||
 		entries[1].ContextWindow != 400000 || entries[1].MaxTokens != 128000 || entries[0].ContextWindow != 1000000 {
 		t.Fatalf("entries %+v default %q", entries, def)
 	}
 	agent.Spec.Model = "copilot/gpt-5.5"
-	if _, def := r.aiGatewayModelEntries(agent); def != "copilot/gpt-5.5" {
+	if _, def, _ := r.aiGatewayModelEntries(agent); def != "copilot/gpt-5.5" {
 		t.Fatalf("the Agent's own available choice wins, got %q", def)
 	}
 	agent.Spec.Model = "not-available"
 	r.AIGateway.DefaultModel = "copilot/gpt-5.5"
-	if _, def := r.aiGatewayModelEntries(agent); def != "copilot/gpt-5.5" {
+	if _, def, _ := r.aiGatewayModelEntries(agent); def != "copilot/gpt-5.5" {
 		t.Fatalf("an unavailable choice falls back to the deployment default, got %q", def)
 	}
 	agent.Spec.ModelAccess = modelAccess(false, true)
 	agent.Status.AIGateway.Copilot.Models = nil
-	if entries, def := r.aiGatewayModelEntries(agent); def != aiGatewaySignInRequiredModel || len(entries) != 1 {
+	if entries, def, _ := r.aiGatewayModelEntries(agent); def != aiGatewaySignInRequiredModel || len(entries) != 1 {
 		t.Fatalf("a Copilot-only Agent before sign-in gets the placeholder: %+v %q", entries, def)
 	}
 	agent.Spec.ModelAccess = modelAccess(false, false)
-	if _, def := r.aiGatewayModelEntries(agent); def != aiGatewayNoModelsModel {
+	if _, def, _ := r.aiGatewayModelEntries(agent); def != aiGatewayNoModelsModel {
 		t.Fatalf("an Agent without sources gets the no-models placeholder, got %q", def)
+	}
+}
+
+// manySharedModels adds count shared models, model-000 onwards, to the Gateway.
+func manySharedModels(gateway *fakeAIGateway, count int) {
+	for i := 0; i < count; i++ {
+		gateway.shared = append(gateway.shared, aigateway.Deployment{
+			ID: fmt.Sprintf("many-%03d", i), ModelName: fmt.Sprintf("model-%03d", i), AccessGroups: []string{aiGatewaySharedAccessGroup},
+		})
+	}
+}
+
+func TestAIGatewayModelEntriesKeepTheConfigurationWithinTheChartLimit(t *testing.T) {
+	r, _, gateway := aiGatewayTestReconciler(t)
+	manySharedModels(gateway, 300)
+	r.refreshAIGatewayCatalogWithin(context.Background(), gateway, 0)
+	agent := routedAgent()
+	copilot := []string{"copilot/claude-sonnet-4.5", "copilot/gpt-5.5"}
+	agent.Status.AIGateway.Copilot = &cetirunv1alpha1.AIGatewayCopilotStatus{Models: copilot}
+	agent.Spec.Model = "model-299"
+	r.AIGateway.DefaultModel = "model-298"
+
+	entries, def, omitted := r.aiGatewayModelEntries(agent)
+	if len(entries) != aiGatewayMaxModels {
+		t.Fatalf("%d entries, want the limit %d", len(entries), aiGatewayMaxModels)
+	}
+	ids := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		ids = append(ids, entry.ID)
+	}
+	// The owner's Copilot models all stay; the shared models fill the rest,
+	// the Agent's own choice and the deployment default first, then by name.
+	for _, want := range append([]string{"model-299", "model-298", "model-000", testSharedModelOne}, copilot...) {
+		if !slices.Contains(ids, want) {
+			t.Errorf("the configuration lacks %s", want)
+		}
+	}
+	if def != "model-299" {
+		t.Fatalf("the Agent's own choice stays its default, got %q", def)
+	}
+	if want := 301 + len(copilot) - aiGatewayMaxModels; len(omitted) != want {
+		t.Fatalf("%d shared models left out, want %d", len(omitted), want)
+	}
+	for _, name := range omitted {
+		if slices.Contains(ids, name) || name == "model-299" || name == "model-298" {
+			t.Fatalf("%s is both listed and left out", name)
+		}
+	}
+	if omitted[0] != "model-251" || omitted[len(omitted)-1] != "model-297" {
+		t.Fatalf("the shared models past the limit in name order are left out, got %s..%s", omitted[0], omitted[len(omitted)-1])
+	}
+}
+
+func TestAIGatewayMaxModelsMatchesTheAgentChart(t *testing.T) {
+	raw, err := os.ReadFile("../../../cetirun-chart/values.schema.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var schema struct {
+		Properties struct {
+			AIGateway struct {
+				Properties struct {
+					Models struct {
+						MaxItems int `json:"maxItems"`
+					} `json:"models"`
+				} `json:"properties"`
+			} `json:"aiGateway"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(raw, &schema); err != nil {
+		t.Fatal(err)
+	}
+	if got := schema.Properties.AIGateway.Properties.Models.MaxItems; got != aiGatewayMaxModels {
+		t.Fatalf("the chart accepts %d models, the operator lists up to %d", got, aiGatewayMaxModels)
+	}
+}
+
+// More shared models than the chart accepts must not block the Agent.
+func TestReconcileInstallsAnAgentWithMoreSharedModelsThanTheChartAccepts(t *testing.T) {
+	agent := aiGatewayTestAgent(testAIGatewayTeam)
+	r, kube, gateway := aiGatewayTestReconciler(t, agent, aiGatewayTestTeam(testAIGatewayTeam))
+	manySharedModels(gateway, 300)
+	chart := &chartHelm{}
+	r.HelmClient = chart
+	recorder := record.NewFakeRecorder(100)
+	r.EventRecorder = recorder
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: agent.Name}}
+	for i := 0; i < 3 && chart.installs == 0; i++ {
+		if _, err := r.Reconcile(context.Background(), req); err != nil {
+			t.Fatalf("reconcile %d: %v", i, err)
+		}
+	}
+	current := &cetirunv1alpha1.Agent{}
+	if err := kube.Get(context.Background(), req.NamespacedName, current); err != nil {
+		t.Fatal(err)
+	}
+	if chart.installs == 0 {
+		t.Fatalf("the Agent was never installed: %+v", current.Status.Conditions)
+	}
+	if models := chart.lastValues["aiGateway"].(map[string]any)["models"].([]any); len(models) != aiGatewayMaxModels {
+		t.Fatalf("%d models configured, want %d", len(models), aiGatewayMaxModels)
+	}
+	limited := false
+	for len(recorder.Events) > 0 {
+		if event := <-recorder.Events; strings.Contains(event, "AIGatewayModelsLimited") && strings.Contains(event, "45 shared models") {
+			limited = true
+		}
+	}
+	if !limited {
+		t.Fatal("the Agent must report the shared models left out")
 	}
 }
 

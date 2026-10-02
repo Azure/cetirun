@@ -502,12 +502,21 @@ func (r *AgentReconciler) reconcileAIGateway(ctx context.Context, instance *ceti
 	r.reconcileAIGatewayCopilot(ctx, client, instance, copilot)
 	r.refreshAIGatewayCatalog(ctx, client)
 	if routed {
-		entries, defaultModel := r.aiGatewayModelEntries(instance)
+		entries, defaultModel, omitted := r.aiGatewayModelEntries(instance)
 		status.Models = make([]string, 0, len(entries))
 		for _, entry := range entries {
 			status.Models = append(status.Models, entry.ID)
 		}
 		status.DefaultModel = defaultModel
+		if len(omitted) > 0 {
+			listed := omitted
+			if len(listed) > 5 {
+				listed = append(slices.Clone(listed[:5]), "...")
+			}
+			r.EventRecorder.Eventf(instance, corev1.EventTypeWarning, "AIGatewayModelsLimited",
+				"%d shared models are left out of the Agent's configuration, which lists at most %d models: %s",
+				len(omitted), aiGatewayMaxModels, strings.Join(listed, ", "))
+		}
 	} else {
 		status.Models, status.DefaultModel = nil, ""
 	}
@@ -661,7 +670,7 @@ func (r *AgentReconciler) applyAIGatewayValues(values map[string]any, instance *
 	if err != nil {
 		return err
 	}
-	entries, defaultModel := r.aiGatewayModelEntries(instance)
+	entries, defaultModel, _ := r.aiGatewayModelEntries(instance)
 	models := make([]any, 0, len(entries))
 	for _, entry := range entries {
 		model := map[string]any{"id": entry.ID, "name": entry.Name}
