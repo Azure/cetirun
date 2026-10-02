@@ -888,6 +888,18 @@ func TestAIGatewayRevision(t *testing.T) {
 	if r.aiGatewayRevision(agent) == withCatalog {
 		t.Fatal("a new shared model must change the revision")
 	}
+	withNewModel := r.aiGatewayRevision(agent)
+	gateway.shared[0].MaxInputTokens /= 2
+	r.refreshAIGatewayCatalogWithin(context.Background(), gateway, 0)
+	if r.aiGatewayRevision(agent) == withNewModel {
+		t.Fatal("new limits for a shared model must change the revision, so they reach the Agent")
+	}
+	withNewLimits := r.aiGatewayRevision(agent)
+	gateway.shared[0].MaxOutputTokens /= 2
+	r.refreshAIGatewayCatalogWithin(context.Background(), gateway, 0)
+	if r.aiGatewayRevision(agent) == withNewLimits {
+		t.Fatal("a new output limit for a shared model must change the revision")
+	}
 	agent.Spec.ModelAccess = modelAccess(true, false)
 	if r.aiGatewayRevision(agent) == withCatalog {
 		t.Fatal("turning Copilot off must change the revision")
@@ -1441,6 +1453,66 @@ func TestReconcileRestartsTheCopilotProxyWithANewMasterKey(t *testing.T) {
 	}
 }
 
+// New limits for a shared model reach the Agent's configuration although the
+// model keeps its name.
+func TestReconcileRollsTheAgentWhenASharedModelsLimitsChange(t *testing.T) {
+	agent := aiGatewayTestAgent(testAIGatewayTeam)
+	r, kube, gateway := aiGatewayTestReconciler(t, agent, aiGatewayTestTeam(testAIGatewayTeam))
+	chart := &chartHelm{}
+	r.HelmClient = chart
+	ctx := context.Background()
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: agent.Name}}
+	reconcile := func(times int) {
+		t.Helper()
+		for i := 0; i < times; i++ {
+			if _, err := r.Reconcile(ctx, req); err != nil {
+				t.Fatalf("reconcile: %v", err)
+			}
+		}
+	}
+	contextWindow := func() int64 {
+		t.Helper()
+		for _, item := range chart.lastValues["aiGateway"].(map[string]any)["models"].([]any) {
+			if model := item.(map[string]any); model["id"] == testSharedModelOne {
+				// Helm's coalescing may turn the number into a float.
+				switch value := model["contextWindow"].(type) {
+				case int64:
+					return value
+				case float64:
+					return int64(value)
+				}
+				t.Fatalf("context window %v (%T)", model["contextWindow"], model["contextWindow"])
+			}
+		}
+		t.Fatal("the shared model is not configured")
+		return 0
+	}
+	reconcile(3)
+	// Only a Ready Agent qualifies for the lightweight pass; the fake Helm
+	// client starts no Pods, so mark it Ready as the workload would.
+	ready := &cetirunv1alpha1.Agent{}
+	if err := kube.Get(ctx, req.NamespacedName, ready); err != nil {
+		t.Fatal(err)
+	}
+	ready.Status.Phase = cetirunv1alpha1.PhaseReady
+	if err := kube.Status().Update(ctx, ready); err != nil {
+		t.Fatal(err)
+	}
+	reconcile(1)
+	if got := contextWindow(); got != 1000000 {
+		t.Fatalf("context window %d, want the catalog's", got)
+	}
+	installs := chart.installs
+
+	// An administrator lowers the model's context window in the Gateway.
+	gateway.shared[0].MaxInputTokens = 400000
+	r.refreshAIGatewayCatalogWithin(ctx, gateway, 0)
+	reconcile(1)
+	if chart.installs == installs || contextWindow() != 400000 {
+		t.Fatalf("the new limit must reach the Agent: installs %d -> %d, context window %d", installs, chart.installs, contextWindow())
+	}
+}
+
 func TestAIGatewayCopilotPendingKeepsReconciling(t *testing.T) {
 	agent := aiGatewayTestAgent(testAIGatewayTeam)
 	now := metav1.Now()
@@ -1505,9 +1577,9 @@ func TestAIGatewayCatalogLeavesOutUnusableSharedNames(t *testing.T) {
 		{ID: "c", ModelName: "copilot/gpt-5.5", AccessGroups: []string{aiGatewaySharedAccessGroup}},
 		{ID: "d", ModelName: "has space", AccessGroups: []string{aiGatewaySharedAccessGroup}},
 	}, time.Now())
-	names, _ := catalog.sharedNames()
-	if !changed || strings.Join(names, ",") != "gpt-6" || len(skipped) != 3 {
-		t.Fatalf("names=%v skipped=%v changed=%v", names, skipped, changed)
+	shared, _ := catalog.shared()
+	if !changed || len(shared) != 1 || shared[0].Name != "gpt-6" || len(skipped) != 3 {
+		t.Fatalf("shared=%v skipped=%v changed=%v", shared, skipped, changed)
 	}
 }
 

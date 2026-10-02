@@ -776,8 +776,14 @@ func (r *AgentReconciler) aiGatewayRevision(instance *cetirunv1alpha1.Agent) str
 	if signedIn := instance.Annotations[cetirunv1alpha1.AnnotationCopilotSignedInAt]; signedIn != "" {
 		parts = append(parts, "copilot-signed-in", signedIn)
 	}
-	if shared, known := r.aiGatewayCatalog.sharedNames(); known && instance.Spec.SharedModelsEnabled() {
-		parts = append(parts, "shared", strings.Join(shared, ","))
+	if shared, known := r.aiGatewayCatalog.shared(); known && instance.Spec.SharedModelsEnabled() {
+		// The limits reach the Agent's configuration too, so a change to them
+		// alone must roll it.
+		models := make([]string, 0, len(shared))
+		for _, model := range shared {
+			models = append(models, fmt.Sprintf("%s:%d:%d", model.Name, model.ContextWindow, model.MaxOutputTokens))
+		}
+		parts = append(parts, "shared", strings.Join(models, ","))
 	}
 	return strings.Join(parts, "|")
 }

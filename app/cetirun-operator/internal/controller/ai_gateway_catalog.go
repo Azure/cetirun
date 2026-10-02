@@ -139,16 +139,6 @@ func (c *aiGatewayCatalog) shared() ([]aiGatewayCatalogModel, bool) {
 	return slices.Clone(c.sharedSet), c.known || c.seeded
 }
 
-func (c *aiGatewayCatalog) sharedNames() ([]string, bool) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	names := make([]string, 0, len(c.sharedSet))
-	for _, model := range c.sharedSet {
-		names = append(names, model.Name)
-	}
-	return names, c.known || c.seeded
-}
-
 // has reports whether a deployment ID exists, and whether the catalog knows.
 func (c *aiGatewayCatalog) has(id string) (bool, bool) {
 	c.mu.RLock()
