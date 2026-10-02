@@ -19,6 +19,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/retry"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/azure"
@@ -191,10 +192,11 @@ func (r *AgentReconciler) persistDefiniteCreateFailure(ctx context.Context, inst
 		if err := r.Get(ctx, types.NamespacedName{Name: instance.Name}, latest); err != nil {
 			return err
 		}
+		before := latest.DeepCopy()
 		latest.Status.AgentIdentity = desired.DeepCopy()
 		setCondition(&latest.Status.Conditions, cetirunv1alpha1.ConditionAgentIdentityReady,
 			metav1.ConditionFalse, "CreateFailed", "Agent Identity create request was not sent")
-		if err := r.Status().Update(ctx, latest); err != nil {
+		if err := r.Status().Patch(ctx, latest, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{})); err != nil {
 			return err
 		}
 		instance.Status = latest.Status
@@ -333,7 +335,7 @@ func (r *AgentReconciler) reconcileAgentIdentity(ctx context.Context, instance *
 		if err := r.updateStatus(ctx, instance); err != nil {
 			return fmt.Errorf("persist Agent Identity create checkpoint: %w", err)
 		}
-		// Status().Update may replace the in-memory status object (notably in the
+		// Status persistence may replace the in-memory status object (notably in the
 		// fake client used by unit tests), so reacquire it before changing the
 		// persisted checkpoint after a pre-request failure.
 		status = ensureAgentIdentityStatus(instance)

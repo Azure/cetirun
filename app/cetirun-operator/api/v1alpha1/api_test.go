@@ -116,10 +116,13 @@ func TestGeneratedCRDContract(t *testing.T) {
 	if err != nil || len(files) != 4 {
 		t.Fatalf("CRD inventory: %v, err=%v; want Agent, Team, Sandbox and AgentPolicy", files, err)
 	}
-	chartDirectory := filepath.Join("..", "..", "chart", "crds")
+	chartDirectory := filepath.Join("..", "..", "chart", "templates", "crds")
 	chartFiles, err := filepath.Glob(filepath.Join(chartDirectory, "*.yaml"))
 	if err != nil || len(chartFiles) != 4 {
 		t.Fatalf("packaged CRD inventory: %v, err=%v; want Agent, Team, Sandbox and AgentPolicy", chartFiles, err)
+	}
+	if legacy, err := filepath.Glob(filepath.Join("..", "..", "chart", "crds", "*.yaml")); err != nil || len(legacy) != 0 {
+		t.Fatalf("CRDs must not also be installed outside the Helm manifest: %v, %v", legacy, err)
 	}
 	for _, tc := range []struct{ kind, plural, singular, short string }{
 		{"Agent", "agents", "agent", "cra"},
@@ -140,6 +143,9 @@ func TestGeneratedCRDContract(t *testing.T) {
 			var crd apiextensionsv1.CustomResourceDefinition
 			if err := yaml.Unmarshal(data, &crd); err != nil {
 				t.Fatal(err)
+			}
+			if crd.Annotations["helm.sh/resource-policy"] != "keep" || crd.Annotations["helm.sh/hook"] != "" {
+				t.Fatal("CRDs must be retained normal Helm resources")
 			}
 			if crd.APIVersion != "apiextensions.k8s.io/v1" || crd.Kind != "CustomResourceDefinition" ||
 				crd.Name != name || crd.Spec.Group != GroupVersion.Group || crd.Spec.Scope != apiextensionsv1.ClusterScoped {

@@ -105,8 +105,9 @@ func (r *AgentReconciler) ensureCustomOwnership(ctx context.Context, instance *a
 		return fmt.Errorf("Custom namespace or HOME ownership changed")
 	}
 	if !controllerutil.ContainsFinalizer(instance, customOwnershipFinalizer) {
+		before := instance.DeepCopy()
 		controllerutil.AddFinalizer(instance, customOwnershipFinalizer)
-		if err := r.Update(ctx, instance); err != nil {
+		if err := r.Patch(ctx, instance, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{})); err != nil {
 			return fmt.Errorf("cannot persist Custom ownership finalizer: %w", err)
 		}
 	}

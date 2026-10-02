@@ -350,11 +350,11 @@ func TestSandboxDeletionWaitsForNamespaceWithoutStatusChurn(t *testing.T) {
 	statusWrites := 0
 	c := fake.NewClientBuilder().WithScheme(testScheme()).WithStatusSubresource(agent).
 		WithObjects(agent, namespace).WithInterceptorFuncs(interceptor.Funcs{
-		SubResourceUpdate: func(ctx context.Context, c client.Client, subResource string, obj client.Object, opts ...client.SubResourceUpdateOption) error {
+		SubResourcePatch: func(ctx context.Context, c client.Client, subResource string, obj client.Object, patch client.Patch, opts ...client.SubResourcePatchOption) error {
 			if subResource == "status" {
 				statusWrites++
 			}
-			return c.SubResource(subResource).Update(ctx, obj, opts...)
+			return c.SubResource(subResource).Patch(ctx, obj, patch, opts...)
 		},
 	}).Build()
 	if err := c.Delete(ctx, agent); err != nil {

@@ -278,7 +278,7 @@ type sandboxHoldStatusErrorWriter struct {
 	err error
 }
 
-func (w sandboxHoldStatusErrorWriter) Update(context.Context, client.Object, ...client.SubResourceUpdateOption) error {
+func (w sandboxHoldStatusErrorWriter) Patch(context.Context, client.Object, client.Patch, ...client.SubResourcePatchOption) error {
 	return w.err
 }
 

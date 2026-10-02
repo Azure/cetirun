@@ -344,9 +344,13 @@ Use a separately configured authorized image-pull path and verify the pod spec.
 The deploy helper's `NAMESPACE` sets the Helm release namespace, whereas the
 chart's `namespace` controls its workload, service account, and binding.
 Keep them aligned; changing `--namespace` alone does not relocate those
-resources. The operator chart bundles both CRDs in `crds/`; Helm creates them
-on first installation but does not upgrade or delete them. Review schema and
-existing-resource compatibility separately from the Helm upgrade.
+resources. The operator chart manages all four CRDs under `templates/crds/`;
+Helm upgrades them with the release. Their `helm.sh/resource-policy: keep`
+annotation retains them on uninstall, not against schema downgrade.
+`sandboxAdmission.validationMode` defaults to `compatible`; `strict` is an
+explicit option that requires ordered schema/binary upgrades. Neither mode
+disables authorization or changes the webhook failure policy. Review schema
+and existing-resource ownership compatibility separately from the Helm upgrade.
 The Portal's [Upgrade action](../../guides/lifecycle/#pin-and-update-a-chart) still
 reads `cetirun-system/cetirun-operator`; a non-default operator namespace
 requires reviewing that additional dependency.

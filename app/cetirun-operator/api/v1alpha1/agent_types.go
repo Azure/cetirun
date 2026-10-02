@@ -347,6 +347,7 @@ const (
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:path=agents,scope=Cluster,shortName=cra,singular=agent
+// +kubebuilder:metadata:annotations="helm.sh/resource-policy=keep"
 // +kubebuilder:printcolumn:name="Alias",type=string,JSONPath=`.spec.user.alias`
 // +kubebuilder:printcolumn:name="Agent",type=string,JSONPath=`.spec.agent.type`
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`

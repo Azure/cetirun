@@ -34,8 +34,9 @@ ownership-handover plan. See the
 
 Source layout: `api/` defines the types, `config/crd/bases/` contains schemas,
 `internal/` contains reconciliation and Helm/Azure integration, and `chart/`
-deploys the operator. The chart packages CRDs under `chart/crds/`; Helm installs
-them initially but does not upgrade or delete them. Follow
+deploys the operator. The chart packages CRDs under `chart/templates/crds/`;
+Helm installs and upgrades them with the release. Their
+`helm.sh/resource-policy: keep` annotation retains them on uninstall. Follow
 [DEVELOPMENT.md](../../DEVELOPMENT.md#generated-files-and-dependencies) for
 pinned generation commands.
 
@@ -458,24 +459,47 @@ version, readiness probe or manually authored expectation is not that evidence.
 
 #### Schema and binary upgrades
 
-Admission deliberately rejects object fields the serving binary does not
-understand. The API server's schema validation cannot prove that an older
-webhook enforces a newly introduced policy field. Do not treat an unknown field
-as allowed or disable fail-closed validation to work around version skew.
+Helm upgrades all four CRDs as ordinary templates. Compatible schema changes
+need no external CRD apply step or upgrade Job. The CRD retention annotation
+prevents deletion; it does not make schema changes or rollback reversible.
 
-For additive upgrades, roll out a backward-compatible admission binary to
-**all replicas first**, verify readiness and existing-field requests, then apply
-the matching CRDs explicitly, and only then use newly introduced fields.
-Helm does not upgrade files under `crds/`. A default added by a newer schema can
-reach admission even if clients do not explicitly send it, so applying that
-schema before every serving replica understands it is unsupported.
-Rollback to an older binary requires first removing unsupported fields and
-defaults through a reviewed migration while the newer validator still runs.
-Breaking schema changes require a separately reviewed transition.
+`sandboxAdmission.validationMode` defaults to `compatible`. CR object decoding
+tolerates fields introduced by a newer schema, so an added status field does
+not block ordinary writes through an older admission replica. Known field
+types, authorization, binding checks, deletion protections and dependency
+failures still apply. Server configuration, Pod admission and namespace
+protection remain strict; `failurePolicy` remains `Fail`.
 
-API-server tests simulate a newer schema and an older handler: objects carrying
-the unrecognized field are rejected explicitly, while known-field objects
-remain writable. This is not an exemption for new policy semantics.
+Metadata-only cleanup compares the raw objects, including unknown fields.
+Non-administrators cannot use legacy Agent/Team authority to add, change or
+remove unknown top-level spec fields. They can continue ordinary updates when
+those unknown fields are unchanged. Administrator authority is not proof that
+an older binary implements a new policy: additions within the same served API
+must preserve the old authorization and execution semantics. New security
+semantics require a qualified version/capability transition, not merely an
+unknown field or a default that silently activates them.
+
+The optional `strict` mode rejects unknown CR object fields. In that mode,
+schema additions may reject requests until all serving binaries understand
+them, including additions delivered through API-server defaults. Use it only
+with an explicitly ordered schema/binary upgrade procedure.
+
+Operator finalizer changes, spec backfills and status updates use merge patches
+with resource-version checks rather than replacing the whole object or status.
+Conflicting writes must be retried from a fresh object. Other clients must follow
+the same rule if they write objects whose schema can outlive their compiled types.
+
+The template-managed installation is the new baseline. It does not adopt
+unmanaged CRDs from an earlier installation or CRDs owned by another release.
+Existing installations need a separately reviewed ownership handover; never
+delete and recreate CRDs to bypass ownership checks. Breaking schema changes
+and downgrades require a reviewed migration. Do not assume Helm rollback or
+automatic rollback can safely restore an older schema and binary.
+
+API-server tests cover a newer status schema with strict and compatible
+handlers, continuous writes during Helm upgrade, retention on uninstall, and
+status patches that preserve unknown fields. They do not qualify arbitrary new
+policy semantics or prove a production rolling-upgrade availability guarantee.
 
 #### Availability and bootstrap
 
@@ -619,10 +643,10 @@ Run these from the repository root. Unit/schema/render checks are not API-server
 admission tests or live CNI/CSI/runtime qualification.
 `make -C app/cetirun-operator test-envtest` starts isolated Kubernetes API-server
 and etcd processes, with RBAC-enabled admission fixtures and the rendered webhook
-rules. It covers schema/default persistence, strict unknown fields, authority,
+rules. It covers schema/default persistence, compatible and strict decoding, authority,
 reference deletion, outage/recovery and the native cleanup predicate. A separate
 loopback serving test exercises the actual admission process and overlapping
-certificate rotation. These checks require pinned envtest assets and Helm 3;
+certificate rotation. These checks require pinned envtest assets and Helm 3 or 4;
 see [development setup](../../DEVELOPMENT.md#generated-files-and-dependencies).
 They never use an existing cluster, execute an Agent, or qualify a production
 issuer, replica-loss recovery, runtime, CNI or CSI.

@@ -59,9 +59,12 @@ func (h *Handler) Validate(ctx context.Context, request admission.Request) admis
 	if request.Operation == admissionv1.Delete && request.Resource.Resource == "agents" {
 		return admission.Allowed("Agent deletion must remain available")
 	}
-	object, old, err := decodeRequest(request)
+	object, old, err := decodeRequest(request, h.config.ValidationMode)
 	if err != nil {
 		return admission.Errored(http.StatusBadRequest, err)
+	}
+	if request.Operation != admissionv1.Delete && !h.config.administrator(request.UserInfo) && unknownSpecChanged(request, object) {
+		return admission.Denied("changes to unrecognized Agent or Team spec fields require an administrator or a matching admission version")
 	}
 	if garbageCollectorFinalizerUpdate(request, object, old) {
 		return admission.Allowed("Kubernetes garbage collector metadata only")
@@ -123,7 +126,7 @@ func (h *Handler) DefaultAgent(ctx context.Context, request admission.Request) a
 	if (request.Operation != admissionv1.Create && request.Operation != admissionv1.Update) || request.Resource.Resource != "agents" {
 		return admission.Denied("Sandbox selection defaulting applies to Agent creation or explicit update reauthorization")
 	}
-	object, old, err := decodeRequest(request)
+	object, old, err := decodeRequest(request, h.config.ValidationMode)
 	if err != nil {
 		return admission.Errored(http.StatusBadRequest, err)
 	}
@@ -136,7 +139,7 @@ func (h *Handler) DefaultAgent(ctx context.Context, request admission.Request) a
 
 func (h *Handler) validateAgent(ctx context.Context, request admission.Request, agent, old *api.Agent) admission.Response {
 	if old != nil && !slices.Equal(agent.Finalizers, old.Finalizers) {
-		if request.UserInfo.Username == h.config.ControllerUsername && controllerFinalizerUpdate(agent, old) {
+		if request.UserInfo.Username == h.config.ControllerUsername && controllerFinalizerUpdate(agent, old) && rawMetadataOnly(request) {
 			return admission.Allowed("controller lifecycle metadata only")
 		}
 		if changedLifecycleFinalizers(agent.Finalizers, old.Finalizers) {
@@ -423,7 +426,7 @@ func garbageCollectorFinalizerUpdate(request admission.Request, object, old clie
 	b.SetFinalizers(nil)
 	a.SetManagedFields(nil)
 	b.SetManagedFields(nil)
-	if !equality.Semantic.DeepEqual(a, b) {
+	if !equality.Semantic.DeepEqual(a, b) || !rawMetadataOnly(request) {
 		return false
 	}
 	expectedFinalizers := make([]string, 0, len(old.GetFinalizers()))
@@ -471,7 +474,7 @@ func controllerFinalizerUpdate(agent, old *api.Agent) bool {
 	return true
 }
 
-func decodeRequest(request admission.Request) (client.Object, client.Object, error) {
+func decodeRequest(request admission.Request, mode string) (client.Object, client.Object, error) {
 	kinds := map[string]string{"agents": "Agent", "teams": "Team", "sandboxes": "Sandbox", "agentpolicies": "AgentPolicy"}
 	kind, known := kinds[request.Resource.Resource]
 	if !known || request.Resource.Group != api.GroupVersion.Group || request.Resource.Version != api.GroupVersion.Version ||
@@ -494,7 +497,7 @@ func decodeRequest(request admission.Request) (client.Object, client.Object, err
 		case "AgentPolicy":
 			object = &api.AgentPolicy{}
 		}
-		if err := decodeStrict(raw.Raw, object); err != nil {
+		if err := decodeJSON(raw.Raw, object, mode == ValidationStrict); err != nil {
 			return nil, fmt.Errorf("invalid %s: %w", kind, err)
 		}
 		assignedName := object.GetName() != "" && object.GetName() == request.Name

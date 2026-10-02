@@ -154,8 +154,8 @@ helm install cetirun-operator app/cetirun-operator/chart \
   --set image.tag=v... \
   --set leaderElection=true   # set true for production multi-replica
 
-# The chart's crds/ directory creates CetiRun CRDs on first installation.
-# Helm does not upgrade or delete CRDs; schema changes require a reviewed migration.
+# Helm manages the CRDs as templates and upgrades them with the release.
+# Retention keeps them on uninstall; incompatible changes require a migration.
 
 # Test cluster without access to the shared skills storage account (cetirunskills):
 # Disable shared skills via spec.helm.values in the instance CR (see sample-alice.yaml)

@@ -33,8 +33,11 @@ existing installation over to the new API.
 The cluster scope, finalizer, namespace/release names, and PVC behavior are
 retained. Harness configuration uses required `spec.agent`; the old
 `spec.agentType` field is not supported. There is no automatic resource
-conversion or field migration. Helm installs packaged CRDs on first
-installation but does not upgrade or delete them.
+conversion or field migration. Helm manages the current CRDs as templates and
+upgrades their schemas with the release. Their retention annotation prevents
+uninstall from deleting them. Earlier unmanaged CRDs need a separately reviewed
+ownership handover; the chart does not force adoption or perform schema/data
+migration. Retention does not protect against a schema downgrade.
 
 ## Agent
 
@@ -237,8 +240,17 @@ Admission is currently gated to Kubernetes 1.37+. Legacy Team deletion retains
 its RBAC behavior; removing a governed Team's bindings requires its members to
 be rebound to another governed Team or deleted, including members that inherit
 governance without an explicit Agent binding.
-For schema upgrades, roll out compatible admission binaries to all replicas
-before adding new schema fields/defaults, and apply CRD upgrades explicitly.
+The default `sandboxAdmission.validationMode=compatible` tolerates newer CR
+fields while preserving known validation and authorization. An added status
+field therefore need not block ordinary writes during a compatible Helm
+upgrade. Non-administrators cannot change unknown top-level Agent/Team spec
+fields through legacy-authority shortcuts; unchanged unknown fields remain
+writable alongside known fields. New security semantics require a qualified
+version/capability transition. The optional `strict` mode rejects unknown CR
+fields and requires an explicitly ordered schema/binary upgrade.
+Operator status patches preserve unknown fields and reject stale revisions.
+Breaking changes, ownership transfers and downgrades still require a reviewed
+migration; no automatic reverse migration is provided.
 
 Governed member Team assignment, pending UID authorization, final-Pod admission,
 rollout barriers, enforcement observation, protected rendering and production
