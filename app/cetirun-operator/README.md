@@ -484,10 +484,10 @@ schema additions may reject requests until all serving binaries understand
 them, including additions delivered through API-server defaults. Use it only
 with an explicitly ordered schema/binary upgrade procedure.
 
-Operator status writes merge changed fields with resource-version checks,
-preserving unknown fields rather than replacing the whole status. Conflicting
-writes must be retried from a fresh object. Other clients must follow the same
-rule if they write objects whose schema can outlive their compiled types.
+Operator finalizer changes, spec backfills and status updates use merge patches
+with resource-version checks rather than replacing the whole object or status.
+Conflicting writes must be retried from a fresh object. Other clients must follow
+the same rule if they write objects whose schema can outlive their compiled types.
 
 The template-managed installation is the new baseline. It does not adopt
 unmanaged CRDs from an earlier installation or CRDs owned by another release.

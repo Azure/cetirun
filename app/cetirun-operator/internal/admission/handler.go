@@ -63,7 +63,7 @@ func (h *Handler) Validate(ctx context.Context, request admission.Request) admis
 	if err != nil {
 		return admission.Errored(http.StatusBadRequest, err)
 	}
-	if !h.config.administrator(request.UserInfo) && unknownSpecChanged(request, object) {
+	if request.Operation != admissionv1.Delete && !h.config.administrator(request.UserInfo) && unknownSpecChanged(request, object) {
 		return admission.Denied("changes to unrecognized Agent or Team spec fields require an administrator or a matching admission version")
 	}
 	if garbageCollectorFinalizerUpdate(request, object, old) {

@@ -94,6 +94,50 @@ func TestCompatibleUnknownSpecChangesCannotUseLegacyAuthority(t *testing.T) {
 	}
 }
 
+func TestCompatibleLegacyTeamDeletionWithFutureSpec(t *testing.T) {
+	for _, user := range []string{"member", "portal", testController, "administrator"} {
+		t.Run(user, func(t *testing.T) {
+			f := newFixture(t)
+			team := &api.Team{ObjectMeta: metav1.ObjectMeta{Name: "legacy-team"}}
+			request := requestFor(t, admissionv1.Delete, team, nil, user)
+			addUnknownField(t, &request.OldObject, "spec", "futureConfiguration", "preserve-me")
+			for _, mode := range []string{"", ValidationCompatible} {
+				f.handler.config.ValidationMode = mode
+				requireResponse(t, f.handler.Validate(context.Background(), request), true, "legacy")
+			}
+			f.handler.reader = unavailableReader{}
+			requireResponse(t, f.handler.Validate(context.Background(), request), true, "legacy")
+			f.handler.config.ValidationMode = ValidationStrict
+			requireResponse(t, f.handler.Validate(context.Background(), request), false, "unknown field")
+		})
+	}
+}
+
+func TestCompatibleDeletionWithFutureSpecKeepsGovernanceChecks(t *testing.T) {
+	f := newFixture(t)
+	f.handler.config.ValidationMode = ValidationCompatible
+	f.agent.ResourceVersion = ""
+	if err := f.client.Create(context.Background(), f.agent); err != nil {
+		t.Fatal(err)
+	}
+	for _, object := range []client.Object{f.team, f.box, f.policy} {
+		t.Run(object.GetName(), func(t *testing.T) {
+			for _, user := range []string{"member", "portal", testController, "administrator"} {
+				request := requestFor(t, admissionv1.Delete, object, nil, user)
+				addUnknownField(t, &request.OldObject, "spec", "futureConfiguration", "preserve-me")
+				message := "administrator"
+				if user == "administrator" {
+					message = "referenced"
+					if object == f.team {
+						message = "inherited governance"
+					}
+				}
+				requireResponse(t, f.handler.Validate(context.Background(), request), false, message)
+			}
+		})
+	}
+}
+
 func TestCompatibleCleanupComparesRawFieldsWithoutRounding(t *testing.T) {
 	f := newFixture(t)
 	f.handler.config.ValidationMode = ValidationCompatible

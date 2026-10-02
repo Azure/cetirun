@@ -221,8 +221,9 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	// 3. Ensure finalizer.
 	if !controllerutil.ContainsFinalizer(instance, cetirunv1alpha1.Finalizer) {
 		logger.V(1).Info("Adding finalizer", "alias", instance.Spec.User.Alias)
+		before := instance.DeepCopy()
 		controllerutil.AddFinalizer(instance, cetirunv1alpha1.Finalizer)
-		if err := r.Update(ctx, instance); err != nil {
+		if err := r.Patch(ctx, instance, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{})); err != nil {
 			return ctrl.Result{}, fmt.Errorf("add finalizer: %w", err)
 		}
 		return ctrl.Result{Requeue: true}, nil
@@ -235,11 +236,12 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	// authorize version/image/port pinning narrowly; admission rejects controller
 	// spec writes and must not gain a blanket controller exemption.
 	if instance.Spec.Helm.Version == "" {
+		before := instance.DeepCopy()
 		instance.Spec.Helm.Version = r.ChartVersion
-		if err := r.Update(ctx, instance); err != nil {
+		if err := r.Patch(ctx, instance, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{})); err != nil {
 			return ctrl.Result{}, fmt.Errorf("backfill helm version: %w", err)
 		}
-		// Update bumps Generation; re-queue to pick up the new value.
+		// A spec patch bumps Generation; re-queue to pick up the new value.
 		return ctrl.Result{Requeue: true}, nil
 	}
 
@@ -280,8 +282,9 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		if err != nil {
 			return r.rejectAgentConfig(ctx, instance, err)
 		}
+		before := instance.DeepCopy()
 		if pinAgentDefaults(&instance.Spec.Agent, prepared.Agent) {
-			if err := r.Update(ctx, instance); err != nil {
+			if err := r.Patch(ctx, instance, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{})); err != nil {
 				return ctrl.Result{}, fmt.Errorf("pin agent defaults: %w", err)
 			}
 			return ctrl.Result{Requeue: true}, nil
@@ -820,9 +823,10 @@ func (r *AgentReconciler) handleDelete(ctx context.Context, instance *cetirunv1a
 	}
 
 	// Remove finalizer.
+	before := instance.DeepCopy()
 	controllerutil.RemoveFinalizer(instance, cetirunv1alpha1.Finalizer)
 	logger.V(1).Info("Removing finalizer", "alias", alias)
-	if err := r.Update(ctx, instance); err != nil {
+	if err := r.Patch(ctx, instance, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{})); err != nil {
 		if errors.IsNotFound(err) {
 			logger.Info("CR already deleted, finalizer removal unnecessary", "alias", alias)
 			return ctrl.Result{}, nil
