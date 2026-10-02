@@ -18,6 +18,8 @@ import (
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxpolicy"
 	w "github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
 	corev1 "k8s.io/api/core/v1"
+	nodev1 "k8s.io/api/node/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -102,6 +104,87 @@ func TestSandboxPreparationUnsupportedProviderControlIsNotRetryableFailure(t *te
 	}
 }
 
+func TestSandboxPreparationPlatformPrerequisiteClassification(t *testing.T) {
+	readFailure := errors.New("synthetic RuntimeClass read failure")
+	for _, tc := range []struct {
+		name   string
+		mutate func(*preparationFixture)
+		clean  bool
+		cause  error
+	}{
+		{"unqualified adapter", func(f *preparationFixture) {
+			platform := f.config.Platforms[api.SandboxKata]
+			platform.Adapter.Qualified = false
+			f.config.Platforms[api.SandboxKata] = platform
+		}, true, nil},
+		{"unsupported adapter", func(f *preparationFixture) {
+			platform := f.config.Platforms[api.SandboxKata]
+			platform.Adapter.Name = "synthetic-unsupported-adapter"
+			f.config.Platforms[api.SandboxKata] = platform
+		}, true, nil},
+		{"unavailable adapter", func(f *preparationFixture) {
+			platform := f.config.Platforms[api.SandboxKata]
+			platform.Adapter.Available = false
+			f.config.Platforms[api.SandboxKata] = platform
+		}, false, sandboxpolicy.ErrUnavailable},
+		{"missing platform inventory", func(f *preparationFixture) {
+			delete(f.config.Platforms, api.SandboxKata)
+		}, false, sandboxpolicy.ErrUnavailable},
+		{"RuntimeClass read failure", func(f *preparationFixture) {
+			f.reconciler.APIReader = interceptor.NewClient(f.client.(client.WithWatch), interceptor.Funcs{
+				Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, object client.Object, options ...client.GetOption) error {
+					if _, ok := object.(*nodev1.RuntimeClass); ok {
+						return readFailure
+					}
+					return c.Get(ctx, key, object, options...)
+				},
+			})
+		}, false, readFailure},
+	} {
+		for _, previouslyPrepared := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/prepared=%v", tc.name, previouslyPrepared), func(t *testing.T) {
+				f := newPreparationFixture(t, "hermes")
+				if previouslyPrepared {
+					if err := f.reconcile(); err != nil {
+						t.Fatal(err)
+					}
+				}
+				stages := f.installer.stages
+				tc.mutate(f)
+				result, err := f.reconciler.Reconcile(context.Background(), ctrl.Request{
+					NamespacedName: client.ObjectKey{Name: f.fixture.Agent.Name},
+				})
+				agent := f.current(t)
+				condition := apimeta.FindStatusCondition(agent.Status.Conditions, api.ConditionAgentConfigReady)
+				if condition == nil || condition.Status != metav1.ConditionFalse ||
+					condition.ObservedGeneration != agent.Generation || agent.Status.AccessURL != "" ||
+					!slices.Contains(agent.Finalizers, sandbox.HoldFinalizer) ||
+					!apimeta.IsStatusConditionFalse(agent.Status.Conditions, api.ConditionReady) ||
+					!apimeta.IsStatusConditionFalse(agent.Status.Conditions, api.ConditionSandboxReady) ||
+					f.installer.stages != stages {
+					t.Fatalf("failed prerequisites did not retain the execution hold: %+v %v", agent.Status, err)
+				}
+				if tc.clean {
+					if err != nil || result.RequeueAfter != time.Minute || condition.Reason != "UnsupportedControl" ||
+						agent.Status.Phase != api.PhaseFailed {
+						t.Fatalf("unsupported platform entered an outage/backoff loop: %+v %+v %v", result, condition, err)
+					}
+				} else if !errors.Is(err, tc.cause) || result.RequeueAfter != 0 ||
+					condition.Reason != "SandboxPreparationPending" || agent.Status.Phase != api.PhasePending {
+					t.Fatalf("an unavailable prerequisite was hidden by an unsupported hold: %+v %+v %v", result, condition, err)
+				}
+				if previouslyPrepared {
+					bindings, err := (&sandboxpolicy.GrantJournalStore{Client: f.client, APIReader: f.client, Namespace: "cetirun-system"}).
+						Read(context.Background(), agent.Name, agent.UID)
+					if err != nil || len(bindings) != 0 {
+						t.Fatalf("failed prerequisites retained previous grants: %+v %v", bindings, err)
+					}
+				}
+			})
+		}
+	}
+}
+
 func TestSandboxPreparationDisabledUntrackedDoesNotReadState(t *testing.T) {
 	f := newPreparationFixture(t, "hermes")
 	f.reconciler.SandboxPreparation = nil
@@ -174,6 +257,114 @@ func TestSandboxPreparationInterruptedFinalizationRetainsStateAfterProviderDisab
 	f.reconciler.SandboxPreparation = preparation
 	if err := f.reconcile(); err != nil {
 		t.Fatal("qualified cleanup retry failed:", err)
+	}
+}
+
+func TestSandboxPreparationDeletionResumesReleasedEmptyJournal(t *testing.T) {
+	const foreignFinalizer = "cleanup.example.com/retained"
+	for _, tc := range []struct {
+		name        string
+		empty       bool
+		terminating bool
+		mutate      func(*corev1.ConfigMap)
+		wantError   bool
+	}{
+		{name: "released live journal", empty: true},
+		{name: "released terminating journal", empty: true, terminating: true},
+		{name: "unprotected grant inventory", wantError: true},
+		{name: "foreign empty journal", empty: true, wantError: true, mutate: func(object *corev1.ConfigMap) {
+			object.OwnerReferences[0].UID = "different-agent-uid"
+		}},
+		{name: "corrupt empty journal", empty: true, wantError: true, mutate: func(object *corev1.ConfigMap) {
+			for key := range object.Data {
+				object.Data[key] = "not-json"
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newPreparationFixture(t, "openclaw")
+			ctx := context.Background()
+			if err := f.reconcile(); err != nil {
+				t.Fatal(err)
+			}
+			agent := f.current(t)
+			if err := f.client.Delete(ctx, agent); err != nil {
+				t.Fatal(err)
+			}
+			journal := &sandboxpolicy.GrantJournalStore{Client: f.client, APIReader: f.client, Namespace: "cetirun-system"}
+			if tc.empty {
+				bindings, err := journal.Read(ctx, agent.Name, agent.UID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := journal.Revoke(ctx, agent.Name, agent.UID, bindings); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if !tc.wantError {
+				namespace := &corev1.Namespace{}
+				if err := f.client.Get(ctx, client.ObjectKeyFromObject(f.fixture.Namespace), namespace); err != nil {
+					t.Fatal(err)
+				}
+				if err := f.client.Delete(ctx, namespace); err != nil {
+					t.Fatal(err)
+				}
+			}
+			agent = f.current(t)
+			agent.Finalizers = slices.DeleteFunc(agent.Finalizers, func(value string) bool {
+				return value == sandbox.PreparationFinalizer
+			})
+			if err := f.client.Update(ctx, agent); err != nil {
+				t.Fatal(err)
+			}
+			key := client.ObjectKey{Namespace: "cetirun-system", Name: sandboxpolicy.GrantJournalName(agent.UID)}
+			object := &corev1.ConfigMap{}
+			if err := f.client.Get(ctx, key, object); err != nil {
+				t.Fatal(err)
+			}
+			object.Finalizers = nil
+			if tc.terminating {
+				object.Finalizers = []string{foreignFinalizer}
+			}
+			if tc.mutate != nil {
+				tc.mutate(object)
+			}
+			if err := f.client.Update(ctx, object); err != nil {
+				t.Fatal(err)
+			}
+			if tc.terminating {
+				if err := f.client.Delete(ctx, object); err != nil {
+					t.Fatal(err)
+				}
+			}
+			err := f.reconcile()
+			if tc.wantError {
+				if err == nil || !slices.Contains(f.current(t).Finalizers, sandbox.HoldFinalizer) {
+					t.Fatal("unsafe journal state allowed cleanup to complete:", err)
+				}
+				if err := f.client.Get(ctx, client.ObjectKeyFromObject(f.fixture.Namespace), &corev1.Namespace{}); err != nil {
+					t.Fatal("unsafe journal state allowed namespace removal:", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal("interrupted journal release prevented deletion retry:", err)
+			}
+			if err := f.client.Get(ctx, client.ObjectKeyFromObject(agent), &api.Agent{}); !apierrors.IsNotFound(err) {
+				t.Fatal("completed journal cleanup retained the Agent:", err)
+			}
+			err = f.client.Get(ctx, key, object)
+			if tc.terminating {
+				if err != nil || object.DeletionTimestamp.IsZero() || !slices.Equal(object.Finalizers, []string{foreignFinalizer}) {
+					t.Fatalf("cleanup did not preserve the foreign finalizer: %+v %v", object, err)
+				}
+			} else if !apierrors.IsNotFound(err) {
+				t.Fatal("released journal was not deleted:", err)
+			}
+			if err := f.reconcile(); err != nil {
+				t.Fatal("completed deletion did not remain idempotent:", err)
+			}
+		})
 	}
 }
 

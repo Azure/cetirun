@@ -286,6 +286,13 @@ It never starts Pods, reruns source templates, runs hooks or creates claims.
 Native ConfigMap/Service ownership is included before sealing, alongside the
 StatefulSet and compiler resources.
 
+Retired resources are excluded from Helm's implicit pruning; grant removal
+remains an identity-checked, journalled operation. Live updates must enforce
+UID/resourceVersion conditions and repair custom-resource drift rather than
+comparing only the old and new release manifests. Staging verifies the live
+resources against the sealed manifest, allowing only supported API defaults,
+before accepting a deployed release as prepared.
+
 ##### Held controller integration
 
 [`AgentReconciler.SandboxPreparation`](internal/controller/sandbox_preparation.go)
@@ -370,6 +377,9 @@ Tailscale, Teams, workload identity and governed Custom configurations remain
 unsupported by this native path. They retain an explanatory `UnsupportedControl`
 hold and bounded requeue instead of a permanent preparation-error loop. Existing
 grants are revoked if a previously prepared Agent transitions to one of them.
+Unqualified platform controls also retain the bounded `UnsupportedControl`
+hold; unavailable adapters, missing inventory and API read failures remain
+preparation errors rather than being reported as unsupported.
 An unsupported result does not suppress source, cleanup or status-write failures.
 
 Partial writes, stale sources, suspension and provider disablement revoke
@@ -379,6 +389,16 @@ terminating Pods), and only then removes the owned namespace. The controller
 releases preparation state and finalizers after namespace absence. A missing or
 corrupt journal, foreign ownership, an unavailable fence, or a conflicting
 state update blocks completion rather than implying successful cleanup.
+
+For deleting legacy Custom Agents, a grant-journal failure does not skip
+independent workload/terminal stop requests, owned-route removal, or attempts to
+clear readiness and the access URL. Revocation, shutdown and status-write errors
+remain visible and block namespace/storage cleanup and finalizer release.
+
+Cleanup can resume after interrupted journal-finalizer release only when the
+remaining record is valid, owned and empty. This cleanup-only recovery neither
+authorizes new grants nor accepts unprotected nonempty inventory. Foreign
+finalizers are preserved, including when they retain a terminating empty journal.
 
 Local tests exercise this chain with synthetic platform providers and an
 isolated API server:

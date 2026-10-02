@@ -47,12 +47,19 @@ func (r *AgentReconciler) revokeSandboxPreparationGrants(ctx context.Context, ag
 		return nil
 	}
 	journal := r.sandboxGrantJournal()
-	bindings, err := journal.Read(ctx, agent.Name, agent.UID)
+	read := journal.Read
+	if !agent.DeletionTimestamp.IsZero() {
+		read = journal.ReadForCleanup
+	}
+	bindings, err := read(ctx, agent.Name, agent.UID)
 	if apierrors.IsNotFound(err) && !controllerutil.ContainsFinalizer(agent, sandbox.PreparationFinalizer) {
 		return nil
 	}
 	if err != nil {
 		return fmt.Errorf("Sandbox grant cleanup inventory is unavailable: %w", err)
+	}
+	if len(bindings) == 0 {
+		return nil
 	}
 	return journal.Revoke(ctx, agent.Name, agent.UID, bindings)
 }

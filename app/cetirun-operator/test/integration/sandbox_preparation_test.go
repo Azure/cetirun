@@ -230,6 +230,25 @@ func TestSandboxPreparation(t *testing.T) {
 				// Complete their local cleanup explicitly, then test the real
 				// reconciler's namespace-absence/finalizer release boundary.
 				f.completeNamespaceDeletion(t)
+				if agentType == "hermes" {
+					agent = f.agent(t)
+					base := agent.DeepCopy()
+					agent.Finalizers = slices.DeleteFunc(agent.Finalizers, func(value string) bool {
+						return value == sandbox.PreparationFinalizer
+					})
+					if err := f.reconciler.Patch(h.ctx, agent, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
+						t.Fatal(err)
+					}
+					// Persist the old crash window: the empty journal lost its
+					// finalizer, but its DELETE never reached the API server.
+					h.get(t, client.ObjectKeyFromObject(journal), journal)
+					journalBase := journal.DeepCopy()
+					journal.Finalizers = nil
+					if err := h.client.Patch(h.ctx, journal, client.MergeFromWithOptions(journalBase, client.MergeFromWithOptimisticLock{})); err != nil {
+						t.Fatal(err)
+					}
+					f.restart()
+				}
 				f.reconcile(t)
 				if err := h.client.Get(h.ctx, client.ObjectKeyFromObject(agent), &api.Agent{}); !apierrors.IsNotFound(err) {
 					t.Fatalf("Agent was not finalized after namespace absence: %v", err)

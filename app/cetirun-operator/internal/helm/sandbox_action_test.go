@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -223,16 +224,41 @@ func (k *sandboxActionKube) Build(reader io.Reader, _ bool) (kube.ResourceList, 
 			Client: restfake.CreateHTTPClient(func(request *http.Request) (*http.Response, error) {
 				k.mu.Lock()
 				defer k.mu.Unlock()
-				k.reads++
 				if k.readError != nil {
 					return nil, k.readError
 				}
 				if err := request.Context().Err(); err != nil {
 					return nil, err
 				}
+				if request.Method == http.MethodPatch {
+					current := k.objects[request.URL.Path]
+					if current == nil {
+						return sandboxSDKStatus(http.StatusNotFound, metav1.StatusReasonNotFound)
+					}
+					raw, err := io.ReadAll(request.Body)
+					if err != nil {
+						return nil, err
+					}
+					updated, err := sandboxSDKMergePatch(current, raw, request.Header.Get("Content-Type"))
+					if err != nil {
+						return nil, err
+					}
+					if current.GetUID() != updated.GetUID() || current.GetResourceVersion() != updated.GetResourceVersion() {
+						return sandboxSDKStatus(http.StatusConflict, metav1.StatusReasonConflict)
+					}
+					written, err := k.writeObject(updated)
+					if err != nil {
+						return nil, err
+					}
+					if k.afterWrite != nil {
+						k.afterWrite()
+					}
+					return sandboxSDKResponse(http.StatusOK, written)
+				}
 				if request.Method != http.MethodGet {
 					return nil, fmt.Errorf("unexpected fake API request %s", request.Method)
 				}
+				k.reads++
 				status := http.StatusOK
 				var body any = k.objects[request.URL.Path]
 				if body.(*unstructured.Unstructured) == nil {
@@ -260,30 +286,44 @@ func (k *sandboxActionKube) Build(reader io.Reader, _ bool) (kube.ResourceList, 
 
 func (k *sandboxActionKube) apply(target kube.ResourceList) (*kube.Result, error) {
 	result := &kube.Result{}
-	for index, info := range target {
-		if k.failAt != 0 && index+1 == k.failAt {
-			return result, errSandboxActionTest
-		}
-		obj := info.Object.(*unstructured.Unstructured).DeepCopy()
-		key := sandboxTestPath(obj)
+	for _, info := range target {
 		k.mu.Lock()
-		if current := k.objects[key]; current != nil {
-			obj.SetUID(current.GetUID())
-		} else {
-			obj.SetUID(types.UID(fmt.Sprintf("synthetic-object-%d", len(k.writes)+1)))
-		}
-		obj.SetResourceVersion("1")
-		k.writes = append(k.writes, obj.DeepCopy())
-		if !k.skipWrites {
-			k.objects[key] = obj
-		}
+		obj, err := k.writeObject(info.Object.(*unstructured.Unstructured))
 		k.mu.Unlock()
+		if err != nil {
+			return result, err
+		}
+		if err := info.Refresh(obj, true); err != nil {
+			return result, err
+		}
 		result.Created = append(result.Created, info)
 		if k.afterWrite != nil {
 			k.afterWrite()
 		}
 	}
 	return result, nil
+}
+
+func (k *sandboxActionKube) writeObject(target *unstructured.Unstructured) (*unstructured.Unstructured, error) {
+	if k.failAt > 0 {
+		k.failAt--
+		if k.failAt == 0 {
+			return nil, errSandboxActionTest
+		}
+	}
+	obj := target.DeepCopy()
+	key := sandboxTestPath(obj)
+	if current := k.objects[key]; current != nil {
+		obj.SetUID(current.GetUID())
+	} else {
+		obj.SetUID(types.UID(fmt.Sprintf("synthetic-object-%d", len(k.writes)+1)))
+	}
+	obj.SetResourceVersion(strconv.Itoa(len(k.writes) + 1))
+	k.writes = append(k.writes, obj.DeepCopy())
+	if !k.skipWrites {
+		k.objects[key] = obj
+	}
+	return obj, nil
 }
 
 func (k *sandboxActionKube) Create(target kube.ResourceList) (*kube.Result, error) {
@@ -958,10 +998,44 @@ func TestSandboxStageNoOpDoesNotHideDriftOrMissingObjects(t *testing.T) {
 				break
 			}
 			before, writes := store.writes, len(k.writes)
-			if err := stageSandboxTest(p, cfg, sandboxStageCheck); err != nil {
+			err := stageSandboxTest(p, cfg, sandboxStageCheck)
+			preservedField := kind == "Service" || kind == "template metadata"
+			// Three-way merging preserves additions outside the sealed
+			// baseline, including a changed Service port's merge key.
+			// Refuse success instead of silently removing unowned fields.
+			if preservedField {
+				if err == nil || !strings.Contains(err.Error(), "sealed content") {
+					t.Fatalf("unowned live field was not rejected by postconditions: %v", err)
+				}
+				for _, obj := range k.objects {
+					if kind == "Service" && obj.GetKind() == "Service" {
+						ports := object(obj.Object["spec"])["ports"].([]any)
+						found := false
+						for _, port := range ports {
+							found = found || object(port)["port"] == int64(43210)
+						}
+						if !found {
+							t.Fatal("unowned Service port was blindly removed")
+						}
+					}
+					if kind == "template metadata" && obj.GetKind() == "StatefulSet" {
+						template := object(object(obj.Object["spec"])["template"])
+						if object(template["metadata"])["name"] != "unexpected" {
+							t.Fatal("unowned template metadata was blindly removed")
+						}
+					}
+				}
+			} else if err != nil {
 				t.Fatal(err)
 			}
 			last, _ := cfg.Releases.Last(p.releaseName)
+			status := release.StatusDeployed
+			if preservedField {
+				status = release.StatusFailed
+			}
+			if last.Info.Status != status {
+				t.Fatalf("drift reconciliation recorded status %s instead of %s", last.Info.Status, status)
+			}
 			if last.Version != 2 || store.writes == before || len(k.writes) == writes {
 				t.Fatal("stored release was mistaken for proof of live convergence")
 			}

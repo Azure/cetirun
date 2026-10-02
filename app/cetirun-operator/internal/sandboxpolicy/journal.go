@@ -32,10 +32,12 @@ const (
 	GrantJournalFinalizer = "sandbox.cetirun.microsoft.com/grant-journal"
 	GrantJournalDataKey   = "grants.json"
 
+	grantJournalReleasedAnnotation = "sandbox.cetirun.microsoft.com/grant-journal-released"
+
 	// Limits include obsolete entries and the entire serialized ConfigMap,
 	// including foreign metadata. Excess is rejected, never truncated. UIDs
-	// must fit a label value; role names are limited to 253 bytes and grant
-	// revisions are the compiler's lowercase SHA-256 digests.
+	// must fit a label value; role names must be valid UTF-8 path segments and
+	// grant revisions are the compiler's lowercase SHA-256 digests.
 	MaxGrantJournalReferences = 1024
 	MaxGrantJournalBytes      = 512 * 1024
 )
@@ -65,6 +67,14 @@ type journalBindingKey struct {
 	Kind, Namespace, Name string
 }
 
+type journalReadMode uint8
+
+const (
+	journalRequireProtection journalReadMode = iota
+	journalAllowReleased
+	journalAllowLegacyCleanup
+)
+
 // GrantJournalName is stable across restarts and distinct for replaced Agents.
 // Ownership is checked independently of the name on every read.
 func GrantJournalName(agentUID types.UID) string {
@@ -73,19 +83,35 @@ func GrantJournalName(agentUID types.UID) string {
 }
 
 // Read returns validated durable inventory, including obsolete entries and
-// entries in a terminating journal. A missing journal returns NotFound, not an
-// empty inventory: discovery cannot prove that a write-ahead record was empty.
+// entries in a terminating journal. A UID-bound release receipt keeps empty
+// inventory readable until deletion completes. A missing journal returns
+// NotFound, not an empty inventory: discovery cannot prove that a write-ahead
+// record was empty.
 func (s GrantJournalStore) Read(ctx context.Context, agentName string, agentUID types.UID) ([]BindingReference, error) {
 	if err := s.validate(agentName, agentUID, false); err != nil {
 		return nil, err
 	}
-	_, refs, err := s.read(ctx, agentName, agentUID, true)
+	_, refs, err := s.read(ctx, agentName, agentUID, journalAllowReleased)
+	return refs, err
+}
+
+// ReadForCleanup is read-only and additionally accepts fully validated, owned,
+// empty legacy journals whose finalizer was removed without a release receipt.
+// Use only for cleanup, not grant application. Skip Revoke for an empty result;
+// Delete revalidates the journal and CAS-persists its release receipt. Missing,
+// corrupt, foreign and unprotected grant-bearing journals still fail closed.
+func (s GrantJournalStore) ReadForCleanup(ctx context.Context, agentName string, agentUID types.UID) ([]BindingReference, error) {
+	if err := s.validate(agentName, agentUID, false); err != nil {
+		return nil, err
+	}
+	_, refs, err := s.read(ctx, agentName, agentUID, journalAllowLegacyCleanup)
 	return refs, err
 }
 
 // Record durably unions desired with prior inventory, including when desired is
 // empty. A known binding UID can be added, but never erased or replaced. A
 // changed immutable identity at the same binding key must first be revoked.
+// Released journals cannot accept new inventory.
 func (s GrantJournalStore) Record(ctx context.Context, agentName string, agentUID types.UID, desired []BindingReference) error {
 	if err := s.validate(agentName, agentUID, true); err != nil {
 		return err
@@ -93,7 +119,7 @@ func (s GrantJournalStore) Record(ctx context.Context, agentName string, agentUI
 	if err := validateJournalReferences(agentName, agentUID, desired); err != nil {
 		return err
 	}
-	cm, previous, err := s.read(ctx, agentName, agentUID, true)
+	cm, previous, err := s.read(ctx, agentName, agentUID, journalAllowReleased)
 	if err != nil && !apierrors.IsNotFound(err) {
 		return err
 	}
@@ -112,8 +138,8 @@ func (s GrantJournalStore) Record(ctx context.Context, agentName string, agentUI
 				}},
 			},
 		}
-	} else if !cm.DeletionTimestamp.IsZero() {
-		return journalConflict(cm.Name, "cannot record grants in a terminating journal")
+	} else if !cm.DeletionTimestamp.IsZero() || !slices.Contains(cm.Finalizers, GrantJournalFinalizer) {
+		return journalConflict(cm.Name, "cannot record grants in a terminating or released journal")
 	}
 	merged := make(map[journalBindingKey]BindingReference, len(previous)+len(desired))
 	for _, ref := range previous {
@@ -174,7 +200,7 @@ func (s GrantJournalStore) Revoke(ctx context.Context, agentName string, agentUI
 	if err := validateJournalReferences(agentName, agentUID, remove); err != nil {
 		return err
 	}
-	cm, previous, err := s.read(ctx, agentName, agentUID, true)
+	cm, previous, err := s.read(ctx, agentName, agentUID, journalAllowReleased)
 	if err != nil {
 		return err
 	}
@@ -219,14 +245,15 @@ func (s GrantJournalStore) Revoke(ctx context.Context, agentName string, agentUI
 // inventory, then deletes with UID and resourceVersion preconditions. Foreign
 // metadata/finalizers and the Agent itself are never removed. NotFound makes
 // journal deletion idempotent; it is not evidence that grants were revoked.
-// Finalizer release and deletion are separate API writes: after a delete error
-// protection is restored with CAS when possible, never over concurrent changes.
-// An ambiguous API failure can leave an empty, released record requiring repair.
+// Finalizer release atomically records a UID-bound receipt, so a retry can
+// resume even if deletion and best-effort CAS restoration both fail. A released
+// journal must remain empty and cannot authorize new grants. Validated empty
+// legacy journals are upgraded by the same CAS write before deletion.
 func (s GrantJournalStore) Delete(ctx context.Context, agentName string, agentUID types.UID) error {
 	if err := s.validate(agentName, agentUID, true); err != nil {
 		return err
 	}
-	cm, refs, err := s.read(ctx, agentName, agentUID, true)
+	cm, refs, err := s.read(ctx, agentName, agentUID, journalAllowLegacyCleanup)
 	if apierrors.IsNotFound(err) {
 		return nil
 	}
@@ -237,21 +264,27 @@ func (s GrantJournalStore) Delete(ctx context.Context, agentName string, agentUI
 		return fmt.Errorf("%w: grant journal is not empty", ErrRevocationPending)
 	}
 	originalUID := cm.UID
-	cm.Finalizers = slices.DeleteFunc(cm.Finalizers, func(value string) bool { return value == GrantJournalFinalizer })
-	if err := s.Client.Update(ctx, cm); err != nil {
-		return fmt.Errorf("release sandbox grant journal: %w", err)
+	if _, released := cm.Annotations[grantJournalReleasedAnnotation]; !released {
+		cm.Finalizers = slices.DeleteFunc(cm.Finalizers, func(value string) bool { return value == GrantJournalFinalizer })
+		cm.Annotations[grantJournalReleasedAnnotation] = string(originalUID)
+		if err := journalSize(cm); err != nil {
+			return err
+		}
+		if err := s.Client.Update(ctx, cm); err != nil {
+			return fmt.Errorf("release sandbox grant journal: %w", err)
+		}
+		if cm.UID != originalUID {
+			return journalConflict(cm.Name, "journal was replaced during finalizer release")
+		}
 	}
-	if cm.UID != originalUID {
-		return journalConflict(cm.Name, "journal was replaced during finalizer release")
-	}
-	releasedRefs, err := s.decode(cm, agentName, agentUID, false)
+	releasedRefs, err := s.decode(cm, agentName, agentUID, journalAllowReleased)
 	if err != nil {
 		return err
 	}
 	if len(releasedRefs) != 0 || slices.Contains(cm.Finalizers, GrantJournalFinalizer) {
 		return errors.Join(journalConflict(cm.Name, "journal changed during finalizer release"), s.restoreFinalizer(ctx, cm))
 	}
-	observed, observedRefs, err := s.read(ctx, agentName, agentUID, false)
+	observed, observedRefs, err := s.read(ctx, agentName, agentUID, journalAllowReleased)
 	if apierrors.IsNotFound(err) {
 		return nil
 	}
@@ -259,7 +292,7 @@ func (s GrantJournalStore) Delete(ctx context.Context, agentName string, agentUI
 		len(observedRefs) != 0 || slices.Contains(observed.Finalizers, GrantJournalFinalizer)) {
 		err = journalConflict(cm.Name, "journal changed after finalizer release")
 	}
-	if err == nil {
+	if err == nil && observed.DeletionTimestamp.IsZero() {
 		uid, version := observed.UID, observed.ResourceVersion
 		err = s.Client.Delete(ctx, observed, client.Preconditions{UID: &uid, ResourceVersion: &version})
 		if apierrors.IsNotFound(err) {
@@ -285,20 +318,20 @@ func (s GrantJournalStore) validate(agentName string, agentUID types.UID, writin
 	return nil
 }
 
-func (s GrantJournalStore) read(ctx context.Context, agentName string, agentUID types.UID, requireFinalizer bool) (*corev1.ConfigMap, []BindingReference, error) {
+func (s GrantJournalStore) read(ctx context.Context, agentName string, agentUID types.UID, mode journalReadMode) (*corev1.ConfigMap, []BindingReference, error) {
 	cm := &corev1.ConfigMap{}
 	key := client.ObjectKey{Namespace: s.Namespace, Name: GrantJournalName(agentUID)}
 	if err := s.APIReader.Get(ctx, key, cm); err != nil {
 		return nil, nil, fmt.Errorf("read sandbox grant journal: %w", err)
 	}
-	refs, err := s.decode(cm, agentName, agentUID, requireFinalizer)
+	refs, err := s.decode(cm, agentName, agentUID, mode)
 	if err != nil {
 		return nil, nil, err
 	}
 	return cm, refs, nil
 }
 
-func (s GrantJournalStore) decode(cm *corev1.ConfigMap, agentName string, agentUID types.UID, requireFinalizer bool) ([]BindingReference, error) {
+func (s GrantJournalStore) decode(cm *corev1.ConfigMap, agentName string, agentUID types.UID, mode journalReadMode) ([]BindingReference, error) {
 	if cm.Name != GrantJournalName(agentUID) || cm.Namespace != s.Namespace ||
 		!validJournalUID(cm.UID) || cm.ResourceVersion == "" ||
 		(cm.Kind != "" && cm.Kind != "ConfigMap") || (cm.APIVersion != "" && cm.APIVersion != "v1") ||
@@ -315,7 +348,7 @@ func (s GrantJournalStore) decode(cm *corev1.ConfigMap, agentName string, agentU
 			finalizers++
 		}
 	}
-	if finalizers > 1 || (requireFinalizer && finalizers != 1) {
+	if finalizers > 1 || (mode == journalRequireProtection && finalizers != 1) {
 		return nil, fmt.Errorf("%w: grant journal finalizer is not intact", ErrOwnership)
 	}
 	if len(cm.Data) != 1 || len(cm.BinaryData) != 0 || (cm.Immutable != nil && *cm.Immutable) {
@@ -342,11 +375,18 @@ func (s GrantJournalStore) decode(cm *corev1.ConfigMap, agentName string, agentU
 	if err := validateJournalReferences(agentName, agentUID, record.Bindings); err != nil {
 		return nil, err
 	}
+	if releasedUID, released := cm.Annotations[grantJournalReleasedAnnotation]; released {
+		if releasedUID != string(cm.UID) || finalizers != 0 || len(record.Bindings) != 0 {
+			return nil, fmt.Errorf("%w: invalid grant journal release receipt", ErrOwnership)
+		}
+	} else if finalizers != 1 && (mode != journalAllowLegacyCleanup || len(record.Bindings) != 0) {
+		return nil, fmt.Errorf("%w: grant journal finalizer is not intact", ErrOwnership)
+	}
 	return canonicalBindingReferences(record.Bindings), nil
 }
 
 func (s GrantJournalStore) confirm(ctx context.Context, written *corev1.ConfigMap, agentName string, agentUID types.UID, expected []BindingReference, allowTerminating bool) error {
-	refs, err := s.decode(written, agentName, agentUID, true)
+	refs, err := s.decode(written, agentName, agentUID, journalRequireProtection)
 	if err != nil {
 		return err
 	}
@@ -354,7 +394,7 @@ func (s GrantJournalStore) confirm(ctx context.Context, written *corev1.ConfigMa
 	if !slices.Equal(refs, expected) || (!allowTerminating && !written.DeletionTimestamp.IsZero()) {
 		return journalConflict(written.Name, "persisted journal differs from the requested inventory")
 	}
-	observed, refs, err := s.read(ctx, agentName, agentUID, true)
+	observed, refs, err := s.read(ctx, agentName, agentUID, journalRequireProtection)
 	if err != nil {
 		return err
 	}
@@ -371,6 +411,7 @@ func (s GrantJournalStore) restoreFinalizer(ctx context.Context, released *corev
 	}
 	protected := released.DeepCopy()
 	protected.Finalizers = append(protected.Finalizers, GrantJournalFinalizer)
+	delete(protected.Annotations, grantJournalReleasedAnnotation)
 	if err := s.Client.Update(ctx, protected); err != nil {
 		return fmt.Errorf("restore empty grant journal protection: %w", err)
 	}
@@ -417,7 +458,7 @@ func validateJournalReferences(agentName string, agentUID types.UID, refs []Bind
 			len(validation.IsDNS1123Label(ref.ServiceAccountNamespace)) != 0 ||
 			(ref.UID != "" && !validJournalUID(ref.UID)) ||
 			ref.RoleRef.APIGroup != rbacv1.GroupName || (ref.RoleRef.Kind != "Role" && ref.RoleRef.Kind != "ClusterRole") ||
-			ref.RoleRef.Name == "" || len(ref.RoleRef.Name) > 253 || !utf8.ValidString(ref.RoleRef.Name) ||
+			ref.RoleRef.Name == "" || !utf8.ValidString(ref.RoleRef.Name) ||
 			len(pathvalidation.IsValidPathSegmentName(ref.RoleRef.Name)) != 0 {
 			return fmt.Errorf("%w: malformed or foreign journal binding reference", ErrOwnership)
 		}

@@ -309,7 +309,11 @@ func (r *AgentReconciler) resolveSandboxPreparation(ctx context.Context, request
 		return nil, err
 	}
 	if condition.Status != metav1.ConditionTrue {
-		return nil, fmt.Errorf("%w: %s: %s", sandboxpolicy.ErrUnavailable, condition.Reason, condition.Message)
+		cause := sandboxpolicy.ErrUnavailable
+		if condition.Status == metav1.ConditionFalse && condition.Reason == "UnsupportedControl" {
+			cause = sandboxpolicy.ErrUnsupportedControl
+		}
+		return nil, fmt.Errorf("%w: %s: %s", cause, condition.Reason, condition.Message)
 	}
 	return &sandboxPreparationAttempt{agent: agent, team: team, resolution: resolution, configuration: snapshot, sources: sources}, nil
 }

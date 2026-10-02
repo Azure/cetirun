@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"time"
@@ -115,9 +116,7 @@ func (r *AgentReconciler) ensureCustomOwnership(ctx context.Context, instance *a
 }
 
 func (r *AgentReconciler) deleteCustom(ctx context.Context, instance *api.Agent) (ctrl.Result, error) {
-	if err := r.revokeSandboxPreparationGrants(ctx, instance); err != nil {
-		return ctrl.Result{}, err
-	}
+	revokeErr := r.revokeSandboxPreparationGrants(ctx, instance)
 	r.customPlans.Delete(instance.Name)
 	previous := instance.DeepCopy().Status
 	stopErr := r.stopCustomWorkload(ctx, instance)
@@ -135,17 +134,9 @@ func (r *AgentReconciler) deleteCustom(ctx context.Context, instance *api.Agent)
 	if routeErr != nil {
 		setCondition(&instance.Status.Conditions, api.ConditionIngressReady, metav1.ConditionFalse, "CustomRouteRemovalBlocked", routeErr.Error())
 	}
-	if err := r.updateCustomStatus(ctx, instance, previous); err != nil {
+	statusErr := r.updateCustomStatus(ctx, instance, previous)
+	if err := errors.Join(revokeErr, stopErr, terminalErr, routeErr, statusErr); err != nil {
 		return ctrl.Result{}, err
-	}
-	if stopErr != nil {
-		return ctrl.Result{}, stopErr
-	}
-	if terminalErr != nil {
-		return ctrl.Result{}, terminalErr
-	}
-	if routeErr != nil {
-		return ctrl.Result{}, routeErr
 	}
 	if err := r.checkSandboxPreparationCleanup(ctx, instance); err != nil {
 		return ctrl.Result{}, err

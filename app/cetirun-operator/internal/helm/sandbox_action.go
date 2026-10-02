@@ -33,9 +33,14 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	utiljson "k8s.io/apimachinery/pkg/util/json"
+	"k8s.io/apimachinery/pkg/util/jsonmergepatch"
+	"k8s.io/apimachinery/pkg/util/strategicpatch"
 	kubeyaml "k8s.io/apimachinery/pkg/util/yaml"
+	"k8s.io/cli-runtime/pkg/resource"
 	"k8s.io/client-go/rest"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/yaml"
@@ -333,7 +338,7 @@ func (p *PreparedRelease) stageSandbox(ctx context.Context, cfg *action.Configur
 	if err != nil {
 		return fmt.Errorf("Sandbox held Helm stage failed: %w", err)
 	}
-	if err := run.preflight(false, true); err != nil {
+	if err := run.preflight(true, true); err != nil {
 		return err
 	}
 	// Helm install can swallow its final storage-update error. A returned
@@ -361,7 +366,7 @@ type sandboxStageRun struct {
 	lastHash       string
 	previous       []*release.Release
 	previousHashes map[int]string
-	objectUIDs     map[string]types.UID
+	objects        map[string]*unstructured.Unstructured
 }
 
 func (r *sandboxStageRun) guard() error {
@@ -466,7 +471,7 @@ func (r *sandboxStageRun) unchangedLiveStage(last *release.Release) (bool, error
 	if err != nil {
 		return false, err
 	}
-	if len(resources) != len(r.objectUIDs) {
+	if len(resources) != len(r.objects) {
 		return false, fmt.Errorf("Sandbox no-op check has an incomplete resource inventory")
 	}
 	seen := map[string]bool{}
@@ -475,8 +480,8 @@ func (r *sandboxStageRun) unchangedLiveStage(last *release.Release) (bool, error
 		if info == nil || info.Client == nil || info.Mapping == nil || info.Mapping.Scope == nil {
 			return false, fmt.Errorf("Sandbox no-op check requires authoritative resource clients")
 		}
-		key := info.Mapping.GroupVersionKind.String() + "/" + info.Namespace + "/" + info.Name
-		uid, exists := r.objectUIDs[key]
+		key := sandboxResourceKey(info)
+		observed, exists := r.objects[key]
 		if !exists || seen[key] {
 			return false, fmt.Errorf("Sandbox no-op resource inventory changed after preflight")
 		}
@@ -494,25 +499,14 @@ func (r *sandboxStageRun) unchangedLiveStage(last *release.Release) (bool, error
 		if err != nil {
 			return false, err
 		}
-		if current.GetUID() != uid || current.GetResourceVersion() == "" {
+		if !sandboxSameObjectVersion(observed, current) {
 			return false, fmt.Errorf("Sandbox object changed during the no-op check")
 		}
 		versions[index] = current.GetResourceVersion()
-		desired, err := sandboxUnstructured(info.Object)
+		desired, err := r.desiredObject(info.Object)
 		if err != nil {
 			return false, err
 		}
-		labels, annotations := desired.GetLabels(), desired.GetAnnotations()
-		if labels == nil {
-			labels = map[string]string{}
-		}
-		if annotations == nil {
-			annotations = map[string]string{}
-		}
-		labels["app.kubernetes.io/managed-by"] = "Helm"
-		annotations["meta.helm.sh/release-name"], annotations["meta.helm.sh/release-namespace"] = r.name, r.namespace
-		desired.SetLabels(labels)
-		desired.SetAnnotations(annotations)
 		if !sandboxDesiredObjectAgrees(desired, current) {
 			return false, nil
 		}
@@ -533,12 +527,43 @@ func (r *sandboxStageRun) unchangedLiveStage(last *release.Release) (bool, error
 		if err != nil {
 			return false, err
 		}
-		key := info.Mapping.GroupVersionKind.String() + "/" + info.Namespace + "/" + info.Name
-		if metadata.GetUID() != r.objectUIDs[key] || metadata.GetResourceVersion() != versions[index] {
+		key := sandboxResourceKey(info)
+		if metadata.GetUID() != r.objects[key].GetUID() || metadata.GetResourceVersion() != versions[index] {
 			return false, fmt.Errorf("Sandbox object changed during the no-op check")
 		}
 	}
 	return true, r.guard()
+}
+
+func sandboxResourceKey(info *resource.Info) string {
+	gvk := info.Mapping.GroupVersionKind
+	return gvk.GroupVersion().String() + "/" + gvk.Kind + "/" + info.Namespace + "/" + info.Name
+}
+
+func sandboxSameObjectVersion(a, b *unstructured.Unstructured) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return a.GetUID() == b.GetUID() && a.GetResourceVersion() == b.GetResourceVersion()
+}
+
+func (r *sandboxStageRun) desiredObject(value any) (*unstructured.Unstructured, error) {
+	desired, err := sandboxUnstructured(value)
+	if err != nil {
+		return nil, err
+	}
+	labels, annotations := desired.GetLabels(), desired.GetAnnotations()
+	if labels == nil {
+		labels = map[string]string{}
+	}
+	if annotations == nil {
+		annotations = map[string]string{}
+	}
+	labels["app.kubernetes.io/managed-by"] = "Helm"
+	annotations["meta.helm.sh/release-name"], annotations["meta.helm.sh/release-namespace"] = r.name, r.namespace
+	desired.SetLabels(labels)
+	desired.SetAnnotations(annotations)
+	return desired, nil
 }
 
 func sandboxUnstructured(value any) (*unstructured.Unstructured, error) {
@@ -809,7 +834,7 @@ func (r *sandboxStageRun) preflight(compare, applied bool) error {
 		manifests = append(manifests, previous.Manifest)
 	}
 	seen := map[string]bool{}
-	uids := map[string]types.UID{}
+	live := map[string]*unstructured.Unstructured{}
 	owner := []metav1.OwnerReference{sandboxworkload.AgentOwner(r.seal.Agent.Name, r.seal.Agent.UID)}
 	desired, err := sandboxStageObjects(r.manifest, r.seal)
 	if err != nil {
@@ -832,10 +857,10 @@ func (r *sandboxStageRun) preflight(compare, applied bool) error {
 				return fmt.Errorf("Sandbox API preflight requires authoritative resource clients")
 			}
 			gvk := info.Mapping.GroupVersionKind
-			if _, ok := objects[gvk.GroupVersion().String()+"/"+gvk.Kind+"/"+info.Namespace+"/"+info.Name]; !ok {
+			key := sandboxResourceKey(info)
+			if _, ok := objects[key]; !ok {
 				return fmt.Errorf("Sandbox API resource mapping differs from the sealed inventory")
 			}
-			key := info.Mapping.GroupVersionKind.String() + "/" + info.Namespace + "/" + info.Name
 			if seen[key] {
 				continue
 			}
@@ -847,24 +872,24 @@ func (r *sandboxStageRun) preflight(compare, applied bool) error {
 				if applied && index == 0 {
 					return fmt.Errorf("Sandbox stage did not create its complete resource inventory")
 				}
-				uids[key] = ""
+				live[key] = nil
 			} else if err != nil {
 				return fmt.Errorf("Sandbox object preflight failed for %s: %w", info.Mapping.GroupVersionKind.Kind, err)
 			} else {
-				metadata, err := meta.Accessor(current)
+				object, err := sandboxUnstructured(current)
 				if err != nil {
 					return err
 				}
-				if (!applied && r.revision == 1) || metadata.GetName() != info.Name ||
-					metadata.GetNamespace() != info.Namespace || metadata.GetUID() == "" || metadata.GetDeletionTimestamp() != nil ||
-					!equality.Semantic.DeepEqual(metadata.GetOwnerReferences(), owner) ||
-					metadata.GetLabels()["app.kubernetes.io/managed-by"] != "Helm" ||
-					metadata.GetAnnotations()["meta.helm.sh/release-name"] != r.name ||
-					metadata.GetAnnotations()["meta.helm.sh/release-namespace"] != r.namespace {
+				if (!applied && r.revision == 1) || object.GetName() != info.Name ||
+					object.GetNamespace() != info.Namespace || object.GetUID() == "" ||
+					object.GetResourceVersion() == "" || object.GetDeletionTimestamp() != nil ||
+					!equality.Semantic.DeepEqual(object.GetOwnerReferences(), owner) ||
+					object.GetLabels()["app.kubernetes.io/managed-by"] != "Helm" ||
+					object.GetAnnotations()["meta.helm.sh/release-name"] != r.name ||
+					object.GetAnnotations()["meta.helm.sh/release-namespace"] != r.namespace {
 					return fmt.Errorf("Sandbox existing %s is not owned by this exact Agent and release", info.Mapping.GroupVersionKind.Kind)
 				}
-				objectKey := gvk.GroupVersion().String() + "/" + gvk.Kind + "/" + info.Namespace + "/" + info.Name
-				if _, retained := desired[objectKey]; !retained {
+				if _, retained := desired[key]; !retained {
 					// Helm Update can log and ignore deletion failures. Do
 					// not delegate grant retirement to that success path.
 					return fmt.Errorf("Sandbox retired %s requires journalled revocation before staging", gvk.Kind)
@@ -881,15 +906,27 @@ func (r *sandboxStageRun) preflight(compare, applied bool) error {
 						return err
 					}
 				}
-				uids[key] = metadata.GetUID()
+				if applied {
+					expected, err := r.desiredObject(info.Object)
+					if err != nil {
+						return err
+					}
+					if !sandboxDesiredObjectAgrees(expected, object) {
+						return fmt.Errorf("Sandbox staged %s does not match its sealed content", gvk.Kind)
+					}
+				}
+				live[key] = object
 			}
-			if compare && uids[key] != r.objectUIDs[key] {
-				return fmt.Errorf("Sandbox object was replaced during staging")
+			if compare {
+				expected, exists := r.objects[key]
+				if !exists || !sandboxSameObjectVersion(expected, live[key]) {
+					return fmt.Errorf("Sandbox object was replaced or changed during staging")
+				}
 			}
 		}
 	}
 	if !compare {
-		r.objectUIDs = uids
+		r.objects = live
 	}
 	return r.ctx.Err()
 }
@@ -938,7 +975,11 @@ func (k *sandboxStageKube) Create(resources kube.ResourceList) (*kube.Result, er
 	if err := k.beforeWrite(); err != nil {
 		return &kube.Result{}, err
 	}
-	return k.Interface.Create(resources)
+	result, err := k.Interface.Create(resources)
+	if err == nil {
+		err = k.recordApplied(resources)
+	}
+	return result, err
 }
 
 func (k *sandboxStageKube) Update(original, target kube.ResourceList, force bool) (*kube.Result, error) {
@@ -948,7 +989,108 @@ func (k *sandboxStageKube) Update(original, target kube.ResourceList, force bool
 	if err := k.beforeWrite(); err != nil {
 		return &kube.Result{}, err
 	}
-	return k.Interface.Update(original, target, false)
+	result := &kube.Result{}
+	// Helm Update prunes original.Difference(target) with name-only DELETEs.
+	// Reconcile only the target; retirement belongs to the guarded journal.
+	for _, info := range target {
+		current, exists := k.run.objects[sandboxResourceKey(info)]
+		if !exists {
+			return result, fmt.Errorf("Sandbox update has an unobserved resource")
+		}
+		if current == nil {
+			result.Created = append(result.Created, info)
+			if _, err := k.Interface.Create(kube.ResourceList{info}); err != nil {
+				return result, err
+			}
+			continue
+		}
+		patch, patchType, err := sandboxStagePatch(original.Get(info), info, current)
+		if err != nil {
+			return result, err
+		}
+		updated, err := info.Client.Patch(patchType).
+			NamespaceIfScoped(info.Namespace, info.Mapping.Scope.Name() == meta.RESTScopeNameNamespace).
+			Resource(info.Mapping.Resource.Resource).Name(info.Name).Body(patch).Do(k.run.ctx).Get()
+		if err != nil {
+			return result, fmt.Errorf("Sandbox conditional update of %s failed: %w", info.Mapping.GroupVersionKind.Kind, err)
+		}
+		if err := info.Refresh(updated, true); err != nil {
+			return result, err
+		}
+		result.Updated = append(result.Updated, info)
+	}
+	return result, k.recordApplied(target)
+}
+
+// Use Helm's native/CR merge strategies, but with the observed live state and
+// explicit identity preconditions. Helm's CR two-way diff misses live drift,
+// and even its three-way diff omits unchanged UID/resourceVersion fields.
+func sandboxStagePatch(original, target *resource.Info, current *unstructured.Unstructured) ([]byte, types.PatchType, error) {
+	old := []byte("{}")
+	if original != nil {
+		previous, err := sandboxUnstructured(original.Object)
+		if err != nil {
+			return nil, "", err
+		}
+		// An adoption check can append a live object to Helm's baseline.
+		// Its extra fields are not part of the sealed managed inventory.
+		if previous.GetUID() == "" && previous.GetResourceVersion() == "" {
+			old, err = previous.MarshalJSON()
+			if err != nil {
+				return nil, "", err
+			}
+		}
+	}
+	desired, err := json.Marshal(target.Object)
+	if err != nil {
+		return nil, "", err
+	}
+	live, err := current.MarshalJSON()
+	if err != nil {
+		return nil, "", err
+	}
+	var patch []byte
+	patchType := types.MergePatchType
+	versioned := kube.AsVersioned(target)
+	if _, unstructured := versioned.(runtime.Unstructured); unstructured {
+		patch, err = jsonmergepatch.CreateThreeWayJSONMergePatch(old, desired, live)
+	} else {
+		patchType = types.StrategicMergePatchType
+		var patchMeta strategicpatch.PatchMetaFromStruct
+		patchMeta, err = strategicpatch.NewPatchMetaFromStruct(versioned)
+		if err == nil {
+			patch, err = strategicpatch.CreateThreeWayMergePatch(old, desired, live, patchMeta, true)
+		}
+	}
+	if err != nil {
+		return nil, "", err
+	}
+	var conditional unstructured.Unstructured
+	if err := utiljson.Unmarshal(patch, &conditional.Object); err != nil {
+		return nil, "", err
+	}
+	conditional.SetUID(current.GetUID())
+	conditional.SetResourceVersion(current.GetResourceVersion())
+	patch, err = conditional.MarshalJSON()
+	return patch, patchType, err
+}
+
+func (k *sandboxStageKube) recordApplied(resources kube.ResourceList) error {
+	for _, info := range resources {
+		current, err := sandboxUnstructured(info.Object)
+		if err != nil {
+			return err
+		}
+		key := sandboxResourceKey(info)
+		previous, exists := k.run.objects[key]
+		if !exists || current.GetUID() == "" || current.GetResourceVersion() == "" ||
+			current.GetName() != info.Name || current.GetNamespace() != info.Namespace ||
+			(previous != nil && current.GetUID() != previous.GetUID()) {
+			return fmt.Errorf("Sandbox write returned an unexpected resource identity")
+		}
+		k.run.objects[key] = current
+	}
+	return k.run.preflight(true, true)
 }
 
 func (k *sandboxStageKube) Delete(kube.ResourceList) (*kube.Result, []error) {
@@ -1021,12 +1163,12 @@ func (d *sandboxStageDriver) Update(key string, rel *release.Release) error {
 			return d.record(fmt.Errorf("unexpected Sandbox stage status transition"))
 		}
 		if rel.Info.Status == release.StatusDeployed {
-			if err := d.run.guard(); err != nil {
+			if err := d.run.preflight(true, true); err != nil {
 				// Recording a failed held stage permits an exact-plan retry.
 				// It never rolls back resources or grants execution.
 				failed := *rel
 				info := *rel.Info
-				info.Status, info.Description = release.StatusFailed, "Sandbox hold check changed during staging"
+				info.Status, info.Description = release.StatusFailed, "Sandbox stage postconditions or hold check failed"
 				failed.Info = &info
 				return d.record(errors.Join(err, d.Driver.Update(key, &failed)))
 			}

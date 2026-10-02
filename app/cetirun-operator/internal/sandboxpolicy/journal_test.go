@@ -16,12 +16,16 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apivalidation "k8s.io/apimachinery/pkg/api/validation"
+	pathvalidation "k8s.io/apimachinery/pkg/api/validation/path"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
 )
 
 type journalTestClient struct {
@@ -60,6 +64,9 @@ func (c *journalTestClient) Create(ctx context.Context, obj client.Object, opts 
 
 func (c *journalTestClient) Update(ctx context.Context, obj client.Object, opts ...client.UpdateOption) error {
 	c.updates++
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if c.beforeUpdate != nil {
 		if err := c.beforeUpdate(obj); err != nil {
 			return err
@@ -76,6 +83,9 @@ func (c *journalTestClient) Update(ctx context.Context, obj client.Object, opts 
 
 func (c *journalTestClient) Delete(ctx context.Context, obj client.Object, opts ...client.DeleteOption) error {
 	c.deletes++
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	var options client.DeleteOptions
 	for _, opt := range opts {
 		opt.ApplyToDelete(&options)
@@ -211,6 +221,10 @@ func TestGrantJournalRestartAndWriteAheadUnion(t *testing.T) {
 	recordJournal(t, restarted, plan, plan.Identity.Bindings[1:])
 	recordJournal(t, store, plan, nil)
 	assertJournalInventory(t, restarted, plan, plan.Identity.Bindings)
+	cleanupRefs, err := restarted.ReadForCleanup(ctx, plan.AgentName, plan.Binding.AgentUID)
+	if err != nil || !slices.Equal(cleanupRefs, canonicalBindingReferences(plan.Identity.Bindings)) {
+		t.Fatal("cleanup-only read lost protected inventory", cleanupRefs, err)
+	}
 	read, err := restarted.Read(ctx, plan.AgentName, plan.Binding.AgentUID)
 	if err != nil {
 		t.Fatal(err)
@@ -432,7 +446,6 @@ func TestGrantJournalValidatesAllIncomingReferencesBeforeEffects(t *testing.T) {
 		{"dotdot role", func(r *BindingReference) { r.RoleRef.Name = ".." }},
 		{"invalid role", func(r *BindingReference) { r.RoleRef.Name = "bad/role" }},
 		{"escaped role", func(r *BindingReference) { r.RoleRef.Name = "bad%2frole" }},
-		{"oversized role", func(r *BindingReference) { r.RoleRef.Name = strings.Repeat("a", 254) }},
 		{"invalid UTF-8 role", func(r *BindingReference) { r.RoleRef.Name = "\xff" }},
 		{"empty revision", func(r *BindingReference) { r.GrantRevision = "" }},
 		{"opaque revision", func(r *BindingReference) { r.GrantRevision = "not-a-grant-digest" }},
@@ -500,6 +513,63 @@ func TestGrantJournalAcceptsNamespacedRolesAndSystemClusterRoles(t *testing.T) {
 	}
 	recordJournal(t, store, plan, refs)
 	assertJournalInventory(t, store, plan, refs)
+}
+
+func TestGrantJournalRoleNamesPassPolicyToRecord(t *testing.T) {
+	for _, tc := range []struct {
+		name, roleName string
+	}{
+		{"253 ASCII bytes", strings.Repeat("r", 253)},
+		{"254 ASCII bytes", strings.Repeat("r", 254)},
+		{"1024 ASCII bytes", strings.Repeat("r", 1024)},
+		{"254 UTF-8 bytes", strings.Repeat("\u00e9", 127)},
+	} {
+		for _, kind := range []string{"RoleBinding", "ClusterRoleBinding"} {
+			t.Run(tc.name+"/"+kind, func(t *testing.T) {
+				input := adminFixture()
+				access := input.Resolution.AgentPolicy.KubernetesAccess
+				if kind == "RoleBinding" {
+					access.RoleBindings[0].ClusterRoleName = tc.roleName
+					access.ClusterRoleBindings = nil
+					input.Platform.Grants = input.Platform.Grants[:1]
+				} else {
+					access.ClusterRoleBindings[0].ClusterRoleName = tc.roleName
+					access.RoleBindings = nil
+					input.Platform.Grants = input.Platform.Grants[1:]
+				}
+				input.Platform.Grants[0].RoleRef.Name = tc.roleName
+				roles := approvedRoleObjects(input.Platform.Grants)
+				for _, object := range roles {
+					role := object.(*rbacv1.ClusterRole)
+					if errs := apivalidation.ValidateObjectMeta(&role.ObjectMeta, false,
+						pathvalidation.ValidatePathSegmentName, field.NewPath("metadata")); len(errs) != 0 {
+						t.Fatal("upstream metadata/path-segment validation rejected role name", errs)
+					}
+				}
+				normalized, errs := sandbox.NormalizeAgentPolicy(input.Resolution.AgentPolicy)
+				if len(errs) != 0 {
+					t.Fatal("policy normalization rejected role name", errs)
+				}
+				input.Resolution.AgentPolicy = normalized
+				policy := &api.AgentPolicy{
+					ObjectMeta: metav1.ObjectMeta{UID: input.Resolution.Binding.AgentPolicyUID},
+					Spec:       normalized,
+				}
+				if err := VerifyPolicyGrants(context.Background(), roleReader(t, roles), policy, input.Platform.Grants); err != nil {
+					t.Fatal("grant verification rejected role name", err)
+				}
+				plan := mustCompile(t, input)
+				if len(plan.Identity.Bindings) != 1 || plan.Identity.Bindings[0].Kind != kind ||
+					plan.Identity.Bindings[0].RoleRef.Name != tc.roleName {
+					t.Fatal("compiler changed the requested role identity")
+				}
+				_, store, writer := journalFixture(t)
+				recordJournal(t, store, plan, plan.Identity.Bindings)
+				assertJournalInventory(t, store, plan, plan.Identity.Bindings)
+				assertJournalProtection(t, store, writer.Client, plan)
+			})
+		}
+	}
 }
 
 func TestGrantJournalAdmissionSourceRoleAndCrossNamespaceSubject(t *testing.T) {
@@ -672,6 +742,10 @@ func TestGrantJournalRejectsCorruptOrForeignStateBeforeEffects(t *testing.T) {
 				t.Fatalf("corrupt journal Read used %d authoritative reads, want 1", reads)
 			}
 			for _, operation := range []func() error{
+				func() error {
+					_, err := store.ReadForCleanup(context.Background(), plan.AgentName, plan.Binding.AgentUID)
+					return err
+				},
 				func() error { return store.Record(context.Background(), plan.AgentName, plan.Binding.AgentUID, nil) },
 				func() error {
 					return store.Record(context.Background(), plan.AgentName, plan.Binding.AgentUID, plan.Identity.Bindings)
@@ -854,6 +928,17 @@ func TestGrantJournalReferenceAndByteBounds(t *testing.T) {
 		}
 		assertJournalInventory(t, store, plan, refs[:300])
 	})
+	t.Run("long role name consumes aggregate byte budget", func(t *testing.T) {
+		plan, store, writer := journalFixture(t)
+		refs := makeRefs(plan, 1)
+		refs[0].RoleRef.Name = strings.Repeat("r", MaxGrantJournalBytes)
+		if err := store.Record(context.Background(), plan.AgentName, plan.Binding.AgentUID, refs); !errors.Is(err, ErrConflict) {
+			t.Fatal("long role name bypassed the journal byte budget", err)
+		}
+		if writer.creates != 0 || writer.updates != 0 || writer.deletes != 0 {
+			t.Fatal("oversized journal caused writes")
+		}
+	})
 	t.Run("exact serialized boundary includes metadata", func(t *testing.T) {
 		plan, store, writer := journalFixture(t)
 		recordJournal(t, store, plan, nil)
@@ -864,19 +949,50 @@ func TestGrantJournalReferenceAndByteBounds(t *testing.T) {
 			t.Fatal(err)
 		}
 		cm.Annotations["example.com/padding"] = strings.Repeat("a", MaxGrantJournalBytes-len(raw))
-		if _, err := store.decode(cm, plan.AgentName, plan.Binding.AgentUID, true); err != nil {
+		if _, err := store.decode(cm, plan.AgentName, plan.Binding.AgentUID, journalRequireProtection); err != nil {
 			t.Fatal("exact byte limit was rejected", err)
 		}
 		cm.Annotations["example.com/padding"] += "a"
-		if _, err := store.decode(cm, plan.AgentName, plan.Binding.AgentUID, true); !errors.Is(err, ErrConflict) {
+		if _, err := store.decode(cm, plan.AgentName, plan.Binding.AgentUID, journalRequireProtection); !errors.Is(err, ErrConflict) {
 			t.Fatal("one byte beyond limit was accepted", err)
 		}
+	})
+	t.Run("release receipt consumes aggregate byte budget", func(t *testing.T) {
+		plan, store, writer := journalFixture(t)
+		writer.beforeCreate = func(obj client.Object) error {
+			obj.SetUID(types.UID(strings.Repeat("j", 63)))
+			return nil
+		}
+		recordJournal(t, store, plan, nil)
+		cm := readJournalCM(t, store, writer.Client, plan)
+		cm.Annotations["example.com/padding"] = ""
+		raw, err := json.Marshal(cm)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cm.Annotations["example.com/padding"] = strings.Repeat("a", MaxGrantJournalBytes-len(raw))
+		if err := writer.Client.Update(context.Background(), cm); err != nil {
+			t.Fatal(err)
+		}
+		cm = readJournalCM(t, store, writer.Client, plan)
+		if err := store.Delete(context.Background(), plan.AgentName, plan.Binding.AgentUID); !errors.Is(err, ErrConflict) {
+			t.Fatal("release receipt bypassed the journal byte budget", err)
+		}
+		if writer.updates != 0 || writer.deletes != 0 ||
+			!reflect.DeepEqual(cm, readJournalCM(t, store, writer.Client, plan)) {
+			t.Fatal("oversized release changed the protected journal")
+		}
+		assertJournalInventory(t, store, plan, nil)
+		assertJournalProtection(t, store, writer.Client, plan)
 	})
 }
 
 func TestGrantJournalMissingStateCannotAuthorizeRevocation(t *testing.T) {
 	plan, store, writer := journalFixture(t)
 	ctx := context.Background()
+	if _, err := store.ReadForCleanup(ctx, plan.AgentName, plan.Binding.AgentUID); !apierrors.IsNotFound(err) {
+		t.Fatal("cleanup-only read invented empty inventory for missing state", err)
+	}
 	if err := store.Revoke(ctx, plan.AgentName, plan.Binding.AgentUID, plan.Identity.Bindings); !apierrors.IsNotFound(err) {
 		t.Fatalf("missing durable inventory was treated as cleanup evidence: %v", err)
 	}
@@ -1118,6 +1234,7 @@ func TestGrantJournalPreservesForeignMetadata(t *testing.T) {
 		t.Fatal(err)
 	}
 	observed = readJournalCM(t, store, writer.Client, plan)
+	cm.Annotations[grantJournalReleasedAnnotation] = string(cm.UID)
 	if observed.DeletionTimestamp.IsZero() || !slices.Equal(observed.Finalizers, []string{"example.com/other-cleanup"}) ||
 		!reflect.DeepEqual(cm.Labels, observed.Labels) || !reflect.DeepEqual(cm.Annotations, observed.Annotations) {
 		t.Fatal("Delete stripped foreign metadata or failed to request deletion")
@@ -1320,13 +1437,541 @@ func TestGrantJournalDeleteErrorsRetainProtectionWhenCASCanRestoreIt(t *testing.
 			}
 			assertJournalProtection(t, store, writer.Client, plan)
 			assertJournalInventory(t, store, plan, nil)
+			if _, released := readJournalCM(t, store, writer.Client, plan).Annotations[grantJournalReleasedAnnotation]; released {
+				t.Fatal("protected journal retained a release receipt")
+			}
 			writer.beforeUpdate, writer.beforeDelete = nil, nil
 			store.APIReader = writer.Client
+			recordJournal(t, store, plan, nil)
 			if err := store.Delete(ctx, plan.AgentName, plan.Binding.AgentUID); err != nil {
 				t.Fatal("failed cleanup was not retriable", err)
 			}
 			assertJournalAgentUntouched(t, writer.Client, plan)
 		})
+	}
+}
+
+func TestGrantJournalDeleteResumesAfterInterruptedRelease(t *testing.T) {
+	for _, failureAt := range []string{
+		"crash after persisted release",
+		"lost release response",
+		"cancellation after persisted release",
+		"cancellation before delete",
+		"delete and restoration",
+		"readback and restoration",
+		"lost delete response with foreign finalizer",
+		"successful delete with foreign finalizer",
+	} {
+		t.Run(failureAt, func(t *testing.T) {
+			plan, store, writer := journalFixture(t)
+			recordJournal(t, store, plan, nil)
+			cm := readJournalCM(t, store, writer.Client, plan)
+			foreign := strings.Contains(failureAt, "foreign finalizer")
+			if foreign {
+				cm.Finalizers = append(cm.Finalizers, "example.com/other-cleanup")
+				cm.Annotations["example.com/annotation"] = "preserve"
+				if err := writer.Client.Update(context.Background(), cm); err != nil {
+					t.Fatal(err)
+				}
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			failure := errors.New("synthetic interrupted journal deletion")
+			restoreFailure := errors.New("synthetic unavailable journal restoration")
+			released, reads := false, 0
+			baseReader := store.APIReader
+			store.APIReader = journalTestReader{Reader: baseReader, get: func(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				reads++
+				if err := ctx.Err(); err != nil {
+					return err
+				}
+				if failureAt == "readback and restoration" && reads == 2 {
+					return failure
+				}
+				return baseReader.Get(ctx, key, obj, opts...)
+			}}
+			writer.afterUpdate = func(obj client.Object) error {
+				if slices.Contains(obj.GetFinalizers(), GrantJournalFinalizer) {
+					return nil
+				}
+				released = true
+				switch failureAt {
+				case "crash after persisted release":
+					panic(failure)
+				case "lost release response":
+					return failure
+				case "cancellation after persisted release":
+					cancel()
+				}
+				return nil
+			}
+			if failureAt == "delete and restoration" || failureAt == "readback and restoration" {
+				writer.beforeUpdate = func(obj client.Object) error {
+					if released && slices.Contains(obj.GetFinalizers(), GrantJournalFinalizer) {
+						return restoreFailure
+					}
+					return nil
+				}
+			}
+			if failureAt == "delete and restoration" {
+				writer.beforeDelete = func(client.Object, client.DeleteOptions) error { return failure }
+			}
+			if failureAt == "cancellation before delete" {
+				writer.beforeDelete = func(client.Object, client.DeleteOptions) error {
+					cancel()
+					return ctx.Err()
+				}
+			}
+			if failureAt == "lost delete response with foreign finalizer" {
+				writer.beforeDelete = func(obj client.Object, options client.DeleteOptions) error {
+					if err := writer.Client.Delete(ctx, obj, &options); err != nil {
+						return err
+					}
+					return failure
+				}
+			}
+			var err error
+			crashed := false
+			func() {
+				defer func() {
+					if recovered := recover(); recovered != nil {
+						if recovered != failure {
+							panic(recovered)
+						}
+						crashed = true
+					}
+				}()
+				err = store.Delete(ctx, plan.AgentName, plan.Binding.AgentUID)
+			}()
+			switch failureAt {
+			case "crash after persisted release":
+				if !crashed {
+					t.Fatal("fixture did not interrupt the process after persisted release")
+				}
+			case "cancellation after persisted release", "cancellation before delete":
+				if !errors.Is(err, context.Canceled) {
+					t.Fatal("cancellation was not surfaced", err)
+				}
+			case "successful delete with foreign finalizer":
+				if err != nil {
+					t.Fatal(err)
+				}
+			default:
+				if !errors.Is(err, failure) {
+					t.Fatal("ambiguous API failure was not surfaced", err)
+				}
+			}
+			if strings.HasSuffix(failureAt, "and restoration") && !errors.Is(err, restoreFailure) {
+				t.Fatal("restoration failure was not surfaced", err)
+			}
+			observed := readJournalCM(t, store, writer.Client, plan)
+			if !released || slices.Contains(observed.Finalizers, GrantJournalFinalizer) ||
+				observed.UID != cm.UID || observed.Data[GrantJournalDataKey] != cm.Data[GrantJournalDataKey] {
+				t.Fatal("fixture did not preserve the released empty journal")
+			}
+			writer.beforeUpdate, writer.afterUpdate, writer.beforeDelete = nil, nil, nil
+			restarted := GrantJournalStore{Client: writer, APIReader: writer.Client, Namespace: store.Namespace}
+			assertJournalInventory(t, restarted, plan, nil)
+			creates, updates, deletes := writer.creates, writer.updates, writer.deletes
+			if err := restarted.Revoke(context.Background(), plan.AgentName, plan.Binding.AgentUID, nil); err != nil {
+				t.Fatal("empty revocation could not resume cleanup", err)
+			}
+			if err := restarted.Revoke(context.Background(), plan.AgentName, plan.Binding.AgentUID, plan.Identity.Bindings); !errors.Is(err, ErrOwnership) {
+				t.Fatal("released journal authorized unrecorded revocation", err)
+			}
+			for _, desired := range [][]BindingReference{nil, plan.Identity.Bindings} {
+				if err := restarted.Record(context.Background(), plan.AgentName, plan.Binding.AgentUID, desired); !apierrors.IsConflict(err) {
+					t.Fatal("released journal accepted new grant bookkeeping", err)
+				}
+			}
+			if writer.creates != creates || writer.updates != updates || writer.deletes != deletes {
+				t.Fatal("reading or rejecting reuse of released state caused writes")
+			}
+			if err := restarted.Delete(context.Background(), plan.AgentName, plan.Binding.AgentUID); err != nil {
+				t.Fatal("cleanup did not resume after interruption", err)
+			}
+			if writer.updates != updates {
+				t.Fatal("resumed cleanup rewrote already released inventory")
+			}
+			if foreign {
+				observed = readJournalCM(t, restarted, writer.Client, plan)
+				if observed.DeletionTimestamp.IsZero() ||
+					!slices.Equal(observed.Finalizers, []string{"example.com/other-cleanup"}) ||
+					observed.Annotations["example.com/annotation"] != "preserve" {
+					t.Fatal("cleanup changed foreign metadata or failed to request deletion")
+				}
+				assertJournalInventory(t, restarted, plan, nil)
+			} else if _, err := restarted.Read(context.Background(), plan.AgentName, plan.Binding.AgentUID); !apierrors.IsNotFound(err) {
+				t.Fatal("resumed cleanup left the journal behind", err)
+			}
+			updates, deletes = writer.updates, writer.deletes
+			for range 2 {
+				if err := restarted.Delete(context.Background(), plan.AgentName, plan.Binding.AgentUID); err != nil {
+					t.Fatal("repeat cleanup was not idempotent", err)
+				}
+			}
+			if writer.updates != updates || writer.deletes != deletes {
+				t.Fatal("repeat cleanup rewrote a completed release")
+			}
+			if foreign {
+				observed.Finalizers = nil
+				if err := writer.Client.Update(context.Background(), observed); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := restarted.Read(context.Background(), plan.AgentName, plan.Binding.AgentUID); !apierrors.IsNotFound(err) {
+					t.Fatal("foreign finalization did not remove the journal", err)
+				}
+			}
+			assertJournalAgentUntouched(t, writer.Client, plan)
+		})
+	}
+}
+
+func TestGrantJournalDeleteResumesLegacyEmptyState(t *testing.T) {
+	for _, tc := range []struct {
+		name                 string
+		foreign, terminating bool
+	}{
+		{"live", false, false},
+		{"live with foreign finalizer", true, false},
+		{"terminating with foreign finalizer", true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			plan, store, writer := journalFixture(t)
+			ctx := context.Background()
+			recordJournal(t, store, plan, nil)
+			cm := readJournalCM(t, store, writer.Client, plan)
+			cm.Finalizers = nil
+			cm.Annotations["example.com/metadata"] = "preserve"
+			if tc.foreign {
+				cm.Finalizers = []string{"example.com/other-cleanup"}
+			}
+			if err := writer.Client.Update(ctx, cm); err != nil {
+				t.Fatal(err)
+			}
+			if tc.terminating {
+				if err := writer.Client.Delete(ctx, cm); err != nil {
+					t.Fatal(err)
+				}
+			}
+			cm = readJournalCM(t, store, writer.Client, plan)
+			if _, released := cm.Annotations[grantJournalReleasedAnnotation]; released ||
+				!cm.DeletionTimestamp.IsZero() != tc.terminating {
+				t.Fatal("fixture is not an unmarked legacy journal")
+			}
+			for _, operation := range []func() error{
+				func() error { _, err := store.Read(ctx, plan.AgentName, plan.Binding.AgentUID); return err },
+				func() error { return store.Record(ctx, plan.AgentName, plan.Binding.AgentUID, nil) },
+				func() error { return store.Record(ctx, plan.AgentName, plan.Binding.AgentUID, plan.Identity.Bindings) },
+				func() error { return store.Revoke(ctx, plan.AgentName, plan.Binding.AgentUID, nil) },
+				func() error { return store.Revoke(ctx, plan.AgentName, plan.Binding.AgentUID, plan.Identity.Bindings) },
+			} {
+				if err := operation(); !errors.Is(err, ErrOwnership) {
+					t.Fatal("ordinary operation accepted unmarked, unprotected state", err)
+				}
+			}
+			if writer.creates != 1 || writer.updates != 0 || writer.deletes != 0 {
+				t.Fatal("ordinary operations wrote to unprotected legacy state")
+			}
+			cleanupReader := store
+			cleanupReader.Client = nil
+			for range 2 {
+				refs, err := cleanupReader.ReadForCleanup(ctx, plan.AgentName, plan.Binding.AgentUID)
+				if err != nil || len(refs) != 0 {
+					t.Fatal("cleanup-only read rejected valid empty legacy inventory", refs, err)
+				}
+			}
+			if writer.creates != 1 || writer.updates != 0 || writer.deletes != 0 ||
+				!reflect.DeepEqual(cm, readJournalCM(t, store, writer.Client, plan)) {
+				t.Fatal("cleanup-only read repaired or changed the legacy journal")
+			}
+			writer.beforeUpdate = func(obj client.Object) error {
+				released := obj.(*corev1.ConfigMap)
+				if released.UID != cm.UID || released.ResourceVersion != cm.ResourceVersion ||
+					released.Annotations[grantJournalReleasedAnnotation] != string(cm.UID) ||
+					released.Data[GrantJournalDataKey] != cm.Data[GrantJournalDataKey] {
+					t.Fatal("legacy cleanup did not CAS-record the empty release")
+				}
+				return nil
+			}
+			writer.beforeDelete = func(obj client.Object, options client.DeleteOptions) error {
+				if options.Preconditions == nil || options.Preconditions.UID == nil ||
+					options.Preconditions.ResourceVersion == nil || *options.Preconditions.UID != cm.UID ||
+					*options.Preconditions.ResourceVersion != obj.GetResourceVersion() {
+					t.Fatal("legacy cleanup did not pin the journal UID and resourceVersion")
+				}
+				return nil
+			}
+			if err := store.Delete(ctx, plan.AgentName, plan.Binding.AgentUID); err != nil {
+				t.Fatal("valid empty legacy journal could not resume deletion", err)
+			}
+			if writer.updates != 1 || (tc.terminating && writer.deletes != 0) ||
+				(!tc.terminating && writer.deletes != 1) {
+				t.Fatal("legacy cleanup did not make exactly the required receipt/deletion writes")
+			}
+			if tc.foreign {
+				observed := readJournalCM(t, store, writer.Client, plan)
+				cm.Annotations[grantJournalReleasedAnnotation] = string(cm.UID)
+				if observed.DeletionTimestamp.IsZero() || !slices.Equal(observed.Finalizers, cm.Finalizers) ||
+					!reflect.DeepEqual(observed.Annotations, cm.Annotations) ||
+					!reflect.DeepEqual(observed.Labels, cm.Labels) ||
+					!reflect.DeepEqual(observed.OwnerReferences, cm.OwnerReferences) {
+					t.Fatal("legacy cleanup changed foreign metadata or ownership")
+				}
+				assertJournalInventory(t, store, plan, nil)
+			} else if _, err := store.Read(ctx, plan.AgentName, plan.Binding.AgentUID); !apierrors.IsNotFound(err) {
+				t.Fatal("legacy journal was not deleted", err)
+			}
+			refs, err := cleanupReader.ReadForCleanup(ctx, plan.AgentName, plan.Binding.AgentUID)
+			if tc.foreign {
+				if err != nil || len(refs) != 0 {
+					t.Fatal("cleanup-only read rejected completed release retained by foreign finalizers", refs, err)
+				}
+			} else if !apierrors.IsNotFound(err) {
+				t.Fatal("cleanup-only read treated missing state as empty inventory", err)
+			}
+			updates, deletes := writer.updates, writer.deletes
+			for range 2 {
+				if err := store.Delete(ctx, plan.AgentName, plan.Binding.AgentUID); err != nil {
+					t.Fatal("repeat legacy cleanup failed", err)
+				}
+			}
+			if writer.updates != updates || writer.deletes != deletes {
+				t.Fatal("repeat legacy cleanup rewrote completed state")
+			}
+			assertJournalAgentUntouched(t, writer.Client, plan)
+		})
+	}
+}
+
+func TestGrantJournalLegacyCleanupRetainsRetryEvidence(t *testing.T) {
+	for _, failureAt := range []string{
+		"receipt write outage",
+		"lost receipt response",
+		"concurrent metadata",
+		"concurrent grants",
+	} {
+		t.Run(failureAt, func(t *testing.T) {
+			plan, store, writer := journalFixture(t)
+			ctx := context.Background()
+			recordJournal(t, store, plan, nil)
+			cm := readJournalCM(t, store, writer.Client, plan)
+			cm.Finalizers = nil
+			if err := writer.Client.Update(ctx, cm); err != nil {
+				t.Fatal(err)
+			}
+			failure := errors.New("synthetic legacy journal receipt failure")
+			var want []BindingReference
+			switch failureAt {
+			case "receipt write outage":
+				writer.beforeUpdate = func(client.Object) error { return failure }
+			case "lost receipt response":
+				writer.afterUpdate = func(client.Object) error { return failure }
+			case "concurrent metadata", "concurrent grants":
+				if failureAt == "concurrent grants" {
+					want = plan.Identity.Bindings
+				}
+				writer.beforeUpdate = func(client.Object) error {
+					concurrent := readJournalCM(t, store, writer.Client, plan)
+					concurrent.Annotations["example.com/concurrent"] = "preserve"
+					if len(want) != 0 {
+						concurrent.Finalizers = []string{GrantJournalFinalizer}
+						concurrent.Data[GrantJournalDataKey] = journalRaw(t, plan, want)
+					}
+					return writer.Client.Update(ctx, concurrent)
+				}
+			}
+			err := store.Delete(ctx, plan.AgentName, plan.Binding.AgentUID)
+			if strings.HasPrefix(failureAt, "concurrent") {
+				if !apierrors.IsConflict(err) {
+					t.Fatal("legacy receipt CAS conflict was not surfaced", err)
+				}
+				if readJournalCM(t, store, writer.Client, plan).Annotations["example.com/concurrent"] != "preserve" {
+					t.Fatal("legacy receipt write overwrote concurrent metadata")
+				}
+			} else if !errors.Is(err, failure) {
+				t.Fatal("legacy receipt failure was not surfaced", err)
+			}
+			if writer.updates != 1 || writer.deletes != 0 {
+				t.Fatal("failed legacy receipt write continued to deletion")
+			}
+			writer.beforeUpdate, writer.afterUpdate = nil, nil
+			restarted := GrantJournalStore{Client: writer, APIReader: writer.Client, Namespace: store.Namespace}
+			refs, err := restarted.ReadForCleanup(ctx, plan.AgentName, plan.Binding.AgentUID)
+			if err != nil || !slices.Equal(refs, canonicalBindingReferences(want)) {
+				t.Fatal("failed legacy cleanup lost durable retry inventory", refs, err)
+			}
+			if len(refs) != 0 {
+				if err := restarted.Delete(ctx, plan.AgentName, plan.Binding.AgentUID); !errors.Is(err, ErrRevocationPending) {
+					t.Fatal("legacy retry deleted concurrent grant inventory", err)
+				}
+				if err := restarted.Revoke(ctx, plan.AgentName, plan.Binding.AgentUID, refs); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := restarted.Delete(ctx, plan.AgentName, plan.Binding.AgentUID); err != nil {
+				t.Fatal("legacy cleanup did not resume after receipt failure", err)
+			}
+			if _, err := restarted.ReadForCleanup(ctx, plan.AgentName, plan.Binding.AgentUID); !apierrors.IsNotFound(err) {
+				t.Fatal("legacy cleanup retry left the journal behind", err)
+			}
+			assertJournalAgentUntouched(t, writer.Client, plan)
+		})
+	}
+}
+
+func TestGrantJournalCleanupReadRejectsUnsafeLegacyState(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*corev1.ConfigMap, *Plan)
+	}{
+		{"grant-bearing inventory", func(cm *corev1.ConfigMap, plan *Plan) {
+			cm.Data[GrantJournalDataKey] = journalRaw(t, plan, plan.Identity.Bindings)
+		}},
+		{"corrupt empty record", func(cm *corev1.ConfigMap, _ *Plan) {
+			cm.Data[GrantJournalDataKey] = "{"
+		}},
+		{"null inventory", func(cm *corev1.ConfigMap, plan *Plan) {
+			cm.Data[GrantJournalDataKey] = journalRaw(t, plan, nil)
+		}},
+		{"foreign owner", func(cm *corev1.ConfigMap, _ *Plan) {
+			cm.OwnerReferences[0].UID = "another-agent"
+		}},
+		{"nonblocking owner", func(cm *corev1.ConfigMap, _ *Plan) {
+			*cm.OwnerReferences[0].BlockOwnerDeletion = false
+		}},
+		{"missing Agent identity", func(cm *corev1.ConfigMap, _ *Plan) {
+			delete(cm.Annotations, AgentUIDLabel)
+		}},
+		{"missing ConfigMap UID", func(cm *corev1.ConfigMap, _ *Plan) {
+			cm.UID = ""
+		}},
+		{"missing resource version", func(cm *corev1.ConfigMap, _ *Plan) {
+			cm.ResourceVersion = ""
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			plan, store, writer := journalFixture(t)
+			ctx := context.Background()
+			recordJournal(t, store, plan, nil)
+			cm := readJournalCM(t, store, writer.Client, plan)
+			cm.Finalizers = nil
+			if err := writer.Client.Update(ctx, cm); err != nil {
+				t.Fatal(err)
+			}
+			cm = readJournalCM(t, store, writer.Client, plan)
+			baseReader := store.APIReader
+			store.APIReader = journalTestReader{Reader: baseReader, get: func(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				if err := baseReader.Get(ctx, key, obj, opts...); err != nil {
+					return err
+				}
+				tc.mutate(obj.(*corev1.ConfigMap), plan)
+				return nil
+			}}
+			if _, err := store.ReadForCleanup(ctx, plan.AgentName, plan.Binding.AgentUID); !errors.Is(err, ErrOwnership) {
+				t.Fatal("cleanup-only read accepted unsafe legacy state", err)
+			}
+			if err := store.Delete(ctx, plan.AgentName, plan.Binding.AgentUID); !errors.Is(err, ErrOwnership) {
+				t.Fatal("cleanup-only deletion accepted unsafe legacy state", err)
+			}
+			if writer.creates != 1 || writer.updates != 0 || writer.deletes != 0 ||
+				!reflect.DeepEqual(cm, readJournalCM(t, store, writer.Client, plan)) {
+				t.Fatal("unsafe legacy cleanup caused effects")
+			}
+			assertJournalAgentUntouched(t, writer.Client, plan)
+		})
+	}
+}
+
+func TestGrantJournalReleasedStateRejectsUnsafeInventory(t *testing.T) {
+	for _, terminating := range []bool{false, true} {
+		for _, tc := range []struct {
+			name   string
+			mutate func(*corev1.ConfigMap, *Plan)
+		}{
+			{"empty receipt", func(cm *corev1.ConfigMap, _ *Plan) {
+				cm.Annotations[grantJournalReleasedAnnotation] = ""
+			}},
+			{"foreign receipt", func(cm *corev1.ConfigMap, _ *Plan) {
+				cm.Annotations[grantJournalReleasedAnnotation] = "another-journal"
+			}},
+			{"replaced journal", func(cm *corev1.ConfigMap, _ *Plan) {
+				cm.UID = "replacement-journal"
+			}},
+			{"foreign owner", func(cm *corev1.ConfigMap, _ *Plan) {
+				cm.OwnerReferences[0].UID = "another-agent"
+			}},
+			{"missing resource version", func(cm *corev1.ConfigMap, _ *Plan) {
+				cm.ResourceVersion = ""
+			}},
+			{"unprotected grants", func(cm *corev1.ConfigMap, plan *Plan) {
+				cm.Data[GrantJournalDataKey] = journalRaw(t, plan, plan.Identity.Bindings)
+			}},
+			{"incomplete restoration", func(cm *corev1.ConfigMap, _ *Plan) {
+				cm.Finalizers = append(cm.Finalizers, GrantJournalFinalizer)
+			}},
+			{"corrupt inventory", func(cm *corev1.ConfigMap, _ *Plan) {
+				cm.Data[GrantJournalDataKey] = "{"
+			}},
+		} {
+			t.Run(fmt.Sprintf("terminating=%t/%s", terminating, tc.name), func(t *testing.T) {
+				plan, store, writer := journalFixture(t)
+				ctx := context.Background()
+				recordJournal(t, store, plan, nil)
+				cm := readJournalCM(t, store, writer.Client, plan)
+				cm.Finalizers = append(cm.Finalizers, "example.com/other-cleanup")
+				if err := writer.Client.Update(ctx, cm); err != nil {
+					t.Fatal(err)
+				}
+				failure := errors.New("synthetic journal delete and restore failure")
+				writer.beforeDelete = func(client.Object, client.DeleteOptions) error { return failure }
+				writer.beforeUpdate = func(obj client.Object) error {
+					if slices.Contains(obj.GetFinalizers(), GrantJournalFinalizer) {
+						return failure
+					}
+					return nil
+				}
+				if err := store.Delete(ctx, plan.AgentName, plan.Binding.AgentUID); !errors.Is(err, failure) {
+					t.Fatal("fixture did not persist a released journal", err)
+				}
+				writer.beforeUpdate, writer.beforeDelete = nil, nil
+				cm = readJournalCM(t, store, writer.Client, plan)
+				if terminating {
+					if err := writer.Client.Delete(ctx, cm); err != nil {
+						t.Fatal(err)
+					}
+					cm = readJournalCM(t, store, writer.Client, plan)
+				}
+				assertJournalInventory(t, store, plan, nil)
+				baseReader := store.APIReader
+				store.APIReader = journalTestReader{Reader: baseReader, get: func(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+					if err := baseReader.Get(ctx, key, obj, opts...); err != nil {
+						return err
+					}
+					tc.mutate(obj.(*corev1.ConfigMap), plan)
+					return nil
+				}}
+				creates, updates, deletes := writer.creates, writer.updates, writer.deletes
+				for _, operation := range []func() error{
+					func() error { _, err := store.Read(ctx, plan.AgentName, plan.Binding.AgentUID); return err },
+					func() error { _, err := store.ReadForCleanup(ctx, plan.AgentName, plan.Binding.AgentUID); return err },
+					func() error { return store.Record(ctx, plan.AgentName, plan.Binding.AgentUID, nil) },
+					func() error { return store.Record(ctx, plan.AgentName, plan.Binding.AgentUID, plan.Identity.Bindings) },
+					func() error { return store.Revoke(ctx, plan.AgentName, plan.Binding.AgentUID, nil) },
+					func() error { return store.Revoke(ctx, plan.AgentName, plan.Binding.AgentUID, plan.Identity.Bindings) },
+					func() error { return store.Delete(ctx, plan.AgentName, plan.Binding.AgentUID) },
+				} {
+					if err := operation(); !errors.Is(err, ErrOwnership) {
+						t.Fatal("unsafe released journal authorized an operation", err)
+					}
+				}
+				if writer.creates != creates || writer.updates != updates || writer.deletes != deletes ||
+					!reflect.DeepEqual(cm, readJournalCM(t, store, writer.Client, plan)) {
+					t.Fatal("unsafe released journal caused effects")
+				}
+				assertJournalAgentUntouched(t, writer.Client, plan)
+			})
+		}
 	}
 }
 
@@ -1338,6 +1983,7 @@ func TestGrantJournalDeleteConflictNeverOverwritesConcurrentState(t *testing.T) 
 		cm := readJournalCM(t, store, writer.Client, plan)
 		cm.Annotations["example.com/concurrent"] = "preserve"
 		cm.Finalizers = append(cm.Finalizers, GrantJournalFinalizer)
+		delete(cm.Annotations, grantJournalReleasedAnnotation)
 		cm.Data[GrantJournalDataKey] = journalRaw(t, plan, plan.Identity.Bindings)
 		return writer.Client.Update(ctx, cm)
 	}
@@ -1474,6 +2120,7 @@ func TestGrantJournalDeleteWillNotDeleteReplacementJournal(t *testing.T) {
 		replacement := cm.DeepCopy()
 		replacement.UID, replacement.ResourceVersion = "replacement-journal", ""
 		replacement.Finalizers = []string{GrantJournalFinalizer}
+		delete(replacement.Annotations, grantJournalReleasedAnnotation)
 		replacement.Data[GrantJournalDataKey] = journalRaw(t, plan, plan.Identity.Bindings)
 		if err := writer.Client.Delete(ctx, cm); err != nil {
 			return err
