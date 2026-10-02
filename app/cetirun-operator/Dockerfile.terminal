@@ -9,10 +9,12 @@ ARG VERSION
 ARG GIT_SHA
 ARG TARGETOS
 ARG TARGETARCH
-WORKDIR /workspace
+WORKDIR /workspace/app/cetirun-operator
 COPY app/cetirun-operator/go.mod app/cetirun-operator/go.sum ./
+COPY app/internal/go.mod app/internal/go.sum ../internal/
 RUN go mod download
 COPY app/cetirun-operator/ .
+COPY app/internal/ ../internal/
 RUN CGO_ENABLED=0 GOEXPERIMENT=ms_nocgo_opensslcrypto GOOS="${TARGETOS}" GOARCH="${TARGETARCH}" \
     go build -trimpath -o /terminal ./cmd/terminal
 

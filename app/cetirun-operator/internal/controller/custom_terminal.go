@@ -13,6 +13,7 @@ import (
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/runtimebindings"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/terminal"
+	"github.com/Azure/CetiRun/app/internal/terminalpolicy"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
@@ -156,7 +157,7 @@ func (r *AgentReconciler) terminalAPIEndpoints(ctx context.Context) ([]runtimebi
 
 func (r *AgentReconciler) stopCustomTerminal(ctx context.Context, instance *api.Agent) error {
 	deployment := &appsv1.Deployment{}
-	key := types.NamespacedName{Namespace: instanceNamespace(instance.Name), Name: terminal.WorkloadName(instanceServiceName(instance.Name))}
+	key := types.NamespacedName{Namespace: instanceNamespace(instance.Name), Name: terminalpolicy.WorkloadName(instanceServiceName(instance.Name))}
 	if err := r.customReader().Get(ctx, key, deployment); err != nil {
 		if apierrors.IsNotFound(err) {
 			return nil
@@ -176,7 +177,7 @@ func (r *AgentReconciler) stopCustomTerminal(ctx context.Context, instance *api.
 
 func (r *AgentReconciler) customTerminalReady(ctx context.Context, instance *api.Agent) (bool, error) {
 	deployment := &appsv1.Deployment{}
-	key := types.NamespacedName{Namespace: instanceNamespace(instance.Name), Name: terminal.WorkloadName(instanceServiceName(instance.Name))}
+	key := types.NamespacedName{Namespace: instanceNamespace(instance.Name), Name: terminalpolicy.WorkloadName(instanceServiceName(instance.Name))}
 	if err := r.customReader().Get(ctx, key, deployment); err != nil {
 		if apierrors.IsNotFound(err) {
 			return false, nil

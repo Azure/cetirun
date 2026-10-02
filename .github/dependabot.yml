@@ -24,10 +24,11 @@ updates:
       docker-images:
         group-by: "dependency-name"
 
-  # Portal imports operator through a local replace. Update their dependency
-  # graphs together, including dependencies that are indirect in the consumer.
+  # Keep locally linked application modules and internal contracts in sync,
+  # including dependencies that are indirect in the consumer.
   - package-ecosystem: "gomod"
     directories:
+      - "/app/internal"
       - "/app/cetirun-agent-broker"
       - "/app/cetirun-operator"
       - "/app/cetirun-portal"

@@ -97,12 +97,41 @@ Check each independent artifact path:
   Secret from the operator namespace into its Helm client.
 - Nodes must be able to pull operator, portal, selected agent, desktop, and
   OAuth2 Proxy images. Node registry permissions do not supply credentials to
-  the operator's Helm client. Runtime `imagePullSecrets` must exist in each
-  instance namespace; the controller does not distribute them for you.
+  the operator's Helm client. For operator-managed Agents, Portal accepts
+  per-Agent credentials and Operator creates the namespace-local pull Secret;
+  see [private registries](../../reference/agent-harness/#private-registries).
+  Standalone Agent Helm releases still require any referenced `imagePullSecrets`
+  to exist in their release namespace.
 
 The operator chart declares `imagePullSecrets` but does not render
 it into its Deployment. That value cannot supply operator image-pull
 credentials; verify the actual node/service-account pull path separately.
+
+### Upgrading runtime registry configuration
+
+Operator-managed Agents reject raw `imagePullSecrets` overrides, including an
+empty list. Before upgrading, remove `cetirun.helmValues.imagePullSecrets` from
+the Operator's saved values (`cetirun-operator.cetirun.helmValues.imagePullSecrets`
+in the platform chart) and any instance `spec.helm.values.imagePullSecrets`.
+Keeping the deployment-level key makes built-in Agents report `AgentConfigInvalid`
+or `RegistryRuntimeConfigRejected`, even when their images are public. Helm
+`--reuse-values` retains that key; replace the saved values with a reviewed file
+that omits it.
+
+Keep a working node image-pull identity while migrating private images, or
+arrange a maintenance window. After the Operator, Portal, and CRDs are upgraded,
+upgrade each affected Agent's pinned runtime chart to a version that advertises
+managed-registry support, then configure its per-Agent credentials through the
+[Registry API](../../reference/agent-harness/#installation-and-api). Existing
+Agent credentials can also be replaced through Portal. A raw pull Secret is not
+automatically adopted or copied into the managed source namespace.
+
+The managed credential covers one registry host derived from the Agent image;
+it does not supply another registry's credentials for Desktop, Terminal, or other
+platform images. Those images need their own working node or platform pull path.
+Check fresh pulls, not only already-running or cached images, before retiring
+the old access method. Standalone Agent chart `imagePullSecrets` and Portal
+Deployment `imagePullSecrets` are separate settings and remain supported.
 
 ### Platform chart
 
@@ -110,8 +139,10 @@ The umbrella installs both components in `cetirun-system` by default. Configure
 the independent Istio release to reach that portal before installation, using
 `PORTAL_AUTH_NAMESPACE=cetirun-system` with its deployment helper. See
 [portal ownership endpoint](../../operations/istio/#portal-ownership-endpoint).
-The platform chart does not install Istio, certificates, credentials, agents,
-or retained agent data.
+The Operator subchart creates the Registry source namespace, retained on
+uninstall; Portal and Operator manage its per-Agent credentials at runtime.
+The platform chart does not install Istio, certificates, external credentials,
+Agents, or retained Agent data.
 
 Prepare a private values file with tested image and runtime-chart versions,
 for example:

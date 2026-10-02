@@ -17,9 +17,6 @@ func validateAgentRuntime(agent cetirunv1alpha1.HarnessSpec) error {
 	if _, err := builtin.NewRegistry().Lookup(string(agent.Type)); err != nil {
 		return err
 	}
-	if agent.RegistrySecretRef != nil {
-		return fmt.Errorf("spec.agent.registrySecretRef runtime support is not implemented")
-	}
 	if agent.Port != nil && (*agent.Port < 1 || *agent.Port > 65535) {
 		return fmt.Errorf("spec.agent.port must be between 1 and 65535")
 	}

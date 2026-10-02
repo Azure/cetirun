@@ -25,7 +25,7 @@ func TestBuiltinValueBuilderRuntimeGate(t *testing.T) {
 		// Qualification is performed against the selected chart during Prepare.
 		{"image override", api.HarnessSpec{Type: api.AgentTypeHermes, Image: ptr.To("registry.example.com/agent:1")}, true},
 		{"port override", api.HarnessSpec{Type: api.AgentTypeOpenClaw, Port: ptr.To[int32](8080)}, true},
-		{"registry reference", api.HarnessSpec{Type: api.AgentTypeOpenClaw, RegistrySecretRef: &api.RegistrySecretRef{Name: "source"}}, false},
+		{"registry reference", api.HarnessSpec{Type: api.AgentTypeOpenClaw, RegistrySecretRef: &api.RegistrySecretRef{Name: "source"}}, true},
 		{"username override", api.HarnessSpec{Type: api.AgentTypeOpenClaw, Username: ptr.To("alice")}, false},
 	}
 	for _, tt := range tests {
@@ -43,15 +43,15 @@ func TestBuiltinValueBuilderRuntimeGate(t *testing.T) {
 	}
 }
 
-func TestCustomRuntimeGateKeepsRegistryRestriction(t *testing.T) {
+func TestCustomRuntimeGateDefersRegistryToSynchronizer(t *testing.T) {
 	agent := api.HarnessSpec{Type: api.AgentTypeCustom, Image: ptr.To("registry.example.com/agent:1"),
 		Username: ptr.To("worker")}
 	if err := validateAgentRuntime(agent); err != nil {
 		t.Fatal(err)
 	}
 	agent.RegistrySecretRef = &api.RegistrySecretRef{Name: "source"}
-	if err := validateAgentRuntime(agent); err == nil {
-		t.Fatal("unimplemented registry workflow was accepted")
+	if err := validateAgentRuntime(agent); err != nil {
+		t.Fatal(err)
 	}
 }
 

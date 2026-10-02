@@ -44,6 +44,7 @@ import { StatusTab } from "./StatusTab";
 import { CopilotAuthBlock } from "./CopilotAuthBlock";
 import { CopilotModelPicker } from "./CopilotModelPicker";
 import { AgentAuthorizationBlock } from "./AgentAuthorizationBlock";
+import { RegistryAuthBlock } from "./RegistryAuthBlock";
 
 const dialogListStyle: React.CSSProperties = {
   margin: "4px 0 0 0",
@@ -330,6 +331,8 @@ export function OverviewSection({ instance }: { instance: Instance }) {
       )}
 
       {nativeIntegrations && features?.agentIdentityEnabled && <AgentAuthorizationBlock instance={instance} />}
+
+      {instance.agent.registrySecretRef && <RegistryAuthBlock key={instance.uid || instance.instanceName} instance={instance} />}
 
       {instance.teamsEnabled && (
         <TeamsStatusSection instance={instance} onDownload={openTeamsDownloadDialog} onShowInstructions={() => setTeamsInstructionsOpen(true)} />

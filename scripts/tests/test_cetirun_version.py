@@ -56,6 +56,7 @@ VERSION_FILES = (
     "app/cetirun-operator/deploy/deploy.sh",
     "app/cetirun-portal/deploy/deploy.sh",
     "app/cetirun-portal/go.mod",
+    "app/internal/go.mod",
     "app/cetirun-portal/web/package.json",
     "app/cetirun-portal/web/package-lock.json",
     "app/cetirun-chart/agents/hermes/plugins/platforms/cetirun_teams/plugin.yaml",

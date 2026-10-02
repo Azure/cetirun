@@ -8,6 +8,7 @@ import (
 	cryptorand "crypto/rand"
 	stderrors "errors"
 	"fmt"
+	"maps"
 	"net/url"
 	"reflect"
 	"strings"
@@ -99,18 +100,20 @@ type CreateInstanceOptions struct {
 	AgentIdentityEnabled bool
 	OwnerTenantID        string
 	OwnerObjectID        string
+	Annotations          map[string]string
 }
 
 const chartVersionTTL = 5 * time.Minute
 
 // Client wraps controller-runtime client for Agent operations.
 type Client struct {
-	client          client.Client
-	chartVersionMu  sync.RWMutex
-	chartVersionVal string
-	chartVersionErr error
-	chartVersionExp time.Time
-	operatorDomain  string
+	client                      client.Client
+	chartVersionMu              sync.RWMutex
+	chartVersionVal             string
+	chartVersionErr             error
+	chartVersionExp             time.Time
+	operatorDomain              string
+	registryCredentialNamespace string
 }
 
 // NewClient creates a new kube Client.
@@ -193,11 +196,15 @@ func (c *Client) CreateInstance(ctx context.Context, alias, displayName, team, e
 	if agent.Type != cetirunv1alpha1.AgentTypeCustom {
 		instance.Spec.GatewayTokenSecretRef = "gateway-token"
 	}
+	if len(optional) > 0 {
+		instance.Annotations = maps.Clone(optional[0].Annotations)
+	}
 	if len(optional) > 0 && optional[0].OwnerTenantID != "" && optional[0].OwnerObjectID != "" {
-		instance.Annotations = map[string]string{
-			cetirunv1alpha1.AnnotationOwnerTenantID: optional[0].OwnerTenantID,
-			cetirunv1alpha1.AnnotationOwnerObjectID: optional[0].OwnerObjectID,
+		if instance.Annotations == nil {
+			instance.Annotations = map[string]string{}
 		}
+		instance.Annotations[cetirunv1alpha1.AnnotationOwnerTenantID] = optional[0].OwnerTenantID
+		instance.Annotations[cetirunv1alpha1.AnnotationOwnerObjectID] = optional[0].OwnerObjectID
 	}
 	if identityEnabled {
 		instance.Spec.AgentIdentity = &cetirunv1alpha1.AgentIdentitySpec{Enabled: true}

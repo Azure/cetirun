@@ -3,16 +3,21 @@ module github.com/Azure/CetiRun/app/cetirun-operator
 go 1.26.8
 
 require (
+	github.com/Azure/CetiRun/app/internal v0.0.0
 	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.23.1
 	github.com/Azure/azure-sdk-for-go/sdk/azidentity v1.14.1
 	github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/botservice/armbotservice v1.2.0
 	github.com/Masterminds/semver/v3 v3.5.0
 	github.com/Masterminds/sprig/v3 v3.3.0
+	github.com/evanphx/json-patch/v5 v5.9.11
 	github.com/go-logr/logr v1.4.4
 	github.com/google/cel-go v0.29.2
+	github.com/prometheus/client_golang v1.24.1
+	github.com/prometheus/client_model v0.6.3
 	go.yaml.in/yaml/v2 v2.4.4
 	golang.org/x/sys v0.48.0
 	golang.org/x/term v0.46.0
+	gomodules.xyz/jsonpatch/v2 v2.5.0
 	google.golang.org/protobuf v1.36.12
 	helm.sh/helm/v3 v3.22.0
 	istio.io/api v1.31.1
@@ -50,7 +55,6 @@ require (
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/emicklei/go-restful/v3 v3.13.0 // indirect
 	github.com/evanphx/json-patch v5.9.11+incompatible // indirect
-	github.com/evanphx/json-patch/v5 v5.9.11 // indirect
 	github.com/exponent-io/jsonpath v0.0.0-20210407135951-1de76d718b3f // indirect
 	github.com/fatih/color v1.19.0 // indirect
 	github.com/fsnotify/fsnotify v1.10.1 // indirect
@@ -109,8 +113,6 @@ require (
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
-	github.com/prometheus/client_golang v1.24.1 // indirect
-	github.com/prometheus/client_model v0.6.3 // indirect
 	github.com/prometheus/common v0.71.0 // indirect
 	github.com/prometheus/procfs v0.22.0 // indirect
 	github.com/rubenv/sql-migrate v1.8.1 // indirect
@@ -132,7 +134,6 @@ require (
 	golang.org/x/sync v0.23.0 // indirect
 	golang.org/x/text v0.42.0 // indirect
 	golang.org/x/time v0.16.0 // indirect
-	gomodules.xyz/jsonpatch/v2 v2.5.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260526163538-3dc84a4a5aaa // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260526163538-3dc84a4a5aaa // indirect
 	gopkg.in/evanphx/json-patch.v4 v4.13.0 // indirect
@@ -151,3 +152,5 @@ require (
 	sigs.k8s.io/randfill v1.0.0 // indirect
 	sigs.k8s.io/structured-merge-diff/v6 v6.4.2 // indirect
 )
+
+replace github.com/Azure/CetiRun/app/internal => ../internal

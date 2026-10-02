@@ -64,6 +64,7 @@ describe("WorkspacePage", () => {
 
   it("shows all nav items", () => {
     renderAt("/instances/testuser/overview");
+    expect(screen.getByRole("navigation", { name: "Agent workspace" })).toBeInTheDocument();
     expect(screen.getAllByText("Overview").length).toBeGreaterThan(0);
     expect(screen.getByText("Agent UI")).toBeInTheDocument();
     expect(screen.getByText("Terminal")).toBeInTheDocument();
@@ -73,6 +74,26 @@ describe("WorkspacePage", () => {
   it("renders overview section by default", () => {
     renderAt("/instances/testuser/overview");
     expect(screen.getByRole("heading", { name: "Test User" })).toBeInTheDocument();
+  });
+
+  it("omits the Registry credentials section for a public image", () => {
+    renderAt("/instances/testuser/overview");
+    expect(screen.queryByRole("region", { name: "Registry credentials" })).toBeNull();
+    expect(screen.queryByText("Not configured")).toBeNull();
+  });
+
+  it("keeps Registry credential recovery controls for an enabled private image", () => {
+    const previous = mockInstance.agent;
+    mockInstance.agent = { ...previous, image: "registry.example.com/agent:1", registrySecretRef: { name: "registry-source-example" } };
+    try {
+      renderAt("/instances/testuser/overview");
+      expect(screen.getByRole("region", { name: "Registry credentials" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Replace registry credentials" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Remove registry credentials" })).toBeInTheDocument();
+      expect(screen.queryByText(/Credential sync/i)).toBeNull();
+    } finally {
+      mockInstance.agent = previous;
+    }
   });
 
   it("redirects /instances/:instanceName to /instances/:instanceName/overview", () => {

@@ -63,6 +63,34 @@ func customPodReady(current *appsv1.StatefulSet) bool {
 		current.Status.ReadyReplicas == 1 && current.Status.UpdatedReplicas == 1
 }
 
+func (r *AgentReconciler) customPodReady(ctx context.Context, current *appsv1.StatefulSet) bool {
+	if customPodReady(current) {
+		return true
+	}
+	if current == nil || current.UID == "" || current.Spec.Replicas == nil || *current.Spec.Replicas != 1 ||
+		current.Status.ReadyReplicas != 1 ||
+		current.Annotations[customPlanHash] == "" {
+		return false
+	}
+	pods := &corev1.PodList{}
+	if r.customReader().List(ctx, pods, client.InNamespace(current.Namespace), client.MatchingLabels(current.Spec.Template.Labels)) != nil {
+		return false
+	}
+	for _, pod := range pods.Items {
+		owner := metav1.GetControllerOf(&pod)
+		if owner == nil || owner.UID != current.UID || !pod.DeletionTimestamp.IsZero() ||
+			pod.Annotations[customPlanHash] != current.Annotations[customPlanHash] {
+			continue
+		}
+		for _, condition := range pod.Status.Conditions {
+			if condition.Type == corev1.PodReady && condition.Status == corev1.ConditionTrue {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // Waiting describes the desired configuration, not the destruction of an
 // already applied workload. Preserve independently observed process state.
 func (r *AgentReconciler) keepCustomObservation(ctx context.Context, instance *api.Agent) bool {
@@ -81,7 +109,7 @@ func (r *AgentReconciler) keepCustomObservation(ctx context.Context, instance *a
 	}
 	instance.Status.Phase = api.PhaseProvisioning
 	status := metav1.ConditionFalse
-	if customPodReady(current) {
+	if r.customPodReady(ctx, current) {
 		instance.Status.Phase = api.PhaseReady
 		status = metav1.ConditionTrue
 	}

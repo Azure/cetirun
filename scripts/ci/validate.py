@@ -15,7 +15,8 @@ import tempfile
 
 
 ROOT = Path(__file__).resolve().parents[2]
-MODULES = ("operator", "portal", "agent-broker")
+COMPONENTS = ("operator", "portal", "agent-broker")
+MODULES = {"internal": "app/internal", **{name: f"app/cetirun-{name}" for name in COMPONENTS}}
 WORKFLOWS = (
     "operator-ci.yml",
     "portal-ci.yml",
@@ -133,7 +134,7 @@ def files(root, suffix):
 
 @contextmanager
 def go_directory(root, component):
-    module = root / f"app/cetirun-{component}"
+    module = root / MODULES[component]
     require_file(module / "go.mod")
     if component != "portal" or (module / "web/dist").is_dir():
         yield module
@@ -141,10 +142,11 @@ def go_directory(root, component):
     # Go embeds the frontend. Use a disposable source copy when it is not built,
     # without writing a placeholder over a developer's frontend or source files.
     with tempfile.TemporaryDirectory(prefix="cetirun-go-") as temp:
-        for name in ("operator", "portal"):
+        for name in ("operator", "portal", "internal"):
+            source = root / MODULES[name]
             shutil.copytree(
-                root / f"app/cetirun-{name}",
-                Path(temp) / f"cetirun-{name}",
+                source,
+                Path(temp) / source.name,
                 ignore=shutil.ignore_patterns("node_modules", "dist", "bin", ".git"),
             )
         module = Path(temp) / "cetirun-portal"

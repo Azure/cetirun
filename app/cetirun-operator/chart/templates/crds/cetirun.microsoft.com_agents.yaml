@@ -520,6 +520,22 @@ spec:
                 - Deleting
                 - Suspended
                 type: string
+              registryCredentials:
+                description: |-
+                  RegistryCredentials records the objects verified by the last sync, not
+                  proof that a node can pull the image.
+                properties:
+                  pullSecretUID:
+                    type: string
+                  sourceResourceVersion:
+                    type: string
+                  sourceUID:
+                    type: string
+                required:
+                - pullSecretUID
+                - sourceResourceVersion
+                - sourceUID
+                type: object
               sandbox:
                 description: Sandbox records the last fully enforced binding, not
                   a pending selection.

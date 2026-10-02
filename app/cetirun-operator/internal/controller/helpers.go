@@ -22,7 +22,7 @@ import (
 
 	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/agents/builtin"
-	"github.com/Azure/CetiRun/app/cetirun-operator/internal/terminal"
+	"github.com/Azure/CetiRun/app/internal/terminalpolicy"
 )
 
 const (
@@ -677,7 +677,7 @@ func buildVirtualService(instance *cetirunv1alpha1.Agent, domainSuffix, gateway 
 			}
 			route := makeRoute(instancePrefix+"/term/", "/term/", port, 0)
 			route.Route[0].Destination.Host = fmt.Sprintf("%s.%s.svc.cluster.local",
-				terminal.WorkloadName(instanceServiceName(name)), ns)
+				terminalpolicy.WorkloadName(instanceServiceName(name)), ns)
 			routes = append(routes,
 				makeRedirect(instancePrefix+"/term"),
 				route)

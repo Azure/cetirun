@@ -108,6 +108,7 @@ class SandboxAdmissionChartTests(unittest.TestCase):
     def test_default_and_disabled_render_only_existing_operator_resources(self):
         default = self.render(kube_version="1.29.0")
         self.assertEqual(set(default), {
+            ("Namespace", "cetirun-registry-credentials"),
             ("Deployment", "cetirun-operator"),
             ("ServiceAccount", "cetirun-operator-controller-manager"),
             ("ClusterRole", "cetirun-operator-manager-role"),
@@ -115,6 +116,9 @@ class SandboxAdmissionChartTests(unittest.TestCase):
             ("ClusterRoleBinding", "cetirun-operator-manager-rolebinding"),
             *(("CustomResourceDefinition", f"{resource}.{API_GROUP}") for resource in RESOURCES),
         })
+        credentials = default[("Namespace", "cetirun-registry-credentials")]
+        self.assertEqual(credentials["metadata"]["annotations"]["helm.sh/resource-policy"], "keep")
+        self.assertEqual(credentials["metadata"]["labels"]["cetirun.microsoft.com/credential-purpose"], "registry")
         disabled = self.render(
             {
                 "enabled": False, "enforce": False, "replicaCount": 1,

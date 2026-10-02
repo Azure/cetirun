@@ -54,16 +54,24 @@ export function useInstanceQuery() {
   });
 }
 
-export function useCreateInstance(options?: { onSuccess?: () => void }) {
+export function useCreateInstance(options?: { onSuccess?: () => void; onSettled?: () => void }) {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: (req: CreateInstanceRequest) => createInstance(req),
+    mutationFn: async (req: CreateInstanceRequest) => {
+      try {
+        return await createInstance(req);
+      } finally {
+        // React Query retains mutation variables after settlement.
+        delete req.registryAuth;
+      }
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: INSTANCE_KEY });
       queryClient.invalidateQueries({ queryKey: ["instances"] });
       options?.onSuccess?.();
     },
+    onSettled: options?.onSettled,
   });
 }
 

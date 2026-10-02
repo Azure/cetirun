@@ -116,6 +116,20 @@ func renderSnapshot(t *testing.T, chrt *chart.Chart, values map[string]any) rend
 				}
 			}
 			if obj["kind"] == "StatefulSet" {
+				if chrt.Metadata.Annotations["cetirun.microsoft.com/registry-credentials"] == "v1" && object(values["runtime"])["preserveRunningPod"] != true {
+					spec, metadata := object(obj["spec"]), object(obj["metadata"])
+					annotations := object(metadata["annotations"])
+					if !reflect.DeepEqual(spec["updateStrategy"], map[string]any{"type": "RollingUpdate"}) || annotations["cetirun.microsoft.com/registry-binding-only"] != "false" {
+						t.Fatal("normal runtime does not explicitly restore rolling updates")
+					}
+					// Assert the explicit defaults before comparing the older manifests.
+					// Registry three-way merge tests cover their update behavior.
+					delete(spec, "updateStrategy")
+					delete(annotations, "cetirun.microsoft.com/registry-binding-only")
+					if len(annotations) == 0 {
+						delete(metadata, "annotations")
+					}
+				}
 				template := object(object(obj["spec"])["template"])
 				annotations := object(object(template["metadata"])["annotations"])
 				delete(annotations, "checksum/config")

@@ -76,6 +76,7 @@ func TestReconcileBuiltinHarnessPinsThenDeploys(t *testing.T) {
 	for _, typ := range []cetirunv1alpha1.AgentType{cetirunv1alpha1.AgentTypeHermes, cetirunv1alpha1.AgentTypeOpenClaw} {
 		t.Run(string(typ), func(t *testing.T) {
 			cr := newCR("example", cetirunv1alpha1.PhasePending, nil, 1, 0, "")
+			cr.UID = "example-agent-uid"
 			cr.Spec.Agent.Type = typ
 			scheme := testScheme()
 			client := fake.NewClientBuilder().WithScheme(scheme).
@@ -106,6 +107,10 @@ func TestReconcileBuiltinHarnessPinsThenDeploys(t *testing.T) {
 			}
 			if !hc.installCalled || hc.lastValues["runtime"] == nil {
 				t.Fatal("built-in did not deploy through the Harness runtime plan")
+			}
+			if err := client.Get(context.Background(), types.NamespacedName{Name: "cetirun-example"}, ns); err != nil ||
+				len(ns.OwnerReferences) != 1 || ns.OwnerReferences[0].UID != cr.UID {
+				t.Fatal("new namespace must bind the Agent UID before the Pod becomes Ready")
 			}
 			runtime := hc.lastValues["runtime"].(map[string]any)
 			agent := runtime["agent"].(map[string]any)
@@ -292,7 +297,7 @@ func findCondition(conditions []metav1.Condition, condType string) *metav1.Condi
 // --- Tests ---
 
 func TestReconcile_UnsupportedAgentDoesNotProvision(t *testing.T) {
-	for _, typ := range []cetirunv1alpha1.AgentType{"", "unknown", cetirunv1alpha1.AgentTypeCustom} {
+	for _, typ := range []cetirunv1alpha1.AgentType{"", "unknown"} {
 		t.Run(string(typ), func(t *testing.T) {
 			cr := newCR("example-agent", "", nil, 1, 0, "")
 			cr.Spec.Agent = cetirunv1alpha1.HarnessSpec{

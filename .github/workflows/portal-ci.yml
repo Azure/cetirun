@@ -89,6 +89,7 @@ jobs:
           cache-dependency-path: |
             app/cetirun-portal/go.sum
             app/cetirun-operator/go.sum
+            app/internal/go.sum
 
       - name: Create placeholder for embed
         run: mkdir -p web/dist && touch web/dist/.keep

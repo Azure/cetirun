@@ -47,7 +47,7 @@ settings and validation, inspect that file and
 | `replicaCount` | `1`; schema accepts only `0` or `1` |
 | `runtimeClassName` | `kata-vm-isolation` |
 | `openclaw.image`, `hermes.image`, `desktop.image` | Repository, pull policy, tag, and digest per image |
-| `imagePullSecrets` | `[]` |
+| `imagePullSecrets` | `[]`; existing namespace-local Secrets for standalone Agent releases only |
 | `nameOverride`, `fullnameOverride` | Empty |
 | `serviceAccount.create` | `false` |
 | `serviceAccount.name`, `serviceAccount.role` | Empty; review any token mount or ClusterRole binding |
@@ -69,10 +69,14 @@ to `<chart-registry>/cetirun-desktop`; per-instance `desktop.image` overrides
 remain available. Configure accessible artifacts and pin their versions:
 repository defaults are not a public release guarantee.
 
-The chart only references `imagePullSecrets`; it does not create or copy them.
-The operator's `acrDockerSecret` is for OCI chart pulls, not a runtime image
-pull Secret. Inspect [controller value assembly]({{< repo "app/cetirun-operator/internal/controller/helpers.go" >}})
-when registry layout or precedence matters.
+Standalone Agent releases only reference `imagePullSecrets`; the chart does not
+create or copy them. Operator-managed Agents instead use
+[Portal-managed registry credentials](../agent-harness/#private-registries).
+Raw `imagePullSecrets` in deployment or instance Helm overrides are rejected,
+including empty lists; they are not appended to the managed pull binding. See
+the [registry upgrade steps](../../getting-started/platform/#upgrading-runtime-registry-configuration)
+before upgrading an installation that used this override. The Operator's
+`acrDockerSecret` is for OCI chart pulls, not a runtime image pull Secret.
 
 For operator-managed instances, leave chart naming overrides alone unless the
 controller is changed with them: its readiness checks and routes expect the
@@ -362,7 +366,8 @@ namespace so agent NetworkPolicies allow gateway traffic.
 
 `cetirun.helmValues` is a default layer, not an enforcement boundary. Team
 settings and per-instance `spec.helm.values` can override it, and lists are
-replaced rather than appended. Copilot `spec.model` then takes precedence over
+replaced rather than appended, except that platform-reserved inputs such as
+`imagePullSecrets` are rejected at both levels. Copilot `spec.model` then takes precedence over
 the deployment default. Each instance's `spec.helm.version` is pinned during
 first reconciliation, so changing the operator's default chart version alone
 does not upgrade existing instances.

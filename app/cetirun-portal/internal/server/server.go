@@ -53,6 +53,8 @@ func New(
 	api.HandleFunc("GET /api/v1/instances/{name}", instanceHandler.GetInstanceByName)
 	api.HandleFunc("PATCH /api/v1/instances/{name}", instanceHandler.UpdateInstanceByName)
 	api.HandleFunc("DELETE /api/v1/instances/{name}", instanceHandler.DeleteInstanceByName)
+	api.HandleFunc("PUT /api/v1/instances/{name}/registry-auth", instanceHandler.PutRegistryAuth)
+	api.HandleFunc("DELETE /api/v1/instances/{name}/registry-auth", instanceHandler.DeleteRegistryAuth)
 	api.HandleFunc("POST /api/v1/instances/{name}/upgrade", instanceHandler.UpgradeInstanceByName)
 	api.HandleFunc("GET /api/v1/instances/{name}/status", instanceHandler.GetInstanceStatusByName)
 	api.HandleFunc("GET /api/v1/instances/{name}/teams-app", instanceHandler.DownloadTeamsAppByName)

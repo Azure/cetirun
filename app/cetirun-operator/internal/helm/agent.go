@@ -26,6 +26,7 @@ type AgentRequest struct {
 	UIPrefix         string `json:"uiPrefix,omitempty"`
 	TailscaleEnabled bool   `json:"tailscaleEnabled,omitempty"`
 	ReleaseName      string `json:"releaseName,omitempty"`
+	PullSecretName   string `json:"pullSecretName,omitempty"`
 }
 
 type PreparedRelease struct {
@@ -92,6 +93,9 @@ func prepareRuntimeChart(chrt *chart.Chart, input map[string]any, validateRender
 	}
 	if err := json.Unmarshal(requestJSON, &request); err != nil {
 		return nil, fmt.Errorf("invalid agent runtime request")
+	}
+	if request.PullSecretName != "" && chrt.Metadata.Annotations["cetirun.microsoft.com/registry-credentials"] != "v1" {
+		return nil, fmt.Errorf("the selected chart does not support managed registry credentials; upgrade the pinned chart first")
 	}
 	harness, err := builtin.NewRegistry().Lookup(request.Type)
 	if err != nil {
@@ -207,6 +211,9 @@ func prepareRuntimeChart(chrt *chart.Chart, input map[string]any, validateRender
 		return nil, err
 	}
 	runtimeValues["contractVersion"] = "v1"
+	if request.PullSecretName != "" {
+		runtimeValues["imagePullSecrets"] = []any{map[string]any{"name": request.PullSecretName}}
+	}
 	values["runtime"] = runtimeValues
 	if err := chartutil.ValidateAgainstSchema(chrt, values); err != nil {
 		return nil, fmt.Errorf("runtime values do not match the selected chart schema")

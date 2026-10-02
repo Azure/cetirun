@@ -1,5 +1,7 @@
 # CetiRun platform umbrella defaults. This chart deliberately does not own
-# managed Istio, credentials, certificates, agent instances, or their data.
+# managed Istio, external credentials, certificates, agent instances, or their
+# data. The Operator subchart owns the Registry source namespace (retained on
+# uninstall); per-Agent credential Secrets are owned by their Agent UID.
 
 # -- Shared release coordinates propagated automatically to the Operator and
 # Portal subcharts.
@@ -10,6 +12,8 @@ global:
   # -- Optional image and chart version override propagated to all subcharts.
   # Empty preserves each synchronized subchart's existing version defaults.
   version: ""
+  # -- Shared by Portal and Operator; separate from the Agent Identity Broker.
+  registryCredentialNamespace: cetirun-registry-credentials
 
 istio:
   # A separately managed cetirun-istio release must be ready before installing

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"github.com/Azure/CetiRun/app/internal/terminalpolicy"
 	"github.com/google/cel-go/cel"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -70,7 +71,7 @@ func TestConfigRejectsUnboundOrUnsafeTargets(t *testing.T) {
 	if err := testConfig().Validate(); err != nil {
 		t.Fatal(err)
 	}
-	if len(WorkloadName(strings.Repeat("a", 63))) > 63 {
+	if len(terminalpolicy.WorkloadName(strings.Repeat("a", 63))) > 63 {
 		t.Fatal("terminal service name is too long")
 	}
 }
@@ -86,7 +87,7 @@ func TestShellDetectionOrderAndFailures(t *testing.T) {
 			return fmt.Errorf("exec: %q: executable file not found in $PATH", command[0])
 		})
 		if want == "" {
-			if !errors.Is(err, ErrNoShell) || !strings.Contains(err.Error(), "没有找到终端") {
+			if !errors.Is(err, terminalpolicy.ErrNoShell) || !strings.Contains(err.Error(), "没有找到终端") {
 				t.Fatal(err)
 			}
 		} else if err != nil || got != want {
@@ -115,10 +116,10 @@ func TestEntryPointFailsWhenNoShellExists(t *testing.T) {
 		resolve: func(context.Context, Identity) (Snapshot, error) {
 			return Snapshot{PodUID: "pod", ContainerID: "container"}, nil
 		},
-		detect: func(context.Context) (string, error) { return "", ErrNoShell }}
+		detect: func(context.Context) (string, error) { return "", terminalpolicy.ErrNoShell }}
 	var ready bool
 	err := watchShell(context.Background(), testConfig(), f, time.Millisecond, func(value bool) { ready = value })
-	if !errors.Is(err, ErrNoShell) || ready {
+	if !errors.Is(err, terminalpolicy.ErrNoShell) || ready {
 		t.Fatalf("entrypoint did not reject a shell-less image: %v", err)
 	}
 }
@@ -168,7 +169,7 @@ func TestAdmissionAllowsOnlyBoundProbesAndInteractiveShells(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	expression := AdmissionExpression("cetirun-example", "agent-0", "cetirun", "terminal", "agent-uid")
+	expression := terminalpolicy.AdmissionExpression("cetirun-example", "agent-0", "cetirun", "terminal", "agent-uid")
 	ast, issues := env.Compile(expression)
 	if issues.Err() != nil {
 		t.Fatal(issues.Err())
@@ -188,7 +189,7 @@ func TestAdmissionAllowsOnlyBoundProbesAndInteractiveShells(t *testing.T) {
 		result, _, err := program.Eval(map[string]any{"request": request, "object": object, "namespaceObject": ns})
 		return err == nil && result.Value() == true
 	}
-	for _, shell := range ShellCandidates() {
+	for _, shell := range terminalpolicy.ShellCandidates() {
 		if !evaluate(shell.Probe, false, nil) || !evaluate([]string{shell.Name, "-i"}, true, nil) {
 			t.Fatal("qualified shell/probe was rejected")
 		}

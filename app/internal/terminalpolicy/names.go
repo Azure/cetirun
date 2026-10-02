@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-package terminal
+package terminalpolicy
 
 import (
 	"crypto/sha256"

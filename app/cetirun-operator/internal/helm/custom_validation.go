@@ -395,10 +395,17 @@ func (p *PreparedRelease) validateCustomObject(obj map[string]any, kind, name st
 		podMap := object(object(object(obj["spec"])["template"])["spec"])
 		if !onlyKeys(podMap, "serviceAccountName", "automountServiceAccountToken", "runtimeClassName",
 			"nodeSelector", "affinity", "tolerations", "topologySpreadConstraints",
-			"securityContext", "initContainers", "containers", "volumes") {
+			"securityContext", "initContainers", "containers", "volumes", "imagePullSecrets") {
 			return fail()
 		}
 		pod := sts.Spec.Template.Spec
+		var pullSecrets []corev1.LocalObjectReference
+		if b.PullSecretName != "" {
+			pullSecrets = []corev1.LocalObjectReference{{Name: b.PullSecretName}}
+		}
+		if !reflect.DeepEqual(pod.ImagePullSecrets, pullSecrets) {
+			return fail()
+		}
 		var scheduling corev1.PodSpec
 		schedulingValues := map[string]any{}
 		if len(object(p.Values["affinity"])) > 0 {

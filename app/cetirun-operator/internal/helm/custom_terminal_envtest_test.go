@@ -15,6 +15,7 @@ import (
 
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/runtimebindings"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/terminal"
+	"github.com/Azure/CetiRun/app/internal/terminalpolicy"
 	"helm.sh/helm/v3/pkg/chart/loader"
 	"helm.sh/helm/v3/pkg/chartutil"
 	"helm.sh/helm/v3/pkg/engine"
@@ -159,7 +160,7 @@ func TestCustomTerminalRBACAndAdmission(t *testing.T) {
 			}
 		}
 	}
-	name := terminal.WorkloadName(workload)
+	name := terminalpolicy.WorkloadName(workload)
 	terminalIdentity := "system:serviceaccount:" + namespace + ":" + name
 	for _, check := range []struct {
 		user, group, resource, subresource, name, namespace, verb string
@@ -222,7 +223,7 @@ func TestCustomTerminalRBACAndAdmission(t *testing.T) {
 		t.Fatalf("exec admission did not become active: %v; last request: %v", err, lastExecError)
 	}
 	for _, method := range []string{http.MethodGet, http.MethodPost} {
-		for _, shell := range terminal.ShellCandidates() {
+		for _, shell := range terminalpolicy.ShellCandidates() {
 			t.Run(method+"/"+shell.Name, func(t *testing.T) {
 				for _, options := range []corev1.PodExecOptions{
 					{Container: "cetirun", Command: shell.Probe, Stdout: true, Stderr: true},

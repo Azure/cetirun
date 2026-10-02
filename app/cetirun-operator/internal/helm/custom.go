@@ -12,7 +12,7 @@ import (
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/agents"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/agents/custom"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/runtimebindings"
-	"github.com/Azure/CetiRun/app/cetirun-operator/internal/terminal"
+	"github.com/Azure/CetiRun/app/internal/terminalpolicy"
 	"helm.sh/helm/v3/pkg/chart"
 	"helm.sh/helm/v3/pkg/chartutil"
 )
@@ -46,6 +46,9 @@ func prepareCustomChart(chrt *chart.Chart, input map[string]any, request AgentRe
 	}
 	if err := bindings.Validate(agent); err != nil {
 		return nil, err
+	}
+	if bindings.PullSecretName != request.PullSecretName {
+		return nil, fmt.Errorf("RegistryBindingInvalid: pull binding does not match the approved request")
 	}
 	if input["agentType"] != "custom" {
 		return nil, fmt.Errorf("custom runtime type mismatch")
@@ -128,8 +131,8 @@ func prepareCustomChart(chrt *chart.Chart, input map[string]any, request AgentRe
 	if len(terminalResources) > 0 {
 		runtime["terminalResources"] = terminalResources
 		fullname := text(coalesced["fullnameOverride"])
-		runtime["terminalExecRule"] = terminal.AdmissionExpression(
-			bindings.Namespace.Name, fullname+"-0", chrt.Name(), terminal.WorkloadName(fullname), bindings.AgentUID)
+		runtime["terminalExecRule"] = terminalpolicy.AdmissionExpression(
+			bindings.Namespace.Name, fullname+"-0", chrt.Name(), terminalpolicy.WorkloadName(fullname), bindings.AgentUID)
 	}
 	workloadHash, err := customWorkloadDigest(chrt, agent, bindings, contribution, coalesced)
 	if err != nil {

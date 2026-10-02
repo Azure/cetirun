@@ -14,6 +14,7 @@ import (
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/agents"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/runtimebindings"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/terminal"
+	"github.com/Azure/CetiRun/app/internal/terminalpolicy"
 	"github.com/Masterminds/semver/v3"
 	"helm.sh/helm/v3/pkg/chartutil"
 	corev1 "k8s.io/api/core/v1"
@@ -227,8 +228,8 @@ func (p *PreparedRelease) customPlatformObjects(namespace string) map[string]pla
 		validation := map[string]any{"expression": "false", "message": "kubectl exec is not allowed on openclaw pods"}
 		if p.terminalEnabled() {
 			bindings := object(object(p.Values["runtime"])["bindings"])
-			validation["expression"] = terminal.AdmissionExpression(namespace, name+"-0", p.chart.Name(),
-				terminal.WorkloadName(name), text(bindings["agentUID"]))
+			validation["expression"] = terminalpolicy.AdmissionExpression(namespace, name+"-0", p.chart.Name(),
+				terminalpolicy.WorkloadName(name), text(bindings["agentUID"]))
 			validation["reason"] = "Forbidden"
 		}
 		objects["ValidatingAdmissionPolicy"] = platformObject{"admissionregistration.k8s.io/v1", policyName, map[string]any{

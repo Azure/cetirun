@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 import { useParams, useNavigate, Navigate } from "react-router-dom";
-import { Button, Text, Badge, tokens } from "@fluentui/react-components";
+import { Button, Text, Badge, makeStyles, tokens } from "@fluentui/react-components";
 import {
   ArrowLeft20Regular,
   Home20Regular,
@@ -30,7 +30,29 @@ const NAV_ITEMS: NavItem[] = [
 
 const VALID_SECTIONS = ["overview"] as const;
 
+const useStyles = makeStyles({
+  layout: {
+    display: "flex",
+    height: "100%",
+    overflow: "hidden",
+    "@media (max-width: 640px)": { flexDirection: "column" },
+  },
+  sidebar: {
+    width: "180px",
+    boxSizing: "border-box",
+    "@media (max-width: 640px)": { width: "100%" },
+  },
+  navigation: {
+    "@media (max-width: 640px)": { display: "flex", flexWrap: "wrap", gap: "4px" },
+  },
+  navButton: {
+    width: "100%",
+    "@media (max-width: 640px)": { width: "auto", flexGrow: 1 },
+  },
+});
+
 export function WorkspacePage() {
+  const styles = useStyles();
   const { instanceName, section } = useParams<{ instanceName: string; section?: string }>();
   const navigate = useNavigate();
   const { data: instance, isLoading, isError } = useInstanceByNameQuery(instanceName);
@@ -47,11 +69,11 @@ export function WorkspacePage() {
   };
 
   return (
-    <div style={{ display: "flex", height: "100%", overflow: "hidden" }}>
+    <div className={styles.layout}>
       {/* Sidebar */}
       <div
+        className={styles.sidebar}
         style={{
-          width: 180,
           flexShrink: 0,
           display: "flex",
           flexDirection: "column",
@@ -84,7 +106,7 @@ export function WorkspacePage() {
         </div>
 
         {/* Nav items */}
-        <div style={{ flex: 1, padding: "8px 0" }}>
+        <div className={styles.navigation} role="navigation" aria-label="Agent workspace" style={{ flex: 1, padding: "8px 0" }}>
           {NAV_ITEMS.map((item) => {
             const externalUrl = item.external ? externalUrls[item.external] : undefined;
             const externalDisabled = Boolean(item.external) && (instance?.phase !== "Ready" || !externalUrl);
@@ -92,6 +114,7 @@ export function WorkspacePage() {
             return (
               <Button
                 key={item.section}
+                className={styles.navButton}
                 as={item.external ? "a" : undefined}
                 href={item.external ? externalUrl : undefined}
                 disabled={externalDisabled}
@@ -99,7 +122,6 @@ export function WorkspacePage() {
                 icon={item.icon}
                 onClick={item.external ? undefined : () => navigate(`/instances/${instanceName}/${item.section}`)}
                 style={{
-                  width: "100%",
                   justifyContent: "flex-start",
                   borderRadius: 0,
                   fontWeight: section === item.section ? 600 : 400,
@@ -114,7 +136,7 @@ export function WorkspacePage() {
       </div>
 
       {/* Content area */}
-      <div style={{ flex: 1, minWidth: 0, overflow: "hidden", display: "flex", flexDirection: "column" }}>
+      <div style={{ flex: 1, minWidth: 0, minHeight: 0, overflow: "hidden", display: "flex", flexDirection: "column" }}>
         {isLoading && (
           <div style={{ padding: 24 }}>
             <Text>Loading...</Text>

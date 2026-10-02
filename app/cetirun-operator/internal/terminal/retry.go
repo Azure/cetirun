@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/Azure/CetiRun/app/internal/terminalpolicy"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/client-go/tools/remotecommand"
 	clientexec "k8s.io/client-go/util/exec"
@@ -86,7 +87,7 @@ func (r *Runner) Run(ctx context.Context, session Session) error {
 		probe, cancelProbe := context.WithTimeout(ctx, r.RequestTimeout)
 		shell, err := r.Backend.DetectShell(probe)
 		cancelProbe()
-		if errors.Is(err, ErrNoShell) || denied(err) {
+		if errors.Is(err, terminalpolicy.ErrNoShell) || denied(err) {
 			return err
 		}
 		if err != nil {

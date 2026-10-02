@@ -80,6 +80,20 @@ class ApiDocumentationTests(unittest.TestCase):
                 self.assertIn(f"**{label}**", guide)
                 self.assertIn(label, (source / relative).read_text())
 
+    def test_registry_pull_settings_have_distinct_upgrade_guidance(self):
+        install = (SITE / "content/en/docs/getting-started/platform.md").read_text()
+        reference = (SITE / "content/en/docs/reference/helm.md").read_text()
+        harness = (SITE / "content/en/docs/reference/agent-harness.md").read_text()
+        for text in (install, reference):
+            self.assertIn("Standalone Agent", text)
+            self.assertIn("Operator-managed Agents", text)
+            self.assertIn("empty list", text)
+        for setting in ("cetirun.helmValues.imagePullSecrets", "spec.helm.values.imagePullSecrets", "--reuse-values", "AgentConfigInvalid"):
+            self.assertIn(setting, install)
+        self.assertIn("upgrading-runtime-registry-configuration", reference)
+        self.assertIn("upgrading-runtime-registry-configuration", harness)
+        self.assertNotIn("the controller does not distribute them for you", install)
+
     def test_harness_reference_and_navigation(self):
         reference = SITE / "content/en/docs/reference/agent-harness.md"
         self.assertTrue(reference.is_file())

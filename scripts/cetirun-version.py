@@ -83,11 +83,12 @@ def set_version(version):
             f'CHART_VERSION="${{CHART_VERSION:-{version}}}"',
         )
 
-    replace(
-        ROOT / "app/cetirun-portal/go.mod",
-        r"^(\s*github\.com/Azure/CetiRun/app/cetirun-operator )v\S+$",
-        rf"\g<1>v{version}",
-    )
+    for relative in ("app/internal/go.mod", "app/cetirun-portal/go.mod"):
+        replace(
+            ROOT / relative,
+            r"^(\s*github\.com/Azure/CetiRun/app/cetirun-operator )v\S+$",
+            rf"\g<1>v{version}",
+        )
     replace(
         ROOT / "app/cetirun-portal/web/package.json",
         r'^  "version": "[^"]+",$',
@@ -157,6 +158,7 @@ def check_version(version):
         "app/cetirun-operator/deploy/deploy.sh": f"CHART_VERSION:-{version}",
         "app/cetirun-portal/deploy/deploy.sh": f"CHART_VERSION:-{version}",
         "app/cetirun-portal/go.mod": f"cetirun-operator v{version}",
+        "app/internal/go.mod": f"cetirun-operator v{version}",
         "app/cetirun-chart/agents/hermes/plugins/platforms/cetirun_teams/plugin.yaml": (
             f"version: {version}"
         ),
