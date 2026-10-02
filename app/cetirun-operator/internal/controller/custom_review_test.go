@@ -18,7 +18,8 @@ import (
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/runtimebindings"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxpolicy"
-	"github.com/Azure/CetiRun/app/cetirun-operator/internal/terminal"
+	"github.com/Azure/CetiRun/app/internal/registryauth"
+	"github.com/Azure/CetiRun/app/internal/terminalpolicy"
 	"helm.sh/helm/v3/pkg/chart/loader"
 	"helm.sh/helm/v3/pkg/chartutil"
 	"helm.sh/helm/v3/pkg/engine"
@@ -406,7 +407,7 @@ func TestCustomDeletionAttemptsShutdownWhenSandboxRevocationFails(t *testing.T) 
 				}
 				workload := s.workload()
 				deployment := &appsv1.Deployment{}
-				if err := s.client.Get(ctx, client.ObjectKey{Namespace: namespace.Name, Name: terminal.WorkloadName(workload.Name)}, deployment); err != nil {
+				if err := s.client.Get(ctx, client.ObjectKey{Namespace: namespace.Name, Name: terminalpolicy.WorkloadName(workload.Name)}, deployment); err != nil {
 					t.Fatal(err)
 				}
 				for operation, replicas := range map[string]*int32{"workload": workload.Spec.Replicas, "terminal": deployment.Spec.Replicas} {
@@ -442,6 +443,88 @@ func TestCustomDeletionAttemptsShutdownWhenSandboxRevocationFails(t *testing.T) 
 				}
 			})
 		}
+	}
+}
+
+func TestCustomDeletionStopsBeforeRetainedRegistryCleanup(t *testing.T) {
+	ctx := context.Background()
+	s := newCompletionScenario(t)
+	enableTerminal(t, s, true)
+	if err := s.step(); err != nil {
+		t.Fatal(err)
+	}
+	s.observeApplied()
+	if err := s.step(); err != nil {
+		t.Fatal(err)
+	}
+	agent := s.current()
+	agent.Finalizers = append(agent.Finalizers, sandbox.HoldFinalizer)
+	if err := s.client.Update(ctx, agent); err != nil {
+		t.Fatal(err)
+	}
+	s.reconciler.OperatorNamespace = "cetirun-system"
+	source := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{
+		Name: "registry-source-retained", Namespace: registryauth.DefaultNamespace, UID: "retained-registry-uid",
+		OwnerReferences: []metav1.OwnerReference{registryauth.Owner(agent)},
+	}}
+	if err := s.client.Create(ctx, source); err != nil {
+		t.Fatal(err)
+	}
+	agent.Status.RegistryCredentials = &api.RegistryCredentialsStatus{SourceUID: string(source.UID)}
+	agent.Status.AccessURL = "https://platform.example.com/completion/"
+	if err := s.client.Status().Update(ctx, agent); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.client.Delete(ctx, agent); err != nil {
+		t.Fatal(err)
+	}
+	s.reconciler.APIReader = interceptor.NewClient(s.client.Client.(client.WithWatch), interceptor.Funcs{
+		List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, options ...client.ListOption) error {
+			if _, ok := list.(*corev1.SecretList); ok {
+				return errors.New("synthetic registry cleanup outage")
+			}
+			return c.List(ctx, list, options...)
+		},
+	})
+	result, err := s.reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(agent)})
+	if err != nil || result.RequeueAfter == 0 {
+		t.Fatalf("registry cleanup outage did not retain a bounded retry: %+v %v", result, err)
+	}
+	current := s.current()
+	if current.Status.Phase != api.PhaseDeleting || current.Status.AccessURL != "" ||
+		!slices.Equal(current.Finalizers, agent.Finalizers) ||
+		!meta.IsStatusConditionFalse(current.Status.Conditions, api.ConditionRegistryCredentialsReady) ||
+		!meta.IsStatusConditionFalse(current.Status.Conditions, api.ConditionReady) {
+		t.Fatal("registry cleanup failure lost the deletion hold or status")
+	}
+	workload := s.workload()
+	deployment := &appsv1.Deployment{}
+	if err := s.client.Get(ctx, client.ObjectKey{Namespace: workload.Namespace, Name: terminalpolicy.WorkloadName(workload.Name)}, deployment); err != nil {
+		t.Fatal(err)
+	}
+	if ptr.Deref(workload.Spec.Replicas, -1) != 0 || ptr.Deref(deployment.Spec.Replicas, -1) != 0 {
+		t.Fatal("registry cleanup failure skipped Custom workload or terminal shutdown")
+	}
+	if err := s.client.Get(ctx, client.ObjectKey{Namespace: workload.Namespace, Name: "cetirun-" + agent.Name}, &istiov1beta1.VirtualService{}); !apierrors.IsNotFound(err) {
+		t.Fatal("registry cleanup failure retained the owned Custom route:", err)
+	}
+	if err := s.client.Get(ctx, client.ObjectKey{Name: workload.Namespace}, &corev1.Namespace{}); err != nil {
+		t.Fatal("namespace was removed before registry cleanup:", err)
+	}
+	if err := s.client.Get(ctx, client.ObjectKeyFromObject(source), source); err != nil {
+		t.Fatal("registry cleanup outage did not retain its retry state:", err)
+	}
+	s.reconciler.APIReader = s.client
+	for range 2 {
+		if err := s.step(); err != nil {
+			t.Fatal("Custom deletion could not resume after registry recovery:", err)
+		}
+	}
+	if err := s.client.Get(ctx, client.ObjectKeyFromObject(source), source); !apierrors.IsNotFound(err) {
+		t.Fatal("Custom deletion skipped retained registry credential cleanup:", err)
+	}
+	if err := s.client.Get(ctx, client.ObjectKeyFromObject(agent), &api.Agent{}); !apierrors.IsNotFound(err) {
+		t.Fatal("Custom deletion did not finish after registry recovery:", err)
 	}
 }
 

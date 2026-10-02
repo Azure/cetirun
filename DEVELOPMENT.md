@@ -13,14 +13,19 @@ network access.
 | `app/cetirun-portal/` | Go portal backend and its Helm chart |
 | `app/cetirun-portal/web/` | React and TypeScript portal frontend |
 | `app/cetirun-agent-broker/` | Agent Identity authorization sessions and workload-bound short-lived credential issuance |
+| `app/internal/` | Shared Go implementation packages for Registry credentials and terminal policy |
 | `app/cetirun-chart/` | Runtime Helm chart, container definitions, and runtime plugins |
 | `infra/` | Infrastructure definitions and Istio configuration |
 | `scripts/` | Component validation and operational helpers |
 | `docs/` | Documentation pointers and project assets |
 | `site/` | Hugo/Docsy documentation site, when included in the checkout |
 
-The portal's Go module uses a local `replace` directive for the operator module.
-Keep both directories in the same checkout when building or testing the portal.
+Application implementation packages belong in `internal/`, not `pkg/`.
+Code shared by the Operator and Portal lives in the `app/internal` Go module;
+Go restricts its imports to modules under `github.com/Azure/CetiRun/app`.
+The modules use local `replace` directives for these packages and the Operator's
+API types. Keep `app/internal`, `app/cetirun-operator`, and `app/cetirun-portal`
+in the same checkout when building or testing them.
 Not every script is a development check: deployment, release, and real-cluster
 test scripts require a separately authorized environment.
 
@@ -57,6 +62,7 @@ the issue and review process.
 For Go components, fetch dependencies once when network access is available:
 
 ```bash
+go -C app/internal mod download
 go -C app/cetirun-operator mod download
 go -C app/cetirun-portal mod download
 go -C app/cetirun-agent-broker mod download
@@ -83,6 +89,16 @@ Install the required tools and dependencies separately before running them.
 These commands do not authorize cluster or cloud access. For an earlier
 checkout without these entry points, use the component commands below and
 report the narrower validation scope.
+
+### Shared internal packages
+
+```bash
+go -C app/internal test ./... -count=1
+go -C app/internal vet ./...
+```
+
+The root `make go-test` and `make go-lint` targets include this module.
+Run the consumer modules' tests too when changing shared behavior.
 
 ### Operator
 

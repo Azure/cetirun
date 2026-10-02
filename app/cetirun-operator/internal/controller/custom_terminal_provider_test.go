@@ -10,6 +10,7 @@ import (
 
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/runtimebindings"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/terminal"
+	"github.com/Azure/CetiRun/app/internal/terminalpolicy"
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
@@ -55,7 +56,7 @@ func TestTerminalReadRoleBootstrapDoesNotGrantExec(t *testing.T) {
 	if err := p.reconciler.ensureTerminalReadRoles(ctx, agent); err != nil {
 		t.Fatal(err)
 	}
-	name := terminal.WorkloadName(instanceServiceName(agent.Name))
+	name := terminalpolicy.WorkloadName(instanceServiceName(agent.Name))
 	role := &rbacv1.Role{}
 	if err := p.reconciler.Get(ctx, types.NamespacedName{Namespace: instanceNamespace(agent.Name), Name: name}, role); err != nil {
 		t.Fatal(err)
@@ -66,7 +67,7 @@ func TestTerminalReadRoleBootstrapDoesNotGrantExec(t *testing.T) {
 		}
 	}
 	reader := &rbacv1.ClusterRole{}
-	if err := p.reconciler.Get(ctx, types.NamespacedName{Name: terminal.AgentReaderName(string(agent.UID))}, reader); err != nil {
+	if err := p.reconciler.Get(ctx, types.NamespacedName{Name: terminalpolicy.AgentReaderName(string(agent.UID))}, reader); err != nil {
 		t.Fatal(err)
 	}
 	if len(reader.Rules) != 1 || !reflect.DeepEqual(reader.Rules[0].ResourceNames, []string{agent.Name}) ||

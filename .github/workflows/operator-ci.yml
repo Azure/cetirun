@@ -32,7 +32,15 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: .go-version
-          cache-dependency-path: app/cetirun-operator/go.sum
+          cache-dependency-path: |
+            app/cetirun-operator/go.sum
+            app/internal/go.sum
+
+      - name: Check shared internal packages
+        working-directory: app/internal
+        run: |
+          go vet ./...
+          go test ./... -v -count=1
 
       - name: Run go vet
         run: go vet ./...

@@ -94,7 +94,9 @@ jobs:
 
       - name: Run go test
         working-directory: app/cetirun-portal
-        run: go test ./... -v -count=1
+        run: |
+          go -C ../internal test ./... -v -count=1
+          go test ./... -v -count=1
 
       - name: Run go build
         working-directory: app/cetirun-portal

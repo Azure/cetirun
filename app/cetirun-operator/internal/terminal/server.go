@@ -25,6 +25,8 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+
+	"github.com/Azure/CetiRun/app/internal/terminalpolicy"
 )
 
 //go:embed reconnect.js
@@ -299,7 +301,7 @@ func watchShell(ctx context.Context, cfg Config, backend Backend, interval time.
 		}
 		cancel()
 		ready(err == nil)
-		if errors.Is(err, ErrNoShell) || denied(err) {
+		if errors.Is(err, terminalpolicy.ErrNoShell) || denied(err) {
 			return err
 		}
 		if err == nil {

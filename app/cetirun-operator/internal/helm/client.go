@@ -224,11 +224,24 @@ func (c *Client) InstallOrUpgrade(namespace, releaseName string, prepared *Prepa
 	}
 
 	if exists {
+		previous, err := cfg.Releases.Deployed(releaseName)
+		if err != nil {
+			previous, err = cfg.Releases.Last(releaseName)
+		}
+		if err != nil {
+			return fmt.Errorf("read previous release for registry rollout classification")
+		}
+		pullOnly := registryBindingOnly(previous, chrt, values)
+		noHooks := pullOnly || nativeNoopUpgrade(previous, chrt, values)
+		if pullOnly {
+			ensureObject(values, "runtime")["preserveRunningPod"] = true
+		}
 		upgrade := action.NewUpgrade(cfg)
 		upgrade.Namespace = namespace
 		upgrade.ReuseValues = false
 		upgrade.Wait = false
 		upgrade.MaxHistory = 10
+		upgrade.DisableHooks = noHooks
 		if _, err := upgrade.Run(releaseName, chrt, values); err != nil {
 			return fmt.Errorf("helm upgrade %s: %w", releaseName, err)
 		}

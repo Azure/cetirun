@@ -7,6 +7,11 @@ global:
   # -- Optional shared image and component version override.
   # Empty preserves image.tag and Chart.appVersion defaults.
   version: ""
+  registryCredentialNamespace: ""
+
+# -- Created by the Operator chart, never by the Portal.
+registryCredentials:
+  namespace: cetirun-registry-credentials
 
 # -- Number of portal replicas.
 replicaCount: 2

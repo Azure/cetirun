@@ -140,11 +140,27 @@ class GateTests(unittest.TestCase):
         portal = self.root / "app/cetirun-portal"
         (portal / "web").mkdir(parents=True)
         (portal / "go.mod").write_text("module example.invalid/portal\n")
+        shared = self.root / "app/internal"
+        shared.mkdir()
+        (shared / "go.mod").write_text("module example.invalid/internal\n")
         with validate.go_directory(self.root, "portal") as directory:
             self.assertNotEqual(directory, portal)
             self.assertTrue((directory / "web/dist/index.html").is_file())
+            self.assertEqual(
+                (directory.parent / "internal/go.mod").read_text(),
+                (shared / "go.mod").read_text(),
+            )
+            self.assertTrue((directory.parent / "cetirun-operator/go.mod").is_file())
         self.assertFalse((portal / "web/dist").exists())
         self.assertFalse(directory.exists())
+
+    def test_shared_internal_module_has_its_own_go_gate(self):
+        shared = self.root / "app/internal"
+        shared.mkdir()
+        (shared / "go.mod").write_text("module example.invalid/internal\n")
+        with patch.object(validate, "run") as run:
+            validate.go_gate(self.root, "test", "internal")
+        self.assertEqual(run.call_args.args[:2], (["go", "test", "./...", "-count=1"], shared))
 
     def test_missing_tools_never_pass(self):
         with patch("shutil.which", return_value=None):
@@ -391,7 +407,7 @@ class WorkflowContractTests(unittest.TestCase):
             self.assertIn(expected, names)
 
     def test_scans_reuse_each_component_build(self):
-        for component in validate.MODULES:
+        for component in validate.COMPONENTS:
             text = (validate.ROOT / f".github/workflows/{component}-ci.yml").read_text()
             images = [component, "terminal"] if component == "operator" else [component]
             self.assertEqual(text.count("uses: docker/build-push-action@"), len(images))
@@ -472,7 +488,7 @@ class WorkflowContractTests(unittest.TestCase):
         vulnerable_digest = (
             "f8f5a9bb739ad1ec347853144c9ed4ca2260e587082277bc6066fcd5cc9973e8"
         )
-        for component in validate.MODULES:
+        for component in validate.COMPONENTS:
             text = (validate.ROOT / f"app/cetirun-{component}/Dockerfile").read_text()
             match = re.search(
                 r"^FROM (mcr\.microsoft\.com/azurelinux/distroless/base:3\.0"

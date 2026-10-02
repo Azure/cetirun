@@ -165,6 +165,9 @@ func (h *InstanceHandler) updateInstance(w http.ResponseWriter, r *http.Request,
 		if !ownsInstance(current, claims) {
 			return &managementError{http.StatusForbidden, "forbidden", "Only the instance owner may change this Agent"}
 		}
+		if req.Agent != nil && current.Spec.Agent.RegistrySecretRef != nil && !registryOwner(current, claims) {
+			return &managementError{http.StatusForbidden, "forbidden", "Only the instance owner may change a private image"}
+		}
 		teamChanged := req.Team != nil && *req.Team != instanceTeam(current)
 		if teamChanged {
 			if !claims.IsAdmin || !current.Spec.Suspended {

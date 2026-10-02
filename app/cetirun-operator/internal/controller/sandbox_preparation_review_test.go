@@ -17,11 +17,14 @@ import (
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxbinding"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxpolicy"
 	w "github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
+	"github.com/Azure/CetiRun/app/internal/registryauth"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	nodev1 "k8s.io/api/node/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
@@ -365,6 +368,92 @@ func TestSandboxPreparationDeletionResumesReleasedEmptyJournal(t *testing.T) {
 				t.Fatal("completed deletion did not remain idempotent:", err)
 			}
 		})
+	}
+}
+
+func TestSandboxPreparationDeletionKeepsRegistryCleanupBehindShutdown(t *testing.T) {
+	ctx := context.Background()
+	f := newPreparationFixture(t, "hermes")
+	if err := f.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	agent := f.current(t)
+	expected := f.expectation(t)
+	workload := &appsv1.StatefulSet{}
+	workloadKey := client.ObjectKey{Namespace: expected.Namespace.Name, Name: expected.Workload.Name}
+	if err := f.client.Get(ctx, workloadKey, workload); err != nil {
+		t.Fatal(err)
+	}
+	workload.Spec.Replicas = ptr.To[int32](1)
+	if err := f.client.Update(ctx, workload); err != nil {
+		t.Fatal(err)
+	}
+	source := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{
+		Name: "registry-source-retained", Namespace: registryauth.DefaultNamespace, UID: "retained-registry-uid",
+		OwnerReferences: []metav1.OwnerReference{registryauth.Owner(agent)},
+	}}
+	if err := f.client.Create(ctx, source); err != nil {
+		t.Fatal(err)
+	}
+	agent.Status.RegistryCredentials = &api.RegistryCredentialsStatus{SourceUID: string(source.UID)}
+	if err := f.client.Status().Update(ctx, agent); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.client.Delete(ctx, agent); err != nil {
+		t.Fatal(err)
+	}
+	f.reconciler.APIReader = interceptor.NewClient(f.client.(client.WithWatch), interceptor.Funcs{
+		List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, options ...client.ListOption) error {
+			if _, ok := list.(*corev1.SecretList); ok {
+				return errors.New("synthetic registry cleanup outage")
+			}
+			return c.List(ctx, list, options...)
+		},
+	})
+	result, err := f.reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(agent)})
+	if err != nil || result.RequeueAfter == 0 {
+		t.Fatalf("registry cleanup outage did not retain a bounded retry: %+v %v", result, err)
+	}
+	bindings, err := (&sandboxpolicy.GrantJournalStore{Client: f.client, APIReader: f.client, Namespace: "cetirun-system"}).
+		Read(ctx, agent.Name, agent.UID)
+	if err != nil || len(bindings) != 0 {
+		t.Fatal("registry cleanup failure skipped Sandbox grant revocation:", err)
+	}
+	if err := f.client.Get(ctx, workloadKey, workload); err != nil || ptr.Deref(workload.Spec.Replicas, -1) != 0 {
+		t.Fatal("registry cleanup failure skipped Sandbox workload shutdown:", err)
+	}
+	current := f.current(t)
+	if !slices.Equal(current.Finalizers, agent.Finalizers) || current.Status.Phase != api.PhaseDeleting ||
+		current.Status.AccessURL != "" ||
+		!apimeta.IsStatusConditionFalse(current.Status.Conditions, api.ConditionRegistryCredentialsReady) ||
+		!apimeta.IsStatusConditionFalse(current.Status.Conditions, api.ConditionReady) {
+		t.Fatal("registry cleanup failure lost the prepared Agent's deletion hold")
+	}
+	if err := f.client.Get(ctx, client.ObjectKey{Name: workload.Namespace}, &corev1.Namespace{}); err != nil {
+		t.Fatal("namespace was removed before registry cleanup:", err)
+	}
+	if err := f.client.Get(ctx, client.ObjectKeyFromObject(source), source); err != nil {
+		t.Fatal("registry cleanup outage lost its retry state:", err)
+	}
+	f.reconciler.APIReader = f.client
+	f.source.fenceErr = errors.New("synthetic unavailable deletion fence")
+	if err := f.reconcile(); err == nil {
+		t.Fatal("registry recovery bypassed the Sandbox writer fence")
+	}
+	if err := f.client.Get(ctx, client.ObjectKeyFromObject(source), source); !apierrors.IsNotFound(err) {
+		t.Fatal("Sandbox deletion skipped retained registry credential cleanup:", err)
+	}
+	if err := f.client.Get(ctx, client.ObjectKey{Name: workload.Namespace}, &corev1.Namespace{}); err != nil {
+		t.Fatal("registry recovery bypassed namespace fencing:", err)
+	}
+	f.source.fenceErr = nil
+	for range 2 {
+		if err := f.reconcile(); err != nil {
+			t.Fatal("Sandbox deletion could not resume after registry recovery:", err)
+		}
+	}
+	if err := f.client.Get(ctx, client.ObjectKeyFromObject(agent), &api.Agent{}); !apierrors.IsNotFound(err) {
+		t.Fatal("Sandbox deletion did not finish after registry recovery:", err)
 	}
 }
 

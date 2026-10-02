@@ -138,6 +138,9 @@ func (r *AgentReconciler) deleteCustom(ctx context.Context, instance *api.Agent)
 	if err := errors.Join(revokeErr, stopErr, terminalErr, routeErr, statusErr); err != nil {
 		return ctrl.Result{}, err
 	}
+	if err := r.cleanupRegistryCredentials(ctx, instance, true); err != nil {
+		return r.registryWaiting(ctx, instance, "RegistryCleanupPending")
+	}
 	if err := r.checkSandboxPreparationCleanup(ctx, instance); err != nil {
 		return ctrl.Result{}, err
 	}

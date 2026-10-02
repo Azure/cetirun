@@ -13,6 +13,7 @@ import (
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/agents"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/runtimebindings"
+	"github.com/Azure/CetiRun/app/internal/registryauth"
 	istiov1beta1 "istio.io/client-go/pkg/apis/networking/v1beta1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -189,6 +190,17 @@ func (r *AgentReconciler) reconcileCustom(ctx context.Context, instance *api.Age
 			return r.customWaiting(ctx, instance, "TerminalRBACBindingPending", "Terminal read roles are not ready or have foreign ownership")
 		}
 	}
+	// A general binding provider cannot inject a pull Secret. Only the registry
+	// synchronizer can supply it after source ownership and isolation checks.
+	if bindings.PullSecretName != "" {
+		return r.registryWaiting(ctx, instance, "RegistryBindingRejected")
+	}
+	if instance.Spec.Agent.RegistrySecretRef != nil {
+		bindings.PullSecretName, err = r.syncRegistryCredentials(ctx, instance, instanceServiceName(instance.Name), bindings.Namespace.UID)
+		if err != nil {
+			return r.registryWaiting(ctx, instance, err.Error())
+		}
+	}
 	values["agentType"] = "custom"
 	desktop := map[string]any{"novncPathPrefix": instance.Name + "/desktop/"}
 	if r.ChartRegistry != "" {
@@ -251,6 +263,14 @@ func (r *AgentReconciler) reconcileCustom(ctx context.Context, instance *api.Age
 		current.Spec.Replicas == nil || *current.Spec.Replicas != 1
 	unchanged := applied && !workloadChanged
 	if !unchanged {
+		if ref := instance.Spec.Agent.RegistrySecretRef; ref != nil {
+			if err := registryauth.CheckIsolation(ctx, r.registryClient(), r.registryNamespace(), bindings.Namespace.Name, instanceServiceName(instance.Name), ref.Name); err != nil {
+				return r.registryWaiting(ctx, instance, "RegistryIsolationUnverified")
+			}
+		}
+		if registryManaged(instance) && r.checkRegistryIntent(ctx, instance) != nil {
+			return r.registryWaiting(ctx, instance, "RegistryInputChanged")
+		}
 		if !workloadChanged {
 			if err := r.checkCustomGeneration(ctx, instance); err != nil {
 				return ctrl.Result{Requeue: true}, nil
@@ -323,6 +343,14 @@ func (r *AgentReconciler) reconcileCustom(ctx context.Context, instance *api.Age
 	if !unchanged {
 		r.customEvent(instance, corev1.EventTypeNormal, "HelmInstalled", "Validated Custom resources applied")
 	}
+	if registryManaged(instance) {
+		if err := r.cleanupRegistryCredentials(ctx, instance, false); err != nil {
+			return r.registryWaiting(ctx, instance, "RegistryCleanupPending")
+		}
+	}
+	if err := r.recoverRegistryPull(ctx, instance); err != nil {
+		return ctrl.Result{}, err
+	}
 	setCondition(&instance.Status.Conditions, api.ConditionHelmDeployed, metav1.ConditionTrue,
 		"CustomChartApplied", "Custom runtime plan applied")
 	instance.Status.ObservedGeneration = instance.Generation
@@ -337,7 +365,7 @@ func (r *AgentReconciler) reconcileCustom(ctx context.Context, instance *api.Age
 		terminal:     prepared.Values["ttyd"].(map[string]any)["enabled"] == true,
 		terminalPort: uint32(prepared.CustomTerminalPort()),
 	})
-	ready := homeBound && customPodReady(current)
+	ready := homeBound && r.customPodReady(ctx, current)
 	instance.Status.Phase = api.PhaseProvisioning
 	status, reason, message := metav1.ConditionFalse, "CustomPodPending", "Waiting for the applied Custom Pod"
 	if ready {
@@ -463,6 +491,9 @@ func (r *AgentReconciler) suspendCustom(ctx context.Context, instance *api.Agent
 	stopErr := r.stopCustomWorkload(ctx, instance)
 	terminalErr := r.stopCustomTerminal(ctx, instance)
 	routeErr := r.removeCustomPlatformRoute(ctx, instance)
+	if stopErr == nil {
+		stopErr = r.removeRegistryCredentials(ctx, instance)
+	}
 	instance.Status.AccessURL = ""
 	instance.Status.Phase = api.PhaseSuspended
 	if stopErr != nil {

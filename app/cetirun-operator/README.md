@@ -395,6 +395,11 @@ independent workload/terminal stop requests, owned-route removal, or attempts to
 clear readiness and the access URL. Revocation, shutdown and status-write errors
 remain visible and block namespace/storage cleanup and finalizer release.
 
+Both deletion paths also remove retained managed registry credentials after
+revocation/shutdown requests and before namespace cleanup or finalizer release.
+Registry cleanup failures retain deletion state and a bounded retry; they do not
+skip shutdown or bypass the Sandbox writer-fencing requirement.
+
 Cleanup can resume after interrupted journal-finalizer release only when the
 remaining record is valid, owned and empty. This cleanup-only recovery neither
 authorizes new grants nor accepts unprotected nonempty inventory. Foreign

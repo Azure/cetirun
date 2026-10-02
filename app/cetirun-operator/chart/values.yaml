@@ -9,6 +9,13 @@ global:
   # -- Optional shared image and chart version override.
   # Empty preserves the component and Chart.appVersion defaults below.
   version: ""
+  registryCredentialNamespace: ""
+
+# -- This chart owns the Registry source namespace. Portal and Operator must
+# use the same namespace; do not reuse the Agent Identity Broker namespace.
+registryCredentials:
+  namespace: cetirun-registry-credentials
+  createNamespace: true
 
 # -- Number of operator replicas (leader election keeps only one active).
 replicaCount: 2

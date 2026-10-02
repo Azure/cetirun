@@ -86,6 +86,7 @@ dnsConfig:
 {{- with .Values.runtimeClassName }}
 runtimeClassName: {{ . | quote }}
 {{- end }}
+{{ include "cetirun.platform.pullSecrets" . }}
 {{- if $bindings }}
 serviceAccountName: {{ include "cetirun.fullname" . }}
 automountServiceAccountToken: false
@@ -96,16 +97,27 @@ securityContext:
   seccompProfile:
     type: RuntimeDefault
 {{- else }}
-{{- with .Values.imagePullSecrets }}
-imagePullSecrets:
-  {{- toYaml . | nindent 2 }}
-{{- end }}
 serviceAccountName: {{ include "cetirun.serviceAccountName" . }}
 automountServiceAccountToken: {{ include "cetirun.automountServiceAccountToken" . }}
 securityContext:
   {{- toYaml .Values.podSecurityContext | nindent 2 }}
 {{- end }}
 {{ include "cetirun.platform.scheduling" . }}
+{{- end }}
+
+{{- define "cetirun.platform.pullSecrets" -}}
+{{- $runtime := .Values.runtime | default dict -}}
+{{- $bindings := $runtime.bindings | default dict -}}
+{{- if $bindings.pullSecretName }}
+imagePullSecrets:
+  - name: {{ $bindings.pullSecretName | quote }}
+{{- else if $runtime.imagePullSecrets }}
+imagePullSecrets:
+  {{- toYaml $runtime.imagePullSecrets | nindent 2 }}
+{{- else if .Values.imagePullSecrets }}
+imagePullSecrets:
+  {{- toYaml .Values.imagePullSecrets | nindent 2 }}
+{{- end }}
 {{- end }}
 
 {{- define "cetirun.platform.temporaryVolumes" -}}

@@ -12,6 +12,7 @@ import (
 	"syscall"
 
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/terminal"
+	"github.com/Azure/CetiRun/app/internal/terminalpolicy"
 	"golang.org/x/term"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/remotecommand"
@@ -90,8 +91,8 @@ func run() error {
 
 func main() {
 	if err := run(); err != nil {
-		if errors.Is(err, terminal.ErrNoShell) {
-			fmt.Fprintln(os.Stderr, terminal.ErrNoShell)
+		if errors.Is(err, terminalpolicy.ErrNoShell) {
+			fmt.Fprintln(os.Stderr, terminalpolicy.ErrNoShell)
 		} else {
 			// API errors can contain request details. Do not print them to the browser.
 			fmt.Fprintln(os.Stderr, "\r\nTerminal ended. Reopen it from the Portal after checking Agent status.")

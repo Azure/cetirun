@@ -9,6 +9,7 @@ import { GITHUB_COPILOT_PROVIDER, useEffectiveTeamProvider } from "../hooks/useT
 import type { AgentType } from "../types/instance";
 import { TeamPicker } from "./TeamPicker";
 import { CopilotModelPicker } from "./CopilotModelPicker";
+import { CreateInstanceError } from "../api/instance";
 
 const DEFAULT_AGENT_TYPES: AgentType[] = ["hermes", "openclaw"];
 const AGENT_TYPE_LABELS: Record<AgentType, string> = {
@@ -31,7 +32,15 @@ export function CreateForm({ onCreated }: { onCreated?: () => void }) {
   const [model, setModel] = useState("");
   const [teamsEnabled, setTeamsEnabled] = useState(false);
   const [agentIdentityEnabled, setAgentIdentityEnabled] = useState(false);
-  const createMutation = useCreateInstance({ onSuccess: onCreated });
+  const [privateRegistry, setPrivateRegistry] = useState(false);
+  const [registryUsername, setRegistryUsername] = useState("");
+  const [registryPassword, setRegistryPassword] = useState("");
+  const [requestId] = useState(() => crypto.randomUUID());
+  const clearRegistryCredentials = () => {
+    setRegistryUsername("");
+    setRegistryPassword("");
+  };
+  const createMutation = useCreateInstance({ onSuccess: onCreated, onSettled: clearRegistryCredentials });
   const { data: features, isLoading: featuresLoading } = useFeatures();
   const effectiveProvider = useEffectiveTeamProvider(team);
   const custom = agentType === "custom";
@@ -72,7 +81,9 @@ export function CreateForm({ onCreated }: { onCreated?: () => void }) {
       instanceName: instanceName || undefined,
       agent: custom
         ? { type: agentType, image: image.trim(), username, ...(httpPort === undefined ? {} : { port: httpPort }) }
-        : { type: agentType },
+        : { type: agentType, image: image.trim() || undefined },
+      registryAuth: privateRegistry ? { username: registryUsername, password: registryPassword } : undefined,
+      requestId: privateRegistry ? requestId : undefined,
       displayName: displayName || undefined,
       team: team || undefined,
       gatewayToken: !custom ? gatewayToken || undefined : undefined,
@@ -127,13 +138,21 @@ export function CreateForm({ onCreated }: { onCreated?: () => void }) {
       </Field>
 
       {custom && (
+        <MessageBar intent="info">
+          Model setup and login remain with the image. Its image cannot change after creation.
+        </MessageBar>
+      )}
+      <Field
+        label={custom || privateRegistry ? "Agent Image" : "Agent Image (optional)"}
+        hint={custom
+          ? "Use an image supported by the configured runtime. The image keeps its own entrypoint."
+          : "Leave empty for the platform default. Overrides must be qualified for the selected agent type."}
+        required={custom || privateRegistry}
+      >
+        <Input value={image} onChange={(_, data) => setImage(data.value)} maxLength={2048} placeholder="registry.example.com/team/agent:version" required={custom || privateRegistry} />
+      </Field>
+      {custom && (
         <>
-          <MessageBar intent="info">
-            Model setup and login remain with the image. Registry credentials and image changes after creation are managed separately.
-          </MessageBar>
-          <Field label="Agent Image" required hint="Use an image supported by the configured runtime. The image keeps its own entrypoint.">
-            <Input value={image} onChange={(_, data) => setImage(data.value)} required maxLength={2048} placeholder="registry.example.com/team/agent@sha256:…" />
-          </Field>
           <Field label="Agent Username" required hint="An existing non-root user in the image; HOME is /home/<username>. This cannot change after creation.">
             <Input value={username} onChange={(_, data) => setUsername(data.value)} required maxLength={32} pattern={"[a-z_][a-z0-9_\\-]{0,31}"} />
           </Field>
@@ -150,6 +169,21 @@ export function CreateForm({ onCreated }: { onCreated?: () => void }) {
           placeholder="Defaults to your profile name"
         />
       </Field>
+
+      <Switch checked={privateRegistry} label="Use private registry credentials" onChange={(_, data) => {
+        setPrivateRegistry(data.checked);
+        clearRegistryCredentials();
+      }} />
+      {privateRegistry && (
+        <>
+          <Field label="Registry username" required>
+            <Input autoComplete="off" value={registryUsername} onChange={(_, data) => setRegistryUsername(data.value)} required />
+          </Field>
+          <Field label="Registry password or token" required hint="Write-only. The registry address is taken from the image; no Secret setup is needed.">
+            <Input type="password" autoComplete="new-password" value={registryPassword} onChange={(_, data) => setRegistryPassword(data.value)} required />
+          </Field>
+        </>
+      )}
 
       <TeamPicker value={team} onChange={setTeam} />
 
@@ -207,6 +241,9 @@ export function CreateForm({ onCreated }: { onCreated?: () => void }) {
       {createMutation.error && (
         <MessageBar intent="error">
           {(createMutation.error as Error).message}
+          {createMutation.error instanceof CreateInstanceError && createMutation.error.instanceName && (
+            <a href={`/instances/${encodeURIComponent(createMutation.error.instanceName)}/overview`}>Manage the existing agent</a>
+          )}
         </MessageBar>
       )}
     </form>

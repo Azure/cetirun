@@ -10,6 +10,7 @@ import (
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/agents"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/helm"
+	"github.com/Azure/CetiRun/app/internal/registryauth"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 )
@@ -29,6 +30,10 @@ func runtimeRequest(instance *api.Agent, registry string) map[string]any {
 	if agent.Port != nil {
 		request["port"] = *agent.Port
 	}
+	if agent.RegistrySecretRef != nil {
+		name, _ := registryauth.PullSecretName(instance.UID)
+		request["pullSecretName"] = name
+	}
 	return request
 }
 
@@ -41,9 +46,14 @@ func (r *AgentReconciler) rejectAgentConfig(ctx context.Context, instance *api.A
 // User and deployment overrides cannot inject a prepared plan or replace its
 // primary image/port. Unrelated deployment settings keep their existing scope.
 func validateRuntimeOverrides(values map[string]any, agentType string) error {
-	for _, key := range []string{"runtime", "agentRequest"} {
+	for _, key := range []string{"runtime", "agentRequest", "imagePullSecrets", "customBindings"} {
 		if _, ok := values[key]; ok {
 			return fmt.Errorf("helm.values.%s is reserved for the platform", key)
+		}
+	}
+	if annotations, ok := values["podAnnotations"].(map[string]any); ok {
+		if _, present := annotations["cetirun.microsoft.com/registry-binding-only"]; present {
+			return fmt.Errorf("registry rollout annotations are platform-owned")
 		}
 	}
 	if _, ok := values["image"]; ok {

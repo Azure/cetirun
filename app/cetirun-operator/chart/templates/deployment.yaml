@@ -42,6 +42,8 @@ spec:
             - {{ printf "--istio-gateway=%s" .Values.istioGateway | quote }}
             - {{ printf "--default-model=%s" .Values.cetirun.defaultModel | quote }}
           env:
+            - name: REGISTRY_CREDENTIAL_NAMESPACE
+              value: {{ default .Values.registryCredentials.namespace .Values.global.registryCredentialNamespace | quote }}
             - name: OPERATOR_NAMESPACE
               valueFrom:
                 fieldRef:

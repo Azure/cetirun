@@ -69,6 +69,7 @@ jobs:
         run: |
           mkdir -p app/cetirun-portal/web/dist
           touch app/cetirun-portal/web/dist/.keep
+          (cd app/internal && go build -a ./...)
           (cd app/cetirun-operator && go build -a ./...)
           (cd app/cetirun-portal && go build -a ./...)
           (cd app/cetirun-agent-broker && go build -a ./...)

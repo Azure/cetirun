@@ -233,6 +233,9 @@ func (r *AgentReconciler) deleteSandboxBuiltin(ctx context.Context, agent *cetir
 	if err := r.stopSandboxBuiltin(ctx, agent); err != nil {
 		return ctrl.Result{}, err
 	}
+	if err := r.cleanupRegistryCredentials(ctx, agent, true); err != nil {
+		return r.registryWaiting(ctx, agent, "RegistryCleanupPending")
+	}
 	if err := r.checkSandboxPreparationCleanup(ctx, agent); err != nil {
 		return ctrl.Result{}, err
 	}
