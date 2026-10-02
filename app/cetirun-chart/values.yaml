@@ -116,6 +116,10 @@ aiGateway:
     # -- Secret holding the proxy's master key (key master-key), which the
     # Gateway's routes to the proxy carry
     masterKeySecretName: ""
+    # -- Identifies the current master key without revealing it (the start of
+    # its SHA-256 hash). The proxy reads the key when it starts, so a new
+    # value restarts it.
+    masterKeyId: ""
     # -- Secret holding the owner's GitHub token (key access-token), written
     # by the Portal at sign-in. The proxy waits for it.
     tokenSecretName: ""

@@ -240,6 +240,9 @@ const (
 	// aiGatewayChartResponsesValue lists the Copilot models the proxy must
 	// reach through the Responses API; older charts do not declare it.
 	aiGatewayChartResponsesValue = "responsesModels"
+	// aiGatewayChartProxyKeyValue identifies the proxy's master key on its
+	// Pod template; older charts do not declare it.
+	aiGatewayChartProxyKeyValue = "masterKeyId"
 )
 
 // validImageReference accepts repository:tag, repository@sha256:<digest> or
@@ -726,6 +729,20 @@ func (r *AgentReconciler) applyCopilotResponsesModels(values map[string]any, ins
 	proxy["responsesModels"] = ids
 }
 
+// applyCopilotProxyKeyID gives the chart the ID of the proxy's master key,
+// which goes on the proxy's Pod template: the proxy reads the key when it
+// starts, so a replaced key restarts it.
+func applyCopilotProxyKeyID(values map[string]any, instance *cetirunv1alpha1.Agent) {
+	gateway, _ := values["aiGateway"].(map[string]any)
+	proxy, _ := gateway["copilotProxy"].(map[string]any)
+	if proxy == nil || proxy["enabled"] != true {
+		return
+	}
+	if status := instance.Status.AIGateway; status != nil && status.Copilot != nil {
+		proxy[aiGatewayChartProxyKeyValue] = status.Copilot.ProxyKeyID
+	}
+}
+
 // aiGatewayRevision is the part of the operator configuration hash that
 // affects the Agent's model access. It covers the desired routing, so a
 // configuration change triggers a full reconcile; the recorded routing, key
@@ -744,6 +761,11 @@ func (r *AgentReconciler) aiGatewayRevision(instance *cetirunv1alpha1.Agent) str
 		status := instance.Status.AIGateway
 		parts = append(parts, "routed", r.AIGateway.URL, status.KeyID, status.DefaultModel, strings.Join(status.Models, ","),
 			strconv.FormatBool(r.aiGatewayCopilotActive(instance)), r.AIGateway.CopilotProxyImage)
+		// The proxy reads its master key when it starts, so a new key must
+		// roll it.
+		if r.aiGatewayCopilotActive(instance) && status.Copilot.ProxyKeyID != "" {
+			parts = append(parts, "proxy-key", status.Copilot.ProxyKeyID)
+		}
 	}
 	if annotation := instance.Annotations[cetirunv1alpha1.AnnotationCopilotModels]; annotation != "" {
 		sum := sha256.Sum256([]byte(annotation))

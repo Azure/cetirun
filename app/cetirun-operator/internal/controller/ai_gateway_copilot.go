@@ -214,6 +214,9 @@ func (r *AgentReconciler) reconcileAIGatewayCopilot(ctx context.Context, client 
 		degraded("ProxySecretFailed", err)
 		return
 	}
+	// A lost or malformed key Secret gets a new key, which the routes below
+	// carry at once; the ID restarts the proxy with it.
+	copilot.ProxyKeyID = aigateway.Token(proxyKey)[:aiGatewayKeyIDLength]
 	signedIn, err := r.ensureCopilotTokenSecret(ctx, instance)
 	if err != nil {
 		degraded("TokenSecretFailed", err)

@@ -647,6 +647,9 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	if prepared.SupportsValuePath(aiGatewayChartValue, aiGatewayChartCopilotValue, aiGatewayChartResponsesValue) {
 		r.applyCopilotResponsesModels(helmValues, instance)
 	}
+	if prepared.SupportsValuePath(aiGatewayChartValue, aiGatewayChartCopilotValue, aiGatewayChartProxyKeyValue) {
+		applyCopilotProxyKeyID(helmValues, instance)
+	}
 	{
 		secret := &corev1.Secret{}
 		if err := r.Get(ctx, types.NamespacedName{Namespace: ns, Name: instance.Spec.GatewayTokenSecretRef}, secret); err != nil {

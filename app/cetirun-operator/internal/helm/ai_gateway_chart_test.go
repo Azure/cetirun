@@ -186,3 +186,55 @@ func TestAIGatewayChartBridgesResponsesOnlyCopilotModels(t *testing.T) {
 		t.Fatal("a model ID that is not a Copilot model ID must be rejected")
 	}
 }
+
+// proxyTemplateAnnotations returns the annotations of the Copilot proxy's Pod
+// template.
+func proxyTemplateAnnotations(t *testing.T, rendered map[string]string) map[string]string {
+	t.Helper()
+	for _, document := range strings.Split(rendered["cetirun/templates/copilot-proxy.yaml"], "\n---") {
+		if !strings.Contains(document, "kind: Deployment") {
+			continue
+		}
+		deployment := &appsv1.Deployment{}
+		if err := yaml.Unmarshal([]byte(document), deployment); err != nil {
+			t.Fatal(err)
+		}
+		return deployment.Spec.Template.Annotations
+	}
+	t.Fatal("no proxy Deployment rendered")
+	return nil
+}
+
+func TestAIGatewayChartRestartsTheProxyForANewMasterKey(t *testing.T) {
+	render := func(keyID any) (map[string]string, error) {
+		input := aiGatewayInput("openclaw", "openai")
+		proxy := map[string]any{
+			"enabled": true, "image": "registry.example.com/cetirun-ai-gateway:1.0.0",
+			"masterKeySecretName": "ai-gateway-copilot-proxy", "tokenSecretName": "github-copilot-token",
+		}
+		if keyID != nil {
+			proxy["masterKeyId"] = keyID
+		}
+		input["aiGateway"].(map[string]any)["copilotProxy"] = proxy
+		return renderAIGateway(t, input)
+	}
+	rendered, err := render("0123456789ab")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The key reaches the proxy as an environment variable: only a changed
+	// Pod template restarts it with a new one.
+	if got := proxyTemplateAnnotations(t, rendered)["cetirun.microsoft.com/copilot-proxy-key-id"]; got != "0123456789ab" {
+		t.Fatalf("the proxy's Pod template must carry the key ID, got %q", got)
+	}
+	rendered, err = render(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := proxyTemplateAnnotations(t, rendered)["cetirun.microsoft.com/copilot-proxy-key-id"]; ok {
+		t.Fatal("no key ID, no annotation")
+	}
+	if _, err := render("not-a-hash"); err == nil {
+		t.Fatal("a key ID that is not a hash prefix must be rejected")
+	}
+}

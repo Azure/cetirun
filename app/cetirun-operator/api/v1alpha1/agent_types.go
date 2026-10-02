@@ -418,6 +418,12 @@ type AIGatewayCopilotStatus struct {
 	// +optional
 	Unpriced []string `json:"unpriced,omitempty"`
 
+	// ProxyKeyID identifies the proxy's master key without revealing it: the
+	// first characters of the key's SHA-256 hash. The proxy reads the key
+	// when it starts, so a new key restarts it.
+	// +optional
+	ProxyKeyID string `json:"proxyKeyId,omitempty"`
+
 	// Reason is a stable, non-sensitive machine-readable status reason.
 	// +optional
 	Reason string `json:"reason,omitempty"`

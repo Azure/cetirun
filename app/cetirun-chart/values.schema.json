@@ -245,6 +245,12 @@
                         "enabled": {"type": "boolean", "default": false},
                         "image": {"type": "string", "default": ""},
                         "masterKeySecretName": {"type": "string", "default": ""},
+                        "masterKeyId": {
+                            "type": "string",
+                            "description": "Identifies the proxy's master key; a new value restarts the proxy",
+                            "pattern": "^[0-9a-f]{0,64}$",
+                            "default": ""
+                        },
                         "tokenSecretName": {"type": "string", "default": ""},
                         "responsesModels": {
                             "type": "array",

@@ -1366,6 +1366,81 @@ func TestReconcileRestoresLostCopilotRoutesBeforeTheVerification(t *testing.T) {
 	}
 }
 
+// A lost proxy key Secret gets a new key, which the Gateway's routes carry at
+// once. The running proxy read the old key when it started, so the Agent's
+// chart must restart it.
+func TestReconcileRestartsTheCopilotProxyWithANewMasterKey(t *testing.T) {
+	agent := aiGatewayTestAgent(testAIGatewayTeam)
+	r, kube, gateway := aiGatewayTestReconciler(t, agent, aiGatewayTestTeam(testAIGatewayTeam))
+	chart := &chartHelm{}
+	r.HelmClient = chart
+	ctx := context.Background()
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: agent.Name}}
+	current := func() *cetirunv1alpha1.Agent {
+		t.Helper()
+		got := &cetirunv1alpha1.Agent{}
+		if err := kube.Get(ctx, req.NamespacedName, got); err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	reconcile := func(times int) {
+		t.Helper()
+		for i := 0; i < times; i++ {
+			if _, err := r.Reconcile(ctx, req); err != nil {
+				t.Fatalf("reconcile: %v", err)
+			}
+		}
+	}
+	proxyKeyID := func() any {
+		t.Helper()
+		return chart.lastValues["aiGateway"].(map[string]any)["copilotProxy"].(map[string]any)[aiGatewayChartProxyKeyValue]
+	}
+	reconcile(3)
+	signedIn := current()
+	signIn(t, kube, signedIn, testCopilotModels)
+	if err := kube.Update(ctx, signedIn); err != nil {
+		t.Fatal(err)
+	}
+	if err := kube.Create(ctx, readyProxy(1)); err != nil {
+		t.Fatal(err)
+	}
+	reconcile(3)
+	before := current().Status.AIGateway.Copilot.ProxyKeyID
+	if before == "" || proxyKeyID() != before || len(gateway.models) == 0 {
+		t.Fatalf("the chart must get the key ID once the routes exist: status %q values %v routes %d", before, proxyKeyID(), len(gateway.models))
+	}
+	installs := chart.installs
+
+	// The proxy's key Secret is lost; the next verification finds it.
+	if err := kube.Delete(ctx, readSecret(t, kube, aiGatewayProxySecretName)); err != nil {
+		t.Fatal(err)
+	}
+	due := current()
+	stale := metav1.NewTime(time.Now().Add(-2 * aiGatewayVerificationInterval))
+	due.Status.AIGateway.LastVerifiedTime = &stale
+	if err := kube.Status().Update(ctx, due); err != nil {
+		t.Fatal(err)
+	}
+	reconcile(1)
+	after := current().Status.AIGateway.Copilot.ProxyKeyID
+	if after == "" || after == before {
+		t.Fatalf("a new key must get a new ID: %q -> %q", before, after)
+	}
+	if chart.installs == installs || proxyKeyID() != after {
+		t.Fatalf("the proxy must be restarted with the new key: installs %d -> %d, values carry %v", installs, chart.installs, proxyKeyID())
+	}
+	key := string(readSecret(t, kube, aiGatewayProxySecretName).Data[aiGatewayProxySecretField])
+	if aigateway.Token(key)[:aiGatewayKeyIDLength] != after {
+		t.Fatal("the ID must identify the key in the Secret")
+	}
+	for id, route := range gateway.models {
+		if route.APIKey != key {
+			t.Fatalf("route %s still carries the old key", id)
+		}
+	}
+}
+
 func TestAIGatewayCopilotPendingKeepsReconciling(t *testing.T) {
 	agent := aiGatewayTestAgent(testAIGatewayTeam)
 	now := metav1.Now()

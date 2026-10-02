@@ -52,6 +52,10 @@ spec:
         {{- include "cetirun.copilotProxyLabels" . | nindent 8 }}
       annotations:
         checksum/config: {{ $config | sha256sum }}
+        {{- /* The proxy reads its master key when it starts: a new key restarts it. */}}
+        {{- with $proxy.masterKeyId }}
+        cetirun.microsoft.com/copilot-proxy-key-id: {{ . | quote }}
+        {{- end }}
     spec:
       serviceAccountName: {{ $name }}
       automountServiceAccountToken: false
