@@ -13,6 +13,7 @@ import (
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/agents"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/runtimebindings"
+	"github.com/Azure/CetiRun/app/internal/registryauth"
 	istiov1beta1 "istio.io/client-go/pkg/apis/networking/v1beta1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -262,6 +263,11 @@ func (r *AgentReconciler) reconcileCustom(ctx context.Context, instance *api.Age
 		current.Spec.Replicas == nil || *current.Spec.Replicas != 1
 	unchanged := applied && !workloadChanged
 	if !unchanged {
+		if ref := instance.Spec.Agent.RegistrySecretRef; ref != nil {
+			if err := registryauth.CheckIsolation(ctx, r.registryClient(), r.registryNamespace(), bindings.Namespace.Name, instanceServiceName(instance.Name), ref.Name); err != nil {
+				return r.registryWaiting(ctx, instance, "RegistryIsolationUnverified")
+			}
+		}
 		if registryManaged(instance) && r.checkRegistryIntent(ctx, instance) != nil {
 			return r.registryWaiting(ctx, instance, "RegistryInputChanged")
 		}

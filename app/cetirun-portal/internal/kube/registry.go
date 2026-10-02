@@ -97,9 +97,6 @@ func (c *Client) SaveRegistryCredentials(ctx context.Context, expected *api.Agen
 	if err != nil {
 		return err
 	}
-	if err := registryauth.CheckIsolation(ctx, c.client, c.registryNamespace(), "cetirun-"+expected.Name, "default", expected.Spec.Agent.RegistrySecretRef.Name); err != nil {
-		return err
-	}
 	secret := &corev1.Secret{}
 	err = c.client.Get(ctx, client.ObjectKey{Namespace: c.registryNamespace(), Name: expected.Spec.Agent.RegistrySecretRef.Name}, secret)
 	missing := apierrors.IsNotFound(err)
@@ -123,6 +120,12 @@ func (c *Client) SaveRegistryCredentials(ctx context.Context, expected *api.Agen
 		secret = &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: expected.Spec.Agent.RegistrySecretRef.Name,
 			Namespace: c.registryNamespace(), OwnerReferences: []metav1.OwnerReference{registryauth.Owner(expected)},
 			Labels: registryauth.Labels(expected.UID)}, Type: corev1.SecretTypeDockerConfigJson}
+	}
+	if err := registryauth.CheckIsolation(ctx, c.client, c.registryNamespace(), "cetirun-"+expected.Name, "default", expected.Spec.Agent.RegistrySecretRef.Name); err != nil {
+		return err
+	}
+	if !c.registryIntentCurrent(ctx, expected) {
+		return ErrRegistryConflict
 	}
 	secret.Data = map[string][]byte{corev1.DockerConfigJsonKey: raw}
 	secret.Annotations = map[string]string{registryauth.Operation: expected.Annotations[registryauth.Operation]}

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
@@ -16,12 +17,14 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	authorizationv1 "k8s.io/api/authorization/v1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -121,6 +124,120 @@ func TestRegistrySyncRotationAndRestart(t *testing.T) {
 	}
 	if agent.Status.RegistryCredentials.SourceResourceVersion != source.ResourceVersion || meta.FindStatusCondition(agent.Status.Conditions, api.ConditionRegistryCredentialsReady).Status != metav1.ConditionTrue {
 		t.Fatal("missing sync receipt")
+	}
+}
+
+type registryAuditClient struct {
+	client.Client
+	reviews, inventories atomic.Int64
+	allow                atomic.Bool
+}
+
+func (c *registryAuditClient) Create(ctx context.Context, object client.Object, options ...client.CreateOption) error {
+	if review, ok := object.(*authorizationv1.SubjectAccessReview); ok {
+		c.reviews.Add(1)
+		review.Status.Allowed = c.allow.Load()
+		review.Status.Denied = !review.Status.Allowed
+		return nil
+	}
+	return c.Client.Create(ctx, object, options...)
+}
+
+func (c *registryAuditClient) List(ctx context.Context, list client.ObjectList, options ...client.ListOption) error {
+	switch list.(type) {
+	case *api.AgentList, *corev1.PodList, *appsv1.StatefulSetList, *rbacv1.RoleList, *rbacv1.ClusterRoleList, *rbacv1.RoleBindingList, *rbacv1.ClusterRoleBindingList:
+		c.inventories.Add(1)
+	}
+	return c.Client.List(ctx, list, options...)
+}
+
+func TestRegistryUnchangedSyncSkipsAuditButRotationRechecksPermissions(t *testing.T) {
+	r, agent, source := registryFixture(t)
+	ctx := context.Background()
+	c := &registryAuditClient{Client: r.Client}
+	r.Client, r.APIReader = c, c
+	name, err := r.syncRegistryCredentials(ctx, agent, "default")
+	if err != nil || c.reviews.Load() == 0 || c.inventories.Load() == 0 {
+		t.Fatalf("initial copy bypassed authorization: %v", err)
+	}
+	c.reviews.Store(0)
+	c.inventories.Store(0)
+	for range 100 {
+		if _, err := r.syncRegistryCredentials(ctx, agent, "default"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if c.reviews.Load() != 0 || c.inventories.Load() != 0 {
+		t.Fatalf("unchanged sync repeated the cluster audit: reviews=%d lists=%d", c.reviews.Load(), c.inventories.Load())
+	}
+	key := client.ObjectKey{Namespace: instanceNamespace(agent.Name), Name: name}
+	target := &corev1.Secret{}
+	if err := c.Get(ctx, key, target); err != nil {
+		t.Fatal(err)
+	}
+	before := target.DeepCopy()
+	if err := c.Get(ctx, client.ObjectKeyFromObject(source), source); err != nil {
+		t.Fatal(err)
+	}
+	source.Data[corev1.DockerConfigJsonKey], _ = registryauth.Encode(*agent.Spec.Agent.Image,
+		registryauth.Credentials{Username: "example", Password: "rotated-synthetic-token"})
+	if err := c.Update(ctx, source); err != nil {
+		t.Fatal(err)
+	}
+	c.allow.Store(true)
+	if _, err := r.syncRegistryCredentials(ctx, agent, "default"); err == nil || c.reviews.Load() == 0 {
+		t.Fatal("rotation reused the previous authorization result")
+	}
+	if err := c.Get(ctx, key, target); err != nil || !reflect.DeepEqual(before, target) {
+		t.Fatal("failed authorization changed the existing pull Secret")
+	}
+	c.allow.Store(false)
+	if _, err := r.syncRegistryCredentials(ctx, agent, "default"); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Get(ctx, key, target); err != nil || !reflect.DeepEqual(target.Data, source.Data) {
+		t.Fatal("rotation did not recover after permissions were corrected")
+	}
+}
+
+func TestRegistryBuiltinSteadyReconcileDoesNotRepeatAudit(t *testing.T) {
+	for _, agentType := range []api.AgentType{api.AgentTypeHermes, api.AgentTypeOpenClaw} {
+		t.Run(string(agentType), func(t *testing.T) {
+			r, agent, _ := registryFixture(t)
+			ctx := context.Background()
+			c := &registryAuditClient{Client: r.Client}
+			r.Client, r.APIReader = c, c
+			r.HelmClient = &registryNamespaceHelm{}
+			r.EventRecorder = record.NewFakeRecorder(10)
+			r.ChartVersion = "0.1.1"
+			r.DomainSuffix = "agents.example.com"
+			agent.Spec.Agent.Type = agentType
+			agent.Spec.Agent.Port = ptr.To[int32](18080)
+			agent.Spec.Helm.Version = r.ChartVersion
+			agent.Finalizers = []string{api.Finalizer}
+			if err := r.Update(ctx, agent); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := r.syncRegistryCredentials(ctx, agent, "default"); err != nil {
+				t.Fatal(err)
+			}
+			agent.Status.Phase = api.PhaseReady
+			agent.Status.ObservedGeneration = agent.Generation
+			agent.Status.ObservedOperatorHash = r.configHash(agent, nil, "", "")
+			if err := r.updateStatus(ctx, agent); err != nil {
+				t.Fatal(err)
+			}
+			c.reviews.Store(0)
+			c.inventories.Store(0)
+			for range 10 {
+				if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(agent)}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if c.reviews.Load() != 0 || c.inventories.Load() != 0 {
+				t.Fatalf("steady built-in reconciliation repeated the audit: reviews=%d inventories=%d", c.reviews.Load(), c.inventories.Load())
+			}
+		})
 	}
 }
 

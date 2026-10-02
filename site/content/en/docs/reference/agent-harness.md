@@ -235,9 +235,15 @@ matching `registryCredentials.namespace` values. Only the Operator chart creates
 the namespace. Agent names that would use the default or configured credential
 namespace are rejected before any lifecycle changes, including deletion. A
 pre-existing collision retains its finalizers and requires administrator recovery;
-verify namespace ownership before removing such an Agent. Runtime charts must advertise the
+verify namespace ownership before removing such an Agent. Runtime charts must
+advertise the
 `cetirun.microsoft.com/registry-credentials: v1` annotation; older pinned charts
 must be upgraded before attaching credentials.
+
+Raw deployment or instance `imagePullSecrets` overrides are not merged with the
+managed binding. Follow the [registry upgrade steps](../../getting-started/platform/#upgrading-runtime-registry-configuration)
+before upgrading a deployment that used them; standalone Agent Helm releases
+retain their separate pull-Secret setting.
 
 | Operation | Contract |
 | --- | --- |
@@ -320,6 +326,14 @@ objects. Reviews are deduplicated within each check and run with at most eight
 requests in flight; authorization results are not cached across checks. Each
 check inventories workloads once and tests their identities against the current
 Agent's credentials, while also inspecting named RBAC grants across namespaces.
+Unchanged synchronization only rereads the source and local Secret and verifies
+their owner, contents, revisions, and saved receipt; it does not repeat the
+cluster-wide permission audit. Completed creation retries are also read-only.
+Credential writes and new workload applications always run a fresh audit before
+proceeding. Initial saves and replacements therefore still incur synchronous
+authorization work proportional to the runtime identities; there is no cached
+authorization result that can allow a later write. Permission changes do not
+revoke an already-distributed credential or stop a running Agent automatically.
 Existing broad control-plane grants are not narrowed by this
 feature. Operator also needs Pod deletion permission for the bounded initial-pull
 recovery above; no such permission is granted to Agent workloads. Privileged

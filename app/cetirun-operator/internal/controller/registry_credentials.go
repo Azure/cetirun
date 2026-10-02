@@ -181,9 +181,6 @@ func (r *AgentReconciler) syncRegistryCredentials(ctx context.Context, agent *ap
 	if err := r.ensureRegistryNamespace(ctx, agent, namespaceUID); err != nil {
 		return "", err
 	}
-	if err := registryauth.CheckIsolation(ctx, r.registryClient(), r.registryNamespace(), instanceNamespace(agent.Name), serviceAccount, ref.Name); err != nil {
-		return "", fmt.Errorf("RegistryIsolationUnverified")
-	}
 	key := client.ObjectKey{Namespace: r.registryNamespace(), Name: ref.Name}
 	source := &corev1.Secret{}
 	if err := r.customReader().Get(ctx, key, source); err != nil {
@@ -205,6 +202,20 @@ func (r *AgentReconciler) syncRegistryCredentials(ctx context.Context, agent *ap
 	if !missing && (!registryauth.Owned(target, agent) || !target.DeletionTimestamp.IsZero() || target.Type != corev1.SecretTypeDockerConfigJson) {
 		return "", fmt.Errorf("RegistryTargetConflict")
 	}
+	needsWrite := missing || !bytes.Equal(target.Data[corev1.DockerConfigJsonKey], source.Data[corev1.DockerConfigJsonKey]) ||
+		len(target.Data) != 1 || target.Annotations[registryauth.SourceUID] != string(source.UID) ||
+		target.Annotations[registryauth.SourceVersion] != source.ResourceVersion
+	receipt := agent.Status.RegistryCredentials
+	synchronized := receipt != nil && receipt.SourceUID == string(source.UID) &&
+		receipt.SourceResourceVersion == source.ResourceVersion && receipt.PullSecretUID == string(target.UID) &&
+		isConditionTrue(agent.Status.Conditions, api.ConditionRegistryCredentialsReady)
+	// Observing an unchanged, synchronized copy is not a credential write.
+	// Every copy change and subsequent workload application checks permissions anew.
+	if needsWrite || !synchronized {
+		if err := registryauth.CheckIsolation(ctx, r.registryClient(), r.registryNamespace(), instanceNamespace(agent.Name), serviceAccount, ref.Name); err != nil {
+			return "", fmt.Errorf("RegistryIsolationUnverified")
+		}
+	}
 	if err := r.checkRegistryIntent(ctx, agent); err != nil {
 		return "", err
 	}
@@ -213,9 +224,7 @@ func (r *AgentReconciler) syncRegistryCredentials(ctx context.Context, agent *ap
 			OwnerReferences: []metav1.OwnerReference{registryauth.Owner(agent)}, Labels: registryauth.Labels(agent.UID)},
 			Type: corev1.SecretTypeDockerConfigJson}
 	}
-	if missing || !bytes.Equal(target.Data[corev1.DockerConfigJsonKey], source.Data[corev1.DockerConfigJsonKey]) ||
-		len(target.Data) != 1 || target.Annotations[registryauth.SourceUID] != string(source.UID) ||
-		target.Annotations[registryauth.SourceVersion] != source.ResourceVersion {
+	if needsWrite {
 		target.Data = map[string][]byte{corev1.DockerConfigJsonKey: bytes.Clone(source.Data[corev1.DockerConfigJsonKey])}
 		target.Annotations = map[string]string{registryauth.SourceUID: string(source.UID), registryauth.SourceVersion: source.ResourceVersion}
 		if missing {

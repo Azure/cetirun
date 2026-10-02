@@ -47,7 +47,7 @@ func (c *registryRecoveryRaceClient) Delete(ctx context.Context, object client.O
 }
 
 func TestRegistryRecoveryOnlyReplacesUnstartedOwnedPullFailure(t *testing.T) {
-	for _, scenario := range []string{"initial", "custom", "bound-reference", "ready", "running", "previous-writer", "unobserved", "other-failure", "foreign-pod", "foreign-workload", "changed-image", "changed-init-image", "missing-container", "changed-config", "suspended", "raced-pod"} {
+	for _, scenario := range []string{"initial", "custom", "bound-reference", "ready", "running", "previous-writer", "unobserved", "other-failure", "foreign-pod", "foreign-workload", "changed-image", "changed-init-image", "missing-container", "changed-config", "suspended", "raced-pod", "permission-change"} {
 		t.Run(scenario, func(t *testing.T) {
 			r, agent, _ := registryFixture(t)
 			ctx := context.Background()
@@ -114,8 +114,13 @@ func TestRegistryRecoveryOnlyReplacesUnstartedOwnedPullFailure(t *testing.T) {
 			if scenario == "raced-pod" {
 				r.Client = &registryRecoveryRaceClient{Client: r.Client, t: t}
 			}
+			if scenario == "permission-change" {
+				c := &registryAuditClient{Client: r.Client}
+				c.allow.Store(true)
+				r.Client = c
+			}
 			err = r.recoverRegistryPull(ctx, agent)
-			if (err != nil) != (scenario == "foreign-workload" || scenario == "raced-pod") {
+			if (err != nil) != (scenario == "foreign-workload" || scenario == "raced-pod" || scenario == "permission-change") {
 				t.Fatalf("unexpected recovery error: %v", err)
 			}
 			observed := &corev1.Pod{}

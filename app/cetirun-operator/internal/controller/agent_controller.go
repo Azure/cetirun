@@ -595,7 +595,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionAgentConfigReady,
 		metav1.ConditionTrue, "AgentConfigResolved", "Built-in Harness configuration resolved")
 	helmValues = prepared.Values
-	if instance.Spec.Agent.RegistrySecretRef != nil {
+	if !alreadyDeployed && instance.Spec.Agent.RegistrySecretRef != nil {
 		sa, err := registryServiceAccount(helmValues, instanceServiceName(instance.Name))
 		if err != nil {
 			return r.registryWaiting(ctx, instance, "RegistryIsolationUnverified")

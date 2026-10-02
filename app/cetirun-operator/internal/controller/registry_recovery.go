@@ -64,6 +64,10 @@ func (r *AgentReconciler) recoverRegistryPull(ctx context.Context, agent *api.Ag
 			!registryUnstartedPullPod(pod, sts.Spec.Template, name) {
 			continue
 		}
+		if err := registryauth.CheckIsolation(ctx, r.registryClient(), r.registryNamespace(), ns,
+			sts.Spec.Template.Spec.ServiceAccountName, agent.Spec.Agent.RegistrySecretRef.Name); err != nil {
+			return fmt.Errorf("RegistryIsolationUnverified")
+		}
 		if err := r.checkRegistryIntent(ctx, agent); err != nil {
 			return err
 		}

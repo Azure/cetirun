@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
@@ -142,6 +143,45 @@ func TestRegistryPartialCreateRetryBeforeQuota(t *testing.T) {
 		if w.Code != http.StatusConflict {
 			t.Fatalf("mismatched retry: %d", w.Code)
 		}
+	}
+}
+
+type registryAuditCounter struct {
+	client.Client
+	reviews atomic.Int64
+	allow   atomic.Bool
+}
+
+func (c *registryAuditCounter) Create(ctx context.Context, object client.Object, options ...client.CreateOption) error {
+	if review, ok := object.(*authorizationv1.SubjectAccessReview); ok {
+		c.reviews.Add(1)
+		review.Status.Allowed = c.allow.Load()
+		review.Status.Denied = !review.Status.Allowed
+		return nil
+	}
+	return c.Client.Create(ctx, object, options...)
+}
+
+func TestRegistryCompletedCreateRetrySkipsAuditButPUTRechecks(t *testing.T) {
+	failing := false
+	h, original := registryHandler(t, &failing)
+	c := &registryAuditCounter{Client: original}
+	h.Kube = kube.NewClient(c)
+	agent := createdRegistryInstance(t, h)
+	if c.reviews.Load() == 0 {
+		t.Fatal("initial credential save skipped authorization")
+	}
+	c.reviews.Store(0)
+	w := httptest.NewRecorder()
+	h.CreateInstance(w, registryRequest(http.MethodPost, registryCreateBody, nil))
+	if w.Code != http.StatusOK || c.reviews.Load() != 0 {
+		t.Fatalf("completed creation retried a write audit: status=%d reviews=%d", w.Code, c.reviews.Load())
+	}
+	c.allow.Store(true)
+	w = httptest.NewRecorder()
+	h.PutRegistryAuth(w, registryRequest(http.MethodPut, `{"username":"example","password":"replacement-token"}`, agent))
+	if w.Code != http.StatusServiceUnavailable || c.reviews.Load() == 0 {
+		t.Fatalf("credential replacement did not recheck changed permissions: status=%d reviews=%d", w.Code, c.reviews.Load())
 	}
 }
 
