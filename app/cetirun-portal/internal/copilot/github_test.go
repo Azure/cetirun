@@ -113,15 +113,19 @@ func TestListModelsKeepsChatModelsWithLimits(t *testing.T) {
 	  {"id":"gpt-4o-mini-hidden","model_picker_enabled":false,"capabilities":{"type":"chat"}},
 	  {"id":"gpt-disabled","policy":{"state":"disabled"},"capabilities":{"type":"chat"}},
 	  {"id":"completions-only","supported_endpoints":["/completions"],"capabilities":{"type":"chat"}},
+	  {"id":"messages-only","supported_endpoints":["/v1/messages"],"capabilities":{"type":"chat"}},
 	  {"id":"accounts/private","capabilities":{"type":"chat"}},
 	  {"id":"gpt-5.5","capabilities":{"type":"chat"}},
-	  {"id":"gpt-6-sol","name":"GPT-6 Sol","capabilities":{"type":"chat"},"supported_endpoints":["/responses","ws:/responses"]}
+	  {"id":"gpt-6-sol","name":"GPT-6 Sol","capabilities":{"type":"chat"},"supported_endpoints":["/responses","ws:/responses"]},
+	  {"id":"claude-opus-4.5","capabilities":{"type":"chat"},"supported_endpoints":["/v1/messages","/chat/completions"]}
 	]}`
 	models, err := client.ListModels(context.Background(), "gho_user")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(models) != 3 {
+	// A model served only through the Messages API is left out: the proxy
+	// would send it chat completions, which it does not serve.
+	if len(models) != 4 {
 		t.Fatalf("models = %+v", models)
 	}
 	if models[0].ResponsesOnly || models[1].ResponsesOnly {
@@ -129,6 +133,9 @@ func TestListModelsKeepsChatModelsWithLimits(t *testing.T) {
 	}
 	if m := models[2]; m.ID != "gpt-6-sol" || !m.ResponsesOnly {
 		t.Fatalf("a model served only on /responses must be marked: %+v", m)
+	}
+	if m := models[3]; m.ID != "claude-opus-4.5" || m.ResponsesOnly {
+		t.Fatalf("a model also served on chat completions is kept as a chat model: %+v", m)
 	}
 	if m := models[0]; m.ID != "gpt-5.5" || m.Name != "GPT-5.5" || m.ContextWindow != 400000 || m.MaxOutputTokens != 128000 {
 		t.Fatalf("first model = %+v", m)

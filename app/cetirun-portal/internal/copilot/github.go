@@ -48,13 +48,6 @@ const (
 // modelIDPattern matches the model IDs the operator accepts.
 var modelIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$`)
 
-// chatEndpoints are the Copilot endpoints a chat model is served on.
-var chatEndpoints = map[string]bool{
-	"/v1/chat/completions": true, "/chat/completions": true,
-	"/v1/responses": true, "/responses": true,
-	"/v1/messages": true, "/messages": true,
-}
-
 // completionsEndpoints serve chat completions, the API agents call.
 var completionsEndpoints = map[string]bool{"/v1/chat/completions": true, "/chat/completions": true}
 
@@ -313,14 +306,17 @@ func ParseModels(body []byte) ([]cetirunv1alpha1.CopilotModel, error) {
 		if m.Policy != nil && strings.EqualFold(m.Policy.State, "disabled") {
 			continue
 		}
-		chat, completions, responses := false, false, false
+		completions, responses := false, false
 		for _, raw := range m.SupportedEndpoints {
 			endpoint := strings.ToLower(strings.TrimRight(strings.TrimSpace(raw), "/"))
-			chat = chat || chatEndpoints[endpoint]
 			completions = completions || completionsEndpoints[endpoint]
 			responses = responses || responsesEndpoints[endpoint]
 		}
-		if len(m.SupportedEndpoints) > 0 && !chat {
+		// Agents call chat completions, which the proxy passes on or, for a
+		// model served only through the Responses API, bridges to it. A model
+		// served only through another API, such as the Messages API, would
+		// fail every call, so it is left out.
+		if len(m.SupportedEndpoints) > 0 && !completions && !responses {
 			continue
 		}
 		contextWindow := m.Capabilities.Limits.MaxContextWindowTokens
