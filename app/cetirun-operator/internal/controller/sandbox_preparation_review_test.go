@@ -18,9 +18,11 @@ import (
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxpolicy"
 	w "github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
 	"github.com/Azure/CetiRun/app/internal/registryauth"
+	istiov1beta1 "istio.io/client-go/pkg/apis/networking/v1beta1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	nodev1 "k8s.io/api/node/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -368,6 +370,198 @@ func TestSandboxPreparationDeletionResumesReleasedEmptyJournal(t *testing.T) {
 				t.Fatal("completed deletion did not remain idempotent:", err)
 			}
 		})
+	}
+}
+
+func TestSandboxBuiltinDeletionAttemptsShutdownWhenRevocationFails(t *testing.T) {
+	for _, typ := range []string{"openclaw", "hermes"} {
+		for _, revocation := range []string{"journal read", "binding deletion"} {
+			for _, failure := range []string{"none", "workload", "route", "status", "all"} {
+				t.Run(typ+"/"+revocation+"/"+failure, func(t *testing.T) {
+					ctx := context.Background()
+					f := newPreparationFixture(t, typ)
+					if err := f.reconcile(); err != nil {
+						t.Fatal(err)
+					}
+					agent := f.current(t)
+					expected := f.expectation(t)
+					workload := &appsv1.StatefulSet{}
+					workloadKey := client.ObjectKey{Namespace: expected.Namespace.Name, Name: expected.Workload.Name}
+					if err := f.client.Get(ctx, workloadKey, workload); err != nil {
+						t.Fatal(err)
+					}
+					workload.Spec.Replicas = ptr.To[int32](1)
+					workload.Spec.PersistentVolumeClaimRetentionPolicy = &appsv1.StatefulSetPersistentVolumeClaimRetentionPolicy{
+						WhenScaled: appsv1.DeletePersistentVolumeClaimRetentionPolicyType, WhenDeleted: appsv1.RetainPersistentVolumeClaimRetentionPolicyType,
+					}
+					if err := f.client.Update(ctx, workload); err != nil {
+						t.Fatal(err)
+					}
+					route := &istiov1beta1.VirtualService{ObjectMeta: metav1.ObjectMeta{
+						Name: "cetirun-" + agent.Name, Namespace: workload.Namespace,
+						OwnerReferences: []metav1.OwnerReference{w.AgentOwner(agent.Name, agent.UID)},
+					}}
+					registry := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{
+						Name: "registry-source-retained", Namespace: registryauth.DefaultNamespace, UID: "retained-registry-uid",
+						OwnerReferences: []metav1.OwnerReference{registryauth.Owner(agent)},
+					}}
+					for _, object := range []client.Object{route, registry} {
+						if err := f.client.Create(ctx, object); err != nil {
+							t.Fatal(err)
+						}
+					}
+					agent.Status.Phase, agent.Status.AccessURL = api.PhaseReady, "https://platform.example.com/agent/"
+					agent.Status.RegistryCredentials = &api.RegistryCredentialsStatus{SourceUID: string(registry.UID)}
+					for _, condition := range []string{api.ConditionReady, api.ConditionSandboxReady, api.ConditionAgentConfigReady} {
+						apimeta.SetStatusCondition(&agent.Status.Conditions, metav1.Condition{
+							Type: condition, Status: metav1.ConditionTrue, Reason: "SyntheticRunning", ObservedGeneration: agent.Generation,
+						})
+					}
+					if err := f.client.Status().Update(ctx, agent); err != nil {
+						t.Fatal(err)
+					}
+					if err := f.client.Delete(ctx, agent); err != nil {
+						t.Fatal(err)
+					}
+					finalizers := slices.Clone(f.current(t).Finalizers)
+					journalKey := client.ObjectKey{Namespace: "cetirun-system", Name: sandboxpolicy.GrantJournalName(agent.UID)}
+					retained := []client.Object{
+						f.fixture.Namespace.DeepCopy(), f.fixture.Input.Home.DeepCopy(), registry,
+						&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: journalKey.Name, Namespace: journalKey.Namespace}},
+					}
+					versions := make([]string, len(retained))
+					for i, object := range retained {
+						if err := f.client.Get(ctx, client.ObjectKeyFromObject(object), object); err != nil {
+							t.Fatal(err)
+						}
+						versions[i] = object.GetResourceVersion()
+					}
+					fences, stages := f.source.fences, f.installer.stages
+					injected := map[string]error{
+						"revocation": fmt.Errorf("synthetic %s failure", revocation),
+						"workload":   errors.New("synthetic workload stop failure"),
+						"route":      errors.New("synthetic route removal failure"),
+						"status":     errors.New("synthetic status patch failure"),
+					}
+					fails := func(operation string) bool { return failure == operation || failure == "all" }
+					calls := map[string]int{}
+					wrapped := interceptor.NewClient(f.client.(client.WithWatch), interceptor.Funcs{
+						Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, object client.Object, options ...client.GetOption) error {
+							if key == journalKey && revocation == "journal read" {
+								calls["revocation"]++
+								return injected["revocation"]
+							}
+							return c.Get(ctx, key, object, options...)
+						},
+						Patch: func(ctx context.Context, c client.WithWatch, object client.Object, patch client.Patch, options ...client.PatchOption) error {
+							if _, ok := object.(*appsv1.StatefulSet); ok {
+								calls["workload"]++
+								if fails("workload") {
+									return injected["workload"]
+								}
+							}
+							return c.Patch(ctx, object, patch, options...)
+						},
+						Delete: func(ctx context.Context, c client.WithWatch, object client.Object, options ...client.DeleteOption) error {
+							switch object.(type) {
+							case *rbacv1.RoleBinding:
+								calls["revocation"]++
+								return injected["revocation"]
+							case *istiov1beta1.VirtualService:
+								calls["route"]++
+								if fails("route") {
+									return injected["route"]
+								}
+							default:
+								calls["destructive cleanup"]++
+							}
+							return c.Delete(ctx, object, options...)
+						},
+						List: func(ctx context.Context, c client.WithWatch, objects client.ObjectList, options ...client.ListOption) error {
+							if _, ok := objects.(*corev1.SecretList); ok {
+								calls["registry cleanup"]++
+							}
+							return c.List(ctx, objects, options...)
+						},
+						SubResourcePatch: func(ctx context.Context, c client.Client, subresource string, object client.Object, patch client.Patch, options ...client.SubResourcePatchOption) error {
+							if subresource == "status" {
+								calls["status"]++
+								if fails("status") {
+									return injected["status"]
+								}
+							}
+							return c.SubResource(subresource).Patch(ctx, object, patch, options...)
+						},
+					})
+					f.reconciler.Client, f.reconciler.APIReader = wrapped, wrapped
+					err := f.reconcile()
+					if !errors.Is(err, injected["revocation"]) {
+						t.Fatal("revocation failure was lost:", err)
+					}
+					for _, operation := range []string{"workload", "route", "status"} {
+						if calls[operation] != 1 || fails(operation) && !errors.Is(err, injected[operation]) {
+							t.Fatalf("%s was skipped or its error lost: calls=%v err=%v", operation, calls, err)
+						}
+					}
+					if calls["revocation"] != 1 || calls["destructive cleanup"] != 0 || calls["registry cleanup"] != 0 ||
+						f.source.fences != fences || f.installer.stages != stages {
+						t.Fatalf("failed shutdown advanced cleanup or preparation: %v", calls)
+					}
+					current := f.current(t)
+					if current.DeletionTimestamp.IsZero() || !slices.Equal(current.Finalizers, finalizers) {
+						t.Fatal("failed shutdown released lifecycle finalizers")
+					}
+					if !fails("status") {
+						if current.Status.Phase != api.PhaseDeleting || current.Status.AccessURL != "" {
+							t.Fatal("deletion retained running status or access")
+						}
+						for _, condition := range []string{api.ConditionReady, api.ConditionSandboxReady, api.ConditionAgentConfigReady} {
+							if !apimeta.IsStatusConditionFalse(current.Status.Conditions, condition) {
+								t.Fatalf("deletion retained %s readiness", condition)
+							}
+						}
+					}
+					wantReplicas := int32(0)
+					if fails("workload") {
+						wantReplicas = 1
+					}
+					if err := f.client.Get(ctx, workloadKey, workload); err != nil || ptr.Deref(workload.Spec.Replicas, -1) != wantReplicas {
+						t.Fatal("workload shutdown was not independently attempted:", err)
+					}
+					if !fails("workload") && workload.Spec.PersistentVolumeClaimRetentionPolicy.WhenScaled != appsv1.RetainPersistentVolumeClaimRetentionPolicyType {
+						t.Fatal("shutdown did not preserve HOME retention")
+					}
+					routeErr := f.client.Get(ctx, client.ObjectKeyFromObject(route), route)
+					if fails("route") && routeErr != nil || !fails("route") && !apierrors.IsNotFound(routeErr) {
+						t.Fatal("route removal was not independently attempted:", routeErr)
+					}
+					for i, object := range retained {
+						if err := f.client.Get(ctx, client.ObjectKeyFromObject(object), object); err != nil ||
+							!object.GetDeletionTimestamp().IsZero() || object.GetResourceVersion() != versions[i] {
+							t.Fatalf("%T changed before successful shutdown: %v", object, err)
+						}
+					}
+
+					f.reconciler.Client, f.reconciler.APIReader = f.client, f.client
+					f.source.fenceErr = errors.New("synthetic unavailable deletion fence")
+					if err := f.reconcile(); !errors.Is(err, f.source.fenceErr) {
+						t.Fatal("recovery did not retain the qualified fence gate:", err)
+					}
+					if err := f.client.Get(ctx, client.ObjectKeyFromObject(f.fixture.Namespace), &corev1.Namespace{}); err != nil {
+						t.Fatal("recovery bypassed namespace fencing:", err)
+					}
+					f.source.fenceErr = nil
+					for range 2 {
+						if err := f.reconcile(); err != nil {
+							t.Fatal("deletion failed to resume after recovery:", err)
+						}
+					}
+					if err := f.client.Get(ctx, client.ObjectKeyFromObject(agent), &api.Agent{}); !apierrors.IsNotFound(err) {
+						t.Fatal("completed deletion retained the Agent:", err)
+					}
+				})
+			}
+		}
 	}
 }
 

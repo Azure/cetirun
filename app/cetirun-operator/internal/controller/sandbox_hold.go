@@ -222,15 +222,14 @@ func (r *AgentReconciler) deleteSandboxBuiltin(ctx context.Context, agent *cetir
 			Reason: "InstanceDeleting", Message: "Sandbox-held Agent cleanup requested",
 		})
 	}
+	var statusErr error
 	if !reflect.DeepEqual(before, agent.Status) {
-		if err := r.updateStatus(ctx, agent); err != nil {
-			return ctrl.Result{}, err
-		}
+		statusErr = r.updateStatus(ctx, agent)
 	}
-	if err := r.revokeSandboxPreparationGrants(ctx, agent); err != nil {
-		return ctrl.Result{}, err
-	}
-	if err := r.stopSandboxBuiltin(ctx, agent); err != nil {
+	// Failed revocation or status writes must not skip independent shutdown.
+	revokeErr := r.revokeSandboxPreparationGrants(ctx, agent)
+	stopErr := r.stopSandboxBuiltin(ctx, agent)
+	if err := errors.Join(statusErr, revokeErr, stopErr); err != nil {
 		return ctrl.Result{}, err
 	}
 	if err := r.cleanupRegistryCredentials(ctx, agent, true); err != nil {

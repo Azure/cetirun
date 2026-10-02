@@ -390,10 +390,12 @@ releases preparation state and finalizers after namespace absence. A missing or
 corrupt journal, foreign ownership, an unavailable fence, or a conflicting
 state update blocks completion rather than implying successful cleanup.
 
-For deleting legacy Custom Agents, a grant-journal failure does not skip
-independent workload/terminal stop requests, owned-route removal, or attempts to
-clear readiness and the access URL. Revocation, shutdown and status-write errors
-remain visible and block namespace/storage cleanup and finalizer release.
+For deleting Sandbox-held native Agents and legacy Custom Agents, a grant-journal
+read or revocation failure does not skip independent workload stop requests,
+Custom terminal shutdown, owned-route removal, or attempts to clear readiness
+and the access URL. Status-write failures likewise do not skip revocation or
+shutdown. Errors from these independent operations are joined and block registry
+credential, namespace/storage cleanup and finalizer release until retry succeeds.
 
 Both deletion paths also remove retained managed registry credentials after
 revocation/shutdown requests and before namespace cleanup or finalizer release.
