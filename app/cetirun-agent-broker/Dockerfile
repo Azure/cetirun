@@ -7,7 +7,7 @@ COPY app/cetirun-agent-broker/go.mod ./
 COPY app/cetirun-agent-broker/ ./
 RUN CGO_ENABLED=0 GOEXPERIMENT=ms_nocgo_opensslcrypto GOOS=linux go build -trimpath -o /agent-broker .
 
-FROM mcr.microsoft.com/azurelinux/distroless/base:3.0@sha256:4377af4aa7a810b7d59f691eae5066895a71aa3eee4cfb4eba527bbebff16479
+FROM mcr.microsoft.com/azurelinux/distroless/base:3.0@sha256:2b5cec59b51cb0509157e3a1b730e19aa42912b99d7f5300b87eac7000bfea19
 COPY --from=builder /agent-broker /agent-broker
 USER 65532:65532
 EXPOSE 8080
