@@ -1,3 +1,4 @@
+{{- $sandboxSources := include "cetirun-operator.sandboxSourcesConfig" . -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -69,6 +70,10 @@ spec:
             {{- if .Values.customRuntime.enabled }}
             - name: CETIRUN_CUSTOM_RUNTIME
               value: {{ .Values.customRuntime | toJson | quote }}
+            {{- end }}
+            {{- if $sandboxSources }}
+            - name: CETIRUN_SANDBOX_SOURCES
+              value: {{ $sandboxSources | quote }}
             {{- end }}
             {{- if .Values.azure.subscriptionId }}
             - name: AZURE_SUBSCRIPTION_ID

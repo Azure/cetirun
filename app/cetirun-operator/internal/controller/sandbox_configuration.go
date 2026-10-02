@@ -104,9 +104,8 @@ func (r *SandboxReconciler) Reconcile(ctx context.Context, request ctrl.Request)
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	before := object.DeepCopy()
+	condition, observedAt, observeErr := assessSandboxPrerequisites(ctx, reader, object, r.Source, r.MaxSnapshotAge, r.Now)
 	now := configurationNow(r.Now)
-	condition, observedAt, observeErr := assessSandboxPrerequisites(ctx, reader, object, r.Source, r.MaxSnapshotAge, now)
-	now = configurationNow(r.Now)
 	if observeErr == nil && !observedAt.IsZero() {
 		if err := configurationSnapshotTime(observedAt, now, r.MaxSnapshotAge); err != nil {
 			condition, observeErr = configurationErrorCondition(err), err
@@ -134,9 +133,8 @@ func (r *AgentPolicyReconciler) Reconcile(ctx context.Context, request ctrl.Requ
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	before := object.DeepCopy()
+	condition, observedAt, observeErr := r.assess(ctx, reader, object)
 	now := configurationNow(r.Now)
-	condition, observedAt, observeErr := r.assess(ctx, reader, object, now)
-	now = configurationNow(r.Now)
 	if observeErr == nil && !observedAt.IsZero() {
 		if err := configurationSnapshotTime(observedAt, now, r.MaxSnapshotAge); err != nil {
 			condition, observeErr = configurationErrorCondition(err), err
@@ -158,7 +156,7 @@ func (r *AgentPolicyReconciler) Reconcile(ctx context.Context, request ctrl.Requ
 }
 
 func assessSandboxPrerequisites(ctx context.Context, reader client.Reader, object *api.Sandbox,
-	source SandboxConfigurationSource, maxAge time.Duration, now time.Time,
+	source SandboxConfigurationSource, maxAge time.Duration, clock func() time.Time,
 ) (metav1.Condition, time.Time, error) {
 	if !object.DeletionTimestamp.IsZero() {
 		return configurationCondition(metav1.ConditionFalse, "Terminating", "Sandbox configuration is terminating."), time.Time{}, nil
@@ -167,7 +165,7 @@ func assessSandboxPrerequisites(ctx context.Context, reader client.Reader, objec
 	if len(errs) != 0 {
 		return configurationCondition(metav1.ConditionFalse, "InvalidConfiguration", "Sandbox configuration is invalid."), time.Time{}, nil
 	}
-	snapshot, err := configurationSnapshot(ctx, source, now, maxAge)
+	snapshot, err := configurationSnapshot(ctx, source, clock, maxAge)
 	if err != nil {
 		return configurationCondition(metav1.ConditionUnknown, "PrerequisitesUnavailable", "Current platform prerequisite state is unavailable."), time.Time{}, err
 	}
@@ -215,14 +213,14 @@ func assessSandboxPrerequisites(ctx context.Context, reader client.Reader, objec
 	return configurationCondition(metav1.ConditionTrue, "PrerequisitesReady", "Registered runtime, storage and control prerequisites are available; Agent enforcement is checked separately."), snapshot.ObservedAt, nil
 }
 
-func (r *AgentPolicyReconciler) assess(ctx context.Context, reader client.Reader, object *api.AgentPolicy, now time.Time) (metav1.Condition, time.Time, error) {
+func (r *AgentPolicyReconciler) assess(ctx context.Context, reader client.Reader, object *api.AgentPolicy) (metav1.Condition, time.Time, error) {
 	if !object.DeletionTimestamp.IsZero() {
 		return configurationCondition(metav1.ConditionFalse, "Terminating", "AgentPolicy configuration is terminating."), time.Time{}, nil
 	}
 	if _, errs := sandbox.NormalizeAgentPolicy(object.Spec); len(errs) != 0 {
 		return configurationCondition(metav1.ConditionFalse, "InvalidConfiguration", "AgentPolicy configuration is invalid."), time.Time{}, nil
 	}
-	snapshot, err := configurationSnapshot(ctx, r.Source, now, r.MaxSnapshotAge)
+	snapshot, err := configurationSnapshot(ctx, r.Source, r.Now, r.MaxSnapshotAge)
 	if err != nil {
 		return configurationCondition(metav1.ConditionUnknown, "PrerequisitesUnavailable", "Current platform support inventory is unavailable."), time.Time{}, err
 	}
@@ -325,7 +323,7 @@ func configurationRefresh(maxAge time.Duration, now, observedAt time.Time) time.
 	return max(time.Nanosecond, base)
 }
 
-func configurationSnapshot(ctx context.Context, source SandboxConfigurationSource, now time.Time, maxAge time.Duration) (SandboxConfigurationSnapshot, error) {
+func configurationSnapshot(ctx context.Context, source SandboxConfigurationSource, clock func() time.Time, maxAge time.Duration) (SandboxConfigurationSnapshot, error) {
 	if source == nil {
 		return SandboxConfigurationSnapshot{}, sandboxpolicy.ErrUnavailable
 	}
@@ -333,7 +331,9 @@ func configurationSnapshot(ctx context.Context, source SandboxConfigurationSourc
 	if err != nil {
 		return SandboxConfigurationSnapshot{}, err
 	}
-	if err := configurationSnapshotTime(snapshot.ObservedAt, now, maxAge); err != nil {
+	// A synchronous source observes after the caller starts the request.
+	// Sampling the clock before Snapshot would reject fresh data as future-dated.
+	if err := configurationSnapshotTime(snapshot.ObservedAt, configurationNow(clock), maxAge); err != nil {
 		return SandboxConfigurationSnapshot{}, err
 	}
 	return snapshot, nil

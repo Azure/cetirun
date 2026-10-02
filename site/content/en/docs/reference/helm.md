@@ -333,6 +333,25 @@ Source: [operator values]({{< repo "app/cetirun-operator/chart/values.yaml" >}})
 | `image` | Operator image pin; `IfNotPresent`, empty tag falls back to `appVersion` |
 | `imagePullSecrets` | Declared in values, but not rendered into the operator Deployment |
 | `azure.*` | Optional Teams provisioning configuration |
+| `sandboxSources.enabled` | `false`; opt in to read-only Kubernetes sources for held native Sandbox preparation |
+| `sandboxSources.platformConfigMapName` | Empty; name of an existing operator-namespace ConfigMap containing versioned `platform.json` |
+| `sandboxSources.homeClaimName`, `sandboxSources.skillsClaimName` | `home`, `skills`; existing owned claims in each protected Agent namespace, never adopted by name |
+| `sandboxSources.helpers` | `doctor`, `logger`, `desktop` default to `false`; approved native helper selection |
+
+Sandbox source wiring requires enabled, enforced configuration and Pod
+admission. It passes `CETIRUN_SANDBOX_SOURCES` only to the operator and uses the
+dedicated admission ServiceAccount. It adds no RBAC permissions and does not
+create a platform inventory, PVC, namespace, model credential or capability
+registration. Tenant Helm values cannot select the source ConfigMap or promote
+a different chart version.
+
+These sources verify explicit platform declarations and existing resource
+ownership through authoritative Kubernetes reads. **They do not enable
+execution:** the stock binary still has no qualified writer-exclusion adapter,
+so held staging stops at that gate. An empty Pod list or PVC access mode is not
+fencing evidence. See the
+[source and lifecycle contract]({{< repo "app/cetirun-operator/README.md" >}}#kubernetes-backed-sources-opt-in)
+before enabling this option.
 
 Node kubelet pull access and the operator’s OCI chart pull credentials are
 different paths. One succeeding does not prove the other works. The

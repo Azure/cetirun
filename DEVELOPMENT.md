@@ -318,9 +318,11 @@ exceptions in `scripts/license_headers.py` must retain their own notices.
   synthetic platform inventory, real API object identities/defaulting and held
   admission expectations. It stages OpenClaw/Hermes resources at zero replicas;
   it does not start containers, install a production provider, or deploy to an
-  existing cluster. These injected controller paths are not reachable from the
-  currently shipped operator configuration. Later provider wiring needs its
-  own behavior-change review and live qualification.
+  existing cluster. These tests inject their platform and fencing dependencies.
+  Their results do not qualify the opt-in Kubernetes-backed sources or a
+  production writer-exclusion adapter. Stock startup leaves writer exclusion
+  unavailable, so enabling sources alone cannot finish held preparation or
+  lift execution holds.
   Normal unit tests also cover stale inputs, metadata-only
   refresh/reauthorization, partial writes, restart, grant revocation, suspension
   and ordered cleanup. Regression tests count read/write requests for unchanged

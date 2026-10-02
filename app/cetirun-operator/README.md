@@ -69,9 +69,11 @@ The [sandbox package](internal/sandbox/) currently provides:
   and incomplete verification fail explicitly.
 
 These helpers do not write workloads, authorize RBAC grants, compile a complete
-network policy, or prove enforcement. There is no production adapter or capability
-registration yet. The registration revision must represent the qualified
-runtime/chart/topology/grant inventory when that integration is implemented.
+network policy, or prove enforcement. There is no packaged guest-external
+observer, writer-fencing adapter or default capability registration. Explicit
+platform declarations can be read through the Kubernetes sources below; their
+registration revision must represent qualified runtime/chart/topology/grant
+inventory, not merely the existence of a RuntimeClass.
 An observation validator checks an adapter's input; it does not generate evidence.
 
 The new Team bindings and Agent `sandboxRef` remain optional in this additive
@@ -298,12 +300,13 @@ before accepting a deployed release as prepared.
 [`AgentReconciler.SandboxPreparation`](internal/controller/sandbox_preparation.go)
 connects the components without treating a successful render as enforcement.
 This is an internal platform integration seam, **not a tenant activation flag**.
-The stock operator installs neither a preparation provider nor qualified
-production registrations. With no provider, governed Agents retain their
-existing execution hold. The integration tests inject dependencies into code
-that the shipped operator binary cannot currently reach. Wiring these providers
-later is a behavior change requiring independent review and qualification, not
-merely a constructor change or evidence supplied by the current test results.
+By default, the operator installs neither a preparation source nor qualified
+production registrations. With no source, governed Agents retain their existing
+execution hold. The opt-in Kubernetes sources below wire authoritative reads of
+platform configuration and existing owned resources into the shipped binary.
+They do not supply a qualified writer-exclusion implementation, so held staging
+still cannot complete through stock startup. Tests inject that separate
+dependency; their results are not platform qualification or a permit to start.
 An operator namespace alone does not enable preparation or routine state reads
 for untracked Agents. Existing preparation markers still require cleanup when
 a provider is disabled. Deletion also probes state while the hold finalizer
@@ -414,6 +417,88 @@ retired non-binding controls, shared-configuration reservations, authorized
 starts, Pod/node/epoch observations and route publication still require their
 qualified lifecycle integrations. Pending or incompatible Helm releases fail
 closed for coordinated recovery rather than being adopted or force-unlocked.
+
+##### Kubernetes-backed sources (opt-in)
+
+`sandboxSources.enabled` in the operator chart serializes
+`CETIRUN_SANDBOX_SOURCES`. It requires configuration and Pod admission to be
+enabled and enforced (`sandboxAdmission.enabled`, `enforce`, and `podsEnabled`).
+The admission ServiceAccount is fixed to the separately deployed
+`cetirun-sandbox-admission`; it is not the controller ServiceAccount.
+The default-off chart output and RBAC grants are unchanged.
+
+```yaml
+sandboxSources:
+  enabled: true
+  platformConfigMapName: sandbox-platform
+  homeClaimName: home
+  skillsClaimName: skills
+  helpers:
+    doctor: false
+    logger: false
+    desktop: false
+```
+
+These are operator settings, never Agent or Team Helm overrides. The constructor
+uses the selected operator namespace and chart version. The
+[configuration source](internal/controller/sandbox_kubernetes_configuration.go)
+reads `platform.json` from the named, pre-existing ConfigMap in that namespace.
+Its `v1` document contains `registrations`, `platforms`, `runtimeClasses` and
+`storageClasses`. It reuses the existing inner contract types and their
+case-sensitive JSON fields: registrations use `Capabilities`/`Available`,
+RuntimeClass pins use `UID`/`Handler`, and StorageClass pins use
+`UID`/`Provisioner`. Capability and platform objects retain their existing
+lower-camel field names. RuntimeClass and StorageClass declarations pin their
+UIDs and handler/provisioner; role approvals pin role identity, version and rules.
+Replacement, concurrent change, malformed configuration and API failures are
+errors, not automatic reapproval or a fallback to cached tenant data.
+The document is bounded to 512 KiB, 16,384 JSON tokens, 12 nesting levels and
+128 distinct API objects including the ConfigMap. Unknown/duplicate fields,
+nulls and incomplete object pins are rejected.
+
+The platform owner must protect this ConfigMap from tenant writes and maintain
+its qualification records, complete topology and explicit approvals. The chart
+does not create that inventory or set capabilities to true. An empty inventory
+can be represented without claiming any platform support:
+
+```json
+{
+  "version": "v1",
+  "registrations": {},
+  "platforms": {},
+  "runtimeClasses": {},
+  "storageClasses": {}
+}
+```
+
+The [prerequisite source](internal/controller/sandbox_kubernetes_prerequisites.go)
+selects the protected Agent namespace and configured existing HOME/skills
+claims, verifies their ownership and current identities, and reads only
+metadata for the Agent's `gatewayTokenSecretRef`. It never provisions or adopts
+storage by name, generates model credentials, or reads Secret contents.
+Provision these resources through the trusted platform first; this reader is
+not a storage migration or credential-issuance mechanism.
+
+The namespace needs its existing protected label, matching Agent-name/UID
+annotations and exact controller owner reference. Retained HOME without an
+owner reference is supported only with the current Agent UID annotation and
+the selected Sandbox's exact filesystem storage profile. Skills can retain
+their supported shared/RWX shape, with no owner or the current Agent/Team owner.
+The runtime Secret must be Agent-owned; its contents, usability and immutability
+are not inferred from metadata. Pending claims are allowed for delayed-binding
+storage classes, without being mistaken for writer-exclusion evidence.
+
+Both sources return revisions bound to their checked inputs and reject changes
+during capture. Configuration observations are dated at the start of the read;
+consumers check freshness after it completes and reject observations that expire
+during capture. The same configuration source is used by the Agent, Sandbox
+and AgentPolicy reconcilers. A configured source does not establish runtime,
+network or CSI enforcement. In particular, the stock prerequisite source has
+no writer-exclusion adapter and returns an explicit error at that gate.
+Kubernetes Pod absence, PVC access modes and zero replicas cannot replace it.
+Qualified fencing, successful held staging, controlled starts and running
+enforcement observations remain separate lifecycle work. Do not remove holds
+or finalizers to bypass these missing guarantees.
 
 **Manual recovery after forced finalizer removal.** Do not force-remove Agent
 or state finalizers as routine cleanup. If an Agent disappears outside the
