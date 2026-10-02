@@ -449,28 +449,50 @@ kubectl rollout restart deployment/gateway-cetirun-ai-gateway
 The bundled PostgreSQL's password takes one more step. The database applies
 `POSTGRES_PASSWORD` only when it initializes an empty volume, so changing the
 Secret alone leaves the `litellm` role on its old password, and the Gateway's
-next Pods cannot connect. Change the role first, then the Secret, which holds
-the password twice, then restart the Gateway. A hex password needs no escaping
-in the database URL:
+next Pods cannot connect. Change the role first, check the new password, then
+change the Secret, which holds the password twice, then restart the Gateway.
+Run this in bash, with `gateway` set to the Gateway's Deployment name
+(`<release>-cetirun-ai-gateway`, or `cetirun-ai-gateway` when the platform
+chart installs it):
 
 ```bash
-password="$(openssl rand -hex 24)"
-printf "ALTER ROLE litellm WITH PASSWORD '%s';\n" "$password" |
-  kubectl exec -i gateway-cetirun-ai-gateway-postgresql-0 -c postgresql -- \
-    psql -U litellm -d litellm -v ON_ERROR_STOP=1 -f -
-url="$(kubectl get secret gateway-cetirun-ai-gateway-postgresql \
-  -o jsonpath='{.data.database-url}' | base64 -d |
-  sed -E "s#^(postgresql://litellm:)[^@]*@#\1${password}@#")"
-b64() { printf '%s' "$1" | base64 | tr -d '\n'; }
-kubectl patch secret gateway-cetirun-ai-gateway-postgresql --type merge \
-  -p "{\"data\":{\"password\":\"$(b64 "$password")\",\"database-url\":\"$(b64 "$url")\"}}"
-kubectl rollout restart deployment/gateway-cetirun-ai-gateway
+(
+  set -euo pipefail
+  gateway=gateway-cetirun-ai-gateway
+  db="${gateway}-postgresql"
+  # Read and check the database URL before changing anything.
+  url="$(kubectl get secret "$db" -o jsonpath='{.data.database-url}' | base64 -d)"
+  [[ "$url" =~ ^postgresql://litellm:[^@/]+@[^@/]+/litellm$ ]] ||
+    { echo "unexpected database URL in Secret $db; nothing changed" >&2; exit 1; }
+  password="$(openssl rand -hex 24)"
+  url="postgresql://litellm:${password}@${url#*@}"
+  # Change the role over the Pod's local socket, which the database trusts.
+  printf "ALTER ROLE litellm WITH PASSWORD '%s';\n" "$password" |
+    kubectl exec -i "${db}-0" -c postgresql -- \
+      psql -U litellm -d litellm -v ON_ERROR_STOP=1 -q -f -
+  # Check the new password over the network, the way the Gateway connects.
+  ip="$(kubectl get pod "${db}-0" -o jsonpath='{.status.podIP}')"
+  [[ -n "$ip" ]] || { echo "Pod ${db}-0 has no IP" >&2; exit 1; }
+  printf '%s\n' "$password" | kubectl exec -i "${db}-0" -c postgresql -- sh -c \
+    'read -r PGPASSWORD && export PGPASSWORD && psql -h "$1" -U litellm -d litellm -tAc "select 1"' \
+    sh "$ip" >/dev/null
+  b64() { printf '%s' "$1" | base64 | tr -d '\n'; }
+  printf '{"data":{"password":"%s","database-url":"%s"}}' "$(b64 "$password")" "$(b64 "$url")" |
+    kubectl patch secret "$db" --type merge --patch-file /dev/stdin
+  kubectl rollout restart "deployment/${gateway}"
+  kubectl rollout status "deployment/${gateway}" --timeout=10m
+)
 ```
 
-The password reaches `psql` on its standard input, not as an argument, so it
-does not show in process listings. `psql` connects over the Pod's local
-socket, which the bundled database trusts. Connections the Gateway already
-holds keep working until the restart.
+Each command runs only after the previous one succeeded. A failure before
+`ALTER ROLE` changes nothing. A failure after it leaves the database and the
+Secret with different passwords: the running Gateway keeps the connections it
+holds, but a Gateway Pod that starts cannot connect. Fix the cause and run the
+block again before the Gateway restarts; each run sets a new password and
+brings the database, the Secret and the Gateway back in line.
+
+The password reaches `psql` and `kubectl patch` on their standard input, not
+as an argument, so it does not show in process listings.
 
 Measured on AKS: requests kept working throughout, the restarted Gateway
 connected with the new password, the database refused other passwords over the
