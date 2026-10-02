@@ -177,6 +177,10 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		return ctrl.Result{}, fmt.Errorf("get Agent: %w", err)
 	}
 
+	if ns := instanceNamespace(instance.Name); ns == r.registryNamespace() || ns == registryauth.DefaultNamespace {
+		return r.rejectReservedRegistryInstance(ctx, instance)
+	}
+
 	// 2. Handle deletion.
 	if !instance.DeletionTimestamp.IsZero() {
 		if err := r.cleanupRegistryCredentials(ctx, instance, true); err != nil {

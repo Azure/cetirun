@@ -232,7 +232,10 @@ Broker or runtime workloads. Both components accept
 `REGISTRY_CREDENTIAL_NAMESPACE`; the umbrella chart sets
 `global.registryCredentialNamespace` once. Standalone installations must set
 matching `registryCredentials.namespace` values. Only the Operator chart creates
-the namespace. Runtime charts must advertise the
+the namespace. Agent names that would use the default or configured credential
+namespace are rejected before any lifecycle changes, including deletion. A
+pre-existing collision retains its finalizers and requires administrator recovery;
+verify namespace ownership before removing such an Agent. Runtime charts must advertise the
 `cetirun.microsoft.com/registry-credentials: v1` annotation; older pinned charts
 must be upgraded before attaching credentials.
 
@@ -314,7 +317,9 @@ cross-namespace exec, Secret access, token issuance or admission-policy changes.
 Portal and Operator need the packaged RBAC inspection and SubjectAccessReview
 permissions, including reads of the terminal ServiceAccount and admission
 objects. Reviews are deduplicated within each check and run with at most eight
-requests in flight; authorization results are not cached across checks.
+requests in flight; authorization results are not cached across checks. Each
+check inventories workloads once and tests their identities against the current
+Agent's credentials, while also inspecting named RBAC grants across namespaces.
 Existing broad control-plane grants are not narrowed by this
 feature. Operator also needs Pod deletion permission for the bounded initial-pull
 recovery above; no such permission is granted to Agent workloads. Privileged

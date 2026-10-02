@@ -30,52 +30,60 @@ func CheckIsolation(ctx context.Context, c client.Client, sourceNS, targetNS, de
 		sourceNS == "cetirun-credentials" || sourceNS == "cetirun-system" || sourceNS == "default" || strings.HasPrefix(sourceNS, "kube-") {
 		return ErrIsolation
 	}
-	sourcePods := &corev1.PodList{}
-	if c.List(ctx, sourcePods, client.InNamespace(sourceNS)) != nil || len(sourcePods.Items) != 0 {
-		return ErrIsolation
-	}
 	type subject struct{ namespace, name string }
 	subjects := map[subject]bool{}
 	runtimeSubjects := map[subject]bool{}
 	terminalAgents := map[subject]*api.Agent{}
-	add := func(ns, name string) {
+	add := func(ns, name string) subject {
 		if name == "" {
 			name = "default"
 		}
-		subjects[subject{ns, name}] = true
+		value := subject{ns, name}
+		subjects[value] = true
+		return value
 	}
-	add(targetNS, desiredSA)
-	runtimeSubjects[subject{targetNS, desiredSA}] = true
+	runtimeSubjects[add(targetNS, desiredSA)] = true
+	agentNamespaces := map[string]bool{targetNS: true}
+	secretNames = slices.Clone(secretNames)
 	agents := &api.AgentList{}
 	if c.List(ctx, agents) != nil {
 		return ErrIsolation
 	}
 	for _, agent := range agents.Items {
-		if agent.Spec.Agent.RegistrySecretRef != nil {
-			secretNames = append(secretNames, agent.Spec.Agent.RegistrySecretRef.Name)
-		}
-		if name, err := PullSecretName(agent.UID); err == nil {
-			secretNames = append(secretNames, name)
-		}
 		ns := "cetirun-" + agent.Name
-		add(ns, "default")
-		add(ns, "openclaw-"+agent.Name+"-cetirun")
-		runtimeSubjects[subject{ns, "default"}] = true
-		runtimeSubjects[subject{ns, "openclaw-" + agent.Name + "-cetirun"}] = true
+		agentNamespaces[ns] = true
+		// Every workload is checked against this operation's two Secrets.
+		// Named RBAC grants are inspected separately, including other namespaces.
+		if ns == targetNS {
+			if agent.Spec.Agent.RegistrySecretRef != nil {
+				secretNames = append(secretNames, agent.Spec.Agent.RegistrySecretRef.Name)
+			}
+			if name, err := PullSecretName(agent.UID); err == nil {
+				secretNames = append(secretNames, name)
+			}
+		}
+		runtimeSubjects[add(ns, "default")] = true
+		runtimeSubjects[add(ns, "openclaw-"+agent.Name+"-cetirun")] = true
 		if agent.Spec.Agent.Type == api.AgentTypeCustom {
 			terminalAgents[subject{ns, terminalpolicy.WorkloadName("openclaw-" + agent.Name + "-cetirun")}] = &agent
 		}
-		pods := &corev1.PodList{}
-		workloads := &appsv1.StatefulSetList{}
-		if c.List(ctx, pods, client.InNamespace(ns)) != nil || c.List(ctx, workloads, client.InNamespace(ns)) != nil {
+	}
+	pods := &corev1.PodList{}
+	workloads := &appsv1.StatefulSetList{}
+	if c.List(ctx, pods) != nil || c.List(ctx, workloads) != nil {
+		return ErrIsolation
+	}
+	for _, pod := range pods.Items {
+		if pod.Namespace == sourceNS {
 			return ErrIsolation
 		}
-		for _, pod := range pods.Items {
-			add(ns, pod.Spec.ServiceAccountName)
+		if agentNamespaces[pod.Namespace] {
+			add(pod.Namespace, pod.Spec.ServiceAccountName)
 		}
-		for _, sts := range workloads.Items {
-			add(ns, sts.Spec.Template.Spec.ServiceAccountName)
-			runtimeSubjects[subject{ns, sts.Spec.Template.Spec.ServiceAccountName}] = true
+	}
+	for _, sts := range workloads.Items {
+		if agentNamespaces[sts.Namespace] {
+			runtimeSubjects[add(sts.Namespace, sts.Spec.Template.Spec.ServiceAccountName)] = true
 		}
 	}
 	inventory, err := readRegistryRBAC(ctx, c)
@@ -84,6 +92,13 @@ func CheckIsolation(ctx context.Context, c client.Client, sourceNS, targetNS, de
 	}
 	slices.Sort(secretNames)
 	secretNames = slices.Compact(secretNames)
+	checks := []authorizationv1.ResourceAttributes{}
+	for _, namespace := range []string{sourceNS, targetNS} {
+		checks = append(checks, registryAccessChecks(namespace)...)
+		for _, name := range secretNames {
+			checks = append(checks, authorizationv1.ResourceAttributes{Namespace: namespace, Resource: "secrets", Verb: "get", Name: name})
+		}
+	}
 	for subject := range subjects {
 		terminalVerified := !runtimeSubjects[subject] && terminalAgents[subject] != nil && terminalExecBound(ctx, c, terminalAgents[subject])
 		// Named grants (for example patching one StatefulSet, or minting a
@@ -95,17 +110,11 @@ func CheckIsolation(ctx context.Context, c client.Client, sourceNS, targetNS, de
 			return ErrIsolation
 		}
 		unique := map[authorizationv1.ResourceAttributes]struct{}{}
-		for _, namespace := range []string{sourceNS, targetNS} {
-			checks := registryAccessChecks(namespace)
-			if namespace == sourceNS {
-				checks = append(checks, extra...)
-			}
-			for _, name := range secretNames {
-				checks = append(checks, authorizationv1.ResourceAttributes{Namespace: namespace, Resource: "secrets", Verb: "get", Name: name})
-			}
-			for _, access := range checks {
-				unique[access] = struct{}{}
-			}
+		for _, access := range checks {
+			unique[access] = struct{}{}
+		}
+		for _, access := range extra {
+			unique[access] = struct{}{}
 		}
 		group, reviewCtx := errgroup.WithContext(ctx)
 		group.SetLimit(8)

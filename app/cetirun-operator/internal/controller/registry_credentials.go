@@ -51,6 +51,28 @@ func (r *AgentReconciler) registryNamespace() string {
 	return registryauth.DefaultNamespace
 }
 
+// The source namespace is platform-owned. Even a deleting legacy Agent must
+// not enter namespace cleanup or release finalizers before explicit recovery.
+func (r *AgentReconciler) rejectReservedRegistryInstance(ctx context.Context, agent *api.Agent) (ctrl.Result, error) {
+	const reason = "ReservedInstanceName"
+	const message = "instance namespace is reserved for registry credentials"
+	before := agent.DeepCopy().Status
+	agent.Status.AccessURL = ""
+	agent.Status.Phase = api.PhaseFailed
+	if !agent.DeletionTimestamp.IsZero() {
+		agent.Status.Phase = api.PhaseDeleting
+	}
+	for _, condition := range []string{api.ConditionAgentConfigReady, api.ConditionReady, api.ConditionIngressReady} {
+		setCondition(&agent.Status.Conditions, condition, metav1.ConditionFalse, reason, message)
+	}
+	if !reflect.DeepEqual(before, agent.Status) {
+		if err := r.updateStatus(ctx, agent); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+	return ctrl.Result{}, fmt.Errorf("%s: %s", reason, message)
+}
+
 func (r *AgentReconciler) enqueueRegistrySecret(ctx context.Context, obj client.Object) []reconcile.Request {
 	requests := []reconcile.Request{}
 	if obj.GetNamespace() == r.registryNamespace() {
