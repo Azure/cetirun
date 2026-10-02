@@ -58,8 +58,10 @@ function loginPath(instanceName: string): string {
   return `/api/v1/instances/${encodeURIComponent(instanceName)}/copilot/login`;
 }
 
-export async function startCopilotLogin(instanceName: string): Promise<CopilotLogin> {
-  const response = await apiFetch(loginPath(instanceName), { method: "POST" });
+// Start and cancel name the Agent's UID, so a page left open while the name
+// was deleted and created again cannot change the new Agent's sign-in.
+export async function startCopilotLogin(instanceName: string, uid: string): Promise<CopilotLogin> {
+  const response = await apiFetch(loginPath(instanceName), { method: "POST", body: JSON.stringify({ uid }) });
   if (!response.ok) {
     throw new PortalError(await errorMessage(response, "Failed to start the GitHub Copilot sign-in"), response.status);
   }
@@ -74,8 +76,8 @@ export async function pollCopilotLogin(instanceName: string): Promise<CopilotLog
   return response.json();
 }
 
-export async function cancelCopilotLogin(instanceName: string): Promise<void> {
-  const response = await apiFetch(loginPath(instanceName), { method: "DELETE" });
+export async function cancelCopilotLogin(instanceName: string, uid: string): Promise<void> {
+  const response = await apiFetch(loginPath(instanceName), { method: "DELETE", body: JSON.stringify({ uid }) });
   if (!response.ok && response.status !== 404) {
     throw new Error(await errorMessage(response, "Failed to cancel the GitHub Copilot sign-in"));
   }

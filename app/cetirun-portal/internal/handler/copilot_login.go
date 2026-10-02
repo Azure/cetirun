@@ -76,8 +76,11 @@ func (h *InstanceHandler) copilotClient() *copilot.Client {
 }
 
 // copilotAgent returns the caller's Agent when it runs a GitHub Copilot proxy
-// through the AI Gateway, or writes the error response.
-func (h *InstanceHandler) copilotAgent(w http.ResponseWriter, r *http.Request) (*cetirunv1alpha1.Agent, bool) {
+// through the AI Gateway, or writes the error response. A request that
+// changes the sign-in names the Agent it was made for with expectedUID, so a
+// page left open while the name was deleted and created again cannot change
+// the new Agent's sign-in; reads pass nil.
+func (h *InstanceHandler) copilotAgent(w http.ResponseWriter, r *http.Request, expectedUID *string) (*cetirunv1alpha1.Agent, bool) {
 	if !h.Config.AIGatewayEnabled {
 		writeError(w, http.StatusNotFound, "feature_disabled", "The AI Gateway is not enabled for this deployment")
 		return nil, false
@@ -96,6 +99,16 @@ func (h *InstanceHandler) copilotAgent(w http.ResponseWriter, r *http.Request) (
 		writeError(w, http.StatusForbidden, "forbidden", "forbidden")
 		return nil, false
 	}
+	if expectedUID != nil {
+		if *expectedUID == "" {
+			writeError(w, http.StatusPreconditionRequired, "version_required", "uid from the current Agent is required")
+			return nil, false
+		}
+		if *expectedUID != string(instance.UID) {
+			writeManagementError(w, kube.ErrInstanceChanged)
+			return nil, false
+		}
+	}
 	if instance.DeletionTimestamp != nil {
 		writeError(w, http.StatusConflict, "agent_deleting", "The agent is being deleted")
 		return nil, false
@@ -105,6 +118,25 @@ func (h *InstanceHandler) copilotAgent(w http.ResponseWriter, r *http.Request) (
 		return nil, false
 	}
 	return instance, true
+}
+
+// copilotLoginRequest is the JSON body that starts or cancels a sign-in.
+type copilotLoginRequest struct {
+	UID string `json:"uid"`
+}
+
+// copilotLoginUID reads the Agent UID a start or cancel request was made for,
+// with the origin check of the other management requests, or writes the
+// error response.
+func (h *InstanceHandler) copilotLoginUID(w http.ResponseWriter, r *http.Request) (string, bool) {
+	if !h.validManagementOrigin(w, r) {
+		return "", false
+	}
+	var req copilotLoginRequest
+	if _, ok := decodeManagementRequest(w, r, &req); !ok {
+		return "", false
+	}
+	return req.UID, true
 }
 
 // copilotTokenSecret returns the Secret the operator created for the Agent's
@@ -138,10 +170,15 @@ func loginResponse(data map[string][]byte) CopilotLoginResponse {
 	return resp
 }
 
-// StartCopilotLogin handles POST /api/v1/instances/{name}/copilot/login. It
-// starts a GitHub device-code sign-in, replacing one in progress.
+// StartCopilotLogin handles POST /api/v1/instances/{name}/copilot/login with
+// the body {"uid": "<Agent UID>"}. It starts a GitHub device-code sign-in,
+// replacing one in progress.
 func (h *InstanceHandler) StartCopilotLogin(w http.ResponseWriter, r *http.Request) {
-	instance, ok := h.copilotAgent(w, r)
+	uid, ok := h.copilotLoginUID(w, r)
+	if !ok {
+		return
+	}
+	instance, ok := h.copilotAgent(w, r, &uid)
 	if !ok {
 		return
 	}
@@ -215,9 +252,11 @@ func (h *InstanceHandler) saveCopilotLogin(ctx context.Context, instance *cetiru
 // PollCopilotLogin handles GET /api/v1/instances/{name}/copilot/login. While
 // a sign-in is pending it asks GitHub at most once per polling interval,
 // across replicas and browser tabs; once the user has authorized, it stores
-// the token for the Agent's proxy and records the account's models.
+// the token for the Agent's proxy and records the account's models. It needs
+// no Agent UID: it only advances a sign-in that a start for the current Agent
+// created, which the Secret's Agent UID label proves.
 func (h *InstanceHandler) PollCopilotLogin(w http.ResponseWriter, r *http.Request) {
-	instance, ok := h.copilotAgent(w, r)
+	instance, ok := h.copilotAgent(w, r, nil)
 	if !ok {
 		return
 	}
@@ -346,9 +385,14 @@ func (h *InstanceHandler) endCopilotLogin(ctx context.Context, w http.ResponseWr
 	writeJSON(w, http.StatusOK, loginResponse(login.Data))
 }
 
-// CancelCopilotLogin handles DELETE /api/v1/instances/{name}/copilot/login.
+// CancelCopilotLogin handles DELETE /api/v1/instances/{name}/copilot/login
+// with the body {"uid": "<Agent UID>"}.
 func (h *InstanceHandler) CancelCopilotLogin(w http.ResponseWriter, r *http.Request) {
-	instance, ok := h.copilotAgent(w, r)
+	uid, ok := h.copilotLoginUID(w, r)
+	if !ok {
+		return
+	}
+	instance, ok := h.copilotAgent(w, r, &uid)
 	if !ok {
 		return
 	}

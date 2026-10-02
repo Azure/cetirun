@@ -6,6 +6,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -94,8 +95,28 @@ func newLoginFixture(t *testing.T, objs ...client.Object) *loginFixture {
 
 func (f *loginFixture) call(method, alias string) (*httptest.ResponseRecorder, CopilotLoginResponse) {
 	f.t.Helper()
-	req := httptest.NewRequest(method, "/api/v1/instances/alice-gw/copilot/login", nil)
+	body := ""
+	if method != http.MethodGet {
+		body = `{"uid":"uid-1"}`
+	}
+	return f.callWith(method, alias, body, nil)
+}
+
+// callWith sends body, if any, as the request's JSON body with the headers.
+func (f *loginFixture) callWith(method, alias, body string, headers map[string]string) (*httptest.ResponseRecorder, CopilotLoginResponse) {
+	f.t.Helper()
+	var reader io.Reader
+	if body != "" {
+		reader = strings.NewReader(body)
+	}
+	req := httptest.NewRequest(method, "/api/v1/instances/alice-gw/copilot/login", reader)
 	req.SetPathValue("name", "alice-gw")
+	if body != "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	for name, value := range headers {
+		req.Header.Set(name, value)
+	}
 	req = withClaims(req, alias, alias, alias+"@example.com")
 	w := httptest.NewRecorder()
 	switch method {
@@ -294,5 +315,60 @@ func TestCopilotLoginPreconditions(t *testing.T) {
 				t.Fatalf("status %d, want %d: %s", w.Code, tc.status, w.Body.String())
 			}
 		})
+	}
+}
+
+// A page left open while its Agent was deleted and created again under the
+// same name names the old Agent's UID: it must not start or cancel the new
+// Agent's sign-in.
+func TestCopilotLoginChangesOnlyTheAgentItWasMadeFor(t *testing.T) {
+	f := newLoginFixture(t)
+	errorCodeOf := func(w *httptest.ResponseRecorder) string {
+		t.Helper()
+		var resp ErrorResponse
+		_ = json.Unmarshal(w.Body.Bytes(), &resp)
+		return resp.Error.Code
+	}
+	for _, tc := range []struct {
+		name, body string
+		headers    map[string]string
+		status     int
+		code       string
+	}{
+		{name: "no body", status: http.StatusBadRequest, code: "invalid_body"},
+		{name: "no UID", body: `{}`, status: http.StatusPreconditionRequired, code: "version_required"},
+		{name: "unknown field", body: `{"uid":"uid-1","name":"alice-gw"}`, status: http.StatusBadRequest, code: "invalid_body"},
+		{name: "the replaced Agent", body: `{"uid":"uid-0"}`, status: http.StatusConflict, code: "instance_changed"},
+		{name: "another site", body: `{"uid":"uid-1"}`, headers: map[string]string{"Sec-Fetch-Site": "cross-site"}, status: http.StatusForbidden, code: "invalid_origin"},
+	} {
+		t.Run("start: "+tc.name, func(t *testing.T) {
+			w, _ := f.callWith(http.MethodPost, "alice", tc.body, tc.headers)
+			if w.Code != tc.status || errorCodeOf(w) != tc.code {
+				t.Fatalf("status %d %s, want %d %s", w.Code, w.Body.String(), tc.status, tc.code)
+			}
+			if err := f.fc.Get(context.Background(), client.ObjectKey{Namespace: "cetirun-alice-gw", Name: copilotLoginSecretName}, &corev1.Secret{}); err == nil {
+				t.Fatal("a refused start must not create a sign-in")
+			}
+		})
+	}
+
+	// The current Agent's own page starts a sign-in.
+	if w, resp := f.call(http.MethodPost, "alice"); w.Code != http.StatusOK || resp.State != copilotLoginPending {
+		t.Fatalf("start: status %d %s", w.Code, w.Body.String())
+	}
+	if w, _ := f.callWith(http.MethodDelete, "alice", `{"uid":"uid-0"}`, nil); w.Code != http.StatusConflict {
+		t.Fatalf("cancel for the replaced Agent: status %d, want 409", w.Code)
+	}
+	if w, _ := f.callWith(http.MethodDelete, "alice", `{}`, nil); w.Code != http.StatusPreconditionRequired {
+		t.Fatalf("cancel without a UID: status %d, want 428", w.Code)
+	}
+	if state := string(f.secret(copilotLoginSecretName).Data[loginState]); state != copilotLoginPending {
+		t.Fatalf("a refused cancel must leave the sign-in pending, got %q", state)
+	}
+	if w, _ := f.call(http.MethodDelete, "alice"); w.Code != http.StatusNoContent {
+		t.Fatalf("cancel: status %d", w.Code)
+	}
+	if data := f.secret(copilotLoginSecretName).Data; len(data) != 0 {
+		t.Fatalf("cancel must clear the sign-in, got %v", data)
 	}
 }

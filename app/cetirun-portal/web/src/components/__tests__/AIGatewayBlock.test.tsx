@@ -103,7 +103,7 @@ describe("AIGatewayBlock", () => {
       .mockResolvedValueOnce({ state: "succeeded", message: "Signed in to GitHub Copilot: 2 models." });
     renderBlock(instance());
     await user.click(screen.getByRole("button", { name: "Sign in with GitHub" }));
-    expect(api.startCopilotLogin).toHaveBeenCalledWith("alice-gw");
+    expect(api.startCopilotLogin).toHaveBeenCalledWith("alice-gw", "agent-uid");
     expect(await screen.findByText("ABCD-1234")).toBeInTheDocument();
     await act(async () => {
       await vi.advanceTimersByTimeAsync(5_000);
@@ -130,7 +130,7 @@ describe("AIGatewayBlock", () => {
     await user.click(screen.getByRole("button", { name: "Sign in with GitHub" }));
     await screen.findByText("WXYZ-9876");
     await user.click(screen.getByRole("button", { name: "Cancel" }));
-    expect(api.cancelCopilotLogin).toHaveBeenCalledWith("alice-gw");
+    expect(api.cancelCopilotLogin).toHaveBeenCalledWith("alice-gw", "agent-uid");
     await act(async () => {
       await vi.advanceTimersByTimeAsync(10_000);
     });

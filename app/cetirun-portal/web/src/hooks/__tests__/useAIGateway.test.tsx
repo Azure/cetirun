@@ -39,12 +39,13 @@ describe("useCopilotGatewayLogin", () => {
     api.startCopilotLogin.mockResolvedValue(PENDING);
     api.cancelCopilotLogin.mockResolvedValue(undefined);
     api.pollCopilotLogin.mockImplementation(() => new Promise((resolve) => unanswered.push(resolve)));
-    const { result } = renderHook(() => useCopilotGatewayLogin("alice-gw"), { wrapper });
+    const { result } = renderHook(() => useCopilotGatewayLogin("alice-gw", "agent-uid"), { wrapper });
 
     await act(async () => {
       await result.current.start();
     });
     expect(result.current.login?.state).toBe("pending");
+    expect(api.startCopilotLogin).toHaveBeenCalledWith("alice-gw", "agent-uid");
     await act(async () => {
       await vi.advanceTimersByTimeAsync(5_000);
     });
@@ -58,19 +59,20 @@ describe("useCopilotGatewayLogin", () => {
       await vi.advanceTimersByTimeAsync(20_000);
     });
     expect(result.current.login).toBeNull();
+    expect(api.cancelCopilotLogin).toHaveBeenCalledWith("alice-gw", "agent-uid");
     expect(api.pollCopilotLogin).toHaveBeenCalledTimes(1);
   });
 
   it("does not resume unless asked, and resumes only a pending sign-in", async () => {
     api.pollCopilotLogin.mockResolvedValue({ state: "succeeded", message: "done" });
-    const quiet = renderHook(() => useCopilotGatewayLogin("alice-gw", true), { wrapper });
+    const quiet = renderHook(() => useCopilotGatewayLogin("alice-gw", "agent-uid", true), { wrapper });
     await act(async () => {
       await Promise.resolve();
     });
     expect(quiet.result.current.login).toBeNull();
 
     api.pollCopilotLogin.mockReset();
-    renderHook(() => useCopilotGatewayLogin("alice-gw"), { wrapper });
+    renderHook(() => useCopilotGatewayLogin("alice-gw", "agent-uid"), { wrapper });
     await act(async () => {
       await Promise.resolve();
     });

@@ -41,7 +41,7 @@ export function AIGatewayBlock({ instance }: { instance: Instance }) {
   const name = instance.instanceName;
   const queryClient = useQueryClient();
   // Resume a sign-in still pending when the page was reloaded.
-  const login = useCopilotGatewayLogin(name, !!gateway?.routed && !!gateway.copilot);
+  const login = useCopilotGatewayLogin(name, instance.uid, !!gateway?.routed && !!gateway.copilot);
   const update = useUpdateInstanceByName(name);
   const [defaultModel, setDefaultModel] = useState(gateway?.defaultModel ?? "");
   const [copied, setCopied] = useState(false);

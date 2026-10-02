@@ -34,10 +34,11 @@ function isFinal(err: unknown): boolean {
 
 /**
  * Runs the Portal's GitHub Copilot sign-in for an Agent: start, poll at the
- * interval GitHub asks for, cancel. The Portal backend keeps the sign-in, so
- * when `resume` is set a sign-in still pending after a reload is picked up.
+ * interval GitHub asks for, cancel. Start and cancel name the Agent's UID.
+ * The Portal backend keeps the sign-in, so when `resume` is set a sign-in
+ * still pending after a reload is picked up.
  */
-export function useCopilotGatewayLogin(instanceName: string, resume = false) {
+export function useCopilotGatewayLogin(instanceName: string, uid: string, resume = false) {
   const queryClient = useQueryClient();
   const [login, setLogin] = useState<CopilotLogin | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -108,7 +109,7 @@ export function useCopilotGatewayLogin(instanceName: string, resume = false) {
     setBusy(true);
     setError(null);
     try {
-      const started = await startCopilotLogin(instanceName);
+      const started = await startCopilotLogin(instanceName, uid);
       if (!active.current || gen !== generation.current) return;
       setLogin(started);
       schedule(started, gen);
@@ -117,7 +118,7 @@ export function useCopilotGatewayLogin(instanceName: string, resume = false) {
     } finally {
       if (active.current) setBusy(false);
     }
-  }, [instanceName, schedule]);
+  }, [instanceName, uid, schedule]);
 
   const cancel = useCallback(async () => {
     generation.current += 1;
@@ -125,11 +126,11 @@ export function useCopilotGatewayLogin(instanceName: string, resume = false) {
     setLogin(null);
     setError(null);
     try {
-      await cancelCopilotLogin(instanceName);
+      await cancelCopilotLogin(instanceName, uid);
     } catch (err) {
       if (active.current) setError(message(err));
     }
-  }, [instanceName]);
+  }, [instanceName, uid]);
 
   const reset = useCallback(() => {
     generation.current += 1;
