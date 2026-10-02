@@ -57,15 +57,21 @@ agent_apply_config() (
   fi
   temp=$(mktemp "${dest}.tmp.XXXXXX")
   trap 'rm -f "$temp"' 0
-  # CetiRun owns the model list of an Agent on the platform AI Gateway (its
-  # default model is an openai/ reference), so that list replaces the saved
+  # CetiRun owns the model list of an Agent on the platform AI Gateway, which
+  # the chart marks with CETIRUN_AI_GATEWAY, so that list replaces the saved
   # one instead of accumulating models the Gateway no longer offers, and the
-  # retired in-agent Copilot sign-in profile is dropped.
+  # retired in-agent Copilot sign-in profile is dropped. Any other
+  # configuration, an openai provider with its own endpoint included, keeps
+  # its saved models and their settings.
+  if [ "${CETIRUN_AI_GATEWAY:-false}" = true ]; then
+    gateway=true
+  else
+    gateway=false
+  fi
   filter='
     .[-1] as $source
     | reduce .[] as $item ({}; . * $item)
-    | if ((($source.agents.defaults.model.primary // "") | tostring | startswith("openai/"))
-          and ($source.models.providers.openai != null)) then
+    | if $gateway then
         .agents.defaults.models = ($source.agents.defaults.models // {})
         | if (.auth.profiles | type) == "object" then .auth.profiles |= del(.["github-copilot:github"]) else . end
       else . end
@@ -73,10 +79,10 @@ agent_apply_config() (
         .channels.msteams.allowFrom //= ["00000000-0000-0000-0000-000000000000"]
       else . end'
   if [ -f "$dest" ]; then
-    jq -s "$filter" "$dest" "$source" > "$temp" 2>/dev/null ||
+    jq -s --argjson gateway "$gateway" "$filter" "$dest" "$source" > "$temp" 2>/dev/null ||
       { init_error "OpenClawConfigApplyFailed"; exit 1; }
   else
-    jq -s "$filter" "$source" > "$temp" 2>/dev/null ||
+    jq -s --argjson gateway "$gateway" "$filter" "$source" > "$temp" 2>/dev/null ||
       { init_error "OpenClawConfigApplyFailed"; exit 1; }
   fi
   chmod 600 "$temp"

@@ -59,10 +59,36 @@ func openAIKeyEnv(t *testing.T, rendered map[string]string) *corev1.EnvVar {
 	return nil
 }
 
+// initGatewayMarker returns the value of CETIRUN_AI_GATEWAY on the OpenClaw
+// init container, which tells init that the Gateway owns the model list.
+func initGatewayMarker(t *testing.T, rendered map[string]string) (string, bool) {
+	t.Helper()
+	sts := &appsv1.StatefulSet{}
+	if err := yaml.Unmarshal([]byte(rendered["cetirun/templates/statefulset.yaml"]), sts); err != nil {
+		t.Fatal(err)
+	}
+	for _, container := range sts.Spec.Template.Spec.InitContainers {
+		if container.Name != "init-home-data" {
+			continue
+		}
+		for _, env := range container.Env {
+			if env.Name == "CETIRUN_AI_GATEWAY" {
+				return env.Value, true
+			}
+		}
+		return "", false
+	}
+	t.Fatal("no init-home-data init container")
+	return "", false
+}
+
 func TestAIGatewayChartWiring(t *testing.T) {
 	rendered, err := renderAIGateway(t, aiGatewayInput("openclaw", "openai"))
 	if err != nil {
 		t.Fatal(err)
+	}
+	if value, ok := initGatewayMarker(t, rendered); !ok || value != "true" {
+		t.Fatalf("init must know the Gateway owns the model list, got %q", value)
 	}
 	env := openAIKeyEnv(t, rendered)
 	if env == nil || env.ValueFrom == nil || env.ValueFrom.SecretKeyRef == nil {
@@ -96,6 +122,10 @@ func TestAIGatewayChartDisabledKeepsProviderKey(t *testing.T) {
 	if strings.Contains(rendered["cetirun/templates/networkpolicy.yaml"], "cetirun-ai-gateway") ||
 		strings.Contains(rendered["cetirun/templates/sidecar.yaml"], "cetirun-system/*") {
 		t.Fatal("disabled Gateway must not open egress")
+	}
+	// An openai provider with its own endpoint keeps its saved model list.
+	if value, ok := initGatewayMarker(t, rendered); ok {
+		t.Fatalf("init must not treat the model list as the Gateway's, got CETIRUN_AI_GATEWAY=%q", value)
 	}
 }
 

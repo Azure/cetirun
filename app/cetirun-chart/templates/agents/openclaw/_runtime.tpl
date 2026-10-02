@@ -86,6 +86,11 @@ OpenClaw init containers
     - name: AZDEVOPS_GIT_CREDENTIAL_ENABLED
       value: "true"
     {{- end }}
+    {{- if (.Values.aiGateway | default dict).enabled }}
+    # The Gateway owns the model list: init replaces the saved one.
+    - name: CETIRUN_AI_GATEWAY
+      value: "true"
+    {{- end }}
   volumeMounts:
     - name: data
       mountPath: /home-data

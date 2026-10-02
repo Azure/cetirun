@@ -290,3 +290,55 @@ def test_openclaw_removes_only_the_retired_copilot_helper(agent, content, kept):
     result = run(agent)
     assert result.returncode == 0, result.stderr
     assert helper.exists() == kept
+
+
+def openai_config(models):
+    # The configuration both an Agent on the AI Gateway and a deployment with
+    # its own openai endpoint render: an openai/ default and that provider.
+    return {
+        "agents": {"defaults": {"model": {"primary": "openai/model-a"}, "models": models}},
+        "models": {"providers": {"openai": {"baseUrl": "https://models.example.com/v1", "models": []}}},
+    }
+
+
+def saved_openclaw_config(agent):
+    # A HOME the Agent has used: its own model settings and a sign-in profile.
+    assert run(agent).returncode == 0
+    saved = read_config(agent)
+    saved["agents"]["defaults"]["models"] = {
+        "openai/model-a": {"alias": "my-alias", "params": {"temperature": 0.2}},
+        "openai/model-old": {},
+    }
+    saved["auth"] = {"profiles": {"github-copilot:github": {"provider": "github-copilot"}}}
+    agent["config_file"].write_text(json.dumps(saved))
+    (agent["config"] / "openclaw.json").write_text(json.dumps(openai_config({"openai/model-a": {}, "openai/model-b": {}})))
+
+
+@pytest.mark.parametrize("agent", ["openclaw"], indirect=True)
+def test_openclaw_on_the_gateway_takes_the_gateway_model_list(agent):
+    agent["env"]["CETIRUN_AI_GATEWAY"] = "true"
+    saved_openclaw_config(agent)
+    result = run(agent)
+    assert result.returncode == 0, result.stderr
+    config = read_config(agent)
+    assert config["agents"]["defaults"]["models"] == {"openai/model-a": {}, "openai/model-b": {}}
+    assert "github-copilot:github" not in config["auth"]["profiles"]
+
+
+@pytest.mark.parametrize("agent", ["openclaw"], indirect=True)
+@pytest.mark.parametrize("marker", [None, "false"])
+def test_openclaw_with_its_own_openai_endpoint_keeps_its_model_settings(agent, marker):
+    # Without the Gateway, an openai/ default is not CetiRun's model list.
+    agent["env"].pop("CETIRUN_AI_GATEWAY", None)
+    if marker is not None:
+        agent["env"]["CETIRUN_AI_GATEWAY"] = marker
+    saved_openclaw_config(agent)
+    result = run(agent)
+    assert result.returncode == 0, result.stderr
+    config = read_config(agent)
+    assert config["agents"]["defaults"]["models"] == {
+        "openai/model-a": {"alias": "my-alias", "params": {"temperature": 0.2}},
+        "openai/model-old": {},
+        "openai/model-b": {},
+    }
+    assert "github-copilot:github" in config["auth"]["profiles"]
