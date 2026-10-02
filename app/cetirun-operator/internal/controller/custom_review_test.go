@@ -363,14 +363,14 @@ func TestCustomDeletionAttemptsShutdownWhenSandboxRevocationFails(t *testing.T) 
 						}
 						return c.Delete(ctx, object, options...)
 					},
-					SubResourceUpdate: func(ctx context.Context, c client.Client, subresource string, object client.Object, options ...client.SubResourceUpdateOption) error {
+					SubResourcePatch: func(ctx context.Context, c client.Client, subresource string, object client.Object, patch client.Patch, options ...client.SubResourcePatchOption) error {
 						if subresource == "status" {
 							calls["status"]++
 							if fails("status") {
 								return injected["status"]
 							}
 						}
-						return c.SubResource(subresource).Update(ctx, object, options...)
+						return c.SubResource(subresource).Patch(ctx, object, patch, options...)
 					},
 				})
 				s.reconciler.Client, s.reconciler.APIReader = wrapped, wrapped
