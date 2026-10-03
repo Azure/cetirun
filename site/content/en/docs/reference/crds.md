@@ -51,7 +51,7 @@ migration. Retention does not protect against a schema downgrade.
 | `agent` | Required Harness configuration object |
 | `agent.type` | `hermes` (default), `openclaw`, or `custom`; immutable |
 | `agent.image` | Required for Custom; once set, cannot be cleared. Built-in defaults are pinned from the selected chart |
-| `agent.registrySecretRef.name` | Optional source credential reference; no namespace, key, or inline credentials |
+| `agent.registrySecretRef.name` | Optional Portal-managed source Secret reference; no namespace, key, or inline credentials |
 | `agent.username` | Defaults to `vibe`; immutable, non-root image username |
 | `agent.port` | Optional HTTP port, 1–65535; omitted for Custom means no platform HTTP entry |
 | `team` | Name of a `Team` |
@@ -80,10 +80,19 @@ schema acceptance to establish safe routing.
 See [first instance](../../getting-started/first-instance/) for minimal YAML and
 [Teams](../../guides/msteams/) for the optional cloud integration.
 
-The operator resolves built-in images and ports through the Harness interface.
-It rejects Custom, registry references and non-default username settings with
-`AgentRuntimeNotImplemented` before provisioning. See the
-[Agent Harness contract](../agent-harness/) for the runtime boundary.
+The operator resolves Hermes and OpenClaw images and ports through the Harness
+interface; their profiles require the `vibe` username. Custom uses a separate
+runtime path that supports non-default usernames. Without a binding provider,
+it reports `CustomBindingsPending`. Administrators can opt in to the
+`customRuntime` Kubernetes provider for approved image digests; Portal Custom
+self-service is a separate opt-in.
+
+Private images use `agent.registrySecretRef.name` to reference a Portal-managed
+source Secret. Operator validates its Agent UID ownership, registry host and
+workload permissions before copying it to the runtime namespace for image
+pulling. Credentials are never stored in the Agent spec. See the
+[Agent Harness contract](../agent-harness/) for runtime requirements and the
+[private registry workflow](../agent-harness/#private-registries).
 
 ### Helm-value admission
 
@@ -128,13 +137,20 @@ check does not prove that an override will reconcile successfully.
 | `observedOperatorHash` | Applied configuration fingerprint used by the reconciliation cache, including the gateway Secret content hash and referenced team's resource version |
 | `lastReconcileTime` | Timestamp written by full Ready/suspension handling; can also be written while suspension ingress removal is failing |
 | `msteams` | Teams state, message, resolved app and bot resource identifiers |
+| `registryCredentials` | Receipt identifying the synchronized source Secret UID/resourceVersion and local pull Secret UID; not credential data or proof of successful image pulling |
 | `sandbox` | Last verified binding: `teamUID`, `sandboxUID`, `policyClass`, `agentPolicyUID`, `appliedRevision`; omitted before successful enforcement |
 
 `AgentConfigReady=False` with reason `AgentRuntimeNotImplemented` reports a
-setting that cannot yet be provisioned. `AgentConfigInvalid` reports rejected
-profile, image or port settings; `AgentConfigResolved` reports a prepared
+setting that cannot be provisioned, such as a non-default built-in username.
+`AgentConfigInvalid` reports rejected profile, image or port settings;
+`AgentConfigResolved` reports a prepared
 built-in configuration, not runtime readiness. The API does not expose a separate
 `status.agent` structure.
+
+`RegistryCredentialsReady` reports credential synchronization. A true condition
+does not prove that the registry accepted the credentials or the image was
+pulled; inspect Pod readiness and pull events separately. Custom readiness also
+depends on its validated platform bindings, not just schema acceptance.
 
 Other condition types include `Ready`, `HelmDeployed`, `IngressReady`, `PodReady`,
 `TailscaleReady`, and `TeamsReady`. Check them independently; overall readiness
@@ -249,6 +265,10 @@ writable alongside known fields. New security semantics require a qualified
 version/capability transition. The optional `strict` mode rejects unknown CR
 fields and requires an explicitly ordered schema/binary upgrade.
 Operator status patches preserve unknown fields and reject stale revisions.
+Portal instance edits and upgrades, Team edits, and Registry intent changes use
+field-level patches with resource-version checks too. They preserve stored fields
+introduced by newer schemas outside the requested changes; explicitly clearing a
+setting still removes that setting.
 Breaking changes, ownership transfers and downgrades still require a reviewed
 migration; no automatic reverse migration is provided.
 

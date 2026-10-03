@@ -71,7 +71,7 @@ func (c *Client) BeginRegistryUpdate(ctx context.Context, expected *api.Agent, r
 	} else if current.Spec.Agent.RegistrySecretRef == nil {
 		current.Spec.Agent.RegistrySecretRef = &api.RegistrySecretRef{Name: "registry-source-" + id}
 	}
-	if c.client.Update(ctx, current) != nil {
+	if c.client.Patch(ctx, current, client.MergeFromWithOptions(expected, client.MergeFromWithOptimisticLock{})) != nil {
 		return nil, ErrRegistryConflict
 	}
 	return current, nil

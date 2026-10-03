@@ -31,7 +31,7 @@ func TestPortalTeamUpdatePreservesConcurrentGovernance(t *testing.T) {
 	}}
 	updates := 0
 	c := fake.NewClientBuilder().WithScheme(newScheme()).WithObjects(team).
-		WithInterceptorFuncs(interceptor.Funcs{Update: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+		WithInterceptorFuncs(interceptor.Funcs{Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
 			updates++
 			if updates == 1 {
 				current := &api.Team{}
@@ -45,7 +45,7 @@ func TestPortalTeamUpdatePreservesConcurrentGovernance(t *testing.T) {
 				}
 				return apierrors.NewConflict(api.GroupVersion.WithResource("teams").GroupResource(), team.Name, fmt.Errorf("synthetic concurrent update"))
 			}
-			return c.Update(ctx, obj, opts...)
+			return c.Patch(ctx, obj, patch, opts...)
 		}}).Build()
 	got, err := NewClient(c).UpdateTeamSpec(context.Background(), team.Name, api.TeamSpec{
 		MemberContext:        api.TeamContextSpec{Role: "new-role"},

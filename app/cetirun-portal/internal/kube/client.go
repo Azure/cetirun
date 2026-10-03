@@ -462,6 +462,7 @@ func (c *Client) UpdateInstanceByName(ctx context.Context, instanceName string, 
 		if err := validateInstanceUpdate(instance, opts); err != nil {
 			return err
 		}
+		before := instance.DeepCopy()
 		crChanged := false
 		if opts.Agent != nil {
 			instance.Spec.Agent = *opts.Agent.DeepCopy()
@@ -516,7 +517,7 @@ func (c *Client) UpdateInstanceByName(ctx context.Context, instanceName string, 
 		}
 
 		if crChanged {
-			if err := c.client.Update(ctx, instance, client.FieldValidation(metav1.FieldValidationStrict)); err != nil {
+			if err := c.client.Patch(ctx, instance, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{}), client.FieldValidation(metav1.FieldValidationStrict)); err != nil {
 				return fmt.Errorf("update instance: %w", err)
 			}
 		}
@@ -550,8 +551,9 @@ func (c *Client) UpgradeInstanceByName(ctx context.Context, instanceName string,
 			result = instance
 			return nil
 		}
+		before := instance.DeepCopy()
 		instance.Spec.Helm.Version = latestVersion
-		if err := c.client.Update(ctx, instance, client.FieldValidation(metav1.FieldValidationStrict)); err != nil {
+		if err := c.client.Patch(ctx, instance, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{}), client.FieldValidation(metav1.FieldValidationStrict)); err != nil {
 			return fmt.Errorf("update instance: %w", err)
 		}
 		result = instance
@@ -809,8 +811,9 @@ func (c *Client) UpgradeInstance(ctx context.Context, alias string) (*cetirunv1a
 			result = instance
 			return nil
 		}
+		before := instance.DeepCopy()
 		instance.Spec.Helm.Version = latestVersion
-		if err := c.client.Update(ctx, instance); err != nil {
+		if err := c.client.Patch(ctx, instance, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{})); err != nil {
 			return fmt.Errorf("update instance: %w", err)
 		}
 		result = instance
@@ -854,12 +857,13 @@ func (c *Client) UpdateTeamSpec(ctx context.Context, name string, newSpec cetiru
 		if err != nil {
 			return err
 		}
+		before := team.DeepCopy()
 		editable := newSpec.DeepCopy()
 		team.Spec.MemberContext = editable.MemberContext
 		team.Spec.Defaults = editable.Defaults
 		team.Spec.Skills = editable.Skills
 		team.Spec.SkillStorage = editable.SkillStorage
-		if err := c.client.Update(ctx, team); err != nil {
+		if err := c.client.Patch(ctx, team, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{})); err != nil {
 			return fmt.Errorf("update team: %w", err)
 		}
 		result = team
