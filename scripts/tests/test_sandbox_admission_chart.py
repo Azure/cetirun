@@ -168,6 +168,63 @@ class SandboxAdmissionChartTests(unittest.TestCase):
             with self.subTest(invalid=invalid):
                 self.assert_rejected(self.server_values(validationMode=invalid), "validationMode must be compatible or strict")
 
+    def test_kubernetes_sources_are_opt_in_and_do_not_expand_rbac(self):
+        admission = self.enforced_values(podsEnabled=True)
+        baseline = self.render(admission)
+        configured = self.render(admission, values={
+            "sandboxSources": {
+                "enabled": True, "platformConfigMapName": "sandbox-platform",
+                "homeClaimName": "owned-home", "skillsClaimName": "owned-skills",
+                "helpers": {"doctor": True, "logger": True, "desktop": False},
+            },
+        })
+        deployment = ("Deployment", "cetirun-operator")
+        env = configured[deployment]["spec"]["template"]["spec"]["containers"][0]["env"]
+        source_env = [item for item in env if item["name"] == "CETIRUN_SANDBOX_SOURCES"]
+        self.assertEqual(len(source_env), 1)
+        self.assertEqual(json.loads(source_env[0]["value"]), {
+            "enabled": True, "platformConfigMapName": "sandbox-platform",
+            "homeClaimName": "owned-home", "skillsClaimName": "owned-skills",
+            "admissionServiceAccount": NAME,
+            "helpers": {"doctor": True, "logger": True, "desktop": False},
+        })
+        env.remove(source_env[0])
+        self.assertEqual(configured, baseline)
+
+    def test_kubernetes_sources_require_enforced_pod_admission(self):
+        values = {"sandboxSources": {
+            "enabled": True, "platformConfigMapName": "sandbox-platform",
+        }}
+        for admission in (None, self.server_values(), self.enforced_values(),
+                          self.server_values(podsEnabled=True)):
+            with self.subTest(admission=admission):
+                self.assert_rejected(
+                    admission,
+                    "sandboxSources.enabled requires enforced Sandbox configuration and Pod admission",
+                    values=values,
+                )
+
+    def test_kubernetes_sources_reject_invalid_configuration(self):
+        cases = [
+            ({"enabled": "true"}, "sandboxSources.enabled must be a boolean"),
+            ({"platformConfigMapName": ""}, "platformConfigMapName must be a valid resource name"),
+            ({"homeClaimName": "bad/name"}, "homeClaimName must be a valid resource name"),
+            ({"skillsClaimName": "UPPER"}, "skillsClaimName must be a valid resource name"),
+            ({"skillsClaimName": 42}, "skillsClaimName must be a resource name"),
+            ({"homeClaimName": "skills"}, "HOME and skills must use distinct claims"),
+            ({"allowExecution": True}, "unsupported sandboxSources field allowExecution"),
+            ({"admissionServiceAccount": "custom"}, "unsupported sandboxSources field admissionServiceAccount"),
+            ({"helpers": {"desktop": "true"}}, "helpers.desktop must be a boolean"),
+            ({"helpers": {"custom": True}}, "unsupported sandboxSources.helpers field custom"),
+        ]
+        for overrides, message in cases:
+            with self.subTest(overrides=overrides):
+                values = {"sandboxSources": {
+                    "enabled": True, "platformConfigMapName": "sandbox-platform",
+                    **overrides,
+                }}
+                self.assert_rejected(self.enforced_values(podsEnabled=True), message, values=values)
+
     def test_read_only_rbac_uses_dedicated_service_account(self):
         documents = self.render(self.server_values())
         account = documents[("ServiceAccount", NAME)]

@@ -168,6 +168,10 @@ func (r *AgentReconciler) prepareSandboxHeld(ctx context.Context, requested *api
 	if reused, err := r.reuseSandboxPreparation(ctx, attempt); err != nil || reused {
 		return err
 	}
+	// Do not persist cleanup obligations until their fence is available.
+	if err := r.checkSandboxPreparationQuiesced(ctx, attempt); err != nil {
+		return err
+	}
 	attempt.plan, err = sandboxpolicy.Compile(sandboxpolicy.CompileInput{
 		Resolution: *attempt.resolution, AgentName: attempt.agent.Name,
 		Namespace: attempt.input.Namespace.Name, Platform: platform,
@@ -267,7 +271,7 @@ func (r *AgentReconciler) resolveSandboxPreparation(ctx context.Context, request
 		!controllerutil.ContainsFinalizer(agent, sandbox.HoldFinalizer) {
 		return nil, fmt.Errorf("Sandbox Agent identity, generation or hold changed")
 	}
-	snapshot, err := configurationSnapshot(ctx, config.Configuration, configurationNow(config.Now), config.MaxSnapshotAge)
+	snapshot, err := configurationSnapshot(ctx, config.Configuration, config.Now, config.MaxSnapshotAge)
 	if err != nil {
 		return nil, err
 	}
@@ -304,7 +308,7 @@ func (r *AgentReconciler) resolveSandboxPreparation(ctx context.Context, request
 	}
 	condition, _, err := assessSandboxPrerequisites(ctx, r.APIReader, resources.Sandboxes[agent.Spec.SandboxRef],
 		SandboxConfigurationSourceFunc(func(context.Context) (SandboxConfigurationSnapshot, error) { return snapshot, nil }),
-		config.MaxSnapshotAge, configurationNow(config.Now))
+		config.MaxSnapshotAge, config.Now)
 	if err != nil {
 		return nil, err
 	}
@@ -366,7 +370,7 @@ func (r *AgentReconciler) sandboxPreparationGuard(attempt *sandboxPreparationAtt
 		if err != nil || currentAgentSource != agentSource {
 			return fmt.Errorf("Sandbox preparation authorization or lifecycle intent changed")
 		}
-		current, err := configurationSnapshot(ctx, config.Configuration, now, config.MaxSnapshotAge)
+		current, err := configurationSnapshot(ctx, config.Configuration, config.Now, config.MaxSnapshotAge)
 		if err != nil {
 			return err
 		}
