@@ -231,7 +231,7 @@ func (r *AgentReconciler) prepareSandboxHeld(ctx context.Context, requested *api
 	if err := check(ctx); err != nil {
 		return err
 	}
-	if err := r.applySandboxSourceAccess(ctx, attempt.agent, role, binding); err != nil {
+	if err := r.applySandboxSourceAccess(ctx, attempt.agent, role, binding, access); err != nil {
 		return err
 	}
 	if err := config.Installer.StageSandbox(ctx, attempt.input.Namespace.Name, attempt.input.ReleaseName, prepared, check); err != nil {

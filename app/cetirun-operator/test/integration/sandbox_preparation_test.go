@@ -142,6 +142,32 @@ func TestSandboxPreparation(t *testing.T) {
 				f.assertAdmissionHeld(t, restarted)
 			})
 
+			t.Run("deleted-source-binding-recovers-after-restart", func(t *testing.T) {
+				binding := &rbacv1.RoleBinding{}
+				h.get(t, client.ObjectKey{Namespace: f.fixture.Namespace.Name, Name: preparationSourceRole}, binding)
+				if err := h.client.Delete(h.ctx, binding); err != nil {
+					t.Fatal(err)
+				}
+				f.assertSourceAccess(t, false)
+				f.restart()
+				f.reconcile(t)
+				recovered := f.assertPrepared(t)
+				currentJournal, currentRefs := f.readJournal(t)
+				source := preparationSource(t, recovered, "RoleBinding", binding.Namespace, binding.Name)
+				if currentJournal.UID != journal.UID || len(currentRefs) != 1 ||
+					currentRefs[0].UID == "" || currentRefs[0].UID == binding.UID ||
+					currentRefs[0].UID != source.UID || recovered.Workload != first.Workload {
+					t.Fatal("deleted source binding did not recover with a new, durably confirmed UID")
+				}
+				f.assertSourceAccess(t, true)
+				f.assertAdmissionHeld(t, recovered)
+				stages := f.installer.stageCalls
+				f.reconcile(t)
+				if f.installer.stageCalls != stages {
+					t.Fatal("recovered source binding prevented unchanged preparation reuse")
+				}
+			})
+
 			t.Run("post-staging-failure-revokes-and-retries", func(t *testing.T) {
 				injected := errors.New("synthetic post-staging response failure")
 				f.source.prerequisites.Revision = "synthetic-changed-prerequisites"

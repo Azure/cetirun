@@ -382,6 +382,13 @@ hold; unavailable adapters, missing inventory and API read failures remain
 preparation errors rather than being reported as unsupported.
 An unsupported result does not suppress source, cleanup or status-write failures.
 
+If the source-read RoleBinding disappears after preparation, the controller
+authoritatively confirms its absence and durably retires its old journal entry
+before recording fresh write-ahead intent and creating a replacement. The new
+UID is then confirmed for reuse and later revocation. An unrelated same-name
+binding is not adopted, overwritten or revoked; read and journal-write failures
+prevent replacement creation.
+
 Partial writes, stale sources, suspension and provider disablement revoke
 recorded grants while retaining the hold and recovery state. Deletion revokes
 access first, waits for qualified writer fencing and all Pods (including

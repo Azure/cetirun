@@ -124,7 +124,7 @@ func (r *AgentReconciler) sandboxSourceAccess(attempt *sandboxPreparationAttempt
 	return role, binding, ref, nil
 }
 
-func (r *AgentReconciler) applySandboxSourceAccess(ctx context.Context, agent *api.Agent, desiredRole *rbacv1.Role, desiredBinding *rbacv1.RoleBinding) error {
+func (r *AgentReconciler) applySandboxSourceAccess(ctx context.Context, agent *api.Agent, desiredRole *rbacv1.Role, desiredBinding *rbacv1.RoleBinding, access sandboxpolicy.BindingReference) error {
 	currentRole := &rbacv1.Role{}
 	err := r.APIReader.Get(ctx, client.ObjectKeyFromObject(desiredRole), currentRole)
 	if apierrors.IsNotFound(err) {
@@ -150,15 +150,43 @@ func (r *AgentReconciler) applySandboxSourceAccess(ctx context.Context, agent *a
 			}
 		}
 	}
+	journal := r.sandboxGrantJournal()
+	recorded, err := journal.Read(ctx, agent.Name, agent.UID)
+	if err != nil {
+		return err
+	}
+	var recordedBinding *sandboxpolicy.BindingReference
+	for i := range recorded {
+		expected := recorded[i]
+		expected.UID = ""
+		if expected == access {
+			recordedBinding = &recorded[i]
+			break
+		}
+	}
+	if recordedBinding == nil {
+		return fmt.Errorf("Sandbox source-read RoleBinding has no matching durable grant intent")
+	}
 	currentBinding := &rbacv1.RoleBinding{}
 	err = r.APIReader.Get(ctx, client.ObjectKeyFromObject(desiredBinding), currentBinding)
 	if apierrors.IsNotFound(err) {
+		if recordedBinding.UID != "" {
+			// Recheck absence and durably retire the old UID before recording
+			// replacement intent. Revoke rejects a same-name replacement.
+			if err := journal.Revoke(ctx, agent.Name, agent.UID, []sandboxpolicy.BindingReference{*recordedBinding}); err != nil {
+				return err
+			}
+			if err := journal.Record(ctx, agent.Name, agent.UID, []sandboxpolicy.BindingReference{access}); err != nil {
+				return err
+			}
+		}
 		return r.Create(ctx, desiredBinding)
 	}
 	if err != nil {
 		return err
 	}
 	if !sandboxPreparationOwned(currentBinding, agent) ||
+		(recordedBinding.UID != "" && currentBinding.UID != recordedBinding.UID) ||
 		currentBinding.RoleRef != desiredBinding.RoleRef ||
 		!equality.Semantic.DeepEqual(currentBinding.Subjects, desiredBinding.Subjects) ||
 		currentBinding.Annotations[sandboxpolicy.GrantRevisionAnnotation] != desiredBinding.Annotations[sandboxpolicy.GrantRevisionAnnotation] {
