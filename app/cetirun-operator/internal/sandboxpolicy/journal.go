@@ -188,6 +188,66 @@ func (s GrantJournalStore) Record(ctx context.Context, agentName string, agentUI
 	return s.confirm(ctx, cm, agentName, agentUID, refs, false)
 }
 
+// RefreshBindingIntents checks already-recorded desired grants before writes.
+// Confirmed bindings that are authoritatively absent are retired durably before
+// fresh UID-less intent is recorded. Live replacements are rejected, and healthy
+// bindings are not revoked. This cannot introduce an unrecorded desired grant.
+func (s GrantJournalStore) RefreshBindingIntents(ctx context.Context, agentName string, agentUID types.UID, desired []BindingReference) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := s.validate(agentName, agentUID, true); err != nil {
+		return err
+	}
+	if err := validateJournalReferences(agentName, agentUID, desired); err != nil {
+		return err
+	}
+	cm, previous, err := s.read(ctx, agentName, agentUID, journalRequireProtection)
+	if err != nil {
+		return err
+	}
+	if !cm.DeletionTimestamp.IsZero() {
+		return journalConflict(cm.Name, "cannot refresh grants in a terminating journal")
+	}
+	recorded := make(map[journalBindingKey]BindingReference, len(previous))
+	for _, ref := range previous {
+		recorded[journalKey(ref)] = ref
+	}
+	var absent, replacement []BindingReference
+	for _, requested := range desired {
+		old, exists := recorded[journalKey(requested)]
+		if !exists || journalIdentity(old) != journalIdentity(requested) ||
+			(requested.UID != "" && requested.UID != old.UID) {
+			return fmt.Errorf("%w: desired binding is not in the grant journal", ErrOwnership)
+		}
+		if old.UID == "" {
+			continue
+		}
+		object, err := readOwnedBinding(ctx, s.APIReader, old)
+		if err != nil {
+			return err
+		}
+		if object != nil {
+			if !object.GetDeletionTimestamp().IsZero() {
+				return fmt.Errorf("%w: desired %s is terminating", ErrRevocationPending, old.Kind)
+			}
+			continue
+		}
+		absent = append(absent, old)
+		old.UID = ""
+		replacement = append(replacement, old)
+	}
+	if len(absent) == 0 {
+		return nil
+	}
+	// Revoke rechecks the old identities, so a replacement racing the first
+	// absence read cannot be silently retired or adopted.
+	if err := s.Revoke(ctx, agentName, agentUID, absent); err != nil {
+		return err
+	}
+	return s.Record(ctx, agentName, agentUID, replacement)
+}
+
 // Revoke acts only on recorded entries, using the stored UID even when remove
 // omits it. All requests and the entire journal are validated before any binding
 // effect. Partial revocation and failed CAS updates retain the original durable

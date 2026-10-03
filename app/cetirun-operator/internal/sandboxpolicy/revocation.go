@@ -46,37 +46,54 @@ func RevokeBindingsWithReader(ctx context.Context, reader client.Reader, writer 
 }
 
 func revokeBinding(ctx context.Context, reader client.Reader, writer client.Client, ref BindingReference) error {
+	object, err := readOwnedBinding(ctx, reader, ref)
+	if err != nil || object == nil {
+		return err
+	}
+	if object.GetDeletionTimestamp().IsZero() {
+		uid, version := object.GetUID(), object.GetResourceVersion()
+		if err := writer.Delete(ctx, object, client.Preconditions{UID: &uid, ResourceVersion: &version}); err != nil && !apierrors.IsNotFound(err) {
+			return fmt.Errorf("revoke sandbox %s: %w", ref.Kind, err)
+		}
+	}
+	if err := reader.Get(ctx, client.ObjectKeyFromObject(object), object); err != nil {
+		return client.IgnoreNotFound(err)
+	}
+	return fmt.Errorf("%w: %s still exists", ErrRevocationPending, ref.Kind)
+}
+
+func readOwnedBinding(ctx context.Context, reader client.Reader, ref BindingReference) (client.Object, error) {
 	if ref.AgentUID == "" || len(validation.IsDNS1123Subdomain(ref.AgentName)) != 0 ||
 		len(validation.IsDNS1123Subdomain(ref.Name)) != 0 ||
 		len(validation.IsDNS1123Subdomain(ref.ServiceAccountName)) != 0 ||
 		len(validation.IsDNS1123Label(ref.ServiceAccountNamespace)) != 0 ||
 		ref.RoleRef.APIGroup != rbacv1.GroupName || ref.RoleRef.Name == "" ||
 		(ref.RoleRef.Kind != "Role" && ref.RoleRef.Kind != "ClusterRole") {
-		return fmt.Errorf("%w: incomplete revocation inventory", ErrOwnership)
+		return nil, fmt.Errorf("%w: incomplete binding inventory", ErrOwnership)
 	}
 	var object client.Object
 	switch ref.Kind {
 	case "RoleBinding":
 		if len(validation.IsDNS1123Label(ref.Namespace)) != 0 {
-			return fmt.Errorf("%w: RoleBinding namespace is required", ErrOwnership)
+			return nil, fmt.Errorf("%w: RoleBinding namespace is required", ErrOwnership)
 		}
 		object = &rbacv1.RoleBinding{}
 	case "ClusterRoleBinding":
 		if ref.Namespace != "" || ref.RoleRef.Kind != "ClusterRole" {
-			return fmt.Errorf("%w: invalid cluster-scoped revocation inventory", ErrOwnership)
+			return nil, fmt.Errorf("%w: invalid cluster-scoped binding inventory", ErrOwnership)
 		}
 		object = &rbacv1.ClusterRoleBinding{}
 	default:
-		return fmt.Errorf("%w: revocation is restricted to RBAC bindings", ErrOwnership)
+		return nil, fmt.Errorf("%w: inventory is restricted to RBAC bindings", ErrOwnership)
 	}
 	key := types.NamespacedName{Namespace: ref.Namespace, Name: ref.Name}
 	if err := reader.Get(ctx, key, object); err != nil {
-		return client.IgnoreNotFound(err)
+		return nil, client.IgnoreNotFound(err)
 	}
 	if !bindingOwned(object, ref.AgentName, ref.AgentUID) ||
 		(ref.UID != "" && ref.UID != object.GetUID()) ||
 		(ref.GrantRevision != "" && ref.GrantRevision != object.GetAnnotations()[GrantRevisionAnnotation]) {
-		return fmt.Errorf("%w: refusing to revoke a foreign or replaced %s", ErrOwnership, ref.Kind)
+		return nil, fmt.Errorf("%w: refusing a foreign or replaced %s", ErrOwnership, ref.Kind)
 	}
 	var role rbacv1.RoleRef
 	var subjects []rbacv1.Subject
@@ -88,21 +105,12 @@ func revokeBinding(ctx context.Context, reader client.Reader, writer client.Clie
 	}
 	expected := rbacv1.Subject{Kind: "ServiceAccount", Name: ref.ServiceAccountName, Namespace: ref.ServiceAccountNamespace}
 	if role != ref.RoleRef || len(subjects) != 1 || subjects[0] != expected {
-		return fmt.Errorf("%w: binding contents differ from recorded inventory", ErrOwnership)
+		return nil, fmt.Errorf("%w: binding contents differ from recorded inventory", ErrOwnership)
 	}
 	if object.GetUID() == "" || object.GetResourceVersion() == "" {
-		return fmt.Errorf("%w: persisted binding identity is required", ErrOwnership)
+		return nil, fmt.Errorf("%w: persisted binding identity is required", ErrOwnership)
 	}
-	if object.GetDeletionTimestamp().IsZero() {
-		uid, version := object.GetUID(), object.GetResourceVersion()
-		if err := writer.Delete(ctx, object, client.Preconditions{UID: &uid, ResourceVersion: &version}); err != nil && !apierrors.IsNotFound(err) {
-			return fmt.Errorf("revoke sandbox %s: %w", ref.Kind, err)
-		}
-	}
-	if err := reader.Get(ctx, key, object); err != nil {
-		return client.IgnoreNotFound(err)
-	}
-	return fmt.Errorf("%w: %s still exists", ErrRevocationPending, ref.Kind)
+	return object, nil
 }
 
 func bindingOwned(object client.Object, name string, uid types.UID) bool {
