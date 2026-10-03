@@ -450,6 +450,12 @@ RuntimeClass pins use `UID`/`Handler`, and StorageClass pins use
 `UID`/`Provisioner`. Capability and platform objects retain their existing
 lower-camel field names. RuntimeClass and StorageClass declarations pin their
 UIDs and handler/provisioner; role approvals pin role identity, version and rules.
+Live role checks are scoped to the grants requested by each policy during
+assessment and workload preparation, including mutation guards. A missing,
+stale, unavailable or ambiguously approved role rejects that request without
+invalidating the shared snapshot or unrelated policies, including policies
+without Kubernetes access. Different policies may hold different approval pins
+for the same role; each request must match its own pins.
 Replacement, concurrent change, malformed configuration and API failures are
 errors, not automatic reapproval or a fallback to cached tenant data.
 The document is bounded to 512 KiB, 16,384 JSON tokens, 12 nesting levels and
@@ -599,8 +605,9 @@ Each approved grant must carry the live ClusterRole UID, resource version and
 normalized rules; the approval's `Revision` is a separate administrative
 revision, not a substitute for an API observation. Configuration assessment
 calls [`VerifyPolicyGrants`](internal/sandboxpolicy/grants.go) through the
-authoritative reader. Trusted snapshot producers and future workload
-application boundaries must also verify immediately before consuming grants,
+authoritative reader for only the requesting policy's grants. Held preparation,
+its mutation guards and future workload application boundaries must also verify
+immediately before consuming requested grants,
 invalidate changed observations and coordinate revocation on drift. The
 compiler remains a pure transformation and cannot detect a later role edit.
 Explicitly approved wildcard or Secret access is not silently rewritten.

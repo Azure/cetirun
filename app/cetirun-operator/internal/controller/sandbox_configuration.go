@@ -50,8 +50,8 @@ type SandboxConfigurationSnapshot struct {
 type SandboxConfigurationSource interface {
 	// Snapshot returns an immutable, atomically captured support inventory.
 	// Grant approvals bind role UID, resourceVersion and normalized rules.
-	// Sources must verify them with authoritative reads before reuse for a
-	// workload; policy assessment below independently verifies requested grants.
+	// Policy assessment and workload consumers must authoritatively verify only
+	// their requested grants before use; unrelated roles do not gate capture.
 	Snapshot(context.Context) (SandboxConfigurationSnapshot, error)
 }
 

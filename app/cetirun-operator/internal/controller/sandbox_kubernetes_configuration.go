@@ -68,8 +68,9 @@ type SandboxPlatformConfiguration struct {
 // write protection is a deployment prerequisite, not inferred from object labels.
 // This source never discovers or qualifies runtimes, topology, identities or
 // enforcement. Those declarations remain the platform owner's responsibility.
-// It verifies pinned RuntimeClasses, StorageClasses and ClusterRole approvals,
-// performs no writes, and supplies neither enforcement evidence nor start permits.
+// It verifies pinned RuntimeClasses and StorageClasses; consumers verify only
+// their requested ClusterRole approvals. It performs no writes and supplies
+// neither enforcement evidence nor start permits.
 type KubernetesSandboxConfigurationSource struct {
 	APIReader client.Reader
 	Namespace string
@@ -127,12 +128,6 @@ func (s *KubernetesSandboxConfigurationSource) Snapshot(ctx context.Context) (Sa
 			return empty, err
 		}
 	}
-	for _, kind := range slices.Sorted(maps.Keys(document.Platforms)) {
-		if err := verifySandboxPlatformGrants(ctx, s.APIReader, document.Platforms[kind].Grants, sources); err != nil {
-			return empty, err
-		}
-	}
-
 	// A second collect detects changes across the initial read interval. This is
 	// optimistic snapshot validation, not a lock or evidence for future execution.
 	references := make([]sandboxworkload.SourceReference, 0, len(sources))
@@ -261,9 +256,7 @@ func validateSandboxPlatformConfiguration(document SandboxPlatformConfiguration)
 		document.RuntimeClasses == nil || document.StorageClasses == nil {
 		return fmt.Errorf("%w: platform version v1 and all four inventory maps are required", sandboxpolicy.ErrUnavailable)
 	}
-	if len(document.RuntimeClasses)+len(document.StorageClasses)+1 > maxSandboxPlatformObjects {
-		return fmt.Errorf("%w: platform object inventory exceeds 128 objects", sandboxpolicy.ErrUnavailable)
-	}
+	roleNames := map[string]struct{}{}
 	for kind, registration := range document.Registrations {
 		if kind != api.SandboxKata && kind != api.SandboxGVisor {
 			return fmt.Errorf("%w: unsupported Sandbox registration key", sandboxpolicy.ErrUnsupportedControl)
@@ -298,6 +291,12 @@ func validateSandboxPlatformConfiguration(document SandboxPlatformConfiguration)
 		if err := validateSandboxPlatformIdentities(platform, capabilities); err != nil {
 			return err
 		}
+		if err := validateSandboxPlatformGrants(platform.Grants, roleNames); err != nil {
+			return err
+		}
+	}
+	if len(document.RuntimeClasses)+len(document.StorageClasses)+len(roleNames)+1 > maxSandboxPlatformObjects {
+		return fmt.Errorf("%w: platform object inventory exceeds 128 objects", sandboxpolicy.ErrUnavailable)
 	}
 	for kind := range document.Platforms {
 		if _, exists := document.Registrations[kind]; !exists {
@@ -348,10 +347,7 @@ func validateSandboxPlatformIdentities(platform sandboxpolicy.Platform, capabili
 	return nil
 }
 
-func verifySandboxPlatformGrants(ctx context.Context, reader client.Reader, grants []sandboxpolicy.ApprovedGrant,
-	sources map[string]sandboxworkload.SourceReference,
-) error {
-	byPolicy := map[types.UID][]sandboxpolicy.ApprovedGrant{}
+func validateSandboxPlatformGrants(grants []sandboxpolicy.ApprovedGrant, roleNames map[string]struct{}) error {
 	for _, grant := range grants {
 		if !sandboxPlatformUID(grant.PolicyUID) || !sandboxPlatformUID(grant.RoleUID) ||
 			!sandboxPlatformValue(grant.RoleResourceVersion) || !sandboxPlatformValue(grant.Revision) || len(grant.Rules) == 0 ||
@@ -360,30 +356,7 @@ func verifySandboxPlatformGrants(ctx context.Context, reader client.Reader, gran
 			(grant.Namespace != "" && len(validation.IsDNS1123Label(grant.Namespace)) != 0) {
 			return fmt.Errorf("%w: grants require complete policy, ClusterRole UID/version/rules and scope pins", sandboxpolicy.ErrUnapprovedGrant)
 		}
-		if err := addSandboxPlatformSource(sources, sandboxworkload.SourceReference{
-			APIVersion: rbacv1.SchemeGroupVersion.String(), Kind: "ClusterRole", Name: grant.RoleRef.Name,
-			UID: grant.RoleUID, ResourceVersion: grant.RoleResourceVersion,
-		}); err != nil {
-			return err
-		}
-		byPolicy[grant.PolicyUID] = append(byPolicy[grant.PolicyUID], grant)
-	}
-	for _, uid := range slices.Sorted(maps.Keys(byPolicy)) {
-		inventory := byPolicy[uid]
-		// Request exactly the declared scopes to reuse the authoritative approval
-		// verifier. This synthetic request is never persisted or authorized for use.
-		access := &api.AgentPolicyAdminKubernetesAccess{ServiceAccountName: "configuration"}
-		for _, grant := range inventory {
-			if grant.Namespace == "" {
-				access.ClusterRoleBindings = append(access.ClusterRoleBindings, api.AgentPolicyClusterRoleBinding{ClusterRoleName: grant.RoleRef.Name})
-			} else {
-				access.RoleBindings = append(access.RoleBindings, api.AgentPolicyRoleBinding{Namespace: grant.Namespace, ClusterRoleName: grant.RoleRef.Name})
-			}
-		}
-		policy := &api.AgentPolicy{ObjectMeta: metav1.ObjectMeta{UID: uid}, Spec: api.AgentPolicySpec{KubernetesAccess: access}}
-		if err := sandboxpolicy.VerifyPolicyGrants(ctx, reader, policy, inventory); err != nil {
-			return err
-		}
+		roleNames[grant.RoleRef.Name] = struct{}{}
 	}
 	return nil
 }

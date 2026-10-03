@@ -18,8 +18,10 @@ import (
 	rbacv1 "k8s.io/api/rbac/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -157,10 +159,114 @@ func TestKubernetesSandboxConfigurationSourceSnapshot(t *testing.T) {
 		{"ConfigMap", client.ObjectKeyFromObject(cm)}:            2,
 		{"RuntimeClass", client.ObjectKey{Name: "example-kata"}}: 2,
 		{"StorageClass", client.ObjectKey{Name: "example-home"}}: 2,
-		{"ClusterRole", client.ObjectKey{Name: "example-view"}}:  2,
 	}
 	if !reflect.DeepEqual(reader.calls, wantReads) || reader.lists != 0 {
 		t.Fatalf("capture did not use only explicit authoritative reads and rechecks: %+v, lists=%d", reader.calls, reader.lists)
+	}
+}
+
+func TestKubernetesSandboxConfigurationSourceScopesRoleFailuresToRequestedGrants(t *testing.T) {
+	failure := errors.New("synthetic role read failure")
+	for _, change := range []string{"missing", "UID", "resourceVersion", "rules", "terminating", "read failure", "duplicate approval"} {
+		t.Run(change, func(t *testing.T) {
+			ctx := context.Background()
+			document, cm, objects := kubernetesPlatformFixture(t)
+			policy, _, _ := configurationGrantFixture()
+			box, _, _ := sandboxConfigurationFixture()
+			normal := &api.AgentPolicy{ObjectMeta: metav1.ObjectMeta{
+				Name: "example-normal", UID: "example-normal-uid", Generation: 1,
+			}}
+			other := policy.DeepCopy()
+			other.Name, other.UID = "example-other-policy", "example-other-policy-uid"
+			role := objects[2].(*rbacv1.ClusterRole)
+			otherRole := role.DeepCopy()
+			otherRole.Name, otherRole.UID = "example-other-role", "example-other-role-uid"
+			other.Spec.KubernetesAccess.RoleBindings[0].ClusterRoleName = otherRole.Name
+			platform := document.Platforms[api.SandboxKata]
+			grant := platform.Grants[0]
+			grant.PolicyUID = other.UID
+			platform.Grants = append(platform.Grants, grant)
+			grant.RoleRef.Name, grant.RoleUID = otherRole.Name, otherRole.UID
+			platform.Grants = append(platform.Grants, grant)
+			if change == "duplicate approval" {
+				platform.Grants = append(platform.Grants, platform.Grants[0])
+			}
+			document.Platforms[api.SandboxKata] = platform
+			cm.Data[controller.SandboxPlatformConfigurationKey] = kubernetesPlatformJSON(t, document)
+			if change == "missing" {
+				objects = objects[:2]
+			}
+			source, reader := kubernetesPlatformSource(t, cm, append(objects, otherRole))
+			reader.after = func(object client.Object, _ int) error {
+				current, ok := object.(*rbacv1.ClusterRole)
+				if !ok || current.Name != role.Name {
+					return nil
+				}
+				switch change {
+				case "UID":
+					current.UID = "replacement-role"
+				case "resourceVersion":
+					current.ResourceVersion = "8"
+				case "rules":
+					current.Rules[0].Resources = []string{"secrets"}
+				case "terminating":
+					stamp := metav1.Now()
+					current.DeletionTimestamp = &stamp
+				case "read failure":
+					return failure
+				}
+				return nil
+			}
+			cached := fake.NewClientBuilder().WithScheme(configurationScheme(t)).
+				WithStatusSubresource(&api.Sandbox{}, &api.AgentPolicy{}).
+				WithObjects(box, normal, other, policy, role.DeepCopy()).Build()
+			reconciler := &controller.AgentPolicyReconciler{
+				Client: cached, APIReader: reader, Source: source, Now: source.Now,
+			}
+			for _, requested := range []*api.AgentPolicy{normal, other, policy} {
+				result, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(requested)})
+				status, reason := metav1.ConditionTrue, "PolicyAccepted"
+				if requested == policy {
+					status, reason = metav1.ConditionFalse, "UnapprovedGrant"
+				}
+				if requested == policy && change == "read failure" {
+					status, reason = metav1.ConditionUnknown, "PrerequisitesUnavailable"
+					if !errors.Is(err, failure) || !errors.Is(err, sandboxpolicy.ErrUnavailable) || result.RequeueAfter != 0 {
+						t.Fatalf("requested role failure lost its cause or backoff: %+v, %v", result, err)
+					}
+				} else if err != nil || result.RequeueAfter <= 0 {
+					t.Fatalf("policy %s was affected by an unrelated role or lost its refresh: %+v, %v", requested.Name, result, err)
+				}
+				current := &api.AgentPolicy{}
+				if err := cached.Get(ctx, client.ObjectKeyFromObject(requested), current); err != nil {
+					t.Fatal(err)
+				}
+				condition := apimeta.FindStatusCondition(current.Status.Conditions, api.ConditionAgentPolicyAccepted)
+				if condition == nil || condition.Status != status || condition.Reason != reason {
+					t.Fatalf("policy %s has the wrong scoped assessment: %+v", requested.Name, condition)
+				}
+			}
+			sandboxReconciler := &controller.SandboxReconciler{
+				Client: cached, APIReader: reader, Source: source, Now: source.Now,
+			}
+			if _, err := sandboxReconciler.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(box)}); err != nil {
+				t.Fatal("role failure prevented Sandbox prerequisite assessment:", err)
+			}
+			if err := cached.Get(ctx, client.ObjectKeyFromObject(box), box); err != nil {
+				t.Fatal(err)
+			}
+			if !apimeta.IsStatusConditionTrue(box.Status.Conditions, api.ConditionReady) {
+				t.Fatal("role failure changed Sandbox prerequisite readiness")
+			}
+			wantRoleReads := 1
+			if change == "duplicate approval" {
+				wantRoleReads = 0
+			}
+			if reader.calls[kubernetesPlatformRead{"ClusterRole", client.ObjectKeyFromObject(role)}] != wantRoleReads ||
+				reader.calls[kubernetesPlatformRead{"ClusterRole", client.ObjectKeyFromObject(otherRole)}] != 1 {
+				t.Fatal("authoritative role reads were not limited to each policy's requested grants:", reader.calls)
+			}
+		})
 	}
 }
 
@@ -415,19 +521,6 @@ func TestKubernetesSandboxConfigurationSourceRejectsInconsistentRecords(t *testi
 		{"missing approved rules", func(d *controller.SandboxPlatformConfiguration) {
 			d.Platforms[api.SandboxKata].Grants[0].Rules = []rbacv1.PolicyRule{}
 		}},
-		{"duplicate approval", func(d *controller.SandboxPlatformConfiguration) {
-			p := d.Platforms[api.SandboxKata]
-			p.Grants = append(p.Grants, p.Grants[0])
-			d.Platforms[api.SandboxKata] = p
-		}},
-		{"conflicting role pins", func(d *controller.SandboxPlatformConfiguration) {
-			p := d.Platforms[api.SandboxKata]
-			other := p.Grants[0]
-			other.PolicyUID = "another-policy"
-			other.RoleUID = "another-role"
-			p.Grants = append(p.Grants, other)
-			d.Platforms[api.SandboxKata] = p
-		}},
 		{"grants without capabilities", func(d *controller.SandboxPlatformConfiguration) {
 			r := d.Registrations[api.SandboxKata]
 			r.Capabilities.KubernetesAccess = false
@@ -506,7 +599,7 @@ func TestKubernetesSandboxConfigurationSourceRejectsInconsistentIdentities(t *te
 	}
 }
 
-func TestKubernetesSandboxConfigurationSourceVerifiesLivePinsAndRules(t *testing.T) {
+func TestKubernetesSandboxConfigurationSourceVerifiesLiveRuntimeAndStoragePins(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		mutate func(client.Object)
@@ -531,21 +624,6 @@ func TestKubernetesSandboxConfigurationSourceVerifiesLivePinsAndRules(t *testing
 				s.Provisioner = "another.example.com"
 			}
 		}},
-		{"ClusterRole replacement", func(o client.Object) {
-			if _, ok := o.(*rbacv1.ClusterRole); ok {
-				o.SetUID("replacement-role")
-			}
-		}},
-		{"ClusterRole version", func(o client.Object) {
-			if _, ok := o.(*rbacv1.ClusterRole); ok {
-				o.SetResourceVersion("8")
-			}
-		}},
-		{"ClusterRole rules at same UID and version", func(o client.Object) {
-			if r, ok := o.(*rbacv1.ClusterRole); ok {
-				r.Rules[0].Resources = []string{"secrets"}
-			}
-		}},
 		{"unpersisted dependency", func(o client.Object) {
 			if _, ok := o.(*nodev1.RuntimeClass); ok {
 				o.SetResourceVersion("")
@@ -553,12 +631,6 @@ func TestKubernetesSandboxConfigurationSourceVerifiesLivePinsAndRules(t *testing
 		}},
 		{"terminating dependency", func(o client.Object) {
 			if _, ok := o.(*storagev1.StorageClass); ok {
-				stamp := metav1.Now()
-				o.SetDeletionTimestamp(&stamp)
-			}
-		}},
-		{"terminating role", func(o client.Object) {
-			if _, ok := o.(*rbacv1.ClusterRole); ok {
 				stamp := metav1.Now()
 				o.SetDeletionTimestamp(&stamp)
 			}
@@ -571,11 +643,11 @@ func TestKubernetesSandboxConfigurationSourceVerifiesLivePinsAndRules(t *testing
 			reader.after = func(object client.Object, _ int) error { tc.mutate(object); return nil }
 			requireKubernetesPlatformFailure(t, source)
 			if kubernetesPlatformJSON(t, document) != original {
-				t.Fatal("a replacement or changed role was silently reapproved")
+				t.Fatal("runtime or storage pins were silently changed")
 			}
 		})
 	}
-	for i := range 3 {
+	for i := range 2 {
 		t.Run(fmt.Sprintf("missing dependency %d", i), func(t *testing.T) {
 			_, cm, objects := kubernetesPlatformFixture(t)
 			objects = append(objects[:i:i], objects[i+1:]...)
@@ -588,7 +660,7 @@ func TestKubernetesSandboxConfigurationSourceVerifiesLivePinsAndRules(t *testing
 }
 
 func TestKubernetesSandboxConfigurationSourceRejectsConcurrentChanges(t *testing.T) {
-	for _, name := range []string{"sandbox-platform", "example-kata", "example-home", "example-view"} {
+	for _, name := range []string{"sandbox-platform", "example-kata", "example-home"} {
 		for _, change := range []string{"replacement", "version", "terminating", "read failure"} {
 			t.Run(name+"/"+change, func(t *testing.T) {
 				_, cm, objects := kubernetesPlatformFixture(t)
@@ -632,7 +704,7 @@ func TestKubernetesSandboxConfigurationSourceRejectsConcurrentChanges(t *testing
 }
 
 func TestKubernetesSandboxConfigurationSourcePreservesReadErrors(t *testing.T) {
-	for _, name := range []string{"sandbox-platform", "example-kata", "example-home", "example-view"} {
+	for _, name := range []string{"sandbox-platform", "example-kata", "example-home"} {
 		t.Run(name, func(t *testing.T) {
 			_, cm, objects := kubernetesPlatformFixture(t)
 			source, reader := kubernetesPlatformSource(t, cm, objects)
@@ -726,6 +798,7 @@ func TestKubernetesSandboxConfigurationSourceStableAndIdentityBoundRevisions(t *
 
 func TestKubernetesSandboxConfigurationSourceRequiresExplicitRoleReapproval(t *testing.T) {
 	document, cm, objects := kubernetesPlatformFixture(t)
+	policy, _, _ := configurationGrantFixture()
 	source, reader := kubernetesPlatformSource(t, cm, objects)
 	first, err := source.Snapshot(context.Background())
 	if err != nil {
@@ -744,7 +817,11 @@ func TestKubernetesSandboxConfigurationSourceRequiresExplicitRoleReapproval(t *t
 		}
 		return nil
 	}
-	if err := requireKubernetesPlatformFailure(t, source); !errors.Is(err, sandboxpolicy.ErrUnapprovedGrant) {
+	drifted, err := source.Snapshot(context.Background())
+	if err != nil || !reflect.DeepEqual(drifted, first) {
+		t.Fatal("live role drift invalidated or silently changed the shared approvals:", err)
+	}
+	if err := sandboxpolicy.VerifyPolicyGrants(context.Background(), reader, policy, drifted.Platforms[api.SandboxKata].Grants); !errors.Is(err, sandboxpolicy.ErrUnapprovedGrant) {
 		t.Fatal("changed live role was not held for explicit reapproval", err)
 	}
 	approved = true
@@ -753,9 +830,12 @@ func TestKubernetesSandboxConfigurationSourceRequiresExplicitRoleReapproval(t *t
 		next.Registrations[api.SandboxKata].Capabilities.Revision == first.Registrations[api.SandboxKata].Capabilities.Revision {
 		t.Fatal("explicit role pin update did not invalidate reuse independently of timestamps", err)
 	}
+	if err := sandboxpolicy.VerifyPolicyGrants(context.Background(), reader, policy, next.Platforms[api.SandboxKata].Grants); err != nil {
+		t.Fatal("explicitly reapproved requested role was rejected:", err)
+	}
 }
 
-func TestKubernetesSandboxConfigurationSourceNormalizesOnlyForRoleVerification(t *testing.T) {
+func TestKubernetesSandboxConfigurationSourceScopesAndNormalizesRoleVerification(t *testing.T) {
 	document, cm, objects := kubernetesPlatformFixture(t)
 	platform := document.Platforms[api.SandboxKata]
 	grant := platform.Grants[0]
@@ -765,16 +845,31 @@ func TestKubernetesSandboxConfigurationSourceNormalizesOnlyForRoleVerification(t
 	grant.Namespace = ""
 	platform.Grants = append(platform.Grants, grant)
 	grant.PolicyUID = "another-policy-uid"
+	grant.RoleUID, grant.RoleResourceVersion = "stale-role-uid", "stale-role-version"
 	platform.Grants = append(platform.Grants, grant)
 	document.Platforms[api.SandboxKata] = platform
 	role := objects[2].(*rbacv1.ClusterRole)
 	role.Name = grant.RoleRef.Name
 	role.Rules[0].Verbs = []string{"get", "list"}
 	cm.Data[controller.SandboxPlatformConfigurationKey] = kubernetesPlatformJSON(t, document)
-	source, _ := kubernetesPlatformSource(t, cm, objects)
+	source, reader := kubernetesPlatformSource(t, cm, objects)
 	snapshot, err := source.Snapshot(context.Background())
 	if err != nil || !reflect.DeepEqual(snapshot.Platforms, document.Platforms) {
 		t.Fatal("normalized role rules, multiple exact scopes, or valid long ClusterRole name were rejected or mutated", err)
+	}
+	policy, _, _ := configurationGrantFixture()
+	policy.Spec.KubernetesAccess.RoleBindings[0].ClusterRoleName = role.Name
+	policy.Spec.KubernetesAccess.ClusterRoleBindings = []api.AgentPolicyClusterRoleBinding{{ClusterRoleName: role.Name}}
+	if err := sandboxpolicy.VerifyPolicyGrants(context.Background(), reader, policy, snapshot.Platforms[api.SandboxKata].Grants); err != nil {
+		t.Fatal("another policy's stale pins affected normalized requested grants:", err)
+	}
+	if reader.calls[kubernetesPlatformRead{"ClusterRole", client.ObjectKeyFromObject(role)}] != 1 {
+		t.Fatal("multiple requested scopes did not share one authoritative role read")
+	}
+	policy.UID = grant.PolicyUID
+	policy.Spec.KubernetesAccess.RoleBindings = nil
+	if err := sandboxpolicy.VerifyPolicyGrants(context.Background(), reader, policy, snapshot.Platforms[api.SandboxKata].Grants); !errors.Is(err, sandboxpolicy.ErrUnapprovedGrant) {
+		t.Fatal("another policy's current pins concealed a requested stale approval:", err)
 	}
 }
 
@@ -873,6 +968,28 @@ func TestKubernetesSandboxConfigurationSourceBounds(t *testing.T) {
 			if count == 127 {
 				if _, err := source.Snapshot(context.Background()); err != nil {
 					t.Fatal("exact object bound was rejected", err)
+				}
+			} else {
+				requireKubernetesPlatformFailure(t, source)
+			}
+		}
+	})
+	t.Run("declared role object bound", func(t *testing.T) {
+		for _, count := range []int{125, 126} {
+			document, cm, objects := kubernetesPlatformFixture(t)
+			platform := document.Platforms[api.SandboxKata]
+			grant := platform.Grants[0]
+			platform.Grants = nil
+			for i := range count {
+				grant.RoleRef.Name = fmt.Sprintf("example-role-%d", i)
+				platform.Grants = append(platform.Grants, grant)
+			}
+			document.Platforms[api.SandboxKata] = platform
+			cm.Data[controller.SandboxPlatformConfigurationKey] = kubernetesPlatformJSON(t, document)
+			source, _ := kubernetesPlatformSource(t, cm, objects[:2])
+			if count == 125 {
+				if _, err := source.Snapshot(context.Background()); err != nil {
+					t.Fatal("exact declared role object bound was rejected:", err)
 				}
 			} else {
 				requireKubernetesPlatformFailure(t, source)
