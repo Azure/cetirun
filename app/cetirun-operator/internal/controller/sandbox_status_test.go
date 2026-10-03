@@ -102,6 +102,9 @@ func TestSandboxAgentStatusRequiresCurrentCompleteEvidence(t *testing.T) {
 		{"Pod pending", func(_ *api.Agent, i *controller.SandboxStatusInput) { i.Observation.PodVerified = false }, metav1.ConditionFalse, "EnforcementPending"},
 		{"runtime pending", func(_ *api.Agent, i *controller.SandboxStatusInput) { i.Observation.RuntimeVerified = false }, metav1.ConditionFalse, "EnforcementPending"},
 		{"unqualified control", func(_ *api.Agent, i *controller.SandboxStatusInput) { i.Failure = sandboxpolicy.ErrUnsupportedControl }, metav1.ConditionFalse, "UnsupportedControl"},
+		{"unqualified control with operational failure", func(_ *api.Agent, i *controller.SandboxStatusInput) {
+			i.Failure = errors.Join(sandboxpolicy.ErrUnsupportedControl, errors.New("synthetic source failure"))
+		}, metav1.ConditionFalse, "PolicyApplyFailed"},
 		{"unavailable dependency", func(_ *api.Agent, i *controller.SandboxStatusInput) { i.Failure = sandboxpolicy.ErrUnavailable }, metav1.ConditionUnknown, "ObservationUnavailable"},
 		{"runtime unavailable", func(_ *api.Agent, i *controller.SandboxStatusInput) { i.Failure = sandbox.ErrRuntimeUnavailable }, metav1.ConditionFalse, "RuntimeUnavailable"},
 		{"reference missing", func(_ *api.Agent, i *controller.SandboxStatusInput) {

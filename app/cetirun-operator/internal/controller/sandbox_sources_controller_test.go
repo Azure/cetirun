@@ -118,11 +118,13 @@ func TestSandboxSourcesHeldControllerWiring(t *testing.T) {
 				t.Fatal("stock source wiring did not stop at unavailable writer fencing:", err)
 			}
 			agent := f.current(t)
+			condition := apimeta.FindStatusCondition(agent.Status.Conditions, api.ConditionSandboxReady)
 			if f.installer.stages != 0 || agent.Status.AccessURL != "" || agent.Status.Sandbox != nil ||
 				!slices.Contains(agent.Finalizers, sandbox.HoldFinalizer) ||
 				slices.Contains(agent.Finalizers, sandbox.PreparationFinalizer) ||
 				!apimeta.IsStatusConditionFalse(agent.Status.Conditions, api.ConditionReady) ||
-				!apimeta.IsStatusConditionFalse(agent.Status.Conditions, api.ConditionSandboxReady) {
+				condition == nil || condition.Status != metav1.ConditionUnknown || condition.Reason != "ObservationUnavailable" ||
+				!apimeta.IsStatusConditionFalse(agent.Status.Conditions, api.ConditionAgentConfigReady) {
 				t.Fatal("Kubernetes sources were mistaken for execution or fencing evidence")
 			}
 			var state corev1.ConfigMapList

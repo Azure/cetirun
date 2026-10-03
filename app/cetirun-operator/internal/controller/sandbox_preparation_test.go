@@ -356,50 +356,51 @@ func TestSandboxPreparationMissingAndStaleInputsStayHeld(t *testing.T) {
 	for _, test := range []struct {
 		name   string
 		mutate func(*testing.T, *preparationFixture)
+		status metav1.ConditionStatus
 	}{
-		{"no configuration source", func(_ *testing.T, f *preparationFixture) { f.reconciler.SandboxPreparation.Configuration = nil }},
-		{"no prerequisite source", func(_ *testing.T, f *preparationFixture) { f.reconciler.SandboxPreparation.Prerequisites = nil }},
-		{"no installer", func(_ *testing.T, f *preparationFixture) { f.reconciler.SandboxPreparation.Installer = nil }},
-		{"no authoritative reader", func(_ *testing.T, f *preparationFixture) { f.reconciler.APIReader = nil }},
-		{"stale registration", func(_ *testing.T, f *preparationFixture) { f.config.ObservedAt = f.now.Add(-time.Minute) }},
-		{"stale prerequisites", func(_ *testing.T, f *preparationFixture) { f.source.inputs.ObservedAt = f.now.Add(-time.Minute) }},
-		{"future prerequisites", func(_ *testing.T, f *preparationFixture) { f.source.inputs.ObservedAt = f.now.Add(time.Second) }},
+		{"no configuration source", func(_ *testing.T, f *preparationFixture) { f.reconciler.SandboxPreparation.Configuration = nil }, metav1.ConditionUnknown},
+		{"no prerequisite source", func(_ *testing.T, f *preparationFixture) { f.reconciler.SandboxPreparation.Prerequisites = nil }, metav1.ConditionUnknown},
+		{"no installer", func(_ *testing.T, f *preparationFixture) { f.reconciler.SandboxPreparation.Installer = nil }, metav1.ConditionUnknown},
+		{"no authoritative reader", func(_ *testing.T, f *preparationFixture) { f.reconciler.APIReader = nil }, metav1.ConditionUnknown},
+		{"stale registration", func(_ *testing.T, f *preparationFixture) { f.config.ObservedAt = f.now.Add(-time.Minute) }, metav1.ConditionUnknown},
+		{"stale prerequisites", func(_ *testing.T, f *preparationFixture) { f.source.inputs.ObservedAt = f.now.Add(-time.Minute) }, metav1.ConditionUnknown},
+		{"future prerequisites", func(_ *testing.T, f *preparationFixture) { f.source.inputs.ObservedAt = f.now.Add(time.Second) }, metav1.ConditionUnknown},
 		{"unavailable runtime", func(_ *testing.T, f *preparationFixture) {
 			registration := f.config.Registrations[api.SandboxKata]
 			registration.Available = false
 			f.config.Registrations[api.SandboxKata] = registration
-		}},
+		}, metav1.ConditionFalse},
 		{"missing fence", func(_ *testing.T, f *preparationFixture) {
 			f.source.fenceErr = fmt.Errorf("synthetic fence unavailable")
-		}},
+		}, metav1.ConditionFalse},
 		{"slow fence expires inventory", func(_ *testing.T, f *preparationFixture) {
 			f.source.onFence = func() { f.now = f.now.Add(time.Minute) }
-		}},
-		{"namespace replacement", func(_ *testing.T, f *preparationFixture) { f.source.inputs.NamespaceUID = "different-namespace" }},
-		{"HOME replacement", func(_ *testing.T, f *preparationFixture) { f.source.inputs.Home.UID = "different-home" }},
-		{"Secret replacement", func(_ *testing.T, f *preparationFixture) { f.source.inputs.RuntimeSecret.UID = "different-secret" }},
-		{"wrong Agent generation", func(_ *testing.T, f *preparationFixture) { f.source.inputs.AgentGeneration++ }},
+		}, metav1.ConditionUnknown},
+		{"namespace replacement", func(_ *testing.T, f *preparationFixture) { f.source.inputs.NamespaceUID = "different-namespace" }, metav1.ConditionFalse},
+		{"HOME replacement", func(_ *testing.T, f *preparationFixture) { f.source.inputs.Home.UID = "different-home" }, metav1.ConditionFalse},
+		{"Secret replacement", func(_ *testing.T, f *preparationFixture) { f.source.inputs.RuntimeSecret.UID = "different-secret" }, metav1.ConditionFalse},
+		{"wrong Agent generation", func(_ *testing.T, f *preparationFixture) { f.source.inputs.AgentGeneration++ }, metav1.ConditionFalse},
 		{"unapproved chart", func(t *testing.T, f *preparationFixture) {
 			agent := f.current(t)
 			agent.Spec.Helm.Version = "999.0.0"
 			if err := f.client.Update(context.Background(), agent); err != nil {
 				t.Fatal(err)
 			}
-		}},
+		}, metav1.ConditionFalse},
 		{"missing authorization", func(t *testing.T, f *preparationFixture) {
 			agent := f.current(t)
 			agent.Annotations = nil
 			if err := f.client.Update(context.Background(), agent); err != nil {
 				t.Fatal(err)
 			}
-		}},
+		}, metav1.ConditionFalse},
 		{"old Pod", func(t *testing.T, f *preparationFixture) {
 			if err := f.client.Create(context.Background(), &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
 				Name: "old-writer", Namespace: f.fixture.Namespace.Name, Finalizers: []string{"example.com/termination"},
 			}}); err != nil {
 				t.Fatal(err)
 			}
-		}},
+		}, metav1.ConditionFalse},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := newPreparationFixture(t, "hermes")
@@ -408,9 +409,10 @@ func TestSandboxPreparationMissingAndStaleInputsStayHeld(t *testing.T) {
 				t.Fatal("unsafe preparation was accepted")
 			}
 			agent := f.current(t)
+			condition := apimeta.FindStatusCondition(agent.Status.Conditions, api.ConditionSandboxReady)
 			if f.installer.stages != 0 || agent.Status.Sandbox != nil ||
 				!slices.Contains(agent.Finalizers, sandbox.HoldFinalizer) ||
-				!apimeta.IsStatusConditionFalse(agent.Status.Conditions, api.ConditionSandboxReady) ||
+				condition == nil || condition.Status != test.status ||
 				apimeta.IsStatusConditionTrue(agent.Status.Conditions, api.ConditionAgentConfigReady) {
 				t.Fatal("invalid inputs produced a prepared or applied result")
 			}

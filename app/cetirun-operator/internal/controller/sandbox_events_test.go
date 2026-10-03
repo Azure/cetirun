@@ -646,7 +646,7 @@ func TestSandboxEventsPreparationFailureRequiresCommittedStatus(t *testing.T) {
 				},
 			})
 			r := &AgentReconciler{Client: writer, APIReader: writer}
-			err := r.sandboxPreparationStatus(ctx, agent, false, sandboxpolicy.ErrUnsupportedControl)
+			err := r.sandboxPreparationStatus(ctx, agent, false, sandboxpolicy.ErrUnapprovedGrant)
 			stored := &api.Agent{}
 			if getErr := backing.Get(ctx, client.ObjectKeyFromObject(agent), stored); getErr != nil {
 				t.Fatal(getErr)
@@ -665,7 +665,7 @@ func TestSandboxEventsPreparationFailureRequiresCommittedStatus(t *testing.T) {
 				t.Fatal(err)
 			}
 			for range 2 {
-				if err := r.sandboxPreparationStatus(ctx, agent, false, sandboxpolicy.ErrUnsupportedControl); err != nil {
+				if err := r.sandboxPreparationStatus(ctx, agent, false, sandboxpolicy.ErrUnapprovedGrant); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -675,7 +675,7 @@ func TestSandboxEventsPreparationFailureRequiresCommittedStatus(t *testing.T) {
 			}
 			event := capture.events[0]
 			condition := apimeta.FindStatusCondition(stored.Status.Conditions, api.ConditionSandboxReady)
-			if event.Event != "sandbox.enforcement.failed" || event.Reason != "UnsupportedControl" ||
+			if event.Event != "sandbox.enforcement.failed" || event.Reason != "UnauthorizedBinding" ||
 				condition == nil || condition.Status != metav1.ConditionFalse || condition.Reason != event.Reason ||
 				stored.Status.Sandbox != nil || stored.Status.AccessURL != "" ||
 				!equality.Semantic.DeepEqual(stored.Spec, agent.Spec) || !reflect.DeepEqual(stored.Finalizers, agent.Finalizers) {

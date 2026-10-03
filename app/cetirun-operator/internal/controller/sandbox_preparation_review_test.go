@@ -79,30 +79,31 @@ func TestSandboxPreparationUnsupportedIntegrationsRemainCleanlyHeld(t *testing.T
 func TestSandboxPreparationUnsupportedProviderControlIsNotRetryableFailure(t *testing.T) {
 	unsupported := fmt.Errorf("%w: synthetic unimplemented control", sandboxpolicy.ErrUnsupportedControl)
 	for _, tc := range []struct {
-		name  string
-		cause error
-		clean bool
+		name   string
+		cause  error
+		clean  bool
+		reason string
 	}{
-		{"single", unsupported, true},
-		{"joined-unsupported", fmt.Errorf("synthetic source: %w", errors.Join(unsupported, sandboxpolicy.ErrUnsupportedControl)), true},
-		{"joined-unavailable", errors.Join(unsupported, sandboxpolicy.ErrUnavailable), false},
-		{"joined-deadline", errors.Join(unsupported, context.DeadlineExceeded), false},
-		{"joined-cancellation", errors.Join(unsupported, context.Canceled), false},
-		{"joined-other-failure", errors.Join(unsupported, errors.New("synthetic source failure")), false},
+		{"single", unsupported, true, "UnsupportedControl"},
+		{"joined-unsupported", fmt.Errorf("synthetic source: %w", errors.Join(unsupported, sandboxpolicy.ErrUnsupportedControl)), true, "UnsupportedControl"},
+		{"joined-unavailable", errors.Join(unsupported, sandboxpolicy.ErrUnavailable), false, "ObservationUnavailable"},
+		{"joined-deadline", errors.Join(unsupported, context.DeadlineExceeded), false, "PolicyApplyFailed"},
+		{"joined-cancellation", errors.Join(unsupported, context.Canceled), false, "PolicyApplyFailed"},
+		{"joined-other-failure", errors.Join(unsupported, errors.New("synthetic source failure")), false, "PolicyApplyFailed"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newPreparationFixture(t, "hermes")
 			f.source.resolveErr = tc.cause
 			result, err := f.reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKey{Name: f.fixture.Agent.Name}})
 			condition := apimeta.FindStatusCondition(f.current(t).Status.Conditions, api.ConditionAgentConfigReady)
-			if condition == nil || condition.Status != metav1.ConditionFalse || f.installer.stages != 0 {
+			if condition == nil || condition.Status != metav1.ConditionFalse || condition.Reason != tc.reason || f.installer.stages != 0 {
 				t.Fatalf("unsupported control did not remain held: %+v %v", condition, err)
 			}
 			if tc.clean {
 				if err != nil || result.RequeueAfter != time.Minute || condition.Reason != "UnsupportedControl" {
 					t.Fatalf("unsupported control was treated as missing prerequisites: %+v %v", result, err)
 				}
-			} else if !errors.Is(err, tc.cause) || result.RequeueAfter != 0 || condition.Reason != "SandboxPreparationPending" {
+			} else if !errors.Is(err, tc.cause) || result.RequeueAfter != 0 {
 				t.Fatalf("unsupported hold hid an operational failure: %+v %+v %v", result, condition, err)
 			}
 		})
@@ -116,25 +117,27 @@ func TestSandboxPreparationPlatformPrerequisiteClassification(t *testing.T) {
 		mutate func(*preparationFixture)
 		clean  bool
 		cause  error
+		reason string
+		status metav1.ConditionStatus
 	}{
 		{"unqualified adapter", func(f *preparationFixture) {
 			platform := f.config.Platforms[api.SandboxKata]
 			platform.Adapter.Qualified = false
 			f.config.Platforms[api.SandboxKata] = platform
-		}, true, nil},
+		}, true, nil, "UnsupportedControl", metav1.ConditionFalse},
 		{"unsupported adapter", func(f *preparationFixture) {
 			platform := f.config.Platforms[api.SandboxKata]
 			platform.Adapter.Name = "synthetic-unsupported-adapter"
 			f.config.Platforms[api.SandboxKata] = platform
-		}, true, nil},
+		}, true, nil, "UnsupportedControl", metav1.ConditionFalse},
 		{"unavailable adapter", func(f *preparationFixture) {
 			platform := f.config.Platforms[api.SandboxKata]
 			platform.Adapter.Available = false
 			f.config.Platforms[api.SandboxKata] = platform
-		}, false, sandboxpolicy.ErrUnavailable},
+		}, false, sandboxpolicy.ErrUnavailable, "ObservationUnavailable", metav1.ConditionUnknown},
 		{"missing platform inventory", func(f *preparationFixture) {
 			delete(f.config.Platforms, api.SandboxKata)
-		}, false, sandboxpolicy.ErrUnavailable},
+		}, false, sandboxpolicy.ErrUnavailable, "ObservationUnavailable", metav1.ConditionUnknown},
 		{"RuntimeClass read failure", func(f *preparationFixture) {
 			f.reconciler.APIReader = interceptor.NewClient(f.client.(client.WithWatch), interceptor.Funcs{
 				Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, object client.Object, options ...client.GetOption) error {
@@ -144,7 +147,7 @@ func TestSandboxPreparationPlatformPrerequisiteClassification(t *testing.T) {
 					return c.Get(ctx, key, object, options...)
 				},
 			})
-		}, false, readFailure},
+		}, false, readFailure, "PolicyApplyFailed", metav1.ConditionFalse},
 	} {
 		for _, previouslyPrepared := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/prepared=%v", tc.name, previouslyPrepared), func(t *testing.T) {
@@ -161,11 +164,12 @@ func TestSandboxPreparationPlatformPrerequisiteClassification(t *testing.T) {
 				})
 				agent := f.current(t)
 				condition := apimeta.FindStatusCondition(agent.Status.Conditions, api.ConditionAgentConfigReady)
+				sandboxCondition := apimeta.FindStatusCondition(agent.Status.Conditions, api.ConditionSandboxReady)
 				if condition == nil || condition.Status != metav1.ConditionFalse ||
+					condition.Reason != tc.reason || sandboxCondition == nil || sandboxCondition.Status != tc.status ||
 					condition.ObservedGeneration != agent.Generation || agent.Status.AccessURL != "" ||
 					!slices.Contains(agent.Finalizers, sandbox.HoldFinalizer) ||
 					!apimeta.IsStatusConditionFalse(agent.Status.Conditions, api.ConditionReady) ||
-					!apimeta.IsStatusConditionFalse(agent.Status.Conditions, api.ConditionSandboxReady) ||
 					f.installer.stages != stages {
 					t.Fatalf("failed prerequisites did not retain the execution hold: %+v %v", agent.Status, err)
 				}
@@ -175,7 +179,7 @@ func TestSandboxPreparationPlatformPrerequisiteClassification(t *testing.T) {
 						t.Fatalf("unsupported platform entered an outage/backoff loop: %+v %+v %v", result, condition, err)
 					}
 				} else if !errors.Is(err, tc.cause) || result.RequeueAfter != 0 ||
-					condition.Reason != "SandboxPreparationPending" || agent.Status.Phase != api.PhasePending {
+					agent.Status.Phase != api.PhasePending {
 					t.Fatalf("an unavailable prerequisite was hidden by an unsupported hold: %+v %+v %v", result, condition, err)
 				}
 				if previouslyPrepared {

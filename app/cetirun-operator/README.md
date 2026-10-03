@@ -578,6 +578,14 @@ mirrors. Configuration acceptance does not establish Agent enforcement;
 rejection can include unavailable prerequisites, distinguished by
 `conditionStatus=Unknown`.
 
+Preparation errors use the shared typed failure classifier before status
+persistence. Missing or drifted approved roles therefore emit a committed
+failure rather than an ordinary pending hold. Unavailable trusted dependencies
+set `SandboxReady=Unknown` with reason `ObservationUnavailable`; `Ready` and
+`AgentConfigReady` remain false. Ordinary pending/prepared holds stay silent.
+Error propagation, grant revocation and explicit reapproval requirements are
+unchanged.
+
 Events include a UTC timestamp, bounded reason, resource UID and generation,
 condition status, stable `transitionID`, and separate
 `attemptedBinding`/`attemptedRevision` and
