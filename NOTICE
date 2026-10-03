@@ -14,6 +14,15 @@ This repository notice covers incorporated source and adaptations. Dependencies
 referenced only through package managers are not additional incorporated source.
 Their notices must accompany the artifacts that actually redistribute them.
 
+The optional examples/vscode-server image downloads Microsoft's official VS
+Code CLI and Web Server under the Microsoft Visual Studio Code Server license:
+https://code.visualstudio.com/license/server
+The first-party installer and path adapter are MIT-licensed; this does not
+relicense the official binaries or authorize hosting or redistribution. The
+build requires explicit license acceptance and retains the server notices.
+Copilot and user-installed extensions remain subject to their own service and
+license terms. This example is not included in platform publishing targets.
+
 The Portal frontend build generates THIRD_PARTY_LICENSES.txt from its installed
 production dependency graph, using
 app/cetirun-portal/web/scripts/production-licenses.mjs. This contains package

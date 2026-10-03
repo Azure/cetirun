@@ -40,9 +40,9 @@ export function parseBaseUrl(accessUrl: string | undefined): string | undefined 
  *
  * Each supported agent serves its browser-native UI below /ui/<instanceName>.
  */
-export function agentUIUrl(instance: Pick<Instance, "agent" | "accessUrl">): string | undefined {
-  if (instance.agent.type === "custom") return undefined;
-  const baseUrl = parseBaseUrl(instance.accessUrl);
+export function agentUIUrl(instance: Pick<Instance, "agent" | "accessUrl" | "webUIUrl">): string | undefined {
+  if (instance.agent.type === "custom" && !instance.agent.webUI) return undefined;
+  const baseUrl = parseBaseUrl(instance.agent.type === "custom" ? instance.webUIUrl : instance.accessUrl);
   if (!baseUrl) return undefined;
   return `${baseUrl}/`;
 }

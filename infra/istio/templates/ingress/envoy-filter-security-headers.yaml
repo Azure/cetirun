@@ -61,11 +61,16 @@ spec:
                 handle:headers():replace("referrer-policy", "{{ .Values.securityHeaders.referrerPolicy }}")
                 local meta = handle:streamInfo():dynamicMetadata():get("cetirun")
                 local path = (meta and meta["path"]) or ""
-                local host = (meta and meta["host"]) or ""
+                path = path:match("^([^?]*)") or ""
+                local is_ui_path = path:match("^/ui/[^/]+/") ~= nil
                 -- For iframe-embedded paths, allow same-origin framing
                 local is_iframe_path = path:find("/term") ~= nil or path:find("/desktop") ~= nil or path:find("/chat") ~= nil
 
-                if is_iframe_path then
+                if is_ui_path then
+                  -- Applications own their CSP, including per-response nonces and hashes.
+                  -- Authentication and ownership checks still run on every UI request.
+                  handle:headers():replace("x-frame-options", "{{ .Values.securityHeaders.xFrameOptions }}")
+                elseif is_iframe_path then
                   handle:headers():replace("content-security-policy",
                     "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'self' wss:; img-src 'self' data:; font-src 'self'; frame-ancestors 'self'")
                   handle:headers():remove("x-frame-options")

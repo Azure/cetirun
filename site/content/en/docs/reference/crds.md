@@ -53,7 +53,8 @@ migration. Retention does not protect against a schema downgrade.
 | `agent.image` | Required for Custom; once set, cannot be cleared. Built-in defaults are pinned from the selected chart |
 | `agent.registrySecretRef.name` | Optional source credential reference; no namespace, key, or inline credentials |
 | `agent.username` | Defaults to `vibe`; immutable, non-root image username |
-| `agent.port` | Optional HTTP port, 1–65535; omitted for Custom means no platform HTTP entry |
+| `agent.port` | HTTP port, 1–65535; required for Custom Web UI, otherwise optional. Omitted for Custom means headless |
+| `agent.webUI` | Boolean, default false; Custom-only. When true, `agent.port` serves a Web UI rather than the Chat API; see [Agent Harness](../agent-harness/#custom-web-ui) |
 | `team` | Name of a `Team` |
 | `sandboxRef` | Optional during additive staging; governed resolution requires a permitted Team Sandbox |
 | `policyClass` | `normal` (default) or administrator-assigned `admin`; the default alone does not enable governance |

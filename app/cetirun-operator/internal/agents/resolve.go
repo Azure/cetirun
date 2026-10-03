@@ -28,8 +28,11 @@ func ResolveCustom(request Request) (ResolvedAgent, error) {
 	if request.Port != nil && (*request.Port < 1 || *request.Port > 65535) {
 		return ResolvedAgent{}, fmt.Errorf("spec.agent.port must be between 1 and 65535")
 	}
+	if request.WebUI && request.Port == nil {
+		return ResolvedAgent{}, fmt.Errorf("spec.agent.webUI requires port")
+	}
 	agent := ResolvedAgent{Type: request.Type, Image: request.Image, Username: request.Username,
-		HomeDir: "/home/" + request.Username}
+		HomeDir: "/home/" + request.Username, WebUI: request.WebUI}
 	if request.Port != nil {
 		agent.Port = ptr.To(*request.Port)
 	}
@@ -42,6 +45,9 @@ func Resolve(request Request, profile Profile) (ResolvedAgent, error) {
 	}
 	if request.Type != "openclaw" && request.Type != "hermes" {
 		return ResolvedAgent{}, fmt.Errorf("unsupported harness type")
+	}
+	if request.WebUI {
+		return ResolvedAgent{}, fmt.Errorf("spec.agent.webUI requires a custom agent")
 	}
 	if profile.ID == "" || profile.Image == "" || profile.Port < 1 || profile.Port > 65535 {
 		return ResolvedAgent{}, fmt.Errorf("incomplete runtime profile")

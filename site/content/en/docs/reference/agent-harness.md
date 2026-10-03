@@ -40,7 +40,8 @@ spec:
 | `image` | Required for Custom. Built-ins use a pinned platform default or a qualified override. Once set, it cannot be cleared. Prefer production digests. |
 | `registrySecretRef` | Optional Portal-managed source Secret reference containing only `name`. |
 | `username` | Existing non-root image user, default `vibe`, with HOME at `/home/<username>`; immutable. |
-| `port` | Optional Agent HTTP port, 1–65535. Without it, Custom has no Agent HTTP endpoint, Chat UI or HTTP probe. Platform desktop and terminal access are independent. Built-ins retain qualified native defaults. |
+| `port` | HTTP port, 1–65535. Custom serves its Web UI when `webUI` is true, otherwise the Chat API; omitted means headless. Built-ins retain qualified native defaults. Platform desktop and terminal access are independent. |
+| `webUI` | Boolean, default false. When true, Custom must set `port` and serve a browser application there instead of the Chat API. Published at `/ui/<instance>/` through platform authentication. |
 
 `spec.agent` remains required; `agent: {}` selects Hermes. `spec.model`,
 ownership, Team, skills, storage, resources, Helm settings and lifecycle stay
@@ -190,9 +191,11 @@ Local checks also cover resources, PDB values, CIDRs, annotations and scheduling
 An Agent HTTP endpoint requires NetworkPolicy to be enabled because it has no
 application-level Chat token; a disabled policy is not silently overridden.
 
-The [synthetic example and qualification commands]({{< repo "examples/custom-agent/README.md" >}})
-exercise this path without a paid model. They do not establish production
-Gateway availability, skill provenance, network isolation or storage compatibility.
+The [official VS Code Server example]({{< repo "examples/vscode-server/README.md" >}})
+provides a Web IDE with native GitHub Copilot sign-in. Its offline tests exercise
+prefix routing, browser storage and HOME preparation without a model call.
+Real Copilot use, browser compatibility, network isolation and storage behavior
+require separate validation.
 
 ## Initialization
 
@@ -375,7 +378,8 @@ capabilities, not prerequisites implemented by the schema. See
 
 ## Chat
 
-Custom images with `port` receive `PORT` and serve these routes on that port:
+Custom images with `port` and `webUI` false or omitted receive `PORT` and serve
+these routes on that port:
 
 | Route | Purpose |
 | --- | --- |
@@ -393,6 +397,42 @@ Chat UI owns its session list and history and sends the needed `messages`.
 Native history is optional and requires no synchronization. Chat UI storage
 is a separate choice; interrupted requests are not automatically replayed.
 
+## Custom Web UI
+
+A Custom image sets `spec.agent.webUI: true` to serve a browser application on
+`spec.agent.port` instead of the Chat API. The port is required while the flag
+is enabled. Both modes use the fixed `/healthz` startup/readiness endpoint,
+which must work without a model call or a user's service login.
+
+```yaml
+spec:
+  agent:
+    type: custom
+    image: registry.example.com/team/editor:1.0.0
+    port: 8080
+    webUI: true
+```
+
+The platform supplies `PORT`, `CETIRUN_WEB_BASE_PATH` and
+`CETIRUN_WEB_INSTANCE`. The base path is `/ui/<instance>/`; the instance value is
+the Agent UID, stable across Pod replacements. The application must preserve
+this prefix in assets, WebSockets and callbacks and scope browser storage and
+cookies per instance. Paths on one origin are not a browser security boundary.
+
+The Operator publishes the route only through the platform's authenticated
+gateway and instance-ownership check. NetworkPolicy must remain enabled. The
+Portal shows the declared Web UI and enables its link when the Agent is Ready
+and the route is configured; suspension removes the route. Desktop and Terminal
+remain separate optional platform services. Web UI readiness
+does not establish successful Copilot authentication or model execution.
+
+The Portal creation and edit forms provide a **Serve Web UI** switch and use
+the same port field for both modes. The API accepts a boolean `agent.webUI`.
+Omitting it during a PATCH preserves the saved flag; false or null resets it
+to false without clearing `agent.port`. To make an instance headless, disable
+Web UI and clear the port together. Changes must match the image's supported
+protocol. Instance UID and resource-version preconditions still apply.
+
 ## Lifecycle
 
 Pin runtime settings per Agent and keep chart and image versions separate.
@@ -407,9 +447,9 @@ combinations fail with `AgentConfigInvalid` before workload deployment.
 
 The shared network rules retain the platform's configured external-egress and
 internal-CIDR settings, DNS and Istio control-plane access. Custom adds the
-approved Gateway peer and internal Agent HTTP callers. Desktop ingress is
-allowed through the platform gateway; the Agent HTTP port is not added to that
-public route. NetworkPolicy configuration alone does not prove Gateway-only
+approved Gateway peer and internal Chat API callers. Desktop and declared Web UI
+ingress are allowed through the platform gateway; the private Chat port is not
+added to that public route. NetworkPolicy configuration alone does not prove Gateway-only
 model egress or live mesh enforcement.
 
 Custom uses `OnDelete` and excludes the built-in orphan-delete hook.
@@ -448,13 +488,15 @@ Missing/conflicting ownership blocks cleanup. Never-bound instances do not
 delete foreign namespaces. Deleting an owned namespace still deletes its PVCs;
 the receipt does not replace a data backup.
 
-With no port, `Ready` describes the running process, not HTTP health, a successful
-model call or recovered sessions. With a port, probes use `/healthz`; protocol
-qualification checks the exact JSON response separately from Kubernetes probes.
-Neither mode publishes a native Agent UI URL in the Agent CR's `status.accessUrl`.
-Portal derives the independent Desktop entry from the platform gateway domain
-and instance name after the route is configured; it does not assume the Portal
-and gateway share an origin.
+For a headless Custom Agent, `Ready` describes the running process, not HTTP
+health, a successful model call or recovered sessions. With a port, probes use
+`/healthz`; protocol qualification checks the response separately from Kubernetes
+probes. When Web UI is enabled and its route is configured, the Operator sets
+the Agent CR's `status.accessUrl` and the Portal returns it as `webUIUrl`.
+Chat-only and headless Custom Agents leave `status.accessUrl` empty. Portal
+derives the independent Desktop and Terminal entries from the platform gateway
+domain and instance name after their routes are configured; it does not assume
+the Portal and gateway share an origin.
 
 ## Portal self-service
 

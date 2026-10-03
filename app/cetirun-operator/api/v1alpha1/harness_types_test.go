@@ -163,6 +163,27 @@ func TestAgentDeepCopy(t *testing.T) {
 	}
 }
 
+func TestWebUISerializationAndCopy(t *testing.T) {
+	agent := &api.Agent{Spec: api.AgentSpec{Agent: api.HarnessSpec{Type: api.AgentTypeCustom,
+		Port: ptr.To[int32](8080), WebUI: true,
+	}}}
+	copy := agent.DeepCopy()
+	copy.Spec.Agent.WebUI = false
+	*copy.Spec.Agent.Port = 9000
+	if !agent.Spec.Agent.WebUI || *agent.Spec.Agent.Port != 8080 {
+		t.Fatal("Web UI is shared by the deepcopy")
+	}
+	raw, err := json.Marshal(agent.Spec.Agent)
+	if err != nil || string(raw) != `{"type":"custom","port":8080,"webUI":true}` {
+		t.Fatalf("Web UI serialization failed: %s %v", raw, err)
+	}
+	for _, invalid := range []string{`{"webUI":{"port":8080}}`, `{"webUI":"true"}`, `{"webUI":1}`} {
+		if err := json.Unmarshal([]byte(invalid), &api.HarnessSpec{}); err == nil {
+			t.Fatalf("non-boolean Web UI accepted: %s", invalid)
+		}
+	}
+}
+
 func TestGeneratedAgentSchema(t *testing.T) {
 	raw, err := os.ReadFile("../../config/crd/bases/cetirun.microsoft.com_agents.yaml")
 	if err != nil {
@@ -200,7 +221,11 @@ func TestGeneratedAgentSchema(t *testing.T) {
 		string(username.Default.Raw) != `"vibe"` {
 		t.Fatal("username must default to vibe")
 	}
-	fields := []string{"type", "image", "registrySecretRef", "username", "port"}
+	webUI := agent.Properties["webUI"]
+	if webUI.Type != "boolean" || webUI.Default == nil || string(webUI.Default.Raw) != "false" || len(webUI.Properties) != 0 {
+		t.Fatal("webUI must be a boolean defaulting to false, without a second port")
+	}
+	fields := []string{"type", "image", "registrySecretRef", "username", "port", "webUI"}
 	if len(agent.Properties) != len(fields) {
 		t.Fatalf("unexpected public agent fields: %v", agent.Properties)
 	}

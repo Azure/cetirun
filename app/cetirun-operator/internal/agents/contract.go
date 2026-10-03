@@ -30,6 +30,7 @@ type Request struct {
 	Image    string `json:"image,omitempty"`
 	Username string `json:"username,omitempty"`
 	Port     *int32 `json:"port,omitempty"`
+	WebUI    bool   `json:"webUI,omitempty"`
 }
 
 type Profile struct {
@@ -46,6 +47,7 @@ type ResolvedAgent struct {
 	Username string `json:"username"`
 	HomeDir  string `json:"home"`
 	Port     *int32 `json:"port,omitempty"`
+	WebUI    bool   `json:"webUI,omitempty"`
 }
 
 // Bindings contains only non-sensitive, platform-selected inputs. ConfigTemplate
@@ -62,6 +64,8 @@ type Bindings struct {
 	ReservedPorts     []PortBinding
 	ContextRevision   string
 	AgentManagedModel bool
+	WebBasePath       string
+	WebInstance       string
 }
 
 type ModelBinding struct {

@@ -262,18 +262,18 @@ by wiring tests and executable initialization tests. Do not replace baseline
 fixtures with changed output merely to make a regression pass.
 
 Custom runtime tests run through the same Go and Python suites. They cover
-typed platform bindings, both HTTP and headless rendering, final manifest
-validation, the common HOME initializer, and a local mock Gateway:
+typed platform bindings, Chat HTTP, Web UI and headless rendering, final manifest
+validation, and the common HOME initializer. The VS Code example has a separate
+offline suite for its prefix proxy, browser storage and restart behavior:
 
 ```bash
-python3 -B examples/custom-agent/qualify.py
+node --test examples/vscode-server/test/*.test.mjs
 ```
 
-This source-level qualification starts only loopback mock servers and uses
-synthetic files and credentials. It does not run Docker or contact a model
-provider. The optional container mode requires a separate, explicit invocation;
-see [the example](examples/custom-agent/README.md). No production Custom binding
-provider is configured by these tests.
+These tests start only loopback fixture servers and use synthetic files and
+credentials. They do not start VS Code, run Docker or contact GitHub/Copilot.
+Image builds, rendered IDE checks and real Copilot tasks are separate checks;
+see [the example](examples/vscode-server/README.md).
 
 ### Documentation
 

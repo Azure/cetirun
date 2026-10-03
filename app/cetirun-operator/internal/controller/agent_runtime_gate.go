@@ -24,7 +24,7 @@ func validateAgentRuntime(agent cetirunv1alpha1.HarnessSpec) error {
 		return fmt.Errorf("spec.agent.image must not be empty")
 	}
 	if agent.Type == cetirunv1alpha1.AgentTypeCustom {
-		request := agents.Request{Type: "custom", Port: agent.Port}
+		request := agents.Request{Type: "custom", Port: agent.Port, WebUI: agent.WebUI}
 		if agent.Image != nil {
 			request.Image = *agent.Image
 		}
@@ -33,6 +33,9 @@ func validateAgentRuntime(agent cetirunv1alpha1.HarnessSpec) error {
 		}
 		_, err := agents.ResolveCustom(request)
 		return err
+	}
+	if agent.WebUI {
+		return fmt.Errorf("spec.agent.webUI requires a custom agent")
 	}
 	if agent.Username != nil && *agent.Username != cetirunv1alpha1.DefaultAgentUsername {
 		return fmt.Errorf("non-default spec.agent.username requires Agent runtime support that is not implemented")

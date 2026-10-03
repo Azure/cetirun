@@ -85,6 +85,25 @@ describe("CreateForm", () => {
     expect(screen.getByText(/HTTP port must be an integer/)).toBeInTheDocument();
   });
 
+  it("creates a Web UI with the shared port and does not carry the flag to built-ins", async () => {
+    mockFeatures.data.allowedAgentTypes = ["hermes", "custom"];
+    const user = userEvent.setup();
+    renderWithQuery(<CreateForm />);
+    await user.selectOptions(screen.getByRole("combobox", { name: "Agent Type" }), "custom");
+    await user.type(screen.getByLabelText(/Agent Image/), "registry.example.com/editor:1");
+    await user.click(screen.getByRole("switch", { name: "Serve Web UI" }));
+    fireEvent.submit(screen.getByRole("button", { name: "Create Agent" }).closest("form")!);
+    expect(mockMutate).not.toHaveBeenCalled();
+    expect(screen.getByText("A port is required when Web UI is enabled.")).toBeInTheDocument();
+    await user.type(screen.getByRole("spinbutton", { name: "Web UI Port" }), "8080");
+    await user.click(screen.getByRole("button", { name: "Create Agent" }));
+    expect(mockMutate.mock.calls[0][0].agent).toEqual({ type: "custom", image: "registry.example.com/editor:1", username: "vibe", port: 8080, webUI: true });
+    await user.selectOptions(screen.getByRole("combobox", { name: "Agent Type" }), "hermes");
+    expect(screen.queryByRole("switch", { name: "Serve Web UI" })).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Create Agent" }));
+    expect(mockMutate.mock.calls[1][0].agent).not.toHaveProperty("webUI");
+  });
+
   it.each(["hermes", "custom"])("creates a private %s image with a stable retry ID and clears credentials", async (type) => {
     mockFeatures.data.allowedAgentTypes = [type];
     const user = userEvent.setup();

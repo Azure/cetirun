@@ -103,7 +103,8 @@ type InstanceResponse struct {
 	Team                   string                      `json:"team"`
 	Model                  string                      `json:"model,omitempty"`
 	Phase                  string                      `json:"phase"`
-	AccessURL              string                      `json:"accessUrl,omitempty"`        // Access URL (token is returned separately via GatewayToken)
+	AccessURL              string                      `json:"accessUrl,omitempty"` // Access URL (token is returned separately via GatewayToken)
+	WebUIURL               string                      `json:"webUIUrl,omitempty"`
 	GatewayToken           string                      `json:"gatewayToken,omitempty"`     // Separate gateway token for display, when available
 	APIServerKey           string                      `json:"apiServerKey,omitempty"`     // Hermes API server key for display, when available
 	CetiRunAuthKey         string                      `json:"cetirunAuthKey,omitempty"`   // Bearer key for the in-pod cetirun-auth helper (both agent types)
@@ -773,7 +774,10 @@ func (h *InstanceHandler) toInstanceResponse(ctx context.Context, instance *ceti
 		(instance.Status.Phase == "Ready" || instance.Status.Phase == "Provisioning") {
 		for _, condition := range instance.Status.Conditions {
 			if condition.Type == cetirunv1alpha1.ConditionIngressReady && condition.Status == metav1.ConditionTrue {
-				service := customAccessService(instance.Status.Conditions)
+				if instance.Spec.Agent.WebUI {
+					resp.WebUIURL = instance.Status.AccessURL
+				}
+				service := customAccessService(instance.Status.Conditions, !instance.Spec.Agent.WebUI)
 				if domain, err := h.Kube.GetOperatorDomainSuffix(ctx); err == nil && service != "" {
 					resp.AccessURL = fmt.Sprintf("https://%s/%s/%s/", domain, instance.Name, service)
 				}
@@ -802,8 +806,8 @@ func (h *InstanceHandler) toInstanceResponse(ctx context.Context, instance *ceti
 	return resp, nil
 }
 
-func customAccessService(conditions []metav1.Condition) string {
-	desktop, terminal := true, false
+func customAccessService(conditions []metav1.Condition, legacyDesktop bool) string {
+	desktop, terminal := legacyDesktop, false
 	for _, condition := range conditions {
 		switch condition.Type {
 		case cetirunv1alpha1.ConditionDesktopConfigured:

@@ -112,11 +112,23 @@ func create(t *testing.T, obj *unstructured.Unstructured) *unstructured.Unstruct
 }
 
 func TestAgentDefaults(t *testing.T) {
+	t.Run("Custom Web UI uses the declared port", func(t *testing.T) {
+		obj := instance("custom")
+		agent(obj)["webUI"] = true
+		agent(obj)["port"] = int64(8080)
+		got := create(t, obj)
+		if agent(got)["webUI"] != true || agent(got)["port"] != int64(8080) {
+			t.Fatal("Web UI must keep its flag and shared port")
+		}
+	})
 	for _, typ := range []string{"openclaw", "hermes", "custom"} {
 		t.Run(typ, func(t *testing.T) {
 			got := create(t, instance(typ))
 			if agent(got)["username"] != "vibe" || agent(got)["type"] != typ {
 				t.Fatalf("unexpected defaults: %v", agent(got))
+			}
+			if agent(got)["webUI"] != false {
+				t.Fatal("Web UI must default to false")
 			}
 			if _, found := agent(got)["port"]; found {
 				t.Fatal("schema must not set a version-dependent port")
@@ -131,6 +143,13 @@ func TestAgentDefaults(t *testing.T) {
 		agent(obj)["username"] = nil
 		if got := create(t, obj); agent(got)["username"] != "vibe" {
 			t.Fatal("non-nullable username must be defaulted")
+		}
+	})
+	t.Run("null Web UI defaults to false", func(t *testing.T) {
+		obj := instance("custom")
+		agent(obj)["webUI"] = nil
+		if got := create(t, obj); agent(got)["webUI"] != false {
+			t.Fatal("null Web UI must reset to false")
 		}
 	})
 	for _, null := range []bool{false, true} {
@@ -150,9 +169,12 @@ func TestAgentDefaults(t *testing.T) {
 }
 
 func TestAgentExamples(t *testing.T) {
-	for _, file := range []string{"sample-alice.yaml", "sample-bob.yaml", "sample-custom.yaml"} {
+	for _, file := range []string{
+		"../config/sample-alice.yaml", "../config/sample-bob.yaml", "../config/sample-custom.yaml",
+		"../../../../examples/vscode-server/agent.yaml",
+	} {
 		t.Run(file, func(t *testing.T) {
-			raw, err := os.ReadFile(filepath.Join("../config", file))
+			raw, err := os.ReadFile(file)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -217,6 +239,18 @@ func TestAgentCreateValidation(t *testing.T) {
 		{"zero port", func(o *unstructured.Unstructured) { agent(o)["port"] = int64(0) }, "port"},
 		{"large port", func(o *unstructured.Unstructured) { agent(o)["port"] = int64(65536) }, "port"},
 		{"string port", func(o *unstructured.Unstructured) { agent(o)["port"] = "8080" }, "port"},
+		{"web UI missing port", func(o *unstructured.Unstructured) { agent(o)["webUI"] = true }, "port"},
+		{"web UI zero port", func(o *unstructured.Unstructured) {
+			agent(o)["webUI"] = true
+			agent(o)["port"] = int64(0)
+		}, "port"},
+		{"web UI string", func(o *unstructured.Unstructured) { agent(o)["webUI"] = "true" }, "webUI"},
+		{"web UI on built-in", func(o *unstructured.Unstructured) {
+			agent(o)["type"] = "hermes"
+			agent(o)["webUI"] = true
+			agent(o)["port"] = int64(8080)
+			o.Object["spec"].(map[string]any)["gatewayTokenSecretRef"] = "gateway-token"
+		}, "webUI"},
 		{"missing ref name", func(o *unstructured.Unstructured) { agent(o)["registrySecretRef"] = map[string]any{} }, "name"},
 		{"empty ref name", func(o *unstructured.Unstructured) { agent(o)["registrySecretRef"] = map[string]any{"name": ""} }, "name"},
 		{"invalid ref name", func(o *unstructured.Unstructured) {
@@ -253,6 +287,7 @@ func TestAgentStrictFields(t *testing.T) {
 		{"spec", "agent", "uid"},
 		{"spec", "agent", "env"},
 		{"spec", "agent", "model"},
+		{"spec", "agent", "webUI", "port"},
 		{"spec", "agent", "registryAuth"},
 		{"spec", "registryAuth"},
 		{"spec", "agent", "registrySecretRef", "namespace"},
@@ -351,4 +386,37 @@ func TestAgentTransitions(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
+}
+
+func TestCustomWebUITransitions(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		edit  func(map[string]any)
+		valid bool
+		webUI bool
+	}{
+		{"port change", func(a map[string]any) { a["port"] = int64(9090) }, true, true},
+		{"port required while enabled", func(a map[string]any) { delete(a, "port") }, false, true},
+		{"disable keeps HTTP port", func(a map[string]any) { a["webUI"] = false }, true, false},
+		{"reset flag", func(a map[string]any) { a["webUI"] = nil }, true, false},
+		{"headless", func(a map[string]any) { a["webUI"] = false; delete(a, "port") }, true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			obj := instance("custom")
+			agent(obj)["port"] = int64(8080)
+			agent(obj)["webUI"] = true
+			obj = create(t, obj)
+			tc.edit(agent(obj))
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			got, err := instances.Update(ctx, obj, metav1.UpdateOptions{FieldValidation: "Strict"})
+			if tc.valid {
+				if err != nil || agent(got)["webUI"] != tc.webUI {
+					t.Fatalf("Web UI transition failed: %v", err)
+				}
+			} else if !apierrors.IsInvalid(err) {
+				t.Fatalf("want Invalid transition, got %v", err)
+			}
+		})
+	}
 }

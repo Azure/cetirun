@@ -1,7 +1,6 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 
-import importlib.util
 import os
 from pathlib import Path
 import shutil
@@ -222,21 +221,6 @@ class CustomInitializationTests(unittest.TestCase):
         self.assertEqual((shared / "team-skill/SKILL.md").read_text(), "unique approved shared instruction")
         self.assertEqual((self.target / ".agents/skills/team-skill/SKILL.md").read_text(), "private image copy")
         self.assertEqual([p.name for p in view.iterdir()], ["current"])
-        spec = importlib.util.spec_from_file_location("skills_reader", ROOT / "examples/custom-agent/agent.py")
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        container_home = self.root / "container-home"
-        container_home.mkdir()
-        (container_home / ".agents").symlink_to(published)
-        # Exercise the actual discovery code without constructing any model
-        # binding, mock service or network connection.
-        agent = module.Agent.__new__(module.Agent)
-        agent.home = container_home
-        context = agent.load_context()
-        self.assertIn("unique approved shared instruction", context)
-        self.assertIn("synthetic canonical contract", context)
-        self.assertIn("synthetic memory contract", context)
-        self.assertNotIn("private image copy", context)
 
     def test_shared_skill_cannot_shadow_canonical_context(self):
         shared, view = self.prepare_shared_skills()

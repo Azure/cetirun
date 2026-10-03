@@ -817,7 +817,7 @@ func TestCustomAccessService(t *testing.T) {
 			if test.terminal != "" {
 				conditions = append(conditions, metav1.Condition{Type: cetirunv1alpha1.ConditionTerminalConfigured, Status: test.terminal})
 			}
-			if got := customAccessService(conditions); got != test.want {
+			if got := customAccessService(conditions, true); got != test.want {
 				t.Fatalf("service=%q, want %q", got, test.want)
 			}
 		})

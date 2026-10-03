@@ -14,6 +14,7 @@ export interface AgentConfig {
   image?: string;
   username?: string;
   port?: number;
+  webUI?: boolean;
   registrySecretRef?: { name: string };
 }
 
@@ -40,6 +41,7 @@ export interface Instance extends InstanceVersion {
   model?: string;
   phase: "Pending" | "Provisioning" | "Ready" | "Failed" | "Deleting" | "Suspended";
   accessUrl?: string;              // Gateway access URL; may have token appended when available
+  webUIUrl?: string;
   gatewayToken?: string;           // Token for gateway access, returned separately when available
   apiServerKey?: string;           // Hermes API server key, returned separately when available
   cetirunAuthKey?: string;         // Bearer key for the in-pod cetirun-auth helper (both agent types)
@@ -86,6 +88,7 @@ export interface UpdateInstanceRequest extends InstanceVersion {
     image?: string | null;
     username?: string;
     port?: number | null;
+    webUI?: boolean | null;
   };
   displayName?: string;
   team?: string;

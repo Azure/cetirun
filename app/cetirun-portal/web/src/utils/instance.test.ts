@@ -51,4 +51,14 @@ describe("Custom platform access", () => {
       conditions: instance.conditions?.filter((condition) => condition.type !== "IngressReady"),
     })).toBeUndefined();
   });
+
+  it("keeps declared Web UI and platform terminal links separate", () => {
+    const editor = { ...instance, agent: { type: "custom" as const, port: 8080, webUI: true }, webUIUrl: "https://gateway.example.com/ui/alice/" };
+    expect(agentUIUrl(editor)).toBe("https://gateway.example.com/ui/alice/");
+    expect(terminalUrl(editor)).toBe("https://gateway.example.com/alice/term");
+    expect(desktopUrl(editor)).toBeUndefined();
+    expect(agentUIUrl({ ...instance, webUIUrl: editor.webUIUrl })).toBeUndefined();
+    expect(agentUIUrl({ ...editor, webUIUrl: undefined })).toBeUndefined();
+    expect(agentUIUrl({ ...editor, webUIUrl: "javascript:alert(1)" })).toBeUndefined();
+  });
 });

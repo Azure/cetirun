@@ -91,6 +91,44 @@ describe("OverviewSection", () => {
     expect(mockUpdate).toHaveBeenCalledWith({ uid: "test-agent-uid", resourceVersion: "7", displayName: "My edit" }, expect.anything());
   });
 
+  it("shows Web UI configuration and preserves it during an unrelated edit", () => {
+    const instance = { ...baseInstance, agent: { type: "custom" as const, image: "registry.example.com/editor:1", port: 8080, webUI: true }, gatewayToken: undefined };
+    renderInRouter(<OverviewSection instance={instance} />);
+    expect(screen.getByText("Web UI port: 8080")).toBeInTheDocument();
+    expect(screen.queryByText(/Headless/)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Edit Agent" }));
+    expect(screen.getByRole("spinbutton", { name: "Web UI Port" })).toHaveValue(8080);
+    expect(screen.getByRole("switch", { name: "Serve Web UI" })).toBeChecked();
+    fireEvent.change(screen.getByLabelText("Display Name"), { target: { value: "Editor" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save", exact: true }));
+    expect(mockUpdate).toHaveBeenCalledWith({ uid: "test-agent-uid", resourceVersion: "7", displayName: "Editor" }, expect.anything());
+  });
+
+  it("uses the same editable port for Web UI and preserves explicit false", () => {
+    const instance = { ...baseInstance, agent: { type: "custom" as const, port: 8080, webUI: true }, gatewayToken: undefined };
+    renderInRouter(<OverviewSection instance={instance} />);
+    fireEvent.click(screen.getByRole("button", { name: "Edit Agent" }));
+    fireEvent.change(screen.getByRole("spinbutton", { name: "Web UI Port" }), { target: { value: "9090" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save", exact: true }));
+    expect(mockUpdate).toHaveBeenLastCalledWith({ uid: "test-agent-uid", resourceVersion: "7", agent: { port: 9090 } }, expect.anything());
+    fireEvent.click(screen.getByRole("switch", { name: "Serve Web UI" }));
+    expect(screen.getByLabelText("HTTP Port (optional)")).toHaveValue(9090);
+    fireEvent.click(screen.getByRole("button", { name: "Save", exact: true }));
+    expect(mockUpdate).toHaveBeenLastCalledWith({ uid: "test-agent-uid", resourceVersion: "7", agent: { port: 9090, webUI: false } }, expect.anything());
+  });
+
+  it("requires a port before enabling Web UI on a headless Custom", () => {
+    renderInRouter(<OverviewSection instance={{ ...baseInstance, agent: { type: "custom" }, gatewayToken: undefined }} />);
+    fireEvent.click(screen.getByRole("button", { name: "Edit Agent" }));
+    fireEvent.click(screen.getByRole("switch", { name: "Serve Web UI" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save", exact: true }));
+    expect(mockUpdate).not.toHaveBeenCalled();
+    expect(screen.getByText("A port is required when Web UI is enabled.")).toBeInTheDocument();
+    fireEvent.change(screen.getByRole("spinbutton", { name: "Web UI Port" }), { target: { value: "8080" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save", exact: true }));
+    expect(mockUpdate).toHaveBeenCalledWith({ uid: "test-agent-uid", resourceVersion: "7", agent: { port: 8080, webUI: true } }, expect.anything());
+  });
+
   it("shows alias and team", () => {
     renderInRouter(<OverviewSection instance={baseInstance} />);
     expect(screen.getByText(/testuser/)).toBeInTheDocument();

@@ -158,17 +158,17 @@ spec:
               protocol: TCP
             {{- end }}
           {{- end }}
-          {{- if $r.http }}
+          {{- with $r.http }}
           startupProbe:
             httpGet:
-              path: {{ $r.http.startupPath | quote }}
-              port: {{ $r.http.portName | quote }}
+              path: {{ .startupPath | quote }}
+              port: {{ .portName | quote }}
             periodSeconds: 5
             failureThreshold: 60
           readinessProbe:
             httpGet:
-              path: {{ $r.http.healthPath | quote }}
-              port: {{ $r.http.portName | quote }}
+              path: {{ .healthPath | quote }}
+              port: {{ .portName | quote }}
             periodSeconds: 10
           {{- end }}
           resources:

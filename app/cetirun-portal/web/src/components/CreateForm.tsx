@@ -24,6 +24,7 @@ export function CreateForm({ onCreated }: { onCreated?: () => void }) {
   const [image, setImage] = useState("");
   const [username, setUsername] = useState("vibe");
   const [port, setPort] = useState("");
+  const [webUI, setWebUI] = useState(false);
   const [validationError, setValidationError] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [team, setTeam] = useState("");
@@ -76,11 +77,15 @@ export function CreateForm({ onCreated }: { onCreated?: () => void }) {
       setValidationError("HTTP port must be an integer between 1 and 65535, or left blank for a headless Agent.");
       return;
     }
+    if (custom && webUI && httpPort === undefined) {
+      setValidationError("A port is required when Web UI is enabled.");
+      return;
+    }
     setValidationError("");
     createMutation.mutate({
       instanceName: instanceName || undefined,
       agent: custom
-        ? { type: agentType, image: image.trim(), username, ...(httpPort === undefined ? {} : { port: httpPort }) }
+        ? { type: agentType, image: image.trim(), username, port: httpPort, webUI: webUI || undefined }
         : { type: agentType, image: image.trim() || undefined },
       registryAuth: privateRegistry ? { username: registryUsername, password: registryPassword } : undefined,
       requestId: privateRegistry ? requestId : undefined,
@@ -126,6 +131,7 @@ export function CreateForm({ onCreated }: { onCreated?: () => void }) {
             setTailscaleAuthKey("");
             setTeamsEnabled(false);
             setAgentIdentityEnabled(false);
+            setWebUI(false);
             setValidationError("");
           }}
         >
@@ -156,8 +162,10 @@ export function CreateForm({ onCreated }: { onCreated?: () => void }) {
           <Field label="Agent Username" required hint="An existing non-root user in the image; HOME is /home/<username>. This cannot change after creation.">
             <Input value={username} onChange={(_, data) => setUsername(data.value)} required maxLength={32} pattern={"[a-z_][a-z0-9_\\-]{0,31}"} />
           </Field>
-          <Field label="HTTP Port (optional)" hint="Leave blank for headless operation. Platform Terminal and Desktop do not need this port.">
-            <Input type="number" min={1} max={65535} step={1} value={port} onChange={(_, data) => setPort(data.value)} placeholder="e.g. 8080" />
+          <Switch checked={webUI} label="Serve Web UI" onChange={(_, data) => setWebUI(data.checked)} />
+          <Field label={webUI ? "Web UI Port" : "HTTP Port (optional)"} required={webUI}
+            hint={webUI ? "Serve a browser UI through platform authentication instead of the Chat API. The image must support /ui/<instance>/ and /healthz." : "Leave blank for headless operation. Platform Terminal and Desktop do not need this port."}>
+            <Input type="number" min={1} max={65535} step={1} value={port} required={webUI} onChange={(_, data) => setPort(data.value)} placeholder="e.g. 8080" />
           </Field>
         </>
       )}

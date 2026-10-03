@@ -34,6 +34,9 @@ func runtimeRequest(instance *api.Agent, registry string) map[string]any {
 		name, _ := registryauth.PullSecretName(instance.UID)
 		request["pullSecretName"] = name
 	}
+	if agent.WebUI {
+		request["webUI"] = agent.WebUI
+	}
 	return request
 }
 

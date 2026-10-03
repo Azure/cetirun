@@ -5,6 +5,7 @@ package agentconfig
 
 import (
 	"encoding/json"
+	"reflect"
 	"testing"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
@@ -21,6 +22,18 @@ func TestCreateAgentContract(t *testing.T) {
 		{`{"type":"openclaw"}`, true},
 		{`{"type":"custom","image":"registry.example.com/team/agent:1"}`, true},
 		{`{"type":"custom","image":"registry.example.com/team/agent:1","username":"assistant","port":8080}`, true},
+		{`{"type":"custom","image":"registry.example.com/team/agent:1","port":8080,"webUI":true}`, true},
+		{`{"type":"custom","image":"registry.example.com/team/agent:1","port":8080,"webUI":false}`, true},
+		{`{"type":"custom","image":"registry.example.com/team/agent:1","webUI":false}`, true},
+		{`{"type":"custom","image":"registry.example.com/team/agent:1","webUI":null}`, true},
+		{`{"webUI":false}`, true},
+		{`{"webUI":true,"port":8080}`, false},
+		{`{"type":"custom","image":"registry.example.com/team/agent:1","webUI":true}`, false},
+		{`{"type":"custom","image":"registry.example.com/team/agent:1","port":0,"webUI":true}`, false},
+		{`{"type":"custom","image":"registry.example.com/team/agent:1","port":65536,"webUI":true}`, false},
+		{`{"type":"custom","image":"registry.example.com/team/agent:1","webUI":{"port":8080}}`, false},
+		{`{"webUI":"true"}`, false},
+		{`{"webUI":1}`, false},
 		{`{"type":"custom"}`, false},
 		{`{"type":""}`, false},
 		{`{"type":null}`, false},
@@ -97,5 +110,51 @@ func TestMarshalOmitsUnsetFields(t *testing.T) {
 	data, err := json.Marshal(in)
 	if err != nil || string(data) != `{"port":null}` {
 		t.Fatalf("unexpected wire format: %s, %v", data, err)
+	}
+	data, err = json.Marshal(Input{WebUI: Value(false)})
+	if err != nil || string(data) != `{"webUI":false}` {
+		t.Fatalf("explicit false was omitted: %s, %v", data, err)
+	}
+}
+
+func TestPatchWebUITransitionsPreserveOtherAgentFields(t *testing.T) {
+	current := api.HarnessSpec{Type: api.AgentTypeCustom, Image: ptr.To("registry.example.com/agent:1"),
+		RegistrySecretRef: &api.RegistrySecretRef{Name: "registry-example"},
+		Port:              ptr.To[int32](8080), WebUI: true}
+	for _, tc := range []struct {
+		body string
+		ok   bool
+		ui   bool
+		port *int32
+	}{
+		{`{}`, true, true, ptr.To[int32](8080)},
+		{`{"image":"registry.example.com/agent:1"}`, true, true, ptr.To[int32](8080)},
+		{`{"webUI":false}`, true, false, ptr.To[int32](8080)},
+		{`{"webUI":null}`, true, false, ptr.To[int32](8080)},
+		{`{"webUI":true,"port":9090}`, true, true, ptr.To[int32](9090)},
+		{`{"port":9090}`, true, true, ptr.To[int32](9090)},
+		{`{"port":null}`, false, true, nil},
+		{`{"webUI":false,"port":null}`, true, false, nil},
+	} {
+		t.Run(tc.body, func(t *testing.T) {
+			var in Input
+			if err := json.Unmarshal([]byte(tc.body), &in); err != nil {
+				t.Fatal(err)
+			}
+			if tc.body != "{}" && in.Empty() {
+				t.Fatal("Web UI patch was treated as empty")
+			}
+			agent, err := in.Apply(current)
+			if (err == nil) != tc.ok {
+				t.Fatalf("Apply() error=%v, want success=%v", err, tc.ok)
+			}
+			if tc.ok && (agent.WebUI != tc.ui || !ptr.Equal(agent.Port, tc.port) ||
+				!reflect.DeepEqual(agent.RegistrySecretRef, current.RegistrySecretRef)) {
+				t.Fatalf("patch lost Web UI or Registry state: %#v", agent)
+			}
+			if current.Username != nil || !current.WebUI || *current.Port != 8080 {
+				t.Fatal("patch modified its input")
+			}
+		})
 	}
 }

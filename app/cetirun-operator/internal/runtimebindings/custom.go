@@ -80,13 +80,12 @@ type Custom struct {
 }
 
 func (b Custom) HarnessBindings() agents.Bindings {
-	if b.AgentManagedModel {
-		return agents.Bindings{AgentManagedModel: true, ContextRevision: b.Context.Revision}
+	bindings := agents.Bindings{AgentManagedModel: b.AgentManagedModel, ContextRevision: b.Context.Revision,
+		WebBasePath: "/ui/" + b.AgentName + "/", WebInstance: b.AgentUID}
+	if !b.AgentManagedModel {
+		bindings.Model = agents.ModelBinding{BaseURL: b.Model.BaseURL, CredentialSlot: "model", Revision: b.Model.Revision}
 	}
-	return agents.Bindings{
-		Model:           agents.ModelBinding{BaseURL: b.Model.BaseURL, CredentialSlot: "model", Revision: b.Model.Revision},
-		ContextRevision: b.Context.Revision,
-	}
+	return bindings
 }
 
 func validReference(ref ObjectReference) bool {

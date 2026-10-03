@@ -46,10 +46,11 @@ type Input struct {
 	Image    Field[string]        `json:"image,omitzero"`
 	Username Field[string]        `json:"username,omitzero"`
 	Port     Field[int32]         `json:"port,omitzero"`
+	WebUI    Field[bool]          `json:"webUI,omitzero"`
 }
 
 func (in Input) Empty() bool {
-	return !in.Type.Set && !in.Image.Set && !in.Username.Set && !in.Port.Set
+	return !in.Type.Set && !in.Image.Set && !in.Username.Set && !in.Port.Set && !in.WebUI.Set
 }
 
 func (in Input) Create() (api.HarnessSpec, error) {
@@ -106,6 +107,9 @@ func (in Input) merge(agent *api.HarnessSpec) error {
 			agent.Port = ptr.To(in.Port.Value)
 		}
 	}
+	if in.WebUI.Set {
+		agent.WebUI = !in.WebUI.Null && in.WebUI.Value
+	}
 	return nil
 }
 
@@ -143,6 +147,9 @@ func Validate(agent api.HarnessSpec) error {
 	}
 	if agent.Port != nil && (*agent.Port < 1 || *agent.Port > 65535) {
 		return fmt.Errorf("agent.port must be between 1 and 65535")
+	}
+	if agent.WebUI && (agent.Type != api.AgentTypeCustom || agent.Port == nil) {
+		return fmt.Errorf("agent.webUI requires a custom agent with port")
 	}
 	return nil
 }

@@ -75,6 +75,7 @@ securityHeaders:
   xContentTypeOptions: "nosniff"
   xFrameOptions: "DENY"
   referrerPolicy: "strict-origin-when-cross-origin"
+  # Applies outside /ui/<instance>/. Agent UIs retain their own CSP, if any.
   contentSecurityPolicy: "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'self' wss:; img-src 'self' data:; font-src 'self'"
 
 # Internal portal auth endpoint for instance ownership check

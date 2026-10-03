@@ -67,6 +67,7 @@ export function WorkspacePage() {
     terminal: instance && !isError ? terminalUrl(instance) : undefined,
     desktop: instance && !isError ? desktopUrl(instance) : undefined,
   };
+  const hasWebUI = instance?.agent.type === "custom" && !!instance.agent.webUI;
 
   return (
     <div className={styles.layout}>
@@ -117,6 +118,8 @@ export function WorkspacePage() {
                 className={styles.navButton}
                 as={item.external ? "a" : undefined}
                 href={item.external ? externalUrl : undefined}
+                target={item.external === "agent" && hasWebUI ? "_blank" : undefined}
+                rel={item.external === "agent" && hasWebUI ? "noopener noreferrer" : undefined}
                 disabled={externalDisabled}
                 appearance={section === item.section ? "subtle" : "transparent"}
                 icon={item.icon}
@@ -128,7 +131,7 @@ export function WorkspacePage() {
                   borderLeft: section === item.section ? `3px solid ${tokens.colorBrandForeground1}` : "3px solid transparent",
                 }}
               >
-                {item.label}
+                {item.external === "agent" && hasWebUI ? "Web UI" : item.label}
               </Button>
             );
           })}

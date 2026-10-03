@@ -70,8 +70,9 @@ spec:
                     type: string
                   port:
                     description: |-
-                      Port is the main HTTP port. Omitted means headless for custom agents;
-                      built-ins resolve their version-specific default outside the schema.
+                      Port is the native HTTP port for built-ins. For Custom it serves the
+                      Chat HTTP contract unless WebUI is true. Omit it for a headless Custom.
+                      Built-ins resolve their version-specific default outside the schema.
                     format: int32
                     maximum: 65535
                     minimum: 1
@@ -115,6 +116,12 @@ spec:
                     x-kubernetes-validations:
                     - message: agent username must not be root
                       rule: self != 'root'
+                  webUI:
+                    default: false
+                    description: |-
+                      WebUI declares that Port serves a browser application instead of Chat.
+                      Custom-only; the platform publishes it at /ui/<instance>/ with authentication.
+                    type: boolean
                 type: object
                 x-kubernetes-validations:
                 - fieldPath: .image
@@ -129,6 +136,12 @@ spec:
                 - fieldPath: .image
                   message: a pinned image cannot be removed
                   rule: '!has(oldSelf.image) || has(self.image)'
+                - fieldPath: .webUI
+                  message: webUI is supported only for custom agents
+                  rule: '!self.webUI || self.type == ''custom'''
+                - fieldPath: .port
+                  message: webUI requires port
+                  rule: '!self.webUI || has(self.port)'
               agentIdentity:
                 description: |-
                   AgentIdentity enables the Microsoft Entra Agent Identity integration for
