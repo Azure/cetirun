@@ -168,6 +168,10 @@ func (r *AgentReconciler) prepareSandboxHeld(ctx context.Context, requested *api
 	if reused, err := r.reuseSandboxPreparation(ctx, attempt); err != nil || reused {
 		return err
 	}
+	// Do not persist cleanup obligations until their fence is available.
+	if err := r.checkSandboxPreparationQuiesced(ctx, attempt); err != nil {
+		return err
+	}
 	attempt.plan, err = sandboxpolicy.Compile(sandboxpolicy.CompileInput{
 		Resolution: *attempt.resolution, AgentName: attempt.agent.Name,
 		Namespace: attempt.input.Namespace.Name, Platform: platform,

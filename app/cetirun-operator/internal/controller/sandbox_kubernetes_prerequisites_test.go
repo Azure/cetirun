@@ -721,6 +721,51 @@ func installKubernetesPrerequisites(t *testing.T, f *preparationFixture, fence c
 	return source
 }
 
+func TestKubernetesSandboxPrerequisitesUnavailableFenceDoesNotPersistPreparation(t *testing.T) {
+	for _, typ := range []string{"openclaw", "hermes"} {
+		for _, disableSources := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/disable-sources=%v", typ, disableSources), func(t *testing.T) {
+				ctx := context.Background()
+				f := newPreparationFixture(t, typ)
+				installKubernetesPrerequisites(t, f, nil)
+				if err := f.reconcile(); !errors.Is(err, sandbox.ErrObservationUnavailable) {
+					t.Fatal("missing writer-exclusion adapter did not stop preparation:", err)
+				}
+				agent := f.current(t)
+				if f.installer.renders != 0 || f.installer.stages != 0 ||
+					slices.Contains(agent.Finalizers, sandbox.PreparationFinalizer) ||
+					!slices.Contains(agent.Finalizers, sandbox.HoldFinalizer) || agent.Status.AccessURL != "" {
+					t.Fatal("unavailable fencing rendered a workload, persisted a cleanup obligation or released the hold")
+				}
+				var state corev1.ConfigMapList
+				if err := f.client.List(ctx, &state, client.InNamespace(f.reconciler.OperatorNamespace)); err != nil {
+					t.Fatal(err)
+				}
+				if len(state.Items) != 0 {
+					t.Fatal("unavailable fencing persisted a preparation receipt, journal or expectation")
+				}
+				if disableSources {
+					f.reconciler.SandboxPreparation = nil
+				}
+				if err := f.client.Delete(ctx, agent); err != nil {
+					t.Fatal(err)
+				}
+				for range 2 {
+					if err := f.reconcile(); err != nil {
+						t.Fatal("an unstaged Agent required unavailable fencing to complete deletion:", err)
+					}
+				}
+				if err := f.client.Get(ctx, client.ObjectKeyFromObject(agent), &api.Agent{}); !apierrors.IsNotFound(err) {
+					t.Fatal("failed preparation stranded Agent deletion:", err)
+				}
+				if err := f.client.Get(ctx, client.ObjectKeyFromObject(f.fixture.Namespace), &corev1.Namespace{}); !apierrors.IsNotFound(err) {
+					t.Fatal("failed preparation stranded the owned namespace:", err)
+				}
+			})
+		}
+	}
+}
+
 func TestKubernetesSandboxPrerequisitesPreparationAndCleanupCallers(t *testing.T) {
 	for _, typ := range []string{"openclaw", "hermes"} {
 		t.Run(typ, func(t *testing.T) {
@@ -766,6 +811,24 @@ func TestKubernetesSandboxPrerequisitesPreparationAndCleanupCallers(t *testing.T
 					return controller.SandboxConfigurationSnapshot{}, sandboxpolicy.ErrUnavailable
 				})
 			f.now = f.now.Add(24 * time.Hour)
+			preparation := f.reconciler.SandboxPreparation
+			source.WriterExclusion = nil
+			for _, disableSources := range []bool{false, true} {
+				wantError := sandbox.ErrObservationUnavailable
+				if disableSources {
+					f.reconciler.SandboxPreparation = nil
+					wantError = sandboxpolicy.ErrUnavailable
+				}
+				if err := f.reconcile(); !errors.Is(err, wantError) ||
+					!slices.Contains(f.current(t).Finalizers, sandbox.PreparationFinalizer) {
+					t.Fatal("existing preparation bypassed unavailable cleanup fencing:", err)
+				}
+				if err := f.client.Get(context.Background(), client.ObjectKeyFromObject(f.fixture.Namespace), &corev1.Namespace{}); err != nil {
+					t.Fatal("existing preparation lost its namespace without cleanup fencing:", err)
+				}
+				f.reconciler.SandboxPreparation = preparation
+			}
+			source.WriterExclusion = fence
 			fence.err = failure
 			if err := f.reconcile(); !errors.Is(err, failure) {
 				t.Fatalf("cleanup lost the injected historical fence error: %v", err)

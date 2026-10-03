@@ -333,10 +333,14 @@ A trusted integration must provide:
   Agent status or arbitrary tenant ConfigMaps.
 
 The controller resolves every referenced Team slot and verifies current
-runtime/storage/grant approvals. New or changed preparation compiles controls
-and renders the native chart. It persists ownership and write-ahead grant inventory before
-any grants or workloads are applied. Old grants are revoked and observed absent;
-fresh source checks, qualified quiescence and Pod absence guard held staging.
+runtime/storage/grant approvals. New or changed preparation first confirms
+qualified quiescence and Pod absence, then compiles controls and renders the
+native chart. A failed preflight creates no preparation receipt, grant journal
+or Agent preparation finalizer. Existing preparation state still requires its
+qualified cleanup fence. The controller persists ownership and write-ahead
+grant inventory before any grants or workloads are applied. Old grants are
+revoked and observed absent; fresh source checks, qualified quiescence and Pod
+absence still guard held staging.
 Source-read RBAC gives admission only `get` on the named workload Secrets and
 ConfigMaps, not blanket namespace Secret reads.
 
@@ -363,7 +367,7 @@ inventory or unavailable authority remains an error. All mutation guards in
 the controller and Helm action remain in place.
 
 The ordinary/admin fake-client regression fixtures measure 38/44 controller
-read calls on unchanged attempts, versus 153/182 through the full path, with
+read calls on unchanged attempts, versus 154/183 through the full path, with
 zero writes, one release-store inspection and one fence check. These are
 regression budgets, not production throughput measurements; providers and
 release storage may perform additional requests. Inventories remain bounded
@@ -500,7 +504,10 @@ consumers check freshness after it completes and reject observations that expire
 during capture. The same configuration source is used by the Agent, Sandbox
 and AgentPolicy reconcilers. A configured source does not establish runtime,
 network or CSI enforcement. In particular, the stock prerequisite source has
-no writer-exclusion adapter and returns an explicit error at that gate.
+no writer-exclusion adapter and returns an explicit error before preparation
+creates durable cleanup state. An Agent rejected by this preflight remains
+deletable, including after sources are disabled; existing preparation state
+never bypasses fencing.
 Kubernetes Pod absence, PVC access modes and zero replicas cannot replace it.
 Qualified fencing, successful held staging, controlled starts and running
 enforcement observations remain separate lifecycle work. Do not remove holds

@@ -120,9 +120,17 @@ func TestSandboxSourcesHeldControllerWiring(t *testing.T) {
 			agent := f.current(t)
 			if f.installer.stages != 0 || agent.Status.AccessURL != "" || agent.Status.Sandbox != nil ||
 				!slices.Contains(agent.Finalizers, sandbox.HoldFinalizer) ||
+				slices.Contains(agent.Finalizers, sandbox.PreparationFinalizer) ||
 				!apimeta.IsStatusConditionFalse(agent.Status.Conditions, api.ConditionReady) ||
 				!apimeta.IsStatusConditionFalse(agent.Status.Conditions, api.ConditionSandboxReady) {
 				t.Fatal("Kubernetes sources were mistaken for execution or fencing evidence")
+			}
+			var state corev1.ConfigMapList
+			if err := f.client.List(ctx, &state, client.InNamespace(configMap.Namespace)); err != nil {
+				t.Fatal(err)
+			}
+			if len(state.Items) != 1 || state.Items[0].UID != configMap.UID {
+				t.Fatal("stock source wiring persisted preparation state without a writer-exclusion adapter")
 			}
 			workload := &appsv1.StatefulSet{}
 			if err := f.client.Get(ctx, client.ObjectKey{Namespace: f.fixture.Namespace.Name,
