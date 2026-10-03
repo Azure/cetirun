@@ -404,12 +404,8 @@ func (r *AgentReconciler) sandboxPreparationGuard(attempt *sandboxPreparationAtt
 			attempt.configuration.Platforms[attempt.resolution.Sandbox.Type].Grants); err != nil {
 			return err
 		}
-		recorded, err := r.sandboxGrantJournal().Read(ctx, agent.Name, agent.UID)
-		if err != nil {
+		if err := r.sandboxGrantJournal().RefreshBindingIntents(ctx, agent.Name, agent.UID, desired); err != nil {
 			return err
-		}
-		if len(sandboxpolicy.ObsoleteBindings(desired, recorded)) != 0 {
-			return fmt.Errorf("Sandbox grants are not durably recorded")
 		}
 		return r.checkSandboxPreparationQuiesced(ctx, attempt)
 	}

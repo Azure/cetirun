@@ -171,12 +171,7 @@ func (r *AgentReconciler) applySandboxSourceAccess(ctx context.Context, agent *a
 	err = r.APIReader.Get(ctx, client.ObjectKeyFromObject(desiredBinding), currentBinding)
 	if apierrors.IsNotFound(err) {
 		if recordedBinding.UID != "" {
-			// Recheck absence and durably retire the old UID before recording
-			// replacement intent. Revoke rejects a same-name replacement.
-			if err := journal.Revoke(ctx, agent.Name, agent.UID, []sandboxpolicy.BindingReference{*recordedBinding}); err != nil {
-				return err
-			}
-			if err := journal.Record(ctx, agent.Name, agent.UID, []sandboxpolicy.BindingReference{access}); err != nil {
+			if err := journal.RefreshBindingIntents(ctx, agent.Name, agent.UID, []sandboxpolicy.BindingReference{access}); err != nil {
 				return err
 			}
 		}
