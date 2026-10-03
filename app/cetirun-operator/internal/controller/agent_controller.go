@@ -1544,6 +1544,7 @@ func (r *AgentReconciler) updateStatus(ctx context.Context, instance *cetirunv1a
 	}
 	instance.Status = current.Status
 	instance.ResourceVersion = current.ResourceVersion
+	emitSandboxAgentTransition(ctx, before, current)
 	return nil
 }
 

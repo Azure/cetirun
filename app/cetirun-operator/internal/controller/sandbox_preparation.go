@@ -496,5 +496,9 @@ func (r *AgentReconciler) sandboxPreparationStatus(ctx context.Context, expected
 	if equality.Semantic.DeepEqual(base.Status, agent.Status) {
 		return nil
 	}
-	return r.Status().Patch(ctx, agent, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{}))
+	if err := r.Status().Patch(ctx, agent, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
+		return err
+	}
+	emitSandboxAgentTransition(ctx, base, agent)
+	return nil
 }
