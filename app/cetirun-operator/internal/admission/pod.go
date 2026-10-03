@@ -5,9 +5,6 @@ package sandboxadmission
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -38,7 +35,7 @@ import (
 
 const (
 	PodValidationPath        = "/validate-sandbox-pods"
-	PodExpectationKey        = "expectation.json"
+	PodExpectationKey        = sandboxworkload.PodExpectationKey
 	DefaultPodRequestTimeout = 8 * time.Second
 	podSourceReadConcurrency = 4
 )
@@ -78,34 +75,14 @@ func NewPodHandler(reader client.Reader, config PodConfig) (*PodHandler, error) 
 }
 
 func PodExpectationName(namespace string, uid types.UID) string {
-	sum := sha256.Sum256([]byte(namespace + "\x00" + string(uid)))
-	return "sandbox-pod-" + hex.EncodeToString(sum[:20])
+	return sandboxworkload.PodExpectationName(namespace, uid)
 }
 
 // PodExpectationObject produces controller state, not an execution permit.
 // The Bundle's Expect method always starts held. Persisting this object requires
 // separate controller authorization and must never be exposed as a tenant API.
 func PodExpectationObject(stateNamespace string, expected sandboxworkload.Expectation) (*corev1.ConfigMap, error) {
-	if stateNamespace == "" || stateNamespace == expected.Namespace.Name ||
-		expected.Version != sandboxworkload.ContractVersion || expected.Agent.Name == "" || expected.Agent.UID == "" ||
-		expected.Namespace.Name == "" || expected.Namespace.UID == "" {
-		return nil, fmt.Errorf("invalid controller-owned Pod expectation")
-	}
-	raw, err := json.Marshal(expected)
-	if err != nil {
-		return nil, err
-	}
-	return &corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{
-			Namespace: stateNamespace, Name: PodExpectationName(expected.Namespace.Name, expected.Namespace.UID),
-			OwnerReferences: []metav1.OwnerReference{sandboxworkload.AgentOwner(expected.Agent.Name, expected.Agent.UID)},
-			Annotations: map[string]string{
-				sandboxworkload.RevisionAnnotation: expected.Revision,
-				sandboxworkload.AgentUIDAnnotation: string(expected.Agent.UID),
-			},
-		},
-		Data: map[string]string{PodExpectationKey: string(raw)},
-	}, nil
+	return sandboxworkload.PodExpectationObject(stateNamespace, expected)
 }
 
 // Validate has no namespace-wide or platform-helper exemption. The API server
@@ -259,7 +236,7 @@ func (h *PodHandler) readExpectation(ctx context.Context, namespace string) (san
 	problems, err := strictjson.UnmarshalStrict([]byte(raw), &expected)
 	if err != nil || len(problems) != 0 ||
 		len(state.Data) != 1 || len(state.BinaryData) != 0 || state.UID == "" || state.ResourceVersion == "" ||
-		!state.DeletionTimestamp.IsZero() || expected.Version != sandboxworkload.ContractVersion ||
+		!state.DeletionTimestamp.IsZero() || expected.Version != sandboxworkload.ExpectationVersion ||
 		expected.Namespace.Name != ns.Name || expected.Namespace.UID != ns.UID ||
 		expected.WorkloadKind != sandboxworkload.AgentWorkload || expected.Workload.Name == "" || expected.Workload.UID == "" ||
 		expected.Agent.Name == "" || expected.Agent.UID == "" || expected.Revision == "" ||
@@ -302,8 +279,11 @@ func (h *PodHandler) validatePodSources(ctx context.Context, expected sandboxwor
 	policy := false
 	for _, source := range expected.Sources {
 		key := objectKey{source.APIVersion, source.Kind, source.Namespace, source.Name}
-		if source.UID == "" || source.ResourceVersion == "" || source.Name == "" || seen[key] {
+		if !source.ValidIdentity() || seen[key] {
 			return podDenied("SourceInventoryInvalid", "source identities must be complete and unique")
+		}
+		if source.IsAgent() && (source.Name != expected.Agent.Name || source.Generation != expected.AgentGeneration) {
+			return podDenied("SourceBindingChanged", "Agent intent differs from the expectation")
 		}
 		if _, err := schema.ParseGroupVersion(source.APIVersion); err != nil || source.Kind == "" {
 			return podDenied("SourceInventoryInvalid", "source inventory contains an invalid resource kind or version")
@@ -356,6 +336,17 @@ func (h *PodHandler) validatePodSources(ctx context.Context, expected sandboxwor
 }
 
 func (h *PodHandler) readPodSource(ctx context.Context, expected sandboxworkload.Expectation, source sandboxworkload.SourceReference) *podFailure {
+	if source.IsAgent() {
+		agent := &api.Agent{}
+		if err := h.reader.Get(ctx, client.ObjectKey{Name: source.Name}, agent); err != nil {
+			return podReadFailure("Source", err)
+		}
+		current, err := sandboxworkload.AgentSourceReference(agent)
+		if err != nil || current != source {
+			return podDenied("SourceChanged", "Agent identity, authorization or lifecycle intent changed")
+		}
+		return nil
+	}
 	var object client.Object = &metav1.PartialObjectMetadata{TypeMeta: metav1.TypeMeta{APIVersion: source.APIVersion, Kind: source.Kind}}
 	var runtimeClass *nodev1.RuntimeClass
 	if source.APIVersion == "node.k8s.io/v1" && source.Kind == "RuntimeClass" && source.Namespace == "" &&

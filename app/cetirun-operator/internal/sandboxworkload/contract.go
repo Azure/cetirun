@@ -19,6 +19,7 @@ import (
 
 const (
 	ContractVersion         = "v1"
+	ExpectationVersion      = "v2"
 	ValuesKey               = "sandboxWorkload"
 	RevisionAnnotation      = "cetirun.microsoft.com/sandbox-revision"
 	AgentUIDAnnotation      = "cetirun.microsoft.com/agent-uid"
@@ -95,15 +96,17 @@ type Bundle struct {
 	accounting Accounting
 }
 
-// SourceReference records an authoritative source version. ResourceVersion is
-// intentionally exact: any source change requires a new controller snapshot.
+// SourceReference pins exact resource versions except for the status-bearing
+// Agent, whose generation and authorization-relevant intent are pinned instead.
 type SourceReference struct {
 	APIVersion      string    `json:"apiVersion"`
 	Kind            string    `json:"kind"`
 	Namespace       string    `json:"namespace,omitempty"`
 	Name            string    `json:"name"`
 	UID             types.UID `json:"uid"`
-	ResourceVersion string    `json:"resourceVersion"`
+	ResourceVersion string    `json:"resourceVersion,omitempty"`
+	Generation      int64     `json:"generation,omitempty"`
+	IntentDigest    string    `json:"intentDigest,omitempty"`
 }
 
 // Expectation is persisted only by the controller in its protected state

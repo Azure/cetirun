@@ -29,7 +29,7 @@ func (e *PodMismatchError) Error() string {
 // Kubernetes and StatefulSet defaults are normalized. It makes no lifecycle or
 // authorization decision; callers must freshly verify persisted ownership.
 func ValidatePod(pod *corev1.Pod, expected Expectation) error {
-	if pod == nil || expected.Version != ContractVersion || expected.WorkloadKind != AgentWorkload ||
+	if pod == nil || expected.Version != ExpectationVersion || expected.WorkloadKind != AgentWorkload ||
 		expected.Workload.Name == "" || expected.Workload.UID == "" || expected.Agent.UID == "" ||
 		expected.Namespace.UID == "" || expected.Revision == "" || expected.Binding.AgentUID != expected.Agent.UID ||
 		expected.Template.Annotations[KindAnnotation] != AgentWorkload ||

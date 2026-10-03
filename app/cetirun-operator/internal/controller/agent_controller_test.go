@@ -196,6 +196,7 @@ func newCR(alias string, phase string, conditions []metav1.Condition, generation
 	cr := &cetirunv1alpha1.Agent{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:       alias,
+			UID:        types.UID("agent-" + alias),
 			Generation: generation,
 			Finalizers: []string{cetirunv1alpha1.Finalizer},
 		},

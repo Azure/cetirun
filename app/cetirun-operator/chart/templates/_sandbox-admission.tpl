@@ -62,6 +62,7 @@ Licensed under the MIT License.
         finalizer in [
           "cetirun.microsoft.com/finalizer",
           "cetirun.microsoft.com/sandbox-hold",
+          "cetirun.microsoft.com/sandbox-preparation",
           "cetirun.microsoft.com/custom-runtime-ownership",
           "cetirun.microsoft.com/custom-apply-completion"
         ]

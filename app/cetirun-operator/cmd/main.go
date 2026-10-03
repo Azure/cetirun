@@ -187,6 +187,12 @@ func main() {
 		setupLog.Info("Loaded operator-level CetiRun Helm values", "keys", helmValueKeys(cetirunHelmValues))
 	}
 
+	sandboxSourcesConfig, err := controller.ParseSandboxSourcesConfig(os.Getenv("CETIRUN_SANDBOX_SOURCES"))
+	if err != nil {
+		setupLog.Error(err, "invalid Sandbox source configuration")
+		os.Exit(1)
+	}
+
 	// Azure config for Teams auto-provisioning (optional — only needed when Teams is enabled).
 	azureSubscriptionID := os.Getenv("AZURE_SUBSCRIPTION_ID")
 	azureResourceGroup := os.Getenv("AZURE_RESOURCE_GROUP")
@@ -260,15 +266,27 @@ func main() {
 	if customConfig.Enabled {
 		agentReconciler.CustomBindings = controller.NewKubernetesCustomBindings(agentReconciler, customConfig)
 	}
+	agentReconciler.SandboxPreparation, err = controller.NewKubernetesSandboxPreparation(
+		sandboxSourcesConfig, mgr.GetAPIReader(), helmClient, agentReconciler.OperatorNamespace, chartVersion,
+	)
+	if err != nil {
+		setupLog.Error(err, "unable to configure Sandbox sources")
+		os.Exit(1)
+	}
+	var sandboxSource controller.SandboxConfigurationSource
+	if agentReconciler.SandboxPreparation != nil {
+		sandboxSource = agentReconciler.SandboxPreparation.Configuration
+		setupLog.Info("Kubernetes Sandbox sources enabled; qualified writer exclusion is unavailable and execution remains held")
+	}
 	if err = agentReconciler.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Agent")
 		os.Exit(1)
 	}
-	if err := (&controller.SandboxReconciler{}).SetupWithManager(mgr); err != nil {
+	if err := (&controller.SandboxReconciler{Source: sandboxSource}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Sandbox")
 		os.Exit(1)
 	}
-	if err := (&controller.AgentPolicyReconciler{}).SetupWithManager(mgr); err != nil {
+	if err := (&controller.AgentPolicyReconciler{Source: sandboxSource}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "AgentPolicy")
 		os.Exit(1)
 	}

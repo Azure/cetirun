@@ -5,8 +5,10 @@ package controller_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -14,6 +16,10 @@ import (
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/controller"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/helm"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/runtimebindings"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxpolicy"
+	"github.com/Azure/CetiRun/app/internal/registryauth"
+	"github.com/Azure/CetiRun/app/internal/terminalpolicy"
 	"helm.sh/helm/v3/pkg/chart/loader"
 	"helm.sh/helm/v3/pkg/chartutil"
 	"helm.sh/helm/v3/pkg/engine"
@@ -31,6 +37,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/yaml"
 )
 
@@ -264,6 +271,260 @@ func TestCustomBlockedDeletionRevokesAccessAndStopsWorkload(t *testing.T) {
 	err := s.client.Get(context.Background(), types.NamespacedName{Namespace: s.provider.bindings.Namespace.Name, Name: "cetirun-" + s.agent.Name}, route)
 	if !apierrors.IsNotFound(err) {
 		t.Fatal("blocked deletion retained an owned route")
+	}
+}
+
+func TestCustomDeletionAttemptsShutdownWhenSandboxRevocationFails(t *testing.T) {
+	for _, trigger := range []string{"retained hold", "enabled preparation"} {
+		for _, failure := range []string{"journal only", "workload", "terminal", "route", "status", "all"} {
+			t.Run(trigger+"/"+failure, func(t *testing.T) {
+				ctx := context.Background()
+				s := newCompletionScenario(t)
+				enableTerminal(t, s, true)
+				if err := s.step(); err != nil {
+					t.Fatal(err)
+				}
+				s.observeApplied()
+				if err := s.step(); err != nil {
+					t.Fatal(err)
+				}
+				agent := s.current()
+				if agent.Status.Phase != api.PhaseReady {
+					t.Fatal("fixture did not reach a running Custom Agent")
+				}
+				agent.Status.AccessURL = "https://platform.example.com/completion/"
+				if err := s.client.Status().Update(ctx, agent); err != nil {
+					t.Fatal(err)
+				}
+				s.reconciler.OperatorNamespace = "cetirun-system"
+				if trigger == "retained hold" {
+					agent.Finalizers = append(agent.Finalizers, sandbox.HoldFinalizer)
+					if err := s.client.Update(ctx, agent); err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					s.reconciler.SandboxPreparation = &controller.SandboxPreparation{}
+				}
+				if err := s.client.Delete(ctx, agent); err != nil {
+					t.Fatal(err)
+				}
+				finalizers := slices.Clone(s.current().Finalizers)
+				namespace := &corev1.Namespace{}
+				if err := s.client.Get(ctx, client.ObjectKey{Name: s.provider.bindings.Namespace.Name}, namespace); err != nil {
+					t.Fatal(err)
+				}
+				namespaceVersion := namespace.ResourceVersion
+				home := &corev1.PersistentVolumeClaim{}
+				homeKey := client.ObjectKey{Namespace: namespace.Name, Name: s.provider.bindings.Home.Name}
+				if err := s.client.Get(ctx, homeKey, home); err != nil {
+					t.Fatal(err)
+				}
+				homeVersion := home.ResourceVersion
+				injected := map[string]error{
+					"journal":  errors.New("synthetic journal read failure"),
+					"workload": errors.New("synthetic workload stop failure"),
+					"terminal": errors.New("synthetic terminal stop failure"),
+					"route":    errors.New("synthetic route removal failure"),
+					"status":   errors.New("synthetic status update failure"),
+				}
+				fails := func(operation string) bool { return failure == operation || failure == "all" }
+				calls := map[string]int{}
+				wrapped := interceptor.NewClient(s.client.Client.(client.WithWatch), interceptor.Funcs{
+					Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, object client.Object, options ...client.GetOption) error {
+						if key.Namespace == "cetirun-system" && key.Name == sandboxpolicy.GrantJournalName(agent.UID) {
+							calls["journal"]++
+							return injected["journal"]
+						}
+						return c.Get(ctx, key, object, options...)
+					},
+					Patch: func(ctx context.Context, c client.WithWatch, object client.Object, patch client.Patch, options ...client.PatchOption) error {
+						var operation string
+						switch object.(type) {
+						case *appsv1.StatefulSet:
+							operation = "workload"
+						case *appsv1.Deployment:
+							operation = "terminal"
+						}
+						if operation != "" {
+							calls[operation]++
+							if fails(operation) {
+								return injected[operation]
+							}
+						}
+						return c.Patch(ctx, object, patch, options...)
+					},
+					Delete: func(ctx context.Context, c client.WithWatch, object client.Object, options ...client.DeleteOption) error {
+						if _, ok := object.(*istiov1beta1.VirtualService); ok {
+							calls["route"]++
+							if fails("route") {
+								return injected["route"]
+							}
+						} else {
+							calls["destructive cleanup"]++
+						}
+						return c.Delete(ctx, object, options...)
+					},
+					SubResourcePatch: func(ctx context.Context, c client.Client, subresource string, object client.Object, patch client.Patch, options ...client.SubResourcePatchOption) error {
+						if subresource == "status" {
+							calls["status"]++
+							if fails("status") {
+								return injected["status"]
+							}
+						}
+						return c.SubResource(subresource).Patch(ctx, object, patch, options...)
+					},
+				})
+				s.reconciler.Client, s.reconciler.APIReader = wrapped, wrapped
+				err := s.step()
+				if !errors.Is(err, injected["journal"]) {
+					t.Fatal("journal revocation failure was lost:", err)
+				}
+				for _, operation := range []string{"workload", "terminal", "route", "status"} {
+					if calls[operation] != 1 {
+						t.Fatalf("journal failure skipped %s: calls=%v error=%v", operation, calls, err)
+					}
+					if fails(operation) && !errors.Is(err, injected[operation]) {
+						t.Fatalf("%s failure was hidden: %v", operation, err)
+					}
+				}
+				if calls["journal"] != 1 || calls["destructive cleanup"] != 0 {
+					t.Fatalf("failed revocation did not block destructive cleanup: %v", calls)
+				}
+				agent = s.current()
+				if agent.DeletionTimestamp.IsZero() || !slices.Equal(agent.Finalizers, finalizers) {
+					t.Fatal("failed revocation released lifecycle finalizers")
+				}
+				if !fails("status") {
+					if agent.Status.Phase != api.PhaseDeleting || agent.Status.AccessURL != "" {
+						t.Fatal("failed revocation retained running status or access URL")
+					}
+					for _, condition := range []string{api.ConditionReady, api.ConditionPodReady, api.ConditionIngressReady,
+						api.ConditionDesktopConfigured, api.ConditionTerminalConfigured} {
+						if !meta.IsStatusConditionFalse(agent.Status.Conditions, condition) {
+							t.Fatalf("failed revocation retained %s readiness", condition)
+						}
+					}
+				}
+				workload := s.workload()
+				deployment := &appsv1.Deployment{}
+				if err := s.client.Get(ctx, client.ObjectKey{Namespace: namespace.Name, Name: terminalpolicy.WorkloadName(workload.Name)}, deployment); err != nil {
+					t.Fatal(err)
+				}
+				for operation, replicas := range map[string]*int32{"workload": workload.Spec.Replicas, "terminal": deployment.Spec.Replicas} {
+					want := int32(0)
+					if fails(operation) {
+						want = 1
+					}
+					if ptr.Deref(replicas, -1) != want {
+						t.Fatalf("%s replicas=%v, want %d", operation, replicas, want)
+					}
+				}
+				routeErr := s.client.Get(ctx, client.ObjectKey{Namespace: namespace.Name, Name: "cetirun-" + agent.Name}, &istiov1beta1.VirtualService{})
+				if fails("route") && routeErr != nil || !fails("route") && !apierrors.IsNotFound(routeErr) {
+					t.Fatal("route removal did not run independently:", routeErr)
+				}
+				if err := s.client.Get(ctx, client.ObjectKeyFromObject(namespace), namespace); err != nil ||
+					!namespace.DeletionTimestamp.IsZero() || namespace.ResourceVersion != namespaceVersion {
+					t.Fatal("namespace changed before successful revocation:", err)
+				}
+				if err := s.client.Get(ctx, homeKey, home); err != nil || home.ResourceVersion != homeVersion {
+					t.Fatal("HOME changed before successful revocation:", err)
+				}
+				if failure == "journal only" {
+					s.reconciler.Client, s.reconciler.APIReader = s.client, s.client
+					for range 2 {
+						if err := s.step(); err != nil {
+							t.Fatal("Custom deletion did not recover after the journal outage:", err)
+						}
+					}
+					if err := s.client.Get(ctx, client.ObjectKeyFromObject(agent), &api.Agent{}); !apierrors.IsNotFound(err) {
+						t.Fatal("recovered cleanup retained the Agent:", err)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestCustomDeletionStopsBeforeRetainedRegistryCleanup(t *testing.T) {
+	ctx := context.Background()
+	s := newCompletionScenario(t)
+	enableTerminal(t, s, true)
+	if err := s.step(); err != nil {
+		t.Fatal(err)
+	}
+	s.observeApplied()
+	if err := s.step(); err != nil {
+		t.Fatal(err)
+	}
+	agent := s.current()
+	agent.Finalizers = append(agent.Finalizers, sandbox.HoldFinalizer)
+	if err := s.client.Update(ctx, agent); err != nil {
+		t.Fatal(err)
+	}
+	s.reconciler.OperatorNamespace = "cetirun-system"
+	source := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{
+		Name: "registry-source-retained", Namespace: registryauth.DefaultNamespace, UID: "retained-registry-uid",
+		OwnerReferences: []metav1.OwnerReference{registryauth.Owner(agent)},
+	}}
+	if err := s.client.Create(ctx, source); err != nil {
+		t.Fatal(err)
+	}
+	agent.Status.RegistryCredentials = &api.RegistryCredentialsStatus{SourceUID: string(source.UID)}
+	agent.Status.AccessURL = "https://platform.example.com/completion/"
+	if err := s.client.Status().Update(ctx, agent); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.client.Delete(ctx, agent); err != nil {
+		t.Fatal(err)
+	}
+	s.reconciler.APIReader = interceptor.NewClient(s.client.Client.(client.WithWatch), interceptor.Funcs{
+		List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, options ...client.ListOption) error {
+			if _, ok := list.(*corev1.SecretList); ok {
+				return errors.New("synthetic registry cleanup outage")
+			}
+			return c.List(ctx, list, options...)
+		},
+	})
+	result, err := s.reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(agent)})
+	if err != nil || result.RequeueAfter == 0 {
+		t.Fatalf("registry cleanup outage did not retain a bounded retry: %+v %v", result, err)
+	}
+	current := s.current()
+	if current.Status.Phase != api.PhaseDeleting || current.Status.AccessURL != "" ||
+		!slices.Equal(current.Finalizers, agent.Finalizers) ||
+		!meta.IsStatusConditionFalse(current.Status.Conditions, api.ConditionRegistryCredentialsReady) ||
+		!meta.IsStatusConditionFalse(current.Status.Conditions, api.ConditionReady) {
+		t.Fatal("registry cleanup failure lost the deletion hold or status")
+	}
+	workload := s.workload()
+	deployment := &appsv1.Deployment{}
+	if err := s.client.Get(ctx, client.ObjectKey{Namespace: workload.Namespace, Name: terminalpolicy.WorkloadName(workload.Name)}, deployment); err != nil {
+		t.Fatal(err)
+	}
+	if ptr.Deref(workload.Spec.Replicas, -1) != 0 || ptr.Deref(deployment.Spec.Replicas, -1) != 0 {
+		t.Fatal("registry cleanup failure skipped Custom workload or terminal shutdown")
+	}
+	if err := s.client.Get(ctx, client.ObjectKey{Namespace: workload.Namespace, Name: "cetirun-" + agent.Name}, &istiov1beta1.VirtualService{}); !apierrors.IsNotFound(err) {
+		t.Fatal("registry cleanup failure retained the owned Custom route:", err)
+	}
+	if err := s.client.Get(ctx, client.ObjectKey{Name: workload.Namespace}, &corev1.Namespace{}); err != nil {
+		t.Fatal("namespace was removed before registry cleanup:", err)
+	}
+	if err := s.client.Get(ctx, client.ObjectKeyFromObject(source), source); err != nil {
+		t.Fatal("registry cleanup outage did not retain its retry state:", err)
+	}
+	s.reconciler.APIReader = s.client
+	for range 2 {
+		if err := s.step(); err != nil {
+			t.Fatal("Custom deletion could not resume after registry recovery:", err)
+		}
+	}
+	if err := s.client.Get(ctx, client.ObjectKeyFromObject(source), source); !apierrors.IsNotFound(err) {
+		t.Fatal("Custom deletion skipped retained registry credential cleanup:", err)
+	}
+	if err := s.client.Get(ctx, client.ObjectKeyFromObject(agent), &api.Agent{}); !apierrors.IsNotFound(err) {
+		t.Fatal("Custom deletion did not finish after registry recovery:", err)
 	}
 }
 

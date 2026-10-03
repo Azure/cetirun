@@ -20,7 +20,7 @@ import (
 // boundary using authoritative ClusterRole reads (the manager's APIReader, not
 // its cache). Rule and field order/duplicates are normalized, but role UID and
 // resourceVersion must match exactly. It never changes an approval or bans
-// explicitly approved privileges. Sources must repeat verification when
+// explicitly approved privileges. Consumers must repeat verification when
 // refreshing evidence; this observation is not a future execution permit.
 // Compile deliberately remains a pure consumer of trusted snapshot contents.
 func VerifyPolicyGrants(ctx context.Context, reader client.Reader, policy *api.AgentPolicy, inventory []ApprovedGrant) error {

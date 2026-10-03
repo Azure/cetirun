@@ -69,9 +69,11 @@ The [sandbox package](internal/sandbox/) currently provides:
   and incomplete verification fail explicitly.
 
 These helpers do not write workloads, authorize RBAC grants, compile a complete
-network policy, or prove enforcement. There is no production adapter or capability
-registration yet. The registration revision must represent the qualified
-runtime/chart/topology/grant inventory when that integration is implemented.
+network policy, or prove enforcement. There is no packaged guest-external
+observer, writer-fencing adapter or default capability registration. Explicit
+platform declarations can be read through the Kubernetes sources below; their
+registration revision must represent qualified runtime/chart/topology/grant
+inventory, not merely the existence of a RuntimeClass.
 An observation validator checks an adapter's input; it does not generate evidence.
 
 The new Team bindings and Agent `sandboxRef` remain optional in this additive
@@ -196,8 +198,8 @@ rejected without a qualified registration. The tests inject synthetic
 registrations; enabling this process does not make those production evidence
 or release the controller hold.
 
-Protected rendering, final-Pod checks and policy compilation are available as
-separate held preparation paths, described below. They do not serialize
+Protected rendering, final-Pod checks and policy compilation are connected by
+an opt-in **held controller preparation** path, described below. It does not serialize
 concurrent shared-configuration changes, coordinate rollout/start barriers,
 produce enforcement observations, or permit governed execution. Reference reads
 are checks against current objects, not an atomic cross-resource transaction.
@@ -279,8 +281,280 @@ and RuntimeClass overhead), runtime/security settings, owned HOME, read-only
 skills, scratch mounts and identity projections. Existing HOME and skills claims
 must match their trusted bindings. An incompatible storage or StatefulSet
 transition fails explicitly; no live writer-exclusion or data-adoption guarantee
-is inferred from rendering. Prepared Sandbox releases remain at zero replicas,
-and the Helm install/upgrade path refuses to apply them.
+is inferred from rendering. Prepared Sandbox releases remain at zero replicas.
+The generic Helm install/upgrade path still refuses them; the separate guarded
+`StageSandbox` operation can apply only the sealed, held manifest through Helm.
+It never starts Pods, reruns source templates, runs hooks or creates claims.
+Native ConfigMap/Service ownership is included before sealing, alongside the
+StatefulSet and compiler resources.
+
+Retired resources are excluded from Helm's implicit pruning; grant removal
+remains an identity-checked, journalled operation. Live updates must enforce
+UID/resourceVersion conditions and repair custom-resource drift rather than
+comparing only the old and new release manifests. Staging verifies the live
+resources against the sealed manifest, allowing only supported API defaults,
+before accepting a deployed release as prepared.
+
+##### Held controller integration
+
+[`AgentReconciler.SandboxPreparation`](internal/controller/sandbox_preparation.go)
+connects the components without treating a successful render as enforcement.
+This is an internal platform integration seam, **not a tenant activation flag**.
+By default, the operator installs neither a preparation source nor qualified
+production registrations. With no source, governed Agents retain their existing
+execution hold. The opt-in Kubernetes sources below wire authoritative reads of
+platform configuration and existing owned resources into the shipped binary.
+They do not supply a qualified writer-exclusion implementation, so held staging
+still cannot complete through stock startup. Tests inject that separate
+dependency; their results are not platform qualification or a permit to start.
+An operator namespace alone does not enable preparation or routine state reads
+for untracked Agents. Existing preparation markers still require cleanup when
+a provider is disabled. Deletion also probes state while the hold finalizer
+remains, so interrupted finalization is not lost after the preparation marker
+has already been released.
+
+A trusted integration must provide:
+
+- The same fresh `SandboxConfigurationSource` used by the Sandbox and
+  AgentPolicy configuration reconcilers.
+- `SandboxPreparationSource` approvals for the complete Agent generation,
+  chart version, helpers, protected namespace UID, existing HOME/skills PVC
+  UIDs and existing runtime Secret UID. Namespace/storage/model provisioning,
+  controller write permissions and serving admission are platform prerequisites;
+  the controller does not discover or adopt them by name alone.
+- A qualified `CheckQuiesced` implementation that confirms previous writers
+  have terminated or are durably fenced, including unreachable nodes. It must
+  support cleanup using the persisted prior namespace/HOME tuple after
+  suspension, reference deletion and restart. A Kubernetes scale request or an
+  empty Pod list is not this evidence.
+- A held Helm installer with authoritative, read-only release-store inspection,
+  an explicit protected state namespace, and the
+  dedicated admission ServiceAccount. There is no trusted-source fallback to
+  Agent status or arbitrary tenant ConfigMaps.
+
+The controller resolves every referenced Team slot and verifies current
+runtime/storage/grant approvals. New or changed preparation first confirms
+qualified quiescence and Pod absence, then compiles controls and renders the
+native chart. A failed preflight creates no preparation receipt, grant journal
+or Agent preparation finalizer. Existing preparation state still requires its
+qualified cleanup fence. The controller persists ownership and write-ahead
+grant inventory before any grants or workloads are applied. Old grants are
+revoked and observed absent; fresh source checks, qualified quiescence and Pod
+absence still guard held staging.
+Source-read RBAC gives admission only `get` on the named workload Secrets and
+ConfigMaps, not blanket namespace Secret reads.
+
+After staging, the controller records binding-object UIDs and an
+`ExecutionHeld=true` Pod expectation in the operator namespace. Source
+UID/resourceVersion snapshots include the Team, referenced configurations,
+RuntimeClass/StorageClass, namespace, claims, Pod sources and compiled controls.
+The Agent instead pins UID, generation, and a digest of its spec, protected
+authorization/reauthorization metadata and lifecycle holds. Status writes and
+unrelated labels/annotations do not invalidate it; metadata-only reauthorization
+still does. This is expectation format `v2`, separate from the unchanged render
+contract. Old expectations fail closed until the controller rebuilds them;
+upgrade controller and admission together, without editing stored JSON or
+lifting holds to bypass version checks.
+
+Successful attempts refresh every 15 seconds, so source changes, prerequisite
+expiry and explicit reauthorization are not missed. An unchanged attempt uses
+a controller-owned digest of approved inputs, rendering values, confirmed grant
+inventory, the expectation, native Service identity and deployed Helm record.
+It rechecks source identities, qualified fencing and Pod absence, but does not
+render, stage, rewrite journals or republish expectations. Changing any of
+these inputs returns to the guarded preparation path; missing/corrupt durable
+inventory or unavailable authority remains an error. All mutation guards in
+the controller and Helm action remain in place.
+
+The ordinary/admin fake-client regression fixtures measure 38/44 controller
+read calls on unchanged attempts, versus 154/183 through the full path, with
+zero writes, one release-store inspection and one fence check. These are
+regression budgets, not production throughput measurements; providers and
+release storage may perform additional requests. Inventories remain bounded
+to 128 sources and 512 KiB per expectation, with a one-Pod existence query.
+No production fleet size is qualified. Activation review must establish a
+measured capacity limit and evaluate additional dependency watches alongside
+the existing Agent/Team/Sandbox/AgentPolicy watches and expiry polling.
+
+`AgentConfigReady=True` with reason `SandboxPrepared` means **held preparation
+only**: `SandboxReady` and `Ready` remain false, the access URL is empty, and
+applied-binding history is not advanced.
+
+Tailscale, Teams, workload identity and governed Custom configurations remain
+unsupported by this native path. They retain an explanatory `UnsupportedControl`
+hold and bounded requeue instead of a permanent preparation-error loop. Existing
+grants are revoked if a previously prepared Agent transitions to one of them.
+Unqualified platform controls also retain the bounded `UnsupportedControl`
+hold; unavailable adapters, missing inventory and API read failures remain
+preparation errors rather than being reported as unsupported.
+An unsupported result does not suppress source, cleanup or status-write failures.
+
+If the source-read RoleBinding disappears after preparation, the controller
+authoritatively confirms its absence and durably retires its old journal entry
+before recording fresh write-ahead intent and creating a replacement. The new
+UID is then confirmed for reuse and later revocation. An unrelated same-name
+binding is not adopted, overwritten or revoked; read and journal-write failures
+prevent replacement creation.
+
+Partial writes, stale sources, suspension and provider disablement revoke
+recorded grants while retaining the hold and recovery state. Deletion revokes
+access first, waits for qualified writer fencing and all Pods (including
+terminating Pods), and only then removes the owned namespace. The controller
+releases preparation state and finalizers after namespace absence. A missing or
+corrupt journal, foreign ownership, an unavailable fence, or a conflicting
+state update blocks completion rather than implying successful cleanup.
+
+For deleting Sandbox-held native Agents and legacy Custom Agents, a grant-journal
+read or revocation failure does not skip independent workload stop requests,
+Custom terminal shutdown, owned-route removal, or attempts to clear readiness
+and the access URL. Status-write failures likewise do not skip revocation or
+shutdown. Errors from these independent operations are joined and block registry
+credential, namespace/storage cleanup and finalizer release until retry succeeds.
+
+Both deletion paths also remove retained managed registry credentials after
+revocation/shutdown requests and before namespace cleanup or finalizer release.
+Registry cleanup failures retain deletion state and a bounded retry; they do not
+skip shutdown or bypass the Sandbox writer-fencing requirement.
+
+Cleanup can resume after interrupted journal-finalizer release only when the
+remaining record is valid, owned and empty. This cleanup-only recovery neither
+authorizes new grants nor accepts unprotected nonempty inventory. Foreign
+finalizers are preserved, including when they retain a terminating empty journal.
+
+Local tests exercise this chain with synthetic platform providers and an
+isolated API server:
+
+```bash
+go test ./internal/controller -run TestSandboxPreparation -count=1
+KUBEBUILDER_ASSETS=/path/to/preinstalled/envtest make test-sandbox-integration
+```
+
+These tests do not run agent containers or establish runtime, Cilium, CSI,
+cloud identity or writer-fence qualification. Storage/identity handoffs,
+retired non-binding controls, shared-configuration reservations, authorized
+starts, Pod/node/epoch observations and route publication still require their
+qualified lifecycle integrations. Pending or incompatible Helm releases fail
+closed for coordinated recovery rather than being adopted or force-unlocked.
+
+##### Kubernetes-backed sources (opt-in)
+
+`sandboxSources.enabled` in the operator chart serializes
+`CETIRUN_SANDBOX_SOURCES`. It requires configuration and Pod admission to be
+enabled and enforced (`sandboxAdmission.enabled`, `enforce`, and `podsEnabled`).
+The admission ServiceAccount is fixed to the separately deployed
+`cetirun-sandbox-admission`; it is not the controller ServiceAccount.
+The default-off chart output and RBAC grants are unchanged.
+
+```yaml
+sandboxSources:
+  enabled: true
+  platformConfigMapName: sandbox-platform
+  homeClaimName: home
+  skillsClaimName: skills
+  helpers:
+    doctor: false
+    logger: false
+    desktop: false
+```
+
+These are operator settings, never Agent or Team Helm overrides. The constructor
+uses the selected operator namespace and chart version. The
+[configuration source](internal/controller/sandbox_kubernetes_configuration.go)
+reads `platform.json` from the named, pre-existing ConfigMap in that namespace.
+Its `v1` document contains `registrations`, `platforms`, `runtimeClasses` and
+`storageClasses`. It reuses the existing inner contract types and their
+case-sensitive JSON fields: registrations use `Capabilities`/`Available`,
+RuntimeClass pins use `UID`/`Handler`, and StorageClass pins use
+`UID`/`Provisioner`. Capability and platform objects retain their existing
+lower-camel field names. RuntimeClass and StorageClass declarations pin their
+UIDs and handler/provisioner; role approvals pin role identity, version and rules.
+Live role checks are scoped to the grants requested by each policy during
+assessment and workload preparation, including mutation guards. A missing,
+stale, unavailable or ambiguously approved role rejects that request without
+invalidating the shared snapshot or unrelated policies, including policies
+without Kubernetes access. Different policies may hold different approval pins
+for the same role; each request must match its own pins.
+Replacement, concurrent change, malformed configuration and API failures are
+errors, not automatic reapproval or a fallback to cached tenant data.
+The document is bounded to 512 KiB, 16,384 JSON tokens, 12 nesting levels and
+128 distinct API objects including the ConfigMap. Unknown/duplicate fields,
+nulls and incomplete object pins are rejected.
+
+The platform owner must protect this ConfigMap from tenant writes and maintain
+its qualification records, complete topology and explicit approvals. The chart
+does not create that inventory or set capabilities to true. An empty inventory
+can be represented without claiming any platform support:
+
+```json
+{
+  "version": "v1",
+  "registrations": {},
+  "platforms": {},
+  "runtimeClasses": {},
+  "storageClasses": {}
+}
+```
+
+The [prerequisite source](internal/controller/sandbox_kubernetes_prerequisites.go)
+selects the protected Agent namespace and configured existing HOME/skills
+claims, verifies their ownership and current identities, and reads only
+metadata for the Agent's `gatewayTokenSecretRef`. It never provisions or adopts
+storage by name, generates model credentials, or reads Secret contents.
+Provision these resources through the trusted platform first; this reader is
+not a storage migration or credential-issuance mechanism.
+
+The namespace needs its existing protected label, matching Agent-name/UID
+annotations and exact controller owner reference. Retained HOME without an
+owner reference is supported only with the current Agent UID annotation and
+the selected Sandbox's exact filesystem storage profile. Skills can retain
+their supported shared/RWX shape, with no owner or the current Agent/Team owner.
+The runtime Secret must be Agent-owned; its contents, usability and immutability
+are not inferred from metadata. Pending claims are allowed for delayed-binding
+storage classes, without being mistaken for writer-exclusion evidence.
+
+Both sources return revisions bound to their checked inputs and reject changes
+during capture. Configuration observations are dated at the start of the read;
+consumers check freshness after it completes and reject observations that expire
+during capture. The same configuration source is used by the Agent, Sandbox
+and AgentPolicy reconcilers. A configured source does not establish runtime,
+network or CSI enforcement. In particular, the stock prerequisite source has
+no writer-exclusion adapter and returns an explicit error before preparation
+creates durable cleanup state. An Agent rejected by this preflight remains
+deletable, including after sources are disabled; existing preparation state
+never bypasses fencing.
+Kubernetes Pod absence, PVC access modes and zero replicas cannot replace it.
+Qualified fencing, successful held staging, controlled starts and running
+enforcement observations remain separate lifecycle work. Do not remove holds
+or finalizers to bypass these missing guarantees.
+
+**Manual recovery after forced finalizer removal.** Do not force-remove Agent
+or state finalizers as routine cleanup. If an Agent disappears outside the
+normal lifecycle, its journal and preparation receipt deliberately retain
+their finalizers and may block state-namespace deletion. There is no automatic
+orphan reaper. A separately authorized recovery must:
+
+1. Preserve and strictly validate the original Agent UID, journal/receipt
+   identities, complete grant inventory and recorded namespace/HOME tuple.
+   Missing or corrupt evidence is not permission to substitute empty state.
+2. Compare any current same-name Agent by UID. A replacement is unrelated and
+   must not be adopted or have its resources removed. A matching terminating
+   Agent should use normal controller cleanup.
+3. Quiesce in-flight grant writers and obtain the platform's qualified fence
+   for the original writers. Agent absence, operator shutdown, scale-to-zero
+   and an empty Pod list are not sufficient evidence.
+4. Revoke every recorded binding, including obsolete entries, after checking
+   owner UID, role, subject and revision. Pin the actual object UID/version when
+   an inventory entry predates UID confirmation. Use deletion preconditions
+   and authoritative absence checks; terminating or replaced bindings remain
+   unresolved. Discovery supplements but never replaces durable inventory.
+5. Persist only confirmed removals with resourceVersion checks. After empty
+   inventory, continued fencing and original namespace/lifecycle cleanup are
+   confirmed, release only the journal's own finalizer and confirm deletion.
+   Handle the receipt separately under its original identity; preserve foreign
+   finalizers. Do not finalize the entire operator namespace to discard state.
+
+This procedure is not a tested live recovery tool. Shared-environment activation
+needs a reviewed and qualified orphan-recovery mechanism.
 
 When the desktop helper is enabled, it uses a separate `tmp-desktop` emptyDir
 for `/tmp`; the Agent retains `tmp`. Both volumes carry the Sandbox scratch
@@ -337,16 +611,24 @@ Approved Kubernetes API and Entra identities use separate audience-bound token
 projections; Entra-only identity does not implicitly authorize Kubernetes access.
 The compiler does not provision or revoke cloud identities. RBAC revocation
 helpers require authoritative UID/ownership checks and confirmed absence, and
-preserve shared roles/accounts. Persisting a grant inventory before writes and
-integrating retryable revocation into every finalizer path are still lifecycle
-requirements, not satisfied by rediscovering currently visible bindings alone.
+preserve shared roles/accounts. The held controller uses
+[`GrantJournalStore`](internal/sandboxpolicy/journal.go) to persist both workload
+and admission-source bindings before writes, record their UIDs, and integrate
+retryable revocation into hold, suspension and deletion paths. Its protected
+ConfigMap survives foreground owner deletion, uses resourceVersion CAS, and is
+bounded to 1,024 references and 512 KiB. Discovering visible bindings is never
+treated as complete cleanup inventory. This does not provide cloud-identity
+revocation or authorize execution. Recording unchanged canonical inventory uses
+one authoritative read and no write or confirming read; real changes retain the
+write-and-confirm path and never discard an already recorded binding UID.
 
 Each approved grant must carry the live ClusterRole UID, resource version and
 normalized rules; the approval's `Revision` is a separate administrative
 revision, not a substitute for an API observation. Configuration assessment
 calls [`VerifyPolicyGrants`](internal/sandboxpolicy/grants.go) through the
-authoritative reader. Trusted snapshot producers and future workload
-application boundaries must also verify immediately before consuming grants,
+authoritative reader for only the requesting policy's grants. Held preparation,
+its mutation guards and future workload application boundaries must also verify
+immediately before consuming requested grants,
 invalidate changed observations and coordinate revocation on drift. The
 compiler remains a pure transformation and cannot detect a later role edit.
 Explicitly approved wildcard or Secret access is not silently rewritten.

@@ -38,6 +38,7 @@ import (
 	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/agents/builtin"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/helm"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
 	"github.com/Azure/CetiRun/app/internal/registryauth"
 )
 
@@ -79,6 +80,7 @@ type AgentReconciler struct {
 	ChartRegistry               string                 // OCI registry host (e.g. "registry.example.com"), derived from chart repo URL
 	DefaultModel                string                 // Default GitHub Copilot model when spec.model is empty
 	CustomBindings              CustomBindingProvider
+	SandboxPreparation          *SandboxPreparation
 	RegistryCredentialNamespace string
 
 	// Azure config for Teams auto-provisioning.
@@ -183,14 +185,17 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 
 	// 2. Handle deletion.
 	if !instance.DeletionTimestamp.IsZero() {
-		if err := r.cleanupRegistryCredentials(ctx, instance, true); err != nil {
-			return r.registryWaiting(ctx, instance, "RegistryCleanupPending")
+		if controllerutil.ContainsFinalizer(instance, sandbox.PreparationFinalizer) {
+			return r.deleteSandboxBuiltin(ctx, instance)
 		}
 		if instance.Spec.Agent.Type == cetirunv1alpha1.AgentTypeCustom {
 			return r.deleteCustom(ctx, instance)
 		}
 		if sandboxRequested(instance, nil) {
 			return r.deleteSandboxBuiltin(ctx, instance)
+		}
+		if err := r.cleanupRegistryCredentials(ctx, instance, true); err != nil {
+			return r.registryWaiting(ctx, instance, "RegistryCleanupPending")
 		}
 		logger.V(1).Info("DeletionTimestamp set, entering delete handler", "alias", instance.Spec.User.Alias)
 		return r.handleDelete(ctx, instance)

@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"time"
@@ -115,6 +116,7 @@ func (r *AgentReconciler) ensureCustomOwnership(ctx context.Context, instance *a
 }
 
 func (r *AgentReconciler) deleteCustom(ctx context.Context, instance *api.Agent) (ctrl.Result, error) {
+	revokeErr := r.revokeSandboxPreparationGrants(ctx, instance)
 	r.customPlans.Delete(instance.Name)
 	previous := instance.DeepCopy().Status
 	stopErr := r.stopCustomWorkload(ctx, instance)
@@ -132,17 +134,15 @@ func (r *AgentReconciler) deleteCustom(ctx context.Context, instance *api.Agent)
 	if routeErr != nil {
 		setCondition(&instance.Status.Conditions, api.ConditionIngressReady, metav1.ConditionFalse, "CustomRouteRemovalBlocked", routeErr.Error())
 	}
-	if err := r.updateCustomStatus(ctx, instance, previous); err != nil {
+	statusErr := r.updateCustomStatus(ctx, instance, previous)
+	if err := errors.Join(revokeErr, stopErr, terminalErr, routeErr, statusErr); err != nil {
 		return ctrl.Result{}, err
 	}
-	if stopErr != nil {
-		return ctrl.Result{}, stopErr
+	if err := r.cleanupRegistryCredentials(ctx, instance, true); err != nil {
+		return r.registryWaiting(ctx, instance, "RegistryCleanupPending")
 	}
-	if terminalErr != nil {
-		return ctrl.Result{}, terminalErr
-	}
-	if routeErr != nil {
-		return ctrl.Result{}, routeErr
+	if err := r.checkSandboxPreparationCleanup(ctx, instance); err != nil {
+		return ctrl.Result{}, err
 	}
 	if err := r.retryCustomCompletion(ctx, instance); err != nil {
 		return ctrl.Result{}, err
@@ -189,6 +189,9 @@ func (r *AgentReconciler) deleteCustom(ctx context.Context, instance *api.Agent)
 }
 
 func (r *AgentReconciler) finishCustomDeletion(ctx context.Context, instance *api.Agent) (ctrl.Result, error) {
+	if err := r.finishSandboxPreparation(ctx, instance); err != nil {
+		return ctrl.Result{}, err
+	}
 	record := &corev1.ConfigMap{}
 	if err := r.customReader().Get(ctx, r.ownershipKey(instance), record); err == nil {
 		if !hasCustomRecordOwner(record, instance) {

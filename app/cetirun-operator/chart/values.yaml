@@ -121,7 +121,7 @@ sandboxAdmission:
   # -- Serve final-Pod checks; matching is installed only with enforce=true.
   # Also denies exec/attach/portforward in controller-marked namespaces.
   # Requires immutable namespace protection and a qualified lifecycle producer
-  # of controller-owned expectations. No production producer is installed yet;
+  # of controller-owned expectations. No execution-ready producer is installed;
   # protected writes fail closed and execution stays held. Other Pod mutators
   # must exclude these namespaces; arbitrary injected metadata is not accepted.
   podsEnabled: false
@@ -159,6 +159,23 @@ sandboxAdmission:
     limits:
       cpu: 500m
       memory: 256Mi
+
+# -- Read-only Kubernetes sources for held native Sandbox preparation.
+# Does not provision storage/model credentials, qualify a platform or implement
+# writer fencing. Execution stays held even when these sources are enabled.
+sandboxSources:
+  enabled: false
+  # -- Existing operator-namespace ConfigMap containing versioned platform.json.
+  # The platform owner supplies qualification, topology and exact object pins.
+  platformConfigMapName: ""
+  # -- Existing claims in each protected Agent namespace; never adopted by name.
+  homeClaimName: home
+  skillsClaimName: skills
+  # -- Approved native helpers; arbitrary injected containers remain unsupported.
+  helpers:
+    doctor: false
+    logger: false
+    desktop: false
 
 # -- Microsoft Entra Agent Identity lifecycle configuration. The feature is
 # deployment-scoped and remains disabled unless every required field is set.

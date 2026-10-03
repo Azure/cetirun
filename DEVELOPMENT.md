@@ -329,6 +329,24 @@ exceptions in `scripts/license_headers.py` must retain their own notices.
   native namespace marker/ownership guard (including webhook outages and
   namespace status/finalize updates). These are isolated API-server tests, not
   runtime/Cilium/CSI qualification or permission to lift the execution hold.
+  The focused `make -C app/cetirun-operator test-sandbox-integration` target
+  exercises the native Sandbox/AgentPolicy controller preparation chain with
+  synthetic platform inventory, real API object identities/defaulting and held
+  admission expectations. It stages OpenClaw/Hermes resources at zero replicas;
+  it does not start containers, install a production provider, or deploy to an
+  existing cluster. These tests inject their platform and fencing dependencies.
+  Their results do not qualify the opt-in Kubernetes-backed sources or a
+  production writer-exclusion adapter. Stock startup leaves writer exclusion
+  unavailable, so enabling sources alone cannot finish held preparation or
+  lift execution holds.
+  Normal unit tests also cover stale inputs, metadata-only
+  refresh/reauthorization, partial writes, restart, grant revocation, suspension
+  and ordered cleanup. Regression tests count read/write requests for unchanged
+  preparation and ensure Agent status changes do not invalidate authorization
+  intent, while generation changes, reauthorization and lifecycle holds do.
+  The versioned expectation transition is fail-closed; it does not change CRDs.
+  See the [operator integration boundary](app/cetirun-operator/README.md#held-controller-integration)
+  for the platform prerequisites and remaining start/observation gates.
   The checksum-pinned Linux amd64/arm64 bundle can be provisioned into a new
   task-local directory after a missing-tool failure:
 

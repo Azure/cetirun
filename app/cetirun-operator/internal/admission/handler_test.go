@@ -664,7 +664,7 @@ func TestDependencyFailureAndCleanupBoundary(t *testing.T) {
 		t.Fatal("dependency failures must not look like configuration validity")
 	}
 	old := f.agent.DeepCopy()
-	old.Finalizers = append(old.Finalizers, sandbox.HoldFinalizer, "example.com/other-controller")
+	old.Finalizers = append(old.Finalizers, sandbox.HoldFinalizer, sandbox.PreparationFinalizer, "example.com/other-controller")
 	now := metav1.Now()
 	old.DeletionTimestamp = &now
 	candidate := old.DeepCopy()
@@ -704,6 +704,25 @@ func TestControllerCanPersistHoldWithoutReferenceLookups(t *testing.T) {
 	requireResponse(t, f.handler.Validate(context.Background(), req), true, "")
 	req = requestFor(t, admissionv1.Update, f.agent, candidate, testController)
 	requireResponse(t, f.handler.Validate(context.Background(), req), false, "finalizers")
+}
+
+func TestControllerPreparationFinalizerBoundary(t *testing.T) {
+	f := newFixture(t)
+	f.handler.reader = unavailableReader{}
+	candidate := f.agent.DeepCopy()
+	candidate.Finalizers = append(candidate.Finalizers, sandbox.PreparationFinalizer)
+	requireResponse(t, f.handler.Validate(context.Background(),
+		requestFor(t, admissionv1.Update, candidate, f.agent, testController)), true, "lifecycle metadata")
+	for _, user := range []string{"administrator", "member"} {
+		requireResponse(t, f.handler.Validate(context.Background(),
+			requestFor(t, admissionv1.Update, candidate, f.agent, user)), false, "finalizers")
+	}
+	requireResponse(t, f.handler.Validate(context.Background(),
+		requestFor(t, admissionv1.Update, f.agent, candidate, testController)), false, "finalizers")
+	changed := candidate.DeepCopy()
+	changed.Spec.Model = "different-model"
+	requireResponse(t, f.handler.Validate(context.Background(),
+		requestFor(t, admissionv1.Update, changed, f.agent, testController)), false, "")
 }
 
 func TestMalformedAdmissionRequestsAreRejected(t *testing.T) {

@@ -30,7 +30,8 @@ import (
 
 // PrepareSandboxChart keeps override provenance until validation, applies the
 // complete protected bundle last, and uses the existing native Helm renderer.
-// The result is a held preview: InstallOrUpgrade explicitly refuses to apply it.
+// The sealed zero-replica result can only be applied by guarded StageSandbox;
+// InstallOrUpgrade explicitly refuses it, and staging never grants execution.
 func PrepareSandboxChart(chrt *chart.Chart, platform, user map[string]any, bundle *sandboxworkload.Bundle) (*PreparedRelease, error) {
 	if bundle == nil || chrt == nil || chrt.Metadata == nil || chrt.Metadata.Name != "cetirun" || len(chrt.CRDObjects()) != 0 {
 		return nil, fmt.Errorf("Sandbox requires a native chart and a resolved protected bundle")
@@ -81,7 +82,7 @@ func PrepareSandboxChart(chrt *chart.Chart, platform, user map[string]any, bundl
 		return nil, err
 	}
 	prepared.sandboxBundle, prepared.releaseName = bundle, input.ReleaseName
-	if err := prepared.validateSandboxRender(); err != nil {
+	if err := prepared.prepareAndValidateSandboxRender(); err != nil {
 		return nil, configurationError(err)
 	}
 	prepared.sealedInput = prepared.inputDigest()
@@ -104,7 +105,9 @@ func (p *PreparedRelease) SandboxManifest() ([]byte, error) {
 	return slices.Clone(p.manifest), nil
 }
 
-func (p *PreparedRelease) validateSandboxRender() error {
+// prepareAndValidateSandboxRender normalizes native namespace and ownership
+// before validating and sealing the complete manifest.
+func (p *PreparedRelease) prepareAndValidateSandboxRender() error {
 	input := p.sandboxBundle.Identity()
 	values, err := chartutil.ToRenderValues(p.chart, p.Values, chartutil.ReleaseOptions{
 		Name: input.ReleaseName, Namespace: input.Namespace.Name, IsInstall: true, Revision: 1,
@@ -177,6 +180,13 @@ func (p *PreparedRelease) validateSandboxRender() error {
 				}
 				if native[object.GetKind()] {
 					return fmt.Errorf("unexpected additional native Sandbox object")
+				}
+				owner := []metav1.OwnerReference{sandboxworkload.AgentOwner(input.AgentName, input.Resolution.Binding.AgentUID)}
+				if object.GetKind() == "ConfigMap" || object.GetKind() == "Service" {
+					if len(object.GetOwnerReferences()) != 0 && !equality.Semantic.DeepEqual(object.GetOwnerReferences(), owner) {
+						return fmt.Errorf("native Sandbox source has foreign ownership")
+					}
+					object.SetOwnerReferences(owner)
 				}
 				if err := p.validateSandboxNative(object); err != nil {
 					return err

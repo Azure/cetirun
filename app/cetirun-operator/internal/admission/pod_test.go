@@ -94,6 +94,14 @@ func newPodFixture(t *testing.T) podFixture {
 		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "runtime-secret", Namespace: fixture.Namespace.Name, UID: "secret-uid", ResourceVersion: "1"}},
 	}
 	for _, object := range objects {
+		if agent, ok := object.(*api.Agent); ok {
+			source, err := w.AgentSourceReference(agent)
+			if err != nil {
+				t.Fatal(err)
+			}
+			expected.Sources = append(expected.Sources, source)
+			continue
+		}
 		kinds, _, err := scheme.ObjectKinds(object)
 		if err != nil {
 			t.Fatal(err)
@@ -108,7 +116,8 @@ func newPodFixture(t *testing.T) podFixture {
 		t.Fatal(err)
 	}
 	state.UID, state.ResourceVersion = "state-uid", "1"
-	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(append(objects, state)...).Build()
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(fixture.Agent).
+		WithObjects(append(objects, state)...).Build()
 	handler, err := NewPodHandler(cl, PodConfig{StateNamespace: "operator-state"})
 	if err != nil {
 		t.Fatal(err)
@@ -299,6 +308,86 @@ func TestPodAdmissionUpdateAndExtraContainerBoundary(t *testing.T) {
 	request.SubResource = "ephemeralcontainers"
 	if response := f.handler.Validate(context.Background(), request); response.Allowed {
 		t.Fatal("ephemeral container injection accepted")
+	}
+}
+
+func TestPodAdmissionAgentStatusAndUnrelatedMetadataDoNotInvalidateIntent(t *testing.T) {
+	f := newPodFixture(t)
+	ctx := context.Background()
+	agent := &api.Agent{}
+	if err := f.client.Get(ctx, client.ObjectKeyFromObject(f.fixture.Agent), agent); err != nil {
+		t.Fatal(err)
+	}
+	oldVersion := agent.ResourceVersion
+	agent.Status.Phase = api.PhaseFailed
+	if err := f.client.Status().Update(ctx, agent); err != nil {
+		t.Fatal(err)
+	}
+	agent.Labels = map[string]string{"example.com/note": "updated"}
+	agent.Annotations["example.com/note"] = "updated"
+	agent.Finalizers = append(agent.Finalizers, "example.com/unrelated")
+	if err := f.client.Update(ctx, agent); err != nil {
+		t.Fatal(err)
+	}
+	if agent.ResourceVersion == oldVersion {
+		t.Fatal("fixture did not change the Agent resourceVersion")
+	}
+	if response := f.handler.Validate(ctx, podRequest(t, f.pod, admissionv1.Create, nil)); !response.Allowed {
+		t.Fatalf("status-only or unrelated metadata changes denied an otherwise authorized Pod: %+v", response.Result)
+	}
+}
+
+func TestPodAdmissionMetadataOnlyReauthorizationInvalidatesIntent(t *testing.T) {
+	f := newPodFixture(t)
+	ctx := context.Background()
+	agent := &api.Agent{}
+	if err := f.client.Get(ctx, client.ObjectKeyFromObject(f.fixture.Agent), agent); err != nil {
+		t.Fatal(err)
+	}
+	reauthorize, err := sandboxbinding.FormatReauthorization("fresh-request", f.expected.Binding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent.Annotations[sandboxbinding.ReauthorizeAnnotation] = reauthorize
+	if err := f.client.Update(ctx, agent); err != nil {
+		t.Fatal(err)
+	}
+	binding, err := sandboxbinding.AuthorizedBinding(agent)
+	if err != nil || binding != f.expected.Binding || agent.Generation != f.expected.AgentGeneration {
+		t.Fatal("fixture must retain generation and bound UIDs")
+	}
+	response := f.handler.Validate(ctx, podRequest(t, f.pod, admissionv1.Create, nil))
+	if response.Allowed || !strings.HasPrefix(response.Result.Message, "SourceChanged:") {
+		t.Fatalf("metadata-only authorization intent reused an old expectation: %+v", response.Result)
+	}
+}
+
+func TestPodAdmissionRejectsLegacyAgentSourceContract(t *testing.T) {
+	for _, legacyVersion := range []bool{false, true} {
+		t.Run(fmt.Sprintf("legacy-version=%v", legacyVersion), func(t *testing.T) {
+			f := newPodFixture(t)
+			if legacyVersion {
+				f.expected.Version = "v1"
+			} else {
+				for i := range f.expected.Sources {
+					if f.expected.Sources[i].IsAgent() {
+						f.expected.Sources[i].Generation, f.expected.Sources[i].IntentDigest = 0, ""
+						f.expected.Sources[i].ResourceVersion = f.fixture.Agent.ResourceVersion
+					}
+				}
+			}
+			raw, err := json.Marshal(f.expected)
+			if err != nil {
+				t.Fatal(err)
+			}
+			f.state.Data[PodExpectationKey] = string(raw)
+			if err := f.client.Update(context.Background(), f.state); err != nil {
+				t.Fatal(err)
+			}
+			if response := f.handler.Validate(context.Background(), podRequest(t, f.pod, admissionv1.Create, nil)); response.Allowed {
+				t.Fatal("old version or status-sensitive Agent source was accepted")
+			}
+		})
 	}
 }
 
