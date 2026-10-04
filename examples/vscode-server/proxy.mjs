@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 import http from "node:http";
+import { pipeline } from "node:stream";
 import { scopeBrowserStorage } from "./browser-storage.mjs";
 
 const MAX_HTML = 4 * 1024 * 1024;
@@ -69,7 +70,11 @@ export function createProxy({ basePath, instance, upstreamPort, defaults = {}, h
       if (headers["set-cookie"]) headers["set-cookie"] = headers["set-cookie"].map((cookie) => scopedCookie(cookie, basePath)).filter(Boolean);
       const html = /text\/html/i.test(headers["content-type"] ?? "");
       const worker = ["worker", "sharedworker", "serviceworker"].includes(request.headers["sec-fetch-dest"]);
-      if (!html && !worker) { response.writeHead(result.statusCode, headers); result.pipe(response); return; }
+      if (!html && !worker) {
+        response.writeHead(result.statusCode, headers);
+        pipeline(result, response, () => {});
+        return;
+      }
       try {
         if (headers["content-encoding"] && headers["content-encoding"] !== "identity") throw new Error("Unexpected compressed page");
         const chunks = [];

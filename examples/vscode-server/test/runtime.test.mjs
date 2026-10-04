@@ -130,6 +130,56 @@ test("proxy preserves prefixes, adapts HTML and cookies, and strips unrelated cr
   assert.match(await (await fetch(url + basePath + "_cetirun/storage.js")).text(), /uid-a/);
 });
 
+test("proxy streams complete assets without changing their bytes or headers", async (t) => {
+  const asset = Buffer.from([0, 1, 127, 128, 255]);
+  const upstream = http.createServer((_, response) => {
+    response.writeHead(200, { "Content-Type": "application/octet-stream", "Content-Length": asset.length,
+      "Cache-Control": "public, max-age=3600", ETag: '"fixture"' });
+    response.end(asset);
+  });
+  const proxy = createProxy({ basePath, instance: "uid-a", upstreamPort: await listen(upstream) });
+  const port = await listen(proxy);
+  t.after(() => { proxy.stop(); upstream.closeAllConnections(); upstream.close(); });
+  const response = await fetch(`http://127.0.0.1:${port}${basePath}asset.bin`);
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("content-length"), String(asset.length));
+  assert.equal(response.headers.get("cache-control"), "public, max-age=3600");
+  assert.equal(response.headers.get("etag"), '"fixture"');
+  assert.deepEqual(Buffer.from(await response.arrayBuffer()), asset);
+});
+
+test("proxy terminates the downstream response when an upstream asset is truncated", async (t) => {
+  let upstreamResponse;
+  const upstream = http.createServer((_, response) => {
+    upstreamResponse = response;
+    response.writeHead(200, { "Content-Type": "application/javascript", "Content-Length": 1024 });
+    response.write("partial");
+  });
+  const proxy = createProxy({ basePath, instance: "uid-a", upstreamPort: await listen(upstream) });
+  const port = await listen(proxy);
+  t.after(() => { proxy.stop(); upstream.closeAllConnections(); upstream.close(); });
+  const result = await new Promise((resolve, reject) => {
+    const request = http.get(`http://127.0.0.1:${port}${basePath}asset.js`, (response) => {
+      let bytes = 0;
+      response.on("data", (chunk) => {
+        bytes += chunk.length;
+        upstreamResponse.destroy();
+      });
+      response.on("error", (error) => {
+        resolve({ status: response.statusCode, bytes, complete: response.complete, code: error.code });
+      });
+      response.on("end", () => reject(new Error("Truncated asset was accepted as complete")));
+    });
+    request.setTimeout(3000, () => {
+      reject(new Error("Downstream response stayed pending after the upstream aborted"));
+      request.destroy();
+    });
+    request.on("error", reject);
+    t.after(() => request.destroy());
+  });
+  assert.deepEqual(result, { status: 200, bytes: 7, complete: false, code: "ECONNRESET" });
+});
+
 test("proxy forwards WebSocket upgrades under the instance prefix", async (t) => {
   const upstream = http.createServer();
   const peers = new Set();
