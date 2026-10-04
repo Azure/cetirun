@@ -1,0 +1,357 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
+package controller
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"slices"
+	"time"
+
+	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/runtimebindings"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxbinding"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
+	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/validation"
+	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	strictjson "sigs.k8s.io/json"
+)
+
+const (
+	sandboxBootstrapReceiptKey = "bootstrap.json"
+	sandboxBootstrapAnnotation = "cetirun.microsoft.com/sandbox-bootstrap"
+)
+
+type sandboxBootstrapConfig struct {
+	HomeClaimName string
+	ChartVersion  string
+}
+
+type sandboxBootstrapObject struct {
+	Kind string    `json:"kind"`
+	Name string    `json:"name"`
+	UID  types.UID `json:"uid,omitempty"`
+}
+
+type sandboxBootstrapReceipt struct {
+	Version      string                    `json:"version"`
+	AgentName    string                    `json:"agentName"`
+	AgentUID     types.UID                 `json:"agentUID"`
+	AgentType    api.AgentType             `json:"agentType"`
+	Namespace    string                    `json:"namespace"`
+	Home         runtimebindings.HomeClaim `json:"home"`
+	ChartVersion string                    `json:"chartVersion"`
+	Objects      []sandboxBootstrapObject  `json:"objects"`
+}
+
+func (r *AgentReconciler) sandboxBootstrapKey(agent *api.Agent) client.ObjectKey {
+	sum := sha256.Sum256([]byte(agent.UID))
+	return client.ObjectKey{Namespace: r.OperatorNamespace, Name: "sandbox-bootstrap-" + hex.EncodeToString(sum[:20])}
+}
+
+func (r *AgentReconciler) readSandboxBootstrap(ctx context.Context, agent *api.Agent) (*corev1.ConfigMap, *sandboxBootstrapReceipt, error) {
+	object := &corev1.ConfigMap{}
+	if err := r.customReader().Get(ctx, r.sandboxBootstrapKey(agent), object); err != nil {
+		return nil, nil, err
+	}
+	raw := object.Data[sandboxBootstrapReceiptKey]
+	if len(raw) > 16*1024 || len(object.Data) != 1 || len(object.BinaryData) != 0 {
+		return nil, nil, fmt.Errorf("Sandbox bootstrap receipt is invalid")
+	}
+	var receipt sandboxBootstrapReceipt
+	problems, err := strictjson.UnmarshalStrict([]byte(raw), &receipt)
+	owner := []metav1.OwnerReference{sandboxworkload.AgentOwner(agent.Name, agent.UID)}
+	if err != nil || len(problems) != 0 || object.UID == "" || object.ResourceVersion == "" ||
+		!equality.Semantic.DeepEqual(object.OwnerReferences, owner) ||
+		object.Annotations[sandboxworkload.AgentUIDAnnotation] != string(agent.UID) ||
+		receipt.Version != "v1" || receipt.AgentName != agent.Name || receipt.AgentUID != agent.UID ||
+		(receipt.AgentType != api.AgentTypeOpenClaw && receipt.AgentType != api.AgentTypeHermes) ||
+		receipt.Namespace != instanceNamespace(agent.Name) || receipt.Namespace == r.OperatorNamespace ||
+		len(validation.IsDNS1123Label(receipt.Namespace)) != 0 || receipt.ChartVersion == "" ||
+		len(receipt.Objects) != 5 {
+		return nil, nil, fmt.Errorf("Sandbox bootstrap ownership receipt is invalid")
+	}
+	size, err := resource.ParseQuantity(receipt.Home.StorageSize)
+	if err != nil || size.Sign() <= 0 || len(validation.IsDNS1123Subdomain(receipt.Home.StorageClass)) != 0 ||
+		(receipt.Home.AccessMode != string(corev1.ReadWriteOnce) && receipt.Home.AccessMode != string(corev1.ReadWriteOncePod)) {
+		return nil, nil, fmt.Errorf("Sandbox bootstrap HOME receipt is invalid")
+	}
+	kinds := []string{"Namespace", "Role", "RoleBinding", "PersistentVolumeClaim", "Secret"}
+	for i, entry := range receipt.Objects {
+		if entry.Kind != kinds[i] || len(validation.IsDNS1123Subdomain(entry.Name)) != 0 {
+			return nil, nil, fmt.Errorf("Sandbox bootstrap resource inventory is invalid")
+		}
+	}
+	role, binding := r.operatorNamespaceRBAC(receipt.Namespace)
+	if receipt.Objects[0].Name != receipt.Namespace || receipt.Objects[1].Name != role.Name || receipt.Objects[2].Name != binding.Name {
+		return nil, nil, fmt.Errorf("Sandbox bootstrap resource inventory is invalid")
+	}
+	return object, &receipt, nil
+}
+
+func (r *AgentReconciler) saveSandboxBootstrap(ctx context.Context, object *corev1.ConfigMap, receipt *sandboxBootstrapReceipt) error {
+	raw, err := json.Marshal(receipt)
+	if err != nil {
+		return err
+	}
+	base := object.DeepCopy()
+	object.Data[sandboxBootstrapReceiptKey] = string(raw)
+	return r.Patch(ctx, object, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{}))
+}
+
+func (r *AgentReconciler) bootstrapSandboxOwned(ctx context.Context, attempt *sandboxPreparationAttempt) error {
+	agent, config := attempt.agent, r.SandboxPreparation.bootstrap
+	object, receipt, err := r.readSandboxBootstrap(ctx, agent)
+	if apierrors.IsNotFound(err) {
+		if controllerutil.ContainsFinalizer(agent, sandbox.BootstrapFinalizer) {
+			return fmt.Errorf("Sandbox bootstrap receipt is missing; recovery is required")
+		}
+		ns := &corev1.Namespace{}
+		if err := r.APIReader.Get(ctx, client.ObjectKey{Name: instanceNamespace(agent.Name)}, ns); err == nil {
+			if ns.Annotations[sandboxBootstrapAnnotation] != "" {
+				return fmt.Errorf("Sandbox namespace has bootstrap intent but its receipt is missing; recovery is required")
+			}
+			// Pre-existing inputs stay on the read-only path; this is not adoption.
+			return nil
+		} else if !apierrors.IsNotFound(err) {
+			return err
+		}
+		if controllerutil.ContainsFinalizer(agent, sandbox.PreparationFinalizer) || agent.Status.Sandbox != nil {
+			return fmt.Errorf("%w: a previously prepared namespace cannot be bootstrapped again", sandboxworkload.ErrStorageTransitionRequired)
+		}
+	} else if err != nil {
+		return err
+	}
+	if agent.Spec.Helm.Version != config.ChartVersion || agent.Spec.Agent.Image == nil || *agent.Spec.Agent.Image == "" ||
+		agent.Spec.Agent.Port == nil || *agent.Spec.Agent.Port < 1 || *agent.Spec.Agent.Port > 65535 {
+		return fmt.Errorf("Sandbox bootstrap requires explicit approved chart version, native image and port; controller spec defaulting is not authorized")
+	}
+	if len(validation.IsDNS1123Label(instanceNamespace(agent.Name))) != 0 || instanceNamespace(agent.Name) == r.OperatorNamespace ||
+		len(validation.IsDNS1123Subdomain(agent.Spec.GatewayTokenSecretRef)) != 0 ||
+		len(validation.IsDNS1123Subdomain(r.OperatorSAName)) != 0 {
+		return fmt.Errorf("Sandbox bootstrap requires valid isolated namespace, runtime Secret and operator identities")
+	}
+	home := attempt.resolution.Sandbox.Storage.Home
+	profile := runtimebindings.HomeClaim{StorageClass: home.StorageClassName, StorageSize: home.Size.String(), AccessMode: string(home.AccessMode)}
+	if receipt == nil {
+		role, binding := r.operatorNamespaceRBAC(instanceNamespace(agent.Name))
+		receipt = &sandboxBootstrapReceipt{
+			Version: "v1", AgentName: agent.Name, AgentUID: agent.UID, AgentType: agent.Spec.Agent.Type, Namespace: instanceNamespace(agent.Name),
+			Home: profile, ChartVersion: config.ChartVersion,
+			Objects: []sandboxBootstrapObject{
+				{Kind: "Namespace", Name: instanceNamespace(agent.Name)},
+				{Kind: "Role", Name: role.Name}, {Kind: "RoleBinding", Name: binding.Name},
+				{Kind: "PersistentVolumeClaim", Name: config.HomeClaimName},
+				{Kind: "Secret", Name: agent.Spec.GatewayTokenSecretRef},
+			},
+		}
+		raw, err := json.Marshal(receipt)
+		if err != nil {
+			return err
+		}
+		key := r.sandboxBootstrapKey(agent)
+		object = &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: key.Name, Namespace: key.Namespace,
+				OwnerReferences: []metav1.OwnerReference{sandboxworkload.AgentOwner(agent.Name, agent.UID)},
+				Annotations:     map[string]string{sandboxworkload.AgentUIDAnnotation: string(agent.UID)},
+				Finalizers:      []string{sandbox.BootstrapFinalizer},
+			},
+			Data: map[string]string{sandboxBootstrapReceiptKey: string(raw)},
+		}
+		if err := r.sandboxBootstrapGuard(ctx, attempt); err != nil {
+			return err
+		}
+		if err := r.Create(ctx, object); err != nil {
+			return err
+		}
+	}
+	if !object.DeletionTimestamp.IsZero() || !controllerutil.ContainsFinalizer(object, sandbox.BootstrapFinalizer) {
+		return fmt.Errorf("Sandbox bootstrap receipt is no longer protected for writes")
+	}
+	if receipt.Home != profile || receipt.Objects[3].Name != config.HomeClaimName ||
+		receipt.Objects[4].Name != agent.Spec.GatewayTokenSecretRef || receipt.ChartVersion != config.ChartVersion ||
+		receipt.AgentType != agent.Spec.Agent.Type {
+		return fmt.Errorf("%w: changing bootstrap storage, native type, Secret or chart requires an explicit handoff", sandboxworkload.ErrStorageTransitionRequired)
+	}
+	if !controllerutil.ContainsFinalizer(agent, sandbox.BootstrapFinalizer) {
+		if err := r.sandboxBootstrapGuard(ctx, attempt); err != nil {
+			return err
+		}
+		base := agent.DeepCopy()
+		controllerutil.AddFinalizer(agent, sandbox.BootstrapFinalizer)
+		if err := r.Patch(ctx, agent, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
+			return err
+		}
+	}
+	desired := r.sandboxBootstrapObjects(agent, object, receipt)
+	for i, resource := range desired {
+		if err := r.sandboxBootstrapGuard(ctx, attempt); err != nil {
+			return err
+		}
+		// Once recorded, namespace replacement cannot redirect a subsequent create.
+		if i > 0 {
+			ns := &corev1.Namespace{}
+			if err := r.APIReader.Get(ctx, client.ObjectKey{Name: receipt.Namespace}, ns); err != nil {
+				return err
+			}
+			if err := validateSandboxBootstrapObject(ns, desired[0], receipt.Objects[0].UID, false); err != nil {
+				return err
+			}
+		}
+		current := resource.DeepCopyObject().(client.Object)
+		err := r.APIReader.Get(ctx, client.ObjectKeyFromObject(resource), current)
+		if apierrors.IsNotFound(err) {
+			if receipt.Objects[i].UID != "" {
+				return fmt.Errorf("recorded Sandbox bootstrap %s is missing; recovery is required", receipt.Objects[i].Kind)
+			}
+			if receipt.Objects[i].Kind == "Secret" {
+				secret, err := r.newGatewayTokenSecret(agent)
+				if err != nil {
+					return err
+				}
+				secret.ObjectMeta = *resource.(*metav1.PartialObjectMetadata).ObjectMeta.DeepCopy()
+				current = secret
+			}
+			if err := r.Create(ctx, current); err != nil {
+				return err
+			}
+		} else if err != nil {
+			return err
+		}
+		if err := validateSandboxBootstrapObject(current, resource, receipt.Objects[i].UID, false); err != nil {
+			return err
+		}
+		if receipt.Objects[i].UID == "" {
+			if err := r.sandboxBootstrapGuard(ctx, attempt); err != nil {
+				return err
+			}
+			receipt.Objects[i].UID = current.GetUID()
+			if err := r.saveSandboxBootstrap(ctx, object, receipt); err != nil {
+				return err
+			}
+		}
+	}
+	return r.sandboxBootstrapGuard(ctx, attempt)
+}
+
+func (r *AgentReconciler) sandboxBootstrapGuard(ctx context.Context, attempt *sandboxPreparationAttempt) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	current, binding, err := sandboxbinding.Read(ctx, r.APIReader, client.ObjectKeyFromObject(attempt.agent))
+	if err != nil {
+		return err
+	}
+	before, err := sandboxworkload.AgentSourceReference(attempt.agent)
+	if err != nil {
+		return err
+	}
+	after, err := sandboxworkload.AgentSourceReference(current)
+	if err != nil || before != after || binding != attempt.resolution.Binding || current.Spec.Suspended ||
+		!current.DeletionTimestamp.IsZero() || !controllerutil.ContainsFinalizer(current, sandbox.HoldFinalizer) {
+		return fmt.Errorf("%w: Sandbox bootstrap intent changed", errSandboxSourceChanged)
+	}
+	config := r.SandboxPreparation
+	if err := configurationSnapshotTime(attempt.configuration.ObservedAt, configurationNow(config.Now), config.MaxSnapshotAge); err != nil {
+		return err
+	}
+	actual, err := configurationSnapshot(ctx, config.Configuration, config.Now, config.MaxSnapshotAge)
+	if err != nil {
+		return err
+	}
+	expected := attempt.configuration
+	actual.ObservedAt, expected.ObservedAt = time.Time{}, time.Time{}
+	actualDigest, err := sandboxPreparationDigest(actual)
+	if err != nil {
+		return err
+	}
+	expectedDigest, err := sandboxPreparationDigest(expected)
+	if err != nil {
+		return err
+	}
+	if actualDigest != expectedDigest {
+		return fmt.Errorf("%w: Sandbox bootstrap platform changed", errSandboxSourceChanged)
+	}
+	return r.verifySandboxSources(ctx, attempt.sources)
+}
+
+func (r *AgentReconciler) sandboxBootstrapObjects(agent *api.Agent, receiptObject *corev1.ConfigMap, receipt *sandboxBootstrapReceipt) []client.Object {
+	role, binding := r.operatorNamespaceRBAC(receipt.Namespace)
+	objects := []client.Object{
+		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: receipt.Namespace,
+			Finalizers: []string{sandbox.BootstrapFinalizer}, Labels: map[string]string{
+				"app.kubernetes.io/name": "cetirun", "app.kubernetes.io/instance": agent.Spec.User.Alias,
+				"app.kubernetes.io/managed-by": "cetirun-operator", sandboxworkload.ProtectedNamespaceLabel: "true",
+			}}},
+		role, binding,
+		&corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: receipt.Objects[3].Name, Namespace: receipt.Namespace}, Spec: receipt.Home.PVCSpec()},
+		&metav1.PartialObjectMetadata{TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Secret"},
+			ObjectMeta: metav1.ObjectMeta{Name: receipt.Objects[4].Name, Namespace: receipt.Namespace}},
+	}
+	for _, object := range objects {
+		object.SetOwnerReferences([]metav1.OwnerReference{sandboxworkload.AgentOwner(agent.Name, agent.UID)})
+		object.SetAnnotations(map[string]string{
+			sandboxworkload.AgentUIDAnnotation: string(agent.UID), sandboxworkload.AgentNameAnnotation: agent.Name,
+			sandboxBootstrapAnnotation: string(receiptObject.UID),
+		})
+	}
+	return objects
+}
+
+func validateSandboxBootstrapObject(current, desired client.Object, uid types.UID, cleanup bool) error {
+	if current.GetUID() == "" || current.GetResourceVersion() == "" || (uid != "" && current.GetUID() != uid) ||
+		(!cleanup && !current.GetDeletionTimestamp().IsZero()) ||
+		!equality.Semantic.DeepEqual(current.GetOwnerReferences(), desired.GetOwnerReferences()) {
+		return fmt.Errorf("Sandbox bootstrap resource ownership or UID changed; recovery is required")
+	}
+	for key, value := range desired.GetAnnotations() {
+		if current.GetAnnotations()[key] != value {
+			return fmt.Errorf("Sandbox bootstrap resource differs from its recorded creation intent")
+		}
+	}
+	if cleanup {
+		return nil
+	}
+	switch expected := desired.(type) {
+	case *corev1.Namespace:
+		if current.GetLabels()[sandboxworkload.ProtectedNamespaceLabel] != "true" ||
+			!controllerutil.ContainsFinalizer(current, sandbox.BootstrapFinalizer) {
+			return fmt.Errorf("Sandbox bootstrap namespace is no longer protected against replacement")
+		}
+	case *corev1.PersistentVolumeClaim:
+		actual := current.(*corev1.PersistentVolumeClaim)
+		if actual.Status.Phase == corev1.ClaimLost ||
+			ptr.Deref(actual.Spec.VolumeMode, corev1.PersistentVolumeFilesystem) != corev1.PersistentVolumeFilesystem ||
+			!equality.Semantic.DeepEqual(actual.Spec.StorageClassName, expected.Spec.StorageClassName) ||
+			!equality.Semantic.DeepEqual(actual.Spec.Resources, expected.Spec.Resources) ||
+			!slices.Equal(actual.Spec.AccessModes, expected.Spec.AccessModes) ||
+			actual.Spec.DataSource != nil || actual.Spec.DataSourceRef != nil || actual.Spec.Selector != nil {
+			return fmt.Errorf("%w: Sandbox bootstrap HOME no longer matches its profile", sandboxworkload.ErrStorageTransitionRequired)
+		}
+	case *rbacv1.Role:
+		if !equality.Semantic.DeepEqual(current.(*rbacv1.Role).Rules, expected.Rules) {
+			return fmt.Errorf("Sandbox bootstrap operator Role changed")
+		}
+	case *rbacv1.RoleBinding:
+		actual := current.(*rbacv1.RoleBinding)
+		if actual.RoleRef != expected.RoleRef || !equality.Semantic.DeepEqual(actual.Subjects, expected.Subjects) {
+			return fmt.Errorf("Sandbox bootstrap operator RoleBinding changed")
+		}
+	}
+	return nil
+}

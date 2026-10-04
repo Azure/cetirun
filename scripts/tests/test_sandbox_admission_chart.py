@@ -23,6 +23,7 @@ FINALIZERS = [
     f"{API_GROUP}/finalizer",
     f"{API_GROUP}/sandbox-hold",
     f"{API_GROUP}/sandbox-preparation",
+    f"{API_GROUP}/sandbox-bootstrap",
     f"{API_GROUP}/custom-runtime-ownership",
     f"{API_GROUP}/custom-apply-completion",
 ]
@@ -175,6 +176,7 @@ class SandboxAdmissionChartTests(unittest.TestCase):
             "sandboxSources": {
                 "enabled": True, "platformConfigMapName": "sandbox-platform",
                 "homeClaimName": "owned-home", "skillsClaimName": "owned-skills",
+                "bootstrapOwnedPrerequisites": True,
                 "helpers": {"doctor": True, "logger": True, "desktop": False},
             },
         })
@@ -185,11 +187,62 @@ class SandboxAdmissionChartTests(unittest.TestCase):
         self.assertEqual(json.loads(source_env[0]["value"]), {
             "enabled": True, "platformConfigMapName": "sandbox-platform",
             "homeClaimName": "owned-home", "skillsClaimName": "owned-skills",
+            "bootstrapOwnedPrerequisites": True,
             "admissionServiceAccount": NAME,
             "helpers": {"doctor": True, "logger": True, "desktop": False},
         })
         env.remove(source_env[0])
         self.assertEqual(configured, baseline)
+
+    def test_kubernetes_sources_bootstrap_defaults_to_false(self):
+        documents = self.render(self.enforced_values(podsEnabled=True), values={
+            "sandboxSources": {
+                "enabled": True, "platformConfigMapName": "sandbox-platform",
+            },
+        })
+        env = documents[("Deployment", "cetirun-operator")]["spec"]["template"]["spec"]["containers"][0]["env"]
+        source_env = next(item for item in env if item["name"] == "CETIRUN_SANDBOX_SOURCES")
+        config = json.loads(source_env["value"])
+        self.assertNotIn("bootstrapOwnedPrerequisites", config)
+        self.assertEqual(set(config), {
+            "enabled", "platformConfigMapName", "homeClaimName", "skillsClaimName",
+            "helpers", "admissionServiceAccount",
+        })
+
+    def test_kubernetes_sources_accept_values_without_the_new_bootstrap_key(self):
+        for enabled in (False, True):
+            with self.subTest(enabled=enabled):
+                documents = self.render(self.enforced_values(podsEnabled=True), values={
+                    "sandboxSources": {
+                        "enabled": enabled,
+                        "platformConfigMapName": "sandbox-platform",
+                        "bootstrapOwnedPrerequisites": None,
+                    },
+                })
+                env = documents[("Deployment", "cetirun-operator")]["spec"]["template"]["spec"]["containers"][0]["env"]
+                configs = [item["value"] for item in env if item["name"] == "CETIRUN_SANDBOX_SOURCES"]
+                if enabled:
+                    self.assertEqual(len(configs), 1)
+                    self.assertNotIn("bootstrapOwnedPrerequisites", json.loads(configs[0]))
+                else:
+                    self.assertEqual(configs, [])
+
+    def test_kubernetes_sources_bootstrap_rejects_invalid_or_disabled_configuration(self):
+        for invalid in ("true", 1, "false", []):
+            with self.subTest(invalid=invalid):
+                self.assert_rejected(
+                    self.enforced_values(podsEnabled=True),
+                    "sandboxSources.bootstrapOwnedPrerequisites must be a boolean",
+                    values={"sandboxSources": {
+                        "enabled": True, "platformConfigMapName": "sandbox-platform",
+                        "bootstrapOwnedPrerequisites": invalid,
+                    }},
+                )
+        self.assert_rejected(
+            self.enforced_values(podsEnabled=True),
+            "sandboxSources.bootstrapOwnedPrerequisites requires enabled sources",
+            values={"sandboxSources": {"enabled": False, "bootstrapOwnedPrerequisites": True}},
+        )
 
     def test_kubernetes_sources_require_enforced_pod_admission(self):
         values = {"sandboxSources": {

@@ -4,6 +4,9 @@
 package sandboxworkload_test
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -20,6 +23,24 @@ func TestAgentSourceReferencePinsIntentNotStatus(t *testing.T) {
 	expected, err := w.AgentSourceReference(fixture.Agent)
 	if err != nil || !expected.ValidIdentity() || expected.ResourceVersion != "" {
 		t.Fatalf("invalid intent identity: %+v %v", expected, err)
+	}
+	legacy, err := json.Marshal(struct {
+		Spec        api.AgentSpec
+		Annotations map[string]string
+		Held        bool
+		Prepared    bool
+	}{
+		Spec: fixture.Agent.Spec,
+		Annotations: map[string]string{
+			sandboxbinding.AuthorizationAnnotation: fixture.Agent.Annotations[sandboxbinding.AuthorizationAnnotation],
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(legacy)
+	if expected.IntentDigest != hex.EncodeToString(sum[:]) {
+		t.Fatal("Agents without bootstrap no longer match their persisted intent digest")
 	}
 	for name, mutate := range map[string]func(*api.Agent){
 		"resource version": func(a *api.Agent) { a.ResourceVersion = "42" },
@@ -44,6 +65,7 @@ func TestAgentSourceReferencePinsIntentNotStatus(t *testing.T) {
 		"suspension":              func(a *api.Agent) { a.Spec.Suspended = true },
 		"hold":                    func(a *api.Agent) { a.Finalizers = append(a.Finalizers, sandbox.HoldFinalizer) },
 		"preparation marker":      func(a *api.Agent) { a.Finalizers = append(a.Finalizers, sandbox.PreparationFinalizer) },
+		"bootstrap marker":        func(a *api.Agent) { a.Finalizers = append(a.Finalizers, sandbox.BootstrapFinalizer) },
 		"reauthorization":         func(a *api.Agent) { a.Annotations[sandboxbinding.ReauthorizeAnnotation] = "different-request" },
 	} {
 		t.Run(name, func(t *testing.T) {

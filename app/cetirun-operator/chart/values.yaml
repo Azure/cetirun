@@ -160,15 +160,17 @@ sandboxAdmission:
       cpu: 500m
       memory: 256Mi
 
-# -- Read-only Kubernetes sources for held native Sandbox preparation.
-# Does not provision storage/model credentials, qualify a platform or implement
-# writer fencing. Execution stays held even when these sources are enabled.
+# -- Kubernetes sources for held native Sandbox preparation.
+# Does not qualify a platform or implement writer fencing. Execution stays held.
 sandboxSources:
   enabled: false
+  # -- Create owned namespace, HOME and native authentication only for new namespaces.
+  # Requires explicit Agent chart/image/port pins. Published skills stay external.
+  bootstrapOwnedPrerequisites: false
   # -- Existing operator-namespace ConfigMap containing versioned platform.json.
   # The platform owner supplies qualification, topology and exact object pins.
   platformConfigMapName: ""
-  # -- Existing claims in each protected Agent namespace; never adopted by name.
+  # -- Claims in each protected Agent namespace; never adopted by name.
   homeClaimName: home
   skillsClaimName: skills
   # -- Approved native helpers; arbitrary injected containers remain unsupported.

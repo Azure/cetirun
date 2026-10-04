@@ -185,7 +185,8 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 
 	// 2. Handle deletion.
 	if !instance.DeletionTimestamp.IsZero() {
-		if controllerutil.ContainsFinalizer(instance, sandbox.PreparationFinalizer) {
+		if controllerutil.ContainsFinalizer(instance, sandbox.PreparationFinalizer) ||
+			controllerutil.ContainsFinalizer(instance, sandbox.BootstrapFinalizer) {
 			return r.deleteSandboxBuiltin(ctx, instance)
 		}
 		if instance.Spec.Agent.Type == cetirunv1alpha1.AgentTypeCustom {
@@ -909,13 +910,7 @@ func (r *AgentReconciler) handleDelete(ctx context.Context, instance *cetirunv1a
 	return ctrl.Result{}, nil
 }
 
-// ensureNamespacedRBAC creates (or updates) a Role and RoleBinding in ns that grants
-// the operator service account the permissions it needs within that single namespace.
-// This replaces the equivalent cluster-wide rules that were previously in the ClusterRole,
-// scoping Secrets/ConfigMaps/Services/StatefulSets/PVCs/ServiceAccounts access to only
-// the namespaces this operator actually manages.
-func (r *AgentReconciler) ensureNamespacedRBAC(ctx context.Context, ns string) error {
-	logger := log.FromContext(ctx)
+func (r *AgentReconciler) operatorNamespaceRBAC(ns string) (*rbacv1.Role, *rbacv1.RoleBinding) {
 	const roleName = "cetirun-operator-ns-role"
 	const bindingName = "cetirun-operator-ns-rolebinding"
 
@@ -966,23 +961,6 @@ func (r *AgentReconciler) ensureNamespacedRBAC(ctx context.Context, ns string) e
 		},
 	}
 
-	existingRole := &rbacv1.Role{}
-	err := r.Get(ctx, types.NamespacedName{Namespace: ns, Name: roleName}, existingRole)
-	if errors.IsNotFound(err) {
-		logger.V(1).Info("Creating namespaced Role", "role", roleName, "namespace", ns)
-		if err := r.Create(ctx, desiredRole); err != nil && !errors.IsAlreadyExists(err) {
-			return fmt.Errorf("create namespaced Role in %s: %w", ns, err)
-		}
-	} else if err != nil {
-		return fmt.Errorf("get namespaced Role in %s: %w", ns, err)
-	} else {
-		logger.V(1).Info("Updating namespaced Role", "role", roleName, "namespace", ns)
-		existingRole.Rules = desiredRole.Rules
-		if err := r.Update(ctx, existingRole); err != nil {
-			return fmt.Errorf("update namespaced Role in %s: %w", ns, err)
-		}
-	}
-
 	// The operator's own ServiceAccount is in the namespace where the operator pod runs.
 	// We bind the Role to the operator's ServiceAccount so that it can act within ns.
 	desiredBinding := &rbacv1.RoleBinding{
@@ -1006,7 +984,29 @@ func (r *AgentReconciler) ensureNamespacedRBAC(ctx context.Context, ns string) e
 			},
 		},
 	}
+	return desiredRole, desiredBinding
+}
 
+func (r *AgentReconciler) ensureNamespacedRBAC(ctx context.Context, ns string) error {
+	logger := log.FromContext(ctx)
+	desiredRole, desiredBinding := r.operatorNamespaceRBAC(ns)
+	roleName, bindingName := desiredRole.Name, desiredBinding.Name
+	existingRole := &rbacv1.Role{}
+	err := r.Get(ctx, types.NamespacedName{Namespace: ns, Name: roleName}, existingRole)
+	if errors.IsNotFound(err) {
+		logger.V(1).Info("Creating namespaced Role", "role", roleName, "namespace", ns)
+		if err := r.Create(ctx, desiredRole); err != nil && !errors.IsAlreadyExists(err) {
+			return fmt.Errorf("create namespaced Role in %s: %w", ns, err)
+		}
+	} else if err != nil {
+		return fmt.Errorf("get namespaced Role in %s: %w", ns, err)
+	} else {
+		logger.V(1).Info("Updating namespaced Role", "role", roleName, "namespace", ns)
+		existingRole.Rules = desiredRole.Rules
+		if err := r.Update(ctx, existingRole); err != nil {
+			return fmt.Errorf("update namespaced Role in %s: %w", ns, err)
+		}
+	}
 	existingBinding := &rbacv1.RoleBinding{}
 	err = r.Get(ctx, types.NamespacedName{Namespace: ns, Name: bindingName}, existingBinding)
 	if errors.IsNotFound(err) {
@@ -1154,7 +1154,6 @@ func (r *AgentReconciler) ensureNamespace(ctx context.Context, ns, alias string,
 // and ensures MSTEAMS credential keys are populated when spec.msteams is configured.
 func (r *AgentReconciler) ensureGatewayToken(ctx context.Context, instance *cetirunv1alpha1.Agent) error {
 	logger := log.FromContext(ctx)
-	alias := instance.Spec.User.Alias
 	ns := instanceNamespace(instance.Name)
 	secretName := instance.Spec.GatewayTokenSecretRef
 
@@ -1170,51 +1169,9 @@ func (r *AgentReconciler) ensureGatewayToken(ctx context.Context, instance *ceti
 
 	logger.Info("Creating gateway token secret", "secret", secretName, "namespace", ns)
 
-	token, err := generateRandomToken(32)
+	secret, err = r.newGatewayTokenSecret(instance)
 	if err != nil {
 		return err
-	}
-	authKey, err := generateRandomToken(32)
-	if err != nil {
-		return err
-	}
-
-	secret = &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      secretName,
-			Namespace: ns,
-			Labels: map[string]string{
-				"app.kubernetes.io/managed-by": "cetirun-operator",
-				"app.kubernetes.io/instance":   alias,
-			},
-		},
-		Type: corev1.SecretTypeOpaque,
-		Data: map[string][]byte{
-			"OPENCLAW_GATEWAY_TOKEN": []byte(token),
-			"CETIRUN_AUTH_KEY":       []byte(authKey),
-		},
-	}
-	h, err := builtin.NewRegistry().Lookup(string(instance.Spec.Agent.Type))
-	if err != nil {
-		return err
-	}
-	descriptor := h.Describe()
-	if descriptor.EnvironmentFile != "" {
-		apiKey, err := generateRandomToken(32)
-		if err != nil {
-			return err
-		}
-		secret.Data[descriptor.NativeSecretKey] = []byte(apiKey)
-		secret.Data[descriptor.EnvironmentFile] = []byte(renderHermesEnv(secret.Data, apiKey, hermesCORSOrigins(r.DomainSuffix)))
-	}
-	// Seed MSTEAMS keys on initial creation (only when Teams is enabled and values are known).
-	if instance.Spec.MSTeams != nil && instance.Spec.MSTeams.Enabled {
-		if instance.Spec.MSTeams.AppID != "" {
-			secret.Data["MSTEAMS_APP_ID"] = []byte(instance.Spec.MSTeams.AppID)
-		}
-		if instance.Spec.MSTeams.TenantID != "" {
-			secret.Data["MSTEAMS_TENANT_ID"] = []byte(instance.Spec.MSTeams.TenantID)
-		}
 	}
 	if err := r.Create(ctx, secret); err != nil {
 		if !errors.IsAlreadyExists(err) {
@@ -1229,6 +1186,56 @@ func (r *AgentReconciler) ensureGatewayToken(ctx context.Context, instance *ceti
 		return r.ensureExistingGatewayToken(ctx, logger, instance, secret)
 	}
 	return nil
+}
+
+func (r *AgentReconciler) newGatewayTokenSecret(instance *cetirunv1alpha1.Agent) (*corev1.Secret, error) {
+	token, err := generateRandomToken(32)
+	if err != nil {
+		return nil, err
+	}
+	authKey, err := generateRandomToken(32)
+	if err != nil {
+		return nil, err
+	}
+
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      instance.Spec.GatewayTokenSecretRef,
+			Namespace: instanceNamespace(instance.Name),
+			Labels: map[string]string{
+				"app.kubernetes.io/managed-by": "cetirun-operator",
+				"app.kubernetes.io/instance":   instance.Spec.User.Alias,
+			},
+		},
+		Type: corev1.SecretTypeOpaque,
+		Data: map[string][]byte{
+			"OPENCLAW_GATEWAY_TOKEN": []byte(token),
+			"CETIRUN_AUTH_KEY":       []byte(authKey),
+		},
+	}
+	h, err := builtin.NewRegistry().Lookup(string(instance.Spec.Agent.Type))
+	if err != nil {
+		return nil, err
+	}
+	descriptor := h.Describe()
+	if descriptor.EnvironmentFile != "" {
+		apiKey, err := generateRandomToken(32)
+		if err != nil {
+			return nil, err
+		}
+		secret.Data[descriptor.NativeSecretKey] = []byte(apiKey)
+		secret.Data[descriptor.EnvironmentFile] = []byte(renderHermesEnv(secret.Data, apiKey, hermesCORSOrigins(r.DomainSuffix)))
+	}
+	// Seed MSTEAMS keys on initial creation (only when Teams is enabled and values are known).
+	if instance.Spec.MSTeams != nil && instance.Spec.MSTeams.Enabled {
+		if instance.Spec.MSTeams.AppID != "" {
+			secret.Data["MSTEAMS_APP_ID"] = []byte(instance.Spec.MSTeams.AppID)
+		}
+		if instance.Spec.MSTeams.TenantID != "" {
+			secret.Data["MSTEAMS_TENANT_ID"] = []byte(instance.Spec.MSTeams.TenantID)
+		}
+	}
+	return secret, nil
 }
 
 func (r *AgentReconciler) ensureExistingGatewayToken(ctx context.Context, logger logr.Logger, instance *cetirunv1alpha1.Agent, secret *corev1.Secret) error {

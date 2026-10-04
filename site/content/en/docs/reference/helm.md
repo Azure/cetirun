@@ -338,16 +338,24 @@ Source: [operator values]({{< repo "app/cetirun-operator/chart/values.yaml" >}})
 | `imagePullSecrets` | Declared in values, but not rendered into the operator Deployment |
 | `azure.*` | Optional Teams provisioning configuration |
 | `sandboxSources.enabled` | `false`; opt in to read-only Kubernetes sources for held native Sandbox preparation |
+| `sandboxSources.bootstrapOwnedPrerequisites` | `false`; additionally bootstrap owned namespace, operator access, HOME and native authentication for new namespaces only; requires explicit Agent chart/image/port pins |
 | `sandboxSources.platformConfigMapName` | Empty; name of an existing operator-namespace ConfigMap containing versioned `platform.json` |
-| `sandboxSources.homeClaimName`, `sandboxSources.skillsClaimName` | `home`, `skills`; existing owned claims in each protected Agent namespace, never adopted by name |
+| `sandboxSources.homeClaimName`, `sandboxSources.skillsClaimName` | `home`, `skills`; existing claims stay read-only; bootstrap can create owned HOME only in new namespaces, while published skills stay external |
 | `sandboxSources.helpers` | `doctor`, `logger`, `desktop` default to `false`; approved native helper selection |
 
 Sandbox source wiring requires enabled, enforced configuration and Pod
 admission. It passes `CETIRUN_SANDBOX_SOURCES` only to the operator and uses the
-dedicated admission ServiceAccount. It adds no RBAC permissions and does not
-create a platform inventory, PVC, namespace, model credential or capability
-registration. Tenant Helm values cannot select the source ConfigMap or promote
-a different chart version.
+dedicated admission ServiceAccount. Sources are read-only by default and add no
+RBAC permissions or capability registrations. With
+`bootstrapOwnedPrerequisites: true`, the operator creates an owned protected
+namespace, its operator Role/RoleBinding, HOME from the selected Sandbox and a
+native authentication Secret. Durable receipts bind those resources to their
+UIDs; existing namespace inputs stay read-only and are never adopted, resized or
+replaced. The Agent must explicitly set the approved chart version, image and
+port. Published skills and model credentials remain external prerequisites;
+bootstrap does not substitute empty skills storage or authorize execution or
+fencing. Tenant Helm values cannot select the source ConfigMap or promote a
+different chart version.
 
 These sources verify explicit platform declarations and existing resource
 ownership through authoritative Kubernetes reads. **They do not enable

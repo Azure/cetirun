@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
+	"github.com/Masterminds/semver/v3"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	strictjson "sigs.k8s.io/json"
@@ -16,12 +17,13 @@ import (
 // SandboxSourcesConfig selects platform-owned inputs, not tenant overrides or
 // execution evidence. It does not configure a writer-exclusion implementation.
 type SandboxSourcesConfig struct {
-	Enabled                 bool                    `json:"enabled"`
-	PlatformConfigMapName   string                  `json:"platformConfigMapName"`
-	HomeClaimName           string                  `json:"homeClaimName"`
-	SkillsClaimName         string                  `json:"skillsClaimName"`
-	AdmissionServiceAccount string                  `json:"admissionServiceAccount"`
-	Helpers                 sandboxworkload.Helpers `json:"helpers"`
+	Enabled                     bool                    `json:"enabled"`
+	BootstrapOwnedPrerequisites bool                    `json:"bootstrapOwnedPrerequisites"`
+	PlatformConfigMapName       string                  `json:"platformConfigMapName"`
+	HomeClaimName               string                  `json:"homeClaimName"`
+	SkillsClaimName             string                  `json:"skillsClaimName"`
+	AdmissionServiceAccount     string                  `json:"admissionServiceAccount"`
+	Helpers                     sandboxworkload.Helpers `json:"helpers"`
 }
 
 func ParseSandboxSourcesConfig(raw string) (SandboxSourcesConfig, error) {
@@ -41,6 +43,9 @@ func ParseSandboxSourcesConfig(raw string) (SandboxSourcesConfig, error) {
 
 func (config SandboxSourcesConfig) validate() error {
 	if !config.Enabled {
+		if config.BootstrapOwnedPrerequisites {
+			return fmt.Errorf("Sandbox bootstrap requires enabled Kubernetes sources")
+		}
 		return nil
 	}
 	for _, field := range []struct{ name, value string }{
@@ -59,8 +64,8 @@ func (config SandboxSourcesConfig) validate() error {
 	return nil
 }
 
-// NewKubernetesSandboxPreparation installs read-only sources for held
-// preparation. A qualified writer-exclusion adapter must be supplied separately;
+// NewKubernetesSandboxPreparation installs sources for held preparation, with
+// optional owned-resource bootstrap. A writer-exclusion adapter must be supplied separately;
 // the nil default never treats Kubernetes object state as fencing evidence.
 func NewKubernetesSandboxPreparation(config SandboxSourcesConfig, reader client.Reader,
 	installer SandboxHelmInstaller, namespace, chartVersion string,
@@ -75,7 +80,7 @@ func NewKubernetesSandboxPreparation(config SandboxSourcesConfig, reader client.
 		chartVersion == "" || strings.TrimSpace(chartVersion) != chartVersion {
 		return nil, fmt.Errorf("Sandbox sources require an authoritative reader, installer, operator namespace and approved chart version")
 	}
-	return &SandboxPreparation{
+	preparation := &SandboxPreparation{
 		Configuration: &KubernetesSandboxConfigurationSource{
 			APIReader: reader, Namespace: namespace, Name: config.PlatformConfigMapName,
 		},
@@ -84,5 +89,12 @@ func NewKubernetesSandboxPreparation(config SandboxSourcesConfig, reader client.
 			ChartVersion: chartVersion, Helpers: config.Helpers,
 		},
 		Installer: installer, AdmissionServiceAccount: config.AdmissionServiceAccount,
-	}, nil
+	}
+	if config.BootstrapOwnedPrerequisites {
+		if _, err := semver.StrictNewVersion(chartVersion); err != nil {
+			return nil, fmt.Errorf("Sandbox bootstrap requires an explicitly approved semantic chart version")
+		}
+		preparation.bootstrap = &sandboxBootstrapConfig{HomeClaimName: config.HomeClaimName, ChartVersion: chartVersion}
+	}
+	return preparation, nil
 }

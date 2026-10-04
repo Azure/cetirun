@@ -32,6 +32,9 @@ func TestParseSandboxSourcesConfig(t *testing.T) {
 		{name: "empty object", raw: "{}"},
 		{name: "disabled", raw: `{"enabled":false}`},
 		{name: "enabled", raw: sandboxSourcesConfigJSON, enabled: true},
+		{name: "bootstrap enabled", raw: strings.Replace(sandboxSourcesConfigJSON, `"enabled": true`, `"enabled": true, "bootstrapOwnedPrerequisites": true`, 1), enabled: true},
+		{name: "bootstrap requires sources", raw: `{"bootstrapOwnedPrerequisites":true}`, wantError: true},
+		{name: "invalid bootstrap type", raw: `{"enabled":false,"bootstrapOwnedPrerequisites":"true"}`, wantError: true},
 		{name: "malformed", raw: "{", wantError: true},
 		{name: "null object", raw: "null", wantError: true},
 		{name: "wrong object type", raw: "[]", wantError: true},
@@ -126,5 +129,12 @@ func TestSandboxSourcesFactoryRejectsMissingDependencies(t *testing.T) {
 	config.HomeClaimName = config.SkillsClaimName
 	if prepare, err := controller.NewKubernetesSandboxPreparation(config, reader, installer, "platform-system", "0.1.1"); err == nil || prepare != nil {
 		t.Fatal("direct typed configuration bypassed startup validation")
+	}
+	config.HomeClaimName = "home"
+	config.BootstrapOwnedPrerequisites = true
+	for _, version := range []string{"latest", "v0.1.1", "0.1"} {
+		if prepare, err := controller.NewKubernetesSandboxPreparation(config, reader, installer, "platform-system", version); err == nil || prepare != nil {
+			t.Fatal("bootstrap accepted a non-semantic approved chart version")
+		}
 	}
 }

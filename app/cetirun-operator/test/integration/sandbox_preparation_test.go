@@ -463,6 +463,10 @@ type preparationCase struct {
 }
 
 func (h *preparationHarness) newCase(t *testing.T, agentType string) *preparationCase {
+	return h.newCaseWithPrerequisites(t, agentType, true)
+}
+
+func (h *preparationHarness) newCaseWithPrerequisites(t *testing.T, agentType string, provision bool) *preparationCase {
 	t.Helper()
 	f := &preparationCase{h: h, fixture: testfixture.New(agentType)}
 	fixture := &f.fixture
@@ -473,6 +477,13 @@ func (h *preparationHarness) newCase(t *testing.T, agentType string) *preparatio
 	fixture.Agent.Annotations = nil
 	fixture.Agent.Spec.PolicyClass = ""
 	fixture.Agent.Spec.Helm.Version = h.chart.Metadata.Version
+	if !provision {
+		fixture.Agent.Spec.Agent.Image = ptr.To("registry.example.com/" + agentType + "-gateway:" + h.chart.Metadata.AppVersion)
+		fixture.Agent.Spec.Agent.Port = ptr.To(int32(18789))
+		if agentType == "hermes" {
+			fixture.Agent.Spec.Agent.Port = ptr.To(int32(8642))
+		}
+	}
 	fixture.Sandbox.Name, fixture.Sandbox.Spec.Type = name+"-box", ""
 	fixture.Sandbox.Spec.Storage.Home.StorageClassName = name + "-csi"
 	fixture.Policy.Name = name + "-normal"
@@ -514,27 +525,37 @@ func (h *preparationHarness) newCase(t *testing.T, agentType string) *preparatio
 		Annotations:     map[string]string{w.AgentNameAnnotation: name, w.AgentUIDAnnotation: string(fixture.Agent.UID)},
 		OwnerReferences: []metav1.OwnerReference{w.AgentOwner(name, fixture.Agent.UID)},
 	}
-	h.create(t, fixture.Namespace)
+	if provision {
+		h.create(t, fixture.Namespace)
+	}
 	fixture.Input.Namespace = w.ObjectIdentity{Name: fixture.Namespace.Name, UID: fixture.Namespace.UID}
 	fixture.Input.AgentName, fixture.Input.AgentGeneration = fixture.Agent.Name, fixture.Agent.Generation
 	fixture.Input.WorkloadName, fixture.Input.ReleaseName = f.workloadName(), "openclaw-"+fixture.Agent.Name
 	fixture.ServiceAccount.ObjectMeta = metav1.ObjectMeta{Name: "default", Namespace: fixture.Namespace.Name}
-	h.create(t, fixture.ServiceAccount)
+	if provision {
+		h.create(t, fixture.ServiceAccount)
+	}
 	fixture.Input.Home.ObjectMeta = metav1.ObjectMeta{
 		Name: "home", Namespace: fixture.Namespace.Name,
 		Annotations: map[string]string{w.AgentUIDAnnotation: string(fixture.Agent.UID)},
 	}
 	fixture.Input.Home.Spec.StorageClassName = ptr.To(fixture.Sandbox.Spec.Storage.Home.StorageClassName)
-	h.create(t, fixture.Input.Home)
+	if provision {
+		h.create(t, fixture.Input.Home)
+	}
 	fixture.Input.Skills.ObjectMeta = metav1.ObjectMeta{Name: "skills", Namespace: fixture.Namespace.Name}
 	fixture.Input.Skills.Spec = corev1.PersistentVolumeClaimSpec{
 		AccessModes:      []corev1.PersistentVolumeAccessMode{corev1.ReadWriteMany},
 		StorageClassName: ptr.To(fixture.Sandbox.Spec.Storage.Home.StorageClassName),
 		Resources:        corev1.VolumeResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("1Gi")}},
 	}
-	h.create(t, fixture.Input.Skills)
+	if provision {
+		h.create(t, fixture.Input.Skills)
+	}
 	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: fixture.Agent.Spec.GatewayTokenSecretRef, Namespace: fixture.Namespace.Name}}
-	h.create(t, secret)
+	if provision {
+		h.create(t, secret)
+	}
 	fixture.Input.RuntimeClass.Name = name + "-kata"
 	h.create(t, fixture.Input.RuntimeClass)
 	storage := &storagev1.StorageClass{

@@ -101,7 +101,7 @@ test-envtest:
 ## Local held Sandbox integration; synthetic providers are not runtime qualification.
 test-sandbox-integration:
 	@test -n "$(KUBEBUILDER_ASSETS)" && test -x "$(KUBEBUILDER_ASSETS)/kube-apiserver" && test -x "$(KUBEBUILDER_ASSETS)/etcd" || { echo "Set KUBEBUILDER_ASSETS to preinstalled envtest binaries"; exit 1; }
-	USE_EXISTING_CLUSTER=false go test -tags=envtest ./test/integration -run TestSandboxPreparation -count=1 -v
+	USE_EXISTING_CLUSTER=false go test -tags=envtest ./test/integration -run '^TestSandbox(Preparation|Bootstrap)' -count=1 -v
 
 ## Clean build artifacts
 clean:

@@ -192,6 +192,9 @@ func (r *AgentReconciler) finishCustomDeletion(ctx context.Context, instance *ap
 	if err := r.finishSandboxPreparation(ctx, instance); err != nil {
 		return ctrl.Result{}, err
 	}
+	if err := r.finishSandboxBootstrap(ctx, instance); err != nil {
+		return ctrl.Result{}, err
+	}
 	record := &corev1.ConfigMap{}
 	if err := r.customReader().Get(ctx, r.ownershipKey(instance), record); err == nil {
 		if !hasCustomRecordOwner(record, instance) {

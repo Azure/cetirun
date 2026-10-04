@@ -43,9 +43,15 @@ Otherwise: repository:tag
 {{- if not (kindIs "bool" $sources.enabled) -}}
 {{- fail "sandboxSources.enabled must be a boolean" -}}
 {{- end -}}
+{{- if and (hasKey $sources "bootstrapOwnedPrerequisites") (not (kindIs "bool" $sources.bootstrapOwnedPrerequisites)) -}}
+{{- fail "sandboxSources.bootstrapOwnedPrerequisites must be a boolean" -}}
+{{- end -}}
+{{- if and $sources.bootstrapOwnedPrerequisites (not $sources.enabled) -}}
+{{- fail "sandboxSources.bootstrapOwnedPrerequisites requires enabled sources" -}}
+{{- end -}}
 {{- if $sources.enabled -}}
 {{- range $key, $_ := $sources -}}
-{{- if not (has $key (list "enabled" "platformConfigMapName" "homeClaimName" "skillsClaimName" "helpers")) -}}
+{{- if not (has $key (list "enabled" "bootstrapOwnedPrerequisites" "platformConfigMapName" "homeClaimName" "skillsClaimName" "helpers")) -}}
 {{- fail (printf "unsupported sandboxSources field %s" $key) -}}
 {{- end -}}
 {{- end -}}
@@ -78,6 +84,9 @@ Otherwise: repository:tag
 {{- end -}}
 {{- end -}}
 {{- $config := deepCopy $sources -}}
+{{- if not $sources.bootstrapOwnedPrerequisites -}}
+{{- $_ := unset $config "bootstrapOwnedPrerequisites" -}}
+{{- end -}}
 {{- $_ := set $config "admissionServiceAccount" "cetirun-sandbox-admission" -}}
 {{- toJson $config -}}
 {{- end -}}

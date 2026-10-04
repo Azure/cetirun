@@ -47,14 +47,16 @@ func AgentSourceReference(agent *api.Agent) (SourceReference, error) {
 		}
 	}
 	intent := struct {
-		Spec        api.AgentSpec
-		Annotations map[string]string
-		Held        bool
-		Prepared    bool
+		Spec         api.AgentSpec
+		Annotations  map[string]string
+		Held         bool
+		Prepared     bool
+		Bootstrapped bool `json:",omitempty"`
 	}{
 		Spec: agent.Spec, Annotations: annotations,
-		Held:     slices.Contains(agent.Finalizers, sandbox.HoldFinalizer),
-		Prepared: slices.Contains(agent.Finalizers, sandbox.PreparationFinalizer),
+		Held:         slices.Contains(agent.Finalizers, sandbox.HoldFinalizer),
+		Prepared:     slices.Contains(agent.Finalizers, sandbox.PreparationFinalizer),
+		Bootstrapped: slices.Contains(agent.Finalizers, sandbox.BootstrapFinalizer),
 	}
 	raw, err := json.Marshal(intent)
 	if err != nil {
