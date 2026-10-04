@@ -148,6 +148,7 @@ func (r *AgentPolicyReconciler) Reconcile(ctx context.Context, request ctrl.Requ
 		if err := r.Status().Patch(ctx, object, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{})); err != nil {
 			return ctrl.Result{}, errors.Join(observeErr, fmt.Errorf("update AgentPolicy configuration status: %w", err))
 		}
+		emitSandboxPolicyTransition(ctx, before, object)
 	}
 	if observeErr != nil {
 		return ctrl.Result{}, observeErr

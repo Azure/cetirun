@@ -141,7 +141,7 @@ func sandboxStatusFailure(err error) (metav1.ConditionStatus, string, string) {
 		return metav1.ConditionFalse, "EnforcementPending", "Current observation does not yet verify every required control."
 	case errors.Is(err, sandbox.ErrRuntimeUnavailable):
 		return metav1.ConditionFalse, "RuntimeUnavailable", "The selected Sandbox runtime is unavailable."
-	case errors.Is(err, sandboxpolicy.ErrUnsupportedControl):
+	case sandboxPreparationUnsupportedError(err):
 		return metav1.ConditionFalse, "UnsupportedControl", "A requested Sandbox control is not qualified."
 	case apierrors.IsNotFound(err):
 		return metav1.ConditionFalse, "ReferenceMissing", "A required Sandbox configuration reference is missing."

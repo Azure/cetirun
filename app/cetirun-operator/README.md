@@ -567,6 +567,51 @@ This keeps their Supervisor configuration, socket and PID files independent.
 The protected inventory rejects shared, missing, unbounded or modified scratch
 mounts/volumes. Disabling desktop omits its scratch volume.
 
+#### Trusted Sandbox policy transition logs
+
+The operator's `sandbox-policy` logger emits structured
+`sandbox.policy.accepted`, `sandbox.policy.rejected`,
+`sandbox.policy.applied`, `sandbox.enforcement.failed`, and
+`sandbox.enforcement.lost` events after successful optimistic status
+persistence. These are operator logs, not Agent stdout or Kubernetes Event
+mirrors. Configuration acceptance does not establish Agent enforcement;
+rejection can include unavailable prerequisites, distinguished by
+`conditionStatus=Unknown`.
+
+Preparation errors use the shared typed failure classifier before status
+persistence. Missing or drifted approved roles therefore emit a committed
+failure rather than an ordinary pending hold. Unavailable trusted dependencies
+set `SandboxReady=Unknown` with reason `ObservationUnavailable`; `Ready` and
+`AgentConfigReady` remain false. Ordinary pending/prepared holds stay silent.
+Error propagation, grant revocation and explicit reapproval requirements are
+unchanged.
+
+Events include a UTC timestamp, bounded reason, resource UID and generation,
+condition status, stable `transitionID`, and separate
+`attemptedBinding`/`attemptedRevision` and
+`appliedBinding`/`appliedRevision` fields. Attempted Agent identities come from
+admission-owned authorization metadata, not applied history. Unresolved fields
+are explicitly `unresolved`. Configuration assessments and failed status paths
+have no verified attempt revision at these hooks and report it as unresolved
+rather than reuse the previous applied revision. Loss reports prior applied
+history separately from the current attempt.
+
+Canonical Kubernetes UUIDs and compiled SHA-256 revisions are retained.
+Other opaque identity or revision values are represented by SHA-256
+fingerprints. Event fields exclude raw specifications, Secret data,
+free-form status messages, provider errors and conversation content.
+
+Application events require committed, current-generation verified applied
+status with matching authorization. Held preparation is not application.
+Intentional suspension and deletion are not enforcement failures, including
+when a previous failure condition remains. These logs do not add observation,
+fencing or permission to start execution.
+
+Unchanged semantic status does not repeatedly emit events. Correlation IDs
+exclude timestamps, resource versions and free-form content; they are not
+unique delivery receipts. Status persistence and log delivery are not atomic,
+so exactly-once delivery across crashes is not guaranteed.
+
 Protected Pods use `DNSPolicy=None` with exactly the compiler's one to three
 distinct resolver IPs. No fallback resolvers, search suffixes or DNS options are
 added. User overrides and final-Pod DNS changes reject rather than silently

@@ -473,17 +473,23 @@ func (r *AgentReconciler) sandboxPreparationStatus(ctx context.Context, expected
 	agent.Status.AccessURL = ""
 	reason, message := "SandboxPreparationPending", "Sandbox prerequisites or held provisioning are incomplete; execution remains held."
 	configStatus := metav1.ConditionFalse
-	if prepared {
+	sandboxStatus := metav1.ConditionFalse
+	if cause != nil {
+		sandboxStatus, reason, message = sandboxStatusFailure(cause)
+		if sandboxPreparationUnsupportedError(cause) {
+			agent.Status.Phase = api.PhaseFailed
+			message = "A requested control is not supported by native Sandbox preparation; execution remains held."
+		}
+	} else if prepared {
 		reason, message = "SandboxPrepared", "Native resources and controls are prepared at zero replicas; qualified start and enforcement observation are still required."
 		configStatus = metav1.ConditionTrue
-	} else if sandboxPreparationUnsupportedError(cause) {
-		agent.Status.Phase = api.PhaseFailed
-		reason, message = "UnsupportedControl", "A requested control is not supported by native Sandbox preparation; execution remains held."
 	}
 	for _, kind := range []string{api.ConditionReady, api.ConditionSandboxReady, api.ConditionAgentConfigReady} {
 		status := metav1.ConditionFalse
 		if kind == api.ConditionAgentConfigReady {
 			status = configStatus
+		} else if kind == api.ConditionSandboxReady {
+			status = sandboxStatus
 		}
 		apimeta.SetStatusCondition(&agent.Status.Conditions, metav1.Condition{
 			Type: kind, Status: status, ObservedGeneration: agent.Generation, Reason: reason, Message: message,
@@ -492,5 +498,9 @@ func (r *AgentReconciler) sandboxPreparationStatus(ctx context.Context, expected
 	if equality.Semantic.DeepEqual(base.Status, agent.Status) {
 		return nil
 	}
-	return r.Status().Patch(ctx, agent, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{}))
+	if err := r.Status().Patch(ctx, agent, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
+		return err
+	}
+	emitSandboxAgentTransition(ctx, base, agent)
+	return nil
 }
