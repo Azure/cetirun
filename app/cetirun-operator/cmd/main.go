@@ -32,6 +32,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	"sigs.k8s.io/controller-runtime/pkg/metrics"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
@@ -226,6 +227,12 @@ func main() {
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
 		os.Exit(1)
+	}
+	if metricsAddr != "0" {
+		if err := controller.RegisterSandboxMetrics(metrics.Registry, mgr); err != nil {
+			setupLog.Error(err, "unable to register Sandbox reported-status metrics")
+			os.Exit(1)
+		}
 	}
 
 	helmClient := helmclient.NewClient(chartRef)

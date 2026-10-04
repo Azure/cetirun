@@ -926,6 +926,107 @@ NetworkPolicy is installed here: guessing control-plane source addresses can
 block the fail-closed webhook itself. Keep these production gates separate from
 local loopback and chart tests.
 
+### Sandbox reported-status metrics
+
+The operator exports the following additional gauges from its existing
+`/metrics` endpoint, bound to `:8080` by default. These are operator metrics,
+not admission-process metrics. No new listener, Service, scrape configuration,
+RBAC grant or policy-enforcement behavior is installed.
+Setting the existing `--metrics-bind-address=0` flag also skips this collector
+and its metrics-only informer initialization.
+
+| Metric | Meaning |
+| --- | --- |
+| `cetirun_sandbox_agents{runtime,class,status,reason}` | Counts explicit or Team-governed Sandbox intent and retained-held/history Agents by their reported status. Ordinary ungoverned Agents are excluded. |
+| `cetirun_sandbox_metrics_collection_success` | `1` when the complete cached snapshot was collected; `0` when collection is unavailable or fails. Failed collection emits no partial fleet counts. |
+
+Startup initializes the shared Agent, Team and Sandbox informers on every
+operator replica, regardless of leadership. Scrapes do not initialize informers.
+Incomplete startup reports collection health `0` with no fleet counts;
+operational initialization failures are logged and retried without stopping
+the operator. The manager cache retains its normal background list/watch and
+reconnect traffic.
+
+Each scrape recomputes counts from that cache with a shared five-second read
+context, without retaining per-Agent metric series or querying a live
+enforcement provider. The cache is eventually consistent, and lists of
+different resource kinds are not an atomic snapshot. Cache updates and
+deletions are reflected on subsequent scrapes. These reads do not add API calls
+to reconciliation or status writes.
+An empty or legacy-only fleet has successful collection and no fleet series;
+it is different from failed collection or an unavailable scrape target.
+
+Labels are bounded: `runtime` is `kata`, `gvisor` or `unknown`; `class` is
+`normal`, `admin` or `unknown`; `status` is `True`, `False` or `Unknown`;
+`reason` uses an allowlist and bounded fallback categories. Names, UIDs,
+namespaces, revisions, messages, provider errors and arbitrary values never
+become metric labels. Runtime classification requires the current,
+non-terminating cached Sandbox to match the admission-owned UID binding;
+a same-name replacement is not adopted for attribution.
+
+Missing, stale or malformed conditions report `Unknown` instead of repeating
+an old success. Otherwise the valid current-generation condition is reported;
+it is not independently reverified by the collector.
+Intentional suspension and deletion take precedence over old conditions and
+remain distinguishable from failures. Applied-binding history alone is not
+current readiness. Cached Team governance fields count as intent only: they
+never assign a class, select a Sandbox or establish an authorization binding.
+
+**These are cached status reports, not fresh enforcement evidence.** A declared
+runtime label does not qualify its adapter, and `SandboxPrepared` still means
+zero-replica held preparation. Scrapes neither check running Pod/node/epoch
+observations nor authorize execution. Condition transition timestamps are not
+observation-freshness measurements. Collection failure is not evidence that
+there are zero affected Agents.
+
+#### Inspection queries and response guidance
+
+Configure an authorized scraper separately; the existing metrics port is
+plaintext and unauthenticated. Keep the deployment's network/access controls.
+Select one operator target for one cluster/fleet before aggregation. Multiple
+operator replicas report the same cluster-wide population: do not sum their
+snapshots. The following target labels are synthetic examples to replace with
+the scraper's actual labels.
+
+```promql
+cetirun_sandbox_metrics_collection_success{
+  job="example-cetirun-operator", instance="operator.example.com:8080"
+}
+```
+
+Only interpret an empty count as zero after confirming both collection success
+and the selected target's `up` signal:
+
+```promql
+sum(cetirun_sandbox_agents{
+  job="example-cetirun-operator", instance="operator.example.com:8080"
+}) or vector(0)
+```
+
+Inspect non-ready reports, excluding explicit suspension/deletion:
+
+```promql
+sum by (runtime, class, reason) (cetirun_sandbox_agents{
+  job="example-cetirun-operator", instance="operator.example.com:8080",
+  status!="True", reason!~"Suspended|Deleting|InstanceDeleting"
+})
+```
+
+This includes expected preparation holds; it is not an automatic failure
+alert. Choose alert thresholds and durations only after qualifying the
+deployment's expected lifecycle and collection behavior.
+
+| Observation | Operator response |
+| --- | --- |
+| Collection failure, missing gauge, or target down | Check target selection/version, operator health, cache synchronization and API connectivity/authorization. Treat fleet counts as unavailable, not healthy or empty. |
+| Missing references or unauthorized bindings | Inspect current status and trusted operator logs. Restore valid references or obtain explicit administrator reapproval of the current identities; never adopt same-name replacements or edit journal UIDs to bypass checks. |
+| Unknown evidence or unavailable runtime | Check the trusted platform inventory and qualified providers. Restore the required evidence; do not reinterpret Pod absence, scale-zero or a PVC access mode as writer fencing. |
+| Apply/conflict failures or reported enforcement loss | Investigate the affected control through trusted status/logs and the qualified containment procedure. Metrics and alerts do not stop execution, revoke grants or establish containment. |
+
+Keep holds and recovery finalizers intact while investigating. This increment
+does not add observation-age, rollout or fencing-duration metrics, durable
+failure counters, alert rules, dashboards or production qualification.
+
 ### Enforcement feasibility baseline
 
 Source inspection identifies Azure CNI Overlay powered by Cilium and Kata node
