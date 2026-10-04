@@ -909,6 +909,59 @@ material); on admission pods, alert on zero, expiry approaching, dependency
 errors and sustained request latency approaching the configured deadline.
 No object names or arbitrary error strings become metric labels.
 
+`cetirun_sandbox_admission_request_duration_seconds` is a histogram of time
+inside each completed admission handler, including its dependency reads. Its
+`_count` supplies completed-call counts split by operation; the existing
+`cetirun_sandbox_admission_decisions_total{handler,outcome}` schema is unchanged.
+
+| Label | Values |
+| --- | --- |
+| `handler` | `validate`, `default`, `pod`, or defensive `unknown` |
+| `operation` | `CREATE`, `UPDATE`, `DELETE`, `CONNECT`, or `unknown` |
+| `outcome` | `allowed`, `denied`, `invalid_request`, `dependency_error` |
+
+Other operation strings, including empty ones, collapse to `unknown` in metrics
+without changing the request passed to admission. Request identities, resource
+names, user information, patches, warnings and error messages are not labels or
+exemplars. Finite duration buckets are 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5,
+1, 2.5, 5, 10 and 30 seconds, followed by the implicit `+Inf` bucket.
+Only observed label combinations are exported.
+
+This histogram does not include TLS, request decoding before dispatch, response
+serialization, or API-server transport time. A handler that panics or never
+returns has no completed-call sample; panic handling and cancellation behavior
+are unchanged. Use the controller-runtime metrics and API-server observations
+alongside it for transport failures, in-flight calls and full request latency.
+A denial sent with HTTP 200 is still `outcome="denied"`, not an allowed call.
+The metric adds no API reads, scrape dependency, request deadline, listener or
+readiness gate. The existing metrics-disable setting remains effective.
+
+For example, after separately configuring an authorized admission-process
+scraper, inspect p95 handler time and request rate per target, handler and
+operation. Replace these synthetic scrape labels with your own; retain any
+cluster/fleet labels when selecting a target:
+
+```promql
+histogram_quantile(0.95,
+  sum without (outcome) (
+    rate(cetirun_sandbox_admission_request_duration_seconds_bucket{
+      job="sandbox-admission-example", instance="admission.example.invalid:8080"
+    }[5m])
+  )
+)
+
+sum without (outcome) (
+  rate(cetirun_sandbox_admission_request_duration_seconds_count{
+    job="sandbox-admission-example", instance="admission.example.invalid:8080"
+  }[5m])
+)
+```
+
+These queries combine outcomes, not replicas or fleets. Inspect the rate and
+scrape health with the quantile: no completed calls or missing series do not
+establish zero latency or a healthy service. No latency target is qualified by
+these examples.
+
 The serving certificate metric does **not** verify the CA bundle configured in
 the API server, its expiry, or hostname/trust alignment. Before enabling
 enforcement and during every rotation, the platform must check those separately
