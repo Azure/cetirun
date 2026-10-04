@@ -54,6 +54,9 @@ write, check the default `execRestriction` prerequisites and operator
 ClusterRole. The chart does not conditionally omit that policy for older
 clusters. Do not change cluster access policy just to make a render install.
 
+For opt-in Sandbox reported-status alerts and offline `promtool` tests, see the
+[standalone examples]({{< repo "app/cetirun-operator/observability/README.md" >}}).
+
 ## Routing
 
 ```bash
