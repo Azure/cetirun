@@ -111,6 +111,21 @@ class ApiDocumentationTests(unittest.TestCase):
         self.assertIn("site/content/en/docs/reference/agent-harness.md", pointer)
         self.assertNotIn("```yaml", pointer)
 
+    def test_crd_reference_describes_available_harness_paths(self):
+        text = (SITE / "content/en/docs/reference/crds.md").read_text()
+        self.assertNotIn("It rejects Custom, registry references", text)
+        for contract in (
+            "`CustomBindingsPending`",
+            "`customRuntime`",
+            "non-default usernames",
+            "Portal-managed source Secret",
+            "`RegistryCredentialsReady`",
+            "| `registryCredentials` |",
+        ):
+            with self.subTest(contract=contract):
+                self.assertIn(contract, text)
+        self.assertIn("does not prove", text)
+
 
 if __name__ == "__main__":
     unittest.main()
