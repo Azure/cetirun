@@ -165,4 +165,24 @@ describe("WorkspacePage", () => {
       mockInstance.conditions = previous.conditions;
     }
   });
+
+  it("opens a Custom Web UI in a new tab without inventing a desktop", () => {
+    const previous = { ...mockInstance };
+    Object.assign(mockInstance, { agent: { type: "custom", port: 8080, webUI: true }, accessUrl: undefined,
+      webUIUrl: "https://example.com/ui/testuser/", conditions: [
+        { type: "IngressReady", status: "True", reason: "PlatformWebUIConfigured", message: "" },
+      ] });
+    try {
+      renderAt("/instances/testuser/overview");
+      const link = screen.getByRole("link", { name: "Web UI" });
+      expect(link).toHaveAttribute("href", "https://example.com/ui/testuser/");
+      expect(link).toHaveAttribute("target", "_blank");
+      expect(link).toHaveAttribute("rel", "noopener noreferrer");
+      expect(screen.getByText("Desktop").closest("a")).not.toHaveAttribute("href");
+      expect(screen.getByText("Terminal").closest("a")).not.toHaveAttribute("href");
+    } finally {
+      delete mockInstance.webUIUrl;
+      Object.assign(mockInstance, previous);
+    }
+  });
 });

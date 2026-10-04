@@ -159,6 +159,7 @@ export function OverviewSection({ instance }: { instance: Instance }) {
   const [editSnapshot, setEditSnapshot] = useState<Instance | null>(null);
   const [editImage, setEditImage] = useState("");
   const [editPort, setEditPort] = useState("");
+  const [editWebUI, setEditWebUI] = useState(false);
   const [editValidationError, setEditValidationError] = useState("");
   const effectiveEditProvider = useEffectiveTeamProvider(editTeam);
   const editUsesGitHubCopilot = effectiveEditProvider === GITHUB_COPILOT_PROVIDER;
@@ -201,6 +202,14 @@ export function OverviewSection({ instance }: { instance: Instance }) {
   const agentCredential = instance.agent.type === "custom" ? undefined : instance.agent.type === "hermes" ? instance.apiServerKey : instance.gatewayToken;
   const agentCredentialLabel = instance.agent.type === "hermes" ? "Hermes API / Dashboard Key (user: cetirun)" : "Gateway Token";
   const nativeIntegrations = instance.agent.type !== "custom";
+  const portLabel = instance.agent.webUI ? "Web UI port" : "HTTP port";
+  const portValue = instance.agent.port ?? (nativeIntegrations ? "Platform default" : "Headless");
+  let portHint = "Leave blank to remove the Agent HTTP endpoint. Terminal and Desktop are independent.";
+  if (nativeIntegrations) {
+    portHint = "Leave blank to restore the pinned runtime version's default.";
+  } else if (editWebUI) {
+    portHint = "Serve a browser UI through platform authentication instead of the Chat API. The image must support /ui/<instance>/ and /healthz.";
+  }
 
   const handleCopyAgentCredential = useCallback(() => {
     navigator.clipboard.writeText(agentCredential ?? "").then(() => {
@@ -223,6 +232,7 @@ export function OverviewSection({ instance }: { instance: Instance }) {
     setEditSnapshot(instance);
     setEditImage(instance.agent.image ?? "");
     setEditPort(instance.agent.port?.toString() ?? "");
+    setEditWebUI(instance.agent.webUI ?? false);
     setEditValidationError("");
     setEditDisplayName(instance.displayName);
     setEditTeam(instance.team);
@@ -247,8 +257,13 @@ export function OverviewSection({ instance }: { instance: Instance }) {
       setEditValidationError("HTTP port must be an integer between 1 and 65535, or left blank.");
       return;
     }
+    if (editWebUI && port === null) {
+      setEditValidationError("A port is required when Web UI is enabled.");
+      return;
+    }
     setEditValidationError("");
     if (port !== (original.agent.port ?? null)) agent.port = port;
+    if (!nativeIntegrations && editWebUI !== (original.agent.webUI ?? false)) agent.webUI = editWebUI;
     if (nativeIntegrations && editImage.trim() !== (original.agent.image ?? "")) agent.image = editImage.trim() || null;
     if (Object.keys(agent).length) req.agent = agent;
     if (editDisplayName.trim() !== original.displayName) req.displayName = editDisplayName.trim();
@@ -293,7 +308,7 @@ export function OverviewSection({ instance }: { instance: Instance }) {
         <Text>Type: {agentTypeLabel(instance.agent.type)}</Text>
         <Text>Image: {instance.agent.image ?? "Platform default (not yet pinned)"}</Text>
         <Text>Username: {instance.agent.username ?? "vibe"}</Text>
-        <Text>HTTP port: {instance.agent.port ?? (instance.agent.type === "custom" ? "Headless" : "Platform default")}</Text>
+        <Text>{portLabel}: {portValue}</Text>
       </div>
       {instance.phase === "Suspended" && (
         <div style={{ display: "flex", alignItems: "center", gap: 8, padding: 12, borderRadius: tokens.borderRadiusMedium, backgroundColor: tokens.colorPaletteYellowBackground2, marginBottom: 8 }}>
@@ -326,7 +341,7 @@ export function OverviewSection({ instance }: { instance: Instance }) {
         </div>
       )}
 
-      {nativeAgentUIUrl && instance.phase !== "Suspended" && (
+      {nativeIntegrations && nativeAgentUIUrl && instance.phase !== "Suspended" && (
         <CopilotAuthBlock instance={instance} />
       )}
 
@@ -400,7 +415,8 @@ export function OverviewSection({ instance }: { instance: Instance }) {
                 <Field label="Agent Image" hint={nativeIntegrations ? "Overrides require platform approval and Harness compatibility. A pinned image cannot be cleared." : "Custom image changes require separate HOME compatibility qualification and are not available here."}>
                   <Input value={editImage} readOnly={!nativeIntegrations} onChange={(_, data) => setEditImage(data.value)} maxLength={2048} />
                 </Field>
-                <Field label="HTTP Port (optional)" hint={nativeIntegrations ? "Leave blank to restore the pinned runtime version's default." : "Leave blank to remove the Agent HTTP endpoint. Terminal and Desktop are independent."}>
+                {!nativeIntegrations && <Switch checked={editWebUI} label="Serve Web UI" onChange={(_, data) => setEditWebUI(data.checked)} />}
+                <Field label={editWebUI ? "Web UI Port" : "HTTP Port (optional)"} required={editWebUI} hint={portHint}>
                   <Input type="number" min={1} max={65535} step={1} value={editPort} onChange={(_, data) => setEditPort(data.value)} />
                 </Field>
                 {nativeIntegrations && editUsesGitHubCopilot && <CopilotModelPicker instance={instance} value={editModel} onChange={setEditModel} allowDefault />}

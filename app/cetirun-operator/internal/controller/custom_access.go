@@ -17,15 +17,23 @@ type customAccess struct {
 }
 
 func (r *AgentReconciler) configureCustomAccess(ctx context.Context, instance *api.Agent, access customAccess) {
+	webUI := instance.Spec.Agent.WebUI
+	instance.Status.AccessURL = ""
 	status := metav1.ConditionFalse
-	reason, message := "PlatformAccessDisabled", "Platform desktop and terminal are disabled"
-	if access.desktop || access.terminal {
+	reason, message := "PlatformAccessDisabled", "Platform desktop, terminal and Agent Web UI are disabled"
+	if access.desktop || access.terminal || webUI {
 		if err := r.ensureVirtualService(ctx, instance, access); err != nil {
 			reason, message = "PlatformRouteUnavailable", err.Error()
 		} else {
 			status = metav1.ConditionTrue
 			reason, message = "PlatformServicesConfigured", "Approved platform routes configured; no native Agent UI or public Chat route"
-			if !access.terminal {
+			if webUI {
+				instance.Status.AccessURL = accessURLPathBased(instance.Name, r.DomainSuffix)
+				message = "Approved platform and Agent Web UI routes configured; no public Chat route"
+				if !access.desktop && !access.terminal {
+					reason = "PlatformWebUIConfigured"
+				}
+			} else if !access.terminal {
 				reason = "PlatformDesktopConfigured"
 			} else if !access.desktop {
 				reason = "PlatformTerminalConfigured"

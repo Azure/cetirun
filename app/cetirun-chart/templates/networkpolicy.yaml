@@ -15,7 +15,8 @@ spec:
 
   # -- Ingress: allow only Istio ingress gateway
   ingress:
-    {{- if or (ne (include "cetirun.agent.type" .) "custom") .Values.desktop.enabled }}
+    {{- $webUI := ((.Values.runtime | default dict).agent | default dict).webUI }}
+    {{- if or (ne (include "cetirun.agent.type" .) "custom") .Values.desktop.enabled $webUI }}
     - from:
         - namespaceSelector:
             matchLabels:
@@ -25,6 +26,10 @@ spec:
         {{- if .Values.desktop.enabled }}
         - protocol: TCP
           port: 6080
+        {{- end }}
+        {{- if $webUI }}
+        - protocol: TCP
+          port: {{ .Values.runtime.agent.port }}
         {{- end }}
         {{- if and .Values.ttyd.enabled (ne (include "cetirun.agent.type" .) "custom") }}
         - protocol: TCP
@@ -36,7 +41,7 @@ spec:
         {{- end }}
     {{- end }}
     {{- with (.Values.runtime | default dict).bindings }}
-    {{- if and $.Values.runtime.http .network.callers }}
+    {{- if and $.Values.runtime.http (not $webUI) .network.callers }}
     - from:
         {{- range .network.callers }}
         - {{ include "cetirun.custom.peer" . | nindent 10 | trim }}
@@ -44,7 +49,7 @@ spec:
       ports:
         - protocol: TCP
           port: {{ $.Values.runtime.agent.port }}
-    {{- else if not $.Values.desktop.enabled }}
+    {{- else if and (not $.Values.desktop.enabled) (not $webUI) }}
     []
     {{- end }}
     {{- end }}

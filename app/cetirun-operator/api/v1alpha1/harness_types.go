@@ -22,6 +22,8 @@ const (
 // +kubebuilder:validation:XValidation:rule="self.type == oldSelf.type",message="agent type is immutable",fieldPath=".type"
 // +kubebuilder:validation:XValidation:rule="self.username == oldSelf.username",message="agent username is immutable",fieldPath=".username"
 // +kubebuilder:validation:XValidation:rule="!has(oldSelf.image) || has(self.image)",message="a pinned image cannot be removed",fieldPath=".image"
+// +kubebuilder:validation:XValidation:rule="!self.webUI || self.type == 'custom'",message="webUI is supported only for custom agents",fieldPath=".webUI"
+// +kubebuilder:validation:XValidation:rule="!self.webUI || has(self.port)",message="webUI requires port",fieldPath=".port"
 type HarnessSpec struct {
 	// Type selects the integration. Defaults to Hermes and cannot change.
 	// +kubebuilder:default=hermes
@@ -52,12 +54,19 @@ type HarnessSpec struct {
 	// +optional
 	Username *string `json:"username,omitempty"`
 
-	// Port is the main HTTP port. Omitted means headless for custom agents;
-	// built-ins resolve their version-specific default outside the schema.
+	// Port is the native HTTP port for built-ins. For Custom it serves the
+	// Chat HTTP contract unless WebUI is true. Omit it for a headless Custom.
+	// Built-ins resolve their version-specific default outside the schema.
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:Maximum=65535
 	// +optional
 	Port *int32 `json:"port,omitempty"`
+
+	// WebUI declares that Port serves a browser application instead of Chat.
+	// Custom-only; the platform publishes it at /ui/<instance>/ with authentication.
+	// +kubebuilder:default=false
+	// +optional
+	WebUI bool `json:"webUI,omitempty"`
 }
 
 // RegistrySecretRef references one Agent's source registry credential.

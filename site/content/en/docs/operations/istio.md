@@ -238,6 +238,28 @@ authorization to read another user's instance. The Istio helper passes
 the portal's reviewed admin list separately; running only the Istio helper
 does not grant portal admin access.
 
+### Agent UI content security policy
+
+Applications served below `/ui/<instance>/` own their Content Security Policy
+(CSP). The gateway preserves their `Content-Security-Policy` and
+`Content-Security-Policy-Report-Only` response headers, including dynamic nonces
+and hashes. It does not supply a fallback CSP when the application omits one.
+Other routes retain the platform policy; the bare `/ui/<instance>` redirect
+also retains it. This is a response-header rule, not an authentication exemption.
+
+AAD authentication, instance ownership checks and platform credential stripping
+remain in effect. The gateway also retains HSTS, `nosniff`, Referrer-Policy and
+the configured X-Frame-Options header. Applications must set a CSP appropriate
+for their scripts, API calls, workers and embedded content. Platform operators
+do not maintain per-application resource allowlists.
+
+Path prefixes do not isolate browser origins. An Agent UI on the Portal's origin
+can make same-origin requests with the visitor's platform session, subject to
+the visitor's server-side permissions. Cookie stripping before forwarding to
+an Agent does not prevent those separate browser requests. Use separate origins
+and corresponding cookie, CORS and CSRF controls when hosting mutually untrusted
+frontends; a storage namespace adapter is not a security boundary.
+
 ### Portal ownership endpoint
 
 Changing the portal service name or namespace also requires updating

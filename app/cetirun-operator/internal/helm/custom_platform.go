@@ -372,16 +372,21 @@ func (p *PreparedRelease) customNetwork(n runtimebindings.Network) networkv1.Net
 			To: []networkv1.NetworkPolicyPeer{boundPeer(n.Gateway)}, Ports: []networkv1.NetworkPolicyPort{tcp(n.GatewayPort)},
 		}}, spec.Egress...)
 	}
-	if p.desktopEnabled() {
+	if p.desktopEnabled() || p.Agent.WebUI {
 		namespace := text(config["istioIngressNamespace"])
 		if namespace == "" {
 			namespace = text(config["istioNamespace"])
 		}
-		spec.Ingress = append(spec.Ingress, networkv1.NetworkPolicyIngressRule{
-			From: []networkv1.NetworkPolicyPeer{peer(namespace)}, Ports: []networkv1.NetworkPolicyPort{tcp(6080)},
-		})
+		ports := []networkv1.NetworkPolicyPort{}
+		if p.desktopEnabled() {
+			ports = append(ports, tcp(6080))
+		}
+		if p.Agent.WebUI {
+			ports = append(ports, tcp(*p.Agent.Port))
+		}
+		spec.Ingress = append(spec.Ingress, networkv1.NetworkPolicyIngressRule{From: []networkv1.NetworkPolicyPeer{peer(namespace)}, Ports: ports})
 	}
-	if p.Agent.Port != nil && len(n.Callers) > 0 {
+	if p.Agent.Port != nil && !p.Agent.WebUI && len(n.Callers) > 0 {
 		rule := networkv1.NetworkPolicyIngressRule{Ports: []networkv1.NetworkPolicyPort{tcp(*p.Agent.Port)}}
 		for _, caller := range n.Callers {
 			rule.From = append(rule.From, boundPeer(caller))

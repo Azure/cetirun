@@ -156,7 +156,7 @@ func (r *AgentReconciler) reconcileCustom(ctx context.Context, instance *api.Age
 	if err != nil {
 		return r.customWaiting(ctx, instance, "CustomBindingsPending", "Platform binding resolution is not ready")
 	}
-	request := agents.Request{Type: "custom", Image: *instance.Spec.Agent.Image, Port: instance.Spec.Agent.Port}
+	request := agents.Request{Type: "custom", Image: *instance.Spec.Agent.Image, Port: instance.Spec.Agent.Port, WebUI: instance.Spec.Agent.WebUI}
 	if instance.Spec.Agent.Username != nil {
 		request.Username = *instance.Spec.Agent.Username
 	}

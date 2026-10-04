@@ -483,6 +483,11 @@ func (p *PreparedRelease) validateCustomObject(obj map[string]any, kind, name st
 		if p.Agent.Port != nil {
 			env = append(env, corev1.EnvVar{Name: "PORT", Value: strconv.Itoa(int(*p.Agent.Port))})
 		}
+		if p.Agent.WebUI {
+			env = append(env,
+				corev1.EnvVar{Name: "CETIRUN_WEB_BASE_PATH", Value: "/ui/" + b.AgentName + "/"},
+				corev1.EnvVar{Name: "CETIRUN_WEB_INSTANCE", Value: b.AgentUID})
+		}
 		if main.Name != p.chart.Name() || init.Name != "init-home-data" || len(main.Command) != 0 ||
 			!reflect.DeepEqual(init.Command, []string{"/bin/sh", "/etc/cetirun/custom-init-home.sh"}) ||
 			!reflect.DeepEqual(main.Env, env) || !reflect.DeepEqual(init.Env, p.customInitEnv()) {
@@ -520,15 +525,14 @@ func (p *PreparedRelease) validateCustomObject(obj map[string]any, kind, name st
 		if !reflect.DeepEqual(main.Ports, ports) {
 			return fail()
 		}
-		if p.Agent.Port == nil {
+		http := contribution.HTTP
+		if http == nil {
 			if main.StartupProbe != nil || main.ReadinessProbe != nil {
 				return fail()
 			}
-		} else {
-			if !reflect.DeepEqual(main.StartupProbe, customProbe(contribution.HTTP.StartupPath, contribution.HTTP.PortName, 5, 60)) ||
-				!reflect.DeepEqual(main.ReadinessProbe, customProbe(contribution.HTTP.HealthPath, contribution.HTTP.PortName, 10, 0)) {
-				return fail()
-			}
+		} else if !reflect.DeepEqual(main.StartupProbe, customProbe(http.StartupPath, http.PortName, 5, 60)) ||
+			!reflect.DeepEqual(main.ReadinessProbe, customProbe(http.HealthPath, http.PortName, 10, 0)) {
+			return fail()
 		}
 	default:
 		return fmt.Errorf("unexpected Custom resource kind %s", kind)
@@ -560,16 +564,18 @@ func (p *PreparedRelease) customContribution() (agents.Contribution, error) {
 		return agents.Contribution{}, err
 	}
 	valid := value.ContractVersion == "v1" && reflect.DeepEqual(value.Agent, p.Agent) &&
-		len(value.ConfigFiles) == 0 && value.ProfileID == ""
+		len(value.ConfigFiles) == 0 && value.ProfileID == "" && (!p.Agent.WebUI || p.Agent.Port != nil)
 	expectedPorts := []agents.PortBinding{}
-	if p.Agent.Port == nil {
-		valid = valid && value.HTTP == nil
-	} else {
+	var expectedHTTP *agents.HTTPBinding
+	if p.Agent.Port != nil {
 		expectedPorts = append(expectedPorts, agents.PortBinding{Name: "http", Number: *p.Agent.Port})
-		valid = valid && reflect.DeepEqual(value.HTTP, &agents.HTTPBinding{PortName: "http", HealthPath: "/healthz", ReadinessPath: "/healthz", StartupPath: "/healthz",
-			ChatPath: "/v1/chat/completions", ModelsPath: "/v1/models"})
+		expectedHTTP = &agents.HTTPBinding{PortName: "http", HealthPath: "/healthz", ReadinessPath: "/healthz", StartupPath: "/healthz"}
+		if !p.Agent.WebUI {
+			expectedHTTP.ChatPath = "/v1/chat/completions"
+			expectedHTTP.ModelsPath = "/v1/models"
+		}
 	}
-	valid = valid && reflect.DeepEqual(value.Ports, expectedPorts)
+	valid = valid && reflect.DeepEqual(value.Ports, expectedPorts) && reflect.DeepEqual(value.HTTP, expectedHTTP)
 	if !valid {
 		return agents.Contribution{}, fmt.Errorf("Custom contribution violates the v1 runtime contract")
 	}

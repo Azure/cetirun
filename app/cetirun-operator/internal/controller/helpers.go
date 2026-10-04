@@ -682,6 +682,9 @@ func buildVirtualService(instance *cetirunv1alpha1.Agent, domainSuffix, gateway 
 				makeRedirect(instancePrefix+"/term"),
 				route)
 		}
+		if instance.Spec.Agent.WebUI && instance.Spec.Agent.Port != nil {
+			routes = append(routes, makeRedirect(uiPrefix), makeRoute(uiPrefix+"/", uiPrefix+"/", primaryPort, 0))
+		}
 	} else if descriptor.DashboardPort != 0 {
 		routes = append(routes,
 			makeRoute(uiPrefix+"/v1", "/v1", primaryPort, 300),
