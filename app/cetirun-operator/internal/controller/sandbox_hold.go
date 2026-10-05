@@ -270,7 +270,7 @@ func (r *AgentReconciler) deleteSandboxBuiltin(ctx context.Context, agent *cetir
 	if !sandboxBuiltinOwned(ns, agent) || ns.Name == operatorNamespace {
 		return ctrl.Result{}, fmt.Errorf("sandbox-held namespace ownership is unconfirmed; cleanup requires recovery")
 	}
-	if err := r.releaseSandboxBootstrapNamespace(ctx, agent, ns); err != nil {
+	if err := r.releaseSandboxBootstrapResources(ctx, agent, ns); err != nil {
 		return ctrl.Result{}, err
 	}
 	if ns.DeletionTimestamp.IsZero() {

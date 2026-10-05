@@ -562,17 +562,26 @@ A bounded controller-owned receipt records each created UID. Each object is
 marked with that receipt's UID so an interrupted create can be recognized;
 confirmed missing/replaced objects, storage resize, foreign objects and changed
 ownership require recovery instead of automatic recreation. Changing the native
-type, Secret name or approved chart likewise requires an explicit handoff. A
-namespace finalizer prevents name reuse between child-object checks and creates. Bootstrap
-and namespace finalizers are removed only by ordered deletion after independent
-shutdown, ownership validation and any existing preparation fencing obligation.
+type, Secret name or approved chart likewise requires an explicit handoff.
+Every bootstrap-owned resource has its own finalizer: Agent finalizers and
+`blockOwnerDeletion` do not prevent foreground garbage collection from deleting
+dependents, and a namespace finalizer alone does not retain its contents.
+Dependent DELETEs can mark HOME, native authentication and operator RBAC as
+terminating, but their bootstrap finalizers retain the objects until independent
+shutdown, receipt/ownership validation and any existing preparation fencing
+obligation succeed. Cleanup removes only its own finalizer with resourceVersion
+checks, releases HOME/credentials before RBAC, and releases namespace protection
+last. Interrupted cleanup retries without recreating resources or clearing
+another controller's finalizers.
 Bootstrap-only Agents can be deleted without a fence that has never been used
 to authorize preparation. Disabling bootstrap does not discard its inventory or
 allow recorded inputs to bypass ownership checks; deletion remains available.
 
 Tests cover cold bootstrap, lost API responses, source/UID changes, immutable
 HOME, credential-preserving retries and cleanup using synthetic fixtures and
-an isolated API server. They do not qualify runtime/storage/network behavior.
+an isolated API server. Foreground-GC regressions explicitly issue dependent
+DELETEs because these test environments do not run a garbage collector.
+They do not qualify runtime/storage/network behavior.
 
 **Manual recovery after forced finalizer removal.** Do not force-remove Agent
 or state finalizers as routine cleanup. If an Agent disappears outside the

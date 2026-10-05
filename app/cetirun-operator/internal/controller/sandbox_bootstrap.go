@@ -294,7 +294,7 @@ func (r *AgentReconciler) sandboxBootstrapObjects(agent *api.Agent, receiptObjec
 	role, binding := r.operatorNamespaceRBAC(receipt.Namespace)
 	objects := []client.Object{
 		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: receipt.Namespace,
-			Finalizers: []string{sandbox.BootstrapFinalizer}, Labels: map[string]string{
+			Labels: map[string]string{
 				"app.kubernetes.io/name": "cetirun", "app.kubernetes.io/instance": agent.Spec.User.Alias,
 				"app.kubernetes.io/managed-by": "cetirun-operator", sandboxworkload.ProtectedNamespaceLabel: "true",
 			}}},
@@ -304,6 +304,7 @@ func (r *AgentReconciler) sandboxBootstrapObjects(agent *api.Agent, receiptObjec
 			ObjectMeta: metav1.ObjectMeta{Name: receipt.Objects[4].Name, Namespace: receipt.Namespace}},
 	}
 	for _, object := range objects {
+		object.SetFinalizers([]string{sandbox.BootstrapFinalizer})
 		object.SetOwnerReferences([]metav1.OwnerReference{sandboxworkload.AgentOwner(agent.Name, agent.UID)})
 		object.SetAnnotations(map[string]string{
 			sandboxworkload.AgentUIDAnnotation: string(agent.UID), sandboxworkload.AgentNameAnnotation: agent.Name,
@@ -327,10 +328,12 @@ func validateSandboxBootstrapObject(current, desired client.Object, uid types.UI
 	if cleanup {
 		return nil
 	}
+	if !controllerutil.ContainsFinalizer(current, sandbox.BootstrapFinalizer) {
+		return fmt.Errorf("Sandbox bootstrap resource lifecycle protection is missing; recovery is required")
+	}
 	switch expected := desired.(type) {
 	case *corev1.Namespace:
-		if current.GetLabels()[sandboxworkload.ProtectedNamespaceLabel] != "true" ||
-			!controllerutil.ContainsFinalizer(current, sandbox.BootstrapFinalizer) {
+		if current.GetLabels()[sandboxworkload.ProtectedNamespaceLabel] != "true" {
 			return fmt.Errorf("Sandbox bootstrap namespace is no longer protected against replacement")
 		}
 	case *corev1.PersistentVolumeClaim:

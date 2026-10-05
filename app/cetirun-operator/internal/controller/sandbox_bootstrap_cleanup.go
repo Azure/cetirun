@@ -63,19 +63,46 @@ func (r *AgentReconciler) checkSandboxBootstrapCleanup(ctx context.Context, agen
 	return ctx.Err()
 }
 
-func (r *AgentReconciler) releaseSandboxBootstrapNamespace(ctx context.Context, agent *api.Agent, namespace *corev1.Namespace) error {
-	if !controllerutil.ContainsFinalizer(namespace, sandbox.BootstrapFinalizer) {
-		return nil
-	}
+func (r *AgentReconciler) releaseSandboxBootstrapResources(ctx context.Context, agent *api.Agent, namespace *corev1.Namespace) error {
 	object, receipt, err := r.sandboxBootstrapForCleanup(ctx, agent)
 	if err != nil {
 		return err
 	}
-	if receipt == nil || agent.DeletionTimestamp.IsZero() {
-		return fmt.Errorf("Sandbox namespace bootstrap finalizer requires its deleting Agent and receipt")
+	if receipt == nil {
+		if controllerutil.ContainsFinalizer(namespace, sandbox.BootstrapFinalizer) {
+			return fmt.Errorf("Sandbox namespace bootstrap finalizer requires its deleting Agent and receipt")
+		}
+		return nil
 	}
-	if err := validateSandboxBootstrapObject(namespace, r.sandboxBootstrapObjects(agent, object, receipt)[0], receipt.Objects[0].UID, true); err != nil {
+	if agent.DeletionTimestamp.IsZero() {
+		return fmt.Errorf("Sandbox bootstrap finalizers require their deleting Agent")
+	}
+	desired := r.sandboxBootstrapObjects(agent, object, receipt)
+	if err := validateSandboxBootstrapObject(namespace, desired[0], receipt.Objects[0].UID, true); err != nil {
 		return err
+	}
+	// Release HOME and credentials before RBAC, after all cleanup gates pass.
+	// Keep the namespace protected until every child release has succeeded.
+	for _, i := range []int{3, 4, 1, 2} {
+		current := desired[i].DeepCopyObject().(client.Object)
+		if err := r.customReader().Get(ctx, client.ObjectKeyFromObject(current), current); apierrors.IsNotFound(err) {
+			continue
+		} else if err != nil {
+			return err
+		}
+		if err := validateSandboxBootstrapObject(current, desired[i], receipt.Objects[i].UID, true); err != nil {
+			return err
+		}
+		if controllerutil.ContainsFinalizer(current, sandbox.BootstrapFinalizer) {
+			base := current.DeepCopyObject().(client.Object)
+			controllerutil.RemoveFinalizer(current, sandbox.BootstrapFinalizer)
+			if err := r.Patch(ctx, current, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
+				return err
+			}
+		}
+	}
+	if !controllerutil.ContainsFinalizer(namespace, sandbox.BootstrapFinalizer) {
+		return nil
 	}
 	base := namespace.DeepCopy()
 	controllerutil.RemoveFinalizer(namespace, sandbox.BootstrapFinalizer)

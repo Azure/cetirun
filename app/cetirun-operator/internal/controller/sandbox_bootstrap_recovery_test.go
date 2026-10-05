@@ -102,6 +102,11 @@ func TestSandboxBootstrapDoesNotRecreateMissingHome(t *testing.T) {
 	if err := f.client.Get(context.Background(), key, home); err != nil {
 		t.Fatal(err)
 	}
+	// Simulate forced removal, not a normal DELETE of protected HOME.
+	home.Finalizers = nil
+	if err := f.client.Update(context.Background(), home); err != nil {
+		t.Fatal(err)
+	}
 	if err := f.client.Delete(context.Background(), home); err != nil {
 		t.Fatal(err)
 	}
@@ -388,28 +393,8 @@ func TestSandboxBootstrapReceiptPatchFailureRetainsIntent(t *testing.T) {
 
 func TestSandboxBootstrapHeldPreparationStillRequiresFence(t *testing.T) {
 	ctx := context.Background()
-	f := bootstrappedFixture(t, "hermes")
-	skills := f.fixture.Input.Skills.DeepCopy()
-	skills.UID, skills.ResourceVersion = "", ""
-	skills.OwnerReferences = []metav1.OwnerReference{{
-		APIVersion: api.GroupVersion.String(), Kind: "Team", Name: f.fixture.Team.Name, UID: f.fixture.Team.UID,
-	}}
-	if err := f.client.Create(ctx, skills); err != nil {
-		t.Fatal(err)
-	}
-	account := f.fixture.ServiceAccount.DeepCopy()
-	account.UID, account.ResourceVersion = "", ""
-	if err := f.client.Create(ctx, account); err != nil {
-		t.Fatal(err)
-	}
-	if err := f.reconcile(); !errors.Is(err, sandbox.ErrObservationUnavailable) {
-		t.Fatal("absence of a real fence was ignored:", err)
-	}
+	f := preparedBootstrapFixture(t, "hermes")
 	prerequisites := f.reconciler.SandboxPreparation.Prerequisites.(*controller.KubernetesSandboxPrerequisites)
-	prerequisites.WriterExclusion = &testSandboxWriterExclusion{}
-	if err := f.reconcile(); err != nil {
-		t.Fatal("test-only evidence could not drive the bootstrapped held path:", err)
-	}
 	workload := &appsv1.StatefulSet{}
 	if err := f.client.Get(ctx, client.ObjectKey{Namespace: f.fixture.Namespace.Name, Name: "openclaw-example-cetirun"}, workload); err != nil {
 		t.Fatal(err)
@@ -433,7 +418,10 @@ func TestSandboxBootstrapHeldPreparationStillRequiresFence(t *testing.T) {
 }
 
 func TestSandboxBootstrapCleanupRecoversInterruptedCheckpoints(t *testing.T) {
-	for _, step := range []string{"release namespace", "delete namespace", "release Agent", "release receipt", "delete receipt"} {
+	for _, step := range []string{
+		"release HOME", "release Secret", "release Role", "release RoleBinding",
+		"release namespace", "delete namespace", "release Agent", "release receipt", "delete receipt",
+	} {
 		for _, afterWrite := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/response-lost=%t", step, afterWrite), func(t *testing.T) {
 				ctx := context.Background()
@@ -461,6 +449,14 @@ func TestSandboxBootstrapCleanupRecoversInterruptedCheckpoints(t *testing.T) {
 						var match bool
 						if !slices.Contains(o.GetFinalizers(), sandbox.BootstrapFinalizer) {
 							switch o.(type) {
+							case *corev1.PersistentVolumeClaim:
+								match = step == "release HOME"
+							case *metav1.PartialObjectMetadata:
+								match = step == "release Secret"
+							case *rbacv1.Role:
+								match = step == "release Role"
+							case *rbacv1.RoleBinding:
+								match = step == "release RoleBinding"
 							case *corev1.Namespace:
 								match = step == "release namespace"
 							case *api.Agent:

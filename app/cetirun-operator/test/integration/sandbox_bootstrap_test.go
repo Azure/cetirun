@@ -194,3 +194,126 @@ func TestSandboxBootstrapNamespaceLifetime(t *testing.T) {
 	}
 	deleteBootstrapCase(t, f)
 }
+
+func TestSandboxBootstrapForegroundDeletionRetainsDependents(t *testing.T) {
+	h := newPreparationHarness(t)
+	for _, agentType := range []string{"openclaw", "hermes"} {
+		t.Run(agentType, func(t *testing.T) {
+			f := h.newCaseWithPrerequisites(t, agentType, false)
+			configureBootstrap(t, f)
+			if _, err := f.reconciler.Reconcile(h.ctx, f.request()); !apierrors.IsNotFound(err) {
+				t.Fatal(err)
+			}
+			var state corev1.ConfigMapList
+			if err := h.client.List(h.ctx, &state, client.InNamespace(preparationStateNamespace)); err != nil {
+				t.Fatal(err)
+			}
+			var receipt *corev1.ConfigMap
+			for i := range state.Items {
+				if state.Items[i].Annotations[w.AgentUIDAnnotation] == string(f.fixture.Agent.UID) &&
+					state.Items[i].Data["bootstrap.json"] != "" {
+					receipt = state.Items[i].DeepCopy()
+				}
+			}
+			if receipt == nil {
+				t.Fatal("bootstrap receipt is missing")
+			}
+			originalData := receipt.DeepCopy().Data
+			receipt.Data["bootstrap.json"] = `{"invalid":"synthetic-receipt"}`
+			h.update(t, receipt)
+			if err := h.client.Delete(h.ctx, f.agent(t), client.PropagationPolicy(metav1.DeletePropagationForeground)); err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Contains(f.agent(t).Finalizers, metav1.FinalizerDeleteDependents) {
+				t.Fatal("the API server did not initiate foreground deletion")
+			}
+			namespace := f.fixture.Namespace.Name
+			dependents := []client.Object{
+				&rbacv1.Role{ObjectMeta: metav1.ObjectMeta{Name: "cetirun-operator-ns-role", Namespace: namespace}},
+				&rbacv1.RoleBinding{ObjectMeta: metav1.ObjectMeta{Name: "cetirun-operator-ns-rolebinding", Namespace: namespace}},
+				&corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: "home", Namespace: namespace}},
+				&metav1.PartialObjectMetadata{TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Secret"},
+					ObjectMeta: metav1.ObjectMeta{Name: f.fixture.Agent.Spec.GatewayTokenSecretRef, Namespace: namespace}},
+				&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace}},
+				receipt,
+			}
+			// envtest has no GC or namespace controller. Send their dependent
+			// DELETEs through the real API before the controller can authorize cleanup.
+			for _, object := range dependents {
+				h.get(t, client.ObjectKeyFromObject(object), object)
+				if err := h.client.Delete(h.ctx, object, client.PropagationPolicy(metav1.DeletePropagationBackground)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := f.reconciler.Reconcile(h.ctx, f.request()); err == nil {
+				t.Fatal("corrupt ownership receipt did not block cleanup")
+			}
+			for _, object := range dependents {
+				uid := object.GetUID()
+				h.get(t, client.ObjectKeyFromObject(object), object)
+				if object.GetUID() != uid || object.GetDeletionTimestamp().IsZero() ||
+					!slices.Contains(object.GetFinalizers(), sandbox.BootstrapFinalizer) {
+					t.Fatalf("%T was not retained through its dependent DELETE", object)
+				}
+			}
+			receipt.Data = originalData
+			h.update(t, receipt)
+			f.reconciler.SandboxPreparation = nil
+			if _, err := f.reconciler.Reconcile(h.ctx, f.request()); err != nil {
+				t.Fatal("bootstrap-only cleanup did not recover:", err)
+			}
+			for _, object := range dependents[:4] {
+				err := h.client.Get(h.ctx, client.ObjectKeyFromObject(object), object)
+				if apierrors.IsNotFound(err) {
+					continue
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				if slices.Contains(object.GetFinalizers(), sandbox.BootstrapFinalizer) {
+					t.Fatalf("%T kept bootstrap protection after cleanup authorization", object)
+				}
+				claim, ok := object.(*corev1.PersistentVolumeClaim)
+				if !ok || !slices.Equal(claim.Finalizers, []string{"kubernetes.io/pvc-protection"}) {
+					t.Fatalf("%T has unexpected pending finalization", object)
+				}
+				// No Pods exist here; explicitly simulate the absent PVC
+				// protection controller after checking our finalizer is gone.
+				base := claim.DeepCopy()
+				claim.Finalizers = nil
+				if err := h.client.Patch(h.ctx, claim, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
+					t.Fatal(err)
+				}
+			}
+			ns := &corev1.Namespace{}
+			h.get(t, client.ObjectKey{Name: namespace}, ns)
+			if slices.Contains(ns.Finalizers, sandbox.BootstrapFinalizer) {
+				t.Fatal("namespace retained bootstrap protection after dependent release")
+			}
+			ns.Spec.Finalizers = nil
+			if _, err := h.kubernetes.CoreV1().Namespaces().Finalize(h.ctx, ns, metav1.UpdateOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.reconciler.Reconcile(h.ctx, f.request()); err != nil {
+				t.Fatal("retained receipt cleanup did not finish:", err)
+			}
+			if err := h.client.Get(h.ctx, client.ObjectKeyFromObject(receipt), &corev1.ConfigMap{}); !apierrors.IsNotFound(err) {
+				t.Fatal("bootstrap receipt outlived successful cleanup:", err)
+			}
+			agent := f.agent(t)
+			if !slices.Equal(agent.Finalizers, []string{metav1.FinalizerDeleteDependents}) {
+				t.Fatal("controller did not release only its own Agent finalizers")
+			}
+			// Simulate GC completing foreground deletion after its retained
+			// dependents are gone; the operator must not remove GC's finalizer.
+			base := agent.DeepCopy()
+			agent.Finalizers = nil
+			if err := h.client.Patch(h.ctx, agent, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
+				t.Fatal(err)
+			}
+			if err := h.client.Get(h.ctx, client.ObjectKeyFromObject(agent), &api.Agent{}); !apierrors.IsNotFound(err) {
+				t.Fatal("foreground Agent deletion did not finish:", err)
+			}
+		})
+	}
+}
