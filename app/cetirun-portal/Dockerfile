@@ -17,7 +17,7 @@ COPY app/cetirun-portal/web/ ./
 RUN npm run build
 
 # --- Build backend ---
-FROM --platform=$BUILDPLATFORM mcr.microsoft.com/oss/go/microsoft/golang:1.26.8-1@sha256:4e652d1254a73a25bbc34dfda45dfca5dfae927f7245cc914310ff1057580499 AS backend
+FROM --platform=$BUILDPLATFORM mcr.microsoft.com/oss/go/microsoft/golang:1.26.8-1@sha256:dcdfc27fb8224a64128b5f82026acbf1d63458cfa9a34fa4b60c07574ff52332 AS backend
 ARG VERSION
 ARG GIT_SHA
 ARG TARGETOS
