@@ -164,3 +164,14 @@ func (h *InstanceHandler) validateAIGatewayCreate(w http.ResponseWriter, r *http
 func aiGatewayRouted(instance *cetirunv1alpha1.Agent) bool {
 	return instance.Status.AIGateway != nil && instance.Status.AIGateway.Routed
 }
+
+// servesSignInHelper reports whether the Agent's workload serves the in-agent
+// cetirun-auth sign-in helper, as the operator records it. OpenClaw charts
+// with the per-Agent Copilot proxy carry none. Before the operator recorded
+// it, the helper ran wherever the AI Gateway did not replace it.
+func servesSignInHelper(instance *cetirunv1alpha1.Agent) bool {
+	if instance.Status.SignInHelper != nil {
+		return *instance.Status.SignInHelper
+	}
+	return !aiGatewayRouted(instance)
+}

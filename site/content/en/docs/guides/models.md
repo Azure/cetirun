@@ -57,6 +57,16 @@ and [portal sign-in]({{< repo "app/cetirun-portal/internal/handler/copilot_login
 Instances routed through the AI Gateway use the sign-in above instead of the
 flow in this section.
 
+This flow reaches an in-agent sign-in helper. Hermes instances keep it, and so
+do OpenClaw instances pinned to a chart without the per-instance Copilot
+proxy. OpenClaw charts with the proxy carry no helper: their models come only
+through the AI Gateway. In a deployment that has not enabled the Gateway, such
+an instance has no model sign-in; the operator reports `AIGatewayReady` as
+false with the reason `AIGatewayDisabled`, and the portal does not offer this
+flow. The operator records whether an instance's workload serves the helper in
+`status.signInHelper`, and routes `/<instance>/cetirun-auth/` only where it
+does.
+
 An existing instance can discover models using the Copilot account signed in
 on that instance. The frontend requires a `Ready` OpenClaw or Hermes instance,
 an access URL, and its authentication-helper key. Complete Copilot login in

@@ -224,6 +224,32 @@ func TestInstanceResponseDescribesAIGateway(t *testing.T) {
 	}
 }
 
+// The Portal offers the in-agent sign-in only where the operator recorded
+// that the workload serves the helper: an OpenClaw chart without one gets no
+// helper key, even when the Agent is not routed through the Gateway.
+func TestInstanceResponseOffersTheInAgentSignInOnlyWithItsHelper(t *testing.T) {
+	helperKeyOf := func(agent *cetirunv1alpha1.Agent) string {
+		t.Helper()
+		h := &InstanceHandler{Kube: kube.NewClient(newFakeClient(agent, gatewayTokenSecret("cetirun-alice"))), Config: gatewayConfig()}
+		resp, err := h.toInstanceResponse(context.Background(), agent)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp.CetiRunAuthKey
+	}
+	without, with := false, true
+	agent := sampleInstance()
+	agent.Spec.GatewayTokenSecretRef = "gateway-token"
+	agent.Status.SignInHelper = &without
+	if key := helperKeyOf(agent); key != "" {
+		t.Fatalf("a workload without the helper must not get its key, got %q", key)
+	}
+	agent.Status.SignInHelper = &with
+	if key := helperKeyOf(agent); key != "helper-key" {
+		t.Fatalf("a workload serving the helper gets its key, got %q", key)
+	}
+}
+
 func TestGetAIGatewayCatalog(t *testing.T) {
 	get := func(cfg config.Config, objs ...client.Object) *httptest.ResponseRecorder {
 		h := &InstanceHandler{Kube: kube.NewClient(newFakeClient(objs...)), Config: cfg}

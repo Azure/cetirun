@@ -553,6 +553,11 @@ func (in *AgentStatus) DeepCopyInto(out *AgentStatus) {
 		*out = new(AIGatewayStatus)
 		(*in).DeepCopyInto(*out)
 	}
+	if in.SignInHelper != nil {
+		in, out := &in.SignInHelper, &out.SignInHelper
+		*out = new(bool)
+		**out = **in
+	}
 	if in.Sandbox != nil {
 		in, out := &in.Sandbox, &out.Sandbox
 		*out = new(SandboxStatus)

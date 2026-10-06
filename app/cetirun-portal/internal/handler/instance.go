@@ -757,9 +757,10 @@ func (h *InstanceHandler) toInstanceResponse(ctx context.Context, instance *ceti
 				resp.APIServerKey = apiServerKey
 			}
 		}
-		// The cetirun-auth helper service runs in Hermes and OpenClaw pods,
-		// except where the AI Gateway replaced it with the Portal sign-in.
-		if !aiGatewayRouted(instance) {
+		// The cetirun-auth helper service runs in Hermes and OpenClaw pods whose
+		// chart carries it, except where the AI Gateway replaced it with the
+		// Portal sign-in. Without it the in-agent sign-in has no backend.
+		if servesSignInHelper(instance) {
 			authKey, err := h.Kube.GetCetiRunAuthKey(ctx, ns, instance.Spec.GatewayTokenSecretRef)
 			if err != nil {
 				slog.Warn("Failed to get cetirun-auth key", "alias", instance.Spec.User.Alias, "error", err)

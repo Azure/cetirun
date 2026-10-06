@@ -258,6 +258,15 @@ type AgentStatus struct {
 	// +optional
 	AIGateway *AIGatewayStatus `json:"aiGateway,omitempty"`
 
+	// SignInHelper reports whether the Agent's workload serves the in-agent
+	// model sign-in helper, which the Portal's in-agent GitHub Copilot sign-in
+	// reaches at /<name>/cetirun-auth/. OpenClaw charts with the per-Agent
+	// Copilot proxy carry none: their models come through the AI Gateway.
+	// Unset until the operator records it; the helper is then assumed unless
+	// the Agent is routed through the Gateway.
+	// +optional
+	SignInHelper *bool `json:"signInHelper,omitempty"`
+
 	// Sandbox records the last fully enforced binding, not a pending selection.
 	// +optional
 	Sandbox *SandboxStatus `json:"sandbox,omitempty"`

@@ -238,3 +238,35 @@ func TestAIGatewayChartRestartsTheProxyForANewMasterKey(t *testing.T) {
 		t.Fatal("a key ID that is not a hash prefix must be rejected")
 	}
 }
+
+// The in-agent model sign-in helper is served exactly where the harness
+// exposes its port: Hermes keeps it, and OpenClaw in a chart with the
+// per-Agent Copilot proxy carries none, whether or not it uses the Gateway.
+func TestPreparedReleaseServesSignInHelper(t *testing.T) {
+	chrt, err := loader.Load("../../../cetirun-chart")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name  string
+		input map[string]any
+		want  bool
+	}{
+		{name: "Hermes", input: sampleInput("hermes", "github_copilot", false), want: true},
+		{name: "OpenClaw without the Gateway", input: sampleInput("openclaw", "github_copilot", false), want: false},
+		{name: "OpenClaw through the Gateway", input: aiGatewayInput("openclaw", "openai"), want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			prepared, err := PrepareChart(chrt, tc.input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := prepared.ServesSignInHelper(); got != tc.want {
+				t.Fatalf("ServesSignInHelper() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+	if (*PreparedRelease)(nil).ServesSignInHelper() {
+		t.Fatal("no release serves no helper")
+	}
+}

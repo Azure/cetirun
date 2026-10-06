@@ -1339,6 +1339,85 @@ func (h *chartHelm) Uninstall(string, string) error {
 	return nil
 }
 
+// hasSignInHelperRoute reports whether the Agent's VirtualService routes to
+// an in-agent sign-in helper.
+func hasSignInHelperRoute(agent *cetirunv1alpha1.Agent) bool {
+	for _, route := range buildVirtualService(agent, "example.com", "").Spec.Http {
+		for _, match := range route.Match {
+			if strings.Contains(match.GetUri().GetPrefix(), "cetirun-auth") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// With the Gateway disabled, an OpenClaw chart that carries no in-agent
+// sign-in helper must not get a route to one, and the Agent must report why
+// it has no model sign-in.
+func TestReconcileWithoutTheGatewayRoutesToNoMissingSignInHelper(t *testing.T) {
+	agent := aiGatewayTestAgent(testAIGatewayTeam)
+	r, kube, gateway := aiGatewayTestReconciler(t, agent, aiGatewayTestTeam(testAIGatewayTeam))
+	r.AIGateway.Enabled = false
+	chart := &chartHelm{}
+	r.HelmClient = chart
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: agent.Name}}
+	for i := 0; i < 3 && chart.installs == 0; i++ {
+		if _, err := r.Reconcile(context.Background(), req); err != nil {
+			t.Fatalf("reconcile %d: %v", i, err)
+		}
+	}
+	if chart.installs == 0 {
+		t.Fatal("the Agent was never installed")
+	}
+	if len(gateway.generated) != 0 {
+		t.Fatal("a disabled Gateway issues no key")
+	}
+	for _, port := range chart.lastValues["runtime"].(map[string]any)["ports"].([]any) {
+		if port.(map[string]any)["name"] == "cetirun-auth" {
+			t.Fatal("this OpenClaw chart carries no in-agent sign-in helper")
+		}
+	}
+	current := &cetirunv1alpha1.Agent{}
+	if err := kube.Get(context.Background(), req.NamespacedName, current); err != nil {
+		t.Fatal(err)
+	}
+	if current.Status.SignInHelper == nil || *current.Status.SignInHelper {
+		t.Fatalf("recorded sign-in helper %v, want false", current.Status.SignInHelper)
+	}
+	if hasSignInHelperRoute(current) {
+		t.Fatal("the VirtualService must not route to a helper the workload does not serve")
+	}
+	condition := meta.FindStatusCondition(current.Status.Conditions, cetirunv1alpha1.ConditionAIGatewayReady)
+	if condition == nil || condition.Status != metav1.ConditionFalse || condition.Reason != aiGatewayReasonDisabled {
+		t.Fatalf("the Agent must report that its models need the Gateway, got %+v", condition)
+	}
+}
+
+// The route follows what the operator recorded at the last render; an Agent
+// not yet recorded keeps the route it had, which ran wherever the Gateway
+// did not replace the helper.
+func TestSignInHelperRouteFollowsTheRecordedWorkload(t *testing.T) {
+	agent := aiGatewayTestAgent(testAIGatewayTeam)
+	if !hasSignInHelperRoute(agent) {
+		t.Fatal("an unrouted Agent not yet recorded keeps its helper route")
+	}
+	agent.Status.AIGateway = &cetirunv1alpha1.AIGatewayStatus{Routed: true}
+	if hasSignInHelperRoute(agent) {
+		t.Fatal("a routed Agent not yet recorded has no helper route")
+	}
+	agent.Status.AIGateway = nil
+	without, with := false, true
+	agent.Status.SignInHelper = &without
+	if hasSignInHelperRoute(agent) {
+		t.Fatal("no route to a helper the workload does not serve")
+	}
+	agent.Status.SignInHelper = &with
+	if !hasSignInHelperRoute(agent) {
+		t.Fatal("a workload serving the helper keeps its route")
+	}
+}
+
 func TestReconcileRoutesAgentWithProxyAndRevokesOnDelete(t *testing.T) {
 	agent := aiGatewayTestAgent(testAIGatewayTeam)
 	r, kube, gateway := aiGatewayTestReconciler(t, agent, aiGatewayTestTeam(testAIGatewayTeam))
@@ -1380,6 +1459,9 @@ func TestReconcileRoutesAgentWithProxyAndRevokesOnDelete(t *testing.T) {
 	}
 	if current.Status.AIGateway == nil || !current.Status.AIGateway.Routed || current.Status.AIGateway.Phase != cetirunv1alpha1.AIGatewayPhaseReady {
 		t.Fatalf("persisted status %+v", current.Status.AIGateway)
+	}
+	if current.Status.SignInHelper == nil || *current.Status.SignInHelper {
+		t.Fatalf("an Agent on the Gateway serves no in-agent sign-in helper, recorded %v", current.Status.SignInHelper)
 	}
 	vs := buildVirtualService(current, "example.com", "")
 	for _, route := range vs.Spec.Http {

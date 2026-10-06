@@ -697,7 +697,8 @@ func buildVirtualService(instance *cetirunv1alpha1.Agent, domainSuffix, gateway 
 			makeRoute(uiPrefix+"/v1", "/v1", primaryPort, 300),
 			makeRoute(uiPrefix+descriptor.HealthPath, descriptor.HealthPath, primaryPort, 0),
 		)
-		if !aiGatewayRoutedStatus(instance) {
+		// The route exists exactly where the workload serves the helper.
+		if servesSignInHelper(instance) {
 			routes = append(routes, makeRoute(instancePrefix+"/cetirun-auth/", "/", cetirunAuthPort, 60))
 		}
 		routes = append(routes,
@@ -718,7 +719,8 @@ func buildVirtualService(instance *cetirunv1alpha1.Agent, domainSuffix, gateway 
 		// on that exact path directly to the gateway because WebSockets cannot
 		// follow a 301 redirect.
 		routes = append([]*istioapiv1beta1.HTTPRoute{makeWebSocketRoute(uiPrefix, primaryPort)}, routes...)
-		if !aiGatewayRoutedStatus(instance) {
+		// The route exists exactly where the workload serves the helper.
+		if servesSignInHelper(instance) {
 			routes = append(routes, makeRoute(instancePrefix+"/cetirun-auth/", "/", cetirunAuthPort, 60))
 		}
 		routes = append(routes,

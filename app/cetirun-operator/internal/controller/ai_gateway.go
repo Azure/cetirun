@@ -53,6 +53,9 @@ const (
 	// aiGatewayReasonKeySecretLost reports that the Agent's own key exists in
 	// the Gateway while its value is no longer in the key Secret.
 	aiGatewayReasonKeySecretLost = "KeySecretLost"
+	// aiGatewayReasonDisabled reports an Agent whose chart takes its models
+	// only from the Gateway in a deployment that has not enabled it.
+	aiGatewayReasonDisabled = "AIGatewayDisabled"
 )
 
 // AIGatewayConfig is the deployment-level AI Gateway integration. With
@@ -690,6 +693,29 @@ func (r *AgentReconciler) revokeAIGatewayKey(ctx context.Context, instance *ceti
 	r.EventRecorder.Eventf(instance, corev1.EventTypeNormal, "AIGatewayKeyRevoked",
 		"Revoked AI Gateway virtual key %s", aiGatewayKeyAlias(instance))
 	return nil
+}
+
+// recordSignInHelper records whether the Agent's workload serves the in-agent
+// model sign-in helper; the /<name>/cetirun-auth/ route and the Portal's
+// in-agent sign-in follow it. An OpenClaw chart without the helper takes its
+// models only from the AI Gateway, so with the Gateway disabled the Agent
+// reports why it has no model sign-in.
+func (r *AgentReconciler) recordSignInHelper(instance *cetirunv1alpha1.Agent, serves bool) {
+	instance.Status.SignInHelper = &serves
+	if !r.AIGateway.Enabled && !serves && instance.Spec.Agent.Type == cetirunv1alpha1.AgentTypeOpenClaw {
+		setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionAIGatewayReady, metav1.ConditionFalse,
+			aiGatewayReasonDisabled, "This OpenClaw chart takes its models only from the AI Gateway, which the deployment has not enabled")
+	}
+}
+
+// servesSignInHelper reports whether the Agent's workload serves the in-agent
+// model sign-in helper, as recorded at its last render. Before the operator
+// recorded it, the helper ran wherever the AI Gateway did not replace it.
+func servesSignInHelper(instance *cetirunv1alpha1.Agent) bool {
+	if instance.Status.SignInHelper != nil {
+		return *instance.Status.SignInHelper
+	}
+	return !aiGatewayRoutedStatus(instance)
 }
 
 // applyAIGatewayValues renders the controller-owned model access values. It

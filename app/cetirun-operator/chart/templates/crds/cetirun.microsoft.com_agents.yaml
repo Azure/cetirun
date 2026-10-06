@@ -739,6 +739,15 @@ spec:
                 - sandboxUID
                 - teamUID
                 type: object
+              signInHelper:
+                description: |-
+                  SignInHelper reports whether the Agent's workload serves the in-agent
+                  model sign-in helper, which the Portal's in-agent GitHub Copilot sign-in
+                  reaches at /<name>/cetirun-auth/. OpenClaw charts with the per-Agent
+                  Copilot proxy carry none: their models come through the AI Gateway.
+                  Unset until the operator records it; the helper is then assumed unless
+                  the Agent is routed through the Gateway.
+                type: boolean
             type: object
         required:
         - spec
