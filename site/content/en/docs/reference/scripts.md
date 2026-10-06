@@ -162,6 +162,12 @@ python3 -B scripts/sandbox-platform-qualify.py network-smoke \
 
 These fixtures have no workload credentials, host mounts or host networking.
 They are not governed Agent Pods and do not bypass protected-Pod admission.
+The server receives its primary Pod IP through the Downward API and binds all
+three listeners using that address's IPv4 or IPv6 family. An exec readiness
+probe checks all three listeners, with a one-second connection timeout and a
+five-second total probe timeout. The baseline waits for server readiness within
+the existing 180-second readiness window; container startup alone is not
+readiness. On dual-stack targets this test exercises the primary Pod IP only.
 Only a TCP connection timeout can count as blocked; connection refusal,
 unexpected HTTP responses and failures after connecting fail the probe.
 The Cilium policy initially allows port 8081, explicitly denies 8080, and leaves

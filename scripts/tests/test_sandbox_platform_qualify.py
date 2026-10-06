@@ -3,12 +3,18 @@
 """Offline tests; no Kubernetes or Azure calls."""
 
 import contextlib
+import errno
 import http.client
+import http.server
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
+import socket
 import subprocess
+import threading
+import time
 import unittest
 from unittest.mock import patch
 
@@ -132,6 +138,134 @@ class SandboxPlatformQualificationTests(unittest.TestCase):
             self.assertNotIn("hostNetwork", value["spec"])
             if role == "probe":
                 self.assertEqual(value["spec"]["runtimeClassName"], "kata-vm-isolation")
+
+    def test_server_readiness_checks_every_listener_before_baseline(self):
+        server = qualify.pod("test-namespace", "run", "server", IMAGE, "kata-vm-isolation")
+        container = server["spec"]["containers"][0]
+        self.assertEqual(container["env"], [{
+            "name": "POD_IP", "valueFrom": {"fieldRef": {"fieldPath": "status.podIP"}},
+        }])
+        self.assertEqual(container["readinessProbe"], {
+            "exec": {"command": ["python3", "-c", qualify.LISTENER_READINESS]},
+            "periodSeconds": 1, "timeoutSeconds": 5, "failureThreshold": 3,
+        })
+        probe = qualify.pod("test-namespace", "run", "probe", IMAGE, "kata-vm-isolation")
+        self.assertNotIn("readinessProbe", probe["spec"]["containers"][0])
+
+        kube = FakeKubernetes()
+        original_get, original_run = kube.get, kube.run
+        server_reads = 0
+
+        def get(resource, name, namespace=None, absent_ok=False):
+            nonlocal server_reads
+            value = original_get(resource, name, namespace, absent_ok)
+            if resource == "pod" and name == "server":
+                server_reads += 1
+                if server_reads < 3:
+                    value["status"]["conditions"][0]["status"] = "False"
+            return value
+
+        def run(args, document=None, timeout=30):
+            if args[0] == "exec":
+                self.assertGreaterEqual(server_reads, 3, "baseline started before all listeners were ready")
+            return original_run(args, document, timeout)
+
+        with patch.object(kube, "get", side_effect=get), patch.object(kube, "run", side_effect=run), \
+             patch.object(qualify.time, "sleep") as sleep:
+            qualify.network_smoke(kube, IMAGE, "kata-vm-isolation", {})
+        self.assertEqual(sleep.call_count, 2)
+
+    def test_listener_readiness_timeout_is_bounded(self):
+        kube = FakeKubernetes()
+        pending = {"status": {"phase": "Running", "conditions": [{"type": "Ready", "status": "False"}]}}
+        with patch.object(kube, "get", return_value=pending), \
+             patch.object(qualify.time, "monotonic", side_effect=[0, 0, 181]), \
+             patch.object(qualify.time, "sleep"):
+            with self.assertRaisesRegex(qualify.QualificationError, "readiness timed out"):
+                qualify.wait_ready(kube, "test-namespace", "server")
+        self.assertEqual(kube.probe_calls, 0)
+
+    def test_listener_readiness_rejects_each_missing_port(self):
+        for missing in (8080, 8081, 8082):
+            calls = []
+
+            def connect(address, timeout):
+                self.assertEqual(timeout, 1)
+                calls.append(address)
+                if address[1] == missing:
+                    raise ConnectionRefusedError
+                return contextlib.nullcontext()
+
+            with self.subTest(port=missing), patch.dict(os.environ, {"POD_IP": "192.0.2.1"}), \
+                 patch.object(socket, "create_connection", side_effect=connect):
+                with self.assertRaises(ConnectionRefusedError):
+                    exec(compile(qualify.LISTENER_READINESS, "<listener-readiness>", "exec"), {})
+            self.assertEqual(calls, [("192.0.2.1", port) for port in range(8080, missing + 1)])
+
+    def check_loopback_listeners(self, address, family):
+        servers, threads = [], []
+        base_server, base_thread = http.server.HTTPServer, threading.Thread
+        connect = socket.create_connection
+
+        class LocalServer(base_server):
+            def __init__(self, requested, handler):
+                self.requested = requested
+                # Exercise the actual embedded server with isolated ephemeral ports.
+                super().__init__((requested[0], 0), handler)
+                servers.append(self)
+
+        def thread(*args, **kwargs):
+            value = base_thread(*args, **kwargs)
+            threads.append(value)
+            return value
+
+        try:
+            with patch.dict(os.environ, {"POD_IP": address}), \
+                 patch.object(http.server, "HTTPServer", LocalServer), \
+                 patch.object(threading, "Thread", side_effect=thread), patch.object(time, "sleep"):
+                exec(compile(qualify.SERVER, "<synthetic-server>", "exec"), {})
+            self.assertEqual([s.requested for s in servers], [(address, port) for port in (8080, 8081, 8082)])
+            self.assertTrue(all(s.address_family == family for s in servers))
+            ports = {s.requested[1]: s.server_port for s in servers}
+
+            def mapped_connect(endpoint, timeout, *args, **kwargs):
+                self.assertEqual(endpoint[0], address)
+                self.assertIn(timeout, (1, 2))
+                return connect((address, ports[endpoint[1]]), timeout, *args, **kwargs)
+
+            with patch.dict(os.environ, {"POD_IP": address}), \
+                 patch.object(socket, "create_connection", side_effect=mapped_connect), \
+                 patch.object(qualify.sys, "argv", ["probe", address]):
+                exec(compile(qualify.LISTENER_READINESS, "<listener-readiness>", "exec"), {})
+                with contextlib.redirect_stdout(io.StringIO()) as output:
+                    exec(compile(qualify.PROBE, "<synthetic-probe>", "exec"), {})
+                self.assertEqual(json.loads(output.getvalue()), [True, True, True])
+                servers[-1].shutdown()
+                servers[-1].server_close()
+                with self.assertRaises(ConnectionRefusedError):
+                    exec(compile(qualify.LISTENER_READINESS, "<listener-readiness>", "exec"), {})
+                with self.assertRaises(ConnectionRefusedError):
+                    exec(compile(qualify.PROBE, "<synthetic-probe>", "exec"), {})
+        finally:
+            for server in servers:
+                server.shutdown()
+                server.server_close()
+            for value in threads:
+                value.join(timeout=2)
+                self.assertFalse(value.is_alive())
+
+    def test_real_ipv4_listeners_readiness_and_strict_probe(self):
+        self.check_loopback_listeners("127.0.0.1", socket.AF_INET)
+
+    def test_real_ipv6_listeners_readiness_and_strict_probe(self):
+        try:
+            with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as endpoint:
+                endpoint.bind(("::1", 0))
+        except OSError as error:
+            if error.errno in (errno.EAFNOSUPPORT, errno.EADDRNOTAVAIL):
+                self.skipTest("IPv6 loopback is unavailable on this host")
+            raise
+        self.check_loopback_listeners("::1", socket.AF_INET6)
 
     def test_smoke_checks_allow_deny_and_cleans_exact_uid(self):
         kube = FakeKubernetes()

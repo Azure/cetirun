@@ -33,14 +33,22 @@ PROBE = (
 )
 SERVER = (
     "from http.server import BaseHTTPRequestHandler,HTTPServer\n"
-    "import threading,time\n"
+    "import ipaddress,os,socket,threading,time\n"
+    "address=ipaddress.ip_address(os.environ['POD_IP'])\n"
+    "class Server(HTTPServer):\n"
+    " address_family=socket.AF_INET6 if address.version==6 else socket.AF_INET\n"
     "class Handler(BaseHTTPRequestHandler):\n"
     " def do_GET(self):\n"
     "  self.send_response(200);self.end_headers();self.wfile.write(b'qualification-ok')\n"
     " def log_message(self,*args): pass\n"
     "for port in (8080,8081,8082):\n"
-    " threading.Thread(target=HTTPServer(('0.0.0.0',port),Handler).serve_forever,daemon=True).start()\n"
+    " threading.Thread(target=Server((str(address),port),Handler).serve_forever,daemon=True).start()\n"
     "time.sleep(3600)\n"
+)
+LISTENER_READINESS = (
+    "import os,socket\n"
+    "for port in (8080,8081,8082):\n"
+    " with socket.create_connection((os.environ['POD_IP'],port),timeout=1): pass\n"
 )
 
 
@@ -152,6 +160,14 @@ def pod(namespace, run, role, image, runtime_class):
     }
     if role == "probe":
         spec["runtimeClassName"] = runtime_class
+    else:
+        spec["containers"][0]["env"] = [{
+            "name": "POD_IP", "valueFrom": {"fieldRef": {"fieldPath": "status.podIP"}},
+        }]
+        spec["containers"][0]["readinessProbe"] = {
+            "exec": {"command": ["python3", "-c", LISTENER_READINESS]},
+            "periodSeconds": 1, "timeoutSeconds": 5, "failureThreshold": 3,
+        }
     return {
         "apiVersion": "v1", "kind": "Pod",
         "metadata": {"name": role, "namespace": namespace, "labels": {RUN_LABEL: run, "role": role}},
