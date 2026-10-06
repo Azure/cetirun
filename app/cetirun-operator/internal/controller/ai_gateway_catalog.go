@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -113,11 +114,18 @@ func (c *aiGatewayCatalog) seed(shared []aiGatewayCatalogModel) {
 	c.sharedSet, c.seeded = slices.Clone(shared), true
 }
 
+// aiGatewayModelNameLimit is the agent chart's limit, in characters, on a
+// configured model's id and name (values.schema.json). A single longer value
+// makes the Agent's whole model configuration invalid, so such names are left
+// out rather than passed to Helm.
+const aiGatewayModelNameLimit = 256
+
 // aiGatewaySharedModelUsable reports whether a shared model name can be given
 // to Agents: the agent chart rejects names with the provider prefix Agents
-// use, and the Copilot prefix belongs to the Agents' own Copilot routes.
+// use and names over its length limit, and the Copilot prefix belongs to the
+// Agents' own Copilot routes.
 func aiGatewaySharedModelUsable(name string) bool {
-	if name == "" || strings.ContainsAny(name, " \t\r\n") {
+	if name == "" || strings.ContainsAny(name, " \t\r\n") || utf8.RuneCountInString(name) > aiGatewayModelNameLimit {
 		return false
 	}
 	return !strings.HasPrefix(name, "openai/") && !strings.HasPrefix(name, aiGatewayCopilotModelPrefix)

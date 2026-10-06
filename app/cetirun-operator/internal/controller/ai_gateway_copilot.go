@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -47,6 +48,21 @@ const (
 // copilotModelID is the form of Copilot model IDs the operator registers.
 // It keeps IDs usable in Gateway model names and deployment IDs.
 var copilotModelID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$`)
+
+// copilotModelNameSuffix marks a Copilot model's name in the Agent's
+// configuration.
+const copilotModelNameSuffix = " (GitHub Copilot)"
+
+// truncateRunes shortens s to at most n characters.
+func truncateRunes(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	if utf8.RuneCountInString(s) <= n {
+		return s
+	}
+	return string([]rune(s)[:n])
+}
 
 func copilotAccessGroup(instance *cetirunv1alpha1.Agent) string {
 	return aiGatewayCopilotGroupPrefix + string(instance.UID)
@@ -488,8 +504,12 @@ func (r *AgentReconciler) aiGatewayModelEntries(instance *cetirunv1alpha1.Agent)
 			if display == "" {
 				display = strings.TrimPrefix(name, aiGatewayCopilotModelPrefix)
 			}
+			// The ID is bounded by copilotModelID; the display name comes
+			// from GitHub, so keep the configured name within the chart's
+			// limit.
+			display = truncateRunes(display, aiGatewayModelNameLimit-utf8.RuneCountInString(copilotModelNameSuffix))
 			copilotEntries = append(copilotEntries, aiGatewayModelEntry{
-				ID: name, Name: display + " (GitHub Copilot)", ContextWindow: model.ContextWindow, MaxTokens: model.MaxOutputTokens,
+				ID: name, Name: display + copilotModelNameSuffix, ContextWindow: model.ContextWindow, MaxTokens: model.MaxOutputTokens,
 			})
 		}
 	}

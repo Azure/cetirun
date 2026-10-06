@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"helm.sh/helm/v3/pkg/chart/loader"
 	appsv1 "k8s.io/api/apps/v1"
@@ -1682,15 +1683,49 @@ func TestCopilotTokenIsReadPastTheCache(t *testing.T) {
 
 func TestAIGatewayCatalogLeavesOutUnusableSharedNames(t *testing.T) {
 	var catalog aiGatewayCatalog
+	atLimit := strings.Repeat("m", aiGatewayModelNameLimit)
+	// The chart counts characters, not bytes.
+	multiByteAtLimit := strings.Repeat("é", aiGatewayModelNameLimit)
 	changed, skipped := catalog.update([]aigateway.Deployment{
 		{ID: "a", ModelName: "gpt-6", AccessGroups: []string{aiGatewaySharedAccessGroup}},
 		{ID: "b", ModelName: "openai/*", AccessGroups: []string{aiGatewaySharedAccessGroup}},
 		{ID: "c", ModelName: "copilot/gpt-5.5", AccessGroups: []string{aiGatewaySharedAccessGroup}},
 		{ID: "d", ModelName: "has space", AccessGroups: []string{aiGatewaySharedAccessGroup}},
+		{ID: "e", ModelName: atLimit, AccessGroups: []string{aiGatewaySharedAccessGroup}},
+		{ID: "f", ModelName: multiByteAtLimit, AccessGroups: []string{aiGatewaySharedAccessGroup}},
+		{ID: "g", ModelName: atLimit + "m", AccessGroups: []string{aiGatewaySharedAccessGroup}},
 	}, time.Now())
 	shared, _ := catalog.shared()
-	if !changed || len(shared) != 1 || shared[0].Name != "gpt-6" || len(skipped) != 3 {
-		t.Fatalf("shared=%v skipped=%v changed=%v", shared, skipped, changed)
+	if !changed || len(shared) != 3 || shared[0].Name != "gpt-6" || shared[1].Name != atLimit ||
+		shared[2].Name != multiByteAtLimit || len(skipped) != 4 || !slices.Contains(skipped, atLimit+"m") {
+		t.Fatalf("shared=%d %v skipped=%d changed=%v", len(shared), shared, len(skipped), changed)
+	}
+}
+
+// A Copilot model's configured name carries GitHub's display name, which the
+// operator does not control: it must stay within the chart's limit too.
+func TestAIGatewayModelEntriesKeepCopilotNamesWithinTheChartLimit(t *testing.T) {
+	r, _, gateway := aiGatewayTestReconciler(t)
+	r.refreshAIGatewayCatalogWithin(context.Background(), gateway, 0)
+	agent := routedAgent()
+	raw, err := json.Marshal([]cetirunv1alpha1.CopilotModel{{ID: "gpt-5.5", Name: strings.Repeat("n", 300)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent.Annotations = map[string]string{cetirunv1alpha1.AnnotationCopilotModels: string(raw)}
+	agent.Status.AIGateway.Copilot = &cetirunv1alpha1.AIGatewayCopilotStatus{Models: []string{"copilot/gpt-5.5"}}
+	entries, _, _ := r.aiGatewayModelEntries(agent)
+	found := false
+	for _, entry := range entries {
+		if utf8.RuneCountInString(entry.ID) > aiGatewayModelNameLimit || utf8.RuneCountInString(entry.Name) > aiGatewayModelNameLimit {
+			t.Fatalf("entry %q exceeds the chart's limit: name has %d characters", entry.ID, utf8.RuneCountInString(entry.Name))
+		}
+		if entry.ID == "copilot/gpt-5.5" {
+			found = strings.HasSuffix(entry.Name, copilotModelNameSuffix)
+		}
+	}
+	if !found {
+		t.Fatalf("the Copilot model must stay listed with its marked name: %+v", entries)
 	}
 }
 
