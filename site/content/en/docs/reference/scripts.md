@@ -172,6 +172,10 @@ The helper retains each server and probe Pod UID from its create response.
 Every readiness observation and both final identity checks must match those
 creation UIDs and must not be terminating. Missing creation identities or
 same-name replacements fail the run; readiness cannot authorize a replacement.
+The probe's effective `spec.runtimeClassName` must also match the requested
+class in its creation response, every readiness observation and the final
+check. Admission rewriting or removing that field fails the run even when
+the Pod UID is unchanged.
 Only a TCP connection timeout can count as blocked; connection refusal,
 unexpected HTTP responses and failures after connecting fail the probe.
 The Cilium policy initially allows port 8081, explicitly denies 8080, and leaves

@@ -3,6 +3,7 @@
 """Offline tests; no Kubernetes or Azure calls."""
 
 import contextlib
+import copy
 import errno
 import http.client
 import http.server
@@ -43,6 +44,7 @@ class FakeKubernetes:
         self.replace_probe = False
         self.fail_probe = False
         self.pod_uids = {"server": "created-server", "probe": "created-probe"}
+        self.pod_specs = {}
 
     def check_target(self):
         self.target_checks += 1
@@ -61,6 +63,7 @@ class FakeKubernetes:
             return {"status": {"conditions": [{"type": "Established", "status": "True" if self.crd_ready else "False"}]}}
         if resource == "pod":
             return {"metadata": {"uid": "changed" if self.replace_probe else self.pod_uids[name]},
+                    "spec": copy.deepcopy(self.pod_specs.get(name, {})),
                     "status": {"podIP": self.address, "phase": "Running", "conditions": [{"type": "Ready", "status": "True"}]}}
         raise AssertionError(resource)
 
@@ -70,6 +73,7 @@ class FakeKubernetes:
             self.namespace = {"metadata": {**value["metadata"], "uid": "namespace-uid", "resourceVersion": "1"}}
             return self.namespace
         if value["kind"] == "Pod":
+            self.pod_specs[value["metadata"]["name"]] = copy.deepcopy(value["spec"])
             return {**value, "metadata": {**value["metadata"], "uid": self.pod_uids[value["metadata"]["name"]]}}
         return value
 
@@ -376,6 +380,52 @@ class SandboxPlatformQualificationTests(unittest.TestCase):
         value = {"metadata": {"uid": "created-probe", "deletionTimestamp": "2026-01-01T00:00:00Z"}}
         with self.assertRaisesRegex(qualify.QualificationError, "terminating"):
             qualify.verify_pod_identity(value, "created-probe")
+
+    def test_same_uid_runtime_mutation_cannot_complete_smoke(self):
+        for phase in ("create", "readiness", "final"):
+            for runtime_class in ("runc", "", None):
+                with self.subTest(phase=phase, runtime_class=runtime_class):
+                    kube = FakeKubernetes()
+                    original_create, original_get = kube.create, kube.get
+
+                    def mutate(value):
+                        self.assertEqual(value["metadata"]["uid"], "created-probe")
+                        if runtime_class is None:
+                            value["spec"].pop("runtimeClassName", None)
+                        else:
+                            value["spec"]["runtimeClassName"] = runtime_class
+                        return value
+
+                    def create(value):
+                        created = original_create(value)
+                        if phase == "create" and value["kind"] == "Pod" and value["metadata"]["name"] == "probe":
+                            return mutate(created)
+                        return created
+
+                    def get(resource, name, namespace=None, absent_ok=False):
+                        value = original_get(resource, name, namespace, absent_ok)
+                        if resource == "pod" and name == "probe" and (
+                            phase == "readiness" or (phase == "final" and kube.probe_calls == 3)
+                        ):
+                            return mutate(value)
+                        return value
+
+                    result = {}
+                    with patch.object(kube, "create", side_effect=create), patch.object(kube, "get", side_effect=get):
+                        with self.assertRaisesRegex(qualify.QualificationError, "requested RuntimeClass"):
+                            qualify.network_smoke(kube, IMAGE, "kata-vm-isolation", result)
+                    self.assertEqual(kube.probe_calls, 3 if phase == "final" else 0)
+                    self.assertNotIn("unchangedProbeIdentity", result.get("networkChecks", {}))
+                    self.assertTrue(result["cleanupComplete"])
+                    if phase == "create":
+                        self.assertFalse(any(resource == "pod" for resource, _, _ in kube.gets))
+
+    def test_runtime_checks_use_the_requested_class_not_a_hardcoded_default(self):
+        kube = FakeKubernetes()
+        result = {}
+        qualify.network_smoke(kube, IMAGE, "qualified-kata", result)
+        self.assertEqual(kube.pod_specs["probe"]["runtimeClassName"], "qualified-kata")
+        self.assertTrue(result["networkChecks"]["unchangedProbeIdentity"])
 
     def test_precedence_waits_for_allow_policy_witness(self):
         kube = FakeKubernetes()
