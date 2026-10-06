@@ -7,9 +7,10 @@ files are byte-for-byte copies. The Fluent UI NOTICE has a final newline added;
 the Rollup license has trailing whitespace and its final newline normalized.
 
 The Fluent UI source revision is the public npm `gitHead` for
-`@fluentui/react-icons@2.0.341`, verified on 2026-09-29. Its LICENSE is unchanged;
+`@fluentui/react-icons@2.0.343`, verified on 2026-10-06. The integrity-checked npm
+tarball contains no license or notice files. Its upstream LICENSE is unchanged;
 its NOTICE matches the stored copy after adding the final newline. Both source
-URLs point to the new version's commit.
+URLs point to that version's commit.
 
 The Embla and Rollup source revisions are the public npm `gitHead` values for
 `embla-carousel@8.6.0`, `embla-carousel-autoplay@8.6.0`,
