@@ -13,6 +13,8 @@ export interface AIGatewayCatalog {
   /** False until the operator has published the shared models. */
   known: boolean;
   sharedModels: SharedModel[];
+  /** Whether the deployment offers GitHub Copilot to agents. */
+  githubCopilot: boolean;
 }
 
 export type CopilotLoginState = "none" | "pending" | "succeeded" | "expired" | "denied" | "failed";

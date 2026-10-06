@@ -54,14 +54,23 @@ export function CreateForm({ onCreated }: { onCreated?: () => void }) {
   const gatewayModels = gatewayOn && agentType === "openclaw";
   const usesGitHubCopilot = !custom && effectiveProvider === GITHUB_COPILOT_PROVIDER && !gatewayModels;
   const catalogQuery = useAIGatewayCatalog(gatewayModels);
+  const catalog = catalogQuery.data;
+  const catalogKnown = !!catalog?.known;
   const sharedModels = useMemo(
-    () => (catalogQuery.data?.known ? catalogQuery.data.sharedModels : []),
-    [catalogQuery.data],
+    () => (catalog?.known ? catalog.sharedModels : []),
+    [catalog],
   );
-  // At least one model source stays on: GitHub Copilot is required when
-  // shared models are off or none are available.
-  const copilotForced = !useSharedModels || sharedModels.length === 0;
-  const effectiveCopilot = copilotForced || useCopilot;
+  const sharedAvailable = sharedModels.length > 0;
+  const copilotOffered = catalogKnown && !!catalog?.githubCopilot;
+  // An OpenClaw agent needs a model to use: shared models while any are
+  // available, or GitHub Copilot while the deployment offers it. Without
+  // GitHub Copilot, shared models stay on; with no shared model on,
+  // GitHub Copilot does.
+  const sharedForced = !copilotOffered && sharedAvailable;
+  const effectiveShared = sharedForced || useSharedModels;
+  const copilotForced = copilotOffered && (!effectiveShared || !sharedAvailable);
+  const effectiveCopilot = copilotOffered && (copilotForced || useCopilot);
+  const noModelSource = catalogKnown && !sharedAvailable && !copilotOffered;
 
   const allowedAgentTypes = useMemo(
     () => features?.allowedAgentTypes ?? DEFAULT_AGENT_TYPES,
@@ -79,8 +88,8 @@ export function CreateForm({ onCreated }: { onCreated?: () => void }) {
   }, [usesGitHubCopilot]);
 
   useEffect(() => {
-    if (!useSharedModels || !sharedModels.some((m) => m.name === gatewayModel)) setGatewayModel("");
-  }, [useSharedModels, sharedModels, gatewayModel]);
+    if (!effectiveShared || !sharedModels.some((m) => m.name === gatewayModel)) setGatewayModel("");
+  }, [effectiveShared, sharedModels, gatewayModel]);
 
   useEffect(() => {
     if (!features?.agentIdentityEnabled || agentType === "custom") setAgentIdentityEnabled(false);
@@ -116,7 +125,7 @@ export function CreateForm({ onCreated }: { onCreated?: () => void }) {
       model: gatewayModels ? gatewayModel || undefined : usesGitHubCopilot ? model.trim() || undefined : undefined,
       teamsEnabled: !custom ? teamsEnabled || undefined : undefined,
       agentIdentityEnabled: !custom ? agentIdentityEnabled || undefined : undefined,
-      modelAccess: gatewayModels ? { sharedModels: useSharedModels, githubCopilot: effectiveCopilot } : undefined,
+      modelAccess: gatewayModels ? { sharedModels: effectiveShared, githubCopilot: effectiveCopilot } : undefined,
     });
   };
 
@@ -222,34 +231,41 @@ export function CreateForm({ onCreated }: { onCreated?: () => void }) {
         <>
           <Field
             hint={
-              sharedModels.length > 0
+              sharedAvailable
                 ? `Models your administrators share: ${sharedModels.map((m) => m.name).join(", ")}`
                 : catalogQuery.isLoading
                   ? "Loading the shared models..."
-                  : "No shared models are available."
+                  : catalogKnown
+                    ? "No shared models are available."
+                    : undefined
             }
           >
             <Switch
-              checked={useSharedModels}
+              checked={effectiveShared}
+              disabled={sharedForced}
               onChange={(_, data) => setUseSharedModels(!!data.checked)}
               label="Use shared models"
             />
           </Field>
           <Field
             hint={
-              copilotForced
-                ? "Required when shared models are off or none are available. Sign in with GitHub once the agent is created."
-                : "Uses your own GitHub Copilot subscription. Sign in with GitHub once the agent is created."
+              !copilotOffered
+                ? catalogKnown
+                  ? "GitHub Copilot is turned off for this deployment."
+                  : undefined
+                : copilotForced
+                  ? "Required when shared models are off or none are available. Sign in with GitHub once the agent is created."
+                  : "Uses your own GitHub Copilot subscription. Sign in with GitHub once the agent is created."
             }
           >
             <Switch
               checked={effectiveCopilot}
-              disabled={copilotForced}
+              disabled={!copilotOffered || copilotForced}
               onChange={(_, data) => setUseCopilot(!!data.checked)}
               label="Use GitHub Copilot"
             />
           </Field>
-          {useSharedModels && sharedModels.length > 0 && (
+          {effectiveShared && sharedAvailable && (
             <Field label="Default model (optional)" hint="GitHub Copilot models can be chosen after sign-in.">
               <Select value={gatewayModel} onChange={(event) => setGatewayModel(event.target.value)}>
                 <option value="">(automatic)</option>
@@ -260,6 +276,17 @@ export function CreateForm({ onCreated }: { onCreated?: () => void }) {
                 ))}
               </Select>
             </Field>
+          )}
+          {!catalogKnown && !catalogQuery.isLoading && (
+            <MessageBar intent="warning">
+              The AI Gateway has not published its models yet. Try again in a minute.
+            </MessageBar>
+          )}
+          {noModelSource && (
+            <MessageBar intent="error">
+              No models are available for new OpenClaw agents: there are no shared models and GitHub Copilot is
+              turned off. Ask an administrator to add a shared model.
+            </MessageBar>
           )}
         </>
       )}
@@ -307,7 +334,8 @@ export function CreateForm({ onCreated }: { onCreated?: () => void }) {
           createMutation.isPending ||
           featuresLoading ||
           allowedAgentTypes.length === 0 ||
-          (gatewayOn && !team)
+          (gatewayOn && !team) ||
+          (gatewayModels && (!catalogKnown || noModelSource))
         }
       >
         {createMutation.isPending ? "Creating..." : "Create Agent"}

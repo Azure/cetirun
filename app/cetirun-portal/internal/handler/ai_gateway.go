@@ -54,6 +54,9 @@ type AIGatewayCatalogResponse struct {
 	// Known is false until the operator has published the catalog.
 	Known        bool                                    `json:"known"`
 	SharedModels []cetirunv1alpha1.AIGatewayCatalogModel `json:"sharedModels"`
+	// GitHubCopilot reports whether the deployment offers GitHub Copilot to
+	// Agents.
+	GitHubCopilot bool `json:"githubCopilot"`
 }
 
 func isAIGatewayPlaceholder(model string) bool {
@@ -102,7 +105,7 @@ func (h *InstanceHandler) sharedModelCatalog(ctx context.Context) AIGatewayCatal
 		slog.Warn("Failed to read the AI Gateway catalog", "error", err)
 		return AIGatewayCatalogResponse{SharedModels: []cetirunv1alpha1.AIGatewayCatalogModel{}}
 	}
-	return AIGatewayCatalogResponse{Known: known, SharedModels: catalog.SharedModels}
+	return AIGatewayCatalogResponse{Known: known, SharedModels: catalog.SharedModels, GitHubCopilot: catalog.GitHubCopilot}
 }
 
 // GetAIGatewayCatalog handles GET /api/v1/ai-gateway/catalog: the shared
@@ -116,10 +119,11 @@ func (h *InstanceHandler) GetAIGatewayCatalog(w http.ResponseWriter, r *http.Req
 }
 
 // validateAIGatewayCreate applies the AI Gateway rules to a new Agent: it
-// must name an existing Team, and an OpenClaw Agent keeps at least one model
-// source, with GitHub Copilot on whenever no shared model is available. It
-// returns the Team to record and the model access to write, or writes the
-// error response and returns false.
+// must name an existing Team, and an OpenClaw Agent must have a model to use,
+// from shared models it keeps on while the catalog lists at least one, or
+// from GitHub Copilot it keeps on while the deployment offers it. Omitted
+// switches count as on. It returns the Team to record and the model access to
+// write, or writes the error response and returns false.
 func (h *InstanceHandler) validateAIGatewayCreate(w http.ResponseWriter, r *http.Request, req CreateInstanceRequest, agentType cetirunv1alpha1.AgentType) (string, *cetirunv1alpha1.ModelAccessSpec, bool) {
 	team := strings.TrimSpace(req.Team)
 	if !h.Config.AIGatewayEnabled {
@@ -138,23 +142,39 @@ func (h *InstanceHandler) validateAIGatewayCreate(w http.ResponseWriter, r *http
 		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to check the Team")
 		return "", nil, false
 	}
-	if agentType != cetirunv1alpha1.AgentTypeOpenClaw || req.ModelAccess == nil {
-		// Only OpenClaw is wired to the Gateway so far. Omitted switches
-		// are on, which the rules below always accept.
+	if agentType != cetirunv1alpha1.AgentTypeOpenClaw {
+		// Only OpenClaw is wired to the Gateway so far.
 		return team, nil, true
 	}
-	shared := req.ModelAccess.SharedModels == nil || *req.ModelAccess.SharedModels
-	copilot := req.ModelAccess.GitHubCopilot == nil || *req.ModelAccess.GitHubCopilot
+	shared, copilot := true, true
+	if req.ModelAccess != nil {
+		shared = req.ModelAccess.SharedModels == nil || *req.ModelAccess.SharedModels
+		copilot = req.ModelAccess.GitHubCopilot == nil || *req.ModelAccess.GitHubCopilot
+	}
 	if !shared && !copilot {
 		writeError(w, http.StatusBadRequest, "invalid_model_access", "Keep shared models or GitHub Copilot on")
 		return "", nil, false
 	}
-	if !copilot {
-		catalog := h.sharedModelCatalog(r.Context())
-		if !catalog.Known || len(catalog.SharedModels) == 0 {
+	catalog := h.sharedModelCatalog(r.Context())
+	if !catalog.Known {
+		writeError(w, http.StatusServiceUnavailable, "model_sources_unknown", "The AI Gateway has not published its models yet. Try again in a minute.")
+		return "", nil, false
+	}
+	sharedAvailable := len(catalog.SharedModels) > 0
+	if !(shared && sharedAvailable) && !(copilot && catalog.GitHubCopilot) {
+		switch {
+		case !sharedAvailable && !catalog.GitHubCopilot:
+			writeError(w, http.StatusConflict, "no_model_source",
+				"No models are available: there are no shared models and GitHub Copilot is turned off. Ask an administrator to add a shared model.")
+		case !catalog.GitHubCopilot:
+			writeError(w, http.StatusBadRequest, "invalid_model_access", "GitHub Copilot is turned off for this deployment. Keep shared models on.")
+		default:
 			writeError(w, http.StatusBadRequest, "invalid_model_access", "GitHub Copilot is required because no shared models are available")
-			return "", nil, false
 		}
+		return "", nil, false
+	}
+	if req.ModelAccess == nil {
+		return team, nil, true
 	}
 	return team, &cetirunv1alpha1.ModelAccessSpec{SharedModels: &shared, GitHubCopilot: &copilot}, true
 }

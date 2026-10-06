@@ -29,9 +29,10 @@ vi.mock("../../hooks/useTeams", async (importOriginal) => {
 });
 
 const mockCatalog = vi.hoisted(() => ({
-  data: { known: true, sharedModels: [{ name: "gpt-6" }, { name: "gpt-6-mini" }] } as {
+  data: { known: true, sharedModels: [{ name: "gpt-6" }, { name: "gpt-6-mini" }], githubCopilot: true } as {
     known: boolean;
     sharedModels: { name: string }[];
+    githubCopilot: boolean;
   },
 }));
 vi.mock("../../hooks/useAIGateway", () => ({
@@ -55,7 +56,7 @@ async function chooseOpenClawAndTeam(user: ReturnType<typeof userEvent.setup>) {
 describe("CreateForm with the AI Gateway", () => {
   beforeEach(() => {
     mockMutate.mockClear();
-    mockCatalog.data = { known: true, sharedModels: [{ name: "gpt-6" }, { name: "gpt-6-mini" }] };
+    mockCatalog.data = { known: true, sharedModels: [{ name: "gpt-6" }, { name: "gpt-6-mini" }], githubCopilot: true };
   });
 
   it("requires a Team before an agent can be created", async () => {
@@ -103,7 +104,7 @@ describe("CreateForm with the AI Gateway", () => {
   });
 
   it("requires GitHub Copilot when no shared model is available", async () => {
-    mockCatalog.data = { known: true, sharedModels: [] };
+    mockCatalog.data = { known: true, sharedModels: [], githubCopilot: true };
     const user = userEvent.setup();
     renderForm();
     await chooseOpenClawAndTeam(user);
@@ -112,6 +113,42 @@ describe("CreateForm with the AI Gateway", () => {
     expect(copilot).toBeDisabled();
     expect(screen.getByText("No shared models are available.")).toBeInTheDocument();
     expect(screen.queryByRole("combobox", { name: /Default model/ })).not.toBeInTheDocument();
+  });
+
+  it("keeps shared models on when the deployment offers no GitHub Copilot", async () => {
+    mockCatalog.data = { known: true, sharedModels: [{ name: "gpt-6" }], githubCopilot: false };
+    const user = userEvent.setup();
+    renderForm();
+    await chooseOpenClawAndTeam(user);
+    const copilot = screen.getByRole("switch", { name: "Use GitHub Copilot" });
+    expect(copilot).not.toBeChecked();
+    expect(copilot).toBeDisabled();
+    expect(screen.getByText("GitHub Copilot is turned off for this deployment.")).toBeInTheDocument();
+    const shared = screen.getByRole("switch", { name: "Use shared models" });
+    expect(shared).toBeChecked();
+    expect(shared).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "Create Agent" }));
+    expect(mockMutate).toHaveBeenCalledWith(
+      expect.objectContaining({ modelAccess: { sharedModels: true, githubCopilot: false } }),
+    );
+  });
+
+  it("refuses an OpenClaw agent when no model source is available", async () => {
+    mockCatalog.data = { known: true, sharedModels: [], githubCopilot: false };
+    const user = userEvent.setup();
+    renderForm();
+    await chooseOpenClawAndTeam(user);
+    expect(screen.getByText(/No models are available for new OpenClaw agents/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Create Agent" })).toBeDisabled();
+  });
+
+  it("waits for the published model sources before creating an OpenClaw agent", async () => {
+    mockCatalog.data = { known: false, sharedModels: [], githubCopilot: false };
+    const user = userEvent.setup();
+    renderForm();
+    await chooseOpenClawAndTeam(user);
+    expect(screen.getByText(/has not published its models yet/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Create Agent" })).toBeDisabled();
   });
 
   it("sends Copilot off and a default shared model", async () => {

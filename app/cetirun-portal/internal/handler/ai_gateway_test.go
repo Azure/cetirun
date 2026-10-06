@@ -29,8 +29,14 @@ func gatewayTeam(name string) *cetirunv1alpha1.Team {
 	return &cetirunv1alpha1.Team{ObjectMeta: metav1.ObjectMeta{Name: name}}
 }
 
+// catalogConfigMap publishes the shared models of a deployment that offers
+// GitHub Copilot.
 func catalogConfigMap(models ...string) *corev1.ConfigMap {
-	catalog := cetirunv1alpha1.AIGatewayCatalog{SharedModels: []cetirunv1alpha1.AIGatewayCatalogModel{}}
+	return publishedCatalog(true, models...)
+}
+
+func publishedCatalog(copilot bool, models ...string) *corev1.ConfigMap {
+	catalog := cetirunv1alpha1.AIGatewayCatalog{SharedModels: []cetirunv1alpha1.AIGatewayCatalogModel{}, GitHubCopilot: copilot}
 	for _, name := range models {
 		catalog.SharedModels = append(catalog.SharedModels, cetirunv1alpha1.AIGatewayCatalogModel{Name: name, ContextWindow: 200000})
 	}
@@ -98,6 +104,7 @@ func TestCreateInstanceAIGatewayRequiresExistingTeam(t *testing.T) {
 }
 
 func TestCreateInstanceAIGatewayModelAccessRules(t *testing.T) {
+	const openclaw = `{"agent":{"type":"openclaw"},"team":"aks"`
 	cases := []struct {
 		name        string
 		body        string
@@ -106,19 +113,30 @@ func TestCreateInstanceAIGatewayModelAccessRules(t *testing.T) {
 		wantAccess  *[2]bool
 		wantErrCode string
 	}{
-		{name: "defaults", body: `{"agent":{"type":"openclaw"},"team":" aks "}`, wantStatus: http.StatusCreated},
-		{name: "both on", body: `{"agent":{"type":"openclaw"},"team":"aks","modelAccess":{"sharedModels":true,"githubCopilot":true}}`,
-			wantStatus: http.StatusCreated, wantAccess: &[2]bool{true, true}},
-		{name: "both off", body: `{"agent":{"type":"openclaw"},"team":"aks","modelAccess":{"sharedModels":false,"githubCopilot":false}}`,
+		{name: "defaults", body: `{"agent":{"type":"openclaw"},"team":" aks "}`, catalog: catalogConfigMap("gpt-6"), wantStatus: http.StatusCreated},
+		{name: "both on", body: openclaw + `,"modelAccess":{"sharedModels":true,"githubCopilot":true}}`,
+			catalog: catalogConfigMap(), wantStatus: http.StatusCreated, wantAccess: &[2]bool{true, true}},
+		{name: "both off", body: openclaw + `,"modelAccess":{"sharedModels":false,"githubCopilot":false}}`,
 			catalog: catalogConfigMap("gpt-6"), wantStatus: http.StatusBadRequest, wantErrCode: "invalid_model_access"},
-		{name: "shared off", body: `{"agent":{"type":"openclaw"},"team":"aks","modelAccess":{"sharedModels":false}}`,
-			wantStatus: http.StatusCreated, wantAccess: &[2]bool{false, true}},
-		{name: "copilot off without catalog", body: `{"agent":{"type":"openclaw"},"team":"aks","modelAccess":{"githubCopilot":false}}`,
-			wantStatus: http.StatusBadRequest, wantErrCode: "invalid_model_access"},
-		{name: "copilot off without shared models", body: `{"agent":{"type":"openclaw"},"team":"aks","modelAccess":{"githubCopilot":false}}`,
+		{name: "shared off", body: openclaw + `,"modelAccess":{"sharedModels":false}}`,
+			catalog: catalogConfigMap(), wantStatus: http.StatusCreated, wantAccess: &[2]bool{false, true}},
+		{name: "copilot off without shared models", body: openclaw + `,"modelAccess":{"githubCopilot":false}}`,
 			catalog: catalogConfigMap(), wantStatus: http.StatusBadRequest, wantErrCode: "invalid_model_access"},
-		{name: "copilot off with shared models", body: `{"agent":{"type":"openclaw"},"team":"aks","modelAccess":{"githubCopilot":false}}`,
+		{name: "copilot off with shared models", body: openclaw + `,"modelAccess":{"githubCopilot":false}}`,
 			catalog: catalogConfigMap("gpt-6"), wantStatus: http.StatusCreated, wantAccess: &[2]bool{true, false}},
+		// The catalog says which sources exist; until it is published the
+		// Portal cannot tell whether the Agent would have a model.
+		{name: "unpublished catalog", body: openclaw + `}`, wantStatus: http.StatusServiceUnavailable, wantErrCode: "model_sources_unknown"},
+		{name: "copilot off with an unpublished catalog", body: openclaw + `,"modelAccess":{"githubCopilot":false}}`,
+			wantStatus: http.StatusServiceUnavailable, wantErrCode: "model_sources_unknown"},
+		// A deployment without the Copilot proxy offers only shared models.
+		{name: "no copilot, shared models", body: openclaw + `}`, catalog: publishedCatalog(false, "gpt-6"), wantStatus: http.StatusCreated},
+		{name: "no copilot, shared off", body: openclaw + `,"modelAccess":{"sharedModels":false}}`,
+			catalog: publishedCatalog(false, "gpt-6"), wantStatus: http.StatusBadRequest, wantErrCode: "invalid_model_access"},
+		{name: "no copilot, no shared models", body: openclaw + `}`, catalog: publishedCatalog(false),
+			wantStatus: http.StatusConflict, wantErrCode: "no_model_source"},
+		{name: "no copilot, no shared models, copilot asked for", body: openclaw + `,"modelAccess":{"sharedModels":false,"githubCopilot":true}}`,
+			catalog: publishedCatalog(false), wantStatus: http.StatusConflict, wantErrCode: "no_model_source"},
 		{name: "hermes ignores switches", body: `{"agent":{"type":"hermes"},"team":"aks","modelAccess":{"githubCopilot":false}}`,
 			wantStatus: http.StatusCreated},
 	}
@@ -268,7 +286,12 @@ func TestGetAIGatewayCatalog(t *testing.T) {
 	}
 	w = get(gatewayConfig(), catalogConfigMap("gpt-6", "gpt-6-mini"))
 	if err := json.NewDecoder(bytes.NewReader(w.Body.Bytes())).Decode(&resp); err != nil || !resp.Known || len(resp.SharedModels) != 2 ||
-		resp.SharedModels[0].Name != "gpt-6" || resp.SharedModels[0].ContextWindow != 200000 {
+		resp.SharedModels[0].Name != "gpt-6" || resp.SharedModels[0].ContextWindow != 200000 || !resp.GitHubCopilot {
 		t.Fatalf("published: resp %+v err %v", resp, err)
+	}
+	resp = AIGatewayCatalogResponse{}
+	w = get(gatewayConfig(), publishedCatalog(false, "gpt-6"))
+	if err := json.NewDecoder(bytes.NewReader(w.Body.Bytes())).Decode(&resp); err != nil || !resp.Known || resp.GitHubCopilot {
+		t.Fatalf("published without GitHub Copilot: resp %+v err %v", resp, err)
 	}
 }
