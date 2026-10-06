@@ -1197,6 +1197,11 @@ func TestParseAIGatewayConfig(t *testing.T) {
 		"untagged image":     {"AI_GATEWAY_COPILOT_PROXY_IMAGE", "registry.example.com/cetirun-ai-gateway"},
 		"image with a space": {"AI_GATEWAY_COPILOT_PROXY_IMAGE", "registry.example.com/x:1 --privileged"},
 		"bad digest":         {"AI_GATEWAY_COPILOT_PROXY_IMAGE", "registry.example.com/x@sha256:123"},
+		// NaN passes every comparison, so a key created with it would get no
+		// budget at all; an infinite budget is no cap either.
+		"NaN budget":      {"AI_GATEWAY_DEFAULT_BUDGET", "NaN"},
+		"infinite budget": {"AI_GATEWAY_DEFAULT_BUDGET", "+Inf"},
+		"Infinity budget": {"AI_GATEWAY_DEFAULT_BUDGET", "Infinity"},
 	} {
 		values := map[string]string{}
 		for key, value := range valid {

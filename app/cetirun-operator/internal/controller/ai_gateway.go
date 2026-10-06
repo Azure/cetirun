@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -97,7 +98,9 @@ func ParseAIGatewayConfig(getenv func(string) string) (AIGatewayConfig, error) {
 	}
 	if raw := strings.TrimSpace(getenv("AI_GATEWAY_DEFAULT_BUDGET")); raw != "" {
 		budget, err := strconv.ParseFloat(raw, 64)
-		if err != nil || budget <= 0 {
+		// ParseFloat accepts NaN and infinities. NaN passes every comparison,
+		// and the key would be created without a budget.
+		if err != nil || math.IsNaN(budget) || math.IsInf(budget, 0) || budget <= 0 {
 			return AIGatewayConfig{}, fmt.Errorf("AI_GATEWAY_DEFAULT_BUDGET must be a positive number of US dollars")
 		}
 		cfg.DefaultBudget = budget
