@@ -34,6 +34,13 @@ for the routing requirements.
    individual readiness conditions if the instance does not become ready.
 5. Use the portal’s access action to open the instance, then complete the
    provider login. For Copilot, use the portal’s device-login flow.
+   The OpenClaw console asks for the gateway token: copy **Gateway Token** from
+   the instance Overview. It also asks to pair each new browser the first time
+   it connects: open the instance's **Terminal** in the portal, run
+   `openclaw devices list`, approve your browser's pending request with
+   `openclaw devices approve <request-id>`, and reload the console. Each
+   browser pairs once per instance. `kubectl exec` cannot approve it by default,
+   because the instance's exec restriction denies it.
 6. [Choose a model](../../guides/models/) from the live catalog after login.
 7. If Agent Identity was enabled, use the instance overview to
    [connect Microsoft Entra](../../guides/agent-identity/) before asking the
@@ -118,7 +125,9 @@ Open the URL in `status.accessUrl`. `Ready` reports workload readiness
 independently of ingress. `IngressReady=True` confirms VirtualService
 reconciliation; verify TLS, sign-in, and model-provider access separately.
 For Hermes, sign in to the native Dashboard with username `cetirun` and the
-Hermes API / Dashboard key shown on the instance Overview page.
+Hermes API / Dashboard key shown on the instance Overview page. For OpenClaw,
+enter the gateway token and approve the browser's pairing request from the
+instance's Terminal, as in the portal steps above.
 
 ## Keep your workspace
 

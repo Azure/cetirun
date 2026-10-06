@@ -189,7 +189,19 @@ PAIR_TIMEOUT=120
 PAIR_INTERVAL=5
 PAIR_ELAPSED=0
 REQUEST_ID=""
-while true; do
+# The Agent chart's exec restriction (execRestriction.enabled, on by default)
+# denies kubectl exec, cluster administrators included; the portal's Terminal
+# runs in the Agent and can approve the browser instead.
+EXEC_DENIED=""
+if ! EXEC_ERROR=$(kubectl exec -n "${INSTANCE_NS}" "${POD_NAME}" -c cetirun -- true 2>&1 >/dev/null) &&
+  grep -qE 'denied request|is not allowed' <<<"${EXEC_ERROR}"; then
+  EXEC_DENIED=1
+  echo "kubectl exec is denied on this instance (execRestriction.enabled)."
+  echo "Approve the browser from the instance's Terminal in the portal:"
+  echo "  openclaw devices list"
+  echo "  openclaw devices approve <requestId>"
+fi
+while [[ -z "${EXEC_DENIED}" ]]; do
   # Extract UUID-format request IDs from the Pending section only.
   # The Pending table has UUIDs (8-4-4-4-12), the Paired table has plain hex device hashes.
   DEVICES_OUTPUT=$(kubectl exec -n "${INSTANCE_NS}" "${POD_NAME}" -c cetirun -- \
@@ -205,7 +217,10 @@ while true; do
   fi
   if (( PAIR_ELAPSED >= PAIR_TIMEOUT )); then
     echo "No pairing request detected within ${PAIR_TIMEOUT}s."
-    echo "You can approve manually later:"
+    echo "You can approve manually later, from the instance's Terminal in the portal:"
+    echo "  openclaw devices list"
+    echo "  openclaw devices approve <requestId>"
+    echo "or, where kubectl exec is allowed:"
     echo "  kubectl exec -n ${INSTANCE_NS} ${POD_NAME} -c cetirun -- openclaw devices list"
     echo "  kubectl exec -n ${INSTANCE_NS} ${POD_NAME} -c cetirun -- openclaw devices approve <requestId>"
     break
