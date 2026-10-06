@@ -319,7 +319,7 @@ func (r *AgentReconciler) reconcileAIGatewayCopilot(ctx context.Context, client 
 			failed = err
 			continue
 		}
-		r.aiGatewayCatalog.noteAdded(id, registration.request.AccessGroups)
+		r.aiGatewayCatalog.noteAdded(id)
 		registered = append(registered, id)
 		names = append(names, registration.request.ModelName)
 	}
@@ -358,17 +358,29 @@ func (r *AgentReconciler) copilotProxyReady(ctx context.Context, instance *cetir
 	return deployment.Status.ReadyReplicas > 0
 }
 
-// deleteCopilotRegistrations removes every Copilot route recorded for the
-// Agent, and any route of its access group the catalog still shows.
+// deleteCopilotRegistrations removes the Agent's Copilot routes: those its
+// status records and every route the Gateway lists in the Agent's access
+// group. A route registered just before the operator stopped, before the
+// status recorded it, exists only in the Gateway, and the operator's catalog
+// may not have been listed yet; so the Gateway is listed here, and a failed
+// listing is an error that keeps what depends on the cleanup, such as the
+// Agent's finalizer.
 func (r *AgentReconciler) deleteCopilotRegistrations(ctx context.Context, client aiGatewayKeyClient, instance *cetirunv1alpha1.Agent) error {
+	deployments, err := client.ListModels(ctx)
+	if err != nil {
+		return fmt.Errorf("list AI Gateway models: %w", err)
+	}
 	ids := map[string]bool{}
 	if status := instance.Status.AIGateway; status != nil && status.Copilot != nil {
 		for _, id := range status.Copilot.Registered {
 			ids[id] = true
 		}
 	}
-	for _, id := range r.aiGatewayCatalog.groupDeployments(copilotAccessGroup(instance)) {
-		ids[id] = true
+	group := copilotAccessGroup(instance)
+	for _, deployment := range deployments {
+		if slices.Contains(deployment.AccessGroups, group) {
+			ids[deployment.ID] = true
+		}
 	}
 	var remaining []string
 	var firstErr error

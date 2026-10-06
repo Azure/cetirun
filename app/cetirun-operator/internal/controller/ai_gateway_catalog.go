@@ -53,7 +53,6 @@ type aiGatewayCatalog struct {
 	fetchedAt time.Time
 	sharedSet []aiGatewayCatalogModel
 	ids       map[string]bool
-	groups    map[string][]string
 	// allowsUnpriced is the Gateway's setting from the last listing. The
 	// zero value is the Gateway's default, which refuses requests for
 	// models without a price.
@@ -77,7 +76,6 @@ func (c *aiGatewayCatalog) age(now time.Time) time.Duration {
 func (c *aiGatewayCatalog) update(deployments []aigateway.Deployment, blockUnpriced bool, now time.Time) (bool, []string, []string) {
 	var skipped, unpriced []string
 	ids := map[string]bool{}
-	groups := map[string][]string{}
 	priced := map[string]bool{}
 	for _, deployment := range deployments {
 		if deployment.Priced {
@@ -87,9 +85,6 @@ func (c *aiGatewayCatalog) update(deployments []aigateway.Deployment, blockUnpri
 	byName := map[string]aiGatewayCatalogModel{}
 	for _, deployment := range deployments {
 		ids[deployment.ID] = true
-		for _, group := range deployment.AccessGroups {
-			groups[group] = append(groups[group], deployment.ID)
-		}
 		if !slices.Contains(deployment.AccessGroups, aiGatewaySharedAccessGroup) {
 			continue
 		}
@@ -120,7 +115,7 @@ func (c *aiGatewayCatalog) update(deployments []aigateway.Deployment, blockUnpri
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	changed := !(c.known || c.seeded) || !slices.Equal(c.sharedSet, shared)
-	c.known, c.seeded, c.fetchedAt, c.sharedSet, c.ids, c.groups = true, false, now, shared, ids, groups
+	c.known, c.seeded, c.fetchedAt, c.sharedSet, c.ids = true, false, now, shared, ids
 	c.allowsUnpriced = !blockUnpriced
 	return changed, skipped, unpriced
 }
@@ -184,27 +179,16 @@ func (c *aiGatewayCatalog) has(id string) (bool, bool) {
 	return c.ids[id], c.known
 }
 
-func (c *aiGatewayCatalog) groupDeployments(group string) []string {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return slices.Clone(c.groups[group])
-}
-
 // noteAdded and noteDeleted keep a known view in step with the operator's
 // own changes, so a view listed before a registration does not report the
 // new route as lost.
-func (c *aiGatewayCatalog) noteAdded(id string, groups []string) {
+func (c *aiGatewayCatalog) noteAdded(id string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if !c.known {
 		return
 	}
 	c.ids[id] = true
-	for _, group := range groups {
-		if !slices.Contains(c.groups[group], id) {
-			c.groups[group] = append(c.groups[group], id)
-		}
-	}
 }
 
 func (c *aiGatewayCatalog) noteDeleted(id string) {
@@ -214,9 +198,6 @@ func (c *aiGatewayCatalog) noteDeleted(id string) {
 		return
 	}
 	delete(c.ids, id)
-	for group, ids := range c.groups {
-		c.groups[group] = slices.DeleteFunc(slices.Clone(ids), func(value string) bool { return value == id })
-	}
 }
 
 // refreshAIGatewayCatalog lists the Gateway's models when the catalog is

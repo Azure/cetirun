@@ -1092,6 +1092,35 @@ func TestDeleteAIGatewayKeyRevokesKeyAndCopilotRoutes(t *testing.T) {
 	}
 }
 
+// A route registered just before the operator stopped is in neither the
+// status nor, right after a restart, the operator's catalog. Deletion lists
+// the Gateway itself, and holds the Agent while it cannot.
+func TestDeleteAIGatewayKeyRemovesCopilotRoutesTheStatusMissed(t *testing.T) {
+	agent := aiGatewayTestAgent(testAIGatewayTeam)
+	agent.Status.AIGateway = &cetirunv1alpha1.AIGatewayStatus{Phase: cetirunv1alpha1.AIGatewayPhaseReady, KeyAlias: aiGatewayKeyAlias(agent)}
+	r, _, gateway := aiGatewayTestReconciler(t, agent, aiGatewayNamespace())
+	gateway.models["unrecorded-route"] = aigateway.ModelRequest{ID: "unrecorded-route", ModelName: "copilot/a", AccessGroups: []string{copilotGroup()}}
+	gateway.models["other-agent-route"] = aigateway.ModelRequest{ID: "other-agent-route", ModelName: "copilot/a", AccessGroups: []string{"cetirun-copilot-another-agent"}}
+	if _, known := r.aiGatewayCatalog.has("unrecorded-route"); known {
+		t.Fatal("the test needs a catalog that was never listed")
+	}
+	if err := r.deleteAIGatewayKey(context.Background(), agent); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(gateway.deletedModels, []string{"unrecorded-route"}) {
+		t.Fatalf("deleted routes %v, want only this Agent's unrecorded route", gateway.deletedModels)
+	}
+
+	held := aiGatewayTestAgent(testAIGatewayTeam)
+	held.Status.AIGateway = &cetirunv1alpha1.AIGatewayStatus{Phase: cetirunv1alpha1.AIGatewayPhaseReady}
+	r2, _, _ := aiGatewayTestReconciler(t, held, aiGatewayNamespace())
+	failing := &failingListGateway{fakeAIGateway: newFakeAIGateway()}
+	r2.aiGatewayClientFactory = func(context.Context) (aiGatewayKeyClient, error) { return failing, nil }
+	if err := r2.deleteAIGatewayKey(context.Background(), held); err == nil {
+		t.Fatal("deletion must wait while the Gateway cannot be listed")
+	}
+}
+
 func TestDeleteAIGatewayKeyBlocksOnFailureAndSkipsWhenUnused(t *testing.T) {
 	agent := aiGatewayTestAgent(testAIGatewayTeam)
 	agent.Status.AIGateway = &cetirunv1alpha1.AIGatewayStatus{Phase: cetirunv1alpha1.AIGatewayPhaseReady}
