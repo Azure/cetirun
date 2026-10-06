@@ -646,6 +646,21 @@ func TestCopilotLoginStalledCompletionIsFenced(t *testing.T) {
 					f.t.Fatalf("the abandoned sign-in must be reported as failed: %+v", resp)
 				}
 			}},
+		// Ended after it stored its token: the token stays, as written, but
+		// the models of a sign-in cancelled or reported as failed are not
+		// recorded, so it never takes effect.
+		{name: "a cancel after the token was stored", stallAfter: storedToken, wantToken: "gho_alice", wantState: copilotLoginNone,
+			meanwhile: func(f *loginFixture) {
+				if w, _ := f.call(http.MethodDelete, "alice"); w.Code != http.StatusNoContent {
+					f.t.Fatalf("cancel after the lease: status %d", w.Code)
+				}
+			}},
+		{name: "the sign-in reported as failed after the token was stored", stallAfter: storedToken, wantToken: "gho_alice", wantState: copilotLoginFailed,
+			meanwhile: func(f *loginFixture) {
+				if _, resp := f.call(http.MethodGet, "alice"); resp.State != copilotLoginFailed {
+					f.t.Fatalf("the abandoned sign-in must be reported as failed: %+v", resp)
+				}
+			}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newLoginFixture(t)
@@ -729,7 +744,7 @@ func TestCopilotLoginStartForAReplacedAgentChangesNothing(t *testing.T) {
 	if login.Labels[kube.AgentUIDLabel] != "uid-2" || string(login.Data[loginUserCode]) != "NEW2-0000" {
 		t.Fatalf("the replacement's sign-in must be left alone: %v %v", login.Labels, login.Data)
 	}
-	if token := f.secret(cetirunv1alpha1.CopilotTokenSecretName); token.Annotations[copilotSignInAnnotation] != "" {
+	if token := f.secret(cetirunv1alpha1.CopilotTokenSecretName); token.Annotations[copilotSignInFloorAnnotation] != "" {
 		t.Fatal("a refused start must not fence completions")
 	}
 }
@@ -800,6 +815,151 @@ func TestCopilotLoginRefusedExpiryLeavesANewerCompletionUnfenced(t *testing.T) {
 	}
 }
 
+// A start, a cancel, or a poll ending an expired completion fences only after
+// its own change was accepted, so a replica can stall in between. A newer
+// sign-in can start meanwhile and its completion commit: when the stalled
+// step resumes, the floor is already past the sign-in it ended, and nothing
+// is written, so the newer completion still stores its token.
+func TestCopilotLoginLateFenceLeavesANewerCompletionUnfenced(t *testing.T) {
+	withNumber := func(state, number string) func(client.Object) bool {
+		return func(obj client.Object) bool {
+			secret, ok := obj.(*corev1.Secret)
+			return ok && secret.Name == copilotLoginSecretName &&
+				string(secret.Data[loginState]) == state && string(secret.Data[loginNumber]) == number
+		}
+	}
+	for _, tc := range []struct {
+		name    string
+		prepare func(*loginFixture)
+		// accepted matches the stalled step's accepted write, and step
+		// makes the request that writes it.
+		accepted func(client.Object) bool
+		step     func(*loginFixture)
+	}{
+		{
+			name:     "a cancel",
+			prepare:  func(f *loginFixture) { f.call(http.MethodPost, "alice") },
+			accepted: withNumber("", "1"),
+			step: func(f *loginFixture) {
+				if w, _ := f.call(http.MethodDelete, "alice"); w.Code != http.StatusNoContent {
+					f.t.Fatalf("cancel: status %d %s", w.Code, w.Body.String())
+				}
+			},
+		},
+		{
+			name:     "a start",
+			prepare:  func(f *loginFixture) { f.call(http.MethodPost, "alice") },
+			accepted: withNumber(copilotLoginPending, "2"),
+			step: func(f *loginFixture) {
+				if w, _ := f.call(http.MethodPost, "alice"); w.Code != http.StatusOK {
+					f.t.Fatalf("start: status %d %s", w.Code, w.Body.String())
+				}
+			},
+		},
+		{
+			name: "the end of an expired completion",
+			prepare: func(f *loginFixture) {
+				f.call(http.MethodPost, "alice")
+				f.commitCompletion()
+				f.clock = f.clock.Add(copilotLoginLease + time.Second)
+			},
+			accepted: withNumber(copilotLoginFailed, "1"),
+			step: func(f *loginFixture) {
+				if _, resp := f.call(http.MethodGet, "alice"); resp.State != copilotLoginFailed {
+					f.t.Fatalf("the expired completion must be reported as failed: %+v", resp)
+				}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newLoginFixture(t)
+			tc.prepare(f)
+			var read *corev1.Secret
+			f.stallAfter(tc.accepted, func() {
+				if w, _ := f.call(http.MethodPost, "alice"); w.Code != http.StatusOK {
+					t.Fatalf("a newer sign-in: status %d %s", w.Code, w.Body.String())
+				}
+				read = f.commitCompletion()
+			})
+			tc.step(f)
+			if read == nil {
+				t.Fatal("the step did not stall")
+			}
+			read.Data = map[string][]byte{cetirunv1alpha1.CopilotTokenSecretKey: []byte("gho_newer")}
+			if err := f.fc.Update(context.Background(), read); err != nil {
+				t.Fatalf("the late fence must not fence the newer completion: %v", err)
+			}
+		})
+	}
+}
+
+// A completion stores its token under the version of the token Secret it
+// read before committing. Another write since then that neither stored a
+// token nor fenced this sign-in is retried past; one that stored another
+// completion's token is not overwritten.
+func TestCopilotLoginTokenWriteAfterAnotherWrite(t *testing.T) {
+	committed := func(obj client.Object) bool {
+		secret, ok := obj.(*corev1.Secret)
+		return ok && secret.Name == copilotLoginSecretName && string(secret.Data[loginState]) == copilotLoginCompleting
+	}
+	for _, tc := range []struct {
+		name      string
+		write     func(*corev1.Secret)
+		wantToken string
+		wantState string
+	}{
+		{name: "an annotation of another writer", wantToken: "gho_alice", wantState: copilotLoginSucceeded,
+			write: func(secret *corev1.Secret) { secret.Annotations = map[string]string{"example.com/note": "touched"} }},
+		{name: "another completion's token", wantToken: "gho_other", wantState: copilotLoginFailed,
+			write: func(secret *corev1.Secret) {
+				secret.Data = map[string][]byte{cetirunv1alpha1.CopilotTokenSecretKey: []byte("gho_other")}
+				secret.Annotations = map[string]string{cetirunv1alpha1.AnnotationCopilotSignInGeneration: "other"}
+			}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newLoginFixture(t)
+			f.call(http.MethodPost, "alice")
+			f.gh.answers = []map[string]any{{"access_token": "gho_alice"}}
+			f.stallAfter(committed, func() {
+				token := f.secret(cetirunv1alpha1.CopilotTokenSecretName)
+				tc.write(token)
+				if err := f.fc.Update(context.Background(), token); err != nil {
+					t.Fatal(err)
+				}
+			})
+			f.clock = f.clock.Add(6 * time.Second)
+			if _, resp := f.call(http.MethodGet, "alice"); resp.State != tc.wantState {
+				t.Fatalf("state %+v, want %q", resp, tc.wantState)
+			}
+			if token := string(f.secret(cetirunv1alpha1.CopilotTokenSecretName).Data[cetirunv1alpha1.CopilotTokenSecretKey]); token != tc.wantToken {
+				t.Fatalf("stored token %q, want %q", token, tc.wantToken)
+			}
+		})
+	}
+}
+
+// A start numbers its sign-in past the token Secret's floor too, so a token
+// Secret that kept the floor of earlier sign-ins does not fence new ones.
+func TestCopilotLoginNumbersContinuePastTheFloor(t *testing.T) {
+	token := copilotTokenSecret("uid-1")
+	token.Annotations = map[string]string{copilotSignInFloorAnnotation: "5"}
+	f := newLoginFixture(t, routedAgent(), token)
+	if w, _ := f.call(http.MethodPost, "alice"); w.Code != http.StatusOK {
+		t.Fatalf("start: status %d %s", w.Code, w.Body.String())
+	}
+	if number := string(f.secret(copilotLoginSecretName).Data[loginNumber]); number != "6" {
+		t.Fatalf("sign-in number %q, want 6", number)
+	}
+	f.gh.answers = []map[string]any{{"access_token": "gho_alice"}}
+	f.clock = f.clock.Add(6 * time.Second)
+	if _, resp := f.call(http.MethodGet, "alice"); resp.State != copilotLoginSucceeded {
+		t.Fatalf("the sign-in must complete: %+v", resp)
+	}
+	if floor := f.secret(cetirunv1alpha1.CopilotTokenSecretName).Annotations[copilotSignInFloorAnnotation]; floor != "6" {
+		t.Fatalf("floor %q, want 6", floor)
+	}
+}
+
 // A page left open while its Agent was deleted and created again under the
 // same name names the old Agent's UID: it must not start or cancel the new
 // Agent's sign-in.
@@ -850,7 +1010,8 @@ func TestCopilotLoginChangesOnlyTheAgentItWasMadeFor(t *testing.T) {
 	if w, _ := f.call(http.MethodDelete, "alice"); w.Code != http.StatusNoContent {
 		t.Fatalf("cancel: status %d", w.Code)
 	}
-	if data := f.secret(copilotLoginSecretName).Data; len(data) != 0 {
+	// The sign-in is cleared; its number stays for the next start.
+	if data := f.secret(copilotLoginSecretName).Data; len(data) != 1 || string(data[loginNumber]) != "1" {
 		t.Fatalf("cancel must clear the sign-in, got %v", data)
 	}
 }
