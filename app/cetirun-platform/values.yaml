@@ -55,6 +55,11 @@ cetirun-portal:
   # sign-in; the platform requires it.
   features:
     aiGatewayEnabled: true
+  aiGateway:
+    # The operator publishes the shared models in its own namespace, where
+    # the Portal reads them: keep this equal to cetirun-operator.namespace.
+    # The deployment helper sets both from NAMESPACE.
+    catalogNamespace: cetirun-system
 
 cetirun-ai-gateway:
   # -- Install the AI Gateway with the operator and Portal. Turn it off only

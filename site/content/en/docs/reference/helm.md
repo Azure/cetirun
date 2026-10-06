@@ -302,6 +302,7 @@ runtime agent values remain under `cetirun-operator.cetirun.helmValues`.
 | `istio.oauth2Proxy.name`, `namespace` | `oauth2-proxy`, `cetirun-istio`; checked by the deployment helper |
 | `cetirun-operator.enabled`, `cetirun-portal.enabled` | `true`; each component can be disabled |
 | `cetirun-operator.namespace` | `cetirun-system`; align with the Helm release namespace, which the bundled AI Gateway requires |
+| `cetirun-portal.aiGateway.catalogNamespace` | `cetirun-system`; must equal `cetirun-operator.namespace`, where the operator publishes the shared models. The deployment helper sets both from `NAMESPACE`; a standalone portal keeps its own value |
 | `cetirun-ai-gateway.enabled` | `true`; turn it off only when a Gateway is installed separately in the operator namespace |
 | `cetirun-ai-gateway.models` | `[]`; shared models every Agent can use. Empty is valid: Agents then use their owners' GitHub Copilot |
 | `cetirun-operator.aiGateway.enabled`, `cetirun-portal.features.aiGatewayEnabled` | `true`; required, the chart refuses to install with either off |

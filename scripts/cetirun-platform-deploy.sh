@@ -64,6 +64,7 @@ helm_args+=(
   --set-string "istio.oauth2Proxy.name=${oauth2_proxy_name}"
   --set-string "istio.oauth2Proxy.namespace=${oauth2_proxy_namespace}"
   --set-string "cetirun-operator.namespace=${namespace}"
+  --set-string "cetirun-portal.aiGateway.catalogNamespace=${namespace}"
   --set-string "cetirun-operator.domainSuffix=${domain}"
   --set-string "cetirun-operator.istioRevision=${istio_revision}"
   --set-string "cetirun-operator.istioGateway=${gateway_namespace}/${gateway_name}"

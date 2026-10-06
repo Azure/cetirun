@@ -40,3 +40,9 @@
 {{- if and $gateway.enabled $operator.enabled (ne .Release.Namespace $operator.namespace) }}
 {{- fail (printf "the AI Gateway is installed in the release namespace %s, but cetirun-operator.namespace is %s: the operator reads the Gateway master key from its own namespace, so install both in the same namespace" .Release.Namespace $operator.namespace) }}
 {{- end }}
+{{- if and $portal.enabled $operator.enabled (($portal.features | default dict).aiGatewayEnabled) }}
+{{- $catalogNamespace := (($portal.aiGateway | default dict).catalogNamespace | default "cetirun-system") }}
+{{- if ne $catalogNamespace $operator.namespace }}
+{{- fail (printf "cetirun-portal.aiGateway.catalogNamespace is %s, but cetirun-operator.namespace is %s: the operator publishes the shared models in its own namespace, where the Portal reads them, so set both to the same namespace" $catalogNamespace $operator.namespace) }}
+{{- end }}
+{{- end }}

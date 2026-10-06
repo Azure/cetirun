@@ -193,6 +193,30 @@ if helm template platform "${chart_dir}" -f "${chart_dir}/values.yaml" --namespa
   exit 1
 fi
 
+# As the deployment helper does for a custom NAMESPACE: the Portal reads the
+# shared models where the operator publishes them.
+echo "==> helm template platform (custom namespace)"
+output=$(helm template platform "${chart_dir}" -f "${chart_dir}/values.yaml" --namespace custom-ns \
+  --set istio.enabled=true \
+  --set-string cetirun-operator.domainSuffix=platform.example.invalid \
+  --set-string cetirun-portal.istio.host=portal.example.invalid \
+  --set-string cetirun-operator.namespace=custom-ns \
+  --set-string cetirun-portal.aiGateway.catalogNamespace=custom-ns)
+grep -A1 'name: AI_GATEWAY_CATALOG_NAMESPACE' <<< "${output}" | grep -q 'value: "custom-ns"' || {
+  echo "FAIL: the Portal does not read the catalog in the operator namespace" >&2
+  exit 1
+}
+
+echo "==> helm template platform (Portal catalog outside the operator namespace, expect failure)"
+if helm template platform "${chart_dir}" -f "${chart_dir}/values.yaml" --namespace custom-ns \
+  --set istio.enabled=true \
+  --set-string cetirun-operator.domainSuffix=platform.example.invalid \
+  --set-string cetirun-portal.istio.host=portal.example.invalid \
+  --set-string cetirun-operator.namespace=custom-ns 2>/dev/null; then
+  echo "FAIL: platform rendered a Portal that reads the catalog outside the operator namespace" >&2
+  exit 1
+fi
+
 echo "==> helm template platform (missing Istio confirmation, expect failure)"
 if helm template platform "${chart_dir}" --namespace cetirun-system \
   --set-string cetirun-operator.domainSuffix=platform.example.invalid \

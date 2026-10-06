@@ -79,8 +79,10 @@ CHARTS = (
             "cetirun-operator.domainSuffix=platform.example.invalid",
             "cetirun-portal.istio.host=portal.example.invalid",
             # Rendered in the default namespace: the bundled AI Gateway must
-            # share the operator's namespace.
+            # share the operator's namespace, and the Portal reads the shared
+            # models the operator publishes there.
             "cetirun-operator.namespace=default",
+            "cetirun-portal.aiGateway.catalogNamespace=default",
         ),
     ),
 )

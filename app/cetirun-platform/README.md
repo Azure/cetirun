@@ -58,6 +58,12 @@ The deployment helper accepts `ISTIO_GATEWAY_NAME` and
 `ISTIO_INGRESS_NAMESPACE` (defaulting to the Gateway namespace) plus
 `ISTIO_GATEWAY_SERVICE_ACCOUNT` for the Gateway workload identity.
 
+To install in a namespace other than `cetirun-system`, set both
+`cetirun-operator.namespace` and `cetirun-portal.aiGateway.catalogNamespace` to
+it: the operator publishes the shared models in its own namespace, where the
+Portal reads them. The deployment helper sets both from `NAMESPACE`, and the
+chart refuses a Portal that would look for them elsewhere.
+
 When using the umbrella, configure the separate Istio release to reach the
 co-located Portal before installing it:
 
