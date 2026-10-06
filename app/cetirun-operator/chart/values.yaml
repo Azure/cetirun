@@ -199,8 +199,9 @@ agentIdentity:
 # long as url and the master key Secret are set, including after enabled is
 # turned off.
 aiGateway:
-  # -- Built-in Agents take their models from the platform AI Gateway. The
-  # platform chart requires it; turning it off leaves them without models.
+  # -- OpenClaw Agents take their models from the platform AI Gateway; Hermes
+  # keeps its own provider and sign-in. The platform chart requires it;
+  # turning it off leaves OpenClaw Agents without models.
   enabled: true
   # -- In-cluster Gateway URL: http://<service>.<namespace>.svc.cluster.local:<port>.
   # Empty means the Gateway named cetirun-ai-gateway in the operator namespace,

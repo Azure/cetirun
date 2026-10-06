@@ -32,7 +32,7 @@
 {{- end }}
 {{- $gateway := index .Values "cetirun-ai-gateway" }}
 {{- if and $operator.enabled (not (($operator.aiGateway | default dict).enabled)) }}
-{{- fail "cetirun-operator.aiGateway.enabled must be true: built-in Agents take their models from the AI Gateway" }}
+{{- fail "cetirun-operator.aiGateway.enabled must be true: OpenClaw Agents take their models from the AI Gateway" }}
 {{- end }}
 {{- if and $portal.enabled (not (($portal.features | default dict).aiGatewayEnabled)) }}
 {{- fail "cetirun-portal.features.aiGatewayEnabled must be true: the Portal offers the AI Gateway's model sources and the GitHub Copilot sign-in" }}

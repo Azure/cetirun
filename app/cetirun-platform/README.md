@@ -77,17 +77,19 @@ the chart never adopts resources owned by another release.
 
 ## AI Gateway
 
-Built-in Agents take their models from the AI Gateway, so the platform requires
+OpenClaw Agents take their models from the AI Gateway, so the platform requires
 it: the chart refuses to install with `cetirun-operator.aiGateway.enabled` or
-`cetirun-portal.features.aiGatewayEnabled` turned off. By default the release
+`cetirun-portal.features.aiGatewayEnabled` turned off. Hermes Agents are not
+routed through the Gateway: they keep their own model provider and sign-in, and
+need that model configuration separately. By default the release
 also installs the Gateway with its PostgreSQL and Valkey, named
 `cetirun-ai-gateway`, in the release namespace, which must be the operator's
 namespace: the operator reads the Gateway master key from there. See the
 [Gateway chart](../cetirun-ai-gateway/chart/README.md) for its settings, under
 `cetirun-ai-gateway` here.
 
-Shared models are optional. Without them Agents use their owners' GitHub
-Copilot. Add them in `cetirun-ai-gateway.models` with provider keys from
+Shared models are optional. Without them OpenClaw Agents use their owners'
+GitHub Copilot. Add them in `cetirun-ai-gateway.models` with provider keys from
 `cetirun-ai-gateway.providerCredentials`, or later in the Gateway console with
 the access group `cetirun-shared`:
 
