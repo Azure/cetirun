@@ -30,6 +30,9 @@ type fakeGitHubServer struct {
 	polls        int
 	answers      []map[string]any
 	exchangeCode int
+	// onPoll runs once while a token poll is waiting on GitHub, before it is
+	// answered: what the owner does in another tab meanwhile.
+	onPoll func()
 }
 
 func (f *fakeGitHubServer) start(t *testing.T) *copilot.Client {
@@ -43,6 +46,10 @@ func (f *fakeGitHubServer) start(t *testing.T) *copilot.Client {
 	})
 	mux.HandleFunc("POST /login/oauth/access_token", func(w http.ResponseWriter, r *http.Request) {
 		f.polls++
+		if hook := f.onPoll; hook != nil {
+			f.onPoll = nil
+			hook()
+		}
 		answer := map[string]any{"error": "authorization_pending"}
 		if len(f.answers) > 0 {
 			answer, f.answers = f.answers[0], f.answers[1:]
@@ -374,6 +381,93 @@ func TestCopilotLoginRequiresTheBoundOwner(t *testing.T) {
 	}
 	if state := string(f.secret(copilotLoginSecretName).Data[loginState]); state != copilotLoginPending {
 		t.Fatalf("the owner's sign-in must stay pending, got %q", state)
+	}
+}
+
+// A poll waiting on GitHub when the owner cancels must not store the token it
+// then receives, nor record that account's models.
+func TestCopilotLoginCancelledWhilePolledStoresNothing(t *testing.T) {
+	f := newLoginFixture(t)
+	f.call(http.MethodPost, "alice")
+	f.gh.answers = []map[string]any{{"access_token": "gho_cancelled"}}
+	cancelled := 0
+	f.gh.onPoll = func() {
+		w, _ := f.call(http.MethodDelete, "alice")
+		cancelled = w.Code
+	}
+	f.clock = f.clock.Add(6 * time.Second)
+	_, resp := f.call(http.MethodGet, "alice")
+	if cancelled != http.StatusNoContent {
+		t.Fatalf("cancel during the poll: status %d", cancelled)
+	}
+	if resp.State != copilotLoginNone {
+		t.Fatalf("the cancelled sign-in must stay cancelled, got %+v", resp)
+	}
+	if token := f.secret(cetirunv1alpha1.CopilotTokenSecretName); len(token.Data) != 0 {
+		t.Fatal("a cancelled sign-in must not store its token")
+	}
+	if _, ok := f.agent().Annotations[cetirunv1alpha1.AnnotationCopilotModels]; ok {
+		t.Fatal("a cancelled sign-in must not record models")
+	}
+}
+
+// A poll of an older sign-in that GitHub answers after the owner started a
+// new one must not store the older account's token.
+func TestCopilotLoginReplacedWhilePolledStoresNothing(t *testing.T) {
+	f := newLoginFixture(t)
+	f.call(http.MethodPost, "alice")
+	f.gh.answers = []map[string]any{{"access_token": "gho_older_account"}}
+	restarted := 0
+	f.gh.onPoll = func() {
+		w, _ := f.call(http.MethodPost, "alice")
+		restarted = w.Code
+	}
+	f.clock = f.clock.Add(6 * time.Second)
+	_, resp := f.call(http.MethodGet, "alice")
+	if restarted != http.StatusOK {
+		t.Fatalf("start during the poll: status %d", restarted)
+	}
+	if resp.State != copilotLoginPending || resp.UserCode == "" {
+		t.Fatalf("the new sign-in must stay pending, got %+v", resp)
+	}
+	if token := f.secret(cetirunv1alpha1.CopilotTokenSecretName); len(token.Data) != 0 {
+		t.Fatal("the replaced sign-in must not store its token")
+	}
+	if _, ok := f.agent().Annotations[cetirunv1alpha1.AnnotationCopilotModels]; ok {
+		t.Fatal("the replaced sign-in must not record models")
+	}
+	if login := f.secret(copilotLoginSecretName); string(login.Data[loginState]) != copilotLoginPending || len(login.Data[loginDeviceCode]) == 0 {
+		t.Fatalf("the new sign-in must be intact, got %v", login.Data)
+	}
+}
+
+// Once a poll has committed its sign-in, a start or a cancel waits for the
+// outcome; if the replica storing the token stops, the lease ends it.
+func TestCopilotLoginBeingCompletedHoldsOffStartAndCancel(t *testing.T) {
+	f := newLoginFixture(t)
+	f.call(http.MethodPost, "alice")
+	login := f.secret(copilotLoginSecretName)
+	login.Data[loginState] = []byte(copilotLoginCompleting)
+	login.Data[loginCompletingUntil] = []byte(f.clock.Add(copilotLoginLease).Format(time.RFC3339))
+	delete(login.Data, loginDeviceCode)
+	if err := f.fc.Update(context.Background(), login); err != nil {
+		t.Fatal(err)
+	}
+	for _, method := range []string{http.MethodPost, http.MethodDelete} {
+		if w, _ := f.call(method, "alice"); w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "copilot_login_completing") {
+			t.Fatalf("%s while completing: status %d %s", method, w.Code, w.Body.String())
+		}
+	}
+	if _, resp := f.call(http.MethodGet, "alice"); resp.State != copilotLoginPending || resp.UserCode != "WXYZ-9876" || f.gh.polls != 0 {
+		t.Fatalf("the browser keeps waiting without a new GitHub poll: %+v, GitHub polls %d", resp, f.gh.polls)
+	}
+
+	f.clock = f.clock.Add(copilotLoginLease + time.Second)
+	if _, resp := f.call(http.MethodGet, "alice"); resp.State != copilotLoginFailed || !strings.Contains(resp.Message, "did not finish") {
+		t.Fatalf("an expired completion must be reported as failed: %+v", resp)
+	}
+	if w, resp := f.call(http.MethodPost, "alice"); w.Code != http.StatusOK || resp.State != copilotLoginPending {
+		t.Fatalf("a new sign-in after the lease: status %d %+v", w.Code, resp)
 	}
 }
 

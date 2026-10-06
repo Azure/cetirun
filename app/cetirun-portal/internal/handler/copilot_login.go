@@ -37,6 +37,7 @@ const (
 	loginInterval        = "interval"
 	loginNextPollAt      = "next-poll-at"
 	loginMessage         = "message"
+	loginCompletingUntil = "completing-until"
 
 	// Sign-in states reported to the browser.
 	copilotLoginNone      = "none"
@@ -45,7 +46,25 @@ const (
 	copilotLoginExpired   = "expired"
 	copilotLoginDenied    = "denied"
 	copilotLoginFailed    = "failed"
+	// copilotLoginCompleting marks a sign-in whose token is being stored. It
+	// is committed before anything is written, so a cancel or a new start
+	// that came first makes the commit conflict and the token is dropped;
+	// once committed, it holds off both until the outcome is recorded. The
+	// browser sees it as pending.
+	copilotLoginCompleting = "completing"
+
+	// copilotLoginLease bounds how long a sign-in being completed holds off
+	// a new start or a cancel. Storing the token takes a few API calls; the
+	// lease only matters if the replica completing it stops on the way.
+	copilotLoginLease = 2 * time.Minute
 )
+
+// errCopilotLoginCompleting reports a sign-in that is storing its token.
+var errCopilotLoginCompleting = errors.New("the GitHub Copilot sign-in is being completed")
+
+// errCopilotLoginChanged reports a sign-in Secret that kept changing while a
+// start or a cancel tried to replace it.
+var errCopilotLoginChanged = errors.New("the GitHub Copilot sign-in changed meanwhile")
 
 // CopilotLoginResponse reports a GitHub Copilot sign-in. It carries the code
 // the user enters at GitHub, never the device code or a token.
@@ -162,6 +181,10 @@ func loginResponse(data map[string][]byte) CopilotLoginResponse {
 	if state == "" {
 		return CopilotLoginResponse{State: copilotLoginNone}
 	}
+	// The browser keeps waiting while the token is being stored.
+	if state == copilotLoginCompleting {
+		state = copilotLoginPending
+	}
 	resp := CopilotLoginResponse{State: state, Message: string(data[loginMessage])}
 	if state == copilotLoginPending {
 		resp.UserCode = string(data[loginUserCode])
@@ -172,9 +195,24 @@ func loginResponse(data map[string][]byte) CopilotLoginResponse {
 	return resp
 }
 
+// copilotLoginBeingCompleted reports a sign-in of this Agent that committed
+// its outcome and is storing its token, within its lease.
+func copilotLoginBeingCompleted(secret *corev1.Secret, instance *cetirunv1alpha1.Agent, now time.Time) bool {
+	if secret == nil || secret.Labels[kube.AgentUIDLabel] != string(instance.UID) ||
+		string(secret.Data[loginState]) != copilotLoginCompleting {
+		return false
+	}
+	until, err := time.Parse(time.RFC3339, string(secret.Data[loginCompletingUntil]))
+	return err == nil && now.Before(until)
+}
+
+func writeCopilotLoginCompleting(w http.ResponseWriter) {
+	writeError(w, http.StatusConflict, "copilot_login_completing", "The GitHub Copilot sign-in is finishing. Try again in a moment.")
+}
+
 // StartCopilotLogin handles POST /api/v1/instances/{name}/copilot/login with
 // the body {"uid": "<Agent UID>"}. It starts a GitHub device-code sign-in,
-// replacing one in progress.
+// replacing one in progress, but not one that is storing its token.
 func (h *InstanceHandler) StartCopilotLogin(w http.ResponseWriter, r *http.Request) {
 	uid, ok := h.copilotLoginUID(w, r)
 	if !ok {
@@ -190,6 +228,12 @@ func (h *InstanceHandler) StartCopilotLogin(w http.ResponseWriter, r *http.Reque
 			slog.Error("Failed to read the Copilot token Secret", "instance", instance.Name, "error", err)
 		}
 		writeError(w, http.StatusConflict, "copilot_not_ready", "The agent's GitHub Copilot proxy is not set up yet. Try again in a minute.")
+		return
+	}
+	// Refuse before asking GitHub for a code that could not be saved.
+	if current, err := h.Kube.GetSecret(ctx, kube.InstanceNamespace(instance.Name), copilotLoginSecretName); err == nil &&
+		copilotLoginBeingCompleted(current, instance, h.now()) {
+		writeCopilotLoginCompleting(w)
 		return
 	}
 	code, err := h.copilotClient().StartDeviceFlow(ctx)
@@ -214,15 +258,24 @@ func (h *InstanceHandler) StartCopilotLogin(w http.ResponseWriter, r *http.Reque
 		loginNextPollAt:      []byte(now.Add(time.Duration(code.Interval) * time.Second).Format(time.RFC3339)),
 	}
 	if err := h.saveCopilotLogin(ctx, instance, data); err != nil {
-		slog.Error("Failed to save the GitHub Copilot sign-in", "instance", instance.Name, "error", err)
-		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to start the sign-in")
+		switch {
+		case errors.Is(err, errCopilotLoginCompleting):
+			writeCopilotLoginCompleting(w)
+		case errors.Is(err, errCopilotLoginChanged):
+			writeError(w, http.StatusConflict, "copilot_login_changed", "The sign-in changed meanwhile. Try again.")
+		default:
+			slog.Error("Failed to save the GitHub Copilot sign-in", "instance", instance.Name, "error", err)
+			writeError(w, http.StatusInternalServerError, "internal_error", "Failed to start the sign-in")
+		}
 		return
 	}
 	slog.Info("GitHub Copilot sign-in started", "instance", instance.Name)
 	writeJSON(w, http.StatusOK, loginResponse(data))
 }
 
-// saveCopilotLogin creates or replaces the sign-in Secret.
+// saveCopilotLogin creates or replaces the sign-in Secret, with the version
+// it read: it never replaces a sign-in that is storing its token, and it
+// retries when a poll updated the Secret meanwhile.
 func (h *InstanceHandler) saveCopilotLogin(ctx context.Context, instance *cetirunv1alpha1.Agent, data map[string][]byte) error {
 	namespace := kube.InstanceNamespace(instance.Name)
 	labels := map[string]string{
@@ -230,25 +283,39 @@ func (h *InstanceHandler) saveCopilotLogin(ctx context.Context, instance *cetiru
 		"app.kubernetes.io/managed-by": "cetirun-portal",
 		kube.AgentUIDLabel:             string(instance.UID),
 	}
-	secret, err := h.Kube.GetSecret(ctx, namespace, copilotLoginSecretName)
-	if kube.IsNotFound(err) {
-		return h.Kube.CreateSecret(ctx, &corev1.Secret{
-			ObjectMeta: metav1.ObjectMeta{Name: copilotLoginSecretName, Namespace: namespace, Labels: labels},
-			Type:       corev1.SecretTypeOpaque,
-			Data:       data,
-		})
-	}
-	if err != nil {
+	for attempt := 0; attempt < 3; attempt++ {
+		secret, err := h.Kube.GetSecret(ctx, namespace, copilotLoginSecretName)
+		if kube.IsNotFound(err) {
+			err = h.Kube.CreateSecret(ctx, &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{Name: copilotLoginSecretName, Namespace: namespace, Labels: labels},
+				Type:       corev1.SecretTypeOpaque,
+				Data:       data,
+			})
+			if kube.IsAlreadyExists(err) {
+				continue
+			}
+			return err
+		}
+		if err != nil {
+			return err
+		}
+		if copilotLoginBeingCompleted(secret, instance, h.now()) {
+			return errCopilotLoginCompleting
+		}
+		if secret.Labels == nil {
+			secret.Labels = map[string]string{}
+		}
+		for k, v := range labels {
+			secret.Labels[k] = v
+		}
+		secret.Data = data
+		err = h.Kube.UpdateSecret(ctx, secret)
+		if kube.IsConflict(err) {
+			continue
+		}
 		return err
 	}
-	if secret.Labels == nil {
-		secret.Labels = map[string]string{}
-	}
-	for k, v := range labels {
-		secret.Labels[k] = v
-	}
-	secret.Data = data
-	return h.Kube.UpdateSecret(ctx, secret)
+	return errCopilotLoginChanged
 }
 
 // PollCopilotLogin handles GET /api/v1/instances/{name}/copilot/login. While
@@ -275,6 +342,15 @@ func (h *InstanceHandler) PollCopilotLogin(w http.ResponseWriter, r *http.Reques
 	}
 	if secret.Labels[kube.AgentUIDLabel] != string(instance.UID) {
 		writeJSON(w, http.StatusOK, CopilotLoginResponse{State: copilotLoginNone})
+		return
+	}
+	if string(secret.Data[loginState]) == copilotLoginCompleting {
+		if copilotLoginBeingCompleted(secret, instance, h.now()) {
+			writeJSON(w, http.StatusOK, loginResponse(secret.Data))
+		} else {
+			// The replica storing the token stopped before recording it.
+			h.endCopilotLogin(ctx, w, instance, secret, copilotLoginFailed, "The sign-in did not finish. Start it again.")
+		}
 		return
 	}
 	if string(secret.Data[loginState]) != copilotLoginPending {
@@ -336,10 +412,13 @@ func (h *InstanceHandler) PollCopilotLogin(w http.ResponseWriter, r *http.Reques
 	}
 }
 
-// finishCopilotLogin checks that the account can use GitHub Copilot, stores
-// the token for the proxy, then records the account's models on the Agent.
-// The token is written first: the operator registers models once the proxy
-// has picked it up, and the annotation is what triggers the operator.
+// finishCopilotLogin checks that the account can use GitHub Copilot, commits
+// the sign-in, stores the token for the proxy, then records the account's
+// models on the Agent. The commit comes first: a cancel or a new start since
+// this poll claimed the sign-in makes it conflict, and the token is then
+// dropped instead of taking effect. The token is written before the models:
+// the operator registers models once the proxy has picked it up, and the
+// annotation is what triggers the operator.
 func (h *InstanceHandler) finishCopilotLogin(ctx context.Context, w http.ResponseWriter, instance *cetirunv1alpha1.Agent, login *corev1.Secret, token string) {
 	models, err := h.copilotClient().ListModels(ctx, token)
 	switch {
@@ -352,6 +431,11 @@ func (h *InstanceHandler) finishCopilotLogin(ctx context.Context, w http.Respons
 		return
 	case len(models) == 0:
 		h.endCopilotLogin(ctx, w, instance, login, copilotLoginFailed, "This GitHub Copilot account offers no chat models.")
+		return
+	}
+	if !h.commitCopilotLogin(ctx, instance, login) {
+		slog.Info("GitHub Copilot sign-in was cancelled or replaced while it was polled; its token is dropped", "instance", instance.Name)
+		h.writeCurrentCopilotLogin(ctx, w, instance)
 		return
 	}
 	secret, err := h.copilotTokenSecret(ctx, instance)
@@ -377,18 +461,58 @@ func (h *InstanceHandler) finishCopilotLogin(ctx context.Context, w http.Respons
 		fmt.Sprintf("Signed in to GitHub Copilot: %d models. They appear on the agent once its proxy has started.", len(models)))
 }
 
-// endCopilotLogin records the outcome in place of the pending sign-in and
-// reports it. A sign-in started meanwhile is left alone.
+// commitCopilotLogin marks the sign-in as being completed, with the version
+// the poll claimed. It reports false when the sign-in changed meanwhile.
+func (h *InstanceHandler) commitCopilotLogin(ctx context.Context, instance *cetirunv1alpha1.Agent, login *corev1.Secret) bool {
+	data := map[string][]byte{
+		loginState:           []byte(copilotLoginCompleting),
+		loginCompletingUntil: []byte(h.now().UTC().Add(copilotLoginLease).Format(time.RFC3339)),
+	}
+	// The browser keeps showing the code until the outcome is recorded; the
+	// device code is no longer needed.
+	for _, key := range []string{loginUserCode, loginVerificationURI, loginExpiresAt, loginInterval} {
+		if value, ok := login.Data[key]; ok {
+			data[key] = value
+		}
+	}
+	login.Data = data
+	if err := h.Kube.UpdateSecret(ctx, login); err != nil {
+		if !kube.IsConflict(err) && !kube.IsNotFound(err) {
+			slog.Error("Failed to commit the GitHub Copilot sign-in", "instance", instance.Name, "error", err)
+		}
+		return false
+	}
+	return true
+}
+
+// writeCurrentCopilotLogin reports the sign-in as it is now stored.
+func (h *InstanceHandler) writeCurrentCopilotLogin(ctx context.Context, w http.ResponseWriter, instance *cetirunv1alpha1.Agent) {
+	secret, err := h.Kube.GetSecret(ctx, kube.InstanceNamespace(instance.Name), copilotLoginSecretName)
+	if err != nil || secret.Labels[kube.AgentUIDLabel] != string(instance.UID) {
+		writeJSON(w, http.StatusOK, CopilotLoginResponse{State: copilotLoginNone})
+		return
+	}
+	writeJSON(w, http.StatusOK, loginResponse(secret.Data))
+}
+
+// endCopilotLogin records the outcome in place of the sign-in it was polled
+// for and reports it. A sign-in cancelled or started meanwhile is left alone
+// and reported as it is.
 func (h *InstanceHandler) endCopilotLogin(ctx context.Context, w http.ResponseWriter, instance *cetirunv1alpha1.Agent, login *corev1.Secret, state, message string) {
 	login.Data = map[string][]byte{loginState: []byte(state), loginMessage: []byte(message)}
-	if err := h.Kube.UpdateSecret(ctx, login); err != nil && !kube.IsConflict(err) {
+	if err := h.Kube.UpdateSecret(ctx, login); err != nil {
+		if kube.IsConflict(err) || kube.IsNotFound(err) {
+			h.writeCurrentCopilotLogin(ctx, w, instance)
+			return
+		}
 		slog.Error("Failed to record the GitHub Copilot sign-in outcome", "instance", instance.Name, "error", err)
 	}
 	writeJSON(w, http.StatusOK, loginResponse(login.Data))
 }
 
 // CancelCopilotLogin handles DELETE /api/v1/instances/{name}/copilot/login
-// with the body {"uid": "<Agent UID>"}.
+// with the body {"uid": "<Agent UID>"}. A sign-in that is storing its token
+// is not cancelled.
 func (h *InstanceHandler) CancelCopilotLogin(w http.ResponseWriter, r *http.Request) {
 	uid, ok := h.copilotLoginUID(w, r)
 	if !ok {
@@ -399,15 +523,33 @@ func (h *InstanceHandler) CancelCopilotLogin(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	ctx := r.Context()
-	secret, err := h.Kube.GetSecret(ctx, kube.InstanceNamespace(instance.Name), copilotLoginSecretName)
-	if err == nil {
-		secret.Data = map[string][]byte{}
-		err = h.Kube.UpdateSecret(ctx, secret)
-	}
-	if err != nil && !kube.IsNotFound(err) {
-		slog.Error("Failed to cancel the GitHub Copilot sign-in", "instance", instance.Name, "error", err)
-		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to cancel the sign-in")
+	namespace := kube.InstanceNamespace(instance.Name)
+	for attempt := 0; attempt < 3; attempt++ {
+		secret, err := h.Kube.GetSecret(ctx, namespace, copilotLoginSecretName)
+		if kube.IsNotFound(err) {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if err == nil && copilotLoginBeingCompleted(secret, instance, h.now()) {
+			writeCopilotLoginCompleting(w)
+			return
+		}
+		if err == nil {
+			// With the version just read: a poll that claimed the sign-in
+			// meanwhile makes this conflict, and the cancel is retried.
+			secret.Data = map[string][]byte{}
+			err = h.Kube.UpdateSecret(ctx, secret)
+			if kube.IsConflict(err) {
+				continue
+			}
+		}
+		if err != nil && !kube.IsNotFound(err) {
+			slog.Error("Failed to cancel the GitHub Copilot sign-in", "instance", instance.Name, "error", err)
+			writeError(w, http.StatusInternalServerError, "internal_error", "Failed to cancel the sign-in")
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	w.WriteHeader(http.StatusNoContent)
+	writeError(w, http.StatusConflict, "copilot_login_changed", "The sign-in changed meanwhile. Try again.")
 }
