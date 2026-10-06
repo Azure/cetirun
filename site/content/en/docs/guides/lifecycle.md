@@ -41,7 +41,8 @@ probe templates.
 ## Suspend and resume
 
 To suspend an instance, set `spec.suspended` to `true`. The operator scales the
-workload to zero and removes its ingress route while retaining persistent data.
+workload, and the instance's GitHub Copilot proxy if it has one, to zero and
+removes its ingress route while retaining persistent data.
 
 ```bash
 kubectl patch agents.cetirun.microsoft.com alice --type=merge \
