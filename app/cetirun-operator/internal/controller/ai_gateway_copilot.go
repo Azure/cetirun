@@ -278,10 +278,29 @@ func (r *AgentReconciler) reconcileAIGatewayCopilot(ctx context.Context, client 
 	var registered []string
 	var failed error
 	pending := false
+	// The routes to remove are those of the Agent's group the status records
+	// and, once the catalog has listed the Gateway, those it lists there: a
+	// route registered just before the operator stopped, before the status
+	// recorded it, is known only to the Gateway, and once the proxy key or
+	// the price table changes its revision would keep serving the Agent's
+	// model names with what it was registered with.
+	stale := map[string]bool{}
 	for _, id := range copilot.Registered {
-		if _, ok := desired[id]; ok {
-			continue
+		stale[id] = true
+	}
+	if listed, known := r.aiGatewayCatalog.groupDeployments(copilot.AccessGroup); known {
+		for _, id := range listed {
+			stale[id] = true
 		}
+	}
+	staleIDs := make([]string, 0, len(stale))
+	for id := range stale {
+		if _, ok := desired[id]; !ok {
+			staleIDs = append(staleIDs, id)
+		}
+	}
+	slices.Sort(staleIDs)
+	for _, id := range staleIDs {
 		if err := client.DeleteModel(ctx, id); err != nil {
 			failed = err
 			registered = append(registered, id)
@@ -319,7 +338,7 @@ func (r *AgentReconciler) reconcileAIGatewayCopilot(ctx context.Context, client 
 			failed = err
 			continue
 		}
-		r.aiGatewayCatalog.noteAdded(id)
+		r.aiGatewayCatalog.noteAdded(id, registration.request.AccessGroups)
 		registered = append(registered, id)
 		names = append(names, registration.request.ModelName)
 	}

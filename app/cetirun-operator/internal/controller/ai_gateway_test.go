@@ -736,6 +736,59 @@ func TestReconcileAIGatewayCopilotSignInRegistersPricedModels(t *testing.T) {
 	}
 }
 
+// A route registered just before the operator stopped, before the status
+// recorded it, is known only to the Gateway. Once the proxy key or the price
+// table changes, its revision is obsolete, and it would keep serving the
+// Agent's model name with the old key. A reconcile removes it as soon as the
+// catalog has listed it; other Agents' routes stay.
+func TestReconcileAIGatewayCopilotRemovesUnrecordedObsoleteRoutes(t *testing.T) {
+	agent := aiGatewayTestAgent(testAIGatewayTeam)
+	r, kube, gateway := aiGatewayTestReconciler(t, agent, aiGatewayNamespace(), readyProxy(1))
+	if err := r.reconcileAIGateway(context.Background(), agent, true); err != nil {
+		t.Fatal(err)
+	}
+	signIn(t, kube, agent, `[{"id":"gpt-5.5"}]`)
+	if err := r.reconcileAIGateway(context.Background(), agent, true); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(gateway.modelNames(), []string{"copilot/gpt-5.5"}) {
+		t.Fatalf("setup: gateway %v", gateway.modelNames())
+	}
+	obsolete := copilotRegistrationID(agent, "gpt-5.5", "0badc0de")
+	gateway.models[obsolete] = aigateway.ModelRequest{ID: obsolete, ModelName: "copilot/gpt-5.5", APIKey: "sk-obsolete", AccessGroups: []string{copilotGroup()}}
+	other := aiGatewayCopilotGroupPrefix + "another-agent-uid-gpt-5.5-0badc0de"
+	gateway.models[other] = aigateway.ModelRequest{ID: other, ModelName: "copilot/gpt-5.5", AccessGroups: []string{aiGatewayCopilotGroupPrefix + "another-agent-uid"}}
+	if slices.Contains(agent.Status.AIGateway.Copilot.Registered, obsolete) {
+		t.Fatal("setup: the obsolete route must not be recorded")
+	}
+
+	// After a restart the catalog has not listed the Gateway yet: nothing
+	// unrecorded is touched, and the reconcile lists it.
+	r.aiGatewayCatalog = aiGatewayCatalog{}
+	if err := r.reconcileAIGateway(context.Background(), agent, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := gateway.models[obsolete]; !ok {
+		t.Fatal("an unlisted route cannot be judged yet")
+	}
+	if err := r.reconcileAIGateway(context.Background(), agent, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := gateway.models[obsolete]; ok {
+		t.Fatalf("the unrecorded obsolete route must be removed: %v", gateway.deletedModels)
+	}
+	if _, ok := gateway.models[other]; !ok {
+		t.Fatal("another Agent's route must stay")
+	}
+	if names := gateway.modelNames(); !slices.Equal(names, []string{"copilot/gpt-5.5", "copilot/gpt-5.5"}) {
+		t.Fatalf("this Agent's current route must stay: %v", names)
+	}
+	if copilot := agent.Status.AIGateway.Copilot; copilot.Phase != cetirunv1alpha1.AIGatewayCopilotPhaseReady ||
+		slices.Contains(copilot.Registered, obsolete) || len(copilot.Registered) != 1 {
+		t.Fatalf("copilot status %+v", copilot)
+	}
+}
+
 func lastKeyModels(gateway *fakeAIGateway) []string {
 	for _, key := range gateway.keys {
 		return key.Models
