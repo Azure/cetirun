@@ -456,6 +456,14 @@ const (
 	// GitHub Copilot sign-in, so every sign-in reaches the operator even when
 	// the model list is unchanged.
 	AnnotationCopilotSignedInAt = "cetirun.microsoft.com/copilot-signed-in-at"
+	// AnnotationCopilotSignInGeneration identifies a GitHub Copilot sign-in.
+	// The Portal sets it on the token Secret in the write that stores the
+	// token, and on the Agent in the write that records the models, so the
+	// operator can tell models recorded for another sign-in than the token's.
+	AnnotationCopilotSignInGeneration = "cetirun.microsoft.com/copilot-sign-in-generation"
+	// AnnotationCopilotTokenStoredAt on the token Secret records when the
+	// Portal stored the token.
+	AnnotationCopilotTokenStoredAt = "cetirun.microsoft.com/copilot-token-stored-at"
 	// CopilotTokenSecretName is the instance-namespace Secret holding the
 	// owner's GitHub token for the Copilot proxy. The operator creates it
 	// empty; the Portal writes the token.

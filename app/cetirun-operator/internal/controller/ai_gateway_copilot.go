@@ -43,6 +43,10 @@ const (
 	// aiGatewayMaxCopilotModels bounds how many models one account registers.
 	aiGatewayMaxCopilotModels = 128
 	aiGatewayPriceCacheTTL    = time.Hour
+	// copilotSignInGrace is how long the operator waits for the models of a
+	// sign-in whose token is stored, as long as the Portal's lease on
+	// completing it. The Portal records them right after the token.
+	copilotSignInGrace = 2 * time.Minute
 )
 
 // copilotModelID is the form of Copilot model IDs the operator registers.
@@ -233,17 +237,33 @@ func (r *AgentReconciler) reconcileAIGatewayCopilot(ctx context.Context, client 
 	// A lost or malformed key Secret gets a new key, which the routes below
 	// carry at once; the ID restarts the proxy with it.
 	copilot.ProxyKeyID = aigateway.Token(proxyKey)[:aiGatewayKeyIDLength]
-	signedIn, err := r.ensureCopilotTokenSecret(ctx, instance)
+	signIn, err := r.ensureCopilotTokenSecret(ctx, instance)
 	if err != nil {
 		degraded("TokenSecretFailed", err)
 		return
 	}
+	signedIn := signIn.signedIn
+	mismatched := false
 	var wanted []cetirunv1alpha1.CopilotModel
 	if signedIn {
-		wanted, err = parseCopilotModels(instance.Annotations[cetirunv1alpha1.AnnotationCopilotModels])
-		if err != nil {
-			degraded("ModelListInvalid", err)
-			return
+		if recorded := instance.Annotations[cetirunv1alpha1.AnnotationCopilotSignInGeneration]; recorded != signIn.generation {
+			// The models on the Agent were recorded for another sign-in than
+			// the token the proxy holds. A completing sign-in records its
+			// models just after its token: wait for them, leaving the routes
+			// as they are. Past that, the models do not belong to the stored
+			// token and are not used.
+			if !signIn.storedAt.IsZero() && time.Since(signIn.storedAt) < copilotSignInGrace {
+				copilot.Phase = cetirunv1alpha1.AIGatewayCopilotPhaseStarting
+				copilot.Reason = "SignInCompleting"
+				return
+			}
+			mismatched = true
+		} else {
+			wanted, err = parseCopilotModels(instance.Annotations[cetirunv1alpha1.AnnotationCopilotModels])
+			if err != nil {
+				degraded("ModelListInvalid", err)
+				return
+			}
 		}
 	}
 
@@ -354,6 +374,9 @@ func (r *AgentReconciler) reconcileAIGatewayCopilot(ctx context.Context, client 
 	case !signedIn:
 		copilot.Phase = cetirunv1alpha1.AIGatewayCopilotPhaseSignInRequired
 		copilot.Reason = ""
+	case mismatched:
+		copilot.Phase = cetirunv1alpha1.AIGatewayCopilotPhaseDegraded
+		copilot.Reason = "SignInIncomplete"
 	case len(wanted) == 0:
 		copilot.Phase = cetirunv1alpha1.AIGatewayCopilotPhaseDegraded
 		copilot.Reason = "ModelListMissing"
@@ -423,11 +446,22 @@ func (r *AgentReconciler) deleteCopilotRegistrations(ctx context.Context, client
 	return firstErr
 }
 
+// copilotSignIn is what the token Secret records of the owner's sign-in.
+type copilotSignIn struct {
+	signedIn bool
+	// generation identifies the sign-in whose token is stored; the models on
+	// the Agent carry the same value. Empty for a token stored before
+	// generations were recorded.
+	generation string
+	storedAt   time.Time
+}
+
 // ensureCopilotTokenSecret creates the empty token Secret the proxy mounts,
 // so the proxy starts and waits for the owner's sign-in. It reports whether
-// the Portal has written a token. A Secret left by an earlier Agent of the
-// same name is cleared: its token belongs to that Agent's sign-in.
-func (r *AgentReconciler) ensureCopilotTokenSecret(ctx context.Context, instance *cetirunv1alpha1.Agent) (bool, error) {
+// the Portal has written a token, and for which sign-in. A Secret left by an
+// earlier Agent of the same name is cleared: its token belongs to that
+// Agent's sign-in.
+func (r *AgentReconciler) ensureCopilotTokenSecret(ctx context.Context, instance *cetirunv1alpha1.Agent) (copilotSignIn, error) {
 	key := types.NamespacedName{Namespace: instanceNamespace(instance.Name), Name: cetirunv1alpha1.CopilotTokenSecretName}
 	secret := &corev1.Secret{}
 	// Read past the cache: the Portal writes the token just before the
@@ -439,22 +473,31 @@ func (r *AgentReconciler) ensureCopilotTokenSecret(ctx context.Context, instance
 		secret.Name, secret.Namespace = key.Name, key.Namespace
 		labelAgentSecret(secret, instance)
 		if err := r.Create(ctx, secret); err != nil && !apierrors.IsAlreadyExists(err) {
-			return false, fmt.Errorf("create Copilot token Secret: %w", err)
+			return copilotSignIn{}, fmt.Errorf("create Copilot token Secret: %w", err)
 		}
-		return false, nil
+		return copilotSignIn{}, nil
 	}
 	if err != nil {
-		return false, fmt.Errorf("get Copilot token Secret: %w", err)
+		return copilotSignIn{}, fmt.Errorf("get Copilot token Secret: %w", err)
 	}
 	if secret.Labels[aiGatewayAgentUIDLabel] != string(instance.UID) {
 		labelAgentSecret(secret, instance)
 		secret.Data = nil
+		delete(secret.Annotations, cetirunv1alpha1.AnnotationCopilotSignInGeneration)
+		delete(secret.Annotations, cetirunv1alpha1.AnnotationCopilotTokenStoredAt)
 		if err := r.Update(ctx, secret); err != nil {
-			return false, fmt.Errorf("reset Copilot token Secret: %w", err)
+			return copilotSignIn{}, fmt.Errorf("reset Copilot token Secret: %w", err)
 		}
-		return false, nil
+		return copilotSignIn{}, nil
 	}
-	return strings.TrimSpace(string(secret.Data[cetirunv1alpha1.CopilotTokenSecretKey])) != "", nil
+	signIn := copilotSignIn{
+		signedIn:   strings.TrimSpace(string(secret.Data[cetirunv1alpha1.CopilotTokenSecretKey])) != "",
+		generation: secret.Annotations[cetirunv1alpha1.AnnotationCopilotSignInGeneration],
+	}
+	if storedAt, err := time.Parse(time.RFC3339, secret.Annotations[cetirunv1alpha1.AnnotationCopilotTokenStoredAt]); err == nil {
+		signIn.storedAt = storedAt
+	}
+	return signIn, nil
 }
 
 func (r *AgentReconciler) deleteAgentSecret(ctx context.Context, instance *cetirunv1alpha1.Agent, name string) error {

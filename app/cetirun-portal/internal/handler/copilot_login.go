@@ -203,19 +203,33 @@ func (h *InstanceHandler) fenceCopilotCompletions(ctx context.Context, instance 
 		if err != nil {
 			return err
 		}
-		marker := make([]byte, 16)
-		if _, err := rand.Read(marker); err != nil {
+		marker, err := randomHex()
+		if err != nil {
 			return err
 		}
 		if secret.Annotations == nil {
 			secret.Annotations = map[string]string{}
 		}
-		secret.Annotations[copilotSignInAnnotation] = hex.EncodeToString(marker)
+		secret.Annotations[copilotSignInAnnotation] = marker
 		if err := h.Kube.UpdateSecret(ctx, secret); !kube.IsConflict(err) {
 			return err
 		}
 	}
 	return errCopilotLoginChanged
+}
+
+// newCopilotSignInGeneration identifies a sign-in whose token and models are
+// being stored.
+func newCopilotSignInGeneration() (string, error) {
+	return randomHex()
+}
+
+func randomHex() (string, error) {
+	value := make([]byte, 16)
+	if _, err := rand.Read(value); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(value), nil
 }
 
 func loginResponse(data map[string][]byte) CopilotLoginResponse {
@@ -525,10 +539,13 @@ func (h *InstanceHandler) PollCopilotLogin(w http.ResponseWriter, r *http.Reques
 // dropped instead of taking effect. The token Secret is read before the
 // commit and the token stored under that version, so a start, a cancel or
 // the end of this completion after its lease ran out, each of which fences
-// the Secret, drops the token too; the models are recorded only while the
-// stored token is still this one, so a newer sign-in keeps its own. The
-// token is written before the models: the operator registers models once the
-// proxy has picked it up, and the annotation is what triggers the operator.
+// the Secret once accepted, drops the token too. The token and the models
+// carry the same new sign-in generation, and the models are recorded only
+// while the stored token is still this sign-in's; the operator uses models
+// only with the token of their generation, so the two never mix even when a
+// newer sign-in stores its token in between. The token is written before the
+// models: the operator registers models once the proxy has picked it up, and
+// the annotation is what triggers the operator.
 func (h *InstanceHandler) finishCopilotLogin(ctx context.Context, w http.ResponseWriter, instance *cetirunv1alpha1.Agent, login *corev1.Secret, token string) {
 	models, err := h.copilotClient().ListModels(ctx, token)
 	switch {
@@ -541,6 +558,12 @@ func (h *InstanceHandler) finishCopilotLogin(ctx context.Context, w http.Respons
 		return
 	case len(models) == 0:
 		h.endCopilotLogin(ctx, w, instance, login, copilotLoginFailed, "This GitHub Copilot account offers no chat models.")
+		return
+	}
+	generation, err := newCopilotSignInGeneration()
+	if err != nil {
+		slog.Error("Failed to create a GitHub Copilot sign-in generation", "instance", instance.Name, "error", err)
+		h.endCopilotLogin(ctx, w, instance, login, copilotLoginFailed, "Signed in to GitHub, but the token could not be stored for the agent. Start the sign-in again.")
 		return
 	}
 	secret, err := h.copilotTokenSecret(ctx, instance)
@@ -558,6 +581,11 @@ func (h *InstanceHandler) finishCopilotLogin(ctx context.Context, w http.Respons
 		secret.Data = map[string][]byte{}
 	}
 	secret.Data[cetirunv1alpha1.CopilotTokenSecretKey] = []byte(token)
+	if secret.Annotations == nil {
+		secret.Annotations = map[string]string{}
+	}
+	secret.Annotations[cetirunv1alpha1.AnnotationCopilotSignInGeneration] = generation
+	secret.Annotations[cetirunv1alpha1.AnnotationCopilotTokenStoredAt] = h.now().UTC().Format(time.RFC3339)
 	if err := h.Kube.UpdateSecret(ctx, secret); err != nil {
 		if kube.IsConflict(err) {
 			slog.Info("GitHub Copilot sign-in was replaced before its token was stored; the token is dropped", "instance", instance.Name)
@@ -573,12 +601,12 @@ func (h *InstanceHandler) finishCopilotLogin(ctx context.Context, w http.Respons
 		if err != nil {
 			return err
 		}
-		if string(current.Data[cetirunv1alpha1.CopilotTokenSecretKey]) != token {
+		if current.Annotations[cetirunv1alpha1.AnnotationCopilotSignInGeneration] != generation {
 			return errCopilotLoginSuperseded
 		}
 		return nil
 	}
-	if err := h.Kube.SetCopilotModels(ctx, instance.Name, instance.UID, models, stillStored); err != nil {
+	if err := h.Kube.SetCopilotModels(ctx, instance.Name, instance.UID, models, generation, stillStored); err != nil {
 		if errors.Is(err, errCopilotLoginSuperseded) {
 			slog.Info("GitHub Copilot sign-in was replaced before its models were recorded; they are dropped", "instance", instance.Name)
 			h.endCopilotLogin(ctx, w, instance, login, copilotLoginFailed, "The sign-in changed meanwhile. Start it again.")

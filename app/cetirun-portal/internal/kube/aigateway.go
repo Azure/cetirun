@@ -58,14 +58,15 @@ func IsConflict(err error) bool {
 	return errors.IsConflict(err)
 }
 
-// SetCopilotModels records the owner's GitHub Copilot models and the time of
-// the sign-in on the Agent for the operator. It writes only when the Agent
-// still has the given UID, with a merge patch of just these annotations under
-// the Agent's resource version, so fields this Portal's types do not know
-// survive, as with the other instance writers. current, when given, runs
-// after each read of the Agent and stops the write with its error; a write
-// that another one overtakes conflicts and runs it again.
-func (c *Client) SetCopilotModels(ctx context.Context, instanceName string, uid types.UID, models []cetirunv1alpha1.CopilotModel, current func(context.Context) error) error {
+// SetCopilotModels records the owner's GitHub Copilot models, the sign-in
+// generation they belong to, and the time of the sign-in on the Agent for
+// the operator. It writes only when the Agent still has the given UID, with a
+// merge patch of just these annotations under the Agent's resource version,
+// so fields this Portal's types do not know survive, as with the other
+// instance writers. current, when given, runs after each read of the Agent
+// and stops the write with its error; a write that another one overtakes
+// conflicts and runs it again.
+func (c *Client) SetCopilotModels(ctx context.Context, instanceName string, uid types.UID, models []cetirunv1alpha1.CopilotModel, generation string, current func(context.Context) error) error {
 	raw, err := json.Marshal(models)
 	if err != nil {
 		return err
@@ -88,6 +89,9 @@ func (c *Client) SetCopilotModels(ctx context.Context, instanceName string, uid 
 			instance.Annotations = map[string]string{}
 		}
 		instance.Annotations[cetirunv1alpha1.AnnotationCopilotModels] = string(raw)
+		if generation != "" {
+			instance.Annotations[cetirunv1alpha1.AnnotationCopilotSignInGeneration] = generation
+		}
 		// A new value on every sign-in wakes the operator even when the
 		// account's models did not change.
 		instance.Annotations[cetirunv1alpha1.AnnotationCopilotSignedInAt] = time.Now().UTC().Format(time.RFC3339Nano)

@@ -332,6 +332,16 @@ func TestCopilotLoginStoresTokenAndModels(t *testing.T) {
 	if f.agent().Annotations[cetirunv1alpha1.AnnotationCopilotSignedInAt] == "" {
 		t.Fatal("the sign-in time must be recorded for the operator")
 	}
+	// The token and the models carry the same sign-in generation, so the
+	// operator can tell models recorded for another sign-in.
+	token := f.secret(cetirunv1alpha1.CopilotTokenSecretName)
+	generation := token.Annotations[cetirunv1alpha1.AnnotationCopilotSignInGeneration]
+	if generation == "" || f.agent().Annotations[cetirunv1alpha1.AnnotationCopilotSignInGeneration] != generation {
+		t.Fatalf("token generation %q, Agent generation %q", generation, f.agent().Annotations[cetirunv1alpha1.AnnotationCopilotSignInGeneration])
+	}
+	if _, err := time.Parse(time.RFC3339, token.Annotations[cetirunv1alpha1.AnnotationCopilotTokenStoredAt]); err != nil {
+		t.Fatalf("the token's storage time must be recorded: %v", err)
+	}
 	login = f.secret(copilotLoginSecretName)
 	if _, ok := login.Data[loginDeviceCode]; ok || string(login.Data[loginState]) != "succeeded" {
 		t.Fatalf("finished login Secret = %v", login.Data)

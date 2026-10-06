@@ -47,7 +47,10 @@ portal runs the GitHub device-code sign-in, stores the token for the instance's
 proxy, and records the account's chat models. They appear once the proxy has
 started, usually within a few minutes, and the instance restarts to pick them
 up. A model the Gateway has no price for is listed as not offered: it would
-escape the instance's budget.
+escape the instance's budget. The token and the models carry the same sign-in
+generation, and the operator uses models only with the token they came with: if
+a sign-in stops after storing its token, the instance offers no Copilot models
+and reports `SignInIncomplete` until you sign in again.
 
 Each instance has its own virtual key with a monthly budget. The instance page
 lists its models and sets the default; saving a new default restarts the

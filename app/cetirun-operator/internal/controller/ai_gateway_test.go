@@ -1979,11 +1979,77 @@ func TestAIGatewayRevisionFollowsEverySignIn(t *testing.T) {
 	}
 }
 
+// A Copilot model list is used only with the token of its sign-in: the
+// Portal records the same generation with both. Models of another sign-in are
+// awaited while a sign-in completes, then no longer used, and the routes go,
+// so the proxy is never asked for models its token's account may not have.
+func TestReconcileAIGatewayCopilotUsesModelsOnlyWithTheirSignIn(t *testing.T) {
+	agent := aiGatewayTestAgent(testAIGatewayTeam)
+	r, kube, gateway := aiGatewayTestReconciler(t, agent, aiGatewayNamespace(), readyProxy(1))
+	if err := r.reconcileAIGateway(context.Background(), agent, true); err != nil {
+		t.Fatal(err)
+	}
+	storeToken := func(generation string, storedAt time.Time) {
+		t.Helper()
+		secret := readSecret(t, kube, cetirunv1alpha1.CopilotTokenSecretName)
+		secret.Data = map[string][]byte{cetirunv1alpha1.CopilotTokenSecretKey: []byte("gho_" + generation)}
+		secret.Annotations = map[string]string{
+			cetirunv1alpha1.AnnotationCopilotSignInGeneration: generation,
+			cetirunv1alpha1.AnnotationCopilotTokenStoredAt:    storedAt.UTC().Format(time.RFC3339),
+		}
+		if err := kube.Update(context.Background(), secret); err != nil {
+			t.Fatal(err)
+		}
+	}
+	recordModels := func(generation, models string) {
+		agent.Annotations = map[string]string{
+			cetirunv1alpha1.AnnotationCopilotModels:           models,
+			cetirunv1alpha1.AnnotationCopilotSignInGeneration: generation,
+		}
+	}
+	reconcile := func() *cetirunv1alpha1.AIGatewayCopilotStatus {
+		t.Helper()
+		if err := r.reconcileAIGateway(context.Background(), agent, true); err != nil {
+			t.Fatal(err)
+		}
+		return agent.Status.AIGateway.Copilot
+	}
+
+	storeToken("first", time.Now())
+	recordModels("first", `[{"id":"gpt-5.5"}]`)
+	if copilot := reconcile(); copilot.Phase != cetirunv1alpha1.AIGatewayCopilotPhaseReady || !slices.Equal(gateway.modelNames(), []string{"copilot/gpt-5.5"}) {
+		t.Fatalf("a consistent sign-in registers its models: %+v %v", copilot, gateway.modelNames())
+	}
+
+	// A newer sign-in stored its token; its models follow. The routes stay
+	// as they are meanwhile.
+	storeToken("second", time.Now())
+	if copilot := reconcile(); copilot.Phase != cetirunv1alpha1.AIGatewayCopilotPhaseStarting || copilot.Reason != "SignInCompleting" ||
+		!slices.Equal(gateway.modelNames(), []string{"copilot/gpt-5.5"}) {
+		t.Fatalf("models of the previous sign-in are awaited, not dropped yet: %+v %v", copilot, gateway.modelNames())
+	}
+
+	// They never came: the models on the Agent belong to another sign-in
+	// than the stored token, and are not used.
+	storeToken("second", time.Now().Add(-copilotSignInGrace-time.Minute))
+	if copilot := reconcile(); copilot.Phase != cetirunv1alpha1.AIGatewayCopilotPhaseDegraded || copilot.Reason != "SignInIncomplete" ||
+		len(gateway.models) != 0 || len(copilot.Models) != 0 {
+		t.Fatalf("models of another sign-in must not be used: %+v %v", copilot, gateway.modelNames())
+	}
+
+	// The second sign-in's models arrive.
+	recordModels("second", `[{"id":"claude-sonnet-4.5"}]`)
+	if copilot := reconcile(); copilot.Phase != cetirunv1alpha1.AIGatewayCopilotPhaseReady ||
+		!slices.Equal(gateway.modelNames(), []string{"copilot/claude-sonnet-4.5"}) {
+		t.Fatalf("the models of the stored sign-in are registered: %+v %v", copilot, gateway.modelNames())
+	}
+}
+
 func TestCopilotTokenIsReadPastTheCache(t *testing.T) {
 	agent := aiGatewayTestAgent(testAIGatewayTeam)
 	r, kube, _ := aiGatewayTestReconciler(t, agent, aiGatewayNamespace())
-	if signedIn, err := r.ensureCopilotTokenSecret(context.Background(), agent); err != nil || signedIn {
-		t.Fatalf("first pass creates an empty Secret: signedIn=%v err=%v", signedIn, err)
+	if signIn, err := r.ensureCopilotTokenSecret(context.Background(), agent); err != nil || signIn.signedIn {
+		t.Fatalf("first pass creates an empty Secret: signIn=%+v err=%v", signIn, err)
 	}
 	// The cache still shows the empty Secret; the API server has the token.
 	fresh := readSecret(t, kube, cetirunv1alpha1.CopilotTokenSecretName).DeepCopy()
@@ -1993,8 +2059,8 @@ func TestCopilotTokenIsReadPastTheCache(t *testing.T) {
 		t.Fatal(err)
 	}
 	r.APIReader = fake.NewClientBuilder().WithScheme(scheme).WithObjects(fresh).Build()
-	if signedIn, err := r.ensureCopilotTokenSecret(context.Background(), agent); err != nil || !signedIn {
-		t.Fatalf("the token written by the Portal must be seen: signedIn=%v err=%v", signedIn, err)
+	if signIn, err := r.ensureCopilotTokenSecret(context.Background(), agent); err != nil || !signIn.signedIn {
+		t.Fatalf("the token written by the Portal must be seen: signIn=%+v err=%v", signIn, err)
 	}
 }
 
