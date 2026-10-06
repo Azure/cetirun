@@ -22,11 +22,13 @@ tests. It adds exactly `k8s.io/cri-api v0.37.1`, aligned with the operator's
 existing Kubernetes module versions. Generated CRI bindings are imported from
 that module, not copied or maintained in this repository.
 
-The already-selected `google.golang.org/grpc v1.82.1` is now declared directly;
-its version and the existing protobuf version remain unchanged. No other
-existing dependency versions are upgraded. Dependency setup used Go's scoped
-`mod edit` and, after the missing-cache failure, a checksum-verified
-`go mod download k8s.io/cri-api@v0.37.1` for only that pinned module. The guard
+The client declares `google.golang.org/grpc v1.83.2` directly. This version
+includes the fixes for
+[HTTP/2 frame memory exhaustion](https://github.com/advisories/GHSA-vp52-pcj8-j9qc)
+and the [xDS header crash](https://github.com/advisories/GHSA-2v4p-qf9q-27wj)
+reported by dependency review for the previously selected version. The existing
+protobuf version and other dependency versions remain unchanged. Dependency
+setup uses Go's versioned module commands and checksum verification. The guard
 does not invoke an external runtime CLI or substitute an unpinned library.
 
 ## Build and offline tests
