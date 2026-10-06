@@ -34,6 +34,14 @@ lists its models and sets the default. When an administrator adds or removes a
 shared model, or changes its limits, the operator updates every instance that
 uses shared models, which restarts them.
 
+The key's value is kept in the instance's `ai-gateway-virtual-key` Secret. If
+that Secret is lost while the key still exists in the Gateway, the operator
+does not replace the key, which would reset its spend, restore the default
+budget and unblock a blocked key. The Agent instead reports `AIGatewayReady`
+as false with the reason `KeySecretLost`, with an `AIGatewayKeySecretLost`
+event. Restore the Secret, or delete the key in the Gateway to have a new one
+created with the default budget.
+
 An instance's configuration lists at most 256 models. Its GitHub Copilot
 models, at most 128, all stay; shared models fill the rest in name order, and
 the instance's default model and the deployment's default are kept. The

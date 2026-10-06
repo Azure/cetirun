@@ -50,6 +50,9 @@ const (
 	// Agent's configuration needs a default; the Portal explains the state.
 	aiGatewaySignInRequiredModel = cetirunv1alpha1.AIGatewaySignInRequiredModel
 	aiGatewayNoModelsModel       = cetirunv1alpha1.AIGatewayNoModelsModel
+	// aiGatewayReasonKeySecretLost reports that the Agent's own key exists in
+	// the Gateway while its value is no longer in the key Secret.
+	aiGatewayReasonKeySecretLost = "KeySecretLost"
 )
 
 // AIGatewayConfig is the deployment-level AI Gateway integration. With
@@ -454,10 +457,17 @@ func (r *AgentReconciler) reconcileAIGateway(ctx context.Context, instance *ceti
 		if errors.Is(err, aigateway.ErrAliasExists) {
 			// The alias embeds this Agent's UID, so the existing key is this
 			// Agent's, with a value no longer held here (for example, the
-			// Secret was deleted). Revoke it and create one for this value.
-			if err = client.DeleteKeyByAlias(ctx, status.KeyAlias); err == nil {
-				err = client.GenerateKey(ctx, request)
+			// Secret was deleted). Replacing it would reset its spend, put
+			// back the default budget in place of an administrator's and
+			// unblock a blocked key, so an administrator decides instead.
+			if status.Reason != aiGatewayReasonKeySecretLost {
+				r.EventRecorder.Eventf(instance, corev1.EventTypeWarning, "AIGatewayKeySecretLost",
+					"The Agent's virtual key %s exists in the AI Gateway, but its value is no longer in the Secret %s. "+
+						"Restore the Secret, or delete the key in the Gateway to have a new key created with the default budget.",
+					status.KeyAlias, aiGatewayKeySecretName)
 			}
+			return aiGatewayDegraded(instance, aiGatewayReasonKeySecretLost,
+				fmt.Errorf("the virtual key %s exists in the Gateway, but its value is no longer held", status.KeyAlias))
 		}
 		if err != nil {
 			return aiGatewayDegraded(instance, "KeyCreateFailed", err)

@@ -458,19 +458,51 @@ func TestReconcileAIGatewayAdoptsKeyCreatedBeforeStatusWasLost(t *testing.T) {
 	}
 }
 
-func TestReconcileAIGatewayReplacesOwnKeyForLostValue(t *testing.T) {
+// When the key Secret no longer holds the value of this Agent's existing key,
+// replacing the key would reset its spend and budget (and unblock it), so the
+// operator reports the state and leaves the key alone until an administrator
+// restores the Secret or deletes the key.
+func TestReconcileAIGatewayKeepsOwnKeyWhenItsValueIsLost(t *testing.T) {
 	agent := aiGatewayTestAgent(testAIGatewayTeam)
 	value := mustKeyValue(t)
 	r, _, gateway := aiGatewayTestReconciler(t, agent, aiGatewayNamespace(), keySecret(testAIGatewayUID, value))
-	gateway.keys["token-of-a-value-no-longer-held"] = &aigateway.Key{Alias: aiGatewayKeyAlias(agent), Models: []string{aiGatewaySharedAccessGroup}}
+	budget := 25.0
+	gateway.keys["token-of-a-value-no-longer-held"] = &aigateway.Key{
+		Alias: aiGatewayKeyAlias(agent), Models: []string{aiGatewaySharedAccessGroup}, MaxBudget: &budget, Blocked: true,
+	}
+	for pass := 1; pass <= 2; pass++ {
+		if err := r.reconcileAIGateway(context.Background(), agent, true); err == nil {
+			t.Fatalf("pass %d: a lost key value must be reported", pass)
+		}
+	}
+	status := agent.Status.AIGateway
+	if status.Phase != cetirunv1alpha1.AIGatewayPhaseDegraded || status.Reason != aiGatewayReasonKeySecretLost {
+		t.Fatalf("status = %s/%s", status.Phase, status.Reason)
+	}
+	if len(gateway.deletedAliases) != 0 || len(gateway.deletedTokens) != 0 || len(gateway.generated) != 0 {
+		t.Fatalf("the existing key must be left alone: deleted=%v/%v generated=%d", gateway.deletedAliases, gateway.deletedTokens, len(gateway.generated))
+	}
+	if key, ok := gateway.keys["token-of-a-value-no-longer-held"]; !ok || !key.Blocked || *key.MaxBudget != budget {
+		t.Fatal("the existing key and its budget state must survive")
+	}
+	events := r.EventRecorder.(*record.FakeRecorder).Events
+	lost := 0
+	for len(events) > 0 {
+		if strings.Contains(<-events, "AIGatewayKeySecretLost") {
+			lost++
+		}
+	}
+	if lost != 1 {
+		t.Fatalf("the lost value must be reported once, got %d events", lost)
+	}
+
+	// An administrator deletes the old key: the next pass creates this one.
+	delete(gateway.keys, "token-of-a-value-no-longer-held")
 	if err := r.reconcileAIGateway(context.Background(), agent, true); err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(gateway.deletedAliases, []string{aiGatewayKeyAlias(agent)}) || len(gateway.generated) != 1 || gateway.generated[0].Key != value {
-		t.Fatalf("the orphaned key for this Agent must be replaced: deleted=%v generated=%d", gateway.deletedAliases, len(gateway.generated))
-	}
-	if _, ok := gateway.keys["token-of-a-value-no-longer-held"]; ok {
-		t.Fatal("the orphaned key is still present")
+	if len(gateway.generated) != 1 || gateway.generated[0].Key != value || agent.Status.AIGateway.Phase != cetirunv1alpha1.AIGatewayPhaseReady {
+		t.Fatalf("after the administrator's decision the key must be created: generated=%d phase=%s", len(gateway.generated), agent.Status.AIGateway.Phase)
 	}
 }
 
