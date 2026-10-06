@@ -227,6 +227,51 @@ class SandboxAdmissionChartTests(unittest.TestCase):
                 config_env["value"] = baseline_config_env["value"]
                 self.assertEqual(configured, baseline)
 
+    def test_kubernetes_sources_skills_catalog_adds_only_controller_setting_and_pv_get(self):
+        admission = self.enforced_values(podsEnabled=True)
+        sources = {
+            "enabled": True, "bootstrapOwnedPrerequisites": True,
+            "platformConfigMapName": "sandbox-platform",
+        }
+        baseline = self.render(admission, values={"sandboxSources": sources})
+        configured = self.render(admission, values={"sandboxSources": {
+            **sources, "skillsCatalogConfigMapName": "published-skills",
+        }})
+
+        def source_environment(documents):
+            container = documents[("Deployment", "cetirun-operator")]["spec"]["template"]["spec"]["containers"][0]
+            return next(item for item in container["env"] if item["name"] == "CETIRUN_SANDBOX_SOURCES")
+
+        before, after = source_environment(baseline), source_environment(configured)
+        self.assertNotIn("skillsCatalogConfigMapName", json.loads(before["value"]))
+        self.assertEqual(json.loads(after["value"]), {
+            **json.loads(before["value"]), "skillsCatalogConfigMapName": "published-skills",
+        })
+        pv_rule = {"apiGroups": [""], "resources": ["persistentvolumes"], "verbs": ["get"]}
+        rules = configured[("ClusterRole", NAME)]["rules"]
+        self.assertEqual(rules.count(pv_rule), 1)
+        rules.remove(pv_rule)
+        after["value"] = before["value"]
+        self.assertEqual(configured, baseline)
+
+    def test_kubernetes_sources_skills_catalog_rejects_invalid_selection(self):
+        for changes, message in (
+            ({"enabled": False, "bootstrapOwnedPrerequisites": False}, "requires enabled owned bootstrap"),
+            ({"bootstrapOwnedPrerequisites": False}, "requires enabled owned bootstrap"),
+            ({"skillsCatalogConfigMapName": True}, "must be a resource name"),
+            ({"skillsCatalogConfigMapName": "other/catalog"}, "must be a separate valid ConfigMap name"),
+            ({"skillsCatalogConfigMapName": "sandbox-platform"}, "must be a separate valid ConfigMap name"),
+        ):
+            with self.subTest(changes=changes):
+                self.assert_rejected(
+                    self.enforced_values(podsEnabled=True), message,
+                    values={"sandboxSources": {
+                        "enabled": True, "bootstrapOwnedPrerequisites": True,
+                        "platformConfigMapName": "sandbox-platform",
+                        "skillsCatalogConfigMapName": "published-skills", **changes,
+                    }},
+                )
+
     def test_kubernetes_sources_omit_both_admission_platform_fields_when_disabled(self):
         admission = self.enforced_values(podsEnabled=True)
         baseline = self.render(admission)

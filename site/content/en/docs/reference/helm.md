@@ -341,6 +341,7 @@ Source: [operator values]({{< repo "app/cetirun-operator/chart/values.yaml" >}})
 | `sandboxSources.bootstrapOwnedPrerequisites` | `false`; additionally bootstrap owned namespace, operator access, HOME and native authentication for new namespaces only; requires explicit Agent chart/image/port pins |
 | `sandboxSources.platformConfigMapName` | Empty; existing operator-namespace ConfigMap containing versioned `platform.json`, shared by configuration admission and the controller |
 | `sandboxSources.homeClaimName`, `sandboxSources.skillsClaimName` | `home`, `skills`; existing claims stay read-only; bootstrap can create owned HOME only in new namespaces, while published skills stay external |
+| `sandboxSources.skillsCatalogConfigMapName` | Empty; opt in to a separate operator-owned `skills.json` catalog binding exact Team identities to already-published Blob NFS content; requires owned bootstrap |
 | `sandboxSources.helpers` | `doctor`, `logger`, `desktop` default to `false`; approved native helper selection |
 
 Sandbox source wiring requires enabled, enforced configuration and Pod
@@ -350,8 +351,9 @@ values. `CETIRUN_SANDBOX_SOURCES` remains operator-only; admission receives the
 selected platform namespace and ConfigMap name in `CETIRUN_SANDBOX_ADMISSION`.
 These settings are omitted when sources are disabled. The dedicated admission
 ServiceAccount reuses its existing namespace-scoped ConfigMap `get` Role and
-RuntimeClass/StorageClass `get` permissions; no RBAC grants, Secret lists or
-cluster-wide ConfigMap access are added.
+RuntimeClass/StorageClass `get` permissions. Sources alone add no RBAC grants.
+The optional skills catalog adds only PersistentVolume `get` for its dependency
+metadata; it adds no Secret lists or cluster-wide ConfigMap access.
 
 Sources are read-only by default and do not create capability registrations. With
 `bootstrapOwnedPrerequisites: true`, the operator creates an owned protected
@@ -363,6 +365,15 @@ port. Published skills and model credentials remain external prerequisites;
 bootstrap does not substitute empty skills storage or authorize execution or
 fencing. Tenant Helm values cannot select the source ConfigMap or promote a
 different chart version.
+
+With `skillsCatalogConfigMapName` set, new catalog-backed bootstrap can create
+owned static PV/PVC bindings to already-published read-only skills. The approval
+must match the current Team name and UID; editable Team storage settings are not
+authority. The operator records ownership before effects and never uploads
+content, resolves storage credentials or changes the backing publication.
+Bindings use `Retain` and exact UID/resourceVersion cleanup; existing external
+claims and older bootstrap receipts remain in their existing mode. See the
+[catalog and recovery contract]({{< repo "app/cetirun-operator/README.md" >}}#published-blob-nfs-skills-catalog-separate-opt-in).
 
 These sources verify explicit platform declarations and existing resource
 ownership through authoritative Kubernetes reads. Each relevant configuration

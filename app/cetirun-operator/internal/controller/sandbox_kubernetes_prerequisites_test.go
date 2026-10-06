@@ -633,7 +633,7 @@ func TestKubernetesSandboxPrerequisitesWriterExclusion(t *testing.T) {
 	type contextKey struct{}
 	ctx := context.WithValue(context.Background(), contextKey{}, "test-context")
 	fence.check = func(gotCtx context.Context, agent *api.Agent, got controller.SandboxPrerequisites) {
-		if gotCtx != ctx || !reflect.DeepEqual(agent, f.agent(t)) || got != tuple {
+		if gotCtx != ctx || !reflect.DeepEqual(agent, f.agent(t)) || !reflect.DeepEqual(got, tuple) {
 			t.Fatal("fencing received a different context, Agent or prerequisite tuple")
 		}
 		agent.Name = "test-provider-cannot-mutate-caller"
@@ -685,7 +685,7 @@ func TestKubernetesSandboxPrerequisitesWriterExclusion(t *testing.T) {
 	now := metav1.NewTime(f.now.Add(24 * time.Hour))
 	agent.DeletionTimestamp = &now
 	f.source.APIReader, f.source.HomeClaimName, f.source.SkillsClaimName, f.source.ChartVersion = nil, "", "", ""
-	if err := f.source.CheckQuiesced(ctx, agent, tuple); err != nil || fence.prerequisites != tuple ||
+	if err := f.source.CheckQuiesced(ctx, agent, tuple); err != nil || !reflect.DeepEqual(fence.prerequisites, tuple) ||
 		!reflect.DeepEqual(fence.agent, agent) {
 		t.Fatalf("historical cleanup reauthorized current preparation or changed the tuple: %v", err)
 	}
@@ -833,7 +833,7 @@ func TestKubernetesSandboxPrerequisitesPreparationAndCleanupCallers(t *testing.T
 			if err := f.reconcile(); !errors.Is(err, failure) {
 				t.Fatalf("cleanup lost the injected historical fence error: %v", err)
 			}
-			if fence.prerequisites != tuple || fence.agent.Generation != agent.Generation ||
+			if !reflect.DeepEqual(fence.prerequisites, tuple) || fence.agent.Generation != agent.Generation ||
 				fence.agent.DeletionTimestamp.IsZero() || tuple.AgentGeneration >= fence.agent.Generation {
 				t.Fatal("cleanup did not pass the exact prior tuple for the current terminating Agent")
 			}

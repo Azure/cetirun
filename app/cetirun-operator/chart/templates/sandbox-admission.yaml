@@ -119,6 +119,11 @@ rules:
   - apiGroups: [""]
     resources: ["namespaces", "pods", "persistentvolumeclaims", "serviceaccounts"]
     verbs: ["get"]
+  {{- if .Values.sandboxSources.skillsCatalogConfigMapName }}
+  - apiGroups: [""]
+    resources: ["persistentvolumes"]
+    verbs: ["get"]
+  {{- end }}
   - apiGroups: ["apps"]
     resources: ["statefulsets"]
     verbs: ["get"]

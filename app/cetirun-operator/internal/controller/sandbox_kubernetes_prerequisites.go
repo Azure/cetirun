@@ -37,13 +37,15 @@ type SandboxWriterExclusionSource interface {
 // configuration, never Agent Helm values. It neither provisions nor adopts
 // resources, and no production WriterExclusion source is installed by default.
 type KubernetesSandboxPrerequisites struct {
-	APIReader       client.Reader
-	HomeClaimName   string
-	SkillsClaimName string
-	ChartVersion    string
-	Helpers         sandboxworkload.Helpers
-	Now             func() time.Time
-	WriterExclusion SandboxWriterExclusionSource
+	APIReader                  client.Reader
+	HomeClaimName              string
+	SkillsClaimName            string
+	OperatorNamespace          string
+	SkillsCatalogConfigMapName string
+	ChartVersion               string
+	Helpers                    sandboxworkload.Helpers
+	Now                        func() time.Time
+	WriterExclusion            SandboxWriterExclusionSource
 }
 
 var _ SandboxPreparationSource = (*KubernetesSandboxPrerequisites)(nil)
@@ -173,12 +175,17 @@ func (p *KubernetesSandboxPrerequisites) Resolve(ctx context.Context, requested 
 	if !sandboxBuiltinOwned(secret, agent) || !sandboxPrerequisiteOwnersMatch(secret, agent, nil) {
 		return empty, fmt.Errorf("Sandbox runtime Secret requires confirmed Agent UID ownership")
 	}
+	publicationSources, err := source.publishedSkillsSources(ctx, agent, team, namespace, home, skills, secret)
+	if err != nil {
+		return empty, err
+	}
 	sources := []sandboxworkload.SourceReference{
 		agentSource, sandboxSource(team, api.GroupVersion.String(), "Team"),
 		sandboxSource(box, api.GroupVersion.String(), "Sandbox"), sandboxSource(namespace, "v1", "Namespace"),
 		sandboxSource(home, "v1", "PersistentVolumeClaim"), sandboxSource(skills, "v1", "PersistentVolumeClaim"),
 		sandboxSource(secret, "v1", "Secret"),
 	}
+	sources = append(sources, publicationSources...)
 	revisionSources := slices.Clone(sources)
 	revisionAgent := agent.DeepCopy()
 	// Preparation records its cleanup finalizer after Resolve, before its first
@@ -212,6 +219,7 @@ func (p *KubernetesSandboxPrerequisites) Resolve(ctx context.Context, requested 
 		Skills:        sandboxworkload.ObjectIdentity{Name: skills.Name, UID: skills.UID},
 		RuntimeSecret: sandboxworkload.ObjectIdentity{Name: secret.Name, UID: secret.UID},
 		ChartVersion:  source.ChartVersion, Helpers: source.Helpers,
+		PublicationSources: publicationSources,
 	}, nil
 }
 
@@ -264,6 +272,7 @@ func (p *KubernetesSandboxPrerequisites) CheckQuiesced(ctx context.Context, agen
 	// Cleanup supplies a durable prior tuple, even after generation, policy,
 	// chart, storage configuration or lifecycle changes. Do not Resolve again,
 	// compare it with current settings, or require those resources to survive.
+	prerequisites.PublicationSources = slices.Clone(prerequisites.PublicationSources)
 	if err := p.WriterExclusion.CheckQuiesced(ctx, agent.DeepCopy(), prerequisites); err != nil {
 		return err
 	}

@@ -22,6 +22,7 @@ type SandboxSourcesConfig struct {
 	PlatformConfigMapName       string                  `json:"platformConfigMapName"`
 	HomeClaimName               string                  `json:"homeClaimName"`
 	SkillsClaimName             string                  `json:"skillsClaimName"`
+	SkillsCatalogConfigMapName  string                  `json:"skillsCatalogConfigMapName,omitempty"`
 	AdmissionServiceAccount     string                  `json:"admissionServiceAccount"`
 	Helpers                     sandboxworkload.Helpers `json:"helpers"`
 }
@@ -42,6 +43,12 @@ func ParseSandboxSourcesConfig(raw string) (SandboxSourcesConfig, error) {
 }
 
 func (config SandboxSourcesConfig) validate() error {
+	if config.SkillsCatalogConfigMapName != "" &&
+		(!config.Enabled || !config.BootstrapOwnedPrerequisites ||
+			len(validation.IsDNS1123Subdomain(config.SkillsCatalogConfigMapName)) != 0 ||
+			config.SkillsCatalogConfigMapName == config.PlatformConfigMapName) {
+		return fmt.Errorf("Sandbox skills catalog requires enabled owned bootstrap and a separate valid ConfigMap name")
+	}
 	if !config.Enabled {
 		if config.BootstrapOwnedPrerequisites {
 			return fmt.Errorf("Sandbox bootstrap requires enabled Kubernetes sources")
@@ -86,6 +93,7 @@ func NewKubernetesSandboxPreparation(config SandboxSourcesConfig, reader client.
 		},
 		Prerequisites: &KubernetesSandboxPrerequisites{
 			APIReader: reader, HomeClaimName: config.HomeClaimName, SkillsClaimName: config.SkillsClaimName,
+			OperatorNamespace: namespace, SkillsCatalogConfigMapName: config.SkillsCatalogConfigMapName,
 			ChartVersion: chartVersion, Helpers: config.Helpers,
 		},
 		Installer: installer, AdmissionServiceAccount: config.AdmissionServiceAccount,
@@ -94,7 +102,10 @@ func NewKubernetesSandboxPreparation(config SandboxSourcesConfig, reader client.
 		if _, err := semver.StrictNewVersion(chartVersion); err != nil {
 			return nil, fmt.Errorf("Sandbox bootstrap requires an explicitly approved semantic chart version")
 		}
-		preparation.bootstrap = &sandboxBootstrapConfig{HomeClaimName: config.HomeClaimName, ChartVersion: chartVersion}
+		preparation.bootstrap = &sandboxBootstrapConfig{
+			HomeClaimName: config.HomeClaimName, ChartVersion: chartVersion,
+			SkillsClaimName: config.SkillsClaimName, SkillsCatalogConfigMapName: config.SkillsCatalogConfigMapName,
+		}
 	}
 	return preparation, nil
 }

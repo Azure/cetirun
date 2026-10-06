@@ -37,8 +37,10 @@ const (
 )
 
 type sandboxBootstrapConfig struct {
-	HomeClaimName string
-	ChartVersion  string
+	HomeClaimName              string
+	ChartVersion               string
+	SkillsClaimName            string
+	SkillsCatalogConfigMapName string
 }
 
 type sandboxBootstrapObject struct {
@@ -56,6 +58,7 @@ type sandboxBootstrapReceipt struct {
 	Home         runtimebindings.HomeClaim `json:"home"`
 	ChartVersion string                    `json:"chartVersion"`
 	Objects      []sandboxBootstrapObject  `json:"objects"`
+	Skills       *sandboxBootstrapSkills   `json:"skills,omitempty"`
 }
 
 func (r *AgentReconciler) sandboxBootstrapKey(agent *api.Agent) client.ObjectKey {
@@ -78,11 +81,12 @@ func (r *AgentReconciler) readSandboxBootstrap(ctx context.Context, agent *api.A
 	if err != nil || len(problems) != 0 || object.UID == "" || object.ResourceVersion == "" ||
 		!equality.Semantic.DeepEqual(object.OwnerReferences, owner) ||
 		object.Annotations[sandboxworkload.AgentUIDAnnotation] != string(agent.UID) ||
-		receipt.Version != "v1" || receipt.AgentName != agent.Name || receipt.AgentUID != agent.UID ||
+		receipt.AgentName != agent.Name || receipt.AgentUID != agent.UID ||
 		(receipt.AgentType != api.AgentTypeOpenClaw && receipt.AgentType != api.AgentTypeHermes) ||
 		receipt.Namespace != instanceNamespace(agent.Name) || receipt.Namespace == r.OperatorNamespace ||
 		len(validation.IsDNS1123Label(receipt.Namespace)) != 0 || receipt.ChartVersion == "" ||
-		len(receipt.Objects) != 5 {
+		!((receipt.Version == "v1" && receipt.Skills == nil && len(receipt.Objects) == 5) ||
+			(receipt.Version == "v2" && receipt.Skills != nil && len(receipt.Objects) == 7)) {
 		return nil, nil, fmt.Errorf("Sandbox bootstrap ownership receipt is invalid")
 	}
 	size, err := resource.ParseQuantity(receipt.Home.StorageSize)
@@ -91,6 +95,18 @@ func (r *AgentReconciler) readSandboxBootstrap(ctx context.Context, agent *api.A
 		return nil, nil, fmt.Errorf("Sandbox bootstrap HOME receipt is invalid")
 	}
 	kinds := []string{"Namespace", "Role", "RoleBinding", "PersistentVolumeClaim", "Secret"}
+	if receipt.Skills != nil {
+		selected := receipt.Skills
+		if !selected.Catalog.ValidIdentity() || selected.Catalog.APIVersion != "v1" || selected.Catalog.Kind != "ConfigMap" ||
+			selected.Catalog.Namespace != r.OperatorNamespace || len(validation.IsDNS1123Subdomain(selected.TeamName)) != 0 ||
+			receipt.Objects[5].Name == receipt.Objects[3].Name || receipt.Objects[6].Name != sandboxSkillsVolumeName(agent.UID) {
+			return nil, nil, fmt.Errorf("Sandbox skills publication receipt is invalid")
+		}
+		if err := validateSandboxSkillsPublication(selected.Publication); err != nil {
+			return nil, nil, err
+		}
+		kinds = append(kinds, "PersistentVolumeClaim", "PersistentVolume")
+	}
 	for i, entry := range receipt.Objects {
 		if entry.Kind != kinds[i] || len(validation.IsDNS1123Subdomain(entry.Name)) != 0 {
 			return nil, nil, fmt.Errorf("Sandbox bootstrap resource inventory is invalid")
@@ -108,9 +124,15 @@ func (r *AgentReconciler) saveSandboxBootstrap(ctx context.Context, object *core
 	if err != nil {
 		return err
 	}
-	base := object.DeepCopy()
 	object.Data[sandboxBootstrapReceiptKey] = string(raw)
-	return r.Patch(ctx, object, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{}))
+	patch, err := json.Marshal(map[string]any{
+		"metadata": map[string]any{"uid": object.UID, "resourceVersion": object.ResourceVersion},
+		"data":     object.Data,
+	})
+	if err != nil {
+		return err
+	}
+	return r.Patch(ctx, object, client.RawPatch(types.MergePatchType, patch))
 }
 
 func (r *AgentReconciler) bootstrapSandboxOwned(ctx context.Context, attempt *sandboxPreparationAttempt) error {
@@ -159,6 +181,17 @@ func (r *AgentReconciler) bootstrapSandboxOwned(ctx context.Context, attempt *sa
 				{Kind: "Secret", Name: agent.Spec.GatewayTokenSecretRef},
 			},
 		}
+		if config.SkillsCatalogConfigMapName != "" {
+			publication, err := r.readSandboxSkillsPublication(ctx, config.SkillsCatalogConfigMapName, attempt.team)
+			if err != nil {
+				return err
+			}
+			receipt.Version, receipt.Skills = "v2", publication
+			receipt.Objects = append(receipt.Objects,
+				sandboxBootstrapObject{Kind: "PersistentVolumeClaim", Name: config.SkillsClaimName},
+				sandboxBootstrapObject{Kind: "PersistentVolume", Name: sandboxSkillsVolumeName(agent.UID)})
+			attempt.sources = append(attempt.sources, publication.Catalog)
+		}
 		raw, err := json.Marshal(receipt)
 		if err != nil {
 			return err
@@ -188,6 +221,24 @@ func (r *AgentReconciler) bootstrapSandboxOwned(ctx context.Context, attempt *sa
 		receipt.AgentType != agent.Spec.Agent.Type {
 		return fmt.Errorf("%w: changing bootstrap storage, native type, Secret or chart requires an explicit handoff", sandboxworkload.ErrStorageTransitionRequired)
 	}
+	if receipt.Skills != nil {
+		if config.SkillsCatalogConfigMapName != receipt.Skills.Catalog.Name || config.SkillsClaimName != receipt.Objects[5].Name {
+			return fmt.Errorf("%w: recorded skills catalog or claim selection changed; recovery is required", sandboxworkload.ErrStorageTransitionRequired)
+		}
+		publication, err := r.readSandboxSkillsPublication(ctx, config.SkillsCatalogConfigMapName, attempt.team)
+		if err != nil {
+			return fmt.Errorf("recorded skills publication is unavailable; recovery is required: %w", err)
+		}
+		if !sameSandboxSkillsPublication(*publication, *receipt.Skills) {
+			return fmt.Errorf("%w: recorded skills publication changed; recovery is required", sandboxworkload.ErrStorageTransitionRequired)
+		}
+		// New receipts already added the source used before their first write.
+		if !slices.ContainsFunc(attempt.sources, func(source sandboxworkload.SourceReference) bool {
+			return sandboxSourceKey(source) == sandboxSourceKey(publication.Catalog)
+		}) {
+			attempt.sources = append(attempt.sources, publication.Catalog)
+		}
+	}
 	if !controllerutil.ContainsFinalizer(agent, sandbox.BootstrapFinalizer) {
 		if err := r.sandboxBootstrapGuard(ctx, attempt); err != nil {
 			return err
@@ -198,8 +249,10 @@ func (r *AgentReconciler) bootstrapSandboxOwned(ctx context.Context, attempt *sa
 			return err
 		}
 	}
-	desired := r.sandboxBootstrapObjects(agent, object, receipt)
-	for i, resource := range desired {
+	for i := range receipt.Objects {
+		// The static skills PV is created only after its PVC UID is durably recorded.
+		desired := r.sandboxBootstrapObjects(agent, object, receipt)
+		resource := desired[i]
 		if err := r.sandboxBootstrapGuard(ctx, attempt); err != nil {
 			return err
 		}
@@ -303,6 +356,9 @@ func (r *AgentReconciler) sandboxBootstrapObjects(agent *api.Agent, receiptObjec
 		&metav1.PartialObjectMetadata{TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Secret"},
 			ObjectMeta: metav1.ObjectMeta{Name: receipt.Objects[4].Name, Namespace: receipt.Namespace}},
 	}
+	if receipt.Skills != nil {
+		objects = append(objects, sandboxSkillsBootstrapObjects(receipt)...)
+	}
 	for _, object := range objects {
 		object.SetFinalizers([]string{sandbox.BootstrapFinalizer})
 		object.SetOwnerReferences([]metav1.OwnerReference{sandboxworkload.AgentOwner(agent.Name, agent.UID)})
@@ -323,6 +379,16 @@ func validateSandboxBootstrapObject(current, desired client.Object, uid types.UI
 	for key, value := range desired.GetAnnotations() {
 		if current.GetAnnotations()[key] != value {
 			return fmt.Errorf("Sandbox bootstrap resource differs from its recorded creation intent")
+		}
+	}
+	if expected, ok := desired.(*corev1.PersistentVolume); ok {
+		if err := validateSandboxSkillsVolume(current.(*corev1.PersistentVolume), expected); err != nil {
+			return err
+		}
+	}
+	if expected, ok := desired.(*corev1.PersistentVolumeClaim); ok && expected.Spec.VolumeName != "" {
+		if !equality.Semantic.DeepEqual(current.(*corev1.PersistentVolumeClaim).Spec, expected.Spec) {
+			return fmt.Errorf("%w: published skills claim differs from its recorded static binding; recovery is required", sandboxworkload.ErrStorageTransitionRequired)
 		}
 	}
 	if cleanup {

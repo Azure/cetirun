@@ -32,19 +32,20 @@ import (
 )
 
 // SandboxPrerequisites authorizes one native Agent generation and its existing
-// platform-owned storage and model Secret. It contains identities, never Secret
+// platform-owned storage and native authentication Secret. It contains identities, never Secret
 // contents. Revision also covers the approved chart, helpers and native inputs.
 type SandboxPrerequisites struct {
-	AgentUID        types.UID
-	AgentGeneration int64
-	Revision        string
-	ObservedAt      time.Time
-	NamespaceUID    types.UID
-	Home            sandboxworkload.ObjectIdentity
-	Skills          sandboxworkload.ObjectIdentity
-	RuntimeSecret   sandboxworkload.ObjectIdentity
-	ChartVersion    string
-	Helpers         sandboxworkload.Helpers
+	AgentUID           types.UID
+	AgentGeneration    int64
+	Revision           string
+	ObservedAt         time.Time
+	NamespaceUID       types.UID
+	Home               sandboxworkload.ObjectIdentity
+	Skills             sandboxworkload.ObjectIdentity
+	RuntimeSecret      sandboxworkload.ObjectIdentity
+	ChartVersion       string
+	Helpers            sandboxworkload.Helpers
+	PublicationSources []sandboxworkload.SourceReference `json:",omitempty"`
 }
 
 // SandboxPreparationSource is a trusted platform integration, not CR status or
