@@ -4,6 +4,8 @@
 package helm
 
 import (
+	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -82,6 +84,25 @@ func initGatewayMarker(t *testing.T, rendered map[string]string) (string, bool) 
 	return "", false
 }
 
+// openClawProvider returns the openai provider entry of the rendered OpenClaw
+// configuration.
+func openClawProvider(t *testing.T, rendered map[string]string) map[string]any {
+	t.Helper()
+	configMap := &corev1.ConfigMap{}
+	if err := yaml.Unmarshal([]byte(rendered["cetirun/templates/configmap.yaml"]), configMap); err != nil {
+		t.Fatal(err)
+	}
+	var config struct {
+		Models struct {
+			Providers map[string]map[string]any `json:"providers"`
+		} `json:"models"`
+	}
+	if err := json.Unmarshal([]byte(configMap.Data["openclaw.json"]), &config); err != nil {
+		t.Fatal(err)
+	}
+	return config.Models.Providers["openai"]
+}
+
 func TestAIGatewayChartWiring(t *testing.T) {
 	rendered, err := renderAIGateway(t, aiGatewayInput("openclaw", "openai"))
 	if err != nil {
@@ -89,6 +110,13 @@ func TestAIGatewayChartWiring(t *testing.T) {
 	}
 	if value, ok := initGatewayMarker(t, rendered); !ok || value != "true" {
 		t.Fatalf("init must know the Gateway owns the model list, got %q", value)
+	}
+	// The Gateway provider is bound to the virtual key: OpenClaw would
+	// otherwise prefer a stored openai profile over OPENAI_API_KEY.
+	provider := openClawProvider(t, rendered)
+	wantKey := map[string]any{"source": "env", "provider": "default", "id": "OPENAI_API_KEY"}
+	if provider["auth"] != "api-key" || !reflect.DeepEqual(provider["apiKey"], wantKey) {
+		t.Fatalf("the Gateway provider must bind OPENAI_API_KEY, got auth=%v apiKey=%v", provider["auth"], provider["apiKey"])
 	}
 	env := openAIKeyEnv(t, rendered)
 	if env == nil || env.ValueFrom == nil || env.ValueFrom.SecretKeyRef == nil {
@@ -126,6 +154,10 @@ func TestAIGatewayChartDisabledKeepsProviderKey(t *testing.T) {
 	// An openai provider with its own endpoint keeps its saved model list.
 	if value, ok := initGatewayMarker(t, rendered); ok {
 		t.Fatalf("init must not treat the model list as the Gateway's, got CETIRUN_AI_GATEWAY=%q", value)
+	}
+	// ...and its owner's choice of credentials.
+	if provider := openClawProvider(t, rendered); provider["apiKey"] != nil || provider["auth"] != nil {
+		t.Fatalf("a provider with its own endpoint must not be bound, got %v", provider)
 	}
 }
 

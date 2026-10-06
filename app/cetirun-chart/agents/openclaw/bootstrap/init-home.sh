@@ -59,10 +59,12 @@ agent_apply_config() (
   trap 'rm -f "$temp"' 0
   # CetiRun owns the model list of an Agent on the platform AI Gateway, which
   # the chart marks with CETIRUN_AI_GATEWAY, so that list replaces the saved
-  # one instead of accumulating models the Gateway no longer offers, and the
-  # retired in-agent Copilot sign-in profile is dropped. Any other
-  # configuration, an openai provider with its own endpoint included, keeps
-  # its saved models and their settings.
+  # one instead of accumulating models the Gateway no longer offers. So does
+  # the Gateway provider entry, which binds the Agent's virtual key: a key,
+  # auth mode or request override saved on that provider would otherwise be
+  # sent to the Gateway in its place. The retired in-agent Copilot sign-in
+  # profile is dropped. Any other configuration, other providers and an openai
+  # provider with its own endpoint included, keeps its saved settings.
   if [ "${CETIRUN_AI_GATEWAY:-false}" = true ]; then
     gateway=true
   else
@@ -73,6 +75,7 @@ agent_apply_config() (
     | reduce .[] as $item ({}; . * $item)
     | if $gateway then
         .agents.defaults.models = ($source.agents.defaults.models // {})
+        | if ($source.models.providers.openai | type) == "object" then .models.providers.openai = $source.models.providers.openai else . end
         | if (.auth.profiles | type) == "object" then .auth.profiles |= del(.["github-copilot:github"]) else . end
       else . end
     | if .channels.msteams.enabled then

@@ -46,8 +46,9 @@ Licensed under the MIT License.
 {{- /* Models the platform AI Gateway offers this Agent. Each becomes a model
    of the Gateway provider, with its limits, and is allowed; the rest of the
    configuration keeps naming the default model. */}}
+{{- $gatewayRouted := and (dig "enabled" false (.Values.aiGateway | default dict)) (eq $provider "openai") }}
 {{- $gatewayModels := list }}
-{{- if and (dig "enabled" false (.Values.aiGateway | default dict)) (eq $provider "openai") }}
+{{- if $gatewayRouted }}
 {{- $gatewayModels = dig "models" (list) .Values.aiGateway }}
 {{- end }}
 {{- /* Default model and compaction settings */}}
@@ -108,6 +109,14 @@ Licensed under the MIT License.
 {{- $providerModels = append $providerModels (dict "id" $model "name" $model) }}
 {{- end }}
 {{- $providerEntry := dict "baseUrl" .Values.secrets.apiBase "models" $providerModels }}
+{{- if $gatewayRouted }}
+{{- /* Bind the Gateway provider to the Agent's virtual key, which the chart
+   passes in OPENAI_API_KEY. OpenClaw otherwise prefers a stored openai
+   profile over that variable, and an upgraded home may keep the owner's
+   own: it would be sent to the Gateway instead. */}}
+{{- $_ := set $providerEntry "auth" "api-key" }}
+{{- $_ := set $providerEntry "apiKey" (dict "source" "env" "provider" "default" "id" "OPENAI_API_KEY") }}
+{{- end }}
 {{- $models := dig "models" (dict) $config }}
 {{- $providers := dig "providers" (dict) $models }}
 {{- $_ := set $providers $providerPrefix $providerEntry }}
