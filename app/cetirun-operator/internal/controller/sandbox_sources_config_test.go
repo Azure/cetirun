@@ -34,6 +34,12 @@ func TestParseSandboxSourcesConfig(t *testing.T) {
 		{name: "enabled", raw: sandboxSourcesConfigJSON, enabled: true},
 		{name: "bootstrap enabled", raw: strings.Replace(sandboxSourcesConfigJSON, `"enabled": true`, `"enabled": true, "bootstrapOwnedPrerequisites": true`, 1), enabled: true},
 		{name: "bootstrap requires sources", raw: `{"bootstrapOwnedPrerequisites":true}`, wantError: true},
+		{name: "catalog requires sources", raw: `{"skillsCatalogConfigMapName":"published-skills"}`, wantError: true},
+		{name: "catalog requires bootstrap", raw: strings.Replace(sandboxSourcesConfigJSON, `"enabled": true`, `"enabled": true, "skillsCatalogConfigMapName":"published-skills"`, 1), wantError: true},
+		{name: "invalid catalog type", raw: `{"skillsCatalogConfigMapName":true}`, wantError: true},
+		{name: "catalog enabled", raw: strings.Replace(sandboxSourcesConfigJSON, `"enabled": true`, `"enabled": true, "bootstrapOwnedPrerequisites":true, "skillsCatalogConfigMapName":"published-skills"`, 1), enabled: true},
+		{name: "invalid catalog name", raw: strings.Replace(sandboxSourcesConfigJSON, `"enabled": true`, `"enabled": true, "bootstrapOwnedPrerequisites":true, "skillsCatalogConfigMapName":"Bad/Name"`, 1), wantError: true},
+		{name: "catalog shares platform document", raw: strings.Replace(sandboxSourcesConfigJSON, `"enabled": true`, `"enabled": true, "bootstrapOwnedPrerequisites":true, "skillsCatalogConfigMapName":"sandbox-platform"`, 1), wantError: true},
 		{name: "invalid bootstrap type", raw: `{"enabled":false,"bootstrapOwnedPrerequisites":"true"}`, wantError: true},
 		{name: "malformed", raw: "{", wantError: true},
 		{name: "null object", raw: "null", wantError: true},
@@ -93,6 +99,9 @@ func TestSandboxSourcesFactoryUsesAuthoritativeReadersWithoutFencing(t *testing.
 	}
 	if prerequisites.WriterExclusion != nil {
 		t.Fatal("startup installed unqualified writer-exclusion evidence")
+	}
+	if prerequisites.OperatorNamespace != "platform-system" || prerequisites.SkillsCatalogConfigMapName != "" {
+		t.Fatal("factory changed the catalog namespace or enabled publication by default")
 	}
 	if prepare.Installer != installer || prepare.AdmissionServiceAccount != config.AdmissionServiceAccount {
 		t.Fatal("factory changed the installer or admission identity")

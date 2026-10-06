@@ -105,6 +105,7 @@ func (r *AgentReconciler) sandboxPreparationInput(ctx context.Context, attempt *
 		sandboxSource(runtimeClass, "node.k8s.io/v1", "RuntimeClass"),
 		sandboxSource(storageClass, "storage.k8s.io/v1", "StorageClass"),
 	)
+	attempt.sources = append(attempt.sources, inputs.PublicationSources...)
 	// Recheck captured versions before applying grants/workloads or accepting
 	// read-only reuse; durable bookkeeping can precede those checks.
 	return nil
