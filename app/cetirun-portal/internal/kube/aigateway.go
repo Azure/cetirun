@@ -60,7 +60,9 @@ func IsConflict(err error) bool {
 
 // SetCopilotModels records the owner's GitHub Copilot models and the time of
 // the sign-in on the Agent for the operator. It writes only when the Agent
-// still has the given UID.
+// still has the given UID, with a merge patch of just these annotations under
+// the Agent's resource version, so fields this Portal's types do not know
+// survive, as with the other instance writers.
 func (c *Client) SetCopilotModels(ctx context.Context, instanceName string, uid types.UID, models []cetirunv1alpha1.CopilotModel) error {
 	raw, err := json.Marshal(models)
 	if err != nil {
@@ -74,6 +76,7 @@ func (c *Client) SetCopilotModels(ctx context.Context, instanceName string, uid 
 		if instance.UID != uid || instance.DeletionTimestamp != nil {
 			return ErrAgentReplaced
 		}
+		before := instance.DeepCopy()
 		if instance.Annotations == nil {
 			instance.Annotations = map[string]string{}
 		}
@@ -81,7 +84,7 @@ func (c *Client) SetCopilotModels(ctx context.Context, instanceName string, uid 
 		// A new value on every sign-in wakes the operator even when the
 		// account's models did not change.
 		instance.Annotations[cetirunv1alpha1.AnnotationCopilotSignedInAt] = time.Now().UTC().Format(time.RFC3339Nano)
-		return c.client.Update(ctx, instance)
+		return c.client.Patch(ctx, instance, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{}))
 	})
 }
 
