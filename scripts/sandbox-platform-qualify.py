@@ -175,10 +175,17 @@ def pod(namespace, run, role, image, runtime_class):
     }
 
 
-def wait_ready(kube, namespace, name, timeout=180):
+def verify_pod_identity(value, expected_uid):
+    metadata = value.get("metadata", {})
+    if metadata.get("uid") != expected_uid or metadata.get("deletionTimestamp"):
+        raise QualificationError("Synthetic Pod identity changed or is terminating")
+
+
+def wait_ready(kube, namespace, name, expected_uid, timeout=180):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         value = kube.get("pod", name, namespace)
+        verify_pod_identity(value, expected_uid)
         if value.get("status", {}).get("phase") in ("Failed", "Succeeded"):
             raise QualificationError("Synthetic probe exited before its readiness check")
         if any(c.get("type") == "Ready" and c.get("status") == "True"
@@ -255,10 +262,15 @@ def network_smoke(kube, image, runtime_class, result):
         raise QualificationError("Namespace creation identity is unknown; do not adopt or delete by name")
     failure = None
     try:
+        pod_uids = {}
         for role in ("server", "probe"):
-            kube.create(pod(namespace, run, role, image, runtime_class))
-        server = wait_ready(kube, namespace, "server")
-        probe = wait_ready(kube, namespace, "probe")
+            created_pod = kube.create(pod(namespace, run, role, image, runtime_class))
+            pod_uid = created_pod.get("metadata", {}).get("uid")
+            if not isinstance(pod_uid, str) or not pod_uid.strip():
+                raise QualificationError("Synthetic Pod creation identity is unknown; no test results may be accepted")
+            pod_uids[role] = pod_uid
+        server = wait_ready(kube, namespace, "server", pod_uids["server"])
+        wait_ready(kube, namespace, "probe", pod_uids["probe"])
         address = server.get("status", {}).get("podIP", "")
         if not address:
             raise QualificationError("Synthetic server has no Pod IP")
@@ -287,9 +299,9 @@ def network_smoke(kube, image, runtime_class, result):
         wait_connectivity(kube, namespace, address, [False, True, True])
         result["networkChecks"]["overlappingAllowObserved"] = True
         result["networkChecks"]["denyOverOverlappingAllow"] = True
-        current = kube.get("pod", "probe", namespace)
-        if current.get("metadata", {}).get("uid") != probe.get("metadata", {}).get("uid"):
-            raise QualificationError("Probe Pod was replaced during the test")
+        for role, pod_uid in pod_uids.items():
+            verify_pod_identity(kube.get("pod", role, namespace), pod_uid)
+        result["networkChecks"]["unchangedServerIdentity"] = True
         result["networkChecks"]["unchangedProbeIdentity"] = True
     except QualificationError as error:
         failure = error

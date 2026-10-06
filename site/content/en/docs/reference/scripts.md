@@ -168,6 +168,10 @@ probe checks all three listeners, with a one-second connection timeout and a
 five-second total probe timeout. The baseline waits for server readiness within
 the existing 180-second readiness window; container startup alone is not
 readiness. On dual-stack targets this test exercises the primary Pod IP only.
+The helper retains each server and probe Pod UID from its create response.
+Every readiness observation and both final identity checks must match those
+creation UIDs and must not be terminating. Missing creation identities or
+same-name replacements fail the run; readiness cannot authorize a replacement.
 Only a TCP connection timeout can count as blocked; connection refusal,
 unexpected HTTP responses and failures after connecting fail the probe.
 The Cilium policy initially allows port 8081, explicitly denies 8080, and leaves

@@ -42,6 +42,7 @@ class FakeKubernetes:
         self.replace_namespace = False
         self.replace_probe = False
         self.fail_probe = False
+        self.pod_uids = {"server": "created-server", "probe": "created-probe"}
 
     def check_target(self):
         self.target_checks += 1
@@ -59,7 +60,7 @@ class FakeKubernetes:
         if resource == "crd":
             return {"status": {"conditions": [{"type": "Established", "status": "True" if self.crd_ready else "False"}]}}
         if resource == "pod":
-            return {"metadata": {"uid": "changed" if self.replace_probe else name},
+            return {"metadata": {"uid": "changed" if self.replace_probe else self.pod_uids[name]},
                     "status": {"podIP": self.address, "phase": "Running", "conditions": [{"type": "Ready", "status": "True"}]}}
         raise AssertionError(resource)
 
@@ -68,6 +69,8 @@ class FakeKubernetes:
         if value["kind"] == "Namespace":
             self.namespace = {"metadata": {**value["metadata"], "uid": "namespace-uid", "resourceVersion": "1"}}
             return self.namespace
+        if value["kind"] == "Pod":
+            return {**value, "metadata": {**value["metadata"], "uid": self.pod_uids[value["metadata"]["name"]]}}
         return value
 
     def run(self, args, document=None, timeout=30):
@@ -177,12 +180,13 @@ class SandboxPlatformQualificationTests(unittest.TestCase):
 
     def test_listener_readiness_timeout_is_bounded(self):
         kube = FakeKubernetes()
-        pending = {"status": {"phase": "Running", "conditions": [{"type": "Ready", "status": "False"}]}}
+        pending = {"metadata": {"uid": "created-server"},
+                   "status": {"phase": "Running", "conditions": [{"type": "Ready", "status": "False"}]}}
         with patch.object(kube, "get", return_value=pending), \
              patch.object(qualify.time, "monotonic", side_effect=[0, 0, 181]), \
              patch.object(qualify.time, "sleep"):
             with self.assertRaisesRegex(qualify.QualificationError, "readiness timed out"):
-                qualify.wait_ready(kube, "test-namespace", "server")
+                qualify.wait_ready(kube, "test-namespace", "server", "created-server")
         self.assertEqual(kube.probe_calls, 0)
 
     def test_listener_readiness_rejects_each_missing_port(self):
@@ -273,11 +277,105 @@ class SandboxPlatformQualificationTests(unittest.TestCase):
         qualify.network_smoke(kube, IMAGE, "kata-vm-isolation", result)
         self.assertTrue(result["cleanupComplete"])
         self.assertTrue(all(result["networkChecks"].values()))
+        self.assertTrue(result["networkChecks"]["unchangedServerIdentity"])
+        self.assertTrue(result["networkChecks"]["unchangedProbeIdentity"])
         self.assertEqual([obj["kind"] for obj in kube.created],
                          ["Namespace", "Pod", "Pod", "CiliumNetworkPolicy", "NetworkPolicy"])
         _, options = kube.deleted[0]
         self.assertEqual(options["preconditions"], {"uid": "namespace-uid", "resourceVersion": "1"})
         self.assertEqual(kube.target_checks, 2)
+
+    def test_created_pods_cannot_be_replaced_before_readiness(self):
+        for role in ("server", "probe"):
+            with self.subTest(role=role):
+                kube = FakeKubernetes()
+                original_get = kube.get
+
+                def get(resource, name, namespace=None, absent_ok=False):
+                    value = original_get(resource, name, namespace, absent_ok)
+                    if resource == "pod" and name == role:
+                        value["metadata"]["uid"] = "replacement-" + role
+                        value["spec"] = {"runtimeClassName": "runc"}
+                    return value
+
+                result = {}
+                with patch.object(kube, "get", side_effect=get):
+                    with self.assertRaisesRegex(qualify.QualificationError, "Pod identity"):
+                        qualify.network_smoke(kube, IMAGE, "kata-vm-isolation", result)
+                self.assertEqual(kube.probe_calls, 0)
+                self.assertNotIn("networkChecks", result)
+                self.assertTrue(result["cleanupComplete"])
+
+    def test_created_pods_cannot_be_replaced_during_readiness(self):
+        for role in ("server", "probe"):
+            with self.subTest(role=role):
+                kube = FakeKubernetes()
+                original_get = kube.get
+                reads = 0
+
+                def get(resource, name, namespace=None, absent_ok=False):
+                    nonlocal reads
+                    value = original_get(resource, name, namespace, absent_ok)
+                    if resource == "pod" and name == role:
+                        reads += 1
+                        if reads == 1:
+                            value["status"]["conditions"][0]["status"] = "False"
+                        else:
+                            value["metadata"]["uid"] = "replacement-" + role
+                    return value
+
+                result = {}
+                with patch.object(kube, "get", side_effect=get), patch.object(qualify.time, "sleep"):
+                    with self.assertRaisesRegex(qualify.QualificationError, "Pod identity"):
+                        qualify.network_smoke(kube, IMAGE, "kata-vm-isolation", result)
+                self.assertEqual(reads, 2)
+                self.assertEqual(kube.probe_calls, 0)
+                self.assertTrue(result["cleanupComplete"])
+
+    def test_final_checks_pin_both_created_pods(self):
+        for role in ("server", "probe"):
+            with self.subTest(role=role):
+                kube = FakeKubernetes()
+                original_get = kube.get
+
+                def get(resource, name, namespace=None, absent_ok=False):
+                    value = original_get(resource, name, namespace, absent_ok)
+                    if resource == "pod" and name == role and kube.probe_calls == 3:
+                        value["metadata"]["uid"] = "replacement-" + role
+                    return value
+
+                result = {}
+                with patch.object(kube, "get", side_effect=get):
+                    with self.assertRaisesRegex(qualify.QualificationError, "Pod identity"):
+                        qualify.network_smoke(kube, IMAGE, "kata-vm-isolation", result)
+                self.assertNotIn("unchangedProbeIdentity", result["networkChecks"])
+                self.assertNotIn("unchangedServerIdentity", result["networkChecks"])
+                self.assertTrue(result["cleanupComplete"])
+
+    def test_missing_creation_uid_never_becomes_readiness_authority(self):
+        for role in ("server", "probe"):
+            for invalid in (None, "", " ", 42):
+                with self.subTest(role=role, uid=invalid):
+                    kube = FakeKubernetes()
+                    original_create = kube.create
+
+                    def create(value):
+                        created = original_create(value)
+                        if value["kind"] == "Pod" and value["metadata"]["name"] == role:
+                            created["metadata"]["uid"] = invalid
+                        return created
+
+                    result = {}
+                    with patch.object(kube, "create", side_effect=create):
+                        with self.assertRaisesRegex(qualify.QualificationError, "creation identity"):
+                            qualify.network_smoke(kube, IMAGE, "kata-vm-isolation", result)
+                    self.assertEqual(kube.probe_calls, 0)
+                    self.assertTrue(result["cleanupComplete"])
+
+    def test_terminating_created_pod_cannot_satisfy_identity_checks(self):
+        value = {"metadata": {"uid": "created-probe", "deletionTimestamp": "2026-01-01T00:00:00Z"}}
+        with self.assertRaisesRegex(qualify.QualificationError, "terminating"):
+            qualify.verify_pod_identity(value, "created-probe")
 
     def test_precedence_waits_for_allow_policy_witness(self):
         kube = FakeKubernetes()
