@@ -28,6 +28,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 
 	istiov1beta1 "istio.io/client-go/pkg/apis/networking/v1beta1"
@@ -1136,6 +1137,23 @@ func TestDeleteAIGatewayKeyRevokesAKeyCreatedBeforeItsStatus(t *testing.T) {
 	r2.AIGateway.Enabled = false
 	if err := r2.deleteAIGatewayKey(context.Background(), other); err != nil || len(gateway2.deletedAliases) != 0 || len(gateway2.deletedTokens) != 0 {
 		t.Fatalf("another Agent's Secret must not trigger revocation: %v %v %v", err, gateway2.deletedAliases, gateway2.deletedTokens)
+	}
+
+	// An Agent that was never provisioned has no namespace: finalizing it
+	// must not need Secret access, which a restricted controller lacks.
+	sparse := aiGatewayTestAgent(testAIGatewayTeam)
+	r3, _, gateway3 := aiGatewayTestReconciler(t, sparse)
+	r3.AIGateway.Enabled = false
+	r3.Client = interceptor.NewClient(r3.Client.(client.WithWatch), interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if _, ok := obj.(*corev1.Secret); ok {
+				return apierrors.NewForbidden(corev1.Resource("secrets"), key.Name, errors.New("no Secret access"))
+			}
+			return c.Get(ctx, key, obj, opts...)
+		},
+	})
+	if err := r3.deleteAIGatewayKey(context.Background(), sparse); err != nil || len(gateway3.deletedAliases) != 0 {
+		t.Fatalf("an Agent without a namespace must be finalized without reading Secrets: %v %v", err, gateway3.deletedAliases)
 	}
 }
 

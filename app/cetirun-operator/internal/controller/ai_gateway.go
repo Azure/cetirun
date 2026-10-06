@@ -641,10 +641,20 @@ func (r *AgentReconciler) deleteAIGatewayKey(ctx context.Context, instance *ceti
 }
 
 // aiGatewayKeySecretHeld reports whether the Agent's namespace holds its
-// virtual key Secret, labelled with this Agent's UID.
+// virtual key Secret, labelled with this Agent's UID. A namespace that does
+// not exist holds none: that is established first, with the namespace read
+// the deletion path already needs, so an Agent that was never provisioned is
+// finalized without any access to Secrets.
 func (r *AgentReconciler) aiGatewayKeySecretHeld(ctx context.Context, instance *cetirunv1alpha1.Agent) (bool, error) {
+	namespace := instanceNamespace(instance.Name)
+	if err := r.customReader().Get(ctx, types.NamespacedName{Name: namespace}, &corev1.Namespace{}); err != nil {
+		if apierrors.IsNotFound(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("get Agent namespace: %w", err)
+	}
 	secret := &corev1.Secret{}
-	err := r.Get(ctx, types.NamespacedName{Namespace: instanceNamespace(instance.Name), Name: aiGatewayKeySecretName}, secret)
+	err := r.Get(ctx, types.NamespacedName{Namespace: namespace, Name: aiGatewayKeySecretName}, secret)
 	if apierrors.IsNotFound(err) {
 		return false, nil
 	}
