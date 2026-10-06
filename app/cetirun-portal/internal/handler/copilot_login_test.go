@@ -17,6 +17,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-portal/internal/config"
@@ -33,6 +34,8 @@ type fakeGitHubServer struct {
 	// onPoll runs once while a token poll is waiting on GitHub, before it is
 	// answered: what the owner does in another tab meanwhile.
 	onPoll func()
+	// models is the model list GitHub returns, when not the default one.
+	models string
 }
 
 func (f *fakeGitHubServer) start(t *testing.T) *copilot.Client {
@@ -65,6 +68,10 @@ func (f *fakeGitHubServer) start(t *testing.T) *copilot.Client {
 		_ = json.NewEncoder(w).Encode(map[string]any{"token": "copilot-token", "endpoints": map[string]string{"api": server.URL}})
 	})
 	mux.HandleFunc("GET /models", func(w http.ResponseWriter, r *http.Request) {
+		if f.models != "" {
+			_, _ = w.Write([]byte(f.models))
+			return
+		}
 		_, _ = w.Write([]byte(`{"data":[{"id":"gpt-5.5","name":"GPT-5.5","capabilities":{"type":"chat","limits":{"max_context_window_tokens":400000,"max_output_tokens":128000}}},{"id":"claude-sonnet-4.5","capabilities":{"type":"chat"}}]}`))
 	})
 	t.Cleanup(server.Close)
@@ -167,6 +174,25 @@ func (f *loginFixture) agent() *cetirunv1alpha1.Agent {
 		f.t.Fatal(err)
 	}
 	return agent
+}
+
+// stallAfter pauses the first write that match accepts right after it is
+// stored, while meanwhile runs: the replica that made it stalls there.
+func (f *loginFixture) stallAfter(match func(client.Object) bool, meanwhile func()) {
+	f.t.Helper()
+	stalled := false
+	wrapped := interceptor.NewClient(f.fc.(client.WithWatch), interceptor.Funcs{
+		Update: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+			if err := c.Update(ctx, obj, opts...); err != nil || stalled || !match(obj) {
+				return err
+			}
+			stalled = true
+			meanwhile()
+			return nil
+		},
+	})
+	f.fc = wrapped
+	f.h.Kube = kube.NewClient(wrapped)
 }
 
 func TestCopilotLoginStoresTokenAndModels(t *testing.T) {
@@ -468,6 +494,87 @@ func TestCopilotLoginBeingCompletedHoldsOffStartAndCancel(t *testing.T) {
 	}
 	if w, resp := f.call(http.MethodPost, "alice"); w.Code != http.StatusOK || resp.State != copilotLoginPending {
 		t.Fatalf("a new sign-in after the lease: status %d %+v", w.Code, resp)
+	}
+}
+
+// A replica completing a sign-in can stall past its lease, after which the
+// owner can start, cancel or end the sign-in. Whatever the owner did then must
+// stand when the stalled replica resumes: its token and models are fenced at
+// the point they would be stored, not by the lease.
+func TestCopilotLoginStalledCompletionIsFenced(t *testing.T) {
+	committed := func(obj client.Object) bool {
+		secret, ok := obj.(*corev1.Secret)
+		return ok && secret.Name == copilotLoginSecretName && string(secret.Data[loginState]) == copilotLoginCompleting
+	}
+	storedToken := func(obj client.Object) bool {
+		secret, ok := obj.(*corev1.Secret)
+		return ok && secret.Name == cetirunv1alpha1.CopilotTokenSecretName &&
+			string(secret.Data[cetirunv1alpha1.CopilotTokenSecretKey]) == "gho_alice"
+	}
+	const bobModels = `{"data":[{"id":"bob-model","capabilities":{"type":"chat"}}]}`
+	signInAsBob := func(f *loginFixture) {
+		f.t.Helper()
+		if w, _ := f.call(http.MethodPost, "alice"); w.Code != http.StatusOK {
+			f.t.Fatalf("a new sign-in after the lease: status %d %s", w.Code, w.Body.String())
+		}
+		f.gh.answers, f.gh.models = []map[string]any{{"access_token": "gho_bob"}}, bobModels
+		f.clock = f.clock.Add(6 * time.Second)
+		if _, resp := f.call(http.MethodGet, "alice"); resp.State != copilotLoginSucceeded {
+			f.t.Fatalf("the new sign-in must complete: %+v", resp)
+		}
+	}
+	for _, tc := range []struct {
+		name       string
+		stallAfter func(client.Object) bool
+		meanwhile  func(*loginFixture)
+		wantToken  string
+		wantModels string
+		wantState  string
+	}{
+		{name: "a newer sign-in after the commit", stallAfter: committed, meanwhile: signInAsBob,
+			wantToken: "gho_bob", wantModels: "bob-model", wantState: copilotLoginSucceeded},
+		{name: "a newer sign-in after the token was stored", stallAfter: storedToken, meanwhile: signInAsBob,
+			wantToken: "gho_bob", wantModels: "bob-model", wantState: copilotLoginSucceeded},
+		{name: "a new start after the commit", stallAfter: committed, wantState: copilotLoginPending,
+			meanwhile: func(f *loginFixture) {
+				if w, _ := f.call(http.MethodPost, "alice"); w.Code != http.StatusOK {
+					f.t.Fatalf("a new sign-in after the lease: status %d", w.Code)
+				}
+			}},
+		{name: "a cancel after the commit", stallAfter: committed, wantState: copilotLoginNone,
+			meanwhile: func(f *loginFixture) {
+				if w, _ := f.call(http.MethodDelete, "alice"); w.Code != http.StatusNoContent {
+					f.t.Fatalf("cancel after the lease: status %d", w.Code)
+				}
+			}},
+		{name: "the sign-in reported as failed", stallAfter: committed, wantState: copilotLoginFailed,
+			meanwhile: func(f *loginFixture) {
+				if _, resp := f.call(http.MethodGet, "alice"); resp.State != copilotLoginFailed {
+					f.t.Fatalf("the abandoned sign-in must be reported as failed: %+v", resp)
+				}
+			}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newLoginFixture(t)
+			f.call(http.MethodPost, "alice")
+			f.gh.answers = []map[string]any{{"access_token": "gho_alice"}}
+			f.stallAfter(tc.stallAfter, func() {
+				f.clock = f.clock.Add(copilotLoginLease + time.Second)
+				tc.meanwhile(f)
+			})
+			f.clock = f.clock.Add(6 * time.Second)
+			_, resp := f.call(http.MethodGet, "alice")
+			if resp.State != tc.wantState {
+				t.Fatalf("the stalled completion must report what happened meanwhile, %q, got %+v", tc.wantState, resp)
+			}
+			if token := string(f.secret(cetirunv1alpha1.CopilotTokenSecretName).Data[cetirunv1alpha1.CopilotTokenSecretKey]); token != tc.wantToken {
+				t.Fatalf("stored token %q, want %q", token, tc.wantToken)
+			}
+			models := f.agent().Annotations[cetirunv1alpha1.AnnotationCopilotModels]
+			if tc.wantModels == "" && models != "" || !strings.Contains(models, tc.wantModels) || strings.Contains(models, "gpt-5.5") {
+				t.Fatalf("recorded models %q, want %q only", models, tc.wantModels)
+			}
+		})
 	}
 }
 

@@ -115,7 +115,7 @@ func TestPortalPatchesPreserveFutureFields(t *testing.T) {
 			// The GitHub Copilot sign-in records the account's models.
 			name: "copilot-models", copilot: true,
 			run: func(c *Client, object client.Object) (client.Object, error) {
-				if err := c.SetCopilotModels(ctx, object.GetName(), object.GetUID(), []api.CopilotModel{{ID: "gpt-5.5"}}); err != nil {
+				if err := c.SetCopilotModels(ctx, object.GetName(), object.GetUID(), []api.CopilotModel{{ID: "gpt-5.5"}}, nil); err != nil {
 					return nil, err
 				}
 				return c.GetInstanceByName(ctx, object.GetName())

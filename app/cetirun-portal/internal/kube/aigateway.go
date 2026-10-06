@@ -62,8 +62,10 @@ func IsConflict(err error) bool {
 // the sign-in on the Agent for the operator. It writes only when the Agent
 // still has the given UID, with a merge patch of just these annotations under
 // the Agent's resource version, so fields this Portal's types do not know
-// survive, as with the other instance writers.
-func (c *Client) SetCopilotModels(ctx context.Context, instanceName string, uid types.UID, models []cetirunv1alpha1.CopilotModel) error {
+// survive, as with the other instance writers. current, when given, runs
+// after each read of the Agent and stops the write with its error; a write
+// that another one overtakes conflicts and runs it again.
+func (c *Client) SetCopilotModels(ctx context.Context, instanceName string, uid types.UID, models []cetirunv1alpha1.CopilotModel, current func(context.Context) error) error {
 	raw, err := json.Marshal(models)
 	if err != nil {
 		return err
@@ -75,6 +77,11 @@ func (c *Client) SetCopilotModels(ctx context.Context, instanceName string, uid 
 		}
 		if instance.UID != uid || instance.DeletionTimestamp != nil {
 			return ErrAgentReplaced
+		}
+		if current != nil {
+			if err := current(ctx); err != nil {
+				return err
+			}
 		}
 		before := instance.DeepCopy()
 		if instance.Annotations == nil {
