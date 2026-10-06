@@ -69,9 +69,11 @@ cetirun-ai-gateway:
   # The operator reaches the Gateway as cetirun-ai-gateway and reads its master
   # key from the cetirun-ai-gateway-auth Secret, so keep this name.
   fullnameOverride: cetirun-ai-gateway
-  # -- Shared models every OpenClaw Agent can use. None is valid: OpenClaw
-  # Agents then use their owners' GitHub Copilot, and administrators can add
-  # shared models through the Gateway console later. With
+  # -- Shared models every OpenClaw Agent can use. Each needs
+  # model_info.access_groups: ["cetirun-shared"] and, while the Gateway blocks
+  # unpriced models, a price; see the README for an example. None is valid:
+  # OpenClaw Agents then use their owners' GitHub Copilot, and administrators
+  # can add shared models through the Gateway console later. With
   # cetirun-operator.aiGateway.copilotProxy.enabled false, the Portal creates
   # no OpenClaw Agent until a shared model is offered.
   models: []
