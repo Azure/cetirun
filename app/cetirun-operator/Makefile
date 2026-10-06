@@ -16,7 +16,7 @@ LDFLAGS := -X github.com/Azure/CetiRun/app/cetirun-operator/internal/buildinfo.V
 CONTROLLER_GEN_VERSION := v0.21.0
 CONTROLLER_GEN ?= controller-gen
 
-.PHONY: all build build-terminal test vet fmt lint docker-build docker-push install-crd \
+.PHONY: all build build-terminal build-node-guard test vet fmt lint docker-build docker-push install-crd \
 	tools generate manifests check-controller-gen sync-crds check-crds \
 	verify-generated test-envtest test-sandbox-integration
 
@@ -34,6 +34,10 @@ build:
 ## Build the independent Custom terminal entrypoint
 build-terminal:
 	CGO_ENABLED=$(CGO_ENABLED) go build $(GOFLAGS) -o bin/terminal ./cmd/terminal
+
+## Build the standalone opt-in node guard prototype; not part of operator startup
+build-node-guard:
+	CGO_ENABLED=$(CGO_ENABLED) go build $(GOFLAGS) -o bin/sandbox-node-guard ./cmd/sandbox-node-guard
 
 ## Run unit tests
 test:
