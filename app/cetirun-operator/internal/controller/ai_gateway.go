@@ -604,7 +604,17 @@ func labelAgentSecret(secret *corev1.Secret, instance *cetirunv1alpha1.Agent) {
 // all there is nothing to call, which is reported as a warning event.
 func (r *AgentReconciler) deleteAIGatewayKey(ctx context.Context, instance *cetirunv1alpha1.Agent) error {
 	if instance.Status.AIGateway == nil && !r.AIGateway.Enabled {
-		return nil
+		// No status does not prove there is no key: the operator writes the
+		// key Secret and the Gateway key before it saves the status. The
+		// Secret is the only record left once the namespace is deleted, so
+		// revoke whenever this Agent's Secret exists.
+		held, err := r.aiGatewayKeySecretHeld(ctx, instance)
+		if err != nil {
+			return err
+		}
+		if !held {
+			return nil
+		}
 	}
 	err := r.revokeAIGatewayKey(ctx, instance)
 	if err != nil && !r.AIGateway.Enabled {
@@ -615,6 +625,20 @@ func (r *AgentReconciler) deleteAIGatewayKey(ctx context.Context, instance *ceti
 		return nil
 	}
 	return err
+}
+
+// aiGatewayKeySecretHeld reports whether the Agent's namespace holds its
+// virtual key Secret, labelled with this Agent's UID.
+func (r *AgentReconciler) aiGatewayKeySecretHeld(ctx context.Context, instance *cetirunv1alpha1.Agent) (bool, error) {
+	secret := &corev1.Secret{}
+	err := r.Get(ctx, types.NamespacedName{Namespace: instanceNamespace(instance.Name), Name: aiGatewayKeySecretName}, secret)
+	if apierrors.IsNotFound(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("get AI Gateway key Secret: %w", err)
+	}
+	return secret.Labels[aiGatewayAgentUIDLabel] == string(instance.UID), nil
 }
 
 func (r *AgentReconciler) revokeAIGatewayKey(ctx context.Context, instance *cetirunv1alpha1.Agent) error {

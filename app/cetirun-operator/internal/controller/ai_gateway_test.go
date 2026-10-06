@@ -1081,6 +1081,32 @@ func TestDeleteAIGatewayKeyBlocksOnFailureAndSkipsWhenUnused(t *testing.T) {
 	}
 }
 
+// The operator writes the key Secret and creates the Gateway key before it
+// saves the Agent's status. A deletion that finds no status must still
+// revoke that key while a Gateway is configured, even after the deployment
+// turned the feature off: the namespace deletion removes the only record.
+func TestDeleteAIGatewayKeyRevokesAKeyCreatedBeforeItsStatus(t *testing.T) {
+	agent := aiGatewayTestAgent(testAIGatewayTeam)
+	value := mustKeyValue(t)
+	r, _, gateway := aiGatewayTestReconciler(t, agent, aiGatewayNamespace(), keySecret(testAIGatewayUID, value))
+	r.AIGateway.Enabled = false
+	gateway.keys[aigateway.Token(value)] = &aigateway.Key{Alias: aiGatewayKeyAlias(agent)}
+	if err := r.deleteAIGatewayKey(context.Background(), agent); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(gateway.deletedTokens, []string{aigateway.Token(value)}) || len(gateway.keys) != 0 {
+		t.Fatalf("the key must be revoked: tokens=%v keys=%d", gateway.deletedTokens, len(gateway.keys))
+	}
+
+	// A Secret of another Agent under the same name is not this Agent's key.
+	other := aiGatewayTestAgent(testAIGatewayTeam)
+	r2, _, gateway2 := aiGatewayTestReconciler(t, other, aiGatewayNamespace(), keySecret("uid-of-another-agent", mustKeyValue(t)))
+	r2.AIGateway.Enabled = false
+	if err := r2.deleteAIGatewayKey(context.Background(), other); err != nil || len(gateway2.deletedAliases) != 0 || len(gateway2.deletedTokens) != 0 {
+		t.Fatalf("another Agent's Secret must not trigger revocation: %v %v %v", err, gateway2.deletedAliases, gateway2.deletedTokens)
+	}
+}
+
 func TestParseAIGatewayConfig(t *testing.T) {
 	env := func(values map[string]string) func(string) string {
 		return func(key string) string { return values[key] }
