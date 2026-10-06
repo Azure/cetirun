@@ -6,6 +6,7 @@ package helm
 import (
 	"encoding/json"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -84,6 +85,16 @@ func initGatewayMarker(t *testing.T, rendered map[string]string) (string, bool) 
 	return "", false
 }
 
+// openClawInitContainers returns the init containers of the rendered workload.
+func openClawInitContainers(t *testing.T, rendered map[string]string) []corev1.Container {
+	t.Helper()
+	sts := &appsv1.StatefulSet{}
+	if err := yaml.Unmarshal([]byte(rendered["cetirun/templates/statefulset.yaml"]), sts); err != nil {
+		t.Fatal(err)
+	}
+	return sts.Spec.Template.Spec.InitContainers
+}
+
 // openClawProvider returns the openai provider entry of the rendered OpenClaw
 // configuration.
 func openClawProvider(t *testing.T, rendered map[string]string) map[string]any {
@@ -117,6 +128,26 @@ func TestAIGatewayChartWiring(t *testing.T) {
 	wantKey := map[string]any{"source": "env", "provider": "default", "id": "OPENAI_API_KEY"}
 	if provider["auth"] != "api-key" || !reflect.DeepEqual(provider["apiKey"], wantKey) {
 		t.Fatalf("the Gateway provider must bind OPENAI_API_KEY, got auth=%v apiKey=%v", provider["auth"], provider["apiKey"])
+	}
+	// The sign-in the retired in-agent helper left in the home is removed
+	// once, after doctor imported the auth profile files of earlier versions.
+	containers := openClawInitContainers(t, rendered)
+	var names []string
+	var retire *corev1.Container
+	for i := range containers {
+		names = append(names, containers[i].Name)
+		if containers[i].Name == "retire-copilot-sign-in" {
+			retire = &containers[i]
+		}
+	}
+	if doctor, retirement := slices.Index(names, "doctor"), slices.Index(names, "retire-copilot-sign-in"); doctor < 0 || retirement != doctor+1 {
+		t.Fatalf("the retirement must run right after doctor, init containers %v", names)
+	}
+	if !slices.Equal(retire.Command, []string{"/bin/sh", "/etc/cetirun/retire-copilot-sign-in.sh"}) {
+		t.Fatalf("retirement command %v", retire.Command)
+	}
+	if !strings.Contains(rendered["cetirun/templates/configmap.yaml"], "retire-copilot-sign-in.sh: |") {
+		t.Fatal("the retirement script is not in the ConfigMap")
 	}
 	env := openAIKeyEnv(t, rendered)
 	if env == nil || env.ValueFrom == nil || env.ValueFrom.SecretKeyRef == nil {
@@ -158,6 +189,11 @@ func TestAIGatewayChartDisabledKeepsProviderKey(t *testing.T) {
 	// ...and its owner's choice of credentials.
 	if provider := openClawProvider(t, rendered); provider["apiKey"] != nil || provider["auth"] != nil {
 		t.Fatalf("a provider with its own endpoint must not be bound, got %v", provider)
+	}
+	for _, container := range openClawInitContainers(t, rendered) {
+		if container.Name == "retire-copilot-sign-in" {
+			t.Fatal("without the Gateway the in-agent sign-in is the Agent's own and stays")
+		}
 	}
 }
 

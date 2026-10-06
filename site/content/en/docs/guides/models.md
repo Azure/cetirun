@@ -52,6 +52,24 @@ generation, and the operator uses models only with the token they came with: if
 a sign-in stops after storing its token, the instance offers no Copilot models
 and reports `SignInIncomplete` until you sign in again.
 
+An instance that signed in to GitHub Copilot inside the agent, before it took
+its models from the Gateway, still has that sign-in in its HOME, where the agent
+can read it. On its first start through the Gateway, after `doctor`, the
+`retire-copilot-sign-in` init container removes it and keeps every other
+credential. Through the OpenClaw CLI, it removes the `github-copilot:github`
+auth profile and the `GITHUB_COPILOT_TOKEN*` secret-store entries of OpenClaw's
+device login, overwriting each entry first because a removed entry keeps its
+value for 30 days, and then compacts OpenClaw's databases. It also removes the
+`COPILOT_GITHUB_TOKEN` and `OPENCLAW_GITHUB_TOKEN` lines of `~/.openclaw/.env`,
+and the profile from the `auth-profiles.json` files of earlier OpenClaw
+versions and the copies `doctor` archived after importing them. A step that
+fails is logged with OpenClaw's reason and tried again at the next start; it
+does not keep the instance from starting. Once every step has succeeded, the
+HOME is marked, and later starts leave it alone. With `doctor` turned off,
+OpenClaw refuses its auth store while earlier profile files wait for import,
+so the profile goes at a start after the import. The token is not carried
+over: the owner signs in again with **Sign in with GitHub**.
+
 Each instance has its own virtual key with a monthly budget. The instance page
 lists its models and sets the default; saving a new default restarts the
 instance. When an administrator adds or removes a shared model, changes its
