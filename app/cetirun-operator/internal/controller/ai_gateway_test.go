@@ -1121,7 +1121,7 @@ func TestDeleteAIGatewayKeyRemovesCopilotRoutesTheStatusMissed(t *testing.T) {
 	}
 }
 
-func TestDeleteAIGatewayKeyBlocksOnFailureAndSkipsWhenUnused(t *testing.T) {
+func TestDeleteAIGatewayKeyBlocksOnFailureAndProceedsOnlyWithoutAGateway(t *testing.T) {
 	agent := aiGatewayTestAgent(testAIGatewayTeam)
 	agent.Status.AIGateway = &cetirunv1alpha1.AIGatewayStatus{Phase: cetirunv1alpha1.AIGatewayPhaseReady}
 	r, _, gateway := aiGatewayTestReconciler(t, agent, aiGatewayNamespace())
@@ -1130,11 +1130,14 @@ func TestDeleteAIGatewayKeyBlocksOnFailureAndSkipsWhenUnused(t *testing.T) {
 		t.Fatal("a failed revocation must block deletion")
 	}
 
+	// Nothing proves that an Agent without status never had a key, so with a
+	// Gateway configured its alias is revoked, which is idempotent.
 	unused := aiGatewayTestAgent(testAIGatewayTeam)
 	r2, _, gateway2 := aiGatewayTestReconciler(t, unused)
 	r2.AIGateway.Enabled = false
-	if err := r2.deleteAIGatewayKey(context.Background(), unused); err != nil || len(gateway2.deletedAliases) != 0 {
-		t.Fatalf("an Agent that never had a key must not call the Gateway: %v %v", err, gateway2.deletedAliases)
+	if err := r2.deleteAIGatewayKey(context.Background(), unused); err != nil ||
+		!slices.Equal(gateway2.deletedAliases, []string{aiGatewayKeyAlias(unused)}) {
+		t.Fatalf("an Agent without status must still have its alias revoked: %v %v", err, gateway2.deletedAliases)
 	}
 
 	unconfigured := aiGatewayTestAgent(testAIGatewayTeam)
@@ -1151,6 +1154,18 @@ func TestDeleteAIGatewayKeyBlocksOnFailureAndSkipsWhenUnused(t *testing.T) {
 		}
 	default:
 		t.Fatal("an unrevoked key must be reported")
+	}
+	// An Agent that never recorded a key has nothing to report.
+	never := aiGatewayTestAgent(testAIGatewayTeam)
+	r4, _, _ := aiGatewayTestReconciler(t, never)
+	r4.AIGateway = AIGatewayConfig{}
+	if err := r4.deleteAIGatewayKey(context.Background(), never); err != nil {
+		t.Fatalf("without any Gateway configuration deletion must proceed: %v", err)
+	}
+	select {
+	case event := <-r4.EventRecorder.(*record.FakeRecorder).Events:
+		t.Fatalf("unexpected event %q", event)
+	default:
 	}
 }
 
@@ -1171,16 +1186,19 @@ func TestDeleteAIGatewayKeyRevokesAKeyCreatedBeforeItsStatus(t *testing.T) {
 		t.Fatalf("the key must be revoked: tokens=%v keys=%d", gateway.deletedTokens, len(gateway.keys))
 	}
 
-	// A Secret of another Agent under the same name is not this Agent's key.
+	// A Secret of another Agent under the same name is not this Agent's key:
+	// only this Agent's own alias is revoked.
 	other := aiGatewayTestAgent(testAIGatewayTeam)
 	r2, _, gateway2 := aiGatewayTestReconciler(t, other, aiGatewayNamespace(), keySecret("uid-of-another-agent", mustKeyValue(t)))
 	r2.AIGateway.Enabled = false
-	if err := r2.deleteAIGatewayKey(context.Background(), other); err != nil || len(gateway2.deletedAliases) != 0 || len(gateway2.deletedTokens) != 0 {
-		t.Fatalf("another Agent's Secret must not trigger revocation: %v %v %v", err, gateway2.deletedAliases, gateway2.deletedTokens)
+	if err := r2.deleteAIGatewayKey(context.Background(), other); err != nil || len(gateway2.deletedTokens) != 0 ||
+		!slices.Equal(gateway2.deletedAliases, []string{aiGatewayKeyAlias(other)}) {
+		t.Fatalf("another Agent's Secret must not be revoked: %v %v %v", err, gateway2.deletedAliases, gateway2.deletedTokens)
 	}
 
 	// An Agent that was never provisioned has no namespace: finalizing it
-	// must not need Secret access, which a restricted controller lacks.
+	// must not need Secret access, which a restricted controller lacks. Its
+	// alias is still revoked, which needs no Secret.
 	sparse := aiGatewayTestAgent(testAIGatewayTeam)
 	r3, _, gateway3 := aiGatewayTestReconciler(t, sparse)
 	r3.AIGateway.Enabled = false
@@ -1192,8 +1210,26 @@ func TestDeleteAIGatewayKeyRevokesAKeyCreatedBeforeItsStatus(t *testing.T) {
 			return c.Get(ctx, key, obj, opts...)
 		},
 	})
-	if err := r3.deleteAIGatewayKey(context.Background(), sparse); err != nil || len(gateway3.deletedAliases) != 0 {
+	if err := r3.deleteAIGatewayKey(context.Background(), sparse); err != nil ||
+		!slices.Equal(gateway3.deletedAliases, []string{aiGatewayKeyAlias(sparse)}) {
 		t.Fatalf("an Agent without a namespace must be finalized without reading Secrets: %v %v", err, gateway3.deletedAliases)
+	}
+}
+
+// Neither the status nor the key Secret proves that the Gateway holds no key:
+// the operator creates the key before it saves the status, and the Secret can
+// be lost. The UID-derived alias is enough to revoke it, with key creation
+// turned off too.
+func TestDeleteAIGatewayKeyRevokesByAliasWithoutStatusOrSecret(t *testing.T) {
+	agent := aiGatewayTestAgent(testAIGatewayTeam)
+	r, _, gateway := aiGatewayTestReconciler(t, agent, aiGatewayNamespace())
+	r.AIGateway.Enabled = false
+	gateway.keys[aigateway.Token(mustKeyValue(t))] = &aigateway.Key{Alias: aiGatewayKeyAlias(agent)}
+	if err := r.deleteAIGatewayKey(context.Background(), agent); err != nil {
+		t.Fatal(err)
+	}
+	if len(gateway.keys) != 0 || !slices.Equal(gateway.deletedAliases, []string{aiGatewayKeyAlias(agent)}) {
+		t.Fatalf("the key must be revoked by its alias: keys=%d aliases=%v", len(gateway.keys), gateway.deletedAliases)
 	}
 }
 
@@ -2074,19 +2110,23 @@ func (f *failingListGateway) ListModels(context.Context) ([]aigateway.Deployment
 	return nil, errors.New("gateway unavailable")
 }
 
-func TestDeleteAIGatewayKeyDoesNotHoldDeletionWhenTheGatewayIsOff(t *testing.T) {
+// Turning key creation off removes no key the Gateway holds: while a Gateway
+// is configured, a failed revocation holds the deletion either way. Removing
+// the Gateway configuration is how a deployment abandons revocation.
+func TestDeleteAIGatewayKeyHoldsDeletionWhileAConfiguredGatewayFails(t *testing.T) {
 	agent := aiGatewayTestAgent(testAIGatewayTeam)
 	agent.Status.AIGateway = &cetirunv1alpha1.AIGatewayStatus{Phase: cetirunv1alpha1.AIGatewayPhaseReady}
 	r, _, gateway := aiGatewayTestReconciler(t, agent, aiGatewayNamespace())
-	gateway.deleteErr = errors.New("gateway gone")
-	r.AIGateway.Enabled = false
-	if err := r.deleteAIGatewayKey(context.Background(), agent); err != nil {
-		t.Fatalf("with the Gateway turned off, deletion must not wait for it: %v", err)
+	gateway.deleteErr = errors.New("synthetic outage")
+	for _, enabled := range []bool{false, true} {
+		r.AIGateway.Enabled = enabled
+		if err := r.deleteAIGatewayKey(context.Background(), agent); err == nil {
+			t.Fatalf("enabled=%v: a failed revocation must hold the deletion while the Gateway is configured", enabled)
+		}
 	}
-	r.AIGateway.Enabled = true
-	agent.Status.AIGateway.Phase = cetirunv1alpha1.AIGatewayPhaseReady
-	if err := r.deleteAIGatewayKey(context.Background(), agent); err == nil {
-		t.Fatal("with the Gateway on, a failed revocation must hold the deletion")
+	r.AIGateway = AIGatewayConfig{}
+	if err := r.deleteAIGatewayKey(context.Background(), agent); err != nil {
+		t.Fatalf("without a Gateway configured deletion must proceed: %v", err)
 	}
 }
 

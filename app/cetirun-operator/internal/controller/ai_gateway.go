@@ -621,65 +621,53 @@ func labelAgentSecret(secret *corev1.Secret, instance *cetirunv1alpha1.Agent) {
 
 // deleteAIGatewayKey revokes the Agent's key and removes its Copilot model
 // registrations before its workload and namespace are removed. Revocation is
-// by the UID-derived alias and, when the Secret is still readable, by the key
-// itself, so a key is removed even if an administrator renamed it. Deletion
-// is blocked while revocation fails; when the Gateway is not configured at
-// all there is nothing to call, which is reported as a warning event.
+// by the UID-derived alias and, when the key Secret is still readable, by the
+// key itself, so a key is removed even if an administrator renamed it, or the
+// operator stopped before it saved the Agent's status, or the Secret is gone.
+// Whenever a Gateway is configured, deletion waits while revocation fails,
+// whether or not the deployment still creates keys: turning that off removes
+// no key it created. Only a deployment with no Gateway configured at all has
+// nothing to call, which is reported as a warning event for an Agent that
+// recorded a key.
 func (r *AgentReconciler) deleteAIGatewayKey(ctx context.Context, instance *cetirunv1alpha1.Agent) error {
-	if instance.Status.AIGateway == nil && !r.AIGateway.Enabled {
-		// No status does not prove there is no key: the operator writes the
-		// key Secret and the Gateway key before it saves the status. The
-		// Secret is the only record left once the namespace is deleted, so
-		// revoke whenever this Agent's Secret exists.
-		held, err := r.aiGatewayKeySecretHeld(ctx, instance)
-		if err != nil {
-			return err
+	if !r.AIGateway.configured() {
+		if instance.Status.AIGateway != nil {
+			r.EventRecorder.Event(instance, corev1.EventTypeWarning, "AIGatewayKeyNotRevoked",
+				"The AI Gateway is not configured, so the Agent's virtual key could not be revoked")
 		}
-		if !held {
-			return nil
-		}
-	}
-	err := r.revokeAIGatewayKey(ctx, instance)
-	if err != nil && !r.AIGateway.Enabled {
-		// The deployment turned the Gateway off, possibly removing it: do not
-		// hold the Agent's deletion on a Gateway that may never return.
-		r.EventRecorder.Eventf(instance, corev1.EventTypeWarning, "AIGatewayKeyNotRevoked",
-			"The AI Gateway is disabled and the Agent's virtual key %s could not be revoked; remove it in the Gateway", aiGatewayKeyAlias(instance))
 		return nil
 	}
-	return err
+	return r.revokeAIGatewayKey(ctx, instance)
 }
 
-// aiGatewayKeySecretHeld reports whether the Agent's namespace holds its
-// virtual key Secret, labelled with this Agent's UID. A namespace that does
+// aiGatewayKeySecret returns the Agent's virtual key Secret, or nil when its
+// namespace holds none labelled with this Agent's UID. A namespace that does
 // not exist holds none: that is established first, with the namespace read
 // the deletion path already needs, so an Agent that was never provisioned is
 // finalized without any access to Secrets.
-func (r *AgentReconciler) aiGatewayKeySecretHeld(ctx context.Context, instance *cetirunv1alpha1.Agent) (bool, error) {
+func (r *AgentReconciler) aiGatewayKeySecret(ctx context.Context, instance *cetirunv1alpha1.Agent) (*corev1.Secret, error) {
 	namespace := instanceNamespace(instance.Name)
 	if err := r.customReader().Get(ctx, types.NamespacedName{Name: namespace}, &corev1.Namespace{}); err != nil {
 		if apierrors.IsNotFound(err) {
-			return false, nil
+			return nil, nil
 		}
-		return false, fmt.Errorf("get Agent namespace: %w", err)
+		return nil, fmt.Errorf("get Agent namespace: %w", err)
 	}
 	secret := &corev1.Secret{}
 	err := r.Get(ctx, types.NamespacedName{Namespace: namespace, Name: aiGatewayKeySecretName}, secret)
 	if apierrors.IsNotFound(err) {
-		return false, nil
+		return nil, nil
 	}
 	if err != nil {
-		return false, fmt.Errorf("get AI Gateway key Secret: %w", err)
+		return nil, fmt.Errorf("get AI Gateway key Secret: %w", err)
 	}
-	return secret.Labels[aiGatewayAgentUIDLabel] == string(instance.UID), nil
+	if secret.Labels[aiGatewayAgentUIDLabel] != string(instance.UID) {
+		return nil, nil
+	}
+	return secret, nil
 }
 
 func (r *AgentReconciler) revokeAIGatewayKey(ctx context.Context, instance *cetirunv1alpha1.Agent) error {
-	if !r.AIGateway.configured() {
-		r.EventRecorder.Event(instance, corev1.EventTypeWarning, "AIGatewayKeyNotRevoked",
-			"The AI Gateway is not configured, so the Agent's virtual key could not be revoked")
-		return nil
-	}
 	status := ensureAIGatewayStatus(instance)
 	if status.Phase != cetirunv1alpha1.AIGatewayPhaseDeleting {
 		status.Phase = cetirunv1alpha1.AIGatewayPhaseDeleting
@@ -695,12 +683,11 @@ func (r *AgentReconciler) revokeAIGatewayKey(ctx context.Context, instance *ceti
 	if err := r.deleteCopilotRegistrations(ctx, client, instance); err != nil {
 		return fmt.Errorf("remove Copilot model registrations: %w", err)
 	}
-	secret := &corev1.Secret{}
-	err = r.Get(ctx, types.NamespacedName{Namespace: instanceNamespace(instance.Name), Name: aiGatewayKeySecretName}, secret)
-	if err != nil && !apierrors.IsNotFound(err) {
-		return fmt.Errorf("get AI Gateway key Secret: %w", err)
+	secret, err := r.aiGatewayKeySecret(ctx, instance)
+	if err != nil {
+		return err
 	}
-	if err == nil && secret.Labels[aiGatewayAgentUIDLabel] == string(instance.UID) {
+	if secret != nil {
 		if value := string(secret.Data[aiGatewayKeySecretField]); aigateway.ValidKeyValue(value) {
 			if err := client.DeleteKeys(ctx, []string{aigateway.Token(value)}); err != nil {
 				return fmt.Errorf("revoke AI Gateway virtual key: %w", err)

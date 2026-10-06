@@ -194,10 +194,11 @@ agentIdentity:
 # -- Platform AI Gateway integration: the operator gives each built-in Agent
 # its own virtual key and routes OpenClaw model traffic through the Gateway:
 # the shared models every Agent may use and, per Agent, a GitHub Copilot proxy
-# for the owner's account. Off here; the cetirun-platform chart turns it on
-# with the Gateway it installs. Keys are revoked when an Agent is deleted as
-# long as url and the master key Secret are set, including after enabled is
-# turned off.
+# for the owner's account. The cetirun-platform chart installs the Gateway and
+# requires this. While the operator has a Gateway to call, with enabled on or
+# url set, deleting an Agent waits until its key is revoked; turning enabled
+# off stops creating keys, not revoking them. Set neither to stop calling the
+# Gateway, for example once it has been removed.
 aiGateway:
   # -- OpenClaw Agents take their models from the platform AI Gateway; Hermes
   # keeps its own provider and sign-in. The platform chart requires it;
