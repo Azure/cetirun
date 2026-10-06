@@ -140,8 +140,11 @@ access to the four configuration kinds by default. Optional Pod admission adds
 read access to workload prerequisites and namespace-scoped controller state,
 not cluster-wide Secret or ConfigMap access. It does not mount operator cloud
 credentials, registry credentials, or workload Secrets.
-Agent validation fetches only its Team and that Team's named Sandbox/policy
-references. Shared-configuration checks scan consumers in pages of 200, reuse
+Agent validation fetches its Team and only that Team's named Sandbox/policy
+references. With [Kubernetes-backed sources](#kubernetes-backed-sources-opt-in)
+enabled, governed configuration checks also read the selected platform
+declarations and verify RuntimeClass/StorageClass pins.
+Shared-configuration checks scan consumers in pages of 200, reuse
 named reference reads only within the current request, and fail on incomplete
 or expired page reads. There is no cross-request reference cache.
 
@@ -442,12 +445,22 @@ closed for coordinated recovery rather than being adopted or force-unlocked.
 
 ##### Kubernetes-backed sources (opt-in)
 
-`sandboxSources.enabled` in the operator chart serializes
-`CETIRUN_SANDBOX_SOURCES`. It requires configuration and Pod admission to be
+`sandboxSources.enabled` in the operator chart selects capability declarations
+for configuration admission as well as sources for held native preparation.
+It serializes `CETIRUN_SANDBOX_SOURCES` for the controller and derives both
+`platformNamespace` and `platformConfigMapName` in the admission process's
+`CETIRUN_SANDBOX_ADMISSION` from the same chart `namespace` and
+`sandboxSources.platformConfigMapName`. There are no separate admission-source
+Helm values. When sources are disabled, both admission fields and the
+controller's source setting are omitted.
+This option requires configuration and Pod admission to be
 enabled and enforced (`sandboxAdmission.enabled`, `enforce`, and `podsEnabled`).
 The admission ServiceAccount is fixed to the separately deployed
 `cetirun-sandbox-admission`; it is not the controller ServiceAccount.
-The default-off chart output and RBAC grants are unchanged.
+Admission reuses its existing operator-namespace ConfigMap `get` Role and
+Pod-admission RuntimeClass/StorageClass `get` permissions. The chart adds no
+RBAC grants, write permissions, Secret lists or cluster-wide ConfigMap access.
+The default-off chart output is unchanged.
 
 ```yaml
 sandboxSources:
@@ -465,7 +478,8 @@ sandboxSources:
 These are operator settings, never Agent or Team Helm overrides. The constructor
 uses the selected operator namespace and chart version. The
 [configuration source](internal/controller/sandbox_kubernetes_configuration.go)
-reads `platform.json` from the named, pre-existing ConfigMap in that namespace.
+and configuration admission read the same `platform.json` from the named,
+pre-existing ConfigMap in that namespace.
 Its `v1` document contains `registrations`, `platforms`, `runtimeClasses` and
 `storageClasses`. It reuses the existing inner contract types and their
 case-sensitive JSON fields: registrations use `Capabilities`/`Available`,
@@ -484,6 +498,16 @@ errors, not automatic reapproval or a fallback to cached tenant data.
 The document is bounded to 512 KiB, 16,384 JSON tokens, 12 nesting levels and
 128 distinct API objects including the ConfigMap. Unknown/duplicate fields,
 nulls and incomplete object pins are rejected.
+
+Each relevant configuration-admission request uses current authoritative reads;
+there is no cross-request inventory cache or fallback to earlier declarations.
+Missing, inaccessible, malformed or drifted platform inventory blocks governed
+configuration writes that require capability checks. This source dependency
+does not apply to configuration `/status`, Agent deletion, narrowly authorized
+controller cleanup or unrelated legacy writes. Their existing authorization
+and cleanup rules still apply. This does not change webhook-outage behavior:
+other matched writes, including legacy writes, still fail closed when admission
+itself is unavailable.
 
 The platform owner must protect this ConfigMap from tenant writes and maintain
 its qualification records, complete topology and explicit approvals. The chart
@@ -521,9 +545,11 @@ storage classes, without being mistaken for writer-exclusion evidence.
 Both sources return revisions bound to their checked inputs and reject changes
 during capture. Configuration observations are dated at the start of the read;
 consumers check freshness after it completes and reject observations that expire
-during capture. The same configuration source is used by the Agent, Sandbox
-and AgentPolicy reconcilers. A configured source does not establish runtime,
-network or CSI enforcement. In particular, the stock prerequisite source has
+during capture. The same platform declarations are used by configuration
+admission and the Agent, Sandbox and AgentPolicy reconcilers. They do not grant
+Portal callers Kubernetes admission authority or replace trusted Team
+assignments. A configured source does not establish runtime, network or CSI
+enforcement. In particular, the stock prerequisite source has
 no writer-exclusion adapter and returns an explicit error before preparation
 creates its qualified-preparation cleanup state. Bootstrap-only ownership state
 is separate and does not claim a writer fence. An Agent rejected by this

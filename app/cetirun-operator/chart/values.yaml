@@ -160,7 +160,8 @@ sandboxAdmission:
       cpu: 500m
       memory: 256Mi
 
-# -- Kubernetes sources for held native Sandbox preparation.
+# -- Kubernetes capability declarations for configuration admission and held
+# native Sandbox preparation. Both use the same operator-namespace platform.json.
 # Does not qualify a platform or implement writer fencing. Execution stays held.
 sandboxSources:
   enabled: false
@@ -168,6 +169,7 @@ sandboxSources:
   # Requires explicit Agent chart/image/port pins. Published skills stay external.
   bootstrapOwnedPrerequisites: false
   # -- Existing operator-namespace ConfigMap containing versioned platform.json.
+  # Shared by configuration admission and the controller only when enabled.
   # The platform owner supplies qualification, topology and exact object pins.
   platformConfigMapName: ""
   # -- Claims in each protected Agent namespace; never adopted by name.

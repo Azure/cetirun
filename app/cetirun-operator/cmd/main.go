@@ -75,7 +75,7 @@ func main() {
 	flag.StringVar(&admissionCertDir, "admission-cert-dir", "", "Directory containing platform-issued tls.crt and tls.key for Sandbox admission.")
 	flag.IntVar(&admissionPort, "admission-port", 9443, "Sandbox admission HTTPS port.")
 	flag.StringVar(&admissionPodStateNamespace, "admission-pod-state-namespace", "", "Protected controller state namespace for optional Sandbox Pod admission.")
-	flag.DurationVar(&admissionPodTimeout, "admission-pod-timeout", sandboxadmission.DefaultPodRequestTimeout, "Total protected Pod validation budget; must be shorter than the API-server webhook timeout.")
+	flag.DurationVar(&admissionPodTimeout, "admission-pod-timeout", sandboxadmission.DefaultPodRequestTimeout, "Total Sandbox admission validation budget; must be shorter than the API-server webhook timeout.")
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "Address the metric endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "Address the probe endpoint binds to.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,

@@ -30,10 +30,13 @@ import (
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxplatform"
 	admissionv1 "k8s.io/api/admission/v1"
 	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	corev1 "k8s.io/api/core/v1"
+	nodev1 "k8s.io/api/node/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	storagev1 "k8s.io/api/storage/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -77,7 +80,7 @@ func TestAdmissionAPIServerBoundaries(t *testing.T) {
 		}
 	})
 	scheme := runtime.NewScheme()
-	for _, add := range []func(*runtime.Scheme) error{api.AddToScheme, corev1.AddToScheme, rbacv1.AddToScheme, admissionregistrationv1.AddToScheme, apiextensionsv1.AddToScheme} {
+	for _, add := range []func(*runtime.Scheme) error{api.AddToScheme, corev1.AddToScheme, nodev1.AddToScheme, storagev1.AddToScheme, rbacv1.AddToScheme, admissionregistrationv1.AddToScheme, apiextensionsv1.AddToScheme} {
 		if err := add(scheme); err != nil {
 			t.Fatal(err)
 		}
@@ -154,13 +157,27 @@ func TestAdmissionAPIServerBoundaries(t *testing.T) {
 			t.Fatal("explicit false or nested protocol default was lost")
 		}
 	})
-	config := testConfig()
+	config := platformFixtureConfig()
+	config.TeamAssignments = nil
 	config.AdminGroups = []string{"system:masters"}
+	create(&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: config.PlatformNamespace}})
+	runtimeClass := &nodev1.RuntimeClass{ObjectMeta: metav1.ObjectMeta{Name: "test-kata"}, Handler: "kata"}
+	storageClass := &storagev1.StorageClass{ObjectMeta: metav1.ObjectMeta{Name: "test-home"}, Provisioner: "storage.example.com/csi"}
+	create(runtimeClass)
+	create(storageClass)
+	platformJSON, err := json.Marshal(platformFixtureDocument(f, runtimeClass.UID, storageClass.UID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	platform := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: config.PlatformConfigMapName, Namespace: config.PlatformNamespace},
+		Data:       map[string]string{sandboxplatform.ConfigurationKey: string(platformJSON)},
+	}
+	create(platform)
 	handler, err := NewHandler(cl, config)
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler.registrations = f.handler.registrations
 	mux := http.NewServeMux()
 	mux.Handle(ValidationPath, &admission.Webhook{Handler: admission.HandlerFunc(handler.Validate)})
 	mux.Handle(DefaultingPath, &admission.Webhook{Handler: admission.HandlerFunc(handler.DefaultAgent)})
@@ -492,8 +509,47 @@ func TestAdmissionAPIServerBoundaries(t *testing.T) {
 	t.Run("requests recover after service restoration", func(t *testing.T) {
 		create(newAgent("after-recovery", false))
 	})
+	t.Run("production platform source fails closed and recovers without restart", func(t *testing.T) {
+		team := f.team.DeepCopy()
+		team.ObjectMeta = metav1.ObjectMeta{Name: "platform-backed-team"}
+		create(team)
+		platform.Data[sandboxplatform.ConfigurationKey] = `{"invalid":"synthetic-invalid-platform"}`
+		if err := cl.Update(ctx, platform); err != nil {
+			t.Fatal(err)
+		}
+		if err := cl.Create(ctx, newAgent("missing-platform", true), client.DryRunAll); err == nil {
+			t.Fatal("governed creation accepted malformed source or reused prior capabilities")
+		}
+		create(newAgent("legacy-during-source-outage", false))
+		platform.Data[sandboxplatform.ConfigurationKey] = string(platformJSON)
+		if err := cl.Update(ctx, platform); err != nil {
+			t.Fatal(err)
+		}
+		if err := cl.Create(ctx, newAgent("recovered-platform", true), client.DryRunAll); err != nil {
+			t.Fatal("repaired platform did not restore governed admission:", err)
+		}
+		if err := cl.Delete(ctx, runtimeClass); err != nil {
+			t.Fatal(err)
+		}
+		replacement := &nodev1.RuntimeClass{ObjectMeta: metav1.ObjectMeta{Name: runtimeClass.Name}, Handler: runtimeClass.Handler}
+		create(replacement)
+		if err := cl.Create(ctx, newAgent("replaced-runtime", true), client.DryRunAll); err == nil {
+			t.Fatal("same-name RuntimeClass replacement bypassed its pinned UID")
+		}
+		platformJSON, err = json.Marshal(platformFixtureDocument(f, replacement.UID, storageClass.UID))
+		if err != nil {
+			t.Fatal(err)
+		}
+		platform.Data[sandboxplatform.ConfigurationKey] = string(platformJSON)
+		if err := cl.Update(ctx, platform); err != nil {
+			t.Fatal(err)
+		}
+		if err := cl.Create(ctx, newAgent("reauthorized-runtime", true), client.DryRunAll); err != nil {
+			t.Fatal("updated platform pin did not restore admission:", err)
+		}
+	})
 	t.Run("independent serving process and overlapping CA rotation", func(t *testing.T) {
-		testServingProcess(t, cfg, newAgent("tls-process-probe", false))
+		testServingProcess(t, cfg, config, newAgent("tls-process-probe", true))
 	})
 }
 
@@ -538,7 +594,7 @@ func renderedWebhooks(t *testing.T, ca []byte) (*admissionregistrationv1.Validat
 	return validating, mutating
 }
 
-func testServingProcess(t *testing.T, restConfig *rest.Config, agent *api.Agent) {
+func testServingProcess(t *testing.T, restConfig *rest.Config, config Config, agent *api.Agent) {
 	t.Helper()
 	freePort := func() int {
 		listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -558,7 +614,7 @@ func testServingProcess(t *testing.T, restConfig *rest.Config, agent *api.Agent)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		done <- Run(ctx, restConfig, testConfig(), ServerOptions{
+		done <- Run(ctx, restConfig, config, ServerOptions{
 			CertDirectory: directory, Host: "127.0.0.1", Port: port, MetricsAddress: "0",
 			ProbeAddress:      fmt.Sprintf("127.0.0.1:%d", healthPort),
 			PodStateNamespace: "operator-state",
@@ -582,7 +638,7 @@ func testServingProcess(t *testing.T, restConfig *rest.Config, agent *api.Agent)
 	transport := &http.Transport{TLSClientConfig: &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12}, DisableKeepAlives: true}
 	t.Cleanup(transport.CloseIdleConnections)
 	httpClient := &http.Client{Transport: transport, Timeout: time.Second}
-	probeRequest := requestFor(t, admissionv1.Create, agent, nil, "portal")
+	probeRequest := requestFor(t, admissionv1.Create, agent, nil, "administrator")
 	review := admissionv1.AdmissionReview{
 		TypeMeta: metav1.TypeMeta{APIVersion: "admission.k8s.io/v1", Kind: "AdmissionReview"},
 		Request:  &probeRequest.AdmissionRequest,
@@ -593,7 +649,7 @@ func testServingProcess(t *testing.T, restConfig *rest.Config, agent *api.Agent)
 	}
 	var probeError error
 	probe := func(serial *big.Int) bool {
-		response, err := httpClient.Post(fmt.Sprintf("https://127.0.0.1:%d%s", port, ValidationPath),
+		response, err := httpClient.Post(fmt.Sprintf("https://127.0.0.1:%d%s", port, DefaultingPath),
 			"application/json", bytes.NewReader(body))
 		if err != nil {
 			probeError = err

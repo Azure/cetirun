@@ -8,10 +8,12 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"time"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxbinding"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxplatform"
 	admissionv1 "k8s.io/api/admission/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -28,9 +30,12 @@ const (
 )
 
 type Handler struct {
-	reader        client.Reader
-	config        Config
-	registrations map[api.SandboxType]sandbox.Registration
+	reader           client.Reader
+	config           Config
+	registrations    map[api.SandboxType]sandbox.Registration
+	platformSource   sandboxplatform.Source
+	platformSnapshot *sandboxplatform.Snapshot
+	requestTimeout   time.Duration
 }
 
 func NewHandler(reader client.Reader, config Config) (*Handler, error) {
@@ -47,12 +52,20 @@ func NewHandler(reader client.Reader, config Config) (*Handler, error) {
 		config.TeamAssignments[i].Users = slices.Clone(config.TeamAssignments[i].Users)
 		config.TeamAssignments[i].Groups = slices.Clone(config.TeamAssignments[i].Groups)
 	}
-	// Production registrations remain absent until the enforcement adapter and
-	// its qualified evidence source exist. Configuration is not proof of support.
-	return &Handler{reader: reader, config: config}, nil
+	handler := &Handler{reader: reader, config: config, requestTimeout: DefaultPodRequestTimeout}
+	if config.PlatformConfigMapName != "" {
+		handler.platformSource = &sandboxplatform.KubernetesSource{
+			APIReader: reader, Namespace: config.PlatformNamespace, Name: config.PlatformConfigMapName,
+		}
+	}
+	return handler, nil
 }
 
 func (h *Handler) Validate(ctx context.Context, request admission.Request) admission.Response {
+	return h.withPlatformSnapshot(ctx, request, (*Handler).validate)
+}
+
+func (h *Handler) validate(ctx context.Context, request admission.Request) admission.Response {
 	if request.SubResource == "status" {
 		return admission.Allowed("status authorization belongs to Kubernetes RBAC")
 	}
@@ -106,7 +119,11 @@ func (h *Handler) Validate(ctx context.Context, request admission.Request) admis
 		if err != nil {
 			return dependencyError(ctx, err)
 		}
-		if errs := sandbox.ValidateTeamConfiguration(candidate.Spec, resources, h.registrations); len(errs) != 0 {
+		registrations, err := h.platformRegistrations(ctx)
+		if err != nil {
+			return dependencyError(ctx, err)
+		}
+		if errs := sandbox.ValidateTeamConfiguration(candidate.Spec, resources, registrations); len(errs) != 0 {
 			return admission.Denied(errs.ToAggregate().Error())
 		}
 		return h.checkTeamConsumers(ctx, candidate, false)
@@ -123,6 +140,10 @@ func (h *Handler) Validate(ctx context.Context, request admission.Request) admis
 }
 
 func (h *Handler) DefaultAgent(ctx context.Context, request admission.Request) admission.Response {
+	return h.withPlatformSnapshot(ctx, request, (*Handler).defaultAgent)
+}
+
+func (h *Handler) defaultAgent(ctx context.Context, request admission.Request) admission.Response {
 	if (request.Operation != admissionv1.Create && request.Operation != admissionv1.Update) || request.Resource.Resource != "agents" {
 		return admission.Denied("Sandbox selection defaulting applies to Agent creation or explicit update reauthorization")
 	}
@@ -223,7 +244,11 @@ func (h *Handler) agentAuthorizationResources(ctx context.Context, operation adm
 	if err != nil {
 		return sandbox.Resources{}, dependencyError(ctx, err)
 	}
-	if errs := sandbox.ValidateTeam(team, resources, h.registrations); len(errs) != 0 {
+	registrations, err := h.platformRegistrations(ctx)
+	if err != nil {
+		return sandbox.Resources{}, dependencyError(ctx, err)
+	}
+	if errs := sandbox.ValidateTeam(team, resources, registrations); len(errs) != 0 {
 		return sandbox.Resources{}, admission.Denied(errs.ToAggregate().Error())
 	}
 	return resources, admission.Allowed("")
@@ -324,7 +349,11 @@ func (h *Handler) checkReferencingTeams(ctx context.Context, candidate client.Ob
 			if err != nil {
 				return dependencyError(ctx, err)
 			}
-			if errs := sandbox.ValidateTeam(team, resources, h.registrations); len(errs) != 0 {
+			registrations, err := h.platformRegistrations(ctx)
+			if err != nil {
+				return dependencyError(ctx, err)
+			}
+			if errs := sandbox.ValidateTeam(team, resources, registrations); len(errs) != 0 {
 				return admission.Denied(fmt.Sprintf("configuration %q would invalidate referencing Team %q: %v", candidate.GetName(), team.Name, errs.ToAggregate()))
 			}
 		}

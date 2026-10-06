@@ -85,6 +85,12 @@ func Run(ctx context.Context, restConfig *rest.Config, config Config, options Se
 	if err != nil {
 		return err
 	}
+	if options.PodRequestTimeout != 0 {
+		if options.PodRequestTimeout <= 0 || options.PodRequestTimeout >= 30*time.Second {
+			return fmt.Errorf("Sandbox admission request timeout must be positive and less than 30 seconds")
+		}
+		handler.requestTimeout = options.PodRequestTimeout
+	}
 	server.Register(ValidationPath, &admission.Webhook{Handler: instrumentAdmission("validate", handler.Validate)})
 	server.Register(DefaultingPath, &admission.Webhook{Handler: instrumentAdmission("default", handler.DefaultAgent)})
 	if options.PodStateNamespace != "" {

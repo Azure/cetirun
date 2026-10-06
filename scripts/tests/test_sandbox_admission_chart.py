@@ -9,6 +9,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import tempfile
 import unittest
 
 import yaml
@@ -77,13 +78,13 @@ class SandboxAdmissionChartTests(unittest.TestCase):
     def enforced_values(self, **overrides):
         return self.server_values(enforce=True, caBundle=self.ca_bundle, **overrides)
 
-    def helm(self, admission=None, *, values=None, kube_version="1.37.0", lint=False):
+    def helm(self, admission=None, *, values=None, kube_version="1.37.0", lint=False, chart=CHART):
         inputs = dict(values or {})
         if admission is not None:
             inputs["sandboxAdmission"] = admission
         command = (
-            ["helm", "lint", "--strict", str(CHART)]
-            if lint else ["helm", "template", "admission-test", str(CHART)]
+            ["helm", "lint", "--strict", str(chart)]
+            if lint else ["helm", "template", "admission-test", str(chart)]
         )
         return subprocess.run(
             [
@@ -169,30 +170,78 @@ class SandboxAdmissionChartTests(unittest.TestCase):
             with self.subTest(invalid=invalid):
                 self.assert_rejected(self.server_values(validationMode=invalid), "validationMode must be compatible or strict")
 
-    def test_kubernetes_sources_are_opt_in_and_do_not_expand_rbac(self):
+    def test_kubernetes_sources_share_platform_config_without_changing_rbac_or_rules(self):
+        admission = self.enforced_values(podsEnabled=True)
+        for namespace, config_map in (
+            ("cetirun-system", "sandbox-platform"),
+            ("synthetic-platform", "alternate-sandbox-platform"),
+        ):
+            with self.subTest(namespace=namespace, config_map=config_map):
+                values = {"namespace": namespace}
+                baseline = self.render(admission, values=values)
+                sources = {
+                    "enabled": True, "platformConfigMapName": config_map,
+                    "homeClaimName": "owned-home", "skillsClaimName": "owned-skills",
+                    "bootstrapOwnedPrerequisites": True,
+                    "helpers": {"doctor": True, "logger": True, "desktop": False},
+                }
+                configured = self.render(admission, values={**values, "sandboxSources": sources})
+                controller = configured[("Deployment", "cetirun-operator")]
+                self.assertEqual(controller["metadata"]["namespace"], namespace)
+                env = controller["spec"]["template"]["spec"]["containers"][0]["env"]
+                self.assertEqual(next(item for item in env if item["name"] == "OPERATOR_NAMESPACE"), {
+                    "name": "OPERATOR_NAMESPACE",
+                    "valueFrom": {"fieldRef": {"fieldPath": "metadata.namespace"}},
+                })
+                source_env = [item for item in env if item["name"] == "CETIRUN_SANDBOX_SOURCES"]
+                self.assertEqual(len(source_env), 1)
+                self.assertEqual(json.loads(source_env[0]["value"]), {
+                    **sources, "admissionServiceAccount": NAME,
+                })
+                container = configured[("Deployment", NAME)]["spec"]["template"]["spec"]["containers"][0]
+                config_env = next(item for item in container["env"] if item["name"] == "CETIRUN_SANDBOX_ADMISSION")
+                baseline_container = baseline[("Deployment", NAME)]["spec"]["template"]["spec"]["containers"][0]
+                baseline_config_env = next(
+                    item for item in baseline_container["env"] if item["name"] == "CETIRUN_SANDBOX_ADMISSION"
+                )
+                self.assertEqual(json.loads(config_env["value"]), {
+                    **json.loads(baseline_config_env["value"]),
+                    "platformNamespace": namespace,
+                    "platformConfigMapName": config_map,
+                })
+                self.assertIn(f"--admission-pod-state-namespace={namespace}", container["args"])
+                state_role = configured[("Role", f"{NAME}-pod-state")]
+                self.assertEqual(state_role["metadata"]["namespace"], namespace)
+                self.assertEqual(state_role["rules"], [{
+                    "apiGroups": [""], "resources": ["configmaps"], "verbs": ["get"],
+                }])
+                binding = configured[("RoleBinding", f"{NAME}-pod-state")]
+                self.assertEqual(binding["metadata"]["namespace"], namespace)
+                self.assertEqual(binding["roleRef"], {
+                    "apiGroup": "rbac.authorization.k8s.io", "kind": "Role", "name": f"{NAME}-pod-state",
+                })
+                self.assertEqual(binding["subjects"], [{
+                    "kind": "ServiceAccount", "name": NAME, "namespace": namespace,
+                }])
+                env.remove(source_env[0])
+                config_env["value"] = baseline_config_env["value"]
+                self.assertEqual(configured, baseline)
+
+    def test_kubernetes_sources_omit_both_admission_platform_fields_when_disabled(self):
         admission = self.enforced_values(podsEnabled=True)
         baseline = self.render(admission)
-        configured = self.render(admission, values={
-            "sandboxSources": {
-                "enabled": True, "platformConfigMapName": "sandbox-platform",
-                "homeClaimName": "owned-home", "skillsClaimName": "owned-skills",
-                "bootstrapOwnedPrerequisites": True,
-                "helpers": {"doctor": True, "logger": True, "desktop": False},
-            },
-        })
-        deployment = ("Deployment", "cetirun-operator")
-        env = configured[deployment]["spec"]["template"]["spec"]["containers"][0]["env"]
-        source_env = [item for item in env if item["name"] == "CETIRUN_SANDBOX_SOURCES"]
-        self.assertEqual(len(source_env), 1)
-        self.assertEqual(json.loads(source_env[0]["value"]), {
-            "enabled": True, "platformConfigMapName": "sandbox-platform",
-            "homeClaimName": "owned-home", "skillsClaimName": "owned-skills",
-            "bootstrapOwnedPrerequisites": True,
-            "admissionServiceAccount": NAME,
-            "helpers": {"doctor": True, "logger": True, "desktop": False},
-        })
-        env.remove(source_env[0])
-        self.assertEqual(configured, baseline)
+        container = baseline[("Deployment", NAME)]["spec"]["template"]["spec"]["containers"][0]
+        config = json.loads(container["env"][0]["value"])
+        self.assertNotIn("platformNamespace", config)
+        self.assertNotIn("platformConfigMapName", config)
+        controller_env = baseline[("Deployment", "cetirun-operator")]["spec"]["template"]["spec"]["containers"][0]["env"]
+        self.assertNotIn("CETIRUN_SANDBOX_SOURCES", [item["name"] for item in controller_env])
+        for config_map in ("", "unused-sandbox-platform"):
+            with self.subTest(config_map=config_map):
+                disabled = self.render(admission, values={"sandboxSources": {
+                    "enabled": False, "platformConfigMapName": config_map,
+                }})
+                self.assertEqual(disabled, baseline)
 
     def test_kubernetes_sources_bootstrap_defaults_to_false(self):
         documents = self.render(self.enforced_values(podsEnabled=True), values={
@@ -257,10 +306,40 @@ class SandboxAdmissionChartTests(unittest.TestCase):
                     values=values,
                 )
 
+    def test_kubernetes_sources_validate_each_deployment_template_in_isolation(self):
+        for template, deployment in (("deployment.yaml", "cetirun-operator"), ("sandbox-admission.yaml", NAME)):
+            with self.subTest(template=template), tempfile.TemporaryDirectory() as directory:
+                chart = Path(directory)
+                (chart / "templates").mkdir()
+                for relative in ("Chart.yaml", "values.yaml", "templates/_helpers.tpl", f"templates/{template}"):
+                    shutil.copyfile(CHART / relative, chart / relative)
+                values = {"sandboxSources": {
+                    "enabled": True, "platformConfigMapName": "sandbox-platform",
+                }}
+                documents = self.render(self.enforced_values(podsEnabled=True), values=values, chart=chart)
+                self.assertIn(("Deployment", deployment), documents)
+                for field in ("enabled", "enforce", "podsEnabled"):
+                    with self.subTest(disabled_admission_field=field):
+                        admission = self.enforced_values(podsEnabled=True)
+                        admission[field] = False
+                        self.assert_rejected(
+                            admission,
+                            "sandboxSources.enabled requires enforced Sandbox configuration and Pod admission",
+                            values=values, chart=chart,
+                        )
+                self.assert_rejected(
+                    self.enforced_values(podsEnabled=True),
+                    "platformConfigMapName must be a valid resource name",
+                    values={"sandboxSources": {"enabled": True}}, chart=chart,
+                )
+
     def test_kubernetes_sources_reject_invalid_configuration(self):
         cases = [
             ({"enabled": "true"}, "sandboxSources.enabled must be a boolean"),
             ({"platformConfigMapName": ""}, "platformConfigMapName must be a valid resource name"),
+            ({"platformConfigMapName": "bad/name"}, "platformConfigMapName must be a valid resource name"),
+            ({"platformConfigMapName": 42}, "platformConfigMapName must be a resource name"),
+            ({"platformNamespace": "other-platform"}, "unsupported sandboxSources field platformNamespace"),
             ({"homeClaimName": "bad/name"}, "homeClaimName must be a valid resource name"),
             ({"skillsClaimName": "UPPER"}, "skillsClaimName must be a valid resource name"),
             ({"skillsClaimName": 42}, "skillsClaimName must be a resource name"),
@@ -642,9 +721,11 @@ class SandboxAdmissionChartTests(unittest.TestCase):
             self.assertNotIn("secrets", rule["resources"])
             self.assertNotIn("configmaps", rule["resources"])
             self.assertNotIn("*", rule["resources"])
-        self.assertIn({
-            "apiGroups": ["storage.k8s.io"], "resources": ["storageclasses"], "verbs": ["get"],
-        }, documents[("ClusterRole", NAME)]["rules"])
+            self.assertNotIn("*", rule["apiGroups"])
+        for api_group, resource in (("node.k8s.io", "runtimeclasses"), ("storage.k8s.io", "storageclasses")):
+            self.assertIn({
+                "apiGroups": [api_group], "resources": [resource], "verbs": ["get"],
+            }, documents[("ClusterRole", NAME)]["rules"])
         self.assert_rejected({"podsEnabled": True}, "podsEnabled requires sandboxAdmission.enabled")
         self.assert_rejected(self.server_values(podsEnabled="true"), "podsEnabled must be a boolean")
 
@@ -891,10 +972,17 @@ class SandboxAdmissionChartTests(unittest.TestCase):
                     self.assertEqual(actual, encoded.replace("\n", ""))
                     self.assertEqual(base64.b64decode(actual).decode(), pem)
 
-    def test_helm_lint_default_bootstrap_and_enforcing_values(self):
-        for admission in (None, self.server_values(), self.enforced_values()):
-            with self.subTest(admission_enabled=admission is not None, enforcing=bool(admission and admission.get("enforce"))):
-                result = self.helm(admission, lint=True)
+    def test_helm_lint_default_bootstrap_enforcing_and_source_values(self):
+        for admission, values in (
+            (None, {}),
+            (self.server_values(), {}),
+            (self.enforced_values(), {}),
+            (self.enforced_values(podsEnabled=True), {"sandboxSources": {
+                "enabled": True, "platformConfigMapName": "sandbox-platform",
+            }}),
+        ):
+            with self.subTest(admission=admission, values=values):
+                result = self.helm(admission, values=values, lint=True)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 
