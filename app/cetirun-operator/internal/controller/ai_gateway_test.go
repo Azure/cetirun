@@ -1648,6 +1648,31 @@ func TestAIGatewayCopilotPendingKeepsReconciling(t *testing.T) {
 	}
 }
 
+// Changing only the deployment's default model must reach the Agents whose
+// default it decides, rather than wait for the next key verification, and
+// must leave Agents with their own usable model alone.
+func TestAIGatewayRevisionFollowsTheDeploymentDefaultModel(t *testing.T) {
+	r, _, _ := aiGatewayTestReconciler(t)
+	revisionWith := func(agent *cetirunv1alpha1.Agent, defaultModel string) string {
+		r.AIGateway.DefaultModel = defaultModel
+		return r.aiGatewayRevision(agent)
+	}
+	unnamed := routedAgent()
+	if revisionWith(unnamed, "model-a") == revisionWith(unnamed, "model-b") {
+		t.Fatal("an Agent that names no model must follow the deployment default")
+	}
+	unavailable := routedAgent()
+	unavailable.Spec.Model = "no-longer-offered"
+	if revisionWith(unavailable, "model-a") == revisionWith(unavailable, "model-b") {
+		t.Fatal("an Agent whose own model is unavailable must follow the deployment default")
+	}
+	chosen := routedAgent()
+	chosen.Spec.Model = testSharedModelOne
+	if revisionWith(chosen, "model-a") != revisionWith(chosen, "model-b") {
+		t.Fatal("an Agent with its own usable model must not be reconciled for the deployment default")
+	}
+}
+
 func TestAIGatewayRevisionFollowsEverySignIn(t *testing.T) {
 	agent := aiGatewayTestAgent(testAIGatewayTeam)
 	r, _, _ := aiGatewayTestReconciler(t, agent)

@@ -752,6 +752,18 @@ func applyCopilotProxyKeyID(values map[string]any, instance *cetirunv1alpha1.Age
 	}
 }
 
+// aiGatewayUsesDeploymentDefault reports whether the deployment's default
+// model can decide a routed Agent's default: the Agent names no model, or
+// names one that is not among its models.
+func aiGatewayUsesDeploymentDefault(instance *cetirunv1alpha1.Agent) bool {
+	model := strings.TrimSpace(instance.Spec.Model)
+	if model == "" {
+		return true
+	}
+	status := instance.Status.AIGateway
+	return status == nil || !slices.Contains(status.Models, model)
+}
+
 // aiGatewayRevision is the part of the operator configuration hash that
 // affects the Agent's model access. It covers the desired routing, so a
 // configuration change triggers a full reconcile; the recorded routing, key
@@ -770,6 +782,14 @@ func (r *AgentReconciler) aiGatewayRevision(instance *cetirunv1alpha1.Agent) str
 		status := instance.Status.AIGateway
 		parts = append(parts, "routed", r.AIGateway.URL, status.KeyID, status.DefaultModel, strings.Join(status.Models, ","),
 			strconv.FormatBool(r.aiGatewayCopilotActive(instance)), r.AIGateway.CopilotProxyImage)
+		// The deployment's default model selects the next default of an Agent
+		// that names no model, or one it cannot use, so changing only that
+		// setting must not take the lightweight path. Agents with their own
+		// usable choice are left out, as configHash does for the Copilot
+		// default.
+		if defaultModel := strings.TrimSpace(r.AIGateway.DefaultModel); defaultModel != "" && aiGatewayUsesDeploymentDefault(instance) {
+			parts = append(parts, "default-model", defaultModel)
+		}
 		// The proxy reads its master key when it starts, so a new key must
 		// roll it.
 		if r.aiGatewayCopilotActive(instance) && status.Copilot.ProxyKeyID != "" {
