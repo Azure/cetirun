@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"maps"
 	"net/url"
-	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -30,7 +29,6 @@ import (
 var ErrUnsupportedCustomUpdate = stderrors.New("Custom does not support Gateway Token, Teams or Tailscale updates")
 var ErrInstanceChanged = stderrors.New("Agent changed or was replaced; reload before saving")
 var ErrInstanceDeleting = stderrors.New("Agent is being deleted")
-var ErrCustomImageChange = stderrors.New("Custom image changes require separate HOME compatibility qualification")
 var ErrOperatorConfigurationUnavailable = stderrors.New("Operator release configuration is unavailable")
 
 func IsUnsupportedCustomUpdate(err error) bool {
@@ -62,9 +60,6 @@ func validateInstanceUpdate(instance *cetirunv1alpha1.Agent, opts UpdateInstance
 		if opts.Agent.Type != previous.Type || *opts.Agent.Username != *previous.Username ||
 			previous.Image != nil && opts.Agent.Image == nil {
 			return fmt.Errorf("agent identity and pinned image must be preserved")
-		}
-		if previous.Type == cetirunv1alpha1.AgentTypeCustom && !reflect.DeepEqual(previous.Image, opts.Agent.Image) {
-			return ErrCustomImageChange
 		}
 	}
 	return nil

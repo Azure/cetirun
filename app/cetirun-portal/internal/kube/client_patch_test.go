@@ -54,6 +54,16 @@ func TestPortalPatchesPreserveFutureFields(t *testing.T) {
 			},
 		},
 		{
+			name: "instance-agent-image", strict: true, wantSpec: `{"agent":{"image":"registry.example.com/agent:2"}}`,
+			run: func(c *Client, object client.Object) (client.Object, error) {
+				agent := object.(*api.Agent).Spec.Agent.DeepCopy()
+				agent.Image = ptr.To("registry.example.com/agent:2")
+				return c.UpdateInstanceByName(ctx, object.GetName(), UpdateInstanceOpts{
+					Agent: agent, ExpectedUID: object.GetUID(), ExpectedResourceVersion: object.GetResourceVersion(),
+				})
+			},
+		},
+		{
 			name: "instance-clear-agent-port", strict: true, wantSpec: `{"agent":{"port":null}}`,
 			run: func(c *Client, object client.Object) (client.Object, error) {
 				agent := object.(*api.Agent).Spec.Agent.DeepCopy()

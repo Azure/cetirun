@@ -74,12 +74,36 @@ describe("OverviewSection", () => {
     const instance = { ...baseInstance, agent: { type: "custom" as const, image: "registry.example.com/assistant:1", username: "assistant", port: 8080 }, gatewayToken: undefined };
     renderInRouter(<OverviewSection instance={instance} />);
     fireEvent.click(screen.getByRole("button", { name: "Edit Agent" }));
-    expect(screen.getByLabelText("Agent Image")).toHaveAttribute("readonly");
+    expect(screen.getByLabelText("Agent Image")).not.toHaveAttribute("readonly");
     expect(screen.getByLabelText("Agent Username")).toHaveAttribute("readonly");
     fireEvent.change(screen.getByLabelText("HTTP Port (optional)"), { target: { value: "" } });
     fireEvent.change(screen.getByLabelText("Display Name"), { target: { value: "" } });
     fireEvent.click(screen.getByRole("button", { name: "Save", exact: true }));
     expect(mockUpdate).toHaveBeenCalledWith({ uid: "test-agent-uid", resourceVersion: "7", displayName: "", agent: { port: null } }, expect.anything());
+  });
+
+  it.each(["custom", "hermes", "openclaw"] as const)("updates only the %s image with the displayed instance version", (type) => {
+    const instance = { ...baseInstance, agent: { type, image: "registry.example.com/assistant:1", username: "vibe", port: 8080 } };
+    renderInRouter(<OverviewSection instance={instance} />);
+    fireEvent.click(screen.getByRole("button", { name: "Edit Agent" }));
+    expect(screen.getByLabelText("Agent Image")).not.toHaveAttribute("readonly");
+    expect(screen.getByLabelText("Agent Username")).toHaveAttribute("readonly");
+    fireEvent.change(screen.getByLabelText("Agent Image"), { target: { value: " registry.example.com/assistant:2 " } });
+    fireEvent.click(screen.getByRole("button", { name: "Save", exact: true }));
+    expect(mockUpdate).toHaveBeenCalledWith({ uid: "test-agent-uid", resourceVersion: "7", agent: { image: "registry.example.com/assistant:2" } }, expect.anything());
+  });
+
+  it.each(["custom", "hermes", "openclaw"] as const)("does not clear a pinned %s image", (type) => {
+    renderInRouter(<OverviewSection instance={{ ...baseInstance, agent: { type, image: "registry.example.com/assistant:1" } }} />);
+    fireEvent.click(screen.getByRole("button", { name: "Edit Agent" }));
+    fireEvent.change(screen.getByLabelText("Agent Image"), { target: { value: "   " } });
+    fireEvent.click(screen.getByRole("button", { name: "Save", exact: true }));
+    expect(mockUpdate).not.toHaveBeenCalled();
+    expect(screen.getByText("A pinned Agent image cannot be cleared.")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Agent Image"), { target: { value: "registry.example.com/assistant:2" } });
+    expect(screen.queryByText("A pinned Agent image cannot be cleared.")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Save", exact: true }));
+    expect(mockUpdate).toHaveBeenCalledWith({ uid: "test-agent-uid", resourceVersion: "7", agent: { image: "registry.example.com/assistant:2" } }, expect.anything());
   });
 
   it("keeps the version that was opened for editing when fresh data arrives", () => {

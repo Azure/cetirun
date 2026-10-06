@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -207,7 +208,8 @@ func TestCustomPatchContractAndPreconditions(t *testing.T) {
 		{`{"uid":"agent-alice","resourceVersion":"1","agent":{"type":"hermes"}}`, http.StatusBadRequest},
 		{`{"uid":"agent-alice","resourceVersion":"1","agent":{"username":"other"}}`, http.StatusBadRequest},
 		{`{"uid":"agent-alice","resourceVersion":"1","agent":{"image":null}}`, http.StatusBadRequest},
-		{`{"uid":"agent-alice","resourceVersion":"1","agent":{"image":"` + replacementImage + `"}}`, http.StatusConflict},
+		{`{"uid":"old-uid","resourceVersion":"1","agent":{"image":"` + replacementImage + `"}}`, http.StatusConflict},
+		{`{"uid":"agent-alice","resourceVersion":"old","agent":{"image":"` + replacementImage + `"}}`, http.StatusConflict},
 		{`{"uid":"agent-alice","resourceVersion":"1","agent":{"registrySecretRef":null}}`, http.StatusBadRequest},
 		{`{"uid":"agent-alice","resourceVersion":"1","agent":null}`, http.StatusBadRequest},
 		{`{"uid":"agent-alice","resourceVersion":"1","agent":{"port":null}}`, http.StatusOK},
@@ -229,6 +231,45 @@ func TestCustomPatchContractAndPreconditions(t *testing.T) {
 			}
 			if tc.code == http.StatusOK && strings.Contains(tc.body, `"port":null`) && stored.Spec.Agent.Port != nil {
 				t.Fatal("explicit null did not clear the HTTP port")
+			}
+		})
+	}
+}
+
+func TestCustomImageUpgradePreservesInstanceConfiguration(t *testing.T) {
+	for _, mode := range []string{"chat", "headless", "web-ui", "suspended"} {
+		t.Run(mode, func(t *testing.T) {
+			instance := customManagementInstance()
+			instance.Spec.Agent.RegistrySecretRef = &api.RegistrySecretRef{Name: "registry-source-example"}
+			switch mode {
+			case "headless":
+				instance.Spec.Agent.Port = nil
+			case "web-ui":
+				instance.Spec.Agent.WebUI = true
+			case "suspended":
+				instance.Spec.Suspended = true
+			}
+			want := instance.DeepCopy()
+			want.Spec.Agent.Image = ptr.To(replacementImage)
+			h := customManagementHandler(instance)
+			w := httptest.NewRecorder()
+			h.UpdateInstanceByName(w, managementRequest(http.MethodPatch,
+				`{"uid":"agent-alice","resourceVersion":"1","agent":{"image":"`+replacementImage+`"}}`))
+			if w.Code != http.StatusOK {
+				t.Fatalf("image update: %d %s", w.Code, w.Body.String())
+			}
+			stored, err := h.Kube.GetInstance(context.Background(), instance.Name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if stored.UID != instance.UID || !reflect.DeepEqual(stored.Spec, want.Spec) ||
+				!reflect.DeepEqual(stored.Annotations, instance.Annotations) {
+				t.Fatal("image update changed the instance identity or unrelated configuration")
+			}
+			var response InstanceResponse
+			if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil ||
+				response.Agent.Image == nil || *response.Agent.Image != replacementImage {
+				t.Fatalf("updated image was not returned: %v", err)
 			}
 		})
 	}
