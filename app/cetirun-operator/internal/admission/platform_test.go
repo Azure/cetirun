@@ -14,6 +14,7 @@ import (
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxbinding"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxplatform"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxpolicy"
 	admissionv1 "k8s.io/api/admission/v1"
@@ -21,6 +22,7 @@ import (
 	nodev1 "k8s.io/api/node/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
@@ -244,6 +246,160 @@ func TestPlatformAdmissionOutageDoesNotBlockIndependentRequests(t *testing.T) {
 	}
 	requireResponse(t, f.handler.DefaultAgent(context.Background(), requests[0]), true, "legacy")
 	requireResponse(t, f.handler.Validate(context.Background(), requestFor(t, admissionv1.Delete, f.policy, nil, "administrator")), false, "referenced")
+}
+
+func TestPlatformAdmissionSuspensionOnly(t *testing.T) {
+	for _, mode := range []string{ValidationStrict, ValidationCompatible} {
+		for _, failure := range []string{"missing", "malformed"} {
+			t.Run(mode+"/"+failure, func(t *testing.T) {
+				f, cm := newPlatformFixture(t)
+				f.handler.config.ValidationMode = mode
+				stampFixtureAuthorization(t, f)
+				f.agent.Finalizers = append(f.agent.Finalizers, sandbox.HoldFinalizer, sandbox.PreparationFinalizer)
+				suspended := f.agent.DeepCopy()
+				suspended.Spec.Suspended = true
+				suspended.Generation++
+				suspended.ManagedFields = []metav1.ManagedFieldsEntry{{
+					Manager: "synthetic-client", Operation: metav1.ManagedFieldsOperationUpdate, APIVersion: api.GroupVersion.String(),
+				}}
+				reauthorized := suspended.DeepCopy()
+				requestReauthorization(t, f.handler, reauthorized, "synthetic-suspension-request")
+				if failure == "missing" {
+					if err := f.client.Delete(context.Background(), cm); err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					cm.Data[sandboxplatform.ConfigurationKey] = `{"invalid":"synthetic-invalid-platform"}`
+					if err := f.client.Update(context.Background(), cm); err != nil {
+						t.Fatal(err)
+					}
+				}
+				source, reads := f.handler.platformSource, 0
+				f.handler.platformSource = platformSnapshotFunc(func(ctx context.Context) (sandboxplatform.Snapshot, error) {
+					reads++
+					return source.Snapshot(ctx)
+				})
+				for _, user := range []string{"administrator", "member", "outsider", testController, "system:anonymous"} {
+					for _, explicitFalse := range []bool{false, true} {
+						t.Run(fmt.Sprintf("%s/explicit-false=%v", user, explicitFalse), func(t *testing.T) {
+							request := requestFor(t, admissionv1.Update, suspended, f.agent, user)
+							if explicitFalse {
+								addUnknownField(t, &request.OldObject, "spec", "suspended", false)
+							}
+							if mode == ValidationCompatible {
+								for _, raw := range []*runtime.RawExtension{&request.Object, &request.OldObject} {
+									for _, section := range []string{"spec", "status"} {
+										addUnknownField(t, raw, section, "futureCounter", json.Number("9007199254740992"))
+									}
+								}
+							}
+							allowed := user == "administrator" || user == "member"
+							message := "authenticated assigned Team member"
+							if allowed {
+								message = "suspension-only"
+								mutation := f.handler.DefaultAgent(context.Background(), request)
+								requireResponse(t, mutation, true, "")
+								if len(mutation.Patches) != 0 {
+									t.Fatal("suspension must not change defaults or authorization")
+								}
+							}
+							before := reads
+							requireResponse(t, f.handler.Validate(context.Background(), request), allowed, message)
+							if reads != before {
+								t.Fatal("suspension or caller-authority checks consulted platform inventory")
+							}
+						})
+					}
+				}
+				for _, test := range []struct {
+					name string
+					edit func(*admission.Request)
+				}{
+					{"creation", func(r *admission.Request) {
+						r.Operation, r.OldObject = admissionv1.Create, runtime.RawExtension{}
+					}},
+					{"resume", func(r *admission.Request) {
+						addUnknownField(t, &r.OldObject, "spec", "suspended", true)
+						addUnknownField(t, &r.Object, "spec", "suspended", false)
+					}},
+					{"already suspended", func(r *admission.Request) {
+						addUnknownField(t, &r.OldObject, "spec", "suspended", true)
+					}},
+					{"no transition", func(r *admission.Request) {
+						addUnknownField(t, &r.Object, "spec", "suspended", false)
+					}},
+					{"Team binding", func(r *admission.Request) {
+						addUnknownField(t, &r.Object, "spec", "team", "another-team")
+					}},
+					{"Sandbox binding", func(r *admission.Request) {
+						addUnknownField(t, &r.Object, "spec", "sandboxRef", "another-sandbox")
+					}},
+					{"policy class", func(r *admission.Request) {
+						addUnknownField(t, &r.Object, "spec", "policyClass", api.AgentPolicyClassAdmin)
+					}},
+					{"model", func(r *admission.Request) {
+						addUnknownField(t, &r.Object, "spec", "model", "another-model")
+					}},
+					{"Secret reference", func(r *admission.Request) {
+						addUnknownField(t, &r.Object, "spec", "gatewayTokenSecretRef", "another-secret")
+					}},
+					{"labels", func(r *admission.Request) {
+						addUnknownField(t, &r.Object, "metadata", "labels", map[string]string{"example.com/note": "changed"})
+					}},
+					{"annotations", func(r *admission.Request) {
+						addUnknownField(t, &r.Object, "metadata", "annotations", map[string]string{
+							sandboxbinding.AuthorizationAnnotation: f.agent.Annotations[sandboxbinding.AuthorizationAnnotation],
+							"example.com/note":                     "changed",
+						})
+					}},
+					{"finalizers", func(r *admission.Request) {
+						addUnknownField(t, &r.Object, "metadata", "finalizers", append(suspended.GetFinalizers(), "example.com/other"))
+					}},
+					{"owner references", func(r *admission.Request) {
+						addUnknownField(t, &r.Object, "metadata", "ownerReferences", []metav1.OwnerReference{{
+							APIVersion: api.GroupVersion.String(), Kind: "Team", Name: f.team.Name, UID: f.team.UID,
+						}})
+					}},
+					{"authorization record", func(r *admission.Request) {
+						addUnknownField(t, &r.Object, "metadata", "annotations", map[string]string{
+							sandboxbinding.AuthorizationAnnotation: "synthetic-invalid-authorization",
+						})
+					}},
+					{"reauthorization", func(r *admission.Request) {
+						addUnknownField(t, &r.Object, "metadata", "annotations", reauthorized.Annotations)
+					}},
+					{"UID", func(r *admission.Request) {
+						addUnknownField(t, &r.Object, "metadata", "uid", "replacement-agent")
+					}},
+					{"resourceVersion", func(r *admission.Request) {
+						addUnknownField(t, &r.Object, "metadata", "resourceVersion", "2")
+					}},
+					{"status", func(r *admission.Request) {
+						addUnknownField(t, &r.Object, "status", "phase", api.PhaseReady)
+					}},
+					{"future nested spec", func(r *admission.Request) {
+						addUnknownField(t, &r.Object, "spec", "agent", map[string]any{
+							"type": api.AgentTypeHermes, "futureCapability": true,
+						})
+					}},
+				} {
+					t.Run(test.name, func(t *testing.T) {
+						request := requestFor(t, admissionv1.Update, suspended, f.agent, "administrator")
+						test.edit(&request)
+						requireResponse(t, f.handler.Validate(context.Background(), request), false, "")
+					})
+				}
+				for _, section := range []string{"spec", "metadata", "status", "futureSection"} {
+					t.Run("changed future field/"+section, func(t *testing.T) {
+						request := requestFor(t, admissionv1.Update, suspended, f.agent, "administrator")
+						addUnknownField(t, &request.OldObject, section, "futureCounter", json.Number("9007199254740992"))
+						addUnknownField(t, &request.Object, section, "futureCounter", json.Number("9007199254740993"))
+						requireResponse(t, f.handler.Validate(context.Background(), request), false, "")
+					})
+				}
+			})
+		}
+	}
 }
 
 func TestPlatformAdmissionReadsRespectTotalDeadline(t *testing.T) {

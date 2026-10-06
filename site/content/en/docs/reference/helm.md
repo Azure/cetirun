@@ -369,7 +369,11 @@ ownership through authoritative Kubernetes reads. Each relevant configuration
 admission request checks the current inventory without a cross-request cache.
 Missing, inaccessible, malformed or drifted inventory blocks governed
 configuration writes that require capability checks, not authorized
-cleanup/status operations or unrelated legacy writes. Webhook matching and
+cleanup/status operations, suspension-only updates or unrelated legacy writes.
+An authorized suspension may only change `spec.suspended` from false (or
+omitted) to true, preserving other spec fields and caller-controlled metadata.
+Creation, resume, binding changes and reauthorization still require valid
+inventory. Webhook matching and
 outage behavior are unchanged: other matched writes still fail closed if the
 admission service is unavailable. Source wiring does not grant Portal callers
 Kubernetes admission authority or replace trusted Team assignments.

@@ -504,8 +504,13 @@ there is no cross-request inventory cache or fallback to earlier declarations.
 Missing, inaccessible, malformed or drifted platform inventory blocks governed
 configuration writes that require capability checks. This source dependency
 does not apply to configuration `/status`, Agent deletion, narrowly authorized
-controller cleanup or unrelated legacy writes. Their existing authorization
-and cleanup rules still apply. This does not change webhook-outage behavior:
+controller cleanup, authorized suspension-only updates or unrelated legacy
+writes. Suspension must change only `spec.suspended` from false (or omitted) to
+true; all other spec fields, authorization records and caller-controlled
+metadata must remain unchanged. Only server-managed generation and field
+ownership changes are ignored. Existing caller-authority and lifecycle checks
+still apply. Creation, resume, binding changes and reauthorization still require
+valid inventory. This does not change webhook-outage behavior:
 other matched writes, including legacy writes, still fail closed when admission
 itself is unavailable.
 

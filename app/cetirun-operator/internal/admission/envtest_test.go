@@ -30,6 +30,7 @@ import (
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxbinding"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxplatform"
 	admissionv1 "k8s.io/api/admission/v1"
 	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
@@ -513,12 +514,48 @@ func TestAdmissionAPIServerBoundaries(t *testing.T) {
 		team := f.team.DeepCopy()
 		team.ObjectMeta = metav1.ObjectMeta{Name: "platform-backed-team"}
 		create(team)
+		agent := newAgent("source-outage-suspension", true)
+		create(agent)
+		record := agent.Annotations[sandboxbinding.AuthorizationAnnotation]
 		platform.Data[sandboxplatform.ConfigurationKey] = `{"invalid":"synthetic-invalid-platform"}`
 		if err := cl.Update(ctx, platform); err != nil {
 			t.Fatal(err)
 		}
 		if err := cl.Create(ctx, newAgent("missing-platform", true), client.DryRunAll); err == nil {
 			t.Fatal("governed creation accepted malformed source or reused prior capabilities")
+		}
+		suspended := agent.DeepCopy()
+		suspended.Spec.Suspended = true
+		if err := member.Update(ctx, suspended.DeepCopy()); !apierrors.IsForbidden(err) {
+			t.Fatalf("suspension bypassed caller authorization: %v", err)
+		}
+		for _, edit := range []func(*api.Agent){
+			func(a *api.Agent) { a.Spec.Model = "another-model" },
+			func(a *api.Agent) { a.Spec.SandboxRef = "another-sandbox" },
+			func(a *api.Agent) { a.Labels = map[string]string{"example.com/note": "changed"} },
+		} {
+			changed := suspended.DeepCopy()
+			edit(changed)
+			if err := cl.Update(ctx, changed); err == nil {
+				t.Fatal("suspension admitted an additional change without valid inventory")
+			}
+		}
+		if err := cl.Update(ctx, suspended); err != nil {
+			t.Fatal("authorized suspension depended on malformed inventory:", err)
+		}
+		var stored api.Agent
+		if err := cl.Get(ctx, client.ObjectKeyFromObject(agent), &stored); err != nil {
+			t.Fatal(err)
+		}
+		if !stored.Spec.Suspended || stored.Generation != agent.Generation+1 ||
+			stored.Annotations[sandboxbinding.AuthorizationAnnotation] != record ||
+			!slices.Equal(stored.Finalizers, agent.Finalizers) {
+			t.Fatal("suspension was not persisted with authorization and finalizers unchanged")
+		}
+		resumed := stored.DeepCopy()
+		resumed.Spec.Suspended = false
+		if err := cl.Update(ctx, resumed); err == nil {
+			t.Fatal("resume was admitted without valid platform inventory")
 		}
 		create(newAgent("legacy-during-source-outage", false))
 		platform.Data[sandboxplatform.ConfigurationKey] = string(platformJSON)
@@ -527,6 +564,9 @@ func TestAdmissionAPIServerBoundaries(t *testing.T) {
 		}
 		if err := cl.Create(ctx, newAgent("recovered-platform", true), client.DryRunAll); err != nil {
 			t.Fatal("repaired platform did not restore governed admission:", err)
+		}
+		if err := cl.Update(ctx, resumed); err != nil {
+			t.Fatal("repaired platform did not restore resume validation:", err)
 		}
 		if err := cl.Delete(ctx, runtimeClass); err != nil {
 			t.Fatal(err)

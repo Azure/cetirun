@@ -216,6 +216,9 @@ func (h *Handler) validateAgent(ctx context.Context, request admission.Request, 
 			return admission.Denied("members cannot change a governed Agent's Team, policy class or Sandbox binding")
 		}
 	}
+	if suspensionOnlyUpdate(request, agent, old) {
+		return admission.Allowed("authorized suspension-only update; existing governance is unchanged")
+	}
 	resources, response := h.agentAuthorizationResources(ctx, request.Operation, agent, team)
 	if !response.Allowed {
 		return response
@@ -423,6 +426,11 @@ func references(team *api.Team, object client.Object) bool {
 func sameTeamGovernance(a, b api.TeamSpec) bool {
 	return a.NormalAgentPolicyRef == b.NormalAgentPolicyRef && a.AdminAgentPolicyRef == b.AdminAgentPolicyRef &&
 		a.DefaultSandboxRef == b.DefaultSandboxRef && slices.Equal(a.SandboxRefs, b.SandboxRefs)
+}
+
+func suspensionOnlyUpdate(request admission.Request, agent, old *api.Agent) bool {
+	return request.Operation == admissionv1.Update && old != nil && !old.Spec.Suspended && agent.Spec.Suspended &&
+		rawChangesOnly(request, []string{"suspended"}, []string{"generation", "managedFields"})
 }
 
 func lifecycleFinalizer(value string) bool {
