@@ -5,11 +5,11 @@ package controller
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"slices"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxplatform"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxpolicy"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
 	appsv1 "k8s.io/api/apps/v1"
@@ -24,7 +24,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-var errSandboxSourceChanged = errors.New("Sandbox source identity changed")
+var errSandboxSourceChanged = sandboxplatform.ErrSourceChanged
 
 func (r *AgentReconciler) sandboxPreparationInput(ctx context.Context, attempt *sandboxPreparationAttempt) error {
 	inputs := attempt.prerequisites
@@ -105,6 +105,7 @@ func (r *AgentReconciler) sandboxPreparationInput(ctx context.Context, attempt *
 		sandboxSource(runtimeClass, "node.k8s.io/v1", "RuntimeClass"),
 		sandboxSource(storageClass, "storage.k8s.io/v1", "StorageClass"),
 	)
+	attempt.sources = append(attempt.sources, inputs.PublicationSources...)
 	// Recheck captured versions before applying grants/workloads or accepting
 	// read-only reuse; durable bookkeeping can precede those checks.
 	return nil

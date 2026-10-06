@@ -132,7 +132,7 @@ func requestFor(t *testing.T, operation admissionv1.Operation, object, old clien
 func requireResponse(t *testing.T, response admission.Response, allowed bool, message string) {
 	t.Helper()
 	if response.Allowed != allowed || (message != "" && (response.Result == nil || !strings.Contains(response.Result.Message, message))) {
-		t.Fatalf("want allowed=%v containing %q, got %#v", allowed, message, response.AdmissionResponse)
+		t.Fatalf("want allowed=%v containing %q, got %#v (status: %+v)", allowed, message, response.AdmissionResponse, response.Result)
 	}
 }
 

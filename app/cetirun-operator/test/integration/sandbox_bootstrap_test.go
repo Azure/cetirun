@@ -28,6 +28,11 @@ import (
 
 func configureBootstrap(t *testing.T, f *preparationCase) {
 	t.Helper()
+	configureBootstrapSkillsCatalog(t, f, "")
+}
+
+func configureBootstrapSkillsCatalog(t *testing.T, f *preparationCase, catalogName string) {
+	t.Helper()
 	snapshot := f.source.configuration
 	data, err := json.Marshal(controller.SandboxPlatformConfiguration{
 		Version: "v1", Registrations: snapshot.Registrations, Platforms: snapshot.Platforms,
@@ -44,7 +49,8 @@ func configureBootstrap(t *testing.T, f *preparationCase) {
 	preparation, err := controller.NewKubernetesSandboxPreparation(controller.SandboxSourcesConfig{
 		Enabled: true, BootstrapOwnedPrerequisites: true, PlatformConfigMapName: name,
 		HomeClaimName: "home", SkillsClaimName: "skills", Helpers: f.fixture.Input.Helpers,
-		AdmissionServiceAccount: preparationAdmissionAccount,
+		SkillsCatalogConfigMapName: catalogName,
+		AdmissionServiceAccount:    preparationAdmissionAccount,
 	}, f.h.client, f.installer, preparationStateNamespace, f.h.chart.Metadata.Version)
 	if err != nil {
 		t.Fatal(err)
@@ -116,6 +122,22 @@ func TestSandboxBootstrap(t *testing.T) {
 			deleteBootstrapCase(t, f)
 		})
 	}
+}
+
+func bootstrapCaseReceipt(t *testing.T, f *preparationCase) *corev1.ConfigMap {
+	t.Helper()
+	var state corev1.ConfigMapList
+	if err := f.h.client.List(f.h.ctx, &state, client.InNamespace(preparationStateNamespace)); err != nil {
+		t.Fatal(err)
+	}
+	for i := range state.Items {
+		if state.Items[i].Annotations[w.AgentUIDAnnotation] == string(f.fixture.Agent.UID) &&
+			state.Items[i].Data["bootstrap.json"] != "" {
+			return state.Items[i].DeepCopy()
+		}
+	}
+	t.Fatal("bootstrap receipt is missing")
+	return nil
 }
 
 func deleteBootstrapCase(t *testing.T, f *preparationCase) {
@@ -204,20 +226,7 @@ func TestSandboxBootstrapForegroundDeletionRetainsDependents(t *testing.T) {
 			if _, err := f.reconciler.Reconcile(h.ctx, f.request()); !apierrors.IsNotFound(err) {
 				t.Fatal(err)
 			}
-			var state corev1.ConfigMapList
-			if err := h.client.List(h.ctx, &state, client.InNamespace(preparationStateNamespace)); err != nil {
-				t.Fatal(err)
-			}
-			var receipt *corev1.ConfigMap
-			for i := range state.Items {
-				if state.Items[i].Annotations[w.AgentUIDAnnotation] == string(f.fixture.Agent.UID) &&
-					state.Items[i].Data["bootstrap.json"] != "" {
-					receipt = state.Items[i].DeepCopy()
-				}
-			}
-			if receipt == nil {
-				t.Fatal("bootstrap receipt is missing")
-			}
+			receipt := bootstrapCaseReceipt(t, f)
 			originalData := receipt.DeepCopy().Data
 			receipt.Data["bootstrap.json"] = `{"invalid":"synthetic-receipt"}`
 			h.update(t, receipt)

@@ -25,11 +25,13 @@ const (
 )
 
 type Config struct {
-	ValidationMode     string           `json:"validationMode,omitempty"`
-	AdminUsers         []string         `json:"adminUsers"`
-	AdminGroups        []string         `json:"adminGroups"`
-	ControllerUsername string           `json:"controllerUsername"`
-	TeamAssignments    []TeamAssignment `json:"teamAssignments,omitempty"`
+	ValidationMode        string           `json:"validationMode,omitempty"`
+	AdminUsers            []string         `json:"adminUsers"`
+	AdminGroups           []string         `json:"adminGroups"`
+	ControllerUsername    string           `json:"controllerUsername"`
+	TeamAssignments       []TeamAssignment `json:"teamAssignments,omitempty"`
+	PlatformNamespace     string           `json:"platformNamespace,omitempty"`
+	PlatformConfigMapName string           `json:"platformConfigMapName,omitempty"`
 }
 
 // TeamAssignment is administrative creation context, not Agent/Portal input.
@@ -73,6 +75,13 @@ func (c Config) Validate() error {
 	if len(parts) != 4 || parts[0] != "system" || parts[1] != "serviceaccount" ||
 		len(validation.IsDNS1123Label(parts[2])) != 0 || len(validation.IsDNS1123Subdomain(parts[3])) != 0 {
 		return fmt.Errorf("Sandbox admission controllerUsername must identify one namespaced service account")
+	}
+	if c.PlatformNamespace != "" || c.PlatformConfigMapName != "" {
+		if len(validation.IsDNS1123Label(c.PlatformNamespace)) != 0 ||
+			len(validation.IsDNS1123Subdomain(c.PlatformConfigMapName)) != 0 ||
+			c.PlatformNamespace != parts[2] {
+			return fmt.Errorf("Sandbox admission platform source requires an explicit ConfigMap name in the controller namespace")
+		}
 	}
 	teams, users, groups := map[string]bool{}, map[string]string{}, map[string]string{}
 	for _, assignment := range c.TeamAssignments {

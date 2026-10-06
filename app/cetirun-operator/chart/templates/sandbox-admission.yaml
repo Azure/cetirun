@@ -1,3 +1,4 @@
+{{- $sandboxSources := include "cetirun-operator.sandboxSourcesConfig" . -}}
 {{- $admission := .Values.sandboxAdmission -}}
 {{- if not (kindIs "bool" $admission.podsEnabled) -}}
 {{- fail "sandboxAdmission.podsEnabled must be a boolean" -}}
@@ -45,6 +46,10 @@
 {{- end -}}
 {{- $controllerUsername := printf "system:serviceaccount:%s:%s" $controllerNamespace $controllerServiceAccount -}}
 {{- $config := dict "adminUsers" $admission.adminUsers "adminGroups" $admission.adminGroups "controllerUsername" $controllerUsername "validationMode" $admission.validationMode -}}
+{{- if $sandboxSources -}}
+{{- $_ := set $config "platformNamespace" $controllerNamespace -}}
+{{- $_ := set $config "platformConfigMapName" .Values.sandboxSources.platformConfigMapName -}}
+{{- end -}}
 {{- if not (kindIs "slice" $admission.teamAssignments) -}}
 {{- fail "sandboxAdmission.teamAssignments must be a list" -}}
 {{- end -}}
@@ -114,6 +119,11 @@ rules:
   - apiGroups: [""]
     resources: ["namespaces", "pods", "persistentvolumeclaims", "serviceaccounts"]
     verbs: ["get"]
+  {{- if .Values.sandboxSources.skillsCatalogConfigMapName }}
+  - apiGroups: [""]
+    resources: ["persistentvolumes"]
+    verbs: ["get"]
+  {{- end }}
   - apiGroups: ["apps"]
     resources: ["statefulsets"]
     verbs: ["get"]

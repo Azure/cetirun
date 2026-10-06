@@ -24,36 +24,17 @@ import (
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxplatform"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxpolicy"
 )
 
-type SandboxRuntimePrerequisite struct {
-	UID     types.UID
-	Handler string
-}
+type SandboxRuntimePrerequisite = sandboxplatform.RuntimePrerequisite
 
-type SandboxStoragePrerequisite struct {
-	UID         types.UID
-	Provisioner string
-}
+type SandboxStoragePrerequisite = sandboxplatform.StoragePrerequisite
 
-// SandboxConfigurationSnapshot is trusted platform state, not CR status. Empty
-// or stale snapshots never imply readiness. No production source is installed.
-type SandboxConfigurationSnapshot struct {
-	ObservedAt     time.Time
-	Registrations  map[api.SandboxType]sandbox.Registration
-	Platforms      map[api.SandboxType]sandboxpolicy.Platform
-	RuntimeClasses map[string]SandboxRuntimePrerequisite
-	StorageClasses map[string]SandboxStoragePrerequisite
-}
+type SandboxConfigurationSnapshot = sandboxplatform.Snapshot
 
-type SandboxConfigurationSource interface {
-	// Snapshot returns an immutable, atomically captured support inventory.
-	// Grant approvals bind role UID, resourceVersion and normalized rules.
-	// Policy assessment and workload consumers must authoritatively verify only
-	// their requested grants before use; unrelated roles do not gate capture.
-	Snapshot(context.Context) (SandboxConfigurationSnapshot, error)
-}
+type SandboxConfigurationSource = sandboxplatform.Source
 
 type SandboxConfigurationSourceFunc func(context.Context) (SandboxConfigurationSnapshot, error)
 
@@ -341,11 +322,5 @@ func configurationSnapshot(ctx context.Context, source SandboxConfigurationSourc
 }
 
 func configurationSnapshotTime(observedAt, now time.Time, maxAge time.Duration) error {
-	if maxAge <= 0 {
-		maxAge = 30 * time.Second
-	}
-	if now.IsZero() || observedAt.IsZero() || observedAt.After(now) || now.Sub(observedAt) >= maxAge {
-		return fmt.Errorf("%w: platform snapshot is stale or incomplete", sandboxpolicy.ErrUnavailable)
-	}
-	return nil
+	return sandboxplatform.CheckFreshness(observedAt, now, maxAge)
 }

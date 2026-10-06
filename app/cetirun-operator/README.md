@@ -140,8 +140,11 @@ access to the four configuration kinds by default. Optional Pod admission adds
 read access to workload prerequisites and namespace-scoped controller state,
 not cluster-wide Secret or ConfigMap access. It does not mount operator cloud
 credentials, registry credentials, or workload Secrets.
-Agent validation fetches only its Team and that Team's named Sandbox/policy
-references. Shared-configuration checks scan consumers in pages of 200, reuse
+Agent validation fetches its Team and only that Team's named Sandbox/policy
+references. With [Kubernetes-backed sources](#kubernetes-backed-sources-opt-in)
+enabled, governed configuration checks also read the selected platform
+declarations and verify RuntimeClass/StorageClass pins.
+Shared-configuration checks scan consumers in pages of 200, reuse
 named reference reads only within the current request, and fail on incomplete
 or expired page reads. There is no cross-request reference cache.
 
@@ -442,12 +445,24 @@ closed for coordinated recovery rather than being adopted or force-unlocked.
 
 ##### Kubernetes-backed sources (opt-in)
 
-`sandboxSources.enabled` in the operator chart serializes
-`CETIRUN_SANDBOX_SOURCES`. It requires configuration and Pod admission to be
+`sandboxSources.enabled` in the operator chart selects capability declarations
+for configuration admission as well as sources for held native preparation.
+It serializes `CETIRUN_SANDBOX_SOURCES` for the controller and derives both
+`platformNamespace` and `platformConfigMapName` in the admission process's
+`CETIRUN_SANDBOX_ADMISSION` from the same chart `namespace` and
+`sandboxSources.platformConfigMapName`. There are no separate admission-source
+Helm values. When sources are disabled, both admission fields and the
+controller's source setting are omitted.
+This option requires configuration and Pod admission to be
 enabled and enforced (`sandboxAdmission.enabled`, `enforce`, and `podsEnabled`).
 The admission ServiceAccount is fixed to the separately deployed
 `cetirun-sandbox-admission`; it is not the controller ServiceAccount.
-The default-off chart output and RBAC grants are unchanged.
+Admission reuses its existing operator-namespace ConfigMap `get` Role and
+Pod-admission RuntimeClass/StorageClass `get` permissions. Sources alone add no
+RBAC grants. The optional skills publication catalog described below adds only
+PersistentVolume `get` for its metadata dependencies, not write permissions,
+Secret lists or cluster-wide ConfigMap access.
+The default-off chart output is unchanged.
 
 ```yaml
 sandboxSources:
@@ -456,6 +471,7 @@ sandboxSources:
   platformConfigMapName: sandbox-platform
   homeClaimName: home
   skillsClaimName: skills
+  skillsCatalogConfigMapName: ""
   helpers:
     doctor: false
     logger: false
@@ -465,7 +481,8 @@ sandboxSources:
 These are operator settings, never Agent or Team Helm overrides. The constructor
 uses the selected operator namespace and chart version. The
 [configuration source](internal/controller/sandbox_kubernetes_configuration.go)
-reads `platform.json` from the named, pre-existing ConfigMap in that namespace.
+and configuration admission read the same `platform.json` from the named,
+pre-existing ConfigMap in that namespace.
 Its `v1` document contains `registrations`, `platforms`, `runtimeClasses` and
 `storageClasses`. It reuses the existing inner contract types and their
 case-sensitive JSON fields: registrations use `Capabilities`/`Available`,
@@ -484,6 +501,21 @@ errors, not automatic reapproval or a fallback to cached tenant data.
 The document is bounded to 512 KiB, 16,384 JSON tokens, 12 nesting levels and
 128 distinct API objects including the ConfigMap. Unknown/duplicate fields,
 nulls and incomplete object pins are rejected.
+
+Each relevant configuration-admission request uses current authoritative reads;
+there is no cross-request inventory cache or fallback to earlier declarations.
+Missing, inaccessible, malformed or drifted platform inventory blocks governed
+configuration writes that require capability checks. This source dependency
+does not apply to configuration `/status`, Agent deletion, narrowly authorized
+controller cleanup, authorized suspension-only updates or unrelated legacy
+writes. Suspension must change only `spec.suspended` from false (or omitted) to
+true; all other spec fields, authorization records and caller-controlled
+metadata must remain unchanged. Only server-managed generation and field
+ownership changes are ignored. Existing caller-authority and lifecycle checks
+still apply. Creation, resume, binding changes and reauthorization still require
+valid inventory. This does not change webhook-outage behavior:
+other matched writes, including legacy writes, still fail closed when admission
+itself is unavailable.
 
 The platform owner must protect this ConfigMap from tenant writes and maintain
 its qualification records, complete topology and explicit approvals. The chart
@@ -521,9 +553,11 @@ storage classes, without being mistaken for writer-exclusion evidence.
 Both sources return revisions bound to their checked inputs and reject changes
 during capture. Configuration observations are dated at the start of the read;
 consumers check freshness after it completes and reject observations that expire
-during capture. The same configuration source is used by the Agent, Sandbox
-and AgentPolicy reconcilers. A configured source does not establish runtime,
-network or CSI enforcement. In particular, the stock prerequisite source has
+during capture. The same platform declarations are used by configuration
+admission and the Agent, Sandbox and AgentPolicy reconcilers. They do not grant
+Portal callers Kubernetes admission authority or replace trusted Team
+assignments. A configured source does not establish runtime, network or CSI
+enforcement. In particular, the stock prerequisite source has
 no writer-exclusion adapter and returns an explicit error before preparation
 creates its qualified-preparation cleanup state. Bootstrap-only ownership state
 is separate and does not claim a writer fence. An Agent rejected by this
@@ -551,12 +585,15 @@ the native authentication Secret named by `gatewayTokenSecretRef`. It reuses the
 ordinary OpenClaw/Hermes key initialization; existing credentials are neither
 read nor enriched by bootstrap. No cluster-wide RBAC grants are added.
 
-Bootstrap does **not** create an empty replacement for published skills, shared
-Blob volumes, model-provider credentials, Pods, routes or execution permits.
-The platform must supply the configured, distinct skills claim in the newly
-created namespace, with the supported Agent/Team or retained ownership.
-Missing skills remain an explicit prerequisite error. Once inputs exist,
-the stock binary still stops at unavailable qualified writer exclusion.
+Bootstrap does **not** create an empty replacement for published skills,
+model-provider credentials, Pods, routes or execution permits. By default the
+platform must supply the configured, distinct skills claim in the newly created
+namespace, with the supported Agent/Team or retained ownership. Missing skills
+remain an explicit prerequisite error. Alternatively, the separately selected
+publication catalog below can create static bindings to already-published
+content. In either mode the stock binary still stops at unavailable qualified
+writer exclusion. The native authentication Secret is not evidence that a
+model provider has issued usable credentials.
 
 A bounded controller-owned receipt records each created UID. Each object is
 marked with that receipt's UID so an interrupted create can be recognized;
@@ -582,6 +619,100 @@ HOME, credential-preserving retries and cleanup using synthetic fixtures and
 an isolated API server. Foreground-GC regressions explicitly issue dependent
 DELETEs because these test environments do not run a garbage collector.
 They do not qualify runtime/storage/network behavior.
+
+###### Published Blob NFS skills catalog (separate opt-in)
+
+Set `sandboxSources.skillsCatalogConfigMapName` to a **separate, pre-existing
+ConfigMap in the operator namespace**, and enable both sources and owned
+bootstrap. The default is empty. This setting changes neither `platform.json`
+nor the configuration-admission wire contract. The operator never creates or
+updates the catalog, publishes source content, contacts Azure, imports caller
+PVs/Secrets or resolves storage credentials. `Team.spec.skillStorage`, Agent
+Helm values and namespace-local ConfigMaps are not publication authority.
+Protect catalog writes using operator-namespace RBAC.
+
+For example, this synthetic catalog binds a publication to one exact Team
+name and UID; replace the example UID with the intended Team object's UID:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sandbox-published-skills
+  namespace: cetirun-system
+data:
+  skills.json: |
+    {
+      "version": "v1",
+      "teams": {
+        "example-team": {
+          "teamUID": "00000000-0000-4000-8000-000000000001",
+          "revision": "published-v1",
+          "source": {
+            "resourceGroup": "skills-example",
+            "storageAccount": "skillsexample123",
+            "containerName": "skills-v1",
+            "storageClassName": "azureblob-nfs-premium",
+            "storageSize": "1Gi"
+          }
+        }
+      }
+    }
+```
+
+The ConfigMap must contain only `data["skills.json"]`, with no binary data.
+The case-sensitive `v1` document requires `teams`, which may be empty, and all
+shown fields for each entry. It is bounded to 64 KiB, 128 Teams, 8,192 JSON tokens
+and five nesting levels. Unknown/duplicate fields, nulls, malformed descriptors,
+Secret references, protocol overrides and mount options are rejected. Missing
+approval for the current Team name **and UID** is a prerequisite error before
+cold-create effects. A same-name replacement Team does not inherit approval.
+The publisher must keep content stable for the selected revision and publish
+changes under a new approval/source; the operator does not inspect or hash NFS
+contents. The revision is an approval identifier, not storage qualification.
+
+New catalog-backed bootstrap uses a `v2` write-ahead receipt containing the
+catalog UID, selected Team/publication and both binding names. It creates the
+Agent-owned skills PVC with an explicit `volumeName`, records its API UID, then
+creates a deterministic per-Agent PV with that exact PVC UID in `claimRef`.
+This is static Blob NFS binding, never an empty dynamically provisioned claim.
+It follows the existing shared-skills RWX shape while enforcing CSI `readOnly`,
+the `ro` mount option, read-only native workload mounts and PV reclaim policy
+`Retain`. HOME remains a different claim with its own authorized profile.
+No shared source object or backing data is modified.
+
+Each returned object UID is recorded before the next effect. Interrupted creates
+can resume only for the exact receipt-marked intent; foreign objects, replacement
+UIDs and immutable spec drift require recovery. The selected catalog UID,
+Team UID, revision and source cannot change in place. Unrelated catalog edits
+are allowed, but every attempt guards the freshly read resourceVersion.
+Removing/changing the selected approval or disabling its catalog holds further
+preparation and requires recovery, not automatic migration or fallback.
+Existing namespaces and older `v1` bootstrap receipts retain their externally
+provided skills mode; enabling a catalog does not adopt or migrate them.
+
+Held preparation includes the catalog, bootstrap receipt and PV identities in
+its checked admission source inventory. With the catalog enabled, the admission
+chart adds only cluster-scoped PersistentVolume `get`; no list, write or Secret
+permissions are added. Catalog/receipt metadata use its existing
+operator-namespace ConfigMap `get` Role, and namespace-local runtime source
+grants remain name-scoped.
+
+Deletion uses the durable receipt without requiring the live catalog. Existing
+shutdown, ownership and any qualified-preparation fencing gates still apply.
+Skills bindings carry the bootstrap finalizer through foreground deletion.
+The controller releases the PVC with namespace cleanup, then deletes only the
+recorded `Retain` PV after namespace and PVC absence, using UID/resourceVersion
+preconditions. It removes only its own finalizer and retains Agent/receipt
+protection until PV absence is observed. Other controller finalizers and the
+published backing data are preserved. This is not a source-content deletion or
+a cloud fencing implementation.
+
+Launch image/chart/port inputs remain explicit; no controller spec-write
+exemption is introduced. Portal namespace precreation and identity delegation
+remain separate work. Catalog bindings, pending PVCs and successful held
+rendering do not qualify CSI/NFS behavior, provider credentials, execution
+starts or running enforcement.
 
 **Manual recovery after forced finalizer removal.** Do not force-remove Agent
 or state finalizers as routine cleanup. If an Agent disappears outside the

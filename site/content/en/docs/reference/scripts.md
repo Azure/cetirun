@@ -124,6 +124,89 @@ artifacts.
 
 ## Connected deployment helpers
 
+### Sandbox platform probes
+
+[`sandbox-platform-qualify.py`]({{< repo "scripts/sandbox-platform-qualify.py" >}})
+requires an explicit kubeconfig, context, and expected `kube-system` namespace
+UID. It never uses the current context implicitly or logs kubeconfig contents
+and upstream authentication diagnostics. Keep target identities and credentials
+in local configuration, not repository fixtures.
+
+The read-only preflight checks the admission minimum Kubernetes version, the
+selected RuntimeClass handler and StorageClass, and established Cilium policy
+and endpoint APIs:
+
+```bash
+python3 -B scripts/sandbox-platform-qualify.py preflight \
+  --kubeconfig "$TEST_KUBECONFIG" --context "$TEST_CONTEXT" \
+  --cluster-uid "$TEST_CLUSTER_UID" --storage-class managed-csi
+```
+
+The default RuntimeClass is `kata-vm-isolation`, with handler `kata`.
+Use `--runtime-class` and `--runtime-handler` to name an explicitly approved
+alternative. Existence and matching configuration do not establish actual
+runtime, network or storage enforcement.
+
+On a separately authorized disposable target, the `network-smoke` mode creates
+a unique namespace, a synthetic server and a Kata probe. It requires
+`--allow-test-resources` and a `--probe-image` pinned by SHA256 digest, containing
+Python 3. It tests three initially reachable TCP ports, a Cilium destination-port
+deny, and deny precedence over an overlapping Kubernetes allow policy:
+
+```bash
+python3 -B scripts/sandbox-platform-qualify.py network-smoke \
+  --kubeconfig "$TEST_KUBECONFIG" --context "$TEST_CONTEXT" \
+  --cluster-uid "$TEST_CLUSTER_UID" --storage-class managed-csi \
+  --probe-image "$PINNED_PYTHON_IMAGE" --allow-test-resources
+```
+
+These fixtures have no workload credentials, host mounts or host networking.
+They are not governed Agent Pods and do not bypass protected-Pod admission.
+The server receives its primary Pod IP through the Downward API and binds all
+three listeners using that address's IPv4 or IPv6 family. An exec readiness
+probe checks all three listeners, with a one-second connection timeout and a
+five-second total probe timeout. The baseline waits for server readiness within
+the existing 180-second readiness window; container startup alone is not
+readiness. On dual-stack targets this test exercises the primary Pod IP only.
+The helper retains each server and probe Pod UID from its create response.
+Every readiness observation and both final identity checks must match those
+creation UIDs and must not be terminating. Missing creation identities or
+same-name replacements fail the run; readiness cannot authorize a replacement.
+The probe's effective `spec.runtimeClassName` must also match the requested
+class in its creation response, every readiness observation and the final
+check. Admission rewriting or removing that field fails the run even when
+the Pod UID is unchanged.
+Only a TCP connection timeout can count as blocked; connection refusal,
+unexpected HTTP responses and failures after connecting fail the probe.
+The Cilium policy initially allows port 8081, explicitly denies 8080, and leaves
+8082 blocked by default. After the overlapping allow policy is created, 8082
+must become reachable while 8080 stays blocked. This witness prevents an
+unchanged pre-allow sample from falsely establishing deny precedence. Each
+sample checks the witness before the denied port, so it cannot reuse a denial
+observed before the allow took effect.
+Cleanup checks the namespace's run label and exact UID and uses
+UID/resourceVersion preconditions on deletion. It waits for absence and never
+removes finalizers. An ambiguous create or failed cleanup reports the generated
+namespace for explicit recovery; it does not adopt or delete a same-name
+replacement.
+
+Both modes return JSON with `qualifiesExecution: false`, even when successful.
+The TCP smoke test does not qualify pre-start enforcement, writer exclusion,
+node/metadata traffic, DNS restrictions, storage, resource bounds, model access
+or failure recovery. It does not create production capability registrations or
+enable execution. These probes are separate from offline checks and are not
+enabled in the live E2E workflow.
+
+The separate [sandbox node guard prototype]({{< repo "app/cetirun-operator/sandbox-node-guard.md" >}})
+uses the node's local CRI socket for exact-identity inspection or an explicitly
+requested sandbox stop. Access to that socket is host-runtime privilege; this
+is not an Agent tool or a default deployment. Its bounded receipt always
+disclaims durable writer exclusion and production eligibility. Kubelet can
+recreate a sandbox with the same Pod UID after a successful stop, so this
+prototype must not be connected to execution authorization.
+
+### Deployment commands
+
 - `infra/cluster/deploy.sh`: cloud provisioning, preview registration, and
   kubeconfig changes; see [infrastructure](../../operations/infrastructure/).
 - `infra/storage/deploy.sh`: subnet endpoint changes and Blob deployment;

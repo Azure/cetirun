@@ -160,19 +160,25 @@ sandboxAdmission:
       cpu: 500m
       memory: 256Mi
 
-# -- Kubernetes sources for held native Sandbox preparation.
+# -- Kubernetes capability declarations for configuration admission and held
+# native Sandbox preparation. Both use the same operator-namespace platform.json.
 # Does not qualify a platform or implement writer fencing. Execution stays held.
 sandboxSources:
   enabled: false
   # -- Create owned namespace, HOME and native authentication only for new namespaces.
-  # Requires explicit Agent chart/image/port pins. Published skills stay external.
+  # Requires explicit Agent chart/image/port pins. Published content stays external.
   bootstrapOwnedPrerequisites: false
   # -- Existing operator-namespace ConfigMap containing versioned platform.json.
+  # Shared by configuration admission and the controller only when enabled.
   # The platform owner supplies qualification, topology and exact object pins.
   platformConfigMapName: ""
   # -- Claims in each protected Agent namespace; never adopted by name.
   homeClaimName: home
   skillsClaimName: skills
+  # -- Optional separate operator-namespace ConfigMap containing skills.json.
+  # Requires owned bootstrap. Selects already-published Blob NFS content by Team UID;
+  # creates only retained, read-only static PV/PVC bindings, never source content.
+  skillsCatalogConfigMapName: ""
   # -- Approved native helpers; arbitrary injected containers remain unsupported.
   helpers:
     doctor: false
