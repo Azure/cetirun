@@ -38,14 +38,17 @@ a Team.
 To add Copilot models, open the instance and choose **Sign in with GitHub**. The
 portal runs the GitHub device-code sign-in, stores the token for the instance's
 proxy, and records the account's chat models. They appear once the proxy has
-started, usually within a few minutes. A model the Gateway has no price for is
-listed as not offered: it would escape the instance's budget.
+started, usually within a few minutes, and the instance restarts to pick them
+up. A model the Gateway has no price for is listed as not offered: it would
+escape the instance's budget.
 
 Each instance has its own virtual key with a monthly budget. The instance page
-lists its models and sets the default. When an administrator adds or removes a
-shared model, changes its limits, or changes whether it is offered through its
-price or the Gateway's setting, the operator updates every instance that uses
-shared models, which restarts them.
+lists its models and sets the default; saving a new default restarts the
+instance. When an administrator adds or removes a shared model, changes its
+limits, or changes whether it is offered through its price or the Gateway's
+setting, the operator updates every instance that uses shared models, which
+restarts them. A restarting instance shows as provisioning for a short while,
+and its UI is unavailable until it is ready again.
 
 The key's value is kept in the instance's `ai-gateway-virtual-key` Secret. If
 that Secret is lost while the key still exists in the Gateway, the operator
