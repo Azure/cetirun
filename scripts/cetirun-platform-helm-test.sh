@@ -74,6 +74,12 @@ grep -A1 'name: AI_GATEWAY_URL' <<< "${output}" | grep -q 'http://cetirun-ai-gat
   echo "FAIL: the operator does not use the bundled AI Gateway" >&2
   exit 1
 }
+# The bundled Gateway serves CetiRun Agents: a router fallback must not reach
+# a model the caller's key may not use, such as another Agent's Copilot route.
+grep -q 'enforce_fallback_model_access: true' <<< "${output}" || {
+  echo "FAIL: the bundled AI Gateway does not check fallback targets against the caller's key" >&2
+  exit 1
+}
 for flag in AI_GATEWAY_ENABLED FEATURE_AI_GATEWAY_ENABLED; do
   grep -A1 "name: ${flag}$" <<< "${output}" | grep -q 'value: "true"' || {
     echo "FAIL: ${flag} is not on" >&2
@@ -176,7 +182,7 @@ grep -A1 'name: AI_GATEWAY_ENABLED' <<< "${output}" | grep -q 'value: "true"' ||
   exit 1
 }
 
-for flag in cetirun-operator.aiGateway.enabled cetirun-portal.features.aiGatewayEnabled; do
+for flag in cetirun-operator.aiGateway.enabled cetirun-portal.features.aiGatewayEnabled cetirun-ai-gateway.operatorIntegration; do
   echo "==> helm template platform (${flag}=false, expect failure)"
   if helm template platform "${chart_dir}" "${base_args[@]}" --set "${flag}=false" 2>/dev/null; then
     echo "FAIL: platform rendered with ${flag}=false" >&2

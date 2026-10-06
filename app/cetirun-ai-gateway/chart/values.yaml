@@ -19,6 +19,18 @@ global:
 # section for why this is not optional. The bundled Valkey provides it.
 replicaCount: 2
 
+# -- Serve CetiRun Agents. The CetiRun operator gives each Agent a virtual key
+# restricted to access groups, and registers each Agent's GitHub Copilot
+# models under copilot/<model> in the Agent's own group. Turned on, the chart
+# reserves the copilot/ prefix for those registrations, and LiteLLM checks
+# each router fallback target against the caller's key
+# (general_settings.enforce_fallback_model_access), so a fallback cannot reach
+# a model the key may not use, such as another Agent's GitHub Copilot route.
+# The cetirun-platform chart turns this on; turn it on for a Gateway installed
+# separately for CetiRun as well. Off, the Gateway keeps its standalone
+# behaviour.
+operatorIntegration: false
+
 # -- Gateway container image: open-source LiteLLM on Azure Linux, built from
 # app/cetirun-ai-gateway. The same image serves the per-agent Copilot proxy.
 image:
@@ -54,7 +66,8 @@ fullnameOverride: ""
 # supply the value through providerCredentials below.
 #
 # Names beginning with `cetirun-` are reserved for models the CetiRun operator
-# registers automatically, and are rejected here.
+# registers automatically, and are rejected here; so are names beginning with
+# `copilot/` while operatorIntegration is on.
 #
 # Example:
 #   models:

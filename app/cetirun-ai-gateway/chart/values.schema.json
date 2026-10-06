@@ -18,6 +18,11 @@
             "minimum": 1,
             "default": 2
         },
+        "operatorIntegration": {
+            "type": "boolean",
+            "description": "Serve CetiRun Agents: reserve the copilot/ model-name prefix for the operator's per-Agent GitHub Copilot routes, and check router fallback targets against the caller's key (general_settings.enforce_fallback_model_access). The cetirun-platform chart turns it on.",
+            "default": false
+        },
         "image": {
             "type": "object",
             "description": "Gateway container image: open-source LiteLLM on Azure Linux, built from app/cetirun-ai-gateway",
@@ -64,7 +69,7 @@
         },
         "models": {
             "type": "array",
-            "description": "Models exposed by this Gateway, in LiteLLM model_list format. The list can be empty: administrators can add models through the console later. Names beginning with cetirun- are reserved.",
+            "description": "Models exposed by this Gateway, in LiteLLM model_list format. The list can be empty: administrators can add models through the console later. Names beginning with cetirun- are reserved, and so are names beginning with copilot/ while operatorIntegration is on.",
             "items": {
                 "type": "object",
                 "properties": {

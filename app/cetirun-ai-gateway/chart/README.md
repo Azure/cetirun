@@ -173,11 +173,12 @@ templates or in `helm get values` output.
 
 ### Reserved names
 
-Model names beginning with `cetirun-` or `copilot/` are rejected. Those prefixes
-belong to models the CetiRun operator registers automatically: `copilot/<model>`
-names each Agent's GitHub Copilot models. Shared models added through the console
-with these prefixes, or with a provider prefix such as `openai/`, are not given
-to Agents.
+Model names beginning with `cetirun-` are rejected: that prefix belongs to models
+the CetiRun operator registers automatically. With `operatorIntegration` on, names
+beginning with `copilot/` are rejected too: `copilot/<model>` names each CetiRun
+Agent's GitHub Copilot models. A standalone Gateway may keep serving models under
+`copilot/`. Shared models added through the console with these prefixes, or with a
+provider prefix such as `openai/`, are not given to Agents.
 
 The reservation exists because adding a model under a name that already exists
 does not replace the original. Both are served under the same name and traffic
@@ -397,6 +398,29 @@ and are refused on `/health`. Create keys through the API the same way:
 ```json
 {"models": ["gpt-4o"], "max_budget": 20, "allowed_routes": ["llm_api_routes"]}
 ```
+
+### Serving CetiRun Agents
+
+The CetiRun operator gives each Agent a key restricted to access groups, and
+registers the Agent's GitHub Copilot models under `copilot/<model>` in a group of
+the Agent's own, each pointing at that Agent's proxy. Set `operatorIntegration:
+true` for such a Gateway; the `cetirun-platform` chart sets it for the Gateway it
+installs. It reserves the `copilot/` prefix, see [Reserved names](#reserved-names),
+and sets `general_settings.enforce_fallback_model_access`.
+
+LiteLLM checks a key against the requested model only. A fallback the Gateway
+is configured with, in `router_settings` or the console, is chosen after that
+check, and without the setting LiteLLM tries it unchecked; for a model name
+several Agents share, it then picks among all of them when the caller's groups
+match none. So a shared model's fallback to a Copilot model could reach another
+Agent's proxy. With the setting, LiteLLM skips a fallback target the caller's key
+could not request directly.
+
+The groups only separate Agents while keys and teams are limited to them. A key
+or team allowed every model, or a `copilot/` name directly, has no group to
+filter by, so LiteLLM spreads its requests for a `copilot/` name over every
+Agent's proxy. The operator creates teams and keys without such grants; do not
+add them in the console.
 
 ## Credentials
 

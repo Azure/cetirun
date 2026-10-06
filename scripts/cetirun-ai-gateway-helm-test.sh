@@ -146,7 +146,25 @@ assert_rejected "both provider credential sources" \
 echo "==> reserved model-name prefix"
 assert_rejected "reserved cetirun- prefix" --set-string "models[0].model_name=cetirun-gpt4"
 assert_rejected "reserved prefix in another case" --set-string "models[0].model_name=CetiRun-gpt4"
-assert_rejected "reserved copilot/ prefix" --set-string "models[0].model_name=copilot/gpt-5"
+# A standalone Gateway keeps serving models under copilot/; serving CetiRun
+# Agents reserves that prefix for their GitHub Copilot routes.
+standalone_copilot="$(render --set-string "models[0].model_name=copilot/gpt-5")"
+assert_contains "model_name: copilot/gpt-5" "a standalone Gateway accepts a copilot/ model name" "${standalone_copilot}"
+assert_rejected "reserved copilot/ prefix with the operator integration" \
+  --set operatorIntegration=true --set-string "models[0].model_name=copilot/gpt-5"
+assert_rejected "reserved copilot/ prefix in another case with the operator integration" \
+  --set operatorIntegration=true --set-string "models[0].model_name=Copilot/gpt-5"
+
+# ----- Operator integration -----
+
+# Router fallbacks are chosen after the key check. Serving CetiRun Agents, the
+# Gateway checks each fallback target against the caller's key, so a fallback
+# cannot reach another Agent's GitHub Copilot route.
+echo "==> fallback targets are checked against the caller's key for CetiRun"
+assert_absent "enforce_fallback_model_access" "a standalone Gateway keeps LiteLLM's fallback default" "${output}"
+integration="$(render --set operatorIntegration=true)"
+assert_contains "enforce_fallback_model_access: true" \
+  "the operator integration checks fallback targets against the caller's key" "${integration}"
 
 # ----- Image -----
 

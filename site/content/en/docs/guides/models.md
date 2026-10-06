@@ -26,6 +26,13 @@ OpenClaw instances take all their models from the Gateway, from two sources:
   appear as `copilot/<model>`. The operator's `aiGateway.copilotProxy.enabled`
   turns the proxy off for the whole deployment.
 
+Each instance's key reaches only its own access groups: `cetirun-shared` and the
+instance's own Copilot group, so its `copilot/<model>` names reach its own proxy.
+The Gateway checks router fallbacks against the key as well
+(`operatorIntegration`). Keep teams and keys in the Gateway console limited to
+access groups: a team or key allowed every model, or a `copilot/` name
+directly, spreads requests for that name over every instance's proxy.
+
 The create form offers both sources, on by default, and a new OpenClaw instance
 needs a model to use: shared models while at least one is offered, or GitHub
 Copilot while the deployment offers it. GitHub Copilot stays on while shared

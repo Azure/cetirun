@@ -69,6 +69,10 @@ cetirun-ai-gateway:
   # The operator reaches the Gateway as cetirun-ai-gateway and reads its master
   # key from the cetirun-ai-gateway-auth Secret, so keep this name.
   fullnameOverride: cetirun-ai-gateway
+  # This Gateway serves CetiRun Agents: it reserves the copilot/ model names
+  # for their GitHub Copilot routes and checks router fallback targets against
+  # the caller's key. The chart refuses to install it turned off.
+  operatorIntegration: true
   # -- Shared models every OpenClaw Agent can use. Each needs
   # model_info.access_groups: ["cetirun-shared"] and, while the Gateway blocks
   # unpriced models, a price; see the README for an example. None is valid:

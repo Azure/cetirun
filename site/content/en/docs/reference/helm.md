@@ -304,6 +304,7 @@ runtime agent values remain under `cetirun-operator.cetirun.helmValues`.
 | `cetirun-operator.namespace` | `cetirun-system`; align with the Helm release namespace, which the bundled AI Gateway requires |
 | `cetirun-portal.aiGateway.catalogNamespace` | `cetirun-system`; must equal `cetirun-operator.namespace`, where the operator publishes the shared models. The deployment helper sets both from `NAMESPACE`; a standalone portal keeps its own value |
 | `cetirun-ai-gateway.enabled` | `true`; turn it off only when a Gateway is installed separately in the operator namespace |
+| `cetirun-ai-gateway.operatorIntegration` | `true`; required while the Gateway is installed. Reserves `copilot/` model names for the Agents' GitHub Copilot routes and checks router fallback targets against the caller's key. Set it on a separately installed Gateway too |
 | `cetirun-ai-gateway.models` | `[]`; shared models every OpenClaw Agent can use, each with `model_info.access_groups: ["cetirun-shared"]` and, while the Gateway blocks unpriced models, a price. Empty is valid: OpenClaw Agents then use their owners' GitHub Copilot. Hermes is not routed through the Gateway |
 | `cetirun-operator.aiGateway.enabled`, `cetirun-portal.features.aiGatewayEnabled` | `true`; required, the chart refuses to install with either off |
 | `cetirun-operator.domainSuffix`, `cetirun-portal.istio.host` | Required deployment domain for enabled components |

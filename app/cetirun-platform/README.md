@@ -130,9 +130,9 @@ Then open <http://localhost:4000/ui> and sign in as `admin`.
 
 A Gateway installed separately can be used instead: set
 `cetirun-ai-gateway.enabled=false` and install it in the operator namespace
-under the name `cetirun-ai-gateway`. Elsewhere, set
-`cetirun-operator.aiGateway.url` to it and copy its master key into the
-operator namespace as the `cetirun-ai-gateway-auth` Secret.
+under the name `cetirun-ai-gateway`, with `operatorIntegration: true`.
+Elsewhere, set `cetirun-operator.aiGateway.url` to it and copy its master key
+into the operator namespace as the `cetirun-ai-gateway-auth` Secret.
 
 New Agents need a Team. Create one before users create Agents, in the Portal's
 administration pages or with a manifest:
