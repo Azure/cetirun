@@ -44,8 +44,9 @@ fullnameOverride: ""
 # -- Models exposed by this Gateway, in LiteLLM's own `model_list` format so
 # administrators can follow upstream provider documentation directly.
 #
-# At least one model is required. Installing with an empty list is rejected
-# rather than producing a Gateway that starts and then fails every request.
+# The list can be empty. Administrators can add models through the console
+# later, and with CetiRun a deployment may rely only on the GitHub Copilot
+# models the operator registers for each Agent.
 #
 # `model_name` is what a client asks for. `litellm_params.model` is what the
 # Gateway sends to the provider, carrying a prefix that selects the handler.
@@ -101,6 +102,11 @@ models: []
 #   model_info:
 #     input_cost_per_token: 0.000005
 #     output_cost_per_token: 0.000015
+#
+# The console can change this setting later. LiteLLM keeps that change in its
+# database, where it takes precedence over this value. With CetiRun, the
+# operator reads the setting in effect and gives Agents only the shared models
+# the Gateway would serve.
 blockUnpricedModels: true
 
 # -- Provider API keys, surfaced to the proxy as environment variables and

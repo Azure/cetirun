@@ -15,13 +15,25 @@ OpenClaw instances take all their models from the Gateway, from two sources:
 
 - **Shared models** are the models an administrator configures in the Gateway
   with the access group `cetirun-shared`. They keep the administrator's names.
+  While the Gateway blocks requests for unpriced models, as it does by default
+  (`blockUnpricedModels`), the operator offers only shared models with a price.
+  It reads the setting from the Gateway, so a change made in the Gateway's
+  console counts too. To offer a model that is free on purpose, set its zero
+  price in `litellm_params`; a zero in `model_info` alone cannot be told apart
+  from a missing price.
 - **GitHub Copilot** models come from the owner's own Copilot subscription,
   through a small proxy per instance that only the Gateway can reach. They
-  appear as `copilot/<model>`.
+  appear as `copilot/<model>`. The operator's `aiGateway.copilotProxy.enabled`
+  turns the proxy off for the whole deployment.
 
-The create form offers both sources, on by default. At least one stays on:
-GitHub Copilot stays on while shared models are off or none is available. Every
-new instance needs a Team.
+The create form offers both sources, on by default, and a new OpenClaw instance
+needs a model to use: shared models while at least one is offered, or GitHub
+Copilot while the deployment offers it. GitHub Copilot stays on while shared
+models are off or none is offered, and shared models stay on without GitHub
+Copilot. With neither source, the portal creates no OpenClaw instance and asks
+for a shared model. It reads the sources from the catalog the operator
+publishes, so it also waits until the catalog exists. Every new instance needs
+a Team.
 
 To add Copilot models, open the instance and choose **Sign in with GitHub**. The
 portal runs the GitHub device-code sign-in, stores the token for the instance's
@@ -31,8 +43,9 @@ listed as not offered: it would escape the instance's budget.
 
 Each instance has its own virtual key with a monthly budget. The instance page
 lists its models and sets the default. When an administrator adds or removes a
-shared model, or changes its limits, the operator updates every instance that
-uses shared models, which restarts them.
+shared model, changes its limits, or changes whether it is offered through its
+price or the Gateway's setting, the operator updates every instance that uses
+shared models, which restarts them.
 
 The key's value is kept in the instance's `ai-gateway-virtual-key` Secret. If
 that Secret is lost while the key still exists in the Gateway, the operator
@@ -49,6 +62,7 @@ operator reports the shared models it leaves out in an `AIGatewayModelsLimited`
 event on the Agent.
 
 Sources: [operator reconcile]({{< repo "app/cetirun-operator/internal/controller/ai_gateway.go" >}}),
+[shared-model catalog]({{< repo "app/cetirun-operator/internal/controller/ai_gateway_catalog.go" >}}),
 [Copilot proxy template]({{< repo "app/cetirun-chart/templates/copilot-proxy.yaml" >}}),
 and [portal sign-in]({{< repo "app/cetirun-portal/internal/handler/copilot_login.go" >}}).
 

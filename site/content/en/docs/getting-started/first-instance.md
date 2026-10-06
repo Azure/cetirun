@@ -34,11 +34,12 @@ for the routing requirements.
    administration pages.
 5. Choose the models. For OpenClaw, turn on **Use shared models** for the
    models your administrators share, **Use GitHub Copilot** for your own
-   Copilot subscription, or both; at least one stays on. With shared models
-   on, you can choose the default model, or leave it to the deployment
-   default. For Hermes with GitHub Copilot, leave the model at the deployment
-   default or enter an authorized model ID; live discovery requires an
-   existing, authenticated instance.
+   Copilot subscription, or both; at least one stays on. If the deployment
+   offers neither, the form says so: ask an administrator to add a shared
+   model. With shared models on, you can choose the default model, or leave
+   it to the deployment default. For Hermes with GitHub Copilot, leave the
+   model at the deployment default or enter an authorized model ID; live
+   discovery requires an existing, authenticated instance.
    Select **Microsoft Entra Agent Identity** only when the deployment has
    enabled it and you need delegated Azure access.
 6. Select **Create Agent** and wait for provisioning. An administrator can inspect

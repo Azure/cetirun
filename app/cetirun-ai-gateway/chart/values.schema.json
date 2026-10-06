@@ -64,7 +64,7 @@
         },
         "models": {
             "type": "array",
-            "description": "Models exposed by this Gateway, in LiteLLM model_list format. At least one entry is required at install; presence is enforced by the chart templates so the failure carries a usable message. Names beginning with cetirun- are reserved.",
+            "description": "Models exposed by this Gateway, in LiteLLM model_list format. The list can be empty: administrators can add models through the console later. Names beginning with cetirun- are reserved.",
             "items": {
                 "type": "object",
                 "properties": {

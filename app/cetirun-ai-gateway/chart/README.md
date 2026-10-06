@@ -201,6 +201,12 @@ request with a message naming the model and telling you to declare pricing.
 Failing at the first request is better than never enforcing a budget somebody
 believes is in place.
 
+The console can change the setting later. LiteLLM keeps that change in its
+database, where it takes precedence over the chart's value (see [Editing
+settings in the console](#editing-settings-in-the-console-takes-them-out-of-chart-control)).
+With CetiRun, the operator reads the setting in effect and gives Agents only
+the shared models the Gateway would serve.
+
 ### Pricing a deployment
 
 Two ways, both verified to price requests made with a virtual key and to enforce

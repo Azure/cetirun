@@ -89,7 +89,11 @@ namespace: the operator reads the Gateway master key from there. See the
 `cetirun-ai-gateway` here.
 
 Shared models are optional. Without them OpenClaw Agents use their owners'
-GitHub Copilot. Add them in `cetirun-ai-gateway.models` with provider keys from
+GitHub Copilot; with `cetirun-operator.aiGateway.copilotProxy.enabled` turned
+off, the Portal creates no OpenClaw Agent until a shared model is offered.
+While the Gateway blocks unpriced models, as it does by default, Agents are
+offered only shared models with a price. Add them in
+`cetirun-ai-gateway.models` with provider keys from
 `cetirun-ai-gateway.providerCredentials`, or later in the Gateway console with
 the access group `cetirun-shared`:
 
