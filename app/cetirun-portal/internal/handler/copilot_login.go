@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
-	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -95,7 +94,10 @@ func (h *InstanceHandler) copilotAgent(w http.ResponseWriter, r *http.Request, e
 		writeError(w, http.StatusNotFound, "not_found", "Agent not found")
 		return nil, false
 	}
-	if !strings.EqualFold(instance.Spec.User.Alias, claims.Alias) {
+	// The same ownership rule as the other instance endpoints: an Agent bound
+	// to a verified owner accepts only that tenant and object ID, whatever
+	// alias another principal shares with it.
+	if !ownsInstance(instance, claims) {
 		writeError(w, http.StatusForbidden, "forbidden", "forbidden")
 		return nil, false
 	}

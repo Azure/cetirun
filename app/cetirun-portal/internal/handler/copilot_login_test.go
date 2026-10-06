@@ -105,6 +105,14 @@ func (f *loginFixture) call(method, alias string) (*httptest.ResponseRecorder, C
 // callWith sends body, if any, as the request's JSON body with the headers.
 func (f *loginFixture) callWith(method, alias, body string, headers map[string]string) (*httptest.ResponseRecorder, CopilotLoginResponse) {
 	f.t.Helper()
+	return f.send(method, body, headers, func(r *http.Request) *http.Request {
+		return withClaims(r, alias, alias, alias+"@example.com")
+	})
+}
+
+// send makes the request as the principal that identify attaches.
+func (f *loginFixture) send(method, body string, headers map[string]string, identify func(*http.Request) *http.Request) (*httptest.ResponseRecorder, CopilotLoginResponse) {
+	f.t.Helper()
 	var reader io.Reader
 	if body != "" {
 		reader = strings.NewReader(body)
@@ -117,7 +125,7 @@ func (f *loginFixture) callWith(method, alias, body string, headers map[string]s
 	for name, value := range headers {
 		req.Header.Set(name, value)
 	}
-	req = withClaims(req, alias, alias, alias+"@example.com")
+	req = identify(req)
 	w := httptest.NewRecorder()
 	switch method {
 	case http.MethodPost:
@@ -315,6 +323,57 @@ func TestCopilotLoginPreconditions(t *testing.T) {
 				t.Fatalf("status %d, want %d: %s", w.Code, tc.status, w.Body.String())
 			}
 		})
+	}
+}
+
+// An Agent bound to a verified owner accepts sign-in requests only from that
+// tenant and object ID: another principal with the same alias can neither
+// start, read nor cancel its sign-in.
+func TestCopilotLoginRequiresTheBoundOwner(t *testing.T) {
+	const tenant, owner, other = "11111111-1111-1111-1111-111111111111",
+		"22222222-2222-2222-2222-222222222222", "33333333-3333-3333-3333-333333333333"
+	bound := routedAgent()
+	if bound.Annotations == nil {
+		bound.Annotations = map[string]string{}
+	}
+	bound.Annotations[cetirunv1alpha1.AnnotationOwnerTenantID] = tenant
+	bound.Annotations[cetirunv1alpha1.AnnotationOwnerObjectID] = owner
+	f := newLoginFixture(t, bound, copilotTokenSecret("uid-1"))
+	as := func(objectID string) func(*http.Request) *http.Request {
+		return func(r *http.Request) *http.Request { return withAgentIdentityClaims(r, "alice", tenant, objectID) }
+	}
+	bodyFor := func(method string) string {
+		if method == http.MethodGet {
+			return ""
+		}
+		return `{"uid":"uid-1"}`
+	}
+	exists := func() bool {
+		t.Helper()
+		return f.fc.Get(context.Background(), client.ObjectKey{Namespace: "cetirun-alice-gw", Name: copilotLoginSecretName}, &corev1.Secret{}) == nil
+	}
+
+	for _, method := range []string{http.MethodPost, http.MethodGet, http.MethodDelete} {
+		if w, _ := f.send(method, bodyFor(method), nil, as(other)); w.Code != http.StatusForbidden {
+			t.Fatalf("%s by a same-alias principal: status %d, want 403", method, w.Code)
+		}
+	}
+	if exists() {
+		t.Fatal("a refused start must not create a sign-in")
+	}
+
+	// The bound owner starts a sign-in; the other principal still cannot read
+	// or cancel it.
+	if w, resp := f.send(http.MethodPost, bodyFor(http.MethodPost), nil, as(owner)); w.Code != http.StatusOK || resp.State != copilotLoginPending {
+		t.Fatalf("start by the owner: status %d %s", w.Code, w.Body.String())
+	}
+	for _, method := range []string{http.MethodGet, http.MethodDelete} {
+		if w, _ := f.send(method, bodyFor(method), nil, as(other)); w.Code != http.StatusForbidden {
+			t.Fatalf("%s of the owner's sign-in by a same-alias principal: status %d, want 403", method, w.Code)
+		}
+	}
+	if state := string(f.secret(copilotLoginSecretName).Data[loginState]); state != copilotLoginPending {
+		t.Fatalf("the owner's sign-in must stay pending, got %q", state)
 	}
 }
 
