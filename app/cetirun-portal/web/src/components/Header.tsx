@@ -7,7 +7,7 @@ import {
   Text,
   tokens,
 } from "@fluentui/react-components";
-import { NavLink } from "react-router-dom";
+import { Link, NavLink } from "react-router-dom";
 import { useThemeContext, type ThemeMode } from "../context/ThemeContext";
 import { useMe } from "../context/MeContext";
 import cetirunLogo from "../assets/cetirun.png";
@@ -51,12 +51,23 @@ export function Header() {
           padding: "12px 48px",
         }}
       >
-        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+        {/* The way back to the owner's agents, from the admin pages too. */}
+        <Link
+          to="/"
+          aria-label="CetiRun Portal home"
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: "8px",
+            color: "inherit",
+            textDecoration: "none",
+          }}
+        >
           <img src={cetirunLogo} alt="CetiRun" width={48} height={48} />
           <Text size={500} weight="semibold">
             CetiRun Portal
           </Text>
-        </div>
+        </Link>
         <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
           {me?.isAdmin && (
             <NavLink
