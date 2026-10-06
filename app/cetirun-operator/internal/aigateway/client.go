@@ -267,23 +267,22 @@ type Deployment struct {
 	FromDatabase    bool
 	MaxInputTokens  int64
 	MaxOutputTokens int64
-	Priced          bool
+	// Priced reports whether the deployment carries a price by the parts of
+	// LiteLLM's unpriced-model check that /model/info shows: a price set in
+	// litellm_params, even zero, or a positive price or tiered pricing in the
+	// model info. LiteLLM also accepts an explicit zero in model_info, but
+	// /model/info fills unknown prices with zero, so such a model counts as
+	// unpriced here.
+	Priced bool
 }
 
 // ListModels returns every model deployment the Gateway serves.
 func (c *Client) ListModels(ctx context.Context) ([]Deployment, error) {
 	var response struct {
 		Data []struct {
-			ModelName string `json:"model_name"`
-			ModelInfo struct {
-				ID                 string   `json:"id"`
-				AccessGroups       []string `json:"access_groups"`
-				DBModel            bool     `json:"db_model"`
-				MaxInputTokens     *float64 `json:"max_input_tokens"`
-				MaxOutputTokens    *float64 `json:"max_output_tokens"`
-				InputCostPerToken  *float64 `json:"input_cost_per_token"`
-				OutputCostPerToken *float64 `json:"output_cost_per_token"`
-			} `json:"model_info"`
+			ModelName     string                     `json:"model_name"`
+			LiteLLMParams map[string]json.RawMessage `json:"litellm_params"`
+			ModelInfo     json.RawMessage            `json:"model_info"`
 		} `json:"data"`
 	}
 	if _, err := c.doLimit(ctx, http.MethodGet, "/model/info", nil, &response, listLimit); err != nil {
@@ -291,14 +290,80 @@ func (c *Client) ListModels(ctx context.Context) ([]Deployment, error) {
 	}
 	deployments := make([]Deployment, 0, len(response.Data))
 	for _, item := range response.Data {
-		info := item.ModelInfo
+		var info struct {
+			ID              string   `json:"id"`
+			AccessGroups    []string `json:"access_groups"`
+			DBModel         bool     `json:"db_model"`
+			MaxInputTokens  *float64 `json:"max_input_tokens"`
+			MaxOutputTokens *float64 `json:"max_output_tokens"`
+		}
+		var fields map[string]any
+		if len(item.ModelInfo) > 0 {
+			if err := json.Unmarshal(item.ModelInfo, &info); err != nil {
+				return nil, fmt.Errorf("decode AI Gateway model info: %w", err)
+			}
+			if err := json.Unmarshal(item.ModelInfo, &fields); err != nil {
+				return nil, fmt.Errorf("decode AI Gateway model info: %w", err)
+			}
+		}
 		deployments = append(deployments, Deployment{
 			ID: info.ID, ModelName: item.ModelName, AccessGroups: info.AccessGroups, FromDatabase: info.DBModel,
 			MaxInputTokens: tokens(info.MaxInputTokens), MaxOutputTokens: tokens(info.MaxOutputTokens),
-			Priced: positive(info.InputCostPerToken) || positive(info.OutputCostPerToken),
+			Priced: declaresPrice(item.LiteLLMParams) || hasPrice(fields),
 		})
 	}
 	return deployments, nil
+}
+
+// declaresPrice reports a price set in a deployment's litellm_params. LiteLLM
+// counts any such field, even zero, as pricing the deployment.
+func declaresPrice(params map[string]json.RawMessage) bool {
+	for key, value := range params {
+		if (strings.Contains(key, "cost_per") || key == "tiered_pricing") && string(value) != "null" {
+			return true
+		}
+	}
+	return false
+}
+
+// hasPrice reports tiered pricing or a positive price for any billed metric,
+// tokens or otherwise, in a deployment's model info.
+func hasPrice(info map[string]any) bool {
+	if info["tiered_pricing"] != nil {
+		return true
+	}
+	for key, value := range info {
+		if !strings.Contains(key, "cost_per") {
+			continue
+		}
+		if price, ok := value.(float64); ok && price > 0 {
+			return true
+		}
+		if nested, ok := value.(map[string]any); ok {
+			for _, inner := range nested {
+				if price, ok := inner.(float64); ok && price > 0 {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// BlockUnpricedModels reports whether the Gateway refuses requests for models
+// without a price. An administrator can change the setting in the Gateway's
+// console, which keeps the change in its database over the chart's value.
+func (c *Client) BlockUnpricedModels(ctx context.Context) (bool, error) {
+	var response struct {
+		Enabled *bool `json:"enabled"`
+	}
+	if _, err := c.do(ctx, http.MethodGet, "/config/block_requests_for_models_without_pricing", nil, &response); err != nil {
+		return false, err
+	}
+	if response.Enabled == nil {
+		return false, fmt.Errorf("the AI Gateway did not report whether it blocks unpriced models")
+	}
+	return *response.Enabled, nil
 }
 
 func tokens(value *float64) int64 {

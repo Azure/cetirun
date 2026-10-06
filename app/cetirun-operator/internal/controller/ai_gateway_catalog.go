@@ -54,6 +54,10 @@ type aiGatewayCatalog struct {
 	sharedSet []aiGatewayCatalogModel
 	ids       map[string]bool
 	groups    map[string][]string
+	// allowsUnpriced is the Gateway's setting from the last listing. The
+	// zero value is the Gateway's default, which refuses requests for
+	// models without a price.
+	allowsUnpriced bool
 }
 
 func (c *aiGatewayCatalog) age(now time.Time) time.Duration {
@@ -65,11 +69,21 @@ func (c *aiGatewayCatalog) age(now time.Time) time.Duration {
 	return now.Sub(c.fetchedAt)
 }
 
-// update replaces the view and reports whether the shared models changed.
-func (c *aiGatewayCatalog) update(deployments []aigateway.Deployment, now time.Time) (bool, []string) {
-	var skipped []string
+// update replaces the view and reports whether the shared models changed. It
+// also returns the shared names it leaves out: those Agents cannot use, and,
+// while the Gateway blocks requests for unpriced models, those without a
+// price. Like LiteLLM, it counts a name as priced when any deployment behind
+// it is.
+func (c *aiGatewayCatalog) update(deployments []aigateway.Deployment, blockUnpriced bool, now time.Time) (bool, []string, []string) {
+	var skipped, unpriced []string
 	ids := map[string]bool{}
 	groups := map[string][]string{}
+	priced := map[string]bool{}
+	for _, deployment := range deployments {
+		if deployment.Priced {
+			priced[deployment.ModelName] = true
+		}
+	}
 	byName := map[string]aiGatewayCatalogModel{}
 	for _, deployment := range deployments {
 		ids[deployment.ID] = true
@@ -81,6 +95,12 @@ func (c *aiGatewayCatalog) update(deployments []aigateway.Deployment, now time.T
 		}
 		if !aiGatewaySharedModelUsable(deployment.ModelName) {
 			skipped = append(skipped, deployment.ModelName)
+			continue
+		}
+		if blockUnpriced && !priced[deployment.ModelName] {
+			if !slices.Contains(unpriced, deployment.ModelName) {
+				unpriced = append(unpriced, deployment.ModelName)
+			}
 			continue
 		}
 		model := byName[deployment.ModelName]
@@ -96,11 +116,21 @@ func (c *aiGatewayCatalog) update(deployments []aigateway.Deployment, now time.T
 		shared = append(shared, model)
 	}
 	sort.Slice(shared, func(i, j int) bool { return shared[i].Name < shared[j].Name })
+	slices.Sort(unpriced)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	changed := !(c.known || c.seeded) || !slices.Equal(c.sharedSet, shared)
 	c.known, c.seeded, c.fetchedAt, c.sharedSet, c.ids, c.groups = true, false, now, shared, ids, groups
-	return changed, skipped
+	c.allowsUnpriced = !blockUnpriced
+	return changed, skipped, unpriced
+}
+
+// blocksUnpriced reports the Gateway's setting from the last listing, or its
+// default before the first one.
+func (c *aiGatewayCatalog) blocksUnpriced() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return !c.allowsUnpriced
 }
 
 // seed takes shared models from the published catalog until the Gateway can
@@ -190,7 +220,8 @@ func (c *aiGatewayCatalog) noteDeleted(id string) {
 }
 
 // refreshAIGatewayCatalog lists the Gateway's models when the catalog is
-// older than maxAge. A failure keeps the previous view.
+// older than maxAge. A failed listing keeps the previous view; a failure to
+// read whether the Gateway blocks unpriced models keeps the last setting.
 func (r *AgentReconciler) refreshAIGatewayCatalogWithin(ctx context.Context, client aiGatewayKeyClient, maxAge time.Duration) bool {
 	catalog := &r.aiGatewayCatalog
 	catalog.refreshMu.Lock()
@@ -204,9 +235,18 @@ func (r *AgentReconciler) refreshAIGatewayCatalogWithin(ctx context.Context, cli
 		r.seedAIGatewayCatalog(ctx)
 		return false
 	}
-	changed, skipped := catalog.update(deployments, time.Now())
+	blockUnpriced, err := client.BlockUnpricedModels(ctx)
+	if err != nil {
+		blockUnpriced = catalog.blocksUnpriced()
+		log.FromContext(ctx).Info("reading whether the AI Gateway blocks unpriced models failed; keeping the last setting",
+			"blocks", blockUnpriced, "error", err.Error())
+	}
+	changed, skipped, unpriced := catalog.update(deployments, blockUnpriced, time.Now())
 	if len(skipped) > 0 {
 		log.FromContext(ctx).Info("shared models with names Agents cannot use are left out", "models", skipped)
+	}
+	if len(unpriced) > 0 {
+		log.FromContext(ctx).Info("shared models without a price are left out while the AI Gateway blocks unpriced models", "models", unpriced)
 	}
 	return changed
 }
@@ -242,8 +282,8 @@ func (r *AgentReconciler) refreshAIGatewayCatalog(ctx context.Context, client ai
 	}
 }
 
-// AIGatewayCatalogPublisher keeps the catalog fresh, publishes the shared
-// models for the Portal and reconciles Agents when the shared models change
+// AIGatewayCatalogPublisher keeps the catalog fresh, publishes the model
+// sources for the Portal and reconciles Agents when the shared models change
 // or their Copilot routes go missing.
 type AIGatewayCatalogPublisher struct {
 	Reconciler *AgentReconciler
@@ -300,7 +340,7 @@ func (r *AgentReconciler) writeAIGatewayCatalog(ctx context.Context, shared []ai
 	if shared == nil {
 		shared = []aiGatewayCatalogModel{}
 	}
-	raw, err := json.Marshal(cetirunv1alpha1.AIGatewayCatalog{SharedModels: shared})
+	raw, err := json.Marshal(cetirunv1alpha1.AIGatewayCatalog{SharedModels: shared, GitHubCopilot: r.aiGatewayCopilotOffered()})
 	if err != nil {
 		return err
 	}

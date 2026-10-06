@@ -493,8 +493,8 @@ type CopilotModel struct {
 }
 
 // The catalog the operator publishes for the Portal: a ConfigMap in the
-// operator namespace listing the shared models with their limits. It holds no
-// credentials or addresses.
+// operator namespace listing the model sources new Agents can use, with the
+// limits of the shared models. It holds no credentials or addresses.
 const (
 	// AIGatewayCatalogConfigMap is the name of the catalog ConfigMap.
 	AIGatewayCatalogConfigMap = "cetirun-ai-gateway-catalog"
@@ -505,7 +505,13 @@ const (
 // AIGatewayCatalog is the content of the catalog ConfigMap.
 type AIGatewayCatalog struct {
 	// SharedModels are the models every Agent with shared models can use.
+	// While the Gateway blocks requests for unpriced models, they leave out
+	// the models it would refuse.
 	SharedModels []AIGatewayCatalogModel `json:"sharedModels"`
+	// GitHubCopilot reports whether the deployment gives Agents a GitHub
+	// Copilot proxy. Without it, an Agent's GitHub Copilot switch adds no
+	// models.
+	GitHubCopilot bool `json:"githubCopilot"`
 }
 
 // AIGatewayCatalogModel is one shared model with the limits the Gateway

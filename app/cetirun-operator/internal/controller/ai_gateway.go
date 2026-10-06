@@ -156,6 +156,7 @@ type aiGatewayKeyClient interface {
 	EnsureUser(context.Context, string, map[string]string) error
 	EnsureTeamMember(context.Context, string, string) error
 	ListModels(context.Context) ([]aigateway.Deployment, error)
+	BlockUnpricedModels(context.Context) (bool, error)
 	AddModel(context.Context, aigateway.ModelRequest) error
 	DeleteModel(context.Context, string) error
 	PricedModels(context.Context) (map[string]bool, error)
@@ -274,11 +275,17 @@ func (r *AgentReconciler) aiGatewayRequired(instance *cetirunv1alpha1.Agent) boo
 	return r.AIGateway.Enabled && aiGatewayHarnessSupported(instance.Spec.Agent.Type)
 }
 
+// aiGatewayCopilotOffered reports whether the deployment gives Agents a
+// GitHub Copilot proxy: it configured the proxy image.
+func (r *AgentReconciler) aiGatewayCopilotOffered() bool {
+	return r.AIGateway.CopilotProxyImage != ""
+}
+
 // aiGatewayCopilotWanted reports whether the Agent gets a GitHub Copilot
 // proxy once routed: the owner kept the switch on and the deployment
-// configured the proxy image.
+// offers the proxy.
 func (r *AgentReconciler) aiGatewayCopilotWanted(instance *cetirunv1alpha1.Agent) bool {
-	return r.aiGatewayRequired(instance) && r.AIGateway.CopilotProxyImage != "" && instance.Spec.GitHubCopilotEnabled()
+	return r.aiGatewayRequired(instance) && r.aiGatewayCopilotOffered() && instance.Spec.GitHubCopilotEnabled()
 }
 
 // aiGatewayRouted reports the routing decision recorded by the last

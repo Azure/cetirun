@@ -184,3 +184,65 @@ func TestNewRejectsInvalidConfiguration(t *testing.T) {
 		}
 	}
 }
+
+// The responses follow LiteLLM's /model/info: the configured model_info with
+// the price table's data added, and litellm_params without credentials. A
+// deployment the price table does not know shows zero prices there.
+func TestListModelsCountsPricesTheWayTheGatewayBlocksUnpricedModels(t *testing.T) {
+	client, requests := testServer(t, func(recordedRequest) (int, string) {
+		return 200, `{"data":[
+			{"model_name":"listed","litellm_params":{"model":"azure/gpt-5"},"model_info":{"id":"a","access_groups":["cetirun-shared"],
+				"db_model":true,"max_input_tokens":200000,"max_output_tokens":32768,"base_model":"azure/gpt-5",
+				"input_cost_per_token":0.000001,"output_cost_per_token":0.000004}},
+			{"model_name":"free","litellm_params":{"model":"openai/local","input_cost_per_token":0,"output_cost_per_token":0},
+				"model_info":{"id":"b","input_cost_per_token":0,"output_cost_per_token":0}},
+			{"model_name":"unknown-price","litellm_params":{"model":"azure/my-deployment"},
+				"model_info":{"id":"c","input_cost_per_token":0,"output_cost_per_token":0}},
+			{"model_name":"per-second","litellm_params":{"model":"openai/whisper"},"model_info":{"id":"d","input_cost_per_second":0.0001}},
+			{"model_name":"per-query","litellm_params":{"model":"openai/search"},
+				"model_info":{"id":"e","search_context_cost_per_query":{"search_context_size_low":0.03}}},
+			{"model_name":"tiered","litellm_params":{"model":"openai/tiered"},"model_info":{"id":"f","tiered_pricing":[{"input_cost_per_token":0.000001}]}},
+			{"model_name":"no-info","litellm_params":{"model":"azure/other"}}
+		]}`
+	})
+	deployments, err := client.ListModels(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := (*requests)[0]; r.method != http.MethodGet || r.path != "/model/info" || r.auth != "Bearer sk-master" {
+		t.Fatalf("unexpected request %+v", r)
+	}
+	want := map[string]bool{"listed": true, "free": true, "unknown-price": false, "per-second": true, "per-query": true, "tiered": true, "no-info": false}
+	if len(deployments) != len(want) {
+		t.Fatalf("got %d deployments, want %d", len(deployments), len(want))
+	}
+	for _, deployment := range deployments {
+		if deployment.Priced != want[deployment.ModelName] {
+			t.Errorf("%s: Priced = %v, want %v", deployment.ModelName, deployment.Priced, want[deployment.ModelName])
+		}
+	}
+	if first := deployments[0]; first.ID != "a" || len(first.AccessGroups) != 1 || first.AccessGroups[0] != "cetirun-shared" ||
+		!first.FromDatabase || first.MaxInputTokens != 200000 || first.MaxOutputTokens != 32768 {
+		t.Fatalf("deployment fields not read: %+v", first)
+	}
+}
+
+func TestBlockUnpricedModelsReadsTheGatewaysSetting(t *testing.T) {
+	for enabled, body := range map[bool]string{true: `{"enabled":true}`, false: `{"enabled":false}`} {
+		client, requests := testServer(t, func(recordedRequest) (int, string) { return 200, body })
+		got, err := client.BlockUnpricedModels(context.Background())
+		if err != nil || got != enabled {
+			t.Fatalf("BlockUnpricedModels = %v, %v; want %v", got, err, enabled)
+		}
+		if r := (*requests)[0]; r.method != http.MethodGet || r.path != "/config/block_requests_for_models_without_pricing" || r.auth != "Bearer sk-master" {
+			t.Fatalf("unexpected request %+v", r)
+		}
+	}
+	// A Gateway that does not report the setting gives an error, not a guess.
+	for status, body := range map[int]string{200: `{}`, 404: `{"detail":"Not Found"}`} {
+		client, _ := testServer(t, func(recordedRequest) (int, string) { return status, body })
+		if _, err := client.BlockUnpricedModels(context.Background()); err == nil {
+			t.Fatalf("status %d %s: expected an error", status, body)
+		}
+	}
+}

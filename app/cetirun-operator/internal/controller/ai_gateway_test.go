@@ -70,6 +70,10 @@ type fakeAIGateway struct {
 	shared         []aigateway.Deployment
 	priced         map[string]bool
 	listCalls      int
+	// blockUnpriced is off so that tests about other behaviour need no
+	// prices; the tests about prices turn it on.
+	blockUnpriced bool
+	blockErr      error
 }
 
 func newFakeAIGateway() *fakeAIGateway {
@@ -211,6 +215,13 @@ func (f *fakeAIGateway) DeleteModel(_ context.Context, id string) error {
 
 func (f *fakeAIGateway) PricedModels(context.Context) (map[string]bool, error) {
 	return f.priced, nil
+}
+
+func (f *fakeAIGateway) BlockUnpricedModels(context.Context) (bool, error) {
+	if f.blockErr != nil {
+		return false, f.blockErr
+	}
+	return f.blockUnpriced, nil
 }
 
 func (f *fakeAIGateway) modelNames() []string {
@@ -1869,7 +1880,7 @@ func TestAIGatewayCatalogLeavesOutUnusableSharedNames(t *testing.T) {
 	atLimit := strings.Repeat("m", aiGatewayModelNameLimit)
 	// The chart counts characters, not bytes.
 	multiByteAtLimit := strings.Repeat("é", aiGatewayModelNameLimit)
-	changed, skipped := catalog.update([]aigateway.Deployment{
+	changed, skipped, _ := catalog.update([]aigateway.Deployment{
 		{ID: "a", ModelName: "gpt-6", AccessGroups: []string{aiGatewaySharedAccessGroup}},
 		{ID: "b", ModelName: "openai/*", AccessGroups: []string{aiGatewaySharedAccessGroup}},
 		{ID: "c", ModelName: "copilot/gpt-5.5", AccessGroups: []string{aiGatewaySharedAccessGroup}},
@@ -1877,11 +1888,97 @@ func TestAIGatewayCatalogLeavesOutUnusableSharedNames(t *testing.T) {
 		{ID: "e", ModelName: atLimit, AccessGroups: []string{aiGatewaySharedAccessGroup}},
 		{ID: "f", ModelName: multiByteAtLimit, AccessGroups: []string{aiGatewaySharedAccessGroup}},
 		{ID: "g", ModelName: atLimit + "m", AccessGroups: []string{aiGatewaySharedAccessGroup}},
-	}, time.Now())
+	}, false, time.Now())
 	shared, _ := catalog.shared()
 	if !changed || len(shared) != 3 || shared[0].Name != "gpt-6" || shared[1].Name != atLimit ||
 		shared[2].Name != multiByteAtLimit || len(skipped) != 4 || !slices.Contains(skipped, atLimit+"m") {
 		t.Fatalf("shared=%d %v skipped=%d changed=%v", len(shared), shared, len(skipped), changed)
+	}
+}
+
+func catalogNames(models []aiGatewayCatalogModel) []string {
+	names := make([]string, 0, len(models))
+	for _, model := range models {
+		names = append(names, model.Name)
+	}
+	return names
+}
+
+// The Gateway refuses every request for an unpriced model while it blocks
+// them, so the catalog does not offer such a model then, and offers it
+// otherwise. Like LiteLLM, a name counts as priced when any deployment
+// behind it is.
+func TestAIGatewayCatalogLeavesOutUnpricedSharedModelsWhileTheGatewayBlocksThem(t *testing.T) {
+	deployments := []aigateway.Deployment{
+		{ID: "a", ModelName: "priced", AccessGroups: []string{aiGatewaySharedAccessGroup}, Priced: true},
+		{ID: "b", ModelName: "unpriced", AccessGroups: []string{aiGatewaySharedAccessGroup}},
+		{ID: "c", ModelName: "unpriced", AccessGroups: []string{aiGatewaySharedAccessGroup}},
+		{ID: "d", ModelName: "mixed", AccessGroups: []string{aiGatewaySharedAccessGroup}},
+		{ID: "e", ModelName: "mixed", AccessGroups: []string{"cetirun-admin"}, Priced: true},
+	}
+	var blocking aiGatewayCatalog
+	_, _, unpriced := blocking.update(deployments, true, time.Now())
+	shared, _ := blocking.shared()
+	if names := catalogNames(shared); !slices.Equal(names, []string{"mixed", "priced"}) || !slices.Equal(unpriced, []string{"unpriced"}) {
+		t.Fatalf("while the Gateway blocks unpriced models: shared %v, left out %v", names, unpriced)
+	}
+	var allowing aiGatewayCatalog
+	_, _, unpriced = allowing.update(deployments, false, time.Now())
+	shared, _ = allowing.shared()
+	if names := catalogNames(shared); !slices.Equal(names, []string{"mixed", "priced", "unpriced"}) || len(unpriced) != 0 {
+		t.Fatalf("while the Gateway serves unpriced models: shared %v, left out %v", names, unpriced)
+	}
+}
+
+// An administrator can change the setting in the Gateway's console at any
+// time, so every listing reads it again.
+func TestAIGatewayCatalogFollowsTheGatewaysUnpricedSetting(t *testing.T) {
+	r, _, gateway := aiGatewayTestReconciler(t)
+	gateway.shared[0].Priced = true
+	gateway.shared = append(gateway.shared, aigateway.Deployment{ID: "cfg-3", ModelName: "unpriced", AccessGroups: []string{aiGatewaySharedAccessGroup}})
+	ctx := context.Background()
+	names := func() []string {
+		shared, _ := r.aiGatewayCatalog.shared()
+		return catalogNames(shared)
+	}
+	pricedOnly, both := []string{testSharedModelOne}, []string{testSharedModelOne, "unpriced"}
+
+	// Before the setting was ever read, the Gateway's default holds.
+	gateway.blockErr = errors.New("not reported")
+	r.refreshAIGatewayCatalogWithin(ctx, gateway, 0)
+	if got := names(); !slices.Equal(got, pricedOnly) {
+		t.Fatalf("before the first read: %v, want %v", got, pricedOnly)
+	}
+	gateway.blockErr, gateway.blockUnpriced = nil, false
+	if !r.refreshAIGatewayCatalogWithin(ctx, gateway, 0) || !slices.Equal(names(), both) {
+		t.Fatalf("once the Gateway serves unpriced models the catalog must change to %v, got %v", both, names())
+	}
+	gateway.blockErr = errors.New("unavailable")
+	if r.refreshAIGatewayCatalogWithin(ctx, gateway, 0) || !slices.Equal(names(), both) {
+		t.Fatalf("a failed read keeps the last setting: %v", names())
+	}
+	gateway.blockErr, gateway.blockUnpriced = nil, true
+	if !r.refreshAIGatewayCatalogWithin(ctx, gateway, 0) || !slices.Equal(names(), pricedOnly) {
+		t.Fatalf("once the Gateway blocks unpriced models again the catalog must change to %v, got %v", pricedOnly, names())
+	}
+}
+
+func TestAIGatewayCatalogPublishesWhetherGitHubCopilotIsOffered(t *testing.T) {
+	for _, image := range []string{testProxyImage, ""} {
+		r, kube, _ := aiGatewayTestReconciler(t)
+		r.AIGateway.CopilotProxyImage = image
+		r.publishAIGatewayCatalog(context.Background(), 0)
+		configMap := &corev1.ConfigMap{}
+		if err := kube.Get(context.Background(), types.NamespacedName{Namespace: "cetirun-system", Name: cetirunv1alpha1.AIGatewayCatalogConfigMap}, configMap); err != nil {
+			t.Fatal(err)
+		}
+		var catalog cetirunv1alpha1.AIGatewayCatalog
+		if err := json.Unmarshal([]byte(configMap.Data[cetirunv1alpha1.AIGatewayCatalogKey]), &catalog); err != nil {
+			t.Fatal(err)
+		}
+		if catalog.GitHubCopilot != (image != "") || len(catalog.SharedModels) != 1 {
+			t.Fatalf("proxy image %q: published %+v", image, catalog)
+		}
 	}
 }
 
