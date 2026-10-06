@@ -67,10 +67,10 @@ export function useCopilotGatewayLogin(instanceName: string, uid: string, resume
         }
         return;
       }
-      if (current.expiresAt && Date.parse(current.expiresAt) < Date.now() - MIN_POLL_SECONDS * 1000) {
-        // Let the Portal report the expiry once more, then stop.
-        return;
-      }
+      // Keep asking while the Portal reports the sign-in pending: it reports
+      // an outcome once the code expires, and once a completion's lease ends.
+      // A sign-in whose token is being stored is pending past its code's
+      // expiry, so that expiry is no reason to stop.
       const seconds = Math.max(current.interval ?? MIN_POLL_SECONDS, MIN_POLL_SECONDS);
       timer.current = setTimeout(async () => {
         try {

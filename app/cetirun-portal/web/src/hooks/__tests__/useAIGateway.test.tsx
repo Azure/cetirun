@@ -78,4 +78,24 @@ describe("useCopilotGatewayLogin", () => {
     });
     expect(api.pollCopilotLogin).not.toHaveBeenCalled();
   });
+
+  it("keeps polling a sign-in being completed past its code's expiry", async () => {
+    // The Portal reports a sign-in whose token is being stored as pending,
+    // with the expiry of its code, for up to two minutes after that.
+    const expired = { ...PENDING, expiresAt: new Date(Date.now() - 60_000).toISOString() };
+    api.pollCopilotLogin
+      .mockResolvedValueOnce(expired)
+      .mockResolvedValueOnce(expired)
+      .mockResolvedValueOnce({ state: "succeeded", message: "Signed in" });
+    const { result } = renderHook(() => useCopilotGatewayLogin("alice-gw", "agent-uid", true), { wrapper });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(result.current.login?.state).toBe("pending");
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10_000);
+    });
+    expect(api.pollCopilotLogin).toHaveBeenCalledTimes(3);
+    expect(result.current.login?.state).toBe("succeeded");
+  });
 });
