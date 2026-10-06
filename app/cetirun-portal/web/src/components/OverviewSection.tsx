@@ -252,6 +252,7 @@ export function OverviewSection({ instance }: { instance: Instance }) {
     const original = editSnapshot ?? instance;
     const req: UpdateInstanceRequest = { uid: original.uid, resourceVersion: original.resourceVersion };
     const agent: NonNullable<UpdateInstanceRequest["agent"]> = {};
+    const image = editImage.trim();
     const port = editPort.trim() === "" ? null : Number(editPort);
     if (port !== null && (!Number.isInteger(port) || port < 1 || port > 65535)) {
       setEditValidationError("HTTP port must be an integer between 1 and 65535, or left blank.");
@@ -261,10 +262,14 @@ export function OverviewSection({ instance }: { instance: Instance }) {
       setEditValidationError("A port is required when Web UI is enabled.");
       return;
     }
+    if (!image && original.agent.image) {
+      setEditValidationError("A pinned Agent image cannot be cleared.");
+      return;
+    }
     setEditValidationError("");
     if (port !== (original.agent.port ?? null)) agent.port = port;
     if (!nativeIntegrations && editWebUI !== (original.agent.webUI ?? false)) agent.webUI = editWebUI;
-    if (nativeIntegrations && editImage.trim() !== (original.agent.image ?? "")) agent.image = editImage.trim() || null;
+    if (image !== (original.agent.image ?? "")) agent.image = image;
     if (Object.keys(agent).length) req.agent = agent;
     if (editDisplayName.trim() !== original.displayName) req.displayName = editDisplayName.trim();
     if (nativeIntegrations && editUsesGitHubCopilot && editModel.trim() !== (original.model ?? "")) req.model = editModel.trim();
@@ -412,8 +417,8 @@ export function OverviewSection({ instance }: { instance: Instance }) {
                 <Field label="Agent Username" hint="The image user cannot change after creation.">
                   <Input value={instance.agent.username ?? "vibe"} readOnly />
                 </Field>
-                <Field label="Agent Image" hint={nativeIntegrations ? "Overrides require platform approval and Harness compatibility. A pinned image cannot be cleared." : "Custom image changes require separate HOME compatibility qualification and are not available here."}>
-                  <Input value={editImage} readOnly={!nativeIntegrations} onChange={(_, data) => setEditImage(data.value)} maxLength={2048} />
+                <Field label="Agent Image" hint={nativeIntegrations ? "Overrides require platform approval and Harness compatibility. A pinned image cannot be cleared." : "Changing the image restarts a running Agent and retains HOME. The new image must support the existing data and image user."}>
+                  <Input value={editImage} onChange={(_, data) => { setEditImage(data.value); setEditValidationError(""); }} maxLength={2048} />
                 </Field>
                 {!nativeIntegrations && <Switch checked={editWebUI} label="Serve Web UI" onChange={(_, data) => setEditWebUI(data.checked)} />}
                 <Field label={editWebUI ? "Web UI Port" : "HTTP Port (optional)"} required={editWebUI} hint={portHint}>

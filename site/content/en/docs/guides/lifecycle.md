@@ -88,6 +88,18 @@ version on a full reconcile, so environment-backed credential updates can
 restart the workload. Direct Secret edits might not trigger reconciliation;
 use the supported update path.
 
+## Update an Agent image
+
+Edit **Agent Image** in Portal or update `spec.agent.image` to select a new
+image. Platform image approvals still apply. The Agent type and image username
+cannot change, and a pinned image cannot be cleared. Changing the image does
+not change `spec.helm.version`.
+
+A running Agent is replaced using the new image and the existing HOME PVC.
+A suspended Agent stays stopped and uses the selected image when resumed.
+Choose an image that supports the existing data, numeric user identity and
+HOME permissions; CetiRun does not migrate native data formats.
+
 HOME seeding is separate from an image or configuration update. Once
 `.cetirun-home-seeded` exists on the home PVC, a new image does not recopy its
 HOME or update dependencies previously copied there. Managed configuration
@@ -101,9 +113,12 @@ recovery copies before performing explicit maintenance.
 Custom updates use a separate `OnDelete` path. They require approved model,
 HOME and context bindings plus an explicit storage/lifecycle handoff. The old
 StatefulSet must be stopped and no active Pod may still reference HOME before
-the new plan is applied. The operator does not perform the handoff itself or
-use the built-in orphan-delete hook. Model Key and context revision changes
-go through the same gate; process environment does not refresh in place.
+the new plan is applied. The configured binding provider coordinates this
+handoff. The opt-in Kubernetes provider scales the old StatefulSet to zero,
+waits for its HOME consumers to exit, and allows the new image to be applied
+with one replica. It does not use the built-in orphan-delete hook or replace
+the HOME claim. Model Key and context revision changes go through the same
+gate; process environment does not refresh in place.
 
 The default operator has no production Custom binding provider and reports
 `CustomBindingsPending`. A Custom process has no native UI URL, including when

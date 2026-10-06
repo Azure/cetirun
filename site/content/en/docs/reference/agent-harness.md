@@ -96,10 +96,11 @@ or native-secret fallback can start the workload.
 
 Administrators can explicitly enable `customRuntime` in the Operator chart for
 qualified image digests that manage their own model authentication. This
-Kubernetes provider provisions the namespace, HOME and canonical context and
-coordinates same-image Pod replacements. It does not inject Gateway variables
-or issue model credentials. Missing Gateway bindings never select this mode
-automatically. The [Pi example]({{< repo "examples/pi-agent/README.md" >}}) uses
+Kubernetes provider prepares the namespace, HOME claim template and canonical
+context, and coordinates Pod replacements, including approved image updates.
+The runtime Chart retains and reuses the same HOME claim. This provider does
+not inject Gateway variables or issue model credentials. Missing Gateway
+bindings never select this mode automatically. The [Pi example]({{< repo "examples/pi-agent/README.md" >}}) uses
 native GitHub Copilot login through this opt-in path.
 
 The approved context snapshot is mounted read-only at `$HOME/.agents`, including
@@ -261,9 +262,10 @@ namespaces or registry login URLs. Ordinary instance PATCH uses `uid` and
 management precondition is separate from the Registry endpoint's `If-Match`.
 PATCH accepts image and port updates inside `agent`: omitted fields are preserved
 and a null port clears the override. A pinned image cannot be cleared; type and
-username are immutable. Custom image changes remain blocked until HOME
-compatibility is qualified. Credentials and references cannot change through
-ordinary PATCH.
+username are immutable. Custom image updates replace the Pod and retain HOME;
+the new image must be approved by the platform and compatible with the existing
+data and image user. Credentials and references cannot change through ordinary
+PATCH.
 
 The same credential controls work during Custom self-service creation and on
 existing Custom instances. Overview shows the Registry credentials section only
@@ -564,8 +566,12 @@ before retrying. The Portal does not replay a stale edit automatically.
 An omitted field leaves its value unchanged. `agent.port: null` removes a
 Custom HTTP endpoint or restores a built-in version's qualified default.
 `agent.type` and the effective `agent.username` cannot change; a pinned image
-cannot be cleared. Cross-image Custom updates remain blocked until HOME
-compatibility is separately qualified. The UI makes the Custom image read-only.
+cannot be cleared. Owners can edit the Custom image in Portal or PATCH
+`agent.image`. An approved image update replaces a running Pod and reuses its
+HOME PVC without reseeding it. A suspended Agent stays stopped until resumed.
+Image changes do not change the pinned runtime Chart version. The image
+provider and owner are responsible for compatibility with existing files,
+native sessions and HOME dependencies; CetiRun does not migrate their formats.
 Team reassignment requires an administrator and a suspended Agent; ordinary
 edits preserve the effective Team and its governance bindings.
 

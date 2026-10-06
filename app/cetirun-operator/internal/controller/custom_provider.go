@@ -275,9 +275,8 @@ func (p *KubernetesCustomBindings) ApproveApply(ctx context.Context, instance *a
 	if operation.ID == "" || operation.PlanKey == "" || operation.Generation != instance.Generation {
 		return nil, fmt.Errorf("invalid Custom apply operation")
 	}
-	if current != nil && (len(current.Spec.Template.Spec.Containers) == 0 ||
-		current.Spec.Template.Spec.Containers[0].Image != *instance.Spec.Agent.Image) {
-		return nil, fmt.Errorf("Custom image changes require explicit HOME compatibility qualification")
+	if current != nil && len(current.Spec.Template.Spec.Containers) == 0 {
+		return nil, fmt.Errorf("Custom workload has no Agent container")
 	}
 	record, state, err := p.readOperation(ctx, instance)
 	if err != nil && !apierrors.IsNotFound(err) {

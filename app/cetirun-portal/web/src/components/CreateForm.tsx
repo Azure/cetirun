@@ -145,7 +145,7 @@ export function CreateForm({ onCreated }: { onCreated?: () => void }) {
 
       {custom && (
         <MessageBar intent="info">
-          Model setup and login remain with the image. Its image cannot change after creation.
+          Model setup and login remain with the image. Image updates retain HOME and require a compatible image.
         </MessageBar>
       )}
       <Field

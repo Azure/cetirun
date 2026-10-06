@@ -440,6 +440,92 @@ func TestKubernetesCustomLeasePersistsAcrossRestart(t *testing.T) {
 	}
 }
 
+func TestKubernetesCustomImageUpgradeRetainsHome(t *testing.T) {
+	for _, name := range []string{"unapproved", "approved"} {
+		t.Run(name, func(t *testing.T) {
+			p, instance := readyProvider(t)
+			ctx := context.Background()
+			bindings, err := p.Resolve(ctx, instance, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			home := &corev1.PersistentVolumeClaim{}
+			homeKey := client.ObjectKey{Namespace: bindings.Namespace.Name, Name: bindings.Home.Name}
+			if err := p.reconciler.Get(ctx, homeKey, home); err != nil {
+				t.Fatal(err)
+			}
+			originalHome := home.DeepCopy()
+			oldImage := *instance.Spec.Agent.Image
+			workload := &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{
+				Name: instanceServiceName(instance.Name), Namespace: bindings.Namespace.Name,
+				Annotations:     map[string]string{customAgentUID: string(instance.UID)},
+				OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(instance, api.GroupVersion.WithKind("Agent"))},
+			}, Spec: appsv1.StatefulSetSpec{Replicas: ptr.To[int32](1),
+				Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{
+					Containers: []corev1.Container{{Name: "cetirun", Image: oldImage}},
+				}},
+			}}
+			if err := p.reconciler.Create(ctx, workload); err != nil {
+				t.Fatal(err)
+			}
+			pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: workload.Name + "-0", Namespace: workload.Namespace},
+				Spec: corev1.PodSpec{Volumes: []corev1.Volume{{Name: "data", VolumeSource: corev1.VolumeSource{
+					PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: home.Name},
+				}}}}, Status: corev1.PodStatus{Phase: corev1.PodRunning}}
+			if err := p.reconciler.Create(ctx, pod); err != nil {
+				t.Fatal(err)
+			}
+			newImage := "registry.example.com/pi@sha256:" + strings.Repeat("b", 64)
+			instance.Spec.Agent.Image, instance.Generation = ptr.To(newImage), instance.Generation+1
+			if err := p.reconciler.Update(ctx, instance); err != nil {
+				t.Fatal(err)
+			}
+			if name == "approved" {
+				cfg := p.config
+				cfg.ApprovedImages = []string{oldImage, newImage}
+				p = NewKubernetesCustomBindings(p.reconciler, cfg)
+			}
+			operation := CustomApplyOperation{ID: "image-upgrade", PlanKey: "new-image:manifest", Generation: instance.Generation}
+			lease, err := p.ApproveApply(ctx, instance, workload, operation)
+			if lease != nil || err == nil {
+				t.Fatal("image upgrade was approved before the old Pod exited")
+			}
+			if err := p.reconciler.Get(ctx, client.ObjectKeyFromObject(workload), workload); err != nil {
+				t.Fatal(err)
+			}
+			if name == "unapproved" {
+				if *workload.Spec.Replicas != 1 {
+					t.Fatal("unapproved image stopped the running workload")
+				}
+				return
+			}
+			if *workload.Spec.Replicas != 0 || workload.Spec.Template.Spec.Containers[0].Image != oldImage {
+				t.Fatal("approved upgrade did not stop the old workload before changing its image")
+			}
+			if err := p.reconciler.Delete(ctx, pod); err != nil {
+				t.Fatal(err)
+			}
+			lease, err = p.ApproveApply(ctx, instance, workload, operation)
+			if err != nil || lease == nil {
+				t.Fatalf("approved image upgrade remained blocked after Pod exit: %v", err)
+			}
+			if err := lease.Check(ctx); err != nil {
+				t.Fatal(err)
+			}
+			next, err := p.Resolve(ctx, instance, nil)
+			if err != nil || next.ApprovedImage != newImage || !reflect.DeepEqual(next.Home, bindings.Home) {
+				t.Fatalf("image upgrade changed the HOME binding: %v", err)
+			}
+			if err := p.reconciler.Get(ctx, homeKey, home); err != nil || !reflect.DeepEqual(home, originalHome) {
+				t.Fatalf("image upgrade changed the retained PVC: %v", err)
+			}
+			if err := lease.Complete(ctx, CustomApplySucceeded); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
 func TestCustomRuntimeConfigRequiresExplicitApproval(t *testing.T) {
 	p, _ := providerFixture(t)
 	for _, edit := range []func(*CustomRuntimeConfig){

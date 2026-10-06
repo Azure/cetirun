@@ -125,9 +125,11 @@ spec:
 ```
 
 The platform creates the namespace and PVCs. Do not change an existing Agent's
-type or manually create its storage. Image changes on an existing HOME require
-separate compatibility qualification. Deleting an Agent deletes its namespace
-and PVCs; it is not a restart procedure.
+type or manually create its storage. To upgrade, edit the image in Portal or
+change `spec.agent.image` to another platform-approved digest. The Operator
+replaces the running Pod and reuses its HOME PVC without reseeding it. Choose
+an image compatible with the existing user, files and native sessions.
+Deleting an Agent deletes its namespace and PVCs; it is not a restart procedure.
 
 Only `ttyd.enabled` is an instance override. Terminal image, port and gateway
 identity belong in the Operator's platform values, not `spec.helm.values`.

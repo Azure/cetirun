@@ -62,6 +62,8 @@ describe("CreateForm", () => {
     await user.type(screen.getByLabelText("Gateway Token (optional)"), "sk-dummy");
     await user.click(screen.getByLabelText("Enable Microsoft Teams Integration"));
     await user.selectOptions(screen.getByRole("combobox", { name: "Agent Type" }), "custom");
+    expect(screen.getByText(/Image updates retain HOME and require a compatible image/)).toBeInTheDocument();
+    expect(screen.queryByText(/image cannot change after creation/)).toBeNull();
     const image = "registry.example.com/team/assistant@sha256:" + "a".repeat(64);
     await user.type(screen.getByLabelText(/Agent Image/), image);
     expect(screen.getByLabelText(/Agent Username/)).toHaveValue("vibe");

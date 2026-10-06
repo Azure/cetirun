@@ -371,11 +371,22 @@ func TestCustomRegistryCreateRecoveryAndVersionedManagement(t *testing.T) {
 			version := `"uid":"` + string(current.UID) + `","resourceVersion":"` + current.ResourceVersion + `"`
 			w = httptest.NewRecorder()
 			h.UpdateInstanceByName(w, request(http.MethodPatch, `{`+version+`,"agent":{"image":"`+replacementImage+`"}}`, current))
-			if w.Code != http.StatusConflict {
-				t.Fatal("Custom Registry bypassed image compatibility protection")
+			if w.Code != http.StatusOK {
+				t.Fatalf("Custom Registry image update: %d %s", w.Code, w.Body.String())
 			}
+			imageUpdated, err := h.Kube.GetInstanceByName(context.Background(), "alice")
+			if err != nil || imageUpdated.UID != current.UID || *imageUpdated.Spec.Agent.Image != replacementImage ||
+				!reflect.DeepEqual(imageUpdated.Spec.Agent.RegistrySecretRef, current.Spec.Agent.RegistrySecretRef) {
+				t.Fatalf("image update changed the Registry binding or instance identity: %v", err)
+			}
+			source := &corev1.Secret{}
+			if err := c.Get(context.Background(), client.ObjectKeyFromObject(&secrets.Items[0]), source); err != nil ||
+				!reflect.DeepEqual(source, &secrets.Items[0]) {
+				t.Fatalf("image update changed Registry credentials: %v", err)
+			}
+			version = `"uid":"` + string(imageUpdated.UID) + `","resourceVersion":"` + imageUpdated.ResourceVersion + `"`
 			w = httptest.NewRecorder()
-			h.UpdateInstanceByName(w, request(http.MethodPatch, `{`+version+`,"agent":{"port":null},"displayName":"Renamed"}`, current))
+			h.UpdateInstanceByName(w, request(http.MethodPatch, `{`+version+`,"agent":{"port":null},"displayName":"Renamed"}`, imageUpdated))
 			if w.Code != http.StatusOK {
 				t.Fatalf("Custom Registry edit: %d %s", w.Code, w.Body.String())
 			}

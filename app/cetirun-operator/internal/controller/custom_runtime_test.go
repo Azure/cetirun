@@ -6,6 +6,7 @@ package controller_test
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -61,11 +62,12 @@ func TestCustomReconcileCreatesHomeInOneChartCall(t *testing.T) {
 	r := &controller.AgentReconciler{Client: c, APIReader: c, Scheme: scheme, HelmClient: hc,
 		OperatorNamespace: "cetirun-system", OperatorSAName: "operator-test", IstioRevision: "asm-test",
 		EventRecorder: record.NewFakeRecorder(100)}
-	r.CustomBindings = controller.NewKubernetesCustomBindings(r, controller.CustomRuntimeConfig{
+	config := controller.CustomRuntimeConfig{
 		Enabled: true, AgentManagedModel: true, ApprovedImages: []string{*cr.Spec.Agent.Image},
 		StorageClass: "default", StorageSize: "100Gi", AccessMode: "ReadWriteOnce", FSGroup: 1024,
 		Context: map[string]string{"AGENTS.md": "approved context", "skills/cetirun-memory/SKILL.md": "approved memory"},
-	})
+	}
+	r.CustomBindings = controller.NewKubernetesCustomBindings(r, config)
 	request := ctrl.Request{NamespacedName: types.NamespacedName{Name: cr.Name}}
 	reconcile := func(allowConflict bool) {
 		t.Helper()
@@ -108,21 +110,26 @@ func TestCustomReconcileCreatesHomeInOneChartCall(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	values, err := chartutil.ToRenderValues(chart, hc.lastValues, chartutil.ReleaseOptions{
-		Name: "openclaw-disk-agent", Namespace: homeKey.Namespace, IsInstall: true,
-	}, chartutil.DefaultCapabilities)
-	if err != nil {
-		t.Fatal(err)
+	renderWorkload := func() *appsv1.StatefulSet {
+		t.Helper()
+		values, err := chartutil.ToRenderValues(chart, hc.lastValues, chartutil.ReleaseOptions{
+			Name: "openclaw-disk-agent", Namespace: homeKey.Namespace, IsInstall: true,
+		}, chartutil.DefaultCapabilities)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rendered, err := engine.Render(chart, values)
+		if err != nil {
+			t.Fatal(err)
+		}
+		workload := &appsv1.StatefulSet{}
+		if err := yaml.Unmarshal([]byte(strings.Split(rendered["cetirun/templates/custom-runtime.yaml"], "\n---")[0]), workload); err != nil {
+			t.Fatal(err)
+		}
+		workload.Namespace = homeKey.Namespace
+		return workload
 	}
-	rendered, err := engine.Render(chart, values)
-	if err != nil {
-		t.Fatal(err)
-	}
-	sts := &appsv1.StatefulSet{}
-	if err := yaml.Unmarshal([]byte(strings.Split(rendered["cetirun/templates/custom-runtime.yaml"], "\n---")[0]), sts); err != nil {
-		t.Fatal(err)
-	}
-	sts.Namespace = homeKey.Namespace
+	sts := renderWorkload()
 	if len(sts.Spec.VolumeClaimTemplates) != 1 || sts.Spec.VolumeClaimTemplates[0].Name != "data" {
 		t.Fatal("Chart did not declare exactly one HOME claim template")
 	}
@@ -177,6 +184,69 @@ func TestCustomReconcileCreatesHomeInOneChartCall(t *testing.T) {
 	reconcile(false)
 	if hc.installCalled || hc.installCalls != 1 {
 		t.Fatalf("initial provisioning must use one Chart call, got %d", hc.installCalls)
+	}
+
+	originalHome := home.DeepCopy()
+	originalClaims := sts.DeepCopy().Spec.VolumeClaimTemplates
+	originalUID := sts.UID
+	newImage := "registry.example.com/agent@sha256:" + strings.Repeat("b", 64)
+	config.ApprovedImages = append(config.ApprovedImages, newImage)
+	r.CustomBindings = controller.NewKubernetesCustomBindings(r, config)
+	cr.Spec.Agent.Image, cr.Generation = ptr.To(newImage), cr.Generation+1
+	if err := c.Update(ctx, cr); err != nil {
+		t.Fatal(err)
+	}
+	reconcile(false)
+	if hc.installCalls != 1 {
+		t.Fatal("image upgrade applied before the old HOME consumer exited")
+	}
+	if err := c.Get(ctx, client.ObjectKeyFromObject(sts), sts); err != nil || *sts.Spec.Replicas != 0 {
+		t.Fatalf("image upgrade did not stop the old StatefulSet: %v", err)
+	}
+	if err := c.Delete(ctx, pod); err != nil {
+		t.Fatal(err)
+	}
+	reconcile(false)
+	if hc.installCalls != 2 || cr.Status.Phase != api.PhaseProvisioning {
+		t.Fatal("image upgrade was not applied after old Pod exit")
+	}
+	next := renderWorkload()
+	if next.Spec.Template.Spec.Containers[0].Image != newImage || next.Spec.Template.Spec.InitContainers[0].Image != newImage ||
+		*next.Spec.Replicas != 1 || !reflect.DeepEqual(next.Spec.VolumeClaimTemplates, originalClaims) ||
+		next.Annotations["cetirun.microsoft.com/custom-plan-hash"] == workloadHash {
+		t.Fatal("image upgrade did not update both containers while preserving the HOME claim template")
+	}
+	// Simulate the applied Helm template and StatefulSet/CSI observations.
+	if err := c.Get(ctx, client.ObjectKeyFromObject(sts), sts); err != nil {
+		t.Fatal(err)
+	}
+	sts.Spec, sts.Annotations = next.Spec, next.Annotations
+	if err := c.Update(ctx, sts); err != nil {
+		t.Fatal(err)
+	}
+	sts.Status = appsv1.StatefulSetStatus{ObservedGeneration: sts.Generation, ReadyReplicas: 1, UpdatedReplicas: 1}
+	if err := c.Status().Update(ctx, sts); err != nil {
+		t.Fatal(err)
+	}
+	pod.UID, pod.ResourceVersion = "replacement-consumer", ""
+	pod.Spec = *next.Spec.Template.Spec.DeepCopy()
+	pod.Spec.Volumes = append(pod.Spec.Volumes, corev1.Volume{Name: "data", VolumeSource: corev1.VolumeSource{
+		PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: home.Name},
+	}})
+	if err := c.Create(ctx, pod); err != nil {
+		t.Fatal(err)
+	}
+	for range 3 {
+		reconcile(false)
+	}
+	if hc.installCalls != 2 || cr.Status.Phase != api.PhaseReady || cr.Status.ObservedGeneration != cr.Generation {
+		t.Fatal("image upgrade did not settle without repeated applications")
+	}
+	if err := c.Get(ctx, client.ObjectKeyFromObject(sts), sts); err != nil || sts.UID != originalUID {
+		t.Fatalf("image upgrade replaced the StatefulSet identity: %v", err)
+	}
+	if err := c.Get(ctx, homeKey, home); err != nil || !reflect.DeepEqual(home, originalHome) {
+		t.Fatalf("image upgrade changed the existing HOME: %v", err)
 	}
 }
 

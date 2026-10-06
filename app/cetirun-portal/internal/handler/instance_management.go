@@ -242,8 +242,6 @@ func writeManagementError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "instance_changed", kube.ErrInstanceChanged.Error())
 	case errors.Is(err, kube.ErrInstanceDeleting):
 		writeError(w, http.StatusConflict, "instance_deleting", err.Error())
-	case errors.Is(err, kube.ErrCustomImageChange):
-		writeError(w, http.StatusConflict, "image_change_not_supported", err.Error())
 	case kube.IsUnsupportedCustomUpdate(err):
 		writeError(w, http.StatusBadRequest, "unsupported_custom_feature", err.Error())
 	case kube.IsNotFound(err):
