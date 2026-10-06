@@ -397,7 +397,7 @@ func sameTeamGovernance(a, b api.TeamSpec) bool {
 }
 
 func lifecycleFinalizer(value string) bool {
-	return slices.Contains([]string{api.Finalizer, sandbox.HoldFinalizer, sandbox.PreparationFinalizer,
+	return slices.Contains([]string{api.Finalizer, sandbox.HoldFinalizer, sandbox.PreparationFinalizer, sandbox.BootstrapFinalizer,
 		"cetirun.microsoft.com/custom-runtime-ownership", "cetirun.microsoft.com/custom-apply-completion"}, value)
 }
 

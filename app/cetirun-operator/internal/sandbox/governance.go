@@ -13,12 +13,14 @@ import (
 const (
 	HoldFinalizer        = "cetirun.microsoft.com/sandbox-hold"
 	PreparationFinalizer = "cetirun.microsoft.com/sandbox-preparation"
+	BootstrapFinalizer   = "cetirun.microsoft.com/sandbox-bootstrap"
 )
 
 // Requested detects governance intent, not a valid or enforced binding.
 func Requested(agent *api.Agent, team *api.Team) bool {
 	if agent != nil && (slices.Contains(agent.Finalizers, HoldFinalizer) ||
-		slices.Contains(agent.Finalizers, PreparationFinalizer) || agent.Spec.SandboxRef != "" ||
+		slices.Contains(agent.Finalizers, PreparationFinalizer) || slices.Contains(agent.Finalizers, BootstrapFinalizer) ||
+		agent.Spec.SandboxRef != "" ||
 		(agent.Spec.PolicyClass != "" && agent.Spec.PolicyClass != api.AgentPolicyClassNormal) ||
 		agent.Status.Sandbox != nil || meta.FindStatusCondition(agent.Status.Conditions, api.ConditionSandboxReady) != nil) {
 		return true

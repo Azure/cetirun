@@ -72,6 +72,7 @@ type SandboxPreparation struct {
 	AdmissionServiceAccount string
 	Now                     func() time.Time
 	MaxSnapshotAge          time.Duration
+	bootstrap               *sandboxBootstrapConfig
 }
 
 type sandboxPreparationAttempt struct {
@@ -144,9 +145,21 @@ func (r *AgentReconciler) prepareSandboxHeld(ctx context.Context, requested *api
 	if requested.Spec.Tailscale != nil || requested.Spec.MSTeams != nil || agentIdentityRequested(requested) {
 		return fmt.Errorf("%w: native cloud and sidecar integrations require separate Sandbox lifecycle support", sandboxpolicy.ErrUnsupportedControl)
 	}
+	if config.bootstrap == nil && controllerutil.ContainsFinalizer(requested, sandbox.BootstrapFinalizer) {
+		return fmt.Errorf("%w: recorded Sandbox bootstrap requires its configured ownership checks; execution remains held", sandboxpolicy.ErrUnavailable)
+	}
 	attempt, err := r.resolveSandboxPreparation(ctx, requested)
 	if err != nil {
 		return err
+	}
+	if config.bootstrap != nil {
+		if err := r.bootstrapSandboxOwned(ctx, attempt); err != nil {
+			return fmt.Errorf("bootstrap Sandbox prerequisites: %w", err)
+		}
+		attempt, err = r.resolveSandboxPreparation(ctx, requested)
+		if err != nil {
+			return err
+		}
 	}
 	prerequisites, err := config.Prerequisites.Resolve(ctx, attempt.agent.DeepCopy(), attempt.team.DeepCopy())
 	if err != nil {

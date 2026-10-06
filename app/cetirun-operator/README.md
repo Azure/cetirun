@@ -452,6 +452,7 @@ The default-off chart output and RBAC grants are unchanged.
 ```yaml
 sandboxSources:
   enabled: true
+  bootstrapOwnedPrerequisites: false
   platformConfigMapName: sandbox-platform
   homeClaimName: home
   skillsClaimName: skills
@@ -504,8 +505,9 @@ selects the protected Agent namespace and configured existing HOME/skills
 claims, verifies their ownership and current identities, and reads only
 metadata for the Agent's `gatewayTokenSecretRef`. It never provisions or adopts
 storage by name, generates model credentials, or reads Secret contents.
-Provision these resources through the trusted platform first; this reader is
-not a storage migration or credential-issuance mechanism.
+Supply these resources through the trusted platform, or opt in to the limited
+owned bootstrap described below. The reader itself is not a storage migration
+or credential-issuance mechanism.
 
 The namespace needs its existing protected label, matching Agent-name/UID
 annotations and exact controller owner reference. Retained HOME without an
@@ -523,18 +525,68 @@ during capture. The same configuration source is used by the Agent, Sandbox
 and AgentPolicy reconcilers. A configured source does not establish runtime,
 network or CSI enforcement. In particular, the stock prerequisite source has
 no writer-exclusion adapter and returns an explicit error before preparation
-creates durable cleanup state. An Agent rejected by this preflight remains
-deletable, including after sources are disabled; existing preparation state
-never bypasses fencing.
+creates its qualified-preparation cleanup state. Bootstrap-only ownership state
+is separate and does not claim a writer fence. An Agent rejected by this
+preflight remains deletable, including after sources are disabled; existing
+preparation state never bypasses fencing.
 Kubernetes Pod absence, PVC access modes and zero replicas cannot replace it.
 Qualified fencing, successful held staging, controlled starts and running
 enforcement observations remain separate lifecycle work. Do not remove holds
 or finalizers to bypass these missing guarantees.
 
+##### Owned bootstrap (separate opt-in)
+
+With `sandboxSources.bootstrapOwnedPrerequisites: true`, new native governed
+Agents can create the prerequisites they own while remaining held. This flag
+requires enabled Kubernetes sources and the same enforced configuration/Pod
+admission prerequisites; it defaults to false. Existing namespace inputs stay
+on the read-only path, without adoption or mutation.
+
+The Agent must explicitly specify the configured approved `spec.helm.version`,
+native `spec.agent.image` and `spec.agent.port`. Bootstrap does not write these
+fields or add a controller admission exemption. After current binding/platform
+checks, it records ownership intent, then creates the protected Agent namespace,
+the existing operator Role/RoleBinding, HOME matching the selected Sandbox, and
+the native authentication Secret named by `gatewayTokenSecretRef`. It reuses the
+ordinary OpenClaw/Hermes key initialization; existing credentials are neither
+read nor enriched by bootstrap. No cluster-wide RBAC grants are added.
+
+Bootstrap does **not** create an empty replacement for published skills, shared
+Blob volumes, model-provider credentials, Pods, routes or execution permits.
+The platform must supply the configured, distinct skills claim in the newly
+created namespace, with the supported Agent/Team or retained ownership.
+Missing skills remain an explicit prerequisite error. Once inputs exist,
+the stock binary still stops at unavailable qualified writer exclusion.
+
+A bounded controller-owned receipt records each created UID. Each object is
+marked with that receipt's UID so an interrupted create can be recognized;
+confirmed missing/replaced objects, storage resize, foreign objects and changed
+ownership require recovery instead of automatic recreation. Changing the native
+type, Secret name or approved chart likewise requires an explicit handoff.
+Every bootstrap-owned resource has its own finalizer: Agent finalizers and
+`blockOwnerDeletion` do not prevent foreground garbage collection from deleting
+dependents, and a namespace finalizer alone does not retain its contents.
+Dependent DELETEs can mark HOME, native authentication and operator RBAC as
+terminating, but their bootstrap finalizers retain the objects until independent
+shutdown, receipt/ownership validation and any existing preparation fencing
+obligation succeed. Cleanup removes only its own finalizer with resourceVersion
+checks, releases HOME/credentials before RBAC, and releases namespace protection
+last. Interrupted cleanup retries without recreating resources or clearing
+another controller's finalizers.
+Bootstrap-only Agents can be deleted without a fence that has never been used
+to authorize preparation. Disabling bootstrap does not discard its inventory or
+allow recorded inputs to bypass ownership checks; deletion remains available.
+
+Tests cover cold bootstrap, lost API responses, source/UID changes, immutable
+HOME, credential-preserving retries and cleanup using synthetic fixtures and
+an isolated API server. Foreground-GC regressions explicitly issue dependent
+DELETEs because these test environments do not run a garbage collector.
+They do not qualify runtime/storage/network behavior.
+
 **Manual recovery after forced finalizer removal.** Do not force-remove Agent
 or state finalizers as routine cleanup. If an Agent disappears outside the
-normal lifecycle, its journal and preparation receipt deliberately retain
-their finalizers and may block state-namespace deletion. There is no automatic
+normal lifecycle, its journal, bootstrap and preparation receipts deliberately
+retain their finalizers and may block state-namespace deletion. There is no automatic
 orphan reaper. A separately authorized recovery must:
 
 1. Preserve and strictly validate the original Agent UID, journal/receipt

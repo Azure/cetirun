@@ -238,6 +238,9 @@ func (r *AgentReconciler) deleteSandboxBuiltin(ctx context.Context, agent *cetir
 	if err := r.checkSandboxPreparationCleanup(ctx, agent); err != nil {
 		return ctrl.Result{}, err
 	}
+	if err := r.checkSandboxBootstrapCleanup(ctx, agent); err != nil {
+		return ctrl.Result{}, err
+	}
 	if agentIdentityRequested(agent) || agent.Status.AgentIdentity != nil {
 		if err := r.deleteAgentIdentity(ctx, agent); err != nil {
 			return ctrl.Result{}, fmt.Errorf("clean up sandbox-held Agent Identity: %w", err)
@@ -247,6 +250,9 @@ func (r *AgentReconciler) deleteSandboxBuiltin(ctx context.Context, agent *cetir
 	err := r.customReader().Get(ctx, types.NamespacedName{Name: instanceNamespace(agent.Name)}, ns)
 	if apierrors.IsNotFound(err) {
 		if err := r.finishSandboxPreparation(ctx, agent); err != nil {
+			return ctrl.Result{}, err
+		}
+		if err := r.finishSandboxBootstrap(ctx, agent); err != nil {
 			return ctrl.Result{}, err
 		}
 		base := agent.DeepCopy()
@@ -263,6 +269,9 @@ func (r *AgentReconciler) deleteSandboxBuiltin(ctx context.Context, agent *cetir
 	}
 	if !sandboxBuiltinOwned(ns, agent) || ns.Name == operatorNamespace {
 		return ctrl.Result{}, fmt.Errorf("sandbox-held namespace ownership is unconfirmed; cleanup requires recovery")
+	}
+	if err := r.releaseSandboxBootstrapResources(ctx, agent, ns); err != nil {
+		return ctrl.Result{}, err
 	}
 	if ns.DeletionTimestamp.IsZero() {
 		if err := r.Delete(ctx, ns, client.Preconditions{UID: &ns.UID, ResourceVersion: &ns.ResourceVersion}); err != nil && !apierrors.IsNotFound(err) {
