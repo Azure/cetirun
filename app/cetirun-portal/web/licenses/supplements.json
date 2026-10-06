@@ -1,16 +1,16 @@
 [
   {
-    "packages": ["@fluentui/react-icons@2.0.341"],
+    "packages": ["@fluentui/react-icons@2.0.343"],
     "files": [
       {
         "file": "fluentui-system-icons.LICENSE",
         "sha256": "69bc45dc42b9acb96a69823adbc6ae538374e3c0bde169b855b32c48eaaef52f",
-        "source": "https://raw.githubusercontent.com/microsoft/fluentui-system-icons/2e4da95009de778ae0f41ec6c17bc67c97f4dc56/LICENSE"
+        "source": "https://raw.githubusercontent.com/microsoft/fluentui-system-icons/e17e4b6a88cb4f5daf6331c2a7bb7cc7217f9b11/LICENSE"
       },
       {
         "file": "fluentui-system-icons.NOTICE",
         "sha256": "1b6a98788d4172ef10d0d186ad39dba77354899683ec98a09c0e0aef8ce0199c",
-        "source": "https://raw.githubusercontent.com/microsoft/fluentui-system-icons/2e4da95009de778ae0f41ec6c17bc67c97f4dc56/NOTICE"
+        "source": "https://raw.githubusercontent.com/microsoft/fluentui-system-icons/e17e4b6a88cb4f5daf6331c2a7bb7cc7217f9b11/NOTICE"
       }
     ]
   },
