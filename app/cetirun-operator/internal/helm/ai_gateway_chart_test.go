@@ -307,6 +307,40 @@ func TestAIGatewayChartRestartsTheProxyForANewMasterKey(t *testing.T) {
 	}
 }
 
+func TestAIGatewayChartRestartsTheProxyForANewSignIn(t *testing.T) {
+	render := func(generation any) (map[string]string, error) {
+		input := aiGatewayInput("openclaw", "openai")
+		proxy := map[string]any{
+			"enabled": true, "image": "registry.example.com/cetirun-ai-gateway:1.0.0",
+			"masterKeySecretName": "ai-gateway-copilot-proxy", "tokenSecretName": "github-copilot-token",
+		}
+		if generation != nil {
+			proxy["signInGeneration"] = generation
+		}
+		input["aiGateway"].(map[string]any)["copilotProxy"] = proxy
+		return renderAIGateway(t, input)
+	}
+	rendered, err := render("0123456789abcdef0123456789abcdef")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The proxy keeps the Copilot token it exchanged: only a changed Pod
+	// template, and with it an empty cache, makes a new sign-in take effect.
+	if got := proxyTemplateAnnotations(t, rendered)["cetirun.microsoft.com/copilot-sign-in-generation"]; got != "0123456789abcdef0123456789abcdef" {
+		t.Fatalf("the proxy's Pod template must carry the sign-in generation, got %q", got)
+	}
+	rendered, err = render(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := proxyTemplateAnnotations(t, rendered)["cetirun.microsoft.com/copilot-sign-in-generation"]; ok {
+		t.Fatal("no generation, no annotation")
+	}
+	if _, err := render("not a generation"); err == nil {
+		t.Fatal("a generation that is not hexadecimal must be rejected")
+	}
+}
+
 // The in-agent model sign-in helper is served exactly where the harness
 // exposes its port: Hermes keeps it, and OpenClaw in a chart with the
 // per-Agent Copilot proxy carries none, whether or not it uses the Gateway.

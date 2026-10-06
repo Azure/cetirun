@@ -124,8 +124,9 @@ def copilot_proxy_environment(token_file, environ):
 
     It reads the owner's GitHub token from the file the Portal's Secret
     provides and exchanges it for short-lived Copilot tokens, which it caches
-    in GITHUB_COPILOT_TOKEN_DIR. A token replaced in the Secret is read at the
-    next exchange, without a restart.
+    in GITHUB_COPILOT_TOKEN_DIR until they expire, without reading the GitHub
+    token again meanwhile. The operator restarts the proxy for every new
+    sign-in, so the cache never outlives the account it came from.
     """
     env = dict(environ)
     env["GITHUB_COPILOT_ACCESS_TOKEN_FILE"] = token_file

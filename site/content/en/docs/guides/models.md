@@ -50,7 +50,9 @@ up. A model the Gateway has no price for is listed as not offered: it would
 escape the instance's budget. The token and the models carry the same sign-in
 generation, and the operator uses models only with the token they came with: if
 a sign-in stops after storing its token, the instance offers no Copilot models
-and reports `SignInIncomplete` until you sign in again.
+and reports `SignInIncomplete` until you sign in again. Each new sign-in also
+restarts the proxy: it otherwise keeps the Copilot token it exchanged until
+that token expires, so another GitHub account would take effect only then.
 
 An instance that signed in to GitHub Copilot inside the agent, before it took
 its models from the Gateway, still has that sign-in in its HOME, where the agent

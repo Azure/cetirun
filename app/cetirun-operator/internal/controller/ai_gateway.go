@@ -253,6 +253,9 @@ const (
 	// aiGatewayChartProxyKeyValue identifies the proxy's master key on its
 	// Pod template; older charts do not declare it.
 	aiGatewayChartProxyKeyValue = "masterKeyId"
+	// aiGatewayChartSignInValue identifies the sign-in whose models the Agent
+	// uses on the proxy's Pod template; older charts do not declare it.
+	aiGatewayChartSignInValue = "signInGeneration"
 )
 
 // validImageReference accepts repository:tag, repository@sha256:<digest> or
@@ -816,6 +819,28 @@ func applyCopilotProxyKeyID(values map[string]any, instance *cetirunv1alpha1.Age
 	}
 	if status := instance.Status.AIGateway; status != nil && status.Copilot != nil {
 		proxy[aiGatewayChartProxyKeyValue] = status.Copilot.ProxyKeyID
+	}
+}
+
+// copilotSignInGenerationPattern is the form the Portal gives sign-in
+// generations; the chart accepts no other.
+var copilotSignInGenerationPattern = regexp.MustCompile(`^[0-9a-f]{1,64}$`)
+
+// applyCopilotSignInGeneration gives the chart the generation of the sign-in
+// whose models the Agent uses, which goes on the proxy's Pod template. The
+// proxy keeps the Copilot token it exchanged until that token expires,
+// without reading the GitHub token again, so a new sign-in, possibly of
+// another account, would otherwise take effect only then. The new Pod starts
+// with an empty cache. A sign-in stored before generations has none, and
+// changes nothing.
+func applyCopilotSignInGeneration(values map[string]any, instance *cetirunv1alpha1.Agent) {
+	gateway, _ := values["aiGateway"].(map[string]any)
+	proxy, _ := gateway["copilotProxy"].(map[string]any)
+	if proxy == nil || proxy["enabled"] != true {
+		return
+	}
+	if generation := instance.Annotations[cetirunv1alpha1.AnnotationCopilotSignInGeneration]; copilotSignInGenerationPattern.MatchString(generation) {
+		proxy[aiGatewayChartSignInValue] = generation
 	}
 }
 

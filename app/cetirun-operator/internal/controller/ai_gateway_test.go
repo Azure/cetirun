@@ -1857,6 +1857,101 @@ func TestReconcileRestartsTheCopilotProxyWithANewMasterKey(t *testing.T) {
 	}
 }
 
+// Signing in again may switch to another GitHub account, with the same model
+// list. The proxy keeps the Copilot token it exchanged until that token
+// expires, without reading the new GitHub token, so the chart restarts it
+// for every new sign-in the Agent takes the models of.
+func TestReconcileRestartsTheCopilotProxyForANewSignIn(t *testing.T) {
+	agent := aiGatewayTestAgent(testAIGatewayTeam)
+	r, kube, gateway := aiGatewayTestReconciler(t, agent, aiGatewayTestTeam(testAIGatewayTeam))
+	chart := &chartHelm{}
+	r.HelmClient = chart
+	ctx := context.Background()
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: agent.Name}}
+	reconcile := func(times int) {
+		t.Helper()
+		for i := 0; i < times; i++ {
+			if _, err := r.Reconcile(ctx, req); err != nil {
+				t.Fatalf("reconcile: %v", err)
+			}
+		}
+	}
+	signInAs := func(generation, at string) {
+		t.Helper()
+		secret := readSecret(t, kube, cetirunv1alpha1.CopilotTokenSecretName)
+		secret.Data = map[string][]byte{cetirunv1alpha1.CopilotTokenSecretKey: []byte("gho_" + generation)}
+		secret.Annotations = map[string]string{
+			cetirunv1alpha1.AnnotationCopilotSignInGeneration: generation,
+			cetirunv1alpha1.AnnotationCopilotTokenStoredAt:    time.Now().UTC().Format(time.RFC3339),
+		}
+		if err := kube.Update(ctx, secret); err != nil {
+			t.Fatal(err)
+		}
+		current := &cetirunv1alpha1.Agent{}
+		if err := kube.Get(ctx, req.NamespacedName, current); err != nil {
+			t.Fatal(err)
+		}
+		if current.Annotations == nil {
+			current.Annotations = map[string]string{}
+		}
+		current.Annotations[cetirunv1alpha1.AnnotationCopilotModels] = testCopilotModels
+		current.Annotations[cetirunv1alpha1.AnnotationCopilotSignInGeneration] = generation
+		current.Annotations[cetirunv1alpha1.AnnotationCopilotSignedInAt] = at
+		if err := kube.Update(ctx, current); err != nil {
+			t.Fatal(err)
+		}
+	}
+	signInValue := func() any {
+		t.Helper()
+		return chart.lastValues["aiGateway"].(map[string]any)["copilotProxy"].(map[string]any)[aiGatewayChartSignInValue]
+	}
+	reconcile(3)
+	if err := kube.Create(ctx, readyProxy(1)); err != nil {
+		t.Fatal(err)
+	}
+	signInAs("0a1b2c", "2026-10-07T08:00:00Z")
+	reconcile(3)
+	routes := gateway.modelNames()
+	if len(routes) == 0 || signInValue() != "0a1b2c" {
+		t.Fatalf("the chart must get the sign-in's generation: values %v, routes %v", signInValue(), routes)
+	}
+	installs := chart.installs
+
+	// Another account, with the same models: the routes stay, the proxy is
+	// restarted.
+	signInAs("3d4e5f", "2026-10-07T08:30:00Z")
+	reconcile(2)
+	if chart.installs == installs || signInValue() != "3d4e5f" {
+		t.Fatalf("the proxy must be restarted for the new sign-in: installs %d -> %d, values carry %v", installs, chart.installs, signInValue())
+	}
+	if !slices.Equal(gateway.modelNames(), routes) {
+		t.Fatalf("the same models keep their routes: %v -> %v", routes, gateway.modelNames())
+	}
+}
+
+func TestApplyCopilotSignInGenerationOnlyForTheProxy(t *testing.T) {
+	for name, tc := range map[string]struct {
+		generation string
+		enabled    bool
+		want       any
+	}{
+		"a sign-in":          {generation: "0123abcd", enabled: true, want: "0123abcd"},
+		"before generations": {generation: "", enabled: true, want: nil},
+		"not a generation":   {generation: "not hex", enabled: true, want: nil},
+		"no proxy":           {generation: "0123abcd", enabled: false, want: nil},
+	} {
+		t.Run(name, func(t *testing.T) {
+			agent := routedAgent()
+			agent.Annotations = map[string]string{cetirunv1alpha1.AnnotationCopilotSignInGeneration: tc.generation}
+			proxy := map[string]any{"enabled": tc.enabled}
+			applyCopilotSignInGeneration(map[string]any{"aiGateway": map[string]any{"copilotProxy": proxy}}, agent)
+			if proxy[aiGatewayChartSignInValue] != tc.want {
+				t.Fatalf("signInGeneration %v, want %v", proxy[aiGatewayChartSignInValue], tc.want)
+			}
+		})
+	}
+}
+
 // New limits for a shared model reach the Agent's configuration although the
 // model keeps its name.
 func TestReconcileRollsTheAgentWhenASharedModelsLimitsChange(t *testing.T) {

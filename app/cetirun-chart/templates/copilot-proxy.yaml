@@ -56,6 +56,12 @@ spec:
         {{- with $proxy.masterKeyId }}
         cetirun.microsoft.com/copilot-proxy-key-id: {{ . | quote }}
         {{- end }}
+        {{- /* The proxy keeps the Copilot token it exchanged until that token
+        expires, without reading the GitHub token again: a new sign-in, maybe
+        of another account, restarts it with an empty cache. */}}
+        {{- with $proxy.signInGeneration }}
+        cetirun.microsoft.com/copilot-sign-in-generation: {{ . | quote }}
+        {{- end }}
     spec:
       serviceAccountName: {{ $name }}
       automountServiceAccountToken: false

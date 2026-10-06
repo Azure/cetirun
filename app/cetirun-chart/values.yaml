@@ -120,6 +120,10 @@ aiGateway:
     # its SHA-256 hash). The proxy reads the key when it starts, so a new
     # value restarts it.
     masterKeyId: ""
+    # -- Generation of the GitHub Copilot sign-in whose models the Agent
+    # uses. The proxy keeps the Copilot token it exchanged until that token
+    # expires, so a new sign-in, possibly of another account, restarts it.
+    signInGeneration: ""
     # -- Secret holding the owner's GitHub token (key access-token), written
     # by the Portal at sign-in. The proxy waits for it.
     tokenSecretName: ""

@@ -251,6 +251,12 @@
                             "pattern": "^[0-9a-f]{0,64}$",
                             "default": ""
                         },
+                        "signInGeneration": {
+                            "type": "string",
+                            "description": "Generation of the GitHub Copilot sign-in the Agent uses; a new value restarts the proxy",
+                            "pattern": "^[0-9a-f]{0,64}$",
+                            "default": ""
+                        },
                         "tokenSecretName": {"type": "string", "default": ""},
                         "responsesModels": {
                             "type": "array",
