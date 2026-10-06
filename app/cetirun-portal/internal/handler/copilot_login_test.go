@@ -34,6 +34,9 @@ type fakeGitHubServer struct {
 	// onPoll runs once while a token poll is waiting on GitHub, before it is
 	// answered: what the owner does in another tab meanwhile.
 	onPoll func()
+	// onDeviceCode runs once while a start is waiting on GitHub for its
+	// device code: what happens meanwhile.
+	onDeviceCode func()
 	// models is the model list GitHub returns, when not the default one.
 	models string
 }
@@ -42,6 +45,10 @@ func (f *fakeGitHubServer) start(t *testing.T) *copilot.Client {
 	t.Helper()
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /login/device/code", func(w http.ResponseWriter, r *http.Request) {
+		if hook := f.onDeviceCode; hook != nil {
+			f.onDeviceCode = nil
+			hook()
+		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"device_code": "dev-secret", "user_code": "WXYZ-9876",
 			"verification_uri": "https://github.com/login/device", "expires_in": 900, "interval": 5,
@@ -193,6 +200,82 @@ func (f *loginFixture) stallAfter(match func(client.Object) bool, meanwhile func
 	})
 	f.fc = wrapped
 	f.h.Kube = kube.NewClient(wrapped)
+}
+
+// afterGet runs meanwhile once, right after the first read that match accepts
+// returned: what another replica does just then.
+func (f *loginFixture) afterGet(match func(client.Object) bool, meanwhile func()) {
+	f.t.Helper()
+	done := false
+	wrapped := interceptor.NewClient(f.fc.(client.WithWatch), interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			err := c.Get(ctx, key, obj, opts...)
+			if err == nil && !done && match(obj) {
+				done = true
+				meanwhile()
+			}
+			return err
+		},
+	})
+	f.fc = wrapped
+	f.h.Kube = kube.NewClient(wrapped)
+}
+
+// agentReads counts the reads of the Agent. hook runs right before read
+// number at; once replaced is set, the Agent reads with another UID, as after
+// it was deleted and created again under the same name.
+type agentReads struct {
+	count, at int
+	hook      func()
+	replaced  bool
+}
+
+func (f *loginFixture) watchAgentReads() *agentReads {
+	f.t.Helper()
+	reads := &agentReads{}
+	wrapped := interceptor.NewClient(f.fc.(client.WithWatch), interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			agent, ok := obj.(*cetirunv1alpha1.Agent)
+			if !ok {
+				return c.Get(ctx, key, obj, opts...)
+			}
+			reads.count++
+			if hook := reads.hook; hook != nil && reads.count == reads.at {
+				reads.hook = nil
+				hook()
+			}
+			if err := c.Get(ctx, key, obj, opts...); err != nil {
+				return err
+			}
+			if reads.replaced {
+				agent.UID = "uid-2"
+			}
+			return nil
+		},
+	})
+	f.fc = wrapped
+	f.h.Kube = kube.NewClient(wrapped)
+	return reads
+}
+
+func isLoginSecret(obj client.Object) bool {
+	secret, ok := obj.(*corev1.Secret)
+	return ok && secret.Name == copilotLoginSecretName
+}
+
+// commitCompletion does what a poll does when GitHub has answered: it reads
+// the token Secret, then commits its sign-in, which takes the lease. It
+// returns the token Secret as read, for the completion's later token write.
+func (f *loginFixture) commitCompletion() *corev1.Secret {
+	f.t.Helper()
+	read := f.secret(cetirunv1alpha1.CopilotTokenSecretName)
+	login := f.secret(copilotLoginSecretName)
+	login.Data[loginState] = []byte(copilotLoginCompleting)
+	login.Data[loginCompletingUntil] = []byte(f.clock.Add(copilotLoginLease).Format(time.RFC3339))
+	if err := f.fc.Update(context.Background(), login); err != nil {
+		f.t.Fatal(err)
+	}
+	return read
 }
 
 func TestCopilotLoginStoresTokenAndModels(t *testing.T) {
@@ -575,6 +658,135 @@ func TestCopilotLoginStalledCompletionIsFenced(t *testing.T) {
 				t.Fatalf("recorded models %q, want %q only", models, tc.wantModels)
 			}
 		})
+	}
+}
+
+// A start refused because a completion took its lease while GitHub answered
+// the start leaves that completion able to store its token: the fence moves
+// only once a start has replaced the sign-in.
+func TestCopilotLoginRefusedStartLeavesTheCompletionUnfenced(t *testing.T) {
+	f := newLoginFixture(t)
+	f.call(http.MethodPost, "alice")
+	var read *corev1.Secret
+	f.gh.onDeviceCode = func() { read = f.commitCompletion() }
+	if w, _ := f.call(http.MethodPost, "alice"); w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "copilot_login_completing") {
+		t.Fatalf("a start during a completion: status %d %s", w.Code, w.Body.String())
+	}
+	read.Data = map[string][]byte{cetirunv1alpha1.CopilotTokenSecretKey: []byte("gho_completing")}
+	if err := f.fc.Update(context.Background(), read); err != nil {
+		t.Fatalf("the refused start must not fence the completion: %v", err)
+	}
+}
+
+// The same for a cancel: a completion that commits after the cancel read the
+// sign-in makes the cancel conflict and then refuse, and the completion still
+// stores its token.
+func TestCopilotLoginRefusedCancelLeavesTheCompletionUnfenced(t *testing.T) {
+	f := newLoginFixture(t)
+	f.call(http.MethodPost, "alice")
+	var read *corev1.Secret
+	reads := f.watchAgentReads()
+	// The cancel's second read of the Agent comes after it read the sign-in.
+	reads.at, reads.hook = 2, func() { read = f.commitCompletion() }
+	if w, _ := f.call(http.MethodDelete, "alice"); w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "copilot_login_completing") {
+		t.Fatalf("a cancel during a completion: status %d %s", w.Code, w.Body.String())
+	}
+	read.Data = map[string][]byte{cetirunv1alpha1.CopilotTokenSecretKey: []byte("gho_completing")}
+	if err := f.fc.Update(context.Background(), read); err != nil {
+		t.Fatalf("the refused cancel must not fence the completion: %v", err)
+	}
+}
+
+// A start that waited on GitHub while its Agent was deleted and created again
+// under the same name changes nothing, not even the replacement's sign-in.
+func TestCopilotLoginStartForAReplacedAgentChangesNothing(t *testing.T) {
+	f := newLoginFixture(t)
+	reads := f.watchAgentReads()
+	f.gh.onDeviceCode = func() {
+		reads.replaced = true
+		// The replacement has already started its own sign-in.
+		if err := f.fc.Create(context.Background(), &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: copilotLoginSecretName, Namespace: "cetirun-alice-gw", Labels: map[string]string{kube.AgentUIDLabel: "uid-2"}},
+			Data:       map[string][]byte{loginState: []byte(copilotLoginPending), loginUserCode: []byte("NEW2-0000")},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if w, _ := f.call(http.MethodPost, "alice"); w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "instance_changed") {
+		t.Fatalf("a start for a replaced Agent: status %d %s", w.Code, w.Body.String())
+	}
+	login := f.secret(copilotLoginSecretName)
+	if login.Labels[kube.AgentUIDLabel] != "uid-2" || string(login.Data[loginUserCode]) != "NEW2-0000" {
+		t.Fatalf("the replacement's sign-in must be left alone: %v %v", login.Labels, login.Data)
+	}
+	if token := f.secret(cetirunv1alpha1.CopilotTokenSecretName); token.Annotations[copilotSignInAnnotation] != "" {
+		t.Fatal("a refused start must not fence completions")
+	}
+}
+
+// A cancel for an Agent replaced after the cancel read the sign-in clears
+// nothing.
+func TestCopilotLoginCancelForAReplacedAgentChangesNothing(t *testing.T) {
+	f := newLoginFixture(t)
+	f.call(http.MethodPost, "alice")
+	reads := f.watchAgentReads()
+	reads.at, reads.hook = 2, func() { reads.replaced = true }
+	if w, _ := f.call(http.MethodDelete, "alice"); w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "instance_changed") {
+		t.Fatalf("a cancel for a replaced Agent: status %d %s", w.Code, w.Body.String())
+	}
+	if login := f.secret(copilotLoginSecretName); string(login.Data[loginState]) != copilotLoginPending || len(login.Data[loginDeviceCode]) == 0 {
+		t.Fatalf("the sign-in must be left alone: %v", login.Data)
+	}
+}
+
+// A sign-in Secret labelled for another UID was left by an Agent of the same
+// name that no longer exists: a cancel leaves it alone, and the current
+// Agent's start replaces it.
+func TestCopilotLoginLeftoverOfAnEarlierAgent(t *testing.T) {
+	leftover := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: copilotLoginSecretName, Namespace: "cetirun-alice-gw", Labels: map[string]string{kube.AgentUIDLabel: "uid-0"}},
+		Data:       map[string][]byte{loginState: []byte(copilotLoginPending), loginDeviceCode: []byte("earlier-agent")},
+	}
+	f := newLoginFixture(t, routedAgent(), copilotTokenSecret("uid-1"), leftover)
+	if w, _ := f.call(http.MethodDelete, "alice"); w.Code != http.StatusNoContent {
+		t.Fatalf("cancel: status %d %s", w.Code, w.Body.String())
+	}
+	if login := f.secret(copilotLoginSecretName); string(login.Data[loginDeviceCode]) != "earlier-agent" {
+		t.Fatalf("a cancel must not clear another Agent's sign-in: %v", login.Data)
+	}
+	if w, resp := f.call(http.MethodPost, "alice"); w.Code != http.StatusOK || resp.State != copilotLoginPending {
+		t.Fatalf("start: status %d %+v", w.Code, resp)
+	}
+	if login := f.secret(copilotLoginSecretName); login.Labels[kube.AgentUIDLabel] != "uid-1" || string(login.Data[loginDeviceCode]) != "dev-secret" {
+		t.Fatalf("the start must replace the leftover: %v %v", login.Labels, login.Data)
+	}
+}
+
+// A poll that finds a completion past its lease records it as failed, and
+// fences only once that is accepted: if a newer sign-in replaced it meanwhile,
+// and its completion has committed, that completion still stores its token.
+func TestCopilotLoginRefusedExpiryLeavesANewerCompletionUnfenced(t *testing.T) {
+	f := newLoginFixture(t)
+	f.call(http.MethodPost, "alice")
+	f.commitCompletion()
+	f.clock = f.clock.Add(copilotLoginLease + time.Second)
+	var read *corev1.Secret
+	f.afterGet(isLoginSecret, func() {
+		// Right after the poll read the expired sign-in, a newer start
+		// replaced it, and its completion committed.
+		login := f.secret(copilotLoginSecretName)
+		login.Data = map[string][]byte{loginState: []byte(copilotLoginPending), loginDeviceCode: []byte("newer")}
+		if err := f.fc.Update(context.Background(), login); err != nil {
+			t.Fatal(err)
+		}
+		read = f.commitCompletion()
+	})
+	if _, resp := f.call(http.MethodGet, "alice"); resp.State != copilotLoginPending {
+		t.Fatalf("the newer sign-in must be reported: %+v", resp)
+	}
+	read.Data = map[string][]byte{cetirunv1alpha1.CopilotTokenSecretKey: []byte("gho_newer")}
+	if err := f.fc.Update(context.Background(), read); err != nil {
+		t.Fatalf("a refused expiry must not fence the newer completion: %v", err)
 	}
 }
 

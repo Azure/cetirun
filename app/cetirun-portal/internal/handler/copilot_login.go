@@ -63,9 +63,10 @@ const (
 	// copilotSignInAnnotation on the token Secret fences completions, since
 	// a lease cannot: a replica that stalls past it may still resume. A
 	// completion reads the token Secret before it commits and stores the
-	// token under that version. A start, a cancel and the end of a
-	// completion whose lease ran out first give this annotation a new value,
-	// so a completion they replace can no longer store its token.
+	// token under that version. Once a start, a cancel, or the end of a
+	// completion whose lease ran out has been accepted, it gives this
+	// annotation a new value, so a completion it replaced can no longer
+	// store its token.
 	copilotSignInAnnotation = "cetirun.microsoft.com/copilot-sign-in"
 )
 
@@ -298,12 +299,6 @@ func (h *InstanceHandler) StartCopilotLogin(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusBadGateway, "github_unavailable", "GitHub did not start the sign-in. Try again.")
 		return
 	}
-	// A completion of an earlier sign-in that outlived its lease must not
-	// store its token once this one replaces it.
-	if err := h.fenceCopilotCompletions(ctx, instance); err != nil {
-		writeCopilotFenceError(w, instance, err, "Failed to start the sign-in")
-		return
-	}
 	now := h.now().UTC()
 	data := map[string][]byte{
 		loginState:           []byte(copilotLoginPending),
@@ -320,19 +315,51 @@ func (h *InstanceHandler) StartCopilotLogin(w http.ResponseWriter, r *http.Reque
 			writeCopilotLoginCompleting(w)
 		case errors.Is(err, errCopilotLoginChanged):
 			writeError(w, http.StatusConflict, "copilot_login_changed", "The sign-in changed meanwhile. Try again.")
+		case errors.Is(err, kube.ErrInstanceChanged):
+			writeManagementError(w, err)
 		default:
 			slog.Error("Failed to save the GitHub Copilot sign-in", "instance", instance.Name, "error", err)
 			writeError(w, http.StatusInternalServerError, "internal_error", "Failed to start the sign-in")
 		}
 		return
 	}
+	// Only once this sign-in has replaced the earlier one: a completion of
+	// an earlier sign-in that outlived its lease must not store its token
+	// now. Fencing before the replacement was accepted would fence a
+	// completion that holds its lease, and the start is then refused too.
+	if err := h.fenceCopilotCompletions(ctx, instance); err != nil {
+		writeCopilotFenceError(w, instance, err, "Failed to start the sign-in")
+		return
+	}
 	slog.Info("GitHub Copilot sign-in started", "instance", instance.Name)
 	writeJSON(w, http.StatusOK, loginResponse(data))
 }
 
+// copilotAgentCurrent rereads the Agent and reports kube.ErrInstanceChanged
+// when it is no longer the incarnation instance was read as: an Agent deleted
+// and created again under the same name has another UID, and its sign-in is
+// not a request for the earlier one's to change.
+func (h *InstanceHandler) copilotAgentCurrent(ctx context.Context, instance *cetirunv1alpha1.Agent) error {
+	current, err := h.Kube.GetInstanceByName(ctx, instance.Name)
+	if kube.IsNotFound(err) {
+		return kube.ErrInstanceChanged
+	}
+	if err != nil {
+		return err
+	}
+	if current.UID != instance.UID || current.DeletionTimestamp != nil {
+		return kube.ErrInstanceChanged
+	}
+	return nil
+}
+
 // saveCopilotLogin creates or replaces the sign-in Secret, with the version
 // it read: it never replaces a sign-in that is storing its token, and it
-// retries when a poll updated the Secret meanwhile.
+// retries when a poll updated the Secret meanwhile. Between reading the
+// Secret and writing it, it checks that the Agent is still the one the
+// request was made for, so a start that waited on GitHub while the Agent was
+// replaced changes nothing. A Secret labelled for another UID is then left
+// over from an Agent that no longer exists, and is replaced.
 func (h *InstanceHandler) saveCopilotLogin(ctx context.Context, instance *cetirunv1alpha1.Agent, data map[string][]byte) error {
 	namespace := kube.InstanceNamespace(instance.Name)
 	labels := map[string]string{
@@ -342,7 +369,14 @@ func (h *InstanceHandler) saveCopilotLogin(ctx context.Context, instance *cetiru
 	}
 	for attempt := 0; attempt < 3; attempt++ {
 		secret, err := h.Kube.GetSecret(ctx, namespace, copilotLoginSecretName)
-		if kube.IsNotFound(err) {
+		if err != nil && !kube.IsNotFound(err) {
+			return err
+		}
+		missing := err != nil
+		if err := h.copilotAgentCurrent(ctx, instance); err != nil {
+			return err
+		}
+		if missing {
 			err = h.Kube.CreateSecret(ctx, &corev1.Secret{
 				ObjectMeta: metav1.ObjectMeta{Name: copilotLoginSecretName, Namespace: namespace, Labels: labels},
 				Type:       corev1.SecretTypeOpaque,
@@ -351,9 +385,6 @@ func (h *InstanceHandler) saveCopilotLogin(ctx context.Context, instance *cetiru
 			if kube.IsAlreadyExists(err) {
 				continue
 			}
-			return err
-		}
-		if err != nil {
 			return err
 		}
 		if copilotLoginBeingCompleted(secret, instance, h.now()) {
@@ -406,16 +437,26 @@ func (h *InstanceHandler) PollCopilotLogin(w http.ResponseWriter, r *http.Reques
 			writeJSON(w, http.StatusOK, loginResponse(secret.Data))
 			return
 		}
-		// The replica storing the token stopped before recording it. Should
-		// it only have stalled, the fence keeps it from storing the token
-		// of a sign-in reported as failed; until the fence holds, the
-		// sign-in stays pending.
-		if err := h.fenceCopilotCompletions(ctx, instance); err != nil {
-			slog.Error("Failed to fence an abandoned GitHub Copilot sign-in", "instance", instance.Name, "error", err)
-			writeJSON(w, http.StatusOK, loginResponse(secret.Data))
+		// The replica storing the token stopped before recording it. Record
+		// the sign-in as failed and only then, once that is accepted, fence
+		// it: should it only have stalled, it can no longer store the token
+		// of a sign-in reported as failed. Fencing first would fence a newer
+		// sign-in's completion if this outcome were then refused.
+		secret.Data = map[string][]byte{
+			loginState:   []byte(copilotLoginFailed),
+			loginMessage: []byte("The sign-in did not finish. Start it again."),
+		}
+		if err := h.Kube.UpdateSecret(ctx, secret); err != nil {
+			if !kube.IsConflict(err) && !kube.IsNotFound(err) {
+				slog.Error("Failed to record the GitHub Copilot sign-in outcome", "instance", instance.Name, "error", err)
+			}
+			h.writeCurrentCopilotLogin(ctx, w, instance)
 			return
 		}
-		h.endCopilotLogin(ctx, w, instance, secret, copilotLoginFailed, "The sign-in did not finish. Start it again.")
+		if err := h.fenceCopilotCompletions(ctx, instance); err != nil {
+			slog.Error("Failed to fence an abandoned GitHub Copilot sign-in", "instance", instance.Name, "error", err)
+		}
+		writeJSON(w, http.StatusOK, loginResponse(secret.Data))
 		return
 	}
 	if string(secret.Data[loginState]) != copilotLoginPending {
@@ -603,7 +644,10 @@ func (h *InstanceHandler) endCopilotLogin(ctx context.Context, w http.ResponseWr
 
 // CancelCopilotLogin handles DELETE /api/v1/instances/{name}/copilot/login
 // with the body {"uid": "<Agent UID>"}. A sign-in that is storing its token
-// is not cancelled.
+// is not cancelled. Between reading the sign-in Secret and clearing it, the
+// cancel checks that the Agent is still the one it was made for; a Secret
+// labelled for another UID, left over from an Agent that no longer exists, is
+// not this Agent's sign-in and is left alone.
 func (h *InstanceHandler) CancelCopilotLogin(w http.ResponseWriter, r *http.Request) {
 	uid, ok := h.copilotLoginUID(w, r)
 	if !ok {
@@ -621,28 +665,45 @@ func (h *InstanceHandler) CancelCopilotLogin(w http.ResponseWriter, r *http.Requ
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
-		if err == nil && copilotLoginBeingCompleted(secret, instance, h.now()) {
+		if err != nil {
+			slog.Error("Failed to read the GitHub Copilot sign-in", "instance", instance.Name, "error", err)
+			writeError(w, http.StatusInternalServerError, "internal_error", "Failed to cancel the sign-in")
+			return
+		}
+		if err := h.copilotAgentCurrent(ctx, instance); err != nil {
+			writeManagementError(w, err)
+			return
+		}
+		if secret.Labels[kube.AgentUIDLabel] != string(instance.UID) {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if copilotLoginBeingCompleted(secret, instance, h.now()) {
 			writeCopilotLoginCompleting(w)
 			return
 		}
-		if err == nil {
-			// A completion that outlived its lease must not store its token
-			// after this cancel.
-			if err := h.fenceCopilotCompletions(ctx, instance); err != nil {
-				writeCopilotFenceError(w, instance, err, "Failed to cancel the sign-in")
-				return
-			}
-			// With the version just read: a poll that claimed the sign-in
-			// meanwhile makes this conflict, and the cancel is retried.
-			secret.Data = map[string][]byte{}
-			err = h.Kube.UpdateSecret(ctx, secret)
-			if kube.IsConflict(err) {
-				continue
-			}
+		// With the version just read: a poll that claimed the sign-in
+		// meanwhile makes this conflict, and the cancel is retried.
+		secret.Data = map[string][]byte{}
+		err = h.Kube.UpdateSecret(ctx, secret)
+		if kube.IsConflict(err) {
+			continue
 		}
-		if err != nil && !kube.IsNotFound(err) {
+		if kube.IsNotFound(err) {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if err != nil {
 			slog.Error("Failed to cancel the GitHub Copilot sign-in", "instance", instance.Name, "error", err)
 			writeError(w, http.StatusInternalServerError, "internal_error", "Failed to cancel the sign-in")
+			return
+		}
+		// Only once the cancel is accepted: a completion that outlived its
+		// lease must not store its token after it. Fencing before the cancel
+		// was accepted would fence a completion that holds its lease, and the
+		// cancel is then refused too.
+		if err := h.fenceCopilotCompletions(ctx, instance); err != nil {
+			writeCopilotFenceError(w, instance, err, "Failed to cancel the sign-in")
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
