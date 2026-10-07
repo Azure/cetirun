@@ -41,6 +41,8 @@
 // Explicit template labels are not overridden; other added labels and
 // annotations remain forbidden. Binding validation checks the persisted Pod
 // and the prospective Pod, including labels the Binding would apply.
+// Required metadata.name affinity uses field equality/inequality, not label
+// value validation; valid Node names may exceed the label value length limit.
 //
 // Deployment must independently protect the configured operator-namespace
 // ConfigMap against tenant writes and enforce the cluster-wide webhook. These

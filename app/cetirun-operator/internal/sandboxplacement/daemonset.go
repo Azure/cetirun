@@ -17,6 +17,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/selection"
 	"k8s.io/apimachinery/pkg/util/validation"
@@ -280,9 +281,21 @@ func nodeMatchesSpec(node *corev1.Node, spec *corev1.PodSpec) bool {
 			matches = matches && matchesRequirement(labels.Set(node.Labels), requirement)
 		}
 		for _, requirement := range term.MatchFields {
-			matches = matches && requirement.Key == "metadata.name" && len(requirement.Values) == 1 &&
-				(requirement.Operator == corev1.NodeSelectorOpIn || requirement.Operator == corev1.NodeSelectorOpNotIn) &&
-				matchesRequirement(labels.Set{"metadata.name": node.Name}, requirement)
+			if requirement.Key != "metadata.name" || len(requirement.Values) != 1 {
+				matches = false
+				break
+			}
+			var selector fields.Selector
+			switch requirement.Operator {
+			case corev1.NodeSelectorOpIn:
+				selector = fields.OneTermEqualSelector(requirement.Key, requirement.Values[0])
+			case corev1.NodeSelectorOpNotIn:
+				selector = fields.OneTermNotEqualSelector(requirement.Key, requirement.Values[0])
+			default:
+				matches = false
+				continue
+			}
+			matches = matches && selector.Matches(fields.Set{"metadata.name": node.Name})
 		}
 		if matches {
 			return true

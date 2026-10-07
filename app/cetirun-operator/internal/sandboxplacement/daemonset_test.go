@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
@@ -218,6 +219,65 @@ func TestDaemonSetDefaultsAndGeneratedSchedulingFields(t *testing.T) {
 	pod.Spec.Tolerations = append(pod.Spec.Tolerations, corev1.Toleration{Operator: corev1.TolerationOpExists})
 	request.Object.Raw = marshal(t, pod)
 	expectDenied(t, f.handler.Validate(context.Background(), request), "DaemonSetTemplateMismatch")
+}
+
+func TestDaemonSetNodeNameFieldSelectors(t *testing.T) {
+	longName := strings.Repeat("worker", 10) + ".node.example.com"
+	for _, test := range []struct {
+		name     string
+		node     string
+		operator corev1.NodeSelectorOperator
+		value    string
+		allowed  bool
+	}{
+		{"in long name", longName, corev1.NodeSelectorOpIn, longName, true},
+		{"not in long name", "reserved-worker", corev1.NodeSelectorOpNotIn, longName, true},
+		{"in different name", "reserved-worker", corev1.NodeSelectorOpIn, longName, false},
+		{"not in same long name", longName, corev1.NodeSelectorOpNotIn, longName, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newFixture(t)
+			ctx := context.Background()
+			if f.reserved.Name != test.node {
+				if err := f.client.Delete(ctx, f.reserved); err != nil {
+					t.Fatal(err)
+				}
+				f.reserved.Name, f.reserved.ResourceVersion = test.node, ""
+				if err := f.client.Create(ctx, f.reserved); err != nil {
+					t.Fatal(err)
+				}
+				f.registry.Nodes[0].Name = test.node
+				f.platformPod.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution = targetAffinity(test.node)
+				if err := f.client.Update(ctx, f.platformPod); err != nil {
+					t.Fatal(err)
+				}
+			}
+			f.daemon.Spec.Template.Spec.Affinity = &corev1.Affinity{NodeAffinity: &corev1.NodeAffinity{
+				RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{NodeSelectorTerms: []corev1.NodeSelectorTerm{{
+					MatchFields: []corev1.NodeSelectorRequirement{{Key: "metadata.name", Operator: test.operator, Values: []string{test.value}}},
+				}}},
+			}}
+			if err := f.client.Update(ctx, f.daemon); err != nil {
+				t.Fatal(err)
+			}
+			digest, err := CanonicalDaemonSetDigest(f.daemon)
+			if err != nil {
+				t.Fatal(err)
+			}
+			f.registry.PlatformDaemonSets[0].TemplateDigest = digest
+			f.saveRegistry(t)
+			create := podRequest(t, f.platformPod, nil)
+			create.UserInfo.Username = f.registry.PlatformDaemonSets[0].TrustedCreator
+			for _, request := range []admission.Request{create, bindingRequest(t, f.platformPod, test.node)} {
+				response := f.handler.Validate(ctx, request)
+				if test.allowed {
+					expectAllowed(t, response)
+				} else {
+					expectDenied(t, response, "DaemonSetSchedulingMismatch")
+				}
+			}
+		})
+	}
 }
 
 func TestDaemonSetAPIDefaultedCompatibility(t *testing.T) {
