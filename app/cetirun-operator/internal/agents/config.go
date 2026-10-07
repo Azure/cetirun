@@ -63,8 +63,23 @@ func nativeTemplateContext(agent ResolvedAgent, bindings Bindings) map[string]an
 	for key, value := range bindings.NativeOptions {
 		native[key] = value
 	}
+	gatewayModels := make([]any, 0, len(bindings.Model.GatewayModels))
+	for _, model := range bindings.Model.GatewayModels {
+		entry := map[string]any{"id": model.ID, "name": model.Name}
+		if model.ContextWindow > 0 {
+			entry["contextWindow"] = model.ContextWindow
+		}
+		if model.MaxTokens > 0 {
+			entry["maxTokens"] = model.MaxTokens
+		}
+		gatewayModels = append(gatewayModels, entry)
+	}
 	values := map[string]any{
 		agent.Type: native,
+		"aiGateway": map[string]any{
+			"enabled": bindings.Model.Gateway,
+			"models":  gatewayModels,
+		},
 		"secrets": map[string]any{
 			"provider":           bindings.Model.Provider,
 			"model":              bindings.Model.Name,
@@ -125,7 +140,11 @@ func Build(agent ResolvedAgent, bindings Bindings, descriptor Descriptor) (Contr
 	if descriptor.DashboardPort != 0 {
 		ports = append(ports, PortBinding{Name: "dashboard", Number: descriptor.DashboardPort})
 	}
-	ports = append(ports, PortBinding{Name: "cetirun-auth", Number: 18790})
+	// The in-agent model sign-in helper serves the Portal's Copilot login in
+	// charts that still carry it.
+	if !bindings.NoSignInHelper && !bindings.Model.Gateway {
+		ports = append(ports, PortBinding{Name: "cetirun-auth", Number: 18790})
+	}
 	return Contribution{
 		Agent:       agent,
 		ProfileID:   bindings.ProfileID,

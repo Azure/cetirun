@@ -21,6 +21,7 @@ import (
 	"github.com/Azure/CetiRun/app/cetirun-portal/internal/agentconfig"
 	"github.com/Azure/CetiRun/app/cetirun-portal/internal/auth"
 	"github.com/Azure/CetiRun/app/cetirun-portal/internal/config"
+	"github.com/Azure/CetiRun/app/cetirun-portal/internal/copilot"
 	"github.com/Azure/CetiRun/app/cetirun-portal/internal/handler/teamsapp"
 	"github.com/Azure/CetiRun/app/cetirun-portal/internal/kube"
 
@@ -87,6 +88,8 @@ type CreateInstanceRequest struct {
 	Model                string                    `json:"model,omitempty"`
 	TeamsEnabled         bool                      `json:"teamsEnabled,omitempty"`
 	AgentIdentityEnabled bool                      `json:"agentIdentityEnabled,omitempty"`
+	// ModelAccess applies to OpenClaw Agents when the AI Gateway is enabled.
+	ModelAccess *ModelAccessRequest `json:"modelAccess,omitempty"`
 }
 
 // InstanceResponse is the JSON response for GET /api/v1/instance.
@@ -118,6 +121,7 @@ type InstanceResponse struct {
 	TeamsAppID             string                      `json:"teamsAppId,omitempty"`   // Azure AD Application ID for sideloading
 	TeamsMessage           string                      `json:"teamsMessage,omitempty"` // Human-readable Teams status detail
 	AgentIdentity          *AgentIdentityResponse      `json:"agentIdentity,omitempty"`
+	AIGateway              *AIGatewayResponse          `json:"aiGateway,omitempty"`
 }
 
 // AgentIdentityResponse contains only non-sensitive lifecycle information.
@@ -184,6 +188,10 @@ type PodStatus struct {
 type InstanceHandler struct {
 	Kube   *kube.Client
 	Config config.Config
+	// Copilot runs the GitHub Copilot sign-in; nil uses the public GitHub.
+	Copilot *copilot.Client
+	// Now overrides the clock in tests.
+	Now func() time.Time
 }
 
 // ListInstances handles GET /api/v1/instances
@@ -580,6 +588,11 @@ func (h *InstanceHandler) CreateInstance(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
+	team, modelAccess, ok := h.validateAIGatewayCreate(w, r, req, agent.Type)
+	if !ok {
+		return
+	}
+
 	if h.Config.MaxInstancesPerUser > 0 {
 		all, err := h.Kube.ListAllInstances(r.Context())
 		if err != nil {
@@ -604,6 +617,7 @@ func (h *InstanceHandler) CreateInstance(w http.ResponseWriter, r *http.Request)
 		AgentIdentityEnabled: req.AgentIdentityEnabled,
 		OwnerTenantID:        claims.TenantID,
 		OwnerObjectID:        claims.ObjectID,
+		ModelAccess:          modelAccess,
 	}
 	if req.RegistryAuth != nil {
 		id, err := kube.RegistryID()
@@ -618,7 +632,7 @@ func (h *InstanceHandler) CreateInstance(w http.ResponseWriter, r *http.Request)
 			registryauth.Operation: id,
 		}
 	}
-	instance, err := h.Kube.CreateInstance(r.Context(), claims.Alias, displayName, req.Team, claims.Email, instanceName, agent, req.GatewayToken, req.TailscaleAuthKey, strings.TrimSpace(req.Model), req.TeamsEnabled, options)
+	instance, err := h.Kube.CreateInstance(r.Context(), claims.Alias, displayName, team, claims.Email, instanceName, agent, req.GatewayToken, req.TailscaleAuthKey, strings.TrimSpace(req.Model), req.TeamsEnabled, options)
 	if err != nil {
 		if kube.IsAlreadyExists(err) {
 			writeError(w, http.StatusConflict, "instance_exists",
@@ -642,7 +656,7 @@ func (h *InstanceHandler) CreateInstance(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	slog.Info("Instance created", "alias", claims.Alias, "team", req.Team, "displayName", displayName)
+	slog.Info("Instance created", "alias", claims.Alias, "team", team, "displayName", displayName)
 	writeJSON(w, http.StatusCreated, resp)
 }
 
@@ -743,12 +757,16 @@ func (h *InstanceHandler) toInstanceResponse(ctx context.Context, instance *ceti
 				resp.APIServerKey = apiServerKey
 			}
 		}
-		// The cetirun-auth helper service runs in both Hermes and OpenClaw pods.
-		authKey, err := h.Kube.GetCetiRunAuthKey(ctx, ns, instance.Spec.GatewayTokenSecretRef)
-		if err != nil {
-			slog.Warn("Failed to get cetirun-auth key", "alias", instance.Spec.User.Alias, "error", err)
-		} else {
-			resp.CetiRunAuthKey = authKey
+		// The cetirun-auth helper service runs in Hermes and OpenClaw pods whose
+		// chart carries it, except where the AI Gateway replaced it with the
+		// Portal sign-in. Without it the in-agent sign-in has no backend.
+		if servesSignInHelper(instance) {
+			authKey, err := h.Kube.GetCetiRunAuthKey(ctx, ns, instance.Spec.GatewayTokenSecretRef)
+			if err != nil {
+				slog.Warn("Failed to get cetirun-auth key", "alias", instance.Spec.User.Alias, "error", err)
+			} else {
+				resp.CetiRunAuthKey = authKey
+			}
 		}
 		// Get tailscale auth key if Tailscale is enabled
 		if instance.Spec.Tailscale != nil {
@@ -802,6 +820,7 @@ func (h *InstanceHandler) toInstanceResponse(ctx context.Context, instance *ceti
 			resp.AgentIdentity.Reason = instance.Status.AgentIdentity.Reason
 		}
 	}
+	resp.AIGateway = aiGatewayResponse(instance)
 
 	return resp, nil
 }

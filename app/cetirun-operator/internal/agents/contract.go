@@ -66,6 +66,10 @@ type Bindings struct {
 	AgentManagedModel bool
 	WebBasePath       string
 	WebInstance       string
+	// NoSignInHelper reports that the selected chart runs no in-agent model
+	// sign-in helper: the Agent's models come through the platform AI
+	// Gateway, and GitHub Copilot sign-in happens in the Portal.
+	NoSignInHelper bool
 }
 
 type ModelBinding struct {
@@ -75,6 +79,20 @@ type ModelBinding struct {
 	AuthMode       string
 	CredentialSlot string
 	Revision       string
+	// Gateway reports that model traffic goes through the platform AI
+	// Gateway, which also replaces the in-agent model sign-in helper.
+	Gateway bool
+	// GatewayModels are the models the Gateway offers the Agent.
+	GatewayModels []GatewayModel
+}
+
+// GatewayModel is one model the AI Gateway offers an Agent, with the limits
+// the Agent should assume.
+type GatewayModel struct {
+	ID            string
+	Name          string
+	ContextWindow int64
+	MaxTokens     int64
 }
 
 type SkillsBinding struct {

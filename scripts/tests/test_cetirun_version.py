@@ -150,7 +150,7 @@ class CetiRunVersionTests(unittest.TestCase):
                     text=True, capture_output=True, timeout=30
                 )
                 self.assertEqual(lint.returncode, 0, lint.stdout + lint.stderr)
-                for component in ("operator", "portal"):
+                for component in ("operator", "portal", "ai-gateway"):
                     archive = self.root / f"app/cetirun-platform/charts/cetirun-{component}-{version}.tgz"
                     self.assertTrue(archive.is_file(), archive)
 

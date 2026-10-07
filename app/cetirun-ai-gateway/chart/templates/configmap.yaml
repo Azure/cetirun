@@ -25,6 +25,13 @@ data:
     general_settings:
       # Required for the management API and the admin console to persist models.
       store_model_in_db: true
+      {{- if .Values.operatorIntegration }}
+      # Router fallbacks are chosen after the key is checked. Check each
+      # fallback target against the caller's key as well, so a fallback cannot
+      # reach a model the key may not use, such as another Agent's GitHub
+      # Copilot route.
+      enforce_fallback_model_access: true
+      {{- end }}
 
     litellm_settings:
       # No retries in the Gateway. LiteLLM retries a failed upstream call twice

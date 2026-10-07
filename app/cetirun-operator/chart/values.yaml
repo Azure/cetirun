@@ -197,6 +197,47 @@ agentIdentity:
   namePrefix: "cetirun-agent"
   brokerURL: "http://cetirun-agent-broker.cetirun-credentials.svc.cluster.local:8080"
 
+# -- Platform AI Gateway integration: the operator gives each built-in Agent
+# its own virtual key and routes OpenClaw model traffic through the Gateway:
+# the shared models every Agent may use and, per Agent, a GitHub Copilot proxy
+# for the owner's account. The cetirun-platform chart installs the Gateway and
+# requires this. While the operator has a Gateway to call, with enabled on or
+# url set, deleting an Agent waits until its key is revoked; turning enabled
+# off stops creating keys, not revoking them. Set neither to stop calling the
+# Gateway, for example once it has been removed.
+aiGateway:
+  # -- OpenClaw Agents take their models from the platform AI Gateway; Hermes
+  # keeps its own provider and sign-in. The platform chart requires it;
+  # turning it off leaves OpenClaw Agents without models.
+  enabled: true
+  # -- In-cluster Gateway URL: http://<service>.<namespace>.svc.cluster.local:<port>.
+  # Empty means the Gateway named cetirun-ai-gateway in the operator namespace,
+  # where the platform chart installs it.
+  url: ""
+  # -- Secret in the operator namespace that holds the Gateway master key. A
+  # Gateway installed separately must run in the operator namespace, or its
+  # master key Secret must be copied there.
+  masterKeySecret:
+    name: cetirun-ai-gateway-auth
+    key: master-key
+  # -- Monthly budget in US dollars written when a key is created. Changes an
+  # administrator makes later in the Gateway are kept.
+  defaultBudget: 10000
+  # -- Preferred default model of Agents that name none. Agents fall back to
+  # the first model available to them when it is not.
+  defaultModel: ""
+  # -- Per-Agent GitHub Copilot proxy. Agents keep it unless their owner
+  # turns GitHub Copilot off. It runs the AI Gateway image. Turned off here,
+  # OpenClaw Agents use only shared models, and the Portal creates none while
+  # no shared model is offered.
+  copilotProxy:
+    enabled: true
+    image:
+      repository: cetirun.azurecr.io/cetirun-ai-gateway
+      # -- Defaults to the release version.
+      tag: ""
+      digest: ""
+
 # -- Override the chart's default skills storage account.
 # Empty string (default) means use the chart's built-in default.
 # Deprecated: use cetirun.helmValues.skills.storageAccount instead.

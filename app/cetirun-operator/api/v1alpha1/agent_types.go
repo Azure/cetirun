@@ -61,11 +61,19 @@ type AgentSpec struct {
 	// +optional
 	PolicyClass AgentPolicyClass `json:"policyClass,omitempty"`
 
-	// Model is the GitHub Copilot model ID for this instance. When empty, the
-	// operator deployment's configured default model is used.
+	// Model is the Agent's preferred default model. With the platform AI
+	// Gateway it is a model name as the Agent sees it, such as a shared model
+	// or copilot/<model>; an unavailable name falls back to the deployment
+	// default and then to the first available model. Without the Gateway it is
+	// the GitHub Copilot model ID, defaulting to the deployment's model.
 	// +kubebuilder:validation:MaxLength=256
 	// +optional
 	Model string `json:"model,omitempty"`
+
+	// ModelAccess selects where the Agent's models come from when the
+	// platform AI Gateway is enabled. Both sources are on unless set to false.
+	// +optional
+	ModelAccess *ModelAccessSpec `json:"modelAccess,omitempty"`
 
 	// SkillOverrides customizes the set of skills installed for this instance.
 	// Add appends skills on top of the team defaults; Remove excludes
@@ -126,6 +134,32 @@ type TailscaleSpec struct {
 
 // TailscaleAuthKeyField is the Secret data key for the Tailscale auth key.
 const TailscaleAuthKeyField = "TAILSCALE_AUTH_KEY"
+
+// ModelAccessSpec selects the Agent's model sources in the AI Gateway. A
+// field left unset counts as true, and at least one source stays on.
+// +kubebuilder:validation:XValidation:rule="!has(self.sharedModels) || self.sharedModels || !has(self.githubCopilot) || self.githubCopilot",message="sharedModels and githubCopilot cannot both be false"
+type ModelAccessSpec struct {
+	// SharedModels grants the models administrators share through the AI
+	// Gateway. Defaults to true.
+	// +optional
+	SharedModels *bool `json:"sharedModels,omitempty"`
+
+	// GitHubCopilot runs a GitHub Copilot proxy for the owner's account and
+	// grants the models that account offers once the owner signs in through
+	// the Portal. Defaults to true.
+	// +optional
+	GitHubCopilot *bool `json:"githubCopilot,omitempty"`
+}
+
+// SharedModelsEnabled reports the effective shared-models switch.
+func (s AgentSpec) SharedModelsEnabled() bool {
+	return s.ModelAccess == nil || s.ModelAccess.SharedModels == nil || *s.ModelAccess.SharedModels
+}
+
+// GitHubCopilotEnabled reports the effective GitHub Copilot switch.
+func (s AgentSpec) GitHubCopilotEnabled() bool {
+	return s.ModelAccess == nil || s.ModelAccess.GitHubCopilot == nil || *s.ModelAccess.GitHubCopilot
+}
 
 // UserSpec identifies the user this instance is provisioned for.
 type UserSpec struct {
@@ -219,6 +253,20 @@ type AgentStatus struct {
 	// +optional
 	AgentIdentity *AgentIdentityStatus `json:"agentIdentity,omitempty"`
 
+	// AIGateway reports the Agent's AI Gateway virtual key. It never contains
+	// the key itself.
+	// +optional
+	AIGateway *AIGatewayStatus `json:"aiGateway,omitempty"`
+
+	// SignInHelper reports whether the Agent's workload serves the in-agent
+	// model sign-in helper, which the Portal's in-agent GitHub Copilot sign-in
+	// reaches at /<name>/cetirun-auth/. OpenClaw charts with the per-Agent
+	// Copilot proxy carry none: their models come through the AI Gateway.
+	// Unset until the operator records it; the helper is then assumed unless
+	// the Agent is routed through the Gateway.
+	// +optional
+	SignInHelper *bool `json:"signInHelper,omitempty"`
+
 	// Sandbox records the last fully enforced binding, not a pending selection.
 	// +optional
 	Sandbox *SandboxStatus `json:"sandbox,omitempty"`
@@ -282,6 +330,209 @@ type AgentIdentityStatus struct {
 	Reason string `json:"reason,omitempty"`
 }
 
+// AIGatewayStatus reports non-secret information about the virtual key the
+// operator manages for this Agent in the platform AI Gateway.
+type AIGatewayStatus struct {
+	// Phase is the current virtual key lifecycle phase.
+	// +kubebuilder:validation:Enum=Provisioning;Ready;Degraded;Deleting
+	// +optional
+	Phase string `json:"phase,omitempty"`
+
+	// KeyAlias is the Gateway alias of the virtual key. It is derived from the
+	// Agent UID and does not change for the life of the Agent.
+	// +optional
+	KeyAlias string `json:"keyAlias,omitempty"`
+
+	// KeyID identifies the current key value without revealing it: the first
+	// characters of the key's SHA-256 hash, which is how the Gateway stores it.
+	// +optional
+	KeyID string `json:"keyId,omitempty"`
+
+	// KeySecretName names the Secret in the instance namespace that holds the
+	// virtual key.
+	// +optional
+	KeySecretName string `json:"keySecretName,omitempty"`
+
+	// AccessGroups are the Gateway model access groups granted to the key.
+	// +listType=set
+	// +optional
+	AccessGroups []string `json:"accessGroups,omitempty"`
+
+	// Team is the Gateway team the key belongs to, derived from spec.team.
+	// +optional
+	Team string `json:"team,omitempty"`
+
+	// Models are the model names the Agent is configured with, as the Agent
+	// sees them in the Gateway.
+	// +listType=atomic
+	// +optional
+	Models []string `json:"models,omitempty"`
+
+	// DefaultModel is the model the Agent uses by default.
+	// +optional
+	DefaultModel string `json:"defaultModel,omitempty"`
+
+	// Copilot reports the Agent's GitHub Copilot proxy and the Copilot models
+	// registered for it in the Gateway.
+	// +optional
+	Copilot *AIGatewayCopilotStatus `json:"copilot,omitempty"`
+
+	// Routed reports whether the Agent's model traffic is configured to use
+	// the Gateway.
+	// +optional
+	Routed bool `json:"routed,omitempty"`
+
+	// ObservedGeneration is the Agent generation reconciled into this status.
+	// +optional
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+
+	// LastVerifiedTime records the most recent successful check of the key in
+	// the Gateway.
+	// +optional
+	LastVerifiedTime *metav1.Time `json:"lastVerifiedTime,omitempty"`
+
+	// Reason is a stable, non-sensitive machine-readable status reason.
+	// +optional
+	Reason string `json:"reason,omitempty"`
+}
+
+// AIGatewayCopilotStatus reports the Agent's GitHub Copilot proxy.
+type AIGatewayCopilotStatus struct {
+	// Phase is SignInRequired until the owner signs in to GitHub Copilot
+	// through the Portal, Starting while the proxy picks up the sign-in,
+	// Ready once the account's models are registered, and Degraded when
+	// registration fails.
+	// +kubebuilder:validation:Enum=SignInRequired;Starting;Ready;Degraded
+	// +optional
+	Phase string `json:"phase,omitempty"`
+
+	// AccessGroup is the Gateway access group of this Agent's Copilot models.
+	// Only this Agent's key is granted it.
+	// +optional
+	AccessGroup string `json:"accessGroup,omitempty"`
+
+	// Models are the registered Copilot models, as the Agent sees them.
+	// +listType=atomic
+	// +optional
+	Models []string `json:"models,omitempty"`
+
+	// Registered are the Gateway model IDs registered for this Agent's proxy.
+	// +listType=atomic
+	// +optional
+	Registered []string `json:"registered,omitempty"`
+
+	// Unpriced lists the account's models left out because the Gateway has no
+	// price for them: an unpriced model would be refused or escape the budget.
+	// +listType=atomic
+	// +optional
+	Unpriced []string `json:"unpriced,omitempty"`
+
+	// ProxyKeyID identifies the proxy's master key without revealing it: the
+	// first characters of the key's SHA-256 hash. The proxy reads the key
+	// when it starts, so a new key restarts it.
+	// +optional
+	ProxyKeyID string `json:"proxyKeyId,omitempty"`
+
+	// Reason is a stable, non-sensitive machine-readable status reason.
+	// +optional
+	Reason string `json:"reason,omitempty"`
+}
+
+// GitHub Copilot proxy phases.
+const (
+	AIGatewayCopilotPhaseSignInRequired = "SignInRequired"
+	AIGatewayCopilotPhaseStarting       = "Starting"
+	AIGatewayCopilotPhaseReady          = "Ready"
+	AIGatewayCopilotPhaseDegraded       = "Degraded"
+)
+
+// Agent annotations and Secrets the Portal and the operator share for the
+// GitHub Copilot sign-in.
+const (
+	// AnnotationCopilotModels holds the JSON list of models the owner's
+	// Copilot account offers, written by the Portal after sign-in.
+	AnnotationCopilotModels = "cetirun.microsoft.com/copilot-models"
+	// AnnotationCopilotSignedInAt records when the Portal last stored a
+	// GitHub Copilot sign-in, so every sign-in reaches the operator even when
+	// the model list is unchanged.
+	AnnotationCopilotSignedInAt = "cetirun.microsoft.com/copilot-signed-in-at"
+	// AnnotationCopilotSignInGeneration identifies a GitHub Copilot sign-in.
+	// The Portal sets it on the token Secret in the write that stores the
+	// token, and on the Agent in the write that records the models, so the
+	// operator can tell models recorded for another sign-in than the token's.
+	AnnotationCopilotSignInGeneration = "cetirun.microsoft.com/copilot-sign-in-generation"
+	// AnnotationCopilotTokenStoredAt on the token Secret records when the
+	// Portal stored the token.
+	AnnotationCopilotTokenStoredAt = "cetirun.microsoft.com/copilot-token-stored-at"
+	// CopilotTokenSecretName is the instance-namespace Secret holding the
+	// owner's GitHub token for the Copilot proxy. The operator creates it
+	// empty; the Portal writes the token.
+	CopilotTokenSecretName = "github-copilot-token"
+	// CopilotTokenSecretKey is the data key of the token.
+	CopilotTokenSecretKey = "access-token"
+)
+
+// Model names the AI Gateway gives an Agent.
+const (
+	// AIGatewayCopilotModelPrefix prefixes the Gateway names of an Agent's
+	// GitHub Copilot models, such as copilot/gpt-5.5.
+	AIGatewayCopilotModelPrefix = "copilot/"
+	// AIGatewaySignInRequiredModel and AIGatewayNoModelsModel are the
+	// placeholder default models of an Agent without any model yet: its
+	// configuration needs a default, and the Portal explains the state.
+	AIGatewaySignInRequiredModel = AIGatewayCopilotModelPrefix + "sign-in-required"
+	AIGatewayNoModelsModel       = "no-models-available"
+)
+
+// CopilotModel is one entry of the AnnotationCopilotModels list.
+type CopilotModel struct {
+	// ID is the Copilot model ID, such as gpt-5.5.
+	ID string `json:"id"`
+	// Name is the display name.
+	Name string `json:"name,omitempty"`
+	// ContextWindow is the model's context window in tokens.
+	ContextWindow int64 `json:"contextWindow,omitempty"`
+	// MaxOutputTokens is the model's output limit in tokens.
+	MaxOutputTokens int64 `json:"maxOutputTokens,omitempty"`
+	// ResponsesOnly marks a model GitHub Copilot serves only through the
+	// Responses API, not chat completions. The Copilot proxy bridges chat
+	// requests for it.
+	ResponsesOnly bool `json:"responsesOnly,omitempty"`
+}
+
+// The catalog the operator publishes for the Portal: a ConfigMap in the
+// operator namespace listing the model sources new Agents can use, with the
+// limits of the shared models. It holds no credentials or addresses.
+const (
+	// AIGatewayCatalogConfigMap is the name of the catalog ConfigMap.
+	AIGatewayCatalogConfigMap = "cetirun-ai-gateway-catalog"
+	// AIGatewayCatalogKey is the data key holding the catalog as JSON.
+	AIGatewayCatalogKey = "catalog.json"
+)
+
+// AIGatewayCatalog is the content of the catalog ConfigMap.
+type AIGatewayCatalog struct {
+	// SharedModels are the models every Agent with shared models can use.
+	// While the Gateway blocks requests for unpriced models, they leave out
+	// the models it would refuse.
+	SharedModels []AIGatewayCatalogModel `json:"sharedModels"`
+	// GitHubCopilot reports whether the deployment gives Agents a GitHub
+	// Copilot proxy. Without it, an Agent's GitHub Copilot switch adds no
+	// models.
+	GitHubCopilot bool `json:"githubCopilot"`
+}
+
+// AIGatewayCatalogModel is one shared model with the limits the Gateway
+// knows for it.
+type AIGatewayCatalogModel struct {
+	// Name is the model name as Agents use it.
+	Name string `json:"name"`
+	// ContextWindow is the model's context window in tokens.
+	ContextWindow int64 `json:"contextWindow,omitempty"`
+	// MaxOutputTokens is the model's output limit in tokens.
+	MaxOutputTokens int64 `json:"maxOutputTokens,omitempty"`
+}
+
 // SandboxStatus records the binding and revision last verified for an Agent.
 type SandboxStatus struct {
 	// +kubebuilder:validation:Type=string
@@ -312,10 +563,19 @@ const (
 	ConditionTeamsReady               = "TeamsReady"
 	ConditionAgentConfigReady         = "AgentConfigReady"
 	ConditionAgentIdentityReady       = "AgentIdentityReady"
+	ConditionAIGatewayReady           = "AIGatewayReady"
 	ConditionSandboxReady             = "SandboxReady"
 	ConditionDesktopConfigured        = "DesktopConfigured"
 	ConditionTerminalConfigured       = "TerminalConfigured"
 	ConditionRegistryCredentialsReady = "RegistryCredentialsReady"
+)
+
+// AI Gateway virtual key lifecycle phases.
+const (
+	AIGatewayPhaseProvisioning = "Provisioning"
+	AIGatewayPhaseReady        = "Ready"
+	AIGatewayPhaseDegraded     = "Degraded"
+	AIGatewayPhaseDeleting     = "Deleting"
 )
 
 // Agent Identity lifecycle phases.

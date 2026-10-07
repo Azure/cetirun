@@ -225,13 +225,13 @@ Whether the chart generates the bundled Valkey's password.
 {{- end }}
 
 {{/*
-At least one model must be configured. A Gateway with no models is not a usable
-deployment, so this fails at install rather than at the first request.
+Models configured at install. None is valid: an administrator can add models
+through the console later, and with CetiRun a deployment may use only the
+GitHub Copilot models the operator registers for each Agent. The copilot/
+prefix is reserved only while operatorIntegration is on: a standalone Gateway
+may already serve a model under such a name.
 */}}
 {{- define "cetirun-ai-gateway.validateModels" -}}
-{{- if not .Values.models }}
-{{- fail "models is required: configure at least one model. A Gateway with no models cannot serve requests." }}
-{{- end }}
 {{- range .Values.models }}
 {{- if not .model_name }}
 {{- fail "each entry in models requires model_name" }}
@@ -244,6 +244,8 @@ deployment, so this fails at install rather than at the first request.
 {{- end }}
 {{- if hasPrefix "cetirun-" (lower .model_name) }}
 {{- fail (printf "model_name %s uses the reserved cetirun- prefix. That prefix belongs to models the CetiRun operator registers automatically; a collision would serve both under one name and split traffic between them." .model_name) }}
+{{- else if and $.Values.operatorIntegration (hasPrefix "copilot/" (lower .model_name)) }}
+{{- fail (printf "model_name %s uses the copilot/ prefix, which operatorIntegration reserves for the GitHub Copilot models the CetiRun operator registers for each Agent; a collision would serve both under one name and split traffic between them." .model_name) }}
 {{- end }}
 {{- end }}
 {{- end }}

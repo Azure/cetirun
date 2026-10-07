@@ -34,7 +34,8 @@ def agent(request, tmp_path):
         source / f".{kind}/skills/azure",
         dirs_exist_ok=True,
     )
-    (config / f"{kind}-auth.sh").write_text("#!/bin/sh\nexit 0\n")
+    if kind == "hermes":
+        (config / "hermes-auth.sh").write_text("#!/bin/sh\nexit 0\n")
     command_log = tmp_path / "commands"
     for command in ("git", "curl", "az", "hermes"):
         stub = binaries / command
@@ -97,7 +98,11 @@ def test_native_first_start_and_repeat_preserve_user_files(agent):
     assert native_marker(agent).is_file()
     assert (agent["target"] / ".cetirun-home-seeded").is_file()
     helper = agent["target"] / ".local/bin/copilot-auth"
-    assert helper.stat().st_mode & 0o777 == 0o755
+    if agent["kind"] == "hermes":
+        assert helper.stat().st_mode & 0o777 == 0o755
+    else:
+        # OpenClaw's models come through the AI Gateway; no in-agent sign-in.
+        assert not helper.exists()
     assert (
         agent["target"] / f'.{agent["kind"]}/skills/azure/SKILL.md'
     ).read_text() == (CHART / "skills/azure/SKILL.md").read_text()
@@ -268,3 +273,100 @@ def test_hermes_atomic_replace_failure(tmp_path, monkeypatch):
         module.replace_file(dest, "new")
     assert dest.read_text() == "original"
     assert sorted(path.name for path in tmp_path.iterdir()) == ["config.yaml"]
+
+
+@pytest.mark.parametrize("agent", ["openclaw"], indirect=True)
+@pytest.mark.parametrize(("content", "kept"), [
+    # The header of the helper earlier releases installed.
+    ("#!/bin/sh\nset -e\n\n# copilot-auth \u2014 Authenticate GitHub Copilot for OpenClaw.\n", False),
+    ("#!/bin/sh\necho my own script\n", True),
+])
+def test_openclaw_removes_only_the_retired_copilot_helper(agent, content, kept):
+    # A HOME an earlier release initialized, restarted with this one.
+    assert run(agent).returncode == 0
+    helper = agent["target"] / ".local/bin/copilot-auth"
+    helper.parent.mkdir(parents=True, exist_ok=True)
+    helper.write_text(content)
+    result = run(agent)
+    assert result.returncode == 0, result.stderr
+    assert helper.exists() == kept
+
+
+def openai_config(models, provider=None):
+    # The configuration both an Agent on the AI Gateway and a deployment with
+    # its own openai endpoint render: an openai/ default and that provider.
+    return {
+        "agents": {"defaults": {"model": {"primary": "openai/model-a"}, "models": models}},
+        "models": {"providers": {"openai": provider or {"baseUrl": "https://models.example.com/v1", "models": []}}},
+    }
+
+
+# The Gateway provider as the chart renders it: bound to the Agent's virtual
+# key in OPENAI_API_KEY.
+GATEWAY_PROVIDER = {
+    "baseUrl": "http://cetirun-ai-gateway.cetirun-system.svc.cluster.local:4000/v1",
+    "models": [{"id": "model-a", "name": "model-a"}],
+    "auth": "api-key",
+    "apiKey": {"source": "env", "provider": "default", "id": "OPENAI_API_KEY"},
+}
+
+
+def saved_openclaw_config(agent, provider=None):
+    # A HOME the Agent has used: its own model settings, a sign-in profile,
+    # and the owner's own keys, for openai and for another provider.
+    assert run(agent).returncode == 0
+    saved = read_config(agent)
+    saved["agents"]["defaults"]["models"] = {
+        "openai/model-a": {"alias": "my-alias", "params": {"temperature": 0.2}},
+        "openai/model-old": {},
+    }
+    saved["auth"] = {"profiles": {"github-copilot:github": {"provider": "github-copilot"}}}
+    saved["models"] = {"providers": {
+        "openai": {
+            "baseUrl": "https://api.openai.com/v1",
+            "apiKey": "owner-test-key",
+            "request": {"auth": {"mode": "authorization-bearer", "token": "owner-test-key"}},
+        },
+        "anthropic": {"apiKey": "owner-anthropic-test-key"},
+    }}
+    agent["config_file"].write_text(json.dumps(saved))
+    (agent["config"] / "openclaw.json").write_text(
+        json.dumps(openai_config({"openai/model-a": {}, "openai/model-b": {}}, provider)))
+
+
+@pytest.mark.parametrize("agent", ["openclaw"], indirect=True)
+def test_openclaw_on_the_gateway_takes_the_gateway_model_list(agent):
+    agent["env"]["CETIRUN_AI_GATEWAY"] = "true"
+    saved_openclaw_config(agent, GATEWAY_PROVIDER)
+    result = run(agent)
+    assert result.returncode == 0, result.stderr
+    config = read_config(agent)
+    assert config["agents"]["defaults"]["models"] == {"openai/model-a": {}, "openai/model-b": {}}
+    assert "github-copilot:github" not in config["auth"]["profiles"]
+    # The Gateway provider is CetiRun's, bound to the Agent's key: a key or a
+    # request override saved on it would be sent to the Gateway instead.
+    assert config["models"]["providers"]["openai"] == GATEWAY_PROVIDER
+    # Other providers keep the owner's settings.
+    assert config["models"]["providers"]["anthropic"] == {"apiKey": "owner-anthropic-test-key"}
+
+
+@pytest.mark.parametrize("agent", ["openclaw"], indirect=True)
+@pytest.mark.parametrize("marker", [None, "false"])
+def test_openclaw_with_its_own_openai_endpoint_keeps_its_model_settings(agent, marker):
+    # Without the Gateway, an openai/ default is not CetiRun's model list.
+    agent["env"].pop("CETIRUN_AI_GATEWAY", None)
+    if marker is not None:
+        agent["env"]["CETIRUN_AI_GATEWAY"] = marker
+    saved_openclaw_config(agent)
+    result = run(agent)
+    assert result.returncode == 0, result.stderr
+    config = read_config(agent)
+    assert config["agents"]["defaults"]["models"] == {
+        "openai/model-a": {"alias": "my-alias", "params": {"temperature": 0.2}},
+        "openai/model-old": {},
+        "openai/model-b": {},
+    }
+    assert "github-copilot:github" in config["auth"]["profiles"]
+    # The owner's own openai settings stay, with the rendered endpoint.
+    assert config["models"]["providers"]["openai"]["apiKey"] == "owner-test-key"
+    assert config["models"]["providers"]["openai"]["baseUrl"] == "https://models.example.com/v1"

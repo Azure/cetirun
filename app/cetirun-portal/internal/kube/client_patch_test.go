@@ -33,6 +33,7 @@ func TestPortalPatchesPreserveFutureFields(t *testing.T) {
 		team        bool
 		addRegistry bool
 		registry    bool
+		copilot     bool
 		strict      bool
 		wantSpec    string
 		run         func(*Client, client.Object) (client.Object, error)
@@ -118,6 +119,16 @@ func TestPortalPatchesPreserveFutureFields(t *testing.T) {
 			name: "registry-remove", registry: true, wantSpec: `{"agent":{"registrySecretRef":null}}`,
 			run: func(c *Client, object client.Object) (client.Object, error) {
 				return c.BeginRegistryUpdate(ctx, object.(*api.Agent), true)
+			},
+		},
+		{
+			// The GitHub Copilot sign-in records the account's models.
+			name: "copilot-models", copilot: true,
+			run: func(c *Client, object client.Object) (client.Object, error) {
+				if err := c.SetCopilotModels(ctx, object.GetName(), object.GetUID(), []api.CopilotModel{{ID: "gpt-5.5"}}, "generation-1", nil); err != nil {
+					return nil, err
+				}
+				return c.GetInstanceByName(ctx, object.GetName())
 			},
 		},
 	} {
@@ -238,6 +249,15 @@ func TestPortalPatchesPreserveFutureFields(t *testing.T) {
 				}
 				wantMetadata["annotations"] = map[string]any{registryauth.Operation: operation}
 				tc.wantSpec = strings.ReplaceAll(tc.wantSpec, "OPERATION", operation)
+			}
+			if tc.copilot {
+				annotations := result.GetAnnotations()
+				signedIn := annotations[api.AnnotationCopilotSignedInAt]
+				if annotations[api.AnnotationCopilotModels] != `[{"id":"gpt-5.5"}]` || signedIn == "" {
+					t.Fatalf("missing the Copilot annotations: %v", annotations)
+				}
+				wantMetadata["annotations"] = map[string]any{api.AnnotationCopilotModels: `[{"id":"gpt-5.5"}]`, api.AnnotationCopilotSignedInAt: signedIn,
+					api.AnnotationCopilotSignInGeneration: "generation-1"}
 			}
 			wantPatch := map[string]any{"metadata": wantMetadata}
 			if tc.wantSpec != "" {

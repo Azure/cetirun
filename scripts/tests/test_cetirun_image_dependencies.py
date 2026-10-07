@@ -78,7 +78,6 @@ class ImageDependencyTests(unittest.TestCase):
                 "OPENCLAW_VERSION": "2026.9.6",
                 "CLAWHUB_VERSION": "0.23.3",
                 "CLAWHUB_UNDICI_VERSION": "7.29.1",
-                "CETIRUN_AUTH_AIOHTTP_VERSION": "3.14.3",
             },
             "agents/hermes/Dockerfile": {
                 "HERMES_VERSION": "0.21.5",

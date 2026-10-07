@@ -20,17 +20,6 @@ logfile=/dev/null
 logfile_maxbytes=0
 pidfile=/tmp/supervisord.pid
 
-[program:cetirun-auth]
-command=/usr/local/lib/cetirun-auth/bin/python /usr/local/share/cetirun/cetirun-auth-service.py
-priority=20
-autorestart=true
-startretries=5
-environment=CETIRUN_AGENT_TYPE="openclaw",CETIRUN_AUTH_KEY="${CETIRUN_AUTH_KEY:-}",OPENCLAW_STATE_DIR="${OPENCLAW_STATE_DIR:-/home/vibe/.openclaw}",OPENCLAW_CONFIG_PATH="${OPENCLAW_CONFIG_PATH:-/home/vibe/.openclaw/openclaw.json}",HOME="/home/vibe"
-stdout_logfile=/dev/stdout
-stdout_logfile_maxbytes=0
-stderr_logfile=/dev/stderr
-stderr_logfile_maxbytes=0
-
 [program:openclaw]
 command=openclaw gateway $* --allow-unconfigured
 priority=40

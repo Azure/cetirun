@@ -225,6 +225,10 @@ The chart enables the OpenClaw doctor init step through `openclaw.doctor.enabled
 It runs `openclaw doctor --fix --non-interactive --yes` on the persistent home;
 this is a startup mutation, not a read-only diagnostic. The `doctor.enabled`
 alias must also be true for it to run. Hermes does not run this init container.
+For an OpenClaw instance on the AI Gateway, the `retire-copilot-sign-in` init
+step follows doctor: once per HOME, it removes the GitHub Copilot sign-in that
+the earlier in-agent helper left there, as [Model selection](../../guides/models/)
+describes.
 `openclaw.acpx` configures the installed agent communication plugin; review its
 permissions, allowed adapters, and optional command overrides before use.
 
@@ -292,16 +296,21 @@ read-only or privilege-escalation-disabled.
 ## Platform chart
 
 Source: [platform values]({{< repo "app/cetirun-platform/values.yaml" >}}).
-The umbrella packages the operator and portal. Their values are nested under
-`cetirun-operator` and `cetirun-portal`; runtime agent values remain under
-`cetirun-operator.cetirun.helmValues`.
+The umbrella packages the operator, the portal and the AI Gateway. Their values
+are nested under `cetirun-operator`, `cetirun-portal` and `cetirun-ai-gateway`;
+runtime agent values remain under `cetirun-operator.cetirun.helmValues`.
 
 | Value | Purpose / default |
 | --- | --- |
 | `istio.enabled` | `false`; must be `true` to acknowledge the separately installed Istio prerequisites, not to install Istio |
 | `istio.oauth2Proxy.name`, `namespace` | `oauth2-proxy`, `cetirun-istio`; checked by the deployment helper |
 | `cetirun-operator.enabled`, `cetirun-portal.enabled` | `true`; each component can be disabled |
-| `cetirun-operator.namespace` | `cetirun-system`; align with the Helm release namespace |
+| `cetirun-operator.namespace` | `cetirun-system`; align with the Helm release namespace, which the bundled AI Gateway requires |
+| `cetirun-portal.aiGateway.catalogNamespace` | `cetirun-system`; must equal `cetirun-operator.namespace`, where the operator publishes the shared models. The deployment helper sets both from `NAMESPACE`; a standalone portal keeps its own value |
+| `cetirun-ai-gateway.enabled` | `true`; turn it off only when a Gateway is installed separately in the operator namespace |
+| `cetirun-ai-gateway.operatorIntegration` | `true`; required while the Gateway is installed. Reserves `copilot/` model names for the Agents' GitHub Copilot routes and checks router fallback targets against the caller's key. Set it on a separately installed Gateway too |
+| `cetirun-ai-gateway.models` | `[]`; shared models every OpenClaw Agent can use, each with `model_info.access_groups: ["cetirun-shared"]` and, while the Gateway blocks unpriced models, a price. Empty is valid: OpenClaw Agents then use their owners' GitHub Copilot. Hermes is not routed through the Gateway |
+| `cetirun-operator.aiGateway.enabled`, `cetirun-portal.features.aiGatewayEnabled` | `true`; required, the chart refuses to install with either off |
 | `cetirun-operator.domainSuffix`, `cetirun-portal.istio.host` | Required deployment domain for enabled components |
 | `cetirun-operator.istioGateway`, `cetirun-portal.istio.gateway` | Matching Gateway resource in `namespace/name` form |
 | `cetirun-operator.cetirun.helmValues.networkPolicy.istioIngressNamespace` | Namespace containing the gateway workload allowed to reach agents |

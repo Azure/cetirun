@@ -173,13 +173,13 @@
     }
   },
   "manifestHashes": {
-    "configmap.yaml": "07dba6df6eedf8e392791b43aa547679a52736bfe0864d65f77e6b9947113130",
+    "configmap.yaml": "03151b2b0939da140481757144b9ff3fe1451883daf8dbcf84fb3606bb14d2b6",
     "deny-exec-policy.yaml": "7dd9900c6cb720cda23eae4abebcdd68e7d868d91be7df00bac133f63acb4267",
-    "networkpolicy.yaml": "6e6daab385ee395ace40d6677ebc9ba26d9a5df8da62b8cf447fcd15818c1644",
+    "networkpolicy.yaml": "e71831723d761652ee6f625d7d36e0764a584cf813d2b39638c8cfd1b9b9504a",
     "pre-upgrade-hook.yaml": "06438617ca6f50d2ea5d2e0e898f95cad13438e19e07b141c52a7b19725f60fc",
-    "service.yaml": "dcfd18b807bd496a41124356859059a9db89b86d5fde460591bbd4275d4aca22",
+    "service.yaml": "baa7d022acf61be11565fd8dc8c9ecd36a6a5e2a677c6f41d59353d13bce45ba",
     "shared-skills-pv.yaml": "38c08b871f0dfe5237fff4c92fd6622e54c9b81edec9bcb10c79f68075035e77",
     "shared-skills-pvc.yaml": "d5af7044cd33fb9d6ddacb1d23aa2fbcc17d0ddcbfa42f9e10f2a7103ab75d7d",
-    "statefulset.yaml": "b5512211cfc41eb968f824a092b19d2c32d39b0637c2d2b9b2904ef40d4282a6"
+    "statefulset.yaml": "84c0753307c68d87e28f59332fd647638aeb4f80eae4f8454ebb30c70a574e50"
   }
 }

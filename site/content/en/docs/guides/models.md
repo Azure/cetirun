@@ -7,7 +7,112 @@ weight: 10
 Select a GitHub Copilot model in the portal, or configure an OpenAI or
 Anthropic model through Helm values.
 
+## Models through the AI Gateway
+
+The platform AI Gateway is part of every platform installation: the operator's
+`aiGateway.enabled` and the portal's `features.aiGatewayEnabled` are required.
+OpenClaw instances take all their models from the Gateway, from two sources:
+
+- **Shared models** are the models an administrator configures in the Gateway
+  with the access group `cetirun-shared`. They keep the administrator's names.
+  While the Gateway blocks requests for unpriced models, as it does by default
+  (`blockUnpricedModels`), the operator offers only shared models with a price.
+  It reads the setting from the Gateway, so a change made in the Gateway's
+  console counts too. To offer a model that is free on purpose, set its zero
+  price in `litellm_params`; a zero in `model_info` alone cannot be told apart
+  from a missing price.
+- **GitHub Copilot** models come from the owner's own Copilot subscription,
+  through a small proxy per instance that only the Gateway can reach. They
+  appear as `copilot/<model>`. The operator's `aiGateway.copilotProxy.enabled`
+  turns the proxy off for the whole deployment.
+
+Each instance's key reaches only its own access groups: `cetirun-shared` and the
+instance's own Copilot group, so its `copilot/<model>` names reach its own proxy.
+The Gateway checks router fallbacks against the key as well
+(`operatorIntegration`). Keep teams and keys in the Gateway console limited to
+access groups: a team or key allowed every model, or a `copilot/` name
+directly, spreads requests for that name over every instance's proxy.
+
+The create form offers both sources, on by default, and a new OpenClaw instance
+needs a model to use: shared models while at least one is offered, or GitHub
+Copilot while the deployment offers it. GitHub Copilot stays on while shared
+models are off or none is offered, and shared models stay on without GitHub
+Copilot. With neither source, the portal creates no OpenClaw instance and asks
+for a shared model. It reads the sources from the catalog the operator
+publishes, so it also waits until the catalog exists. Every new instance needs
+a Team.
+
+To add Copilot models, open the instance and choose **Sign in with GitHub**. The
+portal runs the GitHub device-code sign-in, stores the token for the instance's
+proxy, and records the account's chat models. They appear once the proxy has
+started, usually within a few minutes, and the instance restarts to pick them
+up. A model the Gateway has no price for is listed as not offered: it would
+escape the instance's budget. The token and the models carry the same sign-in
+generation, and the operator uses models only with the token they came with: if
+a sign-in stops after storing its token, the instance offers no Copilot models
+and reports `SignInIncomplete` until you sign in again. Each new sign-in also
+restarts the proxy: it otherwise keeps the Copilot token it exchanged until
+that token expires, so another GitHub account would take effect only then.
+
+An instance that signed in to GitHub Copilot inside the agent, before it took
+its models from the Gateway, still has that sign-in in its HOME, where the agent
+can read it. On its first start through the Gateway, after `doctor`, the
+`retire-copilot-sign-in` init container removes it and keeps every other
+credential. Through the OpenClaw CLI, it removes the `github-copilot:github`
+auth profile and the `GITHUB_COPILOT_TOKEN*` secret-store entries of OpenClaw's
+device login, overwriting each entry first because a removed entry keeps its
+value for 30 days, and then compacts OpenClaw's databases. It also removes the
+`COPILOT_GITHUB_TOKEN` and `OPENCLAW_GITHUB_TOKEN` lines of `~/.openclaw/.env`,
+and the profile from the `auth-profiles.json` files of earlier OpenClaw
+versions and the copies `doctor` archived after importing them. A step that
+fails is logged with OpenClaw's reason and tried again at the next start; it
+does not keep the instance from starting. Once every step has succeeded, the
+HOME is marked, and later starts leave it alone. With `doctor` turned off,
+OpenClaw refuses its auth store while earlier profile files wait for import,
+so the profile goes at a start after the import. The token is not carried
+over: the owner signs in again with **Sign in with GitHub**.
+
+Each instance has its own virtual key with a monthly budget. The instance page
+lists its models and sets the default; saving a new default restarts the
+instance. When an administrator adds or removes a shared model, changes its
+limits, or changes whether it is offered through its price or the Gateway's
+setting, the operator updates every instance that uses shared models, which
+restarts them. A restarting instance shows as provisioning for a short while,
+and its UI is unavailable until it is ready again.
+
+The key's value is kept in the instance's `ai-gateway-virtual-key` Secret. If
+that Secret is lost while the key still exists in the Gateway, the operator
+does not replace the key, which would reset its spend, restore the default
+budget and unblock a blocked key. The Agent instead reports `AIGatewayReady`
+as false with the reason `KeySecretLost`, with an `AIGatewayKeySecretLost`
+event. Restore the Secret, or delete the key in the Gateway to have a new one
+created with the default budget.
+
+An instance's configuration lists at most 256 models. Its GitHub Copilot
+models, at most 128, all stay; shared models fill the rest in name order, and
+the instance's default model and the deployment's default are kept. The
+operator reports the shared models it leaves out in an `AIGatewayModelsLimited`
+event on the Agent.
+
+Sources: [operator reconcile]({{< repo "app/cetirun-operator/internal/controller/ai_gateway.go" >}}),
+[shared-model catalog]({{< repo "app/cetirun-operator/internal/controller/ai_gateway_catalog.go" >}}),
+[Copilot proxy template]({{< repo "app/cetirun-chart/templates/copilot-proxy.yaml" >}}),
+and [portal sign-in]({{< repo "app/cetirun-portal/internal/handler/copilot_login.go" >}}).
+
 ## GitHub Copilot in the portal
+
+Instances routed through the AI Gateway use the sign-in above instead of the
+flow in this section.
+
+This flow reaches an in-agent sign-in helper. Hermes instances keep it, and so
+do OpenClaw instances pinned to a chart without the per-instance Copilot
+proxy. OpenClaw charts with the proxy carry no helper: their models come only
+through the AI Gateway. In a deployment that has not enabled the Gateway, such
+an instance has no model sign-in; the operator reports `AIGatewayReady` as
+false with the reason `AIGatewayDisabled`, and the portal does not offer this
+flow. The operator records whether an instance's workload serves the helper in
+`status.signInHelper`, and routes `/<instance>/cetirun-auth/` only where it
+does.
 
 An existing instance can discover models using the Copilot account signed in
 on that instance. The frontend requires a `Ready` OpenClaw or Hermes instance,
