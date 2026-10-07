@@ -782,10 +782,11 @@ func TestCopilotLoginCompletedBeforeItsEndIsReportedAsSucceeded(t *testing.T) {
 	}
 }
 
-// A cancel or the end of an expired completion records its outcome first and
-// fences only then, so the completion can complete in between. Checking for
-// the completion is part of the fence's update of the token Secret: the step
-// finds it, leaves the floor, and reports the sign-in as succeeded.
+// A cancel or the end of an expired completion records the sign-in as ending
+// first and fences only then, so the completion can complete in between.
+// Checking for the completion is part of the fence's update of the token
+// Secret: the step finds it, leaves the floor, and reports the sign-in as
+// succeeded.
 func TestCopilotLoginCompletedWhileEndedIsReportedAsSucceeded(t *testing.T) {
 	loginWith := func(state string) func(client.Object) bool {
 		return func(obj client.Object) bool {
@@ -799,12 +800,12 @@ func TestCopilotLoginCompletedWhileEndedIsReportedAsSucceeded(t *testing.T) {
 		accepted func(client.Object) bool
 		step     func(*loginFixture)
 	}{
-		{name: "a cancel", accepted: loginWith(""), step: func(f *loginFixture) {
+		{name: "a cancel", accepted: loginWith(copilotLoginEnding), step: func(f *loginFixture) {
 			if w, _ := f.call(http.MethodDelete, "alice"); w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "copilot_login_completed") {
 				f.t.Fatalf("a cancel of a sign-in completed meanwhile: status %d %s", w.Code, w.Body.String())
 			}
 		}},
-		{name: "the end of the expired completion", accepted: loginWith(copilotLoginFailed), step: func(f *loginFixture) {
+		{name: "the end of the expired completion", accepted: loginWith(copilotLoginEnding), step: func(f *loginFixture) {
 			if _, resp := f.call(http.MethodGet, "alice"); resp.State != copilotLoginSucceeded {
 				f.t.Fatalf("a sign-in completed meanwhile must be reported as succeeded: %+v", resp)
 			}
@@ -925,6 +926,112 @@ func TestCopilotLoginCompletionWhoseResponseIsLost(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A sign-in being ended keeps its generation, and the browser sees it as
+// pending, until whether it completed is known; only then is the outcome
+// published. Here the sign-in completed, but its replica stopped before
+// reporting that, and its lease ran out. A step ending it that cannot read
+// the token Secret leaves it ending for the next poll; a poll that comes
+// while another settles it never sees a failure.
+func TestCopilotLoginEndingKeepsItsOutcomeOpenUntilSettled(t *testing.T) {
+	const generation = "0a1b2c3d"
+	setup := func(t *testing.T) *loginFixture {
+		f := newLoginFixture(t)
+		f.call(http.MethodPost, "alice")
+		login := f.secret(copilotLoginSecretName)
+		login.Data[loginState] = []byte(copilotLoginCompleting)
+		login.Data[loginCompletingUntil] = []byte(f.clock.Add(copilotLoginLease).Format(time.RFC3339))
+		login.Data[loginGeneration] = []byte(generation)
+		if err := f.fc.Update(context.Background(), login); err != nil {
+			t.Fatal(err)
+		}
+		token := f.secret(cetirunv1alpha1.CopilotTokenSecretName)
+		token.Data = map[string][]byte{cetirunv1alpha1.CopilotTokenSecretKey: []byte("gho_alice")}
+		token.Annotations[cetirunv1alpha1.AnnotationCopilotSignInGeneration] = generation
+		token.Annotations[cetirunv1alpha1.AnnotationCopilotSignInCompleted] = generation
+		if err := f.fc.Update(context.Background(), token); err != nil {
+			t.Fatal(err)
+		}
+		f.clock = f.clock.Add(copilotLoginLease + time.Second)
+		return f
+	}
+	// The first write of a step that ends sign-in 1: ending, or, before it
+	// existed, the failure or the cleared sign-in recorded first.
+	endsIt := func(obj client.Object) bool {
+		secret, ok := obj.(*corev1.Secret)
+		state := string(secret.Data[loginState])
+		return ok && secret.Name == copilotLoginSecretName && string(secret.Data[loginNumber]) == "1" &&
+			(state == copilotLoginEnding || state == copilotLoginFailed || state == "")
+	}
+	// failTokenReadAfterEnding fails the first read of the token Secret after
+	// the sign-in is recorded as ending.
+	failTokenReadAfterEnding := func(f *loginFixture) {
+		ended, failed := false, false
+		wrapped := interceptor.NewClient(f.fc.(client.WithWatch), interceptor.Funcs{
+			Update: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+				if err := c.Update(ctx, obj, opts...); err != nil {
+					return err
+				}
+				ended = ended || endsIt(obj)
+				return nil
+			},
+			Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				if ended && !failed && key.Name == cetirunv1alpha1.CopilotTokenSecretName {
+					failed = true
+					return errors.New("connection reset by peer")
+				}
+				return c.Get(ctx, key, obj, opts...)
+			},
+		})
+		f.fc = wrapped
+		f.h.Kube = kube.NewClient(wrapped)
+	}
+	settled := func(f *loginFixture) {
+		f.t.Helper()
+		if _, resp := f.call(http.MethodGet, "alice"); resp.State != copilotLoginSucceeded {
+			f.t.Fatalf("the next poll must settle the completed sign-in as succeeded: %+v", resp)
+		}
+		if floor := f.secret(cetirunv1alpha1.CopilotTokenSecretName).Annotations[copilotSignInFloorAnnotation]; floor != "1" {
+			f.t.Fatalf("a completed sign-in must not be fenced: floor %q", floor)
+		}
+	}
+	stillEnding := func(f *loginFixture) {
+		f.t.Helper()
+		login := f.secret(copilotLoginSecretName)
+		if string(login.Data[loginState]) != copilotLoginEnding || string(login.Data[loginGeneration]) != generation {
+			f.t.Fatalf("the sign-in must stay ending with its generation: %v", login.Data)
+		}
+	}
+
+	t.Run("the end of the lease cannot read the token Secret", func(t *testing.T) {
+		f := setup(t)
+		failTokenReadAfterEnding(f)
+		if _, resp := f.call(http.MethodGet, "alice"); resp.State != copilotLoginPending {
+			t.Fatalf("an outcome not yet known must be reported as pending: %+v", resp)
+		}
+		stillEnding(f)
+		settled(f)
+	})
+	t.Run("a cancel cannot read the token Secret", func(t *testing.T) {
+		f := setup(t)
+		failTokenReadAfterEnding(f)
+		if w, _ := f.call(http.MethodDelete, "alice"); w.Code != http.StatusInternalServerError {
+			t.Fatalf("a cancel whose outcome is not known: status %d %s", w.Code, w.Body.String())
+		}
+		stillEnding(f)
+		settled(f)
+	})
+	t.Run("a poll while another settles it", func(t *testing.T) {
+		f := setup(t)
+		var during CopilotLoginResponse
+		f.stallAfter(endsIt, func() { _, during = f.call(http.MethodGet, "alice") })
+		_, resp := f.call(http.MethodGet, "alice")
+		if during.State != copilotLoginSucceeded || resp.State != copilotLoginSucceeded {
+			t.Fatalf("polls during the settlement must not see a failure: during %+v, then %+v", during, resp)
+		}
+		settled(f)
+	})
 }
 
 // A start refused because a completion took its lease while GitHub answered
@@ -1104,10 +1211,12 @@ func TestCopilotLoginLateFenceLeavesANewerCompletionUnfenced(t *testing.T) {
 				f.commitCompletion()
 				f.clock = f.clock.Add(copilotLoginLease + time.Second)
 			},
-			accepted: withNumber(copilotLoginFailed, "1"),
+			accepted: withNumber(copilotLoginEnding, "1"),
 			step: func(f *loginFixture) {
-				if _, resp := f.call(http.MethodGet, "alice"); resp.State != copilotLoginFailed {
-					f.t.Fatalf("the expired completion must be reported as failed: %+v", resp)
+				// The newer sign-in replaced the expired one meanwhile,
+				// and is what the poll reports.
+				if _, resp := f.call(http.MethodGet, "alice"); resp.State != copilotLoginPending {
+					f.t.Fatalf("the newer sign-in must be reported: %+v", resp)
 				}
 			},
 		},

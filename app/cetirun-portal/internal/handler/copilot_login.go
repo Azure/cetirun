@@ -45,6 +45,11 @@ const (
 	// cancel or the end of the completion's lease can tell whether the
 	// sign-in completed after all.
 	loginGeneration = "generation"
+	// loginEndAs and loginEndMessage hold the outcome a sign-in being ended
+	// gets if it did not complete: failed with its message, or, for a
+	// cancel, none.
+	loginEndAs      = "end-as"
+	loginEndMessage = "end-message"
 
 	// Sign-in states reported to the browser.
 	copilotLoginNone      = "none"
@@ -59,6 +64,13 @@ const (
 	// once committed, it holds off both until the outcome is recorded. The
 	// browser sees it as pending.
 	copilotLoginCompleting = "completing"
+	// copilotLoginEnding marks a committed sign-in that a cancel, the end of
+	// its lease or its failed completion ends, while its outcome waits on
+	// whether it completed before the floor rose past it. It keeps the
+	// generation, and the browser sees it as pending: a step that stops
+	// before the outcome is known leaves it to the next poll to settle,
+	// rather than leaving an outcome that may be wrong.
+	copilotLoginEnding = "ending"
 
 	// copilotLoginLease bounds how long a sign-in being completed holds off
 	// a new start or a cancel. Storing the token takes a few API calls; the
@@ -303,8 +315,9 @@ func loginResponse(data map[string][]byte) CopilotLoginResponse {
 	if state == "" {
 		return CopilotLoginResponse{State: copilotLoginNone}
 	}
-	// The browser keeps waiting while the token is being stored.
-	if state == copilotLoginCompleting {
+	// The browser keeps waiting while the token is being stored, and while
+	// the outcome of a sign-in being ended is settled.
+	if state == copilotLoginCompleting || state == copilotLoginEnding {
 		state = copilotLoginPending
 	}
 	resp := CopilotLoginResponse{State: state, Message: string(data[loginMessage])}
@@ -537,6 +550,11 @@ func (h *InstanceHandler) PollCopilotLogin(w http.ResponseWriter, r *http.Reques
 		// The replica completing the sign-in did not report its outcome
 		// within its lease.
 		h.endUnfinishedCopilotLogin(ctx, w, instance, secret, "The sign-in did not finish. Start it again.")
+		return
+	}
+	if string(secret.Data[loginState]) == copilotLoginEnding {
+		// A step ending the sign-in stopped before its outcome was settled.
+		h.settleCopilotLogin(ctx, w, instance, secret)
 		return
 	}
 	if string(secret.Data[loginState]) != copilotLoginPending {
@@ -829,47 +847,97 @@ func (h *InstanceHandler) endCopilotLogin(ctx context.Context, w http.ResponseWr
 	writeJSON(w, http.StatusOK, loginResponse(login.Data))
 }
 
-// endUnfinishedCopilotLogin ends a committed sign-in that did not complete:
-// one whose replica did not report an outcome within its lease, or whose
-// completion failed without completing. It records the sign-in as failed and
-// only then, once that is accepted, raises the floor past it: a completion
-// that only stalled can no longer store the token, record the models or
-// complete a sign-in reported as failed. Fencing first would fence a newer
-// sign-in's completion if this outcome were then refused. A sign-in that
-// completed before the floor rose is in effect, and is reported as succeeded
-// instead.
+// endUnfinishedCopilotLogin ends a committed sign-in that did not report an
+// outcome: one whose replica did not report it within its lease, or whose
+// completion failed without completing. It records the sign-in as ending
+// first, keeping its generation, and settles the outcome only once that is
+// accepted: fencing first would fence a newer sign-in's completion if the
+// ending were then refused.
 func (h *InstanceHandler) endUnfinishedCopilotLogin(ctx context.Context, w http.ResponseWriter, instance *cetirunv1alpha1.Agent, login *corev1.Secret, message string) {
-	number := copilotLoginNumberOf(login.Data)
-	generation := string(login.Data[loginGeneration])
-	login.Data = withCopilotLoginNumber(map[string][]byte{
-		loginState:   []byte(copilotLoginFailed),
-		loginMessage: []byte(message),
-	}, number)
+	login.Data = endingCopilotLoginData(login.Data, copilotLoginFailed, message)
 	if err := h.Kube.UpdateSecret(ctx, login); err != nil {
 		if !kube.IsConflict(err) && !kube.IsNotFound(err) {
-			slog.Error("Failed to record the GitHub Copilot sign-in outcome", "instance", instance.Name, "error", err)
+			slog.Error("Failed to record the end of a GitHub Copilot sign-in", "instance", instance.Name, "error", err)
 		}
 		h.writeCurrentCopilotLogin(ctx, w, instance)
 		return
 	}
-	completed, err := h.raiseCopilotSignInFloor(ctx, instance, number+1, generation)
-	if err != nil {
-		slog.Error("Failed to fence an unfinished GitHub Copilot sign-in", "instance", instance.Name, "error", err)
+	h.settleCopilotLogin(ctx, w, instance, login)
+}
+
+// endingCopilotLoginData is the sign-in Secret's data for ending the
+// committed sign-in in data: its number, generation and code, and the outcome
+// it gets if it did not complete, none when endAs is empty.
+func endingCopilotLoginData(data map[string][]byte, endAs, message string) map[string][]byte {
+	ending := map[string][]byte{loginState: []byte(copilotLoginEnding)}
+	for _, key := range []string{loginUserCode, loginVerificationURI, loginExpiresAt, loginInterval, loginNumber, loginGeneration} {
+		if value, ok := data[key]; ok {
+			ending[key] = value
+		}
 	}
-	if completed {
-		h.endCopilotLogin(ctx, w, instance, login, copilotLoginSucceeded, copilotSignedInMessage)
-		return
+	if endAs != "" {
+		ending[loginEndAs] = []byte(endAs)
+		ending[loginEndMessage] = []byte(message)
+	}
+	return ending
+}
+
+// settleEndingCopilotLogin settles the outcome of a sign-in being ended. It
+// raises the floor past the sign-in, or finds that it completed first: the
+// check and the raise are one versioned write of the token Secret, so the
+// outcome is known once that returns. Only then does it publish the outcome,
+// succeeded for a sign-in that completed, else the one it is ended with, in a
+// versioned write of the sign-in Secret; errCopilotLoginChanged reports that
+// another step changed the sign-in first. On any error the sign-in stays
+// ending, keeping its generation, for the next poll to settle.
+func (h *InstanceHandler) settleEndingCopilotLogin(ctx context.Context, instance *cetirunv1alpha1.Agent, login *corev1.Secret) (completed bool, err error) {
+	number := copilotLoginNumberOf(login.Data)
+	completed, err = h.raiseCopilotSignInFloor(ctx, instance, number+1, string(login.Data[loginGeneration]))
+	if err != nil {
+		return false, err
+	}
+	data := map[string][]byte{}
+	switch {
+	case completed:
+		data[loginState], data[loginMessage] = []byte(copilotLoginSucceeded), []byte(copilotSignedInMessage)
+	case len(login.Data[loginEndAs]) > 0:
+		data[loginState], data[loginMessage] = login.Data[loginEndAs], login.Data[loginEndMessage]
+	}
+	published := login.DeepCopy()
+	published.Data = withCopilotLoginNumber(data, number)
+	if err := h.Kube.UpdateSecret(ctx, published); err != nil {
+		if kube.IsConflict(err) || kube.IsNotFound(err) {
+			return completed, errCopilotLoginChanged
+		}
+		return completed, err
+	}
+	*login = *published
+	return completed, nil
+}
+
+// settleCopilotLogin settles the outcome of a sign-in being ended and reports
+// it. While it cannot be settled, the sign-in stays ending and is reported as
+// pending, and a later poll settles it.
+func (h *InstanceHandler) settleCopilotLogin(ctx context.Context, w http.ResponseWriter, instance *cetirunv1alpha1.Agent, login *corev1.Secret) {
+	if _, err := h.settleEndingCopilotLogin(ctx, instance, login); err != nil {
+		if errors.Is(err, errCopilotLoginChanged) {
+			h.writeCurrentCopilotLogin(ctx, w, instance)
+			return
+		}
+		slog.Error("Failed to settle the outcome of a GitHub Copilot sign-in; a later poll settles it", "instance", instance.Name, "error", err)
 	}
 	writeJSON(w, http.StatusOK, loginResponse(login.Data))
 }
 
 // CancelCopilotLogin handles DELETE /api/v1/instances/{name}/copilot/login
 // with the body {"uid": "<Agent UID>"}. A sign-in that is storing its token
-// is not cancelled, nor one that completed after its lease ran out: that is
-// reported with copilot_login_completed. Between reading the sign-in Secret
-// and clearing it, the cancel checks that the Agent is still the one it was
-// made for; a Secret labelled for another UID, left over from an Agent that
-// no longer exists, is not this Agent's sign-in and is left alone.
+// is not cancelled. A committed sign-in past its lease is ended rather than
+// cleared, and one that completed first is reported with
+// copilot_login_completed; while that cannot be settled, the sign-in stays
+// ending for a poll to settle. Between reading the sign-in Secret and
+// changing it, the cancel checks that the Agent is still the one it was made
+// for; a Secret labelled for another UID, left over from an Agent that no
+// longer exists, is not this Agent's sign-in and is left alone.
 func (h *InstanceHandler) CancelCopilotLogin(w http.ResponseWriter, r *http.Request) {
 	uid, ok := h.copilotLoginUID(w, r)
 	if !ok {
@@ -906,10 +974,16 @@ func (h *InstanceHandler) CancelCopilotLogin(w http.ResponseWriter, r *http.Requ
 		}
 		// With the version just read: a poll that claimed the sign-in
 		// meanwhile makes this conflict, and the cancel is retried. The
-		// number stays for the next start.
+		// number stays for the next start. A committed sign-in, whose
+		// completion may have finished, is ended rather than cleared: its
+		// outcome is published only once settled.
 		number := copilotLoginNumberOf(secret.Data)
-		generation := string(secret.Data[loginGeneration])
-		secret.Data = withCopilotLoginNumber(map[string][]byte{}, number)
+		committed := len(secret.Data[loginGeneration]) > 0
+		if committed {
+			secret.Data = endingCopilotLoginData(secret.Data, "", "")
+		} else {
+			secret.Data = withCopilotLoginNumber(map[string][]byte{}, number)
+		}
 		err = h.Kube.UpdateSecret(ctx, secret)
 		if kube.IsConflict(err) {
 			continue
@@ -930,24 +1004,25 @@ func (h *InstanceHandler) CancelCopilotLogin(w http.ResponseWriter, r *http.Requ
 		// too. Should this cancel resume only after a newer sign-in started,
 		// the floor is already past the cancelled one and stays as it is. A
 		// sign-in that completed before the floor rose is in effect: the
-		// cancel came too late, and records and reports that instead.
-		completed, err := h.raiseCopilotSignInFloor(ctx, instance, number+1, generation)
-		if err != nil {
-			writeCopilotFenceError(w, instance, err, "Failed to cancel the sign-in")
-			return
-		}
-		if completed {
-			secret.Data = withCopilotLoginNumber(map[string][]byte{
-				loginState:   []byte(copilotLoginSucceeded),
-				loginMessage: []byte(copilotSignedInMessage),
-			}, number)
-			if err := h.Kube.UpdateSecret(ctx, secret); err != nil && !kube.IsConflict(err) && !kube.IsNotFound(err) {
-				slog.Error("Failed to record the GitHub Copilot sign-in outcome", "instance", instance.Name, "error", err)
+		// cancel came too late, and that is published and reported instead.
+		if !committed {
+			if _, err := h.raiseCopilotSignInFloor(ctx, instance, number+1, ""); err != nil {
+				writeCopilotFenceError(w, instance, err, "Failed to cancel the sign-in")
+				return
 			}
-			writeError(w, http.StatusConflict, "copilot_login_completed", "The GitHub Copilot sign-in had already finished.")
+			w.WriteHeader(http.StatusNoContent)
 			return
 		}
-		w.WriteHeader(http.StatusNoContent)
+		completed, err := h.settleEndingCopilotLogin(ctx, instance, secret)
+		switch {
+		case err != nil:
+			// The sign-in stays ending, and a poll settles it.
+			writeCopilotFenceError(w, instance, err, "Failed to cancel the sign-in")
+		case completed:
+			writeError(w, http.StatusConflict, "copilot_login_completed", "The GitHub Copilot sign-in had already finished.")
+		default:
+			w.WriteHeader(http.StatusNoContent)
+		}
 		return
 	}
 	writeError(w, http.StatusConflict, "copilot_login_changed", "The sign-in changed meanwhile. Try again.")
