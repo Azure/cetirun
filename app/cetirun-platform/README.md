@@ -30,11 +30,13 @@ helm upgrade --install cetirun-platform app/cetirun-platform \
 
 kubectl rollout status deployment/cetirun-portal -n cetirun-system --timeout=180s
 kubectl get pods -n cetirun-system -l app.kubernetes.io/name=cetirun-portal \
-  -o jsonpath='{range .items[*]}{.spec.containers[*].name}{"\n"}{end}' | grep -qw istio-proxy
+  -o jsonpath='{range .items[*]}{.spec.containers[*].name} {.spec.initContainers[*].name}{"\n"}{end}' | grep -qw istio-proxy
 ```
 
 The final command verifies that the Portal has the Istio sidecar required for
-its authorization policies. Set `cetirun-operator.istioGateway` to the same
+its authorization policies; it lists init containers too, because Istio can
+inject the sidecar as a native sidecar, an init container that keeps running,
+as the AKS Istio add-on does. Set `cetirun-operator.istioGateway` to the same
 `<namespace>/<name>` as `cetirun-portal.istio.gateway` when using a custom
 gateway. `cetirun-portal.istio.gatewayNamespace` and
 `gatewayServiceAccount` identify the selected gateway workload, which can run
