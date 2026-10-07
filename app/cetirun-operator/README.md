@@ -1074,6 +1074,12 @@ or issue a start grant. Ordinary unrelated workloads cannot acquire reserved
 placement by setting a node name, selecting a node, adding tolerations or
 forging a namespace label.
 
+With placement configured, both binding and protected-Pod validation accept
+Kubernetes-added region/zone labels only at the freshly verified registered
+Node's values. Explicit template labels are never overwritten; other additions
+remain forbidden. Without this opt-in, the existing exact-template comparison
+is unchanged.
+
 Platform workloads are not exempt by namespace or ServiceAccount. Only
 explicitly registered DaemonSets with pinned identities and templates can use
 the platform path. Each `platformDaemonSets` entry contains `name`, `uid`,

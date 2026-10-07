@@ -35,12 +35,14 @@
 //
 // Platform Pod comparison accounts for Kubernetes 1.37 Pod-only service-link
 // defaulting and the DaemonSet controller's generated affinity, tolerations and
-// template-generation label. Scheduled platform Pods may carry the two
+// template-generation label. Scheduled Agent and platform Pods may carry the two
 // PodTopologyLabels additions, topology.kubernetes.io/region and
 // topology.kubernetes.io/zone, only at the freshly read pinned Node's values.
 // Explicit template labels are not overridden; other added labels and
 // annotations remain forbidden. Binding validation checks the persisted Pod
 // and the prospective Pod, including labels the Binding would apply.
+// Protected-Pod admission uses the same Node verification and template
+// comparison when the placement registry is configured.
 // Required metadata.name affinity uses field equality/inequality, not label
 // value validation; valid Node names may exceed the label value length limit.
 //

@@ -233,6 +233,84 @@ func TestAgentBindingReadsTemplateAndExactPodUID(t *testing.T) {
 	}
 }
 
+func TestAgentBindingAndUpdatesAcceptVerifiedNodeTopology(t *testing.T) {
+	f := unheldBindingFixture(t)
+	ctx := context.Background()
+	topology := map[string]string{corev1.LabelTopologyRegion: "example-region", corev1.LabelTopologyZone: "example-zone"}
+	for key, value := range topology {
+		f.reserved.Labels[key] = value
+	}
+	if err := f.client.Update(ctx, f.reserved); err != nil {
+		t.Fatal(err)
+	}
+	request := bindingRequest(t, f.agentPod, f.reserved.Name)
+	var binding corev1.Binding
+	if err := json.Unmarshal(request.Object.Raw, &binding); err != nil {
+		t.Fatal(err)
+	}
+	binding.Labels = topology
+	request.Object.Raw = marshal(t, binding)
+	expectAllowed(t, f.handler.Validate(ctx, request))
+	f.agentPod.Spec.NodeName = f.reserved.Name
+	for key, value := range topology {
+		f.agentPod.Labels[key] = value
+	}
+	if err := f.client.Update(ctx, f.agentPod); err != nil {
+		t.Fatal(err)
+	}
+	expectAllowed(t, f.handler.Validate(ctx, podRequest(t, f.agentPod, f.agentPod)))
+	for key := range topology {
+		if _, present := f.expected.Template.Labels[key]; present {
+			t.Fatal("topology validation changed the protected template")
+		}
+	}
+}
+
+func TestAgentTopologyCannotOverrideAuthorityOrOtherFields(t *testing.T) {
+	for name, mutate := range map[string]func(*corev1.Binding){
+		"wrong region": func(b *corev1.Binding) { b.Labels[corev1.LabelTopologyRegion] = "other-region" },
+		"wrong zone":   func(b *corev1.Binding) { b.Labels[corev1.LabelTopologyZone] = "other-zone" },
+		"extra topology": func(b *corev1.Binding) {
+			b.Labels["topology.kubernetes.io/rack"] = "example-rack"
+		},
+		"extra label": func(b *corev1.Binding) { b.Labels["example.com/unapproved"] = "true" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := unheldBindingFixture(t)
+			f.reserved.Labels[corev1.LabelTopologyRegion] = "example-region"
+			f.reserved.Labels[corev1.LabelTopologyZone] = "example-zone"
+			if err := f.client.Update(context.Background(), f.reserved); err != nil {
+				t.Fatal(err)
+			}
+			request := bindingRequest(t, f.agentPod, f.reserved.Name)
+			var binding corev1.Binding
+			if err := json.Unmarshal(request.Object.Raw, &binding); err != nil {
+				t.Fatal(err)
+			}
+			binding.Labels = map[string]string{
+				corev1.LabelTopologyRegion: "example-region", corev1.LabelTopologyZone: "example-zone",
+			}
+			mutate(&binding)
+			request.Object.Raw = marshal(t, binding)
+			expectDenied(t, f.handler.Validate(context.Background(), request), "")
+		})
+	}
+	f := unheldBindingFixture(t)
+	f.expected.Template.Labels[corev1.LabelTopologyRegion] = "template-region"
+	f.workload.Spec.Template.Labels[corev1.LabelTopologyRegion] = "template-region"
+	f.reserved.Labels[corev1.LabelTopologyRegion] = "node-region"
+	f.expectation.Data[sandboxworkload.PodExpectationKey] = string(marshal(t, f.expected))
+	for _, object := range []client.Object{f.workload, f.reserved, f.expectation} {
+		if err := f.client.Update(context.Background(), object); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pod := f.agentPod.DeepCopy()
+	pod.Spec.NodeName = f.reserved.Name
+	pod.Labels[corev1.LabelTopologyRegion] = "node-region"
+	expectDenied(t, f.handler.Validate(context.Background(), podRequest(t, pod, nil)), "AgentTemplateMismatch")
+}
+
 func TestMissingOrNullHoldCannotBecomeExecutionPermission(t *testing.T) {
 	for _, omit := range []bool{false, true} {
 		t.Run(fmt.Sprint(omit), func(t *testing.T) {

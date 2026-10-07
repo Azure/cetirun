@@ -149,35 +149,7 @@ func TestPlacementServingAndBindingAPIServer(t *testing.T) {
 		}
 	}
 	t.Cleanup(closeServer)
-	command := exec.Command("helm", "template", "placement-test", "../../chart", "--kube-version=1.37.0",
-		"--set", "namespace=operator-test", "--set", "serviceAccount.name=controller",
-		"--set", "sandboxAdmission.enabled=true", "--set", "sandboxAdmission.enforce=true",
-		"--set", "sandboxAdmission.podsEnabled=true", "--set", "sandboxAdmission.placementConfigMapName="+state.Name,
-		"--set", "sandboxAdmission.tlsSecretName=placement-test-tls", "--set", "sandboxAdmission.adminUsers[0]=administrator",
-		"--set-string", "sandboxAdmission.caBundle="+base64.StdEncoding.EncodeToString(cert.ca))
-	output, err := command.CombinedOutput()
-	if err != nil {
-		t.Fatalf("render placement webhook: %v\n%s", err, output)
-	}
-	decoder := kyaml.NewYAMLOrJSONDecoder(strings.NewReader(string(output)), 4096)
-	var webhook *admissionregistrationv1.ValidatingWebhookConfiguration
-	for {
-		var object unstructured.Unstructured
-		if err := decoder.Decode(&object); err == io.EOF {
-			break
-		} else if err != nil {
-			t.Fatal(err)
-		}
-		if object.GetKind() == "ValidatingWebhookConfiguration" && object.GetName() == "cetirun-sandbox-placement" {
-			webhook = &admissionregistrationv1.ValidatingWebhookConfiguration{}
-			if err := runtime.DefaultUnstructuredConverter.FromUnstructured(object.Object, webhook); err != nil {
-				t.Fatal(err)
-			}
-		}
-	}
-	if webhook == nil || len(webhook.Webhooks) != 1 {
-		t.Fatal("chart did not emit the placement webhook")
-	}
+	webhook := renderedPlacementWebhook(t, state.Namespace, state.Name, cert.ca)
 	webhook.Webhooks[0].ClientConfig.Service = nil
 	webhook.Webhooks[0].ClientConfig.URL = ptr.To("https://127.0.0.1:" + strconv.Itoa(port) + PlacementValidationPath)
 	webhook.Webhooks[0].TimeoutSeconds = ptr.To(int32(2))
@@ -327,4 +299,39 @@ func TestPlacementServingAndBindingAPIServer(t *testing.T) {
 			t.Fatal("Pod deletion depended on placement serving:", err)
 		}
 	})
+}
+
+func renderedPlacementWebhook(t *testing.T, namespace, registryName string, ca []byte) *admissionregistrationv1.ValidatingWebhookConfiguration {
+	t.Helper()
+	command := exec.Command("helm", "template", "placement-test", "../../chart", "--kube-version=1.37.0",
+		"--set", "namespace="+namespace, "--set", "serviceAccount.name=controller",
+		"--set", "sandboxAdmission.enabled=true", "--set", "sandboxAdmission.enforce=true",
+		"--set", "sandboxAdmission.podsEnabled=true", "--set", "sandboxAdmission.placementConfigMapName="+registryName,
+		"--set", "sandboxAdmission.tlsSecretName=placement-test-tls", "--set", "sandboxAdmission.adminUsers[0]=administrator",
+		"--set-string", "sandboxAdmission.caBundle="+base64.StdEncoding.EncodeToString(ca))
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("render placement webhook: %v\n%s", err, output)
+	}
+	decoder := kyaml.NewYAMLOrJSONDecoder(strings.NewReader(string(output)), 4096)
+	for {
+		var object unstructured.Unstructured
+		if err := decoder.Decode(&object); err == io.EOF {
+			break
+		} else if err != nil {
+			t.Fatal(err)
+		}
+		if object.GetKind() == "ValidatingWebhookConfiguration" && object.GetName() == "cetirun-sandbox-placement" {
+			webhook := &admissionregistrationv1.ValidatingWebhookConfiguration{}
+			if err := runtime.DefaultUnstructuredConverter.FromUnstructured(object.Object, webhook); err != nil {
+				t.Fatal(err)
+			}
+			if len(webhook.Webhooks) != 1 {
+				t.Fatal("chart emitted an ambiguous placement webhook")
+			}
+			return webhook
+		}
+	}
+	t.Fatal("chart did not emit the placement webhook")
+	return nil
 }

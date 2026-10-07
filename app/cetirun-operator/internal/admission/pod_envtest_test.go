@@ -25,6 +25,7 @@ import (
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/helm"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxbinding"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxplacement"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxpolicy"
 	w "github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload/testfixture"
@@ -505,6 +506,7 @@ func TestPodAdmissionAPIServerBoundaries(t *testing.T) {
 		CRDDirectoryPaths: []string{"../../config/crd/bases"}, ErrorIfCRDPathMissing: true,
 		ControlPlaneStartTimeout: time.Minute, ControlPlaneStopTimeout: 30 * time.Second,
 	}
+	env.ControlPlane.GetAPIServer().Configure().Set("enable-admission-plugins", "PodTopologyLabels")
 	cfg, err := env.Start()
 	if err != nil {
 		_ = env.Stop()
@@ -665,17 +667,35 @@ func TestPodAdmissionAPIServerBoundaries(t *testing.T) {
 		t.Fatal(err)
 	}
 	create(state)
-	handler, err := NewPodHandler(cl, PodConfig{StateNamespace: "operator-state"})
+	node := &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: "reserved-worker", Labels: map[string]string{
+			corev1.LabelTopologyRegion: "example-region", corev1.LabelTopologyZone: "example-zone",
+		}},
+		Spec: corev1.NodeSpec{ProviderID: "example://reserved-worker"},
+	}
+	create(node)
+	placementRegistry := placementRegistryForPod(t, state.Namespace, expected, node)
+	create(placementRegistry)
+	handler, err := NewPodHandler(cl, PodConfig{StateNamespace: state.Namespace, PlacementConfigMapName: placementRegistry.Name})
+	if err != nil {
+		t.Fatal(err)
+	}
+	placement, err := sandboxplacement.NewHandler(cl, sandboxplacement.Config{Namespace: state.Namespace, ConfigMapName: placementRegistry.Name})
 	if err != nil {
 		t.Fatal(err)
 	}
 	var unavailable atomic.Bool
 	var calls atomic.Int64
 	webhook := &admission.Webhook{Handler: handler}
+	placementWebhook := &admission.Webhook{Handler: placement}
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
 		if unavailable.Load() {
 			http.Error(w, "synthetic outage", http.StatusServiceUnavailable)
+			return
+		}
+		if r.URL.Path == PlacementValidationPath {
+			placementWebhook.ServeHTTP(w, r)
 			return
 		}
 		webhook.ServeHTTP(w, r)
@@ -766,6 +786,52 @@ func TestPodAdmissionAPIServerBoundaries(t *testing.T) {
 		len(pod.Spec.DNSConfig.Nameservers) != 1 || pod.Spec.DNSConfig.Nameservers[0] != "10.96.0.10" {
 		t.Fatal("API defaulting replaced the protected DNS configuration")
 	}
+	t.Run("node-topology-binding-and-protected-update", func(t *testing.T) {
+		bindingRules := renderedPlacementWebhook(t, state.Namespace, placementRegistry.Name, ca)
+		bindingRules.Webhooks[0].ClientConfig.Service = nil
+		bindingRules.Webhooks[0].ClientConfig.URL = ptr.To(server.URL + PlacementValidationPath)
+		create(bindingRules)
+		t.Cleanup(func() {
+			if err := cl.Delete(context.Background(), bindingRules); err != nil {
+				t.Error(err)
+			}
+		})
+		kube, err := kubernetes.NewForConfig(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		binding := &corev1.Binding{
+			ObjectMeta: metav1.ObjectMeta{Name: pod.Name, Namespace: pod.Namespace, UID: pod.UID},
+			Target:     corev1.ObjectReference{Kind: "Node", Name: node.Name},
+		}
+		stale := binding.DeepCopy()
+		stale.UID = "synthetic-stale-pod"
+		if err := wait.PollUntilContextTimeout(ctx, 50*time.Millisecond, 15*time.Second, true, func(ctx context.Context) (bool, error) {
+			err := kube.CoreV1().Pods(pod.Namespace).Bind(ctx, stale, metav1.CreateOptions{DryRun: []string{metav1.DryRunAll}})
+			return err != nil && strings.Contains(err.Error(), "BindingPodMismatch"), nil
+		}); err != nil {
+			t.Fatal("placement binding webhook did not activate:", err)
+		}
+		if err := kube.CoreV1().Pods(pod.Namespace).Bind(ctx, binding, metav1.CreateOptions{}); err != nil {
+			t.Fatal("API-server topology additions blocked a qualified binding:", err)
+		}
+		if err := cl.Get(ctx, client.ObjectKeyFromObject(pod), pod); err != nil {
+			t.Fatal(err)
+		}
+		for _, key := range []string{corev1.LabelTopologyRegion, corev1.LabelTopologyZone} {
+			if pod.Labels[key] != node.Labels[key] {
+				t.Fatal("PodTopologyLabels did not copy the Node topology at binding")
+			}
+		}
+		if err := cl.Update(ctx, pod.DeepCopy(), client.DryRunAll); err != nil {
+			t.Fatal("both validators must accept the unchanged bound Pod:", err)
+		}
+		forged := pod.DeepCopy()
+		forged.Labels[corev1.LabelTopologyZone] = "forged-zone"
+		if err := cl.Update(ctx, forged, client.DryRunAll); err == nil {
+			t.Fatal("forged bound topology was accepted")
+		}
+	})
 	t.Run("status-churn-and-metadata-reauthorization", func(t *testing.T) {
 		agent := &api.Agent{}
 		if err := cl.Get(ctx, client.ObjectKeyFromObject(f.fixture.Agent), agent); err != nil {

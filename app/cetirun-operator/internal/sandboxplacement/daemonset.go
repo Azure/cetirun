@@ -155,22 +155,8 @@ func (s *requestState) validateDaemonPod(ctx context.Context, registry *registry
 		}
 		template.Labels[daemonGenerationLabel] = generation
 	}
-	if pod.Spec.NodeName != "" {
-		// PodTopologyLabels copies only these keys on direct CREATE or binding.
-		// Never discard incoming labels or override an explicit template value.
-		for _, key := range []string{corev1.LabelTopologyRegion, corev1.LabelTopologyZone} {
-			value, present := pod.Labels[key]
-			if !present {
-				continue
-			}
-			current, found := node.Labels[key]
-			if !found || value != current {
-				return denied("DaemonSetTopologyMismatch", "platform Pod topology labels differ from the current pinned Node")
-			}
-			if _, pinned := template.Labels[key]; !pinned {
-				template.Labels[key] = current
-			}
-		}
+	if !applyNodeTopology(pod, node, template) {
+		return denied("DaemonSetTopologyMismatch", "platform Pod topology labels differ from the current pinned Node")
 	}
 	template.Spec.NodeName = pod.Spec.NodeName
 	if template.Spec.ServiceAccountName == "" {

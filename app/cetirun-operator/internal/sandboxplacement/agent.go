@@ -127,8 +127,8 @@ func (s *requestState) validateAgentPod(ctx context.Context, stateNamespace stri
 	if pod.Spec.NodeName != "" {
 		expected.Template.Spec.NodeName = node.Name
 	}
-	if err := sandboxworkload.ValidatePod(pod, expected); err != nil {
-		return denied("AgentTemplateMismatch", "Pod differs from the controller-owned Agent template")
+	if failure := validateAgentTemplate(pod, node, expected); failure != nil {
+		return failure
 	}
 	if expected.Template.Spec.ServiceAccountName == "" {
 		return denied("ServiceAccountInvalid", "Agent template must identify its ServiceAccount")

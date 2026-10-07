@@ -103,6 +103,7 @@ func Run(ctx context.Context, restConfig *rest.Config, config Config, options Se
 	if options.PodStateNamespace != "" {
 		podHandler, err := NewPodHandler(manager.GetAPIReader(), PodConfig{
 			StateNamespace: options.PodStateNamespace, RequestTimeout: options.PodRequestTimeout,
+			PlacementConfigMapName: config.PlacementConfigMapName,
 		})
 		if err != nil {
 			return err
