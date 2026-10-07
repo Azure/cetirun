@@ -107,7 +107,10 @@ the StatefulSet. Do not assume a named service account is token-free.
 | `hermes.env.API_SERVER_PORT` | `8642` |
 | `hermes.gateway.enabled` | `true` |
 
-Both agents expose the CetiRun authentication helper on `18790`. Hermes also
+Agents that run the in-agent sign-in helper expose it on `18790`: Hermes off
+the AI Gateway, and OpenClaw on charts before its per-instance Copilot proxy.
+Agents on the Gateway sign in through the portal and expose no helper. Hermes
+also
 exposes its native dashboard on `9119`; the operator routes native UI requests
 to that dashboard, not the Hermes API. These ports are defined in
 [agent helpers]({{< repo "app/cetirun-chart/templates/agents/hermes/_runtime.tpl" >}})
@@ -228,7 +231,8 @@ alias must also be true for it to run. Hermes does not run this init container.
 For an OpenClaw instance on the AI Gateway, the `retire-copilot-sign-in` init
 step follows doctor: once per HOME, it removes the GitHub Copilot sign-in that
 the earlier in-agent helper left there, as [Model selection](../../guides/models/)
-describes.
+describes. A Hermes instance on the Gateway does the same in its
+`init-home-data` step.
 `openclaw.acpx` configures the installed agent communication plugin; review its
 permissions, allowed adapters, and optional command overrides before use.
 
@@ -309,7 +313,7 @@ runtime agent values remain under `cetirun-operator.cetirun.helmValues`.
 | `cetirun-portal.aiGateway.catalogNamespace` | `cetirun-system`; must equal `cetirun-operator.namespace`, where the operator publishes the shared models. The deployment helper sets both from `NAMESPACE`; a standalone portal keeps its own value |
 | `cetirun-ai-gateway.enabled` | `true`; turn it off only when a Gateway is installed separately in the operator namespace |
 | `cetirun-ai-gateway.operatorIntegration` | `true`; required while the Gateway is installed. Reserves `copilot/` model names for the Agents' GitHub Copilot routes and checks router fallback targets against the caller's key. Set it on a separately installed Gateway too |
-| `cetirun-ai-gateway.models` | `[]`; shared models every OpenClaw Agent can use, each with `model_info.access_groups: ["cetirun-shared"]` and, while the Gateway blocks unpriced models, a price. Empty is valid: OpenClaw Agents then use their owners' GitHub Copilot. Hermes is not routed through the Gateway |
+| `cetirun-ai-gateway.models` | `[]`; shared models every OpenClaw and Hermes Agent can use, each with `model_info.access_groups: ["cetirun-shared"]` and, while the Gateway blocks unpriced models, a price. Empty is valid: OpenClaw and Hermes Agents then use their owners' GitHub Copilot |
 | `cetirun-operator.aiGateway.enabled`, `cetirun-portal.features.aiGatewayEnabled` | `true`; required, the chart refuses to install with either off |
 | `cetirun-operator.domainSuffix`, `cetirun-portal.istio.host` | Required deployment domain for enabled components |
 | `cetirun-operator.istioGateway`, `cetirun-portal.istio.gateway` | Matching Gateway resource in `namespace/name` form |

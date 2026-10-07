@@ -102,9 +102,9 @@ features:
     - openclaw
   # -- Enable the Microsoft Entra Agent Identity authorization experience.
   agentIdentityEnabled: false
-  # -- Expose the platform AI Gateway: model sources for new OpenClaw Agents,
-  # the GitHub Copilot sign-in and each OpenClaw Agent's model list. Hermes
-  # keeps its own provider and sign-in. Every new Agent then needs a Team.
+  # -- Expose the platform AI Gateway: model sources for new OpenClaw and
+  # Hermes Agents, the GitHub Copilot sign-in and each Agent's model list.
+  # Every new Agent then needs a Team.
   # Keep it in step with the operator's aiGateway.enabled; the platform chart
   # requires both.
   aiGatewayEnabled: true

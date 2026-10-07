@@ -136,9 +136,8 @@ Deployment `imagePullSecrets` are separate settings and remain supported.
 ### Platform chart
 
 The umbrella installs its components in `cetirun-system` by default. OpenClaw
-Agents take their models from the AI Gateway, which the umbrella installs with
-PostgreSQL and Valkey unless one is installed separately; Hermes Agents keep
-their own model provider and sign-in. See the
+and Hermes Agents take their models from the AI Gateway, which the umbrella
+installs with PostgreSQL and Valkey unless one is installed separately. See the
 [platform chart README]({{< repo "app/cetirun-platform/README.md" >}}) for shared
 models, the Gateway console and a separately installed Gateway. Configure
 the independent Istio release to reach that portal before installation, using

@@ -20,8 +20,8 @@ for the routing requirements.
 
 1. Open the portal and sign in.
 2. Choose **New Agent**. Hermes is selected by default when allowed by the
-   deployment; select OpenClaw explicitly if needed. Only OpenClaw takes its
-   models from the AI Gateway; Hermes keeps its own provider and sign-in.
+   deployment; select OpenClaw explicitly if needed. Both take their models
+   from the AI Gateway.
 3. Enter an optional instance-name suffix and display name. The owner alias
    comes from your authenticated identity, not a field you choose. Leaving the
    name empty uses your alias; a suffix such as `example` produces
@@ -32,26 +32,22 @@ for the routing requirements.
    selected, and the portal rejects a request without it. If the list is
    empty, ask an administrator to create a Team in the portal's
    administration pages.
-5. Choose the models. For OpenClaw, turn on **Use shared models** for the
-   models your administrators share, **Use GitHub Copilot** for your own
-   Copilot subscription, or both; at least one stays on. If the deployment
-   offers neither, the form says so: ask an administrator to add a shared
-   model. With shared models on, you can choose the default model, or leave
-   it to the deployment default. For Hermes with GitHub Copilot, leave the
-   model at the deployment default or enter an authorized model ID; live
-   discovery requires an existing, authenticated instance.
+5. Choose the models. Turn on **Use shared models** for the models your
+   administrators share, **Use GitHub Copilot** for your own Copilot
+   subscription, or both; at least one stays on. If the deployment offers
+   neither, the form says so: ask an administrator to add a shared model. With
+   shared models on, you can choose the default model, or leave it to the
+   deployment default.
    Select **Microsoft Entra Agent Identity** only when the deployment has
    enabled it and you need delegated Azure access.
 6. Select **Create Agent** and wait for provisioning. An administrator can inspect
    individual readiness conditions if the instance does not become ready.
-7. Sign in to your model provider. For OpenClaw with GitHub Copilot, open the
-   instance and choose **Sign in with GitHub** in the **Models** section of its
-   overview; the Copilot models appear within a few minutes, after the
-   instance restarts to pick them up. For Hermes, use the portal's access
-   action to open the instance, then complete the provider login; for Copilot,
-   use the portal's device-login flow.
-8. [Choose a model](../../guides/models/). For OpenClaw, set the default model
-   in the **Models** section; saving it restarts the instance.
+7. Sign in to GitHub Copilot if you use it: open the instance and choose
+   **Sign in with GitHub** in the **Models** section of its overview; the
+   Copilot models appear within a few minutes, after the instance restarts to
+   pick them up.
+8. [Choose a model](../../guides/models/). Set the default model in the
+   **Models** section; saving it restarts the instance.
 9. Use the portal's access action to open an OpenClaw instance's console. It
    asks for the gateway token: copy **Gateway Token** from the instance
    Overview. It also asks to pair each new browser the first time it connects:
