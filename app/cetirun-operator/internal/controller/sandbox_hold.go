@@ -39,17 +39,23 @@ func sandboxRequested(agent *cetirunv1alpha1.Agent, team *cetirunv1alpha1.Team) 
 // Once held, clearing spec fields cannot silently return an Agent to legacy mode.
 func (r *AgentReconciler) holdSandbox(ctx context.Context, agent *cetirunv1alpha1.Agent) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
-	// Persist intent independently of status before any workload side effects.
-	// The finalizer also keeps newly held Agents available for safe cleanup.
+	var failures []error
+	// Try to persist intent independently of status before workload side
+	// effects. The finalizer also keeps newly held Agents available for safe
+	// cleanup, but a failed metadata write cannot be allowed to skip shutdown.
 	if !controllerutil.ContainsFinalizer(agent, sandboxHoldFinalizer) {
 		base := agent.DeepCopy()
 		controllerutil.AddFinalizer(agent, sandboxHoldFinalizer)
 		if err := r.Patch(ctx, agent, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
-			return ctrl.Result{}, fmt.Errorf("persist Sandbox hold: %w", err)
+			// The workload fence is more important than the lifecycle marker. Do
+			// not let an API write failure skip independent shutdown and route
+			// removal. Restore the local view so status logic does not mistake an
+			// unpersisted finalizer for durable intent.
+			agent.Finalizers = base.Finalizers
+			failures = append(failures, fmt.Errorf("persist Sandbox hold: %w", err))
 		}
 	}
 	before := agent.DeepCopy().Status
-	var failures []error
 	prepare := r.SandboxPreparation != nil && !agent.Spec.Suspended && sandboxPreparationSupported(agent)
 	if !prepare {
 		if err := r.revokeSandboxPreparationGrants(ctx, agent); err != nil {

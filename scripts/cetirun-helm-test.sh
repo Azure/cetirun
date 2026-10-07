@@ -122,6 +122,25 @@ if grep -q 'command: \["openclaw", "doctor"' <<< "$output"; then
   echo "FAIL: OpenClaw doctor init should not render for Hermes" >&2; exit 1
 fi
 
+# Hermes receives the Gateway virtual key directly from its dedicated Secret.
+# A direct provider key is deliberately not persisted in hermes.env.
+echo "==> helm template ${release_name} ${chart_dir} (Hermes routed through AI Gateway)"
+gateway_output=$(helm_template "${release_name}" "${chart_dir}" \
+  --set agentType=hermes \
+  --set aiGateway.enabled=true \
+  --set aiGateway.keySecretName=ai-gateway-virtual-key \
+  --set aiGateway.keySecretKey=api-key \
+  --set secrets.provider=openai \
+  --set secrets.apiBase=http://cetirun-ai-gateway.cetirun-system.svc.cluster.local:4000/v1 \
+  --set networkPolicy.enabled=true \
+  --set networkPolicy.gatewayNamespace=cetirun-system \
+  --set networkPolicy.gatewayPort=4000 \
+  --set sidecarScope.enabled=true)
+grep -A4 -q 'name: OPENAI_API_KEY' <<< "$gateway_output" || { echo "FAIL: routed Hermes is missing OPENAI_API_KEY" >&2; exit 1; }
+grep -A4 -q 'name: ai-gateway-virtual-key' <<< "$gateway_output" || { echo "FAIL: routed Hermes does not reference the virtual-key Secret" >&2; exit 1; }
+grep -q 'name: OPENAI_BASE_URL' <<< "$gateway_output" || { echo "FAIL: routed Hermes is missing OPENAI_BASE_URL" >&2; exit 1; }
+grep -q 'value: "http://cetirun-ai-gateway.cetirun-system.svc.cluster.local:4000/v1"' <<< "$gateway_output" || { echo "FAIL: routed Hermes has no Gateway base URL" >&2; exit 1; }
+
 # Agent Identity injects only the typed Broker endpoint, keeps the default
 # Kubernetes API token unmounted, and allows only Broker egress.
 for agent_type in openclaw hermes; do

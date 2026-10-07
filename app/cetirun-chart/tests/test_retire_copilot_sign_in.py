@@ -15,6 +15,7 @@ import pytest
 
 CHART = Path(__file__).resolve().parents[1]
 SCRIPT = CHART / "agents/openclaw/bootstrap/retire-copilot-sign-in.sh"
+DIRECT_MODEL_AUTH_SCRIPT = CHART / "agents/openclaw/bootstrap/retire-direct-model-auth.sh"
 PROFILE = "github-copilot:github"
 ENTRY = "GITHUB_COPILOT_TOKEN_DEVICE"
 AGENT_CONFIG = {"models": {"providers": {"openai": {
@@ -108,6 +109,12 @@ def run(home):
     return subprocess.run(["sh", str(SCRIPT)], env=home["env"], capture_output=True, text=True, timeout=30)
 
 
+def run_direct_model_auth(home):
+    return subprocess.run(
+        ["sh", str(DIRECT_MODEL_AUTH_SCRIPT)], env=home["env"], capture_output=True, text=True, timeout=30,
+    )
+
+
 def cli(home):
     return json.loads(home["cli"].read_text())
 
@@ -187,6 +194,85 @@ def test_a_home_never_signed_in_is_marked_without_calling_openclaw(home):
     assert cli(home)["calls"] == []
     assert (home["state"] / ".env").read_text() == "BRAVE_API_KEY=keep-brave\n"
     assert marked(home)
+
+
+def test_gateway_cleanup_removes_all_legacy_model_auth_profiles(home):
+    # The generic Gateway cleanup runs after doctor. It must remove every
+    # profile, not only the retired Copilot profile: OpenClaw can prefer a
+    # retained OpenAI/Anthropic profile over the Gateway environment key.
+    signed_in_home(home)
+
+    result = run_direct_model_auth(home)
+
+    assert result.returncode == 0, result.stderr
+    assert cli(home)["profiles"] == {}
+    calls = cli(home)["calls"]
+    assert ["models", "auth", "logout", PROFILE, "--agent", "main", "--yes"] in calls
+    assert ["models", "auth", "logout", "openai:personal", "--agent", "main", "--yes"] in calls
+    assert (home["state"] / ".cetirun-direct-model-auth-retired").is_file()
+    assert legacy(home, "auth-profiles.json") == {}
+    assert legacy(home, "auth-profiles.json.migrated-2026-09-30T00-00-00-000Z-abc") == {}
+
+    # The marker is not a bypass. A credential created after the first Pod
+    # start must be found and retired by the next init-container run.
+    set_cli(home, profiles={"openai:added-later": {}}, calls=[])
+    result = run_direct_model_auth(home)
+    assert result.returncode == 0, result.stderr
+    assert cli(home)["profiles"] == {}
+    assert ["models", "auth", "logout", "openai:added-later", "--agent", "main", "--yes"] in cli(home)["calls"]
+
+
+@pytest.mark.parametrize("failed_command", [
+    ["models", "auth", "list"],
+    ["models", "auth", "logout"],
+    ["doctor", "--state-sqlite", "compact"],
+    ["doctor", "--session-sqlite", "compact"],
+])
+def test_gateway_cleanup_failure_blocks_agent_start(home, failed_command):
+    signed_in_home(home)
+    set_cli(home, fail=failed_command)
+
+    result = run_direct_model_auth(home)
+
+    assert result.returncode != 0
+    assert "refusing to start the Agent" in result.stderr
+    assert not (home["state"] / ".cetirun-direct-model-auth-retired").exists()
+
+
+def test_gateway_cleanup_invalid_profile_file_blocks_agent_start(home):
+    signed_in_home(home)
+    profile_file = home["state"] / "agents/main/agent/auth-profiles.json"
+    profile_file.write_text('{"profiles": {"broken": ')
+
+    result = run_direct_model_auth(home)
+
+    assert result.returncode != 0
+    assert "refusing to start the Agent" in result.stderr
+    assert not (home["state"] / ".cetirun-direct-model-auth-retired").exists()
+
+
+@pytest.mark.parametrize("failed_utility", ["mktemp", "touch"])
+def test_gateway_cleanup_local_persistence_failure_blocks_agent_start(home, failed_utility):
+    if failed_utility == "touch":
+        # No profiles means cleanup reaches marker creation without requiring
+        # compaction; failure to persist that proof must still block startup.
+        set_cli(home, profiles={})
+    binary = Path(home["env"]["PATH"].split(os.pathsep)[0]) / failed_utility
+    binary.write_text("#!/bin/sh\nexit 1\n")
+    binary.chmod(0o755)
+
+    result = run_direct_model_auth(home)
+
+    assert result.returncode != 0
+    assert "refusing to start the Agent" in result.stderr
+    assert not (home["state"] / ".cetirun-direct-model-auth-retired").exists()
+
+
+def test_gateway_cleanup_remains_an_init_container():
+    runtime = (CHART / "templates/agents/openclaw/_runtime.tpl").read_text()
+    init_section = runtime.split('{{- define "cetirun.agent.openclaw.initContainers" -}}', 1)[1].split("{{- end -}}", 1)[0]
+    assert "- name: retire-direct-model-auth" in init_section
+    assert 'command: ["/bin/sh", "/etc/cetirun/retire-direct-model-auth.sh"]' in init_section
 
 
 def test_a_failed_step_is_reported_and_a_later_start_finishes(home):

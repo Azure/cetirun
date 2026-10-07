@@ -19,7 +19,9 @@ ROOT = Path(__file__).resolve().parents[2]
 CHART = ROOT / "app/cetirun-operator/chart"
 NAME = "cetirun-sandbox-admission"
 API_GROUP = "cetirun.microsoft.com"
-RESOURCES = ["agents", "teams", "sandboxes", "agentpolicies"]
+RESOURCES = ["agents", "teams", "sandboxes", "agentpolicies", "governanceactions"]
+CONFIGURATION_RESOURCES = ["agents", "teams", "sandboxes", "agentpolicies"]
+APPROVAL_USERNAME = "system:serviceaccount:synthetic-release-namespace:cetirun-portal"
 FINALIZERS = [
     f"{API_GROUP}/finalizer",
     f"{API_GROUP}/sandbox-hold",
@@ -71,7 +73,8 @@ class SandboxAdmissionChartTests(unittest.TestCase):
         return {
             "enabled": True,
             "tlsSecretName": "synthetic-admission-tls",
-            "adminUsers": ["admin@example.com"],
+            "adminUsers": ["admin@example.com", APPROVAL_USERNAME],
+            "governanceApprovalUsername": APPROVAL_USERNAME,
             **overrides,
         }
 
@@ -466,7 +469,7 @@ class SandboxAdmissionChartTests(unittest.TestCase):
         self.assertEqual(account["metadata"]["namespace"], "cetirun-system")
         role = documents[("ClusterRole", NAME)]
         self.assertEqual(role["rules"], [{
-            "apiGroups": [API_GROUP], "resources": RESOURCES, "verbs": ["get", "list"],
+            "apiGroups": [API_GROUP], "resources": CONFIGURATION_RESOURCES, "verbs": ["get", "list"],
         }])
         binding = documents[("ClusterRoleBinding", NAME)]
         self.assertEqual(binding["roleRef"], {
@@ -541,9 +544,10 @@ class SandboxAdmissionChartTests(unittest.TestCase):
         ])
         self.assertEqual([entry["name"] for entry in container["env"]], ["CETIRUN_SANDBOX_ADMISSION"])
         self.assertEqual(json.loads(container["env"][0]["value"]), {
-            "adminUsers": ["admin@example.com"],
+            "adminUsers": ["admin@example.com", APPROVAL_USERNAME],
             "adminGroups": [],
             "controllerUsername": "system:serviceaccount:cetirun-system:cetirun-operator-controller-manager",
+            "governanceApprovalUsername": APPROVAL_USERNAME,
             "validationMode": "compatible",
         })
         self.assertNotIn("envFrom", container)
@@ -731,9 +735,9 @@ class SandboxAdmissionChartTests(unittest.TestCase):
 
     def test_admin_user_group_or_both_lists_are_serialized_exactly(self):
         for users, groups in (
-            (["admin@example.com"], []),
-            ([], ["sandbox-admins"]),
-            (["admin@example.com", "second-admin@example.com"], ["sandbox-admins"]),
+            ([APPROVAL_USERNAME], []),
+            ([APPROVAL_USERNAME], ["sandbox-admins"]),
+            (["admin@example.com", "second-admin@example.com", APPROVAL_USERNAME], ["sandbox-admins"]),
         ):
             with self.subTest(users=users, groups=groups):
                 documents = self.render(self.server_values(adminUsers=users, adminGroups=groups))
@@ -752,8 +756,9 @@ class SandboxAdmissionChartTests(unittest.TestCase):
                 configuration = documents[(kind, NAME)]
                 self.assertEqual(configuration["apiVersion"], "admissionregistration.k8s.io/v1")
                 self.assertNotIn("namespace", configuration["metadata"])
-                self.assertEqual(len(configuration["webhooks"]), 1)
-                webhook = configuration["webhooks"][0]
+                expected_count = 2 if kind == "ValidatingWebhookConfiguration" else 1
+                self.assertEqual(len(configuration["webhooks"]), expected_count)
+                webhook = next(item for item in configuration["webhooks"] if item["clientConfig"]["service"]["path"] == path)
                 self.assertEqual(webhook["admissionReviewVersions"], ["v1"])
                 self.assertEqual(webhook["sideEffects"], "None")
                 self.assertEqual(webhook["failurePolicy"], "Fail")
@@ -776,8 +781,15 @@ class SandboxAdmissionChartTests(unittest.TestCase):
                     )
                 expected = {("CREATE", "agents"), ("UPDATE", "agents")}
                 if kind == "ValidatingWebhookConfiguration":
-                    expected = {(operation, resource) for operation in ("CREATE", "UPDATE") for resource in RESOURCES}
-                    expected.update(("DELETE", resource) for resource in RESOURCES if resource != "agents")
+                    expected = {
+                        (operation, resource)
+                        for operation in ("CREATE", "UPDATE")
+                        for resource in CONFIGURATION_RESOURCES
+                    }
+                    expected.update(
+                        ("DELETE", resource)
+                        for resource in CONFIGURATION_RESOURCES if resource != "agents"
+                    )
                 else:
                     self.assertEqual(webhook["reinvocationPolicy"], "Never")
                     self.assertEqual(
@@ -785,6 +797,15 @@ class SandboxAdmissionChartTests(unittest.TestCase):
                         documents[("ValidatingWebhookConfiguration", NAME)]["webhooks"][0]["matchConditions"],
                     )
                 self.assertEqual(operations, expected)
+        action_hook = next(
+            item for item in documents[("ValidatingWebhookConfiguration", NAME)]["webhooks"]
+            if item["clientConfig"]["service"]["path"] == "/validate-governance-action"
+        )
+        self.assertEqual(action_hook["rules"], [{
+            "apiGroups": [API_GROUP], "apiVersions": ["v1alpha1"],
+            "operations": ["CREATE", "UPDATE", "DELETE"],
+            "resources": ["governanceactions"], "scope": "Cluster",
+        }])
 
     def test_trusted_team_assignments_are_serialized_without_inference(self):
         assignments = [

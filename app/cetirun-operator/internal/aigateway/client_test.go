@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 type recordedRequest struct {
@@ -83,6 +84,19 @@ func TestGetKeyUsesTokenAndMasterKey(t *testing.T) {
 	}
 }
 
+func TestGetKeyReadsBudgetObservations(t *testing.T) {
+	client, _ := testServer(t, func(recordedRequest) (int, string) {
+		return 200, `{"info":{"key_alias":"cetirun-a","models":["model-group"],"max_budget":10,"budget_duration":"1mo","spend":1.25,"budget_reset_at":"2026-02-01T00:00:00Z","blocked":false}}`
+	})
+	key, err := client.GetKey(context.Background(), "abc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if key.Spend == nil || *key.Spend != 1.25 || key.BudgetResetAt == nil || key.BudgetResetAt.UTC().Format(time.RFC3339) != "2026-02-01T00:00:00Z" {
+		t.Fatalf("GetKey observations = %+v", key)
+	}
+}
+
 func TestGetKeyNotFoundIsNil(t *testing.T) {
 	client, _ := testServer(t, func(recordedRequest) (int, string) {
 		return 404, `{"error":{"message":"Key not found in database"}}`
@@ -142,6 +156,28 @@ func TestUpdateKeyModelsSendsOnlyModels(t *testing.T) {
 	body := (*requests)[0].body
 	if len(body) != 2 || body["key"] != "abc" {
 		t.Fatalf("update must carry only the token and models, got %v", body)
+	}
+}
+
+func TestUpdateKeyBudgetAndBlockedUseNarrowUpdates(t *testing.T) {
+	client, requests := testServer(t, func(recordedRequest) (int, string) { return 200, `{}` })
+	if err := client.UpdateKeyBudget(context.Background(), "abc", 20, "1mo"); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.SetKeyBlocked(context.Background(), "abc", true); err != nil {
+		t.Fatal(err)
+	}
+	if got := (*requests)[0].body; len(got) != 3 || got["key"] != "abc" || got["max_budget"] != float64(20) || got["budget_duration"] != "1mo" {
+		t.Fatalf("unexpected budget update %v", got)
+	}
+	if got := (*requests)[1].body; len(got) != 2 || got["key"] != "abc" || got["blocked"] != true {
+		t.Fatalf("unexpected block update %v", got)
+	}
+	if err := client.UpdateKeyBudget(context.Background(), "abc", 0, "1mo"); err == nil {
+		t.Fatal("UpdateKeyBudget accepted zero budget")
+	}
+	if err := client.UpdateKeyBudget(context.Background(), "abc", 1, ""); err == nil {
+		t.Fatal("UpdateKeyBudget accepted empty duration")
 	}
 }
 

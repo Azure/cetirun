@@ -23,16 +23,23 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 // --- Helper functions ---
 
 func withClaims(r *http.Request, alias, displayName, email string) *http.Request {
+	objectID := managementOwner
+	if alias == "bob" || strings.Contains(email, "other") {
+		objectID = "33333333-3333-3333-3333-333333333333"
+	}
 	claims := auth.Claims{
 		Alias:       alias,
 		DisplayName: displayName,
 		Email:       email,
+		TenantID:    managementTenant,
+		ObjectID:    objectID,
 	}
 	ctx := auth.NewContext(r.Context(), claims)
 	return r.WithContext(ctx)
@@ -57,13 +64,22 @@ func sampleInstance() *cetirunv1alpha1.Agent {
 			UID:               "agent-alice",
 			ResourceVersion:   "1",
 			CreationTimestamp: metav1.NewTime(time.Date(2024, 1, 15, 10, 0, 0, 0, time.UTC)),
+			Annotations: map[string]string{
+				cetirunv1alpha1.AnnotationOwnerTenantID: managementTenant,
+				cetirunv1alpha1.AnnotationOwnerObjectID: managementOwner,
+			},
 		},
 		Spec: cetirunv1alpha1.AgentSpec{
-			Agent: cetirunv1alpha1.HarnessSpec{Type: cetirunv1alpha1.AgentTypeOpenClaw},
+			Agent:      cetirunv1alpha1.HarnessSpec{Type: cetirunv1alpha1.AgentTypeOpenClaw},
+			Team:       "aks",
+			SandboxRef: "standard",
+			Governance: cetirunv1alpha1.GovernanceSpec{TeamAuthorization: cetirunv1alpha1.TeamAuthorization{
+				Subject:      cetirunv1alpha1.GovernanceSubject{Kind: "User", TenantID: managementTenant, ObjectID: managementOwner},
+				AuthorizedAt: reconcileTime,
+			}},
 			User: cetirunv1alpha1.UserSpec{
 				Alias:       "alice",
 				DisplayName: "Alice Smith",
-				Team:        "aks",
 				Email:       "alice@microsoft.com",
 			},
 		},
@@ -80,6 +96,24 @@ func sampleInstance() *cetirunv1alpha1.Agent {
 					Message: "All components ready",
 				},
 			},
+		},
+	}
+}
+
+// governedTestTeam is the smallest Team fixture that satisfies the Portal's
+// fail-closed creation contract.  Creation always records which verified
+// Team subject authorized the Agent, so positive-path tests must model both
+// membership and the Team-selected sandbox.
+func governedTestTeam(name string) *cetirunv1alpha1.Team {
+	return &cetirunv1alpha1.Team{
+		ObjectMeta: metav1.ObjectMeta{Name: name, UID: types.UID("team-" + name)},
+		Spec: cetirunv1alpha1.TeamSpec{
+			Membership: cetirunv1alpha1.TeamMembershipSpec{Subjects: []cetirunv1alpha1.GovernanceSubject{{
+				Kind: "User", TenantID: managementTenant, ObjectID: managementOwner,
+			}}},
+			NormalAgentPolicyRef: "normal",
+			SandboxRefs:          []string{"standard"},
+			DefaultSandboxRef:    "standard",
 		},
 	}
 }
@@ -262,7 +296,7 @@ func TestGetInstance_NotFound(t *testing.T) {
 
 func TestGetInstance_Success(t *testing.T) {
 	instance := sampleInstance()
-	fc := newFakeClient(instance)
+	fc := newFakeClient(instance, governedTestTeam("platform"))
 	h := &InstanceHandler{
 		Kube: kube.NewClient(fc),
 	}
@@ -290,7 +324,7 @@ func TestGetInstance_Success(t *testing.T) {
 }
 
 func TestCreateInstance_Success(t *testing.T) {
-	fc := newFakeClient()
+	fc := newFakeClient(governedTestTeam("aks"))
 	h := &InstanceHandler{
 		Kube: kube.NewClient(fc),
 	}
@@ -321,8 +355,8 @@ func TestCreateInstance_Success(t *testing.T) {
 }
 
 func TestCreateInstance_ExplicitOpenClaw(t *testing.T) {
-	h := &InstanceHandler{Kube: kube.NewClient(newFakeClient())}
-	body := strings.NewReader(`{"agent":{"type":"openclaw"}}`)
+	h := &InstanceHandler{Kube: kube.NewClient(newFakeClient(governedTestTeam("aks")))}
+	body := strings.NewReader(`{"agent":{"type":"openclaw"},"team":"aks"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/instance", body)
 	req = withClaims(req, "alice", "Example User", "alice@example.com")
 	w := httptest.NewRecorder()
@@ -341,7 +375,7 @@ func TestCreateInstance_ExplicitOpenClaw(t *testing.T) {
 
 func TestCreateInstanceAgentIdentityRequiresEnabledFeature(t *testing.T) {
 	h := &InstanceHandler{Kube: kube.NewClient(newFakeClient())}
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/instance", strings.NewReader(`{"agent":{},"agentIdentityEnabled":true}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/instance", strings.NewReader(`{"agent":{},"team":"aks","agentIdentityEnabled":true}`))
 	req = withAgentIdentityClaims(req, "alice", "11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222")
 	w := httptest.NewRecorder()
 
@@ -354,11 +388,14 @@ func TestCreateInstanceAgentIdentityRequiresEnabledFeature(t *testing.T) {
 
 func TestCreateInstanceAgentIdentityRequiresVerifiedOwner(t *testing.T) {
 	h := &InstanceHandler{
-		Kube:   kube.NewClient(newFakeClient()),
+		Kube:   kube.NewClient(newFakeClient(governedTestTeam("aks"))),
 		Config: config.Config{AgentIdentityEnabled: true},
 	}
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/instance", strings.NewReader(`{"agent":{},"agentIdentityEnabled":true}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/instance", strings.NewReader(`{"agent":{},"team":"aks","agentIdentityEnabled":true}`))
 	req = withClaims(req, "alice", "Alice Smith", "alice@example.com")
+	claims, _ := auth.ClaimsFromContext(req.Context())
+	claims.TenantID, claims.ObjectID = "", ""
+	req = req.WithContext(auth.NewContext(req.Context(), claims))
 	w := httptest.NewRecorder()
 
 	h.CreateInstance(w, req)
@@ -372,10 +409,10 @@ func TestCreateInstanceAgentIdentityBindsVerifiedOwner(t *testing.T) {
 	const tenantID = "11111111-1111-1111-1111-111111111111"
 	const objectID = "22222222-2222-2222-2222-222222222222"
 	h := &InstanceHandler{
-		Kube:   kube.NewClient(newFakeClient()),
+		Kube:   kube.NewClient(newFakeClient(governedTestTeam("aks"))),
 		Config: config.Config{AgentIdentityEnabled: true},
 	}
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/instance", strings.NewReader(`{"agent":{},"agentIdentityEnabled":true}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/instance", strings.NewReader(`{"agent":{},"team":"aks","agentIdentityEnabled":true}`))
 	req = withAgentIdentityClaims(req, "alice", tenantID, objectID)
 	w := httptest.NewRecorder()
 
@@ -400,10 +437,10 @@ func TestCreateInstanceAgentIdentityBindsVerifiedOwner(t *testing.T) {
 }
 
 func TestCreateInstance_ModelRoundTrip(t *testing.T) {
-	fc := newFakeClient()
+	fc := newFakeClient(governedTestTeam("aks"))
 	h := &InstanceHandler{Kube: kube.NewClient(fc)}
 
-	body := CreateInstanceRequest{Agent: &agentconfig.Input{}, Model: " gpt-6-astra "}
+	body := CreateInstanceRequest{Agent: &agentconfig.Input{}, Team: "aks", Model: " gpt-6-astra "}
 	bodyBytes, _ := json.Marshal(body)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/instance", bytes.NewReader(bodyBytes))
 	req = withClaims(req, "alice", "Alice Smith", "alice@microsoft.com")
@@ -465,7 +502,7 @@ func TestCreateInstance_NameLength(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			h := &InstanceHandler{Kube: kube.NewClient(newFakeClient())}
+			h := &InstanceHandler{Kube: kube.NewClient(newFakeClient(governedTestTeam("aks")))}
 			bodyBytes, _ := json.Marshal(CreateInstanceRequest{Agent: &agentconfig.Input{}, Team: "aks", InstanceName: tc.suffix})
 			req := httptest.NewRequest(http.MethodPost, "/api/v1/instance", bytes.NewReader(bodyBytes))
 			req = withClaims(req, tc.alias, "Test User", tc.alias+"@microsoft.com")
@@ -496,7 +533,7 @@ func TestCreateInstance_ReservedName(t *testing.T) {
 	reserved := []string{"oauth2", "api", "internal", "healthz", "readyz", "assets", "portal", "instances", "admin", "ui"}
 	for _, name := range reserved {
 		t.Run(name, func(t *testing.T) {
-			fc := newFakeClient()
+			fc := newFakeClient(governedTestTeam("aks"))
 			h := &InstanceHandler{Kube: kube.NewClient(fc)}
 
 			body := CreateInstanceRequest{Agent: &agentconfig.Input{}, Team: "aks", InstanceName: name}
@@ -522,7 +559,7 @@ func TestCreateInstance_ReservedName(t *testing.T) {
 	// with no suffix, so instanceName == reserved.
 	for _, name := range reserved {
 		t.Run("bare-"+name, func(t *testing.T) {
-			fc := newFakeClient()
+			fc := newFakeClient(governedTestTeam("aks"))
 			h := &InstanceHandler{Kube: kube.NewClient(fc)}
 
 			body := CreateInstanceRequest{Agent: &agentconfig.Input{}, Team: "aks"}
@@ -548,13 +585,13 @@ func TestCreateInstance_ReservedName(t *testing.T) {
 	}
 }
 
-func TestCreateInstance_NoTeam_OK(t *testing.T) {
+func TestCreateInstance_NoTeamRejected(t *testing.T) {
 	fc := newFakeClient()
 	h := &InstanceHandler{
 		Kube: kube.NewClient(fc),
 	}
 
-	// Empty team is allowed: portal users may create solo instances without a team.
+	// Governance always requires a Team; there is no ungoverned solo path.
 	body := CreateInstanceRequest{Agent: &agentconfig.Input{}}
 	bodyBytes, _ := json.Marshal(body)
 
@@ -564,8 +601,8 @@ func TestCreateInstance_NoTeam_OK(t *testing.T) {
 
 	h.CreateInstance(w, req)
 
-	if w.Code != http.StatusCreated {
-		t.Errorf("status = %d, want %d (body=%s)", w.Code, http.StatusCreated, w.Body.String())
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d (body=%s)", w.Code, http.StatusBadRequest, w.Body.String())
 	}
 }
 
@@ -588,7 +625,7 @@ func TestCreateInstance_InvalidBody(t *testing.T) {
 
 func TestCreateInstance_AlreadyExists(t *testing.T) {
 	instance := sampleInstance()
-	fc := newFakeClient(instance)
+	fc := newFakeClient(instance, governedTestTeam("aks"))
 	h := &InstanceHandler{
 		Kube: kube.NewClient(fc),
 	}
@@ -608,7 +645,7 @@ func TestCreateInstance_AlreadyExists(t *testing.T) {
 }
 
 func TestCreateInstance_CustomDisplayName(t *testing.T) {
-	fc := newFakeClient()
+	fc := newFakeClient(governedTestTeam("aks"))
 	h := &InstanceHandler{
 		Kube: kube.NewClient(fc),
 	}
@@ -636,7 +673,7 @@ func TestCreateInstance_CustomDisplayName(t *testing.T) {
 }
 
 func TestCreateInstance_WithGatewayToken(t *testing.T) {
-	fc := newFakeClient()
+	fc := newFakeClient(governedTestTeam("aks"))
 	h := &InstanceHandler{
 		Kube: kube.NewClient(fc),
 	}
@@ -673,7 +710,7 @@ func TestCreateInstance_WithGatewayToken(t *testing.T) {
 }
 
 func TestCreateInstance_WithTailscaleAuthKey(t *testing.T) {
-	fc := newFakeClient()
+	fc := newFakeClient(governedTestTeam("aks"))
 	h := &InstanceHandler{
 		Kube:   kube.NewClient(fc),
 		Config: config.Config{TailscaleEnabled: true},
@@ -997,7 +1034,10 @@ func TestDeleteInstance_NotFound(t *testing.T) {
 func TestUpdateInstance_Success(t *testing.T) {
 	instance := sampleInstance()
 	instance.Spec.Suspended = true
-	fc := newFakeClient(instance)
+	instance.Spec.PolicyClass = cetirunv1alpha1.AgentPolicyClassNormal
+	fc := newFakeClient(instance, governedTestTeam("platform"),
+		&cetirunv1alpha1.Sandbox{ObjectMeta: metav1.ObjectMeta{Name: "standard", UID: "sandbox-standard"}},
+		&cetirunv1alpha1.AgentPolicy{ObjectMeta: metav1.ObjectMeta{Name: "normal", UID: "policy-normal"}})
 	h := &InstanceHandler{
 		Kube: kube.NewClient(fc),
 	}
@@ -1827,6 +1867,7 @@ func TestListInstances(t *testing.T) {
 	bob := sampleInstance()
 	bob.Name = "bob-default"
 	bob.Spec.User.Alias = "bob"
+	bob.Annotations[cetirunv1alpha1.AnnotationOwnerObjectID] = "33333333-3333-3333-3333-333333333333"
 
 	h := &InstanceHandler{Kube: kube.NewClient(newFakeClientWith(alice1, alice2, bob))}
 

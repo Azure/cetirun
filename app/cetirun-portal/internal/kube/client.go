@@ -30,6 +30,7 @@ var ErrUnsupportedCustomUpdate = stderrors.New("Custom does not support Gateway 
 var ErrInstanceChanged = stderrors.New("Agent changed or was replaced; reload before saving")
 var ErrInstanceDeleting = stderrors.New("Agent is being deleted")
 var ErrOperatorConfigurationUnavailable = stderrors.New("Operator release configuration is unavailable")
+var ErrGovernanceRequiresSuspension = stderrors.New("governance changes require the Agent to be suspended before and after the update")
 
 func IsUnsupportedCustomUpdate(err error) bool {
 	return stderrors.Is(err, ErrUnsupportedCustomUpdate)
@@ -76,12 +77,14 @@ type UpdateInstanceOpts struct {
 	ExpectedUID             types.UID
 	ExpectedResourceVersion string
 	Authorize               func(*cetirunv1alpha1.Agent) error
-	DisplayName             *string // nil = no change
-	Team                    *string // nil = no change
-	GatewayToken            *string // nil = no change, non-empty = update
-	TailscaleAuthKey        *string // nil = no change, "" = disable tailscale, non-empty = update/enable
-	TeamsEnabled            *bool   // nil = no change
-	Model                   *string // nil = no change, "" = use deployment default
+	DisplayName             *string                         // nil = no change
+	Team                    *string                         // nil = no change
+	GatewayToken            *string                         // nil = no change, non-empty = update
+	TailscaleAuthKey        *string                         // nil = no change, "" = disable tailscale, non-empty = update/enable
+	TeamsEnabled            *bool                           // nil = no change
+	Model                   *string                         // nil = no change, "" = use deployment default
+	SandboxRef              *string                         // Portal-derived Team default only
+	Governance              *cetirunv1alpha1.GovernanceSpec // Portal-derived evidence only
 }
 
 type InstanceVersion struct {
@@ -99,6 +102,10 @@ type CreateInstanceOptions struct {
 	// ModelAccess is written only when set: an Agent without it has both
 	// model sources on.
 	ModelAccess *cetirunv1alpha1.ModelAccessSpec
+	// Governance is resolved by the Portal from verified claims and Team
+	// membership. Request JSON never supplies this value.
+	Governance *cetirunv1alpha1.GovernanceSpec
+	SandboxRef string
 }
 
 const chartVersionTTL = 5 * time.Minute
@@ -186,9 +193,9 @@ func (c *Client) CreateInstance(ctx context.Context, alias, displayName, team, e
 			User: cetirunv1alpha1.UserSpec{
 				Alias:       alias,
 				DisplayName: displayName,
-				Team:        team,
 				Email:       email,
 			},
+			SandboxRef: "",
 		},
 	}
 	if agent.Type != cetirunv1alpha1.AgentTypeCustom {
@@ -217,6 +224,13 @@ func (c *Client) CreateInstance(ctx context.Context, alias, displayName, team, e
 	}
 	if len(optional) > 0 && optional[0].ModelAccess != nil {
 		instance.Spec.ModelAccess = optional[0].ModelAccess.DeepCopy()
+	}
+	if len(optional) > 0 {
+		instance.Spec.SandboxRef = optional[0].SandboxRef
+		if optional[0].Governance != nil {
+			copy := *optional[0].Governance
+			instance.Spec.Governance = copy
+		}
 	}
 	if err := c.client.Create(ctx, instance, client.FieldValidation(metav1.FieldValidationStrict)); err != nil {
 		return nil, err
@@ -476,7 +490,15 @@ func (c *Client) UpdateInstanceByName(ctx context.Context, instanceName string, 
 		}
 		if opts.Team != nil {
 			instance.Spec.Team = *opts.Team
-			instance.Spec.User.Team = *opts.Team
+			crChanged = true
+		}
+		if opts.SandboxRef != nil {
+			instance.Spec.SandboxRef = *opts.SandboxRef
+			crChanged = true
+		}
+		if opts.Governance != nil {
+			copy := *opts.Governance
+			instance.Spec.Governance = copy
 			crChanged = true
 		}
 		if opts.GatewayToken != nil && *opts.GatewayToken != "" {
@@ -518,6 +540,15 @@ func (c *Client) UpdateInstanceByName(ctx context.Context, instanceName string, 
 		}
 
 		if crChanged {
+			if before.Spec.Team != instance.Spec.Team || before.Spec.SandboxRef != instance.Spec.SandboxRef ||
+				before.Spec.PolicyClass != instance.Spec.PolicyClass {
+				if !before.Spec.Suspended || !instance.Spec.Suspended {
+					return fmt.Errorf("governance binding changes require the Agent to remain suspended")
+				}
+				if err := c.setSandboxReauthorization(ctx, instance); err != nil {
+					return err
+				}
+			}
 			if err := c.client.Patch(ctx, instance, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{}), client.FieldValidation(metav1.FieldValidationStrict)); err != nil {
 				return fmt.Errorf("update instance: %w", err)
 			}
@@ -849,8 +880,10 @@ func (c *Client) CreateTeam(ctx context.Context, team *cetirunv1alpha1.Team) (*c
 	return team, nil
 }
 
-// UpdateTeamSpec replaces the Portal-editable fields, preserving governance
-// fields from the latest stored Team on every conflict retry.
+// UpdateTeamSpec atomically replaces the complete administrator-supplied Team
+// specification. Conflict retries always re-read the latest resource version,
+// so an administrator's requested governance fields are never applied without
+// optimistic locking.
 func (c *Client) UpdateTeamSpec(ctx context.Context, name string, newSpec cetirunv1alpha1.TeamSpec) (*cetirunv1alpha1.Team, error) {
 	var result *cetirunv1alpha1.Team
 	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
@@ -860,10 +893,7 @@ func (c *Client) UpdateTeamSpec(ctx context.Context, name string, newSpec cetiru
 		}
 		before := team.DeepCopy()
 		editable := newSpec.DeepCopy()
-		team.Spec.MemberContext = editable.MemberContext
-		team.Spec.Defaults = editable.Defaults
-		team.Spec.Skills = editable.Skills
-		team.Spec.SkillStorage = editable.SkillStorage
+		team.Spec = *editable
 		if err := c.client.Patch(ctx, team, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{})); err != nil {
 			return fmt.Errorf("update team: %w", err)
 		}

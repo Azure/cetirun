@@ -48,20 +48,12 @@ func main() {
 
 	cfg := config.Load()
 
-	// Load admin alias allowlist (optional). Path defaults to the location
-	// the Helm chart mounts the admins ConfigMap; empty / missing file is
-	// not an error — the portal simply has no admin users.
-	adminFile := os.Getenv("ADMIN_ALIASES_FILE")
-	if adminFile == "" {
-		adminFile = "/etc/cetirun-portal/admins/aliases"
+	adminSubjects := make([][2]string, 0, len(cfg.PlatformAdminSubjects))
+	for _, subject := range cfg.PlatformAdminSubjects {
+		adminSubjects = append(adminSubjects, [2]string{subject.TenantID, subject.ObjectID})
 	}
-	adminAliases, err := config.LoadAdminAliases(adminFile)
-	if err != nil {
-		slog.Error("Failed to load admin aliases", "path", adminFile, "error", err)
-		os.Exit(1)
-	}
-	admins := auth.NewAdminSet(adminAliases)
-	slog.Info("Admin allowlist loaded", "count", len(admins), "path", adminFile)
+	admins := auth.NewVerifiedAdminSet(adminSubjects)
+	slog.Info("Verified platform administrator subjects loaded", "count", len(admins))
 
 	// Register CRD scheme.
 	scheme := runtime.NewScheme()
@@ -83,7 +75,7 @@ func main() {
 	// Create auth middleware. Agent Identity requires a signed Entra ID token
 	// from oauth2-proxy in addition to display-only identity headers.
 	var oidcVerifier *auth.OIDCVerifier
-	if cfg.AgentIdentityEnabled {
+	if cfg.AgentIdentityEnabled || len(cfg.PlatformAdminSubjects) > 0 {
 		oidcVerifier, err = auth.NewOIDCVerifier(cfg.EntraTenantID, cfg.PortalClientID)
 		if err != nil {
 			slog.Error("Invalid Agent Identity OIDC configuration", "error", err)
@@ -103,6 +95,8 @@ func main() {
 	meHandler := &handler.MeHandler{}
 	adminTeamHandler := &handler.AdminTeamHandler{Kube: kubeClient}
 	adminInstanceHandler := &handler.AdminInstanceHandler{Kube: kubeClient}
+	adminGovernanceHandler := &handler.AdminGovernanceHandler{Kube: kubeClient}
+	cetiAdminHandler := handler.NewCetiAdminHandler(kubeClient, cfg.CetiAdminTokenAudience, cfg.CetiAdminServiceAccounts)
 	var agentAuthorizationHandler *handler.AgentAuthorizationHandler
 	if cfg.AgentIdentityEnabled {
 		agentAuthorizationHandler = handler.NewAgentAuthorizationHandler(kubeClient, cfg.AgentIdentityBrokerURL, cfg.PortalOrigin)
@@ -116,7 +110,7 @@ func main() {
 	}
 
 	// Build and start public server.
-	mux := server.New(dist, instanceHandler, healthHandler, featuresHandler, configHandler, meHandler, adminTeamHandler, adminInstanceHandler, authMiddleware, requireAdmin, agentAuthorizationHandler)
+	mux := server.New(dist, instanceHandler, healthHandler, featuresHandler, configHandler, meHandler, adminTeamHandler, adminInstanceHandler, adminGovernanceHandler, authMiddleware, requireAdmin, agentAuthorizationHandler)
 	srv := &http.Server{
 		Addr:    cfg.ListenAddr,
 		Handler: mux,
@@ -124,7 +118,7 @@ func main() {
 
 	// Build and start internal server (cluster-internal only, not exposed via Istio VS).
 	// Serves /internal/auth for the Istio EnvoyFilter Lua ownership check.
-	internalMux := server.NewInternalMux(instanceHandler)
+	internalMux := server.NewInternalMux(instanceHandler, cetiAdminHandler)
 	internalSrv := &http.Server{
 		Addr:    cfg.InternalListenAddr,
 		Handler: internalMux,

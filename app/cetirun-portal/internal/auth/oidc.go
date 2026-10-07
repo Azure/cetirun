@@ -29,6 +29,7 @@ type VerifiedIdentity struct {
 	// applications. It is a sign-in hint only and must never be used as an
 	// authorization identifier.
 	LoginHint string
+	Groups    []string
 }
 
 type oidcClaims struct {
@@ -37,6 +38,7 @@ type oidcClaims struct {
 	TenantID  string          `json:"tid"`
 	ObjectID  string          `json:"oid"`
 	LoginHint string          `json:"login_hint"`
+	Groups    []string        `json:"groups"`
 	Expires   int64           `json:"exp"`
 	NotBefore int64           `json:"nbf"`
 }
@@ -135,7 +137,25 @@ func (v *OIDCVerifier) Verify(ctx context.Context, compact string) (VerifiedIden
 		TenantID:  claims.TenantID,
 		ObjectID:  claims.ObjectID,
 		LoginHint: validEntraLoginHint(claims.LoginHint),
+		Groups:    canonicalGroups(claims.Groups),
 	}, nil
+}
+
+func canonicalGroups(groups []string) []string {
+	seen := map[string]struct{}{}
+	valid := make([]string, 0, len(groups))
+	for _, group := range groups {
+		group = strings.ToLower(strings.TrimSpace(group))
+		if !canonicalID.MatchString(group) {
+			continue
+		}
+		if _, found := seen[group]; found {
+			continue
+		}
+		seen[group] = struct{}{}
+		valid = append(valid, group)
+	}
+	return valid
 }
 
 // validEntraLoginHint accepts the opaque, base64-encoded optional claim issued

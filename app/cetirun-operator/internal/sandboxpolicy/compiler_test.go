@@ -35,6 +35,7 @@ func compilerFixture() CompileInput {
 	return CompileInput{
 		AgentName: "example-agent", Namespace: "cetirun-example-agent",
 		Resolution: sandbox.Resolution{
+			AgentPolicy: api.AgentPolicySpec{Harnesses: api.AgentPolicyHarnesses{Allowed: []api.AgentType{api.AgentTypeHermes}}},
 			Binding: sandbox.Binding{
 				AgentUID: "example-agent-uid", TeamUID: "example-team-uid", SandboxUID: "example-sandbox-uid",
 				AgentPolicyUID: "example-policy-uid", PolicyClass: api.AgentPolicyClassNormal,

@@ -35,7 +35,7 @@
   },
   "manifestHashes": {
     "configmap.yaml": "42801504508bcfa46fee150c5580eb994735a088b950a9a1563b93290c2d20bb",
-    "deny-exec-policy.yaml": "7dd9900c6cb720cda23eae4abebcdd68e7d868d91be7df00bac133f63acb4267",
+    "deny-exec-policy.yaml": "d85249c97b870e0dbb0882e2d6edf7bce5f111747a17317526d57a27ef70912c",
     "networkpolicy.yaml": "587fc15149d71dbad452024d351b82a3c6e0851a2381b57e105cd0b3dd7e78cb",
     "pre-upgrade-hook.yaml": "c70e9f82a181759993f2ea33f7d02cc5add4f5d90622134d0b881222fc0f63ee",
     "service.yaml": "2c46a85b6298b43a6f088229526deb02862d931d21b81a601f61113e8a341269",

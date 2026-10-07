@@ -56,21 +56,27 @@ spec:
               value: {{ default false ((.Values.features).agentIdentityEnabled) | quote }}
             - name: FEATURE_AI_GATEWAY_ENABLED
               value: {{ default false ((.Values.features).aiGatewayEnabled) | quote }}
+            - name: PLATFORM_ADMIN_SUBJECTS
+              value: {{ toJson (default (list) ((.Values.governance).platformAdminSubjects)) | quote }}
+            - name: CETIADMIN_SERVICE_ACCOUNTS
+              value: {{ join "," (default (list) ((.Values.governance).cetiAdminServiceAccounts)) | quote }}
+            - name: CETIADMIN_TOKEN_AUDIENCE
+              value: {{ default "cetirun-governance-actions" ((.Values.governance).cetiAdminTokenAudience) | quote }}
             {{- if default false ((.Values.features).aiGatewayEnabled) }}
             - name: AI_GATEWAY_CATALOG_NAMESPACE
               value: {{ default "cetirun-system" ((.Values.aiGateway).catalogNamespace) | quote }}
             {{- end }}
-            {{- if default false ((.Values.features).agentIdentityEnabled) }}
+            {{- if or (default false ((.Values.features).agentIdentityEnabled)) (gt (len (default (list) ((.Values.governance).platformAdminSubjects))) 0) }}
             - name: ENTRA_TENANT_ID
-              value: {{ required "agentIdentity.tenantId is required when Agent Identity is enabled" .Values.agentIdentity.tenantId | quote }}
+              value: {{ required "agentIdentity.tenantId is required when Agent Identity or Governance administrators are enabled" .Values.agentIdentity.tenantId | quote }}
             - name: PORTAL_OIDC_CLIENT_ID
-              value: {{ required "agentIdentity.portalClientId is required when Agent Identity is enabled" .Values.agentIdentity.portalClientId | quote }}
+              value: {{ required "agentIdentity.portalClientId is required when Agent Identity or Governance administrators are enabled" .Values.agentIdentity.portalClientId | quote }}
+            {{- if default false ((.Values.features).agentIdentityEnabled) }}
             - name: AGENT_ID_BROKER_URL
               value: {{ required "agentIdentity.brokerURL is required when Agent Identity is enabled" .Values.agentIdentity.brokerURL | quote }}
-            {{- $_ := required "istio.host is required when Agent Identity is enabled" .Values.istio.host }}
             {{- end }}
-            - name: ADMIN_ALIASES_FILE
-              value: /etc/cetirun-portal/admins/aliases
+            {{- $_ := required "istio.host is required when Agent Identity or Governance administrators are enabled" .Values.istio.host }}
+            {{- end }}
             {{- if .Values.noticeBanner }}
             - name: NOTICE_BANNER
               value: {{ .Values.noticeBanner | quote }}
@@ -96,14 +102,6 @@ spec:
             capabilities:
               drop:
                 - ALL
-          volumeMounts:
-            - name: admins
-              mountPath: /etc/cetirun-portal/admins
-              readOnly: true
-      volumes:
-        - name: admins
-          configMap:
-            name: {{ include "cetirun-portal.fullname" . }}-admins
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

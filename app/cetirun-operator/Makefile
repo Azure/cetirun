@@ -23,7 +23,8 @@ CONTROLLER_GEN ?= controller-gen
 CRD_SOURCE_DIR := config/crd/bases
 CRD_CHART_DIR := chart/templates/crds
 CRD_FILES := cetirun.microsoft.com_agents.yaml cetirun.microsoft.com_teams.yaml \
-	cetirun.microsoft.com_sandboxes.yaml cetirun.microsoft.com_agentpolicies.yaml
+	cetirun.microsoft.com_sandboxes.yaml cetirun.microsoft.com_agentpolicies.yaml \
+	cetirun.microsoft.com_governanceactions.yaml
 
 all: build
 

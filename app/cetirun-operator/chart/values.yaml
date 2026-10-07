@@ -154,6 +154,10 @@ sandboxAdmission:
   # configuration. At least one nonempty list is required even before enforce.
   adminUsers: []
   adminGroups: []
+  # -- Dedicated Portal ServiceAccount username trusted to persist a human
+  # Platform Admin's GovernanceAction approval. It must also appear in
+  # adminUsers and must differ from the operator controller identity.
+  governanceApprovalUsername: ""
   # -- Trusted Kubernetes user/group to Team creation assignments. Conflicting
   # memberships reject; Portal roles or caller-provided Team names are not proof.
   teamAssignments: []

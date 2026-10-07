@@ -762,7 +762,7 @@ func TestSandboxPreparationReuseRefreshesChangedIntentAndRelease(t *testing.T) {
 			}
 		},
 		"render defaults": func(_ *testing.T, f *preparationFixture) {
-			f.reconciler.CetiRunHelmValues["secrets"].(map[string]any)["apiBase"] = "https://api.example.org/v1"
+			f.reconciler.CetiRunHelmValues["logger"].(map[string]any)["image"] = map[string]any{"repository": "example.org/logger"}
 		},
 		"Helm store": func(_ *testing.T, f *preparationFixture) { f.installer.stageDigest = "changed-synthetic-release" },
 		"Service": func(t *testing.T, f *preparationFixture) {

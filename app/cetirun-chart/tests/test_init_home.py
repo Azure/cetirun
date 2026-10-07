@@ -202,6 +202,35 @@ def test_hermes_preserves_env_and_updates_team(agent):
     assert not (agent["target"] / ".hermes/memories/TEAM.md").exists()
 
 
+@pytest.mark.parametrize("agent", ["hermes"], indirect=True)
+def test_hermes_gateway_bootstrap_replaces_legacy_provider_state(agent):
+    assert run(agent).returncode == 0
+    agent["env"]["CETIRUN_AI_GATEWAY"] = "true"
+    (agent["config_file"]).write_text(
+        "model:\n  default: direct-model\n  provider: anthropic\n"
+        "providers:\n  openai:\n    base_url: https://direct.example.invalid/v1\n"
+        "auth:\n  profiles:\n    direct:\n      api_key: owner-test-key\n"
+    )
+    (agent["target"] / ".hermes/.env").write_text(
+        "API_SERVER_KEY=old-server-key\nOPENAI_API_KEY=owner-test-key\n"
+        "OPENAI_BASE_URL=https://direct.example.invalid/v1\n"
+        "ANTHROPIC_API_KEY=owner-anthropic-key\nCUSTOM_FIELD=keep\n"
+    )
+    (agent["secrets"] / "hermes.env").write_text(
+        "API_SERVER_KEY=platform-server-key\nOPENAI_API_KEY=\nANTHROPIC_API_KEY=\n"
+    )
+
+    result = run(agent)
+
+    assert result.returncode == 0, result.stderr
+    assert read_config(agent) == {
+        "model": {"default": "test-model", "provider": "openai"},
+    }
+    assert (agent["target"] / ".hermes/.env").read_text() == (
+        "API_SERVER_KEY=platform-server-key\nOPENAI_API_KEY=\nANTHROPIC_API_KEY=\n"
+    )
+
+
 @pytest.mark.parametrize("agent", ["openclaw"], indirect=True)
 def test_openclaw_optional_git_failure_and_managed_skill(agent):
     assert run(agent).returncode == 0
@@ -338,16 +367,22 @@ def saved_openclaw_config(agent, provider=None):
 def test_openclaw_on_the_gateway_takes_the_gateway_model_list(agent):
     agent["env"]["CETIRUN_AI_GATEWAY"] = "true"
     saved_openclaw_config(agent, GATEWAY_PROVIDER)
+    (agent["target"] / ".openclaw/.env").write_text(
+        "OPENAI_API_KEY=owner-test-key\n"
+        "OPENAI_BASE_URL=https://direct.example.invalid/v1\n"
+        "ANTHROPIC_API_KEY=owner-anthropic-test-key\n"
+        "CUSTOM_FIELD=keep\n"
+    )
     result = run(agent)
     assert result.returncode == 0, result.stderr
     config = read_config(agent)
     assert config["agents"]["defaults"]["models"] == {"openai/model-a": {}, "openai/model-b": {}}
-    assert "github-copilot:github" not in config["auth"]["profiles"]
+    assert config["auth"] == {"profiles": {}}
     # The Gateway provider is CetiRun's, bound to the Agent's key: a key or a
     # request override saved on it would be sent to the Gateway instead.
     assert config["models"]["providers"]["openai"] == GATEWAY_PROVIDER
-    # Other providers keep the owner's settings.
-    assert config["models"]["providers"]["anthropic"] == {"apiKey": "owner-anthropic-test-key"}
+    assert set(config["models"]["providers"]) == {"openai"}
+    assert (agent["target"] / ".openclaw/.env").read_text() == "CUSTOM_FIELD=keep\n"
 
 
 @pytest.mark.parametrize("agent", ["openclaw"], indirect=True)

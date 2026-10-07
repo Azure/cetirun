@@ -9,11 +9,13 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
@@ -26,7 +28,7 @@ func gatewayConfig() config.Config {
 }
 
 func gatewayTeam(name string) *cetirunv1alpha1.Team {
-	return &cetirunv1alpha1.Team{ObjectMeta: metav1.ObjectMeta{Name: name}}
+	return governedTestTeam(name)
 }
 
 // catalogConfigMap publishes the shared models of a deployment that offers
@@ -76,9 +78,9 @@ func TestCreateInstanceAIGatewayRequiresExistingTeam(t *testing.T) {
 	if w.Code != http.StatusBadRequest || errorCode(t, w) != "unknown_team" {
 		t.Fatalf("unknown team: status %d body %s", w.Code, w.Body.String())
 	}
-	// Without the Gateway, a Team stays optional.
+	// Governance applies independently of the Gateway.
 	w, _ = createAgent(t, config.Config{}, `{"agent":{"type":"openclaw"}}`)
-	if w.Code != http.StatusCreated {
+	if w.Code != http.StatusBadRequest || errorCode(t, w) != "team_required" {
 		t.Fatalf("feature off: status %d body %s", w.Code, w.Body.String())
 	}
 	// A Custom Agent gets a key too, so it needs a Team as well. It is not
@@ -110,35 +112,34 @@ func TestCreateInstanceAIGatewayModelAccessRules(t *testing.T) {
 		body        string
 		catalog     *corev1.ConfigMap
 		wantStatus  int
-		wantAccess  *[2]bool
+		wantAccess  *cetirunv1alpha1.ModelAccessSpec
 		wantErrCode string
 	}{
 		{name: "defaults", body: `{"agent":{"type":"openclaw"},"team":" aks "}`, catalog: catalogConfigMap("gpt-6"), wantStatus: http.StatusCreated},
 		{name: "both on", body: openclaw + `,"modelAccess":{"sharedModels":true,"githubCopilot":true}}`,
-			catalog: catalogConfigMap(), wantStatus: http.StatusCreated, wantAccess: &[2]bool{true, true}},
+			catalog: catalogConfigMap(), wantStatus: http.StatusCreated, wantAccess: &cetirunv1alpha1.ModelAccessSpec{SharedModels: ptr.To(true), GitHubCopilot: ptr.To(true)}},
 		{name: "both off", body: openclaw + `,"modelAccess":{"sharedModels":false,"githubCopilot":false}}`,
-			catalog: catalogConfigMap("gpt-6"), wantStatus: http.StatusBadRequest, wantErrCode: "invalid_model_access"},
+			catalog: catalogConfigMap("gpt-6"), wantStatus: http.StatusCreated, wantAccess: &cetirunv1alpha1.ModelAccessSpec{SharedModels: ptr.To(false), GitHubCopilot: ptr.To(false)}},
 		{name: "shared off", body: openclaw + `,"modelAccess":{"sharedModels":false}}`,
-			catalog: catalogConfigMap(), wantStatus: http.StatusCreated, wantAccess: &[2]bool{false, true}},
+			catalog: catalogConfigMap(), wantStatus: http.StatusCreated, wantAccess: &cetirunv1alpha1.ModelAccessSpec{SharedModels: ptr.To(false)}},
 		{name: "copilot off without shared models", body: openclaw + `,"modelAccess":{"githubCopilot":false}}`,
-			catalog: catalogConfigMap(), wantStatus: http.StatusBadRequest, wantErrCode: "invalid_model_access"},
+			catalog: catalogConfigMap(), wantStatus: http.StatusCreated, wantAccess: &cetirunv1alpha1.ModelAccessSpec{GitHubCopilot: ptr.To(false)}},
 		{name: "copilot off with shared models", body: openclaw + `,"modelAccess":{"githubCopilot":false}}`,
-			catalog: catalogConfigMap("gpt-6"), wantStatus: http.StatusCreated, wantAccess: &[2]bool{true, false}},
-		// The catalog says which sources exist; until it is published the
-		// Portal cannot tell whether the Agent would have a model.
-		{name: "unpublished catalog", body: openclaw + `}`, wantStatus: http.StatusServiceUnavailable, wantErrCode: "model_sources_unknown"},
+			catalog: catalogConfigMap("gpt-6"), wantStatus: http.StatusCreated, wantAccess: &cetirunv1alpha1.ModelAccessSpec{GitHubCopilot: ptr.To(false)}},
+		// The Operator resolves policy and availability. The Portal preserves
+		// an explicit request without trying to infer a final model set.
+		{name: "unpublished catalog", body: openclaw + `}`, wantStatus: http.StatusCreated},
 		{name: "copilot off with an unpublished catalog", body: openclaw + `,"modelAccess":{"githubCopilot":false}}`,
-			wantStatus: http.StatusServiceUnavailable, wantErrCode: "model_sources_unknown"},
-		// A deployment without the Copilot proxy offers only shared models.
+			wantStatus: http.StatusCreated, wantAccess: &cetirunv1alpha1.ModelAccessSpec{GitHubCopilot: ptr.To(false)}},
 		{name: "no copilot, shared models", body: openclaw + `}`, catalog: publishedCatalog(false, "gpt-6"), wantStatus: http.StatusCreated},
 		{name: "no copilot, shared off", body: openclaw + `,"modelAccess":{"sharedModels":false}}`,
-			catalog: publishedCatalog(false, "gpt-6"), wantStatus: http.StatusBadRequest, wantErrCode: "invalid_model_access"},
+			catalog: publishedCatalog(false, "gpt-6"), wantStatus: http.StatusCreated, wantAccess: &cetirunv1alpha1.ModelAccessSpec{SharedModels: ptr.To(false)}},
 		{name: "no copilot, no shared models", body: openclaw + `}`, catalog: publishedCatalog(false),
-			wantStatus: http.StatusConflict, wantErrCode: "no_model_source"},
-		{name: "no copilot, no shared models, copilot asked for", body: openclaw + `,"modelAccess":{"sharedModels":false,"githubCopilot":true}}`,
-			catalog: publishedCatalog(false), wantStatus: http.StatusConflict, wantErrCode: "no_model_source"},
-		{name: "hermes ignores switches", body: `{"agent":{"type":"hermes"},"team":"aks","modelAccess":{"githubCopilot":false}}`,
 			wantStatus: http.StatusCreated},
+		{name: "no copilot, no shared models, copilot asked for", body: openclaw + `,"modelAccess":{"sharedModels":false,"githubCopilot":true}}`,
+			catalog: publishedCatalog(false), wantStatus: http.StatusCreated, wantAccess: &cetirunv1alpha1.ModelAccessSpec{SharedModels: ptr.To(false), GitHubCopilot: ptr.To(true)}},
+		{name: "non-custom agents retain switches", body: `{"agent":{"type":"hermes"},"team":"aks","modelAccess":{"githubCopilot":false}}`,
+			wantStatus: http.StatusCreated, wantAccess: &cetirunv1alpha1.ModelAccessSpec{GitHubCopilot: ptr.To(false)}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -160,18 +161,14 @@ func TestCreateInstanceAIGatewayModelAccessRules(t *testing.T) {
 			if err := fc.Get(context.Background(), client.ObjectKey{Name: "alice"}, agent); err != nil {
 				t.Fatal(err)
 			}
-			if agent.Spec.Team != "aks" || agent.Spec.User.Team != "aks" {
-				t.Fatalf("team = %q/%q, want aks", agent.Spec.Team, agent.Spec.User.Team)
+			if agent.Spec.Team != "aks" {
+				t.Fatalf("team = %q, want aks", agent.Spec.Team)
 			}
 			switch {
 			case tc.wantAccess == nil && agent.Spec.ModelAccess != nil:
 				t.Fatalf("modelAccess = %+v, want unset", agent.Spec.ModelAccess)
-			case tc.wantAccess != nil:
-				access := agent.Spec.ModelAccess
-				if access == nil || access.SharedModels == nil || access.GitHubCopilot == nil ||
-					*access.SharedModels != tc.wantAccess[0] || *access.GitHubCopilot != tc.wantAccess[1] {
-					t.Fatalf("modelAccess = %+v, want %v", access, *tc.wantAccess)
-				}
+			case tc.wantAccess != nil && !reflect.DeepEqual(agent.Spec.ModelAccess, tc.wantAccess):
+				t.Fatalf("modelAccess = %+v, want %+v", agent.Spec.ModelAccess, tc.wantAccess)
 			}
 		})
 	}
@@ -182,6 +179,7 @@ func routedAgent() *cetirunv1alpha1.Agent {
 	agent.Name = "alice-gw"
 	agent.UID = "uid-1"
 	agent.Spec.GatewayTokenSecretRef = "gateway-token"
+	agent.Spec.ModelAccess = &cetirunv1alpha1.ModelAccessSpec{SharedModels: ptr.To(true), GitHubCopilot: ptr.To(true)}
 	agent.Status.Namespace = "cetirun-alice-gw"
 	agent.Status.AIGateway = &cetirunv1alpha1.AIGatewayStatus{
 		Phase: "Ready", Routed: true, KeyID: "abc", KeySecretName: "ai-gateway-virtual-key",

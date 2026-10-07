@@ -599,6 +599,8 @@ func renderedWebhooks(t *testing.T, ca []byte) (*admissionregistrationv1.Validat
 		"--set", "namespace=operator-test", "--set", "serviceAccount.name=controller",
 		"--set", "sandboxAdmission.enabled=true", "--set", "sandboxAdmission.enforce=true",
 		"--set", "sandboxAdmission.tlsSecretName=admission-test-tls", "--set", "sandboxAdmission.adminUsers[0]=administrator",
+		"--set", "sandboxAdmission.adminUsers[1]=system:serviceaccount:operator-test:portal",
+		"--set", "sandboxAdmission.governanceApprovalUsername=system:serviceaccount:operator-test:portal",
 		"--set-string", "sandboxAdmission.caBundle="+base64.StdEncoding.EncodeToString(ca))
 	output, err := command.CombinedOutput()
 	if err != nil {

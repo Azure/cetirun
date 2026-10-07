@@ -236,7 +236,12 @@ func ValidatePlatform(platform Platform, capabilities sandbox.Capabilities) erro
 		return err
 	}
 	policy, errs := sandbox.NormalizeAgentPolicy(api.AgentPolicySpec{
-		Network: api.AgentPolicyNetwork{Ingress: api.AgentPolicyIngress{Mode: api.AgentPolicyIngressDisabled}},
+		// Platform validation compiles only the mandatory network baseline, but
+		// normalization now requires every policy-shaped input to identify a
+		// permitted harness. Hermes is a valid built-in harness and does not
+		// affect the network plan being qualified here.
+		Harnesses: api.AgentPolicyHarnesses{Allowed: []api.AgentType{api.AgentTypeHermes}},
+		Network:   api.AgentPolicyNetwork{Ingress: api.AgentPolicyIngress{Mode: api.AgentPolicyIngressDisabled}},
 	})
 	if len(errs) != 0 {
 		return errs.ToAggregate()

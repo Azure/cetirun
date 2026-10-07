@@ -58,17 +58,6 @@ func TestSandboxBindingWireFormat(t *testing.T) {
 			t.Errorf("Team wire format omits %s", key)
 		}
 	}
-	for _, object := range []interface{}{Agent{}, Team{}} {
-		legacy := apiJSONMap(t, object)
-		for _, member := range []string{"spec", "status"} {
-			fields, _ := legacy[member].(map[string]interface{})
-			for _, key := range []string{"normalAgentPolicyRef", "adminAgentPolicyRef", "sandboxRefs", "defaultSandboxRef", "sandboxRef", "policyClass", "sandbox"} {
-				if _, found := fields[key]; found {
-					t.Errorf("zero-valued legacy %T unexpectedly emits %s.%s", object, member, key)
-				}
-			}
-		}
-	}
 }
 
 func TestSandboxAPIRejectsUnknownAndMalformedWireFields(t *testing.T) {
@@ -157,7 +146,7 @@ func TestSandboxConfigurationDeepCopyIsolation(t *testing.T) {
 }
 
 func TestGeneratedSchemaDefaultTypes(t *testing.T) {
-	for _, plural := range []string{"agents", "teams", "sandboxes", "agentpolicies"} {
+	for _, plural := range []string{"agents", "teams", "sandboxes", "agentpolicies", "governanceactions"} {
 		t.Run(plural, func(t *testing.T) {
 			assertSchemaDefaultTypes(t, apiContractCRD(t, plural).Spec.Versions[0].Schema.OpenAPIV3Schema)
 		})
@@ -197,7 +186,7 @@ func TestGeneratedSandboxSchemaShapes(t *testing.T) {
 
 	policy := apiContractCRD(t, "agentpolicies").Spec.Versions[0].Schema.OpenAPIV3Schema
 	policySpec := policy.Properties["spec"]
-	requireSchemaProperties(t, policySpec, "sandboxSelection", "security", "network", "kubernetesAccess", "entraID")
+	requireSchemaProperties(t, policySpec, "agentIdentity", "entraID", "harnesses", "kubernetesAccess", "modelAccess", "network", "sandboxSelection", "security", "skills")
 	requireSchemaDefault(t, policySpec, `{}`)
 	for _, name := range []string{"sandboxSelection", "security", "network", "entraID"} {
 		requireSchemaDefault(t, policySpec.Properties[name], `{}`)
@@ -214,25 +203,45 @@ func TestGeneratedSandboxSchemaShapes(t *testing.T) {
 	requireSchemaProperties(t, *network.Properties["blockedPorts"].Items.Schema, "port", "protocol")
 	requireSchemaProperties(t, *network.Properties["allowedInternalCIDRs"].Items.Schema, "cidr", "ports")
 	requireSchemaProperties(t, policySpec.Properties["kubernetesAccess"], "serviceAccountName", "roleBindings", "clusterRoleBindings")
+	requireSchemaProperties(t, policySpec.Properties["harnesses"], "allowed")
+	if !slices.Contains(policySpec.Properties["harnesses"].Required, "allowed") {
+		t.Fatal("AgentPolicy harness allowlist must be required")
+	}
+	requireSchemaProperties(t, policySpec.Properties["modelAccess"], "copilot", "gatewayBudget", "sharedModels")
+	requireSchemaProperties(t, policySpec.Properties["modelAccess"].Properties["gatewayBudget"], "defaultMonthlyUSD", "maxMonthlyUSD")
 	requireSchemaProperties(t, policy.Properties["status"], "observedGeneration", "conditions")
 
 	agent := apiContractCRD(t, "agents").Spec.Versions[0].Schema.OpenAPIV3Schema
 	requireSchemaDefault(t, agent.Properties["spec"].Properties["policyClass"], `"normal"`)
-	if slices.Contains(agent.Properties["spec"].Required, "sandboxRef") {
-		t.Fatal("legacy Agents must not require a sandbox binding during additive staging")
+	for _, name := range []string{"governance", "sandboxRef", "team"} {
+		if !slices.Contains(agent.Properties["spec"].Required, name) {
+			t.Fatalf("governed Agent field %s must be required", name)
+		}
 	}
+	requireSchemaProperties(t, agent.Properties["spec"].Properties["governance"], "gatewayBudgetUSD", "teamAuthorization")
+	requireSchemaProperties(t, agent.Properties["spec"].Properties["governance"].Properties["teamAuthorization"], "authorizedAt", "subject")
 	binding := agent.Properties["status"].Properties["sandbox"]
 	requireSchemaProperties(t, binding, "teamUID", "sandboxUID", "policyClass", "agentPolicyUID", "appliedRevision")
 	if len(binding.Required) != 5 || slices.Contains(agent.Properties["status"].Required, "sandbox") {
 		t.Fatal("an enforced binding must be complete when present and omitted before enforcement")
 	}
 	team := apiContractCRD(t, "teams").Spec.Versions[0].Schema.OpenAPIV3Schema.Properties["spec"]
-	for _, name := range []string{"normalAgentPolicyRef", "adminAgentPolicyRef", "sandboxRefs", "defaultSandboxRef"} {
-		if _, ok := team.Properties[name]; !ok || slices.Contains(team.Required, name) {
-			t.Fatalf("Team field %s must exist but remain optional during additive staging", name)
+	for _, name := range []string{"membership", "normalAgentPolicyRef", "sandboxRefs", "defaultSandboxRef"} {
+		if _, ok := team.Properties[name]; !ok || !slices.Contains(team.Required, name) {
+			t.Fatalf("governed Team field %s must exist and be required", name)
 		}
 	}
-	for _, root := range []*apiextensionsv1.JSONSchemaProps{sandbox, policy} {
+	requireSchemaProperties(t, team.Properties["membership"], "subjects")
+
+	action := apiContractCRD(t, "governanceactions").Spec.Versions[0].Schema.OpenAPIV3Schema
+	actionSpec := action.Properties["spec"]
+	requireSchemaProperties(t, actionSpec, "approval", "expectedProjections", "expiresAt", "operation", "reason", "requestedAt", "requester", "targetRef")
+	for _, name := range []string{"expectedProjections", "expiresAt", "operation", "reason", "requestedAt", "requester", "targetRef"} {
+		if !slices.Contains(actionSpec.Required, name) {
+			t.Fatalf("GovernanceAction field %s must be required", name)
+		}
+	}
+	for _, root := range []*apiextensionsv1.JSONSchemaProps{sandbox, policy, action} {
 		assertClosedSchema(t, root)
 		conditions := root.Properties["status"].Properties["conditions"]
 		if conditions.XListType == nil || *conditions.XListType != "map" || !reflect.DeepEqual(conditions.XListMapKeys, []string{"type"}) {

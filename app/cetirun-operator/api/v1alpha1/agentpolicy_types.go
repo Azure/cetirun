@@ -18,6 +18,28 @@ const (
 
 // AgentPolicySpec defines controls independently of runtime selection.
 type AgentPolicySpec struct {
+	// Harnesses limits runtimes that can receive this policy.
+	Harnesses AgentPolicyHarnesses `json:"harnesses"`
+
+	// Skills is the allowlist for Team defaults and per-Agent skill requests.
+	// +optional
+	Skills AgentPolicySkills `json:"skills,omitempty"`
+
+	// ModelAccess defines the Gateway entitlements and one native USD budget
+	// for the Agent virtual key.
+	// +optional
+	ModelAccess AgentPolicyModelAccess `json:"modelAccess,omitempty"`
+
+	// AgentIdentity permits the fixed v1 credential-service entitlement.
+	// +optional
+	AgentIdentity AgentPolicyAgentIdentity `json:"agentIdentity,omitempty"`
+
+	// EntraID remains the Sandbox adapter capability switch. Governance uses
+	// AgentIdentity for the user-facing entitlement and requires both controls
+	// before an Agent Identity can be provisioned.
+	// +kubebuilder:default={}
+	// +optional
+	EntraID AgentPolicyEntraID `json:"entraID,omitempty"`
 	// +kubebuilder:default={}
 	// +optional
 	SandboxSelection SandboxSelectionPolicy `json:"sandboxSelection,omitempty"`
@@ -34,9 +56,69 @@ type AgentPolicySpec struct {
 	// +optional
 	KubernetesAccess *AgentPolicyAdminKubernetesAccess `json:"kubernetesAccess,omitempty"`
 
-	// +kubebuilder:default={}
+}
+
+type AgentPolicyHarnesses struct {
+	// +kubebuilder:validation:MinItems=1
+	// Governance has typed Gateway and Sandbox enforcement adapters only for
+	// the built-in harnesses. Custom workloads cannot be granted a policy.
+	// +kubebuilder:validation:items:Enum=openclaw;hermes
+	// +listType=set
+	Allowed []AgentType `json:"allowed"`
+}
+
+type AgentPolicySkills struct {
+	// +listType=set
 	// +optional
-	EntraID AgentPolicyEntraID `json:"entraID,omitempty"`
+	Allowed []string `json:"allowed,omitempty"`
+}
+
+type AgentPolicyModelAccess struct {
+	// +optional
+	Copilot AgentPolicyCopilotAccess `json:"copilot,omitempty"`
+	// +optional
+	SharedModels AgentPolicySharedModelsAccess `json:"sharedModels,omitempty"`
+	// +optional
+	GatewayBudget *AgentPolicyGatewayBudget `json:"gatewayBudget,omitempty"`
+}
+
+type AgentPolicyCopilotAccess struct {
+	// +optional
+	Allowed bool `json:"allowed,omitempty"`
+}
+
+type AgentPolicySharedModelsAccess struct {
+	// Model identifiers are exact Gateway catalog names, not display labels.
+	// +kubebuilder:validation:items:MinLength=1
+	// +kubebuilder:validation:items:MaxLength=256
+	// +kubebuilder:validation:items:Pattern=`^[^\t\r\n ]+$`
+	// +listType=set
+	// +optional
+	Allowed []string `json:"allowed,omitempty"`
+}
+
+type AgentPolicyGatewayBudget struct {
+	// +kubebuilder:validation:Pattern=`^(0|[1-9][0-9]*)(\.[0-9]{1,6})?$`
+	DefaultMonthlyUSD string `json:"defaultMonthlyUSD"`
+	// +kubebuilder:validation:Pattern=`^(0|[1-9][0-9]*)(\.[0-9]{1,6})?$`
+	MaxMonthlyUSD string `json:"maxMonthlyUSD"`
+}
+
+type AgentPolicyAgentIdentity struct {
+	// +optional
+	Allowed bool `json:"allowed,omitempty"`
+	// +optional
+	Required bool `json:"required,omitempty"`
+	// +kubebuilder:validation:items:Enum=azure-resource-manager
+	// +listType=set
+	// +optional
+	CredentialServices []string `json:"credentialServices,omitempty"`
+}
+
+type AgentPolicyEntraID struct {
+	// +kubebuilder:default=false
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
 }
 
 type SandboxSelectionPolicy struct {
@@ -154,12 +236,6 @@ type AgentPolicyClusterRoleBinding struct {
 	// +kubebuilder:validation:Pattern=`^[^/%]+$`
 	// +kubebuilder:validation:XValidation:rule="self != '.' && self != '..'",message="a ClusterRole name cannot be '.' or '..'"
 	ClusterRoleName string `json:"clusterRoleName"`
-}
-
-type AgentPolicyEntraID struct {
-	// +kubebuilder:default=false
-	// +optional
-	Enabled bool `json:"enabled,omitempty"`
 }
 
 const ConditionAgentPolicyAccepted = "Accepted"

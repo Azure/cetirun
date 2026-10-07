@@ -74,10 +74,8 @@ func hasNativeCreateFields(fields map[string]json.RawMessage) bool {
 func ownsInstance(instance *api.Agent, claims auth.Claims) bool {
 	tenant := instance.Annotations[api.AnnotationOwnerTenantID]
 	object := instance.Annotations[api.AnnotationOwnerObjectID]
-	if tenant != "" || object != "" {
-		return tenant != "" && object != "" && strings.EqualFold(tenant, claims.TenantID) && strings.EqualFold(object, claims.ObjectID)
-	}
-	return claims.Alias != "" && strings.EqualFold(instance.Spec.User.Alias, claims.Alias)
+	return tenant != "" && object != "" && claims.TenantID != "" && claims.ObjectID != "" &&
+		strings.EqualFold(tenant, claims.TenantID) && strings.EqualFold(object, claims.ObjectID)
 }
 
 func (h *InstanceHandler) validateAgentType(kind api.AgentType) error {
@@ -148,10 +146,27 @@ func (h *InstanceHandler) updateInstance(w http.ResponseWriter, r *http.Request,
 		writeManagementError(w, kube.ErrInstanceChanged)
 		return
 	}
+	var governance *api.GovernanceSpec
+	var sandboxRef *string
+	if req.Team != nil && *req.Team != instanceTeam(instance) {
+		if !claims.IsAdmin || !instance.Spec.Suspended {
+			writeError(w, http.StatusForbidden, "team_change_not_allowed", "Changing Team requires a platform administrator and a suspended Agent")
+			return
+		}
+		team, subject, err := h.authorizeTeamOwner(r.Context(), strings.TrimSpace(*req.Team), claims)
+		if err != nil {
+			writeError(w, http.StatusForbidden, "team_membership_required", "The verified owner is not authorized for the target Team")
+			return
+		}
+		governance = governanceSpec(subject, h.now())
+		value := team.Spec.DefaultSandboxRef
+		sandboxRef = &value
+	}
 	opts := kube.UpdateInstanceOpts{
 		DisplayName: req.DisplayName, Team: req.Team, Model: req.Model,
 		GatewayToken: req.GatewayToken, TailscaleAuthKey: req.TailscaleAuthKey, TeamsEnabled: req.TeamsEnabled,
 		ExpectedUID: types.UID(req.UID), ExpectedResourceVersion: req.ResourceVersion,
+		Governance: governance, SandboxRef: sandboxRef,
 	}
 	if req.Agent != nil {
 		updated, err := req.Agent.Apply(instance.Spec.Agent)
@@ -171,7 +186,7 @@ func (h *InstanceHandler) updateInstance(w http.ResponseWriter, r *http.Request,
 		teamChanged := req.Team != nil && *req.Team != instanceTeam(current)
 		if teamChanged {
 			if !claims.IsAdmin || !current.Spec.Suspended {
-				return &managementError{http.StatusForbidden, "team_change_not_allowed", "Changing Team requires an administrator and a suspended Agent"}
+				return &managementError{http.StatusForbidden, "team_change_not_allowed", "Changing Team requires a platform administrator and a suspended Agent"}
 			}
 		}
 		if req.Agent != nil || teamChanged || current.Spec.Agent.Type == api.AgentTypeCustom && req.Model != nil {

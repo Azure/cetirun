@@ -90,6 +90,11 @@ Hermes init containers
       value: {{ include "cetirun.image" . | quote }}
     - name: HERMES_HOME
       value: "/home/vibe/.hermes"
+    {{- if (.Values.aiGateway | default dict).enabled }}
+    # Make the PVC bootstrap discard legacy direct-provider configuration.
+    - name: CETIRUN_AI_GATEWAY
+      value: "true"
+    {{- end }}
   volumeMounts:
     - name: data
       mountPath: /home-data
@@ -167,6 +172,18 @@ Hermes container env vars (agent-specific only)
       key: CETIRUN_AUTH_KEY
 - name: CETIRUN_AGENT_TYPE
   value: "hermes"
+{{- if (.Values.aiGateway | default dict).enabled }}
+# Hermes uses the OpenAI-compatible Gateway only. The virtual key stays in
+# its dedicated operator-managed Secret; it is never copied into hermes.env
+# or the general gateway-token Secret persisted in the Agent home.
+- name: OPENAI_API_KEY
+  valueFrom:
+    secretKeyRef:
+      name: {{ .Values.aiGateway.keySecretName }}
+      key: {{ .Values.aiGateway.keySecretKey | default "api-key" }}
+- name: OPENAI_BASE_URL
+  value: {{ .Values.secrets.apiBase | quote }}
+{{- end }}
 {{- end }}
 
 {{/*
@@ -301,7 +318,7 @@ Receives the standard chart context (.). Uses lookup to find existing secrets.
   API_SERVER_KEY: {{ $apiServerKey | b64enc | quote }}
   {{- $openaiKey := "" }}
   {{- $anthropicKey := "" }}
-  {{- if eq (.Values.secrets.provider | default "github_copilot") "openai" }}
+  {{- if and (eq (.Values.secrets.provider | default "github_copilot") "openai") (not (.Values.aiGateway | default dict).enabled) }}
   {{- $openaiKey = .Values.secrets.apiKey | default "" }}
   {{- else if eq (.Values.secrets.provider | default "github_copilot") "anthropic" }}
   {{- $anthropicKey = .Values.secrets.apiKey | default "" }}

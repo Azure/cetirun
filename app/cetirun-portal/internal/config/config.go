@@ -4,11 +4,19 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"slices"
 	"strconv"
 	"strings"
 )
+
+// IdentitySubject identifies a verified Entra principal.  It deliberately
+// carries immutable directory IDs rather than a UPN or portal alias.
+type IdentitySubject struct {
+	TenantID string `json:"tenantID"`
+	ObjectID string `json:"objectID"`
+}
 
 var defaultAllowedAgentTypes = []string{"hermes", "openclaw"}
 
@@ -48,6 +56,12 @@ type Config struct {
 	// AIGatewayCatalogNamespace is the operator namespace, where the operator
 	// publishes the shared models.
 	AIGatewayCatalogNamespace string
+	// PlatformAdminSubjects contains the verified Entra subjects permitted to
+	// operate the governance management API.  It is supplied by the chart as
+	// JSON because environment variables cannot represent structured lists.
+	PlatformAdminSubjects    []IdentitySubject
+	CetiAdminServiceAccounts []string
+	CetiAdminTokenAudience   string
 }
 
 // Load reads configuration from environment variables.
@@ -67,7 +81,38 @@ func Load() Config {
 		RegistryCredentialNamespace: envOrDefault("REGISTRY_CREDENTIAL_NAMESPACE", "cetirun-registry-credentials"),
 		AIGatewayEnabled:            os.Getenv("FEATURE_AI_GATEWAY_ENABLED") == "true",
 		AIGatewayCatalogNamespace:   envOrDefault("AI_GATEWAY_CATALOG_NAMESPACE", "cetirun-system"),
+		PlatformAdminSubjects:       envIdentitySubjects("PLATFORM_ADMIN_SUBJECTS"),
+		CetiAdminServiceAccounts:    envCSV("CETIADMIN_SERVICE_ACCOUNTS"),
+		CetiAdminTokenAudience:      envOrDefault("CETIADMIN_TOKEN_AUDIENCE", "cetirun-governance-actions"),
 	}
+}
+
+func envCSV(key string) []string {
+	values := []string{}
+	for _, value := range strings.Split(os.Getenv(key), ",") {
+		if value = strings.TrimSpace(value); value != "" {
+			values = append(values, value)
+		}
+	}
+	return values
+}
+
+func envIdentitySubjects(key string) []IdentitySubject {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return []IdentitySubject{}
+	}
+	var subjects []IdentitySubject
+	if err := json.Unmarshal([]byte(raw), &subjects); err != nil {
+		return []IdentitySubject{}
+	}
+	valid := make([]IdentitySubject, 0, len(subjects))
+	for _, subject := range subjects {
+		if strings.TrimSpace(subject.TenantID) != "" && strings.TrimSpace(subject.ObjectID) != "" {
+			valid = append(valid, subject)
+		}
+	}
+	return valid
 }
 
 func (c Config) AgentTypeAllowed(kind string) bool {

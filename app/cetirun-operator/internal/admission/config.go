@@ -25,14 +25,15 @@ const (
 )
 
 type Config struct {
-	ValidationMode         string           `json:"validationMode,omitempty"`
-	AdminUsers             []string         `json:"adminUsers"`
-	AdminGroups            []string         `json:"adminGroups"`
-	ControllerUsername     string           `json:"controllerUsername"`
-	TeamAssignments        []TeamAssignment `json:"teamAssignments,omitempty"`
-	PlatformNamespace      string           `json:"platformNamespace,omitempty"`
-	PlatformConfigMapName  string           `json:"platformConfigMapName,omitempty"`
-	PlacementConfigMapName string           `json:"placementConfigMapName,omitempty"`
+	ValidationMode             string           `json:"validationMode,omitempty"`
+	AdminUsers                 []string         `json:"adminUsers"`
+	AdminGroups                []string         `json:"adminGroups"`
+	ControllerUsername         string           `json:"controllerUsername"`
+	GovernanceApprovalUsername string           `json:"governanceApprovalUsername"`
+	TeamAssignments            []TeamAssignment `json:"teamAssignments,omitempty"`
+	PlatformNamespace          string           `json:"platformNamespace,omitempty"`
+	PlatformConfigMapName      string           `json:"platformConfigMapName,omitempty"`
+	PlacementConfigMapName     string           `json:"placementConfigMapName,omitempty"`
 }
 
 // TeamAssignment is administrative creation context, not Agent/Portal input.
@@ -79,6 +80,15 @@ func (c Config) Validate() error {
 	if len(parts) != 4 || parts[0] != "system" || parts[1] != "serviceaccount" ||
 		len(validation.IsDNS1123Label(parts[2])) != 0 || len(validation.IsDNS1123Subdomain(parts[3])) != 0 {
 		return fmt.Errorf("Sandbox admission controllerUsername must identify one namespaced service account")
+	}
+	approvalParts := strings.Split(c.GovernanceApprovalUsername, ":")
+	if len(approvalParts) != 4 || approvalParts[0] != "system" || approvalParts[1] != "serviceaccount" ||
+		len(validation.IsDNS1123Label(approvalParts[2])) != 0 || len(validation.IsDNS1123Subdomain(approvalParts[3])) != 0 ||
+		c.GovernanceApprovalUsername == c.ControllerUsername {
+		return fmt.Errorf("Sandbox admission governanceApprovalUsername must identify one dedicated namespaced service account")
+	}
+	if !slices.Contains(c.AdminUsers, c.GovernanceApprovalUsername) {
+		return fmt.Errorf("Sandbox admission governanceApprovalUsername must also be an explicit adminUser")
 	}
 	if c.PlatformNamespace != "" || c.PlatformConfigMapName != "" {
 		if len(validation.IsDNS1123Label(c.PlatformNamespace)) != 0 ||

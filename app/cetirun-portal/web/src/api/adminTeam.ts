@@ -19,8 +19,15 @@ export interface TeamDTO {
   defaultProvider?: string;
   skills?: string[];
   skillStorage?: TeamSkillStorage;
+  membership: GovernanceSubject[];
+  normalAgentPolicyRef: string;
+  adminAgentPolicyRef?: string;
+  sandboxRefs: string[];
+  defaultSandboxRef: string;
   createdAt?: string;
 }
+
+export interface GovernanceSubject { kind: "User" | "Group"; tenantID: string; objectID: string; }
 
 export interface TeamUpsertRequest {
   name?: string;
@@ -29,6 +36,11 @@ export interface TeamUpsertRequest {
   defaultProvider?: string;
   skills?: string[];
   skillStorage?: TeamSkillStorage;
+  membership: GovernanceSubject[];
+  normalAgentPolicyRef: string;
+  adminAgentPolicyRef?: string;
+  sandboxRefs: string[];
+  defaultSandboxRef: string;
 }
 
 async function parseError(response: Response, fallback: string): Promise<string> {

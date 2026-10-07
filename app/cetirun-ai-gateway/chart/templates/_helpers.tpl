@@ -242,6 +242,12 @@ may already serve a model under such a name.
 {{- if not .litellm_params.model }}
 {{- fail (printf "model %s requires litellm_params.model" .model_name) }}
 {{- end }}
+{{- $info := .model_info | default dict }}
+{{- range ($info.access_groups | default list) }}
+{{- if hasPrefix "cetirun-model-" (lower (printf "%v" .)) }}
+{{- fail (printf "model %s configures reserved access group %s. The cetirun-model- prefix is chart-managed so an administrator cannot grant a key access to a replacement backend." .model_name .) }}
+{{- end }}
+{{- end }}
 {{- if hasPrefix "cetirun-" (lower .model_name) }}
 {{- fail (printf "model_name %s uses the reserved cetirun- prefix. That prefix belongs to models the CetiRun operator registers automatically; a collision would serve both under one name and split traffic between them." .model_name) }}
 {{- else if and $.Values.operatorIntegration (hasPrefix "copilot/" (lower .model_name)) }}

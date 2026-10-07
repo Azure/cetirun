@@ -37,3 +37,13 @@ spec:
       ports:
         - port: 8081
           protocol: TCP
+    # CetiAdmin submits narrow governance proposals over a projected-token
+    # authenticated internal API. TokenReview is the identity decision; this
+    # namespace rule limits which workloads can reach the unexposed port.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.governance.cetiAdminNamespace | quote }}
+      ports:
+        - port: 8081
+          protocol: TCP

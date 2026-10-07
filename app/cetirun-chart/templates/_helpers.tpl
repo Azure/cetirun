@@ -174,8 +174,9 @@ Validate Azure Workload Identity prerequisites
 {{- fail "aiGateway.copilotProxy.enabled requires aiGateway.enabled" -}}
 {{- end -}}
 {{- if $gateway.enabled -}}
-{{- if ne (include "cetirun.agent.type" .) "openclaw" -}}
-{{- fail "aiGateway.enabled is supported only for OpenClaw" -}}
+{{- $agentType := include "cetirun.agent.type" . -}}
+{{- if and (ne $agentType "openclaw") (ne $agentType "hermes") -}}
+{{- fail "aiGateway.enabled is supported only for OpenClaw and Hermes" -}}
 {{- end -}}
 {{- if ne (.Values.secrets.provider | default "github_copilot") "openai" -}}
 {{- fail "aiGateway.enabled requires secrets.provider=openai" -}}
@@ -191,6 +192,9 @@ Validate Azure Workload Identity prerequisites
 {{- end -}}
 {{- if not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" (.Values.networkPolicy.gatewayNamespace | default "")) -}}
 {{- fail "aiGateway.enabled requires networkPolicy.gatewayNamespace" -}}
+{{- end -}}
+{{- if not (.Values.secrets.apiBase | default "") -}}
+{{- fail "aiGateway.enabled requires secrets.apiBase" -}}
 {{- end -}}
 {{- range .Values.extraEnv -}}
 {{- if has (get . "name") (list "OPENAI_API_KEY" "OPENAI_BASE_URL") -}}

@@ -55,26 +55,26 @@ func TestCompatibilityOptionalControls(t *testing.T) {
 		enable func(*Capabilities)
 	}{
 		{
-			"FQDN", cetirunv1alpha1.AgentPolicySpec{Network: cetirunv1alpha1.AgentPolicyNetwork{BlockedFQDNs: []string{"blocked.example.com"}}},
+			"FQDN", compatibilityPolicy(cetirunv1alpha1.AgentPolicySpec{Network: cetirunv1alpha1.AgentPolicyNetwork{BlockedFQDNs: []string{"blocked.example.com"}}}),
 			func(c *Capabilities) { c.BlockedFQDNs = true },
 		},
 		{
-			"mTLS", cetirunv1alpha1.AgentPolicySpec{Network: cetirunv1alpha1.AgentPolicyNetwork{Ingress: cetirunv1alpha1.AgentPolicyIngress{RequireMTLS: true}}},
+			"mTLS", compatibilityPolicy(cetirunv1alpha1.AgentPolicySpec{Network: cetirunv1alpha1.AgentPolicyNetwork{Ingress: cetirunv1alpha1.AgentPolicyIngress{RequireMTLS: true}}}),
 			func(c *Capabilities) { c.MutualTLS = true },
 		},
 		{
-			"UDP port", cetirunv1alpha1.AgentPolicySpec{Network: cetirunv1alpha1.AgentPolicyNetwork{BlockedPorts: []cetirunv1alpha1.AgentPolicyPort{{Port: 1234, Protocol: corev1.ProtocolUDP}}}},
+			"UDP port", compatibilityPolicy(cetirunv1alpha1.AgentPolicySpec{Network: cetirunv1alpha1.AgentPolicyNetwork{BlockedPorts: []cetirunv1alpha1.AgentPolicyPort{{Port: 1234, Protocol: corev1.ProtocolUDP}}}}),
 			func(c *Capabilities) { c.Protocols = append(c.Protocols, corev1.ProtocolUDP) },
 		},
 		{
-			"Entra", cetirunv1alpha1.AgentPolicySpec{EntraID: cetirunv1alpha1.AgentPolicyEntraID{Enabled: true}},
+			"Entra", compatibilityPolicy(cetirunv1alpha1.AgentPolicySpec{EntraID: cetirunv1alpha1.AgentPolicyEntraID{Enabled: true}}),
 			func(c *Capabilities) { c.EntraID = true },
 		},
 		{
-			"Kubernetes", cetirunv1alpha1.AgentPolicySpec{KubernetesAccess: &cetirunv1alpha1.AgentPolicyAdminKubernetesAccess{
+			"Kubernetes", compatibilityPolicy(cetirunv1alpha1.AgentPolicySpec{KubernetesAccess: &cetirunv1alpha1.AgentPolicyAdminKubernetesAccess{
 				ServiceAccountName: "operations",
 				RoleBindings:       []cetirunv1alpha1.AgentPolicyRoleBinding{{Namespace: "services", ClusterRoleName: "reader"}},
-			}},
+			}}),
 			func(c *Capabilities) { c.KubernetesAccess = true },
 		},
 	} {
@@ -97,7 +97,7 @@ func TestCompatibilityResourceGuarantees(t *testing.T) {
 	sandbox.Type = cetirunv1alpha1.SandboxGVisor
 	capabilities := fixtureCapabilities()
 	capabilities.RuntimeClassName = "gvisor-test"
-	policy := cetirunv1alpha1.AgentPolicySpec{}
+	policy := compatibilityPolicy(cetirunv1alpha1.AgentPolicySpec{})
 	if errs := CheckCompatibility(sandbox, policy, capabilities); len(errs) != 0 {
 		t.Fatalf("aggregate gVisor limits must not imply independent quotas: %v", errs)
 	}
@@ -114,9 +114,9 @@ func TestCompatibilityResourceGuarantees(t *testing.T) {
 func TestCompatibilityBlockedPortsRequireQualifiedSupport(t *testing.T) {
 	input := resolverFixture()
 	sandbox := input.Resources.Sandboxes["standard"].Spec
-	policy := cetirunv1alpha1.AgentPolicySpec{Network: cetirunv1alpha1.AgentPolicyNetwork{
+	policy := compatibilityPolicy(cetirunv1alpha1.AgentPolicySpec{Network: cetirunv1alpha1.AgentPolicyNetwork{
 		BlockedPorts: []cetirunv1alpha1.AgentPolicyPort{{Port: 25}},
-	}}
+	}})
 	capabilities := fixtureCapabilities()
 	capabilities.BlockedPorts = false
 	if len(CheckCompatibility(sandbox, policy, capabilities)) == 0 {
@@ -131,10 +131,10 @@ func TestCompatibilityBlockedPortsRequireQualifiedSupport(t *testing.T) {
 func TestCompatibilityAddressFamiliesAndDisabledIngress(t *testing.T) {
 	input := resolverFixture()
 	sandbox := input.Resources.Sandboxes["standard"].Spec
-	policy := cetirunv1alpha1.AgentPolicySpec{Network: cetirunv1alpha1.AgentPolicyNetwork{
+	policy := compatibilityPolicy(cetirunv1alpha1.AgentPolicySpec{Network: cetirunv1alpha1.AgentPolicyNetwork{
 		BlockedCIDRs: []string{"2001:db8::/32"},
 		Ingress:      cetirunv1alpha1.AgentPolicyIngress{Mode: cetirunv1alpha1.AgentPolicyIngressDisabled},
-	}}
+	}})
 	capabilities := fixtureCapabilities()
 	capabilities.IPFamilies = []corev1.IPFamily{corev1.IPv4Protocol}
 	if len(CheckCompatibility(sandbox, policy, capabilities)) == 0 {
@@ -149,4 +149,9 @@ func TestCompatibilityAddressFamiliesAndDisabledIngress(t *testing.T) {
 	if errs := CheckCompatibility(sandbox, policy, capabilities); len(errs) != 0 {
 		t.Fatalf("qualified disabled ingress rejected: %v", errs)
 	}
+}
+
+func compatibilityPolicy(policy cetirunv1alpha1.AgentPolicySpec) cetirunv1alpha1.AgentPolicySpec {
+	policy.Harnesses.Allowed = []cetirunv1alpha1.AgentType{cetirunv1alpha1.AgentTypeHermes}
+	return policy
 }

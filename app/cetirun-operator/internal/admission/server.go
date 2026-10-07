@@ -99,6 +99,7 @@ func Run(ctx context.Context, restConfig *rest.Config, config Config, options Se
 		handler.requestTimeout = options.PodRequestTimeout
 	}
 	server.Register(ValidationPath, &admission.Webhook{Handler: instrumentAdmission("validate", handler.Validate)})
+	server.Register(GovernanceActionValidationPath, &admission.Webhook{Handler: instrumentAdmission("governance-action", handler.ValidateGovernanceAction)})
 	server.Register(DefaultingPath, &admission.Webhook{Handler: instrumentAdmission("default", handler.DefaultAgent)})
 	if options.PodStateNamespace != "" {
 		podHandler, err := NewPodHandler(manager.GetAPIReader(), PodConfig{

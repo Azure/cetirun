@@ -254,10 +254,6 @@ func TestAIGatewayChartRejectsUnsupportedWiring(t *testing.T) {
 		mutate func(map[string]any)
 		want   string
 	}{
-		"hermes": {func(in map[string]any) {
-			in["agentType"] = "hermes"
-			in["agentRequest"] = map[string]any{"type": "hermes"}
-		}, "supported only for OpenClaw"},
 		"copilot provider": {func(in map[string]any) { in["secrets"].(map[string]any)["provider"] = "github_copilot" }, "secrets.provider=openai"},
 		"missing Secret":   {func(in map[string]any) { in["aiGateway"].(map[string]any)["keySecretName"] = "" }, "keySecretName"},
 		"no NetworkPolicy": {func(in map[string]any) { in["networkPolicy"].(map[string]any)["enabled"] = false }, "networkPolicy.enabled"},

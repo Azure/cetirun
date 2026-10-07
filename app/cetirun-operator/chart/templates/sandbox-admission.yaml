@@ -48,6 +48,10 @@
 {{- if and (empty $admission.adminUsers) (empty $admission.adminGroups) -}}
 {{- fail "sandboxAdmission requires at least one adminUsers or adminGroups entry when enabled" -}}
 {{- end -}}
+{{- $governanceApprovalUsername := required "sandboxAdmission.governanceApprovalUsername is required when enabled" ($admission.governanceApprovalUsername | trim) -}}
+{{- if not (has $governanceApprovalUsername $admission.adminUsers) -}}
+{{- fail "sandboxAdmission.governanceApprovalUsername must also appear in adminUsers" -}}
+{{- end -}}
 {{- if eq .Values.serviceAccount.name "cetirun-sandbox-admission" -}}
 {{- fail "sandboxAdmission must not use the operator controller service account" -}}
 {{- end -}}
@@ -57,7 +61,7 @@
 {{- fail "namespace and serviceAccount.name must not contain surrounding whitespace" -}}
 {{- end -}}
 {{- $controllerUsername := printf "system:serviceaccount:%s:%s" $controllerNamespace $controllerServiceAccount -}}
-{{- $config := dict "adminUsers" $admission.adminUsers "adminGroups" $admission.adminGroups "controllerUsername" $controllerUsername "validationMode" $admission.validationMode -}}
+{{- $config := dict "adminUsers" $admission.adminUsers "adminGroups" $admission.adminGroups "controllerUsername" $controllerUsername "governanceApprovalUsername" $governanceApprovalUsername "validationMode" $admission.validationMode -}}
 {{- if $placementName -}}
 {{- $_ := set $config "placementConfigMapName" $placementName -}}
 {{- end -}}

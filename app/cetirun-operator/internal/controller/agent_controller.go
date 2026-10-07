@@ -5,6 +5,7 @@ package controller
 
 import (
 	"context"
+	stderrors "errors"
 	"fmt"
 	"maps"
 	"net/http"
@@ -238,7 +239,52 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		return r.rejectReservedUIInstance(ctx, instance)
 	}
 
+	// Governance is mandatory for every non-deleting Agent. Resolve its
+	// immutable owner/Team/policy binding before any Sandbox or workload
+	// recovery can make compute available.
+	governance, err := r.reconcileGovernance(ctx, instance)
+	if governance.dependencyUnavailable {
+		// A transient Team, policy, or Gateway catalog failure cannot prove a
+		// denial. Preserve the key identity and spend record, but block it and
+		// stop compute until fresh authorization evidence is available.
+		result, holdErr := r.holdGovernanceDependencyUnavailable(ctx, instance)
+		return result, stderrors.Join(err, holdErr)
+	} else if err != nil {
+		// Status persistence is not part of the authorization boundary. If it
+		// fails, revoke access and stop compute before returning the joined
+		// error; an old workload must never survive because status storage was
+		// temporarily unavailable.
+		result, holdErr := r.holdGovernanceDenied(ctx, instance)
+		return result, stderrors.Join(err, holdErr)
+	} else if !governance.authorized {
+		return r.holdGovernanceDenied(ctx, instance)
+	} else if governance.reprojectionHold {
+		return r.holdGovernanceReprojection(ctx, instance)
+	}
+
 	if sandboxRequested(instance, nil) {
+		// Governed native workloads are rendered only through the held Sandbox
+		// path below, so they never reach the legacy Gateway reconciliation in
+		// this function.  Project the virtual key as soon as the protected
+		// namespace exists.  Bootstrap deliberately creates that namespace
+		// first; a missing namespace on the first pass is therefore not an
+		// authorization to fall back to direct model credentials.
+		if r.AIGateway.Enabled {
+			namespace := &corev1.Namespace{}
+			namespaceErr := r.APIReader.Get(ctx, types.NamespacedName{Name: instanceNamespace(instance.Name)}, namespace)
+			if namespaceErr == nil {
+				if err := r.reconcileAIGateway(ctx, instance, true); err != nil {
+					_ = r.updateStatus(ctx, instance)
+					// Keep progressing through holdSandbox so ingress/compute remain
+					// stopped even when the Gateway control plane is unavailable.
+					logger.Error(err, "Governed AI Gateway projection remains pending")
+				} else if err := r.updateStatus(ctx, instance); err != nil {
+					return ctrl.Result{}, err
+				}
+			} else if !errors.IsNotFound(namespaceErr) {
+				return ctrl.Result{}, fmt.Errorf("inspect governed Agent namespace: %w", namespaceErr)
+			}
+		}
 		return r.holdSandbox(ctx, instance)
 	}
 
@@ -612,6 +658,26 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		instance.Status.AIGateway.Routed = false
 	}
 
+	// The initial projection must be allowed to execute, but it is not a
+	// workload authorization. Re-evaluate after the Gateway projection has had
+	// a chance to update its evidence and stop here until every current
+	// projection is verified. Any workload that was already exposed is fenced
+	// by the early reprojection hold above.
+	governance, err = r.reconcileGovernance(ctx, instance)
+	if governance.dependencyUnavailable {
+		result, holdErr := r.holdGovernanceDependencyUnavailable(ctx, instance)
+		return result, stderrors.Join(err, holdErr)
+	} else if err != nil {
+		result, holdErr := r.holdGovernanceDenied(ctx, instance)
+		return result, stderrors.Join(err, holdErr)
+	}
+	if !governance.authorized {
+		return r.holdGovernanceDenied(ctx, instance)
+	}
+	if !governance.projectionsVerified {
+		return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
+	}
+
 	// 9. Install / upgrade Helm chart (skip if already deployed at this generation).
 	// We check HelmDeployed condition + generation + operator hash rather than Phase,
 	// because Phase may be Provisioning while waiting for the StatefulSet pod to become
@@ -665,6 +731,13 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	if err != nil {
 		return r.rejectAgentConfig(ctx, instance, err)
 	}
+	if !prepared.SupportsValuePath(aiGatewayChartValue, aiGatewayChartModelsValue) {
+		governanceErr := fmt.Errorf("Agent chart %q does not support mandatory AI Gateway routing", instance.Spec.Helm.Version)
+		if err := r.recordGovernance(ctx, instance, nil, governanceErr); err != nil {
+			return ctrl.Result{}, err
+		}
+		return r.holdGovernanceDenied(ctx, instance)
+	}
 	r.recordSignInHelper(instance, prepared.ServesSignInHelper())
 	setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionAgentConfigReady,
 		metav1.ConditionTrue, "AgentConfigResolved", "Built-in Harness configuration resolved")
@@ -685,6 +758,14 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	if gatewaySecretResourceVersion != "" {
 		helmValues["podAnnotations"] = deepMerge(helmValues["podAnnotations"], map[string]interface{}{
 			gatewaySecretResourceVersionAnnotation: gatewaySecretResourceVersion,
+		})
+	}
+	// Governance restart/reconcile actions use an Agent annotation as the
+	// audited intent and project it into the Pod template. This changes the
+	// StatefulSet template even when no declarative Agent spec field changes.
+	if actionUID := instance.Annotations[cetirunv1alpha1.AnnotationGovernanceAction]; actionUID != "" {
+		helmValues["podAnnotations"] = deepMerge(helmValues["podAnnotations"], map[string]interface{}{
+			cetirunv1alpha1.AnnotationGovernanceAction: actionUID,
 		})
 	}
 	if !alreadyDeployed {

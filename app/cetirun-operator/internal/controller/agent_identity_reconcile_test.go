@@ -56,7 +56,7 @@ func (*suspensionHelmClient) CustomApplied(string, string, *helm.PreparedRelease
 
 func (*suspensionHelmClient) Uninstall(string, string) error { return nil }
 
-func TestReconcileSuspensionContinuesWhenAgentIdentityLookupFails(t *testing.T) {
+func TestGovernanceDeniedSuspensionStopsOwnedRouteBeforeIdentityLookup(t *testing.T) {
 	const name = "suspended-identity"
 	instance := &cetirunv1alpha1.Agent{
 		ObjectMeta: metav1.ObjectMeta{
@@ -104,7 +104,17 @@ func TestReconcileSuspensionContinuesWhenAgentIdentityLookupFails(t *testing.T) 
 		},
 	}
 	virtualService := &istiov1beta1.VirtualService{
-		ObjectMeta: metav1.ObjectMeta{Name: virtualServiceName(name), Namespace: instanceNamespace(name)},
+		ObjectMeta: metav1.ObjectMeta{
+			Name: virtualServiceName(name), Namespace: instanceNamespace(name), UID: "suspended-identity-route",
+			OwnerReferences: []metav1.OwnerReference{{
+				APIVersion: cetirunv1alpha1.GroupVersion.String(), Kind: "Agent", Name: name, UID: instance.UID,
+			}},
+			Annotations: map[string]string{
+				"cetirun.microsoft.com/agent-uid": string(instance.UID),
+				"meta.helm.sh/release-name":       helmReleaseName(name),
+				"meta.helm.sh/release-namespace":  instanceNamespace(name),
+			},
+		},
 	}
 
 	scheme := runtime.NewScheme()
@@ -147,11 +157,11 @@ func TestReconcileSuspensionContinuesWhenAgentIdentityLookupFails(t *testing.T) 
 	if err != nil {
 		t.Fatalf("suspension returned an identity dependency error: %v", err)
 	}
-	if result.RequeueAfter != 30*time.Second {
-		t.Fatalf("identity retry interval = %v, want 30s", result.RequeueAfter)
+	if result.RequeueAfter != time.Minute {
+		t.Fatalf("governance hold retry interval = %v, want 1m", result.RequeueAfter)
 	}
-	if !helmClient.installCalled || helmClient.lastValues["replicaCount"] != 0 {
-		t.Fatalf("suspension did not apply replicaCount=0: called=%t values=%v", helmClient.installCalled, helmClient.lastValues)
+	if helmClient.installCalled {
+		t.Fatal("denied governance binding reached Helm or Agent Identity reconciliation")
 	}
 	remaining := &istiov1beta1.VirtualService{}
 	if err := client.Get(context.Background(), types.NamespacedName{Name: virtualService.Name, Namespace: virtualService.Namespace}, remaining); !apierrors.IsNotFound(err) {
@@ -164,12 +174,8 @@ func TestReconcileSuspensionContinuesWhenAgentIdentityLookupFails(t *testing.T) 
 	if updated.Status.Phase != cetirunv1alpha1.PhaseSuspended {
 		t.Fatalf("phase = %q, want Suspended", updated.Status.Phase)
 	}
-	if updated.Status.AgentIdentity == nil || updated.Status.AgentIdentity.Reason != "DirectoryLookupFailed" {
-		t.Fatalf("identity failure was not retained: %#v", updated.Status.AgentIdentity)
-	}
-	condition := findStatusCondition(updated.Status.Conditions, cetirunv1alpha1.ConditionAgentIdentityReady)
-	if condition == nil || condition.Status != metav1.ConditionFalse || condition.Reason != "DirectoryLookupFailed" {
-		t.Fatalf("identity condition was not retained: %#v", condition)
+	if updated.Status.Governance == nil || updated.Status.Governance.Phase != "Denied" {
+		t.Fatalf("governance denial was not retained: %#v", updated.Status.Governance)
 	}
 }
 

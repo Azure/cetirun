@@ -37,6 +37,7 @@ func TestAPIRegistration(t *testing.T) {
 		"Team": &Team{}, "TeamList": &TeamList{},
 		"Sandbox": &Sandbox{}, "SandboxList": &SandboxList{},
 		"AgentPolicy": &AgentPolicy{}, "AgentPolicyList": &AgentPolicyList{},
+		"GovernanceAction": &GovernanceAction{}, "GovernanceActionList": &GovernanceActionList{},
 	} {
 		t.Run(kind, func(t *testing.T) {
 			kinds, unversioned, err := scheme.ObjectKinds(object)
@@ -57,7 +58,7 @@ func TestAPIRegistration(t *testing.T) {
 			}
 		}
 	}
-	for _, kind := range []string{"Agent", "AgentList", "Team", "TeamList", "Sandbox", "SandboxList", "AgentPolicy", "AgentPolicyList"} {
+	for _, kind := range []string{"Agent", "AgentList", "Team", "TeamList", "Sandbox", "SandboxList", "AgentPolicy", "AgentPolicyList", "GovernanceAction", "GovernanceActionList"} {
 		if scheme.Recognizes(schema.GroupVersionKind{Group: GroupVersion.Group, Version: "v1beta1", Kind: kind}) {
 			t.Errorf("unexpected beta API for %s", kind)
 		}
@@ -87,6 +88,10 @@ func TestAPIWireFormat(t *testing.T) {
 		"AgentPolicyList": &AgentPolicyList{Items: []AgentPolicy{
 			{ObjectMeta: metav1.ObjectMeta{Name: "example-policy"}},
 		}},
+		"GovernanceAction": &GovernanceAction{ObjectMeta: metav1.ObjectMeta{Name: "example-action"}},
+		"GovernanceActionList": &GovernanceActionList{Items: []GovernanceAction{
+			{ObjectMeta: metav1.ObjectMeta{Name: "example-action"}},
+		}},
 	} {
 		t.Run(kind, func(t *testing.T) {
 			encoded, err := runtime.Encode(codecs.LegacyCodec(GroupVersion), object)
@@ -114,13 +119,13 @@ func TestAPIWireFormat(t *testing.T) {
 func TestGeneratedCRDContract(t *testing.T) {
 	directory := filepath.Join("..", "..", "config", "crd", "bases")
 	files, err := filepath.Glob(filepath.Join(directory, "*.yaml"))
-	if err != nil || len(files) != 4 {
-		t.Fatalf("CRD inventory: %v, err=%v; want Agent, Team, Sandbox and AgentPolicy", files, err)
+	if err != nil || len(files) != 5 {
+		t.Fatalf("CRD inventory: %v, err=%v; want Agent, Team, Sandbox, AgentPolicy and GovernanceAction", files, err)
 	}
 	chartDirectory := filepath.Join("..", "..", "chart", "templates", "crds")
 	chartFiles, err := filepath.Glob(filepath.Join(chartDirectory, "*.yaml"))
-	if err != nil || len(chartFiles) != 4 {
-		t.Fatalf("packaged CRD inventory: %v, err=%v; want Agent, Team, Sandbox and AgentPolicy", chartFiles, err)
+	if err != nil || len(chartFiles) != 5 {
+		t.Fatalf("packaged CRD inventory: %v, err=%v; want Agent, Team, Sandbox, AgentPolicy and GovernanceAction", chartFiles, err)
 	}
 	if legacy, err := filepath.Glob(filepath.Join("..", "..", "chart", "crds", "*.yaml")); err != nil || len(legacy) != 0 {
 		t.Fatalf("CRDs must not also be installed outside the Helm manifest: %v, %v", legacy, err)
@@ -130,6 +135,7 @@ func TestGeneratedCRDContract(t *testing.T) {
 		{"Team", "teams", "team", "crt"},
 		{"Sandbox", "sandboxes", "sandbox", "crs"},
 		{"AgentPolicy", "agentpolicies", "agentpolicy", "crp"},
+		{"GovernanceAction", "governanceactions", "governanceaction", "cga"},
 	} {
 		t.Run(tc.kind, func(t *testing.T) {
 			name := tc.plural + ".cetirun.microsoft.com"
@@ -228,23 +234,30 @@ func TestChartRBACContract(t *testing.T) {
 			name: "operator",
 			path: "../../chart/templates/clusterrole.yaml",
 			want: map[string][]string{
-				"agents":               {"get", "list", "watch", "create", "update", "patch", "delete"},
-				"agents/status":        {"get", "update", "patch"},
-				"agents/finalizers":    {"update"},
-				"teams":                {"get", "list", "watch"},
-				"teams/status":         {"get", "update", "patch"},
-				"sandboxes":            {"get", "list", "watch"},
-				"sandboxes/status":     {"get", "update", "patch"},
-				"agentpolicies":        {"get", "list", "watch"},
-				"agentpolicies/status": {"get", "update", "patch"},
+				"agents":                   {"get", "list", "watch", "create", "update", "patch", "delete"},
+				"agents/status":            {"get", "update", "patch"},
+				"agents/finalizers":        {"update"},
+				"teams":                    {"get", "list", "watch"},
+				"teams/status":             {"get", "update", "patch"},
+				"sandboxes":                {"get", "list", "watch"},
+				"sandboxes/status":         {"get", "update", "patch"},
+				"agentpolicies":            {"get", "list", "watch"},
+				"agentpolicies/status":     {"get", "update", "patch"},
+				"governanceactions":        {"get", "list", "watch"},
+				"governanceactions/status": {"get", "update", "patch"},
 			},
 		},
 		{
 			name: "portal",
 			path: "../../../cetirun-portal/chart/templates/clusterrole.yaml",
 			want: map[string][]string{
-				"agents": {"get", "list", "create", "update", "patch", "delete"},
-				"teams":  {"get", "list", "create", "update", "patch", "delete"},
+				"agents":            {"get", "list", "create", "update", "patch", "delete"},
+				"teams":             {"get", "list", "create", "update", "patch", "delete"},
+				"agentpolicies":     {"get", "list", "create", "update", "patch", "delete"},
+				"sandboxes":         {"get", "list", "create", "update", "patch", "delete"},
+				// GovernanceAction records are append-only audit evidence. Portal may
+				// propose and decide them, but it cannot erase them.
+				"governanceactions": {"get", "list", "create", "update", "patch"},
 			},
 		},
 	} {

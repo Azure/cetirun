@@ -65,6 +65,7 @@ func (s *completionScenario) workload() *appsv1.StatefulSet {
 }
 
 func TestCustomOnDeleteReadinessAndSteadyCache(t *testing.T) {
+	requireLegacyCustomRuntime(t)
 	s := runningCustomReview(t)
 	current := s.workload()
 	current.Status.CurrentRevision = "old"
@@ -87,6 +88,7 @@ func TestCustomOnDeleteReadinessAndSteadyCache(t *testing.T) {
 }
 
 func TestCustomPlatformAndReceiptUpdatesDoNotStopWriter(t *testing.T) {
+	requireLegacyCustomRuntime(t)
 	for _, change := range []string{"network", "pdb", "namespace-revision", "generation", "ttyd"} {
 		t.Run(change, func(t *testing.T) {
 			s := runningCustomReview(t)
@@ -155,6 +157,7 @@ func (c reviewClient) Get(ctx context.Context, key client.ObjectKey, obj client.
 }
 
 func TestCustomPodPermissionFailurePrecedesHandoff(t *testing.T) {
+	requireLegacyCustomRuntime(t)
 	s := newCompletionScenario(t)
 	s.reconciler.APIReader = reviewClient{Client: s.client, podsForbidden: true}
 	_ = s.step()
@@ -168,6 +171,7 @@ func TestCustomPodPermissionFailurePrecedesHandoff(t *testing.T) {
 }
 
 func TestCustomRouteErrorsAndPendingReleaseKeepObservedState(t *testing.T) {
+	requireLegacyCustomRuntime(t)
 	for _, unavailable := range []string{"route-api", "pending-release", "registry"} {
 		t.Run(unavailable, func(t *testing.T) {
 			s := runningCustomReview(t)
@@ -210,6 +214,7 @@ func (p *observedProvider) Resolve(ctx context.Context, agent *api.Agent, team *
 }
 
 func TestCustomProviderDeadlineAndOutage(t *testing.T) {
+	requireLegacyCustomRuntime(t)
 	s := runningCustomReview(t)
 	provider := &observedProvider{recoveryProvider: s.provider, fail: true}
 	s.reconciler.CustomBindings = provider
@@ -226,6 +231,7 @@ func TestCustomProviderDeadlineAndOutage(t *testing.T) {
 }
 
 func TestCustomForeignRouteIsNotAdoptedOrDeleted(t *testing.T) {
+	requireLegacyCustomRuntime(t)
 	s := runningCustomReview(t)
 	key := types.NamespacedName{Namespace: s.provider.bindings.Namespace.Name, Name: "cetirun-" + s.agent.Name}
 	route := &istiov1beta1.VirtualService{}
@@ -256,6 +262,7 @@ func TestCustomForeignRouteIsNotAdoptedOrDeleted(t *testing.T) {
 }
 
 func TestCustomBlockedDeletionRevokesAccessAndStopsWorkload(t *testing.T) {
+	requireLegacyCustomRuntime(t)
 	s := newCompletionScenario(t)
 	s.provider.store.failures = 5
 	_ = s.step()
@@ -275,6 +282,7 @@ func TestCustomBlockedDeletionRevokesAccessAndStopsWorkload(t *testing.T) {
 }
 
 func TestCustomDeletionAttemptsShutdownWhenSandboxRevocationFails(t *testing.T) {
+	requireLegacyCustomRuntime(t)
 	for _, trigger := range []string{"retained hold", "enabled preparation"} {
 		for _, failure := range []string{"journal only", "workload", "terminal", "route", "status", "all"} {
 			t.Run(trigger+"/"+failure, func(t *testing.T) {
@@ -447,6 +455,7 @@ func TestCustomDeletionAttemptsShutdownWhenSandboxRevocationFails(t *testing.T) 
 }
 
 func TestCustomDeletionStopsBeforeRetainedRegistryCleanup(t *testing.T) {
+	requireLegacyCustomRuntime(t)
 	ctx := context.Background()
 	s := newCompletionScenario(t)
 	enableTerminal(t, s, true)
@@ -529,6 +538,7 @@ func TestCustomDeletionStopsBeforeRetainedRegistryCleanup(t *testing.T) {
 }
 
 func TestCustomDesktopDisableAndEnableCleansRoute(t *testing.T) {
+	requireLegacyCustomRuntime(t)
 	s := runningCustomReview(t)
 	s.provider.approve = func(sts *appsv1.StatefulSet) error {
 		sts.Spec.Replicas = ptr.To[int32](0)
@@ -558,6 +568,7 @@ func TestCustomDesktopDisableAndEnableCleansRoute(t *testing.T) {
 }
 
 func TestCustomDeletingOrphanedRecordsCanFinish(t *testing.T) {
+	requireLegacyCustomRuntime(t)
 	s := newCompletionScenario(t)
 	s.provider.store.failures = 1
 	_ = s.step()
@@ -600,6 +611,7 @@ func TestCustomDeletingOrphanedRecordsCanFinish(t *testing.T) {
 }
 
 func TestControllerPlatformConfigurationParity(t *testing.T) {
+	requireLegacyCustomRuntime(t)
 	configuration := map[string]any{
 		"tolerations": []any{map[string]any{"key": "agents", "operator": "Equal", "value": "true", "effect": "NoSchedule"}},
 		"affinity": map[string]any{"nodeAffinity": map[string]any{"requiredDuringSchedulingIgnoredDuringExecution": map[string]any{

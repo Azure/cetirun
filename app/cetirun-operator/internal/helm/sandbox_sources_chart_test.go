@@ -43,7 +43,12 @@ func sandboxSourcesChartValues(t *testing.T) map[string]any {
 		"namespace": "operator-example",
 		"sandboxAdmission": map[string]any{
 			"enabled": true, "enforce": true, "podsEnabled": true,
-			"adminUsers": []string{"admin@example.com"}, "tlsSecretName": "synthetic-admission-tls",
+			"adminUsers": []string{
+				"admin@example.com",
+				"system:serviceaccount:release-example:cetirun-portal",
+			},
+			"governanceApprovalUsername": "system:serviceaccount:release-example:cetirun-portal",
+			"tlsSecretName":              "synthetic-admission-tls",
 			"caBundle": base64.StdEncoding.EncodeToString(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certificate})),
 		},
 		"sandboxSources": map[string]any{

@@ -1,47 +1,36 @@
-# AdminClaw — Agent CR for operator-managed deployment.
-# Hermes is the default for new deployments. Keep the existing Agent type when
-# reapplying to an existing deployment; Agent types are immutable.
-# The operator will:
-#   1. Ensure namespace cetirun-admin exists (with Istio sidecar label)
-#   2. Create gateway token Secret (gateway-token)
-#   3. Deploy the Hermes runtime as Helm release "openclaw-admin" in cetirun-admin
-#   4. Create VirtualService "cetirun-admin" routing /ui/admin/
-#
-# Pre-requisites (applied by setup.sh before this CR):
-#   - Namespace cetirun-admin (created first so SA can land in it)
-#   - ServiceAccount openclaw-admin-cetirun (via deploy/rbac.yaml)
-#   - ClusterRole/ClusterRoleBinding adminclaw-admin (via deploy/rbac.yaml)
-#   - Secret gateway-token with OPENCLAW_GATEWAY_TOKEN + MODEL_API_KEY (via setup.sh)
+# CetiAdmin enrollment is created suspended. The referenced Team must bind an
+# admin AgentPolicy and permit the selected Sandbox. Starting CetiAdmin also
+# requires the future typed Portal-client Sandbox entitlement; arbitrary Helm
+# environment, volume, and ServiceAccount overrides are intentionally absent.
 apiVersion: cetirun.microsoft.com/v1alpha1
 kind: Agent
 metadata:
   name: admin
+  annotations:
+    agentidentity.cetirun.microsoft.com/owner-tenant-id: "${ADMIN_OWNER_TENANT_ID}"
+    agentidentity.cetirun.microsoft.com/owner-object-id: "${ADMIN_OWNER_OBJECT_ID}"
 spec:
   agent:
     type: hermes
-  gatewayTokenSecretRef: "gateway-token"
-  helm:
-    values:
-      azureWorkloadIdentity:
-        clientId: "${WORKLOAD_IDENTITY_CLIENT_ID}"
-        enabled: ${WORKLOAD_IDENTITY_ENABLED}
-      execRestriction:
-        enabled: true
-      networkPolicy:
-        enabled: false
-      secrets:
-        apiBase: "${MODEL_API_BASE}"
-        authMode: "api_key"
-        model: "gpt-5.4"
-        provider: "openai"
-      serviceAccount:
-        create: false
-        name: "openclaw-admin-cetirun"
-      skills:
-        shared: ${ENABLE_SKILLS}
-  msteams:
-    enabled: true
   user:
     alias: admin
     displayName: "CetiRun Admin"
-    team: aks-platform
+  team: "${ADMIN_TEAM}"
+  policyClass: admin
+  sandboxRef: "${ADMIN_SANDBOX}"
+  model: "${ADMIN_MODEL}"
+  modelAccess:
+    sharedModels: true
+    githubCopilot: false
+  agentIdentity:
+    enabled: false
+  suspended: true
+  governance:
+    teamAuthorization:
+      subject:
+        kind: User
+        tenantID: "${ADMIN_OWNER_TENANT_ID}"
+        objectID: "${ADMIN_OWNER_OBJECT_ID}"
+      authorizedAt: "${ADMIN_AUTHORIZED_AT}"
+    gatewayBudgetUSD: "${ADMIN_GATEWAY_BUDGET_USD}"
+  gatewayTokenSecretRef: gateway-token

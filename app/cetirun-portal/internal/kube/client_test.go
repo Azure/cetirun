@@ -45,10 +45,10 @@ func sampleInstance() *cetirunv1alpha1.Agent {
 		},
 		Spec: cetirunv1alpha1.AgentSpec{
 			GatewayTokenSecretRef: "gateway-token",
+			Team:                  "example-team",
 			User: cetirunv1alpha1.UserSpec{
 				Alias:       "alice",
 				DisplayName: "Alice Smith",
-				Team:        "example-team",
 				Email:       "alice@example.com",
 			},
 		},
@@ -101,8 +101,8 @@ func TestCreateInstance_Success(t *testing.T) {
 	if instance.Spec.User.DisplayName != "Bob Jones" {
 		t.Errorf("DisplayName = %q, want %q", instance.Spec.User.DisplayName, "Bob Jones")
 	}
-	if instance.Spec.User.Team != "other-team" {
-		t.Errorf("Team = %q, want %q", instance.Spec.User.Team, "other-team")
+	if instance.Spec.Team != "other-team" {
+		t.Errorf("Team = %q, want %q", instance.Spec.Team, "other-team")
 	}
 	if instance.Spec.GatewayTokenSecretRef != "gateway-token" {
 		t.Errorf("GatewayTokenSecretRef = %q, want %q", instance.Spec.GatewayTokenSecretRef, "gateway-token")
@@ -339,15 +339,13 @@ func TestGetTailscaleAuthKey_NotFound(t *testing.T) {
 	}
 }
 
-func TestUpdateInstance_DisplayNameAndTeam(t *testing.T) {
+func TestUpdateInstance_DisplayNameWithoutGovernanceRebind(t *testing.T) {
 	fc := newFakeClient(sampleInstance())
 	c := NewClient(fc)
 
 	displayName := "Alice Updated"
-	team := "other-team"
 	instance, err := c.UpdateInstance(context.Background(), "alice", UpdateInstanceOpts{
 		DisplayName: &displayName,
-		Team:        &team,
 	})
 	if err != nil {
 		t.Fatalf("UpdateInstance failed: %v", err)
@@ -355,8 +353,8 @@ func TestUpdateInstance_DisplayNameAndTeam(t *testing.T) {
 	if instance.Spec.User.DisplayName != "Alice Updated" {
 		t.Errorf("DisplayName = %q, want %q", instance.Spec.User.DisplayName, "Alice Updated")
 	}
-	if instance.Spec.User.Team != "other-team" {
-		t.Errorf("Team = %q, want %q", instance.Spec.User.Team, "other-team")
+	if instance.Spec.Team != "example-team" {
+		t.Errorf("Team = %q, want governance binding preserved", instance.Spec.Team)
 	}
 
 	// Verify persisted.

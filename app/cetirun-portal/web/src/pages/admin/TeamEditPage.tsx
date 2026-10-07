@@ -33,6 +33,11 @@ interface FormState {
   skills: string; // newline-separated
   storage: TeamSkillStorage;
   storageEnabled: boolean;
+  membership: string;
+  normalAgentPolicyRef: string;
+  adminAgentPolicyRef: string;
+  sandboxRefs: string;
+  defaultSandboxRef: string;
 }
 
 const emptyStorage: TeamSkillStorage = {
@@ -53,6 +58,11 @@ function fromDTO(t: TeamDTO): FormState {
     skills: (t.skills || []).join("\n"),
     storage: t.skillStorage || { ...emptyStorage },
     storageEnabled: !!t.skillStorage,
+    membership: JSON.stringify(t.membership || [], null, 2),
+    normalAgentPolicyRef: t.normalAgentPolicyRef || "",
+    adminAgentPolicyRef: t.adminAgentPolicyRef || "",
+    sandboxRefs: (t.sandboxRefs || []).join("\n"),
+    defaultSandboxRef: t.defaultSandboxRef || "",
   };
 }
 
@@ -63,12 +73,20 @@ function toRequest(s: FormState): TeamUpsertRequest {
       .map((line) => line.trim())
       .filter((line) => line.length > 0);
 
+  let membership: TeamUpsertRequest["membership"];
+  try { membership = JSON.parse(s.membership); } catch { throw new Error("Membership must be a JSON array of verified subjects."); }
+  if (!Array.isArray(membership)) throw new Error("Membership must be a JSON array of verified subjects.");
   const req: TeamUpsertRequest = {
     name: s.name.trim(),
     role: s.role.trim() || undefined,
     description: splitLines(s.description),
     defaultProvider: s.defaultProvider.trim() || undefined,
     skills: splitLines(s.skills),
+    membership,
+    normalAgentPolicyRef: s.normalAgentPolicyRef.trim(),
+    adminAgentPolicyRef: s.adminAgentPolicyRef.trim() || undefined,
+    sandboxRefs: splitLines(s.sandboxRefs),
+    defaultSandboxRef: s.defaultSandboxRef.trim(),
   };
   if (s.storageEnabled) {
     req.skillStorage = {
@@ -99,6 +117,11 @@ export function TeamEditPage() {
     skills: "",
     storage: { ...emptyStorage },
     storageEnabled: false,
+    membership: "[]",
+    normalAgentPolicyRef: "",
+    adminAgentPolicyRef: "",
+    sandboxRefs: "",
+    defaultSandboxRef: "",
   });
   const [submitError, setSubmitError] = useState<string | null>(null);
 
@@ -132,7 +155,8 @@ export function TeamEditPage() {
   const onSubmit = (e: FormEvent) => {
     e.preventDefault();
     setSubmitError(null);
-    const req = toRequest(form);
+    let req: TeamUpsertRequest;
+    try { req = toRequest(form); } catch (err) { setSubmitError(err instanceof Error ? err.message : "Invalid Team governance configuration"); return; }
     if (isCreate) {
       if (!/^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$/.test(req.name || "")) {
         setSubmitError(
@@ -196,6 +220,15 @@ export function TeamEditPage() {
         />
       </Field>
 
+      <Divider />
+      <Text size={400} weight="semibold">Governance binding</Text>
+      <Field label="Verified membership" required hint='JSON subjects, e.g. [{"kind":"User","tenantID":"...","objectID":"..."}]'>
+        <Textarea rows={6} value={form.membership} onChange={(_, data) => setForm({ ...form, membership: data.value })} />
+      </Field>
+      <Field label="Normal AgentPolicy" required><Input value={form.normalAgentPolicyRef} onChange={(_, data) => setForm({ ...form, normalAgentPolicyRef: data.value })} /></Field>
+      <Field label="Admin AgentPolicy"><Input value={form.adminAgentPolicyRef} onChange={(_, data) => setForm({ ...form, adminAgentPolicyRef: data.value })} /></Field>
+      <Field label="Allowed Sandboxes" required hint="One Sandbox name per line"><Textarea rows={3} value={form.sandboxRefs} onChange={(_, data) => setForm({ ...form, sandboxRefs: data.value })} /></Field>
+      <Field label="Default Sandbox" required><Input value={form.defaultSandboxRef} onChange={(_, data) => setForm({ ...form, defaultSandboxRef: data.value })} /></Field>
       <Divider />
       <Field label="Skills" hint="One skill identifier per line.">
         <Textarea

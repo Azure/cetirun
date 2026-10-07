@@ -8,6 +8,8 @@ import (
 	"net/http/httptest"
 	"testing"
 	"testing/fstest"
+
+	"github.com/Azure/CetiRun/app/cetirun-portal/internal/handler"
 )
 
 func TestSPAHandler_ExistingFile(t *testing.T) {
@@ -86,5 +88,16 @@ func TestSPAHandler_RootPath(t *testing.T) {
 	body := w.Body.String()
 	if body != "<html>root</html>" {
 		t.Errorf("body = %q, want index.html content", body)
+	}
+}
+
+func TestInternalGovernanceObservationRequiresProjectedServiceAccountToken(t *testing.T) {
+	// This checks the route boundary itself: the internal mux must not expose a
+	// read without first reaching CetiAdmin's projected-token authentication.
+	mux := NewInternalMux(&handler.InstanceHandler{}, handler.NewCetiAdminHandler(nil, "cetirun-governance-actions", []string{"system:serviceaccount:cetirun-system:cetiadmin"}))
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/internal/v1/agents/example/governance", nil))
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
 }

@@ -24,6 +24,17 @@ func newAdminTeamHandler(objs ...client.Object) *AdminTeamHandler {
 	return &AdminTeamHandler{Kube: kube.NewClient(c)}
 }
 
+func governedTeamRequest() TeamUpsertRequest {
+	return TeamUpsertRequest{
+		Membership: []cetirunv1alpha1.GovernanceSubject{{
+			Kind: "User", TenantID: managementTenant, ObjectID: managementOwner,
+		}},
+		NormalAgentPolicyRef: "normal",
+		SandboxRefs:          []string{"standard"},
+		DefaultSandboxRef:    "standard",
+	}
+}
+
 func TestAdminTeam_List(t *testing.T) {
 	team := &cetirunv1alpha1.Team{
 		ObjectMeta: metav1.ObjectMeta{Name: "aks"},
@@ -77,12 +88,9 @@ func TestAdminTeam_Get_NotFound(t *testing.T) {
 
 func TestAdminTeam_Create(t *testing.T) {
 	h := newAdminTeamHandler()
-	body, _ := json.Marshal(TeamUpsertRequest{
-		Name:            "sre",
-		Role:            "SRE",
-		DefaultProvider: "anthropic",
-		Skills:          []string{"npm:@scope/skill"},
-	})
+	request := governedTeamRequest()
+	request.Name, request.Role, request.DefaultProvider, request.Skills = "sre", "SRE", "anthropic", []string{"npm:@scope/skill"}
+	body, _ := json.Marshal(request)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/teams", bytes.NewReader(body))
 	w := httptest.NewRecorder()
 	h.CreateTeam(w, req)
@@ -151,7 +159,11 @@ func TestAdminTeam_Update(t *testing.T) {
 			MemberContext: cetirunv1alpha1.TeamContextSpec{Role: "old"},
 		},
 	})
-	body, _ := json.Marshal(TeamUpsertRequest{Role: "new"})
+	request := governedTeamRequest()
+	request.Role = "new"
+	request.AdminAgentPolicyRef = "admin"
+	request.SandboxRefs = []string{"standard", "restricted"}
+	body, _ := json.Marshal(request)
 	req := httptest.NewRequest(http.MethodPut, "/api/v1/admin/teams/aks", bytes.NewReader(body))
 	req.SetPathValue("name", "aks")
 	w := httptest.NewRecorder()
@@ -170,13 +182,19 @@ func TestAdminTeamUpdatePreservesGovernance(t *testing.T) {
 	team := &cetirunv1alpha1.Team{
 		ObjectMeta: metav1.ObjectMeta{Name: "governed"},
 		Spec: cetirunv1alpha1.TeamSpec{
+			Membership:           cetirunv1alpha1.TeamMembershipSpec{Subjects: []cetirunv1alpha1.GovernanceSubject{{Kind: "User", TenantID: managementTenant, ObjectID: managementOwner}}},
 			NormalAgentPolicyRef: "normal", AdminAgentPolicyRef: "admin",
 			SandboxRefs: []string{"standard", "restricted"}, DefaultSandboxRef: "standard",
 			MemberContext: cetirunv1alpha1.TeamContextSpec{Role: "old"},
 		},
 	}
 	h := newAdminTeamHandler(team)
-	req := httptest.NewRequest(http.MethodPut, "/api/v1/admin/teams/governed", bytes.NewBufferString(`{"role":"new"}`))
+	request := governedTeamRequest()
+	request.Role = "new"
+	request.AdminAgentPolicyRef = "admin"
+	request.SandboxRefs = []string{"standard", "restricted"}
+	body, _ := json.Marshal(request)
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/admin/teams/governed", bytes.NewReader(body))
 	req.SetPathValue("name", team.Name)
 	w := httptest.NewRecorder()
 	h.UpdateTeam(w, req)

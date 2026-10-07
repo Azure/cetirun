@@ -57,14 +57,11 @@ agent_apply_config() (
   fi
   temp=$(mktemp "${dest}.tmp.XXXXXX")
   trap 'rm -f "$temp"' 0
-  # CetiRun owns the model list of an Agent on the platform AI Gateway, which
-  # the chart marks with CETIRUN_AI_GATEWAY, so that list replaces the saved
-  # one instead of accumulating models the Gateway no longer offers. So does
-  # the Gateway provider entry, which binds the Agent's virtual key: a key,
-  # auth mode or request override saved on that provider would otherwise be
-  # sent to the Gateway in its place. The retired in-agent Copilot sign-in
-  # profile is dropped. Any other configuration, other providers and an openai
-  # provider with its own endpoint included, keeps its saved settings.
+  # CetiRun owns every model route when an Agent uses the platform AI Gateway.
+  # A stored provider, custom endpoint or auth profile can take precedence over
+  # environment credentials, so preserve unrelated configuration only: replace
+  # the complete models and auth sections with the chart-generated Gateway
+  # configuration.
   if [ "${CETIRUN_AI_GATEWAY:-false}" = true ]; then
     gateway=true
   else
@@ -75,8 +72,8 @@ agent_apply_config() (
     | reduce .[] as $item ({}; . * $item)
     | if $gateway then
         .agents.defaults.models = ($source.agents.defaults.models // {})
-        | if ($source.models.providers.openai | type) == "object" then .models.providers.openai = $source.models.providers.openai else . end
-        | if (.auth.profiles | type) == "object" then .auth.profiles |= del(.["github-copilot:github"]) else . end
+        | .models = ($source.models // {})
+        | .auth = ($source.auth // {"profiles": {}})
       else . end
     | if .channels.msteams.enabled then
         .channels.msteams.allowFrom //= ["00000000-0000-0000-0000-000000000000"]
@@ -92,6 +89,32 @@ agent_apply_config() (
   mv -f "$temp" "$dest"
   health_record=$(home_path .openclaw/logs/config-health.json)
   if [ -f "$health_record" ]; then rm -f "$health_record"; fi
+)
+
+remove_gateway_provider_environment() (
+  set -e
+  [ "${CETIRUN_AI_GATEWAY:-false}" = true ] || exit 0
+  env_file=$(home_path .openclaw/.env)
+  [ -f "$env_file" ] || exit 0
+  temp=$(mktemp "${env_file}.tmp.XXXXXX")
+  trap 'rm -f "$temp"' 0
+  # This is a PVC migration boundary, not a general dotenv normalizer. Remove
+  # variables understood as direct model-provider credentials or endpoints;
+  # the workload receives its one Gateway key and endpoint from Kubernetes.
+  while IFS= read -r line || [ -n "$line" ]; do
+    assignment=${line#export }
+    name=${assignment%%=*}
+    case "$name" in
+      OPENAI_*|ANTHROPIC_*|AZURE_OPENAI_*|AZURE_AI_*|COHERE_*|DEEPSEEK_*|\
+      FIREWORKS_*|GEMINI_*|GOOGLE_AI_*|GROQ_*|HUGGINGFACE_*|MISTRAL_*|\
+      OLLAMA_*|OPENROUTER_*|PERPLEXITY_*|TOGETHER_*|VERTEX_AI_*|XAI_*|\
+      MODEL_API_KEY|LLM_API_KEY|LLM_BASE_URL|LLM_ENDPOINT)
+        ;;
+      *) printf '%s\n' "$line" >> "$temp" ;;
+    esac
+  done < "$env_file"
+  chmod 600 "$temp"
+  mv -f "$temp" "$env_file"
 )
 
 prepare_plugin_link() {
@@ -164,6 +187,7 @@ SCRIPT
 )
 
 agent_prepare_integrations() {
+  remove_gateway_provider_environment
   prepare_plugin_link
   sync_managed_image_skills
   install_image_skills

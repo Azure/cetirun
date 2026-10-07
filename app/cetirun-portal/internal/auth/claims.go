@@ -38,6 +38,10 @@ type Claims struct {
 	// Entra ID token. They are empty when Agent Identity is disabled.
 	TenantID string
 	ObjectID string
+	// Groups contains only UUID group IDs from the signed Entra token. When
+	// Entra emits an overage indicator instead of this claim it remains empty,
+	// which intentionally cannot satisfy Team Group membership.
+	Groups []string
 }
 
 type claimsKey struct{}

@@ -48,6 +48,15 @@ type fakeHelmClient struct {
 	prepareErr       error
 }
 
+// requireLegacyDirectRuntime documents tests for the pre-Governance execution
+// path. That path accepted an Agent without an authorized Team/Sandbox binding
+// and invoked Helm directly. Mandatory Governance intentionally removed it;
+// Sandbox preparation owns any future built-in runtime activation instead.
+func requireLegacyDirectRuntime(t *testing.T) {
+	t.Helper()
+	t.Skip("legacy direct runtime reconciliation was removed by mandatory Governance")
+}
+
 func (f *fakeHelmClient) Prepare(namespace string, values map[string]any, chartVersion string) (*helm.PreparedRelease, error) {
 	f.prepareCalls++
 	if f.prepareErr != nil {
@@ -73,6 +82,7 @@ func (f *fakeHelmClient) Refresh(prepared *helm.PreparedRelease, values map[stri
 }
 
 func TestReconcileBuiltinHarnessPinsThenDeploys(t *testing.T) {
+	requireLegacyDirectRuntime(t)
 	for _, typ := range []cetirunv1alpha1.AgentType{cetirunv1alpha1.AgentTypeHermes, cetirunv1alpha1.AgentTypeOpenClaw} {
 		t.Run(string(typ), func(t *testing.T) {
 			cr := newCR("example", cetirunv1alpha1.PhasePending, nil, 1, 0, "")
@@ -125,6 +135,7 @@ func TestReconcileBuiltinHarnessPinsThenDeploys(t *testing.T) {
 }
 
 func TestReconcileInvalidHarnessPreservesWorkload(t *testing.T) {
+	requireLegacyDirectRuntime(t)
 	for _, invalid := range []cetirunv1alpha1.HarnessSpec{
 		{Type: cetirunv1alpha1.AgentTypeHermes, Port: ptr.To[int32](18790)},
 		{Type: cetirunv1alpha1.AgentTypeOpenClaw, Image: ptr.To("registry.example.com/unqualified:1")},
@@ -202,10 +213,10 @@ func newCR(alias string, phase string, conditions []metav1.Condition, generation
 		},
 		Spec: cetirunv1alpha1.AgentSpec{
 			Agent: cetirunv1alpha1.HarnessSpec{Type: cetirunv1alpha1.AgentTypeOpenClaw},
+			Team:  "test-team",
 			User: cetirunv1alpha1.UserSpec{
 				Alias:       alias,
 				DisplayName: "Test User",
-				Team:        "test-team",
 			},
 			GatewayTokenSecretRef: "gateway-token",
 			Helm: cetirunv1alpha1.HelmSpec{
@@ -298,6 +309,7 @@ func findCondition(conditions []metav1.Condition, condType string) *metav1.Condi
 // --- Tests ---
 
 func TestReconcile_UnsupportedAgentDoesNotProvision(t *testing.T) {
+	requireLegacyDirectRuntime(t)
 	for _, typ := range []cetirunv1alpha1.AgentType{"", "unknown"} {
 		t.Run(string(typ), func(t *testing.T) {
 			cr := newCR("example-agent", "", nil, 1, 0, "")
@@ -364,6 +376,7 @@ func TestFinalizerConstant(t *testing.T) {
 }
 
 func TestReconcile_PodNotReady_StaysProvisioning(t *testing.T) {
+	requireLegacyDirectRuntime(t)
 	alias := "alice"
 
 	cr := newCR(alias, cetirunv1alpha1.PhaseProvisioning, nil, 1, 0, "")
@@ -419,6 +432,7 @@ func TestReconcile_PodNotReady_StaysProvisioning(t *testing.T) {
 }
 
 func TestReconcile_PodReady_MarksReady(t *testing.T) {
+	requireLegacyDirectRuntime(t)
 	alias := "bob"
 
 	cr := newCR(alias, cetirunv1alpha1.PhaseProvisioning, nil, 1, 0, "")
@@ -487,6 +501,7 @@ func TestReconcile_PodReady_MarksReady(t *testing.T) {
 }
 
 func TestReconcile_RolloutIncomplete_StaysProvisioning(t *testing.T) {
+	requireLegacyDirectRuntime(t)
 	cases := []struct {
 		name            string
 		readyReplicas   int32
@@ -572,6 +587,7 @@ func TestReconcile_RolloutIncomplete_StaysProvisioning(t *testing.T) {
 }
 
 func TestReconcile_StatefulSetNotFound_Requeues(t *testing.T) {
+	requireLegacyDirectRuntime(t)
 	alias := "carol"
 
 	cr := newCR(alias, cetirunv1alpha1.PhaseProvisioning, nil, 1, 0, "")
@@ -624,6 +640,7 @@ func TestReconcile_StatefulSetNotFound_Requeues(t *testing.T) {
 }
 
 func TestReconcile_AlreadyDeployed_SkipsHelm(t *testing.T) {
+	requireLegacyDirectRuntime(t)
 	alias := "dave"
 	domainSuffix := "example.com"
 
@@ -693,6 +710,7 @@ func TestReconcile_AlreadyDeployed_SkipsHelm(t *testing.T) {
 // content changes (e.g. token rotation), a Ready instance triggers a full reconcile
 // with Helm upgrade instead of being skipped.
 func TestReconcile_SecretChanged_TriggersHelm(t *testing.T) {
+	requireLegacyDirectRuntime(t)
 	alias := "eve"
 	domainSuffix := "example.com"
 
@@ -772,6 +790,7 @@ func TestReconcile_SecretChanged_TriggersHelm(t *testing.T) {
 // skip-cache does not prevent upgrades of existing instances whose
 // operator-managed gateway Secret predates CETIRUN_AUTH_KEY.
 func TestReconcile_ReadyInstanceBackfillsCetiRunAuthKey(t *testing.T) {
+	requireLegacyDirectRuntime(t)
 	alias := "legacy-auth-key"
 	domainSuffix := "example.com"
 	legacySecretData := map[string][]byte{"OPENCLAW_GATEWAY_TOKEN": []byte("legacy-token")}
@@ -929,6 +948,7 @@ func computeSecretHash(data map[string][]byte) string {
 // TestReconcile_EmptyVersion_Backfills verifies that when spec.helm.version is empty,
 // the reconciler backfills it with the operator's default chart version and requeues.
 func TestReconcile_EmptyVersion_Backfills(t *testing.T) {
+	requireLegacyDirectRuntime(t)
 	alias := "frank"
 	chartVersion := "0.1.28"
 
@@ -984,6 +1004,7 @@ func TestReconcile_EmptyVersion_Backfills(t *testing.T) {
 // TestReconcile_VersionSet_PassesToHelm verifies that when spec.helm.version is set,
 // the reconciler passes it through to HelmClient.InstallOrUpgrade.
 func TestReconcile_VersionSet_PassesToHelm(t *testing.T) {
+	requireLegacyDirectRuntime(t)
 	alias := "grace"
 	pinnedVersion := "0.1.9"
 
@@ -1036,10 +1057,10 @@ func TestConditionTailscaleReady(t *testing.T) {
 func TestTailscaleSpec_TypeConstruction(t *testing.T) {
 	instance := &cetirunv1alpha1.Agent{
 		Spec: cetirunv1alpha1.AgentSpec{
+			Team: "example-team",
 			User: cetirunv1alpha1.UserSpec{
 				Alias:       "alice",
 				DisplayName: "Alice Smith",
-				Team:        "example-team",
 			},
 			GatewayTokenSecretRef: "gateway-token",
 			Tailscale: &cetirunv1alpha1.TailscaleSpec{
@@ -1058,10 +1079,10 @@ func TestTailscaleSpec_TypeConstruction(t *testing.T) {
 	// Verify nil Tailscale is valid (feature disabled).
 	instanceNoTS := &cetirunv1alpha1.Agent{
 		Spec: cetirunv1alpha1.AgentSpec{
+			Team: "example-team",
 			User: cetirunv1alpha1.UserSpec{
 				Alias:       "bob",
 				DisplayName: "Bob",
-				Team:        "example-team",
 			},
 			GatewayTokenSecretRef: "gateway-token",
 		},
@@ -1075,6 +1096,7 @@ func TestTailscaleSpec_TypeConstruction(t *testing.T) {
 // the reconciler sets phase=Suspended, PodReady=False, Ready=False, and calls Helm
 // with replicaCount=0.
 func TestReconcile_Suspended_MarksSuspendedPhase(t *testing.T) {
+	requireLegacyDirectRuntime(t)
 	alias := "suspended-user"
 
 	cr := newCR(alias, cetirunv1alpha1.PhaseProvisioning, nil, 1, 0, "")
@@ -1150,6 +1172,7 @@ func TestReconcile_Suspended_MarksSuspendedPhase(t *testing.T) {
 // TestReconcile_Unsuspend_MarksReady verifies that when spec.suspended changes
 // from true to false, the reconciler transitions through Provisioning back to Ready.
 func TestReconcile_Unsuspend_MarksReady(t *testing.T) {
+	requireLegacyDirectRuntime(t)
 	alias := "unsuspend-user"
 
 	// Start with a Suspended instance that now has suspended=false (unsuspending).
@@ -1206,6 +1229,7 @@ func TestReconcile_Unsuspend_MarksReady(t *testing.T) {
 // TestReconcile_SuspendedSkipCache verifies the skip-cache works for
 // Suspended instances (no Helm call when nothing changed).
 func TestReconcile_SuspendedSkipCache(t *testing.T) {
+	requireLegacyDirectRuntime(t)
 	alias := "skip-cache-suspended"
 
 	// Compute the expected operator hash for skip-cache to match.

@@ -45,33 +45,28 @@ type AgentSpec struct {
 	// Team is the name of the Team this instance belongs to.
 	// The operator merges team defaults (user context, AI model, skills) into
 	// the instance configuration. Per-instance fields take precedence.
-	// +optional
-	Team string `json:"team,omitempty"`
+	Team string `json:"team"`
 
 	// SandboxRef selects a Sandbox permitted by the Team.
-	// Temporarily optional for legacy Agents; sandbox binding validation requires it.
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=253
 	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`
-	// +optional
-	SandboxRef string `json:"sandboxRef,omitempty"`
+	SandboxRef string `json:"sandboxRef"`
 
 	// PolicyClass selects the administrator-assigned Team policy slot.
 	// +kubebuilder:default=normal
 	// +optional
 	PolicyClass AgentPolicyClass `json:"policyClass,omitempty"`
 
-	// Model is the Agent's preferred default model. With the platform AI
-	// Gateway it is a model name as the Agent sees it, such as a shared model
-	// or copilot/<model>; an unavailable name falls back to the deployment
-	// default and then to the first available model. Without the Gateway it is
-	// the GitHub Copilot model ID, defaulting to the deployment's model.
+	// Model is the Agent's preferred default model as exposed by the platform
+	// AI Gateway, such as a shared model or copilot/<model>. Governance rejects
+	// an explicitly requested model that is outside the effective policy.
 	// +kubebuilder:validation:MaxLength=256
 	// +optional
 	Model string `json:"model,omitempty"`
 
-	// ModelAccess selects where the Agent's models come from when the
-	// platform AI Gateway is enabled. Both sources are on unless set to false.
+	// ModelAccess explicitly requests model sources when the platform AI
+	// Gateway is enabled. Omission grants no model source.
 	// +optional
 	ModelAccess *ModelAccessSpec `json:"modelAccess,omitempty"`
 
@@ -86,6 +81,10 @@ type AgentSpec struct {
 	// and are deliberately not accepted in spec.
 	// +optional
 	AgentIdentity *AgentIdentitySpec `json:"agentIdentity,omitempty"`
+
+	// Governance contains platform-written enrollment and Team authorization
+	// evidence. A governed Agent must have a complete Team/Sandbox binding.
+	Governance GovernanceSpec `json:"governance"`
 
 	// GatewayTokenSecretRef names the built-in Agent's multi-purpose Secret
 	// in the instance namespace. Required for openclaw/hermes and forbidden for
@@ -135,30 +134,29 @@ type TailscaleSpec struct {
 // TailscaleAuthKeyField is the Secret data key for the Tailscale auth key.
 const TailscaleAuthKeyField = "TAILSCALE_AUTH_KEY"
 
-// ModelAccessSpec selects the Agent's model sources in the AI Gateway. A
-// field left unset counts as true, and at least one source stays on.
-// +kubebuilder:validation:XValidation:rule="!has(self.sharedModels) || self.sharedModels || !has(self.githubCopilot) || self.githubCopilot",message="sharedModels and githubCopilot cannot both be false"
+// ModelAccessSpec selects the Agent's requested model sources in the AI
+// Gateway. Governance intersects these requests with the effective
+// AgentPolicy; both sources may be disabled for an Agent with no model access.
 type ModelAccessSpec struct {
-	// SharedModels grants the models administrators share through the AI
-	// Gateway. Defaults to true.
+	// SharedModels requests the models administrators share through the AI
+	// Gateway.
 	// +optional
 	SharedModels *bool `json:"sharedModels,omitempty"`
 
-	// GitHubCopilot runs a GitHub Copilot proxy for the owner's account and
-	// grants the models that account offers once the owner signs in through
-	// the Portal. Defaults to true.
+	// GitHubCopilot requests a GitHub Copilot proxy for the owner's account.
+	// The effective policy must also allow it.
 	// +optional
 	GitHubCopilot *bool `json:"githubCopilot,omitempty"`
 }
 
-// SharedModelsEnabled reports the effective shared-models switch.
+// SharedModelsEnabled reports whether shared models were explicitly requested.
 func (s AgentSpec) SharedModelsEnabled() bool {
-	return s.ModelAccess == nil || s.ModelAccess.SharedModels == nil || *s.ModelAccess.SharedModels
+	return s.ModelAccess != nil && s.ModelAccess.SharedModels != nil && *s.ModelAccess.SharedModels
 }
 
-// GitHubCopilotEnabled reports the effective GitHub Copilot switch.
+// GitHubCopilotEnabled reports whether GitHub Copilot was explicitly requested.
 func (s AgentSpec) GitHubCopilotEnabled() bool {
-	return s.ModelAccess == nil || s.ModelAccess.GitHubCopilot == nil || *s.ModelAccess.GitHubCopilot
+	return s.ModelAccess != nil && s.ModelAccess.GitHubCopilot != nil && *s.ModelAccess.GitHubCopilot
 }
 
 // UserSpec identifies the user this instance is provisioned for.
@@ -177,10 +175,6 @@ type UserSpec struct {
 	// +optional
 	Email string `json:"email,omitempty"`
 
-	// Team is the user's team name.
-	// Deprecated: use spec.team instead. This field will be removed in a future version.
-	// +optional
-	Team string `json:"team,omitempty"`
 }
 
 // HelmSpec allows per-instance Helm chart configuration overrides.
@@ -275,6 +269,60 @@ type AgentStatus struct {
 	// proof that a node can pull the image.
 	// +optional
 	RegistryCredentials *RegistryCredentialsStatus `json:"registryCredentials,omitempty"`
+
+	// Governance records the resolved authorization and expected component
+	// revisions. Detailed Sandbox, Gateway and identity evidence remains in
+	// their existing status fields.
+	// +optional
+	Governance *GovernanceStatus `json:"governance,omitempty"`
+}
+
+// GovernanceSpec contains platform-written authorization evidence. It is not
+// a user editable ownership API.
+type GovernanceSpec struct {
+	TeamAuthorization TeamAuthorization `json:"teamAuthorization"`
+	// +kubebuilder:validation:Pattern=`^(0|[1-9][0-9]*)(\.[0-9]{1,6})?$`
+	// +optional
+	GatewayBudgetUSD string `json:"gatewayBudgetUSD,omitempty"`
+}
+
+type TeamAuthorization struct {
+	Subject GovernanceSubject `json:"subject"`
+	AuthorizedAt metav1.Time `json:"authorizedAt"`
+}
+
+type GovernanceStatus struct {
+	// +kubebuilder:validation:Enum=Pending;Ready;Denied;Unknown
+	Phase string `json:"phase,omitempty"`
+	// +kubebuilder:validation:Enum=Enforced;Partial;Unavailable
+	Coverage string `json:"coverage,omitempty"`
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+	Authorization *GovernanceAuthorizationStatus `json:"authorization,omitempty"`
+	Projections GovernanceProjectionsStatus `json:"projections,omitempty"`
+}
+
+type GovernanceAuthorizationStatus struct {
+	Revision string `json:"revision,omitempty"`
+	TeamSubject GovernanceSubject `json:"teamSubject"`
+	TeamRef GovernanceTeamReference `json:"teamRef"`
+	AuthorizedAt metav1.Time `json:"authorizedAt"`
+	ResolvedAt metav1.Time `json:"resolvedAt"`
+}
+
+type GovernanceTeamReference struct {
+	Name string `json:"name"`
+	UID types.UID `json:"uid"`
+	Generation int64 `json:"generation"`
+}
+
+type GovernanceProjectionsStatus struct {
+	Sandbox GovernanceRevisionProjection `json:"sandbox,omitempty"`
+	Gateway GovernanceRevisionProjection `json:"gateway,omitempty"`
+	CredentialPolicy GovernanceRevisionProjection `json:"credentialPolicy,omitempty"`
+}
+
+type GovernanceRevisionProjection struct {
+	ExpectedRevision string `json:"expectedRevision,omitempty"`
 }
 
 type RegistryCredentialsStatus struct {
@@ -328,6 +376,12 @@ type AgentIdentityStatus struct {
 	// Reason is a stable, non-sensitive machine-readable status reason.
 	// +optional
 	Reason string `json:"reason,omitempty"`
+
+	// CredentialPolicyRevision is reserved for a future typed credential
+	// service read-back. The legacy bearer issuer must leave it empty and cannot
+	// satisfy Governance aggregate readiness.
+	// +optional
+	CredentialPolicyRevision string `json:"credentialPolicyRevision,omitempty"`
 }
 
 // AIGatewayStatus reports non-secret information about the virtual key the
@@ -390,6 +444,39 @@ type AIGatewayStatus struct {
 	// the Gateway.
 	// +optional
 	LastVerifiedTime *metav1.Time `json:"lastVerifiedTime,omitempty"`
+
+	// BudgetUSD is the canonical native Gateway budget read back for this
+	// virtual key. It is a management observation, not a provider invoice.
+	// +optional
+	BudgetUSD string `json:"budgetUSD,omitempty"`
+
+	// BudgetDuration is the Gateway reset period, currently "1mo".
+	// +optional
+	BudgetDuration string `json:"budgetDuration,omitempty"`
+
+	// SpendUSD is the Gateway's observed spend in the current period. It is
+	// not exact upstream-provider billing.
+	// +optional
+	SpendUSD string `json:"spendUSD,omitempty"`
+
+	// BudgetResetAt is the next Gateway budget reset observation.
+	// +optional
+	BudgetResetAt *metav1.Time `json:"budgetResetAt,omitempty"`
+
+	// Blocked reports whether the Gateway rejects this key. Retained blocked
+	// keys continue to report spend and reset evidence.
+	// +optional
+	Blocked bool `json:"blocked,omitempty"`
+
+	// PolicyRevision is the exact governance Gateway projection read back by
+	// the management adapter.
+	// +optional
+	PolicyRevision string `json:"policyRevision,omitempty"`
+
+	// PricingRevision identifies the catalog/pricing input used by Gateway
+	// read-back. It is not a provider price quote.
+	// +optional
+	PricingRevision string `json:"pricingRevision,omitempty"`
 
 	// Reason is a stable, non-sensitive machine-readable status reason.
 	// +optional
@@ -578,6 +665,9 @@ const (
 	ConditionDesktopConfigured        = "DesktopConfigured"
 	ConditionTerminalConfigured       = "TerminalConfigured"
 	ConditionRegistryCredentialsReady = "RegistryCredentialsReady"
+	ConditionGovernanceAuthorizationReady = "GovernanceAuthorizationReady"
+	ConditionGovernancePolicyReady = "GovernancePolicyReady"
+	ConditionGovernanceReady = "GovernanceReady"
 )
 
 // AI Gateway virtual key lifecycle phases.

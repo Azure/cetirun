@@ -22,7 +22,8 @@ for crd_file in \
   cetirun.microsoft.com_agents.yaml \
   cetirun.microsoft.com_teams.yaml \
   cetirun.microsoft.com_sandboxes.yaml \
-  cetirun.microsoft.com_agentpolicies.yaml; do
+  cetirun.microsoft.com_agentpolicies.yaml \
+  cetirun.microsoft.com_governanceactions.yaml; do
   if ! cmp -s "${crd_source_dir}/${crd_file}" "${crd_chart_dir}/${crd_file}"; then
     echo "FAIL: chart CRD ${crd_file} does not match its generated source" >&2
     exit 1
@@ -32,7 +33,8 @@ done
 echo "==> helm template operator CRDs"
 output=$(helm template operator "${operator_chart_dir}")
 for crd_name in agents.cetirun.microsoft.com teams.cetirun.microsoft.com \
-  sandboxes.cetirun.microsoft.com agentpolicies.cetirun.microsoft.com; do
+  sandboxes.cetirun.microsoft.com agentpolicies.cetirun.microsoft.com \
+  governanceactions.cetirun.microsoft.com; do
   grep -q "name: ${crd_name}" <<< "${output}" || {
     echo "FAIL: operator chart did not render CRD ${crd_name}" >&2
     exit 1
@@ -45,8 +47,18 @@ base_args=(
   -f "${chart_dir}/values.yaml"
   --namespace cetirun-system
   --set istio.enabled=true
+  --kube-version 1.37.0
   --set-string cetirun-operator.domainSuffix=platform.example.invalid
   --set-string cetirun-portal.istio.host=portal.example.invalid
+  --set-string cetirun-operator.sandboxAdmission.tlsSecretName=synthetic-admission-tls
+  --set-string cetirun-operator.sandboxAdmission.caBundle=LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tClEwRT0KLS0tLS1FTkQgQ0VSVElGSUNBVEUtLS0tLQo=
+  --set-string 'cetirun-operator.sandboxAdmission.adminUsers[0]=lint-admin@example.invalid'
+  --set-string 'cetirun-operator.sandboxAdmission.adminUsers[1]=system:serviceaccount:cetirun-system:cetirun-portal'
+  --set-string cetirun-operator.sandboxAdmission.governanceApprovalUsername=system:serviceaccount:cetirun-system:cetirun-portal
+  --set-string cetirun-portal.agentIdentity.tenantId=11111111-1111-1111-1111-111111111111
+  --set-string cetirun-portal.agentIdentity.portalClientId=22222222-2222-2222-2222-222222222222
+  --set-string cetirun-portal.governance.platformAdminSubjects[0].tenantID=11111111-1111-1111-1111-111111111111
+  --set-string cetirun-portal.governance.platformAdminSubjects[0].objectID=33333333-3333-3333-3333-333333333333
 )
 
 echo "==> helm lint ${chart_dir} (default platform)"
@@ -87,7 +99,8 @@ for flag in AI_GATEWAY_ENABLED FEATURE_AI_GATEWAY_ENABLED; do
   }
 done
 for crd_name in agents.cetirun.microsoft.com teams.cetirun.microsoft.com \
-  sandboxes.cetirun.microsoft.com agentpolicies.cetirun.microsoft.com; do
+  sandboxes.cetirun.microsoft.com agentpolicies.cetirun.microsoft.com \
+  governanceactions.cetirun.microsoft.com; do
   grep -q "name: ${crd_name}" <<< "${output}" || {
     echo "FAIL: platform chart did not render CRD ${crd_name}" >&2
     exit 1
@@ -165,9 +178,19 @@ echo "==> helm template platform (AI Gateway installed separately)"
 # Without the bundled Gateway the release namespace is free, and the Portal
 # still follows it while the operator keeps its own namespace.
 output=$(helm template platform "${chart_dir}" -f "${chart_dir}/values.yaml" --namespace portal-ns \
+  --kube-version 1.37.0 \
   --set istio.enabled=true \
   --set-string cetirun-operator.domainSuffix=platform.example.invalid \
   --set-string cetirun-portal.istio.host=portal.example.invalid \
+  --set-string cetirun-operator.sandboxAdmission.tlsSecretName=synthetic-admission-tls \
+  --set-string cetirun-operator.sandboxAdmission.caBundle=LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tClEwRT0KLS0tLS1FTkQgQ0VSVElGSUNBVEUtLS0tLQo= \
+  --set-string 'cetirun-operator.sandboxAdmission.adminUsers[0]=lint-admin@example.invalid' \
+  --set-string 'cetirun-operator.sandboxAdmission.adminUsers[1]=system:serviceaccount:portal-ns:cetirun-portal' \
+  --set-string cetirun-operator.sandboxAdmission.governanceApprovalUsername=system:serviceaccount:portal-ns:cetirun-portal \
+  --set-string cetirun-portal.agentIdentity.tenantId=11111111-1111-1111-1111-111111111111 \
+  --set-string cetirun-portal.agentIdentity.portalClientId=22222222-2222-2222-2222-222222222222 \
+  --set-string cetirun-portal.governance.platformAdminSubjects[0].tenantID=11111111-1111-1111-1111-111111111111 \
+  --set-string cetirun-portal.governance.platformAdminSubjects[0].objectID=33333333-3333-3333-3333-333333333333 \
   --set cetirun-ai-gateway.enabled=false)
 if grep -q 'cetirun-ai-gateway-postgresql' <<< "${output}"; then
   echo "FAIL: the AI Gateway rendered while disabled" >&2
@@ -203,9 +226,19 @@ fi
 # shared models where the operator publishes them.
 echo "==> helm template platform (custom namespace)"
 output=$(helm template platform "${chart_dir}" -f "${chart_dir}/values.yaml" --namespace custom-ns \
+  --kube-version 1.37.0 \
   --set istio.enabled=true \
   --set-string cetirun-operator.domainSuffix=platform.example.invalid \
   --set-string cetirun-portal.istio.host=portal.example.invalid \
+  --set-string cetirun-operator.sandboxAdmission.tlsSecretName=synthetic-admission-tls \
+  --set-string cetirun-operator.sandboxAdmission.caBundle=LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tClEwRT0KLS0tLS1FTkQgQ0VSVElGSUNBVEUtLS0tLQo= \
+  --set-string 'cetirun-operator.sandboxAdmission.adminUsers[0]=lint-admin@example.invalid' \
+  --set-string 'cetirun-operator.sandboxAdmission.adminUsers[1]=system:serviceaccount:custom-ns:cetirun-portal' \
+  --set-string cetirun-operator.sandboxAdmission.governanceApprovalUsername=system:serviceaccount:custom-ns:cetirun-portal \
+  --set-string cetirun-portal.agentIdentity.tenantId=11111111-1111-1111-1111-111111111111 \
+  --set-string cetirun-portal.agentIdentity.portalClientId=22222222-2222-2222-2222-222222222222 \
+  --set-string cetirun-portal.governance.platformAdminSubjects[0].tenantID=11111111-1111-1111-1111-111111111111 \
+  --set-string cetirun-portal.governance.platformAdminSubjects[0].objectID=33333333-3333-3333-3333-333333333333 \
   --set-string cetirun-operator.namespace=custom-ns \
   --set-string cetirun-portal.aiGateway.catalogNamespace=custom-ns)
 grep -A1 'name: AI_GATEWAY_CATALOG_NAMESPACE' <<< "${output}" | grep -q 'value: "custom-ns"' || {

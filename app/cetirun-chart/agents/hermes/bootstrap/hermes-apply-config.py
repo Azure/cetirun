@@ -99,10 +99,21 @@ def main() -> int:
             return 0
         if not args.config.is_file() or not args.env.is_file():
             raise ValueError("required input is missing")
-        desired_config = merge(existing_config, read_yaml(args.config))
-        for key, value in read_env(args.env).items():
-            if value or key not in existing_env:
-                existing_env[key] = value
+        desired_input = read_yaml(args.config)
+        desired_env = read_env(args.env)
+        if os.environ.get("CETIRUN_AI_GATEWAY") == "true":
+            # A Hermes home is durable. Merging a legacy home would retain an
+            # old provider key, auth profile, or custom endpoint that can
+            # bypass the Gateway. The mounted chart configuration is the
+            # complete, platform-owned runtime state in Gateway mode. The
+            # workload injects its virtual key and endpoint separately.
+            desired_config = desired_input
+            existing_env = desired_env
+        else:
+            desired_config = merge(existing_config, desired_input)
+            for key, value in desired_env.items():
+                if value or key not in existing_env:
+                    existing_env[key] = value
         config_text = yaml.safe_dump(desired_config, sort_keys=False)
         env_text = "".join(f"{key}={value}\n" for key, value in existing_env.items())
         replace_file(config_path, config_text)

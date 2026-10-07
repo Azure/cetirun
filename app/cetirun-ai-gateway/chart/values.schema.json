@@ -69,7 +69,7 @@
         },
         "models": {
             "type": "array",
-            "description": "Models exposed by this Gateway, in LiteLLM model_list format. The list can be empty: administrators can add models through the console later. Names beginning with cetirun- are reserved, and so are names beginning with copilot/ while operatorIntegration is on.",
+            "description": "Models exposed by this Gateway, in LiteLLM model_list format. The list can be empty: administrators can add models through the console later. The chart assigns every configured deployment a collision-safe cetirun-model access group from its canonical model configuration; changing that configuration intentionally creates a new Governance deployment fingerprint. Names beginning with cetirun- are reserved, and so are names beginning with copilot/ while operatorIntegration is on.",
             "items": {
                 "type": "object",
                 "properties": {

@@ -83,7 +83,7 @@ func TestRequireAdmin_Admin(t *testing.T) {
 	}
 }
 
-func TestMiddleware_SetsIsAdminFromAllowlist(t *testing.T) {
+func TestMiddleware_DoesNotTrustAliasAdminAllowlist(t *testing.T) {
 	admins := NewAdminSet([]string{"alice"})
 	var captured Claims
 	h := Middleware(admins)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -96,8 +96,8 @@ func TestMiddleware_SetsIsAdminFromAllowlist(t *testing.T) {
 	req.Header.Set("X-Auth-Request-Preferred-Username", "alice@example.com")
 	req.Header.Set("X-Auth-Request-Email", "alice@example.com")
 	h.ServeHTTP(httptest.NewRecorder(), req)
-	if !captured.IsAdmin {
-		t.Errorf("alice should be admin")
+	if captured.IsAdmin {
+		t.Errorf("an alias must not grant admin access without a verified subject")
 	}
 
 	// Non-admin user.
@@ -107,5 +107,18 @@ func TestMiddleware_SetsIsAdminFromAllowlist(t *testing.T) {
 	h.ServeHTTP(httptest.NewRecorder(), req)
 	if captured.IsAdmin {
 		t.Errorf("bob should not be admin")
+	}
+}
+
+func TestVerifiedAdminSet(t *testing.T) {
+	s := NewVerifiedAdminSet([][2]string{{"TENANT", "OBJECT"}, {"tenant", "object"}, {"", "ignored"}})
+	if !s.ContainsSubject("tenant", "object") {
+		t.Fatal("verified subject was not accepted")
+	}
+	if s.ContainsSubject("tenant", "other") || s.ContainsSubject("", "object") {
+		t.Fatal("unexpected verified subject match")
+	}
+	if len(s) != 1 {
+		t.Fatalf("set length = %d, want 1", len(s))
 	}
 }

@@ -251,7 +251,6 @@ func TestAuthorizationAPIServerBindings(t *testing.T) {
 			agent := newAgent("")
 			agent.GenerateName = "assigned-agent-"
 			agent.Labels = map[string]string{"role": "admin", "team": "caller-team"}
-			agent.Spec.User.Team = "caller-team"
 			if err := writer.Create(ctx, agent); err != nil {
 				t.Fatal(err)
 			}

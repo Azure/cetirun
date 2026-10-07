@@ -44,6 +44,57 @@ func rawChangesOnly(request admission.Request, specFields, metadataFields []stri
 	return reflect.DeepEqual(objects[0], objects[1])
 }
 
+func governanceActionMetadataOnly(request admission.Request, annotations []string) bool {
+	objects, ok := governanceActionRawObjects(request)
+	if !ok {
+		return false
+	}
+	for i := range objects {
+		metadata, _ := objects[i]["metadata"].(map[string]any)
+		values, _ := metadata["annotations"].(map[string]any)
+		for _, key := range annotations {
+			delete(values, key)
+		}
+		if len(values) == 0 {
+			delete(metadata, "annotations")
+		}
+	}
+	return reflect.DeepEqual(objects[0], objects[1])
+}
+
+func governanceActionSuspensionOnly(request admission.Request) bool {
+	objects, ok := governanceActionRawObjects(request)
+	if !ok {
+		return false
+	}
+	for i := range objects {
+		spec, ok := objects[i]["spec"].(map[string]any)
+		if !ok {
+			return false
+		}
+		delete(spec, "suspended")
+	}
+	return reflect.DeepEqual(objects[0], objects[1])
+}
+
+func governanceActionRawObjects(request admission.Request) ([2]map[string]any, bool) {
+	objects := [2]map[string]any{}
+	for i, raw := range [][]byte{request.Object.Raw, request.OldObject.Raw} {
+		if len(raw) == 0 || decodeJSON(raw, &objects[i], false) != nil || objects[i] == nil {
+			return objects, false
+		}
+		delete(objects[i], "status")
+		metadata, ok := objects[i]["metadata"].(map[string]any)
+		if !ok {
+			return objects, false
+		}
+		for _, key := range []string{"resourceVersion", "generation", "managedFields"} {
+			delete(metadata, key)
+		}
+	}
+	return objects, true
+}
+
 // Unknown top-level spec changes must not inherit legacy Agent/Team authority.
 // Unchanged unknown fields and new status fields do not block ordinary writes.
 func unknownSpecChanged(request admission.Request, object client.Object) bool {

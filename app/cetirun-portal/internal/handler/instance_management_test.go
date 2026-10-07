@@ -30,6 +30,7 @@ var managementImage = "registry.example.com/team/assistant@sha256:" + strings.Re
 var replacementImage = "registry.example.com/team/assistant@sha256:" + strings.Repeat("b", 64)
 
 func customManagementHandler(objects ...client.Object) *InstanceHandler {
+	objects = append([]client.Object{governedTestTeam("aks")}, objects...)
 	return &InstanceHandler{Kube: kube.NewClient(newFakeClient(objects...)), Config: config.Config{
 		AllowedAgentTypes: []string{"hermes", "openclaw", "custom"},
 	}}
@@ -38,7 +39,6 @@ func customManagementHandler(objects ...client.Object) *InstanceHandler {
 func customManagementInstance() *api.Agent {
 	instance := sampleInstance()
 	instance.Spec.Agent = api.HarnessSpec{Type: api.AgentTypeCustom, Image: ptr.To(managementImage), Username: ptr.To("vibe"), Port: ptr.To(int32(8080))}
-	instance.Spec.User.Team = ""
 	instance.Annotations = map[string]string{api.AnnotationOwnerTenantID: managementTenant, api.AnnotationOwnerObjectID: managementOwner}
 	return instance
 }
@@ -52,9 +52,9 @@ func managementRequest(method, body string) *http.Request {
 func TestCustomCreateRoundTripWithoutNativeSideEffects(t *testing.T) {
 	for _, port := range []string{"", `,"port":8080`} {
 		h := customManagementHandler()
-		fc := newFakeClient()
+		fc := newFakeClient(governedTestTeam("aks"))
 		h.Kube = kube.NewClient(fc)
-		body := `{"agent":{"type":"custom","image":"` + managementImage + `","username":"assistant"` + port + `},"displayName":"Research Assistant"}`
+		body := `{"agent":{"type":"custom","image":"` + managementImage + `","username":"assistant"` + port + `},"team":"aks","displayName":"Research Assistant"}`
 		w := httptest.NewRecorder()
 		h.CreateInstance(w, managementRequest(http.MethodPost, body))
 		if w.Code != http.StatusCreated {
@@ -94,24 +94,22 @@ func TestCustomCreateUsesExistingPortalAuthentication(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
 		user     string
-		image    string
-		team     string
 		disabled bool
 		code     int
 	}{
-		{"signed-in owner", "alice@example.com", managementImage, "", false, http.StatusCreated},
-		{"another owner and image", "bob@example.com", replacementImage, "example-team", false, http.StatusCreated},
-		{"missing identity", "", managementImage, "", false, http.StatusUnauthorized},
-		{"type disabled", "alice@example.com", managementImage, "", true, http.StatusForbidden},
+		{"unverified signed-in user", "alice@example.com", false, http.StatusForbidden},
+		{"another unverified user", "bob@example.com", false, http.StatusForbidden},
+		{"missing identity", "", false, http.StatusUnauthorized},
+		{"type disabled", "alice@example.com", true, http.StatusForbidden},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			h := &InstanceHandler{Kube: kube.NewClient(newFakeClient(&api.Team{ObjectMeta: metav1.ObjectMeta{Name: "example-team"}})), Config: config.Config{
+			h := &InstanceHandler{Kube: kube.NewClient(newFakeClient(governedTestTeam("aks"))), Config: config.Config{
 				AllowedAgentTypes: []string{"hermes", "openclaw", "custom"},
 			}}
 			if tc.disabled {
 				h.Config.AllowedAgentTypes = []string{"hermes", "openclaw"}
 			}
-			body, err := json.Marshal(map[string]any{"agent": map[string]any{"type": "custom", "image": tc.image}, "team": tc.team})
+			body, err := json.Marshal(map[string]any{"agent": map[string]any{"type": "custom", "image": managementImage}, "team": "aks"})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -129,20 +127,8 @@ func TestCustomCreateUsesExistingPortalAuthentication(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if tc.code != http.StatusCreated {
-				if len(instances) != 0 {
-					t.Fatal("rejected request created an Agent")
-				}
-				return
-			}
-			if len(instances) != 1 {
-				t.Fatalf("created %d Agents, want 1", len(instances))
-			}
-			stored := instances[0]
-			if stored.Spec.User.Alias != strings.Split(tc.user, "@")[0] || stored.Spec.User.Team != tc.team ||
-				stored.Annotations[api.AnnotationOwnerTenantID] != "" || stored.Annotations[api.AnnotationOwnerObjectID] != "" ||
-				stored.Spec.AgentIdentity != nil || stored.Spec.GatewayTokenSecretRef != "" {
-				t.Fatal("Custom creation changed the existing owner or native integration boundary")
+			if len(instances) != 0 {
+				t.Fatal("unverified request created an Agent")
 			}
 		})
 	}
@@ -187,8 +173,7 @@ func TestManagementRejectsOldUnknownAndNativeCustomFields(t *testing.T) {
 func TestDefaultBuiltinCreationUsesExistingPortalIdentity(t *testing.T) {
 	for _, kind := range []string{"hermes", "openclaw"} {
 		h := customManagementHandler()
-		r := managementRequest(http.MethodPost, `{"agent":{"type":"`+kind+`"}}`)
-		r = withClaims(r, "alice", "Alice", "alice@example.com")
+		r := managementRequest(http.MethodPost, `{"agent":{"type":"`+kind+`"},"team":"aks"}`)
 		w := httptest.NewRecorder()
 		h.CreateInstance(w, r)
 		if w.Code != http.StatusCreated {
@@ -262,6 +247,11 @@ func TestCustomImageUpgradePreservesInstanceConfiguration(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			// The API server normalizes metav1.Time's location on round-trip.
+			// Exclude only that representation detail while comparing every
+			// persisted configuration field, including governance subject.
+			stored.Spec.Governance.TeamAuthorization.AuthorizedAt = metav1.Time{}
+			want.Spec.Governance.TeamAuthorization.AuthorizedAt = metav1.Time{}
 			if stored.UID != instance.UID || !reflect.DeepEqual(stored.Spec, want.Spec) ||
 				!reflect.DeepEqual(stored.Annotations, instance.Annotations) {
 				t.Fatal("image update changed the instance identity or unrelated configuration")
@@ -344,10 +334,8 @@ func TestCustomManagementPreservesOwnerChecks(t *testing.T) {
 
 func TestCustomOwnerCanUpdateWithoutAdditionalPolicy(t *testing.T) {
 	instance := customManagementInstance()
-	instance.Annotations = nil
 	h := customManagementHandler(instance)
 	r := managementRequest(http.MethodPatch, `{"uid":"agent-alice","resourceVersion":"1","agent":{"port":9090}}`)
-	r = withClaims(r, "alice", "Alice", "alice@example.com")
 	w := httptest.NewRecorder()
 	h.UpdateInstanceByName(w, r)
 	if w.Code != http.StatusOK {

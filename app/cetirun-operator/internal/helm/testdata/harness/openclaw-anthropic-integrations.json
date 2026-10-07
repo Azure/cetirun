@@ -186,7 +186,7 @@
   },
   "manifestHashes": {
     "configmap.yaml": "aa07cd6e162c3c68c83e9bbbf2fb0ff3bd83a999529401ee9461853fb087ea6f",
-    "deny-exec-policy.yaml": "7dd9900c6cb720cda23eae4abebcdd68e7d868d91be7df00bac133f63acb4267",
+    "deny-exec-policy.yaml": "d85249c97b870e0dbb0882e2d6edf7bce5f111747a17317526d57a27ef70912c",
     "networkpolicy.yaml": "e71831723d761652ee6f625d7d36e0764a584cf813d2b39638c8cfd1b9b9504a",
     "pre-upgrade-hook.yaml": "06438617ca6f50d2ea5d2e0e898f95cad13438e19e07b141c52a7b19725f60fc",
     "service.yaml": "baa7d022acf61be11565fd8dc8c9ecd36a6a5e2a677c6f41d59353d13bce45ba",

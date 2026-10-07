@@ -76,8 +76,20 @@ func resolverFixture() ResolveInput {
 		Resources: Resources{
 			Sandboxes: map[string]*cetirunv1alpha1.Sandbox{"standard": sandbox},
 			AgentPolicies: map[string]*cetirunv1alpha1.AgentPolicy{
-				"normal":     {ObjectMeta: metav1.ObjectMeta{Name: "normal", UID: "normal-uid"}},
-				"operations": {ObjectMeta: metav1.ObjectMeta{Name: "operations", UID: "operations-uid"}},
+				"normal": {
+					ObjectMeta: metav1.ObjectMeta{Name: "normal", UID: "normal-uid"},
+					Spec: cetirunv1alpha1.AgentPolicySpec{Harnesses: cetirunv1alpha1.AgentPolicyHarnesses{Allowed: []cetirunv1alpha1.AgentType{
+						cetirunv1alpha1.AgentTypeHermes,
+						cetirunv1alpha1.AgentTypeOpenClaw,
+					}}},
+				},
+				"operations": {
+					ObjectMeta: metav1.ObjectMeta{Name: "operations", UID: "operations-uid"},
+					Spec: cetirunv1alpha1.AgentPolicySpec{Harnesses: cetirunv1alpha1.AgentPolicyHarnesses{Allowed: []cetirunv1alpha1.AgentType{
+						cetirunv1alpha1.AgentTypeHermes,
+						cetirunv1alpha1.AgentTypeOpenClaw,
+					}}},
+				},
 			},
 		},
 		Registrations: map[cetirunv1alpha1.SandboxType]Registration{

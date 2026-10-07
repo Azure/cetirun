@@ -26,6 +26,7 @@ type AdminTeamHandler struct {
 // teamNamePattern enforces a DNS-1123 label for the cluster-scoped team
 // name. Mirrors the alias pattern used elsewhere in the portal.
 var teamNamePattern = regexp.MustCompile(`^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$`)
+var governanceIDPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
 // TeamSkillStorageDTO mirrors cetirunv1alpha1.SkillStorageSpec.
 type TeamSkillStorageDTO struct {
@@ -39,35 +40,50 @@ type TeamSkillStorageDTO struct {
 
 // TeamDTO is the JSON shape for Team admin endpoints.
 type TeamDTO struct {
-	Name            string               `json:"name"`
-	Role            string               `json:"role,omitempty"`
-	Description     []string             `json:"description,omitempty"`
-	DefaultProvider string               `json:"defaultProvider,omitempty"`
-	Skills          []string             `json:"skills,omitempty"`
-	SkillStorage    *TeamSkillStorageDTO `json:"skillStorage,omitempty"`
-	CreatedAt       string               `json:"createdAt,omitempty"`
+	Name                 string                              `json:"name"`
+	Role                 string                              `json:"role,omitempty"`
+	Description          []string                            `json:"description,omitempty"`
+	DefaultProvider      string                              `json:"defaultProvider,omitempty"`
+	Skills               []string                            `json:"skills,omitempty"`
+	SkillStorage         *TeamSkillStorageDTO                `json:"skillStorage,omitempty"`
+	Membership           []cetirunv1alpha1.GovernanceSubject `json:"membership"`
+	NormalAgentPolicyRef string                              `json:"normalAgentPolicyRef"`
+	AdminAgentPolicyRef  string                              `json:"adminAgentPolicyRef,omitempty"`
+	SandboxRefs          []string                            `json:"sandboxRefs"`
+	DefaultSandboxRef    string                              `json:"defaultSandboxRef"`
+	CreatedAt            string                              `json:"createdAt,omitempty"`
 }
 
 // TeamUpsertRequest is the JSON body for create/update.
 // For create, Name is taken from the URL or body; for update, Name is the
 // URL path parameter and the body's name (if set) must match.
 type TeamUpsertRequest struct {
-	Name            string               `json:"name,omitempty"`
-	Role            string               `json:"role,omitempty"`
-	Description     []string             `json:"description,omitempty"`
-	DefaultProvider string               `json:"defaultProvider,omitempty"`
-	Skills          []string             `json:"skills,omitempty"`
-	SkillStorage    *TeamSkillStorageDTO `json:"skillStorage,omitempty"`
+	Name                 string                              `json:"name,omitempty"`
+	Role                 string                              `json:"role,omitempty"`
+	Description          []string                            `json:"description,omitempty"`
+	DefaultProvider      string                              `json:"defaultProvider,omitempty"`
+	Skills               []string                            `json:"skills,omitempty"`
+	SkillStorage         *TeamSkillStorageDTO                `json:"skillStorage,omitempty"`
+	Membership           []cetirunv1alpha1.GovernanceSubject `json:"membership"`
+	NormalAgentPolicyRef string                              `json:"normalAgentPolicyRef"`
+	AdminAgentPolicyRef  string                              `json:"adminAgentPolicyRef,omitempty"`
+	SandboxRefs          []string                            `json:"sandboxRefs"`
+	DefaultSandboxRef    string                              `json:"defaultSandboxRef"`
 }
 
 func toTeamDTO(t *cetirunv1alpha1.Team) TeamDTO {
 	dto := TeamDTO{
-		Name:            t.Name,
-		Role:            t.Spec.MemberContext.Role,
-		Description:     t.Spec.MemberContext.Description,
-		DefaultProvider: t.Spec.Defaults.Provider,
-		Skills:          t.Spec.Skills,
-		CreatedAt:       t.CreationTimestamp.UTC().Format("2006-01-02T15:04:05Z"),
+		Name:                 t.Name,
+		Role:                 t.Spec.MemberContext.Role,
+		Description:          t.Spec.MemberContext.Description,
+		DefaultProvider:      t.Spec.Defaults.Provider,
+		Skills:               t.Spec.Skills,
+		Membership:           append([]cetirunv1alpha1.GovernanceSubject(nil), t.Spec.Membership.Subjects...),
+		NormalAgentPolicyRef: t.Spec.NormalAgentPolicyRef,
+		AdminAgentPolicyRef:  t.Spec.AdminAgentPolicyRef,
+		SandboxRefs:          append([]string(nil), t.Spec.SandboxRefs...),
+		DefaultSandboxRef:    t.Spec.DefaultSandboxRef,
+		CreatedAt:            t.CreationTimestamp.UTC().Format("2006-01-02T15:04:05Z"),
 	}
 	if t.Spec.SkillStorage != nil {
 		dto.SkillStorage = &TeamSkillStorageDTO{
@@ -91,7 +107,12 @@ func toTeamSpec(req TeamUpsertRequest) cetirunv1alpha1.TeamSpec {
 		Defaults: cetirunv1alpha1.TeamDefaultsSpec{
 			Provider: req.DefaultProvider,
 		},
-		Skills: req.Skills,
+		Skills:               req.Skills,
+		Membership:           cetirunv1alpha1.TeamMembershipSpec{Subjects: append([]cetirunv1alpha1.GovernanceSubject(nil), req.Membership...)},
+		NormalAgentPolicyRef: strings.TrimSpace(req.NormalAgentPolicyRef),
+		AdminAgentPolicyRef:  strings.TrimSpace(req.AdminAgentPolicyRef),
+		SandboxRefs:          append([]string(nil), req.SandboxRefs...),
+		DefaultSandboxRef:    strings.TrimSpace(req.DefaultSandboxRef),
 	}
 	if req.SkillStorage != nil {
 		spec.SkillStorage = &cetirunv1alpha1.SkillStorageSpec{
@@ -104,6 +125,29 @@ func toTeamSpec(req TeamUpsertRequest) cetirunv1alpha1.TeamSpec {
 		}
 	}
 	return spec
+}
+
+func validateGovernanceTeam(req TeamUpsertRequest) string {
+	if len(req.Membership) == 0 {
+		return "membership must contain at least one verified Entra User or Group subject"
+	}
+	for _, subject := range req.Membership {
+		if (subject.Kind != "User" && subject.Kind != "Group") || !governanceIDPattern.MatchString(subject.TenantID) || !governanceIDPattern.MatchString(subject.ObjectID) {
+			return "membership subjects require kind User or Group and UUID tenantID/objectID"
+		}
+	}
+	if strings.TrimSpace(req.NormalAgentPolicyRef) == "" {
+		return "normalAgentPolicyRef is required"
+	}
+	if len(req.SandboxRefs) == 0 || strings.TrimSpace(req.DefaultSandboxRef) == "" {
+		return "sandboxRefs and defaultSandboxRef are required"
+	}
+	for _, sandbox := range req.SandboxRefs {
+		if sandbox == req.DefaultSandboxRef {
+			return ""
+		}
+	}
+	return "defaultSandboxRef must appear in sandboxRefs"
 }
 
 // validateSkillStorage returns a non-empty error message when the optional
@@ -176,6 +220,10 @@ func (h *AdminTeamHandler) CreateTeam(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_skill_storage", msg)
 		return
 	}
+	if msg := validateGovernanceTeam(req); msg != "" {
+		writeError(w, http.StatusBadRequest, "invalid_governance", msg)
+		return
+	}
 	team := &cetirunv1alpha1.Team{
 		ObjectMeta: metav1.ObjectMeta{Name: req.Name},
 		Spec:       toTeamSpec(req),
@@ -219,6 +267,10 @@ func (h *AdminTeamHandler) UpdateTeam(w http.ResponseWriter, r *http.Request) {
 	}
 	if msg := validateSkillStorage(req.SkillStorage); msg != "" {
 		writeError(w, http.StatusBadRequest, "invalid_skill_storage", msg)
+		return
+	}
+	if msg := validateGovernanceTeam(req); msg != "" {
+		writeError(w, http.StatusBadRequest, "invalid_governance", msg)
 		return
 	}
 	updated, err := h.Kube.UpdateTeamSpec(r.Context(), name, toTeamSpec(req))

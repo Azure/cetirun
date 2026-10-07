@@ -83,12 +83,13 @@ affinity: {}
 # -- Additional pod annotations.
 podAnnotations: {}
 
-# -- Admin configuration. Aliases listed here can access /admin/* routes
-# and admin APIs in the portal. Keep this list in sync with the istio chart's
-# `authPolicy.adminAliases` (the istio deploy script sources both from the
-# same `ADMIN_ALIASES` environment variable).
-admins:
-  aliases: []
+# -- Governance trust root. Platform administrators are immutable verified
+# Entra tenant/object ID pairs, never aliases, email addresses, or UPNs.
+governance:
+  platformAdminSubjects: []
+  cetiAdminServiceAccounts: []
+  cetiAdminNamespace: cetirun-system
+  cetiAdminTokenAudience: cetirun-governance-actions
 
 # -- Feature flags. These control which features are exposed in the portal UI.
 features:

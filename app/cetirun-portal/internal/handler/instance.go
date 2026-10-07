@@ -122,6 +122,7 @@ type InstanceResponse struct {
 	TeamsMessage           string                      `json:"teamsMessage,omitempty"` // Human-readable Teams status detail
 	AgentIdentity          *AgentIdentityResponse      `json:"agentIdentity,omitempty"`
 	AIGateway              *AIGatewayResponse          `json:"aiGateway,omitempty"`
+	Governance             *GovernanceResponse         `json:"governance,omitempty"`
 }
 
 // AgentIdentityResponse contains only non-sensitive lifecycle information.
@@ -163,6 +164,17 @@ type StatusResponse struct {
 	Events     []EventItem       `json:"events"`
 	NsEvents   []EventItem       `json:"nsEvents"`
 	Pods       []PodStatus       `json:"pods"`
+}
+
+// GovernanceResponse keeps the authorization decision and each enforcement
+// projection separate; a configured Team is not presented as an enforced
+// workload.
+type GovernanceResponse struct {
+	Phase              string                                         `json:"phase,omitempty"`
+	Coverage           string                                         `json:"coverage,omitempty"`
+	ObservedGeneration int64                                          `json:"observedGeneration,omitempty"`
+	Authorization      *cetirunv1alpha1.GovernanceAuthorizationStatus `json:"authorization,omitempty"`
+	Projections        cetirunv1alpha1.GovernanceProjectionsStatus    `json:"projections"`
 }
 
 // EventItem is a simplified view of a Kubernetes Event.
@@ -414,6 +426,35 @@ func (h *InstanceHandler) GetInstanceStatusByName(w http.ResponseWriter, r *http
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// GetInstanceGovernanceByName returns read-only governance evidence to the
+// verified owner. Detailed component status stays in the Agent status fields.
+func (h *InstanceHandler) GetInstanceGovernanceByName(w http.ResponseWriter, r *http.Request) {
+	claims, ok := auth.ClaimsFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "not_authenticated", "Authentication is required")
+		return
+	}
+	instance, err := h.Kube.GetInstanceByName(r.Context(), r.PathValue("name"))
+	if err != nil {
+		if kube.IsNotFound(err) {
+			writeError(w, http.StatusNotFound, "instance_not_found", "Agent not found")
+		} else {
+			writeError(w, 500, "internal_error", "Unable to read Agent")
+		}
+		return
+	}
+	if !ownsInstance(instance, claims) {
+		writeError(w, http.StatusForbidden, "forbidden", "Only the instance owner may view governance status")
+		return
+	}
+	response := GovernanceResponse{}
+	if status := instance.Status.Governance; status != nil {
+		response.Phase, response.Coverage, response.ObservedGeneration = status.Phase, status.Coverage, status.ObservedGeneration
+		response.Authorization, response.Projections = status.Authorization, status.Projections
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
 // DownloadTeamsAppByName handles GET /api/v1/instances/{name}/teams-app.
 func (h *InstanceHandler) DownloadTeamsAppByName(w http.ResponseWriter, r *http.Request) {
 	claims, ok := auth.ClaimsFromContext(r.Context())
@@ -592,6 +633,19 @@ func (h *InstanceHandler) CreateInstance(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
+	if strings.TrimSpace(team) == "" {
+		writeError(w, http.StatusBadRequest, "team_required", "Choose a Team for the agent")
+		return
+	}
+	governanceTeam, authorizedSubject, err := h.authorizeTeamOwner(r.Context(), team, claims)
+	if err != nil {
+		if kube.IsNotFound(err) {
+			writeError(w, http.StatusBadRequest, "unknown_team", "Team "+team+" does not exist")
+		} else {
+			writeError(w, http.StatusForbidden, "team_membership_required", "Your verified identity is not authorized for this Team")
+		}
+		return
+	}
 
 	if h.Config.MaxInstancesPerUser > 0 {
 		all, err := h.Kube.ListAllInstances(r.Context())
@@ -618,6 +672,8 @@ func (h *InstanceHandler) CreateInstance(w http.ResponseWriter, r *http.Request)
 		OwnerTenantID:        claims.TenantID,
 		OwnerObjectID:        claims.ObjectID,
 		ModelAccess:          modelAccess,
+		SandboxRef:           governanceTeam.Spec.DefaultSandboxRef,
+		Governance:           governanceSpec(authorizedSubject, h.now()),
 	}
 	if req.RegistryAuth != nil {
 		id, err := kube.RegistryID()
@@ -825,6 +881,9 @@ func (h *InstanceHandler) toInstanceResponse(ctx context.Context, instance *ceti
 		}
 	}
 	resp.AIGateway = aiGatewayResponse(instance)
+	if status := instance.Status.Governance; status != nil {
+		resp.Governance = &GovernanceResponse{Phase: status.Phase, Coverage: status.Coverage, ObservedGeneration: status.ObservedGeneration, Authorization: status.Authorization, Projections: status.Projections}
+	}
 
 	return resp, nil
 }
@@ -1057,19 +1116,48 @@ func writeError(w http.ResponseWriter, status int, code, message string) {
 
 // ListTeams handles GET /api/v1/teams.
 func (h *InstanceHandler) ListTeams(w http.ResponseWriter, r *http.Request) {
+	claims, ok := auth.ClaimsFromContext(r.Context())
+	if !ok || claims.TenantID == "" || claims.ObjectID == "" {
+		writeError(w, http.StatusUnauthorized, "verified_identity_required", "A verified Entra identity is required")
+		return
+	}
 	teams, err := h.Kube.ListTeams(r.Context())
 	if err != nil {
 		slog.Error("failed to list teams", "err", err)
 		http.Error(w, "failed to list teams", http.StatusInternalServerError)
 		return
 	}
-	result := make([]TeamSummary, len(teams))
-	for i, t := range teams {
-		result[i] = TeamSummary{
+	result := make([]TeamSummary, 0, len(teams))
+	for _, t := range teams {
+		allowed := false
+		for _, subject := range t.Spec.Membership.Subjects {
+			if !strings.EqualFold(subject.TenantID, claims.TenantID) {
+				continue
+			}
+			if subject.Kind == "User" && strings.EqualFold(subject.ObjectID, claims.ObjectID) {
+				allowed = true
+				break
+			}
+			if subject.Kind == "Group" {
+				for _, group := range claims.Groups {
+					if strings.EqualFold(subject.ObjectID, group) {
+						allowed = true
+						break
+					}
+				}
+			}
+			if allowed {
+				break
+			}
+		}
+		if !allowed {
+			continue
+		}
+		result = append(result, TeamSummary{
 			Name:     t.Name,
 			Role:     t.Spec.MemberContext.Role,
 			Provider: t.Spec.Defaults.Provider,
-		}
+		})
 	}
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(result); err != nil {

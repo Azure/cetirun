@@ -96,7 +96,7 @@ func TestCustomWebUICreateThroughNestedAgent(t *testing.T) {
 	h := customManagementHandler()
 	w := httptest.NewRecorder()
 	h.CreateInstance(w, managementRequest(http.MethodPost,
-		`{"agent":{"type":"custom","image":"`+managementImage+`","port":8080,"webUI":true}}`))
+		`{"agent":{"type":"custom","image":"`+managementImage+`","port":8080,"webUI":true},"team":"aks"}`))
 	if w.Code != http.StatusCreated {
 		t.Fatalf("create Web UI: %d %s", w.Code, w.Body.String())
 	}

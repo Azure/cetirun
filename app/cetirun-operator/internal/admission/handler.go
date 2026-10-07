@@ -153,12 +153,19 @@ func (h *Handler) defaultAgent(ctx context.Context, request admission.Request) a
 	}
 	agent := object.(*api.Agent)
 	if old != nil {
-		return h.reauthorizeAgent(ctx, request, agent, old.(*api.Agent))
+		previous := old.(*api.Agent)
+		return h.reauthorizeAgent(ctx, request, agent, previous)
 	}
 	return h.defaultAgentCreation(ctx, request, agent)
 }
 
 func (h *Handler) validateAgent(ctx context.Context, request admission.Request, agent, old *api.Agent) admission.Response {
+	if h.governanceActionControlledUpdate(request, agent, old) {
+		return admission.Allowed("operator GovernanceAction execution update")
+	}
+	if old != nil && old.Annotations[api.AnnotationGovernanceActionClaim] != "" {
+		return admission.Denied("an executing GovernanceAction holds the Agent; other spec and metadata updates are temporarily blocked")
+	}
 	if old != nil && !slices.Equal(agent.Finalizers, old.Finalizers) {
 		if request.UserInfo.Username == h.config.ControllerUsername && controllerFinalizerUpdate(agent, old) && rawMetadataOnly(request) {
 			return admission.Allowed("controller lifecycle metadata only")
@@ -175,6 +182,9 @@ func (h *Handler) validateAgent(ctx context.Context, request admission.Request, 
 		}
 	}
 	if err := h.protectedAuthorization(request, agent, old); err != nil {
+		return admission.Denied(err.Error())
+	}
+	if err := h.protectedGovernanceBinding(request, agent, old); err != nil {
 		return admission.Denied(err.Error())
 	}
 	assigned := ""

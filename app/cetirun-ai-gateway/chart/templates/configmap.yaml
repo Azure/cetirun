@@ -20,7 +20,24 @@ metadata:
 data:
   config.yaml: |
     model_list:
-      {{- toYaml .Values.models | nindent 6 }}
+      {{- /*
+        Every configured shared deployment receives an opaque group derived
+        from its canonical configured model object. The Operator grants these
+        groups, never a display model name or the old deployment-wide shared
+        group. Consequently a same-name deployment added through the console
+        cannot become reachable through an existing Agent key.
+      */}}
+      {{- $models := list }}
+      {{- range $index, $configured := .Values.models }}
+      {{- $model := deepCopy $configured }}
+      {{- $fingerprint := sha256sum (toJson $model) }}
+      {{- $info := deepCopy ($model.model_info | default dict) }}
+      {{- $group := printf "cetirun-model-%s" ($fingerprint | trunc 16) }}
+      {{- $_ := set $info "access_groups" (append ($info.access_groups | default list) $group | uniq) }}
+      {{- $_ = set $model "model_info" $info }}
+      {{- $models = append $models $model }}
+      {{- end }}
+      {{- toYaml $models | nindent 6 }}
 
     general_settings:
       # Required for the management API and the admin console to persist models.

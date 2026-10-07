@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
@@ -27,8 +28,14 @@ import (
 
 const testController = "system:serviceaccount:operator-test:controller"
 
+var testGovernanceSubject = api.GovernanceSubject{
+	Kind:     "User",
+	TenantID: "00000000-0000-0000-0000-000000000001",
+	ObjectID: "00000000-0000-0000-0000-000000000002",
+}
+
 func testConfig() Config {
-	return Config{ValidationMode: ValidationStrict, AdminUsers: []string{"administrator"}, AdminGroups: []string{"governance-test-admins"}, ControllerUsername: testController}
+	return Config{ValidationMode: ValidationStrict, AdminUsers: []string{"administrator", "system:serviceaccount:test:portal"}, AdminGroups: []string{"governance-test-admins"}, ControllerUsername: testController, GovernanceApprovalUsername: "system:serviceaccount:test:portal"}
 }
 
 type fixture struct {
@@ -62,10 +69,18 @@ func newFixture(t *testing.T) fixture {
 			},
 		},
 	}
-	policy := &api.AgentPolicy{ObjectMeta: metav1.ObjectMeta{Name: "normal", UID: "policy-uid", ResourceVersion: "1"}}
+	policy := &api.AgentPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: "normal", UID: "policy-uid", ResourceVersion: "1"},
+		Spec:       api.AgentPolicySpec{Harnesses: api.AgentPolicyHarnesses{Allowed: []api.AgentType{api.AgentTypeHermes}}},
+	}
 	team := &api.Team{
 		ObjectMeta: metav1.ObjectMeta{Name: "engineering", UID: "team-uid", ResourceVersion: "1"},
-		Spec:       api.TeamSpec{NormalAgentPolicyRef: policy.Name, SandboxRefs: []string{box.Name}, DefaultSandboxRef: box.Name},
+		Spec: api.TeamSpec{
+			Membership:           api.TeamMembershipSpec{Subjects: []api.GovernanceSubject{testGovernanceSubject}},
+			NormalAgentPolicyRef: policy.Name,
+			SandboxRefs:          []string{box.Name},
+			DefaultSandboxRef:    box.Name,
+		},
 	}
 	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(box, policy, team).Build()
 	handler, err := NewHandler(cl, testConfig())
@@ -83,10 +98,19 @@ func newFixture(t *testing.T) fixture {
 		}},
 	}
 	agent := &api.Agent{
-		ObjectMeta: metav1.ObjectMeta{Name: "alice-work", UID: "agent-uid", ResourceVersion: "1", Finalizers: []string{api.Finalizer}},
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "alice-work", UID: "agent-uid", ResourceVersion: "1", Finalizers: []string{api.Finalizer},
+			Annotations: map[string]string{
+				api.AnnotationOwnerTenantID: testGovernanceSubject.TenantID,
+				api.AnnotationOwnerObjectID: testGovernanceSubject.ObjectID,
+			},
+		},
 		Spec: api.AgentSpec{
 			Agent: api.HarnessSpec{Type: api.AgentTypeHermes}, User: api.UserSpec{Alias: "alice"},
 			GatewayTokenSecretRef: "gateway-token", Team: team.Name, SandboxRef: box.Name, PolicyClass: api.AgentPolicyClassNormal,
+			Governance: api.GovernanceSpec{TeamAuthorization: api.TeamAuthorization{
+				Subject: testGovernanceSubject, AuthorizedAt: metav1.Now(),
+			}},
 		},
 	}
 	return fixture{handler, cl, agent, team, box, policy}
@@ -104,6 +128,8 @@ func requestFor(t *testing.T, operation admissionv1.Operation, object, old clien
 		resourceName, kind = "sandboxes", "Sandbox"
 	case *api.AgentPolicy:
 		resourceName, kind = "agentpolicies", "AgentPolicy"
+	case *api.GovernanceAction:
+		resourceName, kind = "governanceactions", "GovernanceAction"
 	default:
 		t.Fatal("unsupported fixture")
 	}
@@ -127,6 +153,36 @@ func requestFor(t *testing.T, operation admissionv1.Operation, object, old clien
 		request.OldObject, request.Object = request.Object, runtime.RawExtension{}
 	}
 	return request
+}
+
+func TestGovernanceActionAdmissionBindsPortalAndRetainsAuditRecord(t *testing.T) {
+	f := newFixture(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	action := &api.GovernanceAction{ObjectMeta: metav1.ObjectMeta{Name: "governanceaction-test", UID: "action-uid"}, Spec: api.GovernanceActionSpec{
+		Requester: api.GovernanceActionRequester{Kind: "CetiAdmin", Subject: "system:serviceaccount:cetirun-admin:cetiadmin"},
+		TargetRef: api.GovernanceActionTargetRef{APIVersion: api.GroupVersion.String(), Kind: "Agent", Name: f.agent.Name, UID: f.agent.UID, Generation: 1},
+		Operation: api.GovernanceActionSuspend, Reason: "contain the governed workload",
+		RequestedAt: metav1.NewTime(now), ExpiresAt: metav1.NewTime(now.Add(time.Hour)),
+	}}
+	portal := f.handler.config.GovernanceApprovalUsername
+	requireResponse(t, f.handler.ValidateGovernanceAction(context.Background(), requestFor(t, admissionv1.Create, action, nil, "administrator")), false, "Portal approval identity")
+	requireResponse(t, f.handler.ValidateGovernanceAction(context.Background(), requestFor(t, admissionv1.Create, action, nil, portal)), true, "")
+
+	approved := action.DeepCopy()
+	digest, err := api.GovernanceActionDigest(approved.Spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	approved.Spec.Approval = &api.GovernanceActionApproval{
+		Decision: "Approved", Approver: testGovernanceSubject, ActionDigest: digest,
+		ApprovedAt: metav1.NewTime(now.Add(time.Minute)), ExpiresAt: metav1.NewTime(now.Add(30 * time.Minute)),
+	}
+	requireResponse(t, f.handler.ValidateGovernanceAction(context.Background(), requestFor(t, admissionv1.Update, approved, action, "administrator")), false, "Portal approval identity")
+	withMetadata := approved.DeepCopy()
+	withMetadata.Labels = map[string]string{"delete-me": "later"}
+	requireResponse(t, f.handler.ValidateGovernanceAction(context.Background(), requestFor(t, admissionv1.Update, withMetadata, action, portal)), false, "metadata is immutable")
+	requireResponse(t, f.handler.ValidateGovernanceAction(context.Background(), requestFor(t, admissionv1.Update, approved, action, portal)), true, "")
+	requireResponse(t, f.handler.ValidateGovernanceAction(context.Background(), requestFor(t, admissionv1.Delete, action, nil, portal)), false, "cannot be deleted")
 }
 
 func requireResponse(t *testing.T, response admission.Response, allowed bool, message string) {
@@ -762,8 +818,8 @@ func TestAdmissionConfigValidation(t *testing.T) {
 			t.Fatalf("accepted invalid config: %s", raw)
 		}
 	}
-	config, err := ParseConfig(`{"adminUsers":["administrator"],"controllerUsername":"system:serviceaccount:test:controller"}`)
-	if err != nil || !slices.Equal(config.AdminUsers, []string{"administrator"}) {
+	config, err := ParseConfig(`{"adminUsers":["administrator","system:serviceaccount:test:portal"],"controllerUsername":"system:serviceaccount:test:controller","governanceApprovalUsername":"system:serviceaccount:test:portal"}`)
+	if err != nil || !slices.Equal(config.AdminUsers, []string{"administrator", "system:serviceaccount:test:portal"}) {
 		t.Fatalf("valid config rejected: %v", err)
 	}
 }

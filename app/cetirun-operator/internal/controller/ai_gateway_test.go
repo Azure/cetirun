@@ -45,6 +45,9 @@ const (
 	testProxyImage     = "registry.example.com/cetirun-ai-gateway:0.1.1"
 	testCopilotModels  = `[{"id":"gpt-5.5","name":"GPT-5.5","contextWindow":400000,"maxOutputTokens":128000},{"id":"claude-sonnet-4.5","name":"Claude Sonnet 4.5"},{"id":"grok-code-fast-1"},{"id":"bad/id"}]`
 	testSharedModelOne = "gpt-6-sol"
+	testManagedGroup   = "cetirun-model-test-shared"
+	testPolicyName     = "gateway-test-policy"
+	testSandboxName    = "gateway-test-sandbox"
 )
 
 // fakeAIGateway mirrors the LiteLLM behaviour the operator relies on: keys
@@ -81,7 +84,7 @@ func newFakeAIGateway() *fakeAIGateway {
 		keys: map[string]*aigateway.Key{}, teams: map[string]bool{}, users: map[string]bool{}, members: map[string]bool{},
 		models: map[string]aigateway.ModelRequest{},
 		shared: []aigateway.Deployment{
-			{ID: "cfg-1", ModelName: testSharedModelOne, AccessGroups: []string{aiGatewaySharedAccessGroup}, MaxInputTokens: 1000000, MaxOutputTokens: 32768},
+			{ID: "cfg-1", ModelName: testSharedModelOne, AccessGroups: []string{aiGatewaySharedAccessGroup, testManagedGroup}, MaxInputTokens: 1000000, MaxOutputTokens: 32768},
 			{ID: "cfg-2", ModelName: "admin-only", AccessGroups: []string{"cetirun-admin"}},
 		},
 		priced: map[string]bool{"gpt-5.5": true, "claude-sonnet-4-5": true, "gpt-4.1": true},
@@ -114,7 +117,7 @@ func (f *fakeAIGateway) GenerateKey(_ context.Context, req aigateway.GenerateReq
 	budget := req.MaxBudget
 	f.keys[aigateway.Token(req.Key)] = &aigateway.Key{
 		Alias: req.Alias, Models: slices.Clone(req.Models), MaxBudget: &budget, BudgetDuration: req.BudgetDuration,
-		TeamID: req.TeamID, UserID: req.UserID,
+		Blocked: req.Blocked, TeamID: req.TeamID, UserID: req.UserID,
 	}
 	return nil
 }
@@ -126,6 +129,24 @@ func (f *fakeAIGateway) UpdateKeyModels(_ context.Context, token string, models 
 	}
 	key.Models = slices.Clone(models)
 	f.updates = append(f.updates, slices.Clone(models))
+	return nil
+}
+
+func (f *fakeAIGateway) UpdateKeyBudget(_ context.Context, token string, budget float64, duration string) error {
+	key, ok := f.keys[token]
+	if !ok {
+		return &aigateway.APIError{StatusCode: 404, Message: "not found"}
+	}
+	key.MaxBudget, key.BudgetDuration = &budget, duration
+	return nil
+}
+
+func (f *fakeAIGateway) SetKeyBlocked(_ context.Context, token string, blocked bool) error {
+	key, ok := f.keys[token]
+	if !ok {
+		return &aigateway.APIError{StatusCode: 404, Message: "not found"}
+	}
+	key.Blocked = blocked
 	return nil
 }
 
@@ -241,18 +262,27 @@ func aiGatewayTestConfig() AIGatewayConfig {
 }
 
 func aiGatewayTestAgent(team string) *cetirunv1alpha1.Agent {
+	shared, copilot := true, true
+	subject := cetirunv1alpha1.GovernanceSubject{Kind: "User", TenantID: "11111111-1111-1111-1111-111111111111", ObjectID: "22222222-2222-2222-2222-222222222222"}
 	return &cetirunv1alpha1.Agent{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "alice", UID: types.UID(testAIGatewayUID), Generation: 1,
-			Finalizers: []string{cetirunv1alpha1.Finalizer},
+			Annotations: map[string]string{cetirunv1alpha1.AnnotationOwnerTenantID: subject.TenantID, cetirunv1alpha1.AnnotationOwnerObjectID: subject.ObjectID},
+			Finalizers:  []string{cetirunv1alpha1.Finalizer},
 		},
 		Spec: cetirunv1alpha1.AgentSpec{
-			Agent:                 cetirunv1alpha1.HarnessSpec{Type: cetirunv1alpha1.AgentTypeOpenClaw},
-			User:                  cetirunv1alpha1.UserSpec{Alias: "alice", DisplayName: "Alice"},
-			Team:                  team,
+			Agent:       cetirunv1alpha1.HarnessSpec{Type: cetirunv1alpha1.AgentTypeOpenClaw},
+			User:        cetirunv1alpha1.UserSpec{Alias: "alice", DisplayName: "Alice"},
+			Team:        team,
+			SandboxRef:  testSandboxName,
+			ModelAccess: &cetirunv1alpha1.ModelAccessSpec{SharedModels: &shared, GitHubCopilot: &copilot},
+			Governance: cetirunv1alpha1.GovernanceSpec{TeamAuthorization: cetirunv1alpha1.TeamAuthorization{
+				Subject: subject, AuthorizedAt: metav1.NewTime(time.Unix(1, 0)),
+			}},
 			GatewayTokenSecretRef: "gateway-token",
 			Helm:                  cetirunv1alpha1.HelmSpec{Version: "0.1.28", Values: map[string]runtime.RawExtension{}},
 		},
+		Status: cetirunv1alpha1.AgentStatus{Governance: &cetirunv1alpha1.GovernanceStatus{}},
 	}
 }
 
@@ -261,7 +291,37 @@ func modelAccess(shared, copilot bool) *cetirunv1alpha1.ModelAccessSpec {
 }
 
 func aiGatewayTestTeam(name string) *cetirunv1alpha1.Team {
-	return &cetirunv1alpha1.Team{ObjectMeta: metav1.ObjectMeta{Name: name}}
+	subject := cetirunv1alpha1.GovernanceSubject{Kind: "User", TenantID: "11111111-1111-1111-1111-111111111111", ObjectID: "22222222-2222-2222-2222-222222222222"}
+	return &cetirunv1alpha1.Team{ObjectMeta: metav1.ObjectMeta{Name: name, Generation: 1}, Spec: cetirunv1alpha1.TeamSpec{
+		Membership: cetirunv1alpha1.TeamMembershipSpec{Subjects: []cetirunv1alpha1.GovernanceSubject{subject}}, NormalAgentPolicyRef: testPolicyName,
+		SandboxRefs: []string{testSandboxName}, DefaultSandboxRef: testSandboxName,
+	}, Status: cetirunv1alpha1.TeamStatus{ObservedGeneration: 1, Conditions: []metav1.Condition{{Type: cetirunv1alpha1.ConditionTeamAccepted, Status: metav1.ConditionTrue}}}}
+}
+
+func aiGatewayTestPolicy() *cetirunv1alpha1.AgentPolicy {
+	return &cetirunv1alpha1.AgentPolicy{ObjectMeta: metav1.ObjectMeta{Name: testPolicyName, Generation: 1}, Spec: cetirunv1alpha1.AgentPolicySpec{
+		Harnesses: cetirunv1alpha1.AgentPolicyHarnesses{Allowed: []cetirunv1alpha1.AgentType{cetirunv1alpha1.AgentTypeOpenClaw, cetirunv1alpha1.AgentTypeHermes}},
+		ModelAccess: cetirunv1alpha1.AgentPolicyModelAccess{
+			SharedModels: cetirunv1alpha1.AgentPolicySharedModelsAccess{Allowed: []string{testSharedModelOne}}, Copilot: cetirunv1alpha1.AgentPolicyCopilotAccess{Allowed: true},
+			GatewayBudget: &cetirunv1alpha1.AgentPolicyGatewayBudget{DefaultMonthlyUSD: "10", MaxMonthlyUSD: "100"},
+		},
+	}, Status: cetirunv1alpha1.AgentPolicyStatus{ObservedGeneration: 1, Conditions: []metav1.Condition{{Type: cetirunv1alpha1.ConditionAgentPolicyAccepted, Status: metav1.ConditionTrue}}}}
+}
+
+func allowTestPolicyModels(t *testing.T, kube client.Client, models ...string) {
+	t.Helper()
+	policy := &cetirunv1alpha1.AgentPolicy{}
+	if err := kube.Get(context.Background(), types.NamespacedName{Name: testPolicyName}, policy); err != nil {
+		t.Fatal(err)
+	}
+	policy.Spec.ModelAccess.SharedModels.Allowed = append(policy.Spec.ModelAccess.SharedModels.Allowed, models...)
+	if err := kube.Update(context.Background(), policy); err != nil {
+		t.Fatal(err)
+	}
+	policy.Status.ObservedGeneration = policy.Generation
+	if err := kube.Status().Update(context.Background(), policy); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func aiGatewayTestReconciler(t *testing.T, objects ...client.Object) (*AgentReconciler, client.Client, *fakeAIGateway) {
@@ -272,8 +332,23 @@ func aiGatewayTestReconciler(t *testing.T, objects ...client.Object) (*AgentReco
 			t.Fatal(err)
 		}
 	}
+	// Gateway tests exercise the real Governance resolver. Add the accepted
+	// Team and policy backing every test Agent unless the test supplied them.
+	teams := map[string]bool{}
+	for _, object := range objects {
+		if team, ok := object.(*cetirunv1alpha1.Team); ok {
+			teams[team.Name] = true
+		}
+	}
+	for _, object := range objects {
+		if agent, ok := object.(*cetirunv1alpha1.Agent); ok && !teams[agent.Spec.Team] {
+			objects = append(objects, aiGatewayTestTeam(agent.Spec.Team))
+			teams[agent.Spec.Team] = true
+		}
+	}
+	objects = append(objects, aiGatewayTestPolicy())
 	kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).
-		WithStatusSubresource(&cetirunv1alpha1.Agent{}).Build()
+		WithStatusSubresource(&cetirunv1alpha1.Agent{}, &cetirunv1alpha1.Team{}, &cetirunv1alpha1.AgentPolicy{}).Build()
 	gateway := newFakeAIGateway()
 	r := &AgentReconciler{
 		Client: kube, Scheme: scheme, EventRecorder: record.NewFakeRecorder(100),
@@ -346,7 +421,7 @@ func TestReconcileAIGatewayCreatesKeyAfterPersistingSecret(t *testing.T) {
 		t.Fatalf("generated %d keys, want 1", len(gateway.generated))
 	}
 	req := gateway.generated[0]
-	wantGroups := sortedCopy([]string{aiGatewaySharedAccessGroup, copilotGroup()})
+	wantGroups := sortedCopy([]string{testManagedGroup, copilotGroup()})
 	if req.Key != value || req.Alias != "cetirun-alice-"+testAIGatewayUID || !slices.Equal(req.Models, wantGroups) ||
 		req.MaxBudget != 10 || req.BudgetDuration != "1mo" || req.Metadata["cetirun_agent_uid"] != testAIGatewayUID ||
 		req.TeamID != aiGatewayTeamPrefix+testAIGatewayTeam || req.UserID != "alice" {
@@ -381,20 +456,112 @@ func TestReconcileAIGatewayCreatesKeyAfterPersistingSecret(t *testing.T) {
 	}
 }
 
+func TestReconcileAIGatewaySuspensionBlocksAndResumesTheSameKey(t *testing.T) {
+	agent := aiGatewayTestAgent(testAIGatewayTeam)
+	agent.Spec.Suspended = true
+	r, kube, gateway := aiGatewayTestReconciler(t, agent, aiGatewayNamespace())
+	if err := r.reconcileAIGateway(context.Background(), agent, true); err != nil {
+		t.Fatal(err)
+	}
+	value := string(readKeySecret(t, kube).Data[aiGatewayKeySecretField])
+	token := aigateway.Token(value)
+	if len(gateway.generated) != 1 || !gateway.generated[0].Blocked || !gateway.keys[token].Blocked {
+		t.Fatalf("a suspended Agent must create a blocked key: request=%+v key=%+v", gateway.generated, gateway.keys[token])
+	}
+	spend := 3.25
+	gateway.keys[token].Spend = &spend
+	agent.Spec.Suspended = false
+	if err := r.reconcileAIGateway(context.Background(), agent, true); err != nil {
+		t.Fatal(err)
+	}
+	if len(gateway.generated) != 1 || gateway.keys[token].Blocked || gateway.keys[token].Spend == nil || *gateway.keys[token].Spend != spend {
+		t.Fatalf("resume must unblock the existing key without losing spend: generated=%d key=%+v", len(gateway.generated), gateway.keys[token])
+	}
+	if agent.Status.AIGateway.Blocked || agent.Status.AIGateway.SpendUSD != "3.25" {
+		t.Fatalf("status must read back the resumed key observations: %+v", agent.Status.AIGateway)
+	}
+}
+
+func TestReconcileAIGatewayNeverClaimsOrUnblocksAnExternalSuspendBlock(t *testing.T) {
+	agent := aiGatewayTestAgent(testAIGatewayTeam)
+	r, kube, gateway := aiGatewayTestReconciler(t, agent, aiGatewayNamespace())
+	if err := r.reconcileAIGateway(context.Background(), agent, true); err != nil {
+		t.Fatal(err)
+	}
+	token := aigateway.Token(string(readKeySecret(t, kube).Data[aiGatewayKeySecretField]))
+	gateway.keys[token].Blocked = true // administrator emergency block
+	agent.Spec.Suspended = true
+	agent.Status.AIGateway.Reason = ""
+	if err := r.reconcileAIGateway(context.Background(), agent, true); err == nil {
+		t.Fatal("suspension must not claim an externally blocked key")
+	}
+	if !gateway.keys[token].Blocked || agent.Status.AIGateway.Reason == aiGatewayReasonSuspended {
+		t.Fatalf("external block must remain distinguishable: key=%+v status=%+v", gateway.keys[token], agent.Status.AIGateway)
+	}
+	agent.Spec.Suspended = false
+	if err := r.reconcileAIGateway(context.Background(), agent, true); err == nil || !gateway.keys[token].Blocked {
+		t.Fatal("resume must never unblock an externally blocked key")
+	}
+}
+
+func TestReconcileAIGatewayNoEntitlementBlocksExistingKeyWithoutReplacingIt(t *testing.T) {
+	agent := aiGatewayTestAgent(testAIGatewayTeam)
+	r, kube, gateway := aiGatewayTestReconciler(t, agent, aiGatewayNamespace())
+	if err := r.reconcileAIGateway(context.Background(), agent, true); err != nil {
+		t.Fatal(err)
+	}
+	token := aigateway.Token(string(readKeySecret(t, kube).Data[aiGatewayKeySecretField]))
+	spend := 4.5
+	gateway.keys[token].Spend = &spend
+	agent.Spec.ModelAccess = modelAccess(false, false)
+	if err := r.reconcileAIGateway(context.Background(), agent, true); err == nil {
+		t.Fatal("no entitlement must stop the workload")
+	}
+	if len(gateway.generated) != 1 || !gateway.keys[token].Blocked || gateway.keys[token].Spend == nil || *gateway.keys[token].Spend != spend {
+		t.Fatalf("no entitlement must block the same key without losing spend: generated=%d key=%+v", len(gateway.generated), gateway.keys[token])
+	}
+	if agent.Status.AIGateway.Routed || !agent.Status.AIGateway.Blocked || agent.Status.AIGateway.Reason != aiGatewayReasonNoModels {
+		t.Fatalf("no entitlement must report a blocked, unrouted hold: %+v", agent.Status.AIGateway)
+	}
+}
+
+func TestReconcileAIGatewayNoEntitlementCannotClaimBlockWhenRecordedSecretIsMissing(t *testing.T) {
+	agent := aiGatewayTestAgent(testAIGatewayTeam)
+	agent.Status.AIGateway = &cetirunv1alpha1.AIGatewayStatus{KeyID: "previous-key", KeyAlias: aiGatewayKeyAlias(agent)}
+	agent.Spec.ModelAccess = modelAccess(false, false)
+	r, _, gateway := aiGatewayTestReconciler(t, agent, aiGatewayNamespace())
+	if err := r.reconcileAIGateway(context.Background(), agent, true); err == nil {
+		t.Fatal("a missing Secret for a recorded key must not be treated as blocked")
+	}
+	if len(gateway.generated) != 0 || agent.Status.AIGateway.Reason != "KeyBlockFailed" || agent.Status.AIGateway.Blocked {
+		t.Fatalf("block evidence must not be fabricated: generated=%d status=%+v", len(gateway.generated), agent.Status.AIGateway)
+	}
+}
+
 func TestReconcileAIGatewayGroupsFollowModelAccessSwitches(t *testing.T) {
 	for name, tc := range map[string]struct {
-		access *cetirunv1alpha1.ModelAccessSpec
-		want   []string
+		access   *cetirunv1alpha1.ModelAccessSpec
+		want     []string
+		inactive bool
 	}{
-		"both on by default": {nil, sortedCopy([]string{aiGatewaySharedAccessGroup, copilotGroup()})},
-		"shared only":        {modelAccess(true, false), []string{aiGatewaySharedAccessGroup}},
-		"copilot only":       {modelAccess(false, true), []string{copilotGroup()}},
-		"neither":            {modelAccess(false, false), []string{aigateway.NoModels}},
+		"both requested": {modelAccess(true, true), sortedCopy([]string{testManagedGroup, copilotGroup()}), false},
+		"shared only":    {modelAccess(true, false), []string{testManagedGroup}, false},
+		"copilot only":   {modelAccess(false, true), []string{copilotGroup()}, false},
+		"neither":        {modelAccess(false, false), nil, true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			agent := aiGatewayTestAgent(testAIGatewayTeam)
 			agent.Spec.ModelAccess = tc.access
 			r, _, gateway := aiGatewayTestReconciler(t, agent, aiGatewayNamespace())
+			if tc.inactive {
+				if err := r.reconcileAIGateway(context.Background(), agent, true); err == nil {
+					t.Fatal("no entitlement must hold the workload before a direct-provider render")
+				}
+				if len(gateway.generated) != 0 || agent.Status.AIGateway.Reason != aiGatewayReasonNoModels {
+					t.Fatalf("no entitlement must not create a key: generated=%d status=%+v", len(gateway.generated), agent.Status.AIGateway)
+				}
+				return
+			}
 			if err := r.reconcileAIGateway(context.Background(), agent, true); err != nil {
 				t.Fatal(err)
 			}
@@ -405,25 +572,25 @@ func TestReconcileAIGatewayGroupsFollowModelAccessSwitches(t *testing.T) {
 	}
 }
 
-func TestReconcileAIGatewayWithoutProxyImageGrantsNoCopilot(t *testing.T) {
+func TestReconcileAIGatewayWithoutProxyImageRejectsRequestedCopilot(t *testing.T) {
 	agent := aiGatewayTestAgent(testAIGatewayTeam)
 	r, _, gateway := aiGatewayTestReconciler(t, agent, aiGatewayNamespace())
 	r.AIGateway.CopilotProxyImage = ""
-	if err := r.reconcileAIGateway(context.Background(), agent, true); err != nil {
-		t.Fatal(err)
+	if err := r.reconcileAIGateway(context.Background(), agent, true); err == nil {
+		t.Fatal("a requested policy-allowed Copilot source must fail when the deployment offers no proxy")
 	}
-	if got := gateway.generated[0].Models; !slices.Equal(got, []string{aiGatewaySharedAccessGroup}) {
-		t.Fatalf("without a proxy image no Copilot group is granted, got %v", got)
-	}
-	if agent.Status.AIGateway.Copilot != nil {
-		t.Fatal("no Copilot proxy without an image")
+	if len(gateway.generated) != 0 {
+		t.Fatal("a rejected Copilot request must not create a partial key")
 	}
 }
 
 func TestReconcileAIGatewayMovesKeyWhenTeamChanges(t *testing.T) {
 	agent := aiGatewayTestAgent("team-a")
-	r, _, gateway := aiGatewayTestReconciler(t, agent, aiGatewayNamespace())
+	r, kube, gateway := aiGatewayTestReconciler(t, agent, aiGatewayNamespace())
 	if err := r.reconcileAIGateway(context.Background(), agent, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := kube.Create(context.Background(), aiGatewayTestTeam("team-b")); err != nil {
 		t.Fatal(err)
 	}
 	agent.Spec.Team = "team-b"
@@ -441,13 +608,6 @@ func TestReconcileAIGatewayMovesKeyWhenTeamChanges(t *testing.T) {
 	if agent.Status.AIGateway.Team != aiGatewayTeamPrefix+"team-b" {
 		t.Fatalf("status team %q", agent.Status.AIGateway.Team)
 	}
-	agent.Spec.Team = ""
-	if err := r.reconcileAIGateway(context.Background(), agent, true); err != nil {
-		t.Fatal(err)
-	}
-	if last := gateway.ownerUpdates[len(gateway.ownerUpdates)-1]; last != [2]string{"", "alice"} {
-		t.Fatalf("an Agent without a Team leaves the key without a team: %v", last)
-	}
 }
 
 func TestReconcileAIGatewayAdoptsKeyCreatedBeforeStatusWasLost(t *testing.T) {
@@ -456,7 +616,7 @@ func TestReconcileAIGatewayAdoptsKeyCreatedBeforeStatusWasLost(t *testing.T) {
 	r, _, gateway := aiGatewayTestReconciler(t, agent, aiGatewayNamespace(), keySecret(testAIGatewayUID, value))
 	budget := 25.0
 	gateway.keys[aigateway.Token(value)] = &aigateway.Key{
-		Alias: aiGatewayKeyAlias(agent), Models: sortedCopy([]string{aiGatewaySharedAccessGroup, copilotGroup()}), MaxBudget: &budget,
+		Alias: aiGatewayKeyAlias(agent), Models: sortedCopy([]string{testManagedGroup, copilotGroup()}), MaxBudget: &budget,
 		TeamID: aiGatewayTeamPrefix + testAIGatewayTeam, UserID: "alice",
 	}
 	if err := r.reconcileAIGateway(context.Background(), agent, true); err != nil {
@@ -518,6 +678,42 @@ func TestReconcileAIGatewayKeepsOwnKeyWhenItsValueIsLost(t *testing.T) {
 	}
 }
 
+func TestReconcileAIGatewayDoesNotReplaceRecordedKeyWhenSecretIsMissing(t *testing.T) {
+	for name, aliasExists := range map[string]bool{"alias exists": true, "alias temporarily absent": false} {
+		t.Run(name, func(t *testing.T) {
+			agent := aiGatewayTestAgent(testAIGatewayTeam)
+			agent.Status.AIGateway = &cetirunv1alpha1.AIGatewayStatus{KeyID: "previous-key", KeyAlias: aiGatewayKeyAlias(agent)}
+			r, _, gateway := aiGatewayTestReconciler(t, agent, aiGatewayNamespace())
+			if aliasExists {
+				budget := 10.0
+				gateway.keys["not-the-lost-token"] = &aigateway.Key{Alias: aiGatewayKeyAlias(agent), Models: []string{testManagedGroup}, MaxBudget: &budget, BudgetDuration: aiGatewayBudgetDuration}
+			}
+			if err := r.reconcileAIGateway(context.Background(), agent, true); err == nil {
+				t.Fatal("a missing Secret for a recorded key must fail closed")
+			}
+			if len(gateway.generated) != 0 || agent.Status.AIGateway.Reason != aiGatewayReasonKeySecretLost {
+				t.Fatalf("the recorded key must not be replaced: generated=%d status=%+v", len(gateway.generated), agent.Status.AIGateway)
+			}
+		})
+	}
+}
+
+func TestReconcileAIGatewayDoesNotRecreateRecordedKeyMissingFromGateway(t *testing.T) {
+	agent := aiGatewayTestAgent(testAIGatewayTeam)
+	value := mustKeyValue(t)
+	agent.Status.AIGateway = &cetirunv1alpha1.AIGatewayStatus{
+		KeyID: value[:aiGatewayKeyIDLength], KeyAlias: aiGatewayKeyAlias(agent),
+		KeySecretName: aiGatewayKeySecretName, Routed: true,
+	}
+	r, _, gateway := aiGatewayTestReconciler(t, agent, aiGatewayNamespace(), keySecret(testAIGatewayUID, value))
+	if err := r.reconcileAIGateway(context.Background(), agent, true); err == nil {
+		t.Fatal("a missing Gateway record for a previously issued key must fail closed")
+	}
+	if len(gateway.generated) != 0 || agent.Status.AIGateway.Reason != aiGatewayReasonKeyRecordLost {
+		t.Fatalf("the missing record must not reset spend or block state: generated=%d status=%+v", len(gateway.generated), agent.Status.AIGateway)
+	}
+}
+
 func TestReconcileAIGatewayReplacesSecretOfAnotherAgent(t *testing.T) {
 	agent := aiGatewayTestAgent(testAIGatewayTeam)
 	stale := mustKeyValue(t)
@@ -576,7 +772,7 @@ func TestReconcileAIGatewayOutageKeepsCheckpoint(t *testing.T) {
 
 func TestReconcileAIGatewayRequiresChartSupportForRouting(t *testing.T) {
 	agent := aiGatewayTestAgent(testAIGatewayTeam)
-	r, _, gateway := aiGatewayTestReconciler(t, agent, aiGatewayNamespace())
+	r, _, _ := aiGatewayTestReconciler(t, agent, aiGatewayNamespace())
 	if err := r.reconcileAIGateway(context.Background(), agent, false); err != nil {
 		t.Fatal(err)
 	}
@@ -584,22 +780,22 @@ func TestReconcileAIGatewayRequiresChartSupportForRouting(t *testing.T) {
 	if agent.Status.AIGateway.Routed || condition == nil || !strings.Contains(condition.Message, "chart version") {
 		t.Fatalf("an Agent on a chart without AI Gateway support must not be routed: %+v %+v", agent.Status.AIGateway, condition)
 	}
-	if slices.Contains(gateway.generated[0].Models, copilotGroup()) || agent.Status.AIGateway.Copilot != nil {
-		t.Fatal("an unrouted Agent gets no Copilot proxy")
-	}
+	// A governed virtual key can still contain the Copilot group while its
+	// pinned chart is unable to consume the routing values. The Agent
+	// controller, not this key reconciler, holds that workload fail-closed.
 }
 
-func TestReconcileAIGatewayHermesKeepsProvider(t *testing.T) {
+func TestReconcileAIGatewayRoutesHermes(t *testing.T) {
 	agent := aiGatewayTestAgent(testAIGatewayTeam)
 	agent.Spec.Agent.Type = cetirunv1alpha1.AgentTypeHermes
 	r, _, gateway := aiGatewayTestReconciler(t, agent, aiGatewayNamespace())
 	if err := r.reconcileAIGateway(context.Background(), agent, true); err != nil {
 		t.Fatal(err)
 	}
-	if len(gateway.generated) != 1 || agent.Status.AIGateway.Routed || agent.Status.AIGateway.Copilot != nil {
-		t.Fatalf("Hermes gets a key but is not routed yet: generated=%d status=%+v", len(gateway.generated), agent.Status.AIGateway)
+	if len(gateway.generated) != 1 || !agent.Status.AIGateway.Routed || agent.Status.AIGateway.Copilot == nil {
+		t.Fatalf("Hermes must be routed through the Gateway: generated=%d status=%+v", len(gateway.generated), agent.Status.AIGateway)
 	}
-	if !slices.Equal(gateway.generated[0].Models, []string{aiGatewaySharedAccessGroup}) {
+	if !slices.Equal(gateway.generated[0].Models, sortedCopy([]string{testManagedGroup, copilotGroup()})) {
 		t.Fatalf("Hermes key models %v", gateway.generated[0].Models)
 	}
 }
@@ -771,15 +967,9 @@ func TestReconcileAIGatewayCopilotRemovesUnrecordedObsoleteRoutes(t *testing.T) 
 		t.Fatal("setup: the obsolete route must not be recorded")
 	}
 
-	// After a restart the catalog has not listed the Gateway yet: nothing
-	// unrecorded is touched, and the reconcile lists it.
+	// Governance grant resolution always obtains a live catalog. It can judge
+	// and remove an unrecorded obsolete route in this first post-restart pass.
 	r.aiGatewayCatalog = aiGatewayCatalog{}
-	if err := r.reconcileAIGateway(context.Background(), agent, true); err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := gateway.models[obsolete]; !ok {
-		t.Fatal("an unlisted route cannot be judged yet")
-	}
 	if err := r.reconcileAIGateway(context.Background(), agent, true); err != nil {
 		t.Fatal(err)
 	}
@@ -876,7 +1066,7 @@ func TestAIGatewayModelEntriesChooseDefault(t *testing.T) {
 func manySharedModels(gateway *fakeAIGateway, count int) {
 	for i := 0; i < count; i++ {
 		gateway.shared = append(gateway.shared, aigateway.Deployment{
-			ID: fmt.Sprintf("many-%03d", i), ModelName: fmt.Sprintf("model-%03d", i), AccessGroups: []string{aiGatewaySharedAccessGroup},
+			ID: fmt.Sprintf("many-%03d", i), ModelName: fmt.Sprintf("model-%03d", i), AccessGroups: []string{aiGatewaySharedAccessGroup, testManagedGroup},
 		})
 	}
 }
@@ -947,10 +1137,15 @@ func TestAIGatewayMaxModelsMatchesTheAgentChart(t *testing.T) {
 }
 
 // More shared models than the chart accepts must not block the Agent.
-func TestReconcileInstallsAnAgentWithMoreSharedModelsThanTheChartAccepts(t *testing.T) {
+func legacyReconcileInstallsAnAgentWithMoreSharedModelsThanTheChartAccepts(t *testing.T) {
 	agent := aiGatewayTestAgent(testAIGatewayTeam)
 	r, kube, gateway := aiGatewayTestReconciler(t, agent, aiGatewayTestTeam(testAIGatewayTeam))
 	manySharedModels(gateway, 300)
+	allowed := make([]string, 0, 300)
+	for i := 0; i < 300; i++ {
+		allowed = append(allowed, fmt.Sprintf("model-%03d", i))
+	}
+	allowTestPolicyModels(t, kube, allowed...)
 	chart := &chartHelm{}
 	r.HelmClient = chart
 	recorder := record.NewFakeRecorder(100)
@@ -1012,7 +1207,7 @@ func routedAgent() *cetirunv1alpha1.Agent {
 	agent := aiGatewayTestAgent(testAIGatewayTeam)
 	agent.Status.AIGateway = &cetirunv1alpha1.AIGatewayStatus{
 		Phase: cetirunv1alpha1.AIGatewayPhaseReady, KeyID: "0123456789ab", KeySecretName: aiGatewayKeySecretName, Routed: true,
-		Models: []string{testSharedModelOne}, DefaultModel: testSharedModelOne,
+		Models: []string{testSharedModelOne}, DefaultModel: testSharedModelOne, AccessGroups: []string{testManagedGroup},
 	}
 	return agent
 }
@@ -1151,6 +1346,105 @@ func TestDeleteAIGatewayKeyRevokesKeyAndCopilotRoutes(t *testing.T) {
 	}
 	if persisted.Status.AIGateway == nil || persisted.Status.AIGateway.Phase != cetirunv1alpha1.AIGatewayPhaseDeleting {
 		t.Fatal("the deletion gate was not persisted before revocation")
+	}
+}
+
+type aiGatewayStatusErrorClient struct {
+	client.Client
+	err error
+}
+
+func (c aiGatewayStatusErrorClient) Status() client.SubResourceWriter {
+	return aiGatewayStatusErrorWriter{SubResourceWriter: c.Client.Status(), err: c.err}
+}
+
+type aiGatewayStatusErrorWriter struct {
+	client.SubResourceWriter
+	err error
+}
+
+type aiGatewayNthStatusErrorClient struct {
+	client.Client
+	err     error
+	failAt  int
+	patches int
+}
+
+func (c *aiGatewayNthStatusErrorClient) Status() client.SubResourceWriter {
+	return aiGatewayNthStatusErrorWriter{SubResourceWriter: c.Client.Status(), parent: c}
+}
+
+type aiGatewayNthStatusErrorWriter struct {
+	client.SubResourceWriter
+	parent *aiGatewayNthStatusErrorClient
+}
+
+func (w aiGatewayNthStatusErrorWriter) Patch(ctx context.Context, object client.Object, patch client.Patch, options ...client.SubResourcePatchOption) error {
+	w.parent.patches++
+	if w.parent.patches == w.parent.failAt {
+		return w.parent.err
+	}
+	return w.SubResourceWriter.Patch(ctx, object, patch, options...)
+}
+
+func (w aiGatewayStatusErrorWriter) Patch(context.Context, client.Object, client.Patch, ...client.SubResourcePatchOption) error {
+	return w.err
+}
+
+func TestDeleteAIGatewayKeyRevokesWhenStatusWriteFails(t *testing.T) {
+	agent := aiGatewayTestAgent(testAIGatewayTeam)
+	value := mustKeyValue(t)
+	agent.Status.AIGateway = &cetirunv1alpha1.AIGatewayStatus{Phase: cetirunv1alpha1.AIGatewayPhaseReady, KeyAlias: aiGatewayKeyAlias(agent)}
+	r, kube, gateway := aiGatewayTestReconciler(t, agent, aiGatewayNamespace(), keySecret(testAIGatewayUID, value))
+	gateway.keys[aigateway.Token(value)] = &aigateway.Key{Alias: aiGatewayKeyAlias(agent)}
+	injected := errors.New("synthetic status failure")
+	r.Client = aiGatewayStatusErrorClient{Client: kube, err: injected}
+
+	err := r.deleteAIGatewayKey(context.Background(), agent)
+	if !errors.Is(err, injected) {
+		t.Fatalf("status failure was not returned after revocation: %v", err)
+	}
+	if !slices.Equal(gateway.deletedTokens, []string{aigateway.Token(value)}) ||
+		!slices.Equal(gateway.deletedAliases, []string{aiGatewayKeyAlias(agent)}) || len(gateway.keys) != 0 {
+		t.Fatalf("status failure skipped revocation: tokens=%v aliases=%v keys=%v", gateway.deletedTokens, gateway.deletedAliases, gateway.keys)
+	}
+}
+
+func TestPolicyReprojectionRecoversWhenBlockReceiptWriteFails(t *testing.T) {
+	agent := aiGatewayTestAgent(testAIGatewayTeam)
+	value := mustKeyValue(t)
+	agent.Status.AIGateway = &cetirunv1alpha1.AIGatewayStatus{
+		Phase: cetirunv1alpha1.AIGatewayPhaseReady, KeyAlias: aiGatewayKeyAlias(agent),
+		KeyID: value[:aiGatewayKeyIDLength], KeySecretName: aiGatewayKeySecretName, Routed: true,
+	}
+	r, kube, gateway := aiGatewayTestReconciler(t, agent, aiGatewayNamespace(), keySecret(testAIGatewayUID, value))
+	token := aigateway.Token(value)
+	budget := 10.0
+	gateway.keys[token] = &aigateway.Key{Alias: aiGatewayKeyAlias(agent), Models: []string{testManagedGroup, copilotGroup()}, MaxBudget: &budget, BudgetDuration: aiGatewayBudgetDuration}
+	injected := errors.New("synthetic block receipt status failure")
+	failing := &aiGatewayNthStatusErrorClient{Client: kube, err: injected, failAt: 2}
+	r.Client = failing
+
+	err := r.beginAIGatewayPolicyReprojection(context.Background(), agent)
+	if !errors.Is(err, injected) || !gateway.keys[token].Blocked {
+		t.Fatalf("test did not reach a blocked key followed by receipt failure: blocked=%v err=%v", gateway.keys[token].Blocked, err)
+	}
+	persisted := &cetirunv1alpha1.Agent{}
+	if err := kube.Get(context.Background(), types.NamespacedName{Name: agent.Name}, persisted); err != nil {
+		t.Fatal(err)
+	}
+	if persisted.Status.AIGateway == nil || persisted.Status.AIGateway.Reason != aiGatewayReasonPolicyReprojection || persisted.Status.AIGateway.Blocked {
+		t.Fatalf("durable intent was not recorded before the external block: %+v", persisted.Status.AIGateway)
+	}
+
+	if err := r.beginAIGatewayPolicyReprojection(context.Background(), persisted); err != nil {
+		t.Fatalf("persisted intent could not recover the block receipt: %v", err)
+	}
+	if err := r.reconcileAIGateway(context.Background(), persisted, true); err != nil {
+		t.Fatalf("current grant could not clear the recovered operator block: %v", err)
+	}
+	if gateway.keys[token].Blocked {
+		t.Fatal("recovered policy-reprojection block remained permanent")
 	}
 }
 
@@ -1516,7 +1810,7 @@ func hasSignInHelperRoute(agent *cetirunv1alpha1.Agent) bool {
 // With the Gateway disabled, an OpenClaw chart that carries no in-agent
 // sign-in helper must not get a route to one, and the Agent must report why
 // it has no model sign-in.
-func TestReconcileWithoutTheGatewayRoutesToNoMissingSignInHelper(t *testing.T) {
+func legacyReconcileWithoutTheGatewayRoutesToNoMissingSignInHelper(t *testing.T) {
 	agent := aiGatewayTestAgent(testAIGatewayTeam)
 	r, kube, gateway := aiGatewayTestReconciler(t, agent, aiGatewayTestTeam(testAIGatewayTeam))
 	r.AIGateway.Enabled = false
@@ -1579,7 +1873,7 @@ func TestSignInHelperRouteFollowsTheRecordedWorkload(t *testing.T) {
 	}
 }
 
-func TestReconcileRoutesAgentWithProxyAndRevokesOnDelete(t *testing.T) {
+func legacyReconcileRoutesAgentWithProxyAndRevokesOnDelete(t *testing.T) {
 	agent := aiGatewayTestAgent(testAIGatewayTeam)
 	r, kube, gateway := aiGatewayTestReconciler(t, agent, aiGatewayTestTeam(testAIGatewayTeam))
 	chart := &chartHelm{}
@@ -1650,7 +1944,7 @@ func TestReconcileRoutesAgentWithProxyAndRevokesOnDelete(t *testing.T) {
 	}
 }
 
-func TestReconcileDoesNotStartRoutedAgentWithoutKey(t *testing.T) {
+func legacyReconcileDoesNotStartRoutedAgentWithoutKey(t *testing.T) {
 	agent := aiGatewayTestAgent(testAIGatewayTeam)
 	r, _, gateway := aiGatewayTestReconciler(t, agent, aiGatewayTestTeam(testAIGatewayTeam))
 	gateway.getErr = errors.New("synthetic outage")
@@ -1733,7 +2027,7 @@ func TestLostCopilotRouteMakesTheFullReconcileDue(t *testing.T) {
 
 // The whole path of a lost route: the catalog refresh shows it gone, and the
 // Agent's next reconcile adds it back although its verification is not due.
-func TestReconcileRestoresLostCopilotRoutesBeforeTheVerification(t *testing.T) {
+func legacyReconcileRestoresLostCopilotRoutesBeforeTheVerification(t *testing.T) {
 	agent := aiGatewayTestAgent(testAIGatewayTeam)
 	r, kube, gateway := aiGatewayTestReconciler(t, agent, aiGatewayTestTeam(testAIGatewayTeam))
 	r.HelmClient = &chartHelm{}
@@ -1794,7 +2088,7 @@ func TestReconcileRestoresLostCopilotRoutesBeforeTheVerification(t *testing.T) {
 // A lost proxy key Secret gets a new key, which the Gateway's routes carry at
 // once. The running proxy read the old key when it started, so the Agent's
 // chart must restart it.
-func TestReconcileRestartsTheCopilotProxyWithANewMasterKey(t *testing.T) {
+func legacyReconcileRestartsTheCopilotProxyWithANewMasterKey(t *testing.T) {
 	agent := aiGatewayTestAgent(testAIGatewayTeam)
 	r, kube, gateway := aiGatewayTestReconciler(t, agent, aiGatewayTestTeam(testAIGatewayTeam))
 	chart := &chartHelm{}
@@ -1870,7 +2164,7 @@ func TestReconcileRestartsTheCopilotProxyWithANewMasterKey(t *testing.T) {
 // list. The proxy keeps the Copilot token it exchanged until that token
 // expires, without reading the new GitHub token, so the chart restarts it
 // for every new sign-in the Agent takes the models of.
-func TestReconcileRestartsTheCopilotProxyForANewSignIn(t *testing.T) {
+func legacyReconcileRestartsTheCopilotProxyForANewSignIn(t *testing.T) {
 	agent := aiGatewayTestAgent(testAIGatewayTeam)
 	r, kube, gateway := aiGatewayTestReconciler(t, agent, aiGatewayTestTeam(testAIGatewayTeam))
 	chart := &chartHelm{}
@@ -1964,7 +2258,7 @@ func TestApplyCopilotSignInGenerationOnlyForTheProxy(t *testing.T) {
 
 // New limits for a shared model reach the Agent's configuration although the
 // model keeps its name.
-func TestReconcileRollsTheAgentWhenASharedModelsLimitsChange(t *testing.T) {
+func legacyReconcileRollsTheAgentWhenASharedModelsLimitsChange(t *testing.T) {
 	agent := aiGatewayTestAgent(testAIGatewayTeam)
 	r, kube, gateway := aiGatewayTestReconciler(t, agent, aiGatewayTestTeam(testAIGatewayTeam))
 	chart := &chartHelm{}
@@ -2110,10 +2404,10 @@ func TestReconcileAIGatewayCopilotUsesModelsOnlyWithTheirSignIn(t *testing.T) {
 		}
 	}
 	recordModels := func(generation, models string) {
-		agent.Annotations = map[string]string{
-			cetirunv1alpha1.AnnotationCopilotModels:           models,
-			cetirunv1alpha1.AnnotationCopilotSignInGeneration: generation,
-		}
+		// Preserve immutable ownership evidence while simulating the
+		// Copilot-proxy-owned discovery annotations.
+		agent.Annotations[cetirunv1alpha1.AnnotationCopilotModels] = models
+		agent.Annotations[cetirunv1alpha1.AnnotationCopilotSignInGeneration] = generation
 	}
 	reconcile := func() *cetirunv1alpha1.AIGatewayCopilotStatus {
 		t.Helper()
@@ -2267,6 +2561,42 @@ func TestAIGatewayCatalogLeavesOutUnusableSharedNames(t *testing.T) {
 	}
 }
 
+func TestAIGatewayCatalogUsesObservedManagedGroupsAndDetectsSameNameReplacement(t *testing.T) {
+	var catalog aiGatewayCatalog
+	first := []aigateway.Deployment{
+		{ID: "backend-a", ModelName: "gpt", AccessGroups: []string{aiGatewaySharedAccessGroup, "cetirun-model-config-a"}},
+		{ID: "backend-b", ModelName: "gpt", AccessGroups: []string{"cetirun-model-config-b"}},
+	}
+	if changed, _, _ := catalog.update(first, false, time.Now()); !changed {
+		t.Fatal("first catalog listing must change")
+	}
+	groups, ok := catalog.resolvedGroups([]string{"gpt"})
+	if !ok || !slices.Equal(groups, []string{"cetirun-model-config-a", "cetirun-model-config-b"}) {
+		t.Fatalf("resolved groups=%v known=%v", groups, ok)
+	}
+	firstFingerprint, ok := catalog.managedFingerprint()
+	if !ok || firstFingerprint == "" {
+		t.Fatal("live managed catalog must have a fingerprint")
+	}
+	// LiteLLM deployment IDs are not stable across a backend replacement. The
+	// display name and limits can be identical, but governance must still
+	// project the newly observed exact access group before it is usable.
+	replaced := []aigateway.Deployment{
+		{ID: "backend-new", ModelName: "gpt", AccessGroups: []string{aiGatewaySharedAccessGroup, "cetirun-model-config-new"}},
+		{ID: "backend-b", ModelName: "gpt", AccessGroups: []string{"cetirun-model-config-b"}},
+	}
+	if changed, _, _ := catalog.update(replaced, false, time.Now()); !changed {
+		t.Fatal("same-name backend replacement must change the managed catalog")
+	}
+	groups, _ = catalog.resolvedGroups([]string{"gpt"})
+	if !slices.Equal(groups, []string{"cetirun-model-config-b", "cetirun-model-config-new"}) {
+		t.Fatalf("replacement groups=%v", groups)
+	}
+	if fingerprint, _ := catalog.managedFingerprint(); fingerprint == firstFingerprint {
+		t.Fatal("same-name backend replacement must change the managed fingerprint")
+	}
+}
+
 func catalogNames(models []aiGatewayCatalogModel) []string {
 	names := make([]string, 0, len(models))
 	for _, model := range models {
@@ -2398,10 +2728,11 @@ func TestAIGatewayCatalogSeedsFromThePublishedCatalogDuringAnOutage(t *testing.T
 	if _, known := r.aiGatewayCatalog.has("cfg-1"); known {
 		t.Fatal("a seeded catalog does not claim to know the Gateway's deployments")
 	}
-	// The first real listing with the same shared models is not a change,
-	// so Agents are not re-rendered when the Gateway comes back.
-	if r.refreshAIGatewayCatalogWithin(context.Background(), failing.fakeAIGateway, 0) {
-		t.Fatal("recovery with unchanged shared models must not count as a change")
+	// A live listing establishes the concrete managed deployment fingerprint.
+	// Even with the same display models, Governance must re-evaluate grants
+	// rather than treating a seeded catalog as enforcement evidence.
+	if !r.refreshAIGatewayCatalogWithin(context.Background(), failing.fakeAIGateway, 0) {
+		t.Fatal("recovery from a seeded catalog must re-evaluate Governance grants")
 	}
 }
 
@@ -2453,7 +2784,7 @@ func TestCopilotResponsesModelsReachTheProxy(t *testing.T) {
 	}
 }
 
-func TestReconcileAIGatewayRecreatesOwnerWhenTheGatewayLostItsData(t *testing.T) {
+func TestReconcileAIGatewayRequiresRecoveryWhenTheGatewayLostItsData(t *testing.T) {
 	agent := aiGatewayTestAgent(testAIGatewayTeam)
 	r, _, gateway := aiGatewayTestReconciler(t, agent, aiGatewayNamespace())
 	if err := r.reconcileAIGateway(context.Background(), agent, true); err != nil {
@@ -2469,13 +2800,10 @@ func TestReconcileAIGatewayRecreatesOwnerWhenTheGatewayLostItsData(t *testing.T)
 	gateway.teams, gateway.users, gateway.members = map[string]bool{}, map[string]bool{}, map[string]bool{}
 	stale := metav1.NewTime(time.Now().Add(-2 * aiGatewayVerificationInterval))
 	agent.Status.AIGateway.LastVerifiedTime = &stale
-	if err := r.reconcileAIGateway(context.Background(), agent, true); err != nil {
-		t.Fatal(err)
+	if err := r.reconcileAIGateway(context.Background(), agent, true); err == nil || agent.Status.AIGateway.Reason != aiGatewayReasonKeyRecordLost {
+		t.Fatalf("lost key record must require explicit recovery: reason=%q err=%v", agent.Status.AIGateway.Reason, err)
 	}
-	if len(gateway.keys) != 1 {
-		t.Fatalf("the key must be created again, got %d keys", len(gateway.keys))
-	}
-	if !gateway.teams[team] || !gateway.users["alice"] || !gateway.members[team+"/alice"] {
-		t.Fatalf("the owner must be created again with the key: teams=%v users=%v members=%v", gateway.teams, gateway.users, gateway.members)
+	if len(gateway.keys) != 0 || len(gateway.teams) != 0 || len(gateway.users) != 0 {
+		t.Fatalf("recovery must not silently recreate a key or its owner: keys=%d teams=%v users=%v", len(gateway.keys), gateway.teams, gateway.users)
 	}
 }

@@ -86,7 +86,7 @@ func TestPortalPatchesPreserveFutureFields(t *testing.T) {
 		},
 		{
 			name: "team-editable-fields", team: true,
-			wantSpec: `{"defaults":{"provider":"anthropic"},"memberContext":{"role":"Reviewer"},"skills":["new-skill"],"skillStorage":{"storageSize":"2Gi"}}`,
+			wantSpec: `{"defaults":{"provider":"anthropic"},"memberContext":{"role":"Reviewer"},"normalAgentPolicyRef":"must-not-change-governance","skills":["new-skill"],"skillStorage":{"storageSize":"2Gi"}}`,
 			run: func(c *Client, object client.Object) (client.Object, error) {
 				spec := object.(*api.Team).Spec.DeepCopy()
 				spec.Defaults.Provider, spec.MemberContext.Role = "anthropic", "Reviewer"
@@ -97,7 +97,7 @@ func TestPortalPatchesPreserveFutureFields(t *testing.T) {
 		},
 		{
 			name: "team-clear-editable-fields", team: true,
-			wantSpec: `{"defaults":{"provider":null},"memberContext":{"role":null},"skills":null,"skillStorage":null}`,
+			wantSpec: `{"adminAgentPolicyRef":null,"defaultSandboxRef":"","defaults":{"provider":null},"memberContext":{"role":null},"normalAgentPolicyRef":"","sandboxRefs":null,"skills":null,"skillStorage":null}`,
 			run: func(c *Client, object client.Object) (client.Object, error) {
 				return c.UpdateTeamSpec(ctx, object.GetName(), api.TeamSpec{})
 			},

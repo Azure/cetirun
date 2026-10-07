@@ -234,8 +234,6 @@ func (p *PreparedRelease) customPlatformObjects(namespace string) map[string]pla
 		}
 		objects["ValidatingAdmissionPolicy"] = platformObject{"admissionregistration.k8s.io/v1", policyName, map[string]any{
 			"failurePolicy": "Fail",
-			"matchConditions": []any{map[string]any{"name": "exclude-adminclaw",
-				"expression": `request.userInfo.username != "system:serviceaccount:cetirun-admin:openclaw-admin-cetirun"`}},
 			"matchConstraints": map[string]any{
 				"resourceRules": []any{map[string]any{"apiGroups": []string{""}, "apiVersions": []string{"v1"},
 					"operations": []string{"CONNECT"}, "resources": []string{"pods/exec"}}},

@@ -23,7 +23,7 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-func TestPortalTeamUpdatePreservesConcurrentGovernance(t *testing.T) {
+func TestPortalTeamUpdateRetriesAndAppliesRequestedGovernance(t *testing.T) {
 	team := &api.Team{ObjectMeta: metav1.ObjectMeta{Name: "governed"}, Spec: api.TeamSpec{
 		NormalAgentPolicyRef: "old-normal", AdminAgentPolicyRef: "old-admin",
 		SandboxRefs: []string{"old"}, DefaultSandboxRef: "old",
@@ -54,10 +54,10 @@ func TestPortalTeamUpdatePreservesConcurrentGovernance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if updates != 2 || got.Spec.NormalAgentPolicyRef != "new-normal" || got.Spec.AdminAgentPolicyRef != "new-admin" ||
-		!slices.Equal(got.Spec.SandboxRefs, []string{"new"}) || got.Spec.DefaultSandboxRef != "new" ||
+	if updates != 2 || got.Spec.NormalAgentPolicyRef != "must-not-override" || got.Spec.AdminAgentPolicyRef != "" ||
+		len(got.Spec.SandboxRefs) != 0 || got.Spec.DefaultSandboxRef != "" ||
 		got.Spec.MemberContext.Role != "new-role" || len(got.Spec.Skills) != 0 {
-		t.Fatalf("retry lost concurrent governance or Portal replacement semantics: %+v", got.Spec)
+		t.Fatalf("retry did not apply the complete requested Team specification: %+v", got.Spec)
 	}
 }
 

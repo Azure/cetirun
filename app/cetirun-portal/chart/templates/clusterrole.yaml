@@ -11,6 +11,17 @@ rules:
   - apiGroups: ["cetirun.microsoft.com"]
     resources: ["teams"]
     verbs: ["get", "list", "create", "update", "patch", "delete"]
+  - apiGroups: ["cetirun.microsoft.com"]
+    resources: ["agentpolicies", "sandboxes"]
+    verbs: ["get", "list", "create", "update", "patch", "delete"]
+  # GovernanceAction is an append-only audit record. Portal may propose and
+  # decide it, but never delete it.
+  - apiGroups: ["cetirun.microsoft.com"]
+    resources: ["governanceactions"]
+    verbs: ["get", "list", "create", "update", "patch"]
+  - apiGroups: ["authentication.k8s.io"]
+    resources: ["tokenreviews"]
+    verbs: ["create"]
   - apiGroups: [""]
     resources: ["secrets"]
     verbs: ["get", "create", "update"]

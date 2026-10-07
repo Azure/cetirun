@@ -69,6 +69,12 @@ fullnameOverride: ""
 # registers automatically, and are rejected here; so are names beginning with
 # `copilot/` while operatorIntegration is on.
 #
+# Each configured deployment receives an opaque `cetirun-model-...` access
+# group, derived from its canonical configured model object, when the chart renders.
+# The Operator grants that group instead of a broad display-name grant. Keep
+# the model configuration stable when changing provider settings; changing it
+# intentionally creates a new Governance deployment fingerprint.
+#
 # Example:
 #   models:
 #     - model_name: gpt-4o

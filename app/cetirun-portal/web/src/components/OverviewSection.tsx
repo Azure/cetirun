@@ -328,6 +328,17 @@ export function OverviewSection({ instance }: { instance: Instance }) {
 
       {instance.phase === "Provisioning" && <Spinner size="small" label="Provisioning your agent..." />}
 
+      {instance.governance && (
+        <div aria-label="Governance status" style={{ marginTop: 12, marginBottom: 12, padding: 12, borderRadius: tokens.borderRadiusMedium, backgroundColor: tokens.colorNeutralBackground2 }}>
+          <Text weight="semibold">Governance</Text>
+          <div style={{ display: "flex", gap: 8, marginTop: 6, alignItems: "center" }}>
+            <Badge appearance="filled" color={instance.governance.phase === "Ready" ? "success" : instance.governance.phase === "Denied" ? "danger" : "warning"}>{instance.governance.phase || "Pending"}</Badge>
+            <Text size={200}>Coverage: {instance.governance.coverage || "Unknown"}</Text>
+          </div>
+          {instance.governance.phase !== "Ready" && <Text size={200} style={{ display: "block", marginTop: 6 }}>Access remains restricted until all policy projections are verified.</Text>}
+        </div>
+      )}
+
       {agentCredential && (
         <div style={{ marginTop: 8, marginBottom: 8, display: "flex", alignItems: "center", gap: 8 }}>
           <Text weight="semibold">{agentCredentialLabel}: </Text>
