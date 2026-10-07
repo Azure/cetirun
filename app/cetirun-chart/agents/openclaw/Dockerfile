@@ -6,24 +6,14 @@ ARG GIT_SHA=unknown
 ARG BASE_IMAGE=cetirun.azurecr.io/cetirun-base:latest
 ARG OPENCLAW_VERSION=2026.9.6
 
-# Resolve and fetch OpenClaw from npm in a base-derived stage so registry
-# configuration matches runtime. Verify the exact published tarball by SRI;
-# npm pack would needlessly unpack and repack this large package under QEMU.
+# The build driver supplies openclaw-artifact as a named context after fetching
+# and verifying the immutable npm tarball on the build host. Verify its SRI
+# again in the target environment before installing it.
 FROM ${BASE_IMAGE} AS openclaw-source
 ARG OPENCLAW_VERSION
 ARG OPENCLAW_TARBALL_INTEGRITY=sha512-Ie0kyQSCVfFqixsgVg39vevUDq01Ch5u3+7Yu5Y3qARczmdAe+lzp8bVnO9925rHiW/+CFp70zfORCyPmCH31g==
-# Override NPM_REGISTRY to use a different package mirror.
-ARG NPM_REGISTRY=https://registry.npmjs.org/
-COPY --chown=vibe:vibe .npmrc /home/vibe/.npmrc
-RUN npm config set registry "${NPM_REGISTRY}" && \
-    npm config set replace-registry-host npmjs && \
-    mkdir -p /home/vibe/openclaw-pack && \
-    metadata=$(npm --min-release-age=0 view "openclaw@${OPENCLAW_VERSION}" dist.tarball dist.integrity --json) && \
-    tarball_url=$(printf '%s' "$metadata" | jq -er '(if type == "array" then .[0] else . end)["dist.tarball"]') && \
-    registry_integrity=$(printf '%s' "$metadata" | jq -er '(if type == "array" then .[0] else . end)["dist.integrity"]') && \
-    test "$registry_integrity" = "$OPENCLAW_TARBALL_INTEGRITY" && \
-    curl -fsSL --retry 5 --retry-all-errors --connect-timeout 30 \
-      "$tarball_url" -o /home/vibe/openclaw-pack/openclaw.tgz && \
+COPY --from=openclaw-artifact --chown=vibe:vibe /openclaw.tgz /home/vibe/openclaw-pack/openclaw.tgz
+RUN test "$OPENCLAW_VERSION" = "2026.9.6" && \
     node -e 'const crypto=require("crypto"),fs=require("fs"); const actual="sha512-"+crypto.createHash("sha512").update(fs.readFileSync(process.argv[1])).digest("base64"); if(actual!==process.argv[2]) throw new Error("OpenClaw tarball integrity mismatch")' \
       /home/vibe/openclaw-pack/openclaw.tgz "$OPENCLAW_TARBALL_INTEGRITY"
 

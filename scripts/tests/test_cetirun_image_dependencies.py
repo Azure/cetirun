@@ -29,6 +29,9 @@ class ImageDependencyTests(unittest.TestCase):
                 'if [ "$1" = "buildx" ] && [ "$2" = "inspect" ]; then exit 1; fi\n'
             )
             docker.chmod(0o755)
+            artifact = temp / "openclaw-artifact"
+            artifact.mkdir()
+            (artifact / "openclaw.tgz").write_bytes(b"test artifact")
             environment = os.environ.copy()
             environment.update(
                 {
@@ -39,6 +42,7 @@ class ImageDependencyTests(unittest.TestCase):
                     "VERSION": "test-version",
                     "CETIRUN_DOCKER_ARGUMENTS": str(log_path),
                     "PATH": f"{temp}{os.pathsep}{environment['PATH']}",
+                    "OPENCLAW_ARTIFACT_DIR": str(artifact),
                 }
             )
             environment.update(overrides)
@@ -307,6 +311,7 @@ class ImageDependencyTests(unittest.TestCase):
 
     def test_plugin_install_and_identity_cleanup_failure_handling(self):
         content = (CHART / "agents/openclaw/Dockerfile").read_text()
+        fetch = (ROOT / "scripts/fetch-openclaw-artifact.sh").read_text()
         self.assertNotIn("OPENCLAW_PLUGIN_STAGE_DIR", content)
         self.assertIn("npm pkg set 'allowScripts.openclaw=true' --json", content)
         self.assertIn("npm pkg delete allowScripts.openclaw", content)
@@ -316,14 +321,27 @@ class ImageDependencyTests(unittest.TestCase):
             "test ! -e node_modules/openclaw/.openclaw-lifecycle-pending", content
         )
         self.assertIn("ARG OPENCLAW_TARBALL_INTEGRITY=sha512-", content)
-        self.assertIn('view "openclaw@${OPENCLAW_VERSION}" dist.tarball dist.integrity', content)
+        self.assertIn(
+            "COPY --from=openclaw-artifact",
+            content,
+        )
+        self.assertIn('test "$OPENCLAW_VERSION" = "2026.9.6"', content)
         self.assertIn('crypto.createHash("sha512")', content)
+        self.assertIn('version="2026.9.6"', fetch)
+        self.assertIn(
+            "sha256=\"1a7355691bc0e605222ba818f1f72c1787253c78dfeb0df6be2086ec73b71e63\"",
+            fetch,
+        )
+        integrity = re.search(
+            r"^ARG OPENCLAW_TARBALL_INTEGRITY=(sha512-.+)$", content, re.MULTILINE
+        )
+        self.assertIsNotNone(integrity)
+        self.assertIn(f'integrity="{integrity[1]}"', fetch)
         self.assertNotIn("npm --min-release-age=0 pack", content)
         self.assertIn(
             "source=/home/vibe/openclaw-pack/openclaw.tgz,target=/tmp/openclaw.tgz,ro",
             content,
         )
-        self.assertNotIn("openclaw-2026.9.6.tgz", content)
         self.assertIn("--prefix /tmp/openclaw-plugin-prefetch", content)
         expected_plugins = (
             "acpx",
@@ -386,6 +404,8 @@ class ImageDependencyTests(unittest.TestCase):
             PYPI_INDEX_URL=index,
         )
         self.assertIn(f"--build-arg PYPI_INDEX_URL={index}", arguments)
+        self.assertIn("--build-context openclaw-artifact=", arguments)
+
 
 if __name__ == "__main__":
     unittest.main()

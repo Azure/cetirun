@@ -99,11 +99,16 @@ jobs:
             GIT_SHA=${{ github.sha }}
             NPM_REGISTRY=${{ env.NPM_REGISTRY }}
 
+      - name: Fetch verified OpenClaw artifact
+        run: scripts/fetch-openclaw-artifact.sh "${{ runner.temp }}/openclaw-artifact"
+
       - name: Build OpenClaw image (no push)
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: app/cetirun-chart
           file: app/cetirun-chart/agents/openclaw/Dockerfile
+          build-contexts: |
+            openclaw-artifact=${{ runner.temp }}/openclaw-artifact
           push: false
           build-args: |
             VERSION=${{ steps.version.outputs.version }}
@@ -181,11 +186,16 @@ jobs:
             ${{ secrets.ACR_REGISTRY }}/cetirun-base:${{ needs.validate.outputs.version }}
             ${{ secrets.ACR_REGISTRY }}/cetirun-base:latest
 
+      - name: Fetch verified OpenClaw artifact
+        run: scripts/fetch-openclaw-artifact.sh "${{ runner.temp }}/openclaw-artifact"
+
       - name: Build and push OpenClaw image
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: app/cetirun-chart
           file: app/cetirun-chart/agents/openclaw/Dockerfile
+          build-contexts: |
+            openclaw-artifact=${{ runner.temp }}/openclaw-artifact
           platforms: linux/amd64
           push: true
           provenance: true

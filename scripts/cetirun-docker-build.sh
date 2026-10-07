@@ -39,6 +39,16 @@ release_build_args=(
 # Preserve the separate OpenClaw override for deployments using different mirrors.
 openclaw_npm_registry="${OPENCLAW_NPM_REGISTRY:-https://registry.npmjs.org/}"
 openclaw_npm_registry_args=(--build-arg "NPM_REGISTRY=${openclaw_npm_registry}")
+openclaw_artifact_args=()
+openclaw_artifact_dir="${OPENCLAW_ARTIFACT_DIR:-}"
+openclaw_artifact_owned="false"
+
+cleanup_openclaw_artifact() {
+  if [ "${openclaw_artifact_owned}" = "true" ] && [ -d "${openclaw_artifact_dir}" ]; then
+    rm -rf -- "${openclaw_artifact_dir}"
+  fi
+}
+trap cleanup_openclaw_artifact EXIT
 
 common_output_args=()
 if [ -n "${build_network}" ]; then
@@ -80,6 +90,16 @@ if [ "${dockerfile}" = "agents/openclaw/Dockerfile" ]; then
 fi
 
 if [ "${build_image}" = "true" ]; then
+  if [ "${dockerfile}" = "agents/openclaw/Dockerfile" ]; then
+    if [ -z "${openclaw_artifact_dir}" ]; then
+      openclaw_artifact_dir="$(mktemp -d "${TMPDIR:-/tmp}/cetirun-openclaw.XXXXXX")"
+      openclaw_artifact_owned="true"
+      "${script_dir}/fetch-openclaw-artifact.sh" "${openclaw_artifact_dir}"
+    else
+      test -f "${openclaw_artifact_dir}/openclaw.tgz"
+    fi
+    openclaw_artifact_args=(--build-context "openclaw-artifact=${openclaw_artifact_dir}")
+  fi
   build_args=(
     --platform linux/amd64
     -f "${context_dir}/${dockerfile}"
@@ -88,6 +108,7 @@ if [ "${build_image}" = "true" ]; then
     "${release_build_args[@]}"
     "${image_npm_registry_args[@]}"
     "${pypi_index_args[@]}"
+    "${openclaw_artifact_args[@]}"
     "${common_output_args[@]}"
   )
   if [ "${push}" = "true" ]; then
