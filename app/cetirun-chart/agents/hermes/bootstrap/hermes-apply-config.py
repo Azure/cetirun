@@ -8,7 +8,8 @@ On the platform AI Gateway (--gateway-key-env), the generated model choice and
 the CetiRun AI Gateway provider replace the saved ones instead of merging into
 them, so a model the Gateway no longer offers leaves Hermes' list. The variable
 that carries the Agent's key is reserved: Hermes loads its .env over the
-process environment, so a saved value would replace the key. Once per HOME,
+process environment, so no assignment of it stays in .env, neither a saved one
+nor one in the generated file. Once per HOME,
 the GitHub Copilot sign-in made inside the agent before the Gateway is
 removed: its token in .env and Hermes' cache of the token it exchanged.
 Without the Gateway, the provider CetiRun added for it is removed.
@@ -175,8 +176,6 @@ def main() -> int:
         retire = False
         if on_gateway:
             desired_config = apply_gateway(desired_config, generated)
-            for name in (args.gateway_key_env, *RESERVED_ENV):
-                existing_env.pop(name, None)
             retire = copilot_sign_in_pending(root)
             if retire:
                 existing_env.pop(COPILOT_TOKEN_ENV, None)
@@ -185,6 +184,13 @@ def main() -> int:
         for key, value in read_env(args.env).items():
             if value or key not in existing_env:
                 existing_env[key] = value
+        if on_gateway:
+            # Hermes loads .env over its environment, where the chart puts the
+            # Agent's key: no assignment of the key's variable may remain,
+            # neither a saved one nor one the chart generates, as it does for
+            # OPENAI_API_KEY.
+            for name in (args.gateway_key_env, *RESERVED_ENV):
+                existing_env.pop(name, None)
         config_text = yaml.safe_dump(desired_config, sort_keys=False)
         env_text = "".join(f"{key}={value}\n" for key, value in existing_env.items())
         replace_file(config_path, config_text)

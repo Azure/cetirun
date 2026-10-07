@@ -470,3 +470,31 @@ def test_hermes_off_the_gateway_drops_its_provider(agent):
     assert config["providers"] == {"mine": {"api": "https://models.example.com/v1"}}
     assert config["model"]["provider"] == "openai" and config["model"]["default"] == "test-model"
     assert (agent["target"] / ".local/bin/copilot-auth").stat().st_mode & 0o777 == 0o755
+
+
+@pytest.mark.parametrize("agent", ["hermes"], indirect=True)
+def test_hermes_on_the_gateway_with_another_key_variable(agent):
+    # Standalone Helm can bind the key to another variable, such as
+    # OPENAI_API_KEY, which the chart also writes into the generated
+    # hermes.env: empty without secrets.apiKey. Hermes loads .env over its
+    # environment, where the key is, so no assignment of the variable may
+    # stay in .env, generated or saved.
+    on_gateway(agent)
+    agent["env"]["CETIRUN_GATEWAY_KEY_ENV"] = "OPENAI_API_KEY"
+    config = json.loads(json.dumps(GATEWAY_CONFIG))
+    config["providers"]["cetirun-gateway"]["key_env"] = "OPENAI_API_KEY"
+    (agent["config"] / "hermes-config.yaml").write_text(yaml.safe_dump(config))
+    (agent["secrets"] / "hermes.env").write_text("API_SERVER_KEY=sk-dummy\nOPENAI_API_KEY=\nBRAVE_API_KEY=\n")
+    result = run(agent)
+    assert result.returncode == 0, result.stderr
+    names = env_names(agent)
+    assert "OPENAI_API_KEY" not in names
+    assert {"API_SERVER_KEY", "BRAVE_API_KEY"} <= set(names)
+
+    env = agent["target"] / ".hermes/.env"
+    env.write_text(env.read_text() + "OPENAI_API_KEY=sk-example-saved\n")
+    (agent["secrets"] / "hermes.env").write_text("API_SERVER_KEY=sk-dummy\nOPENAI_API_KEY=sk-example-generated\n")
+    result = run(agent)
+    assert result.returncode == 0, result.stderr
+    assert "OPENAI_API_KEY" not in env_names(agent)
+    assert read_config(agent)["providers"]["cetirun-gateway"]["key_env"] == "OPENAI_API_KEY"

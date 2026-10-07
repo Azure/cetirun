@@ -193,6 +193,12 @@ Validate Azure Workload Identity prerequisites
 {{- fail "aiGateway.enabled requires networkPolicy.gatewayNamespace" -}}
 {{- end -}}
 {{- $hermesKeyEnv := dig "hermes" "keyEnv" "CETIRUN_GATEWAY_API_KEY" $gateway -}}
+{{- /* Init removes the key's variable from Hermes' .env, so it cannot be one
+   the chart writes there for another setting: the API server's, or a web
+   search key. The model provider keys can carry it. */ -}}
+{{- if has $hermesKeyEnv (list "API_SERVER_ENABLED" "API_SERVER_HOST" "API_SERVER_PORT" "API_SERVER_KEY" "API_SERVER_CORS_ORIGINS" "BRAVE_API_KEY" "PERPLEXITY_API_KEY") -}}
+{{- fail (printf "aiGateway.hermes.keyEnv must not be %s, which the chart writes into Hermes' .env for another setting" $hermesKeyEnv) -}}
+{{- end -}}
 {{- range .Values.extraEnv -}}
 {{- if has (get . "name") (list "OPENAI_API_KEY" "OPENAI_BASE_URL" "CETIRUN_AI_GATEWAY" $hermesKeyEnv) -}}
 {{- fail (printf "OPENAI_API_KEY, OPENAI_BASE_URL, CETIRUN_AI_GATEWAY and %s are reserved when aiGateway.enabled" $hermesKeyEnv) -}}
