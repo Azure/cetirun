@@ -82,6 +82,23 @@ class HermesLockRelocationTests(unittest.TestCase):
         )
         self.assertTrue(any("lost all pinned artifacts" in error for error in errors))
 
+    def test_requires_seeded_artifact_to_be_upstream_pinned(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            original_path = root / "original.lock"
+            relocated_path = root / "relocated.lock"
+            original_path.write_text(lock("https://pypi.org/simple"), encoding="utf-8")
+            relocated_path.write_text(
+                lock("https://packages.example/simple", hashes=("sha256:aaa",)),
+                encoding="utf-8",
+            )
+            errors = VALIDATOR.validate(
+                original_path,
+                relocated_path,
+                required_artifact_hashes=("sha256:ccc",),
+            )
+        self.assertTrue(any("is not upstream-pinned" in error for error in errors))
+
 
 if __name__ == "__main__":
     unittest.main()

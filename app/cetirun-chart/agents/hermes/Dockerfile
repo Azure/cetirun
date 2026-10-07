@@ -81,6 +81,9 @@ FROM ${BASE_IMAGE} AS hermes-build
 ARG HERMES_VERSION
 ARG HERMES_GIT_SHA
 ARG PYPI_INDEX_URL=https://pypi.org/simple/
+ARG PILLOW_HEIF_VERSION=1.5.0
+ARG PILLOW_HEIF_WHEEL=pillow_heif-1.5.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
+ARG PILLOW_HEIF_SHA256=7c8032c6c2bddde009e703e045a0e17f7724925403982821ddd1a8d78559f28d
 
 COPY --from=hermes-uv /uv /usr/local/bin/uv
 COPY --from=hermes-uv /uvx /usr/local/bin/uvx
@@ -102,13 +105,30 @@ COPY --from=hermes-source --chown=vibe:vibe \
 COPY agents/hermes/validate_uv_lock_relocation.py \
   /usr/local/share/cetirun/validate_uv_lock_relocation.py
 
-RUN cp uv.lock /tmp/uv.lock.upstream && \
+# The approved mirror can exclude the current-platform pillow-heif wheel from
+# refreshed metadata based on its mirror timestamp. Fetch that upstream-pinned
+# wheel explicitly, verify it against the immutable lock, and seed the venv
+# before the frozen sync so uv never falls back to an unprepared source build.
+RUN mkdir -p /tmp/hermes-wheelhouse && \
+    PYPI_DOWNLOAD_ROOT="${PYPI_INDEX_URL%/simple/}/download" && \
+    curl -fsSL --retry 5 --retry-all-errors --connect-timeout 15 --max-time 300 \
+      "${PYPI_DOWNLOAD_ROOT}/pillow-heif/1.5/${PILLOW_HEIF_WHEEL}" \
+      -o "/tmp/hermes-wheelhouse/${PILLOW_HEIF_WHEEL}" && \
+    echo "${PILLOW_HEIF_SHA256}  /tmp/hermes-wheelhouse/${PILLOW_HEIF_WHEEL}" \
+      | sha256sum --check && \
+    cp uv.lock /tmp/uv.lock.upstream && \
     uv lock --python /usr/bin/python3 --default-index "${PYPI_INDEX_URL}" && \
     python3 /usr/local/share/cetirun/validate_uv_lock_relocation.py \
-      /tmp/uv.lock.upstream uv.lock && \
+      /tmp/uv.lock.upstream uv.lock \
+      --required-artifact-hash "sha256:${PILLOW_HEIF_SHA256}" && \
+    uv venv --python /usr/bin/python3 "${UV_PROJECT_ENVIRONMENT}" && \
+    uv pip install --python "${HERMES_PYTHON}" --no-index --no-deps \
+      --find-links /tmp/hermes-wheelhouse \
+      "pillow-heif==${PILLOW_HEIF_VERSION}" && \
     UV_DEFAULT_INDEX="${PYPI_INDEX_URL}" \
       uv sync --python /usr/bin/python3 --frozen --extra all \
         --extra anthropic --extra azure-identity && \
+    rm -rf /tmp/hermes-wheelhouse /tmp/uv.lock.upstream && \
     printf '%s\n' docker > .install_method && \
     printf '%s\n' "${HERMES_GIT_SHA}" > .hermes_build_sha
 

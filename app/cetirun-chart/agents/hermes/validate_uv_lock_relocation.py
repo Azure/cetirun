@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 import sys
 import tomllib
+from collections.abc import Iterable
 from typing import Any
 
 
@@ -54,7 +55,11 @@ def load_lock(path: Path) -> list[dict[str, Any]]:
     return packages
 
 
-def validate(original_path: Path, relocated_path: Path) -> list[str]:
+def validate(
+    original_path: Path,
+    relocated_path: Path,
+    required_artifact_hashes: Iterable[str] = (),
+) -> list[str]:
     original = load_lock(original_path)
     relocated = load_lock(relocated_path)
     errors: list[str] = []
@@ -79,6 +84,11 @@ def validate(original_path: Path, relocated_path: Path) -> list[str]:
         if upstream_hashes and not current_hashes:
             errors.append(f"{key[0]} {key[1]} lost all pinned artifacts")
 
+    all_original_hashes = set().union(*original_hashes.values())
+    for required_hash in required_artifact_hashes:
+        if required_hash not in all_original_hashes:
+            errors.append(f"required artifact hash {required_hash} is not upstream-pinned")
+
     return errors
 
 
@@ -86,10 +96,15 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("original", type=Path)
     parser.add_argument("relocated", type=Path)
+    parser.add_argument("--required-artifact-hash", action="append", default=[])
     args = parser.parse_args()
 
     try:
-        errors = validate(args.original, args.relocated)
+        errors = validate(
+            args.original,
+            args.relocated,
+            required_artifact_hashes=args.required_artifact_hash,
+        )
     except (OSError, ValueError, tomllib.TOMLDecodeError) as exc:
         print(f"uv lock relocation validation failed: {exc}", file=sys.stderr)
         return 1
