@@ -86,6 +86,14 @@ Licensed under the MIT License.
 {{- $_ := set $defaultsCurrent "models" (dict $modelFull $modelConfig) }}
 {{- $_ := set $defaultsCurrent "modelPolicy" (dict "allow" (list $modelFull)) }}
 {{- end }}
+{{- if $gatewayRouted }}
+{{- /* OpenClaw sends short internal tasks, such as session titles and
+   activity recaps, to a utility model. Unset, it derives the small model of
+   the primary model's provider, OpenAI's for the Gateway provider, which
+   the Gateway does not offer, so those requests fail. The Agent's default
+   model serves them instead. */}}
+{{- $_ := set $defaultsCurrent "utilityModel" $modelFull }}
+{{- end }}
 {{- $_ := set $agentsCurrent "defaults" $defaultsCurrent }}
 {{- $_ := set $config "agents" $agentsCurrent }}
 {{- /* Custom API base URL → models.providers.<provider>.baseUrl */}}
