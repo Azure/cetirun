@@ -111,14 +111,22 @@ credentials; verify the actual node/service-account pull path separately.
 
 With the artifacts in an Azure Container Registry, these steps cover the
 nodes' image pulls and the operator's chart pulls. They assume the runtime
-chart (`cetirun.chart.repoURL`) is `oci://<registry>.azurecr.io/helm/cetirun`.
-Replace the example values first:
+chart is `helm/cetirun` in the registry. Replace the example values first:
 
 ```bash
 ACR_NAME=exampleregistry
 CLUSTER_RESOURCE_GROUP=example-rg
 CLUSTER_NAME=example-aks
 CHART_VERSION=0.1.0
+```
+
+The registry's host is its login server: `<registry>.azurecr.io`, or a name
+with a hash when the registry has domain name label protection. Read it rather
+than build it, and use it wherever the registry's host appears, as in
+`cetirun.chart.repoURL` (`oci://<login server>/helm/cetirun`):
+
+```bash
+ACR_LOGIN_SERVER=$(az acr show --name "$ACR_NAME" --query loginServer -o tsv)
 ```
 
 1. Let the nodes pull images by giving the cluster's kubelet identity a role
@@ -170,7 +178,7 @@ CHART_VERSION=0.1.0
      --query 'passwords[0].value' -o tsv)
    auth=$(printf '%s:%s' cetirun-operator "$password" | base64 | tr -d '\n')
    (umask 077 && printf '{"auths":{"%s":{"auth":"%s"}}}\n' \
-     "$ACR_NAME.azurecr.io" "$auth" > registry-config.json)
+     "$ACR_LOGIN_SERVER" "$auth" > registry-config.json)
    unset password auth
    kubectl create secret generic acr-helm-pull --namespace cetirun-system \
      --type=kubernetes.io/dockerconfigjson \
@@ -186,7 +194,7 @@ CHART_VERSION=0.1.0
 3. Fetch the chart with the same file, as the operator does, then delete it:
 
    ```bash
-   helm show chart "oci://$ACR_NAME.azurecr.io/helm/cetirun" \
+   helm show chart "oci://$ACR_LOGIN_SERVER/helm/cetirun" \
      --version "$CHART_VERSION" --registry-config registry-config.json
    rm registry-config.json
    ```
