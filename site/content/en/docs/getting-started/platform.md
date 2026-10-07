@@ -121,13 +121,38 @@ CLUSTER_NAME=example-aks
 CHART_VERSION=0.1.0
 ```
 
-1. Let the nodes pull images. This assigns `AcrPull` to the cluster's kubelet
-   identity, so it needs permission to assign roles on the registry:
+1. Let the nodes pull images by giving the cluster's kubelet identity a role
+   on the registry, which needs permission to assign roles there. The role
+   depends on the registry's role assignment permissions mode:
+
+   ```bash
+   az acr show --name "$ACR_NAME" --query roleAssignmentMode -o tsv
+   ```
+
+   With `LegacyRegistryPermissions` (RBAC registry permissions), attach the
+   registry, which assigns `AcrPull`:
 
    ```bash
    az aks update --resource-group "$CLUSTER_RESOURCE_GROUP" \
      --name "$CLUSTER_NAME" --attach-acr "$ACR_NAME"
    ```
+
+   With `AbacRepositoryPermissions` (RBAC registry and ABAC repository
+   permissions), the registry does not honor `AcrPull`, and AKS does not
+   support attaching it. Assign `Container Registry Repository Reader`
+   instead:
+
+   ```bash
+   KUBELET_OBJECT_ID=$(az aks show --resource-group "$CLUSTER_RESOURCE_GROUP" \
+     --name "$CLUSTER_NAME" --query identityProfile.kubeletidentity.objectId -o tsv)
+   az role assignment create --role "Container Registry Repository Reader" \
+     --assignee-object-id "$KUBELET_OBJECT_ID" --assignee-principal-type ServicePrincipal \
+     --scope "$(az acr show --name "$ACR_NAME" --query id -o tsv)"
+   ```
+
+   Without a condition, the assignment covers every repository in the
+   registry, as `AcrPull` does; see
+   [AKS and Azure Container Registry](https://learn.microsoft.com/azure/aks/cluster-container-registry-integration).
 
 2. Give the operator's Helm client a token that can only read the runtime
    chart. The token is created without passwords and one is generated
