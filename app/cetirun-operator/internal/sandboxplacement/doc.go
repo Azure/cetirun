@@ -45,6 +45,15 @@
 // comparison when the placement registry is configured.
 // Required metadata.name affinity uses field equality/inequality, not label
 // value validation; valid Node names may exceed the label value length limit.
+// Platform Pod names use Kubernetes' controller generation prefix, truncated
+// to 58 characters only for the name before its five-character random suffix;
+// a supplied generateName must retain the full controller prefix. Exact
+// registered controller ownership is still required even for shared prefixes.
+// An explicit template PriorityClass is freshly read and rechecked by UID,
+// resource version and content. Its value and effective preemption policy
+// supply Pod-only defaults, never overriding conflicting explicit template
+// fields. Missing class policy means PreemptLowerPriority. No implicit global
+// default PriorityClass is discovered or enabled.
 //
 // Deployment must independently protect the configured operator-namespace
 // ConfigMap against tenant writes and enforce the cluster-wide webhook. These

@@ -780,6 +780,7 @@ class SandboxAdmissionChartTests(unittest.TestCase):
         for rule in baseline[("ClusterRole", NAME)]["rules"]:
             self.assertNotIn("nodes", rule["resources"])
             self.assertNotIn("daemonsets", rule["resources"])
+            self.assertNotIn("priorityclasses", rule["resources"])
 
         documents = self.render(self.server_values(podsEnabled=True, placementConfigMapName="pilot-placement"))
         self.assertNotIn(("ValidatingWebhookConfiguration", "cetirun-sandbox-placement"), documents)
@@ -787,7 +788,7 @@ class SandboxAdmissionChartTests(unittest.TestCase):
         config = json.loads(next(value["value"] for value in container["env"] if value["name"] == "CETIRUN_SANDBOX_ADMISSION"))
         self.assertEqual(config["placementConfigMapName"], "pilot-placement")
         self.assertIn("--admission-pod-state-namespace=cetirun-system", container["args"])
-        for group, resource in (("", "nodes"), ("apps", "daemonsets")):
+        for group, resource in (("", "nodes"), ("apps", "daemonsets"), ("scheduling.k8s.io", "priorityclasses")):
             self.assertIn({"apiGroups": [group], "resources": [resource], "verbs": ["get"]},
                           documents[("ClusterRole", NAME)]["rules"])
 

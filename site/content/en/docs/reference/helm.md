@@ -423,8 +423,9 @@ operator-namespace placement registry requires enabled configuration and Pod
 admission. The server serves the placement endpoint during bootstrap;
 `enforce: true` also installs its cluster-wide checks for Pod writes, scheduling
 bindings, and reserved Node updates/deletion. There is no namespace or Pod-label
-exemption. Only read permissions for Nodes and DaemonSets are added; state reads
-reuse the operator-namespace ConfigMap role.
+exemption. Only read permissions for Nodes, DaemonSets and explicit platform
+PriorityClasses are added; state reads reuse the operator-namespace ConfigMap
+role. PriorityClass-derived Pod fields are verified against current class state.
 The legacy core `bindings` endpoint is denied, and binding annotation overrides
 cannot mutate a Pod while bypassing its normal validation.
 

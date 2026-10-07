@@ -1095,6 +1095,12 @@ trusted controller but remains unable to bind to reserved capacity until its
 new UID is enrolled. That is an intentional fail-closed pilot limitation, not
 automatic platform recovery.
 
+Explicit platform `priorityClassName` selections are resolved from the current
+PriorityClass with read-only access. Its numeric priority and preemption policy
+are checked rather than copied from the incoming Pod. Generated Pod names use
+Kubernetes' bounded prefix/suffix rules for long DaemonSet names; the full
+registered controller name, UID and generation prefix still identify the owner.
+
 The platform owner must protect registry writes and establish the registry on
 an empty, isolated dedicated pool before granting workload access. The guard
 does not discover or adopt nodes, mutate scheduling inputs, install DaemonSets,
