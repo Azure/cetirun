@@ -29,6 +29,8 @@ RUN UNAME_M=$(uname -m) && \
 # ── Build Go tools from source with the pinned fixed Go toolchain ────────────────
 # Upstream release binaries can lag Go stdlib CVE fixes, so build the tools here.
 FROM ${GO_BUILD_IMAGE} AS tailscale-build
+ENV GOPROXY="https://proxy.golang.com.cn|https://proxy.golang.org|direct" \
+    GOSUMDB="sum.golang.org https://sum.golang.google.cn"
 ARG TAILSCALE_VERSION=1.100.0
 ARG TAILSCALE_SRC_SHA256=d9e097d82f08c8557c887ca71962b20f08e27f3b305902ea504bd0e472486b97
 RUN curl --http1.1 --retry 5 --retry-all-errors --connect-timeout 15 -fsSL "https://codeload.github.com/tailscale/tailscale/tar.gz/refs/tags/v${TAILSCALE_VERSION}" -o /tmp/tailscale.tar.gz && \
@@ -44,6 +46,8 @@ RUN GOFLAGS="-trimpath" CGO_ENABLED=0 GOEXPERIMENT=ms_nocgo_opensslcrypto \
 
 # -- Build GitHub CLI from source with the pinned Go toolchain --
 FROM ${GO_BUILD_IMAGE} AS gh-build
+ENV GOPROXY="https://proxy.golang.com.cn|https://proxy.golang.org|direct" \
+    GOSUMDB="sum.golang.org https://sum.golang.google.cn"
 ARG GH_VERSION=2.95.0
 ARG GH_SRC_SHA256=b6a1c88cbd15f49f60a68d210a117a60b349bcb0d028a0dca0ef2d9dc92bd028
 RUN curl --http1.1 --retry 5 --retry-all-errors --connect-timeout 15 -fsSL "https://codeload.github.com/cli/cli/tar.gz/refs/tags/v${GH_VERSION}" -o /tmp/gh.tar.gz && \
@@ -59,6 +63,8 @@ RUN GOFLAGS="-trimpath" CGO_ENABLED=0 GOEXPERIMENT=ms_nocgo_opensslcrypto \
 
 # -- Build kubectl from source with the pinned Go toolchain --
 FROM ${GO_BUILD_IMAGE} AS kubectl-build
+ENV GOPROXY="https://proxy.golang.com.cn|https://proxy.golang.org|direct" \
+    GOSUMDB="sum.golang.org https://sum.golang.google.cn"
 ARG KUBECTL_VERSION=1.36.4
 ARG KUBERNETES_SRC_SHA256=86a216801ddba7098a50c6f3b3fe5fbc28ba34ea5b1daa66d81c2d5307c301ac
 ARG KUBERNETES_GIT_COMMIT=bb826b1d48562f110659e64e8ec444327433db95
