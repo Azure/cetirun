@@ -278,9 +278,12 @@ RUN mkdir -p /home/vibe/.local/bin && \
 
 # Install Claude Code into the same local prefix so it shares dependency policy.
 ARG CLAUDE_CODE_VERSION=2.1.163
+ARG CLAUDE_CODE_NATIVE_PACKAGE=@anthropic-ai/claude-code-linux-x64
 RUN mkdir -p /usr/local/share/npm-global/bin && \
     cd /usr/local/share/npm-global/lib && \
-    npm install @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} && \
+    npm install \
+      @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} \
+      ${CLAUDE_CODE_NATIVE_PACKAGE}@${CLAUDE_CODE_VERSION} && \
     for b in node_modules/.bin/*; do \
       [ -L "$b" ] && ln -sf "$(readlink -f "$b")" /usr/local/share/npm-global/bin/$(basename "$b"); \
     done && \
@@ -293,7 +296,7 @@ RUN mkdir -p /usr/local/share/npm-global/bin && \
 
 RUN cd /usr/local/share/npm-global/lib && \
     npm pkg set 'allowScripts[@anthropic-ai/claude-code]=true' --json && \
-    npm rebuild @anthropic-ai/claude-code && \
+    node node_modules/@anthropic-ai/claude-code/install.cjs && \
     claude --version | grep -F "${CLAUDE_CODE_VERSION}"
 
 # Create config directories and symlink shared skills for opencode and codex
