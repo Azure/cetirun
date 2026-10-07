@@ -56,6 +56,14 @@ type GrantJournalStore struct {
 	Namespace string
 }
 
+// GrantJournalSnapshot binds the validated inventory to one persisted journal.
+// It is not an execution permit or a lock around later grant mutations.
+type GrantJournalSnapshot struct {
+	UID             types.UID
+	ResourceVersion string
+	Bindings        []BindingReference
+}
+
 type grantJournalRecord struct {
 	Version   int                `json:"version"`
 	AgentName string             `json:"agentName"`
@@ -88,11 +96,21 @@ func GrantJournalName(agentUID types.UID) string {
 // NotFound, not an empty inventory: discovery cannot prove that a write-ahead
 // record was empty.
 func (s GrantJournalStore) Read(ctx context.Context, agentName string, agentUID types.UID) ([]BindingReference, error) {
+	snapshot, err := s.ReadSnapshot(ctx, agentName, agentUID)
+	return snapshot.Bindings, err
+}
+
+// ReadSnapshot returns the identity and inventory from the same authoritative
+// read and validation used by Read. Released inventory is never start authority.
+func (s GrantJournalStore) ReadSnapshot(ctx context.Context, agentName string, agentUID types.UID) (GrantJournalSnapshot, error) {
 	if err := s.validate(agentName, agentUID, false); err != nil {
-		return nil, err
+		return GrantJournalSnapshot{}, err
 	}
-	_, refs, err := s.read(ctx, agentName, agentUID, journalAllowReleased)
-	return refs, err
+	object, refs, err := s.read(ctx, agentName, agentUID, journalAllowReleased)
+	if err != nil {
+		return GrantJournalSnapshot{}, err
+	}
+	return GrantJournalSnapshot{UID: object.UID, ResourceVersion: object.ResourceVersion, Bindings: refs}, nil
 }
 
 // ReadForCleanup is read-only and additionally accepts fully validated, owned,
