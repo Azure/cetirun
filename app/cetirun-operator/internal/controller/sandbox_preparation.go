@@ -17,6 +17,7 @@ import (
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/helm"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxbinding"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxplacement"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxpolicy"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
 	corev1 "k8s.io/api/core/v1"
@@ -46,6 +47,7 @@ type SandboxPrerequisites struct {
 	ChartVersion       string
 	Helpers            sandboxworkload.Helpers
 	PublicationSources []sandboxworkload.SourceReference `json:",omitempty"`
+	Placement          *sandboxworkload.PlacementBinding `json:",omitempty"`
 }
 
 // SandboxPreparationSource is a trusted platform integration, not CR status or
@@ -73,6 +75,7 @@ type SandboxPreparation struct {
 	AdmissionServiceAccount string
 	Now                     func() time.Time
 	MaxSnapshotAge          time.Duration
+	Placement               *sandboxplacement.Handler
 	bootstrap               *sandboxBootstrapConfig
 }
 
@@ -165,6 +168,9 @@ func (r *AgentReconciler) prepareSandboxHeld(ctx context.Context, requested *api
 	prerequisites, err := config.Prerequisites.Resolve(ctx, attempt.agent.DeepCopy(), attempt.team.DeepCopy())
 	if err != nil {
 		return fmt.Errorf("resolve Sandbox workload prerequisites: %w", err)
+	}
+	if err := r.inheritSandboxPlacement(ctx, attempt.agent, &prerequisites); err != nil {
+		return err
 	}
 	attempt.prerequisites = prerequisites
 	if err := r.sandboxPreparationInput(ctx, attempt); err != nil {
@@ -400,6 +406,9 @@ func (r *AgentReconciler) sandboxPreparationGuard(attempt *sandboxPreparationAtt
 		if err != nil {
 			return err
 		}
+		if err := r.inheritSandboxPlacement(ctx, agent, &inputs); err != nil {
+			return err
+		}
 		if err := configurationSnapshotTime(inputs.ObservedAt, configurationNow(config.Now), config.MaxSnapshotAge); err != nil {
 			return err
 		}
@@ -427,7 +436,10 @@ func (r *AgentReconciler) sandboxPreparationGuard(attempt *sandboxPreparationAtt
 
 func (r *AgentReconciler) checkSandboxPreparationQuiesced(ctx context.Context, attempt *sandboxPreparationAttempt) error {
 	config := r.SandboxPreparation
-	if err := config.Prerequisites.CheckQuiesced(ctx, attempt.agent.DeepCopy(), attempt.prerequisites); err != nil {
+	if err := r.verifySandboxPlacement(ctx, attempt); err != nil {
+		return err
+	}
+	if err := config.Prerequisites.CheckQuiesced(ctx, attempt.agent.DeepCopy(), copySandboxPrerequisites(attempt.prerequisites)); err != nil {
 		return fmt.Errorf("Sandbox old-writer fence is unconfirmed: %w", err)
 	}
 	var pods corev1.PodList

@@ -227,6 +227,53 @@ class SandboxAdmissionChartTests(unittest.TestCase):
                 config_env["value"] = baseline_config_env["value"]
                 self.assertEqual(configured, baseline)
 
+    def test_kubernetes_sources_placement_adds_only_controller_selection_and_node_get(self):
+        admission = self.enforced_values(podsEnabled=True, placementConfigMapName="sandbox-placement")
+        sources = {"enabled": True, "platformConfigMapName": "sandbox-platform"}
+        baseline = self.render(admission, values={"sandboxSources": sources})
+        configured = self.render(admission, values={"sandboxSources": {
+            **sources, "placementConfigMapName": "sandbox-placement",
+        }})
+
+        def source_environment(documents):
+            container = documents[("Deployment", "cetirun-operator")]["spec"]["template"]["spec"]["containers"][0]
+            return next(item for item in container["env"] if item["name"] == "CETIRUN_SANDBOX_SOURCES")
+
+        before, after = source_environment(baseline), source_environment(configured)
+        self.assertNotIn("placementConfigMapName", json.loads(before["value"]))
+        self.assertEqual(json.loads(after["value"]), {
+            **json.loads(before["value"]), "placementConfigMapName": "sandbox-placement",
+        })
+        node_rule = {"apiGroups": [""], "resources": ["nodes"], "verbs": ["get"]}
+        rules = configured[("ClusterRole", "cetirun-operator-manager-role")]["rules"]
+        self.assertEqual(rules.count(node_rule), 1)
+        rules.remove(node_rule)
+        after["value"] = before["value"]
+        self.assertEqual(configured, baseline)
+
+    def test_kubernetes_sources_placement_requires_same_protected_registry(self):
+        for name in (False, 42, {}, [], "Invalid", "bad/name", "x" * 254):
+            with self.subTest(name=name):
+                self.assert_rejected(
+                    self.enforced_values(podsEnabled=True, placementConfigMapName="sandbox-placement"),
+                    "sandboxSources.placementConfigMapName",
+                    values={"sandboxSources": {"enabled": True, "platformConfigMapName": "sandbox-platform",
+                                              "placementConfigMapName": name}},
+                )
+        for admission_name, selected, enabled in (
+            ("", "sandbox-placement", True),
+            ("another-registry", "sandbox-placement", True),
+            ("sandbox-placement", "sandbox-placement", False),
+            ("sandbox-platform", "sandbox-platform", True),
+        ):
+            with self.subTest(admission_name=admission_name, selected=selected, enabled=enabled):
+                self.assert_rejected(
+                    self.enforced_values(podsEnabled=True, placementConfigMapName=admission_name),
+                    "sandboxSources.placementConfigMapName",
+                    values={"sandboxSources": {"enabled": enabled, "platformConfigMapName": "sandbox-platform",
+                                              "placementConfigMapName": selected}},
+                )
+
     def test_kubernetes_sources_skills_catalog_adds_only_controller_setting_and_pv_get(self):
         admission = self.enforced_values(podsEnabled=True)
         sources = {

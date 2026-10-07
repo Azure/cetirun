@@ -55,10 +55,15 @@ func (r *AgentReconciler) readSandboxPreparationReceipt(ctx context.Context, age
 		object.UID == "" || object.ResourceVersion == "" ||
 		!equality.Semantic.DeepEqual(object.OwnerReferences, owner) ||
 		object.Annotations[sandboxworkload.AgentUIDAnnotation] != string(agent.UID) ||
-		receipt.Version != "v1" || receipt.AgentName != agent.Name || receipt.AgentUID != agent.UID ||
+		!((receipt.Version == "v1" && receipt.Prerequisites.Placement == nil) ||
+			(receipt.Version == "v2" && receipt.Prerequisites.Placement != nil)) ||
+		receipt.AgentName != agent.Name || receipt.AgentUID != agent.UID ||
 		receipt.Prerequisites.AgentUID != agent.UID || receipt.Prerequisites.AgentGeneration < 1 ||
 		receipt.Prerequisites.NamespaceUID == "" || receipt.Prerequisites.Home.Name == "" || receipt.Prerequisites.Home.UID == "" {
 		return nil, nil, fmt.Errorf("Sandbox preparation ownership receipt is invalid")
+	}
+	if err := validateSandboxPlacementTuple(agent, receipt.Prerequisites); err != nil {
+		return nil, nil, err
 	}
 	return object, &receipt, nil
 }
@@ -66,6 +71,9 @@ func (r *AgentReconciler) readSandboxPreparationReceipt(ctx context.Context, age
 func (r *AgentReconciler) recordSandboxPreparationReceipt(ctx context.Context, attempt *sandboxPreparationAttempt) error {
 	agent := attempt.agent
 	desired := sandboxPreparationReceipt{Version: "v1", AgentName: agent.Name, AgentUID: agent.UID, Prerequisites: attempt.prerequisites}
+	if desired.Prerequisites.Placement != nil {
+		desired.Version = "v2"
+	}
 	raw, err := json.Marshal(desired)
 	if err != nil {
 		return err
@@ -98,6 +106,9 @@ func (r *AgentReconciler) recordSandboxPreparationReceipt(ctx context.Context, a
 	if receipt.Prerequisites.NamespaceUID != desired.Prerequisites.NamespaceUID || receipt.Prerequisites.Home != desired.Prerequisites.Home {
 		return fmt.Errorf("%w: Sandbox namespace or HOME replacement requires a separate handoff", sandboxworkload.ErrStorageTransitionRequired)
 	}
+	if !equality.Semantic.DeepEqual(receipt.Prerequisites.Placement, desired.Prerequisites.Placement) {
+		return fmt.Errorf("Sandbox lifetime placement cannot be replaced or removed during preparation")
+	}
 	if object.Data[sandboxPreparationReceiptKey] == string(raw) {
 		return nil
 	}
@@ -128,7 +139,7 @@ func (r *AgentReconciler) checkSandboxPreparationCleanup(ctx context.Context, ag
 	// Cleanup uses the durable prior tuple, not current Team/policy lookup or
 	// name-based rediscovery. Providers must support this after configuration
 	// deletion, suspension, reauthorization and controller restart.
-	if err := r.SandboxPreparation.Prerequisites.CheckQuiesced(ctx, agent.DeepCopy(), receipt.Prerequisites); err != nil {
+	if err := r.SandboxPreparation.Prerequisites.CheckQuiesced(ctx, agent.DeepCopy(), copySandboxPrerequisites(receipt.Prerequisites)); err != nil {
 		return fmt.Errorf("Sandbox deletion fence is unconfirmed: %w", err)
 	}
 	if err := ctx.Err(); err != nil {

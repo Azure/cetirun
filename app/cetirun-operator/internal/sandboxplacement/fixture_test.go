@@ -162,7 +162,8 @@ func newFixture(t *testing.T) *placementFixture {
 	}
 	f.expectation.UID, f.expectation.ResourceVersion = "expectation-uid", "1"
 	objects := append(sources, f.reserved, f.ordinary, f.platformNS, f.platformAccount,
-		f.daemon, f.platformPod, f.agentPod, f.state, f.expectation)
+		f.daemon, f.platformPod, f.agentPod, f.state, f.expectation,
+		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "ordinary-workloads", UID: "ordinary-namespace-uid", ResourceVersion: "1"}})
 	f.client = fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).Build()
 	f.handler, err = NewHandler(f.client, Config{Namespace: f.state.Namespace, ConfigMapName: f.state.Name})
 	if err != nil {

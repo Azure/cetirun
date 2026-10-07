@@ -32,6 +32,11 @@ func TestParseSandboxSourcesConfig(t *testing.T) {
 		{name: "empty object", raw: "{}"},
 		{name: "disabled", raw: `{"enabled":false}`},
 		{name: "enabled", raw: sandboxSourcesConfigJSON, enabled: true},
+		{name: "placement enabled", raw: strings.Replace(sandboxSourcesConfigJSON, `"enabled": true`, `"enabled": true, "placementConfigMapName":"sandbox-placement"`, 1), enabled: true},
+		{name: "placement requires sources", raw: `{"placementConfigMapName":"sandbox-placement"}`, wantError: true},
+		{name: "invalid placement type", raw: `{"placementConfigMapName":true}`, wantError: true},
+		{name: "invalid placement name", raw: strings.Replace(sandboxSourcesConfigJSON, `"enabled": true`, `"enabled": true, "placementConfigMapName":"Bad/Name"`, 1), wantError: true},
+		{name: "placement shares platform document", raw: strings.Replace(sandboxSourcesConfigJSON, `"enabled": true`, `"enabled": true, "placementConfigMapName":"sandbox-platform"`, 1), wantError: true},
 		{name: "bootstrap enabled", raw: strings.Replace(sandboxSourcesConfigJSON, `"enabled": true`, `"enabled": true, "bootstrapOwnedPrerequisites": true`, 1), enabled: true},
 		{name: "bootstrap requires sources", raw: `{"bootstrapOwnedPrerequisites":true}`, wantError: true},
 		{name: "catalog requires sources", raw: `{"skillsCatalogConfigMapName":"published-skills"}`, wantError: true},
@@ -103,8 +108,16 @@ func TestSandboxSourcesFactoryUsesAuthoritativeReadersWithoutFencing(t *testing.
 	if prerequisites.OperatorNamespace != "platform-system" || prerequisites.SkillsCatalogConfigMapName != "" {
 		t.Fatal("factory changed the catalog namespace or enabled publication by default")
 	}
-	if prepare.Installer != installer || prepare.AdmissionServiceAccount != config.AdmissionServiceAccount {
+	if prepare.Installer != installer || prepare.AdmissionServiceAccount != config.AdmissionServiceAccount || prepare.Placement != nil {
 		t.Fatal("factory changed the installer or admission identity")
+	}
+	config.PlacementConfigMapName = "sandbox-placement"
+	selected, err := controller.NewKubernetesSandboxPreparation(config, reader, installer, "platform-system", "0.1.1")
+	if err != nil || selected.Placement == nil {
+		t.Fatal("selected placement reader was not installed:", err)
+	}
+	if source, ok := selected.Prerequisites.(*controller.KubernetesSandboxPrerequisites); !ok || source.WriterExclusion != nil {
+		t.Fatal("placement selection installed an unqualified writer-exclusion provider")
 	}
 }
 

@@ -21,7 +21,7 @@ const (
 	ConfigMapKey        = "placement.json"
 	RegistryVersion     = "v1"
 	MaxRegistryBytes    = 256 * 1024
-	MaxNodes            = 256
+	MaxNodes            = sandboxworkload.MaxPlacementNodes
 	MaxDaemonSets       = 64
 	maxRegistryDepth    = 16
 	maxRegistryTokens   = 65536
