@@ -68,6 +68,20 @@ spec:
       message: "Sandbox namespaces require a complete canonical Agent ownership tuple outside the controller state namespace."
       reason: Forbidden
     - expression: >-
+        !variables.protected ||
+        !(
+          (
+            "control-plane" in object.metadata.labels &&
+            object.metadata.labels["control-plane"] == "true"
+          ) ||
+          (
+            "kubernetes.azure.com/managedby" in object.metadata.labels &&
+            object.metadata.labels["kubernetes.azure.com/managedby"] == "aks"
+          )
+        )
+      message: "Sandbox namespaces cannot use managed-cluster labels that bypass Pod admission."
+      reason: Forbidden
+    - expression: >-
         !variables.protected || variables.wasProtected ||
         request.userInfo.username == {{ $controllerUsername | toJson }}
       message: "Only the configured controller may initialize Sandbox namespace protection."

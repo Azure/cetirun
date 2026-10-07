@@ -56,6 +56,14 @@ helm_args=(
   upgrade --install "${release_name}" "${chart_dir}"
   --namespace "${namespace}"
 )
+# Helm 4 defaults new releases to server-side apply. Managed Kubernetes
+# admission may legitimately add webhook selectors and own those fields, which
+# makes a later SSA upgrade conflict with the admission manager. Helm 3's
+# three-way client-side merge already preserves such injected fields; request
+# the same behavior explicitly whenever the installed Helm supports the flag.
+if helm upgrade --help 2>&1 | grep -q -- '--server-side'; then
+  helm_args+=(--server-side=false)
+fi
 if [ -n "${values_file}" ]; then
   helm_args+=(--values "${values_file}")
 fi
