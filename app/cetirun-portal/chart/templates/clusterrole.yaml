@@ -41,3 +41,9 @@ rules:
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get", "list"]
+  # The AI Gateway's shared-model catalog the operator publishes: model names
+  # and limits only.
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["cetirun-ai-gateway-catalog"]
+    verbs: ["get"]

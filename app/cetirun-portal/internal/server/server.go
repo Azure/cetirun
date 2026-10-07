@@ -59,6 +59,10 @@ func New(
 	api.HandleFunc("GET /api/v1/instances/{name}/status", instanceHandler.GetInstanceStatusByName)
 	api.HandleFunc("GET /api/v1/instances/{name}/teams-app", instanceHandler.DownloadTeamsAppByName)
 	api.HandleFunc("GET /api/v1/teams", instanceHandler.ListTeams)
+	api.HandleFunc("GET /api/v1/ai-gateway/catalog", instanceHandler.GetAIGatewayCatalog)
+	api.HandleFunc("POST /api/v1/instances/{name}/copilot/login", instanceHandler.StartCopilotLogin)
+	api.HandleFunc("GET /api/v1/instances/{name}/copilot/login", instanceHandler.PollCopilotLogin)
+	api.HandleFunc("DELETE /api/v1/instances/{name}/copilot/login", instanceHandler.CancelCopilotLogin)
 	if len(agentAuthorizationHandlers) > 0 && agentAuthorizationHandlers[0] != nil {
 		agentAuthorizationHandler := agentAuthorizationHandlers[0]
 		api.HandleFunc("GET /api/v1/instances/{name}/agent-authorization", agentAuthorizationHandler.Status)

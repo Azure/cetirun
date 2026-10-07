@@ -1,0 +1,86 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
+import { apiFetch } from "./fetch";
+
+export interface SharedModel {
+  name: string;
+  contextWindow?: number;
+  maxOutputTokens?: number;
+}
+
+export interface AIGatewayCatalog {
+  /** False until the operator has published the shared models. */
+  known: boolean;
+  sharedModels: SharedModel[];
+  /** Whether the deployment offers GitHub Copilot to agents. */
+  githubCopilot: boolean;
+}
+
+export type CopilotLoginState = "none" | "pending" | "succeeded" | "expired" | "denied" | "failed";
+
+/** A GitHub Copilot sign-in run by the Portal; never carries a token. */
+export interface CopilotLogin {
+  state: CopilotLoginState;
+  userCode?: string;
+  verificationUri?: string;
+  expiresAt?: string;
+  /** Seconds between polls while pending. */
+  interval?: number;
+  message?: string;
+}
+
+/** An error response from the Portal, with its HTTP status. */
+export class PortalError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "PortalError";
+    this.status = status;
+  }
+}
+
+async function errorMessage(response: Response, fallback: string): Promise<string> {
+  try {
+    const body = await response.json();
+    return body?.error?.message || fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+export async function getAIGatewayCatalog(): Promise<AIGatewayCatalog> {
+  const response = await apiFetch("/api/v1/ai-gateway/catalog");
+  if (!response.ok) throw new Error(await errorMessage(response, "Failed to load the shared models"));
+  return response.json();
+}
+
+function loginPath(instanceName: string): string {
+  return `/api/v1/instances/${encodeURIComponent(instanceName)}/copilot/login`;
+}
+
+// Start and cancel name the Agent's UID, so a page left open while the name
+// was deleted and created again cannot change the new Agent's sign-in.
+export async function startCopilotLogin(instanceName: string, uid: string): Promise<CopilotLogin> {
+  const response = await apiFetch(loginPath(instanceName), { method: "POST", body: JSON.stringify({ uid }) });
+  if (!response.ok) {
+    throw new PortalError(await errorMessage(response, "Failed to start the GitHub Copilot sign-in"), response.status);
+  }
+  return response.json();
+}
+
+export async function pollCopilotLogin(instanceName: string): Promise<CopilotLogin> {
+  const response = await apiFetch(loginPath(instanceName));
+  if (!response.ok) {
+    throw new PortalError(await errorMessage(response, "Failed to check the GitHub Copilot sign-in"), response.status);
+  }
+  return response.json();
+}
+
+export async function cancelCopilotLogin(instanceName: string, uid: string): Promise<void> {
+  const response = await apiFetch(loginPath(instanceName), { method: "DELETE", body: JSON.stringify({ uid }) });
+  if (!response.ok && response.status !== 404) {
+    throw new Error(await errorMessage(response, "Failed to cancel the GitHub Copilot sign-in"));
+  }
+}

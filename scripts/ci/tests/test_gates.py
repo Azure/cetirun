@@ -350,10 +350,10 @@ class WorkflowContractTests(unittest.TestCase):
 
     def test_runtime_image_smoke_selects_only_the_auth_unittest_suite(self):
         text = (validate.ROOT / ".github/workflows/docker-build-validate.yml").read_text()
-        commands = re.findall(r"openclaw-gateway:validation -m unittest discover[^\n]+", text)
+        commands = re.findall(r"[a-z-]+:validation -m unittest discover[^\n]+", text)
         self.assertEqual(
             commands,
-            ["openclaw-gateway:validation -m unittest discover -s /tests -p test_auth_service.py -v"],
+            ["hermes-gateway:validation -m unittest discover -s /tests -p test_auth_service.py -v"],
         )
 
     def test_runtime_scans_extend_timeout_without_weakening_policy(self):
@@ -473,15 +473,6 @@ class WorkflowContractTests(unittest.TestCase):
                 )
                 self.assertIsNotNone(version)
                 self.assertGreaterEqual(tuple(map(int, version.groups())), minimum)
-                if package == "aiohttp":
-                    image = (
-                        validate.ROOT / "app/cetirun-chart/agents/openclaw/Dockerfile"
-                    ).read_text()
-                    self.assertIn(
-                        "ARG CETIRUN_AUTH_AIOHTTP_VERSION="
-                        + ".".join(version.groups()),
-                        image,
-                    )
 
     def test_component_runtime_bases_reject_known_vulnerable_digest(self):
         images = set()

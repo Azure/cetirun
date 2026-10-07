@@ -64,6 +64,7 @@ helm_args+=(
   --set-string "istio.oauth2Proxy.name=${oauth2_proxy_name}"
   --set-string "istio.oauth2Proxy.namespace=${oauth2_proxy_namespace}"
   --set-string "cetirun-operator.namespace=${namespace}"
+  --set-string "cetirun-portal.aiGateway.catalogNamespace=${namespace}"
   --set-string "cetirun-operator.domainSuffix=${domain}"
   --set-string "cetirun-operator.istioRevision=${istio_revision}"
   --set-string "cetirun-operator.istioGateway=${gateway_namespace}/${gateway_name}"
@@ -91,3 +92,7 @@ for deployment_name in cetirun-operator cetirun-portal; do
     kubectl rollout status "deployment/${deployment_name}" -n "${namespace}" --timeout=180s
   fi
 done
+# The bundled AI Gateway migrates its database before it starts serving.
+if deployment_is_rendered cetirun-ai-gateway; then
+  kubectl rollout status deployment/cetirun-ai-gateway -n "${namespace}" --timeout=600s
+fi

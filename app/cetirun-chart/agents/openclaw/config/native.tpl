@@ -43,6 +43,14 @@ Licensed under the MIT License.
 {{- /* Compose full model identifier as <provider>/<model> */}}
 {{- $providerPrefix := $provider | replace "_" "-" }}
 {{- $modelFull := printf "%s/%s" $providerPrefix $model }}
+{{- /* Models the platform AI Gateway offers this Agent. Each becomes a model
+   of the Gateway provider, with its limits, and is allowed; the rest of the
+   configuration keeps naming the default model. */}}
+{{- $gatewayRouted := and (dig "enabled" false (.Values.aiGateway | default dict)) (eq $provider "openai") }}
+{{- $gatewayModels := list }}
+{{- if $gatewayRouted }}
+{{- $gatewayModels = dig "models" (list) .Values.aiGateway }}
+{{- end }}
 {{- /* Default model and compaction settings */}}
 {{- $compaction := dict "memoryFlush" (dict "enabled" true "softThresholdTokens" (int 4000)) }}
 {{- $modelConfig := dict }}
@@ -58,6 +66,21 @@ Licensed under the MIT License.
 {{- end }}
 {{- $_ := set $defaultsCurrent "models" $modelsDict }}
 {{- $_ := set $defaultsCurrent "modelPolicy" (dict "allow" (concat (list $modelFull) $fallbacks)) }}
+{{- else if $gatewayModels }}
+{{- $modelsDict := dict }}
+{{- $allow := list }}
+{{- range $gatewayModels }}
+{{- $ref := printf "%s/%s" $providerPrefix .id }}
+{{- $_ := set $modelsDict $ref (dict) }}
+{{- $allow = append $allow $ref }}
+{{- end }}
+{{- if not (hasKey $modelsDict $modelFull) }}
+{{- $_ := set $modelsDict $modelFull $modelConfig }}
+{{- $allow = append $allow $modelFull }}
+{{- end }}
+{{- $_ := set $defaultsCurrent "model" (dict "primary" $modelFull) }}
+{{- $_ := set $defaultsCurrent "models" $modelsDict }}
+{{- $_ := set $defaultsCurrent "modelPolicy" (dict "allow" $allow) }}
 {{- else }}
 {{- $_ := set $defaultsCurrent "model" (dict "primary" $modelFull) }}
 {{- $_ := set $defaultsCurrent "models" (dict $modelFull $modelConfig) }}
@@ -67,8 +90,33 @@ Licensed under the MIT License.
 {{- $_ := set $config "agents" $agentsCurrent }}
 {{- /* Custom API base URL → models.providers.<provider>.baseUrl */}}
 {{- if and (ne $provider "github_copilot") .Values.secrets.apiBase }}
-{{- $modelEntry := dict "id" $model "name" $model }}
-{{- $providerEntry := dict "baseUrl" .Values.secrets.apiBase "models" (list $modelEntry) }}
+{{- $providerModels := list }}
+{{- $listed := false }}
+{{- range $gatewayModels }}
+{{- $entry := dict "id" .id "name" (.name | default .id) }}
+{{- if .contextWindow }}
+{{- $_ := set $entry "contextWindow" (int .contextWindow) }}
+{{- end }}
+{{- if .maxTokens }}
+{{- $_ := set $entry "maxTokens" (int .maxTokens) }}
+{{- end }}
+{{- if eq .id $model }}
+{{- $listed = true }}
+{{- end }}
+{{- $providerModels = append $providerModels $entry }}
+{{- end }}
+{{- if not $listed }}
+{{- $providerModels = append $providerModels (dict "id" $model "name" $model) }}
+{{- end }}
+{{- $providerEntry := dict "baseUrl" .Values.secrets.apiBase "models" $providerModels }}
+{{- if $gatewayRouted }}
+{{- /* Bind the Gateway provider to the Agent's virtual key, which the chart
+   passes in OPENAI_API_KEY. OpenClaw otherwise prefers a stored openai
+   profile over that variable, and an upgraded home may keep the owner's
+   own: it would be sent to the Gateway instead. */}}
+{{- $_ := set $providerEntry "auth" "api-key" }}
+{{- $_ := set $providerEntry "apiKey" (dict "source" "env" "provider" "default" "id" "OPENAI_API_KEY") }}
+{{- end }}
 {{- $models := dig "models" (dict) $config }}
 {{- $providers := dig "providers" (dict) $models }}
 {{- $_ := set $providers $providerPrefix $providerEntry }}

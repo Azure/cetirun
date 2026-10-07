@@ -10,6 +10,7 @@
 {{- include "cetirun.validatePorts" . -}}
 {{- include "cetirun.validateWorkloadIdentity" . -}}
 {{- include "cetirun.validateAgentIdentity" . -}}
+{{- include "cetirun.validateAIGateway" . -}}
 {{- include "cetirun.validateTtydPort" . -}}
 {{- include "cetirun.validateSkills" . -}}
 {{- include "cetirun.validateDesktopBrowserConfig" . -}}

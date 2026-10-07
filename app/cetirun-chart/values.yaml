@@ -91,6 +91,53 @@ agentIdentity:
   enabled: false
   brokerURL: ""
 
+# -- Platform AI Gateway access. The CetiRun operator sets these values for
+# Agents whose model traffic goes through the Gateway; they are not user
+# settings. When enabled, the openai provider reads its key from the Secret
+# below instead of MODEL_API_KEY, and egress to the Gateway pods in
+# networkPolicy.gatewayNamespace on networkPolicy.gatewayPort is allowed.
+aiGateway:
+  enabled: false
+  # -- Secret in the release namespace holding this Agent's virtual key
+  keySecretName: ""
+  # -- Key within that Secret
+  keySecretKey: api-key
+  # -- Models the Gateway offers this Agent: id (the Gateway model name),
+  # name, and optionally contextWindow and maxTokens. The Agent is configured
+  # with all of them; secrets.model names the default.
+  models: []
+  # -- Per-Agent GitHub Copilot proxy: a small LiteLLM, in its own Pod, that
+  # holds the owner's Copilot sign-in. Only the Gateway reaches it; the Agent
+  # reaches Copilot models through the Gateway with its own key.
+  copilotProxy:
+    enabled: false
+    # -- Proxy image: the AI Gateway image
+    image: ""
+    # -- Secret holding the proxy's master key (key master-key), which the
+    # Gateway's routes to the proxy carry
+    masterKeySecretName: ""
+    # -- Identifies the current master key without revealing it (the start of
+    # its SHA-256 hash). The proxy reads the key when it starts, so a new
+    # value restarts it.
+    masterKeyId: ""
+    # -- Generation of the GitHub Copilot sign-in whose models the Agent
+    # uses. The proxy keeps the Copilot token it exchanged until that token
+    # expires, so a new sign-in, possibly of another account, restarts it.
+    signInGeneration: ""
+    # -- Secret holding the owner's GitHub token (key access-token), written
+    # by the Portal at sign-in. The proxy waits for it.
+    tokenSecretName: ""
+    # -- Copilot models served only through the Responses API. The proxy
+    # bridges chat completion requests for them.
+    responsesModels: []
+    # -- Proxy container resources
+    resources:
+      requests:
+        cpu: 50m
+        memory: 256Mi
+      limits:
+        memory: 1Gi
+
 # -- Pod annotations
 podAnnotations: {}
 
@@ -569,6 +616,10 @@ networkPolicy:
   dnsNamespace: kube-system
   # -- Namespace hosting the deployment-level Agent Identity Broker.
   agentIdentityBrokerNamespace: cetirun-credentials
+  # -- Namespace of the platform AI Gateway, used when aiGateway.enabled.
+  gatewayNamespace: cetirun-system
+  # -- Service port of the platform AI Gateway.
+  gatewayPort: 4000
   # -- CIDRs to block from external egress.
   # kube-dns is allowed via namespace selectors
   # regardless of these blocks.

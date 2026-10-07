@@ -45,6 +45,7 @@ import { CopilotAuthBlock } from "./CopilotAuthBlock";
 import { CopilotModelPicker } from "./CopilotModelPicker";
 import { AgentAuthorizationBlock } from "./AgentAuthorizationBlock";
 import { RegistryAuthBlock } from "./RegistryAuthBlock";
+import { AIGatewayBlock } from "./AIGatewayBlock";
 
 const dialogListStyle: React.CSSProperties = {
   margin: "4px 0 0 0",
@@ -162,7 +163,10 @@ export function OverviewSection({ instance }: { instance: Instance }) {
   const [editWebUI, setEditWebUI] = useState(false);
   const [editValidationError, setEditValidationError] = useState("");
   const effectiveEditProvider = useEffectiveTeamProvider(editTeam);
-  const editUsesGitHubCopilot = effectiveEditProvider === GITHUB_COPILOT_PROVIDER;
+  // An Agent routed through the AI Gateway picks its default model from its
+  // Gateway models instead.
+  const gatewayRouted = !!instance.aiGateway?.routed;
+  const editUsesGitHubCopilot = effectiveEditProvider === GITHUB_COPILOT_PROVIDER && !gatewayRouted;
 
   useEffect(() => {
     return () => {
@@ -349,6 +353,8 @@ export function OverviewSection({ instance }: { instance: Instance }) {
       {nativeIntegrations && nativeAgentUIUrl && instance.phase !== "Suspended" && (
         <CopilotAuthBlock instance={instance} />
       )}
+
+      {gatewayRouted && instance.phase !== "Suspended" && <AIGatewayBlock instance={instance} />}
 
       {nativeIntegrations && features?.agentIdentityEnabled && <AgentAuthorizationBlock instance={instance} />}
 
