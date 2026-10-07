@@ -13,7 +13,9 @@ func ValidatePortableBindings(bindings Bindings) error {
 		return fmt.Errorf("ContextBindingPending: approved context is required")
 	}
 	if bindings.AgentManagedModel {
-		if bindings.Model != (ModelBinding{}) {
+		model := bindings.Model
+		if model.Provider != "" || model.Name != "" || model.BaseURL != "" || model.AuthMode != "" ||
+			model.CredentialSlot != "" || model.Revision != "" || model.Gateway || len(model.GatewayModels) > 0 {
 			return fmt.Errorf("ModelBindingInvalid: agent-managed access cannot carry platform credentials")
 		}
 		return nil

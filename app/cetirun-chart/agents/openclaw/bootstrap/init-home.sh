@@ -19,11 +19,10 @@ agent_check_requirements() {
   for tool in jq ln readlink; do
     command -v "$tool" >/dev/null 2>&1 || { init_error "InitToolsMissing: $tool"; return 1; }
   done
-  [ -f "$CETIRUN_CONFIG_DIR/openclaw.json" ] &&
-    [ -f "$CETIRUN_CONFIG_DIR/openclaw-auth.sh" ] || {
-      init_error "OpenClawInputMissing"
-      return 1
-    }
+  [ -f "$CETIRUN_CONFIG_DIR/openclaw.json" ] || {
+    init_error "OpenClawInputMissing"
+    return 1
+  }
   [ -f "$CETIRUN_BUILTIN_SKILL_SYNC" ] || {
     init_error "OpenClawInputMissing: builtin-skill-sync.sh"
     return 1
@@ -58,16 +57,35 @@ agent_apply_config() (
   fi
   temp=$(mktemp "${dest}.tmp.XXXXXX")
   trap 'rm -f "$temp"' 0
+  # CetiRun owns the model list of an Agent on the platform AI Gateway, which
+  # the chart marks with CETIRUN_AI_GATEWAY, so that list replaces the saved
+  # one instead of accumulating models the Gateway no longer offers. So does
+  # the Gateway provider entry, which binds the Agent's virtual key: a key,
+  # auth mode or request override saved on that provider would otherwise be
+  # sent to the Gateway in its place. The retired in-agent Copilot sign-in
+  # profile is dropped. Any other configuration, other providers and an openai
+  # provider with its own endpoint included, keeps its saved settings.
+  if [ "${CETIRUN_AI_GATEWAY:-false}" = true ]; then
+    gateway=true
+  else
+    gateway=false
+  fi
   filter='
-    reduce .[] as $item ({}; . * $item)
+    .[-1] as $source
+    | reduce .[] as $item ({}; . * $item)
+    | if $gateway then
+        .agents.defaults.models = ($source.agents.defaults.models // {})
+        | if ($source.models.providers.openai | type) == "object" then .models.providers.openai = $source.models.providers.openai else . end
+        | if (.auth.profiles | type) == "object" then .auth.profiles |= del(.["github-copilot:github"]) else . end
+      else . end
     | if .channels.msteams.enabled then
         .channels.msteams.allowFrom //= ["00000000-0000-0000-0000-000000000000"]
       else . end'
   if [ -f "$dest" ]; then
-    jq -s "$filter" "$dest" "$source" > "$temp" 2>/dev/null ||
+    jq -s --argjson gateway "$gateway" "$filter" "$dest" "$source" > "$temp" 2>/dev/null ||
       { init_error "OpenClawConfigApplyFailed"; exit 1; }
   else
-    jq -s "$filter" "$source" > "$temp" 2>/dev/null ||
+    jq -s --argjson gateway "$gateway" "$filter" "$source" > "$temp" 2>/dev/null ||
       { init_error "OpenClawConfigApplyFailed"; exit 1; }
   fi
   chmod 600 "$temp"
@@ -149,16 +167,24 @@ agent_prepare_integrations() {
   prepare_plugin_link
   sync_managed_image_skills
   install_image_skills
-  home_atomic_copy "$CETIRUN_CONFIG_DIR/openclaw-auth.sh" .local/bin/copilot-auth 755
+  remove_retired_copilot_helper
   setup_azdevops_git_credential
+}
+
+# Models come through the platform AI Gateway, and GitHub Copilot sign-in
+# moved to the Portal. Remove the retired in-agent helper earlier releases
+# installed, so it does not suggest a login that no longer applies.
+remove_retired_copilot_helper() {
+  helper=$(home_path .local/bin/copilot-auth)
+  if [ -f "$helper" ] && [ ! -L "$helper" ] && grep -q 'Authenticate GitHub Copilot for OpenClaw' "$helper"; then
+    rm -f "$helper"
+  fi
 }
 
 agent_verify() {
   config=$(home_path .openclaw/openclaw.json)
   jq -e 'type == "object"' "$config" >/dev/null 2>&1 ||
     { init_error "OpenClawConfigInvalid"; return 1; }
-  helper=$(home_path .local/bin/copilot-auth)
-  [ -x "$helper" ] || { init_error "OpenClawAuthHelperUnavailable"; return 1; }
   home_write_marker "$LEGACY_HOME_MARKER" initialized-v1
 }
 

@@ -19,6 +19,18 @@ global:
 # section for why this is not optional. The bundled Valkey provides it.
 replicaCount: 2
 
+# -- Serve CetiRun Agents. The CetiRun operator gives each Agent a virtual key
+# restricted to access groups, and registers each Agent's GitHub Copilot
+# models under copilot/<model> in the Agent's own group. Turned on, the chart
+# reserves the copilot/ prefix for those registrations, and LiteLLM checks
+# each router fallback target against the caller's key
+# (general_settings.enforce_fallback_model_access), so a fallback cannot reach
+# a model the key may not use, such as another Agent's GitHub Copilot route.
+# The cetirun-platform chart turns this on; turn it on for a Gateway installed
+# separately for CetiRun as well. Off, the Gateway keeps its standalone
+# behaviour.
+operatorIntegration: false
+
 # -- Gateway container image: open-source LiteLLM on Azure Linux, built from
 # app/cetirun-ai-gateway. The same image serves the per-agent Copilot proxy.
 image:
@@ -44,8 +56,9 @@ fullnameOverride: ""
 # -- Models exposed by this Gateway, in LiteLLM's own `model_list` format so
 # administrators can follow upstream provider documentation directly.
 #
-# At least one model is required. Installing with an empty list is rejected
-# rather than producing a Gateway that starts and then fails every request.
+# The list can be empty. Administrators can add models through the console
+# later, and with CetiRun a deployment may rely only on the GitHub Copilot
+# models the operator registers for each Agent.
 #
 # `model_name` is what a client asks for. `litellm_params.model` is what the
 # Gateway sends to the provider, carrying a prefix that selects the handler.
@@ -53,7 +66,8 @@ fullnameOverride: ""
 # supply the value through providerCredentials below.
 #
 # Names beginning with `cetirun-` are reserved for models the CetiRun operator
-# registers automatically, and are rejected here.
+# registers automatically, and are rejected here; so are names beginning with
+# `copilot/` while operatorIntegration is on.
 #
 # Example:
 #   models:
@@ -101,6 +115,11 @@ models: []
 #   model_info:
 #     input_cost_per_token: 0.000005
 #     output_cost_per_token: 0.000015
+#
+# The console can change this setting later. LiteLLM keeps that change in its
+# database, where it takes precedence over this value. With CetiRun, the
+# operator reads the setting in effect and gives Agents only the shared models
+# the Gateway would serve.
 blockUnpricedModels: true
 
 # -- Provider API keys, surfaced to the proxy as environment variables and

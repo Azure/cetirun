@@ -3,8 +3,8 @@
 # data. The Operator subchart owns the Registry source namespace (retained on
 # uninstall); per-Agent credential Secrets are owned by their Agent UID.
 
-# -- Shared release coordinates propagated automatically to the Operator and
-# Portal subcharts.
+# -- Shared release coordinates propagated automatically to the Operator,
+# Portal and AI Gateway subcharts.
 global:
   # -- Optional registry hostname override propagated to all CetiRun subcharts.
   # Empty preserves each subchart's existing repository defaults.
@@ -37,6 +37,11 @@ cetirun-operator:
   # Required for instance URLs and VirtualServices. The deployment helper sets
   # this from DOMAIN.
   domainSuffix: ""
+  # OpenClaw Agents take their models from the AI Gateway; the platform
+  # requires it. Hermes Agents keep their own model provider and sign-in.
+  # Without a url, the operator uses cetirun-ai-gateway in its namespace.
+  aiGateway:
+    enabled: true
 
 cetirun-portal:
   enabled: true
@@ -47,3 +52,32 @@ cetirun-portal:
     gateway: "aks-istio-ingress/cetirun-gateway"
     gatewayNamespace: aks-istio-ingress
     gatewayServiceAccount: aks-istio-ingressgateway-external
+  # The Portal offers the AI Gateway's model sources and the GitHub Copilot
+  # sign-in; the platform requires it.
+  features:
+    aiGatewayEnabled: true
+  aiGateway:
+    # The operator publishes the shared models in its own namespace, where
+    # the Portal reads them: keep this equal to cetirun-operator.namespace.
+    # The deployment helper sets both from NAMESPACE.
+    catalogNamespace: cetirun-system
+
+cetirun-ai-gateway:
+  # -- Install the AI Gateway with the operator and Portal. Turn it off only
+  # when a Gateway is installed separately in the operator namespace.
+  enabled: true
+  # The operator reaches the Gateway as cetirun-ai-gateway and reads its master
+  # key from the cetirun-ai-gateway-auth Secret, so keep this name.
+  fullnameOverride: cetirun-ai-gateway
+  # This Gateway serves CetiRun Agents: it reserves the copilot/ model names
+  # for their GitHub Copilot routes and checks router fallback targets against
+  # the caller's key. The chart refuses to install it turned off.
+  operatorIntegration: true
+  # -- Shared models every OpenClaw Agent can use. Each needs
+  # model_info.access_groups: ["cetirun-shared"] and, while the Gateway blocks
+  # unpriced models, a price; see the README for an example. None is valid:
+  # OpenClaw Agents then use their owners' GitHub Copilot, and administrators
+  # can add shared models through the Gateway console later. With
+  # cetirun-operator.aiGateway.copilotProxy.enabled false, the Portal creates
+  # no OpenClaw Agent until a shared model is offered.
+  models: []

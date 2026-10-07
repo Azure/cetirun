@@ -558,6 +558,9 @@ func (r *AgentReconciler) configHash(instance *cetirunv1alpha1.Agent, team *ceti
 	if defaultModel := strings.TrimSpace(r.DefaultModel); defaultModel != "" && r.usesDeploymentDefaultModel(instance, team) {
 		config = append(config, defaultModel)
 	}
+	if revision := r.aiGatewayRevision(instance); revision != "" {
+		config = append(config, revision)
+	}
 	config = append(config, teamRV)
 	return operatorConfigHash(
 		r.DomainSuffix, gwSecretHash, r.SkillsStorageAccount,

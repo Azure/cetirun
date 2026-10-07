@@ -452,6 +452,9 @@ func (r *AgentReconciler) suspendRegistryBuiltin(ctx context.Context, agent *api
 			}
 		}
 	}
+	if err := r.suspendCopilotProxy(ctx, agent); err != nil {
+		return ctrl.Result{}, err
+	}
 	if err := r.removeRegistryBuiltinRoute(ctx, agent); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -472,6 +475,36 @@ func (r *AgentReconciler) suspendRegistryBuiltin(ctx context.Context, agent *api
 		}
 	}
 	return ctrl.Result{RequeueAfter: time.Minute}, nil
+}
+
+// suspendCopilotProxy stops the Agent's GitHub Copilot proxy, which its chart
+// runs beside the workload, as Helm suspension does with a release of no
+// replicas: in place, without a chart or the registry, and only once the
+// Deployment is known to be the Agent's own. Resuming upgrades the release,
+// which restores it.
+func (r *AgentReconciler) suspendCopilotProxy(ctx context.Context, agent *api.Agent) error {
+	proxy := &appsv1.Deployment{}
+	key := client.ObjectKey{Namespace: instanceNamespace(agent.Name), Name: copilotProxyServiceName(agent)}
+	if err := r.customReader().Get(ctx, key, proxy); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		return fmt.Errorf("inspect the Copilot proxy for suspension")
+	}
+	ns := &corev1.Namespace{}
+	if r.customReader().Get(ctx, client.ObjectKey{Name: key.Namespace}, ns) != nil || !hasAgentOwner(ns, agent) {
+		return fmt.Errorf("the Copilot proxy's namespace ownership must be confirmed before suspension")
+	}
+	if proxy.Annotations["meta.helm.sh/release-name"] != helmReleaseName(agent.Name) {
+		return fmt.Errorf("the Copilot proxy's ownership conflicts with suspension")
+	}
+	if proxy.Spec.Replicas != nil && *proxy.Spec.Replicas == 0 {
+		return nil
+	}
+	before := proxy.DeepCopy()
+	zero := int32(0)
+	proxy.Spec.Replicas = &zero
+	return r.Patch(ctx, proxy, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{}))
 }
 
 func (r *AgentReconciler) removeRegistryBuiltinRoute(ctx context.Context, agent *api.Agent) error {

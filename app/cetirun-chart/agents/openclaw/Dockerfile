@@ -124,22 +124,9 @@ COPY --chown=vibe:vibe configs/cetirun-agent /usr/local/bin/cetirun-agent
 
 COPY --chown=vibe:vibe agents/openclaw/bootstrap/entrypoint.sh /usr/local/bin/entrypoint.sh
 
-# In-pod auth helper service (shared with Hermes). Runs in its own tiny Python
-# venv so we don't pollute the system Python; venv lives outside /home/vibe so
-# the PVC overlay doesn't shadow it. OpenClaw doesn't otherwise need Python deps.
-ARG CETIRUN_AUTH_AIOHTTP_VERSION=3.14.3
-ARG CETIRUN_AUTH_PYYAML_VERSION=6.0.2
 USER root
-RUN python3 -m venv /usr/local/lib/cetirun-auth && \
-    /usr/local/lib/cetirun-auth/bin/python -m pip install \
-      --no-cache-dir \
-      --root-user-action=ignore \
-      "aiohttp==${CETIRUN_AUTH_AIOHTTP_VERSION}" \
-      "pyyaml==${CETIRUN_AUTH_PYYAML_VERSION}"
-COPY --chown=vibe:vibe configs/cetirun-auth-service.py /usr/local/share/cetirun/cetirun-auth-service.py
 COPY --chown=vibe:vibe configs/builtin-skill-sync.sh /usr/local/share/cetirun/builtin-skill-sync.sh
-RUN chmod 755 /usr/local/share/cetirun/cetirun-auth-service.py \
-    /usr/local/share/cetirun/builtin-skill-sync.sh \
+RUN chmod 755 /usr/local/share/cetirun/builtin-skill-sync.sh \
     /usr/local/bin/cetirun-agent \
     /usr/local/bin/entrypoint.sh
 USER vibe
@@ -155,6 +142,6 @@ RUN --mount=from=openclaw-source,source=/home/vibe/openclaw-pack/openclaw.tgz,ta
     npm ls "undici@${CLAWHUB_UNDICI_VERSION}" --all >/dev/null && \
     ! npm ls undici@7.29.0 --all >/dev/null 2>&1
 
-EXPOSE 18789 7681 3978 18790
+EXPOSE 18789 7681 3978
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

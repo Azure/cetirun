@@ -96,6 +96,9 @@ type CreateInstanceOptions struct {
 	OwnerTenantID        string
 	OwnerObjectID        string
 	Annotations          map[string]string
+	// ModelAccess is written only when set: an Agent without it has both
+	// model sources on.
+	ModelAccess *cetirunv1alpha1.ModelAccessSpec
 }
 
 const chartVersionTTL = 5 * time.Minute
@@ -211,6 +214,9 @@ func (c *Client) CreateInstance(ctx context.Context, alias, displayName, team, e
 	}
 	if teamsEnabled {
 		instance.Spec.MSTeams = &cetirunv1alpha1.MSTeamsSpec{Enabled: true}
+	}
+	if len(optional) > 0 && optional[0].ModelAccess != nil {
+		instance.Spec.ModelAccess = optional[0].ModelAccess.DeepCopy()
 	}
 	if err := c.client.Create(ctx, instance, client.FieldValidation(metav1.FieldValidationStrict)); err != nil {
 		return nil, err

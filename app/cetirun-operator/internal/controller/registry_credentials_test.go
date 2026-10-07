@@ -455,6 +455,59 @@ func TestRegistrySuspensionDoesNotNeedCredentialsOrHelm(t *testing.T) {
 	}
 }
 
+// The Copilot proxy the Agent's chart runs beside the workload stops with
+// it, as in Helm suspension; one that is not the Agent's release is left
+// alone, and the Agent is not reported suspended.
+func TestRegistrySuspensionStopsTheCopilotProxy(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		own       bool
+		suspended bool
+	}{
+		{name: "the Agent's own proxy", own: true, suspended: true},
+		{name: "another release's Deployment"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, agent, _ := registryFixture(t)
+			ctx := context.Background()
+			agent.Spec.Agent.Type = api.AgentTypeOpenClaw
+			if err := r.Update(ctx, agent); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := r.syncRegistryCredentials(ctx, agent, "default"); err != nil {
+				t.Fatal(err)
+			}
+			proxy := &appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: copilotProxyServiceName(agent), Namespace: instanceNamespace(agent.Name),
+					Annotations: map[string]string{"meta.helm.sh/release-name": "another-release"},
+				},
+				Spec: appsv1.DeploymentSpec{Replicas: ptr.To[int32](1)},
+			}
+			if tc.own {
+				proxy.Annotations["meta.helm.sh/release-name"] = helmReleaseName(agent.Name)
+			}
+			if err := r.Create(ctx, proxy); err != nil {
+				t.Fatal(err)
+			}
+			agent.Spec.Suspended = true
+			agent.Finalizers = []string{api.Finalizer}
+			if err := r.Update(ctx, agent); err != nil {
+				t.Fatal(err)
+			}
+			_, _ = r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKey{Name: agent.Name}})
+			_ = r.Get(ctx, client.ObjectKeyFromObject(proxy), proxy)
+			_ = r.Get(ctx, client.ObjectKeyFromObject(agent), agent)
+			if stopped := *proxy.Spec.Replicas == 0; stopped != tc.suspended {
+				t.Fatalf("proxy replicas %d", *proxy.Spec.Replicas)
+			}
+			if suspended := agent.Status.Phase == api.PhaseSuspended; suspended != tc.suspended {
+				t.Fatalf("phase %q", agent.Status.Phase)
+			}
+		})
+	}
+}
+
 func TestRegistryRemovalBeforeFirstSync(t *testing.T) {
 	r, agent, source := registryFixture(t)
 	ctx := context.Background()

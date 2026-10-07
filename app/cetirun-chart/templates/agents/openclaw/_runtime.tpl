@@ -86,6 +86,11 @@ OpenClaw init containers
     - name: AZDEVOPS_GIT_CREDENTIAL_ENABLED
       value: "true"
     {{- end }}
+    {{- if (.Values.aiGateway | default dict).enabled }}
+    # The Gateway owns the model list: init replaces the saved one.
+    - name: CETIRUN_AI_GATEWAY
+      value: "true"
+    {{- end }}
   volumeMounts:
     - name: data
       mountPath: /home-data
@@ -127,6 +132,44 @@ OpenClaw init containers
     - name: tmp
       mountPath: /tmp
 {{- end }}
+{{- if (.Values.aiGateway | default dict).enabled }}
+# The owner signs in to GitHub Copilot through the Portal, and that token
+# stays with the Copilot proxy: remove, once, the sign-in the in-agent helper
+# left in the home. After doctor, which imports the auth profile files of
+# earlier OpenClaw versions.
+- name: retire-copilot-sign-in
+  image: "{{ include "cetirun.image" . }}"
+  imagePullPolicy: {{ include "cetirun.imagePullPolicy" . }}
+  securityContext:
+    {{- if .Values.sandboxWorkload }}
+    {{- toYaml .Values.sandboxWorkload.securityContext | nindent 4 }}
+    {{- else }}
+    runAsUser: 1024
+    runAsNonRoot: true
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+    seccompProfile:
+      type: RuntimeDefault
+    {{- end }}
+  {{- with .Values.sandboxWorkload }}
+  resources:
+    {{- toYaml .helperResources | nindent 4 }}
+  {{- end }}
+  command: ["/bin/sh", "/etc/cetirun/retire-copilot-sign-in.sh"]
+  env:
+    - name: OPENCLAW_STATE_DIR
+      value: "/home/vibe/.openclaw"
+  volumeMounts:
+    - name: data
+      mountPath: /home/vibe
+    - name: tmp
+      mountPath: /tmp
+    - name: config
+      mountPath: /etc/cetirun
+      readOnly: true
+{{- end }}
 {{ include "cetirun.initSkillsContainer" . }}
 {{- end }}
 
@@ -147,9 +190,6 @@ OpenClaw container ports (agent-specific only)
 {{- define "cetirun.agent.openclaw.ports" -}}
 - name: gateway
   containerPort: {{ .Values.service.targetPort }}
-  protocol: TCP
-- name: cetirun-auth
-  containerPort: 18790
   protocol: TCP
 {{- end }}
 
@@ -175,9 +215,15 @@ OpenClaw container env vars (agent-specific only)
 - name: OPENAI_API_KEY
   valueFrom:
     secretKeyRef:
+      {{- if (.Values.aiGateway | default dict).enabled }}
+      # This Agent's AI Gateway virtual key, managed by the CetiRun operator.
+      name: {{ .Values.aiGateway.keySecretName }}
+      key: {{ .Values.aiGateway.keySecretKey | default "api-key" }}
+      {{- else }}
       name: {{ include "cetirun.secretName" . }}
       key: MODEL_API_KEY
       optional: true
+      {{- end }}
 {{- else if eq (.Values.secrets.provider | default "github_copilot") "anthropic" }}
 - name: ANTHROPIC_API_KEY
   valueFrom:
@@ -195,15 +241,6 @@ OpenClaw container env vars (agent-specific only)
 # Config file path
 - name: OPENCLAW_CONFIG_PATH
   value: "/home/vibe/.openclaw/openclaw.json"
-# Bearer key for the in-pod cetirun-auth helper service used by the
-# Portal "Copilot Auth" UI. Auto-generated and preserved across upgrades.
-- name: CETIRUN_AUTH_KEY
-  valueFrom:
-    secretKeyRef:
-      name: {{ include "cetirun.secretName" . }}
-      key: CETIRUN_AUTH_KEY
-- name: CETIRUN_AGENT_TYPE
-  value: "openclaw"
 {{- end }}
 
 {{/*
@@ -260,10 +297,6 @@ OpenClaw service ports (agent-specific only)
   nodePort: {{ . }}
   {{- end }}
   {{- end }}
-- port: 18790
-  targetPort: cetirun-auth
-  protocol: TCP
-  name: cetirun-auth
 {{- end }}
 
 {{/*
@@ -272,8 +305,6 @@ OpenClaw networkpolicy ingress ports (agent-specific only)
 {{- define "cetirun.agent.openclaw.networkPolicyIngressPorts" -}}
 - protocol: TCP
   port: {{ .Values.service.targetPort }}
-- protocol: TCP
-  port: 18790
 {{- end }}
 
 {{/*
@@ -319,10 +350,12 @@ OpenClaw configmap data
     _Update this as you learn more about them._
   init-home.sh: |
 {{ .Files.Get "agents/openclaw/bootstrap/init-home.sh" | indent 4 }}
+  {{- if (.Values.aiGateway | default dict).enabled }}
+  retire-copilot-sign-in.sh: |
+{{ .Files.Get "agents/openclaw/bootstrap/retire-copilot-sign-in.sh" | indent 4 }}
+  {{- end }}
   init-skills.sh: |
 {{ .Files.Get "configs/init-skills.sh" | indent 4 }}
-  openclaw-auth.sh: |
-{{ .Files.Get "agents/openclaw/bootstrap/openclaw-auth.sh" | indent 4 }}
   session-logger.sh: |
 {{ .Files.Get "configs/session-logger.sh" | indent 4 }}
 {{- end }}

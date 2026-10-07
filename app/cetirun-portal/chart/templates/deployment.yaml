@@ -54,6 +54,12 @@ spec:
               value: {{ join "," (default (list "hermes" "openclaw") ((.Values.features).allowedAgentTypes)) | quote }}
             - name: FEATURE_AGENT_IDENTITY_ENABLED
               value: {{ default false ((.Values.features).agentIdentityEnabled) | quote }}
+            - name: FEATURE_AI_GATEWAY_ENABLED
+              value: {{ default false ((.Values.features).aiGatewayEnabled) | quote }}
+            {{- if default false ((.Values.features).aiGatewayEnabled) }}
+            - name: AI_GATEWAY_CATALOG_NAMESPACE
+              value: {{ default "cetirun-system" ((.Values.aiGateway).catalogNamespace) | quote }}
+            {{- end }}
             {{- if default false ((.Values.features).agentIdentityEnabled) }}
             - name: ENTRA_TENANT_ID
               value: {{ required "agentIdentity.tenantId is required when Agent Identity is enabled" .Values.agentIdentity.tenantId | quote }}
