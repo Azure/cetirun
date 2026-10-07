@@ -495,8 +495,14 @@ enabled and enforced (`sandboxAdmission.enabled`, `enforce`, and `podsEnabled`).
 The admission ServiceAccount is fixed to the separately deployed
 `cetirun-sandbox-admission`; it is not the controller ServiceAccount.
 Admission reuses its existing operator-namespace ConfigMap `get` Role and
-Pod-admission RuntimeClass/StorageClass `get` permissions. Sources alone add no
-RBAC grants. The optional skills publication catalog described below adds only
+Pod-admission RuntimeClass/StorageClass `get` permissions. Enabled sources also
+grant the controller `get`, `list`, `watch`, `create`, `update`, `patch` and
+`delete` on namespaced `ciliumnetworkpolicies.cilium.io`, which guarded Helm
+staging needs for the compiler's policy resources. The controller's ClusterRole
+grants these permissions cluster-wide; the staging path still verifies exact
+Agent ownership and namespace identities. Admission remains read-only, and no
+cluster-wide Cilium policy or endpoint write permissions are granted.
+The optional skills publication catalog described below adds only
 PersistentVolume `get` for its metadata dependencies, not write permissions,
 Secret lists or cluster-wide ConfigMap access.
 The default-off chart output is unchanged.

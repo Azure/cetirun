@@ -170,7 +170,7 @@ class SandboxAdmissionChartTests(unittest.TestCase):
             with self.subTest(invalid=invalid):
                 self.assert_rejected(self.server_values(validationMode=invalid), "validationMode must be compatible or strict")
 
-    def test_kubernetes_sources_share_platform_config_without_changing_rbac_or_rules(self):
+    def test_kubernetes_sources_share_platform_config_and_grant_only_policy_writes(self):
         admission = self.enforced_values(podsEnabled=True)
         for namespace, config_map in (
             ("cetirun-system", "sandbox-platform"),
@@ -223,6 +223,16 @@ class SandboxAdmissionChartTests(unittest.TestCase):
                 self.assertEqual(binding["subjects"], [{
                     "kind": "ServiceAccount", "name": NAME, "namespace": namespace,
                 }])
+                policy_rule = {
+                    "apiGroups": ["cilium.io"],
+                    "resources": ["ciliumnetworkpolicies"],
+                    "verbs": ["get", "list", "watch", "create", "update", "patch", "delete"],
+                }
+                role_key = ("ClusterRole", "cetirun-operator-manager-role")
+                self.assertFalse(any("cilium.io" in rule["apiGroups"] for rule in baseline[role_key]["rules"]))
+                rules = configured[role_key]["rules"]
+                self.assertEqual(rules.count(policy_rule), 1)
+                rules.remove(policy_rule)
                 env.remove(source_env[0])
                 config_env["value"] = baseline_config_env["value"]
                 self.assertEqual(configured, baseline)

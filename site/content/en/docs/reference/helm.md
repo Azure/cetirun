@@ -360,7 +360,12 @@ values. `CETIRUN_SANDBOX_SOURCES` remains operator-only; admission receives the
 selected platform namespace and ConfigMap name in `CETIRUN_SANDBOX_ADMISSION`.
 These settings are omitted when sources are disabled. The dedicated admission
 ServiceAccount reuses its existing namespace-scoped ConfigMap `get` Role and
-RuntimeClass/StorageClass `get` permissions. Sources alone add no RBAC grants.
+RuntimeClass/StorageClass `get` permissions. Enabled sources grant the controller
+`get`, `list`, `watch`, `create`, `update`, `patch` and `delete` on namespaced
+`ciliumnetworkpolicies.cilium.io` for guarded staging of compiled policies.
+These controller permissions are cluster-wide; staging still verifies exact
+Agent ownership and namespace identities. Admission remains read-only, with no
+cluster-wide Cilium policy or endpoint write permissions added.
 The optional skills catalog adds only PersistentVolume `get` for its dependency
 metadata; it adds no Secret lists or cluster-wide ConfigMap access.
 
