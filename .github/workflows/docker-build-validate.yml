@@ -82,11 +82,6 @@ jobs:
             'test ! -e /home/vibe/.openclaw/identity/device.json && openclaw --version && az version && gh --version && kubectl version --client && tailscale version && supervisord --version && python3 -m pip --version'
           docker run --rm --entrypoint python3 openclaw-gateway:validation -c \
             'from pip._vendor import msgpack, pkg_resources; from pip._vendor.cachecontrol.serialize import Serializer; assert msgpack.unpackb(msgpack.packb({"ok": True})) == {"ok": True}; pkg_resources.Requirement.parse("setuptools>=78.1.1"); Serializer()'
-          docker run --rm \
-            --entrypoint /usr/local/lib/cetirun-auth/bin/python \
-            -v "${{ github.workspace }}/app/cetirun-chart/tests:/tests:ro" \
-            -v "${{ github.workspace }}/app/cetirun-chart/configs/cetirun-auth-service.py:/configs/cetirun-auth-service.py:ro" \
-            openclaw-gateway:validation -m unittest discover -s /tests -p test_auth_service.py -v
 
       - name: Build Hermes image
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
@@ -100,6 +95,15 @@ jobs:
             NPM_REGISTRY=${{ env.NPM_REGISTRY }}
             PYPI_INDEX_URL=${{ env.PYPI_INDEX_URL }}
           tags: hermes-gateway:validation
+
+      # Only Hermes still carries the in-agent GitHub Copilot sign-in helper.
+      - name: Test the sign-in helper in the Hermes image
+        run: |
+          docker run --rm \
+            --entrypoint /usr/local/lib/hermes-agent/venv/bin/python \
+            -v "${{ github.workspace }}/app/cetirun-chart/tests:/tests:ro" \
+            -v "${{ github.workspace }}/app/cetirun-chart/configs/cetirun-auth-service.py:/configs/cetirun-auth-service.py:ro" \
+            hermes-gateway:validation -m unittest discover -s /tests -p test_auth_service.py -v
 
       - name: Build desktop sidecar image
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0

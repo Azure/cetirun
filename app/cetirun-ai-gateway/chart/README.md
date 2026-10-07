@@ -40,8 +40,9 @@ providerCredentials:
 `<registry>` is where the CetiRun images and charts are published. The master
 key, salt key and console password are generated; see [Credentials](#credentials).
 
-At least one model is required. Installing with an empty list is rejected rather
-than producing a Gateway that starts and then fails every request.
+The model list can be empty. Administrators can add models through the console
+later, and with CetiRun a deployment may rely only on the GitHub Copilot models the
+operator registers for each Agent.
 
 The last two lines of the model entry are not optional in practice. Without a
 price the model is refused, and for newer Azure models an older `api_version`
@@ -172,8 +173,12 @@ templates or in `helm get values` output.
 
 ### Reserved names
 
-Model names beginning with `cetirun-` are rejected. That prefix belongs to models
-the CetiRun operator registers automatically.
+Model names beginning with `cetirun-` are rejected: that prefix belongs to models
+the CetiRun operator registers automatically. With `operatorIntegration` on, names
+beginning with `copilot/` are rejected too: `copilot/<model>` names each CetiRun
+Agent's GitHub Copilot models. A standalone Gateway may keep serving models under
+`copilot/`. Shared models added through the console with these prefixes, or with a
+provider prefix such as `openai/`, are not given to Agents.
 
 The reservation exists because adding a model under a name that already exists
 does not replace the original. Both are served under the same name and traffic
@@ -196,6 +201,12 @@ The chart therefore sets `blockUnpricedModels: true`, which refuses such a
 request with a message naming the model and telling you to declare pricing.
 Failing at the first request is better than never enforcing a budget somebody
 believes is in place.
+
+The console can change the setting later. LiteLLM keeps that change in its
+database, where it takes precedence over the chart's value (see [Editing
+settings in the console](#editing-settings-in-the-console-takes-them-out-of-chart-control)).
+With CetiRun, the operator reads the setting in effect and gives Agents only
+the shared models the Gateway would serve.
 
 ### Pricing a deployment
 
@@ -387,6 +398,29 @@ and are refused on `/health`. Create keys through the API the same way:
 ```json
 {"models": ["gpt-4o"], "max_budget": 20, "allowed_routes": ["llm_api_routes"]}
 ```
+
+### Serving CetiRun Agents
+
+The CetiRun operator gives each Agent a key restricted to access groups, and
+registers the Agent's GitHub Copilot models under `copilot/<model>` in a group of
+the Agent's own, each pointing at that Agent's proxy. Set `operatorIntegration:
+true` for such a Gateway; the `cetirun-platform` chart sets it for the Gateway it
+installs. It reserves the `copilot/` prefix, see [Reserved names](#reserved-names),
+and sets `general_settings.enforce_fallback_model_access`.
+
+LiteLLM checks a key against the requested model only. A fallback the Gateway
+is configured with, in `router_settings` or the console, is chosen after that
+check, and without the setting LiteLLM tries it unchecked; for a model name
+several Agents share, it then picks among all of them when the caller's groups
+match none. So a shared model's fallback to a Copilot model could reach another
+Agent's proxy. With the setting, LiteLLM skips a fallback target the caller's key
+could not request directly.
+
+The groups only separate Agents while keys and teams are limited to them. A key
+or team allowed every model, or a `copilot/` name directly, has no group to
+filter by, so LiteLLM spreads its requests for a `copilot/` name over every
+Agent's proxy. The operator creates teams and keys without such grants; do not
+add them in the console.
 
 ## Credentials
 

@@ -59,6 +59,34 @@ export interface Instance extends InstanceVersion {
     phase?: "Disabled" | "Provisioning" | "Ready" | "Degraded" | "Failed" | "Deleting";
     reason?: string;
   };
+  /** The Agent's models in the platform AI Gateway; absent when it has none. */
+  aiGateway?: AIGatewayInfo;
+}
+
+export type CopilotProxyPhase = "SignInRequired" | "Starting" | "Ready" | "Degraded";
+
+export interface AIGatewayInfo {
+  /** Whether the Agent's model traffic goes through the Gateway. */
+  routed: boolean;
+  phase?: string;
+  reason?: string;
+  sharedModels: boolean;
+  githubCopilot: boolean;
+  /** Models the Agent is configured with, as it names them. */
+  models: string[];
+  defaultModel?: string;
+  copilot?: {
+    phase?: CopilotProxyPhase;
+    reason?: string;
+    models: string[];
+    /** Account models left out because the Gateway has no price for them. */
+    unpriced?: string[];
+  };
+}
+
+export interface ModelAccess {
+  sharedModels?: boolean;
+  githubCopilot?: boolean;
 }
 
 export interface ConditionStatus {
@@ -80,6 +108,8 @@ export interface CreateInstanceRequest {
   model?: string;
   teamsEnabled?: boolean;
   agentIdentityEnabled?: boolean;
+  /** OpenClaw Agents with the AI Gateway enabled. */
+  modelAccess?: ModelAccess;
 }
 
 export interface UpdateInstanceRequest extends InstanceVersion {

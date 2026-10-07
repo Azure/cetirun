@@ -166,6 +166,106 @@ Validate Azure Workload Identity prerequisites
 {{- end -}}
 {{- end }}
 
+{{/* Validate the platform AI Gateway wiring set by the CetiRun operator. */}}
+{{- define "cetirun.validateAIGateway" -}}
+{{- $gateway := .Values.aiGateway | default dict -}}
+{{- $proxy := $gateway.copilotProxy | default dict -}}
+{{- if and $proxy.enabled (not $gateway.enabled) -}}
+{{- fail "aiGateway.copilotProxy.enabled requires aiGateway.enabled" -}}
+{{- end -}}
+{{- if $gateway.enabled -}}
+{{- if ne (include "cetirun.agent.type" .) "openclaw" -}}
+{{- fail "aiGateway.enabled is supported only for OpenClaw" -}}
+{{- end -}}
+{{- if ne (.Values.secrets.provider | default "github_copilot") "openai" -}}
+{{- fail "aiGateway.enabled requires secrets.provider=openai" -}}
+{{- end -}}
+{{- if not (regexMatch "^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$" (.Values.aiGateway.keySecretName | default "")) -}}
+{{- fail "aiGateway.keySecretName must name a Secret in the release namespace" -}}
+{{- end -}}
+{{- if not .Values.networkPolicy.enabled -}}
+{{- fail "aiGateway.enabled requires networkPolicy.enabled" -}}
+{{- end -}}
+{{- if not .Values.sidecarScope.enabled -}}
+{{- fail "aiGateway.enabled requires sidecarScope.enabled" -}}
+{{- end -}}
+{{- if not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" (.Values.networkPolicy.gatewayNamespace | default "")) -}}
+{{- fail "aiGateway.enabled requires networkPolicy.gatewayNamespace" -}}
+{{- end -}}
+{{- range .Values.extraEnv -}}
+{{- if has (get . "name") (list "OPENAI_API_KEY" "OPENAI_BASE_URL") -}}
+{{- fail "OPENAI_API_KEY and OPENAI_BASE_URL are reserved when aiGateway.enabled" -}}
+{{- end -}}
+{{- end -}}
+{{- range $gateway.models -}}
+{{- if hasPrefix "openai/" (printf "%v" .id) -}}
+{{- fail "aiGateway.models ids are Gateway model names without a provider prefix" -}}
+{{- end -}}
+{{- end -}}
+{{- if $proxy.enabled -}}
+{{- if not $proxy.image -}}
+{{- fail "aiGateway.copilotProxy.image is required" -}}
+{{- end -}}
+{{- if not (regexMatch "^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$" ($proxy.masterKeySecretName | default "")) -}}
+{{- fail "aiGateway.copilotProxy.masterKeySecretName must name a Secret in the release namespace" -}}
+{{- end -}}
+{{- if not (regexMatch "^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$" ($proxy.tokenSecretName | default "")) -}}
+{{- fail "aiGateway.copilotProxy.tokenSecretName must name a Secret in the release namespace" -}}
+{{- end -}}
+{{- range ($proxy.responsesModels | default list) -}}
+{{- if not (regexMatch "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$" (printf "%v" .)) -}}
+{{- fail "aiGateway.copilotProxy.responsesModels must be GitHub Copilot model IDs" -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+Name of the per-Agent GitHub Copilot proxy's objects. The operator derives
+the proxy's Service address from it, so keep the two in step.
+*/}}
+{{- define "cetirun.copilotProxyName" -}}
+{{- printf "%s-copilot-proxy" .Release.Name | trunc 63 | trimSuffix "-" -}}
+{{- end }}
+
+{{- define "cetirun.copilotProxySelectorLabels" -}}
+app.kubernetes.io/name: cetirun-copilot-proxy
+app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end }}
+
+{{- define "cetirun.copilotProxyLabels" -}}
+helm.sh/chart: {{ include "cetirun.chart" . }}
+{{ include "cetirun.copilotProxySelectorLabels" . }}
+app.kubernetes.io/component: copilot-proxy
+app.kubernetes.io/managed-by: {{ .Release.Service }}
+{{- end }}
+
+{{/*
+LiteLLM configuration of the Copilot proxy: every model the owner's account
+offers, under its own name. The Gateway decides which ones the Agent may use.
+*/}}
+{{- define "cetirun.copilotProxyConfig" -}}
+model_list:
+  {{- /* GitHub Copilot serves some models only through the Responses API.
+     Naming them lets LiteLLM bridge chat completion requests to it. */}}
+  {{- range ((.Values.aiGateway.copilotProxy).responsesModels | default list) }}
+  - model_name: {{ . | quote }}
+    litellm_params:
+      model: {{ printf "github_copilot/%s" . | quote }}
+    model_info:
+      mode: responses
+  {{- end }}
+  - model_name: "*"
+    litellm_params:
+      model: "github_copilot/*"
+litellm_settings:
+  # The Gateway and the Agent decide on retries.
+  num_retries: 0
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+{{- end }}
+
 {{/*
 Validate autoscaling settings for single-instance app
 */}}

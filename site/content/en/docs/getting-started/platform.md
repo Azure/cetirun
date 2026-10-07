@@ -81,8 +81,8 @@ ServiceEntry nor the built-in egress blacklist is a complete outbound allowlist.
 
 ## 3. Install the operator and portal
 
-For a new installation, the platform chart packages the operator and portal
-into one release. Independent component charts are also available. Do not
+For a new installation, the platform chart packages the operator, the portal
+and the AI Gateway into one release. Independent component charts are also available. Do not
 install both over the same resources: the umbrella does not adopt resources
 owned by standalone Helm releases.
 
@@ -135,7 +135,12 @@ Deployment `imagePullSecrets` are separate settings and remain supported.
 
 ### Platform chart
 
-The umbrella installs both components in `cetirun-system` by default. Configure
+The umbrella installs its components in `cetirun-system` by default. OpenClaw
+Agents take their models from the AI Gateway, which the umbrella installs with
+PostgreSQL and Valkey unless one is installed separately; Hermes Agents keep
+their own model provider and sign-in. See the
+[platform chart README]({{< repo "app/cetirun-platform/README.md" >}}) for shared
+models, the Gateway console and a separately installed Gateway. Configure
 the independent Istio release to reach that portal before installation, using
 `PORTAL_AUTH_NAMESPACE=cetirun-system` with its deployment helper. See
 [portal ownership endpoint](../../operations/istio/#portal-ownership-endpoint).
@@ -273,7 +278,12 @@ kubectl get crd agents.cetirun.microsoft.com teams.cetirun.microsoft.com
 kubectl get gateway.networking.istio.io cetirun-gateway -n aks-istio-ingress
 kubectl rollout status deployment/cetirun-operator -n cetirun-system --timeout=120s
 kubectl rollout status deployment/cetirun-portal -n cetirun-system --timeout=120s
+kubectl rollout status deployment/cetirun-ai-gateway -n cetirun-system --timeout=300s
 ```
+
+New agents need a Team. Create one before users create agents, in the portal's
+administration pages or with a `Team` manifest (see the
+[platform chart README]({{< repo "app/cetirun-platform/README.md" >}})).
 
 When shared skills are enabled, also check `azureblob-nfs-premium` and the
 `blob.csi.azure.com` CSI driver. HOME storage does not require Blob CSI.

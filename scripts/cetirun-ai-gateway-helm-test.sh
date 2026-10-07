@@ -23,8 +23,8 @@ fi
 
 app_version="$(awk -F': *' '$1=="appVersion" {gsub(/"/, "", $2); print $2; exit}' "${chart_dir}/Chart.yaml")"
 
-# A usable baseline: the defaults, which bundle PostgreSQL and Valkey, plus the
-# one thing an administrator always has to supply.
+# A usable baseline: the defaults, which bundle PostgreSQL and Valkey, plus one
+# model configured at install.
 base_args=(
   --set-string "models[0].model_name=lint-model"
   --set-string "models[0].litellm_params.model=openai/lint-model"
@@ -117,11 +117,18 @@ single_name "${valkey_name}" "the bundled Valkey in the default render"
 
 # ----- Required inputs -----
 
+# ----- No models at install -----
+
+# A Gateway can start without models: administrators add them through the
+# console later, and a CetiRun deployment may use only the GitHub Copilot
+# models the operator registers for each Agent.
+echo "==> a Gateway without models renders"
+no_models="$(helm template "${release_name}" "${chart_dir}")"
+assert_contains "model_list:" "the configuration still lists models" "${no_models}"
+assert_absent "model_name:" "no model is configured" "${no_models}"
+
 echo "==> expected rejections for missing or conflicting input"
 
-# A Gateway with no models starts and then fails every request, so this is
-# rejected at install instead.
-assert_rejected "empty model list" --set "models=null"
 assert_rejected "missing litellm_params.model" --set-string "models[0].litellm_params.model="
 assert_rejected "no database at all" --set "postgresql.bundled.enabled=false"
 assert_rejected "an external database while the bundled one is on" \
@@ -139,6 +146,25 @@ assert_rejected "both provider credential sources" \
 echo "==> reserved model-name prefix"
 assert_rejected "reserved cetirun- prefix" --set-string "models[0].model_name=cetirun-gpt4"
 assert_rejected "reserved prefix in another case" --set-string "models[0].model_name=CetiRun-gpt4"
+# A standalone Gateway keeps serving models under copilot/; serving CetiRun
+# Agents reserves that prefix for their GitHub Copilot routes.
+standalone_copilot="$(render --set-string "models[0].model_name=copilot/gpt-5")"
+assert_contains "model_name: copilot/gpt-5" "a standalone Gateway accepts a copilot/ model name" "${standalone_copilot}"
+assert_rejected "reserved copilot/ prefix with the operator integration" \
+  --set operatorIntegration=true --set-string "models[0].model_name=copilot/gpt-5"
+assert_rejected "reserved copilot/ prefix in another case with the operator integration" \
+  --set operatorIntegration=true --set-string "models[0].model_name=Copilot/gpt-5"
+
+# ----- Operator integration -----
+
+# Router fallbacks are chosen after the key check. Serving CetiRun Agents, the
+# Gateway checks each fallback target against the caller's key, so a fallback
+# cannot reach another Agent's GitHub Copilot route.
+echo "==> fallback targets are checked against the caller's key for CetiRun"
+assert_absent "enforce_fallback_model_access" "a standalone Gateway keeps LiteLLM's fallback default" "${output}"
+integration="$(render --set operatorIntegration=true)"
+assert_contains "enforce_fallback_model_access: true" \
+  "the operator integration checks fallback targets against the caller's key" "${integration}"
 
 # ----- Image -----
 

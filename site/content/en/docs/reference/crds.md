@@ -138,6 +138,8 @@ check does not prove that an override will reconcile successfully.
 | `observedOperatorHash` | Applied configuration fingerprint used by the reconciliation cache, including the gateway Secret content hash and referenced team's resource version |
 | `lastReconcileTime` | Timestamp written by full Ready/suspension handling; can also be written while suspension ingress removal is failing |
 | `msteams` | Teams state, message, resolved app and bot resource identifiers |
+| `aiGateway` | AI Gateway state: phase and reason, key alias and ID (never the key), access groups, team, configured models and default, and the GitHub Copilot sign-in state; omitted until the operator reconciles the Gateway for the Agent |
+| `signInHelper` | Whether the workload serves the in-agent model sign-in helper that `/<instance>/cetirun-auth/` routes to; omitted until the operator records it |
 | `registryCredentials` | Receipt identifying the synchronized source Secret UID/resourceVersion and local pull Secret UID; not credential data or proof of successful image pulling |
 | `sandbox` | Last verified binding: `teamUID`, `sandboxUID`, `policyClass`, `agentPolicyUID`, `appliedRevision`; omitted before successful enforcement |
 

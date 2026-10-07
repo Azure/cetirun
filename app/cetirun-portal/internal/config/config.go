@@ -41,6 +41,13 @@ type Config struct {
 	AgentIdentityBrokerURL      string
 	PortalOrigin                string
 	RegistryCredentialNamespace string
+	// AIGatewayEnabled exposes the platform AI Gateway choices: the model
+	// sources of new OpenClaw Agents, the GitHub Copilot sign-in and the
+	// Agent's model list. Agents then require a Team.
+	AIGatewayEnabled bool
+	// AIGatewayCatalogNamespace is the operator namespace, where the operator
+	// publishes the shared models.
+	AIGatewayCatalogNamespace string
 }
 
 // Load reads configuration from environment variables.
@@ -58,6 +65,8 @@ func Load() Config {
 		AgentIdentityBrokerURL:      envOrDefault("AGENT_ID_BROKER_URL", "http://cetirun-agent-broker.cetirun-credentials.svc.cluster.local:8080"),
 		PortalOrigin:                envOrDefault("PORTAL_ORIGIN", ""),
 		RegistryCredentialNamespace: envOrDefault("REGISTRY_CREDENTIAL_NAMESPACE", "cetirun-registry-credentials"),
+		AIGatewayEnabled:            os.Getenv("FEATURE_AI_GATEWAY_ENABLED") == "true",
+		AIGatewayCatalogNamespace:   envOrDefault("AI_GATEWAY_CATALOG_NAMESPACE", "cetirun-system"),
 	}
 }
 

@@ -26,6 +26,10 @@ spec:
         # Deployment-level Agent Identity Broker.
         - "{{ .Values.networkPolicy.agentIdentityBrokerNamespace }}/*"
         {{- end }}
+        {{- if (.Values.aiGateway | default dict).enabled }}
+        # Platform AI Gateway.
+        - "{{ .Values.networkPolicy.gatewayNamespace }}/*"
+        {{- end }}
         {{- range .Values.sidecarScope.additionalEgressHosts }}
         - {{ . | quote }}
         {{- end }}

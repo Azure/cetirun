@@ -20,6 +20,7 @@ type FeaturesResponse struct {
 	AgentIdentityEnabled bool     `json:"agentIdentityEnabled"`
 	MaxInstancesPerUser  int      `json:"maxInstancesPerUser"`
 	AllowedAgentTypes    []string `json:"allowedAgentTypes"`
+	AIGatewayEnabled     bool     `json:"aiGatewayEnabled"`
 }
 
 // GetFeatures handles GET /api/features.
@@ -29,5 +30,6 @@ func (h *FeaturesHandler) GetFeatures(w http.ResponseWriter, r *http.Request) {
 		AgentIdentityEnabled: h.Config.AgentIdentityEnabled,
 		MaxInstancesPerUser:  h.Config.MaxInstancesPerUser,
 		AllowedAgentTypes:    h.Config.AllowedAgentTypes,
+		AIGatewayEnabled:     h.Config.AIGatewayEnabled,
 	})
 }

@@ -45,6 +45,10 @@ def top_level_yaml(path, field):
     return match.group(1)
 
 
+# Subcharts of the platform chart: Operator, Portal and AI Gateway.
+PLATFORM_DEPENDENCIES = 3
+
+
 def set_version(version):
     PENDING_UPDATES.clear()
     charts = (
@@ -61,7 +65,7 @@ def set_version(version):
         if has_app_version:
             replace(path, r"^appVersion:\s*.*$", f'appVersion: "{version}"')
         if has_dependencies:
-            replace(path, r"^    version:\s*.*$", f"    version: {version}", 2)
+            replace(path, r"^    version:\s*.*$", f"    version: {version}", PLATFORM_DEPENDENCIES)
 
     replace(
         ROOT / "app/cetirun-operator/chart/values.yaml",
@@ -147,9 +151,9 @@ def check_version(version):
     lock_versions = re.findall(
         r"^  version:\s*[\"']?([^\"'\s#]+)", platform_lock, re.MULTILINE
     )
-    if dependency_versions != [version, version]:
+    if dependency_versions != [version] * PLATFORM_DEPENDENCIES:
         errors.append("app/cetirun-platform/Chart.yaml: dependency versions differ")
-    if lock_versions != [version, version]:
+    if lock_versions != [version] * PLATFORM_DEPENDENCIES:
         errors.append("app/cetirun-platform/Chart.lock: dependency versions differ")
 
     expected_text = {

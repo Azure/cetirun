@@ -17,3 +17,7 @@ dependencies:
     version: 0.1.1
     repository: file://../cetirun-portal/chart
     condition: cetirun-portal.enabled
+  - name: cetirun-ai-gateway
+    version: 0.1.1
+    repository: file://../cetirun-ai-gateway/chart
+    condition: cetirun-ai-gateway.enabled
