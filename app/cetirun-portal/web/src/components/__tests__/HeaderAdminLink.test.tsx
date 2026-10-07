@@ -80,4 +80,21 @@ describe("Header admin link", () => {
     );
     expect(screen.queryByRole("link", { name: "Admin" })).toBeNull();
   });
+
+  it("links the CetiRun name back to the agent list from the admin pages", () => {
+    mockTheme();
+    vi.spyOn(MeContext, "useMe").mockReturnValue({
+      me: { alias: "alice", displayName: "Alice", email: "a@x", isAdmin: true },
+      isLoading: false,
+      error: null,
+    });
+    render(
+      <MemoryRouter initialEntries={["/admin/teams"]}>
+        <Header />
+      </MemoryRouter>,
+    );
+    const home = screen.getByRole("link", { name: "CetiRun Portal home" });
+    expect(home).toHaveAttribute("href", "/");
+    expect(home).toContainElement(screen.getByRole("img", { name: "CetiRun" }));
+  });
 });
