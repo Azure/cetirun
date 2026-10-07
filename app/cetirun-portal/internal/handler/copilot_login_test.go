@@ -342,6 +342,10 @@ func TestCopilotLoginStoresTokenAndModels(t *testing.T) {
 	if _, err := time.Parse(time.RFC3339, token.Annotations[cetirunv1alpha1.AnnotationCopilotTokenStoredAt]); err != nil {
 		t.Fatalf("the token's storage time must be recorded: %v", err)
 	}
+	// The sign-in is completed last, which is what the operator waits for.
+	if completed := token.Annotations[cetirunv1alpha1.AnnotationCopilotSignInCompleted]; completed != generation {
+		t.Fatalf("the sign-in must be completed: %q, generation %q", completed, generation)
+	}
 	login = f.secret(copilotLoginSecretName)
 	if _, ok := login.Data[loginDeviceCode]; ok || string(login.Data[loginState]) != "succeeded" {
 		t.Fatalf("finished login Secret = %v", login.Data)
@@ -681,6 +685,164 @@ func TestCopilotLoginStalledCompletionIsFenced(t *testing.T) {
 			models := f.agent().Annotations[cetirunv1alpha1.AnnotationCopilotModels]
 			if tc.wantModels == "" && models != "" || !strings.Contains(models, tc.wantModels) || strings.Contains(models, "gpt-5.5") {
 				t.Fatalf("recorded models %q, want %q only", models, tc.wantModels)
+			}
+		})
+	}
+}
+
+// A completion checks the token Secret just before it records the models,
+// and its replica can stall right after that check. A cancel once the lease
+// has run out raises the floor, but leaves the Agent as it was, so the
+// stalled write of the models still lands when the replica resumes. The
+// completion that would let them take effect is written under the token
+// Secret's version and finds the floor past the sign-in: the sign-in never
+// completes, and the operator never uses those models.
+func TestCopilotLoginFencedAfterItsLastCheckNeverCompletes(t *testing.T) {
+	f := newLoginFixture(t)
+	f.call(http.MethodPost, "alice")
+	f.gh.answers = []map[string]any{{"access_token": "gho_alice"}}
+	storedToken := func(obj client.Object) bool {
+		secret, ok := obj.(*corev1.Secret)
+		return ok && secret.Name == cetirunv1alpha1.CopilotTokenSecretName &&
+			string(secret.Data[cetirunv1alpha1.CopilotTokenSecretKey]) == "gho_alice"
+	}
+	cancelled := 0
+	// The first read that finds the stored token is the check before the
+	// models are written.
+	f.afterGet(storedToken, func() {
+		f.clock = f.clock.Add(copilotLoginLease + time.Second)
+		w, _ := f.call(http.MethodDelete, "alice")
+		cancelled = w.Code
+	})
+	f.clock = f.clock.Add(6 * time.Second)
+	_, resp := f.call(http.MethodGet, "alice")
+	if cancelled != http.StatusNoContent {
+		t.Fatalf("a cancel after the lease: status %d", cancelled)
+	}
+	if resp.State != copilotLoginNone {
+		t.Fatalf("the cancel must stand: %+v", resp)
+	}
+	token := f.secret(cetirunv1alpha1.CopilotTokenSecretName)
+	generation := token.Annotations[cetirunv1alpha1.AnnotationCopilotSignInGeneration]
+	if recorded := f.agent().Annotations[cetirunv1alpha1.AnnotationCopilotSignInGeneration]; generation == "" || recorded != generation {
+		t.Fatalf("setup: the stalled write of the models must land: token generation %q, Agent generation %q", generation, recorded)
+	}
+	if completed := token.Annotations[cetirunv1alpha1.AnnotationCopilotSignInCompleted]; completed != "" {
+		t.Fatalf("a sign-in cancelled before it completed must never complete, got %q", completed)
+	}
+}
+
+// A completion can stall after it completed the sign-in and before it
+// reported that. A cancel or a poll once its lease has run out finds the
+// sign-in completed and in effect, and reports it as succeeded instead of
+// fencing it and reporting it as cancelled or failed.
+func TestCopilotLoginCompletedBeforeItsEndIsReportedAsSucceeded(t *testing.T) {
+	completed := func(obj client.Object) bool {
+		secret, ok := obj.(*corev1.Secret)
+		return ok && secret.Name == cetirunv1alpha1.CopilotTokenSecretName &&
+			secret.Annotations[cetirunv1alpha1.AnnotationCopilotSignInCompleted] != ""
+	}
+	for _, tc := range []struct {
+		name string
+		step func(*loginFixture)
+	}{
+		{name: "a cancel", step: func(f *loginFixture) {
+			if w, _ := f.call(http.MethodDelete, "alice"); w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "copilot_login_completed") {
+				f.t.Fatalf("a cancel of a completed sign-in: status %d %s", w.Code, w.Body.String())
+			}
+		}},
+		{name: "the end of the expired completion", step: func(f *loginFixture) {
+			if _, resp := f.call(http.MethodGet, "alice"); resp.State != copilotLoginSucceeded {
+				f.t.Fatalf("a completed sign-in must be reported as succeeded: %+v", resp)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newLoginFixture(t)
+			f.call(http.MethodPost, "alice")
+			f.gh.answers = []map[string]any{{"access_token": "gho_alice"}}
+			f.stallAfter(completed, func() {
+				f.clock = f.clock.Add(copilotLoginLease + time.Second)
+				tc.step(f)
+			})
+			f.clock = f.clock.Add(6 * time.Second)
+			if _, resp := f.call(http.MethodGet, "alice"); resp.State != copilotLoginSucceeded {
+				t.Fatalf("the completed sign-in must stay reported as succeeded: %+v", resp)
+			}
+			token := f.secret(cetirunv1alpha1.CopilotTokenSecretName)
+			if generation := token.Annotations[cetirunv1alpha1.AnnotationCopilotSignInGeneration]; generation == "" ||
+				token.Annotations[cetirunv1alpha1.AnnotationCopilotSignInCompleted] != generation {
+				t.Fatalf("the completion must stand: %v", token.Annotations)
+			}
+			if floor := token.Annotations[copilotSignInFloorAnnotation]; floor != "1" {
+				t.Fatalf("a completed sign-in must not be fenced: floor %q", floor)
+			}
+		})
+	}
+}
+
+// A cancel or the end of an expired completion records its outcome first and
+// fences only then, so the completion can complete in between. Checking for
+// the completion is part of the fence's update of the token Secret: the step
+// finds it, leaves the floor, and reports the sign-in as succeeded.
+func TestCopilotLoginCompletedWhileEndedIsReportedAsSucceeded(t *testing.T) {
+	loginWith := func(state string) func(client.Object) bool {
+		return func(obj client.Object) bool {
+			secret, ok := obj.(*corev1.Secret)
+			return ok && secret.Name == copilotLoginSecretName && string(secret.Data[loginState]) == state &&
+				string(secret.Data[loginNumber]) == "1"
+		}
+	}
+	for _, tc := range []struct {
+		name     string
+		accepted func(client.Object) bool
+		step     func(*loginFixture)
+	}{
+		{name: "a cancel", accepted: loginWith(""), step: func(f *loginFixture) {
+			if w, _ := f.call(http.MethodDelete, "alice"); w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "copilot_login_completed") {
+				f.t.Fatalf("a cancel of a sign-in completed meanwhile: status %d %s", w.Code, w.Body.String())
+			}
+		}},
+		{name: "the end of the expired completion", accepted: loginWith(copilotLoginFailed), step: func(f *loginFixture) {
+			if _, resp := f.call(http.MethodGet, "alice"); resp.State != copilotLoginSucceeded {
+				f.t.Fatalf("a sign-in completed meanwhile must be reported as succeeded: %+v", resp)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newLoginFixture(t)
+			f.call(http.MethodPost, "alice")
+			// A completion committed sign-in 1 with its generation and
+			// stored the token; its replica stalled past the lease.
+			const generation = "0a1b2c3d"
+			login := f.secret(copilotLoginSecretName)
+			login.Data[loginState] = []byte(copilotLoginCompleting)
+			login.Data[loginCompletingUntil] = []byte(f.clock.Add(copilotLoginLease).Format(time.RFC3339))
+			login.Data[loginGeneration] = []byte(generation)
+			if err := f.fc.Update(context.Background(), login); err != nil {
+				t.Fatal(err)
+			}
+			token := f.secret(cetirunv1alpha1.CopilotTokenSecretName)
+			token.Data = map[string][]byte{cetirunv1alpha1.CopilotTokenSecretKey: []byte("gho_alice")}
+			token.Annotations[cetirunv1alpha1.AnnotationCopilotSignInGeneration] = generation
+			if err := f.fc.Update(context.Background(), token); err != nil {
+				t.Fatal(err)
+			}
+			f.clock = f.clock.Add(copilotLoginLease + time.Second)
+			// The replica resumes and completes the sign-in right after the
+			// step recorded its outcome.
+			f.stallAfter(tc.accepted, func() {
+				if err := f.h.completeCopilotSignIn(context.Background(), f.agent(), 1, generation); err != nil {
+					t.Fatalf("setup: the completion must be accepted: %v", err)
+				}
+			})
+			tc.step(f)
+			if state := string(f.secret(copilotLoginSecretName).Data[loginState]); state != copilotLoginSucceeded {
+				t.Fatalf("the sign-in must be recorded as succeeded, got %q", state)
+			}
+			token = f.secret(cetirunv1alpha1.CopilotTokenSecretName)
+			if token.Annotations[cetirunv1alpha1.AnnotationCopilotSignInCompleted] != generation || token.Annotations[copilotSignInFloorAnnotation] != "1" {
+				t.Fatalf("the completion must stand unfenced: %v", token.Annotations)
 			}
 		})
 	}

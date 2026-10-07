@@ -40,6 +40,11 @@ const (
 	loginNextPollAt      = "next-poll-at"
 	loginMessage         = "message"
 	loginCompletingUntil = "completing-until"
+	// loginGeneration is the generation a completion stores its token and
+	// models with. It is recorded when the completion commits, so that a
+	// cancel or the end of the completion's lease can tell whether the
+	// sign-in completed after all.
+	loginGeneration = "generation"
 
 	// Sign-in states reported to the browser.
 	copilotLoginNone      = "none"
@@ -66,7 +71,7 @@ const (
 	loginNumber = "number"
 
 	// copilotSignInFloorAnnotation on the token Secret is the lowest sign-in
-	// number that may still store its token or record its models. It fences
+	// number that may still store its token or complete. It fences
 	// completions, since a lease cannot: a replica that stalls past it may
 	// still resume. Once a start has replaced a sign-in, or a cancel or the
 	// end of a completion whose lease ran out has ended one, the floor rises
@@ -74,9 +79,18 @@ const (
 	// newer one finds it already there and writes nothing: it cannot fence a
 	// newer sign-in. A completion reads the token Secret before it commits,
 	// stores the token under that version, and checks the floor again when
-	// the write conflicts and before it records the models.
+	// the write conflicts, before it records the models, and when it
+	// records its completion, which the operator waits for. That last check
+	// and an end step's raise each read the token Secret and write under the
+	// version read, so the one that comes second conflicts and reads again:
+	// a sign-in fenced first never completes, and an end step that comes
+	// second finds the completion and reports it.
 	copilotSignInFloorAnnotation = "cetirun.microsoft.com/copilot-sign-in-floor"
 )
+
+// copilotSignedInMessage reports a sign-in that completed, to a step that
+// found it so rather than completed it.
+const copilotSignedInMessage = "Signed in to GitHub Copilot. The models appear on the agent once its proxy has started."
 
 // errCopilotLoginCompleting reports a sign-in that is storing its token.
 var errCopilotLoginCompleting = errors.New("the GitHub Copilot sign-in is being completed")
@@ -229,31 +243,45 @@ func copilotSignInFloor(secret *corev1.Secret) int64 {
 	return floor
 }
 
+// copilotSignInCompleted reports whether the token Secret records the sign-in
+// of generation as completed. A sign-in without a generation never is.
+func copilotSignInCompleted(secret *corev1.Secret, generation string) bool {
+	return generation != "" && secret.Annotations[cetirunv1alpha1.AnnotationCopilotSignInCompleted] == generation
+}
+
 // raiseCopilotSignInFloor fences the completions of sign-ins numbered below
 // floor. A floor already there or higher is left alone: the step raising it
 // resumed after a newer one, and must not fence that one's completion. An
-// Agent without its token Secret has no completion to fence.
-func (h *InstanceHandler) raiseCopilotSignInFloor(ctx context.Context, instance *cetirunv1alpha1.Agent, floor int64) error {
+// Agent without its token Secret has no completion to fence. A step that ends
+// a committed sign-in names its generation: when the Secret records that
+// sign-in as completed, the step found it finished, and nothing is written.
+// The check and the raise read and write the Secret at one version, so a
+// completion recorded in between makes the raise conflict, and the retry
+// finds it.
+func (h *InstanceHandler) raiseCopilotSignInFloor(ctx context.Context, instance *cetirunv1alpha1.Agent, floor int64, generation string) (completed bool, err error) {
 	for attempt := 0; attempt < 3; attempt++ {
 		secret, err := h.copilotTokenSecret(ctx, instance)
 		if errors.Is(err, errCopilotProxyNotReady) {
-			return nil
+			return false, nil
 		}
 		if err != nil {
-			return err
+			return false, err
+		}
+		if copilotSignInCompleted(secret, generation) {
+			return true, nil
 		}
 		if copilotSignInFloor(secret) >= floor {
-			return nil
+			return false, nil
 		}
 		if secret.Annotations == nil {
 			secret.Annotations = map[string]string{}
 		}
 		secret.Annotations[copilotSignInFloorAnnotation] = strconv.FormatInt(floor, 10)
 		if err := h.Kube.UpdateSecret(ctx, secret); !kube.IsConflict(err) {
-			return err
+			return false, err
 		}
 	}
-	return errCopilotLoginChanged
+	return false, errCopilotLoginChanged
 }
 
 // newCopilotSignInGeneration identifies a sign-in whose token and models are
@@ -382,7 +410,9 @@ func (h *InstanceHandler) StartCopilotLogin(w http.ResponseWriter, r *http.Reque
 	// an earlier sign-in that outlived its lease must not store its token
 	// now. Fencing before the replacement was accepted would fence a
 	// completion that holds its lease, and the start is then refused too.
-	if err := h.raiseCopilotSignInFloor(ctx, instance, number); err != nil {
+	// An earlier sign-in that completed stays in effect until this one
+	// stores its token, so the start has nothing to report of it.
+	if _, err := h.raiseCopilotSignInFloor(ctx, instance, number, ""); err != nil {
 		writeCopilotFenceError(w, instance, err, "Failed to start the sign-in")
 		return
 	}
@@ -504,13 +534,16 @@ func (h *InstanceHandler) PollCopilotLogin(w http.ResponseWriter, r *http.Reques
 			writeJSON(w, http.StatusOK, loginResponse(secret.Data))
 			return
 		}
-		// The replica storing the token stopped before recording it. Record
-		// the sign-in as failed and only then, once that is accepted, raise
-		// the floor past it: should it only have stalled, it can no longer
-		// store the token or record the models of a sign-in reported as
-		// failed. Fencing first would fence a newer sign-in's completion if
-		// this outcome were then refused.
+		// The replica completing the sign-in did not report its outcome
+		// within its lease. Record the sign-in as failed and only then, once
+		// that is accepted, raise the floor past it: should it only have
+		// stalled, it can no longer store the token, record the models or
+		// complete a sign-in reported as failed. Fencing first would fence a
+		// newer sign-in's completion if this outcome were then refused. A
+		// sign-in that completed before the floor rose is in effect, and is
+		// reported as succeeded instead.
 		number := copilotLoginNumberOf(secret.Data)
+		generation := string(secret.Data[loginGeneration])
 		secret.Data = withCopilotLoginNumber(map[string][]byte{
 			loginState:   []byte(copilotLoginFailed),
 			loginMessage: []byte("The sign-in did not finish. Start it again."),
@@ -522,8 +555,13 @@ func (h *InstanceHandler) PollCopilotLogin(w http.ResponseWriter, r *http.Reques
 			h.writeCurrentCopilotLogin(ctx, w, instance)
 			return
 		}
-		if err := h.raiseCopilotSignInFloor(ctx, instance, number+1); err != nil {
+		completed, err := h.raiseCopilotSignInFloor(ctx, instance, number+1, generation)
+		if err != nil {
 			slog.Error("Failed to fence an abandoned GitHub Copilot sign-in", "instance", instance.Name, "error", err)
+		}
+		if completed {
+			h.endCopilotLogin(ctx, w, instance, secret, copilotLoginSucceeded, copilotSignedInMessage)
+			return
 		}
 		writeJSON(w, http.StatusOK, loginResponse(secret.Data))
 		return
@@ -588,23 +626,26 @@ func (h *InstanceHandler) PollCopilotLogin(w http.ResponseWriter, r *http.Reques
 }
 
 // finishCopilotLogin checks that the account can use GitHub Copilot, commits
-// the sign-in, stores the token for the proxy, then records the account's
-// models on the Agent. The commit comes first: a cancel or a new start since
-// this poll claimed the sign-in makes it conflict, and the token is then
-// dropped instead of taking effect. The token Secret is read before the
-// commit and the token stored under that version; a start, a cancel or the
-// end of this completion after its lease ran out raises the Secret's floor
-// past this sign-in once accepted, and the write then conflicts and finds the
-// floor past it, so the token is dropped too. A conflict that leaves the
-// floor at or below this sign-in, from a step that resumed late or another
-// writer, is retried. The token and the models carry the same new sign-in
-// generation, and the models are recorded only while the stored token is
-// still this sign-in's and the floor still admits it, so a sign-in replaced
-// or ended after storing its token does not take effect; the operator uses
-// models only with the token of their generation, so the two never mix even
-// when a newer sign-in stores its token in between. The token is written
-// before the models: the operator registers models once the proxy has picked
-// it up, and the annotation is what triggers the operator.
+// the sign-in, stores the token for the proxy, records the account's models
+// on the Agent, and then completes the sign-in on the token Secret. The
+// commit comes first: a cancel or a new start since this poll claimed the
+// sign-in makes it conflict, and the token is then dropped instead of taking
+// effect. The token Secret is read before the commit and the token stored
+// under that version; a start, a cancel or the end of this completion after
+// its lease ran out raises the Secret's floor past this sign-in once
+// accepted, and the write then conflicts and finds the floor past it, so the
+// token is dropped too. A conflict that leaves the floor at or below this
+// sign-in, from a step that resumed late or another writer, is retried. The
+// token and the models carry the same new sign-in generation, so the
+// operator never uses models with another sign-in's token. The models go on
+// the Agent, which the floor does not guard: a check just before the write
+// drops them once the sign-in was replaced or ended, but a replica that
+// stalls after that check still writes them when it resumes. They take
+// effect only through the completion, written last under the token Secret's
+// version while the floor admits this sign-in: the operator uses the models
+// of a completed sign-in only, and a sign-in replaced or ended first never
+// completes. The annotations on the Agent are what trigger the operator; it
+// waits for the completion that follows them, and looks again meanwhile.
 func (h *InstanceHandler) finishCopilotLogin(ctx context.Context, w http.ResponseWriter, instance *cetirunv1alpha1.Agent, login *corev1.Secret, token string) {
 	models, err := h.copilotClient().ListModels(ctx, token)
 	switch {
@@ -632,7 +673,7 @@ func (h *InstanceHandler) finishCopilotLogin(ctx context.Context, w http.Respons
 		h.endCopilotLogin(ctx, w, instance, login, copilotLoginFailed, "Signed in to GitHub, but the token could not be stored for the agent. Start the sign-in again.")
 		return
 	}
-	if !h.commitCopilotLogin(ctx, instance, login) {
+	if !h.commitCopilotLogin(ctx, instance, login, generation) {
 		slog.Info("GitHub Copilot sign-in was cancelled or replaced while it was polled; its token is dropped", "instance", instance.Name)
 		h.writeCurrentCopilotLogin(ctx, w, instance)
 		return
@@ -667,17 +708,28 @@ func (h *InstanceHandler) finishCopilotLogin(ctx context.Context, w http.Respons
 		h.endCopilotLogin(ctx, w, instance, login, copilotLoginFailed, "Signed in, but the model list could not be saved. Start the sign-in again.")
 		return
 	}
+	if err := h.completeCopilotSignIn(ctx, instance, number, generation); err != nil {
+		if errors.Is(err, errCopilotLoginSuperseded) {
+			slog.Info("GitHub Copilot sign-in was replaced or ended before it completed; its models are not used", "instance", instance.Name)
+			h.endCopilotLogin(ctx, w, instance, login, copilotLoginFailed, "The sign-in changed meanwhile. Start it again.")
+			return
+		}
+		slog.Error("Failed to complete the GitHub Copilot sign-in", "instance", instance.Name, "error", err)
+		h.endCopilotLogin(ctx, w, instance, login, copilotLoginFailed, "Signed in, but the sign-in could not be completed. Start it again.")
+		return
+	}
 	slog.Info("GitHub Copilot sign-in completed", "instance", instance.Name, "models", len(models))
 	h.endCopilotLogin(ctx, w, instance, login, copilotLoginSucceeded,
 		fmt.Sprintf("Signed in to GitHub Copilot: %d models. They appear on the agent once its proxy has started.", len(models)))
 }
 
 // storeCopilotToken writes the token and its generation into the token
-// Secret, under the version read before the sign-in was committed. It
-// reports errCopilotLoginSuperseded once the Secret's floor is past this
-// sign-in, or once another completion has stored its token since that read.
-// A conflict from anything else, such as a step that resumed late and raised
-// the floor only up to this sign-in, is retried.
+// Secret, under the version read before the sign-in was committed, and drops
+// the completion of the sign-in whose token it replaces. It reports
+// errCopilotLoginSuperseded once the Secret's floor is past this sign-in, or
+// once another completion has stored its token since that read. A conflict
+// from anything else, such as a step that resumed late and raised the floor
+// only up to this sign-in, is retried.
 func (h *InstanceHandler) storeCopilotToken(ctx context.Context, instance *cetirunv1alpha1.Agent, secret *corev1.Secret, number int64, token, generation string) error {
 	stored := secret.Annotations[cetirunv1alpha1.AnnotationCopilotSignInGeneration]
 	for attempt := 0; attempt < 3; attempt++ {
@@ -703,6 +755,7 @@ func (h *InstanceHandler) storeCopilotToken(ctx context.Context, instance *cetir
 		}
 		secret.Annotations[cetirunv1alpha1.AnnotationCopilotSignInGeneration] = generation
 		secret.Annotations[cetirunv1alpha1.AnnotationCopilotTokenStoredAt] = h.now().UTC().Format(time.RFC3339)
+		delete(secret.Annotations, cetirunv1alpha1.AnnotationCopilotSignInCompleted)
 		err := h.Kube.UpdateSecret(ctx, secret)
 		if !kube.IsConflict(err) {
 			return err
@@ -711,12 +764,40 @@ func (h *InstanceHandler) storeCopilotToken(ctx context.Context, instance *cetir
 	return errCopilotLoginSuperseded
 }
 
+// completeCopilotSignIn records on the token Secret that the sign-in of
+// generation completed: its token is stored and its models recorded. The
+// operator uses the models of a completed sign-in only, and a cancel or the
+// end of an expired completion that finds it completed reports it as such.
+// It writes under the Secret's version, and only while the Secret holds this
+// sign-in's token and the floor admits it: a step that fenced the sign-in
+// first makes it refuse with errCopilotLoginSuperseded, and one that fences
+// later conflicts with it and then finds it completed.
+func (h *InstanceHandler) completeCopilotSignIn(ctx context.Context, instance *cetirunv1alpha1.Agent, number int64, generation string) error {
+	for attempt := 0; attempt < 3; attempt++ {
+		secret, err := h.copilotTokenSecret(ctx, instance)
+		if err != nil {
+			return err
+		}
+		if generation == "" || secret.Annotations[cetirunv1alpha1.AnnotationCopilotSignInGeneration] != generation || copilotSignInFloor(secret) > number {
+			return errCopilotLoginSuperseded
+		}
+		secret.Annotations[cetirunv1alpha1.AnnotationCopilotSignInCompleted] = generation
+		err = h.Kube.UpdateSecret(ctx, secret)
+		if !kube.IsConflict(err) {
+			return err
+		}
+	}
+	return errCopilotLoginSuperseded
+}
+
 // commitCopilotLogin marks the sign-in as being completed, with the version
-// the poll claimed. It reports false when the sign-in changed meanwhile.
-func (h *InstanceHandler) commitCopilotLogin(ctx context.Context, instance *cetirunv1alpha1.Agent, login *corev1.Secret) bool {
+// the poll claimed, and records the generation the completion stores its
+// token with. It reports false when the sign-in changed meanwhile.
+func (h *InstanceHandler) commitCopilotLogin(ctx context.Context, instance *cetirunv1alpha1.Agent, login *corev1.Secret, generation string) bool {
 	data := map[string][]byte{
 		loginState:           []byte(copilotLoginCompleting),
 		loginCompletingUntil: []byte(h.now().UTC().Add(copilotLoginLease).Format(time.RFC3339)),
+		loginGeneration:      []byte(generation),
 	}
 	// The browser keeps showing the code until the outcome is recorded; the
 	// device code is no longer needed.
@@ -762,10 +843,11 @@ func (h *InstanceHandler) endCopilotLogin(ctx context.Context, w http.ResponseWr
 
 // CancelCopilotLogin handles DELETE /api/v1/instances/{name}/copilot/login
 // with the body {"uid": "<Agent UID>"}. A sign-in that is storing its token
-// is not cancelled. Between reading the sign-in Secret and clearing it, the
-// cancel checks that the Agent is still the one it was made for; a Secret
-// labelled for another UID, left over from an Agent that no longer exists, is
-// not this Agent's sign-in and is left alone.
+// is not cancelled, nor one that completed after its lease ran out: that is
+// reported with copilot_login_completed. Between reading the sign-in Secret
+// and clearing it, the cancel checks that the Agent is still the one it was
+// made for; a Secret labelled for another UID, left over from an Agent that
+// no longer exists, is not this Agent's sign-in and is left alone.
 func (h *InstanceHandler) CancelCopilotLogin(w http.ResponseWriter, r *http.Request) {
 	uid, ok := h.copilotLoginUID(w, r)
 	if !ok {
@@ -804,6 +886,7 @@ func (h *InstanceHandler) CancelCopilotLogin(w http.ResponseWriter, r *http.Requ
 		// meanwhile makes this conflict, and the cancel is retried. The
 		// number stays for the next start.
 		number := copilotLoginNumberOf(secret.Data)
+		generation := string(secret.Data[loginGeneration])
 		secret.Data = withCopilotLoginNumber(map[string][]byte{}, number)
 		err = h.Kube.UpdateSecret(ctx, secret)
 		if kube.IsConflict(err) {
@@ -819,13 +902,27 @@ func (h *InstanceHandler) CancelCopilotLogin(w http.ResponseWriter, r *http.Requ
 			return
 		}
 		// Only once the cancel is accepted: a completion that outlived its
-		// lease must not store its token or record its models after it.
-		// Fencing before the cancel was accepted would fence a completion
-		// that holds its lease, and the cancel is then refused too. Should
-		// this cancel resume only after a newer sign-in started, the floor
-		// is already past the cancelled one and stays as it is.
-		if err := h.raiseCopilotSignInFloor(ctx, instance, number+1); err != nil {
+		// lease must not store its token, record its models or complete
+		// after it. Fencing before the cancel was accepted would fence a
+		// completion that holds its lease, and the cancel is then refused
+		// too. Should this cancel resume only after a newer sign-in started,
+		// the floor is already past the cancelled one and stays as it is. A
+		// sign-in that completed before the floor rose is in effect: the
+		// cancel came too late, and records and reports that instead.
+		completed, err := h.raiseCopilotSignInFloor(ctx, instance, number+1, generation)
+		if err != nil {
 			writeCopilotFenceError(w, instance, err, "Failed to cancel the sign-in")
+			return
+		}
+		if completed {
+			secret.Data = withCopilotLoginNumber(map[string][]byte{
+				loginState:   []byte(copilotLoginSucceeded),
+				loginMessage: []byte(copilotSignedInMessage),
+			}, number)
+			if err := h.Kube.UpdateSecret(ctx, secret); err != nil && !kube.IsConflict(err) && !kube.IsNotFound(err) {
+				slog.Error("Failed to record the GitHub Copilot sign-in outcome", "instance", instance.Name, "error", err)
+			}
+			writeError(w, http.StatusConflict, "copilot_login_completed", "The GitHub Copilot sign-in had already finished.")
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)

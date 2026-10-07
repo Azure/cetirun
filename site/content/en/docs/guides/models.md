@@ -48,9 +48,10 @@ proxy, and records the account's chat models. They appear once the proxy has
 started, usually within a few minutes, and the instance restarts to pick them
 up. A model the Gateway has no price for is listed as not offered: it would
 escape the instance's budget. The token and the models carry the same sign-in
-generation, and the operator uses models only with the token they came with: if
-a sign-in stops after storing its token, the instance offers no Copilot models
-and reports `SignInIncomplete` until you sign in again. Each new sign-in also
+generation, and the operator uses models only with the token they came with,
+once the portal has completed that sign-in: if a sign-in stops or is cancelled
+after storing its token, the instance offers no Copilot models and reports
+`SignInIncomplete` until you sign in again. Each new sign-in also
 restarts the proxy: it otherwise keeps the Copilot token it exchanged until
 that token expires, so another GitHub account would take effect only then.
 
