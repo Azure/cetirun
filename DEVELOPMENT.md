@@ -332,7 +332,11 @@ exceptions in `scripts/license_headers.py` must retain their own notices.
   The focused `make -C app/cetirun-operator test-sandbox-integration` target
   exercises the native Sandbox/AgentPolicy controller preparation chain with
   synthetic platform inventory, real API object identities/defaulting and held
-  admission expectations. It stages OpenClaw/Hermes resources at zero replicas;
+  admission expectations. It also checks current grant-journal and owned
+  ControllerRevision pins, API resource-version conflicts, post-write source
+  races and restart without adding another receipt/history format.
+  The ControllerRevision producer is synthetic, not a running StatefulSet
+  controller. It stages OpenClaw/Hermes resources at zero replicas;
   it does not start containers, install a production provider, or deploy to an
   existing cluster. These tests inject their platform and fencing dependencies.
   Their results do not qualify the opt-in Kubernetes-backed sources or a

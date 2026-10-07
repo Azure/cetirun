@@ -136,6 +136,29 @@ func assertJournalInventory(t *testing.T, store GrantJournalStore, plan *Plan, w
 	}
 }
 
+func TestGrantJournalSnapshotPinsValidatedInventory(t *testing.T) {
+	plan, store, writer := journalFixture(t)
+	recordJournal(t, store, plan, plan.Identity.Bindings)
+	object := &corev1.ConfigMap{}
+	key := client.ObjectKey{Namespace: store.Namespace, Name: GrantJournalName(plan.Binding.AgentUID)}
+	if err := store.APIReader.Get(context.Background(), key, object); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := store.ReadSnapshot(context.Background(), plan.AgentName, plan.Binding.AgentUID)
+	if err != nil || snapshot.UID != object.UID || snapshot.ResourceVersion != object.ResourceVersion ||
+		!slices.Equal(snapshot.Bindings, canonicalBindingReferences(plan.Identity.Bindings)) {
+		t.Fatalf("journal snapshot did not bind validated inventory to its persisted identity: %+v %v", snapshot, err)
+	}
+	creates, updates := writer.creates, writer.updates
+	snapshot.Bindings = append(snapshot.Bindings, BindingReference{Name: "caller-only"})
+	again, err := store.ReadSnapshot(context.Background(), plan.AgentName, plan.Binding.AgentUID)
+	if err != nil || again.UID != snapshot.UID || again.ResourceVersion != snapshot.ResourceVersion ||
+		!slices.Equal(again.Bindings, canonicalBindingReferences(plan.Identity.Bindings)) ||
+		writer.creates != creates || writer.updates != updates || writer.reads != 0 {
+		t.Fatal("journal snapshot depended on cached state, caller mutation or a write:", err)
+	}
+}
+
 func readJournalCM(t *testing.T, store GrantJournalStore, storage client.Reader, plan *Plan) *corev1.ConfigMap {
 	t.Helper()
 	cm := &corev1.ConfigMap{}

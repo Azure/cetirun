@@ -369,11 +369,12 @@ these inputs returns to the guarded preparation path; missing/corrupt durable
 inventory or unavailable authority remains an error. All mutation guards in
 the controller and Helm action remain in place.
 
-The ordinary/admin fake-client regression fixtures measure 38/44 controller
-read calls on unchanged attempts, versus 154/183 through the full path, with
-zero writes, one release-store inspection and one fence check. These are
-regression budgets, not production throughput measurements; providers and
-release storage may perform additional requests. Inventories remain bounded
+The ordinary/admin fake-client regression fixtures enforce a bounded read-only
+reuse path with zero writes, one release-store inspection and one fence check.
+These are regression budgets, not production throughput measurements; providers
+and release storage may perform additional requests. Current grant-journal and
+observed ControllerRevision identities are included in the source reads.
+Inventories remain bounded
 to 128 sources and 512 KiB per expectation, with a one-Pod existence query.
 No production fleet size is qualified. Activation review must establish a
 measured capacity limit and evaluate additional dependency watches alongside
@@ -381,7 +382,39 @@ the existing Agent/Team/Sandbox/AgentPolicy watches and expiry polling.
 
 `AgentConfigReady=True` with reason `SandboxPrepared` means **held preparation
 only**: `SandboxReady` and `Ready` remain false, the access URL is empty, and
-applied-binding history is not advanced.
+applied-binding history is not advanced. Success is published only after the
+held expectation persists and its source versions are checked again.
+
+##### Current held start-input pins
+
+The [expectation publisher](internal/controller/sandbox_preparation_sources.go)
+adds only identities needed to validate a prospective start: the UID and
+resourceVersion of the validated grant journal, and the owned ControllerRevision
+once the StatefulSet controller has observed the current generation. The
+revision's actual recorded template must match the sealed native template,
+including the Kubernetes template-replacement patch form. A stale generation
+does not acquire a current revision pin. Both operator and admission receive
+read-only `get` access to ControllerRevisions.
+
+These references use the existing `v2` expectation source format; they are not
+another intent journal or an execution permit. Valid older held expectations
+without the pins are rebuilt through guarded preparation. Older controllers
+may omit them, so a future start action must explicitly require the complete
+current identities rather than infer qualification from format version alone.
+No preparation-receipt upgrade, attempt history, new finalizer or GC lifecycle
+is introduced. The existing `v1` cleanup receipt retains its 64 KiB bound and
+historical namespace/HOME tuple; unsupported receipt formats still fail closed.
+The current expectation retains the existing 128-source/512-KiB bounds and
+Agent owner reference, and is subject to the existing fenced cleanup and GC.
+
+**Controlled start is not implemented.** Both execution holds and zero-replica
+staging remain. Stock startup cannot reach successful preparation with its
+unavailable writer-exclusion provider. Synthetic API tests do not demonstrate
+production reachability, runtime enforcement or a qualified fence.
+Actual start requires separately approved start/change exclusion, lifetime
+pool isolation, qualified old-writer fencing, a distinct pre-start enforcement
+acknowledgement and trusted current Pod/node/epoch observations. Neither a
+held expectation nor pool deletion alone supplies those authorities.
 
 Tailscale, Teams, workload identity and governed Custom configurations remain
 unsupported by this native path. They retain an explanatory `UnsupportedControl`
@@ -436,6 +469,10 @@ go test ./internal/controller -run TestSandboxPreparation -count=1
 KUBEBUILDER_ASSETS=/path/to/preinstalled/envtest make test-sandbox-integration
 ```
 
+The held-input cases exercise real API-assigned identities, expectation CAS
+conflicts, grant-journal races, restart recovery, both native runtimes and
+default/explicit qualified images, and HTTPS Pod admission denial.
+The ControllerRevision producer and platform approvals are synthetic.
 These tests do not run agent containers or establish runtime, Cilium, CSI,
 cloud identity or writer-fence qualification. Storage/identity handoffs,
 retired non-binding controls, shared-configuration reservations, authorized

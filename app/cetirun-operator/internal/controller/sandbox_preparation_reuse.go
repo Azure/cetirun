@@ -41,13 +41,9 @@ func (r *AgentReconciler) sandboxPreparationReuseDigest(ctx context.Context, att
 	}
 	snapshot, prerequisites := attempt.configuration, attempt.prerequisites
 	snapshot.ObservedAt, prerequisites.ObservedAt = time.Time{}, time.Time{}
-	inventory := make(map[string]sandboxpolicy.BindingReference, len(bindings))
-	for _, binding := range bindings {
-		key := binding.Kind + "/" + binding.Namespace + "/" + binding.Name
-		if _, duplicate := inventory[key]; duplicate || binding.UID == "" {
-			return "", fmt.Errorf("Sandbox preparation reuse requires unique, confirmed grant identities")
-		}
-		inventory[key] = binding
+	inventory, err := sandboxConfirmedBindingInventory(bindings)
+	if err != nil {
+		return "", err
 	}
 	return sandboxPreparationDigest(struct {
 		Version                 string
@@ -66,6 +62,18 @@ func (r *AgentReconciler) sandboxPreparationReuseDigest(ctx context.Context, att
 		attempt.platformValues, attempt.userValues, r.OperatorNamespace, r.SandboxPreparation.AdmissionServiceAccount,
 		inventory, expected, service, stageDigest,
 	})
+}
+
+func sandboxConfirmedBindingInventory(bindings []sandboxpolicy.BindingReference) (map[string]sandboxpolicy.BindingReference, error) {
+	inventory := make(map[string]sandboxpolicy.BindingReference, len(bindings))
+	for _, binding := range bindings {
+		key := binding.Kind + "/" + binding.Namespace + "/" + binding.Name
+		if _, duplicate := inventory[key]; duplicate || binding.UID == "" {
+			return nil, fmt.Errorf("Sandbox preparation requires unique, confirmed grant identities")
+		}
+		inventory[key] = binding
+	}
+	return inventory, nil
 }
 
 // reuseSandboxPreparation is read-only. It skips rendering and all write paths
@@ -115,6 +123,16 @@ func (r *AgentReconciler) reuseSandboxPreparation(ctx context.Context, attempt *
 		expected.Binding != attempt.resolution.Binding || expected.Namespace != attempt.input.Namespace ||
 		expected.Workload.Name != attempt.input.WorkloadName || expected.WorkloadKind != sandboxworkload.AgentWorkload ||
 		expected.Revision == "" || state.Annotations[sandboxworkload.RevisionAnnotation] != expected.Revision {
+		return false, nil
+	}
+	journalPinned, revisionPinned := false, expected.ControllerRevision == ""
+	for _, source := range expected.Sources {
+		journalPinned = journalPinned || (source.APIVersion == "v1" && source.Kind == "ConfigMap" &&
+			source.Namespace == r.OperatorNamespace && source.Name == sandboxpolicy.GrantJournalName(agent.UID))
+		revisionPinned = revisionPinned || (source.APIVersion == "apps/v1" && source.Kind == "ControllerRevision" &&
+			source.Namespace == expected.Namespace.Name && source.Name == expected.ControllerRevision)
+	}
+	if !journalPinned || !revisionPinned {
 		return false, nil
 	}
 	receiptObject, receipt, err := r.readSandboxPreparationReceipt(ctx, agent)

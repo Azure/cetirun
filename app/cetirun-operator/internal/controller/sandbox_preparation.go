@@ -265,14 +265,14 @@ func (r *AgentReconciler) prepareSandboxHeld(ctx context.Context, requested *api
 	if err := journal.Record(ctx, attempt.agent.Name, attempt.agent.UID, confirmed); err != nil {
 		return err
 	}
-	if err := r.sandboxPreparationStatus(ctx, attempt.agent, true, nil); err != nil {
-		return err
-	}
 	stageDigest, err := config.Installer.SandboxStageDigest(ctx, attempt.input.Namespace.Name, attempt.input.ReleaseName)
 	if err != nil {
 		return err
 	}
-	return r.publishSandboxExpectation(ctx, attempt, bundle, template, role, binding, confirmed, stageDigest, check)
+	if err := r.publishSandboxExpectation(ctx, attempt, bundle, template, role, binding, confirmed, stageDigest, check); err != nil {
+		return err
+	}
+	return r.sandboxPreparationStatus(ctx, attempt.agent, true, nil)
 }
 
 func (r *AgentReconciler) resolveSandboxPreparation(ctx context.Context, requested *api.Agent) (*sandboxPreparationAttempt, error) {

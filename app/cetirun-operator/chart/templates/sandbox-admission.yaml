@@ -125,7 +125,7 @@ rules:
     verbs: ["get"]
   {{- end }}
   - apiGroups: ["apps"]
-    resources: ["statefulsets"]
+    resources: ["statefulsets", "controllerrevisions"]
     verbs: ["get"]
   - apiGroups: ["node.k8s.io"]
     resources: ["runtimeclasses"]

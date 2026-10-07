@@ -5,6 +5,7 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"slices"
 
@@ -20,6 +21,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/strategicpatch"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -189,6 +191,34 @@ func (r *AgentReconciler) publishSandboxExpectation(ctx context.Context, attempt
 		return fmt.Errorf("Sandbox staged workload is not the exact owned, held template")
 	}
 	candidates := slices.Clone(attempt.sources)
+	journal, err := r.sandboxGrantJournal().ReadSnapshot(ctx, attempt.agent.Name, attempt.agent.UID)
+	if err != nil {
+		return err
+	}
+	recorded, err := sandboxConfirmedBindingInventory(journal.Bindings)
+	if err != nil {
+		return err
+	}
+	confirmed, err := sandboxConfirmedBindingInventory(bindings)
+	if err != nil {
+		return err
+	}
+	if !equality.Semantic.DeepEqual(recorded, confirmed) {
+		return fmt.Errorf("Sandbox grant inventory changed before expectation publication")
+	}
+	candidates = append(candidates, sandboxworkload.SourceReference{
+		APIVersion: "v1", Kind: "ConfigMap", Namespace: r.OperatorNamespace,
+		Name: sandboxpolicy.GrantJournalName(attempt.agent.UID), UID: journal.UID, ResourceVersion: journal.ResourceVersion,
+	})
+	controllerRevision := ""
+	if workload.Status.UpdateRevision != "" && workload.Status.ObservedGeneration == workload.Generation {
+		revision, err := r.readSandboxPreparedRevision(ctx, workload, *template)
+		if err != nil {
+			return err
+		}
+		controllerRevision = revision.Name
+		candidates = append(candidates, sandboxSource(revision, appsv1.SchemeGroupVersion.String(), "ControllerRevision"))
+	}
 	agentSource, err := sandboxworkload.AgentSourceReference(attempt.agent)
 	if err != nil {
 		return err
@@ -251,7 +281,7 @@ func (r *AgentReconciler) publishSandboxExpectation(ctx context.Context, attempt
 	if err != nil {
 		return err
 	}
-	expected.ControllerRevision = workload.Status.UpdateRevision
+	expected.ControllerRevision = controllerRevision
 	object, err := sandboxworkload.PodExpectationObject(r.OperatorNamespace, expected)
 	if err != nil {
 		return err
@@ -301,4 +331,33 @@ func (r *AgentReconciler) publishSandboxExpectation(ctx context.Context, attempt
 		return err
 	}
 	return r.verifySandboxSources(ctx, sources)
+}
+
+func (r *AgentReconciler) readSandboxPreparedRevision(ctx context.Context, workload *appsv1.StatefulSet,
+	template corev1.PodTemplateSpec,
+) (*appsv1.ControllerRevision, error) {
+	revision := &appsv1.ControllerRevision{}
+	if err := r.APIReader.Get(ctx, client.ObjectKey{Namespace: workload.Namespace, Name: workload.Status.UpdateRevision}, revision); err != nil {
+		return nil, fmt.Errorf("read held Sandbox ControllerRevision: %w", err)
+	}
+	owner := metav1.NewControllerRef(workload, appsv1.SchemeGroupVersion.WithKind("StatefulSet"))
+	if revision.UID == "" || revision.ResourceVersion == "" || !revision.DeletionTimestamp.IsZero() ||
+		!equality.Semantic.DeepEqual(revision.OwnerReferences, []metav1.OwnerReference{*owner}) ||
+		revision.Revision < 1 || len(revision.Data.Raw) == 0 || len(revision.Data.Raw) > 512*1024 {
+		return nil, fmt.Errorf("held Sandbox ControllerRevision ownership or data is unavailable")
+	}
+	// Preserve the controller's template-level $patch: replace directive
+	// without inheriting fields from the live workload.
+	raw, err := strategicpatch.StrategicMergePatch([]byte(`{"spec":{"template":{}}}`), revision.Data.Raw, appsv1.StatefulSet{})
+	if err != nil {
+		return nil, fmt.Errorf("decode held Sandbox ControllerRevision patch: %w", err)
+	}
+	var restored appsv1.StatefulSet
+	if err := json.Unmarshal(raw, &restored); err != nil {
+		return nil, fmt.Errorf("decode held Sandbox ControllerRevision workload: %w", err)
+	}
+	if !sandboxworkload.SamePodTemplate(restored.Spec.Template, template) {
+		return nil, fmt.Errorf("held Sandbox ControllerRevision does not describe the prepared template")
+	}
+	return revision, nil
 }
