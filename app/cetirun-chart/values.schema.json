@@ -237,6 +237,19 @@
                         }
                     }
                 },
+                "hermes": {
+                    "type": "object",
+                    "description": "Hermes on the Gateway",
+                    "additionalProperties": false,
+                    "properties": {
+                        "keyEnv": {
+                            "type": "string",
+                            "description": "Environment variable that carries the Agent's key to Hermes' Gateway provider",
+                            "pattern": "^[A-Z][A-Z0-9_]{0,63}$",
+                            "default": "CETIRUN_GATEWAY_API_KEY"
+                        }
+                    }
+                },
                 "copilotProxy": {
                     "type": "object",
                     "description": "Operator-owned per-Agent GitHub Copilot proxy",

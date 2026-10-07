@@ -370,3 +370,103 @@ def test_openclaw_with_its_own_openai_endpoint_keeps_its_model_settings(agent, m
     # The owner's own openai settings stay, with the rendered endpoint.
     assert config["models"]["providers"]["openai"]["apiKey"] == "owner-test-key"
     assert config["models"]["providers"]["openai"]["baseUrl"] == "https://models.example.com/v1"
+
+
+GATEWAY_CONFIG = {
+    "model": {"default": "gpt-6-sol", "provider": "cetirun-gateway"},
+    "providers": {"cetirun-gateway": {
+        "name": "CetiRun AI Gateway", "api": "http://gateway.example.svc.cluster.local:4000/v1",
+        "key_env": "CETIRUN_GATEWAY_API_KEY", "transport": "chat_completions", "default_model": "gpt-6-sol",
+        "discover_models": False, "models": {"gpt-6-sol": {"context_length": 272000}},
+    }},
+}
+
+
+def on_gateway(agent):
+    """Render the agent's next start as the chart does on the AI Gateway."""
+    (agent["config"] / "hermes-config.yaml").write_text(yaml.safe_dump(GATEWAY_CONFIG))
+    (agent["config"] / "hermes-auth.sh").unlink(missing_ok=True)
+    agent["env"].update(CETIRUN_AI_GATEWAY="true", CETIRUN_GATEWAY_KEY_ENV="CETIRUN_GATEWAY_API_KEY")
+
+
+def env_names(agent):
+    return [line.split("=", 1)[0] for line in (agent["target"] / ".hermes/.env").read_text().splitlines() if line]
+
+
+@pytest.mark.parametrize("agent", ["hermes"], indirect=True)
+def test_hermes_moves_onto_the_gateway(agent):
+    assert run(agent).returncode == 0
+    helper = agent["target"] / ".local/bin/copilot-auth"
+    helper.write_text("#!/bin/sh\n# copilot-auth: Authenticate GitHub Copilot for Hermes.\nhermes model\n")
+    (agent["target"] / ".hermes/.env").write_text(
+        "API_SERVER_KEY=old\nCOPILOT_GITHUB_TOKEN=gho_example_signed_in_inside\nGITHUB_TOKEN=ghp_example_own\n"
+        "OPENAI_API_KEY=sk-example-own\nCETIRUN_GATEWAY_API_KEY=stale\n")
+    config = read_config(agent)
+    config["providers"] = {
+        "cetirun-gateway": {"api": "http://old.example/v1", "models": {"gone-model": {}}},
+        "mine": {"api": "https://models.example.com/v1", "key_env": "MY_KEY"},
+    }
+    config["model"]["base_url"] = "https://models.example.com/v1"
+    config["user_preference"] = "preserved"
+    agent["config_file"].write_text(yaml.safe_dump(config))
+    jwt = agent["target"] / ".hermes/.copilot_jwt.json"
+    jwt.write_text('{"token": "example-exchanged"}')
+    on_gateway(agent)
+
+    result = run(agent)
+    assert result.returncode == 0, result.stderr
+    config = read_config(agent)
+    # The Gateway owns the model choice and its provider: replaced, not merged.
+    assert config["model"] == GATEWAY_CONFIG["model"]
+    assert config["providers"]["cetirun-gateway"] == GATEWAY_CONFIG["providers"]["cetirun-gateway"]
+    assert config["providers"]["mine"] == {"api": "https://models.example.com/v1", "key_env": "MY_KEY"}
+    assert config["user_preference"] == "preserved"
+    # The sign-in made inside the agent and the helper are gone; other
+    # credentials stay, and the key's variable cannot be overridden from .env.
+    names = env_names(agent)
+    assert "COPILOT_GITHUB_TOKEN" not in names and "CETIRUN_GATEWAY_API_KEY" not in names
+    assert {"GITHUB_TOKEN", "OPENAI_API_KEY", "API_SERVER_KEY"} <= set(names)
+    assert not jwt.exists()
+    assert not helper.exists()
+    assert (agent["target"] / ".hermes/.cetirun-copilot-sign-in-retired").is_file()
+    assert native_marker(agent).is_file()
+
+    # Once per HOME: a token the owner adds later stays; the key's variable
+    # is removed at every start.
+    env = agent["target"] / ".hermes/.env"
+    env.write_text(env.read_text() + "COPILOT_GITHUB_TOKEN=gho_example_added_later\nCETIRUN_GATEWAY_API_KEY=again\n")
+    result = run(agent)
+    assert result.returncode == 0, result.stderr
+    names = env_names(agent)
+    assert "COPILOT_GITHUB_TOKEN" in names and "CETIRUN_GATEWAY_API_KEY" not in names
+
+
+@pytest.mark.parametrize("agent", ["hermes"], indirect=True)
+def test_hermes_on_the_gateway_keeps_a_helper_it_did_not_install(agent):
+    on_gateway(agent)
+    assert run(agent).returncode == 0
+    helper = agent["target"] / ".local/bin/copilot-auth"
+    assert not helper.exists()
+    helper.write_text("#!/bin/sh\necho the owner's own script\n")
+    result = run(agent)
+    assert result.returncode == 0, result.stderr
+    assert helper.read_text() == "#!/bin/sh\necho the owner's own script\n"
+
+
+@pytest.mark.parametrize("agent", ["hermes"], indirect=True)
+def test_hermes_off_the_gateway_drops_its_provider(agent):
+    on_gateway(agent)
+    assert run(agent).returncode == 0
+    config = read_config(agent)
+    config["providers"]["mine"] = {"api": "https://models.example.com/v1"}
+    agent["config_file"].write_text(yaml.safe_dump(config))
+    (agent["config"] / "hermes-config.yaml").write_text("model:\n  default: test-model\n  provider: openai\n")
+    (agent["config"] / "hermes-auth.sh").write_text("#!/bin/sh\nexit 0\n")
+    for name in ("CETIRUN_AI_GATEWAY", "CETIRUN_GATEWAY_KEY_ENV"):
+        agent["env"].pop(name)
+    result = run(agent)
+    assert result.returncode == 0, result.stderr
+    config = read_config(agent)
+    assert config["providers"] == {"mine": {"api": "https://models.example.com/v1"}}
+    assert config["model"]["provider"] == "openai" and config["model"]["default"] == "test-model"
+    assert (agent["target"] / ".local/bin/copilot-auth").stat().st_mode & 0o777 == 0o755

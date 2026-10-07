@@ -137,8 +137,13 @@ func TestCreateInstanceAIGatewayModelAccessRules(t *testing.T) {
 			wantStatus: http.StatusConflict, wantErrCode: "no_model_source"},
 		{name: "no copilot, no shared models, copilot asked for", body: openclaw + `,"modelAccess":{"sharedModels":false,"githubCopilot":true}}`,
 			catalog: publishedCatalog(false), wantStatus: http.StatusConflict, wantErrCode: "no_model_source"},
-		{name: "hermes ignores switches", body: `{"agent":{"type":"hermes"},"team":"aks","modelAccess":{"githubCopilot":false}}`,
-			wantStatus: http.StatusCreated},
+		// Hermes takes its models from the Gateway too, under the same rules.
+		{name: "hermes copilot off with shared models", body: `{"agent":{"type":"hermes"},"team":"aks","modelAccess":{"githubCopilot":false}}`,
+			catalog: catalogConfigMap("gpt-6"), wantStatus: http.StatusCreated, wantAccess: &[2]bool{true, false}},
+		{name: "hermes copilot off without shared models", body: `{"agent":{"type":"hermes"},"team":"aks","modelAccess":{"githubCopilot":false}}`,
+			catalog: catalogConfigMap(), wantStatus: http.StatusBadRequest, wantErrCode: "invalid_model_access"},
+		{name: "hermes with an unpublished catalog", body: `{"agent":{"type":"hermes"},"team":"aks"}`,
+			wantStatus: http.StatusServiceUnavailable, wantErrCode: "model_sources_unknown"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

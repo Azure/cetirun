@@ -138,7 +138,7 @@ describe("CreateForm with the AI Gateway", () => {
     const user = userEvent.setup();
     renderForm();
     await chooseOpenClawAndTeam(user);
-    expect(screen.getByText(/No models are available for new OpenClaw agents/)).toBeInTheDocument();
+    expect(screen.getByText(/No models are available for new agents/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Create Agent" })).toBeDisabled();
   });
 
@@ -163,14 +163,22 @@ describe("CreateForm with the AI Gateway", () => {
     );
   });
 
-  it("offers no model switches for Hermes", async () => {
+  it("offers Hermes the same model sources as OpenClaw", async () => {
     const user = userEvent.setup();
     renderForm();
     await user.selectOptions(screen.getByRole("combobox", { name: /Agent Type/ }), "hermes");
     await user.selectOptions(screen.getByRole("combobox", { name: /Team/ }), "platform");
-    expect(screen.queryByRole("switch", { name: "Use shared models" })).not.toBeInTheDocument();
+    expect(screen.getByRole("switch", { name: "Use shared models" })).toBeChecked();
+    await user.click(screen.getByRole("switch", { name: "Use GitHub Copilot" }));
+    await user.selectOptions(screen.getByRole("combobox", { name: /Default model/ }), "gpt-6-mini");
     await user.click(screen.getByRole("button", { name: "Create Agent" }));
-    expect(mockMutate).toHaveBeenCalledWith(expect.objectContaining({ agent: { type: "hermes" }, modelAccess: undefined }));
+    expect(mockMutate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agent: { type: "hermes" },
+        model: "gpt-6-mini",
+        modelAccess: { sharedModels: true, githubCopilot: false },
+      }),
+    );
   });
 
   it("offers no model switches for Custom but still requires a Team", async () => {

@@ -174,8 +174,8 @@ Validate Azure Workload Identity prerequisites
 {{- fail "aiGateway.copilotProxy.enabled requires aiGateway.enabled" -}}
 {{- end -}}
 {{- if $gateway.enabled -}}
-{{- if ne (include "cetirun.agent.type" .) "openclaw" -}}
-{{- fail "aiGateway.enabled is supported only for OpenClaw" -}}
+{{- if not (has (include "cetirun.agent.type" .) (list "openclaw" "hermes")) -}}
+{{- fail "aiGateway.enabled is supported only for OpenClaw and Hermes" -}}
 {{- end -}}
 {{- if ne (.Values.secrets.provider | default "github_copilot") "openai" -}}
 {{- fail "aiGateway.enabled requires secrets.provider=openai" -}}
@@ -192,9 +192,10 @@ Validate Azure Workload Identity prerequisites
 {{- if not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" (.Values.networkPolicy.gatewayNamespace | default "")) -}}
 {{- fail "aiGateway.enabled requires networkPolicy.gatewayNamespace" -}}
 {{- end -}}
+{{- $hermesKeyEnv := dig "hermes" "keyEnv" "CETIRUN_GATEWAY_API_KEY" $gateway -}}
 {{- range .Values.extraEnv -}}
-{{- if has (get . "name") (list "OPENAI_API_KEY" "OPENAI_BASE_URL") -}}
-{{- fail "OPENAI_API_KEY and OPENAI_BASE_URL are reserved when aiGateway.enabled" -}}
+{{- if has (get . "name") (list "OPENAI_API_KEY" "OPENAI_BASE_URL" "CETIRUN_AI_GATEWAY" $hermesKeyEnv) -}}
+{{- fail (printf "OPENAI_API_KEY, OPENAI_BASE_URL, CETIRUN_AI_GATEWAY and %s are reserved when aiGateway.enabled" $hermesKeyEnv) -}}
 {{- end -}}
 {{- end -}}
 {{- range $gateway.models -}}

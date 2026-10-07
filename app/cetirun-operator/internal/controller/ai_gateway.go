@@ -233,10 +233,10 @@ func aiGatewayKeyModels(groups []string) []string {
 
 // aiGatewayHarnessSupported reports whether the built-in harness is wired to
 // the Gateway: its configuration takes the Gateway endpoint, the key and the
-// model list, and it no longer carries its own Copilot login. Hermes is not
-// yet, so Hermes Agents get a key but keep their current provider.
+// model list, and it no longer carries its own Copilot login. Its chart must
+// support that too (aiGatewayChartSupports).
 func aiGatewayHarnessSupported(agentType cetirunv1alpha1.AgentType) bool {
-	return agentType == cetirunv1alpha1.AgentTypeOpenClaw
+	return agentType == cetirunv1alpha1.AgentTypeOpenClaw || agentType == cetirunv1alpha1.AgentTypeHermes
 }
 
 // aiGatewayChartValue and aiGatewayChartModelsValue are the agent chart
@@ -247,6 +247,11 @@ const (
 	aiGatewayChartValue        = "aiGateway"
 	aiGatewayChartModelsValue  = "models"
 	aiGatewayChartCopilotValue = "copilotProxy"
+	// aiGatewayChartHermesValue and aiGatewayChartHermesKeyEnvValue name the
+	// variable that carries the key to Hermes. Charts that route only
+	// OpenClaw do not declare it, and reject a routed Hermes.
+	aiGatewayChartHermesValue       = "hermes"
+	aiGatewayChartHermesKeyEnvValue = "keyEnv"
 	// aiGatewayChartResponsesValue lists the Copilot models the proxy must
 	// reach through the Responses API; older charts do not declare it.
 	aiGatewayChartResponsesValue = "responsesModels"
@@ -257,6 +262,26 @@ const (
 	// uses on the proxy's Pod template; older charts do not declare it.
 	aiGatewayChartSignInValue = "signInGeneration"
 )
+
+// chartValuePaths is the part of a prepared release that reports the values
+// its chart declares.
+type chartValuePaths interface {
+	SupportsValuePath(path ...string) bool
+}
+
+// aiGatewayChartSupports reports whether the Agent's chart routes its harness
+// through the Gateway: the key, the model list and the Copilot proxy, and for
+// Hermes the variable that carries the key.
+func aiGatewayChartSupports(prepared chartValuePaths, agentType cetirunv1alpha1.AgentType) bool {
+	if !prepared.SupportsValuePath(aiGatewayChartValue, aiGatewayChartModelsValue) ||
+		!prepared.SupportsValuePath(aiGatewayChartValue, aiGatewayChartCopilotValue) {
+		return false
+	}
+	if agentType == cetirunv1alpha1.AgentTypeHermes {
+		return prepared.SupportsValuePath(aiGatewayChartValue, aiGatewayChartHermesValue, aiGatewayChartHermesKeyEnvValue)
+	}
+	return true
+}
 
 // validImageReference accepts repository:tag, repository@sha256:<digest> or
 // both, without whitespace.

@@ -202,15 +202,16 @@ func TestAIGatewayChartRejectsUnsupportedWiring(t *testing.T) {
 		mutate func(map[string]any)
 		want   string
 	}{
-		"hermes": {func(in map[string]any) {
-			in["agentType"] = "hermes"
-			in["agentRequest"] = map[string]any{"type": "hermes"}
-		}, "supported only for OpenClaw"},
 		"copilot provider": {func(in map[string]any) { in["secrets"].(map[string]any)["provider"] = "github_copilot" }, "secrets.provider=openai"},
 		"missing Secret":   {func(in map[string]any) { in["aiGateway"].(map[string]any)["keySecretName"] = "" }, "keySecretName"},
 		"no NetworkPolicy": {func(in map[string]any) { in["networkPolicy"].(map[string]any)["enabled"] = false }, "networkPolicy.enabled"},
 		"reserved extraEnv": {func(in map[string]any) {
 			in["extraEnv"] = []any{map[string]any{"name": "OPENAI_BASE_URL", "value": "https://example.com"}}
+		}, "reserved"},
+		"Hermes' key variable in extraEnv": {func(in map[string]any) {
+			in["agentType"] = "hermes"
+			in["agentRequest"] = map[string]any{"type": "hermes"}
+			in["extraEnv"] = []any{map[string]any{"name": "CETIRUN_GATEWAY_API_KEY", "value": "example"}}
 		}, "reserved"},
 		"no Sidecar scoping": {func(in map[string]any) { in["sidecarScope"] = map[string]any{"enabled": false} }, "sidecarScope.enabled"},
 	}
@@ -355,6 +356,7 @@ func TestPreparedReleaseServesSignInHelper(t *testing.T) {
 		want  bool
 	}{
 		{name: "Hermes", input: sampleInput("hermes", "github_copilot", false), want: true},
+		{name: "Hermes through the Gateway", input: aiGatewayInput("hermes", "openai"), want: false},
 		{name: "OpenClaw without the Gateway", input: sampleInput("openclaw", "github_copilot", false), want: false},
 		{name: "OpenClaw through the Gateway", input: aiGatewayInput("openclaw", "openai"), want: false},
 	} {
@@ -371,4 +373,160 @@ func TestPreparedReleaseServesSignInHelper(t *testing.T) {
 	if (*PreparedRelease)(nil).ServesSignInHelper() {
 		t.Fatal("no release serves no helper")
 	}
+}
+
+// hermesRender is the parts of a rendered Hermes release the Gateway wiring
+// changes.
+type hermesRender struct {
+	config      map[string]any
+	configFiles map[string]string
+	main        corev1.Container
+	init        corev1.Container
+	service     string
+	policy      string
+	envFile     string
+}
+
+func renderHermes(t *testing.T, input map[string]any) hermesRender {
+	t.Helper()
+	rendered, err := renderAIGateway(t, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	configMap := &corev1.ConfigMap{}
+	if err := yaml.Unmarshal([]byte(rendered["cetirun/templates/configmap.yaml"]), configMap); err != nil {
+		t.Fatal(err)
+	}
+	out := hermesRender{configFiles: configMap.Data, service: rendered["cetirun/templates/service.yaml"],
+		policy: rendered["cetirun/templates/networkpolicy.yaml"]}
+	if err := yaml.Unmarshal([]byte(configMap.Data["hermes-config.yaml"]), &out.config); err != nil {
+		t.Fatal(err)
+	}
+	sts := &appsv1.StatefulSet{}
+	if err := yaml.Unmarshal([]byte(rendered["cetirun/templates/statefulset.yaml"]), sts); err != nil {
+		t.Fatal(err)
+	}
+	for _, container := range sts.Spec.Template.Spec.Containers {
+		if container.Name == "cetirun" {
+			out.main = container
+		}
+	}
+	for _, container := range sts.Spec.Template.Spec.InitContainers {
+		if container.Name == "init-home-data" {
+			out.init = container
+		}
+	}
+	secret := &corev1.Secret{}
+	if err := yaml.Unmarshal([]byte(rendered["cetirun/templates/secret.yaml"]), secret); err == nil {
+		out.envFile = string(secret.Data["hermes.env"])
+	}
+	return out
+}
+
+func envVar(container corev1.Container, name string) *corev1.EnvVar {
+	for i := range container.Env {
+		if container.Env[i].Name == name {
+			return &container.Env[i]
+		}
+	}
+	return nil
+}
+
+// A Hermes Agent on the Gateway gets one Gateway provider with its models and
+// reads its key from the key Secret through the environment, never from its
+// configuration or .env. It runs no in-agent sign-in helper: no port, no
+// Service port, no NetworkPolicy port and no helper script.
+func TestAIGatewayChartWiresHermes(t *testing.T) {
+	input := aiGatewayInput("hermes", "openai")
+	input["secrets"].(map[string]any)["apiBase"] = "http://cetirun-ai-gateway.cetirun-system.svc.cluster.local:4000/v1"
+	input["aiGateway"].(map[string]any)["models"] = []any{
+		map[string]any{"id": "test-model", "name": "Test Model", "contextWindow": 272000, "maxTokens": 128000},
+		map[string]any{"id": "copilot/claude-haiku-4.5", "name": "Claude Haiku 4.5 (GitHub Copilot)", "contextWindow": 200000},
+	}
+	got := renderHermes(t, input)
+
+	wantProvider := map[string]any{
+		"name": "CetiRun AI Gateway", "api": "http://cetirun-ai-gateway.cetirun-system.svc.cluster.local:4000/v1",
+		"key_env": "CETIRUN_GATEWAY_API_KEY", "transport": "chat_completions", "default_model": "test-model",
+		"discover_models": false,
+		"models": map[string]any{
+			"test-model":               map[string]any{"context_length": float64(272000)},
+			"copilot/claude-haiku-4.5": map[string]any{"context_length": float64(200000)},
+		},
+	}
+	providers, _ := got.config["providers"].(map[string]any)
+	if !reflect.DeepEqual(normalizeYAML(t, providers["cetirun-gateway"]), wantProvider) {
+		t.Fatalf("Gateway provider %#v", providers["cetirun-gateway"])
+	}
+	if model := normalizeYAML(t, got.config["model"]); !reflect.DeepEqual(model, map[string]any{"default": "test-model", "provider": "cetirun-gateway"}) {
+		t.Fatalf("model %v", model)
+	}
+	key := envVar(got.main, "CETIRUN_GATEWAY_API_KEY")
+	if key == nil || key.ValueFrom == nil || key.ValueFrom.SecretKeyRef == nil ||
+		key.ValueFrom.SecretKeyRef.Name != "ai-gateway-virtual-key" || key.ValueFrom.SecretKeyRef.Key != "api-key" {
+		t.Fatalf("the key must come from the key Secret, got %+v", key)
+	}
+	for _, container := range []corev1.Container{got.main, got.init} {
+		if marker := envVar(container, "CETIRUN_AI_GATEWAY"); marker == nil || marker.Value != "true" {
+			t.Fatalf("%s lacks CETIRUN_AI_GATEWAY=true", container.Name)
+		}
+	}
+	if keyEnv := envVar(got.init, "CETIRUN_GATEWAY_KEY_ENV"); keyEnv == nil || keyEnv.Value != "CETIRUN_GATEWAY_API_KEY" {
+		t.Fatalf("init must know the key variable, got %+v", keyEnv)
+	}
+	for _, port := range got.main.Ports {
+		if port.Name == "cetirun-auth" || port.ContainerPort == 18790 {
+			t.Fatal("no sign-in helper port on the Gateway")
+		}
+	}
+	if strings.Contains(got.service, "18790") || strings.Contains(got.policy, "port: 18790") {
+		t.Fatal("no Service or NetworkPolicy port for the sign-in helper on the Gateway")
+	}
+	if _, ok := got.configFiles["hermes-auth.sh"]; ok {
+		t.Fatal("no in-agent sign-in helper script on the Gateway")
+	}
+	if !strings.Contains(got.policy, "app.kubernetes.io/name: cetirun-ai-gateway") || !strings.Contains(got.policy, "port: 4000") {
+		t.Fatal("the NetworkPolicy must allow the Gateway")
+	}
+	if strings.Contains(got.envFile, "CETIRUN_GATEWAY_API_KEY") {
+		t.Fatal("the key variable must not be in Hermes' .env")
+	}
+}
+
+// Without the Gateway, Hermes keeps its provider, the sign-in helper and its
+// script.
+func TestAIGatewayChartLeavesHermesWithoutTheGatewayAlone(t *testing.T) {
+	got := renderHermes(t, sampleInput("hermes", "openai", false))
+	if _, ok := got.config["providers"]; ok {
+		t.Fatalf("no Gateway provider without the Gateway: %v", got.config["providers"])
+	}
+	if model := normalizeYAML(t, got.config["model"]); !reflect.DeepEqual(model, map[string]any{"default": "test-model", "provider": "openai"}) {
+		t.Fatalf("model %v", model)
+	}
+	if envVar(got.main, "CETIRUN_AI_GATEWAY") != nil || envVar(got.init, "CETIRUN_AI_GATEWAY") != nil ||
+		envVar(got.main, "CETIRUN_GATEWAY_API_KEY") != nil {
+		t.Fatal("no Gateway variables without the Gateway")
+	}
+	helperPort := false
+	for _, port := range got.main.Ports {
+		helperPort = helperPort || port.Name == "cetirun-auth"
+	}
+	if !helperPort || !strings.Contains(got.service, "18790") || got.configFiles["hermes-auth.sh"] == "" {
+		t.Fatal("Hermes without the Gateway keeps its sign-in helper")
+	}
+}
+
+// normalizeYAML converts a decoded YAML value to the JSON shapes the test
+// compares against.
+func normalizeYAML(t *testing.T, value any) any {
+	t.Helper()
+	raw, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out any
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatal(err)
+	}
+	return out
 }

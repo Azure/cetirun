@@ -589,8 +589,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	// workload: an Agent routed through the Gateway needs its key at startup.
 	var aiGatewayRequeueAfter time.Duration
 	if r.AIGateway.Enabled {
-		chartSupported := prepared.SupportsValuePath(aiGatewayChartValue, aiGatewayChartModelsValue) &&
-			prepared.SupportsValuePath(aiGatewayChartValue, aiGatewayChartCopilotValue)
+		chartSupported := aiGatewayChartSupports(prepared, instance.Spec.Agent.Type)
 		if err := r.reconcileAIGateway(ctx, instance, chartSupported); err != nil {
 			logger.Error(err, "AI Gateway virtual key reconciliation failed", "instance", instance.Name)
 			_ = r.updateStatus(ctx, instance)

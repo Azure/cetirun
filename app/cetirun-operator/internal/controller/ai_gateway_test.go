@@ -589,19 +589,71 @@ func TestReconcileAIGatewayRequiresChartSupportForRouting(t *testing.T) {
 	}
 }
 
-func TestReconcileAIGatewayHermesKeepsProvider(t *testing.T) {
-	agent := aiGatewayTestAgent(testAIGatewayTeam)
-	agent.Spec.Agent.Type = cetirunv1alpha1.AgentTypeHermes
-	r, _, gateway := aiGatewayTestReconciler(t, agent, aiGatewayNamespace())
-	if err := r.reconcileAIGateway(context.Background(), agent, true); err != nil {
-		t.Fatal(err)
+// Hermes takes its models from the Gateway like OpenClaw on a chart that
+// carries Hermes' Gateway provider: both model sources and a Copilot proxy.
+// On a chart that routes only OpenClaw it gets a key and keeps its provider.
+func TestReconcileAIGatewayRoutesHermesOnAChartThatSupportsIt(t *testing.T) {
+	for _, chartSupported := range []bool{true, false} {
+		t.Run(fmt.Sprintf("chart support %v", chartSupported), func(t *testing.T) {
+			agent := aiGatewayTestAgent(testAIGatewayTeam)
+			agent.Spec.Agent.Type = cetirunv1alpha1.AgentTypeHermes
+			r, _, gateway := aiGatewayTestReconciler(t, agent, aiGatewayNamespace())
+			if err := r.reconcileAIGateway(context.Background(), agent, chartSupported); err != nil {
+				t.Fatal(err)
+			}
+			if len(gateway.generated) != 1 || agent.Status.AIGateway.Routed != chartSupported {
+				t.Fatalf("generated=%d status=%+v", len(gateway.generated), agent.Status.AIGateway)
+			}
+			want := []string{aiGatewaySharedAccessGroup}
+			if chartSupported {
+				want = sortedCopy([]string{aiGatewaySharedAccessGroup, copilotGroup()})
+			}
+			if got := gateway.generated[0].Models; !slices.Equal(got, want) {
+				t.Fatalf("Hermes key models %v, want %v", got, want)
+			}
+			if (agent.Status.AIGateway.Copilot != nil) != chartSupported {
+				t.Fatalf("Copilot proxy status %+v", agent.Status.AIGateway.Copilot)
+			}
+		})
 	}
-	if len(gateway.generated) != 1 || agent.Status.AIGateway.Routed || agent.Status.AIGateway.Copilot != nil {
-		t.Fatalf("Hermes gets a key but is not routed yet: generated=%d status=%+v", len(gateway.generated), agent.Status.AIGateway)
+}
+
+// The chart decides whether a harness can be routed: every harness needs the
+// model list and the Copilot proxy, and Hermes the variable that carries its
+// key, which charts routing only OpenClaw do not declare.
+func TestAIGatewayChartSupports(t *testing.T) {
+	gateway := [][]string{{aiGatewayChartValue, aiGatewayChartModelsValue}, {aiGatewayChartValue, aiGatewayChartCopilotValue}}
+	hermes := []string{aiGatewayChartValue, aiGatewayChartHermesValue, aiGatewayChartHermesKeyEnvValue}
+	for _, tc := range []struct {
+		name      string
+		declared  [][]string
+		agentType cetirunv1alpha1.AgentType
+		want      bool
+	}{
+		{"OpenClaw on a Gateway chart", gateway, cetirunv1alpha1.AgentTypeOpenClaw, true},
+		{"Hermes on a chart routing only OpenClaw", gateway, cetirunv1alpha1.AgentTypeHermes, false},
+		{"Hermes on a chart with its key variable", append(slices.Clone(gateway), hermes), cetirunv1alpha1.AgentTypeHermes, true},
+		{"OpenClaw on a chart before the Gateway", nil, cetirunv1alpha1.AgentTypeOpenClaw, false},
+		{"Hermes with its key variable but no proxy", [][]string{gateway[0], hermes}, cetirunv1alpha1.AgentTypeHermes, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := aiGatewayChartSupports(declaredValues(tc.declared), tc.agentType); got != tc.want {
+				t.Fatalf("aiGatewayChartSupports = %v, want %v", got, tc.want)
+			}
+		})
 	}
-	if !slices.Equal(gateway.generated[0].Models, []string{aiGatewaySharedAccessGroup}) {
-		t.Fatalf("Hermes key models %v", gateway.generated[0].Models)
+}
+
+// declaredValues is a chart that declares exactly the given value paths.
+type declaredValues [][]string
+
+func (d declaredValues) SupportsValuePath(path ...string) bool {
+	for _, declared := range d {
+		if slices.Equal(declared, path) {
+			return true
+		}
 	}
+	return false
 }
 
 func readyProxy(ready int32) *appsv1.Deployment {
