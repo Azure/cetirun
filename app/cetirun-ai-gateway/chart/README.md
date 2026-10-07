@@ -459,7 +459,12 @@ chart installs it):
 (
   set -euo pipefail
   gateway=gateway-cetirun-ai-gateway
-  db="${gateway}-postgresql"
+  # The database's StatefulSet and Secret share a name, which the chart
+  # shortens for a long release name: read it from the Gateway.
+  ref='{.spec.template.spec.containers[?(@.name=="gateway")].env[?(@.name=="DATABASE_URL")].valueFrom.secretKeyRef.name}'
+  db="$(kubectl get deployment "$gateway" -o jsonpath="$ref")"
+  [[ -n "$db" ]] || { echo "Deployment $gateway names no database Secret; nothing changed" >&2; exit 1; }
+  kubectl get statefulset "$db" >/dev/null # only the bundled PostgreSQL has one
   # Read and check the database URL before changing anything.
   url="$(kubectl get secret "$db" -o jsonpath='{.data.database-url}' | base64 -d)"
   [[ "$url" =~ ^postgresql://litellm:[^@/]+@[^@/]+/litellm$ ]] ||
