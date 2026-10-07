@@ -174,6 +174,7 @@ func (s *requestState) validateDaemonPod(ctx context.Context, registry *registry
 	if failure := s.applyDaemonPriority(ctx, pod, &template.Spec); failure != nil {
 		return failure
 	}
+	defaultDaemonResourceRequests(&template.Spec)
 	actual := corev1.PodTemplateSpec{
 		ObjectMeta: metav1.ObjectMeta{Labels: pod.Labels, Annotations: pod.Annotations},
 		Spec:       *pod.Spec.DeepCopy(),
@@ -238,6 +239,26 @@ func (s *requestState) applyDaemonPriority(ctx context.Context, pod *corev1.Pod,
 	// Only supply Pod-only admission fields from freshly read authority.
 	template.Priority, template.PreemptionPolicy = ptr.To(class.Value), ptr.To(policy)
 	return nil
+}
+
+func defaultDaemonResourceRequests(spec *corev1.PodSpec) {
+	// Kubernetes derives missing requests from limits on Pods, not templates.
+	for _, containers := range [][]corev1.Container{spec.Containers, spec.InitContainers} {
+		for i := range containers {
+			resources := &containers[i].Resources
+			if len(resources.Limits) == 0 {
+				continue
+			}
+			if resources.Requests == nil {
+				resources.Requests = corev1.ResourceList{}
+			}
+			for name, limit := range resources.Limits {
+				if _, explicit := resources.Requests[name]; !explicit {
+					resources.Requests[name] = limit.DeepCopy()
+				}
+			}
+		}
+	}
 }
 
 func daemonTargetsNode(pod *corev1.Pod, name string) *failure {

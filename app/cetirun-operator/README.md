@@ -1100,6 +1100,10 @@ PriorityClass with read-only access. Its numeric priority and preemption policy
 are checked rather than copied from the incoming Pod. Generated Pod names use
 Kubernetes' bounded prefix/suffix rules for long DaemonSet names; the full
 registered controller name, UID and generation prefix still identify the owner.
+Pod-only resource request defaults are derived from each regular or init
+container's registered limits, including restartable init containers. Explicit
+requests remain unchanged. The incoming Pod and stored DaemonSet template are
+not rewritten, and unrelated admission-added resource requests remain rejected.
 
 The platform owner must protect registry writes and establish the registry on
 an empty, isolated dedicated pool before granting workload access. The guard

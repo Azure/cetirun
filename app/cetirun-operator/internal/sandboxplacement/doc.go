@@ -54,6 +54,10 @@
 // supply Pod-only defaults, never overriding conflicting explicit template
 // fields. Missing class policy means PreemptLowerPriority. No implicit global
 // default PriorityClass is discovered or enabled.
+// Regular and init-container requests omitted from the trusted template are
+// derived only from that container's declared limits, matching Pod defaulting.
+// Explicit requests, including zero, are retained; incoming Pod resources and
+// the persisted template are never rewritten to make the comparison pass.
 //
 // Deployment must independently protect the configured operator-namespace
 // ConfigMap against tenant writes and enforce the cluster-wide webhook. These

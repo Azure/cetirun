@@ -26,6 +26,7 @@ import (
 	authenticationv1 "k8s.io/api/authentication/v1"
 	corev1 "k8s.io/api/core/v1"
 	schedulingv1 "k8s.io/api/scheduling/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -179,7 +180,7 @@ func TestPlacementServingAndBindingAPIServer(t *testing.T) {
 			t.Fatal("direct nodeName bypassed placement checks")
 		}
 	})
-	t.Run("platform priority and bounded generated names use API defaults", func(t *testing.T) {
+	t.Run("platform defaulted resources create bind and update", func(t *testing.T) {
 		identity, err := kube.AuthenticationV1().SelfSubjectReviews().Create(ctx, &authenticationv1.SelfSubjectReview{}, metav1.CreateOptions{})
 		if err != nil || identity.Status.UserInfo.Username == "" {
 			t.Fatal("read authenticated synthetic creator identity:", err)
@@ -203,12 +204,32 @@ func TestPlacementServingAndBindingAPIServer(t *testing.T) {
 						Spec: corev1.PodSpec{
 							ServiceAccountName: "default", AutomountServiceAccountToken: ptr.To(false),
 							PriorityClassName: priority.Name,
-							Containers:        []corev1.Container{{Name: "platform", Image: "registry.example.com/fixture:v1"}},
+							Containers: []corev1.Container{{
+								Name: "platform", Image: "registry.example.com/fixture:v1",
+								Resources: corev1.ResourceRequirements{
+									Limits: corev1.ResourceList{
+										corev1.ResourceCPU: resource.MustParse("1"), corev1.ResourceMemory: resource.MustParse("64Mi"),
+									},
+								},
+							}},
+							InitContainers: []corev1.Container{{
+								Name: "init-platform", Image: "registry.example.com/fixture:v1",
+								Resources: corev1.ResourceRequirements{
+									Limits: corev1.ResourceList{
+										corev1.ResourceCPU: resource.MustParse("500m"), corev1.ResourceMemory: resource.MustParse("32Mi"),
+									},
+									Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("100m")},
+								},
+							}},
 						},
 					},
 				},
 			}
 			create(daemon)
+			if len(daemon.Spec.Template.Spec.Containers[0].Resources.Requests) != 0 ||
+				len(daemon.Spec.Template.Spec.InitContainers[0].Resources.Requests) != 1 {
+				t.Fatal("API fixture no longer distinguishes Pod-only requests from the DaemonSet template")
+			}
 			digest, err := sandboxplacement.CanonicalDaemonSetDigest(daemon)
 			if err != nil {
 				t.Fatal(err)
@@ -221,11 +242,12 @@ func TestPlacementServingAndBindingAPIServer(t *testing.T) {
 			if err := json.Unmarshal(inventory["platformDaemonSets"], &platforms); err != nil {
 				t.Fatal(err)
 			}
-			registration, err := json.Marshal(map[string]any{
+			entry := map[string]any{
 				"name": daemon.Name, "uid": daemon.UID,
 				"namespace":      map[string]any{"name": namespace.Name, "uid": namespace.UID},
 				"templateDigest": digest, "trustedCreator": identity.Status.UserInfo.Username, "bootstrapPods": []any{},
-			})
+			}
+			registration, err := json.Marshal(entry)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -273,6 +295,8 @@ func TestPlacementServingAndBindingAPIServer(t *testing.T) {
 					Key: taint.key, Operator: corev1.TolerationOpExists, Effect: taint.effect,
 				})
 			}
+			pending := value.DeepCopy()
+			pending.Spec.NodeName = ""
 			if err := cl.Create(ctx, value); err != nil {
 				t.Fatal("API-defaulted registered platform Pod was rejected:", err)
 			}
@@ -280,8 +304,70 @@ func TestPlacementServingAndBindingAPIServer(t *testing.T) {
 				ptr.Deref(value.Spec.Priority, 0) != priority.Value || ptr.Deref(value.Spec.PreemptionPolicy, "") != preemption {
 				t.Fatal("API fixture did not exercise truncated naming and class-derived Pod fields")
 			}
+			assertResources := func(pod *corev1.Pod) {
+				t.Helper()
+				if pod.Spec.Containers[0].Resources.Requests.Cpu().Cmp(resource.MustParse("1")) != 0 ||
+					pod.Spec.Containers[0].Resources.Requests.Memory().Cmp(resource.MustParse("64Mi")) != 0 ||
+					pod.Spec.InitContainers[0].Resources.Requests.Cpu().Cmp(resource.MustParse("100m")) != 0 ||
+					pod.Spec.InitContainers[0].Resources.Requests.Memory().Cmp(resource.MustParse("32Mi")) != 0 {
+					t.Fatal("Pod-only request defaults or explicitly declared requests differ from the native API contract")
+				}
+			}
+			assertResources(value)
+			if err := cl.Create(ctx, pending); err != nil {
+				t.Fatal("unscheduled API-defaulted platform Pod was rejected:", err)
+			}
+			assertResources(pending)
+			binding := &corev1.Binding{
+				ObjectMeta: metav1.ObjectMeta{Name: pending.Name, Namespace: pending.Namespace, UID: pending.UID},
+				Target:     corev1.ObjectReference{Kind: "Node", Name: reserved.Name},
+			}
+			if err := kube.CoreV1().Pods(pending.Namespace).Bind(ctx, binding, metav1.CreateOptions{}); err == nil ||
+				!strings.Contains(err.Error(), "PlatformPodNotEnrolled") {
+				t.Fatal("defaulting bypassed the required persisted Pod-UID enrollment:", err)
+			}
+			entry["bootstrapPods"] = []map[string]any{{"name": pending.Name, "uid": pending.UID}}
+			registration, err = json.Marshal(entry)
+			if err != nil {
+				t.Fatal(err)
+			}
+			inventory["platformDaemonSets"], err = json.Marshal(append(platforms, registration))
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw, err = json.Marshal(inventory)
+			if err != nil {
+				t.Fatal(err)
+			}
+			state.Data["placement.json"] = string(raw)
+			if err := cl.Update(ctx, state); err != nil {
+				t.Fatal(err)
+			}
+			if err := kube.CoreV1().Pods(pending.Namespace).Bind(ctx, binding, metav1.CreateOptions{}); err != nil {
+				t.Fatal("enrolled API-defaulted platform Pod could not bind:", err)
+			}
+			if err := cl.Get(ctx, client.ObjectKeyFromObject(pending), pending); err != nil {
+				t.Fatal(err)
+			}
+			if pending.Spec.NodeName != reserved.Name {
+				t.Fatal("successful binding did not persist the reserved destination")
+			}
+			assertResources(pending)
+			if err := cl.Update(ctx, pending.DeepCopy(), client.DryRunAll); err != nil {
+				t.Fatal("bound API-defaulted platform Pod could not pass update validation:", err)
+			}
+			if err := cl.Delete(ctx, pending, client.GracePeriodSeconds(0)); err != nil {
+				t.Fatal(err)
+			}
 			if err := cl.Delete(ctx, value, client.GracePeriodSeconds(0)); err != nil {
 				t.Fatal(err)
+			}
+			if err := cl.Get(ctx, client.ObjectKeyFromObject(daemon), daemon); err != nil {
+				t.Fatal(err)
+			}
+			currentDigest, err := sandboxplacement.CanonicalDaemonSetDigest(daemon)
+			if err != nil || currentDigest != digest {
+				t.Fatal("Pod lifecycle changed the registered template:", err)
 			}
 		}
 	})
