@@ -121,16 +121,29 @@ export function useCopilotGatewayLogin(instanceName: string, uid: string, resume
   }, [instanceName, uid, schedule]);
 
   const cancel = useCallback(async () => {
-    generation.current += 1;
+    const gen = ++generation.current;
     clearTimeout(timer.current);
     setLogin(null);
     setError(null);
     try {
       await cancelCopilotLogin(instanceName, uid);
     } catch (err) {
-      if (active.current) setError(message(err));
+      if (!active.current || gen !== generation.current) return;
+      setError(message(err));
+      // The Portal refused the cancel, as it does while the sign-in's token
+      // is being stored: read the sign-in again and follow it to its outcome.
+      try {
+        const current = await pollCopilotLogin(instanceName);
+        if (!active.current || gen !== generation.current) return;
+        if (current.state !== "none") setLogin(current);
+        schedule(current, gen);
+      } catch (readErr) {
+        if (active.current && gen === generation.current && !isFinal(readErr)) {
+          schedule({ state: "pending" }, gen);
+        }
+      }
     }
-  }, [instanceName, uid]);
+  }, [instanceName, uid, schedule]);
 
   const reset = useCallback(() => {
     generation.current += 1;

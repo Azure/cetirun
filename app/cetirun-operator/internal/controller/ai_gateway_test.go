@@ -611,10 +611,18 @@ func readyProxy(ready int32) *appsv1.Deployment {
 	}
 }
 
+// signIn stores a completed sign-in as the Portal does: the token, its
+// generation and its completion on the token Secret, and the models with the
+// same generation on the Agent.
 func signIn(t *testing.T, kube client.Client, agent *cetirunv1alpha1.Agent, models string) {
 	t.Helper()
+	const generation = "0a1b2c3d"
 	secret := readSecret(t, kube, cetirunv1alpha1.CopilotTokenSecretName)
 	secret.Data = map[string][]byte{cetirunv1alpha1.CopilotTokenSecretKey: []byte("gho_synthetic")}
+	secret.Annotations = map[string]string{
+		cetirunv1alpha1.AnnotationCopilotSignInGeneration: generation,
+		cetirunv1alpha1.AnnotationCopilotSignInCompleted:  generation,
+	}
 	if err := kube.Update(context.Background(), secret); err != nil {
 		t.Fatal(err)
 	}
@@ -622,6 +630,7 @@ func signIn(t *testing.T, kube client.Client, agent *cetirunv1alpha1.Agent, mode
 		agent.Annotations = map[string]string{}
 	}
 	agent.Annotations[cetirunv1alpha1.AnnotationCopilotModels] = models
+	agent.Annotations[cetirunv1alpha1.AnnotationCopilotSignInGeneration] = generation
 }
 
 func TestReconcileAIGatewayCopilotSignInRegistersPricedModels(t *testing.T) {
@@ -1882,6 +1891,7 @@ func TestReconcileRestartsTheCopilotProxyForANewSignIn(t *testing.T) {
 		secret.Data = map[string][]byte{cetirunv1alpha1.CopilotTokenSecretKey: []byte("gho_" + generation)}
 		secret.Annotations = map[string]string{
 			cetirunv1alpha1.AnnotationCopilotSignInGeneration: generation,
+			cetirunv1alpha1.AnnotationCopilotSignInCompleted:  generation,
 			cetirunv1alpha1.AnnotationCopilotTokenStoredAt:    time.Now().UTC().Format(time.RFC3339),
 		}
 		if err := kube.Update(ctx, secret); err != nil {
@@ -2084,12 +2094,15 @@ func TestReconcileAIGatewayCopilotUsesModelsOnlyWithTheirSignIn(t *testing.T) {
 	if err := r.reconcileAIGateway(context.Background(), agent, true); err != nil {
 		t.Fatal(err)
 	}
+	// Each token is stored completed here; the next test covers sign-ins
+	// that are not.
 	storeToken := func(generation string, storedAt time.Time) {
 		t.Helper()
 		secret := readSecret(t, kube, cetirunv1alpha1.CopilotTokenSecretName)
 		secret.Data = map[string][]byte{cetirunv1alpha1.CopilotTokenSecretKey: []byte("gho_" + generation)}
 		secret.Annotations = map[string]string{
 			cetirunv1alpha1.AnnotationCopilotSignInGeneration: generation,
+			cetirunv1alpha1.AnnotationCopilotSignInCompleted:  generation,
 			cetirunv1alpha1.AnnotationCopilotTokenStoredAt:    storedAt.UTC().Format(time.RFC3339),
 		}
 		if err := kube.Update(context.Background(), secret); err != nil {
@@ -2137,6 +2150,80 @@ func TestReconcileAIGatewayCopilotUsesModelsOnlyWithTheirSignIn(t *testing.T) {
 	if copilot := reconcile(); copilot.Phase != cetirunv1alpha1.AIGatewayCopilotPhaseReady ||
 		!slices.Equal(gateway.modelNames(), []string{"copilot/claude-sonnet-4.5"}) {
 		t.Fatalf("the models of the stored sign-in are registered: %+v %v", copilot, gateway.modelNames())
+	}
+}
+
+// The models of a sign-in are used only once the Portal completed it on the
+// token Secret, under the fence that a cancel, a newer start or the end of an
+// expired completion raises. A completion fenced after its last check can
+// still write the token and the models with the same generation, as when its
+// replica stalled there; it never completes, and its models are never used.
+func TestReconcileAIGatewayCopilotUsesOnlyCompletedSignIns(t *testing.T) {
+	agent := aiGatewayTestAgent(testAIGatewayTeam)
+	r, kube, gateway := aiGatewayTestReconciler(t, agent, aiGatewayNamespace(), readyProxy(1))
+	if err := r.reconcileAIGateway(context.Background(), agent, true); err != nil {
+		t.Fatal(err)
+	}
+	storeToken := func(completed string, storedAt time.Time) {
+		t.Helper()
+		secret := readSecret(t, kube, cetirunv1alpha1.CopilotTokenSecretName)
+		secret.Data = map[string][]byte{cetirunv1alpha1.CopilotTokenSecretKey: []byte("gho_fenced")}
+		secret.Annotations = map[string]string{
+			cetirunv1alpha1.AnnotationCopilotSignInGeneration: "fenced",
+			cetirunv1alpha1.AnnotationCopilotTokenStoredAt:    storedAt.UTC().Format(time.RFC3339),
+		}
+		if completed != "" {
+			secret.Annotations[cetirunv1alpha1.AnnotationCopilotSignInCompleted] = completed
+		}
+		if err := kube.Update(context.Background(), secret); err != nil {
+			t.Fatal(err)
+		}
+	}
+	agent.Annotations = map[string]string{
+		cetirunv1alpha1.AnnotationCopilotModels:           `[{"id":"gpt-5.5"}]`,
+		cetirunv1alpha1.AnnotationCopilotSignInGeneration: "fenced",
+	}
+	reconcile := func() *cetirunv1alpha1.AIGatewayCopilotStatus {
+		t.Helper()
+		if err := r.reconcileAIGateway(context.Background(), agent, true); err != nil {
+			t.Fatal(err)
+		}
+		return agent.Status.AIGateway.Copilot
+	}
+
+	// The token and the models of one sign-in, not completed yet: awaited.
+	storeToken("", time.Now())
+	if copilot := reconcile(); copilot.Phase != cetirunv1alpha1.AIGatewayCopilotPhaseStarting || copilot.Reason != "SignInCompleting" ||
+		len(gateway.models) != 0 {
+		t.Fatalf("a sign-in not completed must not be used: %+v %v", copilot, gateway.modelNames())
+	}
+	// It never completes, or an earlier sign-in's completion is all the
+	// Secret records: its models are not used.
+	for _, completed := range []string{"", "earlier"} {
+		storeToken(completed, time.Now().Add(-copilotSignInGrace-time.Minute))
+		if copilot := reconcile(); copilot.Phase != cetirunv1alpha1.AIGatewayCopilotPhaseDegraded || copilot.Reason != "SignInIncomplete" ||
+			len(gateway.models) != 0 || len(copilot.Models) != 0 {
+			t.Fatalf("completed %q: the models of a sign-in that never completed must not be used: %+v %v", completed, copilot, gateway.modelNames())
+		}
+	}
+	// Completed, it is used.
+	storeToken("fenced", time.Now().Add(-copilotSignInGrace-time.Minute))
+	if copilot := reconcile(); copilot.Phase != cetirunv1alpha1.AIGatewayCopilotPhaseReady ||
+		!slices.Equal(gateway.modelNames(), []string{"copilot/gpt-5.5"}) {
+		t.Fatalf("a completed sign-in's models are registered: %+v %v", copilot, gateway.modelNames())
+	}
+
+	// A token stored before generations, with models recorded without one,
+	// is used as before: the Portal now stores every token with one.
+	legacy := readSecret(t, kube, cetirunv1alpha1.CopilotTokenSecretName)
+	legacy.Annotations = nil
+	if err := kube.Update(context.Background(), legacy); err != nil {
+		t.Fatal(err)
+	}
+	agent.Annotations = map[string]string{cetirunv1alpha1.AnnotationCopilotModels: `[{"id":"claude-sonnet-4.5"}]`}
+	if copilot := reconcile(); copilot.Phase != cetirunv1alpha1.AIGatewayCopilotPhaseReady ||
+		!slices.Equal(gateway.modelNames(), []string{"copilot/claude-sonnet-4.5"}) {
+		t.Fatalf("a sign-in from before generations keeps its models: %+v %v", copilot, gateway.modelNames())
 	}
 }
 

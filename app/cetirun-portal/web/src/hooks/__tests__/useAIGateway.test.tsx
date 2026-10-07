@@ -98,4 +98,29 @@ describe("useCopilotGatewayLogin", () => {
     expect(api.pollCopilotLogin).toHaveBeenCalledTimes(3);
     expect(result.current.login?.state).toBe("succeeded");
   });
+
+  it("keeps following a sign-in whose cancel the Portal refused", async () => {
+    // The Portal refuses to cancel a sign-in whose token it is storing, and
+    // reports it as pending until it has an outcome.
+    api.startCopilotLogin.mockResolvedValue(PENDING);
+    api.cancelCopilotLogin.mockRejectedValue(new Error("The GitHub Copilot sign-in is finishing. Try again in a moment."));
+    api.pollCopilotLogin
+      .mockResolvedValueOnce(PENDING)
+      .mockResolvedValueOnce({ state: "succeeded", message: "Signed in to GitHub Copilot: 2 models." });
+    const { result } = renderHook(() => useCopilotGatewayLogin("alice-gw", "agent-uid"), { wrapper });
+    await act(async () => {
+      await result.current.start();
+    });
+    await act(async () => {
+      await result.current.cancel();
+    });
+    expect(result.current.error).toContain("finishing");
+    expect(result.current.login?.state).toBe("pending");
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+    expect(api.pollCopilotLogin).toHaveBeenCalledTimes(2);
+    expect(result.current.login?.state).toBe("succeeded");
+    expect(result.current.error).toBeNull();
+  });
 });

@@ -461,6 +461,16 @@ const (
 	// token, and on the Agent in the write that records the models, so the
 	// operator can tell models recorded for another sign-in than the token's.
 	AnnotationCopilotSignInGeneration = "cetirun.microsoft.com/copilot-sign-in-generation"
+	// AnnotationCopilotSignInCompleted on the token Secret names the
+	// generation of the stored token's sign-in once the Portal has recorded
+	// its models too and completed it. The Portal writes it under the
+	// Secret's version, and only while the Secret holds that sign-in's token
+	// and its fence still admits the sign-in, so a sign-in that a cancel, a
+	// newer start or the end of an expired completion fenced first never
+	// gets it. The operator uses a sign-in's models only once it is
+	// completed; a token stored before generations has neither, and is used
+	// as before.
+	AnnotationCopilotSignInCompleted = "cetirun.microsoft.com/copilot-sign-in-completed"
 	// AnnotationCopilotTokenStoredAt on the token Secret records when the
 	// Portal stored the token.
 	AnnotationCopilotTokenStoredAt = "cetirun.microsoft.com/copilot-token-stored-at"

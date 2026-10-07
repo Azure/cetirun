@@ -43,9 +43,10 @@ const (
 	// aiGatewayMaxCopilotModels bounds how many models one account registers.
 	aiGatewayMaxCopilotModels = 128
 	aiGatewayPriceCacheTTL    = time.Hour
-	// copilotSignInGrace is how long the operator waits for the models of a
-	// sign-in whose token is stored, as long as the Portal's lease on
-	// completing it. The Portal records them right after the token.
+	// copilotSignInGrace is how long the operator waits for a sign-in whose
+	// token is stored to record its models and complete, as long as the
+	// Portal's lease on completing it. The Portal does both right after the
+	// token.
 	copilotSignInGrace = 2 * time.Minute
 )
 
@@ -246,12 +247,15 @@ func (r *AgentReconciler) reconcileAIGatewayCopilot(ctx context.Context, client 
 	mismatched := false
 	var wanted []cetirunv1alpha1.CopilotModel
 	if signedIn {
-		if recorded := instance.Annotations[cetirunv1alpha1.AnnotationCopilotSignInGeneration]; recorded != signIn.generation {
+		if recorded := instance.Annotations[cetirunv1alpha1.AnnotationCopilotSignInGeneration]; recorded != signIn.generation || (signIn.generation != "" && !signIn.completed) {
 			// The models on the Agent were recorded for another sign-in than
-			// the token the proxy holds. A completing sign-in records its
-			// models just after its token: wait for them, leaving the routes
-			// as they are. Past that, the models do not belong to the stored
-			// token and are not used.
+			// the token the proxy holds, or the Portal has not completed that
+			// sign-in. A completing sign-in records its models just after its
+			// token and then completes: wait for that, leaving the routes as
+			// they are. Past that, the models do not belong to the stored
+			// token, or its sign-in was cancelled, replaced or ended before it
+			// completed, and they are not used. A token stored before
+			// generations has none, nor have its models, and is used as before.
 			if !signIn.storedAt.IsZero() && time.Since(signIn.storedAt) < copilotSignInGrace {
 				copilot.Phase = cetirunv1alpha1.AIGatewayCopilotPhaseStarting
 				copilot.Reason = "SignInCompleting"
@@ -453,14 +457,17 @@ type copilotSignIn struct {
 	// the Agent carry the same value. Empty for a token stored before
 	// generations were recorded.
 	generation string
-	storedAt   time.Time
+	// completed reports that the Portal completed that sign-in, under its
+	// fence: one cancelled, replaced or ended first never is.
+	completed bool
+	storedAt  time.Time
 }
 
 // ensureCopilotTokenSecret creates the empty token Secret the proxy mounts,
 // so the proxy starts and waits for the owner's sign-in. It reports whether
-// the Portal has written a token, and for which sign-in. A Secret left by an
-// earlier Agent of the same name is cleared: its token belongs to that
-// Agent's sign-in.
+// the Portal has written a token, for which sign-in, and whether the Portal
+// completed that sign-in. A Secret left by an earlier Agent of the same name
+// is cleared: its token belongs to that Agent's sign-in.
 func (r *AgentReconciler) ensureCopilotTokenSecret(ctx context.Context, instance *cetirunv1alpha1.Agent) (copilotSignIn, error) {
 	key := types.NamespacedName{Namespace: instanceNamespace(instance.Name), Name: cetirunv1alpha1.CopilotTokenSecretName}
 	secret := &corev1.Secret{}
@@ -484,15 +491,18 @@ func (r *AgentReconciler) ensureCopilotTokenSecret(ctx context.Context, instance
 		labelAgentSecret(secret, instance)
 		secret.Data = nil
 		delete(secret.Annotations, cetirunv1alpha1.AnnotationCopilotSignInGeneration)
+		delete(secret.Annotations, cetirunv1alpha1.AnnotationCopilotSignInCompleted)
 		delete(secret.Annotations, cetirunv1alpha1.AnnotationCopilotTokenStoredAt)
 		if err := r.Update(ctx, secret); err != nil {
 			return copilotSignIn{}, fmt.Errorf("reset Copilot token Secret: %w", err)
 		}
 		return copilotSignIn{}, nil
 	}
+	generation := secret.Annotations[cetirunv1alpha1.AnnotationCopilotSignInGeneration]
 	signIn := copilotSignIn{
 		signedIn:   strings.TrimSpace(string(secret.Data[cetirunv1alpha1.CopilotTokenSecretKey])) != "",
-		generation: secret.Annotations[cetirunv1alpha1.AnnotationCopilotSignInGeneration],
+		generation: generation,
+		completed:  generation != "" && secret.Annotations[cetirunv1alpha1.AnnotationCopilotSignInCompleted] == generation,
 	}
 	if storedAt, err := time.Parse(time.RFC3339, secret.Annotations[cetirunv1alpha1.AnnotationCopilotTokenStoredAt]); err == nil {
 		signIn.storedAt = storedAt
