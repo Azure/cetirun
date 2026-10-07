@@ -187,7 +187,9 @@ func TestGeneratedSandboxSchemaShapes(t *testing.T) {
 	policy := apiContractCRD(t, "agentpolicies").Spec.Versions[0].Schema.OpenAPIV3Schema
 	policySpec := policy.Properties["spec"]
 	requireSchemaProperties(t, policySpec, "agentIdentity", "entraID", "harnesses", "kubernetesAccess", "modelAccess", "network", "sandboxSelection", "security", "skills")
-	requireSchemaDefault(t, policySpec, `{}`)
+	if !slices.Contains(policy.Required, "spec") || policySpec.Default != nil {
+		t.Fatal("AgentPolicy spec must be required and must not have an incomplete object default")
+	}
 	for _, name := range []string{"sandboxSelection", "security", "network", "entraID"} {
 		requireSchemaDefault(t, policySpec.Properties[name], `{}`)
 	}
@@ -393,6 +395,13 @@ func assertSchemaDefaultTypes(t *testing.T, schema *apiextensionsv1.JSONSchemaPr
 		}
 		if !matches {
 			t.Fatalf("default %s does not match schema type %s", schema.Default.Raw, schema.Type)
+		}
+		if object, ok := value.(map[string]interface{}); ok {
+			for _, name := range schema.Required {
+				if _, found := object[name]; !found {
+					t.Fatalf("object default %s omits required field %s", schema.Default.Raw, name)
+				}
+			}
 		}
 	}
 	for _, name := range schema.Required {

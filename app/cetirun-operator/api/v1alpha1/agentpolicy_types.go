@@ -55,7 +55,6 @@ type AgentPolicySpec struct {
 	// KubernetesAccess requires separate authorization; its presence grants nothing.
 	// +optional
 	KubernetesAccess *AgentPolicyAdminKubernetesAccess `json:"kubernetesAccess,omitempty"`
-
 }
 
 type AgentPolicyHarnesses struct {
@@ -263,10 +262,7 @@ type AgentPolicy struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	// Default objects allow nested defaults to apply even when spec is omitted.
-	// +kubebuilder:default={}
-	// +optional
-	Spec AgentPolicySpec `json:"spec,omitempty"`
+	Spec AgentPolicySpec `json:"spec"`
 
 	// +optional
 	Status AgentPolicyStatus `json:"status,omitempty"`

@@ -46,9 +46,8 @@ spec:
           metadata:
             type: object
           spec:
-            default: {}
-            description: Default objects allow nested defaults to apply even when
-              spec is omitted.
+            description: AgentPolicySpec defines controls independently of runtime
+              selection.
             properties:
               agentIdentity:
                 description: AgentIdentity permits the fixed v1 credential-service
@@ -381,6 +380,8 @@ spec:
                 minimum: 0
                 type: integer
             type: object
+        required:
+        - spec
         type: object
     served: true
     storage: true
