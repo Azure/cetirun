@@ -28,6 +28,7 @@ import (
 
 var ErrUnsupportedCustomUpdate = stderrors.New("Custom does not support Gateway Token, Teams or Tailscale updates")
 var ErrInstanceChanged = stderrors.New("Agent changed or was replaced; reload before saving")
+var ErrTeamChanged = stderrors.New("Team changed or was replaced; reload before saving")
 var ErrInstanceDeleting = stderrors.New("Agent is being deleted")
 var ErrOperatorConfigurationUnavailable = stderrors.New("Operator release configuration is unavailable")
 var ErrGovernanceRequiresSuspension = stderrors.New("governance changes require the Agent to be suspended before and after the update")
@@ -880,27 +881,37 @@ func (c *Client) CreateTeam(ctx context.Context, team *cetirunv1alpha1.Team) (*c
 	return team, nil
 }
 
+// TeamVersion identifies the exact Team revision observed by an API client.
+// It is required for updates because a Team update replaces its full spec.
+type TeamVersion struct {
+	UID             types.UID
+	ResourceVersion string
+}
+
 // UpdateTeamSpec atomically replaces the complete administrator-supplied Team
-// specification. Conflict retries always re-read the latest resource version,
-// so an administrator's requested governance fields are never applied without
-// optimistic locking.
-func (c *Client) UpdateTeamSpec(ctx context.Context, name string, newSpec cetirunv1alpha1.TeamSpec) (*cetirunv1alpha1.Team, error) {
-	var result *cetirunv1alpha1.Team
-	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		team, err := c.GetTeam(ctx, name)
-		if err != nil {
-			return err
+// specification only when it is still the revision observed by the caller.
+// It deliberately does not retry conflicts: retrying a full-spec update with
+// a stale request could overwrite changes made by another administrator.
+func (c *Client) UpdateTeamSpec(ctx context.Context, name string, newSpec cetirunv1alpha1.TeamSpec, expected TeamVersion) (*cetirunv1alpha1.Team, error) {
+	if expected.UID == "" || expected.ResourceVersion == "" {
+		return nil, ErrTeamChanged
+	}
+	team, err := c.GetTeam(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	if team.UID != expected.UID || team.ResourceVersion != expected.ResourceVersion {
+		return nil, ErrTeamChanged
+	}
+	before := team.DeepCopy()
+	team.Spec = *newSpec.DeepCopy()
+	if err := c.client.Patch(ctx, team, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{})); err != nil {
+		if errors.IsConflict(err) {
+			return nil, ErrTeamChanged
 		}
-		before := team.DeepCopy()
-		editable := newSpec.DeepCopy()
-		team.Spec = *editable
-		if err := c.client.Patch(ctx, team, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{})); err != nil {
-			return fmt.Errorf("update team: %w", err)
-		}
-		result = team
-		return nil
-	})
-	return result, err
+		return nil, fmt.Errorf("update team: %w", err)
+	}
+	return team, nil
 }
 
 // DeleteTeam deletes a Team by name.

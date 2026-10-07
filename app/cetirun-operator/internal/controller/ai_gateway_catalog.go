@@ -89,10 +89,18 @@ func (c *aiGatewayCatalog) update(deployments []aigateway.Deployment, blockUnpri
 	var skipped, unpriced []string
 	ids := map[string]bool{}
 	groups := map[string][]string{}
+	groupMembers := map[string]int{}
+	idMembers := map[string]int{}
 	priced := map[string]bool{}
 	for _, deployment := range deployments {
+		if deployment.ID != "" {
+			idMembers[deployment.ID]++
+		}
 		if deployment.Priced {
 			priced[deployment.ModelName] = true
+		}
+		for _, group := range managedModelGroups(deployment.AccessGroups) {
+			groupMembers[group]++
 		}
 	}
 	byName := map[string]aiGatewayCatalogModel{}
@@ -103,7 +111,7 @@ func (c *aiGatewayCatalog) update(deployments []aigateway.Deployment, blockUnpri
 			groups[group] = append(groups[group], deployment.ID)
 		}
 		legacyShared := slices.Contains(deployment.AccessGroups, aiGatewaySharedAccessGroup)
-		managedGroups := managedModelGroups(deployment.AccessGroups)
+		managedGroups := trustedManagedModelGroups(deployment, groupMembers, idMembers)
 		governedShared := deployment.ID != "" && len(managedGroups) > 0
 		// Keep publishing legacy shared models while old catalog consumers are
 		// present, but never resolve a Governance policy through their broad
@@ -151,6 +159,25 @@ func (c *aiGatewayCatalog) update(deployments []aigateway.Deployment, blockUnpri
 	return changed, skipped, unpriced
 }
 
+// trustedManagedModelGroups returns only the chart-derived bindings whose
+// observed provenance, deployment ID and access-group membership all agree.
+// Every deployment is counted before this check, including database models,
+// so copying a reserved group invalidates the whole group rather than leaving
+// its configured member trusted.
+func trustedManagedModelGroups(deployment aigateway.Deployment, groupMembers, idMembers map[string]int) []string {
+	if !deployment.DatabaseSourceKnown || deployment.FromDatabase || deployment.ID == "" || idMembers[deployment.ID] != 1 {
+		return nil
+	}
+	trusted := []string{}
+	for _, group := range managedModelGroups(deployment.AccessGroups) {
+		suffix := strings.TrimPrefix(group, aiGatewayModelAccessGroupPrefix)
+		if groupMembers[group] == 1 && deployment.ID == aiGatewaySharedDeploymentIDPrefix+suffix {
+			trusted = append(trusted, group)
+		}
+	}
+	return trusted
+}
+
 func managedModelGroups(groups []string) []string {
 	managed := make([]string, 0, len(groups))
 	for _, group := range groups {
@@ -168,9 +195,11 @@ func managedModelGroups(groups []string) []string {
 // governed Agent before the old deployment can be considered authorized.
 func aiGatewayCatalogFingerprint(deployments []aigateway.Deployment, modelGroups map[string][]string) string {
 	type member struct {
-		ModelName string   `json:"modelName"`
-		ID        string   `json:"id"`
-		Groups    []string `json:"groups"`
+		ModelName    string   `json:"modelName"`
+		ID           string   `json:"id"`
+		Groups       []string `json:"groups"`
+		FromDatabase bool     `json:"fromDatabase"`
+		SourceKnown  bool     `json:"sourceKnown"`
 	}
 	members := make([]member, 0, len(deployments))
 	for _, deployment := range deployments {
@@ -178,13 +207,23 @@ func aiGatewayCatalogFingerprint(deployments []aigateway.Deployment, modelGroups
 		if deployment.ID == "" || len(groups) == 0 {
 			continue
 		}
-		members = append(members, member{ModelName: deployment.ModelName, ID: deployment.ID, Groups: groups})
+		members = append(members, member{ModelName: deployment.ModelName, ID: deployment.ID, Groups: groups,
+			FromDatabase: deployment.FromDatabase, SourceKnown: deployment.DatabaseSourceKnown})
 	}
 	sort.Slice(members, func(i, j int) bool {
 		if members[i].ModelName != members[j].ModelName {
 			return members[i].ModelName < members[j].ModelName
 		}
-		return members[i].ID < members[j].ID
+		if members[i].ID != members[j].ID {
+			return members[i].ID < members[j].ID
+		}
+		if groupsI, groupsJ := strings.Join(members[i].Groups, "\x00"), strings.Join(members[j].Groups, "\x00"); groupsI != groupsJ {
+			return groupsI < groupsJ
+		}
+		if members[i].FromDatabase != members[j].FromDatabase {
+			return !members[i].FromDatabase
+		}
+		return !members[i].SourceKnown && members[j].SourceKnown
 	})
 	// modelGroups is included separately so an accidental duplicate or a
 	// changed group assignment cannot hash to the same projection merely

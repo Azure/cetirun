@@ -5,12 +5,14 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"regexp"
 	"strings"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 
 	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-portal/internal/kube"
@@ -41,6 +43,8 @@ type TeamSkillStorageDTO struct {
 // TeamDTO is the JSON shape for Team admin endpoints.
 type TeamDTO struct {
 	Name                 string                              `json:"name"`
+	UID                  string                              `json:"uid"`
+	ResourceVersion      string                              `json:"resourceVersion"`
 	Role                 string                              `json:"role,omitempty"`
 	Description          []string                            `json:"description,omitempty"`
 	DefaultProvider      string                              `json:"defaultProvider,omitempty"`
@@ -59,6 +63,8 @@ type TeamDTO struct {
 // URL path parameter and the body's name (if set) must match.
 type TeamUpsertRequest struct {
 	Name                 string                              `json:"name,omitempty"`
+	UID                  string                              `json:"uid,omitempty"`
+	ResourceVersion      string                              `json:"resourceVersion,omitempty"`
 	Role                 string                              `json:"role,omitempty"`
 	Description          []string                            `json:"description,omitempty"`
 	DefaultProvider      string                              `json:"defaultProvider,omitempty"`
@@ -74,6 +80,8 @@ type TeamUpsertRequest struct {
 func toTeamDTO(t *cetirunv1alpha1.Team) TeamDTO {
 	dto := TeamDTO{
 		Name:                 t.Name,
+		UID:                  string(t.UID),
+		ResourceVersion:      t.ResourceVersion,
 		Role:                 t.Spec.MemberContext.Role,
 		Description:          t.Spec.MemberContext.Description,
 		DefaultProvider:      t.Spec.Defaults.Provider,
@@ -265,6 +273,10 @@ func (h *AdminTeamHandler) UpdateTeam(w http.ResponseWriter, r *http.Request) {
 			"body.name does not match URL name")
 		return
 	}
+	if req.UID == "" || req.ResourceVersion == "" {
+		writeError(w, http.StatusPreconditionRequired, "version_required", "uid and resourceVersion from the current Team are required")
+		return
+	}
 	if msg := validateSkillStorage(req.SkillStorage); msg != "" {
 		writeError(w, http.StatusBadRequest, "invalid_skill_storage", msg)
 		return
@@ -273,8 +285,14 @@ func (h *AdminTeamHandler) UpdateTeam(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_governance", msg)
 		return
 	}
-	updated, err := h.Kube.UpdateTeamSpec(r.Context(), name, toTeamSpec(req))
+	updated, err := h.Kube.UpdateTeamSpec(r.Context(), name, toTeamSpec(req), kube.TeamVersion{
+		UID: types.UID(req.UID), ResourceVersion: req.ResourceVersion,
+	})
 	if err != nil {
+		if errors.Is(err, kube.ErrTeamChanged) {
+			writeError(w, http.StatusConflict, "team_changed", kube.ErrTeamChanged.Error())
+			return
+		}
 		if kube.IsNotFound(err) {
 			writeError(w, http.StatusNotFound, "team_not_found", "Team "+name+" not found")
 			return

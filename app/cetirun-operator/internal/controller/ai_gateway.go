@@ -44,6 +44,9 @@ const (
 	// Gateway catalog and never attempts to recreate the suffix from a
 	// LiteLLM-generated deployment ID.
 	aiGatewayModelAccessGroupPrefix = "cetirun-model-"
+	// aiGatewaySharedDeploymentIDPrefix pairs a chart-derived deployment ID
+	// with the access-group suffix. The catalog trusts neither value alone.
+	aiGatewaySharedDeploymentIDPrefix = "cetirun-shared-"
 	// aiGatewayTeamPrefix prefixes the Gateway team of a CetiRun Team.
 	aiGatewayTeamPrefix           = "cetirun-team-"
 	aiGatewayBudgetDuration       = "1mo"
@@ -647,7 +650,8 @@ func (r *AgentReconciler) reconcileAIGateway(ctx context.Context, instance *ceti
 	if err != nil {
 		return aiGatewayDegraded(instance, "GatewayUnavailable", err)
 	}
-	if key == nil || key.Alias != status.KeyAlias || !slices.Equal(sortedCopy(key.Models), models) ||
+	if key == nil || key.Alias != status.KeyAlias || key.TeamID != teamID || key.UserID != userID ||
+		!slices.Equal(sortedCopy(key.Models), models) ||
 		key.MaxBudget == nil || math.Abs(*key.MaxBudget-grant.budget) > 0.0000001 || key.BudgetDuration != aiGatewayBudgetDuration {
 		return aiGatewayDegraded(instance, "KeyReadbackMismatch", fmt.Errorf("the AI Gateway key does not match its resolved grant"))
 	}

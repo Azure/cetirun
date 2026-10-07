@@ -14,6 +14,8 @@ export interface TeamSkillStorage {
 
 export interface TeamDTO {
   name: string;
+  uid: string;
+  resourceVersion: string;
   role?: string;
   description?: string[];
   defaultProvider?: string;
@@ -41,6 +43,11 @@ export interface TeamUpsertRequest {
   adminAgentPolicyRef?: string;
   sandboxRefs: string[];
   defaultSandboxRef: string;
+}
+
+export interface TeamVersion {
+  uid: string;
+  resourceVersion: string;
 }
 
 async function parseError(response: Response, fallback: string): Promise<string> {
@@ -74,10 +81,10 @@ export async function createTeam(req: TeamUpsertRequest): Promise<TeamDTO> {
   return response.json();
 }
 
-export async function updateTeam(name: string, req: TeamUpsertRequest): Promise<TeamDTO> {
+export async function updateTeam(name: string, req: TeamUpsertRequest, version: TeamVersion): Promise<TeamDTO> {
   const response = await apiFetch(`/api/v1/admin/teams/${encodeURIComponent(name)}`, {
     method: "PUT",
-    body: JSON.stringify(req),
+    body: JSON.stringify({ ...req, ...version }),
   });
   if (!response.ok) throw new Error(await parseError(response, "Failed to update team"));
   return response.json();

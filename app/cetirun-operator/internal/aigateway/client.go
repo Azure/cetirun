@@ -308,12 +308,16 @@ func (c *Client) EnsureTeamMember(ctx context.Context, teamID, userID string) er
 
 // Deployment is the non-secret subset of a model deployment.
 type Deployment struct {
-	ID              string
-	ModelName       string
-	AccessGroups    []string
-	FromDatabase    bool
-	MaxInputTokens  int64
-	MaxOutputTokens int64
+	ID           string
+	ModelName    string
+	AccessGroups []string
+	FromDatabase bool
+	// DatabaseSourceKnown distinguishes an explicit db_model=false (a model
+	// loaded from trusted static configuration) from an older or malformed
+	// response which omitted the provenance field.
+	DatabaseSourceKnown bool
+	MaxInputTokens      int64
+	MaxOutputTokens     int64
 	// Priced reports whether the deployment carries a price by the parts of
 	// LiteLLM's unpriced-model check that /model/info shows: a price set in
 	// litellm_params, even zero, or a positive price or tiered pricing in the
@@ -340,7 +344,7 @@ func (c *Client) ListModels(ctx context.Context) ([]Deployment, error) {
 		var info struct {
 			ID              string   `json:"id"`
 			AccessGroups    []string `json:"access_groups"`
-			DBModel         bool     `json:"db_model"`
+			DBModel         *bool    `json:"db_model"`
 			MaxInputTokens  *float64 `json:"max_input_tokens"`
 			MaxOutputTokens *float64 `json:"max_output_tokens"`
 		}
@@ -354,7 +358,8 @@ func (c *Client) ListModels(ctx context.Context) ([]Deployment, error) {
 			}
 		}
 		deployments = append(deployments, Deployment{
-			ID: info.ID, ModelName: item.ModelName, AccessGroups: info.AccessGroups, FromDatabase: info.DBModel,
+			ID: info.ID, ModelName: item.ModelName, AccessGroups: info.AccessGroups,
+			FromDatabase: info.DBModel != nil && *info.DBModel, DatabaseSourceKnown: info.DBModel != nil,
 			MaxInputTokens: tokens(info.MaxInputTokens), MaxOutputTokens: tokens(info.MaxOutputTokens),
 			Priced: declaresPrice(item.LiteLLMParams) || hasPrice(fields),
 		})

@@ -32,7 +32,9 @@ data:
       {{- $model := deepCopy $configured }}
       {{- $fingerprint := sha256sum (toJson $model) }}
       {{- $info := deepCopy ($model.model_info | default dict) }}
-      {{- $group := printf "cetirun-model-%s" ($fingerprint | trunc 16) }}
+      {{- $suffix := $fingerprint | trunc 16 }}
+      {{- $group := printf "cetirun-model-%s" $suffix }}
+      {{- $_ := set $info "id" (printf "cetirun-shared-%s" $suffix) }}
       {{- $_ := set $info "access_groups" (append ($info.access_groups | default list) $group | uniq) }}
       {{- $_ = set $model "model_info" $info }}
       {{- $models = append $models $model }}

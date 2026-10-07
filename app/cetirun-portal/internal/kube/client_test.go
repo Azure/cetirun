@@ -730,7 +730,7 @@ func TestTeamCRUD(t *testing.T) {
 	// Update
 	updated, err := c.UpdateTeamSpec(ctx, "aks", cetirunv1alpha1.TeamSpec{
 		MemberContext: cetirunv1alpha1.TeamContextSpec{Role: "AKS Engineer"},
-	})
+	}, TeamVersion{UID: got.UID, ResourceVersion: got.ResourceVersion})
 	if err != nil {
 		t.Fatalf("UpdateTeamSpec: %v", err)
 	}

@@ -434,7 +434,8 @@ func references(team *api.Team, object client.Object) bool {
 }
 
 func sameTeamGovernance(a, b api.TeamSpec) bool {
-	return a.NormalAgentPolicyRef == b.NormalAgentPolicyRef && a.AdminAgentPolicyRef == b.AdminAgentPolicyRef &&
+	return equality.Semantic.DeepEqual(a.Membership, b.Membership) &&
+		a.NormalAgentPolicyRef == b.NormalAgentPolicyRef && a.AdminAgentPolicyRef == b.AdminAgentPolicyRef &&
 		a.DefaultSandboxRef == b.DefaultSandboxRef && slices.Equal(a.SandboxRefs, b.SandboxRefs)
 }
 

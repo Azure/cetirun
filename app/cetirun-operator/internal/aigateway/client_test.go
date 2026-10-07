@@ -69,13 +69,14 @@ func TestTokenIsSHA256Hex(t *testing.T) {
 
 func TestGetKeyUsesTokenAndMasterKey(t *testing.T) {
 	client, requests := testServer(t, func(recordedRequest) (int, string) {
-		return 200, `{"key":"abc","info":{"key_alias":"cetirun-a","models":["cetirun-shared"],"max_budget":10,"budget_duration":"1mo","blocked":null}}`
+		return 200, `{"key":"abc","info":{"key_alias":"cetirun-a","models":["cetirun-shared"],"max_budget":10,"budget_duration":"1mo","blocked":null,"team_id":"cetirun-team-a","user_id":"alice"}}`
 	})
 	key, err := client.GetKey(context.Background(), "abc")
 	if err != nil || key == nil {
 		t.Fatalf("GetKey = %v, %v", key, err)
 	}
-	if key.Alias != "cetirun-a" || len(key.Models) != 1 || key.Models[0] != "cetirun-shared" || key.MaxBudget == nil || *key.MaxBudget != 10 || key.Blocked {
+	if key.Alias != "cetirun-a" || len(key.Models) != 1 || key.Models[0] != "cetirun-shared" || key.MaxBudget == nil || *key.MaxBudget != 10 || key.Blocked ||
+		key.TeamID != "cetirun-team-a" || key.UserID != "alice" {
 		t.Fatalf("unexpected key %+v", key)
 	}
 	r := (*requests)[0]
@@ -258,8 +259,11 @@ func TestListModelsCountsPricesTheWayTheGatewayBlocksUnpricedModels(t *testing.T
 		}
 	}
 	if first := deployments[0]; first.ID != "a" || len(first.AccessGroups) != 1 || first.AccessGroups[0] != "cetirun-shared" ||
-		!first.FromDatabase || first.MaxInputTokens != 200000 || first.MaxOutputTokens != 32768 {
+		!first.FromDatabase || !first.DatabaseSourceKnown || first.MaxInputTokens != 200000 || first.MaxOutputTokens != 32768 {
 		t.Fatalf("deployment fields not read: %+v", first)
+	}
+	if deployments[1].DatabaseSourceKnown {
+		t.Fatal("an omitted db_model field must not be treated as trusted static provenance")
 	}
 }
 

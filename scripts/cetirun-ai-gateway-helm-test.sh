@@ -106,6 +106,10 @@ assert_contains "kind: Service" "Service is rendered" "${output}"
 assert_contains "kind: ConfigMap" "ConfigMap is rendered" "${output}"
 assert_contains "model_name: lint-model" "configured model reaches the LiteLLM config" "${output}"
 assert_contains "cetirun-model-" "configured models receive managed access groups" "${output}"
+managed_group="$(grep -oE 'cetirun-model-[0-9a-f]{16}' <<< "${output}" | head -1)"
+managed_suffix="${managed_group#cetirun-model-}"
+assert_contains "id: cetirun-shared-${managed_suffix}" \
+  "the configured deployment ID is bound to its managed access group" "${output}"
 
 # A display name is not an authorization boundary: LiteLLM can have several
 # backends for it. The chart gives every configured backend a deterministic,
@@ -162,6 +166,8 @@ assert_rejected "a user-supplied managed access group" \
   --set-string "models[0].model_info.access_groups[0]=cetirun-model-user-supplied"
 assert_rejected "a user-supplied managed access group in another case" \
   --set-string "models[0].model_info.access_groups[0]=CetiRun-Model-user-supplied"
+assert_rejected "a user-supplied deployment ID" \
+  --set-string "models[0].model_info.id=user-supplied"
 
 # ----- Reserved model-name prefix -----
 

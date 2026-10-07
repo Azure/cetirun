@@ -285,6 +285,21 @@ func TestLegacyBehaviorAndTeamEdits(t *testing.T) {
 	f.handler.registrations = nil
 	req = requestFor(t, admissionv1.Update, team, f.team, "portal")
 	requireResponse(t, f.handler.Validate(context.Background(), req), true, "unchanged")
+	for name, mutate := range map[string]func(*api.Team){
+		"add member": func(candidate *api.Team) {
+			candidate.Spec.Membership.Subjects = append(candidate.Spec.Membership.Subjects, api.GovernanceSubject{
+				Kind: "User", TenantID: testGovernanceSubject.TenantID, ObjectID: "00000000-0000-0000-0000-000000000099",
+			})
+		},
+		"remove member": func(candidate *api.Team) { candidate.Spec.Membership.Subjects = nil },
+	} {
+		t.Run(name, func(t *testing.T) {
+			candidate := f.team.DeepCopy()
+			mutate(candidate)
+			req := requestFor(t, admissionv1.Update, candidate, f.team, "portal")
+			requireResponse(t, f.handler.Validate(context.Background(), req), false, "administrator")
+		})
+	}
 	team.Spec.DefaultSandboxRef = "different"
 	req = requestFor(t, admissionv1.Update, team, f.team, "portal")
 	requireResponse(t, f.handler.Validate(context.Background(), req), false, "administrator")

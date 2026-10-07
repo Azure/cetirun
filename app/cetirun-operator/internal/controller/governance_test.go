@@ -33,8 +33,8 @@ func TestGovernanceGatewayRevisionTracksLiveManagedBackend(t *testing.T) {
 	// Retain the model name and policy, but replace the concrete Gateway
 	// deployment/access group. A cached display catalog would miss this change.
 	gateway.shared = []aigateway.Deployment{{
-		ID: "cfg-replaced", ModelName: testSharedModelOne,
-		AccessGroups: []string{aiGatewaySharedAccessGroup, "cetirun-model-replaced"},
+		ID: "cetirun-shared-replaced", ModelName: testSharedModelOne,
+		AccessGroups: []string{aiGatewaySharedAccessGroup, "cetirun-model-replaced"}, DatabaseSourceKnown: true,
 	}}
 	second, err := r.resolveGovernance(context.Background(), agent)
 	if err != nil {
@@ -351,5 +351,40 @@ func TestPolicyReprojectionBlockClearsOnlyAfterGrantReadback(t *testing.T) {
 	}
 	if gateway.keys[token].Blocked || agent.Status.AIGateway.Reason != "" {
 		t.Fatalf("verified current grant did not clear the temporary reprojection block: %+v", agent.Status.AIGateway)
+	}
+}
+
+func TestManagedGatewayGroupPollutionBlocksAnExistingGrant(t *testing.T) {
+	agent := aiGatewayTestAgent(testAIGatewayTeam)
+	r, kube, gateway := aiGatewayTestReconciler(t, agent, aiGatewayNamespace())
+	ctx := context.Background()
+	if err := r.reconcileAIGateway(ctx, agent, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.updateStatus(ctx, agent); err != nil {
+		t.Fatal(err)
+	}
+	secret := readKeySecret(t, kube)
+	token := aigateway.Token(string(secret.Data[aiGatewayKeySecretField]))
+	gateway.shared = append(gateway.shared, aigateway.Deployment{
+		ID: "database-copy", ModelName: "unauthorized-model", AccessGroups: []string{testManagedGroup},
+		FromDatabase: true, DatabaseSourceKnown: true,
+	})
+	if _, err := r.resolveGovernance(ctx, agent); err == nil || !isGovernanceDependencyError(err) {
+		t.Fatalf("a polluted managed group must invalidate current authorization evidence: %v", err)
+	}
+	// The Agent controller routes that dependency failure through this hold
+	// path. Workload teardown may have no fixture resources here, but key
+	// revocation must happen before it is attempted.
+	_, _ = r.holdGovernanceDependencyUnavailable(ctx, agent)
+	if !gateway.keys[token].Blocked || agent.Status.AIGateway.Reason != aiGatewayReasonPolicyReprojection {
+		t.Fatalf("the old grant remained usable after catalog pollution: key=%+v status=%+v", gateway.keys[token], agent.Status.AIGateway)
+	}
+	gateway.shared = gateway.shared[:len(gateway.shared)-1]
+	if err := r.reconcileAIGateway(ctx, agent, true); err != nil {
+		t.Fatal("the same key did not recover after the collision was removed:", err)
+	}
+	if gateway.keys[token].Blocked || agent.Status.AIGateway.Reason != "" || agent.Status.AIGateway.KeyID != token[:aiGatewayKeyIDLength] {
+		t.Fatalf("the verified grant did not restore the same key: key=%+v status=%+v", gateway.keys[token], agent.Status.AIGateway)
 	}
 }

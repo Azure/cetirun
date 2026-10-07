@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
 """Verify that relocating a uv lock file changes sources, not resolution."""
 
 from __future__ import annotations

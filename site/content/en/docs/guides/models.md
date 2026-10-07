@@ -13,8 +13,11 @@ The platform AI Gateway is part of every platform installation: the operator's
 `aiGateway.enabled` and the portal's `features.aiGatewayEnabled` are required.
 OpenClaw instances take all their models from the Gateway, from two sources:
 
-- **Shared models** are the models an administrator configures in the Gateway
-  with the access group `cetirun-shared`. They keep the administrator's names.
+- **Shared models** are the models a platform administrator configures in the
+  Gateway Helm values. They keep the administrator's names. The chart binds
+  each configured backend to a deterministic `cetirun-shared-...` deployment
+  ID and one `cetirun-model-...` access group; the operator grants only the
+  exact groups allowed by the AgentPolicy.
   While the Gateway blocks requests for unpriced models, as it does by default
   (`blockUnpricedModels`), the operator offers only shared models with a price.
   It reads the setting from the Gateway, so a change made in the Gateway's
@@ -26,12 +29,21 @@ OpenClaw instances take all their models from the Gateway, from two sources:
   appear as `copilot/<model>`. The operator's `aiGateway.copilotProxy.enabled`
   turns the proxy off for the whole deployment.
 
-Each instance's key reaches only its own access groups: `cetirun-shared` and the
-instance's own Copilot group, so its `copilot/<model>` names reach its own proxy.
+Each instance's key reaches only the per-deployment groups selected by its
+policy and its own Copilot group, so its `copilot/<model>` names reach its own proxy.
 The Gateway checks router fallbacks against the key as well
 (`operatorIntegration`). Keep teams and keys in the Gateway console limited to
 access groups: a team or key allowed every model, or a `copilot/` name
 directly, spreads requests for that name over every instance's proxy.
+
+Models added through LiteLLM's database or console are not trusted shared-model
+configuration. Copying a reserved group is not accepted as new Governance
+evidence. An already-issued key has that group, however, so LiteLLM may route
+the copied model until the operator's next catalog refresh (normally within two
+minutes) detects the collision, blocks affected keys and holds their workloads.
+The master key and console credentials are therefore trusted platform
+control-plane credentials: a holder can affect routing, budgets and availability, so
+restrict them to the same administrators who can change the platform release.
 
 The create form offers both sources, on by default, and a new OpenClaw instance
 needs a model to use: shared models while at least one is offered, or GitHub

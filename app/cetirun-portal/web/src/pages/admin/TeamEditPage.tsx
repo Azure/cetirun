@@ -147,7 +147,12 @@ export function TeamEditPage() {
     onError: (e: Error) => setSubmitError(e.message),
   });
   const updateMut = useMutation({
-    mutationFn: (req: TeamUpsertRequest) => updateTeam(name!, req),
+    mutationFn: (req: TeamUpsertRequest) => {
+      if (!existing?.uid || !existing.resourceVersion) {
+        return Promise.reject(new Error("Team version is unavailable. Reload before saving."));
+      }
+      return updateTeam(name!, req, { uid: existing.uid, resourceVersion: existing.resourceVersion });
+    },
     onSuccess,
     onError: (e: Error) => setSubmitError(e.message),
   });

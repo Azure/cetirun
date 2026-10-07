@@ -56,9 +56,10 @@ fullnameOverride: ""
 # -- Models exposed by this Gateway, in LiteLLM's own `model_list` format so
 # administrators can follow upstream provider documentation directly.
 #
-# The list can be empty. Administrators can add models through the console
-# later, and with CetiRun a deployment may rely only on the GitHub Copilot
-# models the operator registers for each Agent.
+# The list can be empty. A standalone Gateway can use models added through the
+# console later. With operatorIntegration, database/console models are not
+# trusted shared-model bindings; configure shared models here, or rely only on
+# the GitHub Copilot models the operator registers for each Agent.
 #
 # `model_name` is what a client asks for. `litellm_params.model` is what the
 # Gateway sends to the provider, carrying a prefix that selects the handler.
@@ -70,8 +71,10 @@ fullnameOverride: ""
 # `copilot/` while operatorIntegration is on.
 #
 # Each configured deployment receives an opaque `cetirun-model-...` access
-# group, derived from its canonical configured model object, when the chart renders.
-# The Operator grants that group instead of a broad display-name grant. Keep
+# group and matching `cetirun-shared-...` deployment ID, derived from its
+# canonical configured model object when the chart renders. `model_info.id`
+# and the `cetirun-model-` prefix are reserved for this binding. The Operator
+# grants that group only when the Gateway reports the exact unique pair. Keep
 # the model configuration stable when changing provider settings; changing it
 # intentionally creates a new Governance deployment fingerprint.
 #

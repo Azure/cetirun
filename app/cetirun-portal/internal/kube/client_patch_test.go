@@ -92,14 +92,14 @@ func TestPortalPatchesPreserveFutureFields(t *testing.T) {
 				spec.Defaults.Provider, spec.MemberContext.Role = "anthropic", "Reviewer"
 				spec.Skills, spec.SkillStorage.StorageSize = []string{"new-skill"}, "2Gi"
 				spec.NormalAgentPolicyRef = "must-not-change-governance"
-				return c.UpdateTeamSpec(ctx, object.GetName(), *spec)
+				return c.UpdateTeamSpec(ctx, object.GetName(), *spec, TeamVersion{UID: object.GetUID(), ResourceVersion: object.GetResourceVersion()})
 			},
 		},
 		{
 			name: "team-clear-editable-fields", team: true,
 			wantSpec: `{"adminAgentPolicyRef":null,"defaultSandboxRef":"","defaults":{"provider":null},"memberContext":{"role":null},"normalAgentPolicyRef":"","sandboxRefs":null,"skills":null,"skillStorage":null}`,
 			run: func(c *Client, object client.Object) (client.Object, error) {
-				return c.UpdateTeamSpec(ctx, object.GetName(), api.TeamSpec{})
+				return c.UpdateTeamSpec(ctx, object.GetName(), api.TeamSpec{}, TeamVersion{UID: object.GetUID(), ResourceVersion: object.GetResourceVersion()})
 			},
 		},
 		{

@@ -5,6 +5,7 @@ package kube
 
 import (
 	"context"
+	stderrors "errors"
 	"fmt"
 	"os"
 	"slices"
@@ -23,8 +24,8 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-func TestPortalTeamUpdateRetriesAndAppliesRequestedGovernance(t *testing.T) {
-	team := &api.Team{ObjectMeta: metav1.ObjectMeta{Name: "governed"}, Spec: api.TeamSpec{
+func TestPortalTeamUpdateConflictDoesNotRetryOrOverwriteConcurrentChange(t *testing.T) {
+	team := &api.Team{ObjectMeta: metav1.ObjectMeta{Name: "governed", UID: "team-uid"}, Spec: api.TeamSpec{
 		NormalAgentPolicyRef: "old-normal", AdminAgentPolicyRef: "old-admin",
 		SandboxRefs: []string{"old"}, DefaultSandboxRef: "old",
 		Skills: []string{"old-skill"},
@@ -47,17 +48,26 @@ func TestPortalTeamUpdateRetriesAndAppliesRequestedGovernance(t *testing.T) {
 			}
 			return c.Patch(ctx, obj, patch, opts...)
 		}}).Build()
-	got, err := NewClient(c).UpdateTeamSpec(context.Background(), team.Name, api.TeamSpec{
-		MemberContext:        api.TeamContextSpec{Role: "new-role"},
-		NormalAgentPolicyRef: "must-not-override",
-	})
+	portal := NewClient(c)
+	observed, err := portal.GetTeam(context.Background(), team.Name)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if updates != 2 || got.Spec.NormalAgentPolicyRef != "must-not-override" || got.Spec.AdminAgentPolicyRef != "" ||
-		len(got.Spec.SandboxRefs) != 0 || got.Spec.DefaultSandboxRef != "" ||
-		got.Spec.MemberContext.Role != "new-role" || len(got.Spec.Skills) != 0 {
-		t.Fatalf("retry did not apply the complete requested Team specification: %+v", got.Spec)
+	_, err = portal.UpdateTeamSpec(context.Background(), team.Name, api.TeamSpec{
+		MemberContext:        api.TeamContextSpec{Role: "new-role"},
+		NormalAgentPolicyRef: "must-not-override",
+	}, TeamVersion{UID: observed.UID, ResourceVersion: observed.ResourceVersion})
+	if !stderrors.Is(err, ErrTeamChanged) {
+		t.Fatalf("UpdateTeamSpec error = %v, want ErrTeamChanged", err)
+	}
+	current := &api.Team{}
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(team), current); err != nil {
+		t.Fatal(err)
+	}
+	if updates != 1 || current.Spec.NormalAgentPolicyRef != "new-normal" || current.Spec.AdminAgentPolicyRef != "new-admin" ||
+		len(current.Spec.SandboxRefs) != 1 || current.Spec.SandboxRefs[0] != "new" || current.Spec.DefaultSandboxRef != "new" ||
+		current.Spec.MemberContext.Role != "" || len(current.Spec.Skills) != 1 || current.Spec.Skills[0] != "old-skill" {
+		t.Fatalf("stale update was retried or overwrote the concurrent Team: %+v", current.Spec)
 	}
 }
 
