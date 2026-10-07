@@ -38,6 +38,11 @@ rules:
   - apiGroups: ["storage.k8s.io"]
     resources: ["storageclasses"]
     verbs: ["get"]
+  {{- if and .Values.sandboxSources.enabled .Values.sandboxSources.placementConfigMapName }}
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get"]
+  {{- end }}
   - apiGroups: ["rbac.authorization.k8s.io"]
     resources: ["clusterroles"]
     verbs: ["get"]

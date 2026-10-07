@@ -12,10 +12,12 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxplacement"
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
@@ -37,11 +39,16 @@ type ServerOptions struct {
 	PodRequestTimeout time.Duration
 }
 
+const PlacementValidationPath = "/validate-sandbox-placement"
+
 // Run serves only admission. It never starts runtime reconcilers, participates
 // in controller leader election, or creates/renews serving certificates.
 func Run(ctx context.Context, restConfig *rest.Config, config Config, options ServerOptions) error {
 	if err := config.Validate(); err != nil {
 		return err
+	}
+	if config.PlacementConfigMapName != "" && options.PodStateNamespace != strings.Split(config.ControllerUsername, ":")[2] {
+		return fmt.Errorf("Sandbox placement requires Pod admission in the configured controller state namespace")
 	}
 	if options.CertDirectory == "" || options.Port < 1 || options.Port > 65535 {
 		return fmt.Errorf("Sandbox admission requires an explicit certificate directory and valid serving port")
@@ -96,11 +103,22 @@ func Run(ctx context.Context, restConfig *rest.Config, config Config, options Se
 	if options.PodStateNamespace != "" {
 		podHandler, err := NewPodHandler(manager.GetAPIReader(), PodConfig{
 			StateNamespace: options.PodStateNamespace, RequestTimeout: options.PodRequestTimeout,
+			PlacementConfigMapName: config.PlacementConfigMapName,
 		})
 		if err != nil {
 			return err
 		}
 		server.Register(PodValidationPath, &admission.Webhook{Handler: instrumentAdmission("pod", podHandler.Validate)})
+	}
+	if config.PlacementConfigMapName != "" {
+		placement, err := sandboxplacement.NewHandler(manager.GetAPIReader(), sandboxplacement.Config{
+			Namespace: options.PodStateNamespace, ConfigMapName: config.PlacementConfigMapName,
+			RequestTimeout: options.PodRequestTimeout,
+		})
+		if err != nil {
+			return err
+		}
+		server.Register(PlacementValidationPath, &admission.Webhook{Handler: instrumentAdmission("placement", placement.Validate)})
 	}
 	if err := manager.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		return err

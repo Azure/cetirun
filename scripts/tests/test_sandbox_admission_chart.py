@@ -227,6 +227,53 @@ class SandboxAdmissionChartTests(unittest.TestCase):
                 config_env["value"] = baseline_config_env["value"]
                 self.assertEqual(configured, baseline)
 
+    def test_kubernetes_sources_placement_adds_only_controller_selection_and_node_get(self):
+        admission = self.enforced_values(podsEnabled=True, placementConfigMapName="sandbox-placement")
+        sources = {"enabled": True, "platformConfigMapName": "sandbox-platform"}
+        baseline = self.render(admission, values={"sandboxSources": sources})
+        configured = self.render(admission, values={"sandboxSources": {
+            **sources, "placementConfigMapName": "sandbox-placement",
+        }})
+
+        def source_environment(documents):
+            container = documents[("Deployment", "cetirun-operator")]["spec"]["template"]["spec"]["containers"][0]
+            return next(item for item in container["env"] if item["name"] == "CETIRUN_SANDBOX_SOURCES")
+
+        before, after = source_environment(baseline), source_environment(configured)
+        self.assertNotIn("placementConfigMapName", json.loads(before["value"]))
+        self.assertEqual(json.loads(after["value"]), {
+            **json.loads(before["value"]), "placementConfigMapName": "sandbox-placement",
+        })
+        node_rule = {"apiGroups": [""], "resources": ["nodes"], "verbs": ["get"]}
+        rules = configured[("ClusterRole", "cetirun-operator-manager-role")]["rules"]
+        self.assertEqual(rules.count(node_rule), 1)
+        rules.remove(node_rule)
+        after["value"] = before["value"]
+        self.assertEqual(configured, baseline)
+
+    def test_kubernetes_sources_placement_requires_same_protected_registry(self):
+        for name in (False, 42, {}, [], "Invalid", "bad/name", "x" * 254):
+            with self.subTest(name=name):
+                self.assert_rejected(
+                    self.enforced_values(podsEnabled=True, placementConfigMapName="sandbox-placement"),
+                    "sandboxSources.placementConfigMapName",
+                    values={"sandboxSources": {"enabled": True, "platformConfigMapName": "sandbox-platform",
+                                              "placementConfigMapName": name}},
+                )
+        for admission_name, selected, enabled in (
+            ("", "sandbox-placement", True),
+            ("another-registry", "sandbox-placement", True),
+            ("sandbox-placement", "sandbox-placement", False),
+            ("sandbox-platform", "sandbox-platform", True),
+        ):
+            with self.subTest(admission_name=admission_name, selected=selected, enabled=enabled):
+                self.assert_rejected(
+                    self.enforced_values(podsEnabled=True, placementConfigMapName=admission_name),
+                    "sandboxSources.placementConfigMapName",
+                    values={"sandboxSources": {"enabled": enabled, "platformConfigMapName": "sandbox-platform",
+                                              "placementConfigMapName": selected}},
+                )
+
     def test_kubernetes_sources_skills_catalog_adds_only_controller_setting_and_pv_get(self):
         admission = self.enforced_values(podsEnabled=True)
         sources = {
@@ -773,6 +820,61 @@ class SandboxAdmissionChartTests(unittest.TestCase):
             }, documents[("ClusterRole", NAME)]["rules"])
         self.assert_rejected({"podsEnabled": True}, "podsEnabled requires sandboxAdmission.enabled")
         self.assert_rejected(self.server_values(podsEnabled="true"), "podsEnabled must be a boolean")
+
+    def test_placement_default_off_and_separate_serving_bootstrap(self):
+        baseline = self.render(self.enforced_values(podsEnabled=True))
+        self.assertNotIn(("ValidatingWebhookConfiguration", "cetirun-sandbox-placement"), baseline)
+        for rule in baseline[("ClusterRole", NAME)]["rules"]:
+            self.assertNotIn("nodes", rule["resources"])
+            self.assertNotIn("daemonsets", rule["resources"])
+            self.assertNotIn("priorityclasses", rule["resources"])
+
+        documents = self.render(self.server_values(podsEnabled=True, placementConfigMapName="pilot-placement"))
+        self.assertNotIn(("ValidatingWebhookConfiguration", "cetirun-sandbox-placement"), documents)
+        container = documents[("Deployment", NAME)]["spec"]["template"]["spec"]["containers"][0]
+        config = json.loads(next(value["value"] for value in container["env"] if value["name"] == "CETIRUN_SANDBOX_ADMISSION"))
+        self.assertEqual(config["placementConfigMapName"], "pilot-placement")
+        self.assertIn("--admission-pod-state-namespace=cetirun-system", container["args"])
+        for group, resource in (("", "nodes"), ("apps", "daemonsets"), ("scheduling.k8s.io", "priorityclasses")):
+            self.assertIn({"apiGroups": [group], "resources": [resource], "verbs": ["get"]},
+                          documents[("ClusterRole", NAME)]["rules"])
+
+    def test_placement_rules_cover_direct_and_bound_placement_cluster_wide(self):
+        documents = self.render(self.enforced_values(podsEnabled=True, placementConfigMapName="pilot-placement"))
+        hook = documents[("ValidatingWebhookConfiguration", "cetirun-sandbox-placement")]["webhooks"][0]
+        self.assertEqual(hook["failurePolicy"], "Fail")
+        self.assertEqual(hook["sideEffects"], "None")
+        self.assertNotIn("namespaceSelector", hook)
+        self.assertNotIn("objectSelector", hook)
+        self.assertEqual(hook["clientConfig"]["service"]["path"], "/validate-sandbox-placement")
+        self.assertEqual(hook["rules"], [
+            {"operations": ["CREATE", "UPDATE"], "apiGroups": [""], "apiVersions": ["v1"],
+             "resources": ["pods", "pods/ephemeralcontainers", "pods/resize"], "scope": "Namespaced"},
+            {"operations": ["CREATE"], "apiGroups": [""], "apiVersions": ["v1"],
+             "resources": ["pods/binding", "bindings"], "scope": "Namespaced"},
+            {"operations": ["UPDATE", "DELETE"], "apiGroups": [""], "apiVersions": ["v1"],
+             "resources": ["nodes"], "scope": "Cluster"},
+        ])
+        expressions = "\n".join(item["expression"] for item in hook["matchConditions"])
+        self.assertIn('request.resource.resource == "pods"', expressions)
+        self.assertIn('"foregroundDeletion"', expressions)
+        for rule in documents[("ClusterRole", NAME)]["rules"]:
+            self.assertTrue(set(rule["verbs"]) <= {"get", "list"})
+            self.assertNotIn("secrets", rule["resources"])
+            self.assertNotIn("configmaps", rule["resources"])
+            self.assertNotIn("*", rule["resources"])
+
+    def test_placement_rejects_ambiguous_or_unprotected_configuration(self):
+        for name in (False, 42, {}, [], " leading", "Invalid", "bad/name", "x" * 254):
+            with self.subTest(name=name):
+                self.assert_rejected(self.server_values(podsEnabled=True, placementConfigMapName=name),
+                                     "sandboxAdmission.placementConfigMapName")
+        self.assert_rejected(self.server_values(placementConfigMapName="pilot-placement"),
+                             "requires enabled Sandbox configuration and Pod admission")
+        self.assert_rejected({"placementConfigMapName": "pilot-placement"},
+                             "requires enabled Sandbox configuration and Pod admission")
+        rendered = self.helm(self.enforced_values(podsEnabled=True, placementConfigMapName="pilot-placement"), lint=True)
+        self.assertEqual(rendered.returncode, 0, rendered.stdout + rendered.stderr)
 
     def test_pod_rules_use_immutable_namespace_routing_not_pod_labels(self):
         documents = self.render(self.enforced_values(podsEnabled=True))

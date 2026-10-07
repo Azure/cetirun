@@ -125,6 +125,11 @@ sandboxAdmission:
   # protected writes fail closed and execution stays held. Other Pod mutators
   # must exclude these namespaces; arbitrary injected metadata is not accepted.
   podsEnabled: false
+  # -- Optional operator-namespace placement.json ConfigMap. Requires Pod
+  # admission. When enforced, placement checks cover every namespace's Pod
+  # writes and bindings; an unavailable registry/server fails those requests.
+  # This does not supply a fencing receipt or authorize Agent execution.
+  placementConfigMapName: ""
   # -- Timeout for each fail-closed webhook call; integer 1..30 when enforce=true.
   # Pod validation uses 80% of this budget, with at most four concurrent source
   # GETs per request; the remainder is reserved for transport and response.
@@ -179,6 +184,10 @@ sandboxSources:
   # Requires owned bootstrap. Selects already-published Blob NFS content by Team UID;
   # creates only retained, read-only static PV/PVC bindings, never source content.
   skillsCatalogConfigMapName: ""
+  # -- Optional placement.json registry for durable namespace/HOME/Node binding.
+  # Must match sandboxAdmission.placementConfigMapName. Records the existing
+  # reservation after zero-replica staging; does not enroll Nodes or grant execution.
+  placementConfigMapName: ""
   # -- Approved native helpers; arbitrary injected containers remain unsupported.
   helpers:
     doctor: false

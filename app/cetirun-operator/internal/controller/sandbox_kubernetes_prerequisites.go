@@ -272,7 +272,10 @@ func (p *KubernetesSandboxPrerequisites) CheckQuiesced(ctx context.Context, agen
 	// Cleanup supplies a durable prior tuple, even after generation, policy,
 	// chart, storage configuration or lifecycle changes. Do not Resolve again,
 	// compare it with current settings, or require those resources to survive.
-	prerequisites.PublicationSources = slices.Clone(prerequisites.PublicationSources)
+	if err := validateSandboxPlacementTuple(agent, prerequisites); err != nil {
+		return err
+	}
+	prerequisites = copySandboxPrerequisites(prerequisites)
 	if err := p.WriterExclusion.CheckQuiesced(ctx, agent.DeepCopy(), prerequisites); err != nil {
 		return err
 	}

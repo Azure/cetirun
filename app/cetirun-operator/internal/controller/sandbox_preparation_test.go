@@ -57,6 +57,7 @@ type preparationSource struct {
 	resolves   int
 	onFence    func()
 	onResolve  func()
+	lastFenced controller.SandboxPrerequisites
 }
 
 func (s *preparationSource) Resolve(context.Context, *api.Agent, *api.Team) (controller.SandboxPrerequisites, error) {
@@ -67,8 +68,9 @@ func (s *preparationSource) Resolve(context.Context, *api.Agent, *api.Team) (con
 	return s.inputs, s.resolveErr
 }
 
-func (s *preparationSource) CheckQuiesced(context.Context, *api.Agent, controller.SandboxPrerequisites) error {
+func (s *preparationSource) CheckQuiesced(_ context.Context, _ *api.Agent, prerequisites controller.SandboxPrerequisites) error {
 	s.fences++
+	s.lastFenced = prerequisites
 	if s.onFence != nil {
 		s.onFence()
 	}

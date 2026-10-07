@@ -128,6 +128,7 @@ type Expectation struct {
 	Sources            []SourceReference      `json:"sources"`
 	Home               ObjectIdentity         `json:"home"`
 	Skills             ObjectIdentity         `json:"skills"`
+	Placement          *PlacementBinding      `json:"placement,omitempty"`
 }
 
 func AgentOwner(name string, uid types.UID) metav1.OwnerReference {
