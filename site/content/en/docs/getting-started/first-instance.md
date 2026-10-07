@@ -52,9 +52,17 @@ for the routing requirements.
    use the portal's device-login flow.
 8. [Choose a model](../../guides/models/). For OpenClaw, set the default model
    in the **Models** section; saving it restarts the instance.
-9. If Agent Identity was enabled, use the instance overview to
-   [connect Microsoft Entra](../../guides/agent-identity/) before asking the
-   Agent to inspect Azure resources.
+9. Use the portal's access action to open an OpenClaw instance's console. It
+   asks for the gateway token: copy **Gateway Token** from the instance
+   Overview. It also asks to pair each new browser the first time it connects:
+   open the instance's **Terminal** in the portal, run
+   `openclaw devices list`, approve your browser's pending request with
+   `openclaw devices approve <request-id>`, and reload the console. Each
+   browser pairs once per instance. `kubectl exec` cannot approve it by default,
+   because the instance's exec restriction denies it.
+10. If Agent Identity was enabled, use the instance overview to
+    [connect Microsoft Entra](../../guides/agent-identity/) before asking the
+    Agent to inspect Azure resources.
 
 The deployment controls which agent types are offered, whether Tailscale is
 visible, and how many instances each user may create. The portal chart defaults
@@ -135,7 +143,9 @@ Open the URL in `status.accessUrl`. `Ready` reports workload readiness
 independently of ingress. `IngressReady=True` confirms VirtualService
 reconciliation; verify TLS, sign-in, and model-provider access separately.
 For Hermes, sign in to the native Dashboard with username `cetirun` and the
-Hermes API / Dashboard key shown on the instance Overview page.
+Hermes API / Dashboard key shown on the instance Overview page. For OpenClaw,
+enter the gateway token and approve the browser's pairing request from the
+instance's Terminal, as in the portal steps above.
 
 ## Keep your workspace
 
