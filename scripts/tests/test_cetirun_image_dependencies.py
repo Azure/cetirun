@@ -242,7 +242,14 @@ class ImageDependencyTests(unittest.TestCase):
             "npm pkg set 'allowScripts[@anthropic-ai/claude-code]=true' --json",
             base,
         )
-        self.assertIn("npm rebuild @anthropic-ai/claude-code", base)
+        self.assertIn(
+            "ARG CLAUDE_CODE_NATIVE_PACKAGE=@anthropic-ai/claude-code-linux-x64",
+            base,
+        )
+        self.assertIn("${CLAUDE_CODE_NATIVE_PACKAGE}@${CLAUDE_CODE_VERSION}", base)
+        self.assertIn(
+            "node node_modules/@anthropic-ai/claude-code/install.cjs", base
+        )
         self.assertIn('claude --version | grep -F "${CLAUDE_CODE_VERSION}"', base)
 
         openclaw = (CHART / "agents/openclaw/Dockerfile").read_text()

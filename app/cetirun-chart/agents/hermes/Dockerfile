@@ -99,8 +99,14 @@ WORKDIR /usr/local/lib/hermes-agent
 # separate Chrome/CDP desktop sidecar.
 COPY --from=hermes-source --chown=vibe:vibe \
   /usr/local/lib/hermes-agent/ /usr/local/lib/hermes-agent/
+COPY agents/hermes/validate_uv_lock_relocation.py \
+  /usr/local/share/cetirun/validate_uv_lock_relocation.py
 
-RUN UV_DEFAULT_INDEX="${PYPI_INDEX_URL}" \
+RUN cp uv.lock /tmp/uv.lock.upstream && \
+    uv lock --python /usr/bin/python3 --default-index "${PYPI_INDEX_URL}" && \
+    python3 /usr/local/share/cetirun/validate_uv_lock_relocation.py \
+      /tmp/uv.lock.upstream uv.lock && \
+    UV_DEFAULT_INDEX="${PYPI_INDEX_URL}" \
       uv sync --python /usr/bin/python3 --frozen --extra all \
         --extra anthropic --extra azure-identity && \
     printf '%s\n' docker > .install_method && \
