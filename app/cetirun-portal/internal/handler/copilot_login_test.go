@@ -4,10 +4,12 @@
 package handler
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -1399,5 +1401,73 @@ func TestCopilotLoginCancelAfterItSucceededIsRefused(t *testing.T) {
 	}
 	if w, resp := f.call(http.MethodPost, "alice"); w.Code != http.StatusOK || resp.State != copilotLoginPending {
 		t.Fatalf("a new sign-in after the refused cancel: status %d %s", w.Code, w.Body.String())
+	}
+}
+
+// A sign-in that ends without taking effect says why in the Portal's log, for
+// an administrator looking into it, without the account's token or the
+// sign-in's codes.
+func TestCopilotLoginLogsWhyASignInDidNotComplete(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		setup  func(*loginFixture)
+		wait   time.Duration
+		state  string
+		reason string
+	}{
+		{name: "account without Copilot", state: copilotLoginFailed, reason: "account_cannot_use_copilot", setup: func(f *loginFixture) {
+			f.gh.answers = []map[string]any{{"access_token": "gho_alice"}}
+			f.gh.exchangeCode = http.StatusNotFound
+		}},
+		{name: "no chat models", state: copilotLoginFailed, reason: "no_chat_models", setup: func(f *loginFixture) {
+			f.gh.answers = []map[string]any{{"access_token": "gho_alice"}}
+			f.gh.models = `{"data":[{"id":"text-embedding-3-small","capabilities":{"type":"embeddings"}}]}`
+		}},
+		{name: "denied at GitHub", state: copilotLoginDenied, reason: "denied_at_github", setup: func(f *loginFixture) {
+			f.gh.answers = []map[string]any{{"error": "access_denied"}}
+		}},
+		{name: "expired at GitHub", state: copilotLoginExpired, reason: "code_expired", setup: func(f *loginFixture) {
+			f.gh.answers = []map[string]any{{"error": "expired_token"}}
+		}},
+		{name: "expired before a poll", state: copilotLoginExpired, reason: "code_expired", wait: 16 * time.Minute, setup: func(*loginFixture) {}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var logs bytes.Buffer
+			previous := slog.Default()
+			slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, nil)))
+			t.Cleanup(func() { slog.SetDefault(previous) })
+			f := newLoginFixture(t)
+			tc.setup(f)
+			if w, _ := f.call(http.MethodPost, "alice"); w.Code != http.StatusOK {
+				t.Fatalf("start: status %d %s", w.Code, w.Body.String())
+			}
+			f.clock = f.clock.Add(max(tc.wait, 6*time.Second))
+			if _, resp := f.call(http.MethodGet, "alice"); resp.State != tc.state {
+				t.Fatalf("poll: %+v", resp)
+			}
+			found := 0
+			decoder := json.NewDecoder(bytes.NewReader(logs.Bytes()))
+			for decoder.More() {
+				var entry map[string]any
+				if err := decoder.Decode(&entry); err != nil {
+					t.Fatalf("decode log: %v", err)
+				}
+				if entry["msg"] != "GitHub Copilot sign-in did not complete" {
+					continue
+				}
+				found++
+				if entry["level"] != "INFO" || entry["instance"] != "alice-gw" || entry["reason"] != tc.reason {
+					t.Errorf("log entry %v", entry)
+				}
+			}
+			if found != 1 {
+				t.Errorf("%d entries say why the sign-in did not complete, want 1: %s", found, logs.String())
+			}
+			for _, value := range []string{"gho_alice", "dev-secret", "WXYZ-9876", "copilot-token"} {
+				if strings.Contains(logs.String(), value) {
+					t.Errorf("the log contains %q", value)
+				}
+			}
+		})
 	}
 }
