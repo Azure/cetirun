@@ -471,6 +471,11 @@ chart installs it):
     { echo "unexpected database URL in Secret $db; nothing changed" >&2; exit 1; }
   password="$(openssl rand -hex 24)"
   url="postgresql://litellm:${password}@${url#*@}"
+  # Encode the Secret's new values now, so that a failure changes nothing.
+  password64="$(printf '%s' "$password" | base64 | tr -d '\n')"
+  url64="$(printf '%s' "$url" | base64 | tr -d '\n')"
+  [[ -n "$password64" && -n "$url64" ]] ||
+    { echo "could not encode the new values; nothing changed" >&2; exit 1; }
   # Change the role over the Pod's local socket, which the database trusts.
   printf "ALTER ROLE litellm WITH PASSWORD '%s';\n" "$password" |
     kubectl exec -i "${db}-0" -c postgresql -- \
@@ -481,8 +486,7 @@ chart installs it):
   printf '%s\n' "$password" | kubectl exec -i "${db}-0" -c postgresql -- sh -c \
     'read -r PGPASSWORD && export PGPASSWORD && psql -h "$1" -U litellm -d litellm -tAc "select 1"' \
     sh "$ip" >/dev/null
-  b64() { printf '%s' "$1" | base64 | tr -d '\n'; }
-  printf '{"data":{"password":"%s","database-url":"%s"}}' "$(b64 "$password")" "$(b64 "$url")" |
+  printf '{"data":{"password":"%s","database-url":"%s"}}' "$password64" "$url64" |
     kubectl patch secret "$db" --type merge --patch-file /dev/stdin
   kubectl rollout restart "deployment/${gateway}"
   kubectl rollout status "deployment/${gateway}" --timeout=10m
