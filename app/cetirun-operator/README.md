@@ -1008,6 +1008,113 @@ governed start path until the producer, scoped read permissions, source
 refresh/revocation and workload lifecycle are qualified together. A chart
 version, readiness probe or manually authored expectation is not that evidence.
 
+#### Dedicated-node placement guard (separate opt-in)
+
+`sandboxAdmission.placementConfigMapName` selects a pre-existing `placement.json`
+ConfigMap in the controller state namespace. Empty is the default. It requires
+configuration and final-Pod admission to be enabled; the placement webhook is
+installed only when `sandboxAdmission.enforce` is true.
+
+This read-only guard checks placement across **all namespaces**, including
+explicit `Pod.spec.nodeName`, scheduler `pods/binding`, Pod updates, and reserved
+Node identity changes/deletion. Labels and taints do not establish ownership.
+The deprecated core `bindings` endpoint is matched and denied rather than
+allowed to bypass the guard. Binding annotation overrides are rejected because
+the API server can apply them to the Pod without a separate Pod UPDATE request.
+An explicit, complete Node inventory pins Node names, UIDs and provider IDs;
+unknown or same-name replacement nodes fail closed rather than become ordinary
+capacity. Known unreserved nodes retain their ordinary placement path.
+
+The registry uses the following shape; every identity below is synthetic:
+
+```json
+{
+  "version": "v1",
+  "nodes": [
+    {
+      "name": "ordinary-worker",
+      "uid": "00000000-0000-4000-8000-000000000001",
+      "providerID": "example://ordinary-worker"
+    },
+    {
+      "name": "reserved-worker",
+      "uid": "00000000-0000-4000-8000-000000000002",
+      "providerID": "example://reserved-worker",
+      "reservation": {
+        "agent": {
+          "name": "example-agent",
+          "uid": "00000000-0000-4000-8000-000000000003"
+        },
+        "namespace": {
+          "name": "example-workload",
+          "uid": "00000000-0000-4000-8000-000000000004"
+        },
+        "statefulSet": {
+          "name": "example-agent",
+          "uid": "00000000-0000-4000-8000-000000000005"
+        }
+      }
+    }
+  ],
+  "platformDaemonSets": []
+}
+```
+
+Store this JSON as `data["placement.json"]` in the selected ConfigMap, with no
+binary data. Registrations must come from persisted API objects, not guessed
+names or labels. The inventory is bounded to 256 KiB, 256 Nodes and 64 platform
+DaemonSets; each DaemonSet may enroll at most 256 persisted Pod identities.
+Unknown fields, duplicate keys, nulls and inconsistent identities are rejected.
+An empty platform inventory provides no platform-workload exemptions.
+
+A reserved node is assigned to an exact Agent, namespace and StatefulSet
+identity. Agent placement must also match the current protected workload
+expectation. This does not relax final-Pod validation, release an execution hold,
+or issue a start grant. Ordinary unrelated workloads cannot acquire reserved
+placement by setting a node name, selecting a node, adding tolerations or
+forging a namespace label.
+
+Platform workloads are not exempt by namespace or ServiceAccount. Only
+explicitly registered DaemonSets with pinned identities and templates can use
+the platform path. Each `platformDaemonSets` entry contains `name`, `uid`,
+`namespace: {name, uid}`, `templateDigest`, `trustedCreator`, and a
+`bootstrapPods` array of `{name, uid}`. The digest is computed from the current
+API-defaulted selector and Pod template using
+[`CanonicalDaemonSetDigest`](internal/sandboxplacement/daemonset.go), not from
+caller-provided Pod labels or the DaemonSet's status. Registered controller
+identities are checked on creation;
+reserved-node binding/update additionally requires the exact persisted Pod name
+and UID in the protected registration. A replacement may be created by its
+trusted controller but remains unable to bind to reserved capacity until its
+new UID is enrolled. That is an intentional fail-closed pilot limitation, not
+automatic platform recovery.
+
+The platform owner must protect registry writes and establish the registry on
+an empty, isolated dedicated pool before granting workload access. The guard
+does not discover or adopt nodes, mutate scheduling inputs, install DaemonSets,
+write reservations, or prove historical pool isolation. Registry changes need
+their own authorized, stopped lifecycle; removing a record is not permission
+to reuse a pool or skip old-writer fencing.
+
+Bootstrap the serving replicas and TLS first on unreserved nodes, publish the
+registry, exercise direct/binding request-path tests, and only then enable
+enforcement. This opt-in expands the failure domain: registry or serving failure
+blocks matched requests cluster-wide. Pod status and deletion remain
+independent, as does the existing narrow garbage-collector finalizer completion.
+When serving is available, ordinary terminating Pods can remove only finalizers
+without altering placement or other object fields; unrelated changes are not
+cleanup exemptions.
+ConfigMap updates and webhook-registration repair remain available. A new
+serving Pod is still a matched CREATE: plan recovery using existing serving
+capacity or an authorized, stopped maintenance procedure, not an assumed
+admission bypass.
+
+This is one placement boundary needed for a future dedicated-pool Agent pilot.
+It is not a `CheckQuiesced` provider, an AKS deletion authorization, a complete
+start/change barrier, or proof of pre-start and ongoing runtime enforcement.
+Those gates and the actual governed-Agent end-to-end demonstration remain
+separate requirements.
+
 #### Schema and binary upgrades
 
 Helm upgrades all four CRDs as ordinary templates. Compatible schema changes
@@ -1136,7 +1243,7 @@ inside each completed admission handler, including its dependency reads. Its
 
 | Label | Values |
 | --- | --- |
-| `handler` | `validate`, `default`, `pod`, or defensive `unknown` |
+| `handler` | `validate`, `default`, `pod`, `placement`, or defensive `unknown` |
 | `operation` | `CREATE`, `UPDATE`, `DELETE`, `CONNECT`, or `unknown` |
 | `outcome` | `allowed`, `denied`, `invalid_request`, `dependency_error` |
 

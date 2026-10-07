@@ -40,7 +40,7 @@ func init() {
 
 func instrumentAdmission(name string, handler admission.HandlerFunc) admission.HandlerFunc {
 	switch name {
-	case "validate", "default", "pod":
+	case "validate", "default", "pod", "placement":
 	default:
 		name = "unknown"
 	}

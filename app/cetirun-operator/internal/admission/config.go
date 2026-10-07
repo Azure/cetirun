@@ -25,13 +25,14 @@ const (
 )
 
 type Config struct {
-	ValidationMode        string           `json:"validationMode,omitempty"`
-	AdminUsers            []string         `json:"adminUsers"`
-	AdminGroups           []string         `json:"adminGroups"`
-	ControllerUsername    string           `json:"controllerUsername"`
-	TeamAssignments       []TeamAssignment `json:"teamAssignments,omitempty"`
-	PlatformNamespace     string           `json:"platformNamespace,omitempty"`
-	PlatformConfigMapName string           `json:"platformConfigMapName,omitempty"`
+	ValidationMode         string           `json:"validationMode,omitempty"`
+	AdminUsers             []string         `json:"adminUsers"`
+	AdminGroups            []string         `json:"adminGroups"`
+	ControllerUsername     string           `json:"controllerUsername"`
+	TeamAssignments        []TeamAssignment `json:"teamAssignments,omitempty"`
+	PlatformNamespace      string           `json:"platformNamespace,omitempty"`
+	PlatformConfigMapName  string           `json:"platformConfigMapName,omitempty"`
+	PlacementConfigMapName string           `json:"placementConfigMapName,omitempty"`
 }
 
 // TeamAssignment is administrative creation context, not Agent/Portal input.
@@ -55,6 +56,9 @@ func ParseConfig(raw string) (Config, error) {
 func (c Config) Validate() error {
 	if c.ValidationMode != "" && c.ValidationMode != ValidationCompatible && c.ValidationMode != ValidationStrict {
 		return fmt.Errorf("Sandbox admission validationMode must be compatible or strict")
+	}
+	if c.PlacementConfigMapName != "" && len(validation.IsDNS1123Subdomain(c.PlacementConfigMapName)) != 0 {
+		return fmt.Errorf("Sandbox placement requires an explicit valid ConfigMap name")
 	}
 	if len(c.AdminUsers)+len(c.AdminGroups) == 0 {
 		return fmt.Errorf("Sandbox admission requires an explicit administrator allowlist")

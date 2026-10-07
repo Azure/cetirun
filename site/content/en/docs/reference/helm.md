@@ -418,6 +418,26 @@ Keep them aligned; changing `--namespace` alone does not relocate those
 resources. The operator chart manages all four CRDs under `templates/crds/`;
 Helm upgrades them with the release. Their `helm.sh/resource-policy: keep`
 annotation retains them on uninstall, not against schema downgrade.
+`sandboxAdmission.placementConfigMapName` defaults to empty. Selecting an
+operator-namespace placement registry requires enabled configuration and Pod
+admission. The server serves the placement endpoint during bootstrap;
+`enforce: true` also installs its cluster-wide checks for Pod writes, scheduling
+bindings, and reserved Node updates/deletion. There is no namespace or Pod-label
+exemption. Only read permissions for Nodes and DaemonSets are added; state reads
+reuse the operator-namespace ConfigMap role.
+The legacy core `bindings` endpoint is denied, and binding annotation overrides
+cannot mutate a Pod while bypassing its normal validation.
+
+This is a dedicated-pool pilot control, not an execution switch. Enable it only
+after registering the complete current Node identity inventory and permitted
+platform workloads. Unknown or replaced nodes cannot receive a binding, and
+reserved-node DaemonSet replacements need explicit Pod-UID enrollment. An
+unavailable registry or webhook blocks matching writes across the cluster;
+ordinary Pod status and deletion remain outside those rules. Keep serving and
+registry-repair resources on separately registered unreserved nodes. New serving
+Pods are also gated; maintain working replicas and a stopped maintenance
+recovery procedure rather than assuming a serving-workload bypass.
+
 `sandboxAdmission.validationMode` defaults to `compatible`; `strict` is an
 explicit option that requires ordered schema/binary upgrades. Neither mode
 disables authorization or changes the webhook failure policy. Review schema
