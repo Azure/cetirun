@@ -53,7 +53,7 @@ func TestDaemonSetCreatesRequireTrustedCreatorBeforeScheduling(t *testing.T) {
 func TestReplacementDaemonPodNeedsManualUIDEnrollment(t *testing.T) {
 	f := newFixture(t)
 	replacement := f.platformPod.DeepCopy()
-	replacement.Name, replacement.UID, replacement.ResourceVersion = f.daemon.Name+"-replacement", "", ""
+	replacement.Name, replacement.UID, replacement.ResourceVersion = f.daemon.Name+"-hjkmp", "", ""
 	request := podRequest(t, replacement, nil)
 	request.UserInfo.Username = f.registry.PlatformDaemonSets[0].TrustedCreator
 	expectAllowed(t, f.handler.Validate(context.Background(), request))

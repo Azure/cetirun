@@ -15,12 +15,15 @@ import (
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	schedulingv1 "k8s.io/api/scheduling/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
+	apivalidation "k8s.io/apimachinery/pkg/api/validation"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/selection"
 	"k8s.io/apimachinery/pkg/util/validation"
+	"k8s.io/apiserver/pkg/storage/names"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -97,9 +100,7 @@ func (s *requestState) validateDaemonPod(ctx context.Context, registry *registry
 		APIVersion: "apps/v1", Kind: "DaemonSet", Name: registered.Name, UID: registered.UID,
 		Controller: ptr.To(true), BlockOwnerDeletion: ptr.To(true),
 	}
-	prefix := registered.Name + "-"
-	if !validName(pod.Name) || !strings.HasPrefix(pod.Name, prefix) ||
-		(pod.GenerateName != "" && pod.GenerateName != prefix) || len(pod.Finalizers) != 0 ||
+	if !daemonPodNameMatches(pod, registered.Name) || len(pod.Finalizers) != 0 ||
 		!equality.Semantic.DeepEqual(pod.OwnerReferences, []metav1.OwnerReference{owner}) {
 		return denied("DaemonSetOwnerMismatch", "platform Pod requires the exact registered controller owner and generated identity")
 	}
@@ -170,6 +171,9 @@ func (s *requestState) validateDaemonPod(ctx context.Context, registry *registry
 	}
 	template.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution = targetAffinity(target)
 	addDaemonTolerations(&template.Spec)
+	if failure := s.applyDaemonPriority(ctx, pod, &template.Spec); failure != nil {
+		return failure
+	}
 	actual := corev1.PodTemplateSpec{
 		ObjectMeta: metav1.ObjectMeta{Labels: pod.Labels, Annotations: pod.Annotations},
 		Spec:       *pod.Spec.DeepCopy(),
@@ -186,6 +190,54 @@ func (s *requestState) validateDaemonPod(ctx context.Context, registry *registry
 	}
 	account := &corev1.ServiceAccount{}
 	return s.read(ctx, client.ObjectKey{Namespace: pod.Namespace, Name: template.Spec.ServiceAccountName}, account, "ServiceAccount")
+}
+
+func daemonPodGenerateName(daemonName string) string {
+	prefix := daemonName + "-"
+	// Match Kubernetes controller.getPodsPrefix, including prefix validation
+	// rather than a length check on the unmasked trailing dash.
+	if len(apivalidation.NameIsDNSSubdomain(prefix, true)) != 0 {
+		return daemonName
+	}
+	return prefix
+}
+
+func daemonPodNameMatches(pod *corev1.Pod, daemonName string) bool {
+	prefix := daemonPodGenerateName(daemonName)
+	if pod.GenerateName != "" && pod.GenerateName != prefix {
+		return false
+	}
+	prefix = prefix[:min(len(prefix), names.MaxGeneratedNameLength)]
+	// SimpleNameGenerator appends five characters from util/rand's alphabet;
+	// only the generated name, not metadata.generateName, is truncated.
+	return validName(pod.Name) && len(pod.Name) == len(prefix)+5 && strings.HasPrefix(pod.Name, prefix) &&
+		strings.Trim(pod.Name[len(prefix):], "bcdfghjklmnpqrstvwxz2456789") == ""
+}
+
+func (s *requestState) applyDaemonPriority(ctx context.Context, pod *corev1.Pod, template *corev1.PodSpec) *failure {
+	if template.PriorityClassName == "" {
+		return nil
+	}
+	if !validName(template.PriorityClassName) || pod.Spec.PriorityClassName != template.PriorityClassName {
+		return denied("DaemonSetPriorityMismatch", "platform Pod must retain the template's explicit PriorityClass")
+	}
+	class := &schedulingv1.PriorityClass{}
+	if failure := s.read(ctx, client.ObjectKey{Name: template.PriorityClassName}, class, "PriorityClass"); failure != nil {
+		return failure
+	}
+	policy := ptr.Deref(class.PreemptionPolicy, corev1.PreemptLowerPriority)
+	if policy != corev1.PreemptLowerPriority && policy != corev1.PreemptNever {
+		return denied("PriorityClassInvalid", "platform PriorityClass has an unsupported preemption policy")
+	}
+	if (template.Priority != nil && *template.Priority != class.Value) ||
+		(template.PreemptionPolicy != nil && *template.PreemptionPolicy != policy) ||
+		pod.Spec.Priority == nil || *pod.Spec.Priority != class.Value ||
+		pod.Spec.PreemptionPolicy == nil || *pod.Spec.PreemptionPolicy != policy {
+		return denied("DaemonSetPriorityMismatch", "platform Pod or explicit template priority fields differ from the current PriorityClass")
+	}
+	// Only supply Pod-only admission fields from freshly read authority.
+	template.Priority, template.PreemptionPolicy = ptr.To(class.Value), ptr.To(policy)
+	return nil
 }
 
 func daemonTargetsNode(pod *corev1.Pod, name string) *failure {

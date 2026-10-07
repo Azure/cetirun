@@ -19,8 +19,10 @@ import (
 	authenticationv1 "k8s.io/api/authentication/v1"
 	corev1 "k8s.io/api/core/v1"
 	nodev1 "k8s.io/api/node/v1"
+	schedulingv1 "k8s.io/api/scheduling/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apiserver/pkg/storage/names"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -127,7 +129,7 @@ func newFixture(t *testing.T) *placementFixture {
 		Data:       map[string]string{ConfigMapKey: string(marshal(t, f.registry))},
 	}
 	scheme := runtime.NewScheme()
-	for _, add := range []func(*runtime.Scheme) error{corev1.AddToScheme, appsv1.AddToScheme, api.AddToScheme, nodev1.AddToScheme} {
+	for _, add := range []func(*runtime.Scheme) error{corev1.AddToScheme, appsv1.AddToScheme, api.AddToScheme, nodev1.AddToScheme, schedulingv1.AddToScheme} {
 		if err := add(scheme); err != nil {
 			t.Fatal(err)
 		}
@@ -173,10 +175,11 @@ func newFixture(t *testing.T) *placementFixture {
 }
 
 func daemonPod(daemon *appsv1.DaemonSet, node string) *corev1.Pod {
+	prefix := daemonPodGenerateName(daemon.Name)
 	pod := &corev1.Pod{
 		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Pod"},
 		ObjectMeta: metav1.ObjectMeta{
-			Name: daemon.Name + "-example", GenerateName: daemon.Name + "-", Namespace: daemon.Namespace,
+			Name: prefix[:min(len(prefix), names.MaxGeneratedNameLength)] + "bcdfg", GenerateName: prefix, Namespace: daemon.Namespace,
 			UID: "platform-pod-uid", ResourceVersion: "1",
 			OwnerReferences: []metav1.OwnerReference{{
 				APIVersion: "apps/v1", Kind: "DaemonSet", Name: daemon.Name, UID: daemon.UID,

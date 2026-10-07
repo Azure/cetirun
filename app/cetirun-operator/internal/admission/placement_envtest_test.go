@@ -20,8 +20,12 @@ import (
 	"time"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxplacement"
 	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
+	appsv1 "k8s.io/api/apps/v1"
+	authenticationv1 "k8s.io/api/authentication/v1"
 	corev1 "k8s.io/api/core/v1"
+	schedulingv1 "k8s.io/api/scheduling/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -173,6 +177,112 @@ func TestPlacementServingAndBindingAPIServer(t *testing.T) {
 		create(pod("ordinary-direct", ordinary.Name))
 		if err := cl.Create(ctx, pod("reserved-direct", reserved.Name)); err == nil {
 			t.Fatal("direct nodeName bypassed placement checks")
+		}
+	})
+	t.Run("platform priority and bounded generated names use API defaults", func(t *testing.T) {
+		identity, err := kube.AuthenticationV1().SelfSubjectReviews().Create(ctx, &authenticationv1.SelfSubjectReview{}, metav1.CreateOptions{})
+		if err != nil || identity.Status.UserInfo.Username == "" {
+			t.Fatal("read authenticated synthetic creator identity:", err)
+		}
+		namespace := &corev1.Namespace{}
+		if err := cl.Get(ctx, client.ObjectKey{Name: "ordinary-workload"}, namespace); err != nil {
+			t.Fatal(err)
+		}
+		for index, preemption := range []corev1.PreemptionPolicy{corev1.PreemptLowerPriority, corev1.PreemptNever} {
+			priority := &schedulingv1.PriorityClass{
+				ObjectMeta: metav1.ObjectMeta{Name: "synthetic-platform-" + strconv.Itoa(index)},
+				Value:      50000, PreemptionPolicy: &preemption,
+			}
+			create(priority)
+			daemon := &appsv1.DaemonSet{
+				ObjectMeta: metav1.ObjectMeta{Name: strings.Repeat("d", 57) + strconv.Itoa(index), Namespace: namespace.Name},
+				Spec: appsv1.DaemonSetSpec{
+					Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "platform-fixture"}},
+					Template: corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": "platform-fixture"}},
+						Spec: corev1.PodSpec{
+							ServiceAccountName: "default", AutomountServiceAccountToken: ptr.To(false),
+							PriorityClassName: priority.Name,
+							Containers:        []corev1.Container{{Name: "platform", Image: "registry.example.com/fixture:v1"}},
+						},
+					},
+				},
+			}
+			create(daemon)
+			digest, err := sandboxplacement.CanonicalDaemonSetDigest(daemon)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var inventory map[string]json.RawMessage
+			if err := json.Unmarshal([]byte(state.Data["placement.json"]), &inventory); err != nil {
+				t.Fatal(err)
+			}
+			var platforms []json.RawMessage
+			if err := json.Unmarshal(inventory["platformDaemonSets"], &platforms); err != nil {
+				t.Fatal(err)
+			}
+			registration, err := json.Marshal(map[string]any{
+				"name": daemon.Name, "uid": daemon.UID,
+				"namespace":      map[string]any{"name": namespace.Name, "uid": namespace.UID},
+				"templateDigest": digest, "trustedCreator": identity.Status.UserInfo.Username, "bootstrapPods": []any{},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			inventory["platformDaemonSets"], err = json.Marshal(append(platforms, registration))
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw, err := json.Marshal(inventory)
+			if err != nil {
+				t.Fatal(err)
+			}
+			state.Data["placement.json"] = string(raw)
+			if err := cl.Update(ctx, state); err != nil {
+				t.Fatal(err)
+			}
+			value := &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					GenerateName: daemon.Name + "-", Namespace: namespace.Name,
+					OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(daemon, appsv1.SchemeGroupVersion.WithKind("DaemonSet"))},
+					Labels:          map[string]string{"app": "platform-fixture", appsv1.ControllerRevisionHashLabelKey: "synthetic-revision"},
+				},
+				Spec: *daemon.Spec.Template.Spec.DeepCopy(),
+			}
+			if generation, found := daemon.Annotations[appsv1.DeprecatedTemplateGeneration]; found {
+				value.Labels["pod-template-generation"] = generation
+			}
+			value.Spec.NodeName = reserved.Name
+			value.Spec.Affinity = &corev1.Affinity{NodeAffinity: &corev1.NodeAffinity{
+				RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{NodeSelectorTerms: []corev1.NodeSelectorTerm{{
+					MatchFields: []corev1.NodeSelectorRequirement{{Key: "metadata.name", Operator: corev1.NodeSelectorOpIn, Values: []string{reserved.Name}}},
+				}}},
+			}}
+			for _, taint := range []struct {
+				key    string
+				effect corev1.TaintEffect
+			}{
+				{corev1.TaintNodeNotReady, corev1.TaintEffectNoExecute},
+				{corev1.TaintNodeUnreachable, corev1.TaintEffectNoExecute},
+				{corev1.TaintNodeDiskPressure, corev1.TaintEffectNoSchedule},
+				{corev1.TaintNodeMemoryPressure, corev1.TaintEffectNoSchedule},
+				{corev1.TaintNodePIDPressure, corev1.TaintEffectNoSchedule},
+				{corev1.TaintNodeUnschedulable, corev1.TaintEffectNoSchedule},
+			} {
+				value.Spec.Tolerations = append(value.Spec.Tolerations, corev1.Toleration{
+					Key: taint.key, Operator: corev1.TolerationOpExists, Effect: taint.effect,
+				})
+			}
+			if err := cl.Create(ctx, value); err != nil {
+				t.Fatal("API-defaulted registered platform Pod was rejected:", err)
+			}
+			if len(value.Name) != 63 || !strings.HasPrefix(value.Name, daemon.Name) ||
+				ptr.Deref(value.Spec.Priority, 0) != priority.Value || ptr.Deref(value.Spec.PreemptionPolicy, "") != preemption {
+				t.Fatal("API fixture did not exercise truncated naming and class-derived Pod fields")
+			}
+			if err := cl.Delete(ctx, value, client.GracePeriodSeconds(0)); err != nil {
+				t.Fatal(err)
+			}
 		}
 	})
 	bind := func(value *corev1.Pod, node string, uid types.UID) error {
