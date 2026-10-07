@@ -55,6 +55,13 @@ after storing its token, the instance offers no Copilot models and reports
 restarts the proxy: it otherwise keeps the Copilot token it exchanged until
 that token expires, so another GitHub account would take effect only then.
 
+After an upgrade from a version whose portal did not yet record completed
+sign-ins, a sign-in that portal finished has a generation but no completion.
+At the instance's next verification, within ten minutes of the upgrade, the
+operator removes its Copilot routes and reports `SignInIncomplete`. Shared
+models stay, but an instance with only GitHub Copilot has no models until its
+owner chooses **Sign in with GitHub** again on the instance overview.
+
 An instance that signed in to GitHub Copilot inside the agent, before it took
 its models from the Gateway, still has that sign-in in its HOME, where the agent
 can read it. On its first start through the Gateway, after `doctor`, the
