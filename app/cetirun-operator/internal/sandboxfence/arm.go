@@ -127,30 +127,23 @@ func authoritativeAbsent(result response) bool {
 	if result.status != http.StatusNotFound {
 		return false
 	}
-	var body struct {
-		Code  json.RawMessage `json:"code"`
-		Error json.RawMessage `json:"error"`
-	}
+	var body map[string]any
 	problems, err := strictjson.UnmarshalStrict(result.body, &body, strictjson.DisallowDuplicateFields)
 	if err != nil || len(problems) != 0 {
 		return false
 	}
-	code := body.Code
-	if len(body.Error) != 0 {
-		if len(body.Code) != 0 {
+	if envelope, present := body["error"]; present {
+		if _, ambiguous := body["code"]; ambiguous {
 			return false
 		}
-		var detail struct {
-			Code json.RawMessage `json:"code"`
-		}
-		problems, err = strictjson.UnmarshalStrict(body.Error, &detail, strictjson.DisallowDuplicateFields)
-		if err != nil || len(problems) != 0 {
+		detail, ok := envelope.(map[string]any)
+		if !ok {
 			return false
 		}
-		code = detail.Code
+		body = detail
 	}
-	var value string
-	return json.Unmarshal(code, &value) == nil &&
+	value, ok := body["code"].(string)
+	return ok &&
 		slices.Contains([]string{"ResourceNotFound", "NotFound", "ParentResourceNotFound"}, value)
 }
 
