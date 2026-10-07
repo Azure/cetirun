@@ -81,5 +81,8 @@ az aks get-credentials \
 kubectl get nodes -o wide
 kubectl get pods -n aks-istio-system
 kubectl get pods -n aks-istio-ingress
+# The Azure CLI spells the property issuerUrl; the ARM name in the Bicep
+# template is issuerURL. JMESPath is case-sensitive, so the ARM spelling
+# prints an empty line.
 az aks show --resource-group "$RG_NAME" --name "$CLUSTER_NAME" \
-  --query 'oidcIssuerProfile.issuerURL' -o tsv
+  --query 'oidcIssuerProfile.issuerUrl' -o tsv
