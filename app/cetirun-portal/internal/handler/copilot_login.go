@@ -535,35 +535,8 @@ func (h *InstanceHandler) PollCopilotLogin(w http.ResponseWriter, r *http.Reques
 			return
 		}
 		// The replica completing the sign-in did not report its outcome
-		// within its lease. Record the sign-in as failed and only then, once
-		// that is accepted, raise the floor past it: should it only have
-		// stalled, it can no longer store the token, record the models or
-		// complete a sign-in reported as failed. Fencing first would fence a
-		// newer sign-in's completion if this outcome were then refused. A
-		// sign-in that completed before the floor rose is in effect, and is
-		// reported as succeeded instead.
-		number := copilotLoginNumberOf(secret.Data)
-		generation := string(secret.Data[loginGeneration])
-		secret.Data = withCopilotLoginNumber(map[string][]byte{
-			loginState:   []byte(copilotLoginFailed),
-			loginMessage: []byte("The sign-in did not finish. Start it again."),
-		}, number)
-		if err := h.Kube.UpdateSecret(ctx, secret); err != nil {
-			if !kube.IsConflict(err) && !kube.IsNotFound(err) {
-				slog.Error("Failed to record the GitHub Copilot sign-in outcome", "instance", instance.Name, "error", err)
-			}
-			h.writeCurrentCopilotLogin(ctx, w, instance)
-			return
-		}
-		completed, err := h.raiseCopilotSignInFloor(ctx, instance, number+1, generation)
-		if err != nil {
-			slog.Error("Failed to fence an abandoned GitHub Copilot sign-in", "instance", instance.Name, "error", err)
-		}
-		if completed {
-			h.endCopilotLogin(ctx, w, instance, secret, copilotLoginSucceeded, copilotSignedInMessage)
-			return
-		}
-		writeJSON(w, http.StatusOK, loginResponse(secret.Data))
+		// within its lease.
+		h.endUnfinishedCopilotLogin(ctx, w, instance, secret, "The sign-in did not finish. Start it again.")
 		return
 	}
 	if string(secret.Data[loginState]) != copilotLoginPending {
@@ -708,6 +681,7 @@ func (h *InstanceHandler) finishCopilotLogin(ctx context.Context, w http.Respons
 		h.endCopilotLogin(ctx, w, instance, login, copilotLoginFailed, "Signed in, but the model list could not be saved. Start the sign-in again.")
 		return
 	}
+	succeeded := fmt.Sprintf("Signed in to GitHub Copilot: %d models. They appear on the agent once its proxy has started.", len(models))
 	if err := h.completeCopilotSignIn(ctx, instance, number, generation); err != nil {
 		if errors.Is(err, errCopilotLoginSuperseded) {
 			slog.Info("GitHub Copilot sign-in was replaced or ended before it completed; its models are not used", "instance", instance.Name)
@@ -715,12 +689,26 @@ func (h *InstanceHandler) finishCopilotLogin(ctx context.Context, w http.Respons
 			return
 		}
 		slog.Error("Failed to complete the GitHub Copilot sign-in", "instance", instance.Name, "error", err)
-		h.endCopilotLogin(ctx, w, instance, login, copilotLoginFailed, "Signed in, but the sign-in could not be completed. Start it again.")
+		// The write may have been applied with only its response lost, and
+		// the operator then uses the sign-in: read the completion back before
+		// recording an outcome. While it cannot be read, the sign-in keeps its
+		// commit, and the end of its lease settles the outcome from what the
+		// token Secret holds then.
+		token, readErr := h.copilotTokenSecret(ctx, instance)
+		switch {
+		case readErr != nil:
+			slog.Error("Failed to read whether the GitHub Copilot sign-in completed; the end of its lease settles it", "instance", instance.Name, "error", readErr)
+			writeJSON(w, http.StatusOK, loginResponse(login.Data))
+		case copilotSignInCompleted(token, generation):
+			slog.Info("GitHub Copilot sign-in completed although its write reported an error", "instance", instance.Name, "models", len(models))
+			h.endCopilotLogin(ctx, w, instance, login, copilotLoginSucceeded, succeeded)
+		default:
+			h.endUnfinishedCopilotLogin(ctx, w, instance, login, "Signed in, but the sign-in could not be completed. Start it again.")
+		}
 		return
 	}
 	slog.Info("GitHub Copilot sign-in completed", "instance", instance.Name, "models", len(models))
-	h.endCopilotLogin(ctx, w, instance, login, copilotLoginSucceeded,
-		fmt.Sprintf("Signed in to GitHub Copilot: %d models. They appear on the agent once its proxy has started.", len(models)))
+	h.endCopilotLogin(ctx, w, instance, login, copilotLoginSucceeded, succeeded)
 }
 
 // storeCopilotToken writes the token and its generation into the token
@@ -837,6 +825,40 @@ func (h *InstanceHandler) endCopilotLogin(ctx context.Context, w http.ResponseWr
 			return
 		}
 		slog.Error("Failed to record the GitHub Copilot sign-in outcome", "instance", instance.Name, "error", err)
+	}
+	writeJSON(w, http.StatusOK, loginResponse(login.Data))
+}
+
+// endUnfinishedCopilotLogin ends a committed sign-in that did not complete:
+// one whose replica did not report an outcome within its lease, or whose
+// completion failed without completing. It records the sign-in as failed and
+// only then, once that is accepted, raises the floor past it: a completion
+// that only stalled can no longer store the token, record the models or
+// complete a sign-in reported as failed. Fencing first would fence a newer
+// sign-in's completion if this outcome were then refused. A sign-in that
+// completed before the floor rose is in effect, and is reported as succeeded
+// instead.
+func (h *InstanceHandler) endUnfinishedCopilotLogin(ctx context.Context, w http.ResponseWriter, instance *cetirunv1alpha1.Agent, login *corev1.Secret, message string) {
+	number := copilotLoginNumberOf(login.Data)
+	generation := string(login.Data[loginGeneration])
+	login.Data = withCopilotLoginNumber(map[string][]byte{
+		loginState:   []byte(copilotLoginFailed),
+		loginMessage: []byte(message),
+	}, number)
+	if err := h.Kube.UpdateSecret(ctx, login); err != nil {
+		if !kube.IsConflict(err) && !kube.IsNotFound(err) {
+			slog.Error("Failed to record the GitHub Copilot sign-in outcome", "instance", instance.Name, "error", err)
+		}
+		h.writeCurrentCopilotLogin(ctx, w, instance)
+		return
+	}
+	completed, err := h.raiseCopilotSignInFloor(ctx, instance, number+1, generation)
+	if err != nil {
+		slog.Error("Failed to fence an unfinished GitHub Copilot sign-in", "instance", instance.Name, "error", err)
+	}
+	if completed {
+		h.endCopilotLogin(ctx, w, instance, login, copilotLoginSucceeded, copilotSignedInMessage)
+		return
 	}
 	writeJSON(w, http.StatusOK, loginResponse(login.Data))
 }

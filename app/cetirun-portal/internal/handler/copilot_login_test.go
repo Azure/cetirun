@@ -6,6 +6,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -843,6 +844,84 @@ func TestCopilotLoginCompletedWhileEndedIsReportedAsSucceeded(t *testing.T) {
 			token = f.secret(cetirunv1alpha1.CopilotTokenSecretName)
 			if token.Annotations[cetirunv1alpha1.AnnotationCopilotSignInCompleted] != generation || token.Annotations[copilotSignInFloorAnnotation] != "1" {
 				t.Fatalf("the completion must stand unfenced: %v", token.Annotations)
+			}
+		})
+	}
+}
+
+// The write that completes a sign-in can be applied with only its response
+// lost, and the operator then uses the sign-in. The completion reads it back
+// before recording an outcome, and reports it as succeeded; while it cannot be
+// read, the sign-in keeps its commit, and a poll after the lease reports what
+// the token Secret holds then. A completion that failed without completing is
+// reported as failed, and fenced, so that it cannot complete later.
+func TestCopilotLoginCompletionWhoseResponseIsLost(t *testing.T) {
+	isCompletion := func(obj client.Object) bool {
+		secret, ok := obj.(*corev1.Secret)
+		return ok && secret.Name == cetirunv1alpha1.CopilotTokenSecretName &&
+			secret.Annotations[cetirunv1alpha1.AnnotationCopilotSignInCompleted] != ""
+	}
+	for _, tc := range []struct {
+		name string
+		// applied: the completion's write is applied before its error.
+		// readFails: the read back after the error fails once.
+		applied, readFails bool
+		wantState          string
+		wantCompleted      bool
+		wantFloor          string
+	}{
+		{name: "applied, read back", applied: true, wantState: copilotLoginSucceeded, wantCompleted: true, wantFloor: "1"},
+		{name: "applied, read back fails", applied: true, readFails: true, wantState: copilotLoginPending, wantCompleted: true, wantFloor: "1"},
+		{name: "not applied", wantState: copilotLoginFailed, wantFloor: "2"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newLoginFixture(t)
+			f.call(http.MethodPost, "alice")
+			f.gh.answers = []map[string]any{{"access_token": "gho_alice"}}
+			failed, readFailed := false, false
+			wrapped := interceptor.NewClient(f.fc.(client.WithWatch), interceptor.Funcs{
+				Update: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+					if failed || !isCompletion(obj) {
+						return c.Update(ctx, obj, opts...)
+					}
+					failed = true
+					if tc.applied {
+						if err := c.Update(ctx, obj, opts...); err != nil {
+							return err
+						}
+					}
+					return errors.New("connection reset by peer")
+				},
+				Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+					if tc.readFails && failed && !readFailed && key.Name == cetirunv1alpha1.CopilotTokenSecretName {
+						readFailed = true
+						return errors.New("connection reset by peer")
+					}
+					return c.Get(ctx, key, obj, opts...)
+				},
+			})
+			f.fc = wrapped
+			f.h.Kube = kube.NewClient(wrapped)
+			f.clock = f.clock.Add(6 * time.Second)
+			if _, resp := f.call(http.MethodGet, "alice"); resp.State != tc.wantState {
+				t.Fatalf("the completion must report %q, got %+v", tc.wantState, resp)
+			}
+			if tc.readFails {
+				if state := string(f.secret(copilotLoginSecretName).Data[loginState]); state != copilotLoginCompleting {
+					t.Fatalf("the sign-in must keep its commit, got %q", state)
+				}
+				f.clock = f.clock.Add(copilotLoginLease + time.Second)
+				if _, resp := f.call(http.MethodGet, "alice"); resp.State != copilotLoginSucceeded {
+					t.Fatalf("after the lease, the completed sign-in must be reported as succeeded: %+v", resp)
+				}
+			}
+			token := f.secret(cetirunv1alpha1.CopilotTokenSecretName)
+			generation := token.Annotations[cetirunv1alpha1.AnnotationCopilotSignInGeneration]
+			if completed := generation != "" && token.Annotations[cetirunv1alpha1.AnnotationCopilotSignInCompleted] == generation; completed != tc.wantCompleted {
+				t.Fatalf("completed %v, want %v: %v", completed, tc.wantCompleted, token.Annotations)
+			}
+			if floor := token.Annotations[copilotSignInFloorAnnotation]; floor != tc.wantFloor {
+				t.Fatalf("floor %q, want %q", floor, tc.wantFloor)
 			}
 		})
 	}
