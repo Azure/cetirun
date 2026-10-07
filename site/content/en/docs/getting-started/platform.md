@@ -107,6 +107,65 @@ The operator chart declares `imagePullSecrets` but does not render
 it into its Deployment. That value cannot supply operator image-pull
 credentials; verify the actual node/service-account pull path separately.
 
+### Example: Azure Container Registry
+
+With the artifacts in an Azure Container Registry, these steps cover the
+nodes' image pulls and the operator's chart pulls. They assume the runtime
+chart (`cetirun.chart.repoURL`) is `oci://<registry>.azurecr.io/helm/cetirun`.
+Replace the example values first:
+
+```bash
+ACR_NAME=exampleregistry
+CLUSTER_RESOURCE_GROUP=example-rg
+CLUSTER_NAME=example-aks
+CHART_VERSION=0.1.0
+```
+
+1. Let the nodes pull images. This assigns `AcrPull` to the cluster's kubelet
+   identity, so it needs permission to assign roles on the registry:
+
+   ```bash
+   az aks update --resource-group "$CLUSTER_RESOURCE_GROUP" \
+     --name "$CLUSTER_NAME" --attach-acr "$ACR_NAME"
+   ```
+
+2. Give the operator's Helm client a token that can only read the runtime
+   chart. The token is created without passwords and one is generated
+   separately, so no command prints it, and the registry configuration is
+   written without the password on a command line. The Secret goes in the
+   operator namespace, `cetirun-system` by default; create it first if needed:
+
+   ```bash
+   az acr scope-map create --registry "$ACR_NAME" --name cetirun-chart-read \
+     --repository helm/cetirun content/read metadata/read
+   az acr token create --registry "$ACR_NAME" --name cetirun-operator \
+     --scope-map cetirun-chart-read --no-passwords
+   password=$(az acr token credential generate --registry "$ACR_NAME" \
+     --name cetirun-operator --password1 --expiration-in-days 90 \
+     --query 'passwords[0].value' -o tsv)
+   auth=$(printf '%s:%s' cetirun-operator "$password" | base64 | tr -d '\n')
+   (umask 077 && printf '{"auths":{"%s":{"auth":"%s"}}}\n' \
+     "$ACR_NAME.azurecr.io" "$auth" > registry-config.json)
+   unset password auth
+   kubectl create secret generic acr-helm-pull --namespace cetirun-system \
+     --type=kubernetes.io/dockerconfigjson \
+     --from-file=.dockerconfigjson=registry-config.json
+   ```
+
+   Use `kubectl create`, not `kubectl apply`, which would also copy the
+   credential into the `last-applied-configuration` annotation. Set
+   `acrDockerSecret: acr-helm-pull` (`cetirun-operator.acrDockerSecret` in the
+   platform chart). Generate a new password and replace the Secret before the
+   current one expires.
+
+3. Fetch the chart with the same file, as the operator does, then delete it:
+
+   ```bash
+   helm show chart "oci://$ACR_NAME.azurecr.io/helm/cetirun" \
+     --version "$CHART_VERSION" --registry-config registry-config.json
+   rm registry-config.json
+   ```
+
 ### Upgrading runtime registry configuration
 
 Operator-managed Agents reject raw `imagePullSecrets` overrides, including an
