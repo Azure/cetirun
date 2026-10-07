@@ -141,6 +141,9 @@ func (h *PodHandler) Validate(ctx context.Context, request admission.Request) ad
 	if expected.ExecutionHeld || agent.Spec.Suspended || slices.Contains(agent.Finalizers, sandbox.HoldFinalizer) {
 		return rejectPod(ctx, request, podDenied("ExecutionHeld", sandboxworkload.ErrExecutionHeld.Error()))
 	}
+	if expected.Placement != nil && h.placement == nil {
+		return rejectPod(ctx, request, podDenied("PlacementUnavailable", "recorded placement requires the configured authoritative placement reader"))
+	}
 	if failure := h.validatePodSources(ctx, expected, agent); failure != nil {
 		return rejectPod(ctx, request, failure)
 	}

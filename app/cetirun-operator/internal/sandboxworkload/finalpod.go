@@ -38,6 +38,14 @@ func ValidatePod(pod *corev1.Pod, expected Expectation) error {
 		expected.Template.Annotations["sidecar.istio.io/inject"] != "false" {
 		return fmt.Errorf("a complete Agent workload expectation is required; helper classification is not supported")
 	}
+	if expected.Placement != nil {
+		if err := expected.Placement.MatchesExpectation(expected); err != nil {
+			return err
+		}
+		if pod.Spec.NodeName != "" && !expected.Placement.containsNode(pod.Spec.NodeName) {
+			return &PodMismatchError{[]string{"spec.nodeName"}}
+		}
+	}
 	if err := validateExpectedInventory(expected.Template.Spec); err != nil {
 		return err
 	}

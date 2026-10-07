@@ -25,6 +25,11 @@ func (h *Handler) ValidateScheduledPod(ctx context.Context, request admission.Re
 	if failure != nil {
 		return reject(ctx, request, failure)
 	}
+	if expected.Placement != nil {
+		if _, failure := state.readAssignment(ctx, registry, expected); failure != nil {
+			return reject(ctx, request, failure)
+		}
+	}
 	node, registered, failure := state.readNode(ctx, registry, pod.Spec.NodeName)
 	if failure != nil {
 		return reject(ctx, request, failure)

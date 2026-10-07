@@ -48,7 +48,7 @@ func (r *registry) agentAssignment(pod *corev1.Pod) (*nodeReservation, *failure)
 	return assigned, nil
 }
 
-func (s *requestState) validateAgentPod(ctx context.Context, stateNamespace string, reservation *nodeReservation, pod *corev1.Pod, node *corev1.Node, binding bool) *failure {
+func (s *requestState) validateAgentPod(ctx context.Context, stateNamespace string, registry *registry, reservation *nodeReservation, pod *corev1.Pod, node *corev1.Node, binding bool) *failure {
 	if pod.Namespace != reservation.Namespace.Name {
 		return denied("ReservedNode", "destination Node is reserved for another workload identity")
 	}
@@ -56,41 +56,19 @@ func (s *requestState) validateAgentPod(ctx context.Context, stateNamespace stri
 	if failure := s.read(ctx, client.ObjectKey{Name: reservation.Namespace.Name}, namespace, "Namespace"); failure != nil {
 		return failure
 	}
-	owner := sandboxworkload.AgentOwner(reservation.Agent.Name, reservation.Agent.UID)
-	if namespace.UID != reservation.Namespace.UID || namespace.Name == stateNamespace ||
-		namespace.Labels[sandboxworkload.ProtectedNamespaceLabel] != "true" ||
-		namespace.Annotations[sandboxworkload.AgentNameAnnotation] != reservation.Agent.Name ||
-		namespace.Annotations[sandboxworkload.AgentUIDAnnotation] != string(reservation.Agent.UID) ||
-		!equality.Semantic.DeepEqual(namespace.OwnerReferences, []metav1.OwnerReference{owner}) {
-		return denied("NamespaceMismatch", "reserved workload namespace differs from its registered Agent ownership")
-	}
-	state := &corev1.ConfigMap{}
-	if failure := s.read(ctx, client.ObjectKey{Namespace: stateNamespace,
-		Name: sandboxworkload.PodExpectationName(namespace.Name, namespace.UID)}, state, "Expectation"); failure != nil {
+	expected, failure := s.readAgentExpectation(ctx, stateNamespace, namespace, false)
+	if failure != nil {
 		return failure
 	}
-	raw := state.Data[sandboxworkload.PodExpectationKey]
-	var expected sandboxworkload.Expectation
-	if len(raw) == 0 || len(raw) > maxExpectationBytes || len(state.Data) != 1 || len(state.BinaryData) != 0 {
-		return denied("ExpectationInvalid", "reserved placement requires a bounded controller-owned Pod expectation")
-	}
-	problems, err := strictjson.UnmarshalStrict([]byte(raw), &expected)
-	if err != nil || len(problems) != 0 || expected.Version != sandboxworkload.ExpectationVersion ||
-		expected.Agent != reservation.Agent || expected.Namespace != reservation.Namespace ||
-		expected.Workload != reservation.StatefulSet || expected.WorkloadKind != sandboxworkload.AgentWorkload ||
-		expected.AgentGeneration <= 0 || expected.Revision == "" || expected.ControllerRevision == "" ||
-		expected.Binding.AgentUID != reservation.Agent.UID ||
-		state.Annotations[sandboxworkload.RevisionAnnotation] != expected.Revision ||
-		state.Annotations[sandboxworkload.AgentUIDAnnotation] != string(reservation.Agent.UID) ||
-		!equality.Semantic.DeepEqual(state.OwnerReferences, []metav1.OwnerReference{owner}) {
+	if expected.Agent != reservation.Agent || expected.Namespace != reservation.Namespace || expected.Workload != reservation.StatefulSet {
 		return denied("ExpectationMismatch", "controller expectation does not match the exact registered workload identities")
 	}
-	var lifecycle struct {
-		ExecutionHeld *bool `json:"executionHeld"`
+	if expected.Placement != nil {
+		if _, failure := s.readAssignment(ctx, registry, *expected); failure != nil {
+			return failure
+		}
 	}
-	if json.Unmarshal([]byte(raw), &lifecycle) != nil || lifecycle.ExecutionHeld == nil {
-		return denied("ExpectationInvalid", "controller expectation must explicitly record its execution hold")
-	}
+	owner := sandboxworkload.AgentOwner(reservation.Agent.Name, reservation.Agent.UID)
 	agent := &api.Agent{}
 	if failure := s.read(ctx, client.ObjectKey{Name: reservation.Agent.Name}, agent, "Agent"); failure != nil {
 		return failure
@@ -127,7 +105,7 @@ func (s *requestState) validateAgentPod(ctx context.Context, stateNamespace stri
 	if pod.Spec.NodeName != "" {
 		expected.Template.Spec.NodeName = node.Name
 	}
-	if failure := validateAgentTemplate(pod, node, expected); failure != nil {
+	if failure := validateAgentTemplate(pod, node, *expected); failure != nil {
 		return failure
 	}
 	if expected.Template.Spec.ServiceAccountName == "" {
@@ -135,4 +113,74 @@ func (s *requestState) validateAgentPod(ctx context.Context, stateNamespace stri
 	}
 	account := &corev1.ServiceAccount{}
 	return s.read(ctx, client.ObjectKey{Namespace: pod.Namespace, Name: expected.Template.Spec.ServiceAccountName}, account, "ServiceAccount")
+}
+
+func (s *requestState) validateOptionalAgentPlacement(ctx context.Context, stateNamespace string, registry *registry, pod *corev1.Pod) *failure {
+	namespace := &corev1.Namespace{}
+	if failure := s.read(ctx, client.ObjectKey{Name: pod.Namespace}, namespace, "Namespace"); failure != nil {
+		return failure
+	}
+	// Look up the protected state independently of both registry reservations
+	// and Pod/namespace markers, which must not hide a recorded binding.
+	expected, failure := s.readAgentExpectation(ctx, stateNamespace, namespace, true)
+	if failure != nil || expected == nil {
+		return failure
+	}
+	if _, failure := s.readAssignment(ctx, registry, *expected); failure != nil {
+		return failure
+	}
+	if err := sandboxworkload.ValidatePod(pod, *expected); err != nil {
+		return denied("AgentTemplateMismatch", "Pod differs from the controller-owned Agent template")
+	}
+	return nil
+}
+
+func (s *requestState) readAgentExpectation(ctx context.Context, stateNamespace string, namespace *corev1.Namespace, optionalPlacement bool) (*sandboxworkload.Expectation, *failure) {
+	state := &corev1.ConfigMap{}
+	if failure := s.read(ctx, client.ObjectKey{Namespace: stateNamespace,
+		Name: sandboxworkload.PodExpectationName(namespace.Name, namespace.UID)}, state, "Expectation"); failure != nil {
+		if optionalPlacement && failure.reason == "ExpectationMissing" {
+			return nil, nil
+		}
+		return nil, failure
+	}
+	raw := state.Data[sandboxworkload.PodExpectationKey]
+	var expected sandboxworkload.Expectation
+	if len(raw) == 0 || len(raw) > maxExpectationBytes || len(state.Data) != 1 || len(state.BinaryData) != 0 {
+		return nil, denied("ExpectationInvalid", "reserved placement requires a bounded controller-owned Pod expectation")
+	}
+	problems, err := strictjson.UnmarshalStrict([]byte(raw), &expected)
+	if err != nil || len(problems) != 0 {
+		return nil, denied("ExpectationInvalid", "controller expectation contains malformed, unknown or duplicate fields")
+	}
+	var lifecycle struct {
+		ExecutionHeld *bool           `json:"executionHeld"`
+		Placement     json.RawMessage `json:"placement"`
+	}
+	if json.Unmarshal([]byte(raw), &lifecycle) != nil || (len(lifecycle.Placement) != 0 && expected.Placement == nil) {
+		return nil, denied("ExpectationInvalid", "controller expectation must record a complete placement binding when the field is present")
+	}
+	if optionalPlacement && expected.Placement == nil {
+		return nil, nil
+	}
+	owner := sandboxworkload.AgentOwner(expected.Agent.Name, expected.Agent.UID)
+	if namespace.Name == stateNamespace || namespace.Labels[sandboxworkload.ProtectedNamespaceLabel] != "true" ||
+		namespace.Annotations[sandboxworkload.AgentNameAnnotation] != expected.Agent.Name ||
+		namespace.Annotations[sandboxworkload.AgentUIDAnnotation] != string(expected.Agent.UID) ||
+		!equality.Semantic.DeepEqual(namespace.OwnerReferences, []metav1.OwnerReference{owner}) {
+		return nil, denied("NamespaceMismatch", "reserved workload namespace differs from its registered Agent ownership")
+	}
+	if expected.Version != sandboxworkload.ExpectationVersion || !validIdentity(expected.Agent) || !validIdentity(expected.Workload) ||
+		expected.Namespace != (sandboxworkload.ObjectIdentity{Name: namespace.Name, UID: namespace.UID}) ||
+		expected.WorkloadKind != sandboxworkload.AgentWorkload || expected.AgentGeneration <= 0 ||
+		expected.Revision == "" || expected.ControllerRevision == "" || expected.Binding.AgentUID != expected.Agent.UID ||
+		state.Annotations[sandboxworkload.RevisionAnnotation] != expected.Revision ||
+		state.Annotations[sandboxworkload.AgentUIDAnnotation] != string(expected.Agent.UID) ||
+		!equality.Semantic.DeepEqual(state.OwnerReferences, []metav1.OwnerReference{owner}) {
+		return nil, denied("ExpectationMismatch", "controller expectation does not match the exact registered workload identities")
+	}
+	if lifecycle.ExecutionHeld == nil {
+		return nil, denied("ExpectationInvalid", "controller expectation must explicitly record its execution hold")
+	}
+	return &expected, nil
 }

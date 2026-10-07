@@ -1131,6 +1131,38 @@ start/change barrier, or proof of pre-start and ongoing runtime enforcement.
 Those gates and the actual governed-Agent end-to-end demonstration remain
 separate requirements.
 
+#### Durable placement binding during held preparation
+
+`sandboxSources.placementConfigMapName` is a separate, default-empty controller
+opt-in. It requires enabled sources and must select the same registry as
+`sandboxAdmission.placementConfigMapName`. It adds only Node `get` permission
+to the controller and does not write the placement registry.
+
+After validating the owned zero-replica StatefulSet, preparation reads its
+registered reservation and the current Node identities. Before publishing the
+held Pod expectation, it records the exact Agent, namespace, StatefulSet, HOME,
+registry UID and Node UID/provider-ID set in the existing preparation receipt.
+The expectation pins both that receipt and the registry's current UID/version.
+The platform must enroll the actual staged workload UID; a missing reservation
+leaves the workload held and preparation incomplete, not implicitly assigned.
+
+The recorded identity is immutable for this namespace/HOME lifetime. A changed
+Node set, replaced registry or workload, or disabled reader cannot silently
+reassign it. Node status and unrelated metadata updates do not append history
+or rewrite the binding. Cleanup passes the recorded tuple to the separately
+qualified writer-exclusion provider, even if the current registry, Node or
+configuration is unavailable; it does not rediscover old writers by name.
+
+Opted-in receipts use the internal `v2` preparation format, which requires the
+placement payload. Existing unselected preparation keeps `v1`; losing a `v2`
+payload is an error, not an unassigned fallback. Upgrade readers before selecting
+this option and do not downgrade binaries while such receipts require cleanup.
+
+This is durable identity plumbing, not proof of lifetime exclusivity or
+Compute VM destruction. No automatic enrollment, qualified fence adapter,
+cloud deletion, execution permit or hold release is added. Those requirements
+and a real governed-Agent run remain open.
+
 #### Schema and binary upgrades
 
 Helm upgrades all four CRDs as ordinary templates. Compatible schema changes

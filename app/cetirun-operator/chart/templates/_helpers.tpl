@@ -49,6 +49,17 @@ Otherwise: repository:tag
 {{- if and $sources.bootstrapOwnedPrerequisites (not $sources.enabled) -}}
 {{- fail "sandboxSources.bootstrapOwnedPrerequisites requires enabled sources" -}}
 {{- end -}}
+{{- if and (hasKey $sources "placementConfigMapName") (not (kindIs "string" $sources.placementConfigMapName)) -}}
+{{- fail "sandboxSources.placementConfigMapName must be a resource name" -}}
+{{- end -}}
+{{- if $sources.placementConfigMapName -}}
+{{- if not (and $sources.enabled (eq $sources.placementConfigMapName .Values.sandboxAdmission.placementConfigMapName)) -}}
+{{- fail "sandboxSources.placementConfigMapName requires enabled sources and the same admission placement registry" -}}
+{{- end -}}
+{{- if or (eq $sources.placementConfigMapName $sources.platformConfigMapName) (eq $sources.placementConfigMapName $sources.skillsCatalogConfigMapName) (gt (len $sources.placementConfigMapName) 253) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$" $sources.placementConfigMapName)) -}}
+{{- fail "sandboxSources.placementConfigMapName must be a separate valid ConfigMap name" -}}
+{{- end -}}
+{{- end -}}
 {{- if and (hasKey $sources "skillsCatalogConfigMapName") (not (kindIs "string" $sources.skillsCatalogConfigMapName)) -}}
 {{- fail "sandboxSources.skillsCatalogConfigMapName must be a resource name" -}}
 {{- end -}}
@@ -62,7 +73,7 @@ Otherwise: repository:tag
 {{- end -}}
 {{- if $sources.enabled -}}
 {{- range $key, $_ := $sources -}}
-{{- if not (has $key (list "enabled" "bootstrapOwnedPrerequisites" "platformConfigMapName" "homeClaimName" "skillsClaimName" "skillsCatalogConfigMapName" "helpers")) -}}
+{{- if not (has $key (list "enabled" "bootstrapOwnedPrerequisites" "platformConfigMapName" "homeClaimName" "skillsClaimName" "skillsCatalogConfigMapName" "placementConfigMapName" "helpers")) -}}
 {{- fail (printf "unsupported sandboxSources field %s" $key) -}}
 {{- end -}}
 {{- end -}}
@@ -100,6 +111,9 @@ Otherwise: repository:tag
 {{- end -}}
 {{- if not $sources.skillsCatalogConfigMapName -}}
 {{- $_ := unset $config "skillsCatalogConfigMapName" -}}
+{{- end -}}
+{{- if not $sources.placementConfigMapName -}}
+{{- $_ := unset $config "placementConfigMapName" -}}
 {{- end -}}
 {{- $_ := set $config "admissionServiceAccount" "cetirun-sandbox-admission" -}}
 {{- toJson $config -}}

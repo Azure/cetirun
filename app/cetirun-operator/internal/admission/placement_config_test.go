@@ -192,6 +192,7 @@ func TestProtectedPodTopologyRequiresFreshRegisteredNode(t *testing.T) {
 		})
 	}
 }
+
 func TestPlacementServerRequiresProtectedPodStateNamespace(t *testing.T) {
 	config := testConfig()
 	config.PlacementConfigMapName = "sandbox-placement"
@@ -200,5 +201,49 @@ func TestPlacementServerRequiresProtectedPodStateNamespace(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "configured controller state namespace") {
 			t.Fatalf("placement serving with namespace %q did not reject before startup: %v", namespace, err)
 		}
+	}
+
+}
+
+func TestRecordedPlacementCannotLoseItsAdmissionReader(t *testing.T) {
+	f, _, registry := newScheduledPodFixture(t)
+	ctx := context.Background()
+	placement, source, err := f.handler.placement.ReadAssignment(ctx, f.expected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.expected.Placement = placement
+	f.expected.Sources = append(f.expected.Sources, source)
+	raw, err := json.Marshal(f.expected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.state.Data[PodExpectationKey] = string(raw)
+	if err := f.client.Update(ctx, f.state); err != nil {
+		t.Fatal(err)
+	}
+	request := podRequest(t, f.pod, admissionv1.Update, f.pod)
+	if response := f.handler.Validate(ctx, request); !response.Allowed {
+		t.Fatalf("recorded placement was not accepted with its verified reader: %+v", response.Result)
+	}
+	withoutPlacement, err := NewPodHandler(f.client, PodConfig{StateNamespace: registry.Namespace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := withoutPlacement.Validate(ctx, request)
+	if response.Allowed || !strings.Contains(response.Result.Message, "PlacementUnavailable") {
+		t.Fatalf("recorded placement silently fell back after reader removal: %+v", response.Result)
+	}
+	f.expected.Placement.Home.UID = "different-home-uid"
+	raw, err = json.Marshal(f.expected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.state.Data[PodExpectationKey] = string(raw)
+	if err := f.client.Update(ctx, f.state); err != nil {
+		t.Fatal(err)
+	}
+	if response := f.handler.Validate(ctx, request); response.Allowed {
+		t.Fatal("placement bound to another HOME was accepted")
 	}
 }

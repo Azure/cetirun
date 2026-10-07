@@ -190,7 +190,22 @@ func (r *AgentReconciler) publishSandboxExpectation(ctx context.Context, attempt
 		!sandboxworkload.SamePodTemplate(workload.Spec.Template, *template) {
 		return fmt.Errorf("Sandbox staged workload is not the exact owned, held template")
 	}
+	var placementSources []sandboxworkload.SourceReference
+	if r.SandboxPreparation.Placement != nil {
+		if err := check(ctx); err != nil {
+			return err
+		}
+		var err error
+		placementSources, err = r.captureSandboxPlacement(ctx, attempt, workload, template)
+		if err != nil {
+			return err
+		}
+		// Initial enrollment changes durable prerequisites, not the execution
+		// hold. Subsequent write guards must cover the newly recorded tuple.
+		check = r.sandboxPreparationGuard(attempt, bindings)
+	}
 	candidates := slices.Clone(attempt.sources)
+	candidates = append(candidates, placementSources...)
 	journal, err := r.sandboxGrantJournal().ReadSnapshot(ctx, attempt.agent.Name, attempt.agent.UID)
 	if err != nil {
 		return err
@@ -282,6 +297,7 @@ func (r *AgentReconciler) publishSandboxExpectation(ctx context.Context, attempt
 		return err
 	}
 	expected.ControllerRevision = controllerRevision
+	expected.Placement = attempt.prerequisites.Placement.DeepCopy()
 	object, err := sandboxworkload.PodExpectationObject(r.OperatorNamespace, expected)
 	if err != nil {
 		return err

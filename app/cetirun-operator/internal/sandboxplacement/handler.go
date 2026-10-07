@@ -11,6 +11,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
 	admissionv1 "k8s.io/api/admission/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
@@ -141,6 +142,7 @@ func (h *Handler) Validate(ctx context.Context, request admission.Request) admis
 			return reject(ctx, request, failure)
 		}
 	}
+	agentValidated := false
 	if target.Name != "" {
 		node, registration, failure := state.readNode(ctx, registry, target.Name)
 		if failure != nil {
@@ -171,9 +173,17 @@ func (h *Handler) Validate(ctx context.Context, request admission.Request) admis
 				if failure := daemonTargetsNode(pod, node.Name); failure != nil {
 					return reject(ctx, request, failure)
 				}
-			} else if failure := state.validateAgentPod(ctx, h.config.Namespace, registration.Reservation, pod, node, binding); failure != nil {
-				return reject(ctx, request, failure)
+			} else {
+				if failure := state.validateAgentPod(ctx, h.config.Namespace, registry, registration.Reservation, pod, node, binding); failure != nil {
+					return reject(ctx, request, failure)
+				}
+				agentValidated = true
 			}
+		}
+	}
+	if !agentValidated && daemon == nil {
+		if failure := state.validateOptionalAgentPlacement(ctx, h.config.Namespace, registry, pod); failure != nil {
+			return reject(ctx, request, failure)
 		}
 	}
 	if failure := state.recheck(ctx); failure != nil {
@@ -188,8 +198,9 @@ type objectSnapshot struct {
 }
 
 type requestState struct {
-	reader    client.Reader
-	snapshots []objectSnapshot
+	reader         client.Reader
+	snapshots      []objectSnapshot
+	registrySource sandboxworkload.SourceReference
 }
 
 func (s *requestState) readRegistry(ctx context.Context, config Config) (*registry, *failure) {
@@ -203,6 +214,10 @@ func (s *requestState) readRegistry(ctx context.Context, config Config) (*regist
 	registry, err := decodeRegistry(object.Data[ConfigMapKey], config.Namespace)
 	if err != nil {
 		return nil, denied("RegistryInvalid", err.Error())
+	}
+	s.registrySource = sandboxworkload.SourceReference{
+		APIVersion: "v1", Kind: "ConfigMap", Namespace: object.Namespace, Name: object.Name,
+		UID: object.UID, ResourceVersion: object.ResourceVersion,
 	}
 	return registry, nil
 }

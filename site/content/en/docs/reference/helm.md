@@ -439,6 +439,18 @@ registry-repair resources on separately registered unreserved nodes. New serving
 Pods are also gated; maintain working replicas and a stopped maintenance
 recovery procedure rather than assuming a serving-workload bypass.
 
+`sandboxSources.placementConfigMapName` separately opts the controller into
+durable placement binding and must match the admission registry. The default
+is empty; selecting it adds only Node `get` permission to the controller.
+After zero-replica staging, the current reservation is bound to the exact
+namespace/HOME/workload identities in the existing preparation receipt before
+the held expectation is published. Missing enrollment leaves preparation
+incomplete; changed identities require a separately qualified handoff, not
+automatic reassignment. Cleanup retains the historical Node UID/provider-ID
+tuple without depending on the live registry. This upgrades selected internal
+receipts to `v2`, so keep compatible readers until their cleanup is complete.
+It neither qualifies fencing nor enables execution.
+
 `sandboxAdmission.validationMode` defaults to `compatible`; `strict` is an
 explicit option that requires ordered schema/binary upgrades. Neither mode
 disables authorization or changes the webhook failure policy. Review schema
