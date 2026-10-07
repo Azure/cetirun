@@ -735,9 +735,12 @@ func (h *InstanceHandler) toInstanceResponse(ctx context.Context, instance *ceti
 		resp.UpgradeAvailable = true
 	}
 
-	// Get gateway token and access URL for Ready or Provisioning instances
+	// Get gateway token and access URL for Ready or Provisioning instances.
+	// The operator records the Agent's namespace once it has created it; until
+	// then there are no Secrets to read.
 	if instance.Spec.Agent.Type != cetirunv1alpha1.AgentTypeCustom &&
-		(instance.Status.Phase == "Ready" || instance.Status.Phase == "Provisioning") {
+		(instance.Status.Phase == "Ready" || instance.Status.Phase == "Provisioning") &&
+		instance.Status.Namespace != "" {
 		ns := instance.Status.Namespace
 		token, err := h.Kube.GetGatewayToken(ctx, ns, instance.Spec.GatewayTokenSecretRef)
 		if err != nil {
@@ -785,7 +788,8 @@ func (h *InstanceHandler) toInstanceResponse(ctx context.Context, instance *ceti
 			}
 		}
 	} else if instance.Spec.Agent.Type != cetirunv1alpha1.AgentTypeCustom {
-		// For non-Ready/Provisioning states, return original URL (without token)
+		// For other states, and before the namespace is recorded, return the
+		// original URL (without token)
 		resp.AccessURL = instance.Status.AccessURL
 	}
 	if instance.Spec.Agent.Type == cetirunv1alpha1.AgentTypeCustom &&
