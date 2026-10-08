@@ -370,6 +370,9 @@ RuntimeClass/StorageClass `get` permissions. Enabled sources grant the controlle
 These controller permissions are cluster-wide; staging still verifies exact
 Agent ownership and namespace identities. Admission remains read-only, with no
 cluster-wide Cilium policy or endpoint write permissions added.
+Sources additionally grant controller-only `get` on Istio Gateways for exact
+native-access input pinning. This is read-only access to shared routing
+infrastructure, not Gateway mutation or automatic route/runtime activation.
 The optional skills catalog adds only PersistentVolume `get` for its dependency
 metadata; it adds no Secret lists or cluster-wide ConfigMap access.
 

@@ -78,6 +78,17 @@ type Intent struct {
 	SourceDigests            map[string]string          `json:"sourceDigests"`
 	TeamSharedDigest         string                     `json:"teamSharedDigest"`
 	IngressMode              api.AgentPolicyIngressMode `json:"ingressMode"`
+	Access                   *AccessBinding             `json:"access,omitempty"`
+}
+
+// AccessBinding pins an already-created, nonforwarding route slot. Runtime
+// publication may update this UID, never create or adopt a replacement.
+type AccessBinding struct {
+	Route   w.ObjectIdentity  `json:"route"`
+	Service w.SourceReference `json:"service"`
+	Gateway w.SourceReference `json:"gateway"`
+	Host    string            `json:"host"`
+	Port    int32             `json:"port"`
 }
 
 func (intent Intent) Validate() error {
@@ -697,6 +708,19 @@ func validateIntent(intent Intent) error {
 			return fmt.Errorf("%w: required binding, placement or storage source is missing", ErrUnavailable)
 		}
 	}
+	if access := intent.Access; access != nil {
+		if intent.IngressMode != api.AgentPolicyIngressAuthenticated ||
+			!identity(access.Route) || access.Route.Name != "cetirun-"+intent.Agent.Name ||
+			len(validation.IsDNS1123Subdomain(access.Host)) != 0 || access.Host == "" ||
+			access.Port < 1 || access.Port > 65535 ||
+			access.Service.APIVersion != "v1" || access.Service.Kind != "Service" ||
+			access.Service.Namespace != intent.Namespace.Name || access.Service.Name != intent.Workload.Name ||
+			access.Gateway.APIVersion != "networking.istio.io/v1beta1" || access.Gateway.Kind != "Gateway" ||
+			access.Gateway.Namespace == "" ||
+			!slices.Contains(intent.Sources, access.Service) || !slices.Contains(intent.Sources, access.Gateway) {
+			return fmt.Errorf("%w: access requires exact owned route and pinned Service/Gateway inputs", ErrUnavailable)
+		}
+	}
 	return nil
 }
 
@@ -748,6 +772,10 @@ func cloneExecution(execution Execution) Execution {
 	execution.Intent.Sources = slices.Clone(execution.Intent.Sources)
 	execution.Intent.Placement = execution.Intent.Placement.DeepCopy()
 	execution.Intent.SourceDigests = maps.Clone(execution.Intent.SourceDigests)
+	if execution.Intent.Access != nil {
+		access := *execution.Intent.Access
+		execution.Intent.Access = &access
+	}
 	return execution
 }
 

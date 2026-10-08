@@ -39,6 +39,13 @@ func runningExecutionFixture(t *testing.T, typ string, configure ...func(*prepar
 	if err != nil {
 		t.Fatal(err)
 	}
+	completeRunningFixture(t, f, target, intent)
+	return f, target, intent
+}
+
+func completeRunningFixture(t *testing.T, f *preparationFixture, target sandboxcoordination.EnrolledTarget, intent sandboxcoordination.Intent) {
+	t.Helper()
+	ctx := context.Background()
 	agent := f.current(t)
 	controllerutil.RemoveFinalizer(agent, sandbox.HoldFinalizer)
 	if err := f.client.Update(ctx, agent); err != nil {
@@ -83,7 +90,6 @@ func runningExecutionFixture(t *testing.T, typ string, configure ...func(*prepar
 	if err := f.client.Create(ctx, pod); err != nil {
 		t.Fatal(err)
 	}
-	return f, target, intent
 }
 
 func writeRunningExpectation(t *testing.T, f *preparationFixture, intent sandboxcoordination.Intent, expected w.Expectation) {

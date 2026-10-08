@@ -334,6 +334,39 @@ Stock startup does not install this component as an execution adapter. Its
 unit and local API-server tests use synthetic runtime inputs and observations;
 they do not establish live enforcement or an end-to-end governed Agent run.
 
+### Governed native access lifecycle
+
+`SandboxExecutionAccess` supplies concrete Istio API operations for the first
+OpenClaw bring-up; it is not installed by stock startup. `Enroll` accepts only
+verified held preparation and creates a nonforwarding, Agent-owned route slot.
+The returned coordination intent pins that route UID and the current Service,
+HTTPS Gateway, host and native port. Service/Gateway inputs participate in the
+same effective-source digests and reservations as the workload inputs.
+An existing foreign, changed or used route is never adopted.
+
+`Publish` requires the exact Running ticket, current running-input checks and
+separate fresh guest-external enforcement evidence. It updates only the enrolled
+route UID, preserving the native `/ui/<agent>` redirect, HTTP and WebSocket
+behavior. It does not expose terminal, desktop, sign-in helper or webhook routes.
+No new access URL, global Ready condition or runtime permission is written.
+Shared gateway authentication and its ongoing enforcement must already be
+independently qualified; an HTTPS Gateway object is not authentication evidence.
+
+`Withdraw` uses the recorded Stopping ticket and route ownership even when
+current policy or gateway inputs are gone. It first makes the exact route
+nonforwarding, advancing its resource version, then conditionally deletes that
+UID and verifies absence. This invalidates delayed publication updates without
+recreating routes or touching a same-name replacement. Unknown results retain
+the coordination reservation; route removal is not writer fencing or a reason
+to release it. Disabled ingress requires route absence and creates no slot.
+
+The optional `access` intent field requires updated readers while such records
+exist. Legacy intents without it cannot publish authenticated access. This
+component does not install a physical start/fencing provider or replace the
+controller's held dispatch. Hermes and helper-route support are not included in
+this first native access slice. Offline tests exercise API behavior with
+synthetic runtime evidence, not a running proxy or an end-to-end model request.
+
 ### Existing activation boundary
 
 The new Team bindings and Agent `sandboxRef` remain optional in this additive
@@ -762,6 +795,8 @@ staging needs for the compiler's policy resources. The controller's ClusterRole
 grants these permissions cluster-wide; the staging path still verifies exact
 Agent ownership and namespace identities. Admission remains read-only, and no
 cluster-wide Cilium policy or endpoint write permissions are granted.
+Sources also grant the controller `get` on Istio Gateways for exact access-source
+pinning; the shared Gateway is not created, updated or deleted by this path.
 The optional skills publication catalog described below adds only
 PersistentVolume `get` for its metadata dependencies, not write permissions,
 Secret lists or cluster-wide ConfigMap access.
