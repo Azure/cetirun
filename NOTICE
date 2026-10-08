@@ -161,8 +161,7 @@ copyright, attribution, and source-distribution obligations where applicable.
   Commercial/service terms for installed tools are not granted by CetiRun's MIT
   license.
 * agents/openclaw/Dockerfile adds OpenClaw, ClawHub, the OpenClaw ACP, Brave,
-  Discord, Feishu, Microsoft Teams, Perplexity, and Slack extensions, and Python
-  auth-helper dependencies.
+  Discord, Feishu, Microsoft Teams, Perplexity, and Slack extensions.
 * agents/hermes/Dockerfile installs the checksum-pinned Hermes Agent
   v2026.9.24 source release, its checked-in uv/npm dependency locks, and the
   upstream-pinned SQLite compatibility library. CetiRun's Teams plugin is added
