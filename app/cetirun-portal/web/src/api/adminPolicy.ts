@@ -3,15 +3,15 @@
 
 import { apiFetch } from "./fetch";
 
-/** Kubernetes metadata returned by the governance administration endpoints. */
-export interface GovernanceMetadata {
+/** Kubernetes metadata returned by policy administration endpoints. */
+export interface PolicyMetadata {
   name: string;
   uid?: string;
   generation?: number;
   creationTimestamp?: string;
 }
 
-export interface GovernanceCondition {
+export interface PolicyCondition {
   type: string;
   status: "True" | "False" | "Unknown";
   reason?: string;
@@ -21,46 +21,17 @@ export interface GovernanceCondition {
 export interface AgentPolicyResource {
   apiVersion?: string;
   kind?: "AgentPolicy";
-  metadata: GovernanceMetadata;
+  metadata: PolicyMetadata;
   spec: Record<string, unknown>;
-  status?: { observedGeneration?: number; conditions?: GovernanceCondition[] };
+  status?: { observedGeneration?: number; conditions?: PolicyCondition[] };
 }
 
 export interface SandboxResource {
   apiVersion?: string;
   kind?: "Sandbox";
-  metadata: GovernanceMetadata;
+  metadata: PolicyMetadata;
   spec: Record<string, unknown>;
-  status?: { observedGeneration?: number; conditions?: GovernanceCondition[] };
-}
-
-export interface GovernanceAction {
-  apiVersion?: string;
-  kind?: "GovernanceAction";
-  metadata: GovernanceMetadata;
-  spec: {
-    requester: { kind: string; subject: string };
-    targetRef: { apiVersion: string; kind: string; name: string; uid: string; generation: number };
-    operation: "Suspend" | "Resume" | "Restart" | "Reconcile";
-    expectedProjections: Record<string, string>;
-    reason: string;
-    requestedAt: string;
-    expiresAt: string;
-    approval?: {
-      decision: "Approved" | "Denied";
-      approver: { kind: string; tenantID: string; objectID: string };
-      actionDigest: string;
-      approvedAt: string;
-      expiresAt: string;
-    };
-  };
-  status?: {
-    phase?: string;
-    resultSummary?: string;
-    observedGeneration?: number;
-    observedProjections?: Record<string, string>;
-    conditions?: GovernanceCondition[];
-  };
+  status?: { observedGeneration?: number; conditions?: PolicyCondition[] };
 }
 
 async function errorMessage(response: Response, fallback: string): Promise<string> {
@@ -72,7 +43,7 @@ async function errorMessage(response: Response, fallback: string): Promise<strin
   }
 }
 
-async function request<T>(path: string, options?: RequestInit, fallback = "Governance request failed"): Promise<T> {
+async function request<T>(path: string, options?: RequestInit, fallback = "Policy request failed"): Promise<T> {
   const response = await apiFetch(path, options);
   if (!response.ok) throw new Error(await errorMessage(response, fallback));
   if (response.status === 204) return undefined as T;
@@ -109,18 +80,4 @@ export function updateSandbox(name: string, spec: Record<string, unknown>): Prom
 }
 export function deleteSandbox(name: string): Promise<void> {
   return request(`/api/v1/admin/sandboxes/${encodeURIComponent(name)}`, { method: "DELETE" }, "Failed to delete Sandbox");
-}
-
-export function listGovernanceActions(): Promise<GovernanceAction[]> {
-  return request("/api/v1/admin/governance/actions", undefined, "Failed to list governance actions");
-}
-export function getGovernanceAction(name: string): Promise<GovernanceAction> {
-  return request(`/api/v1/admin/governance/actions/${encodeURIComponent(name)}`, undefined, "Failed to load governance action");
-}
-export function decideGovernanceAction(name: string, decision: "Approved" | "Denied"): Promise<GovernanceAction> {
-  return request(
-    `/api/v1/admin/governance/actions/${encodeURIComponent(name)}/approval`,
-    { method: "POST", body: JSON.stringify({ decision }) },
-    `Failed to ${decision.toLowerCase()} governance action`,
-  );
 }

@@ -73,10 +73,10 @@ func sampleInstance() *cetirunv1alpha1.Agent {
 			Agent:      cetirunv1alpha1.HarnessSpec{Type: cetirunv1alpha1.AgentTypeOpenClaw},
 			Team:       "aks",
 			SandboxRef: "standard",
-			Governance: cetirunv1alpha1.GovernanceSpec{TeamAuthorization: cetirunv1alpha1.TeamAuthorization{
-				Subject:      cetirunv1alpha1.GovernanceSubject{Kind: "User", TenantID: managementTenant, ObjectID: managementOwner},
+			TeamAuthorization: cetirunv1alpha1.TeamAuthorization{
+				Subject:      cetirunv1alpha1.EntraSubject{Kind: "User", TenantID: managementTenant, ObjectID: managementOwner},
 				AuthorizedAt: reconcileTime,
-			}},
+			},
 			User: cetirunv1alpha1.UserSpec{
 				Alias:       "alice",
 				DisplayName: "Alice Smith",
@@ -108,7 +108,7 @@ func governedTestTeam(name string) *cetirunv1alpha1.Team {
 	return &cetirunv1alpha1.Team{
 		ObjectMeta: metav1.ObjectMeta{Name: name, UID: types.UID("team-" + name)},
 		Spec: cetirunv1alpha1.TeamSpec{
-			Membership: cetirunv1alpha1.TeamMembershipSpec{Subjects: []cetirunv1alpha1.GovernanceSubject{{
+			Membership: cetirunv1alpha1.TeamMembershipSpec{Subjects: []cetirunv1alpha1.EntraSubject{{
 				Kind: "User", TenantID: managementTenant, ObjectID: managementOwner,
 			}}},
 			NormalAgentPolicyRef: "normal",
@@ -591,7 +591,7 @@ func TestCreateInstance_NoTeamRejected(t *testing.T) {
 		Kube: kube.NewClient(fc),
 	}
 
-	// Governance always requires a Team; there is no ungoverned solo path.
+	// Policy always requires a Team; there is no ungoverned solo path.
 	body := CreateInstanceRequest{Agent: &agentconfig.Input{}}
 	bodyBytes, _ := json.Marshal(body)
 

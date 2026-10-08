@@ -59,7 +59,7 @@ type AgentSpec struct {
 	PolicyClass AgentPolicyClass `json:"policyClass,omitempty"`
 
 	// Model is the Agent's preferred default model as exposed by the platform
-	// AI Gateway, such as a shared model or copilot/<model>. Governance rejects
+	// AI Gateway, such as a shared model or copilot/<model>. Policy resolution rejects
 	// an explicitly requested model that is outside the effective policy.
 	// +kubebuilder:validation:MaxLength=256
 	// +optional
@@ -82,9 +82,9 @@ type AgentSpec struct {
 	// +optional
 	AgentIdentity *AgentIdentitySpec `json:"agentIdentity,omitempty"`
 
-	// Governance contains platform-written enrollment and Team authorization
-	// evidence. A governed Agent must have a complete Team/Sandbox binding.
-	Governance GovernanceSpec `json:"governance"`
+	// TeamAuthorization contains platform-written evidence that the verified
+	// owner was assigned to the selected Team. It is not user editable.
+	TeamAuthorization TeamAuthorization `json:"teamAuthorization"`
 
 	// GatewayTokenSecretRef names the built-in Agent's multi-purpose Secret
 	// in the instance namespace. Required for openclaw/hermes and forbidden for
@@ -135,7 +135,7 @@ type TailscaleSpec struct {
 const TailscaleAuthKeyField = "TAILSCALE_AUTH_KEY"
 
 // ModelAccessSpec selects the Agent's requested model sources in the AI
-// Gateway. Governance intersects these requests with the effective
+// Gateway. Policy resolution intersects these requests with the effective
 // AgentPolicy; both sources may be disabled for an Agent with no model access.
 type ModelAccessSpec struct {
 	// SharedModels requests the models administrators share through the AI
@@ -147,6 +147,13 @@ type ModelAccessSpec struct {
 	// The effective policy must also allow it.
 	// +optional
 	GitHubCopilot *bool `json:"githubCopilot,omitempty"`
+
+	// MonthlyBudgetUSD optionally lowers or raises this Agent's native Gateway
+	// budget within the effective AgentPolicy maximum. Omission selects the
+	// policy default.
+	// +kubebuilder:validation:Pattern=`^(0|[1-9][0-9]*)(\.[0-9]{1,6})?$`
+	// +optional
+	MonthlyBudgetUSD string `json:"monthlyBudgetUSD,omitempty"`
 }
 
 // SharedModelsEnabled reports whether shared models were explicitly requested.
@@ -174,7 +181,6 @@ type UserSpec struct {
 	// Email address for notifications (optional).
 	// +optional
 	Email string `json:"email,omitempty"`
-
 }
 
 // HelmSpec allows per-instance Helm chart configuration overrides.
@@ -270,59 +276,54 @@ type AgentStatus struct {
 	// +optional
 	RegistryCredentials *RegistryCredentialsStatus `json:"registryCredentials,omitempty"`
 
-	// Governance records the resolved authorization and expected component
-	// revisions. Detailed Sandbox, Gateway and identity evidence remains in
-	// their existing status fields.
+	// Policy records the resolved AgentPolicy and the revisions each enforcement
+	// component must apply. Detailed component evidence remains in its existing
+	// status field.
 	// +optional
-	Governance *GovernanceStatus `json:"governance,omitempty"`
-}
-
-// GovernanceSpec contains platform-written authorization evidence. It is not
-// a user editable ownership API.
-type GovernanceSpec struct {
-	TeamAuthorization TeamAuthorization `json:"teamAuthorization"`
-	// +kubebuilder:validation:Pattern=`^(0|[1-9][0-9]*)(\.[0-9]{1,6})?$`
-	// +optional
-	GatewayBudgetUSD string `json:"gatewayBudgetUSD,omitempty"`
+	Policy *PolicyStatus `json:"policy,omitempty"`
 }
 
 type TeamAuthorization struct {
-	Subject GovernanceSubject `json:"subject"`
-	AuthorizedAt metav1.Time `json:"authorizedAt"`
+	Subject      EntraSubject `json:"subject"`
+	AuthorizedAt metav1.Time  `json:"authorizedAt"`
 }
 
-type GovernanceStatus struct {
-	// +kubebuilder:validation:Enum=Pending;Ready;Denied;Unknown
-	Phase string `json:"phase,omitempty"`
-	// +kubebuilder:validation:Enum=Enforced;Partial;Unavailable
-	Coverage string `json:"coverage,omitempty"`
-	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
-	Authorization *GovernanceAuthorizationStatus `json:"authorization,omitempty"`
-	Projections GovernanceProjectionsStatus `json:"projections,omitempty"`
+type PolicyStatus struct {
+	// +kubebuilder:validation:Enum=Pending;Applied;Denied;Unknown
+	Phase              string                    `json:"phase,omitempty"`
+	ObservedGeneration int64                     `json:"observedGeneration,omitempty"`
+	TeamAuthorization  *TeamAuthorizationStatus  `json:"teamAuthorization,omitempty"`
+	EffectivePolicyRef *EffectivePolicyReference `json:"effectivePolicyRef,omitempty"`
+	Enforcement        PolicyEnforcementStatus   `json:"enforcement,omitempty"`
 }
 
-type GovernanceAuthorizationStatus struct {
-	Revision string `json:"revision,omitempty"`
-	TeamSubject GovernanceSubject `json:"teamSubject"`
-	TeamRef GovernanceTeamReference `json:"teamRef"`
-	AuthorizedAt metav1.Time `json:"authorizedAt"`
-	ResolvedAt metav1.Time `json:"resolvedAt"`
+type TeamAuthorizationStatus struct {
+	Revision     string                `json:"revision,omitempty"`
+	Subject      EntraSubject          `json:"subject"`
+	TeamRef      PolicyObjectReference `json:"teamRef"`
+	AuthorizedAt metav1.Time           `json:"authorizedAt"`
+	ResolvedAt   metav1.Time           `json:"resolvedAt"`
 }
 
-type GovernanceTeamReference struct {
-	Name string `json:"name"`
-	UID types.UID `json:"uid"`
-	Generation int64 `json:"generation"`
+type PolicyObjectReference struct {
+	Name       string    `json:"name"`
+	UID        types.UID `json:"uid"`
+	Generation int64     `json:"generation"`
 }
 
-type GovernanceProjectionsStatus struct {
-	Sandbox GovernanceRevisionProjection `json:"sandbox,omitempty"`
-	Gateway GovernanceRevisionProjection `json:"gateway,omitempty"`
-	CredentialPolicy GovernanceRevisionProjection `json:"credentialPolicy,omitempty"`
+type EffectivePolicyReference struct {
+	PolicyObjectReference `json:",inline"`
+	Class                 AgentPolicyClass `json:"class"`
 }
 
-type GovernanceRevisionProjection struct {
-	ExpectedRevision string `json:"expectedRevision,omitempty"`
+type PolicyEnforcementStatus struct {
+	Sandbox    PolicyRevisionExpectation `json:"sandbox,omitempty"`
+	Gateway    PolicyRevisionExpectation `json:"gateway,omitempty"`
+	Credential PolicyRevisionExpectation `json:"credential,omitempty"`
+}
+
+type PolicyRevisionExpectation struct {
+	DesiredRevision string `json:"desiredRevision,omitempty"`
 }
 
 type RegistryCredentialsStatus struct {
@@ -379,7 +380,7 @@ type AgentIdentityStatus struct {
 
 	// CredentialPolicyRevision is reserved for a future typed credential
 	// service read-back. The legacy bearer issuer must leave it empty and cannot
-	// satisfy Governance aggregate readiness.
+	// satisfy aggregate Policy application readiness.
 	// +optional
 	CredentialPolicyRevision string `json:"credentialPolicyRevision,omitempty"`
 }
@@ -468,7 +469,7 @@ type AIGatewayStatus struct {
 	// +optional
 	Blocked bool `json:"blocked,omitempty"`
 
-	// PolicyRevision is the exact governance Gateway projection read back by
+	// PolicyRevision is the exact Gateway policy projection read back by
 	// the management adapter.
 	// +optional
 	PolicyRevision string `json:"policyRevision,omitempty"`
@@ -665,9 +666,8 @@ const (
 	ConditionDesktopConfigured        = "DesktopConfigured"
 	ConditionTerminalConfigured       = "TerminalConfigured"
 	ConditionRegistryCredentialsReady = "RegistryCredentialsReady"
-	ConditionGovernanceAuthorizationReady = "GovernanceAuthorizationReady"
-	ConditionGovernancePolicyReady = "GovernancePolicyReady"
-	ConditionGovernanceReady = "GovernanceReady"
+	ConditionPolicyResolved           = "PolicyResolved"
+	ConditionPolicyApplied            = "PolicyApplied"
 )
 
 // AI Gateway virtual key lifecycle phases.

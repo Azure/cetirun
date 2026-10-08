@@ -68,7 +68,7 @@ func Middleware(admins AdminSet, verifiers ...*OIDCVerifier) func(http.Handler) 
 				DisplayName: displayName,
 				Email:       email,
 				LoginHint:   identity,
-				// Governance administration is resolved only after the signed
+				// Policy administration is resolved only after the signed
 				// Entra token is verified below.  Never grant it from mutable
 				// OAuth2 Proxy display headers or aliases.
 				IsAdmin: false,

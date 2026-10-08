@@ -54,7 +54,7 @@ func validateRuntimeOverrides(values map[string]any, agentType string) error {
 			return fmt.Errorf("helm.values.%s is reserved for the platform", key)
 		}
 	}
-	// Gateway routing is a controller projection of Governance. Permitting a
+	// Gateway routing is a controller projection of Policy. Permitting a
 	// Helm value to replace any part of it would let an Agent bypass the
 	// virtual key, select an unapproved provider/model, or send traffic around
 	// the Gateway. Keep these paths reserved even while the Gateway is disabled
@@ -70,7 +70,7 @@ func validateRuntimeOverrides(values map[string]any, agentType string) error {
 		}
 	}
 	if annotations, ok := values["podAnnotations"].(map[string]any); ok {
-		for _, field := range []string{"cetirun.microsoft.com/registry-binding-only", aiGatewayKeyIDPodAnnotation, api.AnnotationGovernanceAction} {
+		for _, field := range []string{"cetirun.microsoft.com/registry-binding-only", aiGatewayKeyIDPodAnnotation} {
 			if _, present := annotations[field]; present {
 				return fmt.Errorf("platform rollout annotations are platform-owned")
 			}
@@ -98,7 +98,7 @@ func validateRuntimeOverrides(values map[string]any, agentType string) error {
 		}
 		if config, ok := native["config"].(map[string]any); ok {
 			if _, ok := config["model"]; ok {
-				return fmt.Errorf("native model overrides must use spec.model and Governance policy")
+				return fmt.Errorf("native model overrides must use spec.model and Policy policy")
 			}
 			if gateway, ok := config["gateway"].(map[string]any); ok {
 				if _, ok := gateway["port"]; ok {

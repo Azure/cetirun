@@ -161,48 +161,6 @@ spec:
                 maxLength: 253
                 minLength: 1
                 type: string
-              governance:
-                description: |-
-                  Governance contains platform-written enrollment and Team authorization
-                  evidence. A governed Agent must have a complete Team/Sandbox binding.
-                properties:
-                  gatewayBudgetUSD:
-                    pattern: ^(0|[1-9][0-9]*)(\.[0-9]{1,6})?$
-                    type: string
-                  teamAuthorization:
-                    properties:
-                      authorizedAt:
-                        format: date-time
-                        type: string
-                      subject:
-                        description: |-
-                          GovernanceSubject is a canonical Entra subject. The tenant is retained in
-                          the API even for a single-tenant deployment so object IDs cannot be
-                          accidentally interpreted in a different tenant.
-                        properties:
-                          kind:
-                            enum:
-                            - User
-                            - Group
-                            type: string
-                          objectID:
-                            pattern: ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$
-                            type: string
-                          tenantID:
-                            pattern: ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$
-                            type: string
-                        required:
-                        - kind
-                        - objectID
-                        - tenantID
-                        type: object
-                    required:
-                    - authorizedAt
-                    - subject
-                    type: object
-                required:
-                - teamAuthorization
-                type: object
               helm:
                 description: Helm chart configuration overrides.
                 properties:
@@ -231,7 +189,7 @@ spec:
               model:
                 description: |-
                   Model is the Agent's preferred default model as exposed by the platform
-                  AI Gateway, such as a shared model or copilot/<model>. Governance rejects
+                  AI Gateway, such as a shared model or copilot/<model>. Policy resolution rejects
                   an explicitly requested model that is outside the effective policy.
                 maxLength: 256
                 type: string
@@ -245,6 +203,13 @@ spec:
                       GitHubCopilot requests a GitHub Copilot proxy for the owner's account.
                       The effective policy must also allow it.
                     type: boolean
+                  monthlyBudgetUSD:
+                    description: |-
+                      MonthlyBudgetUSD optionally lowers or raises this Agent's native Gateway
+                      budget within the effective AgentPolicy maximum. Omission selects the
+                      policy default.
+                    pattern: ^(0|[1-9][0-9]*)(\.[0-9]{1,6})?$
+                    type: string
                   sharedModels:
                     description: |-
                       SharedModels requests the models administrators share through the AI
@@ -358,6 +323,40 @@ spec:
                   The operator merges team defaults (user context, AI model, skills) into
                   the instance configuration. Per-instance fields take precedence.
                 type: string
+              teamAuthorization:
+                description: |-
+                  TeamAuthorization contains platform-written evidence that the verified
+                  owner was assigned to the selected Team. It is not user editable.
+                properties:
+                  authorizedAt:
+                    format: date-time
+                    type: string
+                  subject:
+                    description: |-
+                      EntraSubject is a canonical Entra subject. The tenant is retained in
+                      the API even for a single-tenant deployment so object IDs cannot be
+                      accidentally interpreted in a different tenant.
+                    properties:
+                      kind:
+                        enum:
+                        - User
+                        - Group
+                        type: string
+                      objectID:
+                        pattern: ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$
+                        type: string
+                      tenantID:
+                        pattern: ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$
+                        type: string
+                    required:
+                    - kind
+                    - objectID
+                    - tenantID
+                    type: object
+                required:
+                - authorizedAt
+                - subject
+                type: object
               user:
                 description: User information for this instance.
                 properties:
@@ -380,9 +379,9 @@ spec:
                 type: object
             required:
             - agent
-            - governance
             - sandboxRef
             - team
+            - teamAuthorization
             - user
             type: object
             x-kubernetes-validations:
@@ -421,7 +420,7 @@ spec:
                     description: |-
                       CredentialPolicyRevision is reserved for a future typed credential
                       service read-back. The legacy bearer issuer must leave it empty and cannot
-                      satisfy Governance aggregate readiness.
+                      satisfy aggregate Policy application readiness.
                     type: string
                   displayName:
                     description: |-
@@ -590,7 +589,7 @@ spec:
                     type: string
                   policyRevision:
                     description: |-
-                      PolicyRevision is the exact governance Gateway projection read back by
+                      PolicyRevision is the exact Gateway policy projection read back by
                       the management adapter.
                     type: string
                   pricingRevision:
@@ -678,103 +677,6 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
-              governance:
-                description: |-
-                  Governance records the resolved authorization and expected component
-                  revisions. Detailed Sandbox, Gateway and identity evidence remains in
-                  their existing status fields.
-                properties:
-                  authorization:
-                    properties:
-                      authorizedAt:
-                        format: date-time
-                        type: string
-                      resolvedAt:
-                        format: date-time
-                        type: string
-                      revision:
-                        type: string
-                      teamRef:
-                        properties:
-                          generation:
-                            format: int64
-                            type: integer
-                          name:
-                            type: string
-                          uid:
-                            description: |-
-                              UID is a type that holds unique ID values, including UUIDs.  Because we
-                              don't ONLY use UUIDs, this is an alias to string.  Being a type captures
-                              intent and helps make sure that UIDs and names do not get conflated.
-                            type: string
-                        required:
-                        - generation
-                        - name
-                        - uid
-                        type: object
-                      teamSubject:
-                        description: |-
-                          GovernanceSubject is a canonical Entra subject. The tenant is retained in
-                          the API even for a single-tenant deployment so object IDs cannot be
-                          accidentally interpreted in a different tenant.
-                        properties:
-                          kind:
-                            enum:
-                            - User
-                            - Group
-                            type: string
-                          objectID:
-                            pattern: ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$
-                            type: string
-                          tenantID:
-                            pattern: ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$
-                            type: string
-                        required:
-                        - kind
-                        - objectID
-                        - tenantID
-                        type: object
-                    required:
-                    - authorizedAt
-                    - resolvedAt
-                    - teamRef
-                    - teamSubject
-                    type: object
-                  coverage:
-                    enum:
-                    - Enforced
-                    - Partial
-                    - Unavailable
-                    type: string
-                  observedGeneration:
-                    format: int64
-                    type: integer
-                  phase:
-                    enum:
-                    - Pending
-                    - Ready
-                    - Denied
-                    - Unknown
-                    type: string
-                  projections:
-                    properties:
-                      credentialPolicy:
-                        properties:
-                          expectedRevision:
-                            type: string
-                        type: object
-                      gateway:
-                        properties:
-                          expectedRevision:
-                            type: string
-                        type: object
-                      sandbox:
-                        properties:
-                          expectedRevision:
-                            type: string
-                        type: object
-                    type: object
-                type: object
               helmReleaseName:
                 description: HelmReleaseName is the Helm release name for this instance.
                 type: string
@@ -850,6 +752,121 @@ spec:
                 - Deleting
                 - Suspended
                 type: string
+              policy:
+                description: |-
+                  Policy records the resolved AgentPolicy and the revisions each enforcement
+                  component must apply. Detailed component evidence remains in its existing
+                  status field.
+                properties:
+                  effectivePolicyRef:
+                    properties:
+                      class:
+                        enum:
+                        - normal
+                        - admin
+                        type: string
+                      generation:
+                        format: int64
+                        type: integer
+                      name:
+                        type: string
+                      uid:
+                        description: |-
+                          UID is a type that holds unique ID values, including UUIDs.  Because we
+                          don't ONLY use UUIDs, this is an alias to string.  Being a type captures
+                          intent and helps make sure that UIDs and names do not get conflated.
+                        type: string
+                    required:
+                    - class
+                    - generation
+                    - name
+                    - uid
+                    type: object
+                  enforcement:
+                    properties:
+                      credential:
+                        properties:
+                          desiredRevision:
+                            type: string
+                        type: object
+                      gateway:
+                        properties:
+                          desiredRevision:
+                            type: string
+                        type: object
+                      sandbox:
+                        properties:
+                          desiredRevision:
+                            type: string
+                        type: object
+                    type: object
+                  observedGeneration:
+                    format: int64
+                    type: integer
+                  phase:
+                    enum:
+                    - Pending
+                    - Applied
+                    - Denied
+                    - Unknown
+                    type: string
+                  teamAuthorization:
+                    properties:
+                      authorizedAt:
+                        format: date-time
+                        type: string
+                      resolvedAt:
+                        format: date-time
+                        type: string
+                      revision:
+                        type: string
+                      subject:
+                        description: |-
+                          EntraSubject is a canonical Entra subject. The tenant is retained in
+                          the API even for a single-tenant deployment so object IDs cannot be
+                          accidentally interpreted in a different tenant.
+                        properties:
+                          kind:
+                            enum:
+                            - User
+                            - Group
+                            type: string
+                          objectID:
+                            pattern: ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$
+                            type: string
+                          tenantID:
+                            pattern: ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$
+                            type: string
+                        required:
+                        - kind
+                        - objectID
+                        - tenantID
+                        type: object
+                      teamRef:
+                        properties:
+                          generation:
+                            format: int64
+                            type: integer
+                          name:
+                            type: string
+                          uid:
+                            description: |-
+                              UID is a type that holds unique ID values, including UUIDs.  Because we
+                              don't ONLY use UUIDs, this is an alias to string.  Being a type captures
+                              intent and helps make sure that UIDs and names do not get conflated.
+                            type: string
+                        required:
+                        - generation
+                        - name
+                        - uid
+                        type: object
+                    required:
+                    - authorizedAt
+                    - resolvedAt
+                    - subject
+                    - teamRef
+                    type: object
+                type: object
               registryCredentials:
                 description: |-
                   RegistryCredentials records the objects verified by the last sync, not

@@ -48,13 +48,13 @@ type fakeHelmClient struct {
 	prepareErr       error
 }
 
-// requireLegacyDirectRuntime documents tests for the pre-Governance execution
+// requireLegacyDirectRuntime documents tests for the pre-Policy execution
 // path. That path accepted an Agent without an authorized Team/Sandbox binding
-// and invoked Helm directly. Mandatory Governance intentionally removed it;
+// and invoked Helm directly. Mandatory Policy intentionally removed it;
 // Sandbox preparation owns any future built-in runtime activation instead.
 func requireLegacyDirectRuntime(t *testing.T) {
 	t.Helper()
-	t.Skip("legacy direct runtime reconciliation was removed by mandatory Governance")
+	t.Skip("legacy direct runtime reconciliation was removed by mandatory Policy")
 }
 
 func (f *fakeHelmClient) Prepare(namespace string, values map[string]any, chartVersion string) (*helm.PreparedRelease, error) {

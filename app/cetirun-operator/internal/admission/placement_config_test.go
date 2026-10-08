@@ -36,7 +36,7 @@ func TestPlacementConfigRequiresLiteralName(t *testing.T) {
 		}
 	}
 
-	config, err := ParseConfig(`{"adminUsers":["administrator","system:serviceaccount:operator-test:portal"],"controllerUsername":"system:serviceaccount:operator-test:controller","governanceApprovalUsername":"system:serviceaccount:operator-test:portal","placementConfigMapName":"sandbox-placement"}`)
+	config, err := ParseConfig(`{"adminUsers":["administrator","system:serviceaccount:operator-test:portal"],"controllerUsername":"system:serviceaccount:operator-test:controller","placementConfigMapName":"sandbox-placement"}`)
 	if err != nil || config.PlacementConfigMapName != "sandbox-placement" {
 		t.Fatalf("placement selection failed to roundtrip: %v", err)
 	}

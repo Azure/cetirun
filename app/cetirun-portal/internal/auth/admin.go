@@ -15,7 +15,7 @@ type AdminSet map[string]struct{}
 
 // NewVerifiedAdminSet creates an administrator set from immutable, verified
 // Entra tenant/object ID pairs.  Alias based authorization is intentionally
-// not used by Governance endpoints.
+// not used by Policy endpoints.
 func NewVerifiedAdminSet(subjects [][2]string) AdminSet {
 	s := AdminSet{}
 	for _, subject := range subjects {

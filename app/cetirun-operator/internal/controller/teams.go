@@ -561,11 +561,6 @@ func (r *AgentReconciler) configHash(instance *cetirunv1alpha1.Agent, team *ceti
 	if revision := r.aiGatewayRevision(instance); revision != "" {
 		config = append(config, revision)
 	}
-	// A GovernanceAction restart/reconcile is intentional imperative input
-	// projected into the Helm Pod template. Include only this platform-owned
-	// marker so it invalidates the steady-state cache without making arbitrary
-	// Agent metadata a rollout trigger.
-	config = append(config, instance.Annotations[cetirunv1alpha1.AnnotationGovernanceAction])
 	config = append(config, teamRV)
 	return operatorConfigHash(
 		r.DomainSuffix, gwSecretHash, r.SkillsStorageAccount,

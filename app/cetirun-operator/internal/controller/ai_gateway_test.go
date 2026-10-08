@@ -268,7 +268,7 @@ func aiGatewayTestConfig() AIGatewayConfig {
 
 func aiGatewayTestAgent(team string) *cetirunv1alpha1.Agent {
 	shared, copilot := true, true
-	subject := cetirunv1alpha1.GovernanceSubject{Kind: "User", TenantID: "11111111-1111-1111-1111-111111111111", ObjectID: "22222222-2222-2222-2222-222222222222"}
+	subject := cetirunv1alpha1.EntraSubject{Kind: "User", TenantID: "11111111-1111-1111-1111-111111111111", ObjectID: "22222222-2222-2222-2222-222222222222"}
 	return &cetirunv1alpha1.Agent{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "alice", UID: types.UID(testAIGatewayUID), Generation: 1,
@@ -276,18 +276,16 @@ func aiGatewayTestAgent(team string) *cetirunv1alpha1.Agent {
 			Finalizers:  []string{cetirunv1alpha1.Finalizer},
 		},
 		Spec: cetirunv1alpha1.AgentSpec{
-			Agent:       cetirunv1alpha1.HarnessSpec{Type: cetirunv1alpha1.AgentTypeOpenClaw},
-			User:        cetirunv1alpha1.UserSpec{Alias: "alice", DisplayName: "Alice"},
-			Team:        team,
-			SandboxRef:  testSandboxName,
-			ModelAccess: &cetirunv1alpha1.ModelAccessSpec{SharedModels: &shared, GitHubCopilot: &copilot},
-			Governance: cetirunv1alpha1.GovernanceSpec{TeamAuthorization: cetirunv1alpha1.TeamAuthorization{
-				Subject: subject, AuthorizedAt: metav1.NewTime(time.Unix(1, 0)),
-			}},
+			Agent:                 cetirunv1alpha1.HarnessSpec{Type: cetirunv1alpha1.AgentTypeOpenClaw},
+			User:                  cetirunv1alpha1.UserSpec{Alias: "alice", DisplayName: "Alice"},
+			Team:                  team,
+			SandboxRef:            testSandboxName,
+			ModelAccess:           &cetirunv1alpha1.ModelAccessSpec{SharedModels: &shared, GitHubCopilot: &copilot},
+			TeamAuthorization:     cetirunv1alpha1.TeamAuthorization{Subject: subject, AuthorizedAt: metav1.NewTime(time.Unix(1, 0))},
 			GatewayTokenSecretRef: "gateway-token",
 			Helm:                  cetirunv1alpha1.HelmSpec{Version: "0.1.28", Values: map[string]runtime.RawExtension{}},
 		},
-		Status: cetirunv1alpha1.AgentStatus{Governance: &cetirunv1alpha1.GovernanceStatus{}},
+		Status: cetirunv1alpha1.AgentStatus{Policy: &cetirunv1alpha1.PolicyStatus{}},
 	}
 }
 
@@ -296,9 +294,9 @@ func modelAccess(shared, copilot bool) *cetirunv1alpha1.ModelAccessSpec {
 }
 
 func aiGatewayTestTeam(name string) *cetirunv1alpha1.Team {
-	subject := cetirunv1alpha1.GovernanceSubject{Kind: "User", TenantID: "11111111-1111-1111-1111-111111111111", ObjectID: "22222222-2222-2222-2222-222222222222"}
+	subject := cetirunv1alpha1.EntraSubject{Kind: "User", TenantID: "11111111-1111-1111-1111-111111111111", ObjectID: "22222222-2222-2222-2222-222222222222"}
 	return &cetirunv1alpha1.Team{ObjectMeta: metav1.ObjectMeta{Name: name, Generation: 1}, Spec: cetirunv1alpha1.TeamSpec{
-		Membership: cetirunv1alpha1.TeamMembershipSpec{Subjects: []cetirunv1alpha1.GovernanceSubject{subject}}, NormalAgentPolicyRef: testPolicyName,
+		Membership: cetirunv1alpha1.TeamMembershipSpec{Subjects: []cetirunv1alpha1.EntraSubject{subject}}, NormalAgentPolicyRef: testPolicyName,
 		SandboxRefs: []string{testSandboxName}, DefaultSandboxRef: testSandboxName,
 	}, Status: cetirunv1alpha1.TeamStatus{ObservedGeneration: 1, Conditions: []metav1.Condition{{Type: cetirunv1alpha1.ConditionTeamAccepted, Status: metav1.ConditionTrue}}}}
 }
@@ -337,7 +335,7 @@ func aiGatewayTestReconciler(t *testing.T, objects ...client.Object) (*AgentReco
 			t.Fatal(err)
 		}
 	}
-	// Gateway tests exercise the real Governance resolver. Add the accepted
+	// Gateway tests exercise the real Policy resolver. Add the accepted
 	// Team and policy backing every test Agent unless the test supplied them.
 	teams := map[string]bool{}
 	for _, object := range objects {
@@ -994,7 +992,7 @@ func TestReconcileAIGatewayCopilotRemovesUnrecordedObsoleteRoutes(t *testing.T) 
 		t.Fatal("setup: the obsolete route must not be recorded")
 	}
 
-	// Governance grant resolution always obtains a live catalog. It can judge
+	// Policy grant resolution always obtains a live catalog. It can judge
 	// and remove an unrecorded obsolete route in this first post-restart pass.
 	r.aiGatewayCatalog = aiGatewayCatalog{}
 	if err := r.reconcileAIGateway(context.Background(), agent, true); err != nil {
@@ -2612,7 +2610,7 @@ func TestAIGatewayCatalogUsesObservedManagedGroupsAndDetectsSameNameReplacement(
 		t.Fatal("live managed catalog must have a fingerprint")
 	}
 	// LiteLLM deployment IDs are not stable across a backend replacement. The
-	// display name and limits can be identical, but governance must still
+	// display name and limits can be identical, but policy must still
 	// project the newly observed exact access group before it is usable.
 	replaced := []aigateway.Deployment{
 		{ID: "cetirun-shared-config-new", ModelName: "gpt", AccessGroups: []string{aiGatewaySharedAccessGroup, "cetirun-model-config-new"}, DatabaseSourceKnown: true},
@@ -2817,10 +2815,10 @@ func TestAIGatewayCatalogSeedsFromThePublishedCatalogDuringAnOutage(t *testing.T
 		t.Fatal("a seeded catalog does not claim to know the Gateway's deployments")
 	}
 	// A live listing establishes the concrete managed deployment fingerprint.
-	// Even with the same display models, Governance must re-evaluate grants
+	// Even with the same display models, Policy must re-evaluate grants
 	// rather than treating a seeded catalog as enforcement evidence.
 	if !r.refreshAIGatewayCatalogWithin(context.Background(), failing.fakeAIGateway, 0) {
-		t.Fatal("recovery from a seeded catalog must re-evaluate Governance grants")
+		t.Fatal("recovery from a seeded catalog must re-evaluate Policy grants")
 	}
 }
 

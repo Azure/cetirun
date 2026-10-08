@@ -4,12 +4,14 @@
 package handler
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-portal/internal/kube"
@@ -71,5 +73,49 @@ func TestAdminInstance_ListAll(t *testing.T) {
 	}
 	if byName["bob"].Team != "legacy" {
 		t.Errorf("bob team should fall back to user.team, got %q", byName["bob"].Team)
+	}
+}
+
+func TestAdminInstanceUpdateLifecycle(t *testing.T) {
+	for _, suspended := range []bool{true, false} {
+		t.Run(map[bool]string{true: "suspend", false: "resume"}[suspended], func(t *testing.T) {
+			agent := sampleInstance()
+			agent.Spec.Suspended = !suspended
+			fc := newFakeClient(agent)
+			h := &AdminInstanceHandler{Kube: kube.NewClient(fc)}
+			body, err := json.Marshal(map[string]any{"uid": string(agent.UID), "resourceVersion": agent.ResourceVersion, "suspended": suspended})
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := httptest.NewRequest(http.MethodPatch, "/api/v1/admin/instances/"+agent.Name, bytes.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			req.SetPathValue("name", agent.Name)
+			response := httptest.NewRecorder()
+			h.UpdateLifecycle(response, req)
+			if response.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+			updated := &cetirunv1alpha1.Agent{}
+			if err := fc.Get(t.Context(), client.ObjectKey{Name: agent.Name}, updated); err != nil {
+				t.Fatal(err)
+			}
+			if updated.Spec.Suspended != suspended {
+				t.Fatalf("suspended=%t, want %t", updated.Spec.Suspended, suspended)
+			}
+		})
+	}
+}
+
+func TestAdminInstanceUpdateLifecycleRejectsStaleVersion(t *testing.T) {
+	agent := sampleInstance()
+	h := &AdminInstanceHandler{Kube: kube.NewClient(newFakeClient(agent))}
+	body := []byte(`{"uid":"agent-alice","resourceVersion":"stale","suspended":true}`)
+	req := httptest.NewRequest(http.MethodPatch, "/api/v1/admin/instances/alice", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.SetPathValue("name", agent.Name)
+	response := httptest.NewRecorder()
+	h.UpdateLifecycle(response, req)
+	if response.Code != http.StatusConflict {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
 }

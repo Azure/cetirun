@@ -21,7 +21,7 @@ export interface TeamDTO {
   defaultProvider?: string;
   skills?: string[];
   skillStorage?: TeamSkillStorage;
-  membership: GovernanceSubject[];
+  membership: EntraSubject[];
   normalAgentPolicyRef: string;
   adminAgentPolicyRef?: string;
   sandboxRefs: string[];
@@ -29,7 +29,7 @@ export interface TeamDTO {
   createdAt?: string;
 }
 
-export interface GovernanceSubject { kind: "User" | "Group"; tenantID: string; objectID: string; }
+export interface EntraSubject { kind: "User" | "Group"; tenantID: string; objectID: string; }
 
 export interface TeamUpsertRequest {
   name?: string;
@@ -38,7 +38,7 @@ export interface TeamUpsertRequest {
   defaultProvider?: string;
   skills?: string[];
   skillStorage?: TeamSkillStorage;
-  membership: GovernanceSubject[];
+  membership: EntraSubject[];
   normalAgentPolicyRef: string;
   adminAgentPolicyRef?: string;
   sandboxRefs: string[];

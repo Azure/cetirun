@@ -35,8 +35,8 @@ const (
 	aiGatewayKeySecretName  = "ai-gateway-virtual-key"
 	aiGatewayKeySecretField = "api-key"
 	// aiGatewaySharedAccessGroup is the Gateway access group of the models
-	// administrators shared with every Agent before Governance. It is retained
-	// only to recognize old catalog entries; governed keys never receive it.
+	// administrators shared with every Agent before Policy. It is retained
+	// only to recognize old catalog entries; policy-bound keys never receive it.
 	aiGatewaySharedAccessGroup = "cetirun-shared"
 	// aiGatewayModelAccessGroupPrefix identifies an opaque per-configured-model
 	// access group. The Gateway chart derives its suffix from the canonical
@@ -96,7 +96,7 @@ type AIGatewayConfig struct {
 	MasterKeySecretName string
 	MasterKeySecretKey  string
 	// DefaultBudget is retained as deployment configuration validation input.
-	// Governed keys use the effective AgentPolicy USD budget.
+	// Policy-bound keys use the effective AgentPolicy USD budget.
 	DefaultBudget float64
 	// DefaultModel is the preferred default model of Agents that use the
 	// Gateway when the Agent names none, or names one it cannot use.
@@ -245,7 +245,7 @@ func (r *AgentReconciler) aiGatewayAccessGroups(instance *cetirunv1alpha1.Agent,
 	return groups
 }
 
-// aiGatewayGrant is the resolved, non-secret projection of Governance into a
+// aiGatewayGrant is the resolved, non-secret projection of Policy into a
 // LiteLLM key. Shared model groups are always collision-safe groups observed
 // in the live catalog, never a model display name.
 type aiGatewayGrant struct {
@@ -256,11 +256,11 @@ type aiGatewayGrant struct {
 }
 
 func (r *AgentReconciler) resolveAIGatewayGrant(ctx context.Context, client aiGatewayKeyClient, instance *cetirunv1alpha1.Agent) (aiGatewayGrant, error) {
-	resolution, err := r.resolveGovernance(ctx, instance)
+	resolution, err := r.resolvePolicy(ctx, instance)
 	if err != nil {
 		return aiGatewayGrant{}, err
 	}
-	budgetText, models, err := effectiveGovernanceModels(instance, resolution.policy)
+	budgetText, models, err := effectivePolicyModels(instance, resolution.policy)
 	if err != nil {
 		return aiGatewayGrant{}, err
 	}
@@ -273,11 +273,11 @@ func (r *AgentReconciler) resolveAIGatewayGrant(ctx context.Context, client aiGa
 		return aiGatewayGrant{}, nil
 	}
 	if budgetText == "" {
-		return aiGatewayGrant{}, fmt.Errorf("Governance model entitlement has no Gateway budget")
+		return aiGatewayGrant{}, fmt.Errorf("Policy model entitlement has no Gateway budget")
 	}
 	budget, err := strconv.ParseFloat(budgetText, 64)
 	if err != nil || math.IsNaN(budget) || math.IsInf(budget, 0) || budget <= 0 {
-		return aiGatewayGrant{}, fmt.Errorf("Governance Gateway budget is not a finite positive US-dollar value")
+		return aiGatewayGrant{}, fmt.Errorf("Policy Gateway budget is not a finite positive US-dollar value")
 	}
 	groups := []string{}
 	if shared {
@@ -526,7 +526,7 @@ func (r *AgentReconciler) reconcileAIGateway(ctx context.Context, instance *ceti
 	}
 	grant, err := r.resolveAIGatewayGrant(ctx, client, instance)
 	if err != nil {
-		return aiGatewayDegraded(instance, "GovernanceGrantInvalid", err)
+		return aiGatewayDegraded(instance, "PolicyGrantInvalid", err)
 	}
 	if !grant.active {
 		blocked, err := r.blockAIGatewayKeyIfPresent(ctx, client, instance)
@@ -699,8 +699,8 @@ func (r *AgentReconciler) reconcileAIGateway(ctx context.Context, instance *ceti
 	} else {
 		status.BudgetResetAt = nil
 	}
-	if instance.Status.Governance != nil {
-		status.PolicyRevision = instance.Status.Governance.Projections.Gateway.ExpectedRevision
+	if instance.Status.Policy != nil {
+		status.PolicyRevision = instance.Status.Policy.Enforcement.Gateway.DesiredRevision
 	} else {
 		status.PolicyRevision = ""
 	}

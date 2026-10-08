@@ -104,7 +104,7 @@ spec:
                   subjects:
                     items:
                       description: |-
-                        GovernanceSubject is a canonical Entra subject. The tenant is retained in
+                        EntraSubject is a canonical Entra subject. The tenant is retained in
                         the API even for a single-tenant deployment so object IDs cannot be
                         accidentally interpreted in a different tenant.
                       properties:

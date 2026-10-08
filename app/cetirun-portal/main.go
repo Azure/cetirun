@@ -95,8 +95,7 @@ func main() {
 	meHandler := &handler.MeHandler{}
 	adminTeamHandler := &handler.AdminTeamHandler{Kube: kubeClient}
 	adminInstanceHandler := &handler.AdminInstanceHandler{Kube: kubeClient}
-	adminGovernanceHandler := &handler.AdminGovernanceHandler{Kube: kubeClient}
-	cetiAdminHandler := handler.NewCetiAdminHandler(kubeClient, cfg.CetiAdminTokenAudience, cfg.CetiAdminServiceAccounts)
+	adminPolicyHandler := &handler.AdminPolicyHandler{Kube: kubeClient}
 	var agentAuthorizationHandler *handler.AgentAuthorizationHandler
 	if cfg.AgentIdentityEnabled {
 		agentAuthorizationHandler = handler.NewAgentAuthorizationHandler(kubeClient, cfg.AgentIdentityBrokerURL, cfg.PortalOrigin)
@@ -110,7 +109,7 @@ func main() {
 	}
 
 	// Build and start public server.
-	mux := server.New(dist, instanceHandler, healthHandler, featuresHandler, configHandler, meHandler, adminTeamHandler, adminInstanceHandler, adminGovernanceHandler, authMiddleware, requireAdmin, agentAuthorizationHandler)
+	mux := server.New(dist, instanceHandler, healthHandler, featuresHandler, configHandler, meHandler, adminTeamHandler, adminInstanceHandler, adminPolicyHandler, authMiddleware, requireAdmin, agentAuthorizationHandler)
 	srv := &http.Server{
 		Addr:    cfg.ListenAddr,
 		Handler: mux,
@@ -118,7 +117,7 @@ func main() {
 
 	// Build and start internal server (cluster-internal only, not exposed via Istio VS).
 	// Serves /internal/auth for the Istio EnvoyFilter Lua ownership check.
-	internalMux := server.NewInternalMux(instanceHandler, cetiAdminHandler)
+	internalMux := server.NewInternalMux(instanceHandler)
 	internalSrv := &http.Server{
 		Addr:    cfg.InternalListenAddr,
 		Handler: internalMux,

@@ -61,15 +61,15 @@ export interface Instance extends InstanceVersion {
   };
   /** The Agent's models in the platform AI Gateway; absent when it has none. */
   aiGateway?: AIGatewayInfo;
-  governance?: GovernanceInfo;
+  policy?: PolicyInfo;
 }
 
-export interface GovernanceInfo {
-  phase?: "Pending" | "Ready" | "Denied" | "Unknown";
-  coverage?: "Enforced" | "Partial" | "Unavailable";
+export interface PolicyInfo {
+  phase?: "Pending" | "Applied" | "Denied" | "Unknown";
   observedGeneration?: number;
-  authorization?: { revision?: string; teamRef?: { name: string; uid: string; generation: number } };
-  projections: { sandbox?: { expectedRevision?: string }; gateway?: { expectedRevision?: string }; credentialPolicy?: { expectedRevision?: string } };
+  teamAuthorization?: { revision?: string; teamRef?: { name: string; uid: string; generation: number } };
+  effectivePolicyRef?: { name: string; uid: string; generation: number; class: "normal" | "admin" };
+  enforcement: { sandbox?: { desiredRevision?: string }; gateway?: { desiredRevision?: string }; credential?: { desiredRevision?: string } };
 }
 
 export type CopilotProxyPhase = "SignInRequired" | "Starting" | "Ready" | "Degraded";

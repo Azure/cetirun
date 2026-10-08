@@ -83,13 +83,10 @@ affinity: {}
 # -- Additional pod annotations.
 podAnnotations: {}
 
-# -- Governance trust root. Platform administrators are immutable verified
+# -- Administration trust root. Platform administrators are immutable verified
 # Entra tenant/object ID pairs, never aliases, email addresses, or UPNs.
-governance:
+administration:
   platformAdminSubjects: []
-  cetiAdminServiceAccounts: []
-  cetiAdminNamespace: cetirun-system
-  cetiAdminTokenAudience: cetirun-governance-actions
 
 # -- Feature flags. These control which features are exposed in the portal UI.
 features:

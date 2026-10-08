@@ -10,7 +10,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
@@ -28,14 +27,14 @@ import (
 
 const testController = "system:serviceaccount:operator-test:controller"
 
-var testGovernanceSubject = api.GovernanceSubject{
+var testEntraSubject = api.EntraSubject{
 	Kind:     "User",
 	TenantID: "00000000-0000-0000-0000-000000000001",
 	ObjectID: "00000000-0000-0000-0000-000000000002",
 }
 
 func testConfig() Config {
-	return Config{ValidationMode: ValidationStrict, AdminUsers: []string{"administrator", "system:serviceaccount:test:portal"}, AdminGroups: []string{"governance-test-admins"}, ControllerUsername: testController, GovernanceApprovalUsername: "system:serviceaccount:test:portal"}
+	return Config{ValidationMode: ValidationStrict, AdminUsers: []string{"administrator", "system:serviceaccount:test:portal"}, AdminGroups: []string{"policy-test-admins"}, ControllerUsername: testController}
 }
 
 type fixture struct {
@@ -76,7 +75,7 @@ func newFixture(t *testing.T) fixture {
 	team := &api.Team{
 		ObjectMeta: metav1.ObjectMeta{Name: "engineering", UID: "team-uid", ResourceVersion: "1"},
 		Spec: api.TeamSpec{
-			Membership:           api.TeamMembershipSpec{Subjects: []api.GovernanceSubject{testGovernanceSubject}},
+			Membership:           api.TeamMembershipSpec{Subjects: []api.EntraSubject{testEntraSubject}},
 			NormalAgentPolicyRef: policy.Name,
 			SandboxRefs:          []string{box.Name},
 			DefaultSandboxRef:    box.Name,
@@ -101,16 +100,14 @@ func newFixture(t *testing.T) fixture {
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "alice-work", UID: "agent-uid", ResourceVersion: "1", Finalizers: []string{api.Finalizer},
 			Annotations: map[string]string{
-				api.AnnotationOwnerTenantID: testGovernanceSubject.TenantID,
-				api.AnnotationOwnerObjectID: testGovernanceSubject.ObjectID,
+				api.AnnotationOwnerTenantID: testEntraSubject.TenantID,
+				api.AnnotationOwnerObjectID: testEntraSubject.ObjectID,
 			},
 		},
 		Spec: api.AgentSpec{
 			Agent: api.HarnessSpec{Type: api.AgentTypeHermes}, User: api.UserSpec{Alias: "alice"},
 			GatewayTokenSecretRef: "gateway-token", Team: team.Name, SandboxRef: box.Name, PolicyClass: api.AgentPolicyClassNormal,
-			Governance: api.GovernanceSpec{TeamAuthorization: api.TeamAuthorization{
-				Subject: testGovernanceSubject, AuthorizedAt: metav1.Now(),
-			}},
+			TeamAuthorization: api.TeamAuthorization{Subject: testEntraSubject, AuthorizedAt: metav1.Now()},
 		},
 	}
 	return fixture{handler, cl, agent, team, box, policy}
@@ -128,8 +125,6 @@ func requestFor(t *testing.T, operation admissionv1.Operation, object, old clien
 		resourceName, kind = "sandboxes", "Sandbox"
 	case *api.AgentPolicy:
 		resourceName, kind = "agentpolicies", "AgentPolicy"
-	case *api.GovernanceAction:
-		resourceName, kind = "governanceactions", "GovernanceAction"
 	default:
 		t.Fatal("unsupported fixture")
 	}
@@ -155,36 +150,6 @@ func requestFor(t *testing.T, operation admissionv1.Operation, object, old clien
 	return request
 }
 
-func TestGovernanceActionAdmissionBindsPortalAndRetainsAuditRecord(t *testing.T) {
-	f := newFixture(t)
-	now := time.Now().UTC().Truncate(time.Second)
-	action := &api.GovernanceAction{ObjectMeta: metav1.ObjectMeta{Name: "governanceaction-test", UID: "action-uid"}, Spec: api.GovernanceActionSpec{
-		Requester: api.GovernanceActionRequester{Kind: "CetiAdmin", Subject: "system:serviceaccount:cetirun-admin:cetiadmin"},
-		TargetRef: api.GovernanceActionTargetRef{APIVersion: api.GroupVersion.String(), Kind: "Agent", Name: f.agent.Name, UID: f.agent.UID, Generation: 1},
-		Operation: api.GovernanceActionSuspend, Reason: "contain the governed workload",
-		RequestedAt: metav1.NewTime(now), ExpiresAt: metav1.NewTime(now.Add(time.Hour)),
-	}}
-	portal := f.handler.config.GovernanceApprovalUsername
-	requireResponse(t, f.handler.ValidateGovernanceAction(context.Background(), requestFor(t, admissionv1.Create, action, nil, "administrator")), false, "Portal approval identity")
-	requireResponse(t, f.handler.ValidateGovernanceAction(context.Background(), requestFor(t, admissionv1.Create, action, nil, portal)), true, "")
-
-	approved := action.DeepCopy()
-	digest, err := api.GovernanceActionDigest(approved.Spec)
-	if err != nil {
-		t.Fatal(err)
-	}
-	approved.Spec.Approval = &api.GovernanceActionApproval{
-		Decision: "Approved", Approver: testGovernanceSubject, ActionDigest: digest,
-		ApprovedAt: metav1.NewTime(now.Add(time.Minute)), ExpiresAt: metav1.NewTime(now.Add(30 * time.Minute)),
-	}
-	requireResponse(t, f.handler.ValidateGovernanceAction(context.Background(), requestFor(t, admissionv1.Update, approved, action, "administrator")), false, "Portal approval identity")
-	withMetadata := approved.DeepCopy()
-	withMetadata.Labels = map[string]string{"delete-me": "later"}
-	requireResponse(t, f.handler.ValidateGovernanceAction(context.Background(), requestFor(t, admissionv1.Update, withMetadata, action, portal)), false, "metadata is immutable")
-	requireResponse(t, f.handler.ValidateGovernanceAction(context.Background(), requestFor(t, admissionv1.Update, approved, action, portal)), true, "")
-	requireResponse(t, f.handler.ValidateGovernanceAction(context.Background(), requestFor(t, admissionv1.Delete, action, nil, portal)), false, "cannot be deleted")
-}
-
 func requireResponse(t *testing.T, response admission.Response, allowed bool, message string) {
 	t.Helper()
 	if response.Allowed != allowed || (message != "" && (response.Result == nil || !strings.Contains(response.Result.Message, message))) {
@@ -207,7 +172,7 @@ func TestExplicitAdmissionAuthority(t *testing.T) {
 				}
 				req := requestFor(t, admissionv1.Create, objects[resourceName], nil, user)
 				if user == "group-administrator" {
-					req.UserInfo.Groups = []string{"governance-test-admins"}
+					req.UserInfo.Groups = []string{"policy-test-admins"}
 				}
 				requireResponse(t, f.handler.Validate(context.Background(), req), true, "")
 			}
@@ -287,8 +252,8 @@ func TestLegacyBehaviorAndTeamEdits(t *testing.T) {
 	requireResponse(t, f.handler.Validate(context.Background(), req), true, "unchanged")
 	for name, mutate := range map[string]func(*api.Team){
 		"add member": func(candidate *api.Team) {
-			candidate.Spec.Membership.Subjects = append(candidate.Spec.Membership.Subjects, api.GovernanceSubject{
-				Kind: "User", TenantID: testGovernanceSubject.TenantID, ObjectID: "00000000-0000-0000-0000-000000000099",
+			candidate.Spec.Membership.Subjects = append(candidate.Spec.Membership.Subjects, api.EntraSubject{
+				Kind: "User", TenantID: testEntraSubject.TenantID, ObjectID: "00000000-0000-0000-0000-000000000099",
 			})
 		},
 		"remove member": func(candidate *api.Team) { candidate.Spec.Membership.Subjects = nil },
@@ -404,7 +369,7 @@ func TestLegacyTeamDeletionPreservesExistingAuthorization(t *testing.T) {
 	}
 }
 
-func TestTeamRemovalProtectsInheritedGovernance(t *testing.T) {
+func TestTeamRemovalProtectsInheritedPolicy(t *testing.T) {
 	f := newFixture(t)
 	f.agent.Spec.SandboxRef = ""
 	f.agent.ResourceVersion = ""
@@ -418,7 +383,7 @@ func TestTeamRemovalProtectsInheritedGovernance(t *testing.T) {
 		requestFor(t, admissionv1.Delete, f.team, nil, "administrator"),
 		requestFor(t, admissionv1.Update, ungoverned, f.team, "administrator"),
 	} {
-		requireResponse(t, f.handler.Validate(context.Background(), req), false, "inherited governance")
+		requireResponse(t, f.handler.Validate(context.Background(), req), false, "inherited policy")
 		requireResponse(t, f.handler.Validate(context.Background(), req), false, f.agent.Name)
 	}
 	if err := f.client.Delete(context.Background(), f.agent); err != nil {
@@ -450,14 +415,14 @@ func TestUnknownVersionFieldsDoNotBypassValidationOrBlockKnownObjects(t *testing
 			if !ok {
 				t.Fatal("fixture omitted spec")
 			}
-			spec["futureGovernance"] = true
+			spec["futurePolicy"] = true
 			var err error
 			req.Object.Raw, err = json.Marshal(raw)
 			if err != nil {
 				t.Fatal(err)
 			}
 			response := f.handler.Validate(context.Background(), req)
-			requireResponse(t, response, false, `unknown field "futureGovernance"`)
+			requireResponse(t, response, false, `unknown field "futurePolicy"`)
 			if response.Result.Code != 400 {
 				t.Fatal("unrecognized policy fields must explicitly fail closed")
 			}
@@ -698,7 +663,7 @@ func TestConfigurationUpdatesCheckEveryReferencingTeam(t *testing.T) {
 	requireResponse(t, f.handler.Validate(context.Background(), req), false, "referencing Team")
 }
 
-func TestGovernanceCannotBeClearedIntoLegacyExecution(t *testing.T) {
+func TestPolicyCannotBeClearedIntoLegacyExecution(t *testing.T) {
 	for _, held := range []bool{false, true} {
 		t.Run(fmt.Sprintf("held=%v", held), func(t *testing.T) {
 			f := newFixture(t)
@@ -833,7 +798,7 @@ func TestAdmissionConfigValidation(t *testing.T) {
 			t.Fatalf("accepted invalid config: %s", raw)
 		}
 	}
-	config, err := ParseConfig(`{"adminUsers":["administrator","system:serviceaccount:test:portal"],"controllerUsername":"system:serviceaccount:test:controller","governanceApprovalUsername":"system:serviceaccount:test:portal"}`)
+	config, err := ParseConfig(`{"adminUsers":["administrator","system:serviceaccount:test:portal"],"controllerUsername":"system:serviceaccount:test:controller"}`)
 	if err != nil || !slices.Equal(config.AdminUsers, []string{"administrator", "system:serviceaccount:test:portal"}) {
 		t.Fatalf("valid config rejected: %v", err)
 	}

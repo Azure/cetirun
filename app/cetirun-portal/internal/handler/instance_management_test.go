@@ -249,9 +249,9 @@ func TestCustomImageUpgradePreservesInstanceConfiguration(t *testing.T) {
 			}
 			// The API server normalizes metav1.Time's location on round-trip.
 			// Exclude only that representation detail while comparing every
-			// persisted configuration field, including governance subject.
-			stored.Spec.Governance.TeamAuthorization.AuthorizedAt = metav1.Time{}
-			want.Spec.Governance.TeamAuthorization.AuthorizedAt = metav1.Time{}
+			// persisted configuration field, including policy assignment subject.
+			stored.Spec.TeamAuthorization.AuthorizedAt = metav1.Time{}
+			want.Spec.TeamAuthorization.AuthorizedAt = metav1.Time{}
 			if stored.UID != instance.UID || !reflect.DeepEqual(stored.Spec, want.Spec) ||
 				!reflect.DeepEqual(stored.Annotations, instance.Annotations) {
 				t.Fatal("image update changed the instance identity or unrelated configuration")

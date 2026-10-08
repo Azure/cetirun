@@ -112,11 +112,11 @@ func (c *aiGatewayCatalog) update(deployments []aigateway.Deployment, blockUnpri
 		}
 		legacyShared := slices.Contains(deployment.AccessGroups, aiGatewaySharedAccessGroup)
 		managedGroups := trustedManagedModelGroups(deployment, groupMembers, idMembers)
-		governedShared := deployment.ID != "" && len(managedGroups) > 0
+		policyBoundShared := deployment.ID != "" && len(managedGroups) > 0
 		// Keep publishing legacy shared models while old catalog consumers are
-		// present, but never resolve a Governance policy through their broad
+		// present, but never resolve a Policy policy through their broad
 		// group. Only a per-deployment group below is authorization evidence.
-		if !legacyShared && !governedShared {
+		if !legacyShared && !policyBoundShared {
 			continue
 		}
 		if !aiGatewaySharedModelUsable(deployment.ModelName) {
@@ -136,7 +136,7 @@ func (c *aiGatewayCatalog) update(deployments []aigateway.Deployment, blockUnpri
 		model.ContextWindow = smallerPositive(model.ContextWindow, deployment.MaxInputTokens)
 		model.MaxOutputTokens = smallerPositive(model.MaxOutputTokens, deployment.MaxOutputTokens)
 		byName[deployment.ModelName] = model
-		if governedShared {
+		if policyBoundShared {
 			modelGroups[deployment.ModelName] = append(modelGroups[deployment.ModelName], managedGroups...)
 		}
 	}
@@ -192,7 +192,7 @@ func managedModelGroups(groups []string) []string {
 // aiGatewayCatalogFingerprint deliberately includes deployment IDs and their
 // observed managed groups. A model_name is an API alias, not an immutable
 // backend identity: replacing a same-name deployment must re-project every
-// governed Agent before the old deployment can be considered authorized.
+// policy-bound Agent before the old deployment can be considered authorized.
 func aiGatewayCatalogFingerprint(deployments []aigateway.Deployment, modelGroups map[string][]string) string {
 	type member struct {
 		ModelName    string   `json:"modelName"`
@@ -289,7 +289,7 @@ func (c *aiGatewayCatalog) shared() ([]aiGatewayCatalogModel, bool) {
 }
 
 // managedFingerprint is empty until a live Gateway listing establishes the
-// concrete access groups. Governance uses it in its expected Gateway
+// concrete access groups. Policy uses it in its expected Gateway
 // projection revision; callers must not treat a seeded display catalog as
 // authorization evidence.
 func (c *aiGatewayCatalog) managedFingerprint() (string, bool) {
@@ -301,7 +301,7 @@ func (c *aiGatewayCatalog) managedFingerprint() (string, bool) {
 // resolvedGroups returns the collision-safe deployment groups for the exact
 // policy model identifiers. It is false until a live catalog has been listed;
 // a seeded display-only catalog is intentionally insufficient evidence for a
-// Governance grant.
+// Policy grant.
 func (c *aiGatewayCatalog) resolvedGroups(models []string) ([]string, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -321,7 +321,7 @@ func (c *aiGatewayCatalog) resolvedGroups(models []string) ([]string, bool) {
 }
 
 // sharedForGroups returns the published model entries that are reachable by
-// the supplied collision-safe groups. It is used when rendering a governed
+// the supplied collision-safe groups. It is used when rendering a policy-bound
 // workload so an allowed display name cannot accidentally reintroduce another
 // policy's model into the harness configuration.
 func (c *aiGatewayCatalog) sharedForGroups(groups []string) ([]aiGatewayCatalogModel, bool) {
@@ -420,7 +420,7 @@ func (r *AgentReconciler) refreshAIGatewayCatalogWithin(ctx context.Context, cli
 }
 
 // refreshAIGatewayCatalogForGrant obtains a fresh, live catalog for a
-// Governance grant. Unlike the background refresh, it never falls back to a
+// Policy grant. Unlike the background refresh, it never falls back to a
 // cached or seeded catalog: doing so could authorize a group which has been
 // deleted or omit a newly added same-name backend. Every policy model must be
 // resolved against the exact current Gateway response.
@@ -430,11 +430,11 @@ func (r *AgentReconciler) refreshAIGatewayCatalogForGrant(ctx context.Context, c
 	defer catalog.refreshMu.Unlock()
 	deployments, err := client.ListModels(ctx)
 	if err != nil {
-		return fmt.Errorf("list AI Gateway models for Governance grant: %w", err)
+		return fmt.Errorf("list AI Gateway models for Policy grant: %w", err)
 	}
 	blockUnpriced, err := client.BlockUnpricedModels(ctx)
 	if err != nil {
-		return fmt.Errorf("read AI Gateway pricing policy for Governance grant: %w", err)
+		return fmt.Errorf("read AI Gateway pricing policy for Policy grant: %w", err)
 	}
 	changed, skipped, unpriced := catalog.update(deployments, blockUnpriced, time.Now())
 	if len(skipped) > 0 {

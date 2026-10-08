@@ -74,13 +74,13 @@ type TeamMembershipSpec struct {
 	// +listMapKey=kind
 	// +listMapKey=tenantID
 	// +listMapKey=objectID
-	Subjects []GovernanceSubject `json:"subjects"`
+	Subjects []EntraSubject `json:"subjects"`
 }
 
-// GovernanceSubject is a canonical Entra subject. The tenant is retained in
+// EntraSubject is a canonical Entra subject. The tenant is retained in
 // the API even for a single-tenant deployment so object IDs cannot be
 // accidentally interpreted in a different tenant.
-type GovernanceSubject struct {
+type EntraSubject struct {
 	// +kubebuilder:validation:Enum=User;Group
 	Kind string `json:"kind"`
 	// +kubebuilder:validation:Pattern=`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`

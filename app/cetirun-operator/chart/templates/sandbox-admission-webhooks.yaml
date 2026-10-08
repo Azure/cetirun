@@ -58,27 +58,6 @@ webhooks:
         scope: Cluster
     matchConditions:
       {{- include "cetirun-operator.sandboxCleanupMatch" $controllerUsername | nindent 6 }}
-  - name: governance-action.cetirun.microsoft.com
-    admissionReviewVersions: ["v1"]
-    sideEffects: None
-    failurePolicy: Fail
-    timeoutSeconds: {{ int64 $admission.timeoutSeconds }}
-    matchPolicy: Equivalent
-    clientConfig:
-      caBundle: {{ $encodedCA | quote }}
-      service:
-        name: cetirun-sandbox-admission
-        namespace: {{ .Values.namespace | quote }}
-        path: /validate-governance-action
-        port: 443
-    rules:
-      - operations: ["CREATE", "UPDATE", "DELETE"]
-        apiGroups: ["cetirun.microsoft.com"]
-        apiVersions: ["v1alpha1"]
-        resources: ["governanceactions"]
-        scope: Cluster
-    matchConditions:
-      {{- include "cetirun-operator.sandboxCleanupMatch" $controllerUsername | nindent 6 }}
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: MutatingWebhookConfiguration

@@ -33,9 +33,9 @@ import {
   updateAgentPolicy,
   updateSandbox,
   type AgentPolicyResource,
-  type GovernanceCondition,
+  type PolicyCondition,
   type SandboxResource,
-} from "../../api/adminGovernance";
+} from "../../api/adminPolicy";
 
 type Resource = AgentPolicyResource | SandboxResource;
 type ResourceKind = "policy" | "sandbox";
@@ -78,9 +78,9 @@ const sandboxTemplate: Record<string, unknown> = {
 const titleFor = (kind: ResourceKind) => (kind === "policy" ? "Agent policies" : "Sandboxes");
 const singularFor = (kind: ResourceKind) => (kind === "policy" ? "AgentPolicy" : "Sandbox");
 const pathFor = (kind: ResourceKind) => (kind === "policy" ? "agent-policies" : "sandboxes");
-const queryKeyFor = (kind: ResourceKind) => ["admin", "governance", kind] as const;
+const queryKeyFor = (kind: ResourceKind) => ["admin", "policy", kind] as const;
 
-function acceptedStatus(conditions?: GovernanceCondition[]): string {
+function acceptedStatus(conditions?: PolicyCondition[]): string {
   const condition = conditions?.find((item) => item.type === "Accepted" || item.type === "Ready");
   return condition ? `${condition.type}: ${condition.status}` : "Pending";
 }
@@ -113,7 +113,7 @@ function updateResource(kind: ResourceKind, name: string, spec: Record<string, u
   return kind === "policy" ? updateAgentPolicy(name, spec) : updateSandbox(name, spec);
 }
 
-export function GovernanceResourceListPage({ kind }: { kind: ResourceKind }) {
+export function PolicyResourceListPage({ kind }: { kind: ResourceKind }) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [deleting, setDeleting] = useState<string | null>(null);
@@ -177,7 +177,7 @@ export function GovernanceResourceListPage({ kind }: { kind: ResourceKind }) {
       )}
       {deleting && (
         <MessageBar intent="warning" style={{ marginTop: 16 }}>
-          Delete {singularFor(kind)} <strong>{deleting}</strong>? Existing governance bindings may reject reconciliation. {" "}
+          Delete {singularFor(kind)} <strong>{deleting}</strong>? Existing policy assignments may reject reconciliation. {" "}
           <Button size="small" appearance="primary" disabled={deletion.isPending} onClick={() => deletion.mutate(deleting)}>Delete</Button>
           <Button size="small" appearance="secondary" onClick={() => setDeleting(null)}>Cancel</Button>
         </MessageBar>
@@ -186,7 +186,7 @@ export function GovernanceResourceListPage({ kind }: { kind: ResourceKind }) {
   );
 }
 
-export function GovernanceResourceEditPage({ kind }: { kind: ResourceKind }) {
+export function PolicyResourceEditPage({ kind }: { kind: ResourceKind }) {
   const { name } = useParams<{ name: string }>();
   const navigate = useNavigate();
   const queryClient = useQueryClient();

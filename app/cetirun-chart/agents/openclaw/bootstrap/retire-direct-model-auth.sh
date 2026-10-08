@@ -3,7 +3,7 @@
 # Licensed under the MIT License.
 
 # Remove every in-home model auth profile after OpenClaw doctor has imported
-# legacy profile files. A governed Agent gets its sole model credential from
+# legacy profile files. A policy-bound Agent gets its sole model credential from
 # the platform AI Gateway, so retaining a profile would let OpenClaw prefer a
 # direct provider credential over the Gateway environment variables.
 #

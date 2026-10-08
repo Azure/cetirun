@@ -4,6 +4,7 @@
 package handler
 
 import (
+	"errors"
 	"log/slog"
 	"net/http"
 
@@ -12,25 +13,25 @@ import (
 	"github.com/Azure/CetiRun/app/cetirun-portal/internal/kube"
 )
 
-// AdminInstanceHandler exposes a cluster-wide read-only view of
-// Agent resources for admin users. Modifications still go through
-// the user-scoped /api/v1/instances endpoints in InstanceHandler.
+// AdminInstanceHandler exposes cluster-wide Agent lifecycle administration.
 type AdminInstanceHandler struct {
 	Kube *kube.Client
 }
 
 // AdminInstanceSummary is the row shape for the admin instances list.
 type AdminInstanceSummary struct {
-	Name        string                      `json:"name"`
-	Alias       string                      `json:"alias"`
-	DisplayName string                      `json:"displayName,omitempty"`
-	Email       string                      `json:"email,omitempty"`
-	Team        string                      `json:"team,omitempty"`
-	Agent       cetirunv1alpha1.HarnessSpec `json:"agent"`
-	UID         string                      `json:"uid"`
-	Phase       string                      `json:"phase,omitempty"`
-	Ready       bool                        `json:"ready"`
-	CreatedAt   string                      `json:"createdAt"`
+	Name            string                      `json:"name"`
+	Alias           string                      `json:"alias"`
+	DisplayName     string                      `json:"displayName,omitempty"`
+	Email           string                      `json:"email,omitempty"`
+	Team            string                      `json:"team,omitempty"`
+	Agent           cetirunv1alpha1.HarnessSpec `json:"agent"`
+	UID             string                      `json:"uid"`
+	ResourceVersion string                      `json:"resourceVersion"`
+	Suspended       bool                        `json:"suspended"`
+	Phase           string                      `json:"phase,omitempty"`
+	Ready           bool                        `json:"ready"`
+	CreatedAt       string                      `json:"createdAt"`
 }
 
 // ListAllInstances handles GET /api/v1/admin/instances.
@@ -45,19 +46,64 @@ func (h *AdminInstanceHandler) ListAllInstances(w http.ResponseWriter, r *http.R
 	for i := range items {
 		ins := &items[i]
 		out = append(out, AdminInstanceSummary{
-			Name:        ins.Name,
-			Alias:       ins.Spec.User.Alias,
-			DisplayName: ins.Spec.User.DisplayName,
-			Email:       ins.Spec.User.Email,
-			Team:        instanceTeam(ins),
-			Agent:       agentconfig.Defaults(ins.Spec.Agent),
-			UID:         string(ins.UID),
-			Phase:       ins.Status.Phase,
-			Ready:       isReady(ins),
-			CreatedAt:   ins.CreationTimestamp.UTC().Format("2006-01-02T15:04:05Z"),
+			Name:            ins.Name,
+			Alias:           ins.Spec.User.Alias,
+			DisplayName:     ins.Spec.User.DisplayName,
+			Email:           ins.Spec.User.Email,
+			Team:            instanceTeam(ins),
+			Agent:           agentconfig.Defaults(ins.Spec.Agent),
+			UID:             string(ins.UID),
+			ResourceVersion: ins.ResourceVersion,
+			Suspended:       ins.Spec.Suspended,
+			Phase:           ins.Status.Phase,
+			Ready:           isReady(ins),
+			CreatedAt:       ins.CreationTimestamp.UTC().Format("2006-01-02T15:04:05Z"),
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"instances": out})
+}
+
+// UpdateLifecycle handles PATCH /api/v1/admin/instances/{name}. Lifecycle is
+// deliberately separate from policy assignment: suspension is an immediate
+// administrator decision and does not create an approval resource.
+func (h *AdminInstanceHandler) UpdateLifecycle(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if !teamNamePattern.MatchString(name) {
+		writeError(w, http.StatusBadRequest, "invalid_name", "Invalid Agent name")
+		return
+	}
+	var req struct {
+		UID             string `json:"uid"`
+		ResourceVersion string `json:"resourceVersion"`
+		Suspended       *bool  `json:"suspended"`
+	}
+	if !decodeStrictAdmin(w, r, &req) {
+		return
+	}
+	if req.UID == "" || req.ResourceVersion == "" {
+		writeError(w, http.StatusPreconditionRequired, "version_required", "uid and resourceVersion from the current Agent are required")
+		return
+	}
+	if req.Suspended == nil {
+		writeError(w, http.StatusBadRequest, "suspended_required", "suspended is required")
+		return
+	}
+	item, err := h.Kube.UpdateInstanceLifecycle(r.Context(), name, req.UID, req.ResourceVersion, *req.Suspended)
+	if err != nil {
+		switch {
+		case errors.Is(err, kube.ErrInstanceChanged):
+			writeError(w, http.StatusConflict, "instance_changed", "Agent changed or was replaced; reload before saving")
+		case errors.Is(err, kube.ErrInstanceDeleting):
+			writeError(w, http.StatusConflict, "instance_deleting", "Agent is being deleted")
+		case kube.IsNotFound(err):
+			writeError(w, http.StatusNotFound, "not_found", "Agent not found")
+		default:
+			slog.Error("admin: update Agent lifecycle failed", "name", name, "error", err)
+			writeError(w, http.StatusInternalServerError, "internal_error", "Failed to update Agent lifecycle")
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
 }
 
 // instanceTeam returns the Team binding for an instance.

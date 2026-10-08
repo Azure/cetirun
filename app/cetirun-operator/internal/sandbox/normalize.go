@@ -166,15 +166,15 @@ func NormalizeAgentPolicy(spec v1alpha1.AgentPolicySpec) (v1alpha1.AgentPolicySp
 	if normalized.KubernetesAccess != nil {
 		errs = append(errs, normalizeKubernetesAccess(normalized.KubernetesAccess, path.Child("kubernetesAccess"))...)
 	}
-	errs = append(errs, normalizeGovernancePolicy(&normalized, path)...)
+	errs = append(errs, normalizePolicyConstraints(&normalized, path)...)
 	return normalized, errs
 }
 
-// normalizeGovernancePolicy validates the cross-field semantics of the
-// governance entitlement surface. CRD validations intentionally cover only
+// normalizePolicyConstraints validates the cross-field semantics of the
+// policy entitlement surface. CRD validations intentionally cover only
 // local shape; acceptance must reject policies that cannot be projected to a
 // typed Gateway or credential-service implementation.
-func normalizeGovernancePolicy(policy *v1alpha1.AgentPolicySpec, path *field.Path) field.ErrorList {
+func normalizePolicyConstraints(policy *v1alpha1.AgentPolicySpec, path *field.Path) field.ErrorList {
 	var errs field.ErrorList
 	harnessPath := path.Child("harnesses", "allowed")
 	if len(policy.Harnesses.Allowed) == 0 {

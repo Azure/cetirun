@@ -34,7 +34,7 @@ type AgentPolicySpec struct {
 	// +optional
 	AgentIdentity AgentPolicyAgentIdentity `json:"agentIdentity,omitempty"`
 
-	// EntraID remains the Sandbox adapter capability switch. Governance uses
+	// EntraID remains the Sandbox adapter capability switch. Policy uses
 	// AgentIdentity for the user-facing entitlement and requires both controls
 	// before an Agent Identity can be provisioned.
 	// +kubebuilder:default={}
@@ -59,7 +59,7 @@ type AgentPolicySpec struct {
 
 type AgentPolicyHarnesses struct {
 	// +kubebuilder:validation:MinItems=1
-	// Governance has typed Gateway and Sandbox enforcement adapters only for
+	// Policy has typed Gateway and Sandbox enforcement adapters only for
 	// the built-in harnesses. Custom workloads cannot be granted a policy.
 	// +kubebuilder:validation:items:Enum=openclaw;hermes
 	// +listType=set

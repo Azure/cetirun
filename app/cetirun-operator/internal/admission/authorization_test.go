@@ -45,13 +45,13 @@ func stampFixtureAuthorization(t *testing.T, f fixture) {
 func assignedFixture(t *testing.T) fixture {
 	t.Helper()
 	f := newFixture(t)
-	owner := api.GovernanceSubject{
+	owner := api.EntraSubject{
 		Kind:     "User",
 		TenantID: "00000000-0000-0000-0000-000000000001",
 		ObjectID: "00000000-0000-0000-0000-000000000002",
 	}
 	f.policy.Spec.Harnesses.Allowed = []api.AgentType{api.AgentTypeHermes}
-	f.team.Spec.Membership.Subjects = []api.GovernanceSubject{owner}
+	f.team.Spec.Membership.Subjects = []api.EntraSubject{owner}
 	if err := f.client.Update(context.Background(), f.policy); err != nil {
 		t.Fatal(err)
 	}
@@ -62,9 +62,7 @@ func assignedFixture(t *testing.T) fixture {
 		api.AnnotationOwnerTenantID: owner.TenantID,
 		api.AnnotationOwnerObjectID: owner.ObjectID,
 	}
-	f.agent.Spec.Governance = api.GovernanceSpec{TeamAuthorization: api.TeamAuthorization{
-		Subject: owner, AuthorizedAt: metav1.Now(),
-	}}
+	f.agent.Spec.TeamAuthorization = api.TeamAuthorization{Subject: owner, AuthorizedAt: metav1.Now()}
 	f.handler.config.TeamAssignments = []TeamAssignment{
 		{Team: f.team.Name, Users: []string{"member"}, Groups: []string{"engineering-members"}},
 	}
@@ -152,7 +150,7 @@ func TestTrustedTeamCreationContextIgnoresLabelsAndHumanRoles(t *testing.T) {
 	}
 }
 
-func TestPreGovernanceAgentCannotBeUpgradedInPlace(t *testing.T) {
+func TestPrePolicyAgentCannotBeUpgradedInPlace(t *testing.T) {
 	newBootstrapPair := func(t *testing.T) (fixture, *api.Agent, *api.Agent) {
 		t.Helper()
 		f := assignedFixture(t)
@@ -160,14 +158,14 @@ func TestPreGovernanceAgentCannotBeUpgradedInPlace(t *testing.T) {
 		old := f.agent.DeepCopy()
 		delete(old.Annotations, api.AnnotationOwnerTenantID)
 		delete(old.Annotations, api.AnnotationOwnerObjectID)
-		old.Spec.Governance = api.GovernanceSpec{}
+		old.Spec.TeamAuthorization = api.TeamAuthorization{}
 		old.Spec.Suspended = false
 
 		candidate := old.DeepCopy()
 		candidate.Spec.Suspended = true
-		candidate.Spec.Governance = f.agent.Spec.Governance
-		candidate.Annotations[api.AnnotationOwnerTenantID] = testGovernanceSubject.TenantID
-		candidate.Annotations[api.AnnotationOwnerObjectID] = testGovernanceSubject.ObjectID
+		candidate.Spec.TeamAuthorization = f.agent.Spec.TeamAuthorization
+		candidate.Annotations[api.AnnotationOwnerTenantID] = testEntraSubject.TenantID
+		candidate.Annotations[api.AnnotationOwnerObjectID] = testEntraSubject.ObjectID
 		return f, old, candidate
 	}
 

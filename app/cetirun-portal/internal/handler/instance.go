@@ -122,7 +122,7 @@ type InstanceResponse struct {
 	TeamsMessage           string                      `json:"teamsMessage,omitempty"` // Human-readable Teams status detail
 	AgentIdentity          *AgentIdentityResponse      `json:"agentIdentity,omitempty"`
 	AIGateway              *AIGatewayResponse          `json:"aiGateway,omitempty"`
-	Governance             *GovernanceResponse         `json:"governance,omitempty"`
+	Policy                 *PolicyResponse             `json:"policy,omitempty"`
 }
 
 // AgentIdentityResponse contains only non-sensitive lifecycle information.
@@ -166,15 +166,15 @@ type StatusResponse struct {
 	Pods       []PodStatus       `json:"pods"`
 }
 
-// GovernanceResponse keeps the authorization decision and each enforcement
+// PolicyResponse keeps the authorization decision and each enforcement
 // projection separate; a configured Team is not presented as an enforced
 // workload.
-type GovernanceResponse struct {
-	Phase              string                                         `json:"phase,omitempty"`
-	Coverage           string                                         `json:"coverage,omitempty"`
-	ObservedGeneration int64                                          `json:"observedGeneration,omitempty"`
-	Authorization      *cetirunv1alpha1.GovernanceAuthorizationStatus `json:"authorization,omitempty"`
-	Projections        cetirunv1alpha1.GovernanceProjectionsStatus    `json:"projections"`
+type PolicyResponse struct {
+	Phase              string                                    `json:"phase,omitempty"`
+	ObservedGeneration int64                                     `json:"observedGeneration,omitempty"`
+	TeamAuthorization  *cetirunv1alpha1.TeamAuthorizationStatus  `json:"teamAuthorization,omitempty"`
+	EffectivePolicyRef *cetirunv1alpha1.EffectivePolicyReference `json:"effectivePolicyRef,omitempty"`
+	Enforcement        cetirunv1alpha1.PolicyEnforcementStatus   `json:"enforcement"`
 }
 
 // EventItem is a simplified view of a Kubernetes Event.
@@ -426,9 +426,9 @@ func (h *InstanceHandler) GetInstanceStatusByName(w http.ResponseWriter, r *http
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// GetInstanceGovernanceByName returns read-only governance evidence to the
+// GetInstancePolicyByName returns read-only policy assignment and enforcement evidence to the
 // verified owner. Detailed component status stays in the Agent status fields.
-func (h *InstanceHandler) GetInstanceGovernanceByName(w http.ResponseWriter, r *http.Request) {
+func (h *InstanceHandler) GetInstancePolicyByName(w http.ResponseWriter, r *http.Request) {
 	claims, ok := auth.ClaimsFromContext(r.Context())
 	if !ok {
 		writeError(w, http.StatusUnauthorized, "not_authenticated", "Authentication is required")
@@ -444,13 +444,14 @@ func (h *InstanceHandler) GetInstanceGovernanceByName(w http.ResponseWriter, r *
 		return
 	}
 	if !ownsInstance(instance, claims) {
-		writeError(w, http.StatusForbidden, "forbidden", "Only the instance owner may view governance status")
+		writeError(w, http.StatusForbidden, "forbidden", "Only the instance owner may view policy status")
 		return
 	}
-	response := GovernanceResponse{}
-	if status := instance.Status.Governance; status != nil {
-		response.Phase, response.Coverage, response.ObservedGeneration = status.Phase, status.Coverage, status.ObservedGeneration
-		response.Authorization, response.Projections = status.Authorization, status.Projections
+	response := PolicyResponse{}
+	if status := instance.Status.Policy; status != nil {
+		response.Phase, response.ObservedGeneration = status.Phase, status.ObservedGeneration
+		response.TeamAuthorization = status.TeamAuthorization
+		response.EffectivePolicyRef, response.Enforcement = status.EffectivePolicyRef, status.Enforcement
 	}
 	writeJSON(w, http.StatusOK, response)
 }
@@ -637,7 +638,7 @@ func (h *InstanceHandler) CreateInstance(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusBadRequest, "team_required", "Choose a Team for the agent")
 		return
 	}
-	governanceTeam, authorizedSubject, err := h.authorizeTeamOwner(r.Context(), team, claims)
+	policyTeam, authorizedSubject, err := h.authorizeTeamOwner(r.Context(), team, claims)
 	if err != nil {
 		if kube.IsNotFound(err) {
 			writeError(w, http.StatusBadRequest, "unknown_team", "Team "+team+" does not exist")
@@ -672,8 +673,8 @@ func (h *InstanceHandler) CreateInstance(w http.ResponseWriter, r *http.Request)
 		OwnerTenantID:        claims.TenantID,
 		OwnerObjectID:        claims.ObjectID,
 		ModelAccess:          modelAccess,
-		SandboxRef:           governanceTeam.Spec.DefaultSandboxRef,
-		Governance:           governanceSpec(authorizedSubject, h.now()),
+		SandboxRef:           policyTeam.Spec.DefaultSandboxRef,
+		TeamAuthorization:    newTeamAuthorization(authorizedSubject, h.now()),
 	}
 	if req.RegistryAuth != nil {
 		id, err := kube.RegistryID()
@@ -881,8 +882,8 @@ func (h *InstanceHandler) toInstanceResponse(ctx context.Context, instance *ceti
 		}
 	}
 	resp.AIGateway = aiGatewayResponse(instance)
-	if status := instance.Status.Governance; status != nil {
-		resp.Governance = &GovernanceResponse{Phase: status.Phase, Coverage: status.Coverage, ObservedGeneration: status.ObservedGeneration, Authorization: status.Authorization, Projections: status.Projections}
+	if status := instance.Status.Policy; status != nil {
+		resp.Policy = &PolicyResponse{Phase: status.Phase, ObservedGeneration: status.ObservedGeneration, TeamAuthorization: status.TeamAuthorization, EffectivePolicyRef: status.EffectivePolicyRef, Enforcement: status.Enforcement}
 	}
 
 	return resp, nil

@@ -34,9 +34,9 @@ protected bundle last. `sandboxWorkload` is an internal chart contract, not a
 tenant override or a way to enable Sandbox execution.
 
 This path supports OpenClaw and Hermes. It renders zero replicas and the Helm
-client refuses to apply the prepared Sandbox release. Governed Custom runtimes
+client refuses to apply the prepared Sandbox release. Policy-bound Custom runtimes
 and the separate platform Copilot helper are explicitly unsupported; neither
-falls back to an ungoverned runtime.
+falls back to a policy-free runtime.
 
 The protected inventory includes:
 
@@ -73,7 +73,7 @@ ownership or claims writer exclusion. Scratch limits are accounting/eviction
 controls, not an independent hard disk quota.
 
 Only model provider/name, authorized existing Secret selection and non-reserved
-typed environment inputs are accepted as governed user overrides. Final-Pod
+typed environment inputs are accepted as policy-controlled user overrides. Final-Pod
 validation compares all containers, volumes, identity, scheduling and other
 PodSpec fields against the rendered expectation, allowing only sanctioned
 Kubernetes/StatefulSet defaults. Admission additionally requires current

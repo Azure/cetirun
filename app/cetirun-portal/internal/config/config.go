@@ -57,11 +57,9 @@ type Config struct {
 	// publishes the shared models.
 	AIGatewayCatalogNamespace string
 	// PlatformAdminSubjects contains the verified Entra subjects permitted to
-	// operate the governance management API.  It is supplied by the chart as
+	// operate the policy management API. It is supplied by the chart as
 	// JSON because environment variables cannot represent structured lists.
-	PlatformAdminSubjects    []IdentitySubject
-	CetiAdminServiceAccounts []string
-	CetiAdminTokenAudience   string
+	PlatformAdminSubjects []IdentitySubject
 }
 
 // Load reads configuration from environment variables.
@@ -82,19 +80,7 @@ func Load() Config {
 		AIGatewayEnabled:            os.Getenv("FEATURE_AI_GATEWAY_ENABLED") == "true",
 		AIGatewayCatalogNamespace:   envOrDefault("AI_GATEWAY_CATALOG_NAMESPACE", "cetirun-system"),
 		PlatformAdminSubjects:       envIdentitySubjects("PLATFORM_ADMIN_SUBJECTS"),
-		CetiAdminServiceAccounts:    envCSV("CETIADMIN_SERVICE_ACCOUNTS"),
-		CetiAdminTokenAudience:      envOrDefault("CETIADMIN_TOKEN_AUDIENCE", "cetirun-governance-actions"),
 	}
-}
-
-func envCSV(key string) []string {
-	values := []string{}
-	for _, value := range strings.Split(os.Getenv(key), ",") {
-		if value = strings.TrimSpace(value); value != "" {
-			values = append(values, value)
-		}
-	}
-	return values
 }
 
 func envIdentitySubjects(key string) []IdentitySubject {

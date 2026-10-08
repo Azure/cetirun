@@ -92,12 +92,12 @@ func (h *Handler) validate(ctx context.Context, request admission.Request) admis
 
 	if team, ok := object.(*api.Team); ok && request.Operation == admissionv1.Update {
 		previous := old.(*api.Team)
-		if sameTeamGovernance(team.Spec, previous.Spec) {
-			return admission.Allowed("Team governance is unchanged")
+		if sameTeamPolicy(team.Spec, previous.Spec) {
+			return admission.Allowed("Team policy is unchanged")
 		}
 	}
 	if team, ok := object.(*api.Team); ok &&
-		(request.Operation == admissionv1.Create || request.Operation == admissionv1.Delete) && !sandbox.TeamGoverned(team) {
+		(request.Operation == admissionv1.Create || request.Operation == admissionv1.Delete) && !sandbox.TeamPolicyConfigured(team) {
 		return admission.Allowed("legacy Team")
 	}
 	if !h.config.administrator(request.UserInfo) {
@@ -109,11 +109,11 @@ func (h *Handler) validate(ctx context.Context, request admission.Request) admis
 
 	switch candidate := object.(type) {
 	case *api.Team:
-		if !sandbox.TeamGoverned(candidate) {
+		if !sandbox.TeamPolicyConfigured(candidate) {
 			if response := h.checkTeamConsumers(ctx, candidate, true); !response.Allowed {
 				return response
 			}
-			return admission.Allowed("unreferenced Team governance removed")
+			return admission.Allowed("unreferenced Team policy removed")
 		}
 		resources, err := h.resources(ctx, candidate.Spec, sandbox.Resources{})
 		if err != nil {
@@ -160,12 +160,6 @@ func (h *Handler) defaultAgent(ctx context.Context, request admission.Request) a
 }
 
 func (h *Handler) validateAgent(ctx context.Context, request admission.Request, agent, old *api.Agent) admission.Response {
-	if h.governanceActionControlledUpdate(request, agent, old) {
-		return admission.Allowed("operator GovernanceAction execution update")
-	}
-	if old != nil && old.Annotations[api.AnnotationGovernanceActionClaim] != "" {
-		return admission.Denied("an executing GovernanceAction holds the Agent; other spec and metadata updates are temporarily blocked")
-	}
 	if old != nil && !slices.Equal(agent.Finalizers, old.Finalizers) {
 		if request.UserInfo.Username == h.config.ControllerUsername && controllerFinalizerUpdate(agent, old) && rawMetadataOnly(request) {
 			return admission.Allowed("controller lifecycle metadata only")
@@ -184,7 +178,7 @@ func (h *Handler) validateAgent(ctx context.Context, request admission.Request, 
 	if err := h.protectedAuthorization(request, agent, old); err != nil {
 		return admission.Denied(err.Error())
 	}
-	if err := h.protectedGovernanceBinding(request, agent, old); err != nil {
+	if err := h.protectedPolicyAssignment(request, agent, old); err != nil {
 		return admission.Denied(err.Error())
 	}
 	assigned := ""
@@ -212,8 +206,8 @@ func (h *Handler) validateAgent(ctx context.Context, request admission.Request, 
 			if err != nil {
 				return dependencyError(ctx, err)
 			}
-			if sandbox.TeamGoverned(previousTeam) {
-				return admission.Denied("governed Agents cannot return to the legacy path by changing Team")
+			if sandbox.TeamPolicyConfigured(previousTeam) {
+				return admission.Denied("policy-bound Agents cannot return to the legacy path by changing Team")
 			}
 		}
 		return admission.Allowed("legacy Agent")
@@ -223,11 +217,11 @@ func (h *Handler) validateAgent(ctx context.Context, request admission.Request, 
 			return admission.Denied(err.Error())
 		}
 		if old != nil && !sameAgentSelection(agent, old) {
-			return admission.Denied("members cannot change a governed Agent's Team, policy class or Sandbox binding")
+			return admission.Denied("members cannot change a policy-bound Agent's Team, policy class or Sandbox binding")
 		}
 	}
 	if suspensionOnlyUpdate(request, agent, old) {
-		return admission.Allowed("authorized suspension-only update; existing governance is unchanged")
+		return admission.Allowed("authorized suspension-only update; existing policy assignment is unchanged")
 	}
 	resources, response := h.agentAuthorizationResources(ctx, request.Operation, agent, team)
 	if !response.Allowed {
@@ -237,11 +231,11 @@ func (h *Handler) validateAgent(ctx context.Context, request admission.Request, 
 }
 
 func (h *Handler) agentAuthorizationResources(ctx context.Context, operation admissionv1.Operation, agent *api.Agent, team *api.Team) (sandbox.Resources, admission.Response) {
-	if !sandbox.TeamGoverned(team) {
-		return sandbox.Resources{}, admission.Denied("governed Agents require a governed Team; clearing bindings does not release a hold")
+	if !sandbox.TeamPolicyConfigured(team) {
+		return sandbox.Resources{}, admission.Denied("policy-bound Agents require a policy-configured Team; clearing bindings does not release a hold")
 	}
 	if team.DeletionTimestamp != nil {
-		return sandbox.Resources{}, admission.Denied("a terminating Team cannot authorize a governed Agent")
+		return sandbox.Resources{}, admission.Denied("a terminating Team cannot authorize a policy-bound Agent")
 	}
 	spec, err := sandbox.DefaultAgentSelection(agent.Spec, team)
 	if err != nil {
@@ -329,7 +323,7 @@ func (h *Handler) checkTeamConsumers(ctx context.Context, team *api.Team, removi
 				continue
 			}
 			if removing {
-				return admission.Denied(fmt.Sprintf("Team %q still governs referencing Agent %q, including inherited governance; rebind it to another governed Team or delete it before removing Team governance", team.Name, agent.Name))
+				return admission.Denied(fmt.Sprintf("Team %q still has referencing Agent %q, including inherited policy; rebind it to another policy-configured Team or delete it before removing Team policy", team.Name, agent.Name))
 			}
 			if (agent.Spec.SandboxRef != "" && !slices.Contains(team.Spec.SandboxRefs, agent.Spec.SandboxRef)) ||
 				(agent.Spec.PolicyClass == api.AgentPolicyClassAdmin && team.Spec.AdminAgentPolicyRef == "") {
@@ -433,7 +427,7 @@ func references(team *api.Team, object client.Object) bool {
 	}
 }
 
-func sameTeamGovernance(a, b api.TeamSpec) bool {
+func sameTeamPolicy(a, b api.TeamSpec) bool {
 	return equality.Semantic.DeepEqual(a.Membership, b.Membership) &&
 		a.NormalAgentPolicyRef == b.NormalAgentPolicyRef && a.AdminAgentPolicyRef == b.AdminAgentPolicyRef &&
 		a.DefaultSandboxRef == b.DefaultSandboxRef && slices.Equal(a.SandboxRefs, b.SandboxRefs)
@@ -573,5 +567,5 @@ func decodeRequest(request admission.Request, mode string) (client.Object, clien
 
 func dependencyError(ctx context.Context, err error) admission.Response {
 	log.FromContext(ctx).Error(err, "Sandbox admission cannot verify current configuration")
-	return admission.Errored(http.StatusServiceUnavailable, fmt.Errorf("Sandbox admission dependencies are unavailable; retry without weakening governance"))
+	return admission.Errored(http.StatusServiceUnavailable, fmt.Errorf("Sandbox admission dependencies are unavailable; retry without weakening policy"))
 }

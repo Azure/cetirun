@@ -252,7 +252,7 @@ func TestNormalizeAgentPolicyDefaults(t *testing.T) {
 	}
 }
 
-func TestNormalizeAgentPolicyGovernanceEntitlements(t *testing.T) {
+func TestNormalizeAgentPolicyPolicyEntitlements(t *testing.T) {
 	valid := v1alpha1.AgentPolicySpec{
 		Harnesses: v1alpha1.AgentPolicyHarnesses{Allowed: []v1alpha1.AgentType{v1alpha1.AgentTypeHermes}},
 		ModelAccess: v1alpha1.AgentPolicyModelAccess{
@@ -275,7 +275,7 @@ func TestNormalizeAgentPolicyGovernanceEntitlements(t *testing.T) {
 		{Harnesses: valid.Harnesses, AgentIdentity: v1alpha1.AgentPolicyAgentIdentity{Required: true}},
 	} {
 		if _, errs := NormalizeAgentPolicy(invalid); len(errs) == 0 {
-			t.Fatalf("expected invalid governance policy: %#v", invalid)
+			t.Fatalf("expected invalid policy policy: %#v", invalid)
 		}
 	}
 }

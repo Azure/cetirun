@@ -236,7 +236,7 @@ func TestExplicitReauthorizationFormatIsCompleteAndStrict(t *testing.T) {
 
 func TestPresentIncludesUntrustedOrMalformedMetadata(t *testing.T) {
 	if Present(nil) || Present(&api.Agent{}) {
-		t.Fatal("absent metadata acquired governance intent")
+		t.Fatal("absent metadata acquired policy intent")
 	}
 	for _, key := range []string{AuthorizationAnnotation, ReauthorizeAnnotation} {
 		if !Present(&api.Agent{ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{key: ""}}}) {

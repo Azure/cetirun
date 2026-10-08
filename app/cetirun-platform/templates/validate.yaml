@@ -19,22 +19,17 @@
 {{- fail "cetirun-operator.istioGateway must use namespace/name format when cetirun-operator is enabled" }}
 {{- end }}
 {{- if and $operator.enabled (not (($operator.sandboxAdmission | default dict).enabled)) }}
-{{- fail "cetirun-operator.sandboxAdmission.enabled must be true: Governance binding and action admission are mandatory" }}
+{{- fail "cetirun-operator.sandboxAdmission.enabled must be true: policy assignment admission is mandatory" }}
 {{- end }}
 {{- if and $operator.enabled (not (($operator.sandboxAdmission | default dict).enforce)) }}
-{{- fail "cetirun-operator.sandboxAdmission.enforce must be true: Governance admission must fail closed" }}
+{{- fail "cetirun-operator.sandboxAdmission.enforce must be true: policy admission must fail closed" }}
 {{- end }}
 {{- if and $portal.enabled $operator.enabled }}
-{{- if empty (($portal.governance | default dict).platformAdminSubjects) }}
-{{- fail "cetirun-portal.governance.platformAdminSubjects must contain at least one verified Platform Admin" }}
+{{- if empty (($portal.administration | default dict).platformAdminSubjects) }}
+{{- fail "cetirun-portal.administration.platformAdminSubjects must contain at least one verified Platform Admin" }}
 {{- end }}
-{{- $_ := required "cetirun-portal.agentIdentity.tenantId is required for Governance identity verification" (($portal.agentIdentity | default dict).tenantId) }}
-{{- $_ := required "cetirun-portal.agentIdentity.portalClientId is required for Governance identity verification" (($portal.agentIdentity | default dict).portalClientId) }}
-{{- $portalServiceAccount := required "cetirun-portal.serviceAccount.name is required" (($portal.serviceAccount | default dict).name) }}
-{{- $expectedApprovalUsername := printf "system:serviceaccount:%s:%s" .Release.Namespace $portalServiceAccount }}
-{{- if ne (($operator.sandboxAdmission | default dict).governanceApprovalUsername) $expectedApprovalUsername }}
-{{- fail (printf "cetirun-operator.sandboxAdmission.governanceApprovalUsername must be %s" $expectedApprovalUsername) }}
-{{- end }}
+{{- $_ := required "cetirun-portal.agentIdentity.tenantId is required for administrator identity verification" (($portal.agentIdentity | default dict).tenantId) }}
+{{- $_ := required "cetirun-portal.agentIdentity.portalClientId is required for administrator identity verification" (($portal.agentIdentity | default dict).portalClientId) }}
 {{- end }}
 {{- if and $portal.enabled (not $portal.istio.host) }}
 {{- fail "cetirun-portal.istio.host is required when cetirun-portal is enabled" }}

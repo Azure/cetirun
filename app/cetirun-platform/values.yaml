@@ -42,7 +42,7 @@ cetirun-operator:
   # Without a url, the operator uses cetirun-ai-gateway in its namespace.
   aiGateway:
     enabled: true
-  # Governance admission is mandatory. A deployment must supply the
+  # Policy admission is mandatory. A deployment must supply the
   # platform-issued TLS Secret, CA bundle, and exact administrator identities.
   sandboxAdmission:
     enabled: true

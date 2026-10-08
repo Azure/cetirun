@@ -161,7 +161,7 @@ export function TeamEditPage() {
     e.preventDefault();
     setSubmitError(null);
     let req: TeamUpsertRequest;
-    try { req = toRequest(form); } catch (err) { setSubmitError(err instanceof Error ? err.message : "Invalid Team governance configuration"); return; }
+    try { req = toRequest(form); } catch (err) { setSubmitError(err instanceof Error ? err.message : "Invalid Team policy configuration"); return; }
     if (isCreate) {
       if (!/^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$/.test(req.name || "")) {
         setSubmitError(
@@ -226,7 +226,7 @@ export function TeamEditPage() {
       </Field>
 
       <Divider />
-      <Text size={400} weight="semibold">Governance binding</Text>
+      <Text size={400} weight="semibold">Policy assignment</Text>
       <Field label="Verified membership" required hint='JSON subjects, e.g. [{"kind":"User","tenantID":"...","objectID":"..."}]'>
         <Textarea rows={6} value={form.membership} onChange={(_, data) => setForm({ ...form, membership: data.value })} />
       </Field>

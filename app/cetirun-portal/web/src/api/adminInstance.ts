@@ -12,9 +12,28 @@ export interface AdminInstanceSummary {
   team?: string;
   agent: AgentConfig;
   uid: string;
+  resourceVersion: string;
+  suspended: boolean;
   phase?: string;
   ready: boolean;
   createdAt: string;
+}
+
+export async function updateInstanceLifecycle(instance: AdminInstanceSummary, suspended: boolean): Promise<void> {
+  const response = await apiFetch(`/api/v1/admin/instances/${encodeURIComponent(instance.name)}`, {
+    method: "PATCH",
+    body: JSON.stringify({ uid: instance.uid, resourceVersion: instance.resourceVersion, suspended }),
+  });
+  if (!response.ok) {
+    let message = `Failed to ${suspended ? "suspend" : "resume"} Agent`;
+    try {
+      const body = await response.json();
+      message = body?.error?.message || message;
+    } catch {
+      // Keep the stable fallback when the server did not return JSON.
+    }
+    throw new Error(message);
+  }
 }
 
 export async function listAllInstances(): Promise<AdminInstanceSummary[]> {

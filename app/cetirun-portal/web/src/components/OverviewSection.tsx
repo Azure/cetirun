@@ -328,14 +328,14 @@ export function OverviewSection({ instance }: { instance: Instance }) {
 
       {instance.phase === "Provisioning" && <Spinner size="small" label="Provisioning your agent..." />}
 
-      {instance.governance && (
-        <div aria-label="Governance status" style={{ marginTop: 12, marginBottom: 12, padding: 12, borderRadius: tokens.borderRadiusMedium, backgroundColor: tokens.colorNeutralBackground2 }}>
-          <Text weight="semibold">Governance</Text>
+      {instance.policy && (
+        <div aria-label="Policy status" style={{ marginTop: 12, marginBottom: 12, padding: 12, borderRadius: tokens.borderRadiusMedium, backgroundColor: tokens.colorNeutralBackground2 }}>
+          <Text weight="semibold">Effective policy</Text>
           <div style={{ display: "flex", gap: 8, marginTop: 6, alignItems: "center" }}>
-            <Badge appearance="filled" color={instance.governance.phase === "Ready" ? "success" : instance.governance.phase === "Denied" ? "danger" : "warning"}>{instance.governance.phase || "Pending"}</Badge>
-            <Text size={200}>Coverage: {instance.governance.coverage || "Unknown"}</Text>
+            <Badge appearance="filled" color={instance.policy.phase === "Applied" ? "success" : instance.policy.phase === "Denied" ? "danger" : "warning"}>{instance.policy.phase || "Pending"}</Badge>
+            <Text size={200}>{instance.policy.effectivePolicyRef?.name || "Policy resolution pending"}</Text>
           </div>
-          {instance.governance.phase !== "Ready" && <Text size={200} style={{ display: "block", marginTop: 6 }}>Access remains restricted until all policy projections are verified.</Text>}
+          {instance.policy.phase !== "Applied" && <Text size={200} style={{ display: "block", marginTop: 6 }}>Access remains restricted until all policy enforcement is verified.</Text>}
         </div>
       )}
 

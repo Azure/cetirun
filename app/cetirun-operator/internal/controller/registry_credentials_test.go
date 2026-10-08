@@ -405,8 +405,8 @@ func TestMissingRegistrySourceIsHeldBeforeChartResolution(t *testing.T) {
 		t.Fatalf("unexpected missing-source result: %v %v", result, err)
 	}
 	_ = r.Get(ctx, client.ObjectKeyFromObject(agent), agent)
-	if agent.Status.Phase != api.PhaseFailed || agent.Status.Governance == nil || agent.Status.Governance.Phase != "Denied" {
-		t.Fatalf("ungoverned Agent was not held before registry/chart processing: phase=%q governance=%+v", agent.Status.Phase, agent.Status.Governance)
+	if agent.Status.Phase != api.PhaseFailed || agent.Status.Policy == nil || agent.Status.Policy.Phase != "Denied" {
+		t.Fatalf("Agent without a valid policy was not held before registry/chart processing: phase=%q policy=%+v", agent.Status.Phase, agent.Status.Policy)
 	}
 	workloads := &appsv1.StatefulSetList{}
 	_ = r.List(ctx, workloads)
@@ -470,7 +470,7 @@ func TestRegistrySuspensionDoesNotNeedCredentialsOrHelm(t *testing.T) {
 }
 
 // Copilot proxy ownership is enforced by the dedicated shutdown primitive.
-// A denied governance binding reaches Sandbox hold before legacy registry
+// A denied policy binding reaches Sandbox hold before legacy registry
 // suspension, so this test invokes that primitive directly.
 func TestRegistrySuspensionStopsTheCopilotProxy(t *testing.T) {
 	for _, tc := range []struct {

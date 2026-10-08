@@ -34,7 +34,7 @@ func sandboxRequested(agent *cetirunv1alpha1.Agent, team *cetirunv1alpha1.Team) 
 	return sandbox.Requested(agent, team) || sandboxbinding.Present(agent)
 }
 
-// holdSandbox prevents runtime renderers from ignoring new governance fields.
+// holdSandbox prevents runtime renderers from ignoring new policy fields.
 // It requests an existing workload to stop but is not a qualified node fence.
 // Once held, clearing spec fields cannot silently return an Agent to legacy mode.
 func (r *AgentReconciler) holdSandbox(ctx context.Context, agent *cetirunv1alpha1.Agent) (ctrl.Result, error) {

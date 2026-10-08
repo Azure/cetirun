@@ -414,8 +414,8 @@ The operator grants a group only when the live Gateway reports that exact,
 unique, statically configured binding. A database model, an unknown source, a
 mismatched ID, or any second deployment reusing the group invalidates the
 binding. An already-issued key may reach a copied group until the next catalog
-refresh, normally within two minutes; the operator then holds affected governed
-Agents and blocks their existing keys. Configure governed shared models through
+refresh, normally within two minutes; the operator then holds affected policy-bound
+Agents and blocks their existing keys. Configure policy-bound shared models through
 Helm values, not the console.
 
 LiteLLM checks a key against the requested model only. A fallback the Gateway
@@ -433,7 +433,7 @@ Agent's proxy. The operator creates teams and keys without such grants; do not
 add them in the console.
 
 The console password and master key are control-plane credentials, not tenant
-credentials. Their holders can change routes and budgets or cause a governance
+credentials. Their holders can change routes and budgets or cause a policy
 hold even though forged reserved groups are not accepted as authorization.
 Give them only to administrators trusted to change the platform release.
 

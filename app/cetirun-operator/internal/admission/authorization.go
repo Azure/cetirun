@@ -40,7 +40,7 @@ func (h *Handler) memberAuthority(request admission.Request, agent *api.Agent) e
 		return err
 	}
 	if assigned == "" || assigned != agent.Spec.Team {
-		return fmt.Errorf("governed Agent writes require an explicitly authorized administrator or an authenticated assigned Team member")
+		return fmt.Errorf("policy-bound Agent writes require an explicitly authorized administrator or an authenticated assigned Team member")
 	}
 	if agent.Spec.PolicyClass != "" && agent.Spec.PolicyClass != api.AgentPolicyClassNormal {
 		return fmt.Errorf("only an explicitly authorized administrator may select a non-normal workload policy class")
@@ -182,7 +182,7 @@ func (h *Handler) validateAgentAuthorization(request admission.Request, agent, o
 		return admission.Allowed("explicit administrator reauthorization is valid; Sandbox execution remains held")
 	}
 	if !sameAgentSelection(agent, old) {
-		return admission.Denied("changing a governed Agent's Team, policy class or Sandbox binding requires explicit administrator reauthorization")
+		return admission.Denied("changing a policy-bound Agent's Team, policy class or Sandbox binding requires explicit administrator reauthorization")
 	}
 	if _, err := sandboxbinding.AuthorizedBinding(agent); err != nil {
 		return admission.Denied(fmt.Sprintf("explicit administrator reauthorization is required: %v", err))

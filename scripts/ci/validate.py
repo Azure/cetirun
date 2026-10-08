@@ -87,11 +87,10 @@ CHARTS = (
             "cetirun-operator.sandboxAdmission.caBundle=LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tClEwRT0KLS0tLS1FTkQgQ0VSVElGSUNBVEUtLS0tLQo=",
             "cetirun-operator.sandboxAdmission.adminUsers[0]=lint-admin@example.invalid",
             "cetirun-operator.sandboxAdmission.adminUsers[1]=system:serviceaccount:default:cetirun-portal",
-            "cetirun-operator.sandboxAdmission.governanceApprovalUsername=system:serviceaccount:default:cetirun-portal",
             "cetirun-portal.agentIdentity.tenantId=11111111-1111-1111-1111-111111111111",
             "cetirun-portal.agentIdentity.portalClientId=22222222-2222-2222-2222-222222222222",
-            "cetirun-portal.governance.platformAdminSubjects[0].tenantID=11111111-1111-1111-1111-111111111111",
-            "cetirun-portal.governance.platformAdminSubjects[0].objectID=33333333-3333-3333-3333-333333333333",
+            "cetirun-portal.administration.platformAdminSubjects[0].tenantID=11111111-1111-1111-1111-111111111111",
+            "cetirun-portal.administration.platformAdminSubjects[0].objectID=33333333-3333-3333-3333-333333333333",
         ),
     ),
 )

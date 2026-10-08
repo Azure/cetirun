@@ -11,8 +11,7 @@ import { AdminLayout } from "./pages/admin/AdminLayout";
 import { TeamListPage } from "./pages/admin/TeamListPage";
 import { TeamEditPage } from "./pages/admin/TeamEditPage";
 import { InstanceListPage as AdminInstanceListPage } from "./pages/admin/InstanceListPage";
-import { GovernanceResourceEditPage, GovernanceResourceListPage } from "./pages/admin/GovernanceResourcePages";
-import { GovernanceActionDetailPage, GovernanceActionsPage } from "./pages/admin/GovernanceActionsPage";
+import { PolicyResourceEditPage, PolicyResourceListPage } from "./pages/admin/PolicyResourcePages";
 import "./components/Layout.css";
 
 export default function App() {
@@ -32,14 +31,12 @@ export default function App() {
               <Route path="teams/new" element={<TeamEditPage />} />
               <Route path="teams/:name" element={<TeamEditPage />} />
               <Route path="instances" element={<AdminInstanceListPage />} />
-              <Route path="agent-policies" element={<GovernanceResourceListPage kind="policy" />} />
-              <Route path="agent-policies/new" element={<GovernanceResourceEditPage kind="policy" />} />
-              <Route path="agent-policies/:name" element={<GovernanceResourceEditPage kind="policy" />} />
-              <Route path="sandboxes" element={<GovernanceResourceListPage kind="sandbox" />} />
-              <Route path="sandboxes/new" element={<GovernanceResourceEditPage kind="sandbox" />} />
-              <Route path="sandboxes/:name" element={<GovernanceResourceEditPage kind="sandbox" />} />
-              <Route path="governance/actions" element={<GovernanceActionsPage />} />
-              <Route path="governance/actions/:name" element={<GovernanceActionDetailPage />} />
+              <Route path="agent-policies" element={<PolicyResourceListPage kind="policy" />} />
+              <Route path="agent-policies/new" element={<PolicyResourceEditPage kind="policy" />} />
+              <Route path="agent-policies/:name" element={<PolicyResourceEditPage kind="policy" />} />
+              <Route path="sandboxes" element={<PolicyResourceListPage kind="sandbox" />} />
+              <Route path="sandboxes/new" element={<PolicyResourceEditPage kind="sandbox" />} />
+              <Route path="sandboxes/:name" element={<PolicyResourceEditPage kind="sandbox" />} />
             </Route>
           </Route>
         </Routes>

@@ -228,7 +228,7 @@ Whether the chart generates the bundled Valkey's password.
 Models configured at install. None is valid: a standalone Gateway can use
 console models later, and with CetiRun a deployment may use only the GitHub
 Copilot models the operator registers for each Agent. Database models are not
-trusted shared-model bindings for CetiRun Governance. The copilot/
+trusted shared-model bindings for CetiRun Policy enforcement. The copilot/
 prefix is reserved only while operatorIntegration is on: a standalone Gateway
 may already serve a model under such a name.
 */}}
@@ -245,7 +245,7 @@ may already serve a model under such a name.
 {{- end }}
 {{- $info := .model_info | default dict }}
 {{- if $info.id }}
-{{- fail (printf "model %s configures model_info.id. The chart derives this reserved deployment identity from the complete model configuration so Governance can bind its access group to exactly one trusted backend." .model_name) }}
+{{- fail (printf "model %s configures model_info.id. The chart derives this reserved deployment identity from the complete model configuration so Policy can bind its access group to exactly one trusted backend." .model_name) }}
 {{- end }}
 {{- range ($info.access_groups | default list) }}
 {{- if hasPrefix "cetirun-model-" (lower (printf "%v" .)) }}

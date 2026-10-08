@@ -76,7 +76,7 @@ fullnameOverride: ""
 # and the `cetirun-model-` prefix are reserved for this binding. The Operator
 # grants that group only when the Gateway reports the exact unique pair. Keep
 # the model configuration stable when changing provider settings; changing it
-# intentionally creates a new Governance deployment fingerprint.
+# intentionally creates a new Policy deployment fingerprint.
 #
 # Example:
 #   models:

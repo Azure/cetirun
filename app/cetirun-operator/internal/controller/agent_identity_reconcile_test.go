@@ -56,7 +56,7 @@ func (*suspensionHelmClient) CustomApplied(string, string, *helm.PreparedRelease
 
 func (*suspensionHelmClient) Uninstall(string, string) error { return nil }
 
-func TestGovernanceDeniedSuspensionStopsOwnedRouteBeforeIdentityLookup(t *testing.T) {
+func TestPolicyDeniedSuspensionStopsOwnedRouteBeforeIdentityLookup(t *testing.T) {
 	const name = "suspended-identity"
 	instance := &cetirunv1alpha1.Agent{
 		ObjectMeta: metav1.ObjectMeta{
@@ -158,10 +158,10 @@ func TestGovernanceDeniedSuspensionStopsOwnedRouteBeforeIdentityLookup(t *testin
 		t.Fatalf("suspension returned an identity dependency error: %v", err)
 	}
 	if result.RequeueAfter != time.Minute {
-		t.Fatalf("governance hold retry interval = %v, want 1m", result.RequeueAfter)
+		t.Fatalf("policy hold retry interval = %v, want 1m", result.RequeueAfter)
 	}
 	if helmClient.installCalled {
-		t.Fatal("denied governance binding reached Helm or Agent Identity reconciliation")
+		t.Fatal("denied policy binding reached Helm or Agent Identity reconciliation")
 	}
 	remaining := &istiov1beta1.VirtualService{}
 	if err := client.Get(context.Background(), types.NamespacedName{Name: virtualService.Name, Namespace: virtualService.Namespace}, remaining); !apierrors.IsNotFound(err) {
@@ -174,8 +174,8 @@ func TestGovernanceDeniedSuspensionStopsOwnedRouteBeforeIdentityLookup(t *testin
 	if updated.Status.Phase != cetirunv1alpha1.PhaseSuspended {
 		t.Fatalf("phase = %q, want Suspended", updated.Status.Phase)
 	}
-	if updated.Status.Governance == nil || updated.Status.Governance.Phase != "Denied" {
-		t.Fatalf("governance denial was not retained: %#v", updated.Status.Governance)
+	if updated.Status.Policy == nil || updated.Status.Policy.Phase != "Denied" {
+		t.Fatalf("policy denial was not retained: %#v", updated.Status.Policy)
 	}
 }
 

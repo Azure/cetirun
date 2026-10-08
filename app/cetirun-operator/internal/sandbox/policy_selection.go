@@ -16,7 +16,7 @@ const (
 	BootstrapFinalizer   = "cetirun.microsoft.com/sandbox-bootstrap"
 )
 
-// Requested detects governance intent, not a valid or enforced binding.
+// Requested detects policy assignment intent, not a valid or enforced binding.
 func Requested(agent *api.Agent, team *api.Team) bool {
 	if agent != nil && (slices.Contains(agent.Finalizers, HoldFinalizer) ||
 		slices.Contains(agent.Finalizers, PreparationFinalizer) || slices.Contains(agent.Finalizers, BootstrapFinalizer) ||
@@ -25,10 +25,10 @@ func Requested(agent *api.Agent, team *api.Team) bool {
 		agent.Status.Sandbox != nil || meta.FindStatusCondition(agent.Status.Conditions, api.ConditionSandboxReady) != nil) {
 		return true
 	}
-	return TeamGoverned(team)
+	return TeamPolicyConfigured(team)
 }
 
-func TeamGoverned(team *api.Team) bool {
+func TeamPolicyConfigured(team *api.Team) bool {
 	return team != nil && (team.Spec.NormalAgentPolicyRef != "" || team.Spec.AdminAgentPolicyRef != "" ||
 		len(team.Spec.SandboxRefs) != 0 || team.Spec.DefaultSandboxRef != "")
 }

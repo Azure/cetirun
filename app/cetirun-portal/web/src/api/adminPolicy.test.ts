@@ -3,18 +3,17 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  createAgentPolicy,
-  decideGovernanceAction,
-  listSandboxes,
+	createAgentPolicy,
+	listSandboxes,
   updateSandbox,
   type AgentPolicyResource,
-} from "./adminGovernance";
+} from "./adminPolicy";
 
 function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 }
 
-describe("admin governance API", () => {
+describe("admin policy API", () => {
   const fetchMock = vi.fn();
   beforeEach(() => {
     fetchMock.mockReset();
@@ -45,16 +44,5 @@ describe("admin governance API", () => {
     expect(fetchMock).toHaveBeenLastCalledWith("/api/v1/admin/sandboxes/kata%20test", expect.objectContaining({
       method: "PUT", body: JSON.stringify({ spec: { type: "kata" } }),
     }));
-  });
-
-  it("submits an explicit action decision and surfaces API errors", async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse(200, { metadata: { name: "restart-a" }, spec: {} }));
-    await decideGovernanceAction("restart/a", "Approved");
-    expect(fetchMock).toHaveBeenLastCalledWith("/api/v1/admin/governance/actions/restart%2Fa/approval", expect.objectContaining({
-      method: "POST", body: JSON.stringify({ decision: "Approved" }),
-    }));
-
-    fetchMock.mockResolvedValueOnce(jsonResponse(409, { error: { message: "Action has expired" } }));
-    await expect(decideGovernanceAction("restart-a", "Denied")).rejects.toThrow("Action has expired");
   });
 });

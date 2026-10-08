@@ -146,7 +146,7 @@ func (h *InstanceHandler) updateInstance(w http.ResponseWriter, r *http.Request,
 		writeManagementError(w, kube.ErrInstanceChanged)
 		return
 	}
-	var governance *api.GovernanceSpec
+	var teamAuthorization *api.TeamAuthorization
 	var sandboxRef *string
 	if req.Team != nil && *req.Team != instanceTeam(instance) {
 		if !claims.IsAdmin || !instance.Spec.Suspended {
@@ -158,7 +158,7 @@ func (h *InstanceHandler) updateInstance(w http.ResponseWriter, r *http.Request,
 			writeError(w, http.StatusForbidden, "team_membership_required", "The verified owner is not authorized for the target Team")
 			return
 		}
-		governance = governanceSpec(subject, h.now())
+		teamAuthorization = newTeamAuthorization(subject, h.now())
 		value := team.Spec.DefaultSandboxRef
 		sandboxRef = &value
 	}
@@ -166,7 +166,7 @@ func (h *InstanceHandler) updateInstance(w http.ResponseWriter, r *http.Request,
 		DisplayName: req.DisplayName, Team: req.Team, Model: req.Model,
 		GatewayToken: req.GatewayToken, TailscaleAuthKey: req.TailscaleAuthKey, TeamsEnabled: req.TeamsEnabled,
 		ExpectedUID: types.UID(req.UID), ExpectedResourceVersion: req.ResourceVersion,
-		Governance: governance, SandboxRef: sandboxRef,
+		TeamAuthorization: teamAuthorization, SandboxRef: sandboxRef,
 	}
 	if req.Agent != nil {
 		updated, err := req.Agent.Apply(instance.Spec.Agent)

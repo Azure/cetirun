@@ -22,11 +22,11 @@ import (
 	istiov1beta1 "istio.io/client-go/pkg/apis/networking/v1beta1"
 )
 
-func TestGovernanceGatewayRevisionTracksLiveManagedBackend(t *testing.T) {
+func TestPolicyGatewayRevisionTracksLiveManagedBackend(t *testing.T) {
 	agent := aiGatewayTestAgent(testAIGatewayTeam)
 	r, _, gateway := aiGatewayTestReconciler(t, agent, aiGatewayNamespace())
 
-	first, err := r.resolveGovernance(context.Background(), agent)
+	first, err := r.resolvePolicy(context.Background(), agent)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,44 +36,44 @@ func TestGovernanceGatewayRevisionTracksLiveManagedBackend(t *testing.T) {
 		ID: "cetirun-shared-replaced", ModelName: testSharedModelOne,
 		AccessGroups: []string{aiGatewaySharedAccessGroup, "cetirun-model-replaced"}, DatabaseSourceKnown: true,
 	}}
-	second, err := r.resolveGovernance(context.Background(), agent)
+	second, err := r.resolvePolicy(context.Background(), agent)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if first.gatewayRevision == second.gatewayRevision {
-		t.Fatal("same-name managed backend replacement did not change governance Gateway revision")
+		t.Fatal("same-name managed backend replacement did not change policy Gateway revision")
 	}
 }
 
-func TestGovernanceReprojectionHoldsOnlyActiveOldProjection(t *testing.T) {
-	resolution := &governanceResolution{authorizationRevision: "auth-new", gatewayRevision: "gateway-new", credentialRevision: "credential", sandboxRevision: "sandbox"}
-	agent := &api.Agent{Status: api.AgentStatus{Governance: &api.GovernanceStatus{
-		Authorization: &api.GovernanceAuthorizationStatus{Revision: "auth-old"},
-		Projections: api.GovernanceProjectionsStatus{
-			Sandbox:          api.GovernanceRevisionProjection{ExpectedRevision: "sandbox"},
-			Gateway:          api.GovernanceRevisionProjection{ExpectedRevision: "gateway-old"},
-			CredentialPolicy: api.GovernanceRevisionProjection{ExpectedRevision: "credential"},
+func TestPolicyReprojectionHoldsOnlyActiveOldProjection(t *testing.T) {
+	resolution := &policyResolution{authorizationRevision: "auth-new", gatewayRevision: "gateway-new", credentialRevision: "credential", sandboxRevision: "sandbox"}
+	agent := &api.Agent{Status: api.AgentStatus{Policy: &api.PolicyStatus{
+		TeamAuthorization: &api.TeamAuthorizationStatus{Revision: "auth-old"},
+		Enforcement: api.PolicyEnforcementStatus{
+			Sandbox:    api.PolicyRevisionExpectation{DesiredRevision: "sandbox"},
+			Gateway:    api.PolicyRevisionExpectation{DesiredRevision: "gateway-old"},
+			Credential: api.PolicyRevisionExpectation{DesiredRevision: "credential"},
 		},
 	}}}
-	if governanceReprojectionMustHold(agent, resolution) {
+	if policyReprojectionMustHold(agent, resolution) {
 		t.Fatal("a non-running Agent must be allowed to create its first current projection")
 	}
 	agent.Status.Phase = api.PhaseReady
-	if !governanceReprojectionMustHold(agent, resolution) {
+	if !policyReprojectionMustHold(agent, resolution) {
 		t.Fatal("a running Agent retained an old Gateway projection")
 	}
 	// A matching verified projection has no hold transition.
-	agent.Status.Governance.Authorization.Revision = resolution.authorizationRevision
-	agent.Status.Governance.Projections.Gateway.ExpectedRevision = resolution.gatewayRevision
+	agent.Status.Policy.TeamAuthorization.Revision = resolution.authorizationRevision
+	agent.Status.Policy.Enforcement.Gateway.DesiredRevision = resolution.gatewayRevision
 	agent.Status.Sandbox = &api.SandboxStatus{AppliedRevision: resolution.sandboxRevision}
 	agent.Status.AIGateway = &api.AIGatewayStatus{Phase: api.AIGatewayPhaseReady, Routed: true, PolicyRevision: resolution.gatewayRevision}
 	agent.Status.Conditions = []metav1.Condition{{Type: api.ConditionSandboxReady, Status: metav1.ConditionTrue}}
-	if governanceReprojectionMustHold(agent, resolution) {
+	if policyReprojectionMustHold(agent, resolution) {
 		t.Fatal("a running Agent with all current projections verified was unnecessarily held")
 	}
 }
 
-func TestGovernanceDenialRevokesKeyAndStopsOwnedBuiltinWorkload(t *testing.T) {
+func TestPolicyDenialRevokesKeyAndStopsOwnedBuiltinWorkload(t *testing.T) {
 	ctx := context.Background()
 	agent := aiGatewayTestAgent(testAIGatewayTeam)
 	agent.Status.Phase = api.PhaseReady
@@ -133,12 +133,12 @@ func TestGovernanceDenialRevokesKeyAndStopsOwnedBuiltinWorkload(t *testing.T) {
 	if err := kube.Get(ctx, types.NamespacedName{Name: agent.Name}, current); err != nil {
 		t.Fatal(err)
 	}
-	if current.Status.Governance == nil || current.Status.Governance.Phase != "Denied" {
-		t.Fatalf("denial status was not persisted: %+v", current.Status.Governance)
+	if current.Status.Policy == nil || current.Status.Policy.Phase != "Denied" {
+		t.Fatalf("denial status was not persisted: %+v", current.Status.Policy)
 	}
 }
 
-func TestGovernanceDependencyFailureBlocksButPreservesKeyAndRecovers(t *testing.T) {
+func TestPolicyDependencyFailureBlocksButPreservesKeyAndRecovers(t *testing.T) {
 	ctx := context.Background()
 	agent := aiGatewayTestAgent(testAIGatewayTeam)
 	agent.Status.Phase = api.PhaseReady
@@ -187,8 +187,8 @@ func TestGovernanceDependencyFailureBlocksButPreservesKeyAndRecovers(t *testing.
 	if err := kube.Get(ctx, types.NamespacedName{Name: agent.Name}, current); err != nil {
 		t.Fatal(err)
 	}
-	if current.Status.Governance == nil || current.Status.Governance.Phase != "Pending" || current.Status.Governance.Coverage != governanceCoverageNone {
-		t.Fatalf("dependency outage was reported as a denial: %+v", current.Status.Governance)
+	if current.Status.Policy == nil || current.Status.Policy.Phase != "Pending" {
+		t.Fatalf("dependency outage was reported as a denial: %+v", current.Status.Policy)
 	}
 
 	dependencyDown = false
@@ -200,7 +200,7 @@ func TestGovernanceDependencyFailureBlocksButPreservesKeyAndRecovers(t *testing.
 	}
 }
 
-func TestGovernanceStaleConfigurationObservationPreservesKeyUntilAccepted(t *testing.T) {
+func TestPolicyStaleConfigurationObservationPreservesKeyUntilAccepted(t *testing.T) {
 	for _, kind := range []string{"Team", "AgentPolicy"} {
 		t.Run(kind, func(t *testing.T) {
 			ctx := context.Background()
@@ -370,13 +370,13 @@ func TestManagedGatewayGroupPollutionBlocksAnExistingGrant(t *testing.T) {
 		ID: "database-copy", ModelName: "unauthorized-model", AccessGroups: []string{testManagedGroup},
 		FromDatabase: true, DatabaseSourceKnown: true,
 	})
-	if _, err := r.resolveGovernance(ctx, agent); err == nil || !isGovernanceDependencyError(err) {
+	if _, err := r.resolvePolicy(ctx, agent); err == nil || !isPolicyDependencyError(err) {
 		t.Fatalf("a polluted managed group must invalidate current authorization evidence: %v", err)
 	}
 	// The Agent controller routes that dependency failure through this hold
 	// path. Workload teardown may have no fixture resources here, but key
 	// revocation must happen before it is attempted.
-	_, _ = r.holdGovernanceDependencyUnavailable(ctx, agent)
+	_, _ = r.holdPolicyDependencyUnavailable(ctx, agent)
 	if !gateway.keys[token].Blocked || agent.Status.AIGateway.Reason != aiGatewayReasonPolicyReprojection {
 		t.Fatalf("the old grant remained usable after catalog pollution: key=%+v status=%+v", gateway.keys[token], agent.Status.AIGateway)
 	}

@@ -20,7 +20,7 @@ func New(
 	meHandler *handler.MeHandler,
 	adminTeamHandler *handler.AdminTeamHandler,
 	adminInstanceHandler *handler.AdminInstanceHandler,
-	adminGovernanceHandler *handler.AdminGovernanceHandler,
+	adminPolicyHandler *handler.AdminPolicyHandler,
 	authMiddleware func(http.Handler) http.Handler,
 	requireAdmin func(http.Handler) http.Handler,
 	agentAuthorizationHandlers ...*handler.AgentAuthorizationHandler,
@@ -58,7 +58,7 @@ func New(
 	api.HandleFunc("DELETE /api/v1/instances/{name}/registry-auth", instanceHandler.DeleteRegistryAuth)
 	api.HandleFunc("POST /api/v1/instances/{name}/upgrade", instanceHandler.UpgradeInstanceByName)
 	api.HandleFunc("GET /api/v1/instances/{name}/status", instanceHandler.GetInstanceStatusByName)
-	api.HandleFunc("GET /api/v1/instances/{name}/governance", instanceHandler.GetInstanceGovernanceByName)
+	api.HandleFunc("GET /api/v1/instances/{name}/policy", instanceHandler.GetInstancePolicyByName)
 	api.HandleFunc("GET /api/v1/instances/{name}/teams-app", instanceHandler.DownloadTeamsAppByName)
 	api.HandleFunc("GET /api/v1/teams", instanceHandler.ListTeams)
 	api.HandleFunc("GET /api/v1/ai-gateway/catalog", instanceHandler.GetAIGatewayCatalog)
@@ -83,21 +83,19 @@ func New(
 	adminMux.HandleFunc("PUT /api/v1/admin/teams/{name}", adminTeamHandler.UpdateTeam)
 	adminMux.HandleFunc("DELETE /api/v1/admin/teams/{name}", adminTeamHandler.DeleteTeam)
 	adminMux.HandleFunc("GET /api/v1/admin/instances", adminInstanceHandler.ListAllInstances)
-	if adminGovernanceHandler != nil {
-		adminMux.HandleFunc("GET /api/v1/admin/agent-policies", adminGovernanceHandler.ListAgentPolicies)
-		adminMux.HandleFunc("POST /api/v1/admin/agent-policies", adminGovernanceHandler.CreateAgentPolicy)
-		adminMux.HandleFunc("GET /api/v1/admin/agent-policies/{name}", adminGovernanceHandler.GetAgentPolicy)
-		adminMux.HandleFunc("PUT /api/v1/admin/agent-policies/{name}", adminGovernanceHandler.UpdateAgentPolicy)
-		adminMux.HandleFunc("DELETE /api/v1/admin/agent-policies/{name}", adminGovernanceHandler.DeleteAgentPolicy)
-		adminMux.HandleFunc("GET /api/v1/admin/sandboxes", adminGovernanceHandler.ListSandboxes)
-		adminMux.HandleFunc("POST /api/v1/admin/sandboxes", adminGovernanceHandler.CreateSandbox)
-		adminMux.HandleFunc("GET /api/v1/admin/sandboxes/{name}", adminGovernanceHandler.GetSandbox)
-		adminMux.HandleFunc("PUT /api/v1/admin/sandboxes/{name}", adminGovernanceHandler.UpdateSandbox)
-		adminMux.HandleFunc("DELETE /api/v1/admin/sandboxes/{name}", adminGovernanceHandler.DeleteSandbox)
-		adminMux.HandleFunc("GET /api/v1/admin/governance/actions", adminGovernanceHandler.ListGovernanceActions)
-		adminMux.HandleFunc("GET /api/v1/admin/governance/actions/{name}", adminGovernanceHandler.GetGovernanceAction)
-		adminMux.HandleFunc("POST /api/v1/admin/governance/actions/{name}/approval", adminGovernanceHandler.DecideGovernanceAction)
-		adminMux.HandleFunc("PATCH /api/v1/admin/instances/{name}/governance", adminGovernanceHandler.UpdateInstanceGovernance)
+	adminMux.HandleFunc("PATCH /api/v1/admin/instances/{name}", adminInstanceHandler.UpdateLifecycle)
+	if adminPolicyHandler != nil {
+		adminMux.HandleFunc("GET /api/v1/admin/agent-policies", adminPolicyHandler.ListAgentPolicies)
+		adminMux.HandleFunc("POST /api/v1/admin/agent-policies", adminPolicyHandler.CreateAgentPolicy)
+		adminMux.HandleFunc("GET /api/v1/admin/agent-policies/{name}", adminPolicyHandler.GetAgentPolicy)
+		adminMux.HandleFunc("PUT /api/v1/admin/agent-policies/{name}", adminPolicyHandler.UpdateAgentPolicy)
+		adminMux.HandleFunc("DELETE /api/v1/admin/agent-policies/{name}", adminPolicyHandler.DeleteAgentPolicy)
+		adminMux.HandleFunc("GET /api/v1/admin/sandboxes", adminPolicyHandler.ListSandboxes)
+		adminMux.HandleFunc("POST /api/v1/admin/sandboxes", adminPolicyHandler.CreateSandbox)
+		adminMux.HandleFunc("GET /api/v1/admin/sandboxes/{name}", adminPolicyHandler.GetSandbox)
+		adminMux.HandleFunc("PUT /api/v1/admin/sandboxes/{name}", adminPolicyHandler.UpdateSandbox)
+		adminMux.HandleFunc("DELETE /api/v1/admin/sandboxes/{name}", adminPolicyHandler.DeleteSandbox)
+		adminMux.HandleFunc("PATCH /api/v1/admin/instances/{name}/policy", adminPolicyHandler.UpdateInstancePolicy)
 	}
 	api.Handle("/api/v1/admin/", requireAdmin(adminMux))
 
@@ -134,16 +132,9 @@ func spaHandler(fileServer http.Handler, fsys fs.FS) http.Handler {
 
 // NewInternalMux creates the internal-only HTTP mux served on :8081.
 // This port must NOT be reachable from outside the cluster — it is not exposed via
-// the Istio VirtualService. The EnvoyFilter ownership check and authenticated
-// CetiAdmin workload calls use it through cluster-internal DNS.
-func NewInternalMux(instanceHandler *handler.InstanceHandler, cetiAdminHandlers ...*handler.CetiAdminHandler) *http.ServeMux {
+// the Istio VirtualService.
+func NewInternalMux(instanceHandler *handler.InstanceHandler) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /internal/auth", instanceHandler.InternalAuth)
-	if len(cetiAdminHandlers) > 0 && cetiAdminHandlers[0] != nil {
-		cetiAdmin := cetiAdminHandlers[0]
-		mux.HandleFunc("POST /internal/v1/governance-actions", cetiAdmin.Submit)
-		mux.HandleFunc("GET /internal/v1/governance-actions/{name}", cetiAdmin.Get)
-		mux.HandleFunc("GET /internal/v1/agents/{name}/governance", cetiAdmin.GetAgentGovernanceObservation)
-	}
 	return mux
 }

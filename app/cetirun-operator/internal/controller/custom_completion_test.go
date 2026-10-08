@@ -157,12 +157,12 @@ type completionScenario struct {
 }
 
 // requireLegacyCustomRuntime documents integration tests for Custom's former
-// direct-runtime path. Governance deliberately holds Custom Agents because no
+// direct-runtime path. Policy deliberately holds Custom Agents because no
 // typed AI Gateway enforcement adapter exists for them yet; completion record
 // encoding and delivery remain covered by custom_completion_record_test.go.
 func requireLegacyCustomRuntime(t *testing.T) {
 	t.Helper()
-	t.Skip("legacy Custom direct runtime reconciliation was removed by mandatory Governance")
+	t.Skip("legacy Custom direct runtime reconciliation was removed by mandatory Policy")
 }
 
 func newCompletionScenario(t *testing.T) *completionScenario {

@@ -18,13 +18,13 @@ import (
 // claims.  Absence of a groups claim (including Entra group overage) is a
 // deliberate deny: the Portal never calls a graph endpoint as an implicit
 // authorization fallback.
-func (h *InstanceHandler) authorizeTeamOwner(ctx context.Context, teamName string, claims auth.Claims) (*cetirunv1alpha1.Team, cetirunv1alpha1.GovernanceSubject, error) {
+func (h *InstanceHandler) authorizeTeamOwner(ctx context.Context, teamName string, claims auth.Claims) (*cetirunv1alpha1.Team, cetirunv1alpha1.EntraSubject, error) {
 	if claims.TenantID == "" || claims.ObjectID == "" {
-		return nil, cetirunv1alpha1.GovernanceSubject{}, fmt.Errorf("a verified Entra identity is required")
+		return nil, cetirunv1alpha1.EntraSubject{}, fmt.Errorf("a verified Entra identity is required")
 	}
 	team, err := h.Kube.GetTeam(ctx, teamName)
 	if err != nil {
-		return nil, cetirunv1alpha1.GovernanceSubject{}, err
+		return nil, cetirunv1alpha1.EntraSubject{}, err
 	}
 	for _, subject := range team.Spec.Membership.Subjects {
 		if !strings.EqualFold(subject.TenantID, claims.TenantID) {
@@ -43,11 +43,9 @@ func (h *InstanceHandler) authorizeTeamOwner(ctx context.Context, teamName strin
 			}
 		}
 	}
-	return nil, cetirunv1alpha1.GovernanceSubject{}, fmt.Errorf("the verified owner is not a member of Team %q", teamName)
+	return nil, cetirunv1alpha1.EntraSubject{}, fmt.Errorf("the verified owner is not a member of Team %q", teamName)
 }
 
-func governanceSpec(subject cetirunv1alpha1.GovernanceSubject, now time.Time) *cetirunv1alpha1.GovernanceSpec {
-	return &cetirunv1alpha1.GovernanceSpec{TeamAuthorization: cetirunv1alpha1.TeamAuthorization{
-		Subject: subject, AuthorizedAt: metav1.NewTime(now.UTC()),
-	}}
+func newTeamAuthorization(subject cetirunv1alpha1.EntraSubject, now time.Time) *cetirunv1alpha1.TeamAuthorization {
+	return &cetirunv1alpha1.TeamAuthorization{Subject: subject, AuthorizedAt: metav1.NewTime(now.UTC())}
 }

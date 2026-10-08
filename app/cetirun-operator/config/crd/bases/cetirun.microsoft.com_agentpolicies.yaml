@@ -68,7 +68,7 @@ spec:
               entraID:
                 default: {}
                 description: |-
-                  EntraID remains the Sandbox adapter capability switch. Governance uses
+                  EntraID remains the Sandbox adapter capability switch. Policy uses
                   AgentIdentity for the user-facing entitlement and requires both controls
                   before an Agent Identity can be provisioned.
                 properties:
@@ -81,7 +81,7 @@ spec:
                 properties:
                   allowed:
                     description: |-
-                      Governance has typed Gateway and Sandbox enforcement adapters only for
+                      Policy has typed Gateway and Sandbox enforcement adapters only for
                       the built-in harnesses. Custom workloads cannot be granted a policy.
                     items:
                       description: AgentType identifies a built-in integration or

@@ -78,7 +78,7 @@ func TestCreateInstanceAIGatewayRequiresExistingTeam(t *testing.T) {
 	if w.Code != http.StatusBadRequest || errorCode(t, w) != "unknown_team" {
 		t.Fatalf("unknown team: status %d body %s", w.Code, w.Body.String())
 	}
-	// Governance applies independently of the Gateway.
+	// Policy applies independently of the Gateway.
 	w, _ = createAgent(t, config.Config{}, `{"agent":{"type":"openclaw"}}`)
 	if w.Code != http.StatusBadRequest || errorCode(t, w) != "team_required" {
 		t.Fatalf("feature off: status %d body %s", w.Code, w.Body.String())

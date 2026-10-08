@@ -32,7 +32,7 @@ func Build(input Input) (*Bundle, error) {
 		return nil, fmt.Errorf("the resolved UID binding is incomplete")
 	}
 	if input.AgentType != "openclaw" && input.AgentType != "hermes" {
-		return nil, fmt.Errorf("governed %q rendering is unsupported; legacy fallback is forbidden", input.AgentType)
+		return nil, fmt.Errorf("policy-bound %q rendering is unsupported; legacy fallback is forbidden", input.AgentType)
 	}
 	for _, name := range []string{input.AgentName, input.Namespace.Name, input.WorkloadName, input.ReleaseName} {
 		if name == "" || len(validation.IsDNS1123Subdomain(name)) != 0 {

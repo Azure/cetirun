@@ -9,9 +9,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"slices"
+	"reflect"
 
-	authnv1 "k8s.io/api/authentication/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -20,15 +19,35 @@ import (
 
 const sandboxReauthorizeAnnotation = "cetirun.microsoft.com/sandbox-reauthorize"
 
-type InstanceGovernanceUpdate struct {
+type InstancePolicyUpdate struct {
 	ExpectedUID             string
 	ExpectedResourceVersion string
 	Team                    *string
 	PolicyClass             *cetirunv1alpha1.AgentPolicyClass
 	SandboxRef              *string
-	GatewayBudgetUSD        *string
-	Suspended               *bool
+	MonthlyBudgetUSD        *string
 	TeamAuthorization       *cetirunv1alpha1.TeamAuthorization
+}
+
+// UpdateInstanceLifecycle applies an administrator's direct suspend or resume
+// decision using both UID and resourceVersion to reject stale or replaced Agents.
+func (c *Client) UpdateInstanceLifecycle(ctx context.Context, name, expectedUID, expectedResourceVersion string, suspended bool) (*cetirunv1alpha1.Agent, error) {
+	item, err := c.GetInstanceByName(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	if string(item.UID) != expectedUID || item.ResourceVersion != expectedResourceVersion {
+		return nil, ErrInstanceChanged
+	}
+	if !item.DeletionTimestamp.IsZero() {
+		return nil, ErrInstanceDeleting
+	}
+	before := item.DeepCopy()
+	item.Spec.Suspended = suspended
+	if err := c.client.Patch(ctx, item, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{}), client.FieldValidation(metav1.FieldValidationStrict)); err != nil {
+		return nil, err
+	}
+	return item, nil
 }
 
 func (c *Client) ListAgentPolicies(ctx context.Context) ([]cetirunv1alpha1.AgentPolicy, error) {
@@ -107,40 +126,7 @@ func (c *Client) DeleteSandbox(ctx context.Context, name string) error {
 	return c.client.Delete(ctx, &cetirunv1alpha1.Sandbox{ObjectMeta: metav1.ObjectMeta{Name: name}})
 }
 
-func (c *Client) ListGovernanceActions(ctx context.Context) ([]cetirunv1alpha1.GovernanceAction, error) {
-	list := &cetirunv1alpha1.GovernanceActionList{}
-	if err := c.client.List(ctx, list); err != nil {
-		return nil, err
-	}
-	return list.Items, nil
-}
-func (c *Client) GetGovernanceAction(ctx context.Context, name string) (*cetirunv1alpha1.GovernanceAction, error) {
-	item := &cetirunv1alpha1.GovernanceAction{}
-	if err := c.client.Get(ctx, client.ObjectKey{Name: name}, item); err != nil {
-		return nil, err
-	}
-	return item, nil
-}
-func (c *Client) CreateGovernanceAction(ctx context.Context, item *cetirunv1alpha1.GovernanceAction) (*cetirunv1alpha1.GovernanceAction, error) {
-	if err := c.client.Create(ctx, item, client.FieldValidation(metav1.FieldValidationStrict)); err != nil {
-		return nil, err
-	}
-	return item, nil
-}
-func (c *Client) ApproveGovernanceAction(ctx context.Context, name string, approval cetirunv1alpha1.GovernanceActionApproval) (*cetirunv1alpha1.GovernanceAction, error) {
-	item, err := c.GetGovernanceAction(ctx, name)
-	if err != nil {
-		return nil, err
-	}
-	before := item.DeepCopy()
-	item.Spec.Approval = &approval
-	if err := c.client.Patch(ctx, item, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{}), client.FieldValidation(metav1.FieldValidationStrict)); err != nil {
-		return nil, err
-	}
-	return item, nil
-}
-
-func (c *Client) UpdateInstanceGovernance(ctx context.Context, name string, update InstanceGovernanceUpdate) (*cetirunv1alpha1.Agent, error) {
+func (c *Client) UpdateInstancePolicy(ctx context.Context, name string, update InstancePolicyUpdate) (*cetirunv1alpha1.Agent, error) {
 	item, err := c.GetInstanceByName(ctx, name)
 	if err != nil {
 		return nil, err
@@ -158,19 +144,19 @@ func (c *Client) UpdateInstanceGovernance(ctx context.Context, name string, upda
 	if update.SandboxRef != nil {
 		item.Spec.SandboxRef = *update.SandboxRef
 	}
-	if update.GatewayBudgetUSD != nil {
-		item.Spec.Governance.GatewayBudgetUSD = *update.GatewayBudgetUSD
+	if update.MonthlyBudgetUSD != nil {
+		if item.Spec.ModelAccess == nil {
+			item.Spec.ModelAccess = &cetirunv1alpha1.ModelAccessSpec{}
+		}
+		item.Spec.ModelAccess.MonthlyBudgetUSD = *update.MonthlyBudgetUSD
 	}
 	if update.TeamAuthorization != nil {
-		item.Spec.Governance.TeamAuthorization = *update.TeamAuthorization.DeepCopy()
-	}
-	if update.Suspended != nil {
-		item.Spec.Suspended = *update.Suspended
+		item.Spec.TeamAuthorization = *update.TeamAuthorization.DeepCopy()
 	}
 	selectionChanged := before.Spec.Team != item.Spec.Team || before.Spec.PolicyClass != item.Spec.PolicyClass || before.Spec.SandboxRef != item.Spec.SandboxRef
-	governanceChanged := before.Spec.Governance != item.Spec.Governance
-	if (selectionChanged || governanceChanged) && (!before.Spec.Suspended || !item.Spec.Suspended) {
-		return nil, ErrGovernanceRequiresSuspension
+	policyChanged := !reflect.DeepEqual(before.Spec.TeamAuthorization, item.Spec.TeamAuthorization) || !reflect.DeepEqual(before.Spec.ModelAccess, item.Spec.ModelAccess)
+	if (selectionChanged || policyChanged) && !item.Spec.Suspended {
+		return nil, ErrPolicyChangeRequiresSuspension
 	}
 	if selectionChanged {
 		if err := c.setSandboxReauthorization(ctx, item); err != nil {
@@ -234,14 +220,4 @@ func (c *Client) setSandboxReauthorization(ctx context.Context, item *cetirunv1a
 	}
 	item.Annotations[sandboxReauthorizeAnnotation] = string(raw)
 	return nil
-}
-
-// ReviewServiceAccountToken validates the projected workload JWT directly
-// through the Kubernetes API and constrains it to the dedicated audience.
-func (c *Client) ReviewServiceAccountToken(ctx context.Context, token, audience string) (string, bool, error) {
-	review := &authnv1.TokenReview{Spec: authnv1.TokenReviewSpec{Token: token, Audiences: []string{audience}}}
-	if err := c.client.Create(ctx, review); err != nil {
-		return "", false, err
-	}
-	return review.Status.User.Username, review.Status.Authenticated && slices.Contains(review.Status.Audiences, audience), nil
 }

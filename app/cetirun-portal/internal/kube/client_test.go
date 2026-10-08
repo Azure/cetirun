@@ -339,7 +339,7 @@ func TestGetTailscaleAuthKey_NotFound(t *testing.T) {
 	}
 }
 
-func TestUpdateInstance_DisplayNameWithoutGovernanceRebind(t *testing.T) {
+func TestUpdateInstance_DisplayNameWithoutPolicyRebind(t *testing.T) {
 	fc := newFakeClient(sampleInstance())
 	c := NewClient(fc)
 
@@ -354,7 +354,7 @@ func TestUpdateInstance_DisplayNameWithoutGovernanceRebind(t *testing.T) {
 		t.Errorf("DisplayName = %q, want %q", instance.Spec.User.DisplayName, "Alice Updated")
 	}
 	if instance.Spec.Team != "example-team" {
-		t.Errorf("Team = %q, want governance binding preserved", instance.Spec.Team)
+		t.Errorf("Team = %q, want policy binding preserved", instance.Spec.Team)
 	}
 
 	// Verify persisted.

@@ -47,9 +47,8 @@ func sandboxSourcesChartValues(t *testing.T) map[string]any {
 				"admin@example.com",
 				"system:serviceaccount:release-example:cetirun-portal",
 			},
-			"governanceApprovalUsername": "system:serviceaccount:release-example:cetirun-portal",
-			"tlsSecretName":              "synthetic-admission-tls",
-			"caBundle": base64.StdEncoding.EncodeToString(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certificate})),
+			"tlsSecretName": "synthetic-admission-tls",
+			"caBundle":      base64.StdEncoding.EncodeToString(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certificate})),
 		},
 		"sandboxSources": map[string]any{
 			"enabled": true, "bootstrapOwnedPrerequisites": true,

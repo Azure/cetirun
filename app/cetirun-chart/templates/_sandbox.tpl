@@ -8,7 +8,7 @@ Licensed under the MIT License.
 {{- fail "Sandbox render plans must retain the execution hold" -}}
 {{- end -}}
 {{- if eq (include "cetirun.agent.type" .) "custom" -}}
-{{- fail "governed Custom rendering is unsupported" -}}
+{{- fail "policy-bound Custom rendering is unsupported" -}}
 {{- end -}}
 {{- if or (ne (index .Values.podAnnotations "sidecar.istio.io/inject") "false") .Values.sidecarScope.enabled (not .Values.networkPolicy.enabled) (gt (len .Values.sidecarScope.additionalEgressHosts) 0) -}}
 {{- fail "Sandbox network controls are protected" -}}

@@ -31,7 +31,7 @@ var ErrInstanceChanged = stderrors.New("Agent changed or was replaced; reload be
 var ErrTeamChanged = stderrors.New("Team changed or was replaced; reload before saving")
 var ErrInstanceDeleting = stderrors.New("Agent is being deleted")
 var ErrOperatorConfigurationUnavailable = stderrors.New("Operator release configuration is unavailable")
-var ErrGovernanceRequiresSuspension = stderrors.New("governance changes require the Agent to be suspended before and after the update")
+var ErrPolicyChangeRequiresSuspension = stderrors.New("policy changes require the Agent to be suspended")
 
 func IsUnsupportedCustomUpdate(err error) bool {
 	return stderrors.Is(err, ErrUnsupportedCustomUpdate)
@@ -78,14 +78,14 @@ type UpdateInstanceOpts struct {
 	ExpectedUID             types.UID
 	ExpectedResourceVersion string
 	Authorize               func(*cetirunv1alpha1.Agent) error
-	DisplayName             *string                         // nil = no change
-	Team                    *string                         // nil = no change
-	GatewayToken            *string                         // nil = no change, non-empty = update
-	TailscaleAuthKey        *string                         // nil = no change, "" = disable tailscale, non-empty = update/enable
-	TeamsEnabled            *bool                           // nil = no change
-	Model                   *string                         // nil = no change, "" = use deployment default
-	SandboxRef              *string                         // Portal-derived Team default only
-	Governance              *cetirunv1alpha1.GovernanceSpec // Portal-derived evidence only
+	DisplayName             *string                            // nil = no change
+	Team                    *string                            // nil = no change
+	GatewayToken            *string                            // nil = no change, non-empty = update
+	TailscaleAuthKey        *string                            // nil = no change, "" = disable tailscale, non-empty = update/enable
+	TeamsEnabled            *bool                              // nil = no change
+	Model                   *string                            // nil = no change, "" = use deployment default
+	SandboxRef              *string                            // Portal-derived Team default only
+	TeamAuthorization       *cetirunv1alpha1.TeamAuthorization // Portal-derived evidence only
 }
 
 type InstanceVersion struct {
@@ -103,10 +103,10 @@ type CreateInstanceOptions struct {
 	// ModelAccess is written only when set: an Agent without it has both
 	// model sources on.
 	ModelAccess *cetirunv1alpha1.ModelAccessSpec
-	// Governance is resolved by the Portal from verified claims and Team
+	// TeamAuthorization is resolved by the Portal from verified claims and Team
 	// membership. Request JSON never supplies this value.
-	Governance *cetirunv1alpha1.GovernanceSpec
-	SandboxRef string
+	TeamAuthorization *cetirunv1alpha1.TeamAuthorization
+	SandboxRef        string
 }
 
 const chartVersionTTL = 5 * time.Minute
@@ -228,9 +228,8 @@ func (c *Client) CreateInstance(ctx context.Context, alias, displayName, team, e
 	}
 	if len(optional) > 0 {
 		instance.Spec.SandboxRef = optional[0].SandboxRef
-		if optional[0].Governance != nil {
-			copy := *optional[0].Governance
-			instance.Spec.Governance = copy
+		if optional[0].TeamAuthorization != nil {
+			instance.Spec.TeamAuthorization = *optional[0].TeamAuthorization.DeepCopy()
 		}
 	}
 	if err := c.client.Create(ctx, instance, client.FieldValidation(metav1.FieldValidationStrict)); err != nil {
@@ -497,9 +496,8 @@ func (c *Client) UpdateInstanceByName(ctx context.Context, instanceName string, 
 			instance.Spec.SandboxRef = *opts.SandboxRef
 			crChanged = true
 		}
-		if opts.Governance != nil {
-			copy := *opts.Governance
-			instance.Spec.Governance = copy
+		if opts.TeamAuthorization != nil {
+			instance.Spec.TeamAuthorization = *opts.TeamAuthorization.DeepCopy()
 			crChanged = true
 		}
 		if opts.GatewayToken != nil && *opts.GatewayToken != "" {
@@ -544,7 +542,7 @@ func (c *Client) UpdateInstanceByName(ctx context.Context, instanceName string, 
 			if before.Spec.Team != instance.Spec.Team || before.Spec.SandboxRef != instance.Spec.SandboxRef ||
 				before.Spec.PolicyClass != instance.Spec.PolicyClass {
 				if !before.Spec.Suspended || !instance.Spec.Suspended {
-					return fmt.Errorf("governance binding changes require the Agent to remain suspended")
+					return fmt.Errorf("policy assignment changes require the Agent to remain suspended")
 				}
 				if err := c.setSandboxReauthorization(ctx, instance); err != nil {
 					return err

@@ -146,7 +146,7 @@ func TestSandboxConfigurationDeepCopyIsolation(t *testing.T) {
 }
 
 func TestGeneratedSchemaDefaultTypes(t *testing.T) {
-	for _, plural := range []string{"agents", "teams", "sandboxes", "agentpolicies", "governanceactions"} {
+	for _, plural := range []string{"agents", "teams", "sandboxes", "agentpolicies"} {
 		t.Run(plural, func(t *testing.T) {
 			assertSchemaDefaultTypes(t, apiContractCRD(t, plural).Spec.Versions[0].Schema.OpenAPIV3Schema)
 		})
@@ -215,13 +215,13 @@ func TestGeneratedSandboxSchemaShapes(t *testing.T) {
 
 	agent := apiContractCRD(t, "agents").Spec.Versions[0].Schema.OpenAPIV3Schema
 	requireSchemaDefault(t, agent.Properties["spec"].Properties["policyClass"], `"normal"`)
-	for _, name := range []string{"governance", "sandboxRef", "team"} {
+	for _, name := range []string{"teamAuthorization", "sandboxRef", "team"} {
 		if !slices.Contains(agent.Properties["spec"].Required, name) {
 			t.Fatalf("governed Agent field %s must be required", name)
 		}
 	}
-	requireSchemaProperties(t, agent.Properties["spec"].Properties["governance"], "gatewayBudgetUSD", "teamAuthorization")
-	requireSchemaProperties(t, agent.Properties["spec"].Properties["governance"].Properties["teamAuthorization"], "authorizedAt", "subject")
+	requireSchemaProperties(t, agent.Properties["spec"].Properties["teamAuthorization"], "authorizedAt", "subject")
+	requireSchemaProperties(t, agent.Properties["spec"].Properties["modelAccess"], "githubCopilot", "monthlyBudgetUSD", "sharedModels")
 	binding := agent.Properties["status"].Properties["sandbox"]
 	requireSchemaProperties(t, binding, "teamUID", "sandboxUID", "policyClass", "agentPolicyUID", "appliedRevision")
 	if len(binding.Required) != 5 || slices.Contains(agent.Properties["status"].Required, "sandbox") {
@@ -235,15 +235,7 @@ func TestGeneratedSandboxSchemaShapes(t *testing.T) {
 	}
 	requireSchemaProperties(t, team.Properties["membership"], "subjects")
 
-	action := apiContractCRD(t, "governanceactions").Spec.Versions[0].Schema.OpenAPIV3Schema
-	actionSpec := action.Properties["spec"]
-	requireSchemaProperties(t, actionSpec, "approval", "expectedProjections", "expiresAt", "operation", "reason", "requestedAt", "requester", "targetRef")
-	for _, name := range []string{"expectedProjections", "expiresAt", "operation", "reason", "requestedAt", "requester", "targetRef"} {
-		if !slices.Contains(actionSpec.Required, name) {
-			t.Fatalf("GovernanceAction field %s must be required", name)
-		}
-	}
-	for _, root := range []*apiextensionsv1.JSONSchemaProps{sandbox, policy, action} {
+	for _, root := range []*apiextensionsv1.JSONSchemaProps{sandbox, policy} {
 		assertClosedSchema(t, root)
 		conditions := root.Properties["status"].Properties["conditions"]
 		if conditions.XListType == nil || *conditions.XListType != "map" || !reflect.DeepEqual(conditions.XListMapKeys, []string{"type"}) {

@@ -48,7 +48,7 @@ func governedTeamUpdateRequest(t *testing.T, h *AdminTeamHandler, name string) T
 
 func governedTeamRequest() TeamUpsertRequest {
 	return TeamUpsertRequest{
-		Membership: []cetirunv1alpha1.GovernanceSubject{{
+		Membership: []cetirunv1alpha1.EntraSubject{{
 			Kind: "User", TenantID: managementTenant, ObjectID: managementOwner,
 		}},
 		NormalAgentPolicyRef: "normal",
@@ -207,11 +207,11 @@ func TestAdminTeam_Update(t *testing.T) {
 	}
 }
 
-func TestAdminTeamUpdatePreservesGovernance(t *testing.T) {
+func TestAdminTeamUpdatePreservesPolicy(t *testing.T) {
 	team := &cetirunv1alpha1.Team{
 		ObjectMeta: metav1.ObjectMeta{Name: "governed"},
 		Spec: cetirunv1alpha1.TeamSpec{
-			Membership:           cetirunv1alpha1.TeamMembershipSpec{Subjects: []cetirunv1alpha1.GovernanceSubject{{Kind: "User", TenantID: managementTenant, ObjectID: managementOwner}}},
+			Membership:           cetirunv1alpha1.TeamMembershipSpec{Subjects: []cetirunv1alpha1.EntraSubject{{Kind: "User", TenantID: managementTenant, ObjectID: managementOwner}}},
 			NormalAgentPolicyRef: "normal", AdminAgentPolicyRef: "admin",
 			SandboxRefs: []string{"standard", "restricted"}, DefaultSandboxRef: "standard",
 			MemberContext: cetirunv1alpha1.TeamContextSpec{Role: "old"},
@@ -237,7 +237,7 @@ func TestAdminTeamUpdatePreservesGovernance(t *testing.T) {
 	want := team.Spec.DeepCopy()
 	want.MemberContext.Role = "new"
 	if !reflect.DeepEqual(got.Spec, *want) {
-		t.Fatalf("ordinary Portal edit changed governance: got %+v, want %+v", got.Spec, *want)
+		t.Fatalf("ordinary Portal edit changed policy: got %+v, want %+v", got.Spec, *want)
 	}
 }
 

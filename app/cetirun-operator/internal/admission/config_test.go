@@ -34,7 +34,7 @@ func TestTeamAssignmentConfigurationRequiresExactUniqueIdentities(t *testing.T) 
 			t.Fatalf("invalid assignment accepted: %#v", assignment)
 		}
 	}
-	raw := `{"adminUsers":["administrator","system:serviceaccount:operator-test:portal"],"controllerUsername":"system:serviceaccount:operator-test:controller","governanceApprovalUsername":"system:serviceaccount:operator-test:portal","teamAssignments":[{"team":"engineering","users":["member"],"groups":["engineering-members"]}]}`
+	raw := `{"adminUsers":["administrator","system:serviceaccount:operator-test:portal"],"controllerUsername":"system:serviceaccount:operator-test:controller","teamAssignments":[{"team":"engineering","users":["member"],"groups":["engineering-members"]}]}`
 	config, err := ParseConfig(raw)
 	if err != nil || len(config.TeamAssignments) != 1 || config.TeamAssignments[0].Team != "engineering" ||
 		!slices.Equal(config.TeamAssignments[0].Groups, []string{"engineering-members"}) {
@@ -159,7 +159,7 @@ func TestPlatformSourceConfigurationRequiresControllerNamespace(t *testing.T) {
 			t.Errorf("source %q/%q valid=%t: %v", test.namespace, test.name, test.valid, err)
 		}
 	}
-	config, err := ParseConfig(`{"adminUsers":["administrator","system:serviceaccount:operator-test:portal"],"controllerUsername":"system:serviceaccount:operator-test:controller","governanceApprovalUsername":"system:serviceaccount:operator-test:portal","platformNamespace":"operator-test","platformConfigMapName":"sandbox-platform"}`)
+	config, err := ParseConfig(`{"adminUsers":["administrator","system:serviceaccount:operator-test:portal"],"controllerUsername":"system:serviceaccount:operator-test:controller","platformNamespace":"operator-test","platformConfigMapName":"sandbox-platform"}`)
 	if err != nil || config.PlatformNamespace != "operator-test" || config.PlatformConfigMapName != "sandbox-platform" {
 		t.Fatalf("explicit source did not roundtrip: %+v, %v", config, err)
 	}

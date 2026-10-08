@@ -260,7 +260,6 @@ func renderedPodAdmission(t *testing.T, ca []byte) (*admissionregistrationv1.Val
 		"--set", "sandboxAdmission.podsEnabled=true", "--set", "sandboxAdmission.tlsSecretName=example-tls",
 		"--set", "sandboxAdmission.adminUsers[0]=admin@example.com",
 		"--set", "sandboxAdmission.adminUsers[1]=system:serviceaccount:cetirun-system:portal",
-		"--set", "sandboxAdmission.governanceApprovalUsername=system:serviceaccount:cetirun-system:portal",
 		"--set-string", "sandboxAdmission.caBundle="+base64.StdEncoding.EncodeToString(ca))
 	command.Env = append(os.Environ(), "KUBECONFIG="+os.DevNull, "HELM_REGISTRY_CONFIG="+os.DevNull, "HELM_REPOSITORY_CONFIG="+os.DevNull)
 	output, err := command.CombinedOutput()
