@@ -932,7 +932,6 @@ func (r *AgentReconciler) ensureAIGatewayKeySecret(ctx context.Context, instance
 		if secret == nil || !aigateway.ValidKeyValue(string(secret.Data[aiGatewayKeySecretField])) {
 			return "", errAIGatewayKeySecretLost
 		}
-		return string(secret.Data[aiGatewayKeySecretField]), nil
 	}
 	return r.ensureAgentOwnedValue(ctx, instance, aiGatewayKeySecretName, aiGatewayKeySecretField, replace,
 		map[string]string{aiGatewayKeyAliasAnnotation: aiGatewayKeyAlias(instance)})

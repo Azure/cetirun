@@ -665,6 +665,24 @@ func TestReconcileAIGatewayAdoptsKeyCreatedBeforeStatusWasLost(t *testing.T) {
 	}
 }
 
+func TestEnsureAIGatewayKeySecretRepairsIssuedSecretOwnership(t *testing.T) {
+	agent := aiGatewayTestAgent(testAIGatewayTeam)
+	value := mustKeyValue(t)
+	agent.Status.AIGateway = &cetirunv1alpha1.AIGatewayStatus{KeyID: aigateway.Token(value)[:aiGatewayKeyIDLength]}
+	r, kube, _ := aiGatewayTestReconciler(t, agent, aiGatewayNamespace(), keySecret(testAIGatewayUID, value))
+
+	got, err := r.ensureAIGatewayKeySecret(context.Background(), agent, false)
+	if err != nil || got != value {
+		t.Fatalf("repair issued key Secret: value matched=%t error=%v", got == value, err)
+	}
+	secret := readKeySecret(t, kube)
+	if len(secret.OwnerReferences) != 1 || !metav1.IsControlledBy(secret, agent) ||
+		secret.Annotations[aiGatewayKeyAliasAnnotation] != aiGatewayKeyAlias(agent) {
+		t.Fatalf("issued key Secret ownership was not repaired: owners=%+v annotations=%v",
+			secret.OwnerReferences, secret.Annotations)
+	}
+}
+
 // When the key Secret no longer holds the value of this Agent's existing key,
 // replacing the key would reset its spend and budget (and unblock it), so the
 // operator reports the state and leaves the key alone until an administrator
