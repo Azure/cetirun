@@ -137,21 +137,34 @@ func (r *AgentReconciler) startKubernetesSandbox(ctx context.Context, requested 
 		return ctrl.Result{}, fmt.Errorf("Sandbox prepared StatefulSet changed before start (owned=%t identity=%t revision=%t template=%t controllerRevision=%t replicas=%d)",
 			owned, identityMatches, revisionMatches, templateMatches, controllerRevisionMatches, replicas)
 	}
+	// The Pod expectation remains held until the last step below, so removing
+	// the Agent marker does not by itself authorize Pod admission.  Release the
+	// marker before requesting a replica: if either write fails, the next pass
+	// can retry from a stopped StatefulSet or from the still-held expectation.
+	// Scaling first would leave an unrecoverable replicas=1/finalizer-present
+	// split if admission rejected the finalizer write.
+	if controllerutil.ContainsFinalizer(agent, sandbox.HoldFinalizer) {
+		finalizers := slices.DeleteFunc(slices.Clone(agent.Finalizers), func(value string) bool {
+			return value == sandbox.HoldFinalizer
+		})
+		raw, err := json.Marshal(map[string]any{"metadata": map[string]any{
+			"resourceVersion": agent.ResourceVersion, "finalizers": finalizers,
+		}})
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		if err := r.Patch(ctx, agent, client.RawPatch(types.MergePatchType, raw)); err != nil {
+			return ctrl.Result{}, fmt.Errorf("release Sandbox execution hold: %w", err)
+		}
+		if err := r.APIReader.Get(ctx, client.ObjectKey{Name: agent.Name}, agent); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
 	if replicas == 0 {
 		base := workload.DeepCopy()
 		workload.Spec.Replicas = ptr.To[int32](1)
 		if err := r.Patch(ctx, workload, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
 			return ctrl.Result{}, fmt.Errorf("start Sandbox StatefulSet: %w", err)
-		}
-	}
-	if controllerutil.ContainsFinalizer(agent, sandbox.HoldFinalizer) {
-		base := agent.DeepCopy()
-		controllerutil.RemoveFinalizer(agent, sandbox.HoldFinalizer)
-		if err := r.Patch(ctx, agent, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
-			return ctrl.Result{}, fmt.Errorf("release Sandbox execution hold: %w", err)
-		}
-		if err := r.APIReader.Get(ctx, client.ObjectKey{Name: agent.Name}, agent); err != nil {
-			return ctrl.Result{}, err
 		}
 	}
 	if err := r.releaseKubernetesSandboxExpectation(ctx, state, expected, agent); err != nil {
