@@ -23,7 +23,7 @@ values=(
 output="$(helm template broker-test "${chart_dir}" "${values[@]}")"
 grep -Fq 'automountServiceAccountToken: false' <<<"${output}"
 grep -Fq 'istio.io/rev: "asm-example"' <<<"${output}"
-grep -Fq 'image: "ghcr.io/azure/cetirun-agent-broker:0.1.0"' <<<"${output}"
+grep -Fq 'image: "ghcr.io/azure/cetirun-agent-broker:0.1.1"' <<<"${output}"
 grep -Fq 'image: "mcr.microsoft.com/entra-sdk/auth-sidecar:1.0.0-azurelinux3.0-distroless@sha256:b3e6204abb87daa9c414dcade11f16060e030d114b81ecbd8bd2a7346e107523"' <<<"${output}"
 if grep -Fq ':latest' <<<"${output}"; then
   echo "FAIL: chart rendered a latest image tag" >&2
