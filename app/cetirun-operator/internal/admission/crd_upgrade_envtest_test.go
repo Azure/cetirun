@@ -330,6 +330,84 @@ func TestHelmManagedCRDUpgrade(t *testing.T) {
 	}
 }
 
+func TestCoordinationChartReuseValuesUpgrade(t *testing.T) {
+	if os.Getenv("USE_EXISTING_CLUSTER") == "true" || os.Getenv("KUBEBUILDER_ASSETS") == "" {
+		t.Fatal("explicit local envtest binaries are required; an existing cluster is forbidden")
+	}
+	directory := t.TempDir()
+	beforeChart := upgradeTestChart(t, directory, "reuse-before", "0.0.1", renderedManagedCRDs(t))
+	data, err := os.ReadFile("../../chart/values.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var values map[string]any
+	if err := yaml.UnmarshalStrict(data, &values); err != nil {
+		t.Fatal(err)
+	}
+	admissionValues := values["sandboxAdmission"].(map[string]any)
+	delete(admissionValues, "coordinationConfigMapName")
+	delete(admissionValues, "coordinationConfigMapUID")
+	values["replicaCount"] = 0
+	data, err = yaml.Marshal(values)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(beforeChart, "values.yaml"), data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	environment := &envtest.Environment{
+		BinaryAssetsDirectory: os.Getenv("KUBEBUILDER_ASSETS"), UseExistingCluster: ptr.To(false),
+	}
+	cfg, err := environment.Start()
+	if err != nil {
+		if stopErr := environment.Stop(); stopErr != nil {
+			t.Error(stopErr)
+		}
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := environment.Stop(); err != nil {
+			t.Error(err)
+		}
+	})
+	endpoint, err := url.Parse(cfg.Host)
+	if err != nil || !net.ParseIP(endpoint.Hostname()).IsLoopback() {
+		t.Fatal("refusing a non-loopback API server")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	kubeconfig := upgradeTestKubeconfig(t, directory, cfg)
+	helm := func(arguments ...string) []byte {
+		t.Helper()
+		arguments = append(arguments, "--namespace", "cetirun-system", "--kubeconfig", kubeconfig)
+		command := exec.CommandContext(ctx, "helm", arguments...)
+		command.Env = append(os.Environ(), "KUBECONFIG="+kubeconfig,
+			"HELM_CACHE_HOME="+filepath.Join(directory, "cache"), "HELM_CONFIG_HOME="+filepath.Join(directory, "config"),
+			"HELM_DATA_HOME="+filepath.Join(directory, "data"), "HELM_REGISTRY_CONFIG="+os.DevNull, "HELM_REPOSITORY_CONFIG="+os.DevNull)
+		output, err := command.CombinedOutput()
+		if err != nil {
+			t.Fatalf("Helm %s: %v\n%s", arguments[0], err, output)
+		}
+		return output
+	}
+	helm("install", "reuse-values-test", beforeChart, "--create-namespace")
+	helm("upgrade", "reuse-values-test", "../../chart", "--reuse-values")
+	var reused map[string]any
+	if err := json.Unmarshal(helm("get", "values", "reuse-values-test", "--all", "--output=json"), &reused); err != nil {
+		t.Fatal(err)
+	}
+	admissionValues = reused["sandboxAdmission"].(map[string]any)
+	for _, key := range []string{"coordinationConfigMapName", "coordinationConfigMapUID"} {
+		if _, exists := admissionValues[key]; exists {
+			t.Fatal("fixture did not retain the original defaults without coordination fields")
+		}
+	}
+	if admissionValues["enabled"] != false {
+		t.Fatal("upgrade enabled admission")
+	}
+	helm("uninstall", "reuse-values-test")
+}
+
 func renderedManagedCRDs(t *testing.T) []*apiextensionsv1.CustomResourceDefinition {
 	t.Helper()
 	command := exec.Command("helm", "template", "crd-test", "../../chart")

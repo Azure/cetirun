@@ -1,8 +1,8 @@
 {{- $sandboxSources := include "cetirun-operator.sandboxSourcesConfig" . -}}
 {{- $admission := .Values.sandboxAdmission -}}
 {{- $placementName := $admission.placementConfigMapName -}}
-{{- $coordinationName := $admission.coordinationConfigMapName -}}
-{{- $coordinationUID := $admission.coordinationConfigMapUID -}}
+{{- $coordinationName := get $admission "coordinationConfigMapName" -}}
+{{- $coordinationUID := get $admission "coordinationConfigMapUID" -}}
 {{- if or (not (kindIs "string" $coordinationName)) (not (kindIs "string" $coordinationUID)) -}}
 {{- fail "sandboxAdmission coordination ConfigMap name and UID must be strings" -}}
 {{- end -}}

@@ -216,11 +216,29 @@ class SandboxAdmissionChartTests(unittest.TestCase):
                     "must pin a bounded exact UID",
                 )
         for key in ("coordinationConfigMapName", "coordinationConfigMapUID"):
-            self.assert_rejected({**valid, key: 42}, "name and UID must be strings")
+            for invalid in (42, False, [], {}):
+                with self.subTest(key=key, invalid=invalid):
+                    self.assert_rejected({**valid, key: invalid}, "name and UID must be strings")
         self.assert_rejected(
             {**valid, "placementConfigMapName": "sandbox-coordination"},
             "separate valid ConfigMap name",
         )
+
+    def test_omitted_coordination_defaults_preserve_disabled_rendering(self):
+        with tempfile.TemporaryDirectory(prefix="admission-reused-values-") as directory:
+            chart = Path(directory) / "chart"
+            shutil.copytree(CHART, chart)
+            defaults = yaml.safe_load((chart / "values.yaml").read_text())
+            defaults["sandboxAdmission"].pop("coordinationConfigMapName")
+            defaults["sandboxAdmission"].pop("coordinationConfigMapUID")
+            (chart / "values.yaml").write_text(yaml.safe_dump(defaults))
+            for name, admission in (
+                ("disabled", None),
+                ("serving", self.server_values()),
+                ("enforced", self.enforced_values(podsEnabled=True, validationMode="strict")),
+            ):
+                with self.subTest(mode=name):
+                    self.assertEqual(self.render(admission, chart=chart), self.render(admission))
 
     def test_kubernetes_sources_share_platform_config_and_grant_only_policy_writes(self):
         admission = self.enforced_values(podsEnabled=True)

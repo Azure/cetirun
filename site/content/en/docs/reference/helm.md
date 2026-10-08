@@ -466,8 +466,10 @@ disables authorization or changes the webhook failure policy. Review schema
 and existing-resource ownership compatibility separately from the Helm upgrade.
 
 `sandboxAdmission.coordinationConfigMapName` and `coordinationConfigMapUID`
-default to empty. Set both to opt in to coordinated Team, Sandbox and AgentPolicy
-updates against one existing, protected authority in the operator namespace.
+default to empty, including when absent from older `--reuse-values` releases.
+Explicit non-string values still fail validation. Set both to opt in to
+coordinated Team, Sandbox and AgentPolicy updates against one existing, protected
+authority in the operator namespace.
 This requires `validationMode: strict` and enabled, enforced configuration and
 Pod admission. The chart neither creates authority state nor grants write access
 to admission; its existing namespace-scoped ConfigMap `get` permission is reused.
