@@ -2766,6 +2766,23 @@ func TestAIGatewayCatalogLeavesOutUnpricedSharedModelsWhileTheGatewayBlocksThem(
 	}
 }
 
+// The console accepts the names the Gateway chart reserves, in any letter
+// case; the operator leaves them out. Other provider prefixes are not reserved.
+func TestAIGatewayCatalogLeavesOutReservedSharedNames(t *testing.T) {
+	var catalog aiGatewayCatalog
+	_, skipped, _ := catalog.update([]aigateway.Deployment{
+		{ID: "a", ModelName: "cetirun-console-model", AccessGroups: []string{aiGatewaySharedAccessGroup}},
+		{ID: "b", ModelName: "CetiRun-Console-Model", AccessGroups: []string{aiGatewaySharedAccessGroup}},
+		{ID: "c", ModelName: "Copilot/gpt-5.5", AccessGroups: []string{aiGatewaySharedAccessGroup}},
+		{ID: "d", ModelName: "azure/gpt-4o", AccessGroups: []string{aiGatewaySharedAccessGroup}},
+		{ID: "e", ModelName: "my-cetirun-model", AccessGroups: []string{aiGatewaySharedAccessGroup}},
+	}, false, time.Now())
+	shared, _ := catalog.shared()
+	if names := catalogNames(shared); !slices.Equal(names, []string{"azure/gpt-4o", "my-cetirun-model"}) || len(skipped) != 3 {
+		t.Fatalf("shared=%v skipped=%v", names, skipped)
+	}
+}
+
 // An administrator can change the setting in the Gateway's console at any
 // time, so every listing reads it again.
 func TestAIGatewayCatalogFollowsTheGatewaysUnpricedSetting(t *testing.T) {
