@@ -123,6 +123,9 @@ volume and writer-journal UID. The complete writer tuple is persisted with
 the coordination ticket and must still match before reservation or cleanup.
 It rechecks sources
 without reading Secret contents or treating Agent status as authorization.
+Preparation still validates every permitted Team Sandbox and both policy
+slots. An execution reserves only its selected Sandbox and policy, so valid
+changes to an unused Sandbox or the other policy class do not require it to stop.
 
 One UID-pinned controller-state object serializes shared-source readers and
 exclusive changes with API resource-version comparisons. Running and stopping

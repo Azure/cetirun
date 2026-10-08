@@ -5,24 +5,31 @@ package controller_test
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxbinding"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxcoordination"
 	w "github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxwriter"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-func executionIntentFixture(t *testing.T, typ string) (*preparationFixture, sandboxcoordination.EnrolledTarget) {
+func executionIntentFixture(t *testing.T, typ string, configure ...func(*preparationFixture)) (*preparationFixture, sandboxcoordination.EnrolledTarget) {
 	t.Helper()
 	f, node, _ := placementPreparationFixture(t, typ)
+	for _, configure := range configure {
+		configure(f)
+	}
 	if err := f.reconcile(); err != nil {
 		t.Fatal(err)
 	}
@@ -88,6 +95,125 @@ func TestSandboxExecutionIntentPinsHeldNativePreparation(t *testing.T) {
 				t.Fatal("actual prepared intent could not enter serialized coordination:", err)
 			}
 			assertSandboxPrepared(t, f)
+		})
+	}
+}
+
+func TestSandboxExecutionReservesOnlySelectedConfiguration(t *testing.T) {
+	for _, class := range []api.AgentPolicyClass{api.AgentPolicyClassNormal, api.AgentPolicyClassAdmin} {
+		t.Run(string(class), func(t *testing.T) {
+			ctx := context.Background()
+			var unselectedPolicy *api.AgentPolicy
+			var unusedSandbox *api.Sandbox
+			f, target := executionIntentFixture(t, "hermes", func(f *preparationFixture) {
+				normal := &api.AgentPolicy{}
+				if err := f.client.Get(ctx, client.ObjectKeyFromObject(f.fixture.Policy), normal); err != nil {
+					t.Fatal(err)
+				}
+				normal.Spec.SandboxSelection.AllowMultiple = true
+				if err := f.client.Update(ctx, normal); err != nil {
+					t.Fatal(err)
+				}
+				admin := normal.DeepCopy()
+				admin.ObjectMeta = metav1.ObjectMeta{Name: "policy-admin"}
+				unusedSandbox = f.fixture.Sandbox.DeepCopy()
+				unusedSandbox.ObjectMeta = metav1.ObjectMeta{Name: "sandbox-unused"}
+				for _, object := range []client.Object{admin, unusedSandbox} {
+					if err := f.client.Create(ctx, object); err != nil {
+						t.Fatal(err)
+					}
+				}
+				team := &api.Team{}
+				if err := f.client.Get(ctx, client.ObjectKeyFromObject(f.fixture.Team), team); err != nil {
+					t.Fatal(err)
+				}
+				team.Spec.AdminAgentPolicyRef = admin.Name
+				team.Spec.SandboxRefs = append(team.Spec.SandboxRefs, unusedSandbox.Name)
+				if err := f.client.Update(ctx, team); err != nil {
+					t.Fatal(err)
+				}
+				agent := f.current(t)
+				agent.Spec.PolicyClass = class
+				agent.Generation++
+				authorization, err := sandboxbinding.Snapshot(agent, team, sandbox.Resources{
+					Sandboxes:     map[string]*api.Sandbox{f.fixture.Sandbox.Name: f.fixture.Sandbox, unusedSandbox.Name: unusedSandbox},
+					AgentPolicies: map[string]*api.AgentPolicy{normal.Name: normal, admin.Name: admin},
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				agent.Annotations[sandboxbinding.AuthorizationAnnotation] = authorization
+				if err := f.client.Update(ctx, agent); err != nil {
+					t.Fatal(err)
+				}
+				f.source.inputs.AgentGeneration = agent.Generation
+				unselectedPolicy = admin
+				if class == api.AgentPolicyClassAdmin {
+					unselectedPolicy = normal
+				}
+			})
+			expected := f.expectation(t)
+			intent, err := f.reconciler.SandboxExecutionIntent(ctx, f.current(t), target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			state, err := sandboxcoordination.NewState("cetirun-system", "execution-coordination")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := f.client.Create(ctx, state); err != nil {
+				t.Fatal(err)
+			}
+			store := sandboxcoordination.Store{Client: f.client, APIReader: f.client, Namespace: state.Namespace,
+				Identity: w.ObjectIdentity{Name: state.Name, UID: state.UID}}
+			ticket, err := store.AcquireExecution(ctx, intent)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ticket, err = store.BeginStart(ctx, ticket)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ticket, err = store.MarkRunning(ctx, ticket)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, object := range []client.Object{unselectedPolicy, unusedSandbox} {
+				index := slices.IndexFunc(expected.Sources, func(source w.SourceReference) bool {
+					return source.UID == object.GetUID()
+				})
+				if index < 0 {
+					t.Fatal("preparation did not validate every Team configuration")
+				}
+				before := expected.Sources[index]
+				if slices.Contains(intent.Sources, before) {
+					t.Fatalf("execution reserved unselected %s %s", before.Kind, before.Name)
+				}
+				if _, err := store.AcquireChange(ctx, before, strings.Repeat("b", 64)); err != nil {
+					t.Fatal("unselected configuration change required stopping this execution:", err)
+				}
+			}
+			unselectedPolicy.Spec.Network.BlockedCIDRs = []string{"203.0.113.0/24"}
+			unusedSandbox.Spec.Storage.Scratch.SizeLimit = resource.MustParse("2Gi")
+			for _, object := range []client.Object{unselectedPolicy, unusedSandbox} {
+				if err := f.client.Update(ctx, object); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := f.reconciler.CheckSandboxExecutionSources(ctx, intent); err != nil {
+				t.Fatal("valid unselected configuration changes invalidated execution:", err)
+			}
+			for _, source := range intent.Sources {
+				if source.Kind == "AgentPolicy" || source.Kind == "Sandbox" || source.Kind == "Team" {
+					if _, err := store.AcquireChange(ctx, source, strings.Repeat("c", 64)); !errors.Is(err, sandboxcoordination.ErrConflict) {
+						t.Fatal("selected configuration was not reserved:", err)
+					}
+				}
+			}
+			current, err := store.ReadExecution(ctx, intent.Agent.UID)
+			if err != nil || !reflect.DeepEqual(current, ticket) {
+				t.Fatal("unrelated changes modified the running execution ticket:", err)
+			}
 		})
 	}
 }

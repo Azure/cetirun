@@ -96,11 +96,24 @@ func (r *AgentReconciler) SandboxExecutionIntent(ctx context.Context, requested 
 		return empty, fmt.Errorf("%w: prepared ControllerRevision must be pinned", sandboxpolicy.ErrUnavailable)
 	}
 	stateSource := sandboxSource(state, "v1", "ConfigMap")
+	selectedPolicy := attempt.selectedPolicy().Name
+	sources := make([]w.SourceReference, 0, len(expected.Sources)+1)
+	for _, source := range expected.Sources {
+		// Preparation validates every Team slot; only the selected Sandbox
+		// and policy affect this execution's configuration reservation.
+		if source.APIVersion == api.GroupVersion.String() &&
+			((source.Kind == "Sandbox" && source.Name != attempt.agent.Spec.SandboxRef) ||
+				(source.Kind == "AgentPolicy" && source.Name != selectedPolicy)) {
+			continue
+		}
+		sources = append(sources, source)
+	}
+	sources = append(sources, stateSource)
 	intent := sandboxcoordination.Intent{
 		Agent: expected.Agent, AgentGeneration: expected.AgentGeneration, Namespace: expected.Namespace,
 		Home: expected.Home, Workload: expected.Workload, Expected: target.ExecutionIdentity, Preparation: stateSource,
 		Writer: target.Writer, WriterJournal: target.WriterJournal,
-		Placement: expected.Placement.DeepCopy(), Sources: append(slices.Clone(expected.Sources), stateSource),
+		Placement: expected.Placement.DeepCopy(), Sources: sources,
 		IngressMode: plan.Network.IngressMode,
 	}
 	if err := intent.Validate(); err != nil {
