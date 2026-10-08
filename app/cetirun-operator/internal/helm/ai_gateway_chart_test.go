@@ -573,41 +573,53 @@ func aiGatewayHermesInput(keyEnv string) map[string]any {
 // Hermes' container, so neither can a variable that controls the container's
 // processes, such as PATH, nor one the chart sets there.
 func TestAIGatewayChartBindsTheHermesKeyToAnotherVariable(t *testing.T) {
-	// The operator always binds the default variable: it replaces the
-	// aiGateway values. Another one is standalone Helm's.
+	// The controller always binds the default variable: it replaces the
+	// aiGateway values. Another one is standalone Helm's. A release the
+	// operator prepares renders Hermes' configuration itself, so it must name
+	// the variable its values select as well.
+	for _, renderer := range []struct {
+		name   string
+		render func(*testing.T, map[string]any) (map[string]string, error)
+	}{{"standalone", renderStandalone}, {"prepared", renderAIGateway}} {
+		t.Run(renderer.name, func(t *testing.T) {
+			rendered, err := renderer.render(t, aiGatewayHermesInput("OPENAI_API_KEY"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := parseHermes(t, rendered)
+			var keys []corev1.EnvVar
+			for _, env := range got.main.Env {
+				if env.Name == "OPENAI_API_KEY" {
+					keys = append(keys, env)
+				}
+			}
+			if len(keys) != 1 || keys[0].ValueFrom == nil || keys[0].ValueFrom.SecretKeyRef == nil ||
+				keys[0].ValueFrom.SecretKeyRef.Name != "ai-gateway-virtual-key" {
+				t.Fatalf("OPENAI_API_KEY must be set once, from the key Secret: %+v", keys)
+			}
+			providers, _ := got.config["providers"].(map[string]any)
+			if provider, _ := providers["cetirun-gateway"].(map[string]any); provider["key_env"] != "OPENAI_API_KEY" {
+				t.Fatalf("the Gateway provider must read OPENAI_API_KEY: %v", provider)
+			}
+			if keyEnv := envVar(got.init, "CETIRUN_GATEWAY_KEY_ENV"); keyEnv == nil || keyEnv.Value != "OPENAI_API_KEY" {
+				t.Fatalf("init must know the key variable, got %+v", keyEnv)
+			}
+			if _, err := renderer.render(t, aiGatewayHermesInput("PATH")); err == nil || !strings.Contains(err.Error(), "must not be PATH") {
+				t.Fatalf("binding the key to PATH must be refused, got %v", err)
+			}
+		})
+	}
+
 	standalone := func(t *testing.T, keyEnv string) (map[string]string, error) {
 		return renderStandalone(t, aiGatewayHermesInput(keyEnv))
 	}
-	rendered, err := standalone(t, "OPENAI_API_KEY")
-	if err != nil {
-		t.Fatal(err)
-	}
-	got := parseHermes(t, rendered)
-	var keys []corev1.EnvVar
-	for _, env := range got.main.Env {
-		if env.Name == "OPENAI_API_KEY" {
-			keys = append(keys, env)
-		}
-	}
-	if len(keys) != 1 || keys[0].ValueFrom == nil || keys[0].ValueFrom.SecretKeyRef == nil ||
-		keys[0].ValueFrom.SecretKeyRef.Name != "ai-gateway-virtual-key" {
-		t.Fatalf("OPENAI_API_KEY must be set once, from the key Secret: %+v", keys)
-	}
-	providers, _ := got.config["providers"].(map[string]any)
-	if provider, _ := providers["cetirun-gateway"].(map[string]any); provider["key_env"] != "OPENAI_API_KEY" {
-		t.Fatalf("the Gateway provider must read OPENAI_API_KEY: %v", provider)
-	}
-	if keyEnv := envVar(got.init, "CETIRUN_GATEWAY_KEY_ENV"); keyEnv == nil || keyEnv.Value != "OPENAI_API_KEY" {
-		t.Fatalf("init must know the key variable, got %+v", keyEnv)
-	}
-
 	for _, name := range []string{"ANTHROPIC_API_KEY", "OPENROUTER_API_KEY"} {
 		if _, err := standalone(t, name); err != nil {
 			t.Fatalf("an API key variable, %s, can carry the key: %v", name, err)
 		}
 	}
 
-	rendered, err = standalone(t, "")
+	rendered, err := standalone(t, "")
 	if err != nil {
 		t.Fatal(err)
 	}

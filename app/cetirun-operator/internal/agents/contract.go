@@ -84,6 +84,11 @@ type ModelBinding struct {
 	Gateway bool
 	// GatewayModels are the models the Gateway offers the Agent.
 	GatewayModels []GatewayModel
+	// GatewayKeyEnv names the environment variable that carries the Agent's
+	// Gateway key to Hermes (aiGateway.hermes.keyEnv). The chart sets that
+	// variable in Hermes' containers, so Hermes' configuration must name the
+	// same one. Empty for charts that do not declare it.
+	GatewayKeyEnv string
 }
 
 // GatewayModel is one model the AI Gateway offers an Agent, with the limits
