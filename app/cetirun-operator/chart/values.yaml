@@ -168,6 +168,7 @@ sandboxAdmission:
 # -- Kubernetes capability declarations for configuration admission and held
 # native Sandbox preparation. Both use the same operator-namespace platform.json.
 # Does not qualify a platform or implement writer fencing. Execution stays held.
+# Adds controller write permissions for compiled namespaced CiliumNetworkPolicies.
 sandboxSources:
   enabled: false
   # -- Create owned namespace, HOME and native authentication only for new namespaces.

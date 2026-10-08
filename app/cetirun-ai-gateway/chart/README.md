@@ -776,9 +776,9 @@ non-root user 65532.
   the same release, installed with `--no-deps`, so nothing else is pulled in.
   The differences are deliberate: `litellm-enterprise`, which carries the
   BerriAI Enterprise License, is left out; two backports that Python 3.12
-  needs are added; and a package with a high or critical advisory is moved to
-  its patched version, marked in the file (so far `anyio`, for
-  GHSA-82r6-8w77-94w6). The build fails if the enterprise package is present.
+  needs are added; and packages with known security advisories are moved to
+  patched versions, with the advisories marked in the file. The build fails
+  if the enterprise package is present.
 - The prisma CLI and engines are installed at build time, so migrations need
   neither npm nor network access. Measured on a network with no route out:
   migrations applied and the proxy became ready.
