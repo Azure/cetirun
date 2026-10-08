@@ -106,6 +106,53 @@ Unit, race and isolated API-server tests use synthetic provider responses.
 Run `make test-sandbox-lifecycle` with preinstalled `KUBEBUILDER_ASSETS` for the
 API persistence tests. These checks are not live runtime qualification.
 
+### Start and shared-change coordination
+
+The [coordination package](internal/sandboxcoordination/) provides the ordered
+protocol for a participating platform integration. The
+[native preparation bridge](internal/controller/sandbox_execution_intent.go)
+requires current held preparation, a pinned ControllerRevision and grant
+journal, complete lifetime placement, current authorization and compiled
+policy, and an independently enrolled Pod/Node/epoch, physical machine,
+volume and writer-journal UID. The complete writer tuple is persisted with
+the coordination ticket and must still match before reservation or cleanup.
+It rechecks sources
+without reading Secret contents or treating Agent status as authorization.
+
+One UID-pinned controller-state object serializes shared-source readers and
+exclusive changes with API resource-version comparisons. Running and stopping
+executions retain their source reservations. There is no expiry, lock stealing,
+automatic state recreation or adoption of a same-name replacement. A start or
+source mutation records intent before its only submission; restart and lost
+replies are observation-only. Unknown mutation outcomes retain their reservation,
+including when the API still shows the old object.
+
+The lifecycle reserves the physical writer through the durable journal, then
+requires a fresh, exact pre-start acknowledgement of an armed guest-external
+gate. Current runtime, Pod, control and epoch evidence precedes route publication.
+An additional post-publication observation precedes the adapter's atomic
+applied-binding/readiness commit. Source, freshness or observation loss clears
+readiness, withdraws routes and attempts durable writer exclusion; failure in
+one cleanup step does not skip the others. Reservations are released only after
+all cleanup succeeds. Historical cleanup does not rediscover targets from
+current policy or storage configuration.
+
+**This protocol does not activate the shipped controller.** The adapter must
+enforce the same operation at the actual runtime, mutation and publication
+boundaries, including delayed submissions, restart and observation loss.
+Calling a read-only guard before an asynchronous write is not sufficient.
+Every shared-source writer must participate; direct writes must be excluded
+before enablement. No concrete production start, observation, mutation, routing
+or status-commit adapter is installed here, and neither a coordination record
+nor a successful callback qualifies one. The existing controller and admission
+holds are unchanged. Live governed Agent execution, model traffic and platform
+qualification remain separate, uncompleted integration work.
+
+The focused lifecycle tests cover synthetic ordering, identity/freshness
+failures, writer-history integration and real isolated API persistence/CAS.
+They do not start agent containers, contact a model service or qualify a
+provider.
+
 ### Existing activation boundary
 
 The new Team bindings and Agent `sandboxRef` remain optional in this additive
