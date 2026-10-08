@@ -223,6 +223,35 @@ No code here changes finalizers, expectations or replicas to start an Agent.
 Real runtime gating, independent observations, all-source mutation coordination
 and model/tool validation remain prerequisites for enabling execution.
 
+### Guarded Sandbox status persistence
+
+`SandboxExecutionStatusWriter` provides the status component for a separately
+qualified runtime adapter. `CommitReadiness` requires the exact current Running
+ticket, running-input verification and independent complete, fresh enforcement
+evidence. It uses the existing status helper and one UID/resource-version-pinned
+merge patch to record Sandbox enforcement and applied history. The observation
+age is explicitly bounded to at most one minute and rechecked before and after
+the write. Unchanged status is revalidated without rewriting it.
+
+This component does not create routes, assign a new access URL, set global Agent
+`Ready=True` or change the phase to Ready. Disabled ingress keeps the URL empty.
+An acknowledged status write followed by failed revalidation is returned as an
+error, not reported as a verified transition. Status persistence is not an
+atomic transaction with the coordination object or the physical runtime; the
+caller must execute coordinated cleanup on uncertainty.
+
+`ClearReadiness` requires the exact Stopping ticket but not current policy or
+prerequisite availability. It clears reported readiness/access, follows the
+current suspension/deletion generation and preserves applied history. An opaque
+stop marker forces the first clear to advance the Agent resource version, even
+if it was already nonready, so pending positive writes using the old version
+cannot overwrite it. Repeated identical clears are no-ops. This is status
+invalidation, not route withdrawal, process termination or writer fencing.
+
+Stock startup does not install this component as an execution adapter. Its
+unit and local API-server tests use synthetic runtime inputs and observations;
+they do not establish live enforcement or an end-to-end governed Agent run.
+
 ### Existing activation boundary
 
 The new Team bindings and Agent `sandboxRef` remain optional in this additive
