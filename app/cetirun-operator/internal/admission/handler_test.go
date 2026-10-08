@@ -731,7 +731,7 @@ func TestDependencyFailureAndCleanupBoundary(t *testing.T) {
 	requireResponse(t, f.handler.Validate(context.Background(), req), true, "RBAC")
 }
 
-func TestControllerCanPersistHoldWithoutReferenceLookups(t *testing.T) {
+func TestControllerCanPersistAndReleaseHoldWithoutReferenceLookups(t *testing.T) {
 	f := newFixture(t)
 	f.handler.reader = unavailableReader{}
 	candidate := f.agent.DeepCopy()
@@ -739,7 +739,7 @@ func TestControllerCanPersistHoldWithoutReferenceLookups(t *testing.T) {
 	req := requestFor(t, admissionv1.Update, candidate, f.agent, testController)
 	requireResponse(t, f.handler.Validate(context.Background(), req), true, "")
 	req = requestFor(t, admissionv1.Update, f.agent, candidate, testController)
-	requireResponse(t, f.handler.Validate(context.Background(), req), false, "finalizers")
+	requireResponse(t, f.handler.Validate(context.Background(), req), true, "lifecycle metadata")
 }
 
 func TestControllerPreparationFinalizerBoundary(t *testing.T) {

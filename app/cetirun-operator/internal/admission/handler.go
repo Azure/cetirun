@@ -508,7 +508,11 @@ func controllerFinalizerUpdate(agent, old *api.Agent) bool {
 		}
 	} else {
 		for _, value := range old.Finalizers {
-			if !slices.Contains(agent.Finalizers, value) {
+			// The hold is an execution gate, not a cleanup guard. The
+			// controller must release it on an active Agent only after the
+			// independent Pod expectation is durably held. Other lifecycle
+			// finalizers continue to protect cleanup until deletion.
+			if !slices.Contains(agent.Finalizers, value) && value != sandbox.HoldFinalizer {
 				return false
 			}
 		}
