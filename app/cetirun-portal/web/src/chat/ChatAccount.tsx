@@ -133,6 +133,13 @@ export function ChatAccountProvider({ children }: { children: ReactNode }) {
   const signOut = useCallback(
     async (clear: boolean) => {
       const value = current.current;
+      if (clear && value) {
+        stopScope(value);
+        await clearAccount(value);
+        notify({ kind: "cleared", scope: value });
+        if (current.current !== value)
+          throw new Error("Chat identity changed. Try signing out again.");
+      }
       signedOut.current = true;
       sequence.current++;
       stopAll();
@@ -140,10 +147,6 @@ export function ChatAccountProvider({ children }: { children: ReactNode }) {
       setChecking(false);
       if (value) notify({ kind: "signed-out", scope: value });
       cache.clear();
-      if (clear && value) {
-        await clearAccount(value);
-        notify({ kind: "cleared", scope: value });
-      }
     },
     [cache],
   );

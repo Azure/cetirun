@@ -412,9 +412,6 @@ func (r *AgentReconciler) reconcileCustom(ctx context.Context, instance *api.Age
 	instance.Status.Phase = api.PhaseProvisioning
 	status, reason, message := metav1.ConditionFalse, "CustomPodPending", "Waiting for the applied Custom Pod"
 	if ready {
-		if aiGatewayCopilotPending(instance, r.AIGateway.Enabled) {
-			return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
-		}
 		instance.Status.Phase = api.PhaseReady
 		status, reason = metav1.ConditionTrue, "CustomPodReady"
 		message = "Custom Pod is ready; model calls, context use and session recovery are separate qualifications"
@@ -431,6 +428,9 @@ func (r *AgentReconciler) reconcileCustom(ctx context.Context, instance *api.Age
 		r.customPlans.Store(instance.Name, cachedCustomPlan{signature: signature, plan: prepared, expires: time.Now().Add(10 * time.Minute)})
 	}
 	if ready {
+		if aiGatewayCopilotPending(instance, r.AIGateway.Enabled) {
+			return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
+		}
 		if chatReason == "ChatRouteUnavailable" {
 			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 		}
