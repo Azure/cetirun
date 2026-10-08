@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -168,6 +170,103 @@ func (f *accessFixture) route(t *testing.T) *istio.VirtualService {
 		t.Fatal(err)
 	}
 	return route
+}
+
+func (f *accessFixture) fillPreparedSources(t *testing.T) {
+	t.Helper()
+	expected := fillPreparedSourceInventory(t, f.preparationFixture)
+	f.target.Binding, f.target.Revision = expected.Binding, expected.Revision
+	intent, err := f.reconciler.SandboxExecutionIntent(context.Background(), f.current(t), f.target)
+	if err != nil || len(intent.Sources) != sandboxcoordination.MaxPreparedExecutionSources {
+		t.Fatalf("maximum preparation did not yield the full base execution inventory: count=%d err=%v", len(intent.Sources), err)
+	}
+	f.intent = intent
+}
+
+func TestSandboxAccessEnrolledAtMaximumPreparationSize(t *testing.T) {
+	maximumConsumers := make([]string, sandboxcoordination.MaxIngressNamespaces)
+	for i := range maximumConsumers {
+		maximumConsumers[i] = fmt.Sprintf("ingress-%03d", i)
+	}
+	for _, consumers := range [][]string{
+		{"gateway-workloads"},
+		{"ingress-west", "ingress-east", "ingress-west"},
+		maximumConsumers,
+		append(slices.Clone(maximumConsumers), maximumConsumers[0]),
+	} {
+		t.Run(fmt.Sprintf("consumers=%d", len(consumers)), func(t *testing.T) {
+			ctx := context.Background()
+			f := newAccessFixture(t, true, consumers...)
+			f.fillPreparedSources(t)
+			before := f.intent.Sources
+			f.run(t)
+			if len(f.intent.Sources) != len(before)+2+len(f.intent.Access.IngressNamespaces) {
+				t.Fatal("access did not append exactly the distinct Service, Gateway and ingress namespace dependencies")
+			}
+			for _, source := range before {
+				if !slices.Contains(f.intent.Sources, source) {
+					t.Fatal("access enrollment discarded a preparation source")
+				}
+			}
+			current, err := f.access.Coordination.ReadExecution(ctx, f.intent.Agent.UID)
+			if err != nil || !reflect.DeepEqual(current, f.ticket) {
+				t.Fatal("coordination did not persist the complete access inventory:", err)
+			}
+			if err := f.access.Publish(ctx, f.ticket, f.observation, statusTestGuard); err != nil {
+				t.Fatal("maximum prepared inputs could not publish enrolled access:", err)
+			}
+			stopping, err := f.access.Coordination.BeginStop(ctx, f.ticket)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := f.access.Withdraw(ctx, stopping, statusTestGuard); err != nil {
+				t.Fatal("maximum prepared inputs could not withdraw enrolled access:", err)
+			}
+		})
+	}
+}
+
+func TestSandboxAccessRejectsExcessIngressNamespacesBeforeEnrollment(t *testing.T) {
+	names := make([]string, sandboxcoordination.MaxIngressNamespaces+1)
+	for i := range names {
+		names[i] = fmt.Sprintf("ingress-%03d", i)
+	}
+	f := newAccessFixture(t, true, names...)
+	before := f.current(t)
+	key := client.ObjectKey{Namespace: f.access.Coordination.Namespace, Name: f.access.Coordination.Identity.Name}
+	authority := &corev1.ConfigMap{}
+	if err := f.client.Get(context.Background(), key, authority); err != nil {
+		t.Fatal(err)
+	}
+	counts := &preparationRequestCounts{Client: f.client}
+	f.reconciler.Client = counts
+	consumerReads := 0
+	f.reconciler.APIReader = &prerequisitesAPIReader{
+		Reader: f.client, reads: map[client.ObjectKey]int{},
+		afterGet: func(key client.ObjectKey, _ client.Object) error {
+			if key.Namespace == "" && slices.Contains(names, key.Name) {
+				consumerReads++
+			}
+			return nil
+		},
+	}
+	if _, err := f.access.Enroll(context.Background(), f.intent); err == nil ||
+		!strings.Contains(err.Error(), "ingress namespace inventory exceeds its bound") {
+		t.Fatal("unbounded ingress inventory reached enrollment:", err)
+	}
+	currentAuthority := &corev1.ConfigMap{}
+	if err := f.client.Get(context.Background(), key, currentAuthority); err != nil {
+		t.Fatal(err)
+	}
+	if consumerReads != 0 || counts.writes != 0 || !reflect.DeepEqual(before, f.current(t)) ||
+		!reflect.DeepEqual(authority, currentAuthority) {
+		t.Fatal("excess ingress inventory read consumer namespaces or changed workload/coordination state")
+	}
+	if err := f.client.Get(context.Background(), client.ObjectKey{
+		Namespace: f.intent.Namespace.Name, Name: "cetirun-" + f.intent.Agent.Name,
+	}, &istio.VirtualService{}); !apierrors.IsNotFound(err) {
+		t.Fatal("oversized ingress inventory created a route slot:", err)
+	}
 }
 
 func TestSandboxAccessPublishesOnlyNativeUIAfterEvidence(t *testing.T) {

@@ -156,7 +156,7 @@ func (r *AgentReconciler) readSandboxSource(ctx context.Context, source sandboxw
 }
 
 func (r *AgentReconciler) verifySandboxSources(ctx context.Context, sources []sandboxworkload.SourceReference) error {
-	if len(sources) == 0 || len(sources) > 128 {
+	if len(sources) == 0 || len(sources) > sandboxworkload.MaxPreparationSources {
 		return fmt.Errorf("Sandbox source inventory exceeds the supported bound")
 	}
 	seen := map[string]bool{}
@@ -278,8 +278,8 @@ func (r *AgentReconciler) publishSandboxExpectation(ctx context.Context, attempt
 		seen[key] = source
 		sources = append(sources, source)
 	}
-	if len(sources) < 9 || len(sources) > 128 {
-		return fmt.Errorf("Sandbox Pod source inventory must contain 9 to 128 identities")
+	if len(sources) < 9 || len(sources) > sandboxworkload.MaxPreparationSources {
+		return fmt.Errorf("Sandbox Pod source inventory must contain 9 to %d identities", sandboxworkload.MaxPreparationSources)
 	}
 	slices.SortFunc(sources, func(a, b sandboxworkload.SourceReference) int {
 		if sandboxSourceKey(a) < sandboxSourceKey(b) {

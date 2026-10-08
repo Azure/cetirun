@@ -5,11 +5,15 @@ package sandboxcoordination
 
 import (
 	"context"
+	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	w "github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
+	corev1 "k8s.io/api/core/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 func accessIntent() Intent {
@@ -92,5 +96,83 @@ func TestAccessIntentPersistsAnIndependentBinding(t *testing.T) {
 	}
 	if err := store.Check(ctx, original); err != nil {
 		t.Fatal("immutable original ticket changed:", err)
+	}
+}
+
+func TestAccessInventoryBoundaries(t *testing.T) {
+	if w.MaxPreparationSources != 128 || MaxPreparedExecutionSources != 129 ||
+		MaxIngressNamespaces != 128 || MaxAccessSources != 130 || MaxSources != 259 {
+		t.Fatal("preparation and bounded access inventory limits changed")
+	}
+	maximum := accessIntent()
+	maximum.Access.IngressNamespaces = nil
+	for i := range MaxIngressNamespaces {
+		namespace := source("v1", "Namespace", "", fmt.Sprintf("consumer-%03d", i), fmt.Sprintf("consumer-uid-%03d", i))
+		maximum.Access.IngressNamespaces = append(maximum.Access.IngressNamespaces, namespace)
+		maximum.Sources = append(maximum.Sources, namespace)
+		maximum.SourceDigests[w.SourceKey(namespace)] = strings.Repeat("d", 64)
+	}
+	for len(maximum.Sources) < MaxSources {
+		index := len(maximum.Sources)
+		extra := source("v1", "ConfigMap", "operator-state", fmt.Sprintf("input-%03d", index), fmt.Sprintf("input-uid-%03d", index))
+		maximum.Sources = append(maximum.Sources, extra)
+		maximum.SourceDigests[w.SourceKey(extra)] = strings.Repeat("e", 64)
+	}
+	if MaxSources != w.MaxPreparationSources+1+2+MaxIngressNamespaces || len(maximum.Sources) != MaxSources {
+		t.Fatal("execution limit does not reserve the full bounded access dependency inventory")
+	}
+	for _, scenario := range []string{"maximum", "too many sources", "too many namespaces"} {
+		t.Run(scenario, func(t *testing.T) {
+			intent := (Ticket{Execution: Execution{Intent: maximum}}).DeepCopy().Execution.Intent
+			switch scenario {
+			case "too many sources":
+				extra := source("v1", "ConfigMap", "operator-state", "overflow", "overflow-uid")
+				intent.Sources = append(intent.Sources, extra)
+				intent.SourceDigests[w.SourceKey(extra)] = strings.Repeat("f", 64)
+			case "too many namespaces":
+				// Keep the total below the combined bound, isolating the
+				// independent ingress-namespace limit.
+				intent = accessIntent()
+				intent.Access.IngressNamespaces = nil
+				for i := 0; i <= MaxIngressNamespaces; i++ {
+					namespace := source("v1", "Namespace", "", fmt.Sprintf("consumer-%03d", i), fmt.Sprintf("consumer-uid-%03d", i))
+					intent.Access.IngressNamespaces = append(intent.Access.IngressNamespaces, namespace)
+					intent.Sources = append(intent.Sources, namespace)
+					intent.SourceDigests[w.SourceKey(namespace)] = strings.Repeat("d", 64)
+				}
+				if len(intent.Sources) > MaxSources {
+					t.Fatal("namespace overflow fixture must fit the combined source budget")
+				}
+			}
+			store, storage := fixture(t)
+			ctx := context.Background()
+			key := client.ObjectKey{Namespace: store.Namespace, Name: store.Identity.Name}
+			before := &corev1.ConfigMap{}
+			if err := storage.Get(ctx, key, before); err != nil {
+				t.Fatal(err)
+			}
+			ticket, err := store.AcquireExecution(ctx, intent)
+			if scenario == "maximum" {
+				if err != nil {
+					t.Fatal("maximum access inventory could not be persisted:", err)
+				}
+				restarted := Store{Client: storage, APIReader: storage, Namespace: store.Namespace, Identity: store.Identity}
+				read, err := restarted.ReadExecution(ctx, intent.Agent.UID)
+				if err != nil || !reflect.DeepEqual(read, ticket) {
+					t.Fatal("maximum inventory was lost or truncated on readback:", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("oversized inventory acquired execution authority")
+			}
+			after := &corev1.ConfigMap{}
+			if err := storage.Get(ctx, key, after); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(before, after) {
+				t.Fatal("oversized inventory changed coordination state")
+			}
+		})
 	}
 }

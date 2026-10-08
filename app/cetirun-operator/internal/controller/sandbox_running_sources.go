@@ -174,7 +174,7 @@ func decodeSandboxExecutionExpectation(state *corev1.ConfigMap) (*w.Expectation,
 	var expected w.Expectation
 	problems, err := strictjson.UnmarshalStrict([]byte(raw), &expected)
 	if err != nil || len(problems) != 0 || expected.Version != w.ExpectationVersion ||
-		expected.WorkloadKind != w.AgentWorkload || len(expected.Sources) == 0 || len(expected.Sources) > 128 {
+		expected.WorkloadKind != w.AgentWorkload || len(expected.Sources) == 0 || len(expected.Sources) > w.MaxPreparationSources {
 		return nil, fmt.Errorf("%w: malformed or unsupported preparation envelope", errSandboxSourceChanged)
 	}
 	var fields map[string]json.RawMessage

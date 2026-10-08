@@ -18,6 +18,7 @@ import (
 )
 
 const (
+	MaxPreparationSources   = 128
 	ContractVersion         = "v1"
 	ExpectationVersion      = "v2"
 	ValuesKey               = "sandboxWorkload"

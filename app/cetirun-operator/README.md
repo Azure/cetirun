@@ -141,9 +141,14 @@ revisions cover effective inputs, not incidental observation versions.
 Publication-source content and identities remain checked even when their
 observation versions change. Withdrawal, missing providers, changed approvals
 and stale observations fail without restaging Helm or quiescing a running writer.
-The execution inventory accepts up to 129 identities: all 128 supported
-preparation inputs plus the preparation-state ConfigMap. Larger inventories
-fail without truncation.
+Preparation and final-Pod admission retain the 128-source expectation limit.
+Execution and coordination reserve room for all 128 prepared inputs, the
+preparation-state ConfigMap, and up to 130 access inputs: one Service, one Gateway
+and 128 distinct ingress workload namespaces. The combined limit is 259 source
+identities; duplicate dependencies use a single slot. Oversized inventories
+fail without truncation, and the existing 512-KiB coordination-object and compiler
+budgets still apply. Older readers enforcing the 129-source execution limit
+must be upgraded before larger execution records are written.
 
 One UID-pinned controller-state object serializes shared-source readers and
 exclusive changes with API resource-version comparisons. Running and stopping
@@ -346,7 +351,9 @@ and includes them in the same effective-source digests and reservations.
 The VirtualService references the Gateway resource by its namespace/name but
 exports only to these enrolled consumer namespaces, which need not contain the
 Gateway resource. Multiple approved consumers are sorted and deduplicated;
-missing or replaced namespaces fail closed rather than exporting mesh-wide.
+more than 128 distinct ingress namespaces are rejected before namespace reads
+or route creation. Missing or replaced namespaces fail closed rather than
+exporting mesh-wide.
 An existing foreign, changed or used route is never adopted.
 
 `Publish` requires the exact Running ticket, current running-input checks and

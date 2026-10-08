@@ -26,6 +26,7 @@ import (
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -108,7 +109,30 @@ func TestSandboxExecutionIntentPinsHeldNativePreparation(t *testing.T) {
 func TestSandboxExecutionAcceptsMaximumPreparedSources(t *testing.T) {
 	ctx := context.Background()
 	f, target := executionIntentFixture(t, "hermes")
-	additional := 128 - len(f.expectation(t).Sources)
+	expected := fillPreparedSourceInventory(t, f)
+	target.Binding, target.Revision = expected.Binding, expected.Revision
+	intent, err := f.reconciler.SandboxExecutionIntent(ctx, f.current(t), target)
+	if err != nil || len(intent.Sources) != sandboxcoordination.MaxPreparedExecutionSources {
+		t.Fatalf("valid maximum preparation failed execution capture: sources=%d err=%v", len(intent.Sources), err)
+	}
+	for len(intent.Sources) <= sandboxcoordination.MaxSources {
+		source := w.SourceReference{
+			APIVersion: "v1", Kind: "ConfigMap", Namespace: "cetirun-system",
+			Name: fmt.Sprintf("extra-source-%d", len(intent.Sources)), UID: types.UID(fmt.Sprintf("extra-uid-%d", len(intent.Sources))),
+			ResourceVersion: "1",
+		}
+		intent.Sources = append(intent.Sources, source)
+		intent.SourceDigests[w.SourceKey(source)] = strings.Repeat("d", 64)
+	}
+	if err := intent.Validate(); err == nil {
+		t.Fatal("execution inventory accepted more than its combined source budget")
+	}
+}
+
+func fillPreparedSourceInventory(t *testing.T, f *preparationFixture) w.Expectation {
+	t.Helper()
+	ctx := context.Background()
+	additional := w.MaxPreparationSources - len(f.expectation(t).Sources)
 	if additional <= 0 {
 		t.Fatal("fixture must leave room for approved role inputs")
 	}
@@ -130,21 +154,10 @@ func TestSandboxExecutionAcceptsMaximumPreparedSources(t *testing.T) {
 		t.Fatal(err)
 	}
 	expected := f.expectation(t)
-	if len(expected.Sources) != 128 || len(f.current(t).Spec.Helm.Values) != 0 {
+	if len(expected.Sources) != w.MaxPreparationSources || len(f.current(t).Spec.Helm.Values) != 0 {
 		t.Fatal("fixture did not produce exactly 128 prepared inputs")
 	}
-	target.Binding, target.Revision = expected.Binding, expected.Revision
-	intent, err := f.reconciler.SandboxExecutionIntent(ctx, f.current(t), target)
-	if err != nil || len(intent.Sources) != 129 {
-		t.Fatalf("valid maximum preparation failed execution capture: sources=%d err=%v", len(intent.Sources), err)
-	}
-	intent.Sources = append(intent.Sources, w.SourceReference{
-		APIVersion: "v1", Kind: "ConfigMap", Namespace: "cetirun-system",
-		Name: "overflow", UID: "overflow-uid", ResourceVersion: "1",
-	})
-	if err := intent.Validate(); err == nil {
-		t.Fatal("execution inventory accepted a 130th source")
-	}
+	return expected
 }
 
 func TestSandboxExecutionReservesOnlySelectedConfiguration(t *testing.T) {

@@ -32,7 +32,7 @@ import (
 // API server. Runtime, gateway authentication and other sources are synthetic.
 // There is no proxy, workload execution, cloud or model interaction.
 func TestSandboxAccessAPIServer(t *testing.T) {
-	for _, scenario := range []string{"publish and withdraw", "split namespaces", "delayed publish", "replacement", "lost response"} {
+	for _, scenario := range []string{"publish and withdraw", "split namespaces", "maximum preparation", "delayed publish", "replacement", "lost response"} {
 		t.Run(scenario, func(t *testing.T) {
 			if os.Getenv("USE_EXISTING_CLUSTER") == "true" {
 				t.Fatal("access tests refuse an existing cluster")
@@ -87,6 +87,9 @@ func TestSandboxAccessAPIServer(t *testing.T) {
 				workloadNamespace = "gateway-workloads"
 			}
 			f := newAccessFixture(t, true, workloadNamespace)
+			if scenario == "maximum preparation" {
+				f.fillPreparedSources(t)
+			}
 			consumer := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: workloadNamespace}}
 			if err := storage.Create(ctx, consumer); err != nil {
 				t.Fatal(err)
@@ -147,7 +150,7 @@ func TestSandboxAccessAPIServer(t *testing.T) {
 				return result
 			}
 			switch scenario {
-			case "publish and withdraw", "split namespaces":
+			case "publish and withdraw", "split namespaces", "maximum preparation":
 				if !reflect.DeepEqual(read().Spec.ExportTo, []string{workloadNamespace}) {
 					t.Fatal("nonforwarding slot was not exported to the enrolled consumer")
 				}

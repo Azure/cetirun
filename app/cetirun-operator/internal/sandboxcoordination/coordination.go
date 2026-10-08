@@ -36,14 +36,17 @@ const (
 	Finalizer  = "sandbox.cetirun.microsoft.com/coordination"
 	MaxBytes   = 512 * 1024
 	MaxEntries = 128
-	// Held preparation permits 128 inputs; coordination additionally pins
-	// the prepared expectation ConfigMap itself.
-	MaxSources = 129
-	Reserved   = Phase("reserved")
-	Starting   = Phase("starting")
-	Running    = Phase("running")
-	Stopping   = Phase("stopping")
-	Changing   = Phase("changing")
+	// Access dependencies are appended after the preparation envelope itself.
+	// Keep their budget separate so a full preparation remains enrollable.
+	MaxPreparedExecutionSources = w.MaxPreparationSources + 1
+	MaxIngressNamespaces        = 128
+	MaxAccessSources            = 2 + MaxIngressNamespaces // Service, Gateway and distinct consumer namespaces.
+	MaxSources                  = MaxPreparedExecutionSources + MaxAccessSources
+	Reserved                    = Phase("reserved")
+	Starting                    = Phase("starting")
+	Running                     = Phase("running")
+	Stopping                    = Phase("stopping")
+	Changing                    = Phase("changing")
 )
 
 var (
@@ -721,7 +724,7 @@ func validateIntent(intent Intent) error {
 			!slices.Contains(intent.Sources, access.Service) || !slices.Contains(intent.Sources, access.Gateway) {
 			return fmt.Errorf("%w: access requires exact owned route and pinned Service/Gateway inputs", ErrUnavailable)
 		}
-		if len(access.IngressNamespaces) > MaxSources {
+		if len(access.IngressNamespaces) > MaxIngressNamespaces {
 			return fmt.Errorf("%w: ingress namespace inventory exceeds its bound", ErrUnavailable)
 		}
 		for i, namespace := range access.IngressNamespaces {

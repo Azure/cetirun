@@ -477,8 +477,12 @@ func (a SandboxExecutionAccess) ingressNamespaces(ctx context.Context, intent sa
 	if len(names) == 0 {
 		return nil, fmt.Errorf("%w: trusted ingress workload namespaces are unavailable", sandboxcoordination.ErrUnavailable)
 	}
+	names = uniqueReferences(names)
+	if len(names) > sandboxcoordination.MaxIngressNamespaces {
+		return nil, fmt.Errorf("%w: ingress namespace inventory exceeds its bound", sandboxcoordination.ErrUnavailable)
+	}
 	sources := make([]w.SourceReference, 0, len(names))
-	for _, name := range uniqueReferences(names) {
+	for _, name := range names {
 		namespace := &corev1.Namespace{}
 		if err := a.Reconciler.APIReader.Get(ctx, client.ObjectKey{Name: name}, namespace); err != nil {
 			return nil, err
