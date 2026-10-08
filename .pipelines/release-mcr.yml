@@ -195,11 +195,13 @@ steps:
       helm dependency build --skip-refresh "${platform_chart}"
       echo "==> helm lint ${platform_chart}"
       helm lint --strict "${platform_chart}" \
+        --namespace cetirun-system \
         --set istio.enabled=true \
         --set-string cetirun-operator.domainSuffix=platform.example.invalid \
         --set-string cetirun-portal.istio.host=portal.example.invalid
       echo "==> helm template ${platform_name} ${platform_chart}"
       helm template "${platform_name}" "${platform_chart}" --include-crds \
+        --namespace cetirun-system \
         --set istio.enabled=true \
         --set-string cetirun-operator.domainSuffix=platform.example.invalid \
         --set-string cetirun-portal.istio.host=portal.example.invalid > /dev/null
