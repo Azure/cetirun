@@ -292,15 +292,17 @@ func defaultPod(spec *corev1.PodSpec) error {
 		}
 	}
 	for _, key := range []string{"node.kubernetes.io/not-ready", "node.kubernetes.io/unreachable"} {
-		found := false
-		for _, toleration := range spec.Tolerations {
-			found = found || toleration.Key == key && toleration.Effect == corev1.TaintEffectNoExecute
-		}
-		if !found {
-			spec.Tolerations = append(spec.Tolerations, corev1.Toleration{
-				Key: key, Operator: corev1.TolerationOpExists, Effect: corev1.TaintEffectNoExecute, TolerationSeconds: ptr.To(int64(300)),
-			})
-		}
+		defaultToleration(spec, corev1.Toleration{
+			Key: key, Operator: corev1.TolerationOpExists, Effect: corev1.TaintEffectNoExecute, TolerationSeconds: ptr.To(int64(300)),
+		})
+	}
+	// AKS injects this exact toleration for Kata Pods before validating
+	// admission. Bind the normalization to the AKS Kata scheduling selector so
+	// it cannot authorize the toleration for another RuntimeClass or workload.
+	if ptr.Deref(spec.RuntimeClassName, "") != "" && spec.NodeSelector["kubernetes.azure.com/kata-vm-isolation"] == "true" {
+		defaultToleration(spec, corev1.Toleration{
+			Key: "node.kubernetes.io/memory-pressure", Operator: corev1.TolerationOpExists, Effect: corev1.TaintEffectNoSchedule,
+		})
 	}
 	slices.SortFunc(spec.Tolerations, func(a, b corev1.Toleration) int {
 		return strings.Compare(a.Key+"/"+string(a.Effect)+"/"+string(a.Operator)+"/"+a.Value, b.Key+"/"+string(b.Effect)+"/"+string(b.Operator)+"/"+b.Value)
@@ -313,6 +315,15 @@ func defaultPod(spec *corev1.PodSpec) error {
 	}
 	*spec = normalized
 	return nil
+}
+
+func defaultToleration(spec *corev1.PodSpec, expected corev1.Toleration) {
+	for _, toleration := range spec.Tolerations {
+		if toleration.Key == expected.Key && toleration.Effect == expected.Effect {
+			return
+		}
+	}
+	spec.Tolerations = append(spec.Tolerations, expected)
 }
 
 func defaultDownwardItems(items []corev1.DownwardAPIVolumeFile) {

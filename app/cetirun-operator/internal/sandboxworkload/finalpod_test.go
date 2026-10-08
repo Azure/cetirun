@@ -56,6 +56,65 @@ func TestPodDefaultNormalizationIsStableAndPreservesExplicitValues(t *testing.T)
 	}
 }
 
+func TestAKSKataTolerationNormalizationIsNarrow(t *testing.T) {
+	runtimeClass := "kata-vm-isolation"
+	expected := corev1.PodSpec{
+		RuntimeClassName: &runtimeClass,
+		NodeSelector:     map[string]string{"kubernetes.azure.com/kata-vm-isolation": "true"},
+	}
+	actual := expected.DeepCopy()
+	actual.Tolerations = []corev1.Toleration{{
+		Key: "node.kubernetes.io/memory-pressure", Operator: corev1.TolerationOpExists, Effect: corev1.TaintEffectNoSchedule,
+	}}
+	if err := defaultPod(&expected); err != nil {
+		t.Fatal(err)
+	}
+	if err := defaultPod(actual); err != nil {
+		t.Fatal(err)
+	}
+	if !equality.Semantic.DeepEqual(&expected, actual) {
+		t.Fatal("exact AKS Kata admission toleration was not normalized")
+	}
+
+	nonKataExpected := corev1.PodSpec{RuntimeClassName: &runtimeClass}
+	nonKataActual := nonKataExpected.DeepCopy()
+	nonKataActual.Tolerations = []corev1.Toleration{{
+		Key: "node.kubernetes.io/memory-pressure", Operator: corev1.TolerationOpExists, Effect: corev1.TaintEffectNoSchedule,
+	}}
+	if err := defaultPod(&nonKataExpected); err != nil {
+		t.Fatal(err)
+	}
+	if err := defaultPod(nonKataActual); err != nil {
+		t.Fatal(err)
+	}
+	if equality.Semantic.DeepEqual(&nonKataExpected, nonKataActual) {
+		t.Fatal("AKS Kata toleration was normalized without the Kata scheduling selector")
+	}
+
+	for name, mutate := range map[string]func(*corev1.PodSpec){
+		"different operator": func(spec *corev1.PodSpec) {
+			spec.Tolerations[0].Operator = corev1.TolerationOpEqual
+			spec.Tolerations[0].Value = "true"
+		},
+		"additional toleration": func(spec *corev1.PodSpec) {
+			spec.Tolerations = append(spec.Tolerations, corev1.Toleration{
+				Key: "example.com/extra", Operator: corev1.TolerationOpExists, Effect: corev1.TaintEffectNoSchedule,
+			})
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			candidate := actual.DeepCopy()
+			mutate(candidate)
+			if err := defaultPod(candidate); err != nil {
+				t.Fatal(err)
+			}
+			if equality.Semantic.DeepEqual(&expected, candidate) {
+				t.Fatal("normalization accepted a toleration outside the exact AKS Kata default")
+			}
+		})
+	}
+}
+
 func TestPodDifferencePathsAreBoundedAndDoNotExposeValuesOrMapKeys(t *testing.T) {
 	want := corev1.PodSpec{
 		NodeSelector: map[string]string{"synthetic-private-key": "synthetic-private-value"},
