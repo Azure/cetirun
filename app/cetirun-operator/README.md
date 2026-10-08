@@ -214,15 +214,20 @@ their resource version. Configuration admission and Kubernetes authorization
 still apply.
 
 Sandbox and AgentPolicy updates separately compare the existing effective
-execution digest before and after the proposed write. When it is unchanged,
-the reservation records that digest: existing and new executions with the same
-source UID and digest can coexist with harmless metadata updates. Spec,
+execution digest before and after the proposed write. Typed and unstructured
+AgentPolicy inputs share the same canonical representation of schema-defaulted
+false booleans and empty network arrays; optional empty grant lists use their
+omitted form. Unknown authoritative fields and explicit control values remain
+part of the digest. When it is unchanged, the reservation records that digest:
+existing and new executions with the same source UID and digest can coexist with
+harmless metadata updates. Spec,
 ownership, finalizer and control-metadata changes still exclude affected
 executions. The complete mutation digest continues to authorize every field,
 and competing updates of the same source still serialize.
 Older reservations without this optional digest remain conservative during
 recovery; their scope is never rewritten. Upgrade all coordination readers
 before issuing the new records: older strict readers reject the extra field.
+Previously recorded mismatched digests are not rewritten or accepted as aliases.
 This does not enable execution or replace source rechecks.
 
 After a lost reply, use the same input files to observe the original operation.

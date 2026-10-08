@@ -20,6 +20,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -249,31 +250,101 @@ func TestKubernetesConfigurationAPIServer(t *testing.T) {
 	}
 
 	for _, kind := range []string{"Sandbox", "AgentPolicy"} {
-		t.Run(kind+"/effective-metadata", func(t *testing.T) {
-			store, before, _ := newFixture(t, kind, "metadata")
-			execution := acquire(t, store, configurationIntent(t, before, "metadata"))
-			after := before.DeepCopyObject().(client.Object)
-			after.SetAnnotations(map[string]string{"example.com/description": "updated"})
-			ticket, err := store.AcquireConfigurationChange(ctx, before, after)
-			if err != nil {
-				t.Fatal("metadata-only update blocked the recorded execution:", err)
-			}
-			if _, err := store.ReconcileChange(ctx, ticket,
-				configurationAdapter(t, storage, storage, before, after)); err != nil {
-				t.Fatal("actual metadata Update did not complete:", err)
-			}
-			current := before.DeepCopyObject().(client.Object)
-			if err := storage.Get(ctx, client.ObjectKeyFromObject(before), current); err != nil {
-				t.Fatal(err)
-			}
-			if current.GetUID() != before.GetUID() || current.GetResourceVersion() == before.GetResourceVersion() ||
-				current.GetAnnotations()["example.com/description"] != "updated" {
-				t.Fatal("metadata update was not persisted")
-			}
-			if err := store.Check(ctx, execution); err != nil {
-				t.Fatal("actual metadata Update changed execution ownership:", err)
-			}
-		})
+		for _, order := range []string{"consumer-first", "change-first"} {
+			t.Run(kind+"/effective-metadata/"+order, func(t *testing.T) {
+				store, before, _ := newFixture(t, kind, "metadata-"+order)
+				capture := func() (Intent, *unstructured.Unstructured) {
+					t.Helper()
+					current := &unstructured.Unstructured{}
+					current.SetGroupVersionKind(api.GroupVersion.WithKind(kind))
+					if err := storage.Get(ctx, client.ObjectKeyFromObject(before), current); err != nil {
+						t.Fatal(err)
+					}
+					effective, err := w.ExecutionObjectDigest(current)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if kind == "AgentPolicy" {
+						for _, path := range [][]string{
+							{"sandboxSelection", "allowMultiple"}, {"entraID", "enabled"}, {"network", "ingress", "requireMTLS"},
+						} {
+							if value, found, err := unstructured.NestedBool(current.Object, append([]string{"spec"}, path...)...); err != nil || !found || value {
+								t.Fatal("unstructured GET must retain API-defaulted false values:", err)
+							}
+						}
+						for _, field := range []string{"blockedCIDRs", "blockedFQDNs", "blockedPorts", "allowedInternalCIDRs"} {
+							if values, found, err := unstructured.NestedSlice(current.Object, "spec", "network", field); err != nil || !found || len(values) != 0 {
+								t.Fatal("unstructured GET must retain API-defaulted empty arrays:", err)
+							}
+						}
+					}
+					reference := w.SourceReference{APIVersion: current.GetAPIVersion(), Kind: current.GetKind(),
+						Name: current.GetName(), UID: current.GetUID(), ResourceVersion: current.GetResourceVersion()}
+					intent := testIntent("metadata")
+					for i, source := range intent.Sources {
+						if source.Kind == kind {
+							delete(intent.SourceDigests, w.SourceKey(source))
+							intent.Sources[i] = reference
+							intent.SourceDigests[w.SourceKey(reference)] = effective
+						}
+					}
+					if kind == "Sandbox" {
+						intent.Expected.Binding.SandboxUID = current.GetUID()
+					} else {
+						intent.Expected.Binding.AgentPolicyUID = current.GetUID()
+					}
+					return intent, current
+				}
+				intent, _ := capture()
+				var execution Ticket
+				if order == "consumer-first" {
+					execution = acquire(t, store, intent)
+				}
+				after := before.DeepCopyObject().(client.Object)
+				after.SetLabels(map[string]string{"example.com/description": "updated"})
+				after.SetAnnotations(map[string]string{"example.com/description": "updated"})
+				ticket, err := store.AcquireConfigurationChange(ctx, before, after)
+				if err != nil {
+					t.Fatal("metadata-only update blocked the API-captured execution:", err)
+				}
+				if order == "change-first" {
+					intent, _ = capture()
+					execution = acquire(t, store, intent)
+				}
+				if _, err := store.ReconcileChange(ctx, ticket,
+					configurationAdapter(t, storage, storage, before, after)); err != nil {
+					t.Fatal("actual metadata Update did not complete:", err)
+				}
+				observed, current := capture()
+				if current.GetUID() != before.GetUID() || current.GetResourceVersion() == before.GetResourceVersion() ||
+					current.GetAnnotations()["example.com/description"] != "updated" {
+					t.Fatal("metadata update was not persisted")
+				}
+				if observed.SourceDigests[w.SourceKey(ticket.Change.Before)] != ticket.Change.UnchangedDigest {
+					t.Fatal("typed update scope diverged from the authoritative execution digest")
+				}
+				if err := store.Check(ctx, execution); err != nil {
+					t.Fatal("actual metadata Update changed execution ownership:", err)
+				}
+				if kind == "AgentPolicy" {
+					policy := &api.AgentPolicy{}
+					if err := storage.Get(ctx, client.ObjectKeyFromObject(before), policy); err != nil {
+						t.Fatal(err)
+					}
+					for _, control := range []string{"boolean", "array"} {
+						changed := policy.DeepCopy()
+						if control == "boolean" {
+							changed.Spec.SandboxSelection.AllowMultiple = true
+						} else {
+							changed.Spec.Network.BlockedCIDRs = []string{"203.0.113.0/24"}
+						}
+						if _, err := store.AcquireConfigurationChange(ctx, policy, changed); !errors.Is(err, ErrConflict) {
+							t.Fatal("effective control change bypassed the API-captured execution:", err)
+						}
+					}
+				}
+			})
+		}
 	}
 
 	for _, scenario := range []string{"source-race", "source-replaced", "metadata-mismatch", "status-advanced"} {
