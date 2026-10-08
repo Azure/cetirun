@@ -89,6 +89,10 @@ a pre-annotated existing one plus federated trust. A role, explicit service
 account name, or Workload Identity enables service-account token automount in
 the StatefulSet. Do not assume a named service account is token-free.
 
+On AKS Pod Sandboxing (`runtimeClassName: kata-vm-isolation`, the default),
+`kubectl port-forward` cannot reach the agent's Pod, so the install notes print
+no port-forward commands for that runtime class.
+
 ### Services and interfaces
 
 | Value | Source default / meaning |

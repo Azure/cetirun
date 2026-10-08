@@ -11,6 +11,7 @@ The platform desktop remains available through its authenticated gateway route.
 ttyd is temporarily disabled for Custom Agents pending a terminal integration review.
 Model access, context use, image identity and storage qualification are separate checks.
 {{- else }}
+{{- $aksPodSandboxing := eq (.Values.runtimeClassName | default "") "kata-vm-isolation" }}
 Thank you for installing {{ .Chart.Name }}!
 
 Your release is named {{ .Release.Name }}.
@@ -20,6 +21,10 @@ To learn more about the release, try:
   $ helm status {{ .Release.Name }} -n {{ .Release.Namespace }}
   $ helm get all {{ .Release.Name }} -n {{ .Release.Namespace }}
 
+{{ if and $aksPodSandboxing (not .Values.ingress.enabled) (contains "ClusterIP" .Values.service.type) -}}
+On AKS Pod Sandboxing (runtime class kata-vm-isolation), kubectl port-forward
+cannot reach the Pod. Reach the agent through an ingress route instead.
+{{- else -}}
 To get the application URL, run these commands:
 {{- if .Values.ingress.enabled }}
 {{- range $host := .Values.ingress.hosts }}
@@ -43,6 +48,7 @@ To get the application URL, run these commands:
   echo "Visit http://localhost:{{ .Values.service.port }}/?token=$token to use your application"
   kubectl --namespace {{ .Release.Namespace }} port-forward $POD_NAME {{ .Values.service.port }}:$CONTAINER_PORT
 {{- end }}
+{{- end }}
 
 Gateway Token:
   kubectl get secret --namespace {{ .Release.Namespace }} {{ include "cetirun.secretName" . }} -o jsonpath="{.data.OPENCLAW_GATEWAY_TOKEN}" | base64 --decode
@@ -50,10 +56,14 @@ Gateway Token:
 
 Web Terminal (ttyd):
   ttyd is enabled on port {{ .Values.ttyd.port }}.
+{{- if $aksPodSandboxing }}
+  On AKS Pod Sandboxing, kubectl port-forward cannot reach it.
+{{- else }}
   To access via port-forward:
 
   kubectl --namespace {{ .Release.Namespace }} port-forward $POD_NAME {{ .Values.ttyd.port }}:{{ .Values.ttyd.port }}
 
   Then open http://localhost:{{ .Values.ttyd.port }} in your browser.
+{{- end }}
 {{- end }}
 {{- end }}
