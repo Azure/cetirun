@@ -199,6 +199,19 @@ ACR_LOGIN_SERVER=$(az acr show --name "$ACR_NAME" --query loginServer -o tsv)
    rm registry-config.json
    ```
 
+Pushing the images and charts into the registry also depends on the role
+assignment permissions mode that step 1 reads. With
+`LegacyRegistryPermissions`, `AcrPush` lets an identity push, and so do `Owner`
+and `Contributor` on the registry. With `AbacRepositoryPermissions`, the
+registry honors neither `AcrPush` nor the repository access of `Owner` and
+`Contributor`, which then manage only the registry itself: the identity that
+pushes needs `Container Registry Repository Writer`, assigned on the registry
+like the role in step 1. A new assignment can take a few minutes to apply.
+Copying the artifacts in from another registry with `az acr import` is an
+operation on the registry itself, which `Owner` and `Contributor` still allow,
+so it needs no repository role there. See
+[ABAC repository permissions](https://learn.microsoft.com/azure/container-registry/container-registry-rbac-abac-repository-permissions).
+
 ### Upgrading runtime registry configuration
 
 Operator-managed Agents reject raw `imagePullSecrets` overrides, including an
