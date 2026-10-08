@@ -177,8 +177,11 @@ Model names beginning with `cetirun-` are rejected: that prefix belongs to model
 the CetiRun operator registers automatically. With `operatorIntegration` on, names
 beginning with `copilot/` are rejected too: `copilot/<model>` names each CetiRun
 Agent's GitHub Copilot models. A standalone Gateway may keep serving models under
-`copilot/`. Shared models added through the console with these prefixes, or with a
-provider prefix such as `openai/`, are not given to Agents.
+`copilot/`. The console does not check these prefixes. The operator does not give
+Agents a shared model named under `copilot/` or `openai/` (the agent chart refuses
+`openai/` as a provider prefix), with whitespace in its name, or with a name
+longer than 256 characters. A shared model named under `cetirun-`, or under
+another provider prefix, reaches Agents like any other.
 
 The reservation exists because adding a model under a name that already exists
 does not replace the original. Both are served under the same name and traffic
