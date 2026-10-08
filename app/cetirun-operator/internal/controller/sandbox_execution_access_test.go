@@ -6,6 +6,7 @@ package controller_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"testing"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/controller"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxcoordination"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxpolicy"
 	w "github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
 	"google.golang.org/protobuf/proto"
 	istioapi "istio.io/api/networking/v1beta1"
@@ -21,6 +23,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
@@ -36,9 +39,12 @@ type accessFixture struct {
 	observation sandbox.Observation
 }
 
-func newAccessFixture(t *testing.T, authenticated bool) *accessFixture {
+func newAccessFixture(t *testing.T, authenticated bool, ingressNamespaces ...string) *accessFixture {
 	t.Helper()
 	ctx := context.Background()
+	if len(ingressNamespaces) == 0 {
+		ingressNamespaces = []string{"gateway-system"}
+	}
 	f, target := executionIntentFixture(t, "openclaw", func(f *preparationFixture) {
 		agent := f.current(t)
 		agent.Spec.Agent.Port = ptr.To(int32(18789))
@@ -46,6 +52,18 @@ func newAccessFixture(t *testing.T, authenticated bool) *accessFixture {
 			t.Fatal(err)
 		}
 		if authenticated {
+			platform := f.config.Platforms[api.SandboxKata]
+			original := platform.Topology.Ingress[0]
+			platform.Topology.Ingress = nil
+			for i, namespace := range ingressNamespaces {
+				destination := original
+				destination.Peer = sandboxpolicy.Peer{
+					Name: fmt.Sprintf("ingress-%d", i), Namespace: namespace,
+					UID: types.UID(fmt.Sprintf("ingress-uid-%d", i)), IPs: []string{fmt.Sprintf("10.96.1.%d", 60+i)},
+				}
+				platform.Topology.Ingress = append(platform.Topology.Ingress, destination)
+			}
+			f.config.Platforms[api.SandboxKata] = platform
 			registration := f.config.Registrations[api.SandboxKata]
 			registration.Capabilities.AuthenticatedIngress = true
 			f.config.Registrations[api.SandboxKata] = registration
@@ -60,6 +78,12 @@ func newAccessFixture(t *testing.T, authenticated bool) *accessFixture {
 		}
 	})
 	f.reconciler.IstioGateway = "gateway-system/native-gateway"
+	for _, namespace := range ingressNamespaces {
+		object := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace}}
+		if err := f.client.Create(ctx, object); err != nil && !apierrors.IsAlreadyExists(err) {
+			t.Fatal(err)
+		}
+	}
 	gateway := &istio.Gateway{
 		ObjectMeta: metav1.ObjectMeta{Name: "native-gateway", Namespace: "gateway-system"},
 		Spec: istioapi.Gateway{
@@ -111,6 +135,11 @@ func (f *accessFixture) enroll(t *testing.T) {
 func (f *accessFixture) run(t *testing.T) {
 	t.Helper()
 	f.enroll(t)
+	f.start(t)
+}
+
+func (f *accessFixture) start(t *testing.T) {
+	t.Helper()
 	ctx := context.Background()
 	ticket, err := f.access.Coordination.AcquireExecution(ctx, f.intent)
 	if err != nil {
@@ -180,6 +209,137 @@ func TestSandboxAccessPublishesOnlyNativeUIAfterEvidence(t *testing.T) {
 	}
 	if got := f.route(t); got.ResourceVersion != current.ResourceVersion {
 		t.Fatal("unchanged access publication rewrote the route")
+	}
+}
+
+func TestSandboxAccessExportsToIngressWorkloadNamespaces(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		workload []string
+		exported []string
+	}{
+		{"same namespace", []string{"gateway-system"}, []string{"gateway-system"}},
+		{"separate namespace", []string{"gateway-workloads"}, []string{"gateway-workloads"}},
+		{"multiple consumers", []string{"ingress-west", "ingress-east", "ingress-west"}, []string{"ingress-east", "ingress-west"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newAccessFixture(t, true, test.workload...)
+			f.run(t)
+			if len(f.intent.Access.IngressNamespaces) != len(test.exported) {
+				t.Fatal("ingress consumers were not deduplicated and persisted")
+			}
+			for i, source := range f.intent.Access.IngressNamespaces {
+				if source.Name != test.exported[i] || source.Kind != "Namespace" || source.APIVersion != "v1" ||
+					source.UID == "" || source.ResourceVersion == "" || f.intent.SourceDigests[w.SourceKey(source)] == "" {
+					t.Fatal("ingress consumer namespace was not pinned as an effective source")
+				}
+			}
+			check := func() {
+				t.Helper()
+				route := f.route(t)
+				if !reflect.DeepEqual(route.Spec.Gateways, []string{"gateway-system/native-gateway"}) ||
+					!reflect.DeepEqual(route.Spec.ExportTo, test.exported) {
+					t.Fatalf("Gateway reference and consumer visibility differ: gateways=%v exportTo=%v",
+						route.Spec.Gateways, route.Spec.ExportTo)
+				}
+			}
+			check()
+			if err := f.access.Publish(context.Background(), f.ticket, f.observation, statusTestGuard); err != nil {
+				t.Fatal(err)
+			}
+			check()
+		})
+	}
+}
+
+func TestSandboxAccessRequiresCurrentIngressNamespace(t *testing.T) {
+	for _, scenario := range []string{"deleted", "replaced", "terminating", "control labels", "topology", "metadata only"} {
+		t.Run(scenario, func(t *testing.T) {
+			ctx := context.Background()
+			f := newAccessFixture(t, true, "gateway-workloads")
+			f.run(t)
+			before := f.route(t)
+			namespace := &corev1.Namespace{}
+			if err := f.client.Get(ctx, client.ObjectKey{Name: "gateway-workloads"}, namespace); err != nil {
+				t.Fatal(err)
+			}
+			switch scenario {
+			case "deleted", "replaced":
+				if err := f.client.Delete(ctx, namespace); err != nil {
+					t.Fatal(err)
+				}
+				if scenario == "replaced" {
+					namespace.UID, namespace.ResourceVersion = "replacement-namespace", ""
+					if err := f.client.Create(ctx, namespace); err != nil {
+						t.Fatal(err)
+					}
+				}
+			case "terminating":
+				namespace.Finalizers = []string{"example.com/hold"}
+				if err := f.client.Update(ctx, namespace); err != nil {
+					t.Fatal(err)
+				}
+				if err := f.client.Delete(ctx, namespace); err != nil {
+					t.Fatal(err)
+				}
+			case "control labels":
+				namespace.Labels = map[string]string{"istio.io/rev": "changed"}
+				if err := f.client.Update(ctx, namespace); err != nil {
+					t.Fatal(err)
+				}
+			case "topology":
+				platform := f.config.Platforms[api.SandboxKata]
+				platform.Topology.Ingress[0].Peer.Namespace = "other-ingress"
+				f.config.Platforms[api.SandboxKata] = platform
+			case "metadata only":
+				namespace.Annotations = map[string]string{"example.com/description": "updated"}
+				if err := f.client.Update(ctx, namespace); err != nil {
+					t.Fatal(err)
+				}
+			}
+			err := f.access.Publish(ctx, f.ticket, f.observation, statusTestGuard)
+			if scenario == "metadata only" {
+				if err != nil {
+					t.Fatal("harmless namespace metadata invalidated enrolled access:", err)
+				}
+			} else if err == nil || !reflect.DeepEqual(before, f.route(t)) {
+				t.Fatal("namespace drift did not preserve the nonforwarding slot:", err)
+			}
+		})
+	}
+}
+
+func TestSandboxAccessRejectsMissingIngressNamespaceBeforeEnrollment(t *testing.T) {
+	f := newAccessFixture(t, true, "gateway-workloads")
+	ctx := context.Background()
+	if err := f.client.Delete(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "gateway-workloads"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.access.Enroll(ctx, f.intent); !apierrors.IsNotFound(err) {
+		t.Fatal("enrollment did not require the resolved consumer namespace:", err)
+	}
+	if err := f.client.Get(ctx, client.ObjectKey{Namespace: f.intent.Namespace.Name,
+		Name: "cetirun-" + f.intent.Agent.Name}, &istio.VirtualService{}); !apierrors.IsNotFound(err) {
+		t.Fatal("failed ingress namespace resolution created an access slot:", err)
+	}
+}
+
+func TestSandboxAccessUnpinnedLegacyConsumersPermitOnlyWithdrawal(t *testing.T) {
+	ctx := context.Background()
+	f := newAccessFixture(t, true)
+	f.enroll(t)
+	f.intent.Access.IngressNamespaces = nil
+	f.start(t)
+	if err := f.access.Publish(ctx, f.ticket, f.observation, statusTestGuard); err == nil {
+		t.Fatal("a legacy binding inferred ingress consumers for new publication")
+	}
+	stopping, err := f.access.Coordination.BeginStop(ctx, f.ticket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.reconciler.SandboxPreparation = nil
+	if err := f.access.Withdraw(ctx, stopping, statusTestGuard); err != nil {
+		t.Fatal("an unpinned legacy binding prevented restrictive cleanup:", err)
 	}
 }
 
@@ -263,7 +423,7 @@ func TestSandboxAccessFailsClosedOnEvidenceOrSourceChanges(t *testing.T) {
 
 func TestSandboxAccessWithdrawalUsesHistoricalIdentity(t *testing.T) {
 	ctx := context.Background()
-	f := newAccessFixture(t, true)
+	f := newAccessFixture(t, true, "gateway-workloads")
 	f.run(t)
 	if err := f.access.Publish(ctx, f.ticket, f.observation, statusTestGuard); err != nil {
 		t.Fatal(err)
@@ -275,10 +435,25 @@ func TestSandboxAccessWithdrawalUsesHistoricalIdentity(t *testing.T) {
 	if err := f.client.Delete(ctx, f.fixture.Policy); err != nil {
 		t.Fatal(err)
 	}
+	if err := f.client.Delete(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "gateway-workloads"}}); err != nil {
+		t.Fatal(err)
+	}
 	f.reconciler.SandboxPreparation = nil
 	f.reconciler.DomainSuffix, f.reconciler.IstioGateway = "", ""
+	var withdrawn []string
+	f.reconciler.Client = interceptor.NewClient(f.client.(client.WithWatch), interceptor.Funcs{
+		Update: func(ctx context.Context, c client.WithWatch, object client.Object, options ...client.UpdateOption) error {
+			if route, ok := object.(*istio.VirtualService); ok {
+				withdrawn = append([]string{}, route.Spec.ExportTo...)
+			}
+			return c.Update(ctx, object, options...)
+		},
+	})
 	if err := f.access.Withdraw(ctx, stopping, statusTestGuard); err != nil {
 		t.Fatal("withdrawal depended on current policy/configuration:", err)
+	}
+	if !reflect.DeepEqual(withdrawn, []string{"gateway-workloads"}) {
+		t.Fatalf("withdrawal lost the enrolled ingress consumer: %v", withdrawn)
 	}
 	err = f.client.Get(ctx, client.ObjectKey{Namespace: f.intent.Namespace.Name, Name: f.intent.Access.Route.Name}, &istio.VirtualService{})
 	if !apierrors.IsNotFound(err) {

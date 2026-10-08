@@ -84,11 +84,12 @@ type Intent struct {
 // AccessBinding pins an already-created, nonforwarding route slot. Runtime
 // publication may update this UID, never create or adopt a replacement.
 type AccessBinding struct {
-	Route   w.ObjectIdentity  `json:"route"`
-	Service w.SourceReference `json:"service"`
-	Gateway w.SourceReference `json:"gateway"`
-	Host    string            `json:"host"`
-	Port    int32             `json:"port"`
+	Route             w.ObjectIdentity    `json:"route"`
+	Service           w.SourceReference   `json:"service"`
+	Gateway           w.SourceReference   `json:"gateway"`
+	IngressNamespaces []w.SourceReference `json:"ingressNamespaces,omitempty"`
+	Host              string              `json:"host"`
+	Port              int32               `json:"port"`
 }
 
 func (intent Intent) Validate() error {
@@ -720,6 +721,17 @@ func validateIntent(intent Intent) error {
 			!slices.Contains(intent.Sources, access.Service) || !slices.Contains(intent.Sources, access.Gateway) {
 			return fmt.Errorf("%w: access requires exact owned route and pinned Service/Gateway inputs", ErrUnavailable)
 		}
+		if len(access.IngressNamespaces) > MaxSources {
+			return fmt.Errorf("%w: ingress namespace inventory exceeds its bound", ErrUnavailable)
+		}
+		for i, namespace := range access.IngressNamespaces {
+			if namespace.APIVersion != "v1" || namespace.Kind != "Namespace" || namespace.Namespace != "" ||
+				len(validation.IsDNS1123Label(namespace.Name)) != 0 ||
+				!slices.Contains(intent.Sources, namespace) ||
+				(i > 0 && access.IngressNamespaces[i-1].Name >= namespace.Name) {
+				return fmt.Errorf("%w: access ingress namespaces must be uniquely ordered and pinned sources", ErrUnavailable)
+			}
+		}
 	}
 	return nil
 }
@@ -774,6 +786,7 @@ func cloneExecution(execution Execution) Execution {
 	execution.Intent.SourceDigests = maps.Clone(execution.Intent.SourceDigests)
 	if execution.Intent.Access != nil {
 		access := *execution.Intent.Access
+		access.IngressNamespaces = slices.Clone(access.IngressNamespaces)
 		execution.Intent.Access = &access
 	}
 	return execution

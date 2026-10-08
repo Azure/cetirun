@@ -69,13 +69,18 @@ func (a SandboxExecutionAccess) Enroll(ctx context.Context, intent sandboxcoordi
 	if err != nil {
 		return sandboxcoordination.Intent{}, err
 	}
-	binding := &sandboxcoordination.AccessBinding{
-		Route:   w.ObjectIdentity{Name: virtualServiceName(intent.Agent.Name)},
-		Service: sandboxSource(service, "v1", "Service"),
-		Gateway: sandboxSource(gateway, "networking.istio.io/v1beta1", "Gateway"),
-		Host:    a.Reconciler.DomainSuffix, Port: *agent.Spec.Agent.Port,
+	ingressNamespaces, err := a.ingressNamespaces(ctx, intent, false)
+	if err != nil {
+		return sandboxcoordination.Intent{}, err
 	}
-	for _, source := range []w.SourceReference{binding.Service, binding.Gateway} {
+	binding := &sandboxcoordination.AccessBinding{
+		Route:             w.ObjectIdentity{Name: virtualServiceName(intent.Agent.Name)},
+		Service:           sandboxSource(service, "v1", "Service"),
+		Gateway:           sandboxSource(gateway, "networking.istio.io/v1beta1", "Gateway"),
+		IngressNamespaces: ingressNamespaces,
+		Host:              a.Reconciler.DomainSuffix, Port: *agent.Spec.Agent.Port,
+	}
+	for _, source := range append([]w.SourceReference{binding.Service, binding.Gateway}, ingressNamespaces...) {
 		found := false
 		for _, existing := range intent.Sources {
 			if w.SourceKey(existing) == w.SourceKey(source) {
@@ -338,6 +343,18 @@ func (a SandboxExecutionAccess) publicationGuard(ctx context.Context, ticket san
 			binding.Service.UID != service.UID || binding.Gateway.UID != gateway.UID {
 			return fmt.Errorf("%w: access binding differs from the current platform inputs", sandboxcoordination.ErrConflict)
 		}
+		namespaces, err := a.ingressNamespaces(ctx, intent, true)
+		if err != nil {
+			return err
+		}
+		if len(binding.IngressNamespaces) != len(namespaces) {
+			return fmt.Errorf("%w: ingress workload namespaces differ from enrollment", sandboxcoordination.ErrConflict)
+		}
+		for i, namespace := range namespaces {
+			if namespace.Name != binding.IngressNamespaces[i].Name || namespace.UID != binding.IngressNamespaces[i].UID {
+				return fmt.Errorf("%w: ingress workload namespace identity changed", sandboxcoordination.ErrConflict)
+			}
+		}
 	}
 	if err := a.Coordination.Check(ctx, ticket); err != nil {
 		return err
@@ -444,6 +461,42 @@ func (a SandboxExecutionAccess) inputs(ctx context.Context, intent sandboxcoordi
 	return fail()
 }
 
+func (a SandboxExecutionAccess) ingressNamespaces(ctx context.Context, intent sandboxcoordination.Intent, running bool) ([]w.SourceReference, error) {
+	attempt, err := a.Reconciler.checkSandboxExecutionSources(ctx, intent, running)
+	if err != nil {
+		return nil, err
+	}
+	platform := attempt.configuration.Platforms[attempt.resolution.Sandbox.Type]
+	names := make([]string, 0, len(platform.Topology.Ingress))
+	for _, destination := range platform.Topology.Ingress {
+		if len(validation.IsDNS1123Label(destination.Peer.Namespace)) != 0 {
+			return nil, fmt.Errorf("%w: ingress workloads require explicit namespaces in trusted topology", sandboxcoordination.ErrUnavailable)
+		}
+		names = append(names, destination.Peer.Namespace)
+	}
+	if len(names) == 0 {
+		return nil, fmt.Errorf("%w: trusted ingress workload namespaces are unavailable", sandboxcoordination.ErrUnavailable)
+	}
+	sources := make([]w.SourceReference, 0, len(names))
+	for _, name := range uniqueReferences(names) {
+		namespace := &corev1.Namespace{}
+		if err := a.Reconciler.APIReader.Get(ctx, client.ObjectKey{Name: name}, namespace); err != nil {
+			return nil, err
+		}
+		if namespace.Name != name || namespace.UID == "" || namespace.ResourceVersion == "" || !namespace.DeletionTimestamp.IsZero() {
+			return nil, fmt.Errorf("%w: ingress workload namespace is unavailable or terminating", sandboxcoordination.ErrUnavailable)
+		}
+		sources = append(sources, sandboxSource(namespace, "v1", "Namespace"))
+	}
+	for _, observed := range []time.Time{attempt.configuration.ObservedAt, attempt.prerequisites.ObservedAt} {
+		if err := configurationSnapshotTime(observed, configurationNow(a.Reconciler.SandboxPreparation.Now),
+			a.Reconciler.SandboxPreparation.MaxSnapshotAge); err != nil {
+			return nil, err
+		}
+	}
+	return sources, ctx.Err()
+}
+
 func accessRoute(intent sandboxcoordination.Intent, binding *sandboxcoordination.AccessBinding, phase string) (*istio.VirtualService, error) {
 	if phase != "withdrawn" && !sandboxAccessNameAllowed(intent.Agent.Name) {
 		return nil, fmt.Errorf("%w: native access name is reserved or invalid", sandboxcoordination.ErrConflict)
@@ -451,6 +504,18 @@ func accessRoute(intent sandboxcoordination.Intent, binding *sandboxcoordination
 	epoch, err := sandboxPreparationDigest(intent.Expected)
 	if err != nil {
 		return nil, err
+	}
+	exportTo := make([]string, 0, len(binding.IngressNamespaces))
+	for _, namespace := range binding.IngressNamespaces {
+		exportTo = append(exportTo, namespace.Name)
+	}
+	if len(exportTo) == 0 {
+		if phase != "withdrawn" {
+			return nil, fmt.Errorf("%w: authenticated access requires enrolled ingress workload namespaces", sandboxcoordination.ErrUnavailable)
+		}
+		// Legacy bindings exported only to the Gateway resource namespace.
+		// Preserve that scope solely for their nonforwarding cleanup update.
+		exportTo = []string{binding.Gateway.Namespace}
 	}
 	route := &istio.VirtualService{
 		ObjectMeta: metav1.ObjectMeta{
@@ -464,7 +529,7 @@ func accessRoute(intent sandboxcoordination.Intent, binding *sandboxcoordination
 		},
 		Spec: istioapi.VirtualService{
 			Hosts: []string{binding.Host}, Gateways: []string{binding.Gateway.Namespace + "/" + binding.Gateway.Name},
-			ExportTo: []string{binding.Gateway.Namespace},
+			ExportTo: exportTo,
 		},
 	}
 	if phase != "published" {

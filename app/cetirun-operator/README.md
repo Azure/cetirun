@@ -340,8 +340,13 @@ they do not establish live enforcement or an end-to-end governed Agent run.
 OpenClaw bring-up; it is not installed by stock startup. `Enroll` accepts only
 verified held preparation and creates a nonforwarding, Agent-owned route slot.
 The returned coordination intent pins that route UID and the current Service,
-HTTPS Gateway, host and native port. Service/Gateway inputs participate in the
-same effective-source digests and reservations as the workload inputs.
+HTTPS Gateway, host and native port. It separately resolves the ingress workload
+namespaces from the trusted platform ingress topology, reads their exact UIDs,
+and includes them in the same effective-source digests and reservations.
+The VirtualService references the Gateway resource by its namespace/name but
+exports only to these enrolled consumer namespaces, which need not contain the
+Gateway resource. Multiple approved consumers are sorted and deduplicated;
+missing or replaced namespaces fail closed rather than exporting mesh-wide.
 An existing foreign, changed or used route is never adopted.
 
 `Publish` requires the exact Running ticket, current running-input checks and
@@ -353,15 +358,19 @@ Shared gateway authentication and its ongoing enforcement must already be
 independently qualified; an HTTPS Gateway object is not authentication evidence.
 
 `Withdraw` uses the recorded Stopping ticket and route ownership even when
-current policy or gateway inputs are gone. It first makes the exact route
+current policy, gateway or ingress namespaces are gone. It uses the enrolled
+consumer namespace names and first makes the exact route
 nonforwarding, advancing its resource version, then conditionally deletes that
 UID and verifies absence. This invalidates delayed publication updates without
 recreating routes or touching a same-name replacement. Unknown results retain
 the coordination reservation; route removal is not writer fencing or a reason
 to release it. Disabled ingress requires route absence and creates no slot.
 
-The optional `access` intent field requires updated readers while such records
-exist. Legacy intents without it cannot publish authenticated access. This
+The optional `access` intent field and its `ingressNamespaces` inventory require
+updated readers while such records exist. Legacy intents without access or
+consumer pins cannot publish authenticated access. Previously enrolled routes
+without consumer pins remain eligible only for nonforwarding cleanup using their
+original Gateway-namespace export scope, followed by conditional deletion. This
 component does not install a physical start/fencing provider or replace the
 controller's held dispatch. Hermes and helper-route support are not included in
 this first native access slice. Offline tests exercise API behavior with

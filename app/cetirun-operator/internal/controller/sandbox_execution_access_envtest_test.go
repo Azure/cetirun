@@ -28,11 +28,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 )
 
-// Only route/authority persistence and CAS use the real API server. Runtime,
-// gateway authentication and the other source objects are synthetic fixtures.
+// Route/authority persistence, ingress namespace identity and CAS use the real
+// API server. Runtime, gateway authentication and other sources are synthetic.
 // There is no proxy, workload execution, cloud or model interaction.
 func TestSandboxAccessAPIServer(t *testing.T) {
-	for _, scenario := range []string{"publish and withdraw", "delayed publish", "replacement", "lost response"} {
+	for _, scenario := range []string{"publish and withdraw", "split namespaces", "delayed publish", "replacement", "lost response"} {
 		t.Run(scenario, func(t *testing.T) {
 			if os.Getenv("USE_EXISTING_CLUSTER") == "true" {
 				t.Fatal("access tests refuse an existing cluster")
@@ -82,8 +82,22 @@ func TestSandboxAccessAPIServer(t *testing.T) {
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 			defer cancel()
-			f := newAccessFixture(t, true)
+			workloadNamespace := "gateway-system"
+			if scenario == "split namespaces" {
+				workloadNamespace = "gateway-workloads"
+			}
+			f := newAccessFixture(t, true, workloadNamespace)
+			consumer := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: workloadNamespace}}
+			if err := storage.Create(ctx, consumer); err != nil {
+				t.Fatal(err)
+			}
+			f.reconciler.APIReader = accessAPIReader{
+				Reader: f.client, namespaces: storage, ingressNamespace: workloadNamespace,
+			}
 			f.enroll(t)
+			if len(f.intent.Access.IngressNamespaces) != 1 || f.intent.Access.IngressNamespaces[0].UID != consumer.UID {
+				t.Fatal("enrollment did not pin the real ingress workload namespace identity")
+			}
 			for _, namespace := range []string{f.intent.Namespace.Name, f.reconciler.OperatorNamespace} {
 				if err := storage.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace}}); err != nil {
 					t.Fatal(err)
@@ -121,7 +135,9 @@ func TestSandboxAccessAPIServer(t *testing.T) {
 			f.observation = sandbox.Observation{ExecutionIdentity: f.intent.Expected, ObservedAt: f.now,
 				RuntimeVerified: true, PodVerified: true, ControlsVerified: true}
 			f.reconciler.Client = storage
-			f.reconciler.APIReader = accessAPIReader{Reader: f.client, routes: storage}
+			f.reconciler.APIReader = accessAPIReader{
+				Reader: f.client, routes: storage, namespaces: storage, ingressNamespace: workloadNamespace,
+			}
 			read := func() *istio.VirtualService {
 				t.Helper()
 				result := &istio.VirtualService{}
@@ -131,13 +147,21 @@ func TestSandboxAccessAPIServer(t *testing.T) {
 				return result
 			}
 			switch scenario {
-			case "publish and withdraw":
+			case "publish and withdraw", "split namespaces":
+				if !reflect.DeepEqual(read().Spec.ExportTo, []string{workloadNamespace}) {
+					t.Fatal("nonforwarding slot was not exported to the enrolled consumer")
+				}
 				if err := f.access.Publish(ctx, ticket, f.observation, statusTestGuard); err != nil {
 					t.Fatal(err)
 				}
 				published := read()
 				if published.UID != route.UID || published.ResourceVersion == route.ResourceVersion || len(published.Spec.Http) != 3 {
 					t.Fatal("real API did not persist publication on the enrolled UID")
+				}
+				if !reflect.DeepEqual(published.Spec.Gateways, []string{"gateway-system/native-gateway"}) ||
+					!reflect.DeepEqual(published.Spec.ExportTo, []string{workloadNamespace}) {
+					t.Fatalf("real API conflated Gateway resource and proxy namespaces: gateways=%v exportTo=%v",
+						published.Spec.Gateways, published.Spec.ExportTo)
 				}
 				if err := f.access.Publish(ctx, ticket, f.observation, statusTestGuard); err != nil {
 					t.Fatal(err)
@@ -231,12 +255,19 @@ func TestSandboxAccessAPIServer(t *testing.T) {
 
 type accessAPIReader struct {
 	client.Reader
-	routes client.Reader
+	routes           client.Reader
+	namespaces       client.Reader
+	ingressNamespace string
 }
 
 func (r accessAPIReader) Get(ctx context.Context, key client.ObjectKey, object client.Object, options ...client.GetOption) error {
-	if _, route := object.(*istio.VirtualService); route {
+	if _, route := object.(*istio.VirtualService); route && r.routes != nil {
 		return r.routes.Get(ctx, key, object, options...)
+	}
+	_, namespace := object.(*corev1.Namespace)
+	if r.namespaces != nil && key.Namespace == "" && key.Name == r.ingressNamespace &&
+		(namespace || object.GetObjectKind().GroupVersionKind().Kind == "Namespace") {
+		return r.namespaces.Get(ctx, key, object, options...)
 	}
 	return r.Reader.Get(ctx, key, object, options...)
 }
