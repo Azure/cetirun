@@ -29,10 +29,16 @@ vi.mock("../../hooks/useTeams", async (importOriginal) => {
 });
 
 const mockCatalog = vi.hoisted(() => ({
-  data: { known: true, sharedModels: [{ name: "gpt-6" }, { name: "gpt-6-mini" }], githubCopilot: true } as {
+  data: {
+    known: true,
+    sharedModels: [{ name: "gpt-6" }, { name: "gpt-6-mini" }],
+    githubCopilot: true,
+    agentTypes: ["openclaw", "hermes"],
+  } as {
     known: boolean;
     sharedModels: { name: string }[];
     githubCopilot: boolean;
+    agentTypes?: string[] | null;
   },
 }));
 vi.mock("../../hooks/useAIGateway", () => ({
@@ -56,7 +62,12 @@ async function chooseOpenClawAndTeam(user: ReturnType<typeof userEvent.setup>) {
 describe("CreateForm with the AI Gateway", () => {
   beforeEach(() => {
     mockMutate.mockClear();
-    mockCatalog.data = { known: true, sharedModels: [{ name: "gpt-6" }, { name: "gpt-6-mini" }], githubCopilot: true };
+    mockCatalog.data = {
+      known: true,
+      sharedModels: [{ name: "gpt-6" }, { name: "gpt-6-mini" }],
+      githubCopilot: true,
+      agentTypes: ["openclaw", "hermes"],
+    };
   });
 
   it("requires a Team before an agent can be created", async () => {
@@ -179,6 +190,44 @@ describe("CreateForm with the AI Gateway", () => {
         modelAccess: { sharedModels: true, githubCopilot: false },
       }),
     );
+  });
+
+  it("refuses Hermes while the deployment's agent chart routes only OpenClaw", async () => {
+    mockCatalog.data = { ...mockCatalog.data, agentTypes: ["openclaw"] };
+    const user = userEvent.setup();
+    renderForm();
+    await user.selectOptions(screen.getByRole("combobox", { name: /Agent Type/ }), "hermes");
+    await user.selectOptions(screen.getByRole("combobox", { name: /Team/ }), "platform");
+    expect(screen.getByText(/does not route Hermes agents through the AI Gateway/)).toBeInTheDocument();
+    expect(screen.getByText(/upgrade the agent chart/)).toBeInTheDocument();
+    expect(screen.queryByRole("switch", { name: "Use shared models" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Create Agent" })).toBeDisabled();
+    await user.selectOptions(screen.getByRole("combobox", { name: /Agent Type/ }), "openclaw");
+    expect(screen.queryByText(/does not route/)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Create Agent" })).toBeEnabled();
+  });
+
+  it("routes only OpenClaw with an earlier operator's catalog", async () => {
+    mockCatalog.data = { known: true, sharedModels: [{ name: "gpt-6" }], githubCopilot: true };
+    const user = userEvent.setup();
+    renderForm();
+    await user.selectOptions(screen.getByRole("combobox", { name: /Team/ }), "platform");
+    expect(screen.getByText(/does not route Hermes agents through the AI Gateway/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Create Agent" })).toBeDisabled();
+  });
+
+  it("waits until the operator has read its agent chart", async () => {
+    mockCatalog.data = { ...mockCatalog.data, agentTypes: null };
+    const user = userEvent.setup();
+    renderForm();
+    for (const type of ["hermes", "openclaw"]) {
+      await user.selectOptions(screen.getByRole("combobox", { name: /Agent Type/ }), type);
+      await user.selectOptions(screen.getByRole("combobox", { name: /Team/ }), "platform");
+      expect(screen.getByText(/has not read its agent chart yet/)).toBeInTheDocument();
+      expect(screen.queryByText(/does not route/)).not.toBeInTheDocument();
+      expect(screen.queryByRole("switch", { name: "Use shared models" })).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Create Agent" })).toBeDisabled();
+    }
   });
 
   it("offers no model switches for Custom but still requires a Team", async () => {

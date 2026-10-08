@@ -118,6 +118,9 @@ type AgentReconciler struct {
 	aiGatewayCatalog aiGatewayCatalog
 	aiGatewayOwners  aiGatewayOwnerCache
 	aiGatewayPrices  aiGatewayPriceCache
+	// aiGatewayChartRouting is what the default agent chart routes through
+	// the Gateway, for the catalog.
+	aiGatewayChartRouting aiGatewayChartRouting
 	// aiGatewayEvents queues Agents after a shared-model change.
 	aiGatewayEvents chan event.GenericEvent
 

@@ -66,10 +66,36 @@ func (p *PreparedRelease) SupportsValue(name string) bool {
 // SupportsValuePath reports whether the loaded chart declares a nested value,
 // such as aiGateway.models.
 func (p *PreparedRelease) SupportsValuePath(path ...string) bool {
-	if p == nil || p.chart == nil || len(path) == 0 {
+	if p == nil || p.chart == nil {
 		return false
 	}
-	current := map[string]any(p.chart.Values)
+	return declaresValuePath(p.chart.Values, path)
+}
+
+// ChartValues are the values a chart version declares, for checking what it
+// supports before an Agent uses it.
+type ChartValues struct {
+	values map[string]any
+}
+
+// NewChartValues describes the values a loaded chart declares.
+func NewChartValues(chrt *chart.Chart) *ChartValues {
+	if chrt == nil {
+		return &ChartValues{}
+	}
+	return &ChartValues{values: chrt.Values}
+}
+
+// SupportsValuePath reports whether the chart declares a nested value.
+func (v *ChartValues) SupportsValuePath(path ...string) bool {
+	return v != nil && declaresValuePath(v.values, path)
+}
+
+func declaresValuePath(values map[string]any, path []string) bool {
+	if len(path) == 0 {
+		return false
+	}
+	current := values
 	for i, name := range path {
 		value, ok := current[name]
 		if !ok {

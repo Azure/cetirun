@@ -40,8 +40,12 @@ GitHub Copilot while the deployment offers it. GitHub Copilot stays on while
 shared models are off or none is offered, and shared models stay on without
 GitHub Copilot. With neither source, the portal creates no OpenClaw or Hermes
 instance and asks for a shared model. It reads the sources from the catalog the operator
-publishes, so it also waits until the catalog exists. Every new instance needs
-a Team.
+publishes, so it also waits until the catalog exists. The catalog also lists
+the agent types the operator's default agent chart routes through the Gateway:
+an earlier chart routes OpenClaw but not Hermes, and the portal then creates no
+Hermes instance and asks for the agent chart to be upgraded. Until the
+operator has read that chart, the portal creates no OpenClaw or Hermes
+instance. Every new instance needs a Team.
 
 To add Copilot models, open the instance and choose **Sign in with GitHub**. The
 portal runs the GitHub device-code sign-in, stores the token for the instance's
@@ -90,9 +94,11 @@ Hermes loads `~/.hermes/.env` over its environment, a value of that variable
 saved there is removed. The instance runs no in-agent sign-in helper. Once per
 HOME, on its first start through the Gateway, init removes the GitHub Copilot
 sign-in made inside the agent before: the `COPILOT_GITHUB_TOKEN` line of
-`~/.hermes/.env` and Hermes' cache of the Copilot token it exchanged. Every
-other credential, such as `GITHUB_TOKEN`, stays. Hermes' auxiliary tasks, such
-as context compression, use the instance's model unless configured otherwise.
+`~/.hermes/.env` and Hermes' cache of the Copilot token it exchanged. A
+`COPILOT_GITHUB_TOKEN` in the instance Secret is not copied into
+`~/.hermes/.env` on the Gateway either. Every other credential, such as
+`GITHUB_TOKEN`, stays. Hermes' auxiliary tasks, such as context compression,
+use the instance's model unless configured otherwise.
 A Hermes instance pinned to a chart version without this provider keeps its
 own provider and sign-in until its chart is upgraded; its owner then signs in
 again with **Sign in with GitHub**.
