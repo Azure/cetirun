@@ -2405,6 +2405,96 @@ func TestAIGatewayCatalogPublishesWhetherGitHubCopilotIsOffered(t *testing.T) {
 	}
 }
 
+// inspectingHelm reads the default chart's values for the catalog; the
+// reconciler's other Helm operations are not used.
+type inspectingHelm struct {
+	HelmInstaller
+	values   *helm.ChartValues
+	err      error
+	versions []string
+}
+
+func (f *inspectingHelm) InspectChart(version string) (*helm.ChartValues, error) {
+	f.versions = append(f.versions, version)
+	return f.values, f.err
+}
+
+func publishedAgentTypes(t *testing.T, kube client.Client) []cetirunv1alpha1.AgentType {
+	t.Helper()
+	configMap := &corev1.ConfigMap{}
+	if err := kube.Get(context.Background(), types.NamespacedName{Namespace: "cetirun-system", Name: cetirunv1alpha1.AIGatewayCatalogConfigMap}, configMap); err != nil {
+		t.Fatal(err)
+	}
+	var catalog cetirunv1alpha1.AIGatewayCatalog
+	if err := json.Unmarshal([]byte(configMap.Data[cetirunv1alpha1.AIGatewayCatalogKey]), &catalog); err != nil {
+		t.Fatal(err)
+	}
+	return catalog.AgentTypes
+}
+
+// The catalog lists the agent types the default agent chart routes through
+// the Gateway, so the Portal offers the Gateway's models to those only: a
+// chart without aiGateway.hermes.keyEnv routes OpenClaw alone, one older than
+// the Gateway none. The chart is read once.
+func TestAIGatewayCatalogPublishesTheAgentTypesTheDefaultChartRoutes(t *testing.T) {
+	for name, tc := range map[string]struct {
+		strip []string
+		want  []cetirunv1alpha1.AgentType
+	}{
+		"current chart":   {want: []cetirunv1alpha1.AgentType{cetirunv1alpha1.AgentTypeOpenClaw, cetirunv1alpha1.AgentTypeHermes}},
+		"OpenClaw only":   {strip: []string{"aiGateway", "hermes"}, want: []cetirunv1alpha1.AgentType{cetirunv1alpha1.AgentTypeOpenClaw}},
+		"before Gateway":  {strip: []string{"aiGateway"}, want: []cetirunv1alpha1.AgentType{}},
+		"without a proxy": {strip: []string{"aiGateway", "copilotProxy"}, want: []cetirunv1alpha1.AgentType{}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			chrt, err := loader.Load("../../../cetirun-chart")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(tc.strip) == 1 {
+				delete(chrt.Values, tc.strip[0])
+			} else if len(tc.strip) == 2 {
+				delete(chrt.Values[tc.strip[0]].(map[string]any), tc.strip[1])
+			}
+			r, kube, _ := aiGatewayTestReconciler(t)
+			inspector := &inspectingHelm{values: helm.NewChartValues(chrt)}
+			r.HelmClient = inspector
+			r.publishAIGatewayCatalog(context.Background(), 0)
+			r.publishAIGatewayCatalog(context.Background(), 0)
+			got := publishedAgentTypes(t, kube)
+			if got == nil || !slices.Equal(got, tc.want) {
+				t.Fatalf("published agent types %v, want %v", got, tc.want)
+			}
+			if !slices.Equal(inspector.versions, []string{r.ChartVersion}) {
+				t.Fatalf("the default chart must be read once, read %v", inspector.versions)
+			}
+		})
+	}
+}
+
+// While the default chart cannot be read, the catalog keeps the agent types
+// it published; before any were published it lists none, which the Portal
+// reads as an earlier operator's catalog.
+func TestAIGatewayCatalogKeepsItsAgentTypesWhileTheChartCannotBeRead(t *testing.T) {
+	published := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: cetirunv1alpha1.AIGatewayCatalogConfigMap, Namespace: "cetirun-system"},
+		Data:       map[string]string{cetirunv1alpha1.AIGatewayCatalogKey: `{"sharedModels":[],"githubCopilot":true,"agentTypes":["openclaw","hermes"]}`},
+	}
+	r, kube, _ := aiGatewayTestReconciler(t, published)
+	r.HelmClient = &inspectingHelm{err: errors.New("registry unavailable")}
+	r.publishAIGatewayCatalog(context.Background(), 0)
+	if got := publishedAgentTypes(t, kube); !slices.Equal(got, []cetirunv1alpha1.AgentType{cetirunv1alpha1.AgentTypeOpenClaw, cetirunv1alpha1.AgentTypeHermes}) {
+		t.Fatalf("the published agent types must stay, got %v", got)
+	}
+
+	r, kube, _ = aiGatewayTestReconciler(t)
+	r.HelmClient = &inspectingHelm{err: errors.New("registry unavailable")}
+	r.publishAIGatewayCatalog(context.Background(), 0)
+	if got := publishedAgentTypes(t, kube); got != nil {
+		t.Fatalf("no agent types are known yet, got %v", got)
+	}
+}
+
 // A Copilot model's configured name carries GitHub's display name, which the
 // operator does not control: it must stay within the chart's limit too.
 func TestAIGatewayModelEntriesKeepCopilotNamesWithinTheChartLimit(t *testing.T) {

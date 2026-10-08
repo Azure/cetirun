@@ -530,6 +530,11 @@ type AIGatewayCatalog struct {
 	// Copilot proxy. Without it, an Agent's GitHub Copilot switch adds no
 	// models.
 	GitHubCopilot bool `json:"githubCopilot"`
+	// AgentTypes lists the agent types the operator's default agent chart
+	// routes through the Gateway: those new Agents can take the Gateway's
+	// models with. It is null until the operator has read that chart; a
+	// catalog without it, from an earlier operator, routes only OpenClaw.
+	AgentTypes []AgentType `json:"agentTypes"`
 }
 
 // AIGatewayCatalogModel is one shared model with the limits the Gateway

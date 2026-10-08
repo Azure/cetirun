@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -36,11 +37,21 @@ func catalogConfigMap(models ...string) *corev1.ConfigMap {
 }
 
 func publishedCatalog(copilot bool, models ...string) *corev1.ConfigMap {
-	catalog := cetirunv1alpha1.AIGatewayCatalog{SharedModels: []cetirunv1alpha1.AIGatewayCatalogModel{}, GitHubCopilot: copilot}
+	return routingCatalog([]cetirunv1alpha1.AgentType{cetirunv1alpha1.AgentTypeOpenClaw, cetirunv1alpha1.AgentTypeHermes}, copilot, models...)
+}
+
+// routingCatalog publishes a catalog whose operator's default agent chart
+// routes the given agent types; nil publishes an earlier operator's catalog,
+// which does not list them.
+func routingCatalog(agentTypes []cetirunv1alpha1.AgentType, copilot bool, models ...string) *corev1.ConfigMap {
+	catalog := cetirunv1alpha1.AIGatewayCatalog{SharedModels: []cetirunv1alpha1.AIGatewayCatalogModel{}, GitHubCopilot: copilot, AgentTypes: agentTypes}
 	for _, name := range models {
 		catalog.SharedModels = append(catalog.SharedModels, cetirunv1alpha1.AIGatewayCatalogModel{Name: name, ContextWindow: 200000})
 	}
 	raw, _ := json.Marshal(catalog)
+	if agentTypes == nil {
+		raw, _ = json.Marshal(map[string]any{"sharedModels": catalog.SharedModels, "githubCopilot": copilot})
+	}
 	return &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{Name: cetirunv1alpha1.AIGatewayCatalogConfigMap, Namespace: "cetirun-system"},
 		Data:       map[string]string{cetirunv1alpha1.AIGatewayCatalogKey: string(raw)},
@@ -105,6 +116,8 @@ func TestCreateInstanceAIGatewayRequiresExistingTeam(t *testing.T) {
 
 func TestCreateInstanceAIGatewayModelAccessRules(t *testing.T) {
 	const openclaw = `{"agent":{"type":"openclaw"},"team":"aks"`
+	const hermes = `{"agent":{"type":"hermes"},"team":"aks"}`
+	onlyOpenClaw := []cetirunv1alpha1.AgentType{cetirunv1alpha1.AgentTypeOpenClaw}
 	cases := []struct {
 		name        string
 		body        string
@@ -112,6 +125,7 @@ func TestCreateInstanceAIGatewayModelAccessRules(t *testing.T) {
 		wantStatus  int
 		wantAccess  *[2]bool
 		wantErrCode string
+		wantErrText string
 	}{
 		{name: "defaults", body: `{"agent":{"type":"openclaw"},"team":" aks "}`, catalog: catalogConfigMap("gpt-6"), wantStatus: http.StatusCreated},
 		{name: "both on", body: openclaw + `,"modelAccess":{"sharedModels":true,"githubCopilot":true}}`,
@@ -144,6 +158,18 @@ func TestCreateInstanceAIGatewayModelAccessRules(t *testing.T) {
 			catalog: catalogConfigMap(), wantStatus: http.StatusBadRequest, wantErrCode: "invalid_model_access"},
 		{name: "hermes with an unpublished catalog", body: `{"agent":{"type":"hermes"},"team":"aks"}`,
 			wantStatus: http.StatusServiceUnavailable, wantErrCode: "model_sources_unknown"},
+		// Only the agent types the operator's default agent chart routes
+		// through the Gateway take its models: the operator would leave
+		// another one off the Gateway, with the Gateway's model names on the
+		// agent's own provider.
+		{name: "hermes on a chart that routes only OpenClaw", body: hermes, catalog: routingCatalog(onlyOpenClaw, true, "gpt-6"),
+			wantStatus: http.StatusConflict, wantErrCode: "agent_chart_unsupported", wantErrText: "does not route Hermes agents"},
+		{name: "hermes with an earlier operator's catalog", body: hermes, catalog: routingCatalog(nil, true, "gpt-6"),
+			wantStatus: http.StatusConflict, wantErrCode: "agent_chart_unsupported"},
+		{name: "openclaw with an earlier operator's catalog", body: openclaw + `}`, catalog: routingCatalog(nil, true, "gpt-6"),
+			wantStatus: http.StatusCreated},
+		{name: "openclaw on a chart older than the Gateway", body: openclaw + `}`, catalog: routingCatalog([]cetirunv1alpha1.AgentType{}, true, "gpt-6"),
+			wantStatus: http.StatusConflict, wantErrCode: "agent_chart_unsupported", wantErrText: "upgrade the agent chart"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -158,6 +184,9 @@ func TestCreateInstanceAIGatewayModelAccessRules(t *testing.T) {
 			if tc.wantErrCode != "" {
 				if code := errorCode(t, w); code != tc.wantErrCode {
 					t.Fatalf("error code %q, want %q", code, tc.wantErrCode)
+				}
+				if !strings.Contains(w.Body.String(), tc.wantErrText) {
+					t.Fatalf("error %s, want it to say %q", w.Body.String(), tc.wantErrText)
 				}
 				return
 			}
@@ -298,5 +327,16 @@ func TestGetAIGatewayCatalog(t *testing.T) {
 	w = get(gatewayConfig(), publishedCatalog(false, "gpt-6"))
 	if err := json.NewDecoder(bytes.NewReader(w.Body.Bytes())).Decode(&resp); err != nil || !resp.Known || resp.GitHubCopilot {
 		t.Fatalf("published without GitHub Copilot: resp %+v err %v", resp, err)
+	}
+	if !slices.Equal(resp.AgentTypes, []cetirunv1alpha1.AgentType{cetirunv1alpha1.AgentTypeOpenClaw, cetirunv1alpha1.AgentTypeHermes}) {
+		t.Fatalf("the published agent types must reach the form, got %v", resp.AgentTypes)
+	}
+	// A catalog from an earlier operator lists no agent types: it routes
+	// only OpenClaw.
+	resp = AIGatewayCatalogResponse{}
+	w = get(gatewayConfig(), routingCatalog(nil, true, "gpt-6"))
+	if err := json.NewDecoder(bytes.NewReader(w.Body.Bytes())).Decode(&resp); err != nil ||
+		!slices.Equal(resp.AgentTypes, []cetirunv1alpha1.AgentType{cetirunv1alpha1.AgentTypeOpenClaw}) {
+		t.Fatalf("earlier operator: resp %+v err %v", resp, err)
 	}
 }

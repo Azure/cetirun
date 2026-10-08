@@ -56,6 +56,11 @@ export function CreateForm({ onCreated }: { onCreated?: () => void }) {
   const catalogQuery = useAIGatewayCatalog(gatewayModels);
   const catalog = catalogQuery.data;
   const catalogKnown = !!catalog?.known;
+  // Only the agent types the deployment's agent chart routes through the
+  // Gateway can take its models. A catalog without the list comes from an
+  // earlier operator, which routes only OpenClaw.
+  const chartUnsupported =
+    gatewayModels && catalogKnown && !(catalog?.agentTypes ?? ["openclaw"]).includes(agentType);
   const sharedModels = useMemo(
     () => (catalog?.known ? catalog.sharedModels : []),
     [catalog],
@@ -227,7 +232,13 @@ export function CreateForm({ onCreated }: { onCreated?: () => void }) {
 
       {usesGitHubCopilot && <CopilotModelPicker value={model} onChange={setModel} />}
 
-      {gatewayModels && (
+      {chartUnsupported && (
+        <MessageBar intent="error">
+          {`This deployment's agent chart does not route ${AGENT_TYPE_LABELS[agentType]} agents through the AI Gateway. Ask an administrator to upgrade the agent chart.`}
+        </MessageBar>
+      )}
+
+      {gatewayModels && !chartUnsupported && (
         <>
           <Field
             hint={
@@ -335,7 +346,7 @@ export function CreateForm({ onCreated }: { onCreated?: () => void }) {
           featuresLoading ||
           allowedAgentTypes.length === 0 ||
           (gatewayOn && !team) ||
-          (gatewayModels && (!catalogKnown || noModelSource))
+          (gatewayModels && (!catalogKnown || noModelSource || chartUnsupported))
         }
       >
         {createMutation.isPending ? "Creating..." : "Create Agent"}

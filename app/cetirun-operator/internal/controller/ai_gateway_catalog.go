@@ -24,6 +24,7 @@ import (
 
 	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/aigateway"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/helm"
 )
 
 const (
@@ -343,14 +344,30 @@ func (r *AgentReconciler) writeAIGatewayCatalog(ctx context.Context, shared []ai
 	if shared == nil {
 		shared = []aiGatewayCatalogModel{}
 	}
-	raw, err := json.Marshal(cetirunv1alpha1.AIGatewayCatalog{SharedModels: shared, GitHubCopilot: r.aiGatewayCopilotOffered()})
+	catalog := cetirunv1alpha1.AIGatewayCatalog{SharedModels: shared, GitHubCopilot: r.aiGatewayCopilotOffered()}
+	agentTypes, agentTypesKnown := r.aiGatewayRoutedAgentTypes(ctx)
+	key := types.NamespacedName{Namespace: namespace, Name: cetirunv1alpha1.AIGatewayCatalogConfigMap}
+	configMap := &corev1.ConfigMap{}
+	err := r.Get(ctx, key, configMap)
+	if err != nil && !apierrors.IsNotFound(err) {
+		return fmt.Errorf("get catalog ConfigMap: %w", err)
+	}
+	published := err == nil
+	if agentTypesKnown {
+		catalog.AgentTypes = agentTypes
+	} else if published {
+		// While the default chart cannot be read, keep the agent types
+		// published before.
+		var previous cetirunv1alpha1.AIGatewayCatalog
+		if json.Unmarshal([]byte(configMap.Data[cetirunv1alpha1.AIGatewayCatalogKey]), &previous) == nil {
+			catalog.AgentTypes = previous.AgentTypes
+		}
+	}
+	raw, err := json.Marshal(catalog)
 	if err != nil {
 		return err
 	}
-	key := types.NamespacedName{Namespace: namespace, Name: cetirunv1alpha1.AIGatewayCatalogConfigMap}
-	configMap := &corev1.ConfigMap{}
-	err = r.Get(ctx, key, configMap)
-	if apierrors.IsNotFound(err) {
+	if !published {
 		configMap = &corev1.ConfigMap{
 			ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace, Labels: map[string]string{
 				"app.kubernetes.io/managed-by": "cetirun-operator", "app.kubernetes.io/component": "ai-gateway-catalog",
@@ -358,9 +375,6 @@ func (r *AgentReconciler) writeAIGatewayCatalog(ctx context.Context, shared []ai
 			Data: map[string]string{cetirunv1alpha1.AIGatewayCatalogKey: string(raw)},
 		}
 		return r.Create(ctx, configMap)
-	}
-	if err != nil {
-		return fmt.Errorf("get catalog ConfigMap: %w", err)
 	}
 	if configMap.Data[cetirunv1alpha1.AIGatewayCatalogKey] == string(raw) {
 		return nil
@@ -370,6 +384,52 @@ func (r *AgentReconciler) writeAIGatewayCatalog(ctx context.Context, shared []ai
 	}
 	configMap.Data[cetirunv1alpha1.AIGatewayCatalogKey] = string(raw)
 	return r.Update(ctx, configMap)
+}
+
+// chartInspector reads the values a chart version declares without preparing
+// a release. The Helm client implements it.
+type chartInspector interface {
+	InspectChart(version string) (*helm.ChartValues, error)
+}
+
+// aiGatewayChartRouting caches the agent types the default agent chart routes
+// through the Gateway. The default version is fixed for the operator's
+// lifetime, so one successful read is enough.
+type aiGatewayChartRouting struct {
+	mu    sync.Mutex
+	known bool
+	types []cetirunv1alpha1.AgentType
+}
+
+// aiGatewayRoutedAgentTypes reports the agent types the default agent chart
+// routes through the Gateway, decided as for each Agent's own chart
+// (aiGatewayChartSupports). It reports false while the chart cannot be read.
+func (r *AgentReconciler) aiGatewayRoutedAgentTypes(ctx context.Context) ([]cetirunv1alpha1.AgentType, bool) {
+	routing := &r.aiGatewayChartRouting
+	routing.mu.Lock()
+	defer routing.mu.Unlock()
+	if routing.known {
+		return slices.Clone(routing.types), true
+	}
+	inspector, ok := r.HelmClient.(chartInspector)
+	if !ok {
+		return nil, false
+	}
+	values, err := inspector.InspectChart(r.ChartVersion)
+	if err != nil {
+		log.FromContext(ctx).Error(err, "reading the default agent chart failed; the catalog keeps the agent types it published")
+		return nil, false
+	}
+	routed := []cetirunv1alpha1.AgentType{}
+	for _, agentType := range []cetirunv1alpha1.AgentType{
+		cetirunv1alpha1.AgentTypeOpenClaw, cetirunv1alpha1.AgentTypeHermes, cetirunv1alpha1.AgentTypeCustom,
+	} {
+		if aiGatewayHarnessSupported(agentType) && aiGatewayChartSupports(values, agentType) {
+			routed = append(routed, agentType)
+		}
+	}
+	routing.known, routing.types = true, routed
+	return slices.Clone(routed), true
 }
 
 // notifyAIGatewayCatalogChanged queues every Agent routed through the

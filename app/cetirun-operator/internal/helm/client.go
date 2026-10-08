@@ -160,6 +160,21 @@ func dockerConfigFile() string {
 	return ""
 }
 
+// InspectChart loads a chart version, or the default one, and returns the
+// values it declares, without preparing a release. Loading needs only the
+// registry, not the cluster.
+func (c *Client) InspectChart(version string) (*ChartValues, error) {
+	registryClient, err := newRegistryClient()
+	if err != nil {
+		return nil, fmt.Errorf("init registry client: %w", err)
+	}
+	chrt, err := c.loadChart(&action.Configuration{RegistryClient: registryClient}, "", version)
+	if err != nil {
+		return nil, err
+	}
+	return NewChartValues(chrt), nil
+}
+
 // Prepare loads the selected chart and builds its native Agent configuration.
 func (c *Client) Prepare(namespace string, values map[string]any, chartVersion string) (*PreparedRelease, error) {
 	cfg, err := actionConfig(namespace)
