@@ -250,7 +250,7 @@ COPY --chown=vibe:vibe configs/cve-overrides.json /usr/local/share/npm-global/li
 # Install common npm global tools from the shared dependency-policy package root.
 # Uses local install (not -g) so npm respects any future overrides.
 # Pin Codex to avoid prerelease platform-package resolution changes breaking image builds.
-ARG CODEX_VERSION=0.161.0
+ARG CODEX_VERSION=0.160.1
 ARG OPENCODE_VERSION=1.18.35
 RUN mkdir -p /usr/local/share/npm-global/bin && \
     cd /usr/local/share/npm-global/lib && \
@@ -281,7 +281,7 @@ USER vibe
 RUN mkdir -p /home/vibe/.local/bin
 
 # Install Claude Code into the same local prefix so it shares dependency policy.
-ARG CLAUDE_CODE_VERSION=2.1.293
+ARG CLAUDE_CODE_VERSION=2.1.292
 RUN mkdir -p /usr/local/share/npm-global/bin && \
     cd /usr/local/share/npm-global/lib && \
     npm install --save-exact @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} && \

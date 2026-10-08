@@ -11,8 +11,8 @@ release versions.
 | Node.js | 24.21.0 LTS | [Release index](https://nodejs.org/dist/index.json) |
 | npm | 12.2.0 | [Release notes](https://github.com/npm/cli/releases/tag/v12.2.0) |
 | Microsoft Go builder | 1.27.1-2 | [Microsoft Go](https://github.com/microsoft/go) |
-| Codex | 0.161.0 | [npm package](https://www.npmjs.com/package/@openai/codex/v/0.161.0) |
-| Claude Code | 2.1.293 | [npm package](https://www.npmjs.com/package/@anthropic-ai/claude-code/v/2.1.293) |
+| Codex | 0.160.1 | [npm package](https://www.npmjs.com/package/@openai/codex/v/0.160.1) |
+| Claude Code | 2.1.292 | [npm package](https://www.npmjs.com/package/@anthropic-ai/claude-code/v/2.1.292) |
 | OpenCode | 1.18.35 | [npm package](https://www.npmjs.com/package/opencode-ai/v/1.18.35) |
 | GitHub CLI | 2.102.0 | [Release](https://github.com/cli/cli/releases/tag/v2.102.0) |
 | kubectl | 1.37.1 | [Release](https://github.com/kubernetes/kubernetes/releases/tag/v1.37.1) |
@@ -55,7 +55,11 @@ npm 12 supplies its own fixed undici dependency. The old in-place npm patch is
 removed. CLI installs save exact versions so later agent-layer installs cannot
 change them through a caret range. Only the reviewed OpenCode, Claude Code, and
 OpenClaw lifecycle scripts are approved, using `npm install-scripts approve`.
-Registry overrides and the existing release-age setting remain in effect.
+Registry overrides and the existing `min-release-age=1` setting remain in
+effect. npm measures this setting in days, so tool pins must have been published
+for at least 24 hours. Codex 0.161.0 and Claude Code 2.1.293 were inside that
+window when checked; the selected releases are the latest stable versions
+eligible under this policy at the review time.
 The Pi example still fixes undici 6.26.0 when using its older published base,
 but leaves the already-fixed 6.27.0 and 6.28.0 payloads untouched. Its SDK pin
 is unchanged.
