@@ -557,7 +557,6 @@ func TestConfigurationMetadataScopePinsFutureStartsAndWholeWrites(t *testing.T) 
 			after := before.DeepCopyObject().(client.Object)
 			after.SetAnnotations(map[string]string{"example.com/description": "approved"})
 			ticket := changingConfiguration(t, store, before, after)
-			execution := acquire(t, store, configurationIntent(t, before, "metadata"))
 			wrong := configurationIntent(t, before, "different")
 			for _, reference := range wrong.Sources {
 				if reference.Kind == kind {
@@ -567,6 +566,7 @@ func TestConfigurationMetadataScopePinsFutureStartsAndWholeWrites(t *testing.T) 
 			if _, err := store.AcquireExecution(ctx, wrong); !errors.Is(err, ErrConflict) {
 				t.Fatal("a start with a different effective digest was permitted:", err)
 			}
+			execution := acquire(t, store, configurationIntent(t, before, "metadata"))
 			other := after.DeepCopyObject().(client.Object)
 			other.SetAnnotations(map[string]string{"example.com/description": "unapproved"})
 			if _, err := store.AcquireConfigurationChange(ctx, before, other); !errors.Is(err, ErrConflict) {
