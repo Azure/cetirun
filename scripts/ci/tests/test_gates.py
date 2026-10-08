@@ -462,7 +462,7 @@ class WorkflowContractTests(unittest.TestCase):
         requirements = (validate.ROOT / "scripts/ci/requirements.txt").read_text()
         for package, minimum in {
             "aiohttp": (3, 14, 3),
-            "PyJWT[crypto]": (2, 13, 0),
+            "PyJWT[crypto]": (2, 15, 0),
             "pytest": (9, 0, 3),
         }.items():
             with self.subTest(package=package):
