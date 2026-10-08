@@ -213,6 +213,18 @@ values, are rejected before reservation because Kubernetes need not advance
 their resource version. Configuration admission and Kubernetes authorization
 still apply.
 
+Sandbox and AgentPolicy updates separately compare the existing effective
+execution digest before and after the proposed write. When it is unchanged,
+the reservation records that digest: existing and new executions with the same
+source UID and digest can coexist with harmless metadata updates. Spec,
+ownership, finalizer and control-metadata changes still exclude affected
+executions. The complete mutation digest continues to authorize every field,
+and competing updates of the same source still serialize.
+Older reservations without this optional digest remain conservative during
+recovery; their scope is never rewritten. Upgrade all coordination readers
+before issuing the new records: older strict readers reject the extra field.
+This does not enable execution or replace source rechecks.
+
 After a lost reply, use the same input files to observe the original operation.
 A matching current object with the same UID and an advanced resource version
 proves the desired write is present and an old-version request cannot commit

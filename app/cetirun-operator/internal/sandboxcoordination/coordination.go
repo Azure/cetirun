@@ -107,6 +107,8 @@ type Change struct {
 	DesiredDigest string            `json:"desiredDigest"`
 	Phase         Phase             `json:"phase"`
 	Team          *TeamChange       `json:"team,omitempty"`
+	// UnchangedDigest pins equal before/after effective Sandbox or AgentPolicy inputs.
+	UnchangedDigest string `json:"unchangedDigest,omitempty"`
 }
 
 type TeamChange struct {
@@ -206,7 +208,7 @@ func (s Store) AcquireExecution(ctx context.Context, intent Intent) (Ticket, err
 }
 
 func (s Store) AcquireChange(ctx context.Context, before w.SourceReference, desiredDigest string) (ChangeTicket, error) {
-	return s.acquireChange(ctx, before, desiredDigest, nil)
+	return s.acquireChange(ctx, before, desiredDigest, nil, "")
 }
 
 // AcquireTeamChange derives the affected execution selections from an exact
@@ -266,10 +268,10 @@ func (s Store) AcquireTeamChange(ctx context.Context, before, after *api.Team) (
 		!current.DeletionTimestamp.IsZero() || oldDigest != currentDigest {
 		return ChangeTicket{}, ErrConflict
 	}
-	return s.acquireChange(ctx, reference, desiredDigest, scope)
+	return s.acquireChange(ctx, reference, desiredDigest, scope, "")
 }
 
-func (s Store) acquireChange(ctx context.Context, before w.SourceReference, desiredDigest string, team *TeamChange) (ChangeTicket, error) {
+func (s Store) acquireChange(ctx context.Context, before w.SourceReference, desiredDigest string, team *TeamChange, unchangedDigest string) (ChangeTicket, error) {
 	if !validSource(before) || !digest(desiredDigest) {
 		return ChangeTicket{}, fmt.Errorf("%w: change requires an exact source and desired-content digest", ErrUnavailable)
 	}
@@ -278,19 +280,21 @@ func (s Store) acquireChange(ctx context.Context, before w.SourceReference, desi
 		return ChangeTicket{}, err
 	}
 	for _, execution := range state.Executions {
-		if changeAffects(execution.Intent, Change{Before: before, Team: team}) {
+		if changeAffects(execution.Intent, Change{Before: before, Team: team, UnchangedDigest: unchangedDigest}) {
 			return ChangeTicket{}, ErrConflict
 		}
 	}
 	for _, existing := range state.Changes {
 		if sourceKey(existing.Before) == sourceKey(before) {
-			if existing.Before == before && existing.DesiredDigest == desiredDigest && equality.Semantic.DeepEqual(existing.Team, team) {
+			if existing.Before == before && existing.DesiredDigest == desiredDigest &&
+				existing.UnchangedDigest == unchangedDigest && equality.Semantic.DeepEqual(existing.Team, team) {
 				return ChangeTicket{object.UID, cloneChange(existing)}, nil
 			}
 			return ChangeTicket{}, ErrConflict
 		}
 	}
-	change := Change{ID: rand.Text(), Before: before, DesiredDigest: desiredDigest, Phase: Reserved, Team: team}
+	change := Change{ID: rand.Text(), Before: before, DesiredDigest: desiredDigest, Phase: Reserved,
+		Team: team, UnchangedDigest: unchangedDigest}
 	state.Changes = append(state.Changes, change)
 	if err := s.write(ctx, object, state); err != nil {
 		return ChangeTicket{}, err
@@ -574,6 +578,12 @@ func validateRecord(state record) error {
 				return fmt.Errorf("%w: invalid scoped Team change", ErrUnavailable)
 			}
 		}
+		if change.UnchangedDigest != "" &&
+			(!digest(change.UnchangedDigest) || change.Team != nil ||
+				change.Before.APIVersion != api.GroupVersion.String() || change.Before.Namespace != "" ||
+				(change.Before.Kind != "Sandbox" && change.Before.Kind != "AgentPolicy")) {
+			return fmt.Errorf("%w: invalid unchanged configuration digest", ErrUnavailable)
+		}
 		for _, execution := range state.Executions {
 			if changeAffects(execution.Intent, change) {
 				return fmt.Errorf("%w: source change overlaps an execution", ErrUnavailable)
@@ -747,6 +757,12 @@ func cloneChange(change Change) Change {
 func changeAffects(intent Intent, change Change) bool {
 	if !uses(intent.Sources, change.Before) {
 		return false
+	}
+	if change.UnchangedDigest != "" {
+		return intent.SourceDigests[w.SourceKey(change.Before)] != change.UnchangedDigest ||
+			!slices.ContainsFunc(intent.Sources, func(reference w.SourceReference) bool {
+				return sourceKey(reference) == sourceKey(change.Before) && reference.UID == change.Before.UID
+			})
 	}
 	if change.Team == nil || change.Before.UID != intent.Expected.Binding.TeamUID {
 		return true

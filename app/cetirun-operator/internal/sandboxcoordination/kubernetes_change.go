@@ -37,8 +37,9 @@ type configurationImage struct {
 }
 
 type configurationChange struct {
-	before, after configurationImage
-	team          *TeamChange
+	before, after   configurationImage
+	team            *TeamChange
+	unchangedDigest string
 }
 
 // AcquireConfigurationChange reserves an exact update of a persisted Team,
@@ -60,7 +61,7 @@ func (s Store) AcquireConfigurationChange(ctx context.Context, before, after cli
 	if team, ok := change.before.object.(*api.Team); ok && change.team != nil {
 		return s.AcquireTeamChange(ctx, team, change.after.object.(*api.Team))
 	}
-	return s.acquireChange(ctx, change.before.reference, change.after.digest, nil)
+	return s.acquireChange(ctx, change.before.reference, change.after.digest, nil, change.unchangedDigest)
 }
 
 // ReadConfigurationChange only looks up the exact journaled update. It neither
@@ -238,7 +239,9 @@ func (a *KubernetesChangeAdapter) validate(ctx context.Context, ticket ChangeTic
 }
 
 func (change *configurationChange) matches(recorded Change) bool {
+	// Older conservative reservations remain recoverable without narrowing them.
 	return recorded.Before == change.before.reference && recorded.DesiredDigest == change.after.digest &&
+		(recorded.UnchangedDigest == "" || recorded.UnchangedDigest == change.unchangedDigest) &&
 		equality.Semantic.DeepEqual(recorded.Team, change.team)
 }
 
@@ -348,6 +351,18 @@ func newConfigurationChange(before, after client.Object, admission bool) (*confi
 			return nil, err
 		}
 		change.team = &TeamChange{Before: oldInputs, After: newInputs}
+	} else {
+		oldDigest, err := w.ExecutionObjectDigest(oldImage.object)
+		if err != nil {
+			return nil, err
+		}
+		newDigest, err := w.ExecutionObjectDigest(newImage.object)
+		if err != nil {
+			return nil, err
+		}
+		if oldDigest == newDigest {
+			change.unchangedDigest = oldDigest
+		}
 	}
 	return change, nil
 }

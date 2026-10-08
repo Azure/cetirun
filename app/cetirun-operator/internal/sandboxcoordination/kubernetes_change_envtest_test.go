@@ -248,6 +248,34 @@ func TestKubernetesConfigurationAPIServer(t *testing.T) {
 		})
 	}
 
+	for _, kind := range []string{"Sandbox", "AgentPolicy"} {
+		t.Run(kind+"/effective-metadata", func(t *testing.T) {
+			store, before, _ := newFixture(t, kind, "metadata")
+			execution := acquire(t, store, configurationIntent(t, before, "metadata"))
+			after := before.DeepCopyObject().(client.Object)
+			after.SetAnnotations(map[string]string{"example.com/description": "updated"})
+			ticket, err := store.AcquireConfigurationChange(ctx, before, after)
+			if err != nil {
+				t.Fatal("metadata-only update blocked the recorded execution:", err)
+			}
+			if _, err := store.ReconcileChange(ctx, ticket,
+				configurationAdapter(t, storage, storage, before, after)); err != nil {
+				t.Fatal("actual metadata Update did not complete:", err)
+			}
+			current := before.DeepCopyObject().(client.Object)
+			if err := storage.Get(ctx, client.ObjectKeyFromObject(before), current); err != nil {
+				t.Fatal(err)
+			}
+			if current.GetUID() != before.GetUID() || current.GetResourceVersion() == before.GetResourceVersion() ||
+				current.GetAnnotations()["example.com/description"] != "updated" {
+				t.Fatal("metadata update was not persisted")
+			}
+			if err := store.Check(ctx, execution); err != nil {
+				t.Fatal("actual metadata Update changed execution ownership:", err)
+			}
+		})
+	}
+
 	for _, scenario := range []string{"source-race", "source-replaced", "metadata-mismatch", "status-advanced"} {
 		t.Run(scenario, func(t *testing.T) {
 			store, before, after := newFixture(t, "Team", scenario)
