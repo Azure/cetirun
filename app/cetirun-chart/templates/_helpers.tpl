@@ -186,7 +186,7 @@ Validate Azure Workload Identity prerequisites
 {{- if not .Values.networkPolicy.enabled -}}
 {{- fail "aiGateway.enabled requires networkPolicy.enabled" -}}
 {{- end -}}
-{{- if not .Values.sidecarScope.enabled -}}
+{{- if and (not .Values.sandboxWorkload) (not .Values.sidecarScope.enabled) -}}
 {{- fail "aiGateway.enabled requires sidecarScope.enabled" -}}
 {{- end -}}
 {{- if not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" (.Values.networkPolicy.gatewayNamespace | default "")) -}}

@@ -190,6 +190,44 @@ func TestSandboxAllowsModelAndAuthorizedSecretWithoutOverrides(t *testing.T) {
 	}
 }
 
+func TestSandboxGatewayUsesAuthorizedKeyWithoutIstioSidecar(t *testing.T) {
+	fixture := testfixture.New("hermes")
+	fixture.Input.AuthorizedSecrets = append(fixture.Input.AuthorizedSecrets, "ai-gateway-virtual-key")
+	bundle, err := w.Build(fixture.Input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := sampleInput("hermes", "openai", false)
+	input["secrets"].(map[string]any)["existingSecret"] = "runtime-secret"
+	input["aiGateway"] = map[string]any{
+		"enabled": true, "keySecretName": "ai-gateway-virtual-key", "keySecretKey": "api-key",
+	}
+	input["networkPolicy"] = map[string]any{
+		"enabled": true, "gatewayNamespace": "cetirun-system", "gatewayPort": 4000,
+	}
+
+	prepared, err := PrepareSandboxChart(testChart(t), input, nil, bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	template, err := prepared.SandboxTemplate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if template.Annotations["sidecar.istio.io/inject"] != "false" || object(prepared.Values["sidecarScope"])["enabled"] != false {
+		t.Fatal("Sandbox Gateway routing enabled an Istio sidecar")
+	}
+	found := false
+	for _, env := range template.Spec.Containers[0].Env {
+		if env.ValueFrom != nil && env.ValueFrom.SecretKeyRef != nil && env.ValueFrom.SecretKeyRef.Name == "ai-gateway-virtual-key" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("Sandbox workload did not receive the authorized Gateway key projection")
+	}
+}
+
 func TestSandboxFinalPodRejectsInjectedPaths(t *testing.T) {
 	_, _, expected := sandboxRender(t, "openclaw", true, true)
 	cases := map[string]func(*corev1.Pod){
