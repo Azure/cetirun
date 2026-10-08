@@ -331,14 +331,15 @@ func TestRequiredSourcesAndStoragePlacementPins(t *testing.T) {
 		})
 	}
 	for name, mutate := range map[string]func(*Intent){
-		"no placement": func(i *Intent) { i.Placement = nil },
-		"node UID":     func(i *Intent) { i.Expected.NodeUID = "foreign-node" },
-		"home UID":     func(i *Intent) { i.Placement.Home.UID = "foreign-home" },
-		"binding":      func(i *Intent) { i.Expected.Binding.AgentPolicyUID = "foreign-policy" },
-		"duplicate":    func(i *Intent) { i.Sources = append(i.Sources, i.Sources[0]) },
-		"no ingress":   func(i *Intent) { i.IngressMode = "" },
-		"no digest":    func(i *Intent) { i.WorkloadDigest = "" },
-		"bad digest":   func(i *Intent) { i.WorkloadDigest = "not-a-digest" },
+		"no placement":       func(i *Intent) { i.Placement = nil },
+		"node UID":           func(i *Intent) { i.Expected.NodeUID = "foreign-node" },
+		"home UID":           func(i *Intent) { i.Placement.Home.UID = "foreign-home" },
+		"binding":            func(i *Intent) { i.Expected.Binding.AgentPolicyUID = "foreign-policy" },
+		"duplicate":          func(i *Intent) { i.Sources = append(i.Sources, i.Sources[0]) },
+		"no ingress":         func(i *Intent) { i.IngressMode = "" },
+		"no digest":          func(i *Intent) { i.WorkloadDigest = "" },
+		"bad digest":         func(i *Intent) { i.WorkloadDigest = "not-a-digest" },
+		"bad running digest": func(i *Intent) { i.RunningPreparationDigest = "not-a-digest" },
 	} {
 		t.Run(name, func(t *testing.T) {
 			store, _ := fixture(t)

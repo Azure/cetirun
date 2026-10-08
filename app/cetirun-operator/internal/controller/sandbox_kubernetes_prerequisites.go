@@ -51,6 +51,16 @@ type KubernetesSandboxPrerequisites struct {
 var _ SandboxPreparationSource = (*KubernetesSandboxPrerequisites)(nil)
 
 func (p *KubernetesSandboxPrerequisites) Resolve(ctx context.Context, requested *api.Agent, requestedTeam *api.Team) (SandboxPrerequisites, error) {
+	return p.resolve(ctx, requested, requestedTeam, true)
+}
+
+// ResolveRunning refreshes the same prerequisites after a separately authorized
+// hold transition. It neither supplies writer exclusion nor authorizes a start.
+func (p *KubernetesSandboxPrerequisites) ResolveRunning(ctx context.Context, requested *api.Agent, requestedTeam *api.Team) (SandboxPrerequisites, error) {
+	return p.resolve(ctx, requested, requestedTeam, false)
+}
+
+func (p *KubernetesSandboxPrerequisites) resolve(ctx context.Context, requested *api.Agent, requestedTeam *api.Team, held bool) (SandboxPrerequisites, error) {
 	var empty SandboxPrerequisites
 	if err := ctx.Err(); err != nil {
 		return empty, err
@@ -89,8 +99,8 @@ func (p *KubernetesSandboxPrerequisites) Resolve(ctx context.Context, requested 
 	if err != nil {
 		return empty, err
 	}
-	if agentSource != expectedAgent || agent.Spec.Suspended || !slices.Contains(agent.Finalizers, sandbox.HoldFinalizer) {
-		return empty, fmt.Errorf("%w: Sandbox prerequisites require the exact current held Agent intent", errSandboxSourceChanged)
+	if agentSource != expectedAgent || agent.Spec.Suspended || slices.Contains(agent.Finalizers, sandbox.HoldFinalizer) != held {
+		return empty, fmt.Errorf("%w: Sandbox prerequisites require the exact current Agent intent and lifecycle state", errSandboxSourceChanged)
 	}
 	if !sandboxPreparationSupported(agent) || (agent.Spec.Agent.Type != api.AgentTypeOpenClaw && source.Helpers.Doctor) {
 		return empty, fmt.Errorf("%w: Sandbox prerequisites support only the existing native held path and its helpers", sandboxpolicy.ErrUnsupportedControl)
@@ -192,6 +202,9 @@ func (p *KubernetesSandboxPrerequisites) Resolve(ctx context.Context, requested 
 	// guard. That bookkeeping must not invalidate the approved input revision;
 	// the exact lifecycle intent is still checked within this read interval.
 	revisionAgent.Finalizers = slices.DeleteFunc(revisionAgent.Finalizers, func(value string) bool { return value == sandbox.PreparationFinalizer })
+	if !held {
+		revisionAgent.Finalizers = append(revisionAgent.Finalizers, sandbox.HoldFinalizer)
+	}
 	revisionSources[0], err = sandboxworkload.AgentSourceReference(revisionAgent)
 	if err != nil {
 		return empty, err

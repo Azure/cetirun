@@ -15,37 +15,61 @@ import (
 // expectation, allowing topology additions only from its registered Node.
 // The caller must still authorize the lifecycle, sources and previous Pod.
 func (h *Handler) ValidateScheduledPod(ctx context.Context, request admission.Request, pod *corev1.Pod, expected sandboxworkload.Expectation) admission.Response {
+	if failure := h.checkScheduledPod(ctx, pod, expected); failure != nil {
+		return reject(ctx, request, failure)
+	}
+	return admission.Allowed("protected Pod template matches its current registered Node")
+}
+
+// CheckRunningPod reuses placement and topology validation after scheduling.
+// The caller must independently pin the persisted Pod UID and execution epoch;
+// this verifies current API inputs, not runtime or network enforcement.
+func (h *Handler) CheckRunningPod(ctx context.Context, pod *corev1.Pod, expected sandboxworkload.Expectation) error {
+	if pod == nil || pod.UID == "" || pod.ResourceVersion == "" || !pod.DeletionTimestamp.IsZero() {
+		return invalid("InvalidRunningPod", "running Pod must have an active persisted identity")
+	}
+	expected.Template = *expected.Template.DeepCopy()
+	if expected.Template.Spec.NodeName == "" {
+		expected.Template.Spec.NodeName = pod.Spec.NodeName
+	}
+	if failure := h.checkScheduledPod(ctx, pod, expected); failure != nil {
+		return failure
+	}
+	return nil
+}
+
+func (h *Handler) checkScheduledPod(ctx context.Context, pod *corev1.Pod, expected sandboxworkload.Expectation) *failure {
 	ctx, cancel := context.WithTimeout(ctx, h.config.RequestTimeout)
 	defer cancel()
 	if pod == nil || pod.Spec.NodeName == "" {
-		return reject(ctx, request, invalid("InvalidPod", "scheduled Pod validation requires an explicit destination"))
+		return invalid("InvalidPod", "scheduled Pod validation requires an explicit destination")
 	}
 	state := &requestState{reader: h.reader}
 	registry, failure := state.readRegistry(ctx, h.config)
 	if failure != nil {
-		return reject(ctx, request, failure)
+		return failure
 	}
 	if expected.Placement != nil {
 		if _, failure := state.readAssignment(ctx, registry, expected); failure != nil {
-			return reject(ctx, request, failure)
+			return failure
 		}
 	}
 	node, registered, failure := state.readNode(ctx, registry, pod.Spec.NodeName)
 	if failure != nil {
-		return reject(ctx, request, failure)
+		return failure
 	}
 	if registered.Reservation == nil || *registered.Reservation != (nodeReservation{
 		Agent: expected.Agent, Namespace: expected.Namespace, StatefulSet: expected.Workload,
 	}) {
-		return reject(ctx, request, denied("AgentPlacementMismatch", "protected Pod requires its exact registered reservation"))
+		return denied("AgentPlacementMismatch", "protected Pod requires its exact registered reservation")
 	}
 	if failure := validateAgentTemplate(pod, node, expected); failure != nil {
-		return reject(ctx, request, failure)
+		return failure
 	}
 	if failure := state.recheck(ctx); failure != nil {
-		return reject(ctx, request, failure)
+		return failure
 	}
-	return admission.Allowed("protected Pod template matches its current registered Node")
+	return nil
 }
 
 func validateAgentTemplate(pod *corev1.Pod, node *corev1.Node, expected sandboxworkload.Expectation) *failure {

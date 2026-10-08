@@ -298,8 +298,11 @@ type preparationHarness struct {
 	webhookCalls atomic.Int64
 }
 
-func newPreparationHarness(t *testing.T) *preparationHarness {
+func newPreparationHarness(t *testing.T, placementConfigMapName ...string) *preparationHarness {
 	t.Helper()
+	if len(placementConfigMapName) > 1 {
+		t.Fatal("at most one placement registry may be selected")
+	}
 	// TestMain owns a different isolated server and does not expose rest.Config.
 	// This explicit false remains authoritative even if the caller's env differs.
 	env := &envtest.Environment{
@@ -348,7 +351,11 @@ func newPreparationHarness(t *testing.T) *preparationHarness {
 	h.create(t, &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{
 		Name: preparationAdmissionAccount, Namespace: preparationStateNamespace,
 	}})
-	handler, err := sandboxadmission.NewPodHandler(h.client, sandboxadmission.PodConfig{StateNamespace: preparationStateNamespace})
+	podConfig := sandboxadmission.PodConfig{StateNamespace: preparationStateNamespace}
+	if len(placementConfigMapName) == 1 {
+		podConfig.PlacementConfigMapName = placementConfigMapName[0]
+	}
+	handler, err := sandboxadmission.NewPodHandler(h.client, podConfig)
 	if err != nil {
 		t.Fatal(err)
 	}
