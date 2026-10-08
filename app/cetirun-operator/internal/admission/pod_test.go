@@ -267,6 +267,16 @@ func TestPodAdmissionRejectsStaleHoldAndSpoofedState(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			if name == "controller revision" {
+				current := &appsv1.StatefulSet{}
+				if err := f.client.Get(context.Background(), client.ObjectKeyFromObject(f.workload), current); err != nil {
+					t.Fatal(err)
+				}
+				current.Status.UpdateRevision = "new"
+				if err := f.client.Status().Update(context.Background(), current); err != nil {
+					t.Fatal(err)
+				}
+			}
 			raw, err := json.Marshal(f.expected)
 			if err != nil {
 				t.Fatal(err)

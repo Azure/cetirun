@@ -175,16 +175,11 @@ one cleanup step does not skip the others. Reservations are released only after
 all cleanup succeeds. Historical cleanup does not rediscover targets from
 current policy or storage configuration.
 
-**This protocol does not activate the shipped controller.** The adapter must
-enforce the same operation at the actual runtime, mutation and publication
-boundaries, including delayed submissions, restart and observation loss.
-Calling a read-only guard before an asynchronous write is not sufficient.
-Every shared-source writer must participate; direct writes must be excluded
-before enablement. No concrete production start, observation, mutation, routing
-or status-commit adapter is installed here, and neither a coordination record
-nor a successful callback qualifies one. The existing controller and admission
-holds are unchanged. Live governed Agent execution, model traffic and platform
-qualification remain separate, uncompleted integration work.
+This external coordination protocol is not used by the native Kubernetes
+execution adapter. The native adapter has a narrower boundary: an Agent-owned
+ReadWriteOncePod HOME, a single-replica StatefulSet, protected Pod admission,
+and no force deletion. External adapters must enforce equivalent or stronger
+guarantees at their own runtime and mutation boundaries.
 
 The focused lifecycle tests cover synthetic ordering, identity/freshness
 failures, writer-history integration and real isolated API persistence/CAS.
@@ -199,7 +194,8 @@ handoff: the Agent and persisted expectation must both be unheld, the workload
 must still match its enrolled UID/template with exactly one desired replica,
 and the actual Pod and Node must match the separately enrolled execution.
 The returned current resolution and plan contain no observation or start permit.
-Pod readiness and Node health are not enforcement evidence.
+Pod readiness and Node health are runtime observations only; they are accepted
+only together with current binding, source, template and policy-control checks.
 
 Held intent capture now pins a separate `runningPreparationDigest`. It permits
 only the expected hold transition, the independently rechecked current Agent
@@ -218,10 +214,10 @@ quiescence. Other prerequisite adapters must explicitly support running reads;
 the controller does not silently reuse their held-only resolver.
 Placement checks share the existing scheduled-Pod topology validation.
 
-The existing controller still dispatches governed Agents to held preparation.
-No code here changes finalizers, expectations or replicas to start an Agent.
-Real runtime gating, independent observations, all-source mutation coordination
-and model/tool validation remain prerequisites for enabling execution.
+The native controller dispatches supported governed Hermes and OpenClaw Agents
+through held preparation, verifies the ReadWriteOncePod writer boundary, and
+then releases admission for exactly one StatefulSet replica. Unsupported Agent
+types and integrations remain held.
 
 ### Guarded Sandbox status persistence
 
@@ -373,18 +369,14 @@ This increment implements:
   remain behind the execution hold. A future policy-bound path must authorize those
   specific writes or move them into authorized creation before releasing it.
 
-There are **no production capability registrations**. Standalone Sandbox and
-AgentPolicy definitions can be validated, but policy-bound Team/Agent bindings are
-rejected without a qualified registration. The tests inject synthetic
-registrations; enabling this process does not make those production evidence
-or release the controller hold.
+The chart does not invent a production capability registration. A platform
+owner must publish a qualified, available `platform.json`; configuration
+presence alone is not enforcement evidence.
 
 Protected rendering, final-Pod checks and policy compilation are connected by
-an opt-in **held controller preparation** path, described below. It does not serialize
-concurrent shared-configuration changes, coordinate rollout/start barriers,
-produce enforcement observations, or permit policy-bound execution. Reference reads
-are checks against current objects, not an atomic cross-resource transaction.
-Those boundaries must be completed before production adoption.
+the opt-in native Kubernetes Sandbox adapter described below. Reference reads
+are checks against current objects, not an atomic cross-resource transaction;
+each transition therefore rechecks current identities and fails closed.
 
 #### Trusted Team assignments and explicit reauthorization
 
@@ -585,14 +577,12 @@ historical namespace/HOME tuple; unsupported receipt formats still fail closed.
 The current expectation retains the existing 128-source/512-KiB bounds and
 Agent owner reference, and is subject to the existing fenced cleanup and GC.
 
-**Controlled start is not implemented.** Both execution holds and zero-replica
-staging remain. Stock startup cannot reach successful preparation with its
-unavailable writer-exclusion provider. Synthetic API tests do not demonstrate
-production reachability, runtime enforcement or a qualified fence.
-Actual start requires separately approved start/change exclusion, lifetime
-pool isolation, qualified old-writer fencing, a distinct pre-start enforcement
-acknowledgement and trusted current Pod/node/epoch observations. Neither a
-held expectation nor pool deletion alone supplies those authorities.
+Controlled start is implemented for the native ReadWriteOncePod shape. Both
+execution holds remain during zero-replica staging. The Operator verifies the
+owned stopped StatefulSet and Pod absence, scales to one while admission is
+held, then removes the Agent hold and releases the persisted expectation.
+Admission retries may create the Pod only after both holds are absent and all
+current inputs match. Other storage shapes and execution adapters remain held.
 
 Tailscale, Teams, workload identity and policy-bound Custom configurations remain
 unsupported by this native path. They retain an explanatory `UnsupportedControl`
@@ -777,17 +767,14 @@ consumers check freshness after it completes and reject observations that expire
 during capture. The same platform declarations are used by configuration
 admission and the Agent, Sandbox and AgentPolicy reconcilers. They do not grant
 Portal callers Kubernetes admission authority or replace trusted Team
-assignments. A configured source does not establish runtime, network or CSI
-enforcement. In particular, the stock prerequisite source has
-no writer-exclusion adapter and returns an explicit error before preparation
-creates its qualified-preparation cleanup state. Bootstrap-only ownership state
-is separate and does not claim a writer fence. An Agent rejected by this
-preflight remains deletable, including after sources are disabled; existing
-preparation state never bypasses fencing.
-Kubernetes Pod absence, PVC access modes and zero replicas cannot replace it.
-Qualified fencing, successful held staging, controlled starts and running
-enforcement observations remain separate lifecycle work. Do not remove holds
-or finalizers to bypass these missing guarantees.
+assignments. A configured source does not by itself establish runtime, network
+or CSI enforcement. The stock prerequisite source installs the native
+ReadWriteOncePod writer boundary. Bootstrap-only ownership state is separate
+and does not itself claim quiescence. An Agent rejected by preflight remains
+deletable, including after sources are disabled; existing preparation state
+never bypasses the boundary. Pod absence and zero replicas are accepted only
+with the exact Agent-owned ReadWriteOncePod claim and the rule that the
+Operator never force-deletes a Pod.
 
 ##### Owned bootstrap (separate opt-in)
 
@@ -1183,14 +1170,13 @@ qualified by these packaging defaults.
 
 The separate platform Copilot helper template/ownership contract is not defined
 yet; there is no label-, namespace- or ServiceAccount-only helper exemption.
-Protected preparation and expectation creation remain held until the separate
-lifecycle/start-barrier and enforcement-observation integration is qualified.
-There is no production expectation producer in this increment. `podsEnabled`
-alone only registers the endpoint; `enforce` installs matching for marked
-namespaces, not every Pod in the cluster. Do not mark namespaces or enable a
-policy-bound start path until the producer, scoped read permissions, source
-refresh/revocation and workload lifecycle are qualified together. A chart
-version, readiness probe or manually authored expectation is not that evidence.
+Protected preparation and expectation creation remain held until the native
+controller completes its start transition. `podsEnabled` alone only registers
+the endpoint; `enforce` installs matching for marked namespaces, not every Pod
+in the cluster. Native execution additionally requires enabled sources, scoped
+read permissions, an available qualified platform declaration, and the
+ReadWriteOncePod workload shape. A chart version, readiness probe or manually
+authored expectation is not that evidence.
 
 #### Dedicated-node placement guard (separate opt-in)
 

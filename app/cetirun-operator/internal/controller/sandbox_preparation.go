@@ -53,9 +53,11 @@ type SandboxPrerequisites struct {
 // SandboxPreparationSource is a trusted platform integration, not CR status or
 // tenant Helm values. Resolve must authorize the whole Agent generation without
 // stopping or requiring quiescence of its writer; execution rechecks it too.
-// CheckQuiesced must confirm that previous writers for the exact namespace/HOME
-// tuple have terminated or are durably fenced, including unreachable nodes.
-// API-level Pod absence alone is insufficient. Neither method grants a start.
+// CheckQuiesced must confirm that the configured writer boundary is satisfied
+// for the exact namespace/HOME tuple. The native Kubernetes adapter combines a
+// ReadWriteOncePod claim, a stopped StatefulSet, Pod absence, and a no-force-
+// deletion rule; stronger adapters may use durable guest-external fencing.
+// Neither method grants a start.
 type SandboxPreparationSource interface {
 	Resolve(context.Context, *api.Agent, *api.Team) (SandboxPrerequisites, error)
 	CheckQuiesced(context.Context, *api.Agent, SandboxPrerequisites) error
@@ -67,8 +69,8 @@ type SandboxHelmInstaller interface {
 	SandboxStageDigest(context.Context, string, string) (string, error)
 }
 
-// SandboxPreparation wires held provisioning only. No production source is
-// installed by default, and this interface has no execution-permit operation.
+// SandboxPreparation wires protected provisioning. Execution release remains
+// an internal Agent controller transition and is not exposed as another API.
 type SandboxPreparation struct {
 	Configuration           SandboxConfigurationSource
 	Prerequisites           SandboxPreparationSource
@@ -149,14 +151,6 @@ func (r *AgentReconciler) prepareSandboxHeld(ctx context.Context, requested *api
 	}
 	if requested.Spec.Tailscale != nil || requested.Spec.MSTeams != nil || agentIdentityRequested(requested) {
 		return fmt.Errorf("%w: native cloud and sidecar integrations require separate Sandbox lifecycle support", sandboxpolicy.ErrUnsupportedControl)
-	}
-	// Policy enforcement is mandatory in the reconciler, but the protected Sandbox
-	// renderer does not yet have a typed Gateway endpoint/model/key projection.
-	// Never stage a policy-bound bundle from the legacy provider/value path: a
-	// future start adapter must not be able to turn that held template into a
-	// direct-provider workload.
-	if requested.Status.Policy != nil && requested.Status.Policy.TeamAuthorization != nil {
-		return fmt.Errorf("%w: typed AI Gateway Sandbox projection is unavailable; execution remains held", sandboxpolicy.ErrUnsupportedControl)
 	}
 	if config.bootstrap == nil && controllerutil.ContainsFinalizer(requested, sandbox.BootstrapFinalizer) {
 		return fmt.Errorf("%w: recorded Sandbox bootstrap requires its configured ownership checks; execution remains held", sandboxpolicy.ErrUnavailable)
@@ -487,6 +481,9 @@ func (r *AgentReconciler) sandboxHelmValues(agent *api.Agent, team *api.Team) (m
 	platform, err := buildHelmValues(copy, team, r.DomainSuffix, r.SkillsStorageAccount, r.CetiRunHelmValues, r.ChartRegistry, r.DefaultModel)
 	if err != nil {
 		return nil, nil, err
+	}
+	if err := r.applyAIGatewayValues(platform, agent); err != nil {
+		return nil, nil, fmt.Errorf("apply typed AI Gateway Sandbox projection: %w", err)
 	}
 	user := map[string]any{}
 	for name, raw := range agent.Spec.Helm.Values {

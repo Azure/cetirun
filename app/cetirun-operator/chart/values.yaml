@@ -110,8 +110,8 @@ serviceAccount:
   name: cetirun-operator-controller-manager
   annotations: {}
 
-# -- Configuration admission only; this does not enable policy-bound execution or
-# provide a qualified Sandbox capability registration.
+# -- Fail-closed configuration and protected-Pod admission. Native execution
+# also requires sandboxSources and an available qualified platform registration.
 sandboxAdmission:
   # -- CR object decoding: compatible tolerates fields from a newer schema;
   # strict rejects them. Authorization, Pod checks and server config stay strict.
@@ -125,10 +125,9 @@ sandboxAdmission:
   enforce: false
   # -- Serve final-Pod checks; matching is installed only with enforce=true.
   # Also denies exec/attach/portforward in controller-marked namespaces.
-  # Requires immutable namespace protection and a qualified lifecycle producer
-  # of controller-owned expectations. No execution-ready producer is installed;
-  # protected writes fail closed and execution stays held. Other Pod mutators
-  # must exclude these namespaces; arbitrary injected metadata is not accepted.
+  # Requires immutable namespace protection and the Operator's controller-owned
+  # expectation producer. Other Pod mutators must exclude these namespaces;
+  # arbitrary injected metadata is not accepted.
   podsEnabled: false
   # -- Optional operator-namespace placement.json ConfigMap. Requires Pod
   # admission. When enforced, placement checks cover every namespace's Pod
@@ -170,10 +169,11 @@ sandboxAdmission:
       cpu: 500m
       memory: 256Mi
 
-# -- Kubernetes capability declarations for configuration admission and held
-# native Sandbox preparation. Both use the same operator-namespace platform.json.
-# Does not qualify a platform or implement writer fencing. Execution stays held.
-# Adds controller write permissions for compiled namespaced CiliumNetworkPolicies.
+# -- Kubernetes capability declarations for configuration admission and native
+# Sandbox execution. Both use the same operator-namespace platform.json. The
+# platform owner supplies qualification; the Operator enforces the built-in
+# ReadWriteOncePod/single-replica/no-force-delete writer boundary. Adds controller
+# write permissions for compiled namespaced CiliumNetworkPolicies.
 sandboxSources:
   enabled: false
   # -- Create owned namespace, HOME and native authentication only for new namespaces.
@@ -192,7 +192,7 @@ sandboxSources:
   skillsCatalogConfigMapName: ""
   # -- Optional placement.json registry for durable namespace/HOME/Node binding.
   # Must match sandboxAdmission.placementConfigMapName. Records the existing
-  # reservation after zero-replica staging; does not enroll Nodes or grant execution.
+  # reservation after zero-replica staging; does not enroll Nodes by itself.
   placementConfigMapName: ""
   # -- Approved native helpers; arbitrary injected containers remain unsupported.
   helpers:

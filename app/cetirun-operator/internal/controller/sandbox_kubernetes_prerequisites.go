@@ -24,10 +24,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// SandboxWriterExclusionSource confirms termination or durable guest-external
-// fencing of every old writer for the supplied Agent/namespace/HOME identities.
-// Implementations must support historical tuples during cleanup; Kubernetes
-// Pod absence, replicas, PVC access modes and node readiness are not evidence.
+// SandboxWriterExclusionSource confirms the configured single-writer boundary
+// for the supplied Agent/namespace/HOME identities. Implementations must
+// support historical tuples during cleanup. The native implementation relies
+// on ReadWriteOncePod plus a stopped workload and Pod absence without force
+// deletion; other implementations may provide stronger external fencing.
 type SandboxWriterExclusionSource interface {
 	CheckQuiesced(context.Context, *api.Agent, SandboxPrerequisites) error
 }
@@ -35,7 +36,8 @@ type SandboxWriterExclusionSource interface {
 // KubernetesSandboxPrerequisites selects existing resources with authoritative
 // reads only. Names, chart version and helpers are immutable trusted startup
 // configuration, never Agent Helm values. It neither provisions nor adopts
-// resources, and no production WriterExclusion source is installed by default.
+// resources. The production factory installs the native ReadWriteOncePod
+// writer boundary; direct construction remains explicit for tests and adapters.
 type KubernetesSandboxPrerequisites struct {
 	APIReader                  client.Reader
 	HomeClaimName              string
@@ -304,7 +306,7 @@ func (p *KubernetesSandboxPrerequisites) CheckQuiesced(ctx context.Context, agen
 		return err
 	}
 	if p == nil || p.WriterExclusion == nil {
-		return fmt.Errorf("%w: no qualified guest-external Sandbox writer-exclusion source is installed", sandbox.ErrObservationUnavailable)
+		return fmt.Errorf("%w: no qualified Sandbox writer-exclusion source is installed", sandbox.ErrObservationUnavailable)
 	}
 	if agent == nil || agent.Namespace != "" || len(validation.IsDNS1123Subdomain(agent.Name)) != 0 ||
 		len(validation.IsDNS1123Label(instanceNamespace(agent.Name))) != 0 ||

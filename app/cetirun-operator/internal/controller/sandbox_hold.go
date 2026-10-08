@@ -5,9 +5,11 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -26,6 +28,7 @@ import (
 	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxbinding"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
 )
 
 const sandboxHoldFinalizer = sandbox.HoldFinalizer
@@ -40,6 +43,7 @@ func sandboxRequested(agent *cetirunv1alpha1.Agent, team *cetirunv1alpha1.Team) 
 func (r *AgentReconciler) holdSandbox(ctx context.Context, agent *cetirunv1alpha1.Agent) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 	var failures []error
+	holdAdded := false
 	// Try to persist intent independently of status before workload side
 	// effects. The finalizer also keeps newly held Agents available for safe
 	// cleanup, but a failed metadata write cannot be allowed to skip shutdown.
@@ -53,6 +57,17 @@ func (r *AgentReconciler) holdSandbox(ctx context.Context, agent *cetirunv1alpha
 			// unpersisted finalizer for durable intent.
 			agent.Finalizers = base.Finalizers
 			failures = append(failures, fmt.Errorf("persist Sandbox hold: %w", err))
+		} else {
+			holdAdded = true
+		}
+	}
+	// The Agent hold is the first fail-closed gate. Mirror it into the Pod
+	// expectation before changing replicas so admission remains restrictive
+	// across controller restarts and queued StatefulSet retries.
+	if r.SandboxPreparation != nil && controllerutil.ContainsFinalizer(agent, sandboxHoldFinalizer) &&
+		(holdAdded || policyWorkloadMayBeActive(agent)) {
+		if err := r.holdSandboxExpectation(ctx, agent); err != nil {
+			failures = append(failures, err)
 		}
 	}
 	before := agent.DeepCopy().Status
@@ -143,6 +158,60 @@ func (r *AgentReconciler) holdSandbox(ctx context.Context, agent *cetirunv1alpha
 	return ctrl.Result{RequeueAfter: time.Minute}, nil
 }
 
+func (r *AgentReconciler) holdSandboxExpectation(ctx context.Context, agent *cetirunv1alpha1.Agent) error {
+	reader := r.customReader()
+	namespace := &corev1.Namespace{}
+	if err := reader.Get(ctx, types.NamespacedName{Name: instanceNamespace(agent.Name)}, namespace); err != nil {
+		return client.IgnoreNotFound(err)
+	}
+	state := &corev1.ConfigMap{}
+	key := types.NamespacedName{Namespace: r.OperatorNamespace,
+		Name: sandboxworkload.PodExpectationName(namespace.Name, namespace.UID)}
+	if err := reader.Get(ctx, key, state); err != nil {
+		return client.IgnoreNotFound(err)
+	}
+	expected, err := decodeSandboxExecutionExpectation(state)
+	if err != nil || expected.Agent.Name != agent.Name || expected.Agent.UID != agent.UID ||
+		expected.Namespace.Name != namespace.Name || expected.Namespace.UID != namespace.UID {
+		return fmt.Errorf("hold Sandbox expectation: current expectation identity is invalid")
+	}
+	agentSource, err := sandboxworkload.AgentSourceReference(agent)
+	if err != nil {
+		return fmt.Errorf("hold Sandbox expectation: %w", err)
+	}
+	found := false
+	for i := range expected.Sources {
+		if expected.Sources[i].IsAgent() {
+			if found {
+				return fmt.Errorf("hold Sandbox expectation: duplicate Agent source")
+			}
+			expected.Sources[i], found = agentSource, true
+		}
+	}
+	if !found {
+		return fmt.Errorf("hold Sandbox expectation: Agent source is missing")
+	}
+	expected.AgentGeneration = agent.Generation
+	if expected.ExecutionHeld && state.Data[sandboxworkload.PodExpectationKey] != "" {
+		var current sandboxworkload.Expectation
+		if json.Unmarshal([]byte(state.Data[sandboxworkload.PodExpectationKey]), &current) == nil &&
+			current.ExecutionHeld && slices.Equal(current.Sources, expected.Sources) {
+			return nil
+		}
+	}
+	expected.ExecutionHeld = true
+	raw, err := json.Marshal(expected)
+	if err != nil {
+		return fmt.Errorf("hold Sandbox expectation: %w", err)
+	}
+	base := state.DeepCopy()
+	state.Data = map[string]string{sandboxworkload.PodExpectationKey: string(raw)}
+	if err := r.Patch(ctx, state, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
+		return fmt.Errorf("hold Sandbox expectation: %w", err)
+	}
+	return nil
+}
+
 // Built-in resources predating UID ownership cannot be automatically adopted.
 func sandboxBuiltinOwned(object client.Object, agent *cetirunv1alpha1.Agent) bool {
 	if agent.UID == "" || object.GetUID() == "" || !hasAgentOwner(object, agent) {
@@ -173,8 +242,21 @@ func (r *AgentReconciler) stopSandboxBuiltin(ctx context.Context, agent *cetirun
 		return client.IgnoreNotFound(err)
 	}
 	var failures []error
+	// Withdraw ingress before requesting workload termination so no new request
+	// is routed to a Pod whose execution authority has just been held.
+	route := &istiov1beta1.VirtualService{}
+	key := types.NamespacedName{Namespace: namespace, Name: virtualServiceName(agent.Name)}
+	if err := reader.Get(ctx, key, route); err != nil {
+		if !apierrors.IsNotFound(err) {
+			failures = append(failures, fmt.Errorf("inspect sandbox-held route: %w", err))
+		}
+	} else if !sandboxBuiltinOwned(route, agent) {
+		failures = append(failures, fmt.Errorf("sandbox-held route ownership is unconfirmed; recovery is required"))
+	} else if err := r.Delete(ctx, route, client.Preconditions{UID: &route.UID, ResourceVersion: &route.ResourceVersion}); err != nil && !apierrors.IsNotFound(err) {
+		failures = append(failures, fmt.Errorf("remove sandbox-held route: %w", err))
+	}
 	sts := &appsv1.StatefulSet{}
-	key := types.NamespacedName{Namespace: namespace, Name: instanceServiceName(agent.Name)}
+	key.Name = instanceServiceName(agent.Name)
 	if err := reader.Get(ctx, key, sts); err != nil {
 		if !apierrors.IsNotFound(err) {
 			failures = append(failures, fmt.Errorf("inspect sandbox-held workload: %w", err))
@@ -196,17 +278,6 @@ func (r *AgentReconciler) stopSandboxBuiltin(ctx context.Context, agent *cetirun
 		if err := r.Patch(ctx, sts, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
 			failures = append(failures, fmt.Errorf("stop sandbox-held workload: %w", err))
 		}
-	}
-	route := &istiov1beta1.VirtualService{}
-	key.Name = virtualServiceName(agent.Name)
-	if err := reader.Get(ctx, key, route); err != nil {
-		if !apierrors.IsNotFound(err) {
-			failures = append(failures, fmt.Errorf("inspect sandbox-held route: %w", err))
-		}
-	} else if !sandboxBuiltinOwned(route, agent) {
-		failures = append(failures, fmt.Errorf("sandbox-held route ownership is unconfirmed; recovery is required"))
-	} else if err := r.Delete(ctx, route, client.Preconditions{UID: &route.UID, ResourceVersion: &route.ResourceVersion}); err != nil && !apierrors.IsNotFound(err) {
-		failures = append(failures, fmt.Errorf("remove sandbox-held route: %w", err))
 	}
 	return errors.Join(failures...)
 }

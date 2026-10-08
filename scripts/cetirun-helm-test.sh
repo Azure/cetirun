@@ -136,10 +136,10 @@ gateway_output=$(helm_template "${release_name}" "${chart_dir}" \
   --set networkPolicy.gatewayNamespace=cetirun-system \
   --set networkPolicy.gatewayPort=4000 \
   --set sidecarScope.enabled=true)
-grep -A4 -q 'name: OPENAI_API_KEY' <<< "$gateway_output" || { echo "FAIL: routed Hermes is missing OPENAI_API_KEY" >&2; exit 1; }
+grep -A4 -q 'name: CETIRUN_GATEWAY_API_KEY' <<< "$gateway_output" || { echo "FAIL: routed Hermes is missing its isolated Gateway key variable" >&2; exit 1; }
 grep -A4 -q 'name: ai-gateway-virtual-key' <<< "$gateway_output" || { echo "FAIL: routed Hermes does not reference the virtual-key Secret" >&2; exit 1; }
-grep -q 'name: OPENAI_BASE_URL' <<< "$gateway_output" || { echo "FAIL: routed Hermes is missing OPENAI_BASE_URL" >&2; exit 1; }
-grep -q 'value: "http://cetirun-ai-gateway.cetirun-system.svc.cluster.local:4000/v1"' <<< "$gateway_output" || { echo "FAIL: routed Hermes has no Gateway base URL" >&2; exit 1; }
+grep -q 'api: http://cetirun-ai-gateway.cetirun-system.svc.cluster.local:4000/v1' <<< "$gateway_output" || { echo "FAIL: routed Hermes has no Gateway base URL" >&2; exit 1; }
+grep -q 'key_env: CETIRUN_GATEWAY_API_KEY' <<< "$gateway_output" || { echo "FAIL: routed Hermes config does not select the isolated Gateway key variable" >&2; exit 1; }
 
 # Agent Identity injects only the typed Broker endpoint, keeps the default
 # Kubernetes API token unmounted, and allows only Broker egress.
