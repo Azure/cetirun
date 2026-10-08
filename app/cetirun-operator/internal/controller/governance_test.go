@@ -380,6 +380,12 @@ func TestManagedGatewayGroupPollutionBlocksAnExistingGrant(t *testing.T) {
 	if !gateway.keys[token].Blocked || agent.Status.AIGateway.Reason != aiGatewayReasonPolicyReprojection {
 		t.Fatalf("the old grant remained usable after catalog pollution: key=%+v status=%+v", gateway.keys[token], agent.Status.AIGateway)
 	}
+	if err := r.reconcileAIGateway(ctx, agent, true); err == nil {
+		t.Fatal("a polluted managed group unexpectedly produced a grant")
+	}
+	if !gateway.keys[token].Blocked || agent.Status.AIGateway.Reason != aiGatewayReasonPolicyReprojection {
+		t.Fatalf("a failed replacement grant lost ownership of the temporary block: key=%+v status=%+v", gateway.keys[token], agent.Status.AIGateway)
+	}
 	gateway.shared = gateway.shared[:len(gateway.shared)-1]
 	if err := r.reconcileAIGateway(ctx, agent, true); err != nil {
 		t.Fatal("the same key did not recover after the collision was removed:", err)

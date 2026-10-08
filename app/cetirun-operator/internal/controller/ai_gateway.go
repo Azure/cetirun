@@ -434,7 +434,14 @@ func ensureAIGatewayStatus(instance *cetirunv1alpha1.Agent) *cetirunv1alpha1.AIG
 func aiGatewayDegraded(instance *cetirunv1alpha1.Agent, reason string, err error) error {
 	status := ensureAIGatewayStatus(instance)
 	status.Phase = cetirunv1alpha1.AIGatewayPhaseDegraded
-	status.Reason = reason
+	// Reason is also the durable ownership receipt for a block made by the
+	// operator. Keep that receipt while reporting the more specific failure on
+	// AIGatewayReady. Otherwise a transient grant/catalog failure after the
+	// key was blocked would relabel it as an unknown administrator block, and
+	// the operator could never safely restore the same key after recovery.
+	if !aiGatewayOperatorOwnedBlock(status.Reason) {
+		status.Reason = reason
+	}
 	setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionAIGatewayReady,
 		metav1.ConditionFalse, reason, err.Error())
 	return err
