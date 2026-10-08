@@ -20,6 +20,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
@@ -300,9 +301,11 @@ func TestWriterExplicitEnrollmentAndMissingHistory(t *testing.T) {
 		t.Fatal("enrollment retry changed the original history")
 	}
 	object := f.object(t)
-	if !reflect.DeepEqual(object.OwnerReferences, []metav1.OwnerReference{sandboxworkload.AgentOwner("demo", "agent-uid")}) ||
+	expectedOwner := sandboxworkload.AgentOwner("demo", "agent-uid")
+	expectedOwner.BlockOwnerDeletion = ptr.To(false)
+	if !reflect.DeepEqual(object.OwnerReferences, []metav1.OwnerReference{expectedOwner}) ||
 		!reflect.DeepEqual(object.Finalizers, []string{JournalFinalizer}) || object.Namespace != "operator-state" {
-		t.Fatal("enrollment omitted UID ownership or retention protection")
+		t.Fatal("enrollment must retain protected UID ownership without blocking foreground Agent deletion")
 	}
 	changed := f.lifetime
 	changed.Home.UID = "replacement-home"
@@ -358,7 +361,8 @@ func TestWriterJournalRejectsForeignReleasedAndCorruptHistory(t *testing.T) {
 		"owner absent":         func(o *corev1.ConfigMap) { o.OwnerReferences = nil },
 		"multiple owners":      func(o *corev1.ConfigMap) { o.OwnerReferences = append(o.OwnerReferences, o.OwnerReferences[0]) },
 		"controller absent":    func(o *corev1.ConfigMap) { o.OwnerReferences[0].Controller = nil },
-		"block deletion false": func(o *corev1.ConfigMap) { value := false; o.OwnerReferences[0].BlockOwnerDeletion = &value },
+		"block deletion true":  func(o *corev1.ConfigMap) { o.OwnerReferences[0].BlockOwnerDeletion = ptr.To(true) },
+		"block deletion nil":   func(o *corev1.ConfigMap) { o.OwnerReferences[0].BlockOwnerDeletion = nil },
 		"Agent annotation":     func(o *corev1.ConfigMap) { o.Annotations[sandboxworkload.AgentUIDAnnotation] = "foreign" },
 		"lifetime annotation":  func(o *corev1.ConfigMap) { o.Annotations[lifetimeAnnotation] = "foreign" },
 		"missing finalizer":    func(o *corev1.ConfigMap) { o.Finalizers = nil },

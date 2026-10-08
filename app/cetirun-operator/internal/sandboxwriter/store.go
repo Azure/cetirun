@@ -22,6 +22,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	strictjson "sigs.k8s.io/json"
 )
@@ -57,6 +58,14 @@ func JournalName(lifetime Lifetime) string {
 	return "sandbox-writers-" + hex.EncodeToString(sum[:24])
 }
 
+func journalOwner(lifetime Lifetime) metav1.OwnerReference {
+	owner := sandboxworkload.AgentOwner(lifetime.Agent.Name, lifetime.Agent.UID)
+	// History outlives cleanup; its retained finalizer must not block the
+	// Agent's foreground deletion after the Agent's own cleanup completes.
+	owner.BlockOwnerDeletion = ptr.To(false)
+	return owner
+}
+
 // Enroll is an explicit, create-only assertion by trusted enrollment authority
 // that this journal covers the complete lifetime from birth, before any possible
 // writer. It never adopts or resets an existing journal. After an ambiguous
@@ -76,7 +85,7 @@ func (s Store) Enroll(ctx context.Context, lifetime Lifetime, enrollmentID strin
 			sandboxworkload.AgentUIDAnnotation:  string(lifetime.Agent.UID),
 			lifetimeAnnotation:                  JournalName(lifetime),
 		},
-		OwnerReferences: []metav1.OwnerReference{sandboxworkload.AgentOwner(lifetime.Agent.Name, lifetime.Agent.UID)},
+		OwnerReferences: []metav1.OwnerReference{journalOwner(lifetime)},
 		Finalizers:      []string{JournalFinalizer},
 	}}
 	if err := encodeRecord(object, record); err != nil {
@@ -168,7 +177,7 @@ func (s Store) decode(object *corev1.ConfigMap, lifetime Lifetime) (Snapshot, er
 	if object.Name != JournalName(lifetime) || object.Namespace != s.Namespace ||
 		!boundedValue(string(object.UID), 128) || !boundedValue(object.ResourceVersion, 128) ||
 		(object.Kind != "" && object.Kind != "ConfigMap") || (object.APIVersion != "" && object.APIVersion != "v1") ||
-		!reflect.DeepEqual(object.OwnerReferences, []metav1.OwnerReference{sandboxworkload.AgentOwner(lifetime.Agent.Name, lifetime.Agent.UID)}) ||
+		!reflect.DeepEqual(object.OwnerReferences, []metav1.OwnerReference{journalOwner(lifetime)}) ||
 		object.Annotations[sandboxworkload.AgentNameAnnotation] != lifetime.Agent.Name ||
 		object.Annotations[sandboxworkload.AgentUIDAnnotation] != string(lifetime.Agent.UID) ||
 		object.Annotations[lifetimeAnnotation] != JournalName(lifetime) {
