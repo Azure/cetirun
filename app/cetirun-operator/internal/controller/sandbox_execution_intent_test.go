@@ -17,10 +17,12 @@ import (
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxbinding"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxcoordination"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxpolicy"
 	w "github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxwriter"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
@@ -99,6 +101,48 @@ func TestSandboxExecutionIntentPinsHeldNativePreparation(t *testing.T) {
 			}
 			assertSandboxPrepared(t, f)
 		})
+	}
+}
+
+func TestSandboxExecutionAcceptsMaximumPreparedSources(t *testing.T) {
+	ctx := context.Background()
+	f, target := executionIntentFixture(t, "hermes")
+	additional := 128 - len(f.expectation(t).Sources)
+	if additional <= 0 {
+		t.Fatal("fixture must leave room for approved role inputs")
+	}
+	platform := f.config.Platforms[api.SandboxKata]
+	for i := range additional {
+		role := &rbacv1.ClusterRole{ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("input-role-%03d", i)}}
+		if err := f.client.Create(ctx, role); err != nil {
+			t.Fatal(err)
+		}
+		platform.Grants = append(platform.Grants, sandboxpolicy.ApprovedGrant{
+			PolicyUID: f.fixture.Policy.UID,
+			RoleRef:   rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: role.Name},
+			RoleUID:   role.UID, RoleResourceVersion: role.ResourceVersion, Revision: "synthetic-approval",
+			Rules: []rbacv1.PolicyRule{},
+		})
+	}
+	f.config.Platforms[api.SandboxKata] = platform
+	if err := f.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	expected := f.expectation(t)
+	if len(expected.Sources) != 128 || len(f.current(t).Spec.Helm.Values) != 0 {
+		t.Fatal("fixture did not produce exactly 128 prepared inputs")
+	}
+	target.Binding, target.Revision = expected.Binding, expected.Revision
+	intent, err := f.reconciler.SandboxExecutionIntent(ctx, f.current(t), target)
+	if err != nil || len(intent.Sources) != 129 {
+		t.Fatalf("valid maximum preparation failed execution capture: sources=%d err=%v", len(intent.Sources), err)
+	}
+	intent.Sources = append(intent.Sources, w.SourceReference{
+		APIVersion: "v1", Kind: "ConfigMap", Namespace: "cetirun-system",
+		Name: "overflow", UID: "overflow-uid", ResourceVersion: "1",
+	})
+	if err := intent.Validate(); err == nil {
+		t.Fatal("execution inventory accepted a 130th source")
 	}
 }
 

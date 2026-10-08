@@ -35,7 +35,9 @@ const (
 	Finalizer  = "sandbox.cetirun.microsoft.com/coordination"
 	MaxBytes   = 512 * 1024
 	MaxEntries = 128
-	MaxSources = 128
+	// Held preparation permits 128 inputs; coordination additionally pins
+	// the prepared expectation ConfigMap itself.
+	MaxSources = 129
 	Reserved   = Phase("reserved")
 	Starting   = Phase("starting")
 	Running    = Phase("running")

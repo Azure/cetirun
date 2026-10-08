@@ -135,6 +135,9 @@ Every execution recheck also refreshes whole-generation prerequisite approval
 and compares it with the pinned preparation receipt, excluding only the
 observation timestamp. Withdrawal, missing providers, changed approvals and
 stale observations fail without restaging Helm or quiescing a running writer.
+The execution inventory accepts up to 129 identities: all 128 supported
+preparation inputs plus the preparation-state ConfigMap. Larger inventories
+fail without truncation.
 
 One UID-pinned controller-state object serializes shared-source readers and
 exclusive changes with API resource-version comparisons. Running and stopping
