@@ -65,12 +65,24 @@ func (r *AgentReconciler) captureExecutionSourceDigests(ctx context.Context, int
 	return digests, ctx.Err()
 }
 
-func (r *AgentReconciler) verifyEffectiveExecutionSources(ctx context.Context, intent sandboxcoordination.Intent) error {
+func (r *AgentReconciler) verifyEffectiveExecutionSources(ctx context.Context, intent sandboxcoordination.Intent, running bool) error {
 	if len(intent.Sources) == 0 || len(intent.Sources) > sandboxcoordination.MaxSources {
 		return fmt.Errorf("execution source inventory exceeds its bound")
 	}
 	box := intent.SelectedSandbox()
 	for _, source := range intent.Sources {
+		if running && source.IsAgent() {
+			if err := r.verifyRunningAgentSource(ctx, source); err != nil {
+				return err
+			}
+			continue
+		}
+		if running && source == intent.Preparation {
+			if _, err := r.readSandboxRunningExpectation(ctx, intent); err != nil {
+				return err
+			}
+			continue
+		}
 		if source.APIVersion == "apps/v1" && source.Kind == "StatefulSet" &&
 			source.Namespace == intent.Namespace.Name && source.Name == intent.Workload.Name {
 			continue

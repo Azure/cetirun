@@ -214,15 +214,20 @@ their resource version. Configuration admission and Kubernetes authorization
 still apply.
 
 Sandbox and AgentPolicy updates separately compare the existing effective
-execution digest before and after the proposed write. When it is unchanged,
-the reservation records that digest: existing and new executions with the same
-source UID and digest can coexist with harmless metadata updates. Spec,
+execution digest before and after the proposed write. Typed and unstructured
+AgentPolicy inputs share the same canonical representation of schema-defaulted
+false booleans and empty network arrays; optional empty grant lists use their
+omitted form. Unknown authoritative fields and explicit control values remain
+part of the digest. When it is unchanged, the reservation records that digest:
+existing and new executions with the same source UID and digest can coexist with
+harmless metadata updates. Spec,
 ownership, finalizer and control-metadata changes still exclude affected
 executions. The complete mutation digest continues to authorize every field,
 and competing updates of the same source still serialize.
 Older reservations without this optional digest remain conservative during
 recovery; their scope is never rewritten. Upgrade all coordination readers
 before issuing the new records: older strict readers reject the extra field.
+Previously recorded mismatched digests are not rewritten or accepted as aliases.
 This does not enable execution or replace source rechecks.
 
 After a lost reply, use the same input files to observe the original operation.
@@ -267,6 +272,67 @@ or change uses that source. Only existing finalizers may be removed; other
 content and all outstanding reservations stay unchanged. Missing authority is
 not a cleanup bypass. Ordinary configuration updates still require
 nonterminating inputs.
+
+### Running-input verification
+
+`CheckSandboxExecutionSources` remains the held-preparation check. A qualified
+runtime integration can use `SandboxRunningStatusInput` after its controlled
+handoff: the Agent and persisted expectation must both be unheld, the workload
+must still match its enrolled UID/template with exactly one desired replica,
+and the actual Pod and Node must match the separately enrolled execution.
+The returned current resolution and plan contain no observation or start permit.
+Pod readiness and Node health are not enforcement evidence.
+
+Held intent capture now pins a separate `runningPreparationDigest`. It permits
+only the expected hold transition, the independently rechecked current Agent
+intent, and refreshed observation versions for sources whose effective content
+is checked separately. Ownership, namespace/HOME identity, template, revision,
+source identities and non-effective version pins remain protected. Existing
+held tickets without the optional field remain readable, but cannot use the
+running-input path without a newly verified, stopped enrollment. Older strict
+readers cannot read new records containing the field; keep compatible readers
+until these records have completed cleanup.
+
+The concrete Kubernetes prerequisite source has an explicit `ResolveRunning`
+path. It retains metadata-only Secret reads and exact input/approval checks
+without requiring a preparation hold, re-running Helm or calling writer
+quiescence. Other prerequisite adapters must explicitly support running reads;
+the controller does not silently reuse their held-only resolver.
+Placement checks share the existing scheduled-Pod topology validation.
+
+The existing controller still dispatches governed Agents to held preparation.
+No code here changes finalizers, expectations or replicas to start an Agent.
+Real runtime gating, independent observations, all-source mutation coordination
+and model/tool validation remain prerequisites for enabling execution.
+
+### Guarded Sandbox status persistence
+
+`SandboxExecutionStatusWriter` provides the status component for a separately
+qualified runtime adapter. `CommitReadiness` requires the exact current Running
+ticket, running-input verification and independent complete, fresh enforcement
+evidence. It uses the existing status helper and one UID/resource-version-pinned
+merge patch to record Sandbox enforcement and applied history. The observation
+age is explicitly bounded to at most one minute and rechecked before and after
+the write. Unchanged status is revalidated without rewriting it.
+
+This component does not create routes, assign a new access URL, set global Agent
+`Ready=True` or change the phase to Ready. Disabled ingress keeps the URL empty.
+An acknowledged status write followed by failed revalidation is returned as an
+error, not reported as a verified transition. Status persistence is not an
+atomic transaction with the coordination object or the physical runtime; the
+caller must execute coordinated cleanup on uncertainty.
+
+`ClearReadiness` requires the exact Stopping ticket but not current policy or
+prerequisite availability. It clears reported readiness/access, follows the
+current suspension/deletion generation and preserves applied history. An opaque
+stop marker forces the first clear to advance the Agent resource version, even
+if it was already nonready, so pending positive writes using the old version
+cannot overwrite it. Repeated identical clears are no-ops. This is status
+invalidation, not route withdrawal, process termination or writer fencing.
+
+Stock startup does not install this component as an execution adapter. Its
+unit and local API-server tests use synthetic runtime inputs and observations;
+they do not establish live enforcement or an end-to-end governed Agent run.
 
 ### Existing activation boundary
 

@@ -72,6 +72,141 @@ func TestExecutionDigestRejectsSecretsAndMetadataOnlyEvidence(t *testing.T) {
 	}
 }
 
+func executionPolicyFixture() *unstructured.Unstructured {
+	return &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": api.GroupVersion.String(), "kind": "AgentPolicy",
+		"metadata": map[string]any{"name": "policy", "uid": "policy-uid", "resourceVersion": "1"},
+		"spec": map[string]any{
+			"sandboxSelection": map[string]any{"allowMultiple": false},
+			"security":         map[string]any{"readOnlyRootFilesystem": true},
+			"entraID":          map[string]any{"enabled": false},
+			"network": map[string]any{
+				"blockedCIDRs": []any{}, "blockedFQDNs": []any{},
+				"blockedPorts": []any{}, "allowedInternalCIDRs": []any{},
+				"ingress": map[string]any{"mode": "authenticated", "requireMTLS": false},
+			},
+		},
+	}}
+}
+
+func TestAgentPolicyExecutionDigestMatchesAPIDefaults(t *testing.T) {
+	for _, variant := range []string{"defaults", "explicit values", "optional grant lists"} {
+		t.Run(variant, func(t *testing.T) {
+			raw := executionPolicyFixture()
+			if variant == "explicit values" {
+				for _, path := range [][]string{
+					{"sandboxSelection", "allowMultiple"}, {"entraID", "enabled"}, {"network", "ingress", "requireMTLS"},
+				} {
+					if err := unstructured.SetNestedField(raw.Object, true, append([]string{"spec"}, path...)...); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if variant == "optional grant lists" {
+					if err := unstructured.SetNestedField(raw.Object, map[string]any{
+						"serviceAccountName": "synthetic-tools", "roleBindings": []any{},
+						"clusterRoleBindings": []any{map[string]any{"clusterRoleName": "view"}},
+					}, "spec", "kubernetesAccess"); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if err := unstructured.SetNestedSlice(raw.Object, []any{"203.0.113.0/24"}, "spec", "network", "blockedCIDRs"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			policy := &api.AgentPolicy{}
+			if err := runtime.DefaultUnstructuredConverter.FromUnstructured(raw.Object, policy); err != nil {
+				t.Fatal(err)
+			}
+			originalRaw, originalPolicy := raw.DeepCopy(), policy.DeepCopy()
+			fromAPI, err := ExecutionObjectDigest(raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			fromTyped, err := ExecutionObjectDigest(policy)
+			if err != nil || fromAPI != fromTyped {
+				t.Fatal("typed and API-defaulted policy digest differ:", err)
+			}
+			if variant != "optional grant lists" {
+				body := runtime.DeepCopyJSON(originalRaw.Object)
+				for _, key := range []string{"apiVersion", "kind", "metadata", "status"} {
+					delete(body, key)
+				}
+				originalDigest, err := inputDigest(struct {
+					Body     map[string]any
+					Metadata executionMetadata
+				}{body, effectiveMetadata(originalRaw)})
+				if err != nil || originalDigest != fromAPI {
+					t.Fatal("defaulted authoritative representation changed:", err)
+				}
+			}
+			if !reflect.DeepEqual(raw, originalRaw) || !reflect.DeepEqual(policy, originalPolicy) {
+				t.Fatal("execution digest changed caller-owned content")
+			}
+			if err := unstructured.SetNestedField(raw.Object, true, "spec", "futureControl"); err != nil {
+				t.Fatal(err)
+			}
+			changed, err := ExecutionObjectDigest(raw)
+			if err != nil || changed == fromAPI {
+				t.Fatal("unknown authoritative fields were dropped from the execution digest:", err)
+			}
+		})
+	}
+}
+
+func TestAgentPolicyExecutionDigestPreservesExplicitControls(t *testing.T) {
+	policy := executionPolicyFixture()
+	initial, err := ExecutionObjectDigest(policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range [][]string{
+		{"sandboxSelection", "allowMultiple"}, {"entraID", "enabled"}, {"network", "ingress", "requireMTLS"},
+		{"network", "blockedCIDRs"}, {"network", "blockedFQDNs"}, {"network", "blockedPorts"}, {"network", "allowedInternalCIDRs"},
+	} {
+		omitted := policy.DeepCopy()
+		unstructured.RemoveNestedField(omitted.Object, append([]string{"spec"}, path...)...)
+		got, err := ExecutionObjectDigest(omitted)
+		if err != nil || got != initial {
+			t.Fatal("omitting a zero-valued schema default changed the digest:", path, err)
+		}
+	}
+	for _, change := range []struct {
+		name  string
+		path  []string
+		value any
+	}{
+		{"selection", []string{"sandboxSelection", "allowMultiple"}, true},
+		{"identity", []string{"entraID", "enabled"}, true},
+		{"mTLS", []string{"network", "ingress", "requireMTLS"}, true},
+		{"read-only root", []string{"security", "readOnlyRootFilesystem"}, false},
+		{"CIDR", []string{"network", "blockedCIDRs"}, []any{"203.0.113.0/24"}},
+		{"hostname", []string{"network", "blockedFQDNs"}, []any{"blocked.example.com"}},
+		{"port", []string{"network", "blockedPorts"}, []any{map[string]any{"port": int64(8080), "protocol": "TCP"}}},
+		{"internal access", []string{"network", "allowedInternalCIDRs"}, []any{
+			map[string]any{"cidr": "203.0.113.0/24", "ports": []any{map[string]any{"port": int64(8443), "protocol": "TCP"}}},
+		}},
+		{"unknown control", []string{"network", "futureControl"}, true},
+	} {
+		t.Run(change.name, func(t *testing.T) {
+			changed := policy.DeepCopy()
+			if err := unstructured.SetNestedField(changed.Object, change.value, append([]string{"spec"}, change.path...)...); err != nil {
+				t.Fatal(err)
+			}
+			got, err := ExecutionObjectDigest(changed)
+			if err != nil || got == initial {
+				t.Fatal("explicit authoritative control was dropped:", err)
+			}
+		})
+	}
+	malformed := policy.DeepCopy()
+	if err := unstructured.SetNestedField(malformed.Object, "invalid", "spec", "network"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ExecutionObjectDigest(malformed); err == nil {
+		t.Fatal("malformed policy was silently replaced by defaults")
+	}
+}
+
 func TestTeamEffectiveSelectionExcludesUnrelatedSlots(t *testing.T) {
 	team := &api.Team{ObjectMeta: metav1.ObjectMeta{Name: "team", UID: "team-uid", ResourceVersion: "1"},
 		Spec: api.TeamSpec{NormalAgentPolicyRef: "normal", AdminAgentPolicyRef: "admin",

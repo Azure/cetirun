@@ -14,6 +14,7 @@ import (
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -126,6 +127,12 @@ func ExecutionObjectDigest(object client.Object) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	_, typedPolicy := object.(*api.AgentPolicy)
+	if typedPolicy || object.GetObjectKind().GroupVersionKind() == api.GroupVersion.WithKind("AgentPolicy") {
+		if err := canonicalPolicyExecutionBody(body); err != nil {
+			return "", fmt.Errorf("AgentPolicy execution inputs: %w", err)
+		}
+	}
 	if status, ok := body["status"].(map[string]any); ok && status["phase"] == string(corev1.ClaimLost) {
 		return "", fmt.Errorf("lost storage cannot authorize execution")
 	}
@@ -136,6 +143,42 @@ func ExecutionObjectDigest(object client.Object) (string, error) {
 		Body     map[string]any
 		Metadata executionMetadata
 	}{body, effectiveMetadata(object)})
+}
+
+func canonicalPolicyExecutionBody(body map[string]any) error {
+	// Typed serialization omits these schema-defaulted zero values. Restore
+	// their API shape without a lossy typed decode of authoritative fields.
+	for _, entry := range []struct {
+		path  []string
+		value any
+	}{
+		{[]string{"spec", "sandboxSelection", "allowMultiple"}, false},
+		{[]string{"spec", "entraID", "enabled"}, false},
+		{[]string{"spec", "network", "ingress", "requireMTLS"}, false},
+		{[]string{"spec", "network", "blockedCIDRs"}, []any{}},
+		{[]string{"spec", "network", "blockedFQDNs"}, []any{}},
+		{[]string{"spec", "network", "blockedPorts"}, []any{}},
+		{[]string{"spec", "network", "allowedInternalCIDRs"}, []any{}},
+	} {
+		if _, found, err := unstructured.NestedFieldNoCopy(body, entry.path...); err != nil {
+			return err
+		} else if !found {
+			if err := unstructured.SetNestedField(body, entry.value, entry.path...); err != nil {
+				return err
+			}
+		}
+	}
+	// Optional grant lists have no schema default; their empty form is omitted.
+	for _, field := range []string{"roleBindings", "clusterRoleBindings"} {
+		values, found, err := unstructured.NestedSlice(body, "spec", "kubernetesAccess", field)
+		if err != nil {
+			return err
+		}
+		if found && len(values) == 0 {
+			unstructured.RemoveNestedField(body, "spec", "kubernetesAccess", field)
+		}
+	}
+	return nil
 }
 
 type executionMetadata struct {

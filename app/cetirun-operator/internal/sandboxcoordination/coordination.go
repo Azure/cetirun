@@ -62,21 +62,22 @@ type EnrolledTarget struct {
 // Intent contains identities and digests only. Expected must be independently
 // enrolled before consulting an enforcement observation, not copied from it.
 type Intent struct {
-	Agent            w.ObjectIdentity           `json:"agent"`
-	AgentGeneration  int64                      `json:"agentGeneration"`
-	Namespace        w.ObjectIdentity           `json:"namespace"`
-	Home             w.ObjectIdentity           `json:"home"`
-	Workload         w.ObjectIdentity           `json:"workload"`
-	WorkloadDigest   string                     `json:"workloadDigest"`
-	Expected         sandbox.ExecutionIdentity  `json:"expected"`
-	Writer           sandboxwriter.Writer       `json:"writer"`
-	WriterJournal    w.ObjectIdentity           `json:"writerJournal"`
-	Preparation      w.SourceReference          `json:"preparation"`
-	Placement        *w.PlacementBinding        `json:"placement"`
-	Sources          []w.SourceReference        `json:"sources"`
-	SourceDigests    map[string]string          `json:"sourceDigests"`
-	TeamSharedDigest string                     `json:"teamSharedDigest"`
-	IngressMode      api.AgentPolicyIngressMode `json:"ingressMode"`
+	Agent                    w.ObjectIdentity           `json:"agent"`
+	AgentGeneration          int64                      `json:"agentGeneration"`
+	Namespace                w.ObjectIdentity           `json:"namespace"`
+	Home                     w.ObjectIdentity           `json:"home"`
+	Workload                 w.ObjectIdentity           `json:"workload"`
+	WorkloadDigest           string                     `json:"workloadDigest"`
+	Expected                 sandbox.ExecutionIdentity  `json:"expected"`
+	Writer                   sandboxwriter.Writer       `json:"writer"`
+	WriterJournal            w.ObjectIdentity           `json:"writerJournal"`
+	Preparation              w.SourceReference          `json:"preparation"`
+	RunningPreparationDigest string                     `json:"runningPreparationDigest,omitempty"`
+	Placement                *w.PlacementBinding        `json:"placement"`
+	Sources                  []w.SourceReference        `json:"sources"`
+	SourceDigests            map[string]string          `json:"sourceDigests"`
+	TeamSharedDigest         string                     `json:"teamSharedDigest"`
+	IngressMode              api.AgentPolicyIngressMode `json:"ingressMode"`
 }
 
 func (intent Intent) Validate() error {
@@ -594,6 +595,9 @@ func validateRecord(state record) error {
 }
 
 func validateIntent(intent Intent) error {
+	if intent.RunningPreparationDigest != "" && !digest(intent.RunningPreparationDigest) {
+		return fmt.Errorf("%w: running preparation digest is invalid", ErrUnavailable)
+	}
 	if !identity(intent.Agent) || !identity(intent.Namespace) || !identity(intent.Home) ||
 		!identity(intent.Workload) || !digest(intent.WorkloadDigest) || !digest(intent.TeamSharedDigest) ||
 		len(validation.IsDNS1123Label(intent.Namespace.Name)) != 0 ||
