@@ -30,6 +30,18 @@ func (h *Handler) validateCoordinated(ctx context.Context, request admission.Req
 	if garbageCollectorFinalizerUpdate(request, object, previous) {
 		return response
 	}
+	if !previous.GetDeletionTimestamp().IsZero() {
+		if !rawMetadataOnly(request) {
+			return admission.Denied("CoordinationRequired: terminating configuration may only remove finalizers")
+		}
+		if err := h.coordination.AuthorizeConfigurationFinalization(ctx, previous, object); err != nil {
+			if errors.Is(err, sandboxcoordination.ErrConflict) {
+				return admission.Denied("CoordinationRequired: finalizer removal requires unchanged configuration and no outstanding operations")
+			}
+			return dependencyError(ctx, err)
+		}
+		return response
+	}
 	if err := h.coordination.AuthorizeConfigurationUpdate(ctx, previous, object); err != nil {
 		if errors.Is(err, sandboxcoordination.ErrConflict) {
 			return admission.Denied("CoordinationRequired: configuration updates require the exact submitted change reservation; use sandbox-config-change")

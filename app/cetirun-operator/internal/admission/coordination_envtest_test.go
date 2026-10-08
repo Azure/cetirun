@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -23,6 +24,7 @@ import (
 	w "github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
 	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -165,6 +167,108 @@ func TestConfigurationCoordinationAPIServer(t *testing.T) {
 	}
 	if err := store.CheckChange(ctx, recovered); !errors.Is(err, sandboxcoordination.ErrConflict) {
 		t.Fatal("observed completed mutation retained its reservation:", err)
+	}
+
+	t.Run("schema-defaulted protocol", func(t *testing.T) {
+		original := current.DeepCopy()
+		proposed := original.DeepCopy()
+		proposed.Spec.Network.BlockedPorts = []api.AgentPolicyPort{{Port: 8080}}
+		ticket, err := store.AcquireConfigurationChange(ctx, original, proposed)
+		if err != nil {
+			t.Fatal(err)
+		}
+		adapter, err := sandboxcoordination.NewKubernetesChangeAdapter(storage, storage, original, proposed)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.ReconcileChange(ctx, ticket, adapter); err != nil {
+			t.Fatal("schema defaults invalidated the exact coordinated write:", err)
+		}
+		if err := storage.Get(ctx, client.ObjectKeyFromObject(current), current); err != nil {
+			t.Fatal(err)
+		}
+		if len(current.Spec.Network.BlockedPorts) != 1 ||
+			current.Spec.Network.BlockedPorts[0].Protocol != corev1.ProtocolTCP {
+			t.Fatal("defaulted protocol did not persist through real admission")
+		}
+		if _, err := store.ReadConfigurationChange(ctx, original, proposed); !errors.Is(err, sandboxcoordination.ErrUnavailable) {
+			t.Fatal("completed defaulted write retained a reservation:", err)
+		}
+	})
+
+	for _, scenario := range []string{"unreserved", "reserved", "changing"} {
+		t.Run("finalization/"+scenario, func(t *testing.T) {
+			policy := &api.AgentPolicy{ObjectMeta: metav1.ObjectMeta{
+				Name: "finalization-" + scenario, Finalizers: []string{"example.com/cleanup", "example.com/retain"},
+			}}
+			if err := storage.Create(ctx, policy); err != nil {
+				t.Fatal(err)
+			}
+			var pending sandboxcoordination.ChangeTicket
+			if scenario != "unreserved" {
+				proposed := policy.DeepCopy()
+				proposed.Spec.Network.BlockedCIDRs = []string{"198.51.100.0/24"}
+				pending, err = store.AcquireConfigurationChange(ctx, policy, proposed)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if scenario == "changing" {
+					pending, err = store.BeginChange(ctx, pending)
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			if err := storage.Delete(ctx, policy); err != nil {
+				t.Fatal(err)
+			}
+			if err := storage.Get(ctx, client.ObjectKeyFromObject(policy), policy); err != nil {
+				t.Fatal(err)
+			}
+			cleaned := policy.DeepCopy()
+			cleaned.Finalizers = []string{"example.com/retain"}
+			if scenario != "unreserved" {
+				if err := storage.Update(ctx, cleaned); err == nil {
+					t.Fatal("finalization bypassed an outstanding change")
+				}
+				if err := store.CheckChange(ctx, pending); err != nil {
+					t.Fatal("finalization altered the outstanding change:", err)
+				}
+				return
+			}
+			tampered := cleaned.DeepCopy()
+			tampered.Spec.Network.BlockedCIDRs = []string{"203.0.113.0/24"}
+			if err := storage.Update(ctx, tampered); err == nil {
+				t.Fatal("finalization allowed a concurrent spec change")
+			}
+			originalState := &corev1.ConfigMap{}
+			if err := storage.Get(ctx, client.ObjectKeyFromObject(state), originalState); err != nil {
+				t.Fatal(err)
+			}
+			if err := storage.Update(ctx, cleaned.DeepCopy(), client.DryRunAll); err != nil {
+				t.Fatal("authorized finalizer dry run failed:", err)
+			}
+			if err := storage.Get(ctx, client.ObjectKeyFromObject(policy), policy); err != nil || len(policy.Finalizers) != 2 {
+				t.Fatal("dry-run finalization changed the source:", err)
+			}
+			if err := storage.Update(ctx, cleaned); err != nil {
+				t.Fatal("authorized finalizer removal failed:", err)
+			}
+			cleaned.Finalizers = nil
+			if err := storage.Update(ctx, cleaned); err != nil {
+				t.Fatal("last finalizer removal failed:", err)
+			}
+			if err := storage.Get(ctx, client.ObjectKeyFromObject(cleaned), &api.AgentPolicy{}); !apierrors.IsNotFound(err) {
+				t.Fatal("configuration deletion did not finish:", err)
+			}
+			currentState := &corev1.ConfigMap{}
+			if err := storage.Get(ctx, client.ObjectKeyFromObject(state), currentState); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(originalState, currentState) {
+				t.Fatal("finalization changed authority instead of checking it read-only")
+			}
+		})
 	}
 
 	state.Data[sandboxcoordination.DataKey] = "{}"

@@ -480,6 +480,14 @@ controller identity alone is not a bypass. Use the operator's explicit
 observe an update. Admission performs only reads, including for dry runs;
 missing, corrupt or replaced authority blocks matching updates.
 
+An already-terminating configuration can remove existing finalizers through its
+normal authorized update path without acquiring a new change ticket. This
+read-only cleanup check requires the exact current object, no other content
+changes, and no execution or change reservation using that configuration.
+It cannot add finalizers, alter policy, release an outstanding operation or
+proceed with missing authority. Dry runs leave both source and authority
+unchanged. The ordinary updater continues to reject terminating objects.
+
 This option covers configuration updates only, not create/delete, Agent changes,
 storage, Secrets or the other execution inputs. Existing status and narrow
 garbage-collector cleanup exclusions remain unchanged. It is not the complete

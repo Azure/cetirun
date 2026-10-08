@@ -223,6 +223,70 @@ func TestConfigurationCoordinationDefaultsRemainDisabled(t *testing.T) {
 		requestFor(t, admissionv1.Update, after, f.policy, "administrator")), true, "")
 }
 
+func TestConfigurationCoordinationFinalizerCleanup(t *testing.T) {
+	for _, scenario := range []string{"remove one", "remove all", "dry run", "unchanged", "add finalizer", "spec", "label", "member", "pending change", "missing authority"} {
+		t.Run(scenario, func(t *testing.T) {
+			ctx := context.Background()
+			f, store := coordinatedFixture(t)
+			policy := &api.AgentPolicy{ObjectMeta: metav1.ObjectMeta{
+				Name: "cleanup-policy", UID: "cleanup-policy-uid",
+				Finalizers: []string{"example.com/cleanup", "example.com/retain"},
+			}}
+			if err := f.client.Create(ctx, policy); err != nil {
+				t.Fatal(err)
+			}
+			if scenario == "pending change" {
+				proposed := policy.DeepCopy()
+				proposed.Spec.Network.BlockedCIDRs = []string{"203.0.113.0/24"}
+				if _, err := store.AcquireConfigurationChange(ctx, policy, proposed); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := f.client.Delete(ctx, policy); err != nil {
+				t.Fatal(err)
+			}
+			if err := f.client.Get(ctx, client.ObjectKeyFromObject(policy), policy); err != nil {
+				t.Fatal(err)
+			}
+			after := policy.DeepCopy()
+			after.Finalizers = []string{"example.com/retain"}
+			caller := "administrator"
+			switch scenario {
+			case "remove all":
+				after.Finalizers = nil
+			case "unchanged":
+				after.Finalizers = policy.Finalizers
+			case "add finalizer":
+				after.Finalizers = []string{"example.com/new"}
+			case "spec":
+				after.Spec.Network.BlockedCIDRs = []string{"203.0.113.0/24"}
+			case "label":
+				after.Labels = map[string]string{"example.com/changed": "true"}
+			case "member":
+				caller = "member"
+			case "missing authority":
+				f.handler.coordination.Identity.UID = "different-authority"
+			}
+			request := requestFor(t, admissionv1.Update, after, policy, caller)
+			request.DryRun = ptr.To(scenario == "dry run")
+			key := client.ObjectKey{Namespace: store.Namespace, Name: store.Identity.Name}
+			beforeState := &corev1.ConfigMap{}
+			if err := f.client.Get(ctx, key, beforeState); err != nil {
+				t.Fatal(err)
+			}
+			allowed := scenario == "remove one" || scenario == "remove all" || scenario == "dry run"
+			requireResponse(t, f.handler.Validate(ctx, request), allowed, "")
+			currentState := &corev1.ConfigMap{}
+			if err := f.client.Get(ctx, key, currentState); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(beforeState, currentState) {
+				t.Fatal("finalizer admission modified coordination state")
+			}
+		})
+	}
+}
+
 func TestConfigurationCoordinationRequiresStrictPinnedAuthority(t *testing.T) {
 	for _, test := range []struct {
 		name, uid, mode string

@@ -247,6 +247,15 @@ create missing state, grant privileges, bypass admission, qualify fencing or
 enable a workload. All other source writers and the physical runtime still need
 their own integrations before governed execution can be enabled.
 
+With coordinated configuration admission enabled, finalizer-only cleanup of an
+already-terminating Team, Sandbox or AgentPolicy uses normal authorized API
+updates, not `sandbox-config-change`. Admission checks the current source and
+UID-pinned authority read-only, and refuses cleanup while any recorded execution
+or change uses that source. Only existing finalizers may be removed; other
+content and all outstanding reservations stay unchanged. Missing authority is
+not a cleanup bypass. Ordinary configuration updates still require
+nonterminating inputs.
+
 ### Existing activation boundary
 
 The new Team bindings and Agent `sandboxRef` remain optional in this additive
