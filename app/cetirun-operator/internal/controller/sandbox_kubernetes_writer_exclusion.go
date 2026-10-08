@@ -38,9 +38,25 @@ func (s *KubernetesRWOPWriterExclusion) CheckQuiesced(ctx context.Context, agent
 		prerequisites.Home.Name == "" || prerequisites.Home.UID == "" {
 		return fmt.Errorf("%w: exact Kubernetes Sandbox identities are required", sandbox.ErrObservationUnavailable)
 	}
-	namespace := instanceNamespace(agent.Name)
+	namespaceName := instanceNamespace(agent.Name)
+	namespace := &corev1.Namespace{}
+	if err := s.APIReader.Get(ctx, types.NamespacedName{Name: namespaceName}, namespace); err != nil {
+		if apierrors.IsNotFound(err) && !agent.DeletionTimestamp.IsZero() {
+			// Kubernetes only finishes namespace deletion after all namespaced
+			// objects are gone. This is therefore a stronger cleanup fence than
+			// rediscovering the already deleted HOME, workload, and Pods by name.
+			return ctx.Err()
+		}
+		return fmt.Errorf("inspect Sandbox namespace: %w", err)
+	}
+	if namespace.UID != prerequisites.NamespaceUID || !sandboxBuiltinOwned(namespace, agent) {
+		return fmt.Errorf("%w: Sandbox namespace differs from the exact Agent-owned namespace", sandbox.ErrObservationUnavailable)
+	}
 	home := &corev1.PersistentVolumeClaim{}
-	if err := s.APIReader.Get(ctx, types.NamespacedName{Namespace: namespace, Name: prerequisites.Home.Name}, home); err != nil {
+	if err := s.APIReader.Get(ctx, types.NamespacedName{Namespace: namespaceName, Name: prerequisites.Home.Name}, home); err != nil {
+		if apierrors.IsNotFound(err) && !agent.DeletionTimestamp.IsZero() && !namespace.DeletionTimestamp.IsZero() {
+			return s.checkStoppedWorkloadAndPods(ctx, agent, namespaceName)
+		}
 		return fmt.Errorf("inspect Sandbox HOME: %w", err)
 	}
 	if home.UID != prerequisites.Home.UID || !home.DeletionTimestamp.IsZero() ||
@@ -48,6 +64,10 @@ func (s *KubernetesRWOPWriterExclusion) CheckQuiesced(ctx context.Context, agent
 		home.Annotations[sandboxworkload.AgentUIDAnnotation] != string(agent.UID) {
 		return fmt.Errorf("%w: Sandbox HOME must be the exact Agent-owned ReadWriteOncePod claim", sandbox.ErrObservationUnavailable)
 	}
+	return s.checkStoppedWorkloadAndPods(ctx, agent, namespaceName)
+}
+
+func (s *KubernetesRWOPWriterExclusion) checkStoppedWorkloadAndPods(ctx context.Context, agent *api.Agent, namespace string) error {
 	workload := &appsv1.StatefulSet{}
 	err := s.APIReader.Get(ctx, types.NamespacedName{Namespace: namespace, Name: instanceServiceName(agent.Name)}, workload)
 	if err != nil && !apierrors.IsNotFound(err) {
