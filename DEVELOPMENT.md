@@ -278,6 +278,36 @@ credentials. They do not start VS Code, run Docker or contact GitHub/Copilot.
 Image builds, rendered IDE checks and real Copilot tasks are separate checks;
 see [the example](examples/vscode-server/README.md).
 
+### Release-agent build storage
+
+The Azure Pipelines release job prepares Docker storage before building images.
+It uses `dockerStorageMount` (default `/mnt`) for Docker layers, BuildKit cache,
+and build scratch files instead of the OS disk. The helper logs filesystem sizes,
+free space, and inode usage, requires at least 64 GiB free on the selected mount
+and on both actual write destinations, and checks the active Docker data root
+after restarting the daemon. Existing child mounts and an already-configured
+Docker daemon receive the same capacity checks. This free-space threshold is a
+guardrail, not a measured maximum release-build size.
+
+`scripts/ci/prepare_docker_storage.py` is an operational helper for **disposable
+Linux CI agents only**, not a local validation command. It requires root,
+refuses to interrupt running containers, preserves unrelated daemon settings,
+and restores the original configuration if activation fails. It uses Docker's
+classic `overlay2` image store because the containerd image store does not follow
+Docker's `data-root`. Old image/cache directories are not deleted or migrated;
+the release starts with a fresh local Docker store and retains staged pushes and
+cache pruning between images. Subsequent tasks receive scratch storage via
+`TMPDIR`.
+
+If a temporary disk is insufficient, configure a larger data disk on the hosted
+pool and set `dockerStorageMount` to its Linux mount path. Adding a disk alone
+or increasing the number of agents does not relocate Docker storage. The pipeline
+helper does not change the hosted pool, resize disks, or modify other agents.
+
+Offline helper and pipeline-contract tests run with `make ci-test`. They mock
+Docker and service operations; only a separately authorized Linux-agent run can
+verify the actual mount layout, daemon activation, and release disk headroom.
+
 ### Documentation
 
 Check relative links, heading anchors, examples, and the commands you changed.
