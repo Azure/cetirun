@@ -363,6 +363,12 @@ exceptions in `scripts/license_headers.py` must retain their own notices.
 
   This installs only the manifest-pinned `kube-apiserver`, `etcd` and `kubectl`
   binaries, not a cluster, global tool replacement or a runtime qualification.
+  The focused `make -C app/cetirun-operator test-sandbox-lifecycle` target
+  exercises durable writer-history transitions with those same isolated API
+  servers. Provider responses and physical machine/storage identities are
+  synthetic. It tests persistence, conflicts and restart recovery, not actual
+  fencing, volume release or live Agent execution. No production provider is
+  installed or implicitly qualified by these checks.
 - Helm files under `templates/` are source templates. Rendered Kubernetes
   manifests are validation output, not replacements for those templates.
 - Keep `go.mod` and `go.sum` together when dependencies change. Keep the portal's

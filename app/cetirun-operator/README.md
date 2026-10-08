@@ -76,6 +76,43 @@ registration revision must represent qualified runtime/chart/topology/grant
 inventory, not merely the existence of a RuntimeClass.
 An observation validator checks an adapter's input; it does not generate evidence.
 
+### Durable writer-exclusion orchestration
+
+The [writer lifecycle package](internal/sandboxwriter/) records an explicitly
+enrolled Agent/namespace/HOME lifetime and its immutable historical writers in
+protected controller state. Enrollment must precede every possible writer;
+neither a missing journal nor a list of currently visible Pods proves an empty
+history. Each writer records the workload, Pod, Node, physical machine
+incarnation, epoch and storage identity. Conflicts, missing identities and
+history bounds fail rather than adopting or discarding old entries.
+The journal retains its own finalizer and exact Agent UID ownership, with
+`blockOwnerDeletion: false`. It remains available for historical cleanup when
+garbage collection requests its deletion, without blocking foreground Agent
+deletion after the Agent's independent cleanup obligations are complete.
+A terminating journal cannot reserve another writer.
+
+Revocation intent is persisted before calling the external provider. An
+uncertain reply or controller restart permits observation only, not another
+destructive submission. Completion requires current evidence for the exact
+recorded operation and every historical writer, a durable restart barrier and
+storage release. A one-shot CRI stop, Pod absence, zero replicas, Node readiness,
+or a PVC access mode cannot supply that evidence. Cleanup uses the recorded
+historical tuple even when current policy references are unavailable.
+
+The [controller bridge](internal/controller/sandbox_writer_exclusion.go) can
+supply the existing `SandboxWriterExclusionSource` interface when explicitly
+configured by a trusted platform integration. It does not install a provider,
+adopt an existing workload, weaken placement checks, issue a start permit or
+change the default activation hold. An independently qualified provider must
+implement the guest-external barrier, unreachable-node handling and storage
+release. The standalone CRI and empty-pool experiments are not such providers.
+
+Unit, race and isolated API-server tests use synthetic provider responses.
+Run `make test-sandbox-lifecycle` with preinstalled `KUBEBUILDER_ASSETS` for the
+API persistence tests. These checks are not live runtime qualification.
+
+### Existing activation boundary
+
 The new Team bindings and Agent `sandboxRef` remain optional in this additive
 foundation schema so existing unbound resources retain their previous behavior.
 The resolver requires a complete governed binding. This is not the final
