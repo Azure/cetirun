@@ -85,6 +85,11 @@ neither a missing journal nor a list of currently visible Pods proves an empty
 history. Each writer records the workload, Pod, Node, physical machine
 incarnation, epoch and storage identity. Conflicts, missing identities and
 history bounds fail rather than adopting or discarding old entries.
+The journal retains its own finalizer and exact Agent UID ownership, with
+`blockOwnerDeletion: false`. It remains available for historical cleanup when
+garbage collection requests its deletion, without blocking foreground Agent
+deletion after the Agent's independent cleanup obligations are complete.
+A terminating journal cannot reserve another writer.
 
 Revocation intent is persisted before calling the external provider. An
 uncertain reply or controller restart permits observation only, not another

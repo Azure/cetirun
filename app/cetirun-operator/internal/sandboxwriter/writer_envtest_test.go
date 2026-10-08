@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -122,8 +123,10 @@ func newAPIWriterFixture(t *testing.T, writer, reader client.Client, name string
 		t.Fatal(err)
 	}
 	object := f.journal(t)
+	expectedOwner := sandboxworkload.AgentOwner(agent.Name, agent.UID)
+	expectedOwner.BlockOwnerDeletion = ptr.To(false)
 	if enrolled.UID != object.UID || enrolled.ResourceVersion != object.ResourceVersion ||
-		!reflect.DeepEqual(object.OwnerReferences, []metav1.OwnerReference{sandboxworkload.AgentOwner(agent.Name, agent.UID)}) {
+		!reflect.DeepEqual(object.OwnerReferences, []metav1.OwnerReference{expectedOwner}) {
 		t.Fatal("enrollment did not bind the API-assigned journal and Agent identities")
 	}
 	return f
@@ -244,6 +247,58 @@ func TestWriterJournalAPIServerDurability(t *testing.T) {
 			Provider: provider, Now: func() time.Time { return f.now }, MaxAge: time.Minute,
 		}, provider
 	}
+
+	t.Run("retained history does not block foreground Agent finalization", func(t *testing.T) {
+		f := newFixture(t, "foreground")
+		f.quiesce(t)
+		history := f.reserve(t, 1)
+		agent := &api.Agent{}
+		key := client.ObjectKey{Name: f.lifetime.Agent.Name}
+		if err := f.raw.Get(f.ctx, key, agent); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.raw.Delete(f.ctx, agent, client.PropagationPolicy(metav1.DeletePropagationForeground)); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.raw.Get(f.ctx, key, agent); err != nil ||
+			!slices.Contains(agent.Finalizers, metav1.FinalizerDeleteDependents) {
+			t.Fatal("API server did not start foreground deletion:", err)
+		}
+		journal := f.journal(t)
+		if len(journal.OwnerReferences) != 1 || journal.OwnerReferences[0].UID != agent.UID ||
+			ptr.Deref(journal.OwnerReferences[0].BlockOwnerDeletion, true) {
+			t.Fatal("retained journal blocks foreground Agent deletion")
+		}
+		// envtest has no garbage collector. Simulate its dependent DELETE
+		// and completion only after checking the non-blocking owner edge.
+		if err := f.raw.Delete(f.ctx, journal, client.PropagationPolicy(metav1.DeletePropagationBackground)); err != nil {
+			t.Fatal(err)
+		}
+		quiescent := f.quiesce(t)
+		if quiescent.UID != history.UID || !reflect.DeepEqual(quiescent.Writers, history.Writers) {
+			t.Fatal("dependent deletion discarded historical writers")
+		}
+		agent.Finalizers = slices.DeleteFunc(agent.Finalizers, func(value string) bool {
+			return value == metav1.FinalizerDeleteDependents
+		})
+		if err := f.raw.Update(f.ctx, agent); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.raw.Get(f.ctx, key, &api.Agent{}); !apierrors.IsNotFound(err) {
+			t.Fatal("Agent did not complete simulated foreground finalization:", err)
+		}
+		journal = f.journal(t)
+		if journal.UID != history.UID || journal.DeletionTimestamp.IsZero() ||
+			!slices.Contains(journal.Finalizers, JournalFinalizer) {
+			t.Fatal("Agent deletion removed protected historical state")
+		}
+		if err := f.manager.CheckQuiesced(f.ctx, f.lifetime); err != nil {
+			t.Fatal("historical cleanup required the deleted Agent:", err)
+		}
+		if _, err := f.store.Reserve(f.ctx, f.read(t), syntheticWriter(2)); !apierrors.IsConflict(err) {
+			t.Fatal("terminating history allowed a replacement writer:", err)
+		}
+	})
 
 	t.Run("real resource-version conflict does not retry or append", func(t *testing.T) {
 		f := newFixture(t, "rv-cas")
