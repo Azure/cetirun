@@ -96,6 +96,19 @@ func TestCustomTerminalRBACAndAdmission(t *testing.T) {
 		}
 	}
 	operatorIdentity := "system:serviceaccount:cetirun-system:operator-test"
+	requireGrant := func(user string, attributes authorizationv1.ResourceAttributes) {
+		t.Helper()
+		grantCtx, cancelGrant := context.WithTimeout(ctx, 5*time.Second)
+		defer cancelGrant()
+		grant, err := waitForRBACGrant(grantCtx, 50*time.Millisecond, func(ctx context.Context) (*authorizationv1.SubjectAccessReview, error) {
+			return admin.AuthorizationV1().SubjectAccessReviews().Create(ctx, &authorizationv1.SubjectAccessReview{
+				Spec: authorizationv1.SubjectAccessReviewSpec{User: user, ResourceAttributes: &attributes},
+			}, metav1.CreateOptions{})
+		})
+		if err != nil {
+			t.Fatalf("RBAC grant for %s %+v did not become ready: %v; last review: %+v", user, attributes, err, grant)
+		}
+	}
 	if _, err := admin.RbacV1().ClusterRoleBindings().Create(ctx, &rbacv1.ClusterRoleBinding{
 		ObjectMeta: metav1.ObjectMeta{Name: "operator-test"},
 		Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: "operator-test", Namespace: "cetirun-system"}},
@@ -103,6 +116,10 @@ func TestCustomTerminalRBACAndAdmission(t *testing.T) {
 	}, metav1.CreateOptions{}); err != nil {
 		t.Fatal(err)
 	}
+	// A successful binding write does not mean the authorizer has observed it.
+	requireGrant(operatorIdentity, authorizationv1.ResourceAttributes{
+		Namespace: namespace, Group: rbacv1.GroupName, Resource: "roles", Verb: "create",
+	})
 	operatorConfig := rest.CopyConfig(config)
 	operatorConfig.Impersonate.UserName = operatorIdentity
 	operator, err := kubernetes.NewForConfig(operatorConfig)
@@ -162,7 +179,7 @@ func TestCustomTerminalRBACAndAdmission(t *testing.T) {
 	}
 	name := terminalpolicy.WorkloadName(workload)
 	terminalIdentity := "system:serviceaccount:" + namespace + ":" + name
-	for _, check := range []struct {
+	checks := []struct {
 		user, group, resource, subresource, name, namespace, verb string
 		allowed                                                   bool
 	}{
@@ -178,7 +195,18 @@ func TestCustomTerminalRBACAndAdmission(t *testing.T) {
 		{terminalIdentity, "cetirun.microsoft.com", "agents", "", "other", "", "get", false},
 		{operatorIdentity, "", "pods", "exec", workload + "-0", namespace, "create", false},
 		{operatorIdentity, "", "pods", "exec", workload + "-0", namespace, "get", false},
-	} {
+	}
+	// Observe every positive grant before a missing binding can make a denial
+	// look like proof that the terminal's restrictions work.
+	for _, check := range checks {
+		if check.allowed {
+			requireGrant(check.user, authorizationv1.ResourceAttributes{
+				Group: check.group, Resource: check.resource, Subresource: check.subresource,
+				Name: check.name, Namespace: check.namespace, Verb: check.verb,
+			})
+		}
+	}
+	for _, check := range checks {
 		result, err := admin.AuthorizationV1().SubjectAccessReviews().Create(ctx, &authorizationv1.SubjectAccessReview{
 			Spec: authorizationv1.SubjectAccessReviewSpec{User: check.user,
 				ResourceAttributes: &authorizationv1.ResourceAttributes{
