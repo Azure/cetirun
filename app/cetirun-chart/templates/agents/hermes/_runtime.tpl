@@ -61,6 +61,15 @@ These are called by dispatcher templates in _helpers.tpl based on .Values.agentT
 */}}
 
 {{/*
+Hermes on the platform AI Gateway: its models come from the Gateway, and the
+owner signs in to GitHub Copilot through the Portal instead of the in-agent
+helper. "true" or empty.
+*/}}
+{{- define "cetirun.agent.hermes.gatewayRouted" -}}
+{{- if (.Values.aiGateway | default dict).enabled }}true{{ end -}}
+{{- end }}
+
+{{/*
 Hermes init containers
 */}}
 {{- define "cetirun.agent.hermes.initContainers" -}}
@@ -90,6 +99,14 @@ Hermes init containers
       value: {{ include "cetirun.image" . | quote }}
     - name: HERMES_HOME
       value: "/home/vibe/.hermes"
+    {{- if include "cetirun.agent.hermes.gatewayRouted" . }}
+    # The Gateway owns the model choice: init replaces it, and removes the
+    # in-agent GitHub Copilot sign-in and the helper.
+    - name: CETIRUN_AI_GATEWAY
+      value: "true"
+    - name: CETIRUN_GATEWAY_KEY_ENV
+      value: {{ dig "hermes" "keyEnv" "CETIRUN_GATEWAY_API_KEY" .Values.aiGateway | quote }}
+    {{- end }}
   volumeMounts:
     - name: data
       mountPath: /home-data
@@ -120,9 +137,11 @@ Hermes container ports (agent-specific only)
 - name: dashboard
   containerPort: 9119
   protocol: TCP
+{{- if not (include "cetirun.agent.hermes.gatewayRouted" .) }}
 - name: cetirun-auth
   containerPort: 18790
   protocol: TCP
+{{- end }}
 {{- end }}
 
 {{/*
@@ -167,6 +186,17 @@ Hermes container env vars (agent-specific only)
       key: CETIRUN_AUTH_KEY
 - name: CETIRUN_AGENT_TYPE
   value: "hermes"
+{{- if include "cetirun.agent.hermes.gatewayRouted" . }}
+# The entrypoint runs no in-agent sign-in helper on the Gateway.
+- name: CETIRUN_AI_GATEWAY
+  value: "true"
+# This Agent's AI Gateway virtual key, managed by the CetiRun operator.
+- name: {{ dig "hermes" "keyEnv" "CETIRUN_GATEWAY_API_KEY" .Values.aiGateway }}
+  valueFrom:
+    secretKeyRef:
+      name: {{ .Values.aiGateway.keySecretName }}
+      key: {{ .Values.aiGateway.keySecretKey | default "api-key" }}
+{{- end }}
 {{- end }}
 
 {{/*
@@ -222,10 +252,12 @@ Hermes service ports (agent-specific only)
   targetPort: dashboard
   protocol: TCP
   name: dashboard
+{{- if not (include "cetirun.agent.hermes.gatewayRouted" .) }}
 - port: 18790
   targetPort: cetirun-auth
   protocol: TCP
   name: cetirun-auth
+{{- end }}
 {{- end }}
 
 {{/*
@@ -236,8 +268,10 @@ Hermes networkpolicy ingress ports (agent-specific only)
   port: {{ .Values.hermes.env.API_SERVER_PORT }}
 - protocol: TCP
   port: 9119
+{{- if not (include "cetirun.agent.hermes.gatewayRouted" .) }}
 - protocol: TCP
   port: 18790
+{{- end }}
 {{- end }}
 
 {{/*
@@ -277,8 +311,10 @@ Hermes configmap data
 {{ .Files.Get "agents/hermes/bootstrap/hermes-apply-config.py" | indent 4 }}
   init-skills.sh: |
 {{ .Files.Get "configs/init-skills.sh" | indent 4 }}
+  {{- if not (include "cetirun.agent.hermes.gatewayRouted" .) }}
   hermes-auth.sh: |
 {{ .Files.Get "agents/hermes/bootstrap/hermes-auth.sh" | indent 4 }}
+  {{- end }}
   session-logger.sh: |
 {{ .Files.Get "configs/session-logger.sh" | indent 4 }}
 {{- end }}

@@ -74,12 +74,17 @@ func nativeTemplateContext(agent ResolvedAgent, bindings Bindings) map[string]an
 		}
 		gatewayModels = append(gatewayModels, entry)
 	}
+	gateway := map[string]any{
+		"enabled": bindings.Model.Gateway,
+		"models":  gatewayModels,
+	}
+	// Hermes' provider names the variable the chart puts the key in.
+	if bindings.Model.GatewayKeyEnv != "" {
+		gateway["hermes"] = map[string]any{"keyEnv": bindings.Model.GatewayKeyEnv}
+	}
 	values := map[string]any{
-		agent.Type: native,
-		"aiGateway": map[string]any{
-			"enabled": bindings.Model.Gateway,
-			"models":  gatewayModels,
-		},
+		agent.Type:  native,
+		"aiGateway": gateway,
 		"secrets": map[string]any{
 			"provider":           bindings.Model.Provider,
 			"model":              bindings.Model.Name,

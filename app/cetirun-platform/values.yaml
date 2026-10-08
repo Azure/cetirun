@@ -37,8 +37,8 @@ cetirun-operator:
   # Required for instance URLs and VirtualServices. The deployment helper sets
   # this from DOMAIN.
   domainSuffix: ""
-  # OpenClaw Agents take their models from the AI Gateway; the platform
-  # requires it. Hermes Agents keep their own model provider and sign-in.
+  # OpenClaw and Hermes Agents take their models from the AI Gateway; the
+  # platform requires it.
   # Without a url, the operator uses cetirun-ai-gateway in its namespace.
   aiGateway:
     enabled: true

@@ -216,9 +216,10 @@ agentIdentity:
 # off stops creating keys, not revoking them. Set neither to stop calling the
 # Gateway, for example once it has been removed.
 aiGateway:
-  # -- OpenClaw Agents take their models from the platform AI Gateway; Hermes
-  # keeps its own provider and sign-in. The platform chart requires it;
-  # turning it off leaves OpenClaw Agents without models.
+  # -- OpenClaw and Hermes Agents take their models from the platform AI
+  # Gateway. The platform chart requires it; turning it off leaves OpenClaw
+  # Agents without models, while Hermes Agents fall back to their own provider
+  # and sign-in.
   enabled: true
   # -- In-cluster Gateway URL: http://<service>.<namespace>.svc.cluster.local:<port>.
   # Empty means the Gateway named cetirun-ai-gateway in the operator namespace,

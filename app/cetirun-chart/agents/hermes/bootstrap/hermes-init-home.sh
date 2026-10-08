@@ -15,6 +15,10 @@ CETIRUN_BUILTIN_SKILL_SYNC=${CETIRUN_BUILTIN_SKILL_SYNC:-/usr/local/share/cetiru
 LEGACY_HOME_MARKER=.hermes/.initialized
 PYTHON_BIN=${HERMES_PYTHON:-/usr/local/lib/hermes-agent/venv/bin/python}
 if [ ! -x "$PYTHON_BIN" ]; then PYTHON_BIN=python3; fi
+# On the platform AI Gateway, the Gateway owns the model choice and the owner
+# signs in to GitHub Copilot through the Portal: no in-agent helper.
+ON_GATEWAY=
+if [ "${CETIRUN_AI_GATEWAY:-}" = "true" ]; then ON_GATEWAY=true; fi
 . "$CETIRUN_CONFIG_DIR/init-home-common.sh"
 
 agent_check_requirements() {
@@ -23,7 +27,9 @@ agent_check_requirements() {
       init_error "HermesPythonUnavailable"
       return 1
     }
-  for file in hermes-config.yaml hermes-auth.sh hermes-apply-config.py; do
+  required="hermes-config.yaml hermes-apply-config.py"
+  if [ -z "$ON_GATEWAY" ]; then required="$required hermes-auth.sh"; fi
+  for file in $required; do
     [ -f "$CETIRUN_CONFIG_DIR/$file" ] || { init_error "HermesInputMissing: $file"; return 1; }
   done
   [ -f "$CETIRUN_BUILTIN_SKILL_SYNC" ] || {
@@ -66,18 +72,36 @@ seed_user_file() (
 agent_apply_config() {
   home_path .hermes/config.yaml >/dev/null
   home_path .hermes/.env >/dev/null
-  "$PYTHON_BIN" "$CETIRUN_CONFIG_DIR/hermes-apply-config.py" \
-    --home "$TARGET_HOME" \
+  set -- --home "$TARGET_HOME" \
     --config "$CETIRUN_CONFIG_DIR/hermes-config.yaml" \
     --env "$CETIRUN_SECRET_DIR/hermes.env"
+  if [ -n "$ON_GATEWAY" ]; then
+    set -- "$@" --gateway-key-env "${CETIRUN_GATEWAY_KEY_ENV:-CETIRUN_GATEWAY_API_KEY}"
+  fi
+  "$PYTHON_BIN" "$CETIRUN_CONFIG_DIR/hermes-apply-config.py" "$@"
 }
+
+# The in-agent GitHub Copilot helper that charts before the Gateway installed.
+# Only a file carrying the helper's own text is removed.
+remove_copilot_helper() (
+  set -e
+  helper=$(home_path .local/bin/copilot-auth)
+  [ -f "$helper" ] || exit 0
+  if grep -q -e 'Authenticate GitHub Copilot for Hermes' -e 'Keep the helper path used by older Charts' "$helper"; then
+    rm -f "$helper"
+  fi
+)
 
 agent_prepare_integrations() {
   . "$CETIRUN_BUILTIN_SKILL_SYNC"
   cetirun_sync_builtin_skills \
     "$SOURCE_HOME/.hermes/skills" \
     "$(home_path .hermes/skills)"
-  home_atomic_copy "$CETIRUN_CONFIG_DIR/hermes-auth.sh" .local/bin/copilot-auth 755
+  if [ -n "$ON_GATEWAY" ]; then
+    remove_copilot_helper
+  else
+    home_atomic_copy "$CETIRUN_CONFIG_DIR/hermes-auth.sh" .local/bin/copilot-auth 755
+  fi
   team=$(home_path .hermes/memories/TEAM.md)
   if [ -s "$CETIRUN_CONFIG_DIR/hermes-team.md" ]; then
     home_atomic_copy "$CETIRUN_CONFIG_DIR/hermes-team.md" .hermes/memories/TEAM.md
@@ -88,8 +112,10 @@ agent_prepare_integrations() {
 
 agent_verify() {
   "$PYTHON_BIN" "$CETIRUN_CONFIG_DIR/hermes-apply-config.py" --home "$TARGET_HOME" --check
-  helper=$(home_path .local/bin/copilot-auth)
-  [ -x "$helper" ] || { init_error "HermesAuthHelperUnavailable"; return 1; }
+  if [ -z "$ON_GATEWAY" ]; then
+    helper=$(home_path .local/bin/copilot-auth)
+    [ -x "$helper" ] || { init_error "HermesAuthHelperUnavailable"; return 1; }
+  fi
   home_write_marker "$LEGACY_HOME_MARKER" initialized-v1
 }
 

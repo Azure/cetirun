@@ -174,8 +174,8 @@ Validate Azure Workload Identity prerequisites
 {{- fail "aiGateway.copilotProxy.enabled requires aiGateway.enabled" -}}
 {{- end -}}
 {{- if $gateway.enabled -}}
-{{- if ne (include "cetirun.agent.type" .) "openclaw" -}}
-{{- fail "aiGateway.enabled is supported only for OpenClaw" -}}
+{{- if not (has (include "cetirun.agent.type" .) (list "openclaw" "hermes")) -}}
+{{- fail "aiGateway.enabled is supported only for OpenClaw and Hermes" -}}
 {{- end -}}
 {{- if ne (.Values.secrets.provider | default "github_copilot") "openai" -}}
 {{- fail "aiGateway.enabled requires secrets.provider=openai" -}}
@@ -192,9 +192,23 @@ Validate Azure Workload Identity prerequisites
 {{- if not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" (.Values.networkPolicy.gatewayNamespace | default "")) -}}
 {{- fail "aiGateway.enabled requires networkPolicy.gatewayNamespace" -}}
 {{- end -}}
+{{- $hermesKeyEnv := dig "hermes" "keyEnv" "CETIRUN_GATEWAY_API_KEY" $gateway -}}
+{{- /* Init removes the key's variable from Hermes' .env, so it cannot be one
+   the chart writes there for another setting: the API server's, or a web
+   search key. The model provider keys can carry it. */ -}}
+{{- if has $hermesKeyEnv (list "API_SERVER_ENABLED" "API_SERVER_HOST" "API_SERVER_PORT" "API_SERVER_KEY" "API_SERVER_CORS_ORIGINS" "BRAVE_API_KEY" "PERPLEXITY_API_KEY") -}}
+{{- fail (printf "aiGateway.hermes.keyEnv must not be %s, which the chart writes into Hermes' .env for another setting" $hermesKeyEnv) -}}
+{{- end -}}
+{{- /* The key replaces the variable in Hermes' container, so only an API key
+   variable can carry it: not one that controls the container's processes,
+   such as PATH or LD_PRELOAD, nor one the chart sets there. No list could
+   name every such variable, but none of them ends in _API_KEY. */ -}}
+{{- if not (regexMatch "^[A-Z][A-Z0-9_]*_API_KEY$" $hermesKeyEnv) -}}
+{{- fail (printf "aiGateway.hermes.keyEnv must not be %s: the key replaces that variable in Hermes' container, so it must name an API key variable, ending in _API_KEY" $hermesKeyEnv) -}}
+{{- end -}}
 {{- range .Values.extraEnv -}}
-{{- if has (get . "name") (list "OPENAI_API_KEY" "OPENAI_BASE_URL") -}}
-{{- fail "OPENAI_API_KEY and OPENAI_BASE_URL are reserved when aiGateway.enabled" -}}
+{{- if has (get . "name") (list "OPENAI_API_KEY" "OPENAI_BASE_URL" "CETIRUN_AI_GATEWAY" $hermesKeyEnv) -}}
+{{- fail (printf "OPENAI_API_KEY, OPENAI_BASE_URL, CETIRUN_AI_GATEWAY and %s are reserved when aiGateway.enabled" $hermesKeyEnv) -}}
 {{- end -}}
 {{- end -}}
 {{- range $gateway.models -}}

@@ -47,7 +47,9 @@ CetiRun keeps these layers on top of the upstream source:
 - the persistent user and HOME contract at UID/GID `1024` and
   `/home/vibe/.hermes`;
 - the `cetirun_teams` platform plugin and Azure Workload Identity support;
-- the in-pod CetiRun authentication service;
+- the in-pod CetiRun authentication service, which the entrypoint does not run
+  when `CETIRUN_AI_GATEWAY=true`: on the platform AI Gateway the owner signs
+  in to GitHub Copilot through the Portal;
 - Supervisor wiring for the Hermes gateway, Dashboard, terminal, and Tailscale;
 - the external shared-skills directory and CetiRun-owned persona/context files;
 - the SQLite version and compile flags used by the upstream container to avoid

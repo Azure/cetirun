@@ -93,8 +93,9 @@ agentIdentity:
 
 # -- Platform AI Gateway access. The CetiRun operator sets these values for
 # Agents whose model traffic goes through the Gateway; they are not user
-# settings. When enabled, the openai provider reads its key from the Secret
-# below instead of MODEL_API_KEY, and egress to the Gateway pods in
+# settings. When enabled, the Agent reads its key from the Secret below instead
+# of MODEL_API_KEY: OpenClaw's openai provider through OPENAI_API_KEY, Hermes
+# through aiGateway.hermes.keyEnv. Egress to the Gateway pods in
 # networkPolicy.gatewayNamespace on networkPolicy.gatewayPort is allowed.
 aiGateway:
   enabled: false
@@ -106,6 +107,15 @@ aiGateway:
   # name, and optionally contextWindow and maxTokens. The Agent is configured
   # with all of them; secrets.model names the default.
   models: []
+  # -- Hermes on the Gateway: the environment variable that carries the
+  # Agent's key to Hermes' Gateway provider. The chart sets it from the key
+  # Secret, so the key is in neither Hermes' configuration nor its .env file;
+  # init removes any assignment of it from .env, which Hermes loads over its
+  # environment. Since the key replaces the variable in the container, it must
+  # be an API key variable, ending in _API_KEY, such as OPENAI_API_KEY, and not
+  # one the chart writes into .env for another setting, such as BRAVE_API_KEY.
+  hermes:
+    keyEnv: CETIRUN_GATEWAY_API_KEY
   # -- Per-Agent GitHub Copilot proxy: a small LiteLLM, in its own Pod, that
   # holds the owner's Copilot sign-in. Only the Gateway reaches it; the Agent
   # reaches Copilot models through the Gateway with its own key.

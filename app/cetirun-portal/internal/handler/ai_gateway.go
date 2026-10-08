@@ -119,11 +119,11 @@ func (h *InstanceHandler) GetAIGatewayCatalog(w http.ResponseWriter, r *http.Req
 }
 
 // validateAIGatewayCreate applies the AI Gateway rules to a new Agent: it
-// must name an existing Team, and an OpenClaw Agent must have a model to use,
-// from shared models it keeps on while the catalog lists at least one, or
-// from GitHub Copilot it keeps on while the deployment offers it. Omitted
-// switches count as on. It returns the Team to record and the model access to
-// write, or writes the error response and returns false.
+// must name an existing Team, and an OpenClaw or Hermes Agent must have a
+// model to use, from shared models it keeps on while the catalog lists at
+// least one, or from GitHub Copilot it keeps on while the deployment offers
+// it. Omitted switches count as on. It returns the Team to record and the
+// model access to write, or writes the error response and returns false.
 func (h *InstanceHandler) validateAIGatewayCreate(w http.ResponseWriter, r *http.Request, req CreateInstanceRequest, agentType cetirunv1alpha1.AgentType) (string, *cetirunv1alpha1.ModelAccessSpec, bool) {
 	team := strings.TrimSpace(req.Team)
 	if !h.Config.AIGatewayEnabled {
@@ -142,8 +142,8 @@ func (h *InstanceHandler) validateAIGatewayCreate(w http.ResponseWriter, r *http
 		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to check the Team")
 		return "", nil, false
 	}
-	if agentType != cetirunv1alpha1.AgentTypeOpenClaw {
-		// Only OpenClaw is wired to the Gateway so far.
+	if agentType != cetirunv1alpha1.AgentTypeOpenClaw && agentType != cetirunv1alpha1.AgentTypeHermes {
+		// Custom Agents bring their own models.
 		return team, nil, true
 	}
 	shared, copilot := true, true

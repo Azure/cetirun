@@ -231,6 +231,7 @@ func prepareRuntimeChart(chrt *chart.Chart, input map[string]any, validateRender
 			AuthMode:      text(secrets["authMode"]),
 			Gateway:       gateway["enabled"] == true,
 			GatewayModels: gatewayModels,
+			GatewayKeyEnv: text(object(gateway["hermes"])["keyEnv"]),
 		},
 		Skills: agents.SkillsBinding{
 			Shared:    skills["shared"] == true,
