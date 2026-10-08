@@ -253,7 +253,25 @@ steps:
       PUSH=false \
       bash scripts/portal-docker-build.sh
 
-      for image in cetirun-base openclaw-gateway hermes-gateway cetirun-desktop cetirun-operator cetirun-ai-gateway cetirun-agent-broker cetirun-terminal cetirun-portal; do
+      # Microsoft VS Code Server distribution requires explicit license acceptance.
+      docker buildx build \
+        --platform linux/amd64 \
+        --load \
+        --build-arg "BASE_IMAGE=${LOCAL_REGISTRY}/cetirun-base:${RELEASE_VERSION}" \
+        --build-arg ACCEPT_VSCODE_SERVER_LICENSE_TERMS=true \
+        --tag "${LOCAL_REGISTRY}/cetirun-vscode:${RELEASE_VERSION}" \
+        examples/vscode-server
+
+      docker buildx build \
+        --platform linux/amd64 \
+        --load \
+        --build-arg "BASE_IMAGE=${LOCAL_REGISTRY}/cetirun-base:${RELEASE_VERSION}" \
+        --build-arg "VERSION=${RELEASE_VERSION}" \
+        --build-arg "GIT_SHA=$(git rev-parse HEAD)" \
+        --tag "${LOCAL_REGISTRY}/cetirun-pi-agent:${RELEASE_VERSION}" \
+        examples/pi-agent
+
+      for image in cetirun-base openclaw-gateway hermes-gateway cetirun-desktop cetirun-operator cetirun-ai-gateway cetirun-agent-broker cetirun-terminal cetirun-portal cetirun-vscode cetirun-pi-agent; do
         docker image inspect "${LOCAL_REGISTRY}/${image}:${RELEASE_VERSION}" > /dev/null
         image_platform="$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "${LOCAL_REGISTRY}/${image}:${RELEASE_VERSION}")"
         if [ "${image_platform}" != linux/amd64 ]; then
@@ -276,7 +294,7 @@ steps:
         set -euo pipefail
 
         registry="${ACR_NAME}.azurecr.io"
-        image_artifacts=(openclaw-gateway hermes-gateway cetirun-desktop cetirun-operator cetirun-ai-gateway cetirun-agent-broker cetirun-terminal cetirun-portal)
+        image_artifacts=(cetirun-base openclaw-gateway hermes-gateway cetirun-desktop cetirun-operator cetirun-ai-gateway cetirun-agent-broker cetirun-terminal cetirun-portal cetirun-vscode cetirun-pi-agent)
         chart_artifacts=(cetirun cetirun-istio cetirun-operator cetirun-portal cetirun-platform cetirun-ai-gateway cetirun-agent-broker)
 
         repository_tag_exists() {
