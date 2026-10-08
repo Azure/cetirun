@@ -111,8 +111,9 @@ aiGateway:
   # Agent's key to Hermes' Gateway provider. The chart sets it from the key
   # Secret, so the key is in neither Hermes' configuration nor its .env file;
   # init removes any assignment of it from .env, which Hermes loads over its
-  # environment. It cannot be one of the variables the chart writes into .env
-  # for another setting, such as API_SERVER_KEY or BRAVE_API_KEY.
+  # environment. Since the key replaces the variable in the container, it must
+  # be an API key variable, ending in _API_KEY, such as OPENAI_API_KEY, and not
+  # one the chart writes into .env for another setting, such as BRAVE_API_KEY.
   hermes:
     keyEnv: CETIRUN_GATEWAY_API_KEY
   # -- Per-Agent GitHub Copilot proxy: a small LiteLLM, in its own Pod, that

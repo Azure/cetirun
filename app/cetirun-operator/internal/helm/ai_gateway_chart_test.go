@@ -5,6 +5,7 @@ package helm
 
 import (
 	"encoding/json"
+	"maps"
 	"reflect"
 	"slices"
 	"strings"
@@ -564,11 +565,13 @@ func aiGatewayHermesInput(keyEnv string) map[string]any {
 	return input
 }
 
-// Standalone Helm can bind the Hermes key to another variable. A model
+// Standalone Helm can bind the Hermes key to another API key variable. A model
 // provider key, such as OPENAI_API_KEY, can carry it: the container gets it
 // once, from the key Secret, and the Gateway provider and init name it. Init
 // removes the key's variable from Hermes' .env, so a variable the chart writes
-// there for another setting cannot carry it.
+// there for another setting cannot carry it. The key replaces the variable in
+// Hermes' container, so neither can a variable that controls the container's
+// processes, such as PATH, nor one the chart sets there.
 func TestAIGatewayChartBindsTheHermesKeyToAnotherVariable(t *testing.T) {
 	// The operator always binds the default variable: it replaces the
 	// aiGateway values. Another one is standalone Helm's.
@@ -598,17 +601,36 @@ func TestAIGatewayChartBindsTheHermesKeyToAnotherVariable(t *testing.T) {
 		t.Fatalf("init must know the key variable, got %+v", keyEnv)
 	}
 
+	for _, name := range []string{"ANTHROPIC_API_KEY", "OPENROUTER_API_KEY"} {
+		if _, err := standalone(t, name); err != nil {
+			t.Fatalf("an API key variable, %s, can carry the key: %v", name, err)
+		}
+	}
+
 	rendered, err = standalone(t, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	generated := parseHermes(t, rendered).envFile
-	if generated == "" {
+	defaults := parseHermes(t, rendered)
+	if defaults.envFile == "" {
 		t.Fatal("hermes.env is not rendered")
 	}
-	for _, line := range strings.Split(strings.TrimSpace(generated), "\n") {
+	names := map[string]struct{}{}
+	for _, line := range strings.Split(strings.TrimSpace(defaults.envFile), "\n") {
 		name, _, _ := strings.Cut(line, "=")
-		if name == "OPENAI_API_KEY" || name == "ANTHROPIC_API_KEY" {
+		names[name] = struct{}{}
+	}
+	for _, env := range defaults.main.Env {
+		names[env.Name] = struct{}{}
+	}
+	for _, name := range []string{"PATH", "HOME", "SHELL", "USER", "IFS", "ENV", "BASH_ENV", "TMPDIR",
+		"LD_PRELOAD", "LD_LIBRARY_PATH", "PYTHONPATH", "PYTHONHOME"} {
+		names[name] = struct{}{}
+	}
+	for _, name := range slices.Sorted(maps.Keys(names)) {
+		// The model provider keys of the generated .env can carry the key,
+		// as its default variable does.
+		if name == "OPENAI_API_KEY" || name == "ANTHROPIC_API_KEY" || name == "CETIRUN_GATEWAY_API_KEY" {
 			continue
 		}
 		t.Run(name, func(t *testing.T) {

@@ -199,6 +199,13 @@ Validate Azure Workload Identity prerequisites
 {{- if has $hermesKeyEnv (list "API_SERVER_ENABLED" "API_SERVER_HOST" "API_SERVER_PORT" "API_SERVER_KEY" "API_SERVER_CORS_ORIGINS" "BRAVE_API_KEY" "PERPLEXITY_API_KEY") -}}
 {{- fail (printf "aiGateway.hermes.keyEnv must not be %s, which the chart writes into Hermes' .env for another setting" $hermesKeyEnv) -}}
 {{- end -}}
+{{- /* The key replaces the variable in Hermes' container, so only an API key
+   variable can carry it: not one that controls the container's processes,
+   such as PATH or LD_PRELOAD, nor one the chart sets there. No list could
+   name every such variable, but none of them ends in _API_KEY. */ -}}
+{{- if not (regexMatch "^[A-Z][A-Z0-9_]*_API_KEY$" $hermesKeyEnv) -}}
+{{- fail (printf "aiGateway.hermes.keyEnv must not be %s: the key replaces that variable in Hermes' container, so it must name an API key variable, ending in _API_KEY" $hermesKeyEnv) -}}
+{{- end -}}
 {{- range .Values.extraEnv -}}
 {{- if has (get . "name") (list "OPENAI_API_KEY" "OPENAI_BASE_URL" "CETIRUN_AI_GATEWAY" $hermesKeyEnv) -}}
 {{- fail (printf "OPENAI_API_KEY, OPENAI_BASE_URL, CETIRUN_AI_GATEWAY and %s are reserved when aiGateway.enabled" $hermesKeyEnv) -}}
