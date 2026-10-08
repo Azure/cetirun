@@ -25,14 +25,16 @@ const (
 )
 
 type Config struct {
-	ValidationMode         string           `json:"validationMode,omitempty"`
-	AdminUsers             []string         `json:"adminUsers"`
-	AdminGroups            []string         `json:"adminGroups"`
-	ControllerUsername     string           `json:"controllerUsername"`
-	TeamAssignments        []TeamAssignment `json:"teamAssignments,omitempty"`
-	PlatformNamespace      string           `json:"platformNamespace,omitempty"`
-	PlatformConfigMapName  string           `json:"platformConfigMapName,omitempty"`
-	PlacementConfigMapName string           `json:"placementConfigMapName,omitempty"`
+	ValidationMode            string           `json:"validationMode,omitempty"`
+	AdminUsers                []string         `json:"adminUsers"`
+	AdminGroups               []string         `json:"adminGroups"`
+	ControllerUsername        string           `json:"controllerUsername"`
+	TeamAssignments           []TeamAssignment `json:"teamAssignments,omitempty"`
+	PlatformNamespace         string           `json:"platformNamespace,omitempty"`
+	PlatformConfigMapName     string           `json:"platformConfigMapName,omitempty"`
+	PlacementConfigMapName    string           `json:"placementConfigMapName,omitempty"`
+	CoordinationConfigMapName string           `json:"coordinationConfigMapName,omitempty"`
+	CoordinationConfigMapUID  string           `json:"coordinationConfigMapUID,omitempty"`
 }
 
 // TeamAssignment is administrative creation context, not Agent/Portal input.
@@ -85,6 +87,20 @@ func (c Config) Validate() error {
 			len(validation.IsDNS1123Subdomain(c.PlatformConfigMapName)) != 0 ||
 			c.PlatformNamespace != parts[2] {
 			return fmt.Errorf("Sandbox admission platform source requires an explicit ConfigMap name in the controller namespace")
+		}
+	}
+	if c.CoordinationConfigMapName != "" || c.CoordinationConfigMapUID != "" {
+		if c.ValidationMode != ValidationStrict ||
+			len(validation.IsDNS1123Subdomain(c.CoordinationConfigMapName)) != 0 ||
+			c.CoordinationConfigMapName == c.PlatformConfigMapName ||
+			c.CoordinationConfigMapName == c.PlacementConfigMapName ||
+			len(c.CoordinationConfigMapUID) == 0 || len(c.CoordinationConfigMapUID) > 128 {
+			return fmt.Errorf("Sandbox configuration coordination requires strict validation and a separate ConfigMap name with its exact UID")
+		}
+		for _, character := range c.CoordinationConfigMapUID {
+			if character < '!' || character > '~' {
+				return fmt.Errorf("Sandbox coordination ConfigMap UID must be a bounded printable identity without whitespace")
+			}
 		}
 	}
 	teams, users, groups := map[string]bool{}, map[string]string{}, map[string]string{}

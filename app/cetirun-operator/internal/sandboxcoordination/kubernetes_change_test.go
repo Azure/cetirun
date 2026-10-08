@@ -228,6 +228,166 @@ func TestConfigurationDefaultOnlyChangesCannotReserve(t *testing.T) {
 	}
 }
 
+func TestConfigurationFinalizationExcludesOutstandingOperations(t *testing.T) {
+	for _, operation := range []string{"none", "unrelated", "reserved change", "changing", "old UID change", "reserved execution", "starting", "running", "stopping"} {
+		t.Run(operation, func(t *testing.T) {
+			ctx := context.Background()
+			store, storage, before, _ := configurationFixture(t, "AgentPolicy")
+			before.SetFinalizers([]string{"example.com/cleanup", "example.com/retain"})
+			if err := storage.Update(ctx, before); err != nil {
+				t.Fatal(err)
+			}
+			switch operation {
+			case "reserved change", "changing", "old UID change", "unrelated":
+				reference := source(api.GroupVersion.String(), "AgentPolicy", "", before.GetName(), string(before.GetUID()))
+				reference.ResourceVersion = before.GetResourceVersion()
+				if operation == "old UID change" {
+					reference.UID = "previous-policy-uid"
+				}
+				if operation == "unrelated" {
+					reference.Name, reference.UID = "other-policy", "other-policy-uid"
+				}
+				change, err := store.AcquireChange(ctx, reference, strings.Repeat("b", 64))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if operation == "changing" {
+					if _, err := store.BeginChange(ctx, change); err != nil {
+						t.Fatal(err)
+					}
+				}
+			case "reserved execution", "starting", "running", "stopping":
+				ticket := acquire(t, store, testIntent("finalization"))
+				var err error
+				if operation != "reserved execution" {
+					ticket, err = store.BeginStart(ctx, ticket)
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+				if operation == "running" || operation == "stopping" {
+					ticket, err = store.MarkRunning(ctx, ticket)
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+				if operation == "stopping" {
+					if _, err := store.BeginStop(ctx, ticket); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			if err := storage.Delete(ctx, before); err != nil {
+				t.Fatal(err)
+			}
+			if err := storage.Get(ctx, client.ObjectKeyFromObject(before), before); err != nil {
+				t.Fatal(err)
+			}
+			after := before.DeepCopyObject().(client.Object)
+			after.SetFinalizers(nil)
+			key := client.ObjectKey{Namespace: store.Namespace, Name: store.Identity.Name}
+			original := &corev1.ConfigMap{}
+			if err := storage.Get(ctx, key, original); err != nil {
+				t.Fatal(err)
+			}
+			store.Client = nil
+			err := store.AuthorizeConfigurationFinalization(ctx, before, after)
+			allowed := operation == "none" || operation == "unrelated"
+			if allowed && err != nil || !allowed && !errors.Is(err, ErrConflict) {
+				t.Fatalf("allowed=%v: %v", allowed, err)
+			}
+			current := &corev1.ConfigMap{}
+			if err := storage.Get(ctx, key, current); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(original, current) {
+				t.Fatal("finalization check changed an outstanding operation")
+			}
+		})
+	}
+}
+
+func TestConfigurationFinalizationOnlyRemovesFinalizers(t *testing.T) {
+	for _, kind := range []string{"Team", "Sandbox", "AgentPolicy"} {
+		for _, change := range []string{"valid", "managedFields", "not terminating", "unchanged", "added", "duplicate", "labels", "annotations", "owners", "spec", "status", "UID", "RV", "generation", "deletion", "missing authority", "stale source"} {
+			t.Run(kind+"/"+change, func(t *testing.T) {
+				ctx := context.Background()
+				store, storage, before, _ := configurationFixture(t, kind)
+				before.SetFinalizers([]string{"example.com/cleanup", "example.com/retain", "example.com/third"})
+				if err := storage.Update(ctx, before); err != nil {
+					t.Fatal(err)
+				}
+				if change != "not terminating" {
+					if err := storage.Delete(ctx, before); err != nil {
+						t.Fatal(err)
+					}
+					if err := storage.Get(ctx, client.ObjectKeyFromObject(before), before); err != nil {
+						t.Fatal(err)
+					}
+				}
+				after := before.DeepCopyObject().(client.Object)
+				after.SetFinalizers([]string{"example.com/retain"})
+				switch change {
+				case "managedFields":
+					after.SetManagedFields([]metav1.ManagedFieldsEntry{{Manager: "synthetic-finalizer-controller"}})
+				case "unchanged":
+					after.SetFinalizers(before.GetFinalizers())
+				case "added":
+					after.SetFinalizers([]string{"example.com/new"})
+				case "duplicate":
+					after.SetFinalizers([]string{"example.com/retain", "example.com/retain"})
+				case "labels":
+					after.SetLabels(map[string]string{"example.com/unrelated": "changed"})
+				case "annotations":
+					after.SetAnnotations(map[string]string{"example.com/unrelated": "changed"})
+				case "owners":
+					after.SetOwnerReferences([]metav1.OwnerReference{w.AgentOwner("other", "other-uid")})
+				case "spec":
+					switch object := after.(type) {
+					case *api.Team:
+						object.Spec.DefaultSandboxRef = "other"
+					case *api.Sandbox:
+						object.Spec.Type = api.SandboxGVisor
+					case *api.AgentPolicy:
+						object.Spec.EntraID.Enabled = true
+					}
+				case "status":
+					switch object := after.(type) {
+					case *api.Team:
+						object.Status.ObservedGeneration++
+					case *api.Sandbox:
+						object.Status.ObservedGeneration++
+					case *api.AgentPolicy:
+						object.Status.ObservedGeneration++
+					}
+				case "UID":
+					after.SetUID("different")
+				case "RV":
+					after.SetResourceVersion("different")
+				case "generation":
+					after.SetGeneration(before.GetGeneration() + 1)
+				case "deletion":
+					after.SetDeletionTimestamp(nil)
+				case "missing authority":
+					store.Identity.UID = "different"
+				case "stale source":
+					current := before.DeepCopyObject().(client.Object)
+					current.SetLabels(map[string]string{"example.com/concurrent": "changed"})
+					if err := storage.Update(ctx, current); err != nil {
+						t.Fatal(err)
+					}
+				}
+				store.Client = nil
+				err := store.AuthorizeConfigurationFinalization(ctx, before, after)
+				allowed := change == "valid" || change == "managedFields"
+				if (err == nil) != allowed {
+					t.Fatalf("allowed=%v: %v", allowed, err)
+				}
+			})
+		}
+	}
+}
+
 func TestConfigurationLegacyTeamTransitionsUseWholeTeamReservation(t *testing.T) {
 	for _, transition := range []struct {
 		name                          string

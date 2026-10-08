@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"slices"
 	"sync/atomic"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
@@ -108,6 +109,58 @@ func (s Store) AuthorizeConfigurationUpdate(ctx context.Context, before, after c
 		return err
 	}
 	return s.CheckChange(ctx, ticket)
+}
+
+// AuthorizeConfigurationFinalization permits only finalizer removal from an
+// exact terminating configuration unused by any recorded operation. Ordinary
+// authorization still applies; this read-only check never releases reservations.
+func (s Store) AuthorizeConfigurationFinalization(ctx context.Context, before, after client.Object) error {
+	previous, err := newConfigurationImage(before)
+	if err != nil {
+		return err
+	}
+	proposed, err := newConfigurationImage(after)
+	if err != nil {
+		return err
+	}
+	if previous.reference != proposed.reference || previous.object.GetDeletionTimestamp().IsZero() {
+		return ErrConflict
+	}
+	oldFinalizers, newFinalizers := previous.object.GetFinalizers(), proposed.object.GetFinalizers()
+	if len(newFinalizers) >= len(oldFinalizers) {
+		return ErrConflict
+	}
+	for i, finalizer := range newFinalizers {
+		if !slices.Contains(oldFinalizers, finalizer) || slices.Contains(newFinalizers[:i], finalizer) {
+			return ErrConflict
+		}
+	}
+	oldObject := previous.object.DeepCopyObject().(client.Object)
+	newObject := proposed.object.DeepCopyObject().(client.Object)
+	newObject.SetFinalizers(oldFinalizers)
+	oldObject.SetManagedFields(nil)
+	newObject.SetManagedFields(nil)
+	if !equality.Semantic.DeepEqual(oldObject, newObject) {
+		return ErrConflict
+	}
+	if err := (&configurationChange{before: previous}).checkBefore(ctx, s.APIReader); err != nil {
+		return err
+	}
+	_, state, err := s.read(ctx)
+	if err != nil {
+		return err
+	}
+	for _, change := range state.Changes {
+		if sourceKey(change.Before) == sourceKey(previous.reference) {
+			return ErrConflict
+		}
+	}
+	for _, execution := range state.Executions {
+		if uses(execution.Intent.Sources, previous.reference) {
+			return ErrConflict
+		}
+	}
+	return ctx.Err()
 }
 
 func (s Store) configurationTicket(ctx context.Context, change *configurationChange) (ChangeTicket, bool, error) {
@@ -309,6 +362,11 @@ func newConfigurationChange(before, after client.Object, admission bool) (*confi
 	if err != nil {
 		return nil, err
 	}
+	for _, image := range []configurationImage{oldImage, newImage} {
+		if !image.object.GetDeletionTimestamp().IsZero() || image.object.GetDeletionGracePeriodSeconds() != nil {
+			return nil, fmt.Errorf("%w: configuration changes require nonterminating objects", ErrUnavailable)
+		}
+	}
 	if oldImage.reference != newImage.reference {
 		return nil, fmt.Errorf("%w: configuration updates require the same kind, key, UID and original resourceVersion", ErrConflict)
 	}
@@ -399,9 +457,8 @@ func newConfigurationImage(input client.Object) (configurationImage, error) {
 	// Persistence is established by UID/RV and the authoritative before image,
 	// not a synthesized generation floor (fake persisted clients may use zero).
 	if !validSource(image.reference) || object.GetNamespace() != "" ||
-		len(validation.IsDNS1123Subdomain(object.GetName())) != 0 || object.GetGeneration() < 0 ||
-		!object.GetDeletionTimestamp().IsZero() || object.GetDeletionGracePeriodSeconds() != nil {
-		return image, fmt.Errorf("%w: a persisted nonterminating cluster-scoped configuration identity is required", ErrUnavailable)
+		len(validation.IsDNS1123Subdomain(object.GetName())) != 0 || object.GetGeneration() < 0 {
+		return image, fmt.Errorf("%w: a persisted cluster-scoped configuration identity is required", ErrUnavailable)
 	}
 	// ObjectMeta omits empty collections on the wire. Canonicalizing only that
 	// representation avoids mistaking an empty-vs-nil round trip for drift.

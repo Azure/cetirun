@@ -135,6 +135,11 @@ sandboxAdmission:
   # writes and bindings; an unavailable registry/server fails those requests.
   # This does not supply a fencing receipt or authorize Agent execution.
   placementConfigMapName: ""
+  # -- Optional UID-pinned coordination authority for Team/Sandbox/AgentPolicy
+  # updates. Requires strict, enforced configuration and Pod admission.
+  # Both fields are required. No state is created and no execution is enabled.
+  coordinationConfigMapName: ""
+  coordinationConfigMapUID: ""
   # -- Timeout for each fail-closed webhook call; integer 1..30 when enforce=true.
   # Pod validation uses 80% of this budget, with at most four concurrent source
   # GETs per request; the remainder is reserved for transport and response.
