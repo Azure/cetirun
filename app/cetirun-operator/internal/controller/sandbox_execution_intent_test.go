@@ -6,6 +6,7 @@ package controller_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"slices"
 	"strings"
@@ -21,6 +22,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -311,6 +313,118 @@ func TestSandboxExecutionSourcesRecheckSharedChangesWithoutRestaging(t *testing.
 			}
 		})
 	}
+}
+
+func TestSandboxExecutionSourcesPermitWorkloadStatusAndControlledScale(t *testing.T) {
+	for _, typ := range []string{"openclaw", "hermes"} {
+		t.Run(typ, func(t *testing.T) {
+			ctx := context.Background()
+			f, target := executionIntentFixture(t, typ)
+			intent, err := f.reconciler.SandboxExecutionIntent(ctx, f.current(t), target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			stages, fences := f.installer.stages, f.source.fences
+			workload := &appsv1.StatefulSet{}
+			key := client.ObjectKey{Namespace: intent.Namespace.Name, Name: intent.Workload.Name}
+			for phase, replicas := range []*int32{ptr.To[int32](0), ptr.To[int32](1), nil} {
+				if err := f.client.Get(ctx, key, workload); err != nil {
+					t.Fatal(err)
+				}
+				if phase > 0 {
+					workload.Spec.Replicas = replicas
+					workload.Generation++
+					if err := f.client.Update(ctx, workload); err != nil {
+						t.Fatal(err)
+					}
+				}
+				for observation := range 3 {
+					if err := f.client.Get(ctx, key, workload); err != nil {
+						t.Fatal(err)
+					}
+					previousRV := workload.ResourceVersion
+					workload.Status.Replicas = int32(observation)
+					workload.Status.ReadyReplicas = int32(observation)
+					workload.Status.ObservedGeneration = workload.Generation
+					workload.Status.CurrentRevision = fmt.Sprintf("synthetic-status-%d", observation)
+					if err := f.client.Status().Update(ctx, workload); err != nil {
+						t.Fatal(err)
+					}
+					if workload.ResourceVersion == previousRV {
+						t.Fatal("fixture did not change the workload observation version")
+					}
+					if err := f.reconciler.CheckSandboxExecutionSources(ctx, intent); err != nil {
+						t.Fatal("status or controlled zero/one scale invalidated workload inputs:", err)
+					}
+				}
+			}
+			if f.installer.stages != stages || f.source.fences != fences {
+				t.Fatal("running-input checks restaged or attempted to quiesce the writer")
+			}
+		})
+	}
+}
+
+func TestSandboxExecutionSourcesRejectWorkloadInputOrIdentityDrift(t *testing.T) {
+	for name, mutate := range map[string]func(*appsv1.StatefulSet){
+		"image": func(w *appsv1.StatefulSet) {
+			w.Spec.Template.Spec.Containers[0].Image = "registry.example.com/changed:1"
+		},
+		"service":           func(w *appsv1.StatefulSet) { w.Spec.ServiceName = "changed-service" },
+		"selector":          func(w *appsv1.StatefulSet) { w.Spec.Selector.MatchLabels["example.com/changed"] = "true" },
+		"Pod annotations":   func(w *appsv1.StatefulSet) { w.Spec.Template.Annotations["example.com/changed"] = "true" },
+		"owner":             func(w *appsv1.StatefulSet) { w.OwnerReferences[0].UID = "different-agent" },
+		"revision":          func(w *appsv1.StatefulSet) { w.Annotations["cetirun.microsoft.com/sandbox-revision"] = "changed" },
+		"labels":            func(w *appsv1.StatefulSet) { w.Labels["example.com/changed"] = "true" },
+		"multiple replicas": func(w *appsv1.StatefulSet) { w.Spec.Replicas = ptr.To[int32](2) },
+		"negative replicas": func(w *appsv1.StatefulSet) { w.Spec.Replicas = ptr.To[int32](-1) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			f, target := executionIntentFixture(t, "hermes")
+			intent, err := f.reconciler.SandboxExecutionIntent(ctx, f.current(t), target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			workload := &appsv1.StatefulSet{}
+			if err := f.client.Get(ctx, client.ObjectKey{Namespace: intent.Namespace.Name, Name: intent.Workload.Name}, workload); err != nil {
+				t.Fatal(err)
+			}
+			mutate(workload)
+			if err := f.client.Update(ctx, workload); err != nil {
+				t.Fatal(err)
+			}
+			if err := f.reconciler.CheckSandboxExecutionSources(ctx, intent); err == nil {
+				t.Fatal("changed workload input was accepted")
+			}
+		})
+	}
+	t.Run("same-name replacement", func(t *testing.T) {
+		ctx := context.Background()
+		f, target := executionIntentFixture(t, "hermes")
+		intent, err := f.reconciler.SandboxExecutionIntent(ctx, f.current(t), target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		workload := &appsv1.StatefulSet{}
+		key := client.ObjectKey{Namespace: intent.Namespace.Name, Name: intent.Workload.Name}
+		if err := f.client.Get(ctx, key, workload); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.client.Delete(ctx, workload); err != nil {
+			t.Fatal(err)
+		}
+		workload.UID, workload.ResourceVersion = "", ""
+		if err := f.client.Create(ctx, workload); err != nil {
+			t.Fatal(err)
+		}
+		if workload.UID == intent.Workload.UID {
+			t.Fatal("fixture did not replace workload identity")
+		}
+		if err := f.reconciler.CheckSandboxExecutionSources(ctx, intent); err == nil {
+			t.Fatal("same-name workload replacement was accepted")
+		}
+	})
 }
 
 func TestSandboxExecutionSourcesPermitStatusOnlyAgentUpdates(t *testing.T) {

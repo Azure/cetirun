@@ -126,6 +126,11 @@ without reading Secret contents or treating Agent status as authorization.
 Preparation still validates every permitted Team Sandbox and both policy
 slots. An execution reserves only its selected Sandbox and policy, so valid
 changes to an unused Sandbox or the other policy class do not require it to stop.
+The StatefulSet's registration resource version remains a reservation snapshot,
+not a lifetime freshness check. Execution rechecks its UID and a digest of the
+effective spec, owner references, labels and annotations, excluding status,
+managed fields and controlled zero/one-replica transitions. Replacement,
+termination, other spec changes or more than one desired replica still fail.
 
 One UID-pinned controller-state object serializes shared-source readers and
 exclusive changes with API resource-version comparisons. Running and stopping

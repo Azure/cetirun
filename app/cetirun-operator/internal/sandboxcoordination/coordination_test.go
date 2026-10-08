@@ -37,7 +37,8 @@ func testIntent(suffix string) Intent {
 	preparation := source("v1", "ConfigMap", "operator-state", "preparation-"+suffix, "preparation-uid-"+suffix)
 	intent := Intent{
 		Agent: agent, AgentGeneration: 1, Namespace: namespace, Home: home, Workload: workload,
-		Preparation: preparation, IngressMode: api.AgentPolicyIngressAuthenticated,
+		WorkloadDigest: strings.Repeat("d", 64),
+		Preparation:    preparation, IngressMode: api.AgentPolicyIngressAuthenticated,
 		Expected: sandbox.ExecutionIdentity{
 			Binding: sandbox.Binding{AgentUID: agent.UID, TeamUID: "team-uid", SandboxUID: "sandbox-uid",
 				AgentPolicyUID: "policy-uid", PolicyClass: api.AgentPolicyClassNormal},
@@ -329,6 +330,8 @@ func TestRequiredSourcesAndStoragePlacementPins(t *testing.T) {
 		"binding":      func(i *Intent) { i.Expected.Binding.AgentPolicyUID = "foreign-policy" },
 		"duplicate":    func(i *Intent) { i.Sources = append(i.Sources, i.Sources[0]) },
 		"no ingress":   func(i *Intent) { i.IngressMode = "" },
+		"no digest":    func(i *Intent) { i.WorkloadDigest = "" },
+		"bad digest":   func(i *Intent) { i.WorkloadDigest = "not-a-digest" },
 	} {
 		t.Run(name, func(t *testing.T) {
 			store, _ := fixture(t)

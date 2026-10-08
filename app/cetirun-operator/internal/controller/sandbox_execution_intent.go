@@ -12,9 +12,11 @@ import (
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxcoordination"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxpolicy"
 	w "github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	strictjson "sigs.k8s.io/json"
 )
@@ -109,10 +111,22 @@ func (r *AgentReconciler) SandboxExecutionIntent(ctx context.Context, requested 
 		sources = append(sources, source)
 	}
 	sources = append(sources, stateSource)
+	workload := &appsv1.StatefulSet{}
+	if err := r.APIReader.Get(ctx, client.ObjectKey{Namespace: expected.Namespace.Name, Name: expected.Workload.Name}, workload); err != nil {
+		return empty, err
+	}
+	if !slices.Contains(expected.Sources, sandboxSource(workload, "apps/v1", "StatefulSet")) {
+		return empty, fmt.Errorf("%w: workload changed before execution inputs were captured", errSandboxSourceChanged)
+	}
+	workloadDigest, err := sandboxExecutionWorkloadDigest(workload)
+	if err != nil {
+		return empty, err
+	}
 	intent := sandboxcoordination.Intent{
 		Agent: expected.Agent, AgentGeneration: expected.AgentGeneration, Namespace: expected.Namespace,
 		Home: expected.Home, Workload: expected.Workload, Expected: target.ExecutionIdentity, Preparation: stateSource,
-		Writer: target.Writer, WriterJournal: target.WriterJournal,
+		WorkloadDigest: workloadDigest,
+		Writer:         target.Writer, WriterJournal: target.WriterJournal,
 		Placement: expected.Placement.DeepCopy(), Sources: sources,
 		IngressMode: plan.Network.IngressMode,
 	}
@@ -137,7 +151,7 @@ func (r *AgentReconciler) CheckSandboxExecutionSources(ctx context.Context, inte
 	if err := intent.Validate(); err != nil {
 		return err
 	}
-	if err := r.verifySandboxSources(ctx, intent.Sources); err != nil {
+	if err := r.verifySandboxExecutionSources(ctx, intent); err != nil {
 		return err
 	}
 	attempt, err := r.resolveSandboxPreparation(ctx, &api.Agent{ObjectMeta: metav1.ObjectMeta{
@@ -164,9 +178,53 @@ func (r *AgentReconciler) CheckSandboxExecutionSources(ctx context.Context, inte
 	if err := r.verifySandboxPlacement(ctx, attempt); err != nil {
 		return err
 	}
-	if err := r.verifySandboxSources(ctx, intent.Sources); err != nil {
+	if err := r.verifySandboxExecutionSources(ctx, intent); err != nil {
 		return err
 	}
 	return configurationSnapshotTime(attempt.configuration.ObservedAt,
 		configurationNow(r.SandboxPreparation.Now), r.SandboxPreparation.MaxSnapshotAge)
+}
+
+func (r *AgentReconciler) verifySandboxExecutionSources(ctx context.Context, intent sandboxcoordination.Intent) error {
+	sources := make([]w.SourceReference, 0, len(intent.Sources))
+	for _, source := range intent.Sources {
+		if source.APIVersion == "apps/v1" && source.Kind == "StatefulSet" &&
+			source.Namespace == intent.Namespace.Name && source.Name == intent.Workload.Name {
+			continue
+		}
+		sources = append(sources, source)
+	}
+	if err := r.verifySandboxSources(ctx, sources); err != nil {
+		return err
+	}
+	workload := &appsv1.StatefulSet{}
+	if err := r.APIReader.Get(ctx, client.ObjectKey{Namespace: intent.Namespace.Name, Name: intent.Workload.Name}, workload); err != nil {
+		return err
+	}
+	current, err := sandboxExecutionWorkloadDigest(workload)
+	if err != nil {
+		return err
+	}
+	if workload.UID != intent.Workload.UID || current != intent.WorkloadDigest {
+		return fmt.Errorf("%w: workload identity or effective inputs changed", errSandboxSourceChanged)
+	}
+	return ctx.Err()
+}
+
+func sandboxExecutionWorkloadDigest(workload *appsv1.StatefulSet) (string, error) {
+	if workload == nil || workload.UID == "" || workload.ResourceVersion == "" ||
+		!workload.DeletionTimestamp.IsZero() || ptr.Deref(workload.Spec.Replicas, 1) < 0 ||
+		ptr.Deref(workload.Spec.Replicas, 1) > 1 {
+		return "", fmt.Errorf("%w: a persisted, nonterminating zero/one-replica workload is required", errSandboxSourceChanged)
+	}
+	spec := workload.Spec.DeepCopy()
+	// Zero/one replica intent belongs to controlled start/stop. Status,
+	// observation versions and managed field ownership are not configuration.
+	spec.Replicas = nil
+	return sandboxPreparationDigest(struct {
+		Spec        *appsv1.StatefulSetSpec
+		Owners      []metav1.OwnerReference
+		Labels      map[string]string
+		Annotations map[string]string
+	}{spec, workload.OwnerReferences, workload.Labels, workload.Annotations})
 }

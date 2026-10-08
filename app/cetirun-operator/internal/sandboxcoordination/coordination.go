@@ -64,6 +64,7 @@ type Intent struct {
 	Namespace       w.ObjectIdentity           `json:"namespace"`
 	Home            w.ObjectIdentity           `json:"home"`
 	Workload        w.ObjectIdentity           `json:"workload"`
+	WorkloadDigest  string                     `json:"workloadDigest"`
 	Expected        sandbox.ExecutionIdentity  `json:"expected"`
 	Writer          sandboxwriter.Writer       `json:"writer"`
 	WriterJournal   w.ObjectIdentity           `json:"writerJournal"`
@@ -483,7 +484,7 @@ func validateRecord(state record) error {
 
 func validateIntent(intent Intent) error {
 	if !identity(intent.Agent) || !identity(intent.Namespace) || !identity(intent.Home) ||
-		!identity(intent.Workload) || len(validation.IsDNS1123Label(intent.Namespace.Name)) != 0 ||
+		!identity(intent.Workload) || !digest(intent.WorkloadDigest) || len(validation.IsDNS1123Label(intent.Namespace.Name)) != 0 ||
 		intent.AgentGeneration < 1 || intent.Expected.Binding.AgentUID != intent.Agent.UID ||
 		intent.Expected.Binding.TeamUID == "" || intent.Expected.Binding.SandboxUID == "" ||
 		intent.Expected.Binding.AgentPolicyUID == "" ||
