@@ -8,17 +8,21 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"strings"
 	"time"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxbinding"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxcoordination"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxplatform"
+	w "github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
 	admissionv1 "k8s.io/api/admission/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
@@ -35,6 +39,7 @@ type Handler struct {
 	registrations    map[api.SandboxType]sandbox.Registration
 	platformSource   sandboxplatform.Source
 	platformSnapshot *sandboxplatform.Snapshot
+	coordination     *sandboxcoordination.Store
 	requestTimeout   time.Duration
 }
 
@@ -58,11 +63,17 @@ func NewHandler(reader client.Reader, config Config) (*Handler, error) {
 			APIReader: reader, Namespace: config.PlatformNamespace, Name: config.PlatformConfigMapName,
 		}
 	}
+	if config.CoordinationConfigMapName != "" {
+		handler.coordination = &sandboxcoordination.Store{
+			APIReader: reader, Namespace: strings.Split(config.ControllerUsername, ":")[2],
+			Identity: w.ObjectIdentity{Name: config.CoordinationConfigMapName, UID: types.UID(config.CoordinationConfigMapUID)},
+		}
+	}
 	return handler, nil
 }
 
 func (h *Handler) Validate(ctx context.Context, request admission.Request) admission.Response {
-	return h.withPlatformSnapshot(ctx, request, (*Handler).validate)
+	return h.withPlatformSnapshot(ctx, request, (*Handler).validateCoordinated)
 }
 
 func (h *Handler) validate(ctx context.Context, request admission.Request) admission.Response {

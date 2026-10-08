@@ -464,6 +464,29 @@ It neither qualifies fencing nor enables execution.
 explicit option that requires ordered schema/binary upgrades. Neither mode
 disables authorization or changes the webhook failure policy. Review schema
 and existing-resource ownership compatibility separately from the Helm upgrade.
+
+`sandboxAdmission.coordinationConfigMapName` and `coordinationConfigMapUID`
+default to empty. Set both to opt in to coordinated Team, Sandbox and AgentPolicy
+updates against one existing, protected authority in the operator namespace.
+This requires `validationMode: strict` and enabled, enforced configuration and
+Pod admission. The chart neither creates authority state nor grants write access
+to admission; its existing namespace-scoped ConfigMap `get` permission is reused.
+The state must be separate from platform, placement and skills ConfigMaps.
+
+When selected, a primary-resource update needs an exact submitted coordination
+reservation as well as normal configuration authorization. Administrator or
+controller identity alone is not a bypass. Use the operator's explicit
+`sandbox-config-change` command with pinned before/after inputs to submit or
+observe an update. Admission performs only reads, including for dry runs;
+missing, corrupt or replaced authority blocks matching updates.
+
+This option covers configuration updates only, not create/delete, Agent changes,
+storage, Secrets or the other execution inputs. Existing status and narrow
+garbage-collector cleanup exclusions remain unchanged. It is not the complete
+source-write boundary needed for runtime activation and does not enable a
+governed Agent. Preserve the execution hold until all participants and the
+independently qualified runtime provider are integrated.
+
 The Portal's [Upgrade action](../../guides/lifecycle/#pin-and-update-a-chart) still
 reads `cetirun-system/cetirun-operator`; a non-default operator namespace
 requires reviewing that additional dependency.
