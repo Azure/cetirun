@@ -1,6 +1,6 @@
 module github.com/Azure/CetiRun/app/internal
 
-go 1.26.8
+go 1.27.1
 
 require (
 	github.com/Azure/CetiRun/app/cetirun-operator v0.1.1

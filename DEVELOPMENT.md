@@ -46,7 +46,7 @@ available for alternate mirrors. Image tags, chart versions, and the
 Install tools only for the component you are changing:
 
 - Git, Bash, and Make for repository commands.
-- Go 1.26.8, matching `.go-version`, all module minimums, and the pinned
+- Go 1.27.1, matching `.go-version`, all module minimums, and the pinned
   Microsoft Go builder images.
 - Node.js 24 and npm for the portal frontend, matching its CI configuration.
 - Helm for local chart linting and rendering.
@@ -228,6 +228,9 @@ Starting the Go backend or operator uses Kubernetes configuration and is
 outside the offline validation loop.
 
 ### Runtime chart and Python helpers
+
+The [shared base image version notes](app/cetirun-chart/base-image.md) record
+the selected tool releases and compatibility ceilings.
 
 ```bash
 bash scripts/cetirun-helm-lint.sh

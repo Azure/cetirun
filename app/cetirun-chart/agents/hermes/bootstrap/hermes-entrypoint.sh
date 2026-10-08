@@ -207,7 +207,7 @@ TAILSCALE
     cat > /tmp/tailscale-serve.sh << 'TSSERVE_SCRIPT'
 #!/bin/bash
 sleep 10
-sudo tailscale serve --bg "http://localhost:${TAILSCALE_SERVE_PORT}"
+sudo tailscale serve --bg "http://127.0.0.1:${TAILSCALE_SERVE_PORT}"
 TSSERVE_SCRIPT
     chmod +x /tmp/tailscale-serve.sh
     cat >> /tmp/supervisord.conf << 'TSSERVE'
