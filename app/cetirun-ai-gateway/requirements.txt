@@ -10,7 +10,7 @@
 # everything else identical keeps the tested dependency set. Two exceptions:
 # the short block at the end, backports that Python 3.12 needs and the
 # upstream image, on Python 3.13, does not; and security updates, marked
-# inline, where the upstream version has a known high or critical advisory.
+# inline, where the upstream version has a known security advisory.
 #
 # When moving to a new LiteLLM release, regenerate this list from that release's
 # image rather than editing versions by hand, then let `pip check` in the build
@@ -119,7 +119,9 @@ msal-extensions==1.3.1
 multidict==6.9.1
 nodeenv==1.10.0
 numpy==2.4.4
-oauthlib==3.3.1
+# Upstream has 3.3.1: GHSA-xpv3-w29h-x7cv and GHSA-hj66-6f7g-4r5v;
+# both are medium severity and fixed in 4.0.0.
+oauthlib==4.0.0
 openai==2.33.0
 opentelemetry-api==1.28.0
 opentelemetry-exporter-otlp==1.28.0

@@ -93,6 +93,14 @@ class ImageDependencyTests(unittest.TestCase):
                         version_tuple(match[1]), version_tuple(minimum)
                     )
 
+    def test_ai_gateway_oauthlib_security_floor(self):
+        requirements = (
+            ROOT / "app/cetirun-ai-gateway/requirements.txt"
+        ).read_text()
+        versions = re.findall(r"^oauthlib==([\d.]+)$", requirements, re.MULTILINE)
+        self.assertEqual(len(versions), 1)
+        self.assertGreaterEqual(version_tuple(versions[0]), (4, 0, 0))
+
     def test_openclaw_config_uses_current_schema_contracts(self):
         template = (CHART / "agents/openclaw/config/native.tpl").read_text()
         entrypoint = (
