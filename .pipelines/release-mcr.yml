@@ -13,10 +13,6 @@ trigger:
 
 pr: none
 
-concurrency:
-  group: cetirun-mcr-release
-  cancelInProgress: false
-
 parameters:
   - name: releaseVersion
     displayName: Release version for a manual run (empty uses the CetiRun chart version)
