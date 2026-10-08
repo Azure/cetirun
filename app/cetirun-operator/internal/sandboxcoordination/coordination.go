@@ -473,9 +473,9 @@ func (s Store) read(ctx context.Context) (*corev1.ConfigMap, record, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, state, err
 	}
-	if s.Client == nil || s.APIReader == nil || len(validation.IsDNS1123Label(s.Namespace)) != 0 ||
+	if s.APIReader == nil || len(validation.IsDNS1123Label(s.Namespace)) != 0 ||
 		!identity(s.Identity) {
-		return nil, state, fmt.Errorf("%w: configured writer, authoritative reader and state identity are required", ErrUnavailable)
+		return nil, state, fmt.Errorf("%w: authoritative reader and state identity are required", ErrUnavailable)
 	}
 	object := &corev1.ConfigMap{}
 	if err := s.APIReader.Get(ctx, client.ObjectKey{Namespace: s.Namespace, Name: s.Identity.Name}, object); err != nil {
@@ -508,6 +508,9 @@ func (s Store) read(ctx context.Context) (*corev1.ConfigMap, record, error) {
 func (s Store) write(ctx context.Context, object *corev1.ConfigMap, state record) error {
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	if s.Client == nil {
+		return fmt.Errorf("%w: a configured authority writer is required", ErrUnavailable)
 	}
 	if err := encode(object, state); err != nil {
 		return err
