@@ -3,6 +3,7 @@
 
 import importlib.util
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -51,6 +52,7 @@ VERSION_FILES = (
     "app/cetirun-platform/Chart.lock",
     "infra/istio/Chart.yaml",
     "app/cetirun-ai-gateway/chart/Chart.yaml",
+    "app/cetirun-agent-broker/chart/Chart.yaml",
     "app/cetirun-operator/chart/values.yaml",
     "app/cetirun-operator/cmd/main.go",
     "app/cetirun-operator/deploy/deploy.sh",
@@ -133,7 +135,7 @@ class CetiRunVersionTests(unittest.TestCase):
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(ROOT / relative, destination)
         for version in (
-            "0.1.0-alpha.1", "0.1.0-beta.2", "0.1.0-dev.20260927.gabcdef0", "0.1.0",
+            "0.1.0-alpha.1", "0.1.0-beta.2", "0.1.0-dev.20260927.gabcdef0", "0.1.0", "0.1.2",
         ):
             with self.subTest(version=version):
                 for target in ("set-version", "version-check"):
@@ -153,6 +155,50 @@ class CetiRunVersionTests(unittest.TestCase):
                 for component in ("operator", "portal", "ai-gateway"):
                     archive = self.root / f"app/cetirun-platform/charts/cetirun-{component}-{version}.tgz"
                     self.assertTrue(archive.is_file(), archive)
+
+    def test_set_synchronizes_broker_chart_and_app_versions(self):
+        MODULE.set_version("0.1.2")
+        broker = self.root / "app/cetirun-agent-broker/chart/Chart.yaml"
+        for field in ("version", "appVersion"):
+            self.assertEqual(MODULE.top_level_yaml(broker, field), "0.1.2")
+
+    def test_check_rejects_stale_broker_versions(self):
+        broker = self.root / "app/cetirun-agent-broker/chart/Chart.yaml"
+        original = broker.read_text()
+        for field in ("version", "appVersion"):
+            with self.subTest(field=field):
+                broker.write_text("".join(
+                    f'{field}: "0.0.0"\n' if line.startswith(f"{field}:") else line
+                    for line in original.splitlines(keepends=True)
+                ))
+                with self.assertRaisesRegex(ValueError, f"cetirun-agent-broker/chart/Chart.yaml: {field}"):
+                    MODULE.check_version(self.version)
+
+    def test_missing_broker_app_version_does_not_partially_update_files(self):
+        broker = self.root / "app/cetirun-agent-broker/chart/Chart.yaml"
+        broker.write_text("".join(
+            line for line in broker.read_text().splitlines(keepends=True)
+            if not line.startswith("appVersion:")
+        ))
+        before = {name: (self.root / name).read_bytes() for name in VERSION_FILES}
+        with self.assertRaisesRegex(ValueError, "cetirun-agent-broker/chart/Chart.yaml"):
+            MODULE.set_version("0.1.2")
+        self.assertEqual(before, {name: (self.root / name).read_bytes() for name in VERSION_FILES})
+
+    @unittest.skipUnless(shutil.which("helm"), "requires Helm")
+    def test_broker_helm_test_follows_release_and_prerelease_app_versions(self):
+        broker_dir = self.root / "app/cetirun-agent-broker/chart"
+        shutil.copytree(ROOT / "app/cetirun-agent-broker/chart", broker_dir, dirs_exist_ok=True)
+        for version in ("0.1.2", "0.1.2-rc.1"):
+            with self.subTest(version=version):
+                MODULE.set_version(version)
+                self.assertEqual(MODULE.top_level_yaml(broker_dir / "Chart.yaml", "appVersion"), version)
+                result = subprocess.run(
+                    ["bash", str(ROOT / "scripts/cetirun-agent-broker-helm-test.sh")],
+                    env={**os.environ, "CHART_DIR": str(broker_dir), "KUBECONFIG": os.devnull},
+                    text=True, capture_output=True, timeout=30,
+                )
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_set_synchronizes_istio_app_version(self):
         MODULE.set_version("1.2.3")
