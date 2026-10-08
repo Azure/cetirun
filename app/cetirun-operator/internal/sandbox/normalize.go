@@ -17,15 +17,22 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation/field"
 )
 
+// DefaultSandbox applies schema defaults to an independent copy without
+// validating or canonicalizing explicitly supplied values.
+func DefaultSandbox(spec v1alpha1.SandboxSpec) v1alpha1.SandboxSpec {
+	defaulted := *spec.DeepCopy()
+	if defaulted.Type == "" {
+		defaulted.Type = v1alpha1.SandboxKata
+	}
+	return defaulted
+}
+
 // NormalizeSandbox validates local values and returns an independent canonical copy.
 // It does not establish runtime availability, storage approval or enforcement.
 func NormalizeSandbox(spec v1alpha1.SandboxSpec) (v1alpha1.SandboxSpec, field.ErrorList) {
-	normalized := *spec.DeepCopy()
+	normalized := DefaultSandbox(spec)
 	path := field.NewPath("spec")
 	var errs field.ErrorList
-	if normalized.Type == "" {
-		normalized.Type = v1alpha1.SandboxKata
-	}
 	switch normalized.Type {
 	case v1alpha1.SandboxKata, v1alpha1.SandboxGVisor:
 	default:
@@ -95,16 +102,38 @@ func normalizePositiveQuantity(value resource.Quantity, path *field.Path) (resou
 	return normalized, nil
 }
 
+// DefaultAgentPolicy applies schema defaults to an independent copy. Unlike
+// normalization, it preserves explicit values, list order and duplicates.
+func DefaultAgentPolicy(spec v1alpha1.AgentPolicySpec) v1alpha1.AgentPolicySpec {
+	defaulted := *spec.DeepCopy()
+	if defaulted.Security.ReadOnlyRootFilesystem == nil {
+		readOnly := true
+		defaulted.Security.ReadOnlyRootFilesystem = &readOnly
+	}
+	if defaulted.Network.Ingress.Mode == "" {
+		defaulted.Network.Ingress.Mode = v1alpha1.AgentPolicyIngressAuthenticated
+	}
+	defaultPolicyPorts(defaulted.Network.BlockedPorts)
+	for i := range defaulted.Network.AllowedInternalCIDRs {
+		defaultPolicyPorts(defaulted.Network.AllowedInternalCIDRs[i].Ports)
+	}
+	return defaulted
+}
+
+func defaultPolicyPorts(ports []v1alpha1.AgentPolicyPort) {
+	for i := range ports {
+		if ports[i].Protocol == "" {
+			ports[i].Protocol = corev1.ProtocolTCP
+		}
+	}
+}
+
 // NormalizeAgentPolicy validates and canonicalizes intent without inferring grants
 // or platform capabilities. The returned value never shares mutable input state.
 func NormalizeAgentPolicy(spec v1alpha1.AgentPolicySpec) (v1alpha1.AgentPolicySpec, field.ErrorList) {
-	normalized := *spec.DeepCopy()
+	normalized := DefaultAgentPolicy(spec)
 	path := field.NewPath("spec")
 	var errs field.ErrorList
-	if normalized.Security.ReadOnlyRootFilesystem == nil {
-		readOnly := true
-		normalized.Security.ReadOnlyRootFilesystem = &readOnly
-	}
 	networkPath := path.Child("network")
 	network := &normalized.Network
 	network.BlockedCIDRs = make([]string, len(spec.Network.BlockedCIDRs))
@@ -150,9 +179,6 @@ func NormalizeAgentPolicy(spec v1alpha1.AgentPolicySpec) (v1alpha1.AgentPolicySp
 		})
 	}
 
-	if network.Ingress.Mode == "" {
-		network.Ingress.Mode = v1alpha1.AgentPolicyIngressAuthenticated
-	}
 	switch network.Ingress.Mode {
 	case v1alpha1.AgentPolicyIngressAuthenticated:
 	case v1alpha1.AgentPolicyIngressDisabled:
@@ -201,9 +227,6 @@ func normalizePolicyPorts(input []v1alpha1.AgentPolicyPort, path *field.Path) ([
 		port := &ports[i]
 		if port.Port < 1 || port.Port > 65535 {
 			errs = append(errs, field.Invalid(path.Index(i).Child("port"), port.Port, "must be between 1 and 65535"))
-		}
-		if port.Protocol == "" {
-			port.Protocol = corev1.ProtocolTCP
 		}
 		switch port.Protocol {
 		case corev1.ProtocolTCP, corev1.ProtocolUDP, corev1.ProtocolSCTP:

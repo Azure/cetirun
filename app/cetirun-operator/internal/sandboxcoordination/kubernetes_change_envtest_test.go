@@ -220,6 +220,34 @@ func TestKubernetesConfigurationAPIServer(t *testing.T) {
 		}
 	}
 
+	for _, kind := range []string{"Sandbox", "AgentPolicy"} {
+		t.Run(kind+"/schema-defaults", func(t *testing.T) {
+			store, before, after := newFixture(t, kind, "defaults")
+			switch object := after.(type) {
+			case *api.Sandbox:
+				object.Spec.Type = ""
+			case *api.AgentPolicy:
+				object.Spec.Security.ReadOnlyRootFilesystem = nil
+				object.Spec.Network.Ingress.Mode = ""
+				object.Spec.Network.BlockedPorts = []api.AgentPolicyPort{{Port: 8080}}
+				object.Spec.Network.AllowedInternalCIDRs = []api.AgentPolicyCIDRRule{
+					{CIDR: "203.0.113.0/24", Ports: []api.AgentPolicyPort{{Port: 8443}}},
+				}
+			}
+			ticket, err := store.AcquireConfigurationChange(ctx, before, after)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.ReconcileChange(ctx, ticket,
+				configurationAdapter(t, storage, storage, before, after)); err != nil {
+				t.Fatal("valid API-defaulted update could not complete:", err)
+			}
+			if _, err := store.ReadConfigurationChange(ctx, before, after); !errors.Is(err, ErrUnavailable) {
+				t.Fatal("completed defaulted update retained its reservation:", err)
+			}
+		})
+	}
+
 	for _, scenario := range []string{"source-race", "source-replaced", "metadata-mismatch", "status-advanced"} {
 		t.Run(scenario, func(t *testing.T) {
 			store, before, after := newFixture(t, "Team", scenario)
