@@ -72,7 +72,7 @@ func TestAdminInstance_ListAll(t *testing.T) {
 		t.Errorf("bob should not be ready")
 	}
 	if byName["bob"].Team != "legacy" {
-		t.Errorf("bob team should fall back to user.team, got %q", byName["bob"].Team)
+		t.Errorf("bob team = %q, want legacy", byName["bob"].Team)
 	}
 }
 

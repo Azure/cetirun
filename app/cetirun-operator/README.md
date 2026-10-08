@@ -111,6 +111,147 @@ Unit, race and isolated API-server tests use synthetic provider responses.
 Run `make test-sandbox-lifecycle` with preinstalled `KUBEBUILDER_ASSETS` for the
 API persistence tests. These checks are not live runtime qualification.
 
+### Start and shared-change coordination
+
+The [coordination package](internal/sandboxcoordination/) provides the ordered
+protocol for a participating platform integration. The
+[native preparation bridge](internal/controller/sandbox_execution_intent.go)
+requires current held preparation, a pinned ControllerRevision and grant
+journal, complete lifetime placement, current authorization and compiled
+policy, and an independently enrolled Pod/Node/epoch, physical machine,
+volume and writer-journal UID. The complete writer tuple is persisted with
+the coordination ticket and must still match before reservation or cleanup.
+It rechecks sources without reading Secret contents or treating Agent status
+as authorization.
+Preparation still validates every permitted Team Sandbox and both policy
+slots. An execution reserves only its selected Sandbox and policy, so valid
+changes to an unused Sandbox or the other policy class do not require it to stop.
+Non-secret sources use immutable UIDs and effective-input digests rather than
+treating the original observation resource version as lifetime configuration.
+Digests retain desired content, owner references, finalizers and recognized
+runtime, ownership, network and admission-control metadata. Unrelated labels,
+annotations, managed fields and status do not invalidate execution. StatefulSet
+zero/one-replica transitions remain controlled separately. Replacement,
+termination, lost storage, changed content or more than one desired replica
+still fail. Secret contents are never read by these checks, so Secret versions
+remain conservative pins; explicit grant-approval requirements are unchanged.
+Every execution recheck also refreshes whole-generation prerequisite approval
+and compares it with the protected preparation receipt. Kubernetes prerequisite
+revisions cover effective inputs, not incidental observation versions.
+Publication-source content and identities remain checked even when their
+observation versions change. Withdrawal, missing providers, changed approvals
+and stale observations fail without restaging Helm or quiescing a running writer.
+The execution inventory accepts up to 129 identities: all 128 supported
+preparation inputs plus the preparation-state ConfigMap. Larger inventories
+fail without truncation.
+
+One UID-pinned controller-state object serializes shared-source readers and
+exclusive changes with API resource-version comparisons. Running and stopping
+executions retain their source reservations. There is no expiry, lock stealing,
+automatic state recreation or adoption of a same-name replacement. A start or
+source mutation records intent before its only submission; restart and lost
+replies are observation-only. Unknown mutation outcomes retain their reservation,
+including when the API still shows the old object.
+
+`AcquireTeamChange` derives the affected execution selections from an
+authoritative before image and the complete proposed Team mutation. Changing
+only the creation default or another policy-class slot can coexist with
+unaffected executions. Changing their selected slot, removing their Sandbox
+membership, replacing the Team or changing shared runtime inputs cannot.
+Team mutations still serialize with one another, pin the exact before
+UID/resource version and full desired mutation digest, and retain unknown
+outcomes. Normal configuration admission and whole-Team validation still apply;
+the mutation adapter must enforce the full digest at its actual write boundary.
+
+The lifecycle reserves the physical writer through the durable journal, then
+requires a fresh, exact pre-start acknowledgement of an armed guest-external
+gate. Current runtime, Pod, control and epoch evidence precedes route publication.
+The route-publication boundary guard rechecks the same evidence's freshness
+after coordination and source reads, so delayed publication cannot use an
+expired observation. An additional post-publication observation precedes the
+adapter's atomic applied-binding/readiness commit. Source, freshness or
+observation loss clears readiness, withdraws routes and attempts durable writer exclusion; failure in
+one cleanup step does not skip the others. Reservations are released only after
+all cleanup succeeds. Historical cleanup does not rediscover targets from
+current policy or storage configuration.
+
+**This protocol does not activate the shipped controller.** The adapter must
+enforce the same operation at the actual runtime, mutation and publication
+boundaries, including delayed submissions, restart and observation loss.
+Calling a read-only guard before an asynchronous write is not sufficient.
+Every shared-source writer must participate; direct writes must be excluded
+before enablement. No concrete production start, observation, mutation, routing
+or status-commit adapter is installed here, and neither a coordination record
+nor a successful callback qualifies one. The existing controller and admission
+holds are unchanged. Live governed Agent execution, model traffic and platform
+qualification remain separate, uncompleted integration work.
+
+The focused lifecycle tests cover synthetic ordering, identity/freshness
+failures, writer-history integration and real isolated API persistence/CAS.
+They do not start agent containers, contact a model service or qualify a
+provider.
+
+### Running-input verification
+
+`CheckSandboxExecutionSources` remains the held-preparation check. A qualified
+runtime integration can use `SandboxRunningStatusInput` after its controlled
+handoff: the Agent and persisted expectation must both be unheld, the workload
+must still match its enrolled UID/template with exactly one desired replica,
+and the actual Pod and Node must match the separately enrolled execution.
+The returned current resolution and plan contain no observation or start permit.
+Pod readiness and Node health are not enforcement evidence.
+
+Held intent capture now pins a separate `runningPreparationDigest`. It permits
+only the expected hold transition, the independently rechecked current Agent
+intent, and refreshed observation versions for sources whose effective content
+is checked separately. Ownership, namespace/HOME identity, template, revision,
+source identities and non-effective version pins remain protected. Existing
+held tickets without the optional field remain readable, but cannot use the
+running-input path without a newly verified, stopped enrollment. Older strict
+readers cannot read new records containing the field; keep compatible readers
+until these records have completed cleanup.
+
+The concrete Kubernetes prerequisite source has an explicit `ResolveRunning`
+path. It retains metadata-only Secret reads and exact input/approval checks
+without requiring a preparation hold, re-running Helm or calling writer
+quiescence. Other prerequisite adapters must explicitly support running reads;
+the controller does not silently reuse their held-only resolver.
+Placement checks share the existing scheduled-Pod topology validation.
+
+The existing controller still dispatches governed Agents to held preparation.
+No code here changes finalizers, expectations or replicas to start an Agent.
+Real runtime gating, independent observations, all-source mutation coordination
+and model/tool validation remain prerequisites for enabling execution.
+
+### Guarded Sandbox status persistence
+
+`SandboxExecutionStatusWriter` provides the status component for a separately
+qualified runtime adapter. `CommitReadiness` requires the exact current Running
+ticket, running-input verification and independent complete, fresh enforcement
+evidence. It uses the existing status helper and one UID/resource-version-pinned
+merge patch to record Sandbox enforcement and applied history. The observation
+age is explicitly bounded to at most one minute and rechecked before and after
+the write. Unchanged status is revalidated without rewriting it.
+
+This component does not create routes, assign a new access URL, set global Agent
+`Ready=True` or change the phase to Ready. Disabled ingress keeps the URL empty.
+An acknowledged status write followed by failed revalidation is returned as an
+error, not reported as a verified transition. Status persistence is not an
+atomic transaction with the coordination object or the physical runtime; the
+caller must execute coordinated cleanup on uncertainty.
+
+`ClearReadiness` requires the exact Stopping ticket but not current policy or
+prerequisite availability. It clears reported readiness/access, follows the
+current suspension/deletion generation and preserves applied history. An opaque
+stop marker forces the first clear to advance the Agent resource version, even
+if it was already nonready, so pending positive writes using the old version
+cannot overwrite it. Repeated identical clears are no-ops. This is status
+invalidation, not route withdrawal, process termination or writer fencing.
+
+Stock startup does not install this component as an execution adapter. Its
+unit and local API-server tests use synthetic runtime inputs and observations;
+they do not establish live enforcement or an end-to-end governed Agent run.
+
 ### Existing activation boundary
 
 The new Team bindings and Agent `sandboxRef` remain optional in this additive

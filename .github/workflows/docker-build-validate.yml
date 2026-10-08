@@ -62,6 +62,7 @@ jobs:
           tags: cetirun-base:validation
           build-args: |
             NPM_REGISTRY=${{ env.NPM_REGISTRY }}
+            PYPI_INDEX_URL=${{ env.PYPI_INDEX_URL }}
 
       - name: Fetch verified OpenClaw artifact
         run: scripts/fetch-openclaw-artifact.sh "${{ runner.temp }}/openclaw-artifact"

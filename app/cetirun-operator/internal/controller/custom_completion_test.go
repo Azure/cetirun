@@ -158,7 +158,7 @@ type completionScenario struct {
 
 // requireLegacyCustomRuntime documents integration tests for Custom's former
 // direct-runtime path. Policy deliberately holds Custom Agents because no
-// typed AI Gateway enforcement adapter exists for them yet; completion record
+// typed Sandbox execution adapter exists for them yet; completion record
 // encoding and delivery remain covered by custom_completion_record_test.go.
 func requireLegacyCustomRuntime(t *testing.T) {
 	t.Helper()

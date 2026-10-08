@@ -52,7 +52,7 @@ RUN npm config set registry "${NPM_REGISTRY}" && \
 # reviewed lifecycle, and prove that the package's pending marker was retired.
 RUN cd /usr/local/share/npm-global/lib && \
     npm pkg delete allowScripts.openclaw && \
-    npm approve-scripts openclaw && \
+    npm install-scripts approve openclaw && \
     npm rebuild openclaw && \
     test ! -e node_modules/openclaw/.openclaw-lifecycle-pending && \
     set -- $(openclaw --version) && \

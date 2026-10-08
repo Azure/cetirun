@@ -16,5 +16,5 @@ a commitment to release dates.
   choices, enforced beyond the user interface.
 - **Private memory and safer lifecycle:** built-in Wiki-style memory, retained
   private data, and controlled replacement and recovery.
-- **Operations:** scoped diagnostics, clearer policy status, and CetiAdmin
-  assistance with explicit authorization.
+- **Operations:** scoped diagnostics, clearer policy status, and safer
+  administrator workflows.

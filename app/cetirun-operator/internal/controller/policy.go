@@ -217,9 +217,12 @@ func (r *AgentReconciler) resolvePolicy(ctx context.Context, agent *api.Agent) (
 	if !slices.Contains(policy.Spec.Harnesses.Allowed, agent.Spec.Agent.Type) {
 		return nil, fmt.Errorf("Agent harness %q is not allowed by policy", agent.Spec.Agent.Type)
 	}
-	// Policy enforcement currently has a typed Gateway adapter only for the built-in
-	// Harnesses. A Custom workload could otherwise retain a direct provider
-	// credential path, so it must remain held until it has an equivalent adapter.
+	// A Custom workload has a typed Gateway binding, but not the protected
+	// Sandbox preparation/execution adapter required for complete Policy
+	// enforcement. Keep it held until every required domain has an adapter.
+	if agent.Spec.Agent.Type == api.AgentTypeCustom {
+		return nil, fmt.Errorf("Agent harness %q has no typed Sandbox execution adapter", agent.Spec.Agent.Type)
+	}
 	if !aiGatewayHarnessSupported(agent.Spec.Agent.Type) {
 		return nil, fmt.Errorf("Agent harness %q has no typed AI Gateway enforcement adapter", agent.Spec.Agent.Type)
 	}
@@ -259,38 +262,35 @@ func (r *AgentReconciler) resolvePolicy(ctx context.Context, agent *api.Agent) (
 		}
 	}
 	authorizationRevision, err := policyHash(struct {
-		Version        string           `json:"version"`
-		AgentUID       types.UID        `json:"agentUID"`
-		OwnerTenant    string           `json:"ownerTenant"`
-		OwnerObject    string           `json:"ownerObject"`
-		TeamUID        types.UID        `json:"teamUID"`
-		TeamGeneration int64            `json:"teamGeneration"`
-		Subject        api.EntraSubject `json:"subject"`
-		AuthorizedAt   metav1.Time      `json:"authorizedAt"`
-	}{"policy-authorization-v1", agent.UID, strings.ToLower(ownerTenant), strings.ToLower(ownerObject), team.UID, team.Generation, canonicalEntraSubject(authorization.Subject), authorization.AuthorizedAt})
+		Version      string           `json:"version"`
+		AgentUID     types.UID        `json:"agentUID"`
+		OwnerTenant  string           `json:"ownerTenant"`
+		OwnerObject  string           `json:"ownerObject"`
+		TeamUID      types.UID        `json:"teamUID"`
+		Subject      api.EntraSubject `json:"subject"`
+		AuthorizedAt metav1.Time      `json:"authorizedAt"`
+	}{"policy-authorization-v2", agent.UID, strings.ToLower(ownerTenant), strings.ToLower(ownerObject), team.UID, canonicalEntraSubject(authorization.Subject), authorization.AuthorizedAt})
 	if err != nil {
 		return nil, err
 	}
 	gatewayRevision, err := policyHash(struct {
 		Version            string    `json:"version"`
 		PolicyUID          types.UID `json:"policyUID"`
-		PolicyGeneration   int64     `json:"policyGeneration"`
 		Models             []string  `json:"models"`
 		Budget             string    `json:"budget"`
 		RequestedShared    bool      `json:"requestedShared"`
 		RequestedCopilot   bool      `json:"requestedCopilot"`
 		CatalogFingerprint string    `json:"catalogFingerprint"`
-	}{"gateway-policy-v1", policy.UID, policy.Generation, models, budget, agent.Spec.SharedModelsEnabled(), agent.Spec.GitHubCopilotEnabled(), catalogFingerprint})
+	}{"gateway-policy-v2", policy.UID, models, budget, agent.Spec.SharedModelsEnabled(), agent.Spec.GitHubCopilotEnabled(), catalogFingerprint})
 	if err != nil {
 		return nil, err
 	}
 	credentialRevision, err := policyHash(struct {
-		Version          string                       `json:"version"`
-		PolicyUID        types.UID                    `json:"policyUID"`
-		PolicyGeneration int64                        `json:"policyGeneration"`
-		Enabled          bool                         `json:"enabled"`
-		Identity         api.AgentPolicyAgentIdentity `json:"identity"`
-	}{"credential-policy-v1", policy.UID, policy.Generation, agent.Spec.AgentIdentity != nil && agent.Spec.AgentIdentity.Enabled, policy.Spec.AgentIdentity})
+		Version   string                       `json:"version"`
+		PolicyUID types.UID                    `json:"policyUID"`
+		Enabled   bool                         `json:"enabled"`
+		Identity  api.AgentPolicyAgentIdentity `json:"identity"`
+	}{"credential-policy-v2", policy.UID, agent.Spec.AgentIdentity != nil && agent.Spec.AgentIdentity.Enabled, policy.Spec.AgentIdentity})
 	if err != nil {
 		return nil, err
 	}
@@ -309,11 +309,8 @@ func (r *AgentReconciler) resolvePolicy(ctx context.Context, agent *api.Agent) (
 func (r *AgentReconciler) desiredSandboxPolicyRevision(ctx context.Context, agent *api.Agent, team *api.Team) (string, error) {
 	if r.SandboxPreparation == nil || r.SandboxPreparation.Configuration == nil {
 		// Standalone Gateway-only deployments have no Sandbox compiler. They can
-		// preserve existing Sandbox evidence, but cannot manufacture a desired
-		// revision or make a new Sandbox projection ready.
-		if agent.Status.Sandbox != nil {
-			return agent.Status.Sandbox.AppliedRevision, nil
-		}
+		// preserve existing Sandbox history, but cannot turn that historical
+		// evidence into a desired revision or make a new projection ready.
 		return "", nil
 	}
 	reader := r.APIReader
@@ -529,7 +526,20 @@ func (r *AgentReconciler) recordPolicy(ctx context.Context, agent *api.Agent, re
 }
 
 func policyEnforcementVerified(agent *api.Agent, resolution *policyResolution) bool {
-	if agent.Status.Sandbox == nil || agent.Status.Sandbox.AppliedRevision == "" || !meta.IsStatusConditionTrue(agent.Status.Conditions, api.ConditionSandboxReady) {
+	if agent == nil || resolution == nil || resolution.team == nil || resolution.policy == nil {
+		return false
+	}
+	sandboxReady := meta.FindStatusCondition(agent.Status.Conditions, api.ConditionSandboxReady)
+	class := agent.Spec.PolicyClass
+	if class == "" {
+		class = api.AgentPolicyClassNormal
+	}
+	if agent.Status.Sandbox == nil || agent.Status.Sandbox.AppliedRevision == "" ||
+		agent.Status.Sandbox.AppliedRevision != resolution.sandboxRevision ||
+		agent.Status.Sandbox.TeamUID != resolution.team.UID ||
+		agent.Status.Sandbox.AgentPolicyUID != resolution.policy.UID ||
+		agent.Status.Sandbox.PolicyClass != class || sandboxReady == nil ||
+		sandboxReady.Status != metav1.ConditionTrue || sandboxReady.ObservedGeneration != agent.Generation {
 		return false
 	}
 	needsModels := agent.Spec.SharedModelsEnabled() || agent.Spec.GitHubCopilotEnabled()

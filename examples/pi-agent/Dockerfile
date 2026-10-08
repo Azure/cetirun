@@ -9,22 +9,24 @@ ARG GIT_SHA=unknown
 USER root
 WORKDIR /opt/cetirun-pi
 
-# The published base carries CVE-2026-12151 in npm's own dependency tree.
-# Keep npm and Pi unchanged; install the compatible, checksum-pinned fix.
-RUN case "$(node -p 'require("/usr/local/lib/node_modules/npm/node_modules/undici/package.json").version')" in \
-      6.26.0|6.27.0) ;; \
+# Older published bases need the fixed npm dependency; npm 12 already includes it.
+RUN inherited_undici="$(node -p 'require("/usr/local/lib/node_modules/npm/node_modules/undici/package.json").version')" && \
+    case "${inherited_undici}" in \
+      6.26.0|6.27.0|6.28.0) ;; \
       *) echo "Review the inherited npm undici version before replacing it" >&2; exit 1 ;; \
     esac && \
-    npm_undici_stage="$(mktemp -d)" && \
-    curl --fail --location --retry 3 --max-time 120 \
-      https://registry.npmjs.org/undici/-/undici-6.27.0.tgz \
-      --output "${npm_undici_stage}/undici.tgz" && \
-    echo "cb4ecdf54572260fbbbd0fb03929ff04ca1be8b3d3bb41e60e8b4a72fc2b1036  ${npm_undici_stage}/undici.tgz" | sha256sum --check && \
-    tar -xzf "${npm_undici_stage}/undici.tgz" -C "${npm_undici_stage}" && \
-    rm -r /usr/local/lib/node_modules/npm/node_modules/undici && \
-    mv "${npm_undici_stage}/package" /usr/local/lib/node_modules/npm/node_modules/undici && \
-    rm -r "${npm_undici_stage}" && \
-    test "$(node -p 'require("/usr/local/lib/node_modules/npm/node_modules/undici/package.json").version')" = "6.27.0" && \
+    if [ "${inherited_undici}" = "6.26.0" ]; then \
+      npm_undici_stage="$(mktemp -d)" && \
+      curl --fail --location --retry 3 --max-time 120 \
+        https://registry.npmjs.org/undici/-/undici-6.27.0.tgz \
+        --output "${npm_undici_stage}/undici.tgz" && \
+      echo "cb4ecdf54572260fbbbd0fb03929ff04ca1be8b3d3bb41e60e8b4a72fc2b1036  ${npm_undici_stage}/undici.tgz" | sha256sum --check && \
+      tar -xzf "${npm_undici_stage}/undici.tgz" -C "${npm_undici_stage}" && \
+      rm -r /usr/local/lib/node_modules/npm/node_modules/undici && \
+      mv "${npm_undici_stage}/package" /usr/local/lib/node_modules/npm/node_modules/undici && \
+      rm -r "${npm_undici_stage}" && \
+      test "$(node -p 'require("/usr/local/lib/node_modules/npm/node_modules/undici/package.json").version')" = "6.27.0"; \
+    fi && \
     npm --version
 
 COPY package.json package-lock.json ./
@@ -58,7 +60,7 @@ RUN for tool in sh cp mkdir mv rm chmod mktemp find cmp fd rg; do \
     && ln -s /opt/cetirun-pi/pi-tui.mjs /usr/local/bin/pi-tui
 
 LABEL org.opencontainers.image.source="https://github.com/Azure/CetiRun" \
-      org.opencontainers.image.description="Pi coding-agent Custom example with native GitHub Copilot authentication" \
+      org.opencontainers.image.description="Pi Custom Agent with platform AI Gateway and native login modes" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.revision="${GIT_SHA}" \
       org.opencontainers.image.licenses="MIT"

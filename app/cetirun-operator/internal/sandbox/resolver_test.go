@@ -165,6 +165,25 @@ func TestResolvePolicyClass(t *testing.T) {
 	}
 }
 
+func TestResolveRevisionUsesOnlySandboxPolicyProjection(t *testing.T) {
+	input := resolverFixture()
+	baseline := mustResolve(t, input).Revision
+	policy := input.Resources.AgentPolicies["normal"]
+	policy.Spec.ModelAccess = cetirunv1alpha1.AgentPolicyModelAccess{
+		Copilot:       cetirunv1alpha1.AgentPolicyCopilotAccess{Allowed: true},
+		GatewayBudget: &cetirunv1alpha1.AgentPolicyGatewayBudget{DefaultMonthlyUSD: "10", MaxMonthlyUSD: "20"},
+	}
+	policy.Spec.AgentIdentity = cetirunv1alpha1.AgentPolicyAgentIdentity{Allowed: true, CredentialServices: []string{"azure-resource-manager"}}
+	policy.Spec.Skills.Allowed = []string{"unrelated-skill"}
+	if revision := mustResolve(t, input).Revision; revision != baseline {
+		t.Fatal("Gateway, credential, or skill policy changed the Sandbox revision")
+	}
+	policy.Spec.Network.BlockedPorts = []cetirunv1alpha1.AgentPolicyPort{{Port: 443}}
+	if revision := mustResolve(t, input).Revision; revision == baseline {
+		t.Fatal("Sandbox network policy did not change the Sandbox revision")
+	}
+}
+
 func TestResolveRejectsInvalidReferences(t *testing.T) {
 	for _, tc := range []struct {
 		name   string

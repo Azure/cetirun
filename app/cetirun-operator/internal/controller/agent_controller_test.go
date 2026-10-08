@@ -37,15 +37,16 @@ import (
 // --- Fake HelmClient ---
 
 type fakeHelmClient struct {
-	installCalled    bool
-	installCalls     int
-	installErr       error
-	lastChartVersion string
-	lastValues       map[string]interface{}
-	useHarness       bool
-	appliedKey       string
-	prepareCalls     int
-	prepareErr       error
+	installCalled       bool
+	installCalls        int
+	installErr          error
+	lastChartVersion    string
+	lastValues          map[string]interface{}
+	useHarness          bool
+	appliedKey          string
+	prepareCalls        int
+	prepareErr          error
+	disableChatContract bool
 }
 
 // requireLegacyDirectRuntime documents tests for the pre-Policy execution
@@ -68,6 +69,9 @@ func (f *fakeHelmClient) Prepare(namespace string, values map[string]any, chartV
 			return nil, err
 		}
 		chrt.Metadata.Version = chartVersion
+		if f.disableChatContract {
+			delete(chrt.Metadata.Annotations, "cetirun.microsoft.com/portal-chat")
+		}
 		return helm.PrepareChart(chrt, values)
 	}
 	return &helm.PreparedRelease{Values: values, ChartVersion: chartVersion}, nil

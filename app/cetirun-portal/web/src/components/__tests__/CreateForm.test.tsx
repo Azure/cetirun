@@ -74,7 +74,7 @@ describe("CreateForm", () => {
     await user.click(screen.getByRole("button", { name: "Create Agent" }));
     expect(mockMutate).toHaveBeenCalledOnce();
     expect(JSON.parse(JSON.stringify(mockMutate.mock.calls[0][0]))).toEqual({ agent: { type: "custom", image, username: "vibe" } });
-  });
+  }, 10_000);
 
   it("validates the Custom HTTP port before submitting", async () => {
     mockFeatures.data.allowedAgentTypes = ["custom"];

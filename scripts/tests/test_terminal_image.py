@@ -20,12 +20,12 @@ class TerminalImageTests(unittest.TestCase):
     def test_mcr_release_builds_and_publishes_terminal(self):
         pipeline = (ROOT / ".pipelines/release-mcr.yml").read_text()
         self.assertTrue("bash scripts/terminal-docker-build.sh" in pipeline, "MCR release does not build the terminal")
-        build_inventory = re.search(r"for image in ([^;]+); do", pipeline)
-        publish_inventory = re.search(r"image_artifacts=\(([^)]+)\)", pipeline)
-        self.assertIsNotNone(build_inventory)
-        self.assertIsNotNone(publish_inventory)
-        self.assertIn("cetirun-terminal", build_inventory.group(1).split())
-        self.assertIn("cetirun-terminal", publish_inventory.group(1).split())
+        publish_inventories = re.findall(r"image_artifacts=\(([^)]+)\)", pipeline)
+        self.assertTrue(publish_inventories, "MCR release has no image inventory")
+        self.assertTrue(
+            all("cetirun-terminal" in inventory.split() for inventory in publish_inventories),
+            "MCR release does not publish the terminal",
+        )
 
     def test_help_does_not_require_docker_or_network(self):
         result = subprocess.run(

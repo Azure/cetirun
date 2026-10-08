@@ -36,6 +36,7 @@
       "/docs/guides",
       "/docs/guides/agent-identity",
       "/docs/guides/models",
+      "/docs/guides/custom-chat",
       "/docs/guides/lifecycle",
     ]
   [[modules.groups]]

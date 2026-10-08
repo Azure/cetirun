@@ -18,7 +18,7 @@ provides a separate Chrome/CDP desktop sidecar. UI assets build on the builder's
 native architecture using the upstream-pinned Node 26 image; only their
 architecture-independent output enters the target image. Python, SQLite, and
 the final image build for `linux/amd64`. The runtime retains the shared base's
-Node 24.19.0, which satisfies the upstream package's Node engine range.
+Node 24.21.0, which satisfies the upstream package's Node engine range.
 
 ## Compatibility cleanup in 0.21.5
 
@@ -47,7 +47,9 @@ CetiRun keeps these layers on top of the upstream source:
 - the persistent user and HOME contract at UID/GID `1024` and
   `/home/vibe/.hermes`;
 - the `cetirun_teams` platform plugin and Azure Workload Identity support;
-- the in-pod CetiRun authentication service;
+- the in-pod CetiRun authentication service, which the entrypoint does not run
+  when `CETIRUN_AI_GATEWAY=true`: on the platform AI Gateway the owner signs
+  in to GitHub Copilot through the Portal;
 - Supervisor wiring for the Hermes gateway, Dashboard, terminal, and Tailscale;
 - the external shared-skills directory and CetiRun-owned persona/context files;
 - the SQLite version and compile flags used by the upstream container to avoid

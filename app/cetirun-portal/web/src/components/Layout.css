@@ -3,6 +3,34 @@
  * Licensed under the MIT License.
  */
 
+html,
+body,
+#root {
+  margin: 0;
+  min-height: 100%;
+}
+
+.portal-header-inner {
+  padding: 12px 48px;
+  gap: 8px;
+}
+.portal-header-brand {
+  white-space: nowrap;
+}
+.portal-header-actions {
+  margin-left: auto;
+}
+@media (max-width: 700px) {
+  .portal-header-inner {
+    padding: 8px 12px;
+    flex-wrap: wrap;
+  }
+  .portal-header-brand img {
+    width: 32px;
+    height: 32px;
+  }
+}
+
 .layout-root {
   zoom: 1;
 }

@@ -50,8 +50,8 @@ export function CreateForm({ onCreated }: { onCreated?: () => void }) {
   const effectiveProvider = useEffectiveTeamProvider(team);
   const custom = agentType === "custom";
   const gatewayOn = !!features?.aiGatewayEnabled;
-  // Only OpenClaw is wired to the AI Gateway so far.
-  const gatewayModels = gatewayOn && agentType === "openclaw";
+  // OpenClaw and Hermes take their models from the AI Gateway.
+  const gatewayModels = gatewayOn && (agentType === "openclaw" || agentType === "hermes");
   const usesGitHubCopilot = !custom && effectiveProvider === GITHUB_COPILOT_PROVIDER && !gatewayModels;
   const catalogQuery = useAIGatewayCatalog(gatewayModels);
   const catalog = catalogQuery.data;
@@ -62,7 +62,7 @@ export function CreateForm({ onCreated }: { onCreated?: () => void }) {
   );
   const sharedAvailable = sharedModels.length > 0;
   const copilotOffered = catalogKnown && !!catalog?.githubCopilot;
-  // An OpenClaw agent needs a model to use: shared models while any are
+  // An OpenClaw or Hermes agent needs a model to use: shared models while any are
   // available, or GitHub Copilot while the deployment offers it. Without
   // GitHub Copilot, shared models stay on; with no shared model on,
   // GitHub Copilot does.
@@ -284,7 +284,7 @@ export function CreateForm({ onCreated }: { onCreated?: () => void }) {
           )}
           {noModelSource && (
             <MessageBar intent="error">
-              No models are available for new OpenClaw agents: there are no shared models and GitHub Copilot is
+              No models are available for new agents: there are no shared models and GitHub Copilot is
               turned off. Ask an administrator to add a shared model.
             </MessageBar>
           )}

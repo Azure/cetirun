@@ -86,8 +86,10 @@ The operator consumes an internal `CustomBindingProvider`, supplied by the
 platform capability owners. Its receipts identify the exact Agent UID,
 generation and image, namespace, model Secret, retained HOME PVC, immutable
 context snapshot, network peers and their revisions. The controller checks
-these references against the actual objects. It does not create a Gateway,
-issue Virtual Keys, publish approved skills or invent a storage handoff.
+these references against the actual objects. The Kubernetes provider reuses
+the platform Gateway controller to provision each approved Agent's Virtual Key;
+it does not create another Gateway or database, publish skills, or invent a
+storage handoff.
 
 Without the provider, an Agent reports `CustomBindingsPending`. Missing,
 changed or foreign objects report `CustomBindingRejected`. Registry references
@@ -95,13 +97,24 @@ use the separate credential synchronizer; native integrations remain rejected. N
 or native-secret fallback can start the workload.
 
 Administrators can explicitly enable `customRuntime` in the Operator chart for
-qualified image digests that manage their own model authentication. This
+qualified image digests. This
 Kubernetes provider prepares the namespace, HOME claim template and canonical
 context, and coordinates Pod replacements, including approved image updates.
-The runtime Chart retains and reuses the same HOME claim. This provider does
-not inject Gateway variables or issue model credentials. Missing Gateway
-bindings never select this mode automatically. The [Pi example]({{< repo "examples/pi-agent/README.md" >}}) uses
-native GitHub Copilot login through this opt-in path.
+The runtime Chart retains and reuses the same HOME claim. The `gatewayImages`
+setting is a subset of `approvedImages` qualified for platform model access.
+Those images receive only their own Virtual Key and the Gateway API base.
+Other approved images require `agentManagedModel: true` and retain image-owned
+authentication. Enabling the Gateway does not migrate them automatically, and
+missing Gateway bindings never select native login as a fallback.
+
+For Gateway-backed Custom Agents, the existing Portal Overview provides the
+platform Copilot sign-in. A compatible runtime chart marked
+`cetirun.microsoft.com/custom-copilot: v1` deploys the separate no-database proxy.
+Only Gateway Pods can reach it; OAuth and proxy credentials never enter the
+Agent container or HOME. Shared models and that Agent's private Copilot models
+are authorized by its Virtual Key. The [Pi example]({{< repo "examples/pi-agent/README.md" >}})
+supports this path and discovers models through the Gateway. Portal Chat still
+gets its model choices from the Agent, not directly from the Gateway catalog.
 
 The approved context snapshot is mounted read-only at `$HOME/.agents`, including
 `skills/cetirun-memory/SKILL.md` and canonical `AGENTS.md`. A same-named image
@@ -389,15 +402,20 @@ these routes on that port:
 | `GET /v1/models` | Model identifiers accepted by this Agent's chat endpoint, not the Gateway catalog. |
 | `GET /healthz` | HTTP startup/readiness: `200` with `{"status":"ok"}`, without model or tool calls. |
 
-The intended Chat UI path is browser → authenticated Chat UI backend → private
-Agent Service. This runtime does not implement Chat UI, chatproxy or history storage.
+The Portal Chat path is browser → authenticated Portal backend → private
+Agent Service. The optional feature serves only Custom with `port` and `webUI`
+false. It is disabled by default and requires compatible Portal, Operator and
+runtime charts. Hermes and OpenClaw continue using their native interfaces.
 Custom endpoints need no application-level Chat token; the platform enforces
 user authorization and network isolation. Built-ins retain native API
 authentication. Never forward the outbound `OPENAI_API_KEY` to a chat endpoint.
 
-Chat UI owns its session list and history and sends the needed `messages`.
-Native history is optional and requires no synchronization. Chat UI storage
-is a separate choice; interrupted requests are not automatically replayed.
+Portal Chat owns its session list and history in the current browser's IndexedDB
+and sends the needed `messages`. The Portal server has no history database or
+PVC. Native history is optional and requires no synchronization; interrupted
+requests are not automatically replayed. Browser history does not sync across
+devices or provide a backup. Read [Custom Chat](../../guides/custom-chat/) for
+enabling the feature, privacy, limits and recovery behavior.
 
 ## Custom Web UI
 
@@ -573,12 +591,12 @@ Image changes do not change the pinned runtime Chart version. The image
 provider and owner are responsible for compatibility with existing files,
 native sessions and HOME dependencies; CetiRun does not migrate their formats.
 Team reassignment requires an administrator and a suspended Agent; ordinary
-edits preserve the effective Team and its governance bindings.
+edits preserve the effective Team and its Policy assignment.
 
 The displayed configuration is the requested configuration. A saved request
 does not establish new runtime readiness.
 
 Registry credentials and `registrySecretRef` mutations are not part of this
-management flow. Custom Chat proxy/UI/history and image-specific authentication
-also remain separate. The Portal does not present a Custom native Agent UI or
+management flow. The optional Custom Chat feature has its own access checks;
+image-specific authentication remains with the image. The Portal does not present a Custom native Agent UI or
 Copilot helper merely because an HTTP port is configured.

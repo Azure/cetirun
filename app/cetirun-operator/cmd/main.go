@@ -40,6 +40,7 @@ import (
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/buildinfo"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/controller"
 	helmclient "github.com/Azure/CetiRun/app/cetirun-operator/internal/helm"
+	"github.com/Azure/CetiRun/app/internal/chataccess"
 	"github.com/Azure/CetiRun/app/internal/registryauth"
 )
 
@@ -282,6 +283,11 @@ func main() {
 	}
 	if customConfig.Enabled {
 		agentReconciler.CustomBindings = controller.NewKubernetesCustomBindings(agentReconciler, customConfig)
+	}
+	agentReconciler.ChatAccess, err = chataccess.Parse(os.Getenv("CETIRUN_CHAT_ACCESS"))
+	if err != nil {
+		setupLog.Error(err, "invalid Chat access configuration")
+		os.Exit(1)
 	}
 	agentReconciler.SandboxPreparation, err = controller.NewKubernetesSandboxPreparation(
 		sandboxSourcesConfig, mgr.GetAPIReader(), helmClient, agentReconciler.OperatorNamespace, chartVersion,

@@ -217,9 +217,9 @@ class ImageDependencyTests(unittest.TestCase):
     def test_node_release_and_architecture_checksums(self):
         content = (CHART / "Dockerfile.base").read_text()
         expected = {
-            "NODE_VERSION": "24.19.0",
-            "NODE_SHA256_X64": "14b342e71204f811bde6153be8e04b62aef63c236fef92b55f9c83154b409647",
-            "NODE_SHA256_ARM64": "01443c1e1a29e531ccad5a46fefa6df490d2189c49f7955904aecdbb0fe86fdc",
+            "NODE_VERSION": "24.21.0",
+            "NODE_SHA256_X64": "fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6",
+            "NODE_SHA256_ARM64": "6ad1325edbdb5649c379b75a237147a666c95d4f9ae8d340fef2d1575d289ad2",
         }
         for argument, value in expected.items():
             with self.subTest(argument=argument):
@@ -236,14 +236,16 @@ class ImageDependencyTests(unittest.TestCase):
 
         base = (CHART / "Dockerfile.base").read_text()
         self.assertNotIn("tinyglobby/node_modules/picomatch", base)
+        self.assertNotIn("UNDICI_DIR=", base)
         self.assertIn(
-            "UNDICI_DIR=/usr/local/lib/node_modules/npm/node_modules/undici", base
+            'npm install --global --prefix /usr/local --ignore-scripts', base
         )
-        self.assertIn("npm pkg set 'allowScripts.opencode-ai=true' --json", base)
+        self.assertIn('"npm@${NPM_VERSION}"', base)
+        self.assertIn("npm install-scripts approve opencode-ai", base)
         self.assertIn("npm rebuild opencode-ai", base)
         self.assertIn('test "$(opencode --version)" = "${OPENCODE_VERSION}"', base)
         self.assertIn(
-            "npm pkg set 'allowScripts[@anthropic-ai/claude-code]=true' --json",
+            "npm install-scripts approve @anthropic-ai/claude-code",
             base,
         )
         self.assertIn(
@@ -260,15 +262,24 @@ class ImageDependencyTests(unittest.TestCase):
         self.assertIn('npm pkg set "overrides[undici@7]=${CLAWHUB_UNDICI_VERSION}"', openclaw)
         self.assertIn('npm ls "undici@${CLAWHUB_UNDICI_VERSION}" --all', openclaw)
         self.assertIn("! npm ls undici@7.29.0 --all", openclaw)
-        self.assertIn(
-            'npm pack undici@6.27.0 --quiet --registry "${NPM_REGISTRY}"',
-            base,
-        )
-        self.assertIn(
-            "test \"$(node -p 'require(\"./package.json\").version')\" "
-            '= "6.27.0"',
-            base,
-        )
+
+    def test_pi_example_preserves_fixed_base_dependencies(self):
+        content = (ROOT / "examples/pi-agent/Dockerfile").read_text()
+        install = content.split("RUN ", 1)[1].split("\n\nCOPY ", 1)[0].replace("\\\n", "")
+        for version in ("6.26.0", "6.27.0", "6.28.0", "6.25.0", "7.29.0"):
+            with self.subTest(version=version):
+                mocks = (
+                    f"node() {{ printf '%s\\n' '{version}'; }}\n"
+                    "npm() { return 0; }\n"
+                    "mktemp() { printf '%s\\n' /unused-fixture; }\n"
+                    "curl() { echo patch-download; return 99; }\n"
+                )
+                result = subprocess.run(
+                    ["sh", "-c", mocks + install],
+                    text=True, capture_output=True, check=False,
+                )
+                self.assertEqual(result.returncode == 0, version in ("6.27.0", "6.28.0"))
+                self.assertEqual("patch-download" in result.stdout, version == "6.26.0")
 
     def test_azure_cli_top_level_packages_are_not_replaced(self):
         content = (CHART / "Dockerfile.base").read_text()
@@ -315,7 +326,7 @@ class ImageDependencyTests(unittest.TestCase):
         self.assertNotIn("OPENCLAW_PLUGIN_STAGE_DIR", content)
         self.assertIn("npm pkg set 'allowScripts.openclaw=true' --json", content)
         self.assertIn("npm pkg delete allowScripts.openclaw", content)
-        self.assertIn("npm approve-scripts openclaw", content)
+        self.assertIn("npm install-scripts approve openclaw", content)
         self.assertIn("npm rebuild openclaw", content)
         self.assertIn(
             "test ! -e node_modules/openclaw/.openclaw-lifecycle-pending", content

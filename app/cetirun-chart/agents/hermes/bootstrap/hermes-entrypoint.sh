@@ -74,17 +74,6 @@ logfile=/dev/null
 logfile_maxbytes=0
 pidfile=/tmp/supervisord.pid
 
-[program:cetirun-auth]
-command=/usr/local/lib/hermes-agent/venv/bin/python /usr/local/share/cetirun/cetirun-auth-service.py
-priority=20
-autorestart=true
-startretries=5
-environment=HERMES_HOME="%(ENV_HERMES_HOME)s",CETIRUN_AGENT_TYPE="hermes",CETIRUN_AUTH_KEY="%(ENV_CETIRUN_AUTH_KEY)s",API_SERVER_KEY="%(ENV_API_SERVER_KEY)s"
-stdout_logfile=/dev/stdout
-stdout_logfile_maxbytes=0
-stderr_logfile=/dev/stderr
-stderr_logfile_maxbytes=0
-
 [program:hermes-gateway]
 command=hermes gateway run --replace --accept-hooks --external-supervisor
 priority=40
@@ -98,6 +87,24 @@ stderr_logfile=/dev/stderr
 stderr_logfile_maxbytes=0
 
 EOF
+
+# On the platform AI Gateway, the owner signs in to GitHub Copilot through the
+# Portal, and the chart serves no in-agent sign-in helper.
+if [ "${CETIRUN_AI_GATEWAY:-}" != "true" ]; then
+  cat >> /tmp/supervisord.conf << 'AUTH_EOF'
+
+[program:cetirun-auth]
+command=/usr/local/lib/hermes-agent/venv/bin/python /usr/local/share/cetirun/cetirun-auth-service.py
+priority=20
+autorestart=true
+startretries=5
+environment=HERMES_HOME="%(ENV_HERMES_HOME)s",CETIRUN_AGENT_TYPE="hermes",CETIRUN_AUTH_KEY="%(ENV_CETIRUN_AUTH_KEY)s",API_SERVER_KEY="%(ENV_API_SERVER_KEY)s"
+stdout_logfile=/dev/stdout
+stdout_logfile_maxbytes=0
+stderr_logfile=/dev/stderr
+stderr_logfile_maxbytes=0
+AUTH_EOF
+fi
 
 if [ "${HERMES_DASHBOARD_ENABLED:-true}" = "true" ]; then
   if ! echo "${HERMES_DASHBOARD_PORT}" | grep -qE '^[0-9]+$' || [ "${HERMES_DASHBOARD_PORT}" -lt 1024 ] || [ "${HERMES_DASHBOARD_PORT}" -gt 65535 ]; then
@@ -207,7 +214,7 @@ TAILSCALE
     cat > /tmp/tailscale-serve.sh << 'TSSERVE_SCRIPT'
 #!/bin/bash
 sleep 10
-sudo tailscale serve --bg "http://localhost:${TAILSCALE_SERVE_PORT}"
+sudo tailscale serve --bg "http://127.0.0.1:${TAILSCALE_SERVE_PORT}"
 TSSERVE_SCRIPT
     chmod +x /tmp/tailscale-serve.sh
     cat >> /tmp/supervisord.conf << 'TSSERVE'

@@ -69,8 +69,6 @@ func Compile(input CompileInput) (*Plan, error) {
 		Binding: binding, AgentName: input.AgentName, Namespace: input.Namespace,
 		ResolutionRevision: resolution.Revision, Network: network, Identity: identity,
 	}
-	effectivePolicy := *resolution.AgentPolicy.DeepCopy()
-	effectivePolicy.SandboxSelection = api.SandboxSelectionPolicy{}
 	capabilities := resolution.Capabilities
 	capabilities.IPFamilies = sortedUnique(capabilities.IPFamilies)
 	capabilities.Protocols = sortedUnique(capabilities.Protocols)
@@ -81,7 +79,7 @@ func Compile(input CompileInput) (*Plan, error) {
 		AgentName    string
 		Namespace    string
 		Sandbox      api.SandboxSpec
-		Policy       api.AgentPolicySpec
+		Policy       sandbox.PolicyProjection
 		Capabilities sandbox.Capabilities
 		Adapter      AdapterRegistration
 		Topology     Topology
@@ -90,8 +88,8 @@ func Compile(input CompileInput) (*Plan, error) {
 		Identity     IdentityPlan
 		Network      NetworkPlan
 	}{
-		"sandbox-controls-v1", binding, input.AgentName, input.Namespace,
-		resolution.Sandbox, effectivePolicy, capabilities, platform.Adapter,
+		"sandbox-controls-v2", binding, input.AgentName, input.Namespace,
+		resolution.Sandbox, sandbox.ProjectPolicy(resolution.AgentPolicy), capabilities, platform.Adapter,
 		platform.Topology, grants, approval, identity, network,
 	})
 	if err != nil {

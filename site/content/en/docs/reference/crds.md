@@ -18,27 +18,6 @@ An Agent is a long-lived, user-owned environment, not an execution or template.
 A Team supplies shared configuration and skills, not shared access to private
 data. Pod replacement does not create a new Agent.
 
-## Existing installations
-
-Older installations may contain `OpenClawInstance` and `OpenClawTeam` objects
-in the same API group and version. The operator and portal no longer register
-those legacy kinds. Installing the current CRDs does not convert, adopt, or delete
-legacy objects. Sandbox governance is an inactive foundation, not a migration.
-
-Do not delete legacy CRs or CRDs as an upgrade shortcut. Old finalizers can
-uninstall workloads and delete namespaces; deleting a CRD removes its stored
-objects. Review data retention and resource ownership before handing an
-existing installation over to the new API.
-
-The cluster scope, finalizer, namespace/release names, and PVC behavior are
-retained. Harness configuration uses required `spec.agent`; the old
-`spec.agentType` field is not supported. There is no automatic resource
-conversion or field migration. Helm manages the current CRDs as templates and
-upgrades their schemas with the release. Their retention annotation prevents
-uninstall from deleting them. Earlier unmanaged CRDs need a separately reviewed
-ownership handover; the chart does not force adoption or perform schema/data
-migration. Retention does not protect against a schema downgrade.
-
 ## Agent
 
 | Field under `spec` | Contract |
@@ -46,7 +25,6 @@ migration. Retention does not protect against a schema downgrade.
 | `user.alias` | Required owner alias matching `^[a-z][a-z0-9-]{0,62}$` |
 | `user.displayName` | Required display name |
 | `user.email` | Optional email |
-| `user.team` | Optional user-context label; does not select a team resource. Use `team` for that reference |
 | `gatewayTokenSecretRef` | Required native Secret name for Hermes/OpenClaw; forbidden for Custom |
 | `agent` | Required Harness configuration object |
 | `agent.type` | `hermes` (default), `openclaw`, or `custom`; immutable |
@@ -56,8 +34,8 @@ migration. Retention does not protect against a schema downgrade.
 | `agent.port` | HTTP port, 1–65535; required for Custom Web UI, otherwise optional. Omitted for Custom means headless |
 | `agent.webUI` | Boolean, default false; Custom-only. When true, `agent.port` serves a Web UI rather than the Chat API; see [Agent Harness](../agent-harness/#custom-web-ui) |
 | `team` | Name of a `Team` |
-| `sandboxRef` | Optional during additive staging; governed resolution requires a permitted Team Sandbox |
-| `policyClass` | `normal` (default) or administrator-assigned `admin`; the default alone does not enable governance |
+| `sandboxRef` | Team-permitted Sandbox selected for Policy enforcement |
+| `policyClass` | `normal` (default) or administrator-assigned `admin` |
 | `model` | Optional Copilot model ID, at most 256 characters |
 | `skillOverrides.add` / `remove` | Set-like skill lists, at most 20 per list; effective IDs are `(team ∪ add) − remove` |
 | `helm.version` | Agent chart pin; backfilled from the operator default on first reconciliation |
@@ -214,7 +192,7 @@ only passed to the reserved `skills.clawHub` list, not installed. Shared storage
 uses chart-level protocol and mount options; those are not fields on
 `skillStorage`. See [configuration and skills](../../concepts/configuration/).
 
-## Sandbox and AgentPolicy foundations
+## Sandbox and AgentPolicy
 
 `Sandbox` describes the prepared `kata` or `gvisor` runtime, Agent/helper
 resource budgets, private home storage and scratch. `AgentPolicy` describes
@@ -222,12 +200,14 @@ selection constraints, read-only root filesystem, network and ingress controls,
 and optional Kubernetes or Entra identity intent. Configuration references and
 schema acceptance do not grant access or prove enforcement.
 
-Sandbox execution is **not enabled**. Agents selecting these bindings, including
-through their Team, are held before built-in or Custom runtime preparation.
-`SandboxReady=False` reports the inactive path; the controller requests compute
-shutdown and route removal without claiming a node fence or advancing applied
-status. Custom shutdown preserves its ownership checks and pending completion
-recovery. Existing unbound runtime behavior is unchanged.
+Policy assignment is mandatory. The controller resolves owner and Team
+authorization, the effective AgentPolicy, and the selected Sandbox before any
+workload may run. Invalid or unavailable authorization is fail-closed.
+
+The native Sandbox path compiles and stages protected resources at zero
+replicas. Production start, observation, and routing adapters are not enabled
+yet, so `SandboxReady` remains false and execution remains held. Custom has a
+typed Gateway binding but no typed Sandbox execution adapter and is also held.
 
 The controller records a hold finalizer before changing workloads, so a failed
 status update cannot release the recorded hold. Explicit suspension remains
@@ -240,46 +220,16 @@ namespace deletion.
 Agent Identity authorization and directory cleanup remains a blocking deletion
 step for held built-in Agents, including when the runtime namespace is absent.
 
-Portal Team edits preserve the governance bindings even though the Portal does
-not yet expose them. Portal binds newly created namespaces to the Agent for
-cleanup, but does not adopt pre-existing namespaces. Ownership-write failures
-are reported and require recovery of the tracked Agent. The matching Portal
-chart adds namespace `patch` permission for this ownership write.
+Portal verifies Team membership and writes immutable owner and authorization
+evidence. Administrative assignment or budget changes require a suspended
+Agent. Admission validates protected writes and UID-bound Sandbox
+reauthorization. Operator status reports desired per-domain revisions and only
+marks Policy Applied after matching enforcement evidence is current.
 
-The new binding fields remain optional solely to preserve unbound resources
-during additive staging. The pure resolver requires complete, compatible
-bindings and explicit UID authorization. An optional independent configuration
-admission service now validates governed writes and references, persists
-creation-only selection defaults, and protects cleanup during webhook outages.
-It is disabled by default and supplies no production capability registrations:
-governed bindings remain rejected without qualified support, and runtime
-execution remains held. Enforced webhook rules make matched legacy writes
-depend on service availability too.
-Admission is currently gated to Kubernetes 1.37+. Legacy Team deletion retains
-its RBAC behavior; removing a governed Team's bindings requires its members to
-be rebound to another governed Team or deleted, including members that inherit
-governance without an explicit Agent binding.
-The default `sandboxAdmission.validationMode=compatible` tolerates newer CR
-fields while preserving known validation and authorization. An added status
-field therefore need not block ordinary writes during a compatible Helm
-upgrade. Non-administrators cannot change unknown top-level Agent/Team spec
-fields through legacy-authority shortcuts; unchanged unknown fields remain
-writable alongside known fields. New security semantics require a qualified
-version/capability transition. The optional `strict` mode rejects unknown CR
-fields and requires an explicitly ordered schema/binary upgrade.
-Operator status patches preserve unknown fields and reject stale revisions.
-Portal instance edits and upgrades, Team edits, and Registry intent changes use
-field-level patches with resource-version checks too. They preserve stored fields
-introduced by newer schemas outside the requested changes; explicitly clearing a
-setting still removes that setting.
-Breaking changes, ownership transfers and downgrades still require a reviewed
-migration; no automatic reverse migration is provided.
-
-Governed member Team assignment, pending UID authorization, final-Pod admission,
-rollout barriers, enforcement observation, protected rendering and production
-adoption still need implementation and qualification. See the
+Production Sandbox start and observation still require implementation and
+qualification. See the
 [operator foundation notes]({{< repo "app/cetirun-operator/README.md" >}})
-for the staged admission bootstrap, authority and validation boundaries.
+for the execution-hold, authority, and validation boundaries.
 
 ## Schema and implementation
 

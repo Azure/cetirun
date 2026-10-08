@@ -64,6 +64,7 @@ func Middleware(admins AdminSet, verifiers ...*OIDCVerifier) func(http.Handler) 
 			}
 
 			claims := Claims{
+				Subject:     r.Header.Get("X-Auth-Request-User"),
 				Alias:       alias,
 				DisplayName: displayName,
 				Email:       email,

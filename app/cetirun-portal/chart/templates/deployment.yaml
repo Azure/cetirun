@@ -1,3 +1,10 @@
+{{- $sharedChat := .Values.global.portalChat | default dict -}}
+{{- $chatEnabled := or .Values.chat.enabled (default false $sharedChat.enabled) -}}
+{{- $chatRealm := default .Values.chat.identityRealm $sharedChat.identityRealm -}}
+{{- if $chatEnabled }}
+{{- $_ := required "chat.identityRealm is required for Custom Chat" $chatRealm -}}
+{{- $_ := required "istio.host is required for Custom Chat" .Values.istio.host -}}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -36,6 +43,16 @@ spec:
               containerPort: 8081
               protocol: TCP
           env:
+            - name: FEATURE_CUSTOM_CHAT_ENABLED
+              value: {{ $chatEnabled | quote }}
+            - name: CHAT_IDENTITY_REALM
+              value: {{ $chatRealm | quote }}
+            - name: CHAT_CALLER_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: CHAT_CALLER_LABELS
+              value: {{ include "cetirun-portal.selectorLabels" . | fromYaml | toJson | quote }}
             - name: REGISTRY_CREDENTIAL_NAMESPACE
               value: {{ default .Values.registryCredentials.namespace .Values.global.registryCredentialNamespace | quote }}
             {{- if .Values.istio.host }}

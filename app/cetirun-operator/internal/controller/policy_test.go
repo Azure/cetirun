@@ -45,9 +45,85 @@ func TestPolicyGatewayRevisionTracksLiveManagedBackend(t *testing.T) {
 	}
 }
 
+func TestPolicyRevisionsAreScopedToTheirEnforcementDomains(t *testing.T) {
+	ctx := context.Background()
+	agent := aiGatewayTestAgent(testAIGatewayTeam)
+	r, kube, _ := aiGatewayTestReconciler(t, agent, aiGatewayNamespace())
+	baseline, err := r.resolvePolicy(ctx, agent)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	team := &api.Team{}
+	if err := kube.Get(ctx, types.NamespacedName{Name: testAIGatewayTeam}, team); err != nil {
+		t.Fatal(err)
+	}
+	team.Spec.MemberContext.Role = "unrelated-role"
+	team.Generation++
+	if err := kube.Update(ctx, team); err != nil {
+		t.Fatal(err)
+	}
+	team.Status.ObservedGeneration = team.Generation
+	if err := kube.Status().Update(ctx, team); err != nil {
+		t.Fatal(err)
+	}
+	afterTeam, err := r.resolvePolicy(ctx, agent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterTeam.authorizationRevision != baseline.authorizationRevision {
+		t.Fatal("an unrelated Team default changed authorization evidence")
+	}
+
+	policy := &api.AgentPolicy{}
+	if err := kube.Get(ctx, types.NamespacedName{Name: testPolicyName}, policy); err != nil {
+		t.Fatal(err)
+	}
+	policy.Spec.Network.BlockedPorts = []api.AgentPolicyPort{{Port: 443}}
+	policy.Generation++
+	if err := kube.Update(ctx, policy); err != nil {
+		t.Fatal(err)
+	}
+	policy.Status.ObservedGeneration = policy.Generation
+	if err := kube.Status().Update(ctx, policy); err != nil {
+		t.Fatal(err)
+	}
+	afterNetwork, err := r.resolvePolicy(ctx, agent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterNetwork.gatewayRevision != baseline.gatewayRevision || afterNetwork.credentialRevision != baseline.credentialRevision {
+		t.Fatal("Sandbox-only policy changed Gateway or credential revisions")
+	}
+
+	if err := kube.Get(ctx, types.NamespacedName{Name: testPolicyName}, policy); err != nil {
+		t.Fatal(err)
+	}
+	policy.Spec.AgentIdentity = api.AgentPolicyAgentIdentity{Allowed: true, CredentialServices: []string{"azure-resource-manager"}}
+	policy.Generation++
+	if err := kube.Update(ctx, policy); err != nil {
+		t.Fatal(err)
+	}
+	policy.Status.ObservedGeneration = policy.Generation
+	if err := kube.Status().Update(ctx, policy); err != nil {
+		t.Fatal(err)
+	}
+	afterIdentity, err := r.resolvePolicy(ctx, agent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterIdentity.gatewayRevision != baseline.gatewayRevision || afterIdentity.credentialRevision == baseline.credentialRevision {
+		t.Fatal("credential policy did not remain isolated from the Gateway revision")
+	}
+}
+
 func TestPolicyReprojectionHoldsOnlyActiveOldProjection(t *testing.T) {
-	resolution := &policyResolution{authorizationRevision: "auth-new", gatewayRevision: "gateway-new", credentialRevision: "credential", sandboxRevision: "sandbox"}
-	agent := &api.Agent{Status: api.AgentStatus{Policy: &api.PolicyStatus{
+	resolution := &policyResolution{
+		team:                  &api.Team{ObjectMeta: metav1.ObjectMeta{UID: "team-uid"}},
+		policy:                &api.AgentPolicy{ObjectMeta: metav1.ObjectMeta{UID: "policy-uid"}},
+		authorizationRevision: "auth-new", gatewayRevision: "gateway-new", credentialRevision: "credential", sandboxRevision: "sandbox",
+	}
+	agent := &api.Agent{ObjectMeta: metav1.ObjectMeta{Generation: 3}, Status: api.AgentStatus{Policy: &api.PolicyStatus{
 		TeamAuthorization: &api.TeamAuthorizationStatus{Revision: "auth-old"},
 		Enforcement: api.PolicyEnforcementStatus{
 			Sandbox:    api.PolicyRevisionExpectation{DesiredRevision: "sandbox"},
@@ -65,11 +141,57 @@ func TestPolicyReprojectionHoldsOnlyActiveOldProjection(t *testing.T) {
 	// A matching verified projection has no hold transition.
 	agent.Status.Policy.TeamAuthorization.Revision = resolution.authorizationRevision
 	agent.Status.Policy.Enforcement.Gateway.DesiredRevision = resolution.gatewayRevision
-	agent.Status.Sandbox = &api.SandboxStatus{AppliedRevision: resolution.sandboxRevision}
+	agent.Status.Sandbox = &api.SandboxStatus{AppliedRevision: resolution.sandboxRevision, TeamUID: resolution.team.UID,
+		AgentPolicyUID: resolution.policy.UID, PolicyClass: api.AgentPolicyClassNormal}
 	agent.Status.AIGateway = &api.AIGatewayStatus{Phase: api.AIGatewayPhaseReady, Routed: true, PolicyRevision: resolution.gatewayRevision}
-	agent.Status.Conditions = []metav1.Condition{{Type: api.ConditionSandboxReady, Status: metav1.ConditionTrue}}
+	agent.Status.Conditions = []metav1.Condition{{Type: api.ConditionSandboxReady, Status: metav1.ConditionTrue, ObservedGeneration: agent.Generation}}
 	if policyReprojectionMustHold(agent, resolution) {
 		t.Fatal("a running Agent with all current projections verified was unnecessarily held")
+	}
+}
+
+func TestPolicyEnforcementRejectsStaleSandboxEvidence(t *testing.T) {
+	resolution := &policyResolution{
+		team:            &api.Team{ObjectMeta: metav1.ObjectMeta{UID: "team-uid"}},
+		policy:          &api.AgentPolicy{ObjectMeta: metav1.ObjectMeta{UID: "policy-uid"}},
+		sandboxRevision: "sandbox-current",
+	}
+	agent := &api.Agent{
+		ObjectMeta: metav1.ObjectMeta{Generation: 7},
+		Status: api.AgentStatus{
+			Sandbox: &api.SandboxStatus{TeamUID: resolution.team.UID, AgentPolicyUID: resolution.policy.UID,
+				PolicyClass: api.AgentPolicyClassNormal, AppliedRevision: resolution.sandboxRevision},
+			Conditions: []metav1.Condition{{Type: api.ConditionSandboxReady, Status: metav1.ConditionTrue, ObservedGeneration: 7}},
+		},
+	}
+	if !policyEnforcementVerified(agent, resolution) {
+		t.Fatal("current Sandbox evidence was not accepted")
+	}
+	for name, mutate := range map[string]func(*api.Agent){
+		"revision":   func(a *api.Agent) { a.Status.Sandbox.AppliedRevision = "sandbox-old" },
+		"team":       func(a *api.Agent) { a.Status.Sandbox.TeamUID = "old-team" },
+		"policy":     func(a *api.Agent) { a.Status.Sandbox.AgentPolicyUID = "old-policy" },
+		"class":      func(a *api.Agent) { a.Status.Sandbox.PolicyClass = api.AgentPolicyClassAdmin },
+		"generation": func(a *api.Agent) { a.Status.Conditions[0].ObservedGeneration-- },
+	} {
+		t.Run(name, func(t *testing.T) {
+			stale := agent.DeepCopy()
+			mutate(stale)
+			if policyEnforcementVerified(stale, resolution) {
+				t.Fatal("stale Sandbox evidence was accepted")
+			}
+		})
+	}
+}
+
+func TestDesiredSandboxRevisionDoesNotCopyHistoricalEvidenceWithoutCompiler(t *testing.T) {
+	agent := &api.Agent{Status: api.AgentStatus{Sandbox: &api.SandboxStatus{AppliedRevision: "historical"}}}
+	revision, err := (&AgentReconciler{}).desiredSandboxPolicyRevision(context.Background(), agent, &api.Team{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if revision != "" {
+		t.Fatalf("desired revision = %q, want empty without a compiler", revision)
 	}
 }
 

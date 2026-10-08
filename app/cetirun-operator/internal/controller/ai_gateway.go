@@ -313,9 +313,9 @@ func aiGatewayKeyModels(groups []string) []string {
 }
 
 // aiGatewayHarnessSupported reports whether the built-in harness is wired to
-// the Gateway: its configuration takes the Gateway endpoint, the key and the
-// model list, and it no longer carries a provider credential. Both supported
-// built-in harnesses use the OpenAI-compatible Gateway endpoint.
+// the Gateway: its configuration takes the Gateway endpoint, key, and model
+// list instead of a provider credential or in-agent Copilot login. The pinned
+// chart must declare the harness-specific paths too (aiGatewayChartSupports).
 func aiGatewayHarnessSupported(agentType cetirunv1alpha1.AgentType) bool {
 	return agentType == cetirunv1alpha1.AgentTypeOpenClaw || agentType == cetirunv1alpha1.AgentTypeHermes
 }
@@ -328,6 +328,11 @@ const (
 	aiGatewayChartValue        = "aiGateway"
 	aiGatewayChartModelsValue  = "models"
 	aiGatewayChartCopilotValue = "copilotProxy"
+	// aiGatewayChartHermesValue and aiGatewayChartHermesKeyEnvValue name the
+	// variable that carries the key to Hermes. Charts that route only
+	// OpenClaw do not declare it, and reject a routed Hermes.
+	aiGatewayChartHermesValue       = "hermes"
+	aiGatewayChartHermesKeyEnvValue = "keyEnv"
 	// aiGatewayChartResponsesValue lists the Copilot models the proxy must
 	// reach through the Responses API; older charts do not declare it.
 	aiGatewayChartResponsesValue = "responsesModels"
@@ -338,6 +343,26 @@ const (
 	// uses on the proxy's Pod template; older charts do not declare it.
 	aiGatewayChartSignInValue = "signInGeneration"
 )
+
+// chartValuePaths is the part of a prepared release that reports the values
+// its chart declares.
+type chartValuePaths interface {
+	SupportsValuePath(path ...string) bool
+}
+
+// aiGatewayChartSupports reports whether the Agent's chart routes its harness
+// through the Gateway: the key, the model list and the Copilot proxy, and for
+// Hermes the variable that carries the key.
+func aiGatewayChartSupports(prepared chartValuePaths, agentType cetirunv1alpha1.AgentType) bool {
+	if !prepared.SupportsValuePath(aiGatewayChartValue, aiGatewayChartModelsValue) ||
+		!prepared.SupportsValuePath(aiGatewayChartValue, aiGatewayChartCopilotValue) {
+		return false
+	}
+	if agentType == cetirunv1alpha1.AgentTypeHermes {
+		return prepared.SupportsValuePath(aiGatewayChartValue, aiGatewayChartHermesValue, aiGatewayChartHermesKeyEnvValue)
+	}
+	return true
+}
 
 // validImageReference accepts repository:tag, repository@sha256:<digest> or
 // both, without whitespace.
@@ -359,7 +384,7 @@ var digestPattern = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
 // traffic on the Gateway. Chart support and a provisioned key are checked
 // separately.
 func (r *AgentReconciler) aiGatewayRequired(instance *cetirunv1alpha1.Agent) bool {
-	return r.AIGateway.Enabled && aiGatewayHarnessSupported(instance.Spec.Agent.Type)
+	return r.AIGateway.Enabled && (aiGatewayHarnessSupported(instance.Spec.Agent.Type) || r.customGatewaySelected(instance))
 }
 
 // aiGatewayCopilotOffered reports whether the deployment gives Agents a
@@ -962,6 +987,9 @@ func labelAgentSecret(secret *corev1.Secret, instance *cetirunv1alpha1.Agent) {
 	secret.Labels["app.kubernetes.io/managed-by"] = "cetirun-operator"
 	secret.Labels["app.kubernetes.io/instance"] = instance.Spec.User.Alias
 	secret.Labels[aiGatewayAgentUIDLabel] = string(instance.UID)
+	if instance.Spec.Agent.Type == cetirunv1alpha1.AgentTypeCustom {
+		secret.OwnerReferences = []metav1.OwnerReference{*metav1.NewControllerRef(instance, cetirunv1alpha1.GroupVersion.WithKind("Agent"))}
+	}
 }
 
 // deleteAIGatewayKey revokes the Agent's key and removes its Copilot model

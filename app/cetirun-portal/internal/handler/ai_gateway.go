@@ -141,6 +141,8 @@ func (h *InstanceHandler) validateAIGatewayCreate(w http.ResponseWriter, r *http
 		return "", nil, false
 	}
 	if agentType == cetirunv1alpha1.AgentTypeCustom {
+		// Custom Agents bring their own models. The Operator separately rejects
+		// policy-bound Custom execution until it has a typed enforcement adapter.
 		return team, nil, true
 	}
 	if req.ModelAccess == nil {

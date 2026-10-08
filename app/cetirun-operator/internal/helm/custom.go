@@ -124,6 +124,13 @@ func prepareCustomChart(chrt *chart.Chart, input map[string]any, request AgentRe
 	runtime["contractVersion"] = "v1"
 	coalesced["runtime"] = runtime
 	terminalPlan := &PreparedRelease{Values: coalesced, Agent: agent, chart: chrt, releaseName: request.ReleaseName}
+	copilotResources, err := terminalPlan.customCopilotObjects(bindings)
+	if err != nil {
+		return nil, err
+	}
+	if len(copilotResources) > 0 {
+		runtime["copilotResources"] = copilotResources
+	}
 	terminalResources, err := terminalPlan.terminalObjects(bindings)
 	if err != nil {
 		return nil, err

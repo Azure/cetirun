@@ -11,13 +11,11 @@ Anthropic model through Helm values.
 
 The platform AI Gateway is part of every platform installation: the operator's
 `aiGateway.enabled` and the portal's `features.aiGatewayEnabled` are required.
-OpenClaw instances take all their models from the Gateway, from two sources:
+OpenClaw and Hermes instances take all their models from the Gateway, from two
+sources:
 
-- **Shared models** are the models a platform administrator configures in the
-  Gateway Helm values. They keep the administrator's names. The chart binds
-  each configured backend to a deterministic `cetirun-shared-...` deployment
-  ID and one `cetirun-model-...` access group; the operator grants only the
-  exact groups allowed by the AgentPolicy.
+- **Shared models** are the models an administrator configures in the Gateway
+  with the access group `cetirun-shared`. They keep the administrator's names.
   While the Gateway blocks requests for unpriced models, as it does by default
   (`blockUnpricedModels`), the operator offers only shared models with a price.
   It reads the setting from the Gateway, so a change made in the Gateway's
@@ -29,28 +27,19 @@ OpenClaw instances take all their models from the Gateway, from two sources:
   appear as `copilot/<model>`. The operator's `aiGateway.copilotProxy.enabled`
   turns the proxy off for the whole deployment.
 
-Each instance's key reaches only the per-deployment groups selected by its
-policy and its own Copilot group, so its `copilot/<model>` names reach its own proxy.
+Each instance's key reaches only its own access groups: `cetirun-shared` and the
+instance's own Copilot group, so its `copilot/<model>` names reach its own proxy.
 The Gateway checks router fallbacks against the key as well
 (`operatorIntegration`). Keep teams and keys in the Gateway console limited to
 access groups: a team or key allowed every model, or a `copilot/` name
 directly, spreads requests for that name over every instance's proxy.
 
-Models added through LiteLLM's database or console are not trusted shared-model
-configuration. Copying a reserved group is not accepted as new Governance
-evidence. An already-issued key has that group, however, so LiteLLM may route
-the copied model until the operator's next catalog refresh (normally within two
-minutes) detects the collision, blocks affected keys and holds their workloads.
-The master key and console credentials are therefore trusted platform
-control-plane credentials: a holder can affect routing, budgets and availability, so
-restrict them to the same administrators who can change the platform release.
-
-The create form offers both sources, on by default, and a new OpenClaw instance
-needs a model to use: shared models while at least one is offered, or GitHub
-Copilot while the deployment offers it. GitHub Copilot stays on while shared
-models are off or none is offered, and shared models stay on without GitHub
-Copilot. With neither source, the portal creates no OpenClaw instance and asks
-for a shared model. It reads the sources from the catalog the operator
+The create form offers both sources, on by default, and a new OpenClaw or Hermes
+instance needs a model to use: shared models while at least one is offered, or
+GitHub Copilot while the deployment offers it. GitHub Copilot stays on while
+shared models are off or none is offered, and shared models stay on without
+GitHub Copilot. With neither source, the portal creates no OpenClaw or Hermes
+instance and asks for a shared model. It reads the sources from the catalog the operator
 publishes, so it also waits until the catalog exists. Every new instance needs
 a Team.
 
@@ -92,6 +81,22 @@ OpenClaw refuses its auth store while earlier profile files wait for import,
 so the profile goes at a start after the import. The token is not carried
 over: the owner signs in again with **Sign in with GitHub**.
 
+A Hermes instance on the Gateway takes its models through a provider named
+`cetirun-gateway` in `~/.hermes/config.yaml`. The chart replaces that provider
+and the model choice at every start, so a model the Gateway stops offering
+leaves the list. Hermes reads the instance's key from `CETIRUN_GATEWAY_API_KEY`,
+which the chart sets from the key Secret; the key is in neither file. Because
+Hermes loads `~/.hermes/.env` over its environment, a value of that variable
+saved there is removed. The instance runs no in-agent sign-in helper. Once per
+HOME, on its first start through the Gateway, init removes the GitHub Copilot
+sign-in made inside the agent before: the `COPILOT_GITHUB_TOKEN` line of
+`~/.hermes/.env` and Hermes' cache of the Copilot token it exchanged. Every
+other credential, such as `GITHUB_TOKEN`, stays. Hermes' auxiliary tasks, such
+as context compression, use the instance's model unless configured otherwise.
+A Hermes instance pinned to a chart version without this provider keeps its
+own provider and sign-in until its chart is upgraded; its owner then signs in
+again with **Sign in with GitHub**.
+
 Each instance has its own virtual key with a monthly budget. The instance page
 lists its models and sets the default; saving a new default restarts the
 instance. When an administrator adds or removes a shared model, changes its
@@ -130,13 +135,14 @@ and [portal sign-in]({{< repo "app/cetirun-portal/internal/handler/copilot_login
 Instances routed through the AI Gateway use the sign-in above instead of the
 flow in this section.
 
-This flow reaches an in-agent sign-in helper. Hermes instances keep it, and so
-do OpenClaw instances pinned to a chart without the per-instance Copilot
-proxy. OpenClaw charts with the proxy carry no helper: their models come only
-through the AI Gateway. In a deployment that has not enabled the Gateway, such
-an instance has no model sign-in; the operator reports `AIGatewayReady` as
-false with the reason `AIGatewayDisabled`, and the portal does not offer this
-flow. The operator records whether an instance's workload serves the helper in
+This flow reaches an in-agent sign-in helper. Hermes instances off the Gateway
+keep it: in a deployment that has not enabled it, or pinned to a chart without
+Hermes' Gateway provider. So do OpenClaw instances pinned to a chart without the
+per-instance Copilot proxy. OpenClaw charts with the proxy carry no helper:
+their models come only through the AI Gateway. In a deployment that has not
+enabled the Gateway, such an instance has no model sign-in; the operator
+reports `AIGatewayReady` as false with the reason `AIGatewayDisabled`, and the
+portal does not offer this flow. The operator records whether an instance's workload serves the helper in
 `status.signInHelper`, and routes `/<instance>/cetirun-auth/` only where it
 does.
 
