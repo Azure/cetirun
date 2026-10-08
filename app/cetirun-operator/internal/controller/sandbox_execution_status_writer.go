@@ -148,8 +148,8 @@ func (w SandboxExecutionStatusWriter) validate(ctx context.Context, guard func(c
 		return err
 	}
 	if w.Reconciler == nil || w.Reconciler.Client == nil || w.Reconciler.APIReader == nil ||
-		w.Now == nil || w.Now().IsZero() || guard == nil {
-		return fmt.Errorf("%w: a status writer, uncached reader, explicit clock and guard are required", sandboxcoordination.ErrUnavailable)
+		w.Coordination.Client == nil || w.Now == nil || w.Now().IsZero() || guard == nil {
+		return fmt.Errorf("%w: status and coordination writers, an uncached reader, explicit clock and guard are required", sandboxcoordination.ErrUnavailable)
 	}
 	return nil
 }

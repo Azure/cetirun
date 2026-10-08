@@ -170,6 +170,76 @@ class SandboxAdmissionChartTests(unittest.TestCase):
             with self.subTest(invalid=invalid):
                 self.assert_rejected(self.server_values(validationMode=invalid), "validationMode must be compatible or strict")
 
+    def test_coordination_pins_existing_state_without_adding_rbac_or_webhooks(self):
+        baseline_values = self.enforced_values(podsEnabled=True, validationMode="strict")
+        baseline = self.render(baseline_values)
+        configured = self.render({
+            **baseline_values,
+            "coordinationConfigMapName": "sandbox-coordination",
+            "coordinationConfigMapUID": "synthetic-coordination-uid",
+        })
+        self.assertEqual(set(configured), set(baseline))
+        container = configured[("Deployment", NAME)]["spec"]["template"]["spec"]["containers"][0]
+        env = next(item for item in container["env"] if item["name"] == "CETIRUN_SANDBOX_ADMISSION")
+        config = json.loads(env["value"])
+        self.assertEqual(config.pop("coordinationConfigMapName"), "sandbox-coordination")
+        self.assertEqual(config.pop("coordinationConfigMapUID"), "synthetic-coordination-uid")
+        previous = baseline[("Deployment", NAME)]["spec"]["template"]["spec"]["containers"][0]
+        previous_env = next(item for item in previous["env"] if item["name"] == "CETIRUN_SANDBOX_ADMISSION")
+        self.assertEqual(config, json.loads(previous_env["value"]))
+        env["value"] = previous_env["value"]
+        self.assertEqual(configured, baseline)
+
+    def test_coordination_requires_strict_enforcement_and_exact_separate_identity(self):
+        valid = self.enforced_values(
+            podsEnabled=True, validationMode="strict",
+            coordinationConfigMapName="sandbox-coordination",
+            coordinationConfigMapUID="synthetic-coordination-uid",
+        )
+        for override in (
+            {"validationMode": "compatible"}, {"enabled": False},
+            {"enforce": False}, {"podsEnabled": False},
+        ):
+            with self.subTest(override=override):
+                self.assert_rejected({**valid, **override}, "coordination requires strict")
+        for override in (
+            {"coordinationConfigMapName": ""},
+            {"coordinationConfigMapName": "bad/name"},
+            {"coordinationConfigMapName": "x" * 254},
+        ):
+            with self.subTest(override=override):
+                self.assert_rejected({**valid, **override}, "separate valid ConfigMap name")
+        for uid in ("", "white space", "line\nbreak", "x" * 129):
+            with self.subTest(uid=uid):
+                self.assert_rejected(
+                    {**valid, "coordinationConfigMapUID": uid},
+                    "must pin a bounded exact UID",
+                )
+        for key in ("coordinationConfigMapName", "coordinationConfigMapUID"):
+            for invalid in (42, False, [], {}):
+                with self.subTest(key=key, invalid=invalid):
+                    self.assert_rejected({**valid, key: invalid}, "name and UID must be strings")
+        self.assert_rejected(
+            {**valid, "placementConfigMapName": "sandbox-coordination"},
+            "separate valid ConfigMap name",
+        )
+
+    def test_omitted_coordination_defaults_preserve_disabled_rendering(self):
+        with tempfile.TemporaryDirectory(prefix="admission-reused-values-") as directory:
+            chart = Path(directory) / "chart"
+            shutil.copytree(CHART, chart)
+            defaults = yaml.safe_load((chart / "values.yaml").read_text())
+            defaults["sandboxAdmission"].pop("coordinationConfigMapName")
+            defaults["sandboxAdmission"].pop("coordinationConfigMapUID")
+            (chart / "values.yaml").write_text(yaml.safe_dump(defaults))
+            for name, admission in (
+                ("disabled", None),
+                ("serving", self.server_values()),
+                ("enforced", self.enforced_values(podsEnabled=True, validationMode="strict")),
+            ):
+                with self.subTest(mode=name):
+                    self.assertEqual(self.render(admission, chart=chart), self.render(admission))
+
     def test_kubernetes_sources_share_platform_config_and_grant_only_policy_writes(self):
         admission = self.enforced_values(podsEnabled=True)
         for namespace, config_map in (

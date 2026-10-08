@@ -1,6 +1,22 @@
 {{- $sandboxSources := include "cetirun-operator.sandboxSourcesConfig" . -}}
 {{- $admission := .Values.sandboxAdmission -}}
 {{- $placementName := $admission.placementConfigMapName -}}
+{{- $coordinationName := get $admission "coordinationConfigMapName" -}}
+{{- $coordinationUID := get $admission "coordinationConfigMapUID" -}}
+{{- if or (not (kindIs "string" $coordinationName)) (not (kindIs "string" $coordinationUID)) -}}
+{{- fail "sandboxAdmission coordination ConfigMap name and UID must be strings" -}}
+{{- end -}}
+{{- if or $coordinationName $coordinationUID -}}
+{{- if not (and $admission.enabled $admission.enforce $admission.podsEnabled (eq $admission.validationMode "strict")) -}}
+{{- fail "sandboxAdmission coordination requires strict, enabled and enforced configuration and Pod admission" -}}
+{{- end -}}
+{{- if or (eq $coordinationName "") (gt (len $coordinationName) 253) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$" $coordinationName)) (eq $coordinationName $placementName) (eq $coordinationName .Values.sandboxSources.platformConfigMapName) (eq $coordinationName .Values.sandboxSources.skillsCatalogConfigMapName) -}}
+{{- fail "sandboxAdmission.coordinationConfigMapName must be a separate valid ConfigMap name" -}}
+{{- end -}}
+{{- if or (eq $coordinationUID "") (gt (len $coordinationUID) 128) (not (regexMatch "^[!-~]+$" $coordinationUID)) -}}
+{{- fail "sandboxAdmission.coordinationConfigMapUID must pin a bounded exact UID without whitespace" -}}
+{{- end -}}
+{{- end -}}
 {{- if not (kindIs "string" $placementName) -}}
 {{- fail "sandboxAdmission.placementConfigMapName must be a string" -}}
 {{- end -}}
@@ -60,6 +76,10 @@
 {{- $config := dict "adminUsers" $admission.adminUsers "adminGroups" $admission.adminGroups "controllerUsername" $controllerUsername "validationMode" $admission.validationMode -}}
 {{- if $placementName -}}
 {{- $_ := set $config "placementConfigMapName" $placementName -}}
+{{- end -}}
+{{- if $coordinationName -}}
+{{- $_ := set $config "coordinationConfigMapName" $coordinationName -}}
+{{- $_ := set $config "coordinationConfigMapUID" $coordinationUID -}}
 {{- end -}}
 {{- if $sandboxSources -}}
 {{- $_ := set $config "platformNamespace" $controllerNamespace -}}

@@ -405,6 +405,13 @@ exceptions in `scripts/license_headers.py` must retain their own notices.
   held-preparation bridge, pre-start acknowledgement, current observations,
   route/readiness ordering and the journal-backed writer integration.
   No production provider is installed or implicitly qualified by these checks.
+  Concrete configuration updates are covered by the coordination package and
+  `cmd/sandbox-config-change` tests. Their API-server cases exercise real
+  conditional writes and observation-only recovery, not a runtime provider.
+  Build the explicit command with
+  `make -C app/cetirun-operator build-sandbox-config-change`; do not run it against
+  a cluster as part of an offline check. It requires separately authorized
+  before/after configuration inputs and an explicitly pinned authority.
   Running-input tests additionally check a synthetic held-to-running handoff
   against real Pod creation, API binding/defaulting and final-Pod admission.
   They contain no scheduler, kubelet or guest-external runtime observer. Run the

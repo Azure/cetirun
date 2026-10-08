@@ -180,7 +180,7 @@ enforce the same operation at the actual runtime, mutation and publication
 boundaries, including delayed submissions, restart and observation loss.
 Calling a read-only guard before an asynchronous write is not sufficient.
 Every shared-source writer must participate; direct writes must be excluded
-before enablement. No concrete production start, observation, mutation, routing
+before enablement. No concrete production start, observation, routing
 or status-commit adapter is installed here, and neither a coordination record
 nor a successful callback qualifies one. The existing controller and admission
 holds are unchanged. Live governed Agent execution, model traffic and platform
@@ -190,6 +190,88 @@ The focused lifecycle tests cover synthetic ordering, identity/freshness
 failures, writer-history integration and real isolated API persistence/CAS.
 They do not start agent containers, contact a model service or qualify a
 provider.
+
+### Coordinated configuration updates
+
+The [Kubernetes configuration adapter](internal/sandboxcoordination/kubernetes_change.go)
+and [explicit command](cmd/sandbox-config-change/) submit real Team, Sandbox and
+AgentPolicy updates through the coordination protocol. They are not a runtime
+adapter or an execution switch. Only updates of existing configuration objects
+are supported; creation, deletion, Agent changes and other execution sources
+are outside this command.
+
+Both before and proposed objects must retain the original name, UID and resource
+version. The adapter verifies the authoritative before image, pins the complete
+proposed write, reserves the affected scope and records submission intent before
+one resource-version-conditional Update. Governed-to-governed Team changes retain
+per-class selection scoping; legacy updates and transitions into or out of
+governance conservatively reserve the entire Team. Schema defaults (including
+omitted port protocols) are applied to independent input copies before pinning
+and submitting the write. Explicit values, list order and duplicates are not
+normalized away. No-op updates, including changes that only omit defaulted
+values, are rejected before reservation because Kubernetes need not advance
+their resource version. Configuration admission and Kubernetes authorization
+still apply.
+
+Sandbox and AgentPolicy updates separately compare the existing effective
+execution digest before and after the proposed write. Typed and unstructured
+AgentPolicy inputs share the same canonical representation of schema-defaulted
+false booleans and empty network arrays; optional empty grant lists use their
+omitted form. Unknown authoritative fields and explicit control values remain
+part of the digest. When it is unchanged, the reservation records that digest:
+existing and new executions with the same source UID and digest can coexist with
+harmless metadata updates. Spec,
+ownership, finalizer and control-metadata changes still exclude affected
+executions. The complete mutation digest continues to authorize every field,
+and competing updates of the same source still serialize.
+Older reservations without this optional digest remain conservative during
+recovery; their scope is never rewritten. Upgrade all coordination readers
+before issuing the new records: older strict readers reject the extra field.
+Previously recorded mismatched digests are not rewritten or accepted as aliases.
+This does not enable execution or replace source rechecks.
+
+After a lost reply, use the same input files to observe the original operation.
+A matching current object with the same UID and an advanced resource version
+proves the desired write is present and an old-version request cannot commit
+again. An unchanged, missing, replaced or differently changed object does not
+prove completion or cancellation. Such outcomes keep their reservations; do not
+edit the journal, change the original files or automatically repeat the write.
+An existing reservation with a different, older digest is not rewritten or
+released by defaulting; it remains subject to the same recovery boundary.
+Observation never releases a reservation. After matching committed content is
+reported, explicit `--action update` can finalize that same changing operation
+without resubmitting it.
+
+Build locally:
+
+```bash
+make -C app/cetirun-operator build-sandbox-config-change
+```
+
+Using the command requires separate authorization for the exact cluster and
+mutation. It requires explicit kubeconfig/context, authority namespace/name/UID
+and before/after files; there is no implicit current-cluster fallback. The default
+action is read-only observation; mutation requires `--action update`. Inputs are
+bounded, strict YAML/JSON configuration objects, not arbitrary Kubernetes
+resources (256 KiB per image). Verified HTTPS is required; redirects and
+exec/auth-provider login plugins are refused. Output identifies the operation
+and phase, not the configuration contents. Run `sandbox-config-change --help`
+for the exact argument list.
+
+The UID-pinned authority must already have been installed and protected before
+execution, using the existing coordination state format. The command does not
+create missing state, grant privileges, bypass admission, qualify fencing or
+enable a workload. All other source writers and the physical runtime still need
+their own integrations before governed execution can be enabled.
+
+With coordinated configuration admission enabled, finalizer-only cleanup of an
+already-terminating Team, Sandbox or AgentPolicy uses normal authorized API
+updates, not `sandbox-config-change`. Admission checks the current source and
+UID-pinned authority read-only, and refuses cleanup while any recorded execution
+or change uses that source. Only existing finalizers may be removed; other
+content and all outstanding reservations stay unchanged. Missing authority is
+not a cleanup bypass. Ordinary configuration updates still require
+nonterminating inputs.
 
 ### Running-input verification
 
