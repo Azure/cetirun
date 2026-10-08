@@ -11,7 +11,9 @@ that carries the Agent's key is reserved: Hermes loads its .env over the
 process environment, so no assignment of it stays in .env, neither a saved one
 nor one in the generated file. Once per HOME,
 the GitHub Copilot sign-in made inside the agent before the Gateway is
-removed: its token in .env and Hermes' cache of the token it exchanged.
+removed: its token in .env and Hermes' cache of the token it exchanged. A
+token in the generated file, from the instance Secret, is not merged into .env
+on the Gateway, so the sign-in does not come back.
 Without the Gateway, the provider CetiRun added for it is removed.
 """
 
@@ -171,17 +173,23 @@ def main() -> int:
         if not args.config.is_file() or not args.env.is_file():
             raise ValueError("required input is missing")
         generated = read_yaml(args.config)
+        generated_env = read_env(args.env)
         desired_config = merge(existing_config, generated)
         on_gateway = args.gateway_key_env is not None
         retire = False
         if on_gateway:
             desired_config = apply_gateway(desired_config, generated)
+            # The owner signs in to GitHub Copilot through the Portal. The
+            # generated environment, which carries a token from the instance
+            # Secret, brings none into .env, so the sign-in removed once
+            # cannot come back at this or a later start.
+            generated_env.pop(COPILOT_TOKEN_ENV, None)
             retire = copilot_sign_in_pending(root)
             if retire:
                 existing_env.pop(COPILOT_TOKEN_ENV, None)
         else:
             desired_config = remove_gateway(desired_config)
-        for key, value in read_env(args.env).items():
+        for key, value in generated_env.items():
             if value or key not in existing_env:
                 existing_env[key] = value
         if on_gateway:

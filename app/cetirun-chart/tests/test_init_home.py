@@ -498,3 +498,28 @@ def test_hermes_on_the_gateway_with_another_key_variable(agent):
     assert result.returncode == 0, result.stderr
     assert "OPENAI_API_KEY" not in env_names(agent)
     assert read_config(agent)["providers"]["cetirun-gateway"]["key_env"] == "OPENAI_API_KEY"
+
+
+@pytest.mark.parametrize("agent", ["hermes"], indirect=True)
+def test_hermes_on_the_gateway_takes_no_copilot_token_from_the_secret(agent):
+    # The operator copies a COPILOT_GITHUB_TOKEN of the instance Secret into
+    # hermes.env. Without the Gateway it is Hermes' in-agent sign-in. On the
+    # Gateway it must not reach .env: not at the start that retires the
+    # sign-in, where the merge would put it back after the saved one is
+    # removed and the marker would keep later starts from removing it, nor at
+    # a later start.
+    (agent["secrets"] / "hermes.env").write_text(
+        "API_SERVER_KEY=sk-dummy\nCOPILOT_GITHUB_TOKEN=gho_example_from_the_secret\n")
+    assert run(agent).returncode == 0
+    assert "COPILOT_GITHUB_TOKEN" in env_names(agent)
+
+    on_gateway(agent)
+    result = run(agent)
+    assert result.returncode == 0, result.stderr
+    assert "COPILOT_GITHUB_TOKEN" not in env_names(agent)
+    assert (agent["target"] / ".hermes/.cetirun-copilot-sign-in-retired").is_file()
+
+    result = run(agent)
+    assert result.returncode == 0, result.stderr
+    names = env_names(agent)
+    assert "COPILOT_GITHUB_TOKEN" not in names and "API_SERVER_KEY" in names
