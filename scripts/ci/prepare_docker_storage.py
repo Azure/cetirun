@@ -31,6 +31,21 @@ def same_filesystem(left, right):
     return left.stat().st_dev == right.stat().st_dev
 
 
+def require_free_space(directory, minimum_free_gib):
+    free = shutil.disk_usage(directory).free
+    if free < minimum_free_gib * GIB:
+        raise ValueError(
+            f"Storage destination {directory} has {free / GIB:.1f} GiB free; "
+            f"at least {minimum_free_gib} GiB is required"
+        )
+
+
+def validate_write_destination(directory, minimum_free_gib):
+    if same_filesystem(directory, Path("/")):
+        raise ValueError("Docker data root or build scratch is on the OS filesystem")
+    require_free_space(directory, minimum_free_gib)
+
+
 def docker_info():
     info = json.loads(run([*DOCKER, "info", "--format", "{{json .}}"], capture=True))
     if not isinstance(info, dict) or not isinstance(info.get("DockerRootDir"), str):
@@ -61,19 +76,15 @@ def prepare(storage_mount, minimum_free_gib=64, *, config_path=Path("/etc/docker
     run(["df", "-ih", "/", storage_mount])
     if same_filesystem(storage_mount, Path("/")):
         raise ValueError("Storage mount is on the OS filesystem; configure a separate temporary or data disk")
-    free = shutil.disk_usage(storage_mount).free
-    if free < minimum_free_gib * GIB:
-        raise ValueError(
-            f"Storage mount has {free / GIB:.1f} GiB free; at least {minimum_free_gib} GiB is required"
-        )
+    require_free_space(storage_mount, minimum_free_gib)
 
     data_root = storage_mount / "cetirun-docker"
     scratch = storage_mount / "cetirun-build-tmp"
     for directory in (data_root, scratch):
         if directory.is_symlink() or (directory.exists() and not directory.is_dir()):
             raise ValueError(f"Refusing to use non-directory or symlink: {directory}")
-        if directory.exists() and same_filesystem(directory, Path("/")):
-            raise ValueError("Docker data root or build scratch is on the OS filesystem")
+        if directory.exists():
+            validate_write_destination(directory, minimum_free_gib)
 
     if config_path.is_symlink() or (config_path.exists() and not config_path.is_file()):
         raise ValueError("Docker daemon configuration must be a regular file, not a symlink")
@@ -86,8 +97,8 @@ def prepare(storage_mount, minimum_free_gib=64, *, config_path=Path("/etc/docker
     info = docker_info()
     if Path(info["DockerRootDir"]).resolve() == data_root and info.get("Driver") == "overlay2":
         scratch.mkdir(exist_ok=True)
-        if same_filesystem(data_root, Path("/")) or same_filesystem(scratch, Path("/")):
-            raise ValueError("Docker data root or build scratch is on the OS filesystem")
+        for directory in (data_root, scratch):
+            validate_write_destination(directory, minimum_free_gib)
         scratch.chmod(0o1777)
         print(f"Docker already uses {data_root}; no daemon restart needed.")
         return data_root
@@ -102,8 +113,8 @@ def prepare(storage_mount, minimum_free_gib=64, *, config_path=Path("/etc/docker
 
     data_root.mkdir(exist_ok=True)
     scratch.mkdir(exist_ok=True)
-    if same_filesystem(data_root, Path("/")) or same_filesystem(scratch, Path("/")):
-        raise ValueError("Docker data root or build scratch is on the OS filesystem")
+    for directory in (data_root, scratch):
+        validate_write_destination(directory, minimum_free_gib)
     scratch.chmod(0o1777)
     config_path.parent.mkdir(parents=True, exist_ok=True)
     content = (json.dumps(config, indent=2) + "\n").encode()
@@ -130,7 +141,7 @@ def prepare(storage_mount, minimum_free_gib=64, *, config_path=Path("/etc/docker
                 raise RuntimeError(f"Docker storage setup failed ({error}); rollback also failed ({rollback_error})") from error
             raise RuntimeError(f"Docker storage setup failed ({error}); restored the original daemon configuration") from error
 
-    run(["df", "-hT", "/", data_root])
+    run(["df", "-hT", "/", data_root, scratch])
     print(f"Docker layers and BuildKit cache now use {data_root}.")
     print(f"Use {scratch} for TMPDIR in subsequent build steps.")
     return data_root

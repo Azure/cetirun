@@ -283,9 +283,11 @@ see [the example](examples/vscode-server/README.md).
 The Azure Pipelines release job prepares Docker storage before building images.
 It uses `dockerStorageMount` (default `/mnt`) for Docker layers, BuildKit cache,
 and build scratch files instead of the OS disk. The helper logs filesystem sizes,
-free space, and inode usage, requires a separate filesystem with at least 64 GiB
-free, and checks the active Docker data root after restarting the daemon. This
-free-space threshold is a guardrail, not a measured maximum release-build size.
+free space, and inode usage, requires at least 64 GiB free on the selected mount
+and on both actual write destinations, and checks the active Docker data root
+after restarting the daemon. Existing child mounts and an already-configured
+Docker daemon receive the same capacity checks. This free-space threshold is a
+guardrail, not a measured maximum release-build size.
 
 `scripts/ci/prepare_docker_storage.py` is an operational helper for **disposable
 Linux CI agents only**, not a local validation command. It requires root,

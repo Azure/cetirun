@@ -130,6 +130,67 @@ class DockerStorageTests(unittest.TestCase):
         self.info_count = 0
         self.prepare(minimum_free_gib=32)
 
+    def assert_low_space_child_is_rejected(self, *, already_configured):
+        scratch = self.mount / "cetirun-build-tmp"
+        for destination in (self.target, scratch):
+            with self.subTest(destination=destination, already_configured=already_configured):
+                self.target.mkdir(exist_ok=True)
+                scratch.mkdir(exist_ok=True)
+                scratch.chmod(0o700)
+                self.config.write_bytes(self.original)
+                self.info_count = 0
+                self.commands.clear()
+                self.initial_root = str(self.target) if already_configured else "/var/lib/docker"
+                self.initial_driver = "overlay2" if already_configured else "overlayfs"
+                # The parent has ample space, but either non-OS child mount can
+                # independently be below the required capacity.
+                self.disk_usage.side_effect = lambda path: SimpleNamespace(
+                    free=(63 if Path(path) == destination else 100) * storage.GIB
+                )
+                with self.assertRaisesRegex(ValueError, "at least 64 GiB") as error:
+                    self.prepare()
+                self.assertIn(str(destination), str(error.exception))
+                self.disk_usage.assert_any_call(destination)
+                self.assertEqual(self.config.read_bytes(), self.original)
+                self.assertEqual(self.systemctl(), [])
+                self.assertEqual(scratch.stat().st_mode & 0o7777, 0o700)
+
+    def test_existing_child_mounts_require_their_own_free_space(self):
+        self.assert_low_space_child_is_rejected(already_configured=False)
+
+    def test_already_configured_storage_still_checks_child_capacity(self):
+        self.assert_low_space_child_is_rejected(already_configured=True)
+
+    def test_new_write_destinations_are_checked_before_daemon_changes(self):
+        scratch = self.mount / "cetirun-build-tmp"
+        for destination in (self.target, scratch):
+            with self.subTest(destination=destination):
+                for directory in (self.target, scratch):
+                    if directory.exists():
+                        directory.rmdir()
+                self.info_count = 0
+                self.commands.clear()
+                self.disk_usage.side_effect = lambda path: SimpleNamespace(
+                    free=(63 if Path(path) == destination else 100) * storage.GIB
+                )
+                with self.assertRaisesRegex(ValueError, "at least 64 GiB") as error:
+                    self.prepare()
+                self.assertIn(str(destination), str(error.exception))
+                self.disk_usage.assert_any_call(destination)
+                self.assertEqual(self.config.read_bytes(), self.original)
+                self.assertEqual(self.systemctl(), [])
+
+    def test_child_mounts_at_the_capacity_threshold_are_accepted(self):
+        scratch = self.mount / "cetirun-build-tmp"
+        self.target.mkdir()
+        scratch.mkdir()
+        self.disk_usage.side_effect = lambda path: SimpleNamespace(
+            free=(100 if Path(path) == self.mount else 64) * storage.GIB
+        )
+        self.prepare()
+        for destination in (self.target, scratch):
+            self.disk_usage.assert_any_call(destination)
+
     def test_non_positive_threshold_and_missing_mount_are_rejected(self):
         with self.assertRaisesRegex(ValueError, "positive"):
             self.prepare(minimum_free_gib=0)
