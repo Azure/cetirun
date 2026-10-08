@@ -98,6 +98,7 @@ name in the test helper. These checks do not need Azure or a cluster.
 | `scripts/cetirun-docker-build.sh` | Build agent, base, and desktop images |
 | `scripts/operator-docker-build.sh` | Build the operator image |
 | `scripts/portal-docker-build.sh` | Build the portal image |
+| `scripts/pi-agent-docker-build.sh` | Build the `cetirun-pi-agent` demo |
 
 Builds use Docker and download dependencies; they are not offline checks.
 Registry access and network policy must be appropriate for the environment.
@@ -247,5 +248,8 @@ artifacts; deployment and end-to-end checks can mutate a live environment.
 
 Do not run these as a substitute for local docs or chart checks. This site does
 not establish a release process or automate publication.
+
+`scripts/verify-mcr-image.py --image IMAGE --digest SHA256` checks the public
+MCR digest and AMD64 pull before the release pipeline updates `latest`.
 
 Source: [scripts directory]({{< repo "scripts" "tree" >}}).

@@ -75,6 +75,7 @@ jobs:
             exit 1
           fi
           echo "Chart version: ${version}, App version: ${app_version} validated."
+          python3 -B scripts/cetirun-version.py check "${version}"
 
       - name: Helm lint
         run: scripts/cetirun-helm-lint.sh
@@ -137,6 +138,20 @@ jobs:
             VERSION=${{ steps.version.outputs.version }}
             GIT_SHA=${{ github.sha }}
           tags: cetirun-desktop:validation
+
+      - name: Build Pi agent image (no push)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: examples/pi-agent
+          file: examples/pi-agent/Dockerfile
+          platforms: linux/amd64
+          push: false
+          load: true
+          build-args: |
+            VERSION=${{ steps.version.outputs.version }}
+            GIT_SHA=${{ github.sha }}
+            BASE_IMAGE=cetirun-base:validation
+          tags: cetirun-pi-agent:validation
 
   release:
     runs-on: ubuntu-latest
@@ -234,6 +249,23 @@ jobs:
             ${{ secrets.ACR_REGISTRY }}/cetirun-desktop:${{ needs.validate.outputs.version }}
             ${{ secrets.ACR_REGISTRY }}/cetirun-desktop:latest
 
+      - name: Build and push Pi agent image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: examples/pi-agent
+          file: examples/pi-agent/Dockerfile
+          platforms: linux/amd64
+          push: true
+          provenance: true
+          sbom: true
+          build-args: |
+            VERSION=${{ needs.validate.outputs.version }}
+            GIT_SHA=${{ github.sha }}
+            BASE_IMAGE=${{ secrets.ACR_REGISTRY }}/cetirun-base:${{ needs.validate.outputs.version }}
+          tags: |
+            ${{ secrets.ACR_REGISTRY }}/cetirun-pi-agent:${{ needs.validate.outputs.version }}
+            ${{ secrets.ACR_REGISTRY }}/cetirun-pi-agent:latest
+
       - name: Log in to prod Helm OCI registry
         run: echo "${{ secrets.ACR_PASSWORD }}" | helm registry login "${{ secrets.ACR_REGISTRY }}" --username "${{ secrets.ACR_USERNAME }}" --password-stdin
 
@@ -289,6 +321,15 @@ jobs:
             --tag "${{ secrets.E2E_ACR_REGISTRY }}/cetirun-desktop:latest" \
             "${{ secrets.ACR_REGISTRY }}/cetirun-desktop:${VERSION}"
 
+      - name: Copy Pi agent image to stage ACR
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          docker buildx imagetools create \
+            --tag "${{ secrets.E2E_ACR_REGISTRY }}/cetirun-pi-agent:${VERSION}" \
+            --tag "${{ secrets.E2E_ACR_REGISTRY }}/cetirun-pi-agent:latest" \
+            "${{ secrets.ACR_REGISTRY }}/cetirun-pi-agent:${VERSION}"
+
       - name: Log in to stage Helm OCI registry
         run: echo "${{ secrets.E2E_ACR_PASSWORD }}" | helm registry login "${{ secrets.E2E_ACR_REGISTRY }}" --username "${{ secrets.E2E_ACR_USERNAME }}" --password-stdin
 
@@ -305,18 +346,22 @@ jobs:
           ACR_TEST_REGISTRY: ${{ secrets.E2E_ACR_REGISTRY }}
         run: |
           version="${{ needs.validate.outputs.version }}"
-          echo "## Release Summary" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "**Version:** ${version}" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "### Artifacts" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Docker base image (prod): \`${ACR_REGISTRY}/cetirun-base:${version}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Docker base image (test): \`${ACR_TEST_REGISTRY}/cetirun-base:${version}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Docker image (prod): \`${ACR_REGISTRY}/openclaw-gateway:${version}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Docker image (test): \`${ACR_TEST_REGISTRY}/openclaw-gateway:${version}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Docker image Hermes (prod): \`${ACR_REGISTRY}/hermes-gateway:${version}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Docker image Hermes (test): \`${ACR_TEST_REGISTRY}/hermes-gateway:${version}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Docker image desktop (prod): \`${ACR_REGISTRY}/cetirun-desktop:${version}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Docker image desktop (test): \`${ACR_TEST_REGISTRY}/cetirun-desktop:${version}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Helm chart (prod): \`helm pull oci://${ACR_REGISTRY}/helm/cetirun --version ${version}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Helm chart (test): \`helm pull oci://${ACR_TEST_REGISTRY}/helm/cetirun --version ${version}\`" >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "## Release Summary"
+            echo ""
+            echo "**Version:** ${version}"
+            echo ""
+            echo "### Artifacts"
+            echo "- Docker base image (prod): \`${ACR_REGISTRY}/cetirun-base:${version}\`"
+            echo "- Docker base image (test): \`${ACR_TEST_REGISTRY}/cetirun-base:${version}\`"
+            echo "- Docker image (prod): \`${ACR_REGISTRY}/openclaw-gateway:${version}\`"
+            echo "- Docker image (test): \`${ACR_TEST_REGISTRY}/openclaw-gateway:${version}\`"
+            echo "- Docker image Hermes (prod): \`${ACR_REGISTRY}/hermes-gateway:${version}\`"
+            echo "- Docker image Hermes (test): \`${ACR_TEST_REGISTRY}/hermes-gateway:${version}\`"
+            echo "- Docker image desktop (prod): \`${ACR_REGISTRY}/cetirun-desktop:${version}\`"
+            echo "- Docker image desktop (test): \`${ACR_TEST_REGISTRY}/cetirun-desktop:${version}\`"
+            echo "- Docker image Pi (prod): \`${ACR_REGISTRY}/cetirun-pi-agent:${version}\`"
+            echo "- Docker image Pi (test): \`${ACR_TEST_REGISTRY}/cetirun-pi-agent:${version}\`"
+            echo "- Helm chart (prod): \`helm pull oci://${ACR_REGISTRY}/helm/cetirun --version ${version}\`"
+            echo "- Helm chart (test): \`helm pull oci://${ACR_TEST_REGISTRY}/helm/cetirun --version ${version}\`"
+          } >> "$GITHUB_STEP_SUMMARY"

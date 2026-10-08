@@ -48,8 +48,8 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md), [DEVELOPMENT.md](DEVELOPMENT.md), and
 - After explicit authorization and registry authentication, publish everything
   with `make publish REGISTRY=registry.example.com`. Use `make publish-images`
   or `make publish-charts` when only one artifact class is requested.
-- Publishing pushes eight images and six OCI Helm charts and verifies Chart
-  pulls. It does not log in to the registry, deploy to Kubernetes, or authorize
+- Publishing includes the `cetirun-pi-agent` demo and verifies Chart pulls.
+  It does not log in to the registry, deploy to Kubernetes, or authorize
   changing another registry or environment.
 
 ## Public-data and review boundary

@@ -1,9 +1,10 @@
-# Pi Custom Agent
+# CetiRun Pi Agent
 
 Run [Pi](https://github.com/earendil-works/pi/tree/v0.87.1/packages/coding-agent)
 in CetiRun, with its native terminal UI and an OpenAI-compatible HTTP adapter.
 The example pins `@earendil-works/pi-coding-agent` to **0.87.1**. It uses Pi's
 real tools and works with Portal Chat when enabled; it does not bundle a Web UI.
+The demo image and package are named `cetirun-pi-agent`.
 
 ## HTTP interfaces
 
@@ -51,8 +52,12 @@ Run from `examples/pi-agent`:
 npm ci --ignore-scripts --no-audit --no-fund
 npm test
 npm run check
-docker buildx build --platform linux/amd64 --load -t pi-example:local .
+docker buildx build --platform linux/amd64 --load -t cetirun-pi-agent:local .
 ```
+
+The root `make build-images` and `make publish-images` targets include this
+demo. `scripts/pi-agent-docker-build.sh` builds it separately; use `BASE_IMAGE`
+to select an existing CetiRun base and `PUSH=true` only to publish.
 
 The Dockerfile uses the CetiRun base image for common HOME-initialization tools,
 installs the locked SDK plus checksum-pinned `fd`, and verifies required tools
@@ -65,6 +70,13 @@ runnable shell/TUI command. Do not add ttyd or Kubernetes credentials to the
 Agent image. A different base image must satisfy the initializer contract and
 the Dockerfile's dependency checks. Publish under a new tag, record the source
 and image digest, and use that digest below; publishing is a separate operation.
+
+## MCR publication
+
+The release pipeline publishes
+`mcr.microsoft.com/aks/ai-runtime/cetirun/cetirun-pi-agent` and the shared
+`cetirun-base` after repository onboarding. Use an available release digest
+approved by your platform administrator.
 
 ## Deploy an approved instance
 
@@ -86,9 +98,9 @@ cetirun-operator:
     enabled: true
     agentManagedModel: false
     approvedImages:
-      - registry.example.com/pi-example@sha256:<published-digest>
+      - mcr.microsoft.com/aks/ai-runtime/cetirun/cetirun-pi-agent@sha256:<published-digest>
     gatewayImages:
-      - registry.example.com/pi-example@sha256:<published-digest>
+      - mcr.microsoft.com/aks/ai-runtime/cetirun/cetirun-pi-agent@sha256:<published-digest>
     storageClass: default
     storageSize: 100Gi
     accessMode: ReadWriteOnce
@@ -132,7 +144,7 @@ Create a new Agent, replacing the owner, digest and Chart version:
 apiVersion: cetirun.microsoft.com/v1alpha1
 kind: Agent
 metadata:
-  name: pi-example
+  name: pi-agent
 spec:
   team: example-team # An existing, approved Team.
   user:
@@ -140,7 +152,7 @@ spec:
     displayName: Example User
   agent:
     type: custom
-    image: registry.example.com/pi-example@sha256:<published-digest>
+    image: mcr.microsoft.com/aks/ai-runtime/cetirun/cetirun-pi-agent@sha256:<published-digest>
     username: vibe
     port: 8080
   helm:

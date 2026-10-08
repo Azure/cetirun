@@ -125,6 +125,7 @@ jobs:
           validate_chart app/cetirun-platform/Chart.yaml
           validate_chart app/cetirun-ai-gateway/chart/Chart.yaml
           validate_chart app/cetirun-agent-broker/chart/Chart.yaml
+          python3 -B scripts/cetirun-version.py check "${RELEASE_VERSION}"
         displayName: Validate all chart versions
         env:
           RELEASE_VERSION: $(releaseVersion)
@@ -310,10 +311,8 @@ jobs:
             --build-arg ACCEPT_VSCODE_SERVER_LICENSE_TERMS=true \
             --tag "${image_registry}/cetirun-vscode:${RELEASE_VERSION}" examples/vscode-server
           verify_and_prune "${image_registry}/cetirun-vscode:${RELEASE_VERSION}"
-          docker buildx build --platform linux/amd64 --push \
-            --build-arg "BASE_IMAGE=${image_registry}/cetirun-base:${RELEASE_VERSION}" \
-            --build-arg "VERSION=${RELEASE_VERSION}" --build-arg "GIT_SHA=$(git rev-parse HEAD)" \
-            --tag "${image_registry}/cetirun-pi-agent:${RELEASE_VERSION}" examples/pi-agent
+          REGISTRY="${image_registry}" IMAGE_TAG="${RELEASE_VERSION}" PUSH=true \
+            BASE_IMAGE="${image_registry}/cetirun-base:${RELEASE_VERSION}" bash scripts/pi-agent-docker-build.sh
           verify_and_prune "${image_registry}/cetirun-pi-agent:${RELEASE_VERSION}"
         displayName: Build, push, and verify Linux AMD64 release images
         env:
@@ -340,6 +339,7 @@ jobs:
             mkdir -p "${verify_dir}"
             trap 'rm -rf "${verify_dir}"' EXIT
 
+            published_images=()
             # Promote every staged image before publishing charts that reference them.
             for artifact in "${image_artifacts[@]}"; do
               repository="${REPOSITORY_PREFIX}/${artifact}"
@@ -347,6 +347,12 @@ jobs:
               versioned_image="${registry}/${repository}:${RELEASE_VERSION}"
               docker buildx imagetools create --tag "${versioned_image}" "${staged_image}"
               docker buildx imagetools inspect "${versioned_image}" > /dev/null
+              digest="$(az acr repository show --name "${ACR_NAME}" --image "${repository}:${RELEASE_VERSION}" --query digest --output tsv)"
+              if [[ ! "${digest}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+                echo "ERROR: published image verification returned an invalid digest for ${versioned_image}." >&2
+                exit 1
+              fi
+              published_images+=("${artifact}@${digest}")
             done
 
             chart_destination="oci://${registry}/${REPOSITORY_PREFIX}/helm"
@@ -356,6 +362,15 @@ jobs:
               helm push "${archive}" "${chart_destination}"
               helm pull "${chart_destination}/${chart}" --version "${RELEASE_VERSION}" --destination "${verify_dir}"
               echo "Published and verified ${chart_destination}/${chart}:${RELEASE_VERSION}."
+            done
+
+            for image in "${published_images[@]}"; do
+              mcr_image="mcr.microsoft.com/aks/ai-runtime/cetirun/${image%@*}:${RELEASE_VERSION}"
+              pinned_mcr_image="${mcr_image}@${image#*@}"
+              local_ref_present=false
+              if docker image inspect "${pinned_mcr_image}" > /dev/null 2>&1; then local_ref_present=true; fi
+              python3 scripts/verify-mcr-image.py --image "${mcr_image}" --digest "${image#*@}"
+              if [[ "${local_ref_present}" == "false" ]]; then docker image rm "${pinned_mcr_image}"; fi
             done
 
             # Promote mutable latest tags only after every versioned image and chart succeeds.

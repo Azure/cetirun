@@ -26,7 +26,7 @@ jobs:
   docker-build-validate:
     name: Runtime image CVEs
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - name: Free disk space
         run: |
@@ -74,6 +74,18 @@ jobs:
             BASE_IMAGE=cetirun-base:validation
             NPM_REGISTRY=${{ env.OPENCLAW_NPM_REGISTRY }}
           tags: openclaw-gateway:validation
+
+      - name: Build Pi agent image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: examples/pi-agent
+          file: examples/pi-agent/Dockerfile
+          platforms: linux/amd64
+          push: false
+          load: true
+          build-args: |
+            BASE_IMAGE=cetirun-base:validation
+          tags: cetirun-pi-agent:validation
 
       - name: Smoke test updated runtime dependencies
         run: |
@@ -142,6 +154,21 @@ jobs:
             --severity CRITICAL \
             --ignore-unfixed \
             hermes-gateway:validation
+
+      - name: Scan base and Pi agent images for vulnerabilities (Trivy)
+        run: |
+          for image in cetirun-base:validation cetirun-pi-agent:validation; do
+            docker run --rm \
+              -v /var/run/docker.sock:/var/run/docker.sock \
+              mcr.microsoft.com/oss/v2/aquasecurity/trivy:v0.68.2@sha256:493766e398dcdb680b4084ba396139c495466f4229698b5da7be79d61fa5f5b3 \
+              image \
+              --timeout 10m \
+              --format table \
+              --exit-code 1 \
+              --severity CRITICAL,HIGH \
+              --ignore-unfixed \
+              "${image}" || exit "$?"
+          done
 
       - name: Scan desktop image for vulnerabilities (Trivy)
         run: |
