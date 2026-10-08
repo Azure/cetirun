@@ -9,6 +9,15 @@
 {{- end }}
 {{- $portal := index .Values "cetirun-portal" }}
 {{- $operator := index .Values "cetirun-operator" }}
+{{- if default false ((.Values.global.portalChat | default dict).enabled) }}
+{{- if or (not $portal.enabled) (not $operator.enabled) }}
+{{- fail "global.portalChat requires both Portal and Operator" }}
+{{- end }}
+{{- if and $portal.nameOverride (ne $portal.nameOverride "cetirun-portal") }}
+{{- fail "global.portalChat requires the standard Portal selector; use explicit standalone chatAccess callers for a renamed Portal" }}
+{{- end }}
+{{- $_ := required "global.portalChat.identityRealm is required" .Values.global.portalChat.identityRealm }}
+{{- end }}
 {{- if and $operator.enabled (not $operator.domainSuffix) }}
 {{- fail "cetirun-operator.domainSuffix is required when cetirun-operator is enabled" }}
 {{- end }}

@@ -6,11 +6,22 @@ import {
   Select,
   Text,
   tokens,
+  Checkbox,
+  Dialog,
+  DialogActions,
+  DialogBody,
+  DialogContent,
+  DialogSurface,
+  DialogTitle,
 } from "@fluentui/react-components";
+import { lazy, Suspense, useState } from "react";
 import { Link, NavLink } from "react-router-dom";
 import { useThemeContext, type ThemeMode } from "../context/ThemeContext";
 import { useMe } from "../context/MeContext";
 import cetirunLogo from "../assets/cetirun.png";
+import { useChatAccount } from "../chat/ChatAccount";
+
+const HistoryDrawer = lazy(() => import("../chat/HistoryDrawer"));
 
 const THEME_MODES: ThemeMode[] = ["system", "light", "dark"];
 
@@ -33,7 +44,26 @@ export function buildSignOutUrl(location: {
 export function Header() {
   const { themeMode, setThemeMode } = useThemeContext();
   const { me } = useMe();
+  const account = useChatAccount();
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [signOutOpen, setSignOutOpen] = useState(false);
+  const [clearHistory, setClearHistory] = useState(false);
+  const [signOutError, setSignOutError] = useState<string>();
+  const finishSignOut = async (clear: boolean) => {
+    try {
+      await account?.signOut(clear);
+      window.location.href = buildSignOutUrl(window.location);
+    } catch {
+      setSignOutError(
+        "Local records could not be cleared. You can stay here or sign out without clearing them.",
+      );
+    }
+  };
   const handleSignOut = () => {
+    if (account?.scope) {
+      setSignOutOpen(true);
+      return;
+    }
     window.location.href = buildSignOutUrl(window.location);
   };
 
@@ -44,17 +74,17 @@ export function Header() {
       }}
     >
       <div
+        className="portal-header-inner"
         style={{
           display: "flex",
           justifyContent: "space-between",
           alignItems: "center",
-          padding: "12px 48px",
         }}
       >
-        {/* The way back to the owner's agents, from the admin pages too. */}
         <Link
           to="/"
           aria-label="CetiRun Portal home"
+          className="portal-header-brand"
           style={{
             display: "flex",
             alignItems: "center",
@@ -68,7 +98,19 @@ export function Header() {
             CetiRun Portal
           </Text>
         </Link>
-        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+        <div
+          className="portal-header-actions"
+          style={{ display: "flex", alignItems: "center", gap: "8px" }}
+        >
+          {account?.scope && !account.checking && (
+            <Button
+              appearance="subtle"
+              size="small"
+              onClick={() => setHistoryOpen(true)}
+            >
+              Local history
+            </Button>
+          )}
           {me?.isAdmin && (
             <NavLink
               to="/admin"
@@ -77,7 +119,9 @@ export function Header() {
                 padding: "4px 8px",
                 borderRadius: "4px",
                 fontSize: "14px",
-                color: isActive ? tokens.colorBrandForeground1 : tokens.colorNeutralForeground1,
+                color: isActive
+                  ? tokens.colorBrandForeground1
+                  : tokens.colorNeutralForeground1,
                 fontWeight: isActive ? 600 : 400,
               })}
             >
@@ -96,15 +140,59 @@ export function Header() {
             <option value="light">Light</option>
             <option value="dark">Dark</option>
           </Select>
-          <Button
-            appearance="subtle"
-            size="small"
-            onClick={handleSignOut}
-          >
+          <Button appearance="subtle" size="small" onClick={handleSignOut}>
             Sign out
           </Button>
         </div>
       </div>
+      {account?.scope && !account.checking && historyOpen && (
+        <Suspense fallback={null}>
+          <HistoryDrawer
+            key={account.scope}
+            scope={account.scope}
+            open={historyOpen}
+            onClose={() => setHistoryOpen(false)}
+          />
+        </Suspense>
+      )}
+      <Dialog
+        open={signOutOpen}
+        onOpenChange={(_, data) => setSignOutOpen(data.open)}
+      >
+        <DialogSurface>
+          <DialogBody>
+            <DialogTitle>Sign out of CetiRun?</DialogTitle>
+            <DialogContent>
+              <p>
+                Signing out keeps chat history on this browser. On a shared
+                computer, clear your local history before leaving.
+              </p>
+              <Checkbox
+                checked={clearHistory}
+                onChange={(_, data) => setClearHistory(data.checked === true)}
+                label="Clear this account's local chat history"
+              />
+              {signOutError && <p role="alert">{signOutError}</p>}
+            </DialogContent>
+            <DialogActions>
+              <Button onClick={() => setSignOutOpen(false)}>Stay here</Button>
+              {signOutError && (
+                <Button onClick={() => void finishSignOut(true)}>
+                  Retry clearing
+                </Button>
+              )}
+              <Button
+                appearance="primary"
+                onClick={() =>
+                  void finishSignOut(signOutError ? false : clearHistory)
+                }
+              >
+                {signOutError ? "Sign out without clearing" : "Sign out"}
+              </Button>
+            </DialogActions>
+          </DialogBody>
+        </DialogSurface>
+      </Dialog>
     </header>
   );
 }

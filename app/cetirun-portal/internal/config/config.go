@@ -4,16 +4,22 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/Azure/CetiRun/app/internal/chataccess"
 )
 
 var defaultAllowedAgentTypes = []string{"hermes", "openclaw"}
 
 // Config holds all runtime configuration for the portal.
 type Config struct {
+	CustomChatEnabled bool
+	ChatIdentityRealm string
+	ChatCaller        chataccess.Caller
 	// ListenAddr is the address the public HTTP server binds to.
 	ListenAddr string
 	// InternalListenAddr is the address for the internal-only HTTP server (cluster traffic only).
@@ -52,7 +58,12 @@ type Config struct {
 
 // Load reads configuration from environment variables.
 func Load() Config {
+	var chatLabels map[string]string
+	_ = json.Unmarshal([]byte(os.Getenv("CHAT_CALLER_LABELS")), &chatLabels)
 	return Config{
+		CustomChatEnabled:           os.Getenv("FEATURE_CUSTOM_CHAT_ENABLED") == "true",
+		ChatIdentityRealm:           os.Getenv("CHAT_IDENTITY_REALM"),
+		ChatCaller:                  chataccess.Caller{Namespace: os.Getenv("CHAT_CALLER_NAMESPACE"), PodLabels: chatLabels},
 		ListenAddr:                  envOrDefault("LISTEN_ADDR", ":8080"),
 		InternalListenAddr:          envOrDefault("INTERNAL_LISTEN_ADDR", ":8081"),
 		TailscaleEnabled:            os.Getenv("FEATURE_TAILSCALE_ENABLED") == "true",

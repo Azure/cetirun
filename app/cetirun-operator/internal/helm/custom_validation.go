@@ -114,6 +114,11 @@ func (p *PreparedRelease) validateCustomManifest(namespace, release string, mani
 	if err != nil {
 		return err
 	}
+	copilotObjects, err := p.customCopilotObjects(bindings)
+	if err != nil {
+		return err
+	}
+	terminalObjects = append(terminalObjects, copilotObjects...)
 	expectedTerminal := map[string]map[string]any{}
 	seenTerminal := map[string]bool{}
 	for _, object := range terminalObjects {
@@ -558,6 +563,7 @@ func (p *PreparedRelease) customContribution() (agents.Contribution, error) {
 		PlanHash          string                 `json:"planHash"`
 		WorkloadHash      string                 `json:"workloadHash"`
 		TerminalResources []map[string]any       `json:"terminalResources,omitempty"`
+		CopilotResources  []map[string]any       `json:"copilotResources,omitempty"`
 		TerminalExecRule  string                 `json:"terminalExecRule,omitempty"`
 	}
 	if err := decodeObject(p.Values["runtime"], &value); err != nil {

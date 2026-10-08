@@ -92,6 +92,13 @@ describe("AIGatewayBlock", () => {
     expect(screen.getByText("Sign in to GitHub Copilot to add your Copilot models.")).toBeInTheDocument();
   });
 
+  it("offers the platform sign-in for Custom without a native default-model editor", () => {
+    renderBlock({ ...instance(), agent: { type: "custom", port: 8080 } });
+    expect(screen.getByRole("button", { name: "Sign in with GitHub" })).toBeInTheDocument();
+    expect(screen.queryByRole("combobox", { name: "Default model" })).not.toBeInTheDocument();
+    expect(screen.getByText("Choose a model in Chat from the models this Agent exposes.")).toBeInTheDocument();
+  });
+
   it("runs the GitHub sign-in until it succeeds", async () => {
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     api.startCopilotLogin.mockResolvedValue({
@@ -144,6 +151,34 @@ describe("AIGatewayBlock", () => {
     renderBlock(instance());
     await user.click(screen.getByRole("button", { name: "Sign in with GitHub" }));
     expect(await screen.findByText(/not set up yet/)).toBeInTheDocument();
+  });
+
+  it("shows the completed Custom sign-in when a late cancel is refused", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    api.startCopilotLogin.mockResolvedValue({
+      state: "pending", userCode: "ABCD-1234", verificationUri: "https://github.com/login/device", interval: 5,
+    });
+    api.cancelCopilotLogin.mockRejectedValue(new Error("The GitHub Copilot sign-in had already finished."));
+    api.pollCopilotLogin
+      .mockResolvedValueOnce({ state: "none" })
+      .mockResolvedValueOnce({ state: "succeeded", message: "Signed in to GitHub Copilot: 2 models." });
+    renderBlock({ ...instance(), agent: { type: "custom", port: 8080 } });
+    await user.click(screen.getByRole("button", { name: "Sign in with GitHub" }));
+    await screen.findByText("ABCD-1234");
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(api.cancelCopilotLogin).toHaveBeenCalledWith("alice-gw", "agent-uid");
+    expect(await screen.findByText("Signed in to GitHub Copilot: 2 models.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Close" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Cancel" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Try again" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("combobox", { name: "Default model" })).not.toBeInTheDocument();
+    expect(mockUpdate).not.toHaveBeenCalled();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+    expect(api.startCopilotLogin).toHaveBeenCalledTimes(1);
+    expect(api.pollCopilotLogin).toHaveBeenCalledTimes(2);
   });
 
   it("shows models left out for lack of a price", () => {

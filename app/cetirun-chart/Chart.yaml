@@ -14,4 +14,6 @@ version: 0.1.1
 appVersion: "0.1.1"
 maintainers: []
 annotations:
+  cetirun.microsoft.com/custom-copilot: v1
+  cetirun.microsoft.com/portal-chat: v1
   cetirun.microsoft.com/registry-credentials: v1

@@ -99,6 +99,11 @@ affinity: {}
 # -- Additional pod annotations.
 podAnnotations: {}
 
+# -- Trusted callers of private Custom Chat endpoints; not tenant overrides.
+chatAccess:
+  enabled: false
+  callers: []
+
 # -- Service account configuration.
 serviceAccount:
   create: true
@@ -253,13 +258,15 @@ aiGateway:
 # Deprecated: use cetirun.helmValues.skills.storageAccount instead.
 skillsStorageAccount: ""
 
-# -- Opt-in provisioning for approved Custom images with their own model login.
-# No Gateway credentials are generated or imported. Configure exact image
-# digests and qualify the image UID/GID against this HOME storage before enabling.
+# -- Opt-in provisioning for approved Custom images. Qualify each image's
+# UID/GID against this HOME storage and select its model-access mode explicitly.
 customRuntime:
   enabled: false
   agentManagedModel: false
   approvedImages: []
+  # -- Subset of approvedImages qualified to use the platform AI Gateway.
+  # Other approved images retain explicit image-owned authentication.
+  gatewayImages: []
   storageClass: default
   storageSize: 100Gi
   accessMode: ReadWriteOnce

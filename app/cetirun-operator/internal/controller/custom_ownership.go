@@ -121,6 +121,9 @@ func (r *AgentReconciler) deleteCustom(ctx context.Context, instance *api.Agent)
 	previous := instance.DeepCopy().Status
 	stopErr := r.stopCustomWorkload(ctx, instance)
 	terminalErr := r.stopCustomTerminal(ctx, instance)
+	if err := r.stopCustomCopilot(ctx, instance); err != nil && terminalErr == nil {
+		terminalErr = err
+	}
 	routeErr := r.removeCustomPlatformRoute(ctx, instance)
 	instance.Status.Phase = api.PhaseDeleting
 	instance.Status.AccessURL = ""
@@ -137,6 +140,11 @@ func (r *AgentReconciler) deleteCustom(ctx context.Context, instance *api.Agent)
 	statusErr := r.updateCustomStatus(ctx, instance, previous)
 	if err := errors.Join(revokeErr, stopErr, terminalErr, routeErr, statusErr); err != nil {
 		return ctrl.Result{}, err
+	}
+	if instance.Status.AIGateway != nil || r.customGatewaySelected(instance) {
+		if err := r.deleteAIGatewayKey(ctx, instance); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 	if err := r.cleanupRegistryCredentials(ctx, instance, true); err != nil {
 		return r.registryWaiting(ctx, instance, "RegistryCleanupPending")

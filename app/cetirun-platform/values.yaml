@@ -6,6 +6,10 @@
 # -- Shared release coordinates propagated automatically to the Operator,
 # Portal and AI Gateway subcharts.
 global:
+  # -- Enable both Portal Chat and its private runtime caller. No database.
+  portalChat:
+    enabled: false
+    identityRealm: ""
   # -- Optional registry hostname override propagated to all CetiRun subcharts.
   # Empty preserves each subchart's existing repository defaults.
   registry: ""

@@ -58,7 +58,7 @@ RUN for tool in sh cp mkdir mv rm chmod mktemp find cmp fd rg; do \
     && ln -s /opt/cetirun-pi/pi-tui.mjs /usr/local/bin/pi-tui
 
 LABEL org.opencontainers.image.source="https://github.com/Azure/CetiRun" \
-      org.opencontainers.image.description="Pi coding-agent Custom example with native GitHub Copilot authentication" \
+      org.opencontainers.image.description="Pi Custom Agent with platform AI Gateway and native login modes" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.revision="${GIT_SHA}" \
       org.opencontainers.image.licenses="MIT"

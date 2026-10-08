@@ -13,6 +13,7 @@ import (
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/agents"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/runtimebindings"
+	"github.com/Azure/CetiRun/app/internal/chataccess"
 	"github.com/Azure/CetiRun/app/internal/registryauth"
 	istiov1beta1 "istio.io/client-go/pkg/apis/networking/v1beta1"
 	appsv1 "k8s.io/api/apps/v1"
@@ -168,8 +169,24 @@ func (r *AgentReconciler) reconcileCustom(ctx context.Context, instance *api.Age
 		bindings.Namespace.Name != instanceNamespace(instance.Name) {
 		return r.customWaiting(ctx, instance, "CustomBindingRejected", "Platform bindings do not belong to this Agent generation")
 	}
+	if r.customGatewaySelected(instance) {
+		if err := r.bindCustomGateway(ctx, instance, &bindings); err != nil {
+			return r.customWaiting(ctx, instance, "AIGatewayBindingPending", "The approved AI Gateway binding is not ready")
+		}
+	} else if instance.Status.AIGateway != nil {
+		return r.customWaiting(ctx, instance, "ModelAccessTransitionRequired", "Gateway model access cannot be changed to image-owned authentication implicitly")
+	}
 	if err := bindings.Validate(resolved); err != nil {
 		return r.customWaiting(ctx, instance, "CustomBindingRejected", err.Error())
+	}
+	previousCallers := append([]runtimebindings.Peer(nil), bindings.Network.Callers...)
+	if r.ChatAccess.Enabled && resolved.Port != nil && !resolved.WebUI {
+		for _, caller := range r.ChatAccess.Callers {
+			if err := caller.Validate(); err != nil {
+				return r.customWaiting(ctx, instance, "ChatAccessInvalid", err.Error())
+			}
+			bindings.Network.Callers = append(bindings.Network.Callers, runtimebindings.Peer{Namespace: caller.Namespace, PodLabels: caller.PodLabels})
+		}
 	}
 	homeBound, err := r.validateCustomObjects(ctx, instance, bindings)
 	if err != nil {
@@ -234,6 +251,21 @@ func (r *AgentReconciler) reconcileCustom(ctx context.Context, instance *api.Age
 		}
 	}
 	// A replacement HelmInstaller must preserve the final-plan validation.
+	if r.ChatAccess.Enabled && !prepared.SupportsPortalChat() {
+		bindings.Network.Callers = previousCallers
+		values["customBindings"] = bindings
+		signature, err = customInputSignature(instance.Spec.Helm.Version, values)
+		if err != nil {
+			return r.rejectCustomConfig(ctx, instance, err)
+		}
+		prepared, cached = r.cachedCustomPlan(instance, signature, current)
+		if !cached {
+			prepared, err = r.HelmClient.Prepare(bindings.Namespace.Name, values, instance.Spec.Helm.Version)
+			if err != nil {
+				return r.customPreparationFailed(ctx, instance, err)
+			}
+		}
+	}
 	if err := prepared.ValidateCustom(bindings.Namespace.Name, helmReleaseName(instance.Name)); err != nil {
 		return r.rejectCustomConfig(ctx, instance, err)
 	}
@@ -360,6 +392,17 @@ func (r *AgentReconciler) reconcileCustom(ctx context.Context, instance *api.Age
 	instance.Status.HelmReleaseName = helmReleaseName(instance.Name)
 	setCondition(&instance.Status.Conditions, api.ConditionAgentConfigReady, metav1.ConditionTrue,
 		"CustomConfigResolved", "Custom runtime bindings and plan validated")
+	chatStatus, chatReason := metav1.ConditionFalse, "ChatAccessDisabled"
+	if r.ChatAccess.Enabled && len(r.ChatAccess.Callers) > 0 && resolved.Port != nil && !resolved.WebUI {
+		chatReason = "ChatContractUnsupported"
+		if prepared.SupportsPortalChat() {
+			chatStatus, chatReason = metav1.ConditionTrue, "ChatAccessConfigured"
+		}
+	}
+	if err := r.reconcileChatRoute(ctx, instance, chatStatus == metav1.ConditionTrue); err != nil {
+		chatStatus, chatReason = metav1.ConditionFalse, "ChatRouteUnavailable"
+	}
+	setCondition(&instance.Status.Conditions, chataccess.Condition, chatStatus, chatReason, "Reports private Chat configuration, not model or network qualification")
 	r.configureCustomAccess(ctx, instance, customAccess{
 		desktop:      prepared.Values["desktop"].(map[string]any)["enabled"] == true,
 		terminal:     prepared.Values["ttyd"].(map[string]any)["enabled"] == true,
@@ -369,6 +412,9 @@ func (r *AgentReconciler) reconcileCustom(ctx context.Context, instance *api.Age
 	instance.Status.Phase = api.PhaseProvisioning
 	status, reason, message := metav1.ConditionFalse, "CustomPodPending", "Waiting for the applied Custom Pod"
 	if ready {
+		if aiGatewayCopilotPending(instance, r.AIGateway.Enabled) {
+			return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
+		}
 		instance.Status.Phase = api.PhaseReady
 		status, reason = metav1.ConditionTrue, "CustomPodReady"
 		message = "Custom Pod is ready; model calls, context use and session recovery are separate qualifications"
@@ -385,6 +431,9 @@ func (r *AgentReconciler) reconcileCustom(ctx context.Context, instance *api.Age
 		r.customPlans.Store(instance.Name, cachedCustomPlan{signature: signature, plan: prepared, expires: time.Now().Add(10 * time.Minute)})
 	}
 	if ready {
+		if chatReason == "ChatRouteUnavailable" {
+			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+		}
 		return ctrl.Result{RequeueAfter: 10 * time.Minute}, nil
 	}
 	return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
@@ -490,6 +539,9 @@ func (r *AgentReconciler) suspendCustom(ctx context.Context, instance *api.Agent
 	previous := instance.DeepCopy().Status
 	stopErr := r.stopCustomWorkload(ctx, instance)
 	terminalErr := r.stopCustomTerminal(ctx, instance)
+	if err := r.stopCustomCopilot(ctx, instance); err != nil && terminalErr == nil {
+		terminalErr = err
+	}
 	routeErr := r.removeCustomPlatformRoute(ctx, instance)
 	if stopErr == nil {
 		stopErr = r.removeRegistryCredentials(ctx, instance)

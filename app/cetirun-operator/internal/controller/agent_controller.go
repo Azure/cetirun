@@ -41,6 +41,7 @@ import (
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/agents/builtin"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/helm"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
+	"github.com/Azure/CetiRun/app/internal/chataccess"
 	"github.com/Azure/CetiRun/app/internal/registryauth"
 )
 
@@ -83,6 +84,7 @@ type AgentReconciler struct {
 	ChartRegistry               string                 // OCI registry host (e.g. "registry.example.com"), derived from chart repo URL
 	DefaultModel                string                 // Default GitHub Copilot model when spec.model is empty
 	CustomBindings              CustomBindingProvider
+	ChatAccess                  chataccess.Config
 	SandboxPreparation          *SandboxPreparation
 	RegistryCredentialNamespace string
 
@@ -164,6 +166,7 @@ func (r *AgentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	builder := ctrl.NewControllerManagedBy(mgr).
 		For(&cetirunv1alpha1.Agent{}).
 		Owns(&appsv1.Deployment{}).
+		Owns(&istiov1beta1.VirtualService{}).
 		WatchesMetadata(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.enqueueRegistrySecret)).
 		Watches(
 			&cetirunv1alpha1.Team{},

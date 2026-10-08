@@ -278,7 +278,7 @@ var digestPattern = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
 // traffic on the Gateway. Chart support and a provisioned key are checked
 // separately.
 func (r *AgentReconciler) aiGatewayRequired(instance *cetirunv1alpha1.Agent) bool {
-	return r.AIGateway.Enabled && aiGatewayHarnessSupported(instance.Spec.Agent.Type)
+	return r.AIGateway.Enabled && (aiGatewayHarnessSupported(instance.Spec.Agent.Type) || r.customGatewaySelected(instance))
 }
 
 // aiGatewayCopilotOffered reports whether the deployment gives Agents a
@@ -620,6 +620,9 @@ func labelAgentSecret(secret *corev1.Secret, instance *cetirunv1alpha1.Agent) {
 	secret.Labels["app.kubernetes.io/managed-by"] = "cetirun-operator"
 	secret.Labels["app.kubernetes.io/instance"] = instance.Spec.User.Alias
 	secret.Labels[aiGatewayAgentUIDLabel] = string(instance.UID)
+	if instance.Spec.Agent.Type == cetirunv1alpha1.AgentTypeCustom {
+		secret.OwnerReferences = []metav1.OwnerReference{*metav1.NewControllerRef(instance, cetirunv1alpha1.GroupVersion.WithKind("Agent"))}
+	}
 }
 
 // deleteAIGatewayKey revokes the Agent's key and removes its Copilot model

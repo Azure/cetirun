@@ -36,7 +36,7 @@ async function main() {
   const servers = createServers(await createPiRuntime(process.env.HOME));
   try {
     await listen(servers.api, port, "0.0.0.0");
-    await listen(servers.auth, 9099, "127.0.0.1");
+    if (!process.env.OPENAI_BASE_URL) await listen(servers.auth, 9099, "127.0.0.1");
   } catch (error) {
     await servers.close();
     throw error;

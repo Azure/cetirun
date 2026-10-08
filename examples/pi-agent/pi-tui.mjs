@@ -23,12 +23,14 @@ export async function main(args = process.argv.slice(2)) {
   } = await import("@earendil-works/pi-coding-agent");
   const { createPiServices, PI_TOOLS } = await import("./pi-runtime.mjs");
   const initial = await createPiServices(process.env.HOME);
+  if (initial.modelAccess) await initial.modelAccess.models(AbortSignal.timeout(10_000));
   process.chdir(initial.cwd);
 
   // Pi reuses this factory for /new, /resume and /fork, so each session keeps
   // the same approved context and private authentication directory.
   const createRuntime = async ({ cwd, sessionManager, sessionStartEvent }) => {
     const services = await createPiServices(process.env.HOME, cwd);
+    if (services.modelAccess) await services.modelAccess.models(AbortSignal.timeout(10_000));
     const result = await createAgentSessionFromServices({
       services, sessionManager, sessionStartEvent, tools: PI_TOOLS,
     });
@@ -45,7 +47,9 @@ export async function main(args = process.argv.slice(2)) {
   const tui = new InteractiveMode(runtime, {
     startupDiagnostics: [{
       type: "info",
-      message: "Use /login github-copilot only after approving Pi's model-policy updates on your Copilot account.",
+      message: initial.modelAccess
+        ? "Models use the CetiRun AI Gateway. Manage GitHub sign-in in the Portal, not in this Agent."
+        : "Use /login github-copilot only after approving Pi's model-policy updates on your Copilot account.",
     }],
   });
   await tui.run();

@@ -38,6 +38,10 @@ func New(
 
 	// API endpoints (auth headers validated by middleware).
 	api := http.NewServeMux()
+	chatHandler := handler.NewChatHandler(instanceHandler)
+	api.HandleFunc("GET /api/v1/instances/{name}/chat", chatHandler.Describe)
+	api.HandleFunc("GET /api/v1/instances/{name}/chat/v1/models", chatHandler.Models)
+	api.HandleFunc("POST /api/v1/instances/{name}/chat/v1/chat/completions", chatHandler.Complete)
 	api.HandleFunc("GET /api/v1/me", meHandler.GetMe)
 	api.HandleFunc("GET /api/v1/instance", instanceHandler.GetInstance)
 	api.HandleFunc("POST /api/v1/instance", instanceHandler.CreateInstance)
