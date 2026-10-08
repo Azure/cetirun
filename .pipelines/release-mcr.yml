@@ -30,7 +30,6 @@ jobs:
     pool:
       name: 1es-aks-ai-runtime-ado-southcentralus
     variables:
-      azureServiceConnection: aks ai runtime - prod
       acrName: aksmcrimagescommon
       repositoryPrefix: public/aks/ai-runtime/cetirun
       DOCKER_DEFAULT_PLATFORM: linux/amd64
@@ -219,7 +218,7 @@ jobs:
       - task: AzureCLI@2
         displayName: Authenticate and preflight MCR release artifacts
         inputs:
-          azureSubscription: $(azureServiceConnection)
+          azureSubscription: aks ai runtime - prod
           scriptType: bash
           scriptLocation: inlineScript
           inlineScript: |
@@ -316,7 +315,7 @@ jobs:
       - task: AzureCLI@2
         displayName: Publish charts and promote latest MCR images
         inputs:
-          azureSubscription: $(azureServiceConnection)
+          azureSubscription: aks ai runtime - prod
           scriptType: bash
           scriptLocation: inlineScript
           inlineScript: |
@@ -369,7 +368,7 @@ jobs:
         displayName: Clean staging MCR image repositories
         condition: always()
         inputs:
-          azureSubscription: $(azureServiceConnection)
+          azureSubscription: aks ai runtime - prod
           scriptType: bash
           scriptLocation: inlineScript
           inlineScript: |
