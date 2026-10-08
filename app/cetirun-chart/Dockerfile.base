@@ -3,19 +3,20 @@
 
 ARG VERSION=dev
 ARG GIT_SHA=unknown
-ARG AZURELINUX_BASE=mcr.microsoft.com/azurelinux/base/core:3.0@sha256:1c56f09437dfc2910faad39abaaed336265d246cf183e2adb362d4cb3b881ab6
+ARG AZURELINUX_BASE=mcr.microsoft.com/azurelinux/base/core:3.0@sha256:bfd3e44899fe7c17f6fda42a6ef2a322f2178c2dafb88e69fd87675cdcac39ec
 ARG GO_BUILD_IMAGE=go-toolchain
 
 # Keep the default image visible to Dependabot while retaining the build override.
-FROM mcr.microsoft.com/oss/go/microsoft/golang:1.26.8-1@sha256:dcdfc27fb8224a64128b5f82026acbf1d63458cfa9a34fa4b60c07574ff52332 AS go-toolchain
+FROM mcr.microsoft.com/oss/go/microsoft/golang:1.27.1-2@sha256:d4b8b8f3a73239e62bce33f978de4baf6ead31dac28e25fc619870638f0a99b0 AS go-toolchain
+ENV GOTOOLCHAIN=local
 
 # ── Install Node.js 24 from official tarball ───────────────────
 # Keep the LTS line accepted by OpenClaw's dependencies.
 # Qualify openclaw doctor when changing this pin; earlier Node 24 builds hung.
 FROM ${AZURELINUX_BASE} AS node-install
-ARG NODE_VERSION=24.19.0
-ARG NODE_SHA256_X64=14b342e71204f811bde6153be8e04b62aef63c236fef92b55f9c83154b409647
-ARG NODE_SHA256_ARM64=01443c1e1a29e531ccad5a46fefa6df490d2189c49f7955904aecdbb0fe86fdc
+ARG NODE_VERSION=24.21.0
+ARG NODE_SHA256_X64=fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6
+ARG NODE_SHA256_ARM64=6ad1325edbdb5649c379b75a237147a666c95d4f9ae8d340fef2d1575d289ad2
 RUN tdnf install -y ca-certificates curl tar xz libgcc-atomic && tdnf clean all
 RUN UNAME_M=$(uname -m) && \
     if [ "$UNAME_M" = "x86_64" ]; then NODE_ARCH="x64"; NODE_SHA256="${NODE_SHA256_X64}"; \
@@ -29,48 +30,55 @@ RUN UNAME_M=$(uname -m) && \
 # ── Build Go tools from source with the pinned fixed Go toolchain ────────────────
 # Upstream release binaries can lag Go stdlib CVE fixes, so build the tools here.
 FROM ${GO_BUILD_IMAGE} AS tailscale-build
-ARG TAILSCALE_VERSION=1.100.0
-ARG TAILSCALE_SRC_SHA256=d9e097d82f08c8557c887ca71962b20f08e27f3b305902ea504bd0e472486b97
+ARG TAILSCALE_VERSION=1.104.1
+ARG TAILSCALE_SRC_SHA256=bf868b2b1a46b9485d55bcda12c2d7573279ce4474bc6d607f42f1495db36ed8
 RUN curl -fsSL "https://github.com/tailscale/tailscale/archive/v${TAILSCALE_VERSION}.tar.gz" -o /tmp/tailscale.tar.gz && \
     echo "${TAILSCALE_SRC_SHA256}  /tmp/tailscale.tar.gz" | sha256sum --check && \
     tar xzf /tmp/tailscale.tar.gz -C /tmp && \
     mv /tmp/tailscale-${TAILSCALE_VERSION} /src && \
     rm /tmp/tailscale.tar.gz
 WORKDIR /src
-RUN GOFLAGS="-trimpath" CGO_ENABLED=0 GOEXPERIMENT=ms_nocgo_opensslcrypto \
-    go build -o /out/tailscale ./cmd/tailscale && \
-    GOFLAGS="-trimpath" CGO_ENABLED=0 GOEXPERIMENT=ms_nocgo_opensslcrypto \
-    go build -o /out/tailscaled ./cmd/tailscaled
+# Archive builds have no Git metadata; use the upstream distribution stamps.
+RUN GOFLAGS="-trimpath" CGO_ENABLED=0 \
+    go build -ldflags "-X tailscale.com/version.longStamp=${TAILSCALE_VERSION} -X tailscale.com/version.shortStamp=${TAILSCALE_VERSION}" \
+      -o /out/tailscale ./cmd/tailscale && \
+    GOFLAGS="-trimpath" CGO_ENABLED=0 \
+    go build -ldflags "-X tailscale.com/version.longStamp=${TAILSCALE_VERSION} -X tailscale.com/version.shortStamp=${TAILSCALE_VERSION}" \
+      -o /out/tailscaled ./cmd/tailscaled
 
 # -- Build GitHub CLI from source with the pinned Go toolchain --
 FROM ${GO_BUILD_IMAGE} AS gh-build
-ARG GH_VERSION=2.95.0
-ARG GH_SRC_SHA256=b6a1c88cbd15f49f60a68d210a117a60b349bcb0d028a0dca0ef2d9dc92bd028
+ARG GH_VERSION=2.102.0
+ARG GH_RELEASE_DATE=2026-09-30
+ARG GH_SRC_SHA256=08bf0ef8b4409893889175e0f5279d30d6edd96465816042c0d7c72eac598158
 RUN curl -fsSL "https://github.com/cli/cli/archive/refs/tags/v${GH_VERSION}.tar.gz" -o /tmp/gh.tar.gz && \
     echo "${GH_SRC_SHA256}  /tmp/gh.tar.gz" | sha256sum --check && \
     tar xzf /tmp/gh.tar.gz -C /tmp && \
     mv /tmp/cli-${GH_VERSION} /src && \
     rm /tmp/gh.tar.gz
 WORKDIR /src
-RUN GOFLAGS="-trimpath" CGO_ENABLED=0 GOEXPERIMENT=ms_nocgo_opensslcrypto \
+RUN GOFLAGS="-trimpath" CGO_ENABLED=0 \
     go build \
-      -ldflags "-s -w -X github.com/cli/cli/v2/internal/build.Version=${GH_VERSION} -X github.com/cli/cli/v2/internal/build.Date=2026-06-17" \
+      -ldflags "-s -w -X github.com/cli/cli/v2/internal/build.Version=${GH_VERSION} -X github.com/cli/cli/v2/internal/build.Date=${GH_RELEASE_DATE}" \
       -o /out/gh ./cmd/gh
 
 # -- Build kubectl from source with the pinned Go toolchain --
 FROM ${GO_BUILD_IMAGE} AS kubectl-build
-ARG KUBECTL_VERSION=1.36.4
-ARG KUBERNETES_SRC_SHA256=86a216801ddba7098a50c6f3b3fe5fbc28ba34ea5b1daa66d81c2d5307c301ac
-ARG KUBERNETES_GIT_COMMIT=bb826b1d48562f110659e64e8ec444327433db95
+ARG KUBECTL_VERSION=1.37.1
+ARG KUBERNETES_SRC_SHA256=89295ac375eb0fdfe68a0696d81be615771d6b27c7ad9bb675dc6ffd0d2ce5f3
+ARG KUBERNETES_GIT_COMMIT=f78e722310e50bcaca9276be22276d9e91d91308
 RUN curl -fsSL "https://github.com/kubernetes/kubernetes/archive/refs/tags/v${KUBECTL_VERSION}.tar.gz" -o /tmp/kubernetes.tar.gz && \
     echo "${KUBERNETES_SRC_SHA256}  /tmp/kubernetes.tar.gz" | sha256sum --check && \
     tar xzf /tmp/kubernetes.tar.gz -C /tmp && \
     mv /tmp/kubernetes-${KUBECTL_VERSION} /src && \
     rm /tmp/kubernetes.tar.gz
 WORKDIR /src
-RUN GOFLAGS="-trimpath" CGO_ENABLED=0 GOEXPERIMENT=ms_nocgo_opensslcrypto \
+RUN KUBERNETES_GIT_MAJOR=${KUBECTL_VERSION%%.*} && \
+    KUBERNETES_GIT_MINOR=${KUBECTL_VERSION#*.} && \
+    KUBERNETES_GIT_MINOR=${KUBERNETES_GIT_MINOR%%.*} && \
+    GOFLAGS="-trimpath" CGO_ENABLED=0 \
     go build \
-      -ldflags "-s -w -X k8s.io/component-base/version.gitMajor=1 -X k8s.io/component-base/version.gitMinor=36 -X k8s.io/component-base/version.gitVersion=v${KUBECTL_VERSION} -X k8s.io/component-base/version.gitCommit=${KUBERNETES_GIT_COMMIT} -X k8s.io/component-base/version.gitTreeState=clean" \
+      -ldflags "-s -w -X k8s.io/component-base/version.gitMajor=${KUBERNETES_GIT_MAJOR} -X k8s.io/component-base/version.gitMinor=${KUBERNETES_GIT_MINOR} -X k8s.io/component-base/version.gitVersion=v${KUBECTL_VERSION} -X k8s.io/component-base/version.gitCommit=${KUBERNETES_GIT_COMMIT} -X k8s.io/component-base/version.gitTreeState=clean" \
       -o /out/kubectl ./cmd/kubectl
 
 # ── Main image ──────────────────────────────────────────────────
@@ -125,23 +133,19 @@ RUN for tool in sh cp mkdir mv rm chmod mktemp find cmp; do \
       command -v "$tool" >/dev/null 2>&1 || exit 1; \
     done
 
-# Fix CVE-2026-12151 when the Node release bundles undici 6.26.0 inside npm.
-# npm overrides can't reach npm's internal node_modules, so replace in-place.
-RUN UNDICI_DIR=/usr/local/lib/node_modules/npm/node_modules/undici && \
-    if [ -d "${UNDICI_DIR}" ]; then \
-      cd "${UNDICI_DIR}" && \
-      npm pack undici@6.27.0 --quiet --registry "${NPM_REGISTRY}" && \
-      tar xzf undici-6.27.0.tgz --strip-components=1 && \
-      rm -f undici-6.27.0.tgz && \
-      test "$(node -p 'require("./package.json").version')" = "6.27.0"; \
-    fi
+# npm 12 includes fixed undici; do not overwrite its bundled dependency tree.
+ARG NPM_VERSION=12.2.0
+RUN npm install --global --prefix /usr/local --ignore-scripts \
+      --registry "${NPM_REGISTRY}" "npm@${NPM_VERSION}" && \
+    npm cache clean --force
 
 # Install GitHub CLI and kubectl from fixed-toolchain build stages.
 COPY --from=gh-build /out/gh /usr/local/bin/gh
 COPY --from=kubectl-build /out/kubectl /usr/local/bin/kubectl
 
-ARG MSGPACK_VERSION=1.2.1
-ARG SETUPTOOLS_VERSION=80.10.2
+ARG MSGPACK_VERSION=1.2.3
+# pip 24.2 still imports pkg_resources, which setuptools 82+ removed.
+ARG SETUPTOOLS_VERSION=81.0.0
 ARG PYPI_INDEX_URL=https://pypi.org/simple/
 
 COPY configs/sync-pip-vendor.py /usr/local/share/cetirun/sync-pip-vendor.py
@@ -172,8 +176,8 @@ RUN tdnf install -y azure-cli && \
     tdnf clean all
 
 # Install ripgrep (not in Azure Linux repos — GitHub release binary)
-ARG RIPGREP_VERSION=14.1.1
-ARG RIPGREP_SHA256=4cf9f2741e6c465ffdb7c26f38056a59e2a2544b51f7cc128ef28337eeae4d8e
+ARG RIPGREP_VERSION=15.2.0
+ARG RIPGREP_SHA256=33e15bcf1624b25cdd2a55813a47a2f95dbe126268203e76aa6a585d1e7b149c
 RUN curl -fsSL "https://github.com/BurntSushi/ripgrep/releases/download/${RIPGREP_VERSION}/ripgrep-${RIPGREP_VERSION}-x86_64-unknown-linux-musl.tar.gz" -o /tmp/rg.tar.gz && \
     echo "${RIPGREP_SHA256}  /tmp/rg.tar.gz" | sha256sum --check && \
     tar xzf /tmp/rg.tar.gz -C /tmp && \
@@ -182,7 +186,9 @@ RUN curl -fsSL "https://github.com/BurntSushi/ripgrep/releases/download/${RIPGRE
 
 
 # Install supervisor (not in Azure Linux repos — pure Python)
-RUN pip install --no-cache-dir --break-system-packages --index-url "${PYPI_INDEX_URL}" supervisor
+ARG SUPERVISOR_VERSION=4.3.0
+RUN python3 -m pip install --no-cache-dir --break-system-packages \
+      --index-url "${PYPI_INDEX_URL}" "supervisor==${SUPERVISOR_VERSION}"
 
 # Install ttyd (web terminal) - pinned version with checksum verification
 ARG TTYD_VERSION=1.7.7
@@ -216,8 +222,10 @@ ENV NPM_CONFIG_PREFIX=/usr/local/share/npm-global
 ENV PATH=$PATH:/usr/local/share/npm-global/bin:/home/vibe/.local/bin
 
 # Configure zsh with oh-my-zsh (archive download pinned to commit — avoids curl|bash)
-ARG OHMYZSH_COMMIT=7c10d9839f05b8b73e26aa4e0f04cc886fbba6a6
+ARG OHMYZSH_COMMIT=60c9a7a839b790cd905d0fd4419435124fd1bdc0
+ARG OHMYZSH_SHA256=b76ccbc18fd732d9d897dd2edbf16519cb48d20f31e509f925d1bf41a8df859f
 RUN curl -fsSL "https://github.com/ohmyzsh/ohmyzsh/archive/${OHMYZSH_COMMIT}.tar.gz" -o /tmp/ohmyzsh.tar.gz && \
+    echo "${OHMYZSH_SHA256}  /tmp/ohmyzsh.tar.gz" | sha256sum --check && \
     mkdir -p /home/vibe/.oh-my-zsh && \
     tar xzf /tmp/ohmyzsh.tar.gz --strip-components=1 -C /home/vibe/.oh-my-zsh && \
     rm /tmp/ohmyzsh.tar.gz && \
@@ -242,39 +250,41 @@ COPY --chown=vibe:vibe configs/cve-overrides.json /usr/local/share/npm-global/li
 # Install common npm global tools from the shared dependency-policy package root.
 # Uses local install (not -g) so npm respects any future overrides.
 # Pin Codex to avoid prerelease platform-package resolution changes breaking image builds.
-ARG CODEX_VERSION=0.153.0
-ARG OPENCODE_VERSION=1.18.33
+ARG CODEX_VERSION=0.160.1
+ARG OPENCODE_VERSION=1.18.35
 RUN mkdir -p /usr/local/share/npm-global/bin && \
     cd /usr/local/share/npm-global/lib && \
-    npm install @openai/codex@${CODEX_VERSION} opencode-ai@${OPENCODE_VERSION} && \
+    npm install --save-exact @openai/codex@${CODEX_VERSION} opencode-ai@${OPENCODE_VERSION} && \
     for b in node_modules/.bin/*; do \
       [ -L "$b" ] && ln -sf "$(readlink -f "$b")" /usr/local/share/npm-global/bin/$(basename "$b"); \
     done && \
     npm cache clean --force
 
-# npm 11.16+ blocks undeclared lifecycle scripts. OpenCode's reviewed
+# npm blocks undeclared lifecycle scripts. OpenCode's reviewed
 # postinstall selects and verifies the already-installed target-platform binary.
 RUN cd /usr/local/share/npm-global/lib && \
-    npm pkg set 'allowScripts.opencode-ai=true' --json && \
+    npm install-scripts approve opencode-ai && \
     npm rebuild opencode-ai && \
     test "$(opencode --version)" = "${OPENCODE_VERSION}"
 
-# Install uv (pinned version with checksum verification — avoids curl|bash)
-ARG UV_VERSION=0.11.13
-ARG UV_SHA256=f830ea3d38ae1492acf53cb7f2cd0f81d6ae22b42d2d7310a6c7d42c451e1a43
-RUN mkdir -p /home/vibe/.local/bin && \
-    curl -fsSL "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-x86_64-unknown-linux-gnu.tar.gz" -o /tmp/uv.tar.gz && \
+# Keep uv outside persistent HOME so existing instances use the image's version.
+USER root
+ARG UV_VERSION=0.12.23
+ARG UV_SHA256=9167d72b3319674b6303c4cbe071854bba13ebdf3d76b1a7cbdc175471fb66d6
+RUN curl -fsSL "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-x86_64-unknown-linux-gnu.tar.gz" -o /tmp/uv.tar.gz && \
     echo "${UV_SHA256}  /tmp/uv.tar.gz" | sha256sum --check && \
     tar xzf /tmp/uv.tar.gz -C /tmp && \
-    install -m 755 /tmp/uv-x86_64-unknown-linux-gnu/uv /home/vibe/.local/bin/uv && \
-    install -m 755 /tmp/uv-x86_64-unknown-linux-gnu/uvx /home/vibe/.local/bin/uvx && \
+    install -m 755 /tmp/uv-x86_64-unknown-linux-gnu/uv /usr/local/bin/uv && \
+    install -m 755 /tmp/uv-x86_64-unknown-linux-gnu/uvx /usr/local/bin/uvx && \
     rm -rf /tmp/uv*
+USER vibe
+RUN mkdir -p /home/vibe/.local/bin
 
 # Install Claude Code into the same local prefix so it shares dependency policy.
-ARG CLAUDE_CODE_VERSION=2.1.163
+ARG CLAUDE_CODE_VERSION=2.1.292
 RUN mkdir -p /usr/local/share/npm-global/bin && \
     cd /usr/local/share/npm-global/lib && \
-    npm install @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} && \
+    npm install --save-exact @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} && \
     for b in node_modules/.bin/*; do \
       [ -L "$b" ] && ln -sf "$(readlink -f "$b")" /usr/local/share/npm-global/bin/$(basename "$b"); \
     done && \
@@ -286,7 +296,7 @@ RUN mkdir -p /usr/local/share/npm-global/bin && \
     fi
 
 RUN cd /usr/local/share/npm-global/lib && \
-    npm pkg set 'allowScripts[@anthropic-ai/claude-code]=true' --json && \
+    npm install-scripts approve @anthropic-ai/claude-code && \
     npm rebuild @anthropic-ai/claude-code && \
     claude --version | grep -F "${CLAUDE_CODE_VERSION}"
 

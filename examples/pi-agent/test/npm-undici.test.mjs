@@ -11,22 +11,7 @@ import test from "node:test";
 const imageOptions = {
   skip: process.env.CETIRUN_PI_IMAGE_TEST !== "1" && "Requires the built Pi image",
 };
-const npmRequire = createRequire("/usr/local/lib/node_modules/npm/package.json");
 const gypRequire = createRequire("/usr/local/lib/node_modules/npm/node_modules/node-gyp/package.json");
-
-test("npm's caller resolves the patched package without changing Pi or Node", imageOptions, () => {
-  const manifest = gypRequire("undici/package.json");
-  assert.equal(manifest.version, "6.27.0");
-  assert.equal(gypRequire.resolve("undici"), "/usr/local/lib/node_modules/npm/node_modules/undici/index.js");
-  assert.ok(npmRequire("semver").satisfies(manifest.version, gypRequire("./package.json").dependencies.undici));
-  assert.equal(npmRequire("./package.json").version, "11.17.0");
-  assert.equal(process.version, "v24.19.0");
-  assert.equal(process.versions.undici, "7.29.0");
-
-  const piRequire = createRequire("/opt/cetirun-pi/node_modules/@earendil-works/pi-coding-agent/package.json");
-  assert.equal(piRequire("./package.json").version, "0.87.1");
-  assert.equal(piRequire("undici/package.json").version, "8.10.2");
-});
 
 function parserFixture() {
   const { ByteParser } = gypRequire("undici/lib/web/websocket/receiver.js");

@@ -18,7 +18,7 @@ provides a separate Chrome/CDP desktop sidecar. UI assets build on the builder's
 native architecture using the upstream-pinned Node 26 image; only their
 architecture-independent output enters the target image. Python, SQLite, and
 the final image build for `linux/amd64`. The runtime retains the shared base's
-Node 24.19.0, which satisfies the upstream package's Node engine range.
+Node 24.21.0, which satisfies the upstream package's Node engine range.
 
 ## Compatibility cleanup in 0.21.5
 
