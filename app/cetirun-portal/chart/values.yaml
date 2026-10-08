@@ -16,6 +16,11 @@ registryCredentials:
 # -- Number of portal replicas.
 replicaCount: 2
 
+# -- Optional Custom Chat. History stays in the user's browser.
+chat:
+  enabled: false
+  identityRealm: ""
+
 # -- Portal container image.
 image:
   repository: ghcr.io/azure/cetirun-portal

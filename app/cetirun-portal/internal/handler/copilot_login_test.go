@@ -1374,33 +1374,39 @@ func TestCopilotLoginChangesOnlyTheAgentItWasMadeFor(t *testing.T) {
 // cancel is refused as too late, changes nothing, and a later sign-in starts
 // as usual.
 func TestCopilotLoginCancelAfterItSucceededIsRefused(t *testing.T) {
-	f := newLoginFixture(t)
-	f.gh.answers = []map[string]any{{"access_token": "gho_alice"}}
-	if w, _ := f.call(http.MethodPost, "alice"); w.Code != http.StatusOK {
-		t.Fatalf("start: status %d %s", w.Code, w.Body.String())
-	}
-	f.clock = f.clock.Add(6 * time.Second)
-	if _, resp := f.call(http.MethodGet, "alice"); resp.State != copilotLoginSucceeded {
-		t.Fatalf("poll: %+v", resp)
-	}
-	login := f.secret(copilotLoginSecretName)
-	token := f.secret(cetirunv1alpha1.CopilotTokenSecretName)
+	for _, agentType := range []cetirunv1alpha1.AgentType{cetirunv1alpha1.AgentTypeOpenClaw, cetirunv1alpha1.AgentTypeCustom} {
+		t.Run(string(agentType), func(t *testing.T) {
+			agent := routedAgent()
+			agent.Spec.Agent.Type = agentType
+			f := newLoginFixture(t, agent, copilotTokenSecret("uid-1"))
+			f.gh.answers = []map[string]any{{"access_token": "gho_alice"}}
+			if w, _ := f.call(http.MethodPost, "alice"); w.Code != http.StatusOK {
+				t.Fatalf("start: status %d %s", w.Code, w.Body.String())
+			}
+			f.clock = f.clock.Add(6 * time.Second)
+			if _, resp := f.call(http.MethodGet, "alice"); resp.State != copilotLoginSucceeded {
+				t.Fatalf("poll: %+v", resp)
+			}
+			login := f.secret(copilotLoginSecretName)
+			token := f.secret(cetirunv1alpha1.CopilotTokenSecretName)
 
-	w, _ := f.call(http.MethodDelete, "alice")
-	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "copilot_login_completed") {
-		t.Fatalf("a cancel after the sign-in succeeded: status %d %s", w.Code, w.Body.String())
-	}
-	if after := f.secret(copilotLoginSecretName); after.ResourceVersion != login.ResourceVersion {
-		t.Fatalf("the refused cancel changed the sign-in: %v", after.Data)
-	}
-	if after := f.secret(cetirunv1alpha1.CopilotTokenSecretName); after.ResourceVersion != token.ResourceVersion {
-		t.Fatalf("the refused cancel changed the token Secret: %v", after.Annotations)
-	}
-	if _, resp := f.call(http.MethodGet, "alice"); resp.State != copilotLoginSucceeded {
-		t.Fatalf("after the refused cancel: %+v", resp)
-	}
-	if w, resp := f.call(http.MethodPost, "alice"); w.Code != http.StatusOK || resp.State != copilotLoginPending {
-		t.Fatalf("a new sign-in after the refused cancel: status %d %s", w.Code, w.Body.String())
+			w, _ := f.call(http.MethodDelete, "alice")
+			if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "copilot_login_completed") {
+				t.Fatalf("a cancel after the sign-in succeeded: status %d %s", w.Code, w.Body.String())
+			}
+			if after := f.secret(copilotLoginSecretName); after.ResourceVersion != login.ResourceVersion {
+				t.Fatalf("the refused cancel changed the sign-in: %v", after.Data)
+			}
+			if after := f.secret(cetirunv1alpha1.CopilotTokenSecretName); after.ResourceVersion != token.ResourceVersion {
+				t.Fatalf("the refused cancel changed the token Secret: %v", after.Annotations)
+			}
+			if _, resp := f.call(http.MethodGet, "alice"); resp.State != copilotLoginSucceeded {
+				t.Fatalf("after the refused cancel: %+v", resp)
+			}
+			if w, resp := f.call(http.MethodPost, "alice"); w.Code != http.StatusOK || resp.State != copilotLoginPending {
+				t.Fatalf("a new sign-in after the refused cancel: status %d %s", w.Code, w.Body.String())
+			}
+		})
 	}
 }
 

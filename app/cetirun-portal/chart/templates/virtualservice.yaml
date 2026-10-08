@@ -11,6 +11,19 @@ spec:
   gateways:
     - {{ .Values.istio.gateway }}
   http:
+    {{- if or .Values.chat.enabled (default false ((.Values.global.portalChat | default dict).enabled)) }}
+    - match:
+        - uri:
+            regex: /api/v1/instances/[^/]+/chat(/v1/(models|chat/completions))?
+      timeout: 610s
+      retries:
+        attempts: 0
+      route:
+        - destination:
+            host: {{ include "cetirun-portal.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local
+            port:
+              number: 8080
+    {{- end }}
     - route:
         - destination:
             host: {{ include "cetirun-portal.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local

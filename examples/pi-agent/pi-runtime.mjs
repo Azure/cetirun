@@ -7,50 +7,58 @@ import {
   createAgentSession, ModelRuntime, SessionManager, SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import { approvedResources } from "./pi-resources.mjs";
+import { gatewayAccess, gatewayConfiguration, gatewayCredentials, GATEWAY_PROVIDER } from "./gateway-runtime.mjs";
 
 export const PROVIDER = "github-copilot";
 export const PI_TOOLS = ["read", "bash", "edit", "write", "grep", "find", "ls"];
 const HTTP_TOOL_BUDGET = 8;
 
 /** Shared inputs for HTTP and TUI; neither loads arbitrary HOME extensions. */
-export async function createPiServices(home, cwd = path.join(home, "workspace")) {
+export async function createPiServices(home, cwd = path.join(home, "workspace"), env = process.env) {
   const agentDir = path.join(home, ".pi", "agent");
   await mkdir(agentDir, { recursive: true, mode: 0o700 });
   await mkdir(cwd, { recursive: true, mode: 0o700 });
   const resourceLoader = await approvedResources(home);
+  const gateway = gatewayConfiguration(env);
   const modelRuntime = await ModelRuntime.create({
-    authPath: path.join(agentDir, "auth.json"),
+    ...(gateway ? { credentials: gatewayCredentials() } : { authPath: path.join(agentDir, "auth.json") }),
     modelsPath: null,
     allowModelNetwork: false,
     refreshOnCreate: false,
   });
   const settingsManager = SettingsManager.inMemory({
-    defaultProvider: PROVIDER,
+    defaultProvider: gateway ? GATEWAY_PROVIDER : PROVIDER,
     retry: { enabled: false },
     enableInstallTelemetry: false,
   });
-  return { cwd, agentDir, modelRuntime, resourceLoader, settingsManager, diagnostics: [] };
+  const modelAccess = gateway ? gatewayAccess(modelRuntime, gateway) : undefined;
+  return { cwd, agentDir, modelRuntime, resourceLoader, settingsManager, modelAccess, diagnostics: [] };
 }
 
 /** Adapt the real Pi SDK to agent-api.mjs and the optional local auth helper. */
-export async function createPiRuntime(home) {
-  const services = await createPiServices(home);
+export async function createPiRuntime(home, env = process.env) {
+  const services = await createPiServices(home, path.join(home, "workspace"), env);
   const { cwd, agentDir, modelRuntime, resourceLoader } = services;
 
   async function availableModels(signal) {
+    if (services.modelAccess) return services.modelAccess.models(signal);
     await modelRuntime.refresh({ allowNetwork: false, providers: [PROVIDER], signal });
     return modelRuntime.getAvailable(PROVIDER, { signal });
   }
 
   return {
+    gateway: !!services.modelAccess,
+    provider: services.modelAccess ? GATEWAY_PROVIDER : PROVIDER,
     skills: () => resourceLoader.getSkills().skills.map(({ name }) => name),
     async authenticated() {
+      if (services.modelAccess) return false;
       return (await modelRuntime.listCredentials()).some((entry) => entry.providerId === PROVIDER);
     },
     async models(signal) {
       return (await availableModels(signal)).map(({ id }) => id);
     },
     async login(signal, notify) {
+      if (services.modelAccess) throw new Error("Sign in through the Portal's AI Gateway settings");
       await modelRuntime.login(PROVIDER, "oauth", {
         signal,
         prompt: async () => "",
@@ -67,7 +75,7 @@ export async function createPiRuntime(home) {
     },
     async run({ model: id, messages, signal, onText }) {
       const model = (await availableModels(signal)).find((candidate) => candidate.id === id);
-      if (!model) throw new Error("Requested Copilot model is unavailable");
+      if (!model) throw new Error("Requested model is unavailable");
 
       const { sessionManager, prompt, systemPrompt } = replayHTTPHistory(cwd, model, messages);
       const { session } = await createAgentSession({

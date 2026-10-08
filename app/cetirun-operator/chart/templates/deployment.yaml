@@ -1,4 +1,9 @@
 {{- $sandboxSources := include "cetirun-operator.sandboxSourcesConfig" . -}}
+{{- $chat := deepCopy .Values.chatAccess -}}
+{{- if default false ((.Values.global.portalChat | default dict).enabled) -}}
+{{- $_ := set $chat "enabled" true -}}
+{{- $_ := set $chat "callers" (list (dict "namespace" .Release.Namespace "podLabels" (dict "app.kubernetes.io/name" "cetirun-portal" "app.kubernetes.io/instance" .Release.Name))) -}}
+{{- end -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -43,6 +48,8 @@ spec:
             - {{ printf "--istio-gateway=%s" .Values.istioGateway | quote }}
             - {{ printf "--default-model=%s" .Values.cetirun.defaultModel | quote }}
           env:
+            - name: CETIRUN_CHAT_ACCESS
+              value: {{ $chat | toJson | quote }}
             - name: REGISTRY_CREDENTIAL_NAMESPACE
               value: {{ default .Values.registryCredentials.namespace .Values.global.registryCredentialNamespace | quote }}
             - name: OPERATOR_NAMESPACE

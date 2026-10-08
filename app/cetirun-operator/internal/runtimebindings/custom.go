@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/netip"
 	"path"
+	"regexp"
 	"strings"
 
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/agents"
@@ -25,6 +26,15 @@ type ModelAccess struct {
 	ObjectReference
 	BaseURL string `json:"baseURL"`
 	Key     string `json:"key"`
+}
+
+// CopilotProxy contains platform-owned references only. Its token and proxy key
+// are never mounted into the Agent or included in the Agent model binding.
+type CopilotProxy struct {
+	Image            string   `json:"image"`
+	KeyID            string   `json:"keyID"`
+	SignInGeneration string   `json:"signInGeneration,omitempty"`
+	ResponsesModels  []string `json:"responsesModels,omitempty"`
 }
 
 type Home struct {
@@ -70,11 +80,12 @@ type Custom struct {
 	ApprovedImage  string          `json:"approvedImage"`
 	PolicyRevision string          `json:"policyRevision"`
 	// Only a trusted platform provider can approve image-owned authentication.
-	AgentManagedModel bool        `json:"agentManagedModel,omitempty"`
-	Model             ModelAccess `json:"model"`
-	Home              Home        `json:"home"`
-	Context           Context     `json:"context"`
-	Network           Network     `json:"network"`
+	AgentManagedModel bool          `json:"agentManagedModel,omitempty"`
+	Model             ModelAccess   `json:"model"`
+	Copilot           *CopilotProxy `json:"copilot,omitempty"`
+	Home              Home          `json:"home"`
+	Context           Context       `json:"context"`
+	Network           Network       `json:"network"`
 	// Only the Registry synchronizer supplies this stable, namespace-local name.
 	PullSecretName string `json:"pullSecretName,omitempty"`
 }
@@ -114,12 +125,24 @@ func (b Custom) Validate(agent agents.ResolvedAgent) error {
 		return fmt.Errorf("PolicyBindingPending: exact Agent and image approval is required")
 	}
 	if b.AgentManagedModel {
-		if b.Model != (ModelAccess{}) || b.Network.Gateway.Namespace != "" ||
+		if b.Model != (ModelAccess{}) || b.Copilot != nil || b.Network.Gateway.Namespace != "" ||
 			len(b.Network.Gateway.PodLabels) != 0 || b.Network.GatewayPort != 0 {
 			return fmt.Errorf("ModelBindingInvalid: agent-managed access cannot inherit Gateway credentials or peers")
 		}
 	} else if !validReference(b.Model.ObjectReference) || len(validation.IsConfigMapKey(b.Model.Key)) != 0 {
 		return fmt.Errorf("ModelBindingPending: versioned instance Secret reference is required")
+	}
+	if proxy := b.Copilot; proxy != nil {
+		if proxy.Image == "" || strings.ContainsAny(proxy.Image, " \t\r\n\"'") ||
+			!regexp.MustCompile(`^[a-f0-9]{12}$`).MatchString(proxy.KeyID) ||
+			(proxy.SignInGeneration != "" && !regexp.MustCompile(`^[a-f0-9]{1,64}$`).MatchString(proxy.SignInGeneration)) || len(proxy.ResponsesModels) > 128 {
+			return fmt.Errorf("CopilotBindingInvalid: approved image and credential identities are required")
+		}
+		for _, model := range proxy.ResponsesModels {
+			if !regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`).MatchString(model) {
+				return fmt.Errorf("CopilotBindingInvalid: invalid model identifier")
+			}
+		}
 	}
 	if len(validation.IsDNS1123Subdomain(b.Home.Name)) != 0 || b.Home.FSGroup < 1 || b.Home.FSGroup > 2147483647 {
 		return fmt.Errorf("HomeBindingPending: approved HOME name and volume permissions are required")
