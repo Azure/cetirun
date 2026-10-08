@@ -141,7 +141,8 @@ var _ ChangeAdapter = (*KubernetesChangeAdapter)(nil)
 
 // NewKubernetesChangeAdapter retains private copies of both input images.
 // Only spec, labels, annotations, owner references and finalizers may differ.
-// Empty metadata collections use their persisted JSON (omitted/nil) form.
+// Schema defaults and omitted empty metadata are applied before pinning the
+// complete write, without sorting or rewriting explicitly supplied values.
 func NewKubernetesChangeAdapter(writer client.Client, reader client.Reader, before, after client.Object) (*KubernetesChangeAdapter, error) {
 	change, err := newConfigurationChange(before, after, false)
 	if err != nil {
@@ -400,6 +401,12 @@ func newConfigurationImage(input client.Object) (configurationImage, error) {
 	}
 	if len(object.GetOwnerReferences()) == 0 {
 		object.SetOwnerReferences(nil)
+	}
+	switch object := object.(type) {
+	case *api.Sandbox:
+		object.Spec = sandbox.DefaultSandbox(object.Spec)
+	case *api.AgentPolicy:
+		object.Spec = sandbox.DefaultAgentPolicy(object.Spec)
 	}
 	raw, err := json.Marshal(object)
 	if err != nil || len(raw) > MaxConfigurationBytes {

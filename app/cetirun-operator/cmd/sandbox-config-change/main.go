@@ -57,7 +57,9 @@ Sandbox or AgentPolicy, at most 256 KiB. Both images must pin the same original
 key, UID and resourceVersion. Only spec, labels, annotations, owner references
 and finalizers may change. Preserve server metadata and status, including the
 original generation and managedFields. Retain the exact original input files.
-No-op updates are rejected before acquiring a reservation.
+Schema defaults are applied to private copies before reserving and submitting
+the write; explicit values and list order are preserved. No-op updates,
+including changes that only omit defaults, are rejected before reservation.
 
 Unknown, failed and never-submitted changing operations remain reserved.
 After any uncertain result, run --action observe with the SAME inputs.

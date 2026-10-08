@@ -205,10 +205,13 @@ version. The adapter verifies the authoritative before image, pins the complete
 proposed write, reserves the affected scope and records submission intent before
 one resource-version-conditional Update. Governed-to-governed Team changes retain
 per-class selection scoping; legacy updates and transitions into or out of
-governance conservatively reserve the entire Team. No-op updates are rejected
-before reservation because Kubernetes need
-not advance their resource version. Configuration admission and Kubernetes
-authorization still apply.
+governance conservatively reserve the entire Team. Schema defaults (including
+omitted port protocols) are applied to independent input copies before pinning
+and submitting the write. Explicit values, list order and duplicates are not
+normalized away. No-op updates, including changes that only omit defaulted
+values, are rejected before reservation because Kubernetes need not advance
+their resource version. Configuration admission and Kubernetes authorization
+still apply.
 
 After a lost reply, use the same input files to observe the original operation.
 A matching current object with the same UID and an advanced resource version
@@ -216,6 +219,8 @@ proves the desired write is present and an old-version request cannot commit
 again. An unchanged, missing, replaced or differently changed object does not
 prove completion or cancellation. Such outcomes keep their reservations; do not
 edit the journal, change the original files or automatically repeat the write.
+An existing reservation with a different, older digest is not rewritten or
+released by defaulting; it remains subject to the same recovery boundary.
 Observation never releases a reservation. After matching committed content is
 reported, explicit `--action update` can finalize that same changing operation
 without resubmitting it.

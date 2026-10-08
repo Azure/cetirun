@@ -38,6 +38,52 @@ func normalizationSandboxFixture() v1alpha1.SandboxSpec {
 	}
 }
 
+func TestSchemaDefaultsPreserveExplicitValuesAndInputOwnership(t *testing.T) {
+	box := normalizationSandboxFixture()
+	originalBox := box.DeepCopy()
+	defaultedBox := DefaultSandbox(box)
+	if defaultedBox.Type != v1alpha1.SandboxKata ||
+		defaultedBox.Storage.Home.Size.String() != box.Storage.Home.Size.String() {
+		t.Fatal("Sandbox defaulting changed explicit quantity representation")
+	}
+	defaultedBox.Resources.Agent.Requests[corev1.ResourceCPU] = resource.MustParse("500m")
+	if !reflect.DeepEqual(box, *originalBox) {
+		t.Fatal("Sandbox defaulting retained caller-owned maps")
+	}
+	box.Type = v1alpha1.SandboxGVisor
+	if DefaultSandbox(box).Type != v1alpha1.SandboxGVisor {
+		t.Fatal("Sandbox defaulting replaced an explicit runtime")
+	}
+
+	policy := v1alpha1.AgentPolicySpec{
+		Security: v1alpha1.AgentPolicySecurity{ReadOnlyRootFilesystem: normalizationBool(false)},
+		Network: v1alpha1.AgentPolicyNetwork{
+			Ingress:      v1alpha1.AgentPolicyIngress{Mode: v1alpha1.AgentPolicyIngressDisabled},
+			BlockedCIDRs: []string{"203.0.113.7/24", "198.51.100.0/24", "203.0.113.7/24"},
+			BlockedPorts: []v1alpha1.AgentPolicyPort{
+				{Port: 8080, Protocol: corev1.ProtocolUDP}, {Port: 53}, {Port: 8080, Protocol: corev1.ProtocolUDP},
+			},
+			AllowedInternalCIDRs: []v1alpha1.AgentPolicyCIDRRule{
+				{CIDR: "203.0.113.7/24", Ports: []v1alpha1.AgentPolicyPort{{Port: 8443}, {Port: 443, Protocol: corev1.ProtocolSCTP}}},
+			},
+		},
+	}
+	original := policy.DeepCopy()
+	want := policy.DeepCopy()
+	want.Network.BlockedPorts[1].Protocol = corev1.ProtocolTCP
+	want.Network.AllowedInternalCIDRs[0].Ports[0].Protocol = corev1.ProtocolTCP
+	got := DefaultAgentPolicy(policy)
+	if !reflect.DeepEqual(got, *want) || !reflect.DeepEqual(got, DefaultAgentPolicy(got)) {
+		t.Fatal("schema defaults canonicalized explicit values or were not idempotent")
+	}
+	*got.Security.ReadOnlyRootFilesystem = true
+	got.Network.BlockedPorts[0].Protocol = corev1.ProtocolTCP
+	got.Network.AllowedInternalCIDRs[0].Ports[0].Port = 8080
+	if !reflect.DeepEqual(policy, *original) {
+		t.Fatal("policy defaulting retained caller-owned pointers or slices")
+	}
+}
+
 func TestNormalizeSandboxDefaultsAndCopies(t *testing.T) {
 	for _, runtime := range []v1alpha1.SandboxType{"", v1alpha1.SandboxKata, v1alpha1.SandboxGVisor} {
 		for _, mode := range []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOncePod, corev1.ReadWriteOnce} {

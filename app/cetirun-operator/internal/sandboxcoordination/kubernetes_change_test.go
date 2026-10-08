@@ -116,6 +116,118 @@ func TestConfigurationNoopCannotAcquireAReservation(t *testing.T) {
 	}
 }
 
+func TestConfigurationDefaultsArePinnedBeforeReservation(t *testing.T) {
+	for _, kind := range []string{"Sandbox", "AgentPolicy"} {
+		t.Run(kind, func(t *testing.T) {
+			ctx := context.Background()
+			store, storage, before, after := configurationFixture(t, kind)
+			switch object := after.(type) {
+			case *api.Sandbox:
+				object.Spec.Type = ""
+			case *api.AgentPolicy:
+				object.Spec.Security.ReadOnlyRootFilesystem = nil
+				object.Spec.Network.Ingress.Mode = ""
+				object.Spec.Network.BlockedPorts = []api.AgentPolicyPort{{Port: 8080}}
+				object.Spec.Network.AllowedInternalCIDRs = []api.AgentPolicyCIDRRule{
+					{CIDR: "203.0.113.0/24", Ports: []api.AgentPolicyPort{{Port: 8443}}},
+				}
+			}
+			original := after.DeepCopyObject()
+			ticket, err := store.AcquireConfigurationChange(ctx, before, after)
+			if err != nil {
+				t.Fatal(err)
+			}
+			canonical := after.DeepCopyObject().(client.Object)
+			switch object := canonical.(type) {
+			case *api.Sandbox:
+				object.Spec.Type = api.SandboxKata
+			case *api.AgentPolicy:
+				object.Spec.Security.ReadOnlyRootFilesystem = ptr.To(true)
+				object.Spec.Network.Ingress.Mode = api.AgentPolicyIngressAuthenticated
+				object.Spec.Network.BlockedPorts[0].Protocol = corev1.ProtocolTCP
+				object.Spec.Network.AllowedInternalCIDRs[0].Ports[0].Protocol = corev1.ProtocolTCP
+			}
+			same, err := store.ReadConfigurationChange(ctx, before, canonical)
+			if err != nil || !reflect.DeepEqual(ticket, same) {
+				t.Fatal("API-defaulted content did not identify the reserved write:", err)
+			}
+			adapter := configurationAdapter(t, storage, storage, before, after)
+			ticket, err = store.BeginChange(ctx, ticket)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := store.AuthorizeConfigurationUpdate(ctx, before, canonical); err != nil {
+				t.Fatal("API defaults changed admission authority:", err)
+			}
+			if err := adapter.Submit(ctx, ticket, func(ctx context.Context) error {
+				return store.CheckChange(ctx, ticket)
+			}); err != nil {
+				t.Fatal(err)
+			}
+			current := before.DeepCopyObject().(client.Object)
+			if err := storage.Get(ctx, client.ObjectKeyFromObject(before), current); err != nil {
+				t.Fatal(err)
+			}
+			switch object := current.(type) {
+			case *api.Sandbox:
+				if object.Spec.Type != api.SandboxKata {
+					t.Fatal("submitted Sandbox omitted its schema default")
+				}
+			case *api.AgentPolicy:
+				if object.Spec.Security.ReadOnlyRootFilesystem == nil || !*object.Spec.Security.ReadOnlyRootFilesystem ||
+					object.Spec.Network.Ingress.Mode != api.AgentPolicyIngressAuthenticated ||
+					object.Spec.Network.BlockedPorts[0].Protocol != corev1.ProtocolTCP ||
+					object.Spec.Network.AllowedInternalCIDRs[0].Ports[0].Protocol != corev1.ProtocolTCP {
+					t.Fatal("submitted policy omitted schema defaults")
+				}
+			}
+			recovered, err := store.ReadConfigurationChange(ctx, before, after)
+			if err != nil {
+				t.Fatal("original non-defaulted input could not recover the operation:", err)
+			}
+			if _, err := store.ReconcileChange(ctx, recovered,
+				configurationAdapter(t, nil, storage, before, after)); err != nil {
+				t.Fatal("matching defaulted write could not release its reservation:", err)
+			}
+			if !reflect.DeepEqual(original, after) {
+				t.Fatal("defaulting modified caller-owned inputs")
+			}
+		})
+	}
+}
+
+func TestConfigurationDefaultOnlyChangesCannotReserve(t *testing.T) {
+	for _, kind := range []string{"Sandbox", "AgentPolicy"} {
+		t.Run(kind, func(t *testing.T) {
+			ctx := context.Background()
+			store, storage, before, _ := configurationFixture(t, kind)
+			after := before.DeepCopyObject().(client.Object)
+			switch object := after.(type) {
+			case *api.Sandbox:
+				object.Spec.Type = ""
+			case *api.AgentPolicy:
+				object.Spec.Security.ReadOnlyRootFilesystem = nil
+				object.Spec.Network.Ingress.Mode = ""
+			}
+			key := client.ObjectKey{Namespace: store.Namespace, Name: store.Identity.Name}
+			original := &corev1.ConfigMap{}
+			if err := storage.Get(ctx, key, original); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.AcquireConfigurationChange(ctx, before, after); !errors.Is(err, ErrConflict) {
+				t.Fatal("a schema-defaulted no-op acquired a reservation:", err)
+			}
+			current := &corev1.ConfigMap{}
+			if err := storage.Get(ctx, key, current); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(original, current) {
+				t.Fatal("a schema-defaulted no-op changed authority")
+			}
+		})
+	}
+}
+
 func TestConfigurationLegacyTeamTransitionsUseWholeTeamReservation(t *testing.T) {
 	for _, transition := range []struct {
 		name                          string
