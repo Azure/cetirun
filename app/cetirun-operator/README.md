@@ -121,20 +121,26 @@ journal, complete lifetime placement, current authorization and compiled
 policy, and an independently enrolled Pod/Node/epoch, physical machine,
 volume and writer-journal UID. The complete writer tuple is persisted with
 the coordination ticket and must still match before reservation or cleanup.
-It rechecks sources
-without reading Secret contents or treating Agent status as authorization.
+It rechecks sources without reading Secret contents or treating Agent status
+as authorization.
 Preparation still validates every permitted Team Sandbox and both policy
 slots. An execution reserves only its selected Sandbox and policy, so valid
 changes to an unused Sandbox or the other policy class do not require it to stop.
-The StatefulSet's registration resource version remains a reservation snapshot,
-not a lifetime freshness check. Execution rechecks its UID and a digest of the
-effective spec, owner references, labels and annotations, excluding status,
-managed fields and controlled zero/one-replica transitions. Replacement,
-termination, other spec changes or more than one desired replica still fail.
+Non-secret sources use immutable UIDs and effective-input digests rather than
+treating the original observation resource version as lifetime configuration.
+Digests retain desired content, owner references, finalizers and recognized
+runtime, ownership, network and admission-control metadata. Unrelated labels,
+annotations, managed fields and status do not invalidate execution. StatefulSet
+zero/one-replica transitions remain controlled separately. Replacement,
+termination, lost storage, changed content or more than one desired replica
+still fail. Secret contents are never read by these checks, so Secret versions
+remain conservative pins; explicit grant-approval requirements are unchanged.
 Every execution recheck also refreshes whole-generation prerequisite approval
-and compares it with the pinned preparation receipt, excluding only the
-observation timestamp. Withdrawal, missing providers, changed approvals and
-stale observations fail without restaging Helm or quiescing a running writer.
+and compares it with the protected preparation receipt. Kubernetes prerequisite
+revisions cover effective inputs, not incidental observation versions.
+Publication-source content and identities remain checked even when their
+observation versions change. Withdrawal, missing providers, changed approvals
+and stale observations fail without restaging Helm or quiescing a running writer.
 The execution inventory accepts up to 129 identities: all 128 supported
 preparation inputs plus the preparation-state ConfigMap. Larger inventories
 fail without truncation.
@@ -147,14 +153,24 @@ source mutation records intent before its only submission; restart and lost
 replies are observation-only. Unknown mutation outcomes retain their reservation,
 including when the API still shows the old object.
 
+`AcquireTeamChange` derives the affected execution selections from an
+authoritative before image and the complete proposed Team mutation. Changing
+only the creation default or another policy-class slot can coexist with
+unaffected executions. Changing their selected slot, removing their Sandbox
+membership, replacing the Team or changing shared runtime inputs cannot.
+Team mutations still serialize with one another, pin the exact before
+UID/resource version and full desired mutation digest, and retain unknown
+outcomes. Normal configuration admission and whole-Team validation still apply;
+the mutation adapter must enforce the full digest at its actual write boundary.
+
 The lifecycle reserves the physical writer through the durable journal, then
 requires a fresh, exact pre-start acknowledgement of an armed guest-external
 gate. Current runtime, Pod, control and epoch evidence precedes route publication.
 The route-publication boundary guard rechecks the same evidence's freshness
 after coordination and source reads, so delayed publication cannot use an
 expired observation. An additional post-publication observation precedes the
-adapter's atomic applied-binding/readiness commit. Source, freshness or observation loss clears
-readiness, withdraws routes and attempts durable writer exclusion; failure in
+adapter's atomic applied-binding/readiness commit. Source, freshness or
+observation loss clears readiness, withdraws routes and attempts durable writer exclusion; failure in
 one cleanup step does not skip the others. Reservations are released only after
 all cleanup succeeds. Historical cleanup does not rediscover targets from
 current policy or storage configuration.

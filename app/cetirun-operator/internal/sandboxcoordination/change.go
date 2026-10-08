@@ -33,6 +33,7 @@ type ChangeAdapter interface {
 // timeout or an unchanged API read. Direct, uncoordinated source writes remain
 // outside this integration and must be prohibited before execution enablement.
 func (s Store) ReconcileChange(ctx context.Context, ticket ChangeTicket, adapter ChangeAdapter) (ChangeTicket, error) {
+	ticket = ticket.DeepCopy()
 	if adapter == nil {
 		return ticket, fmt.Errorf("%w: a coordinated mutation adapter is required", ErrUnavailable)
 	}
@@ -46,14 +47,14 @@ func (s Store) ReconcileChange(ctx context.Context, ticket ChangeTicket, adapter
 		}
 		ticket = next
 		guard := func(ctx context.Context) error { return s.CheckChange(ctx, ticket) }
-		if err := adapter.Submit(ctx, ticket, guard); err != nil {
+		if err := adapter.Submit(ctx, ticket.DeepCopy(), guard); err != nil {
 			return ticket, err
 		}
 	}
 	if ticket.Change.Phase != Changing {
 		return ticket, ErrConflict
 	}
-	outcome, err := adapter.ObserveChange(ctx, ticket)
+	outcome, err := adapter.ObserveChange(ctx, ticket.DeepCopy())
 	if err != nil {
 		return ticket, err
 	}

@@ -37,8 +37,9 @@ func testIntent(suffix string) Intent {
 	preparation := source("v1", "ConfigMap", "operator-state", "preparation-"+suffix, "preparation-uid-"+suffix)
 	intent := Intent{
 		Agent: agent, AgentGeneration: 1, Namespace: namespace, Home: home, Workload: workload,
-		WorkloadDigest: strings.Repeat("d", 64),
-		Preparation:    preparation, IngressMode: api.AgentPolicyIngressAuthenticated,
+		WorkloadDigest:   strings.Repeat("d", 64),
+		TeamSharedDigest: strings.Repeat("f", 64),
+		Preparation:      preparation, IngressMode: api.AgentPolicyIngressAuthenticated,
 		Expected: sandbox.ExecutionIdentity{
 			Binding: sandbox.Binding{AgentUID: agent.UID, TeamUID: "team-uid", SandboxUID: "sandbox-uid",
 				AgentPolicyUID: "policy-uid", PolicyClass: api.AgentPolicyClassNormal},
@@ -72,6 +73,12 @@ func testIntent(suffix string) Intent {
 		source("v1", "PersistentVolumeClaim", namespace.Name, home.Name, string(home.UID)),
 		source("apps/v1", "StatefulSet", namespace.Name, workload.Name, string(workload.UID)),
 		source("v1", "ConfigMap", "operator-state", "placement", "placement-uid"),
+	}
+	intent.SourceDigests = map[string]string{}
+	for _, source := range intent.Sources {
+		if w.EffectiveSource(source) {
+			intent.SourceDigests[w.SourceKey(source)] = strings.Repeat("e", 64)
+		}
 	}
 	return intent
 }

@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 
@@ -61,23 +62,35 @@ type EnrolledTarget struct {
 // Intent contains identities and digests only. Expected must be independently
 // enrolled before consulting an enforcement observation, not copied from it.
 type Intent struct {
-	Agent           w.ObjectIdentity           `json:"agent"`
-	AgentGeneration int64                      `json:"agentGeneration"`
-	Namespace       w.ObjectIdentity           `json:"namespace"`
-	Home            w.ObjectIdentity           `json:"home"`
-	Workload        w.ObjectIdentity           `json:"workload"`
-	WorkloadDigest  string                     `json:"workloadDigest"`
-	Expected        sandbox.ExecutionIdentity  `json:"expected"`
-	Writer          sandboxwriter.Writer       `json:"writer"`
-	WriterJournal   w.ObjectIdentity           `json:"writerJournal"`
-	Preparation     w.SourceReference          `json:"preparation"`
-	Placement       *w.PlacementBinding        `json:"placement"`
-	Sources         []w.SourceReference        `json:"sources"`
-	IngressMode     api.AgentPolicyIngressMode `json:"ingressMode"`
+	Agent            w.ObjectIdentity           `json:"agent"`
+	AgentGeneration  int64                      `json:"agentGeneration"`
+	Namespace        w.ObjectIdentity           `json:"namespace"`
+	Home             w.ObjectIdentity           `json:"home"`
+	Workload         w.ObjectIdentity           `json:"workload"`
+	WorkloadDigest   string                     `json:"workloadDigest"`
+	Expected         sandbox.ExecutionIdentity  `json:"expected"`
+	Writer           sandboxwriter.Writer       `json:"writer"`
+	WriterJournal    w.ObjectIdentity           `json:"writerJournal"`
+	Preparation      w.SourceReference          `json:"preparation"`
+	Placement        *w.PlacementBinding        `json:"placement"`
+	Sources          []w.SourceReference        `json:"sources"`
+	SourceDigests    map[string]string          `json:"sourceDigests"`
+	TeamSharedDigest string                     `json:"teamSharedDigest"`
+	IngressMode      api.AgentPolicyIngressMode `json:"ingressMode"`
 }
 
 func (intent Intent) Validate() error {
 	return validateIntent(intent)
+}
+
+func (intent Intent) SelectedSandbox() string {
+	for _, source := range intent.Sources {
+		if source.APIVersion == api.GroupVersion.String() && source.Kind == "Sandbox" &&
+			source.UID == intent.Expected.Binding.SandboxUID {
+			return source.Name
+		}
+	}
+	return ""
 }
 
 type Execution struct {
@@ -93,6 +106,12 @@ type Change struct {
 	Before        w.SourceReference `json:"before"`
 	DesiredDigest string            `json:"desiredDigest"`
 	Phase         Phase             `json:"phase"`
+	Team          *TeamChange       `json:"team,omitempty"`
+}
+
+type TeamChange struct {
+	Before w.TeamInputs `json:"before"`
+	After  w.TeamInputs `json:"after"`
 }
 
 type Ticket struct {
@@ -108,6 +127,11 @@ func (ticket Ticket) DeepCopy() Ticket {
 type ChangeTicket struct {
 	AuthorityUID types.UID
 	Change       Change
+}
+
+func (ticket ChangeTicket) DeepCopy() ChangeTicket {
+	ticket.Change = cloneChange(ticket.Change)
+	return ticket
 }
 
 type record struct {
@@ -165,7 +189,7 @@ func (s Store) AcquireExecution(ctx context.Context, intent Intent) (Ticket, err
 		}
 	}
 	for _, change := range state.Changes {
-		if uses(intent.Sources, change.Before) {
+		if changeAffects(intent, change) {
 			return Ticket{}, ErrConflict
 		}
 	}
@@ -182,6 +206,70 @@ func (s Store) AcquireExecution(ctx context.Context, intent Intent) (Ticket, err
 }
 
 func (s Store) AcquireChange(ctx context.Context, before w.SourceReference, desiredDigest string) (ChangeTicket, error) {
+	return s.acquireChange(ctx, before, desiredDigest, nil)
+}
+
+// AcquireTeamChange derives the affected execution selections from an exact
+// authoritative before image and the full proposed mutation. It does not bypass
+// configuration admission. Submit must enforce Before and DesiredDigest at its
+// actual write boundary; callers cannot supply a partial field-mask assertion.
+func (s Store) AcquireTeamChange(ctx context.Context, before, after *api.Team) (ChangeTicket, error) {
+	if s.APIReader == nil || before == nil || after == nil || before.Namespace != "" ||
+		after.Namespace != "" || before.Name != after.Name || before.UID != after.UID ||
+		before.ResourceVersion != after.ResourceVersion || before.ResourceVersion == "" {
+		return ChangeTicket{}, fmt.Errorf("%w: exact before and proposed Team identities are required", ErrUnavailable)
+	}
+	oldInputs, err := w.ExecutionTeamInputs(before)
+	if err != nil {
+		return ChangeTicket{}, err
+	}
+	newInputs, err := w.ExecutionTeamInputs(after)
+	if err != nil {
+		return ChangeTicket{}, err
+	}
+	desiredDigest, err := w.TeamMutationDigest(after)
+	if err != nil {
+		return ChangeTicket{}, err
+	}
+	reference := w.SourceReference{APIVersion: api.GroupVersion.String(), Kind: "Team",
+		Name: before.Name, UID: before.UID, ResourceVersion: before.ResourceVersion}
+	scope := &TeamChange{Before: oldInputs, After: newInputs}
+	object, state, err := s.read(ctx)
+	if err != nil {
+		return ChangeTicket{}, err
+	}
+	for _, existing := range state.Changes {
+		if sourceKey(existing.Before) != sourceKey(reference) {
+			continue
+		}
+		// A committed API mutation can advance the live Team before its reply
+		// arrives. Recover the exact journaled operation, never a new write.
+		if existing.Before == reference && existing.DesiredDigest == desiredDigest &&
+			equality.Semantic.DeepEqual(existing.Team, scope) {
+			return ChangeTicket{object.UID, cloneChange(existing)}, nil
+		}
+		return ChangeTicket{}, ErrConflict
+	}
+	current := &api.Team{}
+	if err := s.APIReader.Get(ctx, client.ObjectKeyFromObject(before), current); err != nil {
+		return ChangeTicket{}, err
+	}
+	oldDigest, err := w.TeamMutationDigest(before)
+	if err != nil {
+		return ChangeTicket{}, err
+	}
+	currentDigest, err := w.TeamMutationDigest(current)
+	if err != nil {
+		return ChangeTicket{}, err
+	}
+	if current.UID != before.UID || current.ResourceVersion != before.ResourceVersion ||
+		!current.DeletionTimestamp.IsZero() || oldDigest != currentDigest {
+		return ChangeTicket{}, ErrConflict
+	}
+	return s.acquireChange(ctx, reference, desiredDigest, scope)
+}
+
+func (s Store) acquireChange(ctx context.Context, before w.SourceReference, desiredDigest string, team *TeamChange) (ChangeTicket, error) {
 	if !validSource(before) || !digest(desiredDigest) {
 		return ChangeTicket{}, fmt.Errorf("%w: change requires an exact source and desired-content digest", ErrUnavailable)
 	}
@@ -190,24 +278,24 @@ func (s Store) AcquireChange(ctx context.Context, before w.SourceReference, desi
 		return ChangeTicket{}, err
 	}
 	for _, execution := range state.Executions {
-		if uses(execution.Intent.Sources, before) {
+		if changeAffects(execution.Intent, Change{Before: before, Team: team}) {
 			return ChangeTicket{}, ErrConflict
 		}
 	}
 	for _, existing := range state.Changes {
 		if sourceKey(existing.Before) == sourceKey(before) {
-			if existing.Before == before && existing.DesiredDigest == desiredDigest {
-				return ChangeTicket{object.UID, existing}, nil
+			if existing.Before == before && existing.DesiredDigest == desiredDigest && equality.Semantic.DeepEqual(existing.Team, team) {
+				return ChangeTicket{object.UID, cloneChange(existing)}, nil
 			}
 			return ChangeTicket{}, ErrConflict
 		}
 	}
-	change := Change{ID: rand.Text(), Before: before, DesiredDigest: desiredDigest, Phase: Reserved}
+	change := Change{ID: rand.Text(), Before: before, DesiredDigest: desiredDigest, Phase: Reserved, Team: team}
 	state.Changes = append(state.Changes, change)
 	if err := s.write(ctx, object, state); err != nil {
 		return ChangeTicket{}, err
 	}
-	ticket := ChangeTicket{object.UID, change}
+	ticket := ChangeTicket{object.UID, cloneChange(change)}
 	if err := s.CheckChange(ctx, ticket); err != nil {
 		return ChangeTicket{}, err
 	}
@@ -250,7 +338,9 @@ func (s Store) CheckChange(ctx context.Context, ticket ChangeTicket) error {
 	if err != nil {
 		return err
 	}
-	if ticket.AuthorityUID == object.UID && slices.Contains(state.Changes, ticket.Change) {
+	if ticket.AuthorityUID == object.UID && slices.ContainsFunc(state.Changes, func(change Change) bool {
+		return equality.Semantic.DeepEqual(change, ticket.Change)
+	}) {
 		return ctx.Err()
 	}
 	return ErrConflict
@@ -270,7 +360,7 @@ func (s Store) BeginChange(ctx context.Context, ticket ChangeTicket) (ChangeTick
 		return ChangeTicket{}, ErrConflict
 	}
 	for i, change := range state.Changes {
-		if change == ticket.Change {
+		if equality.Semantic.DeepEqual(change, ticket.Change) {
 			state.Changes[i].Phase = Changing
 			if err := s.write(ctx, object, state); err != nil {
 				return ChangeTicket{}, err
@@ -370,7 +460,7 @@ func (s Store) ReleaseChange(ctx context.Context, ticket ChangeTicket) error {
 		return ErrConflict
 	}
 	for i, change := range state.Changes {
-		if change == ticket.Change {
+		if equality.Semantic.DeepEqual(change, ticket.Change) {
 			state.Changes = slices.Delete(state.Changes, i, i+1)
 			return s.write(ctx, object, state)
 		}
@@ -475,8 +565,14 @@ func validateRecord(state record) error {
 			return fmt.Errorf("%w: invalid or duplicate source change", ErrUnavailable)
 		}
 		ids[change.ID], keys[key] = true, true
+		if change.Team != nil {
+			if change.Before.APIVersion != api.GroupVersion.String() || change.Before.Kind != "Team" ||
+				change.Before.Namespace != "" || change.Team.Before.Validate() != nil || change.Team.After.Validate() != nil {
+				return fmt.Errorf("%w: invalid scoped Team change", ErrUnavailable)
+			}
+		}
 		for _, execution := range state.Executions {
-			if uses(execution.Intent.Sources, change.Before) {
+			if changeAffects(execution.Intent, change) {
 				return fmt.Errorf("%w: source change overlaps an execution", ErrUnavailable)
 			}
 		}
@@ -486,7 +582,8 @@ func validateRecord(state record) error {
 
 func validateIntent(intent Intent) error {
 	if !identity(intent.Agent) || !identity(intent.Namespace) || !identity(intent.Home) ||
-		!identity(intent.Workload) || !digest(intent.WorkloadDigest) || len(validation.IsDNS1123Label(intent.Namespace.Name)) != 0 ||
+		!identity(intent.Workload) || !digest(intent.WorkloadDigest) || !digest(intent.TeamSharedDigest) ||
+		len(validation.IsDNS1123Label(intent.Namespace.Name)) != 0 ||
 		intent.AgentGeneration < 1 || intent.Expected.Binding.AgentUID != intent.Agent.UID ||
 		intent.Expected.Binding.TeamUID == "" || intent.Expected.Binding.SandboxUID == "" ||
 		intent.Expected.Binding.AgentPolicyUID == "" ||
@@ -541,12 +638,19 @@ func validateIntent(intent Intent) error {
 		{"v1", "ConfigMap", intent.Preparation.Namespace, intent.Placement.Registry.UID}: intent.Placement.Registry.Name,
 	}
 	agentPinned, preparationPinned := false, false
+	effectiveSources := 0
 	for _, source := range intent.Sources {
 		key := sourceKey(source)
 		if !validSource(source) || keys[key] {
 			return fmt.Errorf("%w: source identities must be complete and unique", ErrUnavailable)
 		}
 		keys[key] = true
+		if w.EffectiveSource(source) {
+			effectiveSources++
+			if !digest(intent.SourceDigests[w.SourceKey(source)]) {
+				return fmt.Errorf("%w: effective source digest is missing", ErrUnavailable)
+			}
+		}
 		identity := struct {
 			version, kind, namespace string
 			uid                      types.UID
@@ -567,6 +671,9 @@ func validateIntent(intent Intent) error {
 	}
 	if !agentPinned || !preparationPinned {
 		return fmt.Errorf("%w: execution must pin Agent intent and preparation state", ErrUnavailable)
+	}
+	if len(intent.SourceDigests) != effectiveSources {
+		return fmt.Errorf("%w: effective source digest inventory differs from sources", ErrUnavailable)
 	}
 	for _, present := range required {
 		if !present {
@@ -597,7 +704,23 @@ func compatibleExecutions(a, b Intent) error {
 		pinned[sourceKey(source)] = source
 	}
 	for _, source := range b.Sources {
-		if old, found := pinned[sourceKey(source)]; found && old != source {
+		old, found := pinned[sourceKey(source)]
+		if !found {
+			continue
+		}
+		if old.UID != source.UID {
+			return ErrConflict
+		}
+		if source.APIVersion == api.GroupVersion.String() && source.Kind == "Team" {
+			if a.TeamSharedDigest != b.TeamSharedDigest || (a.Expected.Binding.PolicyClass == b.Expected.Binding.PolicyClass &&
+				a.Expected.Binding.AgentPolicyUID != b.Expected.Binding.AgentPolicyUID) {
+				return ErrConflict
+			}
+		} else if w.EffectiveSource(source) {
+			if a.SourceDigests[w.SourceKey(old)] != b.SourceDigests[w.SourceKey(source)] {
+				return ErrConflict
+			}
+		} else if old != source {
 			return ErrConflict
 		}
 	}
@@ -607,9 +730,33 @@ func compatibleExecutions(a, b Intent) error {
 func cloneExecution(execution Execution) Execution {
 	execution.Intent.Sources = slices.Clone(execution.Intent.Sources)
 	execution.Intent.Placement = execution.Intent.Placement.DeepCopy()
+	execution.Intent.SourceDigests = maps.Clone(execution.Intent.SourceDigests)
 	return execution
 }
 
+func cloneChange(change Change) Change {
+	if change.Team != nil {
+		change.Team = &TeamChange{Before: change.Team.Before.DeepCopy(), After: change.Team.After.DeepCopy()}
+	}
+	return change
+}
+
+func changeAffects(intent Intent, change Change) bool {
+	if !uses(intent.Sources, change.Before) {
+		return false
+	}
+	if change.Team == nil || change.Before.UID != intent.Expected.Binding.TeamUID {
+		return true
+	}
+	pinned := intent.SourceDigests[w.SourceKey(change.Before)]
+	for _, inputs := range []w.TeamInputs{change.Team.Before, change.Team.After} {
+		digest, err := inputs.DigestFor(intent.SelectedSandbox(), intent.Expected.Binding.PolicyClass)
+		if err != nil || digest != pinned {
+			return true
+		}
+	}
+	return false
+}
 func sourceKey(source w.SourceReference) string {
 	return strings.Join([]string{source.APIVersion, source.Kind, source.Namespace, source.Name}, "\x00")
 }

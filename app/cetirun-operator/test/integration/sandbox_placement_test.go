@@ -12,6 +12,7 @@ import (
 	"slices"
 	"testing"
 
+	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxcoordination"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxplacement"
@@ -128,6 +129,40 @@ func TestSandboxPlacementPreparation(t *testing.T) {
 					t.Fatal(err)
 				}
 				fences, stages := f.source.fenceCalls, f.installer.stageCalls
+				for _, object := range []client.Object{
+					&api.Team{ObjectMeta: metav1.ObjectMeta{Name: f.fixture.Team.Name}},
+					&api.Sandbox{ObjectMeta: metav1.ObjectMeta{Name: f.fixture.Sandbox.Name}},
+					&api.AgentPolicy{ObjectMeta: metav1.ObjectMeta{Name: f.fixture.Policy.Name}},
+					&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: intent.Namespace.Name}},
+					&corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Namespace: intent.Namespace.Name, Name: intent.Home.Name}},
+				} {
+					h.get(t, client.ObjectKeyFromObject(object), object)
+					labels := object.GetLabels()
+					if labels == nil {
+						labels = map[string]string{}
+					}
+					labels["example.com/observation"] = "updated"
+					object.SetLabels(labels)
+					h.update(t, object)
+					switch object := object.(type) {
+					case *api.Team:
+						object.Status.ObservedGeneration = object.Generation
+					case *api.Sandbox:
+						object.Status.ObservedGeneration = object.Generation
+					case *api.AgentPolicy:
+						object.Status.ObservedGeneration = object.Generation
+					case *corev1.Namespace:
+						object.Status.Phase = corev1.NamespaceActive
+					case *corev1.PersistentVolumeClaim:
+						object.Status.Phase = corev1.ClaimBound
+					}
+					if err := h.client.Status().Update(h.ctx, object); err != nil {
+						t.Fatal(err)
+					}
+					if err := f.reconciler.CheckSandboxExecutionSources(h.ctx, intent); err != nil {
+						t.Fatalf("%T observation metadata invalidated current inputs: %v", object, err)
+					}
+				}
 				originalApproval := f.source.prerequisites.Revision
 				f.source.fenceError = errors.New("synthetic writer remains active")
 				defer func() {

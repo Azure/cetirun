@@ -14,6 +14,7 @@ import (
 	"time"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/controller"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxbinding"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxcoordination"
@@ -340,10 +341,20 @@ func TestSandboxExecutionSourcesRecheckSharedChangesWithoutRestaging(t *testing.
 				if err := f.client.Get(ctx, key, object); err != nil {
 					t.Fatal(err)
 				}
-				if agent, ok := object.(*api.Agent); ok {
+				switch changed := object.(type) {
+				case *api.Agent:
+					agent := changed
 					agent.Spec.Suspended = true
 					agent.Generation++
-				} else {
+				case *api.Team:
+					changed.Spec.Defaults.Provider = "changed-provider"
+				case *api.AgentPolicy:
+					changed.Spec.Network.BlockedCIDRs = []string{"203.0.113.0/24"}
+				case *corev1.PersistentVolumeClaim:
+					changed.Spec.Resources.Requests[corev1.ResourceStorage] = resource.MustParse("20Gi")
+				case *corev1.ConfigMap:
+					changed.Data["changed-input"] = "synthetic"
+				default:
 					object.SetLabels(map[string]string{"example.com/source-revision": "changed"})
 				}
 				if err := f.client.Update(ctx, object); err != nil {
@@ -357,6 +368,180 @@ func TestSandboxExecutionSourcesRecheckSharedChangesWithoutRestaging(t *testing.
 				t.Fatal("source check restaged a workload instead of rejecting stale intent")
 			}
 		})
+	}
+}
+
+func TestSandboxExecutionEffectiveInputsIgnoreObservationMetadata(t *testing.T) {
+	for _, kubernetesSource := range []bool{false, true} {
+		t.Run(fmt.Sprintf("kubernetes-prerequisites=%t", kubernetesSource), func(t *testing.T) {
+			ctx := context.Background()
+			f, target := executionIntentFixture(t, "hermes", func(f *preparationFixture) {
+				if !kubernetesSource {
+					return
+				}
+				secret := &corev1.Secret{}
+				if err := f.client.Get(ctx, client.ObjectKey{Namespace: f.fixture.Namespace.Name,
+					Name: f.fixture.Agent.Spec.GatewayTokenSecretRef}, secret); err != nil {
+					t.Fatal(err)
+				}
+				secret.OwnerReferences = []metav1.OwnerReference{w.AgentOwner(f.fixture.Agent.Name, f.fixture.Agent.UID)}
+				if err := f.client.Update(ctx, secret); err != nil {
+					t.Fatal(err)
+				}
+				f.reconciler.SandboxPreparation.Prerequisites = &controller.KubernetesSandboxPrerequisites{
+					APIReader: f.client, HomeClaimName: f.fixture.Input.Home.Name, SkillsClaimName: f.fixture.Input.Skills.Name,
+					ChartVersion: f.source.inputs.ChartVersion, Helpers: f.source.inputs.Helpers, Now: func() time.Time { return f.now },
+					WriterExclusion: &testSandboxWriterExclusion{},
+				}
+			})
+			intent, err := f.reconciler.SandboxExecutionIntent(ctx, f.current(t), target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			before := intent
+			renders, stages := f.installer.renders, f.installer.stages
+			objects := []client.Object{
+				f.fixture.Team.DeepCopy(), f.fixture.Sandbox.DeepCopy(), f.fixture.Policy.DeepCopy(),
+				f.fixture.Namespace.DeepCopy(), f.fixture.Input.Home.DeepCopy(), f.fixture.Input.Skills.DeepCopy(),
+				&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: intent.Preparation.Name, Namespace: intent.Preparation.Namespace}},
+			}
+			for _, object := range objects {
+				if err := f.client.Get(ctx, client.ObjectKeyFromObject(object), object); err != nil {
+					t.Fatal(err)
+				}
+				oldRV := object.GetResourceVersion()
+				labels, annotations := object.GetLabels(), object.GetAnnotations()
+				if labels == nil {
+					labels = map[string]string{}
+				}
+				if annotations == nil {
+					annotations = map[string]string{}
+				}
+				labels["example.com/unrelated"], annotations["example.com/unrelated"] = "changed", "changed"
+				object.SetLabels(labels)
+				object.SetAnnotations(annotations)
+				if err := f.client.Update(ctx, object); err != nil {
+					t.Fatal(err)
+				}
+				if object.GetResourceVersion() == oldRV {
+					t.Fatal("fixture did not change resource version")
+				}
+				if err := f.reconciler.CheckSandboxExecutionSources(ctx, intent); err != nil {
+					t.Fatalf("unrelated %T metadata invalidated effective execution inputs: %v", object, err)
+				}
+			}
+			if !reflect.DeepEqual(before, intent) || f.installer.renders != renders || f.installer.stages != stages {
+				t.Fatal("observation-only changes rewrote or restaged execution")
+			}
+			for _, object := range objects {
+				if err := f.client.Get(ctx, client.ObjectKeyFromObject(object), object); err != nil {
+					t.Fatal(err)
+				}
+				original := object.GetOwnerReferences()
+				object.SetOwnerReferences([]metav1.OwnerReference{w.AgentOwner("foreign", "foreign-uid")})
+				if err := f.client.Update(ctx, object); err != nil {
+					t.Fatal(err)
+				}
+				if err := f.reconciler.CheckSandboxExecutionSources(ctx, intent); err == nil {
+					t.Fatalf("foreign %T ownership was accepted", object)
+				}
+				object.SetOwnerReferences(original)
+				if err := f.client.Update(ctx, object); err != nil {
+					t.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+func TestSandboxExecutionTeamMutationPreservesUnaffectedSelection(t *testing.T) {
+	ctx := context.Background()
+	var spare *api.Sandbox
+	var otherPolicy *api.AgentPolicy
+	f, target := executionIntentFixture(t, "hermes", func(f *preparationFixture) {
+		policy := &api.AgentPolicy{}
+		if err := f.client.Get(ctx, client.ObjectKeyFromObject(f.fixture.Policy), policy); err != nil {
+			t.Fatal(err)
+		}
+		policy.Spec.SandboxSelection.AllowMultiple = true
+		if err := f.client.Update(ctx, policy); err != nil {
+			t.Fatal(err)
+		}
+		spare = f.fixture.Sandbox.DeepCopy()
+		spare.ObjectMeta = metav1.ObjectMeta{Name: "spare-sandbox"}
+		otherPolicy = policy.DeepCopy()
+		otherPolicy.ObjectMeta = metav1.ObjectMeta{Name: "other-policy"}
+		for _, object := range []client.Object{spare, otherPolicy} {
+			if err := f.client.Create(ctx, object); err != nil {
+				t.Fatal(err)
+			}
+		}
+		team := &api.Team{}
+		if err := f.client.Get(ctx, client.ObjectKeyFromObject(f.fixture.Team), team); err != nil {
+			t.Fatal(err)
+		}
+		team.Spec.SandboxRefs = append(team.Spec.SandboxRefs, spare.Name)
+		if err := f.client.Update(ctx, team); err != nil {
+			t.Fatal(err)
+		}
+	})
+	intent, err := f.reconciler.SandboxExecutionIntent(ctx, f.current(t), target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := sandboxcoordination.NewState("cetirun-system", "team-coordination")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.client.Create(ctx, state); err != nil {
+		t.Fatal(err)
+	}
+	store := sandboxcoordination.Store{Client: f.client, APIReader: f.client, Namespace: state.Namespace,
+		Identity: w.ObjectIdentity{Name: state.Name, UID: state.UID}}
+	execution, err := store.AcquireExecution(ctx, intent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, mutation := range []string{"default", "other policy"} {
+		before := &api.Team{}
+		if err := f.client.Get(ctx, client.ObjectKeyFromObject(f.fixture.Team), before); err != nil {
+			t.Fatal(err)
+		}
+		after := before.DeepCopy()
+		if mutation == "default" {
+			after.Spec.DefaultSandboxRef = spare.Name
+		} else {
+			after.Spec.AdminAgentPolicyRef = otherPolicy.Name
+		}
+		change, err := store.AcquireTeamChange(ctx, before, after)
+		if err != nil {
+			t.Fatal("unrelated Team change required stopping normal execution:", err)
+		}
+		change, err = store.BeginChange(ctx, change)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := f.client.Update(ctx, after); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.reconciler.CheckSandboxExecutionSources(ctx, intent); err != nil {
+			t.Fatal("unchanged selected Team binding was invalidated:", err)
+		}
+		if err := store.ReleaseChange(ctx, change); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.Check(ctx, execution); err != nil {
+			t.Fatal("unrelated Team update replaced execution authority:", err)
+		}
+	}
+	before := &api.Team{}
+	if err := f.client.Get(ctx, client.ObjectKeyFromObject(f.fixture.Team), before); err != nil {
+		t.Fatal(err)
+	}
+	after := before.DeepCopy()
+	after.Spec.NormalAgentPolicyRef = otherPolicy.Name
+	if _, err := store.AcquireTeamChange(ctx, before, after); !errors.Is(err, sandboxcoordination.ErrConflict) {
+		t.Fatal("selected normal policy rebind was not excluded:", err)
 	}
 }
 
@@ -420,7 +605,7 @@ func TestSandboxExecutionSourcesRejectWorkloadInputOrIdentityDrift(t *testing.T)
 		"Pod annotations":   func(w *appsv1.StatefulSet) { w.Spec.Template.Annotations["example.com/changed"] = "true" },
 		"owner":             func(w *appsv1.StatefulSet) { w.OwnerReferences[0].UID = "different-agent" },
 		"revision":          func(w *appsv1.StatefulSet) { w.Annotations["cetirun.microsoft.com/sandbox-revision"] = "changed" },
-		"labels":            func(w *appsv1.StatefulSet) { w.Labels["example.com/changed"] = "true" },
+		"labels":            func(w *appsv1.StatefulSet) { w.Labels["cetirun.microsoft.com/changed"] = "true" },
 		"multiple replicas": func(w *appsv1.StatefulSet) { w.Spec.Replicas = ptr.To[int32](2) },
 		"negative replicas": func(w *appsv1.StatefulSet) { w.Spec.Replicas = ptr.To[int32](-1) },
 	} {

@@ -124,13 +124,22 @@ func (r *AgentReconciler) SandboxExecutionIntent(ctx context.Context, requested 
 	if err != nil {
 		return empty, err
 	}
+	teamInputs, err := w.ExecutionTeamInputs(attempt.team)
+	if err != nil {
+		return empty, err
+	}
 	intent := sandboxcoordination.Intent{
 		Agent: expected.Agent, AgentGeneration: expected.AgentGeneration, Namespace: expected.Namespace,
 		Home: expected.Home, Workload: expected.Workload, Expected: target.ExecutionIdentity, Preparation: stateSource,
-		WorkloadDigest: workloadDigest,
-		Writer:         target.Writer, WriterJournal: target.WriterJournal,
+		WorkloadDigest:   workloadDigest,
+		TeamSharedDigest: teamInputs.SharedDigest,
+		Writer:           target.Writer, WriterJournal: target.WriterJournal,
 		Placement: expected.Placement.DeepCopy(), Sources: sources,
 		IngressMode: plan.Network.IngressMode,
+	}
+	intent.SourceDigests, err = r.captureExecutionSourceDigests(ctx, intent)
+	if err != nil {
+		return empty, err
 	}
 	if err := intent.Validate(); err != nil {
 		return empty, err
@@ -214,7 +223,10 @@ func (r *AgentReconciler) checkSandboxExecutionPrerequisites(ctx context.Context
 		return err
 	}
 	if !object.DeletionTimestamp.IsZero() || !slices.Contains(object.Finalizers, sandbox.PreparationFinalizer) ||
-		!slices.Contains(intent.Sources, sandboxSource(object, "v1", "ConfigMap")) ||
+		!slices.ContainsFunc(intent.Sources, func(source w.SourceReference) bool {
+			return source.APIVersion == "v1" && source.Kind == "ConfigMap" &&
+				source.Namespace == object.Namespace && source.Name == object.Name && source.UID == object.UID
+		}) ||
 		inputs.AgentUID != intent.Agent.UID || inputs.AgentGeneration != intent.AgentGeneration ||
 		inputs.NamespaceUID != intent.Namespace.UID || inputs.Home != intent.Home ||
 		!equality.Semantic.DeepEqual(inputs.Placement, intent.Placement) {
@@ -222,6 +234,15 @@ func (r *AgentReconciler) checkSandboxExecutionPrerequisites(ctx context.Context
 	}
 	current, previous := inputs, receipt.Prerequisites
 	current.ObservedAt, previous.ObservedAt = time.Time{}, time.Time{}
+	current.PublicationSources, previous.PublicationSources = slices.Clone(current.PublicationSources), slices.Clone(previous.PublicationSources)
+	for _, sources := range [][]w.SourceReference{current.PublicationSources, previous.PublicationSources} {
+		for i := range sources {
+			if w.EffectiveSource(sources[i]) {
+				// Content/UID remains pinned in the execution's source digests.
+				sources[i].ResourceVersion = ""
+			}
+		}
+	}
 	currentDigest, err := sandboxPreparationDigest(current)
 	if err != nil {
 		return err
@@ -238,15 +259,7 @@ func (r *AgentReconciler) checkSandboxExecutionPrerequisites(ctx context.Context
 }
 
 func (r *AgentReconciler) verifySandboxExecutionSources(ctx context.Context, intent sandboxcoordination.Intent) error {
-	sources := make([]w.SourceReference, 0, len(intent.Sources))
-	for _, source := range intent.Sources {
-		if source.APIVersion == "apps/v1" && source.Kind == "StatefulSet" &&
-			source.Namespace == intent.Namespace.Name && source.Name == intent.Workload.Name {
-			continue
-		}
-		sources = append(sources, source)
-	}
-	if err := r.verifySandboxSources(ctx, sources); err != nil {
+	if err := r.verifyEffectiveExecutionSources(ctx, intent); err != nil {
 		return err
 	}
 	workload := &appsv1.StatefulSet{}
@@ -269,14 +282,9 @@ func sandboxExecutionWorkloadDigest(workload *appsv1.StatefulSet) (string, error
 		ptr.Deref(workload.Spec.Replicas, 1) > 1 {
 		return "", fmt.Errorf("%w: a persisted, nonterminating zero/one-replica workload is required", errSandboxSourceChanged)
 	}
-	spec := workload.Spec.DeepCopy()
+	copy := workload.DeepCopy()
 	// Zero/one replica intent belongs to controlled start/stop. Status,
 	// observation versions and managed field ownership are not configuration.
-	spec.Replicas = nil
-	return sandboxPreparationDigest(struct {
-		Spec        *appsv1.StatefulSetSpec
-		Owners      []metav1.OwnerReference
-		Labels      map[string]string
-		Annotations map[string]string
-	}{spec, workload.OwnerReferences, workload.Labels, workload.Annotations})
+	copy.Spec.Replicas = nil
+	return w.ExecutionObjectDigest(copy)
 }

@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	w "github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -37,7 +38,8 @@ func TestCoordinationAPIServer(t *testing.T) {
 			t.Fatal("explicit preinstalled API-server/etcd binaries are required")
 		}
 	}
-	environment := &envtest.Environment{BinaryAssetsDirectory: assets, UseExistingCluster: ptr.To(false)}
+	environment := &envtest.Environment{BinaryAssetsDirectory: assets, UseExistingCluster: ptr.To(false),
+		CRDDirectoryPaths: []string{"../../config/crd/bases"}, ErrorIfCRDPathMissing: true}
 	config, err := environment.Start()
 	if err != nil {
 		t.Fatal(err)
@@ -49,6 +51,9 @@ func TestCoordinationAPIServer(t *testing.T) {
 	})
 	scheme := runtime.NewScheme()
 	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := api.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
 	}
 	storage, err := client.NewWithWatch(config, client.Options{Scheme: scheme})
@@ -74,6 +79,54 @@ func TestCoordinationAPIServer(t *testing.T) {
 		return Store{Client: storage, APIReader: storage, Namespace: object.Namespace,
 			Identity: w.ObjectIdentity{Name: object.Name, UID: object.UID}}
 	}
+
+	t.Run("committed-Team-mutation-recovers-after-lost-reply", func(t *testing.T) {
+		store := newStore(t, "team-recovery")
+		before := &api.Team{ObjectMeta: metav1.ObjectMeta{Name: "team"},
+			Spec: api.TeamSpec{NormalAgentPolicyRef: "policy", AdminAgentPolicyRef: "admin-policy",
+				SandboxRefs: []string{"sandbox", "spare"}, DefaultSandboxRef: "sandbox"}}
+		if err := storage.Create(ctx, before); err != nil {
+			t.Fatal(err)
+		}
+		acquire(t, store, teamIntent(t, before, "normal", api.AgentPolicyClassNormal))
+		after := before.DeepCopy()
+		after.Spec.DefaultSandboxRef = "spare"
+		ticket, err := store.AcquireTeamChange(ctx, before, after)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var committed *api.Team
+		adapter := &syntheticChangeAdapter{
+			submit: func(ctx context.Context, _ ChangeTicket) error {
+				committed = after.DeepCopy()
+				if err := storage.Update(ctx, committed); err != nil {
+					return err
+				}
+				return errors.New("synthetic lost reply after actual API write")
+			},
+			outcome: func(ticket ChangeTicket) *ChangeOutcome {
+				outcome := completeChange(ticket)
+				outcome.After.ResourceVersion = committed.ResourceVersion
+				return outcome
+			},
+		}
+		if _, err := store.ReconcileChange(ctx, ticket, adapter); err == nil ||
+			committed == nil || committed.ResourceVersion == before.ResourceVersion {
+			t.Fatal("fixture did not lose a reply after an actual committed write")
+		}
+		reader, err := client.New(config, client.Options{Scheme: scheme})
+		if err != nil {
+			t.Fatal(err)
+		}
+		restarted := Store{Client: reader, APIReader: reader, Namespace: store.Namespace, Identity: store.Identity}
+		recovered, err := restarted.AcquireTeamChange(ctx, before, after)
+		if err != nil || recovered.Change.ID != ticket.Change.ID || recovered.Change.Phase != Changing {
+			t.Fatal("advanced Team resourceVersion prevented exact recovery:", err)
+		}
+		if _, err := restarted.ReconcileChange(ctx, recovered, adapter); err != nil || adapter.submissions != 1 {
+			t.Fatal("actual API mutation was resubmitted:", err)
+		}
+	})
 
 	t.Run("real-CAS-excludes-start-versus-change", func(t *testing.T) {
 		store := newStore(t, "concurrent")

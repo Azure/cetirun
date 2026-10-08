@@ -432,14 +432,18 @@ func TestMissingIntegrationNeverEnablesExecution(t *testing.T) {
 type syntheticChangeAdapter struct {
 	submissions int
 	submitErr   error
+	submit      func(context.Context, ChangeTicket) error
 	outcome     func(ChangeTicket) *ChangeOutcome
 }
 
-func (a *syntheticChangeAdapter) Submit(ctx context.Context, _ ChangeTicket, guard func(context.Context) error) error {
+func (a *syntheticChangeAdapter) Submit(ctx context.Context, ticket ChangeTicket, guard func(context.Context) error) error {
 	if err := guard(ctx); err != nil {
 		return err
 	}
 	a.submissions++
+	if a.submit != nil {
+		return a.submit(ctx, ticket)
+	}
 	return a.submitErr
 }
 
