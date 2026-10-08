@@ -153,13 +153,16 @@ const aiGatewayModelNameLimit = 256
 
 // aiGatewaySharedModelUsable reports whether a shared model name can be given
 // to Agents: the agent chart rejects names with the provider prefix Agents
-// use and names over its length limit, and the Copilot prefix belongs to the
-// Agents' own Copilot routes.
+// use and names over its length limit, and the Gateway chart reserves the
+// cetirun- and copilot/ prefixes in any letter case, copilot/ for the Agents'
+// own Copilot routes. The console does not check them.
 func aiGatewaySharedModelUsable(name string) bool {
 	if name == "" || strings.ContainsAny(name, " \t\r\n") || utf8.RuneCountInString(name) > aiGatewayModelNameLimit {
 		return false
 	}
-	return !strings.HasPrefix(name, "openai/") && !strings.HasPrefix(name, aiGatewayCopilotModelPrefix)
+	lower := strings.ToLower(name)
+	return !strings.HasPrefix(name, "openai/") && !strings.HasPrefix(lower, "cetirun-") &&
+		!strings.HasPrefix(lower, aiGatewayCopilotModelPrefix)
 }
 
 func smallerPositive(current, next int64) int64 {
