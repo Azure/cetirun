@@ -116,6 +116,13 @@ rules:
     resources: ["networkpolicies"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 
+  {{- if .Values.sandboxSources.enabled }}
+  # Held Sandbox staging applies the compiler's namespaced Cilium policy.
+  - apiGroups: ["cilium.io"]
+    resources: ["ciliumnetworkpolicies"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  {{- end }}
+
   # Istio VirtualServices + Sidecar (egress scope)
   - apiGroups: ["networking.istio.io"]
     resources: ["virtualservices", "sidecars"]
