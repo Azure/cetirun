@@ -36,6 +36,7 @@ The logo is mounted directly from `../docs/logo.jpg`; there is no second copy.
 | --- | --- |
 | Root README | `content/en/docs/overview/`, `getting-started/` |
 | `docs/agent-harness-contract.md` | `content/en/docs/reference/agent-harness.md` |
+| `docs/guides/environment-deployment.md` | `content/en/docs/operations/infrastructure.md` |
 | `docs/guides/msteams.md` | `content/en/docs/guides/msteams.md` |
 | `docs/guides/tailscale.md` | `content/en/docs/guides/tailscale.md` |
 | `docs/live-copilot-model-selection.design.md` | `content/en/docs/guides/models.md` |

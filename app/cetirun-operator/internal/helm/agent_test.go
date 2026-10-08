@@ -229,6 +229,48 @@ func TestInitRuntimeWiring(t *testing.T) {
 	}
 }
 
+func TestDeploymentPinnedNativeImageDefinesRuntimeProfile(t *testing.T) {
+	const digest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	for _, typ := range []string{"hermes", "openclaw"} {
+		t.Run(typ, func(t *testing.T) {
+			chrt := testChart(t)
+			input := sampleInput(typ, "openai", false)
+			input["agentRequest"].(map[string]any)["registry"] = "registry.example.com"
+			input[typ] = map[string]any{"image": map[string]any{
+				"repository": "ignored.example.com/" + typ,
+				"tag":        "accepted",
+				"digest":     digest,
+			}}
+			prepared, err := PrepareChart(chrt, input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := "registry.example.com/" + typ + "-gateway:accepted@" + digest
+			if prepared.Agent.Image != want {
+				t.Fatalf("resolved image = %q, want %q", prepared.Agent.Image, want)
+			}
+			if got := object(object(prepared.Values["runtime"])["agent"])["image"]; got != want {
+				t.Fatalf("runtime image = %q, want %q", got, want)
+			}
+
+			originalDefault := "registry.example.com/" + typ + "-gateway:" + chrt.Metadata.AppVersion
+			input["agentRequest"].(map[string]any)["image"] = originalDefault
+			prepared, err = PrepareChart(chrt, input)
+			if err != nil {
+				t.Fatalf("original chart default was not retained as a qualified image: %v", err)
+			}
+			if prepared.Agent.Image != originalDefault {
+				t.Fatalf("resolved pinned image = %q, want %q", prepared.Agent.Image, originalDefault)
+			}
+
+			input["agentRequest"].(map[string]any)["image"] = "registry.example.com/" + typ + "-gateway:unqualified"
+			if _, err := PrepareChart(chrt, input); err == nil || !strings.Contains(err.Error(), "not qualified") {
+				t.Fatalf("unqualified image was accepted: %v", err)
+			}
+		})
+	}
+}
+
 func TestNativeRenderBaseline(t *testing.T) {
 	chrt := testChart(t)
 	baselineChart := os.Getenv("HARNESS_BASELINE_CHART")

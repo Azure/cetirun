@@ -206,7 +206,10 @@ func buildHelmValuesCore(instance *cetirunv1alpha1.Agent, team *cetirunv1alpha1.
 	if err := validateAgentRuntime(instance.Spec.Agent); err != nil {
 		return nil, err
 	}
-	if err := validateRuntimeOverrides(cetirunHelmValues, string(instance.Spec.Agent.Type)); err != nil {
+	// Deployment-owned image pins are trusted release inputs. Instance values
+	// must still use spec.agent.image so a tenant cannot bypass the selected
+	// runtime profile or its registry-credential policy.
+	if err := validateRuntimeOverrides(cetirunHelmValues, string(instance.Spec.Agent.Type), true); err != nil {
 		return nil, err
 	}
 	alias := instance.Spec.User.Alias
@@ -375,7 +378,7 @@ func buildHelmValuesCore(instance *cetirunv1alpha1.Agent, team *cetirunv1alpha1.
 		if k == "agentType" && v != string(agentType) {
 			return nil, fmt.Errorf("helm.values.agentType must not override spec.agent.type")
 		}
-		if err := validateRuntimeOverrides(map[string]any{k: v}, string(agentType)); err != nil {
+		if err := validateRuntimeOverrides(map[string]any{k: v}, string(agentType), false); err != nil {
 			return nil, err
 		}
 		values[k] = deepMerge(values[k], v)

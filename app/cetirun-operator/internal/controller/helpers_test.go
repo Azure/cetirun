@@ -921,6 +921,34 @@ func TestBuildHelmValues_CetiRunHelmValues(t *testing.T) {
 	}
 }
 
+func TestBuildHelmValues_AllowsDeploymentNativeImagePin(t *testing.T) {
+	instance := newTestInstance("alice", "Alice Smith", "example-team", "gateway-token")
+	agentType := string(instance.Spec.Agent.Type)
+	operatorValues := map[string]interface{}{
+		agentType: map[string]interface{}{
+			"image": map[string]interface{}{
+				"repository": "registry.example.com/" + agentType,
+				"tag":        "accepted",
+				"digest":     "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			},
+		},
+	}
+	values, err := buildHelmValues(instance, nil, "example.com", "", operatorValues, "")
+	if err != nil {
+		t.Fatalf("buildHelmValues error: %v", err)
+	}
+	if got := values[agentType].(map[string]interface{})["image"].(map[string]interface{})["tag"]; got != "accepted" {
+		t.Fatalf("deployment image tag = %q, want accepted", got)
+	}
+
+	instance.Spec.Helm.Values = map[string]runtime.RawExtension{
+		agentType: {Raw: []byte(`{"image":{"repository":"tenant.example/runtime"}}`)},
+	}
+	if _, err := buildHelmValues(instance, nil, "example.com", "", nil, ""); err == nil || !strings.Contains(err.Error(), "spec.agent.image") {
+		t.Fatalf("instance native image override was not rejected: %v", err)
+	}
+}
+
 // TestBuildHelmValues_CetiRunHelmValuesOverriddenByInstance verifies that
 // per-instance spec.helm.values takes precedence over operator-level values.
 func TestBuildHelmValues_CetiRunHelmValuesOverriddenByInstance(t *testing.T) {

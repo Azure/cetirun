@@ -27,7 +27,7 @@ help:
 	@echo "  make publish REGISTRY=<registry> [VERSION=X.Y.Z]"
 	@echo "Prerequisites: Go from .go-version, Node 24 + npm ci, scripts/ci/requirements.txt,"
 	@echo "  helm, bicep, shellcheck, actionlint, scripts/check-license-headers.py."
-	@echo "Workflow lint covers seven validation workflows; publisher/E2E workflows are excluded."
+	@echo "Workflow lint covers eight owned workflows; legacy publisher/E2E workflows are excluded."
 	@echo "See python3 scripts/ci/validate.py --help for individual gates."
 
 check: lint test

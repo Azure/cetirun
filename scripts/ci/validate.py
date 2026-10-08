@@ -25,6 +25,7 @@ WORKFLOWS = (
     "docker-build-validate.yml",
     "codeql.yml",
     "cetirun-validation.yml",
+    "environment-deploy.yml",
 )
 CHARTS = (
     (

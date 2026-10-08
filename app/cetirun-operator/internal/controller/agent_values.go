@@ -46,9 +46,10 @@ func (r *AgentReconciler) rejectAgentConfig(ctx context.Context, instance *api.A
 	return r.failWith(ctx, instance, "AgentConfigInvalid", err.Error())
 }
 
-// User and deployment overrides cannot inject a prepared plan or replace its
-// primary image/port. Unrelated deployment settings keep their existing scope.
-func validateRuntimeOverrides(values map[string]any, agentType string) error {
+// Overrides cannot inject a prepared plan or replace its primary port. A
+// trusted deployment may pin the selected native image; tenant overrides must
+// use spec.agent.image so profile qualification still applies.
+func validateRuntimeOverrides(values map[string]any, agentType string, allowPlatformImage bool) error {
 	for _, key := range []string{"runtime", "agentRequest", "imagePullSecrets", "customBindings"} {
 		if _, ok := values[key]; ok {
 			return fmt.Errorf("helm.values.%s is reserved for the platform", key)
@@ -71,7 +72,7 @@ func validateRuntimeOverrides(values map[string]any, agentType string) error {
 		}
 	}
 	if native, ok := values[agentType].(map[string]any); ok {
-		if _, ok := native["image"]; ok {
+		if _, ok := native["image"]; ok && !allowPlatformImage {
 			return fmt.Errorf("native image overrides must use spec.agent.image")
 		}
 		if env, ok := native["env"].(map[string]any); ok {

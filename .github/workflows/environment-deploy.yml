@@ -1,0 +1,206 @@
+name: Environment Deploy
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: environment-deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  NPM_CONFIG_REGISTRY: https://packagefeedproxy.microsoft.io/npm/
+  NPM_CONFIG_REPLACE_REGISTRY_HOST: npmjs
+  NPM_REGISTRY: https://packagefeedproxy.microsoft.io/npm/
+  OPENCLAW_NPM_REGISTRY: https://packagefeedproxy.microsoft.io/npm/
+
+jobs:
+  validate:
+    name: Validate Agent Identity deployment sources
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    outputs:
+      source_sha: ${{ steps.source.outputs.sha }}
+    steps:
+      - name: Check out latest main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Pin validated source revision
+        id: source
+        run: echo "sha=$(git rev-parse HEAD)" >> "${GITHUB_OUTPUT}"
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: .go-version
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          registry-url: https://packagefeedproxy.microsoft.io/npm/
+
+      - name: Run Agent Identity unit checks
+        run: |
+          python3 -B scripts/tests/test_agent_id_pilot.py
+          go -C app/cetirun-agent-broker test ./... -count=1
+          go -C app/cetirun-agent-broker vet ./...
+          go -C app/cetirun-operator test ./internal/controller/... ./internal/azure/... -count=1
+          go -C app/cetirun-portal test ./internal/... -count=1
+
+      - name: Run Agent Identity chart checks
+        run: |
+          bash scripts/cetirun-agent-broker-helm-test.sh
+          bash scripts/cetirun-helm-test.sh
+          bash scripts/cetirun-istio-helm-test.sh
+
+      - name: Validate deployment shell
+        run: |
+          bash -n scripts/cetirun-environment-deploy.sh
+          python3 -B scripts/tests/test_environment_deploy.py
+
+  publish-and-deploy:
+    name: Publish main and deploy environment
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    environment: cetiruntest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      ACR_DOCKER_SECRET_NAME: ${{ secrets.ACR_DOCKER_SECRET_NAME }}
+      ACR_NAME: ${{ secrets.ACR_NAME }}
+      ACR_REGISTRY: ${{ secrets.ACR_REGISTRY }}
+      AGENT_ID_AUTHORIZATION_CLIENT_ID: ${{ secrets.AGENT_ID_AUTHORIZATION_CLIENT_ID }}
+      AGENT_ID_BLUEPRINT_CLIENT_ID: ${{ secrets.AGENT_ID_BLUEPRINT_CLIENT_ID }}
+      AGENT_ID_ENCRYPTION_CLIENT_ID: ${{ secrets.AGENT_ID_ENCRYPTION_CLIENT_ID }}
+      AGENT_ID_KEY_VAULT_KEY_URL: ${{ secrets.AGENT_ID_KEY_VAULT_KEY_URL }}
+      AGENT_ID_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      AGENT_PERSISTENCE_ACCESS_MODE: ${{ secrets.AGENT_PERSISTENCE_ACCESS_MODE }}
+      AGENT_PERSISTENCE_SIZE: ${{ secrets.AGENT_PERSISTENCE_SIZE }}
+      AGENT_PERSISTENCE_STORAGE_CLASS: ${{ secrets.AGENT_PERSISTENCE_STORAGE_CLASS }}
+      AKS_CLUSTER_NAME: ${{ secrets.AKS_CLUSTER_NAME }}
+      AKS_RESOURCE_GROUP: ${{ secrets.AKS_RESOURCE_GROUP }}
+      AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      CETIRUN_DOMAIN: ${{ secrets.CETIRUN_DOMAIN }}
+      DESKTOP_IMAGE_DIGEST: ${{ secrets.DESKTOP_IMAGE_DIGEST }}
+      DESKTOP_IMAGE_TAG: ${{ secrets.DESKTOP_IMAGE_TAG }}
+      HERMES_IMAGE_DIGEST: ${{ secrets.HERMES_IMAGE_DIGEST }}
+      HERMES_IMAGE_TAG: ${{ secrets.HERMES_IMAGE_TAG }}
+      OPENCLAW_IMAGE_DIGEST: ${{ secrets.OPENCLAW_IMAGE_DIGEST }}
+      OPENCLAW_IMAGE_TAG: ${{ secrets.OPENCLAW_IMAGE_TAG }}
+      PORTAL_IMAGE_DIGEST: ${{ secrets.PORTAL_IMAGE_DIGEST }}
+      PORTAL_ADMIN_ALIASES: ${{ secrets.PORTAL_ADMIN_ALIASES }}
+      PORTAL_OIDC_CLIENT_ID: ${{ secrets.PORTAL_OIDC_CLIENT_ID }}
+      REDIS_CONNECTION_URL: ${{ secrets.REDIS_CONNECTION_URL }}
+      REDIS_SECRET_NAME: ${{ secrets.REDIS_SECRET_NAME }}
+    steps:
+      - name: Free runner disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force
+
+      - name: Check out validated main revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.validate.outputs.source_sha }}
+          fetch-depth: 0
+
+      - name: Derive immutable candidate version
+        run: |
+          base_version="$(awk -F': *' '$1=="version" {print $2; exit}' app/cetirun-chart/Chart.yaml)"
+          source_sha="$(git rev-parse HEAD)"
+          [[ "${source_sha}" == "${{ needs.validate.outputs.source_sha }}" ]]
+          version="${base_version}-main.${GITHUB_RUN_NUMBER}.${GITHUB_RUN_ATTEMPT}.${source_sha:0:7}"
+          [[ "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+-main\.[0-9]+\.[0-9]+\.[0-9a-f]{7}$ ]]
+          echo "SOURCE_SHA=${source_sha}" >> "${GITHUB_ENV}"
+          echo "RELEASE_VERSION=${version}" >> "${GITHUB_ENV}"
+
+      - name: Sign in to Azure with workload identity
+        uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2.3.1
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Authenticate to the environment registry
+        run: az acr login --name "${ACR_NAME}" --subscription "${AZURE_SUBSCRIPTION_ID}" --only-show-errors
+
+      - name: Build and publish immutable images
+        env:
+          BUILD_BASE: "true"
+          BUILD_DESKTOP: "true"
+          BUILD_HERMES: "true"
+          BUILD_IMAGE: "false"
+          PUSH: "true"
+          PYPI_INDEX_URL: https://pypi.org/simple/
+          REGISTRY: ${{ secrets.ACR_REGISTRY }}
+        run: |
+          export GIT_SHA="${SOURCE_SHA}"
+          export IMAGE_TAG="${RELEASE_VERSION}"
+          export VERSION="${RELEASE_VERSION}"
+          bash scripts/cetirun-docker-build.sh
+          bash scripts/operator-docker-build.sh
+          bash scripts/terminal-docker-build.sh
+          bash scripts/ai-gateway-docker-build.sh
+          bash scripts/agent-broker-docker-build.sh
+
+      - name: Publish immutable charts
+        env:
+          REGISTRY: ${{ secrets.ACR_REGISTRY }}
+          VERIFY_PULL: "true"
+        run: |
+          export APP_VERSION="${RELEASE_VERSION}"
+          export CHART_VERSION="${RELEASE_VERSION}"
+          export VERSION="${RELEASE_VERSION}"
+          bash scripts/cetirun-helm-release.sh
+          bash scripts/operator-helm-release.sh
+          bash scripts/portal-helm-release.sh
+          bash scripts/platform-helm-release.sh
+          bash scripts/istio-helm-release.sh
+          bash scripts/ai-gateway-helm-release.sh
+          bash scripts/agent-broker-helm-release.sh
+
+      - name: Resolve immutable image digests
+        run: |
+          image_digest() {
+            az acr repository show \
+              --name "${ACR_NAME}" \
+              --image "$1:${RELEASE_VERSION}" \
+              --query digest --output tsv --only-show-errors
+          }
+          {
+            echo "OPERATOR_IMAGE_DIGEST=$(image_digest cetirun-operator)"
+            echo "AI_GATEWAY_IMAGE_DIGEST=$(image_digest cetirun-ai-gateway)"
+            echo "TERMINAL_IMAGE_DIGEST=$(image_digest cetirun-terminal)"
+            echo "BROKER_IMAGE_DIGEST=$(image_digest cetirun-agent-broker)"
+          } >> "${GITHUB_ENV}"
+
+      - name: Deploy exact artifacts to the environment
+        env:
+          KUBECONFIG: ${{ runner.temp }}/cetirun-kubeconfig
+        run: bash scripts/cetirun-environment-deploy.sh
+
+      - name: Record deployment summary
+        run: |
+          {
+            echo "## CetiRun environment deployment"
+            echo
+            echo "- Source: \`${SOURCE_SHA}\`"
+            echo "- Version: \`${RELEASE_VERSION}\`"
+            echo "- Agent Identity Broker: deployed and verified"
+            echo "- Platform Agent Identity flags: enabled and verified"
+            echo "- Portal image: preserved at the environment-pinned digest"
+            echo "- OpenClaw image: preserved at the environment-pinned digest"
+            echo "- Hermes image: published from main; deployment preserved the accepted runtime-profile digest"
+            echo "- Desktop image: published from main; deployment preserved the accepted sidecar digest"
+          } >> "${GITHUB_STEP_SUMMARY}"

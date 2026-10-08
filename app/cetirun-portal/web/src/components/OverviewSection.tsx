@@ -350,7 +350,7 @@ export function OverviewSection({ instance }: { instance: Instance }) {
         </div>
       )}
 
-      {nativeIntegrations && nativeAgentUIUrl && instance.phase !== "Suspended" && (
+      {nativeIntegrations && nativeAgentUIUrl && !gatewayRouted && instance.phase !== "Suspended" && (
         <CopilotAuthBlock instance={instance} />
       )}
 

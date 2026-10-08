@@ -6,6 +6,7 @@ package helm
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -158,7 +159,11 @@ func prepareRuntimeChart(chrt *chart.Chart, input map[string]any, validateRender
 	if descriptor.Type == "custom" {
 		return prepareCustomChart(chrt, input, request, validateRender)
 	}
-	profile, err := loadRuntimeProfile(chrt, descriptor, request.Registry)
+	profileValues, err := chartutil.CoalesceValues(chrt, input)
+	if err != nil {
+		return nil, fmt.Errorf("coalesce runtime profile inputs: %w", err)
+	}
+	profile, err := loadRuntimeProfile(chrt, descriptor, request.Registry, profileValues)
 	if err != nil {
 		return nil, err
 	}
@@ -295,7 +300,7 @@ func prepareRuntimeChart(chrt *chart.Chart, input map[string]any, validateRender
 	}, nil
 }
 
-func loadRuntimeProfile(chrt *chart.Chart, descriptor agents.Descriptor, registry string) (agents.Profile, error) {
+func loadRuntimeProfile(chrt *chart.Chart, descriptor agents.Descriptor, registry string, values map[string]any) (agents.Profile, error) {
 	profilePath := "agents/" + descriptor.Type + "/profile.yaml"
 	var definition struct {
 		ContractVersion string   `json:"contractVersion"`
@@ -308,7 +313,28 @@ func loadRuntimeProfile(chrt *chart.Chart, descriptor agents.Descriptor, registr
 		return agents.Profile{}, fmt.Errorf("chart lacks a supported %s runtime profile", descriptor.Type)
 	}
 
-	baseImage := object(object(chrt.Values[descriptor.Type])["image"])
+	image, err := runtimeProfileImage(chrt, descriptor, registry, values)
+	if err != nil {
+		return agents.Profile{}, err
+	}
+	chartDefaultImage, err := runtimeProfileImage(chrt, descriptor, registry, chrt.Values)
+	if err != nil {
+		return agents.Profile{}, err
+	}
+	qualifiedImages := append([]string(nil), definition.QualifiedImages...)
+	if chartDefaultImage != image && !slices.Contains(qualifiedImages, chartDefaultImage) {
+		qualifiedImages = append(qualifiedImages, chartDefaultImage)
+	}
+	return agents.Profile{
+		ID:              chrt.Metadata.Version + "/" + descriptor.Type + "/" + definition.NativeVersion,
+		Image:           image,
+		Port:            definition.Port,
+		QualifiedImages: qualifiedImages,
+	}, nil
+}
+
+func runtimeProfileImage(chrt *chart.Chart, descriptor agents.Descriptor, registry string, values map[string]any) (string, error) {
+	baseImage := object(object(values[descriptor.Type])["image"])
 	repository := text(baseImage["repository"])
 	if registry != "" {
 		repository = registry + "/" + descriptor.Type + "-gateway"
@@ -318,18 +344,13 @@ func loadRuntimeProfile(chrt *chart.Chart, descriptor agents.Descriptor, registr
 		tag = chrt.Metadata.AppVersion
 	}
 	if repository == "" || tag == "" || tag == "latest" {
-		return agents.Profile{}, fmt.Errorf("built-in profile requires a versioned default image")
+		return "", fmt.Errorf("built-in profile requires a versioned default image")
 	}
 	image := repository + ":" + tag
 	if digest := text(baseImage["digest"]); digest != "" {
 		image += "@" + digest
 	}
-	return agents.Profile{
-		ID:              chrt.Metadata.Version + "/" + descriptor.Type + "/" + definition.NativeVersion,
-		Image:           image,
-		Port:            definition.Port,
-		QualifiedImages: definition.QualifiedImages,
-	}, nil
+	return image, nil
 }
 
 func prepareRuntimeValues(chrt *chart.Chart, input map[string]any) (map[string]any, error) {

@@ -41,6 +41,14 @@ vi.mock("../api/instance", () => ({
   downloadTeamsApp: vi.fn(),
 }));
 
+vi.mock("./CopilotAuthBlock", () => ({
+  CopilotAuthBlock: () => <div>Direct Copilot Auth</div>,
+}));
+
+vi.mock("./AIGatewayBlock", () => ({
+  AIGatewayBlock: () => <div>AI Gateway Models</div>,
+}));
+
 describe("OverviewSection", () => {
   beforeEach(() => mockUpdate.mockClear());
   const renderInRouter = (ui: React.ReactElement) => {
@@ -195,6 +203,24 @@ describe("OverviewSection", () => {
     renderInRouter(<OverviewSection instance={baseInstance} />);
     expect(screen.queryByText("Terminal")).toBeNull();
     expect(screen.queryByText("Desktop")).toBeNull();
+  });
+
+  it("hides direct Copilot Auth when the AI Gateway owns Copilot sign-in", () => {
+    const instance = {
+      ...baseInstance,
+      cetirunAuthKey: "instance-key",
+      aiGateway: {
+        routed: true,
+        phase: "Ready" as const,
+        sharedModels: false,
+        githubCopilot: true,
+        models: [],
+        copilot: { phase: "SignInRequired" as const, models: [], unpriced: [] },
+      },
+    };
+    renderInRouter(<OverviewSection instance={instance} />);
+    expect(screen.queryByText("Direct Copilot Auth")).toBeNull();
+    expect(screen.getByText("AI Gateway Models")).toBeInTheDocument();
   });
 
   it("shows Suspended warning when phase is Suspended", () => {
