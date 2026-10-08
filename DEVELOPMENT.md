@@ -375,6 +375,13 @@ exceptions in `scripts/license_headers.py` must retain their own notices.
   held-preparation bridge, pre-start acknowledgement, current observations,
   route/readiness ordering and the journal-backed writer integration.
   No production provider is installed or implicitly qualified by these checks.
+  Running-input tests additionally check a synthetic held-to-running handoff
+  against real Pod creation, API binding/defaulting and final-Pod admission.
+  They contain no scheduler, kubelet or guest-external runtime observer. Run the
+  focused API test with `go test -tags=envtest ./test/integration -run
+  '^TestSandboxRunningInputs$' -count=1` from the Operator module, with the same
+  explicit local envtest assets. Its synthetic enrollment is not a runnable
+  activation procedure.
 - Helm files under `templates/` are source templates. Rendered Kubernetes
   manifests are validation output, not replacements for those templates.
 - Keep `go.mod` and `go.sum` together when dependencies change. Keep the portal's

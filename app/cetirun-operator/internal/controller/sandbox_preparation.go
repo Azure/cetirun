@@ -283,13 +283,17 @@ func (r *AgentReconciler) prepareSandboxHeld(ctx context.Context, requested *api
 }
 
 func (r *AgentReconciler) resolveSandboxPreparation(ctx context.Context, requested *api.Agent) (*sandboxPreparationAttempt, error) {
+	return r.resolveSandboxExecutionInputs(ctx, requested, true)
+}
+
+func (r *AgentReconciler) resolveSandboxExecutionInputs(ctx context.Context, requested *api.Agent, held bool) (*sandboxPreparationAttempt, error) {
 	config := r.SandboxPreparation
 	agent, authorized, err := sandboxbinding.Read(ctx, r.APIReader, client.ObjectKeyFromObject(requested))
 	if err != nil {
 		return nil, err
 	}
 	if agent.UID != requested.UID || agent.Generation != requested.Generation || agent.Spec.Suspended ||
-		!controllerutil.ContainsFinalizer(agent, sandbox.HoldFinalizer) {
+		!agent.DeletionTimestamp.IsZero() || controllerutil.ContainsFinalizer(agent, sandbox.HoldFinalizer) != held {
 		return nil, fmt.Errorf("Sandbox Agent identity, generation or hold changed")
 	}
 	snapshot, err := configurationSnapshot(ctx, config.Configuration, config.Now, config.MaxSnapshotAge)

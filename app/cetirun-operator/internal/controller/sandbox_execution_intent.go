@@ -141,6 +141,10 @@ func (r *AgentReconciler) SandboxExecutionIntent(ctx context.Context, requested 
 	if err != nil {
 		return empty, err
 	}
+	intent.RunningPreparationDigest, err = sandboxRunningPreparationDigest(state)
+	if err != nil {
+		return empty, err
+	}
 	if err := intent.Validate(); err != nil {
 		return empty, err
 	}
@@ -155,59 +159,78 @@ func (r *AgentReconciler) SandboxExecutionIntent(ctx context.Context, requested 
 // renew a stale intent. A participating adapter must additionally verify actual
 // runtime/control enforcement at its start and publication boundaries.
 func (r *AgentReconciler) CheckSandboxExecutionSources(ctx context.Context, intent sandboxcoordination.Intent) error {
+	_, err := r.checkSandboxExecutionSources(ctx, intent, false)
+	return err
+}
+
+func (r *AgentReconciler) checkSandboxExecutionSources(ctx context.Context, intent sandboxcoordination.Intent, running bool) (*sandboxPreparationAttempt, error) {
 	if r.APIReader == nil || r.SandboxPreparation == nil || r.SandboxPreparation.Configuration == nil ||
 		r.SandboxPreparation.Prerequisites == nil || r.SandboxPreparation.Placement == nil {
-		return fmt.Errorf("%w: execution source verification is not configured", sandboxpolicy.ErrUnavailable)
+		return nil, fmt.Errorf("%w: execution source verification is not configured", sandboxpolicy.ErrUnavailable)
 	}
 	if err := intent.Validate(); err != nil {
-		return err
+		return nil, err
 	}
-	if err := r.verifySandboxExecutionSources(ctx, intent); err != nil {
-		return err
+	if running && intent.RunningPreparationDigest == "" {
+		return nil, fmt.Errorf("%w: execution intent has no running preparation pin", sandboxpolicy.ErrUnavailable)
 	}
-	attempt, err := r.resolveSandboxPreparation(ctx, &api.Agent{ObjectMeta: metav1.ObjectMeta{
+	if err := r.verifySandboxExecutionSources(ctx, intent, running); err != nil {
+		return nil, err
+	}
+	attempt, err := r.resolveSandboxExecutionInputs(ctx, &api.Agent{ObjectMeta: metav1.ObjectMeta{
 		Name: intent.Agent.Name, UID: intent.Agent.UID, Generation: intent.AgentGeneration,
-	}})
+	}}, !running)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if err := r.checkSandboxExecutionPrerequisites(ctx, attempt, intent); err != nil {
-		return err
+	if err := r.checkSandboxExecutionPrerequisites(ctx, attempt, intent, running); err != nil {
+		return nil, err
 	}
 	platform := attempt.configuration.Platforms[attempt.resolution.Sandbox.Type]
 	if err := sandboxpolicy.VerifyPolicyGrants(ctx, r.APIReader, attempt.selectedPolicy(), platform.Grants); err != nil {
-		return err
+		return nil, err
 	}
 	plan, err := sandboxpolicy.Compile(sandboxpolicy.CompileInput{
 		Resolution: *attempt.resolution, AgentName: intent.Agent.Name, Namespace: intent.Namespace.Name, Platform: platform,
 	})
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if plan.Binding != intent.Expected.Binding || plan.Revision != intent.Expected.Revision ||
 		plan.Network.IngressMode != intent.IngressMode {
-		return fmt.Errorf("%w: execution authorization or compiled policy changed", errSandboxSourceChanged)
+		return nil, fmt.Errorf("%w: execution authorization or compiled policy changed", errSandboxSourceChanged)
 	}
+	attempt.plan = plan
 	if err := r.verifySandboxPlacement(ctx, attempt); err != nil {
-		return err
+		return nil, err
 	}
-	if err := r.verifySandboxExecutionSources(ctx, intent); err != nil {
-		return err
+	if err := r.verifySandboxExecutionSources(ctx, intent, running); err != nil {
+		return nil, err
 	}
 	for _, observed := range []time.Time{attempt.configuration.ObservedAt, attempt.prerequisites.ObservedAt} {
 		if err := configurationSnapshotTime(observed,
 			configurationNow(r.SandboxPreparation.Now), r.SandboxPreparation.MaxSnapshotAge); err != nil {
-			return err
+			return nil, err
 		}
 	}
-	return ctx.Err()
+	return attempt, ctx.Err()
 }
 
 func (r *AgentReconciler) checkSandboxExecutionPrerequisites(ctx context.Context, attempt *sandboxPreparationAttempt,
-	intent sandboxcoordination.Intent,
+	intent sandboxcoordination.Intent, running bool,
 ) error {
 	config := r.SandboxPreparation
-	inputs, err := config.Prerequisites.Resolve(ctx, attempt.agent.DeepCopy(), attempt.team.DeepCopy())
+	resolve := config.Prerequisites.Resolve
+	if running {
+		source, ok := config.Prerequisites.(interface {
+			ResolveRunning(context.Context, *api.Agent, *api.Team) (SandboxPrerequisites, error)
+		})
+		if !ok {
+			return fmt.Errorf("%w: prerequisite source has no running-input reader", sandboxpolicy.ErrUnavailable)
+		}
+		resolve = source.ResolveRunning
+	}
+	inputs, err := resolve(ctx, attempt.agent.DeepCopy(), attempt.team.DeepCopy())
 	if err != nil {
 		return fmt.Errorf("refresh Sandbox execution prerequisite approval: %w", err)
 	}
@@ -258,8 +281,8 @@ func (r *AgentReconciler) checkSandboxExecutionPrerequisites(ctx context.Context
 	return ctx.Err()
 }
 
-func (r *AgentReconciler) verifySandboxExecutionSources(ctx context.Context, intent sandboxcoordination.Intent) error {
-	if err := r.verifyEffectiveExecutionSources(ctx, intent); err != nil {
+func (r *AgentReconciler) verifySandboxExecutionSources(ctx context.Context, intent sandboxcoordination.Intent, running bool) error {
+	if err := r.verifyEffectiveExecutionSources(ctx, intent, running); err != nil {
 		return err
 	}
 	workload := &appsv1.StatefulSet{}
@@ -270,7 +293,8 @@ func (r *AgentReconciler) verifySandboxExecutionSources(ctx context.Context, int
 	if err != nil {
 		return err
 	}
-	if workload.UID != intent.Workload.UID || current != intent.WorkloadDigest {
+	if workload.UID != intent.Workload.UID || current != intent.WorkloadDigest ||
+		(running && ptr.Deref(workload.Spec.Replicas, 1) != 1) {
 		return fmt.Errorf("%w: workload identity or effective inputs changed", errSandboxSourceChanged)
 	}
 	return ctx.Err()

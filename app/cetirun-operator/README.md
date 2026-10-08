@@ -191,6 +191,38 @@ failures, writer-history integration and real isolated API persistence/CAS.
 They do not start agent containers, contact a model service or qualify a
 provider.
 
+### Running-input verification
+
+`CheckSandboxExecutionSources` remains the held-preparation check. A qualified
+runtime integration can use `SandboxRunningStatusInput` after its controlled
+handoff: the Agent and persisted expectation must both be unheld, the workload
+must still match its enrolled UID/template with exactly one desired replica,
+and the actual Pod and Node must match the separately enrolled execution.
+The returned current resolution and plan contain no observation or start permit.
+Pod readiness and Node health are not enforcement evidence.
+
+Held intent capture now pins a separate `runningPreparationDigest`. It permits
+only the expected hold transition, the independently rechecked current Agent
+intent, and refreshed observation versions for sources whose effective content
+is checked separately. Ownership, namespace/HOME identity, template, revision,
+source identities and non-effective version pins remain protected. Existing
+held tickets without the optional field remain readable, but cannot use the
+running-input path without a newly verified, stopped enrollment. Older strict
+readers cannot read new records containing the field; keep compatible readers
+until these records have completed cleanup.
+
+The concrete Kubernetes prerequisite source has an explicit `ResolveRunning`
+path. It retains metadata-only Secret reads and exact input/approval checks
+without requiring a preparation hold, re-running Helm or calling writer
+quiescence. Other prerequisite adapters must explicitly support running reads;
+the controller does not silently reuse their held-only resolver.
+Placement checks share the existing scheduled-Pod topology validation.
+
+The existing controller still dispatches governed Agents to held preparation.
+No code here changes finalizers, expectations or replicas to start an Agent.
+Real runtime gating, independent observations, all-source mutation coordination
+and model/tool validation remain prerequisites for enabling execution.
+
 ### Existing activation boundary
 
 The new Team bindings and Agent `sandboxRef` remain optional in this additive
