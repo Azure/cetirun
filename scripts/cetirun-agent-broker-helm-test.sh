@@ -7,6 +7,11 @@ set -euo pipefail
 script_dir="$(cd "$(dirname "$0")" && pwd)"
 repo_root="$(cd "${script_dir}/.." && pwd)"
 chart_dir="${CHART_DIR:-${repo_root}/app/cetirun-agent-broker/chart}"
+app_version="$(awk -F': *' '$1=="appVersion" {gsub(/"/, "", $2); print $2; exit}' "${chart_dir}/Chart.yaml")"
+if [ -z "${app_version}" ]; then
+  echo "FAIL: Broker Chart.yaml has no appVersion" >&2
+  exit 1
+fi
 values=(
   --set-string agentIdentity.tenantId=11111111-1111-1111-1111-111111111111
   --set-string agentIdentity.blueprintClientId=22222222-2222-2222-2222-222222222222
@@ -23,7 +28,7 @@ values=(
 output="$(helm template broker-test "${chart_dir}" "${values[@]}")"
 grep -Fq 'automountServiceAccountToken: false' <<<"${output}"
 grep -Fq 'istio.io/rev: "asm-example"' <<<"${output}"
-grep -Fq 'image: "ghcr.io/azure/cetirun-agent-broker:0.1.0"' <<<"${output}"
+grep -Fq "image: \"ghcr.io/azure/cetirun-agent-broker:${app_version}\"" <<<"${output}"
 grep -Fq 'image: "mcr.microsoft.com/entra-sdk/auth-sidecar:1.0.0-azurelinux3.0-distroless@sha256:b3e6204abb87daa9c414dcade11f16060e030d114b81ecbd8bd2a7346e107523"' <<<"${output}"
 if grep -Fq ':latest' <<<"${output}"; then
   echo "FAIL: chart rendered a latest image tag" >&2

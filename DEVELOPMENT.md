@@ -46,7 +46,7 @@ available for alternate mirrors. Image tags, chart versions, and the
 Install tools only for the component you are changing:
 
 - Git, Bash, and Make for repository commands.
-- Go 1.26.8, matching `.go-version`, all module minimums, and the pinned
+- Go 1.27.1, matching `.go-version`, all module minimums, and the pinned
   Microsoft Go builder images.
 - Node.js 24 and npm for the portal frontend, matching its CI configuration.
 - Helm for local chart linting and rendering.
@@ -229,6 +229,9 @@ outside the offline validation loop.
 
 ### Runtime chart and Python helpers
 
+The [shared base image version notes](app/cetirun-chart/base-image.md) record
+the selected tool releases and compatibility ceilings.
+
 ```bash
 bash scripts/cetirun-helm-lint.sh
 bash scripts/cetirun-helm-test.sh
@@ -274,6 +277,36 @@ These tests start only loopback fixture servers and use synthetic files and
 credentials. They do not start VS Code, run Docker or contact GitHub/Copilot.
 Image builds, rendered IDE checks and real Copilot tasks are separate checks;
 see [the example](examples/vscode-server/README.md).
+
+### Release-agent build storage
+
+The Azure Pipelines release job prepares Docker storage before building images.
+It uses `dockerStorageMount` (default `/mnt`) for Docker layers, BuildKit cache,
+and build scratch files instead of the OS disk. The helper logs filesystem sizes,
+free space, and inode usage, requires at least 64 GiB free on the selected mount
+and on both actual write destinations, and checks the active Docker data root
+after restarting the daemon. Existing child mounts and an already-configured
+Docker daemon receive the same capacity checks. This free-space threshold is a
+guardrail, not a measured maximum release-build size.
+
+`scripts/ci/prepare_docker_storage.py` is an operational helper for **disposable
+Linux CI agents only**, not a local validation command. It requires root,
+refuses to interrupt running containers, preserves unrelated daemon settings,
+and restores the original configuration if activation fails. It uses Docker's
+classic `overlay2` image store because the containerd image store does not follow
+Docker's `data-root`. Old image/cache directories are not deleted or migrated;
+the release starts with a fresh local Docker store and retains staged pushes and
+cache pruning between images. Subsequent tasks receive scratch storage via
+`TMPDIR`.
+
+If a temporary disk is insufficient, configure a larger data disk on the hosted
+pool and set `dockerStorageMount` to its Linux mount path. Adding a disk alone
+or increasing the number of agents does not relocate Docker storage. The pipeline
+helper does not change the hosted pool, resize disks, or modify other agents.
+
+Offline helper and pipeline-contract tests run with `make ci-test`. They mock
+Docker and service operations; only a separately authorized Linux-agent run can
+verify the actual mount layout, daemon activation, and release disk headroom.
 
 ### Documentation
 
@@ -379,6 +412,13 @@ exceptions in `scripts/license_headers.py` must retain their own notices.
   `make -C app/cetirun-operator build-sandbox-config-change`; do not run it against
   a cluster as part of an offline check. It requires separately authorized
   before/after configuration inputs and an explicitly pinned authority.
+  Running-input tests additionally check a synthetic held-to-running handoff
+  against real Pod creation, API binding/defaulting and final-Pod admission.
+  They contain no scheduler, kubelet or guest-external runtime observer. Run the
+  focused API test with `go test -tags=envtest ./test/integration -run
+  '^TestSandboxRunningInputs$' -count=1` from the Operator module, with the same
+  explicit local envtest assets. Its synthetic enrollment is not a runnable
+  activation procedure.
 - Helm files under `templates/` are source templates. Rendered Kubernetes
   manifests are validation output, not replacements for those templates.
 - Keep `go.mod` and `go.sum` together when dependencies change. Keep the portal's
