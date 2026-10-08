@@ -278,6 +278,9 @@ credentials. They do not start VS Code, run Docker or contact GitHub/Copilot.
 Image builds, rendered IDE checks and real Copilot tasks are separate checks;
 see [the example](examples/vscode-server/README.md).
 
+`make build-images` and `make publish-images` include the `cetirun-pi-agent`
+demo. See [its README](examples/pi-agent/README.md) for usage and tests.
+
 ### Release-agent build storage
 
 The Azure Pipelines release job prepares Docker storage before building images.

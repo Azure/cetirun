@@ -30,7 +30,7 @@ RUN inherited_undici="$(node -p 'require("/usr/local/lib/node_modules/npm/node_m
     npm --version
 
 COPY package.json package-lock.json ./
-RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund --registry=https://registry.npmjs.org \
+RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund \
     && node --input-type=module -e 'await import("@earendil-works/pi-coding-agent")'
 
 # Pi's find tool needs fd; install it at build time so runtime stays offline.
@@ -60,6 +60,7 @@ RUN for tool in sh cp mkdir mv rm chmod mktemp find cmp fd rg; do \
     && ln -s /opt/cetirun-pi/pi-tui.mjs /usr/local/bin/pi-tui
 
 LABEL org.opencontainers.image.source="https://github.com/Azure/CetiRun" \
+      org.opencontainers.image.title="cetirun-pi-agent" \
       org.opencontainers.image.description="Pi Custom Agent with platform AI Gateway and native login modes" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.revision="${GIT_SHA}" \

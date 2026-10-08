@@ -363,7 +363,7 @@ class WorkflowContractTests(unittest.TestCase):
             for step in text.split("\n      - name: ")[1:]
             if "            image \\\n" in step
         }
-        self.assertEqual(len(scans), 5)
+        self.assertEqual(len(scans), 6)
         for name, step in scans.items():
             with self.subTest(step=name):
                 self.assertEqual(step.count("--timeout 10m"), 1)
@@ -373,6 +373,7 @@ class WorkflowContractTests(unittest.TestCase):
             "Scan image for vulnerabilities (Trivy)": "CRITICAL,HIGH",
             "Scan Hermes image for vulnerabilities (Trivy)": "CRITICAL",
             "Scan desktop image for vulnerabilities (Trivy)": "CRITICAL",
+            "Scan base and Pi agent images for vulnerabilities (Trivy)": "CRITICAL,HIGH",
         }
         for name, severity in gates.items():
             with self.subTest(gate=name):

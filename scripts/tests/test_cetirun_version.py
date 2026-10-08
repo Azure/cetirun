@@ -61,6 +61,8 @@ VERSION_FILES = (
     "app/internal/go.mod",
     "app/cetirun-portal/web/package.json",
     "app/cetirun-portal/web/package-lock.json",
+    "examples/pi-agent/package.json",
+    "examples/pi-agent/package-lock.json",
     "app/cetirun-chart/agents/hermes/plugins/platforms/cetirun_teams/plugin.yaml",
     "app/cetirun-portal/internal/handler/teamsapp/manifest.json",
 )
@@ -124,6 +126,8 @@ class CetiRunVersionTests(unittest.TestCase):
                 for relative in (
                     "app/cetirun-portal/web/package.json",
                     "app/cetirun-portal/web/package-lock.json",
+                    "examples/pi-agent/package.json",
+                    "examples/pi-agent/package-lock.json",
                     "app/cetirun-portal/internal/handler/teamsapp/manifest.json",
                 ):
                     self.assertEqual(json.loads((self.root / relative).read_text())["version"], version)

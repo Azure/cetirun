@@ -94,23 +94,20 @@ def set_version(version):
             r"^(\s*github\.com/Azure/CetiRun/app/cetirun-operator )v\S+$",
             rf"\g<1>v{version}",
         )
-    replace(
-        ROOT / "app/cetirun-portal/web/package.json",
-        r'^  "version": "[^"]+",$',
-        f'  "version": "{version}",',
-    )
-    replace(
-        ROOT / "app/cetirun-portal/web/package-lock.json",
-        r'^  "version": "[^"]+",$',
-        f'  "version": "{version}",',
-    )
-    replace(
-        ROOT / "app/cetirun-portal/web/package-lock.json",
-        r'^      "version": "[^"]+",$',
-        f'      "version": "{version}",',
-        1,
-        1,
-    )
+    for directory in ("app/cetirun-portal/web", "examples/pi-agent"):
+        for filename in ("package.json", "package-lock.json"):
+            replace(
+                ROOT / directory / filename,
+                r'^  "version": "[^"]+",$',
+                f'  "version": "{version}",',
+            )
+        replace(
+            ROOT / directory / "package-lock.json",
+            r'^      "version": "[^"]+",$',
+            f'      "version": "{version}",',
+            1,
+            1,
+        )
     replace(
         ROOT
         / "app/cetirun-chart/agents/hermes/plugins/platforms/cetirun_teams/plugin.yaml",
@@ -176,16 +173,15 @@ def check_version(version):
         if expected not in (ROOT / relative).read_text():
             errors.append(f"{relative}: expected {expected!r}")
 
-    package = json.loads((ROOT / "app/cetirun-portal/web/package.json").read_text())
-    package_lock = json.loads(
-        (ROOT / "app/cetirun-portal/web/package-lock.json").read_text()
-    )
-    if package.get("version") != version:
-        errors.append("app/cetirun-portal/web/package.json: version differs")
-    if package_lock.get("version") != version:
-        errors.append("app/cetirun-portal/web/package-lock.json: version differs")
-    if package_lock.get("packages", {}).get("", {}).get("version") != version:
-        errors.append("app/cetirun-portal/web/package-lock.json: root package differs")
+    for directory in ("app/cetirun-portal/web", "examples/pi-agent"):
+        package = json.loads((ROOT / directory / "package.json").read_text())
+        package_lock = json.loads((ROOT / directory / "package-lock.json").read_text())
+        if package.get("version") != version:
+            errors.append(f"{directory}/package.json: version differs")
+        if package_lock.get("version") != version:
+            errors.append(f"{directory}/package-lock.json: version differs")
+        if package_lock.get("packages", {}).get("", {}).get("version") != version:
+            errors.append(f"{directory}/package-lock.json: root package differs")
 
     if errors:
         raise ValueError("\n".join(errors))
