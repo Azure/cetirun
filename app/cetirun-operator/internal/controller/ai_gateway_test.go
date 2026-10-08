@@ -2418,9 +2418,55 @@ func (f *inspectingHelm) ChartIdentity(version string) string {
 	return "oci://registry.example.com/helm/cetirun:" + version
 }
 
-func (f *inspectingHelm) InspectChart(version string) (*helm.ChartValues, error) {
+func (f *inspectingHelm) InspectChart(_ context.Context, version string) (*helm.ChartValues, error) {
 	f.versions = append(f.versions, version)
 	return f.values, f.err
+}
+
+// stallingHelm reads charts from a registry that never answers: a read
+// returns only when its context is done.
+type stallingHelm struct{ inspectingHelm }
+
+func (f *stallingHelm) InspectChart(ctx context.Context, _ string) (*helm.ChartValues, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+// A chart read that stalls ends with the publisher's context, so the catalog
+// is still published, with the agent types unknown, instead of the publisher
+// waiting forever and the Portal refusing every native Agent for want of a
+// catalog.
+func TestAIGatewayCatalogDoesNotWaitForAStalledChartRead(t *testing.T) {
+	r, kube, _ := aiGatewayTestReconciler(t)
+	r.HelmClient = &stallingHelm{}
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		r.publishAIGatewayCatalog(ctx, 0)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the publisher must not wait for a stalled chart read")
+	}
+	if got := publishedRouting(t, kube); got == nil || got.AgentTypes != nil || len(publishedCatalogModels(t, kube)) != 1 {
+		t.Fatalf("the catalog must be published with unknown agent types, got routing %+v", got)
+	}
+}
+
+func publishedCatalogModels(t *testing.T, kube client.Client) []cetirunv1alpha1.AIGatewayCatalogModel {
+	t.Helper()
+	configMap := &corev1.ConfigMap{}
+	if err := kube.Get(context.Background(), types.NamespacedName{Namespace: "cetirun-system", Name: cetirunv1alpha1.AIGatewayCatalogConfigMap}, configMap); err != nil {
+		t.Fatal(err)
+	}
+	var catalog cetirunv1alpha1.AIGatewayCatalog
+	if err := json.Unmarshal([]byte(configMap.Data[cetirunv1alpha1.AIGatewayCatalogKey]), &catalog); err != nil {
+		t.Fatal(err)
+	}
+	return catalog.SharedModels
 }
 
 func publishedRouting(t *testing.T, kube client.Client) *cetirunv1alpha1.AIGatewayRouting {

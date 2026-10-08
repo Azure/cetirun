@@ -6,6 +6,7 @@ package helm
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -127,7 +128,7 @@ func actionConfig(namespace string) (*action.Configuration, error) {
 //  1. $DOCKER_CONFIG/config.json
 //  2. /root/.docker/config.json (AKS kubelet default)
 //  3. Helm's own registry config (~/.config/helm/registry/config.json)
-func newRegistryClient() (*registry.Client, error) {
+func newRegistryClient(extra ...registry.ClientOption) (*registry.Client, error) {
 	credentialsFile := dockerConfigFile()
 
 	opts := []registry.ClientOption{
@@ -137,7 +138,7 @@ func newRegistryClient() (*registry.Client, error) {
 		opts = append(opts, registry.ClientOptCredentialsFile(credentialsFile))
 	}
 
-	return registry.NewClient(opts...)
+	return registry.NewClient(append(opts, extra...)...)
 }
 
 // dockerConfigFile returns the path to a docker config.json that should be
@@ -169,16 +170,30 @@ func (c *Client) ChartIdentity(version string) string {
 	return c.chartRef.RepoURL + ":" + version
 }
 
+// chartInspectionTimeout bounds reading a chart for InspectChart. Helm's
+// registry client sets no timeout and pulls with a background context, so a
+// registry that stalls after accepting a connection would otherwise hold the
+// caller indefinitely.
+var chartInspectionTimeout = 30 * time.Second
+
 // InspectChart loads a chart version, or the default one, and returns the
 // values it declares, without preparing a release. Loading needs only the
-// registry, not the cluster.
-func (c *Client) InspectChart(version string) (*ChartValues, error) {
-	registryClient, err := newRegistryClient()
+// registry, not the cluster. Every registry request ends when ctx is done or
+// after chartInspectionTimeout, whichever comes first.
+func (c *Client) InspectChart(ctx context.Context, version string) (*ChartValues, error) {
+	ctx, cancel := context.WithTimeout(ctx, chartInspectionTimeout)
+	defer cancel()
+	registryClient, err := newRegistryClient(registry.ClientOptHTTPClient(&http.Client{
+		Transport: contextTransport{ctx: ctx, base: &plainHTTPFallback{base: registry.NewTransport(false)}},
+	}))
 	if err != nil {
 		return nil, fmt.Errorf("init registry client: %w", err)
 	}
 	chrt, err := c.loadChart(&action.Configuration{RegistryClient: registryClient}, "", version)
 	if err != nil {
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("read chart %s: %w", c.ChartIdentity(version), ctx.Err())
+		}
 		return nil, err
 	}
 	return NewChartValues(chrt), nil
