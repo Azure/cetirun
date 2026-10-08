@@ -20,6 +20,10 @@ To learn more about the release, try:
   $ helm status {{ .Release.Name }} -n {{ .Release.Namespace }}
   $ helm get all {{ .Release.Name }} -n {{ .Release.Namespace }}
 
+{{ if and (contains "kata" (.Values.runtimeClassName | default "")) (not .Values.ingress.enabled) (contains "ClusterIP" .Values.service.type) -}}
+The Pod runs in the {{ .Values.runtimeClassName }} VM sandbox, which kubectl port-forward
+cannot reach. Reach the agent through an ingress route instead.
+{{- else -}}
 To get the application URL, run these commands:
 {{- if .Values.ingress.enabled }}
 {{- range $host := .Values.ingress.hosts }}
@@ -43,6 +47,7 @@ To get the application URL, run these commands:
   echo "Visit http://localhost:{{ .Values.service.port }}/?token=$token to use your application"
   kubectl --namespace {{ .Release.Namespace }} port-forward $POD_NAME {{ .Values.service.port }}:$CONTAINER_PORT
 {{- end }}
+{{- end }}
 
 Gateway Token:
   kubectl get secret --namespace {{ .Release.Namespace }} {{ include "cetirun.secretName" . }} -o jsonpath="{.data.OPENCLAW_GATEWAY_TOKEN}" | base64 --decode
@@ -50,10 +55,14 @@ Gateway Token:
 
 Web Terminal (ttyd):
   ttyd is enabled on port {{ .Values.ttyd.port }}.
+{{- if contains "kata" (.Values.runtimeClassName | default "") }}
+  kubectl port-forward cannot reach it in the {{ .Values.runtimeClassName }} VM sandbox.
+{{- else }}
   To access via port-forward:
 
   kubectl --namespace {{ .Release.Namespace }} port-forward $POD_NAME {{ .Values.ttyd.port }}:{{ .Values.ttyd.port }}
 
   Then open http://localhost:{{ .Values.ttyd.port }} in your browser.
+{{- end }}
 {{- end }}
 {{- end }}
