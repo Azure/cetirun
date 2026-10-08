@@ -32,6 +32,7 @@ type syntheticAdapter struct {
 	checkPrepared        func()
 	mutateInput          bool
 	beforeStart          func()
+	beforePublish        func()
 	afterPublish         func()
 	starts, observations int
 }
@@ -86,6 +87,9 @@ func (a *syntheticAdapter) Observe(_ context.Context, ticket Ticket) (*sandbox.O
 }
 
 func (a *syntheticAdapter) PublishRoutes(ctx context.Context, _ Ticket, guard func(context.Context) error) error {
+	if a.beforePublish != nil {
+		a.beforePublish()
+	}
 	if err := guard(ctx); err != nil {
 		return err
 	}
@@ -276,6 +280,34 @@ func TestObservationLossWithdrawsAndKeepsReservationUntilFenced(t *testing.T) {
 	}
 	if adapter.starts != 1 {
 		t.Fatal("cleanup restarted the writer")
+	}
+}
+
+func TestPublicationBoundaryRequiresFreshEvidence(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		delay time.Duration
+		valid bool
+	}{
+		{name: "exact freshness bound", delay: 10 * time.Second, valid: true},
+		{name: "past freshness bound", delay: 10*time.Second + time.Nanosecond},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			lifecycle, ticket, adapter := lifecycleFixture(t)
+			adapter.beforePublish = func() { adapter.now = adapter.now.Add(test.delay) }
+			result, err := lifecycle.Reconcile(context.Background(), ticket)
+			if test.valid {
+				if err != nil || !result.Verified || !slices.Contains(adapter.events, "publish") {
+					t.Fatalf("fresh boundary observation was rejected: %+v %v", result, err)
+				}
+				return
+			}
+			if !errors.Is(err, sandbox.ErrObservationUnavailable) || !result.Hold || result.Verified ||
+				slices.Contains(adapter.events, "publish") || slices.Contains(adapter.events, "commit-readiness") ||
+				!slices.Contains(adapter.events, "withdraw") || !slices.Contains(adapter.events, "exclude-writers") {
+				t.Fatalf("expired publication evidence was accepted: %+v %v %v", result, adapter.events, err)
+			}
+		})
 	}
 }
 

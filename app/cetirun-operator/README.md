@@ -135,8 +135,10 @@ including when the API still shows the old object.
 The lifecycle reserves the physical writer through the durable journal, then
 requires a fresh, exact pre-start acknowledgement of an armed guest-external
 gate. Current runtime, Pod, control and epoch evidence precedes route publication.
-An additional post-publication observation precedes the adapter's atomic
-applied-binding/readiness commit. Source, freshness or observation loss clears
+The route-publication boundary guard rechecks the same evidence's freshness
+after coordination and source reads, so delayed publication cannot use an
+expired observation. An additional post-publication observation precedes the
+adapter's atomic applied-binding/readiness commit. Source, freshness or observation loss clears
 readiness, withdraws routes and attempts durable writer exclusion; failure in
 one cleanup step does not skip the others. Reservations are released only after
 all cleanup succeeds. Historical cleanup does not rediscover targets from

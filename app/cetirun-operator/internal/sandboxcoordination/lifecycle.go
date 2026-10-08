@@ -143,6 +143,7 @@ func (l Lifecycle) Reconcile(ctx context.Context, ticket Ticket) (Result, error)
 	if err := sandbox.VerifyObservation(ticket.Execution.Intent.Expected, observation, l.Now(), l.MaxAge); err != nil {
 		return result, l.fail(ctx, ticket, err)
 	}
+	publicationEvidence := *observation
 	if ticket.Execution.Phase == Starting {
 		ticket, err = l.Store.MarkRunning(ctx, ticket)
 		if err != nil {
@@ -153,7 +154,11 @@ func (l Lifecycle) Reconcile(ctx context.Context, ticket Ticket) (Result, error)
 	if ticket.Execution.Phase != Running {
 		return result, fmt.Errorf("%w: execution is not eligible for publication", ErrConflict)
 	}
-	if err := l.Adapter.PublishRoutes(ctx, ticket.DeepCopy(), l.guard(ticket)); err != nil {
+	publicationGuard := l.enforcementGuard(ticket, publicationEvidence)
+	if err := publicationGuard(ctx); err != nil {
+		return result, l.fail(ctx, ticket, err)
+	}
+	if err := l.Adapter.PublishRoutes(ctx, ticket.DeepCopy(), publicationGuard); err != nil {
 		return result, l.fail(ctx, ticket, err)
 	}
 	// Re-observe after route publication. A successful API write is not the
@@ -169,12 +174,7 @@ func (l Lifecycle) Reconcile(ctx context.Context, ticket Ticket) (Result, error)
 		return result, l.fail(ctx, ticket, err)
 	}
 	copy := *observation
-	commitGuard := func(ctx context.Context) error {
-		if err := l.guard(ticket)(ctx); err != nil {
-			return err
-		}
-		return sandbox.VerifyObservation(ticket.Execution.Intent.Expected, &copy, l.Now(), l.MaxAge)
-	}
+	commitGuard := l.enforcementGuard(ticket, copy)
 	if err := l.Adapter.CommitReadiness(ctx, ticket.DeepCopy(), copy, commitGuard); err != nil {
 		return result, l.fail(ctx, ticket, err)
 	}
@@ -228,6 +228,15 @@ func (l Lifecycle) guard(ticket Ticket) func(context.Context) error {
 			return err
 		}
 		return l.Store.Check(ctx, ticket)
+	}
+}
+
+func (l Lifecycle) enforcementGuard(ticket Ticket, observation sandbox.Observation) func(context.Context) error {
+	return func(ctx context.Context) error {
+		if err := l.guard(ticket)(ctx); err != nil {
+			return err
+		}
+		return sandbox.VerifyObservation(ticket.Execution.Intent.Expected, &observation, l.Now(), l.MaxAge)
 	}
 }
 
