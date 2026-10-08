@@ -84,13 +84,14 @@ standard StatefulSet/Service names. A standalone chart's `fullnameOverride`
 is not an operator-wide naming override.
 
 `runtimeClassName` selects an existing RuntimeClass; the chart creates no
-sandbox runtime. `kubectl port-forward` cannot reach a Pod in a Kata VM
-sandbox, such as the default `kata-vm-isolation`, so the install notes print
-no port-forward commands for one. Workload Identity requires a chart-created
-service account or a pre-annotated existing one plus federated trust. A role,
-explicit service account name, or Workload Identity enables service-account
-token automount in the StatefulSet. Do not assume a named service account is
-token-free.
+sandbox runtime. Workload Identity requires a chart-created service account or
+a pre-annotated existing one plus federated trust. A role, explicit service
+account name, or Workload Identity enables service-account token automount in
+the StatefulSet. Do not assume a named service account is token-free.
+
+On AKS Pod Sandboxing (`runtimeClassName: kata-vm-isolation`, the default),
+`kubectl port-forward` cannot reach the agent's Pod, so the install notes print
+no port-forward commands for that runtime class.
 
 ### Services and interfaces
 

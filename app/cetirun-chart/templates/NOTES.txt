@@ -11,6 +11,7 @@ The platform desktop remains available through its authenticated gateway route.
 ttyd is temporarily disabled for Custom Agents pending a terminal integration review.
 Model access, context use, image identity and storage qualification are separate checks.
 {{- else }}
+{{- $aksPodSandboxing := eq (.Values.runtimeClassName | default "") "kata-vm-isolation" }}
 Thank you for installing {{ .Chart.Name }}!
 
 Your release is named {{ .Release.Name }}.
@@ -20,9 +21,9 @@ To learn more about the release, try:
   $ helm status {{ .Release.Name }} -n {{ .Release.Namespace }}
   $ helm get all {{ .Release.Name }} -n {{ .Release.Namespace }}
 
-{{ if and (contains "kata" (.Values.runtimeClassName | default "")) (not .Values.ingress.enabled) (contains "ClusterIP" .Values.service.type) -}}
-The Pod runs in the {{ .Values.runtimeClassName }} VM sandbox, which kubectl port-forward
-cannot reach. Reach the agent through an ingress route instead.
+{{ if and $aksPodSandboxing (not .Values.ingress.enabled) (contains "ClusterIP" .Values.service.type) -}}
+On AKS Pod Sandboxing (runtime class kata-vm-isolation), kubectl port-forward
+cannot reach the Pod. Reach the agent through an ingress route instead.
 {{- else -}}
 To get the application URL, run these commands:
 {{- if .Values.ingress.enabled }}
@@ -55,8 +56,8 @@ Gateway Token:
 
 Web Terminal (ttyd):
   ttyd is enabled on port {{ .Values.ttyd.port }}.
-{{- if contains "kata" (.Values.runtimeClassName | default "") }}
-  kubectl port-forward cannot reach it in the {{ .Values.runtimeClassName }} VM sandbox.
+{{- if $aksPodSandboxing }}
+  On AKS Pod Sandboxing, kubectl port-forward cannot reach it.
 {{- else }}
   To access via port-forward:
 
