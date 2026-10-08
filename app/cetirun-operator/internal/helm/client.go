@@ -160,6 +160,15 @@ func dockerConfigFile() string {
 	return ""
 }
 
+// ChartIdentity names a chart version, or the default one, by its repository
+// and version.
+func (c *Client) ChartIdentity(version string) string {
+	if version == "" {
+		version = c.chartRef.Version
+	}
+	return c.chartRef.RepoURL + ":" + version
+}
+
 // InspectChart loads a chart version, or the default one, and returns the
 // values it declares, without preparing a release. Loading needs only the
 // registry, not the cluster.

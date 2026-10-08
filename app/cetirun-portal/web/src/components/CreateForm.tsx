@@ -57,10 +57,13 @@ export function CreateForm({ onCreated }: { onCreated?: () => void }) {
   const catalog = catalogQuery.data;
   const catalogKnown = !!catalog?.known;
   // Only the agent types the deployment's agent chart routes through the
-  // Gateway can take its models. A catalog without the list comes from an
-  // earlier operator, which routes only OpenClaw.
+  // Gateway can take its models; null while the operator has not read that
+  // chart. A catalog without the list comes from an earlier operator, which
+  // routes only OpenClaw.
+  const routedAgentTypes = catalog?.agentTypes === undefined ? ["openclaw"] : catalog.agentTypes;
+  const agentTypesUnknown = gatewayModels && catalogKnown && routedAgentTypes === null;
   const chartUnsupported =
-    gatewayModels && catalogKnown && !(catalog?.agentTypes ?? ["openclaw"]).includes(agentType);
+    gatewayModels && catalogKnown && routedAgentTypes !== null && !routedAgentTypes.includes(agentType);
   const sharedModels = useMemo(
     () => (catalog?.known ? catalog.sharedModels : []),
     [catalog],
@@ -238,7 +241,13 @@ export function CreateForm({ onCreated }: { onCreated?: () => void }) {
         </MessageBar>
       )}
 
-      {gatewayModels && !chartUnsupported && (
+      {agentTypesUnknown && (
+        <MessageBar intent="warning">
+          The operator has not read its agent chart yet. Try again in a minute.
+        </MessageBar>
+      )}
+
+      {gatewayModels && !chartUnsupported && !agentTypesUnknown && (
         <>
           <Field
             hint={
@@ -346,7 +355,7 @@ export function CreateForm({ onCreated }: { onCreated?: () => void }) {
           featuresLoading ||
           allowedAgentTypes.length === 0 ||
           (gatewayOn && !team) ||
-          (gatewayModels && (!catalogKnown || noModelSource || chartUnsupported))
+          (gatewayModels && (!catalogKnown || noModelSource || chartUnsupported || agentTypesUnknown))
         }
       >
         {createMutation.isPending ? "Creating..." : "Create Agent"}

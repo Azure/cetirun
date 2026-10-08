@@ -60,7 +60,8 @@ type AIGatewayCatalogResponse struct {
 	// Agents.
 	GitHubCopilot bool `json:"githubCopilot"`
 	// AgentTypes are the agent types new Agents can take the Gateway's models
-	// with: those the operator's default agent chart routes through it.
+	// with: those the operator's default agent chart routes through it. They
+	// are null while the operator has not read that chart.
 	AgentTypes []cetirunv1alpha1.AgentType `json:"agentTypes"`
 }
 
@@ -117,15 +118,16 @@ func (h *InstanceHandler) sharedModelCatalog(ctx context.Context) AIGatewayCatal
 		slog.Warn("Failed to read the AI Gateway catalog", "error", err)
 		return AIGatewayCatalogResponse{SharedModels: []cetirunv1alpha1.AIGatewayCatalogModel{}, AgentTypes: []cetirunv1alpha1.AgentType{}}
 	}
-	agentTypes := catalog.AgentTypes
+	var agentTypes []cetirunv1alpha1.AgentType
 	switch {
 	case !known:
 		agentTypes = []cetirunv1alpha1.AgentType{}
-	case agentTypes == nil:
-		// A catalog from an earlier operator, or one published before the
-		// operator read its chart: route only what every Gateway chart
-		// routes.
+	case catalog.Routing == nil:
+		// A catalog from an earlier operator, which routes only OpenClaw.
 		agentTypes = []cetirunv1alpha1.AgentType{cetirunv1alpha1.AgentTypeOpenClaw}
+	default:
+		// Null while the operator has not read its default agent chart.
+		agentTypes = catalog.Routing.AgentTypes
 	}
 	return AIGatewayCatalogResponse{Known: known, SharedModels: catalog.SharedModels, GitHubCopilot: catalog.GitHubCopilot, AgentTypes: agentTypes}
 }
@@ -142,11 +144,12 @@ func (h *InstanceHandler) GetAIGatewayCatalog(w http.ResponseWriter, r *http.Req
 
 // validateAIGatewayCreate applies the AI Gateway rules to a new Agent: it
 // must name an existing Team, and an OpenClaw or Hermes Agent must be of a
-// type the operator's agent chart routes through the Gateway and have a
-// model to use, from shared models it keeps on while the catalog lists at
-// least one, or from GitHub Copilot it keeps on while the deployment offers
-// it. Omitted switches count as on. It returns the Team to record and the
-// model access to write, or writes the error response and returns false.
+// type the operator's agent chart routes through the Gateway, once the
+// operator has read that chart, and have a model to use, from shared models
+// it keeps on while the catalog lists at least one, or from GitHub Copilot it
+// keeps on while the deployment offers it. Omitted switches count as on. It
+// returns the Team to record and the model access to write, or writes the
+// error response and returns false.
 func (h *InstanceHandler) validateAIGatewayCreate(w http.ResponseWriter, r *http.Request, req CreateInstanceRequest, agentType cetirunv1alpha1.AgentType) (string, *cetirunv1alpha1.ModelAccessSpec, bool) {
 	team := strings.TrimSpace(req.Team)
 	if !h.Config.AIGatewayEnabled {
@@ -181,6 +184,13 @@ func (h *InstanceHandler) validateAIGatewayCreate(w http.ResponseWriter, r *http
 	catalog := h.sharedModelCatalog(r.Context())
 	if !catalog.Known {
 		writeError(w, http.StatusServiceUnavailable, "model_sources_unknown", "The AI Gateway has not published its models yet. Try again in a minute.")
+		return "", nil, false
+	}
+	if catalog.AgentTypes == nil {
+		// The operator has not read its default agent chart, which the new
+		// Agent would be pinned to.
+		writeError(w, http.StatusServiceUnavailable, "agent_types_unknown",
+			"The operator has not read its agent chart yet. Try again in a minute.")
 		return "", nil, false
 	}
 	if !slices.Contains(catalog.AgentTypes, agentType) {

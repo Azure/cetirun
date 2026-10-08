@@ -16,8 +16,11 @@ export interface AIGatewayCatalog {
   sharedModels: SharedModel[];
   /** Whether the deployment offers GitHub Copilot to agents. */
   githubCopilot: boolean;
-  /** The agent types the deployment's agent chart routes through the Gateway. */
-  agentTypes?: AgentType[];
+  /**
+   * The agent types the deployment's agent chart routes through the Gateway;
+   * null while the operator has not read that chart.
+   */
+  agentTypes?: AgentType[] | null;
 }
 
 export type CopilotLoginState = "none" | "pending" | "succeeded" | "expired" | "denied" | "failed";

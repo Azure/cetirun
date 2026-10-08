@@ -2414,12 +2414,16 @@ type inspectingHelm struct {
 	versions []string
 }
 
+func (f *inspectingHelm) ChartIdentity(version string) string {
+	return "oci://registry.example.com/helm/cetirun:" + version
+}
+
 func (f *inspectingHelm) InspectChart(version string) (*helm.ChartValues, error) {
 	f.versions = append(f.versions, version)
 	return f.values, f.err
 }
 
-func publishedAgentTypes(t *testing.T, kube client.Client) []cetirunv1alpha1.AgentType {
+func publishedRouting(t *testing.T, kube client.Client) *cetirunv1alpha1.AIGatewayRouting {
 	t.Helper()
 	configMap := &corev1.ConfigMap{}
 	if err := kube.Get(context.Background(), types.NamespacedName{Namespace: "cetirun-system", Name: cetirunv1alpha1.AIGatewayCatalogConfigMap}, configMap); err != nil {
@@ -2429,13 +2433,21 @@ func publishedAgentTypes(t *testing.T, kube client.Client) []cetirunv1alpha1.Age
 	if err := json.Unmarshal([]byte(configMap.Data[cetirunv1alpha1.AIGatewayCatalogKey]), &catalog); err != nil {
 		t.Fatal(err)
 	}
-	return catalog.AgentTypes
+	return catalog.Routing
+}
+
+func catalogWithRouting(routing string) *corev1.ConfigMap {
+	return &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: cetirunv1alpha1.AIGatewayCatalogConfigMap, Namespace: "cetirun-system"},
+		Data: map[string]string{cetirunv1alpha1.AIGatewayCatalogKey: `{"sharedModels":[],"githubCopilot":true,"routing":` +
+			routing + `}`},
+	}
 }
 
 // The catalog lists the agent types the default agent chart routes through
-// the Gateway, so the Portal offers the Gateway's models to those only: a
-// chart without aiGateway.hermes.keyEnv routes OpenClaw alone, one older than
-// the Gateway none. The chart is read once.
+// the Gateway, with that chart's identity, so the Portal offers the Gateway's
+// models to those only: a chart without aiGateway.hermes.keyEnv routes
+// OpenClaw alone, one older than the Gateway none. The chart is read once.
 func TestAIGatewayCatalogPublishesTheAgentTypesTheDefaultChartRoutes(t *testing.T) {
 	for name, tc := range map[string]struct {
 		strip []string
@@ -2461,9 +2473,9 @@ func TestAIGatewayCatalogPublishesTheAgentTypesTheDefaultChartRoutes(t *testing.
 			r.HelmClient = inspector
 			r.publishAIGatewayCatalog(context.Background(), 0)
 			r.publishAIGatewayCatalog(context.Background(), 0)
-			got := publishedAgentTypes(t, kube)
-			if got == nil || !slices.Equal(got, tc.want) {
-				t.Fatalf("published agent types %v, want %v", got, tc.want)
+			got := publishedRouting(t, kube)
+			if got == nil || got.Chart != inspector.ChartIdentity(r.ChartVersion) || got.AgentTypes == nil || !slices.Equal(got.AgentTypes, tc.want) {
+				t.Fatalf("published routing %+v, want %v for %s", got, tc.want, inspector.ChartIdentity(r.ChartVersion))
 			}
 			if !slices.Equal(inspector.versions, []string{r.ChartVersion}) {
 				t.Fatalf("the default chart must be read once, read %v", inspector.versions)
@@ -2473,25 +2485,44 @@ func TestAIGatewayCatalogPublishesTheAgentTypesTheDefaultChartRoutes(t *testing.
 }
 
 // While the default chart cannot be read, the catalog keeps the agent types
-// it published; before any were published it lists none, which the Portal
-// reads as an earlier operator's catalog.
+// it published for that chart. Those of another chart, published before a
+// restart with a new default, are not reused: the agent types are unknown
+// (null) until the chart can be read, and so are they when nothing was
+// published.
 func TestAIGatewayCatalogKeepsItsAgentTypesWhileTheChartCannotBeRead(t *testing.T) {
-	published := &corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{Name: cetirunv1alpha1.AIGatewayCatalogConfigMap, Namespace: "cetirun-system"},
-		Data:       map[string]string{cetirunv1alpha1.AIGatewayCatalogKey: `{"sharedModels":[],"githubCopilot":true,"agentTypes":["openclaw","hermes"]}`},
-	}
-	r, kube, _ := aiGatewayTestReconciler(t, published)
-	r.HelmClient = &inspectingHelm{err: errors.New("registry unavailable")}
+	unreadable := &inspectingHelm{err: errors.New("registry unavailable")}
+	identity := unreadable.ChartIdentity("0.1.28")
+	both := []cetirunv1alpha1.AgentType{cetirunv1alpha1.AgentTypeOpenClaw, cetirunv1alpha1.AgentTypeHermes}
+
+	r, kube, _ := aiGatewayTestReconciler(t, catalogWithRouting(`{"chart":"`+identity+`","agentTypes":["openclaw","hermes"]}`))
+	r.HelmClient = unreadable
 	r.publishAIGatewayCatalog(context.Background(), 0)
-	if got := publishedAgentTypes(t, kube); !slices.Equal(got, []cetirunv1alpha1.AgentType{cetirunv1alpha1.AgentTypeOpenClaw, cetirunv1alpha1.AgentTypeHermes}) {
-		t.Fatalf("the published agent types must stay, got %v", got)
+	if got := publishedRouting(t, kube); got == nil || got.Chart != identity || !slices.Equal(got.AgentTypes, both) {
+		t.Fatalf("the agent types published for this chart must stay, got %+v", got)
+	}
+
+	r, kube, _ = aiGatewayTestReconciler(t, catalogWithRouting(`{"chart":"`+unreadable.ChartIdentity("0.1.27")+`","agentTypes":["openclaw","hermes"]}`))
+	r.HelmClient = unreadable
+	r.publishAIGatewayCatalog(context.Background(), 0)
+	if got := publishedRouting(t, kube); got == nil || got.Chart != identity || got.AgentTypes != nil {
+		t.Fatalf("another chart's agent types must not be reused, got %+v", got)
 	}
 
 	r, kube, _ = aiGatewayTestReconciler(t)
-	r.HelmClient = &inspectingHelm{err: errors.New("registry unavailable")}
+	r.HelmClient = unreadable
 	r.publishAIGatewayCatalog(context.Background(), 0)
-	if got := publishedAgentTypes(t, kube); got != nil {
-		t.Fatalf("no agent types are known yet, got %v", got)
+	if got := publishedRouting(t, kube); got == nil || got.Chart != identity || got.AgentTypes != nil {
+		t.Fatalf("no agent types are known yet, got %+v", got)
+	}
+	// Once the chart can be read, its agent types are published.
+	chrt, err := loader.Load("../../../cetirun-chart")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.HelmClient = &inspectingHelm{values: helm.NewChartValues(chrt)}
+	r.publishAIGatewayCatalog(context.Background(), 0)
+	if got := publishedRouting(t, kube); got == nil || !slices.Equal(got.AgentTypes, both) {
+		t.Fatalf("the chart's agent types must be published once it can be read, got %+v", got)
 	}
 }
 
