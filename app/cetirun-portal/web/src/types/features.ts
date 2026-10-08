@@ -4,6 +4,7 @@
 import type { AgentType } from "./instance";
 
 export interface Features {
+  customChatEnabled?: boolean;
   tailscaleEnabled: boolean;
   agentIdentityEnabled: boolean;
   maxInstancesPerUser: number; // 0 = unlimited

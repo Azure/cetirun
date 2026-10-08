@@ -38,6 +38,7 @@ const REFRESH_WINDOW_MS = 5 * 60_000;
  */
 export function AIGatewayBlock({ instance }: { instance: Instance }) {
   const gateway = instance.aiGateway;
+  const custom = instance.agent.type === "custom";
   const name = instance.instanceName;
   const queryClient = useQueryClient();
   // Resume a sign-in still pending when the page was reloaded.
@@ -144,9 +145,9 @@ export function AIGatewayBlock({ instance }: { instance: Instance }) {
       {gateway.models.length > 0 ? (
         <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }} aria-label="Agent models">
           {gateway.models.map((model) => (
-            <Badge key={model} appearance={model === gateway.defaultModel ? "filled" : "outline"} color="brand">
+            <Badge key={model} appearance={!custom && model === gateway.defaultModel ? "filled" : "outline"} color="brand">
               {model}
-              {model === gateway.defaultModel ? " (default)" : ""}
+              {!custom && model === gateway.defaultModel ? " (default)" : ""}
             </Badge>
           ))}
         </div>
@@ -154,7 +155,10 @@ export function AIGatewayBlock({ instance }: { instance: Instance }) {
         <Text size={200} style={{ color: tokens.colorNeutralForeground3 }}>{emptyHint}</Text>
       )}
 
-      {gateway.models.length > 1 && (
+      {custom && (
+        <Text size={200}>Choose a model in Chat from the models this Agent exposes.</Text>
+      )}
+      {!custom && gateway.models.length > 1 && (
         <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
           <Text size={200}>Default model</Text>
           <Select

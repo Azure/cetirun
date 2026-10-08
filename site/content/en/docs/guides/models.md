@@ -110,6 +110,12 @@ setting, the operator updates every instance that uses shared models, which
 restarts them. A restarting instance shows as provisioning for a short while,
 and its UI is unavailable until it is ready again.
 
+OpenClaw also sends short internal tasks, such as generated session titles and
+activity recaps, to a utility model. On the Gateway, an instance's utility
+model is its default model: OpenClaw would otherwise pick OpenAI's small model,
+which the Gateway does not offer. These calls count against the instance's
+key like any other.
+
 The key's value is kept in the instance's `ai-gateway-virtual-key` Secret. If
 that Secret is lost while the key still exists in the Gateway, the operator
 does not replace the key, which would reset its spend, restore the default

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxplacement"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
 	"github.com/Masterminds/semver/v3"
 	"k8s.io/apimachinery/pkg/util/validation"
@@ -23,6 +24,7 @@ type SandboxSourcesConfig struct {
 	HomeClaimName               string                  `json:"homeClaimName"`
 	SkillsClaimName             string                  `json:"skillsClaimName"`
 	SkillsCatalogConfigMapName  string                  `json:"skillsCatalogConfigMapName,omitempty"`
+	PlacementConfigMapName      string                  `json:"placementConfigMapName,omitempty"`
 	AdmissionServiceAccount     string                  `json:"admissionServiceAccount"`
 	Helpers                     sandboxworkload.Helpers `json:"helpers"`
 }
@@ -43,6 +45,12 @@ func ParseSandboxSourcesConfig(raw string) (SandboxSourcesConfig, error) {
 }
 
 func (config SandboxSourcesConfig) validate() error {
+	if config.PlacementConfigMapName != "" &&
+		(!config.Enabled || len(validation.IsDNS1123Subdomain(config.PlacementConfigMapName)) != 0 ||
+			config.PlacementConfigMapName == config.PlatformConfigMapName ||
+			config.PlacementConfigMapName == config.SkillsCatalogConfigMapName) {
+		return fmt.Errorf("Sandbox placement requires enabled sources and a separate valid ConfigMap name")
+	}
 	if config.SkillsCatalogConfigMapName != "" &&
 		(!config.Enabled || !config.BootstrapOwnedPrerequisites ||
 			len(validation.IsDNS1123Subdomain(config.SkillsCatalogConfigMapName)) != 0 ||
@@ -97,6 +105,15 @@ func NewKubernetesSandboxPreparation(config SandboxSourcesConfig, reader client.
 			ChartVersion: chartVersion, Helpers: config.Helpers,
 		},
 		Installer: installer, AdmissionServiceAccount: config.AdmissionServiceAccount,
+	}
+	if config.PlacementConfigMapName != "" {
+		placement, err := sandboxplacement.NewHandler(reader, sandboxplacement.Config{
+			Namespace: namespace, ConfigMapName: config.PlacementConfigMapName,
+		})
+		if err != nil {
+			return nil, err
+		}
+		preparation.Placement = placement
 	}
 	if config.BootstrapOwnedPrerequisites {
 		if _, err := semver.StrictNewVersion(chartVersion); err != nil {

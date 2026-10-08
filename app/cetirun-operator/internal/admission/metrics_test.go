@@ -60,7 +60,7 @@ func TestAdmissionMetricsDurationPreservesResponses(t *testing.T) {
 	patch.UID = "synthetic-response"
 	patch.Warnings = []string{"synthetic warning"}
 	patch.AuditAnnotations = map[string]string{"example.com/test": "synthetic annotation"}
-	for _, name := range []string{"validate", "default", "pod"} {
+	for _, name := range []string{"validate", "default", "pod", "placement"} {
 		for _, operation := range []admissionv1.Operation{
 			admissionv1.Create, admissionv1.Update, admissionv1.Delete, admissionv1.Connect, "",
 		} {
@@ -206,7 +206,7 @@ func TestAdmissionMetricsDurationBoundsLabelsAndHTTPExposition(t *testing.T) {
 		t.Fatal(err)
 	}
 	allowed := map[string]map[string]bool{
-		"handler":   {"validate": true, "default": true, "pod": true, "unknown": true},
+		"handler":   {"validate": true, "default": true, "pod": true, "placement": true, "unknown": true},
 		"operation": {"CREATE": true, "UPDATE": true, "DELETE": true, "CONNECT": true, "unknown": true},
 		"outcome":   {"allowed": true, "denied": true, "invalid_request": true, "dependency_error": true},
 	}
@@ -214,7 +214,7 @@ func TestAdmissionMetricsDurationBoundsLabelsAndHTTPExposition(t *testing.T) {
 		wantLabels := 3
 		switch family.GetName() {
 		case admissionDurationMetric:
-			if len(family.Metric) > 4*5*4 {
+			if len(family.Metric) > 5*5*4 {
 				t.Fatal("duration label tuples exceeded the bounded domain")
 			}
 		case "cetirun_sandbox_admission_decisions_total":

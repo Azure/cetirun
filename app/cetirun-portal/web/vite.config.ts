@@ -23,6 +23,7 @@ export default defineConfig({
         headers: {
           "X-Auth-Request-Preferred-Username": `${process.env.DEV_USER ?? "dev"}@example.com`,
           "X-Auth-Request-Email": `${process.env.DEV_USER ?? "dev"}@example.com`,
+          "X-Auth-Request-User": `local-test-${process.env.DEV_USER ?? "dev"}`,
         },
       },
     },

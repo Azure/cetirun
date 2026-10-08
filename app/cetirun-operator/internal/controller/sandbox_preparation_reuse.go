@@ -125,6 +125,10 @@ func (r *AgentReconciler) reuseSandboxPreparation(ctx context.Context, attempt *
 		expected.Revision == "" || state.Annotations[sandboxworkload.RevisionAnnotation] != expected.Revision {
 		return false, nil
 	}
+	if !equality.Semantic.DeepEqual(expected.Placement, attempt.prerequisites.Placement) ||
+		(r.SandboxPreparation.Placement != nil && expected.Placement == nil) {
+		return false, nil
+	}
 	journalPinned, revisionPinned := false, expected.ControllerRevision == ""
 	for _, source := range expected.Sources {
 		journalPinned = journalPinned || (source.APIVersion == "v1" && source.Kind == "ConfigMap" &&
@@ -134,6 +138,19 @@ func (r *AgentReconciler) reuseSandboxPreparation(ctx context.Context, attempt *
 	}
 	if !journalPinned || !revisionPinned {
 		return false, nil
+	}
+	if expected.Placement != nil {
+		placementPinned, receiptPinned := false, false
+		for _, source := range expected.Sources {
+			if source.APIVersion != "v1" || source.Kind != "ConfigMap" || source.Namespace != r.OperatorNamespace {
+				continue
+			}
+			placementPinned = placementPinned || (source.Name == expected.Placement.Registry.Name && source.UID == expected.Placement.Registry.UID)
+			receiptPinned = receiptPinned || source.Name == r.sandboxPreparationKey(agent).Name
+		}
+		if !placementPinned || !receiptPinned {
+			return false, nil
+		}
 	}
 	receiptObject, receipt, err := r.readSandboxPreparationReceipt(ctx, agent)
 	if err != nil {

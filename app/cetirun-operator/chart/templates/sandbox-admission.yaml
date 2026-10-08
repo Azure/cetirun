@@ -1,5 +1,17 @@
 {{- $sandboxSources := include "cetirun-operator.sandboxSourcesConfig" . -}}
 {{- $admission := .Values.sandboxAdmission -}}
+{{- $placementName := $admission.placementConfigMapName -}}
+{{- if not (kindIs "string" $placementName) -}}
+{{- fail "sandboxAdmission.placementConfigMapName must be a string" -}}
+{{- end -}}
+{{- if $placementName -}}
+{{- if or (gt (len $placementName) 253) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$" $placementName)) -}}
+{{- fail "sandboxAdmission.placementConfigMapName must be a valid resource name" -}}
+{{- end -}}
+{{- if not (and $admission.enabled $admission.podsEnabled) -}}
+{{- fail "sandboxAdmission.placementConfigMapName requires enabled Sandbox configuration and Pod admission" -}}
+{{- end -}}
+{{- end -}}
 {{- if not (kindIs "bool" $admission.podsEnabled) -}}
 {{- fail "sandboxAdmission.podsEnabled must be a boolean" -}}
 {{- end -}}
@@ -46,6 +58,9 @@
 {{- end -}}
 {{- $controllerUsername := printf "system:serviceaccount:%s:%s" $controllerNamespace $controllerServiceAccount -}}
 {{- $config := dict "adminUsers" $admission.adminUsers "adminGroups" $admission.adminGroups "controllerUsername" $controllerUsername "validationMode" $admission.validationMode -}}
+{{- if $placementName -}}
+{{- $_ := set $config "placementConfigMapName" $placementName -}}
+{{- end -}}
 {{- if $sandboxSources -}}
 {{- $_ := set $config "platformNamespace" $controllerNamespace -}}
 {{- $_ := set $config "platformConfigMapName" .Values.sandboxSources.platformConfigMapName -}}
@@ -127,6 +142,17 @@ rules:
   - apiGroups: ["apps"]
     resources: ["statefulsets", "controllerrevisions"]
     verbs: ["get"]
+  {{- if $placementName }}
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get"]
+  - apiGroups: ["apps"]
+    resources: ["daemonsets"]
+    verbs: ["get"]
+  - apiGroups: ["scheduling.k8s.io"]
+    resources: ["priorityclasses"]
+    verbs: ["get"]
+  {{- end }}
   - apiGroups: ["node.k8s.io"]
     resources: ["runtimeclasses"]
     verbs: ["get"]

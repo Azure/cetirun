@@ -4,10 +4,12 @@
 package handler
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -1363,5 +1365,115 @@ func TestCopilotLoginChangesOnlyTheAgentItWasMadeFor(t *testing.T) {
 	// The sign-in is cleared; its number stays for the next start.
 	if data := f.secret(copilotLoginSecretName).Data; len(data) != 1 || string(data[loginNumber]) != "1" {
 		t.Fatalf("cancel must clear the sign-in, got %v", data)
+	}
+}
+
+// A page that still shows a sign-in pending can cancel it after the sign-in
+// succeeded, for example from another tab or while the poll that completed
+// it is still on its way to the browser. The sign-in is in effect: the
+// cancel is refused as too late, changes nothing, and a later sign-in starts
+// as usual.
+func TestCopilotLoginCancelAfterItSucceededIsRefused(t *testing.T) {
+	for _, agentType := range []cetirunv1alpha1.AgentType{cetirunv1alpha1.AgentTypeOpenClaw, cetirunv1alpha1.AgentTypeCustom} {
+		t.Run(string(agentType), func(t *testing.T) {
+			agent := routedAgent()
+			agent.Spec.Agent.Type = agentType
+			f := newLoginFixture(t, agent, copilotTokenSecret("uid-1"))
+			f.gh.answers = []map[string]any{{"access_token": "gho_alice"}}
+			if w, _ := f.call(http.MethodPost, "alice"); w.Code != http.StatusOK {
+				t.Fatalf("start: status %d %s", w.Code, w.Body.String())
+			}
+			f.clock = f.clock.Add(6 * time.Second)
+			if _, resp := f.call(http.MethodGet, "alice"); resp.State != copilotLoginSucceeded {
+				t.Fatalf("poll: %+v", resp)
+			}
+			login := f.secret(copilotLoginSecretName)
+			token := f.secret(cetirunv1alpha1.CopilotTokenSecretName)
+
+			w, _ := f.call(http.MethodDelete, "alice")
+			if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "copilot_login_completed") {
+				t.Fatalf("a cancel after the sign-in succeeded: status %d %s", w.Code, w.Body.String())
+			}
+			if after := f.secret(copilotLoginSecretName); after.ResourceVersion != login.ResourceVersion {
+				t.Fatalf("the refused cancel changed the sign-in: %v", after.Data)
+			}
+			if after := f.secret(cetirunv1alpha1.CopilotTokenSecretName); after.ResourceVersion != token.ResourceVersion {
+				t.Fatalf("the refused cancel changed the token Secret: %v", after.Annotations)
+			}
+			if _, resp := f.call(http.MethodGet, "alice"); resp.State != copilotLoginSucceeded {
+				t.Fatalf("after the refused cancel: %+v", resp)
+			}
+			if w, resp := f.call(http.MethodPost, "alice"); w.Code != http.StatusOK || resp.State != copilotLoginPending {
+				t.Fatalf("a new sign-in after the refused cancel: status %d %s", w.Code, w.Body.String())
+			}
+		})
+	}
+}
+
+// A sign-in that ends without taking effect says why in the Portal's log, for
+// an administrator looking into it, without the account's token or the
+// sign-in's codes.
+func TestCopilotLoginLogsWhyASignInDidNotComplete(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		setup  func(*loginFixture)
+		wait   time.Duration
+		state  string
+		reason string
+	}{
+		{name: "account without Copilot", state: copilotLoginFailed, reason: "account_cannot_use_copilot", setup: func(f *loginFixture) {
+			f.gh.answers = []map[string]any{{"access_token": "gho_alice"}}
+			f.gh.exchangeCode = http.StatusNotFound
+		}},
+		{name: "no chat models", state: copilotLoginFailed, reason: "no_chat_models", setup: func(f *loginFixture) {
+			f.gh.answers = []map[string]any{{"access_token": "gho_alice"}}
+			f.gh.models = `{"data":[{"id":"text-embedding-3-small","capabilities":{"type":"embeddings"}}]}`
+		}},
+		{name: "denied at GitHub", state: copilotLoginDenied, reason: "denied_at_github", setup: func(f *loginFixture) {
+			f.gh.answers = []map[string]any{{"error": "access_denied"}}
+		}},
+		{name: "expired at GitHub", state: copilotLoginExpired, reason: "code_expired", setup: func(f *loginFixture) {
+			f.gh.answers = []map[string]any{{"error": "expired_token"}}
+		}},
+		{name: "expired before a poll", state: copilotLoginExpired, reason: "code_expired", wait: 16 * time.Minute, setup: func(*loginFixture) {}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var logs bytes.Buffer
+			previous := slog.Default()
+			slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, nil)))
+			t.Cleanup(func() { slog.SetDefault(previous) })
+			f := newLoginFixture(t)
+			tc.setup(f)
+			if w, _ := f.call(http.MethodPost, "alice"); w.Code != http.StatusOK {
+				t.Fatalf("start: status %d %s", w.Code, w.Body.String())
+			}
+			f.clock = f.clock.Add(max(tc.wait, 6*time.Second))
+			if _, resp := f.call(http.MethodGet, "alice"); resp.State != tc.state {
+				t.Fatalf("poll: %+v", resp)
+			}
+			found := 0
+			decoder := json.NewDecoder(bytes.NewReader(logs.Bytes()))
+			for decoder.More() {
+				var entry map[string]any
+				if err := decoder.Decode(&entry); err != nil {
+					t.Fatalf("decode log: %v", err)
+				}
+				if entry["msg"] != "GitHub Copilot sign-in did not complete" {
+					continue
+				}
+				found++
+				if entry["level"] != "INFO" || entry["instance"] != "alice-gw" || entry["reason"] != tc.reason {
+					t.Errorf("log entry %v", entry)
+				}
+			}
+			if found != 1 {
+				t.Errorf("%d entries say why the sign-in did not complete, want 1: %s", found, logs.String())
+			}
+			for _, value := range []string{"gho_alice", "dev-secret", "WXYZ-9876", "copilot-token"} {
+				if strings.Contains(logs.String(), value) {
+					t.Errorf("the log contains %q", value)
+				}
+			}
+		})
 	}
 }

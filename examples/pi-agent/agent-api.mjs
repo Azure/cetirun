@@ -24,7 +24,7 @@ export function createAgentAPI(runtime, activity) {
           const models = await runtime.models(AbortSignal.timeout(10_000));
           return writeJSON(response, 200, {
             object: "list",
-            data: models.map((id) => ({ id, object: "model", owned_by: "github-copilot" })),
+            data: models.map((id) => ({ id, object: "model" })),
           });
         }
         case "POST /v1/chat/completions":
@@ -119,7 +119,7 @@ async function handleChat(request, response, runtime, activity, runs) {
     }
   } catch {
     if (response.headersSent) response.destroy();
-    else writeJSON(response, 502, { error: { message: "Pi run failed or Copilot login is required" } });
+    else writeJSON(response, 502, { error: { message: "Pi run failed or model access is unavailable" } });
   } finally {
     activity.chat = false;
     runs.delete(controller);

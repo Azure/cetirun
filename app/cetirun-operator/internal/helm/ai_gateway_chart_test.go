@@ -208,10 +208,62 @@ func TestAIGatewayChartDisabledKeepsProviderKey(t *testing.T) {
 	if provider := openClawProvider(t, rendered); provider["apiKey"] != nil || provider["auth"] != nil {
 		t.Fatalf("a provider with its own endpoint must not be bound, got %v", provider)
 	}
+	// ...and OpenClaw's own choice of utility model, which that provider serves.
+	if defaults := openClawAgentDefaults(t, rendered); defaults["utilityModel"] != nil {
+		t.Fatalf("a provider with its own endpoint must keep OpenClaw's utility model, got %v", defaults["utilityModel"])
+	}
 	for _, container := range openClawInitContainers(t, rendered) {
 		if container.Name == "retire-copilot-sign-in" {
 			t.Fatal("without the Gateway the in-agent sign-in is the Agent's own and stays")
 		}
+	}
+}
+
+// openClawAgentDefaults returns agents.defaults of the rendered OpenClaw
+// configuration.
+func openClawAgentDefaults(t *testing.T, rendered map[string]string) map[string]any {
+	t.Helper()
+	configMap := &corev1.ConfigMap{}
+	if err := yaml.Unmarshal([]byte(rendered["cetirun/templates/configmap.yaml"]), configMap); err != nil {
+		t.Fatal(err)
+	}
+	var config struct {
+		Agents struct {
+			Defaults map[string]any `json:"defaults"`
+		} `json:"agents"`
+	}
+	if err := json.Unmarshal([]byte(configMap.Data["openclaw.json"]), &config); err != nil {
+		t.Fatal(err)
+	}
+	return config.Agents.Defaults
+}
+
+// OpenClaw derives a utility model for titles and activity recaps from the
+// primary model's provider: OpenAI's small model for the Gateway provider,
+// which the Gateway does not offer. An Agent on the Gateway names its
+// default model instead, with or without a model list.
+func TestAIGatewayChartRoutesUtilityTasksToTheDefaultModel(t *testing.T) {
+	listed := aiGatewayInput("openclaw", "openai")
+	listed["aiGateway"].(map[string]any)["models"] = []any{
+		map[string]any{"id": "gpt-6-sol", "name": "GPT-6 Sol", "contextWindow": 272000, "maxTokens": 128000},
+		map[string]any{"id": "copilot/claude-haiku-4.5", "name": "Claude Haiku 4.5"},
+	}
+	for name, input := range map[string]map[string]any{"without a model list": aiGatewayInput("openclaw", "openai"), "with a model list": listed} {
+		t.Run(name, func(t *testing.T) {
+			rendered, err := renderAIGateway(t, input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defaults := openClawAgentDefaults(t, rendered)
+			primary, _ := defaults["model"].(map[string]any)["primary"].(string)
+			if primary == "" || defaults["utilityModel"] != primary {
+				t.Fatalf("utilityModel = %v, want the default model %q", defaults["utilityModel"], primary)
+			}
+			allowed, _ := defaults["modelPolicy"].(map[string]any)["allow"].([]any)
+			if !slices.Contains(allowed, any(primary)) {
+				t.Fatalf("the utility model %q is not allowed: %v", primary, allowed)
+			}
+		})
 	}
 }
 

@@ -26,15 +26,30 @@ const mockInstance: Instance = {
 
 vi.mock("../hooks/useInstance", () => ({
   useInstanceByNameQuery: () => ({ data: mockInstance, isLoading: false }),
-  useDeleteInstanceByName: () => ({ mutate: vi.fn(), isPending: false, isError: false }),
-  useUpdateInstanceByName: () => ({ mutate: vi.fn(), isPending: false, isError: false, reset: vi.fn() }),
-  useUpgradeInstanceByName: () => ({ mutate: vi.fn(), isPending: false, isError: false }),
+  useDeleteInstanceByName: () => ({
+    mutate: vi.fn(),
+    isPending: false,
+    isError: false,
+  }),
+  useUpdateInstanceByName: () => ({
+    mutate: vi.fn(),
+    isPending: false,
+    isError: false,
+    reset: vi.fn(),
+  }),
+  useUpgradeInstanceByName: () => ({
+    mutate: vi.fn(),
+    isPending: false,
+    isError: false,
+  }),
   useInstanceStatusByNameQuery: () => ({ data: undefined, isLoading: false }),
 }));
 
-vi.mock("../hooks/useFeatures", () => ({
-  useFeatures: () => ({ data: { tailscaleEnabled: false } }),
-}));
+const mockFeatures = {
+  data: { tailscaleEnabled: false, customChatEnabled: false },
+  isLoading: false,
+};
+vi.mock("../hooks/useFeatures", () => ({ useFeatures: () => mockFeatures }));
 
 vi.mock("../api/instance", () => ({
   downloadTeamsApp: vi.fn(),
@@ -48,15 +63,66 @@ function renderAt(path: string) {
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={[path]}>
         <Routes>
-          <Route path="/instances/:instanceName/:section" element={<WorkspacePage />} />
+          <Route
+            path="/instances/:instanceName/:section"
+            element={<WorkspacePage />}
+          />
           <Route path="/instances/:instanceName" element={<WorkspacePage />} />
         </Routes>
       </MemoryRouter>
-    </QueryClientProvider>
+    </QueryClientProvider>,
   );
 }
 
 describe("WorkspacePage", () => {
+  it("offers Portal Chat only for an enabled Custom HTTP Agent without Web UI", () => {
+    const previous = mockInstance.agent;
+    mockInstance.agent = { type: "custom", port: 8080, webUI: false };
+    mockFeatures.data.customChatEnabled = true;
+    try {
+      renderAt("/instances/testuser/overview");
+      expect(
+        screen.getByRole("button", { name: "Chat", exact: true }),
+      ).toBeInTheDocument();
+    } finally {
+      mockInstance.agent = previous;
+      mockFeatures.data.customChatEnabled = false;
+    }
+  });
+  it.each([
+    { type: "hermes" as const },
+    { type: "openclaw" as const },
+    { type: "custom" as const },
+    { type: "custom" as const, port: 8080, webUI: true },
+  ])("does not replace the existing UI for $type / $webUI / $port", (agent) => {
+    const previous = mockInstance.agent;
+    mockInstance.agent = agent;
+    mockFeatures.data.customChatEnabled = true;
+    try {
+      renderAt("/instances/testuser/overview");
+      expect(
+        screen.queryByRole("button", { name: "Chat", exact: true }),
+      ).toBeNull();
+    } finally {
+      mockInstance.agent = previous;
+      mockFeatures.data.customChatEnabled = false;
+    }
+  });
+  it("waits for feature discovery before redirecting a direct Chat link", () => {
+    const previous = mockInstance.agent;
+    mockInstance.agent = { type: "custom", port: 8080 };
+    mockFeatures.isLoading = true;
+    try {
+      renderAt("/instances/testuser/chat");
+      expect(
+        screen.getByText("Checking Chat availability…"),
+      ).toBeInTheDocument();
+      expect(screen.queryByRole("heading", { name: "Test User" })).toBeNull();
+    } finally {
+      mockInstance.agent = previous;
+      mockFeatures.isLoading = false;
+    }
+  });
   it("shows the display name in the sidebar and heading", () => {
     renderAt("/instances/testuser/overview");
     expect(screen.getAllByText("Test User")).toHaveLength(2);
@@ -64,7 +130,9 @@ describe("WorkspacePage", () => {
 
   it("shows all nav items", () => {
     renderAt("/instances/testuser/overview");
-    expect(screen.getByRole("navigation", { name: "Agent workspace" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("navigation", { name: "Agent workspace" }),
+    ).toBeInTheDocument();
     expect(screen.getAllByText("Overview").length).toBeGreaterThan(0);
     expect(screen.getByText("Agent UI")).toBeInTheDocument();
     expect(screen.getByText("Terminal")).toBeInTheDocument();
@@ -73,23 +141,37 @@ describe("WorkspacePage", () => {
 
   it("renders overview section by default", () => {
     renderAt("/instances/testuser/overview");
-    expect(screen.getByRole("heading", { name: "Test User" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "Test User" }),
+    ).toBeInTheDocument();
   });
 
   it("omits the Registry credentials section for a public image", () => {
     renderAt("/instances/testuser/overview");
-    expect(screen.queryByRole("region", { name: "Registry credentials" })).toBeNull();
+    expect(
+      screen.queryByRole("region", { name: "Registry credentials" }),
+    ).toBeNull();
     expect(screen.queryByText("Not configured")).toBeNull();
   });
 
   it("keeps Registry credential recovery controls for an enabled private image", () => {
     const previous = mockInstance.agent;
-    mockInstance.agent = { ...previous, image: "registry.example.com/agent:1", registrySecretRef: { name: "registry-source-example" } };
+    mockInstance.agent = {
+      ...previous,
+      image: "registry.example.com/agent:1",
+      registrySecretRef: { name: "registry-source-example" },
+    };
     try {
       renderAt("/instances/testuser/overview");
-      expect(screen.getByRole("region", { name: "Registry credentials" })).toBeInTheDocument();
-      expect(screen.getByRole("button", { name: "Replace registry credentials" })).toBeInTheDocument();
-      expect(screen.getByRole("button", { name: "Remove registry credentials" })).toBeInTheDocument();
+      expect(
+        screen.getByRole("region", { name: "Registry credentials" }),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: "Replace registry credentials" }),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: "Remove registry credentials" }),
+      ).toBeInTheDocument();
       expect(screen.queryByText(/Credential sync/i)).toBeNull();
     } finally {
       mockInstance.agent = previous;
@@ -98,25 +180,41 @@ describe("WorkspacePage", () => {
 
   it("redirects /instances/:instanceName to /instances/:instanceName/overview", () => {
     renderAt("/instances/testuser");
-    expect(screen.getByRole("heading", { name: "Test User" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "Test User" }),
+    ).toBeInTheDocument();
   });
 
   it("redirects unknown section to overview", () => {
     renderAt("/instances/testuser/unknown-section");
-    expect(screen.getByRole("heading", { name: "Test User" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "Test User" }),
+    ).toBeInTheDocument();
   });
 
   it("links to standalone instance services when the instance is ready", () => {
     renderAt("/instances/testuser/overview");
-    expect(screen.getByRole("link", { name: "Agent UI" })).toHaveAttribute("href", mockInstance.accessUrl);
-    expect(screen.getByRole("link", { name: "Terminal" })).toHaveAttribute("href", "https://example.com/testuser/term");
-    expect(screen.getByRole("link", { name: "Desktop" })).toHaveAttribute("href", "https://example.com/testuser/desktop");
+    expect(screen.getByRole("link", { name: "Agent UI" })).toHaveAttribute(
+      "href",
+      mockInstance.accessUrl,
+    );
+    expect(screen.getByRole("link", { name: "Terminal" })).toHaveAttribute(
+      "href",
+      "https://example.com/testuser/term",
+    );
+    expect(screen.getByRole("link", { name: "Desktop" })).toHaveAttribute(
+      "href",
+      "https://example.com/testuser/desktop",
+    );
   });
 
   it("links Hermes instances to their native dashboard", () => {
     mockInstance.agent.type = "hermes";
     renderAt("/instances/testuser/overview");
-    expect(screen.getByRole("link", { name: "Agent UI" })).toHaveAttribute("href", "https://example.com/ui/testuser/");
+    expect(screen.getByRole("link", { name: "Agent UI" })).toHaveAttribute(
+      "href",
+      "https://example.com/ui/testuser/",
+    );
     mockInstance.agent.type = "openclaw";
   });
 
@@ -124,12 +222,26 @@ describe("WorkspacePage", () => {
     const previousConditions = mockInstance.conditions;
     mockInstance.agent.type = "custom";
     mockInstance.accessUrl = "https://gateway.example.com/testuser/desktop/";
-    mockInstance.conditions = [{ type: "IngressReady", status: "True", reason: "PlatformDesktopConfigured", message: "" }];
+    mockInstance.conditions = [
+      {
+        type: "IngressReady",
+        status: "True",
+        reason: "PlatformDesktopConfigured",
+        message: "",
+      },
+    ];
     try {
       renderAt("/instances/testuser/overview");
-      expect(screen.getByRole("link", { name: "Desktop" })).toHaveAttribute("href", "https://gateway.example.com/testuser/desktop");
-      expect(screen.getByText("Agent UI").closest("a")).not.toHaveAttribute("href");
-      expect(screen.getByText("Terminal").closest("a")).not.toHaveAttribute("href");
+      expect(screen.getByRole("link", { name: "Desktop" })).toHaveAttribute(
+        "href",
+        "https://gateway.example.com/testuser/desktop",
+      );
+      expect(screen.getByText("Agent UI").closest("a")).not.toHaveAttribute(
+        "href",
+      );
+      expect(screen.getByText("Terminal").closest("a")).not.toHaveAttribute(
+        "href",
+      );
     } finally {
       mockInstance.agent.type = "openclaw";
       mockInstance.accessUrl = "https://example.com/ui/testuser/";
@@ -140,9 +252,18 @@ describe("WorkspacePage", () => {
   it("disables standalone instance services until the instance is ready", () => {
     mockInstance.phase = "Provisioning";
     renderAt("/instances/testuser/overview");
-    expect(screen.getByText("Agent UI")).toHaveAttribute("aria-disabled", "true");
-    expect(screen.getByText("Terminal")).toHaveAttribute("aria-disabled", "true");
-    expect(screen.getByText("Desktop")).toHaveAttribute("aria-disabled", "true");
+    expect(screen.getByText("Agent UI")).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
+    expect(screen.getByText("Terminal")).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
+    expect(screen.getByText("Desktop")).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
     mockInstance.phase = "Ready";
   });
 
@@ -157,9 +278,16 @@ describe("WorkspacePage", () => {
     ];
     try {
       renderAt("/instances/testuser/overview");
-      expect(screen.getByRole("link", { name: "Terminal" })).toHaveAttribute("href", "https://gateway.example.com/testuser/term");
-      expect(screen.getByText("Agent UI").closest("a")).not.toHaveAttribute("href");
-      expect(screen.getByText("Desktop").closest("a")).not.toHaveAttribute("href");
+      expect(screen.getByRole("link", { name: "Terminal" })).toHaveAttribute(
+        "href",
+        "https://gateway.example.com/testuser/term",
+      );
+      expect(screen.getByText("Agent UI").closest("a")).not.toHaveAttribute(
+        "href",
+      );
+      expect(screen.getByText("Desktop").closest("a")).not.toHaveAttribute(
+        "href",
+      );
     } finally {
       Object.assign(mockInstance, previous);
       mockInstance.conditions = previous.conditions;
@@ -168,18 +296,31 @@ describe("WorkspacePage", () => {
 
   it("opens a Custom Web UI in a new tab without inventing a desktop", () => {
     const previous = { ...mockInstance };
-    Object.assign(mockInstance, { agent: { type: "custom", port: 8080, webUI: true }, accessUrl: undefined,
-      webUIUrl: "https://example.com/ui/testuser/", conditions: [
-        { type: "IngressReady", status: "True", reason: "PlatformWebUIConfigured", message: "" },
-      ] });
+    Object.assign(mockInstance, {
+      agent: { type: "custom", port: 8080, webUI: true },
+      accessUrl: undefined,
+      webUIUrl: "https://example.com/ui/testuser/",
+      conditions: [
+        {
+          type: "IngressReady",
+          status: "True",
+          reason: "PlatformWebUIConfigured",
+          message: "",
+        },
+      ],
+    });
     try {
       renderAt("/instances/testuser/overview");
       const link = screen.getByRole("link", { name: "Web UI" });
       expect(link).toHaveAttribute("href", "https://example.com/ui/testuser/");
       expect(link).toHaveAttribute("target", "_blank");
       expect(link).toHaveAttribute("rel", "noopener noreferrer");
-      expect(screen.getByText("Desktop").closest("a")).not.toHaveAttribute("href");
-      expect(screen.getByText("Terminal").closest("a")).not.toHaveAttribute("href");
+      expect(screen.getByText("Desktop").closest("a")).not.toHaveAttribute(
+        "href",
+      );
+      expect(screen.getByText("Terminal").closest("a")).not.toHaveAttribute(
+        "href",
+      );
     } finally {
       delete mockInstance.webUIUrl;
       Object.assign(mockInstance, previous);

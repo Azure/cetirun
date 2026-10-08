@@ -16,7 +16,7 @@ const MeContext = createContext<MeContextValue | undefined>(undefined);
 export function MeProvider({ children }: { children: ReactNode }) {
   const query: UseQueryResult<Me, Error> = useQuery({
     queryKey: ["me"],
-    queryFn: fetchMe,
+    queryFn: () => fetchMe(),
     staleTime: 60_000,
   });
   return (

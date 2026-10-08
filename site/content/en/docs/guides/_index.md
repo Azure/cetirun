@@ -11,6 +11,7 @@ Kubernetes, Azure, and tailnet changes require platform authorization.
 Replace the example names with your instance and deployment settings.
 
 - [Choose a model](models/)
+- [Chat with a Custom Agent](custom-chat/) — chat without a native Web UI and keep history in your browser
 - [Manage lifecycle](lifecycle/) — check readiness, update, suspend, and delete instances
 
 ## Integrations

@@ -99,6 +99,11 @@ affinity: {}
 # -- Additional pod annotations.
 podAnnotations: {}
 
+# -- Trusted callers of private Custom Chat endpoints; not tenant overrides.
+chatAccess:
+  enabled: false
+  callers: []
+
 # -- Service account configuration.
 serviceAccount:
   create: true
@@ -125,6 +130,11 @@ sandboxAdmission:
   # protected writes fail closed and execution stays held. Other Pod mutators
   # must exclude these namespaces; arbitrary injected metadata is not accepted.
   podsEnabled: false
+  # -- Optional operator-namespace placement.json ConfigMap. Requires Pod
+  # admission. When enforced, placement checks cover every namespace's Pod
+  # writes and bindings; an unavailable registry/server fails those requests.
+  # This does not supply a fencing receipt or authorize Agent execution.
+  placementConfigMapName: ""
   # -- Timeout for each fail-closed webhook call; integer 1..30 when enforce=true.
   # Pod validation uses 80% of this budget, with at most four concurrent source
   # GETs per request; the remainder is reserved for transport and response.
@@ -163,6 +173,7 @@ sandboxAdmission:
 # -- Kubernetes capability declarations for configuration admission and held
 # native Sandbox preparation. Both use the same operator-namespace platform.json.
 # Does not qualify a platform or implement writer fencing. Execution stays held.
+# Adds controller write permissions for compiled namespaced CiliumNetworkPolicies.
 sandboxSources:
   enabled: false
   # -- Create owned namespace, HOME and native authentication only for new namespaces.
@@ -179,6 +190,10 @@ sandboxSources:
   # Requires owned bootstrap. Selects already-published Blob NFS content by Team UID;
   # creates only retained, read-only static PV/PVC bindings, never source content.
   skillsCatalogConfigMapName: ""
+  # -- Optional placement.json registry for durable namespace/HOME/Node binding.
+  # Must match sandboxAdmission.placementConfigMapName. Records the existing
+  # reservation after zero-replica staging; does not enroll Nodes or grant execution.
+  placementConfigMapName: ""
   # -- Approved native helpers; arbitrary injected containers remain unsupported.
   helpers:
     doctor: false
@@ -244,13 +259,15 @@ aiGateway:
 # Deprecated: use cetirun.helmValues.skills.storageAccount instead.
 skillsStorageAccount: ""
 
-# -- Opt-in provisioning for approved Custom images with their own model login.
-# No Gateway credentials are generated or imported. Configure exact image
-# digests and qualify the image UID/GID against this HOME storage before enabling.
+# -- Opt-in provisioning for approved Custom images. Qualify each image's
+# UID/GID against this HOME storage and select its model-access mode explicitly.
 customRuntime:
   enabled: false
   agentManagedModel: false
   approvedImages: []
+  # -- Subset of approvedImages qualified to use the platform AI Gateway.
+  # Other approved images retain explicit image-owned authentication.
+  gatewayImages: []
   storageClass: default
   storageSize: 100Gi
   accessMode: ReadWriteOnce

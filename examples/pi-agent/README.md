@@ -3,7 +3,7 @@
 Run [Pi](https://github.com/earendil-works/pi/tree/v0.87.1/packages/coding-agent)
 in CetiRun, with its native terminal UI and an OpenAI-compatible HTTP adapter.
 The example pins `@earendil-works/pi-coding-agent` to **0.87.1**. It uses Pi's
-real tools; it does not provide a Web Chat UI.
+real tools and works with Portal Chat when enabled; it does not bundle a Web UI.
 
 ## HTTP interfaces
 
@@ -13,7 +13,7 @@ starts its HTTP server on `0.0.0.0:PORT`.
 | Interface | Implementation |
 | --- | --- |
 | `GET /healthz` | Returns process readiness without calling a model. |
-| `GET /v1/models` | Lists the Copilot models available to this instance. |
+| `GET /v1/models` | Lists this Agent's available model identifiers from its selected model-access mode. |
 | `POST /v1/chat/completions` | Accepts text messages and optional SSE streaming; runs Pi's read, bash, edit, write, grep, find and ls tools. |
 
 [agent-api.mjs](agent-api.mjs) contains all three routes. It accepts one HTTP
@@ -30,13 +30,14 @@ platform requirements beyond this example.
 | [server.mjs](server.mjs) | Image entrypoint: start the API and private auth listener; stop them on shutdown. |
 | [agent-api.mjs](agent-api.mjs) | HTTP contract, input validation, streaming, limits and cancellation. |
 | [pi-runtime.mjs](pi-runtime.mjs) | Pi SDK sessions, model discovery and tool execution. |
+| [gateway-runtime.mjs](gateway-runtime.mjs) | Model discovery and requests through the platform AI Gateway, with memory-only credentials and no automatic retries. |
 | [pi-resources.mjs](pi-resources.mjs) | Load approved context and skills without global extensions or runtime package installation. |
 | [pi-tui.mjs](pi-tui.mjs) | Start Pi's native interactive mode with the same context and private auth directory. |
 | [auth-api.mjs](auth-api.mjs), [copilot-auth.mjs](copilot-auth.mjs) | Loopback-only login/status/cancel API and its operations CLI. |
 | [http.mjs](http.mjs) | Shared HTTP I/O and server lifecycle helpers. |
 | [Dockerfile](Dockerfile) | Install pinned dependencies and tools, expose `pi-tui`, and run the HTTP entrypoint as a non-root user. |
 
-The auth listener is private to the Pod at `127.0.0.1:9099`; never expose it
+In image-owned mode, the auth listener is private to the Pod at `127.0.0.1:9099`; never expose it
 through a Service or ingress. From an approved operations channel inside the
 Agent container, `node /opt/cetirun-pi/copilot-auth.mjs --help` describes its CLI.
 Credentials stay in `$HOME/.pi/agent/auth.json` and are not returned by the API
@@ -72,23 +73,47 @@ its published `cetirun-terminal` image. The Operator provisions the terminal
 ServiceAccount, restricted exec access, routing and storage. Keep the existing
 gateway configuration; `ttyd.gatewayServiceAccount` must match its identity.
 
-An administrator must enable Custom provisioning and approve the exact image.
-This example opts into Pi-owned model authentication; missing Gateway
-credentials never enable that mode implicitly. Merge these settings into the
-platform values:
+An administrator enables Custom provisioning and approves the exact image.
+Add the same digest to `gatewayImages` to use the platform AI Gateway. This
+selects model access for that image without migrating other approved images.
+The Operator provisions the Agent's Virtual Key and private Gateway access;
+the image receives `OPENAI_BASE_URL` and a Secret-backed `OPENAI_API_KEY`.
+Merge these settings into the platform values:
 
 ```yaml
 cetirun-operator:
   customRuntime:
     enabled: true
-    agentManagedModel: true
+    agentManagedModel: false
     approvedImages:
+      - registry.example.com/pi-example@sha256:<published-digest>
+    gatewayImages:
       - registry.example.com/pi-example@sha256:<published-digest>
     storageClass: default
     storageSize: 100Gi
     accessMode: ReadWriteOnce
     fsGroup: 1024
 ```
+
+Gateway mode keeps its key in memory, ignores native `auth.json`, and disables
+the image's local login listener. Pi discovers models through the Gateway using
+its own key and runs its tools locally. The HTTP adapter still owns no history;
+Portal Chat supplies each conversation's context. Automatic model and compaction
+retries are disabled. The adapter uses a 32K context estimate and a 2K output
+ceiling, not a claim about every model's actual limits; Gateway/provider limits
+still apply. Pi's local cost display is not the Gateway's usage ledger.
+
+Shared models appear only when the Gateway grants access. If Copilot is enabled,
+use **Sign in with GitHub** on the Portal Overview. The platform deploys a
+separate proxy using a chart marked `cetirun.microsoft.com/custom-copilot: v1`.
+Its token and proxy key never reach the Agent container or HOME. Ready with an
+empty model list means model access is still pending, not successful inference.
+
+To retain the earlier image-owned mode, set `agentManagedModel: true` and omit
+that image from `gatewayImages`. Missing or failed Gateway configuration never
+selects native login automatically. Partial Gateway environment variables fail
+startup. Use a new, qualified image/instance for migration; existing private
+native credentials are not copied, imported or removed by this example.
 
 The Operator prepares the namespace, canonical context and HOME claim template
 in one Chart installation. The StatefulSet creates the PVC and Pod; a
@@ -109,6 +134,7 @@ kind: Agent
 metadata:
   name: pi-example
 spec:
+  team: example-team # An existing, approved Team.
   user:
     alias: example-user
     displayName: Example User
@@ -118,7 +144,7 @@ spec:
     username: vibe
     port: 8080
   helm:
-    version: "<terminal-enabled-chart-version>"
+    version: "<chat-and-custom-copilot-enabled-chart-version>"
     values:
       ttyd:
         enabled: true
@@ -138,6 +164,11 @@ Desktop without disabling Terminal.
 
 ## Open Pi from the Portal
 
+For web chat, enable [Portal Chat](../../site/content/en/docs/guides/custom-chat.md)
+and select **Chat** in the instance. The Portal saves conversations in this
+browser and sends their context with each request; Pi runs the model and tools.
+This history is separate from Pi's native terminal sessions.
+
 Open the instance, select **Terminal**, and run:
 
 ```bash
@@ -150,13 +181,15 @@ trying `zsh`, `bash`, then `sh`. This image does not install or start ttyd.
 The browser uses `/<instance>/term/`; the terminal Service defaults to port 7681,
 separate from the Agent's HTTP port.
 
-For model access, approve Pi's Copilot model-policy updates before using
+In Gateway mode, model login stays in Portal Overview. In image-owned mode,
+approve Pi's Copilot model-policy updates before using
 `/login github-copilot`, then select a model with `/model`. Complete the GitHub
 device flow with your own approved account. Terminal access does not log you in
-to Copilot; this example has no Portal model-login action.
+to Copilot; the image-owned mode has no Portal model-login action.
 
-Pi works in `$HOME/workspace`. Credentials and saved sessions stay in the
-private HOME PVC under `.pi/agent`; context and skills come from read-only
+Pi works in `$HOME/workspace`. Native sessions, and image-owned credentials when
+that mode is selected, stay in the private HOME PVC under `.pi/agent`;
+context and skills come from read-only
 `.agents`. Pi saves a new native session after its first assistant response,
 so an empty or shell-only session is not a persistence test. Pod replacement
 opens a new shell; run `pi-tui` again to reopen a saved session.

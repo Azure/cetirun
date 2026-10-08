@@ -151,3 +151,60 @@ func TestToInstanceResponse_TailscaleLogging(t *testing.T) {
 		}
 	}
 }
+
+// An Agent the operator has not created a namespace for yet has no Secrets:
+// its response reads none and logs no warning, however often it is polled.
+func TestToInstanceResponseBeforeTheNamespaceIsRecorded(t *testing.T) {
+	for _, agentType := range []cetirunv1alpha1.AgentType{cetirunv1alpha1.AgentTypeOpenClaw, cetirunv1alpha1.AgentTypeHermes} {
+		t.Run(string(agentType), func(t *testing.T) {
+			instance := sampleInstance()
+			instance.Spec.Agent.Type = agentType
+			instance.Status.Phase = "Provisioning"
+			instance.Status.Namespace = ""
+			instance.Status.AccessURL = ""
+			instance.Spec.GatewayTokenSecretRef = "gateway-token"
+			instance.Spec.Tailscale = &cetirunv1alpha1.TailscaleSpec{AuthKeySecretRef: "tailscale-auth"}
+			secretReads := 0
+			fc := fake.NewClientBuilder().WithScheme(newScheme()).
+				WithInterceptorFuncs(interceptor.Funcs{
+					Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+						if _, ok := obj.(*corev1.Secret); ok && (key.Namespace == "" || key.Name == "gateway-token" || key.Name == "tailscale-auth") {
+							secretReads++
+						}
+						return c.Get(ctx, key, obj, opts...)
+					},
+				}).Build()
+			h := &InstanceHandler{Kube: kube.NewClient(fc)}
+
+			var logs bytes.Buffer
+			previousLogger := slog.Default()
+			slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, nil)))
+			t.Cleanup(func() { slog.SetDefault(previousLogger) })
+
+			resp, err := h.toInstanceResponse(context.Background(), instance)
+			if err != nil {
+				t.Fatalf("toInstanceResponse() error = %v", err)
+			}
+			if secretReads != 0 {
+				t.Errorf("read %d Secrets before the namespace was recorded", secretReads)
+			}
+			if resp.GatewayToken != "" || resp.APIServerKey != "" || resp.CetiRunAuthKey != "" || resp.TailscaleAuthKey != "" {
+				t.Errorf("credentials returned without a namespace: %+v", resp)
+			}
+			if resp.Phase != "Provisioning" {
+				t.Errorf("Phase = %q", resp.Phase)
+			}
+			decoder := json.NewDecoder(&logs)
+			for decoder.More() {
+				var entry map[string]any
+				if err := decoder.Decode(&entry); err != nil {
+					t.Fatalf("decode log: %v", err)
+				}
+				switch entry["msg"] {
+				case "Failed to get gateway token", "Failed to get Hermes API server key", "Failed to get cetirun-auth key", "Failed to get tailscale auth key":
+					t.Errorf("unexpected warning: %v", entry)
+				}
+			}
+		})
+	}
+}

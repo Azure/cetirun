@@ -345,6 +345,18 @@ func writeCopilotLoginCompleting(w http.ResponseWriter) {
 	writeError(w, http.StatusConflict, "copilot_login_completing", "The GitHub Copilot sign-in is finishing. Try again in a moment.")
 }
 
+// logCopilotLoginNotCompleted records why a sign-in ended without taking
+// effect, for an administrator looking into a failed sign-in. It names neither
+// the GitHub account nor the sign-in's codes.
+func logCopilotLoginNotCompleted(instance *cetirunv1alpha1.Agent, reason string) {
+	slog.Info("GitHub Copilot sign-in did not complete", "instance", instance.Name, "reason", reason)
+}
+
+// writeCopilotLoginCompleted refuses a cancel of a sign-in that is in effect.
+func writeCopilotLoginCompleted(w http.ResponseWriter) {
+	writeError(w, http.StatusConflict, "copilot_login_completed", "The GitHub Copilot sign-in had already finished.")
+}
+
 // writeCopilotFenceError reports a failure to fence earlier completions.
 func writeCopilotFenceError(w http.ResponseWriter, instance *cetirunv1alpha1.Agent, err error, message string) {
 	if errors.Is(err, errCopilotLoginChanged) {
@@ -564,6 +576,7 @@ func (h *InstanceHandler) PollCopilotLogin(w http.ResponseWriter, r *http.Reques
 	now := h.now().UTC()
 	expiresAt, err := time.Parse(time.RFC3339, string(secret.Data[loginExpiresAt]))
 	if err != nil || !now.Before(expiresAt) {
+		logCopilotLoginNotCompleted(instance, "code_expired")
 		h.endCopilotLogin(ctx, w, instance, secret, copilotLoginExpired, "The code expired. Start the sign-in again.")
 		return
 	}
@@ -607,8 +620,10 @@ func (h *InstanceHandler) PollCopilotLogin(w http.ResponseWriter, r *http.Reques
 		}
 		writeJSON(w, http.StatusOK, loginResponse(secret.Data))
 	case result.Error == "expired_token":
+		logCopilotLoginNotCompleted(instance, "code_expired")
 		h.endCopilotLogin(ctx, w, instance, secret, copilotLoginExpired, "The code expired. Start the sign-in again.")
 	case result.Error == "access_denied":
+		logCopilotLoginNotCompleted(instance, "denied_at_github")
 		h.endCopilotLogin(ctx, w, instance, secret, copilotLoginDenied, "The sign-in was cancelled at GitHub.")
 	default:
 		slog.Warn("GitHub Copilot sign-in failed", "instance", instance.Name, "error", result.Error)
@@ -641,6 +656,7 @@ func (h *InstanceHandler) finishCopilotLogin(ctx context.Context, w http.Respons
 	models, err := h.copilotClient().ListModels(ctx, token)
 	switch {
 	case errors.Is(err, copilot.ErrNoCopilot):
+		logCopilotLoginNotCompleted(instance, "account_cannot_use_copilot")
 		h.endCopilotLogin(ctx, w, instance, login, copilotLoginFailed, "This GitHub account cannot use GitHub Copilot.")
 		return
 	case err != nil:
@@ -648,6 +664,7 @@ func (h *InstanceHandler) finishCopilotLogin(ctx context.Context, w http.Respons
 		h.endCopilotLogin(ctx, w, instance, login, copilotLoginFailed, "Signed in to GitHub, but GitHub Copilot's model list could not be read. Start the sign-in again.")
 		return
 	case len(models) == 0:
+		logCopilotLoginNotCompleted(instance, "no_chat_models")
 		h.endCopilotLogin(ctx, w, instance, login, copilotLoginFailed, "This GitHub Copilot account offers no chat models.")
 		return
 	}
@@ -934,10 +951,12 @@ func (h *InstanceHandler) settleCopilotLogin(ctx context.Context, w http.Respons
 // is not cancelled. A committed sign-in past its lease is ended rather than
 // cleared, and one that completed first is reported with
 // copilot_login_completed; while that cannot be settled, the sign-in stays
-// ending for a poll to settle. Between reading the sign-in Secret and
-// changing it, the cancel checks that the Agent is still the one it was made
-// for; a Secret labelled for another UID, left over from an Agent that no
-// longer exists, is not this Agent's sign-in and is left alone.
+// ending for a poll to settle. A sign-in that has succeeded is in effect, and
+// a cancel that comes after it, from a page that still showed it pending, is
+// reported with copilot_login_completed too. Between reading the sign-in
+// Secret and changing it, the cancel checks that the Agent is still the one
+// it was made for; a Secret labelled for another UID, left over from an Agent
+// that no longer exists, is not this Agent's sign-in and is left alone.
 func (h *InstanceHandler) CancelCopilotLogin(w http.ResponseWriter, r *http.Request) {
 	uid, ok := h.copilotLoginUID(w, r)
 	if !ok {
@@ -970,6 +989,13 @@ func (h *InstanceHandler) CancelCopilotLogin(w http.ResponseWriter, r *http.Requ
 		}
 		if copilotLoginBeingCompleted(secret, instance, h.now()) {
 			writeCopilotLoginCompleting(w)
+			return
+		}
+		// Clearing a succeeded sign-in would not undo it: its token and
+		// models are in effect. Reporting the cancel as done would tell the
+		// page that it was cancelled.
+		if string(secret.Data[loginState]) == copilotLoginSucceeded {
+			writeCopilotLoginCompleted(w)
 			return
 		}
 		// With the version just read: a poll that claimed the sign-in
@@ -1019,7 +1045,7 @@ func (h *InstanceHandler) CancelCopilotLogin(w http.ResponseWriter, r *http.Requ
 			// The sign-in stays ending, and a poll settles it.
 			writeCopilotFenceError(w, instance, err, "Failed to cancel the sign-in")
 		case completed:
-			writeError(w, http.StatusConflict, "copilot_login_completed", "The GitHub Copilot sign-in had already finished.")
+			writeCopilotLoginCompleted(w)
 		default:
 			w.WriteHeader(http.StatusNoContent)
 		}

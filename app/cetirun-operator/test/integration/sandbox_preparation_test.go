@@ -1032,7 +1032,9 @@ func (f *preparationCase) readReceipt(t *testing.T) (*corev1.ConfigMap, controll
 		if err := json.Unmarshal([]byte(object.Data["preparation.json"]), &receipt); err != nil {
 			t.Fatal(err)
 		}
-		if receipt.Version != "v1" || receipt.AgentUID != f.fixture.Agent.UID || receipt.AgentName != f.fixture.Agent.Name ||
+		if !((receipt.Version == "v1" && receipt.Prerequisites.Placement == nil) ||
+			(receipt.Version == "v2" && receipt.Prerequisites.Placement != nil)) ||
+			receipt.AgentUID != f.fixture.Agent.UID || receipt.AgentName != f.fixture.Agent.Name ||
 			receipt.Prerequisites.NamespaceUID != f.fixture.Namespace.UID || receipt.Prerequisites.Home != f.source.prerequisites.Home ||
 			!slices.Contains(object.Finalizers, sandbox.PreparationFinalizer) {
 			t.Fatal("durable preparation receipt does not bind the original namespace/HOME")

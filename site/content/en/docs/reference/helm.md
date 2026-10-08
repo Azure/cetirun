@@ -364,7 +364,12 @@ values. `CETIRUN_SANDBOX_SOURCES` remains operator-only; admission receives the
 selected platform namespace and ConfigMap name in `CETIRUN_SANDBOX_ADMISSION`.
 These settings are omitted when sources are disabled. The dedicated admission
 ServiceAccount reuses its existing namespace-scoped ConfigMap `get` Role and
-RuntimeClass/StorageClass `get` permissions. Sources alone add no RBAC grants.
+RuntimeClass/StorageClass `get` permissions. Enabled sources grant the controller
+`get`, `list`, `watch`, `create`, `update`, `patch` and `delete` on namespaced
+`ciliumnetworkpolicies.cilium.io` for guarded staging of compiled policies.
+These controller permissions are cluster-wide; staging still verifies exact
+Agent ownership and namespace identities. Admission remains read-only, with no
+cluster-wide Cilium policy or endpoint write permissions added.
 The optional skills catalog adds only PersistentVolume `get` for its dependency
 metadata; it adds no Secret lists or cluster-wide ConfigMap access.
 
@@ -422,6 +427,39 @@ Keep them aligned; changing `--namespace` alone does not relocate those
 resources. The operator chart manages all four CRDs under `templates/crds/`;
 Helm upgrades them with the release. Their `helm.sh/resource-policy: keep`
 annotation retains them on uninstall, not against schema downgrade.
+`sandboxAdmission.placementConfigMapName` defaults to empty. Selecting an
+operator-namespace placement registry requires enabled configuration and Pod
+admission. The server serves the placement endpoint during bootstrap;
+`enforce: true` also installs its cluster-wide checks for Pod writes, scheduling
+bindings, and reserved Node updates/deletion. There is no namespace or Pod-label
+exemption. Only read permissions for Nodes, DaemonSets and explicit platform
+PriorityClasses are added; state reads reuse the operator-namespace ConfigMap
+role. PriorityClass-derived Pod fields are verified against current class state.
+The legacy core `bindings` endpoint is denied, and binding annotation overrides
+cannot mutate a Pod while bypassing its normal validation.
+
+This is a dedicated-pool pilot control, not an execution switch. Enable it only
+after registering the complete current Node identity inventory and permitted
+platform workloads. Unknown or replaced nodes cannot receive a binding, and
+reserved-node DaemonSet replacements need explicit Pod-UID enrollment. An
+unavailable registry or webhook blocks matching writes across the cluster;
+ordinary Pod status and deletion remain outside those rules. Keep serving and
+registry-repair resources on separately registered unreserved nodes. New serving
+Pods are also gated; maintain working replicas and a stopped maintenance
+recovery procedure rather than assuming a serving-workload bypass.
+
+`sandboxSources.placementConfigMapName` separately opts the controller into
+durable placement binding and must match the admission registry. The default
+is empty; selecting it adds only Node `get` permission to the controller.
+After zero-replica staging, the current reservation is bound to the exact
+namespace/HOME/workload identities in the existing preparation receipt before
+the held expectation is published. Missing enrollment leaves preparation
+incomplete; changed identities require a separately qualified handoff, not
+automatic reassignment. Cleanup retains the historical Node UID/provider-ID
+tuple without depending on the live registry. This upgrades selected internal
+receipts to `v2`, so keep compatible readers until their cleanup is complete.
+It neither qualifies fencing nor enables execution.
+
 `sandboxAdmission.validationMode` defaults to `compatible`; `strict` is an
 explicit option that requires ordered schema/binary upgrades. Neither mode
 disables authorization or changes the webhook failure policy. Review schema

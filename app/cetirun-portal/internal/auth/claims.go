@@ -11,6 +11,8 @@ import (
 
 // Claims represents the authenticated user extracted from OAuth2 Proxy headers.
 type Claims struct {
+	// Subject comes only from the gateway-authenticated opaque identity header.
+	Subject string
 	// Alias is the user's short name, extracted from the X-Auth-Request-Preferred-Username
 	// header by stripping the @domain.com suffix. Used as the Agent name.
 	Alias string

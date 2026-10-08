@@ -196,16 +196,48 @@ func (p *KubernetesSandboxPrerequisites) Resolve(ctx context.Context, requested 
 	if err != nil {
 		return empty, err
 	}
+	type revisionInput struct {
+		Source sandboxworkload.SourceReference
+		Digest string
+	}
+	revisionInputs := make([]revisionInput, 0, len(revisionSources))
+	known := map[string]client.Object{}
+	for i, object := range []client.Object{team, box, namespace, home, skills} {
+		known[sandboxworkload.SourceKey(sources[i+1])] = object
+	}
+	verifier := &AgentReconciler{APIReader: source.APIReader}
+	for _, reference := range revisionSources {
+		input := revisionInput{Source: reference}
+		if sandboxworkload.EffectiveSource(reference) {
+			object := known[sandboxworkload.SourceKey(reference)]
+			switch {
+			case reference.Kind == "Team" && reference.APIVersion == api.GroupVersion.String():
+				teamInputs, err := sandboxworkload.ExecutionTeamInputs(team)
+				if err != nil {
+					return empty, err
+				}
+				input.Digest, err = teamInputs.DigestFor(agent.Spec.SandboxRef, binding.PolicyClass)
+			case object != nil:
+				input.Digest, err = sandboxworkload.ExecutionObjectDigest(object)
+			default:
+				input.Digest, err = verifier.executionSourceDigest(ctx, reference, agent.Spec.SandboxRef, binding.PolicyClass, true)
+			}
+			if err != nil {
+				return empty, err
+			}
+			input.Source.ResourceVersion = ""
+		}
+		revisionInputs = append(revisionInputs, input)
+	}
 	revision, err := sandboxPreparationDigest(struct {
 		Version      string
-		Sources      []sandboxworkload.SourceReference
+		Inputs       []revisionInput
 		ChartVersion string
 		Helpers      sandboxworkload.Helpers
-	}{"kubernetes-prerequisites-v1", revisionSources, source.ChartVersion, source.Helpers})
+	}{"kubernetes-prerequisites-v2", revisionInputs, source.ChartVersion, source.Helpers})
 	if err != nil {
 		return empty, err
 	}
-	verifier := &AgentReconciler{APIReader: source.APIReader}
 	if err := verifier.verifySandboxSources(ctx, sources); err != nil {
 		return empty, fmt.Errorf("recheck Sandbox prerequisites: %w", err)
 	}
@@ -272,7 +304,10 @@ func (p *KubernetesSandboxPrerequisites) CheckQuiesced(ctx context.Context, agen
 	// Cleanup supplies a durable prior tuple, even after generation, policy,
 	// chart, storage configuration or lifecycle changes. Do not Resolve again,
 	// compare it with current settings, or require those resources to survive.
-	prerequisites.PublicationSources = slices.Clone(prerequisites.PublicationSources)
+	if err := validateSandboxPlacementTuple(agent, prerequisites); err != nil {
+		return err
+	}
+	prerequisites = copySandboxPrerequisites(prerequisites)
 	if err := p.WriterExclusion.CheckQuiesced(ctx, agent.DeepCopy(), prerequisites); err != nil {
 		return err
 	}

@@ -15,6 +15,7 @@ import (
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxbinding"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxplacement"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
 	admissionv1 "k8s.io/api/admission/v1"
 	appsv1 "k8s.io/api/apps/v1"
@@ -45,14 +46,17 @@ type PodConfig struct {
 	// It must not be an Agent workload namespace. Admission matching must
 	// independently protect that boundary and exclude its own repair resources.
 	StateNamespace string
+	// Optional placement registry also verifies Node-added topology labels.
+	PlacementConfigMapName string
 	// RequestTimeout covers all authoritative reads, not each individual GET.
 	// The chart reserves 20% of the webhook timeout for transport and response.
 	RequestTimeout time.Duration
 }
 
 type PodHandler struct {
-	reader client.Reader
-	config PodConfig
+	reader    client.Reader
+	config    PodConfig
+	placement *sandboxplacement.Handler
 }
 
 func (h *PodHandler) Handle(ctx context.Context, request admission.Request) admission.Response {
@@ -71,7 +75,18 @@ func NewPodHandler(reader client.Reader, config PodConfig) (*PodHandler, error) 
 	if config.RequestTimeout <= 0 || config.RequestTimeout >= 30*time.Second {
 		return nil, fmt.Errorf("Pod admission request timeout must be positive and less than 30 seconds")
 	}
-	return &PodHandler{reader: reader, config: config}, nil
+	handler := &PodHandler{reader: reader, config: config}
+	if config.PlacementConfigMapName != "" {
+		placement, err := sandboxplacement.NewHandler(reader, sandboxplacement.Config{
+			Namespace: config.StateNamespace, ConfigMapName: config.PlacementConfigMapName,
+			RequestTimeout: config.RequestTimeout,
+		})
+		if err != nil {
+			return nil, err
+		}
+		handler.placement = placement
+	}
+	return handler, nil
 }
 
 func PodExpectationName(namespace string, uid types.UID) string {
@@ -126,6 +141,9 @@ func (h *PodHandler) Validate(ctx context.Context, request admission.Request) ad
 	if expected.ExecutionHeld || agent.Spec.Suspended || slices.Contains(agent.Finalizers, sandbox.HoldFinalizer) {
 		return rejectPod(ctx, request, podDenied("ExecutionHeld", sandboxworkload.ErrExecutionHeld.Error()))
 	}
+	if expected.Placement != nil && h.placement == nil {
+		return rejectPod(ctx, request, podDenied("PlacementUnavailable", "recorded placement requires the configured authoritative placement reader"))
+	}
 	if failure := h.validatePodSources(ctx, expected, agent); failure != nil {
 		return rejectPod(ctx, request, failure)
 	}
@@ -164,7 +182,11 @@ func (h *PodHandler) Validate(ctx context.Context, request admission.Request) ad
 		// by a new Pod or inferred from its caller, labels or ServiceAccount.
 		expected.Template.Spec.NodeName = current.Spec.NodeName
 	}
-	if err := sandboxworkload.ValidatePod(&pod, expected); err != nil {
+	if h.placement != nil && pod.Spec.NodeName != "" {
+		if response := h.placement.ValidateScheduledPod(ctx, request, &pod, expected); !response.Allowed {
+			return response
+		}
+	} else if err := sandboxworkload.ValidatePod(&pod, expected); err != nil {
 		message := "Pod does not match the protected workload contract"
 		var mismatch *sandboxworkload.PodMismatchError
 		if errors.As(err, &mismatch) {

@@ -100,7 +100,7 @@ func main() {
 	healthHandler := &handler.HealthHandler{KubeClient: k8sClient}
 	featuresHandler := &handler.FeaturesHandler{Config: cfg}
 	configHandler := &handler.ConfigHandler{NoticeBanner: cfg.NoticeBanner}
-	meHandler := &handler.MeHandler{}
+	meHandler := &handler.MeHandler{ChatIdentityRealm: cfg.ChatIdentityRealm}
 	adminTeamHandler := &handler.AdminTeamHandler{Kube: kubeClient}
 	adminInstanceHandler := &handler.AdminInstanceHandler{Kube: kubeClient}
 	var agentAuthorizationHandler *handler.AgentAuthorizationHandler

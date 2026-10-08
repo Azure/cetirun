@@ -76,6 +76,123 @@ registration revision must represent qualified runtime/chart/topology/grant
 inventory, not merely the existence of a RuntimeClass.
 An observation validator checks an adapter's input; it does not generate evidence.
 
+### Durable writer-exclusion orchestration
+
+The [writer lifecycle package](internal/sandboxwriter/) records an explicitly
+enrolled Agent/namespace/HOME lifetime and its immutable historical writers in
+protected controller state. Enrollment must precede every possible writer;
+neither a missing journal nor a list of currently visible Pods proves an empty
+history. Each writer records the workload, Pod, Node, physical machine
+incarnation, epoch and storage identity. Conflicts, missing identities and
+history bounds fail rather than adopting or discarding old entries.
+The journal retains its own finalizer and exact Agent UID ownership, with
+`blockOwnerDeletion: false`. It remains available for historical cleanup when
+garbage collection requests its deletion, without blocking foreground Agent
+deletion after the Agent's independent cleanup obligations are complete.
+A terminating journal cannot reserve another writer.
+
+Revocation intent is persisted before calling the external provider. An
+uncertain reply or controller restart permits observation only, not another
+destructive submission. Completion requires current evidence for the exact
+recorded operation and every historical writer, a durable restart barrier and
+storage release. A one-shot CRI stop, Pod absence, zero replicas, Node readiness,
+or a PVC access mode cannot supply that evidence. Cleanup uses the recorded
+historical tuple even when current policy references are unavailable.
+
+The [controller bridge](internal/controller/sandbox_writer_exclusion.go) can
+supply the existing `SandboxWriterExclusionSource` interface when explicitly
+configured by a trusted platform integration. It does not install a provider,
+adopt an existing workload, weaken placement checks, issue a start permit or
+change the default activation hold. An independently qualified provider must
+implement the guest-external barrier, unreachable-node handling and storage
+release. The standalone CRI and empty-pool experiments are not such providers.
+
+Unit, race and isolated API-server tests use synthetic provider responses.
+Run `make test-sandbox-lifecycle` with preinstalled `KUBEBUILDER_ASSETS` for the
+API persistence tests. These checks are not live runtime qualification.
+
+### Start and shared-change coordination
+
+The [coordination package](internal/sandboxcoordination/) provides the ordered
+protocol for a participating platform integration. The
+[native preparation bridge](internal/controller/sandbox_execution_intent.go)
+requires current held preparation, a pinned ControllerRevision and grant
+journal, complete lifetime placement, current authorization and compiled
+policy, and an independently enrolled Pod/Node/epoch, physical machine,
+volume and writer-journal UID. The complete writer tuple is persisted with
+the coordination ticket and must still match before reservation or cleanup.
+It rechecks sources without reading Secret contents or treating Agent status
+as authorization.
+Preparation still validates every permitted Team Sandbox and both policy
+slots. An execution reserves only its selected Sandbox and policy, so valid
+changes to an unused Sandbox or the other policy class do not require it to stop.
+Non-secret sources use immutable UIDs and effective-input digests rather than
+treating the original observation resource version as lifetime configuration.
+Digests retain desired content, owner references, finalizers and recognized
+runtime, ownership, network and admission-control metadata. Unrelated labels,
+annotations, managed fields and status do not invalidate execution. StatefulSet
+zero/one-replica transitions remain controlled separately. Replacement,
+termination, lost storage, changed content or more than one desired replica
+still fail. Secret contents are never read by these checks, so Secret versions
+remain conservative pins; explicit grant-approval requirements are unchanged.
+Every execution recheck also refreshes whole-generation prerequisite approval
+and compares it with the protected preparation receipt. Kubernetes prerequisite
+revisions cover effective inputs, not incidental observation versions.
+Publication-source content and identities remain checked even when their
+observation versions change. Withdrawal, missing providers, changed approvals
+and stale observations fail without restaging Helm or quiescing a running writer.
+The execution inventory accepts up to 129 identities: all 128 supported
+preparation inputs plus the preparation-state ConfigMap. Larger inventories
+fail without truncation.
+
+One UID-pinned controller-state object serializes shared-source readers and
+exclusive changes with API resource-version comparisons. Running and stopping
+executions retain their source reservations. There is no expiry, lock stealing,
+automatic state recreation or adoption of a same-name replacement. A start or
+source mutation records intent before its only submission; restart and lost
+replies are observation-only. Unknown mutation outcomes retain their reservation,
+including when the API still shows the old object.
+
+`AcquireTeamChange` derives the affected execution selections from an
+authoritative before image and the complete proposed Team mutation. Changing
+only the creation default or another policy-class slot can coexist with
+unaffected executions. Changing their selected slot, removing their Sandbox
+membership, replacing the Team or changing shared runtime inputs cannot.
+Team mutations still serialize with one another, pin the exact before
+UID/resource version and full desired mutation digest, and retain unknown
+outcomes. Normal configuration admission and whole-Team validation still apply;
+the mutation adapter must enforce the full digest at its actual write boundary.
+
+The lifecycle reserves the physical writer through the durable journal, then
+requires a fresh, exact pre-start acknowledgement of an armed guest-external
+gate. Current runtime, Pod, control and epoch evidence precedes route publication.
+The route-publication boundary guard rechecks the same evidence's freshness
+after coordination and source reads, so delayed publication cannot use an
+expired observation. An additional post-publication observation precedes the
+adapter's atomic applied-binding/readiness commit. Source, freshness or
+observation loss clears readiness, withdraws routes and attempts durable writer exclusion; failure in
+one cleanup step does not skip the others. Reservations are released only after
+all cleanup succeeds. Historical cleanup does not rediscover targets from
+current policy or storage configuration.
+
+**This protocol does not activate the shipped controller.** The adapter must
+enforce the same operation at the actual runtime, mutation and publication
+boundaries, including delayed submissions, restart and observation loss.
+Calling a read-only guard before an asynchronous write is not sufficient.
+Every shared-source writer must participate; direct writes must be excluded
+before enablement. No concrete production start, observation, mutation, routing
+or status-commit adapter is installed here, and neither a coordination record
+nor a successful callback qualifies one. The existing controller and admission
+holds are unchanged. Live governed Agent execution, model traffic and platform
+qualification remain separate, uncompleted integration work.
+
+The focused lifecycle tests cover synthetic ordering, identity/freshness
+failures, writer-history integration and real isolated API persistence/CAS.
+They do not start agent containers, contact a model service or qualify a
+provider.
+
+### Existing activation boundary
+
 The new Team bindings and Agent `sandboxRef` remain optional in this additive
 foundation schema so existing unbound resources retain their previous behavior.
 The resolver requires a complete governed binding. This is not the final
@@ -495,8 +612,14 @@ enabled and enforced (`sandboxAdmission.enabled`, `enforce`, and `podsEnabled`).
 The admission ServiceAccount is fixed to the separately deployed
 `cetirun-sandbox-admission`; it is not the controller ServiceAccount.
 Admission reuses its existing operator-namespace ConfigMap `get` Role and
-Pod-admission RuntimeClass/StorageClass `get` permissions. Sources alone add no
-RBAC grants. The optional skills publication catalog described below adds only
+Pod-admission RuntimeClass/StorageClass `get` permissions. Enabled sources also
+grant the controller `get`, `list`, `watch`, `create`, `update`, `patch` and
+`delete` on namespaced `ciliumnetworkpolicies.cilium.io`, which guarded Helm
+staging needs for the compiler's policy resources. The controller's ClusterRole
+grants these permissions cluster-wide; the staging path still verifies exact
+Agent ownership and namespace identities. Admission remains read-only, and no
+cluster-wide Cilium policy or endpoint write permissions are granted.
+The optional skills publication catalog described below adds only
 PersistentVolume `get` for its metadata dependencies, not write permissions,
 Secret lists or cluster-wide ConfigMap access.
 The default-off chart output is unchanged.
@@ -1008,6 +1131,161 @@ governed start path until the producer, scoped read permissions, source
 refresh/revocation and workload lifecycle are qualified together. A chart
 version, readiness probe or manually authored expectation is not that evidence.
 
+#### Dedicated-node placement guard (separate opt-in)
+
+`sandboxAdmission.placementConfigMapName` selects a pre-existing `placement.json`
+ConfigMap in the controller state namespace. Empty is the default. It requires
+configuration and final-Pod admission to be enabled; the placement webhook is
+installed only when `sandboxAdmission.enforce` is true.
+
+This read-only guard checks placement across **all namespaces**, including
+explicit `Pod.spec.nodeName`, scheduler `pods/binding`, Pod updates, and reserved
+Node identity changes/deletion. Labels and taints do not establish ownership.
+The deprecated core `bindings` endpoint is matched and denied rather than
+allowed to bypass the guard. Binding annotation overrides are rejected because
+the API server can apply them to the Pod without a separate Pod UPDATE request.
+An explicit, complete Node inventory pins Node names, UIDs and provider IDs;
+unknown or same-name replacement nodes fail closed rather than become ordinary
+capacity. Known unreserved nodes retain their ordinary placement path.
+
+The registry uses the following shape; every identity below is synthetic:
+
+```json
+{
+  "version": "v1",
+  "nodes": [
+    {
+      "name": "ordinary-worker",
+      "uid": "00000000-0000-4000-8000-000000000001",
+      "providerID": "example://ordinary-worker"
+    },
+    {
+      "name": "reserved-worker",
+      "uid": "00000000-0000-4000-8000-000000000002",
+      "providerID": "example://reserved-worker",
+      "reservation": {
+        "agent": {
+          "name": "example-agent",
+          "uid": "00000000-0000-4000-8000-000000000003"
+        },
+        "namespace": {
+          "name": "example-workload",
+          "uid": "00000000-0000-4000-8000-000000000004"
+        },
+        "statefulSet": {
+          "name": "example-agent",
+          "uid": "00000000-0000-4000-8000-000000000005"
+        }
+      }
+    }
+  ],
+  "platformDaemonSets": []
+}
+```
+
+Store this JSON as `data["placement.json"]` in the selected ConfigMap, with no
+binary data. Registrations must come from persisted API objects, not guessed
+names or labels. The inventory is bounded to 256 KiB, 256 Nodes and 64 platform
+DaemonSets; each DaemonSet may enroll at most 256 persisted Pod identities.
+Unknown fields, duplicate keys, nulls and inconsistent identities are rejected.
+An empty platform inventory provides no platform-workload exemptions.
+
+A reserved node is assigned to an exact Agent, namespace and StatefulSet
+identity. Agent placement must also match the current protected workload
+expectation. This does not relax final-Pod validation, release an execution hold,
+or issue a start grant. Ordinary unrelated workloads cannot acquire reserved
+placement by setting a node name, selecting a node, adding tolerations or
+forging a namespace label.
+
+With placement configured, both binding and protected-Pod validation accept
+Kubernetes-added region/zone labels only at the freshly verified registered
+Node's values. Explicit template labels are never overwritten; other additions
+remain forbidden. Without this opt-in, the existing exact-template comparison
+is unchanged.
+
+Platform workloads are not exempt by namespace or ServiceAccount. Only
+explicitly registered DaemonSets with pinned identities and templates can use
+the platform path. Each `platformDaemonSets` entry contains `name`, `uid`,
+`namespace: {name, uid}`, `templateDigest`, `trustedCreator`, and a
+`bootstrapPods` array of `{name, uid}`. The digest is computed from the current
+API-defaulted selector and Pod template using
+[`CanonicalDaemonSetDigest`](internal/sandboxplacement/daemonset.go), not from
+caller-provided Pod labels or the DaemonSet's status. Registered controller
+identities are checked on creation;
+reserved-node binding/update additionally requires the exact persisted Pod name
+and UID in the protected registration. A replacement may be created by its
+trusted controller but remains unable to bind to reserved capacity until its
+new UID is enrolled. That is an intentional fail-closed pilot limitation, not
+automatic platform recovery.
+
+Explicit platform `priorityClassName` selections are resolved from the current
+PriorityClass with read-only access. Its numeric priority and preemption policy
+are checked rather than copied from the incoming Pod. Generated Pod names use
+Kubernetes' bounded prefix/suffix rules for long DaemonSet names; the full
+registered controller name, UID and generation prefix still identify the owner.
+Pod-only resource request defaults are derived from each regular or init
+container's registered limits, including restartable init containers. Explicit
+requests remain unchanged. The incoming Pod and stored DaemonSet template are
+not rewritten, and unrelated admission-added resource requests remain rejected.
+
+The platform owner must protect registry writes and establish the registry on
+an empty, isolated dedicated pool before granting workload access. The guard
+does not discover or adopt nodes, mutate scheduling inputs, install DaemonSets,
+write reservations, or prove historical pool isolation. Registry changes need
+their own authorized, stopped lifecycle; removing a record is not permission
+to reuse a pool or skip old-writer fencing.
+
+Bootstrap the serving replicas and TLS first on unreserved nodes, publish the
+registry, exercise direct/binding request-path tests, and only then enable
+enforcement. This opt-in expands the failure domain: registry or serving failure
+blocks matched requests cluster-wide. Pod status and deletion remain
+independent, as does the existing narrow garbage-collector finalizer completion.
+When serving is available, ordinary terminating Pods can remove only finalizers
+without altering placement or other object fields; unrelated changes are not
+cleanup exemptions.
+ConfigMap updates and webhook-registration repair remain available. A new
+serving Pod is still a matched CREATE: plan recovery using existing serving
+capacity or an authorized, stopped maintenance procedure, not an assumed
+admission bypass.
+
+This is one placement boundary needed for a future dedicated-pool Agent pilot.
+It is not a `CheckQuiesced` provider, an AKS deletion authorization, a complete
+start/change barrier, or proof of pre-start and ongoing runtime enforcement.
+Those gates and the actual governed-Agent end-to-end demonstration remain
+separate requirements.
+
+#### Durable placement binding during held preparation
+
+`sandboxSources.placementConfigMapName` is a separate, default-empty controller
+opt-in. It requires enabled sources and must select the same registry as
+`sandboxAdmission.placementConfigMapName`. It adds only Node `get` permission
+to the controller and does not write the placement registry.
+
+After validating the owned zero-replica StatefulSet, preparation reads its
+registered reservation and the current Node identities. Before publishing the
+held Pod expectation, it records the exact Agent, namespace, StatefulSet, HOME,
+registry UID and Node UID/provider-ID set in the existing preparation receipt.
+The expectation pins both that receipt and the registry's current UID/version.
+The platform must enroll the actual staged workload UID; a missing reservation
+leaves the workload held and preparation incomplete, not implicitly assigned.
+
+The recorded identity is immutable for this namespace/HOME lifetime. A changed
+Node set, replaced registry or workload, or disabled reader cannot silently
+reassign it. Node status and unrelated metadata updates do not append history
+or rewrite the binding. Cleanup passes the recorded tuple to the separately
+qualified writer-exclusion provider, even if the current registry, Node or
+configuration is unavailable; it does not rediscover old writers by name.
+
+Opted-in receipts use the internal `v2` preparation format, which requires the
+placement payload. Existing unselected preparation keeps `v1`; losing a `v2`
+payload is an error, not an unassigned fallback. Upgrade readers before selecting
+this option and do not downgrade binaries while such receipts require cleanup.
+
+This is durable identity plumbing, not proof of lifetime exclusivity or
+Compute VM destruction. No automatic enrollment, qualified fence adapter,
+cloud deletion, execution permit or hold release is added. Those requirements
+and a real governed-Agent run remain open.
+
 #### Schema and binary upgrades
 
 Helm upgrades all four CRDs as ordinary templates. Compatible schema changes
@@ -1136,7 +1414,7 @@ inside each completed admission handler, including its dependency reads. Its
 
 | Label | Values |
 | --- | --- |
-| `handler` | `validate`, `default`, `pod`, or defensive `unknown` |
+| `handler` | `validate`, `default`, `pod`, `placement`, or defensive `unknown` |
 | `operation` | `CREATE`, `UPDATE`, `DELETE`, `CONNECT`, or `unknown` |
 | `outcome` | `allowed`, `denied`, `invalid_request`, `dependency_error` |
 

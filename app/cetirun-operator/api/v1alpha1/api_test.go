@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"text/template"
 
 	rbacv1 "k8s.io/api/rbac/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
@@ -252,32 +253,48 @@ func TestChartRBACContract(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			// Only metadata uses Helm expressions; validate the source rules offline.
 			_, rules, ok := strings.Cut(string(data), "\nrules:\n")
 			if !ok {
 				t.Fatal("missing RBAC rules")
 			}
-			var parsed []rbacv1.PolicyRule
-			if err := yaml.Unmarshal([]byte(rules), &parsed); err != nil {
+			source, err := template.New("rbac-rules").Parse(rules)
+			if err != nil {
 				t.Fatal(err)
 			}
-			got := map[string][]string{}
-			for _, rule := range parsed {
-				if !slices.Contains(rule.APIGroups, GroupVersion.Group) {
-					continue
-				}
-				if len(rule.APIGroups) != 1 {
-					t.Fatalf("unexpected mixed API groups: %v", rule.APIGroups)
-				}
-				for _, resource := range rule.Resources {
-					if _, exists := got[resource]; exists {
-						t.Fatalf("duplicate permission rule: %s", resource)
+			for _, option := range []struct {
+				name    string
+				enabled bool
+			}{{"default", false}, {"placement", true}} {
+				t.Run(option.name, func(t *testing.T) {
+					var rendered bytes.Buffer
+					if err := source.Execute(&rendered, map[string]any{"Values": map[string]any{
+						"sandboxSources": map[string]any{"enabled": option.enabled, "placementConfigMapName": "sandbox-placement"},
+					}}); err != nil {
+						t.Fatal(err)
 					}
-					got[resource] = rule.Verbs
-				}
-			}
-			if !reflect.DeepEqual(got, tc.want) {
-				t.Fatalf("RBAC resources/verbs = %v, want %v", got, tc.want)
+					var parsed []rbacv1.PolicyRule
+					if err := yaml.Unmarshal(rendered.Bytes(), &parsed); err != nil {
+						t.Fatal(err)
+					}
+					got := map[string][]string{}
+					for _, rule := range parsed {
+						if !slices.Contains(rule.APIGroups, GroupVersion.Group) {
+							continue
+						}
+						if len(rule.APIGroups) != 1 {
+							t.Fatalf("unexpected mixed API groups: %v", rule.APIGroups)
+						}
+						for _, resource := range rule.Resources {
+							if _, exists := got[resource]; exists {
+								t.Fatalf("duplicate permission rule: %s", resource)
+							}
+							got[resource] = rule.Verbs
+						}
+					}
+					if !reflect.DeepEqual(got, tc.want) {
+						t.Fatalf("RBAC resources/verbs = %v, want %v", got, tc.want)
+					}
+				})
 			}
 		})
 	}

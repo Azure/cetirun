@@ -18,7 +18,7 @@ CONTROLLER_GEN ?= controller-gen
 
 .PHONY: all build build-terminal build-node-guard test vet fmt lint docker-build docker-push install-crd \
 	tools generate manifests check-controller-gen sync-crds check-crds \
-	verify-generated test-envtest test-sandbox-integration
+	verify-generated test-envtest test-sandbox-integration test-sandbox-lifecycle
 
 CRD_SOURCE_DIR := config/crd/bases
 CRD_CHART_DIR := chart/templates/crds
@@ -100,12 +100,17 @@ verify-generated: generate manifests
 ## Uses only a local API server and etcd; never connects to an existing cluster.
 test-envtest:
 	@test -n "$(KUBEBUILDER_ASSETS)" && test -x "$(KUBEBUILDER_ASSETS)/kube-apiserver" && test -x "$(KUBEBUILDER_ASSETS)/etcd" || { echo "Set KUBEBUILDER_ASSETS to preinstalled envtest binaries"; exit 1; }
-	USE_EXISTING_CLUSTER=false go test -tags=envtest ./test/integration ./internal/helm ./internal/admission ./internal/controller -count=1 -v
+	USE_EXISTING_CLUSTER=false go test -tags=envtest ./test/integration ./internal/helm ./internal/admission ./internal/controller ./internal/sandboxwriter ./internal/sandboxcoordination -count=1 -v
 
 ## Local held Sandbox integration; synthetic providers are not runtime qualification.
 test-sandbox-integration:
 	@test -n "$(KUBEBUILDER_ASSETS)" && test -x "$(KUBEBUILDER_ASSETS)/kube-apiserver" && test -x "$(KUBEBUILDER_ASSETS)/etcd" || { echo "Set KUBEBUILDER_ASSETS to preinstalled envtest binaries"; exit 1; }
 	USE_EXISTING_CLUSTER=false go test -tags=envtest ./test/integration -run '^TestSandbox(Preparation|Bootstrap)' -count=1 -v
+
+## Durable lifecycle state against isolated API servers; no live runtime providers.
+test-sandbox-lifecycle:
+	@test -n "$(KUBEBUILDER_ASSETS)" && test -x "$(KUBEBUILDER_ASSETS)/kube-apiserver" && test -x "$(KUBEBUILDER_ASSETS)/etcd" || { echo "Set KUBEBUILDER_ASSETS to preinstalled envtest binaries"; exit 1; }
+	USE_EXISTING_CLUSTER=false go test -tags=envtest ./internal/sandboxwriter ./internal/sandboxcoordination -count=1 -v
 
 ## Clean build artifacts
 clean:

@@ -427,6 +427,37 @@ func TestKubernetesSandboxPrerequisitesPreservesSupportedStorageShapes(t *testin
 	}
 }
 
+func TestKubernetesPrerequisiteRevisionIgnoresUnselectedTeamChanges(t *testing.T) {
+	ctx := context.Background()
+	f := newKubernetesPrerequisitesFixture(t, "hermes")
+	first, err := f.resolve(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	team := &api.Team{}
+	if err := f.client.Get(ctx, client.ObjectKeyFromObject(f.fixture.Team), team); err != nil {
+		t.Fatal(err)
+	}
+	team.Spec.SandboxRefs = append(team.Spec.SandboxRefs, "spare-sandbox")
+	team.Spec.DefaultSandboxRef = "spare-sandbox"
+	team.Spec.AdminAgentPolicyRef = "new-admin-policy"
+	if err := f.client.Update(ctx, team); err != nil {
+		t.Fatal(err)
+	}
+	next, err := f.resolve(t)
+	if err != nil || next.Revision != first.Revision {
+		t.Fatal("unselected Team changes invalidated whole-generation effective approval:", err)
+	}
+	team.Spec.MemberContext.Role = "changed-shared-input"
+	if err := f.client.Update(ctx, team); err != nil {
+		t.Fatal(err)
+	}
+	next, err = f.resolve(t)
+	if err != nil || next.Revision == first.Revision {
+		t.Fatal("shared Team runtime input did not invalidate prerequisite approval:", err)
+	}
+}
+
 func TestKubernetesSandboxPrerequisitesRevisionStabilityAndInvalidation(t *testing.T) {
 	f := newKubernetesPrerequisitesFixture(t, "hermes")
 	before, err := f.resolve(t)
@@ -479,8 +510,9 @@ func TestKubernetesSandboxPrerequisitesRevisionStabilityAndInvalidation(t *testi
 					team.ResourceVersion = "next-version"
 				}
 				second, err := f.source.Resolve(context.Background(), f.agent(t), team)
-				if err != nil || second.Revision == first.Revision {
-					t.Fatalf("changed identity did not invalidate revision: %+v, %v", second, err)
+				mustChange := field == "UID" || target == "secret"
+				if err != nil || (second.Revision != first.Revision) != mustChange {
+					t.Fatalf("revision did not distinguish effective inputs from observation metadata: %+v, %v", second, err)
 				}
 				third, err := f.source.Resolve(context.Background(), f.agent(t), team)
 				if err != nil || third.Revision != second.Revision {

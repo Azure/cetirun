@@ -15,13 +15,30 @@ import "./components/Layout.css";
 
 export default function App() {
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100vh", overflow: "hidden" }}>
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        height: "100dvh",
+        overflow: "hidden",
+      }}
+    >
       <Header />
       <NoticeBanner />
-      <div style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column" }}>
+      <div
+        style={{
+          flex: 1,
+          overflow: "hidden",
+          display: "flex",
+          flexDirection: "column",
+        }}
+      >
         <Routes>
           <Route path="/" element={<InstanceListPage />} />
-          <Route path="/instances/:instanceName/:section" element={<WorkspacePage />} />
+          <Route
+            path="/instances/:instanceName/:section"
+            element={<WorkspacePage />}
+          />
           <Route path="/instances/:instanceName" element={<WorkspacePage />} />
           <Route path="/admin" element={<AdminGuard />}>
             <Route element={<AdminLayout />}>
