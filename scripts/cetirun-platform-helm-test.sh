@@ -79,6 +79,14 @@ grep -q 'name: cetirun-ai-gateway-auth$' <<< "${output}" || {
   echo "FAIL: the AI Gateway master key Secret does not have the name the operator reads" >&2
   exit 1
 }
+grep -q 'maxUnavailable: 1' <<< "${output}" || {
+  echo "FAIL: sandbox admission cannot make progress on a two-node rollout" >&2
+  exit 1
+}
+if grep -q 'maxUnavailable: 0' <<< "${output}"; then
+  echo "FAIL: sandbox admission uses a zero-unavailable rollout that can deadlock with strict topology spreading" >&2
+  exit 1
+fi
 grep -A1 'name: AI_GATEWAY_URL' <<< "${output}" | grep -q 'http://cetirun-ai-gateway.cetirun-system.svc.cluster.local:4000' || {
   echo "FAIL: the operator does not use the bundled AI Gateway" >&2
   exit 1

@@ -258,7 +258,10 @@ spec:
   strategy:
     type: RollingUpdate
     rollingUpdate:
-      maxUnavailable: 0
+      # Keep one admission replica serving while allowing the old replica on
+      # a two-node pool to leave before strict topology spreading schedules
+      # its replacement. maxUnavailable=0 can deadlock that rollout.
+      maxUnavailable: 1
       maxSurge: 1
   selector:
     matchLabels:
