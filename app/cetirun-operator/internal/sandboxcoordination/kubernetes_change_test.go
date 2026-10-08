@@ -430,6 +430,242 @@ func TestConfigurationLegacyTeamTransitionsUseWholeTeamReservation(t *testing.T)
 	}
 }
 
+func configurationIntent(t *testing.T, before client.Object, suffix string) Intent {
+	t.Helper()
+	image, err := newConfigurationImage(before)
+	if err != nil {
+		t.Fatal(err)
+	}
+	effective, err := w.ExecutionObjectDigest(image.object)
+	if err != nil {
+		t.Fatal(err)
+	}
+	intent := testIntent(suffix)
+	for i, reference := range intent.Sources {
+		if reference.Kind == image.reference.Kind {
+			delete(intent.SourceDigests, w.SourceKey(reference))
+			intent.Sources[i] = image.reference
+			intent.SourceDigests[w.SourceKey(image.reference)] = effective
+		}
+	}
+	switch before.(type) {
+	case *api.Sandbox:
+		intent.Expected.Binding.SandboxUID = before.GetUID()
+	case *api.AgentPolicy:
+		intent.Expected.Binding.AgentPolicyUID = before.GetUID()
+	}
+	return intent
+}
+
+func TestConfigurationMetadataUpdatesPreserveExecutions(t *testing.T) {
+	for _, kind := range []string{"Sandbox", "AgentPolicy"} {
+		for _, phase := range []Phase{Reserved, Starting, Running, Stopping} {
+			t.Run(kind+"/"+string(phase), func(t *testing.T) {
+				ctx := context.Background()
+				store, storage, before, _ := configurationFixture(t, kind)
+				execution := acquire(t, store, configurationIntent(t, before, "metadata"))
+				var err error
+				if phase != Reserved {
+					execution, err = store.BeginStart(ctx, execution)
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+				if phase == Running || phase == Stopping {
+					execution, err = store.MarkRunning(ctx, execution)
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+				if phase == Stopping {
+					execution, err = store.BeginStop(ctx, execution)
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+				after := before.DeepCopyObject().(client.Object)
+				after.SetLabels(map[string]string{"example.com/description": "updated"})
+				after.SetAnnotations(map[string]string{"example.com/description": "updated"})
+				ticket, err := store.AcquireConfigurationChange(ctx, before, after)
+				if err != nil {
+					t.Fatal("unchanged effective inputs blocked an existing execution:", err)
+				}
+				if _, err := store.ReconcileChange(ctx, ticket,
+					configurationAdapter(t, storage, storage, before, after)); err != nil {
+					t.Fatal("harmless metadata update did not complete:", err)
+				}
+				if err := store.Check(ctx, execution); err != nil {
+					t.Fatal("metadata update changed execution ownership:", err)
+				}
+			})
+		}
+	}
+}
+
+func TestConfigurationMetadataScopeStillRejectsEffectiveChanges(t *testing.T) {
+	for _, kind := range []string{"Sandbox", "AgentPolicy"} {
+		for _, scenario := range []string{"spec", "control label", "owner", "finalizer", "stale digest", "wrong UID"} {
+			t.Run(kind+"/"+scenario, func(t *testing.T) {
+				ctx := context.Background()
+				store, _, before, _ := configurationFixture(t, kind)
+				intent := configurationIntent(t, before, "metadata")
+				if scenario == "stale digest" {
+					for _, reference := range intent.Sources {
+						if reference.Kind == kind {
+							intent.SourceDigests[w.SourceKey(reference)] = strings.Repeat("a", 64)
+						}
+					}
+				}
+				if scenario == "wrong UID" {
+					for i := range intent.Sources {
+						if intent.Sources[i].Kind == kind {
+							intent.Sources[i].UID = "previous-uid"
+						}
+					}
+					if kind == "Sandbox" {
+						intent.Expected.Binding.SandboxUID = "previous-uid"
+					} else {
+						intent.Expected.Binding.AgentPolicyUID = "previous-uid"
+					}
+				}
+				acquire(t, store, intent)
+				after := before.DeepCopyObject().(client.Object)
+				after.SetAnnotations(map[string]string{"example.com/description": "updated"})
+				switch scenario {
+				case "spec":
+					after = desiredConfiguration(before)
+				case "control label":
+					after.SetLabels(map[string]string{"cetirun.microsoft.com/control": "changed"})
+				case "owner":
+					after.SetOwnerReferences([]metav1.OwnerReference{w.AgentOwner("other", "other-uid")})
+				case "finalizer":
+					after.SetFinalizers([]string{"example.com/retain"})
+				}
+				if _, err := store.AcquireConfigurationChange(ctx, before, after); !errors.Is(err, ErrConflict) {
+					t.Fatal("effective inputs or identity drift did not block the update:", err)
+				}
+			})
+		}
+	}
+}
+
+func TestConfigurationMetadataScopePinsFutureStartsAndWholeWrites(t *testing.T) {
+	for _, kind := range []string{"Sandbox", "AgentPolicy"} {
+		t.Run(kind, func(t *testing.T) {
+			ctx := context.Background()
+			store, storage, before, _ := configurationFixture(t, kind)
+			after := before.DeepCopyObject().(client.Object)
+			after.SetAnnotations(map[string]string{"example.com/description": "approved"})
+			ticket := changingConfiguration(t, store, before, after)
+			execution := acquire(t, store, configurationIntent(t, before, "metadata"))
+			wrong := configurationIntent(t, before, "different")
+			for _, reference := range wrong.Sources {
+				if reference.Kind == kind {
+					wrong.SourceDigests[w.SourceKey(reference)] = strings.Repeat("a", 64)
+				}
+			}
+			if _, err := store.AcquireExecution(ctx, wrong); !errors.Is(err, ErrConflict) {
+				t.Fatal("a start with a different effective digest was permitted:", err)
+			}
+			other := after.DeepCopyObject().(client.Object)
+			other.SetAnnotations(map[string]string{"example.com/description": "unapproved"})
+			if _, err := store.AcquireConfigurationChange(ctx, before, other); !errors.Is(err, ErrConflict) {
+				t.Fatal("another metadata writer acquired the same source:", err)
+			}
+			if err := store.AuthorizeConfigurationUpdate(ctx, before, other); !errors.Is(err, ErrConflict) {
+				t.Fatal("unchanged execution inputs bypassed full-write authorization:", err)
+			}
+			restarted := Store{Client: store.Client, APIReader: storage, Namespace: store.Namespace, Identity: store.Identity}
+			recovered, err := restarted.ReadConfigurationChange(ctx, before, after)
+			if err != nil || !reflect.DeepEqual(recovered, ticket) {
+				t.Fatal("effective scope was not preserved across recovery:", err)
+			}
+			adapter := configurationAdapter(t, storage, storage, before, after)
+			if err := adapter.Submit(ctx, recovered, func(ctx context.Context) error {
+				return restarted.CheckChange(ctx, recovered)
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := restarted.ReconcileChange(ctx, recovered,
+				configurationAdapter(t, nil, storage, before, after)); err != nil {
+				t.Fatal("metadata outcome could not recover without another write:", err)
+			}
+			if err := store.Check(ctx, execution); err != nil {
+				t.Fatal("recovery released execution ownership:", err)
+			}
+		})
+	}
+}
+
+func TestConfigurationMetadataRecoveryPreservesConservativeRecords(t *testing.T) {
+	ctx := context.Background()
+	store, storage, before, _ := configurationFixture(t, "AgentPolicy")
+	after := before.DeepCopyObject().(client.Object)
+	after.SetAnnotations(map[string]string{"example.com/description": "approved"})
+	change, err := newConfigurationChange(before, after, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ticket, err := store.AcquireChange(ctx, change.before.reference, change.after.digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := store.AcquireConfigurationChange(ctx, before, after)
+	if err != nil || !reflect.DeepEqual(ticket, recovered) || recovered.Change.UnchangedDigest != "" {
+		t.Fatal("recovery changed the scope of an older record:", err)
+	}
+	if _, err := store.AcquireExecution(ctx, configurationIntent(t, before, "conservative")); !errors.Is(err, ErrConflict) {
+		t.Fatal("conservative pending change stopped excluding new executions:", err)
+	}
+	if _, err := store.ReconcileChange(ctx, recovered,
+		configurationAdapter(t, storage, storage, before, after)); err != nil {
+		t.Fatal("older conservative record could not complete:", err)
+	}
+}
+
+func TestConfigurationMetadataScopeRejectsCorruptRecords(t *testing.T) {
+	for _, scenario := range []string{"malformed digest", "wrong kind", "wrong version", "namespace", "changed digest"} {
+		t.Run(scenario, func(t *testing.T) {
+			ctx := context.Background()
+			store, storage, before, _ := configurationFixture(t, "AgentPolicy")
+			after := before.DeepCopyObject().(client.Object)
+			after.SetAnnotations(map[string]string{"example.com/description": "approved"})
+			changingConfiguration(t, store, before, after)
+			authority, state, err := store.read(ctx)
+			if err != nil || state.Changes[0].UnchangedDigest == "" {
+				t.Fatal("metadata reservation did not persist its effective scope:", err)
+			}
+			switch scenario {
+			case "malformed digest":
+				state.Changes[0].UnchangedDigest = "invalid"
+			case "wrong kind":
+				state.Changes[0].Before.Kind = "ConfigMap"
+			case "wrong version":
+				state.Changes[0].Before.APIVersion = "example.com/v1"
+			case "namespace":
+				state.Changes[0].Before.Namespace = "different"
+			case "changed digest":
+				state.Changes[0].UnchangedDigest = strings.Repeat("a", 64)
+			}
+			if scenario != "changed digest" {
+				if err := validateRecord(state); err == nil {
+					t.Fatal("invalid scope record was accepted")
+				}
+				return
+			}
+			if err := encode(authority, state); err != nil {
+				t.Fatal(err)
+			}
+			if err := storage.Update(ctx, authority); err != nil {
+				t.Fatal(err)
+			}
+			if err := store.AuthorizeConfigurationUpdate(ctx, before, after); !errors.Is(err, ErrConflict) {
+				t.Fatal("recorded effective scope did not match the proposed images:", err)
+			}
+		})
+	}
+}
+
 func changingConfiguration(t *testing.T, store Store, before, after client.Object) ChangeTicket {
 	t.Helper()
 	ticket, err := store.AcquireConfigurationChange(context.Background(), before, after)
