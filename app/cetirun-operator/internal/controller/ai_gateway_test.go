@@ -420,6 +420,10 @@ func TestReconcileAIGatewayCreatesKeyAfterPersistingSecret(t *testing.T) {
 	if !aigateway.ValidKeyValue(value) || secret.Labels[aiGatewayAgentUIDLabel] != testAIGatewayUID {
 		t.Fatalf("unexpected key Secret labels=%v", secret.Labels)
 	}
+	if len(secret.OwnerReferences) != 1 || !metav1.IsControlledBy(secret, agent) ||
+		secret.OwnerReferences[0].BlockOwnerDeletion == nil || !*secret.OwnerReferences[0].BlockOwnerDeletion {
+		t.Fatalf("key Secret is not controlled by its Agent: %+v", secret.OwnerReferences)
+	}
 	if len(gateway.generated) != 1 {
 		t.Fatalf("generated %d keys, want 1", len(gateway.generated))
 	}
@@ -638,7 +642,7 @@ func TestReconcileAIGatewayRejectsOwnerUpdateWithoutMatchingReadback(t *testing.
 func TestReconcileAIGatewayAdoptsKeyCreatedBeforeStatusWasLost(t *testing.T) {
 	agent := aiGatewayTestAgent(testAIGatewayTeam)
 	value := mustKeyValue(t)
-	r, _, gateway := aiGatewayTestReconciler(t, agent, aiGatewayNamespace(), keySecret(testAIGatewayUID, value))
+	r, kube, gateway := aiGatewayTestReconciler(t, agent, aiGatewayNamespace(), keySecret(testAIGatewayUID, value))
 	budget := 25.0
 	gateway.keys[aigateway.Token(value)] = &aigateway.Key{
 		Alias: aiGatewayKeyAlias(agent), Models: sortedCopy([]string{testManagedGroup, copilotGroup()}), MaxBudget: &budget,
@@ -652,6 +656,12 @@ func TestReconcileAIGatewayAdoptsKeyCreatedBeforeStatusWasLost(t *testing.T) {
 	}
 	if agent.Status.AIGateway.KeyID != aigateway.Token(value)[:aiGatewayKeyIDLength] {
 		t.Fatal("adopted key is not recorded")
+	}
+	secret := readKeySecret(t, kube)
+	if len(secret.OwnerReferences) != 1 || !metav1.IsControlledBy(secret, agent) ||
+		secret.Annotations[aiGatewayKeyAliasAnnotation] != aiGatewayKeyAlias(agent) {
+		t.Fatalf("adopted key Secret ownership was not repaired: owners=%+v annotations=%v",
+			secret.OwnerReferences, secret.Annotations)
 	}
 }
 

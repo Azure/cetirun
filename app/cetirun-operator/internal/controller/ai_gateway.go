@@ -20,6 +20,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -951,6 +952,21 @@ func (r *AgentReconciler) ensureAgentOwnedValue(ctx context.Context, instance *c
 	if exists && !replace {
 		value := string(secret.Data[field])
 		if secret.Labels[aiGatewayAgentUIDLabel] == string(instance.UID) && aigateway.ValidKeyValue(value) {
+			base := secret.DeepCopy()
+			labelAgentSecret(secret, instance)
+			if secret.Annotations == nil {
+				secret.Annotations = map[string]string{}
+			}
+			for k, v := range annotations {
+				secret.Annotations[k] = v
+			}
+			if !equality.Semantic.DeepEqual(base.Labels, secret.Labels) ||
+				!equality.Semantic.DeepEqual(base.Annotations, secret.Annotations) ||
+				!equality.Semantic.DeepEqual(base.OwnerReferences, secret.OwnerReferences) {
+				if err := r.Update(ctx, secret); err != nil {
+					return "", fmt.Errorf("repair Secret %s ownership: %w", name, err)
+				}
+			}
 			return value, nil
 		}
 	}
@@ -987,9 +1003,11 @@ func labelAgentSecret(secret *corev1.Secret, instance *cetirunv1alpha1.Agent) {
 	secret.Labels["app.kubernetes.io/managed-by"] = "cetirun-operator"
 	secret.Labels["app.kubernetes.io/instance"] = instance.Spec.User.Alias
 	secret.Labels[aiGatewayAgentUIDLabel] = string(instance.UID)
-	if instance.Spec.Agent.Type == cetirunv1alpha1.AgentTypeCustom {
-		secret.OwnerReferences = []metav1.OwnerReference{*metav1.NewControllerRef(instance, cetirunv1alpha1.GroupVersion.WithKind("Agent"))}
-	}
+	// Every operator-generated credential projection has the same Agent
+	// lifetime, including native Hermes and OpenClaw Sandboxes.  The Sandbox
+	// execution adapter requires this ownership proof before it authorizes the
+	// Secret in a Pod; a UID label alone is mutable metadata, not ownership.
+	secret.OwnerReferences = []metav1.OwnerReference{*metav1.NewControllerRef(instance, cetirunv1alpha1.GroupVersion.WithKind("Agent"))}
 }
 
 // deleteAIGatewayKey revokes the Agent's key and removes its Copilot model
