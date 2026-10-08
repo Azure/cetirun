@@ -7,8 +7,10 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"time"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxcoordination"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxpolicy"
 	w "github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
@@ -145,7 +147,7 @@ func (r *AgentReconciler) SandboxExecutionIntent(ctx context.Context, requested 
 // runtime/control enforcement at its start and publication boundaries.
 func (r *AgentReconciler) CheckSandboxExecutionSources(ctx context.Context, intent sandboxcoordination.Intent) error {
 	if r.APIReader == nil || r.SandboxPreparation == nil || r.SandboxPreparation.Configuration == nil ||
-		r.SandboxPreparation.Placement == nil {
+		r.SandboxPreparation.Prerequisites == nil || r.SandboxPreparation.Placement == nil {
 		return fmt.Errorf("%w: execution source verification is not configured", sandboxpolicy.ErrUnavailable)
 	}
 	if err := intent.Validate(); err != nil {
@@ -158,6 +160,9 @@ func (r *AgentReconciler) CheckSandboxExecutionSources(ctx context.Context, inte
 		Name: intent.Agent.Name, UID: intent.Agent.UID, Generation: intent.AgentGeneration,
 	}})
 	if err != nil {
+		return err
+	}
+	if err := r.checkSandboxExecutionPrerequisites(ctx, attempt, intent); err != nil {
 		return err
 	}
 	platform := attempt.configuration.Platforms[attempt.resolution.Sandbox.Type]
@@ -174,15 +179,62 @@ func (r *AgentReconciler) CheckSandboxExecutionSources(ctx context.Context, inte
 		plan.Network.IngressMode != intent.IngressMode {
 		return fmt.Errorf("%w: execution authorization or compiled policy changed", errSandboxSourceChanged)
 	}
-	attempt.prerequisites.Placement = intent.Placement.DeepCopy()
 	if err := r.verifySandboxPlacement(ctx, attempt); err != nil {
 		return err
 	}
 	if err := r.verifySandboxExecutionSources(ctx, intent); err != nil {
 		return err
 	}
-	return configurationSnapshotTime(attempt.configuration.ObservedAt,
-		configurationNow(r.SandboxPreparation.Now), r.SandboxPreparation.MaxSnapshotAge)
+	for _, observed := range []time.Time{attempt.configuration.ObservedAt, attempt.prerequisites.ObservedAt} {
+		if err := configurationSnapshotTime(observed,
+			configurationNow(r.SandboxPreparation.Now), r.SandboxPreparation.MaxSnapshotAge); err != nil {
+			return err
+		}
+	}
+	return ctx.Err()
+}
+
+func (r *AgentReconciler) checkSandboxExecutionPrerequisites(ctx context.Context, attempt *sandboxPreparationAttempt,
+	intent sandboxcoordination.Intent,
+) error {
+	config := r.SandboxPreparation
+	inputs, err := config.Prerequisites.Resolve(ctx, attempt.agent.DeepCopy(), attempt.team.DeepCopy())
+	if err != nil {
+		return fmt.Errorf("refresh Sandbox execution prerequisite approval: %w", err)
+	}
+	inputs = copySandboxPrerequisites(inputs)
+	if err := configurationSnapshotTime(inputs.ObservedAt, configurationNow(config.Now), config.MaxSnapshotAge); err != nil {
+		return err
+	}
+	if err := r.inheritSandboxPlacement(ctx, attempt.agent, &inputs); err != nil {
+		return err
+	}
+	object, receipt, err := r.readSandboxPreparationReceipt(ctx, attempt.agent)
+	if err != nil {
+		return err
+	}
+	if !object.DeletionTimestamp.IsZero() || !slices.Contains(object.Finalizers, sandbox.PreparationFinalizer) ||
+		!slices.Contains(intent.Sources, sandboxSource(object, "v1", "ConfigMap")) ||
+		inputs.AgentUID != intent.Agent.UID || inputs.AgentGeneration != intent.AgentGeneration ||
+		inputs.NamespaceUID != intent.Namespace.UID || inputs.Home != intent.Home ||
+		!equality.Semantic.DeepEqual(inputs.Placement, intent.Placement) {
+		return fmt.Errorf("%w: prerequisite approval or its pinned receipt changed", errSandboxSourceChanged)
+	}
+	current, previous := inputs, receipt.Prerequisites
+	current.ObservedAt, previous.ObservedAt = time.Time{}, time.Time{}
+	currentDigest, err := sandboxPreparationDigest(current)
+	if err != nil {
+		return err
+	}
+	previousDigest, err := sandboxPreparationDigest(previous)
+	if err != nil {
+		return err
+	}
+	if currentDigest != previousDigest {
+		return fmt.Errorf("%w: whole-generation prerequisite approval changed", errSandboxSourceChanged)
+	}
+	attempt.prerequisites = inputs
+	return ctx.Err()
 }
 
 func (r *AgentReconciler) verifySandboxExecutionSources(ctx context.Context, intent sandboxcoordination.Intent) error {

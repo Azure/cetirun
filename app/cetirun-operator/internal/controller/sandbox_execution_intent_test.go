@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
@@ -425,6 +426,94 @@ func TestSandboxExecutionSourcesRejectWorkloadInputOrIdentityDrift(t *testing.T)
 			t.Fatal("same-name workload replacement was accepted")
 		}
 	})
+}
+
+func TestSandboxExecutionSourcesRecheckPrerequisiteApproval(t *testing.T) {
+	for name, mutate := range map[string]func(*preparationFixture){
+		"unavailable source": func(f *preparationFixture) { f.source.resolveErr = errors.New("synthetic approval unavailable") },
+		"missing source":     func(f *preparationFixture) { f.reconciler.SandboxPreparation.Prerequisites = nil },
+		"withdrawn approval": func(f *preparationFixture) { f.source.inputs.Revision = "withdrawn-approval" },
+		"Agent UID":          func(f *preparationFixture) { f.source.inputs.AgentUID = "other-agent" },
+		"generation":         func(f *preparationFixture) { f.source.inputs.AgentGeneration++ },
+		"namespace":          func(f *preparationFixture) { f.source.inputs.NamespaceUID = "other-namespace" },
+		"HOME":               func(f *preparationFixture) { f.source.inputs.Home.UID = "other-home" },
+		"skills":             func(f *preparationFixture) { f.source.inputs.Skills.UID = "other-skills" },
+		"runtime approval":   func(f *preparationFixture) { f.source.inputs.RuntimeSecret.UID = "other-secret-identity" },
+		"chart":              func(f *preparationFixture) { f.source.inputs.ChartVersion = "99.0.0" },
+		"helpers":            func(f *preparationFixture) { f.source.inputs.Helpers.Logger = !f.source.inputs.Helpers.Logger },
+		"publication": func(f *preparationFixture) {
+			f.source.inputs.PublicationSources = []w.SourceReference{{
+				APIVersion: "v1", Kind: "ConfigMap", Namespace: "cetirun-system",
+				Name: "changed-publication", UID: "publication-uid", ResourceVersion: "2",
+			}}
+		},
+		"placement": func(f *preparationFixture) {
+			f.source.inputs.Placement = f.expectation(t).Placement.DeepCopy()
+			f.source.inputs.Placement.Workload.UID = "other-workload"
+		},
+		"stale":  func(f *preparationFixture) { f.source.inputs.ObservedAt = f.now.Add(-time.Minute) },
+		"future": func(f *preparationFixture) { f.source.inputs.ObservedAt = f.now.Add(time.Second) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			f, target := executionIntentFixture(t, "hermes")
+			intent, err := f.reconciler.SandboxExecutionIntent(ctx, f.current(t), target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			renders, stages, reads, fences := f.installer.renders, f.installer.stages, f.installer.digestReads, f.source.fences
+			mutate(f)
+			if err := f.reconciler.CheckSandboxExecutionSources(ctx, intent); err == nil {
+				t.Fatal("changed or unavailable whole-generation prerequisite approval was ignored")
+			}
+			if f.installer.renders != renders || f.installer.stages != stages || f.installer.digestReads != reads ||
+				f.source.fences != fences {
+				t.Fatal("reauthorization attempted Helm work or quiescence")
+			}
+		})
+	}
+}
+
+func TestSandboxExecutionPrerequisiteRefreshDoesNotRewriteOrQuiesce(t *testing.T) {
+	ctx := context.Background()
+	f, target := executionIntentFixture(t, "openclaw")
+	intent, err := f.reconciler.SandboxExecutionIntent(ctx, f.current(t), target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt, _, _ := preparationPlacementReceipt(t, f)
+	resolves, fences, stages, reads := f.source.resolves, f.source.fences, f.installer.stages, f.installer.digestReads
+	f.source.fenceErr = errors.New("synthetic writer is still running")
+	for range 3 {
+		f.now = f.now.Add(time.Second)
+		f.source.inputs.ObservedAt = f.now
+		if err := f.reconciler.CheckSandboxExecutionSources(ctx, intent); err != nil {
+			t.Fatal("unchanged prerequisite approval with a fresh observation was rejected:", err)
+		}
+	}
+	if f.source.resolves != resolves+3 || f.source.fences != fences || f.installer.stages != stages || f.installer.digestReads != reads {
+		t.Fatal("execution recheck must refresh only approval, without Helm or running-writer quiescence")
+	}
+	current, _, _ := preparationPlacementReceipt(t, f)
+	if !reflect.DeepEqual(current, receipt) {
+		t.Fatal("current approval refresh rewrote its pinned historical receipt")
+	}
+}
+
+func TestSandboxExecutionSourcesRequirePinnedPrerequisiteReceipt(t *testing.T) {
+	f, target := executionIntentFixture(t, "hermes")
+	intent, err := f.reconciler.SandboxExecutionIntent(context.Background(), f.current(t), target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt, _, _ := preparationPlacementReceipt(t, f)
+	intent.Sources = slices.DeleteFunc(intent.Sources, func(source w.SourceReference) bool {
+		return source.APIVersion == "v1" && source.Kind == "ConfigMap" &&
+			source.Namespace == receipt.Namespace && source.Name == receipt.Name
+	})
+	if err := f.reconciler.CheckSandboxExecutionSources(context.Background(), intent); err == nil {
+		t.Fatal("an unpinned prerequisite receipt authorized execution")
+	}
 }
 
 func TestSandboxExecutionSourcesPermitStatusOnlyAgentUpdates(t *testing.T) {

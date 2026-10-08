@@ -131,6 +131,10 @@ not a lifetime freshness check. Execution rechecks its UID and a digest of the
 effective spec, owner references, labels and annotations, excluding status,
 managed fields and controlled zero/one-replica transitions. Replacement,
 termination, other spec changes or more than one desired replica still fail.
+Every execution recheck also refreshes whole-generation prerequisite approval
+and compares it with the pinned preparation receipt, excluding only the
+observation timestamp. Withdrawal, missing providers, changed approvals and
+stale observations fail without restaging Helm or quiescing a running writer.
 
 One UID-pinned controller-state object serializes shared-source readers and
 exclusive changes with API resource-version comparisons. Running and stopping

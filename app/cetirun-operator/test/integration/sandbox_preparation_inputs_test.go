@@ -21,6 +21,34 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
+func createPreparationRevision(t *testing.T, f *preparationCase) *appsv1.ControllerRevision {
+	t.Helper()
+	workload := &appsv1.StatefulSet{}
+	f.h.get(t, client.ObjectKey{Namespace: f.fixture.Namespace.Name, Name: f.workloadName()}, workload)
+	template, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&workload.Spec.Template)
+	if err != nil {
+		t.Fatal(err)
+	}
+	template["$patch"] = "replace"
+	raw, err := json.Marshal(map[string]any{"spec": map[string]any{"template": template}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	revision := &appsv1.ControllerRevision{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: workload.Namespace, Name: workload.Name + "-revision",
+			OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(workload, appsv1.SchemeGroupVersion.WithKind("StatefulSet"))},
+		},
+		Data: runtime.RawExtension{Raw: raw}, Revision: 1,
+	}
+	f.h.create(t, revision)
+	workload.Status.UpdateRevision, workload.Status.ObservedGeneration = revision.Name, workload.Generation
+	if err := f.h.client.Status().Update(f.h.ctx, workload); err != nil {
+		t.Fatal(err)
+	}
+	return revision
+}
+
 // Platform approvals, writer exclusion and the ControllerRevision producer are
 // synthetic. Object identities, CAS failures and held Pod admission use the API.
 func TestSandboxPreparationStartInputs(t *testing.T) {
@@ -47,29 +75,7 @@ func TestSandboxPreparationStartInputs(t *testing.T) {
 			if unchanged.UID != receipt.UID || unchanged.ResourceVersion != receipt.ResourceVersion || f.installer.stageCalls != 0 {
 				t.Fatal("restart changed the v1 cleanup receipt or repeated held staging")
 			}
-			workload := &appsv1.StatefulSet{}
-			h.get(t, client.ObjectKey{Namespace: f.fixture.Namespace.Name, Name: f.workloadName()}, workload)
-			template, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&workload.Spec.Template)
-			if err != nil {
-				t.Fatal(err)
-			}
-			template["$patch"] = "replace"
-			raw, err := json.Marshal(map[string]any{"spec": map[string]any{"template": template}})
-			if err != nil {
-				t.Fatal(err)
-			}
-			revision := &appsv1.ControllerRevision{
-				ObjectMeta: metav1.ObjectMeta{
-					Namespace: workload.Namespace, Name: workload.Name + "-revision",
-					OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(workload, appsv1.SchemeGroupVersion.WithKind("StatefulSet"))},
-				},
-				Data: runtime.RawExtension{Raw: raw}, Revision: 1,
-			}
-			h.create(t, revision)
-			workload.Status.UpdateRevision, workload.Status.ObservedGeneration = revision.Name, workload.Generation
-			if err := h.client.Status().Update(h.ctx, workload); err != nil {
-				t.Fatal(err)
-			}
+			revision := createPreparationRevision(t, f)
 			f.reconcile(t)
 			expected = f.assertPrepared(t)
 			pin = preparationSource(t, expected, "ControllerRevision", revision.Namespace, revision.Name)

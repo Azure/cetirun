@@ -51,7 +51,8 @@ type SandboxPrerequisites struct {
 }
 
 // SandboxPreparationSource is a trusted platform integration, not CR status or
-// tenant Helm values. Resolve must authorize the whole Agent generation.
+// tenant Helm values. Resolve must authorize the whole Agent generation without
+// stopping or requiring quiescence of its writer; execution rechecks it too.
 // CheckQuiesced must confirm that previous writers for the exact namespace/HOME
 // tuple have terminated or are durably fenced, including unreachable nodes.
 // API-level Pod absence alone is insufficient. Neither method grants a start.

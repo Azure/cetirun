@@ -7,15 +7,22 @@ package integration_test
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"testing"
 
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxcoordination"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxplacement"
 	w "github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxwriter"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -96,6 +103,72 @@ func TestSandboxPlacementPreparation(t *testing.T) {
 			if currentReceipt.ResourceVersion != receipt.ResourceVersion || !equality.Semantic.DeepEqual(current.Placement, historical.Placement) {
 				t.Fatal("metadata churn rewrote the durable receipt")
 			}
+			t.Run("execution-input-and-approval-rechecks", func(t *testing.T) {
+				createPreparationRevision(t, f)
+				f.reconcile(t)
+				expected := f.assertPrepared(t)
+				target := sandboxcoordination.EnrolledTarget{
+					ExecutionIdentity: sandbox.ExecutionIdentity{
+						Binding: expected.Binding, Revision: expected.Revision,
+						PodUID: "synthetic-enrolled-pod", NodeUID: node.UID, EnforcementEpoch: "synthetic-epoch",
+					},
+					Writer: sandboxwriter.Writer{
+						Workload: expected.Workload, Pod: w.ObjectIdentity{Name: expected.Workload.Name + "-0", UID: "synthetic-enrolled-pod"},
+						Node: expected.Placement.Nodes[0], MachineID: "synthetic-physical-incarnation", Epoch: "synthetic-epoch",
+						Storage: sandboxwriter.StorageIdentity{Volume: w.ObjectIdentity{Name: "example-pv", UID: "synthetic-pv-uid"},
+							Driver: "csi.example.com", Handle: "synthetic-volume"},
+					},
+					WriterJournal: w.ObjectIdentity{
+						Name: sandboxwriter.JournalName(sandboxwriter.Lifetime{Agent: expected.Agent, Namespace: expected.Namespace, Home: expected.Home}),
+						UID:  "synthetic-writer-journal-uid",
+					},
+				}
+				intent, err := f.reconciler.SandboxExecutionIntent(h.ctx, f.agent(t), target)
+				if err != nil {
+					t.Fatal(err)
+				}
+				fences, stages := f.source.fenceCalls, f.installer.stageCalls
+				originalApproval := f.source.prerequisites.Revision
+				f.source.fenceError = errors.New("synthetic writer remains active")
+				defer func() {
+					f.source.fenceError = nil
+					f.source.prerequisites.Revision = originalApproval
+				}()
+				workload := &appsv1.StatefulSet{}
+				h.get(t, client.ObjectKey{Namespace: intent.Namespace.Name, Name: intent.Workload.Name}, workload)
+				originalRV := workload.ResourceVersion
+				workload.Status.Replicas = 1
+				workload.Status.ReadyReplicas = 1
+				if err := h.client.Status().Update(h.ctx, workload); err != nil {
+					t.Fatal(err)
+				}
+				if workload.ResourceVersion == originalRV {
+					t.Fatal("API server did not advance the status observation version")
+				}
+				if err := f.reconciler.CheckSandboxExecutionSources(h.ctx, intent); err != nil {
+					t.Fatal("status-only API update invalidated effective workload inputs:", err)
+				}
+				// No StatefulSet controller or agent container runs in envtest.
+				workload.Spec.Replicas = ptr.To[int32](1)
+				h.update(t, workload)
+				h.get(t, client.ObjectKeyFromObject(f.spare), f.spare)
+				h.get(t, client.ObjectKeyFromObject(f.admin), f.admin)
+				f.spare.Spec.Storage.Scratch.SizeLimit = resource.MustParse("2Gi")
+				f.admin.Spec.Network.BlockedCIDRs = []string{"203.0.113.0/24"}
+				h.update(t, f.spare)
+				h.update(t, f.admin)
+				if err := f.reconciler.CheckSandboxExecutionSources(h.ctx, intent); err != nil {
+					t.Fatal("controlled scale or unused configuration changes invalidated execution:", err)
+				}
+				f.source.prerequisites.Revision = "withdrawn-synthetic-approval"
+				if err := f.reconciler.CheckSandboxExecutionSources(h.ctx, intent); err == nil {
+					t.Fatal("withdrawn prerequisite approval was accepted")
+				}
+				if f.source.fenceCalls != fences || f.installer.stageCalls != stages {
+					t.Fatal("execution rechecks quiesced or restaged the writer")
+				}
+				f.assertAdmissionHeld(t, expected)
+			})
 			if err := h.client.Delete(h.ctx, registry); err != nil {
 				t.Fatal(err)
 			}
