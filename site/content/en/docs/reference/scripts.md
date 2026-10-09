@@ -187,8 +187,19 @@ The probe's effective `spec.runtimeClassName` must also match the requested
 class in its creation response, every readiness observation and the final
 check. Admission rewriting or removing that field fails the run even when
 the Pod UID is unchanged.
-Only a TCP connection timeout can count as blocked; connection refusal,
-unexpected HTTP responses and failures after connecting fail the probe.
+TCP remains the default. Only a TCP connection timeout can count as blocked;
+connection refusal, unexpected HTTP responses and failures after connecting
+fail the probe.
+
+To run that sequence for UDP, add `--network-protocol UDP`. The synthetic UDP
+server echoes a fresh random payload over connected datagram sockets; readiness
+requires the exact echo from every listener. A two-second receive timeout
+counts as no response. Connect/send failures, connection refusals and incorrect
+or oversized responses fail rather than count as denial. Readiness uses one
+second per listener within the existing five-second timeout. The protocol flag
+is not valid for either read-only preflight mode. See the
+[protocol-specific probe contract]({{< repo "scripts/README.md" >}}#protocol-specific-network-smoke).
+
 The Cilium policy initially allows port 8081, explicitly denies 8080, and leaves
 8082 blocked by default. After the overlapping allow policy is created, 8082
 must become reachable while 8080 stays blocked. This witness prevents an
@@ -201,8 +212,10 @@ removes finalizers. An ambiguous create or failed cleanup reports the generated
 namespace for explicit recovery; it does not adopt or delete a same-name
 replacement.
 
-Both modes return JSON with `qualifiesExecution: false`, even when successful.
-The TCP smoke test does not qualify pre-start enforcement, writer exclusion,
+Results identify the tested transport in `networkProtocol` and always retain
+`qualifiesExecution: false`, even when successful. A UDP receive timeout is
+absence of a reply, not proof of which policy or device dropped the datagram.
+The TCP/UDP smoke test does not qualify pre-start enforcement, writer exclusion,
 node/metadata traffic, DNS restrictions, storage, resource bounds, model access
 or failure recovery. It does not create production capability registrations or
 enable execution. These probes are separate from offline checks and are not
