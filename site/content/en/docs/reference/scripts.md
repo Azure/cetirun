@@ -148,6 +148,16 @@ Use `--runtime-class` and `--runtime-handler` to name an explicitly approved
 alternative. Existence and matching configuration do not establish actual
 runtime, network or storage enforcement.
 
+For an existing Operator/admission installation, the separate
+`deployment-preflight` mode checks explicit Deployment and ServiceAccount UID
+pins, digest-pinned images, native source bindings, named admission endpoints
+and webhook wiring. It performs bounded named GETs only, without discovery,
+Secret reads or test resources. It reports unverified prerequisites explicitly;
+successful scoped observations do not lift the stock writer-exclusion hold or
+qualify execution. See the [deployed Sandbox preflight inputs, output contract
+and limits]({{< repo "scripts/README.md" >}}#read-only-deployed-sandbox-preflight).
+Neither read-only mode authorizes running the network smoke test below.
+
 On a separately authorized disposable target, the `network-smoke` mode creates
 a unique namespace, a synthetic server and a Kata probe. It requires
 `--allow-test-resources` and a `--probe-image` pinned by SHA256 digest, containing
