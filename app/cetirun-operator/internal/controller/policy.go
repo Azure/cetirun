@@ -57,7 +57,7 @@ func (r *AgentReconciler) holdPolicyReprojection(ctx context.Context, agent *api
 	if r.AIGateway.configured() {
 		blockErr = r.beginAIGatewayPolicyReprojection(ctx, agent)
 	}
-	result, holdErr := r.holdSandbox(ctx, agent)
+	result, holdErr := r.fenceSandboxForPolicyReprojection(ctx, agent)
 	if blockErr != nil || holdErr != nil {
 		return result, errors.Join(blockErr, holdErr)
 	}

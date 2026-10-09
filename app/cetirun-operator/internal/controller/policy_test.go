@@ -544,6 +544,29 @@ func TestPolicyReprojectionDoesNotClaimAnAdministratorBlock(t *testing.T) {
 	}
 }
 
+func TestPolicyFenceDoesNotPrepareAReplacementSandbox(t *testing.T) {
+	agent := aiGatewayTestAgent(testAIGatewayTeam)
+	agent.Status.Phase = api.PhaseReady
+	r, kube, _ := aiGatewayTestReconciler(t, agent, aiGatewayNamespace())
+	// An incomplete preparation configuration fails immediately if the normal
+	// held-preparation path is entered. A policy fence must not consult it.
+	r.SandboxPreparation = &SandboxPreparation{}
+
+	result, err := r.fenceSandboxForPolicyReprojection(context.Background(), agent)
+	if err != nil || result.RequeueAfter == 0 {
+		t.Fatalf("policy fence entered Sandbox preparation: result=%+v err=%v", result, err)
+	}
+	current := &api.Agent{}
+	if err := kube.Get(context.Background(), client.ObjectKeyFromObject(agent), current); err != nil {
+		t.Fatal(err)
+	}
+	condition := findStatusCondition(current.Status.Conditions, api.ConditionSandboxReady)
+	if current.Status.Phase != api.PhasePending || condition == nil || condition.Status != metav1.ConditionFalse ||
+		condition.Reason != aiGatewayReasonPolicyReprojection {
+		t.Fatalf("policy fence did not report a held replacement projection: phase=%s condition=%+v", current.Status.Phase, condition)
+	}
+}
+
 func TestManagedGatewayGroupPollutionBlocksAnExistingGrant(t *testing.T) {
 	agent := aiGatewayTestAgent(testAIGatewayTeam)
 	r, kube, gateway := aiGatewayTestReconciler(t, agent, aiGatewayNamespace())

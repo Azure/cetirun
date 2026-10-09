@@ -41,6 +41,27 @@ func sandboxRequested(agent *cetirunv1alpha1.Agent, team *cetirunv1alpha1.Team) 
 // It requests an existing workload to stop but is not a qualified node fence.
 // Once held, clearing spec fields cannot silently return an Agent to legacy mode.
 func (r *AgentReconciler) holdSandbox(ctx context.Context, agent *cetirunv1alpha1.Agent) (ctrl.Result, error) {
+	return r.holdSandboxWithPolicyFence(ctx, agent, nil)
+}
+
+type sandboxPolicyFenceStatus struct {
+	phase   string
+	reason  string
+	message string
+}
+
+// fenceSandboxForPolicyReprojection performs only the fail-closed half of the
+// transition. It must stop compute before the Gateway replacement grant is
+// read back, but preparing a replacement workload at this point would depend
+// on that not-yet-verified model projection and deadlock the transition.
+func (r *AgentReconciler) fenceSandboxForPolicyReprojection(ctx context.Context, agent *cetirunv1alpha1.Agent) (ctrl.Result, error) {
+	return r.holdSandboxWithPolicyFence(ctx, agent, &sandboxPolicyFenceStatus{
+		phase: cetirunv1alpha1.PhasePending, reason: aiGatewayReasonPolicyReprojection,
+		message: "Current policy projections are changing; Sandbox execution remains held until replacement enforcement is verified.",
+	})
+}
+
+func (r *AgentReconciler) holdSandboxWithPolicyFence(ctx context.Context, agent *cetirunv1alpha1.Agent, policyFence *sandboxPolicyFenceStatus) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 	var failures []error
 	holdAdded := false
@@ -71,7 +92,7 @@ func (r *AgentReconciler) holdSandbox(ctx context.Context, agent *cetirunv1alpha
 		}
 	}
 	before := agent.DeepCopy().Status
-	prepare := r.SandboxPreparation != nil && !agent.Spec.Suspended && sandboxPreparationSupported(agent)
+	prepare := policyFence == nil && r.SandboxPreparation != nil && !agent.Spec.Suspended && sandboxPreparationSupported(agent)
 	if !prepare {
 		if err := r.revokeSandboxPreparationGrants(ctx, agent); err != nil {
 			failures = append(failures, err)
@@ -111,12 +132,15 @@ func (r *AgentReconciler) holdSandbox(ctx context.Context, agent *cetirunv1alpha
 		}
 	}
 
+	phase := cetirunv1alpha1.PhaseFailed
 	reason := "UnsupportedControl"
 	message := "Sandbox execution is not enabled: a qualified enforcement adapter and admission are required; workload execution is held."
-	if r.SandboxPreparation != nil && !sandboxPreparationSupported(agent) {
+	if policyFence != nil {
+		phase, reason, message = policyFence.phase, policyFence.reason, policyFence.message
+	} else if r.SandboxPreparation != nil && !sandboxPreparationSupported(agent) {
 		message = "This Agent type or cloud/sidecar integration is not supported by native Sandbox preparation; execution remains held."
 	}
-	agent.Status.Phase = cetirunv1alpha1.PhaseFailed
+	agent.Status.Phase = phase
 	if agent.Spec.Suspended {
 		agent.Status.Phase = cetirunv1alpha1.PhaseSuspended
 		reason = "Suspended"
