@@ -150,6 +150,19 @@ func TestPolicyReprojectionHoldsOnlyActiveOldProjection(t *testing.T) {
 	}
 }
 
+func TestPolicyWorkloadActivityDistinguishesDisabledFromPublishedIngress(t *testing.T) {
+	agent := &api.Agent{Status: api.AgentStatus{Phase: api.PhasePending, Conditions: []metav1.Condition{{
+		Type: api.ConditionIngressReady, Status: metav1.ConditionTrue, Reason: "IngressDisabled",
+	}}}}
+	if policyWorkloadMayBeActive(agent) {
+		t.Fatal("an intentionally absent ingress route was treated as an active workload")
+	}
+	agent.Status.Conditions[0].Reason = "IngressPublished"
+	if !policyWorkloadMayBeActive(agent) {
+		t.Fatal("a published ingress route was not treated as a potentially active workload")
+	}
+}
+
 func TestPolicyEnforcementRejectsStaleSandboxEvidence(t *testing.T) {
 	resolution := &policyResolution{
 		team:            &api.Team{ObjectMeta: metav1.ObjectMeta{UID: "team-uid"}},

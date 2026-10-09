@@ -583,8 +583,13 @@ func policyWorkloadMayBeActive(agent *api.Agent) bool {
 	if agent == nil {
 		return false
 	}
-	if agent.Status.Phase == api.PhaseReady || meta.IsStatusConditionTrue(agent.Status.Conditions, api.ConditionReady) ||
-		meta.IsStatusConditionTrue(agent.Status.Conditions, api.ConditionIngressReady) {
+	ingress := meta.FindStatusCondition(agent.Status.Conditions, api.ConditionIngressReady)
+	// IngressReady=True also represents an intentionally absent route. That is
+	// verified enforcement, not evidence that an old workload may still be
+	// reachable; treating it as activity would re-enter the reprojection hold
+	// immediately after the workload and Gateway were fenced.
+	ingressMayBeActive := ingress != nil && ingress.Status == metav1.ConditionTrue && ingress.Reason != "IngressDisabled"
+	if agent.Status.Phase == api.PhaseReady || meta.IsStatusConditionTrue(agent.Status.Conditions, api.ConditionReady) || ingressMayBeActive {
 		return true
 	}
 	return false
