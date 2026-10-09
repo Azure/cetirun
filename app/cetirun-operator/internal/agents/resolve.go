@@ -13,7 +13,6 @@ import (
 )
 
 var usernamePattern = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
-var sha256DigestPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 
 func ResolveCustom(request Request) (ResolvedAgent, error) {
 	if request.Username == "" {
@@ -62,8 +61,7 @@ func Resolve(request Request, profile Profile) (ResolvedAgent, error) {
 	if request.Image == "" {
 		request.Image = profile.Image
 	}
-	if request.Image != profile.Image && !slices.Contains(profile.QualifiedImages, request.Image) &&
-		!digestPinsProfileImage(request.Image, profile.Image) {
+	if request.Image != profile.Image && !slices.Contains(profile.QualifiedImages, request.Image) {
 		return ResolvedAgent{}, fmt.Errorf("spec.agent.image is not qualified for the selected harness profile")
 	}
 	if strings.ContainsAny(request.Image, " \t\r\n") {
@@ -79,15 +77,6 @@ func Resolve(request Request, profile Profile) (ResolvedAgent, error) {
 		Type: request.Type, Image: request.Image, Username: request.Username,
 		HomeDir: "/home/" + request.Username, Port: ptr.To(*request.Port),
 	}, nil
-}
-
-// digestPinsProfileImage permits an immutable form of the chart-qualified
-// default image without turning the digest into a general image override. The
-// repository and tag must remain byte-for-byte identical to the profile; only
-// one canonical sha256 digest may be appended.
-func digestPinsProfileImage(image, profileImage string) bool {
-	digest, ok := strings.CutPrefix(image, profileImage+"@")
-	return ok && !strings.Contains(profileImage, "@") && sha256DigestPattern.MatchString(digest)
 }
 
 func Validate(agent ResolvedAgent, bindings Bindings, descriptor Descriptor) error {

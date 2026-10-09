@@ -30,6 +30,12 @@ if argv[:3] == ["models", "auth", "list"]:
     print(json.dumps({"profiles": [{"id": item} for item in state["profiles"]]}))
 elif argv[:3] == ["models", "auth", "logout"]:
     state["profiles"].remove(argv[3])
+elif argv[:3] == ["secrets", "store", "set"]:
+    state.setdefault("store", {})[argv[3]] = {"value": sys.stdin.read().rstrip("\n"), "deleted": False}
+elif argv[:3] == ["secrets", "store", "rm"]:
+    entry = state.setdefault("store", {}).get(argv[3])
+    if entry is not None:
+        entry["deleted"] = True
 open(state_path, "w").write(json.dumps(state))
 '''
 
@@ -44,7 +50,7 @@ def home(tmp_path):
     fake.write_text(f"#!{sys.executable}\n{FAKE_OPENCLAW}")
     fake.chmod(0o755)
     cli = tmp_path / "cli.json"
-    cli.write_text(json.dumps({"profiles": ["openai:personal", "anthropic:personal"], "calls": []}))
+    cli.write_text(json.dumps({"profiles": ["openai:personal", "anthropic:personal"], "calls": [], "store": {}}))
     env = dict(os.environ, HOME=str(tmp_path / "home"), OPENCLAW_STATE_DIR=str(state),
                FAKE_OPENCLAW_STATE=str(cli), PATH=str(binaries) + os.pathsep + os.environ["PATH"])
     return state, cli, env
@@ -73,7 +79,30 @@ def test_removes_every_supported_direct_model_credential_on_every_start(home):
     assert json.loads(profiles.read_text()) == {"profiles": {}}
     saved = json.loads(cli.read_text())
     assert saved["profiles"] == []
+    assert len(saved["store"]) == 4
+    assert all(entry == {"value": "retired", "deleted": True} for entry in saved["store"].values())
     assert [call[:3] for call in saved["calls"]].count(["models", "auth", "logout"]) == 2
+    assert [call[:3] for call in saved["calls"]].count(["secrets", "store", "set"]) == 4
+    assert [call[:3] for call in saved["calls"]].count(["secrets", "store", "rm"]) == 4
+
+
+def test_overwrites_soft_deleted_provider_secrets_before_removing_them(home):
+    _, cli, _ = home
+    saved = json.loads(cli.read_text())
+    saved["profiles"] = []
+    saved["store"] = {
+        "OPENAI_API_KEY": {"value": "retained-soft-deleted-token", "deleted": True},
+        "UNRELATED_TOKEN": {"value": "keep", "deleted": False},
+    }
+    cli.write_text(json.dumps(saved))
+
+    result = run(home)
+    assert result.returncode == 0, result.stderr
+    saved = json.loads(cli.read_text())
+    assert saved["store"]["OPENAI_API_KEY"] == {"value": "retired", "deleted": True}
+    assert saved["store"]["UNRELATED_TOKEN"] == {"value": "keep", "deleted": False}
+    assert ["secrets", "store", "set", "OPENAI_API_KEY", "--kind", "secret"] in saved["calls"]
+    assert ["secrets", "store", "rm", "OPENAI_API_KEY", "--yes"] in saved["calls"]
 
 
 def test_auth_store_failure_keeps_the_agent_down(home):

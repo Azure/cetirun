@@ -71,7 +71,8 @@ helper. "true" or empty.
 
 {{/* Policy controls model credentials even when it grants no model source. */}}
 {{- define "cetirun.agent.hermes.modelAccessEnforced" -}}
-{{- if dig "enforceModelAccess" false (.Values.aiGateway | default dict) }}true{{ end -}}
+{{- $gateway := .Values.aiGateway | default dict -}}
+{{- if or ($gateway.enabled | default false) (dig "enforceModelAccess" false $gateway) }}true{{ end -}}
 {{- end }}
 
 {{/*

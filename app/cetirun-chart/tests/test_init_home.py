@@ -446,6 +446,17 @@ def test_hermes_moves_onto_the_gateway(agent):
 
 
 @pytest.mark.parametrize("agent", ["hermes"], indirect=True)
+def test_hermes_gateway_enforces_model_access_without_legacy_flag(agent):
+    on_gateway(agent)
+    agent["env"].pop("CETIRUN_MODEL_ACCESS_ENFORCED")
+
+    result = run(agent)
+    assert result.returncode == 0, result.stderr
+    assert not (agent["target"] / ".local/bin/copilot-auth").exists()
+    assert read_config(agent)["providers"] == GATEWAY_CONFIG["providers"]
+
+
+@pytest.mark.parametrize("agent", ["hermes"], indirect=True)
 def test_hermes_on_the_gateway_keeps_a_helper_it_did_not_install(agent):
     on_gateway(agent)
     assert run(agent).returncode == 0

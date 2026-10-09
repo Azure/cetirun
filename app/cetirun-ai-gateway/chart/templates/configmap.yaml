@@ -30,6 +30,7 @@ data:
       {{- $models := list }}
       {{- range $index, $configured := .Values.models }}
       {{- $model := deepCopy $configured }}
+      {{- if $.Values.operatorIntegration }}
       {{- $fingerprint := sha256sum (toJson $model) }}
       {{- $info := deepCopy ($model.model_info | default dict) }}
       {{- $suffix := $fingerprint | trunc 16 }}
@@ -37,6 +38,7 @@ data:
       {{- $_ := set $info "id" (printf "cetirun-shared-%s" $suffix) }}
       {{- $_ := set $info "access_groups" (append ($info.access_groups | default list) $group | uniq) }}
       {{- $_ = set $model "model_info" $info }}
+      {{- end }}
       {{- $models = append $models $model }}
       {{- end }}
       {{- toYaml $models | nindent 6 }}

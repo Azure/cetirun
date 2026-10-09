@@ -23,7 +23,7 @@ func policyHandler(objs ...client.Object) *AdminPolicyHandler {
 
 func TestAdminPolicyCRUD(t *testing.T) {
 	h := policyHandler()
-	body := []byte(`{"apiVersion":"cetirun.microsoft.com/v1alpha1","kind":"AgentPolicy","metadata":{"name":"normal"},"spec":{"harnesses":{"allowed":["hermes"]},"skills":{"allowed":[]},"modelAccess":{"copilot":{"allowed":false},"sharedModels":{"allowed":[]}},"agentIdentity":{"allowed":false,"required":false,"credentialServices":[]},"entraID":{"enabled":false},"sandboxSelection":{"allowMultiple":false},"security":{"readOnlyRootFilesystem":true},"network":{"blockedCIDRs":[],"blockedFQDNs":[],"blockedPorts":[],"allowedInternalCIDRs":[],"ingress":{"mode":"authenticated","requireMTLS":false}}}}`)
+	body := []byte(`{"apiVersion":"cetirun.microsoft.com/v1alpha1","kind":"AgentPolicy","metadata":{"name":"normal.v1"},"spec":{"harnesses":{"allowed":["hermes"]},"skills":{"allowed":[]},"modelAccess":{"copilot":{"allowed":false},"sharedModels":{"allowed":[]}},"agentIdentity":{"allowed":false,"required":false,"credentialServices":[]},"entraID":{"enabled":false},"sandboxSelection":{"allowMultiple":false},"security":{"readOnlyRootFilesystem":true},"network":{"blockedCIDRs":[],"blockedFQDNs":[],"blockedPorts":[],"allowedInternalCIDRs":[],"ingress":{"mode":"authenticated","requireMTLS":false}}}}`)
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/admin/agent-policies", bytes.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
 	response := httptest.NewRecorder()
@@ -31,8 +31,8 @@ func TestAdminPolicyCRUD(t *testing.T) {
 	if response.Code != http.StatusCreated {
 		t.Fatalf("create policy status=%d body=%s", response.Code, response.Body.String())
 	}
-	get := httptest.NewRequest(http.MethodGet, "/api/v1/admin/agent-policies/normal", nil)
-	get.SetPathValue("name", "normal")
+	get := httptest.NewRequest(http.MethodGet, "/api/v1/admin/agent-policies/normal.v1", nil)
+	get.SetPathValue("name", "normal.v1")
 	response = httptest.NewRecorder()
 	h.GetAgentPolicy(response, get)
 	if response.Code != http.StatusOK {

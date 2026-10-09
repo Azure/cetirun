@@ -244,6 +244,7 @@ may already serve a model under such a name.
 {{- fail (printf "model %s requires litellm_params.model" .model_name) }}
 {{- end }}
 {{- $info := .model_info | default dict }}
+{{- if $.Values.operatorIntegration }}
 {{- if $info.id }}
 {{- fail (printf "model %s configures model_info.id. The chart derives this reserved deployment identity from the complete model configuration so Policy can bind its access group to exactly one trusted backend." .model_name) }}
 {{- end }}
@@ -254,8 +255,9 @@ may already serve a model under such a name.
 {{- end }}
 {{- if hasPrefix "cetirun-" (lower .model_name) }}
 {{- fail (printf "model_name %s uses the reserved cetirun- prefix. That prefix belongs to models the CetiRun operator registers automatically; a collision would serve both under one name and split traffic between them." .model_name) }}
-{{- else if and $.Values.operatorIntegration (hasPrefix "copilot/" (lower .model_name)) }}
+{{- else if hasPrefix "copilot/" (lower .model_name) }}
 {{- fail (printf "model_name %s uses the copilot/ prefix, which operatorIntegration reserves for the GitHub Copilot models the CetiRun operator registers for each Agent; a collision would serve both under one name and split traffic between them." .model_name) }}
+{{- end }}
 {{- end }}
 {{- end }}
 {{- end }}

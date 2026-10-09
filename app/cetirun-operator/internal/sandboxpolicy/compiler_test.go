@@ -486,6 +486,30 @@ func TestCompileIngressModesAndMergedPeerPorts(t *testing.T) {
 	}
 }
 
+func TestWorkloadProbeDoesNotDenyApprovedNativeIngress(t *testing.T) {
+	input := compilerFixture()
+	input.WorkloadProbePort = 8642
+	input.Platform.Topology.Ingress[0].Ports = []api.AgentPolicyPort{{Port: 9119, Protocol: corev1.ProtocolTCP}}
+	plan := mustCompile(t, input)
+	foundHostProbe, foundNativeIngress := false, false
+	for _, rule := range plan.Network.Policy.Spec.Ingress {
+		if slices.Contains(rule.FromEntities, "host") && syntheticPortsMatch(rule.ToPorts, 8642, corev1.ProtocolTCP) {
+			foundHostProbe = true
+		}
+		if len(rule.FromEndpoints) != 0 && syntheticPortsMatch(rule.ToPorts, 9119, corev1.ProtocolTCP) {
+			foundNativeIngress = true
+		}
+	}
+	if !foundHostProbe || !foundNativeIngress {
+		t.Fatalf("probe or approved native ingress is missing: host=%t native=%t", foundHostProbe, foundNativeIngress)
+	}
+	for _, rule := range plan.Network.Policy.Spec.IngressDeny {
+		if slices.Contains(rule.FromEntities, "all") {
+			t.Fatal("probe restriction emitted a global deny that overrides approved native ingress")
+		}
+	}
+}
+
 // This evaluator checks generated rule intent only. It is not a Cilium runtime,
 // schema/managed-version acceptance test, or live dataplane qualification.
 func syntheticEgressAllowed(spec CiliumPolicySpec, rawIP string, peer *Peer, port int32, protocol corev1.Protocol) bool {

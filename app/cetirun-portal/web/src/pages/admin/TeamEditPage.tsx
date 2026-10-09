@@ -158,6 +158,12 @@ export function TeamEditPage() {
       }
       createMut.mutate(req);
     } else {
+      if (!existing?.uid || !existing.resourceVersion) {
+        setSubmitError("Team version is unavailable; reload before saving.");
+        return;
+      }
+      req.uid = existing.uid;
+      req.resourceVersion = existing.resourceVersion;
       updateMut.mutate(req);
     }
   };

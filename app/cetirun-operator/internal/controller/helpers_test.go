@@ -593,6 +593,9 @@ func TestBuildVirtualService_Routes(t *testing.T) {
 	domainSuffix := "example.com"
 
 	vs := buildVirtualService(instance, domainSuffix, DefaultIstioGateway)
+	if len(vs.OwnerReferences) != 1 || vs.OwnerReferences[0].Kind != "Agent" || vs.OwnerReferences[0].Name != instance.Name {
+		t.Fatalf("native VirtualService is not owned by its Agent: %+v", vs.OwnerReferences)
+	}
 
 	// VS must bind to the apex domain, not a subdomain
 	if len(vs.Spec.Hosts) != 1 || vs.Spec.Hosts[0] != domainSuffix {

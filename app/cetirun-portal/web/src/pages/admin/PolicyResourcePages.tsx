@@ -40,6 +40,11 @@ export function resourcePayload(kind: ResourceKind, name: string, spec: Record<s
   return { apiVersion: "cetirun.microsoft.com/v1alpha1", kind: singular(kind), metadata: { name }, spec };
 }
 
+export function isDNS1123Subdomain(name: string) {
+  if (name.length === 0 || name.length > 253) return false;
+  return name.split(".").every((label) => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label));
+}
+
 function acceptance(conditions?: PolicyCondition[]) {
   const accepted = conditions?.find((condition) => condition.type === "Accepted" || condition.type === "Ready");
   return accepted ? `${accepted.type}: ${accepted.status}` : "Pending";
@@ -50,7 +55,7 @@ export function PolicyResourceListPage({ kind }: { kind: ResourceKind }) {
   const query = useQuery<Resource[], Error>({ queryKey: key(kind), queryFn: () => list(kind) });
   const deletion = useMutation({ mutationFn: (resource: Resource) => remove(kind, resource), onSuccess: () => { queryClient.invalidateQueries({ queryKey: key(kind) }); setConfirming(undefined); } });
   return <div>
-    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}><Title2>{title(kind)}</Title2><Button appearance="primary" icon={<Add20Regular />} onClick={() => navigate(`/admin/${route(kind)}/new`)}>New {singular(kind)}</Button></div>
+    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}><Title2>{title(kind)}</Title2><Button appearance="primary" icon={<Add20Regular />} onClick={() => navigate(`/admin/${route(kind)}/-/new`)}>New {singular(kind)}</Button></div>
     <Text block style={{ marginBottom: 16 }}>{kind === "policy" ? "Policies define the approved Agent capabilities, model access, budgets and network controls." : "Sandboxes define approved runtime, resource limits and private storage profiles."}</Text>
     {query.isLoading && <Spinner label={`Loading ${title(kind).toLowerCase()}...`} />}
     {query.error && <MessageBar intent="error">{query.error.message}</MessageBar>}
@@ -63,8 +68,8 @@ export function PolicyResourceListPage({ kind }: { kind: ResourceKind }) {
   </div>;
 }
 
-export function PolicyResourceEditPage({ kind }: { kind: ResourceKind }) {
-  const { name } = useParams<{ name: string }>(); const navigate = useNavigate(); const queryClient = useQueryClient(); const creating = !name || name === "new";
+export function PolicyResourceEditPage({ kind, creating }: { kind: ResourceKind; creating: boolean }) {
+  const { name } = useParams<{ name: string }>(); const navigate = useNavigate(); const queryClient = useQueryClient();
   const [resourceName, setResourceName] = useState(""); const [specJSON, setSpecJSON] = useState(() => JSON.stringify(kind === "policy" ? policyTemplate : sandboxTemplate, null, 2)); const [error, setError] = useState<string>();
   const query = useQuery<Resource, Error>({ queryKey: [...key(kind), name], queryFn: () => get(kind, name!), enabled: !creating });
   useEffect(() => { if (query.data) { setResourceName(query.data.metadata.name); setSpecJSON(JSON.stringify(query.data.spec, null, 2)); } }, [query.data]);
@@ -74,7 +79,7 @@ export function PolicyResourceEditPage({ kind }: { kind: ResourceKind }) {
     if (!current) throw new Error("Policy resource is unavailable; reload before saving");
     return (kind === "policy" ? updateAgentPolicy(name!, version(current), spec) : updateSandbox(name!, version(current), spec)) as Promise<Resource>;
   }, onSuccess: () => { queryClient.invalidateQueries({ queryKey: key(kind) }); navigate(`/admin/${route(kind)}`); }, onError: (cause: Error) => setError(cause.message) });
-  const submit = (event: FormEvent) => { event.preventDefault(); setError(undefined); if (!/^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$/.test(resourceName.trim())) { setError("Name must be a DNS-1123 label: lowercase, start with a letter, max 63 characters."); return; } try { const spec: unknown = JSON.parse(specJSON); if (!spec || Array.isArray(spec) || typeof spec !== "object") throw new Error(); save.mutate({ itemName: resourceName.trim(), spec: spec as Record<string, unknown> }); } catch { setError("Specification must be a valid JSON object."); } };
+  const submit = (event: FormEvent) => { event.preventDefault(); setError(undefined); if (!isDNS1123Subdomain(resourceName.trim())) { setError("Name must be a DNS-1123 subdomain: lowercase labels separated by dots, max 253 characters."); return; } try { const spec: unknown = JSON.parse(specJSON); if (!spec || Array.isArray(spec) || typeof spec !== "object") throw new Error(); save.mutate({ itemName: resourceName.trim(), spec: spec as Record<string, unknown> }); } catch { setError("Specification must be a valid JSON object."); } };
   if (!creating && query.isLoading) return <Spinner label={`Loading ${singular(kind)}...`} />;
   if (!creating && query.error) return <MessageBar intent="error">{query.error.message}</MessageBar>;
   return <form onSubmit={submit} style={{ maxWidth: 820, display: "flex", flexDirection: "column", gap: 16 }}><Title2>{creating ? `New ${singular(kind)}` : `${singular(kind)}: ${name}`}</Title2><Text>{kind === "policy" ? "Edit the complete AgentPolicy specification. Start restrictive and explicitly add approved capabilities." : "Edit the complete Sandbox specification. Resource requests and limits need CPU, memory and ephemeral storage."}</Text><Field label="Name" required><Input value={resourceName} disabled={!creating} onChange={(_, data) => setResourceName(data.value)} /></Field><Field label="Specification" required hint="Only the CRD spec is editable; the platform owns metadata and status."><Textarea aria-label={`${singular(kind)} specification`} rows={24} value={specJSON} onChange={(_, data) => setSpecJSON(data.value)} style={{ fontFamily: "monospace" }} /></Field>{error && <MessageBar intent="error">{error}</MessageBar>}<div style={{ display: "flex", gap: 8 }}><Button appearance="primary" type="submit" disabled={save.isPending}>{save.isPending ? "Saving..." : creating ? "Create" : "Save"}</Button><Button appearance="secondary" type="button" onClick={() => navigate(`/admin/${route(kind)}`)}>Cancel</Button></div></form>;

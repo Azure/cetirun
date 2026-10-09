@@ -794,6 +794,9 @@ func buildVirtualService(instance *cetirunv1alpha1.Agent, domainSuffix, gateway 
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      virtualServiceName(name),
 			Namespace: ns,
+			OwnerReferences: []metav1.OwnerReference{
+				*metav1.NewControllerRef(instance, cetirunv1alpha1.GroupVersion.WithKind("Agent")),
+			},
 			Labels: map[string]string{
 				"app.kubernetes.io/managed-by": "cetirun-operator",
 				"app.kubernetes.io/instance":   name,
@@ -808,9 +811,6 @@ func buildVirtualService(instance *cetirunv1alpha1.Agent, domainSuffix, gateway 
 	}
 	if agentType == cetirunv1alpha1.AgentTypeCustom {
 		desired.Annotations = map[string]string{customAgentUID: string(instance.UID)}
-		desired.OwnerReferences = []metav1.OwnerReference{
-			*metav1.NewControllerRef(instance, cetirunv1alpha1.GroupVersion.WithKind("Agent")),
-		}
 	}
 	return desired
 }

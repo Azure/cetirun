@@ -13,6 +13,8 @@ import (
 	"slices"
 	"strings"
 
+	"k8s.io/apimachinery/pkg/util/validation"
+
 	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-portal/internal/kube"
 )
@@ -29,7 +31,7 @@ type policyResourcePrecondition struct {
 
 func policyObjectName(r *http.Request) (string, bool) {
 	name := r.PathValue("name")
-	return name, teamNamePattern.MatchString(name)
+	return name, len(validation.IsDNS1123Subdomain(name)) == 0
 }
 
 func (h *AdminPolicyHandler) ListAgentPolicies(w http.ResponseWriter, r *http.Request) {
@@ -50,7 +52,7 @@ func (h *AdminPolicyHandler) CreateAgentPolicy(w http.ResponseWriter, r *http.Re
 	if !decodeStrictPolicy(w, r, &item) {
 		return
 	}
-	if !teamNamePattern.MatchString(item.Name) {
+	if len(validation.IsDNS1123Subdomain(item.Name)) != 0 {
 		writeError(w, 400, "invalid_name", "Invalid policy name")
 		return
 	}
@@ -111,7 +113,7 @@ func (h *AdminPolicyHandler) CreateSandbox(w http.ResponseWriter, r *http.Reques
 	if !decodeStrictPolicy(w, r, &item) {
 		return
 	}
-	if !teamNamePattern.MatchString(item.Name) {
+	if len(validation.IsDNS1123Subdomain(item.Name)) != 0 {
 		writeError(w, 400, "invalid_name", "Invalid sandbox name")
 		return
 	}

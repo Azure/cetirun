@@ -26,7 +26,7 @@ func newAdminTeamHandler(objs ...client.Object) *AdminTeamHandler {
 
 func TestAdminTeam_List(t *testing.T) {
 	team := &cetirunv1alpha1.Team{
-		ObjectMeta: metav1.ObjectMeta{Name: "aks"},
+		ObjectMeta: metav1.ObjectMeta{Name: "aks", UID: "team-uid", ResourceVersion: "7"},
 		Spec: cetirunv1alpha1.TeamSpec{
 			MemberContext: cetirunv1alpha1.TeamContextSpec{Role: "AKS Engineer"},
 			Defaults:      cetirunv1alpha1.TeamDefaultsSpec{Provider: "github_copilot"},
@@ -46,7 +46,8 @@ func TestAdminTeam_List(t *testing.T) {
 	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if len(resp.Teams) != 1 || resp.Teams[0].Name != "aks" || resp.Teams[0].Role != "AKS Engineer" {
+	if len(resp.Teams) != 1 || resp.Teams[0].Name != "aks" || resp.Teams[0].Role != "AKS Engineer" ||
+		resp.Teams[0].UID != "team-uid" || resp.Teams[0].ResourceVersion != "7" {
 		t.Errorf("unexpected response: %+v", resp)
 	}
 }
@@ -133,9 +134,10 @@ func TestAdminTeam_Create_InvalidSkillStorage(t *testing.T) {
 
 func TestAdminTeam_Update_InvalidSkillStorage(t *testing.T) {
 	h := newAdminTeamHandler(&cetirunv1alpha1.Team{
-		ObjectMeta: metav1.ObjectMeta{Name: "aks"},
+		ObjectMeta: metav1.ObjectMeta{Name: "aks", UID: "team-uid", ResourceVersion: "1"},
 	})
 	body, _ := json.Marshal(TeamUpsertRequest{
+		UID: "team-uid", ResourceVersion: "1",
 		SkillStorage: &TeamSkillStorageDTO{ResourceGroup: " "}, // whitespace-only
 	})
 	req := httptest.NewRequest(http.MethodPut, "/api/v1/admin/teams/aks", bytes.NewReader(body))
@@ -149,12 +151,12 @@ func TestAdminTeam_Update_InvalidSkillStorage(t *testing.T) {
 
 func TestAdminTeam_Update(t *testing.T) {
 	h := newAdminTeamHandler(&cetirunv1alpha1.Team{
-		ObjectMeta: metav1.ObjectMeta{Name: "aks"},
+		ObjectMeta: metav1.ObjectMeta{Name: "aks", UID: "team-uid", ResourceVersion: "1"},
 		Spec: cetirunv1alpha1.TeamSpec{
 			MemberContext: cetirunv1alpha1.TeamContextSpec{Role: "old"},
 		},
 	})
-	body, _ := json.Marshal(TeamUpsertRequest{Role: "new", NormalAgentPolicyRef: "normal", SandboxRefs: []string{"standard"}, DefaultSandboxRef: "standard"})
+	body, _ := json.Marshal(TeamUpsertRequest{UID: "team-uid", ResourceVersion: "1", Role: "new", NormalAgentPolicyRef: "normal", SandboxRefs: []string{"standard"}, DefaultSandboxRef: "standard"})
 	req := httptest.NewRequest(http.MethodPut, "/api/v1/admin/teams/aks", bytes.NewReader(body))
 	req.SetPathValue("name", "aks")
 	w := httptest.NewRecorder()
@@ -171,7 +173,7 @@ func TestAdminTeam_Update(t *testing.T) {
 
 func TestAdminTeamUpdateReplacesPolicyBindings(t *testing.T) {
 	team := &cetirunv1alpha1.Team{
-		ObjectMeta: metav1.ObjectMeta{Name: "governed"},
+		ObjectMeta: metav1.ObjectMeta{Name: "governed", UID: "team-uid", ResourceVersion: "1"},
 		Spec: cetirunv1alpha1.TeamSpec{
 			NormalAgentPolicyRef: "normal", AdminAgentPolicyRef: "admin",
 			SandboxRefs: []string{"standard", "restricted"}, DefaultSandboxRef: "standard",
@@ -179,7 +181,7 @@ func TestAdminTeamUpdateReplacesPolicyBindings(t *testing.T) {
 		},
 	}
 	h := newAdminTeamHandler(team)
-	req := httptest.NewRequest(http.MethodPut, "/api/v1/admin/teams/governed", bytes.NewBufferString(`{"role":"new","normalAgentPolicyRef":"new-normal","sandboxRefs":["restricted"],"defaultSandboxRef":"restricted"}`))
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/admin/teams/governed", bytes.NewBufferString(`{"uid":"team-uid","resourceVersion":"1","role":"new","normalAgentPolicyRef":"new-normal","sandboxRefs":["restricted"],"defaultSandboxRef":"restricted"}`))
 	req.SetPathValue("name", team.Name)
 	w := httptest.NewRecorder()
 	h.UpdateTeam(w, req)
@@ -195,6 +197,38 @@ func TestAdminTeamUpdateReplacesPolicyBindings(t *testing.T) {
 	want.SandboxRefs, want.DefaultSandboxRef = []string{"restricted"}, "restricted"
 	if !reflect.DeepEqual(got.Spec, *want) {
 		t.Fatalf("Portal policy binding update mismatch: got %+v, want %+v", got.Spec, *want)
+	}
+}
+
+func TestAdminTeamUpdateRequiresCurrentVersion(t *testing.T) {
+	team := &cetirunv1alpha1.Team{
+		ObjectMeta: metav1.ObjectMeta{Name: "governed", UID: "team-uid", ResourceVersion: "7"},
+		Spec: cetirunv1alpha1.TeamSpec{
+			NormalAgentPolicyRef: "restrictive", SandboxRefs: []string{"restricted"}, DefaultSandboxRef: "restricted",
+		},
+	}
+	for _, test := range []struct {
+		name string
+		body string
+		want int
+	}{
+		{name: "missing", body: `{"normalAgentPolicyRef":"permissive","sandboxRefs":["standard"],"defaultSandboxRef":"standard"}`, want: http.StatusPreconditionRequired},
+		{name: "stale", body: `{"uid":"team-uid","resourceVersion":"6","normalAgentPolicyRef":"permissive","sandboxRefs":["standard"],"defaultSandboxRef":"standard"}`, want: http.StatusConflict},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			h := newAdminTeamHandler(team.DeepCopy())
+			req := httptest.NewRequest(http.MethodPut, "/api/v1/admin/teams/governed", bytes.NewBufferString(test.body))
+			req.SetPathValue("name", team.Name)
+			w := httptest.NewRecorder()
+			h.UpdateTeam(w, req)
+			if w.Code != test.want {
+				t.Fatalf("status %d, want %d: %s", w.Code, test.want, w.Body.String())
+			}
+			got, err := h.Kube.GetTeam(t.Context(), team.Name)
+			if err != nil || got.Spec.NormalAgentPolicyRef != "restrictive" {
+				t.Fatalf("stale update changed Team: %+v, err=%v", got, err)
+			}
+		})
 	}
 }
 

@@ -105,17 +105,25 @@ assert_contains "kind: Deployment" "Deployment is rendered" "${output}"
 assert_contains "kind: Service" "Service is rendered" "${output}"
 assert_contains "kind: ConfigMap" "ConfigMap is rendered" "${output}"
 assert_contains "model_name: lint-model" "configured model reaches the LiteLLM config" "${output}"
-assert_contains "cetirun-model-" "configured models receive managed access groups" "${output}"
-managed_group="$(grep -oE 'cetirun-model-[0-9a-f]{16}' <<< "${output}" | head -1)"
+assert_absent "cetirun-model-" "a standalone Gateway does not add CetiRun access groups" "${output}"
+assert_absent "cetirun-shared-" "a standalone Gateway does not replace deployment IDs" "${output}"
+
+integration="$(render --set operatorIntegration=true)"
+assert_contains "cetirun-model-" "operator-managed models receive managed access groups" "${integration}"
+managed_group="$(grep -oE 'cetirun-model-[0-9a-f]{16}' <<< "${integration}" | head -1)"
 managed_suffix="${managed_group#cetirun-model-}"
 assert_contains "id: cetirun-shared-${managed_suffix}" \
-  "the configured deployment ID is bound to its managed access group" "${output}"
+  "the configured deployment ID is bound to its managed access group" "${integration}"
+
+standalone_id="$(render --set-string "models[0].model_info.id=user-supplied")"
+assert_contains "id: user-supplied" "a standalone Gateway preserves model_info.id" "${standalone_id}"
 
 # A display name is not an authorization boundary: LiteLLM can have several
 # backends for it. The chart gives every configured backend a deterministic,
 # collision-safe group which the operator grants exactly as observed.
 echo "==> configured model groups are collision-safe and deterministic"
 two_models="$(render \
+  --set operatorIntegration=true \
   --set-string 'models[1].model_name=lint-model' \
   --set-string 'models[1].litellm_params.model=azure/lint-model')"
 mapfile -t managed_groups < <(grep -oE 'cetirun-model-[0-9a-f]{16}' <<< "${two_models}" | sort -u)
@@ -124,6 +132,7 @@ if [ "${#managed_groups[@]}" -ne 2 ] || [ "${managed_groups[0]}" = "${managed_gr
   exit 1
 fi
 two_models_repeat="$(render \
+  --set operatorIntegration=true \
   --set-string 'models[1].model_name=lint-model' \
   --set-string 'models[1].litellm_params.model=azure/lint-model')"
 mapfile -t managed_groups_repeat < <(grep -oE 'cetirun-model-[0-9a-f]{16}' <<< "${two_models_repeat}" | sort -u)
@@ -163,10 +172,13 @@ assert_rejected "an external Redis while the bundled one is on" --set-string "re
 assert_rejected "both provider credential sources" \
   --set-string "providerCredentials.existingSecret=a" --set-string "providerCredentials.inline.B=c"
 assert_rejected "a user-supplied managed access group" \
+  --set operatorIntegration=true \
   --set-string "models[0].model_info.access_groups[0]=cetirun-model-user-supplied"
 assert_rejected "a user-supplied managed access group in another case" \
+  --set operatorIntegration=true \
   --set-string "models[0].model_info.access_groups[0]=CetiRun-Model-user-supplied"
 assert_rejected "a user-supplied deployment ID" \
+  --set operatorIntegration=true \
   --set-string "models[0].model_info.id=user-supplied"
 
 # ----- Reserved model-name prefix -----
@@ -176,8 +188,12 @@ assert_rejected "a user-supplied deployment ID" \
 # different backends, invisibly to the client. The prefix keeps operator
 # generated names out of the administrator's namespace.
 echo "==> reserved model-name prefix"
-assert_rejected "reserved cetirun- prefix" --set-string "models[0].model_name=cetirun-gpt4"
-assert_rejected "reserved prefix in another case" --set-string "models[0].model_name=CetiRun-gpt4"
+standalone_cetirun="$(render --set-string "models[0].model_name=cetirun-gpt4")"
+assert_contains "model_name: cetirun-gpt4" "a standalone Gateway accepts a cetirun- model name" "${standalone_cetirun}"
+assert_rejected "reserved cetirun- prefix with the operator integration" \
+  --set operatorIntegration=true --set-string "models[0].model_name=cetirun-gpt4"
+assert_rejected "reserved prefix in another case with the operator integration" \
+  --set operatorIntegration=true --set-string "models[0].model_name=CetiRun-gpt4"
 # A standalone Gateway keeps serving models under copilot/; serving CetiRun
 # Agents reserves that prefix for their GitHub Copilot routes.
 standalone_copilot="$(render --set-string "models[0].model_name=copilot/gpt-5")"
@@ -194,7 +210,6 @@ assert_rejected "reserved copilot/ prefix in another case with the operator inte
 # cannot reach another Agent's GitHub Copilot route.
 echo "==> fallback targets are checked against the caller's key for CetiRun"
 assert_absent "enforce_fallback_model_access" "a standalone Gateway keeps LiteLLM's fallback default" "${output}"
-integration="$(render --set operatorIntegration=true)"
 assert_contains "enforce_fallback_model_access: true" \
   "the operator integration checks fallback targets against the caller's key" "${integration}"
 

@@ -56,7 +56,8 @@ func (r *AgentReconciler) reconcileKubernetesSandbox(ctx context.Context, agent 
 		return r.holdSandbox(ctx, agent)
 	}
 	if err != nil {
-		return ctrl.Result{}, err
+		result, holdErr := r.holdSandbox(ctx, agent)
+		return result, errors.Join(err, holdErr)
 	}
 	if expected.ExecutionHeld {
 		return r.startKubernetesSandbox(ctx, agent)
@@ -239,12 +240,17 @@ func (r *AgentReconciler) observeKubernetesSandbox(ctx context.Context, agent *a
 	pod := &corev1.Pod{}
 	if err := r.APIReader.Get(ctx, client.ObjectKey{Namespace: expected.Namespace.Name, Name: expected.Workload.Name + "-0"}, pod); err != nil {
 		if apierrors.IsNotFound(err) {
+			if agent.Status.Phase == api.PhaseReady {
+				result, holdErr := r.holdSandbox(ctx, agent)
+				return result, errors.Join(err, holdErr)
+			}
 			if err := r.sandboxExecutionPendingStatus(ctx, agent, "SandboxStarting", "Waiting for the Sandbox Pod to be created."); err != nil {
 				return ctrl.Result{}, err
 			}
 			return ctrl.Result{RequeueAfter: sandboxExecutionRequeue}, nil
 		}
-		return ctrl.Result{}, err
+		result, holdErr := r.holdSandbox(ctx, agent)
+		return result, errors.Join(err, holdErr)
 	}
 	if pod.UID == "" || !pod.DeletionTimestamp.IsZero() || pod.Spec.NodeName == "" || !sandboxPodReady(pod) {
 		if agent.Status.Phase == api.PhaseReady {
@@ -257,7 +263,8 @@ func (r *AgentReconciler) observeKubernetesSandbox(ctx context.Context, agent *a
 	}
 	node := &corev1.Node{}
 	if err := r.APIReader.Get(ctx, client.ObjectKey{Name: pod.Spec.NodeName}, node); err != nil {
-		return ctrl.Result{}, err
+		result, holdErr := r.holdSandbox(ctx, agent)
+		return result, errors.Join(err, holdErr)
 	}
 	if node.UID == "" || !node.DeletionTimestamp.IsZero() || !sandboxNodeReady(node) {
 		return r.holdSandbox(ctx, agent)
@@ -266,6 +273,10 @@ func (r *AgentReconciler) observeKubernetesSandbox(ctx context.Context, agent *a
 	// transitions after admission. Validate both against the freshly read Node;
 	// every other metadata and PodSpec field remains exact-template only.
 	if err := w.ValidatePodOnNode(pod, node, *expected); err != nil {
+		result, holdErr := r.holdSandbox(ctx, agent)
+		return result, errors.Join(err, holdErr)
+	}
+	if err := r.verifyKubernetesSandboxControls(ctx, agent, expected, attempt.plan); err != nil {
 		result, holdErr := r.holdSandbox(ctx, agent)
 		return result, errors.Join(err, holdErr)
 	}
@@ -302,6 +313,38 @@ func (r *AgentReconciler) observeKubernetesSandbox(ctx context.Context, agent *a
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
+}
+
+func (r *AgentReconciler) verifyKubernetesSandboxControls(ctx context.Context, agent *api.Agent,
+	expected *w.Expectation, plan *sandboxpolicy.Plan,
+) error {
+	if agent == nil || agent.UID == "" || expected == nil || plan == nil || len(plan.Resources) == 0 {
+		return fmt.Errorf("Sandbox applied-control evidence is incomplete")
+	}
+	required := make([]w.SourceReference, 0, len(plan.Resources)+1)
+	for _, resource := range plan.Resources {
+		required = append(required, w.SourceReference{
+			APIVersion: resource.GetAPIVersion(), Kind: resource.GetKind(), Namespace: resource.GetNamespace(), Name: resource.GetName(),
+		})
+	}
+	required = append(required, w.SourceReference{
+		APIVersion: "v1", Kind: "ConfigMap", Namespace: r.OperatorNamespace,
+		Name: sandboxpolicy.GrantJournalName(agent.UID),
+	})
+	for _, control := range required {
+		index := slices.IndexFunc(expected.Sources, func(source w.SourceReference) bool {
+			return source.APIVersion == control.APIVersion && source.Kind == control.Kind &&
+				source.Namespace == control.Namespace && source.Name == control.Name
+		})
+		if index < 0 || expected.Sources[index].UID == "" || expected.Sources[index].ResourceVersion == "" {
+			return fmt.Errorf("Sandbox applied-control source is missing: %s/%s/%s/%s",
+				control.APIVersion, control.Kind, control.Namespace, control.Name)
+		}
+		if _, err := r.readSandboxSource(ctx, expected.Sources[index]); err != nil {
+			return fmt.Errorf("verify Sandbox applied control %s/%s: %w", control.Kind, control.Name, err)
+		}
+	}
+	return ctx.Err()
 }
 
 func sandboxPodReady(pod *corev1.Pod) bool {

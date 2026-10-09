@@ -61,6 +61,21 @@ if [ -f "$env_file" ] && grep -Eq "$env_keys" "$env_file"; then
   log "removed direct model credentials from $env_file"
 fi
 
+# A removed shared-store entry is only tombstoned for 30 days, and its value
+# remains in secret_store_entries during that period. Overwrite every reserved
+# provider credential before removing it so retries also sanitize entries that
+# were already soft-deleted by an earlier logout or cleanup attempt.
+for key in OPENAI_API_KEY ANTHROPIC_API_KEY COPILOT_GITHUB_TOKEN OPENCLAW_GITHUB_TOKEN; do
+  if ! printf '%s\n' retired | openclaw secrets store set "$key" --kind secret >"$output" 2>"$errors"; then
+    log "could not overwrite shared secret $key; refusing to start the Agent"
+    exit 1
+  fi
+  if ! openclaw secrets store rm "$key" --yes >"$output" 2>"$errors"; then
+    log "could not retire shared secret $key; refusing to start the Agent"
+    exit 1
+  fi
+done
+
 if ! openclaw models auth list --agent main --json >"$output" 2>"$errors" ||
   ! jq -e '.profiles | type == "array"' "$output" >/dev/null 2>&1; then
   reason=$(jq -r '.error.message? // empty' "$output" 2>/dev/null)

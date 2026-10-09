@@ -122,6 +122,22 @@ if grep -q 'command: \["openclaw", "doctor"' <<< "$output"; then
   echo "FAIL: OpenClaw doctor init should not render for Hermes" >&2; exit 1
 fi
 
+echo "==> Hermes Gateway routing always enforces model access"
+output=$(helm_template "${release_name}" "${chart_dir}" -f "${chart_dir}/values.yaml" \
+  --set agentType=hermes \
+  --set secrets.provider=openai \
+  --set-string secrets.apiBase=http://gateway.example.invalid/v1 \
+  --set aiGateway.enabled=true \
+  --set aiGateway.keySecretName=lint-gateway-key \
+  --set-string 'aiGateway.models[0].id=lint-model' \
+  --set-string 'aiGateway.models[0].name=Lint Model')
+grep -q 'name: CETIRUN_MODEL_ACCESS_ENFORCED' <<< "$output" || {
+  echo "FAIL: Gateway-routed Hermes did not enforce model access" >&2; exit 1
+}
+if grep -q 'name: cetirun-auth' <<< "$output"; then
+  echo "FAIL: Gateway-routed Hermes still exposes the in-agent auth helper" >&2; exit 1
+fi
+
 # Agent Identity injects only the typed Broker endpoint, keeps the default
 # Kubernetes API token unmounted, and allows only Broker egress.
 for agent_type in openclaw hermes; do

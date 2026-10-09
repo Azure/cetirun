@@ -1589,8 +1589,8 @@ func (r *AgentReconciler) ensureVirtualService(ctx context.Context, instance *ce
 
 	// Update existing VirtualService by patching it with the desired spec fields.
 	// We avoid direct struct assignment because the proto message contains a sync.Mutex.
-	if instance.Spec.Agent.Type == cetirunv1alpha1.AgentTypeCustom && !hasAgentOwner(existing, instance) {
-		return fmt.Errorf("Custom platform route belongs to another owner")
+	if !hasAgentOwner(existing, instance) {
+		return fmt.Errorf("Agent platform route belongs to another owner")
 	}
 	ownedAnnotationsMatch := instance.Spec.Agent.Type != cetirunv1alpha1.AgentTypeCustom ||
 		existing.Annotations[customAgentUID] == string(instance.UID)

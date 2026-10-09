@@ -14,6 +14,8 @@ export interface TeamSkillStorage {
 
 export interface TeamDTO {
   name: string;
+  uid: string;
+  resourceVersion: string;
   role?: string;
   description?: string[];
   defaultProvider?: string;
@@ -28,6 +30,8 @@ export interface TeamDTO {
 
 export interface TeamUpsertRequest {
   name?: string;
+  uid?: string;
+  resourceVersion?: string;
   role?: string;
   description?: string[];
   defaultProvider?: string;

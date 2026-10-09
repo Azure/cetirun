@@ -49,11 +49,11 @@ export default function App() {
               <Route path="teams/:name" element={<TeamEditPage />} />
               <Route path="instances" element={<AdminInstanceListPage />} />
               <Route path="agent-policies" element={<PolicyResourceListPage kind="policy" />} />
-              <Route path="agent-policies/new" element={<PolicyResourceEditPage kind="policy" />} />
-              <Route path="agent-policies/:name" element={<PolicyResourceEditPage kind="policy" />} />
+              <Route path="agent-policies/-/new" element={<PolicyResourceEditPage kind="policy" creating />} />
+              <Route path="agent-policies/:name" element={<PolicyResourceEditPage kind="policy" creating={false} />} />
               <Route path="sandboxes" element={<PolicyResourceListPage kind="sandbox" />} />
-              <Route path="sandboxes/new" element={<PolicyResourceEditPage kind="sandbox" />} />
-              <Route path="sandboxes/:name" element={<PolicyResourceEditPage kind="sandbox" />} />
+              <Route path="sandboxes/-/new" element={<PolicyResourceEditPage kind="sandbox" creating />} />
+              <Route path="sandboxes/:name" element={<PolicyResourceEditPage kind="sandbox" creating={false} />} />
             </Route>
           </Route>
         </Routes>

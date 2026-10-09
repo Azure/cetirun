@@ -81,7 +81,7 @@ func TestSandboxSourcesFactoryDefaultsStayDisabled(t *testing.T) {
 	}
 }
 
-func TestSandboxSourcesFactoryUsesAuthoritativeReadersAndRWOPWriterExclusion(t *testing.T) {
+func TestSandboxSourcesFactoryUsesAuthoritativeReadersAndRequiresQualifiedWriterExclusion(t *testing.T) {
 	config, err := controller.ParseSandboxSourcesConfig(sandboxSourcesConfigJSON)
 	if err != nil {
 		t.Fatal(err)
@@ -102,9 +102,8 @@ func TestSandboxSourcesFactoryUsesAuthoritativeReadersAndRWOPWriterExclusion(t *
 		prerequisites.Helpers != (sandboxworkload.Helpers{Doctor: true, Logger: true}) {
 		t.Fatal("prerequisite source was not bound to the approved native inputs")
 	}
-	writerExclusion, ok := prerequisites.WriterExclusion.(*controller.KubernetesRWOPWriterExclusion)
-	if !ok || writerExclusion.APIReader != reader {
-		t.Fatal("startup did not bind native RWOP writer exclusion to the authoritative reader")
+	if prerequisites.WriterExclusion != nil {
+		t.Fatal("startup installed API-state writer exclusion without a qualified historical fencing provider")
 	}
 	if prerequisites.OperatorNamespace != "platform-system" || prerequisites.SkillsCatalogConfigMapName != "" {
 		t.Fatal("factory changed the catalog namespace or enabled publication by default")
@@ -119,8 +118,8 @@ func TestSandboxSourcesFactoryUsesAuthoritativeReadersAndRWOPWriterExclusion(t *
 	}
 	if source, ok := selected.Prerequisites.(*controller.KubernetesSandboxPrerequisites); !ok {
 		t.Fatal("placement selection changed the native prerequisite source")
-	} else if writerExclusion, ok := source.WriterExclusion.(*controller.KubernetesRWOPWriterExclusion); !ok || writerExclusion.APIReader != reader {
-		t.Fatal("placement selection changed the native RWOP writer-exclusion provider")
+	} else if source.WriterExclusion != nil {
+		t.Fatal("placement selection installed an unqualified writer-exclusion provider")
 	}
 }
 

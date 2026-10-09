@@ -20,7 +20,9 @@ if [ ! -x "$PYTHON_BIN" ]; then PYTHON_BIN=python3; fi
 ON_GATEWAY=
 if [ "${CETIRUN_AI_GATEWAY:-}" = "true" ]; then ON_GATEWAY=true; fi
 MODEL_ACCESS_ENFORCED=
-if [ "${CETIRUN_MODEL_ACCESS_ENFORCED:-}" = "true" ]; then MODEL_ACCESS_ENFORCED=true; fi
+if [ -n "$ON_GATEWAY" ] || [ "${CETIRUN_MODEL_ACCESS_ENFORCED:-}" = "true" ]; then
+  MODEL_ACCESS_ENFORCED=true
+fi
 . "$CETIRUN_CONFIG_DIR/init-home-common.sh"
 
 agent_check_requirements() {

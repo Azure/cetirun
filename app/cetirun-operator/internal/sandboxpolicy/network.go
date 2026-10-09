@@ -367,9 +367,6 @@ func compileNetwork(input CompileInput) (NetworkPlan, error) {
 		if err := budget.ingress(&spec.Ingress, IngressRule{FromEntities: []string{"host"}, ToPorts: portRules(workloadProbePorts)}); err != nil {
 			return plan, err
 		}
-		if err := budget.ingress(&spec.IngressDeny, IngressRule{FromEntities: []string{"all"}, ToPorts: deniedPorts(workloadProbePorts)}); err != nil {
-			return plan, err
-		}
 	}
 	// Public-internet egress is intentionally permitted except for explicit
 	// exclusions/denies below. Default-deny is not an internet allow-list; only

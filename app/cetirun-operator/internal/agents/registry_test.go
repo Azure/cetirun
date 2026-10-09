@@ -36,7 +36,7 @@ func TestRegistry(t *testing.T) {
 
 func TestResolve(t *testing.T) {
 	profile := agents.Profile{ID: "release/hermes", Image: "registry.example.com/hermes:1", Port: 8642,
-		QualifiedImages: []string{"registry.example.com/hermes@sha256:abcdef"}}
+		QualifiedImages: []string{"registry.example.com/hermes@sha256:" + strings.Repeat("b", 64)}}
 	resolved, err := agents.Resolve(agents.Request{Type: "hermes"}, profile)
 	if err != nil || resolved.Image != profile.Image || resolved.Port == nil || *resolved.Port != 8642 || resolved.HomeDir != "/home/vibe" {
 		t.Fatalf("defaults: %+v %v", resolved, err)
@@ -44,15 +44,11 @@ func TestResolve(t *testing.T) {
 	if _, err := agents.Resolve(agents.Request{Type: "hermes", Image: profile.QualifiedImages[0]}, profile); err != nil {
 		t.Fatal(err)
 	}
-	digestPinned := profile.Image + "@sha256:" + strings.Repeat("a", 64)
-	resolved, err = agents.Resolve(agents.Request{Type: "hermes", Image: digestPinned}, profile)
-	if err != nil || resolved.Image != digestPinned {
-		t.Fatalf("digest-pinned profile image: %+v %v", resolved, err)
-	}
 	for _, req := range []agents.Request{
 		{Type: "hermes", Image: "registry.example.com/other:1"},
 		{Type: "hermes", Image: "registry.example.com/hermes:2@sha256:" + strings.Repeat("a", 64)},
 		{Type: "hermes", Image: profile.Image + "@sha256:abcdef"},
+		{Type: "hermes", Image: profile.Image + "@sha256:" + strings.Repeat("a", 64)},
 		{Type: "hermes", Image: profile.Image + "@sha256:" + strings.Repeat("A", 64)},
 		{Type: "hermes", Image: profile.Image + "@sha512:" + strings.Repeat("a", 128)},
 		{Type: "hermes", Username: "root"},

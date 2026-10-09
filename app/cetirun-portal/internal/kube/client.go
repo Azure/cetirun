@@ -28,6 +28,7 @@ import (
 
 var ErrUnsupportedCustomUpdate = stderrors.New("Custom does not support Gateway Token, Teams or Tailscale updates")
 var ErrInstanceChanged = stderrors.New("Agent changed or was replaced; reload before saving")
+var ErrTeamChanged = stderrors.New("Team changed or was replaced; reload before saving")
 var ErrInstanceDeleting = stderrors.New("Agent is being deleted")
 var ErrOperatorConfigurationUnavailable = stderrors.New("Operator release configuration is unavailable")
 
@@ -858,33 +859,27 @@ func (c *Client) CreateTeam(ctx context.Context, team *cetirunv1alpha1.Team) (*c
 	return team, nil
 }
 
-// UpdateTeamSpec replaces the Team configuration from the latest stored Team
-// on every conflict retry. Policy bindings are owned by the administrator
-// Portal API as well as the ordinary Team settings.
-func (c *Client) UpdateTeamSpec(ctx context.Context, name string, newSpec cetirunv1alpha1.TeamSpec) (*cetirunv1alpha1.Team, error) {
-	var result *cetirunv1alpha1.Team
-	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		team, err := c.GetTeam(ctx, name)
-		if err != nil {
-			return err
+// UpdateTeamSpec replaces the complete Team configuration only when it is
+// still the exact object version the administrator loaded. Retrying a stale
+// full replacement would silently erase another administrator's changes.
+func (c *Client) UpdateTeamSpec(ctx context.Context, name, expectedUID, expectedResourceVersion string, newSpec cetirunv1alpha1.TeamSpec) (*cetirunv1alpha1.Team, error) {
+	team, err := c.GetTeam(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	if expectedUID == "" || expectedResourceVersion == "" ||
+		string(team.UID) != expectedUID || team.ResourceVersion != expectedResourceVersion {
+		return nil, ErrTeamChanged
+	}
+	before := team.DeepCopy()
+	team.Spec = *newSpec.DeepCopy()
+	if err := c.client.Patch(ctx, team, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{})); err != nil {
+		if errors.IsConflict(err) {
+			return nil, ErrTeamChanged
 		}
-		before := team.DeepCopy()
-		editable := newSpec.DeepCopy()
-		team.Spec.MemberContext = editable.MemberContext
-		team.Spec.Defaults = editable.Defaults
-		team.Spec.Skills = editable.Skills
-		team.Spec.SkillStorage = editable.SkillStorage
-		team.Spec.NormalAgentPolicyRef = editable.NormalAgentPolicyRef
-		team.Spec.AdminAgentPolicyRef = editable.AdminAgentPolicyRef
-		team.Spec.SandboxRefs = editable.SandboxRefs
-		team.Spec.DefaultSandboxRef = editable.DefaultSandboxRef
-		if err := c.client.Patch(ctx, team, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{})); err != nil {
-			return fmt.Errorf("update team: %w", err)
-		}
-		result = team
-		return nil
-	})
-	return result, err
+		return nil, fmt.Errorf("update team: %w", err)
+	}
+	return team, nil
 }
 
 // DeleteTeam deletes a Team by name.

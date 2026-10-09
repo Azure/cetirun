@@ -17,6 +17,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
@@ -89,7 +91,7 @@ func newKubernetesExecutionFixture(t *testing.T, typ string) *preparationFixture
 	}, Data: map[string][]byte{"master-key": []byte("test-master-key")}}); err != nil {
 		t.Fatal(err)
 	}
-	installKubernetesPrerequisites(t, f, &controller.KubernetesRWOPWriterExclusion{APIReader: f.client})
+	installKubernetesPrerequisites(t, f, &testSandboxWriterExclusion{})
 	return f
 }
 
@@ -204,17 +206,14 @@ func TestKubernetesSandboxExecutionStartRestartAndNodeFailure(t *testing.T) {
 				t.Fatal("controller restart lost the running Sandbox observation")
 			}
 
-			// Losing the Node restores both holds and scales down. The old RWOP
-			// writer is deliberately left to Kubernetes/CSI; force deletion would
-			// violate the writer-exclusion contract.
-			if err := f.client.Get(ctx, client.ObjectKeyFromObject(node), node); err != nil {
+			// Losing the Node restores both holds and scales down. Historical
+			// writer retirement remains the independent fencing provider's job.
+			if err := f.client.Delete(ctx, node); err != nil {
 				t.Fatal(err)
 			}
-			node.Status.Conditions = []corev1.NodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionFalse}}
-			if err := f.client.Status().Update(ctx, node); err != nil {
-				t.Fatal(err)
+			if err := f.reconcile(); err == nil {
+				t.Fatal("missing Node evidence did not fail closed")
 			}
-			_ = f.reconcile() // preparation waits for the old writer Pod to disappear
 			agent := f.current(t)
 			if ptr.Deref(executionStatefulSet(t, f).Spec.Replicas, -1) != 0 ||
 				!slices.Contains(agent.Finalizers, sandbox.HoldFinalizer) || !f.expectation(t).ExecutionHeld {
@@ -230,7 +229,59 @@ func TestKubernetesSandboxExecutionStartRestartAndNodeFailure(t *testing.T) {
 	}
 }
 
-func TestKubernetesSandboxExecutionSuspendResumeWaitsForPreviousRWOPWriter(t *testing.T) {
+func TestKubernetesSandboxExecutionHoldsWhenAppliedControlDisappears(t *testing.T) {
+	ctx := context.Background()
+	f := newKubernetesExecutionFixture(t, "hermes")
+	if err := f.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	preparedRevision(t, f)
+	reconcileExecutionUntil(t, f, func() bool {
+		sts := maybeExecutionStatefulSet(t, f)
+		return sts != nil && ptr.Deref(sts.Spec.Replicas, -1) == 1 && !f.expectation(t).ExecutionHeld
+	})
+	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "control-node", UID: "control-node-uid", Labels: map[string]string{
+		corev1.LabelTopologyRegion: "example-region", corev1.LabelTopologyZone: "example-zone",
+	}}, Status: corev1.NodeStatus{Conditions: []corev1.NodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionTrue}}}}
+	if err := f.client.Create(ctx, node); err != nil {
+		t.Fatal(err)
+	}
+	createReadyExecutionPod(t, f, node)
+	reconcileExecutionUntil(t, f, func() bool { return f.current(t).Status.Phase == api.PhaseReady })
+
+	var control *unstructured.Unstructured
+	for _, source := range f.expectation(t).Sources {
+		if source.Kind != "CiliumNetworkPolicy" {
+			continue
+		}
+		gv, err := schema.ParseGroupVersion(source.APIVersion)
+		if err != nil {
+			t.Fatal(err)
+		}
+		control = &unstructured.Unstructured{}
+		control.SetGroupVersionKind(gv.WithKind(source.Kind))
+		if err := f.client.Get(ctx, client.ObjectKey{Namespace: source.Namespace, Name: source.Name}, control); err != nil {
+			t.Fatal(err)
+		}
+		break
+	}
+	if control == nil {
+		t.Fatal("prepared execution did not record its CiliumNetworkPolicy")
+	}
+	if err := f.client.Delete(ctx, control); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.reconcile(); err == nil {
+		t.Fatal("missing applied control remained positively observed")
+	}
+	current := f.current(t)
+	if !slices.Contains(current.Finalizers, sandbox.HoldFinalizer) || !f.expectation(t).ExecutionHeld ||
+		ptr.Deref(executionStatefulSet(t, f).Spec.Replicas, -1) != 0 {
+		t.Fatal("applied-control drift did not restore the execution hold")
+	}
+}
+
+func TestKubernetesSandboxExecutionSuspendResumeWaitsForPreviousWriterExclusion(t *testing.T) {
 	ctx := context.Background()
 	f := newKubernetesExecutionFixture(t, "hermes")
 	if err := f.reconcile(); err != nil {

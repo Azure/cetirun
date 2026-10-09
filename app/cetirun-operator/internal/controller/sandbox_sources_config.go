@@ -16,8 +16,8 @@ import (
 )
 
 // SandboxSourcesConfig selects platform-owned inputs, not tenant overrides or
-// caller-supplied execution evidence. The native adapter derives conservative
-// ReadWriteOncePod writer-exclusion evidence from authoritative API reads.
+// caller-supplied execution evidence. Writer exclusion requires a separately
+// qualified historical journal and guest-external fencing provider.
 type SandboxSourcesConfig struct {
 	Enabled                     bool                    `json:"enabled"`
 	BootstrapOwnedPrerequisites bool                    `json:"bootstrapOwnedPrerequisites"`
@@ -101,7 +101,6 @@ func NewKubernetesSandboxPreparation(config SandboxSourcesConfig, reader client.
 		APIReader: reader, HomeClaimName: config.HomeClaimName, SkillsClaimName: config.SkillsClaimName,
 		OperatorNamespace: namespace, SkillsCatalogConfigMapName: config.SkillsCatalogConfigMapName,
 		ChartVersion: chartVersion, Helpers: config.Helpers,
-		WriterExclusion: &KubernetesRWOPWriterExclusion{APIReader: reader},
 	}
 	preparation := &SandboxPreparation{
 		Configuration: &KubernetesSandboxConfigurationSource{
