@@ -818,7 +818,7 @@ func (r *AgentReconciler) beginAIGatewayPolicyReprojection(ctx context.Context, 
 		return fmt.Errorf("the AI Gateway key Secret identifies another key alias")
 	}
 	status := ensureAIGatewayStatus(instance)
-	if key.Blocked && status.Reason != aiGatewayReasonPolicyReprojection {
+	if key.Blocked && !aiGatewayOperatorOwnedBlock(status.Reason) {
 		return fmt.Errorf("the AI Gateway key is already blocked outside an operator policy reprojection")
 	}
 	// Persist ownership before the external side effect. If this write fails,

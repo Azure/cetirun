@@ -476,6 +476,74 @@ func TestPolicyReprojectionBlockClearsOnlyAfterGrantReadback(t *testing.T) {
 	}
 }
 
+func TestPolicyReprojectionConvertsSuspensionBlockAndResumesTheSameGrant(t *testing.T) {
+	agent := aiGatewayTestAgent(testAIGatewayTeam)
+	r, kube, gateway := aiGatewayTestReconciler(t, agent, aiGatewayNamespace())
+	ctx := context.Background()
+	if err := r.reconcileAIGateway(ctx, agent, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.updateStatus(ctx, agent); err != nil {
+		t.Fatal(err)
+	}
+	secret := readKeySecret(t, kube)
+	token := aigateway.Token(string(secret.Data[aiGatewayKeySecretField]))
+	spend := 3.25
+	gateway.keys[token].Spend = &spend
+	wantBudget := *gateway.keys[token].MaxBudget
+
+	agent.Spec.Suspended = true
+	if err := r.reconcileAIGateway(ctx, agent, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.updateStatus(ctx, agent); err != nil {
+		t.Fatal(err)
+	}
+	if !gateway.keys[token].Blocked || agent.Status.AIGateway.Reason != aiGatewayReasonSuspended {
+		t.Fatalf("suspension did not establish an operator-owned block: key=%+v status=%+v", gateway.keys[token], agent.Status.AIGateway)
+	}
+
+	agent.Spec.Suspended = false
+	if err := r.beginAIGatewayPolicyReprojection(ctx, agent); err != nil {
+		t.Fatalf("suspension block could not become a policy-reprojection block: %v", err)
+	}
+	if !gateway.keys[token].Blocked || agent.Status.AIGateway.Reason != aiGatewayReasonPolicyReprojection {
+		t.Fatalf("suspension block lost its operator ownership during reprojection: key=%+v status=%+v", gateway.keys[token], agent.Status.AIGateway)
+	}
+	if err := r.reconcileAIGateway(ctx, agent, true); err != nil {
+		t.Fatal(err)
+	}
+	if len(gateway.generated) != 1 || gateway.keys[token].Blocked || gateway.keys[token].Spend == nil ||
+		*gateway.keys[token].Spend != spend || gateway.keys[token].MaxBudget == nil || *gateway.keys[token].MaxBudget != wantBudget {
+		t.Fatalf("resume did not preserve and unblock the same grant: generated=%d key=%+v", len(gateway.generated), gateway.keys[token])
+	}
+	if agent.Status.AIGateway.Reason != "" || agent.Status.AIGateway.Blocked || agent.Status.AIGateway.SpendUSD != "3.25" {
+		t.Fatalf("verified grant did not clear the temporary block: %+v", agent.Status.AIGateway)
+	}
+}
+
+func TestPolicyReprojectionDoesNotClaimAnAdministratorBlock(t *testing.T) {
+	agent := aiGatewayTestAgent(testAIGatewayTeam)
+	r, kube, gateway := aiGatewayTestReconciler(t, agent, aiGatewayNamespace())
+	ctx := context.Background()
+	if err := r.reconcileAIGateway(ctx, agent, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.updateStatus(ctx, agent); err != nil {
+		t.Fatal(err)
+	}
+	token := aigateway.Token(string(readKeySecret(t, kube).Data[aiGatewayKeySecretField]))
+	gateway.keys[token].Blocked = true
+	agent.Status.AIGateway.Reason = ""
+
+	if err := r.beginAIGatewayPolicyReprojection(ctx, agent); err == nil {
+		t.Fatal("policy reprojection claimed an administrator block")
+	}
+	if !gateway.keys[token].Blocked || agent.Status.AIGateway.Reason == aiGatewayReasonPolicyReprojection {
+		t.Fatalf("administrator block lost its ownership boundary: key=%+v status=%+v", gateway.keys[token], agent.Status.AIGateway)
+	}
+}
+
 func TestManagedGatewayGroupPollutionBlocksAnExistingGrant(t *testing.T) {
 	agent := aiGatewayTestAgent(testAIGatewayTeam)
 	r, kube, gateway := aiGatewayTestReconciler(t, agent, aiGatewayNamespace())
