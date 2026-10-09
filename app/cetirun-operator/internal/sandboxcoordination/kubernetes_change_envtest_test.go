@@ -202,7 +202,7 @@ func TestKubernetesConfigurationAPIServer(t *testing.T) {
 		}
 		replacement := &api.Team{
 			ObjectMeta: metav1.ObjectMeta{Name: before.GetName()},
-			Spec: api.TeamSpec{MemberContext: api.TeamContextSpec{
+			Spec: api.TeamSpec{NormalAgentPolicyRef: "policy", SandboxRefs: []string{"sandbox"}, DefaultSandboxRef: "sandbox", MemberContext: api.TeamContextSpec{
 				Role: strings.Repeat("x", 270000),
 			}},
 		}
@@ -237,41 +237,6 @@ func TestKubernetesConfigurationAPIServer(t *testing.T) {
 			t.Fatal("recovery resubmitted Delete")
 		}
 	})
-
-	for _, transition := range []struct {
-		name                          string
-		beforeGoverned, afterGoverned bool
-	}{
-		{"legacy-update", false, false},
-		{"add-governance", false, true},
-		{"remove-governance", true, false},
-	} {
-		t.Run(transition.name, func(t *testing.T) {
-			store, original, _ := newFixture(t, "Team", transition.name)
-			before := original.(*api.Team)
-			governed := *before.Spec.DeepCopy()
-			if !transition.beforeGoverned {
-				before.Spec = api.TeamSpec{}
-				if err := storage.Update(ctx, before); err != nil {
-					t.Fatal(err)
-				}
-			}
-			after := before.DeepCopy()
-			if transition.afterGoverned {
-				after.Spec = governed
-			} else {
-				after.Spec = api.TeamSpec{}
-			}
-			after.Annotations["example.com/change"] = "legacy-transition"
-			ticket, err := store.AcquireConfigurationChange(ctx, before, after)
-			if err != nil || ticket.Change.Team != nil {
-				t.Fatal("legacy transition requires a whole-Team reservation:", err)
-			}
-			if _, err := store.ReconcileChange(ctx, ticket, configurationAdapter(t, storage, storage, before, after)); err != nil {
-				t.Fatal("actual legacy Team transition failed:", err)
-			}
-		})
-	}
 
 	for _, kind := range []string{"Team", "Sandbox", "AgentPolicy"} {
 		for _, scenario := range []string{"success", "lost-reply", "failed-request", "never-submitted"} {

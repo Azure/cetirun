@@ -81,6 +81,7 @@ func TestAgentStatusPatchPreservesFutureFields(t *testing.T) {
 	}
 	agent := &api.Agent{ObjectMeta: metav1.ObjectMeta{Name: "status-compatibility"}, Spec: api.AgentSpec{
 		Agent: api.HarnessSpec{Type: api.AgentTypeHermes}, User: api.UserSpec{Alias: "status-user", DisplayName: "Example User"},
+		Team: "example-team", SandboxRef: "standard",
 		GatewayTokenSecretRef: "synthetic-token",
 	}}
 	if err := cl.Create(ctx, agent); err != nil {

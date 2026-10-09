@@ -149,14 +149,6 @@ func TestAgentSpecAndFinalizerPatchesPreserveFutureFields(t *testing.T) {
 		run      func(*AgentReconciler, *api.Agent) error
 		want     func(*api.Agent)
 	}{
-		{"add-finalizer", false, func(a *api.Agent) { a.Finalizers = []string{"example.com/retain"} }, reconcile,
-			func(a *api.Agent) { a.Finalizers = append(a.Finalizers, api.Finalizer) }},
-		{"pin-chart-version", false, func(a *api.Agent) { a.Spec.Helm.Version = "" }, reconcile,
-			func(a *api.Agent) { a.Spec.Helm.Version = "1.0.0" }},
-		{"pin-agent-defaults", false, func(a *api.Agent) { a.Spec.Agent.Image, a.Spec.Agent.Port = nil, nil }, reconcile,
-			func(a *api.Agent) {
-				a.Spec.Agent.Image, a.Spec.Agent.Port = ptr.To("registry.example.com/agent:1"), ptr.To[int32](18789)
-			}},
 		{"remove-finalizer", true, func(*api.Agent) {}, reconcile, func(a *api.Agent) { a.Finalizers = []string{"example.com/retain"} }},
 		{"custom-ownership-finalizer", false, func(a *api.Agent) {
 			a.Spec.Agent.Type, a.Spec.GatewayTokenSecretRef = api.AgentTypeCustom, ""
@@ -182,7 +174,8 @@ func TestAgentSpecAndFinalizerPatchesPreserveFutureFields(t *testing.T) {
 					Spec: api.AgentSpec{
 						Agent: api.HarnessSpec{Type: api.AgentTypeHermes, Image: ptr.To("registry.example.com/agent:1"), Port: ptr.To[int32](18789)},
 						User:  api.UserSpec{Alias: "patch-user", DisplayName: "Example User"},
-						Helm:  api.HelmSpec{Version: "1.0.0"}, GatewayTokenSecretRef: "synthetic-token",
+						Team:  "example-team", SandboxRef: "standard",
+						Helm: api.HelmSpec{Version: "1.0.0"}, GatewayTokenSecretRef: "synthetic-token",
 					},
 				}
 				test.prepare(agent)

@@ -15,6 +15,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
@@ -27,7 +28,9 @@ func gatewayConfig() config.Config {
 }
 
 func gatewayTeam(name string) *cetirunv1alpha1.Team {
-	return &cetirunv1alpha1.Team{ObjectMeta: metav1.ObjectMeta{Name: name}}
+	return &cetirunv1alpha1.Team{ObjectMeta: metav1.ObjectMeta{Name: name}, Spec: cetirunv1alpha1.TeamSpec{
+		NormalAgentPolicyRef: "standard", SandboxRefs: []string{"standard"}, DefaultSandboxRef: "standard",
+	}}
 }
 
 // catalogConfigMap publishes the shared models of a deployment that offers
@@ -87,10 +90,21 @@ func TestCreateInstanceAIGatewayRequiresExistingTeam(t *testing.T) {
 	if w.Code != http.StatusBadRequest || errorCode(t, w) != "unknown_team" {
 		t.Fatalf("unknown team: status %d body %s", w.Code, w.Body.String())
 	}
-	// Without the Gateway, a Team stays optional.
-	w, _ = createAgent(t, config.Config{}, `{"agent":{"type":"openclaw"}}`)
+	// Team and Sandbox bindings are required independently of the Gateway.
+	w, _ = createAgent(t, config.Config{}, `{"agent":{"type":"openclaw"}}`, gatewayTeam("aks"))
+	if w.Code != http.StatusBadRequest || errorCode(t, w) != "team_required" {
+		t.Fatalf("feature off without team: status %d body %s", w.Code, w.Body.String())
+	}
+	w, fc := createAgent(t, config.Config{}, `{"agent":{"type":"openclaw"},"team":"aks"}`, gatewayTeam("aks"))
 	if w.Code != http.StatusCreated {
-		t.Fatalf("feature off: status %d body %s", w.Code, w.Body.String())
+		t.Fatalf("feature off with team: status %d body %s", w.Code, w.Body.String())
+	}
+	created := &cetirunv1alpha1.Agent{}
+	if err := fc.Get(context.Background(), client.ObjectKey{Name: "alice"}, created); err != nil {
+		t.Fatal(err)
+	}
+	if created.Spec.Team != "aks" || created.Spec.SandboxRef != "standard" {
+		t.Fatalf("binding = %q/%q, want aks/standard", created.Spec.Team, created.Spec.SandboxRef)
 	}
 	// A Custom Agent gets a key too, so it needs a Team as well. It is not
 	// routed, so the model switches do not apply to it.
@@ -101,7 +115,7 @@ func TestCreateInstanceAIGatewayRequiresExistingTeam(t *testing.T) {
 	if w.Code != http.StatusBadRequest || errorCode(t, w) != "team_required" {
 		t.Fatalf("custom without team: status %d body %s", w.Code, w.Body.String())
 	}
-	w, fc := createAgent(t, custom, `{`+customAgent+`,"team":"aks","modelAccess":{"githubCopilot":false}}`, gatewayTeam("aks"))
+	w, fc = createAgent(t, custom, `{`+customAgent+`,"team":"aks","modelAccess":{"githubCopilot":false}}`, gatewayTeam("aks"))
 	if w.Code != http.StatusCreated {
 		t.Fatalf("custom with team: status %d body %s", w.Code, w.Body.String())
 	}
@@ -203,8 +217,8 @@ func TestCreateInstanceAIGatewayModelAccessRules(t *testing.T) {
 			if err := fc.Get(context.Background(), client.ObjectKey{Name: "alice"}, agent); err != nil {
 				t.Fatal(err)
 			}
-			if agent.Spec.Team != "aks" || agent.Spec.User.Team != "aks" {
-				t.Fatalf("team = %q/%q, want aks", agent.Spec.Team, agent.Spec.User.Team)
+			if agent.Spec.Team != "aks" || agent.Spec.SandboxRef != "standard" {
+				t.Fatalf("binding = %q/%q, want aks/standard", agent.Spec.Team, agent.Spec.SandboxRef)
 			}
 			switch {
 			case tc.wantAccess == nil && agent.Spec.ModelAccess != nil:
@@ -222,6 +236,7 @@ func TestCreateInstanceAIGatewayModelAccessRules(t *testing.T) {
 
 func routedAgent() *cetirunv1alpha1.Agent {
 	agent := sampleInstance()
+	agent.Spec.ModelAccess = &cetirunv1alpha1.ModelAccessSpec{SharedModels: ptr.To(true), GitHubCopilot: ptr.To(true)}
 	agent.Name = "alice-gw"
 	agent.UID = "uid-1"
 	agent.Spec.GatewayTokenSecretRef = "gateway-token"

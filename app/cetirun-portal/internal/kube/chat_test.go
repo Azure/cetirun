@@ -35,7 +35,6 @@ func TestResolveCustomChat(t *testing.T) {
 func TestResolveChatWithoutTeamStillHonorsAgentPolicy(t *testing.T) {
 	agent, objects := chattest.Objects()
 	agent.Spec.Team = ""
-	agent.Spec.User.Team = ""
 	objects = append(objects[:6], objects[7:]...)
 	c := NewClient(newFakeClient(objects...))
 	value, err := c.ResolveChat(context.Background(), agent, chattest.Caller)

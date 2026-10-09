@@ -86,6 +86,7 @@ func newAPIWriterFixture(t *testing.T, writer, reader client.Client, name string
 				Type: api.AgentTypeHermes, Image: ptr.To("registry.example.com/agent:1"), Port: ptr.To[int32](18789),
 			},
 			User: api.UserSpec{Alias: "writer-test", DisplayName: "Example User"},
+			Team: "example-team", SandboxRef: "standard",
 			Helm: api.HelmSpec{Version: "1.0.0"}, GatewayTokenSecretRef: "synthetic-runtime-secret",
 		},
 	}

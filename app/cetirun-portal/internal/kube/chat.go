@@ -49,13 +49,9 @@ func (c *Client) resolveChat(ctx context.Context, agent *api.Agent, caller chata
 		target.Reason = "suspended"
 		return target, nil
 	}
-	teamName := agent.Spec.Team
-	if teamName == "" {
-		teamName = agent.Spec.User.Team
-	}
 	team := &api.Team{}
-	if teamName != "" {
-		observed, err := c.GetTeam(ctx, teamName)
+	if agent.Spec.Team != "" {
+		observed, err := c.GetTeam(ctx, agent.Spec.Team)
 		if err != nil {
 			return target, err
 		}

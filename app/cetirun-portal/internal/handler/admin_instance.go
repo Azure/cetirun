@@ -60,13 +60,9 @@ func (h *AdminInstanceHandler) ListAllInstances(w http.ResponseWriter, r *http.R
 	writeJSON(w, http.StatusOK, map[string]any{"instances": out})
 }
 
-// instanceTeam returns the effective team for an instance — the top-level
-// spec.team takes precedence over the legacy spec.user.team.
+// instanceTeam returns the Team selected by the Agent.
 func instanceTeam(ins *cetirunv1alpha1.Agent) string {
-	if ins.Spec.Team != "" {
-		return ins.Spec.Team
-	}
-	return ins.Spec.User.Team
+	return ins.Spec.Team
 }
 
 func isReady(ins *cetirunv1alpha1.Agent) bool {

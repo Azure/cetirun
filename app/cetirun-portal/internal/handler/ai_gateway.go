@@ -142,35 +142,25 @@ func (h *InstanceHandler) GetAIGatewayCatalog(w http.ResponseWriter, r *http.Req
 	writeJSON(w, http.StatusOK, h.sharedModelCatalog(r.Context()))
 }
 
-// validateAIGatewayCreate applies the AI Gateway rules to a new Agent: it
-// must name an existing Team, and an OpenClaw or Hermes Agent must be of a
+// validateAIGatewayCreate applies the Team and AI Gateway rules to a new Agent:
+// it must name an existing Team with a default Sandbox, and an OpenClaw or Hermes Agent must be of a
 // type the operator's agent chart routes through the Gateway, once the
 // operator has read that chart, and have a model to use, from shared models
 // it keeps on while the catalog lists at least one, or from GitHub Copilot it
 // keeps on while the deployment offers it. Omitted switches count as on. It
-// returns the Team to record and the model access to write, or writes the
-// error response and returns false.
-func (h *InstanceHandler) validateAIGatewayCreate(w http.ResponseWriter, r *http.Request, req CreateInstanceRequest, agentType cetirunv1alpha1.AgentType) (string, *cetirunv1alpha1.ModelAccessSpec, bool) {
-	team := strings.TrimSpace(req.Team)
+// returns the Team and Sandbox to record and the model access to write, or
+// writes the error response and returns false.
+func (h *InstanceHandler) validateAIGatewayCreate(w http.ResponseWriter, r *http.Request, req CreateInstanceRequest, agentType cetirunv1alpha1.AgentType) (string, string, *cetirunv1alpha1.ModelAccessSpec, bool) {
+	team, sandboxRef, ok := h.resolveTeamBinding(w, r, req.Team)
+	if !ok {
+		return "", "", nil, false
+	}
 	if !h.Config.AIGatewayEnabled {
-		return req.Team, nil, true
-	}
-	if team == "" {
-		writeError(w, http.StatusBadRequest, "team_required", "Choose a Team for the agent")
-		return "", nil, false
-	}
-	if _, err := h.Kube.GetTeam(r.Context(), team); err != nil {
-		if kube.IsNotFound(err) {
-			writeError(w, http.StatusBadRequest, "unknown_team", "Team '"+team+"' does not exist")
-			return "", nil, false
-		}
-		slog.Error("Failed to read Team", "team", team, "error", err)
-		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to check the Team")
-		return "", nil, false
+		return team, sandboxRef, nil, true
 	}
 	if agentType != cetirunv1alpha1.AgentTypeOpenClaw && agentType != cetirunv1alpha1.AgentTypeHermes {
 		// Custom Agents bring their own models.
-		return team, nil, true
+		return team, sandboxRef, nil, true
 	}
 	shared, copilot := true, true
 	if req.ModelAccess != nil {
@@ -179,19 +169,19 @@ func (h *InstanceHandler) validateAIGatewayCreate(w http.ResponseWriter, r *http
 	}
 	if !shared && !copilot {
 		writeError(w, http.StatusBadRequest, "invalid_model_access", "Keep shared models or GitHub Copilot on")
-		return "", nil, false
+		return "", "", nil, false
 	}
 	catalog := h.sharedModelCatalog(r.Context())
 	if !catalog.Known {
 		writeError(w, http.StatusServiceUnavailable, "model_sources_unknown", "The AI Gateway has not published its models yet. Try again in a minute.")
-		return "", nil, false
+		return "", "", nil, false
 	}
 	if catalog.AgentTypes == nil {
 		// The operator has not read its default agent chart, which the new
 		// Agent would be pinned to.
 		writeError(w, http.StatusServiceUnavailable, "agent_types_unknown",
 			"The operator has not read its agent chart yet. Try again in a minute.")
-		return "", nil, false
+		return "", "", nil, false
 	}
 	if !slices.Contains(catalog.AgentTypes, agentType) {
 		// The operator would leave the Agent off the Gateway and hand the
@@ -199,7 +189,7 @@ func (h *InstanceHandler) validateAIGatewayCreate(w http.ResponseWriter, r *http
 		writeError(w, http.StatusConflict, "agent_chart_unsupported",
 			"This deployment's agent chart does not route "+agentTypeNames[agentType]+
 				" agents through the AI Gateway. Ask an administrator to upgrade the agent chart.")
-		return "", nil, false
+		return "", "", nil, false
 	}
 	sharedAvailable := len(catalog.SharedModels) > 0
 	if !(shared && sharedAvailable) && !(copilot && catalog.GitHubCopilot) {
@@ -212,12 +202,36 @@ func (h *InstanceHandler) validateAIGatewayCreate(w http.ResponseWriter, r *http
 		default:
 			writeError(w, http.StatusBadRequest, "invalid_model_access", "GitHub Copilot is required because no shared models are available")
 		}
-		return "", nil, false
+		return "", "", nil, false
 	}
 	if req.ModelAccess == nil {
-		return team, nil, true
+		return team, sandboxRef, nil, true
 	}
-	return team, &cetirunv1alpha1.ModelAccessSpec{SharedModels: &shared, GitHubCopilot: &copilot}, true
+	return team, sandboxRef, &cetirunv1alpha1.ModelAccessSpec{SharedModels: &shared, GitHubCopilot: &copilot}, true
+}
+
+func (h *InstanceHandler) resolveTeamBinding(w http.ResponseWriter, r *http.Request, requestedTeam string) (string, string, bool) {
+	team := strings.TrimSpace(requestedTeam)
+	if team == "" {
+		writeError(w, http.StatusBadRequest, "team_required", "Choose a Team for the agent")
+		return "", "", false
+	}
+	selectedTeam, err := h.Kube.GetTeam(r.Context(), team)
+	if err != nil {
+		if kube.IsNotFound(err) {
+			writeError(w, http.StatusBadRequest, "unknown_team", "Team '"+team+"' does not exist")
+			return "", "", false
+		}
+		slog.Error("Failed to read Team", "team", team, "error", err)
+		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to check the Team")
+		return "", "", false
+	}
+	sandboxRef := strings.TrimSpace(selectedTeam.Spec.DefaultSandboxRef)
+	if sandboxRef == "" {
+		writeError(w, http.StatusConflict, "team_not_configured", "The selected Team has no default Sandbox")
+		return "", "", false
+	}
+	return team, sandboxRef, true
 }
 
 // aiGatewayRouted reports whether the Agent's model traffic uses the Gateway,

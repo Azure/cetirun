@@ -74,8 +74,10 @@ func TestMain(m *testing.M) {
 
 func instance(agentType string) *unstructured.Unstructured {
 	spec := map[string]any{
-		"user":  map[string]any{"alias": "alice", "displayName": "Example User"},
-		"agent": map[string]any{"type": agentType},
+		"user":       map[string]any{"alias": "alice", "displayName": "Example User"},
+		"agent":      map[string]any{"type": agentType},
+		"team":       "example-team",
+		"sandboxRef": "standard",
 	}
 	if agentType == "custom" {
 		spec["agent"].(map[string]any)["image"] = "registry.example.com/team/agent:1"

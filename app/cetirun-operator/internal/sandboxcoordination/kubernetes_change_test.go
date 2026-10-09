@@ -43,8 +43,9 @@ func configurationObject(kind string) client.Object {
 				Scratch: api.SandboxScratchStorage{SizeLimit: resource.MustParse("128Mi")}}}}
 	case "AgentPolicy":
 		return &api.AgentPolicy{ObjectMeta: metav1.ObjectMeta{Name: "policy"},
-			Spec: api.AgentPolicySpec{Security: api.AgentPolicySecurity{ReadOnlyRootFilesystem: ptr.To(true)},
-				Network: api.AgentPolicyNetwork{Ingress: api.AgentPolicyIngress{Mode: api.AgentPolicyIngressAuthenticated}}}}
+			Spec: api.AgentPolicySpec{Harnesses: api.AgentPolicyHarnesses{Allowed: []api.AgentType{api.AgentTypeHermes}},
+				Security: api.AgentPolicySecurity{ReadOnlyRootFilesystem: ptr.To(true)},
+				Network:  api.AgentPolicyNetwork{Ingress: api.AgentPolicyIngress{Mode: api.AgentPolicyIngressAuthenticated}}}}
 	default:
 		panic("unsupported test fixture kind")
 	}

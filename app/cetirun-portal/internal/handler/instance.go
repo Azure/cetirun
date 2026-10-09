@@ -589,7 +589,7 @@ func (h *InstanceHandler) CreateInstance(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
-	team, modelAccess, ok := h.validateAIGatewayCreate(w, r, req, agent.Type)
+	team, sandboxRef, modelAccess, ok := h.validateAIGatewayCreate(w, r, req, agent.Type)
 	if !ok {
 		return
 	}
@@ -618,6 +618,7 @@ func (h *InstanceHandler) CreateInstance(w http.ResponseWriter, r *http.Request)
 		AgentIdentityEnabled: req.AgentIdentityEnabled,
 		OwnerTenantID:        claims.TenantID,
 		OwnerObjectID:        claims.ObjectID,
+		SandboxRef:           sandboxRef,
 		ModelAccess:          modelAccess,
 	}
 	if req.RegistryAuth != nil {

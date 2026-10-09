@@ -18,7 +18,6 @@ import (
 	"github.com/Azure/CetiRun/app/cetirun-portal/internal/config"
 	"github.com/Azure/CetiRun/app/cetirun-portal/internal/kube"
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -38,7 +37,6 @@ func customManagementHandler(objects ...client.Object) *InstanceHandler {
 func customManagementInstance() *api.Agent {
 	instance := sampleInstance()
 	instance.Spec.Agent = api.HarnessSpec{Type: api.AgentTypeCustom, Image: ptr.To(managementImage), Username: ptr.To("vibe"), Port: ptr.To(int32(8080))}
-	instance.Spec.User.Team = ""
 	instance.Annotations = map[string]string{api.AnnotationOwnerTenantID: managementTenant, api.AnnotationOwnerObjectID: managementOwner}
 	return instance
 }
@@ -54,7 +52,7 @@ func TestCustomCreateRoundTripWithoutNativeSideEffects(t *testing.T) {
 		h := customManagementHandler()
 		fc := newFakeClient()
 		h.Kube = kube.NewClient(fc)
-		body := `{"agent":{"type":"custom","image":"` + managementImage + `","username":"assistant"` + port + `},"displayName":"Research Assistant"}`
+		body := `{"agent":{"type":"custom","image":"` + managementImage + `","username":"assistant"` + port + `},"displayName":"Research Assistant","team":"aks"}`
 		w := httptest.NewRecorder()
 		h.CreateInstance(w, managementRequest(http.MethodPost, body))
 		if w.Code != http.StatusCreated {
@@ -99,13 +97,13 @@ func TestCustomCreateUsesExistingPortalAuthentication(t *testing.T) {
 		disabled bool
 		code     int
 	}{
-		{"signed-in owner", "alice@example.com", managementImage, "", false, http.StatusCreated},
+		{"signed-in owner", "alice@example.com", managementImage, "example-team", false, http.StatusCreated},
 		{"another owner and image", "bob@example.com", replacementImage, "example-team", false, http.StatusCreated},
-		{"missing identity", "", managementImage, "", false, http.StatusUnauthorized},
-		{"type disabled", "alice@example.com", managementImage, "", true, http.StatusForbidden},
+		{"missing identity", "", managementImage, "example-team", false, http.StatusUnauthorized},
+		{"type disabled", "alice@example.com", managementImage, "example-team", true, http.StatusForbidden},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			h := &InstanceHandler{Kube: kube.NewClient(newFakeClient(&api.Team{ObjectMeta: metav1.ObjectMeta{Name: "example-team"}})), Config: config.Config{
+			h := &InstanceHandler{Kube: kube.NewClient(newFakeClient(gatewayTeam("example-team"))), Config: config.Config{
 				AllowedAgentTypes: []string{"hermes", "openclaw", "custom"},
 			}}
 			if tc.disabled {
@@ -139,7 +137,7 @@ func TestCustomCreateUsesExistingPortalAuthentication(t *testing.T) {
 				t.Fatalf("created %d Agents, want 1", len(instances))
 			}
 			stored := instances[0]
-			if stored.Spec.User.Alias != strings.Split(tc.user, "@")[0] || stored.Spec.User.Team != tc.team ||
+			if stored.Spec.User.Alias != strings.Split(tc.user, "@")[0] || stored.Spec.Team != tc.team || stored.Spec.SandboxRef != "standard" ||
 				stored.Annotations[api.AnnotationOwnerTenantID] != "" || stored.Annotations[api.AnnotationOwnerObjectID] != "" ||
 				stored.Spec.AgentIdentity != nil || stored.Spec.GatewayTokenSecretRef != "" {
 				t.Fatal("Custom creation changed the existing owner or native integration boundary")
@@ -187,7 +185,7 @@ func TestManagementRejectsOldUnknownAndNativeCustomFields(t *testing.T) {
 func TestDefaultBuiltinCreationUsesExistingPortalIdentity(t *testing.T) {
 	for _, kind := range []string{"hermes", "openclaw"} {
 		h := customManagementHandler()
-		r := managementRequest(http.MethodPost, `{"agent":{"type":"`+kind+`"}}`)
+		r := managementRequest(http.MethodPost, `{"agent":{"type":"`+kind+`"},"team":"aks"}`)
 		r = withClaims(r, "alice", "Alice", "alice@example.com")
 		w := httptest.NewRecorder()
 		h.CreateInstance(w, r)

@@ -483,6 +483,7 @@ func (h *preparationHarness) newCaseWithPrerequisites(t *testing.T, agentType st
 	fixture.Agent.Name, fixture.Agent.Spec.User.Alias = name, name
 	fixture.Agent.Annotations = nil
 	fixture.Agent.Spec.PolicyClass = ""
+	fixture.Agent.Spec.Model = "example-model"
 	fixture.Agent.Spec.Helm.Version = h.chart.Metadata.Version
 	if !provision {
 		fixture.Agent.Spec.Agent.Image = ptr.To("registry.example.com/" + agentType + "-gateway:" + h.chart.Metadata.AppVersion)
@@ -508,7 +509,7 @@ func (h *preparationHarness) newCaseWithPrerequisites(t *testing.T, agentType st
 	fixture.Team.Spec = api.TeamSpec{
 		SandboxRefs: []string{fixture.Sandbox.Name, f.spare.Name}, DefaultSandboxRef: fixture.Sandbox.Name,
 		NormalAgentPolicyRef: fixture.Policy.Name, AdminAgentPolicyRef: f.admin.Name,
-		Defaults: api.TeamDefaultsSpec{Provider: "openai"},
+		Defaults: api.TeamDefaultsSpec{Provider: "github_copilot"},
 	}
 	h.create(t, fixture.Team)
 	fixture.Agent.Spec.Team, fixture.Agent.Spec.SandboxRef = fixture.Team.Name, fixture.Sandbox.Name
@@ -757,10 +758,7 @@ func (f *preparationCase) restart() {
 	f.installer = installer
 	f.reconciler = &controller.AgentReconciler{
 		Client: f.h.client, APIReader: f.h.client, Scheme: f.h.scheme,
-		OperatorNamespace: preparationStateNamespace, DomainSuffix: "example.com",
-		CetiRunHelmValues: map[string]any{"secrets": map[string]any{
-			"apiBase": "https://api.example.com/v1", "model": "example-model",
-		}},
+		OperatorNamespace: preparationStateNamespace, DomainSuffix: "example.com", DefaultModel: "example-model",
 		SandboxPreparation: &controller.SandboxPreparation{
 			Configuration: f.source, Prerequisites: f.source, Installer: f.installer,
 			AdmissionServiceAccount: preparationAdmissionAccount,

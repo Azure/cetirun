@@ -44,11 +44,12 @@ func sampleInstance() *cetirunv1alpha1.Agent {
 			Name: "alice",
 		},
 		Spec: cetirunv1alpha1.AgentSpec{
+			Team:                  "example-team",
+			SandboxRef:            "standard",
 			GatewayTokenSecretRef: "gateway-token",
 			User: cetirunv1alpha1.UserSpec{
 				Alias:       "alice",
 				DisplayName: "Alice Smith",
-				Team:        "example-team",
 				Email:       "alice@example.com",
 			},
 		},
@@ -101,8 +102,8 @@ func TestCreateInstance_Success(t *testing.T) {
 	if instance.Spec.User.DisplayName != "Bob Jones" {
 		t.Errorf("DisplayName = %q, want %q", instance.Spec.User.DisplayName, "Bob Jones")
 	}
-	if instance.Spec.User.Team != "other-team" {
-		t.Errorf("Team = %q, want %q", instance.Spec.User.Team, "other-team")
+	if instance.Spec.Team != "other-team" {
+		t.Errorf("Team = %q, want %q", instance.Spec.Team, "other-team")
 	}
 	if instance.Spec.GatewayTokenSecretRef != "gateway-token" {
 		t.Errorf("GatewayTokenSecretRef = %q, want %q", instance.Spec.GatewayTokenSecretRef, "gateway-token")
@@ -355,8 +356,8 @@ func TestUpdateInstance_DisplayNameAndTeam(t *testing.T) {
 	if instance.Spec.User.DisplayName != "Alice Updated" {
 		t.Errorf("DisplayName = %q, want %q", instance.Spec.User.DisplayName, "Alice Updated")
 	}
-	if instance.Spec.User.Team != "other-team" {
-		t.Errorf("Team = %q, want %q", instance.Spec.User.Team, "other-team")
+	if instance.Spec.Team != "other-team" {
+		t.Errorf("Team = %q, want %q", instance.Spec.Team, "other-team")
 	}
 
 	// Verify persisted.

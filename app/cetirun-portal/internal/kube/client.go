@@ -78,6 +78,7 @@ type UpdateInstanceOpts struct {
 	Authorize               func(*cetirunv1alpha1.Agent) error
 	DisplayName             *string // nil = no change
 	Team                    *string // nil = no change
+	SandboxRef              *string // nil = no change; set with Team from the selected Team default
 	GatewayToken            *string // nil = no change, non-empty = update
 	TailscaleAuthKey        *string // nil = no change, "" = disable tailscale, non-empty = update/enable
 	TeamsEnabled            *bool   // nil = no change
@@ -95,6 +96,7 @@ type CreateInstanceOptions struct {
 	AgentIdentityEnabled bool
 	OwnerTenantID        string
 	OwnerObjectID        string
+	SandboxRef           string
 	Annotations          map[string]string
 	// ModelAccess is written only when set: an Agent without it has both
 	// model sources on.
@@ -148,6 +150,10 @@ func (c *Client) CreateInstance(ctx context.Context, alias, displayName, team, e
 	if identityEnabled && (optional[0].OwnerTenantID == "" || optional[0].OwnerObjectID == "") {
 		return nil, fmt.Errorf("verified owner identity is required for Agent Identity")
 	}
+	sandboxRef := ""
+	if len(optional) > 0 {
+		sandboxRef = optional[0].SandboxRef
+	}
 	ns := fmt.Sprintf("cetirun-%s", instanceName)
 	var createdNamespace *corev1.Namespace
 
@@ -180,13 +186,13 @@ func (c *Client) CreateInstance(ctx context.Context, alias, displayName, team, e
 			Finalizers: []string{cetirunv1alpha1.Finalizer},
 		},
 		Spec: cetirunv1alpha1.AgentSpec{
-			Agent: agent,
-			Model: strings.TrimSpace(model),
-			Team:  team,
+			Agent:      agent,
+			Model:      strings.TrimSpace(model),
+			Team:       team,
+			SandboxRef: sandboxRef,
 			User: cetirunv1alpha1.UserSpec{
 				Alias:       alias,
 				DisplayName: displayName,
-				Team:        team,
 				Email:       email,
 			},
 		},
@@ -476,7 +482,10 @@ func (c *Client) UpdateInstanceByName(ctx context.Context, instanceName string, 
 		}
 		if opts.Team != nil {
 			instance.Spec.Team = *opts.Team
-			instance.Spec.User.Team = *opts.Team
+			crChanged = true
+		}
+		if opts.SandboxRef != nil {
+			instance.Spec.SandboxRef = *opts.SandboxRef
 			crChanged = true
 		}
 		if opts.GatewayToken != nil && *opts.GatewayToken != "" {

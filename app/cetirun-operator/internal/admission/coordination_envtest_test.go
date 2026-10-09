@@ -83,7 +83,9 @@ func TestConfigurationCoordinationAPIServer(t *testing.T) {
 	if err := storage.Create(ctx, state); err != nil {
 		t.Fatal(err)
 	}
-	before := &api.AgentPolicy{ObjectMeta: metav1.ObjectMeta{Name: "coordinated-policy"}}
+	before := &api.AgentPolicy{ObjectMeta: metav1.ObjectMeta{Name: "coordinated-policy"}, Spec: api.AgentPolicySpec{
+		Harnesses: api.AgentPolicyHarnesses{Allowed: []api.AgentType{api.AgentTypeHermes}},
+	}}
 	if err := storage.Create(ctx, before); err != nil {
 		t.Fatal(err)
 	}
@@ -96,6 +98,7 @@ func TestConfigurationCoordinationAPIServer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	handler.registrations = newFixture(t).handler.registrations
 	mux := http.NewServeMux()
 	mux.Handle(ValidationPath, &admission.Webhook{Handler: admission.HandlerFunc(handler.Validate)})
 	server := httptest.NewTLSServer(mux)
@@ -202,7 +205,7 @@ func TestConfigurationCoordinationAPIServer(t *testing.T) {
 		t.Run("finalization/"+scenario, func(t *testing.T) {
 			policy := &api.AgentPolicy{ObjectMeta: metav1.ObjectMeta{
 				Name: "finalization-" + scenario, Finalizers: []string{"example.com/cleanup", "example.com/retain"},
-			}}
+			}, Spec: before.Spec}
 			if err := storage.Create(ctx, policy); err != nil {
 				t.Fatal(err)
 			}
@@ -309,10 +312,22 @@ func TestConfigurationCoordinationAPIServer(t *testing.T) {
 func testConfigurationDeletionThroughAdmission(t *testing.T, ctx context.Context, storage client.WithWatch, store sandboxcoordination.Store) {
 	t.Helper()
 	f := newFixture(t)
+	supportBox := f.box.DeepCopy()
+	supportBox.ObjectMeta = metav1.ObjectMeta{Name: "deletion-support-sandbox"}
+	supportPolicy := f.policy.DeepCopy()
+	supportPolicy.ObjectMeta = metav1.ObjectMeta{Name: "deletion-support-policy"}
+	for _, object := range []client.Object{supportBox, supportPolicy} {
+		if err := storage.Create(ctx, object); err != nil {
+			t.Fatal(err)
+		}
+	}
+	teamSpec := f.team.Spec
+	teamSpec.NormalAgentPolicyRef = supportPolicy.Name
+	teamSpec.SandboxRefs, teamSpec.DefaultSandboxRef = []string{supportBox.Name}, supportBox.Name
 	for _, before := range []client.Object{
-		&api.Team{ObjectMeta: metav1.ObjectMeta{Name: "delete-team"}},
+		&api.Team{ObjectMeta: metav1.ObjectMeta{Name: "delete-team"}, Spec: teamSpec},
 		&api.Sandbox{ObjectMeta: metav1.ObjectMeta{Name: "delete-sandbox"}, Spec: f.box.Spec},
-		&api.AgentPolicy{ObjectMeta: metav1.ObjectMeta{Name: "delete-policy"}},
+		&api.AgentPolicy{ObjectMeta: metav1.ObjectMeta{Name: "delete-policy"}, Spec: f.policy.Spec},
 	} {
 		t.Run(before.GetName(), func(t *testing.T) {
 			if err := storage.Create(ctx, before); err != nil {

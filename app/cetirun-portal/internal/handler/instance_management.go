@@ -153,6 +153,14 @@ func (h *InstanceHandler) updateInstance(w http.ResponseWriter, r *http.Request,
 		GatewayToken: req.GatewayToken, TailscaleAuthKey: req.TailscaleAuthKey, TeamsEnabled: req.TeamsEnabled,
 		ExpectedUID: types.UID(req.UID), ExpectedResourceVersion: req.ResourceVersion,
 	}
+	if req.Team != nil {
+		team, sandboxRef, ok := h.resolveTeamBinding(w, r, *req.Team)
+		if !ok {
+			return
+		}
+		req.Team = &team
+		opts.Team, opts.SandboxRef = &team, &sandboxRef
+	}
 	if req.Agent != nil {
 		updated, err := req.Agent.Apply(instance.Spec.Agent)
 		if err != nil {
