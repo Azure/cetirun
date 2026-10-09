@@ -81,6 +81,29 @@ class HomeInitializationTests(unittest.TestCase):
         self.assertEqual(os.readlink(self.target / "link"), "/outside/target")
         self.assertEqual(self.trace.read_text().splitlines(), ["check", "prepare", "apply", "integrations", "verify"])
 
+    def test_content_comparison_uses_a_validated_sha256(self):
+        first = self.root / "first"
+        second = self.root / "second"
+        first.write_text("same")
+        second.write_text("same")
+        result = subprocess.run(
+            ["sh", "-c", '. "$COMMON"; files_equal "$1" "$2"', "fixture", str(first), str(second)],
+            env=self.env,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        second.write_text("different")
+        result = subprocess.run(
+            ["sh", "-c", '. "$COMMON"; files_equal "$1" "$2"', "fixture", str(first), str(second)],
+            env=self.env,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        self.assertNotEqual(result.returncode, 0)
+
     def test_restart_and_image_upgrade_do_not_reseed_but_run_stages(self):
         (self.source / ".zshrc").write_text("image")
         self.assertEqual(self.run_init().returncode, 0)

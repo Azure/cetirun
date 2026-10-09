@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "app/cetirun-chart/agents/custom/bootstrap/init-home.sh"
 COMMON = ROOT / "app/cetirun-chart/configs/init-home-common.sh"
 IMAGE = "registry.example.com/agent@sha256:" + "a" * 64
-TOOLS = ("sh", "cp", "mkdir", "mv", "rm", "chmod", "mktemp", "find", "cmp")
+TOOLS = ("sh", "cp", "mkdir", "mv", "rm", "chmod", "mktemp", "find", "sha256sum")
 
 
 class CustomInitializationTests(unittest.TestCase):

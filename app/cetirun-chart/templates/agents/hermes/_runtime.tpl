@@ -97,6 +97,8 @@ Hermes init containers
   env:
     - name: CETIRUN_INIT_IMAGE
       value: {{ include "cetirun.image" . | quote }}
+    - name: CETIRUN_BUILTIN_SKILL_SYNC
+      value: /etc/cetirun/builtin-skill-sync.sh
     - name: HERMES_HOME
       value: "/home/vibe/.hermes"
     {{- if include "cetirun.agent.hermes.gatewayRouted" . }}

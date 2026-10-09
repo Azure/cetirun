@@ -71,6 +71,14 @@ if args[:2]==["get","namespace"]:
 if args[:1]==["create"]:
     assert body["kind"]=="Agent" and body["metadata"]["name"]==os.environ["TEST_ALIAS"]
     assert state.get("agent") is None
+    if os.environ.get("AGENT_IDENTITY_ENABLED")=="true":
+        assert body["metadata"]["annotations"]=={
+          "agentidentity.cetirun.microsoft.com/owner-tenant-id":os.environ["AGENT_OWNER_TENANT_ID"],
+          "agentidentity.cetirun.microsoft.com/owner-object-id":os.environ["AGENT_OWNER_OBJECT_ID"]}
+        assert body["spec"]["agentIdentity"]=={"enabled":True}
+    else:
+        assert "annotations" not in body["metadata"]
+        assert "agentIdentity" not in body["spec"]
     body["metadata"].update(uid="created-agent",resourceVersion="1")
     body["status"]={"phase":"Failed" if mode=="main-failure" else "Ready"}
     state["agent"]=copy.deepcopy(body)
@@ -145,6 +153,7 @@ class E2ELifecycleTests(unittest.TestCase):
             "TEST_NAMESPACE": "operator-fixture",
             "PORTAL_NAMESPACE": "portal-fixture",
             "AGENT_TYPE": "openclaw",
+            "AGENT_IDENTITY_ENABLED": "false",
             "READY_TIMEOUT": "1",
             "CLEANUP_TIMEOUT": "1",
             "FAKE_LOG": str(self.log),
@@ -169,9 +178,44 @@ class E2ELifecycleTests(unittest.TestCase):
     def test_explicit_target_required_before_any_client(self):
         for key, value in (("E2E_KUBECONFIG", ""), ("E2E_CONTEXT", ""), ("E2E_CLUSTER_UID", ""),
                            ("E2E_KUBECONFIG", "relative"), ("TEST_ALIAS", "invalid/name"),
-                           ("READY_TIMEOUT", "0"), ("CLEANUP_TIMEOUT", "10000")):
+                           ("READY_TIMEOUT", "0"), ("CLEANUP_TIMEOUT", "10000"),
+                           ("E2E_RESOURCE_PROFILE", "invalid")):
             with self.subTest(key=key, value=value):
                 result = self.run_functions("check_target", env={key: value})
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(self.calls(), [])
+
+    def test_constrained_resource_profile_is_explicit_and_bounded(self):
+        result = self.run_functions(
+            "create_instance; cleanup",
+            env={"E2E_RESOURCE_PROFILE": "constrained"},
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        values = self.mutations()[0]["body"]["spec"]["helm"]["values"]
+        self.assertEqual(
+            values["resources"],
+            {"requests": {"cpu": "2000m", "memory": "4Gi"}},
+        )
+        self.assertEqual(values["skills"], {"shared": False})
+
+    def test_default_resource_profile_does_not_override_chart_defaults(self):
+        result = self.run_functions("create_instance; cleanup")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        values = self.mutations()[0]["body"]["spec"]["helm"]["values"]
+        self.assertNotIn("resources", values)
+
+    def test_agent_identity_owner_binding_is_validated_before_any_client(self):
+        for env in (
+            {"AGENT_IDENTITY_ENABLED": "invalid"},
+            {"AGENT_IDENTITY_ENABLED": "true"},
+            {
+                "AGENT_IDENTITY_ENABLED": "true",
+                "AGENT_OWNER_TENANT_ID": "not-a-uuid",
+                "AGENT_OWNER_OBJECT_ID": "22222222-2222-2222-2222-222222222222",
+            },
+        ):
+            with self.subTest(env=env):
+                result = self.run_functions("check_target", env=env)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertEqual(self.calls(), [])
 
@@ -218,6 +262,30 @@ class E2ELifecycleTests(unittest.TestCase):
         self.assertEqual(writes[1]["args"][2], "/apis/cetirun.microsoft.com/v1alpha1/agents/e2e-fixture")
         self.assertIn("Cleanup verified", result.stdout)
         self.assertEqual(json.loads(self.state.read_text())["namespace"], None)
+
+    def test_agent_identity_create_keeps_run_ownership_and_owner_binding(self):
+        owner_tenant = "11111111-1111-1111-1111-111111111111"
+        owner_object = "22222222-2222-2222-2222-222222222222"
+        result = self.run_functions(
+            "create_instance; cleanup",
+            env={
+                "AGENT_IDENTITY_ENABLED": "true",
+                "AGENT_OWNER_TENANT_ID": owner_tenant,
+                "AGENT_OWNER_OBJECT_ID": owner_object,
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        create = self.mutations()[0]
+        self.assertEqual(create["args"][0], "create")
+        self.assertEqual(create["body"]["spec"]["agentIdentity"], {"enabled": True})
+        self.assertEqual(
+            create["body"]["metadata"]["annotations"],
+            {
+                "agentidentity.cetirun.microsoft.com/owner-tenant-id": owner_tenant,
+                "agentidentity.cetirun.microsoft.com/owner-object-id": owner_object,
+            },
+        )
+        self.assertIn("qualification.cetirun.microsoft.com/e2e-run", create["body"]["metadata"]["labels"])
 
     def test_lost_or_unconfirmed_create_response_never_deletes_by_name(self):
         for mode in ("lost-create", "missing-create-uid", "wrong-create-label"):
@@ -318,13 +386,14 @@ class E2ELifecycleTests(unittest.TestCase):
         self.assertEqual([entry["args"][0] for entry in self.mutations()], ["create", "delete"])
         self.assertIn("Cleanup verified", result.stdout)
 
-    def test_workflow_keeps_live_jobs_disabled_and_supplies_explicit_inputs(self):
+    def test_workflow_enables_lifecycle_with_explicit_target_inputs(self):
         source = (ROOT / ".github/workflows/e2e.yml").read_text()
-        self.assertEqual(source.count("if: false # E2E temporarily disabled"), 6)
+        self.assertNotIn("if: false # E2E temporarily disabled", source)
         section = source.split("\n  e2e-test:", 1)[1]
         for name in ("E2E_KUBECONFIG", "E2E_CONTEXT", "E2E_CLUSTER_UID"):
             self.assertIn(name, section)
         self.assertNotIn("TEST_ALIAS=johnreese", section)
+        self.assertNotIn("TEST_ALIAS=e2e-", section)
         self.assertNotIn('$HOME/.kube/config', section)
 
 

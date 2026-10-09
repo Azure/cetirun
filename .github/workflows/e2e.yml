@@ -9,263 +9,743 @@ on:
       - "app/cetirun-chart/**"
       - "scripts/**"
       - ".github/workflows/e2e.yml"
-  push:
-    branches:
-      - "main"
-  schedule:
-    - cron: "0 16 * * *" # 16:00 UTC (02:00 AEST / 03:00 AEDT, depending on daylight saving)
   workflow_dispatch:
 
 concurrency:
-  group: e2e-deploy
-  cancel-in-progress: true
+  group: e2e-cetiruntest
+  cancel-in-progress: false
 
 permissions:
   contents: read
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Always build+deploy every component from the current commit, then run E2E.
-# This ensures a broken component from a prior PR doesn't poison later runs.
-# Dependabot PRs are skipped (github.actor check) because pull_request
-# events from dependabot do not have access to secrets.
-#
-# Job graph (needs):
-#   deploy-operator  ◄── deploy-istio, build-cetirun, build-operator
-#   deploy-portal    ◄── deploy-istio
-#   e2e-test         ◄── deploy-operator, deploy-portal, build-cetirun
-# ──────────────────────────────────────────────────────────────────────────────
+env:
+  NPM_REGISTRY: https://packagefeedproxy.microsoft.io/npm/
+  OPENCLAW_NPM_REGISTRY: https://packagefeedproxy.microsoft.io/npm/
+  NPM_CONFIG_REGISTRY: https://packagefeedproxy.microsoft.io/npm/
+  NPM_CONFIG_REPLACE_REGISTRY_HOST: npmjs
+
 jobs:
-  # ── Deploy Istio ──────────────────────────────────────────────────────────
-  deploy-istio:
-    if: false # E2E temporarily disabled
+  validate:
+    name: Validate deployment sources
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Set up kubeconfig
+      - name: Validate E2E shell and workflow contracts
         run: |
-          mkdir -p "$HOME/.kube"
-          echo "${{ secrets.E2E_KUBE_CONFIG }}" | base64 -d > "$HOME/.kube/config"
-          chmod 600 "$HOME/.kube/config"
+          bash -n infra/istio/deploy.sh
+          bash -n scripts/e2e-test.sh
+          python3 -B scripts/tests/test_e2e_workflow.py
+          python3 -B scripts/tests/test_agent_id_runtime_assets.py
 
-      - name: Write PFX and set path
+      - name: Validate affected Helm charts
         run: |
-          TLS_DIR="$(mktemp -d)"
-          echo "${{ secrets.E2E_TLS_PFX }}" | base64 -d > "${TLS_DIR}/cert.pfx"
-          echo "PFX_PATH=${TLS_DIR}/cert.pfx" >> "$GITHUB_ENV"
+          bash scripts/cetirun-istio-helm-test.sh
+          bash scripts/cetirun-agent-broker-helm-test.sh
+          bash scripts/cetirun-helm-test.sh
+          bash scripts/cetirun-platform-helm-test.sh
 
-      - name: Deploy Istio (local chart)
-        env:
-          SKIP_AZ_VALIDATION: "true"
-          CLIENT_ID: ${{ secrets.E2E_CLIENT_ID }}
-          TENANT_ID: ${{ secrets.E2E_TENANT_ID }}
-          ALLOWED_GROUPS: ${{ secrets.E2E_ALLOWED_GROUPS }}
-          ADMIN_ALIASES: ${{ secrets.E2E_ADMIN_ALIASES }}
-          DOMAIN: ${{ vars.E2E_DOMAIN }}
-        run: infra/istio/deploy.sh
-
-  # ── Build OpenClaw (image + chart) ────────────────────────────────────────
-  build-cetirun:
-    if: false # E2E temporarily disabled
+  preflight:
+    name: Verify protected environment inputs
+    if: github.event_name == 'workflow_dispatch'
+    needs: validate
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-    outputs:
-      image_tag: ${{ steps.tag.outputs.image_tag }}
+    timeout-minutes: 15
+    environment: cetiruntest
+    env:
+      REGISTRY: ${{ secrets.ACR_REGISTRY }}
+      ACR_USERNAME: ${{ secrets.E2E_ACR_USERNAME }}
+      ACR_PASSWORD: ${{ secrets.E2E_ACR_PASSWORD }}
+      KUBE_CONFIG_BASE64: ${{ secrets.E2E_KUBE_CONFIG }}
+      E2E_CONTEXT: ${{ secrets.E2E_CONTEXT }}
+      E2E_CLUSTER_UID: ${{ secrets.E2E_CLUSTER_UID }}
+      TLS_PFX_BASE64: ${{ secrets.E2E_TLS_PFX }}
+      ALLOWED_GROUPS: ${{ secrets.E2E_ALLOWED_GROUPS }}
+      OWNER_OBJECT_ID: ${{ secrets.E2E_OWNER_OBJECT_ID }}
+      EXPECTED_CLUSTER: ${{ secrets.AKS_CLUSTER_NAME }}
+      REDIS_SECRET_NAME: ${{ secrets.REDIS_SECRET_NAME }}
+      ACR_DOCKER_SECRET_NAME: ${{ secrets.ACR_DOCKER_SECRET_NAME }}
+      TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      BLUEPRINT_CLIENT_ID: ${{ secrets.AGENT_ID_BLUEPRINT_CLIENT_ID }}
+      AUTHORIZATION_CLIENT_ID: ${{ secrets.AGENT_ID_AUTHORIZATION_CLIENT_ID }}
+      ENCRYPTION_CLIENT_ID: ${{ secrets.AGENT_ID_ENCRYPTION_CLIENT_ID }}
+      KEY_VAULT_KEY_URL: ${{ secrets.AGENT_ID_KEY_VAULT_KEY_URL }}
+      PORTAL_CLIENT_ID: ${{ secrets.PORTAL_OIDC_CLIENT_ID }}
+      DOMAIN: ${{ secrets.CETIRUN_DOMAIN }}
+      PERSISTENCE_STORAGE_CLASS: ${{ secrets.AGENT_PERSISTENCE_STORAGE_CLASS }}
+      PERSISTENCE_ACCESS_MODE: ${{ secrets.AGENT_PERSISTENCE_ACCESS_MODE }}
+      PERSISTENCE_SIZE: ${{ secrets.AGENT_PERSISTENCE_SIZE }}
+      PORTAL_ADMIN_ALIASES: ${{ secrets.PORTAL_ADMIN_ALIASES }}
+      PORTAL_IMAGE_TAG: ${{ secrets.PORTAL_IMAGE_TAG }}
+      PORTAL_IMAGE_DIGEST: ${{ secrets.PORTAL_IMAGE_DIGEST }}
+      BASE_IMAGE_TAG: ${{ secrets.BASE_IMAGE_TAG }}
+      BASE_IMAGE_DIGEST: ${{ secrets.BASE_IMAGE_DIGEST }}
+      OPENCLAW_IMAGE_TAG: ${{ secrets.OPENCLAW_IMAGE_TAG }}
+      OPENCLAW_IMAGE_DIGEST: ${{ secrets.OPENCLAW_IMAGE_DIGEST }}
+      HERMES_IMAGE_TAG: ${{ secrets.HERMES_IMAGE_TAG }}
+      HERMES_IMAGE_DIGEST: ${{ secrets.HERMES_IMAGE_DIGEST }}
+      DESKTOP_IMAGE_TAG: ${{ secrets.DESKTOP_IMAGE_TAG }}
+      DESKTOP_IMAGE_DIGEST: ${{ secrets.DESKTOP_IMAGE_DIGEST }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Set image tag
-        id: tag
+      - name: Validate required values
+        shell: bash
         run: |
-          TAG="e2e-${{ github.run_number }}"
-          echo "IMAGE_TAG=${TAG}" >> "$GITHUB_ENV"
-          echo "image_tag=${TAG}" >> "$GITHUB_OUTPUT"
+          required=(
+            REGISTRY ACR_USERNAME ACR_PASSWORD KUBE_CONFIG_BASE64 E2E_CONTEXT
+            E2E_CLUSTER_UID TLS_PFX_BASE64
+            ALLOWED_GROUPS OWNER_OBJECT_ID EXPECTED_CLUSTER REDIS_SECRET_NAME
+            ACR_DOCKER_SECRET_NAME TENANT_ID BLUEPRINT_CLIENT_ID
+            AUTHORIZATION_CLIENT_ID ENCRYPTION_CLIENT_ID KEY_VAULT_KEY_URL
+            PORTAL_CLIENT_ID DOMAIN PERSISTENCE_STORAGE_CLASS
+            PERSISTENCE_ACCESS_MODE PERSISTENCE_SIZE PORTAL_ADMIN_ALIASES
+            PORTAL_IMAGE_TAG PORTAL_IMAGE_DIGEST
+            BASE_IMAGE_TAG BASE_IMAGE_DIGEST
+            OPENCLAW_IMAGE_TAG OPENCLAW_IMAGE_DIGEST
+            HERMES_IMAGE_TAG HERMES_IMAGE_DIGEST
+            DESKTOP_IMAGE_TAG DESKTOP_IMAGE_DIGEST
+          )
+          for name in "${required[@]}"; do
+            [[ -n "${!name}" ]] || { echo "::error::Missing protected input ${name}"; exit 1; }
+          done
+          [[ "${OWNER_OBJECT_ID}" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]
+          [[ "${PORTAL_IMAGE_TAG}" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$ ]]
+          [[ "${PORTAL_IMAGE_DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]]
+          [[ "${BASE_IMAGE_TAG}" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$ ]]
+          [[ "${BASE_IMAGE_DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]]
+          [[ "${OPENCLAW_IMAGE_TAG}" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$ ]]
+          [[ "${OPENCLAW_IMAGE_DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]]
+          [[ "${HERMES_IMAGE_TAG}" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$ ]]
+          [[ "${HERMES_IMAGE_DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]]
+          [[ "${DESKTOP_IMAGE_TAG}" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$ ]]
+          [[ "${DESKTOP_IMAGE_DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]]
+          printf '%s' "${TLS_PFX_BASE64}" | base64 --decode | openssl pkcs12 -in /dev/stdin -passin pass: -noout >/dev/null 2>&1
 
-      - name: Log in to ACR
-        run: echo "${{ secrets.E2E_ACR_PASSWORD }}" | docker login "${{ secrets.E2E_ACR_REGISTRY }}" --username "${{ secrets.E2E_ACR_USERNAME }}" --password-stdin
-
-      - name: Build and push agent images
-        env:
-          REGISTRY: ${{ secrets.E2E_ACR_REGISTRY }}
-          PUSH: "true"
-          BUILD_HERMES: "true"
-        run: scripts/cetirun-docker-build.sh
-
-      - name: Package and push cetirun Helm chart
-        env:
-          REGISTRY: ${{ secrets.E2E_ACR_REGISTRY }}
-          CHART_VERSION: 0.0.0-${{ env.IMAGE_TAG }}
-          APP_VERSION: ${{ env.IMAGE_TAG }}
-        run: |
-          # Override image.repository to use the test ACR
-          sed -i "s|repository: .*openclaw-gateway|repository: ${{ secrets.E2E_ACR_REGISTRY }}/openclaw-gateway|" app/cetirun-chart/values.yaml
-          sed -i "s|repository: .*hermes-gateway|repository: ${{ secrets.E2E_ACR_REGISTRY }}/hermes-gateway|" app/cetirun-chart/values.yaml
-          echo "${{ secrets.E2E_ACR_PASSWORD }}" | helm registry login "${{ secrets.E2E_ACR_REGISTRY }}" \
-            --username "${{ secrets.E2E_ACR_USERNAME }}" --password-stdin
-          scripts/cetirun-helm-release.sh
-
-  # ── Build Operator ────────────────────────────────────────────────────────
-  build-operator:
-    if: false # E2E temporarily disabled
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Set image tag
-        run: echo "IMAGE_TAG=e2e-${{ github.run_number }}" >> "$GITHUB_ENV"
-
-      - name: Log in to ACR
-        run: echo "${{ secrets.E2E_ACR_PASSWORD }}" | docker login "${{ secrets.E2E_ACR_REGISTRY }}" --username "${{ secrets.E2E_ACR_USERNAME }}" --password-stdin
-
-      - name: Build and push operator image
-        env:
-          REGISTRY: ${{ secrets.E2E_ACR_REGISTRY }}
-          PUSH: "true"
-        run: scripts/operator-docker-build.sh
-
-  # ── Deploy Operator ───────────────────────────────────────────────────────
-  deploy-operator:
-    if: false # E2E temporarily disabled
-    needs: [deploy-istio, build-cetirun, build-operator]
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Set image tag
-        run: echo "IMAGE_TAG=e2e-${{ github.run_number }}" >> "$GITHUB_ENV"
-
-      - name: Set up kubeconfig
-        run: |
-          mkdir -p "$HOME/.kube"
-          echo "${{ secrets.E2E_KUBE_CONFIG }}" | base64 -d > "$HOME/.kube/config"
-          chmod 600 "$HOME/.kube/config"
-
-      - name: Log in to ACR
-        run: echo "${{ secrets.E2E_ACR_PASSWORD }}" | docker login "${{ secrets.E2E_ACR_REGISTRY }}" --username "${{ secrets.E2E_ACR_USERNAME }}" --password-stdin
-
-      - name: Create ACR pull secret for operator
-        run: |
-          kubectl create secret docker-registry acr-e2e \
-            --namespace cetirun-system \
-            --docker-server="${{ secrets.E2E_ACR_REGISTRY }}" \
-            --docker-username="${{ secrets.E2E_ACR_USERNAME }}" \
-            --docker-password="${{ secrets.E2E_ACR_PASSWORD }}" \
-            --dry-run=client -o yaml | kubectl apply -f -
-
-      - name: Validate Azure secrets
-        env:
-          SUBSCRIPTION_ID: ${{ secrets.E2E_AZURE_SUBSCRIPTION_ID }}
-          TENANT_ID: ${{ secrets.E2E_AZURE_TENANT_ID }}
-          CLIENT_ID: ${{ secrets.E2E_AZURE_CLIENT_ID }}
-          RESOURCE_GROUP: ${{ vars.E2E_AZURE_RESOURCE_GROUP }}
-          BOT_NAME_PREFIX: ${{ vars.E2E_AZURE_BOT_NAME_PREFIX }}
-        run: |
-          missing=()
-          [ -z "$SUBSCRIPTION_ID" ] && missing+=(E2E_AZURE_SUBSCRIPTION_ID)
-          [ -z "$TENANT_ID" ] && missing+=(E2E_AZURE_TENANT_ID)
-          [ -z "$CLIENT_ID" ] && missing+=(E2E_AZURE_CLIENT_ID)
-          [ -z "$RESOURCE_GROUP" ] && missing+=(E2E_AZURE_RESOURCE_GROUP)
-          [ -z "$BOT_NAME_PREFIX" ] && missing+=(E2E_AZURE_BOT_NAME_PREFIX)
-          if [ ${#missing[@]} -gt 0 ]; then
-            echo "::error::Missing required Azure secrets/variables: ${missing[*]}"
-            exit 1
-          fi
-
-      - name: Deploy Operator (local chart + test image)
-        env:
-          LOCAL_CHART: "true"
-          IMAGE_REPO: ${{ secrets.E2E_ACR_REGISTRY }}/cetirun-operator
-          E2E_DOMAIN: ${{ vars.E2E_DOMAIN }}
-        run: |
-          VERSION="0.0.0-${IMAGE_TAG}"
-          DOMAIN="${E2E_DOMAIN}"
-          if [[ -z "${DOMAIN}" ]]; then
-            echo "::error::E2E_DOMAIN variable is not set. Configure it in the GitHub environment variables."
-            exit 1
-          fi
-          export HELM_SET_ARGS="cetirun.chart.repoURL=oci://${{ secrets.E2E_ACR_REGISTRY }}/helm/cetirun cetirun.chart.version=${VERSION} domainSuffix=${DOMAIN} skillsStorageAccount=${{ vars.E2E_SKILLS_STORAGE_ACCOUNT || 'cetirunskills' }} azure.subscriptionId=${{ secrets.E2E_AZURE_SUBSCRIPTION_ID }} azure.resourceGroup=${{ vars.E2E_AZURE_RESOURCE_GROUP }} azure.botNamePrefix=${{ vars.E2E_AZURE_BOT_NAME_PREFIX }} azure.tenantId=${{ secrets.E2E_AZURE_TENANT_ID }} azure.clientId=${{ secrets.E2E_AZURE_CLIENT_ID }}"
-          cd app/cetirun-operator
-          deploy/deploy.sh
-
-      - name: Patch operator with ACR credentials
-        run: |
-          kubectl patch deployment cetirun-operator -n cetirun-system --type=strategic -p '{
-            "spec": {"template": {"spec": {
-              "volumes": [{"name": "acr-docker-config", "secret": {"secretName": "acr-e2e", "items": [{"key": ".dockerconfigjson", "path": "config.json"}]}}],
-              "containers": [{"name": "manager",
-                "volumeMounts": [{"name": "acr-docker-config", "mountPath": "/etc/docker", "readOnly": true}],
-                "env": [{"name": "DOCKER_CONFIG", "value": "/etc/docker"}]
-              }]
-            }}}
-          }'
-          kubectl rollout status deployment/cetirun-operator -n cetirun-system --timeout=120s
-
-  # ── Deploy Portal ─────────────────────────────────────────────────────────
-  deploy-portal:
-    if: false # E2E temporarily disabled
-    needs: [deploy-istio]
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Set image tag
-        run: echo "IMAGE_TAG=e2e-${{ github.run_number }}" >> "$GITHUB_ENV"
-
-      - name: Set up kubeconfig
-        run: |
-          mkdir -p "$HOME/.kube"
-          echo "${{ secrets.E2E_KUBE_CONFIG }}" | base64 -d > "$HOME/.kube/config"
-          chmod 600 "$HOME/.kube/config"
-
-      - name: Log in to ACR
-        run: echo "${{ secrets.E2E_ACR_PASSWORD }}" | docker login "${{ secrets.E2E_ACR_REGISTRY }}" --username "${{ secrets.E2E_ACR_USERNAME }}" --password-stdin
-
-      - name: Build and push portal image
-        env:
-          REGISTRY: ${{ secrets.E2E_ACR_REGISTRY }}
-          PUSH: "true"
-        run: scripts/portal-docker-build.sh
-
-      - name: Deploy Portal (local chart + test image)
-        env:
-          LOCAL_CHART: "true"
-          IMAGE_REPO: ${{ secrets.E2E_ACR_REGISTRY }}/cetirun-portal
-          ISTIO_HOST: ${{ vars.E2E_DOMAIN }}
-        run: |
-          cd app/cetirun-portal
-          deploy/deploy.sh
-
-  # ── E2E Tests ─────────────────────────────────────────────────────────────
-  e2e-test:
-    if: false # E2E temporarily disabled
-    needs: [build-cetirun, deploy-operator, deploy-portal]
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Set up kubeconfig
+      - name: Verify target cluster and one-time prerequisites
+        shell: bash
         run: |
           umask 077
-          mkdir -p "$RUNNER_TEMP/cetirun-e2e"
-          echo "${{ secrets.E2E_KUBE_CONFIG }}" | base64 -d > "$RUNNER_TEMP/cetirun-e2e/kubeconfig"
-          echo "E2E_KUBECONFIG=$RUNNER_TEMP/cetirun-e2e/kubeconfig" >> "$GITHUB_ENV"
+          export KUBECONFIG="${RUNNER_TEMP}/cetiruntest-kubeconfig"
+          printf '%s' "${KUBE_CONFIG_BASE64}" | base64 --decode > "${KUBECONFIG}"
+          chmod 600 "${KUBECONFIG}"
+          context="$(kubectl config current-context)"
+          [[ "${context}" == "${E2E_CONTEXT}" ]]
+          [[ "${context}" == *"${EXPECTED_CLUSTER}"* ]]
+          cluster_uid="$(kubectl --context "${E2E_CONTEXT}" get namespace kube-system -o jsonpath='{.metadata.uid}')"
+          [[ "${cluster_uid}" == "${E2E_CLUSTER_UID}" ]]
+          kubectl --context "${E2E_CONTEXT}" cluster-info --request-timeout=10s >/dev/null
+          helm status cetirun-istio -n cetirun-istio >/dev/null
+          helm status cetirun-platform -n cetirun-system >/dev/null
+          kubectl get secret "${REDIS_SECRET_NAME}" -n cetirun-istio >/dev/null
+          kubectl get secret "${ACR_DOCKER_SECRET_NAME}" -n cetirun-system >/dev/null
+          expected_openclaw="${REGISTRY}/openclaw-gateway:${OPENCLAW_IMAGE_TAG}@${OPENCLAW_IMAGE_DIGEST}"
+          expected_hermes="${REGISTRY}/hermes-gateway:${HERMES_IMAGE_TAG}@${HERMES_IMAGE_DIGEST}"
+          kubectl get agents.cetirun.microsoft.com -o json | jq -e \
+            --arg openclaw "${expected_openclaw}" --arg hermes "${expected_hermes}" '
+              all(.items[];
+                if .spec.agent.type == "openclaw" then .spec.agent.image == $openclaw
+                elif .spec.agent.type == "hermes" then .spec.agent.image == $hermes
+                else true
+                end)
+            ' >/dev/null || {
+              echo "::error::Protected runtime image pins do not match every existing built-in Agent"
+              exit 1
+            }
+          kubectl get agents.cetirun.microsoft.com -o json | jq -e '
+            all(.items[];
+              ((.spec.team // "") | length) > 0 and
+              ((.spec.sandboxRef // "") | length) > 0)
+          ' >/dev/null || {
+            echo "::error::Existing Agents must complete the Team and Sandbox policy migration before this workflow can deploy"
+            exit 1
+          }
+          kubectl get agents.cetirun.microsoft.com -o json | jq -e '
+            all(.items[]; (.spec.agentIdentity.enabled // false) == false)
+          ' >/dev/null || {
+            echo "::error::An existing Agent uses legacy Agent Identity; typed credential-policy enforcement is required before this workflow can deploy"
+            exit 1
+          }
 
-      - name: Run E2E tests
+      - name: Verify ACR credentials
+        run: |
+          printf '%s' "${ACR_PASSWORD}" | docker login "${REGISTRY}" --username "${ACR_USERNAME}" --password-stdin
+          resolved_digest="$(docker buildx imagetools inspect \
+            "${REGISTRY}/cetirun-portal:${PORTAL_IMAGE_TAG}" \
+            --format '{{json .Manifest.Digest}}' | tr -d '"')"
+          [[ "${resolved_digest}" == "${PORTAL_IMAGE_DIGEST}" ]]
+          resolved_digest="$(docker buildx imagetools inspect \
+            "${REGISTRY}/cetirun-base:${BASE_IMAGE_TAG}" \
+            --format '{{json .Manifest.Digest}}' | tr -d '"')"
+          [[ "${resolved_digest}" == "${BASE_IMAGE_DIGEST}" ]]
+          resolved_digest="$(docker buildx imagetools inspect \
+            "${REGISTRY}/openclaw-gateway:${OPENCLAW_IMAGE_TAG}" \
+            --format '{{json .Manifest.Digest}}' | tr -d '"')"
+          [[ "${resolved_digest}" == "${OPENCLAW_IMAGE_DIGEST}" ]]
+          resolved_digest="$(docker buildx imagetools inspect \
+            "${REGISTRY}/hermes-gateway:${HERMES_IMAGE_TAG}" \
+            --format '{{json .Manifest.Digest}}' | tr -d '"')"
+          [[ "${resolved_digest}" == "${HERMES_IMAGE_DIGEST}" ]]
+          resolved_digest="$(docker buildx imagetools inspect \
+            "${REGISTRY}/cetirun-desktop:${DESKTOP_IMAGE_TAG}" \
+            --format '{{json .Manifest.Digest}}' | tr -d '"')"
+          [[ "${resolved_digest}" == "${DESKTOP_IMAGE_DIGEST}" ]]
+
+  build-runtime:
+    name: Build runtime images and chart
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    environment: cetiruntest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    env:
+      REGISTRY: ${{ secrets.ACR_REGISTRY }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Derive immutable candidate version
+        id: version
+        shell: bash
+        run: |
+          version="0.0.0-e2e.${GITHUB_RUN_NUMBER}.${GITHUB_RUN_ATTEMPT}.${GITHUB_SHA:0:7}"
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+
+      - name: Free runner disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Authenticate to ACR
         env:
-          EXPECTED_IMAGE_TAG: ${{ needs.build-cetirun.outputs.image_tag }}
+          ACR_USERNAME: ${{ secrets.E2E_ACR_USERNAME }}
+          ACR_PASSWORD: ${{ secrets.E2E_ACR_PASSWORD }}
+        run: |
+          printf '%s' "${ACR_PASSWORD}" | docker login "${REGISTRY}" --username "${ACR_USERNAME}" --password-stdin
+          printf '%s' "${ACR_PASSWORD}" | helm registry login "${REGISTRY}" --username "${ACR_USERNAME}" --password-stdin
+
+      - name: Build and publish runtime images
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          IMAGE_TAG: ${{ steps.version.outputs.version }}
+          GIT_SHA: ${{ github.sha }}
+          PUSH: "true"
+          BUILD_BASE: "false"
+          BUILD_IMAGE: "false"
+          BUILD_HERMES: "true"
+          BUILD_DESKTOP: "true"
+          BASE_IMAGE_TAG: ${{ secrets.BASE_IMAGE_TAG }}
+          BASE_IMAGE_DIGEST: ${{ secrets.BASE_IMAGE_DIGEST }}
+        run: |
+          export BASE_IMAGE="${REGISTRY}/cetirun-base:${BASE_IMAGE_TAG}@${BASE_IMAGE_DIGEST}"
+          bash scripts/cetirun-docker-build.sh
+
+      - name: Publish runtime chart
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          CHART_VERSION: ${{ steps.version.outputs.version }}
+          APP_VERSION: ${{ steps.version.outputs.version }}
+          VERIFY_PULL: "true"
+          OPENCLAW_IMAGE_TAG: ${{ secrets.OPENCLAW_IMAGE_TAG }}
+          OPENCLAW_IMAGE_DIGEST: ${{ secrets.OPENCLAW_IMAGE_DIGEST }}
+          HERMES_IMAGE_TAG: ${{ secrets.HERMES_IMAGE_TAG }}
+          HERMES_IMAGE_DIGEST: ${{ secrets.HERMES_IMAGE_DIGEST }}
+          DESKTOP_IMAGE_TAG: ${{ secrets.DESKTOP_IMAGE_TAG }}
+          DESKTOP_IMAGE_DIGEST: ${{ secrets.DESKTOP_IMAGE_DIGEST }}
+        run: |
+          umask 077
+          candidate_digest() {
+            local image="$1" digest
+            digest="$(docker buildx imagetools inspect \
+              "${REGISTRY}/${image}:${VERSION}" \
+              --format '{{json .Manifest.Digest}}' | tr -d '"')"
+            [[ "${digest}" =~ ^sha256:[0-9a-f]{64}$ ]]
+          }
+          candidate_digest hermes-gateway
+          candidate_digest cetirun-desktop
+          python3 -m pip install --disable-pip-version-check -r infra/istio/requirements.txt
+          staging_directory="$(mktemp -d)"
+          trap 'rm -rf "${staging_directory}"' EXIT
+          staged_chart="${staging_directory}/cetirun"
+          mkdir -p "${staged_chart}"
+          cp -a app/cetirun-chart/. "${staged_chart}/"
+          python3 - "${staged_chart}/values.yaml" <<'PY'
+          import os
+          from pathlib import Path
+          import sys
+
+          import yaml
+
+          path = Path(sys.argv[1])
+          values = yaml.safe_load(path.read_text(encoding="utf-8"))
+          pins = {
+              "openclaw": ("openclaw-gateway", "OPENCLAW_IMAGE_TAG", "OPENCLAW_IMAGE_DIGEST"),
+              "hermes": ("hermes-gateway", "HERMES_IMAGE_TAG", "HERMES_IMAGE_DIGEST"),
+              "desktop": ("cetirun-desktop", "DESKTOP_IMAGE_TAG", "DESKTOP_IMAGE_DIGEST"),
+          }
+          for component, (repository, tag_name, digest_name) in pins.items():
+              image = values[component]["image"]
+              image["repository"] = f"{os.environ['REGISTRY']}/{repository}"
+              image["tag"] = os.environ[tag_name]
+              image["digest"] = os.environ[digest_name]
+          path.write_text(yaml.safe_dump(values, sort_keys=False), encoding="utf-8")
+          PY
+          chmod 600 "${staged_chart}/values.yaml"
+          CHART_DIR="${staged_chart}" bash scripts/cetirun-helm-release.sh
+
+  build-control-plane:
+    name: Build control-plane images and charts
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    environment: cetiruntest
+    env:
+      REGISTRY: ${{ secrets.ACR_REGISTRY }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Derive immutable candidate version
+        id: version
+        shell: bash
+        run: |
+          version="0.0.0-e2e.${GITHUB_RUN_NUMBER}.${GITHUB_RUN_ATTEMPT}.${GITHUB_SHA:0:7}"
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+
+      - name: Free runner disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Authenticate to ACR
+        env:
+          ACR_USERNAME: ${{ secrets.E2E_ACR_USERNAME }}
+          ACR_PASSWORD: ${{ secrets.E2E_ACR_PASSWORD }}
+        run: |
+          printf '%s' "${ACR_PASSWORD}" | docker login "${REGISTRY}" --username "${ACR_USERNAME}" --password-stdin
+          printf '%s' "${ACR_PASSWORD}" | helm registry login "${REGISTRY}" --username "${ACR_USERNAME}" --password-stdin
+
+      - name: Build and publish control-plane images
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          IMAGE_TAG: ${{ steps.version.outputs.version }}
+          GIT_SHA: ${{ github.sha }}
+          PUSH: "true"
+        run: |
+          bash scripts/operator-docker-build.sh
+          bash scripts/terminal-docker-build.sh
+          bash scripts/ai-gateway-docker-build.sh
+          bash scripts/agent-broker-docker-build.sh
+
+      - name: Publish platform and Broker charts
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          CHART_VERSION: ${{ steps.version.outputs.version }}
+          APP_VERSION: ${{ steps.version.outputs.version }}
+          VERIFY_PULL: "true"
+        run: |
+          bash scripts/platform-helm-release.sh
+          bash scripts/agent-broker-helm-release.sh
+
+  deploy-istio:
+    name: Deploy authentication edge
+    needs: [build-runtime, build-control-plane]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: cetiruntest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up isolated kubeconfig
+        env:
+          KUBE_CONFIG_BASE64: ${{ secrets.E2E_KUBE_CONFIG }}
           E2E_CONTEXT: ${{ secrets.E2E_CONTEXT }}
           E2E_CLUSTER_UID: ${{ secrets.E2E_CLUSTER_UID }}
         run: |
-          AGENT_TYPE=openclaw scripts/e2e-test.sh
-          AGENT_TYPE=hermes scripts/e2e-test.sh
+          umask 077
+          export KUBECONFIG="${RUNNER_TEMP}/cetiruntest-kubeconfig"
+          echo "KUBECONFIG=${KUBECONFIG}" >> "${GITHUB_ENV}"
+          printf '%s' "${KUBE_CONFIG_BASE64}" | base64 --decode > "${KUBECONFIG}"
+          chmod 600 "${KUBECONFIG}"
+          [[ "$(kubectl config current-context)" == "${E2E_CONTEXT}" ]]
+          [[ "$(kubectl --context "${E2E_CONTEXT}" get namespace kube-system -o jsonpath='{.metadata.uid}')" == "${E2E_CLUSTER_UID}" ]]
+          kubectl --context "${E2E_CONTEXT}" cluster-info --request-timeout=10s >/dev/null
+
+      - name: Install pinned mesh reconciliation dependency
+        run: python3 -m pip install --disable-pip-version-check -r infra/istio/requirements.txt
+
+      - name: Verify deployment prerequisites
+        env:
+          EXPECTED_CLUSTER: ${{ secrets.AKS_CLUSTER_NAME }}
+          REDIS_SECRET_NAME: ${{ secrets.REDIS_SECRET_NAME }}
+          ACR_DOCKER_SECRET_NAME: ${{ secrets.ACR_DOCKER_SECRET_NAME }}
+        run: |
+          context="$(kubectl config current-context)"
+          [[ -n "${EXPECTED_CLUSTER}" && "${context}" == *"${EXPECTED_CLUSTER}"* ]]
+          helm status cetirun-istio -n cetirun-istio >/dev/null
+          helm status cetirun-platform -n cetirun-system >/dev/null
+          kubectl get secret "${REDIS_SECRET_NAME}" -n cetirun-istio >/dev/null
+          kubectl get secret "${ACR_DOCKER_SECRET_NAME}" -n cetirun-system >/dev/null
+
+      - name: Upgrade Istio authentication release
+        env:
+          SKIP_AZ_VALIDATION: "true"
+          HELM_RESET_THEN_REUSE_VALUES: "true"
+          CLIENT_ID: ${{ secrets.PORTAL_OIDC_CLIENT_ID }}
+          TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          ALLOWED_GROUPS: ${{ secrets.E2E_ALLOWED_GROUPS }}
+          ADMIN_ALIASES: ${{ secrets.PORTAL_ADMIN_ALIASES }}
+          DOMAIN: ${{ secrets.CETIRUN_DOMAIN }}
+          PFX_BASE64: ${{ secrets.E2E_TLS_PFX }}
+          AKS_CLUSTER_NAME: ${{ secrets.AKS_CLUSTER_NAME }}
+          RESOURCE_GROUP: ${{ secrets.AKS_RESOURCE_GROUP }}
+          PORTAL_AUTH_NAMESPACE: cetirun-system
+          PORTAL_AUTH_SERVICE: cetirun-portal
+        run: bash infra/istio/deploy.sh
+
+  deploy-broker:
+    name: Deploy Agent Identity Broker
+    needs: [build-runtime, build-control-plane, deploy-istio]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: cetiruntest
+    outputs:
+      operator_digest: ${{ steps.digests.outputs.operator_digest }}
+      terminal_digest: ${{ steps.digests.outputs.terminal_digest }}
+      ai_gateway_digest: ${{ steps.digests.outputs.ai_gateway_digest }}
+      broker_digest: ${{ steps.digests.outputs.broker_digest }}
+    env:
+      REGISTRY: ${{ secrets.ACR_REGISTRY }}
+      VERSION: ${{ needs.build-runtime.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up isolated kubeconfig
+        env:
+          KUBE_CONFIG_BASE64: ${{ secrets.E2E_KUBE_CONFIG }}
+          E2E_CONTEXT: ${{ secrets.E2E_CONTEXT }}
+          E2E_CLUSTER_UID: ${{ secrets.E2E_CLUSTER_UID }}
+        run: |
+          umask 077
+          export KUBECONFIG="${RUNNER_TEMP}/cetiruntest-kubeconfig"
+          echo "KUBECONFIG=${KUBECONFIG}" >> "${GITHUB_ENV}"
+          printf '%s' "${KUBE_CONFIG_BASE64}" | base64 --decode > "${KUBECONFIG}"
+          chmod 600 "${KUBECONFIG}"
+          [[ "$(kubectl config current-context)" == "${E2E_CONTEXT}" ]]
+          [[ "$(kubectl --context "${E2E_CONTEXT}" get namespace kube-system -o jsonpath='{.metadata.uid}')" == "${E2E_CLUSTER_UID}" ]]
+          kubectl --context "${E2E_CONTEXT}" cluster-info --request-timeout=10s >/dev/null
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Authenticate to ACR
+        env:
+          ACR_USERNAME: ${{ secrets.E2E_ACR_USERNAME }}
+          ACR_PASSWORD: ${{ secrets.E2E_ACR_PASSWORD }}
+        run: |
+          printf '%s' "${ACR_PASSWORD}" | docker login "${REGISTRY}" --username "${ACR_USERNAME}" --password-stdin
+          printf '%s' "${ACR_PASSWORD}" | helm registry login "${REGISTRY}" --username "${ACR_USERNAME}" --password-stdin
+
+      - name: Resolve immutable image digests
+        id: digests
+        shell: bash
+        run: |
+          resolve_digest() {
+            local image="$1" digest
+            digest="$(docker buildx imagetools inspect "${REGISTRY}/${image}:${VERSION}" --format '{{json .Manifest.Digest}}' | tr -d '"')"
+            [[ "${digest}" =~ ^sha256:[0-9a-f]{64}$ ]]
+            printf '%s' "${digest}"
+          }
+          {
+            echo "operator_digest=$(resolve_digest cetirun-operator)"
+            echo "terminal_digest=$(resolve_digest cetirun-terminal)"
+            echo "ai_gateway_digest=$(resolve_digest cetirun-ai-gateway)"
+            echo "broker_digest=$(resolve_digest cetirun-agent-broker)"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Upgrade Broker release
+        env:
+          BROKER_DIGEST: ${{ steps.digests.outputs.broker_digest }}
+          TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          BLUEPRINT_CLIENT_ID: ${{ secrets.AGENT_ID_BLUEPRINT_CLIENT_ID }}
+          AUTHORIZATION_CLIENT_ID: ${{ secrets.AGENT_ID_AUTHORIZATION_CLIENT_ID }}
+          ENCRYPTION_CLIENT_ID: ${{ secrets.AGENT_ID_ENCRYPTION_CLIENT_ID }}
+          KEY_VAULT_KEY_URL: ${{ secrets.AGENT_ID_KEY_VAULT_KEY_URL }}
+          DOMAIN: ${{ secrets.CETIRUN_DOMAIN }}
+        run: |
+          values_file="$(mktemp)"
+          trap 'rm -f "${values_file}"' EXIT
+          chmod 600 "${values_file}"
+          istio_revision="$(kubectl get pods -n aks-istio-system -l app=istiod -o jsonpath='{.items[0].metadata.labels.istio\.io/rev}')"
+          [[ -n "${istio_revision}" ]]
+          kubectl create namespace cetirun-credentials --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+          kubectl label namespace cetirun-credentials "istio.io/rev=${istio_revision}" --overwrite >/dev/null
+          jq -n --arg revision "${istio_revision}" '{
+            image: {
+              repository: (env.REGISTRY + "/cetirun-agent-broker"),
+              tag: env.VERSION,
+              digest: env.BROKER_DIGEST
+            },
+            serviceAccount: {name: "cetirun-agent-broker"},
+            agentIdentity: {
+              tenantId: env.TENANT_ID,
+              blueprintClientId: env.BLUEPRINT_CLIENT_ID,
+              authorizationClientId: env.AUTHORIZATION_CLIENT_ID,
+              encryptionClientId: env.ENCRYPTION_CLIENT_ID,
+              keyVaultKeyUrl: env.KEY_VAULT_KEY_URL,
+              redirectUri: ("https://" + env.DOMAIN + "/api/v1/agent-authorization/callback"),
+              portalOrigin: ("https://" + env.DOMAIN),
+              portalBaseUrl: ("https://" + env.DOMAIN)
+            },
+            portal: {namespace: "cetirun-system", serviceAccount: "cetirun-portal"},
+            operator: {namespace: "cetirun-system", serviceAccount: "cetirun-operator-controller-manager"},
+            istio: {enabled: true, sidecarInjection: true, revision: $revision}
+          }' > "${values_file}"
+          helm upgrade --install cetirun-agent-broker \
+            "oci://${REGISTRY}/helm/cetirun-agent-broker" \
+            --version "${VERSION}" \
+            --namespace cetirun-credentials \
+            --reset-then-reuse-values \
+            --values "${values_file}" \
+            --wait --timeout 10m
+          kubectl rollout status deployment/cetirun-agent-broker -n cetirun-credentials --timeout=300s
+          kubectl get deployment cetirun-agent-broker -n cetirun-credentials -o json | \
+            jq -e --arg digest "${BROKER_DIGEST}" \
+              'any(.spec.template.spec.containers[]?; .name == "broker" and (.image | endswith("@" + $digest)))' >/dev/null
+          kubectl get peerauthentication cetirun-agent-broker -n cetirun-credentials >/dev/null
+          kubectl get networkpolicy cetirun-agent-broker -n cetirun-credentials >/dev/null
+
+  deploy-platform:
+    name: Deploy CetiRun platform
+    needs: [build-runtime, deploy-broker]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: cetiruntest
+    env:
+      REGISTRY: ${{ secrets.ACR_REGISTRY }}
+      VERSION: ${{ needs.build-runtime.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up isolated kubeconfig
+        env:
+          KUBE_CONFIG_BASE64: ${{ secrets.E2E_KUBE_CONFIG }}
+          E2E_CONTEXT: ${{ secrets.E2E_CONTEXT }}
+          E2E_CLUSTER_UID: ${{ secrets.E2E_CLUSTER_UID }}
+        run: |
+          umask 077
+          export KUBECONFIG="${RUNNER_TEMP}/cetiruntest-kubeconfig"
+          echo "KUBECONFIG=${KUBECONFIG}" >> "${GITHUB_ENV}"
+          printf '%s' "${KUBE_CONFIG_BASE64}" | base64 --decode > "${KUBECONFIG}"
+          chmod 600 "${KUBECONFIG}"
+          [[ "$(kubectl config current-context)" == "${E2E_CONTEXT}" ]]
+          [[ "$(kubectl --context "${E2E_CONTEXT}" get namespace kube-system -o jsonpath='{.metadata.uid}')" == "${E2E_CLUSTER_UID}" ]]
+          kubectl --context "${E2E_CONTEXT}" cluster-info --request-timeout=10s >/dev/null
+
+      - name: Authenticate Helm to ACR
+        env:
+          ACR_USERNAME: ${{ secrets.E2E_ACR_USERNAME }}
+          ACR_PASSWORD: ${{ secrets.E2E_ACR_PASSWORD }}
+        run: printf '%s' "${ACR_PASSWORD}" | helm registry login "${REGISTRY}" --username "${ACR_USERNAME}" --password-stdin
+
+      - name: Upgrade platform release
+        env:
+          OPERATOR_DIGEST: ${{ needs.deploy-broker.outputs.operator_digest }}
+          PORTAL_TAG: ${{ secrets.PORTAL_IMAGE_TAG }}
+          PORTAL_DIGEST: ${{ secrets.PORTAL_IMAGE_DIGEST }}
+          TERMINAL_DIGEST: ${{ needs.deploy-broker.outputs.terminal_digest }}
+          AI_GATEWAY_DIGEST: ${{ needs.deploy-broker.outputs.ai_gateway_digest }}
+          DESKTOP_TAG: ${{ secrets.DESKTOP_IMAGE_TAG }}
+          DESKTOP_DIGEST: ${{ secrets.DESKTOP_IMAGE_DIGEST }}
+          TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          BLUEPRINT_CLIENT_ID: ${{ secrets.AGENT_ID_BLUEPRINT_CLIENT_ID }}
+          PORTAL_CLIENT_ID: ${{ secrets.PORTAL_OIDC_CLIENT_ID }}
+          ACR_DOCKER_SECRET_NAME: ${{ secrets.ACR_DOCKER_SECRET_NAME }}
+          PERSISTENCE_STORAGE_CLASS: ${{ secrets.AGENT_PERSISTENCE_STORAGE_CLASS }}
+          PERSISTENCE_ACCESS_MODE: ${{ secrets.AGENT_PERSISTENCE_ACCESS_MODE }}
+          PERSISTENCE_SIZE: ${{ secrets.AGENT_PERSISTENCE_SIZE }}
+          PORTAL_ADMIN_ALIASES: ${{ secrets.PORTAL_ADMIN_ALIASES }}
+          DOMAIN: ${{ secrets.CETIRUN_DOMAIN }}
+        run: |
+          umask 077
+          temporary_directory="$(mktemp -d)"
+          trap 'rm -rf "${temporary_directory}"' EXIT
+          chmod 700 "${temporary_directory}"
+          values_file="${temporary_directory}/platform.json"
+          preserved_values_file="${temporary_directory}/platform-preserved.json"
+          agents_before="${temporary_directory}/agents-before.json"
+          agents_after="${temporary_directory}/agents-after.json"
+          kubectl get agents.cetirun.microsoft.com -o json | jq -S '[.items[] | {
+            name: .metadata.name,
+            uid: .metadata.uid,
+            generation: .metadata.generation,
+            spec: .spec
+          }] | sort_by(.name)' > "${agents_before}"
+          kubectl get agents.cetirun.microsoft.com -o json | jq -e '
+            all(.items[];
+              .status.observedGeneration == .metadata.generation and
+              (([.status.conditions[]? | select(.type == "Ready")] | last | .status) == "True"))
+          ' >/dev/null
+          helm get values cetirun-platform -n cetirun-system -o json | jq '
+            del(.["cetirun-operator"].cetirun.helmValues.openclaw.image) |
+            del(.["cetirun-operator"].cetirun.helmValues.hermes.image)
+          ' > "${preserved_values_file}"
+          admin_aliases="$(jq -cn --arg aliases "${PORTAL_ADMIN_ALIASES}" '$aliases | split(",") | map(gsub("^\\s+|\\s+$"; ""))')"
+          jq -n --argjson adminAliases "${admin_aliases}" '{
+            global: {registry: env.REGISTRY, version: ""},
+            "cetirun-operator": {
+              image: {tag: env.VERSION, digest: env.OPERATOR_DIGEST},
+              acrDockerSecret: env.ACR_DOCKER_SECRET_NAME,
+              cetirun: {
+                chart: {repoURL: ("oci://" + env.REGISTRY + "/helm/cetirun"), version: env.VERSION},
+                helmValues: {
+                  persistence: {
+                    storageClass: env.PERSISTENCE_STORAGE_CLASS,
+                    accessMode: env.PERSISTENCE_ACCESS_MODE,
+                    size: env.PERSISTENCE_SIZE
+                  },
+                  agentIdentity: {brokerURL: "http://cetirun-agent-broker.cetirun-credentials.svc.cluster.local:8080"},
+                  desktop: {image: {repository: (env.REGISTRY + "/cetirun-desktop"), tag: env.DESKTOP_TAG, digest: env.DESKTOP_DIGEST}},
+                  ttyd: {image: {repository: (env.REGISTRY + "/cetirun-terminal"), tag: env.VERSION, digest: env.TERMINAL_DIGEST}}
+                }
+              },
+              agentIdentity: {
+                enabled: true,
+                cleanupEnabled: true,
+                tenantId: env.TENANT_ID,
+                blueprintClientId: env.BLUEPRINT_CLIENT_ID,
+                namePrefix: "cetirun-agent",
+                brokerURL: "http://cetirun-agent-broker.cetirun-credentials.svc.cluster.local:8080"
+              },
+              aiGateway: {copilotProxy: {image: {tag: env.VERSION, digest: env.AI_GATEWAY_DIGEST}}}
+            },
+            "cetirun-portal": {
+              image: {tag: env.PORTAL_TAG, digest: env.PORTAL_DIGEST},
+              admins: {aliases: $adminAliases},
+              features: {agentIdentityEnabled: true},
+              agentIdentity: {
+                tenantId: env.TENANT_ID,
+                portalClientId: env.PORTAL_CLIENT_ID,
+                brokerURL: "http://cetirun-agent-broker.cetirun-credentials.svc.cluster.local:8080"
+              }
+            },
+            "cetirun-ai-gateway": {image: {tag: env.VERSION, digest: env.AI_GATEWAY_DIGEST}}
+          }' > "${values_file}"
+          chmod 600 "${values_file}" "${preserved_values_file}" "${agents_before}"
+          helm upgrade cetirun-platform "oci://${REGISTRY}/helm/cetirun-platform" \
+            --version "${VERSION}" \
+            --namespace cetirun-system \
+            --reset-values \
+            --values "${preserved_values_file}" \
+            --values "${values_file}" \
+            --wait --timeout 15m
+          kubectl rollout status deployment/cetirun-operator -n cetirun-system --timeout=300s
+          kubectl rollout status deployment/cetirun-portal -n cetirun-system --timeout=300s
+          kubectl rollout status deployment/cetirun-ai-gateway -n cetirun-system --timeout=600s
+          converged=false
+          for _ in $(seq 1 60); do
+            if kubectl get agents.cetirun.microsoft.com -o json | jq -e '
+              all(.items[];
+                .status.observedGeneration == .metadata.generation and
+                (([.status.conditions[]? | select(.type == "Ready")] | last | .status) == "True"))
+            ' >/dev/null; then
+              converged=true
+              break
+            fi
+            sleep 5
+          done
+          [[ "${converged}" == "true" ]]
+          kubectl get agents.cetirun.microsoft.com -o json | jq -S '[.items[] | {
+            name: .metadata.name,
+            uid: .metadata.uid,
+            generation: .metadata.generation,
+            spec: .spec
+          }] | sort_by(.name)' > "${agents_after}"
+          cmp "${agents_before}" "${agents_after}"
+          helm get values cetirun-platform -n cetirun-system -o json | jq -e '
+            .["cetirun-operator"].agentIdentity.enabled == true and
+            .["cetirun-portal"].features.agentIdentityEnabled == true
+          ' >/dev/null
+          kubectl get deployment cetirun-operator -n cetirun-system -o json | \
+            jq -e --arg digest "${OPERATOR_DIGEST}" \
+              'any(.spec.template.spec.containers[]?; .name == "manager" and (.image | endswith("@" + $digest)))' >/dev/null
+          kubectl get deployment cetirun-portal -n cetirun-system -o json | \
+            jq -e --arg digest "${PORTAL_DIGEST}" \
+              'any(.spec.template.spec.containers[]?; .image | endswith("@" + $digest))' >/dev/null
+          kubectl get deployment cetirun-ai-gateway -n cetirun-system -o json | \
+            jq -e --arg digest "${AI_GATEWAY_DIGEST}" \
+              'any(.spec.template.spec.containers[]?; .image | endswith("@" + $digest))' >/dev/null
+
+  e2e-test:
+    name: Run OpenClaw, Hermes, and Agent Identity E2E
+    needs: [build-runtime, deploy-platform]
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    environment: cetiruntest
+    env:
+      E2E_CONTEXT: ${{ secrets.E2E_CONTEXT }}
+      E2E_CLUSTER_UID: ${{ secrets.E2E_CLUSTER_UID }}
+      E2E_RESOURCE_PROFILE: constrained
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up isolated kubeconfig
+        env:
+          KUBE_CONFIG_BASE64: ${{ secrets.E2E_KUBE_CONFIG }}
+        run: |
+          umask 077
+          export E2E_KUBECONFIG="${RUNNER_TEMP}/cetiruntest-kubeconfig"
+          echo "E2E_KUBECONFIG=${E2E_KUBECONFIG}" >> "${GITHUB_ENV}"
+          printf '%s' "${KUBE_CONFIG_BASE64}" | base64 --decode > "${E2E_KUBECONFIG}"
+          chmod 600 "${E2E_KUBECONFIG}"
+
+      - name: Run original OpenClaw and Hermes cases
+        env:
+          OPENCLAW_EXPECTED_IMAGE_TAG: ${{ secrets.OPENCLAW_IMAGE_TAG }}
+          HERMES_EXPECTED_IMAGE_TAG: ${{ secrets.HERMES_IMAGE_TAG }}
+          DOMAIN: ${{ secrets.CETIRUN_DOMAIN }}
+          PORTAL_NAMESPACE: cetirun-system
+        run: |
+          EXPECTED_IMAGE_TAG="${OPENCLAW_EXPECTED_IMAGE_TAG}" AGENT_TYPE=openclaw scripts/e2e-test.sh
+          EXPECTED_IMAGE_TAG="${HERMES_EXPECTED_IMAGE_TAG}" AGENT_TYPE=hermes scripts/e2e-test.sh
+
+      - name: Run Agent Identity lifecycle case
+        env:
+          EXPECTED_IMAGE_TAG: ${{ secrets.HERMES_IMAGE_TAG }}
+          DOMAIN: ${{ secrets.CETIRUN_DOMAIN }}
+          PORTAL_NAMESPACE: cetirun-system
+          AGENT_TYPE: hermes
+          AGENT_IDENTITY_ENABLED: "true"
+          CLEANUP_TIMEOUT: "300"
+          AGENT_OWNER_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AGENT_OWNER_OBJECT_ID: ${{ secrets.E2E_OWNER_OBJECT_ID }}
+        run: scripts/e2e-test.sh
+
+      - name: Record deployment summary
+        if: always()
+        run: |
+          {
+            echo "## CetiRun E2E"
+            echo
+            echo "- Source: \`${GITHUB_SHA}\`"
+            echo "- Candidate version: \`${{ needs.build-runtime.outputs.version }}\`"
+            echo "- Target environment: \`cetiruntest\`"
+            echo "- Runtime base image: preserved at the environment-pinned tag and digest because the approved enterprise mirror enforces a publication-age window for newly released npm packages"
+            echo "- Portal image: preserved at the environment-pinned tag and digest because the approved enterprise mirror does not currently contain the complete locked frontend dependency graph"
+            echo "- OpenClaw image: preserved at the environment-pinned tag and digest because the approved enterprise mirror does not contain the locked OpenClaw package"
+            echo "- Hermes and Desktop candidates: built from source; deployment preserved the environment-accepted runtime-profile and sidecar tag/digest pins"
+            echo "- OpenClaw and Hermes regression cases: see job result"
+            echo "- Agent Identity lifecycle: see job result"
+            echo "- Interactive Microsoft Entra consent and live OBO are intentionally outside this unattended lifecycle case"
+          } >> "${GITHUB_STEP_SUMMARY}"

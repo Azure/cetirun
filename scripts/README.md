@@ -51,6 +51,10 @@ accept positive values up to 9999. Individual Kubernetes requests use a
 15-second request timeout, which can extend the final polling iteration beyond
 its deadline. An ambiguous creation without a returned UID is retained for
 explicit recovery, never adopted by its name or label.
+`E2E_RESOURCE_PROFILE=constrained` applies fixed 2000m CPU and 4Gi memory
+requests to the test Agent while retaining the chart's limits. It is intended
+for functional lifecycle qualification in bounded test clusters; the default
+profile leaves the runtime chart's production requests unchanged.
 `SKIP_CLEANUP` retains resources only after successful application checks;
 that explicit choice is reported and may incur charges. Keep the alias and
 private run output for authorized cleanup.
@@ -59,10 +63,17 @@ The existing application/routing assertions and their limitations remain:
 this does not implement governed creation, prove physical writer fencing,
 qualify enforcement or complete a real model/tool acceptance run. The existing
 Hermes check still uses Pod exec and is not a governed-Pod admission workaround.
-All six live workflow jobs remain disabled. Before independently enabling the
-test job, provision its `E2E_CONTEXT` and `E2E_CLUSTER_UID` secrets together with
-its existing kubeconfig; the job uses a task-local file rather than overwriting
-the runner's default kubeconfig.
+
+The protected `cetiruntest` workflow runs on `main`, nightly, and by manual
+dispatch. Its preflight and every cluster-mutating deployment job verify the
+configured context and `kube-system` UID before mutation, using task-local
+kubeconfig files rather than the runner's default kubeconfig. The application
+job runs separate generated-alias OpenClaw, Hermes, and Agent Identity cases.
+The Agent Identity case adds the trusted owner binding to the same conditional
+create/cleanup lifecycle, verifies managed identity readiness and runtime CLI/
+skill assets, checks the disconnected authorization contract, and exercises a
+Broker restart. Interactive Microsoft Entra consent and live OBO remain outside
+this unattended workflow.
 
 Offline lifecycle regressions replace kubectl and Helm with synthetic processes:
 

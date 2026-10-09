@@ -39,7 +39,7 @@ agent_prepare_home() {
   if [ -f "$CETIRUN_CONFIG_DIR/user-md" ] && [ ! -f "$native_marker" ]; then
     if [ ! -e "$user_file" ] ||
       { [ -f "$SOURCE_HOME/.openclaw/workspace/USER.md" ] &&
-        cmp -s "$user_file" "$SOURCE_HOME/.openclaw/workspace/USER.md"; }; then
+        files_equal "$user_file" "$SOURCE_HOME/.openclaw/workspace/USER.md"; }; then
       home_atomic_copy "$CETIRUN_CONFIG_DIR/user-md" .openclaw/workspace/USER.md 600
     fi
   fi

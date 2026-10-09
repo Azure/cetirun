@@ -82,6 +82,8 @@ OpenClaw init containers
   env:
     - name: CETIRUN_INIT_IMAGE
       value: {{ include "cetirun.image" . | quote }}
+    - name: CETIRUN_BUILTIN_SKILL_SYNC
+      value: /etc/cetirun/builtin-skill-sync.sh
     {{- if dig "git" "azureDevOps" "enabled" true .Values.openclaw }}
     - name: AZDEVOPS_GIT_CREDENTIAL_ENABLED
       value: "true"

@@ -129,7 +129,7 @@ RUN tdnf install -y \
   && tdnf update -y \
   && tdnf clean all
 
-RUN for tool in sh cp mkdir mv rm chmod mktemp find cmp; do \
+RUN for tool in sh cp mkdir mv rm chmod mktemp find sha256sum; do \
       command -v "$tool" >/dev/null 2>&1 || exit 1; \
     done
 

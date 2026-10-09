@@ -13,13 +13,27 @@ init_error() {
 }
 
 check_common_tools() {
-  for tool in cp mkdir mv rm chmod mktemp find cmp; do
+  for tool in cp mkdir mv rm chmod mktemp find sha256sum; do
     command -v "$tool" >/dev/null 2>&1 || {
       init_error "InitToolsMissing: $tool"
       return 1
     }
   done
 }
+
+files_equal() (
+  set -e
+  # Preserved runtime images predate the later diffutils/cmp requirement but
+  # already contain coreutils. Validate sha256sum output before comparing it.
+  [ "$#" -eq 2 ] && [ -f "$1" ] && [ -f "$2" ] || exit 1
+  first=$(sha256sum "$1")
+  second=$(sha256sum "$2")
+  first=${first%% *}
+  second=${second%% *}
+  [ "${#first}" -eq 64 ] && [ "${#second}" -eq 64 ] || exit 1
+  case "$first$second" in *[!0-9a-f]*) exit 1;; esac
+  [ "$first" = "$second" ]
+)
 
 # Resolve a controlled relative path without following links out of the PVC.
 home_path() (

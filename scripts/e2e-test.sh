@@ -24,8 +24,14 @@
 #   PORTAL_NAMESPACE      — Portal namespace          (default: cetirun-portal; set to TEST_NAMESPACE for umbrella)
 #   READY_TIMEOUT         — Seconds to wait for Ready (default: 600)
 #   CLEANUP_TIMEOUT       — Seconds to observe controller cleanup (default: 180)
+#   E2E_RESOURCE_PROFILE  — Agent requests: default or constrained (default: default)
 #   DOMAIN                — Base domain for routing   (auto-detected from operator Helm values)
 #   EXPECTED_IMAGE_TAG    — If set, verify agent pod uses this image tag
+#   AGENT_IDENTITY_ENABLED — Set to true to test the Agent Identity lifecycle
+#   AGENT_OWNER_TENANT_ID — Trusted owner tenant ID (required for Agent Identity)
+#   AGENT_OWNER_OBJECT_ID — Trusted owner object ID (required for Agent Identity)
+#   BROKER_NAMESPACE      — Agent Identity Broker namespace (default: cetirun-credentials)
+#   BROKER_DEPLOYMENT     — Agent Identity Broker Deployment (default: cetirun-agent-broker)
 #   SKIP_CLEANUP          — If non-empty, skip cleanup on success
 
 set -euo pipefail
@@ -39,6 +45,10 @@ TEST_NAMESPACE="${TEST_NAMESPACE:-cetirun-system}"
 PORTAL_NAMESPACE="${PORTAL_NAMESPACE:-cetirun-portal}"
 READY_TIMEOUT="${READY_TIMEOUT:-600}"
 CLEANUP_TIMEOUT="${CLEANUP_TIMEOUT:-180}"
+E2E_RESOURCE_PROFILE="${E2E_RESOURCE_PROFILE:-default}"
+AGENT_IDENTITY_ENABLED="${AGENT_IDENTITY_ENABLED:-false}"
+BROKER_NAMESPACE="${BROKER_NAMESPACE:-cetirun-credentials}"
+BROKER_DEPLOYMENT="${BROKER_DEPLOYMENT:-cetirun-agent-broker}"
 INSTANCE_NS="cetirun-${TEST_ALIAS}"
 INSTANCE_UID=""
 INSTANCE_NS_UID=""
@@ -63,6 +73,10 @@ valid_label() {
   [[ ${#1} -ge 1 && ${#1} -le 63 && "$1" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]]
 }
 
+valid_uuid() {
+  [[ "$1" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]
+}
+
 validate_inputs() {
   if [[ "${E2E_KUBECONFIG}" != /* || ! -f "${E2E_KUBECONFIG}" ||
         -z "${E2E_CONTEXT}" || -z "${E2E_CLUSTER_UID}" ]] ||
@@ -70,6 +84,19 @@ validate_inputs() {
      ! valid_label "${TEST_NAMESPACE}" || ! valid_label "${PORTAL_NAMESPACE}" ||
      [[ ! "${READY_TIMEOUT}" =~ ^[1-9][0-9]{0,3}$ || ! "${CLEANUP_TIMEOUT}" =~ ^[1-9][0-9]{0,3}$ ]]; then
     echo "ERROR: Explicit kubeconfig/context/cluster UID, valid names and bounded positive timeouts are required." >&2
+    return 1
+  fi
+  if [[ "${AGENT_IDENTITY_ENABLED}" != "true" && "${AGENT_IDENTITY_ENABLED}" != "false" ]]; then
+    echo "ERROR: AGENT_IDENTITY_ENABLED must be 'true' or 'false'." >&2
+    return 1
+  fi
+  if [[ "${E2E_RESOURCE_PROFILE}" != "default" && "${E2E_RESOURCE_PROFILE}" != "constrained" ]]; then
+    echo "ERROR: E2E_RESOURCE_PROFILE must be 'default' or 'constrained'." >&2
+    return 1
+  fi
+  if [[ "${AGENT_IDENTITY_ENABLED}" == "true" ]] &&
+     { ! valid_uuid "${AGENT_OWNER_TENANT_ID:-}" || ! valid_uuid "${AGENT_OWNER_OBJECT_ID:-}"; }; then
+    echo "ERROR: Agent Identity owner values must be UUIDs." >&2
     return 1
   fi
 }
@@ -170,11 +197,23 @@ create_instance() {
   CREATE_ATTEMPTED=true
   if ! created="$(jq -n --arg name "${TEST_ALIAS}" --arg agentType "${AGENT_TYPE}" \
     --arg label "${RUN_LABEL}" --arg run "${RUN_ID}" \
+    --arg resourceProfile "${E2E_RESOURCE_PROFILE}" \
+    --argjson agentIdentityEnabled "${AGENT_IDENTITY_ENABLED}" \
+    --arg ownerTenantId "${AGENT_OWNER_TENANT_ID:-}" \
+    --arg ownerObjectId "${AGENT_OWNER_OBJECT_ID:-}" \
     '{apiVersion:"cetirun.microsoft.com/v1alpha1",kind:"Agent",
-      metadata:{name:$name,labels:{($label):$run}},
-      spec:{agent:{type:$agentType},gatewayTokenSecretRef:"gateway-token",
+      metadata:({name:$name,labels:{($label):$run}} +
+        if $agentIdentityEnabled then {annotations:{
+          "agentidentity.cetirun.microsoft.com/owner-tenant-id":$ownerTenantId,
+          "agentidentity.cetirun.microsoft.com/owner-object-id":$ownerObjectId}}
+        else {} end),
+      spec:({agent:{type:$agentType},gatewayTokenSecretRef:"gateway-token",
         user:{alias:$name,displayName:"E2E Test User",team:"e2e-testing",email:"e2e-test@example.com"},
-        helm:{values:{skills:{shared:false}}}}}' |
+        helm:{values:({skills:{shared:false}} +
+          if $resourceProfile == "constrained" then
+            {resources:{requests:{cpu:"2000m",memory:"4Gi"}}}
+          else {} end)}} +
+        (if $agentIdentityEnabled then {agentIdentity:{enabled:true}} else {} end))}' |
       kubectl create -f - -o json 2>/dev/null)"; then
     echo "ERROR: Agent create outcome is unknown; do not retry or delete by name. Inspect the test alias explicitly." >&2
     return 1
@@ -281,7 +320,6 @@ if [[ "${AGENT_TYPE}" != "openclaw" && "${AGENT_TYPE}" != "hermes" ]]; then
   echo "ERROR: AGENT_TYPE must be 'openclaw' or 'hermes', got '${AGENT_TYPE}'." >&2
   exit 1
 fi
-
 # ── Prerequisite checks ──────────────────────────────────────────────────────
 echo "==> Checking prerequisites..."
 for cmd in kubectl helm jq curl base64; do
@@ -364,12 +402,50 @@ while true; do
   if (( SECONDS > DEADLINE )); then
     echo "ERROR: Timed out waiting for Ready phase after ${READY_TIMEOUT}s." >&2
     echo "  Last phase: ${PHASE}" >&2
-    kubectl describe agent "${TEST_ALIAS}" -n "${TEST_NAMESPACE}" 2>/dev/null || true
     exit 1
   fi
 
   sleep 10
 done
+
+if [[ "${AGENT_IDENTITY_ENABLED}" == "true" ]]; then
+  echo ""
+  echo "==> Waiting for Agent Identity to reach Ready..."
+  IDENTITY_DEADLINE=$((SECONDS + READY_TIMEOUT))
+  LAST_IDENTITY_PHASE=""
+  while true; do
+    IDENTITY_STATE="$(read_owned_agent)"
+    if [[ -z "${IDENTITY_STATE}" ]]; then
+      echo "ERROR: Run-owned Agent disappeared during Agent Identity reconciliation." >&2
+      exit 1
+    fi
+    IDENTITY_PHASE="$(jq -r '.status.agentIdentity.phase // "Unknown"' <<< "${IDENTITY_STATE}")"
+    if [[ "${IDENTITY_PHASE}" != "${LAST_IDENTITY_PHASE}" ]]; then
+      echo "    Agent Identity phase: ${IDENTITY_PHASE:-Unknown}"
+      LAST_IDENTITY_PHASE="${IDENTITY_PHASE}"
+    fi
+    if [[ "${IDENTITY_PHASE}" == "Ready" ]]; then
+      if jq -e '
+        (.status.agentIdentity.clientId | type == "string" and length > 0) and
+        (.status.agentIdentity.objectId | type == "string" and length > 0)
+      ' >/dev/null <<< "${IDENTITY_STATE}"; then
+        pass "Agent Identity is Ready with platform-managed identifiers"
+      else
+        fail "Agent Identity is Ready but its platform-managed identifiers are incomplete"
+      fi
+      break
+    fi
+    if [[ "${IDENTITY_PHASE}" == "Failed" || "${IDENTITY_PHASE}" == "Degraded" ]]; then
+      echo "ERROR: Agent Identity entered ${IDENTITY_PHASE} phase." >&2
+      exit 1
+    fi
+    if (( SECONDS > IDENTITY_DEADLINE )); then
+      echo "ERROR: Timed out waiting for Agent Identity Ready phase." >&2
+      exit 1
+    fi
+    sleep 10
+  done
+fi
 
 # ── Verify resources ─────────────────────────────────────────────────────────
 echo ""
@@ -407,7 +483,9 @@ else
   fail "No running pods in ${INSTANCE_NS}"
 fi
 
-POD_NAME=$(kubectl get pods -n "${INSTANCE_NS}" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+POD_NAME=$(kubectl get pods -n "${INSTANCE_NS}" -o json 2>/dev/null |
+  jq -r '.items[] | select(any(.spec.containers[]?; .name == "cetirun")) | .metadata.name' |
+  head -n 1 || true)
 
 if [[ "${AGENT_TYPE}" == "hermes" && -n "${POD_NAME}" ]]; then
   echo ""
@@ -447,6 +525,57 @@ if [[ "${AGENT_TYPE}" == "hermes" && -n "${POD_NAME}" ]]; then
   }
 
   wait_for_pod_http "Hermes API health" "http://127.0.0.1:8642/health"
+fi
+
+verify_agent_identity_runtime() {
+  local skill_path auth_output
+  if [[ "${AGENT_TYPE}" == "hermes" ]]; then
+    skill_path="/home/vibe/.hermes/skills/azure/SKILL.md"
+  else
+    skill_path="/home/vibe/.openclaw/skills/azure/SKILL.md"
+  fi
+
+  if kubectl exec -n "${INSTANCE_NS}" "${POD_NAME}" -c cetirun -- \
+      sh -c 'command -v cetirun-agent >/dev/null'; then
+    pass "Typed cetirun-agent CLI is installed"
+  else
+    fail "Typed cetirun-agent CLI is not installed"
+  fi
+  if kubectl exec -n "${INSTANCE_NS}" "${POD_NAME}" -c cetirun -- \
+      test -f "${skill_path}"; then
+    pass "Managed Azure read-only skill is installed"
+  else
+    fail "Managed Azure read-only skill is not installed"
+  fi
+  # The single-quoted expressions are evaluated by the shell inside the Pod.
+  # shellcheck disable=SC2016
+  if kubectl exec -n "${INSTANCE_NS}" "${POD_NAME}" -c cetirun -- \
+      sh -c 'test -n "${CETIRUN_AGENT_BROKER_URL:-}"'; then
+    pass "Agent workload has the Broker endpoint configuration"
+  else
+    fail "Agent workload is missing the Broker endpoint configuration"
+  fi
+
+  # shellcheck disable=SC2016
+  auth_output=$(kubectl exec -n "${INSTANCE_NS}" "${POD_NAME}" -c cetirun -- \
+    sh -c 'output=$(cetirun-agent auth status 2>&1); status=$?; printf "%s" "$output"; test "$status" -eq 2' \
+    2>/dev/null || true)
+  if jq -e '.error.code == "authorization_required" and (.error.message | type == "string")' \
+      >/dev/null 2>&1 <<<"${auth_output}"; then
+    pass "Disconnected Agent returns structured authorization_required"
+  else
+    fail "Disconnected Agent did not return structured authorization_required"
+  fi
+}
+
+if [[ "${AGENT_IDENTITY_ENABLED}" == "true" ]]; then
+  echo ""
+  echo "==> Verifying Agent Identity runtime assets and disconnected state..."
+  if [[ -z "${POD_NAME}" ]]; then
+    fail "Agent pod is unavailable for Agent Identity runtime checks"
+  else
+    verify_agent_identity_runtime
+  fi
 fi
 
 # VirtualService
@@ -601,6 +730,38 @@ else
   fail "PVC ${PVC_NAME} phase is '${PVC_PHASE_AFTER}' after unsuspend, expected 'Bound'"
 fi
 
+if [[ "${AGENT_IDENTITY_ENABLED}" == "true" ]]; then
+  echo ""
+  echo "==> Verifying Agent Identity recovery after a Broker restart..."
+  if kubectl rollout restart "deployment/${BROKER_DEPLOYMENT}" -n "${BROKER_NAMESPACE}" >/dev/null &&
+     kubectl rollout status "deployment/${BROKER_DEPLOYMENT}" -n "${BROKER_NAMESPACE}" --timeout=300s; then
+    pass "Agent Identity Broker restarted successfully"
+  else
+    fail "Agent Identity Broker did not recover from restart"
+  fi
+
+  RECOVERY_STATE="$(read_owned_agent)"
+  if [[ -z "${RECOVERY_STATE}" ]]; then
+    echo "ERROR: Run-owned Agent disappeared after Broker restart." >&2
+    exit 1
+  fi
+  RECOVERY_PHASE="$(jq -r '.status.phase // "Unknown"' <<< "${RECOVERY_STATE}")"
+  RECOVERY_IDENTITY_PHASE="$(jq -r '.status.agentIdentity.phase // "Unknown"' <<< "${RECOVERY_STATE}")"
+  if [[ "${RECOVERY_PHASE}" == "Ready" && "${RECOVERY_IDENTITY_PHASE}" == "Ready" ]]; then
+    pass "Agent and Agent Identity remain Ready after Broker restart"
+  else
+    fail "Agent or Agent Identity lost Ready state after Broker restart"
+  fi
+  POD_NAME=$(kubectl get pods -n "${INSTANCE_NS}" -o json 2>/dev/null |
+    jq -r '.items[] | select(any(.spec.containers[]?; .name == "cetirun")) | .metadata.name' |
+    head -n 1 || true)
+  if [[ -n "${POD_NAME}" ]]; then
+    verify_agent_identity_runtime
+  else
+    fail "Agent pod is unavailable after Broker restart"
+  fi
+fi
+
 # ── Verify routing ────────────────────────────────────────────────────────────
 echo ""
 echo "==> Verifying gateway routing..."
@@ -649,7 +810,7 @@ fi
 if echo "${LOCATION}" | grep -q 'login.microsoftonline.com'; then
   pass "Redirect points to login.microsoftonline.com"
 else
-  fail "Redirect Location does not point to login.microsoftonline.com: ${LOCATION}"
+  fail "Redirect Location does not point to login.microsoftonline.com"
 fi
 
 # Verify client_id in the redirect matches the configured Entra app
@@ -657,9 +818,9 @@ EXPECTED_CLIENT_ID=$(helm get values cetirun-istio -n cetirun-istio -o json 2>/d
   | jq -r '.clientId // empty' 2>/dev/null || echo "")
 if [[ -n "${EXPECTED_CLIENT_ID}" ]]; then
   if echo "${LOCATION}" | grep -q "client_id=${EXPECTED_CLIENT_ID}"; then
-    pass "Redirect uses correct client_id (${EXPECTED_CLIENT_ID})"
+    pass "Redirect uses the configured client_id"
   else
-    fail "Redirect client_id does not match expected '${EXPECTED_CLIENT_ID}'"
+    fail "Redirect client_id does not match the configured value"
   fi
 else
   echo "    SKIP: Could not determine expected client_id from Helm values."
@@ -671,12 +832,12 @@ if [[ -n "${EXPECTED_IMAGE_TAG:-}" ]]; then
   echo "==> Verifying ${AGENT_TYPE} image tag..."
   image_name="${AGENT_TYPE}-gateway"
   ACTUAL_IMAGE=$(kubectl get pods -n "${INSTANCE_NS}" \
-    -o jsonpath='{.items[0].spec.containers[*].image}' 2>/dev/null | tr ' ' '\n' | grep "${image_name}" || echo "")
+    -o jsonpath='{.items[*].spec.containers[*].image}' 2>/dev/null | tr ' ' '\n' | grep "${image_name}" || echo "")
 
   if echo "${ACTUAL_IMAGE}" | grep -q ":${EXPECTED_IMAGE_TAG}"; then
     pass "${AGENT_TYPE} image uses expected tag (${EXPECTED_IMAGE_TAG})"
   else
-    fail "${AGENT_TYPE} image tag mismatch: expected '${EXPECTED_IMAGE_TAG}', got '${ACTUAL_IMAGE}'"
+    fail "${AGENT_TYPE} image does not use the expected candidate tag"
   fi
 fi
 

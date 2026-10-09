@@ -100,15 +100,22 @@ class AgentIDRuntimeAssetTests(unittest.TestCase):
         self.assertIn("builtin-skill-sync.sh", hermes)
 
     def test_chart_templates_mount_runtime_specific_initializer_scripts(self):
+        configmap = (CHART / "templates" / "configmap.yaml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('.Files.Get "configs/builtin-skill-sync.sh"', configmap)
+
         openclaw = (
             CHART / "templates" / "agents" / "openclaw" / "_runtime.tpl"
         ).read_text(encoding="utf-8")
         self.assertIn('command: ["/bin/sh", "/etc/cetirun/init-home.sh"]', openclaw)
+        self.assertIn("value: /etc/cetirun/builtin-skill-sync.sh", openclaw)
 
         hermes = (
             CHART / "templates" / "agents" / "hermes" / "_runtime.tpl"
         ).read_text(encoding="utf-8")
         self.assertIn('command: ["/bin/sh", "/etc/cetirun/hermes-init-home.sh"]', hermes)
+        self.assertIn("value: /etc/cetirun/builtin-skill-sync.sh", hermes)
         self.assertIn(
             '.Files.Get "agents/hermes/bootstrap/hermes-init-home.sh"',
             hermes,

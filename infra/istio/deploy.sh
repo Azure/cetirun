@@ -26,7 +26,7 @@
 #   TLS_KEY_PATH           — Path to TLS private key file (PEM; skips PFX parsing entirely)
 #   PFX_BASE64             — Base64-encoded PFX certificate content (decoded and parsed into cert/key)
 #   PFX_PATH               — Path to PFX file (skips Key Vault download, still parses into cert/key)
-#   KEY_VAULT_NAME         — Key Vault name for TLS cert (required)
+#   KEY_VAULT_NAME         — Key Vault name for TLS cert (required only when no certificate input is provided)
 #   KEY_VAULT_CERT_NAME    — Certificate name in Key Vault (default: sslcert)
 #   AKS_CLUSTER_NAME       — Cluster name (required)
 #   RESOURCE_GROUP         — Resource group (required)
@@ -36,6 +36,7 @@
 #   PORTAL_AUTH_SERVICE    — Name of the portal auth service (default: cetirun-portal)
 #   PORTAL_AUTH_CLUSTER_HOST — Explicit portal auth service FQDN (overrides namespace/service)
 #   SKIP_AZ_VALIDATION     — If non-empty, skip az CLI checks (for CI with pre-provided certs)
+#   HELM_RESET_THEN_REUSE_VALUES — If non-empty, preserve unspecified live Helm values during upgrade
 #
 # Usage:
 #   export AZURE_SUBSCRIPTION_ID="<subscription-id>"
@@ -77,7 +78,6 @@ AKS_CLUSTER_NAME="${AKS_CLUSTER_NAME:?AKS_CLUSTER_NAME is required}"
 RESOURCE_GROUP="${RESOURCE_GROUP:?RESOURCE_GROUP is required}"
 RELEASE_NAME="${RELEASE_NAME:-cetirun-istio}"
 DOMAIN="${DOMAIN:?DOMAIN is required}"
-KEY_VAULT_NAME="${KEY_VAULT_NAME:?KEY_VAULT_NAME is required}"
 KEY_VAULT_CERT_NAME="${KEY_VAULT_CERT_NAME:-sslcert}"
 PORTAL_AUTH_NAMESPACE="${PORTAL_AUTH_NAMESPACE:-cetirun-portal}"
 PORTAL_AUTH_SERVICE="${PORTAL_AUTH_SERVICE:-cetirun-portal}"
@@ -225,6 +225,7 @@ else
     echo "       Set TLS_CERT_PATH+TLS_KEY_PATH, PFX_BASE64, or PFX_PATH when skipping az validation." >&2
     exit 1
   fi
+  KEY_VAULT_NAME="${KEY_VAULT_NAME:?KEY_VAULT_NAME is required when certificate material is not provided}"
   echo "--- Downloading TLS certificate from Key Vault ---"
   echo "Key Vault:   ${KEY_VAULT_NAME}"
   echo "Certificate: ${KEY_VAULT_CERT_NAME}"
@@ -254,6 +255,10 @@ HELM_ARGS=(
   --set "domain=${DOMAIN}"
   --set-string "portalAuth.clusterHost=${PORTAL_AUTH_CLUSTER_HOST}"
 )
+
+if [[ -n "${HELM_RESET_THEN_REUSE_VALUES:-}" ]]; then
+  HELM_ARGS+=(--reset-then-reuse-values)
+fi
 
 # Only pass cookieSecret when explicitly provided via environment variable.
 # This allows the chart to reuse the existing secret on upgrades, avoiding

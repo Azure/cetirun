@@ -135,11 +135,17 @@ mutations and cleanup. The test refuses existing Agent/namespace names.
 Cleanup observes controller finalization and fails if ownership, deletion
 outcome or absence cannot be confirmed; it never force-deletes a namespace or
 strips finalizers.
+The optional `constrained` resource profile applies fixed lower requests for
+functional qualification in bounded test clusters without changing the chart's
+default requests or limits.
 
 See [inputs, timeouts, retention and offline regression checks]({{< repo "scripts/README.md" >}}#explicit-target-application-e2e-lifecycle).
 These run-lifecycle checks do not establish governed execution, runtime fencing
-or model/tool acceptance. The live E2E workflow remains disabled and must not
-be enabled as part of routine local validation.
+or model/tool acceptance. The protected `cetiruntest` workflow runs these cases
+after publishing and deploying immutable candidates from `main`, on its nightly
+schedule, or by manual dispatch. It also runs an Agent Identity lifecycle case,
+but interactive Microsoft Entra consent and live OBO are intentionally outside
+the unattended workflow. Routine local validation does not execute it.
 
 ### Sandbox platform probes
 

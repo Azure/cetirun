@@ -7,4 +7,6 @@ metadata:
 data:
   init-home-common.sh: |
 {{ .Files.Get "configs/init-home-common.sh" | indent 4 }}
+  builtin-skill-sync.sh: |
+{{ .Files.Get "configs/builtin-skill-sync.sh" | indent 4 }}
 {{ include "cetirun.agent.configmapData" . }}
