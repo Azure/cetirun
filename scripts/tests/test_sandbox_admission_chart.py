@@ -669,7 +669,7 @@ class SandboxAdmissionChartTests(unittest.TestCase):
                 deployment = documents[("Deployment", NAME)]["spec"]
                 self.assertEqual(deployment["replicas"], replicas)
                 self.assertEqual(deployment["strategy"], {
-                    "type": "RollingUpdate", "rollingUpdate": {"maxUnavailable": 0, "maxSurge": 1},
+                    "type": "RollingUpdate", "rollingUpdate": {"maxUnavailable": 1, "maxSurge": 1},
                 })
                 selector = deployment["selector"]
                 self.assertEqual(selector, {"matchLabels": {"app.kubernetes.io/name": NAME}})
