@@ -199,6 +199,45 @@ func TestPolicyEnforcementRejectsStaleSandboxEvidence(t *testing.T) {
 	}
 }
 
+func TestPolicyEnforcementRequiresCurrentCredentialPolicyEvidence(t *testing.T) {
+	resolution := &policyResolution{
+		team:               &api.Team{ObjectMeta: metav1.ObjectMeta{UID: "team-uid"}},
+		policy:             &api.AgentPolicy{ObjectMeta: metav1.ObjectMeta{UID: "policy-uid"}},
+		sandboxRevision:    "sandbox-current",
+		credentialRevision: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+	}
+	agent := &api.Agent{
+		ObjectMeta: metav1.ObjectMeta{Generation: 7},
+		Spec:       api.AgentSpec{AgentIdentity: &api.AgentIdentitySpec{Enabled: true}},
+		Status: api.AgentStatus{
+			Sandbox: &api.SandboxStatus{TeamUID: resolution.team.UID, AgentPolicyUID: resolution.policy.UID,
+				PolicyClass: api.AgentPolicyClassNormal, AppliedRevision: resolution.sandboxRevision},
+			AgentIdentity: &api.AgentIdentityStatus{Phase: api.AgentIdentityPhaseReady,
+				ObservedGeneration: 7, CredentialPolicyRevision: resolution.credentialRevision},
+			Conditions: []metav1.Condition{{Type: api.ConditionSandboxReady, Status: metav1.ConditionTrue, ObservedGeneration: 7}},
+		},
+	}
+	if !policyEnforcementVerified(agent, resolution) {
+		t.Fatal("current typed credential-policy evidence was not accepted")
+	}
+	for name, mutate := range map[string]func(*api.Agent){
+		"identity phase":      func(a *api.Agent) { a.Status.AgentIdentity.Phase = api.AgentIdentityPhaseDegraded },
+		"identity generation": func(a *api.Agent) { a.Status.AgentIdentity.ObservedGeneration-- },
+		"credential revision": func(a *api.Agent) {
+			a.Status.AgentIdentity.CredentialPolicyRevision = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+		},
+		"missing credential evidence": func(a *api.Agent) { a.Status.AgentIdentity.CredentialPolicyRevision = "" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			stale := agent.DeepCopy()
+			mutate(stale)
+			if policyEnforcementVerified(stale, resolution) {
+				t.Fatal("stale typed credential-policy evidence was accepted")
+			}
+		})
+	}
+}
+
 func TestDesiredSandboxRevisionDoesNotCopyHistoricalEvidenceWithoutCompiler(t *testing.T) {
 	agent := &api.Agent{Status: api.AgentStatus{Sandbox: &api.SandboxStatus{AppliedRevision: "historical"}}}
 	revision, err := (&AgentReconciler{}).desiredSandboxPolicyRevision(context.Background(), agent, &api.Team{})

@@ -74,6 +74,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("DELETE /internal/v1/instances/{uid}/authorization", s.portalEnd)
 	s.mux.HandleFunc("POST /internal/v1/authorization/callback", s.callback)
 	s.mux.HandleFunc("DELETE /operator/v1/instances/{uid}/authorization", s.operatorDeleteAuthorization)
+	s.mux.HandleFunc("PUT /operator/v1/instances/{uid}/credential-policy", s.operatorPutCredentialPolicy)
+	s.mux.HandleFunc("GET /operator/v1/instances/{uid}/credential-policy", s.operatorGetCredentialPolicy)
+	s.mux.HandleFunc("DELETE /operator/v1/instances/{uid}/credential-policy", s.operatorDeleteCredentialPolicy)
 
 	s.mux.HandleFunc("GET /v1/auth/status", s.agentStatus)
 	s.mux.HandleFunc("POST /v1/auth/start-link", s.agentStartLink)
@@ -515,6 +518,158 @@ func (s *Server) operatorDeleteAuthorization(w http.ResponseWriter, r *http.Requ
 	w.WriteHeader(http.StatusNoContent)
 }
 
+type credentialPolicyResponse struct {
+	InstanceUID string   `json:"instanceUid"`
+	Revision    string   `json:"revision"`
+	Services    []string `json:"services"`
+}
+
+func operatorCredentialPolicyAgent(w http.ResponseWriter, r *http.Request, store *kubeClient, cfg Config) (Agent, bool) {
+	if !operatorPrincipalAllowed(r.Header.Get("X-Forwarded-Client-Cert"), cfg) {
+		writeAPIError(w, http.StatusForbidden, "forbidden", "Verified operator workload identity is required", correlationID(r))
+		return Agent{}, false
+	}
+	agent, err := store.getAgentByUID(r.Context(), r.PathValue("uid"))
+	if errors.Is(err, errNotFound) || err == nil && agent.UID != r.PathValue("uid") {
+		writeAPIError(w, http.StatusNotFound, "instance_not_found", "Instance not found", correlationID(r))
+		return Agent{}, false
+	}
+	if err != nil {
+		writeAPIError(w, http.StatusServiceUnavailable, "dependency_unavailable", "Instance state is unavailable", correlationID(r))
+		return Agent{}, false
+	}
+	return agent, true
+}
+
+func decodeCanonicalCredentialPolicy(w http.ResponseWriter, r *http.Request) (CredentialPolicy, bool) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBody)
+	raw, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, "invalid_request", "The request body is invalid", correlationID(r))
+		return CredentialPolicy{}, false
+	}
+	policy, err := parseCredentialPolicy(raw)
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, "invalid_request", "The credential policy must be canonical and supported", correlationID(r))
+		return CredentialPolicy{}, false
+	}
+	return policy, true
+}
+
+func writeCredentialPolicy(w http.ResponseWriter, agent Agent, policy CredentialPolicy) {
+	writeJSON(w, http.StatusOK, credentialPolicyResponse{InstanceUID: agent.UID, Revision: policy.Revision, Services: policy.Services})
+}
+
+func (s *Server) operatorPutCredentialPolicy(w http.ResponseWriter, r *http.Request) {
+	agent, ok := operatorCredentialPolicyAgent(w, r, s.store, s.cfg)
+	if !ok {
+		return
+	}
+	policy, ok := decodeCanonicalCredentialPolicy(w, r)
+	if !ok {
+		return
+	}
+	// The Operator publishes the desired revision before applying it. Refuse a
+	// stale reconciler from replacing a newer desired policy.
+	if !credentialPolicyControlAllows(agent, policy) {
+		writeAPIError(w, http.StatusConflict, "policy_changed", "The desired credential policy changed", correlationID(r))
+		return
+	}
+	for attempt := 0; attempt < 3; attempt++ {
+		currentAgent, err := s.store.getAgentByUID(r.Context(), agent.UID)
+		if err != nil {
+			if errors.Is(err, errNotFound) {
+				writeAPIError(w, http.StatusConflict, "policy_changed", "The desired credential policy changed", correlationID(r))
+			} else {
+				writeAPIError(w, http.StatusServiceUnavailable, "dependency_unavailable", "Instance state is unavailable", correlationID(r))
+			}
+			return
+		}
+		if currentAgent.UID != agent.UID || currentAgent.Name != agent.Name ||
+			!credentialPolicyControlAllows(currentAgent, policy) {
+			writeAPIError(w, http.StatusConflict, "policy_changed", "The desired credential policy changed", correlationID(r))
+			return
+		}
+		agent = currentAgent
+		current, version, err := s.store.getCredentialPolicy(r.Context(), agent)
+		if errors.Is(err, errNotFound) {
+			if err := s.store.putCredentialPolicy(r.Context(), agent, policy, ""); errors.Is(err, errConflict) {
+				continue
+			} else if err != nil {
+				writeAPIError(w, http.StatusServiceUnavailable, "dependency_unavailable", "Credential policy could not be stored", correlationID(r))
+				return
+			}
+			writeCredentialPolicy(w, agent, policy)
+			return
+		}
+		if err != nil {
+			writeAPIError(w, http.StatusServiceUnavailable, "dependency_unavailable", "Credential policy state is unavailable", correlationID(r))
+			return
+		}
+		if current.Revision == policy.Revision && credentialPolicyAllows(current, "azure-resource-manager") {
+			writeCredentialPolicy(w, agent, current)
+			return
+		}
+		if err := s.store.putCredentialPolicy(r.Context(), agent, policy, version); errors.Is(err, errConflict) {
+			continue
+		} else if err != nil {
+			writeAPIError(w, http.StatusServiceUnavailable, "dependency_unavailable", "Credential policy could not be stored", correlationID(r))
+			return
+		}
+		writeCredentialPolicy(w, agent, policy)
+		return
+	}
+	writeAPIError(w, http.StatusConflict, "conflict", "Credential policy changed; retry", correlationID(r))
+}
+
+func (s *Server) operatorGetCredentialPolicy(w http.ResponseWriter, r *http.Request) {
+	agent, ok := operatorCredentialPolicyAgent(w, r, s.store, s.cfg)
+	if !ok {
+		return
+	}
+	policy, _, err := s.store.getCredentialPolicy(r.Context(), agent)
+	if errors.Is(err, errNotFound) {
+		writeAPIError(w, http.StatusNotFound, "policy_not_found", "Credential policy is not applied", correlationID(r))
+		return
+	}
+	if err != nil {
+		writeAPIError(w, http.StatusServiceUnavailable, "dependency_unavailable", "Credential policy state is unavailable", correlationID(r))
+		return
+	}
+	if !credentialPolicyControlAllows(agent, policy) {
+		writeAPIError(w, http.StatusConflict, "policy_changed", "Credential policy does not match the desired revision", correlationID(r))
+		return
+	}
+	writeCredentialPolicy(w, agent, policy)
+}
+
+func (s *Server) operatorDeleteCredentialPolicy(w http.ResponseWriter, r *http.Request) {
+	if !operatorPrincipalAllowed(r.Header.Get("X-Forwarded-Client-Cert"), s.cfg) {
+		writeAPIError(w, http.StatusForbidden, "forbidden", "Verified operator workload identity is required", correlationID(r))
+		return
+	}
+	agent, err := s.store.getAgentByUID(r.Context(), r.PathValue("uid"))
+	if errors.Is(err, errNotFound) {
+		// The Agent and its owner-referenced ConfigMap have already been
+		// removed. This is the safe idempotent delete outcome.
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if err != nil {
+		writeAPIError(w, http.StatusServiceUnavailable, "dependency_unavailable", "Instance state is unavailable", correlationID(r))
+		return
+	}
+	if agent.UID != r.PathValue("uid") {
+		writeAPIError(w, http.StatusNotFound, "instance_not_found", "Instance not found", correlationID(r))
+		return
+	}
+	if err := s.store.deleteCredentialPolicy(r.Context(), agent); err != nil {
+		writeAPIError(w, http.StatusServiceUnavailable, "dependency_unavailable", "Credential policy could not be deleted", correlationID(r))
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (s *Server) agentStatus(w http.ResponseWriter, r *http.Request) {
 	correlationID := correlationID(r)
 	agent, err := s.workloadAgent(r)
@@ -558,6 +713,10 @@ func (s *Server) issueCredential(w http.ResponseWriter, r *http.Request) {
 	agent, err := s.workloadAgent(r)
 	if err != nil {
 		writeAPIError(w, http.StatusForbidden, "forbidden", "Verified instance workload identity is required", correlationID)
+		return
+	}
+	if _, err := s.credentialPolicyBarrier(r.Context(), agent, input.Service); err != nil {
+		writeAPIError(w, http.StatusConflict, "credential_policy_not_ready", "The credential policy is not applied", correlationID)
 		return
 	}
 	record, version, err := s.store.getRecord(r.Context(), agent.UID)
@@ -621,8 +780,16 @@ func (s *Server) issueCredential(w http.ResponseWriter, r *http.Request) {
 		s.writeDependencyError(w, err, correlationID)
 		return
 	}
+	// The Auth SDK exchange can take long enough for a policy reconciliation to
+	// finish. Re-read both the Agent status and the Broker-owned policy before
+	// crossing the credential boundary, so a stale OBO result is never issued.
+	currentAgent, err := s.credentialPolicyBarrier(r.Context(), agent, input.Service)
+	if err != nil {
+		writeAPIError(w, http.StatusConflict, "credential_policy_not_ready", "The credential policy is not applied", correlationID)
+		return
+	}
 	current, currentVersion, err := s.store.getRecord(r.Context(), agent.UID)
-	if err != nil || current.Revoked || current.Generation != generation {
+	if err != nil || current.Revoked || current.Generation != generation || !recordMatchesAgent(current, currentAgent) {
 		writeAPIError(w, http.StatusUnauthorized, "authorization_required", "The connection was ended", correlationID)
 		return
 	}
@@ -646,6 +813,10 @@ func (s *Server) issueCredential(w http.ResponseWriter, r *http.Request) {
 		// Its successful CAS is a sufficient final revocation barrier; the
 		// LastUsed timestamp is audit metadata and need not make otherwise
 		// valid parallel credential issuance fail.
+	}
+	if _, err := s.credentialPolicyBarrier(r.Context(), currentAgent, input.Service); err != nil {
+		writeAPIError(w, http.StatusConflict, "credential_policy_not_ready", "The credential policy is not applied", correlationID)
+		return
 	}
 
 	// This response deliberately crosses the Broker/workload boundary. The

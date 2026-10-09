@@ -22,21 +22,36 @@ import (
 )
 
 const (
-	testAgentName       = "agent-a"
-	testAgentUID        = "11111111-1111-1111-1111-111111111111"
-	testOwnerTenantID   = "22222222-2222-2222-2222-222222222222"
-	testOwnerObjectID   = "33333333-3333-3333-3333-333333333333"
-	testAgentClientID   = "44444444-4444-4444-4444-444444444444"
-	testBlueprintID     = "55555555-5555-5555-5555-555555555555"
-	testAuthorizationID = "66666666-6666-6666-6666-666666666666"
+	testAgentName                = "agent-a"
+	testAgentUID                 = "11111111-1111-1111-1111-111111111111"
+	testOwnerTenantID            = "22222222-2222-2222-2222-222222222222"
+	testOwnerObjectID            = "33333333-3333-3333-3333-333333333333"
+	testAgentClientID            = "44444444-4444-4444-4444-444444444444"
+	testBlueprintID              = "55555555-5555-5555-5555-555555555555"
+	testAuthorizationID          = "66666666-6666-6666-6666-666666666666"
+	testCredentialPolicyRevision = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 )
 
 type recordAPIFixture struct {
-	t               *testing.T
-	mu              sync.Mutex
-	secret          *secretDocument
-	resourceVersion int
-	agentPhase      string
+	t                          *testing.T
+	mu                         sync.Mutex
+	secret                     *secretDocument
+	resourceVersion            int
+	policy                     *configMapDocument
+	policyVersion              int
+	policyPutConflicts         int
+	onPolicyPutConflict        func()
+	agentPhase                 string
+	agentGeneration            int64
+	identityObservedGeneration int64
+	policyObservedGeneration   int64
+	policyPhase                string
+	suspended                  bool
+	deleting                   bool
+	identityDisabled           bool
+	desiredRevision            string
+	appliedRevision            string
+	onSecretPut                func()
 }
 
 func (f *recordAPIFixture) handler(w http.ResponseWriter, r *http.Request) {
@@ -50,6 +65,8 @@ func (f *recordAPIFixture) handler(w http.ResponseWriter, r *http.Request) {
 	}
 	collection := "/api/v1/namespaces/cetirun-credentials/secrets"
 	item := collection + "/agent-authorization-" + testAgentUID
+	policyCollection := "/api/v1/namespaces/cetirun-credentials/configmaps"
+	policyItem := policyCollection + "/agent-credential-policy-" + testAgentUID
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	switch {
@@ -85,10 +102,70 @@ func (f *recordAPIFixture) handler(w http.ResponseWriter, r *http.Request) {
 		f.resourceVersion++
 		incoming.Metadata.ResourceVersion = strconv.Itoa(f.resourceVersion)
 		f.secret = &incoming
+		if f.onSecretPut != nil {
+			f.onSecretPut()
+		}
+		w.WriteHeader(http.StatusOK)
+	case r.Method == http.MethodGet && r.URL.Path == policyItem:
+		if f.policy == nil {
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(f.policy)
+	case r.Method == http.MethodPost && r.URL.Path == policyCollection:
+		if f.policy != nil {
+			http.Error(w, "conflict", http.StatusConflict)
+			return
+		}
+		f.storePolicy(w, r, http.StatusCreated)
+	case r.Method == http.MethodPut && r.URL.Path == policyItem:
+		var incoming configMapDocument
+		if err := json.NewDecoder(r.Body).Decode(&incoming); err != nil {
+			f.t.Errorf("decode ConfigMap: %v", err)
+			http.Error(w, "invalid", http.StatusBadRequest)
+			return
+		}
+		if f.policyPutConflicts > 0 {
+			f.policyPutConflicts--
+			if f.onPolicyPutConflict != nil {
+				f.onPolicyPutConflict()
+			}
+			http.Error(w, "conflict", http.StatusConflict)
+			return
+		}
+		if f.policy == nil || incoming.Metadata.ResourceVersion != f.policy.Metadata.ResourceVersion {
+			http.Error(w, "conflict", http.StatusConflict)
+			return
+		}
+		f.policyVersion++
+		incoming.Metadata.ResourceVersion = strconv.Itoa(f.policyVersion)
+		incoming.Metadata.UID = f.policy.Metadata.UID
+		f.policy = &incoming
+		w.WriteHeader(http.StatusOK)
+	case r.Method == http.MethodDelete && r.URL.Path == policyItem:
+		if f.policy == nil {
+			http.NotFound(w, r)
+			return
+		}
+		f.policy = nil
 		w.WriteHeader(http.StatusOK)
 	default:
 		http.Error(w, "unexpected request", http.StatusInternalServerError)
 	}
+}
+
+func (f *recordAPIFixture) storePolicy(w http.ResponseWriter, r *http.Request, status int) {
+	var incoming configMapDocument
+	if err := json.NewDecoder(r.Body).Decode(&incoming); err != nil {
+		f.t.Errorf("decode ConfigMap: %v", err)
+		http.Error(w, "invalid", http.StatusBadRequest)
+		return
+	}
+	f.policyVersion++
+	incoming.Metadata.ResourceVersion = strconv.Itoa(f.policyVersion)
+	incoming.Metadata.UID = "77777777-7777-7777-7777-777777777777"
+	f.policy = &incoming
+	w.WriteHeader(status)
 }
 
 func (f *recordAPIFixture) storeSecret(w http.ResponseWriter, r *http.Request, status int) {
@@ -109,28 +186,66 @@ func (f *recordAPIFixture) agentDocument() map[string]any {
 	if phase == "" {
 		phase = "Ready"
 	}
-	return map[string]any{
-		"metadata": map[string]any{
-			"name": testAgentName, "uid": testAgentUID,
-			"annotations": map[string]string{
-				"agentidentity.cetirun.microsoft.com/owner-tenant-id": testOwnerTenantID,
-				"agentidentity.cetirun.microsoft.com/owner-object-id": testOwnerObjectID,
-			},
+	desiredRevision := f.desiredRevision
+	if desiredRevision == "" {
+		desiredRevision = testCredentialPolicyRevision
+	}
+	appliedRevision := f.appliedRevision
+	if appliedRevision == "" {
+		appliedRevision = testCredentialPolicyRevision
+	}
+	generation := f.agentGeneration
+	if generation == 0 {
+		generation = 7
+	}
+	identityObserved := f.identityObservedGeneration
+	if identityObserved == 0 {
+		identityObserved = generation
+	}
+	policyObserved := f.policyObservedGeneration
+	if policyObserved == 0 {
+		policyObserved = generation
+	}
+	policyPhase := f.policyPhase
+	if policyPhase == "" {
+		policyPhase = "Applied"
+	}
+	metadata := map[string]any{
+		"name": testAgentName, "uid": testAgentUID, "generation": generation,
+		"annotations": map[string]string{
+			"agentidentity.cetirun.microsoft.com/owner-tenant-id": testOwnerTenantID,
+			"agentidentity.cetirun.microsoft.com/owner-object-id": testOwnerObjectID,
 		},
+	}
+	if f.deleting {
+		metadata["deletionTimestamp"] = "2026-10-10T00:00:00Z"
+	}
+	return map[string]any{
+		"metadata": metadata,
 		"spec": map[string]any{
 			"user":          map[string]any{"alias": "owner"},
-			"agentIdentity": map[string]any{"enabled": true},
+			"suspended":     f.suspended,
+			"agentIdentity": map[string]any{"enabled": !f.identityDisabled},
 		},
 		"status": map[string]any{
 			"phase": phase, "namespace": "cetirun-owner",
-			"agentIdentity": map[string]any{"phase": "Ready", "clientId": testAgentClientID},
+			"agentIdentity": map[string]any{"phase": "Ready", "clientId": testAgentClientID, "observedGeneration": identityObserved, "credentialPolicyRevision": appliedRevision},
+			"policy": map[string]any{"phase": policyPhase, "observedGeneration": policyObserved,
+				"enforcement": map[string]any{"credential": map[string]any{"desiredRevision": desiredRevision}}},
 		},
 	}
 }
 
 func newRecordTestStore(t *testing.T) (*kubeClient, *recordAPIFixture, func()) {
 	t.Helper()
-	fixture := &recordAPIFixture{t: t}
+	fixture := &recordAPIFixture{t: t, policy: &configMapDocument{
+		APIVersion: "v1", Kind: "ConfigMap",
+		Metadata: secretMetadata{Name: credentialPolicyName(testAgentUID), Namespace: "cetirun-credentials", UID: "77777777-7777-7777-7777-777777777777", ResourceVersion: "1", Labels: map[string]string{
+			"agentidentity.cetirun.microsoft.com/instance-uid":  testAgentUID,
+			"agentidentity.cetirun.microsoft.com/instance-name": testAgentName,
+		}, OwnerReferences: []ownerReference{{APIVersion: "cetirun.microsoft.com/v1alpha1", Kind: "Agent", Name: testAgentName, UID: testAgentUID}}},
+		Data: map[string]string{"policy.json": `{"revision":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","services":["azure-resource-manager"]}`},
+	}, policyVersion: 1}
 	server := httptest.NewServer(http.HandlerFunc(fixture.handler))
 	tokenFile := filepath.Join(t.TempDir(), "token")
 	if err := os.WriteFile(tokenFile, []byte("synthetic-token"), 0o600); err != nil {

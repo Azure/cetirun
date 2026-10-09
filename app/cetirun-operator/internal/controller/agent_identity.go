@@ -210,7 +210,8 @@ func (r *AgentReconciler) persistDefiniteCreateFailure(ctx context.Context, inst
 // a failed status write can be recovered without creating a duplicate.
 func (r *AgentReconciler) reconcileAgentIdentity(ctx context.Context, instance *cetirunv1alpha1.Agent) error {
 	if !agentIdentityRequested(instance) {
-		if instance.Status.AgentIdentity != nil && instance.Status.AgentIdentity.Phase != cetirunv1alpha1.AgentIdentityPhaseDisabled {
+		if instance.Status.AgentIdentity != nil && (instance.Status.AgentIdentity.Phase != cetirunv1alpha1.AgentIdentityPhaseDisabled ||
+			instance.Status.AgentIdentity.CredentialPolicyRevision != "") {
 			if err := r.deleteAgentIdentity(ctx, instance); err != nil {
 				return err
 			}
@@ -380,9 +381,19 @@ func (r *AgentReconciler) deleteAgentIdentity(ctx context.Context, instance *cet
 	if instance.Status.AgentIdentity.Phase != cetirunv1alpha1.AgentIdentityPhaseDeleting {
 		instance.Status.AgentIdentity.Phase = cetirunv1alpha1.AgentIdentityPhaseDeleting
 		instance.Status.AgentIdentity.ObservedGeneration = instance.Generation
+		// A deletion gate must revoke the local read-back evidence before any
+		// remote cleanup. A stale revision must never keep attesting to a policy
+		// while this finalizer retries a failed Broker or directory operation.
+		instance.Status.AgentIdentity.CredentialPolicyRevision = ""
 		if err := r.updateStatus(ctx, instance); err != nil {
 			return fmt.Errorf("persist Agent Identity deletion gate: %w", err)
 		}
+	}
+	// The typed credential policy is an independent Broker resource. Delete it
+	// before authorization or directory cleanup, and retain the finalizer on a
+	// failure so no delegated issue path can outlive the Agent lifecycle.
+	if err := r.deleteCredentialPolicy(ctx, string(instance.UID)); err != nil {
+		return err
 	}
 	// Delete the encrypted authorization cache before deleting the delegated
 	// principal. This is a blocking operation: retaining the CR finalizer keeps

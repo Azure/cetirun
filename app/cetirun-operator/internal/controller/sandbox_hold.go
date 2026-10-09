@@ -137,13 +137,17 @@ func (r *AgentReconciler) holdSandboxWithPolicyFence(ctx context.Context, agent 
 		message = "Sandbox execution remains disabled, but workload shutdown, route removal or prior apply completion failed; retrying."
 	}
 	agent.Status.AccessURL = ""
-	conditions := []string{cetirunv1alpha1.ConditionSandboxReady, cetirunv1alpha1.ConditionReady}
+	conditions := []string{
+		cetirunv1alpha1.ConditionSandboxReady,
+		cetirunv1alpha1.ConditionReady,
+		cetirunv1alpha1.ConditionIngressReady,
+	}
 	if controllerutil.ContainsFinalizer(agent, sandbox.PreparationFinalizer) {
 		conditions = append(conditions, cetirunv1alpha1.ConditionAgentConfigReady)
 	}
 	if agent.Spec.Agent.Type == cetirunv1alpha1.AgentTypeCustom {
-		conditions = append(conditions, cetirunv1alpha1.ConditionIngressReady,
-			cetirunv1alpha1.ConditionDesktopConfigured, cetirunv1alpha1.ConditionTerminalConfigured)
+		conditions = append(conditions, cetirunv1alpha1.ConditionDesktopConfigured,
+			cetirunv1alpha1.ConditionTerminalConfigured)
 	}
 	for _, conditionType := range conditions {
 		apimeta.SetStatusCondition(&agent.Status.Conditions, metav1.Condition{
@@ -271,13 +275,20 @@ func (r *AgentReconciler) deleteSandboxBuiltin(ctx context.Context, agent *cetir
 	if err := r.checkSandboxBootstrapCleanup(ctx, agent); err != nil {
 		return ctrl.Result{}, err
 	}
+	var identityErr error
 	if agentIdentityRequested(agent) || agent.Status.AgentIdentity != nil {
-		if err := r.deleteAgentIdentity(ctx, agent); err != nil {
-			return ctrl.Result{}, fmt.Errorf("clean up sandbox-held Agent Identity: %w", err)
-		}
+		identityErr = r.deleteAgentIdentity(ctx, agent)
 	}
-	if err := r.deleteAIGatewayKey(ctx, agent); err != nil {
-		return ctrl.Result{}, fmt.Errorf("revoke sandbox-held AI Gateway key: %w", err)
+	gatewayErr := r.deleteAIGatewayKey(ctx, agent)
+	if identityErr != nil || gatewayErr != nil {
+		var failures []error
+		if identityErr != nil {
+			failures = append(failures, fmt.Errorf("clean up sandbox-held Agent Identity: %w", identityErr))
+		}
+		if gatewayErr != nil {
+			failures = append(failures, fmt.Errorf("revoke sandbox-held AI Gateway key: %w", gatewayErr))
+		}
+		return ctrl.Result{}, errors.Join(failures...)
 	}
 	ns := &corev1.Namespace{}
 	err := r.customReader().Get(ctx, types.NamespacedName{Name: instanceNamespace(agent.Name)}, ns)

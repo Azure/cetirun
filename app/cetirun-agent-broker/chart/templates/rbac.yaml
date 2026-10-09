@@ -35,6 +35,12 @@ rules:
   - apiGroups: [""]
     resources: ["secrets"]
     verbs: ["get", "list", "create", "update"]
+  # Typed, non-secret credential policy evidence. The ConfigMap is
+  # owner-referenced to the Agent and contains only a revision and service
+  # allowlist; it never contains authorization state or credentials.
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "create", "update", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

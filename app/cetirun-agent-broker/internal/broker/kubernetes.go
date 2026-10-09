@@ -34,6 +34,7 @@ type secretDocument struct {
 type secretMetadata struct {
 	Name            string            `json:"name"`
 	Namespace       string            `json:"namespace,omitempty"`
+	UID             string            `json:"uid,omitempty"`
 	ResourceVersion string            `json:"resourceVersion,omitempty"`
 	Labels          map[string]string `json:"labels,omitempty"`
 	OwnerReferences []ownerReference  `json:"ownerReferences,omitempty"`
@@ -50,14 +51,24 @@ type secretList struct {
 	Items []secretDocument `json:"items"`
 }
 
+type configMapDocument struct {
+	APIVersion string            `json:"apiVersion"`
+	Kind       string            `json:"kind"`
+	Metadata   secretMetadata    `json:"metadata"`
+	Data       map[string]string `json:"data"`
+}
+
 type agentDocument struct {
 	Metadata struct {
-		Name        string            `json:"name"`
-		UID         string            `json:"uid"`
-		Annotations map[string]string `json:"annotations"`
+		Name              string            `json:"name"`
+		UID               string            `json:"uid"`
+		Generation        int64             `json:"generation"`
+		DeletionTimestamp *string           `json:"deletionTimestamp"`
+		Annotations       map[string]string `json:"annotations"`
 	} `json:"metadata"`
 	Spec struct {
-		User struct {
+		Suspended bool `json:"suspended"`
+		User      struct {
 			Alias string `json:"alias"`
 		} `json:"user"`
 		AgentIdentity *struct {
@@ -68,9 +79,20 @@ type agentDocument struct {
 		Phase         string `json:"phase"`
 		Namespace     string `json:"namespace"`
 		AgentIdentity *struct {
-			Phase    string `json:"phase"`
-			ClientID string `json:"clientId"`
+			Phase                    string `json:"phase"`
+			ClientID                 string `json:"clientId"`
+			ObservedGeneration       int64  `json:"observedGeneration"`
+			CredentialPolicyRevision string `json:"credentialPolicyRevision"`
 		} `json:"agentIdentity"`
+		Policy *struct {
+			ObservedGeneration int64  `json:"observedGeneration"`
+			Phase              string `json:"phase"`
+			Enforcement        struct {
+				Credential struct {
+					DesiredRevision string `json:"desiredRevision"`
+				} `json:"credential"`
+			} `json:"enforcement"`
+		} `json:"policy"`
 	} `json:"status"`
 }
 
@@ -185,16 +207,28 @@ func (k *kubeClient) getAgent(ctx context.Context, name string) (Agent, error) {
 		return Agent{}, err
 	}
 	agent := Agent{
-		Name:           document.Metadata.Name,
-		UID:            document.Metadata.UID,
-		Namespace:      document.Status.Namespace,
-		OwnerTenantID:  document.Metadata.Annotations["agentidentity.cetirun.microsoft.com/owner-tenant-id"],
-		OwnerObjectID:  document.Metadata.Annotations["agentidentity.cetirun.microsoft.com/owner-object-id"],
-		ServiceAccount: workloadServiceAccount(document.Metadata.Name),
+		Name:                 document.Metadata.Name,
+		UID:                  document.Metadata.UID,
+		Generation:           document.Metadata.Generation,
+		Namespace:            document.Status.Namespace,
+		OwnerTenantID:        document.Metadata.Annotations["agentidentity.cetirun.microsoft.com/owner-tenant-id"],
+		OwnerObjectID:        document.Metadata.Annotations["agentidentity.cetirun.microsoft.com/owner-object-id"],
+		ServiceAccount:       workloadServiceAccount(document.Metadata.Name),
+		Deleting:             document.Metadata.DeletionTimestamp != nil,
+		Suspended:            document.Spec.Suspended,
+		AgentIdentityEnabled: document.Spec.AgentIdentity != nil && document.Spec.AgentIdentity.Enabled,
 	}
 	if document.Spec.AgentIdentity != nil && document.Spec.AgentIdentity.Enabled && document.Status.AgentIdentity != nil {
 		agent.AgentIdentityClientID = document.Status.AgentIdentity.ClientID
-		agent.AgentIdentityReady = document.Status.Phase == "Ready" && document.Status.AgentIdentity.Phase == "Ready"
+		agent.AgentIdentityBound = document.Status.AgentIdentity.Phase == "Ready"
+		agent.AgentIdentityObservedGeneration = document.Status.AgentIdentity.ObservedGeneration
+		agent.AgentIdentityReady = document.Status.Phase == "Ready" && agent.AgentIdentityBound && !agent.Deleting && !agent.Suspended
+		agent.CredentialPolicyRevision = document.Status.AgentIdentity.CredentialPolicyRevision
+	}
+	if document.Status.Policy != nil {
+		agent.PolicyObservedGeneration = document.Status.Policy.ObservedGeneration
+		agent.PolicyPhase = document.Status.Policy.Phase
+		agent.DesiredCredentialPolicyRevision = document.Status.Policy.Enforcement.Credential.DesiredRevision
 	}
 	if agent.UID == "" || agent.Namespace == "" {
 		return Agent{}, errors.New("Agent resource is not ready")
@@ -244,16 +278,28 @@ func (k *kubeClient) getAgentByUID(ctx context.Context, uid string) (Agent, erro
 			continue
 		}
 		agent := Agent{
-			Name:               document.Metadata.Name,
-			UID:                document.Metadata.UID,
-			Namespace:          document.Status.Namespace,
-			OwnerTenantID:      document.Metadata.Annotations["agentidentity.cetirun.microsoft.com/owner-tenant-id"],
-			OwnerObjectID:      document.Metadata.Annotations["agentidentity.cetirun.microsoft.com/owner-object-id"],
-			ServiceAccount:     workloadServiceAccount(document.Metadata.Name),
-			AgentIdentityReady: document.Status.Phase == "Ready" && document.Status.AgentIdentity != nil && document.Status.AgentIdentity.Phase == "Ready",
+			Name:                 document.Metadata.Name,
+			UID:                  document.Metadata.UID,
+			Generation:           document.Metadata.Generation,
+			Namespace:            document.Status.Namespace,
+			OwnerTenantID:        document.Metadata.Annotations["agentidentity.cetirun.microsoft.com/owner-tenant-id"],
+			OwnerObjectID:        document.Metadata.Annotations["agentidentity.cetirun.microsoft.com/owner-object-id"],
+			ServiceAccount:       workloadServiceAccount(document.Metadata.Name),
+			Deleting:             document.Metadata.DeletionTimestamp != nil,
+			Suspended:            document.Spec.Suspended,
+			AgentIdentityEnabled: document.Spec.AgentIdentity != nil && document.Spec.AgentIdentity.Enabled,
 		}
 		if document.Status.AgentIdentity != nil {
 			agent.AgentIdentityClientID = document.Status.AgentIdentity.ClientID
+			agent.AgentIdentityBound = document.Status.AgentIdentity.Phase == "Ready" && agent.AgentIdentityEnabled
+			agent.AgentIdentityObservedGeneration = document.Status.AgentIdentity.ObservedGeneration
+			agent.AgentIdentityReady = document.Status.Phase == "Ready" && agent.AgentIdentityBound && !agent.Deleting && !agent.Suspended
+			agent.CredentialPolicyRevision = document.Status.AgentIdentity.CredentialPolicyRevision
+		}
+		if document.Status.Policy != nil {
+			agent.PolicyObservedGeneration = document.Status.Policy.ObservedGeneration
+			agent.PolicyPhase = document.Status.Policy.Phase
+			agent.DesiredCredentialPolicyRevision = document.Status.Policy.Enforcement.Credential.DesiredRevision
 		}
 		if match != nil {
 			return Agent{}, errors.New("instance UID maps to multiple resources")
@@ -275,6 +321,97 @@ func workloadServiceAccount(instanceName string) string {
 }
 
 func recordName(uid string) string { return "agent-authorization-" + strings.ToLower(uid) }
+
+func credentialPolicyName(uid string) string {
+	return "agent-credential-policy-" + strings.ToLower(uid)
+}
+
+func credentialPolicyMatchesAgent(document *configMapDocument, agent Agent) bool {
+	if document == nil || document.Metadata.Name != credentialPolicyName(agent.UID) {
+		return false
+	}
+	if document.Metadata.Labels["agentidentity.cetirun.microsoft.com/instance-uid"] != agent.UID ||
+		document.Metadata.Labels["agentidentity.cetirun.microsoft.com/instance-name"] != agent.Name {
+		return false
+	}
+	return len(document.Metadata.OwnerReferences) == 1 &&
+		document.Metadata.OwnerReferences[0].APIVersion == "cetirun.microsoft.com/v1alpha1" &&
+		document.Metadata.OwnerReferences[0].Kind == "Agent" &&
+		document.Metadata.OwnerReferences[0].Name == agent.Name &&
+		document.Metadata.OwnerReferences[0].UID == agent.UID
+}
+
+func (k *kubeClient) getCredentialPolicy(ctx context.Context, agent Agent) (CredentialPolicy, string, error) {
+	var document configMapDocument
+	endpoint := "/api/v1/namespaces/" + url.PathEscape(k.namespace) + "/configmaps/" + url.PathEscape(credentialPolicyName(agent.UID))
+	if _, err := k.request(ctx, http.MethodGet, endpoint, nil, &document); err != nil {
+		return CredentialPolicy{}, "", err
+	}
+	if !credentialPolicyMatchesAgent(&document, agent) {
+		return CredentialPolicy{}, "", errors.New("credential policy ownership is invalid")
+	}
+	policy, err := parseCredentialPolicy([]byte(document.Data["policy.json"]))
+	if err != nil {
+		return CredentialPolicy{}, "", errors.New("credential policy is invalid")
+	}
+	return policy, document.Metadata.ResourceVersion, nil
+}
+
+func (k *kubeClient) putCredentialPolicy(ctx context.Context, agent Agent, policy CredentialPolicy, resourceVersion string) error {
+	encoded, err := canonicalCredentialPolicy(policy)
+	if err != nil {
+		return err
+	}
+	document := configMapDocument{
+		APIVersion: "v1",
+		Kind:       "ConfigMap",
+		Metadata: secretMetadata{
+			Name:            credentialPolicyName(agent.UID),
+			Namespace:       k.namespace,
+			ResourceVersion: resourceVersion,
+			Labels: map[string]string{
+				"app.kubernetes.io/managed-by":                      "cetirun-agent-broker",
+				"agentidentity.cetirun.microsoft.com/instance-uid":  agent.UID,
+				"agentidentity.cetirun.microsoft.com/instance-name": agent.Name,
+			},
+			OwnerReferences: []ownerReference{{
+				APIVersion: "cetirun.microsoft.com/v1alpha1", Kind: "Agent", Name: agent.Name, UID: agent.UID,
+			}},
+		},
+		Data: map[string]string{"policy.json": string(encoded)},
+	}
+	endpoint := "/api/v1/namespaces/" + url.PathEscape(k.namespace) + "/configmaps"
+	method := http.MethodPost
+	if resourceVersion != "" {
+		method = http.MethodPut
+		endpoint += "/" + url.PathEscape(document.Metadata.Name)
+	}
+	_, err = k.request(ctx, method, endpoint, document, nil)
+	return err
+}
+
+func (k *kubeClient) deleteCredentialPolicy(ctx context.Context, agent Agent) error {
+	var document configMapDocument
+	endpoint := "/api/v1/namespaces/" + url.PathEscape(k.namespace) + "/configmaps/" + url.PathEscape(credentialPolicyName(agent.UID))
+	_, err := k.request(ctx, http.MethodGet, endpoint, nil, &document)
+	if errors.Is(err, errNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !credentialPolicyMatchesAgent(&document, agent) || document.Metadata.UID == "" || document.Metadata.ResourceVersion == "" {
+		return errors.New("credential policy ownership is invalid")
+	}
+	// Kubernetes deletion preconditions prevent an old delete from removing a
+	// ConfigMap that was recreated by a newer Agent with the same name.
+	body := map[string]any{"preconditions": map[string]string{"uid": document.Metadata.UID, "resourceVersion": document.Metadata.ResourceVersion}}
+	_, err = k.request(ctx, http.MethodDelete, endpoint, body, nil)
+	if errors.Is(err, errNotFound) {
+		return nil
+	}
+	return err
+}
 
 func recordAAD(uid, tenantID, ownerID, agentIdentityClientID, blueprintClientID, authorizationClientID string, generation uint64) []byte {
 	return []byte(fmt.Sprintf("v1\x00%s\x00%s\x00%s\x00%s\x00%s\x00%s\x00%d", uid, tenantID, ownerID, agentIdentityClientID, blueprintClientID, authorizationClientID, generation))

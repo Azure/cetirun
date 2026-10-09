@@ -203,6 +203,15 @@ func TestNewTeamHeldAgentDeletionChecksNamespaceOwnership(t *testing.T) {
 			if err := c.Get(context.Background(), key, agent); err != nil {
 				t.Fatal(err)
 			}
+			if !slices.Contains(agent.Finalizers, api.Finalizer) {
+				t.Fatal("new held Agent has no lifecycle finalizer")
+			}
+			if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: key}); err != nil {
+				t.Fatal(err)
+			}
+			if err := c.Get(context.Background(), key, agent); err != nil {
+				t.Fatal(err)
+			}
 			if !slices.Contains(agent.Finalizers, holdFinalizer) {
 				t.Fatal("new held Agent has no deletion finalizer")
 			}

@@ -35,14 +35,35 @@ type TokenCache struct {
 }
 
 type Agent struct {
-	Name                  string
-	UID                   string
-	Namespace             string
-	ServiceAccount        string
-	OwnerTenantID         string
-	OwnerObjectID         string
-	AgentIdentityClientID string
-	AgentIdentityReady    bool
+	Name                            string
+	UID                             string
+	Generation                      int64
+	Namespace                       string
+	ServiceAccount                  string
+	OwnerTenantID                   string
+	OwnerObjectID                   string
+	AgentIdentityClientID           string
+	Deleting                        bool
+	Suspended                       bool
+	AgentIdentityEnabled            bool
+	AgentIdentityBound              bool
+	AgentIdentityReady              bool
+	AgentIdentityObservedGeneration int64
+	PolicyObservedGeneration        int64
+	PolicyPhase                     string
+	// DesiredCredentialPolicyRevision is the policy revision calculated by the
+	// Operator. CredentialPolicyRevision is the revision which the Operator
+	// read back from this Broker after applying it. Both must agree before a
+	// workload can receive a delegated credential.
+	DesiredCredentialPolicyRevision string
+	CredentialPolicyRevision        string
+}
+
+// CredentialPolicy is the deliberately small, typed contract the Operator
+// projects into the Broker. It contains no user or downstream credential.
+type CredentialPolicy struct {
+	Revision string   `json:"revision"`
+	Services []string `json:"services"`
 }
 
 type statusResponse struct {

@@ -34,13 +34,14 @@ import (
 // error never skips the compute stop: the next reconcile keeps the fail-closed
 // hold and retries revocation.
 func (r *AgentReconciler) holdPolicyDenied(ctx context.Context, agent *api.Agent) (ctrl.Result, error) {
+	credentialErr := r.revokeCredentialPolicyIfProjected(ctx, agent)
 	var revokeErr error
 	if r.AIGateway.configured() {
 		revokeErr = r.revokeAIGatewayKey(ctx, agent)
 	}
 	result, holdErr := r.holdSandbox(ctx, agent)
-	if revokeErr != nil || holdErr != nil {
-		return result, errors.Join(revokeErr, holdErr)
+	if credentialErr != nil || revokeErr != nil || holdErr != nil {
+		return result, errors.Join(credentialErr, revokeErr, holdErr)
 	}
 	return result, nil
 }
@@ -70,8 +71,22 @@ func (r *AgentReconciler) holdPolicyReprojection(ctx context.Context, agent *api
 	if err := r.updateStatus(ctx, agent); err != nil {
 		return ctrl.Result{}, err
 	}
-	if _, err := r.reconcilePolicy(ctx, agent); err != nil {
-		return ctrl.Result{}, err
+	_, err := r.reconcilePolicy(ctx, agent)
+	if err != nil {
+		credentialErr := r.revokeCredentialPolicyIfProjected(ctx, agent)
+		return result, errors.Join(err, credentialErr)
+	}
+	if agentIdentityRequested(agent) || agent.Status.AgentIdentity != nil {
+		resolution, err := r.resolvePolicy(ctx, agent)
+		if err != nil {
+			return result, errors.Join(err, r.revokeCredentialPolicyIfProjected(ctx, agent))
+		}
+		if err := r.reconcileAgentIdentity(ctx, agent); err != nil {
+			return result, errors.Join(err, r.revokeCredentialPolicyIfProjected(ctx, agent))
+		}
+		if err := r.reconcileCredentialPolicy(ctx, agent, resolution); err != nil {
+			return result, err
+		}
 	}
 	return result, nil
 }
@@ -81,12 +96,13 @@ func (r *AgentReconciler) holdPolicyReprojection(ctx context.Context, agent *api
 // existing key and stops compute, but deliberately does not try to calculate
 // or apply a replacement grant without current policy evidence.
 func (r *AgentReconciler) holdPolicyDependencyUnavailable(ctx context.Context, agent *api.Agent) (ctrl.Result, error) {
+	credentialErr := r.revokeCredentialPolicyIfProjected(ctx, agent)
 	var blockErr error
 	if r.AIGateway.configured() {
 		blockErr = r.beginAIGatewayPolicyReprojection(ctx, agent)
 	}
 	result, holdErr := r.holdSandbox(ctx, agent)
-	return result, errors.Join(blockErr, holdErr)
+	return result, errors.Join(credentialErr, blockErr, holdErr)
 }
 
 // reconcilePolicy resolves the declarative selection and effective
@@ -104,6 +120,7 @@ func (r *AgentReconciler) reconcilePolicy(ctx context.Context, agent *api.Agent)
 		authorized:          true,
 		projectionsVerified: policyEnforcementVerified(agent, resolution),
 		reprojectionHold:    policyReprojectionMustHold(agent, resolution),
+		resolution:          resolution,
 	}
 	return result, r.recordPolicy(ctx, agent, resolution, nil)
 }
@@ -126,6 +143,7 @@ type policyReconcileResult struct {
 	projectionsVerified   bool
 	reprojectionHold      bool
 	dependencyUnavailable bool
+	resolution            *policyResolution
 }
 
 // policyDependencyError distinguishes an unavailable control-plane read
@@ -510,11 +528,13 @@ func policyEnforcementVerified(agent *api.Agent, resolution *policyResolution) b
 	if needsModels && (agent.Status.AIGateway == nil || agent.Status.AIGateway.Phase != api.AIGatewayPhaseReady || !agent.Status.AIGateway.Routed || agent.Status.AIGateway.PolicyRevision != resolution.gatewayRevision) {
 		return false
 	}
-	// Agent ID currently has a legacy bearer issuance path. It can receive a
-	// policy projection but must not make aggregate Policy application ready until a
-	// typed credential-service executor supplies equivalent evidence.
 	if agent.Spec.AgentIdentity != nil && agent.Spec.AgentIdentity.Enabled {
-		return false
+		identity := agent.Status.AgentIdentity
+		if identity == nil || identity.Phase != api.AgentIdentityPhaseReady ||
+			identity.ObservedGeneration != agent.Generation ||
+			identity.CredentialPolicyRevision != resolution.credentialRevision {
+			return false
+		}
 	}
 	return resolution != nil
 }

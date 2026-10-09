@@ -245,6 +245,19 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		return r.rejectReservedUIInstance(ctx, instance)
 	}
 
+	// Persist lifecycle ownership before policy projection can create or adopt
+	// any external identity, Broker policy, Gateway key, or Sandbox resource.
+	// A deletion racing a later side effect must always enter the cleanup path.
+	if !controllerutil.ContainsFinalizer(instance, cetirunv1alpha1.Finalizer) {
+		logger.V(1).Info("Adding finalizer", "alias", instance.Spec.User.Alias)
+		before := instance.DeepCopy()
+		controllerutil.AddFinalizer(instance, cetirunv1alpha1.Finalizer)
+		if err := r.Patch(ctx, instance, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{})); err != nil {
+			return ctrl.Result{}, fmt.Errorf("add finalizer: %w", err)
+		}
+		return ctrl.Result{Requeue: true}, nil
+	}
+
 	// Policy is mandatory for every non-deleting Agent. Resolve its
 	// immutable owner/Team/policy binding before any Sandbox or workload
 	// recovery can make compute available.
@@ -264,8 +277,35 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		return result, stderrors.Join(err, holdErr)
 	} else if !policy.authorized {
 		return r.holdPolicyDenied(ctx, instance)
+	} else if instance.Spec.Suspended {
+		// Suspension outranks projection repair. A generation change makes a
+		// previously Ready projection stale, but the Broker deliberately rejects
+		// policy PUTs for suspended Agents. Revoke the old executable policy and
+		// stop ingress/compute without contacting Graph or attempting replacement.
+		var credentialErr error
+		if agentIdentityRequested(instance) || instance.Status.AgentIdentity != nil {
+			credentialErr = r.revokeCredentialPolicyIfProjected(ctx, instance)
+		}
+		result, holdErr := r.holdSandbox(ctx, instance)
+		return result, stderrors.Join(credentialErr, holdErr)
+	} else if sandboxRequested(instance, nil) && r.SandboxPreparation != nil && !sandboxPreparationSupported(instance) {
+		// Unsupported native integrations remain held without provisioning new
+		// external identity state. If an older supported generation had already
+		// projected a credential policy, clear and revoke that evidence before
+		// returning to the ordinary unsupported-control hold.
+		credentialErr := r.revokeCredentialPolicyIfProjected(ctx, instance)
+		result, holdErr := r.holdSandbox(ctx, instance)
+		return result, stderrors.Join(credentialErr, holdErr)
 	} else if policy.reprojectionHold {
 		return r.holdPolicyReprojection(ctx, instance)
+	}
+	if err := r.reconcileAgentIdentityPolicyProjection(ctx, instance, policy.resolution); err != nil {
+		if stderrors.Is(err, errAgentIdentityProvisioning) {
+			return ctrl.Result{Requeue: true}, nil
+		}
+		logger.Error(err, "Agent Identity credential policy projection failed", "instance", instance.Name)
+		result, holdErr := r.holdSandbox(ctx, instance)
+		return result, stderrors.Join(err, holdErr)
 	}
 
 	if sandboxRequested(instance, nil) {
@@ -340,17 +380,6 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		meta.RemoveStatusCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionAgentConfigReady)
 	}
 
-	// 3. Ensure finalizer.
-	if !controllerutil.ContainsFinalizer(instance, cetirunv1alpha1.Finalizer) {
-		logger.V(1).Info("Adding finalizer", "alias", instance.Spec.User.Alias)
-		before := instance.DeepCopy()
-		controllerutil.AddFinalizer(instance, cetirunv1alpha1.Finalizer)
-		if err := r.Patch(ctx, instance, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{})); err != nil {
-			return ctrl.Result{}, fmt.Errorf("add finalizer: %w", err)
-		}
-		return ctrl.Result{Requeue: true}, nil
-	}
-
 	// 3a. Backfill spec.helm.version if empty.
 	// This pins the chart version on the CR so that future operator upgrades
 	// do not automatically roll out a new chart (avoiding pod restarts).
@@ -379,22 +408,6 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 
 	if instance.Spec.Agent.Type == cetirunv1alpha1.AgentTypeCustom {
 		return r.reconcileCustom(ctx, instance, team)
-	}
-
-	// Persist the Agent Identity provisioning intent before any workload
-	// preparation. This preserves a canonical binding and create checkpoint
-	// across generation changes and transient downstream failures.
-	if agentIdentityRequested(instance) && (instance.Status.AgentIdentity == nil || instance.Status.AgentIdentity.ObservedGeneration != instance.Generation) {
-		status := ensureAgentIdentityStatus(instance)
-		status.Phase = cetirunv1alpha1.AgentIdentityPhaseProvisioning
-		status.ObservedGeneration = instance.Generation
-		status.Reason = ""
-		setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionAgentIdentityReady,
-			metav1.ConditionFalse, "Provisioning", "Agent Identity provisioning intent is recorded")
-		if err := r.updateStatus(ctx, instance); err != nil {
-			return ctrl.Result{}, fmt.Errorf("persist Agent Identity provisioning intent: %w", err)
-		}
-		return ctrl.Result{Requeue: true}, nil
 	}
 
 	if instance.Spec.Agent.RegistrySecretRef != nil && instance.Spec.Agent.Image != nil && !instance.Spec.Suspended {
@@ -615,34 +628,6 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 			// Request a faster requeue so the 404 timer and other retryable
 			// Teams errors don't wait for the next full reconcile cycle.
 			teamsRequeueAfter = 30 * time.Second
-		}
-	}
-
-	// Reconcile the per-instance Agent Identity before rendering the workload.
-	// The Broker reads only the canonical binding persisted in CR status.
-	var agentIdentityRequeueAfter time.Duration
-	if instance.Spec.AgentIdentity != nil || instance.Status.AgentIdentity != nil {
-		logger.Info("Reconciling Agent Identity", "instance", instance.Name)
-		if err := r.reconcileAgentIdentity(ctx, instance); err != nil {
-			logger.Error(err, "Agent Identity reconciliation failed", "instance", instance.Name)
-			reason := "ReconcileFailed"
-			if instance.Status.AgentIdentity != nil && instance.Status.AgentIdentity.Reason != "" {
-				reason = instance.Status.AgentIdentity.Reason
-			}
-			setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionAgentIdentityReady,
-				metav1.ConditionFalse, reason, "Agent Identity is not ready")
-			_ = r.updateStatus(ctx, instance)
-			if !instance.Spec.Suspended {
-				return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
-			}
-			// Suspension is a safety boundary and must not depend on directory
-			// availability. Continue to scale the workload to zero and remove
-			// ingress, while retaining the identity error for a separate retry.
-			agentIdentityRequeueAfter = 30 * time.Second
-		}
-		if agentIdentityRequested(instance) && instance.Status.AgentIdentity != nil && instance.Status.AgentIdentity.Phase == cetirunv1alpha1.AgentIdentityPhaseReady {
-			now := metav1.Now()
-			instance.Status.AgentIdentity.LastVerifiedTime = &now
 		}
 	}
 
@@ -869,9 +854,6 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		if teamsRequeueAfter > 0 && teamsRequeueAfter < requeueAfter {
 			requeueAfter = teamsRequeueAfter
 		}
-		if agentIdentityRequeueAfter > 0 && agentIdentityRequeueAfter < requeueAfter {
-			requeueAfter = agentIdentityRequeueAfter
-		}
 		if aiGatewayRequeueAfter > 0 && aiGatewayRequeueAfter < requeueAfter {
 			requeueAfter = aiGatewayRequeueAfter
 		}
@@ -997,23 +979,10 @@ func (r *AgentReconciler) handleDelete(ctx context.Context, instance *cetirunv1a
 	// Delete Teams Azure resources (best-effort, never blocks deletion).
 	r.deleteTeams(ctx, instance)
 
-	// Agent Identity cleanup is blocking. Removing the finalizer before the
-	// authorization record and directory principal are gone would orphan them.
-	if agentIdentityRequested(instance) || instance.Status.AgentIdentity != nil {
-		if err := r.deleteAgentIdentity(ctx, instance); err != nil {
-			logger.Error(err, "Agent Identity cleanup failed; retaining finalizer", "instance", instance.Name)
-			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
-		}
-	}
-
-	// AI Gateway key revocation is blocking for the same reason, and runs
-	// before the workload is removed so the key cannot outlive the Agent.
-	if err := r.deleteAIGatewayKey(ctx, instance); err != nil {
-		logger.Error(err, "AI Gateway key revocation failed; retaining finalizer", "instance", instance.Name)
-		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
-	}
-
-	// Helm uninstall.
+	// Stop compute before credential cleanup. A failed Broker cleanup must
+	// retain the finalizer, but never leave an old workload running while it
+	// retries. Namespace deletion below supplies an independent stop path if
+	// Helm cannot complete this first uninstall attempt.
 	logger.Info("Uninstalling Helm release", "release", releaseName, "namespace", ns)
 	if err := r.HelmClient.Uninstall(ns, releaseName); err != nil {
 		logger.Error(err, "helm uninstall failed, continuing cleanup", "release", releaseName)
@@ -1057,6 +1026,24 @@ func (r *AgentReconciler) handleDelete(ctx context.Context, instance *cetirunv1a
 		} else {
 			logger.V(1).Info("Namespace deletion initiated", "namespace", ns)
 		}
+	}
+
+	// Agent Identity and Gateway cleanup are blocking only after workload stop
+	// has been requested. Their finalizers remain retryable without allowing a
+	// Broker, directory, or Gateway outage to preserve compute.
+	var identityErr error
+	if agentIdentityRequested(instance) || instance.Status.AgentIdentity != nil {
+		identityErr = r.deleteAgentIdentity(ctx, instance)
+		if identityErr != nil {
+			logger.Error(identityErr, "Agent Identity cleanup failed; retaining finalizer", "instance", instance.Name)
+		}
+	}
+	gatewayErr := r.deleteAIGatewayKey(ctx, instance)
+	if gatewayErr != nil {
+		logger.Error(gatewayErr, "AI Gateway key revocation failed; retaining finalizer", "instance", instance.Name)
+	}
+	if identityErr != nil || gatewayErr != nil {
+		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 
 	// Remove finalizer.

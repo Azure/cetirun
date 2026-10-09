@@ -56,6 +56,30 @@ func (*suspensionHelmClient) CustomApplied(string, string, *helm.PreparedRelease
 
 func (*suspensionHelmClient) Uninstall(string, string) error { return nil }
 
+func TestAgentIdentityReconcilePersistsFinalizerBeforeExternalMutation(t *testing.T) {
+	instance := newAgentIdentityTestInstance()
+	directory := &fakeAgentIdentityDirectory{}
+	reconciler := newAgentIdentityTestReconciler(t, instance, directory)
+
+	result, err := reconciler.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: instance.Name},
+	})
+	if err != nil || !result.Requeue {
+		t.Fatalf("initial finalizer reconcile = %+v, %v", result, err)
+	}
+	stored := &cetirunv1alpha1.Agent{}
+	if err := reconciler.Get(context.Background(), types.NamespacedName{Name: instance.Name}, stored); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(stored.Finalizers, cetirunv1alpha1.Finalizer) {
+		t.Fatal("lifecycle finalizer was not persisted")
+	}
+	if stored.Status.AgentIdentity != nil || directory.lookupCalls != 0 || directory.getObjectCalls != 0 ||
+		directory.createCalls != 0 || directory.deleteCalls != 0 {
+		t.Fatalf("external identity work preceded the finalizer: status=%+v directory=%+v", stored.Status.AgentIdentity, directory)
+	}
+}
+
 func TestPolicyDeniedSuspensionStopsOwnedRouteBeforeIdentityLookup(t *testing.T) {
 	const name = "suspended-identity"
 	instance := &cetirunv1alpha1.Agent{
@@ -150,6 +174,9 @@ func TestPolicyDeniedSuspensionStopsOwnedRouteBeforeIdentityLookup(t *testing.T)
 			return directory, nil
 		},
 	}
+	// A denied Agent Identity must revoke its typed Broker policy while the
+	// suspension path independently stops the workload.
+	reconciler.AgentIdentityBrokerURL = newSuccessfulAuthorizationCleanupServer(t, reconciler)
 
 	result, err := reconciler.Reconcile(context.Background(), ctrl.Request{
 		NamespacedName: types.NamespacedName{Name: name},
@@ -176,6 +203,93 @@ func TestPolicyDeniedSuspensionStopsOwnedRouteBeforeIdentityLookup(t *testing.T)
 	}
 	if updated.Status.Policy == nil || updated.Status.Policy.Phase != "Denied" {
 		t.Fatalf("policy denial was not retained: %#v", updated.Status.Policy)
+	}
+}
+
+func TestReadyBuiltinSuspensionRevokesCredentialPolicyBeforeReprojection(t *testing.T) {
+	ctx := context.Background()
+	agent := aiGatewayTestAgent(testAIGatewayTeam)
+	agent.Generation = 2
+	agent.Spec.Suspended = true
+	agent.Spec.AgentIdentity = &cetirunv1alpha1.AgentIdentitySpec{Enabled: true}
+	agent.Status.Phase = cetirunv1alpha1.PhaseReady
+	agent.Status.ObservedGeneration = 1
+	agent.Status.Conditions = []metav1.Condition{
+		{Type: cetirunv1alpha1.ConditionReady, Status: metav1.ConditionTrue, ObservedGeneration: 1},
+		{Type: cetirunv1alpha1.ConditionIngressReady, Status: metav1.ConditionTrue, ObservedGeneration: 1, Reason: "IngressPublished"},
+	}
+
+	reconciler, kube, _ := aiGatewayTestReconciler(t, agent, aiGatewayNamespace())
+	policy := &cetirunv1alpha1.AgentPolicy{}
+	if err := kube.Get(ctx, types.NamespacedName{Name: testPolicyName}, policy); err != nil {
+		t.Fatal(err)
+	}
+	policy.Spec.AgentIdentity = cetirunv1alpha1.AgentPolicyAgentIdentity{
+		Allowed: true, CredentialServices: []string{"azure-resource-manager"},
+	}
+	policy.Generation++
+	if err := kube.Update(ctx, policy); err != nil {
+		t.Fatal(err)
+	}
+	policy.Status.ObservedGeneration = policy.Generation
+	policy.Status.Conditions[0].ObservedGeneration = policy.Generation
+	if err := kube.Status().Update(ctx, policy); err != nil {
+		t.Fatal(err)
+	}
+	resolution, err := reconciler.resolvePolicy(ctx, agent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent.Status.AgentIdentity = &cetirunv1alpha1.AgentIdentityStatus{
+		Phase:                    cetirunv1alpha1.AgentIdentityPhaseReady,
+		ClientID:                 testAgentIdentityClientID,
+		ObjectID:                 testAgentIdentityObjectID,
+		DisplayName:              "cetirun-agent-" + string(agent.UID),
+		ObservedGeneration:       1,
+		CredentialPolicyRevision: resolution.credentialRevision,
+	}
+	if err := reconciler.updateStatus(ctx, agent); err != nil {
+		t.Fatal(err)
+	}
+
+	var methods []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		methods = append(methods, request.Method)
+		if request.Method != http.MethodDelete {
+			http.Error(w, "suspended Agents must not apply a credential policy", http.StatusConflict)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(server.Close)
+	reconciler.AgentIdentityBrokerURL = server.URL
+	reconciler.AgentIdentityHTTPClient = server.Client()
+	graphCalls := 0
+	reconciler.agentIdentityGraphClientFactory = func() (agentIdentityDirectoryClient, error) {
+		graphCalls++
+		return nil, errors.New("Graph must not be called while suspending")
+	}
+
+	result, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: agent.Name}})
+	if err != nil {
+		t.Fatalf("suspension entered projection repair: %v", err)
+	}
+	if result.RequeueAfter != time.Minute {
+		t.Fatalf("suspension retry interval = %v, want 1m", result.RequeueAfter)
+	}
+	if !slices.Equal(methods, []string{http.MethodDelete}) || graphCalls != 0 {
+		t.Fatalf("suspension contacted replacement dependencies: methods=%v graph=%d", methods, graphCalls)
+	}
+	stored := &cetirunv1alpha1.Agent{}
+	if err := kube.Get(ctx, types.NamespacedName{Name: agent.Name}, stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored.Status.Phase != cetirunv1alpha1.PhaseSuspended || stored.Status.AgentIdentity == nil ||
+		stored.Status.AgentIdentity.CredentialPolicyRevision != "" {
+		t.Fatalf("suspension did not revoke policy and converge: %#v", stored.Status)
+	}
+	if condition := findStatusCondition(stored.Status.Conditions, cetirunv1alpha1.ConditionIngressReady); condition == nil || condition.Status != metav1.ConditionFalse {
+		t.Fatalf("suspension retained published ingress evidence: %#v", condition)
 	}
 }
 
@@ -230,23 +344,37 @@ func TestSandboxHeldDeletionPreservesAgentIdentityCleanup(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
-				var brokerStatus, brokerCalls atomic.Int32
+				var brokerStatus, authorizationCalls, policyCalls atomic.Int32
 				brokerStatus.Store(http.StatusNoContent)
 				if failure == "authorization" {
 					brokerStatus.Store(http.StatusServiceUnavailable)
 				}
 				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-					brokerCalls.Add(1)
-					if req.Method != http.MethodDelete || req.URL.Path != "/operator/v1/instances/"+testAgentIdentityInstanceUID+"/authorization" {
+					if req.Method != http.MethodDelete {
 						t.Errorf("unexpected authorization cleanup request: %s %s", req.Method, req.URL.Path)
+						w.WriteHeader(http.StatusNotFound)
+						return
 					}
-					w.WriteHeader(int(brokerStatus.Load()))
+					switch req.URL.Path {
+					case "/operator/v1/instances/" + testAgentIdentityInstanceUID + "/credential-policy":
+						policyCalls.Add(1)
+						w.WriteHeader(http.StatusNoContent)
+					case "/operator/v1/instances/" + testAgentIdentityInstanceUID + "/authorization":
+						if policyCalls.Load() == 0 {
+							t.Error("authorization cleanup preceded credential policy cleanup")
+						}
+						authorizationCalls.Add(1)
+						w.WriteHeader(int(brokerStatus.Load()))
+					default:
+						t.Errorf("unexpected authorization cleanup request: %s %s", req.Method, req.URL.Path)
+						w.WriteHeader(http.StatusNotFound)
+					}
 				}))
 				t.Cleanup(server.Close)
 				reconciler.AgentIdentityBrokerURL = server.URL
 				reconciler.AgentIdentityHTTPClient = server.Client()
 				directory.onDelete = func(objectID string) {
-					if objectID != testAgentIdentityObjectID || brokerCalls.Load() == 0 || brokerStatus.Load() != http.StatusNoContent {
+					if objectID != testAgentIdentityObjectID || authorizationCalls.Load() == 0 || policyCalls.Load() == 0 || brokerStatus.Load() != http.StatusNoContent {
 						t.Error("directory deletion bypassed canonical ownership or authorization cleanup")
 					}
 					if directory.deleteErr == nil {
@@ -294,8 +422,8 @@ func TestSandboxHeldDeletionPreservesAgentIdentityCleanup(t *testing.T) {
 				if failure == "directory" {
 					wantDeletes = 2
 				}
-				if brokerCalls.Load() == 0 || directory.deleteCalls != wantDeletes || directory.createCalls != 0 {
-					t.Fatalf("identity cleanup skipped or provisioned: broker=%d deletes=%d creates=%d", brokerCalls.Load(), directory.deleteCalls, directory.createCalls)
+				if authorizationCalls.Load() == 0 || policyCalls.Load() == 0 || directory.deleteCalls != wantDeletes || directory.createCalls != 0 {
+					t.Fatalf("identity cleanup skipped or provisioned: authorization=%d policies=%d deletes=%d creates=%d", authorizationCalls.Load(), policyCalls.Load(), directory.deleteCalls, directory.createCalls)
 				}
 			})
 		}

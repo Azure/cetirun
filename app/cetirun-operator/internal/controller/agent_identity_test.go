@@ -5,11 +5,13 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -659,4 +661,218 @@ func newSuccessfulAuthorizationCleanupServer(t *testing.T, reconciler *AgentReco
 	t.Cleanup(server.Close)
 	reconciler.AgentIdentityHTTPClient = server.Client()
 	return server.URL
+}
+
+func readyCredentialPolicyTestInstance() *cetirunv1alpha1.Agent {
+	instance := newAgentIdentityTestInstance()
+	instance.Status.AgentIdentity = &cetirunv1alpha1.AgentIdentityStatus{
+		Phase:                    cetirunv1alpha1.AgentIdentityPhaseReady,
+		ClientID:                 testAgentIdentityClientID,
+		ObjectID:                 testAgentIdentityObjectID,
+		DisplayName:              testAgentIdentityDisplayName(),
+		ObservedGeneration:       instance.Generation,
+		CredentialPolicyRevision: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+	}
+	return instance
+}
+
+func credentialPolicyTestResolution() *policyResolution {
+	return &policyResolution{
+		policy: &cetirunv1alpha1.AgentPolicy{Spec: cetirunv1alpha1.AgentPolicySpec{
+			AgentIdentity: cetirunv1alpha1.AgentPolicyAgentIdentity{
+				Allowed:            true,
+				CredentialServices: []string{"azure-resource-manager"},
+			},
+		}},
+		credentialRevision: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+	}
+}
+
+func TestReconcileCredentialPolicyPersistsOnlyExactReadBack(t *testing.T) {
+	instance := readyCredentialPolicyTestInstance()
+	reconciler := newAgentIdentityTestReconciler(t, instance, &fakeAgentIdentityDirectory{})
+	policy := credentialPolicyTestResolution()
+	var methods []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		methods = append(methods, r.Method)
+		if want := "/operator/v1/instances/" + testAgentIdentityInstanceUID + "/credential-policy"; r.URL.Path != want {
+			t.Fatalf("path = %q, want %q", r.URL.Path, want)
+		}
+		switch r.Method {
+		case http.MethodDelete:
+			w.WriteHeader(http.StatusNoContent)
+		case http.MethodPut:
+			var request credentialPolicyRequest
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				t.Fatalf("decode credential policy request: %v", err)
+			}
+			if request.Revision != policy.credentialRevision || !slices.Equal(request.Services, []string{"azure-resource-manager"}) {
+				t.Fatalf("unexpected credential policy request: %#v", request)
+			}
+			_ = json.NewEncoder(w).Encode(credentialPolicyResponse{InstanceUID: testAgentIdentityInstanceUID, Revision: policy.credentialRevision, Services: []string{"azure-resource-manager"}})
+		case http.MethodGet:
+			// The Operator must reject even a subtle read-back mismatch.
+			_ = json.NewEncoder(w).Encode(credentialPolicyResponse{InstanceUID: testAgentIdentityInstanceUID, Revision: policy.credentialRevision, Services: []string{"wrong-service"}})
+		default:
+			t.Fatalf("unexpected method %q", r.Method)
+		}
+	}))
+	defer server.Close()
+	reconciler.AgentIdentityBrokerURL = server.URL
+	reconciler.AgentIdentityHTTPClient = server.Client()
+
+	if err := reconciler.reconcileCredentialPolicy(context.Background(), instance, policy); err == nil {
+		t.Fatal("mismatched read-back must fail closed")
+	}
+	if !slices.Equal(methods, []string{http.MethodDelete, http.MethodPut, http.MethodGet}) {
+		t.Fatalf("methods = %v", methods)
+	}
+	stored := &cetirunv1alpha1.Agent{}
+	if err := reconciler.Get(context.Background(), types.NamespacedName{Name: instance.Name}, stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored.Status.AgentIdentity == nil || stored.Status.AgentIdentity.CredentialPolicyRevision != "" {
+		t.Fatalf("failed read-back retained credential evidence: %#v", stored.Status.AgentIdentity)
+	}
+}
+
+func TestReconcileCredentialPolicyPersistsExactReadBack(t *testing.T) {
+	instance := readyCredentialPolicyTestInstance()
+	reconciler := newAgentIdentityTestReconciler(t, instance, &fakeAgentIdentityDirectory{})
+	policy := credentialPolicyTestResolution()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodDelete:
+			w.WriteHeader(http.StatusNoContent)
+		case http.MethodPut, http.MethodGet:
+			_ = json.NewEncoder(w).Encode(credentialPolicyResponse{InstanceUID: testAgentIdentityInstanceUID, Revision: policy.credentialRevision, Services: []string{"azure-resource-manager"}})
+		default:
+			t.Fatalf("unexpected method %q", r.Method)
+		}
+	}))
+	defer server.Close()
+	reconciler.AgentIdentityBrokerURL = server.URL
+	reconciler.AgentIdentityHTTPClient = server.Client()
+
+	if err := reconciler.reconcileCredentialPolicy(context.Background(), instance, policy); err != nil {
+		t.Fatal(err)
+	}
+	stored := &cetirunv1alpha1.Agent{}
+	if err := reconciler.Get(context.Background(), types.NamespacedName{Name: instance.Name}, stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored.Status.AgentIdentity == nil || stored.Status.AgentIdentity.CredentialPolicyRevision != policy.credentialRevision {
+		t.Fatalf("exact read-back was not persisted: %#v", stored.Status.AgentIdentity)
+	}
+}
+
+func TestCredentialPolicyStableEvidenceRequiresBrokerReadBack(t *testing.T) {
+	instance := readyCredentialPolicyTestInstance()
+	policy := credentialPolicyTestResolution()
+	instance.Status.AgentIdentity.CredentialPolicyRevision = policy.credentialRevision
+	recent := metav1.NewTime(time.Now())
+	instance.Status.AgentIdentity.LastVerifiedTime = &recent
+	reconciler := newAgentIdentityTestReconciler(t, instance, &fakeAgentIdentityDirectory{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Fatalf("stable policy verification used %s, want GET", r.Method)
+		}
+		_ = json.NewEncoder(w).Encode(credentialPolicyResponse{InstanceUID: testAgentIdentityInstanceUID, Revision: policy.credentialRevision, Services: []string{"azure-resource-manager"}})
+	}))
+	defer server.Close()
+	reconciler.AgentIdentityBrokerURL = server.URL
+	reconciler.AgentIdentityHTTPClient = server.Client()
+
+	if err := reconciler.reconcileAgentIdentityPolicyProjection(context.Background(), instance, policy); err != nil {
+		t.Fatalf("stable Broker read-back failed: %v", err)
+	}
+}
+
+func TestCredentialPolicyStableReadBackFailureClearsEvidence(t *testing.T) {
+	instance := readyCredentialPolicyTestInstance()
+	policy := credentialPolicyTestResolution()
+	instance.Status.AgentIdentity.CredentialPolicyRevision = policy.credentialRevision
+	recent := metav1.NewTime(time.Now())
+	instance.Status.AgentIdentity.LastVerifiedTime = &recent
+	reconciler := newAgentIdentityTestReconciler(t, instance, &fakeAgentIdentityDirectory{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Fatalf("stable policy verification used %s, want GET", r.Method)
+		}
+		http.Error(w, "missing", http.StatusNotFound)
+	}))
+	defer server.Close()
+	reconciler.AgentIdentityBrokerURL = server.URL
+	reconciler.AgentIdentityHTTPClient = server.Client()
+
+	if err := reconciler.reconcileAgentIdentityPolicyProjection(context.Background(), instance, policy); err == nil {
+		t.Fatal("missing Broker policy must fail closed")
+	}
+	stored := &cetirunv1alpha1.Agent{}
+	if err := reconciler.Get(context.Background(), types.NamespacedName{Name: instance.Name}, stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored.Status.AgentIdentity == nil || stored.Status.AgentIdentity.CredentialPolicyRevision != "" {
+		t.Fatalf("failed stable read-back retained credential evidence: %#v", stored.Status.AgentIdentity)
+	}
+}
+
+func TestSuspendedAgentIdentityRevokesPolicyAndUnsuspendReapplies(t *testing.T) {
+	instance := readyCredentialPolicyTestInstance()
+	policy := credentialPolicyTestResolution()
+	instance.Spec.Suspended = true
+	instance.Status.AgentIdentity.CredentialPolicyRevision = policy.credentialRevision
+	directory := &fakeAgentIdentityDirectory{byObject: &azure.ServicePrincipal{
+		ID:                       testAgentIdentityObjectID,
+		AppID:                    testAgentIdentityClientID,
+		DisplayName:              testAgentIdentityDisplayName(),
+		AgentIdentityBlueprintID: testAgentIdentityBlueprintID,
+	}}
+	reconciler := newAgentIdentityTestReconciler(t, instance, directory)
+	var methods []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		methods = append(methods, r.Method)
+		switch r.Method {
+		case http.MethodDelete:
+			w.WriteHeader(http.StatusNoContent)
+		case http.MethodPut, http.MethodGet:
+			_ = json.NewEncoder(w).Encode(credentialPolicyResponse{
+				InstanceUID: testAgentIdentityInstanceUID,
+				Revision:    policy.credentialRevision,
+				Services:    []string{"azure-resource-manager"},
+			})
+		default:
+			t.Fatalf("unexpected method %q", r.Method)
+		}
+	}))
+	t.Cleanup(server.Close)
+	reconciler.AgentIdentityBrokerURL = server.URL
+	reconciler.AgentIdentityHTTPClient = server.Client()
+
+	if err := reconciler.reconcileAgentIdentityPolicyProjection(context.Background(), instance, policy); err != nil {
+		t.Fatalf("suspended policy revocation did not converge: %v", err)
+	}
+	if !slices.Equal(methods, []string{http.MethodDelete}) {
+		t.Fatalf("suspended projection contacted unexpected dependencies: %v", methods)
+	}
+	if directory.getObjectCalls != 0 || directory.lookupCalls != 0 || directory.createCalls != 0 {
+		t.Fatalf("suspension contacted Graph: object=%d lookup=%d create=%d", directory.getObjectCalls, directory.lookupCalls, directory.createCalls)
+	}
+	if instance.Status.AgentIdentity.CredentialPolicyRevision != "" {
+		t.Fatal("suspended Agent retained credential policy evidence")
+	}
+
+	instance.Spec.Suspended = false
+	if err := reconciler.reconcileAgentIdentityPolicyProjection(context.Background(), instance, policy); err != nil {
+		t.Fatalf("unsuspended policy projection did not converge: %v", err)
+	}
+	if !slices.Equal(methods, []string{http.MethodDelete, http.MethodDelete, http.MethodPut, http.MethodGet}) {
+		t.Fatalf("unsuspend did not reapply and verify the policy: %v", methods)
+	}
+	if directory.getObjectCalls != 1 || directory.lookupCalls != 0 || directory.createCalls != 0 {
+		t.Fatalf("unsuspend did not verify the canonical identity: object=%d lookup=%d create=%d", directory.getObjectCalls, directory.lookupCalls, directory.createCalls)
+	}
+	if instance.Status.AgentIdentity.CredentialPolicyRevision != policy.credentialRevision {
+		t.Fatalf("unsuspend did not persist policy evidence: %#v", instance.Status.AgentIdentity)
+	}
 }

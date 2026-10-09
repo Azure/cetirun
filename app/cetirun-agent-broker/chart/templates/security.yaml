@@ -35,9 +35,9 @@ spec:
               - cluster.local/ns/{{ .Values.operator.namespace }}/sa/{{ .Values.operator.serviceAccount }}
       to:
         - operation:
-            methods: ["DELETE"]
+            methods: ["GET", "PUT", "DELETE"]
             # Istio StringMatch supports a trailing prefix wildcard. The Go
-            # ServeMux still exposes only the exact bounded cleanup route.
+            # ServeMux still exposes only the exact bounded operator routes.
             paths: ["/operator/v1/instances/*"]
     - from:
         - source:

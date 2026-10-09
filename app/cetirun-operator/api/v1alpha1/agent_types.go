@@ -360,9 +360,10 @@ type AgentIdentityStatus struct {
 	// +optional
 	Reason string `json:"reason,omitempty"`
 
-	// CredentialPolicyRevision is reserved for a future typed credential
-	// service read-back. The legacy bearer issuer must leave it empty and cannot
-	// satisfy aggregate Policy application readiness.
+	// CredentialPolicyRevision is the exact desired credential-policy revision
+	// which the Operator applied to, then read back from, the typed credential
+	// service. It is cleared before a replacement is attempted and is never a
+	// credential or user authorization token.
 	// +optional
 	CredentialPolicyRevision string `json:"credentialPolicyRevision,omitempty"`
 }

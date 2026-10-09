@@ -19,6 +19,18 @@ The broker and the Microsoft Auth SDK are separate containers in one Pod. This
 keeps the vendor authentication component isolated while avoiding a reusable
 credential protocol between independently reachable services.
 
+## Credential policy enforcement
+
+The Operator applies the current AgentPolicy credential projection through the
+operator-authenticated `PUT /operator/v1/instances/{uid}/credential-policy`
+endpoint and verifies the same value with `GET`. The only currently supported
+canonical policy is a SHA-256 revision with the
+`azure-resource-manager` service allowlist. The Broker persists that non-secret
+evidence in an Agent-owned ConfigMap in its namespace. It issues a credential
+only when the Agent's desired revision, Operator read-back status revision, and
+stored ConfigMap revision exactly agree, both before and after the Auth SDK
+exchange. Deleting the policy or any disagreement fails closed.
+
 Returning a bearer token to an Agent workload is an explicit trust decision,
 not a hard process boundary. The supported CLI must not print, persist, place in
 an environment variable, or include the token in model context. Code with
