@@ -106,6 +106,14 @@ func TestCompileRequiresValidWorkloadProbePort(t *testing.T) {
 	}
 }
 
+func TestProbeDenyEntitiesDoNotAliasManagedHostIdentity(t *testing.T) {
+	for _, entity := range []string{"host", "kube-apiserver"} {
+		if slices.Contains(nonHostIngressEntities, entity) {
+			t.Fatalf("%s can alias the managed host identity and must not override the kubelet probe allow", entity)
+		}
+	}
+}
+
 func ingressRuleForPeer(spec CiliumPolicySpec, peer Peer) *IngressRule {
 	for i := range spec.Ingress {
 		for _, selector := range spec.Ingress[i].FromEndpoints {

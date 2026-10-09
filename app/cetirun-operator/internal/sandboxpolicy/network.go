@@ -34,11 +34,13 @@ var dnsPorts = []api.AgentPolicyPort{
 	{Port: 53, Protocol: corev1.ProtocolUDP},
 }
 
-// The local host is handled separately for kubelet probes. Enumerating every
-// other reserved source keeps additive Cilium policies from reopening the
-// probe port without also treating the impossible "none" entity as traffic.
+// The local host is handled separately for kubelet probes. Enumerating the
+// other disjoint reserved sources keeps additive Cilium policies from reopening
+// the probe port. kube-apiserver is deliberately omitted: managed Cilium can
+// represent it with reserved:host, so denying that entity also denies kubelet.
+// A distinct kube-apiserver identity remains blocked by default-deny.
 var nonHostIngressEntities = []string{
-	"health", "ingress", "init", "kube-apiserver", "remote-node", "unmanaged", "world",
+	"health", "ingress", "init", "remote-node", "unmanaged", "world",
 }
 
 type addressGrant struct {
