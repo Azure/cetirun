@@ -33,7 +33,7 @@ func compilerFixture() CompileInput {
 		},
 	}
 	return CompileInput{
-		AgentName: "example-agent", Namespace: "cetirun-example-agent",
+		AgentName: "example-agent", Namespace: "cetirun-example-agent", WorkloadProbePort: 8642,
 		Resolution: sandbox.Resolution{
 			AgentPolicy: api.AgentPolicySpec{Harnesses: api.AgentPolicyHarnesses{Allowed: []api.AgentType{api.AgentTypeHermes}}},
 			Binding: sandbox.Binding{
@@ -94,6 +94,28 @@ func mustCompile(t *testing.T, input CompileInput) *Plan {
 		t.Fatal(err)
 	}
 	return plan
+}
+
+func TestCompileRequiresValidWorkloadProbePort(t *testing.T) {
+	for _, port := range []int32{0, -1, 65536} {
+		input := compilerFixture()
+		input.WorkloadProbePort = port
+		if plan, err := Compile(input); err == nil || plan != nil {
+			t.Fatalf("probe port %d must fail closed, got plan=%+v err=%v", port, plan, err)
+		}
+	}
+}
+
+func ingressRuleForPeer(spec CiliumPolicySpec, peer Peer) *IngressRule {
+	for i := range spec.Ingress {
+		for _, selector := range spec.Ingress[i].FromEndpoints {
+			if selector.MatchLabels["k8s:"+PeerUIDLabel] == string(peer.UID) &&
+				selector.MatchLabels["k8s:io.kubernetes.pod.namespace"] == peer.Namespace {
+				return &spec.Ingress[i]
+			}
+		}
+	}
+	return nil
 }
 
 func adminFixture() CompileInput {
@@ -467,15 +489,43 @@ func TestCompileIngressModesAndMergedPeerPorts(t *testing.T) {
 	first.Ports = []api.AgentPolicyPort{{Port: 9090, Protocol: corev1.ProtocolTCP}}
 	input.Platform.Topology.Ingress = append(input.Platform.Topology.Ingress, first)
 	plan := mustCompile(t, input)
-	if len(plan.Network.Policy.Spec.Ingress) != 1 || len(plan.Network.Policy.Spec.Ingress[0].ToPorts[0].Ports) != 2 {
+	peerRule := ingressRuleForPeer(plan.Network.Policy.Spec, first.Peer)
+	if peerRule == nil || len(peerRule.ToPorts[0].Ports) != 2 {
 		t.Fatal("same authenticated peer ports must merge before complementary denies")
+	}
+	hostProbe := false
+	for _, rule := range plan.Network.Policy.Spec.Ingress {
+		hostProbe = hostProbe || slices.Contains(rule.FromEntities, "host") &&
+			syntheticPortsMatch(rule.ToPorts, input.WorkloadProbePort, corev1.ProtocolTCP)
+	}
+	if !hostProbe {
+		t.Fatal("authenticated ingress must retain the compiler-owned local kubelet probe")
+	}
+	changedPort := input
+	changedPort.WorkloadProbePort++
+	if mustCompile(t, changedPort).Revision == plan.Revision {
+		t.Fatal("workload probe port must affect the compiled revision")
 	}
 	input.Resolution.AgentPolicy.Network.Ingress.Mode = api.AgentPolicyIngressDisabled
 	input.Platform.Topology.Ingress = nil
 	disabled := mustCompile(t, input)
-	if len(disabled.Network.Policy.Spec.Ingress) != 0 || len(disabled.Network.Policy.Spec.IngressDeny) != 1 ||
-		!slices.Contains(disabled.Network.Policy.Spec.IngressDeny[0].FromEntities, "all") {
-		t.Fatal("disabled ingress must explicitly deny every inbound peer")
+	if len(disabled.Network.Policy.Spec.Ingress) != 1 ||
+		!slices.Contains(disabled.Network.Policy.Spec.Ingress[0].FromEntities, "host") ||
+		!syntheticPortsMatch(disabled.Network.Policy.Spec.Ingress[0].ToPorts, input.WorkloadProbePort, corev1.ProtocolTCP) {
+		t.Fatal("disabled ingress must retain only the compiler-owned local kubelet probe")
+	}
+	var complement, nonHost, pods bool
+	for _, rule := range disabled.Network.Policy.Spec.IngressDeny {
+		if slices.Contains(rule.FromEntities, "all") &&
+			!syntheticPortsMatch(rule.ToPorts, input.WorkloadProbePort, corev1.ProtocolTCP) &&
+			syntheticPortsMatch(rule.ToPorts, input.WorkloadProbePort+1, corev1.ProtocolTCP) {
+			complement = true
+		}
+		nonHost = nonHost || slices.Contains(rule.FromEntities, "world") && slices.Contains(rule.FromEntities, "remote-node")
+		pods = pods || len(rule.FromEndpoints) != 0
+	}
+	if !complement || !nonHost || !pods {
+		t.Fatal("disabled ingress must explicitly deny non-probe ports and every non-host source")
 	}
 	gateway := input.Platform.Topology.Gateway[0].Peer
 	if !syntheticEgressAllowed(disabled.Network.Policy.Spec, gateway.IPs[0], &gateway, 8443, corev1.ProtocolTCP) {

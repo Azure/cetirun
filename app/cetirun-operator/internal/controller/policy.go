@@ -20,6 +20,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
@@ -384,7 +385,8 @@ func (r *AgentReconciler) desiredSandboxPolicyRevision(ctx context.Context, agen
 		return "", err
 	}
 	plan, err := sandboxpolicy.Compile(sandboxpolicy.CompileInput{
-		Resolution: *resolution, AgentName: agent.Name, Namespace: instanceNamespace(agent.Name), Platform: platform,
+		Resolution: *resolution, AgentName: agent.Name, Namespace: instanceNamespace(agent.Name),
+		WorkloadProbePort: ptr.Deref(agent.Spec.Agent.Port, 0), Platform: platform,
 	})
 	if err != nil {
 		if errors.Is(err, sandboxpolicy.ErrUnavailable) {

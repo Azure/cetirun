@@ -346,7 +346,8 @@ func (r *AgentReconciler) resolveRunningKubernetesSandbox(ctx context.Context, r
 		return nil, err
 	}
 	attempt.plan, err = sandboxpolicy.Compile(sandboxpolicy.CompileInput{Resolution: *attempt.resolution,
-		AgentName: attempt.agent.Name, Namespace: attempt.input.Namespace.Name, Platform: platform})
+		AgentName: attempt.agent.Name, Namespace: attempt.input.Namespace.Name,
+		WorkloadProbePort: ptr.Deref(attempt.agent.Spec.Agent.Port, 0), Platform: platform})
 	if err != nil {
 		return nil, err
 	}

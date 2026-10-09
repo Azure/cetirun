@@ -34,6 +34,13 @@ var dnsPorts = []api.AgentPolicyPort{
 	{Port: 53, Protocol: corev1.ProtocolUDP},
 }
 
+// The local host is handled separately for kubelet probes. Enumerating every
+// other reserved source keeps additive Cilium policies from reopening the
+// probe port without also treating the impossible "none" entity as traffic.
+var nonHostIngressEntities = []string{
+	"health", "ingress", "init", "kube-apiserver", "remote-node", "unmanaged", "world",
+}
+
 type addressGrant struct {
 	Prefix netip.Prefix
 	Ports  []api.AgentPolicyPort
@@ -361,6 +368,24 @@ func compileNetwork(input CompileInput) (NetworkPlan, error) {
 		Ingress:           []IngressRule{}, IngressDeny: []IngressRule{}, Egress: []EgressRule{}, EgressDeny: []EgressRule{},
 	}
 	budget := networkRuleBudget{}
+	var workloadProbePorts []api.AgentPolicyPort
+	if input.WorkloadProbePort != 0 {
+		workloadProbePorts = []api.AgentPolicyPort{{Port: input.WorkloadProbePort, Protocol: corev1.ProtocolTCP}}
+		// Kubelet HTTP probes originate from the local host. Keep this narrow L4
+		// exception compiler-owned: every other host port and every non-host
+		// source remains explicitly denied below, including when another Cilium
+		// policy would otherwise add an allow.
+		if err := budget.ingress(&spec.Ingress, IngressRule{
+			FromEntities: []string{"host"}, ToPorts: portRules(workloadProbePorts),
+		}); err != nil {
+			return plan, err
+		}
+		if err := budget.ingress(&spec.IngressDeny, IngressRule{
+			FromEntities: []string{"all"}, ToPorts: deniedPorts(workloadProbePorts),
+		}); err != nil {
+			return plan, err
+		}
+	}
 	// Public-internet egress is intentionally permitted except for explicit
 	// exclusions/denies below. Default-deny is not an internet allow-list; only
 	// approved peers and ports are exceptions to internal-network isolation.
@@ -466,8 +491,22 @@ func compileNetwork(input CompileInput) (NetworkPlan, error) {
 		}
 	}
 	if policy.Network.Ingress.Mode == api.AgentPolicyIngressDisabled {
-		if err := budget.ingress(&spec.IngressDeny, IngressRule{FromEntities: []string{"all"}}); err != nil {
-			return plan, err
+		if len(workloadProbePorts) == 0 {
+			// Standalone policy validation has no concrete workload port.
+			if err := budget.ingress(&spec.IngressDeny, IngressRule{FromEntities: []string{"all"}}); err != nil {
+				return plan, err
+			}
+		} else {
+			selectors, selectorErr := excludingPeers(nil)
+			if selectorErr != nil {
+				return plan, selectorErr
+			}
+			if err := budget.ingress(&spec.IngressDeny,
+				IngressRule{FromEntities: slices.Clone(nonHostIngressEntities)},
+				IngressRule{FromEndpoints: selectors},
+			); err != nil {
+				return plan, err
+			}
 		}
 	} else {
 		if len(topology.Ingress) == 0 {
@@ -496,7 +535,11 @@ func compileNetwork(input CompileInput) (NetworkPlan, error) {
 				return plan, err
 			}
 		}
-		if err := budget.ingress(&spec.IngressDeny, IngressRule{FromEntities: []string{"world", "host", "remote-node"}}); err != nil {
+		entities := slices.Clone(nonHostIngressEntities)
+		if len(workloadProbePorts) == 0 {
+			entities = append(entities, "host")
+		}
+		if err := budget.ingress(&spec.IngressDeny, IngressRule{FromEntities: entities}); err != nil {
 			return plan, err
 		}
 	}

@@ -35,6 +35,7 @@ import (
 	kubeyaml "k8s.io/apimachinery/pkg/util/yaml"
 	"k8s.io/cli-runtime/pkg/resource"
 	restfake "k8s.io/client-go/rest/fake"
+	"k8s.io/utils/ptr"
 )
 
 // Only discovery/building and HTTP/storage are synthetic. Mutations go through
@@ -319,7 +320,8 @@ func sandboxSDKAdminPlans(t *testing.T) (*PreparedRelease, *PreparedRelease, *un
 			t.Fatal(err)
 		}
 		plan, err := sandboxpolicy.Compile(sandboxpolicy.CompileInput{
-			Resolution: *resolution, AgentName: fixture.Agent.Name, Namespace: fixture.Namespace.Name, Platform: platform,
+			Resolution: *resolution, AgentName: fixture.Agent.Name, Namespace: fixture.Namespace.Name,
+			WorkloadProbePort: ptr.Deref(fixture.Agent.Spec.Agent.Port, 0), Platform: platform,
 		})
 		if err != nil {
 			t.Fatal(err)

@@ -482,7 +482,8 @@ func TestSandboxCompilerIdentityProjectionRendering(t *testing.T) {
 				})
 			}
 			plan, err := sandboxpolicy.Compile(sandboxpolicy.CompileInput{
-				Resolution: *resolution, AgentName: fixture.Input.AgentName, Namespace: fixture.Input.Namespace.Name, Platform: platform,
+				Resolution: *resolution, AgentName: fixture.Input.AgentName, Namespace: fixture.Input.Namespace.Name,
+				WorkloadProbePort: ptr.Deref(fixture.Agent.Spec.Agent.Port, 0), Platform: platform,
 			})
 			if err != nil {
 				t.Fatal(err)

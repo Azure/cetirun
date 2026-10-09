@@ -26,6 +26,7 @@ import (
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -197,7 +198,8 @@ func (r *AgentReconciler) prepareSandboxHeld(ctx context.Context, requested *api
 	}
 	attempt.plan, err = sandboxpolicy.Compile(sandboxpolicy.CompileInput{
 		Resolution: *attempt.resolution, AgentName: attempt.agent.Name,
-		Namespace: attempt.input.Namespace.Name, Platform: platform,
+		Namespace:         attempt.input.Namespace.Name,
+		WorkloadProbePort: ptr.Deref(attempt.agent.Spec.Agent.Port, 0), Platform: platform,
 	})
 	if err != nil {
 		return err

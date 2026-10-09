@@ -31,8 +31,9 @@ func Compile(input CompileInput) (*Plan, error) {
 	}
 	if len(validation.IsDNS1123Subdomain(input.AgentName)) != 0 ||
 		len(validation.IsDNS1123Label(input.Namespace)) != 0 ||
-		len(validation.IsValidLabelValue(string(binding.AgentUID))) != 0 {
-		return nil, fmt.Errorf("valid Agent name, UID label and workload namespace are required")
+		len(validation.IsValidLabelValue(string(binding.AgentUID))) != 0 ||
+		input.WorkloadProbePort < 1 || input.WorkloadProbePort > 65535 {
+		return nil, fmt.Errorf("valid Agent name, UID label, workload namespace and probe port are required")
 	}
 	if err := validateControlInput(resolution.AgentPolicy, input.Platform); err != nil {
 		return nil, err
@@ -88,7 +89,7 @@ func Compile(input CompileInput) (*Plan, error) {
 		Identity     IdentityPlan
 		Network      NetworkPlan
 	}{
-		"sandbox-controls-v2", binding, input.AgentName, input.Namespace,
+		"sandbox-controls-v3", binding, input.AgentName, input.Namespace,
 		resolution.Sandbox, sandbox.ProjectPolicy(resolution.AgentPolicy), capabilities, platform.Adapter,
 		platform.Topology, grants, approval, identity, network,
 	})

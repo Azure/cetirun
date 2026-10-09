@@ -128,10 +128,11 @@ type Platform struct {
 }
 
 type CompileInput struct {
-	Resolution sandbox.Resolution
-	AgentName  string
-	Namespace  string
-	Platform   Platform
+	Resolution        sandbox.Resolution
+	AgentName         string
+	Namespace         string
+	WorkloadProbePort int32
+	Platform          Platform
 }
 
 // Plan contains desired resources, never observed status. Render Resources

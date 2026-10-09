@@ -346,12 +346,12 @@ func TestCompileChunksMergedGatewayAPIAndIngressPorts(t *testing.T) {
 			plan := mustCompile(t, input)
 			requireBoundedPortArrays(t, plan)
 			if direction == "Ingress" {
-				rules := plan.Network.Policy.Spec.Ingress
-				if len(rules) != 1 || len(rules[0].ToPorts) != 2 {
+				rule := ingressRuleForPeer(plan.Network.Policy.Spec, first.Peer)
+				if rule == nil || len(rule.ToPorts) != 2 {
 					t.Fatal("merged ingress ports were not split into two groups")
 				}
 				got := map[PortRange]bool{}
-				for _, group := range rules[0].ToPorts {
+				for _, group := range rule.ToPorts {
 					for _, port := range group.Ports {
 						got[port] = true
 					}
@@ -365,8 +365,13 @@ func TestCompileChunksMergedGatewayAPIAndIngressPorts(t *testing.T) {
 					}
 				}
 				var denies []PortRule
-				for _, rule := range plan.Network.Policy.Spec.IngressDeny {
-					denies = append(denies, rule.ToPorts...)
+				for _, denyRule := range plan.Network.Policy.Spec.IngressDeny {
+					for _, selector := range denyRule.FromEndpoints {
+						if selector.MatchLabels["k8s:"+PeerUIDLabel] == string(first.Peer.UID) &&
+							selector.MatchLabels["k8s:io.kubernetes.pod.namespace"] == first.Peer.Namespace {
+							denies = append(denies, denyRule.ToPorts...)
+						}
+					}
 				}
 				if len(denies) != 2 {
 					t.Fatal("fragmented ingress complement was not split into two groups")
@@ -374,7 +379,7 @@ func TestCompileChunksMergedGatewayAPIAndIngressPorts(t *testing.T) {
 				for port := int32(999); port <= 1081; port++ {
 					for _, protocol := range []corev1.Protocol{corev1.ProtocolTCP, corev1.ProtocolUDP, corev1.ProtocolSCTP} {
 						want := protocol == corev1.ProtocolTCP && port >= 1000 && port <= 1080 && port%2 == 0
-						allowed := syntheticPortsMatch(rules[0].ToPorts, port, protocol)
+						allowed := syntheticPortsMatch(rule.ToPorts, port, protocol)
 						denied := syntheticPortsMatch(denies, port, protocol)
 						if allowed != want || denied == want {
 							t.Fatalf("ingress grouping changed fragmented permission for %d/%s", port, protocol)

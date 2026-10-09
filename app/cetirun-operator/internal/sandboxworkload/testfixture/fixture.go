@@ -34,6 +34,10 @@ type Fixture struct {
 }
 
 func New(agentType string) Fixture {
+	probePort := int32(8642)
+	if agentType == string(api.AgentTypeOpenClaw) {
+		probePort = 18789
+	}
 	resources := api.SandboxContainerResources{
 		Requests: ResourceList("1", "1Gi", "1Gi"), Limits: ResourceList("2", "2Gi", "2Gi"),
 	}
@@ -68,7 +72,7 @@ func New(agentType string) Fixture {
 		ObjectMeta: metav1.ObjectMeta{Name: "example", UID: "agent-uid", ResourceVersion: "1", Generation: 1},
 		Spec: api.AgentSpec{
 			Team: team.Name, SandboxRef: box.Name, PolicyClass: api.AgentPolicyClassNormal,
-			Agent: api.HarnessSpec{Type: api.AgentType(agentType)}, GatewayTokenSecretRef: "runtime-secret",
+			Agent: api.HarnessSpec{Type: api.AgentType(agentType), Port: ptr.To(probePort)}, GatewayTokenSecretRef: "runtime-secret",
 			User: api.UserSpec{Alias: "example", DisplayName: "Example"},
 		},
 	}
