@@ -2,7 +2,7 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 
-"""Wait for an MCR version tag to match its backing digest, then pull that digest."""
+"""Wait for an MCR version tag and platform manifest to match the backing digest."""
 
 import argparse
 import hashlib
@@ -28,7 +28,7 @@ ACCEPT = ", ".join((
 MAX_MANIFEST_BYTES = 4 * 1024 * 1024
 
 
-def manifest_matches(url, expected):
+def manifest_matches(url: str, expected: str) -> bool:
     try:
         with urlopen(Request(url, headers={"Accept": ACCEPT}), timeout=15) as response:
             manifest = response.read(MAX_MANIFEST_BYTES + 1)
@@ -47,7 +47,22 @@ def manifest_matches(url, expected):
         return False
 
 
-def main(argv=None):
+def pull_image(image: str) -> bool:
+    """Return whether MCR has synchronized the requested platform manifest."""
+    try:
+        subprocess.run(
+            ["docker", "pull", "--platform", "linux/amd64", image],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        return False
+    return True
+
+
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--image", required=True, help="tagged mcr.microsoft.com/aks/ai-runtime/cetirun image")
     parser.add_argument("--digest", required=True, help="sha256 digest returned by the backing registry")
@@ -64,16 +79,18 @@ def main(argv=None):
             raise ValueError("Docker is required; install it separately")
 
         url = f"https://mcr.microsoft.com/v2/{image['repository']}/manifests/{image['tag']}"
+        pinned = f"{args.image}@{args.digest}"
         for attempt in range(args.attempts):
-            if manifest_matches(url, args.digest):
+            if manifest_matches(url, args.digest) and pull_image(pinned):
                 break
             if attempt + 1 == args.attempts:
-                raise ValueError(f"MCR did not expose the expected digest for {args.image}; check onboarding and retry verification")
+                raise ValueError(
+                    f"MCR did not expose a pullable {args.digest} manifest for "
+                    f"{args.image}; check onboarding and retry verification"
+                )
             print(f"Waiting for MCR: {args.image} (attempt {attempt + 1}/{args.attempts})", flush=True)
             time.sleep(args.interval)
 
-        pinned = f"{args.image}@{args.digest}"
-        subprocess.run(["docker", "pull", "--platform", "linux/amd64", pinned], check=True, timeout=600)
         platform = subprocess.run(
             ["docker", "image", "inspect", "--format", "{{.Os}}/{{.Architecture}}", pinned],
             check=True, capture_output=True, text=True, timeout=30,
