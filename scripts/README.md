@@ -55,7 +55,7 @@ explicit recovery, never adopted by its name or label.
 that explicit choice is reported and may incur charges. Keep the alias and
 private run output for authorized cleanup.
 
-The existing application/routing assertions and their limitations remain:
+The application checks retain their existing scope:
 this does not implement governed creation, prove physical writer fencing,
 qualify enforcement or complete a real model/tool acceptance run. The existing
 Hermes check still uses Pod exec and is not a governed-Pod admission workaround.
@@ -68,6 +68,59 @@ Offline lifecycle regressions replace kubectl and Helm with synthetic processes:
 
 ```bash
 python3 -B -m unittest discover -s scripts/tests -p test_e2e_lifecycle.py -v
+```
+
+### Native ingress sign-in challenge
+
+The application runner uses `e2e-ingress-check.py` to request the canonical
+`https://<domain>/ui/<agent>/` route, not an instance subdomain. `DOMAIN` is an
+explicit override of the operator release's `domainSuffix`; missing/unreadable
+values fail instead of falling back to an example domain. `E2E_OIDC_CLIENT_ID`
+can supply the expected public application identifier; otherwise the runner
+reads `clientId` from the selected cluster's Istio release.
+
+The helper sends one unauthenticated GET with certificate and hostname
+verification. It does not read an Agent Secret, send a token/cookie, follow a
+redirect, contact the identity provider, use ambient HTTP proxies or enable
+ambient TLS key logging. System CA trust is the default; `E2E_CA_FILE` selects
+an absolute PEM CA bundle when the approved target needs a private test CA.
+There is no insecure verification option.
+
+For a separately authorized HTTPS target, the helper can also run directly:
+
+```bash
+python3 -B scripts/e2e-ingress-check.py \
+  --origin "$TEST_HTTPS_ORIGIN" --agent-name "$TEST_AGENT_NAME" \
+  --client-id "$EXPECTED_OIDC_CLIENT_ID"
+```
+
+It accepts only HTTP 302 with a single Location naming the exact public
+`https://login.microsoftonline.com/<tenant>/oauth2/v2.0/authorize` endpoint,
+the expected client ID, `response_type=code`, and the exact
+`<origin>/oauth2/callback` redirect URI. Missing/duplicate/mismatched query
+parameters fail. Other statuses, including 200, 401 and 403, are not evidence
+that the expected sign-in challenge is wired correctly. Sovereign-cloud issuers,
+intermediate redirects and other layouts are outside this narrow check.
+
+Accepted response headers are limited to 16 KiB and Location to 8 KiB; Python's
+HTTP parser also applies its native line/count limits. The body is not read.
+Socket operations have a ten-second timeout and the POSIX command has a
+30-second overall deadline, including DNS/TLS/header collection. Output is one
+small JSON object with fixed reason codes, never the origin, response headers,
+cookies, redirect state, identifiers or raw transport diagnostics.
+
+Exit zero means only `status: observed` for that unauthenticated challenge.
+`authenticatedAccess` remains `not-tested` and `qualifiesExecution` remains
+`false`. Owner sign-in, authorized native HTTP/WebSocket access, downstream
+application readiness and model/tool execution require separate acceptance.
+Transport/validation failure exits 1, invalid inputs exit 2, and cancellation
+exits 130/143. The runner retains its ordinary conditional cleanup on failure.
+
+Offline tests use response doubles and ephemeral local TLS servers/certificates:
+
+```bash
+PYTHONPATH=scripts/tests python3 -B -m unittest \
+  test_e2e_ingress_check test_e2e_lifecycle -v
 ```
 
 ## Read-only deployed Sandbox preflight
