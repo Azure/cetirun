@@ -121,6 +121,9 @@ rules:
   - apiGroups: ["cilium.io"]
     resources: ["ciliumnetworkpolicies"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["networking.istio.io"]
+    resources: ["gateways"]
+    verbs: ["get"]
   {{- end }}
 
   # Istio VirtualServices + Sidecar (egress scope)

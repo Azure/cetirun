@@ -276,8 +276,8 @@ func (h *PodHandler) readExpectation(ctx context.Context, namespace string) (san
 }
 
 func (h *PodHandler) validatePodSources(ctx context.Context, expected sandboxworkload.Expectation, agent *api.Agent) *podFailure {
-	if len(expected.Sources) < 9 || len(expected.Sources) > 128 {
-		return podDenied("SourceInventoryInvalid", "source inventory must contain 9 to 128 identities")
+	if len(expected.Sources) < 9 || len(expected.Sources) > sandboxworkload.MaxPreparationSources {
+		return podDenied("SourceInventoryInvalid", fmt.Sprintf("source inventory must contain 9 to %d identities", sandboxworkload.MaxPreparationSources))
 	}
 	type objectKey struct{ version, kind, namespace, name string }
 	required := map[objectKey]types.UID{

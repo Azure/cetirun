@@ -179,6 +179,7 @@ sandboxAdmission:
 # native Sandbox preparation. Both use the same operator-namespace platform.json.
 # Does not qualify a platform or implement writer fencing. Execution stays held.
 # Adds controller write permissions for compiled namespaced CiliumNetworkPolicies.
+# Adds only get permission on shared Istio Gateways for pinned access inputs.
 sandboxSources:
   enabled: false
   # -- Create owned namespace, HOME and native authentication only for new namespaces.

@@ -303,6 +303,14 @@ class SandboxAdmissionChartTests(unittest.TestCase):
                 rules = configured[role_key]["rules"]
                 self.assertEqual(rules.count(policy_rule), 1)
                 rules.remove(policy_rule)
+                gateway_rule = {
+                    "apiGroups": ["networking.istio.io"],
+                    "resources": ["gateways"],
+                    "verbs": ["get"],
+                }
+                self.assertEqual(rules.count(gateway_rule), 1)
+                self.assertFalse(any("gateways" in rule["resources"] for rule in baseline[role_key]["rules"]))
+                rules.remove(gateway_rule)
                 env.remove(source_env[0])
                 config_env["value"] = baseline_config_env["value"]
                 self.assertEqual(configured, baseline)

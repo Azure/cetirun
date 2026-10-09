@@ -374,6 +374,9 @@ RuntimeClass/StorageClass `get` permissions. Enabled sources grant the controlle
 These controller permissions are cluster-wide; staging still verifies exact
 Agent ownership and namespace identities. Admission remains read-only, with no
 cluster-wide Cilium policy or endpoint write permissions added.
+Sources additionally grant controller-only `get` on Istio Gateways for exact
+native-access input pinning. This is read-only access to shared routing
+infrastructure, not Gateway mutation or automatic route/runtime activation.
 The optional skills catalog adds only PersistentVolume `get` for its dependency
 metadata; it adds no Secret lists or cluster-wide ConfigMap access.
 
@@ -509,6 +512,12 @@ Keep `istioGateway` aligned with the portal chart's `istio.gateway`. The
 Gateway resource namespace can differ from its workload namespace: set
 `cetirun.helmValues.networkPolicy.istioIngressNamespace` to the workload
 namespace so agent NetworkPolicies allow gateway traffic.
+The governed native-access component instead resolves consumer namespaces from
+the trusted platform ingress topology and pins their identities independently of
+the Gateway resource. Its VirtualService keeps the configured Gateway reference
+but exports to those enrolled ingress workload namespaces, not implicitly to the
+Gateway resource namespace. These inputs do not qualify gateway authentication
+or enable governed execution.
 
 `cetirun.helmValues` is a default layer, not an enforcement boundary. Team
 settings and per-instance `spec.helm.values` can override it, and lists are

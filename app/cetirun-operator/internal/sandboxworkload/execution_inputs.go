@@ -105,7 +105,8 @@ func EffectiveSource(source SourceReference) bool {
 		"node.k8s.io/v1/RuntimeClass", "storage.k8s.io/v1/StorageClass",
 		"rbac.authorization.k8s.io/v1/Role", "rbac.authorization.k8s.io/v1/RoleBinding",
 		"rbac.authorization.k8s.io/v1/ClusterRole", "rbac.authorization.k8s.io/v1/ClusterRoleBinding",
-		"apps/v1/ControllerRevision", "cilium.io/v2/CiliumNetworkPolicy":
+		"apps/v1/ControllerRevision", "cilium.io/v2/CiliumNetworkPolicy",
+		"networking.istio.io/v1beta1/Gateway":
 		return true
 	}
 	return false

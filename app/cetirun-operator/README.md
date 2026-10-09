@@ -141,9 +141,14 @@ revisions cover effective inputs, not incidental observation versions.
 Publication-source content and identities remain checked even when their
 observation versions change. Withdrawal, missing providers, changed approvals
 and stale observations fail without restaging Helm or quiescing a running writer.
-The execution inventory accepts up to 129 identities: all 128 supported
-preparation inputs plus the preparation-state ConfigMap. Larger inventories
-fail without truncation.
+Preparation and final-Pod admission retain the 128-source expectation limit.
+Execution and coordination reserve room for all 128 prepared inputs, the
+preparation-state ConfigMap, and up to 130 access inputs: one Service, one Gateway
+and 128 distinct ingress workload namespaces. The combined limit is 259 source
+identities; duplicate dependencies use a single slot. Oversized inventories
+fail without truncation, and the existing 512-KiB coordination-object and compiler
+budgets still apply. Older readers enforcing the 129-source execution limit
+must be upgraded before larger execution records are written.
 
 One UID-pinned controller-state object serializes shared-source readers and
 exclusive changes with API resource-version comparisons. Running and stopping
@@ -333,6 +338,50 @@ invalidation, not route withdrawal, process termination or writer fencing.
 Stock startup does not install this component as an execution adapter. Its
 unit and local API-server tests use synthetic runtime inputs and observations;
 they do not establish live enforcement or an end-to-end governed Agent run.
+
+### Governed native access lifecycle
+
+`SandboxExecutionAccess` supplies concrete Istio API operations for the first
+OpenClaw bring-up; it is not installed by stock startup. `Enroll` accepts only
+verified held preparation and creates a nonforwarding, Agent-owned route slot.
+The returned coordination intent pins that route UID and the current Service,
+HTTPS Gateway, host and native port. It separately resolves the ingress workload
+namespaces from the trusted platform ingress topology, reads their exact UIDs,
+and includes them in the same effective-source digests and reservations.
+The VirtualService references the Gateway resource by its namespace/name but
+exports only to these enrolled consumer namespaces, which need not contain the
+Gateway resource. Multiple approved consumers are sorted and deduplicated;
+more than 128 distinct ingress namespaces are rejected before namespace reads
+or route creation. Missing or replaced namespaces fail closed rather than
+exporting mesh-wide.
+An existing foreign, changed or used route is never adopted.
+
+`Publish` requires the exact Running ticket, current running-input checks and
+separate fresh guest-external enforcement evidence. It updates only the enrolled
+route UID, preserving the native `/ui/<agent>` redirect, HTTP and WebSocket
+behavior. It does not expose terminal, desktop, sign-in helper or webhook routes.
+No new access URL, global Ready condition or runtime permission is written.
+Shared gateway authentication and its ongoing enforcement must already be
+independently qualified; an HTTPS Gateway object is not authentication evidence.
+
+`Withdraw` uses the recorded Stopping ticket and route ownership even when
+current policy, gateway or ingress namespaces are gone. It uses the enrolled
+consumer namespace names and first makes the exact route
+nonforwarding, advancing its resource version, then conditionally deletes that
+UID and verifies absence. This invalidates delayed publication updates without
+recreating routes or touching a same-name replacement. Unknown results retain
+the coordination reservation; route removal is not writer fencing or a reason
+to release it. Disabled ingress requires route absence and creates no slot.
+
+The optional `access` intent field and its `ingressNamespaces` inventory require
+updated readers while such records exist. Legacy intents without access or
+consumer pins cannot publish authenticated access. Previously enrolled routes
+without consumer pins remain eligible only for nonforwarding cleanup using their
+original Gateway-namespace export scope, followed by conditional deletion. This
+component does not install a physical start/fencing provider or replace the
+controller's held dispatch. Hermes and helper-route support are not included in
+this first native access slice. Offline tests exercise API behavior with
+synthetic runtime evidence, not a running proxy or an end-to-end model request.
 
 ### Existing activation boundary
 
@@ -762,6 +811,8 @@ staging needs for the compiler's policy resources. The controller's ClusterRole
 grants these permissions cluster-wide; the staging path still verifies exact
 Agent ownership and namespace identities. Admission remains read-only, and no
 cluster-wide Cilium policy or endpoint write permissions are granted.
+Sources also grant the controller `get` on Istio Gateways for exact access-source
+pinning; the shared Gateway is not created, updated or deleted by this path.
 The optional skills publication catalog described below adds only
 PersistentVolume `get` for its metadata dependencies, not write permissions,
 Secret lists or cluster-wide ConfigMap access.

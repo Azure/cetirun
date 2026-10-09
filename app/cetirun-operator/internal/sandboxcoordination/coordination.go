@@ -36,14 +36,17 @@ const (
 	Finalizer  = "sandbox.cetirun.microsoft.com/coordination"
 	MaxBytes   = 512 * 1024
 	MaxEntries = 128
-	// Held preparation permits 128 inputs; coordination additionally pins
-	// the prepared expectation ConfigMap itself.
-	MaxSources = 129
-	Reserved   = Phase("reserved")
-	Starting   = Phase("starting")
-	Running    = Phase("running")
-	Stopping   = Phase("stopping")
-	Changing   = Phase("changing")
+	// Access dependencies are appended after the preparation envelope itself.
+	// Keep their budget separate so a full preparation remains enrollable.
+	MaxPreparedExecutionSources = w.MaxPreparationSources + 1
+	MaxIngressNamespaces        = 128
+	MaxAccessSources            = 2 + MaxIngressNamespaces // Service, Gateway and distinct consumer namespaces.
+	MaxSources                  = MaxPreparedExecutionSources + MaxAccessSources
+	Reserved                    = Phase("reserved")
+	Starting                    = Phase("starting")
+	Running                     = Phase("running")
+	Stopping                    = Phase("stopping")
+	Changing                    = Phase("changing")
 )
 
 var (
@@ -78,6 +81,18 @@ type Intent struct {
 	SourceDigests            map[string]string          `json:"sourceDigests"`
 	TeamSharedDigest         string                     `json:"teamSharedDigest"`
 	IngressMode              api.AgentPolicyIngressMode `json:"ingressMode"`
+	Access                   *AccessBinding             `json:"access,omitempty"`
+}
+
+// AccessBinding pins an already-created, nonforwarding route slot. Runtime
+// publication may update this UID, never create or adopt a replacement.
+type AccessBinding struct {
+	Route             w.ObjectIdentity    `json:"route"`
+	Service           w.SourceReference   `json:"service"`
+	Gateway           w.SourceReference   `json:"gateway"`
+	IngressNamespaces []w.SourceReference `json:"ingressNamespaces,omitempty"`
+	Host              string              `json:"host"`
+	Port              int32               `json:"port"`
 }
 
 func (intent Intent) Validate() error {
@@ -697,6 +712,30 @@ func validateIntent(intent Intent) error {
 			return fmt.Errorf("%w: required binding, placement or storage source is missing", ErrUnavailable)
 		}
 	}
+	if access := intent.Access; access != nil {
+		if intent.IngressMode != api.AgentPolicyIngressAuthenticated ||
+			!identity(access.Route) || access.Route.Name != "cetirun-"+intent.Agent.Name ||
+			len(validation.IsDNS1123Subdomain(access.Host)) != 0 || access.Host == "" ||
+			access.Port < 1 || access.Port > 65535 ||
+			access.Service.APIVersion != "v1" || access.Service.Kind != "Service" ||
+			access.Service.Namespace != intent.Namespace.Name || access.Service.Name != intent.Workload.Name ||
+			access.Gateway.APIVersion != "networking.istio.io/v1beta1" || access.Gateway.Kind != "Gateway" ||
+			access.Gateway.Namespace == "" ||
+			!slices.Contains(intent.Sources, access.Service) || !slices.Contains(intent.Sources, access.Gateway) {
+			return fmt.Errorf("%w: access requires exact owned route and pinned Service/Gateway inputs", ErrUnavailable)
+		}
+		if len(access.IngressNamespaces) > MaxIngressNamespaces {
+			return fmt.Errorf("%w: ingress namespace inventory exceeds its bound", ErrUnavailable)
+		}
+		for i, namespace := range access.IngressNamespaces {
+			if namespace.APIVersion != "v1" || namespace.Kind != "Namespace" || namespace.Namespace != "" ||
+				len(validation.IsDNS1123Label(namespace.Name)) != 0 ||
+				!slices.Contains(intent.Sources, namespace) ||
+				(i > 0 && access.IngressNamespaces[i-1].Name >= namespace.Name) {
+				return fmt.Errorf("%w: access ingress namespaces must be uniquely ordered and pinned sources", ErrUnavailable)
+			}
+		}
+	}
 	return nil
 }
 
@@ -748,6 +787,11 @@ func cloneExecution(execution Execution) Execution {
 	execution.Intent.Sources = slices.Clone(execution.Intent.Sources)
 	execution.Intent.Placement = execution.Intent.Placement.DeepCopy()
 	execution.Intent.SourceDigests = maps.Clone(execution.Intent.SourceDigests)
+	if execution.Intent.Access != nil {
+		access := *execution.Intent.Access
+		access.IngressNamespaces = slices.Clone(access.IngressNamespaces)
+		execution.Intent.Access = &access
+	}
 	return execution
 }
 
