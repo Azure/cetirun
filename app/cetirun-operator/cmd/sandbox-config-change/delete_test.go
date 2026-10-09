@@ -27,7 +27,7 @@ import (
 )
 
 func TestCLIDeleteAndObservationRecovery(t *testing.T) {
-	for _, outcome := range []string{"success", "lost reply", "not committed"} {
+	for _, outcome := range []string{"success", "lost reply", "large replacement", "not committed"} {
 		t.Run(outcome, func(t *testing.T) {
 			args, store, storage, before, _ := cliFixture(t)
 			args = args[:len(args)-2] // --after is forbidden for deletion.
@@ -41,7 +41,7 @@ func TestCLIDeleteAndObservationRecovery(t *testing.T) {
 					if err := c.Delete(ctx, object, opts...); err != nil {
 						return err
 					}
-					if outcome == "lost reply" {
+					if outcome == "lost reply" || outcome == "large replacement" {
 						return errors.New(syntheticBody + " sk-dummy")
 					}
 					return nil
@@ -63,6 +63,18 @@ func TestCLIDeleteAndObservationRecovery(t *testing.T) {
 			if code != 1 || status.Status != "uncertain" || !strings.Contains(message, deletionObservationInstruction) {
 				t.Fatal("unknown Delete did not give the correct recovery instructions")
 			}
+			var replacement *api.Team
+			if outcome == "large replacement" {
+				replacement = &api.Team{
+					ObjectMeta: metav1.ObjectMeta{Name: before.Name, UID: "replacement-uid"},
+					Spec: api.TeamSpec{MemberContext: api.TeamContextSpec{
+						Role: strings.Repeat("x", 270000),
+					}},
+				}
+				if err := storage.Create(context.Background(), replacement); err != nil {
+					t.Fatal(err)
+				}
+			}
 			writes := 0
 			observer := interceptor.NewClient(storage, interceptor.Funcs{
 				Update: func(context.Context, client.WithWatch, client.Object, ...client.UpdateOption) error {
@@ -78,7 +90,7 @@ func TestCLIDeleteAndObservationRecovery(t *testing.T) {
 			if writes != 0 || observed.Operation != status.Operation {
 				t.Fatal("observe-delete changed state or selected a different operation")
 			}
-			if outcome == "lost reply" {
+			if outcome != "not committed" {
 				if code != 0 || observed.Status != "deletion-accepted-reservation-retained" {
 					t.Fatal("deleted UID not observed")
 				}
@@ -92,8 +104,16 @@ func TestCLIDeleteAndObservationRecovery(t *testing.T) {
 			if deletes != 1 || recovered.Operation != status.Operation {
 				t.Fatal("recovery replayed or substituted the deletion")
 			}
-			if (code == 0) != (outcome == "lost reply") {
+			if (code == 0) != (outcome != "not committed") {
 				t.Fatal("unexpected recovery result")
+			}
+			if replacement != nil {
+				current := &api.Team{}
+				if err := storage.Get(context.Background(), client.ObjectKeyFromObject(replacement), current); err != nil ||
+					current.UID != replacement.UID || current.ResourceVersion != replacement.ResourceVersion ||
+					current.Spec.MemberContext.Role != replacement.Spec.MemberContext.Role {
+					t.Fatal("recovery modified the replacement:", err)
+				}
 			}
 		})
 	}

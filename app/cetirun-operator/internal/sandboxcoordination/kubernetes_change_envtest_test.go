@@ -180,6 +180,64 @@ func TestKubernetesConfigurationAPIServer(t *testing.T) {
 		}
 	}
 
+	t.Run("delete/large-replacement", func(t *testing.T) {
+		store, before, _ := newFixture(t, "Team", "large-replacement")
+		ticket, err := store.AcquireConfigurationDeletion(ctx, before)
+		if err != nil {
+			t.Fatal(err)
+		}
+		deletes := 0
+		writer := interceptor.NewClient(storage, interceptor.Funcs{
+			Delete: func(ctx context.Context, c client.WithWatch, object client.Object, opts ...client.DeleteOption) error {
+				deletes++
+				if err := c.Delete(ctx, object, opts...); err != nil {
+					return err
+				}
+				return errors.New("synthetic lost Delete reply")
+			},
+		})
+		ticket, err = store.ReconcileChange(ctx, ticket, deletionAdapter(t, writer, storage, before))
+		if err == nil || ticket.Change.Phase != Changing {
+			t.Fatal("lost reply did not retain deletion intent")
+		}
+		replacement := &api.Team{
+			ObjectMeta: metav1.ObjectMeta{Name: before.GetName()},
+			Spec: api.TeamSpec{MemberContext: api.TeamContextSpec{
+				Role: strings.Repeat("x", 270000),
+			}},
+		}
+		if err := storage.Create(ctx, replacement); err != nil {
+			t.Fatal("API rejected valid replacement larger than the configuration image bound:", err)
+		}
+		recovered, err := store.ReadConfigurationDeletion(ctx, before)
+		if err != nil {
+			t.Fatal(err)
+		}
+		observer := deletionAdapter(t, nil, storage, before)
+		outcome, err := observer.ObserveChange(ctx, recovered)
+		if err != nil || !outcome.Removed {
+			t.Fatal("replacement contents prevented observing the original UID's removal:", err)
+		}
+		if err := store.CheckChange(ctx, recovered); err != nil {
+			t.Fatal("read-only observation released the reservation:", err)
+		}
+		if _, err := store.ReconcileChange(ctx, recovered, observer); err != nil {
+			t.Fatal("replacement blocked observation-only recovery:", err)
+		}
+		if _, err := store.ReadConfigurationDeletion(ctx, before); !errors.Is(err, ErrUnavailable) {
+			t.Fatal("completed deletion retained its reservation:", err)
+		}
+		current := &api.Team{}
+		if err := storage.Get(ctx, client.ObjectKeyFromObject(replacement), current); err != nil ||
+			current.UID != replacement.UID || current.ResourceVersion != replacement.ResourceVersion ||
+			current.Spec.MemberContext.Role != replacement.Spec.MemberContext.Role {
+			t.Fatal("recovery modified the replacement:", err)
+		}
+		if deletes != 1 {
+			t.Fatal("recovery resubmitted Delete")
+		}
+	})
+
 	for _, transition := range []struct {
 		name                          string
 		beforeGoverned, afterGoverned bool

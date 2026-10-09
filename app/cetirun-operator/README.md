@@ -264,6 +264,10 @@ then finishes the same recorded operation without resubmission.
 The CLI reports `deletion-accepted`, not resource or dependent cleanup completion.
 Release after the terminating transition allows normal finalizer cleanup to
 finish. Missing authority remains an error, never permission to delete.
+Deletion observation reads authoritative metadata only, so a replacement's
+larger or newer specification cannot block recovery for the original UID.
+Reservation, admission and submission still validate the complete original
+before image and enforce the same conditional Delete.
 
 The journal format is unchanged: deletion has its own desired-operation digest
 and conservative whole-source scope. Update tickets cannot authorize deletion.

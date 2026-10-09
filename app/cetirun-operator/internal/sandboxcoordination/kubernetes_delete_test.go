@@ -143,6 +143,51 @@ func TestConfigurationDeletionRecovery(t *testing.T) {
 	}
 }
 
+func TestConfigurationDeletionObservationRejectsInvalidMetadata(t *testing.T) {
+	for name, mutate := range map[string]func(*metav1.PartialObjectMetadata){
+		"missing UID":             func(o *metav1.PartialObjectMetadata) { o.UID = "" },
+		"missing resourceVersion": func(o *metav1.PartialObjectMetadata) { o.ResourceVersion = "" },
+		"wrong name":              func(o *metav1.PartialObjectMetadata) { o.Name = "wrong-name" },
+		"wrong namespace":         func(o *metav1.PartialObjectMetadata) { o.Namespace = "unexpected" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			store, storage, before, _ := configurationFixture(t, "Team")
+			ticket, err := store.AcquireConfigurationDeletion(ctx, before)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ticket, err = store.BeginChange(ctx, ticket)
+			if err != nil {
+				t.Fatal(err)
+			}
+			reader := interceptor.NewClient(storage, interceptor.Funcs{
+				Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, object client.Object, opts ...client.GetOption) error {
+					metadata, ok := object.(*metav1.PartialObjectMetadata)
+					if !ok {
+						t.Fatal("deletion observation requested a complete configuration")
+					}
+					if key != client.ObjectKeyFromObject(before) {
+						t.Fatal("observation selected another configuration")
+					}
+					if err := c.Get(ctx, key, object, opts...); err != nil {
+						return err
+					}
+					metadata.UID = "replacement-uid"
+					mutate(metadata)
+					return nil
+				},
+			})
+			if _, err := store.ReconcileChange(ctx, ticket, deletionAdapter(t, nil, reader, before)); !errors.Is(err, ErrUnavailable) {
+				t.Fatal("invalid metadata was accepted as deletion evidence:", err)
+			}
+			if err := store.CheckChange(ctx, ticket); err != nil {
+				t.Fatal("invalid observation released the reservation:", err)
+			}
+		})
+	}
+}
+
 func TestConfigurationDeletionExcludesEveryConsumerPhase(t *testing.T) {
 	for _, kind := range []string{"Team", "Sandbox", "AgentPolicy"} {
 		for _, phase := range []Phase{Reserved, Starting, Running, Stopping} {

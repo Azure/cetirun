@@ -146,23 +146,31 @@ func (a *KubernetesDeleteAdapter) ObserveChange(ctx context.Context, ticket Chan
 	if err := a.validate(ctx, ticket); err != nil {
 		return nil, err
 	}
-	current, err := a.deletion.source().readCurrent(ctx, a.reader)
-	if err != nil && !apierrors.IsNotFound(err) {
-		return nil, err
-	}
 	before := a.deletion.before.reference
+	// Deletion evidence needs only identity and termination metadata. A
+	// replacement's size or schema must not prevent observing the old UID gone.
+	metadata := &metav1.PartialObjectMetadata{TypeMeta: metav1.TypeMeta{APIVersion: before.APIVersion, Kind: before.Kind}}
+	err := a.reader.Get(ctx, client.ObjectKey{Namespace: before.Namespace, Name: before.Name}, metadata)
+	if err != nil && !apierrors.IsNotFound(err) {
+		return nil, fmt.Errorf("%w: configuration deletion observation failed: %w", ErrUnavailable, err)
+	}
+	current := w.SourceReference{APIVersion: before.APIVersion, Kind: before.Kind,
+		Namespace: metadata.Namespace, Name: metadata.Name, UID: metadata.UID, ResourceVersion: metadata.ResourceVersion}
+	if err == nil && (!validSource(current) || sourceKey(current) != sourceKey(before)) {
+		return nil, fmt.Errorf("%w: observed configuration identity is incomplete or mismatched", ErrUnavailable)
+	}
 	outcome := &ChangeOutcome{
 		AuthorityUID: string(ticket.AuthorityUID), OperationID: ticket.Change.ID,
 		Before: before, DesiredDigest: a.deletion.digest, Applied: true, NoPendingSubmissions: true,
 	}
-	if apierrors.IsNotFound(err) || current.reference.UID != before.UID {
+	if apierrors.IsNotFound(err) || current.UID != before.UID {
 		// The old UID is absent. A delayed conditional Delete cannot affect a
 		// replacement; its contents are neither adopted nor returned as After.
 		outcome.Removed = true
-	} else if !current.object.GetDeletionTimestamp().IsZero() && current.reference.ResourceVersion != before.ResourceVersion {
+	} else if !metadata.DeletionTimestamp.IsZero() && current.ResourceVersion != before.ResourceVersion {
 		// Release the change reservation so ordinary finalizer cleanup can
 		// finish. This is deletion acceptance, not proof of physical cleanup.
-		outcome.After = current.reference
+		outcome.After = current
 	} else {
 		return nil, fmt.Errorf("%w: configuration deletion outcome remains unknown", ErrUnavailable)
 	}
