@@ -258,10 +258,10 @@ func TestAdmissionAPIServerBoundaries(t *testing.T) {
 			t.Fatalf("dry-run Agent persisted: %v", err)
 		}
 	})
-	t.Run("member cannot create policy or write status despite broad spec RBAC", func(t *testing.T) {
+	t.Run("member can select a Team directly but cannot write status despite broad spec RBAC", func(t *testing.T) {
 		agent := newAgent("member-governed")
-		if err := member.Create(ctx, agent); !apierrors.IsForbidden(err) || !strings.Contains(err.Error(), "administrator") {
-			t.Fatalf("expected webhook authority denial, got %v", err)
+		if err := member.Create(ctx, agent); err != nil {
+			t.Fatalf("direct Team selection was rejected: %v", err)
 		}
 		managed := newAgent("member-status")
 		if err := cl.Create(ctx, managed); err != nil {
@@ -497,8 +497,8 @@ func TestAdmissionAPIServerBoundaries(t *testing.T) {
 		}
 		suspended := agent.DeepCopy()
 		suspended.Spec.Suspended = true
-		if err := member.Update(ctx, suspended.DeepCopy()); !apierrors.IsForbidden(err) {
-			t.Fatalf("suspension bypassed caller authorization: %v", err)
+		if err := member.Update(ctx, suspended); err != nil {
+			t.Fatalf("direct writer could not suspend during a platform outage: %v", err)
 		}
 		for _, edit := range []func(*api.Agent){
 			func(a *api.Agent) { a.Spec.Model = "another-model" },
@@ -510,9 +510,6 @@ func TestAdmissionAPIServerBoundaries(t *testing.T) {
 			if err := cl.Update(ctx, changed); err == nil {
 				t.Fatal("suspension admitted an additional change without valid inventory")
 			}
-		}
-		if err := cl.Update(ctx, suspended); err != nil {
-			t.Fatal("authorized suspension depended on malformed inventory:", err)
 		}
 		var stored api.Agent
 		if err := cl.Get(ctx, client.ObjectKeyFromObject(agent), &stored); err != nil {

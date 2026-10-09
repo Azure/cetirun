@@ -158,6 +158,7 @@ func TestAuthorizationAPIServerBindings(t *testing.T) {
 		recovery.agent = f.agent.DeepCopy()
 		recovery.agent.ObjectMeta = metav1.ObjectMeta{Name: recovery.name + "-agent", Finalizers: []string{api.Finalizer}}
 		recovery.agent.Spec.Team, recovery.agent.Spec.SandboxRef = recovery.team.Name, recovery.box.Name
+		recovery.agent.Spec.Suspended = true
 		stampFixtureAuthorization(t, recovery.fixture)
 		create(recovery.agent)
 		binding, err := sandboxbinding.AuthorizedBinding(recovery.agent)
@@ -330,6 +331,10 @@ func TestAuthorizationAPIServerBindings(t *testing.T) {
 		agent := newAgent("replacement-agent")
 		agent.Spec.Team = team.Name
 		create(agent)
+		agent.Spec.Suspended = true
+		if err := admin.Update(ctx, agent); err != nil {
+			t.Fatal("could not suspend Agent before reference reauthorization test:", err)
+		}
 		original, err := sandboxbinding.AuthorizedBinding(agent)
 		if err != nil || agent.Status.Sandbox != nil {
 			t.Fatalf("initial authorization missing before first apply: %v", err)
@@ -627,24 +632,29 @@ func TestAuthorizationAPIServerBindings(t *testing.T) {
 		}
 	})
 	t.Run("server-side apply owns annotation keys rather than the whole map", func(t *testing.T) {
-		for _, mode := range []string{"create-defaults", "create-explicit", "adopt-existing"} {
+		for _, mode := range []string{"create-team-defaults", "create-explicit", "adopt-existing"} {
 			t.Run(mode, func(t *testing.T) {
 				name := "apply-" + mode
 				annotations := map[string]any{"example.com/gitops-note": "initial"}
 				spec := map[string]any{
 					"agent": map[string]any{"type": api.AgentTypeHermes}, "user": map[string]any{"alias": "alice", "displayName": ""},
-					"gatewayTokenSecretRef": "gateway-token",
+					"gatewayTokenSecretRef": "gateway-token", "suspended": true,
 				}
 				manifest := map[string]any{
 					"apiVersion": api.GroupVersion.String(), "kind": "Agent",
 					"metadata": map[string]any{"name": name, "annotations": annotations, "finalizers": []string{api.Finalizer}},
 					"spec":     spec,
 				}
+				if mode != "adopt-existing" {
+					spec["team"] = f.team.Name
+				}
 				if mode == "create-explicit" {
 					spec["team"], spec["sandboxRef"], spec["policyClass"] = f.team.Name, f.box.Name, api.AgentPolicyClassNormal
 				}
 				if mode == "adopt-existing" {
-					if err := member.Create(ctx, newAgent(name), client.FieldOwner("agent-bootstrap")); err != nil {
+					existing := newAgent(name)
+					existing.Spec.Suspended = true
+					if err := member.Create(ctx, existing, client.FieldOwner("agent-bootstrap")); err != nil {
 						t.Fatal(err)
 					}
 				}
