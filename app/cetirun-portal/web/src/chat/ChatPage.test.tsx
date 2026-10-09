@@ -3,13 +3,14 @@
 
 import "fake-indexeddb/auto";
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import type { Instance } from "../types/instance";
 import ChatPage from "./ChatPage";
 import * as store from "./store";
-import { conversationKey } from "./types";
-import { ChatError, sendChat } from "./api";
+import { conversationKey, type ChatDescription } from "./types";
+import { ChatError, describeChat, sendChat } from "./api";
+import * as runtime from "./runtime";
 
 const identity = vi.hoisted(() => ({
   scope: "",
@@ -59,16 +60,18 @@ const instance: Instance = {
 };
 const input = () =>
   screen.getByRole("textbox", { name: "Message Research workspace" });
+// Match WorkspacePage's account/Agent lifetime boundary.
+const page = (value = instance, id?: string) => (
+  <MemoryRouter
+    initialEntries={[
+      `/instances/example/chat${id ? `?conversation=${id}` : ""}`,
+    ]}
+  >
+    <ChatPage key={`${value.uid}:${identity.scope}`} instance={value} />
+  </MemoryRouter>
+);
 async function open(id?: string) {
-  const view = render(
-    <MemoryRouter
-      initialEntries={[
-        `/instances/example/chat${id ? `?conversation=${id}` : ""}`,
-      ]}
-    >
-      <ChatPage instance={instance} />
-    </MemoryRouter>,
-  );
+  const view = render(page(instance, id));
   await waitFor(() =>
     expect(screen.getByRole("combobox", { name: "Chat model" })).toHaveValue(
       "example-agent",
@@ -78,10 +81,90 @@ async function open(id?: string) {
   return view;
 }
 
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason: Error) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+const finalReads = [
+  "getConversation",
+  "conversationHistory",
+  "listMessages",
+  "listConversations",
+] as const;
+
+function pauseFinalRead(method: (typeof finalReads)[number]) {
+  const agent = store.forAgent(identity.scope, instance.uid);
+  const pending = deferred<void>();
+  const reached = vi.fn();
+  let finalized = false;
+  const pause = <Args extends unknown[], Result>(
+    name: (typeof finalReads)[number],
+    read: (...args: Args) => Promise<Result>,
+  ) =>
+    async (...args: Args) => {
+      const value = await read(...args);
+      if (finalized && name === method) {
+        reached();
+        await pending.promise;
+      }
+      return value;
+    };
+  vi.spyOn(store, "forAgent").mockReturnValue({
+    ...agent,
+    getConversation: pause("getConversation", agent.getConversation),
+    conversationHistory: pause(
+      "conversationHistory",
+      agent.conversationHistory,
+    ),
+    listMessages: pause("listMessages", agent.listMessages),
+    listConversations: pause("listConversations", agent.listConversations),
+    saveTurn: async (...args) => {
+      const value = await agent.saveTurn(...args);
+      if (args[2] !== "pending") finalized = true;
+      return value;
+    },
+  });
+  return { pending, reached };
+}
+
+function sendMessage(text = "Synthetic question") {
+  fireEvent.change(input(), { target: { value: text } });
+  fireEvent.click(
+    screen.getByRole("button", { name: "Send message" }),
+  );
+}
+
+async function afterWindowTeardown(work: () => Promise<void>) {
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, "window");
+  if (!descriptor) throw new Error("The test needs a jsdom window.");
+  // Trap stale React dispatches even if their missing-window error is caught.
+  const access = vi.fn(() => {
+    throw new ReferenceError("window is not defined");
+  });
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    get: access,
+  });
+  try {
+    await work();
+  } finally {
+    Object.defineProperty(globalThis, "window", descriptor);
+  }
+  expect(access).not.toHaveBeenCalled();
+}
+
 beforeEach(() => {
   identity.scope = `test-${crypto.randomUUID()}`;
   identity.checking = false;
   identity.invalidate.mockReset();
+  vi.mocked(runtime.notify).mockClear();
+  vi.mocked(describeChat).mockClear();
   vi.mocked(sendChat)
     .mockReset()
     .mockImplementation(
@@ -196,4 +279,305 @@ describe("Custom Chat interactions", () => {
     await waitFor(() => expect(input()).not.toBeDisabled());
     expect(sendChat).toHaveBeenCalledTimes(1);
   });
+});
+
+describe("Chat send lifecycle", () => {
+  describe.each(finalReads)("finalizing %s", (method) => {
+    it.each(["success", "failure"] as const)(
+      "settles a late %s after window teardown without updating React",
+      async (outcome) => {
+        const { pending, reached } = pauseFinalRead(method);
+        const view = await open();
+        sendMessage();
+        await waitFor(() => expect(reached).toHaveBeenCalledTimes(1));
+        view.unmount();
+
+        await afterWindowTeardown(async () => {
+          if (outcome === "success") pending.resolve();
+          else pending.reject(new Error("Synthetic history read failure"));
+          await vi.waitFor(() =>
+            expect(runtime.notify).toHaveBeenCalledTimes(1),
+          );
+        });
+
+        const [notice] = vi.mocked(runtime.notify).mock.calls[0];
+        expect(notice).toMatchObject({
+          kind: "changed",
+          scope: identity.scope,
+          agentUid: instance.uid,
+        });
+        const history = await store.conversationHistory([
+          identity.scope,
+          instance.uid,
+          notice.conversationId!,
+        ]);
+        expect(history.turns).toHaveLength(1);
+        expect(history.turns[0].resultState).toBe("completed");
+        expect(history.history[0].assistant).toBe("Synthetic reply");
+        expect(sendChat).toHaveBeenCalledTimes(1);
+      },
+    );
+
+    it("still reports a history read failure while mounted", async () => {
+      const { pending, reached } = pauseFinalRead(method);
+      await open();
+      sendMessage();
+      await waitFor(() => expect(reached).toHaveBeenCalledTimes(1));
+      await act(async () => {
+        pending.reject(new Error("Synthetic history read failure"));
+        await vi.waitFor(() =>
+          expect(runtime.notify).toHaveBeenCalledTimes(1),
+        );
+      });
+
+      expect(screen.getByText("Synthetic history read failure")).toBeVisible();
+      expect(input()).toHaveAttribute("readonly");
+      expect(
+        screen.getByText("Not saved · copy your text before leaving"),
+      ).toBeVisible();
+      expect(
+        screen.getByRole("button", { name: "Send message" }),
+      ).toBeDisabled();
+      expect(sendChat).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it("keeps sending and conversation changes disabled until history refresh finishes", async () => {
+    const { pending, reached } = pauseFinalRead("getConversation");
+    await open();
+    sendMessage();
+    await waitFor(() => expect(reached).toHaveBeenCalledTimes(1));
+    const inputDisabled = input().hasAttribute("disabled");
+    const newChatDisabled = screen
+      .getByRole("button", { name: "New chat" })
+      .hasAttribute("disabled");
+    await act(async () => {
+      pending.resolve();
+      await vi.waitFor(() =>
+        expect(runtime.notify).toHaveBeenCalledTimes(1),
+      );
+    });
+
+    expect(inputDisabled).toBe(true);
+    expect(newChatDisabled).toBe(true);
+    expect(input()).not.toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "New chat" }));
+    await waitFor(() => expect(input()).not.toBeDisabled());
+    sendMessage("New conversation question");
+    await waitFor(() => expect(runtime.notify).toHaveBeenCalledTimes(2));
+    expect(vi.mocked(sendChat).mock.calls[1][2]).toEqual([
+      { role: "user", content: "New conversation question" },
+    ]);
+  });
+
+  it.each([
+    ["success", "completed"],
+    ["incomplete", "incomplete"],
+    ["error", "failed"],
+    ["abort", "interrupted"],
+  ] as const)(
+    "persists a late stream %s after unmount without replaying it",
+    async (outcome, resultState) => {
+      const response = deferred<string>();
+      vi.mocked(sendChat).mockImplementationOnce(
+        async (_target, _model, _messages, _id, _signal, onText) => {
+          await onText("Synthetic partial response");
+          return response.promise;
+        },
+      );
+      const view = await open();
+      sendMessage();
+      await waitFor(() => expect(sendChat).toHaveBeenCalledTimes(1));
+      const signal = vi.mocked(sendChat).mock.calls[0][4];
+      view.unmount();
+      expect(signal.aborted).toBe(true);
+
+      await afterWindowTeardown(async () => {
+        if (outcome === "success") response.resolve("stop");
+        else if (outcome === "incomplete") response.resolve("length");
+        else if (outcome === "error")
+          response.reject(
+            new ChatError("Synthetic stream failure", "agent_reported_error"),
+          );
+        else response.reject(new DOMException("Stopped", "AbortError"));
+        await vi.waitFor(() =>
+          expect(runtime.notify).toHaveBeenCalledTimes(1),
+        );
+      });
+
+      const { items } = await store.listConversations(
+        identity.scope,
+        instance.uid,
+      );
+      expect(items).toHaveLength(1);
+      const key = conversationKey(items[0]);
+      const { turns } = await store.conversationHistory(key);
+      expect(turns).toHaveLength(1);
+      expect(turns[0]).toMatchObject({
+        resultState,
+        dispatchState: "dispatching",
+        reservedBytes: 0,
+      });
+      if (outcome === "success" || outcome === "incomplete")
+        expect(turns[0].finishReason).toBe(
+          outcome === "success" ? "stop" : "length",
+        );
+      expect((await store.listMessages(key))[1].text).toBe(
+        "Synthetic partial response",
+      );
+      expect(sendChat).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("does not prepare a turn when target discovery resolves after unmount", async () => {
+    const target = deferred<ChatDescription>();
+    const agent = store.forAgent(identity.scope, instance.uid);
+    const beginTurn = vi.fn(agent.beginTurn);
+    vi.spyOn(store, "forAgent").mockReturnValue({ ...agent, beginTurn });
+    const flight = runtime.flight;
+    const released = vi.fn();
+    vi.spyOn(runtime, "flight").mockImplementation((scope) => {
+      const work = flight(scope);
+      return {
+        ...work,
+        release: () => {
+          work.release();
+          released();
+        },
+      };
+    });
+    const view = await open();
+    const description = await vi.mocked(describeChat).mock.results[0].value;
+    vi.mocked(describeChat).mockReturnValueOnce(target.promise);
+    sendMessage();
+    await waitFor(() => expect(describeChat).toHaveBeenCalledTimes(2));
+    view.unmount();
+    target.resolve(description);
+    await vi.waitFor(() => expect(released).toHaveBeenCalledTimes(1));
+
+    expect(beginTurn).not.toHaveBeenCalled();
+    expect(sendChat).not.toHaveBeenCalled();
+    expect(runtime.notify).not.toHaveBeenCalled();
+  });
+
+  it.each(["beginTurn", "listMessages", "saveTurn"] as const)(
+    "records an aborted preparation as not sent when %s settles after unmount",
+    async (method) => {
+      const pending = deferred<void>();
+      const reached = vi.fn();
+      const agent = store.forAgent(identity.scope, instance.uid);
+      const pause = async <T,>(value: T, step: typeof method) => {
+        if (step === method) {
+          reached();
+          await pending.promise;
+        }
+        return value;
+      };
+      vi.spyOn(store, "forAgent").mockReturnValue({
+        ...agent,
+        beginTurn: async (...args) =>
+          pause(await agent.beginTurn(...args), "beginTurn"),
+        listMessages: async (...args) =>
+          pause(await agent.listMessages(...args), "listMessages"),
+        saveTurn: async (...args) => {
+          const turn = await agent.saveTurn(...args);
+          return args[3]?.dispatchState === "dispatching"
+            ? pause(turn, "saveTurn")
+            : turn;
+        },
+      });
+      const view = await open();
+      sendMessage();
+      await waitFor(() => expect(reached).toHaveBeenCalledTimes(1));
+      view.unmount();
+      await afterWindowTeardown(async () => {
+        pending.resolve();
+        await vi.waitFor(() =>
+          expect(runtime.notify).toHaveBeenCalledTimes(1),
+        );
+      });
+
+      expect(sendChat).not.toHaveBeenCalled();
+      const { items } = await agent.listConversations();
+      expect(items).toHaveLength(1);
+      const { turns } = await agent.conversationHistory(items[0].id);
+      expect(turns).toHaveLength(1);
+      expect(turns[0]).toMatchObject({
+        resultState: "failed",
+        dispatchState: "not-sent",
+        reservedBytes: 0,
+      });
+      expect((await agent.listMessages(items[0].id))[0].text).toBe(
+        "Synthetic question",
+      );
+    },
+  );
+
+  it.each(["account", "Agent UID"] as const)(
+    "keeps a replacement %s chat independent of an old stream settling",
+    async (change) => {
+      const oldResponse = deferred<string>();
+      const newResponse = deferred<string>();
+      vi.mocked(sendChat)
+        .mockImplementationOnce(
+          async (_target, _model, _messages, _id, _signal, onText) => {
+            await onText("Old synthetic response");
+            return oldResponse.promise;
+          },
+        )
+        .mockImplementationOnce(
+          async (_target, _model, _messages, _id, _signal, onText) => {
+            await onText("New synthetic response");
+            return newResponse.promise;
+          },
+        );
+      const view = await open();
+      sendMessage("Old question");
+      await waitFor(() => expect(sendChat).toHaveBeenCalledTimes(1));
+      if (change === "account") identity.scope = `test-${crypto.randomUUID()}`;
+      const next =
+        change === "Agent UID"
+          ? { ...instance, uid: "synthetic-replacement-uid" }
+          : instance;
+      view.rerender(page(next));
+      await waitFor(() => expect(input()).not.toBeDisabled());
+      expect(vi.mocked(sendChat).mock.calls[0][4].aborted).toBe(true);
+      sendMessage("New question");
+      await waitFor(() => expect(sendChat).toHaveBeenCalledTimes(2));
+      await act(async () => {
+        oldResponse.reject(
+          new ChatError("Old synthetic failure", "agent_reported_error"),
+        );
+        await vi.waitFor(() =>
+          expect(runtime.notify).toHaveBeenCalledTimes(1),
+        );
+      });
+
+      expect(
+        screen.queryByText("Old synthetic response"),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByText("Old synthetic failure"),
+      ).not.toBeInTheDocument();
+      expect(screen.getByText("New synthetic response")).toBeVisible();
+      expect(input()).toBeDisabled();
+      fireEvent.click(screen.getByRole("button", { name: "Stop response" }));
+      expect(vi.mocked(sendChat).mock.calls[1][4].aborted).toBe(true);
+      await act(async () => {
+        newResponse.reject(new DOMException("Stopped", "AbortError"));
+        await vi.waitFor(() =>
+          expect(runtime.notify).toHaveBeenCalledTimes(2),
+        );
+      });
+
+      const { items } = await store.listConversations(identity.scope, next.uid);
+      expect(items).toHaveLength(1);
+      expect(
+        (await store.listMessages(conversationKey(items[0]))).map(
+          (m) => m.text,
+        ),
+      ).toEqual(["New question", "New synthetic response"]);
+      expect(sendChat).toHaveBeenCalledTimes(2);
+    },
+  );
 });

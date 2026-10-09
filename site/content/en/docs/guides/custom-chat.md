@@ -88,6 +88,11 @@ and text copying. Replies appear incrementally. **Stop** stops receiving and
 propagates cancellation; it does not prove that tools stopped, undo side effects,
 revoke model access or stop provider billing.
 
+Sending and conversation selection stay disabled until local history finishes
+updating. Leaving Chat stops receiving; local saves already in progress may
+finish, but late results do not update a replacement Chat page or send another
+request.
+
 Interrupted, failed and incomplete replies retain their actual state. Refreshing
 does not resend a request. Review uncertain results before explicitly starting
 a new turn. A new Chat conversation starts a new UI transcript, not a new Agent:

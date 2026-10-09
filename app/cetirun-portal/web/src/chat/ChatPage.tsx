@@ -205,8 +205,9 @@ export default function ChatPage({ instance }: { instance: Instance }) {
     setSelected(value);
   }, []);
   const refreshList = useCallback(async () => {
-    if (!scope) return;
+    if (!scope || !mounted.current) return;
     const result = await store.listConversations();
+    if (!mounted.current) return;
     setConversations(result.items);
     setCursor(result.cursor);
   }, [scope, instance.uid]);
@@ -494,9 +495,11 @@ export default function ChatPage({ instance }: { instance: Instance }) {
           }
         })
         .catch((reason) => {
-          setError(errorText(reason));
-          setSaved(false);
-          setReadyStorage(false);
+          if (mounted.current) {
+            setError(errorText(reason));
+            setSaved(false);
+            setReadyStorage(false);
+          }
         });
     }, 500);
     draftTimer.current = timer;
@@ -576,6 +579,7 @@ export default function ChatPage({ instance }: { instance: Instance }) {
     let text = "";
     let storageFailed = false;
     let receivedFinish: string | undefined;
+    let dispatchStarted = false;
     const work = flight(scope);
     controllerRef.current = work.controller;
     const checkpoint = new ResponseCheckpoint(
@@ -587,6 +591,7 @@ export default function ChatPage({ instance }: { instance: Instance }) {
     );
     try {
       await draftWork.current;
+      work.controller.signal.throwIfAborted();
       const verified = await account.verify();
       if (verified !== scope)
         throw new ChatError(
@@ -609,13 +614,17 @@ export default function ChatPage({ instance }: { instance: Instance }) {
             instance.instanceName,
             sendEpoch,
           );
+          work.controller.signal.throwIfAborted();
           choose(current);
           setParams({ conversation: current.id });
         }
         await store.recoverTurns(current.id);
+        work.controller.signal.throwIfAborted();
         current = await store.getConversation(current.id);
+        work.controller.signal.throwIfAborted();
         if (!current) throw new Error("This local conversation was removed.");
         const history = await store.conversationHistory(current.id);
+        work.controller.signal.throwIfAborted();
         if (
           history.turns.some(
             (t) =>
@@ -633,6 +642,7 @@ export default function ChatPage({ instance }: { instance: Instance }) {
           uid: instance.uid,
         };
         const resolved = await describeChat(target, work.controller.signal);
+        work.controller.signal.throwIfAborted();
         setDescription(resolved);
         if (!resolved.available || !resolved.bindingRevision)
           throw new ChatError(
@@ -642,13 +652,16 @@ export default function ChatPage({ instance }: { instance: Instance }) {
           );
         const prepared = await store.beginTurn(current, input, model);
         turn = prepared.turn;
+        work.controller.signal.throwIfAborted();
+        const rows = await store.listMessages(current.id);
+        work.controller.signal.throwIfAborted();
         choose(prepared.conversation);
         setDraft("");
         setContextCount({
           included: turn.contextTurnIds.length,
           omitted: turn.omittedTurns,
         });
-        setMessages(await store.listMessages(current.id));
+        setMessages(rows);
         setTurns([...history.turns, turn]);
         setLive({ turnId: turn.id, text: "" });
         setSaved(true);
@@ -657,6 +670,7 @@ export default function ChatPage({ instance }: { instance: Instance }) {
         });
         work.controller.signal.throwIfAborted();
         let lastPaint = 0;
+        dispatchStarted = true;
         const finish = await sendChat(
           { ...target, binding: resolved.bindingRevision },
           model,
@@ -706,20 +720,19 @@ export default function ChatPage({ instance }: { instance: Instance }) {
         if (turn) setLive({ turnId: turn.id, text });
       }
       if (turn && !storageFailed) {
+        const notSent =
+          !dispatchStarted || (reason instanceof ChatError && reason.notSent);
         try {
           await store.saveTurn(
             turn,
             text,
-            reason instanceof ChatError &&
-              (reason.notSent ||
+            notSent ||
+              (reason instanceof ChatError &&
                 ["agent_reported_error", "chat_busy"].includes(reason.code))
               ? "failed"
               : "interrupted",
             {
-              dispatchState:
-                reason instanceof ChatError && reason.notSent
-                  ? "not-sent"
-                  : "dispatching",
+              dispatchState: notSent ? "not-sent" : "dispatching",
               errorCode:
                 reason instanceof ChatError ? reason.code : "interrupted",
             },
@@ -734,36 +747,44 @@ export default function ChatPage({ instance }: { instance: Instance }) {
       }
     } finally {
       await checkpoint.stop().catch(() => {});
-      work.release();
-      controllerRef.current = undefined;
-      busyRef.current = false;
-      if (mounted.current) {
-        setBusy(false);
-        try {
+      try {
+        if (mounted.current) {
           if (selectedRef.current && !storageFailed) {
             const value = await store.getConversation(selectedRef.current.id);
-            if (value) {
-              choose(value);
+            if (mounted.current && value) {
               const history = await store.conversationHistory(value.id);
-              setTurns(history.turns);
-              contextHistory.current = history;
-              setMessages(await store.listMessages(value.id));
+              if (mounted.current) {
+                const rows = await store.listMessages(value.id);
+                if (mounted.current && selectedRef.current?.id === value.id) {
+                  choose(value);
+                  setTurns(history.turns);
+                  contextHistory.current = history;
+                  setMessages(rows);
+                }
+              }
             }
           }
           await refreshList();
-        } catch (reason) {
+        }
+      } catch (reason) {
+        if (mounted.current) {
           setSaved(false);
           setReadyStorage(false);
           setError(errorText(reason));
         }
+      } finally {
+        work.release();
+        controllerRef.current = undefined;
+        busyRef.current = false;
+        if (mounted.current) setBusy(false);
+        if (turn)
+          notify({
+            kind: "changed",
+            scope,
+            agentUid: instance.uid,
+            conversationId: turn.conversationId,
+          });
       }
-      if (turn)
-        notify({
-          kind: "changed",
-          scope,
-          agentUid: instance.uid,
-          conversationId: turn.conversationId,
-        });
     }
   };
 
