@@ -136,7 +136,7 @@ sandboxAdmission:
   # This does not supply a fencing receipt or authorize Agent execution.
   placementConfigMapName: ""
   # -- Optional UID-pinned coordination authority for Team/Sandbox/AgentPolicy
-  # updates. Requires strict, enforced configuration and Pod admission.
+  # updates and deletions. Requires strict, enforced configuration and Pod admission.
   # Both fields are required. No state is created and no execution is enabled.
   coordinationConfigMapName: ""
   coordinationConfigMapUID: ""

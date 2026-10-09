@@ -475,7 +475,7 @@ and existing-resource ownership compatibility separately from the Helm upgrade.
 `sandboxAdmission.coordinationConfigMapName` and `coordinationConfigMapUID`
 default to empty, including when absent from older `--reuse-values` releases.
 Explicit non-string values still fail validation. Set both to opt in to
-coordinated Team, Sandbox and AgentPolicy updates against one existing, protected
+coordinated Team, Sandbox and AgentPolicy updates/deletions against one existing, protected
 authority in the operator namespace.
 This requires `validationMode: strict` and enabled, enforced configuration and
 Pod admission. The chart neither creates authority state nor grants write access
@@ -489,6 +489,21 @@ controller identity alone is not a bypass. Use the operator's explicit
 observe an update. Admission performs only reads, including for dry runs;
 missing, corrupt or replaced authority blocks matching updates.
 
+Primary-resource deletion also requires the exact submitted reservation, original
+UID/resourceVersion preconditions and background propagation, even for
+unreferenced configurations and legacy Teams. Use `sandbox-config-change
+--action delete --before FILE`, without `--after`; recover uncertain outcomes
+with `--action observe-delete` and the unchanged original file. The reservation
+covers the whole source, not only a Team class. Update tickets never authorize
+deletion. Missing authority is not a deletion exemption. Upgrade operational
+clients before enabling this option.
+
+Deletion acceptance is observed when the exact original UID is terminating at
+a new version or is absent. Delayed conditional requests cannot delete a
+replacement. Explicit `delete` can then release the recorded reservation without
+resubmission; read-only observation retains it. `deletion-accepted` does not
+mean finalizers, dependents or physical cleanup have completed.
+
 An already-terminating configuration can remove existing finalizers through its
 normal authorized update path without acquiring a new change ticket. This
 read-only cleanup check requires the exact current object, no other content
@@ -497,7 +512,7 @@ It cannot add finalizers, alter policy, release an outstanding operation or
 proceed with missing authority. Dry runs leave both source and authority
 unchanged. The ordinary updater continues to reject terminating objects.
 
-This option covers configuration updates only, not create/delete, Agent changes,
+This option covers configuration updates/deletions, not creation, Agent changes,
 storage, Secrets or the other execution inputs. Existing status and narrow
 garbage-collector cleanup exclusions remain unchanged. It is not the complete
 source-write boundary needed for runtime activation and does not enable a

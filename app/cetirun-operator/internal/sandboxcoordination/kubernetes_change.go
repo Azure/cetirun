@@ -164,15 +164,19 @@ func (s Store) AuthorizeConfigurationFinalization(ctx context.Context, before, a
 }
 
 func (s Store) configurationTicket(ctx context.Context, change *configurationChange) (ChangeTicket, bool, error) {
+	return s.matchConfigurationTicket(ctx, change.before.reference, change.matches)
+}
+
+func (s Store) matchConfigurationTicket(ctx context.Context, before w.SourceReference, matches func(Change) bool) (ChangeTicket, bool, error) {
 	authority, state, err := s.read(ctx)
 	if err != nil {
 		return ChangeTicket{}, false, err
 	}
 	for _, existing := range state.Changes {
-		if sourceKey(existing.Before) != sourceKey(change.before.reference) {
+		if sourceKey(existing.Before) != sourceKey(before) {
 			continue
 		}
-		if !change.matches(existing) {
+		if !matches(existing) {
 			return ChangeTicket{}, false, ErrConflict
 		}
 		return ChangeTicket{AuthorityUID: authority.UID, Change: cloneChange(existing)}, true, nil
@@ -443,7 +447,7 @@ func newConfigurationImage(input client.Object) (configurationImage, error) {
 		}
 	}
 	if image.object == nil {
-		return image, fmt.Errorf("%w: only typed Team, Sandbox and AgentPolicy updates are supported", ErrUnavailable)
+		return image, fmt.Errorf("%w: only typed Team, Sandbox and AgentPolicy configurations are supported", ErrUnavailable)
 	}
 	object := image.object
 	gvk := object.GetObjectKind().GroupVersionKind()

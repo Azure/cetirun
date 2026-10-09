@@ -196,6 +196,8 @@ func TestConfigurationCoordinationAPIServer(t *testing.T) {
 		}
 	})
 
+	testConfigurationDeletionThroughAdmission(t, ctx, storage, store)
+
 	for _, scenario := range []string{"unreserved", "reserved", "changing"} {
 		t.Run("finalization/"+scenario, func(t *testing.T) {
 			policy := &api.AgentPolicy{ObjectMeta: metav1.ObjectMeta{
@@ -219,23 +221,31 @@ func TestConfigurationCoordinationAPIServer(t *testing.T) {
 					}
 				}
 			}
-			if err := storage.Delete(ctx, policy); err != nil {
+			if scenario != "unreserved" {
+				if err := storage.Delete(ctx, policy); err == nil {
+					t.Fatal("deletion bypassed an outstanding update reservation")
+				}
+				if err := store.CheckChange(ctx, pending); err != nil {
+					t.Fatal("rejected deletion changed the outstanding operation:", err)
+				}
+				return
+			}
+			deleting, err := store.AcquireConfigurationDeletion(ctx, policy)
+			if err != nil {
 				t.Fatal(err)
+			}
+			adapter, err := sandboxcoordination.NewKubernetesDeleteAdapter(storage, storage, policy)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.ReconcileChange(ctx, deleting, adapter); err != nil {
+				t.Fatal("coordinated delete acceptance failed:", err)
 			}
 			if err := storage.Get(ctx, client.ObjectKeyFromObject(policy), policy); err != nil {
 				t.Fatal(err)
 			}
 			cleaned := policy.DeepCopy()
 			cleaned.Finalizers = []string{"example.com/retain"}
-			if scenario != "unreserved" {
-				if err := storage.Update(ctx, cleaned); err == nil {
-					t.Fatal("finalization bypassed an outstanding change")
-				}
-				if err := store.CheckChange(ctx, pending); err != nil {
-					t.Fatal("finalization altered the outstanding change:", err)
-				}
-				return
-			}
 			tampered := cleaned.DeepCopy()
 			tampered.Spec.Network.BlockedCIDRs = []string{"203.0.113.0/24"}
 			if err := storage.Update(ctx, tampered); err == nil {
@@ -291,7 +301,88 @@ func TestConfigurationCoordinationAPIServer(t *testing.T) {
 	if err := storage.Status().Update(ctx, current); err != nil {
 		t.Fatal("coordination source loss blocked an independent status update:", err)
 	}
-	if err := storage.Delete(ctx, current); err != nil {
-		t.Fatal("coordination source loss changed existing unreferenced deletion behavior:", err)
+	if err := storage.Delete(ctx, current); err == nil {
+		t.Fatal("corrupt coordination authority permitted a configuration deletion")
+	}
+}
+
+func testConfigurationDeletionThroughAdmission(t *testing.T, ctx context.Context, storage client.WithWatch, store sandboxcoordination.Store) {
+	t.Helper()
+	f := newFixture(t)
+	for _, before := range []client.Object{
+		&api.Team{ObjectMeta: metav1.ObjectMeta{Name: "delete-team"}},
+		&api.Sandbox{ObjectMeta: metav1.ObjectMeta{Name: "delete-sandbox"}, Spec: f.box.Spec},
+		&api.AgentPolicy{ObjectMeta: metav1.ObjectMeta{Name: "delete-policy"}},
+	} {
+		t.Run(before.GetName(), func(t *testing.T) {
+			if err := storage.Create(ctx, before); err != nil {
+				t.Fatal(err)
+			}
+			uid, rv := before.GetUID(), before.GetResourceVersion()
+			opts := []client.DeleteOption{
+				client.Preconditions{UID: &uid, ResourceVersion: &rv},
+				client.PropagationPolicy(metav1.DeletePropagationBackground),
+			}
+			if err := storage.Delete(ctx, before, opts...); err == nil {
+				t.Fatal("unreserved Delete bypassed served admission")
+			}
+			ticket, err := store.AcquireConfigurationDeletion(ctx, before)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := storage.Delete(ctx, before, opts...); err == nil {
+				t.Fatal("Reserved phase authorized a Delete")
+			}
+			deletes := 0
+			writer := interceptor.NewClient(storage, interceptor.Funcs{
+				Delete: func(ctx context.Context, c client.WithWatch, object client.Object, options ...client.DeleteOption) error {
+					deletes++
+					if err := c.Delete(ctx, object, options...); err != nil {
+						return err
+					}
+					return errors.New("synthetic lost deletion response")
+				},
+			})
+			adapter, err := sandboxcoordination.NewKubernetesDeleteAdapter(writer, storage, before)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ticket, err = store.ReconcileChange(ctx, ticket, adapter)
+			if err == nil || ticket.Change.Phase != sandboxcoordination.Changing || deletes != 1 {
+				t.Fatal("lost Delete reply did not retain submission intent:", err)
+			}
+			if err := storage.Get(ctx, client.ObjectKeyFromObject(before), before.DeepCopyObject().(client.Object)); !apierrors.IsNotFound(err) {
+				t.Fatal("Delete was not accepted through the real webhook:", err)
+			}
+			replacement := before.DeepCopyObject().(client.Object)
+			replacement.SetUID("")
+			replacement.SetResourceVersion("")
+			replacement.SetGeneration(0)
+			replacement.SetCreationTimestamp(metav1.Time{})
+			if err := storage.Create(ctx, replacement); err != nil {
+				t.Fatal(err)
+			}
+			recovered, err := store.ReadConfigurationDeletion(ctx, before)
+			if err != nil {
+				t.Fatal(err)
+			}
+			observer, err := sandboxcoordination.NewKubernetesDeleteAdapter(nil, storage, before)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.ReconcileChange(ctx, recovered, observer); err != nil {
+				t.Fatal("lost deletion response failed observation-only recovery:", err)
+			}
+			if err := storage.Delete(ctx, before, opts...); err == nil {
+				t.Fatal("delayed old Delete was allowed to affect a replacement")
+			}
+			actual := replacement.DeepCopyObject().(client.Object)
+			if err := storage.Get(ctx, client.ObjectKeyFromObject(replacement), actual); err != nil || actual.GetUID() != replacement.GetUID() {
+				t.Fatal("replacement disappeared or changed:", err)
+			}
+			if deletes != 1 {
+				t.Fatal("recovery resubmitted Delete")
+			}
+		})
 	}
 }

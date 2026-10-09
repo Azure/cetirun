@@ -196,7 +196,7 @@ func TestConfigurationCoordinationMissingAuthorityFailsUpdatesNotCleanup(t *test
 		requestFor(t, admissionv1.Delete, f.agent, nil, "administrator")), true, "")
 	unreferenced := &api.AgentPolicy{ObjectMeta: metav1.ObjectMeta{Name: "unused-policy"}}
 	requireResponse(t, f.handler.Validate(ctx,
-		requestFor(t, admissionv1.Delete, unreferenced, nil, "administrator")), true, "")
+		requestFor(t, admissionv1.Delete, unreferenced, nil, "administrator")), false, "CoordinationRequired")
 	deleting := f.policy.DeepCopy()
 	deleting.DeletionTimestamp = ptr.To(metav1.Now())
 	deleting.Finalizers = []string{metav1.FinalizerDeleteDependents, "example.com/retain"}

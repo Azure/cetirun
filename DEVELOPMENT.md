@@ -415,6 +415,10 @@ exceptions in `scripts/license_headers.py` must retain their own notices.
   `make -C app/cetirun-operator build-sandbox-config-change`; do not run it against
   a cluster as part of an offline check. It requires separately authorized
   before/after configuration inputs and an explicitly pinned authority.
+  The same suites cover conditional configuration deletion and observation-only
+  recovery using the original before input. Real API cases exercise UID/version
+  conflicts, replacement protection, served deletion admission and independent
+  finalizer cleanup; no live cluster or physical writer is involved.
   Running-input tests additionally check a synthetic held-to-running handoff
   against real Pod creation, API binding/defaulting and final-Pod admission.
   They contain no scheduler, kubelet or guest-external runtime observer. Run the
