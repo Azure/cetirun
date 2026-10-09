@@ -121,9 +121,12 @@ func TestHelmManagedCRDUpgrade(t *testing.T) {
 	if err := cl.Get(ctx, client.ObjectKey{Name: "agents." + api.GroupVersion.Group}, &originalCRD); err != nil {
 		t.Fatal(err)
 	}
-	agent := &api.Agent{ObjectMeta: metav1.ObjectMeta{Name: "upgrade-test"}, Spec: api.AgentSpec{
-		Agent: api.HarnessSpec{Type: api.AgentTypeHermes}, User: api.UserSpec{Alias: "upgrade-user", DisplayName: "Example User"}, GatewayTokenSecretRef: "synthetic-token",
-	}}
+	f := newFixture(t)
+	stampFixtureAuthorization(t, f)
+	agent := f.agent.DeepCopy()
+	agent.ObjectMeta.Name = "upgrade-test"
+	agent.ResourceVersion = ""
+	agent.UID = ""
 	if err := cl.Create(ctx, agent); err != nil {
 		t.Fatal(err)
 	}
@@ -140,15 +143,17 @@ func TestHelmManagedCRDUpgrade(t *testing.T) {
 	config := testConfig()
 	config.ValidationMode = ValidationCompatible
 	config.AdminGroups = []string{"system:masters"}
-	compatible, err := NewHandler(cl, config)
+	compatible, err := NewHandler(f.client, config)
 	if err != nil {
 		t.Fatal(err)
 	}
+	compatible.registrations = f.handler.registrations
 	config.ValidationMode = ValidationStrict
-	strict, err := NewHandler(cl, config)
+	strict, err := NewHandler(f.client, config)
 	if err != nil {
 		t.Fatal(err)
 	}
+	strict.registrations = f.handler.registrations
 	var strictMode atomic.Bool
 	var calls atomic.Int64
 	serve := func(mutate bool) admission.HandlerFunc {
@@ -194,10 +199,15 @@ func TestHelmManagedCRDUpgrade(t *testing.T) {
 		data, _ := json.Marshal(map[string]any{"metadata": map[string]any{"annotations": map[string]string{"example.com/heartbeat": fmt.Sprint(time.Now().UnixNano())}}})
 		return cl.Patch(ctx, object, client.RawPatch(types.MergePatchType, data))
 	}
+	lastPatchError := ""
 	if err := wait.PollUntilContextTimeout(ctx, 20*time.Millisecond, 10*time.Second, true, func(ctx context.Context) (bool, error) {
-		return patch(ctx) == nil && calls.Load() >= 2, nil
+		err := patch(ctx)
+		if err != nil {
+			lastPatchError = err.Error()
+		}
+		return err == nil && calls.Load() >= 2, nil
 	}); err != nil {
-		t.Fatal(err)
+		t.Fatalf("webhook did not accept the authorized Agent patch: %v (last error: %s)", err, lastPatchError)
 	}
 	writerCtx, stopWriter := context.WithCancel(ctx)
 	done := make(chan struct{})
@@ -270,7 +280,9 @@ func TestHelmManagedCRDUpgrade(t *testing.T) {
 			team := &unstructured.Unstructured{Object: map[string]any{
 				"apiVersion": api.GroupVersion.String(), "kind": "Team",
 				"metadata": map[string]any{"name": user.name},
-				"spec":     map[string]any{"futureConfiguration": "preserve-me"},
+				"spec": map[string]any{"normalAgentPolicyRef": f.policy.Name,
+					"sandboxRefs": []any{f.box.Name}, "defaultSandboxRef": f.box.Name,
+					"futureConfiguration": "preserve-me"},
 			}}
 			if err := cl.Create(ctx, team, client.FieldValidation(metav1.FieldValidationStrict)); err != nil {
 				t.Fatal(err)
@@ -304,14 +316,14 @@ func TestHelmManagedCRDUpgrade(t *testing.T) {
 				t.Fatal("test Team permissions did not become active:", err)
 			}
 			requests := calls.Load()
-			if err := member.Delete(ctx, team); err != nil {
-				t.Fatal("future spec fields blocked legacy Team deletion:", err)
+			if err := member.Delete(ctx, team); !apierrors.IsForbidden(err) {
+				t.Fatalf("future spec fields bypassed Team deletion authorization: %v", err)
 			}
 			if calls.Load() <= requests {
 				t.Fatal("Team deletion did not reach the admission handler")
 			}
-			if err := cl.Get(ctx, client.ObjectKeyFromObject(team), &api.Team{}); !apierrors.IsNotFound(err) {
-				t.Fatalf("legacy Team was not deleted: %v", err)
+			if err := cl.Get(ctx, client.ObjectKeyFromObject(team), &api.Team{}); err != nil {
+				t.Fatalf("denied Team deletion changed the object: %v", err)
 			}
 		})
 	}

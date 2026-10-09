@@ -42,6 +42,8 @@ kind: Agent
 metadata:
   name: alice
 spec:
+  team: example-team
+  sandboxRef: standard
   agent:
     type: hermes
   user:

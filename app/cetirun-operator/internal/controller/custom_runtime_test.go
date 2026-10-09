@@ -50,6 +50,7 @@ func (c provisioningClient) Create(ctx context.Context, obj client.Object, opts 
 }
 
 func TestCustomReconcileCreatesHomeInOneChartCall(t *testing.T) {
+	requireLegacyCustomRuntime(t)
 	ctx := context.Background()
 	cr, _, _ := customFixture("disk-agent", nil)
 	scheme := testScheme()
@@ -323,6 +324,7 @@ func customFixture(name string, port *int32) (*api.Agent, runtimebindings.Custom
 }
 
 func TestCustomReconcileUsesBindingsNotNativeSecrets(t *testing.T) {
+	requireLegacyCustomRuntime(t)
 	for _, port := range []*int32{nil, ptr.To[int32](8080)} {
 		cr, b, objects := customFixture("example", port)
 		scheme := testScheme()
@@ -421,6 +423,7 @@ func TestCustomReconcileUsesBindingsNotNativeSecrets(t *testing.T) {
 }
 
 func TestCustomReconcileRejectsUnreadyOrForeignBindings(t *testing.T) {
+	requireLegacyCustomRuntime(t)
 	cases := []string{"no provider", "wrong UID", "wrong generation", "wrong namespace", "wrong secret owner", "wrong secret revision",
 		"missing home", "mutable context", "missing canonical", "old writer", "foreign workload", "registry"}
 	for _, name := range cases {
@@ -474,6 +477,7 @@ func TestCustomReconcileRejectsUnreadyOrForeignBindings(t *testing.T) {
 }
 
 func TestCustomSameUserInstancesDoNotShareBindings(t *testing.T) {
+	requireLegacyCustomRuntime(t)
 	one, b, objects := customFixture("one", nil)
 	two, _, second := customFixture("two", nil)
 	objects = append(objects, second...)
@@ -492,6 +496,7 @@ func TestCustomSameUserInstancesDoNotShareBindings(t *testing.T) {
 }
 
 func TestCustomSuspensionWorksWithoutBindingsAndWithInvalidConfig(t *testing.T) {
+	requireLegacyCustomRuntime(t)
 	cr, b, objects := customFixture("example", nil)
 	cr.Spec.Suspended = true
 	cr.Spec.Agent.RegistrySecretRef = &api.RegistrySecretRef{Name: "unsupported"}
@@ -516,6 +521,7 @@ func TestCustomSuspensionWorksWithoutBindingsAndWithInvalidConfig(t *testing.T) 
 }
 
 func TestCustomRendererDriftDoesNotReplaceWorkload(t *testing.T) {
+	requireLegacyCustomRuntime(t)
 	cr, b, objects := customFixture("example", nil)
 	scheme := testScheme()
 	c := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&api.Agent{}).WithObjects(objects...).Build()

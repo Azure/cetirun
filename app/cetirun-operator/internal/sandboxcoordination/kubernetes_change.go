@@ -393,7 +393,7 @@ func newConfigurationChange(before, after client.Object, admission bool) (*confi
 	}
 	change := &configurationChange{before: oldImage, after: newImage}
 	if team, ok := oldImage.object.(*api.Team); ok {
-		if !sandbox.TeamGoverned(team) || !sandbox.TeamGoverned(newImage.object.(*api.Team)) {
+		if !sandbox.TeamPolicyConfigured(team) || !sandbox.TeamPolicyConfigured(newImage.object.(*api.Team)) {
 			// Legacy transitions have no complete selection on both sides.
 			// Reserve the whole Team rather than inventing a policy-class scope.
 			return change, nil

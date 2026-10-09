@@ -46,6 +46,7 @@ func enableTerminal(t *testing.T, s *completionScenario, desktop bool) {
 }
 
 func TestCustomTerminalUsesSeparateServiceAndStopsOnSuspension(t *testing.T) {
+	requireLegacyCustomRuntime(t)
 	for _, desktop := range []bool{false, true} {
 		t.Run(fmt.Sprintf("desktop=%v", desktop), func(t *testing.T) {
 			s := newCompletionScenario(t)
@@ -114,6 +115,7 @@ func TestCustomTerminalUsesSeparateServiceAndStopsOnSuspension(t *testing.T) {
 }
 
 func TestCustomTerminalCanBeDisabled(t *testing.T) {
+	requireLegacyCustomRuntime(t)
 	s := newCompletionScenario(t)
 	enableTerminal(t, s, true)
 	if err := s.step(); err != nil {
@@ -144,6 +146,7 @@ func TestCustomTerminalCanBeDisabled(t *testing.T) {
 }
 
 func TestCustomTerminalStopsOnSandboxHold(t *testing.T) {
+	requireLegacyCustomRuntime(t)
 	for _, foreign := range []bool{false, true} {
 		t.Run(fmt.Sprintf("foreign=%v", foreign), func(t *testing.T) {
 			s := newCompletionScenario(t)

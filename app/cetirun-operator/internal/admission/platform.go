@@ -16,7 +16,7 @@ import (
 )
 
 // Snapshot state belongs to one request. Cleanup and unrelated legacy requests
-// never consult the platform source; governed compatibility checks load it lazily.
+// never consult the platform source; policy compatibility checks load it lazily.
 func (h *Handler) withPlatformSnapshot(ctx context.Context, request admission.Request,
 	handle func(*Handler, context.Context, admission.Request) admission.Response,
 ) admission.Response {

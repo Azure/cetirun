@@ -45,6 +45,26 @@ type ResolveInput struct {
 	AuthorizedBinding Binding
 }
 
+// PolicyProjection contains only the AgentPolicy fields enforced by the
+// Sandbox domain. Gateway budgets/models, credential-service entitlement,
+// skill admission, and selection rules have independent revisions or affect
+// authorization before a Sandbox execution is compiled.
+type PolicyProjection struct {
+	Harnesses        cetirunv1alpha1.AgentPolicyHarnesses              `json:"harnesses"`
+	EntraID          cetirunv1alpha1.AgentPolicyEntraID                `json:"entraID"`
+	Security         cetirunv1alpha1.AgentPolicySecurity               `json:"security"`
+	Network          cetirunv1alpha1.AgentPolicyNetwork                `json:"network"`
+	KubernetesAccess *cetirunv1alpha1.AgentPolicyAdminKubernetesAccess `json:"kubernetesAccess,omitempty"`
+}
+
+func ProjectPolicy(spec cetirunv1alpha1.AgentPolicySpec) PolicyProjection {
+	copy := spec.DeepCopy()
+	return PolicyProjection{
+		Harnesses: copy.Harnesses, EntraID: copy.EntraID, Security: copy.Security,
+		Network: copy.Network, KubernetesAccess: copy.KubernetesAccess,
+	}
+}
+
 // Resolution is a validated desired configuration, not an applied/enforced plan.
 // The enforcement adapter must still compile/verify grants, topology and Pods.
 type Resolution struct {
@@ -214,18 +234,15 @@ func Resolve(input ResolveInput) (*Resolution, error) {
 		Binding: binding, Sandbox: sandboxSpec, AgentPolicy: policySpec,
 		Capabilities: canonicalCapabilities(registration.Capabilities),
 	}
-	// Selection rules govern Team validity, not an already-selected workload.
-	effectivePolicy := *policySpec.DeepCopy()
-	effectivePolicy.SandboxSelection = cetirunv1alpha1.SandboxSelectionPolicy{}
 	encoded, err := json.Marshal(struct {
-		Version          string                          `json:"version"`
-		Binding          Binding                         `json:"binding"`
-		Sandbox          cetirunv1alpha1.SandboxSpec     `json:"sandbox"`
-		Policy           cetirunv1alpha1.AgentPolicySpec `json:"policy"`
-		RuntimeClassName string                          `json:"runtimeClassName"`
-		PlatformRevision string                          `json:"platformRevision"`
+		Version          string                      `json:"version"`
+		Binding          Binding                     `json:"binding"`
+		Sandbox          cetirunv1alpha1.SandboxSpec `json:"sandbox"`
+		Policy           PolicyProjection            `json:"policy"`
+		RuntimeClassName string                      `json:"runtimeClassName"`
+		PlatformRevision string                      `json:"platformRevision"`
 	}{
-		"sandbox-foundation-v1", binding, sandboxSpec, effectivePolicy,
+		"sandbox-foundation-v2", binding, sandboxSpec, ProjectPolicy(policySpec),
 		registration.Capabilities.RuntimeClassName, registration.Capabilities.Revision,
 	})
 	if err != nil {

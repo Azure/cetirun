@@ -99,6 +99,10 @@ func sandboxConfigurationFixture() (*api.Sandbox, controller.SandboxConfiguratio
 	return object, snapshot, objects
 }
 
+func nativePolicyHarnesses() api.AgentPolicyHarnesses {
+	return api.AgentPolicyHarnesses{Allowed: []api.AgentType{api.AgentTypeOpenClaw, api.AgentTypeHermes}}
+}
+
 func configurationScheme(t *testing.T) *runtime.Scheme {
 	t.Helper()
 	scheme := runtime.NewScheme()
@@ -249,7 +253,7 @@ func TestAgentPolicyAcceptedIsConfigurationOnly(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, snapshot, _ := sandboxConfigurationFixture()
-			policy := &api.AgentPolicy{ObjectMeta: metav1.ObjectMeta{Name: "example-policy", UID: "example-policy-uid", Generation: 6}}
+			policy := &api.AgentPolicy{ObjectMeta: metav1.ObjectMeta{Name: "example-policy", UID: "example-policy-uid", Generation: 6}, Spec: api.AgentPolicySpec{Harnesses: nativePolicyHarnesses()}}
 			tc.mutate(policy, &snapshot)
 			agent := &api.Agent{ObjectMeta: metav1.ObjectMeta{Name: "example-agent", UID: "example-agent-uid"}}
 			c := fake.NewClientBuilder().WithScheme(configurationScheme(t)).WithStatusSubresource(policy, agent).WithObjects(policy, agent).Build()
@@ -286,6 +290,44 @@ func TestAgentPolicyAcceptedIsConfigurationOnly(t *testing.T) {
 				t.Fatal("configuration acceptance must not report an Agent's enforcement")
 			}
 		})
+	}
+}
+
+func TestTeamDependencyReadFailureIsUnknownAndRetryable(t *testing.T) {
+	policy := &api.AgentPolicy{ObjectMeta: metav1.ObjectMeta{Name: "normal", UID: "normal-uid"}}
+	box := &api.Sandbox{ObjectMeta: metav1.ObjectMeta{Name: "standard", UID: "standard-uid"}}
+	team := &api.Team{ObjectMeta: metav1.ObjectMeta{Name: "example", UID: "team-uid", Generation: 3}, Spec: api.TeamSpec{
+		NormalAgentPolicyRef: policy.Name, DefaultSandboxRef: box.Name, SandboxRefs: []string{box.Name},
+	}}
+	base := fake.NewClientBuilder().WithScheme(configurationScheme(t)).WithStatusSubresource(team).
+		WithObjects(policy, box, team).Build()
+	failure := errors.New("synthetic Team dependency timeout")
+	reader := &teamDependencyReader{Reader: base, failure: failure}
+	r := &controller.TeamReconciler{Client: base, APIReader: reader}
+	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(team)}
+	if _, err := r.Reconcile(context.Background(), request); !errors.Is(err, failure) {
+		t.Fatalf("dependency timeout must be returned for controller retry: %v", err)
+	}
+	current := &api.Team{}
+	if err := base.Get(context.Background(), request.NamespacedName, current); err != nil {
+		t.Fatal(err)
+	}
+	condition := apimeta.FindStatusCondition(current.Status.Conditions, api.ConditionTeamAccepted)
+	if condition == nil || condition.Status != metav1.ConditionUnknown || condition.Reason != "DependenciesUnavailable" ||
+		condition.ObservedGeneration != team.Generation || current.Status.ObservedGeneration != team.Generation {
+		t.Fatalf("transient dependency failure became a definitive denial: %+v", current.Status)
+	}
+
+	reader.failure = nil
+	if _, err := r.Reconcile(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	if err := base.Get(context.Background(), request.NamespacedName, current); err != nil {
+		t.Fatal(err)
+	}
+	condition = apimeta.FindStatusCondition(current.Status.Conditions, api.ConditionTeamAccepted)
+	if condition == nil || condition.Status != metav1.ConditionTrue {
+		t.Fatalf("Team did not recover when its dependencies became readable: %+v", current.Status)
 	}
 }
 
@@ -337,7 +379,7 @@ func TestAgentPolicyConfigurationPreservesRegistrationFailureCauses(t *testing.T
 					snapshot.Registrations[kind] = registration
 				}
 			}
-			policy := &api.AgentPolicy{ObjectMeta: metav1.ObjectMeta{Name: "example-policy", UID: "example-policy-uid"}}
+			policy := &api.AgentPolicy{ObjectMeta: metav1.ObjectMeta{Name: "example-policy", UID: "example-policy-uid"}, Spec: api.AgentPolicySpec{Harnesses: nativePolicyHarnesses()}}
 			c := fake.NewClientBuilder().WithScheme(configurationScheme(t)).WithStatusSubresource(policy).WithObjects(policy).Build()
 			r := &controller.AgentPolicyReconciler{
 				Client: c, Now: func() time.Time { return snapshot.ObservedAt },
@@ -362,7 +404,7 @@ func configurationGrantFixture() (*api.AgentPolicy, controller.SandboxConfigurat
 	_, snapshot, _ := sandboxConfigurationFixture()
 	policy := &api.AgentPolicy{
 		ObjectMeta: metav1.ObjectMeta{Name: "example-policy", UID: "example-policy-uid", Generation: 3},
-		Spec: api.AgentPolicySpec{KubernetesAccess: &api.AgentPolicyAdminKubernetesAccess{
+		Spec: api.AgentPolicySpec{Harnesses: nativePolicyHarnesses(), KubernetesAccess: &api.AgentPolicyAdminKubernetesAccess{
 			ServiceAccountName: "example-admin",
 			RoleBindings:       []api.AgentPolicyRoleBinding{{Namespace: "operations", ClusterRoleName: "example-view"}},
 		}},
@@ -466,7 +508,7 @@ func TestConfigurationStalePrimaryCannotPublishAcceptance(t *testing.T) {
 	for _, kind := range []string{"Sandbox", "AgentPolicy"} {
 		t.Run(kind, func(t *testing.T) {
 			object, snapshot, prerequisites := sandboxConfigurationFixture()
-			policy := &api.AgentPolicy{ObjectMeta: metav1.ObjectMeta{Name: "example-policy", UID: "example-policy-uid", Generation: 1}}
+			policy := &api.AgentPolicy{ObjectMeta: metav1.ObjectMeta{Name: "example-policy", UID: "example-policy-uid", Generation: 1}, Spec: api.AgentPolicySpec{Harnesses: nativePolicyHarnesses()}}
 			base := fake.NewClientBuilder().WithScheme(configurationScheme(t)).WithStatusSubresource(object, policy).
 				WithObjects(append([]client.Object{object, policy}, prerequisites...)...).Build()
 			ctx := context.Background()
@@ -517,7 +559,7 @@ func TestConfigurationSnapshotMustRemainFreshThroughAssessment(t *testing.T) {
 	for _, kind := range []string{"Sandbox", "AgentPolicy"} {
 		t.Run(kind, func(t *testing.T) {
 			object, snapshot, prerequisites := sandboxConfigurationFixture()
-			policy := &api.AgentPolicy{ObjectMeta: metav1.ObjectMeta{Name: "example-policy", UID: "example-policy-uid"}}
+			policy := &api.AgentPolicy{ObjectMeta: metav1.ObjectMeta{Name: "example-policy", UID: "example-policy-uid"}, Spec: api.AgentPolicySpec{Harnesses: nativePolicyHarnesses()}}
 			c := fake.NewClientBuilder().WithScheme(configurationScheme(t)).WithStatusSubresource(object, policy).
 				WithObjects(append([]client.Object{object, policy}, prerequisites...)...).Build()
 			now := snapshot.ObservedAt
@@ -556,7 +598,7 @@ func TestConfigurationSnapshotMustRemainFreshThroughAssessment(t *testing.T) {
 
 func TestConfigurationPreservesObservationAndStatusErrors(t *testing.T) {
 	object, snapshot, _ := sandboxConfigurationFixture()
-	policy := &api.AgentPolicy{ObjectMeta: metav1.ObjectMeta{Name: "example-policy", UID: "example-policy-uid"}}
+	policy := &api.AgentPolicy{ObjectMeta: metav1.ObjectMeta{Name: "example-policy", UID: "example-policy-uid"}, Spec: api.AgentPolicySpec{Harnesses: nativePolicyHarnesses()}}
 	base := fake.NewClientBuilder().WithScheme(configurationScheme(t)).WithStatusSubresource(object, policy).WithObjects(object, policy).Build()
 	observationFailure, statusFailure := errors.New("synthetic observation failure"), errors.New("synthetic status failure")
 	c := &configurationErrorClient{Client: base, failure: statusFailure}
@@ -581,6 +623,18 @@ func TestConfigurationPreservesObservationAndStatusErrors(t *testing.T) {
 type configurationPrerequisiteReader struct {
 	client.Reader
 	failure error
+}
+
+type teamDependencyReader struct {
+	client.Reader
+	failure error
+}
+
+func (r *teamDependencyReader) Get(ctx context.Context, key client.ObjectKey, object client.Object, options ...client.GetOption) error {
+	if _, ok := object.(*api.AgentPolicy); ok && r.failure != nil {
+		return r.failure
+	}
+	return r.Reader.Get(ctx, key, object, options...)
 }
 
 func (r *configurationPrerequisiteReader) Get(ctx context.Context, key client.ObjectKey, object client.Object, options ...client.GetOption) error {

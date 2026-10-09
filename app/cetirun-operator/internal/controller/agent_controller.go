@@ -5,6 +5,7 @@ package controller
 
 import (
 	"context"
+	stderrors "errors"
 	"fmt"
 	"maps"
 	"net/http"
@@ -244,11 +245,65 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		return r.rejectReservedUIInstance(ctx, instance)
 	}
 
-	if sandboxRequested(instance, nil) {
-		return r.holdSandbox(ctx, instance)
+	// Policy is mandatory for every non-deleting Agent. Resolve its
+	// immutable owner/Team/policy binding before any Sandbox or workload
+	// recovery can make compute available.
+	policy, err := r.reconcilePolicy(ctx, instance)
+	if policy.dependencyUnavailable {
+		// A transient Team, policy, or Gateway catalog failure cannot prove a
+		// denial. Preserve the key identity and spend record, but block it and
+		// stop compute until fresh authorization evidence is available.
+		result, holdErr := r.holdPolicyDependencyUnavailable(ctx, instance)
+		return result, stderrors.Join(err, holdErr)
+	} else if err != nil {
+		// Status persistence is not part of the authorization boundary. If it
+		// fails, revoke access and stop compute before returning the joined
+		// error; an old workload must never survive because status storage was
+		// temporarily unavailable.
+		result, holdErr := r.holdPolicyDenied(ctx, instance)
+		return result, stderrors.Join(err, holdErr)
+	} else if !policy.authorized {
+		return r.holdPolicyDenied(ctx, instance)
+	} else if policy.reprojectionHold {
+		return r.holdPolicyReprojection(ctx, instance)
 	}
 
-	// Inspect Team governance before runtime recovery can retain a Ready state.
+	if sandboxRequested(instance, nil) {
+		// Policy-bound native workloads are rendered only through the held Sandbox
+		// path below, so they never reach the legacy Gateway reconciliation in
+		// this function.  Project the virtual key as soon as the protected
+		// namespace exists.  Bootstrap deliberately creates that namespace
+		// first; a missing namespace on the first pass is therefore not an
+		// authorization to fall back to direct model credentials.
+		var namespaceErr error
+		if r.AIGateway.Enabled {
+			namespace := &corev1.Namespace{}
+			namespaceErr = r.customReader().Get(ctx, types.NamespacedName{Name: instanceNamespace(instance.Name)}, namespace)
+			if namespaceErr == nil {
+				if err := r.validateSandboxBootstrapNamespace(ctx, instance, namespace); err != nil {
+					namespaceErr = err
+					logger.Error(err, "Policy-bound AI Gateway projection is waiting for a protected Sandbox namespace")
+				} else if err := r.reconcileAIGateway(ctx, instance, true); err != nil {
+					_ = r.updateStatus(ctx, instance)
+					// Keep progressing through holdSandbox so ingress/compute remain
+					// stopped even when the Gateway control plane is unavailable.
+					logger.Error(err, "Policy-bound AI Gateway projection remains pending")
+				} else if err := r.updateStatus(ctx, instance); err != nil {
+					return ctrl.Result{}, err
+				}
+			} else if !errors.IsNotFound(namespaceErr) {
+				namespaceErr = fmt.Errorf("inspect policy-bound Agent namespace: %w", namespaceErr)
+				logger.Error(namespaceErr, "Policy-bound AI Gateway projection cannot verify its namespace")
+			}
+		}
+		result, holdErr := r.holdSandbox(ctx, instance)
+		if namespaceErr != nil && !errors.IsNotFound(namespaceErr) {
+			return result, stderrors.Join(namespaceErr, holdErr)
+		}
+		return result, holdErr
+	}
+
+	// Inspect Team policy before runtime recovery can retain a Ready state.
 	// Lookup errors are handled below so Custom suspension/recovery stays available.
 	var team *cetirunv1alpha1.Team
 	var teamErr error
@@ -299,7 +354,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	// 3a. Backfill spec.helm.version if empty.
 	// This pins the chart version on the CR so that future operator upgrades
 	// do not automatically roll out a new chart (avoiding pod restarts).
-	// Governed Agents stop at holdSandbox above. Before enabling that path,
+	// Policy-bound Agents stop at holdSandbox above. Before enabling that path,
 	// authorize version/image/port pinning narrowly; admission rejects controller
 	// spec writes and must not gain a blanket controller exemption.
 	if instance.Spec.Helm.Version == "" {
@@ -617,6 +672,26 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		instance.Status.AIGateway.Routed = false
 	}
 
+	// The initial projection must be allowed to execute, but it is not a
+	// workload authorization. Re-evaluate after the Gateway projection has had
+	// a chance to update its evidence and stop here until every current
+	// projection is verified. Any workload that was already exposed is fenced
+	// by the early reprojection hold above.
+	policy, err = r.reconcilePolicy(ctx, instance)
+	if policy.dependencyUnavailable {
+		result, holdErr := r.holdPolicyDependencyUnavailable(ctx, instance)
+		return result, stderrors.Join(err, holdErr)
+	} else if err != nil {
+		result, holdErr := r.holdPolicyDenied(ctx, instance)
+		return result, stderrors.Join(err, holdErr)
+	}
+	if !policy.authorized {
+		return r.holdPolicyDenied(ctx, instance)
+	}
+	if !policy.projectionsVerified {
+		return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
+	}
+
 	// 9. Install / upgrade Helm chart (skip if already deployed at this generation).
 	// We check HelmDeployed condition + generation + operator hash rather than Phase,
 	// because Phase may be Provisioning while waiting for the StatefulSet pod to become
@@ -669,6 +744,13 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	prepared, err = r.HelmClient.Refresh(prepared, helmValues)
 	if err != nil {
 		return r.rejectAgentConfig(ctx, instance, err)
+	}
+	if !prepared.SupportsValuePath(aiGatewayChartValue, aiGatewayChartModelsValue) {
+		policyErr := fmt.Errorf("Agent chart %q does not support mandatory AI Gateway routing", instance.Spec.Helm.Version)
+		if err := r.recordPolicy(ctx, instance, nil, policyErr); err != nil {
+			return ctrl.Result{}, err
+		}
+		return r.holdPolicyDenied(ctx, instance)
 	}
 	r.recordSignInHelper(instance, prepared.ServesSignInHelper())
 	setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionAgentConfigReady,

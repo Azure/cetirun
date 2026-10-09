@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 type recordedRequest struct {
@@ -68,18 +69,32 @@ func TestTokenIsSHA256Hex(t *testing.T) {
 
 func TestGetKeyUsesTokenAndMasterKey(t *testing.T) {
 	client, requests := testServer(t, func(recordedRequest) (int, string) {
-		return 200, `{"key":"abc","info":{"key_alias":"cetirun-a","models":["cetirun-shared"],"max_budget":10,"budget_duration":"1mo","blocked":null}}`
+		return 200, `{"key":"abc","info":{"key_alias":"cetirun-a","models":["cetirun-shared"],"max_budget":10,"budget_duration":"1mo","blocked":null,"team_id":"cetirun-team-a","user_id":"alice"}}`
 	})
 	key, err := client.GetKey(context.Background(), "abc")
 	if err != nil || key == nil {
 		t.Fatalf("GetKey = %v, %v", key, err)
 	}
-	if key.Alias != "cetirun-a" || len(key.Models) != 1 || key.Models[0] != "cetirun-shared" || key.MaxBudget == nil || *key.MaxBudget != 10 || key.Blocked {
+	if key.Alias != "cetirun-a" || len(key.Models) != 1 || key.Models[0] != "cetirun-shared" || key.MaxBudget == nil || *key.MaxBudget != 10 || key.Blocked ||
+		key.TeamID != "cetirun-team-a" || key.UserID != "alice" {
 		t.Fatalf("unexpected key %+v", key)
 	}
 	r := (*requests)[0]
 	if r.method != http.MethodGet || r.path != "/key/info" || r.query != "key=abc" || r.auth != "Bearer sk-master" {
 		t.Fatalf("unexpected request %+v", r)
+	}
+}
+
+func TestGetKeyReadsBudgetObservations(t *testing.T) {
+	client, _ := testServer(t, func(recordedRequest) (int, string) {
+		return 200, `{"info":{"key_alias":"cetirun-a","models":["model-group"],"max_budget":10,"budget_duration":"1mo","spend":1.25,"budget_reset_at":"2026-02-01T00:00:00Z","blocked":false}}`
+	})
+	key, err := client.GetKey(context.Background(), "abc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if key.Spend == nil || *key.Spend != 1.25 || key.BudgetResetAt == nil || key.BudgetResetAt.UTC().Format(time.RFC3339) != "2026-02-01T00:00:00Z" {
+		t.Fatalf("GetKey observations = %+v", key)
 	}
 }
 
@@ -142,6 +157,28 @@ func TestUpdateKeyModelsSendsOnlyModels(t *testing.T) {
 	body := (*requests)[0].body
 	if len(body) != 2 || body["key"] != "abc" {
 		t.Fatalf("update must carry only the token and models, got %v", body)
+	}
+}
+
+func TestUpdateKeyBudgetAndBlockedUseNarrowUpdates(t *testing.T) {
+	client, requests := testServer(t, func(recordedRequest) (int, string) { return 200, `{}` })
+	if err := client.UpdateKeyBudget(context.Background(), "abc", 20, "1mo"); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.SetKeyBlocked(context.Background(), "abc", true); err != nil {
+		t.Fatal(err)
+	}
+	if got := (*requests)[0].body; len(got) != 3 || got["key"] != "abc" || got["max_budget"] != float64(20) || got["budget_duration"] != "1mo" {
+		t.Fatalf("unexpected budget update %v", got)
+	}
+	if got := (*requests)[1].body; len(got) != 2 || got["key"] != "abc" || got["blocked"] != true {
+		t.Fatalf("unexpected block update %v", got)
+	}
+	if err := client.UpdateKeyBudget(context.Background(), "abc", 0, "1mo"); err == nil {
+		t.Fatal("UpdateKeyBudget accepted zero budget")
+	}
+	if err := client.UpdateKeyBudget(context.Background(), "abc", 1, ""); err == nil {
+		t.Fatal("UpdateKeyBudget accepted empty duration")
 	}
 }
 
@@ -222,8 +259,11 @@ func TestListModelsCountsPricesTheWayTheGatewayBlocksUnpricedModels(t *testing.T
 		}
 	}
 	if first := deployments[0]; first.ID != "a" || len(first.AccessGroups) != 1 || first.AccessGroups[0] != "cetirun-shared" ||
-		!first.FromDatabase || first.MaxInputTokens != 200000 || first.MaxOutputTokens != 32768 {
+		!first.FromDatabase || !first.DatabaseSourceKnown || first.MaxInputTokens != 200000 || first.MaxOutputTokens != 32768 {
 		t.Fatalf("deployment fields not read: %+v", first)
+	}
+	if deployments[1].DatabaseSourceKnown {
+		t.Fatal("an omitted db_model field must not be treated as trusted static provenance")
 	}
 }
 

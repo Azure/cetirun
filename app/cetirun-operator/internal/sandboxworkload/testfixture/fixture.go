@@ -52,6 +52,10 @@ func New(agentType string) Fixture {
 	policy := &api.AgentPolicy{
 		ObjectMeta: metav1.ObjectMeta{Name: "policy-example", UID: "policy-uid", ResourceVersion: "1", Generation: 1},
 		Spec: api.AgentPolicySpec{
+			Harnesses: api.AgentPolicyHarnesses{Allowed: []api.AgentType{
+				api.AgentTypeHermes,
+				api.AgentTypeOpenClaw,
+			}},
 			Security: api.AgentPolicySecurity{ReadOnlyRootFilesystem: ptr.To(true)},
 			Network:  api.AgentPolicyNetwork{Ingress: api.AgentPolicyIngress{Mode: api.AgentPolicyIngressDisabled}},
 		},

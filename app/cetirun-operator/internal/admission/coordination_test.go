@@ -231,7 +231,9 @@ func TestConfigurationCoordinationFinalizerCleanup(t *testing.T) {
 			policy := &api.AgentPolicy{ObjectMeta: metav1.ObjectMeta{
 				Name: "cleanup-policy", UID: "cleanup-policy-uid",
 				Finalizers: []string{"example.com/cleanup", "example.com/retain"},
-			}}
+			}, Spec: api.AgentPolicySpec{Harnesses: api.AgentPolicyHarnesses{
+				Allowed: []api.AgentType{api.AgentTypeOpenClaw},
+			}}}
 			if err := f.client.Create(ctx, policy); err != nil {
 				t.Fatal(err)
 			}

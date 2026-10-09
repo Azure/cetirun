@@ -9,5 +9,6 @@ spec:
   user:
     alias: bob
     displayName: "Bob Johnson"
-    team: platform
     email: bob@example.com
+  team: platform
+  sandboxRef: standard

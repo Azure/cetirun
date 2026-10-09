@@ -17,6 +17,7 @@ import (
 )
 
 func TestCustomWebUIAccessAndSuspension(t *testing.T) {
+	requireLegacyCustomRuntime(t)
 	s := newCompletionScenario(t)
 	s.reconciler.DomainSuffix = "platform.example.com"
 	current := s.current()
@@ -64,6 +65,7 @@ func TestCustomWebUIAccessAndSuspension(t *testing.T) {
 }
 
 func TestCustomDesktopAccessAndSuspension(t *testing.T) {
+	requireLegacyCustomRuntime(t)
 	s := newCompletionScenario(t)
 	s.reconciler.DomainSuffix = "platform.example.com"
 	if err := s.step(); err != nil {
@@ -101,6 +103,7 @@ func TestCustomDesktopAccessAndSuspension(t *testing.T) {
 }
 
 func TestCustomDesktopCanBeDisabledWithoutLosingControls(t *testing.T) {
+	requireLegacyCustomRuntime(t)
 	s := newCompletionScenario(t)
 	current := s.current()
 	current.Spec.Helm.Values["desktop"] = runtime.RawExtension{Raw: []byte(`{"enabled":false}`)}
@@ -119,6 +122,7 @@ func TestCustomDesktopCanBeDisabledWithoutLosingControls(t *testing.T) {
 }
 
 func TestCustomWebUIAndTerminalCanBeDisabledIndependently(t *testing.T) {
+	requireLegacyCustomRuntime(t)
 	for _, disable := range []string{"webUI", "terminal"} {
 		t.Run(disable, func(t *testing.T) {
 			s := newCompletionScenario(t)

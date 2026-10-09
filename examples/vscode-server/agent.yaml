@@ -6,6 +6,8 @@ kind: Agent
 metadata:
   name: vscode-example
 spec:
+  team: example-team
+  sandboxRef: standard
   user:
     alias: example-user
     displayName: Example User

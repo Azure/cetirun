@@ -577,7 +577,7 @@ func TestPodGarbageCollectorCleanupRejectsOtherChanges(t *testing.T) {
 				t.Fatal(err)
 			}
 			if response := handler.Validate(context.Background(), request); response.Allowed {
-				t.Fatalf("%s bypassed Pod governance as GC cleanup", name)
+				t.Fatalf("%s bypassed Pod policy as GC cleanup", name)
 			}
 		})
 	}

@@ -148,8 +148,9 @@ func TestAdmissionAPIServerBoundaries(t *testing.T) {
 		policy := &api.AgentPolicy{
 			ObjectMeta: metav1.ObjectMeta{Name: "explicit-false"},
 			Spec: api.AgentPolicySpec{
-				Security: api.AgentPolicySecurity{ReadOnlyRootFilesystem: ptr.To(false)},
-				Network:  api.AgentPolicyNetwork{BlockedPorts: []api.AgentPolicyPort{{Port: 25}}},
+				Harnesses: api.AgentPolicyHarnesses{Allowed: []api.AgentType{api.AgentTypeHermes}},
+				Security:  api.AgentPolicySecurity{ReadOnlyRootFilesystem: ptr.To(false)},
+				Network:   api.AgentPolicyNetwork{BlockedPorts: []api.AgentPolicyPort{{Port: 25}}},
 			},
 		}
 		create(policy)
@@ -208,17 +209,14 @@ func TestAdmissionAPIServerBoundaries(t *testing.T) {
 	create(validating)
 	create(mutating)
 
-	newAgent := func(name string, governed bool) *api.Agent {
+	newAgent := func(name string) *api.Agent {
 		agent := f.agent.DeepCopy()
 		agent.ObjectMeta = metav1.ObjectMeta{Name: name, Finalizers: []string{api.Finalizer}}
 		agent.Spec.SandboxRef, agent.Spec.PolicyClass = "", ""
-		if !governed {
-			agent.Spec.Team = ""
-		}
 		return agent
 	}
 	if err := wait.PollUntilContextTimeout(ctx, 50*time.Millisecond, 10*time.Second, true, func(ctx context.Context) (bool, error) {
-		probe := newAgent("admission-ready-probe", true)
+		probe := newAgent("admission-ready-probe")
 		err := cl.Create(ctx, probe, client.DryRunAll)
 		return err == nil && probe.Spec.SandboxRef == f.box.Name, nil
 	}); err != nil {
@@ -226,7 +224,7 @@ func TestAdmissionAPIServerBoundaries(t *testing.T) {
 	}
 
 	t.Run("persist defaults without elevating a human administrator", func(t *testing.T) {
-		agent := newAgent("governed-agent", true)
+		agent := newAgent("governed-agent")
 		create(agent)
 		var stored api.Agent
 		if err := cl.Get(ctx, client.ObjectKeyFromObject(agent), &stored); err != nil {
@@ -237,30 +235,20 @@ func TestAdmissionAPIServerBoundaries(t *testing.T) {
 		}
 	})
 	t.Run("generated names pass mutation and validation before assignment", func(t *testing.T) {
-		for _, governed := range []bool{false, true} {
-			agent := newAgent("", governed)
-			agent.GenerateName = "generated-agent-"
-			writer := member
-			if governed {
-				writer = cl
-			}
-			if err := writer.Create(ctx, agent); err != nil {
-				t.Fatal(err)
-			}
-			if !strings.HasPrefix(agent.Name, agent.GenerateName) {
-				t.Fatalf("API server did not assign the requested generated name: %q", agent.Name)
-			}
-			if governed && (agent.Spec.SandboxRef != f.box.Name || agent.Spec.PolicyClass != api.AgentPolicyClassNormal) {
-				t.Fatal("governed generated-name Agent did not persist creation defaults")
-			}
-			if !governed && (agent.Spec.Team != "" || agent.Spec.SandboxRef != "" ||
-				agent.Spec.PolicyClass != api.AgentPolicyClassNormal) {
-				t.Fatal("legacy generated-name Agent did not preserve the schema-only normal policy default")
-			}
+		agent := newAgent("")
+		agent.GenerateName = "generated-agent-"
+		if err := cl.Create(ctx, agent); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.HasPrefix(agent.Name, agent.GenerateName) {
+			t.Fatalf("API server did not assign the requested generated name: %q", agent.Name)
+		}
+		if agent.Spec.SandboxRef != f.box.Name || agent.Spec.PolicyClass != api.AgentPolicyClassNormal {
+			t.Fatal("governed generated-name Agent did not persist creation defaults")
 		}
 	})
 	t.Run("dry run performs defaulting and validation without persistence", func(t *testing.T) {
-		agent := newAgent("dry-run-governed", true)
+		agent := newAgent("dry-run-governed")
 		if err := cl.Create(ctx, agent, client.DryRunAll); err != nil {
 			t.Fatal(err)
 		}
@@ -271,46 +259,29 @@ func TestAdmissionAPIServerBoundaries(t *testing.T) {
 			t.Fatalf("dry-run Agent persisted: %v", err)
 		}
 	})
-	t.Run("legacy Team deletion preserves member-authorized behavior", func(t *testing.T) {
-		team := &api.Team{ObjectMeta: metav1.ObjectMeta{Name: "legacy-delete-team"}}
-		if err := member.Create(ctx, team); err != nil {
-			t.Fatal(err)
-		}
-		agent := newAgent("legacy-team-member", false)
-		agent.Spec.Team = team.Name
-		if err := member.Create(ctx, agent); err != nil {
-			t.Fatal(err)
-		}
-		if err := member.Delete(ctx, team); err != nil {
-			t.Fatal("legacy Team deletion gained Sandbox authority or consumer requirements:", err)
-		}
-		if err := cl.Get(ctx, client.ObjectKeyFromObject(agent), &api.Agent{}); err != nil {
-			t.Fatal("legacy Team deletion removed its Agent:", err)
-		}
-	})
-	t.Run("member cannot create governance or write status despite broad spec RBAC", func(t *testing.T) {
-		agent := newAgent("member-governed", true)
+	t.Run("member cannot create policy or write status despite broad spec RBAC", func(t *testing.T) {
+		agent := newAgent("member-governed")
 		if err := member.Create(ctx, agent); !apierrors.IsForbidden(err) || !strings.Contains(err.Error(), "administrator") {
 			t.Fatalf("expected webhook authority denial, got %v", err)
 		}
-		legacy := newAgent("member-legacy", false)
-		if err := member.Create(ctx, legacy); err != nil {
+		managed := newAgent("member-status")
+		if err := cl.Create(ctx, managed); err != nil {
 			t.Fatal(err)
 		}
-		legacy.Status.Phase = api.PhaseReady
-		if err := member.Status().Update(ctx, legacy); !apierrors.IsForbidden(err) {
+		managed.Status.Phase = api.PhaseReady
+		if err := member.Status().Update(ctx, managed); !apierrors.IsForbidden(err) {
 			t.Fatalf("member status must be blocked by RBAC: %v", err)
 		}
 	})
 	t.Run("unknown fields are explicitly rejected", func(t *testing.T) {
-		object, err := runtime.DefaultUnstructuredConverter.ToUnstructured(newAgent("unknown-field", false))
+		object, err := runtime.DefaultUnstructuredConverter.ToUnstructured(newAgent("unknown-field"))
 		if err != nil {
 			t.Fatal(err)
 		}
 		obj := &unstructured.Unstructured{Object: object}
 		obj.SetAPIVersion(api.GroupVersion.String())
 		obj.SetKind("Agent")
-		if err := unstructured.SetNestedField(obj.Object, true, "spec", "unknownGovernance"); err != nil {
+		if err := unstructured.SetNestedField(obj.Object, true, "spec", "unknownPolicy"); err != nil {
 			t.Fatal(err)
 		}
 		if err := cl.Create(ctx, obj, client.FieldValidation(metav1.FieldValidationStrict)); !apierrors.IsBadRequest(err) {
@@ -325,7 +296,7 @@ func TestAdmissionAPIServerBoundaries(t *testing.T) {
 		for i := range crd.Spec.Versions {
 			schema := crd.Spec.Versions[i].Schema.OpenAPIV3Schema
 			spec := schema.Properties["spec"]
-			spec.Properties["futureGovernance"] = apiextensionsv1.JSONSchemaProps{Type: "boolean"}
+			spec.Properties["futurePolicy"] = apiextensionsv1.JSONSchemaProps{Type: "boolean"}
 			schema.Properties["spec"] = spec
 		}
 		if err := cl.Update(ctx, &crd); err != nil {
@@ -334,16 +305,17 @@ func TestAdmissionAPIServerBoundaries(t *testing.T) {
 		obj := &unstructured.Unstructured{Object: map[string]any{
 			"apiVersion": api.GroupVersion.String(), "kind": "AgentPolicy",
 			"metadata": map[string]any{"name": "future-policy"},
-			"spec":     map[string]any{"futureGovernance": true},
+			"spec": map[string]any{"futurePolicy": true,
+				"harnesses": map[string]any{"allowed": []any{string(api.AgentTypeHermes)}}},
 		}}
 		if err := wait.PollUntilContextTimeout(ctx, 50*time.Millisecond, 10*time.Second, true, func(ctx context.Context) (bool, error) {
 			before := calls.Load()
 			err := cl.Create(ctx, obj.DeepCopy(), client.DryRunAll, client.FieldValidation(metav1.FieldValidationStrict))
-			return err != nil && calls.Load() > before && strings.Contains(err.Error(), `unknown field "futureGovernance"`), nil
+			return err != nil && calls.Load() > before && strings.Contains(err.Error(), `unknown field "futurePolicy"`), nil
 		}); err != nil {
 			t.Fatal("older admission did not explicitly reject a field admitted by the newer schema:", err)
 		}
-		known := &api.AgentPolicy{ObjectMeta: metav1.ObjectMeta{Name: "known-during-skew"}}
+		known := &api.AgentPolicy{ObjectMeta: metav1.ObjectMeta{Name: "known-during-skew"}, Spec: f.policy.Spec}
 		create(known)
 		if err := cl.Delete(ctx, known); err != nil {
 			t.Fatal("known-field objects must remain writable during skew:", err)
@@ -361,13 +333,13 @@ func TestAdmissionAPIServerBoundaries(t *testing.T) {
 			"system:serviceaccount:kube-system:generic-garbage-collector",
 		} {
 			collector := userClient(username, false)
-			policy := &api.AgentPolicy{ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("gc-policy-%d", i)}}
+			policy := &api.AgentPolicy{ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("gc-policy-%d", i)}, Spec: f.policy.Spec}
 			if err := collector.Create(ctx, policy.DeepCopy()); !apierrors.IsForbidden(err) || !strings.Contains(err.Error(), "administrator") {
 				t.Fatalf("garbage collector acquired configuration administration: %v", err)
 			}
 			box := f.box.DeepCopy()
 			box.ObjectMeta = metav1.ObjectMeta{Name: fmt.Sprintf("gc-sandbox-%d", i)}
-			for _, object := range []client.Object{box, policy, newAgent(fmt.Sprintf("gc-agent-%d", i), true)} {
+			for _, object := range []client.Object{box, policy, newAgent(fmt.Sprintf("gc-agent-%d", i))} {
 				t.Run(object.GetName(), func(t *testing.T) {
 					if err := cl.Create(ctx, object); err != nil {
 						t.Fatal(err)
@@ -414,7 +386,7 @@ func TestAdmissionAPIServerBoundaries(t *testing.T) {
 		}
 	})
 
-	cleanup := newAgent("cleanup-agent", false)
+	cleanup := newAgent("cleanup-agent")
 	cleanup.Finalizers = append(cleanup.Finalizers, "example.com/another-controller")
 	create(cleanup)
 	cleanup.Finalizers = append(cleanup.Finalizers, sandbox.HoldFinalizer, sandbox.PreparationFinalizer, sandbox.BootstrapFinalizer)
@@ -427,7 +399,7 @@ func TestAdmissionAPIServerBoundaries(t *testing.T) {
 	if err := cl.Get(ctx, client.ObjectKeyFromObject(cleanup), cleanup); err != nil {
 		t.Fatal(err)
 	}
-	deleteDuringOutage := newAgent("delete-during-outage", false)
+	deleteDuringOutage := newAgent("delete-during-outage")
 	create(deleteDuringOutage)
 	create(&corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: "default", Namespace: "default"}})
 	pod := &corev1.Pod{
@@ -442,7 +414,7 @@ func TestAdmissionAPIServerBoundaries(t *testing.T) {
 
 	t.Run("outage fails creates and protected writes closed", func(t *testing.T) {
 		for _, operation := range []func() error{
-			func() error { return cl.Create(ctx, newAgent("blocked-during-outage", false)) },
+			func() error { return cl.Create(ctx, newAgent("blocked-during-outage")) },
 			func() error { return cl.Delete(ctx, f.policy) },
 		} {
 			if err := operation(); err == nil || !strings.Contains(err.Error(), "failed calling webhook") {
@@ -508,20 +480,20 @@ func TestAdmissionAPIServerBoundaries(t *testing.T) {
 	})
 	unavailable.Store(false)
 	t.Run("requests recover after service restoration", func(t *testing.T) {
-		create(newAgent("after-recovery", false))
+		create(newAgent("after-recovery"))
 	})
 	t.Run("production platform source fails closed and recovers without restart", func(t *testing.T) {
 		team := f.team.DeepCopy()
 		team.ObjectMeta = metav1.ObjectMeta{Name: "platform-backed-team"}
 		create(team)
-		agent := newAgent("source-outage-suspension", true)
+		agent := newAgent("source-outage-suspension")
 		create(agent)
 		record := agent.Annotations[sandboxbinding.AuthorizationAnnotation]
 		platform.Data[sandboxplatform.ConfigurationKey] = `{"invalid":"synthetic-invalid-platform"}`
 		if err := cl.Update(ctx, platform); err != nil {
 			t.Fatal(err)
 		}
-		if err := cl.Create(ctx, newAgent("missing-platform", true), client.DryRunAll); err == nil {
+		if err := cl.Create(ctx, newAgent("missing-platform"), client.DryRunAll); err == nil {
 			t.Fatal("governed creation accepted malformed source or reused prior capabilities")
 		}
 		suspended := agent.DeepCopy()
@@ -557,12 +529,11 @@ func TestAdmissionAPIServerBoundaries(t *testing.T) {
 		if err := cl.Update(ctx, resumed); err == nil {
 			t.Fatal("resume was admitted without valid platform inventory")
 		}
-		create(newAgent("legacy-during-source-outage", false))
 		platform.Data[sandboxplatform.ConfigurationKey] = string(platformJSON)
 		if err := cl.Update(ctx, platform); err != nil {
 			t.Fatal(err)
 		}
-		if err := cl.Create(ctx, newAgent("recovered-platform", true), client.DryRunAll); err != nil {
+		if err := cl.Create(ctx, newAgent("recovered-platform"), client.DryRunAll); err != nil {
 			t.Fatal("repaired platform did not restore governed admission:", err)
 		}
 		if err := cl.Update(ctx, resumed); err != nil {
@@ -573,7 +544,7 @@ func TestAdmissionAPIServerBoundaries(t *testing.T) {
 		}
 		replacement := &nodev1.RuntimeClass{ObjectMeta: metav1.ObjectMeta{Name: runtimeClass.Name}, Handler: runtimeClass.Handler}
 		create(replacement)
-		if err := cl.Create(ctx, newAgent("replaced-runtime", true), client.DryRunAll); err == nil {
+		if err := cl.Create(ctx, newAgent("replaced-runtime"), client.DryRunAll); err == nil {
 			t.Fatal("same-name RuntimeClass replacement bypassed its pinned UID")
 		}
 		platformJSON, err = json.Marshal(platformFixtureDocument(f, replacement.UID, storageClass.UID))
@@ -584,12 +555,12 @@ func TestAdmissionAPIServerBoundaries(t *testing.T) {
 		if err := cl.Update(ctx, platform); err != nil {
 			t.Fatal(err)
 		}
-		if err := cl.Create(ctx, newAgent("reauthorized-runtime", true), client.DryRunAll); err != nil {
+		if err := cl.Create(ctx, newAgent("reauthorized-runtime"), client.DryRunAll); err != nil {
 			t.Fatal("updated platform pin did not restore admission:", err)
 		}
 	})
 	t.Run("independent serving process and overlapping CA rotation", func(t *testing.T) {
-		testServingProcess(t, cfg, config, newAgent("tls-process-probe", true))
+		testServingProcess(t, cfg, config, newAgent("tls-process-probe"))
 	})
 }
 
@@ -599,6 +570,7 @@ func renderedWebhooks(t *testing.T, ca []byte) (*admissionregistrationv1.Validat
 		"--set", "namespace=operator-test", "--set", "serviceAccount.name=controller",
 		"--set", "sandboxAdmission.enabled=true", "--set", "sandboxAdmission.enforce=true",
 		"--set", "sandboxAdmission.tlsSecretName=admission-test-tls", "--set", "sandboxAdmission.adminUsers[0]=administrator",
+		"--set", "sandboxAdmission.adminUsers[1]=system:serviceaccount:operator-test:portal",
 		"--set-string", "sandboxAdmission.caBundle="+base64.StdEncoding.EncodeToString(ca))
 	output, err := command.CombinedOutput()
 	if err != nil {

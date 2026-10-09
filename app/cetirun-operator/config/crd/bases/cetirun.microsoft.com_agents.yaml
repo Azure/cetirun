@@ -188,34 +188,34 @@ spec:
                 type: object
               model:
                 description: |-
-                  Model is the Agent's preferred default model. With the platform AI
-                  Gateway it is a model name as the Agent sees it, such as a shared model
-                  or copilot/<model>; an unavailable name falls back to the deployment
-                  default and then to the first available model. Without the Gateway it is
-                  the GitHub Copilot model ID, defaulting to the deployment's model.
+                  Model is the Agent's preferred default model as exposed by the platform
+                  AI Gateway, such as a shared model or copilot/<model>. Policy resolution rejects
+                  an explicitly requested model that is outside the effective policy.
                 maxLength: 256
                 type: string
               modelAccess:
                 description: |-
-                  ModelAccess selects where the Agent's models come from when the
-                  platform AI Gateway is enabled. Both sources are on unless set to false.
+                  ModelAccess explicitly requests model sources when the platform AI
+                  Gateway is enabled. Omission grants no model source.
                 properties:
                   githubCopilot:
                     description: |-
-                      GitHubCopilot runs a GitHub Copilot proxy for the owner's account and
-                      grants the models that account offers once the owner signs in through
-                      the Portal. Defaults to true.
+                      GitHubCopilot requests a GitHub Copilot proxy for the owner's account.
+                      The effective policy must also allow it.
                     type: boolean
+                  monthlyBudgetUSD:
+                    description: |-
+                      MonthlyBudgetUSD optionally lowers or raises this Agent's native Gateway
+                      budget within the effective AgentPolicy maximum. Omission selects the
+                      policy default.
+                    pattern: ^(0|[1-9][0-9]*)(\.[0-9]{1,6})?$
+                    type: string
                   sharedModels:
                     description: |-
-                      SharedModels grants the models administrators share through the AI
-                      Gateway. Defaults to true.
+                      SharedModels requests the models administrators share through the AI
+                      Gateway.
                     type: boolean
                 type: object
-                x-kubernetes-validations:
-                - message: sharedModels and githubCopilot cannot both be false
-                  rule: '!has(self.sharedModels) || self.sharedModels || !has(self.githubCopilot)
-                    || self.githubCopilot'
               msteams:
                 description: |-
                   MSTeams configures Microsoft Teams bot integration for this instance.
@@ -257,9 +257,7 @@ spec:
                 - admin
                 type: string
               sandboxRef:
-                description: |-
-                  SandboxRef selects a Sandbox permitted by the Team.
-                  Temporarily optional for legacy Agents; sandbox binding validation requires it.
+                description: SandboxRef selects a Sandbox permitted by the Team.
                 maxLength: 253
                 minLength: 1
                 pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
@@ -341,17 +339,14 @@ spec:
                   email:
                     description: Email address for notifications (optional).
                     type: string
-                  team:
-                    description: |-
-                      Team is the user's team name.
-                      Deprecated: use spec.team instead. This field will be removed in a future version.
-                    type: string
                 required:
                 - alias
                 - displayName
                 type: object
             required:
             - agent
+            - sandboxRef
+            - team
             - user
             type: object
             x-kubernetes-validations:
@@ -386,6 +381,12 @@ spec:
                       CreationAttempted records a durable create checkpoint, which prevents a
                       retry after an unknown request outcome from creating a second identity.
                     type: boolean
+                  credentialPolicyRevision:
+                    description: |-
+                      CredentialPolicyRevision is reserved for a future typed credential
+                      service read-back. The legacy bearer issuer must leave it empty and cannot
+                      satisfy aggregate Policy application readiness.
+                    type: string
                   displayName:
                     description: |-
                       DisplayName is the immutable directory display name bound to this Agent
@@ -433,6 +434,24 @@ spec:
                       type: string
                     type: array
                     x-kubernetes-list-type: set
+                  blocked:
+                    description: |-
+                      Blocked reports whether the Gateway rejects this key. Retained blocked
+                      keys continue to report spend and reset evidence.
+                    type: boolean
+                  budgetDuration:
+                    description: BudgetDuration is the Gateway reset period, currently
+                      "1mo".
+                    type: string
+                  budgetResetAt:
+                    description: BudgetResetAt is the next Gateway budget reset observation.
+                    format: date-time
+                    type: string
+                  budgetUSD:
+                    description: |-
+                      BudgetUSD is the canonical native Gateway budget read back for this
+                      virtual key. It is a management observation, not a provider invoice.
+                    type: string
                   copilot:
                     description: |-
                       Copilot reports the Agent's GitHub Copilot proxy and the Copilot models
@@ -533,6 +552,16 @@ spec:
                     - Degraded
                     - Deleting
                     type: string
+                  policyRevision:
+                    description: |-
+                      PolicyRevision is the exact Gateway policy projection read back by
+                      the management adapter.
+                    type: string
+                  pricingRevision:
+                    description: |-
+                      PricingRevision identifies the catalog/pricing input used by Gateway
+                      read-back. It is not a provider price quote.
+                    type: string
                   reason:
                     description: Reason is a stable, non-sensitive machine-readable
                       status reason.
@@ -542,6 +571,11 @@ spec:
                       Routed reports whether the Agent's model traffic is configured to use
                       the Gateway.
                     type: boolean
+                  spendUSD:
+                    description: |-
+                      SpendUSD is the Gateway's observed spend in the current period. It is
+                      not exact upstream-provider billing.
+                    type: string
                   team:
                     description: Team is the Gateway team the key belongs to, derived
                       from spec.team.
@@ -683,6 +717,65 @@ spec:
                 - Deleting
                 - Suspended
                 type: string
+              policy:
+                description: |-
+                  Policy records the resolved AgentPolicy and the revisions each enforcement
+                  component must apply. Detailed component evidence remains in its existing
+                  status field.
+                properties:
+                  effectivePolicyRef:
+                    properties:
+                      class:
+                        enum:
+                        - normal
+                        - admin
+                        type: string
+                      generation:
+                        format: int64
+                        type: integer
+                      name:
+                        type: string
+                      uid:
+                        description: |-
+                          UID is a type that holds unique ID values, including UUIDs.  Because we
+                          don't ONLY use UUIDs, this is an alias to string.  Being a type captures
+                          intent and helps make sure that UIDs and names do not get conflated.
+                        type: string
+                    required:
+                    - class
+                    - generation
+                    - name
+                    - uid
+                    type: object
+                  enforcement:
+                    properties:
+                      credential:
+                        properties:
+                          desiredRevision:
+                            type: string
+                        type: object
+                      gateway:
+                        properties:
+                          desiredRevision:
+                            type: string
+                        type: object
+                      sandbox:
+                        properties:
+                          desiredRevision:
+                            type: string
+                        type: object
+                    type: object
+                  observedGeneration:
+                    format: int64
+                    type: integer
+                  phase:
+                    enum:
+                    - Pending
+                    - Applied
+                    - Denied
+                    - Unknown
+                    type: string
+                type: object
               registryCredentials:
                 description: |-
                   RegistryCredentials records the objects verified by the last sync, not

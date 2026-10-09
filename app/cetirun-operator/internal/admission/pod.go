@@ -106,7 +106,7 @@ func PodExpectationObject(stateNamespace string, expected sandboxworkload.Expect
 // garbage collector's finalizer-only completion of an already deleting Pod.
 func (h *PodHandler) Validate(ctx context.Context, request admission.Request) admission.Response {
 	if request.Operation == admissionv1.Delete || request.SubResource == "status" {
-		return admission.Allowed("Pod deletion and status remain independent of governance admission")
+		return admission.Allowed("Pod deletion and status remain independent of policy admission")
 	}
 	if request.Resource.Group == "" && request.Resource.Resource == "pods" && request.Resource.Version == "v1" &&
 		request.Operation == admissionv1.Connect && slices.Contains([]string{"exec", "attach", "portforward"}, request.SubResource) {
@@ -127,7 +127,7 @@ func (h *PodHandler) Validate(ctx context.Context, request admission.Request) ad
 		return rejectPod(ctx, request, &podFailure{http.StatusBadRequest, "InvalidPod", "invalid or ambiguous protected Pod"})
 	}
 	if podGarbageCollectorFinalizerUpdate(request, &pod) {
-		return admission.Allowed("garbage collector Pod finalization remains independent of governance admission")
+		return admission.Allowed("garbage collector Pod finalization remains independent of policy admission")
 	}
 	expected, state, failure := h.readExpectation(ctx, request.Namespace)
 	if failure != nil {

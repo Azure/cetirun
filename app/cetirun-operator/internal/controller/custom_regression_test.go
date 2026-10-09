@@ -23,6 +23,7 @@ import (
 )
 
 func TestCustomUnboundDeletionPreservesForeignNamespace(t *testing.T) {
+	requireLegacyCustomRuntime(t)
 	for _, forgedMetadata := range []bool{false, true} {
 		cr, b, _ := customFixture("example", nil)
 		cr.Finalizers = nil
@@ -58,6 +59,7 @@ func TestCustomUnboundDeletionPreservesForeignNamespace(t *testing.T) {
 }
 
 func TestCustomRecordedDeletionAndNamespaceReplacement(t *testing.T) {
+	requireLegacyCustomRuntime(t)
 	for _, replaceNamespace := range []bool{false, true} {
 		cr, b, objects := customFixture("example", nil)
 		scheme := testScheme()
@@ -111,6 +113,7 @@ func TestCustomRecordedDeletionAndNamespaceReplacement(t *testing.T) {
 }
 
 func TestCustomAgentChangesDuringApprovalPreventApply(t *testing.T) {
+	requireLegacyCustomRuntime(t)
 	for _, change := range []string{"suspend", "delete", "generation", "revoked"} {
 		t.Run(change, func(t *testing.T) {
 			cr, b, objects := customFixture("example", nil)
@@ -170,6 +173,7 @@ func (w failStatusWriter) Patch(ctx context.Context, obj client.Object, patch cl
 }
 
 func TestCustomSuccessfulApplyRecoversStatusWithoutHandoff(t *testing.T) {
+	requireLegacyCustomRuntime(t)
 	cr, b, objects := customFixture("example", nil)
 	scheme := testScheme()
 	c := &failStatusOnceClient{Client: fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&api.Agent{}).WithObjects(objects...).Build(), fail: true}
@@ -201,6 +205,7 @@ func TestCustomSuccessfulApplyRecoversStatusWithoutHandoff(t *testing.T) {
 }
 
 func TestCustomInvalidResourcesDoNotRequestHandoff(t *testing.T) {
+	requireLegacyCustomRuntime(t)
 	for _, body := range []string{
 		`{"requests":{"cpu":"8"},"limits":{"cpu":"1"}}`,
 		`{"requests":{"example.com/device":"1"}}`,

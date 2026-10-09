@@ -37,7 +37,8 @@ func TestAdminInstance_ListAll(t *testing.T) {
 			ObjectMeta: metav1.ObjectMeta{Name: "bob"},
 			Spec: cetirunv1alpha1.AgentSpec{
 				Agent: cetirunv1alpha1.HarnessSpec{Type: cetirunv1alpha1.AgentTypeOpenClaw},
-				User:  cetirunv1alpha1.UserSpec{Alias: "bob", Team: "legacy"},
+				Team:  "platform",
+				User:  cetirunv1alpha1.UserSpec{Alias: "bob"},
 			},
 			Status: cetirunv1alpha1.AgentStatus{Phase: "Pending"},
 		},
@@ -68,7 +69,7 @@ func TestAdminInstance_ListAll(t *testing.T) {
 	if byName["bob"].Ready {
 		t.Errorf("bob should not be ready")
 	}
-	if byName["bob"].Team != "legacy" {
-		t.Errorf("bob team should fall back to user.team, got %q", byName["bob"].Team)
+	if byName["bob"].Team != "platform" {
+		t.Errorf("bob team = %q, want platform", byName["bob"].Team)
 	}
 }

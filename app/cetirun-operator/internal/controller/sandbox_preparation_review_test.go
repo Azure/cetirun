@@ -737,7 +737,10 @@ func TestSandboxPreparationUnchangedRequestBudget(t *testing.T) {
 			}
 			sources := len(f.expectation(t).Sources)
 			reads := counts.gets + counts.lists
-			if counts.writes != 0 || reads > sources+25 || reads*2 >= fullReads || counts.lists != 1 ||
+			// Admin-class resolution reads the selected Team before the held
+			// preparation reuse path; Team selection has no separate authorization
+			// record that can short-circuit that read.
+			if counts.writes != 0 || reads > sources+26 || reads*2 >= fullReads || counts.lists != 1 ||
 				f.installer.stages != stages || f.installer.renders != renders ||
 				f.source.fences != fences+1 || f.installer.digestReads != digestReads+1 {
 				t.Fatalf("unchanged preparation exceeded its read-only budget: reads=%d full=%d sources=%d writes=%d renders=%d stages=%d fences=%d",
@@ -762,7 +765,7 @@ func TestSandboxPreparationReuseRefreshesChangedIntentAndRelease(t *testing.T) {
 			}
 		},
 		"render defaults": func(_ *testing.T, f *preparationFixture) {
-			f.reconciler.CetiRunHelmValues["secrets"].(map[string]any)["apiBase"] = "https://api.example.org/v1"
+			f.reconciler.CetiRunHelmValues["logger"].(map[string]any)["image"] = map[string]any{"repository": "example.org/logger"}
 		},
 		"Helm store": func(_ *testing.T, f *preparationFixture) { f.installer.stageDigest = "changed-synthetic-release" },
 		"Service": func(t *testing.T, f *preparationFixture) {

@@ -61,8 +61,13 @@ type Key struct {
 	MaxBudget      *float64
 	BudgetDuration string
 	Blocked        bool
-	TeamID         string
-	UserID         string
+	// Spend and BudgetResetAt are enforcement observations returned by
+	// LiteLLM. They are deliberately non-secret: callers use them only for
+	// status/read-back and never infer a budget from a missing value.
+	Spend         *float64
+	BudgetResetAt *time.Time
+	TeamID        string
+	UserID        string
 }
 
 // GenerateRequest creates a key with a caller-chosen value, which lets the
@@ -74,7 +79,11 @@ type GenerateRequest struct {
 	Models         []string
 	MaxBudget      float64
 	BudgetDuration string
-	Metadata       map[string]string
+	// Blocked creates a revoked key. This is used when an Agent is suspended
+	// before it has ever received a Gateway key: creating it unblocked, even
+	// briefly, would violate the suspension boundary.
+	Blocked  bool
+	Metadata map[string]string
 	// TeamID and UserID attribute the key's spend to a Gateway team and
 	// user. The team must exist; the user need not.
 	TeamID string
@@ -136,6 +145,8 @@ func (c *Client) GetKey(ctx context.Context, token string) (*Key, error) {
 			MaxBudget      *float64 `json:"max_budget"`
 			BudgetDuration string   `json:"budget_duration"`
 			Blocked        *bool    `json:"blocked"`
+			Spend          *float64 `json:"spend"`
+			BudgetResetAt  *string  `json:"budget_reset_at"`
 			TeamID         *string  `json:"team_id"`
 			UserID         *string  `json:"user_id"`
 		} `json:"info"`
@@ -148,11 +159,19 @@ func (c *Client) GetKey(ctx context.Context, token string) (*Key, error) {
 		return nil, err
 	}
 	info := response.Info
-	return &Key{
+	key := &Key{
 		Alias: info.KeyAlias, Models: info.Models, MaxBudget: info.MaxBudget,
-		BudgetDuration: info.BudgetDuration, Blocked: info.Blocked != nil && *info.Blocked,
+		BudgetDuration: info.BudgetDuration, Blocked: info.Blocked != nil && *info.Blocked, Spend: info.Spend,
 		TeamID: deref(info.TeamID), UserID: deref(info.UserID),
-	}, nil
+	}
+	if info.BudgetResetAt != nil && strings.TrimSpace(*info.BudgetResetAt) != "" {
+		resetAt, err := time.Parse(time.RFC3339, *info.BudgetResetAt)
+		if err != nil {
+			return nil, fmt.Errorf("decode AI Gateway key budget reset time: %w", err)
+		}
+		key.BudgetResetAt = &resetAt
+	}
+	return key, nil
 }
 
 func deref(value *string) string {
@@ -183,6 +202,9 @@ func (c *Client) GenerateKey(ctx context.Context, req GenerateRequest) error {
 	if req.BudgetDuration != "" {
 		body["budget_duration"] = req.BudgetDuration
 	}
+	if req.Blocked {
+		body["blocked"] = true
+	}
 	if req.TeamID != "" {
 		body["team_id"] = req.TeamID
 	}
@@ -204,6 +226,31 @@ func (c *Client) UpdateKeyModels(ctx context.Context, token string, models []str
 		return fmt.Errorf("virtual key model list must not be empty; an empty list grants every model")
 	}
 	_, err := c.do(ctx, http.MethodPost, "/key/update", map[string]any{"key": token, "models": models}, nil)
+	return err
+}
+
+// UpdateKeyBudget replaces the native LiteLLM USD budget without replacing
+// the key. Keeping the same key preserves LiteLLM's current-period spend and
+// reset state; callers must GetKey afterwards before treating the change as
+// applied.
+func (c *Client) UpdateKeyBudget(ctx context.Context, token string, maxBudget float64, budgetDuration string) error {
+	if maxBudget <= 0 {
+		return fmt.Errorf("virtual key budget must be positive")
+	}
+	if budgetDuration == "" {
+		return fmt.Errorf("virtual key budget duration is required")
+	}
+	_, err := c.do(ctx, http.MethodPost, "/key/update", map[string]any{
+		"key": token, "max_budget": maxBudget, "budget_duration": budgetDuration,
+	}, nil)
+	return err
+}
+
+// SetKeyBlocked changes only LiteLLM's blocked flag. It is used for
+// suspension and no-entitlement tightening, where deleting or recreating the
+// key would lose current-period budget accounting.
+func (c *Client) SetKeyBlocked(ctx context.Context, token string, blocked bool) error {
+	_, err := c.do(ctx, http.MethodPost, "/key/update", map[string]any{"key": token, "blocked": blocked}, nil)
 	return err
 }
 
@@ -261,12 +308,16 @@ func (c *Client) EnsureTeamMember(ctx context.Context, teamID, userID string) er
 
 // Deployment is the non-secret subset of a model deployment.
 type Deployment struct {
-	ID              string
-	ModelName       string
-	AccessGroups    []string
-	FromDatabase    bool
-	MaxInputTokens  int64
-	MaxOutputTokens int64
+	ID           string
+	ModelName    string
+	AccessGroups []string
+	FromDatabase bool
+	// DatabaseSourceKnown distinguishes an explicit db_model=false (a model
+	// loaded from trusted static configuration) from an older or malformed
+	// response which omitted the provenance field.
+	DatabaseSourceKnown bool
+	MaxInputTokens      int64
+	MaxOutputTokens     int64
 	// Priced reports whether the deployment carries a price by the parts of
 	// LiteLLM's unpriced-model check that /model/info shows: a price set in
 	// litellm_params, even zero, or a positive price or tiered pricing in the
@@ -293,7 +344,7 @@ func (c *Client) ListModels(ctx context.Context) ([]Deployment, error) {
 		var info struct {
 			ID              string   `json:"id"`
 			AccessGroups    []string `json:"access_groups"`
-			DBModel         bool     `json:"db_model"`
+			DBModel         *bool    `json:"db_model"`
 			MaxInputTokens  *float64 `json:"max_input_tokens"`
 			MaxOutputTokens *float64 `json:"max_output_tokens"`
 		}
@@ -307,7 +358,8 @@ func (c *Client) ListModels(ctx context.Context) ([]Deployment, error) {
 			}
 		}
 		deployments = append(deployments, Deployment{
-			ID: info.ID, ModelName: item.ModelName, AccessGroups: info.AccessGroups, FromDatabase: info.DBModel,
+			ID: info.ID, ModelName: item.ModelName, AccessGroups: info.AccessGroups,
+			FromDatabase: info.DBModel != nil && *info.DBModel, DatabaseSourceKnown: info.DBModel != nil,
 			MaxInputTokens: tokens(info.MaxInputTokens), MaxOutputTokens: tokens(info.MaxOutputTokens),
 			Priced: declaresPrice(item.LiteLLMParams) || hasPrice(fields),
 		})

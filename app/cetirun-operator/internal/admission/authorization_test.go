@@ -35,12 +35,19 @@ func fixtureAuthorization(t *testing.T, f fixture) string {
 
 func stampFixtureAuthorization(t *testing.T, f fixture) {
 	t.Helper()
-	f.agent.Annotations = map[string]string{sandboxbinding.AuthorizationAnnotation: fixtureAuthorization(t, f)}
+	if f.agent.Annotations == nil {
+		f.agent.Annotations = map[string]string{}
+	}
+	f.agent.Annotations[sandboxbinding.AuthorizationAnnotation] = fixtureAuthorization(t, f)
 }
 
 func assignedFixture(t *testing.T) fixture {
 	t.Helper()
 	f := newFixture(t)
+	f.policy.Spec.Harnesses.Allowed = []api.AgentType{api.AgentTypeHermes}
+	if err := f.client.Update(context.Background(), f.policy); err != nil {
+		t.Fatal(err)
+	}
 	f.handler.config.TeamAssignments = []TeamAssignment{
 		{Team: f.team.Name, Users: []string{"member"}, Groups: []string{"engineering-members"}},
 	}
@@ -109,17 +116,15 @@ func TestTrustedTeamCreationContextIgnoresLabelsAndHumanRoles(t *testing.T) {
 	} {
 		t.Run(user.Username+strings.Join(user.Groups, ","), func(t *testing.T) {
 			f := assignedFixture(t)
-			f.agent.Spec.Team, f.agent.Spec.SandboxRef, f.agent.Spec.PolicyClass = "", "", ""
-			f.agent.Spec.User.Team = "caller-supplied-team"
 			f.agent.Labels = map[string]string{"team": "caller-supplied-team", "role": "admin"}
-			f.agent.Annotations = map[string]string{"example.com/portal-role": "admin"}
+			f.agent.Annotations["example.com/portal-role"] = "admin"
 			req := requestFor(t, admissionv1.Create, f.agent, nil, user.Username)
 			req.UserInfo = user
 			agent := admitAgent(t, f.handler, req)
 			if agent.Spec.Team != f.team.Name || agent.Spec.SandboxRef != f.box.Name || agent.Spec.PolicyClass != api.AgentPolicyClassNormal {
 				t.Fatalf("trusted creation context was not persisted: %#v", agent.Spec)
 			}
-			if agent.Annotations["example.com/portal-role"] != "admin" || f.agent.Spec.Team != "" || sandboxbinding.Present(f.agent) {
+			if agent.Annotations["example.com/portal-role"] != "admin" || f.agent.Spec.Team != f.team.Name || sandboxbinding.Present(f.agent) {
 				t.Fatal("mutation changed unrelated metadata or the caller's object")
 			}
 			binding, err := sandboxbinding.AuthorizedBinding(agent)

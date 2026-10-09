@@ -251,7 +251,6 @@ func TestAuthorizationAPIServerBindings(t *testing.T) {
 			agent := newAgent("")
 			agent.GenerateName = "assigned-agent-"
 			agent.Labels = map[string]string{"role": "admin", "team": "caller-team"}
-			agent.Spec.User.Team = "caller-team"
 			if err := writer.Create(ctx, agent); err != nil {
 				t.Fatal(err)
 			}
@@ -307,13 +306,6 @@ func TestAuthorizationAPIServerBindings(t *testing.T) {
 			agent := newAgent("forged-" + name)
 			edit(agent)
 			denied(member.Create(ctx, agent))
-		}
-		legacy := newAgent("unassigned-legacy")
-		if err := outsider.Create(ctx, legacy); err != nil {
-			t.Fatal("unmapped legacy behavior changed:", err)
-		}
-		if legacy.Spec.Team != "" || legacy.Spec.SandboxRef != "" || sandboxbinding.Present(legacy) {
-			t.Fatal("unmapped legacy creation acquired Sandbox authority")
 		}
 	})
 	t.Run("creation dry run persists nothing and cannot be replayed", func(t *testing.T) {
@@ -455,7 +447,9 @@ func TestAuthorizationAPIServerBindings(t *testing.T) {
 			t.Fatal("new creation did not use the new Team default")
 		}
 		agent.Spec.SandboxRef = ""
-		denied(admin.Update(ctx, agent))
+		if err := admin.Update(ctx, agent); !apierrors.IsInvalid(err) {
+			t.Fatalf("required Sandbox binding was removable: %v", err)
+		}
 	})
 	t.Run("missing references recover without clearing protected authority or the execution hold", func(t *testing.T) {
 		for _, recovery := range recoveries {
@@ -516,9 +510,6 @@ func TestAuthorizationAPIServerBindings(t *testing.T) {
 					func(a *api.Agent) { a.Annotations[sandboxbinding.AuthorizationAnnotation] = "caller-authored" },
 					func(a *api.Agent) { delete(a.Annotations, sandboxbinding.ReauthorizeAnnotation) },
 					func(a *api.Agent) { a.Annotations = nil },
-					func(a *api.Agent) {
-						a.Spec.Team, a.Spec.SandboxRef, a.Spec.PolicyClass = "", "", ""
-					},
 					func(a *api.Agent) {
 						delete(a.Annotations, sandboxbinding.AuthorizationAnnotation)
 						a.Annotations[sandboxbinding.ReauthorizeAnnotation] = request
@@ -641,7 +632,7 @@ func TestAuthorizationAPIServerBindings(t *testing.T) {
 		}
 	})
 	t.Run("server-side apply owns annotation keys rather than the whole map", func(t *testing.T) {
-		for _, mode := range []string{"create-defaults", "create-explicit", "adopt-existing", "legacy"} {
+		for _, mode := range []string{"create-defaults", "create-explicit", "adopt-existing"} {
 			t.Run(mode, func(t *testing.T) {
 				name := "apply-" + mode
 				annotations := map[string]any{"example.com/gitops-note": "initial"}
@@ -686,31 +677,9 @@ func TestAuthorizationAPIServerBindings(t *testing.T) {
 						"metadata": metadata,
 					}
 				}
-				writer := member
-				if mode == "legacy" {
-					writer = outsider
-				}
-				applied, err := apply(writer, "gitops", manifest, false)
+				applied, err := apply(member, "gitops", manifest, false)
 				if err != nil {
 					t.Fatal("initial server-side apply failed:", err)
-				}
-				if mode == "legacy" {
-					for range 2 {
-						if sandboxbinding.Present(applied) || sandbox.Requested(applied, nil) || applied.Spec.Team != "" {
-							t.Fatal("unassigned legacy apply acquired Sandbox authority")
-						}
-						delete(annotations, "example.com/gitops-note")
-						spec["model"] = "legacy-model"
-						applied, err = apply(writer, "gitops", manifest, false)
-						if err != nil {
-							t.Fatal("legacy server-side apply regressed:", err)
-						}
-					}
-					for _, key := range []string{sandboxbinding.AuthorizationAnnotation, sandboxbinding.ReauthorizeAnnotation} {
-						_, err := apply(writer, "legacy-forgery", metadataApply(map[string]any{key: ""}), true)
-						requireAuthorizationDenied(t, err)
-					}
-					return
 				}
 				binding, err := sandboxbinding.AuthorizedBinding(applied)
 				if err != nil {

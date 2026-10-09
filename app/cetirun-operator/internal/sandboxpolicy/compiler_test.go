@@ -35,6 +35,7 @@ func compilerFixture() CompileInput {
 	return CompileInput{
 		AgentName: "example-agent", Namespace: "cetirun-example-agent",
 		Resolution: sandbox.Resolution{
+			AgentPolicy: api.AgentPolicySpec{Harnesses: api.AgentPolicyHarnesses{Allowed: []api.AgentType{api.AgentTypeHermes}}},
 			Binding: sandbox.Binding{
 				AgentUID: "example-agent-uid", TeamUID: "example-team-uid", SandboxUID: "example-sandbox-uid",
 				AgentPolicyUID: "example-policy-uid", PolicyClass: api.AgentPolicyClassNormal,
@@ -307,6 +308,15 @@ func TestCompileCanonicalRevisionAndNoInputMutation(t *testing.T) {
 	input.Resolution.AgentPolicy.SandboxSelection.AllowMultiple = true
 	if mustCompile(t, input).Revision != first.Revision {
 		t.Fatal("selection-only changes must not change an already selected execution")
+	}
+	input.Resolution.AgentPolicy.ModelAccess = api.AgentPolicyModelAccess{
+		Copilot:       api.AgentPolicyCopilotAccess{Allowed: true},
+		GatewayBudget: &api.AgentPolicyGatewayBudget{DefaultMonthlyUSD: "10", MaxMonthlyUSD: "20"},
+	}
+	input.Resolution.AgentPolicy.AgentIdentity = api.AgentPolicyAgentIdentity{Allowed: true, CredentialServices: []string{"azure-resource-manager"}}
+	input.Resolution.AgentPolicy.Skills.Allowed = []string{"unrelated-skill"}
+	if mustCompile(t, input).Revision != first.Revision {
+		t.Fatal("non-Sandbox policy fields changed compiled Sandbox controls")
 	}
 }
 

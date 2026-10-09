@@ -94,7 +94,10 @@ func TestCompileRequiresExplicitApprovedDNSResolvers(t *testing.T) {
 			if err := ValidatePlatform(input.Platform, input.Resolution.Capabilities); !errors.Is(err, tc.want) {
 				t.Fatalf("platform assessment accepted invalid resolvers: %v", err)
 			}
-			policy := &api.AgentPolicy{ObjectMeta: metav1.ObjectMeta{UID: input.Resolution.Binding.AgentPolicyUID}}
+			policy := &api.AgentPolicy{
+				ObjectMeta: metav1.ObjectMeta{UID: input.Resolution.Binding.AgentPolicyUID},
+				Spec:       input.Resolution.AgentPolicy,
+			}
 			if err := ValidatePolicyConfiguration(policy, input.Resolution.Capabilities, input.Platform); !errors.Is(err, tc.want) {
 				t.Fatalf("policy assessment accepted invalid resolvers: %v", err)
 			}

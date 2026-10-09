@@ -83,6 +83,8 @@ kind: Agent
 metadata:
   name: alice-example
 spec:
+  team: example-team
+  sandboxRef: standard
   agent:
     type: hermes
   gatewayTokenSecretRef: gateway-token
@@ -95,8 +97,9 @@ Keep `metadata.name` and `spec.user.alias` stable. The former determines the
 instance namespace, Helm release, and URL path; the latter determines
 ownership. Do not use `ui`, which the controller reserves.
 
-`spec.agent` is required; omitting its `type` defaults to Hermes. The effective
-type and runtime username cannot change after creation.
+`spec.team` and `spec.sandboxRef` select administrator-defined policy and
+isolation settings. `spec.agent` is required; omitting its `type` defaults to
+Hermes. The effective type and runtime username cannot change after creation.
 
 Validate the manifest against the cluster's installed CRD without saving it:
 

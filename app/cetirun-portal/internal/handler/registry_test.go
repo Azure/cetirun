@@ -29,11 +29,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
 
-const registryCreateBody = `{"agent":{"type":"hermes","image":"registry.example.com/agent:1"},"registryAuth":{"username":"registry-user","password":"synthetic-write-only-token"}}`
+const registryCreateBody = `{"agent":{"type":"hermes","image":"registry.example.com/agent:1"},"team":"aks","registryAuth":{"username":"registry-user","password":"synthetic-write-only-token"}}`
 
 func registryHandler(t *testing.T, failSave *bool) (*InstanceHandler, client.Client) {
 	t.Helper()
 	c := fake.NewClientBuilder().WithScheme(newScheme()).WithStatusSubresource(&api.Agent{}).
+		WithObjects(gatewayTeam("aks")).
 		WithInterceptorFuncs(interceptor.Funcs{Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
 			if review, ok := obj.(*authorizationv1.SubjectAccessReview); ok {
 				review.Status.Denied = true
@@ -336,7 +337,7 @@ func TestCustomRegistryCreateRecoveryAndVersionedManagement(t *testing.T) {
 			failing := true
 			h, c := registryHandler(t, &failing)
 			h.Config.AllowedAgentTypes = []string{"hermes", "custom"}
-			body := `{"agent":{"type":"custom","image":"` + managementImage + `","username":"assistant"` + port + `},"registryAuth":{"username":"synthetic-user","password":"synthetic-token"}}`
+			body := `{"agent":{"type":"custom","image":"` + managementImage + `","username":"assistant"` + port + `},"team":"aks","registryAuth":{"username":"synthetic-user","password":"synthetic-token"}}`
 			request := func(method, body string, instance *api.Agent) *http.Request {
 				return withAgentIdentityClaims(registryRequest(method, body, instance), "alice", managementTenant, managementOwner)
 			}

@@ -31,6 +31,16 @@ func newFakeClientWith(objs ...client.Object) client.Client {
 func newFakeClient(objs ...client.Object) client.Client {
 	scheme := newScheme()
 	builder := fake.NewClientBuilder().WithScheme(scheme)
+	hasTeam := false
+	for _, obj := range objs {
+		if _, ok := obj.(*cetirunv1alpha1.Team); ok {
+			hasTeam = true
+			break
+		}
+	}
+	if !hasTeam {
+		objs = append(objs, gatewayTeam("aks"))
+	}
 	if len(objs) > 0 {
 		builder = builder.WithObjects(objs...)
 	}

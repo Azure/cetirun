@@ -153,11 +153,25 @@ func TestProtectedNamespaceRoutingAPIServer(t *testing.T) {
 		create(cl, &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: "runner", Namespace: namespace}})
 	}
 	for name, change := range map[string]func(*corev1.Namespace){
-		"remove marker":     func(object *corev1.Namespace) { delete(object.Labels, "cetirun.microsoft.com/sandbox-protected") },
-		"disable marker":    func(object *corev1.Namespace) { object.Labels["cetirun.microsoft.com/sandbox-protected"] = "false" },
-		"change Agent UID":  func(object *corev1.Namespace) { object.Annotations["cetirun.microsoft.com/agent-uid"] = "replacement" },
-		"change Agent name": func(object *corev1.Namespace) { object.Annotations["cetirun.microsoft.com/agent-name"] = "replacement" },
-		"remove owner":      func(object *corev1.Namespace) { object.OwnerReferences = nil },
+		"remove marker": func(object *corev1.Namespace) {
+			delete(object.Labels, "cetirun.microsoft.com/sandbox-protected")
+		},
+		"disable marker": func(object *corev1.Namespace) {
+			object.Labels["cetirun.microsoft.com/sandbox-protected"] = "false"
+		},
+		"add AKS control-plane exclusion": func(object *corev1.Namespace) {
+			object.Labels["control-plane"] = "true"
+		},
+		"add AKS managed namespace exclusion": func(object *corev1.Namespace) {
+			object.Labels["kubernetes.azure.com/managedby"] = "aks"
+		},
+		"change Agent UID": func(object *corev1.Namespace) {
+			object.Annotations["cetirun.microsoft.com/agent-uid"] = "replacement"
+		},
+		"change Agent name": func(object *corev1.Namespace) {
+			object.Annotations["cetirun.microsoft.com/agent-name"] = "replacement"
+		},
+		"remove owner": func(object *corev1.Namespace) { object.OwnerReferences = nil },
 	} {
 		t.Run(name, func(t *testing.T) {
 			for _, actor := range []client.Client{member, controller} {
@@ -245,6 +259,7 @@ func renderedPodAdmission(t *testing.T, ca []byte) (*admissionregistrationv1.Val
 		"--set", "sandboxAdmission.enabled=true", "--set", "sandboxAdmission.enforce=true",
 		"--set", "sandboxAdmission.podsEnabled=true", "--set", "sandboxAdmission.tlsSecretName=example-tls",
 		"--set", "sandboxAdmission.adminUsers[0]=admin@example.com",
+		"--set", "sandboxAdmission.adminUsers[1]=system:serviceaccount:cetirun-system:portal",
 		"--set-string", "sandboxAdmission.caBundle="+base64.StdEncoding.EncodeToString(ca))
 	command.Env = append(os.Environ(), "KUBECONFIG="+os.DevNull, "HELM_REGISTRY_CONFIG="+os.DevNull, "HELM_REPOSITORY_CONFIG="+os.DevNull)
 	output, err := command.CombinedOutput()

@@ -59,11 +59,12 @@ func sampleInstance() *cetirunv1alpha1.Agent {
 			CreationTimestamp: metav1.NewTime(time.Date(2024, 1, 15, 10, 0, 0, 0, time.UTC)),
 		},
 		Spec: cetirunv1alpha1.AgentSpec{
-			Agent: cetirunv1alpha1.HarnessSpec{Type: cetirunv1alpha1.AgentTypeOpenClaw},
+			Agent:      cetirunv1alpha1.HarnessSpec{Type: cetirunv1alpha1.AgentTypeOpenClaw},
+			Team:       "aks",
+			SandboxRef: "standard",
 			User: cetirunv1alpha1.UserSpec{
 				Alias:       "alice",
 				DisplayName: "Alice Smith",
-				Team:        "aks",
 				Email:       "alice@microsoft.com",
 			},
 		},
@@ -322,7 +323,7 @@ func TestCreateInstance_Success(t *testing.T) {
 
 func TestCreateInstance_ExplicitOpenClaw(t *testing.T) {
 	h := &InstanceHandler{Kube: kube.NewClient(newFakeClient())}
-	body := strings.NewReader(`{"agent":{"type":"openclaw"}}`)
+	body := strings.NewReader(`{"agent":{"type":"openclaw"},"team":"aks"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/instance", body)
 	req = withClaims(req, "alice", "Example User", "alice@example.com")
 	w := httptest.NewRecorder()
@@ -341,7 +342,7 @@ func TestCreateInstance_ExplicitOpenClaw(t *testing.T) {
 
 func TestCreateInstanceAgentIdentityRequiresEnabledFeature(t *testing.T) {
 	h := &InstanceHandler{Kube: kube.NewClient(newFakeClient())}
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/instance", strings.NewReader(`{"agent":{},"agentIdentityEnabled":true}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/instance", strings.NewReader(`{"agent":{},"team":"aks","agentIdentityEnabled":true}`))
 	req = withAgentIdentityClaims(req, "alice", "11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222")
 	w := httptest.NewRecorder()
 
@@ -357,7 +358,7 @@ func TestCreateInstanceAgentIdentityRequiresVerifiedOwner(t *testing.T) {
 		Kube:   kube.NewClient(newFakeClient()),
 		Config: config.Config{AgentIdentityEnabled: true},
 	}
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/instance", strings.NewReader(`{"agent":{},"agentIdentityEnabled":true}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/instance", strings.NewReader(`{"agent":{},"team":"aks","agentIdentityEnabled":true}`))
 	req = withClaims(req, "alice", "Alice Smith", "alice@example.com")
 	w := httptest.NewRecorder()
 
@@ -375,7 +376,7 @@ func TestCreateInstanceAgentIdentityBindsVerifiedOwner(t *testing.T) {
 		Kube:   kube.NewClient(newFakeClient()),
 		Config: config.Config{AgentIdentityEnabled: true},
 	}
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/instance", strings.NewReader(`{"agent":{},"agentIdentityEnabled":true}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/instance", strings.NewReader(`{"agent":{},"team":"aks","agentIdentityEnabled":true}`))
 	req = withAgentIdentityClaims(req, "alice", tenantID, objectID)
 	w := httptest.NewRecorder()
 
@@ -403,7 +404,7 @@ func TestCreateInstance_ModelRoundTrip(t *testing.T) {
 	fc := newFakeClient()
 	h := &InstanceHandler{Kube: kube.NewClient(fc)}
 
-	body := CreateInstanceRequest{Agent: &agentconfig.Input{}, Model: " gpt-6-astra "}
+	body := CreateInstanceRequest{Agent: &agentconfig.Input{}, Team: "aks", Model: " gpt-6-astra "}
 	bodyBytes, _ := json.Marshal(body)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/instance", bytes.NewReader(bodyBytes))
 	req = withClaims(req, "alice", "Alice Smith", "alice@microsoft.com")
@@ -548,13 +549,12 @@ func TestCreateInstance_ReservedName(t *testing.T) {
 	}
 }
 
-func TestCreateInstance_NoTeam_OK(t *testing.T) {
+func TestCreateInstanceRequiresTeam(t *testing.T) {
 	fc := newFakeClient()
 	h := &InstanceHandler{
 		Kube: kube.NewClient(fc),
 	}
 
-	// Empty team is allowed: portal users may create solo instances without a team.
 	body := CreateInstanceRequest{Agent: &agentconfig.Input{}}
 	bodyBytes, _ := json.Marshal(body)
 
@@ -564,8 +564,8 @@ func TestCreateInstance_NoTeam_OK(t *testing.T) {
 
 	h.CreateInstance(w, req)
 
-	if w.Code != http.StatusCreated {
-		t.Errorf("status = %d, want %d (body=%s)", w.Code, http.StatusCreated, w.Body.String())
+	if w.Code != http.StatusBadRequest || errorCode(t, w) != "team_required" {
+		t.Errorf("status = %d, want %d team_required (body=%s)", w.Code, http.StatusBadRequest, w.Body.String())
 	}
 }
 
@@ -997,7 +997,9 @@ func TestDeleteInstance_NotFound(t *testing.T) {
 func TestUpdateInstance_Success(t *testing.T) {
 	instance := sampleInstance()
 	instance.Spec.Suspended = true
-	fc := newFakeClient(instance)
+	platform := gatewayTeam("platform")
+	platform.Spec.SandboxRefs, platform.Spec.DefaultSandboxRef = []string{"restricted"}, "restricted"
+	fc := newFakeClient(instance, platform)
 	h := &InstanceHandler{
 		Kube: kube.NewClient(fc),
 	}
@@ -1027,6 +1029,10 @@ func TestUpdateInstance_Success(t *testing.T) {
 	}
 	if resp.DisplayName != "Alice Updated" {
 		t.Errorf("DisplayName = %q, want %q", resp.DisplayName, "Alice Updated")
+	}
+	stored, err := h.Kube.GetInstance(context.Background(), "alice")
+	if err != nil || stored.Spec.Team != "platform" || stored.Spec.SandboxRef != "restricted" {
+		t.Fatalf("updated binding = %q/%q, err=%v", stored.Spec.Team, stored.Spec.SandboxRef, err)
 	}
 	if resp.Team != "platform" {
 		t.Errorf("Team = %q, want %q", resp.Team, "platform")
@@ -1169,8 +1175,8 @@ func TestUpdateInstance_MemberCannotClearTeam(t *testing.T) {
 
 	h.UpdateInstance(w, req)
 
-	if w.Code != http.StatusForbidden {
-		t.Errorf("status = %d, want %d", w.Code, http.StatusForbidden)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusBadRequest)
 	}
 }
 

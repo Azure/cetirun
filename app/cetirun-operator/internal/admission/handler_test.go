@@ -28,7 +28,7 @@ import (
 const testController = "system:serviceaccount:operator-test:controller"
 
 func testConfig() Config {
-	return Config{ValidationMode: ValidationStrict, AdminUsers: []string{"administrator"}, AdminGroups: []string{"governance-test-admins"}, ControllerUsername: testController}
+	return Config{ValidationMode: ValidationStrict, AdminUsers: []string{"administrator", "system:serviceaccount:test:portal"}, AdminGroups: []string{"policy-test-admins"}, ControllerUsername: testController}
 }
 
 type fixture struct {
@@ -62,10 +62,17 @@ func newFixture(t *testing.T) fixture {
 			},
 		},
 	}
-	policy := &api.AgentPolicy{ObjectMeta: metav1.ObjectMeta{Name: "normal", UID: "policy-uid", ResourceVersion: "1"}}
+	policy := &api.AgentPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: "normal", UID: "policy-uid", ResourceVersion: "1"},
+		Spec:       api.AgentPolicySpec{Harnesses: api.AgentPolicyHarnesses{Allowed: []api.AgentType{api.AgentTypeHermes}}},
+	}
 	team := &api.Team{
 		ObjectMeta: metav1.ObjectMeta{Name: "engineering", UID: "team-uid", ResourceVersion: "1"},
-		Spec:       api.TeamSpec{NormalAgentPolicyRef: policy.Name, SandboxRefs: []string{box.Name}, DefaultSandboxRef: box.Name},
+		Spec: api.TeamSpec{
+			NormalAgentPolicyRef: policy.Name,
+			SandboxRefs:          []string{box.Name},
+			DefaultSandboxRef:    box.Name,
+		},
 	}
 	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(box, policy, team).Build()
 	handler, err := NewHandler(cl, testConfig())
@@ -83,7 +90,10 @@ func newFixture(t *testing.T) fixture {
 		}},
 	}
 	agent := &api.Agent{
-		ObjectMeta: metav1.ObjectMeta{Name: "alice-work", UID: "agent-uid", ResourceVersion: "1", Finalizers: []string{api.Finalizer}},
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "alice-work", UID: "agent-uid", ResourceVersion: "1", Finalizers: []string{api.Finalizer},
+			Annotations: map[string]string{},
+		},
 		Spec: api.AgentSpec{
 			Agent: api.HarnessSpec{Type: api.AgentTypeHermes}, User: api.UserSpec{Alias: "alice"},
 			GatewayTokenSecretRef: "gateway-token", Team: team.Name, SandboxRef: box.Name, PolicyClass: api.AgentPolicyClassNormal,
@@ -151,7 +161,7 @@ func TestExplicitAdmissionAuthority(t *testing.T) {
 				}
 				req := requestFor(t, admissionv1.Create, objects[resourceName], nil, user)
 				if user == "group-administrator" {
-					req.UserInfo.Groups = []string{"governance-test-admins"}
+					req.UserInfo.Groups = []string{"policy-test-admins"}
 				}
 				requireResponse(t, f.handler.Validate(context.Background(), req), true, "")
 			}
@@ -333,7 +343,7 @@ func TestLegacyTeamDeletionPreservesExistingAuthorization(t *testing.T) {
 	}
 }
 
-func TestTeamRemovalProtectsInheritedGovernance(t *testing.T) {
+func TestTeamRemovalProtectsInheritedPolicy(t *testing.T) {
 	f := newFixture(t)
 	f.agent.Spec.SandboxRef = ""
 	f.agent.ResourceVersion = ""
@@ -347,7 +357,7 @@ func TestTeamRemovalProtectsInheritedGovernance(t *testing.T) {
 		requestFor(t, admissionv1.Delete, f.team, nil, "administrator"),
 		requestFor(t, admissionv1.Update, ungoverned, f.team, "administrator"),
 	} {
-		requireResponse(t, f.handler.Validate(context.Background(), req), false, "inherited governance")
+		requireResponse(t, f.handler.Validate(context.Background(), req), false, "inherited policy")
 		requireResponse(t, f.handler.Validate(context.Background(), req), false, f.agent.Name)
 	}
 	if err := f.client.Delete(context.Background(), f.agent); err != nil {
@@ -379,14 +389,14 @@ func TestUnknownVersionFieldsDoNotBypassValidationOrBlockKnownObjects(t *testing
 			if !ok {
 				t.Fatal("fixture omitted spec")
 			}
-			spec["futureGovernance"] = true
+			spec["futurePolicy"] = true
 			var err error
 			req.Object.Raw, err = json.Marshal(raw)
 			if err != nil {
 				t.Fatal(err)
 			}
 			response := f.handler.Validate(context.Background(), req)
-			requireResponse(t, response, false, `unknown field "futureGovernance"`)
+			requireResponse(t, response, false, `unknown field "futurePolicy"`)
 			if response.Result.Code != 400 {
 				t.Fatal("unrecognized policy fields must explicitly fail closed")
 			}
@@ -627,7 +637,7 @@ func TestConfigurationUpdatesCheckEveryReferencingTeam(t *testing.T) {
 	requireResponse(t, f.handler.Validate(context.Background(), req), false, "referencing Team")
 }
 
-func TestGovernanceCannotBeClearedIntoLegacyExecution(t *testing.T) {
+func TestPolicyCannotBeClearedIntoLegacyExecution(t *testing.T) {
 	for _, held := range []bool{false, true} {
 		t.Run(fmt.Sprintf("held=%v", held), func(t *testing.T) {
 			f := newFixture(t)
@@ -762,8 +772,8 @@ func TestAdmissionConfigValidation(t *testing.T) {
 			t.Fatalf("accepted invalid config: %s", raw)
 		}
 	}
-	config, err := ParseConfig(`{"adminUsers":["administrator"],"controllerUsername":"system:serviceaccount:test:controller"}`)
-	if err != nil || !slices.Equal(config.AdminUsers, []string{"administrator"}) {
+	config, err := ParseConfig(`{"adminUsers":["administrator","system:serviceaccount:test:portal"],"controllerUsername":"system:serviceaccount:test:controller"}`)
+	if err != nil || !slices.Equal(config.AdminUsers, []string{"administrator", "system:serviceaccount:test:portal"}) {
 		t.Fatalf("valid config rejected: %v", err)
 	}
 }

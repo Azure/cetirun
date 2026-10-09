@@ -82,6 +82,7 @@ func attachCustomRegistry(t *testing.T, s *completionScenario) (*registryScenari
 }
 
 func TestCustomRegistryChangesNeverStopHealthyWriter(t *testing.T) {
+	requireLegacyCustomRuntime(t)
 	s := runningCustomReview(t)
 	ctx := context.Background()
 	before := s.workload()
@@ -132,6 +133,7 @@ func TestCustomRegistryChangesNeverStopHealthyWriter(t *testing.T) {
 }
 
 func TestCustomPrivateRuntimeChangeRechecksAuthorizationBeforeHandoff(t *testing.T) {
+	requireLegacyCustomRuntime(t)
 	s := runningCustomReview(t)
 	c, _ := attachCustomRegistry(t, s)
 	s.provider.approve = func(sts *appsv1.StatefulSet) error {

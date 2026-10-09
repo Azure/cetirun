@@ -46,16 +46,56 @@ spec:
           metadata:
             type: object
           spec:
-            default: {}
-            description: Default objects allow nested defaults to apply even when
-              spec is omitted.
+            description: AgentPolicySpec defines controls independently of runtime
+              selection.
             properties:
+              agentIdentity:
+                description: AgentIdentity permits the fixed v1 credential-service
+                  entitlement.
+                properties:
+                  allowed:
+                    type: boolean
+                  credentialServices:
+                    items:
+                      enum:
+                      - azure-resource-manager
+                      type: string
+                    type: array
+                    x-kubernetes-list-type: set
+                  required:
+                    type: boolean
+                type: object
               entraID:
                 default: {}
+                description: |-
+                  EntraID remains the Sandbox adapter capability switch. Policy uses
+                  AgentIdentity for the user-facing entitlement and requires both controls
+                  before an Agent Identity can be provisioned.
                 properties:
                   enabled:
                     default: false
                     type: boolean
+                type: object
+              harnesses:
+                description: Harnesses limits runtimes that can receive this policy.
+                properties:
+                  allowed:
+                    description: |-
+                      Policy has typed Gateway and Sandbox enforcement adapters only for
+                      the built-in harnesses. Custom workloads cannot be granted a policy.
+                    items:
+                      description: AgentType identifies a built-in integration or
+                        a user-supplied image.
+                      enum:
+                      - openclaw
+                      - hermes
+                      - custom
+                      type: string
+                    minItems: 1
+                    type: array
+                    x-kubernetes-list-type: set
+                required:
+                - allowed
                 type: object
               kubernetesAccess:
                 description: KubernetesAccess requires separate authorization; its
@@ -112,6 +152,42 @@ spec:
                   rule: (has(self.roleBindings) && size(self.roleBindings) > 0) ||
                     (has(self.clusterRoleBindings) && size(self.clusterRoleBindings)
                     > 0)
+              modelAccess:
+                description: |-
+                  ModelAccess defines the Gateway entitlements and one native USD budget
+                  for the Agent virtual key.
+                properties:
+                  copilot:
+                    properties:
+                      allowed:
+                        type: boolean
+                    type: object
+                  gatewayBudget:
+                    properties:
+                      defaultMonthlyUSD:
+                        pattern: ^(0|[1-9][0-9]*)(\.[0-9]{1,6})?$
+                        type: string
+                      maxMonthlyUSD:
+                        pattern: ^(0|[1-9][0-9]*)(\.[0-9]{1,6})?$
+                        type: string
+                    required:
+                    - defaultMonthlyUSD
+                    - maxMonthlyUSD
+                    type: object
+                  sharedModels:
+                    properties:
+                      allowed:
+                        description: Model identifiers are exact Gateway catalog names,
+                          not display labels.
+                        items:
+                          maxLength: 256
+                          minLength: 1
+                          pattern: ^[^\t\r\n ]+$
+                          type: string
+                        type: array
+                        x-kubernetes-list-type: set
+                    type: object
+                type: object
               network:
                 default: {}
                 properties:
@@ -223,6 +299,18 @@ spec:
                     default: true
                     type: boolean
                 type: object
+              skills:
+                description: Skills is the allowlist for Team defaults and per-Agent
+                  skill requests.
+                properties:
+                  allowed:
+                    items:
+                      type: string
+                    type: array
+                    x-kubernetes-list-type: set
+                type: object
+            required:
+            - harnesses
             type: object
           status:
             description: AgentPolicyStatus reports configuration acceptance, not Agent
@@ -292,6 +380,8 @@ spec:
                 minimum: 0
                 type: integer
             type: object
+        required:
+        - spec
         type: object
     served: true
     storage: true

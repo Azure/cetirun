@@ -5,6 +5,8 @@ package controller
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"slices"
@@ -56,6 +58,14 @@ type aiGatewayCatalog struct {
 	ids       map[string]bool
 	// groups lists the deployment IDs of each access group.
 	groups map[string][]string
+	// modelGroups lists the collision-safe deployment groups for each shared
+	// model identifier. Policy resolution uses these groups rather than a
+	// display name or the broad legacy cetirun-shared group.
+	modelGroups map[string][]string
+	// fingerprint identifies the concrete Gateway deployment set backing the
+	// managed access groups. It changes when a same-name backend is replaced,
+	// even if the display-only Portal catalog is unchanged.
+	fingerprint string
 	// allowsUnpriced is the Gateway's setting from the last listing. The
 	// zero value is the Gateway's default, which refuses requests for
 	// models without a price.
@@ -80,19 +90,34 @@ func (c *aiGatewayCatalog) update(deployments []aigateway.Deployment, blockUnpri
 	var skipped, unpriced []string
 	ids := map[string]bool{}
 	groups := map[string][]string{}
+	groupMembers := map[string]int{}
+	idMembers := map[string]int{}
 	priced := map[string]bool{}
 	for _, deployment := range deployments {
+		if deployment.ID != "" {
+			idMembers[deployment.ID]++
+		}
 		if deployment.Priced {
 			priced[deployment.ModelName] = true
 		}
+		for _, group := range managedModelGroups(deployment.AccessGroups) {
+			groupMembers[group]++
+		}
 	}
 	byName := map[string]aiGatewayCatalogModel{}
+	modelGroups := map[string][]string{}
 	for _, deployment := range deployments {
 		ids[deployment.ID] = true
 		for _, group := range deployment.AccessGroups {
 			groups[group] = append(groups[group], deployment.ID)
 		}
-		if !slices.Contains(deployment.AccessGroups, aiGatewaySharedAccessGroup) {
+		legacyShared := slices.Contains(deployment.AccessGroups, aiGatewaySharedAccessGroup)
+		managedGroups := trustedManagedModelGroups(deployment, groupMembers, idMembers)
+		policyBoundShared := deployment.ID != "" && len(managedGroups) > 0
+		// Keep publishing legacy shared models while old catalog consumers are
+		// present, but never resolve a Policy policy through their broad
+		// group. Only a per-deployment group below is authorization evidence.
+		if !legacyShared && !policyBoundShared {
 			continue
 		}
 		if !aiGatewaySharedModelUsable(deployment.ModelName) {
@@ -112,6 +137,9 @@ func (c *aiGatewayCatalog) update(deployments []aigateway.Deployment, blockUnpri
 		model.ContextWindow = smallerPositive(model.ContextWindow, deployment.MaxInputTokens)
 		model.MaxOutputTokens = smallerPositive(model.MaxOutputTokens, deployment.MaxOutputTokens)
 		byName[deployment.ModelName] = model
+		if policyBoundShared {
+			modelGroups[deployment.ModelName] = append(modelGroups[deployment.ModelName], managedGroups...)
+		}
 	}
 	shared := make([]aiGatewayCatalogModel, 0, len(byName))
 	for _, model := range byName {
@@ -119,12 +147,94 @@ func (c *aiGatewayCatalog) update(deployments []aigateway.Deployment, blockUnpri
 	}
 	sort.Slice(shared, func(i, j int) bool { return shared[i].Name < shared[j].Name })
 	slices.Sort(unpriced)
+	for name, groups := range modelGroups {
+		slices.Sort(groups)
+		modelGroups[name] = slices.Compact(groups)
+	}
+	fingerprint := aiGatewayCatalogFingerprint(deployments, modelGroups)
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	changed := !(c.known || c.seeded) || !slices.Equal(c.sharedSet, shared)
-	c.known, c.seeded, c.fetchedAt, c.sharedSet, c.ids, c.groups = true, false, now, shared, ids, groups
+	changed := !(c.known || c.seeded) || !slices.Equal(c.sharedSet, shared) || c.fingerprint != fingerprint
+	c.known, c.seeded, c.fetchedAt, c.sharedSet, c.ids, c.groups, c.modelGroups, c.fingerprint = true, false, now, shared, ids, groups, modelGroups, fingerprint
 	c.allowsUnpriced = !blockUnpriced
 	return changed, skipped, unpriced
+}
+
+// trustedManagedModelGroups returns only the chart-derived bindings whose
+// observed provenance, deployment ID and access-group membership all agree.
+// Every deployment is counted before this check, including database models,
+// so copying a reserved group invalidates the whole group rather than leaving
+// its configured member trusted.
+func trustedManagedModelGroups(deployment aigateway.Deployment, groupMembers, idMembers map[string]int) []string {
+	if !deployment.DatabaseSourceKnown || deployment.FromDatabase || deployment.ID == "" || idMembers[deployment.ID] != 1 {
+		return nil
+	}
+	trusted := []string{}
+	for _, group := range managedModelGroups(deployment.AccessGroups) {
+		suffix := strings.TrimPrefix(group, aiGatewayModelAccessGroupPrefix)
+		if groupMembers[group] == 1 && deployment.ID == aiGatewaySharedDeploymentIDPrefix+suffix {
+			trusted = append(trusted, group)
+		}
+	}
+	return trusted
+}
+
+func managedModelGroups(groups []string) []string {
+	managed := make([]string, 0, len(groups))
+	for _, group := range groups {
+		if strings.HasPrefix(group, aiGatewayModelAccessGroupPrefix) && len(group) > len(aiGatewayModelAccessGroupPrefix) {
+			managed = append(managed, group)
+		}
+	}
+	slices.Sort(managed)
+	return slices.Compact(managed)
+}
+
+// aiGatewayCatalogFingerprint deliberately includes deployment IDs and their
+// observed managed groups. A model_name is an API alias, not an immutable
+// backend identity: replacing a same-name deployment must re-project every
+// policy-bound Agent before the old deployment can be considered authorized.
+func aiGatewayCatalogFingerprint(deployments []aigateway.Deployment, modelGroups map[string][]string) string {
+	type member struct {
+		ModelName    string   `json:"modelName"`
+		ID           string   `json:"id"`
+		Groups       []string `json:"groups"`
+		FromDatabase bool     `json:"fromDatabase"`
+		SourceKnown  bool     `json:"sourceKnown"`
+	}
+	members := make([]member, 0, len(deployments))
+	for _, deployment := range deployments {
+		groups := managedModelGroups(deployment.AccessGroups)
+		if deployment.ID == "" || len(groups) == 0 {
+			continue
+		}
+		members = append(members, member{ModelName: deployment.ModelName, ID: deployment.ID, Groups: groups,
+			FromDatabase: deployment.FromDatabase, SourceKnown: deployment.DatabaseSourceKnown})
+	}
+	sort.Slice(members, func(i, j int) bool {
+		if members[i].ModelName != members[j].ModelName {
+			return members[i].ModelName < members[j].ModelName
+		}
+		if members[i].ID != members[j].ID {
+			return members[i].ID < members[j].ID
+		}
+		if groupsI, groupsJ := strings.Join(members[i].Groups, "\x00"), strings.Join(members[j].Groups, "\x00"); groupsI != groupsJ {
+			return groupsI < groupsJ
+		}
+		if members[i].FromDatabase != members[j].FromDatabase {
+			return !members[i].FromDatabase
+		}
+		return !members[i].SourceKnown && members[j].SourceKnown
+	})
+	// modelGroups is included separately so an accidental duplicate or a
+	// changed group assignment cannot hash to the same projection merely
+	// because deployments happened to be listed in a different order.
+	sum, _ := json.Marshal(struct {
+		Members     []member            `json:"members"`
+		ModelGroups map[string][]string `json:"modelGroups"`
+	}{Members: members, ModelGroups: modelGroups})
+	digest := sha256.Sum256(sum)
+	return "sha256:" + hex.EncodeToString(digest[:])
 }
 
 // blocksUnpriced reports the Gateway's setting from the last listing, or its
@@ -180,6 +290,61 @@ func (c *aiGatewayCatalog) shared() ([]aiGatewayCatalogModel, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return slices.Clone(c.sharedSet), c.known || c.seeded
+}
+
+// managedFingerprint is empty until a live Gateway listing establishes the
+// concrete access groups. Policy uses it in its expected Gateway
+// projection revision; callers must not treat a seeded display catalog as
+// authorization evidence.
+func (c *aiGatewayCatalog) managedFingerprint() (string, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.fingerprint, c.known
+}
+
+// resolvedGroups returns the collision-safe deployment groups for the exact
+// policy model identifiers. It is false until a live catalog has been listed;
+// a seeded display-only catalog is intentionally insufficient evidence for a
+// Policy grant.
+func (c *aiGatewayCatalog) resolvedGroups(models []string) ([]string, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if !c.known {
+		return nil, false
+	}
+	groups := make([]string, 0, len(models))
+	for _, model := range models {
+		entries := c.modelGroups[model]
+		if len(entries) == 0 {
+			return nil, false
+		}
+		groups = append(groups, entries...)
+	}
+	slices.Sort(groups)
+	return slices.Compact(groups), true
+}
+
+// sharedForGroups returns the published model entries that are reachable by
+// the supplied collision-safe groups. It is used when rendering a policy-bound
+// workload so an allowed display name cannot accidentally reintroduce another
+// policy's model into the harness configuration.
+func (c *aiGatewayCatalog) sharedForGroups(groups []string) ([]aiGatewayCatalogModel, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if !c.known {
+		return nil, false
+	}
+	allowed := make(map[string]bool, len(groups))
+	for _, group := range groups {
+		allowed[group] = true
+	}
+	shared := make([]aiGatewayCatalogModel, 0, len(c.sharedSet))
+	for _, model := range c.sharedSet {
+		if slices.ContainsFunc(c.modelGroups[model.Name], func(group string) bool { return allowed[group] }) {
+			shared = append(shared, model)
+		}
+	}
+	return shared, true
 }
 
 // has reports whether a deployment ID exists, and whether the catalog knows.
@@ -256,6 +421,36 @@ func (r *AgentReconciler) refreshAIGatewayCatalogWithin(ctx context.Context, cli
 		log.FromContext(ctx).Info("shared models without a price are left out while the AI Gateway blocks unpriced models", "models", unpriced)
 	}
 	return changed
+}
+
+// refreshAIGatewayCatalogForGrant obtains a fresh, live catalog for a
+// Policy grant. Unlike the background refresh, it never falls back to a
+// cached or seeded catalog: doing so could authorize a group which has been
+// deleted or omit a newly added same-name backend. Every policy model must be
+// resolved against the exact current Gateway response.
+func (r *AgentReconciler) refreshAIGatewayCatalogForGrant(ctx context.Context, client aiGatewayKeyClient) error {
+	catalog := &r.aiGatewayCatalog
+	catalog.refreshMu.Lock()
+	defer catalog.refreshMu.Unlock()
+	deployments, err := client.ListModels(ctx)
+	if err != nil {
+		return fmt.Errorf("list AI Gateway models for Policy grant: %w", err)
+	}
+	blockUnpriced, err := client.BlockUnpricedModels(ctx)
+	if err != nil {
+		return fmt.Errorf("read AI Gateway pricing policy for Policy grant: %w", err)
+	}
+	changed, skipped, unpriced := catalog.update(deployments, blockUnpriced, time.Now())
+	if len(skipped) > 0 {
+		log.FromContext(ctx).Info("shared models with names Agents cannot use are left out", "models", skipped)
+	}
+	if len(unpriced) > 0 {
+		log.FromContext(ctx).Info("shared models without a price are left out while the AI Gateway blocks unpriced models", "models", unpriced)
+	}
+	if changed {
+		r.notifyAIGatewayCatalogChanged(ctx)
+	}
+	return nil
 }
 
 // seedAIGatewayCatalog loads the last published shared models, once, when the

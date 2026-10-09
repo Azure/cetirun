@@ -119,6 +119,25 @@ func (r *AgentReconciler) readSandboxBootstrap(ctx context.Context, agent *api.A
 	return object, &receipt, nil
 }
 
+// validateSandboxBootstrapNamespace proves that a namespace is the exact
+// protected object recorded for this Agent before any credential is projected
+// into it. Names are not identities: the receipt and current namespace UID
+// must both survive a read-back check.
+func (r *AgentReconciler) validateSandboxBootstrapNamespace(ctx context.Context, agent *api.Agent, namespace *corev1.Namespace) error {
+	object, receipt, err := r.readSandboxBootstrap(ctx, agent)
+	if err != nil {
+		return fmt.Errorf("read Sandbox bootstrap ownership receipt: %w", err)
+	}
+	if receipt.Objects[0].UID == "" {
+		return fmt.Errorf("Sandbox bootstrap namespace identity is not yet recorded")
+	}
+	desired := r.sandboxBootstrapObjects(agent, object, receipt)[0]
+	if err := validateSandboxBootstrapObject(namespace, desired, receipt.Objects[0].UID, false); err != nil {
+		return fmt.Errorf("validate Sandbox bootstrap namespace: %w", err)
+	}
+	return nil
+}
+
 func (r *AgentReconciler) saveSandboxBootstrap(ctx context.Context, object *corev1.ConfigMap, receipt *sandboxBootstrapReceipt) error {
 	raw, err := json.Marshal(receipt)
 	if err != nil {
