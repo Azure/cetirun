@@ -10,8 +10,10 @@ import io
 import json
 import os
 from pathlib import Path
+import platform
 import shutil
 import signal
+import socket
 import ssl
 import subprocess
 import sys
@@ -79,7 +81,8 @@ class Connection:
 class IngressCheckTests(unittest.TestCase):
     def invoke(self, args, *, response=None, error=None):
         connection = Connection(response or Response())
-        with patch.object(check.http.client, "HTTPSConnection", return_value=connection) as factory, \
+        with patch.object(check, "supervised_probe", side_effect=check.inspect), \
+                patch.object(check.http.client, "HTTPSConnection", return_value=connection) as factory, \
                 contextlib.redirect_stdout(io.StringIO()) as stdout, \
                 contextlib.redirect_stderr(io.StringIO()) as stderr:
             if error is None:
@@ -262,7 +265,73 @@ class IngressCheckTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertEqual(json.loads(output.getvalue())["reason"], "deadline-exceeded")
         self.assertLess(elapsed, 1)
-        self.assertTrue(connection.closed)
+
+    def test_worker_failure_is_sanitized_and_signal_handlers_are_restored(self):
+        previous = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}
+        with patch.object(check, "inspect", side_effect=RuntimeError(SENTINEL)), \
+                contextlib.redirect_stdout(io.StringIO()) as stdout, \
+                contextlib.redirect_stderr(io.StringIO()) as stderr:
+            code = check.main(arguments())
+        self.assertEqual(code, 1)
+        self.assertEqual(json.loads(stdout.getvalue())["reason"], "worker-failed")
+        self.assertNotIn(SENTINEL, stdout.getvalue() + stderr.getvalue())
+        for sig, handler in previous.items():
+            self.assertEqual(signal.getsignal(sig), handler)
+
+    def test_unavailable_process_boundary_fails_before_network(self):
+        with patch.object(check.multiprocessing, "get_all_start_methods", return_value=[]), \
+                patch.object(check.http.client, "HTTPSConnection") as factory, \
+                contextlib.redirect_stdout(io.StringIO()) as output:
+            code = check.main(arguments())
+        self.assertEqual(code, 1)
+        self.assertEqual(json.loads(output.getvalue())["reason"], "deadline-unavailable")
+        factory.assert_not_called()
+
+    def test_worker_start_failure_is_sanitized_and_signal_handlers_are_restored(self):
+        previous = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}
+        context = check.multiprocessing.get_context("fork")
+        with patch.object(context.Process, "start", side_effect=OSError(SENTINEL)), \
+                contextlib.redirect_stdout(io.StringIO()) as output:
+            code = check.main(arguments())
+        self.assertEqual(code, 1)
+        self.assertEqual(json.loads(output.getvalue())["reason"], "request-failed")
+        self.assertNotIn(SENTINEL, output.getvalue())
+        for sig, handler in previous.items():
+            self.assertEqual(signal.getsignal(sig), handler)
+
+    def test_cancellation_during_worker_start_still_reaps_the_worker(self):
+        context = check.multiprocessing.get_context("fork")
+        original_start = context.Process.start
+        for signum, expected in ((signal.SIGINT, 130), (signal.SIGTERM, 143)):
+            with self.subTest(signum=signum):
+                pids = []
+                previous = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}
+
+                def start(worker):
+                    original_start(worker)
+                    pids.append(worker.pid)
+                    os.kill(os.getpid(), signum)
+
+                with patch.object(context.Process, "start", start), \
+                        patch.object(check, "inspect", side_effect=lambda *args: time.sleep(5)), \
+                        contextlib.redirect_stdout(io.StringIO()) as output:
+                    code = check.main(arguments())
+                self.assertEqual(code, expected)
+                self.assertEqual(json.loads(output.getvalue())["reason"], "cancelled")
+                self.assertEqual(len(pids), 1)
+                with self.assertRaises(ChildProcessError):
+                    os.waitpid(pids[0], os.WNOHANG)
+                for sig, handler in previous.items():
+                    self.assertEqual(signal.getsignal(sig), handler)
+
+    def test_help_does_not_start_a_worker(self):
+        with patch.object(check, "supervised_probe") as probe, \
+                contextlib.redirect_stdout(io.StringIO()) as output, \
+                self.assertRaises(SystemExit) as exited:
+            check.main(["--help"])
+        self.assertEqual(exited.exception.code, 0)
+        self.assertIn("--origin", output.getvalue())
+        probe.assert_not_called()
 
 
 @unittest.skipUnless(shutil.which("bash") and shutil.which("jq"), "Bash and jq are required")
@@ -347,6 +416,89 @@ else:
     def test_probe_failure_is_preserved(self):
         result, _ = self.invoke(DOMAIN="portal.example.com", E2E_OIDC_CLIENT_ID=CLIENT, CHECK_EXIT="1")
         self.assertEqual(result.returncode, 1)
+
+
+@unittest.skipUnless(sys.platform.startswith("linux") and platform.libc_ver()[0] == "glibc" and
+                     shutil.which("cc"), "Linux/glibc and a C compiler are required for native DNS tests")
+class NativeDNSDeadlineTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        temporary = tempfile.TemporaryDirectory(prefix="cetirun-ingress-dns-")
+        cls.addClassCleanup(temporary.cleanup)
+        cls.library = Path(temporary.name) / "stalled-dns.so"
+        subprocess.run([
+            "cc", "-shared", "-fPIC", "-Wall", "-Wextra", "-Werror",
+            str(Path(__file__).with_name("fixtures") / "stalled_dns.c"),
+            "-o", str(cls.library), "-lresolv",
+        ], capture_output=True, text=True, timeout=15, check=True)
+
+    def run_stalled_resolver(self, signum=None, deadline=1):
+        wrapper = r'''
+import ctypes, os, pathlib, runpy, socket, sys
+probe = runpy.run_path(sys.argv[1])
+probe["main"].__globals__["TOTAL_TIMEOUT"] = float(sys.argv[5])
+native = ctypes.CDLL(sys.argv[2])
+native.cetirun_test_dns.argtypes = [ctypes.c_ushort]
+native.cetirun_test_dns.restype = ctypes.c_int
+original = socket.getaddrinfo
+def resolve(host, port, *args, **kwargs):
+    assert host == "nonresponding.example.invalid"
+    assert native.cetirun_test_dns(int(sys.argv[3])) == 0
+    pathlib.Path(sys.argv[4]).write_text(str(os.getpid()))
+    return original(host + ".", port, *args, **kwargs)
+socket.getaddrinfo = resolve
+sys.exit(probe["main"]([
+    "--origin", "https://nonresponding.example.invalid", "--agent-name", "synthetic-agent",
+    "--client-id", "00000000-0000-4000-8000-000000000001",
+]))
+'''
+        with tempfile.TemporaryDirectory(prefix="cetirun-dns-worker-") as directory, \
+                socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as dns:
+            dns.bind(("127.0.0.1", 0))
+            dns.settimeout(5)
+            pid_file = Path(directory) / "worker.pid"
+            started = time.monotonic()
+            process = subprocess.Popen([
+                sys.executable, "-B", "-c", wrapper, str(SCRIPT), str(self.library),
+                str(dns.getsockname()[1]), str(pid_file), "30" if signum else str(deadline),
+            ], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, start_new_session=True)
+            try:
+                query, sender = dns.recvfrom(512)
+                self.assertEqual(sender[0], "127.0.0.1")
+                self.assertIn(b"\rnonresponding\x07example\x07invalid\x00", query)
+                worker_pid = int(pid_file.read_text())
+                if signum is not None:
+                    started = time.monotonic()
+                    process.send_signal(signum)
+                budget = 3 if signum else deadline + 2
+                stdout, stderr = process.communicate(timeout=budget)
+                self.assertLess(time.monotonic() - started, budget)
+                self.assertEqual(stderr, "")
+                self.assertLess(len(stdout), 512)
+                self.assertNotIn("nonresponding.example.invalid", stdout)
+                result = json.loads(stdout)
+                self.assertEqual(result["status"], "blocked")
+                self.assertIs(result["qualifiesExecution"], False)
+                self.assertEqual(result["authenticatedAccess"], "not-tested")
+                self.assertNotEqual(worker_pid, process.pid)
+                with self.assertRaises(ProcessLookupError):
+                    os.kill(worker_pid, 0)
+                return process.returncode, result["reason"]
+            finally:
+                with contextlib.suppress(ProcessLookupError):
+                    os.killpg(process.pid, signal.SIGKILL)
+                process.communicate(timeout=5)
+
+    def test_native_getaddrinfo_deadline_kills_and_reaps_worker(self):
+        self.assertEqual(check.TOTAL_TIMEOUT, 30)
+        self.assertEqual(self.run_stalled_resolver(), (1, "deadline-exceeded"))
+
+    def test_sigterm_during_native_getaddrinfo_kills_and_reaps_worker(self):
+        self.assertEqual(self.run_stalled_resolver(signal.SIGTERM), (143, "cancelled"))
+
+    def test_sigint_during_native_getaddrinfo_kills_and_reaps_worker(self):
+        self.assertEqual(self.run_stalled_resolver(signal.SIGINT), (130, "cancelled"))
 
 
 @unittest.skipUnless(shutil.which("openssl"), "OpenSSL is required for local TLS fixtures")

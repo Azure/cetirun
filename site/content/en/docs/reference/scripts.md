@@ -148,6 +148,8 @@ redirects or printing response data. `E2E_OIDC_CLIENT_ID` and `E2E_CA_FILE`
 provide explicit application/CA inputs when needed. Missing configuration,
 TLS failures and unexpected/ambiguous challenges fail; a sign-in challenge is
 not proof of authenticated owner access or a running model/tool task.
+The POSIX helper supervises a separate worker, killing and reaping it on timeout
+or cancellation even when native DNS resolution is stalled.
 See the [native ingress challenge contract]({{< repo "scripts/README.md" >}}#native-ingress-sign-in-challenge)
 for inputs, deadlines, supported layout and offline TLS tests.
 

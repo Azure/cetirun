@@ -105,9 +105,14 @@ intermediate redirects and other layouts are outside this narrow check.
 Accepted response headers are limited to 16 KiB and Location to 8 KiB; Python's
 HTTP parser also applies its native line/count limits. The body is not read.
 Socket operations have a ten-second timeout and the POSIX command has a
-30-second overall deadline, including DNS/TLS/header collection. Output is one
-small JSON object with fixed reason codes, never the origin, response headers,
-cookies, redirect state, identifiers or raw transport diagnostics.
+30-second worker deadline, including DNS/TLS/header collection. A separate
+supervisor enforces that deadline without relying on Python signal delivery
+inside the resolver. On timeout or SIGINT/SIGTERM it kills the worker and waits
+up to one additional second to confirm reaping before returning. Unavailable
+process isolation, abnormal worker exit or unconfirmed cleanup fails the check.
+The helper requires POSIX `fork` support. Output is one small JSON object with
+fixed reason codes, never the origin, response headers, cookies, redirect state,
+identifiers or raw transport diagnostics.
 
 Exit zero means only `status: observed` for that unauthenticated challenge.
 `authenticatedAccess` remains `not-tested` and `qualifiesExecution` remains
@@ -122,6 +127,12 @@ Offline tests use response doubles and ephemeral local TLS servers/certificates:
 PYTHONPATH=scripts/tests python3 -B -m unittest \
   test_e2e_ingress_check test_e2e_lifecycle -v
 ```
+
+On Linux/glibc, a local C compiler (`cc`) also enables native `getaddrinfo`
+regressions for the deadline and SIGINT/SIGTERM cleanup. A temporary fixture
+directs only the worker's resolver to a nonresponding loopback DNS socket with
+30-second retries. These tests do not change host resolver configuration or
+contact external DNS. They are explicitly skipped without Linux/glibc or `cc`.
 
 ## Read-only deployed Sandbox preflight
 

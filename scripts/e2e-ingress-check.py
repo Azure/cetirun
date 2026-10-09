@@ -4,15 +4,17 @@
 """Check one native UI's HTTPS sign-in challenge without credentials or redirects."""
 
 import argparse
-from contextlib import contextmanager
 import http.client
 import ipaddress
 import json
+import multiprocessing
+import os
 from pathlib import Path
 import re
 import signal
 import ssl
 import sys
+import time
 from urllib.parse import parse_qs, urlsplit
 
 
@@ -104,57 +106,121 @@ def verify_challenge(status, headers, origin, client_id):
         raise CheckError("unexpected-challenge-callback")
 
 
-@contextmanager
-def deadline():
-    if not hasattr(signal, "setitimer") or signal.getitimer(signal.ITIMER_REAL) != (0.0, 0.0):
-        raise CheckError("deadline-unavailable")
-
-    def expired(_signum, _frame):
-        raise TimeoutError
-
-    def terminated(_signum, _frame):
-        raise Terminated("cancelled")
-
-    previous_alarm = signal.signal(signal.SIGALRM, expired)
-    previous_term = signal.signal(signal.SIGTERM, terminated)
-    signal.setitimer(signal.ITIMER_REAL, TOTAL_TIMEOUT)
-    try:
-        yield
-    finally:
-        signal.setitimer(signal.ITIMER_REAL, 0)
-        signal.signal(signal.SIGALRM, previous_alarm)
-        signal.signal(signal.SIGTERM, previous_term)
-
-
 def inspect(origin, agent, client_id, ca_file=None):
     parsed = validate_inputs(origin, agent, client_id, ca_file)
-    with deadline():
-        context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-        if ca_file is None:
-            context.load_default_certs()
-        else:
-            context.load_verify_locations(cafile=ca_file)
-        connection = http.client.HTTPSConnection(parsed.hostname, parsed.port or 443,
-                                                timeout=REQUEST_TIMEOUT, context=context)
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    if ca_file is None:
+        context.load_default_certs()
+    else:
+        context.load_verify_locations(cafile=ca_file)
+    connection = http.client.HTTPSConnection(parsed.hostname, parsed.port or 443,
+                                            timeout=REQUEST_TIMEOUT, context=context)
+    try:
+        # No ambient proxy, cookie store, authorization or redirect handler.
+        connection.request("GET", f"/ui/{agent}/", headers={
+            "Accept": "text/html",
+            "User-Agent": "cetirun-e2e-ingress-check",
+            "Connection": "close",
+        })
+        response = connection.getresponse()
         try:
-            # No ambient proxy, cookie store, authorization or redirect handler.
-            connection.request("GET", f"/ui/{agent}/", headers={
-                "Accept": "text/html",
-                "User-Agent": "cetirun-e2e-ingress-check",
-                "Connection": "close",
-            })
-            response = connection.getresponse()
-            try:
-                if response.msg.defects:
-                    raise CheckError("invalid-response-headers")
-                verify_challenge(response.status, response.getheaders(), origin, client_id)
-            finally:
-                response.close()
+            if response.msg.defects:
+                raise CheckError("invalid-response-headers")
+            verify_challenge(response.status, response.getheaders(), origin, client_id)
         finally:
-            connection.close()
+            response.close()
+    finally:
+        connection.close()
+    return "expected-sign-in-challenge", 0
 
 
-def main(argv=None):
+def outcome(operation, *args):
+    try:
+        return operation(*args)
+    except InvalidInput as error:
+        return str(error), 2
+    except ssl.SSLCertVerificationError:
+        return "tls-verification-failed", 1
+    except ssl.SSLError:
+        return "tls-connection-failed", 1
+    except TimeoutError:
+        return "deadline-exceeded", 1
+    except (OSError, http.client.HTTPException):
+        return "request-failed", 1
+    except Terminated:
+        return "cancelled", 143
+    except KeyboardInterrupt:
+        return "cancelled", 130
+    except CheckError as error:
+        return str(error), 1
+
+
+def probe_worker(sender, args):
+    # Unexpected worker exceptions must not print raw transport diagnostics.
+    with open(os.devnull, "wb") as output:
+        os.dup2(output.fileno(), 1)
+        os.dup2(output.fileno(), 2)
+    signal.signal(signal.SIGTERM, signal.SIG_DFL)
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    with sender:
+        sender.send(outcome(inspect, *args))
+
+
+def supervised_probe(*args):
+    if "fork" not in multiprocessing.get_all_start_methods():
+        raise CheckError("deadline-unavailable")
+    expires = time.monotonic() + TOTAL_TIMEOUT
+    context = multiprocessing.get_context("fork")
+    receiver, sender = context.Pipe(duplex=False)
+    worker = context.Process(target=probe_worker, args=(sender, args))
+    cancelled = None
+
+    def cancel(signum, _frame):
+        nonlocal cancelled
+        # Do not interrupt process creation or reaping partway through.
+        if cancelled is None:
+            cancelled = signum
+
+    previous = {sig: signal.signal(sig, cancel) for sig in (signal.SIGINT, signal.SIGTERM)}
+    try:
+        worker.start()
+        sender.close()
+        while worker.is_alive() and cancelled is None:
+            remaining = expires - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError
+            worker.join(timeout=min(remaining, 0.05))
+        if cancelled is None:
+            if time.monotonic() >= expires:
+                raise TimeoutError
+            if worker.exitcode != 0 or not receiver.poll():
+                raise CheckError("worker-failed")
+            try:
+                result = receiver.recv()
+            except EOFError as error:
+                raise CheckError("worker-failed") from error
+    finally:
+        try:
+            if worker.pid is not None:
+                if worker.is_alive():
+                    worker.kill()
+                worker.join(timeout=1)
+                if worker.is_alive():
+                    raise CheckError("worker-cleanup-unconfirmed")
+            worker.close()
+        finally:
+            receiver.close()
+            sender.close()
+            for sig, handler in previous.items():
+                signal.signal(sig, handler)
+    if cancelled == signal.SIGINT:
+        raise KeyboardInterrupt
+    if cancelled == signal.SIGTERM:
+        raise Terminated("cancelled")
+    return result
+
+
+def run(argv):
     class Parser(argparse.ArgumentParser):
         def error(self, message):
             raise InvalidInput("invalid-arguments")
@@ -164,30 +230,16 @@ def main(argv=None):
     parser.add_argument("--agent-name", required=True)
     parser.add_argument("--client-id", required=True, help="Expected public OIDC application identifier")
     parser.add_argument("--ca-file", help="Optional absolute PEM CA bundle; otherwise system trust is used")
+    args = parser.parse_args(argv)
+    return supervised_probe(args.origin, args.agent_name, args.client_id, args.ca_file)
+
+
+def main(argv=None):
+    reason, code = outcome(run, argv)
     result = {"version": "v1", "check": "native-ingress-challenge", "status": "blocked",
-              "authenticatedAccess": "not-tested", "qualifiesExecution": False}
-    code = 1
-    try:
-        args = parser.parse_args(argv)
-        inspect(args.origin, args.agent_name, args.client_id, args.ca_file)
-        result.update(status="observed", reason="expected-sign-in-challenge")
-        code = 0
-    except InvalidInput as error:
-        result["reason"], code = str(error), 2
-    except ssl.SSLCertVerificationError:
-        result["reason"] = "tls-verification-failed"
-    except ssl.SSLError:
-        result["reason"] = "tls-connection-failed"
-    except TimeoutError:
-        result["reason"] = "deadline-exceeded"
-    except (OSError, http.client.HTTPException):
-        result["reason"] = "request-failed"
-    except Terminated:
-        result["reason"], code = "cancelled", 143
-    except KeyboardInterrupt:
-        result["reason"], code = "cancelled", 130
-    except CheckError as error:
-        result["reason"] = str(error)
+              "authenticatedAccess": "not-tested", "qualifiesExecution": False, "reason": reason}
+    if code == 0:
+        result["status"] = "observed"
     print(json.dumps(result, sort_keys=True))
     return code
 
