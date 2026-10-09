@@ -161,8 +161,7 @@ spec:
           {{- end }}
           {{- if .Values.livenessProbe.enabled }}
           livenessProbe:
-            httpGet:
-              {{- include "cetirun.agent.probePathPort" . | nindent 14 }}
+            {{- include "cetirun.agent.healthProbe" (dict "root" . "pathPort" "cetirun.agent.probePathPort" "timeoutSeconds" .Values.livenessProbe.timeoutSeconds) | nindent 12 }}
             initialDelaySeconds: {{ .Values.livenessProbe.initialDelaySeconds }}
             periodSeconds: {{ .Values.livenessProbe.periodSeconds }}
             timeoutSeconds: {{ .Values.livenessProbe.timeoutSeconds }}
@@ -171,8 +170,7 @@ spec:
           {{- end }}
           {{- if .Values.readinessProbe.enabled }}
           readinessProbe:
-            httpGet:
-              {{- include "cetirun.agent.readinessProbePathPort" . | nindent 14 }}
+            {{- include "cetirun.agent.healthProbe" (dict "root" . "pathPort" "cetirun.agent.readinessProbePathPort" "timeoutSeconds" .Values.readinessProbe.timeoutSeconds) | nindent 12 }}
             initialDelaySeconds: {{ .Values.readinessProbe.initialDelaySeconds }}
             periodSeconds: {{ .Values.readinessProbe.periodSeconds }}
             timeoutSeconds: {{ .Values.readinessProbe.timeoutSeconds }}
@@ -181,8 +179,7 @@ spec:
           {{- end }}
           {{- if .Values.startupProbe.enabled }}
           startupProbe:
-            httpGet:
-              {{- include "cetirun.agent.startupProbePathPort" . | nindent 14 }}
+            {{- include "cetirun.agent.healthProbe" (dict "root" . "pathPort" "cetirun.agent.startupProbePathPort" "timeoutSeconds" .Values.startupProbe.timeoutSeconds) | nindent 12 }}
             initialDelaySeconds: {{ .Values.startupProbe.initialDelaySeconds }}
             periodSeconds: {{ .Values.startupProbe.periodSeconds }}
             timeoutSeconds: {{ .Values.startupProbe.timeoutSeconds }}

@@ -97,6 +97,9 @@ agentIdentity:
 # of MODEL_API_KEY: OpenClaw's openai provider through OPENAI_API_KEY, Hermes
 # through aiGateway.hermes.keyEnv. Egress to the Gateway pods in
 # networkPolicy.gatewayNamespace on networkPolicy.gatewayPort is allowed.
+# Protected OpenClaw renders use compiler-owned network controls without an
+# Istio Sidecar. Their model and ingress-auth configuration is platform-owned
+# on each start; legacy initialization behavior is unchanged.
 aiGateway:
   enabled: false
   # -- Secret in the release namespace holding this Agent's virtual key

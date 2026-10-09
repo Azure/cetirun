@@ -26,6 +26,8 @@ replicaCount: 2
 # each router fallback target against the caller's key
 # (general_settings.enforce_fallback_model_access), so a fallback cannot reach
 # a model the key may not use, such as another Agent's GitHub Copilot route.
+# Configured shared models also receive a chart-derived deployment ID and
+# access group, allowing AgentPolicy to grant one exact configured backend.
 # The cetirun-platform chart turns this on; turn it on for a Gateway installed
 # separately for CetiRun as well. Off, the Gateway keeps its standalone
 # behaviour.
@@ -56,9 +58,9 @@ fullnameOverride: ""
 # -- Models exposed by this Gateway, in LiteLLM's own `model_list` format so
 # administrators can follow upstream provider documentation directly.
 #
-# The list can be empty. Administrators can add models through the console
-# later, and with CetiRun a deployment may rely only on the GitHub Copilot
-# models the operator registers for each Agent.
+# The list can be empty. Standalone Gateways may add models through the console
+# later. AgentPolicy shared-model grants require chart-configured models with
+# operatorIntegration enabled; console models are not trusted shared bindings.
 #
 # `model_name` is what a client asks for. `litellm_params.model` is what the
 # Gateway sends to the provider, carrying a prefix that selects the handler.
@@ -68,6 +70,11 @@ fullnameOverride: ""
 # Names beginning with `cetirun-` are reserved for models the CetiRun operator
 # registers automatically, and are rejected here; so are names beginning with
 # `copilot/` while operatorIntegration is on.
+#
+# With operatorIntegration, model_info.id and the cetirun-model- access group
+# prefix are reserved. The chart hashes the complete configured model object
+# into a matching cetirun-shared- deployment ID and cetirun-model- group.
+# Changing the model configuration intentionally changes that binding.
 #
 # Example:
 #   models:

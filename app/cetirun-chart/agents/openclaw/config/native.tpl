@@ -18,13 +18,17 @@ Licensed under the MIT License.
    Supports: github_copilot (token-based), openai (api-key), anthropic (api-key). */}}
 {{- $provider := .Values.secrets.provider | default "github_copilot" }}
 {{- $model := required "secrets.model must be set by the CetiRun operator or Helm values" .Values.secrets.model }}
+{{- $gatewayRouted := and (dig "enabled" false (.Values.aiGateway | default dict)) (eq $provider "openai") }}
+{{- $nativeGateway := and $gatewayRouted .Values.sandboxWorkload }}
 {{- $authMode := .Values.secrets.authMode }}
 {{- $authProfileMode := $authMode }}
 {{- if eq $authProfileMode "api-key" }}
 {{- $authProfileMode = "api_key" }}
 {{- end }}
 {{- $auth := dig "auth" (dict) $config }}
-{{- if eq $provider "github_copilot" }}
+{{- if $nativeGateway }}
+{{- $auth = dict "profiles" (dict) }}
+{{- else if eq $provider "github_copilot" }}
 {{- $_ := set $auth "profiles" (dict "github-copilot:github" (dict "provider" "github-copilot" "mode" "token")) }}
 {{- else if eq $provider "openai" }}
 {{- $profile := dict "provider" "openai" }}
@@ -46,7 +50,6 @@ Licensed under the MIT License.
 {{- /* Models the platform AI Gateway offers this Agent. Each becomes a model
    of the Gateway provider, with its limits, and is allowed; the rest of the
    configuration keeps naming the default model. */}}
-{{- $gatewayRouted := and (dig "enabled" false (.Values.aiGateway | default dict)) (eq $provider "openai") }}
 {{- $gatewayModels := list }}
 {{- if $gatewayRouted }}
 {{- $gatewayModels = dig "models" (list) .Values.aiGateway }}
@@ -126,6 +129,9 @@ Licensed under the MIT License.
 {{- $_ := set $providerEntry "apiKey" (dict "source" "env" "provider" "default" "id" "OPENAI_API_KEY") }}
 {{- end }}
 {{- $models := dig "models" (dict) $config }}
+{{- if $nativeGateway }}
+{{- $models = dict }}
+{{- end }}
 {{- $providers := dig "providers" (dict) $models }}
 {{- $_ := set $providers $providerPrefix $providerEntry }}
 {{- $_ := set $models "providers" $providers }}

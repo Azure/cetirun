@@ -15,6 +15,7 @@ import pytest
 
 CHART = Path(__file__).resolve().parents[1]
 SCRIPT = CHART / "agents/openclaw/bootstrap/retire-copilot-sign-in.sh"
+NATIVE_SCRIPT = CHART / "agents/openclaw/bootstrap/retire-direct-model-auth.sh"
 PROFILE = "github-copilot:github"
 ENTRY = "GITHUB_COPILOT_TOKEN_DEVICE"
 AGENT_CONFIG = {"models": {"providers": {"openai": {
@@ -67,9 +68,10 @@ if argv[:3] == ["models", "auth", "list"]:
              "[auth-profiles/persistence] code=AUTH_PROFILE_MIGRATION_REQUIRED")
     print(json.dumps({"agentId": "main", "profiles": [{"id": p} for p in state["profiles"]]}))
 elif argv[:3] == ["models", "auth", "logout"]:
-    ref = state["profiles"].pop(argv[3]).get("tokenRef")
-    if ref in state["store"]:
-        state["removed"][ref] = state["store"].pop(ref)
+    if not state.get("keep_profiles"):
+        ref = state["profiles"].pop(argv[3]).get("tokenRef")
+        if ref in state["store"]:
+            state["removed"][ref] = state["store"].pop(ref)
 elif argv[:3] == ["secrets", "store", "list"]:
     print(json.dumps([{"name": name, "kind": "secret"} for name in sorted(state["store"])]))
 elif argv[:3] == ["secrets", "store", "set"]:
@@ -104,8 +106,8 @@ def home(tmp_path):
     return {"state": state, "cli": cli, "env": env}
 
 
-def run(home):
-    return subprocess.run(["sh", str(SCRIPT)], env=home["env"], capture_output=True, text=True, timeout=30)
+def run(home, script=SCRIPT):
+    return subprocess.run(["sh", str(script)], env=home["env"], capture_output=True, text=True, timeout=30)
 
 
 def cli(home):
@@ -277,3 +279,80 @@ def test_an_unreadable_profile_file_is_left_and_reported(home):
     assert (home["state"] / "agents/main/agent/auth-profiles.json").read_text() == broken
     assert (home["state"] / ".env").read_text() == "BRAVE_API_KEY=keep-brave\n"
     assert not marked(home)
+
+
+def test_native_retires_direct_profiles_on_every_start(home):
+    signed_in_home(home)
+    result = run(home, NATIVE_SCRIPT)
+    assert result.returncode == 0, result.stderr
+    assert cli(home)["profiles"] == {}
+    assert legacy(home, "auth-profiles.json") == {}
+    assert len(compactions(home)) == 2
+    assert "ghu_test_device" not in result.stdout + result.stderr
+    assert json.loads((home["state"] / "openclaw.json").read_text()) == AGENT_CONFIG
+
+    set_cli(home, profiles={"openai:later": {}}, calls=[])
+    result = run(home, NATIVE_SCRIPT)
+    assert result.returncode == 0, result.stderr
+    assert cli(home)["profiles"] == {}
+    assert ["models", "auth", "logout", "openai:later", "--agent", "main", "--yes"] in cli(home)["calls"]
+
+
+@pytest.mark.parametrize("command", [
+    ["models", "auth", "list"],
+    ["models", "auth", "logout"],
+    ["doctor", "--state-sqlite", "compact"],
+    ["doctor", "--session-sqlite", "compact"],
+])
+def test_native_auth_failures_block_start_and_retry(home, command):
+    signed_in_home(home)
+    set_cli(home, fail=command)
+    result = run(home, NATIVE_SCRIPT)
+    assert result.returncode != 0
+    assert "refusing to start the Agent" in result.stderr
+    assert "ghu_test_device" not in result.stdout + result.stderr
+    set_cli(home, fail=None)
+    result = run(home, NATIVE_SCRIPT)
+    assert result.returncode == 0, result.stderr
+
+
+def test_native_auth_checks_successful_logout_actually_removed_the_profiles(home):
+    signed_in_home(home)
+    set_cli(home, keep_profiles=True)
+    result = run(home, NATIVE_SCRIPT)
+    assert result.returncode != 0
+    assert "model auth profiles remain" in result.stderr
+
+
+@pytest.mark.parametrize("contents", ["not-json", "[]", '{"profiles": []}'])
+def test_native_auth_rejects_malformed_legacy_profiles(home, contents):
+    directory = home["state"] / "agents/main/agent"
+    directory.mkdir(parents=True)
+    profiles = directory / "auth-profiles.json"
+    profiles.write_text(contents)
+    result = run(home, NATIVE_SCRIPT)
+    assert result.returncode != 0
+    assert "could not clear legacy auth profiles" in result.stderr
+    assert profiles.read_text() == contents
+    assert list(directory.glob("*.tmp.*")) == []
+
+
+def test_native_auth_rejects_links_before_calling_openclaw(home, tmp_path):
+    outside = tmp_path / "outside.json"
+    outside.write_text('{"profiles": {"openai:personal": {"key": "sk-dummy"}}}')
+    directory = home["state"] / "agents/main/agent"
+    directory.mkdir(parents=True)
+    (directory / "auth-profiles.json").symlink_to(outside)
+    result = run(home, NATIVE_SCRIPT)
+    assert result.returncode != 0
+    assert "unsupported auth store link" in result.stderr
+    assert cli(home)["calls"] == []
+    assert "sk-dummy" in outside.read_text()
+
+
+def test_native_auth_refuses_unsupported_named_agent_stores(home):
+    (home["state"] / "agents/example-extra/agent").mkdir(parents=True)
+    result = run(home, NATIVE_SCRIPT)
+    assert result.returncode != 0
+    assert "additional Agent model stores are unsupported" in result.stderr
+    assert cli(home)["calls"] == []

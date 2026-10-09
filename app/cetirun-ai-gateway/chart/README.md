@@ -40,15 +40,37 @@ providerCredentials:
 `<registry>` is where the CetiRun images and charts are published. The master
 key, salt key and console password are generated; see [Credentials](#credentials).
 
-The model list can be empty. Administrators can add models through the console
-later, and with CetiRun a deployment may rely only on the GitHub Copilot models the
-operator registers for each Agent.
+The model list can be empty. Standalone Gateways can add models through the
+console later. CetiRun AgentPolicy shared-model grants require chart-configured
+models with `operatorIntegration` enabled, as described below.
 
 The last two lines of the model entry are not optional in practice. Without a
 price the model is refused, and for newer Azure models an older `api_version`
 serves plain chat but fails every tool call an agent makes. See [Budgets and
 unpriced models](#budgets-and-unpriced-models) and [Azure
 OpenAI](#azure-openai).
+
+### CetiRun AgentPolicy model bindings
+
+With `operatorIntegration: true`, each chart-configured model gets a
+`cetirun-model-<hash>` access group and matching `cetirun-shared-<hash>`
+deployment ID. The suffix is the first 16 hexadecimal characters of SHA-256
+over the complete model object's canonical JSON, before those generated fields
+are added. Existing non-reserved access groups and provider parameters remain
+unchanged. The chart rejects a supplied `model_info.id` or access group using
+the reserved `cetirun-model-` prefix.
+
+The Operator requires an exact, unique ID/group pair before granting a shared
+model through AgentPolicy. A same-name console deployment is not automatically
+trusted or granted. Changing the configured endpoint, provider parameters,
+pricing or other model metadata changes the binding; the Operator must
+reconcile the new grant before the Agent can use it. Rotating the value of a
+referenced Secret does not change this configuration hash.
+
+This behavior is opt-in. Standalone Gateways retain their existing model list
+and custom deployment IDs unchanged when `operatorIntegration` is false. The
+platform umbrella chart already enables this integration; no additional
+platform value or image is needed.
 
 ## Requirements
 

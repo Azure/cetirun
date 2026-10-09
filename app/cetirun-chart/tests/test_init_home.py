@@ -350,6 +350,94 @@ def test_openclaw_on_the_gateway_takes_the_gateway_model_list(agent):
     assert config["models"]["providers"]["anthropic"] == {"apiKey": "owner-anthropic-test-key"}
 
 
+def native_openclaw_source(agent):
+    saved_openclaw_config(agent, GATEWAY_PROVIDER)
+    source_file = agent["config"] / "openclaw.json"
+    source = json.loads(source_file.read_text())
+    source["auth"] = {"profiles": {}}
+    source["gateway"] = {"auth": {"mode": "token"}, "controlUi": {"basePath": "/ui/example-agent"}}
+    source["agents"]["defaults"].update({
+        "model": {"primary": "openai/model-a"},
+        "modelPolicy": {"allow": ["openai/model-a", "openai/model-b"]},
+        "utilityModel": "openai/model-a",
+    })
+    source_file.write_text(json.dumps(source))
+    agent["env"].update(CETIRUN_AI_GATEWAY="true", CETIRUN_NATIVE_SANDBOX="true")
+    return source
+
+
+@pytest.mark.parametrize("agent", ["openclaw"], indirect=True)
+def test_native_openclaw_replaces_saved_model_and_gateway_overrides(agent):
+    source = native_openclaw_source(agent)
+    saved = read_config(agent)
+    saved["user_preference"] = "preserved"
+    saved["gateway"] = {"auth": {"mode": "none"}, "controlUi": {"allowInsecureAuth": True}}
+    saved["agents"]["list"] = [{"id": "example-extra", "model": "anthropic/ungranted"}]
+    saved["agents"]["defaults"]["model"]["fallbacks"] = ["anthropic/ungranted"]
+    agent["config_file"].write_text(json.dumps(saved))
+    env_file = agent["target"] / ".openclaw/.env"
+    env_file.write_text(
+        "OPENAI_API_KEY=sk-dummy\n  export ANTHROPIC_API_KEY = sk-dummy\n"
+        "OPENAI_BASE_URL=https://ungranted.example.com\nMODEL_API_KEY=sk-dummy\n"
+        "COPILOT_GITHUB_TOKEN=sk-dummy\nBRAVE_API_KEY=keep-brave\nUSER_SETTING=keep\n"
+    )
+    for _ in range(2):
+        result = run(agent)
+        assert result.returncode == 0, result.stderr
+        config = read_config(agent)
+        assert config["models"] == source["models"]
+        assert config["auth"] == source["auth"]
+        assert config["gateway"] == source["gateway"]
+        assert config["agents"]["defaults"]["model"] == source["agents"]["defaults"]["model"]
+        assert config["agents"]["defaults"]["modelPolicy"] == source["agents"]["defaults"]["modelPolicy"]
+        assert config["agents"]["defaults"]["utilityModel"] == "openai/model-a"
+        assert "list" not in config["agents"]
+        assert config["user_preference"] == "preserved"
+        assert env_file.read_text() == "BRAVE_API_KEY=keep-brave\nUSER_SETTING=keep\n"
+        assert env_file.stat().st_mode & 0o777 == 0o600
+        assert "sk-dummy" not in result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("agent", ["openclaw"], indirect=True)
+def test_native_openclaw_requires_a_gateway_binding(agent):
+    agent["env"]["CETIRUN_NATIVE_SANDBOX"] = "true"
+    result = run(agent)
+    assert result.returncode != 0
+    assert "NativeSandboxRequiresAIGateway" in result.stderr
+    assert not (agent["target"] / ".cetirun-home-seeded").exists()
+
+
+@pytest.mark.parametrize("agent", ["openclaw"], indirect=True)
+@pytest.mark.parametrize("invalid", ["key", "named-agent"])
+def test_native_openclaw_refuses_unbound_configuration(agent, invalid):
+    native_openclaw_source(agent)
+    source_file = agent["config"] / "openclaw.json"
+    source = json.loads(source_file.read_text())
+    if invalid == "key":
+        source["models"]["providers"]["openai"]["apiKey"] = "sk-dummy-unbound"
+    else:
+        source["agents"]["list"] = [{"id": "example-extra", "model": "anthropic/ungranted"}]
+    source_file.write_text(json.dumps(source))
+    saved = agent["config_file"].read_text()
+    result = run(agent)
+    assert result.returncode != 0
+    assert "OpenClawNativeModelConfigInvalid" in result.stderr
+    assert "sk-dummy-unbound" not in result.stdout + result.stderr
+    assert agent["config_file"].read_text() == saved
+
+
+@pytest.mark.parametrize("agent", ["openclaw"], indirect=True)
+def test_native_openclaw_does_not_follow_a_dotenv_link(agent, tmp_path):
+    native_openclaw_source(agent)
+    outside = tmp_path / "outside.env"
+    outside.write_text("OPENAI_API_KEY=sk-dummy\n")
+    (agent["target"] / ".openclaw/.env").symlink_to(outside)
+    result = run(agent)
+    assert result.returncode != 0
+    assert "HomePathIsSymlink" in result.stderr
+    assert outside.read_text() == "OPENAI_API_KEY=sk-dummy\n"
+
+
 @pytest.mark.parametrize("agent", ["openclaw"], indirect=True)
 @pytest.mark.parametrize("marker", [None, "false"])
 def test_openclaw_with_its_own_openai_endpoint_keeps_its_model_settings(agent, marker):
