@@ -96,6 +96,37 @@ func TestSandboxNativeProtectedRendering(t *testing.T) {
 	}
 }
 
+func TestSandboxNativeGatewayRenderingUsesCompilerNetworkControls(t *testing.T) {
+	fixture := testfixture.New("hermes")
+	fixture.Input.AuthorizedSecrets = append(fixture.Input.AuthorizedSecrets, "ai-gateway-virtual-key")
+	bundle, err := w.Build(fixture.Input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := aiGatewayInput("hermes", "openai")
+	input["secrets"].(map[string]any)["existingSecret"] = "runtime-secret"
+	prepared, err := PrepareSandboxChart(testChart(t), input, nil, bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	template, err := prepared.SandboxTemplate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prepared.Values["sidecarScope"].(map[string]any)["enabled"] != false ||
+		template.Annotations["sidecar.istio.io/inject"] != "false" {
+		t.Fatal("protected Gateway workload enabled an Istio sidecar")
+	}
+	manifest, err := prepared.SandboxManifest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(manifest), `"kind":"CiliumNetworkPolicy"`) ||
+		strings.Contains(string(manifest), `"kind":"Sidecar"`) {
+		t.Fatal("protected Gateway workload did not retain compiler-owned network controls")
+	}
+}
+
 func TestSandboxDesktopScratchIsolation(t *testing.T) {
 	for _, typ := range []string{"openclaw", "hermes"} {
 		for _, readOnly := range []bool{true, false} {
