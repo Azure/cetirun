@@ -140,13 +140,16 @@ func reconcileUntil(t *testing.T, f *preparationFixture, condition func() bool) 
 		agent.Status.Phase, agent.Finalizers, agent.Status.Conditions, sts)
 }
 
-func createReadyExecutionPod(t *testing.T, f *preparationFixture, nodeName string) {
+func createReadyExecutionPod(t *testing.T, f *preparationFixture, node *corev1.Node) {
 	t.Helper()
 	ctx := context.Background()
 	expected := f.expectation(t)
 	pod := testfixture.Pod(expected)
 	pod.UID = "running-pod-uid"
-	pod.Spec.NodeName = nodeName
+	pod.Spec.NodeName = node.Name
+	for _, key := range []string{corev1.LabelTopologyRegion, corev1.LabelTopologyZone} {
+		pod.Labels[key] = node.Labels[key]
+	}
 	pod.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}
 	if err := f.client.Create(ctx, pod); err != nil {
 		t.Fatal(err)
@@ -174,7 +177,9 @@ func TestKubernetesSandboxExecutionStartRestartAndNodeFailure(t *testing.T) {
 			})
 
 			node := &corev1.Node{
-				ObjectMeta: metav1.ObjectMeta{Name: "sandbox-node", UID: "sandbox-node-uid"},
+				ObjectMeta: metav1.ObjectMeta{Name: "sandbox-node", UID: "sandbox-node-uid", Labels: map[string]string{
+					corev1.LabelTopologyRegion: "example-region", corev1.LabelTopologyZone: "example-zone",
+				}},
 				Status: corev1.NodeStatus{Conditions: []corev1.NodeCondition{{
 					Type: corev1.NodeReady, Status: corev1.ConditionTrue,
 				}}},
@@ -182,7 +187,7 @@ func TestKubernetesSandboxExecutionStartRestartAndNodeFailure(t *testing.T) {
 			if err := f.client.Create(ctx, node); err != nil {
 				t.Fatal(err)
 			}
-			createReadyExecutionPod(t, f, node.Name)
+			createReadyExecutionPod(t, f, node)
 			reconcileUntil(t, f, func() bool {
 				agent := f.current(t)
 				return agent.Status.Phase == api.PhaseReady &&

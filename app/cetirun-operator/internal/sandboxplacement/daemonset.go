@@ -156,7 +156,7 @@ func (s *requestState) validateDaemonPod(ctx context.Context, registry *registry
 		}
 		template.Labels[daemonGenerationLabel] = generation
 	}
-	if !applyNodeTopology(pod, node, template) {
+	if !sandboxworkload.ApplyNodeTopologyLabels(pod, node, template) {
 		return denied("DaemonSetTopologyMismatch", "platform Pod topology labels differ from the current pinned Node")
 	}
 	template.Spec.NodeName = pod.Spec.NodeName

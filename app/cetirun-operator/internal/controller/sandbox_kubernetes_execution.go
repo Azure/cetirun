@@ -255,23 +255,19 @@ func (r *AgentReconciler) observeKubernetesSandbox(ctx context.Context, agent *a
 		}
 		return ctrl.Result{RequeueAfter: sandboxExecutionRequeue}, nil
 	}
-	// Scheduling is the one Kubernetes-owned PodSpec transition after admission.
-	// Validate the final Pod against the protected template with only the
-	// authoritative persisted node assignment grandfathered, matching the Pod
-	// admission update path.
-	observedExpectation := *expected
-	observedExpectation.Template = *expected.Template.DeepCopy()
-	observedExpectation.Template.Spec.NodeName = pod.Spec.NodeName
-	if err := w.ValidatePod(pod, observedExpectation); err != nil {
-		result, holdErr := r.holdSandbox(ctx, agent)
-		return result, errors.Join(err, holdErr)
-	}
 	node := &corev1.Node{}
 	if err := r.APIReader.Get(ctx, client.ObjectKey{Name: pod.Spec.NodeName}, node); err != nil {
 		return ctrl.Result{}, err
 	}
 	if node.UID == "" || !node.DeletionTimestamp.IsZero() || !sandboxNodeReady(node) {
 		return r.holdSandbox(ctx, agent)
+	}
+	// Scheduling and PodTopologyLabels are the Kubernetes-owned final Pod
+	// transitions after admission. Validate both against the freshly read Node;
+	// every other metadata and PodSpec field remains exact-template only.
+	if err := w.ValidatePodOnNode(pod, node, *expected); err != nil {
+		result, holdErr := r.holdSandbox(ctx, agent)
+		return result, errors.Join(err, holdErr)
 	}
 	now := time.Now().UTC()
 	identity := sandbox.ExecutionIdentity{Binding: attempt.plan.Binding, Revision: attempt.plan.Revision,

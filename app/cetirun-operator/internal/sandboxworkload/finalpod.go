@@ -96,6 +96,55 @@ func ValidatePod(pod *corev1.Pod, expected Expectation) error {
 	return nil
 }
 
+// ValidatePodOnNode permits only the two Kubernetes PodTopologyLabels
+// additions when they exactly match the freshly read assigned Node. The caller
+// must independently pin the Node identity and lifecycle before treating this
+// structural validation as an execution observation.
+func ValidatePodOnNode(pod *corev1.Pod, node *corev1.Node, expected Expectation) error {
+	if pod == nil || node == nil || node.Name == "" || pod.Spec.NodeName != node.Name {
+		return &PodMismatchError{[]string{"spec.nodeName"}}
+	}
+	expected.Template = *expected.Template.DeepCopy()
+	if expected.Template.Spec.NodeName == "" {
+		expected.Template.Spec.NodeName = node.Name
+	}
+	if !ApplyNodeTopologyLabels(pod, node, &expected.Template) {
+		return &PodMismatchError{[]string{"metadata.labels"}}
+	}
+	return ValidatePod(pod, expected)
+}
+
+// ApplyNodeTopologyLabels adds only final Pod topology labels whose values are
+// proven by the supplied assigned Node. It never overwrites a template value.
+func ApplyNodeTopologyLabels(pod *corev1.Pod, node *corev1.Node, template *corev1.PodTemplateSpec) bool {
+	if pod == nil || node == nil || template == nil {
+		return false
+	}
+	if pod.Spec.NodeName == "" {
+		return true
+	}
+	if pod.Spec.NodeName != node.Name {
+		return false
+	}
+	for _, key := range []string{corev1.LabelTopologyRegion, corev1.LabelTopologyZone} {
+		value, present := pod.Labels[key]
+		if !present {
+			continue
+		}
+		current, found := node.Labels[key]
+		if !found || value != current {
+			return false
+		}
+		if _, pinned := template.Labels[key]; !pinned {
+			if template.Labels == nil {
+				template.Labels = map[string]string{}
+			}
+			template.Labels[key] = current
+		}
+	}
+	return true
+}
+
 func podDifferencePaths(a, b reflect.Value, path string, fields *[]string) {
 	if len(*fields) >= 8 || equality.Semantic.DeepEqual(a.Interface(), b.Interface()) {
 		return

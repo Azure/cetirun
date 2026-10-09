@@ -74,38 +74,11 @@ func (h *Handler) checkScheduledPod(ctx context.Context, pod *corev1.Pod, expect
 
 func validateAgentTemplate(pod *corev1.Pod, node *corev1.Node, expected sandboxworkload.Expectation) *failure {
 	expected.Template = *expected.Template.DeepCopy()
-	if !applyNodeTopology(pod, node, &expected.Template) {
+	if !sandboxworkload.ApplyNodeTopologyLabels(pod, node, &expected.Template) {
 		return denied("AgentTopologyMismatch", "Agent Pod topology labels differ from the current pinned Node")
 	}
 	if err := sandboxworkload.ValidatePod(pod, expected); err != nil {
 		return denied("AgentTemplateMismatch", "Pod differs from the controller-owned Agent template")
 	}
 	return nil
-}
-
-func applyNodeTopology(pod *corev1.Pod, node *corev1.Node, template *corev1.PodTemplateSpec) bool {
-	if pod.Spec.NodeName == "" {
-		return true
-	}
-	if pod.Spec.NodeName != node.Name {
-		return false
-	}
-	for _, key := range []string{corev1.LabelTopologyRegion, corev1.LabelTopologyZone} {
-		value, present := pod.Labels[key]
-		if !present {
-			continue
-		}
-		current, found := node.Labels[key]
-		if !found || value != current {
-			return false
-		}
-		// Never override an explicit template value or discard incoming labels.
-		if _, pinned := template.Labels[key]; !pinned {
-			if template.Labels == nil {
-				template.Labels = map[string]string{}
-			}
-			template.Labels[key] = current
-		}
-	}
-	return true
 }
