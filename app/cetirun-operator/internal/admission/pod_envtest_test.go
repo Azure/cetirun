@@ -938,6 +938,67 @@ func TestPodAdmissionAPIServerBoundaries(t *testing.T) {
 		t.Fatal("status/delete reached protected-write webhook")
 	}
 	unavailable.Store(false)
+	t.Run("native-single-pod-and-effective-source-pins", func(t *testing.T) {
+		expected.SinglePod, expected.PodUID = true, ""
+		expected.SourceDigests = map[string]string{}
+		for _, source := range expected.Sources {
+			if !w.EffectiveSource(source) || (source.APIVersion == "v1" && source.Kind == "PersistentVolumeClaim") {
+				continue
+			}
+			value := &unstructured.Unstructured{}
+			value.SetAPIVersion(source.APIVersion)
+			value.SetKind(source.Kind)
+			var object client.Object = value
+			if source.APIVersion == api.GroupVersion.String() && source.Kind == "Team" {
+				object = &api.Team{}
+			}
+			if err := cl.Get(ctx, client.ObjectKey{Namespace: source.Namespace, Name: source.Name}, object); err != nil {
+				t.Fatal(err)
+			}
+			digest, err := w.ExecutionSourceDigest(object, f.fixture.Sandbox.Name, expected.Binding.PolicyClass)
+			if err != nil {
+				t.Fatal(err)
+			}
+			expected.SourceDigests[w.SourceKey(source)] = digest
+		}
+		save := func() {
+			t.Helper()
+			if err := cl.Get(ctx, client.ObjectKeyFromObject(state), state); err != nil {
+				t.Fatal(err)
+			}
+			raw, err := json.Marshal(expected)
+			if err != nil {
+				t.Fatal(err)
+			}
+			state.Data[PodExpectationKey] = string(raw)
+			if err := cl.Update(ctx, state); err != nil {
+				t.Fatal(err)
+			}
+		}
+		save()
+		if err := cl.Get(ctx, client.ObjectKeyFromObject(workload), workload); err != nil {
+			t.Fatal(err)
+		}
+		workload.Status.Replicas, workload.Status.ReadyReplicas = 1, 1
+		if err := cl.Status().Update(ctx, workload); err != nil {
+			t.Fatal(err)
+		}
+		native := testfixture.Pod(expected)
+		native.Spec.Overhead = nil
+		if err := cl.Create(ctx, native); err != nil {
+			t.Fatal("native admission rejected status-only source changes:", err)
+		}
+		expected.PodUID = native.UID
+		save()
+		if err := cl.Delete(ctx, native, client.GracePeriodSeconds(0)); err != nil {
+			t.Fatal(err)
+		}
+		replacement := testfixture.Pod(expected)
+		replacement.Spec.Overhead = nil
+		if err := cl.Create(ctx, replacement); err == nil || !strings.Contains(err.Error(), "ReplacementUnsupported") {
+			t.Fatalf("native admission did not enforce the recorded Pod lifetime: %v", err)
+		}
+	})
 	if err := cl.Delete(ctx, state); err != nil {
 		t.Fatal(err)
 	}

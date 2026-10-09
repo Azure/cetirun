@@ -14,12 +14,71 @@ import (
 	"testing"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
+	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	yamlutil "k8s.io/apimachinery/pkg/util/yaml"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/yaml"
 )
+
+func TestNativeSandboxExampleUsesSupportedContract(t *testing.T) {
+	raw, err := os.ReadFile("../../../../examples/native-sandbox/agent.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent := &api.Agent{}
+	if err := yaml.UnmarshalStrict(raw, agent); err != nil {
+		t.Fatal(err)
+	}
+	if agent.Spec.Agent.Type != api.AgentTypeOpenClaw || agent.Spec.PolicyClass != api.AgentPolicyClassNormal ||
+		!agent.Spec.SharedModelsEnabled() || agent.Spec.GitHubCopilotEnabled() || len(agent.Spec.Helm.Values) != 0 ||
+		agent.Spec.Agent.Image == nil || agent.Spec.Agent.Port == nil || agent.Spec.Helm.Version == "" {
+		t.Fatal("native example is missing the explicit, supported runtime/model pins")
+	}
+	raw, err = os.ReadFile("../../../../examples/native-sandbox/configuration.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	box, policy, team := &api.Sandbox{}, &api.AgentPolicy{}, &api.Team{}
+	objects := map[string]any{"Sandbox": box, "AgentPolicy": policy, "Team": team}
+	seen := map[string]bool{}
+	decoder := yamlutil.NewYAMLOrJSONDecoder(strings.NewReader(string(raw)), 4096)
+	for {
+		var document json.RawMessage
+		if err := decoder.Decode(&document); err == io.EOF {
+			break
+		} else if err != nil {
+			t.Fatal(err)
+		}
+		var metadata metav1.TypeMeta
+		if err := json.Unmarshal(document, &metadata); err != nil {
+			t.Fatal(err)
+		}
+		if objects[metadata.Kind] == nil || seen[metadata.Kind] {
+			t.Fatal("unexpected or duplicate native configuration kind")
+		}
+		if err := yaml.UnmarshalStrict(document, objects[metadata.Kind]); err != nil {
+			t.Fatal(err)
+		}
+		seen[metadata.Kind] = true
+	}
+	if len(seen) != 3 || box.Spec.Type != api.SandboxKata || box.Spec.Storage.Home.AccessMode != corev1.ReadWriteOncePod ||
+		agent.Spec.SandboxRef != box.Name || agent.Spec.Team != team.Name ||
+		team.Spec.DefaultSandboxRef != box.Name || !slices.Contains(team.Spec.SandboxRefs, box.Name) ||
+		team.Spec.NormalAgentPolicyRef != policy.Name || team.Spec.AdminAgentPolicyRef != "" ||
+		!slices.Contains(policy.Spec.ModelAccess.SharedModels.Allowed, agent.Spec.Model) ||
+		policy.Spec.Network.Ingress.Mode != api.AgentPolicyIngressAuthenticated {
+		t.Fatal("native example bindings do not form the supported profile")
+	}
+	if _, errs := sandbox.NormalizeSandbox(box.Spec); len(errs) != 0 {
+		t.Fatal(errs.ToAggregate())
+	}
+	if _, errs := sandbox.NormalizeAgentPolicy(policy.Spec); len(errs) != 0 {
+		t.Fatal(errs.ToAggregate())
+	}
+}
 
 func TestCreationExamplesDefaultToHermes(t *testing.T) {
 	for _, path := range []string{

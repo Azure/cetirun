@@ -95,6 +95,17 @@ func SourceKey(source SourceReference) string {
 	return source.APIVersion + "/" + source.Kind + "/" + source.Namespace + "/" + source.Name
 }
 
+func ExecutionSourceDigest(object client.Object, box string, class api.AgentPolicyClass) (string, error) {
+	if team, ok := object.(*api.Team); ok {
+		inputs, err := ExecutionTeamInputs(team)
+		if err != nil {
+			return "", err
+		}
+		return inputs.DigestFor(box, class)
+	}
+	return ExecutionObjectDigest(object)
+}
+
 // EffectiveSource identifies non-secret resources whose configuration can be
 // read without credentials. Secret contents remain unread and version-pinned;
 // Agent intent and StatefulSet inputs have their own lifecycle-aware checks.

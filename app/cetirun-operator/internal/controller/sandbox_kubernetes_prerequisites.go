@@ -46,6 +46,7 @@ type KubernetesSandboxPrerequisites struct {
 	Helpers                    sandboxworkload.Helpers
 	Now                        func() time.Time
 	WriterExclusion            SandboxWriterExclusionSource
+	NativeQuiescence           *KubernetesNativeQuiescence
 }
 
 var _ SandboxPreparationSource = (*KubernetesSandboxPrerequisites)(nil)
@@ -303,7 +304,7 @@ func (p *KubernetesSandboxPrerequisites) CheckQuiesced(ctx context.Context, agen
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if p == nil || p.WriterExclusion == nil {
+	if p == nil || (p.WriterExclusion == nil && p.NativeQuiescence == nil) {
 		return fmt.Errorf("%w: no qualified guest-external Sandbox writer-exclusion source is installed", sandbox.ErrObservationUnavailable)
 	}
 	if agent == nil || agent.Namespace != "" || len(validation.IsDNS1123Subdomain(agent.Name)) != 0 ||
@@ -321,6 +322,9 @@ func (p *KubernetesSandboxPrerequisites) CheckQuiesced(ctx context.Context, agen
 		return err
 	}
 	prerequisites = copySandboxPrerequisites(prerequisites)
+	if p.NativeQuiescence != nil {
+		return p.NativeQuiescence.CheckQuiesced(ctx, agent.DeepCopy(), prerequisites)
+	}
 	if err := p.WriterExclusion.CheckQuiesced(ctx, agent.DeepCopy(), prerequisites); err != nil {
 		return err
 	}

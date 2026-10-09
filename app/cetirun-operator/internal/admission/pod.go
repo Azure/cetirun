@@ -24,6 +24,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation"
@@ -140,6 +141,9 @@ func (h *PodHandler) Validate(ctx context.Context, request admission.Request) ad
 	}
 	if expected.ExecutionHeld || agent.Spec.Suspended || slices.Contains(agent.Finalizers, sandbox.HoldFinalizer) {
 		return rejectPod(ctx, request, podDenied("ExecutionHeld", sandboxworkload.ErrExecutionHeld.Error()))
+	}
+	if expected.SinglePod && expected.PodUID != "" && request.Operation == admissionv1.Create {
+		return rejectPod(ctx, request, podDenied("ReplacementUnsupported", "native Sandbox Pod replacement requires a new Agent"))
 	}
 	if expected.Placement != nil && h.placement == nil {
 		return rejectPod(ctx, request, podDenied("PlacementUnavailable", "recorded placement requires the configured authoritative placement reader"))
@@ -370,6 +374,20 @@ func (h *PodHandler) readPodSource(ctx context.Context, expected sandboxworkload
 		return nil
 	}
 	var object client.Object = &metav1.PartialObjectMetadata{TypeMeta: metav1.TypeMeta{APIVersion: source.APIVersion, Kind: source.Kind}}
+	effectiveSource := expected.SinglePod && sandboxworkload.EffectiveSource(source) &&
+		!(source.APIVersion == "v1" && source.Kind == "PersistentVolumeClaim")
+	if effectiveSource {
+		version, err := schema.ParseGroupVersion(source.APIVersion)
+		if err != nil {
+			return podDenied("SourceInvalid", "native source version is invalid")
+		}
+		value := &unstructured.Unstructured{}
+		value.SetGroupVersionKind(version.WithKind(source.Kind))
+		object = value
+		if source.APIVersion == api.GroupVersion.String() && source.Kind == "Team" {
+			object = &api.Team{}
+		}
+	}
 	var runtimeClass *nodev1.RuntimeClass
 	if source.APIVersion == "node.k8s.io/v1" && source.Kind == "RuntimeClass" && source.Namespace == "" &&
 		source.Name == ptr.Deref(expected.Template.Spec.RuntimeClassName, "") {
@@ -379,8 +397,25 @@ func (h *PodHandler) readPodSource(ctx context.Context, expected sandboxworkload
 	if err := h.reader.Get(ctx, client.ObjectKey{Namespace: source.Namespace, Name: source.Name}, object); err != nil {
 		return podReadFailure("Source", err)
 	}
-	if object.GetUID() != source.UID || object.GetResourceVersion() != source.ResourceVersion || !object.GetDeletionTimestamp().IsZero() {
+	workloadSource := expected.SinglePod && source.APIVersion == "apps/v1" && source.Kind == "StatefulSet" &&
+		source.Namespace == expected.Namespace.Name && source.Name == expected.Workload.Name && source.UID == expected.Workload.UID
+	// Native startup changes replicas and the StatefulSet controller updates
+	// status. Validate its complete current template/lifecycle in Validate.
+	if object.GetUID() != source.UID || (!workloadSource && !effectiveSource && object.GetResourceVersion() != source.ResourceVersion) || !object.GetDeletionTimestamp().IsZero() {
 		return podDenied("SourceChanged", "a source UID or revision changed, or the source is terminating")
+	}
+	if effectiveSource {
+		box := ""
+		for _, entry := range expected.Sources {
+			if entry.APIVersion == api.GroupVersion.String() && entry.Kind == "Sandbox" && entry.UID == expected.Binding.SandboxUID {
+				box = entry.Name
+			}
+		}
+		digest, err := sandboxworkload.ExecutionSourceDigest(object, box, expected.Binding.PolicyClass)
+		pinned := expected.SourceDigests[sandboxworkload.SourceKey(source)]
+		if err != nil || !sandboxworkload.ValidInputDigest(pinned) || digest != pinned {
+			return podDenied("SourceChanged", "native Sandbox effective source inputs changed")
+		}
 	}
 	if source.APIVersion == "v1" && source.Kind == "PersistentVolumeClaim" &&
 		source.Namespace == expected.Namespace.Name && source.Name == expected.Home.Name &&

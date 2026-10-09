@@ -438,6 +438,43 @@ class SandboxAdmissionChartTests(unittest.TestCase):
             "helpers", "admissionServiceAccount",
         })
 
+    def test_native_execution_requires_explicit_opt_in_and_only_adds_node_reads(self):
+        admission = self.enforced_values(podsEnabled=True)
+        sources = {
+            "enabled": True, "platformConfigMapName": "sandbox-platform",
+            "bootstrapOwnedPrerequisites": True,
+        }
+        values = {"sandboxSources": sources, "aiGateway": {"enabled": True}}
+        baseline = self.render(admission, values=values)
+        configured = self.render(admission, values={
+            **values, "sandboxSources": {**sources, "nativeExecution": True},
+        })
+        env = configured[("Deployment", "cetirun-operator")]["spec"]["template"]["spec"]["containers"][0]["env"]
+        config = json.loads(next(item["value"] for item in env if item["name"] == "CETIRUN_SANDBOX_SOURCES"))
+        self.assertIs(config["nativeExecution"], True)
+        role = ("ClusterRole", "cetirun-operator-manager-role")
+        added = [rule for rule in configured[role]["rules"] if rule not in baseline[role]["rules"]]
+        self.assertEqual(added, [{"apiGroups": [""], "resources": ["nodes"], "verbs": ["get"]}])
+
+    def test_native_execution_rejects_incomplete_configuration(self):
+        sources = {
+            "enabled": True, "nativeExecution": True,
+            "bootstrapOwnedPrerequisites": True, "platformConfigMapName": "sandbox-platform",
+        }
+        for change, gateway in (
+            ({"enabled": False, "bootstrapOwnedPrerequisites": False}, True),
+            ({"bootstrapOwnedPrerequisites": False}, True),
+            ({}, False),
+            ({"helpers": {"desktop": True}}, True),
+            ({"nativeExecution": "true"}, True),
+            ({"placementConfigMapName": "sandbox-placement"}, True),
+        ):
+            with self.subTest(change=change, gateway=gateway):
+                self.assert_rejected(
+                    self.enforced_values(podsEnabled=True), "sandboxSources.nativeExecution",
+                    values={"sandboxSources": {**sources, **change}, "aiGateway": {"enabled": gateway}},
+                )
+
     def test_kubernetes_sources_accept_values_without_the_new_bootstrap_key(self):
         for enabled in (False, True):
             with self.subTest(enabled=enabled):

@@ -112,6 +112,9 @@ func nativeTemplateContext(agent ResolvedAgent, bindings Bindings) map[string]an
 		"msteamsAuthType":    integrations.TeamsAuthType,
 		"msteamsWebhookPort": integrations.TeamsPort,
 	}
+	if bindings.NativeSandbox {
+		values["sandboxWorkload"] = map[string]any{"contractVersion": "v1"}
+	}
 	return map[string]any{
 		"Values":           values,
 		"Chart":            map[string]any{"Version": bindings.ChartVersion},

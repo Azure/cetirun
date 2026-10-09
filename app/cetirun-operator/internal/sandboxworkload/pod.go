@@ -71,6 +71,9 @@ func (b *Bundle) ValidateTemplate(template *corev1.PodTemplateSpec, image string
 	if b.input.Helpers.Doctor {
 		initNames = append(initNames, "doctor")
 	}
+	if b.input.GatewayKey != nil {
+		initNames = append(initNames, "retire-copilot-sign-in", "retire-direct-model-auth")
+	}
 	if len(spec.Containers) != len(names) || len(spec.InitContainers) != len(initNames) {
 		return fmt.Errorf("unexpected native container or helper count")
 	}
@@ -169,6 +172,13 @@ func (b *Bundle) validateContainer(container corev1.Container, image string) err
 			len(container.Args) != 0 {
 			return fmt.Errorf("unapproved doctor helper")
 		}
+	case "retire-copilot-sign-in", "retire-direct-model-auth":
+		if b.input.GatewayKey == nil || b.input.AgentType != "openclaw" ||
+			!slices.Equal(container.Command, []string{"/bin/sh", "/etc/cetirun/" + container.Name + ".sh"}) ||
+			len(container.Args) != 0 {
+			return fmt.Errorf("unapproved native Gateway initializer")
+		}
+		mounts = append(mounts, corev1.VolumeMount{Name: "config", MountPath: "/etc/cetirun", ReadOnly: true})
 	case "logger":
 		mounts[0].MountPath, mounts[0].SubPath, mounts[0].ReadOnly = HomePath+"/."+b.input.AgentType, "."+b.input.AgentType, true
 		mounts = append(mounts, corev1.VolumeMount{Name: "config", MountPath: "/etc/cetirun", ReadOnly: true})

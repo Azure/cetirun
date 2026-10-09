@@ -259,7 +259,8 @@ func (r *AgentReconciler) deleteSandboxBuiltin(ctx context.Context, agent *cetir
 	// Failed revocation or status writes must not skip independent shutdown.
 	revokeErr := r.revokeSandboxPreparationGrants(ctx, agent)
 	stopErr := r.stopSandboxBuiltin(ctx, agent)
-	if err := errors.Join(statusErr, revokeErr, stopErr); err != nil {
+	gatewayErr := r.deleteAIGatewayKey(ctx, agent)
+	if err := errors.Join(statusErr, revokeErr, stopErr, gatewayErr); err != nil {
 		return ctrl.Result{}, err
 	}
 	if err := r.cleanupRegistryCredentials(ctx, agent, true); err != nil {
@@ -275,9 +276,6 @@ func (r *AgentReconciler) deleteSandboxBuiltin(ctx context.Context, agent *cetir
 		if err := r.deleteAgentIdentity(ctx, agent); err != nil {
 			return ctrl.Result{}, fmt.Errorf("clean up sandbox-held Agent Identity: %w", err)
 		}
-	}
-	if err := r.deleteAIGatewayKey(ctx, agent); err != nil {
-		return ctrl.Result{}, fmt.Errorf("revoke sandbox-held AI Gateway key: %w", err)
 	}
 	ns := &corev1.Namespace{}
 	err := r.customReader().Get(ctx, types.NamespacedName{Name: instanceNamespace(agent.Name)}, ns)

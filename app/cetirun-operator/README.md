@@ -58,7 +58,7 @@ For a Gateway in a separate namespace, configure the
 [Gateway reference and workload namespace](../../site/content/en/docs/reference/helm.md#operator-chart)
 independently.
 
-## Policy control plane: Sandbox execution is held
+## Policy control plane and native Sandbox execution
 
 `Sandbox` describes a reusable runtime, container resource declarations, private
 home storage and scratch. `AgentPolicy` describes selection, security, network,
@@ -88,6 +88,51 @@ platform declarations can be read through the Kubernetes sources below; their
 registration revision must represent qualified runtime/chart/topology/grant
 inventory, not merely the existence of a RuntimeClass.
 An observation validator checks an adapter's input; it does not generate evidence.
+
+### Native execution profile (explicit opt-in)
+
+`sandboxSources.nativeExecution: true` enables a bounded Kubernetes execution
+path in the shipped controller. It defaults to `false` and requires enabled,
+enforced configuration/Pod admission, `sandboxSources.enabled`,
+`sandboxSources.bootstrapOwnedPrerequisites`, and an enabled AI Gateway.
+The controller receives the same option through `CETIRUN_SANDBOX_SOURCES`.
+The option adds only Node `get` permission for the controller's readiness check.
+The native profile uses the registered RuntimeClass's scheduling constraints;
+the separate durable placement registry is unsupported and rejected.
+
+The supported profile is one normal-class OpenClaw Agent, a Kata Sandbox with
+ReadWriteOncePod HOME, and shared Gateway model access. It uses the selected
+Sandbox's resources/storage and the selected AgentPolicy's model entitlement
+and budget. Per-Agent Gateway keys are projected through owned Secrets, not
+embedded provider credentials. Custom CIDR/FQDN/port rules, internal-network
+exceptions, required mTLS, admin/identity grants, Copilot sidecars, desktop,
+Tailscale, Teams and arbitrary Agent Helm overrides are rejected before start.
+Existing baseline network controls are retained.
+
+The controller stages the protected chart, records a one-shot start marker,
+releases admission and starts one StatefulSet replica. It pins the first
+observed Pod UID; admission rejects subsequent Pod creation for that lifetime.
+Ready requires the current application readiness probe, Node readiness,
+matching workload and effective source inputs, and the current Gateway grant.
+Native owner access uses the existing `/ui/<agent>/` route and authentication
+deployment. An unauthenticated sign-in challenge alone is not an access test.
+
+This is **Kubernetes workload readiness, not guest-external enforcement proof or
+physical failover fencing**. ReadWriteOncePod and ordinary Pod termination do
+not establish the stronger writer-exclusion contract below. Do not force-delete
+Pods or use this mode for node failover, old-HOME handoff or production recovery.
+After a hold, source change, suspension or uncertain start, delete and recreate
+the Agent instead of attempting resume/replay. In-Pod restarts remain Kubernetes
+behavior; this profile does not qualify failure recovery.
+
+Normal deletion retains the existing ownership checks and finalizers, withdraws
+the route, independently revokes the Gateway grant and waits for ordinary workload termination
+before removing owned storage/namespace resources. A failed cleanup stays
+visible. Disabling native execution does not waive existing cleanup obligations.
+Component tests and API observations do not replace an authorized end-to-end
+create/connect/model/tool/delete run on the selected runtime.
+See the [native Sandbox example](../../examples/native-sandbox/) for the minimal
+configuration, explicit-target run steps and UID-conditional cleanup.
 
 ### Durable writer-exclusion orchestration
 
@@ -675,8 +720,9 @@ By default, the operator installs neither a preparation source nor qualified
 production registrations. With no source, policy-bound Agents retain their existing
 execution hold. The opt-in Kubernetes sources below wire authoritative reads of
 platform configuration and existing owned resources into the shipped binary.
-They do not supply a qualified writer-exclusion implementation, so held staging
-still cannot complete through stock startup. Tests inject that separate
+Without the separate native execution opt-in above, they do not supply a
+qualified writer-exclusion implementation, so held staging cannot complete
+through stock startup. Tests inject that separate
 dependency; their results are not platform qualification or a permit to start.
 An operator namespace alone does not enable preparation or routine state reads
 for untracked Agents. Existing preparation markers still require cleanup when
@@ -970,7 +1016,7 @@ during capture. The same platform declarations are used by configuration
 admission and the Agent, Sandbox and AgentPolicy reconcilers. They do not grant
 Portal callers Kubernetes admission authority or replace trusted Team
 assignments. A configured source does not establish runtime, network or CSI
-enforcement. In particular, the stock prerequisite source has
+enforcement. In particular, the default prerequisite source has
 no writer-exclusion adapter and returns an explicit error before preparation
 creates its qualified-preparation cleanup state. Bootstrap-only ownership state
 is separate and does not claim a writer fence. An Agent rejected by this
@@ -979,7 +1025,8 @@ preparation state never bypasses fencing.
 Kubernetes Pod absence, PVC access modes and zero replicas cannot replace it.
 Qualified fencing, successful held staging, controlled starts and running
 enforcement observations remain separate lifecycle work. Do not remove holds
-or finalizers to bypass these missing guarantees.
+or finalizers to bypass these missing guarantees. The separately enabled native
+profile uses ordinary Kubernetes quiescence, never this qualified fence.
 
 ##### Owned bootstrap (separate opt-in)
 

@@ -81,6 +81,7 @@ type Input struct {
 	Helpers           Helpers
 	Controls          Controls
 	AuthorizedSecrets []string
+	GatewayKey        *ObjectIdentity
 }
 
 // Accounting uses Kubernetes effective init/sidecar accounting. Pod contains
@@ -124,6 +125,9 @@ type Expectation struct {
 	WorkloadKind       string                 `json:"workloadKind"`
 	ControllerRevision string                 `json:"controllerRevision,omitempty"`
 	ExecutionHeld      bool                   `json:"executionHeld"`
+	SinglePod          bool                   `json:"singlePod,omitempty"`
+	PodUID             types.UID              `json:"podUID,omitempty"`
+	SourceDigests      map[string]string      `json:"sourceDigests,omitempty"`
 	Template           corev1.PodTemplateSpec `json:"template"`
 	Overhead           corev1.ResourceList    `json:"overhead,omitempty"`
 	Sources            []SourceReference      `json:"sources"`

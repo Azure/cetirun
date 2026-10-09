@@ -299,7 +299,11 @@ func main() {
 	var sandboxSource controller.SandboxConfigurationSource
 	if agentReconciler.SandboxPreparation != nil {
 		sandboxSource = agentReconciler.SandboxPreparation.Configuration
-		setupLog.Info("Kubernetes Sandbox sources enabled; qualified writer exclusion is unavailable and execution remains held")
+		if sandboxSourcesConfig.NativeExecution {
+			setupLog.Info("Native Sandbox execution enabled for the bounded OpenClaw profile; physical failover fencing is not provided")
+		} else {
+			setupLog.Info("Kubernetes Sandbox sources enabled; qualified writer exclusion is unavailable and execution remains held")
+		}
 	}
 	if err = agentReconciler.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Agent")

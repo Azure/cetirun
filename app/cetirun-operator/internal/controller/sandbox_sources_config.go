@@ -19,6 +19,7 @@ import (
 // execution evidence. It does not configure a writer-exclusion implementation.
 type SandboxSourcesConfig struct {
 	Enabled                     bool                    `json:"enabled"`
+	NativeExecution             bool                    `json:"nativeExecution"`
 	BootstrapOwnedPrerequisites bool                    `json:"bootstrapOwnedPrerequisites"`
 	PlatformConfigMapName       string                  `json:"platformConfigMapName"`
 	HomeClaimName               string                  `json:"homeClaimName"`
@@ -45,6 +46,12 @@ func ParseSandboxSourcesConfig(raw string) (SandboxSourcesConfig, error) {
 }
 
 func (config SandboxSourcesConfig) validate() error {
+	if config.NativeExecution && (!config.Enabled || !config.BootstrapOwnedPrerequisites || config.Helpers.Desktop) {
+		return fmt.Errorf("native Sandbox execution requires enabled sources, owned bootstrap and no desktop helper")
+	}
+	if config.NativeExecution && config.PlacementConfigMapName != "" {
+		return fmt.Errorf("native Sandbox execution uses RuntimeClass scheduling; a placement registry is unsupported")
+	}
 	if config.PlacementConfigMapName != "" &&
 		(!config.Enabled || len(validation.IsDNS1123Subdomain(config.PlacementConfigMapName)) != 0 ||
 			config.PlacementConfigMapName == config.PlatformConfigMapName ||
@@ -79,9 +86,9 @@ func (config SandboxSourcesConfig) validate() error {
 	return nil
 }
 
-// NewKubernetesSandboxPreparation installs sources for held preparation, with
-// optional owned-resource bootstrap. A writer-exclusion adapter must be supplied separately;
-// the nil default never treats Kubernetes object state as fencing evidence.
+// NewKubernetesSandboxPreparation defaults to held preparation. NativeExecution
+// separately opts into Kubernetes single-start semantics, not physical fencing.
+// The default path still requires a qualified writer-exclusion adapter.
 func NewKubernetesSandboxPreparation(config SandboxSourcesConfig, reader client.Reader,
 	installer SandboxHelmInstaller, namespace, chartVersion string,
 ) (*SandboxPreparation, error) {
@@ -96,6 +103,7 @@ func NewKubernetesSandboxPreparation(config SandboxSourcesConfig, reader client.
 		return nil, fmt.Errorf("Sandbox sources require an authoritative reader, installer, operator namespace and approved chart version")
 	}
 	preparation := &SandboxPreparation{
+		NativeExecution: config.NativeExecution,
 		Configuration: &KubernetesSandboxConfigurationSource{
 			APIReader: reader, Namespace: namespace, Name: config.PlatformConfigMapName,
 		},
@@ -105,6 +113,9 @@ func NewKubernetesSandboxPreparation(config SandboxSourcesConfig, reader client.
 			ChartVersion: chartVersion, Helpers: config.Helpers,
 		},
 		Installer: installer, AdmissionServiceAccount: config.AdmissionServiceAccount,
+	}
+	if config.NativeExecution {
+		preparation.Prerequisites.(*KubernetesSandboxPrerequisites).NativeQuiescence = &KubernetesNativeQuiescence{APIReader: reader}
 	}
 	if config.PlacementConfigMapName != "" {
 		placement, err := sandboxplacement.NewHandler(reader, sandboxplacement.Config{

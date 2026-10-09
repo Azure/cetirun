@@ -123,6 +123,15 @@ func (b *Bundle) Apply(values map[string]any) (map[string]any, error) {
 	if !slices.Contains(b.input.AuthorizedSecrets, textValue(secrets["existingSecret"])) {
 		return nil, fmt.Errorf("native runtime Secret is not authorized")
 	}
+	gateway, _ := out["aiGateway"].(map[string]any)
+	if key := b.input.GatewayKey; key != nil {
+		if gateway["enabled"] != true || textValue(gateway["keySecretName"]) != key.Name ||
+			textValue(gateway["keySecretKey"]) != "api-key" || key.Name == textValue(secrets["existingSecret"]) {
+			return nil, fmt.Errorf("native Gateway values do not match the separately authorized key")
+		}
+	} else if gateway["enabled"] == true {
+		return nil, fmt.Errorf("native Gateway requires a typed authorized key projection")
+	}
 	security, _ := jsonValue(b.SecurityContext())
 	podSecurity, _ := jsonValue(b.PodSecurityContext())
 	dnsConfig, _ := jsonValue(b.DNSConfig())

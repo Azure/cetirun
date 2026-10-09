@@ -10,6 +10,7 @@ import (
 	"slices"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/aigateway"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxplatform"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxpolicy"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
@@ -108,6 +109,23 @@ func (r *AgentReconciler) sandboxPreparationInput(ctx context.Context, attempt *
 		sandboxSource(storageClass, "storage.k8s.io/v1", "StorageClass"),
 	)
 	attempt.sources = append(attempt.sources, inputs.PublicationSources...)
+	if config.NativeExecution {
+		if !sandboxGatewayProjectionReady(agent) {
+			return fmt.Errorf("%w: current Gateway projection is required for native execution", sandboxpolicy.ErrUnavailable)
+		}
+		key := &corev1.Secret{}
+		if err := r.APIReader.Get(ctx, client.ObjectKey{Namespace: namespace.Name, Name: aiGatewayKeySecretName}, key); err != nil {
+			return fmt.Errorf("read Sandbox AI Gateway key projection: %w", err)
+		}
+		if key.UID == "" || key.ResourceVersion == "" || !key.DeletionTimestamp.IsZero() ||
+			!hasAgentOwner(key, agent) || key.Labels[aiGatewayAgentUIDLabel] != string(agent.UID) ||
+			!aigateway.ValidKeyValue(string(key.Data[aiGatewayKeySecretField])) {
+			return fmt.Errorf("Sandbox AI Gateway key projection is not owned and ready")
+		}
+		attempt.input.AuthorizedSecrets = append(attempt.input.AuthorizedSecrets, key.Name)
+		attempt.input.GatewayKey = &sandboxworkload.ObjectIdentity{Name: key.Name, UID: key.UID}
+		attempt.sources = append(attempt.sources, sandboxSource(key, "v1", "Secret"))
+	}
 	// Recheck captured versions before applying grants/workloads or accepting
 	// read-only reuse; durable bookkeeping can precede those checks.
 	return nil

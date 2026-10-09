@@ -275,7 +275,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		// namespace exists.  Bootstrap deliberately creates that namespace
 		// first; a missing namespace on the first pass is therefore not an
 		// authorization to fall back to direct model credentials.
-		var namespaceErr error
+		var namespaceErr, projectionErr error
 		if r.AIGateway.Enabled {
 			namespace := &corev1.Namespace{}
 			namespaceErr = r.customReader().Get(ctx, types.NamespacedName{Name: instanceNamespace(instance.Name)}, namespace)
@@ -284,7 +284,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 					namespaceErr = err
 					logger.Error(err, "Policy-bound AI Gateway projection is waiting for a protected Sandbox namespace")
 				} else if err := r.reconcileAIGateway(ctx, instance, true); err != nil {
-					_ = r.updateStatus(ctx, instance)
+					projectionErr = stderrors.Join(err, r.updateStatus(ctx, instance))
 					// Keep progressing through holdSandbox so ingress/compute remain
 					// stopped even when the Gateway control plane is unavailable.
 					logger.Error(err, "Policy-bound AI Gateway projection remains pending")
@@ -296,11 +296,17 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 				logger.Error(namespaceErr, "Policy-bound AI Gateway projection cannot verify its namespace")
 			}
 		}
-		result, holdErr := r.holdSandbox(ctx, instance)
+		var result ctrl.Result
+		var holdErr error
+		if namespaceErr == nil && projectionErr == nil && r.SandboxPreparation != nil && r.SandboxPreparation.NativeExecution {
+			result, holdErr = r.reconcileKubernetesSandbox(ctx, instance)
+		} else {
+			result, holdErr = r.holdSandbox(ctx, instance)
+		}
 		if namespaceErr != nil && !errors.IsNotFound(namespaceErr) {
 			return result, stderrors.Join(namespaceErr, holdErr)
 		}
-		return result, holdErr
+		return result, stderrors.Join(projectionErr, holdErr)
 	}
 
 	// Inspect Team policy before runtime recovery can retain a Ready state.

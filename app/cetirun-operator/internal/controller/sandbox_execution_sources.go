@@ -39,14 +39,7 @@ func (r *AgentReconciler) executionSourceDigest(ctx context.Context, source w.So
 		(capture && object.GetResourceVersion() != source.ResourceVersion) {
 		return "", fmt.Errorf("%w: effective source identity changed: %s", errSandboxSourceChanged, w.SourceKey(source))
 	}
-	if team, ok := object.(*api.Team); ok {
-		inputs, err := w.ExecutionTeamInputs(team)
-		if err != nil {
-			return "", err
-		}
-		return inputs.DigestFor(box, class)
-	}
-	return w.ExecutionObjectDigest(object)
+	return w.ExecutionSourceDigest(object, box, class)
 }
 
 func (r *AgentReconciler) captureExecutionSourceDigests(ctx context.Context, intent sandboxcoordination.Intent) (map[string]string, error) {
