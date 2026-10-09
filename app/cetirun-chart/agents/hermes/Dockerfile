@@ -95,14 +95,23 @@ WORKDIR /usr/local/lib/hermes-agent
 
 # Follow Hermes' official source-install contract: install the immutable release
 # checkout with its checked-in uv.lock instead of reconstructing dependencies
-# from a PyPI wheel. Browser binaries are omitted because CetiRun supplies a
-# separate Chrome/CDP desktop sidecar.
+# from a PyPI wheel. Exporting the lock lets pip use the platform TLS stack for
+# enterprise package mirrors while retaining the lock's package hashes. Browser
+# binaries are omitted because CetiRun supplies a separate Chrome/CDP sidecar.
 COPY --from=hermes-source --chown=vibe:vibe \
   /usr/local/lib/hermes-agent/ /usr/local/lib/hermes-agent/
 
-RUN UV_DEFAULT_INDEX="${PYPI_INDEX_URL}" \
-      uv sync --python /usr/bin/python3 --frozen --extra all \
-        --extra anthropic --extra azure-identity && \
+RUN uv export --quiet --frozen --no-dev --extra all \
+      --extra anthropic --extra azure-identity --no-emit-project \
+      --output-file /tmp/hermes-requirements.txt && \
+    python3 -m venv "${UV_PROJECT_ENVIRONMENT}" && \
+    "${HERMES_PYTHON}" -m pip install --disable-pip-version-check \
+      --index-url "${PYPI_INDEX_URL}" --no-deps --require-hashes \
+      -r /tmp/hermes-requirements.txt && \
+    PIP_INDEX_URL="${PYPI_INDEX_URL}" \
+      "${HERMES_PYTHON}" -m pip install --disable-pip-version-check \
+        --no-deps -e . && \
+    rm -f /tmp/hermes-requirements.txt && \
     printf '%s\n' docker > .install_method && \
     printf '%s\n' "${HERMES_GIT_SHA}" > .hermes_build_sha
 

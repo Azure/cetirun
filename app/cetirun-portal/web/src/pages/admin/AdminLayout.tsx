@@ -37,6 +37,12 @@ export function AdminLayout() {
         <NavLink to="/admin/instances" style={navStyle}>
           Agents
         </NavLink>
+        <NavLink to="/admin/agent-policies" style={navStyle}>
+          Agent policies
+        </NavLink>
+        <NavLink to="/admin/sandboxes" style={navStyle}>
+          Sandboxes
+        </NavLink>
         <span
           style={{
             ...navStyle({ isActive: false }),

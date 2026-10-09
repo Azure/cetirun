@@ -78,10 +78,13 @@ func TestAdminTeam_Get_NotFound(t *testing.T) {
 func TestAdminTeam_Create(t *testing.T) {
 	h := newAdminTeamHandler()
 	body, _ := json.Marshal(TeamUpsertRequest{
-		Name:            "sre",
-		Role:            "SRE",
-		DefaultProvider: "anthropic",
-		Skills:          []string{"npm:@scope/skill"},
+		Name:                 "sre",
+		Role:                 "SRE",
+		DefaultProvider:      "anthropic",
+		Skills:               []string{"npm:@scope/skill"},
+		NormalAgentPolicyRef: "standard",
+		SandboxRefs:          []string{"standard"},
+		DefaultSandboxRef:    "standard",
 	})
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/teams", bytes.NewReader(body))
 	w := httptest.NewRecorder()
@@ -151,7 +154,7 @@ func TestAdminTeam_Update(t *testing.T) {
 			MemberContext: cetirunv1alpha1.TeamContextSpec{Role: "old"},
 		},
 	})
-	body, _ := json.Marshal(TeamUpsertRequest{Role: "new"})
+	body, _ := json.Marshal(TeamUpsertRequest{Role: "new", NormalAgentPolicyRef: "normal", SandboxRefs: []string{"standard"}, DefaultSandboxRef: "standard"})
 	req := httptest.NewRequest(http.MethodPut, "/api/v1/admin/teams/aks", bytes.NewReader(body))
 	req.SetPathValue("name", "aks")
 	w := httptest.NewRecorder()
@@ -166,7 +169,7 @@ func TestAdminTeam_Update(t *testing.T) {
 	}
 }
 
-func TestAdminTeamUpdatePreservesGovernance(t *testing.T) {
+func TestAdminTeamUpdateReplacesPolicyBindings(t *testing.T) {
 	team := &cetirunv1alpha1.Team{
 		ObjectMeta: metav1.ObjectMeta{Name: "governed"},
 		Spec: cetirunv1alpha1.TeamSpec{
@@ -176,7 +179,7 @@ func TestAdminTeamUpdatePreservesGovernance(t *testing.T) {
 		},
 	}
 	h := newAdminTeamHandler(team)
-	req := httptest.NewRequest(http.MethodPut, "/api/v1/admin/teams/governed", bytes.NewBufferString(`{"role":"new"}`))
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/admin/teams/governed", bytes.NewBufferString(`{"role":"new","normalAgentPolicyRef":"new-normal","sandboxRefs":["restricted"],"defaultSandboxRef":"restricted"}`))
 	req.SetPathValue("name", team.Name)
 	w := httptest.NewRecorder()
 	h.UpdateTeam(w, req)
@@ -188,9 +191,10 @@ func TestAdminTeamUpdatePreservesGovernance(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := team.Spec.DeepCopy()
-	want.MemberContext.Role = "new"
+	want.MemberContext.Role, want.NormalAgentPolicyRef, want.AdminAgentPolicyRef = "new", "new-normal", ""
+	want.SandboxRefs, want.DefaultSandboxRef = []string{"restricted"}, "restricted"
 	if !reflect.DeepEqual(got.Spec, *want) {
-		t.Fatalf("ordinary Portal edit changed governance: got %+v, want %+v", got.Spec, *want)
+		t.Fatalf("Portal policy binding update mismatch: got %+v, want %+v", got.Spec, *want)
 	}
 }
 

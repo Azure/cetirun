@@ -188,6 +188,12 @@ func (b *Bundle) Apply(values map[string]any) (map[string]any, error) {
 			"objects": nonNilList(controls),
 		},
 	}
+	gateway, _ := out["aiGateway"].(map[string]any)
+	if gateway == nil {
+		gateway = map[string]any{}
+	}
+	gateway["enforceModelAccess"] = b.input.ModelAccessEnforced
+	overlay["aiGateway"] = gateway
 	if scheduling := b.input.RuntimeClass.Scheduling; scheduling != nil {
 		overlay["nodeSelector"], _ = jsonValue(scheduling.NodeSelector)
 		overlay["tolerations"], _ = jsonValue(scheduling.Tolerations)

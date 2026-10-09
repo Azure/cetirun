@@ -137,7 +137,7 @@ outcome or absence cannot be confirmed; it never force-deletes a namespace or
 strips finalizers.
 
 See [inputs, timeouts, retention and offline regression checks]({{< repo "scripts/README.md" >}}#explicit-target-application-e2e-lifecycle).
-These run-lifecycle checks do not establish governed execution, runtime fencing
+These run-lifecycle checks do not establish policy-enforced execution, runtime fencing
 or model/tool acceptance. The live E2E workflow remains disabled and must not
 be enabled as part of routine local validation.
 
@@ -169,8 +169,8 @@ For an existing Operator/admission installation, the separate
 pins, digest-pinned images, native source bindings, named admission endpoints
 and webhook wiring. It performs bounded named GETs only, without discovery,
 Secret reads or test resources. It reports unverified prerequisites explicitly;
-successful scoped observations do not lift the stock writer-exclusion hold or
-qualify execution. See the [deployed Sandbox preflight inputs, output contract
+successful scoped observations do not qualify the target platform or authorize
+execution. See the [deployed Sandbox preflight inputs, output contract
 and limits]({{< repo "scripts/README.md" >}}#read-only-deployed-sandbox-preflight).
 Neither read-only mode authorizes running the network smoke test below.
 
@@ -188,7 +188,7 @@ python3 -B scripts/sandbox-platform-qualify.py network-smoke \
 ```
 
 These fixtures have no workload credentials, host mounts or host networking.
-They are not governed Agent Pods and do not bypass protected-Pod admission.
+They are not policy-bound Agent Pods and do not bypass protected-Pod admission.
 The server receives its primary Pod IP through the Downward API and binds all
 three listeners using that address's IPv4 or IPv6 family. An exec readiness
 probe checks all three listeners, with a one-second connection timeout and a

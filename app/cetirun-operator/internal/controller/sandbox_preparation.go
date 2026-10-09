@@ -26,6 +26,7 @@ import (
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -166,14 +167,6 @@ func (r *AgentReconciler) prepareSandboxHeld(ctx context.Context, requested *api
 			return err
 		}
 	}
-	// Policy enforcement is mandatory in the reconciler, but the protected
-	// Sandbox renderer does not yet have a typed Gateway endpoint/model/key
-	// projection. Bootstrap the protected namespace first so the Gateway key
-	// can be projected only after its UID is durably recorded, then stop before
-	// staging any workload from the legacy direct-provider value path.
-	if requested.Status.Policy != nil && requested.Status.Policy.EffectivePolicyRef != nil {
-		return fmt.Errorf("%w: typed AI Gateway Sandbox projection is unavailable; execution remains held", sandboxpolicy.ErrUnsupportedControl)
-	}
 	prerequisites, err := config.Prerequisites.Resolve(ctx, attempt.agent.DeepCopy(), attempt.team.DeepCopy())
 	if err != nil {
 		return fmt.Errorf("resolve Sandbox workload prerequisites: %w", err)
@@ -203,7 +196,7 @@ func (r *AgentReconciler) prepareSandboxHeld(ctx context.Context, requested *api
 	}
 	attempt.plan, err = sandboxpolicy.Compile(sandboxpolicy.CompileInput{
 		Resolution: *attempt.resolution, AgentName: attempt.agent.Name,
-		Namespace: attempt.input.Namespace.Name, Platform: platform,
+		Namespace: attempt.input.Namespace.Name, WorkloadProbePort: ptr.Deref(attempt.agent.Spec.Agent.Port, 0), Platform: platform,
 	})
 	if err != nil {
 		return err
@@ -487,6 +480,9 @@ func (r *AgentReconciler) sandboxHelmValues(agent *api.Agent, team *api.Team) (m
 	platform, err := buildHelmValues(copy, team, r.DomainSuffix, r.SkillsStorageAccount, r.CetiRunHelmValues, r.ChartRegistry, r.DefaultModel)
 	if err != nil {
 		return nil, nil, err
+	}
+	if err := r.applyAIGatewayValues(platform, agent); err != nil {
+		return nil, nil, fmt.Errorf("apply AI Gateway Sandbox projection: %w", err)
 	}
 	user := map[string]any{}
 	for name, raw := range agent.Spec.Helm.Values {

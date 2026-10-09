@@ -123,6 +123,7 @@ type InstanceResponse struct {
 	TeamsMessage           string                      `json:"teamsMessage,omitempty"` // Human-readable Teams status detail
 	AgentIdentity          *AgentIdentityResponse      `json:"agentIdentity,omitempty"`
 	AIGateway              *AIGatewayResponse          `json:"aiGateway,omitempty"`
+	Policy                 *PolicyResponse             `json:"policy,omitempty"`
 }
 
 // AgentIdentityResponse contains only non-sensitive lifecycle information.
@@ -138,6 +139,15 @@ type ConditionStatus struct {
 	Status  string `json:"status"`
 	Reason  string `json:"reason"`
 	Message string `json:"message"`
+}
+
+// PolicyResponse exposes resolved policy evidence only. It never includes
+// protected admission authorization records or credentials.
+type PolicyResponse struct {
+	Phase              string                                    `json:"phase,omitempty"`
+	ObservedGeneration int64                                     `json:"observedGeneration,omitempty"`
+	EffectivePolicyRef *cetirunv1alpha1.EffectivePolicyReference `json:"effectivePolicyRef,omitempty"`
+	Enforcement        cetirunv1alpha1.PolicyEnforcementStatus   `json:"enforcement,omitempty"`
 }
 
 // TeamSummary is the JSON response element for GET /api/v1/teams.
@@ -827,6 +837,12 @@ func (h *InstanceHandler) toInstanceResponse(ctx context.Context, instance *ceti
 		}
 	}
 	resp.AIGateway = aiGatewayResponse(instance)
+	if status := instance.Status.Policy; status != nil {
+		resp.Policy = &PolicyResponse{
+			Phase: status.Phase, ObservedGeneration: status.ObservedGeneration,
+			EffectivePolicyRef: status.EffectivePolicyRef, Enforcement: status.Enforcement,
+		}
+	}
 
 	return resp, nil
 }

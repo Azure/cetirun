@@ -67,7 +67,6 @@ func platformFixtureDocument(f fixture, runtimeUID, storageUID types.UID) sandbo
 func platformFixtureConfig() Config {
 	config := testConfig()
 	config.PlatformNamespace, config.PlatformConfigMapName = "operator-test", "sandbox-platform"
-	config.TeamAssignments = []TeamAssignment{{Team: "engineering", Users: []string{"member"}}}
 	return config
 }
 
@@ -116,14 +115,14 @@ func TestPlatformAdmissionProductionFactory(t *testing.T) {
 	f.agent.Spec.SandboxRef, f.agent.Spec.PolicyClass, f.agent.Spec.Team = "", "", ""
 	response := f.handler.DefaultAgent(context.Background(), requestFor(t, admissionv1.Create, f.agent, nil, "member"))
 	requireResponse(t, response, true, "")
-	if len(response.Patches) == 0 || f.handler.platformSnapshot != nil || f.handler.registrations != nil {
-		t.Fatal("production source must serve request-local decisions without persisting registration state")
+	if len(response.Patches) != 0 || f.handler.platformSnapshot != nil || f.handler.registrations != nil {
+		t.Fatal("legacy creation must not consult or persist production source state")
 	}
 	requireResponse(t, f.handler.DefaultAgent(context.Background(), requestFor(t, admissionv1.Create, f.agent, nil, "outsider")), true, "legacy")
 	f.agent.Spec.Team = f.team.Name
-	requireResponse(t, f.handler.DefaultAgent(context.Background(), requestFor(t, admissionv1.Create, f.agent, nil, "outsider")), false, "assigned Team")
+	requireResponse(t, f.handler.DefaultAgent(context.Background(), requestFor(t, admissionv1.Create, f.agent, nil, "outsider")), true, "")
 	f.agent.Spec.PolicyClass = api.AgentPolicyClassAdmin
-	requireResponse(t, f.handler.DefaultAgent(context.Background(), requestFor(t, admissionv1.Create, f.agent, nil, "member")), false, "non-normal")
+	requireResponse(t, f.handler.DefaultAgent(context.Background(), requestFor(t, admissionv1.Create, f.agent, nil, "member")), false, "admin workload policy")
 }
 
 func TestPlatformAdmissionNoLastKnownGoodFallback(t *testing.T) {
@@ -293,8 +292,8 @@ func TestPlatformAdmissionSuspensionOnly(t *testing.T) {
 									}
 								}
 							}
-							allowed := user == "administrator" || user == "member"
-							message := "authenticated assigned Team member"
+							allowed := true
+							message := ""
 							if allowed {
 								message = "suspension-only"
 								mutation := f.handler.DefaultAgent(context.Background(), request)

@@ -22,7 +22,10 @@ import (
 
 func aiGatewayInput(typ, provider string) map[string]any {
 	input := sampleInput(typ, provider, false)
-	input["aiGateway"] = map[string]any{"enabled": true, "keySecretName": "ai-gateway-virtual-key", "keySecretKey": "api-key"}
+	input["aiGateway"] = map[string]any{
+		"enabled": true, "enforceModelAccess": true,
+		"keySecretName": "ai-gateway-virtual-key", "keySecretKey": "api-key",
+	}
 	input["networkPolicy"] = map[string]any{"gatewayNamespace": "cetirun-system", "gatewayPort": 4000}
 	return input
 }
@@ -147,8 +150,8 @@ func TestAIGatewayChartWiring(t *testing.T) {
 	if provider["auth"] != "api-key" || !reflect.DeepEqual(provider["apiKey"], wantKey) {
 		t.Fatalf("the Gateway provider must bind OPENAI_API_KEY, got auth=%v apiKey=%v", provider["auth"], provider["apiKey"])
 	}
-	// The sign-in the retired in-agent helper left in the home is removed
-	// once, after doctor imported the auth profile files of earlier versions.
+	// Credentials that an older in-agent helper left in the home are checked
+	// and removed on every start, after doctor may import legacy profiles.
 	containers := openClawInitContainers(t, rendered)
 	var names []string
 	var retire *corev1.Container

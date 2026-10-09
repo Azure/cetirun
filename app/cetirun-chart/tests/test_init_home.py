@@ -386,7 +386,8 @@ def on_gateway(agent):
     """Render the agent's next start as the chart does on the AI Gateway."""
     (agent["config"] / "hermes-config.yaml").write_text(yaml.safe_dump(GATEWAY_CONFIG))
     (agent["config"] / "hermes-auth.sh").unlink(missing_ok=True)
-    agent["env"].update(CETIRUN_AI_GATEWAY="true", CETIRUN_GATEWAY_KEY_ENV="CETIRUN_GATEWAY_API_KEY")
+    agent["env"].update(CETIRUN_AI_GATEWAY="true", CETIRUN_MODEL_ACCESS_ENFORCED="true",
+                        CETIRUN_GATEWAY_KEY_ENV="CETIRUN_GATEWAY_API_KEY")
 
 
 def env_names(agent):
@@ -418,27 +419,30 @@ def test_hermes_moves_onto_the_gateway(agent):
     config = read_config(agent)
     # The Gateway owns the model choice and its provider: replaced, not merged.
     assert config["model"] == GATEWAY_CONFIG["model"]
-    assert config["providers"]["cetirun-gateway"] == GATEWAY_CONFIG["providers"]["cetirun-gateway"]
-    assert config["providers"]["mine"] == {"api": "https://models.example.com/v1", "key_env": "MY_KEY"}
+    assert config["providers"] == GATEWAY_CONFIG["providers"]
     assert config["user_preference"] == "preserved"
-    # The sign-in made inside the agent and the helper are gone; other
-    # credentials stay, and the key's variable cannot be overridden from .env.
+    # Direct model credentials, the sign-in helper and its cache are gone.
+    # Unrelated Git/tool and API-server credentials stay, and the Gateway key
+    # cannot be overridden from .env.
     names = env_names(agent)
     assert "COPILOT_GITHUB_TOKEN" not in names and "CETIRUN_GATEWAY_API_KEY" not in names
-    assert {"GITHUB_TOKEN", "OPENAI_API_KEY", "API_SERVER_KEY"} <= set(names)
+    assert "OPENAI_API_KEY" not in names
+    assert {"GITHUB_TOKEN", "API_SERVER_KEY"} <= set(names)
     assert not jwt.exists()
     assert not helper.exists()
     assert (agent["target"] / ".hermes/.cetirun-copilot-sign-in-retired").is_file()
     assert native_marker(agent).is_file()
 
-    # Once per HOME: a token the owner adds later stays; the key's variable
-    # is removed at every start.
+    # The marker is only audit evidence: credentials and caches added later
+    # are removed again at every Pod start.
     env = agent["target"] / ".hermes/.env"
     env.write_text(env.read_text() + "COPILOT_GITHUB_TOKEN=gho_example_added_later\nCETIRUN_GATEWAY_API_KEY=again\n")
+    jwt.write_text('{"token": "example-reintroduced"}')
     result = run(agent)
     assert result.returncode == 0, result.stderr
     names = env_names(agent)
-    assert "COPILOT_GITHUB_TOKEN" in names and "CETIRUN_GATEWAY_API_KEY" not in names
+    assert "COPILOT_GITHUB_TOKEN" not in names and "CETIRUN_GATEWAY_API_KEY" not in names
+    assert not jwt.exists()
 
 
 @pytest.mark.parametrize("agent", ["hermes"], indirect=True)
@@ -462,7 +466,7 @@ def test_hermes_off_the_gateway_drops_its_provider(agent):
     agent["config_file"].write_text(yaml.safe_dump(config))
     (agent["config"] / "hermes-config.yaml").write_text("model:\n  default: test-model\n  provider: openai\n")
     (agent["config"] / "hermes-auth.sh").write_text("#!/bin/sh\nexit 0\n")
-    for name in ("CETIRUN_AI_GATEWAY", "CETIRUN_GATEWAY_KEY_ENV"):
+    for name in ("CETIRUN_AI_GATEWAY", "CETIRUN_MODEL_ACCESS_ENFORCED", "CETIRUN_GATEWAY_KEY_ENV"):
         agent["env"].pop(name)
     result = run(agent)
     assert result.returncode == 0, result.stderr

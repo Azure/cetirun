@@ -20,7 +20,7 @@ import (
 const (
 	MaxPreparationSources   = 128
 	ContractVersion         = "v1"
-	ExpectationVersion      = "v2"
+	ExpectationVersion      = "v3"
 	ValuesKey               = "sandboxWorkload"
 	RevisionAnnotation      = "cetirun.microsoft.com/sandbox-revision"
 	AgentUIDAnnotation      = "cetirun.microsoft.com/agent-uid"
@@ -68,19 +68,20 @@ type Helpers struct {
 }
 
 type Input struct {
-	Resolution        *sandbox.Resolution
-	AgentName         string
-	AgentGeneration   int64
-	AgentType         string
-	Namespace         ObjectIdentity
-	WorkloadName      string
-	ReleaseName       string
-	RuntimeClass      *nodev1.RuntimeClass
-	Home              *corev1.PersistentVolumeClaim
-	Skills            *corev1.PersistentVolumeClaim
-	Helpers           Helpers
-	Controls          Controls
-	AuthorizedSecrets []string
+	Resolution          *sandbox.Resolution
+	AgentName           string
+	AgentGeneration     int64
+	AgentType           string
+	ModelAccessEnforced bool
+	Namespace           ObjectIdentity
+	WorkloadName        string
+	ReleaseName         string
+	RuntimeClass        *nodev1.RuntimeClass
+	Home                *corev1.PersistentVolumeClaim
+	Skills              *corev1.PersistentVolumeClaim
+	Helpers             Helpers
+	Controls            Controls
+	AuthorizedSecrets   []string
 }
 
 // Accounting uses Kubernetes effective init/sidecar accounting. Pod contains
@@ -114,22 +115,23 @@ type SourceReference struct {
 // namespace. Admission re-reads it and its sources on every protected request.
 // It cannot itself lift the lifecycle hold.
 type Expectation struct {
-	Version            string                 `json:"version"`
-	Binding            sandbox.Binding        `json:"binding"`
-	Revision           string                 `json:"revision"`
-	Agent              ObjectIdentity         `json:"agent"`
-	AgentGeneration    int64                  `json:"agentGeneration"`
-	Namespace          ObjectIdentity         `json:"namespace"`
-	Workload           ObjectIdentity         `json:"workload"`
-	WorkloadKind       string                 `json:"workloadKind"`
-	ControllerRevision string                 `json:"controllerRevision,omitempty"`
-	ExecutionHeld      bool                   `json:"executionHeld"`
-	Template           corev1.PodTemplateSpec `json:"template"`
-	Overhead           corev1.ResourceList    `json:"overhead,omitempty"`
-	Sources            []SourceReference      `json:"sources"`
-	Home               ObjectIdentity         `json:"home"`
-	Skills             ObjectIdentity         `json:"skills"`
-	Placement          *PlacementBinding      `json:"placement,omitempty"`
+	Version                     string                 `json:"version"`
+	Binding                     sandbox.Binding        `json:"binding"`
+	Revision                    string                 `json:"revision"`
+	Agent                       ObjectIdentity         `json:"agent"`
+	AgentGeneration             int64                  `json:"agentGeneration"`
+	Namespace                   ObjectIdentity         `json:"namespace"`
+	Workload                    ObjectIdentity         `json:"workload"`
+	WorkloadKind                string                 `json:"workloadKind"`
+	ControllerRevision          string                 `json:"controllerRevision,omitempty"`
+	ExecutionHeld               bool                   `json:"executionHeld"`
+	OpenClawModelAccessEnforced bool                   `json:"openClawModelAccessEnforced,omitempty"`
+	Template                    corev1.PodTemplateSpec `json:"template"`
+	Overhead                    corev1.ResourceList    `json:"overhead,omitempty"`
+	Sources                     []SourceReference      `json:"sources"`
+	Home                        ObjectIdentity         `json:"home"`
+	Skills                      ObjectIdentity         `json:"skills"`
+	Placement                   *PlacementBinding      `json:"placement,omitempty"`
 }
 
 func AgentOwner(name string, uid types.UID) metav1.OwnerReference {

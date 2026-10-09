@@ -234,10 +234,13 @@ Policy assignment is mandatory. The controller resolves owner and Team
 authorization, the effective AgentPolicy, and the selected Sandbox before any
 workload may run. Invalid or unavailable authorization is fail-closed.
 
-The native Sandbox path compiles and stages protected resources at zero
-replicas. Production start, observation, and routing adapters are not enabled
-yet, so `SandboxReady` remains false and execution remains held. Custom has a
-typed Gateway binding but no typed Sandbox execution adapter and is also held.
+The opt-in native Kubernetes Sandbox path supports OpenClaw and Hermes. It
+compiles and stages protected resources at zero replicas, verifies an exact
+Agent-owned RWOP HOME and one-replica StatefulSet, releases independent Agent
+and Pod-admission gates, then observes the final Pod, scheduled Node, routing,
+and source revisions before reporting `SandboxReady`. Suspension or unverifiable
+state restores the gates and scales to zero without force-deleting the previous
+Pod. Custom has no typed Sandbox execution adapter and remains held.
 
 The controller records a hold finalizer before changing workloads, so a failed
 status update cannot release the recorded hold. Explicit suspension remains
@@ -263,10 +266,11 @@ LiteLLM default and maximum monthly USD budget. Custom is not an allowed policy
 Harness. Agent Identity cannot complete aggregate `PolicyApplied` until a typed
 credential-service executor supplies matching read-back evidence.
 
-Production Sandbox start and observation still require implementation and
-qualification. See the
+The native adapter must be enabled with qualified platform sources and enforced
+configuration and Pod admission. Unsupported runtimes and incomplete platform
+registrations fail closed. See the
 [operator foundation notes]({{< repo "app/cetirun-operator/README.md" >}})
-for the execution-hold, authority, and validation boundaries.
+for the execution, authority, writer-exclusion, and validation boundaries.
 
 ## Schema and implementation
 

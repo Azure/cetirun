@@ -361,6 +361,16 @@ func compileNetwork(input CompileInput) (NetworkPlan, error) {
 		Ingress:           []IngressRule{}, IngressDeny: []IngressRule{}, Egress: []EgressRule{}, EgressDeny: []EgressRule{},
 	}
 	budget := networkRuleBudget{}
+	var workloadProbePorts []api.AgentPolicyPort
+	if input.WorkloadProbePort != 0 {
+		workloadProbePorts = []api.AgentPolicyPort{{Port: input.WorkloadProbePort, Protocol: corev1.ProtocolTCP}}
+		if err := budget.ingress(&spec.Ingress, IngressRule{FromEntities: []string{"host"}, ToPorts: portRules(workloadProbePorts)}); err != nil {
+			return plan, err
+		}
+		if err := budget.ingress(&spec.IngressDeny, IngressRule{FromEntities: []string{"all"}, ToPorts: deniedPorts(workloadProbePorts)}); err != nil {
+			return plan, err
+		}
+	}
 	// Public-internet egress is intentionally permitted except for explicit
 	// exclusions/denies below. Default-deny is not an internet allow-list; only
 	// approved peers and ports are exceptions to internal-network isolation.
@@ -466,7 +476,13 @@ func compileNetwork(input CompileInput) (NetworkPlan, error) {
 		}
 	}
 	if policy.Network.Ingress.Mode == api.AgentPolicyIngressDisabled {
-		if err := budget.ingress(&spec.IngressDeny, IngressRule{FromEntities: []string{"all"}}); err != nil {
+		if len(workloadProbePorts) == 0 {
+			if err := budget.ingress(&spec.IngressDeny, IngressRule{FromEntities: []string{"all"}}); err != nil {
+				return plan, err
+			}
+		} else if selectors, err := excludingPeers(nil); err != nil {
+			return plan, err
+		} else if err := budget.ingress(&spec.IngressDeny, IngressRule{FromEndpoints: selectors}); err != nil {
 			return plan, err
 		}
 	} else {
@@ -495,9 +511,6 @@ func compileNetwork(input CompileInput) (NetworkPlan, error) {
 			if err := budget.ingress(&spec.IngressDeny, IngressRule{FromEndpoints: []metav1.LabelSelector{selector}}); err != nil {
 				return plan, err
 			}
-		}
-		if err := budget.ingress(&spec.IngressDeny, IngressRule{FromEntities: []string{"world", "host", "remote-node"}}); err != nil {
-			return plan, err
 		}
 	}
 	for _, rules := range []*[]EgressRule{&spec.Egress, &spec.EgressDeny} {

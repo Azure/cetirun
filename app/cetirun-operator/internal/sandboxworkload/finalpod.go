@@ -46,7 +46,7 @@ func ValidatePod(pod *corev1.Pod, expected Expectation) error {
 			return &PodMismatchError{[]string{"spec.nodeName"}}
 		}
 	}
-	if err := validateExpectedInventory(expected.Template.Spec); err != nil {
+	if err := validateExpectedInventory(expected.Template.Spec, expected.OpenClawModelAccessEnforced); err != nil {
 		return err
 	}
 	name := expected.Workload.Name + "-0"
@@ -96,6 +96,47 @@ func ValidatePod(pod *corev1.Pod, expected Expectation) error {
 	return nil
 }
 
+// ValidatePodOnNode permits only Kubernetes-owned topology labels when their
+// values exactly match the freshly read scheduled Node.
+func ValidatePodOnNode(pod *corev1.Pod, node *corev1.Node, expected Expectation) error {
+	if pod == nil || node == nil || node.Name == "" || pod.Spec.NodeName != node.Name {
+		return &PodMismatchError{[]string{"spec.nodeName"}}
+	}
+	expected.Template = *expected.Template.DeepCopy()
+	if expected.Template.Spec.NodeName == "" {
+		expected.Template.Spec.NodeName = node.Name
+	}
+	if !ApplyNodeTopologyLabels(pod, node, &expected.Template) {
+		return &PodMismatchError{[]string{"metadata.labels"}}
+	}
+	return ValidatePod(pod, expected)
+}
+
+// ApplyNodeTopologyLabels accepts only the two Kubernetes topology labels
+// added after scheduling, proven by the current assigned Node.
+func ApplyNodeTopologyLabels(pod *corev1.Pod, node *corev1.Node, template *corev1.PodTemplateSpec) bool {
+	if pod == nil || node == nil || template == nil || pod.Spec.NodeName != node.Name {
+		return false
+	}
+	for _, key := range []string{corev1.LabelTopologyRegion, corev1.LabelTopologyZone} {
+		value, present := pod.Labels[key]
+		if !present {
+			continue
+		}
+		current, found := node.Labels[key]
+		if !found || value != current {
+			return false
+		}
+		if _, pinned := template.Labels[key]; !pinned {
+			if template.Labels == nil {
+				template.Labels = map[string]string{}
+			}
+			template.Labels[key] = current
+		}
+	}
+	return true
+}
+
 func podDifferencePaths(a, b reflect.Value, path string, fields *[]string) {
 	if len(*fields) >= 8 || equality.Semantic.DeepEqual(a.Interface(), b.Interface()) {
 		return
@@ -133,7 +174,7 @@ func podDifferencePaths(a, b reflect.Value, path string, fields *[]string) {
 	*fields = append(*fields, path)
 }
 
-func validateExpectedInventory(spec corev1.PodSpec) error {
+func validateExpectedInventory(spec corev1.PodSpec, modelAccessEnforced bool) error {
 	if ptr.Deref(spec.RuntimeClassName, "") == "" || spec.Resources == nil || spec.HostNetwork || spec.HostPID || spec.HostIPC ||
 		spec.DNSPolicy != corev1.DNSNone || spec.DNSConfig == nil ||
 		ptr.Deref(spec.ShareProcessNamespace, false) || spec.AutomountServiceAccountToken == nil || *spec.AutomountServiceAccountToken ||
@@ -147,13 +188,28 @@ func validateExpectedInventory(spec corev1.PodSpec) error {
 	if len(spec.DNSConfig.Searches) != 0 || len(spec.DNSConfig.Options) != 0 {
 		return fmt.Errorf("controller expectation contains unsupported DNS search or option overrides")
 	}
+	initNames := []string{"init-home-data"}
+	if len(spec.InitContainers) > 1 && spec.InitContainers[1].Name == "doctor" {
+		initNames = append(initNames, "doctor")
+	}
+	if modelAccessEnforced {
+		initNames = append(initNames, "retire-copilot-sign-in", "retire-direct-model-auth")
+	}
+	if len(spec.InitContainers) != len(initNames) {
+		return fmt.Errorf("controller expectation contains an unapproved helper inventory")
+	}
+	for i, name := range initNames {
+		if spec.InitContainers[i].Name != name {
+			return fmt.Errorf("controller expectation contains an unapproved or reordered init helper")
+		}
+	}
 	seen := map[string]bool{}
 	for _, group := range []struct {
 		containers []corev1.Container
 		allowed    []string
 	}{
 		{spec.Containers, []string{"cetirun", "logger", "desktop"}},
-		{spec.InitContainers, []string{"init-home-data", "doctor"}},
+		{spec.InitContainers, initNames},
 	} {
 		for _, container := range group.containers {
 			sc := container.SecurityContext
@@ -292,15 +348,10 @@ func defaultPod(spec *corev1.PodSpec) error {
 		}
 	}
 	for _, key := range []string{"node.kubernetes.io/not-ready", "node.kubernetes.io/unreachable"} {
-		found := false
-		for _, toleration := range spec.Tolerations {
-			found = found || toleration.Key == key && toleration.Effect == corev1.TaintEffectNoExecute
-		}
-		if !found {
-			spec.Tolerations = append(spec.Tolerations, corev1.Toleration{
-				Key: key, Operator: corev1.TolerationOpExists, Effect: corev1.TaintEffectNoExecute, TolerationSeconds: ptr.To(int64(300)),
-			})
-		}
+		defaultToleration(spec, corev1.Toleration{Key: key, Operator: corev1.TolerationOpExists, Effect: corev1.TaintEffectNoExecute, TolerationSeconds: ptr.To(int64(300))})
+	}
+	if ptr.Deref(spec.RuntimeClassName, "") != "" && spec.NodeSelector["kubernetes.azure.com/kata-vm-isolation"] == "true" {
+		defaultToleration(spec, corev1.Toleration{Key: "node.kubernetes.io/memory-pressure", Operator: corev1.TolerationOpExists, Effect: corev1.TaintEffectNoSchedule})
 	}
 	slices.SortFunc(spec.Tolerations, func(a, b corev1.Toleration) int {
 		return strings.Compare(a.Key+"/"+string(a.Effect)+"/"+string(a.Operator)+"/"+a.Value, b.Key+"/"+string(b.Effect)+"/"+string(b.Operator)+"/"+b.Value)
@@ -313,6 +364,15 @@ func defaultPod(spec *corev1.PodSpec) error {
 	}
 	*spec = normalized
 	return nil
+}
+
+func defaultToleration(spec *corev1.PodSpec, expected corev1.Toleration) {
+	for _, toleration := range spec.Tolerations {
+		if toleration.Key == expected.Key && toleration.Effect == expected.Effect {
+			return
+		}
+	}
+	spec.Tolerations = append(spec.Tolerations, expected)
 }
 
 func defaultDownwardItems(items []corev1.DownwardAPIVolumeFile) {

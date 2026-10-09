@@ -2,8 +2,9 @@
 
 The operator reconciles `Agent`, `Team`, `Sandbox`, and `AgentPolicy` resources
 in `cetirun.microsoft.com/v1alpha1`. Policy assignment and AI Gateway
-projection are active control-plane contracts; native Sandbox execution remains
-held at zero replicas until a separately delivered execution adapter is enabled.
+projection are active control-plane contracts. The opt-in native Kubernetes
+adapter can run protected OpenClaw and Hermes Sandboxes after their policy,
+Gateway, admission, storage, runtime, and platform inputs are verified.
 
 - [Custom-resource reference](../../site/content/en/docs/reference/crds.md)
 - [Agent Harness contract](../../site/content/en/docs/reference/agent-harness.md)
@@ -35,7 +36,7 @@ retain compute or model access. It projects model names and a native monthly USD
 budget to a per-Agent AI Gateway virtual key, compiles the Sandbox/security/network
 revision, and records the expected Gateway, Sandbox, and credential revisions in
 Agent status. Missing, rejected, stale, or unreadable evidence fails closed.
-There is no approval resource or separate governance workflow.
+There is no approval resource or separate policy approval workflow.
 
 The API replaces `OpenClawInstance` and `OpenClawTeam` without changing the
 group or version. Installing these CRDs does not convert, adopt, or delete
@@ -58,7 +59,7 @@ For a Gateway in a separate namespace, configure the
 [Gateway reference and workload namespace](../../site/content/en/docs/reference/helm.md#operator-chart)
 independently.
 
-## Policy control plane: Sandbox execution is held
+## Policy control plane and native Sandbox execution
 
 `Sandbox` describes a reusable runtime, container resource declarations, private
 home storage and scratch. `AgentPolicy` describes selection, security, network,
@@ -81,13 +82,20 @@ The [sandbox package](internal/sandbox/) currently provides:
   observations. Zero-value registrations, missing observations, stale evidence
   and incomplete verification fail explicitly.
 
-These helpers do not write workloads, authorize RBAC grants, compile a complete
-network policy, or prove enforcement. There is no packaged guest-external
-observer, writer-fencing adapter or default capability registration. Explicit
-platform declarations can be read through the Kubernetes sources below; their
-registration revision must represent qualified runtime/chart/topology/grant
-inventory, not merely the existence of a RuntimeClass.
-An observation validator checks an adapter's input; it does not generate evidence.
+The controller adds the enforcement path around these pure helpers. When
+Kubernetes-backed sources, owned bootstrap, configuration admission, Pod
+admission, and a qualified platform declaration are enabled, it compiles the
+network and identity resources, stages an exact protected StatefulSet at zero
+replicas, publishes a Pod expectation, and starts one OpenClaw or Hermes Pod.
+The expectation, final Pod, scheduled Node, runtime class, source UIDs, and
+applied revision are re-read before readiness is reported.
+
+The native adapter is deliberately narrow: HOME must be an exact
+Agent-owned `ReadWriteOncePod` claim, the workload is a one-replica StatefulSet,
+and the operator never force-deletes a previous Pod to create another writer.
+Suspension, policy failure, Gateway failure, deletion, or unverifiable runtime
+state restores both execution gates and scales the workload to zero. Custom
+Agents and platforms without the complete opt-in registration remain held.
 
 ### Durable writer-exclusion orchestration
 
@@ -112,13 +120,14 @@ storage release. A one-shot CRI stop, Pod absence, zero replicas, Node readiness
 or a PVC access mode cannot supply that evidence. Cleanup uses the recorded
 historical tuple even when current policy references are unavailable.
 
-The [controller bridge](internal/controller/sandbox_writer_exclusion.go) can
-supply the existing `SandboxWriterExclusionSource` interface when explicitly
-configured by a trusted platform integration. It does not install a provider,
-adopt an existing workload, weaken placement checks, issue a start permit or
-change the default activation hold. An independently qualified provider must
-implement the guest-external barrier, unreachable-node handling and storage
-release. The standalone CRI and empty-pool experiments are not such providers.
+The native Kubernetes adapter implements `SandboxWriterExclusionSource` with
+authoritative namespace, PVC, StatefulSet, and Pod reads. It succeeds only for
+the exact RWOP HOME after the owned StatefulSet is stopped and every Pod in the
+single-Agent namespace has disappeared. A PVC access mode or empty Pod list by
+itself is never sufficient. The generalized writer journal and external-provider
+interfaces remain available for future environments that cannot use this narrow
+Kubernetes/CSI boundary; the standalone CRI and empty-pool experiments are not
+production providers.
 
 Unit, race and isolated API-server tests use synthetic provider responses.
 Run `make test-sandbox-lifecycle` with preinstalled `KUBEBUILDER_ASSETS` for the
@@ -201,8 +210,9 @@ Every shared-source writer must participate; direct writes must be excluded
 before enablement. No concrete production start, observation, routing
 or status-commit adapter is installed here, and neither a coordination record
 nor a successful callback qualifies one. The existing controller and admission
-holds are unchanged. Live governed Agent execution, model traffic and platform
-qualification remain separate, uncompleted integration work.
+holds are unchanged by this generalized protocol. Integrating another runtime
+provider, model traffic, and its platform qualification remains separate work;
+the narrow native Kubernetes adapter uses its own protected execution path.
 
 The focused lifecycle tests cover synthetic ordering, identity/freshness
 failures, writer-history integration and real isolated API persistence/CAS.
@@ -220,9 +230,9 @@ execution sources remain outside this command.
 Both before and proposed objects must retain the original name, UID and resource
 version. The adapter verifies the authoritative before image, pins the complete
 proposed write, reserves the affected scope and records submission intent before
-one resource-version-conditional Update. Governed-to-governed Team changes retain
+one resource-version-conditional Update. Policy-bound Team changes retain
 per-class selection scoping; legacy updates and transitions into or out of
-governance conservatively reserve the entire Team. Schema defaults (including
+policy enforcement conservatively reserve the entire Team. Schema defaults (including
 omitted port protocols) are applied to independent input copies before pinning
 and submitting the write. Explicit values, list order and duplicates are not
 normalized away. No-op updates, including changes that only omit defaulted
@@ -310,7 +320,7 @@ The UID-pinned authority must already have been installed and protected before
 execution, using the existing coordination state format. The command does not
 create missing state, grant privileges, bypass admission, qualify fencing or
 enable a workload. All other source writers and the physical runtime still need
-their own integrations before governed execution can be enabled.
+their own integrations before policy-enforced execution can be enabled.
 
 With coordinated configuration admission enabled, finalizer-only cleanup of an
 already-terminating Team, Sandbox or AgentPolicy uses normal authorized API
@@ -354,10 +364,11 @@ quiescence. Other prerequisite adapters must explicitly support running reads;
 the controller does not silently reuse their held-only resolver.
 Placement checks share the existing scheduled-Pod topology validation.
 
-The existing controller still dispatches governed Agents to held preparation.
-No code here changes finalizers, expectations or replicas to start an Agent.
-Real runtime gating, independent observations, all-source mutation coordination
-and model/tool validation remain prerequisites for enabling execution.
+This generalized running-input path does not change finalizers, expectations,
+or replicas. The native Kubernetes adapter starts supported built-in Agents
+through its narrower double-gate and RWOP checks; another provider must connect
+real runtime gating, independent observations, source coordination, and
+model/tool validation before it can start workloads.
 
 ### Guarded Sandbox status persistence
 
@@ -384,11 +395,12 @@ if it was already nonready, so pending positive writes using the old version
 cannot overwrite it. Repeated identical clears are no-ops. This is status
 invalidation, not route withdrawal, process termination or writer fencing.
 
-Stock startup does not install this component as an execution adapter. Its
-unit and local API-server tests use synthetic runtime inputs and observations;
-they do not establish live enforcement or an end-to-end governed Agent run.
+The native adapter records readiness after its own protected workload and Node
+checks; it does not install this generalized status component. The component's
+unit and local API-server tests use synthetic runtime inputs and observations
+and do not establish live enforcement by another provider.
 
-### Governed native access lifecycle
+### Coordinated native access lifecycle
 
 `SandboxExecutionAccess` supplies concrete Istio API operations for the first
 OpenClaw bring-up; it is not installed by stock startup. `Enroll` accepts only
@@ -443,58 +455,41 @@ Custom is not a supported policy Harness in this contract. `policyClass`
 defaults to `normal`; selecting `admin` requires an explicit Team admin-policy
 slot and administrator-controlled assignment.
 
-The CRDs and Operator must be rolled out with an API writer that supplies this
-contract. Portal support for managing the configuration resources is delivered
-separately. Admission defaults creation-time selection and protects the exact
-Team/Sandbox/policy UIDs from same-name replacement. Later assignment or budget
-changes require an authorized administrator and a suspended Agent.
+The CRDs, admission webhooks, Operator, Portal, and platform declarations must
+be rolled out as one contract. Portal administrators manage AgentPolicy and
+Sandbox resources and bind them to Team policy slots and Sandbox allowlists.
+Agent creators may select any configured Team. Admission defaults the
+creation-time Sandbox and normal policy class and protects the exact
+Team/Sandbox/policy UIDs from same-name replacement. Later Team or Sandbox
+assignment, admin-policy selection, budget change, or UID reauthorization
+requires a configured administrator and a suspended Agent.
 
-The controller holds Agents that request Sandbox policy, belong to a Team
-with policy settings, or already have Sandbox status or a hold finalizer.
-It never passes them to built-in or Custom runtime preparation or application.
-Before workload changes it persists a dedicated hold finalizer, which also
-keeps newly held Agents available for cleanup. Clearing spec fields cannot
-release that recorded hold, even if a later status write fails. If the initial
-finalizer write fails, no workload changes are attempted; an unpersisted request
-is not a durable hold.
+For supported OpenClaw and Hermes Agents, the native adapter maintains two
+independent execution gates: an Agent hold finalizer and an admission-owned Pod
+expectation. It stages the protected StatefulSet at zero replicas, releases the
+Agent gate, requests one replica, and releases Pod admission only after the
+same generation, template, ControllerRevision, sources, policy revision, and
+Gateway projection still match. Controller restart resumes from those durable
+objects rather than treating a partial write as permission to run.
 
-For resources with verified ownership it removes the route and requests zero
-replicas while retaining home storage. It reports `SandboxReady=False` and
-preserves any last-applied binding. Explicit suspension remains `Suspended`;
-shutdown/removal/completion failures are reported as failures and retried.
-Built-in resources require an Agent UID owner reference and non-conflicting
-ownership/release metadata. Older resources without that evidence are not
-automatically adopted or stopped: the hold reports an ownership error requiring
-reviewed recovery. Route and namespace deletes use UID/resourceVersion
-preconditions. Custom shutdown uses the existing ownership checks,
-preserves external home storage, and retries prior apply-completion records
-without preparing a new workload.
+Suspension and policy failures hold Pod admission before scaling to zero. Resume
+waits for the old Pod to disappear and for the exact RWOP writer-exclusion check
+to pass; the operator does not force-delete an unreachable writer. Node loss,
+source replacement, admission drift, or an unverified final Pod clears readiness
+and fails closed while retaining the old Pod for safe recovery. Custom Agents
+have no typed Sandbox execution adapter and remain held.
 
-Held built-in deletion removes only a verified Agent-owned namespace, waits for
-its disappearance before removing finalizers, and never runs Helm uninstall
-hooks. Unknown ownership leaves deletion pending for recovery. Deletion removes
-namespace contents; home retention during a hold does not promise retention
-after an explicit Agent deletion. Custom deletion retains its existing receipt
-and completion checks.
-For held built-in Agents, Agent Identity authorization and directory cleanup
-must also succeed before namespace deletion or finalizer removal, even if the
-runtime namespace is already absent or the identity feature was deselected.
+Deletion removes only a verified Agent-owned namespace, waits for its
+disappearance before removing finalizers, and never runs Helm uninstall hooks.
+Unknown ownership leaves deletion pending for reviewed recovery. Namespace
+deletion removes its contents; HOME retention during suspension does not promise
+retention after explicit Agent deletion. Agent Identity authorization and
+directory cleanup remain blocking deletion steps when configured.
 
-Portal Team edits preserve policy fields that the Portal does not expose.
-Portal creation registers the cleanup finalizer and binds only namespaces it
-newly created to the persisted Agent UID. Existing namespaces are not adopted.
-The Portal chart grants namespace `patch` for this ownership write, in addition
-to its existing `get`/`create` permissions; deploy the matching RBAC with the
-Portal binary.
-If that ownership write fails, creation reports an error and the Agent remains
-tracked for recovery; it must not be retried as an unrelated new Agent.
-
-This hold is a development activation guard, not an enforcement adapter or a
-fence for an unreachable node. Do not adopt existing live workloads until
-admission, approved rendering, identity revocation, actual enforcement
-observation/fencing and the ordered rollout path are implemented and qualified.
-The guard is the temporary controller-owned stop path; normal runtime reconciliation
-cannot concurrently recreate a held workload.
+The Portal exposes policy and Sandbox administration, Team bindings, and
+per-Agent policy state. It does not create a second approval workflow. Its RBAC
+permits CRUD on the four public configuration kinds; admission and controller
+checks remain authoritative.
 
 ### Optional configuration admission
 
@@ -523,16 +518,13 @@ healthy admission leaves their Sandbox selection unchanged.
 This increment implements:
 
 - Explicit administrator usernames/groups for shared policy configuration,
-  and trusted Team assignments for normal-class member Agents. Kubernetes RBAC
-  must also authorize the operation.
-  Portal administrators do not automatically acquire this independent authority.
-  A human administrator's Agent still defaults to the `normal` policy class.
+  `admin` workload policy selection, budget changes, and reauthorization.
+  Kubernetes RBAC must also authorize the operation. A human administrator's
+  Agent still defaults to the `normal` policy class.
 - Creation-only Agent selection defaulting, followed by validation against the
-  current Team. Existing Agents are never silently re-defaulted. Portal writes
-  use its administrator identity and may preserve the Team selected by the
-  Agent owner. Non-administrator direct Kubernetes writes require an exact
-  authenticated identity-to-Team assignment configured on the webhook; that
-  cluster access rule is separate from the product's Team selection model.
+  current Team. Existing Agents are never silently re-defaulted. Any caller
+  already authorized by Kubernetes RBAC may select a policy-configured Team;
+  the `admin` policy class remains restricted to configured administrators.
   Mutation and validation are installed together: Kubernetes runs mutation
   first, including for dry runs. Validation rejects a missing selection rather
   than assuming that a default was persisted.
@@ -558,49 +550,29 @@ This increment implements:
   garbage-collector username may remove only the built-in `foregroundDeletion`
   finalizer from an already terminating object in an otherwise metadata-only
   update.
-  The legacy controller's chart-version and Harness image/port pinning writes
-  remain behind the execution hold. A future policy-bound path must authorize those
-  specific writes or move them into authorized creation before releasing it.
+  Controller chart-version and Harness image/port pinning writes use the narrow
+  controller identity path and remain subject to the protected generation and
+  workload contract.
 
-There are **no production capability registrations**. Standalone Sandbox and
-AgentPolicy definitions can be validated, but policy-bound Team/Agent bindings are
-rejected without a qualified registration. The tests inject synthetic
-registrations; enabling this process does not make those production evidence
-or release the controller hold.
+Capability registrations are always explicit. Standalone Sandbox and
+AgentPolicy definitions can be validated, but policy-bound Team/Agent bindings
+are rejected unless the selected platform document proves the required runtime,
+storage, network, admission, and grant capabilities. Enabling sources without a
+complete registration does not release either execution gate.
 
-Protected rendering, final-Pod checks and policy compilation are connected by
-an opt-in **held controller preparation** path, described below. It does not serialize
-concurrent shared-configuration changes, coordinate rollout/start barriers,
-produce enforcement observations, or permit policy-bound execution. Reference reads
-are checks against current objects, not an atomic cross-resource transaction.
-Those boundaries must be completed before production adoption.
+Protected rendering, final-Pod checks, policy compilation, writer exclusion,
+and readiness observation are connected by the opt-in native controller path
+described below. Reference reads remain checks against current objects rather
+than an atomic cross-resource transaction, so every release boundary rechecks
+the pinned sources and fails closed on change.
 
-#### Direct Kubernetes writer assignments and explicit reauthorization
+#### Direct Kubernetes writers and explicit reauthorization
 
-For non-administrator callers that write Agent CRs directly, configure
-assignments using the Kubernetes authenticated identity rather than an Agent
-field or a Portal role:
-
-```yaml
-sandboxAdmission:
-  teamAssignments:
-    - team: research
-      users: ["member@example.com"]
-      groups: ["research-members"]
-```
-
-Every matching user/group must identify the same Team; conflicting memberships
-reject instead of picking a precedence order. Assignments do not grant Kubernetes
-RBAC permissions or access to the `admin` workload policy class. An unassigned
-caller cannot create or update a policy-bound member Agent. Do not map a shared
-Portal ServiceAccount as if it identified the individual human caller.
-
-`TeamAssignmentConflict` means the authenticated user's effective memberships
-match more than one configured Team. Administrators must review both the
-assignment configuration and identity-provider memberships; there is no
-user-over-group or first-match precedence. Static configuration validation cannot
-discover overlapping live memberships. The diagnostic does not disclose users,
-groups or matched Team names.
+Callers that are authorized by Kubernetes RBAC may select any
+policy-configured Team directly in `spec.team`; admission does not maintain a
+separate user-to-Team membership map. Selecting the `admin` workload policy
+class, changing a policy budget, or reauthorizing a UID-bound policy selection
+still requires a configured admission administrator.
 
 For recovery after reference deletion or replacement, restore the required
 configuration or explicitly select valid replacement references, then authorize
@@ -764,7 +736,8 @@ including the Kubernetes template-replacement patch form. A stale generation
 does not acquire a current revision pin. Both operator and admission receive
 read-only `get` access to ControllerRevisions.
 
-These references use the existing `v2` expectation source format; they are not
+These references use the `v3` expectation source format, which also records
+whether OpenClaw direct-model credential cleanup is mandatory; they are not
 another intent journal or an execution permit. Valid older held expectations
 without the pins are rebuilt through guarded preparation. Older controllers
 may omit them, so a future start action must explicitly require the complete
@@ -774,15 +747,6 @@ is introduced. The existing `v1` cleanup receipt retains its 64 KiB bound and
 historical namespace/HOME tuple; unsupported receipt formats still fail closed.
 The current expectation retains the existing 128-source/512-KiB bounds and
 Agent owner reference, and is subject to the existing fenced cleanup and GC.
-
-**Controlled start is not implemented.** Both execution holds and zero-replica
-staging remain. Stock startup cannot reach successful preparation with its
-unavailable writer-exclusion provider. Synthetic API tests do not demonstrate
-production reachability, runtime enforcement or a qualified fence.
-Actual start requires separately approved start/change exclusion, lifetime
-pool isolation, qualified old-writer fencing, a distinct pre-start enforcement
-acknowledgement and trusted current Pod/node/epoch observations. Neither a
-held expectation nor pool deletion alone supplies those authorities.
 
 Tailscale, Teams, workload identity and policy-bound Custom configurations remain
 unsupported by this native path. They retain an explanatory `UnsupportedControl`

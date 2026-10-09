@@ -356,6 +356,17 @@ export function OverviewSection({ instance }: { instance: Instance }) {
 
       {gatewayRouted && instance.phase !== "Suspended" && <AIGatewayBlock instance={instance} />}
 
+      {instance.policy && (
+        <div style={{ marginTop: 8, marginBottom: 8, padding: 12, borderRadius: tokens.borderRadiusMedium, border: `1px solid ${tokens.colorNeutralStroke1}` }}>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 6 }}>
+            <Text weight="semibold">Policy</Text>
+            <Badge appearance="filled" color={instance.policy.phase === "Applied" ? "success" : instance.policy.phase === "Denied" ? "danger" : "warning"}>{instance.policy.phase || "Pending"}</Badge>
+          </div>
+          <Text size={200} block>Effective policy: {instance.policy.effectivePolicyRef ? `${instance.policy.effectivePolicyRef.name} (${instance.policy.effectivePolicyRef.class})` : "Resolving"}</Text>
+          <Text size={200} block>Enforcement revisions: Sandbox {instance.policy.enforcement.sandbox?.desiredRevision || "pending"}; Gateway {instance.policy.enforcement.gateway?.desiredRevision || "pending"}; Credential {instance.policy.enforcement.credential?.desiredRevision || "pending"}.</Text>
+        </div>
+      )}
+
       {nativeIntegrations && features?.agentIdentityEnabled && <AgentAuthorizationBlock instance={instance} />}
 
       {instance.agent.registrySecretRef && <RegistryAuthBlock key={instance.uid || instance.instanceName} instance={instance} />}

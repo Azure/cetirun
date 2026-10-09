@@ -9,12 +9,13 @@
 # in the github-copilot:github auth profile, in the secret-store entries the
 # device login keeps it in, in the state directory's .env, and in the auth
 # profile files of earlier OpenClaw versions. This removes those through
-# OpenClaw's own interface where it has one, once per home, after doctor has
-# imported any earlier auth profile files, and keeps every other credential.
-# A step that fails is reported with OpenClaw's reason and tried again at the
-# next start. It does not keep the agent from starting: an init container
-# that keeps failing keeps the Agent down, and its StatefulSet then rolls no
-# corrected chart onto the Pod until someone deletes the Pod.
+# OpenClaw's own interface where it has one, after doctor has imported any
+# earlier auth profile files, and keeps every other credential. The marker is
+# audit evidence only: a running harness can write another credential after a
+# previous cleanup, so every Pod start checks the durable stores again.
+#
+# This is an init-container authorization boundary. A failed cleanup must keep
+# the Agent container down; Kubernetes retries it after a transient failure.
 set -u
 if [ "${1:-}" = "--help" ]; then
   printf '%s\n' "Remove the in-agent GitHub Copilot sign-in from an OpenClaw state directory, once."
@@ -28,15 +29,13 @@ store_prefix=GITHUB_COPILOT_TOKEN
 env_keys='^[[:space:]]*(export[[:space:]]+)?(COPILOT_GITHUB_TOKEN|OPENCLAW_GITHUB_TOKEN)='
 
 [ -d "$state" ] || exit 0
-[ -f "$marker" ] && exit 0
-
 log() {
   printf 'retire-copilot-sign-in: %s\n' "$*" >&2
 }
 
 if ! scratch=$(mktemp -d); then
-  log "could not create a scratch directory; the next start tries again"
-  exit 0
+  log "could not create a scratch directory; refusing to start the Agent"
+  exit 1
 fi
 trap 'rm -rf "$scratch"' EXIT
 output=$scratch/output
@@ -63,7 +62,7 @@ reason() {
 
 # Report an OpenClaw step that failed, and leave the home unmarked.
 failed() {
-  log "could not $1: $(reason); the next start tries again"
+  log "could not $1: $(reason); refusing to start the Agent"
   complete=false
 }
 
@@ -198,7 +197,7 @@ if [ -f "$env_file" ] && grep -Eq "$env_keys" "$env_file"; then
   if rewrite "$env_file" without_token_variables; then
     log "removed the GitHub token from $env_file"
   else
-    log "could not rewrite $env_file; the next start tries again"
+    log "could not rewrite $env_file; refusing to start the Agent"
     complete=false
   fi
 fi
@@ -211,12 +210,13 @@ for file in "$state"/agents/*/agent/auth-profiles.json "$state"/agents/*/agent/a
   if rewrite "$file" without_profile; then
     log "removed the $profile profile from $file"
   else
-    log "could not rewrite $file; the next start tries again"
+    log "could not rewrite $file; refusing to start the Agent"
     complete=false
   fi
 done
 
-if [ "$complete" = true ] && ! touch "$marker"; then
-  log "could not mark $state as done; the next start runs again"
+[ "$complete" = true ] || exit 1
+if ! touch "$marker"; then
+  log "could not mark $state as checked; refusing to start the Agent"
+  exit 1
 fi
-exit 0

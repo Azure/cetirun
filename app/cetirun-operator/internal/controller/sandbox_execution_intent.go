@@ -62,7 +62,8 @@ func (r *AgentReconciler) SandboxExecutionIntent(ctx context.Context, requested 
 	}
 	plan, err := sandboxpolicy.Compile(sandboxpolicy.CompileInput{
 		Resolution: *attempt.resolution, AgentName: attempt.agent.Name, Namespace: attempt.input.Namespace.Name,
-		Platform: attempt.configuration.Platforms[attempt.resolution.Sandbox.Type],
+		WorkloadProbePort: ptr.Deref(attempt.agent.Spec.Agent.Port, 0),
+		Platform:          attempt.configuration.Platforms[attempt.resolution.Sandbox.Type],
 	})
 	if err != nil {
 		return empty, err
@@ -191,7 +192,8 @@ func (r *AgentReconciler) checkSandboxExecutionSources(ctx context.Context, inte
 		return nil, err
 	}
 	plan, err := sandboxpolicy.Compile(sandboxpolicy.CompileInput{
-		Resolution: *attempt.resolution, AgentName: intent.Agent.Name, Namespace: intent.Namespace.Name, Platform: platform,
+		Resolution: *attempt.resolution, AgentName: intent.Agent.Name, Namespace: intent.Namespace.Name,
+		WorkloadProbePort: ptr.Deref(attempt.agent.Spec.Agent.Port, 0), Platform: platform,
 	})
 	if err != nil {
 		return nil, err

@@ -591,7 +591,7 @@ Image changes do not change the pinned runtime Chart version. The image
 provider and owner are responsible for compatibility with existing files,
 native sessions and HOME dependencies; CetiRun does not migrate their formats.
 Team reassignment requires an administrator and a suspended Agent; ordinary
-edits preserve the effective Team and its governance bindings.
+edits preserve the effective Team and its policy bindings.
 
 The displayed configuration is the requested configuration. A saved request
 does not establish new runtime readiness.

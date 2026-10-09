@@ -132,11 +132,10 @@ OpenClaw init containers
     - name: tmp
       mountPath: /tmp
 {{- end }}
-{{- if (.Values.aiGateway | default dict).enabled }}
-# The owner signs in to GitHub Copilot through the Portal, and that token
-# stays with the Copilot proxy: remove, once, the sign-in the in-agent helper
-# left in the home. After doctor, which imports the auth profile files of
-# earlier OpenClaw versions.
+{{- if dig "enforceModelAccess" false (.Values.aiGateway | default dict) }}
+# Policy-controlled model access never trusts durable provider credentials.
+# Check and remove them after doctor, which imports auth profile files from
+# earlier OpenClaw versions. Both init containers fail closed.
 - name: retire-copilot-sign-in
   image: "{{ include "cetirun.image" . }}"
   imagePullPolicy: {{ include "cetirun.imagePullPolicy" . }}
@@ -158,6 +157,38 @@ OpenClaw init containers
     {{- toYaml .helperResources | nindent 4 }}
   {{- end }}
   command: ["/bin/sh", "/etc/cetirun/retire-copilot-sign-in.sh"]
+  env:
+    - name: OPENCLAW_STATE_DIR
+      value: "/home/vibe/.openclaw"
+  volumeMounts:
+    - name: data
+      mountPath: /home/vibe
+    - name: tmp
+      mountPath: /tmp
+    - name: config
+      mountPath: /etc/cetirun
+      readOnly: true
+- name: retire-direct-model-auth
+  image: "{{ include "cetirun.image" . }}"
+  imagePullPolicy: {{ include "cetirun.imagePullPolicy" . }}
+  securityContext:
+    {{- if .Values.sandboxWorkload }}
+    {{- toYaml .Values.sandboxWorkload.securityContext | nindent 4 }}
+    {{- else }}
+    runAsUser: 1024
+    runAsNonRoot: true
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+    seccompProfile:
+      type: RuntimeDefault
+    {{- end }}
+  {{- with .Values.sandboxWorkload }}
+  resources:
+    {{- toYaml .helperResources | nindent 4 }}
+  {{- end }}
+  command: ["/bin/sh", "/etc/cetirun/retire-direct-model-auth.sh"]
   env:
     - name: OPENCLAW_STATE_DIR
       value: "/home/vibe/.openclaw"
@@ -350,9 +381,11 @@ OpenClaw configmap data
     _Update this as you learn more about them._
   init-home.sh: |
 {{ .Files.Get "agents/openclaw/bootstrap/init-home.sh" | indent 4 }}
-  {{- if (.Values.aiGateway | default dict).enabled }}
+  {{- if dig "enforceModelAccess" false (.Values.aiGateway | default dict) }}
   retire-copilot-sign-in.sh: |
 {{ .Files.Get "agents/openclaw/bootstrap/retire-copilot-sign-in.sh" | indent 4 }}
+  retire-direct-model-auth.sh: |
+{{ .Files.Get "agents/openclaw/bootstrap/retire-direct-model-auth.sh" | indent 4 }}
   {{- end }}
   init-skills.sh: |
 {{ .Files.Get "configs/init-skills.sh" | indent 4 }}

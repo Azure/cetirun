@@ -102,6 +102,12 @@ func Build(input Input) (*Bundle, error) {
 	if input.Helpers.Doctor {
 		spec.InitContainers = append(spec.InitContainers, corev1.Container{Resources: b.helperResources()})
 	}
+	if input.AgentType == "openclaw" && input.ModelAccessEnforced {
+		spec.InitContainers = append(spec.InitContainers,
+			corev1.Container{Resources: b.helperResources()},
+			corev1.Container{Resources: b.helperResources()},
+		)
+	}
 	b.accounting = AccountResources(spec, b.Overhead())
 	return b, nil
 }

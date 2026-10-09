@@ -15,7 +15,15 @@ import (
 // direct: any caller otherwise authorized to create an Agent may select a Team.
 func (h *Handler) protectedPolicyBudget(request admission.Request, agent, old *api.Agent) error {
 	if old == nil {
+		if agent.Spec.PolicyClass == api.AgentPolicyClassAdmin && !h.config.administrator(request.UserInfo) {
+			return fmt.Errorf("admin workload policy class requires an authorized administrator")
+		}
 		return nil
+	}
+	if old.Spec.PolicyClass != agent.Spec.PolicyClass &&
+		(old.Spec.PolicyClass == api.AgentPolicyClassAdmin || agent.Spec.PolicyClass == api.AgentPolicyClassAdmin) &&
+		!h.config.administrator(request.UserInfo) {
+		return fmt.Errorf("admin workload policy class transitions require an authorized administrator")
 	}
 	if monthlyBudgetUSD(old) != monthlyBudgetUSD(agent) {
 		if !h.config.administrator(request.UserInfo) || !old.Spec.Suspended || !agent.Spec.Suspended {

@@ -19,6 +19,8 @@ if [ ! -x "$PYTHON_BIN" ]; then PYTHON_BIN=python3; fi
 # signs in to GitHub Copilot through the Portal: no in-agent helper.
 ON_GATEWAY=
 if [ "${CETIRUN_AI_GATEWAY:-}" = "true" ]; then ON_GATEWAY=true; fi
+MODEL_ACCESS_ENFORCED=
+if [ "${CETIRUN_MODEL_ACCESS_ENFORCED:-}" = "true" ]; then MODEL_ACCESS_ENFORCED=true; fi
 . "$CETIRUN_CONFIG_DIR/init-home-common.sh"
 
 agent_check_requirements() {
@@ -28,7 +30,7 @@ agent_check_requirements() {
       return 1
     }
   required="hermes-config.yaml hermes-apply-config.py"
-  if [ -z "$ON_GATEWAY" ]; then required="$required hermes-auth.sh"; fi
+  if [ -z "$MODEL_ACCESS_ENFORCED" ]; then required="$required hermes-auth.sh"; fi
   for file in $required; do
     [ -f "$CETIRUN_CONFIG_DIR/$file" ] || { init_error "HermesInputMissing: $file"; return 1; }
   done
@@ -75,6 +77,9 @@ agent_apply_config() {
   set -- --home "$TARGET_HOME" \
     --config "$CETIRUN_CONFIG_DIR/hermes-config.yaml" \
     --env "$CETIRUN_SECRET_DIR/hermes.env"
+  if [ -n "$MODEL_ACCESS_ENFORCED" ]; then
+    set -- "$@" --enforce-model-access
+  fi
   if [ -n "$ON_GATEWAY" ]; then
     set -- "$@" --gateway-key-env "${CETIRUN_GATEWAY_KEY_ENV:-CETIRUN_GATEWAY_API_KEY}"
   fi
@@ -97,7 +102,7 @@ agent_prepare_integrations() {
   cetirun_sync_builtin_skills \
     "$SOURCE_HOME/.hermes/skills" \
     "$(home_path .hermes/skills)"
-  if [ -n "$ON_GATEWAY" ]; then
+  if [ -n "$MODEL_ACCESS_ENFORCED" ]; then
     remove_copilot_helper
   else
     home_atomic_copy "$CETIRUN_CONFIG_DIR/hermes-auth.sh" .local/bin/copilot-auth 755
@@ -112,7 +117,7 @@ agent_prepare_integrations() {
 
 agent_verify() {
   "$PYTHON_BIN" "$CETIRUN_CONFIG_DIR/hermes-apply-config.py" --home "$TARGET_HOME" --check
-  if [ -z "$ON_GATEWAY" ]; then
+  if [ -z "$MODEL_ACCESS_ENFORCED" ]; then
     helper=$(home_path .local/bin/copilot-auth)
     [ -x "$helper" ] || { init_error "HermesAuthHelperUnavailable"; return 1; }
   fi

@@ -210,6 +210,11 @@
                     "type": "boolean",
                     "default": false
                 },
+                "enforceModelAccess": {
+                    "type": "boolean",
+                    "description": "Remove durable direct-provider credentials even when no Gateway key is projected",
+                    "default": false
+                },
                 "keySecretName": {
                     "type": "string",
                     "description": "Secret in the release namespace holding the Agent's virtual key",
@@ -922,11 +927,12 @@
                 },
                 "provider": {
                     "type": "string",
-                    "description": "Model provider: github_copilot, openai, or anthropic",
+                    "description": "Model provider; disabled is reserved for operator-enforced no-model access",
                     "enum": [
                         "github_copilot",
                         "openai",
-                        "anthropic"
+                        "anthropic",
+                        "disabled"
                     ],
                     "default": "github_copilot"
                 },

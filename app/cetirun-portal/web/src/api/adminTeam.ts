@@ -19,6 +19,10 @@ export interface TeamDTO {
   defaultProvider?: string;
   skills?: string[];
   skillStorage?: TeamSkillStorage;
+  normalAgentPolicyRef: string;
+  adminAgentPolicyRef?: string;
+  sandboxRefs: string[];
+  defaultSandboxRef: string;
   createdAt?: string;
 }
 
@@ -29,6 +33,10 @@ export interface TeamUpsertRequest {
   defaultProvider?: string;
   skills?: string[];
   skillStorage?: TeamSkillStorage;
+  normalAgentPolicyRef: string;
+  adminAgentPolicyRef?: string;
+  sandboxRefs: string[];
+  defaultSandboxRef: string;
 }
 
 async function parseError(response: Response, fallback: string): Promise<string> {

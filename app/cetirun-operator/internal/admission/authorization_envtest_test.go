@@ -116,10 +116,10 @@ func TestAuthorizationAPIServerBindings(t *testing.T) {
 		})
 		return newClient(user.Config())
 	}
-	member := userClient("assigned-member")
-	groupMember := userClient("assigned-group-member", "engineering-members")
-	outsider := userClient("unassigned-member")
-	conflicted := userClient("conflicting-member", "engineering-members", "other-members")
+	member := userClient("direct-writer")
+	groupMember := userClient("group-writer", "engineering-members")
+	outsider := userClient("another-direct-writer")
+	conflicted := userClient("multi-group-writer", "engineering-members", "other-members")
 	reauthorizer := userClient("administrator")
 	controller := userClient(testController)
 	f := newFixture(t)
@@ -185,10 +185,6 @@ func TestAuthorizationAPIServerBindings(t *testing.T) {
 	}
 	config := testConfig()
 	config.AdminGroups = []string{"system:masters"}
-	config.TeamAssignments = []TeamAssignment{
-		{Team: f.team.Name, Users: []string{"assigned-member"}, Groups: []string{"engineering-members"}},
-		{Team: "other-team", Groups: []string{"other-members"}},
-	}
 	handler, err := NewHandler(admin, config)
 	if err != nil {
 		t.Fatal(err)
@@ -230,7 +226,7 @@ func TestAuthorizationAPIServerBindings(t *testing.T) {
 	newAgent := func(name string) *api.Agent {
 		agent := f.agent.DeepCopy()
 		agent.ObjectMeta = metav1.ObjectMeta{Name: name, Finalizers: []string{api.Finalizer}}
-		agent.Spec.Team, agent.Spec.SandboxRef, agent.Spec.PolicyClass = "", "", ""
+		agent.Spec.Team, agent.Spec.SandboxRef, agent.Spec.PolicyClass = f.team.Name, "", ""
 		return agent
 	}
 	if err := wait.PollUntilContextTimeout(ctx, 50*time.Millisecond, 10*time.Second, true, func(ctx context.Context) (bool, error) {
@@ -246,7 +242,7 @@ func TestAuthorizationAPIServerBindings(t *testing.T) {
 			t.Fatalf("expected admission denial despite broad main-resource RBAC, got %v", err)
 		}
 	}
-	t.Run("trusted user and group creation persists normal authorization with generated names", func(t *testing.T) {
+	t.Run("direct Team selection persists normal authorization with generated names", func(t *testing.T) {
 		for _, writer := range []client.Client{member, groupMember} {
 			agent := newAgent("")
 			agent.GenerateName = "assigned-agent-"
@@ -265,7 +261,7 @@ func TestAuthorizationAPIServerBindings(t *testing.T) {
 			}
 			stored.Spec.Model = "member-application-model"
 			if err := writer.Update(ctx, stored); err != nil {
-				t.Fatal("assigned member lost ordinary application updates:", err)
+				t.Fatal("direct writer lost ordinary application updates:", err)
 			}
 			for _, edit := range []func(*api.Agent){
 				func(a *api.Agent) { a.Spec.Team = "other-team" },
@@ -281,22 +277,21 @@ func TestAuthorizationAPIServerBindings(t *testing.T) {
 				edit(candidate)
 				denied(writer.Update(ctx, candidate))
 			}
-			denied(outsider.Update(ctx, stored.DeepCopy()))
+			stored.Spec.Model = "another-direct-writer-update"
+			if err := outsider.Update(ctx, stored.DeepCopy()); err != nil {
+				t.Fatal("another direct writer could not make an ordinary application update:", err)
+			}
 		}
 	})
-	t.Run("caller context and ambiguous memberships cannot choose authority", func(t *testing.T) {
-		for name, writer := range map[string]client.Client{"outsider": outsider, "conflicted": conflicted} {
-			agent := newAgent("denied-" + name)
-			agent.Spec.Team = f.team.Name
+	t.Run("callers may select the Team directly but not an admin policy", func(t *testing.T) {
+		for name, writer := range map[string]client.Client{"outsider": outsider, "multi-group": conflicted} {
+			agent := newAgent("direct-" + name)
 			agent.Labels = map[string]string{"team": f.team.Name, "role": "admin"}
-			err := writer.Create(ctx, agent)
-			denied(err)
-			if name == "conflicted" && !strings.Contains(err.Error(), errTeamAssignmentConflict.Error()) {
-				t.Fatalf("API-server denial omitted the stable assignment guidance: %v", err)
+			if err := writer.Create(ctx, agent); err != nil {
+				t.Fatal(err)
 			}
 		}
 		for name, edit := range map[string]func(*api.Agent){
-			"team":  func(a *api.Agent) { a.Spec.Team = "caller-team" },
 			"class": func(a *api.Agent) { a.Spec.PolicyClass = api.AgentPolicyClassAdmin },
 			"record": func(a *api.Agent) {
 				a.Annotations = map[string]string{sandboxbinding.AuthorizationAnnotation: fixtureAuthorization(t, f)}

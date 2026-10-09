@@ -10,7 +10,7 @@ a commitment to release dates.
 
 - **More execution options:** qualify AKS/Kata and self-managed
   Kubernetes/KVM/Firecracker environments.
-- **Governed model access:** shared AI Gateway, private Copilot authorization,
+- **Policy-controlled model access:** shared AI Gateway, private Copilot authorization,
   usage visibility, and later token budgets and Smart Routing.
 - **Team capabilities:** approved, versioned skills and supported harness
   choices, enforced beyond the user interface.

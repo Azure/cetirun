@@ -16,7 +16,8 @@ import (
 )
 
 // SandboxSourcesConfig selects platform-owned inputs, not tenant overrides or
-// execution evidence. It does not configure a writer-exclusion implementation.
+// caller-supplied execution evidence. The native adapter derives conservative
+// ReadWriteOncePod writer-exclusion evidence from authoritative API reads.
 type SandboxSourcesConfig struct {
 	Enabled                     bool                    `json:"enabled"`
 	BootstrapOwnedPrerequisites bool                    `json:"bootstrapOwnedPrerequisites"`
@@ -79,9 +80,10 @@ func (config SandboxSourcesConfig) validate() error {
 	return nil
 }
 
-// NewKubernetesSandboxPreparation installs sources for held preparation, with
-// optional owned-resource bootstrap. A writer-exclusion adapter must be supplied separately;
-// the nil default never treats Kubernetes object state as fencing evidence.
+// NewKubernetesSandboxPreparation installs the native Kubernetes adapter. It
+// supports only ReadWriteOncePod HOME volumes, a one-replica StatefulSet and
+// controller-owned shutdown; it never force-deletes a Pod to manufacture a
+// replacement writer.
 func NewKubernetesSandboxPreparation(config SandboxSourcesConfig, reader client.Reader,
 	installer SandboxHelmInstaller, namespace, chartVersion string,
 ) (*SandboxPreparation, error) {
@@ -95,16 +97,18 @@ func NewKubernetesSandboxPreparation(config SandboxSourcesConfig, reader client.
 		chartVersion == "" || strings.TrimSpace(chartVersion) != chartVersion {
 		return nil, fmt.Errorf("Sandbox sources require an authoritative reader, installer, operator namespace and approved chart version")
 	}
+	prerequisites := &KubernetesSandboxPrerequisites{
+		APIReader: reader, HomeClaimName: config.HomeClaimName, SkillsClaimName: config.SkillsClaimName,
+		OperatorNamespace: namespace, SkillsCatalogConfigMapName: config.SkillsCatalogConfigMapName,
+		ChartVersion: chartVersion, Helpers: config.Helpers,
+		WriterExclusion: &KubernetesRWOPWriterExclusion{APIReader: reader},
+	}
 	preparation := &SandboxPreparation{
 		Configuration: &KubernetesSandboxConfigurationSource{
 			APIReader: reader, Namespace: namespace, Name: config.PlatformConfigMapName,
 		},
-		Prerequisites: &KubernetesSandboxPrerequisites{
-			APIReader: reader, HomeClaimName: config.HomeClaimName, SkillsClaimName: config.SkillsClaimName,
-			OperatorNamespace: namespace, SkillsCatalogConfigMapName: config.SkillsCatalogConfigMapName,
-			ChartVersion: chartVersion, Helpers: config.Helpers,
-		},
-		Installer: installer, AdmissionServiceAccount: config.AdmissionServiceAccount,
+		Prerequisites: prerequisites,
+		Installer:     installer, AdmissionServiceAccount: config.AdmissionServiceAccount,
 	}
 	if config.PlacementConfigMapName != "" {
 		placement, err := sandboxplacement.NewHandler(reader, sandboxplacement.Config{

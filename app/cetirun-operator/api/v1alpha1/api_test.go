@@ -243,8 +243,10 @@ func TestChartRBACContract(t *testing.T) {
 			name: "portal",
 			path: "../../../cetirun-portal/chart/templates/clusterrole.yaml",
 			want: map[string][]string{
-				"agents": {"get", "list", "create", "update", "patch", "delete"},
-				"teams":  {"get", "list", "create", "update", "patch", "delete"},
+				"agents":        {"get", "list", "create", "update", "patch", "delete"},
+				"teams":         {"get", "list", "create", "update", "patch", "delete"},
+				"agentpolicies": {"get", "list", "create", "update", "patch", "delete"},
+				"sandboxes":     {"get", "list", "create", "update", "patch", "delete"},
 			},
 		},
 	} {

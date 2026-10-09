@@ -21,16 +21,22 @@ type AdminInstanceHandler struct {
 
 // AdminInstanceSummary is the row shape for the admin instances list.
 type AdminInstanceSummary struct {
-	Name        string                      `json:"name"`
-	Alias       string                      `json:"alias"`
-	DisplayName string                      `json:"displayName,omitempty"`
-	Email       string                      `json:"email,omitempty"`
-	Team        string                      `json:"team,omitempty"`
-	Agent       cetirunv1alpha1.HarnessSpec `json:"agent"`
-	UID         string                      `json:"uid"`
-	Phase       string                      `json:"phase,omitempty"`
-	Ready       bool                        `json:"ready"`
-	CreatedAt   string                      `json:"createdAt"`
+	Name             string                           `json:"name"`
+	Alias            string                           `json:"alias"`
+	DisplayName      string                           `json:"displayName,omitempty"`
+	Email            string                           `json:"email,omitempty"`
+	Team             string                           `json:"team,omitempty"`
+	Agent            cetirunv1alpha1.HarnessSpec      `json:"agent"`
+	UID              string                           `json:"uid"`
+	ResourceVersion  string                           `json:"resourceVersion"`
+	Phase            string                           `json:"phase,omitempty"`
+	Ready            bool                             `json:"ready"`
+	Suspended        bool                             `json:"suspended"`
+	SandboxRef       string                           `json:"sandboxRef,omitempty"`
+	PolicyClass      cetirunv1alpha1.AgentPolicyClass `json:"policyClass,omitempty"`
+	MonthlyBudgetUSD string                           `json:"monthlyBudgetUSD,omitempty"`
+	Policy           *PolicyResponse                  `json:"policy,omitempty"`
+	CreatedAt        string                           `json:"createdAt"`
 }
 
 // ListAllInstances handles GET /api/v1/admin/instances.
@@ -45,17 +51,27 @@ func (h *AdminInstanceHandler) ListAllInstances(w http.ResponseWriter, r *http.R
 	for i := range items {
 		ins := &items[i]
 		out = append(out, AdminInstanceSummary{
-			Name:        ins.Name,
-			Alias:       ins.Spec.User.Alias,
-			DisplayName: ins.Spec.User.DisplayName,
-			Email:       ins.Spec.User.Email,
-			Team:        instanceTeam(ins),
-			Agent:       agentconfig.Defaults(ins.Spec.Agent),
-			UID:         string(ins.UID),
-			Phase:       ins.Status.Phase,
-			Ready:       isReady(ins),
-			CreatedAt:   ins.CreationTimestamp.UTC().Format("2006-01-02T15:04:05Z"),
+			Name:            ins.Name,
+			Alias:           ins.Spec.User.Alias,
+			DisplayName:     ins.Spec.User.DisplayName,
+			Email:           ins.Spec.User.Email,
+			Team:            instanceTeam(ins),
+			Agent:           agentconfig.Defaults(ins.Spec.Agent),
+			UID:             string(ins.UID),
+			ResourceVersion: ins.ResourceVersion,
+			Phase:           ins.Status.Phase,
+			Ready:           isReady(ins),
+			Suspended:       ins.Spec.Suspended,
+			SandboxRef:      ins.Spec.SandboxRef,
+			PolicyClass:     ins.Spec.PolicyClass,
+			CreatedAt:       ins.CreationTimestamp.UTC().Format("2006-01-02T15:04:05Z"),
 		})
+		if ins.Spec.ModelAccess != nil {
+			out[len(out)-1].MonthlyBudgetUSD = ins.Spec.ModelAccess.MonthlyBudgetUSD
+		}
+		if status := ins.Status.Policy; status != nil {
+			out[len(out)-1].Policy = &PolicyResponse{Phase: status.Phase, ObservedGeneration: status.ObservedGeneration, EffectivePolicyRef: status.EffectivePolicyRef, Enforcement: status.Enforcement}
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"instances": out})
 }

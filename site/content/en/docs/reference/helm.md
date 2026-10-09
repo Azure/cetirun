@@ -354,7 +354,7 @@ Source: [operator values]({{< repo "app/cetirun-operator/chart/values.yaml" >}})
 | `image` | Operator image pin; `IfNotPresent`, empty tag falls back to `appVersion` |
 | `imagePullSecrets` | Declared in values, but not rendered into the operator Deployment |
 | `azure.*` | Optional Teams provisioning configuration |
-| `sandboxSources.enabled` | `false`; opt in to Kubernetes capability declarations for configuration admission and sources for held native Sandbox preparation |
+| `sandboxSources.enabled` | `false`; opt in to Kubernetes capability declarations and the native OpenClaw/Hermes Sandbox execution adapter |
 | `sandboxSources.bootstrapOwnedPrerequisites` | `false`; additionally bootstrap owned namespace, operator access, HOME and native authentication for new namespaces only; requires explicit Agent chart/image/port pins |
 | `sandboxSources.platformConfigMapName` | Empty; existing operator-namespace ConfigMap containing versioned `platform.json`, shared by configuration admission and the controller |
 | `sandboxSources.homeClaimName`, `sandboxSources.skillsClaimName` | `home`, `skills`; existing claims stay read-only; bootstrap can create owned HOME only in new namespaces, while published skills stay external |
@@ -403,7 +403,7 @@ claims and older bootstrap receipts remain in their existing mode. See the
 These sources verify explicit platform declarations and existing resource
 ownership through authoritative Kubernetes reads. Each relevant configuration
 admission request checks the current inventory without a cross-request cache.
-Missing, inaccessible, malformed or drifted inventory blocks governed
+Missing, inaccessible, malformed or drifted inventory blocks policy-bound
 configuration writes that require capability checks, not authorized
 cleanup/status operations, suspension-only updates or unrelated legacy writes.
 An authorized suspension may only change `spec.suspended` from false (or
@@ -412,12 +412,15 @@ Creation, resume, binding changes and reauthorization still require valid
 inventory. Webhook matching and
 outage behavior are unchanged: other matched writes still fail closed if the
 admission service is unavailable. Source wiring does not grant Portal callers
-Kubernetes admission authority or replace trusted Team assignments.
+Kubernetes admission authority or bypass administrator-only policy operations.
 
-**These declarations do not qualify a platform or enable
-execution:** the stock binary still has no qualified writer-exclusion adapter,
-so held staging stops at that gate. An empty Pod list or PVC access mode is not
-fencing evidence. See the
+**Declarations alone do not qualify a platform or enable execution.** The
+selected platform document, owned bootstrap inputs, configuration admission,
+Pod admission, runtime, storage, network, and grants must all agree. The native
+writer-exclusion adapter accepts only the exact Agent-owned RWOP claim after the
+owned StatefulSet is stopped and all Pods in the single-Agent namespace are
+gone; an empty Pod list or PVC access mode alone is not fencing evidence.
+Incomplete inputs leave both execution gates held. See the
 [source and lifecycle contract]({{< repo "app/cetirun-operator/README.md" >}}#kubernetes-backed-sources-opt-in)
 before enabling this option.
 
@@ -515,9 +518,9 @@ unchanged. The ordinary updater continues to reject terminating objects.
 This option covers configuration updates/deletions, not creation, Agent changes,
 storage, Secrets or the other execution inputs. Existing status and narrow
 garbage-collector cleanup exclusions remain unchanged. It is not the complete
-source-write boundary needed for runtime activation and does not enable a
-governed Agent. Preserve the execution hold until all participants and the
-independently qualified runtime provider are integrated.
+source-write boundary needed by another runtime provider and does not enable an
+Agent by itself. The native Kubernetes adapter continues to rely on its
+independent source rechecks and execution gates.
 
 The Portal's [Upgrade action](../../guides/lifecycle/#pin-and-update-a-chart) still
 reads `cetirun-system/cetirun-operator`; a non-default operator namespace
@@ -527,12 +530,12 @@ Keep `istioGateway` aligned with the portal chart's `istio.gateway`. The
 Gateway resource namespace can differ from its workload namespace: set
 `cetirun.helmValues.networkPolicy.istioIngressNamespace` to the workload
 namespace so agent NetworkPolicies allow gateway traffic.
-The governed native-access component instead resolves consumer namespaces from
+The coordinated native-access component instead resolves consumer namespaces from
 the trusted platform ingress topology and pins their identities independently of
 the Gateway resource. Its VirtualService keeps the configured Gateway reference
 but exports to those enrolled ingress workload namespaces, not implicitly to the
 Gateway resource namespace. These inputs do not qualify gateway authentication
-or enable governed execution.
+or enable policy-enforced execution.
 
 `cetirun.helmValues` is a default layer, not an enforcement boundary. Team
 settings and per-instance `spec.helm.values` can override it, and lists are

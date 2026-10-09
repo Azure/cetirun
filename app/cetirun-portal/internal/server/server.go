@@ -20,6 +20,7 @@ func New(
 	meHandler *handler.MeHandler,
 	adminTeamHandler *handler.AdminTeamHandler,
 	adminInstanceHandler *handler.AdminInstanceHandler,
+	adminPolicyHandler *handler.AdminPolicyHandler,
 	authMiddleware func(http.Handler) http.Handler,
 	requireAdmin func(http.Handler) http.Handler,
 	agentAuthorizationHandlers ...*handler.AgentAuthorizationHandler,
@@ -85,6 +86,17 @@ func New(
 	adminMux.HandleFunc("PUT /api/v1/admin/teams/{name}", adminTeamHandler.UpdateTeam)
 	adminMux.HandleFunc("DELETE /api/v1/admin/teams/{name}", adminTeamHandler.DeleteTeam)
 	adminMux.HandleFunc("GET /api/v1/admin/instances", adminInstanceHandler.ListAllInstances)
+	adminMux.HandleFunc("PATCH /api/v1/admin/instances/{name}/policy", adminPolicyHandler.UpdateInstancePolicy)
+	adminMux.HandleFunc("GET /api/v1/admin/agent-policies", adminPolicyHandler.ListAgentPolicies)
+	adminMux.HandleFunc("POST /api/v1/admin/agent-policies", adminPolicyHandler.CreateAgentPolicy)
+	adminMux.HandleFunc("GET /api/v1/admin/agent-policies/{name}", adminPolicyHandler.GetAgentPolicy)
+	adminMux.HandleFunc("PUT /api/v1/admin/agent-policies/{name}", adminPolicyHandler.UpdateAgentPolicy)
+	adminMux.HandleFunc("DELETE /api/v1/admin/agent-policies/{name}", adminPolicyHandler.DeleteAgentPolicy)
+	adminMux.HandleFunc("GET /api/v1/admin/sandboxes", adminPolicyHandler.ListSandboxes)
+	adminMux.HandleFunc("POST /api/v1/admin/sandboxes", adminPolicyHandler.CreateSandbox)
+	adminMux.HandleFunc("GET /api/v1/admin/sandboxes/{name}", adminPolicyHandler.GetSandbox)
+	adminMux.HandleFunc("PUT /api/v1/admin/sandboxes/{name}", adminPolicyHandler.UpdateSandbox)
+	adminMux.HandleFunc("DELETE /api/v1/admin/sandboxes/{name}", adminPolicyHandler.DeleteSandbox)
 	api.Handle("/api/v1/admin/", requireAdmin(adminMux))
 
 	mux.Handle("/api/", authMiddleware(api))

@@ -103,6 +103,7 @@ func main() {
 	meHandler := &handler.MeHandler{ChatIdentityRealm: cfg.ChatIdentityRealm}
 	adminTeamHandler := &handler.AdminTeamHandler{Kube: kubeClient}
 	adminInstanceHandler := &handler.AdminInstanceHandler{Kube: kubeClient}
+	adminPolicyHandler := &handler.AdminPolicyHandler{Kube: kubeClient}
 	var agentAuthorizationHandler *handler.AgentAuthorizationHandler
 	if cfg.AgentIdentityEnabled {
 		agentAuthorizationHandler = handler.NewAgentAuthorizationHandler(kubeClient, cfg.AgentIdentityBrokerURL, cfg.PortalOrigin)
@@ -116,7 +117,7 @@ func main() {
 	}
 
 	// Build and start public server.
-	mux := server.New(dist, instanceHandler, healthHandler, featuresHandler, configHandler, meHandler, adminTeamHandler, adminInstanceHandler, authMiddleware, requireAdmin, agentAuthorizationHandler)
+	mux := server.New(dist, instanceHandler, healthHandler, featuresHandler, configHandler, meHandler, adminTeamHandler, adminInstanceHandler, adminPolicyHandler, authMiddleware, requireAdmin, agentAuthorizationHandler)
 	srv := &http.Server{
 		Addr:    cfg.ListenAddr,
 		Handler: mux,

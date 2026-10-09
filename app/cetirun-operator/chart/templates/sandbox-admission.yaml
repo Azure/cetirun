@@ -85,51 +85,6 @@
 {{- $_ := set $config "platformNamespace" $controllerNamespace -}}
 {{- $_ := set $config "platformConfigMapName" .Values.sandboxSources.platformConfigMapName -}}
 {{- end -}}
-{{- if not (kindIs "slice" $admission.teamAssignments) -}}
-{{- fail "sandboxAdmission.teamAssignments must be a list" -}}
-{{- end -}}
-{{- range $assignment := $admission.teamAssignments -}}
-{{- if not (kindIs "map" $assignment) -}}
-{{- fail "sandboxAdmission.teamAssignments entries must be objects" -}}
-{{- end -}}
-{{- range $key, $_ := $assignment -}}
-{{- if not (has $key (list "team" "users" "groups")) -}}
-{{- fail "sandboxAdmission.teamAssignments entries support only team, users and groups" -}}
-{{- end -}}
-{{- end -}}
-{{- if not (kindIs "string" $assignment.team) -}}
-{{- fail "sandboxAdmission.teamAssignments entries require a Team name" -}}
-{{- end -}}
-{{- if or (gt (len $assignment.team) 253) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$" $assignment.team)) -}}
-{{- fail "sandboxAdmission.teamAssignments entries require a valid Team name" -}}
-{{- end -}}
-{{- $users := list -}}
-{{- $groups := list -}}
-{{- if hasKey $assignment "users" -}}{{- $users = get $assignment "users" -}}{{- end -}}
-{{- if hasKey $assignment "groups" -}}{{- $groups = get $assignment "groups" -}}{{- end -}}
-{{- range $field, $identities := dict "users" $users "groups" $groups -}}
-{{- if not (kindIs "slice" $identities) -}}
-{{- fail "sandboxAdmission.teamAssignments identities must be lists" -}}
-{{- end -}}
-{{- range $identity := $identities -}}
-{{- if not (kindIs "string" $identity) -}}
-{{- fail "sandboxAdmission.teamAssignments identities must be exact strings" -}}
-{{- end -}}
-{{- if or (eq (trim $identity) "") (ne (trim $identity) $identity) (contains "*" $identity) (eq $identity "system:anonymous") -}}
-{{- fail "sandboxAdmission.teamAssignments identities must be exact authenticated identities" -}}
-{{- end -}}
-{{- if and (eq $field "groups") (or (eq $identity "system:authenticated") (eq $identity "system:unauthenticated") (hasPrefix "system:serviceaccounts" $identity)) -}}
-{{- fail "sandboxAdmission.teamAssignments cannot use blanket authentication groups" -}}
-{{- end -}}
-{{- end -}}
-{{- end -}}
-{{- if and (empty $users) (empty $groups) -}}
-{{- fail "sandboxAdmission.teamAssignments entries require users or groups" -}}
-{{- end -}}
-{{- end -}}
-{{- if $admission.teamAssignments -}}
-{{- $_ := set $config "teamAssignments" $admission.teamAssignments -}}
-{{- end -}}
 apiVersion: v1
 kind: ServiceAccount
 metadata:

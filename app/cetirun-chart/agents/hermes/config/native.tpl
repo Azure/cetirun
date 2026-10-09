@@ -9,6 +9,8 @@ Licensed under the MIT License.
 {{- $hermesProvider = "openai" }}
 {{- else if eq $provider "anthropic" }}
 {{- $hermesProvider = "anthropic" }}
+{{- else if eq $provider "disabled" }}
+{{- $hermesProvider = "cetirun-disabled" }}
 {{- end }}
 {{- $model := required "secrets.model must be set by the CetiRun operator or Helm values" .Values.secrets.model }}
 {{- $gateway := .Values.aiGateway | default dict }}
@@ -40,6 +42,18 @@ Licensed under the MIT License.
 {{- $_ := set $config "providers" $providers }}
 {{- $_ := set $config "model" (dict "default" $model "provider" "cetirun-gateway") }}
 {{- else }}
+{{- if eq $provider "disabled" }}
+{{- $providers := dig "providers" (dict) $config }}
+{{- $_ := set $providers "cetirun-disabled" (dict
+      "name" "Model access disabled by CetiRun policy"
+      "api" "http://127.0.0.1:1/v1"
+      "key_env" "CETIRUN_DISABLED_MODEL_API_KEY"
+      "transport" "chat_completions"
+      "default_model" "disabled"
+      "discover_models" false
+      "models" (dict "disabled" (dict))) }}
+{{- $_ := set $config "providers" $providers }}
+{{- end }}
 {{- $_ := set $config "model" (dict "default" $model "provider" $hermesProvider) }}
 {{- end }}
 {{- $msteamsAuthType := default "" .Values.msteamsAuthType }}

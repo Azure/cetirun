@@ -57,6 +57,7 @@ import (
 // +kubebuilder:rbac:groups=cetirun.microsoft.com,resources=sandboxes/status;agentpolicies/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=node.k8s.io,resources=runtimeclasses,verbs=get
 // +kubebuilder:rbac:groups=storage.k8s.io,resources=storageclasses,verbs=get
+// +kubebuilder:rbac:groups="",resources=nodes,verbs=get
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles;clusterrolebindings,verbs=get;list
@@ -170,6 +171,7 @@ func (r *AgentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	builder := ctrl.NewControllerManagedBy(mgr).
 		For(&cetirunv1alpha1.Agent{}).
 		Owns(&appsv1.Deployment{}).
+		Owns(&appsv1.StatefulSet{}).
 		Owns(&istiov1beta1.VirtualService{}).
 		WatchesMetadata(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.enqueueRegistrySecret)).
 		Watches(
@@ -296,11 +298,10 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 				logger.Error(namespaceErr, "Policy-bound AI Gateway projection cannot verify its namespace")
 			}
 		}
-		result, holdErr := r.holdSandbox(ctx, instance)
 		if namespaceErr != nil && !errors.IsNotFound(namespaceErr) {
-			return result, stderrors.Join(namespaceErr, holdErr)
+			return ctrl.Result{}, namespaceErr
 		}
-		return result, holdErr
+		return r.reconcileKubernetesSandbox(ctx, instance)
 	}
 
 	// Inspect Team policy before runtime recovery can retain a Ready state.

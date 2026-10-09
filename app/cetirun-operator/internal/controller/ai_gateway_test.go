@@ -1427,7 +1427,7 @@ func TestApplyAIGatewayValuesOverridesProviderForRoutedAgent(t *testing.T) {
 	}
 }
 
-func TestApplyAIGatewayValuesLeavesUnroutedAgentAlone(t *testing.T) {
+func TestApplyAIGatewayValuesDisablesDirectProviderForUnroutedAgent(t *testing.T) {
 	for name, mutate := range map[string]func(*AgentReconciler, *cetirunv1alpha1.Agent){
 		"not routed":       func(_ *AgentReconciler, a *cetirunv1alpha1.Agent) { a.Status.AIGateway.Routed = false },
 		"feature disabled": func(r *AgentReconciler, _ *cetirunv1alpha1.Agent) { r.AIGateway.Enabled = false },
@@ -1442,8 +1442,10 @@ func TestApplyAIGatewayValuesLeavesUnroutedAgentAlone(t *testing.T) {
 				t.Fatal(err)
 			}
 			gatewayValues := values["aiGateway"].(map[string]any)
-			if values["secrets"].(map[string]any)["provider"] != "github_copilot" || gatewayValues["enabled"] != false {
-				t.Fatalf("unrouted Agent values changed: %v", values)
+			secrets := values["secrets"].(map[string]any)
+			if secrets["provider"] != "disabled" || secrets["model"] != "disabled" || secrets["apiKey"] != "" ||
+				gatewayValues["enabled"] != false || gatewayValues["enforceModelAccess"] != true {
+				t.Fatalf("unrouted Agent retained model access: %v", values)
 			}
 			if _, ok := gatewayValues["models"]; ok {
 				t.Fatal("charts without model support must not receive the model list")

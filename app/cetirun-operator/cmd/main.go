@@ -299,7 +299,7 @@ func main() {
 	var sandboxSource controller.SandboxConfigurationSource
 	if agentReconciler.SandboxPreparation != nil {
 		sandboxSource = agentReconciler.SandboxPreparation.Configuration
-		setupLog.Info("Kubernetes Sandbox sources enabled; qualified writer exclusion is unavailable and execution remains held")
+		setupLog.Info("Kubernetes Sandbox execution enabled", "writerBoundary", "ReadWriteOncePod")
 	}
 	if err = agentReconciler.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Agent")

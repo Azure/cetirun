@@ -16,63 +16,21 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 )
 
-func (h *Handler) creationTeam(request admission.Request, agent *api.Agent) (string, string, error) {
-	admin := h.config.administrator(request.UserInfo)
-	if admin && agent.Spec.Team != "" {
-		return agent.Spec.Team, "", nil
-	}
-	assigned, err := h.config.assignedTeam(request.UserInfo)
-	if err != nil {
-		return "", "", err
-	}
-	if assigned == "" {
-		return agent.Spec.Team, "", nil
-	}
-	if agent.Spec.Team != "" && agent.Spec.Team != assigned {
-		return "", "", fmt.Errorf("spec.team does not match the authenticated administrative Team assignment")
-	}
-	return assigned, assigned, nil
-}
-
-func (h *Handler) memberAuthority(request admission.Request, agent *api.Agent) error {
-	assigned, err := h.config.assignedTeam(request.UserInfo)
-	if err != nil {
-		return err
-	}
-	if assigned == "" || assigned != agent.Spec.Team {
-		return fmt.Errorf("policy-bound Agent writes require an explicitly authorized administrator or an authenticated assigned Team member")
-	}
-	if agent.Spec.PolicyClass != "" && agent.Spec.PolicyClass != api.AgentPolicyClassNormal {
-		return fmt.Errorf("only an explicitly authorized administrator may select a non-normal workload policy class")
-	}
-	return nil
-}
-
 func (h *Handler) defaultAgentCreation(ctx context.Context, request admission.Request, agent *api.Agent) admission.Response {
 	if sandboxbinding.Present(agent) {
 		return admission.Denied("authorization records and reauthorization requests cannot be supplied during Agent creation")
 	}
-	name, assigned, err := h.creationTeam(request, agent)
-	if err != nil {
-		return admission.Denied(err.Error())
+	if agent.Spec.PolicyClass == api.AgentPolicyClassAdmin && !h.config.administrator(request.UserInfo) {
+		return admission.Denied("admin workload policy class requires an authorized administrator")
 	}
-	team, err := h.team(ctx, name)
+	team, err := h.team(ctx, agent.Spec.Team)
 	if err != nil {
 		return dependencyError(ctx, err)
 	}
-	if assigned != "" && team == nil {
-		return admission.Denied("the administratively assigned Team does not exist")
-	}
 	desired := agent.DeepCopy()
-	desired.Spec.Team = name
 	patches := selectionPatches(agent, desired)
 	if !sandbox.Requested(desired, team) {
-		return admission.Patched("legacy Agent; preserve any trusted Team assignment", patches...)
-	}
-	if !h.config.administrator(request.UserInfo) {
-		if err := h.memberAuthority(request, desired); err != nil {
-			return admission.Denied(err.Error())
-		}
+		return admission.Patched("legacy Agent; preserve its explicit Team selection", patches...)
 	}
 	spec, err := sandbox.DefaultAgentSelection(desired.Spec, team)
 	if err != nil {
@@ -196,6 +154,9 @@ func (h *Handler) validateAgentAuthorization(request admission.Request, agent, o
 func reauthorizationIntent(agent, old *api.Agent) (sandboxbinding.Reauthorization, error) {
 	if old == nil || old.UID == "" || old.UID != agent.UID || old.Name != agent.Name || agent.ResourceVersion == "" {
 		return sandboxbinding.Reauthorization{}, fmt.Errorf("explicit reauthorization requires an existing Agent UID and resourceVersion")
+	}
+	if !old.Spec.Suspended || !agent.Spec.Suspended {
+		return sandboxbinding.Reauthorization{}, fmt.Errorf("explicit reauthorization requires the Agent to remain suspended for the entire update")
 	}
 	intent, err := sandboxbinding.ParseReauthorization(agent.Annotations[sandboxbinding.ReauthorizeAnnotation])
 	if err != nil {

@@ -15,7 +15,8 @@ Licensed under the MIT License.
 {{- $_ := set $config "gateway" $gateway }}
 {{- end }}
 {{- /* Model provider auth profile and default model.
-   Supports: github_copilot (token-based), openai (api-key), anthropic (api-key). */}}
+   Supports: github_copilot (token-based), openai (api-key), anthropic
+   (api-key), and the operator-reserved disabled provider. */}}
 {{- $provider := .Values.secrets.provider | default "github_copilot" }}
 {{- $model := required "secrets.model must be set by the CetiRun operator or Helm values" .Values.secrets.model }}
 {{- $authMode := .Values.secrets.authMode }}
@@ -42,6 +43,9 @@ Licensed under the MIT License.
 {{- $_ := set $config "auth" $auth }}
 {{- /* Compose full model identifier as <provider>/<model> */}}
 {{- $providerPrefix := $provider | replace "_" "-" }}
+{{- if eq $provider "disabled" }}
+{{- $providerPrefix = "cetirun-disabled" }}
+{{- end }}
 {{- $modelFull := printf "%s/%s" $providerPrefix $model }}
 {{- /* Models the platform AI Gateway offers this Agent. Each becomes a model
    of the Gateway provider, with its limits, and is allowed; the rest of the
@@ -96,8 +100,21 @@ Licensed under the MIT License.
 {{- end }}
 {{- $_ := set $agentsCurrent "defaults" $defaultsCurrent }}
 {{- $_ := set $config "agents" $agentsCurrent }}
+{{- /* The disabled provider is a syntactically valid OpenAI-compatible
+   provider whose loopback endpoint cannot be opened by this non-root Pod.
+   It lets the harness start without preserving or projecting credentials. */}}
+{{- if eq $provider "disabled" }}
+{{- $models := dig "models" (dict) $config }}
+{{- $providers := dig "providers" (dict) $models }}
+{{- $_ := set $providers $providerPrefix (dict
+      "baseUrl" "http://127.0.0.1:1/v1"
+      "api" "openai-completions"
+      "apiKey" "disabled-by-cetirun-policy"
+      "models" (list (dict "id" "disabled" "name" "Model access disabled by CetiRun policy"))) }}
+{{- $_ := set $models "providers" $providers }}
+{{- $_ := set $config "models" $models }}
 {{- /* Custom API base URL → models.providers.<provider>.baseUrl */}}
-{{- if and (ne $provider "github_copilot") .Values.secrets.apiBase }}
+{{- else if and (ne $provider "github_copilot") .Values.secrets.apiBase }}
 {{- $providerModels := list }}
 {{- $listed := false }}
 {{- range $gatewayModels }}

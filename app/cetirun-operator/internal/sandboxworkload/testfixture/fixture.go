@@ -159,8 +159,9 @@ func New(agentType string) Fixture {
 	return Fixture{
 		Input: sandboxworkload.Input{
 			Resolution: resolution, AgentName: agent.Name, AgentGeneration: 1, AgentType: agentType,
-			Namespace:    sandboxworkload.ObjectIdentity{Name: ns.Name, UID: ns.UID},
-			WorkloadName: "example", ReleaseName: "example", RuntimeClass: runtimeClass,
+			ModelAccessEnforced: true,
+			Namespace:           sandboxworkload.ObjectIdentity{Name: ns.Name, UID: ns.UID},
+			WorkloadName:        "example", ReleaseName: "example", RuntimeClass: runtimeClass,
 			Home: home, Skills: skills, Helpers: sandboxworkload.Helpers{Doctor: agentType == "openclaw", Desktop: true, Logger: true},
 			Controls: controls, AuthorizedSecrets: []string{"runtime-secret"},
 		},

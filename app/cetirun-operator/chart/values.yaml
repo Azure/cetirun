@@ -164,9 +164,6 @@ sandboxAdmission:
   # configuration. At least one nonempty list is required even before enforce.
   adminUsers: []
   adminGroups: []
-  # -- Trusted Kubernetes user/group to Team creation assignments. Conflicting
-  # memberships reject; Portal roles or caller-provided Team names are not proof.
-  teamAssignments: []
   resources:
     requests:
       cpu: 100m

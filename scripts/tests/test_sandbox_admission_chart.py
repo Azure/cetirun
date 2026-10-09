@@ -315,7 +315,7 @@ class SandboxAdmissionChartTests(unittest.TestCase):
                 config_env["value"] = baseline_config_env["value"]
                 self.assertEqual(configured, baseline)
 
-    def test_kubernetes_sources_placement_adds_only_controller_selection_and_node_get(self):
+    def test_kubernetes_sources_placement_changes_only_controller_selection(self):
         admission = self.enforced_values(podsEnabled=True, placementConfigMapName="sandbox-placement")
         sources = {"enabled": True, "platformConfigMapName": "sandbox-platform"}
         baseline = self.render(admission, values={"sandboxSources": sources})
@@ -333,9 +333,10 @@ class SandboxAdmissionChartTests(unittest.TestCase):
             **json.loads(before["value"]), "placementConfigMapName": "sandbox-placement",
         })
         node_rule = {"apiGroups": [""], "resources": ["nodes"], "verbs": ["get"]}
+        baseline_rules = baseline[("ClusterRole", "cetirun-operator-manager-role")]["rules"]
         rules = configured[("ClusterRole", "cetirun-operator-manager-role")]["rules"]
+        self.assertEqual(baseline_rules.count(node_rule), 1)
         self.assertEqual(rules.count(node_rule), 1)
-        rules.remove(node_rule)
         after["value"] = before["value"]
         self.assertEqual(configured, baseline)
 
@@ -863,27 +864,6 @@ class SandboxAdmissionChartTests(unittest.TestCase):
                         documents[("ValidatingWebhookConfiguration", NAME)]["webhooks"][0]["matchConditions"],
                     )
                 self.assertEqual(operations, expected)
-
-    def test_trusted_team_assignments_are_serialized_without_inference(self):
-        assignments = [
-            {"team": "research", "users": ["member@example.com"], "groups": ["researchers"]},
-            {"team": "operations", "groups": ["operators"]},
-        ]
-        documents = self.render(self.server_values(teamAssignments=assignments))
-        container = documents[("Deployment", NAME)]["spec"]["template"]["spec"]["containers"][0]
-        config = json.loads(container["env"][0]["value"])
-        self.assertEqual(config["teamAssignments"], assignments)
-        for invalid in (
-            "research", [{}], ["research"], [{"team": "research"}],
-            [{"team": "Invalid", "users": ["member@example.com"]}],
-            [{"team": "research", "users": "member@example.com"}],
-            [{"team": "research", "users": [], "groups": ""}],
-            [{"team": "research", "groups": ["system:authenticated"]}],
-            [{"team": "research", "users": ["*"]}],
-            [{"team": "research", "users": ["member@example.com"], "admin": True}],
-        ):
-            with self.subTest(invalid=invalid):
-                self.assert_rejected(self.server_values(teamAssignments=invalid), "sandboxAdmission.teamAssignments")
 
     def test_pod_bootstrap_scopes_state_reads_without_installing_rules(self):
         documents = self.render(self.server_values(podsEnabled=True))

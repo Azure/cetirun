@@ -69,6 +69,11 @@ helper. "true" or empty.
 {{- if (.Values.aiGateway | default dict).enabled }}true{{ end -}}
 {{- end }}
 
+{{/* Policy controls model credentials even when it grants no model source. */}}
+{{- define "cetirun.agent.hermes.modelAccessEnforced" -}}
+{{- if dig "enforceModelAccess" false (.Values.aiGateway | default dict) }}true{{ end -}}
+{{- end }}
+
 {{/*
 Hermes init containers
 */}}
@@ -99,6 +104,10 @@ Hermes init containers
       value: {{ include "cetirun.image" . | quote }}
     - name: HERMES_HOME
       value: "/home/vibe/.hermes"
+    {{- if include "cetirun.agent.hermes.modelAccessEnforced" . }}
+    - name: CETIRUN_MODEL_ACCESS_ENFORCED
+      value: "true"
+    {{- end }}
     {{- if include "cetirun.agent.hermes.gatewayRouted" . }}
     # The Gateway owns the model choice: init replaces it, and removes the
     # in-agent GitHub Copilot sign-in and the helper.
@@ -137,7 +146,7 @@ Hermes container ports (agent-specific only)
 - name: dashboard
   containerPort: 9119
   protocol: TCP
-{{- if not (include "cetirun.agent.hermes.gatewayRouted" .) }}
+{{- if not (include "cetirun.agent.hermes.modelAccessEnforced" .) }}
 - name: cetirun-auth
   containerPort: 18790
   protocol: TCP
@@ -252,7 +261,7 @@ Hermes service ports (agent-specific only)
   targetPort: dashboard
   protocol: TCP
   name: dashboard
-{{- if not (include "cetirun.agent.hermes.gatewayRouted" .) }}
+{{- if not (include "cetirun.agent.hermes.modelAccessEnforced" .) }}
 - port: 18790
   targetPort: cetirun-auth
   protocol: TCP
@@ -268,7 +277,7 @@ Hermes networkpolicy ingress ports (agent-specific only)
   port: {{ .Values.hermes.env.API_SERVER_PORT }}
 - protocol: TCP
   port: 9119
-{{- if not (include "cetirun.agent.hermes.gatewayRouted" .) }}
+{{- if not (include "cetirun.agent.hermes.modelAccessEnforced" .) }}
 - protocol: TCP
   port: 18790
 {{- end }}
@@ -311,7 +320,7 @@ Hermes configmap data
 {{ .Files.Get "agents/hermes/bootstrap/hermes-apply-config.py" | indent 4 }}
   init-skills.sh: |
 {{ .Files.Get "configs/init-skills.sh" | indent 4 }}
-  {{- if not (include "cetirun.agent.hermes.gatewayRouted" .) }}
+  {{- if not (include "cetirun.agent.hermes.modelAccessEnforced" .) }}
   hermes-auth.sh: |
 {{ .Files.Get "agents/hermes/bootstrap/hermes-auth.sh" | indent 4 }}
   {{- end }}

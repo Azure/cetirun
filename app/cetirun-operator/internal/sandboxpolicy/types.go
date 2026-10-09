@@ -131,7 +131,10 @@ type CompileInput struct {
 	Resolution sandbox.Resolution
 	AgentName  string
 	Namespace  string
-	Platform   Platform
+	// WorkloadProbePort is the controller-known health probe port. Zero is
+	// retained for policy-only callers that do not render a workload.
+	WorkloadProbePort int32
+	Platform          Platform
 }
 
 // Plan contains desired resources, never observed status. Render Resources

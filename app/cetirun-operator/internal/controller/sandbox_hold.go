@@ -5,9 +5,11 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -26,6 +28,7 @@ import (
 	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxbinding"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
 )
 
 const sandboxHoldFinalizer = sandbox.HoldFinalizer
@@ -61,6 +64,7 @@ func (r *AgentReconciler) fenceSandboxForPolicyReprojection(ctx context.Context,
 func (r *AgentReconciler) holdSandboxWithPolicyFence(ctx context.Context, agent *cetirunv1alpha1.Agent, policyFence *sandboxPolicyFenceStatus) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 	var failures []error
+	holdAttempted := !controllerutil.ContainsFinalizer(agent, sandboxHoldFinalizer)
 	// Try to persist intent independently of status before workload side
 	// effects. The finalizer also keeps newly held Agents available for safe
 	// cleanup, but a failed metadata write cannot be allowed to skip shutdown.
@@ -74,6 +78,16 @@ func (r *AgentReconciler) holdSandboxWithPolicyFence(ctx context.Context, agent 
 			// unpersisted finalizer for durable intent.
 			agent.Finalizers = base.Finalizers
 			failures = append(failures, fmt.Errorf("persist Sandbox hold: %w", err))
+		}
+	}
+	// The Pod-admission gate is independently useful even when persisting the
+	// Agent finalizer failed. Try to hold it before scaling down whenever this
+	// reconciliation added (or attempted to add) the hold, or when status says a
+	// workload may be active.
+	if r.SandboxPreparation != nil &&
+		(holdAttempted || controllerutil.ContainsFinalizer(agent, sandboxHoldFinalizer) || policyWorkloadMayBeActive(agent)) {
+		if err := r.holdSandboxExpectation(ctx, agent); err != nil {
+			failures = append(failures, err)
 		}
 	}
 	before := agent.DeepCopy().Status
@@ -165,6 +179,62 @@ func (r *AgentReconciler) holdSandboxWithPolicyFence(ctx context.Context, agent 
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{RequeueAfter: time.Minute}, nil
+}
+
+// holdSandboxExpectation mirrors the Agent lifecycle gate into the protected
+// Pod expectation before scaling down. This leaves admission fail-closed while
+// a StatefulSet update or controller restart is in flight.
+func (r *AgentReconciler) holdSandboxExpectation(ctx context.Context, agent *cetirunv1alpha1.Agent) error {
+	reader := r.customReader()
+	namespace := &corev1.Namespace{}
+	if err := reader.Get(ctx, types.NamespacedName{Name: instanceNamespace(agent.Name)}, namespace); err != nil {
+		return client.IgnoreNotFound(err)
+	}
+	state := &corev1.ConfigMap{}
+	key := types.NamespacedName{Namespace: r.OperatorNamespace, Name: sandboxworkload.PodExpectationName(namespace.Name, namespace.UID)}
+	if err := reader.Get(ctx, key, state); err != nil {
+		return client.IgnoreNotFound(err)
+	}
+	expected, err := decodeSandboxExecutionExpectation(state)
+	if err != nil || expected.Agent.Name != agent.Name || expected.Agent.UID != agent.UID ||
+		expected.Namespace.Name != namespace.Name || expected.Namespace.UID != namespace.UID {
+		return fmt.Errorf("hold Sandbox expectation: current expectation identity is invalid")
+	}
+	agentSource, err := sandboxworkload.AgentSourceReference(agent)
+	if err != nil {
+		return fmt.Errorf("hold Sandbox expectation: %w", err)
+	}
+	found := false
+	for i := range expected.Sources {
+		if expected.Sources[i].IsAgent() {
+			if found {
+				return fmt.Errorf("hold Sandbox expectation: duplicate Agent source")
+			}
+			expected.Sources[i], found = agentSource, true
+		}
+	}
+	if !found {
+		return fmt.Errorf("hold Sandbox expectation: Agent source is missing")
+	}
+	expected.AgentGeneration = agent.Generation
+	if expected.ExecutionHeld && state.Data[sandboxworkload.PodExpectationKey] != "" {
+		var current sandboxworkload.Expectation
+		if json.Unmarshal([]byte(state.Data[sandboxworkload.PodExpectationKey]), &current) == nil &&
+			current.ExecutionHeld && slices.Equal(current.Sources, expected.Sources) {
+			return nil
+		}
+	}
+	expected.ExecutionHeld = true
+	raw, err := json.Marshal(expected)
+	if err != nil {
+		return fmt.Errorf("hold Sandbox expectation: %w", err)
+	}
+	base := state.DeepCopy()
+	state.Data = map[string]string{sandboxworkload.PodExpectationKey: string(raw)}
+	if err := r.Patch(ctx, state, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
+		return fmt.Errorf("hold Sandbox expectation: %w", err)
+	}
+	return nil
 }
 
 // Built-in resources predating UID ownership cannot be automatically adopted.

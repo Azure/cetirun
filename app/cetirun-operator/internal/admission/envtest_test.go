@@ -160,7 +160,6 @@ func TestAdmissionAPIServerBoundaries(t *testing.T) {
 		}
 	})
 	config := platformFixtureConfig()
-	config.TeamAssignments = nil
 	config.AdminGroups = []string{"system:masters"}
 	create(&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: config.PlatformNamespace}})
 	runtimeClass := &nodev1.RuntimeClass{ObjectMeta: metav1.ObjectMeta{Name: "test-kata"}, Handler: "kata"}

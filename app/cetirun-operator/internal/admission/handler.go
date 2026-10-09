@@ -52,11 +52,6 @@ func NewHandler(reader client.Reader, config Config) (*Handler, error) {
 	}
 	config.AdminUsers = slices.Clone(config.AdminUsers)
 	config.AdminGroups = slices.Clone(config.AdminGroups)
-	config.TeamAssignments = slices.Clone(config.TeamAssignments)
-	for i := range config.TeamAssignments {
-		config.TeamAssignments[i].Users = slices.Clone(config.TeamAssignments[i].Users)
-		config.TeamAssignments[i].Groups = slices.Clone(config.TeamAssignments[i].Groups)
-	}
 	handler := &Handler{reader: reader, config: config, requestTimeout: DefaultPodRequestTimeout}
 	if config.PlatformConfigMapName != "" {
 		handler.platformSource = &sandboxplatform.KubernetesSource{
@@ -192,23 +187,9 @@ func (h *Handler) validateAgent(ctx context.Context, request admission.Request, 
 	if err := h.protectedPolicyBudget(request, agent, old); err != nil {
 		return admission.Denied(err.Error())
 	}
-	assigned := ""
-	if old == nil {
-		name, assignment, err := h.creationTeam(request, agent)
-		if err != nil {
-			return admission.Denied(err.Error())
-		}
-		if name != agent.Spec.Team {
-			return admission.Denied("the creation-defaulting webhook must persist the authenticated Team assignment")
-		}
-		assigned = assignment
-	}
 	team, err := h.team(ctx, agent.Spec.Team)
 	if err != nil {
 		return dependencyError(ctx, err)
-	}
-	if assigned != "" && team == nil {
-		return admission.Denied("the administratively assigned Team does not exist")
 	}
 	if !sandbox.Requested(agent, team) && !sandbox.Requested(old, nil) &&
 		!sandboxbinding.Present(agent) && !sandboxbinding.Present(old) {
@@ -222,14 +203,6 @@ func (h *Handler) validateAgent(ctx context.Context, request admission.Request, 
 			}
 		}
 		return admission.Allowed("legacy Agent")
-	}
-	if !h.config.administrator(request.UserInfo) {
-		if err := h.memberAuthority(request, agent); err != nil {
-			return admission.Denied(err.Error())
-		}
-		if old != nil && !sameAgentSelection(agent, old) {
-			return admission.Denied("members cannot change a policy-bound Agent's Team, policy class or Sandbox binding")
-		}
 	}
 	if suspensionOnlyUpdate(request, agent, old) {
 		return admission.Allowed("authorized suspension-only update; existing policy assignment is unchanged")
@@ -518,7 +491,10 @@ func controllerFinalizerUpdate(agent, old *api.Agent) bool {
 		}
 	} else {
 		for _, value := range old.Finalizers {
-			if !slices.Contains(agent.Finalizers, value) {
+			// The execution hold is released by the controller only after its
+			// independently persisted Pod expectation remains held. Other
+			// lifecycle finalizers still protect cleanup.
+			if !slices.Contains(agent.Finalizers, value) && value != sandbox.HoldFinalizer {
 				return false
 			}
 		}

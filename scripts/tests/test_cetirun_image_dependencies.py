@@ -174,11 +174,23 @@ class ImageDependencyTests(unittest.TestCase):
             "| sha256sum --check",
             content,
         )
-        self.assertIn(
-            "uv sync --python /usr/bin/python3 --frozen --extra all", content
-        )
+        self.assertIn("uv export --quiet --frozen --no-dev --extra all", content)
         self.assertIn("--extra anthropic", content)
         self.assertIn("--extra azure-identity", content)
+        self.assertIn("--no-emit-project", content)
+        self.assertIn("python3 -m venv", content)
+        self.assertIn(
+            '--index-url "${PYPI_INDEX_URL}" --no-deps --require-hashes', content
+        )
+        self.assertIn(
+            'PIP_INDEX_URL="${PYPI_INDEX_URL}" \\\n'
+            '      "${HERMES_PYTHON}" -m pip install',
+            content,
+        )
+        self.assertIn("--no-deps -e .", content)
+        self.assertLess(
+            content.index("--require-hashes"), content.index("--no-deps -e .")
+        )
         self.assertIn(
             "COPY --from=hermes-uv /uv /usr/local/bin/uv",
             content,

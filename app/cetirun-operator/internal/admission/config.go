@@ -6,7 +6,6 @@ package sandboxadmission
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"slices"
@@ -16,35 +15,21 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation"
 )
 
-var errTeamAssignmentConflict = errors.New("TeamAssignmentConflict: authenticated membership matches multiple Teams; " +
-	"ask an administrator to review sandboxAdmission.teamAssignments and identity-provider memberships so all matching users and groups resolve to one Team")
-
 const (
 	ValidationCompatible = "compatible"
 	ValidationStrict     = "strict"
 )
 
 type Config struct {
-	ValidationMode            string           `json:"validationMode,omitempty"`
-	AdminUsers                []string         `json:"adminUsers"`
-	AdminGroups               []string         `json:"adminGroups"`
-	ControllerUsername        string           `json:"controllerUsername"`
-	TeamAssignments           []TeamAssignment `json:"teamAssignments,omitempty"`
-	PlatformNamespace         string           `json:"platformNamespace,omitempty"`
-	PlatformConfigMapName     string           `json:"platformConfigMapName,omitempty"`
-	PlacementConfigMapName    string           `json:"placementConfigMapName,omitempty"`
-	CoordinationConfigMapName string           `json:"coordinationConfigMapName,omitempty"`
-	CoordinationConfigMapUID  string           `json:"coordinationConfigMapUID,omitempty"`
-}
-
-// TeamAssignment is administrative creation context, not Agent/Portal input.
-// All matching users and groups must agree on one Team; there is no precedence
-// rule that lets a request choose between conflicting memberships. Group overlap
-// is checked per request because static configuration cannot establish membership.
-type TeamAssignment struct {
-	Team   string   `json:"team"`
-	Users  []string `json:"users,omitempty"`
-	Groups []string `json:"groups,omitempty"`
+	ValidationMode            string   `json:"validationMode,omitempty"`
+	AdminUsers                []string `json:"adminUsers"`
+	AdminGroups               []string `json:"adminGroups"`
+	ControllerUsername        string   `json:"controllerUsername"`
+	PlatformNamespace         string   `json:"platformNamespace,omitempty"`
+	PlatformConfigMapName     string   `json:"platformConfigMapName,omitempty"`
+	PlacementConfigMapName    string   `json:"placementConfigMapName,omitempty"`
+	CoordinationConfigMapName string   `json:"coordinationConfigMapName,omitempty"`
+	CoordinationConfigMapUID  string   `json:"coordinationConfigMapUID,omitempty"`
 }
 
 func ParseConfig(raw string) (Config, error) {
@@ -103,31 +88,6 @@ func (c Config) Validate() error {
 			}
 		}
 	}
-	teams, users, groups := map[string]bool{}, map[string]string{}, map[string]string{}
-	for _, assignment := range c.TeamAssignments {
-		if len(validation.IsDNS1123Subdomain(assignment.Team)) != 0 || teams[assignment.Team] {
-			return fmt.Errorf("Sandbox admission Team assignments require unique, valid Team names")
-		}
-		teams[assignment.Team] = true
-		if len(assignment.Users)+len(assignment.Groups) == 0 {
-			return fmt.Errorf("Sandbox admission Team assignments require explicit users or groups")
-		}
-		for _, set := range []struct {
-			values []string
-			seen   map[string]string
-			group  bool
-		}{{assignment.Users, users, false}, {assignment.Groups, groups, true}} {
-			for _, identity := range set.values {
-				if !exactIdentity(identity) || (set.group && blanketGroup(identity)) {
-					return fmt.Errorf("Sandbox admission Team assignments require exact authenticated identities, not blanket groups")
-				}
-				if _, found := set.seen[identity]; found {
-					return fmt.Errorf("Sandbox admission Team assignments repeat an identity")
-				}
-				set.seen[identity] = assignment.Team
-			}
-		}
-	}
 	return nil
 }
 
@@ -144,27 +104,6 @@ func (c Config) administrator(user authenticationv1.UserInfo) bool {
 		}
 	}
 	return false
-}
-
-func (c Config) assignedTeam(user authenticationv1.UserInfo) (string, error) {
-	if !authenticated(user) {
-		return "", nil
-	}
-	team := ""
-	for _, assignment := range c.TeamAssignments {
-		matches := slices.Contains(assignment.Users, user.Username)
-		for _, group := range user.Groups {
-			matches = matches || slices.Contains(assignment.Groups, group)
-		}
-		if !matches {
-			continue
-		}
-		if team != "" && team != assignment.Team {
-			return "", errTeamAssignmentConflict
-		}
-		team = assignment.Team
-	}
-	return team, nil
 }
 
 func authenticated(user authenticationv1.UserInfo) bool {

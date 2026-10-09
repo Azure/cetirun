@@ -1173,8 +1173,18 @@ func servesSignInHelper(instance *cetirunv1alpha1.Agent) bool {
 // runs after per-instance Helm values, so a routed Agent cannot select
 // another provider, endpoint, key or proxy.
 func (r *AgentReconciler) applyAIGatewayValues(values map[string]any, instance *cetirunv1alpha1.Agent) error {
-	values["aiGateway"] = map[string]any{"enabled": false, "keySecretName": "", "keySecretKey": aiGatewayKeySecretField}
+	values["aiGateway"] = map[string]any{
+		"enabled": false, "enforceModelAccess": true,
+		"keySecretName": "", "keySecretKey": aiGatewayKeySecretField,
+	}
 	if !r.aiGatewayRouted(instance) {
+		// Policy-controlled native Agents may intentionally have no model
+		// entitlement, or may still be waiting for a Gateway projection. Render
+		// a credentialless provider in the held workload instead of preserving
+		// a Team/user-selected direct provider and MODEL_API_KEY projection.
+		values["secrets"] = deepMerge(values["secrets"], map[string]any{
+			"provider": "disabled", "authMode": "", "apiBase": "", "apiKey": "", "model": "disabled",
+		})
 		return nil
 	}
 	namespace, port, err := aiGatewayEndpoint(r.AIGateway.URL)
@@ -1213,7 +1223,8 @@ func (r *AgentReconciler) applyAIGatewayValues(values map[string]any, instance *
 		}
 	}
 	values["aiGateway"] = map[string]any{
-		"enabled": true, "keySecretName": aiGatewayKeySecretName, "keySecretKey": aiGatewayKeySecretField,
+		"enabled": true, "enforceModelAccess": true,
+		"keySecretName": aiGatewayKeySecretName, "keySecretKey": aiGatewayKeySecretField,
 		"models": models, "copilotProxy": proxy,
 	}
 	values["networkPolicy"] = deepMerge(values["networkPolicy"], map[string]any{

@@ -38,11 +38,11 @@ rules:
   - apiGroups: ["storage.k8s.io"]
     resources: ["storageclasses"]
     verbs: ["get"]
-  {{- if and .Values.sandboxSources.enabled .Values.sandboxSources.placementConfigMapName }}
+  # Native execution verifies the scheduled Node identity and readiness before
+  # publishing Sandbox readiness.
   - apiGroups: [""]
     resources: ["nodes"]
     verbs: ["get"]
-  {{- end }}
   - apiGroups: ["rbac.authorization.k8s.io"]
     resources: ["clusterroles"]
     verbs: ["get"]

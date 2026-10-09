@@ -153,7 +153,11 @@ func TestExplicitAdmissionAuthority(t *testing.T) {
 			objects := map[string]client.Object{"agent": f.agent, "team": f.team, "sandbox": f.box, "policy": f.policy}
 			for _, user := range []string{"member", testController, "system:anonymous"} {
 				req := requestFor(t, admissionv1.Create, objects[resourceName], nil, user)
-				requireResponse(t, f.handler.Validate(context.Background(), req), false, "administrator")
+				expected := "administrator"
+				if resourceName == "agent" {
+					expected = "current UID authorization"
+				}
+				requireResponse(t, f.handler.Validate(context.Background(), req), false, expected)
 			}
 			for _, user := range []string{"administrator", "group-administrator"} {
 				if resourceName == "agent" {
@@ -713,7 +717,7 @@ func TestControllerCanPersistHoldWithoutReferenceLookups(t *testing.T) {
 	req := requestFor(t, admissionv1.Update, candidate, f.agent, testController)
 	requireResponse(t, f.handler.Validate(context.Background(), req), true, "")
 	req = requestFor(t, admissionv1.Update, f.agent, candidate, testController)
-	requireResponse(t, f.handler.Validate(context.Background(), req), false, "finalizers")
+	requireResponse(t, f.handler.Validate(context.Background(), req), true, "")
 }
 
 func TestControllerPreparationFinalizerBoundary(t *testing.T) {

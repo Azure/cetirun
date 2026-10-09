@@ -99,6 +99,10 @@ agentIdentity:
 # networkPolicy.gatewayNamespace on networkPolicy.gatewayPort is allowed.
 aiGateway:
   enabled: false
+  # -- Remove durable direct-provider credentials on every Pod start. The
+  # operator sets this for every policy-controlled native Agent, including an
+  # Agent whose policy grants no model source.
+  enforceModelAccess: false
   # -- Secret in the release namespace holding this Agent's virtual key
   keySecretName: ""
   # -- Key within that Secret
@@ -462,7 +466,8 @@ secrets:
   # -- Tailscale auth key (from https://login.tailscale.com/admin/settings/keys)
   # Recommended: Reusable + Ephemeral. Setting this enables Tailscale (no separate toggle).
   tailscaleAuthKey: ""
-  # -- Model provider: github_copilot, openai, or anthropic
+  # -- Model provider. "disabled" is reserved for the operator when policy
+  # grants no usable Gateway projection.
   provider: "github_copilot"
   # -- Model name. The operator supplies this from spec.model or its deployment default.
   model: ""

@@ -33,6 +33,10 @@ interface FormState {
   skills: string; // newline-separated
   storage: TeamSkillStorage;
   storageEnabled: boolean;
+  normalAgentPolicyRef: string;
+  adminAgentPolicyRef: string;
+  sandboxRefs: string;
+  defaultSandboxRef: string;
 }
 
 const emptyStorage: TeamSkillStorage = {
@@ -53,6 +57,10 @@ function fromDTO(t: TeamDTO): FormState {
     skills: (t.skills || []).join("\n"),
     storage: t.skillStorage || { ...emptyStorage },
     storageEnabled: !!t.skillStorage,
+    normalAgentPolicyRef: t.normalAgentPolicyRef || "",
+    adminAgentPolicyRef: t.adminAgentPolicyRef || "",
+    sandboxRefs: (t.sandboxRefs || []).join("\n"),
+    defaultSandboxRef: t.defaultSandboxRef || "",
   };
 }
 
@@ -69,6 +77,10 @@ function toRequest(s: FormState): TeamUpsertRequest {
     description: splitLines(s.description),
     defaultProvider: s.defaultProvider.trim() || undefined,
     skills: splitLines(s.skills),
+    normalAgentPolicyRef: s.normalAgentPolicyRef.trim(),
+    adminAgentPolicyRef: s.adminAgentPolicyRef.trim() || undefined,
+    sandboxRefs: splitLines(s.sandboxRefs),
+    defaultSandboxRef: s.defaultSandboxRef.trim(),
   };
   if (s.storageEnabled) {
     req.skillStorage = {
@@ -99,6 +111,10 @@ export function TeamEditPage() {
     skills: "",
     storage: { ...emptyStorage },
     storageEnabled: false,
+    normalAgentPolicyRef: "",
+    adminAgentPolicyRef: "",
+    sandboxRefs: "",
+    defaultSandboxRef: "",
   });
   const [submitError, setSubmitError] = useState<string | null>(null);
 
@@ -194,6 +210,21 @@ export function TeamEditPage() {
           onChange={(_, data) => setForm({ ...form, defaultProvider: data.value })}
           placeholder="e.g. github_copilot"
         />
+      </Field>
+
+      <Divider />
+      <Text size={400} weight="semibold">Policy assignment</Text>
+      <Field label="Normal AgentPolicy" required hint="Applied to ordinary Agents in this Team.">
+        <Input value={form.normalAgentPolicyRef} onChange={(_, data) => setForm({ ...form, normalAgentPolicyRef: data.value })} />
+      </Field>
+      <Field label="Admin AgentPolicy" hint="Optional policy used only when an administrator assigns the admin policy class.">
+        <Input value={form.adminAgentPolicyRef} onChange={(_, data) => setForm({ ...form, adminAgentPolicyRef: data.value })} />
+      </Field>
+      <Field label="Allowed Sandboxes" required hint="One Sandbox name per line.">
+        <Textarea rows={3} value={form.sandboxRefs} onChange={(_, data) => setForm({ ...form, sandboxRefs: data.value })} />
+      </Field>
+      <Field label="Default Sandbox" required hint="Must be one of the allowed Sandboxes; selected for new Agents.">
+        <Input value={form.defaultSandboxRef} onChange={(_, data) => setForm({ ...form, defaultSandboxRef: data.value })} />
       </Field>
 
       <Divider />

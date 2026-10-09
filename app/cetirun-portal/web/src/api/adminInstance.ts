@@ -12,8 +12,14 @@ export interface AdminInstanceSummary {
   team?: string;
   agent: AgentConfig;
   uid: string;
+  resourceVersion: string;
   phase?: string;
   ready: boolean;
+  suspended: boolean;
+  sandboxRef?: string;
+  policyClass?: "normal" | "admin";
+  monthlyBudgetUSD?: string;
+  policy?: { phase?: "Pending" | "Applied" | "Denied" | "Unknown"; effectivePolicyRef?: { name: string; class: "normal" | "admin" } };
   createdAt: string;
 }
 

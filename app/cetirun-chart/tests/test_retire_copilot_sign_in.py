@@ -174,9 +174,14 @@ def test_retires_the_in_agent_sign_in_and_keeps_other_credentials(home):
     assert json.loads((home["state"] / "openclaw.json").read_text()) == AGENT_CONFIG
     assert marked(home)
 
-    # Once per home: a later start calls nothing.
+    # The marker is audit evidence, not an authorization cache. A credential
+    # written after the first cleanup is retired on the next Pod start too.
+    set_cli(home, profiles={PROFILE: {"tokenRef": ENTRY}}, store={ENTRY: "ghu_reintroduced"}, calls=[])
+    (home["state"] / ".env").write_text("COPILOT_GITHUB_TOKEN=ghu_reintroduced\n")
     assert run(home).returncode == 0
-    assert len(cli(home)["calls"]) == len(calls)
+    assert cli(home)["profiles"] == {}
+    assert cli(home)["removed"] == {ENTRY: "retired"}
+    assert (home["state"] / ".env").read_text() == ""
 
 
 def test_a_home_never_signed_in_is_marked_without_calling_openclaw(home):
@@ -190,13 +195,13 @@ def test_a_home_never_signed_in_is_marked_without_calling_openclaw(home):
 
 
 def test_a_failed_step_is_reported_and_a_later_start_finishes(home):
-    # A failure does not keep the agent from starting; the home stays
-    # unmarked, and the next start tries again.
+    # A failure keeps the Agent down; the home stays unmarked, and the next
+    # init-container retry can finish.
     signed_in_home(home)
     set_cli(home, fail=["doctor", "--state-sqlite", "compact"])
     result = run(home)
-    assert result.returncode == 0, result.stderr
-    assert "could not compact the shared state database: disk I/O error; the next start tries again" in result.stderr
+    assert result.returncode == 1, result.stderr
+    assert "could not compact the shared state database: disk I/O error; refusing to start the Agent" in result.stderr
     assert (home["state"] / ".env").read_text() == "BRAVE_API_KEY=keep-brave\n"
     assert not marked(home)
 
@@ -213,7 +218,7 @@ def test_an_auth_store_that_cannot_be_listed_is_tried_again(home):
     signed_in_home(home)
     set_cli(home, fail=["models", "auth", "list"])
     result = run(home)
-    assert result.returncode == 0, result.stderr
+    assert result.returncode == 1, result.stderr
     assert "could not list the auth profiles: disk I/O error" in result.stderr
     assert PROFILE in cli(home)["profiles"]
     assert not marked(home)
@@ -225,7 +230,7 @@ def test_an_entry_that_cannot_be_overwritten_keeps_its_profile(home):
     signed_in_home(home)
     set_cli(home, fail=["secrets", "store", "set"])
     result = run(home)
-    assert result.returncode == 0, result.stderr
+    assert result.returncode == 1, result.stderr
     assert f"could not overwrite the secret-store entry {ENTRY}: disk I/O error" in result.stderr
     state = cli(home)
     assert PROFILE in state["profiles"]
@@ -245,7 +250,7 @@ def test_waits_for_doctors_import_before_retiring_the_profile(home):
     # the profile, and the marker, wait for a start after the import.
     signed_in_home(home, refuse=True)
     result = run(home)
-    assert result.returncode == 0, result.stderr
+    assert result.returncode == 1, result.stderr
     assert "requires legacy credential migration" in result.stderr
     assert PROFILE in cli(home)["profiles"]
     assert cli(home)["store"] == {"UNRELATED_SECRET": "keep-me"}
@@ -272,7 +277,7 @@ def test_an_unreadable_profile_file_is_left_and_reported(home):
     broken = '{"profiles": {"' + PROFILE + '": '
     (home["state"] / "agents/main/agent/auth-profiles.json").write_text(broken)
     result = run(home)
-    assert result.returncode == 0, result.stderr
+    assert result.returncode == 1, result.stderr
     assert "could not rewrite" in result.stderr
     assert (home["state"] / "agents/main/agent/auth-profiles.json").read_text() == broken
     assert (home["state"] / ".env").read_text() == "BRAVE_API_KEY=keep-brave\n"

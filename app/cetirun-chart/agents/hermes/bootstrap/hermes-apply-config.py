@@ -4,16 +4,12 @@
 
 """Apply already-generated Hermes files. This does not choose model settings.
 
-On the platform AI Gateway (--gateway-key-env), the generated model choice and
-the CetiRun AI Gateway provider replace the saved ones instead of merging into
-them, so a model the Gateway no longer offers leaves Hermes' list. The variable
-that carries the Agent's key is reserved: Hermes loads its .env over the
-process environment, so no assignment of it stays in .env, neither a saved one
-nor one in the generated file. Once per HOME,
-the GitHub Copilot sign-in made inside the agent before the Gateway is
-removed: its token in .env and Hermes' cache of the token it exchanged. A
-token in the generated file, from the instance Secret, is not merged into .env
-on the Gateway, so the sign-in does not come back.
+With policy-controlled model access (--enforce-model-access), the generated
+model choice and provider list replace saved ones instead of merging into
+them, so a removed provider or model leaves Hermes' configuration. Durable
+direct-provider variables and the Copilot token cache are removed on every Pod
+start. With a Gateway key, its variable is reserved too: Hermes loads .env over
+the process environment, so no saved assignment may replace the Pod-only key.
 Without the Gateway, the provider CetiRun added for it is removed.
 """
 
@@ -39,6 +35,7 @@ COPILOT_RETIRED_MARKER = Path(".hermes/.cetirun-copilot-sign-in-retired")
 COPILOT_TOKEN_ENV = "COPILOT_GITHUB_TOKEN"
 COPILOT_TOKEN_CACHE = Path(".hermes/.copilot_jwt.json")
 RESERVED_ENV = ("CETIRUN_AI_GATEWAY",)
+DIRECT_MODEL_ENV = (COPILOT_TOKEN_ENV, "OPENCLAW_GITHUB_TOKEN", "OPENAI_API_KEY", "ANTHROPIC_API_KEY")
 ENV_NAME = re.compile(r"[A-Z][A-Z0-9_]{0,63}")
 
 
@@ -100,16 +97,12 @@ def replace_file(path: Path, content: str) -> None:
             os.unlink(name)
 
 
-def apply_gateway(config: dict[str, Any], desired: dict[str, Any]) -> dict[str, Any]:
-    """Replace the model choice and the Gateway provider with the generated ones."""
-    provider = (desired.get("providers") or {}).get(GATEWAY_PROVIDER)
-    if not isinstance(provider, dict) or not isinstance(desired.get("model"), dict):
-        raise ValueError("generated Gateway configuration is incomplete")
-    providers = config.get("providers")
-    if not isinstance(providers, dict):
-        providers = {}
-    providers[GATEWAY_PROVIDER] = copy.deepcopy(provider)
-    config["providers"] = providers
+def apply_managed_model(config: dict[str, Any], desired: dict[str, Any]) -> dict[str, Any]:
+    """Replace every saved model provider with the policy-generated set."""
+    providers = desired.get("providers")
+    if not isinstance(providers, dict) or not isinstance(desired.get("model"), dict):
+        raise ValueError("generated policy-controlled model configuration is incomplete")
+    config["providers"] = copy.deepcopy(providers)
     config["model"] = copy.deepcopy(desired["model"])
     return config
 
@@ -124,26 +117,16 @@ def remove_gateway(config: dict[str, Any]) -> dict[str, Any]:
     return config
 
 
-def copilot_sign_in_pending(root: Path) -> bool:
-    """Whether this HOME's in-agent GitHub Copilot sign-in is still to be removed."""
-    try:
-        return not check_destination(root, COPILOT_RETIRED_MARKER).exists()
-    except ValueError:
-        print("[agent-init] HermesCopilotSignInNotRetired: the marker is not a regular file", file=sys.stderr)
-        return False
-
-
 def retire_copilot_sign_in(root: Path) -> None:
-    """Remove the cached Copilot token and mark the HOME. The GitHub token left
-    .env with the rewrite. A failure leaves the HOME unmarked, for the next
-    start to try again, without keeping the Agent from starting."""
-    try:
-        cache = check_destination(root, COPILOT_TOKEN_CACHE)
-        if cache.exists():
-            cache.unlink()
-        replace_file(check_destination(root, COPILOT_RETIRED_MARKER), "retired\n")
-    except (OSError, ValueError):
-        print("[agent-init] HermesCopilotSignInNotRetired: tried again at the next start", file=sys.stderr)
+    """Remove the cached Copilot token and leave audit evidence.
+
+    The marker never skips a later check. Any failure propagates to the caller
+    and keeps the Agent container from starting.
+    """
+    cache = check_destination(root, COPILOT_TOKEN_CACHE)
+    if cache.exists():
+        cache.unlink()
+    replace_file(check_destination(root, COPILOT_RETIRED_MARKER), "retired\n")
 
 
 def main() -> int:
@@ -152,6 +135,7 @@ def main() -> int:
     parser.add_argument("--config", type=Path)
     parser.add_argument("--env", type=Path)
     parser.add_argument("--check", action="store_true")
+    parser.add_argument("--enforce-model-access", action="store_true")
     parser.add_argument("--gateway-key-env", help="on the AI Gateway: the variable carrying the Agent's key")
     args = parser.parse_args()
     if not args.check and (args.config is None or args.env is None):
@@ -176,34 +160,32 @@ def main() -> int:
         generated_env = read_env(args.env)
         desired_config = merge(existing_config, generated)
         on_gateway = args.gateway_key_env is not None
-        retire = False
-        if on_gateway:
-            desired_config = apply_gateway(desired_config, generated)
-            # The owner signs in to GitHub Copilot through the Portal. The
-            # generated environment, which carries a token from the instance
-            # Secret, brings none into .env, so the sign-in removed once
-            # cannot come back at this or a later start.
-            generated_env.pop(COPILOT_TOKEN_ENV, None)
-            retire = copilot_sign_in_pending(root)
-            if retire:
-                existing_env.pop(COPILOT_TOKEN_ENV, None)
+        if on_gateway and not args.enforce_model_access:
+            raise ValueError("a Gateway key requires enforced model access")
+        if args.enforce_model_access:
+            desired_config = apply_managed_model(desired_config, generated)
+            for name in DIRECT_MODEL_ENV:
+                generated_env.pop(name, None)
+                existing_env.pop(name, None)
         else:
             desired_config = remove_gateway(desired_config)
         for key, value in generated_env.items():
             if value or key not in existing_env:
                 existing_env[key] = value
-        if on_gateway:
+        if args.enforce_model_access:
             # Hermes loads .env over its environment, where the chart puts the
-            # Agent's key: no assignment of the key's variable may remain,
-            # neither a saved one nor one the chart generates, as it does for
-            # OPENAI_API_KEY.
-            for name in (args.gateway_key_env, *RESERVED_ENV):
+            # Agent's key when routed. No durable policy-control variable may
+            # remain, and no saved key may override the Pod-only key.
+            reserved = RESERVED_ENV
+            if args.gateway_key_env is not None:
+                reserved = (*reserved, args.gateway_key_env)
+            for name in reserved:
                 existing_env.pop(name, None)
         config_text = yaml.safe_dump(desired_config, sort_keys=False)
         env_text = "".join(f"{key}={value}\n" for key, value in existing_env.items())
         replace_file(config_path, config_text)
         replace_file(env_path, env_text)
-        if retire:
+        if args.enforce_model_access:
             retire_copilot_sign_in(root)
         return 0
     except (OSError, ValueError, yaml.YAMLError):

@@ -61,6 +61,14 @@ export interface Instance extends InstanceVersion {
   };
   /** The Agent's models in the platform AI Gateway; absent when it has none. */
   aiGateway?: AIGatewayInfo;
+  policy?: PolicyInfo;
+}
+
+export interface PolicyInfo {
+  phase?: "Pending" | "Applied" | "Denied" | "Unknown";
+  observedGeneration?: number;
+  effectivePolicyRef?: { name: string; uid: string; generation: number; class: "normal" | "admin" };
+  enforcement: { sandbox?: { desiredRevision?: string }; gateway?: { desiredRevision?: string }; credential?: { desiredRevision?: string } };
 }
 
 export type CopilotProxyPhase = "SignInRequired" | "Starting" | "Ready" | "Degraded";

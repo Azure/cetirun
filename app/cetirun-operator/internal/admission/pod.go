@@ -379,7 +379,12 @@ func (h *PodHandler) readPodSource(ctx context.Context, expected sandboxworkload
 	if err := h.reader.Get(ctx, client.ObjectKey{Namespace: source.Namespace, Name: source.Name}, object); err != nil {
 		return podReadFailure("Source", err)
 	}
-	if object.GetUID() != source.UID || object.GetResourceVersion() != source.ResourceVersion || !object.GetDeletionTimestamp().IsZero() {
+	workloadSource := source.APIVersion == "apps/v1" && source.Kind == "StatefulSet" &&
+		source.Namespace == expected.Namespace.Name && source.Name == expected.Workload.Name && source.UID == expected.Workload.UID
+	// The Operator's only execution mutation changes replicas from zero to one.
+	// The complete current StatefulSet is checked separately, so its metadata
+	// resourceVersion is not an immutable source pin here.
+	if object.GetUID() != source.UID || (!workloadSource && object.GetResourceVersion() != source.ResourceVersion) || !object.GetDeletionTimestamp().IsZero() {
 		return podDenied("SourceChanged", "a source UID or revision changed, or the source is terminating")
 	}
 	if source.APIVersion == "v1" && source.Kind == "PersistentVolumeClaim" &&

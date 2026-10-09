@@ -106,6 +106,10 @@ func Validate(agent ResolvedAgent, bindings Bindings, descriptor Descriptor) err
 	}
 	switch bindings.Model.Provider {
 	case "github_copilot", "openai", "anthropic":
+	case "disabled":
+		if bindings.Model.Name != "disabled" || bindings.Model.BaseURL != "" || bindings.Model.AuthMode != "" || bindings.Model.Gateway {
+			return fmt.Errorf("invalid disabled model provider")
+		}
 	default:
 		return fmt.Errorf("unsupported model provider")
 	}

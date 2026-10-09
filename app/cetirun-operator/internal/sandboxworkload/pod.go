@@ -71,6 +71,9 @@ func (b *Bundle) ValidateTemplate(template *corev1.PodTemplateSpec, image string
 	if b.input.Helpers.Doctor {
 		initNames = append(initNames, "doctor")
 	}
+	if b.input.AgentType == "openclaw" && b.input.ModelAccessEnforced {
+		initNames = append(initNames, "retire-copilot-sign-in", "retire-direct-model-auth")
+	}
 	if len(spec.Containers) != len(names) || len(spec.InitContainers) != len(initNames) {
 		return fmt.Errorf("unexpected native container or helper count")
 	}
@@ -168,6 +171,22 @@ func (b *Bundle) validateContainer(container corev1.Container, image string) err
 		if !slices.Equal(container.Command, []string{"openclaw", "doctor", "--fix", "--non-interactive", "--yes"}) ||
 			len(container.Args) != 0 {
 			return fmt.Errorf("unapproved doctor helper")
+		}
+	case "retire-copilot-sign-in":
+		mounts = append(mounts, corev1.VolumeMount{Name: "config", MountPath: "/etc/cetirun", ReadOnly: true})
+		if !slices.Equal(container.Command, []string{"/bin/sh", "/etc/cetirun/retire-copilot-sign-in.sh"}) ||
+			len(container.Args) != 0 || !equality.Semantic.DeepEqual(container.Env, []corev1.EnvVar{{
+			Name: "OPENCLAW_STATE_DIR", Value: "/home/vibe/.openclaw",
+		}}) {
+			return fmt.Errorf("unapproved Copilot sign-in retirement helper")
+		}
+	case "retire-direct-model-auth":
+		mounts = append(mounts, corev1.VolumeMount{Name: "config", MountPath: "/etc/cetirun", ReadOnly: true})
+		if !slices.Equal(container.Command, []string{"/bin/sh", "/etc/cetirun/retire-direct-model-auth.sh"}) ||
+			len(container.Args) != 0 || !equality.Semantic.DeepEqual(container.Env, []corev1.EnvVar{{
+			Name: "OPENCLAW_STATE_DIR", Value: "/home/vibe/.openclaw",
+		}}) {
+			return fmt.Errorf("unapproved direct model authentication retirement helper")
 		}
 	case "logger":
 		mounts[0].MountPath, mounts[0].SubPath, mounts[0].ReadOnly = HomePath+"/."+b.input.AgentType, "."+b.input.AgentType, true
@@ -285,7 +304,9 @@ func (b *Bundle) Expect(template corev1.PodTemplateSpec, workload *appsv1.Statef
 		Version: ExpectationVersion, Binding: b.input.Resolution.Binding, Revision: b.input.Controls.Revision,
 		Agent: ObjectIdentity{Name: b.input.AgentName, UID: b.input.Resolution.Binding.AgentUID}, AgentGeneration: b.input.AgentGeneration,
 		Namespace: b.input.Namespace, Workload: ObjectIdentity{Name: workload.Name, UID: workload.UID},
-		WorkloadKind: AgentWorkload, ExecutionHeld: true, Template: *template.DeepCopy(), Overhead: b.Overhead(),
+		WorkloadKind: AgentWorkload, ExecutionHeld: true,
+		OpenClawModelAccessEnforced: b.input.AgentType == "openclaw" && b.input.ModelAccessEnforced,
+		Template:                    *template.DeepCopy(), Overhead: b.Overhead(),
 		Sources: slices.Clone(sources), Home: ObjectIdentity{Name: b.input.Home.Name, UID: b.input.Home.UID},
 		Skills: ObjectIdentity{Name: b.input.Skills.Name, UID: b.input.Skills.UID},
 	}, nil

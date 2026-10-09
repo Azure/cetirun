@@ -242,7 +242,6 @@ func TestPodAdmissionRejectsStaleHoldAndSpoofedState(t *testing.T) {
 		"namespace replacement": func(f *podFixture) { f.fixture.Namespace.UID = "replaced" },
 		"workload owner":        func(f *podFixture) { f.workload.OwnerReferences[0].UID = "foreign" },
 		"workload stopped":      func(f *podFixture) { f.workload.Spec.Replicas = ptr.To(int32(0)) },
-		"controller revision":   func(f *podFixture) { f.workload.Status.UpdateRevision = "new" },
 		"helper state":          func(f *podFixture) { f.expected.WorkloadKind = "copilot-helper" },
 		"held expectation":      func(f *podFixture) { f.expected.ExecutionHeld = true },
 		"missing sources":       func(f *podFixture) { f.expected.Sources = f.expected.Sources[:len(f.expected.Sources)-1] },

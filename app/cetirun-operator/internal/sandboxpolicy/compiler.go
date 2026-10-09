@@ -31,7 +31,8 @@ func Compile(input CompileInput) (*Plan, error) {
 	}
 	if len(validation.IsDNS1123Subdomain(input.AgentName)) != 0 ||
 		len(validation.IsDNS1123Label(input.Namespace)) != 0 ||
-		len(validation.IsValidLabelValue(string(binding.AgentUID))) != 0 {
+		len(validation.IsValidLabelValue(string(binding.AgentUID))) != 0 ||
+		input.WorkloadProbePort < 0 || input.WorkloadProbePort > 65535 {
 		return nil, fmt.Errorf("valid Agent name, UID label and workload namespace are required")
 	}
 	if err := validateControlInput(resolution.AgentPolicy, input.Platform); err != nil {
@@ -74,21 +75,22 @@ func Compile(input CompileInput) (*Plan, error) {
 	capabilities.Protocols = sortedUnique(capabilities.Protocols)
 	capabilities.HomeAccessModes = sortedUnique(capabilities.HomeAccessModes)
 	plan.Revision, err = digest(struct {
-		Version      string
-		Binding      sandbox.Binding
-		AgentName    string
-		Namespace    string
-		Sandbox      api.SandboxSpec
-		Policy       sandbox.PolicyProjection
-		Capabilities sandbox.Capabilities
-		Adapter      AdapterRegistration
-		Topology     Topology
-		Grants       []ApprovedGrant
-		Approval     *ApprovedIdentity
-		Identity     IdentityPlan
-		Network      NetworkPlan
+		Version           string
+		Binding           sandbox.Binding
+		AgentName         string
+		Namespace         string
+		WorkloadProbePort int32
+		Sandbox           api.SandboxSpec
+		Policy            sandbox.PolicyProjection
+		Capabilities      sandbox.Capabilities
+		Adapter           AdapterRegistration
+		Topology          Topology
+		Grants            []ApprovedGrant
+		Approval          *ApprovedIdentity
+		Identity          IdentityPlan
+		Network           NetworkPlan
 	}{
-		"sandbox-controls-v2", binding, input.AgentName, input.Namespace,
+		"sandbox-controls-v3", binding, input.AgentName, input.Namespace, input.WorkloadProbePort,
 		resolution.Sandbox, sandbox.ProjectPolicy(resolution.AgentPolicy), capabilities, platform.Adapter,
 		platform.Topology, grants, approval, identity, network,
 	})

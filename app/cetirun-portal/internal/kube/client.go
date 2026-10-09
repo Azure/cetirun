@@ -858,8 +858,9 @@ func (c *Client) CreateTeam(ctx context.Context, team *cetirunv1alpha1.Team) (*c
 	return team, nil
 }
 
-// UpdateTeamSpec replaces the Portal-editable fields, preserving governance
-// fields from the latest stored Team on every conflict retry.
+// UpdateTeamSpec replaces the Team configuration from the latest stored Team
+// on every conflict retry. Policy bindings are owned by the administrator
+// Portal API as well as the ordinary Team settings.
 func (c *Client) UpdateTeamSpec(ctx context.Context, name string, newSpec cetirunv1alpha1.TeamSpec) (*cetirunv1alpha1.Team, error) {
 	var result *cetirunv1alpha1.Team
 	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
@@ -873,6 +874,10 @@ func (c *Client) UpdateTeamSpec(ctx context.Context, name string, newSpec cetiru
 		team.Spec.Defaults = editable.Defaults
 		team.Spec.Skills = editable.Skills
 		team.Spec.SkillStorage = editable.SkillStorage
+		team.Spec.NormalAgentPolicyRef = editable.NormalAgentPolicyRef
+		team.Spec.AdminAgentPolicyRef = editable.AdminAgentPolicyRef
+		team.Spec.SandboxRefs = editable.SandboxRefs
+		team.Spec.DefaultSandboxRef = editable.DefaultSandboxRef
 		if err := c.client.Patch(ctx, team, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{})); err != nil {
 			return fmt.Errorf("update team: %w", err)
 		}
