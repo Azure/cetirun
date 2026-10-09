@@ -56,6 +56,45 @@ LISTENER_READINESS = (
     "for port in (8080,8081,8082):\n"
     " with socket.create_connection((os.environ['POD_IP'],port),timeout=1): pass\n"
 )
+UDP_EXCHANGE = (
+    "import ipaddress,secrets,socket\n"
+    "def exchange(address,port,timeout):\n"
+    " ip=ipaddress.ip_address(address)\n"
+    " family=socket.AF_INET6 if ip.version==6 else socket.AF_INET\n"
+    " payload=b'qualification-'+secrets.token_bytes(16)\n"
+    " with socket.socket(family,socket.SOCK_DGRAM) as endpoint:\n"
+    "  endpoint.settimeout(timeout)\n"
+    "  endpoint.connect((str(ip),port))\n"
+    "  if endpoint.send(payload)!=len(payload): raise SystemExit('incomplete synthetic datagram send')\n"
+    "  try: response=endpoint.recv(len(payload)+1)\n"
+    "  except TimeoutError: return False\n"
+    "  if response!=payload: raise SystemExit('unexpected synthetic datagram response')\n"
+    " return True\n"
+)
+UDP_PROBE = UDP_EXCHANGE + (
+    "import json,sys\n"
+    "results={port:exchange(sys.argv[1],port,2) for port in (8082,8080,8081)}\n"
+    "print(json.dumps([results[port] for port in (8080,8081,8082)]))\n"
+)
+UDP_LISTENER_READINESS = UDP_EXCHANGE + (
+    "import os\n"
+    "for port in (8080,8081,8082):\n"
+    " if not exchange(os.environ['POD_IP'],port,1): raise SystemExit('synthetic datagram listener not ready')\n"
+)
+UDP_SERVER = (
+    "import ipaddress,os,socket,socketserver,threading,time\n"
+    "address=ipaddress.ip_address(os.environ['POD_IP'])\n"
+    "class Server(socketserver.UDPServer):\n"
+    " address_family=socket.AF_INET6 if address.version==6 else socket.AF_INET\n"
+    " max_packet_size=128\n"
+    "class Handler(socketserver.BaseRequestHandler):\n"
+    " def handle(self):\n"
+    "  data,endpoint=self.request\n"
+    "  endpoint.sendto(data,self.client_address)\n"
+    "for port in (8080,8081,8082):\n"
+    " threading.Thread(target=Server((str(address),port),Handler).serve_forever,daemon=True).start()\n"
+    "time.sleep(3600)\n"
+)
 
 
 class QualificationError(Exception):
@@ -685,13 +724,22 @@ def preflight(kube, runtime_class, runtime_handler, storage_class):
     }
 
 
-def pod(namespace, run, role, image, runtime_class):
+def network_scripts(protocol):
+    if protocol == "TCP":
+        return SERVER, LISTENER_READINESS, PROBE
+    if protocol == "UDP":
+        return UDP_SERVER, UDP_LISTENER_READINESS, UDP_PROBE
+    raise QualificationError("Network smoke protocol must be TCP or UDP")
+
+
+def pod(namespace, run, role, image, runtime_class, protocol="TCP"):
+    server, readiness, _ = network_scripts(protocol)
     spec = {
         "automountServiceAccountToken": False, "restartPolicy": "Never",
         "securityContext": {"runAsNonRoot": True, "runAsUser": 65532, "runAsGroup": 65532},
         "containers": [{
             "name": role, "image": image, "imagePullPolicy": "IfNotPresent",
-            "command": ["python3", "-c", SERVER if role == "server" else "import time;time.sleep(3600)"],
+            "command": ["python3", "-c", server if role == "server" else "import time;time.sleep(3600)"],
             "securityContext": {
                 "allowPrivilegeEscalation": False, "readOnlyRootFilesystem": True,
                 "capabilities": {"drop": ["ALL"]}, "seccompProfile": {"type": "RuntimeDefault"},
@@ -709,7 +757,7 @@ def pod(namespace, run, role, image, runtime_class):
             "name": "POD_IP", "valueFrom": {"fieldRef": {"fieldPath": "status.podIP"}},
         }]
         spec["containers"][0]["readinessProbe"] = {
-            "exec": {"command": ["python3", "-c", LISTENER_READINESS]},
+            "exec": {"command": ["python3", "-c", readiness]},
             "periodSeconds": 1, "timeoutSeconds": 5, "failureThreshold": 3,
         }
     return {
@@ -743,12 +791,13 @@ def wait_ready(kube, namespace, name, expected_uid, timeout=180, *, runtime_clas
     raise QualificationError("Synthetic probe readiness timed out")
 
 
-def connectivity(kube, namespace, address):
+def connectivity(kube, namespace, address, protocol="TCP"):
+    _, _, probe = network_scripts(protocol)
     try:
         ipaddress.ip_address(address)
     except ValueError as error:
         raise QualificationError("Synthetic server has an invalid Pod IP") from error
-    raw = kube.run(["exec", "--namespace", namespace, "probe", "--", "python3", "-c", PROBE, address])
+    raw = kube.run(["exec", "--namespace", namespace, "probe", "--", "python3", "-c", probe, address])
     try:
         result = json.loads(raw)
     except json.JSONDecodeError as error:
@@ -758,10 +807,10 @@ def connectivity(kube, namespace, address):
     return result
 
 
-def wait_connectivity(kube, namespace, address, expected, timeout=45):
+def wait_connectivity(kube, namespace, address, expected, timeout=45, *, protocol="TCP"):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        if connectivity(kube, namespace, address) == expected:
+        if connectivity(kube, namespace, address, protocol) == expected:
             return
         time.sleep(1)
     raise QualificationError("Network behavior did not match the expected allow/deny result")
@@ -793,9 +842,11 @@ def cleanup(kube, namespace, uid, run, timeout=120):
     raise QualificationError("Cleanup timed out; no finalizers were removed")
 
 
-def network_smoke(kube, image, runtime_class, result):
+def network_smoke(kube, image, runtime_class, result, protocol="TCP"):
+    network_scripts(protocol)
     if not re.fullmatch(PINNED_IMAGE, image):
         raise QualificationError("Network probes require an explicit digest-pinned image with Python 3")
+    result["networkProtocol"] = protocol
     run = uuid.uuid4().hex
     namespace = "cetirun-sandbox-probe-" + run[:12]
     result["testNamespace"] = namespace
@@ -812,7 +863,7 @@ def network_smoke(kube, image, runtime_class, result):
     try:
         pod_uids = {}
         for role in ("server", "probe"):
-            created_pod = kube.create(pod(namespace, run, role, image, runtime_class))
+            created_pod = kube.create(pod(namespace, run, role, image, runtime_class, protocol))
             pod_uid = created_pod.get("metadata", {}).get("uid")
             if not isinstance(pod_uid, str) or not pod_uid.strip():
                 raise QualificationError("Synthetic Pod creation identity is unknown; no test results may be accepted")
@@ -823,7 +874,7 @@ def network_smoke(kube, image, runtime_class, result):
         address = server.get("status", {}).get("podIP", "")
         if not address:
             raise QualificationError("Synthetic server has no Pod IP")
-        wait_connectivity(kube, namespace, address, [True, True, True])
+        wait_connectivity(kube, namespace, address, [True, True, True], protocol=protocol)
         result["networkChecks"] = {"baselineAllPorts": True}
         selector = {"matchLabels": {RUN_LABEL: run, "role": "probe"}}
         kube.create({
@@ -831,11 +882,11 @@ def network_smoke(kube, image, runtime_class, result):
             "metadata": {"name": "probe-deny", "namespace": namespace},
             "spec": {"endpointSelector": selector,
                      "egress": [{"toEntities": ["all"],
-                                 "toPorts": [{"ports": [{"port": "8081", "protocol": "TCP"}]}]}],
+                                 "toPorts": [{"ports": [{"port": "8081", "protocol": protocol}]}]}],
                      "egressDeny": [{"toEntities": ["all"],
-                                     "toPorts": [{"ports": [{"port": "8080", "protocol": "TCP"}]}]}]},
+                                     "toPorts": [{"ports": [{"port": "8080", "protocol": protocol}]}]}]},
         })
-        wait_connectivity(kube, namespace, address, [False, True, False])
+        wait_connectivity(kube, namespace, address, [False, True, False], protocol=protocol)
         result["networkChecks"]["destinationPortDeny"] = True
         result["networkChecks"]["witnessInitiallyBlocked"] = True
         kube.create({
@@ -845,7 +896,7 @@ def network_smoke(kube, image, runtime_class, result):
         })
         # The probe tests the 8082 allow witness before the 8080 deny, so a
         # sample straddling policy application cannot reuse an earlier denial.
-        wait_connectivity(kube, namespace, address, [False, True, True])
+        wait_connectivity(kube, namespace, address, [False, True, True], protocol=protocol)
         result["networkChecks"]["overlappingAllowObserved"] = True
         result["networkChecks"]["denyOverOverlappingAllow"] = True
         for role, pod_uid in pod_uids.items():
@@ -879,6 +930,8 @@ def main(argv=None):
     parser.add_argument("--runtime-handler")
     parser.add_argument("--storage-class")
     parser.add_argument("--probe-image")
+    parser.add_argument("--network-protocol", choices=("TCP", "UDP"),
+                        help="network-smoke transport (default TCP); not valid for read-only modes")
     parser.add_argument("--allow-test-resources", action="store_true")
     deployment = parser.add_argument_group("deployment-preflight (explicit workload pins required)")
     deployment.add_argument("--namespace")
@@ -890,6 +943,10 @@ def main(argv=None):
     except PreflightBlocked:
         print(json.dumps({"version": "v1", "status": "blocked", "qualifiesExecution": False,
                           "error": "invalid-command-line; use --help"}))
+        return 2
+    if args.network_protocol is not None and args.mode != "network-smoke":
+        print(json.dumps({"version": "v1", "mode": args.mode, "status": "blocked", "qualifiesExecution": False,
+                          "error": "--network-protocol requires network-smoke"}))
         return 2
     if args.mode == "deployment-preflight":
         return deployment_preflight(args)
@@ -904,7 +961,7 @@ def main(argv=None):
         kube = Kubernetes(args.kubeconfig, args.context, args.cluster_uid)
         result["preflight"] = preflight(kube, args.runtime_class, args.runtime_handler, args.storage_class)
         if args.mode == "network-smoke":
-            network_smoke(kube, args.probe_image, args.runtime_class, result)
+            network_smoke(kube, args.probe_image, args.runtime_class, result, args.network_protocol or "TCP")
         result["status"] = "completed"
     except (QualificationError, ValueError) as error:
         result["error"] = str(error)

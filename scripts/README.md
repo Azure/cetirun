@@ -138,6 +138,54 @@ PYTHONPATH=scripts/tests python3 -B -m unittest \
 make python-check license-check
 ```
 
+## Protocol-specific network smoke
+
+The existing `network-smoke` mode defaults to TCP. On a separately authorized
+disposable target, select `--network-protocol UDP` to run the same destination
+port-denial and overlapping-allow sequence with UDP datagrams:
+
+```bash
+python3 -B scripts/sandbox-platform-qualify.py network-smoke \
+  --kubeconfig "$TEST_KUBECONFIG" --context "$TEST_CONTEXT" \
+  --cluster-uid "$TEST_CLUSTER_UID" --storage-class managed-csi \
+  --probe-image "$PINNED_PYTHON_IMAGE" --allow-test-resources \
+  --network-protocol UDP
+```
+
+Each invocation creates its own synthetic server/probe Pods and policies, then
+deletes only its UID-pinned, run-labelled namespace. The protocol flag is
+rejected for both read-only preflight modes before client setup. No new workload
+credentials, host access, capability registration or execution override is added.
+
+UDP uses connected sockets to the selected server's primary IPv4/IPv6 Pod IP.
+Every datagram carries a fresh 16-byte random suffix and must receive the exact
+echo; mismatched, empty, stale or oversized responses fail the probe. Only a
+receive timeout counts as no response. Connect/send failures, short sends and
+connection refusals are errors, not successful policy denials. Each receive has
+a two-second timeout; server readiness requires an echo from all three listeners
+with one second per listener inside the existing five-second readiness probe.
+
+The baseline requires all ports to respond. The Cilium policy then allows 8081,
+denies 8080 and leaves 8082 blocked. After an overlapping allow, 8082 must respond
+while 8080 still times out. Each sample checks 8082 before 8080, so an earlier
+denial cannot be reused across that allow transition.
+
+Results include `networkProtocol` (`TCP` or `UDP`) and retain
+`qualifiesExecution: false`. UDP timeouts are observed loss of replies, not an
+independent proof of which device or policy dropped a datagram. Neither protocol
+qualifies full network isolation, DNS semantics, other IP families, physical
+fencing or a running governed Agent. These are synthetic primitive probes, not
+permission to exec into governed Pods or enable a live E2E workflow.
+
+Offline validation covers both the existing TCP behavior and UDP policy wiring,
+strict response handling, and actual echo traffic over IPv4/IPv6 loopback:
+
+```bash
+PYTHONPATH=scripts/tests python3 -B -m unittest \
+  test_sandbox_udp_probe test_sandbox_platform_qualify \
+  test_sandbox_deployment_preflight -v
+```
+
 ## Pinned test tools
 
 `ci/install_tools.py` is a separate, networked setup command, not part of the
