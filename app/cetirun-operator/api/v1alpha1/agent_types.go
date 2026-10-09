@@ -82,10 +82,6 @@ type AgentSpec struct {
 	// +optional
 	AgentIdentity *AgentIdentitySpec `json:"agentIdentity,omitempty"`
 
-	// TeamAuthorization contains platform-written evidence that the verified
-	// owner was assigned to the selected Team. It is not user editable.
-	TeamAuthorization TeamAuthorization `json:"teamAuthorization"`
-
 	// GatewayTokenSecretRef names the built-in Agent's multi-purpose Secret
 	// in the instance namespace. Required for openclaw/hermes and forbidden for
 	// custom; it is not the model-access or registry credential.
@@ -283,26 +279,12 @@ type AgentStatus struct {
 	Policy *PolicyStatus `json:"policy,omitempty"`
 }
 
-type TeamAuthorization struct {
-	Subject      EntraSubject `json:"subject"`
-	AuthorizedAt metav1.Time  `json:"authorizedAt"`
-}
-
 type PolicyStatus struct {
 	// +kubebuilder:validation:Enum=Pending;Applied;Denied;Unknown
 	Phase              string                    `json:"phase,omitempty"`
 	ObservedGeneration int64                     `json:"observedGeneration,omitempty"`
-	TeamAuthorization  *TeamAuthorizationStatus  `json:"teamAuthorization,omitempty"`
 	EffectivePolicyRef *EffectivePolicyReference `json:"effectivePolicyRef,omitempty"`
 	Enforcement        PolicyEnforcementStatus   `json:"enforcement,omitempty"`
-}
-
-type TeamAuthorizationStatus struct {
-	Revision     string                `json:"revision,omitempty"`
-	Subject      EntraSubject          `json:"subject"`
-	TeamRef      PolicyObjectReference `json:"teamRef"`
-	AuthorizedAt metav1.Time           `json:"authorizedAt"`
-	ResolvedAt   metav1.Time           `json:"resolvedAt"`
 }
 
 type PolicyObjectReference struct {

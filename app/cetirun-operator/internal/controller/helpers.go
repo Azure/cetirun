@@ -212,7 +212,7 @@ func buildHelmValuesCore(instance *cetirunv1alpha1.Agent, team *cetirunv1alpha1.
 	alias := instance.Spec.User.Alias
 	spec := instance.Spec
 	agentType := spec.Agent.Type
-	// Team membership is a policy-controlled top-level binding, never mutable user
+	// Team selection is a policy-controlled top-level binding, never mutable user
 	// profile data.
 	userTeam := spec.Team
 

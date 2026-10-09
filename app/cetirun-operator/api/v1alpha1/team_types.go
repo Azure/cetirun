@@ -9,10 +9,6 @@ import (
 
 // TeamSpec defines team-wide configuration applied to every member instance.
 type TeamSpec struct {
-	// Membership is the set of verified Entra subjects permitted to own Agents
-	// in this Team. Display names and aliases are deliberately not accepted as
-	// authorization evidence.
-	Membership TeamMembershipSpec `json:"membership"`
 	// NormalAgentPolicyRef names the policy for normal-class Agents.
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=253
@@ -64,29 +60,6 @@ type TeamSpec struct {
 	// coordinates so that a PV+PVC are auto-provisioned per instance namespace.
 	// +optional
 	SkillStorage *SkillStorageSpec `json:"skillStorage,omitempty"`
-}
-
-// TeamMembershipSpec contains the verified subjects that may be assigned to a
-// Team. It is set-like by subject kind, tenant ID and object ID.
-type TeamMembershipSpec struct {
-	// +kubebuilder:validation:MinItems=1
-	// +listType=map
-	// +listMapKey=kind
-	// +listMapKey=tenantID
-	// +listMapKey=objectID
-	Subjects []EntraSubject `json:"subjects"`
-}
-
-// EntraSubject is a canonical Entra subject. The tenant is retained in
-// the API even for a single-tenant deployment so object IDs cannot be
-// accidentally interpreted in a different tenant.
-type EntraSubject struct {
-	// +kubebuilder:validation:Enum=User;Group
-	Kind string `json:"kind"`
-	// +kubebuilder:validation:Pattern=`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`
-	TenantID string `json:"tenantID"`
-	// +kubebuilder:validation:Pattern=`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`
-	ObjectID string `json:"objectID"`
 }
 
 // SkillStorageSpec describes a shared Azure Blob NFS container holding

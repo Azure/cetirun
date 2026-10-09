@@ -71,8 +71,8 @@ func TestPolicyRevisionsAreScopedToTheirEnforcementDomains(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if afterTeam.authorizationRevision != baseline.authorizationRevision {
-		t.Fatal("an unrelated Team default changed authorization evidence")
+	if afterTeam.gatewayRevision != baseline.gatewayRevision || afterTeam.credentialRevision != baseline.credentialRevision || afterTeam.sandboxRevision != baseline.sandboxRevision {
+		t.Fatal("an unrelated Team default changed an enforcement revision")
 	}
 
 	policy := &api.AgentPolicy{}
@@ -119,12 +119,10 @@ func TestPolicyRevisionsAreScopedToTheirEnforcementDomains(t *testing.T) {
 
 func TestPolicyReprojectionHoldsOnlyActiveOldProjection(t *testing.T) {
 	resolution := &policyResolution{
-		team:                  &api.Team{ObjectMeta: metav1.ObjectMeta{UID: "team-uid"}},
-		policy:                &api.AgentPolicy{ObjectMeta: metav1.ObjectMeta{UID: "policy-uid"}},
-		authorizationRevision: "auth-new", gatewayRevision: "gateway-new", credentialRevision: "credential", sandboxRevision: "sandbox",
+		team: &api.Team{ObjectMeta: metav1.ObjectMeta{UID: "team-uid"}}, policy: &api.AgentPolicy{ObjectMeta: metav1.ObjectMeta{UID: "policy-uid"}},
+		gatewayRevision: "gateway-new", credentialRevision: "credential", sandboxRevision: "sandbox",
 	}
 	agent := &api.Agent{ObjectMeta: metav1.ObjectMeta{Generation: 3}, Status: api.AgentStatus{Policy: &api.PolicyStatus{
-		TeamAuthorization: &api.TeamAuthorizationStatus{Revision: "auth-old"},
 		Enforcement: api.PolicyEnforcementStatus{
 			Sandbox:    api.PolicyRevisionExpectation{DesiredRevision: "sandbox"},
 			Gateway:    api.PolicyRevisionExpectation{DesiredRevision: "gateway-old"},
@@ -139,7 +137,6 @@ func TestPolicyReprojectionHoldsOnlyActiveOldProjection(t *testing.T) {
 		t.Fatal("a running Agent retained an old Gateway projection")
 	}
 	// A matching verified projection has no hold transition.
-	agent.Status.Policy.TeamAuthorization.Revision = resolution.authorizationRevision
 	agent.Status.Policy.Enforcement.Gateway.DesiredRevision = resolution.gatewayRevision
 	agent.Status.Sandbox = &api.SandboxStatus{AppliedRevision: resolution.sandboxRevision, TeamUID: resolution.team.UID,
 		AgentPolicyUID: resolution.policy.UID, PolicyClass: api.AgentPolicyClassNormal}
@@ -245,7 +242,7 @@ func TestPolicyDenialRevokesKeyAndStopsOwnedBuiltinWorkload(t *testing.T) {
 	if err := kube.Get(ctx, types.NamespacedName{Name: testAIGatewayTeam}, team); err != nil {
 		t.Fatal(err)
 	}
-	team.Spec.Membership.Subjects = nil
+	team.Spec.SandboxRefs = nil
 	if err := kube.Update(ctx, team); err != nil {
 		t.Fatal(err)
 	}

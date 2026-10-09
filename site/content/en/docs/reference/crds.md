@@ -55,10 +55,9 @@ migration. Retention does not protect against a schema downgrade.
 | `agent.username` | Defaults to `vibe`; immutable, non-root image username |
 | `agent.port` | HTTP port, 1–65535; required for Custom Web UI, otherwise optional. Omitted for Custom means headless |
 | `agent.webUI` | Boolean, default false; Custom-only. When true, `agent.port` serves a Web UI rather than the Chat API; see [Agent Harness](../agent-harness/#custom-web-ui) |
-| `team` | Required name of the owning `Team` |
+| `team` | Required selected `Team`; an Agent creator may choose any available Team |
 | `sandboxRef` | Team-permitted Sandbox selected for Policy enforcement |
 | `policyClass` | `normal` (default) or administrator-assigned `admin` |
-| `teamAuthorization` | Required platform-written Entra subject and authorization time; users must not synthesize it |
 | `model` | Optional AI Gateway model name, at most 256 characters; it must be granted by the effective policy |
 | `modelAccess.sharedModels` | Explicit request for policy-allowed shared models; omission does not grant them |
 | `modelAccess.githubCopilot` | Explicit request for the policy-allowed per-user Copilot proxy |
@@ -146,7 +145,7 @@ check does not prove that an override will reconcile successfully.
 | `signInHelper` | Whether the workload serves the in-agent model sign-in helper that `/<instance>/cetirun-auth/` routes to; omitted until the operator records it |
 | `registryCredentials` | Receipt identifying the synchronized source Secret UID/resourceVersion and local pull Secret UID; not credential data or proof of successful image pulling |
 | `sandbox` | Last verified binding: `teamUID`, `sandboxUID`, `policyClass`, `agentPolicyUID`, `appliedRevision`; omitted before successful enforcement |
-| `policy` | Resolved Team authorization and effective policy plus desired Sandbox, Gateway, and credential revisions |
+| `policy` | Resolved effective policy plus desired Sandbox, Gateway, and credential revisions |
 
 `AgentConfigReady=False` with reason `AgentRuntimeNotImplemented` reports a
 setting that cannot be provisioned, such as a non-default built-in username.
@@ -184,7 +183,6 @@ not material to paste into a public bug report.
 
 | Field under `spec` | Contract |
 | --- | --- |
-| `membership.subjects` | Required nonempty set of canonical Entra users/groups, keyed by kind, tenant ID, and object ID |
 | `normalAgentPolicyRef` | Required normal-class policy |
 | `adminAgentPolicyRef` | Optional admin-class policy; never falls back to the normal policy |
 | `sandboxRefs` | Required nonempty set of permitted Sandbox names |
@@ -200,14 +198,15 @@ not material to paste into a public bug report.
 | `skillStorage.storageSize` | Optional shared PVC request; chart default `100Gi` |
 | `skillStorage.mountPath` | Optional in-container path; chart default `/home/vibe/.aks/skills` |
 
-Instances reference this object through `spec.team`; this does not grant
-membership or cross-instance access. Admission and the Operator require the
-Agent's immutable owner evidence to match a canonical membership subject.
-There is no team-level model or credential entitlement; those are selected by
-the Team's policy slot and requested per Agent.
+Instances select this object through `spec.team`. Selection applies the Team's
+runtime defaults and normal policy; it does not grant access to another Agent's
+data or runtime. There is no separate Team membership or authorization record.
+The optional admin policy remains an administrator-controlled selection. Model
+and credential entitlements come from the selected policy slot and are
+requested per Agent.
 
-The Team controller reports `Accepted` only after membership, policy slots, and
-Sandbox references form a valid current configuration. Runtime context
+The Team controller reports `Accepted` only after its policy slots and Sandbox
+references form a valid current configuration. Runtime context
 persistence also differs:
 Hermes refreshes `TEAM.md` on initialization, while OpenClaw preserves an
 initialized workspace's `USER.md`. See [configure a team](../../guides/teams/).
@@ -251,12 +250,12 @@ namespace deletion.
 Agent Identity authorization and directory cleanup remains a blocking deletion
 step for held built-in Agents, including when the runtime namespace is absent.
 
-The API writer must verify Team membership and write immutable owner and
-authorization evidence. Portal support is delivered separately from this
-CRD/Operator contract. Administrative assignment or budget changes require a
-suspended Agent. Admission validates protected writes and UID-bound Sandbox
-reauthorization. Operator status reports desired per-domain revisions and only
-marks Policy Applied after matching enforcement evidence is current.
+The Agent creator selects a Team directly. Admission defaults the Team's Sandbox
+and normal policy class, then persists UID-bound references so same-name
+resource replacement cannot be adopted implicitly. Later Team, Sandbox, admin
+policy, or budget changes require an administrator and a suspended Agent.
+Operator status reports desired per-domain revisions and only marks Policy
+Applied after matching enforcement evidence is current.
 
 AgentPolicy additionally allowlists built-in Harnesses, skills, exact Gateway
 model names, Copilot, and Agent Identity. A model entitlement requires a native

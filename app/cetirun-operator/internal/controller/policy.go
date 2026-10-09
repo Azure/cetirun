@@ -79,7 +79,7 @@ func (r *AgentReconciler) holdPolicyReprojection(ctx context.Context, agent *api
 // holdPolicyDependencyUnavailable preserves the virtual-key identity and
 // spend history while a control-plane dependency cannot be read. It blocks an
 // existing key and stops compute, but deliberately does not try to calculate
-// or apply a replacement grant without current authorization evidence.
+// or apply a replacement grant without current policy evidence.
 func (r *AgentReconciler) holdPolicyDependencyUnavailable(ctx context.Context, agent *api.Agent) (ctrl.Result, error) {
 	var blockErr error
 	if r.AIGateway.configured() {
@@ -89,10 +89,10 @@ func (r *AgentReconciler) holdPolicyDependencyUnavailable(ctx context.Context, a
 	return result, errors.Join(blockErr, holdErr)
 }
 
-// reconcilePolicy resolves declarative authorization and the effective
+// reconcilePolicy resolves the declarative selection and effective
 // AgentPolicy. Workload,
 // Gateway, and credential controllers remain the authority for their own
-// applied evidence. Invalid authorization is fail-closed before any workload
+// applied evidence. Invalid selection is fail-closed before any workload
 // recovery can happen.
 func (r *AgentReconciler) reconcilePolicy(ctx context.Context, agent *api.Agent) (policyReconcileResult, error) {
 	resolution, err := r.resolvePolicy(ctx, agent)
@@ -109,12 +109,11 @@ func (r *AgentReconciler) reconcilePolicy(ctx context.Context, agent *api.Agent)
 }
 
 type policyResolution struct {
-	team                  *api.Team
-	policy                *api.AgentPolicy
-	authorizationRevision string
-	gatewayRevision       string
-	credentialRevision    string
-	sandboxRevision       string
+	team               *api.Team
+	policy             *api.AgentPolicy
+	gatewayRevision    string
+	credentialRevision string
+	sandboxRevision    string
 }
 
 // policyReconcileResult distinguishes a declaratively authorized Agent
@@ -150,32 +149,12 @@ func (r *AgentReconciler) resolvePolicy(ctx context.Context, agent *api.Agent) (
 	if agent.Spec.Team == "" || agent.Spec.SandboxRef == "" {
 		return nil, fmt.Errorf("policy resolution requires spec.team and spec.sandboxRef")
 	}
-	ownerTenant, ownerTenantOK := agent.Annotations[api.AnnotationOwnerTenantID]
-	ownerObject, ownerObjectOK := agent.Annotations[api.AnnotationOwnerObjectID]
-	if !ownerTenantOK || !ownerObjectOK || ownerTenant == "" || ownerObject == "" {
-		return nil, fmt.Errorf("policy resolution requires immutable verified owner annotations")
-	}
-	authorization := agent.Spec.TeamAuthorization
-	if authorization.AuthorizedAt.IsZero() || !validEntraSubject(authorization.Subject) {
-		return nil, fmt.Errorf("policy resolution requires a complete Team authorization")
-	}
-	if !strings.EqualFold(authorization.Subject.TenantID, ownerTenant) {
-		return nil, fmt.Errorf("Team authorization tenant does not match the verified owner")
-	}
-	if authorization.Subject.Kind == "User" && !strings.EqualFold(authorization.Subject.ObjectID, ownerObject) {
-		return nil, fmt.Errorf("user Team authorization subject does not match the verified owner")
-	}
 	team := &api.Team{}
 	if err := r.Get(ctx, types.NamespacedName{Name: agent.Spec.Team}, team); err != nil {
 		if !apierrors.IsNotFound(err) {
 			return nil, policyDependency("read Team: %w", err)
 		}
 		return nil, fmt.Errorf("read Team: %w", err)
-	}
-	if !slices.ContainsFunc(team.Spec.Membership.Subjects, func(subject api.EntraSubject) bool {
-		return subject.Kind == authorization.Subject.Kind && strings.EqualFold(subject.TenantID, authorization.Subject.TenantID) && strings.EqualFold(subject.ObjectID, authorization.Subject.ObjectID)
-	}) {
-		return nil, fmt.Errorf("recorded Team authorization subject is not a current Team member")
 	}
 	if team.Spec.DefaultSandboxRef == "" || !slices.Contains(team.Spec.SandboxRefs, team.Spec.DefaultSandboxRef) || !slices.Contains(team.Spec.SandboxRefs, agent.Spec.SandboxRef) {
 		return nil, fmt.Errorf("Agent Sandbox is not permitted by the current Team")
@@ -261,18 +240,6 @@ func (r *AgentReconciler) resolvePolicy(ctx context.Context, agent *api.Agent) (
 			return nil, policyDependency("the live AI Gateway catalog cannot resolve every authorized shared model")
 		}
 	}
-	authorizationRevision, err := policyHash(struct {
-		Version      string           `json:"version"`
-		AgentUID     types.UID        `json:"agentUID"`
-		OwnerTenant  string           `json:"ownerTenant"`
-		OwnerObject  string           `json:"ownerObject"`
-		TeamUID      types.UID        `json:"teamUID"`
-		Subject      api.EntraSubject `json:"subject"`
-		AuthorizedAt metav1.Time      `json:"authorizedAt"`
-	}{"policy-authorization-v2", agent.UID, strings.ToLower(ownerTenant), strings.ToLower(ownerObject), team.UID, canonicalEntraSubject(authorization.Subject), authorization.AuthorizedAt})
-	if err != nil {
-		return nil, err
-	}
 	gatewayRevision, err := policyHash(struct {
 		Version            string    `json:"version"`
 		PolicyUID          types.UID `json:"policyUID"`
@@ -298,7 +265,7 @@ func (r *AgentReconciler) resolvePolicy(ctx context.Context, agent *api.Agent) (
 	if err != nil {
 		return nil, err
 	}
-	return &policyResolution{team: team, policy: policy, authorizationRevision: authorizationRevision, gatewayRevision: gatewayRevision, credentialRevision: credentialRevision, sandboxRevision: sandboxRevision}, nil
+	return &policyResolution{team: team, policy: policy, gatewayRevision: gatewayRevision, credentialRevision: credentialRevision, sandboxRevision: sandboxRevision}, nil
 }
 
 // desiredSandboxPolicyRevision compiles the current desired Sandbox controls
@@ -393,16 +360,6 @@ func (r *AgentReconciler) desiredSandboxPolicyRevision(ctx context.Context, agen
 		return "", err
 	}
 	return plan.Revision, nil
-}
-
-func validEntraSubject(subject api.EntraSubject) bool {
-	return (subject.Kind == "User" || subject.Kind == "Group") && subject.TenantID != "" && subject.ObjectID != ""
-}
-
-func canonicalEntraSubject(subject api.EntraSubject) api.EntraSubject {
-	subject.TenantID = strings.ToLower(subject.TenantID)
-	subject.ObjectID = strings.ToLower(subject.ObjectID)
-	return subject
 }
 
 func validatePolicySkills(agent *api.Agent, team *api.Team, policy *api.AgentPolicy) error {
@@ -501,15 +458,10 @@ func (r *AgentReconciler) recordPolicy(ctx context.Context, agent *api.Agent, re
 			setCondition(&agent.Status.Conditions, api.ConditionPolicyApplied, metav1.ConditionFalse, "PolicyDenied", "Policy enforcement is withheld until the assignment and requests are valid")
 		}
 	} else {
-		resolvedAt := metav1.NewTime(time.Now().UTC())
-		if existing := agent.Status.Policy; existing != nil && existing.TeamAuthorization != nil && existing.TeamAuthorization.Revision == resolution.authorizationRevision {
-			resolvedAt = existing.TeamAuthorization.ResolvedAt
-		}
-		status.TeamAuthorization = &api.TeamAuthorizationStatus{Revision: resolution.authorizationRevision, Subject: agent.Spec.TeamAuthorization.Subject, TeamRef: api.PolicyObjectReference{Name: resolution.team.Name, UID: resolution.team.UID, Generation: resolution.team.Generation}, AuthorizedAt: agent.Spec.TeamAuthorization.AuthorizedAt, ResolvedAt: resolvedAt}
 		status.EffectivePolicyRef = &api.EffectivePolicyReference{PolicyObjectReference: api.PolicyObjectReference{Name: resolution.policy.Name, UID: resolution.policy.UID, Generation: resolution.policy.Generation}, Class: agent.Spec.PolicyClass}
 		status.Enforcement = api.PolicyEnforcementStatus{Sandbox: api.PolicyRevisionExpectation{DesiredRevision: resolution.sandboxRevision}, Gateway: api.PolicyRevisionExpectation{DesiredRevision: resolution.gatewayRevision}, Credential: api.PolicyRevisionExpectation{DesiredRevision: resolution.credentialRevision}}
 		status.Phase = "Pending"
-		setCondition(&agent.Status.Conditions, api.ConditionPolicyResolved, metav1.ConditionTrue, "EffectivePolicyResolved", "The owner, Team assignment, requests, Sandbox, and effective AgentPolicy are valid")
+		setCondition(&agent.Status.Conditions, api.ConditionPolicyResolved, metav1.ConditionTrue, "EffectivePolicyResolved", "The Team selection, requests, Sandbox, and effective AgentPolicy are valid")
 		verified := policyEnforcementVerified(agent, resolution)
 		if verified {
 			status.Phase = "Applied"
@@ -565,11 +517,10 @@ func policyReprojectionMustHold(agent *api.Agent, resolution *policyResolution) 
 		return false
 	}
 	existing := agent.Status.Policy
-	if existing == nil || existing.TeamAuthorization == nil {
+	if existing == nil {
 		return true
 	}
-	if existing.TeamAuthorization.Revision != resolution.authorizationRevision ||
-		existing.Enforcement.Sandbox.DesiredRevision != resolution.sandboxRevision ||
+	if existing.Enforcement.Sandbox.DesiredRevision != resolution.sandboxRevision ||
 		existing.Enforcement.Gateway.DesiredRevision != resolution.gatewayRevision ||
 		existing.Enforcement.Credential.DesiredRevision != resolution.credentialRevision {
 		return true

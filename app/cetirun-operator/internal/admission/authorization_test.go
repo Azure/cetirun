@@ -17,7 +17,6 @@ import (
 	admissionv1 "k8s.io/api/admission/v1"
 	authenticationv1 "k8s.io/api/authentication/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
@@ -45,24 +44,10 @@ func stampFixtureAuthorization(t *testing.T, f fixture) {
 func assignedFixture(t *testing.T) fixture {
 	t.Helper()
 	f := newFixture(t)
-	owner := api.EntraSubject{
-		Kind:     "User",
-		TenantID: "00000000-0000-0000-0000-000000000001",
-		ObjectID: "00000000-0000-0000-0000-000000000002",
-	}
 	f.policy.Spec.Harnesses.Allowed = []api.AgentType{api.AgentTypeHermes}
-	f.team.Spec.Membership.Subjects = []api.EntraSubject{owner}
 	if err := f.client.Update(context.Background(), f.policy); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.client.Update(context.Background(), f.team); err != nil {
-		t.Fatal(err)
-	}
-	f.agent.Annotations = map[string]string{
-		api.AnnotationOwnerTenantID: owner.TenantID,
-		api.AnnotationOwnerObjectID: owner.ObjectID,
-	}
-	f.agent.Spec.TeamAuthorization = api.TeamAuthorization{Subject: owner, AuthorizedAt: metav1.Now()}
 	f.handler.config.TeamAssignments = []TeamAssignment{
 		{Team: f.team.Name, Users: []string{"member"}, Groups: []string{"engineering-members"}},
 	}
@@ -146,57 +131,6 @@ func TestTrustedTeamCreationContextIgnoresLabelsAndHumanRoles(t *testing.T) {
 			if err != nil || binding.TeamUID != f.team.UID || binding.AgentPolicyUID != f.policy.UID || agent.Status.Sandbox != nil {
 				t.Fatalf("creation did not persist authorization independently of enforcement: %v, %v", binding, err)
 			}
-		})
-	}
-}
-
-func TestPrePolicyAgentCannotBeUpgradedInPlace(t *testing.T) {
-	newBootstrapPair := func(t *testing.T) (fixture, *api.Agent, *api.Agent) {
-		t.Helper()
-		f := assignedFixture(t)
-		stampFixtureAuthorization(t, f)
-		old := f.agent.DeepCopy()
-		delete(old.Annotations, api.AnnotationOwnerTenantID)
-		delete(old.Annotations, api.AnnotationOwnerObjectID)
-		old.Spec.TeamAuthorization = api.TeamAuthorization{}
-		old.Spec.Suspended = false
-
-		candidate := old.DeepCopy()
-		candidate.Spec.Suspended = true
-		candidate.Spec.TeamAuthorization = f.agent.Spec.TeamAuthorization
-		candidate.Annotations[api.AnnotationOwnerTenantID] = testEntraSubject.TenantID
-		candidate.Annotations[api.AnnotationOwnerObjectID] = testEntraSubject.ObjectID
-		return f, old, candidate
-	}
-
-	for _, tc := range []struct {
-		name    string
-		user    string
-		mutate  func(*api.Agent)
-		allowed bool
-	}{
-		{name: "administrator bootstrap is unsupported", user: "administrator", allowed: false},
-		{name: "member cannot bootstrap", user: "member", allowed: false},
-		{name: "must suspend", user: "administrator", mutate: func(a *api.Agent) { a.Spec.Suspended = false }, allowed: false},
-		{name: "runtime model cannot change", user: "administrator", mutate: func(a *api.Agent) { a.Spec.Model = "other-model" }, allowed: false},
-		{name: "chart values cannot change", user: "administrator", mutate: func(a *api.Agent) {
-			a.Spec.Helm.Values = map[string]runtime.RawExtension{"unsafe": {Raw: []byte(`true`)}}
-		}, allowed: false},
-		{name: "image cannot change", user: "administrator", mutate: func(a *api.Agent) {
-			image := "registry.example.com/other:latest"
-			a.Spec.Agent.Image = &image
-		}, allowed: false},
-		{name: "unrelated annotations cannot change", user: "administrator", mutate: func(a *api.Agent) {
-			a.Annotations["example.com/runtime-note"] = "changed"
-		}, allowed: false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			f, old, candidate := newBootstrapPair(t)
-			if tc.mutate != nil {
-				tc.mutate(candidate)
-			}
-			response := f.handler.Validate(context.Background(), requestFor(t, admissionv1.Update, candidate, old, tc.user))
-			requireResponse(t, response, tc.allowed, "")
 		})
 	}
 }

@@ -215,12 +215,14 @@ func TestGeneratedSandboxSchemaShapes(t *testing.T) {
 
 	agent := apiContractCRD(t, "agents").Spec.Versions[0].Schema.OpenAPIV3Schema
 	requireSchemaDefault(t, agent.Properties["spec"].Properties["policyClass"], `"normal"`)
-	for _, name := range []string{"teamAuthorization", "sandboxRef", "team"} {
+	for _, name := range []string{"sandboxRef", "team"} {
 		if !slices.Contains(agent.Properties["spec"].Required, name) {
-			t.Fatalf("governed Agent field %s must be required", name)
+			t.Fatalf("policy-bound Agent field %s must be required", name)
 		}
 	}
-	requireSchemaProperties(t, agent.Properties["spec"].Properties["teamAuthorization"], "authorizedAt", "subject")
+	if _, ok := agent.Properties["spec"].Properties["teamAuthorization"]; ok {
+		t.Fatal("Agent must not require a separate Team authorization record")
+	}
 	requireSchemaProperties(t, agent.Properties["spec"].Properties["modelAccess"], "githubCopilot", "monthlyBudgetUSD", "sharedModels")
 	binding := agent.Properties["status"].Properties["sandbox"]
 	requireSchemaProperties(t, binding, "teamUID", "sandboxUID", "policyClass", "agentPolicyUID", "appliedRevision")
@@ -228,12 +230,14 @@ func TestGeneratedSandboxSchemaShapes(t *testing.T) {
 		t.Fatal("an enforced binding must be complete when present and omitted before enforcement")
 	}
 	team := apiContractCRD(t, "teams").Spec.Versions[0].Schema.OpenAPIV3Schema.Properties["spec"]
-	for _, name := range []string{"membership", "normalAgentPolicyRef", "sandboxRefs", "defaultSandboxRef"} {
+	for _, name := range []string{"normalAgentPolicyRef", "sandboxRefs", "defaultSandboxRef"} {
 		if _, ok := team.Properties[name]; !ok || !slices.Contains(team.Required, name) {
-			t.Fatalf("governed Team field %s must exist and be required", name)
+			t.Fatalf("policy-bound Team field %s must exist and be required", name)
 		}
 	}
-	requireSchemaProperties(t, team.Properties["membership"], "subjects")
+	if _, ok := team.Properties["membership"]; ok {
+		t.Fatal("Team selection must not require a membership allowlist")
+	}
 
 	for _, root := range []*apiextensionsv1.JSONSchemaProps{sandbox, policy} {
 		assertClosedSchema(t, root)

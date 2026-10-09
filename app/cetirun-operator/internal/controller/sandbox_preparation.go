@@ -155,7 +155,7 @@ func (r *AgentReconciler) prepareSandboxHeld(ctx context.Context, requested *api
 	// Never stage a policy-bound bundle from the legacy provider/value path: a
 	// future start adapter must not be able to turn that held template into a
 	// direct-provider workload.
-	if requested.Status.Policy != nil && requested.Status.Policy.TeamAuthorization != nil {
+	if requested.Status.Policy != nil && requested.Status.Policy.EffectivePolicyRef != nil {
 		return fmt.Errorf("%w: typed AI Gateway Sandbox projection is unavailable; execution remains held", sandboxpolicy.ErrUnsupportedControl)
 	}
 	if config.bootstrap == nil && controllerutil.ContainsFinalizer(requested, sandbox.BootstrapFinalizer) {

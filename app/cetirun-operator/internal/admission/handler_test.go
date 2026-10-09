@@ -27,12 +27,6 @@ import (
 
 const testController = "system:serviceaccount:operator-test:controller"
 
-var testEntraSubject = api.EntraSubject{
-	Kind:     "User",
-	TenantID: "00000000-0000-0000-0000-000000000001",
-	ObjectID: "00000000-0000-0000-0000-000000000002",
-}
-
 func testConfig() Config {
 	return Config{ValidationMode: ValidationStrict, AdminUsers: []string{"administrator", "system:serviceaccount:test:portal"}, AdminGroups: []string{"policy-test-admins"}, ControllerUsername: testController}
 }
@@ -75,7 +69,6 @@ func newFixture(t *testing.T) fixture {
 	team := &api.Team{
 		ObjectMeta: metav1.ObjectMeta{Name: "engineering", UID: "team-uid", ResourceVersion: "1"},
 		Spec: api.TeamSpec{
-			Membership:           api.TeamMembershipSpec{Subjects: []api.EntraSubject{testEntraSubject}},
 			NormalAgentPolicyRef: policy.Name,
 			SandboxRefs:          []string{box.Name},
 			DefaultSandboxRef:    box.Name,
@@ -99,15 +92,11 @@ func newFixture(t *testing.T) fixture {
 	agent := &api.Agent{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "alice-work", UID: "agent-uid", ResourceVersion: "1", Finalizers: []string{api.Finalizer},
-			Annotations: map[string]string{
-				api.AnnotationOwnerTenantID: testEntraSubject.TenantID,
-				api.AnnotationOwnerObjectID: testEntraSubject.ObjectID,
-			},
+			Annotations: map[string]string{},
 		},
 		Spec: api.AgentSpec{
 			Agent: api.HarnessSpec{Type: api.AgentTypeHermes}, User: api.UserSpec{Alias: "alice"},
 			GatewayTokenSecretRef: "gateway-token", Team: team.Name, SandboxRef: box.Name, PolicyClass: api.AgentPolicyClassNormal,
-			TeamAuthorization: api.TeamAuthorization{Subject: testEntraSubject, AuthorizedAt: metav1.Now()},
 		},
 	}
 	return fixture{handler, cl, agent, team, box, policy}
@@ -250,21 +239,6 @@ func TestLegacyBehaviorAndTeamEdits(t *testing.T) {
 	f.handler.registrations = nil
 	req = requestFor(t, admissionv1.Update, team, f.team, "portal")
 	requireResponse(t, f.handler.Validate(context.Background(), req), true, "unchanged")
-	for name, mutate := range map[string]func(*api.Team){
-		"add member": func(candidate *api.Team) {
-			candidate.Spec.Membership.Subjects = append(candidate.Spec.Membership.Subjects, api.EntraSubject{
-				Kind: "User", TenantID: testEntraSubject.TenantID, ObjectID: "00000000-0000-0000-0000-000000000099",
-			})
-		},
-		"remove member": func(candidate *api.Team) { candidate.Spec.Membership.Subjects = nil },
-	} {
-		t.Run(name, func(t *testing.T) {
-			candidate := f.team.DeepCopy()
-			mutate(candidate)
-			req := requestFor(t, admissionv1.Update, candidate, f.team, "portal")
-			requireResponse(t, f.handler.Validate(context.Background(), req), false, "administrator")
-		})
-	}
 	team.Spec.DefaultSandboxRef = "different"
 	req = requestFor(t, admissionv1.Update, team, f.team, "portal")
 	requireResponse(t, f.handler.Validate(context.Background(), req), false, "administrator")

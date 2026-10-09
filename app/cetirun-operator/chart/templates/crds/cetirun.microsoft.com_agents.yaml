@@ -323,40 +323,6 @@ spec:
                   The operator merges team defaults (user context, AI model, skills) into
                   the instance configuration. Per-instance fields take precedence.
                 type: string
-              teamAuthorization:
-                description: |-
-                  TeamAuthorization contains platform-written evidence that the verified
-                  owner was assigned to the selected Team. It is not user editable.
-                properties:
-                  authorizedAt:
-                    format: date-time
-                    type: string
-                  subject:
-                    description: |-
-                      EntraSubject is a canonical Entra subject. The tenant is retained in
-                      the API even for a single-tenant deployment so object IDs cannot be
-                      accidentally interpreted in a different tenant.
-                    properties:
-                      kind:
-                        enum:
-                        - User
-                        - Group
-                        type: string
-                      objectID:
-                        pattern: ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$
-                        type: string
-                      tenantID:
-                        pattern: ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$
-                        type: string
-                    required:
-                    - kind
-                    - objectID
-                    - tenantID
-                    type: object
-                required:
-                - authorizedAt
-                - subject
-                type: object
               user:
                 description: User information for this instance.
                 properties:
@@ -381,7 +347,6 @@ spec:
             - agent
             - sandboxRef
             - team
-            - teamAuthorization
             - user
             type: object
             x-kubernetes-validations:
@@ -810,62 +775,6 @@ spec:
                     - Denied
                     - Unknown
                     type: string
-                  teamAuthorization:
-                    properties:
-                      authorizedAt:
-                        format: date-time
-                        type: string
-                      resolvedAt:
-                        format: date-time
-                        type: string
-                      revision:
-                        type: string
-                      subject:
-                        description: |-
-                          EntraSubject is a canonical Entra subject. The tenant is retained in
-                          the API even for a single-tenant deployment so object IDs cannot be
-                          accidentally interpreted in a different tenant.
-                        properties:
-                          kind:
-                            enum:
-                            - User
-                            - Group
-                            type: string
-                          objectID:
-                            pattern: ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$
-                            type: string
-                          tenantID:
-                            pattern: ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$
-                            type: string
-                        required:
-                        - kind
-                        - objectID
-                        - tenantID
-                        type: object
-                      teamRef:
-                        properties:
-                          generation:
-                            format: int64
-                            type: integer
-                          name:
-                            type: string
-                          uid:
-                            description: |-
-                              UID is a type that holds unique ID values, including UUIDs.  Because we
-                              don't ONLY use UUIDs, this is an alias to string.  Being a type captures
-                              intent and helps make sure that UIDs and names do not get conflated.
-                            type: string
-                        required:
-                        - generation
-                        - name
-                        - uid
-                        type: object
-                    required:
-                    - authorizedAt
-                    - resolvedAt
-                    - subject
-                    - teamRef
-                    type: object
                 type: object
               registryCredentials:
                 description: |-

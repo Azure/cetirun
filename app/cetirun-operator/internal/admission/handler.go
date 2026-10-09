@@ -189,7 +189,7 @@ func (h *Handler) validateAgent(ctx context.Context, request admission.Request, 
 	if err := h.protectedAuthorization(request, agent, old); err != nil {
 		return admission.Denied(err.Error())
 	}
-	if err := h.protectedPolicyAssignment(request, agent, old); err != nil {
+	if err := h.protectedPolicyBudget(request, agent, old); err != nil {
 		return admission.Denied(err.Error())
 	}
 	assigned := ""
@@ -439,8 +439,7 @@ func references(team *api.Team, object client.Object) bool {
 }
 
 func sameTeamPolicy(a, b api.TeamSpec) bool {
-	return equality.Semantic.DeepEqual(a.Membership, b.Membership) &&
-		a.NormalAgentPolicyRef == b.NormalAgentPolicyRef && a.AdminAgentPolicyRef == b.AdminAgentPolicyRef &&
+	return a.NormalAgentPolicyRef == b.NormalAgentPolicyRef && a.AdminAgentPolicyRef == b.AdminAgentPolicyRef &&
 		a.DefaultSandboxRef == b.DefaultSandboxRef && slices.Equal(a.SandboxRefs, b.SandboxRefs)
 }
 

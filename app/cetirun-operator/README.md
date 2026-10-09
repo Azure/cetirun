@@ -30,7 +30,7 @@ does not derive from the human caller's Portal role. The effective policy is
 the intersection of that administrator-selected `AgentPolicy` and the Agent's
 explicit requests for models, budget, skills, and identity.
 
-The Operator resolves immutable owner and Team authorization before it can
+The Operator resolves the selected Team, Sandbox, and policy before it can
 retain compute or model access. It projects model names and a native monthly USD
 budget to a per-Agent AI Gateway virtual key, compiles the Sandbox/security/network
 revision, and records the expected Gateway, Sandbox, and credential revisions in
@@ -435,18 +435,19 @@ synthetic runtime evidence, not a running proxy or an end-to-end model request.
 ### Current activation boundary
 
 This API intentionally has no legacy-unbound mode. Every Agent requires
-`team`, `sandboxRef`, and platform-written `teamAuthorization`. Every Team
-requires verified Entra membership, a normal policy, permitted Sandboxes, and
-a creation default. Every AgentPolicy requires at least one supported built-in
-Harness. Custom is not a supported policy Harness in this contract.
-`policyClass` defaults to `normal`; selecting `admin` requires an explicit Team
-admin-policy slot and administrator-controlled assignment.
+`team` and `sandboxRef`. Every Team requires a normal policy, permitted
+Sandboxes, and a creation default. Agent creators may select any available
+Team; selecting one applies its normal policy and does not grant access to other
+Agents. Every AgentPolicy requires at least one supported built-in Harness.
+Custom is not a supported policy Harness in this contract. `policyClass`
+defaults to `normal`; selecting `admin` requires an explicit Team admin-policy
+slot and administrator-controlled assignment.
 
 The CRDs and Operator must be rolled out with an API writer that supplies this
-contract. An older Portal that omits membership or authorization evidence
-cannot create valid resources. Schema acceptance alone is not authorization:
-Admission protects platform-written evidence and requires an authorized
-administrator plus a suspended Agent for assignment or budget changes.
+contract. Portal support for managing the configuration resources is delivered
+separately. Admission defaults creation-time selection and protects the exact
+Team/Sandbox/policy UIDs from same-name replacement. Later assignment or budget
+changes require an authorized administrator and a suspended Agent.
 
 The controller holds Agents that request Sandbox policy, belong to a Team
 with policy settings, or already have Sandbox status or a hold finalizer.
@@ -527,9 +528,11 @@ This increment implements:
   Portal administrators do not automatically acquire this independent authority.
   A human administrator's Agent still defaults to the `normal` policy class.
 - Creation-only Agent selection defaulting, followed by validation against the
-  current Team. Existing Agents are never silently re-defaulted. Policy-bound member
-  writes require an exact authenticated identity-to-Team assignment; Portal
-  identity propagation is a separate integration and is not inferred here.
+  current Team. Existing Agents are never silently re-defaulted. Portal writes
+  use its administrator identity and may preserve the Team selected by the
+  Agent owner. Non-administrator direct Kubernetes writes require an exact
+  authenticated identity-to-Team assignment configured on the webhook; that
+  cluster access rule is separate from the product's Team selection model.
   Mutation and validation are installed together: Kubernetes runs mutation
   first, including for dry runs. Validation rejects a missing selection rather
   than assuming that a default was persisted.
@@ -572,10 +575,11 @@ produce enforcement observations, or permit policy-bound execution. Reference re
 are checks against current objects, not an atomic cross-resource transaction.
 Those boundaries must be completed before production adoption.
 
-#### Trusted Team assignments and explicit reauthorization
+#### Direct Kubernetes writer assignments and explicit reauthorization
 
-Configure assignments administratively, using the Kubernetes authenticated
-identity rather than an Agent field or a Portal role:
+For non-administrator callers that write Agent CRs directly, configure
+assignments using the Kubernetes authenticated identity rather than an Agent
+field or a Portal role:
 
 ```yaml
 sandboxAdmission:

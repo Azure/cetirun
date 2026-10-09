@@ -58,9 +58,8 @@ type AgentPolicyReconciler struct {
 	MaxSnapshotAge time.Duration
 }
 
-// TeamReconciler records whether the Team's membership and policy
-// bindings are structurally complete. It deliberately does not authorize a
-// human caller; the Portal records that evidence on the Agent.
+// TeamReconciler records whether the Team's policy and Sandbox bindings are
+// structurally complete.
 type TeamReconciler struct {
 	client.Client
 	APIReader client.Reader
@@ -104,11 +103,11 @@ func (r *TeamReconciler) Reconcile(ctx context.Context, request ctrl.Request) (c
 	}
 	before := team.DeepCopy()
 	now := configurationNow(r.Now)
-	condition := configurationCondition(metav1.ConditionTrue, "Valid", "Team membership and Policy bindings are valid.")
+	condition := configurationCondition(metav1.ConditionTrue, "Valid", "Team Policy and Sandbox bindings are valid.")
 	if team.DeletionTimestamp != nil {
 		condition = configurationCondition(metav1.ConditionFalse, "Terminating", "Team configuration is terminating.")
 	} else if err := r.validate(ctx, team); err != nil {
-		condition = configurationCondition(metav1.ConditionFalse, "InvalidConfiguration", "Team membership or Policy bindings are invalid.")
+		condition = configurationCondition(metav1.ConditionFalse, "InvalidConfiguration", "Team Policy or Sandbox bindings are invalid.")
 	}
 	condition.Type, condition.ObservedGeneration, condition.LastTransitionTime = api.ConditionTeamAccepted, team.Generation, metav1.NewTime(now)
 	apimeta.SetStatusCondition(&team.Status.Conditions, condition)
@@ -122,14 +121,6 @@ func (r *TeamReconciler) Reconcile(ctx context.Context, request ctrl.Request) (c
 }
 
 func (r *TeamReconciler) validate(ctx context.Context, team *api.Team) error {
-	if len(team.Spec.Membership.Subjects) == 0 {
-		return fmt.Errorf("Team membership is required")
-	}
-	for _, subject := range team.Spec.Membership.Subjects {
-		if !validEntraSubject(subject) {
-			return fmt.Errorf("Team membership contains an invalid subject")
-		}
-	}
 	if team.Spec.NormalAgentPolicyRef == "" || team.Spec.DefaultSandboxRef == "" || len(team.Spec.SandboxRefs) == 0 || !slices.Contains(team.Spec.SandboxRefs, team.Spec.DefaultSandboxRef) {
 		return fmt.Errorf("Team policy and Sandbox bindings are incomplete")
 	}
