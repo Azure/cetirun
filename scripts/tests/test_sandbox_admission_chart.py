@@ -239,7 +239,7 @@ class SandboxAdmissionChartTests(unittest.TestCase):
                 config_env["value"] = baseline_config_env["value"]
                 self.assertEqual(configured, baseline)
 
-    def test_kubernetes_sources_placement_adds_only_controller_selection_and_node_get(self):
+    def test_kubernetes_sources_placement_adds_only_controller_selection(self):
         admission = self.enforced_values(podsEnabled=True, placementConfigMapName="sandbox-placement")
         sources = {"enabled": True, "platformConfigMapName": "sandbox-platform"}
         baseline = self.render(admission, values={"sandboxSources": sources})
@@ -257,9 +257,9 @@ class SandboxAdmissionChartTests(unittest.TestCase):
             **json.loads(before["value"]), "placementConfigMapName": "sandbox-placement",
         })
         node_rule = {"apiGroups": [""], "resources": ["nodes"], "verbs": ["get"]}
-        rules = configured[("ClusterRole", "cetirun-operator-manager-role")]["rules"]
-        self.assertEqual(rules.count(node_rule), 1)
-        rules.remove(node_rule)
+        for documents in (baseline, configured):
+            rules = documents[("ClusterRole", "cetirun-operator-manager-role")]["rules"]
+            self.assertEqual(rules.count(node_rule), 1)
         after["value"] = before["value"]
         self.assertEqual(configured, baseline)
 

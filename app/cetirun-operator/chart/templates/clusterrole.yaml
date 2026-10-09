@@ -38,11 +38,11 @@ rules:
   - apiGroups: ["storage.k8s.io"]
     resources: ["storageclasses"]
     verbs: ["get"]
-  {{- if and .Values.sandboxSources.enabled .Values.sandboxSources.placementConfigMapName }}
+  # Native execution verifies the scheduled Node identity, readiness and the
+  # Kubernetes-owned PodTopologyLabels before publishing PolicyApplied.
   - apiGroups: [""]
     resources: ["nodes"]
     verbs: ["get"]
-  {{- end }}
   - apiGroups: ["rbac.authorization.k8s.io"]
     resources: ["clusterroles"]
     verbs: ["get"]
