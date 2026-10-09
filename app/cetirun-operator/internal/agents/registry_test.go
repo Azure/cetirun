@@ -4,6 +4,7 @@
 package agents_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/agents"
@@ -43,8 +44,17 @@ func TestResolve(t *testing.T) {
 	if _, err := agents.Resolve(agents.Request{Type: "hermes", Image: profile.QualifiedImages[0]}, profile); err != nil {
 		t.Fatal(err)
 	}
+	digestPinned := profile.Image + "@sha256:" + strings.Repeat("a", 64)
+	resolved, err = agents.Resolve(agents.Request{Type: "hermes", Image: digestPinned}, profile)
+	if err != nil || resolved.Image != digestPinned {
+		t.Fatalf("digest-pinned profile image: %+v %v", resolved, err)
+	}
 	for _, req := range []agents.Request{
 		{Type: "hermes", Image: "registry.example.com/other:1"},
+		{Type: "hermes", Image: "registry.example.com/hermes:2@sha256:" + strings.Repeat("a", 64)},
+		{Type: "hermes", Image: profile.Image + "@sha256:abcdef"},
+		{Type: "hermes", Image: profile.Image + "@sha256:" + strings.Repeat("A", 64)},
+		{Type: "hermes", Image: profile.Image + "@sha512:" + strings.Repeat("a", 128)},
 		{Type: "hermes", Username: "root"},
 		{Type: "hermes", Port: ptr.To[int32](-1)},
 		{Type: "hermes", Port: ptr.To[int32](0)},
