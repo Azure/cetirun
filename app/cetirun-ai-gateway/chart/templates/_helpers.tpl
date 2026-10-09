@@ -225,9 +225,10 @@ Whether the chart generates the bundled Valkey's password.
 {{- end }}
 
 {{/*
-Models configured at install. None is valid: an administrator can add models
-through the console later, and with CetiRun a deployment may use only the
-GitHub Copilot models the operator registers for each Agent. The copilot/
+Models configured at install. None is valid: a standalone Gateway can use
+console models later, and with CetiRun a deployment may use only the GitHub
+Copilot models the operator registers for each Agent. Database models are not
+trusted shared-model bindings for CetiRun Policy enforcement. The copilot/
 prefix is reserved only while operatorIntegration is on: a standalone Gateway
 may already serve a model under such a name.
 */}}
@@ -241,6 +242,15 @@ may already serve a model under such a name.
 {{- end }}
 {{- if not .litellm_params.model }}
 {{- fail (printf "model %s requires litellm_params.model" .model_name) }}
+{{- end }}
+{{- $info := .model_info | default dict }}
+{{- if $info.id }}
+{{- fail (printf "model %s configures model_info.id. The chart derives this reserved deployment identity from the complete model configuration so Policy can bind its access group to exactly one trusted backend." .model_name) }}
+{{- end }}
+{{- range ($info.access_groups | default list) }}
+{{- if hasPrefix "cetirun-model-" (lower (printf "%v" .)) }}
+{{- fail (printf "model %s configures reserved access group %s. The cetirun-model- prefix is chart-managed so an administrator cannot grant a key access to a replacement backend." .model_name .) }}
+{{- end }}
 {{- end }}
 {{- if hasPrefix "cetirun-" (lower .model_name) }}
 {{- fail (printf "model_name %s uses the reserved cetirun- prefix. That prefix belongs to models the CetiRun operator registers automatically; a collision would serve both under one name and split traffic between them." .model_name) }}

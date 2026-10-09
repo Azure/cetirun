@@ -105,6 +105,32 @@ assert_contains "kind: Deployment" "Deployment is rendered" "${output}"
 assert_contains "kind: Service" "Service is rendered" "${output}"
 assert_contains "kind: ConfigMap" "ConfigMap is rendered" "${output}"
 assert_contains "model_name: lint-model" "configured model reaches the LiteLLM config" "${output}"
+assert_contains "cetirun-model-" "configured models receive managed access groups" "${output}"
+managed_group="$(grep -oE 'cetirun-model-[0-9a-f]{16}' <<< "${output}" | head -1)"
+managed_suffix="${managed_group#cetirun-model-}"
+assert_contains "id: cetirun-shared-${managed_suffix}" \
+  "the configured deployment ID is bound to its managed access group" "${output}"
+
+# A display name is not an authorization boundary: LiteLLM can have several
+# backends for it. The chart gives every configured backend a deterministic,
+# collision-safe group which the operator grants exactly as observed.
+echo "==> configured model groups are collision-safe and deterministic"
+two_models="$(render \
+  --set-string 'models[1].model_name=lint-model' \
+  --set-string 'models[1].litellm_params.model=azure/lint-model')"
+mapfile -t managed_groups < <(grep -oE 'cetirun-model-[0-9a-f]{16}' <<< "${two_models}" | sort -u)
+if [ "${#managed_groups[@]}" -ne 2 ] || [ "${managed_groups[0]}" = "${managed_groups[1]}" ]; then
+  echo "FAIL: two distinct configured backends need distinct managed groups: ${managed_groups[*]}" >&2
+  exit 1
+fi
+two_models_repeat="$(render \
+  --set-string 'models[1].model_name=lint-model' \
+  --set-string 'models[1].litellm_params.model=azure/lint-model')"
+mapfile -t managed_groups_repeat < <(grep -oE 'cetirun-model-[0-9a-f]{16}' <<< "${two_models_repeat}" | sort -u)
+if [ "${managed_groups[*]}" != "${managed_groups_repeat[*]}" ]; then
+  echo "FAIL: managed access groups must be deterministic" >&2
+  exit 1
+fi
 assert_contains "\- \-\-config" "the config path is passed explicitly" "${output}"
 
 # Names are read from the rendered objects rather than rebuilt here: the chart
@@ -136,6 +162,12 @@ assert_rejected "an external database while the bundled one is on" \
 assert_rejected "an external Redis while the bundled one is on" --set-string "redis.host=r.example.invalid"
 assert_rejected "both provider credential sources" \
   --set-string "providerCredentials.existingSecret=a" --set-string "providerCredentials.inline.B=c"
+assert_rejected "a user-supplied managed access group" \
+  --set-string "models[0].model_info.access_groups[0]=cetirun-model-user-supplied"
+assert_rejected "a user-supplied managed access group in another case" \
+  --set-string "models[0].model_info.access_groups[0]=CetiRun-Model-user-supplied"
+assert_rejected "a user-supplied deployment ID" \
+  --set-string "models[0].model_info.id=user-supplied"
 
 # ----- Reserved model-name prefix -----
 

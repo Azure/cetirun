@@ -412,6 +412,16 @@ true` for such a Gateway; the `cetirun-platform` chart sets it for the Gateway i
 installs. It reserves the `copilot/` prefix, see [Reserved names](#reserved-names),
 and sets `general_settings.enforce_fallback_model_access`.
 
+For shared models, the chart derives a matching `cetirun-shared-...`
+deployment ID and `cetirun-model-...` access group from every configured model.
+The operator grants a group only when the live Gateway reports that exact,
+unique, statically configured binding. A database model, an unknown source, a
+mismatched ID, or any second deployment reusing the group invalidates the
+binding. An already-issued key may reach a copied group until the next catalog
+refresh, normally within two minutes; the operator then holds affected
+policy-bound Agents and blocks their existing keys. Configure policy-bound
+shared models through Helm values, not the console.
+
 LiteLLM checks a key against the requested model only. A fallback the Gateway
 is configured with, in `router_settings` or the console, is chosen after that
 check, and without the setting LiteLLM tries it unchecked; for a model name
@@ -425,6 +435,11 @@ or team allowed every model, or a `copilot/` name directly, has no group to
 filter by, so LiteLLM spreads its requests for a `copilot/` name over every
 Agent's proxy. The operator creates teams and keys without such grants; do not
 add them in the console.
+
+The console password and master key are control-plane credentials, not tenant
+credentials. Their holders can change routes and budgets or cause a policy
+hold even though forged reserved groups are not accepted as authorization.
+Give them only to administrators trusted to change the platform release.
 
 ## Credentials
 
