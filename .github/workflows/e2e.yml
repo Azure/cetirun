@@ -256,13 +256,16 @@ jobs:
 
       - name: Set up kubeconfig
         run: |
-          mkdir -p "$HOME/.kube"
-          echo "${{ secrets.E2E_KUBE_CONFIG }}" | base64 -d > "$HOME/.kube/config"
-          chmod 600 "$HOME/.kube/config"
+          umask 077
+          mkdir -p "$RUNNER_TEMP/cetirun-e2e"
+          echo "${{ secrets.E2E_KUBE_CONFIG }}" | base64 -d > "$RUNNER_TEMP/cetirun-e2e/kubeconfig"
+          echo "E2E_KUBECONFIG=$RUNNER_TEMP/cetirun-e2e/kubeconfig" >> "$GITHUB_ENV"
 
       - name: Run E2E tests
         env:
           EXPECTED_IMAGE_TAG: ${{ needs.build-cetirun.outputs.image_tag }}
+          E2E_CONTEXT: ${{ secrets.E2E_CONTEXT }}
+          E2E_CLUSTER_UID: ${{ secrets.E2E_CLUSTER_UID }}
         run: |
-          TEST_ALIAS=johnreese AGENT_TYPE=openclaw scripts/e2e-test.sh
-          TEST_ALIAS=hermese2e AGENT_TYPE=hermes scripts/e2e-test.sh
+          AGENT_TYPE=openclaw scripts/e2e-test.sh
+          AGENT_TYPE=hermes scripts/e2e-test.sh
