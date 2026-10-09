@@ -21,6 +21,8 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
@@ -93,7 +95,51 @@ func (r *TeamReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if r.APIReader == nil {
 		r.APIReader = mgr.GetAPIReader()
 	}
-	return ctrl.NewControllerManagedBy(mgr).For(&api.Team{}).Complete(r)
+	return ctrl.NewControllerManagedBy(mgr).
+		For(&api.Team{}).
+		Watches(&api.AgentPolicy{}, handler.EnqueueRequestsFromMapFunc(r.enqueueTeamsForAgentPolicy)).
+		Watches(&api.Sandbox{}, handler.EnqueueRequestsFromMapFunc(r.enqueueTeamsForSandbox)).
+		Complete(r)
+}
+
+func (r *TeamReconciler) enqueueTeams(ctx context.Context, matches func(*api.Team) bool) []reconcile.Request {
+	teams := &api.TeamList{}
+	if err := r.List(ctx, teams); err != nil {
+		return nil
+	}
+	requests := make([]reconcile.Request, 0, len(teams.Items))
+	for i := range teams.Items {
+		if matches(&teams.Items[i]) {
+			requests = append(requests, reconcile.Request{NamespacedName: types.NamespacedName{Name: teams.Items[i].Name}})
+		}
+	}
+	return requests
+}
+
+func (r *TeamReconciler) enqueueTeamsForAgentPolicy(ctx context.Context, object client.Object) []reconcile.Request {
+	return r.enqueueTeams(ctx, func(team *api.Team) bool {
+		return team.Spec.NormalAgentPolicyRef == object.GetName() || team.Spec.AdminAgentPolicyRef == object.GetName()
+	})
+}
+
+func (r *TeamReconciler) enqueueTeamsForSandbox(ctx context.Context, object client.Object) []reconcile.Request {
+	return r.enqueueTeams(ctx, func(team *api.Team) bool {
+		return slices.Contains(team.Spec.SandboxRefs, object.GetName())
+	})
+}
+
+type invalidTeamConfigurationError struct{ err error }
+
+func (e *invalidTeamConfigurationError) Error() string { return e.err.Error() }
+func (e *invalidTeamConfigurationError) Unwrap() error { return e.err }
+
+func invalidTeamConfiguration(format string, args ...any) error {
+	return &invalidTeamConfigurationError{err: fmt.Errorf(format, args...)}
+}
+
+func isInvalidTeamConfiguration(err error) bool {
+	var invalid *invalidTeamConfigurationError
+	return errors.As(err, &invalid)
 }
 
 func (r *TeamReconciler) Reconcile(ctx context.Context, request ctrl.Request) (ctrl.Result, error) {
@@ -103,40 +149,59 @@ func (r *TeamReconciler) Reconcile(ctx context.Context, request ctrl.Request) (c
 	}
 	before := team.DeepCopy()
 	now := configurationNow(r.Now)
+	var observeErr error
 	condition := configurationCondition(metav1.ConditionTrue, "Valid", "Team Policy and Sandbox bindings are valid.")
 	if team.DeletionTimestamp != nil {
 		condition = configurationCondition(metav1.ConditionFalse, "Terminating", "Team configuration is terminating.")
 	} else if err := r.validate(ctx, team); err != nil {
-		condition = configurationCondition(metav1.ConditionFalse, "InvalidConfiguration", "Team Policy or Sandbox bindings are invalid.")
+		if isInvalidTeamConfiguration(err) {
+			condition = configurationCondition(metav1.ConditionFalse, "InvalidConfiguration", err.Error())
+		} else {
+			condition = configurationCondition(metav1.ConditionUnknown, "DependenciesUnavailable", "Team Policy or Sandbox bindings cannot currently be verified.")
+			observeErr = err
+		}
 	}
 	condition.Type, condition.ObservedGeneration, condition.LastTransitionTime = api.ConditionTeamAccepted, team.Generation, metav1.NewTime(now)
 	apimeta.SetStatusCondition(&team.Status.Conditions, condition)
 	team.Status.ObservedGeneration = team.Generation
 	if !reflect.DeepEqual(before.Status, team.Status) {
 		if err := r.Status().Patch(ctx, team, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{})); err != nil {
-			return ctrl.Result{}, err
+			return ctrl.Result{}, errors.Join(observeErr, err)
 		}
 	}
-	return ctrl.Result{}, nil
+	return ctrl.Result{}, observeErr
 }
 
 func (r *TeamReconciler) validate(ctx context.Context, team *api.Team) error {
+	reader := r.APIReader
+	if reader == nil {
+		reader = r.Client
+	}
 	if team.Spec.NormalAgentPolicyRef == "" || team.Spec.DefaultSandboxRef == "" || len(team.Spec.SandboxRefs) == 0 || !slices.Contains(team.Spec.SandboxRefs, team.Spec.DefaultSandboxRef) {
-		return fmt.Errorf("Team policy and Sandbox bindings are incomplete")
+		return invalidTeamConfiguration("Team policy and Sandbox bindings are incomplete")
 	}
 	policy := &api.AgentPolicy{}
-	if err := r.APIReader.Get(ctx, types.NamespacedName{Name: team.Spec.NormalAgentPolicyRef}, policy); err != nil {
+	if err := reader.Get(ctx, types.NamespacedName{Name: team.Spec.NormalAgentPolicyRef}, policy); err != nil {
+		if apierrors.IsNotFound(err) {
+			return invalidTeamConfiguration("normal AgentPolicy %q does not exist", team.Spec.NormalAgentPolicyRef)
+		}
 		return fmt.Errorf("normal AgentPolicy is unavailable: %w", err)
 	}
 	for _, name := range team.Spec.SandboxRefs {
 		box := &api.Sandbox{}
-		if err := r.APIReader.Get(ctx, types.NamespacedName{Name: name}, box); err != nil {
+		if err := reader.Get(ctx, types.NamespacedName{Name: name}, box); err != nil {
+			if apierrors.IsNotFound(err) {
+				return invalidTeamConfiguration("Sandbox %q does not exist", name)
+			}
 			return fmt.Errorf("Sandbox %q is unavailable: %w", name, err)
 		}
 	}
 	if team.Spec.AdminAgentPolicyRef != "" {
 		admin := &api.AgentPolicy{}
-		if err := r.APIReader.Get(ctx, types.NamespacedName{Name: team.Spec.AdminAgentPolicyRef}, admin); err != nil {
+		if err := reader.Get(ctx, types.NamespacedName{Name: team.Spec.AdminAgentPolicyRef}, admin); err != nil {
+			if apierrors.IsNotFound(err) {
+				return invalidTeamConfiguration("admin AgentPolicy %q does not exist", team.Spec.AdminAgentPolicyRef)
+			}
 			return fmt.Errorf("admin AgentPolicy is unavailable: %w", err)
 		}
 	}

@@ -275,11 +275,15 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		// namespace exists.  Bootstrap deliberately creates that namespace
 		// first; a missing namespace on the first pass is therefore not an
 		// authorization to fall back to direct model credentials.
+		var namespaceErr error
 		if r.AIGateway.Enabled {
 			namespace := &corev1.Namespace{}
-			namespaceErr := r.APIReader.Get(ctx, types.NamespacedName{Name: instanceNamespace(instance.Name)}, namespace)
+			namespaceErr = r.customReader().Get(ctx, types.NamespacedName{Name: instanceNamespace(instance.Name)}, namespace)
 			if namespaceErr == nil {
-				if err := r.reconcileAIGateway(ctx, instance, true); err != nil {
+				if err := r.validateSandboxBootstrapNamespace(ctx, instance, namespace); err != nil {
+					namespaceErr = err
+					logger.Error(err, "Policy-bound AI Gateway projection is waiting for a protected Sandbox namespace")
+				} else if err := r.reconcileAIGateway(ctx, instance, true); err != nil {
 					_ = r.updateStatus(ctx, instance)
 					// Keep progressing through holdSandbox so ingress/compute remain
 					// stopped even when the Gateway control plane is unavailable.
@@ -288,10 +292,15 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 					return ctrl.Result{}, err
 				}
 			} else if !errors.IsNotFound(namespaceErr) {
-				return ctrl.Result{}, fmt.Errorf("inspect policy-bound Agent namespace: %w", namespaceErr)
+				namespaceErr = fmt.Errorf("inspect policy-bound Agent namespace: %w", namespaceErr)
+				logger.Error(namespaceErr, "Policy-bound AI Gateway projection cannot verify its namespace")
 			}
 		}
-		return r.holdSandbox(ctx, instance)
+		result, holdErr := r.holdSandbox(ctx, instance)
+		if namespaceErr != nil && !errors.IsNotFound(namespaceErr) {
+			return result, stderrors.Join(namespaceErr, holdErr)
+		}
+		return result, holdErr
 	}
 
 	// Inspect Team policy before runtime recovery can retain a Ready state.

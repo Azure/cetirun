@@ -555,10 +555,14 @@ func (r *AgentReconciler) reconcileAIGateway(ctx context.Context, instance *ceti
 		return aiGatewayDegraded(instance, "PolicyGrantInvalid", err)
 	}
 	if !grant.active {
-		blocked, err := r.blockAIGatewayKeyIfPresent(ctx, client, instance)
+		blocked, err := r.blockAIGatewayKeyIfPresent(ctx, client, instance, aiGatewayReasonNoModels)
 		if err != nil {
+			if aiGatewayOperatorOwnedBlock(status.Reason) {
+				return err
+			}
 			return aiGatewayDegraded(instance, "KeyBlockFailed", err)
 		}
+		status = ensureAIGatewayStatus(instance)
 		status.Routed, status.AccessGroups, status.Models, status.DefaultModel, status.Blocked = false, nil, nil, "", blocked
 		status.Phase, status.Reason = cetirunv1alpha1.AIGatewayPhaseReady, aiGatewayReasonNoModels
 		setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionAIGatewayReady,
@@ -613,6 +617,12 @@ func (r *AgentReconciler) reconcileAIGateway(ctx context.Context, instance *ceti
 				"cetirun_user": instance.Spec.User.Alias, "cetirun_team": instance.Spec.Team,
 			},
 		}
+		if instance.Spec.Suspended {
+			if err := r.recordAIGatewayBlockIntent(ctx, instance, aiGatewayReasonSuspended,
+				"The AI Gateway key will remain blocked while the Agent is suspended"); err != nil {
+				return fmt.Errorf("persist AI Gateway suspension intent: %w", err)
+			}
+		}
 		err := client.GenerateKey(ctx, request)
 		if errors.Is(err, aigateway.ErrAliasExists) {
 			// The alias embeds this Agent's UID, so the existing key is this
@@ -630,6 +640,9 @@ func (r *AgentReconciler) reconcileAIGateway(ctx context.Context, instance *ceti
 				fmt.Errorf("the virtual key %s exists in the Gateway, but its value is no longer held", status.KeyAlias))
 		}
 		if err != nil {
+			if instance.Spec.Suspended {
+				return fmt.Errorf("create blocked AI Gateway key for suspended Agent: %w", err)
+			}
 			return aiGatewayDegraded(instance, "KeyCreateFailed", err)
 		}
 		r.EventRecorder.Eventf(instance, corev1.EventTypeNormal, "AIGatewayKeyCreated",
@@ -653,8 +666,12 @@ func (r *AgentReconciler) reconcileAIGateway(ctx context.Context, instance *ceti
 		// Suspend is a revocation boundary. Block before doing any other
 		// update; later read-back proves the key stayed the same.
 		if instance.Spec.Suspended && !key.Blocked {
+			if err := r.recordAIGatewayBlockIntent(ctx, instance, aiGatewayReasonSuspended,
+				"The AI Gateway key will be blocked while the Agent is suspended"); err != nil {
+				return fmt.Errorf("persist AI Gateway suspension intent: %w", err)
+			}
 			if err := client.SetKeyBlocked(ctx, token, true); err != nil {
-				return aiGatewayDegraded(instance, "KeyBlockFailed", err)
+				return fmt.Errorf("block AI Gateway key for suspended Agent: %w", err)
 			}
 			key.Blocked = true
 		}
@@ -707,6 +724,9 @@ func (r *AgentReconciler) reconcileAIGateway(ctx context.Context, instance *ceti
 			return aiGatewayDegraded(instance, "KeyReadbackMismatch", err)
 		}
 	}
+	// A write-ahead block intent may have refreshed instance.Status and
+	// invalidated a pointer taken before that status patch.
+	status = ensureAIGatewayStatus(instance)
 	now := metav1.Now()
 	status.KeyID = token[:aiGatewayKeyIDLength]
 	status.AccessGroups = groups
@@ -781,6 +801,23 @@ func (r *AgentReconciler) reconcileAIGateway(ctx context.Context, instance *ceti
 
 func aiGatewayOperatorOwnedBlock(reason string) bool {
 	return reason == aiGatewayReasonSuspended || reason == aiGatewayReasonNoModels || reason == aiGatewayReasonPolicyReprojection
+}
+
+// recordAIGatewayBlockIntent durably records why CetiRun is allowed to own a
+// blocked key before changing the external Gateway. A restart can then finish
+// the transition without adopting an administrator's pre-existing block.
+func (r *AgentReconciler) recordAIGatewayBlockIntent(ctx context.Context, instance *cetirunv1alpha1.Agent, reason, message string) error {
+	status := ensureAIGatewayStatus(instance)
+	if status.Reason == reason {
+		return nil
+	}
+	status.Blocked = false
+	status.Routed = false
+	status.Reason = reason
+	status.Phase = cetirunv1alpha1.AIGatewayPhaseReady
+	setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionAIGatewayReady,
+		metav1.ConditionFalse, reason, message)
+	return r.updateStatus(ctx, instance)
 }
 
 // beginAIGatewayPolicyReprojection blocks an active operator-owned key before
@@ -864,7 +901,7 @@ func (r *AgentReconciler) beginAIGatewayPolicyReprojection(ctx context.Context, 
 // has tightened to no model sources. A missing Secret cannot safely identify
 // a key, so the UID-derived alias remains untouched rather than risking an
 // unrelated key or resetting spend.
-func (r *AgentReconciler) blockAIGatewayKeyIfPresent(ctx context.Context, client aiGatewayKeyClient, instance *cetirunv1alpha1.Agent) (bool, error) {
+func (r *AgentReconciler) blockAIGatewayKeyIfPresent(ctx context.Context, client aiGatewayKeyClient, instance *cetirunv1alpha1.Agent, reason string) (bool, error) {
 	secret, err := r.aiGatewayKeySecret(ctx, instance)
 	if err != nil {
 		return false, err
@@ -889,6 +926,16 @@ func (r *AgentReconciler) blockAIGatewayKeyIfPresent(ctx context.Context, client
 	}
 	if key.Alias != aiGatewayKeyAlias(instance) {
 		return false, fmt.Errorf("the AI Gateway key Secret identifies another key alias")
+	}
+	status := ensureAIGatewayStatus(instance)
+	if key.Blocked && !aiGatewayOperatorOwnedBlock(status.Reason) {
+		return false, fmt.Errorf("the AI Gateway key is already blocked outside a CetiRun policy transition")
+	}
+	if status.Reason != reason {
+		if err := r.recordAIGatewayBlockIntent(ctx, instance, reason,
+			"The AI Gateway key will be blocked because the effective policy grants no model source"); err != nil {
+			return false, fmt.Errorf("persist AI Gateway block intent: %w", err)
+		}
 	}
 	if !key.Blocked {
 		if err := client.SetKeyBlocked(ctx, token, true); err != nil {

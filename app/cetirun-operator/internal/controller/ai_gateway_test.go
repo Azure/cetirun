@@ -36,6 +36,9 @@ import (
 	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/aigateway"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/helm"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/runtimebindings"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
 )
 
 const (
@@ -294,7 +297,7 @@ func aiGatewayTestTeam(name string) *cetirunv1alpha1.Team {
 	return &cetirunv1alpha1.Team{ObjectMeta: metav1.ObjectMeta{Name: name, Generation: 1}, Spec: cetirunv1alpha1.TeamSpec{
 		NormalAgentPolicyRef: testPolicyName,
 		SandboxRefs:          []string{testSandboxName}, DefaultSandboxRef: testSandboxName,
-	}, Status: cetirunv1alpha1.TeamStatus{ObservedGeneration: 1, Conditions: []metav1.Condition{{Type: cetirunv1alpha1.ConditionTeamAccepted, Status: metav1.ConditionTrue}}}}
+	}, Status: cetirunv1alpha1.TeamStatus{ObservedGeneration: 1, Conditions: []metav1.Condition{{Type: cetirunv1alpha1.ConditionTeamAccepted, Status: metav1.ConditionTrue, ObservedGeneration: 1}}}}
 }
 
 func aiGatewayTestPolicy() *cetirunv1alpha1.AgentPolicy {
@@ -304,7 +307,7 @@ func aiGatewayTestPolicy() *cetirunv1alpha1.AgentPolicy {
 			SharedModels: cetirunv1alpha1.AgentPolicySharedModelsAccess{Allowed: []string{testSharedModelOne}}, Copilot: cetirunv1alpha1.AgentPolicyCopilotAccess{Allowed: true},
 			GatewayBudget: &cetirunv1alpha1.AgentPolicyGatewayBudget{DefaultMonthlyUSD: "10", MaxMonthlyUSD: "100"},
 		},
-	}, Status: cetirunv1alpha1.AgentPolicyStatus{ObservedGeneration: 1, Conditions: []metav1.Condition{{Type: cetirunv1alpha1.ConditionAgentPolicyAccepted, Status: metav1.ConditionTrue}}}}
+	}, Status: cetirunv1alpha1.AgentPolicyStatus{ObservedGeneration: 1, Conditions: []metav1.Condition{{Type: cetirunv1alpha1.ConditionAgentPolicyAccepted, Status: metav1.ConditionTrue, ObservedGeneration: 1}}}}
 }
 
 func allowTestPolicyModels(t *testing.T, kube client.Client, models ...string) {
@@ -358,11 +361,57 @@ func aiGatewayTestReconciler(t *testing.T, objects ...client.Object) (*AgentReco
 			return gateway, nil
 		},
 	}
+	for _, object := range objects {
+		if agent, ok := object.(*cetirunv1alpha1.Agent); ok {
+			installAIGatewayTestBootstrap(t, r, kube, agent)
+		}
+	}
 	return r, kube, gateway
 }
 
 func aiGatewayNamespace() *corev1.Namespace {
-	return &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: instanceNamespace("alice")}}
+	return &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: instanceNamespace("alice"), UID: "test-agent-namespace-uid"}}
+}
+
+func installAIGatewayTestBootstrap(t *testing.T, r *AgentReconciler, kube client.Client, agent *cetirunv1alpha1.Agent) {
+	t.Helper()
+	namespace := &corev1.Namespace{}
+	if err := kube.Get(context.Background(), types.NamespacedName{Name: instanceNamespace(agent.Name)}, namespace); err != nil {
+		if apierrors.IsNotFound(err) {
+			return
+		}
+		t.Fatal(err)
+	}
+	receipt := &sandboxBootstrapReceipt{
+		Version: "v1", AgentName: agent.Name, AgentUID: agent.UID, AgentType: agent.Spec.Agent.Type,
+		Namespace: namespace.Name, ChartVersion: agent.Spec.Helm.Version,
+		Home: runtimebindings.HomeClaim{StorageClass: "test-storage", StorageSize: "1Gi", AccessMode: string(corev1.ReadWriteOnce)},
+		Objects: []sandboxBootstrapObject{
+			{Kind: "Namespace", Name: namespace.Name, UID: namespace.UID},
+			{Kind: "Role", Name: "cetirun-operator-ns-role"},
+			{Kind: "RoleBinding", Name: "cetirun-operator-ns-rolebinding"},
+			{Kind: "PersistentVolumeClaim", Name: "agent-home"},
+			{Kind: "Secret", Name: agent.Spec.GatewayTokenSecretRef},
+		},
+	}
+	raw, err := json.Marshal(receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receiptObject := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{
+		Name: r.sandboxBootstrapKey(agent).Name, Namespace: r.OperatorNamespace, UID: types.UID("test-bootstrap-" + agent.Name),
+		OwnerReferences: []metav1.OwnerReference{sandboxworkload.AgentOwner(agent.Name, agent.UID)},
+		Annotations:     map[string]string{sandboxworkload.AgentUIDAnnotation: string(agent.UID)},
+		Finalizers:      []string{sandbox.BootstrapFinalizer},
+	}, Data: map[string]string{sandboxBootstrapReceiptKey: string(raw)}}
+	if err := kube.Create(context.Background(), receiptObject); err != nil {
+		t.Fatal(err)
+	}
+	desired := r.sandboxBootstrapObjects(agent, receiptObject, receipt)[0].(*corev1.Namespace)
+	desired.UID, desired.ResourceVersion = namespace.UID, namespace.ResourceVersion
+	if err := kube.Update(context.Background(), desired); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func readSecret(t *testing.T, kube client.Client, name string) *corev1.Secret {
@@ -525,6 +574,28 @@ func TestReconcileAIGatewayNoEntitlementBlocksExistingKeyWithoutReplacingIt(t *t
 	}
 	if agent.Status.AIGateway.Routed || !agent.Status.AIGateway.Blocked || agent.Status.AIGateway.Reason != aiGatewayReasonNoModels {
 		t.Fatalf("no entitlement must report a blocked, unrouted hold: %+v", agent.Status.AIGateway)
+	}
+}
+
+func TestReconcileAIGatewayNoEntitlementNeverClaimsAnAdministratorBlock(t *testing.T) {
+	agent := aiGatewayTestAgent(testAIGatewayTeam)
+	r, kube, gateway := aiGatewayTestReconciler(t, agent, aiGatewayNamespace())
+	if err := r.reconcileAIGateway(context.Background(), agent, true); err != nil {
+		t.Fatal(err)
+	}
+	token := aigateway.Token(string(readKeySecret(t, kube).Data[aiGatewayKeySecretField]))
+	gateway.keys[token].Blocked = true
+	agent.Status.AIGateway.Reason = ""
+	agent.Spec.ModelAccess = modelAccess(false, false)
+	if err := r.reconcileAIGateway(context.Background(), agent, true); err == nil {
+		t.Fatal("no-entitlement reconciliation claimed an administrator block")
+	}
+	if !gateway.keys[token].Blocked || agent.Status.AIGateway.Reason == aiGatewayReasonNoModels {
+		t.Fatalf("administrator block lost its ownership boundary: key=%+v status=%+v", gateway.keys[token], agent.Status.AIGateway)
+	}
+	agent.Spec.ModelAccess = modelAccess(true, true)
+	if err := r.reconcileAIGateway(context.Background(), agent, true); err == nil || !gateway.keys[token].Blocked {
+		t.Fatal("restoring entitlement must not clear an administrator block")
 	}
 }
 
@@ -1550,6 +1621,60 @@ func TestPolicyReprojectionRecoversWhenBlockReceiptWriteFails(t *testing.T) {
 	}
 	if gateway.keys[token].Blocked {
 		t.Fatal("recovered policy-reprojection block remained permanent")
+	}
+}
+
+func TestSuspensionBlockRecoversWhenReceiptWriteFails(t *testing.T) {
+	agent := aiGatewayTestAgent(testAIGatewayTeam)
+	r, kube, gateway := aiGatewayTestReconciler(t, agent, aiGatewayNamespace())
+	ctx := context.Background()
+	if err := r.reconcileAIGateway(ctx, agent, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.updateStatus(ctx, agent); err != nil {
+		t.Fatal(err)
+	}
+	token := aigateway.Token(string(readKeySecret(t, kube).Data[aiGatewayKeySecretField]))
+	agent.Spec.Suspended = true
+	if err := kube.Update(ctx, agent); err != nil {
+		t.Fatal(err)
+	}
+	if err := kube.Get(ctx, client.ObjectKeyFromObject(agent), agent); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := r.reconcileAIGateway(ctx, agent, true); err != nil {
+		t.Fatal(err)
+	}
+	if !gateway.keys[token].Blocked {
+		t.Fatal("suspension did not block the key")
+	}
+	injected := errors.New("synthetic suspension receipt failure")
+	r.Client = aiGatewayStatusErrorClient{Client: kube, err: injected}
+	if err := r.updateStatus(ctx, agent); !errors.Is(err, injected) {
+		t.Fatalf("receipt failure was not returned: %v", err)
+	}
+	persisted := &cetirunv1alpha1.Agent{}
+	if err := kube.Get(ctx, client.ObjectKeyFromObject(agent), persisted); err != nil {
+		t.Fatal(err)
+	}
+	if persisted.Status.AIGateway == nil || persisted.Status.AIGateway.Reason != aiGatewayReasonSuspended || persisted.Status.AIGateway.Blocked {
+		t.Fatalf("durable suspension intent was not recorded before blocking: %+v", persisted.Status.AIGateway)
+	}
+
+	persisted.Spec.Suspended = false
+	if err := kube.Update(ctx, persisted); err != nil {
+		t.Fatal(err)
+	}
+	if err := kube.Get(ctx, client.ObjectKeyFromObject(persisted), persisted); err != nil {
+		t.Fatal(err)
+	}
+	r.Client = kube
+	if err := r.reconcileAIGateway(ctx, persisted, true); err != nil {
+		t.Fatalf("persisted suspension intent could not recover: %v", err)
+	}
+	if gateway.keys[token].Blocked {
+		t.Fatal("recovered suspension block remained permanent")
 	}
 }
 

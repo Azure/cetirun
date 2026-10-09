@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -19,6 +20,7 @@ import (
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/aigateway"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
 	istiov1beta1 "istio.io/client-go/pkg/apis/networking/v1beta1"
 )
 
@@ -64,6 +66,7 @@ func TestPolicyRevisionsAreScopedToTheirEnforcementDomains(t *testing.T) {
 		t.Fatal(err)
 	}
 	team.Status.ObservedGeneration = team.Generation
+	team.Status.Conditions[0].ObservedGeneration = team.Generation
 	if err := kube.Status().Update(ctx, team); err != nil {
 		t.Fatal(err)
 	}
@@ -85,6 +88,7 @@ func TestPolicyRevisionsAreScopedToTheirEnforcementDomains(t *testing.T) {
 		t.Fatal(err)
 	}
 	policy.Status.ObservedGeneration = policy.Generation
+	policy.Status.Conditions[0].ObservedGeneration = policy.Generation
 	if err := kube.Status().Update(ctx, policy); err != nil {
 		t.Fatal(err)
 	}
@@ -105,6 +109,7 @@ func TestPolicyRevisionsAreScopedToTheirEnforcementDomains(t *testing.T) {
 		t.Fatal(err)
 	}
 	policy.Status.ObservedGeneration = policy.Generation
+	policy.Status.Conditions[0].ObservedGeneration = policy.Generation
 	if err := kube.Status().Update(ctx, policy); err != nil {
 		t.Fatal(err)
 	}
@@ -329,6 +334,76 @@ func TestPolicyDependencyFailureBlocksButPreservesKeyAndRecovers(t *testing.T) {
 	}
 	if gateway.keys[token] == nil || gateway.keys[token].Blocked || len(gateway.deletedTokens) != 0 || len(gateway.deletedAliases) != 0 {
 		t.Fatalf("recovery did not reuse and unblock the same key: key=%+v tokens=%v aliases=%v", gateway.keys[token], gateway.deletedTokens, gateway.deletedAliases)
+	}
+}
+
+func TestPolicyGatewayNeverProjectsAKeyIntoAnUnverifiedNamespace(t *testing.T) {
+	ctx := context.Background()
+	agent := aiGatewayTestAgent(testAIGatewayTeam)
+	r, kube, gateway := aiGatewayTestReconciler(t, agent, aiGatewayNamespace())
+	namespace := &corev1.Namespace{}
+	if err := kube.Get(ctx, types.NamespacedName{Name: instanceNamespace(agent.Name)}, namespace); err != nil {
+		t.Fatal(err)
+	}
+	delete(namespace.Annotations, sandboxworkload.AgentUIDAnnotation)
+	if err := kube.Update(ctx, namespace); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: agent.Name}}); err == nil {
+		t.Fatal("an unverified namespace must keep the governed Agent held")
+	}
+	secret := &corev1.Secret{}
+	err := kube.Get(ctx, types.NamespacedName{Namespace: namespace.Name, Name: aiGatewayKeySecretName}, secret)
+	if !apierrors.IsNotFound(err) || len(gateway.generated) != 0 {
+		t.Fatalf("an unverified namespace received Gateway credentials: secretErr=%v generated=%d", err, len(gateway.generated))
+	}
+}
+
+func TestPolicyUnknownAcceptancePreservesTheExistingGatewayKey(t *testing.T) {
+	for _, kind := range []string{"Team", "AgentPolicy"} {
+		t.Run(kind, func(t *testing.T) {
+			ctx := context.Background()
+			agent := aiGatewayTestAgent(testAIGatewayTeam)
+			r, kube, gateway := aiGatewayTestReconciler(t, agent, aiGatewayNamespace())
+			if err := r.reconcileAIGateway(ctx, agent, true); err != nil {
+				t.Fatal(err)
+			}
+			if err := r.updateStatus(ctx, agent); err != nil {
+				t.Fatal(err)
+			}
+			token := aigateway.Token(string(readKeySecret(t, kube).Data[aiGatewayKeySecretField]))
+
+			switch kind {
+			case "Team":
+				team := &api.Team{}
+				if err := kube.Get(ctx, types.NamespacedName{Name: testAIGatewayTeam}, team); err != nil {
+					t.Fatal(err)
+				}
+				team.Status.Conditions[0].Status = metav1.ConditionUnknown
+				if err := kube.Status().Update(ctx, team); err != nil {
+					t.Fatal(err)
+				}
+			case "AgentPolicy":
+				policy := &api.AgentPolicy{}
+				if err := kube.Get(ctx, types.NamespacedName{Name: testPolicyName}, policy); err != nil {
+					t.Fatal(err)
+				}
+				policy.Status.Conditions[0].Status = metav1.ConditionUnknown
+				if err := kube.Status().Update(ctx, policy); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := r.resolvePolicy(ctx, agent); err == nil || !isPolicyDependencyError(err) {
+				t.Fatalf("Accepted=Unknown must be a retryable dependency state: %v", err)
+			}
+			if _, err := r.holdPolicyDependencyUnavailable(ctx, agent); err != nil {
+				t.Fatal(err)
+			}
+			if gateway.keys[token] == nil || !gateway.keys[token].Blocked || len(gateway.deletedTokens) != 0 || len(gateway.deletedAliases) != 0 {
+				t.Fatalf("Accepted=Unknown deleted or failed to block the key: key=%+v tokens=%v aliases=%v", gateway.keys[token], gateway.deletedTokens, gateway.deletedAliases)
+			}
+		})
 	}
 }
 

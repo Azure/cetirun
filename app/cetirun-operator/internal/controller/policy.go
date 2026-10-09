@@ -166,8 +166,14 @@ func (r *AgentReconciler) resolvePolicy(ctx context.Context, agent *api.Agent) (
 	if teamAccepted == nil {
 		return nil, policyDependency("Team acceptance observation is unavailable")
 	}
-	if teamAccepted.Status != metav1.ConditionTrue {
+	if teamAccepted.ObservedGeneration != team.Generation || teamAccepted.Status == metav1.ConditionUnknown {
+		return nil, policyDependency("Team acceptance observation is unavailable for generation %d", team.Generation)
+	}
+	if teamAccepted.Status == metav1.ConditionFalse {
 		return nil, fmt.Errorf("Team policy assignment is not accepted")
+	}
+	if teamAccepted.Status != metav1.ConditionTrue {
+		return nil, policyDependency("Team acceptance observation has an unrecognized status")
 	}
 	policyRef := team.Spec.NormalAgentPolicyRef
 	if agent.Spec.PolicyClass == api.AgentPolicyClassAdmin {
@@ -190,8 +196,14 @@ func (r *AgentReconciler) resolvePolicy(ctx context.Context, agent *api.Agent) (
 	if policyAccepted == nil {
 		return nil, policyDependency("AgentPolicy acceptance observation is unavailable")
 	}
-	if policyAccepted.Status != metav1.ConditionTrue {
+	if policyAccepted.ObservedGeneration != policy.Generation || policyAccepted.Status == metav1.ConditionUnknown {
+		return nil, policyDependency("AgentPolicy acceptance observation is unavailable for generation %d", policy.Generation)
+	}
+	if policyAccepted.Status == metav1.ConditionFalse {
 		return nil, fmt.Errorf("effective AgentPolicy is not accepted")
+	}
+	if policyAccepted.Status != metav1.ConditionTrue {
+		return nil, policyDependency("AgentPolicy acceptance observation has an unrecognized status")
 	}
 	if !slices.Contains(policy.Spec.Harnesses.Allowed, agent.Spec.Agent.Type) {
 		return nil, fmt.Errorf("Agent harness %q is not allowed by policy", agent.Spec.Agent.Type)

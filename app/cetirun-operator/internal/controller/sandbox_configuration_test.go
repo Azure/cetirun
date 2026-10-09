@@ -293,6 +293,44 @@ func TestAgentPolicyAcceptedIsConfigurationOnly(t *testing.T) {
 	}
 }
 
+func TestTeamDependencyReadFailureIsUnknownAndRetryable(t *testing.T) {
+	policy := &api.AgentPolicy{ObjectMeta: metav1.ObjectMeta{Name: "normal", UID: "normal-uid"}}
+	box := &api.Sandbox{ObjectMeta: metav1.ObjectMeta{Name: "standard", UID: "standard-uid"}}
+	team := &api.Team{ObjectMeta: metav1.ObjectMeta{Name: "example", UID: "team-uid", Generation: 3}, Spec: api.TeamSpec{
+		NormalAgentPolicyRef: policy.Name, DefaultSandboxRef: box.Name, SandboxRefs: []string{box.Name},
+	}}
+	base := fake.NewClientBuilder().WithScheme(configurationScheme(t)).WithStatusSubresource(team).
+		WithObjects(policy, box, team).Build()
+	failure := errors.New("synthetic Team dependency timeout")
+	reader := &teamDependencyReader{Reader: base, failure: failure}
+	r := &controller.TeamReconciler{Client: base, APIReader: reader}
+	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(team)}
+	if _, err := r.Reconcile(context.Background(), request); !errors.Is(err, failure) {
+		t.Fatalf("dependency timeout must be returned for controller retry: %v", err)
+	}
+	current := &api.Team{}
+	if err := base.Get(context.Background(), request.NamespacedName, current); err != nil {
+		t.Fatal(err)
+	}
+	condition := apimeta.FindStatusCondition(current.Status.Conditions, api.ConditionTeamAccepted)
+	if condition == nil || condition.Status != metav1.ConditionUnknown || condition.Reason != "DependenciesUnavailable" ||
+		condition.ObservedGeneration != team.Generation || current.Status.ObservedGeneration != team.Generation {
+		t.Fatalf("transient dependency failure became a definitive denial: %+v", current.Status)
+	}
+
+	reader.failure = nil
+	if _, err := r.Reconcile(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	if err := base.Get(context.Background(), request.NamespacedName, current); err != nil {
+		t.Fatal(err)
+	}
+	condition = apimeta.FindStatusCondition(current.Status.Conditions, api.ConditionTeamAccepted)
+	if condition == nil || condition.Status != metav1.ConditionTrue {
+		t.Fatalf("Team did not recover when its dependencies became readable: %+v", current.Status)
+	}
+}
+
 func TestConfigurationReadFailureAndStatusFailureAreNotSuccess(t *testing.T) {
 	object, snapshot, prerequisites := sandboxConfigurationFixture()
 	base := fake.NewClientBuilder().WithScheme(configurationScheme(t)).WithStatusSubresource(object).
@@ -585,6 +623,18 @@ func TestConfigurationPreservesObservationAndStatusErrors(t *testing.T) {
 type configurationPrerequisiteReader struct {
 	client.Reader
 	failure error
+}
+
+type teamDependencyReader struct {
+	client.Reader
+	failure error
+}
+
+func (r *teamDependencyReader) Get(ctx context.Context, key client.ObjectKey, object client.Object, options ...client.GetOption) error {
+	if _, ok := object.(*api.AgentPolicy); ok && r.failure != nil {
+		return r.failure
+	}
+	return r.Reader.Get(ctx, key, object, options...)
 }
 
 func (r *configurationPrerequisiteReader) Get(ctx context.Context, key client.ObjectKey, object client.Object, options ...client.GetOption) error {
