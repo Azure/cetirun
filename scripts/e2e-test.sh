@@ -10,49 +10,260 @@
 # the openclaw image tag, and cleans up.
 #
 # Prerequisites:
-#   - kubectl and helm configured to target the AKS cluster
+#   - Explicitly authorized cluster and the target pins below
 #   - Agent CRD installed
 #   - Operator, portal, and OAuth2 Proxy pods running
 #
 # Environment variables:
-#   TEST_ALIAS            — Instance alias           (default: johnreese)
+#   E2E_KUBECONFIG        — Explicit absolute kubeconfig path (required)
+#   E2E_CONTEXT           — Explicit context name (required)
+#   E2E_CLUSTER_UID       — Expected kube-system namespace UID (required)
+#   TEST_ALIAS            — New instance alias (default: generated)
 #   AGENT_TYPE            — Agent type               (default: hermes)
 #   TEST_NAMESPACE        — Operator namespace        (default: cetirun-system)
 #   PORTAL_NAMESPACE      — Portal namespace          (default: cetirun-portal; set to TEST_NAMESPACE for umbrella)
 #   READY_TIMEOUT         — Seconds to wait for Ready (default: 600)
+#   CLEANUP_TIMEOUT       — Seconds to observe controller cleanup (default: 180)
 #   DOMAIN                — Base domain for routing   (auto-detected from operator Helm values)
 #   EXPECTED_IMAGE_TAG    — If set, verify agent pod uses this image tag
 #   SKIP_CLEANUP          — If non-empty, skip cleanup on success
 
 set -euo pipefail
 
-TEST_ALIAS="${TEST_ALIAS:-johnreese}"
+E2E_KUBECONFIG="${E2E_KUBECONFIG:-}"
+E2E_CONTEXT="${E2E_CONTEXT:-}"
+E2E_CLUSTER_UID="${E2E_CLUSTER_UID:-}"
+TEST_ALIAS="${TEST_ALIAS:-e2e-${RANDOM}-${RANDOM}}"
 AGENT_TYPE="${AGENT_TYPE:-hermes}"
 TEST_NAMESPACE="${TEST_NAMESPACE:-cetirun-system}"
 PORTAL_NAMESPACE="${PORTAL_NAMESPACE:-cetirun-portal}"
 READY_TIMEOUT="${READY_TIMEOUT:-600}"
+CLEANUP_TIMEOUT="${CLEANUP_TIMEOUT:-180}"
 INSTANCE_NS="cetirun-${TEST_ALIAS}"
+INSTANCE_UID=""
+INSTANCE_NS_UID=""
+CREATE_ATTEMPTED=false
+RUN_LABEL="qualification.cetirun.microsoft.com/e2e-run"
+RUN_ID="run-$$-${RANDOM}-${RANDOM}"
 
 pass() { echo "  ✓ $1"; }
 fail() { echo "  ✗ $1" >&2; FAILURES=$((FAILURES + 1)); }
 FAILURES=0
 
-cleanup() {
-  echo ""
-  echo "==> Cleanup: deleting test instance '${TEST_ALIAS}'..."
-  kubectl delete agent "${TEST_ALIAS}" -n "${TEST_NAMESPACE}" --ignore-not-found --timeout=120s 2>/dev/null || true
-
-  # Wait for finalizer to complete namespace deletion
-  local deadline=$((SECONDS + 180))
-  while kubectl get namespace "${INSTANCE_NS}" &>/dev/null; do
-    if (( SECONDS > deadline )); then
-      echo "WARNING: Namespace ${INSTANCE_NS} still exists after 180s — giving up." >&2
-      break
-    fi
-    sleep 5
-  done
-  echo "    Cleanup done."
+kubectl() {
+  KUBECTL_KUBERC=false command kubectl --kubeconfig "${E2E_KUBECONFIG}" \
+    --context "${E2E_CONTEXT}" --request-timeout=15s "$@"
 }
+
+helm() {
+  command helm --kubeconfig "${E2E_KUBECONFIG}" --kube-context "${E2E_CONTEXT}" "$@"
+}
+
+valid_label() {
+  [[ ${#1} -ge 1 && ${#1} -le 63 && "$1" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]]
+}
+
+validate_inputs() {
+  if [[ "${E2E_KUBECONFIG}" != /* || ! -f "${E2E_KUBECONFIG}" ||
+        -z "${E2E_CONTEXT}" || -z "${E2E_CLUSTER_UID}" ]] ||
+     ! valid_label "${TEST_ALIAS}" || ! valid_label "${INSTANCE_NS}" ||
+     ! valid_label "${TEST_NAMESPACE}" || ! valid_label "${PORTAL_NAMESPACE}" ||
+     [[ ! "${READY_TIMEOUT}" =~ ^[1-9][0-9]{0,3}$ || ! "${CLEANUP_TIMEOUT}" =~ ^[1-9][0-9]{0,3}$ ]]; then
+    echo "ERROR: Explicit kubeconfig/context/cluster UID, valid names and bounded positive timeouts are required." >&2
+    return 1
+  fi
+}
+
+check_target() {
+  local value
+  if ! value="$(kubectl get namespace kube-system -o json 2>/dev/null)" ||
+     ! jq -e --arg uid "${E2E_CLUSTER_UID}" \
+       '.metadata.uid == $uid and .metadata.deletionTimestamp == null' <<< "${value}" >/dev/null 2>&1; then
+    echo "ERROR: Expected cluster identity could not be verified; no mutation authorized." >&2
+    return 1
+  fi
+}
+
+check_client_config() {
+  local value
+  if ! value="$(kubectl config view --minify -o json 2>/dev/null)" ||
+     ! jq -e --arg context "${E2E_CONTEXT}" '
+       .["current-context"] == $context and
+       (.contexts | length) == 1 and (.clusters | length) == 1 and (.users | length) == 1 and
+       .contexts[0].name == $context and
+       .contexts[0].context.cluster == .clusters[0].name and
+       .contexts[0].context.user == .users[0].name and
+       .users[0].user.exec == null and .users[0].user["auth-provider"] == null and
+       .clusters[0].cluster["insecure-skip-tls-verify"] != true and
+       (.clusters[0].cluster.server | test("^https://[^/@?#]+(:[0-9]+)?(/[^?#]*)?$"))
+       ' <<< "${value}" >/dev/null 2>&1; then
+    echo "ERROR: An explicit HTTPS context with non-plugin authentication is required." >&2
+    return 1
+  fi
+}
+
+read_owned_agent() {
+  local value
+  if ! value="$(kubectl get agent "${TEST_ALIAS}" --ignore-not-found -o json 2>/dev/null)"; then
+    echo "ERROR: Agent observation failed; absence is not established." >&2
+    return 1
+  fi
+  if [[ -n "${value}" ]] && ! jq -e --arg name "${TEST_ALIAS}" --arg uid "${INSTANCE_UID}" \
+    --arg label "${RUN_LABEL}" --arg run "${RUN_ID}" \
+    '.metadata.name == $name and .metadata.uid == $uid and $uid != "" and
+     .metadata.labels[$label] == $run and
+     (.metadata.resourceVersion | type == "string" and length > 0)' <<< "${value}" >/dev/null 2>&1; then
+    echo "ERROR: Agent ownership changed or is incomplete; replacement retained." >&2
+    return 1
+  fi
+  printf '%s' "${value}"
+}
+
+owned_agent_phase() {
+  local value
+  value="$(read_owned_agent)" || return 1
+  if [[ -z "${value}" ]]; then
+    echo "ERROR: Run-owned Agent disappeared before its lifecycle check." >&2
+    return 1
+  fi
+  jq -r '.status.phase // "Pending"' <<< "${value}"
+}
+
+observe_owned_namespace() {
+  local value uid
+  if ! value="$(kubectl get namespace "${INSTANCE_NS}" --ignore-not-found -o json 2>/dev/null)"; then
+    echo "ERROR: Namespace observation failed; cleanup is unconfirmed." >&2
+    return 1
+  fi
+  if [[ -z "${value}" ]]; then
+    return 0
+  fi
+  if ! uid="$(jq -er --arg name "${INSTANCE_NS}" --arg agent "${TEST_ALIAS}" --arg uid "${INSTANCE_UID}" \
+    'select(.metadata.name == $name and $uid != "" and
+      any(.metadata.ownerReferences[]?;
+        .apiVersion == "cetirun.microsoft.com/v1alpha1" and .kind == "Agent" and
+        .name == $agent and .uid == $uid)) |
+      .metadata.uid | select(type == "string" and length > 0)' <<< "${value}" 2>/dev/null)" ||
+     [[ -n "${INSTANCE_NS_UID}" && "${INSTANCE_NS_UID}" != "${uid}" ]]; then
+    echo "ERROR: Namespace ownership changed or is unconfirmed; namespace retained." >&2
+    return 1
+  fi
+  INSTANCE_NS_UID="${uid}"
+  NAMESPACE_PRESENT=true
+}
+
+create_instance() {
+  local existing created resource name
+  check_target || return 1
+  for resource in agent namespace; do
+    name="${TEST_ALIAS}"
+    [[ "${resource}" == "namespace" ]] && name="${INSTANCE_NS}"
+    if ! existing="$(kubectl get "${resource}" "${name}" --ignore-not-found -o json 2>/dev/null)"; then
+      echo "ERROR: Initial resource absence could not be established; refusing creation." >&2
+      return 1
+    fi
+    if [[ -n "${existing}" ]]; then
+      echo "ERROR: Test Agent or namespace already exists; choose a fresh alias. Nothing was adopted or deleted." >&2
+      return 1
+    fi
+  done
+  CREATE_ATTEMPTED=true
+  if ! created="$(jq -n --arg name "${TEST_ALIAS}" --arg agentType "${AGENT_TYPE}" \
+    --arg label "${RUN_LABEL}" --arg run "${RUN_ID}" \
+    '{apiVersion:"cetirun.microsoft.com/v1alpha1",kind:"Agent",
+      metadata:{name:$name,labels:{($label):$run}},
+      spec:{agent:{type:$agentType},gatewayTokenSecretRef:"gateway-token",
+        user:{alias:$name,displayName:"E2E Test User",team:"e2e-testing",email:"e2e-test@example.com"},
+        helm:{values:{skills:{shared:false}}}}}' |
+      kubectl create -f - -o json 2>/dev/null)"; then
+    echo "ERROR: Agent create outcome is unknown; do not retry or delete by name. Inspect the test alias explicitly." >&2
+    return 1
+  fi
+  if ! INSTANCE_UID="$(jq -er --arg name "${TEST_ALIAS}" --arg label "${RUN_LABEL}" --arg run "${RUN_ID}" \
+    'select(.apiVersion == "cetirun.microsoft.com/v1alpha1" and .kind == "Agent" and
+       .metadata.name == $name and .metadata.labels[$label] == $run) |
+     .metadata.uid | select(type == "string" and length > 0)' <<< "${created}" 2>/dev/null)"; then
+    INSTANCE_UID=""
+    echo "ERROR: Create did not return confirmed ownership; resource retained for explicit recovery." >&2
+    return 1
+  fi
+}
+
+set_suspended() {
+  local value patch
+  check_target || return 1
+  value="$(read_owned_agent)" || return 1
+  if [[ -z "${value}" ]] ||
+     ! jq -e '.metadata.deletionTimestamp == null' <<< "${value}" >/dev/null 2>&1; then
+    echo "ERROR: Owned Agent is absent or terminating; lifecycle mutation refused." >&2
+    return 1
+  fi
+  patch="$(jq -c --argjson suspended "$1" \
+    '[{op:"test",path:"/metadata/uid",value:.metadata.uid},
+      {op:"test",path:"/metadata/resourceVersion",value:.metadata.resourceVersion},
+      {op:"add",path:"/spec/suspended",value:$suspended}]' <<< "${value}")" || return 1
+  if ! kubectl patch agent "${TEST_ALIAS}" --type=json -p "${patch}" >/dev/null 2>&1; then
+    echo "ERROR: Conditional lifecycle mutation failed; no automatic retry was attempted." >&2
+    return 1
+  fi
+}
+
+cleanup() {
+  local value options deadline
+  if [[ -z "${INSTANCE_UID}" ]]; then
+    if [[ "${CREATE_ATTEMPTED}" == "true" ]]; then
+      echo "ERROR: Creation ownership is unconfirmed; no cleanup mutation attempted." >&2
+      return 1
+    fi
+    return 0
+  fi
+  echo ""
+  echo "==> Cleanup: observing the run-owned Agent and namespace..."
+  check_target || return 1
+  value="$(read_owned_agent)" || return 1
+  NAMESPACE_PRESENT=false
+  observe_owned_namespace || return 1
+  if [[ -n "${value}" ]] && jq -e '.metadata.deletionTimestamp == null' <<< "${value}" >/dev/null; then
+    options="$(jq -c '{apiVersion:"v1",kind:"DeleteOptions",
+      preconditions:{uid:.metadata.uid,resourceVersion:.metadata.resourceVersion},
+      propagationPolicy:"Background"}' <<< "${value}")" || return 1
+    if ! kubectl delete --raw "/apis/cetirun.microsoft.com/v1alpha1/agents/${TEST_ALIAS}" \
+      -f - <<< "${options}" >/dev/null 2>&1; then
+      echo "ERROR: Conditional Agent deletion is unconfirmed; retained for recovery without replay." >&2
+      return 1
+    fi
+  fi
+  deadline=$((SECONDS + CLEANUP_TIMEOUT))
+  while true; do
+    value="$(read_owned_agent)" || return 1
+    NAMESPACE_PRESENT=false
+    observe_owned_namespace || return 1
+    if [[ -z "${value}" && "${NAMESPACE_PRESENT}" == "false" ]]; then
+      echo "    Cleanup verified: owned Agent and namespace are absent."
+      return 0
+    fi
+    if (( SECONDS >= deadline )); then
+      echo "ERROR: Controller cleanup timed out; resources retained. No namespace or finalizer was forced." >&2
+      return 1
+    fi
+    sleep 1
+  done
+}
+
+finish() {
+  local result=$?
+  trap - EXIT
+  if ! cleanup && (( result == 0 )); then
+    result=1
+  fi
+  if (( result == 0 )); then
+    echo " E2E PASSED (controller cleanup verified)"
+  fi
+  exit "${result}"
+}
+
+main() {
+validate_inputs
 
 echo "==========================================="
 echo " CetiRun E2E Test"
@@ -74,13 +285,14 @@ fi
 # ── Prerequisite checks ──────────────────────────────────────────────────────
 echo "==> Checking prerequisites..."
 for cmd in kubectl helm jq curl base64; do
-  if ! command -v "$cmd" &>/dev/null; then
+  if ! type -P "$cmd" &>/dev/null; then
     echo "ERROR: ${cmd} is required but not installed." >&2
     exit 1
   fi
 done
 
-kubectl cluster-info --request-timeout=5s > /dev/null
+check_client_config
+check_target
 if ! kubectl get crd agents.cetirun.microsoft.com &>/dev/null; then
   echo "ERROR: Agent CRD not found. Is the operator deployed?" >&2
   exit 1
@@ -116,56 +328,12 @@ echo "    Prerequisites OK."
 
 # ── Deploy test instance ─────────────────────────────────────────────────────
 echo ""
-echo "==> Cleaning up any leftover instance '${TEST_ALIAS}'..."
-
-# Clean up any leftover from a previous cancelled/failed run
-if kubectl get agent "${TEST_ALIAS}" -n "${TEST_NAMESPACE}" &>/dev/null; then
-  echo "    Found leftover CR — deleting..."
-  kubectl delete agent "${TEST_ALIAS}" -n "${TEST_NAMESPACE}" --ignore-not-found --timeout=120s 2>/dev/null || true
-fi
-# Wait for namespace to be fully removed (finalizer may still be running)
-if kubectl get namespace "${INSTANCE_NS}" &>/dev/null; then
-  echo "    Waiting for leftover namespace ${INSTANCE_NS} to be deleted..."
-  local_deadline=$((SECONDS + 180))
-  while kubectl get namespace "${INSTANCE_NS}" &>/dev/null; do
-    if (( SECONDS > local_deadline )); then
-      echo "WARNING: Namespace ${INSTANCE_NS} still exists after 180s — force-deleting." >&2
-      kubectl delete namespace "${INSTANCE_NS}" --ignore-not-found --timeout=60s 2>/dev/null || true
-      sleep 10
-      break
-    fi
-    sleep 5
-  done
-fi
-echo "    Clean."
-
-echo ""
 echo "==> Creating test Agent '${TEST_ALIAS}'..."
-
-kubectl apply -n "${TEST_NAMESPACE}" -f - <<EOF
-apiVersion: cetirun.microsoft.com/v1alpha1
-kind: Agent
-metadata:
-  name: ${TEST_ALIAS}
-spec:
-  agent:
-    type: ${AGENT_TYPE}
-  gatewayTokenSecretRef: "gateway-token"
-  user:
-    alias: ${TEST_ALIAS}
-    displayName: "E2E Test User"
-    team: e2e-testing
-    email: e2e-test@example.com
-  helm:
-    values:
-      skills:
-        shared: false
-EOF
-
-echo "    Instance CR applied."
-
-# Set up cleanup trap after CR is created
-trap cleanup EXIT
+trap finish EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+create_instance
+echo "    New Agent identity recorded."
 
 # ── Wait for Ready ────────────────────────────────────────────────────────────
 echo ""
@@ -173,8 +341,7 @@ echo "==> Waiting for instance to reach Ready phase (timeout: ${READY_TIMEOUT}s)
 DEADLINE=$((SECONDS + READY_TIMEOUT))
 LAST_PHASE=""
 while true; do
-  PHASE=$(kubectl get agent "${TEST_ALIAS}" -n "${TEST_NAMESPACE}" \
-    -o jsonpath='{.status.phase}' 2>/dev/null || echo "Unknown")
+  PHASE="$(owned_agent_phase)"
 
   if [[ "${PHASE}" != "${LAST_PHASE}" ]]; then
     echo "    Phase: ${PHASE}"
@@ -209,7 +376,9 @@ echo ""
 echo "==> Verifying resources..."
 
 # Namespace
-if kubectl get namespace "${INSTANCE_NS}" &>/dev/null; then
+NAMESPACE_PRESENT=false
+observe_owned_namespace
+if [[ "${NAMESPACE_PRESENT}" == "true" ]]; then
   pass "Namespace ${INSTANCE_NS} exists"
 else
   fail "Namespace ${INSTANCE_NS} not found"
@@ -317,13 +486,13 @@ fi
 
 # Suspend the instance
 echo "    Patching suspended=true..."
-kubectl patch agent "${TEST_ALIAS}" -n "${TEST_NAMESPACE}" --type=merge -p '{"spec":{"suspended":true}}'
+set_suspended true
 
 # Wait for Suspended phase
 SUSPEND_TIMEOUT=300
 SUSPEND_DEADLINE=$((SECONDS + SUSPEND_TIMEOUT))
 while true; do
-  PHASE=$(kubectl get agent "${TEST_ALIAS}" -n "${TEST_NAMESPACE}" -o jsonpath='{.status.phase}' 2>/dev/null || echo "Unknown")
+  PHASE="$(owned_agent_phase)"
   if [[ "${PHASE}" == "Suspended" ]]; then
     pass "Phase transitioned to Suspended"
     break
@@ -375,13 +544,13 @@ fi
 
 # Unsuspend the instance
 echo "    Patching suspended=false..."
-kubectl patch agent "${TEST_ALIAS}" -n "${TEST_NAMESPACE}" --type=merge -p '{"spec":{"suspended":false}}'
+set_suspended false
 
 # Wait for Ready phase
 UNSUSPEND_DEADLINE=$((SECONDS + READY_TIMEOUT))
 LAST_PHASE_UNSUSPEND=""
 while true; do
-  PHASE=$(kubectl get agent "${TEST_ALIAS}" -n "${TEST_NAMESPACE}" -o jsonpath='{.status.phase}' 2>/dev/null || echo "Unknown")
+  PHASE="$(owned_agent_phase)"
   if [[ "${PHASE}" != "${LAST_PHASE_UNSUSPEND}" ]]; then
     echo "    Phase: ${PHASE}"
     LAST_PHASE_UNSUSPEND="${PHASE}"
@@ -566,10 +735,15 @@ if (( FAILURES > 0 )); then
   # cleanup runs via trap
   exit 1
 else
-  echo " E2E PASSED"
+  echo " E2E checks passed; cleanup is still required."
   echo "==========================================="
   if [[ -n "${SKIP_CLEANUP:-}" ]]; then
-    echo "SKIP_CLEANUP set — leaving test instance in place."
+    echo "SKIP_CLEANUP set — retaining the recorded test Agent for explicit cleanup; charges may continue."
     trap - EXIT
   fi
+fi
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
 fi

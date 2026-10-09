@@ -14,6 +14,62 @@ bash scripts/cetirun-helm-test.sh
 Documentation validation is `make -C site check`. It does not run deployment,
 publication, or end-to-end scripts.
 
+## Explicit-target application E2E lifecycle
+
+`e2e-test.sh` is a connected application smoke test, not an offline check.
+Run it only after authorization for the exact environment and its test resources.
+It now requires an absolute `E2E_KUBECONFIG`, an explicit `E2E_CONTEXT`, and an
+independently obtained `E2E_CLUSTER_UID` (the `kube-system` namespace UID).
+Use a trusted pre-provisioned HTTPS kubeconfig without exec/auth-provider login
+plugins, and do not change that file or context during a run. Every kubectl and
+Helm invocation carries the explicit target; the ambient current context is
+not used.
+
+```bash
+E2E_KUBECONFIG="$TEST_KUBECONFIG" \
+E2E_CONTEXT="$TEST_CONTEXT" \
+E2E_CLUSTER_UID="$TEST_CLUSTER_UID" \
+AGENT_TYPE=openclaw bash scripts/e2e-test.sh
+```
+
+The default alias is generated per invocation. If `TEST_ALIAS` is supplied,
+both it and its derived namespace must be absent. Existing resources, forbidden
+reads and failed observations stop the run; there is no leftover adoption,
+pre-run deletion, `apply` takeover or forced namespace cleanup.
+
+Creation records the API-issued Agent UID and a run label. Suspend/resume use
+JSON Patch tests for the current UID and resourceVersion; conflicts are not
+automatically rebased/retried. Cleanup rechecks cluster/Agent ownership and
+any namespace owner reference, submits at most one conditional Agent Delete,
+then observes both Agent and namespace absence through normal controller
+finalization. A replacement identity, unknown response, read error or timeout
+is reported as incomplete cleanup and causes a failing exit. It never removes
+finalizers or deletes a namespace directly.
+
+`READY_TIMEOUT` (default 600 seconds) and `CLEANUP_TIMEOUT` (default 180 seconds)
+accept positive values up to 9999. Individual Kubernetes requests use a
+15-second request timeout, which can extend the final polling iteration beyond
+its deadline. An ambiguous creation without a returned UID is retained for
+explicit recovery, never adopted by its name or label.
+`SKIP_CLEANUP` retains resources only after successful application checks;
+that explicit choice is reported and may incur charges. Keep the alias and
+private run output for authorized cleanup.
+
+The existing application/routing assertions and their limitations remain:
+this does not implement governed creation, prove physical writer fencing,
+qualify enforcement or complete a real model/tool acceptance run. The existing
+Hermes check still uses Pod exec and is not a governed-Pod admission workaround.
+All six live workflow jobs remain disabled. Before independently enabling the
+test job, provision its `E2E_CONTEXT` and `E2E_CLUSTER_UID` secrets together with
+its existing kubeconfig; the job uses a task-local file rather than overwriting
+the runner's default kubeconfig.
+
+Offline lifecycle regressions replace kubectl and Helm with synthetic processes:
+
+```bash
+python3 -B -m unittest discover -s scripts/tests -p test_e2e_lifecycle.py -v
+```
+
 ## Read-only deployed Sandbox preflight
 
 `sandbox-platform-qualify.py deployment-preflight` inspects a small, explicitly

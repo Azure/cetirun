@@ -125,6 +125,22 @@ artifacts.
 
 ## Connected deployment helpers
 
+### Application E2E lifecycle
+
+[`scripts/e2e-test.sh`]({{< repo "scripts/e2e-test.sh" >}}) requires
+`E2E_KUBECONFIG`, `E2E_CONTEXT` and the independently obtained
+`E2E_CLUSTER_UID`. It verifies the explicit cluster, creates a new test Agent
+instead of adopting/deleting leftovers, and pins that Agent's UID for lifecycle
+mutations and cleanup. The test refuses existing Agent/namespace names.
+Cleanup observes controller finalization and fails if ownership, deletion
+outcome or absence cannot be confirmed; it never force-deletes a namespace or
+strips finalizers.
+
+See [inputs, timeouts, retention and offline regression checks]({{< repo "scripts/README.md" >}}#explicit-target-application-e2e-lifecycle).
+These run-lifecycle checks do not establish governed execution, runtime fencing
+or model/tool acceptance. The live E2E workflow remains disabled and must not
+be enabled as part of routine local validation.
+
 ### Sandbox platform probes
 
 [`sandbox-platform-qualify.py`]({{< repo "scripts/sandbox-platform-qualify.py" >}})
