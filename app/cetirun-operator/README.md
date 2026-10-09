@@ -200,10 +200,9 @@ provider.
 
 The [Kubernetes configuration adapter](internal/sandboxcoordination/kubernetes_change.go)
 and [explicit command](cmd/sandbox-config-change/) submit real Team, Sandbox and
-AgentPolicy updates through the coordination protocol. They are not a runtime
-adapter or an execution switch. Only updates of existing configuration objects
-are supported; creation, deletion, Agent changes and other execution sources
-are outside this command.
+AgentPolicy updates and deletions through the coordination protocol. They are not
+a runtime adapter or an execution switch. Creation, Agent changes and other
+execution sources remain outside this command.
 
 Both before and proposed objects must retain the original name, UID and resource
 version. The adapter verifies the authoritative before image, pins the complete
@@ -235,7 +234,7 @@ before issuing the new records: older strict readers reject the extra field.
 Previously recorded mismatched digests are not rewritten or accepted as aliases.
 This does not enable execution or replace source rechecks.
 
-After a lost reply, use the same input files to observe the original operation.
+After a lost Update reply, use the same input files to observe the original operation.
 A matching current object with the same UID and an advanced resource version
 proves the desired write is present and an old-version request cannot commit
 again. An unchanged, missing, replaced or differently changed object does not
@@ -247,6 +246,30 @@ Observation never releases a reservation. After matching committed content is
 reported, explicit `--action update` can finalize that same changing operation
 without resubmitting it.
 
+For deletion, use `--action delete --before FILE` without `--after`.
+The [deletion adapter](internal/sandboxcoordination/kubernetes_delete.go) reserves
+the entire source, including all Team policy classes, and persists submission
+intent before one background Delete with exact UID and resourceVersion
+preconditions. Existing reference checks and Kubernetes authorization still
+apply. It neither removes finalizers nor adopts a replacement object.
+
+After an uncertain Delete result, retain the original before file and use
+`--action observe-delete --before FILE`. An unchanged object or failed read
+keeps the outcome unknown and its reservation retained. An authoritative
+observation of the original UID terminating at a different resourceVersion,
+or of that UID's absence, establishes deletion acceptance: a delayed old
+conditional Delete cannot change it or a same-name replacement. Observation
+alone does not release the reservation. Repeating explicit `--action delete`
+then finishes the same recorded operation without resubmission.
+The CLI reports `deletion-accepted`, not resource or dependent cleanup completion.
+Release after the terminating transition allows normal finalizer cleanup to
+finish. Missing authority remains an error, never permission to delete.
+
+The journal format is unchanged: deletion has its own desired-operation digest
+and conservative whole-source scope. Update tickets cannot authorize deletion.
+Older update-only clients cannot reconcile a deletion; keep a deletion-capable
+client available until its outstanding operations complete.
+
 Build locally:
 
 ```bash
@@ -255,11 +278,14 @@ make -C app/cetirun-operator build-sandbox-config-change
 
 Using the command requires separate authorization for the exact cluster and
 mutation. It requires explicit kubeconfig/context, authority namespace/name/UID
-and before/after files; there is no implicit current-cluster fallback. The default
-action is read-only observation; mutation requires `--action update`. Inputs are
+and the original before file (plus after for updates); there is no implicit
+current-cluster fallback. The default action observes an update; deletion
+observation requires `--action observe-delete`. Mutation requires explicit
+`--action update` or `--action delete`. Inputs are
 bounded, strict YAML/JSON configuration objects, not arbitrary Kubernetes
 resources (256 KiB per image). Verified HTTPS is required; redirects and
-exec/auth-provider login plugins are refused. Output identifies the operation
+exec/auth-provider login plugins and automatic mutation retries are refused.
+Output identifies the operation
 and phase, not the configuration contents. Run `sandbox-config-change --help`
 for the exact argument list.
 
@@ -277,6 +303,12 @@ or change uses that source. Only existing finalizers may be removed; other
 content and all outstanding reservations stay unchanged. Missing authority is
 not a cleanup bypass. Ordinary configuration updates still require
 nonterminating inputs.
+This opt-in also requires every primary Team/Sandbox/AgentPolicy Delete to carry
+the exact submitted deletion reservation and conditional background options,
+including unreferenced configurations and legacy Teams. Upgrade operational
+deletion clients before enabling it. Default-off behavior, Agent deletion,
+status writes and the narrow Kubernetes garbage-collector finalizer exclusion
+are unchanged. This is not a complete all-source execution barrier.
 
 ### Running-input verification
 

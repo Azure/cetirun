@@ -42,6 +42,7 @@ const usage = `Usage: sandbox-config-change
   --kubeconfig ABSOLUTE_FILE --context EXPLICIT_CONTEXT
   --authority-namespace NAMESPACE --authority-name NAME --authority-uid UID
   --before FILE --after FILE [--action observe|update] [--timeout 30s]
+  --before FILE --action observe-delete|delete [--timeout 30s]
 
 observe is the default and has no side effects: it only looks up the exact
 recorded operation and, if changing, observes its current configuration.
@@ -50,7 +51,13 @@ It never acquires, submits, or releases a reservation.
 update is explicit opt-in. It reserves and submits one conditional Update, or
 observes an already-changing operation without resubmitting it. Only a verified
 matching committed version permits update to release the reservation.
-No resources are created or deleted. No readiness or admission overrides exist.
+delete is a separate explicit opt-in and forbids --after. It reserves the whole
+original source and submits one UID/resourceVersion-conditional background Delete.
+observe-delete only observes that exact recorded deletion; it never writes.
+Recovery uses the SAME original --before file. A terminating original UID or its
+absence establishes acceptance, not completion of finalizers/dependent cleanup.
+Explicit delete then releases the change reservation without resubmission.
+No resources are created. No readiness, finalizer or admission overrides exist.
 
 Each input is exactly one strict YAML/JSON cetirun.microsoft.com/v1alpha1 Team,
 Sandbox or AgentPolicy, at most 256 KiB. Both images must pin the same original
@@ -62,14 +69,15 @@ the write; explicit values and list order are preserved. No-op updates,
 including changes that only omit defaults, are rejected before reservation.
 
 Unknown, failed and never-submitted changing operations remain reserved.
-After any uncertain result, run --action observe with the SAME inputs.
-Do not refresh their UID/resourceVersion, replay a write, or edit the journal.
+After any uncertain result, run --action observe (updates) or observe-delete
+(deletions) with the SAME inputs. Do not refresh their UID/resourceVersion,
+replay a write, or edit the journal.
 An applied-reservation-retained observation is read-only; explicit update can
 then reconcile that same changing operation to release it, without submission.
 
 Only the named kubeconfig/context is used. HTTPS with certificate validation is
 required; exec/auth-provider login plugins and redirects are refused. There is
-no in-cluster/default-context fallback, cloud login or automatic Update retry.
+no in-cluster/default-context fallback, cloud login or automatic mutation retry.
 timeout must be positive and at most 5m.
 
 Output is bounded operation/phase/identity status only; configuration bodies,
@@ -80,6 +88,7 @@ Exit 0 = successful observation/completion, 1 = uncertain/unavailable/I/O failur
 `
 
 const observationInstruction = "run --action observe with the same --before and --after inputs; do not replay an Update or edit the coordination journal"
+const deletionObservationInstruction = "run --action observe-delete with the same --before input; do not replay a Delete or edit the coordination journal"
 
 type options struct {
 	kubeconfig, contextName                string
@@ -115,7 +124,7 @@ func runWithClientFactory(ctx context.Context, args []string, stdout, stderr io.
 	flags.StringVar(&o.uid, "authority-uid", "", "pinned coordination ConfigMap UID")
 	flags.StringVar(&o.beforePath, "before", "", "persisted original image")
 	flags.StringVar(&o.afterPath, "after", "", "desired image with original UID/resourceVersion")
-	flags.StringVar(&o.action, "action", "observe", "observe or update")
+	flags.StringVar(&o.action, "action", "observe", "observe, update, observe-delete or delete")
 	flags.DurationVar(&o.timeout, "timeout", 30*time.Second, "overall deadline, at most 5m")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -128,12 +137,15 @@ func runWithClientFactory(ctx context.Context, args []string, stdout, stderr io.
 		fmt.Fprintln(stderr, "sandbox-config-change: invalid arguments; see --help")
 		return 2
 	}
+	deleting := o.action == "delete" || o.action == "observe-delete"
+	observing := o.action == "observe" || o.action == "observe-delete"
 	if flags.NArg() != 0 || !filepath.IsAbs(o.kubeconfig) || !boundedToken(o.contextName, 256) ||
 		len(validation.IsDNS1123Label(o.authorityNamespace)) != 0 ||
 		len(validation.IsDNS1123Subdomain(o.authorityName)) != 0 || !boundedToken(o.uid, 128) ||
-		o.beforePath == "" || o.afterPath == "" || (o.action != "observe" && o.action != "update") ||
+		o.beforePath == "" || (deleting && o.afterPath != "") || (!deleting && o.afterPath == "") ||
+		(!deleting && o.action != "observe" && o.action != "update") ||
 		o.timeout <= 0 || o.timeout > 5*time.Minute {
-		fmt.Fprintln(stderr, "sandbox-config-change: all identity/file flags are required; action must be observe or update and timeout must be positive and at most 5m; see --help")
+		fmt.Fprintln(stderr, "sandbox-config-change: explicit identities and --before are required; updates require --after, deletions forbid it; action must be observe, update, observe-delete or delete and timeout must be positive and at most 5m; see --help")
 		return 2
 	}
 	ctx, cancel := context.WithTimeout(ctx, o.timeout)
@@ -147,22 +159,30 @@ func runWithClientFactory(ctx context.Context, args []string, stdout, stderr io.
 		fmt.Fprintln(stderr, "sandbox-config-change: --before must contain one bounded strict supported configuration object")
 		return 2
 	}
-	after, err := readConfiguration(o.afterPath)
-	if err != nil {
-		fmt.Fprintln(stderr, "sandbox-config-change: --after must contain one bounded strict supported configuration object")
-		return 2
+	var after client.Object
+	if !deleting {
+		after, err = readConfiguration(o.afterPath)
+		if err != nil {
+			fmt.Fprintln(stderr, "sandbox-config-change: --after must contain one bounded strict supported configuration object")
+			return 2
+		}
 	}
 	writer, reader, err := factory(o)
 	if err != nil {
 		fmt.Fprintln(stderr, "sandbox-config-change: explicit kubeconfig/context client setup failed; no configuration request submitted")
 		return 1
 	}
-	if o.action == "observe" {
+	if observing {
 		writer = nil
 	}
-	adapter, err := sandboxcoordination.NewKubernetesChangeAdapter(writer, reader, before, after)
+	var adapter sandboxcoordination.ChangeAdapter
+	if deleting {
+		adapter, err = sandboxcoordination.NewKubernetesDeleteAdapter(writer, reader, before)
+	} else {
+		adapter, err = sandboxcoordination.NewKubernetesChangeAdapter(writer, reader, before, after)
+	}
 	if err != nil {
-		fmt.Fprintln(stderr, "sandbox-config-change: images must retain the same persisted identity and server fields and change supported writable content")
+		fmt.Fprintln(stderr, "sandbox-config-change: invalid original nonterminating configuration or proposed update; preserve exact persisted identities and server fields")
 		return 2
 	}
 	store := sandboxcoordination.Store{Client: writer, APIReader: reader,
@@ -173,17 +193,22 @@ func runWithClientFactory(ctx context.Context, args []string, stdout, stderr io.
 			Name: before.GetName(), UID: before.GetUID(), ResourceVersion: before.GetResourceVersion()},
 	}
 	var ticket sandboxcoordination.ChangeTicket
-	if o.action == "observe" {
+	switch o.action {
+	case "observe-delete":
+		ticket, err = store.ReadConfigurationDeletion(ctx, before)
+	case "delete":
+		ticket, err = store.AcquireConfigurationDeletion(ctx, before)
+	case "observe":
 		ticket, err = store.ReadConfigurationChange(ctx, before, after)
-	} else {
+	case "update":
 		ticket, err = store.AcquireConfigurationChange(ctx, before, after)
 	}
 	if err != nil {
-		fmt.Fprintln(stderr, "sandbox-config-change: exact operation unavailable;", observationInstruction)
+		fmt.Fprintln(stderr, "sandbox-config-change: exact operation unavailable;", observationHint(o.action))
 		return printStatus(stdout, stderr, result, 1)
 	}
 	result.Operation, result.Phase = ticket.Change.ID, ticket.Change.Phase
-	if o.action == "observe" {
+	if observing {
 		if ticket.Change.Phase == sandboxcoordination.Reserved {
 			result.Status = "reserved"
 			return printStatus(stdout, stderr, result, 0)
@@ -193,28 +218,41 @@ func runWithClientFactory(ctx context.Context, args []string, stdout, stderr io.
 			err = store.CheckChange(ctx, ticket)
 		}
 		result.Status = "applied-reservation-retained"
+		if deleting {
+			result.Status = "deletion-accepted-reservation-retained"
+		}
 	} else {
 		ticket, err = store.ReconcileChange(ctx, ticket, adapter)
 		result.Operation, result.Phase = ticket.Change.ID, ticket.Change.Phase
 		result.Status = "completed"
+		if deleting {
+			result.Status = "deletion-accepted"
+		}
 	}
 	if err != nil {
 		result.Status = "uncertain"
-		fmt.Fprintln(stderr, "sandbox-config-change: outcome uncertain; reservation not confirmed released;", observationInstruction)
+		fmt.Fprintln(stderr, "sandbox-config-change: outcome uncertain; reservation not confirmed released;", observationHint(o.action))
 		return printStatus(stdout, stderr, result, 1)
 	}
 	return printStatus(stdout, stderr, result, 0)
 }
 
+func observationHint(action string) string {
+	if action == "delete" || action == "observe-delete" {
+		return deletionObservationInstruction
+	}
+	return observationInstruction
+}
+
 func printStatus(stdout, stderr io.Writer, status operationStatus, exitCode int) int {
 	raw, err := json.Marshal(status)
 	if err != nil || len(raw)+1 > 4096 {
-		fmt.Fprintln(stderr, "sandbox-config-change: status encoding failed;", observationInstruction)
+		fmt.Fprintln(stderr, "sandbox-config-change: status encoding failed;", observationHint(status.Action))
 		return 1
 	}
 	raw = append(raw, '\n')
 	if n, err := stdout.Write(raw); err != nil || n != len(raw) {
-		fmt.Fprintln(stderr, "sandbox-config-change: status output failed;", observationInstruction)
+		fmt.Fprintln(stderr, "sandbox-config-change: status output failed;", observationHint(status.Action))
 		return 1
 	}
 	return exitCode
@@ -346,7 +384,7 @@ func newClients(o options) (client.Client, client.Reader, error) {
 	}
 	isolated := *httpClient
 	httpClient = &isolated
-	httpClient.Transport = &singleUpdateTransport{next: httpClient.Transport}
+	httpClient.Transport = &singleMutationTransport{next: httpClient.Transport}
 	httpClient.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	scheme := runtime.NewScheme()
 	if err := corev1.AddToScheme(scheme); err != nil {
@@ -367,24 +405,34 @@ func newClients(o options) (client.Client, client.Reader, error) {
 	if err != nil {
 		return nil, nil, errors.New("Kubernetes client could not be constructed")
 	}
-	return &singleUpdateClient{Client: base}, base, nil
+	return &singleMutationClient{Client: base}, base, nil
 }
 
-type updateAttemptKey struct{}
+type mutationAttemptKey struct{}
 
-type singleUpdateClient struct{ client.Client }
-
-func (c *singleUpdateClient) Update(ctx context.Context, object client.Object, opts ...client.UpdateOption) error {
-	return c.Client.Update(context.WithValue(ctx, updateAttemptKey{}, &atomic.Bool{}), object, opts...)
+type mutationAttempt struct {
+	method    string
+	attempted atomic.Bool
 }
 
-type singleUpdateTransport struct{ next http.RoundTripper }
+type singleMutationClient struct{ client.Client }
 
-func (t *singleUpdateTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+func (c *singleMutationClient) Update(ctx context.Context, object client.Object, opts ...client.UpdateOption) error {
+	return c.Client.Update(context.WithValue(ctx, mutationAttemptKey{}, &mutationAttempt{method: http.MethodPut}), object, opts...)
+}
+
+func (c *singleMutationClient) Delete(ctx context.Context, object client.Object, opts ...client.DeleteOption) error {
+	return c.Client.Delete(context.WithValue(ctx, mutationAttemptKey{}, &mutationAttempt{method: http.MethodDelete}), object, opts...)
+}
+
+type singleMutationTransport struct{ next http.RoundTripper }
+
+func (t *singleMutationTransport) RoundTrip(request *http.Request) (*http.Response, error) {
 	if request.Method != http.MethodGet {
-		attempt, ok := request.Context().Value(updateAttemptKey{}).(*atomic.Bool)
-		if request.Method != http.MethodPut || !ok || !attempt.CompareAndSwap(false, true) {
-			return nil, errors.New("unapproved mutation or automatic Update retry refused")
+		attempt, ok := request.Context().Value(mutationAttemptKey{}).(*mutationAttempt)
+		if (request.Method != http.MethodPut && request.Method != http.MethodDelete) ||
+			!ok || attempt == nil || attempt.method != request.Method || !attempt.attempted.CompareAndSwap(false, true) {
+			return nil, errors.New("unapproved mutation or automatic retry refused")
 		}
 	}
 	return t.next.RoundTrip(request)

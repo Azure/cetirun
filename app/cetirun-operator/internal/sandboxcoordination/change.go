@@ -22,6 +22,9 @@ type ChangeOutcome struct {
 	Applied              bool
 	Aborted              bool
 	NoPendingSubmissions bool
+	// Removed proves the Before UID is absent. After must be empty, and any
+	// delayed submission must be unable to affect a same-name replacement.
+	Removed bool
 }
 
 type ChangeAdapter interface {
@@ -61,10 +64,17 @@ func (s Store) ReconcileChange(ctx context.Context, ticket ChangeTicket, adapter
 	if outcome == nil || outcome.AuthorityUID != string(ticket.AuthorityUID) ||
 		outcome.OperationID != ticket.Change.ID || outcome.Before != ticket.Change.Before ||
 		outcome.DesiredDigest != ticket.Change.DesiredDigest || !outcome.NoPendingSubmissions ||
-		outcome.Applied == outcome.Aborted || !validSource(outcome.After) ||
-		sourceKey(outcome.After) != sourceKey(outcome.Before) || outcome.After.UID != outcome.Before.UID ||
-		(outcome.Applied && outcome.After == outcome.Before) || (outcome.Aborted && outcome.After != outcome.Before) {
+		outcome.Applied == outcome.Aborted || !validChangeAfter(outcome) {
 		return ticket, fmt.Errorf("%w: source change outcome is unknown or mismatched", ErrUnavailable)
 	}
 	return ticket, s.ReleaseChange(ctx, ticket)
+}
+
+func validChangeAfter(outcome *ChangeOutcome) bool {
+	if outcome.Removed {
+		return outcome.Applied && !outcome.Aborted && outcome.After == (w.SourceReference{})
+	}
+	return validSource(outcome.After) && sourceKey(outcome.After) == sourceKey(outcome.Before) &&
+		outcome.After.UID == outcome.Before.UID &&
+		((outcome.Applied && outcome.After != outcome.Before) || (outcome.Aborted && outcome.After == outcome.Before))
 }

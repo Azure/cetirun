@@ -99,6 +99,87 @@ func TestKubernetesConfigurationAPIServer(t *testing.T) {
 			Identity: w.ObjectIdentity{Name: authority.Name, UID: authority.UID}}, before, desiredConfiguration(before)
 	}
 
+	for _, kind := range []string{"Team", "Sandbox", "AgentPolicy"} {
+		for _, scenario := range []string{"removed", "terminating", "lost-reply", "source-race"} {
+			t.Run("delete/"+kind+"/"+scenario, func(t *testing.T) {
+				store, before, _ := newFixture(t, kind, "delete-"+scenario)
+				if scenario == "terminating" {
+					before.SetFinalizers([]string{"example.com/retain"})
+					if err := storage.Update(ctx, before); err != nil {
+						t.Fatal(err)
+					}
+				}
+				deletes := 0
+				writer := interceptor.NewClient(storage, interceptor.Funcs{
+					Delete: func(ctx context.Context, c client.WithWatch, object client.Object, opts ...client.DeleteOption) error {
+						deletes++
+						if scenario == "source-race" {
+							raced := before.DeepCopyObject().(client.Object)
+							raced.SetLabels(map[string]string{"example.com/race": "changed"})
+							if err := c.Update(ctx, raced); err != nil {
+								t.Fatal(err)
+							}
+						}
+						if err := c.Delete(ctx, object, opts...); err != nil {
+							return err
+						}
+						if scenario == "lost-reply" {
+							return errors.New("synthetic lost Delete reply")
+						}
+						return nil
+					},
+				})
+				ticket, err := store.AcquireConfigurationDeletion(ctx, before)
+				if err != nil {
+					t.Fatal(err)
+				}
+				ticket, err = store.ReconcileChange(ctx, ticket, deletionAdapter(t, writer, storage, before))
+				switch scenario {
+				case "source-race":
+					if !apierrors.IsConflict(err) {
+						t.Fatal("real Delete lost its resourceVersion precondition:", err)
+					}
+				case "lost-reply":
+					if err == nil || ticket.Change.Phase != Changing {
+						t.Fatal("lost reply did not retain intent")
+					}
+				default:
+					if err != nil {
+						t.Fatal("conditional deletion failed:", err)
+					}
+				}
+				if scenario == "source-race" || scenario == "lost-reply" {
+					recovered, err := store.ReadConfigurationDeletion(ctx, before)
+					if err != nil {
+						t.Fatal(err)
+					}
+					_, err = store.ReconcileChange(ctx, recovered, deletionAdapter(t, nil, storage, before))
+					if (err == nil) != (scenario == "lost-reply") {
+						t.Fatal("unexpected observation-only recovery:", err)
+					}
+					if scenario == "source-race" && store.CheckChange(ctx, recovered) != nil {
+						t.Fatal("conflicted deletion lost its reservation")
+					}
+				}
+				if deletes != 1 {
+					t.Fatal("Delete was resubmitted")
+				}
+				if scenario == "terminating" {
+					current := before.DeepCopyObject().(client.Object)
+					if err := storage.Get(ctx, client.ObjectKeyFromObject(before), current); err != nil ||
+						current.GetDeletionTimestamp().IsZero() || len(current.GetFinalizers()) != 1 {
+						t.Fatal("Delete bypassed independent finalization:", err)
+					}
+					cleaned := current.DeepCopyObject().(client.Object)
+					cleaned.SetFinalizers(nil)
+					if err := store.AuthorizeConfigurationFinalization(ctx, current, cleaned); err != nil {
+						t.Fatal("accepted deletion blocked finalization:", err)
+					}
+				}
+			})
+		}
+	}
+
 	for _, transition := range []struct {
 		name                          string
 		beforeGoverned, afterGoverned bool

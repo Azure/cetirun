@@ -501,12 +501,12 @@ func TestCLITransportDoesNotRetryAnUpdate(t *testing.T) {
 	}
 	mapper := meta.NewDefaultRESTMapper([]schema.GroupVersion{api.GroupVersion})
 	mapper.Add(api.GroupVersion.WithKind("Team"), meta.RESTScopeRoot)
-	httpClient := &http.Client{Transport: &singleUpdateTransport{next: http.DefaultTransport}}
+	httpClient := &http.Client{Transport: &singleMutationTransport{next: http.DefaultTransport}}
 	base, err := client.New(&rest.Config{Host: server.URL}, client.Options{Scheme: scheme, Mapper: mapper, HTTPClient: httpClient})
 	if err != nil {
 		t.Fatal(err)
 	}
-	writer := &singleUpdateClient{Client: base}
+	writer := &singleMutationClient{Client: base}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	err = writer.Update(ctx, &api.Team{ObjectMeta: metav1.ObjectMeta{Name: "team", UID: "uid", ResourceVersion: "1"}})
@@ -517,7 +517,7 @@ func TestCLITransportDoesNotRetryAnUpdate(t *testing.T) {
 
 func TestCLITransportRejectsUnapprovedWrites(t *testing.T) {
 	calls := 0
-	transport := &singleUpdateTransport{next: roundTripFunc(func(*http.Request) (*http.Response, error) {
+	transport := &singleMutationTransport{next: roundTripFunc(func(*http.Request) (*http.Response, error) {
 		calls++
 		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(""))}, nil
 	})}
