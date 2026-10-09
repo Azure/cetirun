@@ -212,7 +212,7 @@ func (c *sandboxMetricsCollector) collectSnapshot(ctx context.Context) (map[sand
 			return nil, fmt.Errorf("Sandbox metrics collection deadline: %w", err)
 		}
 		agent := &agents.Items[i]
-		// A Team's governance fields imply intent only. They never select a
+		// A Team's policy fields imply intent only. They never select a
 		// runtime or authorize an otherwise unbound Agent for these metrics.
 		if !sandboxRequested(agent, teamsByName[agent.Spec.Team]) {
 			continue

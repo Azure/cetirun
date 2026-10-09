@@ -17,6 +17,7 @@ import (
 )
 
 func TestCustomChatCallerDoesNotReplaceTheAgent(t *testing.T) {
+	requireLegacyCustomRuntime(t)
 	s := newCompletionScenario(t)
 	agent := s.current()
 	agent.Spec.Agent.Port = ptr.To[int32](8080)
@@ -75,6 +76,7 @@ func TestCustomChatCallerDoesNotReplaceTheAgent(t *testing.T) {
 }
 
 func TestCustomChatDoesNotAlterAnOlderChart(t *testing.T) {
+	requireLegacyCustomRuntime(t)
 	s := newCompletionScenario(t)
 	s.helm.disableChatContract = true
 	agent := s.current()

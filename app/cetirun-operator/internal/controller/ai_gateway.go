@@ -20,6 +20,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -35,9 +36,18 @@ const (
 	aiGatewayKeySecretName  = "ai-gateway-virtual-key"
 	aiGatewayKeySecretField = "api-key"
 	// aiGatewaySharedAccessGroup is the Gateway access group of the models
-	// administrators share with every Agent. Administrators assign a model to
-	// it with model_info.access_groups.
+	// administrators shared with every Agent before Policy. It is retained
+	// only to recognize old catalog entries; policy-bound keys never receive it.
 	aiGatewaySharedAccessGroup = "cetirun-shared"
+	// aiGatewayModelAccessGroupPrefix identifies an opaque per-configured-model
+	// access group. The Gateway chart derives its suffix from the canonical
+	// model configuration; the controller only trusts groups returned by the
+	// Gateway catalog and never attempts to recreate the suffix from a
+	// LiteLLM-generated deployment ID.
+	aiGatewayModelAccessGroupPrefix = "cetirun-model-"
+	// aiGatewaySharedDeploymentIDPrefix pairs a chart-derived deployment ID
+	// with the access-group suffix. The catalog trusts neither value alone.
+	aiGatewaySharedDeploymentIDPrefix = "cetirun-shared-"
 	// aiGatewayTeamPrefix prefixes the Gateway team of a CetiRun Team.
 	aiGatewayTeamPrefix           = "cetirun-team-"
 	aiGatewayBudgetDuration       = "1mo"
@@ -54,10 +64,25 @@ const (
 	// aiGatewayReasonKeySecretLost reports that the Agent's own key exists in
 	// the Gateway while its value is no longer in the key Secret.
 	aiGatewayReasonKeySecretLost = "KeySecretLost"
+	// aiGatewayReasonKeyRecordLost reports that the Agent previously issued a
+	// key but the Gateway no longer has its durable record. Recreating it would
+	// silently reset spend, budget-reset time, and emergency block state.
+	aiGatewayReasonKeyRecordLost = "KeyRecordLost"
+	// aiGatewayReasonSuspended marks a block the operator itself applied. It is
+	// the only blocked state a later authorized resume may clear; any other
+	// blocked key is an administrator emergency block and remains fail-closed.
+	aiGatewayReasonSuspended = "Suspended"
+	aiGatewayReasonNoModels  = "NoModelEntitlement"
+	// aiGatewayReasonPolicyReprojection is an operator-owned, temporary block
+	// placed before an old policy projection is replaced. It may be cleared
+	// only after the new key grant has been read back successfully.
+	aiGatewayReasonPolicyReprojection = "PolicyReprojection"
 	// aiGatewayReasonDisabled reports an Agent whose chart takes its models
 	// only from the Gateway in a deployment that has not enabled it.
 	aiGatewayReasonDisabled = "AIGatewayDisabled"
 )
+
+var errAIGatewayKeySecretLost = errors.New("the recorded AI Gateway key value is no longer available in its Secret")
 
 // AIGatewayConfig is the deployment-level AI Gateway integration. With
 // Enabled false the operator creates no keys, but still revokes existing keys
@@ -71,8 +96,8 @@ type AIGatewayConfig struct {
 	// in the operator namespace.
 	MasterKeySecretName string
 	MasterKeySecretKey  string
-	// DefaultBudget is the monthly budget in US dollars written when a key is
-	// created. Later changes made in the Gateway are not overwritten.
+	// DefaultBudget is retained as deployment configuration validation input.
+	// Policy-bound keys use the effective AgentPolicy USD budget.
 	DefaultBudget float64
 	// DefaultModel is the preferred default model of Agents that use the
 	// Gateway when the Agent names none, or names one it cannot use.
@@ -152,6 +177,8 @@ type aiGatewayKeyClient interface {
 	GetKey(context.Context, string) (*aigateway.Key, error)
 	GenerateKey(context.Context, aigateway.GenerateRequest) error
 	UpdateKeyModels(context.Context, string, []string) error
+	UpdateKeyBudget(context.Context, string, float64, string) error
+	SetKeyBlocked(context.Context, string, bool) error
 	UpdateKeyOwner(context.Context, string, string, string) error
 	DeleteKeys(context.Context, []string) error
 	DeleteKeyByAlias(context.Context, string) error
@@ -219,6 +246,61 @@ func (r *AgentReconciler) aiGatewayAccessGroups(instance *cetirunv1alpha1.Agent,
 	return groups
 }
 
+// aiGatewayGrant is the resolved, non-secret projection of Policy into a
+// LiteLLM key. Shared model groups are always collision-safe groups observed
+// in the live catalog, never a model display name.
+type aiGatewayGrant struct {
+	groups  []string
+	budget  float64
+	copilot bool
+	active  bool
+}
+
+func (r *AgentReconciler) resolveAIGatewayGrant(ctx context.Context, client aiGatewayKeyClient, instance *cetirunv1alpha1.Agent) (aiGatewayGrant, error) {
+	resolution, err := r.resolvePolicy(ctx, instance)
+	if err != nil {
+		return aiGatewayGrant{}, err
+	}
+	budgetText, models, err := effectivePolicyModels(instance, resolution.policy)
+	if err != nil {
+		return aiGatewayGrant{}, err
+	}
+	shared := instance.Spec.SharedModelsEnabled()
+	if instance.Spec.GitHubCopilotEnabled() && !r.aiGatewayCopilotOffered() {
+		return aiGatewayGrant{}, fmt.Errorf("GitHub Copilot was requested but this deployment does not offer a Copilot proxy")
+	}
+	copilot := instance.Spec.GitHubCopilotEnabled() && resolution.policy.Spec.ModelAccess.Copilot.Allowed
+	if !shared && !copilot {
+		return aiGatewayGrant{}, nil
+	}
+	if budgetText == "" {
+		return aiGatewayGrant{}, fmt.Errorf("Policy model entitlement has no Gateway budget")
+	}
+	budget, err := strconv.ParseFloat(budgetText, 64)
+	if err != nil || math.IsNaN(budget) || math.IsInf(budget, 0) || budget <= 0 {
+		return aiGatewayGrant{}, fmt.Errorf("Policy Gateway budget is not a finite positive US-dollar value")
+	}
+	groups := []string{}
+	if shared {
+		// A current Gateway catalog is the authorization evidence that binds
+		// policy model identifiers to concrete deployment groups. The seeded
+		// Portal catalog intentionally cannot satisfy this check.
+		if err := r.refreshAIGatewayCatalogForGrant(ctx, client); err != nil {
+			return aiGatewayGrant{}, err
+		}
+		var complete bool
+		groups, complete = r.aiGatewayCatalog.resolvedGroups(models)
+		if !complete || len(groups) == 0 {
+			return aiGatewayGrant{}, fmt.Errorf("the Gateway catalog has no collision-safe deployment group for an authorized shared model")
+		}
+	}
+	if copilot {
+		groups = append(groups, copilotAccessGroup(instance))
+	}
+	slices.Sort(groups)
+	return aiGatewayGrant{groups: slices.Compact(groups), budget: budget, copilot: copilot, active: true}, nil
+}
+
 // aiGatewayKeyModels converts access groups to the key's model list. The
 // Gateway treats an empty list as access to every model, so a key without
 // groups carries LiteLLM's explicit no-access entry instead.
@@ -232,9 +314,9 @@ func aiGatewayKeyModels(groups []string) []string {
 }
 
 // aiGatewayHarnessSupported reports whether the built-in harness is wired to
-// the Gateway: its configuration takes the Gateway endpoint, the key and the
-// model list, and it no longer carries its own Copilot login. Its chart must
-// support that too (aiGatewayChartSupports).
+// the Gateway: its configuration takes the Gateway endpoint, key, and model
+// list instead of a provider credential or in-agent Copilot login. The pinned
+// chart must declare the harness-specific paths too (aiGatewayChartSupports).
 func aiGatewayHarnessSupported(agentType cetirunv1alpha1.AgentType) bool {
 	return agentType == cetirunv1alpha1.AgentTypeOpenClaw || agentType == cetirunv1alpha1.AgentTypeHermes
 }
@@ -378,7 +460,14 @@ func ensureAIGatewayStatus(instance *cetirunv1alpha1.Agent) *cetirunv1alpha1.AIG
 func aiGatewayDegraded(instance *cetirunv1alpha1.Agent, reason string, err error) error {
 	status := ensureAIGatewayStatus(instance)
 	status.Phase = cetirunv1alpha1.AIGatewayPhaseDegraded
-	status.Reason = reason
+	// Reason is also the durable ownership receipt for a block made by the
+	// operator. Keep that receipt while reporting the more specific failure on
+	// AIGatewayReady. Otherwise a transient grant/catalog failure after the
+	// key was blocked would relabel it as an unknown administrator block, and
+	// the operator could never safely restore the same key after recovery.
+	if !aiGatewayOperatorOwnedBlock(status.Reason) {
+		status.Reason = reason
+	}
 	setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionAIGatewayReady,
 		metav1.ConditionFalse, reason, err.Error())
 	return err
@@ -442,9 +531,10 @@ func (r *AgentReconciler) ensureAIGatewayOwner(ctx context.Context, client aiGat
 // Copilot proxy registrations and model list. The key value is written to the
 // instance Secret before the create request, so an unknown create outcome is
 // resolved by looking the value up instead of creating a second key. The
-// budget is written only at creation: administrators may change it in the
-// Gateway. chartSupported reports whether the Agent's pinned chart can route
-// model traffic through the Gateway.
+// budget, access groups, and blocked state are policy reconciled and read
+// back without replacing the key, so current-period LiteLLM spend survives.
+// chartSupported reports whether the Agent's pinned chart can route model
+// traffic through the Gateway.
 func (r *AgentReconciler) reconcileAIGateway(ctx context.Context, instance *cetirunv1alpha1.Agent, chartSupported bool) error {
 	// Only a due verification moves the verification time: a status that
 	// changed on every pass would re-queue the Agent at once, again and again.
@@ -456,21 +546,46 @@ func (r *AgentReconciler) reconcileAIGateway(ctx context.Context, instance *ceti
 	if status.Phase == "" {
 		status.Phase = cetirunv1alpha1.AIGatewayPhaseProvisioning
 	}
-	routed := r.aiGatewayRequired(instance) && chartSupported
-	copilot := routed && r.aiGatewayCopilotWanted(instance)
-	groups := r.aiGatewayAccessGroups(instance, copilot)
-	models := aiGatewayKeyModels(groups)
-
 	client, err := r.aiGatewayClient(ctx)
 	if err != nil {
 		return aiGatewayDegraded(instance, "GatewayConfigUnavailable", err)
 	}
+	grant, err := r.resolveAIGatewayGrant(ctx, client, instance)
+	if err != nil {
+		return aiGatewayDegraded(instance, "PolicyGrantInvalid", err)
+	}
+	if !grant.active {
+		blocked, err := r.blockAIGatewayKeyIfPresent(ctx, client, instance)
+		if err != nil {
+			return aiGatewayDegraded(instance, "KeyBlockFailed", err)
+		}
+		status.Routed, status.AccessGroups, status.Models, status.DefaultModel, status.Blocked = false, nil, nil, "", blocked
+		status.Phase, status.Reason = cetirunv1alpha1.AIGatewayPhaseReady, aiGatewayReasonNoModels
+		setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionAIGatewayReady,
+			metav1.ConditionFalse, aiGatewayReasonNoModels, "The effective policy grants no AI Gateway model source")
+		// Do not let a no-entitlement Agent fall back to the chart's prior
+		// provider configuration. The reconciler stops before a Helm render;
+		// an existing Gateway key has already been blocked above.
+		return aiGatewayDegraded(instance, aiGatewayReasonNoModels, fmt.Errorf("the effective policy grants no AI Gateway model source"))
+	}
+	routed := r.aiGatewayRequired(instance) && chartSupported
+	copilot := routed && grant.copilot
+	groups := slices.Clone(grant.groups)
+	models := aiGatewayKeyModels(groups)
 	teamID, userID, err := r.ensureAIGatewayOwner(ctx, client, instance, false)
 	if err != nil {
 		return aiGatewayDegraded(instance, "GatewayOwnerFailed", err)
 	}
 	value, err := r.ensureAIGatewayKeySecret(ctx, instance, false)
 	if err != nil {
+		if errors.Is(err, errAIGatewayKeySecretLost) {
+			if status.Reason != aiGatewayReasonKeySecretLost {
+				r.EventRecorder.Eventf(instance, corev1.EventTypeWarning, "AIGatewayKeySecretLost",
+					"The Agent's virtual key %s was previously issued, but its value is no longer held in Secret %s. Restore the Secret or delete the key in the Gateway before issuing a replacement.",
+					status.KeyAlias, aiGatewayKeySecretName)
+			}
+			return aiGatewayDegraded(instance, aiGatewayReasonKeySecretLost, err)
+		}
 		return aiGatewayDegraded(instance, "KeySecretFailed", err)
 	}
 	token := aigateway.Token(value)
@@ -479,6 +594,9 @@ func (r *AgentReconciler) reconcileAIGateway(ctx context.Context, instance *ceti
 		return aiGatewayDegraded(instance, "GatewayUnavailable", err)
 	}
 	switch {
+	case key == nil && status.KeyID != "":
+		return aiGatewayDegraded(instance, aiGatewayReasonKeyRecordLost,
+			fmt.Errorf("the previously issued virtual key record is missing from the AI Gateway; explicit recovery is required to preserve spend and block intent"))
 	case key == nil:
 		// A missing key can mean the Gateway lost its data, teams and users
 		// included: ensure the owner again before creating the key.
@@ -487,8 +605,9 @@ func (r *AgentReconciler) reconcileAIGateway(ctx context.Context, instance *ceti
 		}
 		request := aigateway.GenerateRequest{
 			Key: value, Alias: status.KeyAlias, Models: models,
-			MaxBudget: r.AIGateway.DefaultBudget, BudgetDuration: aiGatewayBudgetDuration,
-			TeamID: teamID, UserID: userID,
+			MaxBudget: grant.budget, BudgetDuration: aiGatewayBudgetDuration,
+			Blocked: instance.Spec.Suspended,
+			TeamID:  teamID, UserID: userID,
 			Metadata: map[string]string{
 				"cetirun_agent": instance.Name, "cetirun_agent_uid": string(instance.UID),
 				"cetirun_user": instance.Spec.User.Alias, "cetirun_team": instance.Spec.Team,
@@ -524,6 +643,21 @@ func (r *AgentReconciler) reconcileAIGateway(ctx context.Context, instance *ceti
 		return aiGatewayDegraded(instance, "KeyAliasMismatch",
 			fmt.Errorf("the virtual key Secret held a key with another alias; a new key will be created"))
 	default:
+		// An already-blocked key is operator-owned only when a previous
+		// suspension or no-entitlement transition recorded that fact. Never
+		// relabel an administrator emergency block as a suspension: doing so
+		// would make a later resume silently unblock it.
+		if key.Blocked && !aiGatewayOperatorOwnedBlock(status.Reason) {
+			return aiGatewayDegraded(instance, "KeyBlocked", fmt.Errorf("the AI Gateway key is blocked outside a CetiRun suspension or no-entitlement transition"))
+		}
+		// Suspend is a revocation boundary. Block before doing any other
+		// update; later read-back proves the key stayed the same.
+		if instance.Spec.Suspended && !key.Blocked {
+			if err := client.SetKeyBlocked(ctx, token, true); err != nil {
+				return aiGatewayDegraded(instance, "KeyBlockFailed", err)
+			}
+			key.Blocked = true
+		}
 		if !slices.Equal(sortedCopy(key.Models), models) {
 			if err := client.UpdateKeyModels(ctx, token, models); err != nil {
 				return aiGatewayDegraded(instance, "KeyUpdateFailed", err)
@@ -536,13 +670,77 @@ func (r *AgentReconciler) reconcileAIGateway(ctx context.Context, instance *ceti
 				return aiGatewayDegraded(instance, "KeyUpdateFailed", err)
 			}
 		}
+		if key.MaxBudget == nil || math.Abs(*key.MaxBudget-grant.budget) > 0.0000001 || key.BudgetDuration != aiGatewayBudgetDuration {
+			if err := client.UpdateKeyBudget(ctx, token, grant.budget, aiGatewayBudgetDuration); err != nil {
+				return aiGatewayDegraded(instance, "KeyBudgetUpdateFailed", err)
+			}
+		}
+	}
+	// Management responses are not enforcement evidence. Re-read the stored
+	// key after every create/update and reject drift before exposing the
+	// workload as routed.
+	key, err = client.GetKey(ctx, token)
+	if err != nil {
+		return aiGatewayDegraded(instance, "GatewayUnavailable", err)
+	}
+	if key == nil || key.Alias != status.KeyAlias || key.TeamID != teamID || key.UserID != userID ||
+		!slices.Equal(sortedCopy(key.Models), models) ||
+		key.MaxBudget == nil || math.Abs(*key.MaxBudget-grant.budget) > 0.0000001 || key.BudgetDuration != aiGatewayBudgetDuration {
+		return aiGatewayDegraded(instance, "KeyReadbackMismatch", fmt.Errorf("the AI Gateway key does not match its resolved grant"))
+	}
+	if instance.Spec.Suspended {
+		if !key.Blocked {
+			return aiGatewayDegraded(instance, "KeyReadbackMismatch", fmt.Errorf("the suspended Agent key is not blocked"))
+		}
+	} else if key.Blocked {
+		if !aiGatewayOperatorOwnedBlock(status.Reason) {
+			return aiGatewayDegraded(instance, "KeyBlocked", fmt.Errorf("the AI Gateway key is blocked outside a CetiRun suspension or no-entitlement transition"))
+		}
+		if err := client.SetKeyBlocked(ctx, token, false); err != nil {
+			return aiGatewayDegraded(instance, "KeyUnblockFailed", err)
+		}
+		key, err = client.GetKey(ctx, token)
+		if err != nil || key == nil || key.Blocked {
+			if err == nil {
+				err = fmt.Errorf("the AI Gateway key remained blocked after resume")
+			}
+			return aiGatewayDegraded(instance, "KeyReadbackMismatch", err)
+		}
 	}
 	now := metav1.Now()
 	status.KeyID = token[:aiGatewayKeyIDLength]
 	status.AccessGroups = groups
 	status.Team = teamID
+	status.BudgetUSD = strconv.FormatFloat(*key.MaxBudget, 'f', -1, 64)
+	status.BudgetDuration = key.BudgetDuration
+	status.Blocked = key.Blocked
+	if key.Spend != nil {
+		status.SpendUSD = strconv.FormatFloat(*key.Spend, 'f', -1, 64)
+	} else {
+		status.SpendUSD = ""
+	}
+	if key.BudgetResetAt != nil {
+		resetAt := metav1.NewTime(*key.BudgetResetAt)
+		status.BudgetResetAt = &resetAt
+	} else {
+		status.BudgetResetAt = nil
+	}
+	if instance.Status.Policy != nil {
+		status.PolicyRevision = instance.Status.Policy.Enforcement.Gateway.DesiredRevision
+	} else {
+		status.PolicyRevision = ""
+	}
+	if fingerprint, known := r.aiGatewayCatalog.managedFingerprint(); known {
+		status.PricingRevision = fingerprint
+	} else {
+		status.PricingRevision = ""
+	}
 	status.Phase = cetirunv1alpha1.AIGatewayPhaseReady
-	status.Reason = ""
+	if instance.Spec.Suspended {
+		status.Reason = aiGatewayReasonSuspended
+	} else {
+		status.Reason = ""
+	}
 	if verificationDue || status.LastVerifiedTime == nil {
 		status.LastVerifiedTime = &now
 	}
@@ -550,7 +748,7 @@ func (r *AgentReconciler) reconcileAIGateway(ctx context.Context, instance *ceti
 
 	// Copilot registration problems are reported on the Copilot status and
 	// never block the key: shared models keep working.
-	r.reconcileAIGatewayCopilot(ctx, client, instance, copilot)
+	r.reconcileAIGatewayCopilot(ctx, client, instance, copilot && !instance.Spec.Suspended)
 	r.refreshAIGatewayCatalog(ctx, client)
 	if routed {
 		entries, defaultModel, omitted := r.aiGatewayModelEntries(instance)
@@ -581,6 +779,136 @@ func (r *AgentReconciler) reconcileAIGateway(ctx context.Context, instance *ceti
 	return nil
 }
 
+func aiGatewayOperatorOwnedBlock(reason string) bool {
+	return reason == aiGatewayReasonSuspended || reason == aiGatewayReasonNoModels || reason == aiGatewayReasonPolicyReprojection
+}
+
+// beginAIGatewayPolicyReprojection blocks an active operator-owned key before
+// the Agent controller holds its workload for a changed policy revision. It
+// records distinct ownership for this temporary block, so reconciliation can
+// clear it only after it has read back the replacement grant. A pre-existing
+// block without that ownership remains an administrator emergency block.
+func (r *AgentReconciler) beginAIGatewayPolicyReprojection(ctx context.Context, instance *cetirunv1alpha1.Agent) error {
+	secret, err := r.aiGatewayKeySecret(ctx, instance)
+	if err != nil {
+		return err
+	}
+	if secret == nil || !aigateway.ValidKeyValue(string(secret.Data[aiGatewayKeySecretField])) {
+		if aiGatewayKeyWasIssued(instance) {
+			return errAIGatewayKeySecretLost
+		}
+		return nil
+	}
+	client, err := r.aiGatewayClient(ctx)
+	if err != nil {
+		return err
+	}
+	token := aigateway.Token(string(secret.Data[aiGatewayKeySecretField]))
+	key, err := client.GetKey(ctx, token)
+	if err != nil {
+		return err
+	}
+	if key == nil {
+		if aiGatewayKeyWasIssued(instance) {
+			return fmt.Errorf("the previously issued AI Gateway key record is missing")
+		}
+		return nil
+	}
+	if key.Alias != aiGatewayKeyAlias(instance) {
+		return fmt.Errorf("the AI Gateway key Secret identifies another key alias")
+	}
+	status := ensureAIGatewayStatus(instance)
+	if key.Blocked && !aiGatewayOperatorOwnedBlock(status.Reason) {
+		return fmt.Errorf("the AI Gateway key is already blocked outside an operator policy reprojection")
+	}
+	// Persist ownership before the external side effect. If this write fails,
+	// compute is still held by the caller but the key is left untouched. If a
+	// later receipt write fails after blocking, the next reconcile can safely
+	// resume because this durable intent distinguishes the block from an
+	// administrator emergency block.
+	if status.Reason != aiGatewayReasonPolicyReprojection {
+		status.Blocked = false
+		status.Routed = false
+		status.Reason = aiGatewayReasonPolicyReprojection
+		status.Phase = cetirunv1alpha1.AIGatewayPhaseReady
+		setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionAIGatewayReady,
+			metav1.ConditionFalse, aiGatewayReasonPolicyReprojection, "The old AI Gateway grant will be blocked until the current policy projection is verified")
+		if err := r.updateStatus(ctx, instance); err != nil {
+			return fmt.Errorf("persist AI Gateway policy-reprojection intent: %w", err)
+		}
+		status = ensureAIGatewayStatus(instance)
+	}
+	if !key.Blocked {
+		if err := client.SetKeyBlocked(ctx, token, true); err != nil {
+			return err
+		}
+		key, err = client.GetKey(ctx, token)
+		if err != nil {
+			return err
+		}
+		if key == nil || !key.Blocked {
+			return fmt.Errorf("the AI Gateway key was not blocked for policy reprojection")
+		}
+	}
+	status.Blocked = true
+	status.Routed = false
+	status.Reason = aiGatewayReasonPolicyReprojection
+	status.Phase = cetirunv1alpha1.AIGatewayPhaseReady
+	setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionAIGatewayReady,
+		metav1.ConditionFalse, aiGatewayReasonPolicyReprojection, "The old AI Gateway grant is blocked until the current policy projection is verified")
+	return r.updateStatus(ctx, instance)
+}
+
+// blockAIGatewayKeyIfPresent revokes an existing operator-owned key without
+// creating a Secret or a replacement key. It is used for an entitlement that
+// has tightened to no model sources. A missing Secret cannot safely identify
+// a key, so the UID-derived alias remains untouched rather than risking an
+// unrelated key or resetting spend.
+func (r *AgentReconciler) blockAIGatewayKeyIfPresent(ctx context.Context, client aiGatewayKeyClient, instance *cetirunv1alpha1.Agent) (bool, error) {
+	secret, err := r.aiGatewayKeySecret(ctx, instance)
+	if err != nil {
+		return false, err
+	}
+	if secret == nil {
+		if aiGatewayKeyWasIssued(instance) {
+			return false, errAIGatewayKeySecretLost
+		}
+		return false, nil
+	}
+	value := string(secret.Data[aiGatewayKeySecretField])
+	if !aigateway.ValidKeyValue(value) {
+		if aiGatewayKeyWasIssued(instance) {
+			return false, errAIGatewayKeySecretLost
+		}
+		return false, nil
+	}
+	token := aigateway.Token(value)
+	key, err := client.GetKey(ctx, token)
+	if err != nil || key == nil {
+		return false, err
+	}
+	if key.Alias != aiGatewayKeyAlias(instance) {
+		return false, fmt.Errorf("the AI Gateway key Secret identifies another key alias")
+	}
+	if !key.Blocked {
+		if err := client.SetKeyBlocked(ctx, token, true); err != nil {
+			return false, err
+		}
+	}
+	key, err = client.GetKey(ctx, token)
+	if err != nil {
+		return false, err
+	}
+	if key == nil || !key.Blocked {
+		return false, fmt.Errorf("the AI Gateway key was not blocked")
+	}
+	return true, nil
+}
+
+func aiGatewayKeyWasIssued(instance *cetirunv1alpha1.Agent) bool {
+	return instance.Status.AIGateway != nil && instance.Status.AIGateway.KeyID != ""
+}
+
 func sortedCopy(values []string) []string {
 	out := slices.Clone(values)
 	slices.Sort(out)
@@ -591,6 +919,20 @@ func sortedCopy(values []string) []string {
 // when needed. A Secret written for another Agent UID, or holding a value in
 // an unexpected form, gets a new value; replace forces a new value.
 func (r *AgentReconciler) ensureAIGatewayKeySecret(ctx context.Context, instance *cetirunv1alpha1.Agent, replace bool) (string, error) {
+	// Once a key ID was recorded, a missing or malformed Secret is an
+	// irrecoverable continuity boundary. Generating a new value before proving
+	// the old key is absent can create a second alias after a transient Gateway
+	// outage and resets the old key's spend. Only an Agent with no recorded key
+	// is allowed to create its first Secret here.
+	if !replace && aiGatewayKeyWasIssued(instance) {
+		secret, err := r.aiGatewayKeySecret(ctx, instance)
+		if err != nil {
+			return "", err
+		}
+		if secret == nil || !aigateway.ValidKeyValue(string(secret.Data[aiGatewayKeySecretField])) {
+			return "", errAIGatewayKeySecretLost
+		}
+	}
 	return r.ensureAgentOwnedValue(ctx, instance, aiGatewayKeySecretName, aiGatewayKeySecretField, replace,
 		map[string]string{aiGatewayKeyAliasAnnotation: aiGatewayKeyAlias(instance)})
 }
@@ -609,6 +951,21 @@ func (r *AgentReconciler) ensureAgentOwnedValue(ctx context.Context, instance *c
 	if exists && !replace {
 		value := string(secret.Data[field])
 		if secret.Labels[aiGatewayAgentUIDLabel] == string(instance.UID) && aigateway.ValidKeyValue(value) {
+			base := secret.DeepCopy()
+			labelAgentSecret(secret, instance)
+			if secret.Annotations == nil {
+				secret.Annotations = map[string]string{}
+			}
+			for k, v := range annotations {
+				secret.Annotations[k] = v
+			}
+			if !equality.Semantic.DeepEqual(base.Labels, secret.Labels) ||
+				!equality.Semantic.DeepEqual(base.Annotations, secret.Annotations) ||
+				!equality.Semantic.DeepEqual(base.OwnerReferences, secret.OwnerReferences) {
+				if err := r.Update(ctx, secret); err != nil {
+					return "", fmt.Errorf("repair Secret %s ownership: %w", name, err)
+				}
+			}
 			return value, nil
 		}
 	}
@@ -645,9 +1002,11 @@ func labelAgentSecret(secret *corev1.Secret, instance *cetirunv1alpha1.Agent) {
 	secret.Labels["app.kubernetes.io/managed-by"] = "cetirun-operator"
 	secret.Labels["app.kubernetes.io/instance"] = instance.Spec.User.Alias
 	secret.Labels[aiGatewayAgentUIDLabel] = string(instance.UID)
-	if instance.Spec.Agent.Type == cetirunv1alpha1.AgentTypeCustom {
-		secret.OwnerReferences = []metav1.OwnerReference{*metav1.NewControllerRef(instance, cetirunv1alpha1.GroupVersion.WithKind("Agent"))}
-	}
+	// Every operator-generated credential projection has the same Agent
+	// lifetime, including native Hermes and OpenClaw Sandboxes.  The Sandbox
+	// execution adapter requires this ownership proof before it authorizes the
+	// Secret in a Pod; a UID label alone is mutable metadata, not ownership.
+	secret.OwnerReferences = []metav1.OwnerReference{*metav1.NewControllerRef(instance, cetirunv1alpha1.GroupVersion.WithKind("Agent"))}
 }
 
 // deleteAIGatewayKey revokes the Agent's key and removes its Copilot model
@@ -699,38 +1058,45 @@ func (r *AgentReconciler) aiGatewayKeySecret(ctx context.Context, instance *ceti
 }
 
 func (r *AgentReconciler) revokeAIGatewayKey(ctx context.Context, instance *cetirunv1alpha1.Agent) error {
+	var failures []error
 	status := ensureAIGatewayStatus(instance)
 	if status.Phase != cetirunv1alpha1.AIGatewayPhaseDeleting {
 		status.Phase = cetirunv1alpha1.AIGatewayPhaseDeleting
 		status.Routed = false
 		if err := r.updateStatus(ctx, instance); err != nil {
-			return fmt.Errorf("persist AI Gateway deletion gate: %w", err)
+			// Status is observability, not the revocation boundary. Continue all
+			// independent cleanup attempts even when the deletion gate cannot be
+			// persisted, then return the joined failures for retry.
+			failures = append(failures, fmt.Errorf("persist AI Gateway deletion gate: %w", err))
 		}
 	}
 	client, err := r.aiGatewayClient(ctx)
 	if err != nil {
-		return err
+		failures = append(failures, err)
+		return errors.Join(failures...)
 	}
 	if err := r.deleteCopilotRegistrations(ctx, client, instance); err != nil {
-		return fmt.Errorf("remove Copilot model registrations: %w", err)
+		failures = append(failures, fmt.Errorf("remove Copilot model registrations: %w", err))
 	}
 	secret, err := r.aiGatewayKeySecret(ctx, instance)
 	if err != nil {
-		return err
+		failures = append(failures, err)
 	}
 	if secret != nil {
 		if value := string(secret.Data[aiGatewayKeySecretField]); aigateway.ValidKeyValue(value) {
 			if err := client.DeleteKeys(ctx, []string{aigateway.Token(value)}); err != nil {
-				return fmt.Errorf("revoke AI Gateway virtual key: %w", err)
+				failures = append(failures, fmt.Errorf("revoke AI Gateway virtual key: %w", err))
 			}
 		}
 	}
 	if err := client.DeleteKeyByAlias(ctx, aiGatewayKeyAlias(instance)); err != nil {
-		return fmt.Errorf("revoke AI Gateway virtual key by alias: %w", err)
+		failures = append(failures, fmt.Errorf("revoke AI Gateway virtual key by alias: %w", err))
 	}
-	r.EventRecorder.Eventf(instance, corev1.EventTypeNormal, "AIGatewayKeyRevoked",
-		"Revoked AI Gateway virtual key %s", aiGatewayKeyAlias(instance))
-	return nil
+	if len(failures) == 0 {
+		r.EventRecorder.Eventf(instance, corev1.EventTypeNormal, "AIGatewayKeyRevoked",
+			"Revoked AI Gateway virtual key %s", aiGatewayKeyAlias(instance))
+	}
+	return errors.Join(failures...)
 }
 
 // recordSignInHelper records whether the Agent's workload serves the in-agent
@@ -784,7 +1150,11 @@ func (r *AgentReconciler) applyAIGatewayValues(values map[string]any, instance *
 		"provider": "openai",
 		"authMode": "api_key",
 		"apiBase":  r.AIGateway.URL + "/v1",
-		"model":    defaultModel,
+		// Provider credentials may not survive in the chart-created Secret or
+		// Hermes persistent home when an Agent is routed through the Gateway.
+		// The chart consumes the virtual key from its separate Secret instead.
+		"apiKey": "",
+		"model":  defaultModel,
 	})
 	proxy := map[string]any{"enabled": false}
 	if r.aiGatewayCopilotActive(instance) {

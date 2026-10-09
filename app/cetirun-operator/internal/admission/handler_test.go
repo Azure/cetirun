@@ -27,8 +27,14 @@ import (
 
 const testController = "system:serviceaccount:operator-test:controller"
 
+var testEntraSubject = api.EntraSubject{
+	Kind:     "User",
+	TenantID: "00000000-0000-0000-0000-000000000001",
+	ObjectID: "00000000-0000-0000-0000-000000000002",
+}
+
 func testConfig() Config {
-	return Config{ValidationMode: ValidationStrict, AdminUsers: []string{"administrator"}, AdminGroups: []string{"governance-test-admins"}, ControllerUsername: testController}
+	return Config{ValidationMode: ValidationStrict, AdminUsers: []string{"administrator", "system:serviceaccount:test:portal"}, AdminGroups: []string{"policy-test-admins"}, ControllerUsername: testController}
 }
 
 type fixture struct {
@@ -62,10 +68,18 @@ func newFixture(t *testing.T) fixture {
 			},
 		},
 	}
-	policy := &api.AgentPolicy{ObjectMeta: metav1.ObjectMeta{Name: "normal", UID: "policy-uid", ResourceVersion: "1"}}
+	policy := &api.AgentPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: "normal", UID: "policy-uid", ResourceVersion: "1"},
+		Spec:       api.AgentPolicySpec{Harnesses: api.AgentPolicyHarnesses{Allowed: []api.AgentType{api.AgentTypeHermes}}},
+	}
 	team := &api.Team{
 		ObjectMeta: metav1.ObjectMeta{Name: "engineering", UID: "team-uid", ResourceVersion: "1"},
-		Spec:       api.TeamSpec{NormalAgentPolicyRef: policy.Name, SandboxRefs: []string{box.Name}, DefaultSandboxRef: box.Name},
+		Spec: api.TeamSpec{
+			Membership:           api.TeamMembershipSpec{Subjects: []api.EntraSubject{testEntraSubject}},
+			NormalAgentPolicyRef: policy.Name,
+			SandboxRefs:          []string{box.Name},
+			DefaultSandboxRef:    box.Name,
+		},
 	}
 	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(box, policy, team).Build()
 	handler, err := NewHandler(cl, testConfig())
@@ -83,10 +97,17 @@ func newFixture(t *testing.T) fixture {
 		}},
 	}
 	agent := &api.Agent{
-		ObjectMeta: metav1.ObjectMeta{Name: "alice-work", UID: "agent-uid", ResourceVersion: "1", Finalizers: []string{api.Finalizer}},
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "alice-work", UID: "agent-uid", ResourceVersion: "1", Finalizers: []string{api.Finalizer},
+			Annotations: map[string]string{
+				api.AnnotationOwnerTenantID: testEntraSubject.TenantID,
+				api.AnnotationOwnerObjectID: testEntraSubject.ObjectID,
+			},
+		},
 		Spec: api.AgentSpec{
 			Agent: api.HarnessSpec{Type: api.AgentTypeHermes}, User: api.UserSpec{Alias: "alice"},
 			GatewayTokenSecretRef: "gateway-token", Team: team.Name, SandboxRef: box.Name, PolicyClass: api.AgentPolicyClassNormal,
+			TeamAuthorization: api.TeamAuthorization{Subject: testEntraSubject, AuthorizedAt: metav1.Now()},
 		},
 	}
 	return fixture{handler, cl, agent, team, box, policy}
@@ -151,7 +172,7 @@ func TestExplicitAdmissionAuthority(t *testing.T) {
 				}
 				req := requestFor(t, admissionv1.Create, objects[resourceName], nil, user)
 				if user == "group-administrator" {
-					req.UserInfo.Groups = []string{"governance-test-admins"}
+					req.UserInfo.Groups = []string{"policy-test-admins"}
 				}
 				requireResponse(t, f.handler.Validate(context.Background(), req), true, "")
 			}
@@ -229,6 +250,21 @@ func TestLegacyBehaviorAndTeamEdits(t *testing.T) {
 	f.handler.registrations = nil
 	req = requestFor(t, admissionv1.Update, team, f.team, "portal")
 	requireResponse(t, f.handler.Validate(context.Background(), req), true, "unchanged")
+	for name, mutate := range map[string]func(*api.Team){
+		"add member": func(candidate *api.Team) {
+			candidate.Spec.Membership.Subjects = append(candidate.Spec.Membership.Subjects, api.EntraSubject{
+				Kind: "User", TenantID: testEntraSubject.TenantID, ObjectID: "00000000-0000-0000-0000-000000000099",
+			})
+		},
+		"remove member": func(candidate *api.Team) { candidate.Spec.Membership.Subjects = nil },
+	} {
+		t.Run(name, func(t *testing.T) {
+			candidate := f.team.DeepCopy()
+			mutate(candidate)
+			req := requestFor(t, admissionv1.Update, candidate, f.team, "portal")
+			requireResponse(t, f.handler.Validate(context.Background(), req), false, "administrator")
+		})
+	}
 	team.Spec.DefaultSandboxRef = "different"
 	req = requestFor(t, admissionv1.Update, team, f.team, "portal")
 	requireResponse(t, f.handler.Validate(context.Background(), req), false, "administrator")
@@ -333,7 +369,7 @@ func TestLegacyTeamDeletionPreservesExistingAuthorization(t *testing.T) {
 	}
 }
 
-func TestTeamRemovalProtectsInheritedGovernance(t *testing.T) {
+func TestTeamRemovalProtectsInheritedPolicy(t *testing.T) {
 	f := newFixture(t)
 	f.agent.Spec.SandboxRef = ""
 	f.agent.ResourceVersion = ""
@@ -347,7 +383,7 @@ func TestTeamRemovalProtectsInheritedGovernance(t *testing.T) {
 		requestFor(t, admissionv1.Delete, f.team, nil, "administrator"),
 		requestFor(t, admissionv1.Update, ungoverned, f.team, "administrator"),
 	} {
-		requireResponse(t, f.handler.Validate(context.Background(), req), false, "inherited governance")
+		requireResponse(t, f.handler.Validate(context.Background(), req), false, "inherited policy")
 		requireResponse(t, f.handler.Validate(context.Background(), req), false, f.agent.Name)
 	}
 	if err := f.client.Delete(context.Background(), f.agent); err != nil {
@@ -379,14 +415,14 @@ func TestUnknownVersionFieldsDoNotBypassValidationOrBlockKnownObjects(t *testing
 			if !ok {
 				t.Fatal("fixture omitted spec")
 			}
-			spec["futureGovernance"] = true
+			spec["futurePolicy"] = true
 			var err error
 			req.Object.Raw, err = json.Marshal(raw)
 			if err != nil {
 				t.Fatal(err)
 			}
 			response := f.handler.Validate(context.Background(), req)
-			requireResponse(t, response, false, `unknown field "futureGovernance"`)
+			requireResponse(t, response, false, `unknown field "futurePolicy"`)
 			if response.Result.Code != 400 {
 				t.Fatal("unrecognized policy fields must explicitly fail closed")
 			}
@@ -627,7 +663,7 @@ func TestConfigurationUpdatesCheckEveryReferencingTeam(t *testing.T) {
 	requireResponse(t, f.handler.Validate(context.Background(), req), false, "referencing Team")
 }
 
-func TestGovernanceCannotBeClearedIntoLegacyExecution(t *testing.T) {
+func TestPolicyCannotBeClearedIntoLegacyExecution(t *testing.T) {
 	for _, held := range []bool{false, true} {
 		t.Run(fmt.Sprintf("held=%v", held), func(t *testing.T) {
 			f := newFixture(t)
@@ -762,8 +798,8 @@ func TestAdmissionConfigValidation(t *testing.T) {
 			t.Fatalf("accepted invalid config: %s", raw)
 		}
 	}
-	config, err := ParseConfig(`{"adminUsers":["administrator"],"controllerUsername":"system:serviceaccount:test:controller"}`)
-	if err != nil || !slices.Equal(config.AdminUsers, []string{"administrator"}) {
+	config, err := ParseConfig(`{"adminUsers":["administrator","system:serviceaccount:test:portal"],"controllerUsername":"system:serviceaccount:test:controller"}`)
+	if err != nil || !slices.Equal(config.AdminUsers, []string{"administrator", "system:serviceaccount:test:portal"}) {
 		t.Fatalf("valid config rejected: %v", err)
 	}
 }

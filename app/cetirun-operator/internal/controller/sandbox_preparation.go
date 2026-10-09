@@ -150,6 +150,14 @@ func (r *AgentReconciler) prepareSandboxHeld(ctx context.Context, requested *api
 	if requested.Spec.Tailscale != nil || requested.Spec.MSTeams != nil || agentIdentityRequested(requested) {
 		return fmt.Errorf("%w: native cloud and sidecar integrations require separate Sandbox lifecycle support", sandboxpolicy.ErrUnsupportedControl)
 	}
+	// Policy enforcement is mandatory in the reconciler, but the protected Sandbox
+	// renderer does not yet have a typed Gateway endpoint/model/key projection.
+	// Never stage a policy-bound bundle from the legacy provider/value path: a
+	// future start adapter must not be able to turn that held template into a
+	// direct-provider workload.
+	if requested.Status.Policy != nil && requested.Status.Policy.TeamAuthorization != nil {
+		return fmt.Errorf("%w: typed AI Gateway Sandbox projection is unavailable; execution remains held", sandboxpolicy.ErrUnsupportedControl)
+	}
 	if config.bootstrap == nil && controllerutil.ContainsFinalizer(requested, sandbox.BootstrapFinalizer) {
 		return fmt.Errorf("%w: recorded Sandbox bootstrap requires its configured ownership checks; execution remains held", sandboxpolicy.ErrUnavailable)
 	}

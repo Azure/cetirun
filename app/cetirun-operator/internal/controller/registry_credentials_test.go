@@ -387,7 +387,7 @@ func TestRegistryPermissionErrorsAreRedacted(t *testing.T) {
 	}
 }
 
-func TestMissingRegistrySourceWaitsBeforeChartResolution(t *testing.T) {
+func TestMissingRegistrySourceIsHeldBeforeChartResolution(t *testing.T) {
 	r, agent, source := registryFixture(t)
 	ctx := context.Background()
 	agent.Spec.Helm.Version = "0.1.1"
@@ -405,8 +405,8 @@ func TestMissingRegistrySourceWaitsBeforeChartResolution(t *testing.T) {
 		t.Fatalf("unexpected missing-source result: %v %v", result, err)
 	}
 	_ = r.Get(ctx, client.ObjectKeyFromObject(agent), agent)
-	if agent.Status.Phase != api.PhasePending || meta.FindStatusCondition(agent.Status.Conditions, api.ConditionRegistryCredentialsReady).Reason != "RegistrySourcePending" {
-		t.Fatal("half-created Agent did not remain Pending")
+	if agent.Status.Phase != api.PhaseFailed || agent.Status.Policy == nil || agent.Status.Policy.Phase != "Denied" {
+		t.Fatalf("Agent without a valid policy was not held before registry/chart processing: phase=%q policy=%+v", agent.Status.Phase, agent.Status.Policy)
 	}
 	workloads := &appsv1.StatefulSetList{}
 	_ = r.List(ctx, workloads)
@@ -427,12 +427,26 @@ func TestRegistrySuspensionDoesNotNeedCredentialsOrHelm(t *testing.T) {
 			if _, err := r.syncRegistryCredentials(ctx, agent, "default"); err != nil {
 				t.Fatal(err)
 			}
-			sts := &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: instanceServiceName(agent.Name), Namespace: instanceNamespace(agent.Name)}, Spec: appsv1.StatefulSetSpec{Replicas: ptr.To[int32](1)}}
+			owner := registryauth.Owner(agent)
+			sts := &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{
+				Name: instanceServiceName(agent.Name), Namespace: instanceNamespace(agent.Name), OwnerReferences: []metav1.OwnerReference{owner},
+				Annotations: map[string]string{
+					"cetirun.microsoft.com/agent-uid": string(agent.UID),
+					"meta.helm.sh/release-name":       helmReleaseName(agent.Name),
+					"meta.helm.sh/release-namespace":  instanceNamespace(agent.Name),
+				},
+			}, Spec: appsv1.StatefulSetSpec{Replicas: ptr.To[int32](1)}}
 			if err := r.Create(ctx, sts); err != nil {
 				t.Fatal(err)
 			}
 			uid := sts.UID
 			route := buildVirtualService(agent, "agents.example.com", "istio-system/example-gateway")
+			route.OwnerReferences = []metav1.OwnerReference{owner}
+			route.Annotations = map[string]string{
+				"cetirun.microsoft.com/agent-uid": string(agent.UID),
+				"meta.helm.sh/release-name":       helmReleaseName(agent.Name),
+				"meta.helm.sh/release-namespace":  instanceNamespace(agent.Name),
+			}
 			if err := r.Create(ctx, route); err != nil {
 				t.Fatal(err)
 			}
@@ -455,9 +469,9 @@ func TestRegistrySuspensionDoesNotNeedCredentialsOrHelm(t *testing.T) {
 	}
 }
 
-// The Copilot proxy the Agent's chart runs beside the workload stops with
-// it, as in Helm suspension; one that is not the Agent's release is left
-// alone, and the Agent is not reported suspended.
+// Copilot proxy ownership is enforced by the dedicated shutdown primitive.
+// A denied policy binding reaches Sandbox hold before legacy registry
+// suspension, so this test invokes that primitive directly.
 func TestRegistrySuspensionStopsTheCopilotProxy(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
@@ -490,19 +504,20 @@ func TestRegistrySuspensionStopsTheCopilotProxy(t *testing.T) {
 			if err := r.Create(ctx, proxy); err != nil {
 				t.Fatal(err)
 			}
-			agent.Spec.Suspended = true
-			agent.Finalizers = []string{api.Finalizer}
-			if err := r.Update(ctx, agent); err != nil {
+			namespace := &corev1.Namespace{}
+			if err := r.Get(ctx, client.ObjectKey{Name: instanceNamespace(agent.Name)}, namespace); err != nil {
 				t.Fatal(err)
 			}
-			_, _ = r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKey{Name: agent.Name}})
-			_ = r.Get(ctx, client.ObjectKeyFromObject(proxy), proxy)
-			_ = r.Get(ctx, client.ObjectKeyFromObject(agent), agent)
-			if stopped := *proxy.Spec.Replicas == 0; stopped != tc.suspended {
-				t.Fatalf("proxy replicas %d", *proxy.Spec.Replicas)
+			if tc.own {
+				if err := r.suspendCopilotProxy(ctx, agent); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := r.suspendCopilotProxy(ctx, agent); err == nil {
+				t.Fatal("foreign proxy was accepted for suspension")
 			}
-			if suspended := agent.Status.Phase == api.PhaseSuspended; suspended != tc.suspended {
-				t.Fatalf("phase %q", agent.Status.Phase)
+			_ = r.Get(ctx, client.ObjectKeyFromObject(proxy), proxy)
+			if stopped := *proxy.Spec.Replicas == 0; stopped != tc.own {
+				t.Fatalf("proxy replicas %d", *proxy.Spec.Replicas)
 			}
 		})
 	}

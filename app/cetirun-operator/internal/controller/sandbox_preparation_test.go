@@ -183,7 +183,7 @@ type preparationFixture struct {
 func newPreparationFixture(t *testing.T, typ string) *preparationFixture {
 	t.Helper()
 	f := testfixture.New(typ)
-	f.Team.Spec.Defaults.Provider = "openai"
+	f.Team.Spec.Defaults.Provider = "github_copilot"
 	chrt, err := loader.Load(filepath.Join("..", "..", "..", "cetirun-chart"))
 	if err != nil {
 		t.Fatal(err)
@@ -230,9 +230,9 @@ func newPreparationFixture(t *testing.T, typ string) *preparationFixture {
 	result := &preparationFixture{fixture: f, client: c, source: source, installer: installer, config: config, now: now}
 	result.reconciler = &controller.AgentReconciler{
 		Client: c, APIReader: c, Scheme: scheme, OperatorNamespace: state.Name,
-		OperatorSAName: "cetirun-operator", DomainSuffix: "example.com",
-		CetiRunHelmValues: map[string]any{"secrets": map[string]any{
-			"apiBase": "https://api.example.com/v1", "model": "example-model",
+		OperatorSAName: "cetirun-operator", DomainSuffix: "example.com", DefaultModel: "example-model",
+		CetiRunHelmValues: map[string]any{"logger": map[string]any{
+			"image": map[string]any{"repository": "example.com/logger"},
 		}},
 		SandboxPreparation: &controller.SandboxPreparation{
 			Configuration: controller.SandboxConfigurationSourceFunc(func(context.Context) (controller.SandboxConfigurationSnapshot, error) { return result.config, nil }),
@@ -460,7 +460,7 @@ func TestSandboxPreparationRefreshesMetadataWithoutAgentGenerationChange(t *test
 			f.reconciler = &controller.AgentReconciler{
 				Client: previous.Client, APIReader: previous.APIReader, Scheme: previous.Scheme,
 				OperatorNamespace: previous.OperatorNamespace, OperatorSAName: previous.OperatorSAName,
-				DomainSuffix: previous.DomainSuffix, CetiRunHelmValues: previous.CetiRunHelmValues,
+				DomainSuffix: previous.DomainSuffix, CetiRunHelmValues: previous.CetiRunHelmValues, DefaultModel: previous.DefaultModel,
 				SandboxPreparation: previous.SandboxPreparation,
 			}
 			if err := f.reconcile(); err != nil {

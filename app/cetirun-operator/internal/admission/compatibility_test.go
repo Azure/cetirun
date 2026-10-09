@@ -113,7 +113,7 @@ func TestCompatibleLegacyTeamDeletionWithFutureSpec(t *testing.T) {
 	}
 }
 
-func TestCompatibleDeletionWithFutureSpecKeepsGovernanceChecks(t *testing.T) {
+func TestCompatibleDeletionWithFutureSpecKeepsPolicyChecks(t *testing.T) {
 	f := newFixture(t)
 	f.handler.config.ValidationMode = ValidationCompatible
 	f.agent.ResourceVersion = ""
@@ -129,7 +129,7 @@ func TestCompatibleDeletionWithFutureSpecKeepsGovernanceChecks(t *testing.T) {
 				if user == "administrator" {
 					message = "referenced"
 					if object == f.team {
-						message = "inherited governance"
+						message = "inherited policy"
 					}
 				}
 				requireResponse(t, f.handler.Validate(context.Background(), request), false, message)

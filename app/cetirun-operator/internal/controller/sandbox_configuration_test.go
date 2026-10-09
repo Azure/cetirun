@@ -99,6 +99,10 @@ func sandboxConfigurationFixture() (*api.Sandbox, controller.SandboxConfiguratio
 	return object, snapshot, objects
 }
 
+func nativePolicyHarnesses() api.AgentPolicyHarnesses {
+	return api.AgentPolicyHarnesses{Allowed: []api.AgentType{api.AgentTypeOpenClaw, api.AgentTypeHermes}}
+}
+
 func configurationScheme(t *testing.T) *runtime.Scheme {
 	t.Helper()
 	scheme := runtime.NewScheme()
@@ -249,7 +253,7 @@ func TestAgentPolicyAcceptedIsConfigurationOnly(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, snapshot, _ := sandboxConfigurationFixture()
-			policy := &api.AgentPolicy{ObjectMeta: metav1.ObjectMeta{Name: "example-policy", UID: "example-policy-uid", Generation: 6}}
+			policy := &api.AgentPolicy{ObjectMeta: metav1.ObjectMeta{Name: "example-policy", UID: "example-policy-uid", Generation: 6}, Spec: api.AgentPolicySpec{Harnesses: nativePolicyHarnesses()}}
 			tc.mutate(policy, &snapshot)
 			agent := &api.Agent{ObjectMeta: metav1.ObjectMeta{Name: "example-agent", UID: "example-agent-uid"}}
 			c := fake.NewClientBuilder().WithScheme(configurationScheme(t)).WithStatusSubresource(policy, agent).WithObjects(policy, agent).Build()
@@ -337,7 +341,7 @@ func TestAgentPolicyConfigurationPreservesRegistrationFailureCauses(t *testing.T
 					snapshot.Registrations[kind] = registration
 				}
 			}
-			policy := &api.AgentPolicy{ObjectMeta: metav1.ObjectMeta{Name: "example-policy", UID: "example-policy-uid"}}
+			policy := &api.AgentPolicy{ObjectMeta: metav1.ObjectMeta{Name: "example-policy", UID: "example-policy-uid"}, Spec: api.AgentPolicySpec{Harnesses: nativePolicyHarnesses()}}
 			c := fake.NewClientBuilder().WithScheme(configurationScheme(t)).WithStatusSubresource(policy).WithObjects(policy).Build()
 			r := &controller.AgentPolicyReconciler{
 				Client: c, Now: func() time.Time { return snapshot.ObservedAt },
@@ -362,7 +366,7 @@ func configurationGrantFixture() (*api.AgentPolicy, controller.SandboxConfigurat
 	_, snapshot, _ := sandboxConfigurationFixture()
 	policy := &api.AgentPolicy{
 		ObjectMeta: metav1.ObjectMeta{Name: "example-policy", UID: "example-policy-uid", Generation: 3},
-		Spec: api.AgentPolicySpec{KubernetesAccess: &api.AgentPolicyAdminKubernetesAccess{
+		Spec: api.AgentPolicySpec{Harnesses: nativePolicyHarnesses(), KubernetesAccess: &api.AgentPolicyAdminKubernetesAccess{
 			ServiceAccountName: "example-admin",
 			RoleBindings:       []api.AgentPolicyRoleBinding{{Namespace: "operations", ClusterRoleName: "example-view"}},
 		}},
@@ -466,7 +470,7 @@ func TestConfigurationStalePrimaryCannotPublishAcceptance(t *testing.T) {
 	for _, kind := range []string{"Sandbox", "AgentPolicy"} {
 		t.Run(kind, func(t *testing.T) {
 			object, snapshot, prerequisites := sandboxConfigurationFixture()
-			policy := &api.AgentPolicy{ObjectMeta: metav1.ObjectMeta{Name: "example-policy", UID: "example-policy-uid", Generation: 1}}
+			policy := &api.AgentPolicy{ObjectMeta: metav1.ObjectMeta{Name: "example-policy", UID: "example-policy-uid", Generation: 1}, Spec: api.AgentPolicySpec{Harnesses: nativePolicyHarnesses()}}
 			base := fake.NewClientBuilder().WithScheme(configurationScheme(t)).WithStatusSubresource(object, policy).
 				WithObjects(append([]client.Object{object, policy}, prerequisites...)...).Build()
 			ctx := context.Background()
@@ -517,7 +521,7 @@ func TestConfigurationSnapshotMustRemainFreshThroughAssessment(t *testing.T) {
 	for _, kind := range []string{"Sandbox", "AgentPolicy"} {
 		t.Run(kind, func(t *testing.T) {
 			object, snapshot, prerequisites := sandboxConfigurationFixture()
-			policy := &api.AgentPolicy{ObjectMeta: metav1.ObjectMeta{Name: "example-policy", UID: "example-policy-uid"}}
+			policy := &api.AgentPolicy{ObjectMeta: metav1.ObjectMeta{Name: "example-policy", UID: "example-policy-uid"}, Spec: api.AgentPolicySpec{Harnesses: nativePolicyHarnesses()}}
 			c := fake.NewClientBuilder().WithScheme(configurationScheme(t)).WithStatusSubresource(object, policy).
 				WithObjects(append([]client.Object{object, policy}, prerequisites...)...).Build()
 			now := snapshot.ObservedAt
@@ -556,7 +560,7 @@ func TestConfigurationSnapshotMustRemainFreshThroughAssessment(t *testing.T) {
 
 func TestConfigurationPreservesObservationAndStatusErrors(t *testing.T) {
 	object, snapshot, _ := sandboxConfigurationFixture()
-	policy := &api.AgentPolicy{ObjectMeta: metav1.ObjectMeta{Name: "example-policy", UID: "example-policy-uid"}}
+	policy := &api.AgentPolicy{ObjectMeta: metav1.ObjectMeta{Name: "example-policy", UID: "example-policy-uid"}, Spec: api.AgentPolicySpec{Harnesses: nativePolicyHarnesses()}}
 	base := fake.NewClientBuilder().WithScheme(configurationScheme(t)).WithStatusSubresource(object, policy).WithObjects(object, policy).Build()
 	observationFailure, statusFailure := errors.New("synthetic observation failure"), errors.New("synthetic status failure")
 	c := &configurationErrorClient{Client: base, failure: statusFailure}

@@ -9,13 +9,15 @@ import (
 
 // TeamSpec defines team-wide configuration applied to every member instance.
 type TeamSpec struct {
+	// Membership is the set of verified Entra subjects permitted to own Agents
+	// in this Team. Display names and aliases are deliberately not accepted as
+	// authorization evidence.
+	Membership TeamMembershipSpec `json:"membership"`
 	// NormalAgentPolicyRef names the policy for normal-class Agents.
-	// Required sandbox bindings remain optional for legacy Teams until pure binding validation.
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=253
 	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`
-	// +optional
-	NormalAgentPolicyRef string `json:"normalAgentPolicyRef,omitempty"`
+	NormalAgentPolicyRef string `json:"normalAgentPolicyRef"`
 
 	// AdminAgentPolicyRef optionally names the policy for admin-class Agents.
 	// +kubebuilder:validation:MinLength=1
@@ -30,15 +32,13 @@ type TeamSpec struct {
 	// +kubebuilder:validation:items:MaxLength=253
 	// +kubebuilder:validation:items:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`
 	// +listType=set
-	// +optional
-	SandboxRefs []string `json:"sandboxRefs,omitempty"`
+	SandboxRefs []string `json:"sandboxRefs"`
 
 	// DefaultSandboxRef selects a listed Sandbox for newly created Agents.
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=253
 	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`
-	// +optional
-	DefaultSandboxRef string `json:"defaultSandboxRef,omitempty"`
+	DefaultSandboxRef string `json:"defaultSandboxRef"`
 
 	// MemberContext defines the team context injected into USER.md for every member instance.
 	// +optional
@@ -64,6 +64,29 @@ type TeamSpec struct {
 	// coordinates so that a PV+PVC are auto-provisioned per instance namespace.
 	// +optional
 	SkillStorage *SkillStorageSpec `json:"skillStorage,omitempty"`
+}
+
+// TeamMembershipSpec contains the verified subjects that may be assigned to a
+// Team. It is set-like by subject kind, tenant ID and object ID.
+type TeamMembershipSpec struct {
+	// +kubebuilder:validation:MinItems=1
+	// +listType=map
+	// +listMapKey=kind
+	// +listMapKey=tenantID
+	// +listMapKey=objectID
+	Subjects []EntraSubject `json:"subjects"`
+}
+
+// EntraSubject is a canonical Entra subject. The tenant is retained in
+// the API even for a single-tenant deployment so object IDs cannot be
+// accidentally interpreted in a different tenant.
+type EntraSubject struct {
+	// +kubebuilder:validation:Enum=User;Group
+	Kind string `json:"kind"`
+	// +kubebuilder:validation:Pattern=`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`
+	TenantID string `json:"tenantID"`
+	// +kubebuilder:validation:Pattern=`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`
+	ObjectID string `json:"objectID"`
 }
 
 // SkillStorageSpec describes a shared Azure Blob NFS container holding
@@ -125,6 +148,8 @@ type TeamStatus struct {
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 }
+
+const ConditionTeamAccepted = "Accepted"
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status

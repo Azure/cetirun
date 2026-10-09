@@ -114,8 +114,8 @@ func newTestInstance(alias, displayName, team, gatewaySecret string) *cetirunv1a
 			User: cetirunv1alpha1.UserSpec{
 				Alias:       alias,
 				DisplayName: displayName,
-				Team:        team,
 			},
+			Team:                  team,
 			GatewayTokenSecretRef: gatewaySecret,
 			Helm:                  cetirunv1alpha1.HelmSpec{Values: map[string]runtime.RawExtension{}},
 		},
@@ -228,22 +228,14 @@ func TestBuildHelmValues_CopilotProvider(t *testing.T) {
 	}
 }
 
-func TestBuildHelmValues_NonCopilotProviderPreservesHelmModel(t *testing.T) {
+func TestBuildHelmValues_RejectsDirectProviderOverride(t *testing.T) {
 	instance := newTestInstance("admin", "Admin", "", "gateway-token")
 	instance.Spec.Model = "gpt-6-astra"
 	instance.Spec.Helm.Values["secrets"] = runtime.RawExtension{
 		Raw: []byte(`{"provider":"openai","model":"gpt-5.4"}`),
 	}
-	values, err := buildHelmValues(instance, nil, "example.com", "", nil, "", "gpt-6-astra")
-	if err != nil {
-		t.Fatalf("buildHelmValues error: %v", err)
-	}
-	secrets := values["secrets"].(map[string]interface{})
-	if got := secrets["provider"]; got != "openai" {
-		t.Errorf("secrets.provider = %q, want %q", got, "openai")
-	}
-	if got := secrets["model"]; got != "gpt-5.4" {
-		t.Errorf("secrets.model = %q, want %q", got, "gpt-5.4")
+	if _, err := buildHelmValues(instance, nil, "example.com", "", nil, "", "gpt-6-astra"); err == nil {
+		t.Fatal("direct model provider override bypassed AI Gateway routing")
 	}
 }
 
@@ -1592,17 +1584,13 @@ func TestBuildHelmValues_WithTeam(t *testing.T) {
 		},
 	}
 
-	vals, err := buildHelmValues(inst, team, "example.com", "", nil, "")
-	if err != nil {
-		t.Fatal(err)
+	if _, err := buildHelmValues(inst, team, "example.com", "", nil, ""); err == nil {
+		t.Fatal("team defaults must not inject a direct provider model")
 	}
 
-	secrets := vals["secrets"].(map[string]interface{})
-	if secrets["provider"] != "anthropic" {
-		t.Errorf("provider = %v, want anthropic", secrets["provider"])
-	}
-	if secrets["model"] != "claude-sonnet-4.5" {
-		t.Errorf("model = %v, want claude-sonnet-4.5", secrets["model"])
+	vals, err := buildHelmValues(newTestInstance("alice", "Alice", "", "gateway-token"), team, "example.com", "", nil, "")
+	if err != nil {
+		t.Fatal(err)
 	}
 
 	user := vals["user"].(map[string]interface{})

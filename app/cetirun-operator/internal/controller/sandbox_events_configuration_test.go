@@ -80,7 +80,7 @@ func TestSandboxEventsCommittedConfigurationTransitions(t *testing.T) {
 			_, snapshot, _ := sandboxConfigurationFixture()
 			policy := &api.AgentPolicy{ObjectMeta: metav1.ObjectMeta{
 				Name: "event-policy", UID: "00000000-0000-4000-8000-000000000004", Generation: 6,
-			}}
+			}, Spec: api.AgentPolicySpec{Harnesses: nativePolicyHarnesses()}}
 			tc.mutate(policy, &snapshot)
 			ctx, capture := capturePolicyEvents(t)
 			writes := 0
@@ -164,7 +164,7 @@ func TestSandboxEventsConfigurationFailureOrCASConflictDoesNotEmit(t *testing.T)
 				_, snapshot, _ := sandboxConfigurationFixture()
 				policy := &api.AgentPolicy{ObjectMeta: metav1.ObjectMeta{
 					Name: "event-policy", UID: "00000000-0000-4000-8000-000000000004", Generation: 1,
-				}}
+				}, Spec: api.AgentPolicySpec{Harnesses: nativePolicyHarnesses()}}
 				if assessment == "rejected" {
 					policy.Spec.Network.BlockedFQDNs = []string{"blocked.example.com"}
 				}

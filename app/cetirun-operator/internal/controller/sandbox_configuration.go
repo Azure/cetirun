@@ -58,6 +58,15 @@ type AgentPolicyReconciler struct {
 	MaxSnapshotAge time.Duration
 }
 
+// TeamReconciler records whether the Team's membership and policy
+// bindings are structurally complete. It deliberately does not authorize a
+// human caller; the Portal records that evidence on the Agent.
+type TeamReconciler struct {
+	client.Client
+	APIReader client.Reader
+	Now       func() time.Time
+}
+
 func (r *SandboxReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if r.Client == nil {
 		r.Client = mgr.GetClient()
@@ -76,6 +85,71 @@ func (r *AgentPolicyReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		r.APIReader = mgr.GetAPIReader()
 	}
 	return ctrl.NewControllerManagedBy(mgr).For(&api.AgentPolicy{}).Complete(r)
+}
+
+func (r *TeamReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	if r.Client == nil {
+		r.Client = mgr.GetClient()
+	}
+	if r.APIReader == nil {
+		r.APIReader = mgr.GetAPIReader()
+	}
+	return ctrl.NewControllerManagedBy(mgr).For(&api.Team{}).Complete(r)
+}
+
+func (r *TeamReconciler) Reconcile(ctx context.Context, request ctrl.Request) (ctrl.Result, error) {
+	team := &api.Team{}
+	if err := r.Get(ctx, request.NamespacedName, team); err != nil {
+		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+	before := team.DeepCopy()
+	now := configurationNow(r.Now)
+	condition := configurationCondition(metav1.ConditionTrue, "Valid", "Team membership and Policy bindings are valid.")
+	if team.DeletionTimestamp != nil {
+		condition = configurationCondition(metav1.ConditionFalse, "Terminating", "Team configuration is terminating.")
+	} else if err := r.validate(ctx, team); err != nil {
+		condition = configurationCondition(metav1.ConditionFalse, "InvalidConfiguration", "Team membership or Policy bindings are invalid.")
+	}
+	condition.Type, condition.ObservedGeneration, condition.LastTransitionTime = api.ConditionTeamAccepted, team.Generation, metav1.NewTime(now)
+	apimeta.SetStatusCondition(&team.Status.Conditions, condition)
+	team.Status.ObservedGeneration = team.Generation
+	if !reflect.DeepEqual(before.Status, team.Status) {
+		if err := r.Status().Patch(ctx, team, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{})); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+	return ctrl.Result{}, nil
+}
+
+func (r *TeamReconciler) validate(ctx context.Context, team *api.Team) error {
+	if len(team.Spec.Membership.Subjects) == 0 {
+		return fmt.Errorf("Team membership is required")
+	}
+	for _, subject := range team.Spec.Membership.Subjects {
+		if !validEntraSubject(subject) {
+			return fmt.Errorf("Team membership contains an invalid subject")
+		}
+	}
+	if team.Spec.NormalAgentPolicyRef == "" || team.Spec.DefaultSandboxRef == "" || len(team.Spec.SandboxRefs) == 0 || !slices.Contains(team.Spec.SandboxRefs, team.Spec.DefaultSandboxRef) {
+		return fmt.Errorf("Team policy and Sandbox bindings are incomplete")
+	}
+	policy := &api.AgentPolicy{}
+	if err := r.APIReader.Get(ctx, types.NamespacedName{Name: team.Spec.NormalAgentPolicyRef}, policy); err != nil {
+		return fmt.Errorf("normal AgentPolicy is unavailable: %w", err)
+	}
+	for _, name := range team.Spec.SandboxRefs {
+		box := &api.Sandbox{}
+		if err := r.APIReader.Get(ctx, types.NamespacedName{Name: name}, box); err != nil {
+			return fmt.Errorf("Sandbox %q is unavailable: %w", name, err)
+		}
+	}
+	if team.Spec.AdminAgentPolicyRef != "" {
+		admin := &api.AgentPolicy{}
+		if err := r.APIReader.Get(ctx, types.NamespacedName{Name: team.Spec.AdminAgentPolicyRef}, admin); err != nil {
+			return fmt.Errorf("admin AgentPolicy is unavailable: %w", err)
+		}
+	}
+	return nil
 }
 
 func (r *SandboxReconciler) Reconcile(ctx context.Context, request ctrl.Request) (ctrl.Result, error) {

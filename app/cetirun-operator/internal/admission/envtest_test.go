@@ -288,7 +288,7 @@ func TestAdmissionAPIServerBoundaries(t *testing.T) {
 			t.Fatal("legacy Team deletion removed its Agent:", err)
 		}
 	})
-	t.Run("member cannot create governance or write status despite broad spec RBAC", func(t *testing.T) {
+	t.Run("member cannot create policy or write status despite broad spec RBAC", func(t *testing.T) {
 		agent := newAgent("member-governed", true)
 		if err := member.Create(ctx, agent); !apierrors.IsForbidden(err) || !strings.Contains(err.Error(), "administrator") {
 			t.Fatalf("expected webhook authority denial, got %v", err)
@@ -310,7 +310,7 @@ func TestAdmissionAPIServerBoundaries(t *testing.T) {
 		obj := &unstructured.Unstructured{Object: object}
 		obj.SetAPIVersion(api.GroupVersion.String())
 		obj.SetKind("Agent")
-		if err := unstructured.SetNestedField(obj.Object, true, "spec", "unknownGovernance"); err != nil {
+		if err := unstructured.SetNestedField(obj.Object, true, "spec", "unknownPolicy"); err != nil {
 			t.Fatal(err)
 		}
 		if err := cl.Create(ctx, obj, client.FieldValidation(metav1.FieldValidationStrict)); !apierrors.IsBadRequest(err) {
@@ -325,7 +325,7 @@ func TestAdmissionAPIServerBoundaries(t *testing.T) {
 		for i := range crd.Spec.Versions {
 			schema := crd.Spec.Versions[i].Schema.OpenAPIV3Schema
 			spec := schema.Properties["spec"]
-			spec.Properties["futureGovernance"] = apiextensionsv1.JSONSchemaProps{Type: "boolean"}
+			spec.Properties["futurePolicy"] = apiextensionsv1.JSONSchemaProps{Type: "boolean"}
 			schema.Properties["spec"] = spec
 		}
 		if err := cl.Update(ctx, &crd); err != nil {
@@ -334,12 +334,12 @@ func TestAdmissionAPIServerBoundaries(t *testing.T) {
 		obj := &unstructured.Unstructured{Object: map[string]any{
 			"apiVersion": api.GroupVersion.String(), "kind": "AgentPolicy",
 			"metadata": map[string]any{"name": "future-policy"},
-			"spec":     map[string]any{"futureGovernance": true},
+			"spec":     map[string]any{"futurePolicy": true},
 		}}
 		if err := wait.PollUntilContextTimeout(ctx, 50*time.Millisecond, 10*time.Second, true, func(ctx context.Context) (bool, error) {
 			before := calls.Load()
 			err := cl.Create(ctx, obj.DeepCopy(), client.DryRunAll, client.FieldValidation(metav1.FieldValidationStrict))
-			return err != nil && calls.Load() > before && strings.Contains(err.Error(), `unknown field "futureGovernance"`), nil
+			return err != nil && calls.Load() > before && strings.Contains(err.Error(), `unknown field "futurePolicy"`), nil
 		}); err != nil {
 			t.Fatal("older admission did not explicitly reject a field admitted by the newer schema:", err)
 		}
@@ -599,6 +599,7 @@ func renderedWebhooks(t *testing.T, ca []byte) (*admissionregistrationv1.Validat
 		"--set", "namespace=operator-test", "--set", "serviceAccount.name=controller",
 		"--set", "sandboxAdmission.enabled=true", "--set", "sandboxAdmission.enforce=true",
 		"--set", "sandboxAdmission.tlsSecretName=admission-test-tls", "--set", "sandboxAdmission.adminUsers[0]=administrator",
+		"--set", "sandboxAdmission.adminUsers[1]=system:serviceaccount:operator-test:portal",
 		"--set-string", "sandboxAdmission.caBundle="+base64.StdEncoding.EncodeToString(ca))
 	output, err := command.CombinedOutput()
 	if err != nil {

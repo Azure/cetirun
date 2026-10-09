@@ -77,6 +77,10 @@ func executionPolicyFixture() *unstructured.Unstructured {
 		"apiVersion": api.GroupVersion.String(), "kind": "AgentPolicy",
 		"metadata": map[string]any{"name": "policy", "uid": "policy-uid", "resourceVersion": "1"},
 		"spec": map[string]any{
+			"harnesses":        map[string]any{"allowed": []any{"openclaw"}},
+			"skills":           map[string]any{"allowed": []any{}},
+			"modelAccess":      map[string]any{"copilot": map[string]any{"allowed": false}, "sharedModels": map[string]any{"allowed": []any{}}},
+			"agentIdentity":    map[string]any{"allowed": false, "required": false, "credentialServices": []any{}},
 			"sandboxSelection": map[string]any{"allowMultiple": false},
 			"security":         map[string]any{"readOnlyRootFilesystem": true},
 			"entraID":          map[string]any{"enabled": false},

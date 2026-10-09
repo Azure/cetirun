@@ -557,7 +557,11 @@ func (r *AgentReconciler) aiGatewayModelEntries(instance *cetirunv1alpha1.Agent)
 	var sharedEntries, copilotEntries []aiGatewayModelEntry
 	status := instance.Status.AIGateway
 	if instance.Spec.SharedModelsEnabled() {
-		if models, known := r.aiGatewayCatalog.shared(); known {
+		groups := []string(nil)
+		if status != nil {
+			groups = status.AccessGroups
+		}
+		if models, known := r.aiGatewayCatalog.sharedForGroups(groups); known {
 			for _, model := range models {
 				sharedEntries = append(sharedEntries, aiGatewayModelEntry{
 					ID: model.Name, Name: model.Name, ContextWindow: model.ContextWindow, MaxTokens: model.MaxOutputTokens,

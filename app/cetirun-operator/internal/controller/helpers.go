@@ -212,13 +212,9 @@ func buildHelmValuesCore(instance *cetirunv1alpha1.Agent, team *cetirunv1alpha1.
 	alias := instance.Spec.User.Alias
 	spec := instance.Spec
 	agentType := spec.Agent.Type
-	// userTeam falls back to spec.team when user.team is unset, so the team
-	// label propagates into USER.md / extraEnv even when callers only set the
-	// top-level team reference.
-	userTeam := spec.User.Team
-	if userTeam == "" {
-		userTeam = spec.Team
-	}
+	// Team membership is a policy-controlled top-level binding, never mutable user
+	// profile data.
+	userTeam := spec.Team
 
 	values := map[string]interface{}{
 		"agentType": string(agentType),

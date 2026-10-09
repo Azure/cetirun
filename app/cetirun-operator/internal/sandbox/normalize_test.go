@@ -264,10 +264,10 @@ func TestNormalizeAgentPolicyDefaults(t *testing.T) {
 		input    v1alpha1.AgentPolicySpec
 		readOnly bool
 	}{
-		{"omitted", v1alpha1.AgentPolicySpec{}, true},
-		{"explicit true", v1alpha1.AgentPolicySpec{Security: v1alpha1.AgentPolicySecurity{ReadOnlyRootFilesystem: normalizationBool(true)}}, true},
-		{"explicit false", v1alpha1.AgentPolicySpec{Security: v1alpha1.AgentPolicySecurity{ReadOnlyRootFilesystem: normalizationBool(false)}}, false},
-		{"empty lists", v1alpha1.AgentPolicySpec{Network: v1alpha1.AgentPolicyNetwork{
+		{"omitted", v1alpha1.AgentPolicySpec{Harnesses: v1alpha1.AgentPolicyHarnesses{Allowed: []v1alpha1.AgentType{v1alpha1.AgentTypeHermes}}}, true},
+		{"explicit true", v1alpha1.AgentPolicySpec{Harnesses: v1alpha1.AgentPolicyHarnesses{Allowed: []v1alpha1.AgentType{v1alpha1.AgentTypeHermes}}, Security: v1alpha1.AgentPolicySecurity{ReadOnlyRootFilesystem: normalizationBool(true)}}, true},
+		{"explicit false", v1alpha1.AgentPolicySpec{Harnesses: v1alpha1.AgentPolicyHarnesses{Allowed: []v1alpha1.AgentType{v1alpha1.AgentTypeHermes}}, Security: v1alpha1.AgentPolicySecurity{ReadOnlyRootFilesystem: normalizationBool(false)}}, false},
+		{"empty lists", v1alpha1.AgentPolicySpec{Harnesses: v1alpha1.AgentPolicyHarnesses{Allowed: []v1alpha1.AgentType{v1alpha1.AgentTypeHermes}}, Network: v1alpha1.AgentPolicyNetwork{
 			BlockedCIDRs: []string{}, BlockedFQDNs: []string{}, BlockedPorts: []v1alpha1.AgentPolicyPort{},
 			AllowedInternalCIDRs: []v1alpha1.AgentPolicyCIDRRule{},
 		}}, true},
@@ -298,8 +298,37 @@ func TestNormalizeAgentPolicyDefaults(t *testing.T) {
 	}
 }
 
+func TestNormalizeAgentPolicyPolicyEntitlements(t *testing.T) {
+	valid := v1alpha1.AgentPolicySpec{
+		Harnesses: v1alpha1.AgentPolicyHarnesses{Allowed: []v1alpha1.AgentType{v1alpha1.AgentTypeHermes}},
+		ModelAccess: v1alpha1.AgentPolicyModelAccess{
+			SharedModels:  v1alpha1.AgentPolicySharedModelsAccess{Allowed: []string{"gpt-4", "gpt-4"}},
+			GatewayBudget: &v1alpha1.AgentPolicyGatewayBudget{DefaultMonthlyUSD: "5", MaxMonthlyUSD: "10"},
+		},
+		AgentIdentity: v1alpha1.AgentPolicyAgentIdentity{Allowed: true, CredentialServices: []string{"azure-resource-manager"}},
+	}
+	normalized, errs := NormalizeAgentPolicy(valid)
+	if len(errs) != 0 {
+		t.Fatal(errs.ToAggregate())
+	}
+	if !reflect.DeepEqual(normalized.ModelAccess.SharedModels.Allowed, []string{"gpt-4"}) {
+		t.Fatalf("shared models were not canonicalized: %#v", normalized.ModelAccess.SharedModels.Allowed)
+	}
+	for _, invalid := range []v1alpha1.AgentPolicySpec{
+		{},
+		{Harnesses: valid.Harnesses, ModelAccess: v1alpha1.AgentPolicyModelAccess{Copilot: v1alpha1.AgentPolicyCopilotAccess{Allowed: true}}},
+		{Harnesses: valid.Harnesses, ModelAccess: v1alpha1.AgentPolicyModelAccess{GatewayBudget: valid.ModelAccess.GatewayBudget}},
+		{Harnesses: valid.Harnesses, AgentIdentity: v1alpha1.AgentPolicyAgentIdentity{Required: true}},
+	} {
+		if _, errs := NormalizeAgentPolicy(invalid); len(errs) == 0 {
+			t.Fatalf("expected invalid policy policy: %#v", invalid)
+		}
+	}
+}
+
 func TestNormalizeAgentPolicyOrderingAndIsolation(t *testing.T) {
 	input := v1alpha1.AgentPolicySpec{
+		Harnesses:        v1alpha1.AgentPolicyHarnesses{Allowed: []v1alpha1.AgentType{v1alpha1.AgentTypeOpenClaw}},
 		SandboxSelection: v1alpha1.SandboxSelectionPolicy{AllowMultiple: true},
 		Security:         v1alpha1.AgentPolicySecurity{ReadOnlyRootFilesystem: normalizationBool(false)},
 		EntraID:          v1alpha1.AgentPolicyEntraID{Enabled: true},
@@ -392,10 +421,10 @@ func TestNormalizeAgentPolicyRejectsMalformedNetwork(t *testing.T) {
 	for _, value := range []string{"", "192.0.2.1", "192.0.2.1/33", "2001:db8::/129", "192.000.2.1/24", "garbage/24",
 		"::ffff:192.0.2.1/120", "::ffff:c000:201/120", "fe80::1%eth0/64"} {
 		t.Run("CIDR/"+value, func(t *testing.T) {
-			input := v1alpha1.AgentPolicySpec{Network: v1alpha1.AgentPolicyNetwork{
+			input := normalizationPolicy(v1alpha1.AgentPolicySpec{Network: v1alpha1.AgentPolicyNetwork{
 				BlockedCIDRs:         []string{value},
 				AllowedInternalCIDRs: []v1alpha1.AgentPolicyCIDRRule{{CIDR: value, Ports: []v1alpha1.AgentPolicyPort{{Port: 443}}}},
-			}}
+			}})
 			_, errs := NormalizeAgentPolicy(input)
 			requireNormalizationError(t, errs, "spec.network.blockedCIDRs[0]")
 			requireNormalizationError(t, errs, "spec.network.allowedInternalCIDRs[0].cidr")
@@ -406,7 +435,7 @@ func TestNormalizeAgentPolicyRejectsMalformedNetwork(t *testing.T) {
 		" example.com", "example.com ", "a..example.com", "-a.example.com", strings.Repeat("a", 64) + ".example.com",
 		strings.Repeat("a.", 126) + "com"} {
 		t.Run("hostname/"+value, func(t *testing.T) {
-			_, errs := NormalizeAgentPolicy(v1alpha1.AgentPolicySpec{Network: v1alpha1.AgentPolicyNetwork{BlockedFQDNs: []string{value}}})
+			_, errs := NormalizeAgentPolicy(normalizationPolicy(v1alpha1.AgentPolicySpec{Network: v1alpha1.AgentPolicyNetwork{BlockedFQDNs: []string{value}}}))
 			requireNormalizationError(t, errs, "spec.network.blockedFQDNs[0]")
 		})
 	}
@@ -414,10 +443,10 @@ func TestNormalizeAgentPolicyRejectsMalformedNetwork(t *testing.T) {
 		{Port: -1}, {Port: 0}, {Port: 65536}, {Port: 443, Protocol: "tcp"}, {Port: 443, Protocol: "ICMP"},
 	} {
 		t.Run("port/"+normalizationJSON(t, port), func(t *testing.T) {
-			input := v1alpha1.AgentPolicySpec{Network: v1alpha1.AgentPolicyNetwork{
+			input := normalizationPolicy(v1alpha1.AgentPolicySpec{Network: v1alpha1.AgentPolicyNetwork{
 				BlockedPorts:         []v1alpha1.AgentPolicyPort{port},
 				AllowedInternalCIDRs: []v1alpha1.AgentPolicyCIDRRule{{CIDR: "198.51.100.0/24", Ports: []v1alpha1.AgentPolicyPort{port}}},
-			}}
+			}})
 			_, errs := NormalizeAgentPolicy(input)
 			member := "port"
 			if port.Protocol != "" {
@@ -428,9 +457,9 @@ func TestNormalizeAgentPolicyRejectsMalformedNetwork(t *testing.T) {
 		})
 	}
 	for _, ports := range [][]v1alpha1.AgentPolicyPort{nil, {}} {
-		_, errs := NormalizeAgentPolicy(v1alpha1.AgentPolicySpec{Network: v1alpha1.AgentPolicyNetwork{
+		_, errs := NormalizeAgentPolicy(normalizationPolicy(v1alpha1.AgentPolicySpec{Network: v1alpha1.AgentPolicyNetwork{
 			AllowedInternalCIDRs: []v1alpha1.AgentPolicyCIDRRule{{CIDR: "198.51.100.0/24", Ports: ports}},
-		}})
+		}}))
 		requireNormalizationError(t, errs, "spec.network.allowedInternalCIDRs[0].ports")
 	}
 }
@@ -447,9 +476,9 @@ func TestNormalizeAgentPolicyIngress(t *testing.T) {
 		{"anonymous", false, "spec.network.ingress.mode"},
 	} {
 		t.Run(string(tc.mode)+"/"+normalizationJSON(t, tc.mtls), func(t *testing.T) {
-			_, errs := NormalizeAgentPolicy(v1alpha1.AgentPolicySpec{Network: v1alpha1.AgentPolicyNetwork{
+			_, errs := NormalizeAgentPolicy(normalizationPolicy(v1alpha1.AgentPolicySpec{Network: v1alpha1.AgentPolicyNetwork{
 				Ingress: v1alpha1.AgentPolicyIngress{Mode: tc.mode, RequireMTLS: tc.mtls},
-			}})
+			}}))
 			if tc.path == "" && len(errs) != 0 {
 				t.Fatal(errs.ToAggregate())
 			}
@@ -481,7 +510,7 @@ func TestNormalizeAgentPolicyKubernetesAccess(t *testing.T) {
 		{"cluster only", v1alpha1.AgentPolicyAdminKubernetesAccess{ServiceAccountName: "agent-access", ClusterRoleBindings: []v1alpha1.AgentPolicyClusterRoleBinding{{ClusterRoleName: "system:discovery"}}}, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			input := v1alpha1.AgentPolicySpec{KubernetesAccess: &tc.access}
+			input := normalizationPolicy(v1alpha1.AgentPolicySpec{KubernetesAccess: &tc.access})
 			before := input.DeepCopy()
 			_, errs := NormalizeAgentPolicy(input)
 			if tc.path == "" && len(errs) != 0 {
@@ -517,3 +546,8 @@ func normalizationJSON(t *testing.T, value any) string {
 }
 
 func normalizationBool(value bool) *bool { return &value }
+
+func normalizationPolicy(policy v1alpha1.AgentPolicySpec) v1alpha1.AgentPolicySpec {
+	policy.Harnesses.Allowed = []v1alpha1.AgentType{v1alpha1.AgentTypeHermes}
+	return policy
+}

@@ -156,6 +156,15 @@ type completionScenario struct {
 	reconciler *controller.AgentReconciler
 }
 
+// requireLegacyCustomRuntime documents integration tests for Custom's former
+// direct-runtime path. Policy deliberately holds Custom Agents because no
+// typed Sandbox execution adapter exists for them yet; completion record
+// encoding and delivery remain covered by custom_completion_record_test.go.
+func requireLegacyCustomRuntime(t *testing.T) {
+	t.Helper()
+	t.Skip("legacy Custom direct runtime reconciliation was removed by mandatory Policy")
+}
+
 func newCompletionScenario(t *testing.T) *completionScenario {
 	t.Helper()
 	instance, bindings, objects := customFixture("completion", nil)
@@ -212,6 +221,7 @@ func (s *completionScenario) observeApplied() {
 }
 
 func TestCustomCompletionRetriesAfterRestartWithoutReapplying(t *testing.T) {
+	requireLegacyCustomRuntime(t)
 	s := newCompletionScenario(t)
 	s.provider.store.failures = 1
 	if err := s.step(); err == nil || s.pending() == nil || !s.helm.installCalled {
@@ -249,6 +259,7 @@ func TestCustomCompletionRetriesAfterRestartWithoutReapplying(t *testing.T) {
 }
 
 func TestCustomCompletionOutboxFailureWindows(t *testing.T) {
+	requireLegacyCustomRuntime(t)
 	for _, failure := range []string{"create", "before-apply", "after-apply", "delete-after-ack", "approve-response"} {
 		t.Run(failure, func(t *testing.T) {
 			s := newCompletionScenario(t)
@@ -297,6 +308,7 @@ func TestCustomCompletionOutboxFailureWindows(t *testing.T) {
 }
 
 func TestCustomCompletionRecoveryIsIndependentOfNewConfiguration(t *testing.T) {
+	requireLegacyCustomRuntime(t)
 	s := newCompletionScenario(t)
 	s.provider.store.failures = 1
 	_ = s.step()
@@ -318,6 +330,7 @@ func TestCustomCompletionRecoveryIsIndependentOfNewConfiguration(t *testing.T) {
 }
 
 func TestCustomPendingCompletionPreservesSuspendAndDeletion(t *testing.T) {
+	requireLegacyCustomRuntime(t)
 	for _, deleting := range []bool{false, true} {
 		s := newCompletionScenario(t)
 		s.provider.store.failures = 2
@@ -371,6 +384,7 @@ func TestCustomPendingCompletionPreservesSuspendAndDeletion(t *testing.T) {
 }
 
 func TestCustomForeignCompletionRecordCannotBeDelivered(t *testing.T) {
+	requireLegacyCustomRuntime(t)
 	s := newCompletionScenario(t)
 	s.provider.store.failures = 1
 	_ = s.step()

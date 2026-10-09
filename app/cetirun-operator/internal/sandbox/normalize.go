@@ -5,6 +5,7 @@ package sandbox
 
 import (
 	"cmp"
+	"math/big"
 	"net/netip"
 	"slices"
 	"strings"
@@ -191,7 +192,84 @@ func NormalizeAgentPolicy(spec v1alpha1.AgentPolicySpec) (v1alpha1.AgentPolicySp
 	if normalized.KubernetesAccess != nil {
 		errs = append(errs, normalizeKubernetesAccess(normalized.KubernetesAccess, path.Child("kubernetesAccess"))...)
 	}
+	errs = append(errs, normalizePolicyConstraints(&normalized, path)...)
 	return normalized, errs
+}
+
+// normalizePolicyConstraints validates the cross-field semantics of the
+// policy entitlement surface. CRD validations intentionally cover only
+// local shape; acceptance must reject policies that cannot be projected to a
+// typed Gateway or credential-service implementation.
+func normalizePolicyConstraints(policy *v1alpha1.AgentPolicySpec, path *field.Path) field.ErrorList {
+	var errs field.ErrorList
+	harnessPath := path.Child("harnesses", "allowed")
+	if len(policy.Harnesses.Allowed) == 0 {
+		errs = append(errs, field.Required(harnessPath, "at least one harness is required"))
+	} else {
+		slices.Sort(policy.Harnesses.Allowed)
+		policy.Harnesses.Allowed = slices.Compact(policy.Harnesses.Allowed)
+		for i, harness := range policy.Harnesses.Allowed {
+			switch harness {
+			case v1alpha1.AgentTypeOpenClaw, v1alpha1.AgentTypeHermes:
+			case v1alpha1.AgentTypeCustom:
+				errs = append(errs, field.NotSupported(harnessPath.Index(i), harness, []string{string(v1alpha1.AgentTypeOpenClaw), string(v1alpha1.AgentTypeHermes)}))
+			default:
+				errs = append(errs, field.NotSupported(harnessPath.Index(i), harness, []string{string(v1alpha1.AgentTypeOpenClaw), string(v1alpha1.AgentTypeHermes)}))
+			}
+		}
+	}
+	policy.Skills.Allowed = canonicalNonEmptyStrings(policy.Skills.Allowed, path.Child("skills", "allowed"), &errs)
+	policy.ModelAccess.SharedModels.Allowed = canonicalNonEmptyStrings(policy.ModelAccess.SharedModels.Allowed, path.Child("modelAccess", "sharedModels", "allowed"), &errs)
+	hasModelEntitlement := policy.ModelAccess.Copilot.Allowed || len(policy.ModelAccess.SharedModels.Allowed) > 0
+	budgetPath := path.Child("modelAccess", "gatewayBudget")
+	if hasModelEntitlement && policy.ModelAccess.GatewayBudget == nil {
+		errs = append(errs, field.Required(budgetPath, "a Gateway budget is required for every model entitlement"))
+	}
+	if !hasModelEntitlement && policy.ModelAccess.GatewayBudget != nil {
+		errs = append(errs, field.Forbidden(budgetPath, "a Gateway budget is allowed only with a model entitlement"))
+	}
+	if budget := policy.ModelAccess.GatewayBudget; budget != nil {
+		defaultBudget, defaultOK := new(big.Rat).SetString(budget.DefaultMonthlyUSD)
+		maximumBudget, maximumOK := new(big.Rat).SetString(budget.MaxMonthlyUSD)
+		if !defaultOK || defaultBudget.Sign() <= 0 {
+			errs = append(errs, field.Invalid(budgetPath.Child("defaultMonthlyUSD"), budget.DefaultMonthlyUSD, "must be a positive decimal"))
+		}
+		if !maximumOK || maximumBudget.Sign() <= 0 {
+			errs = append(errs, field.Invalid(budgetPath.Child("maxMonthlyUSD"), budget.MaxMonthlyUSD, "must be a positive decimal"))
+		}
+		if defaultOK && maximumOK && defaultBudget.Sign() > 0 && maximumBudget.Sign() > 0 && defaultBudget.Cmp(maximumBudget) > 0 {
+			errs = append(errs, field.Invalid(budgetPath.Child("defaultMonthlyUSD"), budget.DefaultMonthlyUSD, "must not exceed maxMonthlyUSD"))
+		}
+	}
+	identityPath := path.Child("agentIdentity")
+	identity := &policy.AgentIdentity
+	identity.CredentialServices = canonicalNonEmptyStrings(identity.CredentialServices, identityPath.Child("credentialServices"), &errs)
+	for i, service := range identity.CredentialServices {
+		if service != "azure-resource-manager" {
+			errs = append(errs, field.NotSupported(identityPath.Child("credentialServices").Index(i), service, []string{"azure-resource-manager"}))
+		}
+	}
+	if identity.Required && !identity.Allowed {
+		errs = append(errs, field.Invalid(identityPath.Child("required"), true, "requires allowed=true"))
+	}
+	if identity.Allowed && !slices.Contains(identity.CredentialServices, "azure-resource-manager") {
+		errs = append(errs, field.Required(identityPath.Child("credentialServices"), "allowed Agent Identity requires azure-resource-manager"))
+	}
+	if !identity.Allowed && len(identity.CredentialServices) != 0 {
+		errs = append(errs, field.Forbidden(identityPath.Child("credentialServices"), "credential services require allowed=true"))
+	}
+	return errs
+}
+
+func canonicalNonEmptyStrings(values []string, path *field.Path, errs *field.ErrorList) []string {
+	canonical := append([]string(nil), values...)
+	for i, value := range canonical {
+		if strings.TrimSpace(value) == "" {
+			*errs = append(*errs, field.Invalid(path.Index(i), value, "must not be blank"))
+		}
+	}
+	slices.Sort(canonical)
+	return slices.Compact(canonical)
 }
 
 func normalizeCIDR(value string, path *field.Path) (string, field.ErrorList) {

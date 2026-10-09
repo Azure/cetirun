@@ -147,8 +147,9 @@ func ExecutionObjectDigest(object client.Object) (string, error) {
 }
 
 func canonicalPolicyExecutionBody(body map[string]any) error {
-	// Typed serialization omits these schema-defaulted zero values. Restore
-	// their API shape without a lossy typed decode of authoritative fields.
+	// Typed serialization omits zero-valued leaves while retaining their parent
+	// structs. Restore one semantic API shape without a lossy typed decode of
+	// authoritative or unknown fields.
 	for _, entry := range []struct {
 		path  []string
 		value any
@@ -160,6 +161,12 @@ func canonicalPolicyExecutionBody(body map[string]any) error {
 		{[]string{"spec", "network", "blockedFQDNs"}, []any{}},
 		{[]string{"spec", "network", "blockedPorts"}, []any{}},
 		{[]string{"spec", "network", "allowedInternalCIDRs"}, []any{}},
+		{[]string{"spec", "skills", "allowed"}, []any{}},
+		{[]string{"spec", "modelAccess", "copilot", "allowed"}, false},
+		{[]string{"spec", "modelAccess", "sharedModels", "allowed"}, []any{}},
+		{[]string{"spec", "agentIdentity", "allowed"}, false},
+		{[]string{"spec", "agentIdentity", "required"}, false},
+		{[]string{"spec", "agentIdentity", "credentialServices"}, []any{}},
 	} {
 		if _, found, err := unstructured.NestedFieldNoCopy(body, entry.path...); err != nil {
 			return err

@@ -175,7 +175,7 @@ func TestKubernetesSandboxConfigurationSourceScopesRoleFailuresToRequestedGrants
 			box, _, _ := sandboxConfigurationFixture()
 			normal := &api.AgentPolicy{ObjectMeta: metav1.ObjectMeta{
 				Name: "example-normal", UID: "example-normal-uid", Generation: 1,
-			}}
+			}, Spec: api.AgentPolicySpec{Harnesses: nativePolicyHarnesses()}}
 			other := policy.DeepCopy()
 			other.Name, other.UID = "example-other-policy", "example-other-policy-uid"
 			role := objects[2].(*rbacv1.ClusterRole)

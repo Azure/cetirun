@@ -16,6 +16,7 @@ import (
 )
 
 func TestCustomInvalidPlatformSchedulingCannotReachHandoff(t *testing.T) {
+	requireLegacyCustomRuntime(t)
 	for _, defaults := range []map[string]any{
 		{"runtimeClassName": "INVALID_CLASS"},
 		{"nodeSelector": map[string]any{"example.com/node": "value/with/slash"}},

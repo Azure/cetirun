@@ -95,10 +95,48 @@ spec:
                     description: Role is the team member's role, e.g. "Engineer".
                     type: string
                 type: object
-              normalAgentPolicyRef:
+              membership:
                 description: |-
-                  NormalAgentPolicyRef names the policy for normal-class Agents.
-                  Required sandbox bindings remain optional for legacy Teams until pure binding validation.
+                  Membership is the set of verified Entra subjects permitted to own Agents
+                  in this Team. Display names and aliases are deliberately not accepted as
+                  authorization evidence.
+                properties:
+                  subjects:
+                    items:
+                      description: |-
+                        EntraSubject is a canonical Entra subject. The tenant is retained in
+                        the API even for a single-tenant deployment so object IDs cannot be
+                        accidentally interpreted in a different tenant.
+                      properties:
+                        kind:
+                          enum:
+                          - User
+                          - Group
+                          type: string
+                        objectID:
+                          pattern: ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$
+                          type: string
+                        tenantID:
+                          pattern: ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$
+                          type: string
+                      required:
+                      - kind
+                      - objectID
+                      - tenantID
+                      type: object
+                    minItems: 1
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - kind
+                    - tenantID
+                    - objectID
+                    x-kubernetes-list-type: map
+                required:
+                - subjects
+                type: object
+              normalAgentPolicyRef:
+                description: NormalAgentPolicyRef names the policy for normal-class
+                  Agents.
                 maxLength: 253
                 minLength: 1
                 pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
@@ -162,6 +200,11 @@ spec:
                 maxItems: 20
                 type: array
                 x-kubernetes-list-type: set
+            required:
+            - defaultSandboxRef
+            - membership
+            - normalAgentPolicyRef
+            - sandboxRefs
             type: object
           status:
             description: TeamStatus defines the observed state of Team.

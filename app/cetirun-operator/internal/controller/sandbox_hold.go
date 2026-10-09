@@ -34,23 +34,50 @@ func sandboxRequested(agent *cetirunv1alpha1.Agent, team *cetirunv1alpha1.Team) 
 	return sandbox.Requested(agent, team) || sandboxbinding.Present(agent)
 }
 
-// holdSandbox prevents runtime renderers from ignoring new governance fields.
+// holdSandbox prevents runtime renderers from ignoring new policy fields.
 // It requests an existing workload to stop but is not a qualified node fence.
 // Once held, clearing spec fields cannot silently return an Agent to legacy mode.
 func (r *AgentReconciler) holdSandbox(ctx context.Context, agent *cetirunv1alpha1.Agent) (ctrl.Result, error) {
+	return r.holdSandboxWithPolicyFence(ctx, agent, nil)
+}
+
+type sandboxPolicyFenceStatus struct {
+	phase   string
+	reason  string
+	message string
+}
+
+// fenceSandboxForPolicyReprojection performs only the fail-closed half of the
+// transition. It must stop compute before the Gateway replacement grant is
+// read back, but preparing a replacement workload at this point would depend
+// on that not-yet-verified model projection and deadlock the transition.
+func (r *AgentReconciler) fenceSandboxForPolicyReprojection(ctx context.Context, agent *cetirunv1alpha1.Agent) (ctrl.Result, error) {
+	return r.holdSandboxWithPolicyFence(ctx, agent, &sandboxPolicyFenceStatus{
+		phase: cetirunv1alpha1.PhasePending, reason: aiGatewayReasonPolicyReprojection,
+		message: "Current policy projections are changing; Sandbox execution remains held until replacement enforcement is verified.",
+	})
+}
+
+func (r *AgentReconciler) holdSandboxWithPolicyFence(ctx context.Context, agent *cetirunv1alpha1.Agent, policyFence *sandboxPolicyFenceStatus) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
-	// Persist intent independently of status before any workload side effects.
-	// The finalizer also keeps newly held Agents available for safe cleanup.
+	var failures []error
+	// Try to persist intent independently of status before workload side
+	// effects. The finalizer also keeps newly held Agents available for safe
+	// cleanup, but a failed metadata write cannot be allowed to skip shutdown.
 	if !controllerutil.ContainsFinalizer(agent, sandboxHoldFinalizer) {
 		base := agent.DeepCopy()
 		controllerutil.AddFinalizer(agent, sandboxHoldFinalizer)
 		if err := r.Patch(ctx, agent, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
-			return ctrl.Result{}, fmt.Errorf("persist Sandbox hold: %w", err)
+			// The workload fence is more important than the lifecycle marker. Do
+			// not let an API write failure skip independent shutdown and route
+			// removal. Restore the local view so status logic does not mistake an
+			// unpersisted finalizer for durable intent.
+			agent.Finalizers = base.Finalizers
+			failures = append(failures, fmt.Errorf("persist Sandbox hold: %w", err))
 		}
 	}
 	before := agent.DeepCopy().Status
-	var failures []error
-	prepare := r.SandboxPreparation != nil && !agent.Spec.Suspended && sandboxPreparationSupported(agent)
+	prepare := policyFence == nil && r.SandboxPreparation != nil && !agent.Spec.Suspended && sandboxPreparationSupported(agent)
 	if !prepare {
 		if err := r.revokeSandboxPreparationGrants(ctx, agent); err != nil {
 			failures = append(failures, err)
@@ -90,12 +117,15 @@ func (r *AgentReconciler) holdSandbox(ctx context.Context, agent *cetirunv1alpha
 		}
 	}
 
+	phase := cetirunv1alpha1.PhaseFailed
 	reason := "UnsupportedControl"
 	message := "Sandbox execution is not enabled: a qualified enforcement adapter and admission are required; workload execution is held."
-	if r.SandboxPreparation != nil && !sandboxPreparationSupported(agent) {
+	if policyFence != nil {
+		phase, reason, message = policyFence.phase, policyFence.reason, policyFence.message
+	} else if r.SandboxPreparation != nil && !sandboxPreparationSupported(agent) {
 		message = "This Agent type or cloud/sidecar integration is not supported by native Sandbox preparation; execution remains held."
 	}
-	agent.Status.Phase = cetirunv1alpha1.PhaseFailed
+	agent.Status.Phase = phase
 	if agent.Spec.Suspended {
 		agent.Status.Phase = cetirunv1alpha1.PhaseSuspended
 		reason = "Suspended"
