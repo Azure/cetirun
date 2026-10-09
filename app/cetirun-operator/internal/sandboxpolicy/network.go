@@ -34,15 +34,6 @@ var dnsPorts = []api.AgentPolicyPort{
 	{Port: 53, Protocol: corev1.ProtocolUDP},
 }
 
-// The local host is handled separately for kubelet probes. Enumerating the
-// other disjoint reserved sources keeps additive Cilium policies from reopening
-// the probe port. kube-apiserver is deliberately omitted: managed Cilium can
-// represent it with reserved:host, so denying that entity also denies kubelet.
-// A distinct kube-apiserver identity remains blocked by default-deny.
-var nonHostIngressEntities = []string{
-	"health", "ingress", "init", "remote-node", "unmanaged", "world",
-}
-
 type addressGrant struct {
 	Prefix netip.Prefix
 	Ports  []api.AgentPolicyPort
@@ -503,10 +494,7 @@ func compileNetwork(input CompileInput) (NetworkPlan, error) {
 			if selectorErr != nil {
 				return plan, selectorErr
 			}
-			if err := budget.ingress(&spec.IngressDeny,
-				IngressRule{FromEntities: slices.Clone(nonHostIngressEntities)},
-				IngressRule{FromEndpoints: selectors},
-			); err != nil {
+			if err := budget.ingress(&spec.IngressDeny, IngressRule{FromEndpoints: selectors}); err != nil {
 				return plan, err
 			}
 		}
@@ -536,13 +524,6 @@ func compileNetwork(input CompileInput) (NetworkPlan, error) {
 			if err := budget.ingress(&spec.IngressDeny, IngressRule{FromEndpoints: []metav1.LabelSelector{selector}}); err != nil {
 				return plan, err
 			}
-		}
-		entities := slices.Clone(nonHostIngressEntities)
-		if len(workloadProbePorts) == 0 {
-			entities = append(entities, "host")
-		}
-		if err := budget.ingress(&spec.IngressDeny, IngressRule{FromEntities: entities}); err != nil {
-			return plan, err
 		}
 	}
 	for _, rules := range []*[]EgressRule{&spec.Egress, &spec.EgressDeny} {

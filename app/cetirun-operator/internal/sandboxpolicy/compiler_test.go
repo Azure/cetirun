@@ -106,10 +106,18 @@ func TestCompileRequiresValidWorkloadProbePort(t *testing.T) {
 	}
 }
 
-func TestProbeDenyEntitiesDoNotAliasManagedHostIdentity(t *testing.T) {
-	for _, entity := range []string{"host", "kube-apiserver"} {
-		if slices.Contains(nonHostIngressEntities, entity) {
-			t.Fatalf("%s can alias the managed host identity and must not override the kubelet probe allow", entity)
+func TestProbeHasNoWholeIdentityDeny(t *testing.T) {
+	for _, mode := range []api.AgentPolicyIngressMode{api.AgentPolicyIngressAuthenticated, api.AgentPolicyIngressDisabled} {
+		input := compilerFixture()
+		input.Resolution.AgentPolicy.Network.Ingress.Mode = mode
+		if mode == api.AgentPolicyIngressDisabled {
+			input.Platform.Topology.Ingress = nil
+		}
+		plan := mustCompile(t, input)
+		for _, rule := range plan.Network.Policy.Spec.IngressDeny {
+			if len(rule.FromEntities) != 0 && len(rule.ToPorts) == 0 {
+				t.Fatalf("%s ingress has a whole-identity deny that can alias reserved:host: %+v", mode, rule)
+			}
 		}
 	}
 }
@@ -522,18 +530,17 @@ func TestCompileIngressModesAndMergedPeerPorts(t *testing.T) {
 		!syntheticPortsMatch(disabled.Network.Policy.Spec.Ingress[0].ToPorts, input.WorkloadProbePort, corev1.ProtocolTCP) {
 		t.Fatal("disabled ingress must retain only the compiler-owned local kubelet probe")
 	}
-	var complement, nonHost, pods bool
+	var complement, pods bool
 	for _, rule := range disabled.Network.Policy.Spec.IngressDeny {
 		if slices.Contains(rule.FromEntities, "all") &&
 			!syntheticPortsMatch(rule.ToPorts, input.WorkloadProbePort, corev1.ProtocolTCP) &&
 			syntheticPortsMatch(rule.ToPorts, input.WorkloadProbePort+1, corev1.ProtocolTCP) {
 			complement = true
 		}
-		nonHost = nonHost || slices.Contains(rule.FromEntities, "world") && slices.Contains(rule.FromEntities, "remote-node")
 		pods = pods || len(rule.FromEndpoints) != 0
 	}
-	if !complement || !nonHost || !pods {
-		t.Fatal("disabled ingress must explicitly deny non-probe ports and every non-host source")
+	if !complement || !pods {
+		t.Fatal("disabled ingress must explicitly deny non-probe ports and Kubernetes workload sources")
 	}
 	gateway := input.Platform.Topology.Gateway[0].Peer
 	if !syntheticEgressAllowed(disabled.Network.Policy.Spec, gateway.IPs[0], &gateway, 8443, corev1.ProtocolTCP) {

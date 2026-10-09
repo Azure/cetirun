@@ -1036,10 +1036,13 @@ their JSON shape is not a Kubernetes API-machinery label-selector contract.
 Ingress remains compiler-owned as well. The compiler permits the local host
 only on the Agent's pinned HTTP probe port so kubelet startup, readiness and
 liveness probes can observe the workload. It explicitly denies every other
-host port and every non-host reserved identity or Pod source. Disabled ingress
-therefore exposes no workload route; authenticated ingress adds only the
-registered gateway peers and ports. The pinned probe port is part of the
-compiled revision and cannot be supplied by AgentPolicy.
+port and Kubernetes workload source, while Cilium default-deny rejects
+unmatched reserved identities on the probe port. Whole-identity reserved
+denies are deliberately omitted because managed Cilium can alias them to the
+local host and override the kubelet exception. Disabled ingress therefore
+exposes no workload route; authenticated ingress adds only the registered
+gateway peers and ports. The pinned probe port is part of the compiled revision
+and cannot be supplied by AgentPolicy.
 
 Network compilation has fixed budgets: 1,024 input entries, 32,768 partition
 work units, 2,048 rules, 16,384 expanded entries and 512 KiB for the complete
