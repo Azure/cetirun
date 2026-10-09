@@ -362,9 +362,7 @@ func (r *AgentReconciler) desiredSandboxPolicyRevision(ctx context.Context, agen
 		}
 		return "", err
 	}
-	plan, err := sandboxpolicy.Compile(sandboxpolicy.CompileInput{
-		Resolution: *resolution, AgentName: agent.Name, Namespace: instanceNamespace(agent.Name), Platform: platform,
-	})
+	plan, err := sandboxpolicy.Compile(sandboxPolicyCompileInput(agent, *resolution, instanceNamespace(agent.Name), platform))
 	if err != nil {
 		if errors.Is(err, sandboxpolicy.ErrUnavailable) {
 			return "", policyDependency("compile Sandbox policy: %w", err)

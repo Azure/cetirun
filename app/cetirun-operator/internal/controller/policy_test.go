@@ -20,6 +20,8 @@ import (
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/aigateway"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxpolicy"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
 	istiov1beta1 "istio.io/client-go/pkg/apis/networking/v1beta1"
 )
@@ -207,6 +209,19 @@ func TestDesiredSandboxRevisionDoesNotCopyHistoricalEvidenceWithoutCompiler(t *t
 	}
 	if revision != "" {
 		t.Fatalf("desired revision = %q, want empty without a compiler", revision)
+	}
+}
+
+func TestSandboxPolicyCompileInputIncludesWorkloadProbePort(t *testing.T) {
+	agent := &api.Agent{ObjectMeta: metav1.ObjectMeta{Name: "example"}, Spec: api.AgentSpec{
+		Agent: api.HarnessSpec{Port: ptr.To[int32](8000)},
+	}}
+	resolution := sandbox.Resolution{Revision: "synthetic-resolution"}
+	platform := sandboxpolicy.Platform{}
+	input := sandboxPolicyCompileInput(agent, resolution, "cetirun-example", platform)
+	if input.AgentName != agent.Name || input.Namespace != "cetirun-example" ||
+		input.WorkloadProbePort != 8000 || input.Resolution.Revision != resolution.Revision {
+		t.Fatalf("incomplete shared Sandbox compiler input: %+v", input)
 	}
 }
 

@@ -60,11 +60,10 @@ func (r *AgentReconciler) SandboxExecutionIntent(ctx context.Context, requested 
 		}
 		return empty, fmt.Errorf("%w: current held preparation must be verified before reservation", sandboxpolicy.ErrUnavailable)
 	}
-	plan, err := sandboxpolicy.Compile(sandboxpolicy.CompileInput{
-		Resolution: *attempt.resolution, AgentName: attempt.agent.Name, Namespace: attempt.input.Namespace.Name,
-		WorkloadProbePort: ptr.Deref(attempt.agent.Spec.Agent.Port, 0),
-		Platform:          attempt.configuration.Platforms[attempt.resolution.Sandbox.Type],
-	})
+	plan, err := sandboxpolicy.Compile(sandboxPolicyCompileInput(
+		attempt.agent, *attempt.resolution, attempt.input.Namespace.Name,
+		attempt.configuration.Platforms[attempt.resolution.Sandbox.Type],
+	))
 	if err != nil {
 		return empty, err
 	}
@@ -191,10 +190,9 @@ func (r *AgentReconciler) checkSandboxExecutionSources(ctx context.Context, inte
 	if err := sandboxpolicy.VerifyPolicyGrants(ctx, r.APIReader, attempt.selectedPolicy(), platform.Grants); err != nil {
 		return nil, err
 	}
-	plan, err := sandboxpolicy.Compile(sandboxpolicy.CompileInput{
-		Resolution: *attempt.resolution, AgentName: intent.Agent.Name, Namespace: intent.Namespace.Name,
-		WorkloadProbePort: ptr.Deref(attempt.agent.Spec.Agent.Port, 0), Platform: platform,
-	})
+	plan, err := sandboxpolicy.Compile(sandboxPolicyCompileInput(
+		attempt.agent, *attempt.resolution, intent.Namespace.Name, platform,
+	))
 	if err != nil {
 		return nil, err
 	}
