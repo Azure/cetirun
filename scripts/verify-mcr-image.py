@@ -47,8 +47,28 @@ def manifest_matches(url: str, expected: str) -> bool:
         return False
 
 
-def pull_image(image: str) -> bool:
-    """Return whether MCR has synchronized the requested platform manifest."""
+def output_detail(output: str | bytes | None) -> str:
+    """Return captured process output in a form safe for diagnostics."""
+    if isinstance(output, bytes):
+        output = output.decode(errors="replace")
+    return (output or "").strip()
+
+
+def process_diagnostics(
+    stdout: str | bytes | None,
+    stderr: str | bytes | None,
+) -> str:
+    """Return all nonempty process streams with their source labels."""
+    details = []
+    for label, output in (("stdout", stdout), ("stderr", stderr)):
+        detail = output_detail(output)
+        if detail:
+            details.append(f"{label}: {detail}")
+    return "; ".join(details)
+
+
+def pull_image(image: str) -> str | None:
+    """Return a transient pull error while MCR synchronizes a platform manifest."""
     try:
         subprocess.run(
             ["docker", "pull", "--platform", "linux/amd64", image],
@@ -57,9 +77,17 @@ def pull_image(image: str) -> bool:
             text=True,
             timeout=600,
         )
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
-        return False
-    return True
+    except subprocess.CalledProcessError as error:
+        detail = process_diagnostics(error.stdout, error.stderr)
+        if detail:
+            return f"docker pull failed with exit code {error.returncode}: {detail}"
+        return f"docker pull failed with exit code {error.returncode}"
+    except subprocess.TimeoutExpired as error:
+        detail = process_diagnostics(error.stdout, error.stderr)
+        if detail:
+            return f"docker pull timed out after {error.timeout} seconds: {detail}"
+        return f"docker pull timed out after {error.timeout} seconds"
+    return None
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -80,14 +108,27 @@ def main(argv: list[str] | None = None) -> int:
 
         url = f"https://mcr.microsoft.com/v2/{image['repository']}/manifests/{image['tag']}"
         pinned = f"{args.image}@{args.digest}"
+        last_pull_error = None
+        manifest_matched = False
         for attempt in range(args.attempts):
-            if manifest_matches(url, args.digest) and pull_image(pinned):
-                break
+            manifest_matched = manifest_matches(url, args.digest)
+            if manifest_matched:
+                last_pull_error = pull_image(pinned)
+                if last_pull_error is None:
+                    break
             if attempt + 1 == args.attempts:
-                raise ValueError(
+                if manifest_matched and last_pull_error:
+                    raise ValueError(
+                        f"Could not pull the synchronized MCR manifest for "
+                        f"{args.image}; last Docker pull error: {last_pull_error}"
+                    )
+                message = (
                     f"MCR did not expose a pullable {args.digest} manifest for "
                     f"{args.image}; check onboarding and retry verification"
                 )
+                if last_pull_error:
+                    message += f"; last Docker pull error: {last_pull_error}"
+                raise ValueError(message)
             print(f"Waiting for MCR: {args.image} (attempt {attempt + 1}/{args.attempts})", flush=True)
             time.sleep(args.interval)
 
