@@ -5,6 +5,10 @@ import "fake-indexeddb/auto";
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
+import { useEffect, useState } from "react";
+import { createRoot } from "react-dom/client";
+import { flushSync } from "react-dom";
+import { setImmediate } from "node:timers";
 import type { Instance } from "../types/instance";
 import ChatPage from "./ChatPage";
 import * as store from "./store";
@@ -141,6 +145,10 @@ function sendMessage(text = "Synthetic question") {
 }
 
 async function afterWindowTeardown(work: () => Promise<void>) {
+  // Let already committed React work finish with a live window. Its queued
+  // passive-effect callback reads window.event even after the root unmounts.
+  // Keep the deferred Chat completion pending until the access trap is armed.
+  await act(async () => {});
   const descriptor = Object.getOwnPropertyDescriptor(globalThis, "window");
   if (!descriptor) throw new Error("The test needs a jsdom window.");
   // Trap stale React dispatches even if their missing-window error is caught.
@@ -176,6 +184,67 @@ beforeEach(() => {
     );
 });
 afterEach(() => vi.restoreAllMocks());
+
+describe("window teardown test boundary", () => {
+  it("drains committed React work before removing window", async () => {
+    const effect = vi.fn();
+    function CommittedPage() {
+      useEffect(effect, []);
+      return null;
+    }
+    const root = createRoot(document.createElement("div"));
+    const actEnvironment = Object.getOwnPropertyDescriptor(
+      globalThis,
+      "IS_REACT_ACT_ENVIRONMENT",
+    );
+    // Deliberately commit outside act, as async work can while waitFor polls.
+    Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", {
+      configurable: true,
+      writable: true,
+      value: false,
+    });
+    try {
+      flushSync(() => root.render(<CommittedPage />));
+      root.unmount();
+    } finally {
+      if (actEnvironment)
+        Object.defineProperty(
+          globalThis,
+          "IS_REACT_ACT_ENVIRONMENT",
+          actEnvironment,
+        );
+      else Reflect.deleteProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT");
+    }
+    expect(effect).toHaveBeenCalledTimes(1);
+    await afterWindowTeardown(async () => {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    });
+  });
+
+  it("still detects a caught stale React dispatch and restores window", async () => {
+    let dispatch!: () => void;
+    function StalePage() {
+      const [, setValue] = useState(0);
+      dispatch = () => setValue(1);
+      return null;
+    }
+    const view = render(<StalePage />);
+    view.unmount();
+    const descriptor = Object.getOwnPropertyDescriptor(globalThis, "window");
+    await expect(
+      afterWindowTeardown(async () => {
+        try {
+          dispatch();
+        } catch {
+          // Production code may catch the missing-window error.
+        }
+      }),
+    ).rejects.toThrow("to not be called");
+    expect(Object.getOwnPropertyDescriptor(globalThis, "window")).toEqual(
+      descriptor,
+    );
+  });
+});
 
 describe("Custom Chat interactions", () => {
   it("flushes a draft when creating a conversation before the debounce fires", async () => {
