@@ -31,6 +31,7 @@ func TestSandboxBootstrapSkillsPublication(t *testing.T) {
 	for _, typ := range []string{"openclaw", "hermes"} {
 		t.Run(typ, func(t *testing.T) {
 			f := h.newCaseWithPrerequisites(t, typ, false)
+			f.reconcileConfiguration(t)
 			raw, err := json.Marshal(map[string]any{
 				"version": "v1", "teams": map[string]any{f.fixture.Team.Name: map[string]any{
 					"teamUID": f.fixture.Team.UID, "revision": "published-v1",

@@ -43,9 +43,6 @@ func VerifyObservation(expected ExecutionIdentity, observation *Observation, now
 		expected.Revision == "" || expected.PodUID == "" || expected.NodeUID == "" || expected.EnforcementEpoch == "" {
 		return fmt.Errorf("%w: expected binding, revision and workload identities must be complete", ErrObservationUnavailable)
 	}
-	if expected.Binding.PolicyClass != "normal" && expected.Binding.PolicyClass != "admin" {
-		return fmt.Errorf("%w: expected policy class is invalid", ErrObservationUnavailable)
-	}
 	if observation == nil || observation.ObservedAt.IsZero() {
 		return fmt.Errorf("%w: no trusted observation is available", ErrObservationUnavailable)
 	}

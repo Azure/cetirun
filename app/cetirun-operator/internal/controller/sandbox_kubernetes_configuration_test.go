@@ -225,24 +225,15 @@ func TestKubernetesSandboxConfigurationSourceScopesRoleFailuresToRequestedGrants
 			}
 			for _, requested := range []*api.AgentPolicy{normal, other, policy} {
 				result, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(requested)})
-				status, reason := metav1.ConditionTrue, "PolicyAccepted"
-				if requested == policy {
-					status, reason = metav1.ConditionFalse, "UnapprovedGrant"
-				}
-				if requested == policy && change == "read failure" {
-					status, reason = metav1.ConditionUnknown, "PrerequisitesUnavailable"
-					if !errors.Is(err, failure) || !errors.Is(err, sandboxpolicy.ErrUnavailable) || result.RequeueAfter != 0 {
-						t.Fatalf("requested role failure lost its cause or backoff: %+v, %v", result, err)
-					}
-				} else if err != nil || result.RequeueAfter <= 0 {
-					t.Fatalf("policy %s was affected by an unrelated role or lost its refresh: %+v, %v", requested.Name, result, err)
+				if err != nil || result.RequeueAfter != 0 {
+					t.Fatalf("policy %s declaration acceptance read runtime role state: %+v, %v", requested.Name, result, err)
 				}
 				current := &api.AgentPolicy{}
 				if err := cached.Get(ctx, client.ObjectKeyFromObject(requested), current); err != nil {
 					t.Fatal(err)
 				}
 				condition := apimeta.FindStatusCondition(current.Status.Conditions, api.ConditionAgentPolicyAccepted)
-				if condition == nil || condition.Status != status || condition.Reason != reason {
+				if condition == nil || condition.Status != metav1.ConditionTrue || condition.Reason != "PolicyAccepted" {
 					t.Fatalf("policy %s has the wrong scoped assessment: %+v", requested.Name, condition)
 				}
 			}
@@ -258,13 +249,9 @@ func TestKubernetesSandboxConfigurationSourceScopesRoleFailuresToRequestedGrants
 			if !apimeta.IsStatusConditionTrue(box.Status.Conditions, api.ConditionReady) {
 				t.Fatal("role failure changed Sandbox prerequisite readiness")
 			}
-			wantRoleReads := 1
-			if change == "duplicate approval" {
-				wantRoleReads = 0
-			}
-			if reader.calls[kubernetesPlatformRead{"ClusterRole", client.ObjectKeyFromObject(role)}] != wantRoleReads ||
-				reader.calls[kubernetesPlatformRead{"ClusterRole", client.ObjectKeyFromObject(otherRole)}] != 1 {
-				t.Fatal("authoritative role reads were not limited to each policy's requested grants:", reader.calls)
+			if reader.calls[kubernetesPlatformRead{"ClusterRole", client.ObjectKeyFromObject(role)}] != 0 ||
+				reader.calls[kubernetesPlatformRead{"ClusterRole", client.ObjectKeyFromObject(otherRole)}] != 0 {
+				t.Fatal("declaration acceptance read component-owned role state:", reader.calls)
 			}
 		})
 	}

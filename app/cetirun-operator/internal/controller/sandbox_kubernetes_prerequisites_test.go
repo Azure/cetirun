@@ -502,7 +502,7 @@ func TestKubernetesSandboxPrerequisitesPreservesSupportedStorageShapes(t *testin
 	}
 }
 
-func TestKubernetesPrerequisiteRevisionIgnoresUnselectedTeamChanges(t *testing.T) {
+func TestKubernetesPrerequisiteRevisionIgnoresUnselectedSandboxChanges(t *testing.T) {
 	ctx := context.Background()
 	f := newKubernetesPrerequisitesFixture(t, "hermes")
 	first, err := f.resolve(t)
@@ -515,7 +515,6 @@ func TestKubernetesPrerequisiteRevisionIgnoresUnselectedTeamChanges(t *testing.T
 	}
 	team.Spec.SandboxRefs = append(team.Spec.SandboxRefs, "spare-sandbox")
 	team.Spec.DefaultSandboxRef = "spare-sandbox"
-	team.Spec.AdminAgentPolicyRef = "new-admin-policy"
 	if err := f.client.Update(ctx, team); err != nil {
 		t.Fatal(err)
 	}

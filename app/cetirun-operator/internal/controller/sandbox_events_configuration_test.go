@@ -60,21 +60,21 @@ func TestSandboxEventsCommittedConfigurationTransitions(t *testing.T) {
 		{"invalid", "InvalidConfiguration", func(p *api.AgentPolicy, _ *controller.SandboxConfigurationSnapshot) {
 			p.Spec.Network.BlockedFQDNs = []string{"sk-dummy invalid endpoint https://policy.example.com/"}
 		}, nil, false, metav1.ConditionFalse},
-		{"unsupported", "UnsupportedControl", func(p *api.AgentPolicy, _ *controller.SandboxConfigurationSnapshot) {
+		{"component-specific control", "PolicyAccepted", func(p *api.AgentPolicy, _ *controller.SandboxConfigurationSnapshot) {
 			p.Spec.Network.BlockedFQDNs = []string{"sk-dummy.policy.example.com"}
-		}, nil, false, metav1.ConditionFalse},
-		{"conflict", "PolicyConflict", func(p *api.AgentPolicy, _ *controller.SandboxConfigurationSnapshot) {
+		}, nil, false, metav1.ConditionTrue},
+		{"component-specific conflict", "PolicyAccepted", func(p *api.AgentPolicy, _ *controller.SandboxConfigurationSnapshot) {
 			p.Spec.Network.BlockedPorts = []api.AgentPolicyPort{{Port: 53}}
-		}, nil, false, metav1.ConditionFalse},
-		{"grant", "UnapprovedGrant", func(p *api.AgentPolicy, _ *controller.SandboxConfigurationSnapshot) {
+		}, nil, false, metav1.ConditionTrue},
+		{"component-specific grant", "PolicyAccepted", func(p *api.AgentPolicy, _ *controller.SandboxConfigurationSnapshot) {
 			p.Spec.KubernetesAccess = &api.AgentPolicyAdminKubernetesAccess{
 				ServiceAccountName: "synthetic-admin", ClusterRoleBindings: []api.AgentPolicyClusterRoleBinding{{ClusterRoleName: "synthetic-admin"}},
 			}
-		}, nil, false, metav1.ConditionFalse},
-		{"unavailable", "PrerequisitesUnavailable", func(_ *api.AgentPolicy, s *controller.SandboxConfigurationSnapshot) {
+		}, nil, false, metav1.ConditionTrue},
+		{"unavailable", "PolicyAccepted", func(_ *api.AgentPolicy, s *controller.SandboxConfigurationSnapshot) {
 			s.Platforms = nil
-		}, nil, true, metav1.ConditionUnknown},
-		{"source error", "PrerequisitesUnavailable", func(*api.AgentPolicy, *controller.SandboxConfigurationSnapshot) {}, injected, true, metav1.ConditionUnknown},
+		}, nil, false, metav1.ConditionTrue},
+		{"source error", "PolicyAccepted", func(*api.AgentPolicy, *controller.SandboxConfigurationSnapshot) {}, injected, false, metav1.ConditionTrue},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, snapshot, _ := sandboxConfigurationFixture()
@@ -107,7 +107,7 @@ func TestSandboxEventsCommittedConfigurationTransitions(t *testing.T) {
 			request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(policy)}
 			for range 3 {
 				_, err := r.Reconcile(ctx, request)
-				if (err != nil) != tc.wantError || tc.sourceError != nil && !errors.Is(err, tc.sourceError) {
+				if (err != nil) != tc.wantError || tc.wantError && tc.sourceError != nil && !errors.Is(err, tc.sourceError) {
 					t.Fatalf("configuration event changed assessment error semantics: %v", err)
 				}
 			}
@@ -128,11 +128,11 @@ func TestSandboxEventsCommittedConfigurationTransitions(t *testing.T) {
 			}
 			unresolved := map[string]any{
 				"agentUID": "unresolved", "teamUID": "unresolved", "sandboxUID": "unresolved",
-				"agentPolicyUID": "unresolved", "policyClass": "unresolved",
+				"agentPolicyUID": "unresolved",
 			}
 			attempted := map[string]any{
 				"agentUID": "unresolved", "teamUID": "unresolved", "sandboxUID": "unresolved",
-				"agentPolicyUID": string(policy.UID), "policyClass": "unresolved",
+				"agentPolicyUID": string(policy.UID),
 			}
 			if event["event"] != expectedType || event["reason"] != tc.reason ||
 				event["conditionStatus"] != string(tc.status) || event["condition"] != api.ConditionAgentPolicyAccepted ||

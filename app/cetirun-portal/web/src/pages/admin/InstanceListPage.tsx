@@ -54,13 +54,17 @@ export function InstanceListPage() {
               <TableHeaderCell>Team</TableHeaderCell>
               <TableHeaderCell>Agent</TableHeaderCell>
               <TableHeaderCell>Phase</TableHeaderCell>
+              <TableHeaderCell>Policy</TableHeaderCell>
+              <TableHeaderCell>Gateway</TableHeaderCell>
+              <TableHeaderCell>Sandbox</TableHeaderCell>
+              <TableHeaderCell>Agent identity</TableHeaderCell>
               <TableHeaderCell>Age</TableHeaderCell>
             </TableRow>
           </TableHeader>
           <TableBody>
             {data.length === 0 && (
               <TableRow>
-                <TableCell colSpan={7}>
+                <TableCell colSpan={11}>
                   <Text>No agents.</Text>
                 </TableCell>
               </TableRow>
@@ -81,6 +85,14 @@ export function InstanceListPage() {
                     {ins.phase || "Unknown"}
                   </Badge>
                 </TableCell>
+                <TableCell>
+                  <Badge appearance="outline" color={ins.policy === "Resolved" ? "success" : ins.policy === "Denied" ? "danger" : "warning"}>
+                    {ins.policy}
+                  </Badge>
+                </TableCell>
+                <TableCell><Badge appearance="outline">{ins.gateway}</Badge></TableCell>
+                <TableCell><Badge appearance="outline">{ins.sandbox}</Badge></TableCell>
+                <TableCell><Badge appearance="outline">{ins.agentIdentity}</Badge></TableCell>
                 <TableCell>{formatAge(ins.createdAt)}</TableCell>
               </TableRow>
             ))}

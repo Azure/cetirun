@@ -47,7 +47,7 @@ kind: Team
 metadata:
   name: native-example
 spec:
-  normalAgentPolicyRef: native-example
+  agentPolicyRef: native-example
   sandboxRefs: [native-example]
   defaultSandboxRef: native-example
   skills: []

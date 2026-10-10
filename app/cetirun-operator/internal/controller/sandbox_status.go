@@ -50,15 +50,10 @@ func UpdateSandboxAgentStatus(agent *api.Agent, input SandboxStatusInput) (Sandb
 	}
 	before := agent.DeepCopy().Status
 	err := input.Failure
-	class := agent.Spec.PolicyClass
-	if class == "" {
-		class = api.AgentPolicyClassNormal
-	}
 	if err == nil {
 		if input.Resolution == nil || input.Plan == nil ||
 			agent.Spec.Team == "" || agent.Spec.SandboxRef == "" ||
 			input.AgentGeneration != agent.Generation || input.Resolution.Binding.AgentUID != agent.UID ||
-			input.Resolution.Binding.PolicyClass != class ||
 			input.Plan.Binding != input.Resolution.Binding || input.Plan.AgentName != agent.Name ||
 			input.Plan.Namespace == "" || input.Resolution.Revision == "" || input.Plan.Revision == "" ||
 			input.Plan.ResolutionRevision != input.Resolution.Revision ||
@@ -83,7 +78,7 @@ func UpdateSandboxAgentStatus(agent *api.Agent, input SandboxStatusInput) (Sandb
 		result.Hold, result.Verified = false, true
 		binding := input.Plan.Binding
 		agent.Status.Sandbox = &api.SandboxStatus{
-			TeamUID: binding.TeamUID, SandboxUID: binding.SandboxUID, PolicyClass: binding.PolicyClass,
+			TeamUID: binding.TeamUID, SandboxUID: binding.SandboxUID,
 			AgentPolicyUID: binding.AgentPolicyUID, AppliedRevision: input.Plan.Revision,
 		}
 		agent.Status.ObservedGeneration = agent.Generation
@@ -127,7 +122,7 @@ func UpdateSandboxAgentStatus(agent *api.Agent, input SandboxStatusInput) (Sandb
 func appliedMatches(agent *api.Agent, expected sandbox.ExecutionIdentity) bool {
 	applied := agent.Status.Sandbox
 	return applied != nil && applied.TeamUID == expected.Binding.TeamUID && applied.SandboxUID == expected.Binding.SandboxUID &&
-		applied.PolicyClass == expected.Binding.PolicyClass && applied.AgentPolicyUID == expected.Binding.AgentPolicyUID &&
+		applied.AgentPolicyUID == expected.Binding.AgentPolicyUID &&
 		applied.AppliedRevision == expected.Revision
 }
 

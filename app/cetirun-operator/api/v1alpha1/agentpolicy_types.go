@@ -8,14 +8,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// +kubebuilder:validation:Enum=normal;admin
-type AgentPolicyClass string
-
-const (
-	AgentPolicyClassNormal AgentPolicyClass = "normal"
-	AgentPolicyClassAdmin  AgentPolicyClass = "admin"
-)
-
 // AgentPolicySpec defines controls independently of runtime selection.
 type AgentPolicySpec struct {
 	// Harnesses limits runtimes that can receive this policy.

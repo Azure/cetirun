@@ -150,7 +150,7 @@ func TestNativePodAdmissionRechecksReservationAfterSourceReads(t *testing.T) {
 	}
 }
 
-func TestNativePodReservationAllowsUnselectedTeamMutation(t *testing.T) {
+func TestNativePodReservationAllowsUnselectedSandboxMembership(t *testing.T) {
 	ctx := context.Background()
 	f, store, intent := coordinatedNativePodFixture(t)
 	if _, err := store.AcquireNative(ctx, intent); err != nil {
@@ -161,10 +161,10 @@ func TestNativePodReservationAllowsUnselectedTeamMutation(t *testing.T) {
 		t.Fatal(err)
 	}
 	after := before.DeepCopy()
-	after.Spec.AdminAgentPolicyRef = "unused-admin-policy"
+	after.Spec.SandboxRefs = append(after.Spec.SandboxRefs, "unused-sandbox")
 	change, err := store.AcquireConfigurationChange(ctx, before, after)
 	if err != nil {
-		t.Fatal("unused Team policy slot was blocked:", err)
+		t.Fatal("unused Team Sandbox membership was blocked:", err)
 	}
 	adapter, err := sandboxcoordination.NewKubernetesChangeAdapter(f.client, f.client, before, after)
 	if err != nil {

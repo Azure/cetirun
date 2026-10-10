@@ -110,7 +110,6 @@ func TestNativeSandboxProfileRejectsUnsupportedOverrides(t *testing.T) {
 		{"RWO HOME", func(a *sandboxPreparationAttempt) {
 			a.resolution.Sandbox.Storage.Home.AccessMode = corev1.ReadWriteOnce
 		}},
-		{"admin", func(a *sandboxPreparationAttempt) { a.resolution.Binding.PolicyClass = api.AgentPolicyClassAdmin }},
 		{"no shared models", func(a *sandboxPreparationAttempt) { a.agent.Spec.ModelAccess.SharedModels = ptr.To(false) }},
 		{"Copilot", func(a *sandboxPreparationAttempt) { a.agent.Spec.ModelAccess.GitHubCopilot = ptr.To(true) }},
 		{"Tailscale", func(a *sandboxPreparationAttempt) { a.agent.Spec.Tailscale = &api.TailscaleSpec{} }},

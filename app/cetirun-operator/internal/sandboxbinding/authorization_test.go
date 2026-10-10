@@ -21,18 +21,18 @@ func bindingFixture(t *testing.T) (*api.Agent, *api.Team, sandbox.Resources) {
 	t.Helper()
 	agent := &api.Agent{
 		ObjectMeta: metav1.ObjectMeta{Name: "example-agent", UID: "agent-uid", ResourceVersion: "1"},
-		Spec:       api.AgentSpec{Team: "example-team", SandboxRef: "example-box", PolicyClass: api.AgentPolicyClassNormal},
+		Spec:       api.AgentSpec{Team: "example-team", SandboxRef: "example-box"},
 	}
 	team := &api.Team{
 		ObjectMeta: metav1.ObjectMeta{Name: agent.Spec.Team, UID: "team-uid"},
-		Spec:       api.TeamSpec{NormalAgentPolicyRef: "example-policy", SandboxRefs: []string{agent.Spec.SandboxRef}, DefaultSandboxRef: agent.Spec.SandboxRef},
+		Spec:       api.TeamSpec{AgentPolicyRef: "example-policy", SandboxRefs: []string{agent.Spec.SandboxRef}, DefaultSandboxRef: agent.Spec.SandboxRef},
 	}
 	resources := sandbox.Resources{
 		Sandboxes: map[string]*api.Sandbox{
 			agent.Spec.SandboxRef: {ObjectMeta: metav1.ObjectMeta{Name: agent.Spec.SandboxRef, UID: "box-uid"}},
 		},
 		AgentPolicies: map[string]*api.AgentPolicy{
-			team.Spec.NormalAgentPolicyRef: {ObjectMeta: metav1.ObjectMeta{Name: team.Spec.NormalAgentPolicyRef, UID: "policy-uid"}},
+			team.Spec.AgentPolicyRef: {ObjectMeta: metav1.ObjectMeta{Name: team.Spec.AgentPolicyRef, UID: "policy-uid"}},
 		},
 	}
 	record, err := Snapshot(agent, team, resources)
@@ -62,8 +62,7 @@ func TestSnapshotPersistsBeforeAgentNameUIDOrSuccessfulApply(t *testing.T) {
 		t.Fatalf("stored authorization lost the API-assigned Agent UID: %v, %v", before, err)
 	}
 	agent.Status.Sandbox = &api.SandboxStatus{
-		TeamUID: "old-team", SandboxUID: "old-box", PolicyClass: api.AgentPolicyClassAdmin,
-		AgentPolicyUID: "old-policy", AppliedRevision: "previous-apply",
+		TeamUID: "old-team", SandboxUID: "old-box", AgentPolicyUID: "old-policy", AppliedRevision: "previous-apply",
 	}
 	after, err := AuthorizedBinding(agent)
 	if err != nil || before != after {
@@ -102,8 +101,6 @@ func TestAuthorizationRejectsMalformedOrDetachedRecords(t *testing.T) {
 		}},
 		{"different Team", func(a *api.Agent) { a.Spec.Team = "other-team" }},
 		{"different Sandbox", func(a *api.Agent) { a.Spec.SandboxRef = "other-box" }},
-		{"different class", func(a *api.Agent) { a.Spec.PolicyClass = api.AgentPolicyClassAdmin }},
-		{"unpersisted class", func(a *api.Agent) { a.Spec.PolicyClass = "" }},
 		{"no Agent UID", func(a *api.Agent) { a.UID = "" }},
 		{"no Agent name", func(a *api.Agent) { a.Name = "" }},
 		{"namespaced Agent", func(a *api.Agent) { a.Namespace = "unexpected" }},
@@ -128,15 +125,14 @@ func TestCurrentBindingRejectsMissingReplacedOrTerminatingIdentities(t *testing.
 		edit func(*api.Agent, *api.Team, sandbox.Resources)
 	}{
 		{"unselected box", func(a *api.Agent, _ *api.Team, _ sandbox.Resources) { a.Spec.SandboxRef = "other" }},
-		{"missing policy slot", func(a *api.Agent, _ *api.Team, _ sandbox.Resources) { a.Spec.PolicyClass = api.AgentPolicyClassAdmin }},
 		{"missing box", func(a *api.Agent, _ *api.Team, r sandbox.Resources) { delete(r.Sandboxes, a.Spec.SandboxRef) }},
 		{"missing policy", func(_ *api.Agent, team *api.Team, r sandbox.Resources) {
-			delete(r.AgentPolicies, team.Spec.NormalAgentPolicyRef)
+			delete(r.AgentPolicies, team.Spec.AgentPolicyRef)
 		}},
 		{"Team UID absent", func(_ *api.Agent, team *api.Team, _ sandbox.Resources) { team.UID = "" }},
 		{"Team name changed", func(_ *api.Agent, team *api.Team, _ sandbox.Resources) { team.Name = "different" }},
 		{"policy name changed", func(_ *api.Agent, team *api.Team, r sandbox.Resources) {
-			r.AgentPolicies[team.Spec.NormalAgentPolicyRef].Name = "different"
+			r.AgentPolicies[team.Spec.AgentPolicyRef].Name = "different"
 		}},
 		{"box name changed", func(a *api.Agent, _ *api.Team, r sandbox.Resources) {
 			r.Sandboxes[a.Spec.SandboxRef].Name = "different"
@@ -151,7 +147,7 @@ func TestCurrentBindingRejectsMissingReplacedOrTerminatingIdentities(t *testing.
 		}},
 		{"policy terminating", func(_ *api.Agent, team *api.Team, r sandbox.Resources) {
 			now := metav1.Now()
-			r.AgentPolicies[team.Spec.NormalAgentPolicyRef].DeletionTimestamp = &now
+			r.AgentPolicies[team.Spec.AgentPolicyRef].DeletionTimestamp = &now
 		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -172,13 +168,13 @@ func TestReadKeepsAuthorizedUIDsRatherThanRefreshingReferences(t *testing.T) {
 	}
 	team.UID = "replacement-team"
 	resources.Sandboxes[agent.Spec.SandboxRef].UID = "replacement-box"
-	resources.AgentPolicies[team.Spec.NormalAgentPolicyRef].UID = "replacement-policy"
+	resources.AgentPolicies[team.Spec.AgentPolicyRef].UID = "replacement-policy"
 	scheme := runtime.NewScheme()
 	if err := api.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
 	}
 	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(agent, team,
-		resources.Sandboxes[agent.Spec.SandboxRef], resources.AgentPolicies[team.Spec.NormalAgentPolicyRef]).Build()
+		resources.Sandboxes[agent.Spec.SandboxRef], resources.AgentPolicies[team.Spec.AgentPolicyRef]).Build()
 	read, binding, err := Read(context.Background(), cl, client.ObjectKeyFromObject(agent))
 	if err != nil || binding != original || read.UID != agent.UID {
 		t.Fatalf("read lost the durable snapshot: %v, %v", binding, err)
@@ -223,7 +219,7 @@ func TestExplicitReauthorizationFormatIsCompleteAndStrict(t *testing.T) {
 	for _, raw := range []string{
 		"", "null", "{}", raw + " {}", strings.Replace(raw, `"requestID":`, `"unknown":true,"requestID":`, 1),
 		strings.Replace(raw, `"operation-1"`, `""`, 1), strings.Replace(raw, `"agent-uid"`, `"*"`, 1),
-		strings.Replace(raw, `"team-uid"`, `""`, 1), strings.Replace(raw, `"normal"`, `"other"`, 1),
+		strings.Replace(raw, `"team-uid"`, `""`, 1), strings.Replace(raw, `"policy-uid"`, `""`, 1),
 	} {
 		if _, err := ParseReauthorization(raw); err == nil {
 			t.Fatalf("invalid explicit request accepted: %s", raw)

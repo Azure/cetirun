@@ -151,7 +151,7 @@ func TestAuthorizationAPIServerBindings(t *testing.T) {
 		recovery.team.ObjectMeta = metav1.ObjectMeta{Name: recovery.name + "-team"}
 		recovery.team.Spec.SandboxRefs = []string{recovery.box.Name}
 		recovery.team.Spec.DefaultSandboxRef = recovery.box.Name
-		recovery.team.Spec.NormalAgentPolicyRef = recovery.policy.Name
+		recovery.team.Spec.AgentPolicyRef = recovery.policy.Name
 		for _, object := range []client.Object{recovery.box, recovery.policy, recovery.team} {
 			create(object)
 		}
@@ -230,7 +230,7 @@ func TestAuthorizationAPIServerBindings(t *testing.T) {
 	newAgent := func(name string) *api.Agent {
 		agent := f.agent.DeepCopy()
 		agent.ObjectMeta = metav1.ObjectMeta{Name: name, Finalizers: []string{api.Finalizer}}
-		agent.Spec.Team, agent.Spec.SandboxRef, agent.Spec.PolicyClass = "", "", ""
+		agent.Spec.Team, agent.Spec.SandboxRef = "", ""
 		return agent
 	}
 	if err := wait.PollUntilContextTimeout(ctx, 50*time.Millisecond, 10*time.Second, true, func(ctx context.Context) (bool, error) {
@@ -259,8 +259,7 @@ func TestAuthorizationAPIServerBindings(t *testing.T) {
 				binding.TeamUID != f.team.UID || binding.SandboxUID != f.box.UID || binding.AgentPolicyUID != f.policy.UID {
 				t.Fatalf("API-assigned identity or current reference authorization was not durable: %#v, %v", binding, err)
 			}
-			if stored.Spec.Team != f.team.Name || stored.Spec.PolicyClass != api.AgentPolicyClassNormal ||
-				stored.Spec.SandboxRef != f.box.Name || stored.Status.Sandbox != nil {
+			if stored.Spec.Team != f.team.Name || stored.Spec.SandboxRef != f.box.Name || stored.Status.Sandbox != nil {
 				t.Fatal("creation defaulting promoted the workload or claimed enforcement")
 			}
 			stored.Spec.Model = "member-application-model"
@@ -269,7 +268,6 @@ func TestAuthorizationAPIServerBindings(t *testing.T) {
 			}
 			for _, edit := range []func(*api.Agent){
 				func(a *api.Agent) { a.Spec.Team = "other-team" },
-				func(a *api.Agent) { a.Spec.PolicyClass = api.AgentPolicyClassAdmin },
 				func(a *api.Agent) { a.Spec.SandboxRef = "other-box" },
 				func(a *api.Agent) { delete(a.Annotations, sandboxbinding.AuthorizationAnnotation) },
 				func(a *api.Agent) { a.Annotations[sandboxbinding.AuthorizationAnnotation] = "forged" },
@@ -296,8 +294,7 @@ func TestAuthorizationAPIServerBindings(t *testing.T) {
 			}
 		}
 		for name, edit := range map[string]func(*api.Agent){
-			"team":  func(a *api.Agent) { a.Spec.Team = "caller-team" },
-			"class": func(a *api.Agent) { a.Spec.PolicyClass = api.AgentPolicyClassAdmin },
+			"team": func(a *api.Agent) { a.Spec.Team = "caller-team" },
 			"record": func(a *api.Agent) {
 				a.Annotations = map[string]string{sandboxbinding.AuthorizationAnnotation: fixtureAuthorization(t, f)}
 			},
@@ -330,7 +327,7 @@ func TestAuthorizationAPIServerBindings(t *testing.T) {
 		create(alternate)
 		team := f.team.DeepCopy()
 		team.ObjectMeta = metav1.ObjectMeta{Name: "replacement-team"}
-		team.Spec.NormalAgentPolicyRef = policy.Name
+		team.Spec.AgentPolicyRef = policy.Name
 		create(team)
 		agent := newAgent("replacement-agent")
 		agent.Spec.Team = team.Name
@@ -344,7 +341,7 @@ func TestAuthorizationAPIServerBindings(t *testing.T) {
 		denied(admin.Delete(ctx, policy.DeepCopy()))
 		// An authorized slot change permits deleting the now-unreferenced policy.
 		// Re-selecting its same-name replacement must not renew Agent authority.
-		team.Spec.NormalAgentPolicyRef = alternate.Name
+		team.Spec.AgentPolicyRef = alternate.Name
 		if err := admin.Update(ctx, team); err != nil {
 			t.Fatal(err)
 		}
@@ -356,7 +353,7 @@ func TestAuthorizationAPIServerBindings(t *testing.T) {
 		if policy.UID == original.AgentPolicyUID {
 			t.Fatal("API server did not assign a replacement policy UID")
 		}
-		team.Spec.NormalAgentPolicyRef = policy.Name
+		team.Spec.AgentPolicyRef = policy.Name
 		if err := admin.Update(ctx, team); err != nil {
 			t.Fatal(err)
 		}
@@ -367,7 +364,7 @@ func TestAuthorizationAPIServerBindings(t *testing.T) {
 		if err != nil || binding != original || unchanged.Status.Sandbox != nil {
 			t.Fatalf("replacement silently renewed pending authorization: %v, %v", binding, err)
 		}
-		target := sandbox.Binding{AgentUID: agent.UID, TeamUID: team.UID, SandboxUID: f.box.UID, PolicyClass: api.AgentPolicyClassNormal, AgentPolicyUID: policy.UID}
+		target := sandbox.Binding{AgentUID: agent.UID, TeamUID: team.UID, SandboxUID: f.box.UID, AgentPolicyUID: policy.UID}
 		request, err := sandboxbinding.FormatReauthorization("replace-policy-1", target)
 		if err != nil {
 			t.Fatal(err)
@@ -419,7 +416,7 @@ func TestAuthorizationAPIServerBindings(t *testing.T) {
 		team := f.team.DeepCopy()
 		team.ObjectMeta = metav1.ObjectMeta{Name: "changing-default-team"}
 		team.Spec.SandboxRefs = []string{f.box.Name, box.Name}
-		team.Spec.NormalAgentPolicyRef = policy.Name
+		team.Spec.AgentPolicyRef = policy.Name
 		create(team)
 		agent := newAgent("persisted-default-agent")
 		agent.Spec.Team = team.Name
@@ -525,7 +522,7 @@ func TestAuthorizationAPIServerBindings(t *testing.T) {
 					if slices.Contains(recovery.missing, "Team") {
 						candidate.Spec.Team, candidate.Spec.SandboxRef = f.team.Name, f.box.Name
 					} else {
-						recovery.team.Spec.NormalAgentPolicyRef = f.policy.Name
+						recovery.team.Spec.AgentPolicyRef = f.policy.Name
 						if err := admin.Update(ctx, recovery.team); err != nil {
 							t.Fatal("could not repair the missing policy by selecting a live policy:", err)
 						}
@@ -646,7 +643,7 @@ func TestAuthorizationAPIServerBindings(t *testing.T) {
 					"spec":     spec,
 				}
 				if mode == "create-explicit" {
-					spec["team"], spec["sandboxRef"], spec["policyClass"] = f.team.Name, f.box.Name, api.AgentPolicyClassNormal
+					spec["team"], spec["sandboxRef"] = f.team.Name, f.box.Name
 				}
 				if mode == "adopt-existing" {
 					if err := member.Create(ctx, newAgent(name), client.FieldOwner("agent-bootstrap")); err != nil {

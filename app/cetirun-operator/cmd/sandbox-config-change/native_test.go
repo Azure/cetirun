@@ -18,7 +18,7 @@ import (
 )
 
 func TestCLIConfigurationChangesHonorNativeReservations(t *testing.T) {
-	for _, kind := range []string{"Team", "Sandbox", "AgentPolicy", "unused Team policy"} {
+	for _, kind := range []string{"Team", "Sandbox", "AgentPolicy"} {
 		t.Run(kind, func(t *testing.T) {
 			ctx := context.Background()
 			args, store, storage, team, _ := cliFixture(t)
@@ -37,7 +37,7 @@ func TestCLIConfigurationChangesHonorNativeReservations(t *testing.T) {
 				Home:      w.ObjectIdentity{Name: "home", UID: "native-home-uid"},
 				Workload:  w.ObjectIdentity{Name: "native-workload", UID: "native-workload-uid"},
 				Binding: sandbox.Binding{AgentUID: "native-agent-uid", TeamUID: team.UID, SandboxUID: box.UID,
-					AgentPolicyUID: policy.UID, PolicyClass: api.AgentPolicyClassNormal},
+					AgentPolicyUID: policy.UID},
 				Revision: "native-revision", SourceDigests: map[string]string{},
 			}
 			for _, selected := range []struct {
@@ -47,7 +47,7 @@ func TestCLIConfigurationChangesHonorNativeReservations(t *testing.T) {
 				reference := w.SourceReference{APIVersion: api.GroupVersion.String(), Kind: selected.kind,
 					Name: selected.object.GetName(), UID: selected.object.GetUID(), ResourceVersion: selected.object.GetResourceVersion()}
 				intent.Sources = append(intent.Sources, reference)
-				value, err := w.ExecutionSourceDigest(selected.object, box.Name, intent.Binding.PolicyClass)
+				value, err := w.ExecutionSourceDigest(selected.object, box.Name)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -59,14 +59,10 @@ func TestCLIConfigurationChangesHonorNativeReservations(t *testing.T) {
 			}
 			var before, after client.Object
 			switch kind {
-			case "Team", "unused Team policy":
+			case "Team":
 				before = team
 				desired := team.DeepCopy()
-				if kind == "Team" {
-					desired.Spec.NormalAgentPolicyRef = "replacement-policy"
-				} else {
-					desired.Spec.AdminAgentPolicyRef = "unused-admin-policy"
-				}
+				desired.Spec.AgentPolicyRef = "replacement-policy"
 				after = desired
 			case "Sandbox":
 				before = box
@@ -80,9 +76,6 @@ func TestCLIConfigurationChangesHonorNativeReservations(t *testing.T) {
 				after = desired
 			}
 			gvk := api.GroupVersion.WithKind(kind)
-			if kind == "unused Team policy" {
-				gvk = api.GroupVersion.WithKind("Team")
-			}
 			before.GetObjectKind().SetGroupVersionKind(gvk)
 			after.GetObjectKind().SetGroupVersionKind(gvk)
 			writeObjectFile(t, args[len(args)-3], before)

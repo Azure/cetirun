@@ -22,7 +22,7 @@ func nativeConfigurationIntent(t *testing.T, before client.Object) NativeIntent 
 			continue
 		}
 		reference.ResourceVersion = before.GetResourceVersion()
-		value, err := w.ExecutionSourceDigest(before, intent.SelectedSandbox(), intent.Binding.PolicyClass)
+		value, err := w.ExecutionSourceDigest(before, intent.SelectedSandbox())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -37,7 +37,7 @@ func TestNativeConfigurationWriterAndDeletionRespectReservations(t *testing.T) {
 			ctx := context.Background()
 			store, storage, before, after := configurationFixture(t, kind)
 			if team, ok := after.(*api.Team); ok {
-				team.Spec.NormalAgentPolicyRef = "replacement-normal"
+				team.Spec.AgentPolicyRef = "replacement-policy"
 			}
 			ticket := acquireNative(t, store, nativeConfigurationIntent(t, before))
 			for _, stopping := range []bool{false, true} {
@@ -75,7 +75,7 @@ func TestNativeConfigurationWriterAndDeletionRespectReservations(t *testing.T) {
 }
 
 func TestNativeTeamChangesRespectSelectedSlots(t *testing.T) {
-	for _, scenario := range []string{"creation default", "unused policy slot", "unused sandbox membership", "selected policy slot", "selected sandbox membership", "shared context"} {
+	for _, scenario := range []string{"creation default", "unused sandbox membership", "selected policy", "selected sandbox membership", "shared context"} {
 		t.Run(scenario, func(t *testing.T) {
 			ctx := context.Background()
 			store, storage, before := teamChangeFixture(t)
@@ -86,12 +86,10 @@ func TestNativeTeamChangesRespectSelectedSlots(t *testing.T) {
 			switch scenario {
 			case "creation default":
 				after.Spec.DefaultSandboxRef = "spare"
-			case "unused policy slot":
-				after.Spec.AdminAgentPolicyRef = "another-admin"
 			case "unused sandbox membership":
 				after.Spec.SandboxRefs = append(after.Spec.SandboxRefs, "another-spare")
-			case "selected policy slot":
-				after.Spec.NormalAgentPolicyRef, allowed = "replacement-normal", false
+			case "selected policy":
+				after.Spec.AgentPolicyRef, allowed = "replacement-policy", false
 			case "selected sandbox membership":
 				after.Spec.SandboxRefs, after.Spec.DefaultSandboxRef, allowed = []string{"spare"}, "spare", false
 			case "shared context":

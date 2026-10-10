@@ -20,12 +20,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// TeamInputs retains shared runtime inputs separately from per-class selection.
+// TeamInputs retains shared runtime inputs separately from policy selection.
 // It contains digests and reference names, never rendered configuration.
 type TeamInputs struct {
 	SharedDigest string   `json:"sharedDigest"`
-	NormalPolicy string   `json:"normalPolicy"`
-	AdminPolicy  string   `json:"adminPolicy"`
+	Policy       string   `json:"policy"`
 	Sandboxes    []string `json:"sandboxes"`
 }
 
@@ -34,30 +33,21 @@ func (inputs TeamInputs) DeepCopy() TeamInputs {
 	return inputs
 }
 
-func (inputs TeamInputs) DigestFor(box string, class api.AgentPolicyClass) (string, error) {
+func (inputs TeamInputs) DigestFor(box string) (string, error) {
 	if err := inputs.Validate(); err != nil {
 		return "", err
 	}
 	if box == "" || !slices.Contains(inputs.Sandboxes, box) {
 		return "", fmt.Errorf("Team inputs do not authorize the selected Sandbox")
 	}
-	policy := inputs.NormalPolicy
-	switch class {
-	case api.AgentPolicyClassNormal:
-	case api.AgentPolicyClassAdmin:
-		policy = inputs.AdminPolicy
-	default:
-		return "", fmt.Errorf("Team inputs require a normal or admin policy class")
+	if inputs.Policy == "" {
+		return "", fmt.Errorf("Team inputs do not authorize a policy")
 	}
-	if policy == "" {
-		return "", fmt.Errorf("Team inputs do not authorize the selected policy class")
-	}
-	return inputDigest(struct{ Shared, Sandbox, Policy string }{inputs.SharedDigest, box, policy})
+	return inputDigest(struct{ Shared, Sandbox, Policy string }{inputs.SharedDigest, box, inputs.Policy})
 }
 
 func (inputs TeamInputs) Validate() error {
-	if !ValidInputDigest(inputs.SharedDigest) || len(validation.IsDNS1123Subdomain(inputs.NormalPolicy)) != 0 ||
-		(inputs.AdminPolicy != "" && len(validation.IsDNS1123Subdomain(inputs.AdminPolicy)) != 0) ||
+	if !ValidInputDigest(inputs.SharedDigest) || len(validation.IsDNS1123Subdomain(inputs.Policy)) != 0 ||
 		len(inputs.Sandboxes) == 0 || len(inputs.Sandboxes) > 128 {
 		return fmt.Errorf("Team input identity and selection inventory are invalid")
 	}
@@ -74,7 +64,7 @@ func ExecutionTeamInputs(team *api.Team) (TeamInputs, error) {
 		return TeamInputs{}, fmt.Errorf("current persisted Team identity is required")
 	}
 	spec := team.Spec.DeepCopy()
-	spec.NormalAgentPolicyRef, spec.AdminAgentPolicyRef, spec.DefaultSandboxRef = "", "", ""
+	spec.AgentPolicyRef, spec.DefaultSandboxRef = "", ""
 	spec.SandboxRefs = nil
 	spec.Skills = slices.Clone(spec.Skills)
 	slices.Sort(spec.Skills)
@@ -87,21 +77,20 @@ func ExecutionTeamInputs(team *api.Team) (TeamInputs, error) {
 	}
 	boxes := slices.Clone(team.Spec.SandboxRefs)
 	slices.Sort(boxes)
-	return TeamInputs{SharedDigest: shared, NormalPolicy: team.Spec.NormalAgentPolicyRef,
-		AdminPolicy: team.Spec.AdminAgentPolicyRef, Sandboxes: slices.Compact(boxes)}, nil
+	return TeamInputs{SharedDigest: shared, Policy: team.Spec.AgentPolicyRef, Sandboxes: slices.Compact(boxes)}, nil
 }
 
 func SourceKey(source SourceReference) string {
 	return source.APIVersion + "/" + source.Kind + "/" + source.Namespace + "/" + source.Name
 }
 
-func ExecutionSourceDigest(object client.Object, box string, class api.AgentPolicyClass) (string, error) {
+func ExecutionSourceDigest(object client.Object, box string) (string, error) {
 	if team, ok := object.(*api.Team); ok {
 		inputs, err := ExecutionTeamInputs(team)
 		if err != nil {
 			return "", err
 		}
-		return inputs.DigestFor(box, class)
+		return inputs.DigestFor(box)
 	}
 	return ExecutionObjectDigest(object)
 }

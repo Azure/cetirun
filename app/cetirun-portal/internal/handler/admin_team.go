@@ -5,12 +5,15 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"regexp"
 	"strings"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 
 	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-portal/internal/kube"
@@ -26,6 +29,7 @@ type AdminTeamHandler struct {
 // teamNamePattern enforces a DNS-1123 label for the cluster-scoped team
 // name. Mirrors the alias pattern used elsewhere in the portal.
 var teamNamePattern = regexp.MustCompile(`^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$`)
+var teamReferencePattern = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`)
 
 // TeamSkillStorageDTO mirrors cetirunv1alpha1.SkillStorageSpec.
 type TeamSkillStorageDTO struct {
@@ -39,35 +43,50 @@ type TeamSkillStorageDTO struct {
 
 // TeamDTO is the JSON shape for Team admin endpoints.
 type TeamDTO struct {
-	Name            string               `json:"name"`
-	Role            string               `json:"role,omitempty"`
-	Description     []string             `json:"description,omitempty"`
-	DefaultProvider string               `json:"defaultProvider,omitempty"`
-	Skills          []string             `json:"skills,omitempty"`
-	SkillStorage    *TeamSkillStorageDTO `json:"skillStorage,omitempty"`
-	CreatedAt       string               `json:"createdAt,omitempty"`
+	Name              string               `json:"name"`
+	UID               string               `json:"uid"`
+	ResourceVersion   string               `json:"resourceVersion"`
+	Role              string               `json:"role,omitempty"`
+	Description       []string             `json:"description,omitempty"`
+	DefaultProvider   string               `json:"defaultProvider,omitempty"`
+	Skills            []string             `json:"skills,omitempty"`
+	SkillStorage      *TeamSkillStorageDTO `json:"skillStorage,omitempty"`
+	AgentPolicyRef    string               `json:"agentPolicyRef"`
+	SandboxRefs       []string             `json:"sandboxRefs"`
+	DefaultSandboxRef string               `json:"defaultSandboxRef"`
+	CreatedAt         string               `json:"createdAt,omitempty"`
 }
 
 // TeamUpsertRequest is the JSON body for create/update.
 // For create, Name is taken from the URL or body; for update, Name is the
 // URL path parameter and the body's name (if set) must match.
 type TeamUpsertRequest struct {
-	Name            string               `json:"name,omitempty"`
-	Role            string               `json:"role,omitempty"`
-	Description     []string             `json:"description,omitempty"`
-	DefaultProvider string               `json:"defaultProvider,omitempty"`
-	Skills          []string             `json:"skills,omitempty"`
-	SkillStorage    *TeamSkillStorageDTO `json:"skillStorage,omitempty"`
+	Name              string               `json:"name,omitempty"`
+	UID               string               `json:"uid,omitempty"`
+	ResourceVersion   string               `json:"resourceVersion,omitempty"`
+	Role              string               `json:"role,omitempty"`
+	Description       []string             `json:"description,omitempty"`
+	DefaultProvider   string               `json:"defaultProvider,omitempty"`
+	Skills            []string             `json:"skills,omitempty"`
+	SkillStorage      *TeamSkillStorageDTO `json:"skillStorage,omitempty"`
+	AgentPolicyRef    string               `json:"agentPolicyRef"`
+	SandboxRefs       []string             `json:"sandboxRefs"`
+	DefaultSandboxRef string               `json:"defaultSandboxRef"`
 }
 
 func toTeamDTO(t *cetirunv1alpha1.Team) TeamDTO {
 	dto := TeamDTO{
-		Name:            t.Name,
-		Role:            t.Spec.MemberContext.Role,
-		Description:     t.Spec.MemberContext.Description,
-		DefaultProvider: t.Spec.Defaults.Provider,
-		Skills:          t.Spec.Skills,
-		CreatedAt:       t.CreationTimestamp.UTC().Format("2006-01-02T15:04:05Z"),
+		Name:              t.Name,
+		UID:               string(t.UID),
+		ResourceVersion:   t.ResourceVersion,
+		Role:              t.Spec.MemberContext.Role,
+		Description:       t.Spec.MemberContext.Description,
+		DefaultProvider:   t.Spec.Defaults.Provider,
+		Skills:            t.Spec.Skills,
+		AgentPolicyRef:    t.Spec.AgentPolicyRef,
+		SandboxRefs:       append([]string(nil), t.Spec.SandboxRefs...),
+		DefaultSandboxRef: t.Spec.DefaultSandboxRef,
+		CreatedAt:         t.CreationTimestamp.UTC().Format("2006-01-02T15:04:05Z"),
 	}
 	if t.Spec.SkillStorage != nil {
 		dto.SkillStorage = &TeamSkillStorageDTO{
@@ -82,7 +101,18 @@ func toTeamDTO(t *cetirunv1alpha1.Team) TeamDTO {
 	return dto
 }
 
+func teamVersion(req TeamUpsertRequest) (kube.TeamVersion, string) {
+	if req.UID == "" || req.ResourceVersion == "" {
+		return kube.TeamVersion{}, "uid and resourceVersion from the current Team are required"
+	}
+	return kube.TeamVersion{UID: types.UID(req.UID), ResourceVersion: req.ResourceVersion}, ""
+}
+
 func toTeamSpec(req TeamUpsertRequest) cetirunv1alpha1.TeamSpec {
+	sandboxRefs := make([]string, len(req.SandboxRefs))
+	for i, ref := range req.SandboxRefs {
+		sandboxRefs[i] = strings.TrimSpace(ref)
+	}
 	spec := cetirunv1alpha1.TeamSpec{
 		MemberContext: cetirunv1alpha1.TeamContextSpec{
 			Role:        req.Role,
@@ -91,7 +121,10 @@ func toTeamSpec(req TeamUpsertRequest) cetirunv1alpha1.TeamSpec {
 		Defaults: cetirunv1alpha1.TeamDefaultsSpec{
 			Provider: req.DefaultProvider,
 		},
-		Skills: req.Skills,
+		Skills:            req.Skills,
+		AgentPolicyRef:    strings.TrimSpace(req.AgentPolicyRef),
+		SandboxRefs:       sandboxRefs,
+		DefaultSandboxRef: strings.TrimSpace(req.DefaultSandboxRef),
 	}
 	if req.SkillStorage != nil {
 		spec.SkillStorage = &cetirunv1alpha1.SkillStorageSpec{
@@ -121,6 +154,31 @@ func validateSkillStorage(s *TeamSkillStorageDTO) string {
 		return "skillStorage.storageAccount is required"
 	case strings.TrimSpace(s.ContainerName) == "":
 		return "skillStorage.containerName is required"
+	}
+	return ""
+}
+
+func validateTeamBindings(req TeamUpsertRequest) string {
+	if !teamReferencePattern.MatchString(strings.TrimSpace(req.AgentPolicyRef)) {
+		return "agentPolicyRef is required and must be a valid policy name"
+	}
+	if len(req.SandboxRefs) == 0 {
+		return "sandboxRefs must contain at least one Sandbox"
+	}
+	seen := map[string]bool{}
+	for _, ref := range req.SandboxRefs {
+		ref = strings.TrimSpace(ref)
+		if !teamReferencePattern.MatchString(ref) {
+			return "sandboxRefs entries must be valid Sandbox names"
+		}
+		if seen[ref] {
+			return "sandboxRefs must not contain duplicate entries"
+		}
+		seen[ref] = true
+	}
+	defaultRef := strings.TrimSpace(req.DefaultSandboxRef)
+	if !seen[defaultRef] {
+		return "defaultSandboxRef must be one of sandboxRefs"
 	}
 	return ""
 }
@@ -176,6 +234,10 @@ func (h *AdminTeamHandler) CreateTeam(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_skill_storage", msg)
 		return
 	}
+	if msg := validateTeamBindings(req); msg != "" {
+		writeError(w, http.StatusBadRequest, "invalid_team_binding", msg)
+		return
+	}
 	team := &cetirunv1alpha1.Team{
 		ObjectMeta: metav1.ObjectMeta{Name: req.Name},
 		Spec:       toTeamSpec(req),
@@ -200,7 +262,7 @@ func (h *AdminTeamHandler) CreateTeam(w http.ResponseWriter, r *http.Request) {
 }
 
 // UpdateTeam handles PUT /api/v1/admin/teams/{name}. The request body
-// replaces the Portal-editable fields, not Sandbox governance bindings.
+// replaces the Portal-editable fields and the Team's policy/Sandbox bindings.
 func (h *AdminTeamHandler) UpdateTeam(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	if !teamNamePattern.MatchString(name) {
@@ -221,7 +283,16 @@ func (h *AdminTeamHandler) UpdateTeam(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_skill_storage", msg)
 		return
 	}
-	updated, err := h.Kube.UpdateTeamSpec(r.Context(), name, toTeamSpec(req))
+	if msg := validateTeamBindings(req); msg != "" {
+		writeError(w, http.StatusBadRequest, "invalid_team_binding", msg)
+		return
+	}
+	version, msg := teamVersion(req)
+	if msg != "" {
+		writeError(w, http.StatusPreconditionRequired, "version_required", msg)
+		return
+	}
+	updated, err := h.Kube.UpdateTeamSpec(r.Context(), name, toTeamSpec(req), version)
 	if err != nil {
 		if kube.IsNotFound(err) {
 			writeError(w, http.StatusNotFound, "team_not_found", "Team "+name+" not found")
@@ -231,6 +302,10 @@ func (h *AdminTeamHandler) UpdateTeam(w http.ResponseWriter, r *http.Request) {
 			slog.Error("admin: update team forbidden by k8s RBAC", "name", name, "error", err)
 			writeError(w, http.StatusForbidden, "rbac_forbidden",
 				"Portal service account is not allowed to update teams. Check ClusterRole bindings.")
+			return
+		}
+		if errors.Is(err, kube.ErrTeamChanged) || apierrors.IsConflict(err) {
+			writeError(w, http.StatusConflict, "team_changed", kube.ErrTeamChanged.Error())
 			return
 		}
 		slog.Error("admin: update team failed", "name", name, "error", err)
@@ -247,7 +322,16 @@ func (h *AdminTeamHandler) DeleteTeam(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_name", "Invalid team name")
 		return
 	}
-	if err := h.Kube.DeleteTeam(r.Context(), name); err != nil {
+	var versionRequest struct {
+		UID             string `json:"uid"`
+		ResourceVersion string `json:"resourceVersion"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&versionRequest); err != nil || versionRequest.UID == "" || versionRequest.ResourceVersion == "" {
+		writeError(w, http.StatusPreconditionRequired, "version_required", "uid and resourceVersion from the current Team are required")
+		return
+	}
+	version := kube.TeamVersion{UID: types.UID(versionRequest.UID), ResourceVersion: versionRequest.ResourceVersion}
+	if err := h.Kube.DeleteTeam(r.Context(), name, version); err != nil {
 		if kube.IsNotFound(err) {
 			writeError(w, http.StatusNotFound, "team_not_found", "Team "+name+" not found")
 			return
@@ -256,6 +340,10 @@ func (h *AdminTeamHandler) DeleteTeam(w http.ResponseWriter, r *http.Request) {
 			slog.Error("admin: delete team forbidden by k8s RBAC", "name", name, "error", err)
 			writeError(w, http.StatusForbidden, "rbac_forbidden",
 				"Portal service account is not allowed to delete teams. Check ClusterRole bindings.")
+			return
+		}
+		if errors.Is(err, kube.ErrTeamChanged) || apierrors.IsConflict(err) {
+			writeError(w, http.StatusConflict, "team_changed", kube.ErrTeamChanged.Error())
 			return
 		}
 		slog.Error("admin: delete team failed", "name", name, "error", err)

@@ -42,7 +42,7 @@ func testIntent(suffix string) Intent {
 		Preparation:      preparation, IngressMode: api.AgentPolicyIngressAuthenticated,
 		Expected: sandbox.ExecutionIdentity{
 			Binding: sandbox.Binding{AgentUID: agent.UID, TeamUID: "team-uid", SandboxUID: "sandbox-uid",
-				AgentPolicyUID: "policy-uid", PolicyClass: api.AgentPolicyClassNormal},
+				AgentPolicyUID: "policy-uid"},
 			Revision: "compiled-revision", PodUID: types.UID("pod-uid-" + suffix),
 			NodeUID: types.UID("node-uid-" + suffix), EnforcementEpoch: "epoch-" + suffix,
 		},

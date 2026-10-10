@@ -246,8 +246,7 @@ func sandboxSDKAdminPlans(t *testing.T) (*PreparedRelease, *PreparedRelease, *un
 	normalPolicy := fixture.Policy
 	fixture.Policy = fixture.Policy.DeepCopy()
 	fixture.Policy.Name, fixture.Policy.UID = "policy-admin-example", "admin-policy-uid"
-	fixture.Agent.Spec.PolicyClass = api.AgentPolicyClassAdmin
-	fixture.Team.Spec.AdminAgentPolicyRef = fixture.Policy.Name
+	fixture.Team.Spec.AgentPolicyRef = fixture.Policy.Name
 	fixture.Policy.Spec.KubernetesAccess = &api.AgentPolicyAdminKubernetesAccess{
 		ServiceAccountName: "sandbox-example",
 		ClusterRoleBindings: []api.AgentPolicyClusterRoleBinding{

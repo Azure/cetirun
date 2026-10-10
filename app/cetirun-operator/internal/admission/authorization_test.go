@@ -121,7 +121,7 @@ func TestTrustedTeamCreationContextIgnoresLabelsAndHumanRoles(t *testing.T) {
 			req := requestFor(t, admissionv1.Create, f.agent, nil, user.Username)
 			req.UserInfo = user
 			agent := admitAgent(t, f.handler, req)
-			if agent.Spec.Team != f.team.Name || agent.Spec.SandboxRef != f.box.Name || agent.Spec.PolicyClass != api.AgentPolicyClassNormal {
+			if agent.Spec.Team != f.team.Name || agent.Spec.SandboxRef != f.box.Name {
 				t.Fatalf("trusted creation context was not persisted: %#v", agent.Spec)
 			}
 			if agent.Annotations["example.com/portal-role"] != "admin" || f.agent.Spec.Team != f.team.Name || sandboxbinding.Present(f.agent) {
@@ -135,29 +135,9 @@ func TestTrustedTeamCreationContextIgnoresLabelsAndHumanRoles(t *testing.T) {
 	}
 }
 
-func TestAdministratorRetainsExplicitTeamAndAdminPolicySelection(t *testing.T) {
-	f := assignedFixture(t)
-	f.handler.config.TeamAssignments = append(f.handler.config.TeamAssignments, TeamAssignment{Team: "other-team", Users: []string{"administrator"}})
-	policy := f.policy.DeepCopy()
-	policy.Name, policy.UID, policy.ResourceVersion = "admin-policy", "admin-policy-uid", ""
-	if err := f.client.Create(context.Background(), policy); err != nil {
-		t.Fatal(err)
-	}
-	f.team.Spec.AdminAgentPolicyRef = policy.Name
-	if err := f.client.Update(context.Background(), f.team); err != nil {
-		t.Fatal(err)
-	}
-	f.agent.Spec.PolicyClass = api.AgentPolicyClassAdmin
-	agent := admitAgent(t, f.handler, requestFor(t, admissionv1.Create, f.agent, nil, "administrator"))
-	binding, err := sandboxbinding.AuthorizedBinding(agent)
-	if err != nil || binding.PolicyClass != api.AgentPolicyClassAdmin || binding.AgentPolicyUID != policy.UID {
-		t.Fatalf("explicit administration did not select the requested policy slot: %v, %v", binding, err)
-	}
-}
-
 func TestMemberCreationContextCannotBeSelectedOrEscalatedByCaller(t *testing.T) {
 	for _, scenario := range []string{
-		"other Team", "legacy Team escape", "admin class", "unmapped", "anonymous", "conflicting membership", "missing assignment Team",
+		"other Team", "legacy Team escape", "unmapped", "anonymous", "conflicting membership", "missing assignment Team",
 	} {
 		t.Run(scenario, func(t *testing.T) {
 			f := assignedFixture(t)
@@ -168,8 +148,6 @@ func TestMemberCreationContextCannotBeSelectedOrEscalatedByCaller(t *testing.T) 
 				agent.Spec.Team = "other"
 			case "legacy Team escape":
 				agent.Spec.Team, agent.Spec.SandboxRef = "legacy", ""
-			case "admin class":
-				agent.Spec.PolicyClass = api.AgentPolicyClassAdmin
 			case "unmapped":
 				username = "outsider"
 				agent.Labels = map[string]string{"team": f.team.Name, "role": "admin"}
@@ -194,10 +172,10 @@ func TestMemberCreationContextCannotBeSelectedOrEscalatedByCaller(t *testing.T) 
 
 func TestValidationCannotStandInForMissingCreationMutation(t *testing.T) {
 	f := assignedFixture(t)
-	f.agent.Spec.Team, f.agent.Spec.SandboxRef, f.agent.Spec.PolicyClass = "", "", ""
+	f.agent.Spec.Team, f.agent.Spec.SandboxRef = "", ""
 	req := requestFor(t, admissionv1.Create, f.agent, nil, "member")
 	requireResponse(t, f.handler.Validate(context.Background(), req), false, "creation-defaulting")
-	f.agent.Spec.Team, f.agent.Spec.SandboxRef, f.agent.Spec.PolicyClass = f.team.Name, f.box.Name, api.AgentPolicyClassNormal
+	f.agent.Spec.Team, f.agent.Spec.SandboxRef = f.team.Name, f.box.Name
 	req = requestFor(t, admissionv1.Create, f.agent, nil, "member")
 	requireResponse(t, f.handler.Validate(context.Background(), req), false, "current UID authorization")
 }
@@ -230,7 +208,7 @@ func TestCallersCannotTransplantOrRewriteProtectedAuthorization(t *testing.T) {
 					agent.Annotations = map[string]string{key: value}
 					req := requestFor(t, admissionv1.Create, agent, nil, user)
 					requireResponse(t, f.handler.DefaultAgent(context.Background(), req), false, "cannot be supplied")
-					agent.Spec.Team, agent.Spec.SandboxRef, agent.Spec.PolicyClass = "", "", ""
+					agent.Spec.Team, agent.Spec.SandboxRef = "", ""
 					req = requestFor(t, admissionv1.Create, agent, nil, user)
 					requireResponse(t, f.handler.DefaultAgent(context.Background(), req), false, "cannot be supplied")
 				}
@@ -267,8 +245,6 @@ func TestMemberWritesRequireCurrentMembershipAndImmutableBinding(t *testing.T) {
 	for _, edit := range []func(*api.Agent){
 		func(a *api.Agent) { a.Spec.Team = "other" },
 		func(a *api.Agent) { a.Spec.SandboxRef = "other" },
-		func(a *api.Agent) { a.Spec.PolicyClass = api.AgentPolicyClassAdmin },
-		func(a *api.Agent) { a.Spec.PolicyClass = "" },
 		func(a *api.Agent) { requestReauthorization(t, f.handler, a, "member-escalation") },
 	} {
 		updated := old.DeepCopy()
@@ -352,31 +328,6 @@ func TestReplacementBetweenMutationAndValidationIsNotAuthorized(t *testing.T) {
 	requireResponse(t, f.handler.Validate(context.Background(), mutated), false, "current UID authorization")
 }
 
-func TestUnselectedPolicyUIDDoesNotChangeTheAuthorizedNormalBinding(t *testing.T) {
-	f := assignedFixture(t)
-	policy := f.policy.DeepCopy()
-	policy.Name, policy.UID, policy.ResourceVersion = "admin-policy", "old-admin-policy-uid", ""
-	if err := f.client.Create(context.Background(), policy); err != nil {
-		t.Fatal(err)
-	}
-	f.team.Spec.AdminAgentPolicyRef = policy.Name
-	if err := f.client.Update(context.Background(), f.team); err != nil {
-		t.Fatal(err)
-	}
-	old := admitAgent(t, f.handler, requestFor(t, admissionv1.Create, f.agent, nil, "member"))
-	if err := f.client.Delete(context.Background(), policy); err != nil {
-		t.Fatal(err)
-	}
-	policy.UID, policy.ResourceVersion = "new-admin-policy-uid", ""
-	if err := f.client.Create(context.Background(), policy); err != nil {
-		t.Fatal(err)
-	}
-	updated := old.DeepCopy()
-	updated.Spec.Model = "normal-application-update"
-	req := requestFor(t, admissionv1.Update, updated, old, "member")
-	requireResponse(t, f.handler.Validate(context.Background(), req), true, "unchanged")
-}
-
 func TestAdminReauthorizationIsExplicitFreshAndExact(t *testing.T) {
 	f := assignedFixture(t)
 	old := admitAgent(t, f.handler, requestFor(t, admissionv1.Create, f.agent, nil, "member"))
@@ -411,7 +362,7 @@ func TestAdminReauthorizationIsExplicitFreshAndExact(t *testing.T) {
 	}
 	updated = renewed.DeepCopy()
 	requestReauthorization(t, f.handler, updated, "operation-2")
-	updated.Status.Sandbox = &api.SandboxStatus{TeamUID: "previous-team", SandboxUID: "previous-box", PolicyClass: api.AgentPolicyClassNormal, AgentPolicyUID: "previous-policy", AppliedRevision: "previous-revision"}
+	updated.Status.Sandbox = &api.SandboxStatus{TeamUID: "previous-team", SandboxUID: "previous-box", AgentPolicyUID: "previous-policy", AppliedRevision: "previous-revision"}
 	renewed = admitAgent(t, f.handler, requestFor(t, admissionv1.Update, updated, renewed, "administrator"))
 	if renewed.Status.Sandbox == nil || renewed.Status.Sandbox.AppliedRevision != "previous-revision" {
 		t.Fatal("authorization rewrote last-applied status")
@@ -419,7 +370,7 @@ func TestAdminReauthorizationIsExplicitFreshAndExact(t *testing.T) {
 }
 
 func TestAdminRebindingAndLegacyAdoptionNeverImplicitlyDefault(t *testing.T) {
-	for _, selection := range []string{"Team", "Sandbox", "class"} {
+	for _, selection := range []string{"Team", "Sandbox"} {
 		t.Run(selection, func(t *testing.T) {
 			f := assignedFixture(t)
 			old := admitAgent(t, f.handler, requestFor(t, admissionv1.Create, f.agent, nil, "member"))
@@ -447,12 +398,6 @@ func TestAdminRebindingAndLegacyAdoptionNeverImplicitlyDefault(t *testing.T) {
 					t.Fatal(err)
 				}
 				updated.Spec.SandboxRef = box.Name
-			case "class":
-				f.team.Spec.AdminAgentPolicyRef = f.policy.Name
-				if err := f.client.Update(context.Background(), f.team); err != nil {
-					t.Fatal(err)
-				}
-				updated.Spec.PolicyClass = api.AgentPolicyClassAdmin
 			}
 			req := requestFor(t, admissionv1.Update, updated, old, "administrator")
 			requireResponse(t, f.handler.Validate(context.Background(), req), false, "reauthorization")

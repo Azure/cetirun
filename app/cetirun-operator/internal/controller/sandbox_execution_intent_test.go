@@ -161,122 +161,108 @@ func fillPreparedSourceInventory(t *testing.T, f *preparationFixture) w.Expectat
 }
 
 func TestSandboxExecutionReservesOnlySelectedConfiguration(t *testing.T) {
-	for _, class := range []api.AgentPolicyClass{api.AgentPolicyClassNormal, api.AgentPolicyClassAdmin} {
-		t.Run(string(class), func(t *testing.T) {
-			ctx := context.Background()
-			var unselectedPolicy *api.AgentPolicy
-			var unusedSandbox *api.Sandbox
-			f, target := executionIntentFixture(t, "hermes", func(f *preparationFixture) {
-				normal := &api.AgentPolicy{}
-				if err := f.client.Get(ctx, client.ObjectKeyFromObject(f.fixture.Policy), normal); err != nil {
-					t.Fatal(err)
-				}
-				normal.Spec.SandboxSelection.AllowMultiple = true
-				if err := f.client.Update(ctx, normal); err != nil {
-					t.Fatal(err)
-				}
-				admin := normal.DeepCopy()
-				admin.ObjectMeta = metav1.ObjectMeta{Name: "policy-admin"}
-				unusedSandbox = f.fixture.Sandbox.DeepCopy()
-				unusedSandbox.ObjectMeta = metav1.ObjectMeta{Name: "sandbox-unused"}
-				for _, object := range []client.Object{admin, unusedSandbox} {
-					if err := f.client.Create(ctx, object); err != nil {
-						t.Fatal(err)
-					}
-				}
-				team := &api.Team{}
-				if err := f.client.Get(ctx, client.ObjectKeyFromObject(f.fixture.Team), team); err != nil {
-					t.Fatal(err)
-				}
-				team.Spec.AdminAgentPolicyRef = admin.Name
-				team.Spec.SandboxRefs = append(team.Spec.SandboxRefs, unusedSandbox.Name)
-				if err := f.client.Update(ctx, team); err != nil {
-					t.Fatal(err)
-				}
-				agent := f.current(t)
-				agent.Spec.PolicyClass = class
-				agent.Generation++
-				authorization, err := sandboxbinding.Snapshot(agent, team, sandbox.Resources{
-					Sandboxes:     map[string]*api.Sandbox{f.fixture.Sandbox.Name: f.fixture.Sandbox, unusedSandbox.Name: unusedSandbox},
-					AgentPolicies: map[string]*api.AgentPolicy{normal.Name: normal, admin.Name: admin},
-				})
-				if err != nil {
-					t.Fatal(err)
-				}
-				agent.Annotations[sandboxbinding.AuthorizationAnnotation] = authorization
-				if err := f.client.Update(ctx, agent); err != nil {
-					t.Fatal(err)
-				}
-				f.source.inputs.AgentGeneration = agent.Generation
-				unselectedPolicy = admin
-				if class == api.AgentPolicyClassAdmin {
-					unselectedPolicy = normal
-				}
+	t.Run("single-policy", func(t *testing.T) {
+		ctx := context.Background()
+		var unusedSandbox *api.Sandbox
+		f, target := executionIntentFixture(t, "hermes", func(f *preparationFixture) {
+			normal := &api.AgentPolicy{}
+			if err := f.client.Get(ctx, client.ObjectKeyFromObject(f.fixture.Policy), normal); err != nil {
+				t.Fatal(err)
+			}
+			normal.Spec.SandboxSelection.AllowMultiple = true
+			if err := f.client.Update(ctx, normal); err != nil {
+				t.Fatal(err)
+			}
+			unusedSandbox = f.fixture.Sandbox.DeepCopy()
+			unusedSandbox.ObjectMeta = metav1.ObjectMeta{Name: "sandbox-unused"}
+			if err := f.client.Create(ctx, unusedSandbox); err != nil {
+				t.Fatal(err)
+			}
+			team := &api.Team{}
+			if err := f.client.Get(ctx, client.ObjectKeyFromObject(f.fixture.Team), team); err != nil {
+				t.Fatal(err)
+			}
+			team.Spec.SandboxRefs = append(team.Spec.SandboxRefs, unusedSandbox.Name)
+			if err := f.client.Update(ctx, team); err != nil {
+				t.Fatal(err)
+			}
+			agent := f.current(t)
+			agent.Generation++
+			authorization, err := sandboxbinding.Snapshot(agent, team, sandbox.Resources{
+				Sandboxes:     map[string]*api.Sandbox{f.fixture.Sandbox.Name: f.fixture.Sandbox, unusedSandbox.Name: unusedSandbox},
+				AgentPolicies: map[string]*api.AgentPolicy{normal.Name: normal},
 			})
-			expected := f.expectation(t)
-			intent, err := f.reconciler.SandboxExecutionIntent(ctx, f.current(t), target)
 			if err != nil {
 				t.Fatal(err)
 			}
-			state, err := sandboxcoordination.NewState("cetirun-system", "execution-coordination")
-			if err != nil {
+			agent.Annotations[sandboxbinding.AuthorizationAnnotation] = authorization
+			if err := f.client.Update(ctx, agent); err != nil {
 				t.Fatal(err)
 			}
-			if err := f.client.Create(ctx, state); err != nil {
-				t.Fatal(err)
-			}
-			store := sandboxcoordination.Store{Client: f.client, APIReader: f.client, Namespace: state.Namespace,
-				Identity: w.ObjectIdentity{Name: state.Name, UID: state.UID}}
-			ticket, err := store.AcquireExecution(ctx, intent)
-			if err != nil {
-				t.Fatal(err)
-			}
-			ticket, err = store.BeginStart(ctx, ticket)
-			if err != nil {
-				t.Fatal(err)
-			}
-			ticket, err = store.MarkRunning(ctx, ticket)
-			if err != nil {
-				t.Fatal(err)
-			}
-			for _, object := range []client.Object{unselectedPolicy, unusedSandbox} {
-				index := slices.IndexFunc(expected.Sources, func(source w.SourceReference) bool {
-					return source.UID == object.GetUID()
-				})
-				if index < 0 {
-					t.Fatal("preparation did not validate every Team configuration")
-				}
-				before := expected.Sources[index]
-				if slices.Contains(intent.Sources, before) {
-					t.Fatalf("execution reserved unselected %s %s", before.Kind, before.Name)
-				}
-				if _, err := store.AcquireChange(ctx, before, strings.Repeat("b", 64)); err != nil {
-					t.Fatal("unselected configuration change required stopping this execution:", err)
-				}
-			}
-			unselectedPolicy.Spec.Network.BlockedCIDRs = []string{"203.0.113.0/24"}
-			unusedSandbox.Spec.Storage.Scratch.SizeLimit = resource.MustParse("2Gi")
-			for _, object := range []client.Object{unselectedPolicy, unusedSandbox} {
-				if err := f.client.Update(ctx, object); err != nil {
-					t.Fatal(err)
-				}
-			}
-			if err := f.reconciler.CheckSandboxExecutionSources(ctx, intent); err != nil {
-				t.Fatal("valid unselected configuration changes invalidated execution:", err)
-			}
-			for _, source := range intent.Sources {
-				if source.Kind == "AgentPolicy" || source.Kind == "Sandbox" || source.Kind == "Team" {
-					if _, err := store.AcquireChange(ctx, source, strings.Repeat("c", 64)); !errors.Is(err, sandboxcoordination.ErrConflict) {
-						t.Fatal("selected configuration was not reserved:", err)
-					}
-				}
-			}
-			current, err := store.ReadExecution(ctx, intent.Agent.UID)
-			if err != nil || !reflect.DeepEqual(current, ticket) {
-				t.Fatal("unrelated changes modified the running execution ticket:", err)
-			}
+			f.source.inputs.AgentGeneration = agent.Generation
 		})
-	}
+		expected := f.expectation(t)
+		intent, err := f.reconciler.SandboxExecutionIntent(ctx, f.current(t), target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		state, err := sandboxcoordination.NewState("cetirun-system", "execution-coordination")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := f.client.Create(ctx, state); err != nil {
+			t.Fatal(err)
+		}
+		store := sandboxcoordination.Store{Client: f.client, APIReader: f.client, Namespace: state.Namespace,
+			Identity: w.ObjectIdentity{Name: state.Name, UID: state.UID}}
+		ticket, err := store.AcquireExecution(ctx, intent)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ticket, err = store.BeginStart(ctx, ticket)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ticket, err = store.MarkRunning(ctx, ticket)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, object := range []client.Object{unusedSandbox} {
+			index := slices.IndexFunc(expected.Sources, func(source w.SourceReference) bool {
+				return source.UID == object.GetUID()
+			})
+			if index < 0 {
+				t.Fatal("preparation did not validate every Team configuration")
+			}
+			before := expected.Sources[index]
+			if slices.Contains(intent.Sources, before) {
+				t.Fatalf("execution reserved unselected %s %s", before.Kind, before.Name)
+			}
+			if _, err := store.AcquireChange(ctx, before, strings.Repeat("b", 64)); err != nil {
+				t.Fatal("unselected configuration change required stopping this execution:", err)
+			}
+		}
+		unusedSandbox.Spec.Storage.Scratch.SizeLimit = resource.MustParse("2Gi")
+		for _, object := range []client.Object{unusedSandbox} {
+			if err := f.client.Update(ctx, object); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := f.reconciler.CheckSandboxExecutionSources(ctx, intent); err != nil {
+			t.Fatal("valid unselected configuration changes invalidated execution:", err)
+		}
+		for _, source := range intent.Sources {
+			if source.Kind == "AgentPolicy" || source.Kind == "Sandbox" || source.Kind == "Team" {
+				if _, err := store.AcquireChange(ctx, source, strings.Repeat("c", 64)); !errors.Is(err, sandboxcoordination.ErrConflict) {
+					t.Fatal("selected configuration was not reserved:", err)
+				}
+			}
+		}
+		current, err := store.ReadExecution(ctx, intent.Agent.UID)
+		if err != nil || !reflect.DeepEqual(current, ticket) {
+			t.Fatal("unrelated changes modified the running execution ticket:", err)
+		}
+	})
 }
 
 func TestSandboxExecutionIntentRejectsUnpreparedOrMismatchedTarget(t *testing.T) {
@@ -515,7 +501,7 @@ func TestSandboxExecutionTeamMutationPreservesUnaffectedSelection(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, mutation := range []string{"default", "other policy"} {
+	for _, mutation := range []string{"default"} {
 		before := &api.Team{}
 		if err := f.client.Get(ctx, client.ObjectKeyFromObject(f.fixture.Team), before); err != nil {
 			t.Fatal(err)
@@ -523,8 +509,6 @@ func TestSandboxExecutionTeamMutationPreservesUnaffectedSelection(t *testing.T) 
 		after := before.DeepCopy()
 		if mutation == "default" {
 			after.Spec.DefaultSandboxRef = spare.Name
-		} else {
-			after.Spec.AdminAgentPolicyRef = otherPolicy.Name
 		}
 		change, err := store.AcquireTeamChange(ctx, before, after)
 		if err != nil {
@@ -552,9 +536,9 @@ func TestSandboxExecutionTeamMutationPreservesUnaffectedSelection(t *testing.T) 
 		t.Fatal(err)
 	}
 	after := before.DeepCopy()
-	after.Spec.NormalAgentPolicyRef = otherPolicy.Name
+	after.Spec.AgentPolicyRef = otherPolicy.Name
 	if _, err := store.AcquireTeamChange(ctx, before, after); !errors.Is(err, sandboxcoordination.ErrConflict) {
-		t.Fatal("selected normal policy rebind was not excluded:", err)
+		t.Fatal("selected policy rebind was not excluded:", err)
 	}
 }
 

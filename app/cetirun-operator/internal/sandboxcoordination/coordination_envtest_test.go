@@ -87,12 +87,12 @@ func TestCoordinationAPIServer(t *testing.T) {
 	t.Run("committed-Team-mutation-recovers-after-lost-reply", func(t *testing.T) {
 		store := newStore(t, "team-recovery")
 		before := &api.Team{ObjectMeta: metav1.ObjectMeta{Name: "team"},
-			Spec: api.TeamSpec{NormalAgentPolicyRef: "policy", AdminAgentPolicyRef: "admin-policy",
+			Spec: api.TeamSpec{AgentPolicyRef: "policy",
 				SandboxRefs: []string{"sandbox", "spare"}, DefaultSandboxRef: "sandbox"}}
 		if err := storage.Create(ctx, before); err != nil {
 			t.Fatal(err)
 		}
-		acquire(t, store, teamIntent(t, before, "normal", api.AgentPolicyClassNormal))
+		acquire(t, store, teamIntent(t, before, "current"))
 		after := before.DeepCopy()
 		after.Spec.DefaultSandboxRef = "spare"
 		ticket, err := store.AcquireTeamChange(ctx, before, after)

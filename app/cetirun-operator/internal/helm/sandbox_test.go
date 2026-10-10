@@ -381,8 +381,7 @@ func TestSandboxCompilerIdentityProjectionRendering(t *testing.T) {
 				ClusterRoleBindings: []api.AgentPolicyClusterRoleBinding{{ClusterRoleName: "example-cluster-reader"}},
 			}
 			policy.Spec.EntraID.Enabled = true
-			fixture.Team.Spec.AdminAgentPolicyRef = policy.Name
-			fixture.Agent.Spec.PolicyClass = api.AgentPolicyClassAdmin
+			fixture.Team.Spec.AgentPolicyRef = policy.Name
 			resources := sandbox.Resources{
 				Sandboxes:     map[string]*api.Sandbox{fixture.Sandbox.Name: fixture.Sandbox},
 				AgentPolicies: map[string]*api.AgentPolicy{fixture.Policy.Name: fixture.Policy, policy.Name: policy},

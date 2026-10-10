@@ -36,6 +36,48 @@ func sandboxRequested(agent *cetirunv1alpha1.Agent, team *cetirunv1alpha1.Team) 
 	return sandbox.Requested(agent, team) || sandboxbinding.Present(agent)
 }
 
+// ensureSandboxGatewayNamespace creates only the Agent-owned Secret boundary
+// needed by the Gateway when no Sandbox preparation adapter is installed. It
+// never creates a workload, storage, grants, or runtime preparation state.
+func (r *AgentReconciler) ensureSandboxGatewayNamespace(ctx context.Context, agent *cetirunv1alpha1.Agent) error {
+	if agent == nil || agent.UID == "" {
+		return fmt.Errorf("Sandbox Gateway namespace requires a persisted Agent identity")
+	}
+	name := instanceNamespace(agent.Name)
+	current := &corev1.Namespace{}
+	if err := r.Get(ctx, types.NamespacedName{Name: name}, current); err == nil {
+		if !hasAgentOwner(current, agent) {
+			return fmt.Errorf("Sandbox Gateway namespace %q is not owned by Agent %q; recovery is required", name, agent.Name)
+		}
+		return nil
+	} else if !apierrors.IsNotFound(err) {
+		return fmt.Errorf("get Sandbox Gateway namespace %q: %w", name, err)
+	}
+	namespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
+		Name: name,
+		Labels: map[string]string{
+			"app.kubernetes.io/name":       "cetirun",
+			"app.kubernetes.io/instance":   agent.Name,
+			"app.kubernetes.io/managed-by": "cetirun-operator",
+		},
+		OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(agent, cetirunv1alpha1.GroupVersion.WithKind("Agent"))},
+	}}
+	if err := r.Create(ctx, namespace); err != nil {
+		if !apierrors.IsAlreadyExists(err) {
+			return fmt.Errorf("create Sandbox Gateway namespace %q: %w", name, err)
+		}
+		// A create race is not ownership evidence. Read and verify the winner
+		// before any credential projection can continue.
+		if err := r.Get(ctx, types.NamespacedName{Name: name}, current); err != nil {
+			return fmt.Errorf("verify concurrently created Sandbox Gateway namespace %q: %w", name, err)
+		}
+		if !hasAgentOwner(current, agent) {
+			return fmt.Errorf("concurrently created Sandbox Gateway namespace %q is not owned by Agent %q", name, agent.Name)
+		}
+	}
+	return nil
+}
+
 // holdSandbox prevents runtime renderers from ignoring new policy fields.
 // It requests an existing workload to stop but is not a qualified node fence.
 // Once held, clearing spec fields cannot silently return an Agent to legacy mode.

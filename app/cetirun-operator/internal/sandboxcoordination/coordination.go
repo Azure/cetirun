@@ -654,7 +654,6 @@ func validateIntent(intent Intent) error {
 		intent.AgentGeneration < 1 || intent.Expected.Binding.AgentUID != intent.Agent.UID ||
 		intent.Expected.Binding.TeamUID == "" || intent.Expected.Binding.SandboxUID == "" ||
 		intent.Expected.Binding.AgentPolicyUID == "" ||
-		(intent.Expected.Binding.PolicyClass != "normal" && intent.Expected.Binding.PolicyClass != "admin") ||
 		!literal(intent.Expected.Revision, 256) || !literal(string(intent.Expected.PodUID), 128) ||
 		!literal(string(intent.Expected.NodeUID), 128) || !literal(intent.Expected.EnforcementEpoch, 128) ||
 		(intent.IngressMode != api.AgentPolicyIngressAuthenticated && intent.IngressMode != api.AgentPolicyIngressDisabled) {
@@ -803,8 +802,7 @@ func compatibleExecutions(a, b Intent) error {
 			return ErrConflict
 		}
 		if source.APIVersion == api.GroupVersion.String() && source.Kind == "Team" {
-			if a.TeamSharedDigest != b.TeamSharedDigest || (a.Expected.Binding.PolicyClass == b.Expected.Binding.PolicyClass &&
-				a.Expected.Binding.AgentPolicyUID != b.Expected.Binding.AgentPolicyUID) {
+			if a.TeamSharedDigest != b.TeamSharedDigest || a.Expected.Binding.AgentPolicyUID != b.Expected.Binding.AgentPolicyUID {
 				return ErrConflict
 			}
 		} else if w.EffectiveSource(source) {
@@ -856,7 +854,7 @@ func selectedChangeAffects(sources []w.SourceReference, digests map[string]strin
 	}
 	pinned := digests[w.SourceKey(change.Before)]
 	for _, inputs := range []w.TeamInputs{change.Team.Before, change.Team.After} {
-		digest, err := inputs.DigestFor(box, binding.PolicyClass)
+		digest, err := inputs.DigestFor(box)
 		if err != nil || digest != pinned {
 			return true
 		}

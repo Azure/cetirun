@@ -25,6 +25,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/agentpolicy"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxplatform"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxpolicy"
@@ -117,9 +118,7 @@ func (r *TeamReconciler) enqueueTeams(ctx context.Context, matches func(*api.Tea
 }
 
 func (r *TeamReconciler) enqueueTeamsForAgentPolicy(ctx context.Context, object client.Object) []reconcile.Request {
-	return r.enqueueTeams(ctx, func(team *api.Team) bool {
-		return team.Spec.NormalAgentPolicyRef == object.GetName() || team.Spec.AdminAgentPolicyRef == object.GetName()
-	})
+	return r.enqueueTeams(ctx, func(team *api.Team) bool { return team.Spec.AgentPolicyRef == object.GetName() })
 }
 
 func (r *TeamReconciler) enqueueTeamsForSandbox(ctx context.Context, object client.Object) []reconcile.Request {
@@ -180,15 +179,15 @@ func (r *TeamReconciler) validate(ctx context.Context, team *api.Team) error {
 	if reader == nil {
 		reader = r.Client
 	}
-	if team.Spec.NormalAgentPolicyRef == "" || team.Spec.DefaultSandboxRef == "" || len(team.Spec.SandboxRefs) == 0 || !slices.Contains(team.Spec.SandboxRefs, team.Spec.DefaultSandboxRef) {
+	if team.Spec.AgentPolicyRef == "" || team.Spec.DefaultSandboxRef == "" || len(team.Spec.SandboxRefs) == 0 || !slices.Contains(team.Spec.SandboxRefs, team.Spec.DefaultSandboxRef) {
 		return invalidTeamConfiguration("Team policy and Sandbox bindings are incomplete")
 	}
 	policy := &api.AgentPolicy{}
-	if err := reader.Get(ctx, types.NamespacedName{Name: team.Spec.NormalAgentPolicyRef}, policy); err != nil {
+	if err := reader.Get(ctx, types.NamespacedName{Name: team.Spec.AgentPolicyRef}, policy); err != nil {
 		if apierrors.IsNotFound(err) {
-			return invalidTeamConfiguration("normal AgentPolicy %q does not exist", team.Spec.NormalAgentPolicyRef)
+			return invalidTeamConfiguration("AgentPolicy %q does not exist", team.Spec.AgentPolicyRef)
 		}
-		return fmt.Errorf("normal AgentPolicy is unavailable: %w", err)
+		return fmt.Errorf("AgentPolicy is unavailable: %w", err)
 	}
 	for _, name := range team.Spec.SandboxRefs {
 		box := &api.Sandbox{}
@@ -197,15 +196,6 @@ func (r *TeamReconciler) validate(ctx context.Context, team *api.Team) error {
 				return invalidTeamConfiguration("Sandbox %q does not exist", name)
 			}
 			return fmt.Errorf("Sandbox %q is unavailable: %w", name, err)
-		}
-	}
-	if team.Spec.AdminAgentPolicyRef != "" {
-		admin := &api.AgentPolicy{}
-		if err := reader.Get(ctx, types.NamespacedName{Name: team.Spec.AdminAgentPolicyRef}, admin); err != nil {
-			if apierrors.IsNotFound(err) {
-				return invalidTeamConfiguration("admin AgentPolicy %q does not exist", team.Spec.AdminAgentPolicyRef)
-			}
-			return fmt.Errorf("admin AgentPolicy is unavailable: %w", err)
 		}
 	}
 	return nil
@@ -266,6 +256,9 @@ func (r *AgentPolicyReconciler) Reconcile(ctx context.Context, request ctrl.Requ
 	}
 	if observeErr != nil {
 		return ctrl.Result{}, observeErr
+	}
+	if observedAt.IsZero() {
+		return ctrl.Result{}, nil
 	}
 	return ctrl.Result{RequeueAfter: configurationRefresh(r.MaxSnapshotAge, now, observedAt)}, nil
 }
@@ -328,47 +321,17 @@ func assessSandboxPrerequisites(ctx context.Context, reader client.Reader, objec
 	return configurationCondition(metav1.ConditionTrue, "PrerequisitesReady", "Registered runtime, storage and control prerequisites are available; Agent enforcement is checked separately."), snapshot.ObservedAt, nil
 }
 
-func (r *AgentPolicyReconciler) assess(ctx context.Context, reader client.Reader, object *api.AgentPolicy) (metav1.Condition, time.Time, error) {
+func (r *AgentPolicyReconciler) assess(_ context.Context, _ client.Reader, object *api.AgentPolicy) (metav1.Condition, time.Time, error) {
 	if !object.DeletionTimestamp.IsZero() {
 		return configurationCondition(metav1.ConditionFalse, "Terminating", "AgentPolicy configuration is terminating."), time.Time{}, nil
+	}
+	if _, errs := agentpolicy.Normalize(object.Spec); len(errs) != 0 {
+		return configurationCondition(metav1.ConditionFalse, "InvalidConfiguration", "AgentPolicy configuration is invalid."), time.Time{}, nil
 	}
 	if _, errs := sandbox.NormalizeAgentPolicy(object.Spec); len(errs) != 0 {
 		return configurationCondition(metav1.ConditionFalse, "InvalidConfiguration", "AgentPolicy configuration is invalid."), time.Time{}, nil
 	}
-	snapshot, err := configurationSnapshot(ctx, r.Source, r.Now, r.MaxSnapshotAge)
-	if err != nil {
-		return configurationCondition(metav1.ConditionUnknown, "PrerequisitesUnavailable", "Current platform support inventory is unavailable."), time.Time{}, err
-	}
-	keys := make([]api.SandboxType, 0, len(snapshot.Registrations))
-	for key := range snapshot.Registrations {
-		keys = append(keys, key)
-	}
-	slices.Sort(keys)
-	var failures []error
-	for _, key := range keys {
-		platform, exists := snapshot.Platforms[key]
-		if !exists {
-			failures = append(failures, fmt.Errorf("registration %s: %w: platform inventory is missing", key, sandboxpolicy.ErrUnavailable))
-			continue
-		}
-		err := sandboxpolicy.ValidatePolicyConfiguration(object, snapshot.Registrations[key].Capabilities, platform)
-		if err == nil {
-			err = sandboxpolicy.VerifyPolicyGrants(ctx, reader, object, platform.Grants)
-		}
-		if err == nil {
-			return configurationCondition(metav1.ConditionTrue, "PolicyAccepted", "Standalone policy support and requested role approvals match a registered adapter; Sandbox compatibility, home access and per-Agent enforcement are not assessed."), snapshot.ObservedAt, nil
-		}
-		failures = append(failures, fmt.Errorf("registration %s: %w", key, err))
-	}
-	if len(failures) == 0 {
-		failures = append(failures, sandboxpolicy.ErrUnsupportedControl)
-	}
-	unsupported := errors.Join(failures...)
-	condition := configurationErrorCondition(unsupported)
-	if errors.Is(unsupported, sandboxpolicy.ErrUnavailable) {
-		return condition, snapshot.ObservedAt, unsupported
-	}
-	return condition, snapshot.ObservedAt, nil
+	return configurationCondition(metav1.ConditionTrue, "PolicyAccepted", "The policy declaration is valid; Gateway, Sandbox, and identity components report their own enforcement readiness."), time.Time{}, nil
 }
 
 func runtimePrerequisitesSupported(spec api.SandboxSpec, capabilities sandbox.Capabilities) bool {

@@ -56,6 +56,7 @@ func TestSandboxPreparationStartInputs(t *testing.T) {
 	for _, typ := range []string{"openclaw", "hermes"} {
 		t.Run(typ, func(t *testing.T) {
 			f := h.newCase(t, typ)
+			f.reconcileConfiguration(t)
 			restart := func() {
 				f.restart()
 				f.reconciler.ChartRegistry = "registry.example.com"

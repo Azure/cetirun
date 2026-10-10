@@ -42,9 +42,6 @@ func (h *Handler) memberAuthority(request admission.Request, agent *api.Agent) e
 	if assigned == "" || assigned != agent.Spec.Team {
 		return fmt.Errorf("policy-bound Agent writes require an explicitly authorized administrator or an authenticated assigned Team member")
 	}
-	if agent.Spec.PolicyClass != "" && agent.Spec.PolicyClass != api.AgentPolicyClassNormal {
-		return fmt.Errorf("only an explicitly authorized administrator may select a non-normal workload policy class")
-	}
 	return nil
 }
 
@@ -120,7 +117,7 @@ func (h *Handler) reauthorizeAgent(ctx context.Context, request admission.Reques
 		return admission.Denied(err.Error())
 	}
 	if intent.Binding != current {
-		return admission.Denied("explicit reauthorization does not match the current Agent, Team, Sandbox, policy class and AgentPolicy UIDs")
+		return admission.Denied("explicit reauthorization does not match the current Agent, Team, Sandbox and AgentPolicy UIDs")
 	}
 	record, err := sandboxbinding.Snapshot(agent, team, resources)
 	if err != nil {
@@ -182,7 +179,7 @@ func (h *Handler) validateAgentAuthorization(request admission.Request, agent, o
 		return admission.Allowed("explicit administrator reauthorization is valid; Sandbox execution remains held")
 	}
 	if !sameAgentSelection(agent, old) {
-		return admission.Denied("changing a policy-bound Agent's Team, policy class or Sandbox binding requires explicit administrator reauthorization")
+		return admission.Denied("changing a policy-bound Agent's Team or Sandbox binding requires explicit administrator reauthorization")
 	}
 	if _, err := sandboxbinding.AuthorizedBinding(agent); err != nil {
 		return admission.Denied(fmt.Sprintf("explicit administrator reauthorization is required: %v", err))
@@ -215,7 +212,7 @@ func sameAnnotation(a, b *api.Agent, key string) bool {
 }
 
 func sameAgentSelection(a, b *api.Agent) bool {
-	return a.Spec.Team == b.Spec.Team && a.Spec.SandboxRef == b.Spec.SandboxRef && a.Spec.PolicyClass == b.Spec.PolicyClass
+	return a.Spec.Team == b.Spec.Team && a.Spec.SandboxRef == b.Spec.SandboxRef
 }
 
 func selectionPatches(old, desired *api.Agent) []jsonpatch.JsonPatchOperation {
@@ -227,7 +224,6 @@ func selectionPatches(old, desired *api.Agent) []jsonpatch.JsonPatchOperation {
 	}{
 		{"/spec/team", old.Spec.Team, desired.Spec.Team},
 		{"/spec/sandboxRef", old.Spec.SandboxRef, desired.Spec.SandboxRef},
-		{"/spec/policyClass", old.Spec.PolicyClass, desired.Spec.PolicyClass},
 	} {
 		if field.old != field.new {
 			patches = append(patches, jsonpatch.JsonPatchOperation{Operation: "add", Path: field.path, Value: field.new})

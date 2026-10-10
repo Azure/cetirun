@@ -156,7 +156,7 @@ func (c *sandboxMetricsTestCache) List(ctx context.Context, out client.ObjectLis
 	return err
 }
 
-func sandboxMetricsFixture(t *testing.T, name string, runtime api.SandboxType, class api.AgentPolicyClass) (*api.Agent, *api.Team, *api.Sandbox) {
+func sandboxMetricsFixture(t *testing.T, name string, runtime api.SandboxType) (*api.Agent, *api.Team, *api.Sandbox) {
 	t.Helper()
 	box := &api.Sandbox{
 		ObjectMeta: metav1.ObjectMeta{Name: name + "-sandbox", UID: types.UID(name + "-sandbox-uid")},
@@ -169,7 +169,7 @@ func sandboxMetricsFixture(t *testing.T, name string, runtime api.SandboxType, c
 		ObjectMeta: metav1.ObjectMeta{Name: name + "-team", UID: types.UID(name + "-team-uid")},
 		Spec: api.TeamSpec{
 			SandboxRefs: []string{box.Name}, DefaultSandboxRef: box.Name,
-			NormalAgentPolicyRef: policy.Name, AdminAgentPolicyRef: policy.Name,
+			AgentPolicyRef: policy.Name,
 		},
 	}
 	agent := &api.Agent{
@@ -177,7 +177,7 @@ func sandboxMetricsFixture(t *testing.T, name string, runtime api.SandboxType, c
 			Name: name, UID: types.UID(name + "-uid"), Generation: 5,
 			Labels: map[string]string{"example.com/identity": name},
 		},
-		Spec: api.AgentSpec{Team: team.Name, SandboxRef: box.Name, PolicyClass: class},
+		Spec: api.AgentSpec{Team: team.Name, SandboxRef: box.Name},
 		Status: api.AgentStatus{
 			ObservedGeneration: 2,
 			AccessURL:          "https://" + name + ".example.com/",
@@ -217,7 +217,6 @@ func readSandboxMetrics(registry *prometheus.Registry) (map[string]float64, floa
 	}
 	bounds := map[string][]string{
 		"runtime": {"kata", "gvisor", "unknown"},
-		"class":   {"normal", "admin", "unknown"},
 		"status":  {"True", "False", "Unknown"},
 		"reason": {
 			"PolicyApplied", "ObservationUnavailable", "EnforcementPending", "EnforcementLost",
@@ -254,7 +253,7 @@ func readSandboxMetrics(registry *prometheus.Registry) (map[string]float64, floa
 				return nil, 0, fmt.Errorf("unexpected fleet metric shape: %v", family)
 			}
 			for _, metric := range family.Metric {
-				if len(metric.Label) != 4 {
+				if len(metric.Label) != 3 {
 					return nil, 0, fmt.Errorf("unexpected label count: %v", metric)
 				}
 				labels := make(map[string]string)
@@ -265,7 +264,7 @@ func readSandboxMetrics(registry *prometheus.Registry) (map[string]float64, floa
 					}
 					labels[name] = value
 				}
-				key := strings.Join([]string{labels["runtime"], labels["class"], labels["status"], labels["reason"]}, "/")
+				key := strings.Join([]string{labels["runtime"], labels["status"], labels["reason"]}, "/")
 				value := metric.Gauge.GetValue()
 				if _, exists := counts[key]; exists || value <= 0 || math.Trunc(value) != value {
 					return nil, 0, fmt.Errorf("duplicate or non-count fleet sample: %v", metric)
@@ -313,17 +312,16 @@ func TestSandboxMetricsExposition(t *testing.T) {
 	for _, item := range []struct {
 		name    string
 		runtime api.SandboxType
-		class   api.AgentPolicyClass
 		status  metav1.ConditionStatus
 		reason  string
 	}{
-		{"example-one", api.SandboxKata, api.AgentPolicyClassNormal, metav1.ConditionTrue, "PolicyApplied"},
-		{"example-two", api.SandboxKata, api.AgentPolicyClassNormal, metav1.ConditionTrue, "PolicyApplied"},
-		{"example-three", api.SandboxKata, api.AgentPolicyClassAdmin, metav1.ConditionFalse, "EnforcementPending"},
-		{"example-four", api.SandboxGVisor, api.AgentPolicyClassNormal, metav1.ConditionUnknown, "ObservationUnavailable"},
-		{"example-five", api.SandboxGVisor, api.AgentPolicyClassAdmin, metav1.ConditionFalse, "SandboxPrepared"},
+		{"example-one", api.SandboxKata, metav1.ConditionTrue, "PolicyApplied"},
+		{"example-two", api.SandboxKata, metav1.ConditionTrue, "PolicyApplied"},
+		{"example-three", api.SandboxKata, metav1.ConditionFalse, "EnforcementPending"},
+		{"example-four", api.SandboxGVisor, metav1.ConditionUnknown, "ObservationUnavailable"},
+		{"example-five", api.SandboxGVisor, metav1.ConditionFalse, "SandboxPrepared"},
 	} {
-		agent, team, box := sandboxMetricsFixture(t, item.name, item.runtime, item.class)
+		agent, team, box := sandboxMetricsFixture(t, item.name, item.runtime)
 		agent.Status.Conditions[0].Status, agent.Status.Conditions[0].Reason = item.status, item.reason
 		objects = append(objects, agent, team, box)
 	}
@@ -331,17 +329,17 @@ func TestSandboxMetricsExposition(t *testing.T) {
 	before := source.objects()
 	registry := sandboxMetricsRegistry(t, source)
 	assertSandboxMetrics(t, registry, map[string]float64{
-		"kata/normal/True/PolicyApplied":               2,
-		"kata/admin/False/EnforcementPending":          1,
-		"gvisor/normal/Unknown/ObservationUnavailable": 1,
-		"gvisor/admin/False/SandboxPrepared":           1,
+		"kata/True/PolicyApplied":               2,
+		"kata/False/EnforcementPending":         1,
+		"gvisor/Unknown/ObservationUnavailable": 1,
+		"gvisor/False/SandboxPrepared":          1,
 	}, 1)
 	want := `# HELP cetirun_sandbox_agents ` + sandboxMetricsAgentsHelp + `
 # TYPE cetirun_sandbox_agents gauge
-cetirun_sandbox_agents{class="admin",reason="EnforcementPending",runtime="kata",status="False"} 1
-cetirun_sandbox_agents{class="admin",reason="SandboxPrepared",runtime="gvisor",status="False"} 1
-cetirun_sandbox_agents{class="normal",reason="ObservationUnavailable",runtime="gvisor",status="Unknown"} 1
-cetirun_sandbox_agents{class="normal",reason="PolicyApplied",runtime="kata",status="True"} 2
+cetirun_sandbox_agents{reason="EnforcementPending",runtime="kata",status="False"} 1
+cetirun_sandbox_agents{reason="ObservationUnavailable",runtime="gvisor",status="Unknown"} 1
+cetirun_sandbox_agents{reason="PolicyApplied",runtime="kata",status="True"} 2
+cetirun_sandbox_agents{reason="SandboxPrepared",runtime="gvisor",status="False"} 1
 # HELP cetirun_sandbox_metrics_collection_success ` + sandboxMetricsHealthHelp + `
 # TYPE cetirun_sandbox_metrics_collection_success gauge
 cetirun_sandbox_metrics_collection_success 1
@@ -363,54 +361,46 @@ func TestSandboxMetricsPopulation(t *testing.T) {
 		mutate func(*api.Agent, *api.Team)
 		want   string
 	}{
-		{"legacy normal", func(*api.Agent, *api.Team) {}, ""},
-		{"legacy unspecified class", func(a *api.Agent, _ *api.Team) { a.Spec.PolicyClass = "" }, ""},
+		{"legacy", func(*api.Agent, *api.Team) {}, ""},
 		{"legacy suspended", func(a *api.Agent, _ *api.Team) { a.Spec.Suspended = true }, ""},
 		{"legacy deleting", func(a *api.Agent, _ *api.Team) { a.DeletionTimestamp = &metav1.Time{Time: time.Now()} }, ""},
 		{"missing Team", func(a *api.Agent, _ *api.Team) { a.Spec.Team = "example-absent" }, ""},
-		{"Team normal policy intent", func(_ *api.Agent, team *api.Team) { team.Spec.NormalAgentPolicyRef = "example-policy" }, "unknown/normal/Unknown/ConditionMissing"},
-		{"Team admin policy intent", func(_ *api.Agent, team *api.Team) { team.Spec.AdminAgentPolicyRef = "example-policy" }, "unknown/normal/Unknown/ConditionMissing"},
-		{"Team Sandbox list intent", func(_ *api.Agent, team *api.Team) { team.Spec.SandboxRefs = []string{"example-sandbox"} }, "unknown/normal/Unknown/ConditionMissing"},
-		{"Team default is not authorization", func(_ *api.Agent, team *api.Team) { team.Spec.DefaultSandboxRef = "example-sandbox" }, "unknown/normal/Unknown/ConditionMissing"},
-		{"Team without declared Agent class", func(a *api.Agent, team *api.Team) {
-			a.Spec.PolicyClass = ""
-			team.Spec.DefaultSandboxRef = "example-sandbox"
-		}, "unknown/unknown/Unknown/ConditionMissing"},
+		{"Team policy intent", func(_ *api.Agent, team *api.Team) { team.Spec.AgentPolicyRef = "example-policy" }, "unknown/Unknown/ConditionMissing"},
+		{"Team Sandbox list intent", func(_ *api.Agent, team *api.Team) { team.Spec.SandboxRefs = []string{"example-sandbox"} }, "unknown/Unknown/ConditionMissing"},
+		{"Team default is not authorization", func(_ *api.Agent, team *api.Team) { team.Spec.DefaultSandboxRef = "example-sandbox" }, "unknown/Unknown/ConditionMissing"},
 		{"unrelated governed Team", func(a *api.Agent, team *api.Team) {
 			a.Spec.Team = "example-other-team"
 			team.Spec.DefaultSandboxRef = "example-sandbox"
 		}, ""},
-		{"explicit Sandbox", func(a *api.Agent, _ *api.Team) { a.Spec.SandboxRef = "example-sandbox" }, "unknown/normal/Unknown/ConditionMissing"},
-		{"admin intent", func(a *api.Agent, _ *api.Team) { a.Spec.PolicyClass = api.AgentPolicyClassAdmin }, "unknown/admin/Unknown/ConditionMissing"},
-		{"opaque class intent", func(a *api.Agent, _ *api.Team) { a.Spec.PolicyClass = "OpaqueClass" }, "unknown/unknown/Unknown/ConditionMissing"},
+		{"explicit Sandbox", func(a *api.Agent, _ *api.Team) { a.Spec.SandboxRef = "example-sandbox" }, "unknown/Unknown/ConditionMissing"},
 		{"hold after cleared fields", func(a *api.Agent, _ *api.Team) {
 			a.Spec = api.AgentSpec{}
 			a.Finalizers = []string{sandbox.HoldFinalizer}
-		}, "unknown/unknown/Unknown/ConditionMissing"},
+		}, "unknown/Unknown/ConditionMissing"},
 		{"preparation after cleared fields", func(a *api.Agent, _ *api.Team) {
 			a.Spec = api.AgentSpec{}
 			a.Finalizers = []string{sandbox.PreparationFinalizer}
-		}, "unknown/unknown/Unknown/ConditionMissing"},
+		}, "unknown/Unknown/ConditionMissing"},
 		{"history after cleared fields", func(a *api.Agent, _ *api.Team) {
 			a.Spec = api.AgentSpec{}
 			a.Status.Sandbox = &api.SandboxStatus{
-				SandboxUID: "example-sandbox-uid", PolicyClass: api.AgentPolicyClassAdmin, AppliedRevision: "example-applied",
+				SandboxUID: "example-sandbox-uid", AppliedRevision: "example-applied",
 			}
-		}, "unknown/unknown/Unknown/ConditionMissing"},
+		}, "unknown/Unknown/ConditionMissing"},
 		{"condition after cleared fields", func(a *api.Agent, _ *api.Team) {
 			a.Spec = api.AgentSpec{}
 			a.Status.Conditions[0].Type = api.ConditionSandboxReady
 			a.Status.Conditions[0].ObservedGeneration--
-		}, "unknown/unknown/Unknown/ConditionStale"},
+		}, "unknown/Unknown/ConditionStale"},
 		{"empty retained authorization", func(a *api.Agent, _ *api.Team) {
 			a.Annotations = map[string]string{sandboxbinding.AuthorizationAnnotation: ""}
-		}, "unknown/normal/Unknown/ConditionMissing"},
+		}, "unknown/Unknown/ConditionMissing"},
 		{"retained reauthorization request", func(a *api.Agent, _ *api.Team) {
 			a.Annotations = map[string]string{sandboxbinding.ReauthorizeAnnotation: "opaque-request"}
-		}, "unknown/normal/Unknown/ConditionMissing"},
+		}, "unknown/Unknown/ConditionMissing"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			agent, team, box := sandboxMetricsFixture(t, "example", api.SandboxKata, api.AgentPolicyClassNormal)
+			agent, team, box := sandboxMetricsFixture(t, "example", api.SandboxKata)
 			agent.Spec.SandboxRef, agent.Annotations = "", nil
 			agent.Status.Conditions[0].Type = api.ConditionReady
 			team.Spec = api.TeamSpec{}
@@ -470,16 +460,16 @@ func TestSandboxMetricsReportedStatus(t *testing.T) {
 		{"phase does not imply suspension", func(a *api.Agent) { a.Status.Phase = api.PhaseSuspended }, "True/PolicyApplied"},
 		{"phase does not imply deletion", func(a *api.Agent) { a.Status.Phase = api.PhaseDeleting }, "True/PolicyApplied"},
 		{"applied history is not readiness", func(a *api.Agent) {
-			a.Status.Sandbox = &api.SandboxStatus{PolicyClass: api.AgentPolicyClassNormal, AppliedRevision: "example-applied"}
+			a.Status.Sandbox = &api.SandboxStatus{AppliedRevision: "example-applied"}
 			a.Status.Conditions[0].Status, a.Status.Conditions[0].Reason = metav1.ConditionFalse, "EnforcementLost"
 		}, "False/EnforcementLost"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			agent, team, box := sandboxMetricsFixture(t, "example", api.SandboxKata, api.AgentPolicyClassNormal)
+			agent, team, box := sandboxMetricsFixture(t, "example", api.SandboxKata)
 			tc.mutate(agent)
 			source := newSandboxMetricsTestCache(t, agent, team, box)
 			before := source.objects()
-			assertSandboxMetrics(t, sandboxMetricsRegistry(t, source), map[string]float64{"kata/normal/" + tc.want: 1}, 1)
+			assertSandboxMetrics(t, sandboxMetricsRegistry(t, source), map[string]float64{"kata/" + tc.want: 1}, 1)
 			if !reflect.DeepEqual(before, source.objects()) {
 				t.Fatal("reported-status classification modified cached objects")
 			}
@@ -509,10 +499,10 @@ func TestSandboxMetricsReasonAllowlist(t *testing.T) {
 		{"InstanceDeleting", metav1.ConditionFalse},
 	} {
 		t.Run(tc.reason, func(t *testing.T) {
-			agent, team, box := sandboxMetricsFixture(t, "example", api.SandboxKata, api.AgentPolicyClassNormal)
+			agent, team, box := sandboxMetricsFixture(t, "example", api.SandboxKata)
 			agent.Status.Conditions[0].Status, agent.Status.Conditions[0].Reason = tc.status, tc.reason
 			registry := sandboxMetricsRegistry(t, newSandboxMetricsTestCache(t, agent, team, box))
-			assertSandboxMetrics(t, registry, map[string]float64{"kata/normal/" + string(tc.status) + "/" + tc.reason: 1}, 1)
+			assertSandboxMetrics(t, registry, map[string]float64{"kata/" + string(tc.status) + "/" + tc.reason: 1}, 1)
 		})
 	}
 }
@@ -521,7 +511,7 @@ func TestSandboxMetricsLifecyclePrecedence(t *testing.T) {
 	for _, lifecycle := range []string{"suspended", "deleting", "both"} {
 		for _, condition := range []string{"stale success", "stale failure", "missing", "malformed", "current success"} {
 			t.Run(lifecycle+"/"+condition, func(t *testing.T) {
-				agent, team, box := sandboxMetricsFixture(t, "example", api.SandboxKata, api.AgentPolicyClassNormal)
+				agent, team, box := sandboxMetricsFixture(t, "example", api.SandboxKata)
 				switch condition {
 				case "stale success":
 					agent.Status.Conditions[0].ObservedGeneration--
@@ -534,10 +524,10 @@ func TestSandboxMetricsLifecyclePrecedence(t *testing.T) {
 					agent.Status.Conditions[0].Status = "opaque-status"
 				}
 				agent.Spec.Suspended = lifecycle != "deleting"
-				want := "kata/normal/False/Suspended"
+				want := "kata/False/Suspended"
 				if lifecycle != "suspended" {
 					agent.DeletionTimestamp = &metav1.Time{Time: time.Now()}
-					want = "unknown/normal/False/Deleting"
+					want = "unknown/False/Deleting"
 				}
 				source := newSandboxMetricsTestCache(t, agent, team, box)
 				before := source.objects()
@@ -556,49 +546,46 @@ func TestSandboxMetricsRuntimeBinding(t *testing.T) {
 		mutate func(*api.Agent, *api.Sandbox)
 		want   string
 	}{
-		{"current kata", func(*api.Agent, *api.Sandbox) {}, "kata/normal"},
-		{"current gvisor", func(_ *api.Agent, box *api.Sandbox) { box.Spec.Type = api.SandboxGVisor }, "gvisor/normal"},
+		{"current kata", func(*api.Agent, *api.Sandbox) {}, "kata"},
+		{"current gvisor", func(_ *api.Agent, box *api.Sandbox) { box.Spec.Type = api.SandboxGVisor }, "gvisor"},
 		{"declared runtime is not qualification", func(_ *api.Agent, box *api.Sandbox) {
 			box.Status.Conditions = []metav1.Condition{{
 				Type: api.ConditionReady, Status: metav1.ConditionFalse, Reason: "RuntimeUnavailable",
 			}}
-		}, "kata/normal"},
-		{"absent declaration has no default", func(_ *api.Agent, box *api.Sandbox) { box.Spec.Type = "" }, "unknown/normal"},
-		{"opaque declaration", func(_ *api.Agent, box *api.Sandbox) { box.Spec.Type = "OpaqueRuntime" }, "unknown/normal"},
-		{"noncanonical declaration", func(_ *api.Agent, box *api.Sandbox) { box.Spec.Type = "KATA" }, "unknown/normal"},
-		{"missing Sandbox", func(_ *api.Agent, box *api.Sandbox) { box.Name = "example-other-sandbox" }, "unknown/normal"},
-		{"missing Sandbox UID", func(_ *api.Agent, box *api.Sandbox) { box.UID = "" }, "unknown/normal"},
-		{"same-name replacement", func(_ *api.Agent, box *api.Sandbox) { box.UID = "replacement-sandbox-uid" }, "unknown/normal"},
+		}, "kata"},
+		{"absent declaration has no default", func(_ *api.Agent, box *api.Sandbox) { box.Spec.Type = "" }, "unknown"},
+		{"opaque declaration", func(_ *api.Agent, box *api.Sandbox) { box.Spec.Type = "OpaqueRuntime" }, "unknown"},
+		{"noncanonical declaration", func(_ *api.Agent, box *api.Sandbox) { box.Spec.Type = "KATA" }, "unknown"},
+		{"missing Sandbox", func(_ *api.Agent, box *api.Sandbox) { box.Name = "example-other-sandbox" }, "unknown"},
+		{"missing Sandbox UID", func(_ *api.Agent, box *api.Sandbox) { box.UID = "" }, "unknown"},
+		{"same-name replacement", func(_ *api.Agent, box *api.Sandbox) { box.UID = "replacement-sandbox-uid" }, "unknown"},
 		{"history cannot authorize replacement", func(a *api.Agent, box *api.Sandbox) {
 			box.UID = "replacement-sandbox-uid"
 			a.Status.Sandbox = &api.SandboxStatus{SandboxUID: box.UID, AppliedRevision: "example-history"}
-		}, "unknown/normal"},
-		{"terminating Sandbox", func(_ *api.Agent, box *api.Sandbox) { box.DeletionTimestamp = &metav1.Time{Time: time.Now()} }, "unknown/normal"},
-		{"namespaced Sandbox", func(_ *api.Agent, box *api.Sandbox) { box.Namespace = "example-namespace" }, "unknown/normal"},
-		{"missing authorization", func(a *api.Agent, _ *api.Sandbox) { a.Annotations = nil }, "unknown/normal"},
-		{"empty authorization", func(a *api.Agent, _ *api.Sandbox) { a.Annotations[sandboxbinding.AuthorizationAnnotation] = "" }, "unknown/normal"},
+		}, "unknown"},
+		{"terminating Sandbox", func(_ *api.Agent, box *api.Sandbox) { box.DeletionTimestamp = &metav1.Time{Time: time.Now()} }, "unknown"},
+		{"namespaced Sandbox", func(_ *api.Agent, box *api.Sandbox) { box.Namespace = "example-namespace" }, "unknown"},
+		{"missing authorization", func(a *api.Agent, _ *api.Sandbox) { a.Annotations = nil }, "unknown"},
+		{"empty authorization", func(a *api.Agent, _ *api.Sandbox) { a.Annotations[sandboxbinding.AuthorizationAnnotation] = "" }, "unknown"},
 		{"malformed authorization", func(a *api.Agent, _ *api.Sandbox) {
 			a.Annotations[sandboxbinding.AuthorizationAnnotation] = "opaque-record"
-		}, "unknown/normal"},
+		}, "unknown"},
 		{"noncanonical authorization", func(a *api.Agent, _ *api.Sandbox) {
 			a.Annotations[sandboxbinding.AuthorizationAnnotation] = " " + a.Annotations[sandboxbinding.AuthorizationAnnotation]
-		}, "unknown/normal"},
+		}, "unknown"},
 		{"reauthorization is not authorization", func(a *api.Agent, _ *api.Sandbox) {
 			a.Annotations = map[string]string{sandboxbinding.ReauthorizeAnnotation: "opaque-request"}
-		}, "unknown/normal"},
-		{"changed Team selection", func(a *api.Agent, _ *api.Sandbox) { a.Spec.Team = "example-other-team" }, "unknown/normal"},
-		{"changed class selection", func(a *api.Agent, _ *api.Sandbox) { a.Spec.PolicyClass = api.AgentPolicyClassAdmin }, "unknown/admin"},
+		}, "unknown"},
+		{"changed Team selection", func(a *api.Agent, _ *api.Sandbox) { a.Spec.Team = "example-other-team" }, "unknown"},
 		{"changed Sandbox selection", func(a *api.Agent, box *api.Sandbox) {
 			a.Spec.SandboxRef, box.Name = "example-other-sandbox", "example-other-sandbox"
-		}, "unknown/normal"},
-		{"cleared Sandbox selection", func(a *api.Agent, _ *api.Sandbox) { a.Spec.SandboxRef = "" }, "unknown/normal"},
-		{"missing class", func(a *api.Agent, _ *api.Sandbox) { a.Spec.PolicyClass = "" }, "unknown/unknown"},
-		{"opaque class", func(a *api.Agent, _ *api.Sandbox) { a.Spec.PolicyClass = "OpaqueClass" }, "unknown/unknown"},
-		{"missing Agent UID", func(a *api.Agent, _ *api.Sandbox) { a.UID = "" }, "unknown/normal"},
-		{"namespaced Agent", func(a *api.Agent, _ *api.Sandbox) { a.Namespace = "example-namespace" }, "unknown/normal"},
+		}, "unknown"},
+		{"cleared Sandbox selection", func(a *api.Agent, _ *api.Sandbox) { a.Spec.SandboxRef = "" }, "unknown"},
+		{"missing Agent UID", func(a *api.Agent, _ *api.Sandbox) { a.UID = "" }, "unknown"},
+		{"namespaced Agent", func(a *api.Agent, _ *api.Sandbox) { a.Namespace = "example-namespace" }, "unknown"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			agent, team, box := sandboxMetricsFixture(t, "example", api.SandboxKata, api.AgentPolicyClassNormal)
+			agent, team, box := sandboxMetricsFixture(t, "example", api.SandboxKata)
 			tc.mutate(agent, box)
 			source := newSandboxMetricsTestCache(t, agent, team, box)
 			before := source.objects()
@@ -615,17 +602,16 @@ func TestSandboxMetricsBoundedLabels(t *testing.T) {
 	var forbidden []string
 	for i := range 240 {
 		name := fmt.Sprintf("opaque-example-%03d", i)
-		runtime, class := api.SandboxKata, api.AgentPolicyClassNormal
+		runtime := api.SandboxKata
 		if i%4 == 1 {
-			runtime, class = api.SandboxGVisor, api.AgentPolicyClassAdmin
+			runtime = api.SandboxGVisor
 		}
-		agent, team, box := sandboxMetricsFixture(t, name, runtime, class)
+		agent, team, box := sandboxMetricsFixture(t, name, runtime)
 		condition := &agent.Status.Conditions[0]
 		condition.Reason = fmt.Sprintf("OpaqueReason%d", i)
 		condition.Message = "Synthetic error for " + name + " at https://" + name + ".example.com/"
 		agent.Status.Sandbox = &api.SandboxStatus{
-			TeamUID: team.UID, SandboxUID: box.UID, PolicyClass: class,
-			AgentPolicyUID: types.UID(name + "-policy-uid"), AppliedRevision: name + "-revision",
+			TeamUID: team.UID, SandboxUID: box.UID, AgentPolicyUID: types.UID(name + "-policy-uid"), AppliedRevision: name + "-revision",
 		}
 		switch i % 4 {
 		case 1:
@@ -635,17 +621,16 @@ func TestSandboxMetricsBoundedLabels(t *testing.T) {
 			condition.Status = metav1.ConditionUnknown
 		case 3:
 			agent.Namespace = name + "-namespace"
-			agent.Spec.PolicyClass = api.AgentPolicyClass("OpaqueClass" + name)
 			condition.Status = metav1.ConditionStatus("OpaqueStatus" + name)
 		}
 		forbidden = append(forbidden, name, team.Name, box.Name, string(agent.UID), string(team.UID), string(box.UID),
-			team.Spec.NormalAgentPolicyRef, string(agent.Status.Sandbox.AgentPolicyUID), agent.Status.Sandbox.AppliedRevision,
+			team.Spec.AgentPolicyRef, string(agent.Status.Sandbox.AgentPolicyUID), agent.Status.Sandbox.AppliedRevision,
 			condition.Reason, condition.Message, agent.Annotations[sandboxbinding.AuthorizationAnnotation], agent.Status.AccessURL)
 		if i%4 == 2 {
 			forbidden = append(forbidden, string(box.Spec.Type))
 		}
 		if i%4 == 3 {
-			forbidden = append(forbidden, agent.Namespace, string(agent.Spec.PolicyClass), string(condition.Status))
+			forbidden = append(forbidden, agent.Namespace, string(condition.Status))
 		}
 		objects = append(objects, agent, team, box)
 	}
@@ -653,10 +638,10 @@ func TestSandboxMetricsBoundedLabels(t *testing.T) {
 	before := source.objects()
 	registry := sandboxMetricsRegistry(t, source)
 	want := map[string]float64{
-		"kata/normal/True/Other":                     60,
-		"gvisor/admin/False/Other":                   60,
-		"unknown/normal/Unknown/Other":               60,
-		"unknown/unknown/Unknown/ConditionMalformed": 60,
+		"kata/True/Other":                    60,
+		"gvisor/False/Other":                 60,
+		"unknown/Unknown/Other":              60,
+		"unknown/Unknown/ConditionMalformed": 60,
 	}
 	for range 3 {
 		assertSandboxMetrics(t, registry, want, 1)
@@ -673,20 +658,20 @@ func TestSandboxMetricsBoundedLabels(t *testing.T) {
 }
 
 func TestSandboxMetricsUpdatesAndDeletes(t *testing.T) {
-	first, team, box := sandboxMetricsFixture(t, "example", api.SandboxKata, api.AgentPolicyClassNormal)
+	first, team, box := sandboxMetricsFixture(t, "example", api.SandboxKata)
 	second := first.DeepCopy()
 	second.Name, second.UID = "example-second", "example-second-uid"
 	source := newSandboxMetricsTestCache(t, first, second, team, box)
 	registry := sandboxMetricsRegistry(t, source)
 	for range 3 {
-		assertSandboxMetrics(t, registry, map[string]float64{"kata/normal/True/PolicyApplied": 2}, 1)
+		assertSandboxMetrics(t, registry, map[string]float64{"kata/True/PolicyApplied": 2}, 1)
 	}
 	first.Generation++
 	first.Status.Conditions[0].ObservedGeneration = first.Generation
 	first.Status.Conditions[0].Status, first.Status.Conditions[0].Reason = metav1.ConditionFalse, "RuntimeUnavailable"
 	source.replace(t, first, team, box)
 	for range 3 {
-		assertSandboxMetrics(t, registry, map[string]float64{"kata/normal/False/RuntimeUnavailable": 1}, 1)
+		assertSandboxMetrics(t, registry, map[string]float64{"kata/False/RuntimeUnavailable": 1}, 1)
 	}
 	source.replace(t)
 	for range 3 {
@@ -694,13 +679,13 @@ func TestSandboxMetricsUpdatesAndDeletes(t *testing.T) {
 	}
 	first.UID, first.Annotations, first.Status.Conditions = "example-replacement-uid", nil, nil
 	source.replace(t, first, team, box)
-	assertSandboxMetrics(t, registry, map[string]float64{"unknown/normal/Unknown/ConditionMissing": 1}, 1)
+	assertSandboxMetrics(t, registry, map[string]float64{"unknown/Unknown/ConditionMissing": 1}, 1)
 }
 
 func TestSandboxMetricsCollectionFailures(t *testing.T) {
 	for _, stage := range []string{"nil cache", "unsynced", "agents", "teams", "sandboxes"} {
 		t.Run(stage, func(t *testing.T) {
-			agent, team, box := sandboxMetricsFixture(t, "example", api.SandboxKata, api.AgentPolicyClassNormal)
+			agent, team, box := sandboxMetricsFixture(t, "example", api.SandboxKata)
 			source := newSandboxMetricsTestCache(t, agent, team, box)
 			collector := newSandboxMetricsCollector(source)
 			var logMu sync.Mutex
@@ -717,7 +702,7 @@ func TestSandboxMetricsCollectionFailures(t *testing.T) {
 			if err := collector.initializeCache(context.Background()); err != nil {
 				t.Fatal(err)
 			}
-			assertSandboxMetrics(t, registry, map[string]float64{"kata/normal/True/PolicyApplied": 1}, 1)
+			assertSandboxMetrics(t, registry, map[string]float64{"kata/True/PolicyApplied": 1}, 1)
 			switch stage {
 			case "nil cache":
 				collector.cache = nil
@@ -740,19 +725,19 @@ func TestSandboxMetricsCollectionFailures(t *testing.T) {
 			}
 			logMu.Unlock()
 			collector.cache, source.synced, source.failures = source, true, nil
-			assertSandboxMetrics(t, registry, map[string]float64{"kata/normal/True/PolicyApplied": 1}, 1)
+			assertSandboxMetrics(t, registry, map[string]float64{"kata/True/PolicyApplied": 1}, 1)
 		})
 	}
 }
 
 func TestSandboxMetricsReadContext(t *testing.T) {
-	agent, team, box := sandboxMetricsFixture(t, "example", api.SandboxKata, api.AgentPolicyClassNormal)
+	agent, team, box := sandboxMetricsFixture(t, "example", api.SandboxKata)
 	source := newSandboxMetricsTestCache(t, agent, team, box)
 	registry := sandboxMetricsRegistry(t, source)
 	if len(source.calls) != 0 {
 		t.Fatal("registration read or waited for the cache")
 	}
-	assertSandboxMetrics(t, registry, map[string]float64{"kata/normal/True/PolicyApplied": 1}, 1)
+	assertSandboxMetrics(t, registry, map[string]float64{"kata/True/PolicyApplied": 1}, 1)
 	var kinds []string
 	for _, call := range source.calls {
 		kinds = append(kinds, call.kind)
@@ -771,7 +756,7 @@ func TestSandboxMetricsCollectionDeadline(t *testing.T) {
 	for _, stage := range []string{"sync", "agents", "late successful sandboxes"} {
 		t.Run(stage, func(t *testing.T) {
 			t.Parallel()
-			agent, team, box := sandboxMetricsFixture(t, "example", api.SandboxKata, api.AgentPolicyClassNormal)
+			agent, team, box := sandboxMetricsFixture(t, "example", api.SandboxKata)
 			source := newSandboxMetricsTestCache(t, agent, team, box)
 			source.block = stage
 			if stage == "late successful sandboxes" {
@@ -793,7 +778,7 @@ func TestSandboxMetricsCollectionDeadline(t *testing.T) {
 }
 
 func TestSandboxMetricsRegistration(t *testing.T) {
-	agent, team, box := sandboxMetricsFixture(t, "example", api.SandboxKata, api.AgentPolicyClassNormal)
+	agent, team, box := sandboxMetricsFixture(t, "example", api.SandboxKata)
 	first := newSandboxMetricsTestCache(t, agent, team, box)
 	other := agent.DeepCopy()
 	other.Name, other.UID = "example-other", "example-other-uid"
@@ -811,8 +796,8 @@ func TestSandboxMetricsRegistration(t *testing.T) {
 	if err := collector.initializeCache(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	assertSandboxMetrics(t, registry, map[string]float64{"kata/normal/True/PolicyApplied": 1}, 1)
-	assertSandboxMetrics(t, sandboxMetricsRegistry(t, second), map[string]float64{"kata/normal/True/PolicyApplied": 2}, 1)
+	assertSandboxMetrics(t, registry, map[string]float64{"kata/True/PolicyApplied": 1}, 1)
+	assertSandboxMetrics(t, sandboxMetricsRegistry(t, second), map[string]float64{"kata/True/PolicyApplied": 2}, 1)
 	if err := RegisterSandboxMetrics(nil, secondManager); err == nil {
 		t.Fatal("missing registry did not return an error")
 	}
@@ -831,7 +816,7 @@ func TestSandboxMetricsRegistration(t *testing.T) {
 }
 
 func TestSandboxMetricsConcurrentScrapes(t *testing.T) {
-	agent, team, box := sandboxMetricsFixture(t, "example", api.SandboxKata, api.AgentPolicyClassNormal)
+	agent, team, box := sandboxMetricsFixture(t, "example", api.SandboxKata)
 	other := agent.DeepCopy()
 	other.Name, other.UID = "example-other", "example-other-uid"
 	source := newSandboxMetricsTestCache(t, agent, team, box)
@@ -851,7 +836,7 @@ func TestSandboxMetricsConcurrentScrapes(t *testing.T) {
 					failures <- err
 					return
 				}
-				value := counts["kata/normal/True/PolicyApplied"]
+				value := counts["kata/True/PolicyApplied"]
 				if health != 1 || len(counts) != 1 || (value != 1 && value != 2) {
 					failures <- fmt.Errorf("concurrent scrape accumulated or lost counts: %v, health %v", counts, health)
 					return

@@ -29,7 +29,7 @@ func gatewayConfig() config.Config {
 
 func gatewayTeam(name string) *cetirunv1alpha1.Team {
 	return &cetirunv1alpha1.Team{ObjectMeta: metav1.ObjectMeta{Name: name}, Spec: cetirunv1alpha1.TeamSpec{
-		NormalAgentPolicyRef: "standard", SandboxRefs: []string{"standard"}, DefaultSandboxRef: "standard",
+		AgentPolicyRef: "standard", SandboxRefs: []string{"standard"}, DefaultSandboxRef: "standard",
 	}}
 }
 
@@ -144,9 +144,11 @@ func TestCreateInstanceAIGatewayModelAccessRules(t *testing.T) {
 		wantErrCode string
 		wantErrText string
 	}{
-		{name: "defaults", body: `{"agent":{"type":"openclaw"},"team":" aks "}`, catalog: catalogConfigMap("gpt-6"), wantStatus: http.StatusCreated},
+		{name: "defaults", body: `{"agent":{"type":"openclaw"},"team":" aks "}`, catalog: catalogConfigMap("gpt-6"), wantStatus: http.StatusCreated, wantAccess: &[2]bool{true, true}},
 		{name: "both on", body: openclaw + `,"modelAccess":{"sharedModels":true,"githubCopilot":true}}`,
-			catalog: catalogConfigMap(), wantStatus: http.StatusCreated, wantAccess: &[2]bool{true, true}},
+			catalog: catalogConfigMap("gpt-6"), wantStatus: http.StatusCreated, wantAccess: &[2]bool{true, true}},
+		{name: "explicit unavailable shared models", body: openclaw + `,"modelAccess":{"sharedModels":true,"githubCopilot":true}}`,
+			catalog: catalogConfigMap(), wantStatus: http.StatusBadRequest, wantErrCode: "invalid_model_access"},
 		{name: "both off", body: openclaw + `,"modelAccess":{"sharedModels":false,"githubCopilot":false}}`,
 			catalog: catalogConfigMap("gpt-6"), wantStatus: http.StatusBadRequest, wantErrCode: "invalid_model_access"},
 		{name: "shared off", body: openclaw + `,"modelAccess":{"sharedModels":false}}`,
@@ -161,13 +163,15 @@ func TestCreateInstanceAIGatewayModelAccessRules(t *testing.T) {
 		{name: "copilot off with an unpublished catalog", body: openclaw + `,"modelAccess":{"githubCopilot":false}}`,
 			wantStatus: http.StatusServiceUnavailable, wantErrCode: "model_sources_unknown"},
 		// A deployment without the Copilot proxy offers only shared models.
-		{name: "no copilot, shared models", body: openclaw + `}`, catalog: publishedCatalog(false, "gpt-6"), wantStatus: http.StatusCreated},
+		{name: "no copilot, shared models", body: openclaw + `}`, catalog: publishedCatalog(false, "gpt-6"), wantStatus: http.StatusCreated, wantAccess: &[2]bool{true, false}},
+		{name: "explicit unavailable copilot", body: openclaw + `,"modelAccess":{"sharedModels":true,"githubCopilot":true}}`,
+			catalog: publishedCatalog(false, "gpt-6"), wantStatus: http.StatusBadRequest, wantErrCode: "invalid_model_access"},
 		{name: "no copilot, shared off", body: openclaw + `,"modelAccess":{"sharedModels":false}}`,
 			catalog: publishedCatalog(false, "gpt-6"), wantStatus: http.StatusBadRequest, wantErrCode: "invalid_model_access"},
 		{name: "no copilot, no shared models", body: openclaw + `}`, catalog: publishedCatalog(false),
 			wantStatus: http.StatusConflict, wantErrCode: "no_model_source"},
 		{name: "no copilot, no shared models, copilot asked for", body: openclaw + `,"modelAccess":{"sharedModels":false,"githubCopilot":true}}`,
-			catalog: publishedCatalog(false), wantStatus: http.StatusConflict, wantErrCode: "no_model_source"},
+			catalog: publishedCatalog(false), wantStatus: http.StatusBadRequest, wantErrCode: "invalid_model_access"},
 		// Hermes takes its models from the Gateway too, under the same rules.
 		{name: "hermes copilot off with shared models", body: `{"agent":{"type":"hermes"},"team":"aks","modelAccess":{"githubCopilot":false}}`,
 			catalog: catalogConfigMap("gpt-6"), wantStatus: http.StatusCreated, wantAccess: &[2]bool{true, false}},
@@ -184,7 +188,7 @@ func TestCreateInstanceAIGatewayModelAccessRules(t *testing.T) {
 		{name: "hermes with an earlier operator's catalog", body: hermes, catalog: routingCatalog(nil, true, "gpt-6"),
 			wantStatus: http.StatusConflict, wantErrCode: "agent_chart_unsupported"},
 		{name: "openclaw with an earlier operator's catalog", body: openclaw + `}`, catalog: routingCatalog(nil, true, "gpt-6"),
-			wantStatus: http.StatusCreated},
+			wantStatus: http.StatusCreated, wantAccess: &[2]bool{true, true}},
 		{name: "openclaw on a chart older than the Gateway", body: openclaw + `}`, catalog: routingCatalog(routes(), true, "gpt-6"),
 			wantStatus: http.StatusConflict, wantErrCode: "agent_chart_unsupported", wantErrText: "upgrade the agent chart"},
 		// Until the operator has read its default chart, which a new Agent

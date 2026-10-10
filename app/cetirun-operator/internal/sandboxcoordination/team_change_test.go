@@ -26,7 +26,7 @@ func teamChangeFixture(t *testing.T) (Store, client.WithWatch, *api.Team) {
 		t.Fatal(err)
 	}
 	team := &api.Team{ObjectMeta: metav1.ObjectMeta{Name: "team", UID: "team-uid"},
-		Spec: api.TeamSpec{NormalAgentPolicyRef: "policy", AdminAgentPolicyRef: "admin-policy",
+		Spec: api.TeamSpec{AgentPolicyRef: "policy",
 			SandboxRefs: []string{"sandbox", "spare"}, DefaultSandboxRef: "sandbox"}}
 	if err := storage.Create(context.Background(), team); err != nil {
 		t.Fatal(err)
@@ -34,11 +34,10 @@ func teamChangeFixture(t *testing.T) (Store, client.WithWatch, *api.Team) {
 	return store, storage, team
 }
 
-func teamIntent(t *testing.T, team *api.Team, suffix string, class api.AgentPolicyClass) Intent {
+func teamIntent(t *testing.T, team *api.Team, suffix string) Intent {
 	t.Helper()
 	intent := testIntent(suffix)
 	intent.Expected.Binding.TeamUID = team.UID
-	intent.Expected.Binding.PolicyClass = class
 	inputs, err := w.ExecutionTeamInputs(team)
 	if err != nil {
 		t.Fatal(err)
@@ -50,98 +49,67 @@ func teamIntent(t *testing.T, team *api.Team, suffix string, class api.AgentPoli
 			delete(intent.SourceDigests, w.SourceKey(*source))
 			source.Name, source.UID = team.Name, team.UID
 			source.ResourceVersion = team.ResourceVersion
-			intent.SourceDigests[w.SourceKey(*source)], err = inputs.DigestFor(intent.SelectedSandbox(), class)
+			intent.SourceDigests[w.SourceKey(*source)], err = inputs.DigestFor(intent.SelectedSandbox())
 			if err != nil {
 				t.Fatal(err)
 			}
-		}
-		if class == api.AgentPolicyClassAdmin && source.Kind == "AgentPolicy" {
-			delete(intent.SourceDigests, w.SourceKey(*source))
-			source.Name, source.UID = "admin-policy", "admin-policy-uid"
-			intent.Expected.Binding.AgentPolicyUID = source.UID
-			intent.SourceDigests[w.SourceKey(*source)] = intent.SourceDigests[w.SourceKey(intent.Preparation)]
 		}
 	}
 	return intent
 }
 
 func TestTeamChangesOnlyConflictWithAffectedExecutions(t *testing.T) {
-	for _, class := range []api.AgentPolicyClass{api.AgentPolicyClassNormal, api.AgentPolicyClassAdmin} {
-		for _, change := range []string{"creation default", "other class", "selected class", "remove selected Sandbox", "runtime context", "ownership"} {
-			t.Run(string(class)+"/"+change, func(t *testing.T) {
-				ctx := context.Background()
-				store, _, before := teamChangeFixture(t)
-				intent := teamIntent(t, before, "one", class)
-				ticket := acquire(t, store, intent)
-				after := before.DeepCopy()
-				allowed := change == "creation default" || change == "other class"
-				switch change {
-				case "creation default":
-					after.Spec.DefaultSandboxRef = "spare"
-				case "other class":
-					if class == api.AgentPolicyClassNormal {
-						after.Spec.AdminAgentPolicyRef = "replacement-admin"
-					} else {
-						after.Spec.NormalAgentPolicyRef = "replacement-normal"
-					}
-				case "selected class":
-					if class == api.AgentPolicyClassNormal {
-						after.Spec.NormalAgentPolicyRef = "replacement-normal"
-					} else {
-						after.Spec.AdminAgentPolicyRef = "replacement-admin"
-					}
-				case "remove selected Sandbox":
-					after.Spec.SandboxRefs, after.Spec.DefaultSandboxRef = []string{"spare"}, "spare"
-				case "runtime context":
-					after.Spec.MemberContext.Role = "changed-role"
-				case "ownership":
-					after.OwnerReferences = []metav1.OwnerReference{w.AgentOwner("other", "other-uid")}
+	for _, change := range []string{"creation default", "selected policy", "remove selected Sandbox", "runtime context", "ownership"} {
+		t.Run(change, func(t *testing.T) {
+			ctx := context.Background()
+			store, _, before := teamChangeFixture(t)
+			intent := teamIntent(t, before, "one")
+			ticket := acquire(t, store, intent)
+			after := before.DeepCopy()
+			allowed := change == "creation default"
+			switch change {
+			case "creation default":
+				after.Spec.DefaultSandboxRef = "spare"
+			case "selected policy":
+				after.Spec.AgentPolicyRef = "replacement-policy"
+			case "remove selected Sandbox":
+				after.Spec.SandboxRefs, after.Spec.DefaultSandboxRef = []string{"spare"}, "spare"
+			case "runtime context":
+				after.Spec.MemberContext.Role = "changed-role"
+			case "ownership":
+				after.OwnerReferences = []metav1.OwnerReference{w.AgentOwner("other", "other-uid")}
+			}
+			mutation, err := store.AcquireTeamChange(ctx, before, after)
+			if allowed {
+				if err != nil || mutation.Change.Team == nil {
+					t.Fatal("unaffected execution blocked Team mutation:", err)
 				}
-				mutation, err := store.AcquireTeamChange(ctx, before, after)
-				if allowed {
-					if err != nil || mutation.Change.Team == nil {
-						t.Fatal("unaffected execution blocked Team mutation:", err)
-					}
-					if err := store.Check(ctx, ticket); err != nil {
-						t.Fatal("scoped change invalidated existing execution:", err)
-					}
-					second := teamIntent(t, before, "two", class)
-					if _, err := store.AcquireExecution(ctx, second); err != nil {
-						t.Fatal("unaffected new execution was blocked by pending Team change:", err)
-					}
-					mutation.Change.Team.After.Sandboxes[0] = "caller-mutation"
-					if err := store.CheckChange(ctx, mutation); !errors.Is(err, ErrConflict) {
-						t.Fatal("caller modified persisted Team mutation authority:", err)
-					}
-				} else if !errors.Is(err, ErrConflict) {
-					t.Fatal("effective Team change did not conflict:", err)
+				if err := store.Check(ctx, ticket); err != nil {
+					t.Fatal("scoped change invalidated existing execution:", err)
 				}
-			})
-		}
+				second := teamIntent(t, before, "two")
+				if _, err := store.AcquireExecution(ctx, second); err != nil {
+					t.Fatal("unaffected new execution was blocked by pending Team change:", err)
+				}
+				mutation.Change.Team.After.Sandboxes[0] = "caller-mutation"
+				if err := store.CheckChange(ctx, mutation); !errors.Is(err, ErrConflict) {
+					t.Fatal("caller modified persisted Team mutation authority:", err)
+				}
+			} else if !errors.Is(err, ErrConflict) {
+				t.Fatal("effective Team change did not conflict:", err)
+			}
+		})
 	}
 }
 
-func TestTeamChangeChecksEveryPolicyClassAndFutureStart(t *testing.T) {
+func TestTeamPolicyChangeConflictsWithCurrentAndFutureExecutions(t *testing.T) {
 	ctx := context.Background()
 	store, _, before := teamChangeFixture(t)
-	acquire(t, store, teamIntent(t, before, "normal", api.AgentPolicyClassNormal))
+	acquire(t, store, teamIntent(t, before, "current"))
 	after := before.DeepCopy()
-	after.Spec.AdminAgentPolicyRef = "replacement-admin"
-	change, err := store.AcquireTeamChange(ctx, before, after)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.AcquireExecution(ctx, teamIntent(t, before, "admin", api.AgentPolicyClassAdmin)); !errors.Is(err, ErrConflict) {
-		t.Fatal("pending admin mutation allowed an affected execution:", err)
-	}
-	if err := store.CheckChange(ctx, change); err != nil {
-		t.Fatal(err)
-	}
-	store, _, before = teamChangeFixture(t)
-	acquire(t, store, teamIntent(t, before, "normal", api.AgentPolicyClassNormal))
-	acquire(t, store, teamIntent(t, before, "admin", api.AgentPolicyClassAdmin))
+	after.Spec.AgentPolicyRef = "replacement-policy"
 	if _, err := store.AcquireTeamChange(ctx, before, after); !errors.Is(err, ErrConflict) {
-		t.Fatal("running admin execution did not protect its slot:", err)
+		t.Fatal("running execution did not protect its policy selection:", err)
 	}
 }
 
@@ -179,7 +147,7 @@ func TestScopedTeamChangeAndAffectedStartHaveOneCASWinner(t *testing.T) {
 	defer cancel()
 	store, storage, before := teamChangeFixture(t)
 	after := before.DeepCopy()
-	after.Spec.NormalAgentPolicyRef = "replacement-normal"
+	after.Spec.AgentPolicyRef = "replacement-normal"
 	var writes atomic.Int32
 	barrier := make(chan struct{})
 	store.Client = interceptor.NewClient(storage, interceptor.Funcs{
@@ -197,7 +165,7 @@ func TestScopedTeamChangeAndAffectedStartHaveOneCASWinner(t *testing.T) {
 			return c.Update(ctx, object, opts...)
 		},
 	})
-	intent := teamIntent(t, before, "normal", api.AgentPolicyClassNormal)
+	intent := teamIntent(t, before, "current")
 	results := make(chan error, 2)
 	var group sync.WaitGroup
 	group.Go(func() {
@@ -224,7 +192,7 @@ func TestScopedTeamChangeAndAffectedStartHaveOneCASWinner(t *testing.T) {
 func TestScopedTeamChangeRetainsUnknownOutcomes(t *testing.T) {
 	ctx := context.Background()
 	store, _, before := teamChangeFixture(t)
-	acquire(t, store, teamIntent(t, before, "normal", api.AgentPolicyClassNormal))
+	acquire(t, store, teamIntent(t, before, "current"))
 	after := before.DeepCopy()
 	after.Spec.DefaultSandboxRef = "spare"
 	ticket, err := store.AcquireTeamChange(ctx, before, after)
@@ -249,7 +217,7 @@ func TestScopedTeamChangeRetainsUnknownOutcomes(t *testing.T) {
 func TestScopedTeamChangeRecoversCommittedWriteWithLostReply(t *testing.T) {
 	ctx := context.Background()
 	store, storage, before := teamChangeFixture(t)
-	acquire(t, store, teamIntent(t, before, "normal", api.AgentPolicyClassNormal))
+	acquire(t, store, teamIntent(t, before, "current"))
 	after := before.DeepCopy()
 	after.Spec.DefaultSandboxRef = "spare"
 	ticket, err := store.AcquireTeamChange(ctx, before, after)

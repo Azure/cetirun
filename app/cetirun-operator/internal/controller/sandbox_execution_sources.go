@@ -30,7 +30,7 @@ func selectedSandboxExecutionSources(sources []w.SourceReference, binding sandbo
 }
 
 func (r *AgentReconciler) executionSourceDigest(ctx context.Context, source w.SourceReference,
-	box string, class api.AgentPolicyClass, capture bool,
+	box string, capture bool,
 ) (string, error) {
 	var object client.Object
 	if source.APIVersion == api.GroupVersion.String() && source.Kind == "Team" {
@@ -53,7 +53,7 @@ func (r *AgentReconciler) executionSourceDigest(ctx context.Context, source w.So
 		(capture && object.GetResourceVersion() != source.ResourceVersion) {
 		return "", fmt.Errorf("%w: effective source identity changed: %s", errSandboxSourceChanged, w.SourceKey(source))
 	}
-	return w.ExecutionSourceDigest(object, box, class)
+	return w.ExecutionSourceDigest(object, box)
 }
 
 func (r *AgentReconciler) captureExecutionSourceDigests(ctx context.Context, intent sandboxcoordination.Intent) (map[string]string, error) {
@@ -63,7 +63,7 @@ func (r *AgentReconciler) captureExecutionSourceDigests(ctx context.Context, int
 		if !w.EffectiveSource(source) {
 			continue
 		}
-		digest, err := r.executionSourceDigest(ctx, source, box, intent.Expected.Binding.PolicyClass, true)
+		digest, err := r.executionSourceDigest(ctx, source, box, true)
 		if err != nil {
 			return nil, err
 		}
@@ -95,7 +95,7 @@ func (r *AgentReconciler) verifyEffectiveExecutionSources(ctx context.Context, i
 			continue
 		}
 		if w.EffectiveSource(source) {
-			current, err := r.executionSourceDigest(ctx, source, box, intent.Expected.Binding.PolicyClass, false)
+			current, err := r.executionSourceDigest(ctx, source, box, false)
 			if err != nil {
 				return err
 			}

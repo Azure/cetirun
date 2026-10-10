@@ -93,7 +93,7 @@ func (a SandboxExecutionAccess) Enroll(ctx context.Context, intent sandboxcoordi
 		if !found {
 			intent.Sources = append(intent.Sources, source)
 		}
-		digest, err := a.Reconciler.executionSourceDigest(ctx, source, intent.SelectedSandbox(), intent.Expected.Binding.PolicyClass, true)
+		digest, err := a.Reconciler.executionSourceDigest(ctx, source, intent.SelectedSandbox(), true)
 		if err != nil {
 			return sandboxcoordination.Intent{}, err
 		}

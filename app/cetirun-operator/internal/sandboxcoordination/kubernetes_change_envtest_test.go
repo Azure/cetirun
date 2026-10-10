@@ -202,7 +202,7 @@ func TestKubernetesConfigurationAPIServer(t *testing.T) {
 		}
 		replacement := &api.Team{
 			ObjectMeta: metav1.ObjectMeta{Name: before.GetName()},
-			Spec: api.TeamSpec{NormalAgentPolicyRef: "policy", SandboxRefs: []string{"sandbox"}, DefaultSandboxRef: "sandbox", MemberContext: api.TeamContextSpec{
+			Spec: api.TeamSpec{AgentPolicyRef: "policy", SandboxRefs: []string{"sandbox"}, DefaultSandboxRef: "sandbox", MemberContext: api.TeamContextSpec{
 				Role: strings.Repeat("x", 270000),
 			}},
 		}

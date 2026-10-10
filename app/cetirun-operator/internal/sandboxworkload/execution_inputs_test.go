@@ -211,34 +211,34 @@ func TestAgentPolicyExecutionDigestPreservesExplicitControls(t *testing.T) {
 	}
 }
 
-func TestTeamEffectiveSelectionExcludesUnrelatedSlots(t *testing.T) {
+func TestTeamEffectiveSelectionExcludesCreationDefault(t *testing.T) {
 	team := &api.Team{ObjectMeta: metav1.ObjectMeta{Name: "team", UID: "team-uid", ResourceVersion: "1"},
-		Spec: api.TeamSpec{NormalAgentPolicyRef: "normal", AdminAgentPolicyRef: "admin",
+		Spec: api.TeamSpec{AgentPolicyRef: "policy",
 			SandboxRefs: []string{"selected", "spare"}, DefaultSandboxRef: "selected"}}
 	first, err := ExecutionTeamInputs(team)
 	if err != nil {
 		t.Fatal(err)
 	}
-	pinned, err := first.DigestFor("selected", api.AgentPolicyClassNormal)
+	pinned, err := first.DigestFor("selected")
 	if err != nil {
 		t.Fatal(err)
 	}
-	team.Spec.DefaultSandboxRef, team.Spec.AdminAgentPolicyRef = "spare", "other-admin"
+	team.Spec.DefaultSandboxRef = "spare"
 	team.ResourceVersion = "2"
 	second, err := ExecutionTeamInputs(team)
 	if err != nil {
 		t.Fatal(err)
 	}
-	current, err := second.DigestFor("selected", api.AgentPolicyClassNormal)
+	current, err := second.DigestFor("selected")
 	if err != nil || current != pinned {
-		t.Fatal("creation default or other class invalidated normal selection:", err)
+		t.Fatal("creation default invalidated selected execution inputs:", err)
 	}
-	team.Spec.NormalAgentPolicyRef = "other-normal"
+	team.Spec.AgentPolicyRef = "other-policy"
 	third, err := ExecutionTeamInputs(team)
 	if err != nil {
 		t.Fatal(err)
 	}
-	current, err = third.DigestFor("selected", api.AgentPolicyClassNormal)
+	current, err = third.DigestFor("selected")
 	if err != nil || current == pinned {
 		t.Fatal("selected policy rebind did not invalidate execution:", err)
 	}

@@ -86,20 +86,21 @@ func TestPortalPatchesPreserveFutureFields(t *testing.T) {
 		},
 		{
 			name: "team-editable-fields", team: true,
-			wantSpec: `{"defaults":{"provider":"anthropic"},"memberContext":{"role":"Reviewer"},"skills":["new-skill"],"skillStorage":{"storageSize":"2Gi"}}`,
+			wantSpec: `{"agentPolicyRef":"new-policy","sandboxRefs":["new-sandbox"],"defaultSandboxRef":"new-sandbox","defaults":{"provider":"anthropic"},"memberContext":{"role":"Reviewer"},"skills":["new-skill"],"skillStorage":{"storageSize":"2Gi"}}`,
 			run: func(c *Client, object client.Object) (client.Object, error) {
 				spec := object.(*api.Team).Spec.DeepCopy()
 				spec.Defaults.Provider, spec.MemberContext.Role = "anthropic", "Reviewer"
 				spec.Skills, spec.SkillStorage.StorageSize = []string{"new-skill"}, "2Gi"
-				spec.NormalAgentPolicyRef = "must-not-change-governance"
-				return c.UpdateTeamSpec(ctx, object.GetName(), *spec)
+				spec.AgentPolicyRef = "new-policy"
+				spec.SandboxRefs, spec.DefaultSandboxRef = []string{"new-sandbox"}, "new-sandbox"
+				return c.UpdateTeamSpec(ctx, object.GetName(), *spec, TeamVersion{UID: object.GetUID(), ResourceVersion: object.GetResourceVersion()})
 			},
 		},
 		{
 			name: "team-clear-editable-fields", team: true,
-			wantSpec: `{"defaults":{"provider":null},"memberContext":{"role":null},"skills":null,"skillStorage":null}`,
+			wantSpec: `{"agentPolicyRef":"","sandboxRefs":null,"defaultSandboxRef":"","defaults":{"provider":null},"memberContext":{"role":null},"skills":null,"skillStorage":null}`,
 			run: func(c *Client, object client.Object) (client.Object, error) {
-				return c.UpdateTeamSpec(ctx, object.GetName(), api.TeamSpec{})
+				return c.UpdateTeamSpec(ctx, object.GetName(), api.TeamSpec{}, TeamVersion{UID: object.GetUID(), ResourceVersion: object.GetResourceVersion()})
 			},
 		},
 		{
@@ -152,8 +153,8 @@ func TestPortalPatchesPreserveFutureFields(t *testing.T) {
 			if tc.team {
 				kind, resource, expected = "Team", "teams", &api.Team{}
 				spec = map[string]any{
-					"normalAgentPolicyRef": "normal-policy", "adminAgentPolicyRef": "admin-policy",
-					"sandboxRefs": []string{"example-sandbox"}, "defaultSandboxRef": "example-sandbox",
+					"agentPolicyRef": "policy",
+					"sandboxRefs":    []string{"example-sandbox"}, "defaultSandboxRef": "example-sandbox",
 					"defaults":      map[string]any{"provider": "github_copilot", "futureDefaults": "keep-defaults"},
 					"memberContext": map[string]any{"role": "Engineer", "futureContext": "keep-context"},
 					"skills":        []string{"old-skill"},

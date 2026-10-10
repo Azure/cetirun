@@ -460,13 +460,13 @@ func (h *preparationHarness) assertUnselectedNamespace(t *testing.T) {
 }
 
 type preparationCase struct {
-	h          *preparationHarness
-	fixture    testfixture.Fixture
-	spare      *api.Sandbox
-	admin      *api.AgentPolicy
-	source     *syntheticPreparationSource
-	installer  *localPreparationInstaller
-	reconciler *controller.AgentReconciler
+	h           *preparationHarness
+	fixture     testfixture.Fixture
+	spare       *api.Sandbox
+	otherPolicy *api.AgentPolicy
+	source      *syntheticPreparationSource
+	installer   *localPreparationInstaller
+	reconciler  *controller.AgentReconciler
 }
 
 func (h *preparationHarness) newCase(t *testing.T, agentType string) *preparationCase {
@@ -482,8 +482,8 @@ func (h *preparationHarness) newCaseWithPrerequisites(t *testing.T, agentType st
 	name := "prep-" + agentType
 	fixture.Agent.Name, fixture.Agent.Spec.User.Alias = name, name
 	fixture.Agent.Annotations = nil
-	fixture.Agent.Spec.PolicyClass = ""
 	fixture.Agent.Spec.Model = "example-model"
+	fixture.Agent.Spec.ModelAccess = &api.ModelAccessSpec{SharedModels: ptr.To(true)}
 	fixture.Agent.Spec.Helm.Version = h.chart.Metadata.Version
 	if !provision {
 		fixture.Agent.Spec.Agent.Image = ptr.To("registry.example.com/" + agentType + "-gateway:" + h.chart.Metadata.AppVersion)
@@ -497,30 +497,37 @@ func (h *preparationHarness) newCaseWithPrerequisites(t *testing.T, agentType st
 	fixture.Policy.Name = name + "-normal"
 	fixture.Policy.Spec.Security.ReadOnlyRootFilesystem = nil
 	fixture.Policy.Spec.SandboxSelection.AllowMultiple = true
+	fixture.Policy.Spec.ModelAccess = api.AgentPolicyModelAccess{
+		SharedModels: api.AgentPolicySharedModelsAccess{Allowed: []string{fixture.Agent.Spec.Model}},
+		GatewayBudget: &api.AgentPolicyGatewayBudget{
+			DefaultMonthlyUSD: "1",
+			MaxMonthlyUSD:     "1",
+		},
+	}
 	h.create(t, fixture.Sandbox)
 	h.create(t, fixture.Policy)
 	f.spare = fixture.Sandbox.DeepCopy()
 	f.spare.ObjectMeta = metav1.ObjectMeta{Name: name + "-spare"}
-	f.admin = fixture.Policy.DeepCopy()
-	f.admin.ObjectMeta = metav1.ObjectMeta{Name: name + "-admin"}
+	f.otherPolicy = fixture.Policy.DeepCopy()
+	f.otherPolicy.ObjectMeta = metav1.ObjectMeta{Name: name + "-other"}
 	h.create(t, f.spare)
-	h.create(t, f.admin)
+	h.create(t, f.otherPolicy)
 	fixture.Team.Name = name + "-team"
 	fixture.Team.Spec = api.TeamSpec{
 		SandboxRefs: []string{fixture.Sandbox.Name, f.spare.Name}, DefaultSandboxRef: fixture.Sandbox.Name,
-		NormalAgentPolicyRef: fixture.Policy.Name, AdminAgentPolicyRef: f.admin.Name,
-		Defaults: api.TeamDefaultsSpec{Provider: "github_copilot"},
+		AgentPolicyRef: fixture.Policy.Name,
+		Defaults:       api.TeamDefaultsSpec{Provider: "github_copilot"},
 	}
 	h.create(t, fixture.Team)
 	fixture.Agent.Spec.Team, fixture.Agent.Spec.SandboxRef = fixture.Team.Name, fixture.Sandbox.Name
 	h.create(t, fixture.Agent)
-	if ptr.Deref(fixture.Agent.Spec.Agent.Username, "") != "vibe" || fixture.Agent.Spec.PolicyClass != api.AgentPolicyClassNormal ||
+	if ptr.Deref(fixture.Agent.Spec.Agent.Username, "") != "vibe" ||
 		fixture.Sandbox.Spec.Type != api.SandboxKata || !ptr.Deref(fixture.Policy.Spec.Security.ReadOnlyRootFilesystem, false) {
 		t.Fatal("real CRD defaults were not applied to the persisted fixtures")
 	}
 	record, err := sandboxbinding.Snapshot(fixture.Agent, fixture.Team, sandbox.Resources{
 		Sandboxes:     map[string]*api.Sandbox{fixture.Sandbox.Name: fixture.Sandbox, f.spare.Name: f.spare},
-		AgentPolicies: map[string]*api.AgentPolicy{fixture.Policy.Name: fixture.Policy, f.admin.Name: f.admin},
+		AgentPolicies: map[string]*api.AgentPolicy{fixture.Policy.Name: fixture.Policy},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -795,7 +802,7 @@ func (f *preparationCase) reconcileConfiguration(t *testing.T) {
 			t.Fatalf("Sandbox %s must persist current-generation Ready: %+v", current.Name, current.Status)
 		}
 	}
-	for _, original := range []*api.AgentPolicy{f.fixture.Policy, f.admin} {
+	for _, original := range []*api.AgentPolicy{f.fixture.Policy, f.otherPolicy} {
 		key := client.ObjectKeyFromObject(original)
 		if _, err := policyController.Reconcile(f.h.ctx, ctrl.Request{NamespacedName: key}); err != nil {
 			t.Fatalf("reconcile AgentPolicy against the shared synthetic inventory: %v", err)
@@ -937,7 +944,7 @@ func (f *preparationCase) assertPrepared(t *testing.T) w.Expectation {
 	}
 	for _, object := range []struct{ kind, name string }{
 		{"Team", f.fixture.Team.Name}, {"Sandbox", f.fixture.Sandbox.Name}, {"Sandbox", f.spare.Name},
-		{"AgentPolicy", f.fixture.Policy.Name}, {"AgentPolicy", f.admin.Name},
+		{"AgentPolicy", f.fixture.Policy.Name},
 	} {
 		preparationSource(t, expected, object.kind, "", object.name)
 	}

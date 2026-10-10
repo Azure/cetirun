@@ -48,12 +48,10 @@ ingress traffic.
 Helm upgrades the CRD templates with this release; no separate CRD apply script
 is required for compatible changes. The `helm.sh/resource-policy: keep`
 annotation retains CRDs and their objects on uninstall. It does not protect
-against an incompatible schema change or downgrade. The Operator chart defaults
-`sandboxAdmission.validationMode` to `compatible`, retaining known validation and
-authorization checks while tolerating newer CR fields. See the
-[schema and binary upgrade contract](../cetirun-operator/README.md#schema-and-binary-upgrades).
-Previously unmanaged CRDs and cross-release ownership transfers still require
-a separately reviewed handover; this chart does not forcibly adopt them.
+against an incompatible schema change or downgrade. Previously unmanaged CRDs
+and cross-release ownership transfers still require a separately reviewed
+handover; this chart does not forcibly adopt them. The chart does not install a
+Sandbox admission service or execution adapter.
 
 The deployment helper accepts `ISTIO_GATEWAY_NAME` and
 `ISTIO_GATEWAY_NAMESPACE` for the Gateway resource, and

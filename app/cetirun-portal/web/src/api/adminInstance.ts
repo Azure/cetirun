@@ -13,6 +13,10 @@ export interface AdminInstanceSummary {
   agent: AgentConfig;
   uid: string;
   phase?: string;
+  policy: "Resolved" | "Denied" | "Updating" | "Unknown";
+  gateway: string;
+  sandbox: string;
+  agentIdentity: string;
   ready: boolean;
   createdAt: string;
 }

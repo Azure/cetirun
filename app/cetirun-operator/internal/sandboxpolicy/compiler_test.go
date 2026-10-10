@@ -38,8 +38,7 @@ func compilerFixture() CompileInput {
 			AgentPolicy: api.AgentPolicySpec{Harnesses: api.AgentPolicyHarnesses{Allowed: []api.AgentType{api.AgentTypeHermes}}},
 			Binding: sandbox.Binding{
 				AgentUID: "example-agent-uid", TeamUID: "example-team-uid", SandboxUID: "example-sandbox-uid",
-				AgentPolicyUID: "example-policy-uid", PolicyClass: api.AgentPolicyClassNormal,
-			},
+				AgentPolicyUID: "example-policy-uid"},
 			Revision: "synthetic-foundation",
 			Sandbox: api.SandboxSpec{
 				Type:      api.SandboxKata,
@@ -98,7 +97,6 @@ func mustCompile(t *testing.T, input CompileInput) *Plan {
 
 func adminFixture() CompileInput {
 	input := compilerFixture()
-	input.Resolution.Binding.PolicyClass = api.AgentPolicyClassAdmin
 	input.Resolution.AgentPolicy.KubernetesAccess = &api.AgentPolicyAdminKubernetesAccess{
 		ServiceAccountName:  "example-dedicated",
 		RoleBindings:        []api.AgentPolicyRoleBinding{{Namespace: "operations", ClusterRoleName: "view"}},
@@ -419,7 +417,6 @@ func TestCompileRejectsUnapprovedAndIncompatibleIdentity(t *testing.T) {
 		name   string
 		mutate func(*CompileInput)
 	}{
-		{"normal admin grant", func(i *CompileInput) { i.Resolution.Binding.PolicyClass = api.AgentPolicyClassNormal }},
 		{"no approvals", func(i *CompileInput) { i.Platform.Grants = nil }},
 		{"wrong policy approval", func(i *CompileInput) { i.Platform.Grants[0].PolicyUID = "foreign-policy" }},
 		{"wrong namespace scope", func(i *CompileInput) { i.Platform.Grants[0].Namespace = "foreign-namespace" }},

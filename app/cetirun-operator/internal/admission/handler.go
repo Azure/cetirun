@@ -232,7 +232,7 @@ func (h *Handler) validateAgent(ctx context.Context, request admission.Request, 
 			return admission.Denied(err.Error())
 		}
 		if old != nil && !sameAgentSelection(agent, old) {
-			return admission.Denied("members cannot change a policy-bound Agent's Team, policy class or Sandbox binding")
+			return admission.Denied("members cannot change a policy-bound Agent's Team or Sandbox binding")
 		}
 	}
 	if suspensionOnlyUpdate(request, agent, old) {
@@ -256,11 +256,11 @@ func (h *Handler) agentAuthorizationResources(ctx context.Context, operation adm
 	if err != nil {
 		return sandbox.Resources{}, admission.Denied(err.Error())
 	}
-	if spec.SandboxRef != agent.Spec.SandboxRef || spec.PolicyClass != agent.Spec.PolicyClass {
+	if spec.SandboxRef != agent.Spec.SandboxRef {
 		if operation == admissionv1.Create {
 			return sandbox.Resources{}, admission.Denied(fmt.Sprintf("Agent %q is missing its persisted selection; the creation-defaulting webhook must set Team %q's defaults before validation", agent.Name, team.Name))
 		}
-		return sandbox.Resources{}, admission.Denied("spec.sandboxRef and spec.policyClass must be persisted at creation; existing Agents are never re-defaulted")
+		return sandbox.Resources{}, admission.Denied("spec.sandboxRef must be persisted at creation; existing Agents are never re-defaulted")
 	}
 	resources, err := h.resources(ctx, team.Spec, sandbox.Resources{})
 	if err != nil {
@@ -299,7 +299,7 @@ func (h *Handler) resources(ctx context.Context, spec api.TeamSpec, resources sa
 		}
 		resources.Sandboxes[name] = &box
 	}
-	for _, name := range []string{spec.NormalAgentPolicyRef, spec.AdminAgentPolicyRef} {
+	for _, name := range []string{spec.AgentPolicyRef} {
 		if _, read := resources.AgentPolicies[name]; name == "" || read {
 			continue
 		}
@@ -340,8 +340,7 @@ func (h *Handler) checkTeamConsumers(ctx context.Context, team *api.Team, removi
 			if removing {
 				return admission.Denied(fmt.Sprintf("Team %q still has referencing Agent %q, including inherited policy; rebind it to another policy-configured Team or delete it before removing Team policy", team.Name, agent.Name))
 			}
-			if (agent.Spec.SandboxRef != "" && !slices.Contains(team.Spec.SandboxRefs, agent.Spec.SandboxRef)) ||
-				(agent.Spec.PolicyClass == api.AgentPolicyClassAdmin && team.Spec.AdminAgentPolicyRef == "") {
+			if agent.Spec.SandboxRef != "" && !slices.Contains(team.Spec.SandboxRefs, agent.Spec.SandboxRef) {
 				return admission.Denied(fmt.Sprintf("Team %q change would invalidate referencing Agent %q; rebind or delete its consumers first", team.Name, agent.Name))
 			}
 		}
@@ -436,14 +435,14 @@ func references(team *api.Team, object client.Object) bool {
 	case *api.Sandbox:
 		return slices.Contains(team.Spec.SandboxRefs, object.GetName())
 	case *api.AgentPolicy:
-		return team.Spec.NormalAgentPolicyRef == object.GetName() || team.Spec.AdminAgentPolicyRef == object.GetName()
+		return team.Spec.AgentPolicyRef == object.GetName()
 	default:
 		return false
 	}
 }
 
 func sameTeamPolicy(a, b api.TeamSpec) bool {
-	return a.NormalAgentPolicyRef == b.NormalAgentPolicyRef && a.AdminAgentPolicyRef == b.AdminAgentPolicyRef &&
+	return a.AgentPolicyRef == b.AgentPolicyRef &&
 		a.DefaultSandboxRef == b.DefaultSandboxRef && slices.Equal(a.SandboxRefs, b.SandboxRefs)
 }
 

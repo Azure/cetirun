@@ -113,7 +113,7 @@ func TestPlatformAdmissionProductionFactory(t *testing.T) {
 	for _, object := range []client.Object{f.team, f.box, f.policy} {
 		requireResponse(t, f.handler.Validate(context.Background(), requestFor(t, admissionv1.Create, object, nil, "administrator")), true, "")
 	}
-	f.agent.Spec.SandboxRef, f.agent.Spec.PolicyClass, f.agent.Spec.Team = "", "", ""
+	f.agent.Spec.SandboxRef, f.agent.Spec.Team = "", ""
 	response := f.handler.DefaultAgent(context.Background(), requestFor(t, admissionv1.Create, f.agent, nil, "member"))
 	requireResponse(t, response, true, "")
 	if len(response.Patches) == 0 || f.handler.platformSnapshot != nil || f.handler.registrations != nil {
@@ -122,8 +122,6 @@ func TestPlatformAdmissionProductionFactory(t *testing.T) {
 	requireResponse(t, f.handler.DefaultAgent(context.Background(), requestFor(t, admissionv1.Create, f.agent, nil, "outsider")), true, "legacy")
 	f.agent.Spec.Team = f.team.Name
 	requireResponse(t, f.handler.DefaultAgent(context.Background(), requestFor(t, admissionv1.Create, f.agent, nil, "outsider")), false, "assigned Team")
-	f.agent.Spec.PolicyClass = api.AgentPolicyClassAdmin
-	requireResponse(t, f.handler.DefaultAgent(context.Background(), requestFor(t, admissionv1.Create, f.agent, nil, "member")), false, "non-normal")
 }
 
 func TestPlatformAdmissionNoLastKnownGoodFallback(t *testing.T) {
@@ -218,7 +216,7 @@ func TestPlatformAdmissionOutageDoesNotBlockIndependentRequests(t *testing.T) {
 		t.Fatal(err)
 	}
 	legacy := f.agent.DeepCopy()
-	legacy.Spec.Team, legacy.Spec.SandboxRef, legacy.Spec.PolicyClass = "", "", api.AgentPolicyClassNormal
+	legacy.Spec.Team, legacy.Spec.SandboxRef = "", ""
 	plain := f.policy.DeepCopy()
 	plain.Name = "unreferenced"
 	requests := []admission.Request{
@@ -333,9 +331,6 @@ func TestPlatformAdmissionSuspensionOnly(t *testing.T) {
 					}},
 					{"Sandbox binding", func(r *admission.Request) {
 						addUnknownField(t, &r.Object, "spec", "sandboxRef", "another-sandbox")
-					}},
-					{"policy class", func(r *admission.Request) {
-						addUnknownField(t, &r.Object, "spec", "policyClass", api.AgentPolicyClassAdmin)
 					}},
 					{"model", func(r *admission.Request) {
 						addUnknownField(t, &r.Object, "spec", "model", "another-model")

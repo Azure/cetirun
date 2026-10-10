@@ -31,7 +31,7 @@ func nativeCoordinationFixture(t *testing.T) (*nativeSandboxFixture, *w.Expectat
 		if !w.EffectiveSource(source) {
 			continue
 		}
-		value, err := f.r.nativeSourceDigest(ctx, source, f.agent.Spec.SandboxRef, expected.Binding.PolicyClass, true)
+		value, err := f.r.nativeSourceDigest(ctx, source, f.agent.Spec.SandboxRef, true)
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -24,15 +24,21 @@ import {
   type TeamSkillStorage,
   type TeamUpsertRequest,
 } from "../../api/adminTeam";
+import { listPolicies, type AgentPolicyDTO } from "../../api/adminPolicy";
 
 interface FormState {
   name: string;
+  uid: string;
+  resourceVersion: string;
   role: string;
   description: string; // newline-separated
   defaultProvider: string;
   skills: string; // newline-separated
   storage: TeamSkillStorage;
   storageEnabled: boolean;
+  agentPolicyRef: string;
+  sandboxRefs: string;
+  defaultSandboxRef: string;
 }
 
 const emptyStorage: TeamSkillStorage = {
@@ -47,12 +53,17 @@ const emptyStorage: TeamSkillStorage = {
 function fromDTO(t: TeamDTO): FormState {
   return {
     name: t.name,
+    uid: t.uid,
+    resourceVersion: t.resourceVersion,
     role: t.role || "",
     description: (t.description || []).join("\n"),
     defaultProvider: t.defaultProvider || "",
     skills: (t.skills || []).join("\n"),
     storage: t.skillStorage || { ...emptyStorage },
     storageEnabled: !!t.skillStorage,
+    agentPolicyRef: t.agentPolicyRef || "",
+    sandboxRefs: (t.sandboxRefs || []).join("\n"),
+    defaultSandboxRef: t.defaultSandboxRef || "",
   };
 }
 
@@ -65,10 +76,15 @@ function toRequest(s: FormState): TeamUpsertRequest {
 
   const req: TeamUpsertRequest = {
     name: s.name.trim(),
+    uid: s.uid || undefined,
+    resourceVersion: s.resourceVersion || undefined,
     role: s.role.trim() || undefined,
     description: splitLines(s.description),
     defaultProvider: s.defaultProvider.trim() || undefined,
     skills: splitLines(s.skills),
+    agentPolicyRef: s.agentPolicyRef.trim(),
+    sandboxRefs: splitLines(s.sandboxRefs),
+    defaultSandboxRef: s.defaultSandboxRef.trim(),
   };
   if (s.storageEnabled) {
     req.skillStorage = {
@@ -93,12 +109,17 @@ export function TeamEditPage() {
 
   const [form, setForm] = useState<FormState>({
     name: "",
+    uid: "",
+    resourceVersion: "",
     role: "",
     description: "",
     defaultProvider: "",
     skills: "",
     storage: { ...emptyStorage },
     storageEnabled: false,
+    agentPolicyRef: "",
+    sandboxRefs: "",
+    defaultSandboxRef: "",
   });
   const [submitError, setSubmitError] = useState<string | null>(null);
 
@@ -106,6 +127,10 @@ export function TeamEditPage() {
     queryKey: ["admin", "team", name],
     queryFn: () => getTeam(name!),
     enabled: !isCreate,
+  });
+  const { data: policies } = useQuery<AgentPolicyDTO[], Error>({
+    queryKey: ["admin", "policies"],
+    queryFn: listPolicies,
   });
 
   useEffect(() => {
@@ -133,6 +158,14 @@ export function TeamEditPage() {
     e.preventDefault();
     setSubmitError(null);
     const req = toRequest(form);
+    if (!req.agentPolicyRef) {
+      setSubmitError("Choose an Agent policy.");
+      return;
+    }
+    if (req.sandboxRefs.length === 0 || !req.defaultSandboxRef || !req.sandboxRefs.includes(req.defaultSandboxRef)) {
+      setSubmitError("Provide one or more allowed Sandboxes and select one as the default.");
+      return;
+    }
     if (isCreate) {
       if (!/^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$/.test(req.name || "")) {
         setSubmitError(
@@ -182,6 +215,36 @@ export function TeamEditPage() {
           rows={4}
           value={form.description}
           onChange={(_, data) => setForm({ ...form, description: data.value })}
+        />
+      </Field>
+
+      <Divider />
+      <Text size={400} weight="semibold">Policy and sandbox assignment</Text>
+      <Field label="Agent policy" required hint="One policy applies to every Agent in this Team.">
+        <select
+          value={form.agentPolicyRef}
+          onChange={(event) => setForm({ ...form, agentPolicyRef: event.target.value })}
+          style={{ minHeight: 32, padding: "4px 8px" }}
+        >
+          <option value="">Select a policy</option>
+          {(policies || []).map((policy) => (
+            <option key={policy.name} value={policy.name}>{policy.name}</option>
+          ))}
+        </select>
+      </Field>
+      <Field label="Allowed sandboxes" required hint="One separately managed Sandbox name per line.">
+        <Textarea
+          rows={3}
+          value={form.sandboxRefs}
+          onChange={(_, data) => setForm({ ...form, sandboxRefs: data.value })}
+          placeholder="e.g. standard"
+        />
+      </Field>
+      <Field label="Default sandbox" required hint="Must be one of the allowed sandboxes.">
+        <Input
+          value={form.defaultSandboxRef}
+          onChange={(_, data) => setForm({ ...form, defaultSandboxRef: data.value })}
+          placeholder="e.g. standard"
         />
       </Field>
 

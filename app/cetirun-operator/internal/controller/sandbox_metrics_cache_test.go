@@ -239,7 +239,7 @@ func awaitSandboxMetricsInitialization(t *testing.T, collector *sandboxMetricsCo
 }
 
 func TestSandboxMetricsStartupGatesScrapes(t *testing.T) {
-	agent, team, box := sandboxMetricsFixture(t, "example", api.SandboxKata, api.AgentPolicyClassNormal)
+	agent, team, box := sandboxMetricsFixture(t, "example", api.SandboxKata)
 	source := newSandboxMetricsTestCache(t, agent, team, box)
 	source.informerBlock = "teams"
 	source.informerEntered, source.informerRelease = make(chan struct{}), make(chan struct{})
@@ -268,7 +268,7 @@ func TestSandboxMetricsStartupGatesScrapes(t *testing.T) {
 	}
 	close(source.informerRelease)
 	awaitSandboxMetricsInitialization(t, collector)
-	assertSandboxMetrics(t, registry, map[string]float64{"kata/normal/True/PolicyApplied": 1}, 1)
+	assertSandboxMetrics(t, registry, map[string]float64{"kata/True/PolicyApplied": 1}, 1)
 	stop()
 	assertSandboxMetrics(t, registry, nil, 0)
 	var kinds []string
@@ -346,7 +346,7 @@ func TestSandboxMetricsStartupRetries(t *testing.T) {
 	for index, stage := range []string{"agents", "teams", "sandboxes"} {
 		t.Run(stage, func(t *testing.T) {
 			t.Parallel()
-			agent, team, box := sandboxMetricsFixture(t, "example", api.SandboxKata, api.AgentPolicyClassNormal)
+			agent, team, box := sandboxMetricsFixture(t, "example", api.SandboxKata)
 			source := newSandboxMetricsTestCache(t, agent, team, box)
 			before := source.objects()
 			source.informerFailures = map[string]error{stage: errors.New("synthetic informer initialization failure")}
@@ -387,7 +387,7 @@ func TestSandboxMetricsStartupRetries(t *testing.T) {
 			source.mu.Unlock()
 			awaitSandboxMetricsInitialization(t, collector)
 			for range 3 {
-				assertSandboxMetrics(t, registry, map[string]float64{"kata/normal/True/PolicyApplied": 1}, 1)
+				assertSandboxMetrics(t, registry, map[string]float64{"kata/True/PolicyApplied": 1}, 1)
 			}
 			stop()
 			assertSandboxMetrics(t, registry, nil, 0)
@@ -418,7 +418,7 @@ func TestSandboxMetricsStartupRetries(t *testing.T) {
 
 func TestSandboxMetricsStartupAttemptDeadline(t *testing.T) {
 	t.Parallel()
-	agent, team, box := sandboxMetricsFixture(t, "example", api.SandboxKata, api.AgentPolicyClassNormal)
+	agent, team, box := sandboxMetricsFixture(t, "example", api.SandboxKata)
 	source := newSandboxMetricsTestCache(t, agent, team, box)
 	source.informerBlock = "teams"
 	source.informerEntered, source.informerRelease = make(chan struct{}), make(chan struct{})
@@ -436,7 +436,7 @@ func TestSandboxMetricsStartupAttemptDeadline(t *testing.T) {
 	}
 	close(source.informerRelease)
 	awaitSandboxMetricsInitialization(t, collector)
-	assertSandboxMetrics(t, registry, map[string]float64{"kata/normal/True/PolicyApplied": 1}, 1)
+	assertSandboxMetrics(t, registry, map[string]float64{"kata/True/PolicyApplied": 1}, 1)
 	stop()
 	if failures.Load() != 1 {
 		t.Fatalf("timeout recovery logged %d failures, want 1", failures.Load())
@@ -522,7 +522,7 @@ func (s *sandboxMetricsRejectHTTP) RoundTrip(*http.Request) (*http.Response, err
 func TestSandboxMetricsRealCacheWithoutLeaderControllers(t *testing.T) {
 	for _, preexistingAgentInformer := range []bool{false, true} {
 		t.Run(fmt.Sprintf("preexisting-agent-informer=%t", preexistingAgentInformer), func(t *testing.T) {
-			agent, team, box := sandboxMetricsFixture(t, "example", api.SandboxKata, api.AgentPolicyClassNormal)
+			agent, team, box := sandboxMetricsFixture(t, "example", api.SandboxKata)
 			sources := make(map[string]*sandboxMetricsInformerSource)
 			scheme := runtime.NewScheme()
 			if err := api.AddToScheme(scheme); err != nil {
@@ -608,7 +608,7 @@ func TestSandboxMetricsRealCacheWithoutLeaderControllers(t *testing.T) {
 				t.Fatal("startup list/watch did not complete:", err)
 			}
 			for range 10 {
-				assertSandboxMetrics(t, registry, map[string]float64{"kata/normal/True/PolicyApplied": 1}, 1)
+				assertSandboxMetrics(t, registry, map[string]float64{"kata/True/PolicyApplied": 1}, 1)
 				sandboxMetricsExposition(t, registry)
 			}
 			if constructions.Load() != 3 || noHTTP.calls.Load() != 0 {

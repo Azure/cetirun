@@ -56,11 +56,6 @@ type AgentSpec struct {
 	// +optional
 	SandboxRef string `json:"sandboxRef,omitempty"`
 
-	// PolicyClass selects the administrator-assigned Team policy slot.
-	// +kubebuilder:default=normal
-	// +optional
-	PolicyClass AgentPolicyClass `json:"policyClass,omitempty"`
-
 	// Model is the Agent's preferred default model as exposed by the platform
 	// AI Gateway, such as a shared model or copilot/<model>. Policy resolution rejects
 	// an explicitly requested model that is outside the effective policy.
@@ -288,19 +283,17 @@ type AgentStatus struct {
 	// +optional
 	RegistryCredentials *RegistryCredentialsStatus `json:"registryCredentials,omitempty"`
 
-	// Policy records the resolved AgentPolicy and the revisions each enforcement
-	// component must apply. Detailed component evidence remains in its existing
-	// status field.
+	// Policy records the resolved AgentPolicy. Component execution is reported
+	// independently by the component that owns it.
 	// +optional
 	Policy *PolicyStatus `json:"policy,omitempty"`
 }
 
 type PolicyStatus struct {
-	// +kubebuilder:validation:Enum=Pending;Applied;Denied;Unknown
+	// +kubebuilder:validation:Enum=Resolved;Denied
 	Phase              string                    `json:"phase,omitempty"`
 	ObservedGeneration int64                     `json:"observedGeneration,omitempty"`
 	EffectivePolicyRef *EffectivePolicyReference `json:"effectivePolicyRef,omitempty"`
-	Enforcement        PolicyEnforcementStatus   `json:"enforcement,omitempty"`
 }
 
 type PolicyObjectReference struct {
@@ -311,17 +304,6 @@ type PolicyObjectReference struct {
 
 type EffectivePolicyReference struct {
 	PolicyObjectReference `json:",inline"`
-	Class                 AgentPolicyClass `json:"class"`
-}
-
-type PolicyEnforcementStatus struct {
-	Sandbox    PolicyRevisionExpectation `json:"sandbox,omitempty"`
-	Gateway    PolicyRevisionExpectation `json:"gateway,omitempty"`
-	Credential PolicyRevisionExpectation `json:"credential,omitempty"`
-}
-
-type PolicyRevisionExpectation struct {
-	DesiredRevision string `json:"desiredRevision,omitempty"`
 }
 
 type RegistryCredentialsStatus struct {
@@ -377,8 +359,8 @@ type AgentIdentityStatus struct {
 	Reason string `json:"reason,omitempty"`
 
 	// CredentialPolicyRevision is reserved for a future typed credential
-	// service read-back. The legacy bearer issuer must leave it empty and cannot
-	// satisfy aggregate Policy application readiness.
+	// service read-back. The legacy bearer issuer must leave it empty; only the
+	// credential component may report its own policy execution revision.
 	// +optional
 	CredentialPolicyRevision string `json:"credentialPolicyRevision,omitempty"`
 }
@@ -654,8 +636,6 @@ type SandboxStatus struct {
 	// +kubebuilder:validation:MinLength=1
 	SandboxUID types.UID `json:"sandboxUID"`
 
-	PolicyClass AgentPolicyClass `json:"policyClass"`
-
 	// +kubebuilder:validation:Type=string
 	// +kubebuilder:validation:MinLength=1
 	AgentPolicyUID types.UID `json:"agentPolicyUID"`
@@ -680,7 +660,6 @@ const (
 	ConditionTerminalConfigured       = "TerminalConfigured"
 	ConditionRegistryCredentialsReady = "RegistryCredentialsReady"
 	ConditionPolicyResolved           = "PolicyResolved"
-	ConditionPolicyApplied            = "PolicyApplied"
 )
 
 // AI Gateway virtual key lifecycle phases.
