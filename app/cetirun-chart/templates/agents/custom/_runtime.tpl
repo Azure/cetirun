@@ -5,12 +5,6 @@ Licensed under the MIT License.
 {{- define "cetirun.agent.custom.configmapData" }}
   custom-init-home.sh: |
 {{ .Files.Get "agents/custom/bootstrap/init-home.sh" | indent 4 }}
-{{- if .Values.agentIdentity.enabled }}
-  cetirun-agent: |
-{{ .Files.Get "configs/cetirun-agent" | indent 4 }}
-  azure-skill: |
-{{ .Files.Get "skills/azure/SKILL.md" | indent 4 }}
-{{- end }}
 {{- end }}
 
 {{- define "cetirun.agent.custom.validateDesktopBrowserConfig" -}}
@@ -37,6 +31,8 @@ Licensed under the MIT License.
 {{- fail "Custom requires image, model, HOME and context bindings" -}}
 {{- end -}}
 {{- if ne $r.bindings.namespace.name .Release.Namespace -}}{{- fail "Custom binding namespace mismatch" -}}{{- end -}}
+{{- if or .Values.agentIdentity.enabled $r.bindings.agentIdentity -}}{{- fail "Custom does not support Agent Identity" -}}{{- end -}}
+{{- if .Values.toolsMCP.enabled -}}{{- fail "Custom does not support Agent Tools MCP" -}}{{- end -}}
 {{- if or .Values.extraEnv .Values.extraEnvFrom .Values.initContainers .Values.sidecars .Values.extraVolumes .Values.extraVolumeMounts .Values.imagePullSecrets -}}
 {{- fail "Custom does not accept raw environment, container, volume or pull-Secret overrides" -}}
 {{- end -}}
@@ -114,10 +110,6 @@ spec:
               value: /etc/cetirun/init-home-common.sh
             - name: CETIRUN_CONTEXT_DIR
               value: /etc/cetirun-context
-            {{- if $b.agentIdentity }}
-            - name: CETIRUN_AGENT_IDENTITY_ENABLED
-              value: "true"
-            {{- end }}
             {{- include "cetirun.context.initEnv" . | nindent 12 }}
           volumeMounts:
             - name: data
@@ -149,10 +141,6 @@ spec:
               {{- else }}
               value: {{ .value | quote }}
               {{- end }}
-            {{- end }}
-            {{- if $b.agentIdentity }}
-            - name: CETIRUN_AGENT_BROKER_URL
-              value: {{ $b.agentIdentity.brokerURL | quote }}
             {{- end }}
             {{- include "cetirun.memory.env" . | nindent 12 }}
           {{- if $r.ports }}
@@ -190,35 +178,12 @@ spec:
             {{- end }}
             - name: tmp
               mountPath: /tmp
-            {{- if $b.agentIdentity }}
-            - name: agent-identity-tools
-              mountPath: /usr/local/bin/cetirun-agent
-              subPath: cetirun-agent
-              readOnly: true
-            {{- end }}
             {{- include "cetirun.memory.mounts" . | nindent 12 }}
         {{- if .Values.desktop.enabled }}
         {{- include "cetirun.platform.desktop" . | nindent 8 }}
         {{- end }}
       volumes:
         - name: context
-          {{- if $b.agentIdentity }}
-          projected:
-            defaultMode: 0444
-            sources:
-              - configMap:
-                  name: {{ $b.context.name | quote }}
-                  items:
-                    {{- range $key, $path := $b.context.files }}
-                    - key: {{ $key | quote }}
-                      path: {{ $path | quote }}
-                    {{- end }}
-              - configMap:
-                  name: {{ include "cetirun.configMapName" . }}
-                  items:
-                    - key: azure-skill
-                      path: skills/azure/SKILL.md
-          {{- else }}
           configMap:
             name: {{ $b.context.name | quote }}
             defaultMode: 0444
@@ -227,7 +192,6 @@ spec:
               - key: {{ $key | quote }}
                 path: {{ $path | quote }}
               {{- end }}
-          {{- end }}
         - name: config
           configMap:
             name: {{ include "cetirun.configMapName" . }}
@@ -241,15 +205,6 @@ spec:
         {{- end }}
         {{- include "cetirun.context.volume" . | nindent 8 }}
         {{- include "cetirun.memory.volumes" . | nindent 8 }}
-        {{- if $b.agentIdentity }}
-        - name: agent-identity-tools
-          configMap:
-            name: {{ include "cetirun.configMapName" . }}
-            defaultMode: 0555
-            items:
-              - key: cetirun-agent
-                path: cetirun-agent
-        {{- end }}
   {{- if semverCompare ">=1.25-0" .Capabilities.KubeVersion.Version }}
   persistentVolumeClaimRetentionPolicy:
     whenDeleted: Retain

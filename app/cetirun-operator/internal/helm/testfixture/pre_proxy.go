@@ -20,6 +20,24 @@ func RestorePreProxyContract(chrt *chart.Chart) error {
 			assets[file.Name] = &file.Data
 		}
 	}
+	// The current chart also contains native MCP support. Remove only those
+	// additions before reconstructing and checking the fixed pre-proxy revision.
+	for name, addition := range map[string]string{
+		"agents/openclaw/config/native.tpl": `{{- if .Values.toolsMCP.enabled }}
+{{- $_ := set $config "mcp" (dict "servers" (dict "agent-tools" (dict "url" .Values.toolsMCP.url "transport" "streamable-http" "sslVerify" true))) }}
+{{- else }}
+{{- $servers := dig "mcp" "servers" (dict) $config }}
+{{- $_ := unset $servers "agent-tools" }}
+{{- end }}
+`,
+		"templates/_sandbox.tpl": ".Values.toolsMCP.enabled ",
+	} {
+		data, exists := assets[name]
+		if !exists || bytes.Count(*data, []byte(addition)) != 1 {
+			return fmt.Errorf("pre-proxy fixture requires the exact MCP addition in %s", name)
+		}
+		*data = bytes.Replace(*data, []byte(addition), nil, 1)
+	}
 	for name, change := range map[string]struct {
 		addition string
 		checksum string

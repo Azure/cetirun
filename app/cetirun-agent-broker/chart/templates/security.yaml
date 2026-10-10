@@ -28,24 +28,24 @@ spec:
               - cluster.local/ns/{{ .Values.portal.namespace }}/sa/{{ .Values.portal.serviceAccount }}
       to:
         - operation:
-            paths: ["/internal/v1/*", "/healthz", "/readyz"]
+            ports: ["8080"]
+            paths: ["/v1/connections*", "/v1/instances*", "/api/v1/connections/callback", "/healthz", "/readyz"]
     - from:
         - source:
             principals:
               - cluster.local/ns/{{ .Values.operator.namespace }}/sa/{{ .Values.operator.serviceAccount }}
       to:
         - operation:
+            ports: ["8080"]
             methods: ["DELETE"]
             # Istio StringMatch supports a trailing prefix wildcard. The Go
             # ServeMux still exposes only the exact bounded cleanup route.
             paths: ["/operator/v1/instances/*"]
     - from:
         - source:
-            # Istio string matching supports a trailing prefix wildcard. The
-            # Broker still maps the exact mTLS namespace + ServiceAccount to a
-            # single Agent CR before serving any request.
-            namespaces: ["cetirun-*"]
+            principals:
+              - cluster.local/ns/{{ .Values.toolService.namespace }}/sa/{{ .Values.toolService.serviceAccount }}
       to:
         - operation:
-            paths: ["/v1/*"]
+            ports: ["8443"]
 {{- end }}

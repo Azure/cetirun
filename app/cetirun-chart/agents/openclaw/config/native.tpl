@@ -343,4 +343,10 @@ Licensed under the MIT License.
 {{- $meta := dig "meta" (dict) $config }}
 {{- $_ := set $meta "lastTouchedVersion" (.Chart.Version | default "unknown") }}
 {{- $_ := set $config "meta" $meta }}
+{{- if .Values.toolsMCP.enabled }}
+{{- $_ := set $config "mcp" (dict "servers" (dict "agent-tools" (dict "url" .Values.toolsMCP.url "transport" "streamable-http" "sslVerify" true))) }}
+{{- else }}
+{{- $servers := dig "mcp" "servers" (dict) $config }}
+{{- $_ := unset $servers "agent-tools" }}
+{{- end }}
 {{ $config | toPrettyJson }}

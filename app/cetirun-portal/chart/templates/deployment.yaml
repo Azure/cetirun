@@ -73,6 +73,8 @@ spec:
               value: {{ .Values.sandboxRuntimeProfiles | toJson | quote }}
             - name: FEATURE_AGENT_IDENTITY_ENABLED
               value: {{ default false ((.Values.features).agentIdentityEnabled) | quote }}
+            - name: FEATURE_AGENT_TOOLS_ENABLED
+              value: {{ default false ((.Values.features).agentToolsEnabled) | quote }}
             - name: FEATURE_AI_GATEWAY_ENABLED
               value: {{ default false ((.Values.features).aiGatewayEnabled) | quote }}
             {{- if default false ((.Values.features).aiGatewayEnabled) }}
@@ -87,14 +89,16 @@ spec:
             - name: CONFIGURATION_COORDINATION_UID
               value: {{ .Values.configurationCoordination.uid | quote }}
             {{- end }}
-            {{- if default false ((.Values.features).agentIdentityEnabled) }}
+            {{- if or (default false ((.Values.features).agentIdentityEnabled)) (default false ((.Values.features).agentToolsEnabled)) }}
             - name: ENTRA_TENANT_ID
-              value: {{ required "agentIdentity.tenantId is required when Agent Identity is enabled" .Values.agentIdentity.tenantId | quote }}
+              value: {{ required "agentIdentity.tenantId is required when verified Portal identity is enabled" .Values.agentIdentity.tenantId | quote }}
             - name: PORTAL_OIDC_CLIENT_ID
-              value: {{ required "agentIdentity.portalClientId is required when Agent Identity is enabled" .Values.agentIdentity.portalClientId | quote }}
-            - name: AGENT_ID_BROKER_URL
-              value: {{ required "agentIdentity.brokerURL is required when Agent Identity is enabled" .Values.agentIdentity.brokerURL | quote }}
-            {{- $_ := required "istio.host is required when Agent Identity is enabled" .Values.istio.host }}
+              value: {{ required "agentIdentity.portalClientId is required when verified Portal identity is enabled" .Values.agentIdentity.portalClientId | quote }}
+            {{- $_ := required "istio.host is required when verified Portal identity is enabled" .Values.istio.host }}
+            {{- end }}
+            {{- if default false ((.Values.features).agentToolsEnabled) }}
+            - name: AGENT_TOOLS_BROKER_URL
+              value: {{ required "agentTools.brokerURL is required when Agent Tools is enabled" .Values.agentTools.brokerURL | quote }}
             {{- end }}
             - name: ADMIN_ALIASES_FILE
               value: /etc/cetirun-portal/admins/aliases

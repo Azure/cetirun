@@ -11,3 +11,6 @@
 {{- if not .Values.istio.sidecarInjection }}{{ fail "istio.sidecarInjection must be true to confirm that the release namespace has injection enabled" }}{{ end -}}
 {{- if empty .Values.istio.revision }}{{ fail "istio.revision is required for revision-based sidecar injection" }}{{ end -}}
 {{- if or (empty .Values.operator.namespace) (empty .Values.operator.serviceAccount) }}{{ fail "operator namespace and ServiceAccount are required" }}{{ end -}}
+{{- if or (empty .Values.portal.namespace) (empty .Values.portal.serviceAccount) }}{{ fail "portal namespace and ServiceAccount are required" }}{{ end -}}
+{{- if or (empty .Values.toolService.namespace) (empty .Values.toolService.serviceAccount) }}{{ fail "tool service namespace and ServiceAccount are required" }}{{ end -}}
+{{- if and .Values.tls.enabled (or (empty .Values.tls.secretName) (empty .Values.tls.certKey) (empty .Values.tls.keyKey) (empty .Values.tls.clientCAKey)) }}{{ fail "tls.secretName, certKey, keyKey, and clientCAKey are required when TLS is enabled" }}{{ end -}}

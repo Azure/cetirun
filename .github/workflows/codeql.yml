@@ -73,6 +73,7 @@ jobs:
           (cd app/cetirun-operator && go build -a ./...)
           (cd app/cetirun-portal && go build -a ./...)
           (cd app/cetirun-agent-broker && go build -a ./...)
+          (cd app/agent-tools-mcp && go build -a ./...)
           (cd app/cetirun-memory-context && go build -a ./...)
 
       - name: Perform CodeQL Analysis

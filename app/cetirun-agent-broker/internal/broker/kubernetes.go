@@ -18,11 +18,15 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strings"
+	"time"
 )
 
-var errConflict = errors.New("authorization record update conflict")
-var errNotFound = errors.New("authorization record not found")
+var errConflict = errors.New("record update conflict")
+var errNotFound = errors.New("record not found")
+var errDependencyUnavailable = errors.New("dependency unavailable")
+var errWorkloadProofInvalid = errors.New("workload proof is invalid")
 
 type secretDocument struct {
 	APIVersion string            `json:"apiVersion"`
@@ -52,12 +56,14 @@ type secretList struct {
 
 type agentDocument struct {
 	Metadata struct {
-		Name        string            `json:"name"`
-		UID         string            `json:"uid"`
-		Annotations map[string]string `json:"annotations"`
+		Name              string            `json:"name"`
+		UID               string            `json:"uid"`
+		Annotations       map[string]string `json:"annotations"`
+		DeletionTimestamp *time.Time        `json:"deletionTimestamp"`
 	} `json:"metadata"`
 	Spec struct {
-		User struct {
+		Suspended bool `json:"suspended"`
+		User      struct {
 			Alias string `json:"alias"`
 		} `json:"user"`
 		AgentIdentity *struct {
@@ -78,14 +84,36 @@ type agentList struct {
 	Items []agentDocument `json:"items"`
 }
 
+type tokenReview struct {
+	APIVersion string `json:"apiVersion"`
+	Kind       string `json:"kind"`
+	Spec       struct {
+		Token     string   `json:"token"`
+		Audiences []string `json:"audiences"`
+	} `json:"spec"`
+	Status struct {
+		Authenticated bool     `json:"authenticated"`
+		Audiences     []string `json:"audiences"`
+		User          struct {
+			Username string              `json:"username"`
+			UID      string              `json:"uid"`
+			Extra    map[string][]string `json:"extra"`
+		} `json:"user"`
+	} `json:"status"`
+}
+
+type workloadIdentity struct {
+	Agent  Agent
+	PodUID string
+	SAUID  string
+}
+
 type kubeClient struct {
-	baseURL               string
-	namespace             string
-	tokenFile             string
-	client                *http.Client
-	wrapper               keyWrapper
-	blueprintClientID     string
-	authorizationClientID string
+	baseURL   string
+	namespace string
+	tokenFile string
+	client    *http.Client
+	wrapper   keyWrapper
 }
 
 func newKubeClient(cfg Config, wrapper keyWrapper) (*kubeClient, error) {
@@ -114,9 +142,7 @@ func newKubeClient(cfg Config, wrapper keyWrapper) (*kubeClient, error) {
 			MinVersion: tls.VersionTLS12,
 			RootCAs:    pool,
 		}}, Timeout: cfg.RequestTimeout},
-		wrapper:               wrapper,
-		blueprintClientID:     cfg.BlueprintClientID,
-		authorizationClientID: cfg.AuthorizationClientID,
+		wrapper: wrapper,
 	}, nil
 }
 
@@ -184,18 +210,7 @@ func (k *kubeClient) getAgent(ctx context.Context, name string) (Agent, error) {
 	if err != nil {
 		return Agent{}, err
 	}
-	agent := Agent{
-		Name:           document.Metadata.Name,
-		UID:            document.Metadata.UID,
-		Namespace:      document.Status.Namespace,
-		OwnerTenantID:  document.Metadata.Annotations["agentidentity.cetirun.microsoft.com/owner-tenant-id"],
-		OwnerObjectID:  document.Metadata.Annotations["agentidentity.cetirun.microsoft.com/owner-object-id"],
-		ServiceAccount: workloadServiceAccount(document.Metadata.Name),
-	}
-	if document.Spec.AgentIdentity != nil && document.Spec.AgentIdentity.Enabled && document.Status.AgentIdentity != nil {
-		agent.AgentIdentityClientID = document.Status.AgentIdentity.ClientID
-		agent.AgentIdentityReady = document.Status.Phase == "Ready" && document.Status.AgentIdentity.Phase == "Ready"
-	}
+	agent := agentFromDocument(document)
 	if agent.UID == "" || agent.Namespace == "" {
 		return Agent{}, errors.New("Agent resource is not ready")
 	}
@@ -243,18 +258,7 @@ func (k *kubeClient) getAgentByUID(ctx context.Context, uid string) (Agent, erro
 		if document.Metadata.UID != uid {
 			continue
 		}
-		agent := Agent{
-			Name:               document.Metadata.Name,
-			UID:                document.Metadata.UID,
-			Namespace:          document.Status.Namespace,
-			OwnerTenantID:      document.Metadata.Annotations["agentidentity.cetirun.microsoft.com/owner-tenant-id"],
-			OwnerObjectID:      document.Metadata.Annotations["agentidentity.cetirun.microsoft.com/owner-object-id"],
-			ServiceAccount:     workloadServiceAccount(document.Metadata.Name),
-			AgentIdentityReady: document.Status.Phase == "Ready" && document.Status.AgentIdentity != nil && document.Status.AgentIdentity.Phase == "Ready",
-		}
-		if document.Status.AgentIdentity != nil {
-			agent.AgentIdentityClientID = document.Status.AgentIdentity.ClientID
-		}
+		agent := agentFromDocument(document)
 		if match != nil {
 			return Agent{}, errors.New("instance UID maps to multiple resources")
 		}
@@ -266,150 +270,106 @@ func (k *kubeClient) getAgentByUID(ctx context.Context, uid string) (Agent, erro
 	return *match, nil
 }
 
+func (k *kubeClient) verifyWorkloadProof(ctx context.Context, proof, audience string) (workloadIdentity, error) {
+	if strings.TrimSpace(proof) == "" || strings.TrimSpace(audience) == "" {
+		return workloadIdentity{}, errWorkloadProofInvalid
+	}
+	review := tokenReview{APIVersion: "authentication.k8s.io/v1", Kind: "TokenReview"}
+	review.Spec.Token, review.Spec.Audiences = proof, []string{audience}
+	if _, err := k.request(ctx, http.MethodPost, "/apis/authentication.k8s.io/v1/tokenreviews", review, &review); err != nil {
+		return workloadIdentity{}, fmt.Errorf("%w: token review: %v", errDependencyUnavailable, err)
+	}
+	if !review.Status.Authenticated || !tokenReviewAudienceAccepted(review.Status.Audiences, audience) {
+		return workloadIdentity{}, errWorkloadProofInvalid
+	}
+	parts := strings.Split(review.Status.User.Username, ":")
+	if len(parts) != 4 || parts[0] != "system" || parts[1] != "serviceaccount" || !dnsLabel(parts[2]) || !dnsLabel(parts[3]) {
+		return workloadIdentity{}, errWorkloadProofInvalid
+	}
+	saUID := review.Status.User.UID
+	podUID := firstExtra(review.Status.User.Extra, "authentication.kubernetes.io/pod-uid")
+	podName := firstExtra(review.Status.User.Extra, "authentication.kubernetes.io/pod-name")
+	if saUID == "" || podUID == "" || podName == "" || !dnsLabel(podName) {
+		return workloadIdentity{}, errWorkloadProofInvalid
+	}
+	var serviceAccount struct {
+		Metadata struct {
+			UID               string     `json:"uid"`
+			DeletionTimestamp *time.Time `json:"deletionTimestamp,omitempty"`
+		} `json:"metadata"`
+	}
+	if _, err := k.request(ctx, http.MethodGet, "/api/v1/namespaces/"+url.PathEscape(parts[2])+"/serviceaccounts/"+url.PathEscape(parts[3]), nil, &serviceAccount); err != nil {
+		if errors.Is(err, errNotFound) {
+			return workloadIdentity{}, errWorkloadProofInvalid
+		}
+		return workloadIdentity{}, fmt.Errorf("%w: service account lookup: %v", errDependencyUnavailable, err)
+	} else if serviceAccount.Metadata.UID != saUID || serviceAccount.Metadata.DeletionTimestamp != nil {
+		return workloadIdentity{}, errWorkloadProofInvalid
+	}
+	var pod struct {
+		Metadata struct {
+			UID               string     `json:"uid"`
+			DeletionTimestamp *time.Time `json:"deletionTimestamp,omitempty"`
+		} `json:"metadata"`
+		Spec struct {
+			ServiceAccountName string `json:"serviceAccountName"`
+		} `json:"spec"`
+	}
+	if _, err := k.request(ctx, http.MethodGet, "/api/v1/namespaces/"+url.PathEscape(parts[2])+"/pods/"+url.PathEscape(podName), nil, &pod); err != nil {
+		if errors.Is(err, errNotFound) {
+			return workloadIdentity{}, errWorkloadProofInvalid
+		}
+		return workloadIdentity{}, fmt.Errorf("%w: pod lookup: %v", errDependencyUnavailable, err)
+	} else if pod.Metadata.UID != podUID || pod.Spec.ServiceAccountName != parts[3] || pod.Metadata.DeletionTimestamp != nil {
+		return workloadIdentity{}, errWorkloadProofInvalid
+	}
+	agent, err := k.getAgentByWorkload(ctx, parts[2], parts[3])
+	if err != nil {
+		if errors.Is(err, errNotFound) {
+			return workloadIdentity{}, errWorkloadProofInvalid
+		}
+		return workloadIdentity{}, fmt.Errorf("%w: instance lookup: %v", errDependencyUnavailable, err)
+	}
+	if !agent.WorkloadReady || !uuidPattern.MatchString(agent.UID) {
+		return workloadIdentity{}, errWorkloadProofInvalid
+	}
+	return workloadIdentity{Agent: agent, PodUID: podUID, SAUID: saUID}, nil
+}
+
+func tokenReviewAudienceAccepted(audiences []string, expected string) bool {
+	return len(audiences) == 1 && audiences[0] == expected
+}
+
+func agentFromDocument(document agentDocument) Agent {
+	agent := Agent{
+		Name:           document.Metadata.Name,
+		UID:            document.Metadata.UID,
+		Namespace:      document.Status.Namespace,
+		OwnerTenantID:  document.Metadata.Annotations["agentidentity.cetirun.microsoft.com/owner-tenant-id"],
+		OwnerObjectID:  document.Metadata.Annotations["agentidentity.cetirun.microsoft.com/owner-object-id"],
+		ServiceAccount: workloadServiceAccount(document.Metadata.Name),
+		WorkloadReady:  document.Status.Phase == "Ready" && !document.Spec.Suspended && document.Metadata.DeletionTimestamp == nil,
+	}
+	if document.Spec.AgentIdentity != nil && document.Spec.AgentIdentity.Enabled && document.Status.AgentIdentity != nil {
+		agent.AgentIdentityClientID = document.Status.AgentIdentity.ClientID
+		agent.AgentIdentityReady = agent.WorkloadReady && document.Status.AgentIdentity.Phase == "Ready" && agent.AgentIdentityClientID != ""
+	}
+	return agent
+}
+
+func firstExtra(extra map[string][]string, key string) string {
+	if len(extra[key]) != 1 {
+		return ""
+	}
+	return extra[key][0]
+}
+
 func workloadServiceAccount(instanceName string) string {
 	name := "openclaw-" + instanceName + "-cetirun"
 	if len(name) > 63 {
 		name = name[:63]
 	}
 	return strings.TrimRight(name, "-")
-}
-
-func recordName(uid string) string { return "agent-authorization-" + strings.ToLower(uid) }
-
-func recordAAD(uid, tenantID, ownerID, agentIdentityClientID, blueprintClientID, authorizationClientID string, generation uint64) []byte {
-	return []byte(fmt.Sprintf("v1\x00%s\x00%s\x00%s\x00%s\x00%s\x00%s\x00%d", uid, tenantID, ownerID, agentIdentityClientID, blueprintClientID, authorizationClientID, generation))
-}
-
-func (k *kubeClient) getRecord(ctx context.Context, uid string) (*AuthorizationRecord, string, error) {
-	var secret secretDocument
-	endpoint := "/api/v1/namespaces/" + url.PathEscape(k.namespace) + "/secrets/" + url.PathEscape(recordName(uid))
-	if _, err := k.request(ctx, http.MethodGet, endpoint, nil, &secret); err != nil {
-		return nil, "", err
-	}
-	encoded, err := base64.StdEncoding.DecodeString(secret.Data["envelope.json"])
-	if err != nil {
-		return nil, "", errors.New("authorization record encoding is invalid")
-	}
-	generation := uint64(0)
-	if raw := secret.Data["generation"]; raw != "" {
-		decoded, decodeErr := base64.StdEncoding.DecodeString(raw)
-		if decodeErr == nil {
-			_, _ = fmt.Sscanf(string(decoded), "%d", &generation)
-		}
-	}
-	ownerTenant := secret.Metadata.Labels["agentidentity.cetirun.microsoft.com/owner-tenant"]
-	ownerObject := secret.Metadata.Labels["agentidentity.cetirun.microsoft.com/owner-object"]
-	agentIdentityClientID := secret.Metadata.Labels["agentidentity.cetirun.microsoft.com/agent-client-id"]
-	plaintext, err := openEnvelope(ctx, k.wrapper, encoded, recordAAD(uid, ownerTenant, ownerObject, agentIdentityClientID, k.blueprintClientID, k.authorizationClientID, generation))
-	if err != nil {
-		return nil, "", err
-	}
-	var record AuthorizationRecord
-	if err := json.Unmarshal(plaintext, &record); err != nil || record.InstanceUID != uid || record.Generation != generation {
-		return nil, "", errors.New("authorization record is invalid")
-	}
-	return &record, secret.Metadata.ResourceVersion, nil
-}
-
-func (k *kubeClient) putRecord(ctx context.Context, record *AuthorizationRecord, resourceVersion string) error {
-	plaintext, err := json.Marshal(record)
-	if err != nil {
-		return err
-	}
-	aad := recordAAD(record.InstanceUID, record.OwnerTenantID, record.OwnerObjectID, record.AgentIdentityClientID, k.blueprintClientID, k.authorizationClientID, record.Generation)
-	encoded, err := seal(ctx, k.wrapper, plaintext, aad)
-	if err != nil {
-		return err
-	}
-	labels := map[string]string{
-		"app.kubernetes.io/managed-by":                        "cetirun-agent-broker",
-		"agentidentity.cetirun.microsoft.com/instance-uid":    record.InstanceUID,
-		"agentidentity.cetirun.microsoft.com/instance-name":   record.InstanceName,
-		"agentidentity.cetirun.microsoft.com/owner-tenant":    record.OwnerTenantID,
-		"agentidentity.cetirun.microsoft.com/owner-object":    record.OwnerObjectID,
-		"agentidentity.cetirun.microsoft.com/agent-client-id": record.AgentIdentityClientID,
-	}
-	if record.Transaction != nil {
-		labels["agentidentity.cetirun.microsoft.com/state-hash"] = record.Transaction.StateHash[:48]
-	}
-	secret := secretDocument{
-		APIVersion: "v1",
-		Kind:       "Secret",
-		Metadata: secretMetadata{
-			Name:            recordName(record.InstanceUID),
-			Namespace:       k.namespace,
-			ResourceVersion: resourceVersion,
-			Labels:          labels,
-			OwnerReferences: []ownerReference{{
-				APIVersion: "cetirun.microsoft.com/v1alpha1",
-				Kind:       "Agent",
-				Name:       record.InstanceName,
-				UID:        record.InstanceUID,
-			}},
-		},
-		Data: map[string]string{
-			"envelope.json": base64.StdEncoding.EncodeToString(encoded),
-			"generation":    base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf("%d", record.Generation))),
-		},
-	}
-	endpoint := "/api/v1/namespaces/" + url.PathEscape(k.namespace) + "/secrets"
-	method := http.MethodPost
-	if resourceVersion != "" {
-		method = http.MethodPut
-		endpoint += "/" + url.PathEscape(secret.Metadata.Name)
-	}
-	_, err = k.request(ctx, method, endpoint, secret, nil)
-	return err
-}
-
-func (k *kubeClient) findRecordByState(ctx context.Context, state string) (*AuthorizationRecord, string, error) {
-	digest := sha256.Sum256([]byte(state))
-	hash := hex.EncodeToString(digest[:])
-	selector := url.QueryEscape("agentidentity.cetirun.microsoft.com/state-hash=" + hash[:48])
-	endpoint := "/api/v1/namespaces/" + url.PathEscape(k.namespace) + "/secrets?labelSelector=" + selector
-	var list secretList
-	if _, err := k.request(ctx, http.MethodGet, endpoint, nil, &list); err != nil {
-		return nil, "", err
-	}
-	if len(list.Items) != 1 {
-		return nil, "", errNotFound
-	}
-	return k.getRecord(ctx, strings.TrimPrefix(list.Items[0].Metadata.Name, "agent-authorization-"))
-}
-
-func revokeAuthorizationRecord(record *AuthorizationRecord) {
-	record.Generation++
-	record.Revoked = true
-	record.Transaction = nil
-	record.Tokens = nil
-	record.AccountDisplay = ""
-}
-
-func (k *kubeClient) revokeRecord(ctx context.Context, agent Agent) error {
-	for attempt := 0; attempt < 3; attempt++ {
-		record, version, err := k.getRecord(ctx, agent.UID)
-		if errors.Is(err, errNotFound) {
-			if agent.Name == "" || agent.OwnerTenantID == "" || agent.OwnerObjectID == "" || agent.AgentIdentityClientID == "" {
-				return nil
-			}
-			record = &AuthorizationRecord{
-				InstanceUID:           agent.UID,
-				InstanceName:          agent.Name,
-				OwnerTenantID:         agent.OwnerTenantID,
-				OwnerObjectID:         agent.OwnerObjectID,
-				AgentIdentityClientID: agent.AgentIdentityClientID,
-			}
-		} else if err != nil {
-			return err
-		}
-		revokeAuthorizationRecord(record)
-		if err := k.putRecord(ctx, record, version); errors.Is(err, errConflict) {
-			continue
-		} else {
-			return err
-		}
-	}
-	return errConflict
 }
 
 func stateHash(state string) string {
@@ -428,4 +388,331 @@ func dnsLabel(value string) bool {
 		return false
 	}
 	return true
+}
+
+func toolRecordName(kind, id string) string { return "agent-tools-" + kind + "-" + id }
+
+func connectionAAD(connection Connection) []byte {
+	return []byte(fmt.Sprintf("agent-tools-connection-v1\x00%s\x00%s\x00%s\x00%s\x00%s\x00%d", connection.ID, connection.Owner.TenantID, connection.Owner.ObjectID, connection.Provider, connection.AccountID, connection.Revision))
+}
+
+func grantAAD(grant AgentGrant) []byte {
+	return []byte(fmt.Sprintf("agent-tools-grant-v1\x00%s\x00%s\x00%s\x00%s\x00%s\x00%d", grant.ID, grant.Owner.TenantID, grant.Owner.ObjectID, grant.InstanceUID, grant.ConnectionID, grant.Revision))
+}
+
+func recordRevision(data map[string]string) uint64 {
+	raw, err := base64.StdEncoding.DecodeString(data["revision"])
+	if err != nil {
+		return 0
+	}
+	var revision uint64
+	_, _ = fmt.Sscanf(string(raw), "%d", &revision)
+	return revision
+}
+
+func (k *kubeClient) getToolSecret(ctx context.Context, kind, id string) (secretDocument, error) {
+	var secret secretDocument
+	_, err := k.request(ctx, http.MethodGet, "/api/v1/namespaces/"+url.PathEscape(k.namespace)+"/secrets/"+url.PathEscape(toolRecordName(kind, id)), nil, &secret)
+	return secret, err
+}
+
+func (k *kubeClient) putToolSecret(ctx context.Context, kind, id string, labels map[string]string, data map[string]string, resourceVersion string) error {
+	labels["app.kubernetes.io/managed-by"] = "cetirun-agent-broker"
+	labels["agenttools.cetirun.microsoft.com/record-type"] = kind
+	secret := secretDocument{APIVersion: "v1", Kind: "Secret", Metadata: secretMetadata{Name: toolRecordName(kind, id), Namespace: k.namespace, ResourceVersion: resourceVersion, Labels: labels}, Data: data}
+	endpoint, method := "/api/v1/namespaces/"+url.PathEscape(k.namespace)+"/secrets", http.MethodPost
+	if resourceVersion != "" {
+		endpoint, method = endpoint+"/"+url.PathEscape(secret.Metadata.Name), http.MethodPut
+	}
+	_, err := k.request(ctx, method, endpoint, secret, nil)
+	return err
+}
+
+func (k *kubeClient) encodeConnection(ctx context.Context, record *connectionRecord) (map[string]string, error) {
+	plain, err := json.Marshal(storedConnectionRecord{connectionRecord: record, OwnerTenantID: record.Connection.Owner.TenantID, OwnerObjectID: record.Connection.Owner.ObjectID, AccountID: record.Connection.AccountID, UpdatedAt: record.Connection.UpdatedAt})
+	if err != nil {
+		return nil, err
+	}
+	envelope, err := seal(ctx, k.wrapper, plain, connectionAAD(record.Connection))
+	if err != nil {
+		return nil, err
+	}
+	return map[string]string{"envelope.json": base64.StdEncoding.EncodeToString(envelope), "revision": base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf("%d", record.Connection.Revision)))}, nil
+}
+
+type storedConnectionRecord struct {
+	*connectionRecord
+	OwnerTenantID string    `json:"ownerTenantId"`
+	OwnerObjectID string    `json:"ownerObjectId"`
+	AccountID     string    `json:"accountId"`
+	UpdatedAt     time.Time `json:"updatedAt"`
+}
+
+func (k *kubeClient) decodeConnection(ctx context.Context, secret secretDocument) (*connectionRecord, error) {
+	id, ownerTenant, ownerObject, provider := secret.Metadata.Labels["agenttools.cetirun.microsoft.com/id"], secret.Metadata.Labels["agenttools.cetirun.microsoft.com/owner-tenant"], secret.Metadata.Labels["agenttools.cetirun.microsoft.com/owner-object"], secret.Metadata.Labels["agenttools.cetirun.microsoft.com/provider"]
+	revision := recordRevision(secret.Data)
+	if id == "" || ownerTenant == "" || ownerObject == "" || provider == "" || revision == 0 {
+		return nil, errors.New("connection record metadata is invalid")
+	}
+	envelope, err := base64.StdEncoding.DecodeString(secret.Data["envelope.json"])
+	if err != nil {
+		return nil, errors.New("connection record encoding is invalid")
+	}
+	stub := Connection{ID: id, Owner: Owner{TenantID: ownerTenant, ObjectID: ownerObject}, Provider: provider, AccountID: secret.Metadata.Labels["agenttools.cetirun.microsoft.com/account-id"], Revision: revision}
+	plain, err := openEnvelope(ctx, k.wrapper, envelope, connectionAAD(stub))
+	if err != nil {
+		return nil, err
+	}
+	stored := storedConnectionRecord{connectionRecord: &connectionRecord{}}
+	if json.Unmarshal(plain, &stored) != nil {
+		return nil, errors.New("connection record is invalid")
+	}
+	record := stored.connectionRecord
+	record.Connection.Owner = Owner{TenantID: stored.OwnerTenantID, ObjectID: stored.OwnerObjectID}
+	record.Connection.AccountID, record.Connection.UpdatedAt = stored.AccountID, stored.UpdatedAt
+	if record.Connection.ID != id || record.Connection.Revision != revision || !sameOwner(record.Connection.Owner, stub.Owner) || record.Connection.Provider != provider || record.Connection.AccountID != stub.AccountID {
+		return nil, errors.New("connection record is invalid")
+	}
+	return record, nil
+}
+
+func (k *kubeClient) getConnection(ctx context.Context, id string) (*connectionRecord, string, error) {
+	secret, err := k.getToolSecret(ctx, "connection", id)
+	if err != nil {
+		return nil, "", err
+	}
+	record, err := k.decodeConnection(ctx, secret)
+	return record, secret.Metadata.ResourceVersion, err
+}
+
+func (k *kubeClient) putConnection(ctx context.Context, record *connectionRecord, resourceVersion string) error {
+	data, err := k.encodeConnection(ctx, record)
+	if err != nil {
+		return err
+	}
+	labels := map[string]string{
+		"agenttools.cetirun.microsoft.com/id":           record.Connection.ID,
+		"agenttools.cetirun.microsoft.com/owner-tenant": record.Connection.Owner.TenantID,
+		"agenttools.cetirun.microsoft.com/owner-object": record.Connection.Owner.ObjectID,
+		"agenttools.cetirun.microsoft.com/provider":     record.Connection.Provider,
+		"agenttools.cetirun.microsoft.com/account-id":   record.Connection.AccountID,
+	}
+	if record.Transaction != nil {
+		labels["agenttools.cetirun.microsoft.com/state-hash"] = record.Transaction.StateHash[:48]
+	}
+	return k.putToolSecret(ctx, "connection", record.Connection.ID, labels, data, resourceVersion)
+}
+
+func (k *kubeClient) connectionRecords(ctx context.Context, selector string) ([]struct {
+	record  *connectionRecord
+	version string
+}, error) {
+	endpoint := "/api/v1/namespaces/" + url.PathEscape(k.namespace) + "/secrets"
+	if selector != "" {
+		endpoint += "?labelSelector=" + url.QueryEscape(selector)
+	}
+	var list secretList
+	if _, err := k.request(ctx, http.MethodGet, endpoint, nil, &list); err != nil {
+		return nil, err
+	}
+	result := make([]struct {
+		record  *connectionRecord
+		version string
+	}, 0, len(list.Items))
+	for _, secret := range list.Items {
+		if secret.Metadata.Labels["agenttools.cetirun.microsoft.com/record-type"] != "connection" {
+			continue
+		}
+		record, err := k.decodeConnection(ctx, secret)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, struct {
+			record  *connectionRecord
+			version string
+		}{record, secret.Metadata.ResourceVersion})
+	}
+	return result, nil
+}
+
+func (k *kubeClient) listConnections(ctx context.Context, owner Owner) ([]Connection, error) {
+	records, err := k.connectionRecords(ctx, "agenttools.cetirun.microsoft.com/owner-tenant="+owner.TenantID+",agenttools.cetirun.microsoft.com/owner-object="+owner.ObjectID)
+	if err != nil {
+		return nil, err
+	}
+	connections := make([]Connection, 0, len(records))
+	for _, item := range records {
+		if !item.record.Deleted && sameOwner(item.record.Connection.Owner, owner) {
+			connections = append(connections, item.record.Connection)
+		}
+	}
+	sort.Slice(connections, func(i, j int) bool { return connections[i].CreatedAt.Before(connections[j].CreatedAt) })
+	return connections, nil
+}
+
+func (k *kubeClient) findConnectionByState(ctx context.Context, state string) (*connectionRecord, string, error) {
+	hash := stateHash(state)
+	records, err := k.connectionRecords(ctx, "agenttools.cetirun.microsoft.com/state-hash="+hash[:48])
+	if err != nil {
+		return nil, "", err
+	}
+	if len(records) != 1 || records[0].record.Deleted || records[0].record.Transaction == nil || !strings.EqualFold(records[0].record.Transaction.StateHash, hash) {
+		return nil, "", errNotFound
+	}
+	return records[0].record, records[0].version, nil
+}
+
+func (k *kubeClient) encodeGrant(ctx context.Context, record *grantRecord) (map[string]string, error) {
+	plain, err := json.Marshal(storedGrantRecord{grantRecord: record, OwnerTenantID: record.Grant.Owner.TenantID, OwnerObjectID: record.Grant.Owner.ObjectID, Revoked: record.Grant.Revoked, CreatedAt: record.Grant.CreatedAt, UpdatedAt: record.Grant.UpdatedAt})
+	if err != nil {
+		return nil, err
+	}
+	envelope, err := seal(ctx, k.wrapper, plain, grantAAD(record.Grant))
+	if err != nil {
+		return nil, err
+	}
+	return map[string]string{"envelope.json": base64.StdEncoding.EncodeToString(envelope), "revision": base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf("%d", record.Grant.Revision)))}, nil
+}
+
+type storedGrantRecord struct {
+	*grantRecord
+	OwnerTenantID string    `json:"ownerTenantId"`
+	OwnerObjectID string    `json:"ownerObjectId"`
+	Revoked       bool      `json:"revoked"`
+	CreatedAt     time.Time `json:"createdAt"`
+	UpdatedAt     time.Time `json:"updatedAt"`
+}
+
+func (k *kubeClient) decodeGrant(ctx context.Context, secret secretDocument) (*grantRecord, error) {
+	id, ownerTenant, ownerObject, instanceUID, connectionID := secret.Metadata.Labels["agenttools.cetirun.microsoft.com/id"], secret.Metadata.Labels["agenttools.cetirun.microsoft.com/owner-tenant"], secret.Metadata.Labels["agenttools.cetirun.microsoft.com/owner-object"], secret.Metadata.Labels["agenttools.cetirun.microsoft.com/instance-uid"], secret.Metadata.Labels["agenttools.cetirun.microsoft.com/connection-id"]
+	stub := AgentGrant{ID: id, Owner: Owner{TenantID: ownerTenant, ObjectID: ownerObject}, InstanceUID: instanceUID, ConnectionID: connectionID, Revision: recordRevision(secret.Data)}
+	if id == "" || ownerTenant == "" || ownerObject == "" || instanceUID == "" || connectionID == "" || stub.Revision == 0 {
+		return nil, errors.New("grant record metadata is invalid")
+	}
+	envelope, err := base64.StdEncoding.DecodeString(secret.Data["envelope.json"])
+	if err != nil {
+		return nil, errors.New("grant record encoding is invalid")
+	}
+	plain, err := openEnvelope(ctx, k.wrapper, envelope, grantAAD(stub))
+	if err != nil {
+		return nil, err
+	}
+	stored := storedGrantRecord{grantRecord: &grantRecord{}}
+	if json.Unmarshal(plain, &stored) != nil {
+		return nil, errors.New("grant record is invalid")
+	}
+	record := stored.grantRecord
+	record.Grant.Owner = Owner{TenantID: stored.OwnerTenantID, ObjectID: stored.OwnerObjectID}
+	record.Grant.Revoked, record.Grant.CreatedAt, record.Grant.UpdatedAt = stored.Revoked, stored.CreatedAt, stored.UpdatedAt
+	if record.Grant.ID != id || record.Grant.Revision != stub.Revision || !sameOwner(record.Grant.Owner, stub.Owner) || record.Grant.InstanceUID != instanceUID || record.Grant.ConnectionID != connectionID {
+		return nil, errors.New("grant record is invalid")
+	}
+	return record, nil
+}
+
+func (k *kubeClient) getGrant(ctx context.Context, id string) (*grantRecord, string, error) {
+	secret, err := k.getToolSecret(ctx, "grant", id)
+	if err != nil {
+		return nil, "", err
+	}
+	record, err := k.decodeGrant(ctx, secret)
+	return record, secret.Metadata.ResourceVersion, err
+}
+
+func (k *kubeClient) putGrant(ctx context.Context, record *grantRecord, resourceVersion string) error {
+	data, err := k.encodeGrant(ctx, record)
+	if err != nil {
+		return err
+	}
+	grant := record.Grant
+	labels := map[string]string{
+		"agenttools.cetirun.microsoft.com/id":            grant.ID,
+		"agenttools.cetirun.microsoft.com/owner-tenant":  grant.Owner.TenantID,
+		"agenttools.cetirun.microsoft.com/owner-object":  grant.Owner.ObjectID,
+		"agenttools.cetirun.microsoft.com/instance-uid":  grant.InstanceUID,
+		"agenttools.cetirun.microsoft.com/connection-id": grant.ConnectionID,
+	}
+	return k.putToolSecret(ctx, "grant", grant.ID, labels, data, resourceVersion)
+}
+
+func (k *kubeClient) grantRecords(ctx context.Context, selector string) ([]struct {
+	record  *grantRecord
+	version string
+}, error) {
+	endpoint := "/api/v1/namespaces/" + url.PathEscape(k.namespace) + "/secrets"
+	if selector != "" {
+		endpoint += "?labelSelector=" + url.QueryEscape(selector)
+	}
+	var list secretList
+	if _, err := k.request(ctx, http.MethodGet, endpoint, nil, &list); err != nil {
+		return nil, err
+	}
+	result := make([]struct {
+		record  *grantRecord
+		version string
+	}, 0, len(list.Items))
+	for _, secret := range list.Items {
+		if secret.Metadata.Labels["agenttools.cetirun.microsoft.com/record-type"] != "grant" {
+			continue
+		}
+		record, err := k.decodeGrant(ctx, secret)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, struct {
+			record  *grantRecord
+			version string
+		}{record, secret.Metadata.ResourceVersion})
+	}
+	return result, nil
+}
+
+func (k *kubeClient) listGrants(ctx context.Context, owner Owner, instanceUID string) ([]AgentGrant, error) {
+	selector := "agenttools.cetirun.microsoft.com/owner-tenant=" + owner.TenantID + ",agenttools.cetirun.microsoft.com/owner-object=" + owner.ObjectID
+	if instanceUID != "" {
+		selector += ",agenttools.cetirun.microsoft.com/instance-uid=" + instanceUID
+	}
+	records, err := k.grantRecords(ctx, selector)
+	if err != nil {
+		return nil, err
+	}
+	grants := make([]AgentGrant, 0, len(records))
+	for _, item := range records {
+		if sameOwner(item.record.Grant.Owner, owner) {
+			grants = append(grants, item.record.Grant)
+		}
+	}
+	sort.Slice(grants, func(i, j int) bool { return grants[i].CreatedAt.Before(grants[j].CreatedAt) })
+	return grants, nil
+}
+
+func sameOwner(left, right Owner) bool {
+	return sameIdentityID(left.TenantID, right.TenantID) && sameIdentityID(left.ObjectID, right.ObjectID)
+}
+
+func activeGrant(grant AgentGrant, now time.Time) bool {
+	return !grant.Revoked && now.Before(grant.ExpiresAt)
+}
+
+func (k *kubeClient) revokeGrantsForInstance(ctx context.Context, instanceUID string) error {
+	records, err := k.grantRecords(ctx, "agenttools.cetirun.microsoft.com/instance-uid="+instanceUID)
+	if err != nil {
+		return err
+	}
+	for _, item := range records {
+		if item.record.Grant.Revoked {
+			continue
+		}
+		updated := item.record
+		updated.Grant.Revoked = true
+		updated.Grant.Revision++
+		updated.Grant.UpdatedAt = time.Now().UTC()
+		if err := k.putGrant(ctx, updated, item.version); err != nil {
+			if errors.Is(err, errConflict) {
+				return errConflict
+			}
+			return err
+		}
+	}
+	return nil
 }

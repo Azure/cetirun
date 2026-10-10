@@ -17,6 +17,7 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[2]
 COMPONENTS = ("operator", "portal", "agent-broker", "memory-context")
 MODULES = {"internal": "app/internal", **{name: f"app/cetirun-{name}" for name in COMPONENTS}}
+MODULES["agent-tools-mcp"] = "app/agent-tools-mcp"
 WORKFLOWS = (
     "memory-context-ci.yml",
     "operator-ci.yml",
@@ -28,6 +29,10 @@ WORKFLOWS = (
     "cetirun-validation.yml",
 )
 CHARTS = (
+    ("app/agent-tools-mcp/chart", (
+        "tls.secretName=tools-tls", "broker.clientTLSSecretName=broker-client-tls", "broker.baseURL=https://broker.example.com",
+        "istio.sidecarInjection=true", "istio.revision=asm-example",
+    )),
     (
         "app/cetirun-chart",
         (
@@ -47,7 +52,7 @@ CHARTS = (
             "agentIdentity.authorizationClientId=33333333-3333-3333-3333-333333333333",
             "agentIdentity.encryptionClientId=44444444-4444-4444-4444-444444444444",
             "agentIdentity.keyVaultKeyUrl=https://example.vault.azure.net/keys/cache/version",
-            "agentIdentity.redirectUri=https://portal.example.invalid/api/v1/agent-authorization/callback",
+            "agentIdentity.redirectUri=https://portal.example.invalid/api/v1/connections/callback",
             "agentIdentity.portalOrigin=https://portal.example.invalid",
             "agentIdentity.portalBaseUrl=https://portal.example.invalid",
             "istio.sidecarInjection=true",

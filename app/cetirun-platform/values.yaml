@@ -22,6 +22,12 @@ global:
   # -- Shared by Portal and Operator; separate from the Agent Identity Broker.
   registryCredentialNamespace: cetirun-registry-credentials
 
+agent-tools-mcp:
+  enabled: false
+
+cetirun-agent-broker:
+  enabled: false
+
 istio:
   # A separately managed cetirun-istio release must be ready before installing
   # this chart. The deployment helper checks these references against the API.

@@ -45,7 +45,7 @@ func nativeTemplateFunctions() template.FuncMap {
 	funcs := template.FuncMap{}
 	for _, name := range []string{
 		"deepCopy", "default", "dict", "list", "dig", "set", "int", "replace",
-		"append", "concat", "uniq", "has", "hasKey",
+		"append", "concat", "uniq", "has", "hasKey", "unset",
 	} {
 		funcs[name] = available[name]
 	}
@@ -95,6 +95,7 @@ func nativeTemplateContext(agent ResolvedAgent, bindings Bindings) map[string]an
 		"memoryContext": map[string]any{"enabled": bindings.MemoryEnabled},
 		agent.Type:      native,
 		"aiGateway":     gateway,
+		"toolsMCP":      map[string]any{"enabled": bindings.ToolsMCP.Enabled, "url": bindings.ToolsMCP.URL},
 		"secrets": map[string]any{
 			"provider":           bindings.Model.Provider,
 			"model":              bindings.Model.Name,

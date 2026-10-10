@@ -105,8 +105,10 @@ features:
   allowedAgentTypes:
     - hermes
     - openclaw
-  # -- Enable the Microsoft Entra Agent Identity authorization experience.
+  # -- Enable the Microsoft Entra Agent Identity lifecycle for new Agents.
   agentIdentityEnabled: false
+  # -- Enable owner-scoped account connections and Agent tool grants.
+  agentToolsEnabled: false
   # -- Expose the platform AI Gateway: model sources for new OpenClaw and
   # Hermes Agents, the GitHub Copilot sign-in and each Agent's model list.
   # Every new Agent then needs a Team.
@@ -137,4 +139,7 @@ configurationCoordination:
 agentIdentity:
   tenantId: ""
   portalClientId: ""
+  brokerURL: "http://cetirun-agent-broker.cetirun-credentials.svc.cluster.local:8080"
+
+agentTools:
   brokerURL: "http://cetirun-agent-broker.cetirun-credentials.svc.cluster.local:8080"

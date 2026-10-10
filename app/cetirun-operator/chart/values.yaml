@@ -220,6 +220,12 @@ sandboxSources:
 
 # -- Microsoft Entra Agent Identity lifecycle configuration. The feature is
 # deployment-scoped and remains disabled unless every required field is set.
+toolsMCP:
+  url: ""
+  audience: agent-tools-mcp
+  # Existing CA-only source Secret in the operator namespace; distributed to each Agent.
+  caSecretName: ""
+
 agentIdentity:
   enabled: false
   # Keep lifecycle credentials available while existing identities are being

@@ -1,0 +1,14 @@
+tls:
+  secretName: tools-server-tls
+broker:
+  baseURL: https://cetirun-agent-broker.cetirun-credentials.svc.cluster.local
+  clientTLSSecretName: tools-broker-client-tls
+portal:
+  baseURL: https://portal.example.invalid
+operationRecords:
+  namespace: cetirun-tools-operations
+istio:
+  sidecarInjection: true
+  revision: asm-example
+  brokerNamespace: cetirun-credentials
+  controlPlaneNamespace: aks-istio-system

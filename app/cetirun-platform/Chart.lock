@@ -1,4 +1,10 @@
 dependencies:
+- name: agent-tools-mcp
+  repository: file://../agent-tools-mcp/chart
+  version: 0.1.1
+- name: cetirun-agent-broker
+  repository: file://../cetirun-agent-broker/chart
+  version: 0.1.1
 - name: cetirun-operator
   repository: file://../cetirun-operator/chart
   version: 0.1.1
@@ -8,5 +14,5 @@ dependencies:
 - name: cetirun-ai-gateway
   repository: file://../cetirun-ai-gateway/chart
   version: 0.1.1
-digest: sha256:0a7b30bdab93d834b811c47fb65ab4a551d694276343ece88256615261867c84
-generated: "2026-10-01T05:27:30.10789839Z"
+digest: sha256:9a5c7ad76b7ff155831f5a78f9ddb2cb310858b30cbbe628d206ad343dcb11db
+generated: "2026-10-10T11:31:34.676292211+08:00"

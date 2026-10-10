@@ -1,0 +1,9 @@
+{{- if .Values.operationRecords.createNamespace }}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Values.operationRecords.namespace }}
+  labels:
+    app.kubernetes.io/name: {{ include "cetirun-agent-tools-mcp.name" . }}
+    app.kubernetes.io/component: operation-records
+{{- end }}

@@ -495,7 +495,11 @@ func (r *AgentReconciler) deleteAgentAuthorization(ctx context.Context, instance
 	if client == nil {
 		client = &http.Client{Timeout: 15 * time.Second}
 	}
-	response, err := client.Do(req)
+	requestClient := *client
+	requestClient.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	response, err := requestClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("delete Agent authorization: %w", err)
 	}

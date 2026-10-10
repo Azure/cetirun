@@ -5,33 +5,76 @@ package broker
 
 import "time"
 
-type AuthorizationRecord struct {
-	InstanceUID           string       `json:"instanceUid"`
-	InstanceName          string       `json:"instanceName"`
-	OwnerTenantID         string       `json:"ownerTenantId"`
-	OwnerObjectID         string       `json:"ownerObjectId"`
-	AgentIdentityClientID string       `json:"agentIdentityClientId"`
-	Generation            uint64       `json:"generation"`
-	Revoked               bool         `json:"revoked"`
-	Transaction           *Transaction `json:"transaction,omitempty"`
-	Tokens                *TokenCache  `json:"tokens,omitempty"`
-	AccountDisplay        string       `json:"accountDisplay,omitempty"`
-	LastRenewed           *time.Time   `json:"lastRenewed,omitempty"`
-	LastUsed              *time.Time   `json:"lastUsed,omitempty"`
+const catalogVersion = "2026-10-10"
+
+type Owner struct {
+	TenantID string `json:"-"`
+	ObjectID string `json:"-"`
 }
 
-type Transaction struct {
-	StateHash    string    `json:"stateHash"`
-	CodeVerifier string    `json:"codeVerifier"`
-	Nonce        string    `json:"nonce"`
-	ExpiresAt    time.Time `json:"expiresAt"`
-	Consumed     bool      `json:"consumed"`
+type Connection struct {
+	ID             string    `json:"id"`
+	Provider       string    `json:"provider"`
+	AccountDisplay string    `json:"accountDisplay"`
+	Capabilities   []string  `json:"capabilities"`
+	Revision       uint64    `json:"revision"`
+	Status         string    `json:"status"`
+	CreatedAt      time.Time `json:"createdAt"`
+	UpdatedAt      time.Time `json:"-"`
+	Owner          Owner     `json:"-"`
+	AccountID      string    `json:"-"`
 }
 
-type TokenCache struct {
+type Constraints struct {
+	SubscriptionIDs    []string `json:"subscriptionIds"`
+	RepositoryIDs      []string `json:"repositoryIds"`
+	BaseBranches       []string `json:"baseBranches"`
+	CalendarIDs        []string `json:"calendarIds"`
+	RecipientAddresses []string `json:"recipientAddresses"`
+	RecipientDomains   []string `json:"recipientDomains"`
+	AllowInvites       bool     `json:"allowInvites"`
+}
+
+type AgentGrant struct {
+	ID           string      `json:"id"`
+	InstanceUID  string      `json:"instanceUid"`
+	ConnectionID string      `json:"connectionId"`
+	Tools        []string    `json:"tools"`
+	Constraints  Constraints `json:"constraints"`
+	ExpiresAt    time.Time   `json:"expiresAt"`
+	Revision     uint64      `json:"revision"`
+	Owner        Owner       `json:"-"`
+	Revoked      bool        `json:"-"`
+	CreatedAt    time.Time   `json:"-"`
+	UpdatedAt    time.Time   `json:"-"`
+}
+
+type providerCredential struct {
 	AccessToken  string    `json:"accessToken"`
 	RefreshToken string    `json:"refreshToken"`
 	ExpiresAt    time.Time `json:"expiresAt"`
+	Scopes       []string  `json:"scopes"`
+}
+
+type connectionTransaction struct {
+	Provider          string    `json:"provider"`
+	StateHash         string    `json:"stateHash"`
+	CodeVerifier      string    `json:"codeVerifier"`
+	Nonce             string    `json:"nonce,omitempty"`
+	ExpectedAccountID string    `json:"expectedAccountId,omitempty"`
+	ExpiresAt         time.Time `json:"expiresAt"`
+	Consumed          bool      `json:"consumed"`
+}
+
+type connectionRecord struct {
+	Connection  Connection             `json:"connection"`
+	Credential  *providerCredential    `json:"credential,omitempty"`
+	Transaction *connectionTransaction `json:"transaction,omitempty"`
+	Deleted     bool                   `json:"deleted"`
+}
+
+type grantRecord struct {
+	Grant AgentGrant `json:"grant"`
 }
 
 type Agent struct {
@@ -42,16 +85,8 @@ type Agent struct {
 	OwnerTenantID         string
 	OwnerObjectID         string
 	AgentIdentityClientID string
+	WorkloadReady         bool
 	AgentIdentityReady    bool
-}
-
-type statusResponse struct {
-	Status        string     `json:"status"`
-	Account       string     `json:"account,omitempty"`
-	LastRenewed   *time.Time `json:"lastRenewed,omitempty"`
-	LastUsed      *time.Time `json:"lastUsed,omitempty"`
-	ActionURL     string     `json:"actionUrl,omitempty"`
-	CorrelationID string     `json:"correlationId"`
 }
 
 type apiError struct {

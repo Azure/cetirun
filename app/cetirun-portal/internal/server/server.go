@@ -23,7 +23,7 @@ func New(
 	adminPolicyHandler *handler.AdminPolicyHandler,
 	authMiddleware func(http.Handler) http.Handler,
 	requireAdmin func(http.Handler) http.Handler,
-	agentAuthorizationHandlers ...*handler.AgentAuthorizationHandler,
+	toolConnectionsHandlers ...*handler.ToolConnectionsHandler,
 ) *http.ServeMux {
 	mux := http.NewServeMux()
 
@@ -69,12 +69,19 @@ func New(
 	api.HandleFunc("POST /api/v1/instances/{name}/copilot/login", instanceHandler.StartCopilotLogin)
 	api.HandleFunc("GET /api/v1/instances/{name}/copilot/login", instanceHandler.PollCopilotLogin)
 	api.HandleFunc("DELETE /api/v1/instances/{name}/copilot/login", instanceHandler.CancelCopilotLogin)
-	if len(agentAuthorizationHandlers) > 0 && agentAuthorizationHandlers[0] != nil {
-		agentAuthorizationHandler := agentAuthorizationHandlers[0]
-		api.HandleFunc("GET /api/v1/instances/{name}/agent-authorization", agentAuthorizationHandler.Status)
-		api.HandleFunc("POST /api/v1/instances/{name}/agent-authorization/start", agentAuthorizationHandler.Start)
-		api.HandleFunc("DELETE /api/v1/instances/{name}/agent-authorization", agentAuthorizationHandler.End)
-		mux.HandleFunc("POST /api/v1/agent-authorization/callback", agentAuthorizationHandler.Callback)
+	if len(toolConnectionsHandlers) > 0 && toolConnectionsHandlers[0] != nil {
+		toolConnectionsHandler := toolConnectionsHandlers[0]
+		mux.HandleFunc("GET /api/v1/connections/callback", toolConnectionsHandler.ConnectionCallback)
+		mux.HandleFunc("POST /api/v1/connections/callback", toolConnectionsHandler.ConnectionCallback)
+		api.HandleFunc("GET /api/v1/connections", toolConnectionsHandler.ListConnections)
+		api.HandleFunc("POST /api/v1/connections/start", toolConnectionsHandler.StartConnection)
+		api.HandleFunc("GET /api/v1/connections/{id}", toolConnectionsHandler.GetConnection)
+		api.HandleFunc("DELETE /api/v1/connections/{id}", toolConnectionsHandler.DeleteConnection)
+		api.HandleFunc("POST /api/v1/connections/{id}/reconnect", toolConnectionsHandler.ReconnectConnection)
+		api.HandleFunc("GET /api/v1/instances/{name}/tool-grants", toolConnectionsHandler.ListToolGrants)
+		api.HandleFunc("POST /api/v1/instances/{name}/tool-grants", toolConnectionsHandler.CreateToolGrant)
+		api.HandleFunc("PUT /api/v1/instances/{name}/tool-grants/{id}", toolConnectionsHandler.UpdateToolGrant)
+		api.HandleFunc("DELETE /api/v1/instances/{name}/tool-grants/{id}", toolConnectionsHandler.DeleteToolGrant)
 	}
 
 	// Admin API: gated by RequireAdmin (in addition to the auth middleware

@@ -7,6 +7,7 @@ export interface Features {
   customChatEnabled?: boolean;
   tailscaleEnabled: boolean;
   agentIdentityEnabled: boolean;
+  agentToolsEnabled: boolean;
   maxInstancesPerUser: number; // 0 = unlimited
   allowedAgentTypes?: AgentType[];
   /** The platform AI Gateway: model sources, GitHub Copilot sign-in, Team required. */

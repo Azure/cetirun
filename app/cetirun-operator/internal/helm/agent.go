@@ -261,6 +261,7 @@ func prepareRuntimeChart(chrt *chart.Chart, input map[string]any, validateRender
 	}
 	bindings := agents.Bindings{
 		MemoryEnabled: values[sandboxworkload.ValuesKey] == nil && object(values["memoryContext"])["enabled"] == true,
+		ToolsMCP:      agents.ToolsMCPBinding{Enabled: object(values["toolsMCP"])["enabled"] == true, URL: text(object(values["toolsMCP"])["url"])},
 		ProfileID:     profile.ID,
 		ChartVersion:  chrt.Metadata.Version,
 		NativeConfig:  config,

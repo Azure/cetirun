@@ -535,12 +535,15 @@ func resolveDesiredAppID(instance *cetirunv1alpha1.Agent) string {
 // (defaults / memberContext / skills / skillStorage) invalidate the cache so
 // the watch-driven re-enqueue actually re-runs buildHelmValues with the new
 // team data instead of being short-circuited.
-const agentIdentityRuntimeRevision = "runtime-v1"
+const agentIdentityRuntimeRevision = "native-mcp-v1"
 
 func (r *AgentReconciler) configHash(instance *cetirunv1alpha1.Agent, team *cetirunv1alpha1.Team, gwSecretHash, teamRV string) string {
 	config := []string{
 		r.AzureSubscriptionID, r.AzureResourceGroup, r.AzureBotNamePrefix,
 		r.AzureTenantID, r.AzureOIDCIssuerURL,
+	}
+	if r.ToolsMCPURL != "" {
+		config = append(config, r.ToolsMCPURL, r.ToolsMCPAudience, r.ToolsMCPCASecretName, agentIdentityRuntimeRevision)
 	}
 	// Preserve the existing hash for deployments and Agents that do not use
 	// Agent Identity. This prevents an unrelated operator upgrade from rolling

@@ -18,7 +18,7 @@ helm lint "${chart_dir}" \
   --set agentIdentity.authorizationClientId=33333333-3333-3333-3333-333333333333 \
   --set agentIdentity.encryptionClientId=44444444-4444-4444-4444-444444444444 \
   --set agentIdentity.keyVaultKeyUrl=https://example.vault.azure.net/keys/cache \
-  --set agentIdentity.redirectUri=https://portal.example.com/api/v1/agent-authorization/callback \
+  --set agentIdentity.redirectUri=https://portal.example.com/api/v1/connections/callback \
   --set agentIdentity.portalOrigin=https://portal.example.com \
   --set agentIdentity.portalBaseUrl=https://portal.example.com \
   --set istio.sidecarInjection=true \

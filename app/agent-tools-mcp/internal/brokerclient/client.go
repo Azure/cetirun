@@ -1,0 +1,209 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
+package brokerclient
+
+import (
+	"bytes"
+	"context"
+	"crypto/tls"
+	"crypto/x509"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"os"
+	"strings"
+	"time"
+)
+
+const CatalogVersion = "2026-10-10"
+
+type Client struct {
+	baseURL *url.URL
+	http    *http.Client
+}
+
+type Request struct {
+	CallerProof        string         `json:"callerProof"`
+	Tool               string         `json:"tool"`
+	ConnectionID       string         `json:"connectionId"`
+	Arguments          map[string]any `json:"arguments"`
+	GrantRevision      *uint64        `json:"grantRevision,omitempty"`
+	ConnectionRevision *uint64        `json:"connectionRevision,omitempty"`
+	CatalogVersion     string         `json:"catalogVersion"`
+}
+
+type Connection struct {
+	ID             string   `json:"id"`
+	Provider       string   `json:"provider"`
+	AccountDisplay string   `json:"accountDisplay"`
+	Capabilities   []string `json:"capabilities"`
+	Revision       uint64   `json:"revision"`
+	Status         string   `json:"status"`
+	CreatedAt      string   `json:"createdAt"`
+}
+
+type Constraints struct {
+	SubscriptionIDs    []string `json:"subscriptionIds"`
+	RepositoryIDs      []string `json:"repositoryIds"`
+	BaseBranches       []string `json:"baseBranches"`
+	CalendarIDs        []string `json:"calendarIds"`
+	RecipientAddresses []string `json:"recipientAddresses"`
+	RecipientDomains   []string `json:"recipientDomains"`
+	AllowInvites       bool     `json:"allowInvites"`
+}
+
+type Grant struct {
+	ID           string      `json:"id"`
+	InstanceUID  string      `json:"instanceUid"`
+	ConnectionID string      `json:"connectionId"`
+	Tools        []string    `json:"tools"`
+	Constraints  Constraints `json:"constraints"`
+	ExpiresAt    string      `json:"expiresAt"`
+	Revision     uint64      `json:"revision"`
+}
+
+type ListResponse struct {
+	InstanceUID    string       `json:"instanceUid"`
+	Connections    []Connection `json:"connections"`
+	Grants         []Grant      `json:"grants"`
+	Tools          []string     `json:"tools"`
+	CatalogVersion string       `json:"catalogVersion"`
+}
+
+type CheckResponse struct {
+	InstanceUID    string     `json:"instanceUid"`
+	Connection     Connection `json:"connection"`
+	Grant          Grant      `json:"grant"`
+	CatalogVersion string     `json:"catalogVersion"`
+}
+
+type IssueResponse struct {
+	CheckResponse
+	AccessToken string `json:"accessToken"`
+	ExpiresAt   string `json:"expiresAt"`
+}
+
+type apiError struct {
+	Error struct {
+		Code          string `json:"code"`
+		Message       string `json:"message"`
+		CorrelationID string `json:"correlationId"`
+	} `json:"error"`
+}
+
+type Error struct {
+	Code string
+}
+
+func (err *Error) Error() string { return err.Code }
+
+func New(baseURL *url.URL) (*Client, error) {
+	if baseURL == nil || baseURL.Scheme != "https" || baseURL.Host == "" || baseURL.Path != "" || baseURL.User != nil || baseURL.RawQuery != "" || baseURL.Fragment != "" {
+		return nil, errors.New("Broker URL must be an HTTPS origin")
+	}
+	return &Client{baseURL: baseURL, http: &http.Client{
+		Timeout:       10 * time.Second,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}}, nil
+}
+
+func NewMutualTLS(baseURL *url.URL, caFile, certFile, keyFile string) (*Client, error) {
+	client, err := New(baseURL)
+	if err != nil {
+		return nil, err
+	}
+	certificate, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		return nil, errors.New("Broker client identity is unavailable")
+	}
+	ca, err := os.ReadFile(caFile)
+	if err != nil {
+		return nil, errors.New("Broker TLS trust is unavailable")
+	}
+	roots := x509.NewCertPool()
+	if !roots.AppendCertsFromPEM(ca) {
+		return nil, errors.New("Broker TLS trust is invalid")
+	}
+	client.http.Transport = &http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS13, RootCAs: roots, Certificates: []tls.Certificate{certificate}}}
+	return client, nil
+}
+
+func (c *Client) List(ctx context.Context, callerProof string) (ListResponse, error) {
+	var result ListResponse
+	err := c.call(ctx, "/internal/v1/tool-authorizations/list", Request{CallerProof: callerProof, Tool: "connections_status", Arguments: map[string]any{}, CatalogVersion: CatalogVersion}, &result)
+	return result, err
+}
+
+func (c *Client) Check(ctx context.Context, request Request) (CheckResponse, error) {
+	var result CheckResponse
+	request.CatalogVersion = CatalogVersion
+	err := c.call(ctx, "/internal/v1/tool-authorizations/check", request, &result)
+	return result, err
+}
+
+func (c *Client) Issue(ctx context.Context, request Request) (IssueResponse, error) {
+	var result IssueResponse
+	request.CatalogVersion = CatalogVersion
+	err := c.call(ctx, "/internal/v1/tool-credentials/issue", request, &result)
+	return result, err
+}
+
+func (c *Client) call(ctx context.Context, path string, input any, output any) error {
+	body, err := json.Marshal(input)
+	if err != nil {
+		return errors.New("cannot encode Broker request")
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL.String()+path, bytes.NewReader(body))
+	if err != nil {
+		return errors.New("cannot create Broker request")
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Accept", "application/json")
+	response, err := c.http.Do(request)
+	if err != nil {
+		return &Error{Code: "dependency_unavailable"}
+	}
+	defer response.Body.Close()
+	payload, readErr := io.ReadAll(io.LimitReader(response.Body, (1<<20)+1))
+	if readErr != nil || len(payload) > 1<<20 {
+		return &Error{Code: "dependency_unavailable"}
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		var brokerError apiError
+		if json.Unmarshal(payload, &brokerError) == nil && brokerError.Error.Code != "" {
+			return &Error{Code: safeCode(brokerError.Error.Code)}
+		}
+		return &Error{Code: "dependency_unavailable"}
+	}
+	if err := json.Unmarshal(payload, output); err != nil {
+		return &Error{Code: "dependency_unavailable"}
+	}
+	return nil
+}
+
+func safeCode(code string) string {
+	allowed := map[string]bool{"unauthenticated": true, "grant_required": true, "permission_denied": true, "interaction_required": true, "invalid_request": true, "authorization_changed": true, "throttled": true, "dependency_unavailable": true}
+	if allowed[code] {
+		return code
+	}
+	return "dependency_unavailable"
+}
+
+func NewRequest(callerProof, tool, connectionID string, arguments map[string]any, grantRevision, connectionRevision *uint64) Request {
+	return Request{CallerProof: strings.TrimSpace(callerProof), Tool: tool, ConnectionID: connectionID, Arguments: arguments, GrantRevision: grantRevision, ConnectionRevision: connectionRevision, CatalogVersion: CatalogVersion}
+}
+
+func (c Connection) ValidProvider() bool {
+	return c.Provider == "azure" || c.Provider == "microsoft" || c.Provider == "github" || c.Provider == "google"
+}
+
+func (r CheckResponse) ValidCatalog() error {
+	if r.CatalogVersion != CatalogVersion || !r.Connection.ValidProvider() || r.InstanceUID == "" || r.Grant.ID == "" {
+		return fmt.Errorf("invalid Broker authorization response")
+	}
+	return nil
+}

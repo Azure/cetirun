@@ -23,6 +23,13 @@ serviceAccount:
 service:
   port: 8080
 
+tls:
+  enabled: false
+  secretName: ""
+  certKey: tls.crt
+  keyKey: tls.key
+  clientCAKey: ca.crt
+
 agentIdentity:
   tenantId: ""
   blueprintClientId: ""
@@ -34,10 +41,32 @@ agentIdentity:
   portalBaseUrl: ""
   armScopes:
     - https://management.azure.com/user_impersonation
+  graphScopes:
+    - https://graph.microsoft.com/.default
+  armPermissions:
+    - user_impersonation
+  graphPermissions:
+    - Mail.Read
+    - Mail.Send
+    - Calendars.ReadWrite
 
 portal:
   namespace: cetirun-portal
   serviceAccount: cetirun-portal
+
+toolService:
+  namespace: cetirun-system
+  serviceAccount: agent-tools-mcp
+
+providers:
+  github:
+    credentialsSecretName: ""
+    clientIDKey: client-id
+    clientSecretKey: client-secret
+  google:
+    credentialsSecretName: ""
+    clientIDKey: client-id
+    clientSecretKey: client-secret
 
 operator:
   namespace: cetirun-system

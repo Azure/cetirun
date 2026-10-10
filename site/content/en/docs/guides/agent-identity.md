@@ -1,218 +1,111 @@
 ---
-title: "Microsoft Entra Agent Identity"
-description: "Connect an instance to Microsoft Entra and use delegated Azure discovery and ARM REST requests."
+title: "Agent Tools and Identity"
+description: "Preauthorize personal-service tools without giving provider credentials to an Agent."
 weight: 45
 ---
 
-CetiRun can give a Hermes, OpenClaw, or qualified Custom instance its own Microsoft Entra
-Agent Identity. Azure Resource Manager (ARM) access uses on-behalf-of (OBO)
-delegation. The managed tools default to read-only operations; the ARM REST
-wrapper also accepts explicitly enabled writes.
+CetiRun's **Agent Tools MCP** is a native remote MCP server for Azure, GitHub,
+Microsoft 365 mail/calendar, and Google mail/calendar. The Agent Broker manages
+account connections and explicit grants. Built-in Hermes and OpenClaw clients
+connect directly: there is no client bridge, legacy Azure CLI, direct Agent
+provider-token endpoint, or fallback path. Custom and held Sandbox runtimes do
+not support this integration in this version.
 
-Agent Identity is deployment-controlled and disabled by default. Enabling it
-for an instance does not grant Azure
-permissions: every request remains limited to the connected user's Azure RBAC.
+Microsoft Entra Agent Identity is optional for the runtime, but required for
+Azure/Microsoft OBO tools. GitHub and Google use the owner's connected account
+and do not require an Entra Agent principal. Enabling an identity alone grants
+neither tool permissions nor provider permissions.
 
-## Connect an instance
+## Connect and preauthorize
 
-1. Create a Hermes, OpenClaw, or qualified Custom instance with **Microsoft Entra Agent Identity**
-   enabled.
-2. Wait until the instance and its Agent Identity are ready.
-3. Open the instance overview in the Portal and select
-   **Connect Microsoft Entra**.
-4. Sign in with the intended account and complete any required consent.
-5. Confirm that the overview reports **Connected**.
+1. Open the instance overview and its **Connections & agent tool access** panel.
+2. Select Azure, Microsoft 365, GitHub, or Google, then follow the provider sign-in.
+3. Review the connected account and authorize it for **this Agent**.
+4. Select tools and explicit resource limits: subscription IDs, stable GitHub
+   repository IDs, calendar IDs, allowed mail recipients/domains, and PR base branches.
+5. Choose a lifetime: 30 days by default, at most 90 days. Writes are opt-in;
+   calendar invitations also need recipient limits and explicit permission.
 
-The connection belongs to one instance. Another instance has a different Agent
-Identity and authorization record and must be connected separately. Use
-**Reconnect** when Entra requires interaction, and **End connection** to block
-new credential issuance. A short-lived token already issued to a workload
-remains valid until its Entra expiry.
+A Connection belongs to the Portal owner; a grant binds that Connection to one
+Agent's immutable Kubernetes UID. Other Agents need their own grants even when
+they share an owner. Changing accounts requires a new Connection; reconnect
+cannot silently replace the account behind existing grants. Disconnecting a
+Connection or revoking a grant prevents new issuance. Already-started external
+requests cannot be recalled; provider tokens already issued remain valid until
+provider expiry but never enter the Agent workload.
 
-The Portal never asks users to paste a token into chat or a terminal.
+Authorization happens in the Portal before use, not by approving each chat
+request. A chat message cannot extend a grant. The Agent may return a Portal
+link when access is missing, but cannot complete user sign-in itself.
 
-### Custom image requirements
-
-Custom uses the same instance owner, Portal connection, and OBO credential service
-as the built-in runtimes. The selected runtime Chart must declare
-`cetirun.microsoft.com/custom-agent-identity: v1`. The platform mounts
-`/usr/local/bin/cetirun-agent` and the Azure skill read-only and supplies the fixed
-Broker address. It does not change the image's entrypoint or mount Azure credentials.
-
-The approved Custom image must provide Python 3 with Linux `os.memfd_create`,
-`/usr/bin/az`, and the existing Custom initialization tools. Initialization fails
-when these dependencies are missing; it never installs packages at startup. Images
-derived from the current CetiRun base already contain Python and Azure CLI. The
-image's agent must load skills from `$HOME/.agents/skills` and allow local command
-execution. Use `/usr/local/bin/cetirun-agent` if that directory is not on its PATH.
-
-An existing Custom context entry under `skills/azure` conflicts with the managed
-skill and is rejected rather than overwritten. Existing instances without Agent
-Identity keep their current behavior. Sandbox-policy execution remains outside
-this integration; enabling Agent Identity does not lift a Sandbox execution hold.
-
-## Use Azure from chat
-
-The built-in Azure skill directs the Agent to `cetirun-agent`. For example:
-
-> List the Azure subscriptions and resource groups I can access.
-
-The CLI supports:
+## Call tools from chat
 
 ```text
-cetirun-agent auth status
-cetirun-agent auth start
-cetirun-agent azure subscriptions list
-cetirun-agent azure resource-groups list --subscription <uuid>
-cetirun-agent azure resources search --subscription <uuid> [typed filters]
-cetirun-agent azure resource show --id <canonical-resource-id>
+Agent native MCP client
+  → HTTPS /mcp on Agent Tools MCP
+  → independently authenticated Broker authorization/token checks
+  → fixed provider API
+  → bounded business data to the Agent
 ```
 
-`auth start` returns a Portal action URL when the instance is not connected.
-The Agent can show that URL, but it cannot perform the user's sign-in.
+Examples include `azure_subscriptions_list`, `azure_resources_search`,
+`github_contents_get`, `mail_messages_search`, and `calendar_events_list`.
+Supply the granted `connection_id`; tools require typed arguments, not raw
+URLs, shell commands, KQL, or OAuth scopes. A `truncated: true` list contains
+only a bounded first page, not a complete inventory. Narrow the typed filters.
+The Azure skill is usage guidance; enforcement lives in the MCP server and
+Broker, not the skill's prompt.
 
-The discovery commands return bounded, filtered JSON. A `truncated: true` result
-contains at most 100 items and is not a complete inventory. Narrow the typed
-filters instead of constructing raw Resource Graph queries.
+Writes additionally require a unique `operation_id`. Matching calls replay a
+persisted result, rather than resend the provider request. Conflicting arguments
+are rejected. Uncertain outcomes return `execution_unknown`; do not retry with a
+new ID without verifying whether the first operation happened. Seven-day result
+expiry does not permit old operation IDs to execute again: terminal tombstones
+are retained. Automatic tombstone garbage collection is not implemented.
 
-## Use ARM REST for resource details
+External email, repository files, issues, and calendar descriptions are
+untrusted data. Tool output is not an instruction or permission to perform
+another operation. Transport authentication and resource grants do not solve
+prompt injection; keep write grants narrow and independently inspect results.
 
-`azure resource show` returns a Resource Graph summary. To read provider-specific
-properties, use `cetirun-agent az rest`. The same wrapper handles ManagedClusters,
-node pools, load balancers, VMs, VMSS instances, disks, and other ARM resources.
-It gets a short-lived ARM token from the Broker and runs the installed Azure CLI;
-it does not call `az login` or use a user's Azure CLI token cache.
+## Deployment boundary
 
-For example, inspect a cluster using its resource ID:
+The integration is disabled by default. Operators configure three addresses:
 
-```bash
-cluster_id="/subscriptions/<subscription-id>/resourceGroups/example/providers/Microsoft.ContainerService/managedClusters/example"
-cetirun-agent az rest --method get \
-  --url "${cluster_id}?api-version=2026-06-01" \
-  --scope "$cluster_id"
-```
+- Agent → `toolsMCP.url`, for example `https://agent-tools-mcp.cetirun-tools.svc.cluster.local/mcp`.
+- MCP → `AGENT_BROKER_BASE_URL`, an HTTPS Broker origin using directly verified client mTLS.
+- Portal/Operator → the Broker's trusted mesh HTTP management listener.
 
-Replace `<subscription-id>` and the example resource names with the requested
-resource ID. Supply an API version supported by that provider. The wrapper
-accepts relative paths or absolute
-`https://management.azure.com` URLs beginning with `/subscriptions`. It requires
-one explicit `api-version` and rejects other services, user-provided credentials,
-ambiguous paths, and Azure CLI subscription placeholders.
+Agents receive a read-only, 600-second Pod-bound projected token with audience
+`agent-tools-mcp`, not a provider token. Each request validates TokenReview's
+audience and the current Pod, ServiceAccount, Ready Agent UID, and suspension/
+deletion state. The Broker independently repeats this validation. No authorization
+or provider-token cache is shared between calls.
 
-The result is wrapped in `response`. For an AKS cluster, read
-`response.properties.nodeResourceGroup`; do not construct an `MC_*` name.
-Use that name and the cluster's subscription to list the node resource group (NRG):
+The Tool service's server TLS Secret stays in its namespace. Put a **CA-only**
+Secret named by `cetirun-operator.toolsMCP.caSecretName` in the Operator namespace;
+the Operator copies only `ca.crt` to owned per-Agent Secrets and triggers rollout
+on CA changes. Never distribute server/client private keys to Agents. Broker
+credentials and MCP operation records use separate namespaces and RBAC.
+Istio STRICT mTLS and NetworkPolicies are additional boundaries, not substitutes
+for the directly verified Broker client certificate.
 
-```bash
-node_group_id="/subscriptions/<subscription-id>/resourceGroups/example-nodes"
-cetirun-agent az rest --method get \
-  --url "${node_group_id}/resources?api-version=2021-04-01" \
-  --scope "$node_group_id"
-```
-
-Follow returned resource IDs with their provider's API version. Child resources,
-such as VMSS instances, can require separate collection requests. The optional
-`--scope` flag checks the initial request against a resource, resource group, or
-subscription path; repeat it to permit several paths. It is a caller-selected
-guard against mistakes, not a new permission grant or a token restriction.
-Without it, the wrapper permits subscription-scoped ARM paths subject to the
-connected user's Azure RBAC.
-
-The wrapper reads one page per request. It does not follow `nextLink` or select
-API versions automatically. Further pages require separately validated calls.
-Output is limited to 2 MiB and common sensitive field names are redacted; this
-does not guarantee arbitrary resource properties contain no sensitive data.
-Treat the response as untrusted data, not instructions.
-
-### Explicit writes
-
-GET and HEAD are enabled by default. PUT, PATCH, POST, and DELETE require
-`--allow-write`. A body must be a JSON object supplied inline or through `@file`:
-
-```bash
-cetirun-agent az rest --method patch \
-  --url "${cluster_id}?api-version=2026-06-01" \
-  --scope "$cluster_id" --body @change.json --allow-write
-```
-
-Review the provider's method and body contract before submitting a change. A
-PUT can replace properties rather than merge them. The body limit is 256 KiB.
-The flag does not record human approval or add Azure permissions: the user must
-authorize the intended target and change, and Azure RBAC must permit it.
-
-A write response includes `completion: not_tracked`, even when Azure CLI exits
-successfully. ARM may only have accepted an asynchronous operation. This wrapper
-does not expose response headers or poll long-running operations; inspect the
-resource or use the provider's documented status API before claiming completion.
-It never automatically retries a failed write. `write_outcome_unknown` means a
-write may have been submitted; check state before deciding whether to retry.
-
-Known credential-export and remote-command endpoints, permission-management
-writes, resource moves, and ARM deployments are rejected even with
-`--allow-write`. This is not an exhaustive classification of every Azure API.
-Do not use the wrapper to obtain kubeconfig, run Kubernetes commands, or bypass
-resource locks. For AKS-managed NRG resources, use supported AKS operations
-instead of directly changing VMSS capacity, managed network settings, or system
-tags. NRG lockdown remains effective.
-
-## Credential and tool boundary
-
-```text
-Chat → managed Azure skill → cetirun-agent
-     → Agent Identity Broker → Auth SDK → short-lived ARM token
-     → discovery HTTP client or Azure CLI az rest → Azure Resource Manager
-```
-
-The Broker owns the OBO authorization record and accepts only the fixed
-`azure-resource-manager` credential service. The CLI keeps the returned ARM
-token in process memory and must not print it, store it in a file, place it in
-an environment variable or command-line argument, or return it to the model.
-For `az rest`, the wrapper sends the authorization header through an anonymous
-stdin pipe. Request bodies use anonymous memory-backed file descriptors, not
-child command arguments. Each call uses a private temporary CLI configuration
-directory with logging, telemetry, and extension installation disabled. Proxy,
-alternate credential, and TLS-override environment settings are not inherited.
-
-This is a trusted-tool boundary, not process isolation. Arbitrary code running
-inside the same Agent workload could request a credential directly. Enable
-Agent Identity only for runtimes and users that are trusted within the
-instance boundary.
-
-The read-only default and `--scope` checks are not a technical enforcement
-boundary: arbitrary code in the same workload could obtain an ARM token and use
-any operation allowed by the connected user's RBAC. Users with privileged Azure
-roles must not connect those accounts to an Agent workload that can execute
-untrusted code. Adding Reader does not reduce existing Contributor or Owner
-permissions.
-
-Azure CLI can follow HTTP redirects after the wrapper validates the initial URL;
-the wrapper does not claim to enforce the scope of redirected requests. The
-existing discovery client continues to reject redirects. Use Azure RBAC, not
-this wrapper, when a resource boundary must hold independently of the runtime.
-
-Only the `rest` subcommand is exposed. The wrapper does not log in other commands
-such as `az aks show` or `az vm list`. Debug flags, custom headers, output-file
-options, and arbitrary Azure CLI arguments are not forwarded. Within the
-supported Agent Identity tool contract, do not use bare `az`, Azure PowerShell,
-a generic HTTP client, or another credential source as a fallback.
+OAuth apps, consent, Key Vault encryption, TLS material, and namespace-specific
+Istio wiring must be provisioned separately. This change supplies source and
+offline tests, not a live deployment or proof of production security. See the
+[component README](https://github.com/Azure/cetirun/tree/main/app/agent-tools-mcp)
+and [Istio operations](../../operations/istio/) for details.
 
 ## Common failures
 
-| Error | Meaning |
+| Error | Action |
 | --- | --- |
-| `authorization_required` | Open the returned Portal URL and connect Microsoft Entra. |
-| `interaction_required` | Reconnect the instance in the Portal. |
-| `forbidden` | Azure rejected authentication or authorization for the delegated request. |
-| `throttled` | Azure rate-limited the read request. |
-| `not_found` | Azure CLI reported that the requested resource was not found. |
-| `write_not_enabled` | A mutating method was requested without `--allow-write`. |
-| `write_outcome_unknown` | A write did not produce a usable response; inspect state before retrying. |
-| `dependency_unavailable` | The Broker, Auth SDK, or Azure dependency is unavailable. |
-| `invalid_request` | The command arguments, path, scope, API version, or JSON body were rejected. |
-
-Do not work around `forbidden` by granting roles automatically. An
-administrator must review any Azure RBAC change separately.
-
-Platform operators should also review
-[Istio authentication](../../operations/istio/) for the trusted Portal ID-token
-header and session-store requirements.
+| `unauthenticated` | Check the projected token, audience, and current workload binding. |
+| `grant_required` | Connect an account and authorize this Agent in the Portal. |
+| `permission_denied` | Review the grant and provider permissions; do not auto-grant roles. |
+| `interaction_required` | Reconnect the same account in the Portal. |
+| `authorization_changed` | Refresh the current grant; the call crossed a revision change. |
+| `throttled` | Respect provider limits. |
+| `dependency_unavailable` | Inspect the MCP/Broker/provider dependency without logging credentials. |
+| `execution_unknown` | Independently inspect whether the write occurred before proceeding. |
+| `invalid_request` | Correct the typed arguments. |

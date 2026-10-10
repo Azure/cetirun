@@ -34,6 +34,8 @@ spec:
           ports:
             - name: http
               containerPort: 8080
+            - name: https
+              containerPort: 8443
           env:
             - name: ENTRA_TENANT_ID
               value: {{ .Values.agentIdentity.tenantId | quote }}
@@ -47,6 +49,44 @@ spec:
               value: {{ .Values.agentIdentity.portalOrigin | quote }}
             - name: PORTAL_BASE_URL
               value: {{ .Values.agentIdentity.portalBaseUrl | quote }}
+            - name: PORTAL_NAMESPACE
+              value: {{ .Values.portal.namespace | quote }}
+            - name: PORTAL_SERVICE_ACCOUNT
+              value: {{ .Values.portal.serviceAccount | quote }}
+            - name: TOOL_SERVICE_NAMESPACE
+              value: {{ .Values.toolService.namespace | quote }}
+            - name: TOOL_SERVICE_ACCOUNT
+              value: {{ .Values.toolService.serviceAccount | quote }}
+            - name: WORKLOAD_TOKEN_AUDIENCE
+              value: agent-tools-mcp
+            - name: AZURE_OBO_PERMISSIONS
+              value: {{ join " " .Values.agentIdentity.armPermissions | quote }}
+            - name: MICROSOFT_OBO_PERMISSIONS
+              value: {{ join " " .Values.agentIdentity.graphPermissions | quote }}
+            {{- if .Values.providers.github.credentialsSecretName }}
+            - name: GITHUB_APP_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.providers.github.credentialsSecretName | quote }}
+                  key: {{ .Values.providers.github.clientIDKey | quote }}
+            - name: GITHUB_APP_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.providers.github.credentialsSecretName | quote }}
+                  key: {{ .Values.providers.github.clientSecretKey | quote }}
+            {{- end }}
+            {{- if .Values.providers.google.credentialsSecretName }}
+            - name: GOOGLE_OAUTH_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.providers.google.credentialsSecretName | quote }}
+                  key: {{ .Values.providers.google.clientIDKey | quote }}
+            - name: GOOGLE_OAUTH_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.providers.google.credentialsSecretName | quote }}
+                  key: {{ .Values.providers.google.clientSecretKey | quote }}
+            {{- end }}
             - name: KEY_VAULT_KEY_URL
               value: {{ .Values.agentIdentity.keyVaultKeyUrl | quote }}
             - name: AZURE_CLIENT_ID
@@ -65,10 +105,23 @@ spec:
               value: {{ .Values.operator.namespace | quote }}
             - name: OPERATOR_SERVICE_ACCOUNT
               value: {{ .Values.operator.serviceAccount | quote }}
+            {{- if .Values.tls.enabled }}
+            - name: TLS_CERT_FILE
+              value: /var/run/cetirun/tls/{{ .Values.tls.certKey }}
+            - name: TLS_KEY_FILE
+              value: /var/run/cetirun/tls/{{ .Values.tls.keyKey }}
+            - name: TLS_CLIENT_CA_FILE
+              value: /var/run/cetirun/tls/{{ .Values.tls.clientCAKey }}
+            {{- end }}
           volumeMounts:
             - name: kubernetes-api-credential
               mountPath: /var/run/cetirun/kubernetes
               readOnly: true
+            {{- if .Values.tls.enabled }}
+            - name: broker-tls
+              mountPath: /var/run/cetirun/tls
+              readOnly: true
+            {{- end }}
           readinessProbe:
             httpGet: {path: /readyz, port: http}
           livenessProbe:
@@ -99,6 +152,12 @@ spec:
               value: https://management.azure.com/
             {{- range $index, $scope := .Values.agentIdentity.armScopes }}
             - name: DownstreamApis__AzureResourceManager__Scopes__{{ $index }}
+              value: {{ $scope | quote }}
+            {{- end }}
+            - name: DownstreamApis__MicrosoftGraph__BaseUrl
+              value: https://graph.microsoft.com/
+            {{- range $index, $scope := .Values.agentIdentity.graphScopes }}
+            - name: DownstreamApis__MicrosoftGraph__Scopes__{{ $index }}
               value: {{ $scope | quote }}
             {{- end }}
             - name: ASPNETCORE_URLS
@@ -140,3 +199,9 @@ spec:
                   items:
                     - key: ca.crt
                       path: ca.crt
+        {{- if .Values.tls.enabled }}
+        - name: broker-tls
+          secret:
+            secretName: {{ .Values.tls.secretName | quote }}
+            defaultMode: 0440
+        {{- end }}

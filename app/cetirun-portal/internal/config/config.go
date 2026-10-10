@@ -39,14 +39,17 @@ type Config struct {
 	// SandboxRuntimes pins deployment-approved built-in creation inputs.
 	SandboxRuntimes map[string]SandboxRuntime
 	// AgentIdentityEnabled requires cryptographically verified Entra owner
-	// claims and exposes the per-instance authorization experience.
+	// claims for Agent Identity lifecycle management.
 	AgentIdentityEnabled bool
+	// AgentToolsEnabled exposes owner-scoped external account connections and
+	// per-instance tool grants. It independently requires verified owner claims.
+	AgentToolsEnabled bool
 	// EntraTenantID and PortalClientID identify the issuer and audience of the
 	// ID token passed by oauth2-proxy to the Portal backend.
 	EntraTenantID  string
 	PortalClientID string
-	// AgentIdentityBrokerURL is an internal cluster URL, never browser-visible.
-	AgentIdentityBrokerURL      string
+	// AgentToolsBrokerURL is an internal cluster URL, never browser-visible.
+	AgentToolsBrokerURL         string
 	PortalOrigin                string
 	RegistryCredentialNamespace string
 	// AIGatewayEnabled exposes the platform AI Gateway choices: the model
@@ -79,9 +82,10 @@ func Load() Config {
 		AllowedAgentTypes:                  envOrDefaultAgentTypes("ALLOWED_AGENT_TYPES", defaultAllowedAgentTypes),
 		SandboxRuntimes:                    loadSandboxRuntimes(os.Getenv("SANDBOX_RUNTIME_PROFILES")),
 		AgentIdentityEnabled:               os.Getenv("FEATURE_AGENT_IDENTITY_ENABLED") == "true",
+		AgentToolsEnabled:                  os.Getenv("FEATURE_AGENT_TOOLS_ENABLED") == "true",
 		EntraTenantID:                      envOrDefault("ENTRA_TENANT_ID", ""),
 		PortalClientID:                     envOrDefault("PORTAL_OIDC_CLIENT_ID", ""),
-		AgentIdentityBrokerURL:             envOrDefault("AGENT_ID_BROKER_URL", "http://cetirun-agent-broker.cetirun-credentials.svc.cluster.local:8080"),
+		AgentToolsBrokerURL:                envOrDefault("AGENT_TOOLS_BROKER_URL", "http://cetirun-agent-broker.cetirun-credentials.svc.cluster.local:8080"),
 		PortalOrigin:                       envOrDefault("PORTAL_ORIGIN", ""),
 		RegistryCredentialNamespace:        envOrDefault("REGISTRY_CREDENTIAL_NAMESPACE", "cetirun-registry-credentials"),
 		AIGatewayEnabled:                   os.Getenv("FEATURE_AI_GATEWAY_ENABLED") == "true",

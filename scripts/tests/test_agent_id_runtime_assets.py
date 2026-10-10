@@ -1,7 +1,7 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 
-"""Contracts for the built-in Agent Identity Azure skill and its PVC sync."""
+"""Contracts for the native MCP Azure guidance and managed skill sync."""
 
 import hashlib
 import os
@@ -19,17 +19,16 @@ SYNC_SCRIPT = CHART / "configs" / "builtin-skill-sync.sh"
 
 
 class AgentIDRuntimeAssetTests(unittest.TestCase):
-    def test_azure_skill_is_read_only_by_default_and_handles_auth_states(self):
+    def test_azure_skill_is_typed_read_only_and_handles_auth_states(self):
         content = SKILL.read_text(encoding="utf-8")
         self.assertIn("name: azure-readonly", content)
         for command in (
-            "cetirun-agent auth status",
-            "cetirun-agent auth start",
-            "cetirun-agent azure subscriptions list",
-            "cetirun-agent azure resource-groups list",
-            "cetirun-agent azure resources search",
-            "cetirun-agent azure resource show",
-            "cetirun-agent az rest",
+            "connections_status",
+            "connections_start_link",
+            "azure_subscriptions_list",
+            "azure_resource_groups_list",
+            "azure_resources_search",
+            "azure_resource_show",
         ):
             with self.subTest(command=command):
                 self.assertIn(command, content)
@@ -39,33 +38,23 @@ class AgentIDRuntimeAssetTests(unittest.TestCase):
             "direct ARM",
             "raw KQL",
             "access token",
-            "permission-management",
-            "credential-export",
+            "write, delete, deployment, policy",
         ):
             with self.subTest(prohibited=prohibited):
                 self.assertIn(prohibited, content)
         for error_code in (
-            "authorization_required",
+            "grant_required",
             "interaction_required",
-            "forbidden",
+            "permission_denied",
             "throttled",
             "dependency_unavailable",
             "invalid_request",
-            "write_not_enabled",
-            "write_outcome_unknown",
-            "not_found",
         ):
             with self.subTest(error_code=error_code):
                 self.assertIn(error_code, content)
         self.assertIn("untrusted data", content)
         self.assertIn("`actionUrl`", content)
-        for contract in (
-            "Default to read-only", "--allow-write", "--scope",
-            "nodeResourceGroup", "completion: not_tracked", "response.nextLink",
-            "not a process boundary", "can follow redirects",
-        ):
-            with self.subTest(contract=contract):
-                self.assertIn(contract, content)
+        self.assertNotIn("cetirun-agent", content)
 
     def test_both_runtime_images_package_the_same_skill(self):
         expected_destinations = {

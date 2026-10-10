@@ -290,6 +290,9 @@ func main() {
 		AgentIdentityBlueprintClientID: agentIdentityBlueprintClientID,
 		AgentIdentityNamePrefix:        agentIdentityNamePrefix,
 		AgentIdentityBrokerURL:         agentIdentityBrokerURL,
+		ToolsMCPURL:                    os.Getenv("TOOLS_MCP_URL"),
+		ToolsMCPAudience:               os.Getenv("WORKLOAD_TOKEN_AUDIENCE"),
+		ToolsMCPCASecretName:           os.Getenv("TOOLS_MCP_CA_SECRET_NAME"),
 		AIGateway:                      aiGatewayConfig,
 	}
 	if customConfig.Enabled {

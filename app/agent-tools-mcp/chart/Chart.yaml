@@ -1,0 +1,6 @@
+apiVersion: v2
+name: agent-tools-mcp
+description: Workload-bound MCP tools with broker-managed user authorization
+type: application
+version: 0.1.1
+appVersion: "0.1.1"
