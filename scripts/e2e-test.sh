@@ -25,6 +25,8 @@
 #   READY_TIMEOUT         — Seconds to wait for Ready (default: 600)
 #   CLEANUP_TIMEOUT       — Seconds to observe controller cleanup (default: 180)
 #   DOMAIN                — Base domain for routing   (auto-detected from operator Helm values)
+#   E2E_OIDC_CLIENT_ID    — Expected public OIDC client ID (otherwise read from Istio release values)
+#   E2E_CA_FILE           — Optional absolute PEM CA bundle for ingress verification
 #   EXPECTED_IMAGE_TAG    — If set, verify agent pod uses this image tag
 #   SKIP_CLEANUP          — If non-empty, skip cleanup on success
 
@@ -45,6 +47,7 @@ INSTANCE_NS_UID=""
 CREATE_ATTEMPTED=false
 RUN_LABEL="qualification.cetirun.microsoft.com/e2e-run"
 RUN_ID="run-$$-${RANDOM}-${RANDOM}"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 pass() { echo "  ✓ $1"; }
 fail() { echo "  ✗ $1" >&2; FAILURES=$((FAILURES + 1)); }
@@ -262,6 +265,30 @@ finish() {
   exit "${result}"
 }
 
+check_ingress() {
+  local domain="${DOMAIN:-}" client_id="${E2E_OIDC_CLIENT_ID:-}" values
+  local -a arguments
+  if [[ -z "${domain}" ]]; then
+    if ! values="$(helm get values cetirun-operator -n "${TEST_NAMESPACE}" -o json 2>/dev/null)" ||
+       ! domain="$(jq -er '.domainSuffix | select(type == "string" and length > 0)' <<< "${values}" 2>/dev/null)"; then
+      echo "ERROR: An explicit ingress domain or readable operator domain value is required." >&2
+      return 1
+    fi
+  fi
+  if [[ -z "${client_id}" ]]; then
+    if ! values="$(helm get values cetirun-istio -n cetirun-istio -o json 2>/dev/null)" ||
+       ! client_id="$(jq -er '.clientId | select(type == "string" and length > 0)' <<< "${values}" 2>/dev/null)"; then
+      echo "ERROR: An expected OIDC client identifier is required for the ingress check." >&2
+      return 1
+    fi
+  fi
+  arguments=(--origin "https://${domain}" --agent-name "${TEST_ALIAS}" --client-id "${client_id}")
+  if [[ -n "${E2E_CA_FILE:-}" ]]; then
+    arguments+=(--ca-file "${E2E_CA_FILE}")
+  fi
+  python3 -B "${SCRIPT_DIR}/e2e-ingress-check.py" "${arguments[@]}"
+}
+
 main() {
 validate_inputs
 
@@ -284,7 +311,7 @@ fi
 
 # ── Prerequisite checks ──────────────────────────────────────────────────────
 echo "==> Checking prerequisites..."
-for cmd in kubectl helm jq curl base64; do
+for cmd in kubectl helm jq python3 base64; do
   if ! type -P "$cmd" &>/dev/null; then
     echo "ERROR: ${cmd} is required but not installed." >&2
     exit 1
@@ -605,65 +632,12 @@ fi
 echo ""
 echo "==> Verifying gateway routing..."
 
-# Auto-detect the domain from the operator's Helm values if not overridden.
-if [[ -z "${DOMAIN:-}" ]]; then
-  DOMAIN=$(helm get values cetirun-operator -n "${TEST_NAMESPACE}" -o json 2>/dev/null \
-    | jq -r '.domainSuffix // empty' 2>/dev/null || echo "")
-  [[ -z "${DOMAIN}" ]] && DOMAIN="example.com"
-fi
-INSTANCE_URL="https://${TEST_ALIAS}.${DOMAIN}"
-
-if [[ "${AGENT_TYPE}" == "openclaw" ]]; then
-  GATEWAY_TOKEN=$(kubectl get secret gateway-token -n "${INSTANCE_NS}" \
-    -o jsonpath='{.data.OPENCLAW_GATEWAY_TOKEN}' 2>/dev/null | base64 -d 2>/dev/null || echo "")
-
-  if [[ -n "${GATEWAY_TOKEN}" ]]; then
-    HTTP_CODE=$(curl -s -o /dev/null -w '%{http_code}' \
-      --connect-timeout 10 --max-time 30 -k \
-      "${INSTANCE_URL}/?tkn=${GATEWAY_TOKEN}" 2>/dev/null || echo "000")
-
-    if [[ "${HTTP_CODE}" =~ ^(200|301|302|401|403|426)$ ]]; then
-      pass "Authenticated routing works (HTTP ${HTTP_CODE} at ${INSTANCE_URL})"
-    else
-      fail "Authenticated routing returned unexpected HTTP ${HTTP_CODE} at ${INSTANCE_URL}"
-    fi
-  else
-    fail "Could not retrieve gateway token"
-  fi
+if check_ingress; then
+  pass "Native UI sign-in challenge verified over HTTPS"
 else
-  echo "    SKIP: Hermes external API is protected by OAuth2 Proxy plus API_SERVER_KEY."
+  fail "Native UI sign-in challenge could not be verified"
 fi
-
-# Verify unauthenticated request gets 302 redirect to Entra ID
-REDIRECT_HEADERS=$(curl -s -D - -o /dev/null --connect-timeout 10 --max-time 30 -k \
-  "${INSTANCE_URL}/" 2>/dev/null || echo "")
-REDIRECT_CODE=$(echo "$REDIRECT_HEADERS" | awk '/^HTTP\//{print $2}' | head -1)
-LOCATION=$(echo "$REDIRECT_HEADERS" | grep -i '^location:' | tr -d '\r' || true)
-
-if [[ "${REDIRECT_CODE}" == "302" ]]; then
-  pass "Unauthenticated request returns 302 redirect"
-else
-  fail "Unauthenticated request returned HTTP ${REDIRECT_CODE:-???}, expected 302"
-fi
-
-if echo "${LOCATION}" | grep -q 'login.microsoftonline.com'; then
-  pass "Redirect points to login.microsoftonline.com"
-else
-  fail "Redirect Location does not point to login.microsoftonline.com: ${LOCATION}"
-fi
-
-# Verify client_id in the redirect matches the configured Entra app
-EXPECTED_CLIENT_ID=$(helm get values cetirun-istio -n cetirun-istio -o json 2>/dev/null \
-  | jq -r '.clientId // empty' 2>/dev/null || echo "")
-if [[ -n "${EXPECTED_CLIENT_ID}" ]]; then
-  if echo "${LOCATION}" | grep -q "client_id=${EXPECTED_CLIENT_ID}"; then
-    pass "Redirect uses correct client_id (${EXPECTED_CLIENT_ID})"
-  else
-    fail "Redirect client_id does not match expected '${EXPECTED_CLIENT_ID}'"
-  fi
-else
-  echo "    SKIP: Could not determine expected client_id from Helm values."
-fi
+echo "    Not tested: owner sign-in, authorized native UI/WebSocket access and model/tool traffic."
 
 # ── Verify image tags ───────────────────────────────────────────────────────────────
 if [[ -n "${EXPECTED_IMAGE_TAG:-}" ]]; then
