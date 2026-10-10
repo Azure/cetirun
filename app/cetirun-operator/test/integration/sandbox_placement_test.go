@@ -187,11 +187,11 @@ func TestSandboxPlacementPreparation(t *testing.T) {
 				workload.Spec.Replicas = ptr.To[int32](1)
 				h.update(t, workload)
 				h.get(t, client.ObjectKeyFromObject(f.spare), f.spare)
-				h.get(t, client.ObjectKeyFromObject(f.unusedPolicy), f.unusedPolicy)
+				h.get(t, client.ObjectKeyFromObject(f.otherPolicy), f.otherPolicy)
 				f.spare.Spec.Storage.Scratch.SizeLimit = resource.MustParse("2Gi")
-				f.unusedPolicy.Spec.Network.BlockedCIDRs = []string{"203.0.113.0/24"}
+				f.otherPolicy.Spec.Network.BlockedCIDRs = []string{"203.0.113.0/24"}
 				h.update(t, f.spare)
-				h.update(t, f.unusedPolicy)
+				h.update(t, f.otherPolicy)
 				if err := f.reconciler.CheckSandboxExecutionSources(h.ctx, intent); err != nil {
 					t.Fatal("controlled scale or unused configuration changes invalidated execution:", err)
 				}

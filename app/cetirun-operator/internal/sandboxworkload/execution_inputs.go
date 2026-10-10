@@ -20,7 +20,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// TeamInputs retains shared runtime inputs separately from Sandbox selection.
+// TeamInputs retains shared runtime inputs separately from policy selection.
 // It contains digests and reference names, never rendered configuration.
 type TeamInputs struct {
 	SharedDigest string   `json:"sharedDigest"`
@@ -41,7 +41,7 @@ func (inputs TeamInputs) DigestFor(box string) (string, error) {
 		return "", fmt.Errorf("Team inputs do not authorize the selected Sandbox")
 	}
 	if inputs.Policy == "" {
-		return "", fmt.Errorf("Team inputs do not authorize an AgentPolicy")
+		return "", fmt.Errorf("Team inputs do not authorize a policy")
 	}
 	return inputDigest(struct{ Shared, Sandbox, Policy string }{inputs.SharedDigest, box, inputs.Policy})
 }

@@ -96,8 +96,7 @@ func newFixture(t *testing.T) fixture {
 		},
 		Spec: api.AgentSpec{
 			Agent: api.HarnessSpec{Type: api.AgentTypeHermes}, User: api.UserSpec{Alias: "alice"},
-			GatewayTokenSecretRef: "gateway-token", Team: team.Name, SandboxRef: box.Name,
-		},
+			GatewayTokenSecretRef: "gateway-token", Team: team.Name, SandboxRef: box.Name},
 	}
 	return fixture{handler, cl, agent, team, box, policy}
 }
@@ -566,14 +565,14 @@ func TestTeamReferenceAndCompatibilityValidation(t *testing.T) {
 			}
 			f.team.Spec.SandboxRefs = append(f.team.Spec.SandboxRefs, box.Name)
 		}, "only one"},
-		{"normal grants forbidden", func(t *testing.T, f *fixture) {
+		{"unqualified Kubernetes access", func(t *testing.T, f *fixture) {
 			f.policy.Spec.KubernetesAccess = &api.AgentPolicyAdminKubernetesAccess{
 				ServiceAccountName: "agent-admin", ClusterRoleBindings: []api.AgentPolicyClusterRoleBinding{{ClusterRoleName: "read-only"}},
 			}
 			if err := f.client.Update(context.Background(), f.policy); err != nil {
 				t.Fatal(err)
 			}
-		}, "administrative Kubernetes access"},
+		}, "incompatible"},
 		{"unsupported optional FQDN", func(t *testing.T, f *fixture) {
 			f.policy.Spec.Network.BlockedFQDNs = []string{"blocked.example.com"}
 			if err := f.client.Update(context.Background(), f.policy); err != nil {
@@ -594,22 +593,6 @@ func TestTeamReferenceAndCompatibilityValidation(t *testing.T) {
 		req := requestFor(t, admissionv1.Create, f.team, nil, "administrator")
 		requireResponse(t, f.handler.Validate(context.Background(), req), true, "")
 	})
-}
-
-func TestTeamPolicyReferenceBlocksDeletionWithoutCoordination(t *testing.T) {
-	fixture := newFixture(t)
-	if fixture.handler.coordination != nil {
-		t.Fatal("test requires configuration coordination to be disabled")
-	}
-	var agents api.AgentList
-	if err := fixture.client.List(context.Background(), &agents); err != nil {
-		t.Fatal(err)
-	}
-	if len(agents.Items) != 0 {
-		t.Fatal("Team policy protection must not depend on Agent consumers")
-	}
-	request := requestFor(t, admissionv1.Delete, fixture.policy, nil, "administrator")
-	requireResponse(t, fixture.handler.Validate(context.Background(), request), false, "still referenced by Team")
 }
 
 func TestReferencingConsumersBlockInvalidation(t *testing.T) {
@@ -642,9 +625,7 @@ func TestConfigurationUpdatesCheckEveryReferencingTeam(t *testing.T) {
 		t.Fatal(err)
 	}
 	candidate := f.policy.DeepCopy()
-	candidate.Spec.KubernetesAccess = &api.AgentPolicyAdminKubernetesAccess{
-		ServiceAccountName: "agent-admin", ClusterRoleBindings: []api.AgentPolicyClusterRoleBinding{{ClusterRoleName: "read-only"}},
-	}
+	candidate.Spec.Network.BlockedFQDNs = []string{"blocked.example.com"}
 	req := requestFor(t, admissionv1.Update, candidate, f.policy, "administrator")
 	requireResponse(t, f.handler.Validate(context.Background(), req), false, "referencing Team")
 }

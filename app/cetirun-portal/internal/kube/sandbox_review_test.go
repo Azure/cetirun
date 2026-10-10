@@ -23,8 +23,8 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-func TestPortalTeamUpdatePreservesConcurrentGovernance(t *testing.T) {
-	team := &api.Team{ObjectMeta: metav1.ObjectMeta{Name: "governed"}, Spec: api.TeamSpec{
+func TestPortalTeamUpdateDoesNotOverwriteAfterConflict(t *testing.T) {
+	team := &api.Team{ObjectMeta: metav1.ObjectMeta{Name: "governed", UID: "governed-uid"}, Spec: api.TeamSpec{
 		AgentPolicyRef: "old-policy",
 		SandboxRefs:    []string{"old"}, DefaultSandboxRef: "old",
 		Skills: []string{"old-skill"},
@@ -33,31 +33,21 @@ func TestPortalTeamUpdatePreservesConcurrentGovernance(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(newScheme()).WithObjects(team).
 		WithInterceptorFuncs(interceptor.Funcs{Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
 			updates++
-			if updates == 1 {
-				current := &api.Team{}
-				if err := c.Get(ctx, client.ObjectKeyFromObject(team), current); err != nil {
-					t.Fatal(err)
-				}
-				current.Spec.AgentPolicyRef = "new-policy"
-				current.Spec.SandboxRefs, current.Spec.DefaultSandboxRef = []string{"new"}, "new"
-				if err := c.Update(ctx, current); err != nil {
-					t.Fatal(err)
-				}
-				return apierrors.NewConflict(api.GroupVersion.WithResource("teams").GroupResource(), team.Name, fmt.Errorf("synthetic concurrent update"))
-			}
-			return c.Patch(ctx, obj, patch, opts...)
+			return apierrors.NewConflict(api.GroupVersion.WithResource("teams").GroupResource(), team.Name, fmt.Errorf("synthetic concurrent update"))
 		}}).Build()
-	got, err := NewClient(c).UpdateTeamSpec(context.Background(), team.Name, api.TeamSpec{
-		MemberContext:  api.TeamContextSpec{Role: "new-role"},
-		AgentPolicyRef: "must-not-override",
-	})
-	if err != nil {
+	current := &api.Team{}
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(team), current); err != nil {
 		t.Fatal(err)
 	}
-	if updates != 2 || got.Spec.AgentPolicyRef != "new-policy" ||
-		!slices.Equal(got.Spec.SandboxRefs, []string{"new"}) || got.Spec.DefaultSandboxRef != "new" ||
-		got.Spec.MemberContext.Role != "new-role" || len(got.Spec.Skills) != 0 {
-		t.Fatalf("retry lost concurrent governance or Portal replacement semantics: %+v", got.Spec)
+	_, err := NewClient(c).UpdateTeamSpec(context.Background(), team.Name, api.TeamSpec{
+		MemberContext:  api.TeamContextSpec{Role: "new-role"},
+		AgentPolicyRef: "requested-policy", SandboxRefs: []string{"requested"}, DefaultSandboxRef: "requested",
+	}, TeamVersion{UID: current.UID, ResourceVersion: current.ResourceVersion})
+	if !apierrors.IsConflict(err) {
+		t.Fatalf("err = %v, want conflict", err)
+	}
+	if updates != 1 {
+		t.Fatalf("patch attempts = %d, want 1", updates)
 	}
 }
 

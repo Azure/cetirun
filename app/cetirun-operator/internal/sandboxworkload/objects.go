@@ -29,7 +29,7 @@ func validateObjects(input Input) error {
 	grants := map[grantScope]bool{}
 	if access != nil {
 		if access.ServiceAccountName != c.ServiceAccountName {
-			return fmt.Errorf("compiled Kubernetes bindings require the selected dedicated ServiceAccount")
+			return fmt.Errorf("compiled Kubernetes bindings require the selected policy ServiceAccount")
 		}
 		for _, grant := range access.RoleBindings {
 			grants[grantScope{namespace: grant.Namespace, role: grant.ClusterRoleName}] = false

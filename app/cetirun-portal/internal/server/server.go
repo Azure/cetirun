@@ -20,6 +20,7 @@ func New(
 	meHandler *handler.MeHandler,
 	adminTeamHandler *handler.AdminTeamHandler,
 	adminInstanceHandler *handler.AdminInstanceHandler,
+	adminPolicyHandler *handler.AdminPolicyHandler,
 	authMiddleware func(http.Handler) http.Handler,
 	requireAdmin func(http.Handler) http.Handler,
 	agentAuthorizationHandlers ...*handler.AgentAuthorizationHandler,
@@ -84,6 +85,11 @@ func New(
 	adminMux.HandleFunc("GET /api/v1/admin/teams/{name}", adminTeamHandler.GetTeam)
 	adminMux.HandleFunc("PUT /api/v1/admin/teams/{name}", adminTeamHandler.UpdateTeam)
 	adminMux.HandleFunc("DELETE /api/v1/admin/teams/{name}", adminTeamHandler.DeleteTeam)
+	adminMux.HandleFunc("GET /api/v1/admin/policies", adminPolicyHandler.ListPolicies)
+	adminMux.HandleFunc("POST /api/v1/admin/policies", adminPolicyHandler.CreatePolicy)
+	adminMux.HandleFunc("GET /api/v1/admin/policies/{name}", adminPolicyHandler.GetPolicy)
+	adminMux.HandleFunc("PUT /api/v1/admin/policies/{name}", adminPolicyHandler.UpdatePolicy)
+	adminMux.HandleFunc("DELETE /api/v1/admin/policies/{name}", adminPolicyHandler.DeletePolicy)
 	adminMux.HandleFunc("GET /api/v1/admin/instances", adminInstanceHandler.ListAllInstances)
 	api.Handle("/api/v1/admin/", requireAdmin(adminMux))
 

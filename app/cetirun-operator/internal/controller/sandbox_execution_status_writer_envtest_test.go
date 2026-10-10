@@ -223,7 +223,7 @@ func executionStatusAPIFixture(t *testing.T, ctx context.Context, storage client
 	}
 	agent.Status.Sandbox = &api.SandboxStatus{
 		TeamUID: "historical-team", SandboxUID: "historical-sandbox", AgentPolicyUID: "historical-policy",
-		AppliedRevision: "historical-revision",
+AppliedRevision: "historical-revision",
 	}
 	agent.Status.Phase = api.PhasePending
 	agent.Status.ObservedGeneration = agent.Generation

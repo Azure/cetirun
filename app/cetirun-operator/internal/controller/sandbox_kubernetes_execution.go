@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strconv"
 	"time"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
@@ -75,9 +76,20 @@ func sandboxGatewayProjectionReady(agent *api.Agent) bool {
 		return false
 	}
 	status := agent.Status.AIGateway
-	return status != nil && status.Phase == api.AIGatewayPhaseReady && status.Routed && !status.Blocked &&
-		status.PolicyRevision != "" && status.KeyID != "" &&
-		status.PolicyRevision == agent.Status.Policy.Enforcement.Gateway.DesiredRevision
+	if status == nil || status.Phase != api.AIGatewayPhaseReady || !status.Routed || status.Blocked ||
+		status.ObservedGeneration != agent.Generation || status.PolicyRevision == "" || status.KeyID == "" {
+		return false
+	}
+	budget, err := strconv.ParseFloat(status.BudgetUSD, 64)
+	if err != nil {
+		return false
+	}
+	policy := agent.Status.Policy.EffectivePolicyRef
+	desired := gatewayPolicyRevision(agent, aiGatewayGrant{
+		policyName: policy.Name, policyUID: policy.UID,
+		groups: slices.Clone(status.AccessGroups), budget: budget,
+	})
+	return desired != "" && status.PolicyRevision == desired
 }
 
 func (r *AgentReconciler) reconcileKubernetesSandbox(ctx context.Context, agent *api.Agent) (ctrl.Result, error) {

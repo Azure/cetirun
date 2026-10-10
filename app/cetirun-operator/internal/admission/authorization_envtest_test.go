@@ -259,8 +259,7 @@ func TestAuthorizationAPIServerBindings(t *testing.T) {
 				binding.TeamUID != f.team.UID || binding.SandboxUID != f.box.UID || binding.AgentPolicyUID != f.policy.UID {
 				t.Fatalf("API-assigned identity or current reference authorization was not durable: %#v, %v", binding, err)
 			}
-			if stored.Spec.Team != f.team.Name ||
-				stored.Spec.SandboxRef != f.box.Name || stored.Status.Sandbox != nil {
+			if stored.Spec.Team != f.team.Name || stored.Spec.SandboxRef != f.box.Name || stored.Status.Sandbox != nil {
 				t.Fatal("creation defaulting promoted the workload or claimed enforcement")
 			}
 			stored.Spec.Model = "member-application-model"
@@ -295,7 +294,7 @@ func TestAuthorizationAPIServerBindings(t *testing.T) {
 			}
 		}
 		for name, edit := range map[string]func(*api.Agent){
-			"team":  func(a *api.Agent) { a.Spec.Team = "caller-team" },
+			"team": func(a *api.Agent) { a.Spec.Team = "caller-team" },
 			"record": func(a *api.Agent) {
 				a.Annotations = map[string]string{sandboxbinding.AuthorizationAnnotation: fixtureAuthorization(t, f)}
 			},

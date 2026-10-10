@@ -502,7 +502,7 @@ func TestKubernetesSandboxPrerequisitesPreservesSupportedStorageShapes(t *testin
 	}
 }
 
-func TestKubernetesPrerequisiteRevisionIgnoresUnselectedTeamChanges(t *testing.T) {
+func TestKubernetesPrerequisiteRevisionIgnoresUnselectedSandboxChanges(t *testing.T) {
 	ctx := context.Background()
 	f := newKubernetesPrerequisitesFixture(t, "hermes")
 	first, err := f.resolve(t)

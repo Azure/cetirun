@@ -34,8 +34,7 @@ func sandboxStatusFixture() (*api.Agent, controller.SandboxStatusInput) {
 	}
 	binding := sandbox.Binding{
 		AgentUID: agent.UID, TeamUID: "example-team-uid", SandboxUID: "example-sandbox-uid",
-		AgentPolicyUID: "example-policy-uid",
-	}
+		AgentPolicyUID: "example-policy-uid"}
 	expected := sandbox.ExecutionIdentity{
 		Binding: binding, Revision: "synthetic-compiled-revision", PodUID: "example-pod-uid",
 		NodeUID: "example-node-uid", EnforcementEpoch: "synthetic-enforcement-epoch",
@@ -149,8 +148,7 @@ func TestSandboxAgentStatusCommitsAtomicallyAndRetainsAppliedHistory(t *testing.
 	}
 	expected := &api.SandboxStatus{
 		TeamUID: input.Expected.Binding.TeamUID, SandboxUID: input.Expected.Binding.SandboxUID,
-		AgentPolicyUID: input.Expected.Binding.AgentPolicyUID,
-		AppliedRevision: input.Plan.Revision,
+		AgentPolicyUID: input.Expected.Binding.AgentPolicyUID, AppliedRevision: input.Plan.Revision,
 	}
 	if !reflect.DeepEqual(agent.Status.Sandbox, expected) || agent.Status.ObservedGeneration != agent.Generation {
 		t.Fatalf("applied binding was not committed as one unit: %+v", agent.Status.Sandbox)

@@ -179,7 +179,7 @@ func (h *Handler) validateAgentAuthorization(request admission.Request, agent, o
 		return admission.Allowed("explicit administrator reauthorization is valid; Sandbox execution remains held")
 	}
 	if !sameAgentSelection(agent, old) {
-		return admission.Denied("changing a policy-bound Agent's Team, policy class or Sandbox binding requires explicit administrator reauthorization")
+		return admission.Denied("changing a policy-bound Agent's Team or Sandbox binding requires explicit administrator reauthorization")
 	}
 	if _, err := sandboxbinding.AuthorizedBinding(agent); err != nil {
 		return admission.Denied(fmt.Sprintf("explicit administrator reauthorization is required: %v", err))

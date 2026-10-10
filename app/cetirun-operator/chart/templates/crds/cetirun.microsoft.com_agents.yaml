@@ -382,8 +382,8 @@ spec:
                   credentialPolicyRevision:
                     description: |-
                       CredentialPolicyRevision is reserved for a future typed credential
-                      service read-back. The legacy bearer issuer must leave it empty and cannot
-                      satisfy aggregate Policy application readiness.
+                      service read-back. The legacy bearer issuer must leave it empty; only the
+                      credential component may report its own policy execution revision.
                     type: string
                   displayName:
                     description: |-
@@ -717,9 +717,8 @@ spec:
                 type: string
               policy:
                 description: |-
-                  Policy records the resolved AgentPolicy and the revisions each enforcement
-                  component must apply. Detailed component evidence remains in its existing
-                  status field.
+                  Policy records the resolved AgentPolicy. Component execution is reported
+                  independently by the component that owns it.
                 properties:
                   effectivePolicyRef:
                     properties:
@@ -739,33 +738,13 @@ spec:
                     - name
                     - uid
                     type: object
-                  enforcement:
-                    properties:
-                      credential:
-                        properties:
-                          desiredRevision:
-                            type: string
-                        type: object
-                      gateway:
-                        properties:
-                          desiredRevision:
-                            type: string
-                        type: object
-                      sandbox:
-                        properties:
-                          desiredRevision:
-                            type: string
-                        type: object
-                    type: object
                   observedGeneration:
                     format: int64
                     type: integer
                   phase:
                     enum:
-                    - Pending
-                    - Applied
+                    - Resolved
                     - Denied
-                    - Unknown
                     type: string
                 type: object
               registryCredentials:

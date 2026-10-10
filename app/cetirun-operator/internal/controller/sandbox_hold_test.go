@@ -26,6 +26,7 @@ import (
 	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/controller"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload/testfixture"
 )
 
 type sandboxFinalizerPatchClient struct {
@@ -69,13 +70,14 @@ func (c *sandboxFinalizerPatchClient) Patch(ctx context.Context, object client.O
 }
 
 func TestSandboxFinalizersUseOptimisticMetadataOnlyPatches(t *testing.T) {
-	for _, typ := range []cetirunv1alpha1.AgentType{cetirunv1alpha1.AgentTypeOpenClaw, cetirunv1alpha1.AgentTypeHermes, cetirunv1alpha1.AgentTypeCustom} {
+	for _, typ := range []cetirunv1alpha1.AgentType{cetirunv1alpha1.AgentTypeOpenClaw, cetirunv1alpha1.AgentTypeHermes} {
 		t.Run(string(typ), func(t *testing.T) {
 			ctx := context.Background()
-			agent := newCR("patch-example", cetirunv1alpha1.PhasePending, nil, 1, 0, "")
-			agent.Spec.SandboxRef, agent.Spec.Agent.Type = "standard", typ
+			fixture := testfixture.New(string(typ))
+			agent := fixture.Agent
 			agent.Finalizers = append(agent.Finalizers, "example.com/retain")
-			backing := fake.NewClientBuilder().WithScheme(testScheme()).WithStatusSubresource(agent).WithObjects(agent).Build()
+			backing := fake.NewClientBuilder().WithScheme(testScheme()).WithStatusSubresource(agent).
+				WithObjects(agent, fixture.Team, fixture.Sandbox, fixture.Policy).Build()
 			writer := &sandboxFinalizerPatchClient{Client: backing}
 			reconciler := &controller.AgentReconciler{Client: writer, EventRecorder: record.NewFakeRecorder(10)}
 			request := ctrl.Request{NamespacedName: types.NamespacedName{Name: agent.Name}}
@@ -99,7 +101,7 @@ func TestSandboxFinalizersUseOptimisticMetadataOnlyPatches(t *testing.T) {
 				t.Fatal(err)
 			}
 			if writer.patches != 2 || !slices.Equal(current.Finalizers, []string{"example.com/retain"}) ||
-				current.Spec.SandboxRef != "standard" {
+				current.Spec.SandboxRef != fixture.Sandbox.Name {
 				t.Fatal("finalizer cleanup rewrote policy or removed a foreign finalizer")
 			}
 		})
@@ -117,7 +119,7 @@ func TestSandboxOptInDoesNotRunLegacyHelm(t *testing.T) {
 			team.Spec.SandboxRefs = []string{"standard"}
 			team.Spec.DefaultSandboxRef = "standard"
 		}},
-		{"partial Team binding", func(_ *cetirunv1alpha1.Agent, team *cetirunv1alpha1.Team) {
+		{"policy-only Team binding", func(_ *cetirunv1alpha1.Agent, team *cetirunv1alpha1.Team) {
 			team.Spec.AgentPolicyRef = "operations"
 		}},
 		{"prior applied binding", func(a *cetirunv1alpha1.Agent, _ *cetirunv1alpha1.Team) {
@@ -152,8 +154,8 @@ func TestSandboxOptInDoesNotRunLegacyHelm(t *testing.T) {
 			if err := client.Get(context.Background(), types.NamespacedName{Name: agent.Name}, actual); err != nil {
 				t.Fatal(err)
 			}
-			condition := findCondition(actual.Status.Conditions, cetirunv1alpha1.ConditionSandboxReady)
-			if condition == nil || condition.Status != metav1.ConditionFalse || condition.Reason != "UnsupportedControl" ||
+			condition := findCondition(actual.Status.Conditions, cetirunv1alpha1.ConditionReady)
+			if condition == nil || condition.Status != metav1.ConditionFalse || condition.Reason != "PolicyDenied" ||
 				condition.ObservedGeneration != agent.Generation {
 				t.Fatalf("expected explicit unsupported, unready state: %+v", condition)
 			}
@@ -180,8 +182,7 @@ func TestSandboxHoldStopsExistingWorkloadAndPreservesHome(t *testing.T) {
 	agent.Spec.SandboxRef = "standard"
 	agent.Status.AccessURL = "https://portal.example.com/ui/alice-work/"
 	agent.Status.Sandbox = &cetirunv1alpha1.SandboxStatus{
-		TeamUID: "team-uid", SandboxUID: "sandbox-uid",
-		AgentPolicyUID: "policy-uid", AppliedRevision: "previous",
+		TeamUID: "team-uid", SandboxUID: "sandbox-uid", AgentPolicyUID: "policy-uid", AppliedRevision: "previous",
 	}
 	sts := statefulSet(agent.Name, 1)
 	sts.Spec.PersistentVolumeClaimRetentionPolicy = &appsv1.StatefulSetPersistentVolumeClaimRetentionPolicy{
@@ -217,14 +218,14 @@ func TestSandboxHoldStopsExistingWorkloadAndPreservesHome(t *testing.T) {
 		t.Fatal("hold changed applied state, dropped unrelated conditions, or ran Helm")
 	}
 	rv := actual.ResourceVersion
-	transition := findCondition(actual.Status.Conditions, cetirunv1alpha1.ConditionSandboxReady).LastTransitionTime
+	transition := findCondition(actual.Status.Conditions, cetirunv1alpha1.ConditionReady).LastTransitionTime
 	if _, err := reconciler.Reconcile(context.Background(), request); err != nil {
 		t.Fatal(err)
 	}
 	if err := client.Get(context.Background(), request.NamespacedName, actual); err != nil {
 		t.Fatal(err)
 	}
-	if rv != actual.ResourceVersion || !transition.Equal(&findCondition(actual.Status.Conditions, cetirunv1alpha1.ConditionSandboxReady).LastTransitionTime) {
+	if rv != actual.ResourceVersion || !transition.Equal(&findCondition(actual.Status.Conditions, cetirunv1alpha1.ConditionReady).LastTransitionTime) {
 		t.Fatal("stable hold must not repeatedly rewrite status or fabricate transitions")
 	}
 }
@@ -411,7 +412,7 @@ func TestSandboxHoldCustomRuntimePreservesOwnership(t *testing.T) {
 				t.Fatal(err)
 			}
 			condition := findCondition(actual.Status.Conditions, cetirunv1alpha1.ConditionSandboxReady)
-			wantReason := "UnsupportedControl"
+			wantReason := "PolicyDenied"
 			wantReplicas := int32(0)
 			if foreign {
 				wantReason = "PolicyApplyFailed"

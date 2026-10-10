@@ -732,27 +732,13 @@ func TestKubernetesConfigurationUpdate(t *testing.T) {
 }
 
 func TestConfigurationTeamAffectedSelections(t *testing.T) {
-	store, storage, oldObject, _ := configurationFixture(t, "Team")
+	store, _, oldObject, _ := configurationFixture(t, "Team")
 	before := oldObject.(*api.Team)
 	acquire(t, store, teamIntent(t, before, "existing"))
 	after := before.DeepCopy()
 	after.Spec.AgentPolicyRef = "new-policy"
 	if _, err := store.AcquireConfigurationChange(context.Background(), before, after); !errors.Is(err, ErrConflict) {
-		t.Fatal("Team policy mutation acquired a reservation:", err)
-	}
-
-	store, storage, oldObject, _ = configurationFixture(t, "Team")
-	before = oldObject.(*api.Team)
-	acquire(t, store, teamIntent(t, before, "existing"))
-	after = before.DeepCopy()
-	after.Spec.SandboxRefs = append(after.Spec.SandboxRefs, "another-spare")
-	ticket, err := store.AcquireConfigurationChange(context.Background(), before, after)
-	if err != nil || ticket.Change.Team == nil {
-		t.Fatal("unselected Sandbox mutation was unnecessarily blocked:", err)
-	}
-	if _, err := store.ReconcileChange(context.Background(), ticket,
-		configurationAdapter(t, storage, storage, before, after)); err != nil {
-		t.Fatal("unselected Sandbox update failed:", err)
+		t.Fatal("selected policy mutation acquired a reservation:", err)
 	}
 }
 

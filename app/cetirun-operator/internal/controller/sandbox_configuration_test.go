@@ -292,20 +292,20 @@ func TestAgentPolicyAcceptedIsConfigurationOnly(t *testing.T) {
 		reason string
 	}{
 		{"accepted", func(*api.AgentPolicy, *controller.SandboxConfigurationSnapshot) {}, metav1.ConditionTrue, "PolicyAccepted"},
-		{"unsupported FQDN", func(p *api.AgentPolicy, _ *controller.SandboxConfigurationSnapshot) {
+		{"component-specific FQDN", func(p *api.AgentPolicy, _ *controller.SandboxConfigurationSnapshot) {
 			p.Spec.Network.BlockedFQDNs = []string{"blocked.example.com"}
-		}, metav1.ConditionFalse, "UnsupportedControl"},
+		}, metav1.ConditionTrue, "PolicyAccepted"},
 		{"invalid port", func(p *api.AgentPolicy, _ *controller.SandboxConfigurationSnapshot) {
 			p.Spec.Network.BlockedPorts = []api.AgentPolicyPort{{Port: 70000}}
 		}, metav1.ConditionFalse, "InvalidConfiguration"},
-		{"required DNS conflict", func(p *api.AgentPolicy, _ *controller.SandboxConfigurationSnapshot) {
+		{"component-specific DNS conflict", func(p *api.AgentPolicy, _ *controller.SandboxConfigurationSnapshot) {
 			p.Spec.Network.BlockedPorts = []api.AgentPolicyPort{{Port: 53}}
-		}, metav1.ConditionFalse, "PolicyConflict"},
-		{"unapproved grant", func(p *api.AgentPolicy, _ *controller.SandboxConfigurationSnapshot) {
+		}, metav1.ConditionTrue, "PolicyAccepted"},
+		{"component-specific grant", func(p *api.AgentPolicy, _ *controller.SandboxConfigurationSnapshot) {
 			p.Spec.KubernetesAccess = &api.AgentPolicyAdminKubernetesAccess{ServiceAccountName: "example-admin", ClusterRoleBindings: []api.AgentPolicyClusterRoleBinding{{ClusterRoleName: "admin"}}}
-		}, metav1.ConditionFalse, "UnapprovedGrant"},
-		{"no registration", func(_ *api.AgentPolicy, s *controller.SandboxConfigurationSnapshot) { s.Registrations = nil }, metav1.ConditionFalse, "UnsupportedControl"},
-		{"unavailable topology", func(_ *api.AgentPolicy, s *controller.SandboxConfigurationSnapshot) { s.Platforms = nil }, metav1.ConditionUnknown, "PrerequisitesUnavailable"},
+		}, metav1.ConditionTrue, "PolicyAccepted"},
+		{"no registration", func(_ *api.AgentPolicy, s *controller.SandboxConfigurationSnapshot) { s.Registrations = nil }, metav1.ConditionTrue, "PolicyAccepted"},
+		{"unavailable topology", func(_ *api.AgentPolicy, s *controller.SandboxConfigurationSnapshot) { s.Platforms = nil }, metav1.ConditionTrue, "PolicyAccepted"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, snapshot, _ := sandboxConfigurationFixture()
@@ -319,11 +319,7 @@ func TestAgentPolicyAcceptedIsConfigurationOnly(t *testing.T) {
 			}
 			request := ctrl.Request{NamespacedName: types.NamespacedName{Name: policy.Name}}
 			_, err := r.Reconcile(context.Background(), request)
-			if tc.name == "unavailable topology" {
-				if !errors.Is(err, sandboxpolicy.ErrUnavailable) {
-					t.Fatal("unavailable topology must retain retryable classification", err)
-				}
-			} else if err != nil {
+			if err != nil {
 				t.Fatal(err)
 			}
 			actual := &api.AgentPolicy{}
@@ -336,7 +332,7 @@ func TestAgentPolicyAcceptedIsConfigurationOnly(t *testing.T) {
 				t.Fatalf("unexpected policy configuration condition: %+v", actual.Status)
 			}
 			if condition.Status == metav1.ConditionTrue &&
-				(!strings.Contains(condition.Message, "Standalone policy support") || !strings.Contains(condition.Message, "are not assessed")) {
+				(!strings.Contains(condition.Message, "declaration is valid") || !strings.Contains(condition.Message, "own enforcement readiness")) {
 				t.Fatal("standalone acceptance overstates workload readiness", condition.Message)
 			}
 			if err := c.Get(context.Background(), client.ObjectKeyFromObject(agent), agent); err != nil {
@@ -421,7 +417,7 @@ func TestConfigurationReadFailureAndStatusFailureAreNotSuccess(t *testing.T) {
 	}
 }
 
-func TestAgentPolicyConfigurationPreservesRegistrationFailureCauses(t *testing.T) {
+func TestAgentPolicyAcceptanceDoesNotDependOnRuntimeRegistrations(t *testing.T) {
 	for _, unavailable := range []api.SandboxType{api.SandboxGVisor, api.SandboxKata} {
 		t.Run(string(unavailable), func(t *testing.T) {
 			_, snapshot, _ := sandboxConfigurationFixture()
@@ -442,15 +438,15 @@ func TestAgentPolicyConfigurationPreservesRegistrationFailureCauses(t *testing.T
 				Source: controller.SandboxConfigurationSourceFunc(func(context.Context) (controller.SandboxConfigurationSnapshot, error) { return snapshot, nil }),
 			}
 			result, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(policy)})
-			if !errors.Is(err, sandboxpolicy.ErrUnavailable) || !errors.Is(err, sandboxpolicy.ErrUnsupportedControl) || result.RequeueAfter != 0 {
-				t.Fatalf("registration failure order lost causes or bypassed backoff: %+v, %v", result, err)
+			if err != nil || result.RequeueAfter != 0 {
+				t.Fatalf("runtime registration affected declaration acceptance: %+v, %v", result, err)
 			}
 			if err := c.Get(context.Background(), client.ObjectKeyFromObject(policy), policy); err != nil {
 				t.Fatal(err)
 			}
 			condition := apimeta.FindStatusCondition(policy.Status.Conditions, api.ConditionAgentPolicyAccepted)
-			if condition == nil || condition.Status != metav1.ConditionUnknown || condition.Reason != "PrerequisitesUnavailable" {
-				t.Fatal("a terminal registration masked unavailable evidence", condition)
+			if condition == nil || condition.Status != metav1.ConditionTrue || condition.Reason != "PolicyAccepted" {
+				t.Fatal("runtime registration affected declaration acceptance", condition)
 			}
 		})
 	}
@@ -484,7 +480,7 @@ func configurationGrantFixture() (*api.AgentPolicy, controller.SandboxConfigurat
 	return policy, snapshot, role
 }
 
-func TestAgentPolicyConfigurationVerifiesAuthoritativeRoleObservations(t *testing.T) {
+func TestAgentPolicyAcceptanceLeavesRoleObservationToEnforcementComponents(t *testing.T) {
 	failure := errors.New("synthetic authoritative role read failure")
 	for _, tc := range []struct {
 		name   string
@@ -493,11 +489,11 @@ func TestAgentPolicyConfigurationVerifiesAuthoritativeRoleObservations(t *testin
 		reason string
 	}{
 		{"approved", func(*rbacv1.ClusterRole) {}, metav1.ConditionTrue, "PolicyAccepted"},
-		{"rules changed", func(r *rbacv1.ClusterRole) { r.Rules[0].Resources = []string{"secrets"} }, metav1.ConditionFalse, "UnapprovedGrant"},
-		{"UID changed", func(r *rbacv1.ClusterRole) { r.UID = "replacement-role" }, metav1.ConditionFalse, "UnapprovedGrant"},
-		{"RV changed", func(r *rbacv1.ClusterRole) { r.ResourceVersion = "8" }, metav1.ConditionFalse, "UnapprovedGrant"},
-		{"missing", func(*rbacv1.ClusterRole) {}, metav1.ConditionFalse, "UnapprovedGrant"},
-		{"read failure", func(*rbacv1.ClusterRole) {}, metav1.ConditionUnknown, "PrerequisitesUnavailable"},
+		{"rules changed", func(r *rbacv1.ClusterRole) { r.Rules[0].Resources = []string{"secrets"} }, metav1.ConditionTrue, "PolicyAccepted"},
+		{"UID changed", func(r *rbacv1.ClusterRole) { r.UID = "replacement-role" }, metav1.ConditionTrue, "PolicyAccepted"},
+		{"RV changed", func(r *rbacv1.ClusterRole) { r.ResourceVersion = "8" }, metav1.ConditionTrue, "PolicyAccepted"},
+		{"missing", func(*rbacv1.ClusterRole) {}, metav1.ConditionTrue, "PolicyAccepted"},
+		{"read failure", func(*rbacv1.ClusterRole) {}, metav1.ConditionTrue, "PolicyAccepted"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			policy, snapshot, role := configurationGrantFixture()
@@ -518,11 +514,7 @@ func TestAgentPolicyConfigurationVerifiesAuthoritativeRoleObservations(t *testin
 				Source: controller.SandboxConfigurationSourceFunc(func(context.Context) (controller.SandboxConfigurationSnapshot, error) { return snapshot, nil }),
 			}
 			result, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(policy)})
-			if tc.name == "read failure" {
-				if !errors.Is(err, sandboxpolicy.ErrUnavailable) || !errors.Is(err, failure) || result.RequeueAfter != 0 {
-					t.Fatalf("read failure lost causes/backoff: %+v, %v", result, err)
-				}
-			} else if err != nil || result.RequeueAfter <= 0 {
+			if err != nil || result.RequeueAfter != 0 {
 				t.Fatalf("configuration assessment: %+v, %v", result, err)
 			}
 			if err := cached.Get(context.Background(), client.ObjectKeyFromObject(policy), policy); err != nil {
@@ -632,8 +624,11 @@ func TestConfigurationSnapshotMustRemainFreshThroughAssessment(t *testing.T) {
 				r := &controller.AgentPolicyReconciler{Client: c, Source: source, Now: func() time.Time { return now }}
 				result, err = r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(policy)})
 			}
-			if !errors.Is(err, sandboxpolicy.ErrUnavailable) || result.RequeueAfter != 0 {
+			if kind == "Sandbox" && (!errors.Is(err, sandboxpolicy.ErrUnavailable) || result.RequeueAfter != 0) {
 				t.Fatalf("expired evidence became periodic success: %+v, %v", result, err)
+			}
+			if kind == "AgentPolicy" && (err != nil || result.RequeueAfter != 0) {
+				t.Fatalf("platform snapshot affected declaration acceptance: %+v, %v", result, err)
 			}
 			if err := c.Get(context.Background(), client.ObjectKeyFromObject(object), object); err != nil {
 				t.Fatal(err)
@@ -645,7 +640,11 @@ func TestConfigurationSnapshotMustRemainFreshThroughAssessment(t *testing.T) {
 			if kind == "AgentPolicy" {
 				conditions = policy.Status.Conditions
 			}
-			if len(conditions) != 1 || conditions[0].Status != metav1.ConditionUnknown {
+			wantStatus := metav1.ConditionUnknown
+			if kind == "AgentPolicy" {
+				wantStatus = metav1.ConditionTrue
+			}
+			if len(conditions) != 1 || conditions[0].Status != wantStatus {
 				t.Fatal("freshness loss during assessment was not reported", conditions)
 			}
 		})
@@ -668,9 +667,10 @@ func TestConfigurationPreservesObservationAndStatusErrors(t *testing.T) {
 		{client.ObjectKeyFromObject(object), (&controller.SandboxReconciler{Client: c, Source: source, Now: func() time.Time { return snapshot.ObservedAt }}).Reconcile},
 		{client.ObjectKeyFromObject(policy), (&controller.AgentPolicyReconciler{Client: c, Source: source, Now: func() time.Time { return snapshot.ObservedAt }}).Reconcile},
 	}
-	for _, reconciler := range reconcilers {
+	for i, reconciler := range reconcilers {
 		result, err := reconciler.reconcile(context.Background(), ctrl.Request{NamespacedName: reconciler.key})
-		if !errors.Is(err, observationFailure) || !errors.Is(err, statusFailure) || result.RequeueAfter != 0 {
+		wantObservationFailure := i == 0
+		if errors.Is(err, observationFailure) != wantObservationFailure || !errors.Is(err, statusFailure) || result.RequeueAfter != 0 {
 			t.Fatalf("failed status write masked observation failure: %+v, %v", result, err)
 		}
 	}

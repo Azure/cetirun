@@ -239,10 +239,14 @@ func (a *sandboxSDKAPI) object(t *testing.T, kind string) *unstructured.Unstruct
 	return nil
 }
 
-func sandboxSDKKubernetesAccessPlans(t *testing.T) (*PreparedRelease, *PreparedRelease, *unstructured.Unstructured) {
+func sandboxSDKAdminPlans(t *testing.T) (*PreparedRelease, *PreparedRelease, *unstructured.Unstructured) {
 	t.Helper()
 	fixture := testfixture.New("hermes")
 	fixture.Input.Helpers.Desktop = false
+	normalPolicy := fixture.Policy
+	fixture.Policy = fixture.Policy.DeepCopy()
+	fixture.Policy.Name, fixture.Policy.UID = "policy-admin-example", "admin-policy-uid"
+	fixture.Team.Spec.AgentPolicyRef = fixture.Policy.Name
 	fixture.Policy.Spec.KubernetesAccess = &api.AgentPolicyAdminKubernetesAccess{
 		ServiceAccountName: "sandbox-example",
 		ClusterRoleBindings: []api.AgentPolicyClusterRoleBinding{
@@ -251,7 +255,7 @@ func sandboxSDKKubernetesAccessPlans(t *testing.T) (*PreparedRelease, *PreparedR
 	}
 	resources := sandbox.Resources{
 		Sandboxes:     map[string]*api.Sandbox{fixture.Sandbox.Name: fixture.Sandbox},
-		AgentPolicies: map[string]*api.AgentPolicy{fixture.Policy.Name: fixture.Policy},
+		AgentPolicies: map[string]*api.AgentPolicy{normalPolicy.Name: normalPolicy, fixture.Policy.Name: fixture.Policy},
 	}
 	caps := fixture.Input.Resolution.Capabilities
 	caps.KubernetesAccess = true
@@ -354,7 +358,7 @@ func sandboxSDKKubernetesAccessPlans(t *testing.T) (*PreparedRelease, *PreparedR
 }
 
 func TestSandboxSDKRetiredBindingReplacementIsNeverPruned(t *testing.T) {
-	previous, next, retired := sandboxSDKKubernetesAccessPlans(t)
+	previous, next, retired := sandboxSDKAdminPlans(t)
 	cfg, api, store := sandboxSDKConfig()
 	if err := stageSandboxTest(previous, cfg, sandboxStageCheck); err != nil {
 		t.Fatal(err)

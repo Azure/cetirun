@@ -733,7 +733,7 @@ func TestTeamCRUD(t *testing.T) {
 	// Update
 	updated, err := c.UpdateTeamSpec(ctx, "aks", cetirunv1alpha1.TeamSpec{
 		MemberContext: cetirunv1alpha1.TeamContextSpec{Role: "AKS Engineer"},
-	})
+	}, TeamVersion{UID: got.UID, ResourceVersion: got.ResourceVersion})
 	if err != nil {
 		t.Fatalf("UpdateTeamSpec: %v", err)
 	}
@@ -745,7 +745,7 @@ func TestTeamCRUD(t *testing.T) {
 	}
 
 	// Delete
-	if err := c.DeleteTeam(ctx, "aks"); err != nil {
+	if err := c.DeleteTeam(ctx, "aks", TeamVersion{UID: updated.UID, ResourceVersion: updated.ResourceVersion}); err != nil {
 		t.Fatalf("DeleteTeam: %v", err)
 	}
 	if _, err := c.GetTeam(ctx, "aks"); err == nil {

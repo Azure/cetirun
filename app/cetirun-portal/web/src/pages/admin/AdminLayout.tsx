@@ -34,6 +34,9 @@ export function AdminLayout() {
         <NavLink to="/admin/teams" style={navStyle}>
           Teams
         </NavLink>
+        <NavLink to="/admin/policies" style={navStyle}>
+          Agent policies
+        </NavLink>
         <NavLink to="/admin/instances" style={navStyle}>
           Agents
         </NavLink>

@@ -373,15 +373,18 @@ func TestSandboxCompilerIdentityProjectionRendering(t *testing.T) {
 	for _, typ := range []string{"openclaw", "hermes"} {
 		t.Run(typ, func(t *testing.T) {
 			fixture := testfixture.New(typ)
-			fixture.Policy.Spec.KubernetesAccess = &api.AgentPolicyAdminKubernetesAccess{
+			policy := fixture.Policy.DeepCopy()
+			policy.Name, policy.UID = "policy-admin-example", "admin-policy-uid"
+			policy.Spec.KubernetesAccess = &api.AgentPolicyAdminKubernetesAccess{
 				ServiceAccountName:  "sandbox-example",
 				RoleBindings:        []api.AgentPolicyRoleBinding{{Namespace: "approved-tools", ClusterRoleName: "example-reader"}},
 				ClusterRoleBindings: []api.AgentPolicyClusterRoleBinding{{ClusterRoleName: "example-cluster-reader"}},
 			}
-			fixture.Policy.Spec.EntraID.Enabled = true
+			policy.Spec.EntraID.Enabled = true
+			fixture.Team.Spec.AgentPolicyRef = policy.Name
 			resources := sandbox.Resources{
 				Sandboxes:     map[string]*api.Sandbox{fixture.Sandbox.Name: fixture.Sandbox},
-				AgentPolicies: map[string]*api.AgentPolicy{fixture.Policy.Name: fixture.Policy},
+				AgentPolicies: map[string]*api.AgentPolicy{fixture.Policy.Name: fixture.Policy, policy.Name: policy},
 			}
 			record, err := sandboxbinding.Snapshot(fixture.Agent, fixture.Team, resources)
 			if err != nil {
@@ -434,7 +437,7 @@ func TestSandboxCompilerIdentityProjectionRendering(t *testing.T) {
 				{"example-reader", "approved-tools"}, {"example-cluster-reader", ""},
 			} {
 				platform.Grants = append(platform.Grants, sandboxpolicy.ApprovedGrant{
-					PolicyUID: fixture.Policy.UID, Namespace: grant.namespace, RoleUID: "role-uid", RoleResourceVersion: "1", Revision: "synthetic-only",
+					PolicyUID: policy.UID, Namespace: grant.namespace, RoleUID: "role-uid", RoleResourceVersion: "1", Revision: "synthetic-only",
 					RoleRef: rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: grant.name},
 					Rules:   []rbacv1.PolicyRule{{APIGroups: []string{""}, Resources: []string{"pods"}, Verbs: []string{"get"}}},
 				})

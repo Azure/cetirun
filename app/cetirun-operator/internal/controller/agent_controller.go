@@ -274,8 +274,6 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		return result, stderrors.Join(err, holdErr)
 	} else if !policy.authorized {
 		return r.holdPolicyDenied(ctx, instance)
-	} else if policy.reprojectionHold {
-		return r.holdPolicyReprojection(ctx, instance)
 	}
 
 	if sandboxRequested(instance, nil) {
@@ -287,13 +285,22 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		// authorization to fall back to direct model credentials.
 		var namespaceErr, projectionErr error
 		if r.AIGateway.Enabled {
-			namespace := &corev1.Namespace{}
-			namespaceErr = r.customReader().Get(ctx, types.NamespacedName{Name: instanceNamespace(instance.Name)}, namespace)
-			if namespaceErr == nil {
-				if err := r.validateSandboxBootstrapNamespace(ctx, instance, namespace); err != nil {
-					namespaceErr = err
-					logger.Error(err, "Policy-bound AI Gateway projection is waiting for a protected Sandbox namespace")
-				} else if err := r.reconcileAIGateway(ctx, instance, true); err != nil {
+			if r.SandboxPreparation == nil {
+				// Gateway execution is independent of Sandbox execution. A deployment
+				// without a Sandbox preparation adapter still needs the smallest
+				// Agent-owned namespace in which Gateway can project its key.
+				namespaceErr = r.ensureSandboxGatewayNamespace(ctx, instance)
+			} else {
+				namespace := &corev1.Namespace{}
+				namespaceErr = r.customReader().Get(ctx, types.NamespacedName{Name: instanceNamespace(instance.Name)}, namespace)
+				if namespaceErr == nil {
+					namespaceErr = r.validateSandboxBootstrapNamespace(ctx, instance, namespace)
+				}
+			}
+			if namespaceErr != nil && !errors.IsNotFound(namespaceErr) {
+				logger.Error(namespaceErr, "Policy-bound AI Gateway projection is waiting for an owned Sandbox namespace")
+			} else if namespaceErr == nil {
+				if err := r.reconcileAIGateway(ctx, instance, true); err != nil {
 					projectionErr = stderrors.Join(err, r.updateStatus(ctx, instance))
 					// Keep progressing through holdSandbox so ingress/compute remain
 					// stopped even when the Gateway control plane is unavailable.
@@ -301,9 +308,6 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 				} else if err := r.updateStatus(ctx, instance); err != nil {
 					return ctrl.Result{}, err
 				}
-			} else if !errors.IsNotFound(namespaceErr) {
-				namespaceErr = fmt.Errorf("inspect policy-bound Agent namespace: %w", namespaceErr)
-				logger.Error(namespaceErr, "Policy-bound AI Gateway projection cannot verify its namespace")
 			}
 		}
 		var result ctrl.Result
@@ -706,11 +710,9 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		instance.Status.AIGateway.Routed = false
 	}
 
-	// The initial projection must be allowed to execute, but it is not a
-	// workload authorization. Re-evaluate after the Gateway projection has had
-	// a chance to update its evidence and stop here until every current
-	// projection is verified. Any workload that was already exposed is fenced
-	// by the early reprojection hold above.
+	// Re-evaluate after component projection. Policy resolution remains separate
+	// from component readiness; Gateway, Sandbox, and identity publish their own
+	// enforcement status and do not turn Policy back into a global readiness gate.
 	policy, err = r.reconcilePolicy(ctx, instance)
 	if policy.dependencyUnavailable {
 		result, holdErr := r.holdPolicyDependencyUnavailable(ctx, instance)
@@ -721,9 +723,6 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	}
 	if !policy.authorized {
 		return r.holdPolicyDenied(ctx, instance)
-	}
-	if !policy.projectionsVerified {
-		return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
 	}
 
 	// 9. Install / upgrade Helm chart (skip if already deployed at this generation).

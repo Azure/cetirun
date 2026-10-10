@@ -460,13 +460,13 @@ func (h *preparationHarness) assertUnselectedNamespace(t *testing.T) {
 }
 
 type preparationCase struct {
-	h            *preparationHarness
-	fixture      testfixture.Fixture
-	spare        *api.Sandbox
-	unusedPolicy *api.AgentPolicy
-	source       *syntheticPreparationSource
-	installer    *localPreparationInstaller
-	reconciler   *controller.AgentReconciler
+	h           *preparationHarness
+	fixture     testfixture.Fixture
+	spare       *api.Sandbox
+	otherPolicy *api.AgentPolicy
+	source      *syntheticPreparationSource
+	installer   *localPreparationInstaller
+	reconciler  *controller.AgentReconciler
 }
 
 func (h *preparationHarness) newCase(t *testing.T, agentType string) *preparationCase {
@@ -483,6 +483,7 @@ func (h *preparationHarness) newCaseWithPrerequisites(t *testing.T, agentType st
 	fixture.Agent.Name, fixture.Agent.Spec.User.Alias = name, name
 	fixture.Agent.Annotations = nil
 	fixture.Agent.Spec.Model = "example-model"
+	fixture.Agent.Spec.ModelAccess = &api.ModelAccessSpec{SharedModels: ptr.To(true)}
 	fixture.Agent.Spec.Helm.Version = h.chart.Metadata.Version
 	if !provision {
 		fixture.Agent.Spec.Agent.Image = ptr.To("registry.example.com/" + agentType + "-gateway:" + h.chart.Metadata.AppVersion)
@@ -496,14 +497,21 @@ func (h *preparationHarness) newCaseWithPrerequisites(t *testing.T, agentType st
 	fixture.Policy.Name = name + "-normal"
 	fixture.Policy.Spec.Security.ReadOnlyRootFilesystem = nil
 	fixture.Policy.Spec.SandboxSelection.AllowMultiple = true
+	fixture.Policy.Spec.ModelAccess = api.AgentPolicyModelAccess{
+		SharedModels: api.AgentPolicySharedModelsAccess{Allowed: []string{fixture.Agent.Spec.Model}},
+		GatewayBudget: &api.AgentPolicyGatewayBudget{
+			DefaultMonthlyUSD: "1",
+			MaxMonthlyUSD:     "1",
+		},
+	}
 	h.create(t, fixture.Sandbox)
 	h.create(t, fixture.Policy)
 	f.spare = fixture.Sandbox.DeepCopy()
 	f.spare.ObjectMeta = metav1.ObjectMeta{Name: name + "-spare"}
+	f.otherPolicy = fixture.Policy.DeepCopy()
+	f.otherPolicy.ObjectMeta = metav1.ObjectMeta{Name: name + "-other"}
 	h.create(t, f.spare)
-	f.unusedPolicy = fixture.Policy.DeepCopy()
-	f.unusedPolicy.ObjectMeta = metav1.ObjectMeta{Name: name + "-unrelated"}
-	h.create(t, f.unusedPolicy)
+	h.create(t, f.otherPolicy)
 	fixture.Team.Name = name + "-team"
 	fixture.Team.Spec = api.TeamSpec{
 		SandboxRefs: []string{fixture.Sandbox.Name, f.spare.Name}, DefaultSandboxRef: fixture.Sandbox.Name,
@@ -794,7 +802,7 @@ func (f *preparationCase) reconcileConfiguration(t *testing.T) {
 			t.Fatalf("Sandbox %s must persist current-generation Ready: %+v", current.Name, current.Status)
 		}
 	}
-	for _, original := range []*api.AgentPolicy{f.fixture.Policy, f.unusedPolicy} {
+	for _, original := range []*api.AgentPolicy{f.fixture.Policy, f.otherPolicy} {
 		key := client.ObjectKeyFromObject(original)
 		if _, err := policyController.Reconcile(f.h.ctx, ctrl.Request{NamespacedName: key}); err != nil {
 			t.Fatalf("reconcile AgentPolicy against the shared synthetic inventory: %v", err)

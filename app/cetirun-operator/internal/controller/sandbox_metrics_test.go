@@ -168,7 +168,8 @@ func sandboxMetricsFixture(t *testing.T, name string, runtime api.SandboxType) (
 	team := &api.Team{
 		ObjectMeta: metav1.ObjectMeta{Name: name + "-team", UID: types.UID(name + "-team-uid")},
 		Spec: api.TeamSpec{
-			SandboxRefs: []string{box.Name}, DefaultSandboxRef: box.Name, AgentPolicyRef: policy.Name,
+			SandboxRefs: []string{box.Name}, DefaultSandboxRef: box.Name,
+			AgentPolicyRef: policy.Name,
 		},
 	}
 	agent := &api.Agent{
@@ -360,7 +361,7 @@ func TestSandboxMetricsPopulation(t *testing.T) {
 		mutate func(*api.Agent, *api.Team)
 		want   string
 	}{
-		{"legacy normal", func(*api.Agent, *api.Team) {}, ""},
+		{"legacy", func(*api.Agent, *api.Team) {}, ""},
 		{"legacy suspended", func(a *api.Agent, _ *api.Team) { a.Spec.Suspended = true }, ""},
 		{"legacy deleting", func(a *api.Agent, _ *api.Team) { a.DeletionTimestamp = &metav1.Time{Time: time.Now()} }, ""},
 		{"missing Team", func(a *api.Agent, _ *api.Team) { a.Spec.Team = "example-absent" }, ""},
@@ -610,8 +611,7 @@ func TestSandboxMetricsBoundedLabels(t *testing.T) {
 		condition.Reason = fmt.Sprintf("OpaqueReason%d", i)
 		condition.Message = "Synthetic error for " + name + " at https://" + name + ".example.com/"
 		agent.Status.Sandbox = &api.SandboxStatus{
-			TeamUID: team.UID, SandboxUID: box.UID,
-			AgentPolicyUID: types.UID(name + "-policy-uid"), AppliedRevision: name + "-revision",
+			TeamUID: team.UID, SandboxUID: box.UID, AgentPolicyUID: types.UID(name + "-policy-uid"), AppliedRevision: name + "-revision",
 		}
 		switch i % 4 {
 		case 1:

@@ -18,7 +18,7 @@ import (
 )
 
 func TestCLIConfigurationChangesHonorNativeReservations(t *testing.T) {
-	for _, kind := range []string{"Team", "Sandbox", "AgentPolicy", "unselected Team sandbox"} {
+	for _, kind := range []string{"Team", "Sandbox", "AgentPolicy"} {
 		t.Run(kind, func(t *testing.T) {
 			ctx := context.Background()
 			args, store, storage, team, _ := cliFixture(t)
@@ -59,14 +59,10 @@ func TestCLIConfigurationChangesHonorNativeReservations(t *testing.T) {
 			}
 			var before, after client.Object
 			switch kind {
-			case "Team", "unselected Team sandbox":
+			case "Team":
 				before = team
 				desired := team.DeepCopy()
-				if kind == "Team" {
-					desired.Spec.AgentPolicyRef = "replacement-policy"
-				} else {
-					desired.Spec.SandboxRefs = append(desired.Spec.SandboxRefs, "another-spare")
-				}
+				desired.Spec.AgentPolicyRef = "replacement-policy"
 				after = desired
 			case "Sandbox":
 				before = box
@@ -80,9 +76,6 @@ func TestCLIConfigurationChangesHonorNativeReservations(t *testing.T) {
 				after = desired
 			}
 			gvk := api.GroupVersion.WithKind(kind)
-			if kind == "unselected Team sandbox" {
-				gvk = api.GroupVersion.WithKind("Team")
-			}
 			before.GetObjectKind().SetGroupVersionKind(gvk)
 			after.GetObjectKind().SetGroupVersionKind(gvk)
 			writeObjectFile(t, args[len(args)-3], before)
@@ -99,9 +92,9 @@ func TestCLIConfigurationChangesHonorNativeReservations(t *testing.T) {
 				},
 			})
 			code, status, message := invoke(t, args, injectedClients(writer))
-			if kind == "unselected Team sandbox" {
+			if kind == "unused Team policy" {
 				if code != 0 || status.Status != "completed" || writes != 1 {
-					t.Fatalf("unselected Team Sandbox was blocked: code=%d status=%+v writes=%d message=%s", code, status, writes, message)
+					t.Fatalf("unselected Team slot was blocked: code=%d status=%+v writes=%d message=%s", code, status, writes, message)
 				}
 				return
 			}

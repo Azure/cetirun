@@ -75,7 +75,7 @@ func TestNativeConfigurationWriterAndDeletionRespectReservations(t *testing.T) {
 }
 
 func TestNativeTeamChangesRespectSelectedSlots(t *testing.T) {
-	for _, scenario := range []string{"creation default", "unused sandbox membership", "policy", "selected sandbox membership", "shared context"} {
+	for _, scenario := range []string{"creation default", "unused sandbox membership", "selected policy", "selected sandbox membership", "shared context"} {
 		t.Run(scenario, func(t *testing.T) {
 			ctx := context.Background()
 			store, storage, before := teamChangeFixture(t)
@@ -88,7 +88,7 @@ func TestNativeTeamChangesRespectSelectedSlots(t *testing.T) {
 				after.Spec.DefaultSandboxRef = "spare"
 			case "unused sandbox membership":
 				after.Spec.SandboxRefs = append(after.Spec.SandboxRefs, "another-spare")
-			case "policy":
+			case "selected policy":
 				after.Spec.AgentPolicyRef, allowed = "replacement-policy", false
 			case "selected sandbox membership":
 				after.Spec.SandboxRefs, after.Spec.DefaultSandboxRef, allowed = []string{"spare"}, "spare", false

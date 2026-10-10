@@ -59,20 +59,18 @@ func teamIntent(t *testing.T, team *api.Team, suffix string) Intent {
 }
 
 func TestTeamChangesOnlyConflictWithAffectedExecutions(t *testing.T) {
-	for _, change := range []string{"creation default", "add unselected Sandbox", "policy", "remove selected Sandbox", "runtime context", "ownership"} {
+	for _, change := range []string{"creation default", "selected policy", "remove selected Sandbox", "runtime context", "ownership"} {
 		t.Run(change, func(t *testing.T) {
 			ctx := context.Background()
 			store, _, before := teamChangeFixture(t)
 			intent := teamIntent(t, before, "one")
 			ticket := acquire(t, store, intent)
 			after := before.DeepCopy()
-			allowed := change == "creation default" || change == "add unselected Sandbox"
+			allowed := change == "creation default"
 			switch change {
 			case "creation default":
 				after.Spec.DefaultSandboxRef = "spare"
-			case "add unselected Sandbox":
-				after.Spec.SandboxRefs = append(after.Spec.SandboxRefs, "another-spare")
-			case "policy":
+			case "selected policy":
 				after.Spec.AgentPolicyRef = "replacement-policy"
 			case "remove selected Sandbox":
 				after.Spec.SandboxRefs, after.Spec.DefaultSandboxRef = []string{"spare"}, "spare"
@@ -104,27 +102,14 @@ func TestTeamChangesOnlyConflictWithAffectedExecutions(t *testing.T) {
 	}
 }
 
-func TestTeamPolicyChangeBlocksExistingAndFutureStarts(t *testing.T) {
+func TestTeamPolicyChangeConflictsWithCurrentAndFutureExecutions(t *testing.T) {
 	ctx := context.Background()
 	store, _, before := teamChangeFixture(t)
-	acquire(t, store, teamIntent(t, before, "existing"))
+	acquire(t, store, teamIntent(t, before, "current"))
 	after := before.DeepCopy()
 	after.Spec.AgentPolicyRef = "replacement-policy"
 	if _, err := store.AcquireTeamChange(ctx, before, after); !errors.Is(err, ErrConflict) {
-		t.Fatal("running execution did not protect the Team policy:", err)
-	}
-	store, _, before = teamChangeFixture(t)
-	after = before.DeepCopy()
-	after.Spec.AgentPolicyRef = "replacement-policy"
-	change, err := store.AcquireTeamChange(ctx, before, after)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.AcquireExecution(ctx, teamIntent(t, before, "future")); !errors.Is(err, ErrConflict) {
-		t.Fatal("pending policy mutation allowed an affected execution:", err)
-	}
-	if err := store.CheckChange(ctx, change); err != nil {
-		t.Fatal(err)
+		t.Fatal("running execution did not protect its policy selection:", err)
 	}
 }
 
@@ -162,7 +147,7 @@ func TestScopedTeamChangeAndAffectedStartHaveOneCASWinner(t *testing.T) {
 	defer cancel()
 	store, storage, before := teamChangeFixture(t)
 	after := before.DeepCopy()
-	after.Spec.AgentPolicyRef = "replacement-policy"
+	after.Spec.AgentPolicyRef = "replacement-normal"
 	var writes atomic.Int32
 	barrier := make(chan struct{})
 	store.Client = interceptor.NewClient(storage, interceptor.Funcs{
@@ -180,7 +165,7 @@ func TestScopedTeamChangeAndAffectedStartHaveOneCASWinner(t *testing.T) {
 			return c.Update(ctx, object, opts...)
 		},
 	})
-	intent := teamIntent(t, before, "normal")
+	intent := teamIntent(t, before, "current")
 	results := make(chan error, 2)
 	var group sync.WaitGroup
 	group.Go(func() {
@@ -207,7 +192,7 @@ func TestScopedTeamChangeAndAffectedStartHaveOneCASWinner(t *testing.T) {
 func TestScopedTeamChangeRetainsUnknownOutcomes(t *testing.T) {
 	ctx := context.Background()
 	store, _, before := teamChangeFixture(t)
-	acquire(t, store, teamIntent(t, before, "normal"))
+	acquire(t, store, teamIntent(t, before, "current"))
 	after := before.DeepCopy()
 	after.Spec.DefaultSandboxRef = "spare"
 	ticket, err := store.AcquireTeamChange(ctx, before, after)
@@ -232,7 +217,7 @@ func TestScopedTeamChangeRetainsUnknownOutcomes(t *testing.T) {
 func TestScopedTeamChangeRecoversCommittedWriteWithLostReply(t *testing.T) {
 	ctx := context.Background()
 	store, storage, before := teamChangeFixture(t)
-	acquire(t, store, teamIntent(t, before, "normal"))
+	acquire(t, store, teamIntent(t, before, "current"))
 	after := before.DeepCopy()
 	after.Spec.DefaultSandboxRef = "spare"
 	ticket, err := store.AcquireTeamChange(ctx, before, after)

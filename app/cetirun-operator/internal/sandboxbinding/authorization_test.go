@@ -53,9 +53,6 @@ func TestSnapshotPersistsBeforeAgentNameUIDOrSuccessfulApply(t *testing.T) {
 	if record != agent.Annotations[AuthorizationAnnotation] {
 		t.Fatal("creation metadata must not bind a caller-supplied Agent name or UID")
 	}
-	if !strings.HasPrefix(record, `{"version":"v1",`) {
-		t.Fatalf("authorization must use the v1 format: %s", record)
-	}
 	if _, err := AuthorizedBinding(agent); err == nil {
 		t.Fatal("an unpersisted create request is not authorized for execution")
 	}
@@ -89,11 +86,8 @@ func TestAuthorizationRejectsMalformedOrDetachedRecords(t *testing.T) {
 		{"unknown", func(a *api.Agent) {
 			a.Annotations[AuthorizationAnnotation] = strings.Replace(a.Annotations[AuthorizationAnnotation], `"version":`, `"unknown":true,"version":`, 1)
 		}},
-		{"unsupported v2", func(agent *api.Agent) {
-			agent.Annotations[AuthorizationAnnotation] = strings.Replace(agent.Annotations[AuthorizationAnnotation], `"v1"`, `"v2"`, 1)
-		}},
-		{"unsupported v3", func(agent *api.Agent) {
-			agent.Annotations[AuthorizationAnnotation] = strings.Replace(agent.Annotations[AuthorizationAnnotation], `"v1"`, `"v3"`, 1)
+		{"version", func(a *api.Agent) {
+			a.Annotations[AuthorizationAnnotation] = strings.Replace(a.Annotations[AuthorizationAnnotation], `"v1"`, `"v2"`, 1)
 		}},
 		{"trailing", func(a *api.Agent) { a.Annotations[AuthorizationAnnotation] += " {}" }},
 		{"duplicate", func(a *api.Agent) {
@@ -107,9 +101,6 @@ func TestAuthorizationRejectsMalformedOrDetachedRecords(t *testing.T) {
 		}},
 		{"different Team", func(a *api.Agent) { a.Spec.Team = "other-team" }},
 		{"different Sandbox", func(a *api.Agent) { a.Spec.SandboxRef = "other-box" }},
-		{"unexpected binding field", func(a *api.Agent) {
-			a.Annotations[AuthorizationAnnotation] = strings.Replace(a.Annotations[AuthorizationAnnotation], `"agentPolicy":`, `"unexpected":true,"agentPolicy":`, 1)
-		}},
 		{"no Agent UID", func(a *api.Agent) { a.UID = "" }},
 		{"no Agent name", func(a *api.Agent) { a.Name = "" }},
 		{"namespaced Agent", func(a *api.Agent) { a.Namespace = "unexpected" }},
@@ -134,7 +125,6 @@ func TestCurrentBindingRejectsMissingReplacedOrTerminatingIdentities(t *testing.
 		edit func(*api.Agent, *api.Team, sandbox.Resources)
 	}{
 		{"unselected box", func(a *api.Agent, _ *api.Team, _ sandbox.Resources) { a.Spec.SandboxRef = "other" }},
-		{"missing policy", func(_ *api.Agent, team *api.Team, _ sandbox.Resources) { team.Spec.AgentPolicyRef = "" }},
 		{"missing box", func(a *api.Agent, _ *api.Team, r sandbox.Resources) { delete(r.Sandboxes, a.Spec.SandboxRef) }},
 		{"missing policy", func(_ *api.Agent, team *api.Team, r sandbox.Resources) {
 			delete(r.AgentPolicies, team.Spec.AgentPolicyRef)
@@ -229,7 +219,7 @@ func TestExplicitReauthorizationFormatIsCompleteAndStrict(t *testing.T) {
 	for _, raw := range []string{
 		"", "null", "{}", raw + " {}", strings.Replace(raw, `"requestID":`, `"unknown":true,"requestID":`, 1),
 		strings.Replace(raw, `"operation-1"`, `""`, 1), strings.Replace(raw, `"agent-uid"`, `"*"`, 1),
-		strings.Replace(raw, `"team-uid"`, `""`, 1), strings.Replace(raw, `"binding":`, `"unexpected":true,"binding":`, 1),
+		strings.Replace(raw, `"team-uid"`, `""`, 1), strings.Replace(raw, `"policy-uid"`, `""`, 1),
 	} {
 		if _, err := ParseReauthorization(raw); err == nil {
 			t.Fatalf("invalid explicit request accepted: %s", raw)

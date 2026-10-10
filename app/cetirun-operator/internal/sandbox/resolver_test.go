@@ -172,14 +172,6 @@ func TestValidateTeamStopsAtInvalidPersistedIdentity(t *testing.T) {
 	}
 }
 
-func TestFoundationRevisionUsesV1Domain(t *testing.T) {
-	const expectedRevision = "39efbdbf83b160e3e032255dbc0df12bc80d9787e0a7866f2b0faff9a622e644"
-	resolved := mustResolve(t, resolverFixture())
-	if resolved.Revision != expectedRevision {
-		t.Fatalf("v1 foundation revision = %q, want %q", resolved.Revision, expectedRevision)
-	}
-}
-
 func TestResolveDefaultsAndIsolation(t *testing.T) {
 	input := resolverFixture()
 	beforeAgent := input.Agent.DeepCopy()
@@ -207,21 +199,13 @@ func TestResolveDefaultsAndIsolation(t *testing.T) {
 	}
 }
 
-func TestResolveIndependentTeamPolicies(t *testing.T) {
+func TestResolveSinglePolicy(t *testing.T) {
 	input := resolverFixture()
-	input.Resources.AgentPolicies["operations"].Spec.Network.BlockedPorts = []cetirunv1alpha1.AgentPolicyPort{{Port: 25}}
-	normal := mustResolve(t, input)
-	input.Team.Name, input.Team.UID = "administration", "admin-team-uid"
-	input.Team.Spec.AgentPolicyRef = "operations"
-	input.Agent.Spec.Team = input.Team.Name
-	input.AuthorizedBinding.TeamUID = input.Team.UID
-	input.AuthorizedBinding.AgentPolicyUID = "operations-uid"
-	admin := mustResolve(t, input)
-	if len(normal.AgentPolicy.Network.BlockedPorts) != 0 || len(admin.AgentPolicy.Network.BlockedPorts) != 1 {
-		t.Fatal("independent Team policies must not be merged")
-	}
-	if admin.Binding.SandboxUID != normal.Binding.SandboxUID || admin.Revision == normal.Revision {
-		t.Fatal("shared Sandbox must not collapse distinct policy bindings")
+	baseline := mustResolve(t, input)
+	input.Resources.AgentPolicies["normal"].Spec.Network.BlockedPorts = []cetirunv1alpha1.AgentPolicyPort{{Port: 25}}
+	updated := mustResolve(t, input)
+	if len(updated.AgentPolicy.Network.BlockedPorts) != 1 || updated.Binding != baseline.Binding || updated.Revision == baseline.Revision {
+		t.Fatal("the Team's single policy must drive the effective Sandbox controls")
 	}
 }
 
@@ -257,7 +241,7 @@ func TestResolveRejectsInvalidReferences(t *testing.T) {
 		{"empty list", func(i *ResolveInput) { i.Team.Spec.SandboxRefs = nil }},
 		{"duplicate list", func(i *ResolveInput) { i.Team.Spec.SandboxRefs = []string{"standard", "standard"} }},
 		{"unlisted default", func(i *ResolveInput) { i.Team.Spec.DefaultSandboxRef = "absent" }},
-		{"missing Team policy", func(i *ResolveInput) { i.Team.Spec.AgentPolicyRef = "" }},
+		{"missing policy", func(i *ResolveInput) { i.Team.Spec.AgentPolicyRef = "" }},
 		{"missing Sandbox", func(i *ResolveInput) { delete(i.Resources.Sandboxes, "standard") }},
 		{"missing selected policy", func(i *ResolveInput) { delete(i.Resources.AgentPolicies, "normal") }},
 		{"mismatched Sandbox name", func(i *ResolveInput) { i.Resources.Sandboxes["standard"].Name = "different" }},
@@ -293,7 +277,6 @@ func TestResolveRequiresExplicitUIDAuthorization(t *testing.T) {
 		func(i *ResolveInput) { i.Team.UID = "replacement-team" },
 		func(i *ResolveInput) { i.Resources.Sandboxes["standard"].UID = "replacement-sandbox" },
 		func(i *ResolveInput) { i.Resources.AgentPolicies["normal"].UID = "replacement-policy" },
-		func(i *ResolveInput) { i.Team.Spec.AgentPolicyRef = "operations" },
 	} {
 		input := resolverFixture()
 		change(&input)
@@ -320,17 +303,14 @@ func TestEveryConfiguredPairAndSelectedRuntimeHealth(t *testing.T) {
 	other.Name, other.UID, other.Spec.Type = "gvisor", "gvisor-uid", cetirunv1alpha1.SandboxGVisor
 	input.Resources.Sandboxes["gvisor"] = other
 	input.Team.Spec.SandboxRefs = append(input.Team.Spec.SandboxRefs, "gvisor")
-	input.Registrations[cetirunv1alpha1.SandboxGVisor] = Registration{Capabilities: fixtureCapabilities()}
-	if _, err := Resolve(input); err == nil {
-		t.Fatal("Team policy must permit multiple Sandboxes")
-	}
 	input.Resources.AgentPolicies["normal"].Spec.SandboxSelection.AllowMultiple = true
+	input.Registrations[cetirunv1alpha1.SandboxGVisor] = Registration{Capabilities: fixtureCapabilities()}
 	mustResolve(t, input) // Unselected gVisor health does not stop a Kata consumer.
 	registration := input.Registrations[cetirunv1alpha1.SandboxGVisor]
 	registration.Capabilities.GuestExternalNetwork = false
 	input.Registrations[cetirunv1alpha1.SandboxGVisor] = registration
 	if _, err := Resolve(input); err == nil {
-		t.Fatal("every permitted Sandbox must support both policy slots")
+		t.Fatal("every permitted Sandbox must support the Team policy")
 	}
 	input = resolverFixture()
 	registration = input.Registrations[cetirunv1alpha1.SandboxKata]

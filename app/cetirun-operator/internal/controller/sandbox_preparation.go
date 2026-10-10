@@ -171,7 +171,7 @@ func (r *AgentReconciler) prepareSandboxHeld(ctx context.Context, requested *api
 	// Bootstrap first: the Gateway must validate the recorded namespace UID
 	// before projecting its key. Only the opt-in native path renders that key.
 	if requested.Status.Policy != nil && requested.Status.Policy.EffectivePolicyRef != nil &&
-		(!config.NativeExecution || !sandboxGatewayProjectionReady(attempt.agent)) {
+		r.aiGatewayRequired(requested) && (!config.NativeExecution || !sandboxGatewayProjectionReady(attempt.agent)) {
 		return fmt.Errorf("%w: typed AI Gateway Sandbox projection is unavailable; execution remains held", sandboxpolicy.ErrUnsupportedControl)
 	}
 	prerequisites, err := config.Prerequisites.Resolve(ctx, attempt.agent.DeepCopy(), attempt.team.DeepCopy())
@@ -358,9 +358,8 @@ func (r *AgentReconciler) resolveSandboxExecutionInputs(ctx context.Context, req
 }
 
 func (a *sandboxPreparationAttempt) selectedPolicy() *api.AgentPolicy {
-	name := a.team.Spec.AgentPolicyRef
 	return &api.AgentPolicy{
-		ObjectMeta: metav1.ObjectMeta{Name: name, UID: a.resolution.Binding.AgentPolicyUID},
+		ObjectMeta: metav1.ObjectMeta{Name: a.team.Spec.AgentPolicyRef, UID: a.resolution.Binding.AgentPolicyUID},
 		Spec:       a.resolution.AgentPolicy,
 	}
 }

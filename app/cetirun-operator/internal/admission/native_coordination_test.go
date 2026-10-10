@@ -150,7 +150,7 @@ func TestNativePodAdmissionRechecksReservationAfterSourceReads(t *testing.T) {
 	}
 }
 
-func TestNativePodReservationBlocksSelectedTeamPolicyMutation(t *testing.T) {
+func TestNativePodReservationAllowsUnselectedSandboxMembership(t *testing.T) {
 	ctx := context.Background()
 	f, store, intent := coordinatedNativePodFixture(t)
 	if _, err := store.AcquireNative(ctx, intent); err != nil {
@@ -161,9 +161,21 @@ func TestNativePodReservationBlocksSelectedTeamPolicyMutation(t *testing.T) {
 		t.Fatal(err)
 	}
 	after := before.DeepCopy()
-	after.Spec.AgentPolicyRef = "other-policy"
-	if _, err := store.AcquireConfigurationChange(ctx, before, after); !errors.Is(err, sandboxcoordination.ErrConflict) {
-		t.Fatalf("selected Team policy mutation was not blocked: %v", err)
+	after.Spec.SandboxRefs = append(after.Spec.SandboxRefs, "unused-sandbox")
+	change, err := store.AcquireConfigurationChange(ctx, before, after)
+	if err != nil {
+		t.Fatal("unused Team Sandbox membership was blocked:", err)
+	}
+	adapter, err := sandboxcoordination.NewKubernetesChangeAdapter(f.client, f.client, before, after)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ReconcileChange(ctx, change, adapter); err != nil {
+		t.Fatal(err)
+	}
+	response := f.handler.Validate(ctx, podRequest(t, f.pod, admissionv1.Create, nil))
+	if !response.Allowed {
+		t.Fatalf("unrelated committed Team mutation prevented native Pod creation: %+v", response.Result)
 	}
 }
 

@@ -80,8 +80,7 @@ func sandboxEventAgentFixture(t *testing.T) (*api.Agent, SandboxStatusInput) {
 			Finalizers: []string{sandbox.HoldFinalizer},
 		},
 		Spec: api.AgentSpec{
-			Team: "event-team", SandboxRef: "event-sandbox",
-			Agent: api.HarnessSpec{Type: api.AgentTypeHermes}, User: api.UserSpec{Alias: "event-example"},
+			Team: "event-team", SandboxRef: "event-sandbox", Agent: api.HarnessSpec{Type: api.AgentTypeHermes}, User: api.UserSpec{Alias: "event-example"},
 		},
 		Status: api.AgentStatus{Phase: api.PhasePending, ObservedGeneration: 2},
 	}
@@ -437,8 +436,7 @@ func TestSandboxEventsMissingReferencesAndOpaqueValues(t *testing.T) {
 			agent.Status.AccessURL = "https://agent.example.com/synthetic-private-endpoint"
 			agent.Status.Sandbox = &api.SandboxStatus{
 				TeamUID: "synthetic-historical-team", SandboxUID: "synthetic-historical-sandbox",
-				AgentPolicyUID: "synthetic-historical-policy",
-				AppliedRevision: "sk-dummy " + strings.Repeat("synthetic-opaque-revision", 200),
+				AgentPolicyUID: "synthetic-historical-policy", AppliedRevision: "sk-dummy " + strings.Repeat("synthetic-opaque-revision", 200),
 			}
 			ctx, capture := captureSandboxEvents(t)
 			backing := sandboxEventClient(t, agent)
@@ -490,8 +488,9 @@ func TestSandboxEventsMissingReferencesAndOpaqueValues(t *testing.T) {
 	}
 	event := capture.events[0]
 	if event.Reason != "EnforcementPending" || event.Event != "sandbox.enforcement.failed" ||
-		event.AppliedBinding != unresolvedSandboxEventBinding() || event.AppliedRevision != sandboxEventUnresolved {
-		t.Fatal("unresolved identities received invented defaults")
+		event.AppliedBinding != unresolvedSandboxEventBinding() || event.AppliedRevision != sandboxEventUnresolved ||
+		event.AttemptedBinding.AgentPolicyUID != sandboxEventUnresolved {
+		t.Fatal("unresolved identities or class received invented defaults")
 	}
 }
 
@@ -568,7 +567,7 @@ func TestSandboxEventsExcludeHeldAndUnverifiedApplication(t *testing.T) {
 	}
 }
 
-func TestSandboxEventsProductionHoldAndPreparation(t *testing.T) {
+func TestPolicyHoldAndPreparationDoNotClaimSandboxEnforcement(t *testing.T) {
 	agent, _ := sandboxEventAgentFixture(t)
 	ctx, capture := captureSandboxEvents(t)
 	backing := sandboxEventClient(t, agent)
@@ -579,16 +578,15 @@ func TestSandboxEventsProductionHoldAndPreparation(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if len(capture.events) != 1 || capture.events[0].Event != "sandbox.enforcement.failed" ||
-		capture.events[0].Reason != "UnsupportedControl" {
-		t.Fatalf("production hold did not emit one committed failure: %+v", capture.events)
+	if len(capture.events) != 0 {
+		t.Fatalf("Policy resolution hold claimed Sandbox enforcement: %+v", capture.events)
 	}
 	for _, prepared := range []bool{false, true, true} {
 		if err := r.sandboxPreparationStatus(ctx, agent, prepared, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if len(capture.events) != 1 {
+	if len(capture.events) != 0 {
 		t.Fatal("held preparation emitted applied or failed enforcement events")
 	}
 	stored := &api.Agent{}

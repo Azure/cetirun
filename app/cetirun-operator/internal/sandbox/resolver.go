@@ -94,8 +94,8 @@ func DefaultAgentSelection(spec cetirunv1alpha1.AgentSpec, team *cetirunv1alpha1
 	return spec, nil
 }
 
-// ValidateTeam checks the Team policy against every configured Sandbox.
-// Availability is checked only for the selected runtime during Resolve.
+// ValidateTeam checks every configured Sandbox/policy pair, including unselected
+// slots. Availability is checked only for the selected runtime during Resolve.
 func ValidateTeam(team *cetirunv1alpha1.Team, resources Resources, registrations map[cetirunv1alpha1.SandboxType]Registration) field.ErrorList {
 	if team == nil {
 		return field.ErrorList{field.Required(field.NewPath("team"), "referenced Team is missing")}
@@ -134,33 +134,36 @@ func ValidateTeamConfiguration(spec cetirunv1alpha1.TeamSpec, resources Resource
 	}
 
 	ref := team.Spec.AgentPolicyRef
-	path := field.NewPath("agentPolicies").Key(ref)
-	policy := resources.AgentPolicies[ref]
-	if policy == nil {
-		return append(errs, field.NotFound(path, ref))
-	}
-	errs = append(errs, validateIdentity(policy.ObjectMeta, ref, path)...)
-	policySpec, policyErrs := NormalizeAgentPolicy(policy.Spec)
-	errs = append(errs, policyErrs...)
-	if len(policyErrs) != 0 {
-		return errs
-	}
-	if len(team.Spec.SandboxRefs) > 1 && !policySpec.SandboxSelection.AllowMultiple {
-		errs = append(errs, field.Forbidden(field.NewPath("spec", "sandboxRefs"), fmt.Sprintf("policy %q permits only one Sandbox", ref)))
-	}
-	for _, name := range team.Spec.SandboxRefs {
-		box, valid := sandboxes[name]
-		if !valid {
-			continue
+	if ref != "" {
+		path := field.NewPath("agentPolicies").Key(ref)
+		policy := resources.AgentPolicies[ref]
+		if policy == nil {
+			errs = append(errs, field.NotFound(path, ref))
+			return errs
 		}
-		registration, found := registrations[box.Type]
-		if !found {
-			errs = append(errs, field.NotFound(field.NewPath("registrations"), box.Type))
-			continue
+		errs = append(errs, validateIdentity(policy.ObjectMeta, ref, path)...)
+		spec, specErrs := NormalizeAgentPolicy(policy.Spec)
+		errs = append(errs, specErrs...)
+		if len(specErrs) != 0 {
+			return errs
 		}
-		if compatibilityErrs := CheckCompatibility(box, policySpec, registration.Capabilities); len(compatibilityErrs) != 0 {
-			errs = append(errs, field.Invalid(field.NewPath("spec", "agentPolicyRef"), ref,
-				fmt.Sprintf("Sandbox %q is incompatible: %v", name, compatibilityErrs.ToAggregate())))
+		if len(team.Spec.SandboxRefs) > 1 && !spec.SandboxSelection.AllowMultiple {
+			errs = append(errs, field.Forbidden(field.NewPath("spec", "sandboxRefs"), fmt.Sprintf("policy %q permits only one Sandbox", ref)))
+		}
+		for _, name := range team.Spec.SandboxRefs {
+			sandbox, valid := sandboxes[name]
+			if !valid {
+				continue
+			}
+			registration, found := registrations[sandbox.Type]
+			if !found {
+				errs = append(errs, field.NotFound(field.NewPath("registrations"), sandbox.Type))
+				continue
+			}
+			if compatibilityErrs := CheckCompatibility(sandbox, spec, registration.Capabilities); len(compatibilityErrs) != 0 {
+				errs = append(errs, field.Invalid(field.NewPath("spec", "agentPolicyRef"), ref,
+					fmt.Sprintf("Sandbox %q is incompatible: %v", name, compatibilityErrs.ToAggregate())))
+			}
 		}
 	}
 	return errs
@@ -221,7 +224,7 @@ func Resolve(input ResolveInput) (*Resolution, error) {
 		PlatformRevision string                      `json:"platformRevision"`
 		Profile          string                      `json:"profile,omitempty"`
 	}{
-		"sandbox-foundation-v1", binding, sandboxSpec, ProjectPolicy(policySpec),
+		"sandbox-foundation-v2", binding, sandboxSpec, ProjectPolicy(policySpec),
 		registration.Capabilities.RuntimeClassName, registration.Capabilities.Revision, registration.Capabilities.Profile,
 	})
 	if err != nil {

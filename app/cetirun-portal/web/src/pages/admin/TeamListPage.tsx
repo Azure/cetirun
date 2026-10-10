@@ -34,7 +34,7 @@ export function TeamListPage() {
     queryKey: ["admin", "teams"],
     queryFn: listTeams,
   });
-  const [pendingDelete, setPendingDelete] = useState<string | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<TeamDTO | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const delMutation = useMutation({
@@ -77,6 +77,7 @@ export function TeamListPage() {
               <TableHeaderCell>Name</TableHeaderCell>
               <TableHeaderCell>Role</TableHeaderCell>
               <TableHeaderCell>Default Provider</TableHeaderCell>
+              <TableHeaderCell>Agent policy</TableHeaderCell>
               <TableHeaderCell>Skills</TableHeaderCell>
               <TableHeaderCell style={{ width: 120 }}>Actions</TableHeaderCell>
             </TableRow>
@@ -84,7 +85,7 @@ export function TeamListPage() {
           <TableBody>
             {teams.length === 0 && (
               <TableRow>
-                <TableCell colSpan={5}>
+                <TableCell colSpan={6}>
                   <Text>No teams yet.</Text>
                 </TableCell>
               </TableRow>
@@ -94,6 +95,7 @@ export function TeamListPage() {
                 <TableCell>{t.name}</TableCell>
                 <TableCell>{t.role || "—"}</TableCell>
                 <TableCell>{t.defaultProvider || "—"}</TableCell>
+                <TableCell>{t.agentPolicyRef || "—"}</TableCell>
                 <TableCell>{t.skills?.length ?? 0}</TableCell>
                 <TableCell>
                   <Button
@@ -109,7 +111,7 @@ export function TeamListPage() {
                     appearance="subtle"
                     onClick={() => {
                       setDeleteError(null);
-                      setPendingDelete(t.name);
+                      setPendingDelete(t);
                     }}
                     aria-label={`Delete ${t.name}`}
                   />
@@ -131,7 +133,7 @@ export function TeamListPage() {
             <DialogTitle>Delete team?</DialogTitle>
             <DialogContent>
               Are you sure you want to delete team{" "}
-              <strong>{pendingDelete}</strong>? This cannot be undone.
+              <strong>{pendingDelete?.name}</strong>? This cannot be undone.
             </DialogContent>
             <DialogActions>
               <DialogTrigger disableButtonEnhancement>

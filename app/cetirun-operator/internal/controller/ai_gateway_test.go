@@ -36,9 +36,6 @@ import (
 	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/aigateway"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/helm"
-	"github.com/Azure/CetiRun/app/cetirun-operator/internal/runtimebindings"
-	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
-	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
 )
 
 const (
@@ -58,26 +55,27 @@ const (
 // are stored by the SHA-256 of their value and aliases are unique; teams,
 // users and memberships are created once; model IDs are unique.
 type fakeAIGateway struct {
-	keys              map[string]*aigateway.Key
-	getErr            error
-	deleteErr         error
-	addModelErr       error
-	generated         []aigateway.GenerateRequest
-	updates           [][]string
-	ownerUpdates      [][2]string
-	ignoreOwnerUpdate bool
-	deletedTokens     []string
-	deletedAliases    []string
-	beforeGenerate    func(aigateway.GenerateRequest)
-	teams             map[string]bool
-	users             map[string]bool
-	members           map[string]bool
-	models            map[string]aigateway.ModelRequest
-	added             []string
-	deletedModels     []string
-	shared            []aigateway.Deployment
-	priced            map[string]bool
-	listCalls         int
+	keys               map[string]*aigateway.Key
+	getErr             error
+	deleteErr          error
+	addModelErr        error
+	generated          []aigateway.GenerateRequest
+	updates            [][]string
+	budgetUpdateBlocks []bool
+	ownerUpdates       [][2]string
+	ignoreOwnerUpdate  bool
+	deletedTokens      []string
+	deletedAliases     []string
+	beforeGenerate     func(aigateway.GenerateRequest)
+	teams              map[string]bool
+	users              map[string]bool
+	members            map[string]bool
+	models             map[string]aigateway.ModelRequest
+	added              []string
+	deletedModels      []string
+	shared             []aigateway.Deployment
+	priced             map[string]bool
+	listCalls          int
 	// blockUnpriced is off so that tests about other behaviour need no
 	// prices; the tests about prices turn it on.
 	blockUnpriced bool
@@ -142,6 +140,7 @@ func (f *fakeAIGateway) UpdateKeyBudget(_ context.Context, token string, budget 
 	if !ok {
 		return &aigateway.APIError{StatusCode: 404, Message: "not found"}
 	}
+	f.budgetUpdateBlocks = append(f.budgetUpdateBlocks, key.Blocked)
 	key.MaxBudget, key.BudgetDuration = &budget, duration
 	return nil
 }
@@ -295,8 +294,8 @@ func modelAccess(shared, copilot bool) *cetirunv1alpha1.ModelAccessSpec {
 
 func aiGatewayTestTeam(name string) *cetirunv1alpha1.Team {
 	return &cetirunv1alpha1.Team{ObjectMeta: metav1.ObjectMeta{Name: name, Generation: 1}, Spec: cetirunv1alpha1.TeamSpec{
-		AgentPolicyRef:    testPolicyName,
-		SandboxRefs:       []string{testSandboxName}, DefaultSandboxRef: testSandboxName,
+		AgentPolicyRef: testPolicyName,
+		SandboxRefs:    []string{testSandboxName}, DefaultSandboxRef: testSandboxName,
 	}, Status: cetirunv1alpha1.TeamStatus{ObservedGeneration: 1, Conditions: []metav1.Condition{{Type: cetirunv1alpha1.ConditionTeamAccepted, Status: metav1.ConditionTrue, ObservedGeneration: 1}}}}
 }
 
@@ -382,34 +381,8 @@ func installAIGatewayTestBootstrap(t *testing.T, r *AgentReconciler, kube client
 		}
 		t.Fatal(err)
 	}
-	receipt := &sandboxBootstrapReceipt{
-		Version: "v1", AgentName: agent.Name, AgentUID: agent.UID, AgentType: agent.Spec.Agent.Type,
-		Namespace: namespace.Name, ChartVersion: agent.Spec.Helm.Version,
-		Home: runtimebindings.HomeClaim{StorageClass: "test-storage", StorageSize: "1Gi", AccessMode: string(corev1.ReadWriteOnce)},
-		Objects: []sandboxBootstrapObject{
-			{Kind: "Namespace", Name: namespace.Name, UID: namespace.UID},
-			{Kind: "Role", Name: "cetirun-operator-ns-role"},
-			{Kind: "RoleBinding", Name: "cetirun-operator-ns-rolebinding"},
-			{Kind: "PersistentVolumeClaim", Name: "agent-home"},
-			{Kind: "Secret", Name: agent.Spec.GatewayTokenSecretRef},
-		},
-	}
-	raw, err := json.Marshal(receipt)
-	if err != nil {
-		t.Fatal(err)
-	}
-	receiptObject := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{
-		Name: r.sandboxBootstrapKey(agent).Name, Namespace: r.OperatorNamespace, UID: types.UID("test-bootstrap-" + agent.Name),
-		OwnerReferences: []metav1.OwnerReference{sandboxworkload.AgentOwner(agent.Name, agent.UID)},
-		Annotations:     map[string]string{sandboxworkload.AgentUIDAnnotation: string(agent.UID)},
-		Finalizers:      []string{sandbox.BootstrapFinalizer},
-	}, Data: map[string]string{sandboxBootstrapReceiptKey: string(raw)}}
-	if err := kube.Create(context.Background(), receiptObject); err != nil {
-		t.Fatal(err)
-	}
-	desired := r.sandboxBootstrapObjects(agent, receiptObject, receipt)[0].(*corev1.Namespace)
-	desired.UID, desired.ResourceVersion = namespace.UID, namespace.ResourceVersion
-	if err := kube.Update(context.Background(), desired); err != nil {
+	namespace.OwnerReferences = []metav1.OwnerReference{*metav1.NewControllerRef(agent, cetirunv1alpha1.GroupVersion.WithKind("Agent"))}
+	if err := kube.Update(context.Background(), namespace); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -505,6 +478,119 @@ func TestReconcileAIGatewayCreatesKeyAfterPersistingSecret(t *testing.T) {
 	if len(gateway.generated) != 1 || len(gateway.updates) != 0 || len(gateway.ownerUpdates) != 0 {
 		t.Fatalf("a steady reconcile must not create or update: generated=%d updates=%d owner=%d",
 			len(gateway.generated), len(gateway.updates), len(gateway.ownerUpdates))
+	}
+}
+
+func TestReconcileAIGatewayBlocksExistingKeyBeforePolicyBudgetUpdate(t *testing.T) {
+	ctx := context.Background()
+	agent := aiGatewayTestAgent(testAIGatewayTeam)
+	agent.Status.Policy = &cetirunv1alpha1.PolicyStatus{
+		Phase: "Resolved", ObservedGeneration: agent.Generation,
+		EffectivePolicyRef: &cetirunv1alpha1.EffectivePolicyReference{PolicyObjectReference: cetirunv1alpha1.PolicyObjectReference{
+			Name: testPolicyName, UID: types.UID("policy-uid"), Generation: 1,
+		}},
+	}
+	r, kube, gateway := aiGatewayTestReconciler(t, agent, aiGatewayNamespace())
+	if err := r.reconcileAIGateway(ctx, agent, true); err != nil {
+		t.Fatal(err)
+	}
+	oldRevision := agent.Status.AIGateway.PolicyRevision
+	if oldRevision == "" {
+		t.Fatal("initial Gateway policy revision was not recorded")
+	}
+	if err := r.updateStatus(ctx, agent); err != nil {
+		t.Fatal(err)
+	}
+
+	policy := &cetirunv1alpha1.AgentPolicy{}
+	if err := kube.Get(ctx, types.NamespacedName{Name: testPolicyName}, policy); err != nil {
+		t.Fatal(err)
+	}
+	policy.Generation = 2
+	policy.Spec.ModelAccess.GatewayBudget.DefaultMonthlyUSD = "20"
+	if err := kube.Update(ctx, policy); err != nil {
+		t.Fatal(err)
+	}
+	policy.Status.ObservedGeneration = 2
+	condition := meta.FindStatusCondition(policy.Status.Conditions, cetirunv1alpha1.ConditionAgentPolicyAccepted)
+	condition.ObservedGeneration = 2
+	if err := kube.Status().Update(ctx, policy); err != nil {
+		t.Fatal(err)
+	}
+	agent.Status.Policy.EffectivePolicyRef.Generation = 2
+	if err := r.updateStatus(ctx, agent); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := r.reconcileAIGateway(ctx, agent, true); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(gateway.budgetUpdateBlocks, []bool{true}) {
+		t.Fatalf("Gateway budget updates observed blocked states %v, want [true]", gateway.budgetUpdateBlocks)
+	}
+	if agent.Status.AIGateway.PolicyRevision == oldRevision {
+		t.Fatal("Gateway policy revision did not change with the policy generation")
+	}
+	for _, key := range gateway.keys {
+		if key.Blocked || key.MaxBudget == nil || *key.MaxBudget != 20 {
+			t.Fatalf("replacement grant was not read back and unblocked: %+v", key)
+		}
+	}
+}
+
+func TestReconcileAIGatewayBlocksExistingKeyBeforeRepairingGrantDrift(t *testing.T) {
+	ctx := context.Background()
+	agent := aiGatewayTestAgent(testAIGatewayTeam)
+	r, _, gateway := aiGatewayTestReconciler(t, agent, aiGatewayNamespace())
+	if err := r.reconcileAIGateway(ctx, agent, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.updateStatus(ctx, agent); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range gateway.keys {
+		driftedBudget := 1000.0
+		key.MaxBudget = &driftedBudget
+	}
+
+	if err := r.reconcileAIGateway(ctx, agent, true); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(gateway.budgetUpdateBlocks, []bool{true}) {
+		t.Fatalf("Gateway drift repair observed blocked states %v, want [true]", gateway.budgetUpdateBlocks)
+	}
+	for _, key := range gateway.keys {
+		if key.Blocked || key.MaxBudget == nil || *key.MaxBudget == 1000 {
+			t.Fatalf("drifted grant was not repaired, read back and unblocked: %+v", key)
+		}
+	}
+}
+
+func TestReconcileAIGatewayBlocksExistingKeyWhenCurrentGrantCannotBeResolved(t *testing.T) {
+	ctx := context.Background()
+	agent := aiGatewayTestAgent(testAIGatewayTeam)
+	r, _, gateway := aiGatewayTestReconciler(t, agent, aiGatewayNamespace())
+	if err := r.reconcileAIGateway(ctx, agent, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.updateStatus(ctx, agent); err != nil {
+		t.Fatal(err)
+	}
+	r.aiGatewayClientFactory = func(context.Context) (aiGatewayKeyClient, error) {
+		return &failingListGateway{fakeAIGateway: gateway}, nil
+	}
+
+	err := r.reconcileAIGateway(ctx, agent, true)
+	if err == nil || !strings.Contains(err.Error(), "list AI Gateway models for Policy grant") {
+		t.Fatalf("unresolved current grant returned %v", err)
+	}
+	for _, key := range gateway.keys {
+		if !key.Blocked {
+			t.Fatal("the previous key remained active while its current grant was unresolved")
+		}
+	}
+	if agent.Status.AIGateway.Reason != aiGatewayReasonPolicyReprojection || agent.Status.AIGateway.Routed {
+		t.Fatalf("Gateway did not report its fail-closed projection state: %+v", agent.Status.AIGateway)
 	}
 }
 
@@ -698,7 +784,10 @@ func TestReconcileAIGatewayRejectsOwnerUpdateWithoutMatchingReadback(t *testing.
 	if err := r.reconcileAIGateway(context.Background(), agent, true); err == nil {
 		t.Fatal("an owner update that the Gateway did not store must fail closed")
 	}
-	if agent.Status.AIGateway.Reason != "KeyReadbackMismatch" || agent.Status.AIGateway.Phase != cetirunv1alpha1.AIGatewayPhaseDegraded {
+	condition := meta.FindStatusCondition(agent.Status.Conditions, cetirunv1alpha1.ConditionAIGatewayReady)
+	if agent.Status.AIGateway.Reason != aiGatewayReasonPolicyReprojection ||
+		agent.Status.AIGateway.Phase != cetirunv1alpha1.AIGatewayPhaseDegraded ||
+		condition == nil || condition.Reason != "KeyReadbackMismatch" {
 		t.Fatalf("unexpected status after owner read-back mismatch: %+v", agent.Status.AIGateway)
 	}
 	if agent.Status.AIGateway.Team == aiGatewayTeamPrefix+"team-b" {

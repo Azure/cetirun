@@ -30,7 +30,7 @@ func TestSandboxConfigurationWatchesIncludePendingBindings(t *testing.T) {
 	}
 	otherTeam := &api.Team{
 		ObjectMeta: metav1.ObjectMeta{Name: "other"},
-		Spec:       api.TeamSpec{SandboxRefs: []string{"other"}, AgentPolicyRef: "other"},
+		Spec:       api.TeamSpec{SandboxRefs: []string{"other"}, DefaultSandboxRef: "other", AgentPolicyRef: "other"},
 	}
 	agent := func(name, team, sandbox string) *api.Agent {
 		return &api.Agent{ObjectMeta: metav1.ObjectMeta{Name: name}, Spec: api.AgentSpec{Team: team, SandboxRef: sandbox}}
@@ -78,8 +78,7 @@ func TestSandboxConfigurationWatchesIncludePendingBindings(t *testing.T) {
 
 func TestSandboxDependencyIndexesDoNotMutateResources(t *testing.T) {
 	team := &api.Team{Spec: api.TeamSpec{
-		SandboxRefs: []string{"z", "a", "z", ""}, DefaultSandboxRef: "default",
-		AgentPolicyRef: "shared",
+		SandboxRefs: []string{"z", "a", "z", ""}, DefaultSandboxRef: "default", AgentPolicyRef: "shared",
 	}}
 	before := team.DeepCopy()
 	if got := teamSandboxReferences(team); !reflect.DeepEqual(got, []string{"a", "default", "z"}) {

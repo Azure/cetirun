@@ -211,7 +211,7 @@ func TestAgentPolicyExecutionDigestPreservesExplicitControls(t *testing.T) {
 	}
 }
 
-func TestTeamEffectiveSelectionExcludesUnrelatedSlots(t *testing.T) {
+func TestTeamEffectiveSelectionExcludesCreationDefault(t *testing.T) {
 	team := &api.Team{ObjectMeta: metav1.ObjectMeta{Name: "team", UID: "team-uid", ResourceVersion: "1"},
 		Spec: api.TeamSpec{AgentPolicyRef: "policy",
 			SandboxRefs: []string{"selected", "spare"}, DefaultSandboxRef: "selected"}}
@@ -231,7 +231,7 @@ func TestTeamEffectiveSelectionExcludesUnrelatedSlots(t *testing.T) {
 	}
 	current, err := second.DigestFor("selected")
 	if err != nil || current != pinned {
-		t.Fatal("creation default or other class invalidated normal selection:", err)
+		t.Fatal("creation default invalidated selected execution inputs:", err)
 	}
 	team.Spec.AgentPolicyRef = "other-policy"
 	third, err := ExecutionTeamInputs(team)

@@ -59,6 +59,10 @@ func New(agentType string) Fixture {
 			Security: api.AgentPolicySecurity{ReadOnlyRootFilesystem: ptr.To(true)},
 			Network:  api.AgentPolicyNetwork{Ingress: api.AgentPolicyIngress{Mode: api.AgentPolicyIngressDisabled}},
 		},
+		Status: api.AgentPolicyStatus{ObservedGeneration: 1, Conditions: []metav1.Condition{{
+			Type: api.ConditionAgentPolicyAccepted, Status: metav1.ConditionTrue,
+			Reason: "PolicyAccepted", ObservedGeneration: 1,
+		}}},
 	}
 	team := &api.Team{
 		ObjectMeta: metav1.ObjectMeta{Name: "team-example", UID: "team-uid", ResourceVersion: "1", Generation: 1},

@@ -92,7 +92,7 @@ func TestCoordinationAPIServer(t *testing.T) {
 		if err := storage.Create(ctx, before); err != nil {
 			t.Fatal(err)
 		}
-		acquire(t, store, teamIntent(t, before, "normal"))
+		acquire(t, store, teamIntent(t, before, "current"))
 		after := before.DeepCopy()
 		after.Spec.DefaultSandboxRef = "spare"
 		ticket, err := store.AcquireTeamChange(ctx, before, after)

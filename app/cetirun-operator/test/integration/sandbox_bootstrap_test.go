@@ -67,6 +67,7 @@ func TestSandboxBootstrap(t *testing.T) {
 	for _, agentType := range []string{"openclaw", "hermes"} {
 		t.Run(agentType, func(t *testing.T) {
 			f := h.newCaseWithPrerequisites(t, agentType, false)
+			f.reconcileConfiguration(t)
 			configureBootstrap(t, f)
 			if _, err := f.reconciler.Reconcile(h.ctx, f.request()); !apierrors.IsNotFound(err) {
 				t.Fatal("bootstrap should wait for published skills:", err)
@@ -187,6 +188,7 @@ func (c *bootstrapNamespaceRaceClient) Create(ctx context.Context, object client
 func TestSandboxBootstrapNamespaceLifetime(t *testing.T) {
 	h := newPreparationHarness(t)
 	f := h.newCaseWithPrerequisites(t, "hermes", false)
+	f.reconcileConfiguration(t)
 	configureBootstrap(t, f)
 	var namespace corev1.Namespace
 	var attempted bool
@@ -222,6 +224,7 @@ func TestSandboxBootstrapForegroundDeletionRetainsDependents(t *testing.T) {
 	for _, agentType := range []string{"openclaw", "hermes"} {
 		t.Run(agentType, func(t *testing.T) {
 			f := h.newCaseWithPrerequisites(t, agentType, false)
+			f.reconcileConfiguration(t)
 			configureBootstrap(t, f)
 			if _, err := f.reconciler.Reconcile(h.ctx, f.request()); !apierrors.IsNotFound(err) {
 				t.Fatal(err)
