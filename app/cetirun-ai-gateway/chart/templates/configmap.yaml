@@ -1,9 +1,8 @@
 {{/*
   Generated LiteLLM configuration.
 
-  The model list is passed through unchanged, so an administrator can follow
-  upstream provider documentation directly and we do not have to track every
-  provider parameter LiteLLM supports.
+  Provider parameters are passed through unchanged. Operator integration adds
+  a per-configuration model binding; standalone model lists stay unchanged.
 
   The chart writes as little as possible into the settings blocks below. Editing
   any field of one of these blocks in the admin console persists the whole block
@@ -20,7 +19,21 @@ metadata:
 data:
   config.yaml: |
     model_list:
+      {{- if .Values.operatorIntegration }}
+      {{- $models := list }}
+      {{- range .Values.models }}
+      {{- $model := deepCopy . }}
+      {{- $suffix := sha256sum (toJson $model) | trunc 16 }}
+      {{- $info := deepCopy ($model.model_info | default dict) }}
+      {{- $_ := set $info "id" (printf "cetirun-shared-%s" $suffix) }}
+      {{- $_ = set $info "access_groups" (append ($info.access_groups | default list) (printf "cetirun-model-%s" $suffix) | uniq) }}
+      {{- $_ = set $model "model_info" $info }}
+      {{- $models = append $models $model }}
+      {{- end }}
+      {{- toYaml $models | nindent 6 }}
+      {{- else }}
       {{- toYaml .Values.models | nindent 6 }}
+      {{- end }}
 
     general_settings:
       # Required for the management API and the admin console to persist models.

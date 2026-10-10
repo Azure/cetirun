@@ -77,11 +77,10 @@ cetirun-ai-gateway:
   # for their GitHub Copilot routes and checks router fallback targets against
   # the caller's key. The chart refuses to install it turned off.
   operatorIntegration: true
-  # -- Shared models every OpenClaw Agent can use. Each needs
-  # model_info.access_groups: ["cetirun-shared"] and, while the Gateway blocks
-  # unpriced models, a price; see the README for an example. None is valid:
-  # OpenClaw Agents then use their owners' GitHub Copilot, and administrators
-  # can add shared models through the Gateway console later. With
-  # cetirun-operator.aiGateway.copilotProxy.enabled false, the Portal creates
-  # no OpenClaw Agent until a shared model is offered.
+  # -- Shared model candidates granted through the selected AgentPolicy.
+  # The Gateway chart generates their deployment IDs and per-model access
+  # groups; the old cetirun-shared group is not a policy grant. Each model
+  # still needs pricing while the Gateway blocks unpriced models.
+  # An empty list is valid, but console-only models are not trusted shared
+  # bindings. Agents need an authorized model entitlement before model use.
   models: []

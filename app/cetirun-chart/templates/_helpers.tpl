@@ -186,8 +186,22 @@ Validate Azure Workload Identity prerequisites
 {{- if not .Values.networkPolicy.enabled -}}
 {{- fail "aiGateway.enabled requires networkPolicy.enabled" -}}
 {{- end -}}
-{{- if not .Values.sidecarScope.enabled -}}
+{{- if and (not .Values.sandboxWorkload) (not .Values.sidecarScope.enabled) -}}
 {{- fail "aiGateway.enabled requires sidecarScope.enabled" -}}
+{{- end -}}
+{{- if and .Values.sandboxWorkload (eq (include "cetirun.agent.type" .) "openclaw") -}}
+{{- if not .Values.secrets.apiBase -}}
+{{- fail "Sandbox Gateway routing requires secrets.apiBase" -}}
+{{- end -}}
+{{- $defaultGranted := false -}}
+{{- range $gateway.models -}}
+{{- if eq .id $.Values.secrets.model -}}
+{{- $defaultGranted = true -}}
+{{- end -}}
+{{- end -}}
+{{- if not $defaultGranted -}}
+{{- fail "Sandbox default model must be in aiGateway.models" -}}
+{{- end -}}
 {{- end -}}
 {{- if not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" (.Values.networkPolicy.gatewayNamespace | default "")) -}}
 {{- fail "aiGateway.enabled requires networkPolicy.gatewayNamespace" -}}
@@ -207,8 +221,8 @@ Validate Azure Workload Identity prerequisites
 {{- fail (printf "aiGateway.hermes.keyEnv must not be %s: the key replaces that variable in Hermes' container, so it must name an API key variable, ending in _API_KEY" $hermesKeyEnv) -}}
 {{- end -}}
 {{- range .Values.extraEnv -}}
-{{- if has (get . "name") (list "OPENAI_API_KEY" "OPENAI_BASE_URL" "CETIRUN_AI_GATEWAY" $hermesKeyEnv) -}}
-{{- fail (printf "OPENAI_API_KEY, OPENAI_BASE_URL, CETIRUN_AI_GATEWAY and %s are reserved when aiGateway.enabled" $hermesKeyEnv) -}}
+{{- if has (get . "name") (list "OPENAI_API_KEY" "OPENAI_BASE_URL" "CETIRUN_AI_GATEWAY" "CETIRUN_NATIVE_SANDBOX" $hermesKeyEnv) -}}
+{{- fail (printf "OPENAI_API_KEY, OPENAI_BASE_URL, CETIRUN_AI_GATEWAY, CETIRUN_NATIVE_SANDBOX and %s are reserved when aiGateway.enabled" $hermesKeyEnv) -}}
 {{- end -}}
 {{- end -}}
 {{- range $gateway.models -}}
@@ -515,6 +529,26 @@ port: {{ .Values.runtime.http.portName }}
 {{- else -}}
 {{- include (printf "cetirun.agent.%s.startupProbePathPort" (include "cetirun.agent.type" .)) . -}}
 {{- end }}
+{{- end }}
+
+{{/*
+Protected OpenClaw probes run inside the container, without host ingress grants.
+*/}}
+{{- define "cetirun.agent.healthProbe" -}}
+{{- $root := .root -}}
+{{- if and $root.Values.sandboxWorkload (eq (include "cetirun.agent.type" $root) "openclaw") -}}
+{{- $endpoint := include .pathPort $root | fromYaml -}}
+exec:
+  command:
+    - node
+    - /etc/cetirun/health-probe.cjs
+    - {{ $root.Values.service.targetPort | quote }}
+    - {{ $endpoint.path | quote }}
+    - {{ mul (int .timeoutSeconds) 1000 | quote }}
+{{- else -}}
+httpGet:
+  {{- include .pathPort $root | nindent 2 }}
+{{- end -}}
 {{- end }}
 
 {{/*

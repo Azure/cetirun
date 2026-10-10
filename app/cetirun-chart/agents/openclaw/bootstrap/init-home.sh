@@ -27,6 +27,11 @@ agent_check_requirements() {
     init_error "OpenClawInputMissing: builtin-skill-sync.sh"
     return 1
   }
+  if [ "${CETIRUN_NATIVE_SANDBOX:-false}" = true ] &&
+    [ "${CETIRUN_AI_GATEWAY:-false}" != true ]; then
+    init_error "NativeSandboxRequiresAIGateway"
+    return 1
+  fi
 }
 
 agent_prepare_home() {
@@ -64,34 +69,76 @@ agent_apply_config() (
   # auth mode or request override saved on that provider would otherwise be
   # sent to the Gateway in its place. The retired in-agent Copilot sign-in
   # profile is dropped. Any other configuration, other providers and an openai
-  # provider with its own endpoint included, keeps its saved settings.
+  # provider with its own endpoint included, keeps its saved settings on the
+  # legacy path. Native Sandbox model and ingress bindings are platform-owned.
   if [ "${CETIRUN_AI_GATEWAY:-false}" = true ]; then
     gateway=true
   else
     gateway=false
+  fi
+  native_gateway=false
+  if [ "${CETIRUN_NATIVE_SANDBOX:-false}" = true ]; then
+    native_gateway=true
+    jq -e '
+      (.models.providers | keys) == ["openai"]
+      and .auth == {"profiles": {}}
+      and .models.providers.openai.apiKey == {"source": "env", "provider": "default", "id": "OPENAI_API_KEY"}
+      and (.models.providers.openai.baseUrl | type == "string" and length > 0)
+      and (.agents.defaults.model.primary as $primary | .agents.defaults.models | has($primary))
+      and ((.agents.list // []) | length == 0)
+    ' "$source" >/dev/null 2>&1 ||
+      { init_error "OpenClawNativeModelConfigInvalid"; exit 1; }
   fi
   filter='
     .[-1] as $source
     | reduce .[] as $item ({}; . * $item)
     | if $gateway then
         .agents.defaults.models = ($source.agents.defaults.models // {})
-        | if ($source.models.providers.openai | type) == "object" then .models.providers.openai = $source.models.providers.openai else . end
-        | if (.auth.profiles | type) == "object" then .auth.profiles |= del(.["github-copilot:github"]) else . end
+        | if $native_gateway then
+            .models = ($source.models // {})
+            | .auth = ($source.auth // {"profiles": {}})
+            | .gateway = ($source.gateway // {})
+            | .agents.defaults.model = $source.agents.defaults.model
+            | .agents.defaults.modelPolicy = $source.agents.defaults.modelPolicy
+            | .agents.defaults.utilityModel = $source.agents.defaults.utilityModel
+            | .agents |= del(.list)
+          else
+            if ($source.models.providers.openai | type) == "object" then .models.providers.openai = $source.models.providers.openai else . end
+            | if (.auth.profiles | type) == "object" then .auth.profiles |= del(.["github-copilot:github"]) else . end
+          end
       else . end
     | if .channels.msteams.enabled then
         .channels.msteams.allowFrom //= ["00000000-0000-0000-0000-000000000000"]
       else . end'
   if [ -f "$dest" ]; then
-    jq -s --argjson gateway "$gateway" "$filter" "$dest" "$source" > "$temp" 2>/dev/null ||
+    jq -s --argjson gateway "$gateway" --argjson native_gateway "$native_gateway" "$filter" "$dest" "$source" > "$temp" 2>/dev/null ||
       { init_error "OpenClawConfigApplyFailed"; exit 1; }
   else
-    jq -s --argjson gateway "$gateway" "$filter" "$source" > "$temp" 2>/dev/null ||
+    jq -s --argjson gateway "$gateway" --argjson native_gateway "$native_gateway" "$filter" "$source" > "$temp" 2>/dev/null ||
       { init_error "OpenClawConfigApplyFailed"; exit 1; }
   fi
   chmod 600 "$temp"
   mv -f "$temp" "$dest"
   health_record=$(home_path .openclaw/logs/config-health.json)
   if [ -f "$health_record" ]; then rm -f "$health_record"; fi
+)
+
+remove_native_provider_environment() (
+  set -e
+  [ "${CETIRUN_NATIVE_SANDBOX:-false}" = true ] || exit 0
+  env_file=$(home_path .openclaw/.env)
+  [ ! -e "$env_file" ] || [ -f "$env_file" ] ||
+    { init_error "OpenClawEnvironmentInvalid"; exit 1; }
+  [ -f "$env_file" ] || exit 0
+  temp=$(mktemp "${env_file}.tmp.XXXXXX")
+  trap 'rm -f "$temp"' 0
+  # Persisted dotenv settings must not replace the native Gateway binding.
+  keys='(OPENAI_.*|ANTHROPIC_.*|AZURE_OPENAI_.*|AZURE_AI_.*|COHERE_.*|DEEPSEEK_.*|FIREWORKS_.*|GEMINI_.*|GOOGLE_AI_.*|GROQ_.*|HUGGINGFACE_.*|MISTRAL_.*|OLLAMA_.*|OPENROUTER_.*|PERPLEXITY_.*|TOGETHER_.*|VERTEX_AI_.*|XAI_.*|MODEL_API_KEY|LLM_API_KEY|LLM_BASE_URL|LLM_ENDPOINT|COPILOT_GITHUB_TOKEN|OPENCLAW_GITHUB_TOKEN)'
+  result=0
+  grep -Ev "^[[:space:]]*(export[[:space:]]+)?${keys}[[:space:]]*=" "$env_file" > "$temp" || result=$?
+  [ "$result" -le 1 ] || { init_error "OpenClawEnvironmentApplyFailed"; exit 1; }
+  chmod 600 "$temp"
+  mv -f "$temp" "$env_file"
 )
 
 prepare_plugin_link() {
@@ -164,6 +211,7 @@ SCRIPT
 )
 
 agent_prepare_integrations() {
+  remove_native_provider_environment
   prepare_plugin_link
   sync_managed_image_skills
   install_image_skills

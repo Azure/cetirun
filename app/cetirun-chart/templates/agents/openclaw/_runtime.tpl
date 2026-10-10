@@ -90,6 +90,10 @@ OpenClaw init containers
     # The Gateway owns the model list: init replaces the saved one.
     - name: CETIRUN_AI_GATEWAY
       value: "true"
+    {{- if .Values.sandboxWorkload }}
+    - name: CETIRUN_NATIVE_SANDBOX
+      value: "true"
+    {{- end }}
     {{- end }}
   volumeMounts:
     - name: data
@@ -158,6 +162,27 @@ OpenClaw init containers
     {{- toYaml .helperResources | nindent 4 }}
   {{- end }}
   command: ["/bin/sh", "/etc/cetirun/retire-copilot-sign-in.sh"]
+  env:
+    - name: OPENCLAW_STATE_DIR
+      value: "/home/vibe/.openclaw"
+  volumeMounts:
+    - name: data
+      mountPath: /home/vibe
+    - name: tmp
+      mountPath: /tmp
+    - name: config
+      mountPath: /etc/cetirun
+      readOnly: true
+{{- end }}
+{{- if and .Values.sandboxWorkload (.Values.aiGateway | default dict).enabled }}
+- name: retire-direct-model-auth
+  image: "{{ include "cetirun.image" . }}"
+  imagePullPolicy: {{ include "cetirun.imagePullPolicy" . }}
+  securityContext:
+    {{- toYaml .Values.sandboxWorkload.securityContext | nindent 4 }}
+  resources:
+    {{- toYaml .Values.sandboxWorkload.helperResources | nindent 4 }}
+  command: ["/bin/sh", "/etc/cetirun/retire-direct-model-auth.sh"]
   env:
     - name: OPENCLAW_STATE_DIR
       value: "/home/vibe/.openclaw"
@@ -350,9 +375,17 @@ OpenClaw configmap data
     _Update this as you learn more about them._
   init-home.sh: |
 {{ .Files.Get "agents/openclaw/bootstrap/init-home.sh" | indent 4 }}
+  {{- if .Values.sandboxWorkload }}
+  health-probe.cjs: |
+{{ .Files.Get "agents/openclaw/bootstrap/health-probe.cjs" | indent 4 }}
+  {{- end }}
   {{- if (.Values.aiGateway | default dict).enabled }}
   retire-copilot-sign-in.sh: |
 {{ .Files.Get "agents/openclaw/bootstrap/retire-copilot-sign-in.sh" | indent 4 }}
+  {{- if .Values.sandboxWorkload }}
+  retire-direct-model-auth.sh: |
+{{ .Files.Get "agents/openclaw/bootstrap/retire-direct-model-auth.sh" | indent 4 }}
+  {{- end }}
   {{- end }}
   init-skills.sh: |
 {{ .Files.Get "configs/init-skills.sh" | indent 4 }}

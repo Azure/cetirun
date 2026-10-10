@@ -104,3 +104,75 @@ go -C app/cetirun-operator test -tags=envtest ./internal/admission -run '^TestPo
 These checks do not qualify runtime isolation, host resource enforcement, CSI
 writer exclusion, network enforcement or identity federation. Legacy chart
 defaults remain unchanged when the protected contract is absent.
+
+### Normal OpenClaw Gateway packaging
+
+The normal-class OpenClaw MVP reuses the protected renderer and the existing
+OpenClaw image. It does not add an alternative image, an Istio sidecar, or a
+Helm value that authorizes execution. The controller owns Sandbox/AgentPolicy
+selection, owner access, activation and deletion; the chart still prepares a
+held workload. Rendering alone does not test any of those live operations.
+
+The Operator supplies this contract:
+
+| Values | Runtime use |
+| --- | --- |
+| `agentType: openclaw`, `sandboxWorkload.contractVersion: v1` | Explicit protected OpenClaw profile; preparation retains `executionHeld: true` and `replicaCount: 0` |
+| `runtimeClassName`, `sandboxWorkload` resources, DNS, security and enforcement objects | The selected Sandbox's compiled runtime controls, never legacy network defaults |
+| `persistence.existingClaim`, `skills.existingClaim` | Separately owned HOME and read-only skills storage |
+| `openclaw.image.repository`, `tag`, optional `digest` | The same existing OpenClaw image for the Agent and its initializers; shared registry/version overrides remain supported |
+| `aiGateway.enabled: true`, `keySecretName`, `keySecretKey` | The Agent's virtual key, passed as `OPENAI_API_KEY` through a Secret reference only in the main container |
+| `aiGateway.models`, `secrets.provider: openai`, `secrets.model`, `secrets.apiBase` | The authorized model list, default and Gateway endpoint; missing endpoints and defaults outside that list fail rendering |
+| `openclaw.config.gateway` | Controller-selected ingress/auth configuration, copied without persisted auth overrides on each native start |
+
+Protected Gateway traffic uses compiler-owned network policy, so
+`sidecarScope.enabled` remains false. A legacy Gateway render still requires
+the existing Istio Sidecar scope.
+
+Protected OpenClaw startup, readiness and liveness probes use the image's
+existing Node runtime to request `/startupz`, `/readyz` and `/healthz` over
+`127.0.0.1` inside the main container. The helper is packaged in the read-only
+ConfigMap mount at `/etc/cetirun/health-probe.cjs`; no new image is needed.
+It accepts HTTP 200-399 without following redirects, sends no model credentials,
+and exits nonzero on HTTP errors, connection failures or its bounded deadline.
+Probe timing, thresholds and enablement settings are preserved. Legacy OpenClaw
+and held Hermes renders retain their existing HTTP probes.
+
+These exec probes require no host/remote-node ingress exception or network
+compiler change. They report Kubernetes container health only, not
+guest-external observations, runtime qualification or authorization to lift an
+execution hold.
+
+The chart adds `CETIRUN_NATIVE_SANDBOX=true` to OpenClaw's HOME initializer only
+on this protected Gateway path. The initializer replaces saved model/provider,
+model fallback and ingress-auth settings with the current platform configuration.
+It removes persisted provider credential/endpoint assignments from OpenClaw's
+dotenv file while preserving unrelated settings and user files. A subsequent
+`retire-direct-model-auth` initializer uses the existing OpenClaw CLI to retire
+saved default-agent auth profiles after any doctor/import step. Invalid source
+configuration, unsupported named-agent stores, unresolved profile removal,
+compaction errors and linked auth paths fail initialization instead of starting
+with a different credential source. Named-agent configurations are outside this
+single-agent MVP. Legacy bootstrap behavior is unchanged.
+
+The Gateway deployment must enable `operatorIntegration` and configure shared
+models in its chart so the Operator can bind AgentPolicy grants to the
+[chart-derived model identities](../cetirun-ai-gateway/chart/README.md#cetirun-agentpolicy-model-bindings).
+Provider credentials stay with the Gateway. Arbitrary direct provider routes,
+unimplemented policy restrictions, identity extensions and other deferred
+profiles must be rejected by the controller, not passed through as ordinary
+runtime values.
+
+Focused offline checks (with the documented dependencies, Node and Helm 3 or 4):
+
+```bash
+python3 -B -m unittest discover -s scripts/tests -p test_native_gateway_chart.py -v
+python3 -B -m pytest -p no:cacheprovider -q \
+  app/cetirun-chart/tests/test_init_home.py \
+  app/cetirun-chart/tests/test_retire_copilot_sign_in.py
+```
+
+`make ci-test` includes the rendering tests; `make python-test` includes the
+initialization tests with the repository's offline guards. The CLI fixtures are
+synthetic; they do not qualify a built image, Kata, Cilium, storage, a live owner
+sign-in or an actual model request.
