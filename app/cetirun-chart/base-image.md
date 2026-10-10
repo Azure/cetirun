@@ -10,7 +10,7 @@ release versions.
 | Azure Linux | 3.0, refreshed core image digest | [Releases](https://github.com/microsoft/azurelinux/releases) |
 | Node.js | 24.21.0 LTS | [Release index](https://nodejs.org/dist/index.json) |
 | npm | 12.2.0 | [Release notes](https://github.com/npm/cli/releases/tag/v12.2.0) |
-| Microsoft Go builder | 1.27.1-2 | [Microsoft Go](https://github.com/microsoft/go) |
+| Microsoft Go builder | 1.27.2-1 | [Microsoft Go](https://github.com/microsoft/go) |
 | Codex | 0.160.1 | [npm package](https://www.npmjs.com/package/@openai/codex/v/0.160.1) |
 | Claude Code | 2.1.292 | [npm package](https://www.npmjs.com/package/@anthropic-ai/claude-code/v/2.1.292) |
 | OpenCode | 1.18.35 | [npm package](https://www.npmjs.com/package/opencode-ai/v/1.18.35) |
