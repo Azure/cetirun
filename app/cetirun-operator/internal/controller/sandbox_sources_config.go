@@ -92,7 +92,9 @@ func (config SandboxSourcesConfig) validate() error {
 		{"skillsClaimName", config.SkillsClaimName},
 		{"admissionServiceAccount", config.AdmissionServiceAccount},
 	} {
-		if field.name == "skillsClaimName" && field.value == "" && config.NativeExecution && config.SkillsCatalogConfigMapName == "" {
+		// Retain valid empty-skills settings when disabling new native starts.
+		// Prerequisite resolution still requires a claim for PVC-backed modes.
+		if field.name == "skillsClaimName" && field.value == "" && config.SkillsCatalogConfigMapName == "" {
 			continue
 		}
 		if len(validation.IsDNS1123Subdomain(field.value)) != 0 {

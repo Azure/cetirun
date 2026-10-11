@@ -507,6 +507,7 @@ func TestPodAdmissionAPIServerBoundaries(t *testing.T) {
 		ControlPlaneStartTimeout: time.Minute, ControlPlaneStopTimeout: 30 * time.Second,
 	}
 	env.ControlPlane.GetAPIServer().Configure().Set("enable-admission-plugins", "PodTopologyLabels")
+	env.ControlPlane.GetAPIServer().Configure().Set("authorization-mode", "RBAC")
 	cfg, err := env.Start()
 	if err != nil {
 		_ = env.Stop()
@@ -1027,10 +1028,17 @@ func TestPodAdmissionAPIServerBoundaries(t *testing.T) {
 		expected.PodUID = native.UID
 		expected.ExecutionHeld = true
 		save()
+		cleanup := nativeDisabledCleanupClient(t, ctx, cl, cfg, f.scheme)
 		beforeFinalize := native.DeepCopy()
 		native.Finalizers = nil
-		if err := cl.Patch(ctx, native, client.MergeFromWithOptions(beforeFinalize, client.MergeFromWithOptimisticLock{}), client.DryRunAll); err != nil {
-			t.Fatal("held native finalizer-only patch was rejected:", err)
+		if err := wait.PollUntilContextTimeout(ctx, 100*time.Millisecond, 10*time.Second, true, func(ctx context.Context) (bool, error) {
+			err := cleanup.Patch(ctx, native, client.MergeFromWithOptions(beforeFinalize, client.MergeFromWithOptimisticLock{}), client.DryRunAll)
+			if apierrors.IsForbidden(err) {
+				return false, nil
+			}
+			return err == nil, err
+		}); err != nil {
+			t.Fatal("disabled manager role could not finalize the held native Pod:", err)
 		}
 		agent := &api.Agent{}
 		if err := cl.Get(ctx, client.ObjectKeyFromObject(f.fixture.Agent), agent); err != nil {
@@ -1048,7 +1056,7 @@ func TestPodAdmissionAPIServerBoundaries(t *testing.T) {
 		}
 		beforeFinalize = native.DeepCopy()
 		native.Finalizers = nil
-		if err := cl.Patch(ctx, native, client.MergeFromWithOptions(beforeFinalize, client.MergeFromWithOptimisticLock{})); err != nil {
+		if err := cleanup.Patch(ctx, native, client.MergeFromWithOptions(beforeFinalize, client.MergeFromWithOptimisticLock{})); err != nil {
 			t.Fatal(err)
 		}
 		replacement := testfixture.Pod(expected)

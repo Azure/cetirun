@@ -28,10 +28,11 @@ import (
 const sandboxPreparationReceiptKey = "preparation.json"
 
 type sandboxPreparationReceipt struct {
-	Version       string               `json:"version"`
-	AgentName     string               `json:"agentName"`
-	AgentUID      types.UID            `json:"agentUID"`
-	Prerequisites SandboxPrerequisites `json:"prerequisites"`
+	Version         string               `json:"version"`
+	AgentName       string               `json:"agentName"`
+	AgentUID        types.UID            `json:"agentUID"`
+	NativeExecution bool                 `json:"nativeExecution,omitempty"`
+	Prerequisites   SandboxPrerequisites `json:"prerequisites"`
 }
 
 func (r *AgentReconciler) sandboxPreparationKey(agent *api.Agent) client.ObjectKey {
@@ -78,7 +79,8 @@ func (r *AgentReconciler) readSandboxPreparationReceipt(ctx context.Context, age
 
 func (r *AgentReconciler) recordSandboxPreparationReceipt(ctx context.Context, attempt *sandboxPreparationAttempt) error {
 	agent := attempt.agent
-	desired := sandboxPreparationReceipt{Version: "v1", AgentName: agent.Name, AgentUID: agent.UID, Prerequisites: attempt.prerequisites}
+	desired := sandboxPreparationReceipt{Version: "v1", AgentName: agent.Name, AgentUID: agent.UID,
+		NativeExecution: r.SandboxPreparation.NativeExecution, Prerequisites: attempt.prerequisites}
 	if desired.Prerequisites.Placement != nil {
 		desired.Version = "v2"
 	}
@@ -111,6 +113,10 @@ func (r *AgentReconciler) recordSandboxPreparationReceipt(ctx context.Context, a
 	if !object.DeletionTimestamp.IsZero() || !controllerutil.ContainsFinalizer(object, sandbox.PreparationFinalizer) {
 		return fmt.Errorf("Sandbox preparation receipt is no longer protected for writes")
 	}
+	recordedNative := receipt.NativeExecution || object.Annotations[nativeStartAnnotation] != ""
+	if recordedNative != desired.NativeExecution {
+		return fmt.Errorf("Sandbox preparation cannot change its recorded execution mode")
+	}
 	if receipt.Prerequisites.NamespaceUID != desired.Prerequisites.NamespaceUID || receipt.Prerequisites.Home != desired.Prerequisites.Home {
 		return fmt.Errorf("%w: Sandbox namespace or HOME replacement requires a separate handoff", sandboxworkload.ErrStorageTransitionRequired)
 	}
@@ -132,22 +138,41 @@ func (r *AgentReconciler) checkSandboxPreparationCleanup(ctx context.Context, ag
 	if !r.sandboxPreparationStateNeeded(agent) {
 		return nil
 	}
-	_, receipt, err := r.readSandboxPreparationReceipt(ctx, agent)
+	object, receipt, err := r.readSandboxPreparationReceipt(ctx, agent)
 	if apierrors.IsNotFound(err) && !controllerutil.ContainsFinalizer(agent, sandbox.PreparationFinalizer) {
 		return nil
 	}
 	if err != nil {
 		return fmt.Errorf("Sandbox cleanup ownership receipt is unavailable: %w", err)
 	}
-	if r.SandboxPreparation == nil || r.SandboxPreparation.Prerequisites == nil {
-		return fmt.Errorf("%w: Sandbox cleanup requires the qualified old-writer fence provider", sandboxpolicy.ErrUnavailable)
-	}
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	// Cleanup uses the durable prior tuple, not current Team/policy lookup or
 	// name-based rediscovery. Providers must support this after configuration
 	// deletion, suspension, reauthorization and controller restart.
-	if err := r.SandboxPreparation.Prerequisites.CheckQuiesced(ctx, agent.DeepCopy(), copySandboxPrerequisites(receipt.Prerequisites)); err != nil {
+	native := receipt.NativeExecution
+	// Started native receipts from before execution-mode recording retain their
+	// controller-written marker. Current enablement is not cleanup authority.
+	if started := object.Annotations[nativeStartAnnotation]; started != "" {
+		if !sandboxworkload.ValidInputDigest(started) {
+			return fmt.Errorf("Sandbox cleanup has an invalid native start marker")
+		}
+		native = true
+	}
+	inputs := copySandboxPrerequisites(receipt.Prerequisites)
+	if native {
+		if inputs.Placement != nil || inputs.AgentGeneration > agent.Generation {
+			return fmt.Errorf("native Sandbox cleanup requires an unplaced historical native lifetime")
+		}
+		err = (&KubernetesNativeQuiescence{APIReader: r.customReader()}).CheckQuiesced(ctx, agent.DeepCopy(), inputs)
+	} else {
+		if r.SandboxPreparation == nil || r.SandboxPreparation.Prerequisites == nil ||
+			r.SandboxPreparation.NativeExecution {
+			return fmt.Errorf("%w: Sandbox cleanup requires the recorded non-native fence provider", sandboxpolicy.ErrUnavailable)
+		}
+		err = r.SandboxPreparation.Prerequisites.CheckQuiesced(ctx, agent.DeepCopy(), inputs)
+	}
+	if err != nil {
 		return fmt.Errorf("Sandbox deletion fence is unconfirmed: %w", err)
 	}
 	if err := ctx.Err(); err != nil {

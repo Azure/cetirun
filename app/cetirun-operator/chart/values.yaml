@@ -189,6 +189,7 @@ sandboxSources:
   # Requires owned bootstrap and AI Gateway shared models. No resume or failover.
   # When admission coordination is configured, reserve the selected sources
   # until observed ordinary shutdown; this is not physical writer fencing.
+  # Disabling starts retains recorded native cleanup and Pod finalization RBAC.
   nativeExecution: false
   # -- Create owned namespace, HOME and native authentication only for new namespaces.
   # Requires explicit Agent chart/image/port pins. Published content stays external.

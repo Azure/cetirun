@@ -96,8 +96,9 @@ path in the shipped controller. It defaults to `false` and requires enabled,
 enforced configuration/Pod admission, `sandboxSources.enabled`,
 `sandboxSources.bootstrapOwnedPrerequisites`, and an enabled AI Gateway.
 The controller receives the same option through `CETIRUN_SANDBOX_SOURCES`.
-The option adds Node `get` permission for readiness and Pod `patch` permission
-for recorded lifetime finalization. Both additions are scoped to the opt-in.
+The option adds Node `get` permission for readiness. The manager always retains
+Pod `patch` permission for recorded lifetime finalization, including after new
+native starts are disabled; admission still limits protected Pod updates.
 The native profile uses the registered RuntimeClass's scheduling constraints;
 the separate durable placement registry is unsupported and rejected.
 
@@ -168,6 +169,14 @@ Normal deletion retains the existing ownership checks and finalizers, withdraws
 the route, independently revokes the Gateway grant and waits for ordinary workload termination
 before removing owned storage/namespace resources. A failed cleanup stays
 visible. Disabling native execution does not waive existing cleanup obligations.
+Cleanup selects ordinary native quiescence from the protected preparation
+receipt's recorded execution mode, not from the current new-start option.
+Earlier started native receipts retain their controller-written start marker.
+Non-native or unknown lifetimes still require their qualified cleanup provider.
+Keep the operator state namespace, enforced admission, Gateway cleanup credentials
+and any configured coordination authority until the recorded lifetimes finish.
+An empty `skillsClaimName` without a catalog remains accepted when disabling
+native starts, so that configuration does not prevent the controller restarting.
 Component tests and API observations do not replace an authorized end-to-end
 create/connect/model/tool/delete run on the selected runtime.
 See the [native Sandbox example](../../examples/native-sandbox/) for the minimal

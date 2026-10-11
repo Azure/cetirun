@@ -62,7 +62,7 @@ func TestNativeSandboxSourcesRequireExplicitOptIn(t *testing.T) {
 		{name: "explicit false", raw: strings.Replace(nativeSandboxSourcesJSON, `"enabled":true`, `"enabled":true,"nativeExecution":false`, 1)},
 		{name: "explicit true", raw: strings.Replace(nativeSandboxSourcesJSON, `"enabled":true`, `"enabled":true,"nativeExecution":true`, 1), native: true},
 		{name: "native without claim name", raw: strings.Replace(strings.Replace(nativeSandboxSourcesJSON, `"enabled":true`, `"enabled":true,"nativeExecution":true`, 1), `"skills-example"`, `""`, 1), native: true},
-		{name: "held still needs claim name", raw: strings.Replace(nativeSandboxSourcesJSON, `"skills-example"`, `""`, 1), wantError: true},
+		{name: "disabled starts retain empty claim setting", raw: strings.Replace(nativeSandboxSourcesJSON, `"skills-example"`, `""`, 1)},
 		{name: "catalog still needs claim name", raw: strings.Replace(strings.Replace(nativeSandboxSourcesJSON, `"enabled":true`, `"enabled":true,"nativeExecution":true,"skillsCatalogConfigMapName":"skills-catalog"`, 1), `"skills-example"`, `""`, 1), wantError: true},
 		{name: "requires sources", raw: `{"nativeExecution":true,"bootstrapOwnedPrerequisites":true}`, wantError: true},
 		{name: "requires bootstrap", raw: strings.Replace(nativeSandboxSourcesJSON, `"bootstrapOwnedPrerequisites":true`, `"nativeExecution":true`, 1), wantError: true},

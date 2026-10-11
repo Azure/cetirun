@@ -438,7 +438,7 @@ class SandboxAdmissionChartTests(unittest.TestCase):
             "helpers", "admissionServiceAccount",
         })
 
-    def test_native_execution_adds_only_node_reads_and_pod_finalization_patch(self):
+    def test_native_execution_adds_only_node_reads_and_retains_cleanup_patch(self):
         admission = self.enforced_values(podsEnabled=True)
         sources = {
             "enabled": True, "platformConfigMapName": "sandbox-platform",
@@ -454,12 +454,30 @@ class SandboxAdmissionChartTests(unittest.TestCase):
         self.assertIs(config["nativeExecution"], True)
         role = ("ClusterRole", "cetirun-operator-manager-role")
         added = [rule for rule in configured[role]["rules"] if rule not in baseline[role]["rules"]]
-        self.assertEqual(added, [
-            {"apiGroups": [""], "resources": ["nodes"], "verbs": ["get"]},
-            {"apiGroups": [""], "resources": ["pods"], "verbs": ["get", "list", "delete", "patch"]},
-        ])
+        self.assertEqual(added, [{"apiGroups": [""], "resources": ["nodes"], "verbs": ["get"]}])
         removed = [rule for rule in baseline[role]["rules"] if rule not in configured[role]["rules"]]
-        self.assertEqual(removed, [{"apiGroups": [""], "resources": ["pods"], "verbs": ["get", "list", "delete"]}])
+        self.assertEqual(removed, [])
+
+    def test_native_finalization_permission_survives_disabling_starts(self):
+        admission = self.enforced_values(podsEnabled=True)
+        for sources in (
+            {"enabled": True, "nativeExecution": True, "bootstrapOwnedPrerequisites": True,
+             "platformConfigMapName": "sandbox-platform"},
+            {"enabled": True, "nativeExecution": False, "bootstrapOwnedPrerequisites": True,
+             "platformConfigMapName": "sandbox-platform"},
+            {"enabled": True, "nativeExecution": False, "bootstrapOwnedPrerequisites": True,
+             "platformConfigMapName": "sandbox-platform", "skillsClaimName": ""},
+            {"enabled": False, "nativeExecution": False},
+        ):
+            with self.subTest(sources=sources):
+                documents = self.render(admission, values={
+                    "sandboxSources": sources, "aiGateway": {"enabled": True},
+                })
+                rules = documents[("ClusterRole", "cetirun-operator-manager-role")]["rules"]
+                self.assertIn({
+                    "apiGroups": [""], "resources": ["pods"],
+                    "verbs": ["get", "list", "delete", "patch"],
+                }, rules)
 
     def test_native_empty_skills_claim_name_is_optional_without_extra_grants(self):
         admission = self.enforced_values(podsEnabled=True)
@@ -481,7 +499,7 @@ class SandboxAdmissionChartTests(unittest.TestCase):
         self.assertEqual(config["skillsClaimName"], "")
         self.assertNotIn("skillsCatalogConfigMapName", config)
         for change in (
-            {"nativeExecution": False}, {"skillsCatalogConfigMapName": "skills-catalog"},
+            {"skillsCatalogConfigMapName": "skills-catalog"},
             {"skillsClaimName": "INVALID"}, {"skillsClaimName": 42},
         ):
             with self.subTest(change=change):
