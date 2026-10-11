@@ -8,7 +8,7 @@ weight: 10
 ## Toolchain
 
 The site pins **Hugo extended 0.164.0**, **Docsy 0.16.0**, Bootstrap 5.3.8,
-and Font Awesome 6.7.2. Use Go 1.27.1, matching the repository's
+and Font Awesome 6.7.2. Use Go 1.27.2, matching the repository's
 [`.go-version`]({{< repo ".go-version" >}}), to install the pinned Hugo
 binary, a C/C++ compiler for its extended build, Node.js 24 with npm,
 Python 3.11 or later, and Make.

@@ -141,6 +141,18 @@ These run-lifecycle checks do not establish governed execution, runtime fencing
 or model/tool acceptance. The live E2E workflow remains disabled and must not
 be enabled as part of routine local validation.
 
+The runner's routing check uses the canonical `/ui/<agent>/` path over verified
+HTTPS. Its credential-free `e2e-ingress-check.py` helper checks the exact public
+Entra sign-in endpoint, expected application ID and callback without following
+redirects or printing response data. `E2E_OIDC_CLIENT_ID` and `E2E_CA_FILE`
+provide explicit application/CA inputs when needed. Missing configuration,
+TLS failures and unexpected/ambiguous challenges fail; a sign-in challenge is
+not proof of authenticated owner access or a running model/tool task.
+The POSIX helper supervises a separate worker, killing and reaping it on timeout
+or cancellation even when native DNS resolution is stalled.
+See the [native ingress challenge contract]({{< repo "scripts/README.md" >}}#native-ingress-sign-in-challenge)
+for inputs, deadlines, supported layout and offline TLS tests.
+
 ### Sandbox platform probes
 
 [`sandbox-platform-qualify.py`]({{< repo "scripts/sandbox-platform-qualify.py" >}})
