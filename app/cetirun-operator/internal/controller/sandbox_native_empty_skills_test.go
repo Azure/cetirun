@@ -6,6 +6,7 @@ package controller
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	sandboxadmission "github.com/Azure/CetiRun/app/cetirun-operator/internal/admission"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxcoordination"
 	w "github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload/testfixture"
 	admissionv1 "k8s.io/api/admission/v1"
@@ -222,6 +224,47 @@ func TestNativeSandboxEmptySkillsLifecycle(t *testing.T) {
 		if err := f.kube.Get(ctx, client.ObjectKeyFromObject(object), object); !apierrors.IsNotFound(err) {
 			t.Fatalf("native deletion retained %T or its lifecycle state: %v", object, err)
 		}
+	}
+}
+
+func TestNativeSandboxEmptySkillsUsesConfigurationReservation(t *testing.T) {
+	f := newNativeSandboxSkillsFixture(t, true, nil)
+	ctx := context.Background()
+	authority, err := sandboxcoordination.NewState(f.r.OperatorNamespace, "empty-skills-coordination")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.kube.Create(ctx, authority); err != nil {
+		t.Fatal(err)
+	}
+	store := &sandboxcoordination.Store{
+		Client: f.kube, APIReader: f.kube, Namespace: authority.Namespace,
+		Identity: w.ObjectIdentity{Name: authority.Name, UID: authority.UID},
+	}
+	f.r.SandboxNativeCoordination = store
+	f.ready(t)
+	_, expected := f.expectation(t)
+	if expected.SkillsMode != w.SkillsModeEmpty || expected.Skills != (w.ObjectIdentity{}) {
+		t.Fatal("coordinated startup reintroduced a skills claim")
+	}
+	if _, found, err := store.ReadNative(ctx, f.agent.UID); err != nil || !found {
+		t.Fatal("empty-skills startup did not reserve its configuration:", err)
+	}
+	before, after := nativePolicyChange(t, f, expected)
+	if _, err := store.AcquireConfigurationChange(ctx, before, after); !errors.Is(err, sandboxcoordination.ErrConflict) {
+		t.Fatal("configuration changed while the empty-skills Agent ran:", err)
+	}
+	pod := f.pod(t)
+	if err := f.kube.Delete(ctx, f.current(t)); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.kube.Delete(ctx, pod); err != nil {
+		t.Fatal(err)
+	}
+	f.reconcileOK(t)
+	f.reconcileOK(t)
+	if _, found, err := store.ReadNative(ctx, f.agent.UID); err != nil || found {
+		t.Fatal("ordinary empty-skills cleanup retained its reservation:", err)
 	}
 }
 
