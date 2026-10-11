@@ -19,6 +19,13 @@ func (b *Bundle) ValidateTemplate(template *corev1.PodTemplateSpec, image string
 	if template == nil || image == "" {
 		return fmt.Errorf("a rendered native Pod template is required")
 	}
+	var finalizers []string
+	if b.input.GatewayKey != nil {
+		finalizers = []string{NativePodFinalizer}
+	}
+	if !slices.Equal(template.Finalizers, finalizers) {
+		return fmt.Errorf("native Pod lifetime protection differs from the bundle")
+	}
 	spec := &template.Spec
 	for key, value := range b.input.Controls.PodLabels {
 		if template.Labels[key] != value {

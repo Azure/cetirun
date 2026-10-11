@@ -110,10 +110,18 @@ Tailscale, Teams and arbitrary Agent Helm overrides are rejected before start.
 Existing baseline network controls are retained.
 
 The controller stages the protected chart, records a one-shot start marker,
-releases admission and starts one StatefulSet replica. It pins the first
-observed Pod UID; admission rejects subsequent Pod creation for that lifetime.
+releases admission and starts one StatefulSet replica. The first Pod carries a
+lifetime finalizer, so an early deletion cannot free its name before the
+controller records its UID. Only after that durable record may the finalizer
+be removed; admission rejects subsequent Pod creation for that lifetime.
+Finalizer-only cleanup remains available after a hold or Agent deletion, and
+admission remains read-only.
 Ready requires the current application readiness probe, Node readiness,
 matching workload and effective source inputs, and the current Gateway grant.
+Native HOME and skills checks pin ownership and storage inputs rather than
+PVC resourceVersion. Ordinary delayed binding, status updates and PVC-protection
+finalization do not block first creation; changed ownership/profile or lost
+claims are still rejected.
 Native owner access uses the existing `/ui/<agent>/` route and authentication
 deployment. An unauthenticated sign-in challenge alone is not an access test.
 

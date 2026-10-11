@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -26,6 +27,7 @@ import (
 	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxbinding"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
 )
 
 const sandboxHoldFinalizer = sandbox.HoldFinalizer
@@ -231,6 +233,13 @@ func (r *AgentReconciler) stopSandboxBuiltin(ctx context.Context, agent *cetirun
 		failures = append(failures, fmt.Errorf("sandbox-held route ownership is unconfirmed; recovery is required"))
 	} else if err := r.Delete(ctx, route, client.Preconditions{UID: &route.UID, ResourceVersion: &route.ResourceVersion}); err != nil && !apierrors.IsNotFound(err) {
 		failures = append(failures, fmt.Errorf("remove sandbox-held route: %w", err))
+	}
+	if (r.SandboxPreparation != nil && r.SandboxPreparation.NativeExecution) ||
+		slices.Contains(sts.Spec.Template.Finalizers, sandboxworkload.NativePodFinalizer) ||
+		!agent.DeletionTimestamp.IsZero() {
+		if err := r.finishNativePodLifetime(ctx, agent); err != nil {
+			failures = append(failures, err)
+		}
 	}
 	return errors.Join(failures...)
 }

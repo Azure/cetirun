@@ -130,9 +130,13 @@ func (h *PodHandler) Validate(ctx context.Context, request admission.Request) ad
 	if podGarbageCollectorFinalizerUpdate(request, &pod) {
 		return admission.Allowed("garbage collector Pod finalization remains independent of policy admission")
 	}
-	expected, state, failure := h.readExpectation(ctx, request.Namespace)
+	releaseFinalizer := nativePodFinalizerRemoval(request, &pod)
+	expected, state, failure := h.readPodExpectation(ctx, request.Namespace, releaseFinalizer)
 	if failure != nil {
 		return rejectPod(ctx, request, failure)
+	}
+	if releaseFinalizer {
+		return h.releaseNativePodFinalizer(ctx, request, &pod, expected, state)
 	}
 	agent, binding, err := sandboxbinding.Read(ctx, h.reader, client.ObjectKey{Name: expected.Agent.Name})
 	if err != nil || agent.UID != expected.Agent.UID || agent.Generation != expected.AgentGeneration ||
@@ -239,6 +243,10 @@ func podGarbageCollectorFinalizerUpdate(request admission.Request, pod *corev1.P
 }
 
 func (h *PodHandler) readExpectation(ctx context.Context, namespace string) (sandboxworkload.Expectation, *corev1.ConfigMap, *podFailure) {
+	return h.readPodExpectation(ctx, namespace, false)
+}
+
+func (h *PodHandler) readPodExpectation(ctx context.Context, namespace string, cleanup bool) (sandboxworkload.Expectation, *corev1.ConfigMap, *podFailure) {
 	var expected sandboxworkload.Expectation
 	if namespace == h.config.StateNamespace {
 		return expected, nil, podDenied("ControllerNamespace", "controller state is not an Agent namespace")
@@ -247,7 +255,7 @@ func (h *PodHandler) readExpectation(ctx context.Context, namespace string) (san
 	if err := h.reader.Get(ctx, client.ObjectKey{Name: namespace}, ns); err != nil {
 		return expected, nil, podReadFailure("Namespace", err)
 	}
-	if ns.UID == "" || !ns.DeletionTimestamp.IsZero() ||
+	if ns.UID == "" || (!cleanup && !ns.DeletionTimestamp.IsZero()) ||
 		ns.Labels[sandboxworkload.ProtectedNamespaceLabel] != "true" {
 		return expected, nil, podDenied("NamespaceInactive", "namespace is unprotected, absent or terminating")
 	}
@@ -262,7 +270,7 @@ func (h *PodHandler) readExpectation(ctx context.Context, namespace string) (san
 	problems, err := strictjson.UnmarshalStrict([]byte(raw), &expected)
 	if err != nil || len(problems) != 0 ||
 		len(state.Data) != 1 || len(state.BinaryData) != 0 || state.UID == "" || state.ResourceVersion == "" ||
-		!state.DeletionTimestamp.IsZero() || expected.Version != sandboxworkload.ExpectationVersion ||
+		(!cleanup && !state.DeletionTimestamp.IsZero()) || expected.Version != sandboxworkload.ExpectationVersion ||
 		expected.Namespace.Name != ns.Name || expected.Namespace.UID != ns.UID ||
 		expected.WorkloadKind != sandboxworkload.AgentWorkload || expected.Workload.Name == "" || expected.Workload.UID == "" ||
 		expected.Agent.Name == "" || expected.Agent.UID == "" || expected.Revision == "" ||
@@ -374,8 +382,7 @@ func (h *PodHandler) readPodSource(ctx context.Context, expected sandboxworkload
 		return nil
 	}
 	var object client.Object = &metav1.PartialObjectMetadata{TypeMeta: metav1.TypeMeta{APIVersion: source.APIVersion, Kind: source.Kind}}
-	effectiveSource := expected.SinglePod && sandboxworkload.EffectiveSource(source) &&
-		!(source.APIVersion == "v1" && source.Kind == "PersistentVolumeClaim")
+	effectiveSource := expected.SinglePod && sandboxworkload.EffectiveSource(source)
 	if effectiveSource {
 		version, err := schema.ParseGroupVersion(source.APIVersion)
 		if err != nil {
@@ -386,6 +393,9 @@ func (h *PodHandler) readPodSource(ctx context.Context, expected sandboxworkload
 		object = value
 		if source.APIVersion == api.GroupVersion.String() && source.Kind == "Team" {
 			object = &api.Team{}
+		}
+		if source.APIVersion == "v1" && source.Kind == "PersistentVolumeClaim" {
+			object = &corev1.PersistentVolumeClaim{}
 		}
 	}
 	var runtimeClass *nodev1.RuntimeClass
@@ -412,6 +422,9 @@ func (h *PodHandler) readPodSource(ctx context.Context, expected sandboxworkload
 			}
 		}
 		digest, err := sandboxworkload.ExecutionSourceDigest(object, box, expected.Binding.PolicyClass)
+		if claim, ok := object.(*corev1.PersistentVolumeClaim); ok {
+			digest, err = sandboxworkload.NativeClaimDigest(claim)
+		}
 		pinned := expected.SourceDigests[sandboxworkload.SourceKey(source)]
 		if err != nil || !sandboxworkload.ValidInputDigest(pinned) || digest != pinned {
 			return podDenied("SourceChanged", "native Sandbox effective source inputs changed")

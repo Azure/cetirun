@@ -30,6 +30,7 @@ const (
 	AgentWorkload           = "agent"
 	HomePath                = "/home/vibe"
 	SkillsPath              = "/home/vibe/.aks/skills"
+	NativePodFinalizer      = "cetirun.microsoft.com/native-pod-lifetime"
 )
 
 var (

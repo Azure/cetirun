@@ -64,7 +64,12 @@ func ValidatePod(pod *corev1.Pod, expected Expectation) error {
 	if !equality.Semantic.DeepEqual(pod.OwnerReferences, []metav1.OwnerReference{owner}) {
 		return &PodMismatchError{[]string{"metadata.ownerReferences"}}
 	}
-	if len(pod.Finalizers) != 0 {
+	finalizersValid := len(pod.Finalizers) == 0 && !expected.SinglePod
+	if expected.SinglePod && slices.Equal(expected.Template.Finalizers, []string{NativePodFinalizer}) {
+		finalizersValid = slices.Equal(pod.Finalizers, []string{NativePodFinalizer}) ||
+			(expected.PodUID == pod.UID && expected.PodUID != "" && len(pod.Finalizers) == 0)
+	}
+	if !finalizersValid {
 		return &PodMismatchError{[]string{"metadata.finalizers"}}
 	}
 	if !equalJSON(pod.Annotations, expected.Template.Annotations) {
@@ -267,7 +272,7 @@ func SamePodTemplate(actual, expected corev1.PodTemplateSpec) bool {
 		return false
 	}
 	return equalJSON(a.Labels, b.Labels) && equalJSON(a.Annotations, b.Annotations) &&
-		len(a.Finalizers) == 0 && len(a.OwnerReferences) == 0 && equality.Semantic.DeepEqual(a.Spec, b.Spec)
+		slices.Equal(a.Finalizers, b.Finalizers) && len(a.OwnerReferences) == 0 && equality.Semantic.DeepEqual(a.Spec, b.Spec)
 }
 
 func defaultPod(spec *corev1.PodSpec) error {

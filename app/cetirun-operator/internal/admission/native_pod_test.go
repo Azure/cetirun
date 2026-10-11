@@ -13,6 +13,9 @@ import (
 	admissionv1 "k8s.io/api/admission/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -20,9 +23,15 @@ func nativePodFixture(t *testing.T) podFixture {
 	t.Helper()
 	f := newPodFixture(t)
 	f.expected.SinglePod = true
+	f.expected.Template.Finalizers = []string{w.NativePodFinalizer}
+	f.workload.Spec.Template.Finalizers = []string{w.NativePodFinalizer}
+	f.pod.Finalizers = []string{w.NativePodFinalizer}
+	if err := f.client.Update(context.Background(), f.workload); err != nil {
+		t.Fatal(err)
+	}
 	f.expected.SourceDigests = map[string]string{}
 	for _, source := range f.expected.Sources {
-		if !w.EffectiveSource(source) || (source.APIVersion == "v1" && source.Kind == "PersistentVolumeClaim") {
+		if !w.EffectiveSource(source) {
 			continue
 		}
 		for _, object := range f.objects {
@@ -30,6 +39,9 @@ func nativePodFixture(t *testing.T) podFixture {
 				continue
 			}
 			digest, err := w.ExecutionSourceDigest(object, f.fixture.Sandbox.Name, f.expected.Binding.PolicyClass)
+			if claim, ok := object.(*corev1.PersistentVolumeClaim); ok {
+				digest, err = w.NativeClaimDigest(claim)
+			}
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -135,5 +147,78 @@ func TestNativePodPinKeepsOrdinaryDeletionAvailable(t *testing.T) {
 	response := f.handler.Validate(context.Background(), podRequest(t, f.pod, admissionv1.Delete, nil))
 	if !response.Allowed {
 		t.Fatalf("native one-shot state blocked ordinary Pod cleanup: %+v", response.Result)
+	}
+}
+
+func TestNativePodAdmissionAllowsClaimBindingBeforeFirstCreate(t *testing.T) {
+	for _, name := range []string{"home", "skills"} {
+		t.Run(name, func(t *testing.T) {
+			f := nativePodFixture(t)
+			identity := f.expected.Home
+			if name == "skills" {
+				identity = f.expected.Skills
+			}
+			claim := &corev1.PersistentVolumeClaim{}
+			if err := f.client.Get(context.Background(), client.ObjectKey{Namespace: f.pod.Namespace, Name: identity.Name}, claim); err != nil {
+				t.Fatal(err)
+			}
+			claim.Spec.VolumeName = "bound-example-volume"
+			claim.Status.Phase = corev1.ClaimBound
+			if claim.Annotations == nil {
+				claim.Annotations = map[string]string{}
+			}
+			claim.Annotations["pv.kubernetes.io/bind-completed"] = "yes"
+			claim.Finalizers = append(claim.Finalizers, "kubernetes.io/pvc-protection")
+			if err := f.client.Update(context.Background(), claim); err != nil {
+				t.Fatal(err)
+			}
+			claim.Status.Phase = corev1.ClaimBound
+			if err := f.client.Status().Update(context.Background(), claim); err != nil {
+				t.Fatal(err)
+			}
+			response := f.handler.Validate(context.Background(), podRequest(t, f.pod, admissionv1.Create, nil))
+			if !response.Allowed {
+				t.Fatalf("binding-only claim changes blocked the first Pod: %+v", response.Result)
+			}
+		})
+	}
+}
+
+func TestNativePodAdmissionRejectsChangedClaimInputs(t *testing.T) {
+	for _, change := range []struct {
+		name   string
+		mutate func(*corev1.PersistentVolumeClaim)
+	}{
+		{"owner", func(p *corev1.PersistentVolumeClaim) {
+			p.OwnerReferences = []metav1.OwnerReference{{APIVersion: "v1", Kind: "Pod", Name: "other", UID: "other-owner"}}
+		}},
+		{"storage class", func(p *corev1.PersistentVolumeClaim) { p.Spec.StorageClassName = ptr.To("other-storage") }},
+		{"access mode", func(p *corev1.PersistentVolumeClaim) {
+			p.Spec.AccessModes = []corev1.PersistentVolumeAccessMode{corev1.ReadOnlyMany}
+		}},
+		{"size", func(p *corev1.PersistentVolumeClaim) {
+			p.Spec.Resources.Requests = corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("99Gi")}
+		}},
+		{"lost", func(p *corev1.PersistentVolumeClaim) { p.Status.Phase = corev1.ClaimLost }},
+	} {
+		t.Run(change.name, func(t *testing.T) {
+			f := nativePodFixture(t)
+			claim := &corev1.PersistentVolumeClaim{}
+			if err := f.client.Get(context.Background(), client.ObjectKey{Namespace: f.pod.Namespace, Name: f.expected.Home.Name}, claim); err != nil {
+				t.Fatal(err)
+			}
+			change.mutate(claim)
+			phase := claim.Status.Phase
+			if err := f.client.Update(context.Background(), claim); err != nil {
+				t.Fatal(err)
+			}
+			claim.Status.Phase = phase
+			if err := f.client.Status().Update(context.Background(), claim); err != nil {
+				t.Fatal(err)
+			}
+			if response := f.handler.Validate(context.Background(), podRequest(t, f.pod, admissionv1.Create, nil)); response.Allowed {
+				t.Fatal("changed claim ownership or storage input was accepted")
+			}
+		})
 	}
 }

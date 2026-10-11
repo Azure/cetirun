@@ -109,11 +109,15 @@ func (r *AgentReconciler) failKubernetesSandbox(ctx context.Context, agent *api.
 }
 
 func (r *AgentReconciler) readKubernetesSandboxExpectation(ctx context.Context, agent *api.Agent) (*corev1.ConfigMap, *w.Expectation, error) {
+	return r.readNativeSandboxExpectation(ctx, agent, false)
+}
+
+func (r *AgentReconciler) readNativeSandboxExpectation(ctx context.Context, agent *api.Agent, cleanup bool) (*corev1.ConfigMap, *w.Expectation, error) {
 	namespace := &corev1.Namespace{}
 	if err := r.APIReader.Get(ctx, client.ObjectKey{Name: instanceNamespace(agent.Name)}, namespace); err != nil {
 		return nil, nil, err
 	}
-	if !sandboxBuiltinOwned(namespace, agent) || !namespace.DeletionTimestamp.IsZero() {
+	if !sandboxBuiltinOwned(namespace, agent) || (!cleanup && !namespace.DeletionTimestamp.IsZero()) {
 		return nil, nil, fmt.Errorf("native Sandbox namespace is not current and owned")
 	}
 	state := &corev1.ConfigMap{}
@@ -121,7 +125,7 @@ func (r *AgentReconciler) readKubernetesSandboxExpectation(ctx context.Context, 
 	if err := r.APIReader.Get(ctx, key, state); err != nil {
 		return nil, nil, err
 	}
-	if state.UID == "" || state.ResourceVersion == "" || !state.DeletionTimestamp.IsZero() ||
+	if state.UID == "" || state.ResourceVersion == "" || (!cleanup && !state.DeletionTimestamp.IsZero()) ||
 		state.Annotations[w.AgentUIDAnnotation] != string(agent.UID) ||
 		!equality.Semantic.DeepEqual(state.OwnerReferences, []metav1.OwnerReference{w.AgentOwner(agent.Name, agent.UID)}) {
 		return nil, nil, fmt.Errorf("native Sandbox expectation ownership changed")
@@ -133,7 +137,7 @@ func (r *AgentReconciler) readKubernetesSandboxExpectation(ctx context.Context, 
 	if expected.Agent != (w.ObjectIdentity{Name: agent.Name, UID: agent.UID}) ||
 		expected.Namespace != (w.ObjectIdentity{Name: namespace.Name, UID: namespace.UID}) ||
 		expected.WorkloadKind != w.AgentWorkload || expected.Workload.Name != instanceServiceName(agent.Name) ||
-		expected.Binding.AgentUID != agent.UID || expected.AgentGeneration != agent.Generation {
+		expected.Binding.AgentUID != agent.UID || (!cleanup && expected.AgentGeneration != agent.Generation) {
 		return nil, nil, fmt.Errorf("native Sandbox expectation differs from the current Agent")
 	}
 	return state, expected, nil
@@ -181,10 +185,10 @@ func (r *AgentReconciler) startKubernetesSandbox(ctx context.Context, requested 
 	}
 	expected.SourceDigests = map[string]string{}
 	for _, source := range expected.Sources {
-		if !nativeDigestSource(source) {
+		if !w.EffectiveSource(source) {
 			continue
 		}
-		digest, err := r.executionSourceDigest(ctx, source, agent.Spec.SandboxRef, expected.Binding.PolicyClass, true)
+		digest, err := r.nativeSourceDigest(ctx, source, agent.Spec.SandboxRef, expected.Binding.PolicyClass, true)
 		if err != nil {
 			return ctrl.Result{}, err
 		}
@@ -292,14 +296,11 @@ func (r *AgentReconciler) observeKubernetesSandbox(ctx context.Context, agent *a
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	if pod.UID == "" || !pod.DeletionTimestamp.IsZero() || (expected.PodUID != "" && pod.UID != expected.PodUID) {
-		return ctrl.Result{}, fmt.Errorf("native Sandbox Pod identity changed; replacement is unsupported")
+	if err := r.recordNativePodLifetime(ctx, state, expected, pod); err != nil {
+		return ctrl.Result{}, err
 	}
-	if expected.PodUID == "" {
-		expected.PodUID = pod.UID
-		if err := r.saveNativeExpectation(ctx, state, expected); err != nil {
-			return ctrl.Result{}, err
-		}
+	if !pod.DeletionTimestamp.IsZero() {
+		return ctrl.Result{}, fmt.Errorf("native Sandbox Pod is terminating; replacement is unsupported")
 	}
 	if pod.Spec.NodeName == "" || !sandboxPodReady(pod) {
 		if agent.Status.Phase == api.PhaseReady {
@@ -390,8 +391,18 @@ func (r *AgentReconciler) resolveRunningKubernetesSandbox(ctx context.Context, a
 	return attempt, err
 }
 
-func nativeDigestSource(source w.SourceReference) bool {
-	return w.EffectiveSource(source) && !(source.APIVersion == "v1" && source.Kind == "PersistentVolumeClaim")
+func (r *AgentReconciler) nativeSourceDigest(ctx context.Context, source w.SourceReference, box string, class api.AgentPolicyClass, capture bool) (string, error) {
+	if source.APIVersion != "v1" || source.Kind != "PersistentVolumeClaim" {
+		return r.executionSourceDigest(ctx, source, box, class, capture)
+	}
+	claim := &corev1.PersistentVolumeClaim{}
+	if err := r.APIReader.Get(ctx, client.ObjectKey{Namespace: source.Namespace, Name: source.Name}, claim); err != nil {
+		return "", err
+	}
+	if claim.UID != source.UID || (capture && claim.ResourceVersion != source.ResourceVersion) {
+		return "", fmt.Errorf("native Sandbox claim identity changed")
+	}
+	return w.NativeClaimDigest(claim)
 }
 
 func (r *AgentReconciler) verifyNativeSandboxSources(ctx context.Context, expected *w.Expectation, agent *api.Agent) error {
@@ -401,24 +412,14 @@ func (r *AgentReconciler) verifyNativeSandboxSources(ctx context.Context, expect
 		case source.APIVersion == "apps/v1" && source.Kind == "StatefulSet" &&
 			source.UID == expected.Workload.UID && source.Name == expected.Workload.Name && source.Namespace == expected.Namespace.Name:
 			// The complete live workload is checked separately after its scale.
-		case nativeDigestSource(source):
+		case w.EffectiveSource(source):
 			digests++
-			current, err := r.executionSourceDigest(ctx, source, agent.Spec.SandboxRef, expected.Binding.PolicyClass, false)
+			current, err := r.nativeSourceDigest(ctx, source, agent.Spec.SandboxRef, expected.Binding.PolicyClass, false)
 			if err != nil {
 				return err
 			}
 			if !w.ValidInputDigest(expected.SourceDigests[w.SourceKey(source)]) || current != expected.SourceDigests[w.SourceKey(source)] {
 				return fmt.Errorf("native Sandbox execution source changed")
-			}
-		case source.APIVersion == "v1" && source.Kind == "PersistentVolumeClaim":
-			// CSI may complete delayed binding after the first Pod is scheduled.
-			// ResolveRunning separately validates the selected storage profile.
-			claim := &corev1.PersistentVolumeClaim{}
-			if err := r.APIReader.Get(ctx, client.ObjectKey{Namespace: source.Namespace, Name: source.Name}, claim); err != nil {
-				return err
-			}
-			if claim.UID != source.UID || !claim.DeletionTimestamp.IsZero() || claim.Status.Phase == corev1.ClaimLost {
-				return fmt.Errorf("native Sandbox claim identity or availability changed")
 			}
 		default:
 			if _, err := r.readSandboxSource(ctx, source); err != nil {

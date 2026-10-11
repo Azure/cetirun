@@ -268,7 +268,7 @@ func TestNativeSandboxHeldToRunningRequiresCurrentPodReadiness(t *testing.T) {
 	}
 	digests := 0
 	for _, source := range running.Sources {
-		if !w.EffectiveSource(source) || (source.APIVersion == "v1" && source.Kind == "PersistentVolumeClaim") {
+		if !w.EffectiveSource(source) {
 			continue
 		}
 		digests++
@@ -297,6 +297,7 @@ func TestNativeSandboxHeldToRunningRequiresCurrentPodReadiness(t *testing.T) {
 	if running.PodUID != pod.UID {
 		t.Fatal("the first observed Pod UID was not durably pinned")
 	}
+	pod = f.pod(t)
 	pod.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}
 	if err := f.kube.Status().Update(context.Background(), pod); err != nil {
 		t.Fatal(err)

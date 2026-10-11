@@ -197,6 +197,9 @@ func (b *Bundle) Apply(values map[string]any) (map[string]any, error) {
 			"objects": nonNilList(controls),
 		},
 	}
+	if b.input.GatewayKey != nil {
+		overlay[ValuesKey].(map[string]any)["podFinalizers"] = []any{NativePodFinalizer}
+	}
 	if scheduling := b.input.RuntimeClass.Scheduling; scheduling != nil {
 		overlay["nodeSelector"], _ = jsonValue(scheduling.NodeSelector)
 		overlay["tolerations"], _ = jsonValue(scheduling.Tolerations)

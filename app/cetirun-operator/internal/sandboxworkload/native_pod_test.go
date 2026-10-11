@@ -41,6 +41,7 @@ func TestNativePodObservationPinsUIDAndNodeTopology(t *testing.T) {
 		t.Fatal(err)
 	}
 	expected.SinglePod, expected.PodUID = true, "first-pod-uid"
+	expected.Template.Finalizers = []string{w.NativePodFinalizer}
 	pod := testfixture.Pod(expected)
 	pod.UID, pod.Spec.NodeName = expected.PodUID, "example-node"
 	pod.Labels[corev1.LabelTopologyZone] = "example-zone"
