@@ -438,7 +438,7 @@ class SandboxAdmissionChartTests(unittest.TestCase):
             "helpers", "admissionServiceAccount",
         })
 
-    def test_native_execution_requires_explicit_opt_in_and_only_adds_node_reads(self):
+    def test_native_execution_adds_only_node_reads_and_pod_finalization_patch(self):
         admission = self.enforced_values(podsEnabled=True)
         sources = {
             "enabled": True, "platformConfigMapName": "sandbox-platform",
@@ -454,7 +454,12 @@ class SandboxAdmissionChartTests(unittest.TestCase):
         self.assertIs(config["nativeExecution"], True)
         role = ("ClusterRole", "cetirun-operator-manager-role")
         added = [rule for rule in configured[role]["rules"] if rule not in baseline[role]["rules"]]
-        self.assertEqual(added, [{"apiGroups": [""], "resources": ["nodes"], "verbs": ["get"]}])
+        self.assertEqual(added, [
+            {"apiGroups": [""], "resources": ["nodes"], "verbs": ["get"]},
+            {"apiGroups": [""], "resources": ["pods"], "verbs": ["get", "list", "delete", "patch"]},
+        ])
+        removed = [rule for rule in baseline[role]["rules"] if rule not in configured[role]["rules"]]
+        self.assertEqual(removed, [{"apiGroups": [""], "resources": ["pods"], "verbs": ["get", "list", "delete"]}])
 
     def test_native_empty_skills_claim_name_is_optional_without_extra_grants(self):
         admission = self.enforced_values(podsEnabled=True)

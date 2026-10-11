@@ -8,12 +8,26 @@ import (
 	"fmt"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxcoordination"
 	w "github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
+
+func selectedSandboxExecutionSources(sources []w.SourceReference, binding sandbox.Binding) []w.SourceReference {
+	selected := make([]w.SourceReference, 0, len(sources))
+	for _, source := range sources {
+		if source.APIVersion == api.GroupVersion.String() &&
+			((source.Kind == "Sandbox" && source.UID != binding.SandboxUID) ||
+				(source.Kind == "AgentPolicy" && source.UID != binding.AgentPolicyUID)) {
+			continue
+		}
+		selected = append(selected, source)
+	}
+	return selected
+}
 
 func (r *AgentReconciler) executionSourceDigest(ctx context.Context, source w.SourceReference,
 	box string, class api.AgentPolicyClass, capture bool,

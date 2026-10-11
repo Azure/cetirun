@@ -160,6 +160,11 @@ func (s Store) AuthorizeConfigurationFinalization(ctx context.Context, before, a
 			return ErrConflict
 		}
 	}
+	for _, native := range state.NativeReservations {
+		if uses(native.Intent.Sources, previous.reference) {
+			return ErrConflict
+		}
+	}
 	return ctx.Err()
 }
 

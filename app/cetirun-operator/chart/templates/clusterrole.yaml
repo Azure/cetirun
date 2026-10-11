@@ -91,7 +91,7 @@ rules:
     verbs: ["get"]
   - apiGroups: [""]
     resources: ["pods"]
-    verbs: ["get", "list", "delete"]
+    verbs: ["get", "list", "delete"{{ if .Values.sandboxSources.nativeExecution }}, "patch"{{ end }}]
   - apiGroups: [""]
     resources: ["endpoints"]
     resourceNames: ["kubernetes"]

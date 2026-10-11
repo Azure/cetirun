@@ -15,6 +15,7 @@ import (
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxbinding"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxcoordination"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxplacement"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
 	admissionv1 "k8s.io/api/admission/v1"
@@ -49,15 +50,19 @@ type PodConfig struct {
 	StateNamespace string
 	// Optional placement registry also verifies Node-added topology labels.
 	PlacementConfigMapName string
+	// Same UID-pinned authority as configuration admission; never written here.
+	CoordinationConfigMapName string
+	CoordinationConfigMapUID  string
 	// RequestTimeout covers all authoritative reads, not each individual GET.
 	// The chart reserves 20% of the webhook timeout for transport and response.
 	RequestTimeout time.Duration
 }
 
 type PodHandler struct {
-	reader    client.Reader
-	config    PodConfig
-	placement *sandboxplacement.Handler
+	reader       client.Reader
+	config       PodConfig
+	placement    *sandboxplacement.Handler
+	coordination *sandboxcoordination.Store
 }
 
 func (h *PodHandler) Handle(ctx context.Context, request admission.Request) admission.Response {
@@ -77,6 +82,16 @@ func NewPodHandler(reader client.Reader, config PodConfig) (*PodHandler, error) 
 		return nil, fmt.Errorf("Pod admission request timeout must be positive and less than 30 seconds")
 	}
 	handler := &PodHandler{reader: reader, config: config}
+	if config.CoordinationConfigMapName != "" || config.CoordinationConfigMapUID != "" {
+		identity := sandboxworkload.ObjectIdentity{Name: config.CoordinationConfigMapName, UID: types.UID(config.CoordinationConfigMapUID)}
+		if err := sandboxcoordination.ValidateAuthorityIdentity(identity); err != nil {
+			return nil, err
+		}
+		if config.CoordinationConfigMapName == config.PlacementConfigMapName {
+			return nil, fmt.Errorf("Pod coordination and placement require separate ConfigMaps")
+		}
+		handler.coordination = &sandboxcoordination.Store{APIReader: reader, Namespace: config.StateNamespace, Identity: identity}
+	}
 	if config.PlacementConfigMapName != "" {
 		placement, err := sandboxplacement.NewHandler(reader, sandboxplacement.Config{
 			Namespace: config.StateNamespace, ConfigMapName: config.PlacementConfigMapName,
@@ -152,6 +167,9 @@ func (h *PodHandler) Validate(ctx context.Context, request admission.Request) ad
 	if expected.Placement != nil && h.placement == nil {
 		return rejectPod(ctx, request, podDenied("PlacementUnavailable", "recorded placement requires the configured authoritative placement reader"))
 	}
+	if failure := h.validateNativeReservation(ctx, expected); failure != nil {
+		return rejectPod(ctx, request, failure)
+	}
 	if failure := h.validatePodSources(ctx, expected, agent); failure != nil {
 		return rejectPod(ctx, request, failure)
 	}
@@ -209,10 +227,30 @@ func (h *PodHandler) Validate(ctx context.Context, request admission.Request) ad
 	if currentState.UID != state.UID || currentState.ResourceVersion != state.ResourceVersion {
 		return rejectPod(ctx, request, podDenied("ExpectationChanged", "Pod expectation changed during validation"))
 	}
+	if failure := h.validateNativeReservation(ctx, expected); failure != nil {
+		return rejectPod(ctx, request, failure)
+	}
 	if ctx.Err() != nil {
 		return rejectPod(ctx, request, podReadFailure("Expectation", ctx.Err()))
 	}
 	return admission.Allowed("final Pod matches current controller-owned expectations")
+}
+
+func (h *PodHandler) validateNativeReservation(ctx context.Context, expected sandboxworkload.Expectation) *podFailure {
+	if !expected.SinglePod || h.coordination == nil {
+		return nil
+	}
+	intent, err := sandboxcoordination.NativeIntentFor(expected)
+	if err != nil {
+		return podReadFailure("NativeReservation", err)
+	}
+	if err := h.coordination.AuthorizeNativeStart(ctx, intent); err != nil {
+		if errors.Is(err, sandboxcoordination.ErrConflict) {
+			return podDenied("NativeReservationRequired", "native Sandbox requires its current non-stopping source reservation")
+		}
+		return podReadFailure("NativeReservation", err)
+	}
+	return nil
 }
 
 func decodePod(raw []byte, target *corev1.Pod) error {

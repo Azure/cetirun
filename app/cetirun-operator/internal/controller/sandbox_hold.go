@@ -196,7 +196,10 @@ func (r *AgentReconciler) stopSandboxBuiltin(ctx context.Context, agent *cetirun
 	reader := r.customReader()
 	namespace := instanceNamespace(agent.Name)
 	if err := reader.Get(ctx, types.NamespacedName{Name: namespace}, &corev1.Namespace{}); err != nil {
-		return client.IgnoreNotFound(err)
+		if apierrors.IsNotFound(err) {
+			return r.stopNativeSandboxReservation(ctx, agent)
+		}
+		return err
 	}
 	var failures []error
 	sts := &appsv1.StatefulSet{}
@@ -238,6 +241,11 @@ func (r *AgentReconciler) stopSandboxBuiltin(ctx context.Context, agent *cetirun
 		slices.Contains(sts.Spec.Template.Finalizers, sandboxworkload.NativePodFinalizer) ||
 		!agent.DeletionTimestamp.IsZero() {
 		if err := r.finishNativePodLifetime(ctx, agent); err != nil {
+			failures = append(failures, err)
+		}
+	}
+	if len(failures) == 0 {
+		if err := r.stopNativeSandboxReservation(ctx, agent); err != nil {
 			failures = append(failures, err)
 		}
 	}

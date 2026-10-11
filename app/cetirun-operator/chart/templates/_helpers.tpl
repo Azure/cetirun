@@ -131,6 +131,13 @@ Otherwise: repository:tag
 {{- if not $sources.placementConfigMapName -}}
 {{- $_ := unset $config "placementConfigMapName" -}}
 {{- end -}}
+{{- if .Values.sandboxAdmission.coordinationConfigMapName -}}
+{{- if eq .Values.sandboxAdmission.coordinationConfigMapName $sources.skillsCatalogConfigMapName -}}
+{{- fail "Sandbox coordination and skills catalog require separate ConfigMaps" -}}
+{{- end -}}
+{{- $_ := set $config "coordinationConfigMapName" .Values.sandboxAdmission.coordinationConfigMapName -}}
+{{- $_ := set $config "coordinationConfigMapUID" .Values.sandboxAdmission.coordinationConfigMapUID -}}
+{{- end -}}
 {{- $_ := set $config "admissionServiceAccount" "cetirun-sandbox-admission" -}}
 {{- toJson $config -}}
 {{- end -}}

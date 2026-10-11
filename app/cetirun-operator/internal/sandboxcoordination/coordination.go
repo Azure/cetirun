@@ -153,9 +153,10 @@ func (ticket ChangeTicket) DeepCopy() ChangeTicket {
 }
 
 type record struct {
-	Version    int         `json:"version"`
-	Executions []Execution `json:"executions"`
-	Changes    []Change    `json:"changes"`
+	Version            int                 `json:"version"`
+	Executions         []Execution         `json:"executions"`
+	Changes            []Change            `json:"changes"`
+	NativeReservations []NativeReservation `json:"nativeReservations,omitempty"`
 }
 
 // Store uses one UID-pinned, protected object so acquisition is atomic across
@@ -203,6 +204,11 @@ func (s Store) AcquireExecution(ctx context.Context, intent Intent) (Ticket, err
 			return Ticket{}, ErrConflict
 		}
 		if err := compatibleExecutions(existing.Intent, intent); err != nil {
+			return Ticket{}, err
+		}
+	}
+	for _, native := range state.NativeReservations {
+		if err := compatibleNativeExecution(native.Intent, intent); err != nil {
 			return Ticket{}, err
 		}
 	}
@@ -297,6 +303,11 @@ func (s Store) acquireChange(ctx context.Context, before w.SourceReference, desi
 	}
 	for _, execution := range state.Executions {
 		if changeAffects(execution.Intent, Change{Before: before, Team: team, UnchangedDigest: unchangedDigest}) {
+			return ChangeTicket{}, ErrConflict
+		}
+	}
+	for _, native := range state.NativeReservations {
+		if nativeChangeAffects(native.Intent, Change{Before: before, Team: team, UnchangedDigest: unchangedDigest}) {
 			return ChangeTicket{}, ErrConflict
 		}
 	}
@@ -557,7 +568,7 @@ func encode(object *corev1.ConfigMap, state record) error {
 
 func validateRecord(state record) error {
 	if state.Version != 1 || state.Executions == nil || state.Changes == nil ||
-		len(state.Executions)+len(state.Changes) > MaxEntries {
+		len(state.Executions)+len(state.Changes)+len(state.NativeReservations) > MaxEntries {
 		return fmt.Errorf("%w: invalid version, inventory or entry bound", ErrUnavailable)
 	}
 	ids := map[string]bool{}
@@ -575,6 +586,25 @@ func validateRecord(state record) error {
 				return fmt.Errorf("%w: duplicate Agent execution", ErrUnavailable)
 			}
 			if err := compatibleExecutions(other.Intent, execution.Intent); err != nil {
+				return err
+			}
+		}
+	}
+	for i, native := range state.NativeReservations {
+		if !literal(native.ID, 128) || ids[native.ID] || (native.Phase != Reserved && native.Phase != Stopping) {
+			return fmt.Errorf("%w: invalid native reservation identity or phase", ErrUnavailable)
+		}
+		ids[native.ID] = true
+		if err := native.Intent.Validate(); err != nil {
+			return err
+		}
+		for _, other := range state.NativeReservations[:i] {
+			if err := compatibleNativeIntents(other.Intent, native.Intent); err != nil {
+				return err
+			}
+		}
+		for _, execution := range state.Executions {
+			if err := compatibleNativeExecution(native.Intent, execution.Intent); err != nil {
 				return err
 			}
 		}
@@ -603,6 +633,11 @@ func validateRecord(state record) error {
 		for _, execution := range state.Executions {
 			if changeAffects(execution.Intent, change) {
 				return fmt.Errorf("%w: source change overlaps an execution", ErrUnavailable)
+			}
+		}
+		for _, native := range state.NativeReservations {
+			if nativeChangeAffects(native.Intent, change) {
+				return fmt.Errorf("%w: source change overlaps a native reservation", ErrUnavailable)
 			}
 		}
 	}
@@ -803,21 +838,25 @@ func cloneChange(change Change) Change {
 }
 
 func changeAffects(intent Intent, change Change) bool {
-	if !uses(intent.Sources, change.Before) {
+	return selectedChangeAffects(intent.Sources, intent.SourceDigests, intent.SelectedSandbox(), intent.Expected.Binding, change)
+}
+
+func selectedChangeAffects(sources []w.SourceReference, digests map[string]string, box string, binding sandbox.Binding, change Change) bool {
+	if !uses(sources, change.Before) {
 		return false
 	}
 	if change.UnchangedDigest != "" {
-		return intent.SourceDigests[w.SourceKey(change.Before)] != change.UnchangedDigest ||
-			!slices.ContainsFunc(intent.Sources, func(reference w.SourceReference) bool {
+		return digests[w.SourceKey(change.Before)] != change.UnchangedDigest ||
+			!slices.ContainsFunc(sources, func(reference w.SourceReference) bool {
 				return sourceKey(reference) == sourceKey(change.Before) && reference.UID == change.Before.UID
 			})
 	}
-	if change.Team == nil || change.Before.UID != intent.Expected.Binding.TeamUID {
+	if change.Team == nil || change.Before.UID != binding.TeamUID {
 		return true
 	}
-	pinned := intent.SourceDigests[w.SourceKey(change.Before)]
+	pinned := digests[w.SourceKey(change.Before)]
 	for _, inputs := range []w.TeamInputs{change.Team.Before, change.Team.After} {
-		digest, err := inputs.DigestFor(intent.SelectedSandbox(), intent.Expected.Binding.PolicyClass)
+		digest, err := inputs.DigestFor(box, binding.PolicyClass)
 		if err != nil || digest != pinned {
 			return true
 		}
@@ -844,6 +883,15 @@ func uses(sources []w.SourceReference, target w.SourceReference) bool {
 
 func identity(value w.ObjectIdentity) bool {
 	return len(validation.IsDNS1123Subdomain(value.Name)) == 0 && literal(string(value.UID), 128)
+}
+
+// ValidateAuthorityIdentity validates deployment configuration without reading
+// or creating the authority. Its server-issued UID must be supplied explicitly.
+func ValidateAuthorityIdentity(value w.ObjectIdentity) error {
+	if !identity(value) {
+		return fmt.Errorf("%w: a valid coordination ConfigMap name and exact bounded UID are required", ErrUnavailable)
+	}
+	return nil
 }
 
 func literal(value string, limit int) bool {
