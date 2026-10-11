@@ -1025,14 +1025,35 @@ func TestPodAdmissionAPIServerBoundaries(t *testing.T) {
 			t.Fatal("unrecorded Pod protection was removable")
 		}
 		expected.PodUID = native.UID
+		expected.ExecutionHeld = true
 		save()
+		beforeFinalize := native.DeepCopy()
 		native.Finalizers = nil
-		if err := cl.Update(ctx, native); err != nil {
+		if err := cl.Patch(ctx, native, client.MergeFromWithOptions(beforeFinalize, client.MergeFromWithOptimisticLock{}), client.DryRunAll); err != nil {
+			t.Fatal("held native finalizer-only patch was rejected:", err)
+		}
+		agent := &api.Agent{}
+		if err := cl.Get(ctx, client.ObjectKeyFromObject(f.fixture.Agent), agent); err != nil {
+			t.Fatal(err)
+		}
+		agent.Finalizers = append(agent.Finalizers, api.Finalizer)
+		if err := cl.Update(ctx, agent); err != nil {
+			t.Fatal(err)
+		}
+		if err := cl.Delete(ctx, agent); err != nil {
+			t.Fatal(err)
+		}
+		if err := cl.Get(ctx, client.ObjectKeyFromObject(native), native); err != nil {
+			t.Fatal(err)
+		}
+		beforeFinalize = native.DeepCopy()
+		native.Finalizers = nil
+		if err := cl.Patch(ctx, native, client.MergeFromWithOptions(beforeFinalize, client.MergeFromWithOptimisticLock{})); err != nil {
 			t.Fatal(err)
 		}
 		replacement := testfixture.Pod(expected)
 		replacement.Spec.Overhead = nil
-		if err := cl.Create(ctx, replacement); err == nil || !strings.Contains(err.Error(), "ReplacementUnsupported") {
+		if err := cl.Create(ctx, replacement); err == nil {
 			t.Fatalf("native admission did not enforce the recorded Pod lifetime: %v", err)
 		}
 	})

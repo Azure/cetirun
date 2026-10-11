@@ -15,6 +15,35 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
+func TestNativeSandboxForegroundDeletionRetainsLifetimeState(t *testing.T) {
+	f := newNativeSandboxFixture(t, true)
+	f.prepare(t)
+	f.reconcileOK(t)
+	pod := f.createPod(t, false)
+	ctx := context.Background()
+	state, _ := f.expectation(t)
+	if err := f.kube.Delete(ctx, f.current(t)); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.kube.Delete(ctx, state); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.kube.Get(ctx, client.ObjectKeyFromObject(state), state); err != nil {
+		t.Fatal("foreground GC removed the initial Pod record before finalization:", err)
+	}
+	if err := f.kube.Delete(ctx, pod); err != nil {
+		t.Fatal(err)
+	}
+	f.reconcileOK(t)
+	f.reconcileOK(t)
+	if err := f.kube.Get(ctx, client.ObjectKeyFromObject(pod), &corev1.Pod{}); !apierrors.IsNotFound(err) {
+		t.Fatal("foreground deletion left the initial Pod protected:", err)
+	}
+	if err := f.kube.Get(ctx, client.ObjectKeyFromObject(state), &corev1.ConfigMap{}); !apierrors.IsNotFound(err) {
+		t.Fatal("completed deletion retained native lifetime state:", err)
+	}
+}
+
 func TestNativeSandboxDeletionBeforeFirstObservationConsumesLifetime(t *testing.T) {
 	f := newNativeSandboxFixture(t, true)
 	f.prepare(t)

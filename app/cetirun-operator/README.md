@@ -116,6 +116,9 @@ controller records its UID. Only after that durable record may the finalizer
 be removed; admission rejects subsequent Pod creation for that lifetime.
 Finalizer-only cleanup remains available after a hold or Agent deletion, and
 admission remains read-only.
+The recorded expectation is also retained through foreground garbage collection
+and released only after owned namespace cleanup, so early Pod deletion cannot
+lose the record needed for finalization.
 Ready requires the current application readiness probe, Node readiness,
 matching workload and effective source inputs, and the current Gateway grant.
 Native HOME and skills checks pin ownership and storage inputs rather than

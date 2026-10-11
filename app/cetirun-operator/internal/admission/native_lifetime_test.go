@@ -11,6 +11,7 @@ import (
 	admissionv1 "k8s.io/api/admission/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -60,6 +61,7 @@ func TestNativePodRecordedFinalizationIsNarrowAndReadOnly(t *testing.T) {
 	for _, change := range []bool{false, true} {
 		next := pod.DeepCopy()
 		next.Finalizers = nil
+		next.ManagedFields = []metav1.ManagedFieldsEntry{{Manager: "controller", Operation: metav1.ManagedFieldsOperationUpdate, APIVersion: "v1"}}
 		if change {
 			next.Spec.Containers[0].Image = "example.com/changed:1"
 		}

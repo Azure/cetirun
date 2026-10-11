@@ -264,6 +264,9 @@ func (r *AgentReconciler) saveNativeExpectation(ctx context.Context, state *core
 	}
 	base := state.DeepCopy()
 	state.Data = map[string]string{w.PodExpectationKey: string(raw)}
+	if expected.SinglePod {
+		controllerutil.AddFinalizer(state, w.NativePodFinalizer)
+	}
 	return r.Patch(ctx, state, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{}))
 }
 

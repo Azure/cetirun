@@ -33,6 +33,7 @@ func nativePodFinalizerRemoval(request admission.Request, pod *corev1.Pod) bool 
 	if len(current.Finalizers) == 0 {
 		current.Finalizers = nil
 	}
+	old.ManagedFields, current.ManagedFields = nil, nil
 	return equality.Semantic.DeepEqual(old, current)
 }
 

@@ -172,7 +172,7 @@ func (r *AgentReconciler) finishSandboxPreparation(ctx context.Context, agent *a
 	if !r.sandboxPreparationStateNeeded(agent) {
 		return nil
 	}
-	object, _, err := r.readSandboxPreparationReceipt(ctx, agent)
+	object, receipt, err := r.readSandboxPreparationReceipt(ctx, agent)
 	if err != nil && !apierrors.IsNotFound(err) {
 		return err
 	}
@@ -184,6 +184,9 @@ func (r *AgentReconciler) finishSandboxPreparation(ctx context.Context, agent *a
 		if err := r.customReader().Get(ctx, client.ObjectKey{Name: instanceNamespace(agent.Name)}, namespace); err == nil {
 			return fmt.Errorf("Sandbox namespace must be absent before releasing preparation state")
 		} else if !apierrors.IsNotFound(err) {
+			return err
+		}
+		if err := r.releaseNativeLifetimeState(ctx, agent, receipt.Prerequisites.NamespaceUID); err != nil {
 			return err
 		}
 	}
