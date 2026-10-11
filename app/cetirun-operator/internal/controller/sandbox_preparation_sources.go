@@ -55,11 +55,28 @@ func (r *AgentReconciler) sandboxPreparationInput(ctx context.Context, attempt *
 		!equality.Semantic.DeepEqual(namespace.OwnerReferences, owner) {
 		return fmt.Errorf("Sandbox namespace protection or UID ownership is not established")
 	}
-	home, skills := &corev1.PersistentVolumeClaim{}, &corev1.PersistentVolumeClaim{}
-	for _, claim := range []struct {
+	if err := inputs.SkillsMode.ValidateIdentity(inputs.Skills); err != nil {
+		return err
+	}
+	if inputs.SkillsMode == sandboxworkload.SkillsModeEmpty &&
+		(!config.NativeExecution || config.bootstrap == nil || len(inputs.PublicationSources) != 0 ||
+			sandboxSkillsMode(config.NativeExecution, config.bootstrap.SkillsCatalogConfigMapName, agent, attempt.team) != inputs.SkillsMode) {
+		return fmt.Errorf("empty skills require native execution, an empty effective selection and no configured catalog or publication")
+	}
+	home := &corev1.PersistentVolumeClaim{}
+	var skills *corev1.PersistentVolumeClaim
+	claims := []struct {
 		expected sandboxworkload.ObjectIdentity
 		object   *corev1.PersistentVolumeClaim
-	}{{inputs.Home, home}, {inputs.Skills, skills}} {
+	}{{inputs.Home, home}}
+	if inputs.SkillsMode != sandboxworkload.SkillsModeEmpty {
+		skills = &corev1.PersistentVolumeClaim{}
+		claims = append(claims, struct {
+			expected sandboxworkload.ObjectIdentity
+			object   *corev1.PersistentVolumeClaim
+		}{inputs.Skills, skills})
+	}
+	for _, claim := range claims {
 		if claim.expected.Name == "" || claim.expected.UID == "" {
 			return fmt.Errorf("Sandbox HOME and skills require explicit persisted identities")
 		}
@@ -97,13 +114,17 @@ func (r *AgentReconciler) sandboxPreparationInput(ctx context.Context, attempt *
 		Resolution: attempt.resolution, AgentName: agent.Name, AgentGeneration: agent.Generation,
 		AgentType: string(agent.Spec.Agent.Type), WorkloadName: instanceServiceName(agent.Name), ReleaseName: helmReleaseName(agent.Name),
 		Namespace: sandboxworkload.ObjectIdentity{Name: namespace.Name, UID: namespace.UID},
-		Home:      home, Skills: skills, RuntimeClass: runtimeClass,
+		Home:      home, Skills: skills, SkillsMode: inputs.SkillsMode, RuntimeClass: runtimeClass,
 		Helpers: inputs.Helpers, AuthorizedSecrets: []string{inputs.RuntimeSecret.Name},
 	}
 	attempt.sources = append(attempt.sources,
 		sandboxSource(namespace, "v1", "Namespace"),
 		sandboxSource(home, "v1", "PersistentVolumeClaim"),
-		sandboxSource(skills, "v1", "PersistentVolumeClaim"),
+	)
+	if skills != nil {
+		attempt.sources = append(attempt.sources, sandboxSource(skills, "v1", "PersistentVolumeClaim"))
+	}
+	attempt.sources = append(attempt.sources,
 		sandboxSource(secret, "v1", "Secret"),
 		sandboxSource(runtimeClass, "node.k8s.io/v1", "RuntimeClass"),
 		sandboxSource(storageClass, "storage.k8s.io/v1", "StorageClass"),

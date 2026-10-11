@@ -61,6 +61,9 @@ func TestNativeSandboxSourcesRequireExplicitOptIn(t *testing.T) {
 		{name: "sources alone", raw: nativeSandboxSourcesJSON},
 		{name: "explicit false", raw: strings.Replace(nativeSandboxSourcesJSON, `"enabled":true`, `"enabled":true,"nativeExecution":false`, 1)},
 		{name: "explicit true", raw: strings.Replace(nativeSandboxSourcesJSON, `"enabled":true`, `"enabled":true,"nativeExecution":true`, 1), native: true},
+		{name: "native without claim name", raw: strings.Replace(strings.Replace(nativeSandboxSourcesJSON, `"enabled":true`, `"enabled":true,"nativeExecution":true`, 1), `"skills-example"`, `""`, 1), native: true},
+		{name: "held still needs claim name", raw: strings.Replace(nativeSandboxSourcesJSON, `"skills-example"`, `""`, 1), wantError: true},
+		{name: "catalog still needs claim name", raw: strings.Replace(strings.Replace(nativeSandboxSourcesJSON, `"enabled":true`, `"enabled":true,"nativeExecution":true,"skillsCatalogConfigMapName":"skills-catalog"`, 1), `"skills-example"`, `""`, 1), wantError: true},
 		{name: "requires sources", raw: `{"nativeExecution":true,"bootstrapOwnedPrerequisites":true}`, wantError: true},
 		{name: "requires bootstrap", raw: strings.Replace(nativeSandboxSourcesJSON, `"bootstrapOwnedPrerequisites":true`, `"nativeExecution":true`, 1), wantError: true},
 		{name: "rejects desktop", raw: strings.Replace(nativeSandboxSourcesJSON, `"enabled":true`, `"enabled":true,"nativeExecution":true,"helpers":{"desktop":true}`, 1), wantError: true},
@@ -89,7 +92,7 @@ func TestNativeSandboxSourcesRequireExplicitOptIn(t *testing.T) {
 				return
 			}
 			source, ok := preparation.Prerequisites.(*KubernetesSandboxPrerequisites)
-			if !ok || preparation.NativeExecution != tc.native || (source.NativeQuiescence != nil) != tc.native ||
+			if !ok || preparation.NativeExecution != tc.native || source.NativeExecution != tc.native || (source.NativeQuiescence != nil) != tc.native ||
 				source.WriterExclusion != nil {
 				t.Fatal("factory did not preserve explicit opt-in or invented a writer-exclusion provider")
 			}
@@ -625,7 +628,14 @@ type nativeSandboxFixture struct {
 
 func newNativeSandboxFixture(t *testing.T, native bool) *nativeSandboxFixture {
 	t.Helper()
+	return newNativeSandboxSkillsFixture(t, native, []string{"example-skill"})
+}
+
+func newNativeSandboxSkillsFixture(t *testing.T, native bool, skills []string) *nativeSandboxFixture {
+	t.Helper()
 	input := testfixture.New("openclaw")
+	input.Team.Spec.Skills = skills
+	input.Policy.Spec.Skills.Allowed = slices.Clone(skills)
 	chrt, err := loader.Load(filepath.Join("..", "..", "..", "cetirun-chart"))
 	if err != nil {
 		t.Fatal(err)
@@ -725,11 +735,13 @@ func newNativeSandboxFixture(t *testing.T, native bool) *nativeSandboxFixture {
 	if err := kube.Create(context.Background(), serviceAccount); err != nil {
 		t.Fatal(err)
 	}
-	skills := input.Input.Skills.DeepCopy()
-	skills.UID, skills.ResourceVersion = "", ""
-	skills.OwnerReferences = []metav1.OwnerReference{{APIVersion: api.GroupVersion.String(), Kind: "Team", Name: input.Team.Name, UID: input.Team.UID}}
-	if err := kube.Create(context.Background(), skills); err != nil {
-		t.Fatal(err)
+	if len(skills) != 0 {
+		claim := input.Input.Skills.DeepCopy()
+		claim.UID, claim.ResourceVersion = "", ""
+		claim.OwnerReferences = []metav1.OwnerReference{{APIVersion: api.GroupVersion.String(), Kind: "Team", Name: input.Team.Name, UID: input.Team.UID}}
+		if err := kube.Create(context.Background(), claim); err != nil {
+			t.Fatal(err)
+		}
 	}
 	return f
 }

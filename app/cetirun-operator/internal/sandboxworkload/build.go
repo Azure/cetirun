@@ -62,7 +62,14 @@ func Build(input Input) (*Bundle, error) {
 	if err := validateHome(input); err != nil {
 		return nil, err
 	}
-	if input.Skills == nil || input.Skills.UID == "" || input.Skills.Namespace != input.Namespace.Name ||
+	if err := input.SkillsMode.ValidateIdentity(skillsIdentity(input.Skills)); err != nil {
+		return nil, err
+	}
+	if input.SkillsMode == SkillsModeEmpty {
+		if input.Skills != nil || input.GatewayKey == nil || input.AgentType != "openclaw" {
+			return nil, fmt.Errorf("empty skills require native OpenClaw Gateway inputs without a skills PVC")
+		}
+	} else if input.Skills.Namespace != input.Namespace.Name ||
 		input.Skills.Name == input.Home.Name || !input.Skills.DeletionTimestamp.IsZero() ||
 		input.Skills.Status.Phase == corev1.ClaimLost || ptr.Deref(input.Skills.Spec.VolumeMode, corev1.PersistentVolumeFilesystem) != corev1.PersistentVolumeFilesystem {
 		return nil, fmt.Errorf("a distinct, current filesystem skills PVC is required")
@@ -154,7 +161,7 @@ func validateControls(input Input) error {
 	}
 	volumes := map[string]bool{}
 	for _, volume := range c.Volumes {
-		if volume.Name == "" || volumes[volume.Name] || slices.Contains([]string{"data", "tmp", "tmp-desktop", "config", "secrets", "shared-skills"}, volume.Name) {
+		if volume.Name == "" || volumes[volume.Name] || slices.Contains([]string{"data", "tmp", "tmp-desktop", "config", "secrets", "shared-skills", "empty-skills"}, volume.Name) {
 			return fmt.Errorf("identity volumes conflict with protected mounts")
 		}
 		volumes[volume.Name] = true

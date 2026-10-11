@@ -288,7 +288,7 @@ Licensed under the MIT License.
 {{- if $channels }}
 {{- $_ := set $config "channels" $channels }}
 {{- end }}
-{{- if .Values.skills.shared }}
+{{- if or .Values.skills.shared (eq (dig "skillsMode" "" (.Values.sandboxWorkload | default dict)) "empty") }}
 {{- $skills := dig "skills" (dict) $config }}
 {{- $load := dig "load" (dict) $skills }}
 {{- $_ := set $load "extraDirs" (list .Values.skills.mountPath) }}

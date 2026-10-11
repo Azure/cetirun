@@ -103,6 +103,7 @@ type GatewayModel struct {
 
 type SkillsBinding struct {
 	Shared    bool
+	Empty     bool `json:",omitempty"`
 	MountPath string
 	NPM       []string
 }

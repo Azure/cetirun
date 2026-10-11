@@ -65,6 +65,14 @@ func (r *AgentReconciler) readSandboxPreparationReceipt(ctx context.Context, age
 	if err := validateSandboxPlacementTuple(agent, receipt.Prerequisites); err != nil {
 		return nil, nil, err
 	}
+	if inputs := receipt.Prerequisites; inputs.SkillsMode != "" {
+		if err := inputs.SkillsMode.ValidateIdentity(inputs.Skills); err != nil {
+			return nil, nil, err
+		}
+		if len(inputs.PublicationSources) != 0 || inputs.Placement != nil {
+			return nil, nil, fmt.Errorf("empty skills preparation cannot contain a publication or non-native placement")
+		}
+	}
 	return object, &receipt, nil
 }
 

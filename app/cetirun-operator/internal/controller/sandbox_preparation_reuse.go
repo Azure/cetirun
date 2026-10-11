@@ -118,9 +118,13 @@ func (r *AgentReconciler) reuseSandboxPreparation(ctx context.Context, attempt *
 	if err != nil || len(problems) != 0 {
 		return false, fmt.Errorf("Sandbox preparation state cannot be decoded")
 	}
+	if err := expected.ValidateSkills(); err != nil {
+		return false, fmt.Errorf("Sandbox preparation skills source is invalid: %w", err)
+	}
 	if expected.Version != sandboxworkload.ExpectationVersion || !expected.ExecutionHeld ||
 		expected.Agent.Name != agent.Name || expected.Agent.UID != agent.UID || expected.AgentGeneration != agent.Generation ||
 		expected.Binding != attempt.resolution.Binding || expected.Namespace != attempt.input.Namespace ||
+		expected.SkillsMode != attempt.prerequisites.SkillsMode || expected.Skills != attempt.prerequisites.Skills ||
 		expected.Workload.Name != attempt.input.WorkloadName || expected.WorkloadKind != sandboxworkload.AgentWorkload ||
 		expected.Revision == "" || state.Annotations[sandboxworkload.RevisionAnnotation] != expected.Revision {
 		return false, nil

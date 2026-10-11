@@ -461,6 +461,34 @@ class SandboxAdmissionChartTests(unittest.TestCase):
         removed = [rule for rule in baseline[role]["rules"] if rule not in configured[role]["rules"]]
         self.assertEqual(removed, [{"apiGroups": [""], "resources": ["pods"], "verbs": ["get", "list", "delete"]}])
 
+    def test_native_empty_skills_claim_name_is_optional_without_extra_grants(self):
+        admission = self.enforced_values(podsEnabled=True)
+        sources = {
+            "enabled": True, "nativeExecution": True,
+            "bootstrapOwnedPrerequisites": True, "platformConfigMapName": "sandbox-platform",
+        }
+        values = {"sandboxSources": sources, "aiGateway": {"enabled": True}}
+        baseline = self.render(admission, values=values)
+        empty = self.render(admission, values={
+            **values, "sandboxSources": {**sources, "skillsClaimName": ""},
+        })
+        self.assertEqual(set(empty), set(baseline))
+        for key in empty:
+            if key[0] in ("Role", "RoleBinding", "ClusterRole", "ClusterRoleBinding", "ServiceAccount"):
+                self.assertEqual(empty[key], baseline[key])
+        env = empty[("Deployment", "cetirun-operator")]["spec"]["template"]["spec"]["containers"][0]["env"]
+        config = json.loads(next(item["value"] for item in env if item["name"] == "CETIRUN_SANDBOX_SOURCES"))
+        self.assertEqual(config["skillsClaimName"], "")
+        self.assertNotIn("skillsCatalogConfigMapName", config)
+        for change in (
+            {"nativeExecution": False}, {"skillsCatalogConfigMapName": "skills-catalog"},
+            {"skillsClaimName": "INVALID"}, {"skillsClaimName": 42},
+        ):
+            with self.subTest(change=change):
+                self.assert_rejected(admission, "skillsClaimName", values={
+                    **values, "sandboxSources": {**sources, "skillsClaimName": "", **change},
+                })
+
     def test_native_execution_rejects_incomplete_configuration(self):
         sources = {
             "enabled": True, "nativeExecution": True,

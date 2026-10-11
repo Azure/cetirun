@@ -63,6 +63,58 @@ func newSkillsPublicationFixture(t *testing.T, typ string) (*preparationFixture,
 	return f, catalog
 }
 
+func TestSandboxNativeEmptySelectionPreservesPublishedSkills(t *testing.T) {
+	for _, change := range []string{"unchanged", "missing catalog", "malformed catalog", "changed publication", "removed catalog", "missing claim"} {
+		t.Run(change, func(t *testing.T) {
+			ctx := context.Background()
+			f, catalog := newSkillsPublicationFixture(t, "openclaw")
+			if err := f.reconcile(); !errors.Is(err, sandbox.ErrObservationUnavailable) {
+				t.Fatal("publication bootstrap did not reach held prerequisites:", err)
+			}
+			source := f.reconciler.SandboxPreparation.Prerequisites.(*controller.KubernetesSandboxPrerequisites)
+			source.NativeExecution = true
+			team := &api.Team{}
+			if err := f.client.Get(ctx, client.ObjectKeyFromObject(f.fixture.Team), team); err != nil {
+				t.Fatal(err)
+			}
+			if len(team.Spec.Skills) != 0 {
+				t.Fatal("catalog regression must exercise an empty effective selection")
+			}
+			switch change {
+			case "missing catalog":
+				if err := f.client.Delete(ctx, catalog); err != nil {
+					t.Fatal(err)
+				}
+			case "malformed catalog":
+				catalog.Data[controller.SandboxSkillsCatalogKey] = `{"version":"v1","teams":null}`
+				if err := f.client.Update(ctx, catalog); err != nil {
+					t.Fatal(err)
+				}
+			case "changed publication":
+				catalog.Data[controller.SandboxSkillsCatalogKey] = strings.ReplaceAll(catalog.Data[controller.SandboxSkillsCatalogKey], "published-v1", "published-v2")
+				if err := f.client.Update(ctx, catalog); err != nil {
+					t.Fatal(err)
+				}
+			case "removed catalog":
+				source.SkillsCatalogConfigMapName = ""
+			case "missing claim":
+				claim, _ := publicationObjects(t, f)
+				if err := f.client.Delete(ctx, claim); err != nil {
+					t.Fatal(err)
+				}
+			}
+			got, err := source.Resolve(ctx, f.current(t), team)
+			if change == "unchanged" {
+				if err != nil || got.SkillsMode != "" || got.Skills.UID == "" || len(got.PublicationSources) != 3 {
+					t.Fatal("configured catalog did not preserve its validated PVC/publication path:", err)
+				}
+			} else {
+				assertPrerequisiteRejection(t, got, err)
+			}
+		})
+	}
+}
+
 func publicationObjects(t *testing.T, f *preparationFixture) (*corev1.PersistentVolumeClaim, *corev1.PersistentVolume) {
 	t.Helper()
 	claim, volume := &corev1.PersistentVolumeClaim{}, &corev1.PersistentVolume{}

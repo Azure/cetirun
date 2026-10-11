@@ -15,8 +15,7 @@ from the same integration build. The platform must already have:
 
 - The selected Kata runtime, compatible CSI/RWOP storage and baseline Cilium
   networking. A RuntimeClass object alone is not runtime qualification.
-- An accurate, administrator-maintained Sandbox platform configuration and the
-  published read-only skills storage/catalog expected by owned bootstrap.
+- An accurate, administrator-maintained Sandbox platform configuration.
   Do not invent qualification flags, object UIDs or topology to pass admission.
 - Enforced Sandbox configuration and Pod admission with working TLS.
 - A configured AI Gateway model, its real provider credentials in the approved
@@ -24,6 +23,12 @@ from the same integration build. The platform must already have:
   groups must match the chart-derived policy bindings.
 - The existing native ingress/authentication deployment and an authorized
   owner who can sign in. An HTTPS redirect alone does not prove owner access.
+
+This minimal example selects no skills. With no skills catalog configured, the
+native profile supplies an empty read-only skills directory and needs no shared
+skills PVC or NFS publication. When any skill is selected, configure the existing
+validated publication/catalog instead; requested skills are never silently
+dropped. A configured catalog still uses its normal validation and storage path.
 
 In the Operator values, explicitly select:
 
@@ -35,7 +40,6 @@ sandboxSources:
   platformConfigMapName: sandbox-platform
   homeClaimName: home
   skillsClaimName: skills
-  skillsCatalogConfigMapName: published-skills
   helpers:
     doctor: false
     logger: false
@@ -151,7 +155,9 @@ A conflict or unknown delete outcome requires observation, not automatic replay.
 Never force-delete the namespace, Pod, storage or lifecycle finalizers.
 Verify route withdrawal, Gateway grant revocation and owned resource cleanup.
 Respect storage reclaim policy; report any retained PVs and ongoing cost.
-The read-only shared skills source is not owned by this Agent and must survive.
+When a skills publication is configured, its read-only shared source is not
+owned by this Agent and must survive. The no-skills example has no shared
+skills storage to retain or delete.
 
 Reusable Sandbox/AgentPolicy/Team configuration is separate from Agent cleanup.
 If created solely for this run, remove it with the existing

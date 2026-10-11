@@ -18,6 +18,10 @@ import (
 // deterministic formatting/collection functions are exposed, with no lookup,
 // environment access, network access, or nested template evaluation.
 func RenderConfig(agent ResolvedAgent, bindings Bindings) (string, error) {
+	if bindings.Skills.Empty && (!bindings.NativeSandbox || !bindings.Model.Gateway || agent.Type != "openclaw" ||
+		bindings.Skills.Shared || len(bindings.Skills.NPM) != 0 || bindings.Skills.MountPath != "/home/vibe/.aks/skills") {
+		return "", fmt.Errorf("empty skills require the native OpenClaw Gateway's read-only skills directory without shared storage or packages")
+	}
 	renderer, err := template.New("native-config").Funcs(nativeTemplateFunctions()).Parse(bindings.ConfigTemplate)
 	if err != nil {
 		return "", fmt.Errorf("invalid native config asset")
@@ -114,6 +118,9 @@ func nativeTemplateContext(agent ResolvedAgent, bindings Bindings) map[string]an
 	}
 	if bindings.NativeSandbox {
 		values["sandboxWorkload"] = map[string]any{"contractVersion": "v1"}
+		if bindings.Skills.Empty {
+			values["sandboxWorkload"].(map[string]any)["skillsMode"] = "empty"
+		}
 	}
 	return map[string]any{
 		"Values":           values,

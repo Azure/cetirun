@@ -84,6 +84,7 @@ func (r *AgentReconciler) SandboxExecutionIntent(ctx context.Context, requested 
 		expected.Agent != (w.ObjectIdentity{Name: attempt.agent.Name, UID: attempt.agent.UID}) ||
 		expected.AgentGeneration != attempt.agent.Generation || expected.Namespace != attempt.input.Namespace ||
 		expected.Home != attempt.prerequisites.Home || expected.Skills != attempt.prerequisites.Skills ||
+		expected.SkillsMode != attempt.prerequisites.SkillsMode ||
 		expected.WorkloadKind != w.AgentWorkload || expected.Workload.Name != attempt.input.WorkloadName ||
 		expected.ControllerRevision == "" || expected.Binding != plan.Binding || expected.Revision != plan.Revision ||
 		target.Binding != plan.Binding || target.Revision != plan.Revision ||

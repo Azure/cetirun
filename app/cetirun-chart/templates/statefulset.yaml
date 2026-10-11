@@ -1,4 +1,5 @@
 {{- if ne (include "cetirun.agent.type" .) "custom" }}
+{{- $emptySkills := eq ((.Values.sandboxWorkload | default dict).skillsMode | default "") "empty" }}
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -202,7 +203,11 @@ spec:
             - name: config
               mountPath: /etc/cetirun
               readOnly: true
-            {{- if .Values.skills.shared }}
+            {{- if $emptySkills }}
+            - name: empty-skills
+              mountPath: /home/vibe/.aks/skills
+              readOnly: true
+            {{- else if .Values.skills.shared }}
             - name: shared-skills
               mountPath: {{ .Values.skills.mountPath }}
               readOnly: true
@@ -282,7 +287,10 @@ spec:
         - name: data
           emptyDir: {}
         {{- end }}
-        {{- if .Values.skills.shared }}
+        {{- if $emptySkills }}
+        - name: empty-skills
+          emptyDir: {}
+        {{- else if .Values.skills.shared }}
         - name: shared-skills
           persistentVolumeClaim:
             claimName: {{ include "cetirun.sharedSkillsPVCName" . }}

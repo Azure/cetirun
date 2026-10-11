@@ -41,6 +41,9 @@ func ValidatePod(pod *corev1.Pod, expected Expectation) error {
 	if expected.SinglePod && expected.PodUID != "" && pod.UID != expected.PodUID {
 		return &PodMismatchError{[]string{"metadata.uid"}}
 	}
+	if err := expected.ValidateSkills(); err != nil {
+		return err
+	}
 	if expected.Placement != nil {
 		if err := expected.Placement.MatchesExpectation(expected); err != nil {
 			return err

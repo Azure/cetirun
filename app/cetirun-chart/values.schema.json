@@ -11,6 +11,10 @@
             "properties": {
                 "contractVersion": {"const": "v1"},
                 "executionHeld": {"const": true},
+                "skillsMode": {
+                    "const": "empty",
+                    "description": "Internal native empty-selection source; omitted for the existing skills PVC path"
+                },
                 "podResources": {"type": "object"},
                 "helperResources": {"type": "object"},
                 "securityContext": {"type": "object"},
@@ -1577,6 +1581,37 @@
         }
     },
     "allOf": [
+        {
+            "if": {
+                "required": ["sandboxWorkload"],
+                "properties": {
+                    "sandboxWorkload": {
+                        "type": "object",
+                        "required": ["skillsMode"]
+                    }
+                }
+            },
+            "then": {
+                "properties": {
+                    "agentType": {"const": "openclaw"},
+                    "aiGateway": {
+                        "properties": {"enabled": {"const": true}},
+                        "required": ["enabled"]
+                    },
+                    "sandboxWorkload": {"required": ["podFinalizers"]},
+                    "skills": {
+                        "properties": {
+                            "shared": {"const": false},
+                            "existingClaim": {"const": ""},
+                            "mountPath": {"const": "/home/vibe/.aks/skills"},
+                            "npm": {"maxItems": 0},
+                            "clawHub": {"maxItems": 0}
+                        },
+                        "required": ["shared", "existingClaim", "mountPath"]
+                    }
+                }
+            }
+        },
         {
             "if": {
                 "properties": {

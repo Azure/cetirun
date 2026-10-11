@@ -50,7 +50,9 @@ The protected inventory includes:
 - An existing private HOME claim and a distinct read-only skills claim, plus a
   size-limited writable scratch volume. `skills.existingClaim` suppresses chart
   PV/PVC creation on the native path. The adapter requires confirmed HOME UID
-  ownership and unchanged class, access mode and size.
+  ownership and unchanged class, access mode and size. The opt-in native
+  OpenClaw profile may instead use an explicit internal empty-skills source
+  when the effective selection is empty and no catalog is configured.
 - Disabled Istio injection and Sidecar discovery, enabled compiler-owned network
   controls, and independent explicit identity projections mounted only in the
   main container. Compiler resources are emitted unchanged by this chart.
@@ -120,6 +122,7 @@ The Operator supplies this contract:
 | `agentType: openclaw`, `sandboxWorkload.contractVersion: v1` | Explicit protected OpenClaw profile; preparation retains `executionHeld: true` and `replicaCount: 0` |
 | `runtimeClassName`, `sandboxWorkload` resources, DNS, security and enforcement objects | The selected Sandbox's compiled runtime controls, never legacy network defaults |
 | `persistence.existingClaim`, `skills.existingClaim` | Separately owned HOME and read-only skills storage |
+| `sandboxWorkload.skillsMode: empty` (internal, otherwise omitted) | Replaces only the skills claim with an unpopulated `emptyDir`, mounted read-only at `/home/vibe/.aks/skills` in the main container |
 | `openclaw.image.repository`, `tag`, optional `digest` | The same existing OpenClaw image for the Agent and its initializers; shared registry/version overrides remain supported |
 | `aiGateway.enabled: true`, `keySecretName`, `keySecretKey` | The Agent's virtual key, passed as `OPENAI_API_KEY` through a Secret reference only in the main container |
 | `aiGateway.models`, `secrets.provider: openai`, `secrets.model`, `secrets.apiBase` | The authorized model list, default and Gateway endpoint; missing endpoints and defaults outside that list fail rendering |
@@ -128,6 +131,16 @@ The Operator supplies this contract:
 Protected Gateway traffic uses compiler-owned network policy, so
 `sidecarScope.enabled` remains false. A legacy Gateway render still requires
 the existing Istio Sidecar scope.
+
+Only the controller's existing `sandboxSources.nativeExecution` opt-in can
+select the empty-skills mode, after resolving Team skills and Agent additions
+and removals. It requires no new public flag. HOME remains a PVC, the chart
+remains held, and the initial Pod lifetime finalizer is preserved.
+The schema and renderer reject combining the empty mode with a shared claim,
+package requests, another mount path, a non-OpenClaw runtime or missing native
+Gateway/lifetime inputs. No helper can populate the empty skills volume.
+Requested skills and configured catalogs continue to use the existing validated
+PVC/publication path; errors never select an empty fallback.
 
 Protected OpenClaw startup, readiness and liveness probes use the image's
 existing Node runtime to request `/startupz`, `/readyz` and `/healthz` over

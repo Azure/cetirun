@@ -144,6 +144,59 @@ def gateway_models(model, *, integrated):
 
 @unittest.skipUnless(shutil.which("helm"), "requires Helm 3 or 4")
 class NativeGatewayChartTests(unittest.TestCase):
+    def test_empty_skills_are_read_only_without_extra_storage_or_grants(self):
+        values = native_values()
+        values["sandboxWorkload"]["podFinalizers"] = ["cetirun.microsoft.com/native-pod-lifetime"]
+        baseline = render(RUNTIME_CHART, values)
+        values["sandboxWorkload"]["skillsMode"] = "empty"
+        values["skills"] = {"shared": False, "existingClaim": ""}
+        documents = render(RUNTIME_CHART, values)
+        self.assertEqual(
+            [(d["kind"], d["metadata"]["name"]) for d in documents],
+            [(d["kind"], d["metadata"]["name"]) for d in baseline],
+        )
+        self.assertFalse(any(d["kind"] in ("PersistentVolume", "PersistentVolumeClaim") for d in documents))
+        expected = copy.deepcopy(object_of_kind(baseline, "StatefulSet"))
+        pod = expected["spec"]["template"]["spec"]
+        volumes = pod["volumes"]
+        index = next(i for i, volume in enumerate(volumes) if volume["name"] == "shared-skills")
+        volumes[index] = {"name": "empty-skills", "emptyDir": {}}
+        mounts = pod["containers"][0]["volumeMounts"]
+        index = next(i for i, mount in enumerate(mounts) if mount["name"] == "shared-skills")
+        mounts[index] = {"name": "empty-skills", "mountPath": "/home/vibe/.aks/skills", "readOnly": True}
+        self.assertEqual(object_of_kind(documents, "StatefulSet"), expected)
+        for kind in ("Role", "RoleBinding", "ClusterRole", "ClusterRoleBinding", "ServiceAccount", "CiliumNetworkPolicy"):
+            self.assertEqual(
+                [d for d in documents if d["kind"] == kind],
+                [d for d in baseline if d["kind"] == kind],
+            )
+
+    def test_empty_skills_reject_inconsistent_internal_values(self):
+        for path, value, error in (
+            (("sandboxWorkload", "skillsMode"), "unknown", "skillsMode"),
+            (("sandboxWorkload", "skillsMode"), False, "skillsMode"),
+            (("sandboxWorkload", "podFinalizers"), [], "podFinalizers"),
+            (("skills", "shared"), True, "shared"),
+            (("skills", "existingClaim"), "example-skills", "existingClaim"),
+            (("skills", "npm"), ["example-package"], "npm"),
+            (("skills", "clawHub"), ["example-skill"], "clawHub"),
+            (("skills", "mountPath"), "/other-skills", "mountPath"),
+            (("aiGateway", "enabled"), False, "enabled"),
+            (("agentType",), "hermes", "agentType"),
+        ):
+            with self.subTest(path=path, value=value):
+                values = native_values()
+                values["sandboxWorkload"].update({
+                    "skillsMode": "empty",
+                    "podFinalizers": ["cetirun.microsoft.com/native-pod-lifetime"],
+                })
+                values["skills"] = {"shared": False, "existingClaim": ""}
+                target = values
+                for key in path[:-1]:
+                    target = target[key]
+                target[path[-1]] = value
+                render(RUNTIME_CHART, values, error=error)
+
     def test_native_probes_use_exec_without_changing_network_controls_or_timing(self):
         values = native_values()
         values["service"] = {"port": 18793, "targetPort": 18793}
