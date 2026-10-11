@@ -183,6 +183,7 @@ func (r *AgentReconciler) startKubernetesSandbox(ctx context.Context, requested 
 	if receipt.Annotations[nativeStartAnnotation] != "" {
 		return ctrl.Result{}, fmt.Errorf("native Sandbox start was already submitted; automatic replay is unsupported")
 	}
+	expected.Sources = selectedSandboxExecutionSources(expected.Sources, expected.Binding)
 	expected.SourceDigests = map[string]string{}
 	for _, source := range expected.Sources {
 		if !w.EffectiveSource(source) {
@@ -193,6 +194,9 @@ func (r *AgentReconciler) startKubernetesSandbox(ctx context.Context, requested 
 			return ctrl.Result{}, err
 		}
 		expected.SourceDigests[w.SourceKey(source)] = digest
+	}
+	if err := r.reserveNativeSandboxSources(ctx, agent, expected); err != nil {
+		return ctrl.Result{}, err
 	}
 	// Persist the one-shot boundary before admission can release a workload.
 	// An uncertain start remains held and requires delete/recreate, not replay.
@@ -219,6 +223,9 @@ func (r *AgentReconciler) startKubernetesSandbox(ctx context.Context, requested 
 	if err := r.APIReader.Get(ctx, client.ObjectKey{Name: agent.Name}, agent); err != nil {
 		return ctrl.Result{}, err
 	}
+	if err := r.checkNativeSandboxReservation(ctx, expected); err != nil {
+		return ctrl.Result{}, err
+	}
 	base := workload.DeepCopy()
 	workload.Spec.Replicas = ptr.To[int32](1)
 	if err := r.Patch(ctx, workload, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
@@ -236,6 +243,9 @@ func (r *AgentReconciler) releaseKubernetesSandboxExpectation(ctx context.Contex
 		agent.Generation != expected.AgentGeneration || controllerutil.ContainsFinalizer(agent, sandbox.HoldFinalizer) ||
 		!sandboxGatewayProjectionReady(agent) {
 		return fmt.Errorf("native Sandbox intent changed before admission release")
+	}
+	if err := r.checkNativeSandboxReservation(ctx, expected); err != nil {
+		return err
 	}
 	agentSource, err := w.AgentSourceReference(agent)
 	if err != nil {
@@ -271,6 +281,9 @@ func (r *AgentReconciler) saveNativeExpectation(ctx context.Context, state *core
 }
 
 func (r *AgentReconciler) observeKubernetesSandbox(ctx context.Context, agent *api.Agent, state *corev1.ConfigMap, expected *w.Expectation) (ctrl.Result, error) {
+	if err := r.checkNativeSandboxReservation(ctx, expected); err != nil {
+		return ctrl.Result{}, err
+	}
 	attempt, err := r.resolveRunningKubernetesSandbox(ctx, agent)
 	if err != nil {
 		return ctrl.Result{}, err
@@ -329,6 +342,9 @@ func (r *AgentReconciler) observeKubernetesSandbox(ctx context.Context, agent *a
 	source, err := w.AgentSourceReference(current)
 	if err != nil || !slices.Contains(expected.Sources, source) || !sandboxGatewayProjectionReady(current) {
 		return ctrl.Result{}, fmt.Errorf("native Sandbox intent changed before readiness")
+	}
+	if err := r.checkNativeSandboxReservation(ctx, expected); err != nil {
+		return ctrl.Result{}, err
 	}
 	if attempt.plan.Network.IngressMode == api.AgentPolicyIngressAuthenticated {
 		if err := r.ensureNativeSandboxRoute(ctx, current); err != nil {

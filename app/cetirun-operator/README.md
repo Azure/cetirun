@@ -96,7 +96,8 @@ path in the shipped controller. It defaults to `false` and requires enabled,
 enforced configuration/Pod admission, `sandboxSources.enabled`,
 `sandboxSources.bootstrapOwnedPrerequisites`, and an enabled AI Gateway.
 The controller receives the same option through `CETIRUN_SANDBOX_SOURCES`.
-The option adds only Node `get` permission for the controller's readiness check.
+The option adds Node `get` permission for readiness and Pod `patch` permission
+for recorded lifetime finalization. Both additions are scoped to the opt-in.
 The native profile uses the registered RuntimeClass's scheduling constraints;
 the separate durable placement registry is unsupported and rejected.
 
@@ -127,6 +128,21 @@ finalization do not block first creation; changed ownership/profile or lost
 claims are still rejected.
 Native owner access uses the existing `/ui/<agent>/` route and authentication
 deployment. An unauthenticated sign-in challenge alone is not an access test.
+
+With coordinated configuration admission enabled, native startup reserves the
+bound Team, selected Sandbox and effective policy in the same coordination
+store before its one-shot start marker. Pending configuration changes prevent
+that reservation; relevant configuration writers are blocked while it is active
+or stopping. Pod admission and readiness recheck the reservation read-only.
+Ordinary cleanup releases it only after observing quiescence. Unused Sandbox
+and other policy-slot edits do not become native execution inputs.
+Once first-Pod admission is released, an unobserved creation outcome keeps the
+reservation held even if replicas are zero and no Pod is currently listed.
+The initial Pod must be observed and ordinarily terminated; an uncertain start
+is not permission to unlock configuration or force-remove lifecycle state.
+The authority name/UID is derived from the existing admission configuration;
+keep that authority configured until native cleanup finishes. This reservation
+does not enroll a qualified writer or claim physical-fencing evidence.
 
 This is **Kubernetes workload readiness, not guest-external enforcement proof or
 physical failover fencing**. ReadWriteOncePod and ordinary Pod termination do

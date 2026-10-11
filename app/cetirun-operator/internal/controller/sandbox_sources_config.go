@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxcoordination"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxplacement"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
 	"github.com/Masterminds/semver/v3"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	strictjson "sigs.k8s.io/json"
@@ -26,6 +28,8 @@ type SandboxSourcesConfig struct {
 	SkillsClaimName             string                  `json:"skillsClaimName"`
 	SkillsCatalogConfigMapName  string                  `json:"skillsCatalogConfigMapName,omitempty"`
 	PlacementConfigMapName      string                  `json:"placementConfigMapName,omitempty"`
+	CoordinationConfigMapName   string                  `json:"coordinationConfigMapName,omitempty"`
+	CoordinationConfigMapUID    string                  `json:"coordinationConfigMapUID,omitempty"`
 	AdmissionServiceAccount     string                  `json:"admissionServiceAccount"`
 	Helpers                     sandboxworkload.Helpers `json:"helpers"`
 }
@@ -46,6 +50,18 @@ func ParseSandboxSourcesConfig(raw string) (SandboxSourcesConfig, error) {
 }
 
 func (config SandboxSourcesConfig) validate() error {
+	if config.CoordinationConfigMapName != "" || config.CoordinationConfigMapUID != "" {
+		if !config.Enabled || config.CoordinationConfigMapName == config.PlatformConfigMapName ||
+			config.CoordinationConfigMapName == config.PlacementConfigMapName ||
+			config.CoordinationConfigMapName == config.SkillsCatalogConfigMapName {
+			return fmt.Errorf("Sandbox coordination requires enabled sources and a separate authority ConfigMap")
+		}
+		if err := sandboxcoordination.ValidateAuthorityIdentity(sandboxworkload.ObjectIdentity{
+			Name: config.CoordinationConfigMapName, UID: types.UID(config.CoordinationConfigMapUID),
+		}); err != nil {
+			return err
+		}
+	}
 	if config.NativeExecution && (!config.Enabled || !config.BootstrapOwnedPrerequisites || config.Helpers.Desktop) {
 		return fmt.Errorf("native Sandbox execution requires enabled sources, owned bootstrap and no desktop helper")
 	}

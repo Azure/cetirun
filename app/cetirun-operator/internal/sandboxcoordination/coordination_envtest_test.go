@@ -80,6 +80,10 @@ func TestCoordinationAPIServer(t *testing.T) {
 			Identity: w.ObjectIdentity{Name: object.Name, UID: object.UID}}
 	}
 
+	t.Run("native-start-versus-change-real-CAS", func(t *testing.T) {
+		testNativeCASRace(t, newStore(t, "native-concurrent"), storage)
+	})
+
 	t.Run("committed-Team-mutation-recovers-after-lost-reply", func(t *testing.T) {
 		store := newStore(t, "team-recovery")
 		before := &api.Team{ObjectMeta: metav1.ObjectMeta{Name: "team"},

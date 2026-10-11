@@ -42,6 +42,7 @@ import (
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/agents/builtin"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/helm"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxcoordination"
 	"github.com/Azure/CetiRun/app/internal/chataccess"
 	"github.com/Azure/CetiRun/app/internal/registryauth"
 )
@@ -87,6 +88,7 @@ type AgentReconciler struct {
 	CustomBindings              CustomBindingProvider
 	ChatAccess                  chataccess.Config
 	SandboxPreparation          *SandboxPreparation
+	SandboxNativeCoordination   *sandboxcoordination.Store
 	RegistryCredentialNamespace string
 
 	// Azure config for Teams auto-provisioning.

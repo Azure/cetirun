@@ -138,6 +138,9 @@ sandboxAdmission:
   # -- Optional UID-pinned coordination authority for Team/Sandbox/AgentPolicy
   # updates and deletions. Requires strict, enforced configuration and Pod admission.
   # Both fields are required. No state is created and no execution is enabled.
+  # Native execution uses this same authority for selected-source reservations;
+  # there is no separate sandboxSources coordination setting. Keep it configured
+  # until existing native executions have stopped and released their reservations.
   coordinationConfigMapName: ""
   coordinationConfigMapUID: ""
   # -- Timeout for each fail-closed webhook call; integer 1..30 when enforce=true.
@@ -184,6 +187,8 @@ sandboxSources:
   enabled: false
   # -- Opt in to the single-start normal OpenClaw/Kata/RWOP profile.
   # Requires owned bootstrap and AI Gateway shared models. No resume or failover.
+  # When admission coordination is configured, reserve the selected sources
+  # until observed ordinary shutdown; this is not physical writer fencing.
   nativeExecution: false
   # -- Create owned namespace, HOME and native authentication only for new namespaces.
   # Requires explicit Agent chart/image/port pins. Published content stays external.

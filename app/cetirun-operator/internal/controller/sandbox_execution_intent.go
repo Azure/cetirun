@@ -100,18 +100,7 @@ func (r *AgentReconciler) SandboxExecutionIntent(ctx context.Context, requested 
 		return empty, fmt.Errorf("%w: prepared ControllerRevision must be pinned", sandboxpolicy.ErrUnavailable)
 	}
 	stateSource := sandboxSource(state, "v1", "ConfigMap")
-	selectedPolicy := attempt.selectedPolicy().Name
-	sources := make([]w.SourceReference, 0, len(expected.Sources)+1)
-	for _, source := range expected.Sources {
-		// Preparation validates every Team slot; only the selected Sandbox
-		// and policy affect this execution's configuration reservation.
-		if source.APIVersion == api.GroupVersion.String() &&
-			((source.Kind == "Sandbox" && source.Name != attempt.agent.Spec.SandboxRef) ||
-				(source.Kind == "AgentPolicy" && source.Name != selectedPolicy)) {
-			continue
-		}
-		sources = append(sources, source)
-	}
+	sources := selectedSandboxExecutionSources(expected.Sources, expected.Binding)
 	sources = append(sources, stateSource)
 	workload := &appsv1.StatefulSet{}
 	if err := r.APIReader.Get(ctx, client.ObjectKey{Namespace: expected.Namespace.Name, Name: expected.Workload.Name}, workload); err != nil {

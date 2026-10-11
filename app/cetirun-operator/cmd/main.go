@@ -296,6 +296,13 @@ func main() {
 		setupLog.Error(err, "unable to configure Sandbox sources")
 		os.Exit(1)
 	}
+	agentReconciler.SandboxNativeCoordination, err = controller.NewNativeSandboxCoordination(
+		sandboxSourcesConfig, mgr.GetClient(), mgr.GetAPIReader(), agentReconciler.OperatorNamespace,
+	)
+	if err != nil {
+		setupLog.Error(err, "unable to configure native Sandbox source coordination")
+		os.Exit(1)
+	}
 	var sandboxSource controller.SandboxConfigurationSource
 	if agentReconciler.SandboxPreparation != nil {
 		sandboxSource = agentReconciler.SandboxPreparation.Configuration
