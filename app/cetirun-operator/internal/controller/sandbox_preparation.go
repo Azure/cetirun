@@ -43,6 +43,7 @@ type SandboxPrerequisites struct {
 	NamespaceUID       types.UID
 	Home               sandboxworkload.ObjectIdentity
 	Skills             sandboxworkload.ObjectIdentity
+	SkillsMode         sandboxworkload.SkillsMode `json:",omitempty"`
 	RuntimeSecret      sandboxworkload.ObjectIdentity
 	ChartVersion       string
 	Helpers            sandboxworkload.Helpers

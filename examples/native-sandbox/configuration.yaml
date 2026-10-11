@@ -28,6 +28,8 @@ metadata:
 spec:
   harnesses:
     allowed: [openclaw]
+  skills:
+    allowed: []
   modelAccess:
     sharedModels:
       allowed: [example-model]
@@ -48,3 +50,4 @@ spec:
   normalAgentPolicyRef: native-example
   sandboxRefs: [native-example]
   defaultSandboxRef: native-example
+  skills: []

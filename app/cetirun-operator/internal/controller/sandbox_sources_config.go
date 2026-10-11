@@ -76,6 +76,9 @@ func (config SandboxSourcesConfig) validate() error {
 		{"skillsClaimName", config.SkillsClaimName},
 		{"admissionServiceAccount", config.AdmissionServiceAccount},
 	} {
+		if field.name == "skillsClaimName" && field.value == "" && config.NativeExecution && config.SkillsCatalogConfigMapName == "" {
+			continue
+		}
 		if len(validation.IsDNS1123Subdomain(field.value)) != 0 {
 			return fmt.Errorf("Sandbox sources require a valid %s", field.name)
 		}
@@ -108,7 +111,8 @@ func NewKubernetesSandboxPreparation(config SandboxSourcesConfig, reader client.
 			APIReader: reader, Namespace: namespace, Name: config.PlatformConfigMapName,
 		},
 		Prerequisites: &KubernetesSandboxPrerequisites{
-			APIReader: reader, HomeClaimName: config.HomeClaimName, SkillsClaimName: config.SkillsClaimName,
+			NativeExecution: config.NativeExecution,
+			APIReader:       reader, HomeClaimName: config.HomeClaimName, SkillsClaimName: config.SkillsClaimName,
 			OperatorNamespace: namespace, SkillsCatalogConfigMapName: config.SkillsCatalogConfigMapName,
 			ChartVersion: chartVersion, Helpers: config.Helpers,
 		},

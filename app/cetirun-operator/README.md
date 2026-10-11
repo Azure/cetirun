@@ -109,6 +109,18 @@ exceptions, required mTLS, admin/identity grants, Copilot sidecars, desktop,
 Tailscale, Teams and arbitrary Agent Helm overrides are rejected before start.
 Existing baseline network controls are retained.
 
+When this native profile has no `sandboxSources.skillsCatalogConfigMapName` and
+the effective skills `(Team skills + Agent additions) - Agent removals` are
+empty, no skills PVC or published catalog is required. The internal empty-skills
+source mounts a fresh `emptyDir` read-only at `/home/vibe/.aks/skills`, only in
+the main container. It creates no publication receipt, PVC, PV, package installer
+or additional grant. `skillsClaimName` is unused for that selection and may be
+empty. HOME and the other native prerequisites remain required.
+Any remaining selected skill still requires the configured skills PVC. A
+configured catalog retains its existing validated publication path, even for an
+empty selection; catalog errors or a recorded publication cannot fall back to
+empty skills. Default held and non-native behavior is unchanged.
+
 The controller stages the protected chart, records a one-shot start marker,
 releases admission and starts one StatefulSet replica. The first Pod carries a
 lifetime finalizer, so an early deletion cannot free its name before the
@@ -121,7 +133,7 @@ and released only after owned namespace cleanup, so early Pod deletion cannot
 lose the record needed for finalization.
 Ready requires the current application readiness probe, Node readiness,
 matching workload and effective source inputs, and the current Gateway grant.
-Native HOME and skills checks pin ownership and storage inputs rather than
+Native HOME and PVC-backed skills checks pin ownership and storage inputs rather than
 PVC resourceVersion. Ordinary delayed binding, status updates and PVC-protection
 finalization do not block first creation; changed ownership/profile or lost
 claims are still rejected.
@@ -706,7 +718,8 @@ switch. Policy-bound Custom rendering is explicitly unsupported by this slice.
 Prepared manifests protect resource accounting (including init/helper containers
 and RuntimeClass overhead), runtime/security settings, owned HOME, read-only
 skills, scratch mounts and identity projections. Existing HOME and skills claims
-must match their trusted bindings. An incompatible storage or StatefulSet
+must match their trusted bindings; the native-only empty-skills source has no
+skills claim identity. An incompatible storage or StatefulSet
 transition fails explicitly; no live writer-exclusion or data-adoption guarantee
 is inferred from rendering. Prepared Sandbox releases remain at zero replicas.
 The generic Helm install/upgrade path still refuses them; the separate guarded
@@ -1004,7 +1017,8 @@ can be represented without claiming any platform support:
 
 The [prerequisite source](internal/controller/sandbox_kubernetes_prerequisites.go)
 selects the protected Agent namespace and configured existing HOME/skills
-claims, verifies their ownership and current identities, and reads only
+claims (or the native-only empty-skills source described above), verifies
+ownership and current identities, and reads only
 metadata for the Agent's `gatewayTokenSecretRef`. It never provisions or adopts
 storage by name, generates model credentials, or reads Secret contents.
 Supply these resources through the trusted platform, or opt in to the limited
@@ -1062,8 +1076,11 @@ platform must supply the configured, distinct skills claim in the newly created
 namespace, with the supported Agent/Team or retained ownership. Missing skills
 remain an explicit prerequisite error. Alternatively, the separately selected
 publication catalog below can create static bindings to already-published
-content. In either mode the stock binary still stops at unavailable qualified
-writer exclusion. The native authentication Secret is not evidence that a
+content. The only exception is the explicitly enabled native profile with an
+empty effective selection and no catalog: it uses the read-only in-Pod directory
+described above, not an empty replacement for published content. Without native
+execution, the stock binary still stops at unavailable qualified writer
+exclusion. The native authentication Secret is not evidence that a
 model provider has issued usable credentials.
 
 A bounded controller-owned receipt records each created UID. Each object is

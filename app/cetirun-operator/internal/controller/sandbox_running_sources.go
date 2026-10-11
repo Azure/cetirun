@@ -185,6 +185,9 @@ func decodeSandboxExecutionExpectation(state *corev1.ConfigMap) (*w.Expectation,
 	if err := json.Unmarshal(fields["executionHeld"], &held); err != nil || held == nil {
 		return nil, fmt.Errorf("%w: an explicit execution hold boolean is required", errSandboxSourceChanged)
 	}
+	if err := expected.ValidateSkills(); err != nil {
+		return nil, fmt.Errorf("%w: invalid preparation skills source: %w", errSandboxSourceChanged, err)
+	}
 	return &expected, nil
 }
 

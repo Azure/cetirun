@@ -94,7 +94,8 @@ Otherwise: repository:tag
 {{- if not (kindIs "string" $name) -}}
 {{- fail (printf "sandboxSources.%s must be a resource name" $field) -}}
 {{- end -}}
-{{- if or (gt (len $name) 253) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$" $name)) -}}
+{{- $optionalSkills := and (eq $field "skillsClaimName") (eq $name "") $sources.nativeExecution (not $sources.skillsCatalogConfigMapName) -}}
+{{- if and (not $optionalSkills) (or (gt (len $name) 253) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$" $name))) -}}
 {{- fail (printf "sandboxSources.%s must be a valid resource name" $field) -}}
 {{- end -}}
 {{- end -}}

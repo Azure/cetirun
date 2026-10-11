@@ -132,6 +132,24 @@ func (b *Bundle) Apply(values map[string]any) (map[string]any, error) {
 	} else if gateway["enabled"] == true {
 		return nil, fmt.Errorf("native Gateway requires a typed authorized key projection")
 	}
+	if b.input.SkillsMode == SkillsModeEmpty && out["skills"] != nil {
+		skills, ok := out["skills"].(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("empty skills require a skills object without package requests")
+		}
+		for _, field := range []string{"npm", "clawHub"} {
+			if skills[field] == nil {
+				continue
+			}
+			requested, ok := skills[field].([]any)
+			if !ok || len(requested) != 0 {
+				return nil, fmt.Errorf("empty skills cannot discard skills.%s requests", field)
+			}
+		}
+		if claim, present := skills["existingClaim"]; present && claim != "" {
+			return nil, fmt.Errorf("empty skills cannot also select skills.existingClaim")
+		}
+	}
 	security, _ := jsonValue(b.SecurityContext())
 	podSecurity, _ := jsonValue(b.PodSecurityContext())
 	dnsConfig, _ := jsonValue(b.DNSConfig())
@@ -165,7 +183,7 @@ func (b *Bundle) Apply(values map[string]any) (map[string]any, error) {
 			"size": b.input.Resolution.Sandbox.Storage.Home.Size.String(), "annotations": map[string]any{},
 		},
 		"skills": map[string]any{
-			"shared": true, "existingClaim": b.input.Skills.Name, "mountPath": SkillsPath,
+			"shared": b.input.SkillsMode != SkillsModeEmpty, "existingClaim": skillsIdentity(b.input.Skills).Name, "mountPath": SkillsPath,
 			"npm": []any{}, "clawHub": []any{},
 		},
 		"doctor":                    map[string]any{"enabled": b.input.Helpers.Doctor},
@@ -199,6 +217,9 @@ func (b *Bundle) Apply(values map[string]any) (map[string]any, error) {
 	}
 	if b.input.GatewayKey != nil {
 		overlay[ValuesKey].(map[string]any)["podFinalizers"] = []any{NativePodFinalizer}
+	}
+	if b.input.SkillsMode == SkillsModeEmpty {
+		overlay[ValuesKey].(map[string]any)["skillsMode"] = string(SkillsModeEmpty)
 	}
 	if scheduling := b.input.RuntimeClass.Scheduling; scheduling != nil {
 		overlay["nodeSelector"], _ = jsonValue(scheduling.NodeSelector)

@@ -284,6 +284,9 @@ func (h *PodHandler) readPodExpectation(ctx context.Context, namespace string, c
 		!equality.Semantic.DeepEqual(ns.OwnerReferences, []metav1.OwnerReference{sandboxworkload.AgentOwner(expected.Agent.Name, expected.Agent.UID)}) {
 		return expected, nil, podDenied("NamespaceOwnershipChanged", "namespace ownership differs from the controller-owned expectation")
 	}
+	if err := expected.ValidateSkills(); err != nil {
+		return expected, nil, podDenied("ExpectationInvalid", "invalid controller-owned skills source")
+	}
 	return expected, state, nil
 }
 
@@ -299,9 +302,11 @@ func (h *PodHandler) validatePodSources(ctx context.Context, expected sandboxwor
 		{"v1", "Namespace", "", expected.Namespace.Name}:                                               expected.Namespace.UID,
 		{"apps/v1", "StatefulSet", expected.Namespace.Name, expected.Workload.Name}:                    expected.Workload.UID,
 		{"v1", "PersistentVolumeClaim", expected.Namespace.Name, expected.Home.Name}:                   expected.Home.UID,
-		{"v1", "PersistentVolumeClaim", expected.Namespace.Name, expected.Skills.Name}:                 expected.Skills.UID,
 		{"v1", "ServiceAccount", expected.Namespace.Name, expected.Template.Spec.ServiceAccountName}:   "",
 		{"node.k8s.io/v1", "RuntimeClass", "", ptr.Deref(expected.Template.Spec.RuntimeClassName, "")}: "",
+	}
+	if expected.SkillsMode != sandboxworkload.SkillsModeEmpty {
+		required[objectKey{"v1", "PersistentVolumeClaim", expected.Namespace.Name, expected.Skills.Name}] = expected.Skills.UID
 	}
 	for _, source := range sandboxworkload.PodSourceReferences(expected.Template.Spec, expected.Namespace.Name) {
 		key := objectKey{source.APIVersion, source.Kind, source.Namespace, source.Name}
@@ -315,6 +320,11 @@ func (h *PodHandler) validatePodSources(ctx context.Context, expected sandboxwor
 		key := objectKey{source.APIVersion, source.Kind, source.Namespace, source.Name}
 		if !source.ValidIdentity() || seen[key] {
 			return podDenied("SourceInventoryInvalid", "source identities must be complete and unique")
+		}
+		if expected.SkillsMode == sandboxworkload.SkillsModeEmpty && source.APIVersion == "v1" &&
+			(source.Kind == "PersistentVolume" || (source.Kind == "PersistentVolumeClaim" &&
+				(source.Namespace != expected.Namespace.Name || source.Name != expected.Home.Name))) {
+			return podDenied("SourceInventoryInvalid", "empty skills cannot pin a skills PVC or publication volume")
 		}
 		if source.IsAgent() && (source.Name != expected.Agent.Name || source.Generation != expected.AgentGeneration) {
 			return podDenied("SourceBindingChanged", "Agent intent differs from the expectation")

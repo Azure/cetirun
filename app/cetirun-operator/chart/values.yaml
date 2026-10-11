@@ -194,6 +194,9 @@ sandboxSources:
   platformConfigMapName: ""
   # -- Claims in each protected Agent namespace; never adopted by name.
   homeClaimName: home
+  # Native execution with no catalog and an empty effective skill selection uses
+  # a read-only in-Pod directory instead. The name may be empty only without a catalog;
+  # selecting any skill still requires a configured, existing skills claim.
   skillsClaimName: skills
   # -- Optional separate operator-namespace ConfigMap containing skills.json.
   # Requires owned bootstrap. Selects already-published Blob NFS content by Team UID;

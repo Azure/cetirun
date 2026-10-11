@@ -186,6 +186,7 @@ type sandboxStageSeal struct {
 	Namespace       sandboxworkload.ObjectIdentity `json:"namespace"`
 	Home            sandboxworkload.ObjectIdentity `json:"home"`
 	Skills          sandboxworkload.ObjectIdentity `json:"skills"`
+	SkillsMode      sandboxworkload.SkillsMode     `json:"skillsMode,omitempty"`
 	ReleaseName     string                         `json:"releaseName"`
 	WorkloadName    string                         `json:"workloadName"`
 	Runtime         agents.ResolvedAgent           `json:"runtime"`
@@ -197,11 +198,15 @@ type sandboxStageSeal struct {
 }
 
 func sandboxSealIdentity(input sandboxworkload.Input) sandboxStageSeal {
+	var skills sandboxworkload.ObjectIdentity
+	if input.Skills != nil {
+		skills = sandboxworkload.ObjectIdentity{Name: input.Skills.Name, UID: input.Skills.UID}
+	}
 	return sandboxStageSeal{
 		Version: "held-v1", Agent: sandboxworkload.ObjectIdentity{Name: input.AgentName, UID: input.Resolution.Binding.AgentUID},
 		AgentGeneration: input.AgentGeneration, Namespace: input.Namespace,
-		Home:        sandboxworkload.ObjectIdentity{Name: input.Home.Name, UID: input.Home.UID},
-		Skills:      sandboxworkload.ObjectIdentity{Name: input.Skills.Name, UID: input.Skills.UID},
+		Home:   sandboxworkload.ObjectIdentity{Name: input.Home.Name, UID: input.Home.UID},
+		Skills: skills, SkillsMode: input.SkillsMode,
 		ReleaseName: input.ReleaseName, WorkloadName: input.WorkloadName,
 	}
 }
@@ -213,7 +218,7 @@ func (s sandboxStageSeal) digest() string {
 
 func (s sandboxStageSeal) sameOwner(other sandboxStageSeal) bool {
 	return s.Agent == other.Agent && s.Namespace == other.Namespace && s.Home == other.Home &&
-		s.Skills == other.Skills && s.ReleaseName == other.ReleaseName &&
+		s.Skills == other.Skills && s.SkillsMode == other.SkillsMode && s.ReleaseName == other.ReleaseName &&
 		s.WorkloadName == other.WorkloadName && s.Runtime.Type == other.Runtime.Type &&
 		s.AgentGeneration <= other.AgentGeneration
 }
@@ -688,9 +693,10 @@ func sandboxReleaseSeal(rel *release.Release) (sandboxStageSeal, error) {
 	if rel == nil || decodeObject(rel.Config[sandboxStageConfigKey], &seal) != nil ||
 		seal.Version != "held-v1" || seal.Agent.Name == "" || seal.Agent.UID == "" ||
 		seal.AgentGeneration < 1 || seal.Namespace.Name == "" || seal.Namespace.UID == "" ||
-		seal.Home.Name == "" || seal.Home.UID == "" || seal.Skills.Name == "" || seal.Skills.UID == "" ||
+		seal.Home.Name == "" || seal.Home.UID == "" || seal.SkillsMode.ValidateIdentity(seal.Skills) != nil ||
 		seal.ReleaseName != rel.Name || seal.Namespace.Name != rel.Namespace ||
 		(seal.Runtime.Type != "openclaw" && seal.Runtime.Type != "hermes") ||
+		(seal.SkillsMode == sandboxworkload.SkillsModeEmpty && seal.Runtime.Type != "openclaw") ||
 		seal.Digest == "" || seal.Digest != seal.digest() ||
 		seal.ManifestHash != sandboxBytesHash([]byte(rel.Manifest)) || seal.ChartHash != sandboxJSONHash(rel.Chart) ||
 		len(rel.Hooks) != 0 || rel.Chart == nil || rel.Chart.Metadata == nil || rel.Chart.Metadata.Name != "cetirun" ||

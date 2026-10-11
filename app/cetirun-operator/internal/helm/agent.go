@@ -262,6 +262,7 @@ func prepareRuntimeChart(chrt *chart.Chart, input map[string]any, validateRender
 		},
 		Skills: agents.SkillsBinding{
 			Shared:    skills["shared"] == true,
+			Empty:     object(values[sandboxworkload.ValuesKey])["skillsMode"] == string(sandboxworkload.SkillsModeEmpty),
 			MountPath: text(skills["mountPath"]),
 		},
 		Integrations:   integrations,

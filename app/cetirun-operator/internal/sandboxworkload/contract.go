@@ -79,6 +79,7 @@ type Input struct {
 	RuntimeClass      *nodev1.RuntimeClass
 	Home              *corev1.PersistentVolumeClaim
 	Skills            *corev1.PersistentVolumeClaim
+	SkillsMode        SkillsMode `json:",omitempty"`
 	Helpers           Helpers
 	Controls          Controls
 	AuthorizedSecrets []string
@@ -134,6 +135,7 @@ type Expectation struct {
 	Sources            []SourceReference      `json:"sources"`
 	Home               ObjectIdentity         `json:"home"`
 	Skills             ObjectIdentity         `json:"skills"`
+	SkillsMode         SkillsMode             `json:"skillsMode,omitempty"`
 	Placement          *PlacementBinding      `json:"placement,omitempty"`
 }
 
