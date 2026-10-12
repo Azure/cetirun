@@ -78,9 +78,10 @@ Insights monitoring add-on and managed Prometheus, and defines data collection
 rules and associations for Container Insights, including ContainerLogV2, and
 for managed Prometheus. Collected data is directed to the configured Azure Log
 Analytics and Azure Monitor workspaces. Container Insights then collects
-container stdout and stderr outside `kube-system`, including the session
-logger's output described above, together with Kubernetes inventory, events and
-performance data. Successful collection still depends on the deployed
+container stdout and stderr outside `kube-system`, together with Kubernetes
+inventory, events and performance data. That output includes the session
+logger's output described above and what Agents print themselves, which can
+include conversation text. Successful collection still depends on the deployed
 collectors, permissions, and settings; source configuration alone does not
 prove that a live cluster is collecting data.
 

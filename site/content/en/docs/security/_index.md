@@ -121,8 +121,9 @@ version and configuration and is not necessarily a complete transcript.
 
 The [cluster template]({{< repo "infra/cluster/main.bicep" >}}) defaults
 `enableContainerInsights` and `enablePrometheusMetrics` to `true`. It enables
-the Container Insights monitoring add-on, which collects container stdout and
-stderr, the session logger's output included, and managed Prometheus. Its
+managed Prometheus and the Container Insights monitoring add-on. The add-on
+collects container stdout and stderr, including the session logger's output and
+what Agents print themselves, which can include conversation text. Its
 collection rules target configured Azure Log Analytics and Azure Monitor
 workspaces. Actual collection depends on deployed collectors, permissions, and
 settings. By default the add-on also copies containers' environment variables,
