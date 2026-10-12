@@ -41,16 +41,19 @@ import (
 )
 
 const (
-	testAIGatewayUID        = "3f0b5a8e-1c2d-4e5f-8a9b-0c1d2e3f4a5b"
-	testAIGatewayURL        = "http://cetirun-ai-gateway.cetirun-system.svc.cluster.local:4000"
-	testAIGatewayTeam       = "platform-admins"
-	testProxyImage          = "registry.example.com/cetirun-ai-gateway:0.1.1"
-	testCopilotModels       = `[{"id":"gpt-5.5","name":"GPT-5.5","contextWindow":400000,"maxOutputTokens":128000},{"id":"claude-sonnet-4.5","name":"Claude Sonnet 4.5"},{"id":"grok-code-fast-1"},{"id":"bad/id"}]`
-	testSharedModelOne      = "gpt-6-sol"
-	testManagedGroup        = "cetirun-model-test-shared"
-	testManagedDeploymentID = "cetirun-shared-test-shared"
-	testPolicyName          = "gateway-test-policy"
-	testSandboxName         = "gateway-test-sandbox"
+	// aiGatewaySharedAccessGroup is an unmanaged broad group used only to prove
+	// that the policy catalog does not trust or grant it.
+	aiGatewaySharedAccessGroup = "cetirun-shared"
+	testAIGatewayUID           = "3f0b5a8e-1c2d-4e5f-8a9b-0c1d2e3f4a5b"
+	testAIGatewayURL           = "http://cetirun-ai-gateway.cetirun-system.svc.cluster.local:4000"
+	testAIGatewayTeam          = "platform-admins"
+	testProxyImage             = "registry.example.com/cetirun-ai-gateway:0.1.1"
+	testCopilotModels          = `[{"id":"gpt-5.5","name":"GPT-5.5","contextWindow":400000,"maxOutputTokens":128000},{"id":"claude-sonnet-4.5","name":"Claude Sonnet 4.5"},{"id":"grok-code-fast-1"},{"id":"bad/id"}]`
+	testSharedModelOne         = "gpt-6-sol"
+	testManagedGroup           = "cetirun-model-test-shared"
+	testManagedDeploymentID    = "cetirun-shared-test-shared"
+	testPolicyName             = "gateway-test-policy"
+	testSandboxName            = "gateway-test-sandbox"
 )
 
 // fakeAIGateway mirrors the LiteLLM behaviour the operator relies on: keys
@@ -266,7 +269,16 @@ func (f *fakeAIGateway) modelNames() []string {
 func aiGatewayTestConfig() AIGatewayConfig {
 	return AIGatewayConfig{
 		Enabled: true, URL: testAIGatewayURL, MasterKeySecretName: "cetirun-ai-gateway-auth", MasterKeySecretKey: "master-key",
-		DefaultBudget: 10, CopilotProxyImage: testProxyImage,
+		CopilotProxyImage: testProxyImage,
+	}
+}
+
+func managedCatalogDeployment(suffix, name string) aigateway.Deployment {
+	return aigateway.Deployment{
+		ID:                  aiGatewaySharedDeploymentIDPrefix + suffix,
+		ModelName:           name,
+		AccessGroups:        []string{aiGatewayModelAccessGroupPrefix + suffix},
+		DatabaseSourceKnown: true,
 	}
 }
 
@@ -1654,7 +1666,7 @@ func TestAIGatewayRevision(t *testing.T) {
 	}
 	r.refreshAIGatewayCatalogWithin(context.Background(), gateway, 0)
 	withCatalog := r.aiGatewayRevision(agent)
-	gateway.shared = append(gateway.shared, aigateway.Deployment{ID: "cfg-3", ModelName: "new-shared", AccessGroups: []string{aiGatewaySharedAccessGroup}})
+	gateway.shared = append(gateway.shared, managedCatalogDeployment("new-shared", "new-shared"))
 	r.refreshAIGatewayCatalogWithin(context.Background(), gateway, 0)
 	if r.aiGatewayRevision(agent) == withCatalog {
 		t.Fatal("a new shared model must change the revision")
@@ -2011,11 +2023,11 @@ func TestParseAIGatewayConfig(t *testing.T) {
 	}
 	valid := map[string]string{
 		"AI_GATEWAY_ENABLED": "true", "AI_GATEWAY_URL": testAIGatewayURL + "/", "AI_GATEWAY_MASTER_KEY_SECRET": "cetirun-ai-gateway-auth",
-		"AI_GATEWAY_DEFAULT_BUDGET": "12.5", "AI_GATEWAY_DEFAULT_MODEL": "shared-model",
+		"AI_GATEWAY_DEFAULT_MODEL":       "shared-model",
 		"AI_GATEWAY_COPILOT_PROXY_IMAGE": "registry.example.com/cetirun-ai-gateway:0.1.1@sha256:" + strings.Repeat("a", 64),
 	}
 	cfg, err = ParseAIGatewayConfig(env(valid))
-	if err != nil || !cfg.Enabled || cfg.URL != testAIGatewayURL || cfg.MasterKeySecretKey != "master-key" || cfg.DefaultBudget != 12.5 ||
+	if err != nil || !cfg.Enabled || cfg.URL != testAIGatewayURL || cfg.MasterKeySecretKey != "master-key" ||
 		!strings.HasPrefix(cfg.CopilotProxyImage, "registry.example.com/") {
 		t.Fatalf("valid configuration: %+v %v", cfg, err)
 	}
@@ -2025,16 +2037,9 @@ func TestParseAIGatewayConfig(t *testing.T) {
 		"URL with path":      {"AI_GATEWAY_URL", testAIGatewayURL + "/v1"},
 		"URL without port":   {"AI_GATEWAY_URL", "http://cetirun-ai-gateway.cetirun-system.svc.cluster.local"},
 		"no Secret":          {"AI_GATEWAY_MASTER_KEY_SECRET", ""},
-		"no budget":          {"AI_GATEWAY_DEFAULT_BUDGET", ""},
-		"negative budget":    {"AI_GATEWAY_DEFAULT_BUDGET", "-1"},
 		"untagged image":     {"AI_GATEWAY_COPILOT_PROXY_IMAGE", "registry.example.com/cetirun-ai-gateway"},
 		"image with a space": {"AI_GATEWAY_COPILOT_PROXY_IMAGE", "registry.example.com/x:1 --privileged"},
 		"bad digest":         {"AI_GATEWAY_COPILOT_PROXY_IMAGE", "registry.example.com/x@sha256:123"},
-		// NaN passes every comparison, so a key created with it would get no
-		// budget at all; an infinite budget is no cap either.
-		"NaN budget":      {"AI_GATEWAY_DEFAULT_BUDGET", "NaN"},
-		"infinite budget": {"AI_GATEWAY_DEFAULT_BUDGET", "+Inf"},
-		"Infinity budget": {"AI_GATEWAY_DEFAULT_BUDGET", "Infinity"},
 	} {
 		values := map[string]string{}
 		for key, value := range valid {
@@ -2093,9 +2098,9 @@ func TestParseCopilotModels(t *testing.T) {
 
 func TestAIGatewayCatalogPublishesSharedModels(t *testing.T) {
 	r, kube, gateway := aiGatewayTestReconciler(t)
-	gateway.shared = append(gateway.shared,
-		aigateway.Deployment{ID: "cfg-3", ModelName: testSharedModelOne, AccessGroups: []string{aiGatewaySharedAccessGroup}, MaxInputTokens: 200000},
-	)
+	replacement := managedCatalogDeployment("second-shared", testSharedModelOne)
+	replacement.MaxInputTokens = 200000
+	gateway.shared = append(gateway.shared, replacement)
 	r.publishAIGatewayCatalog(context.Background(), 0)
 	configMap := &corev1.ConfigMap{}
 	if err := kube.Get(context.Background(), types.NamespacedName{Namespace: "cetirun-system", Name: cetirunv1alpha1.AIGatewayCatalogConfigMap}, configMap); err != nil {
@@ -2957,13 +2962,13 @@ func TestAIGatewayCatalogLeavesOutUnusableSharedNames(t *testing.T) {
 	// The chart counts characters, not bytes.
 	multiByteAtLimit := strings.Repeat("é", aiGatewayModelNameLimit)
 	changed, skipped, _ := catalog.update([]aigateway.Deployment{
-		{ID: "a", ModelName: "gpt-6", AccessGroups: []string{aiGatewaySharedAccessGroup}},
-		{ID: "b", ModelName: "openai/*", AccessGroups: []string{aiGatewaySharedAccessGroup}},
-		{ID: "c", ModelName: "copilot/gpt-5.5", AccessGroups: []string{aiGatewaySharedAccessGroup}},
-		{ID: "d", ModelName: "has space", AccessGroups: []string{aiGatewaySharedAccessGroup}},
-		{ID: "e", ModelName: atLimit, AccessGroups: []string{aiGatewaySharedAccessGroup}},
-		{ID: "f", ModelName: multiByteAtLimit, AccessGroups: []string{aiGatewaySharedAccessGroup}},
-		{ID: "g", ModelName: atLimit + "m", AccessGroups: []string{aiGatewaySharedAccessGroup}},
+		managedCatalogDeployment("a", "gpt-6"),
+		managedCatalogDeployment("b", "openai/*"),
+		managedCatalogDeployment("c", "copilot/gpt-5.5"),
+		managedCatalogDeployment("d", "has space"),
+		managedCatalogDeployment("e", atLimit),
+		managedCatalogDeployment("f", multiByteAtLimit),
+		managedCatalogDeployment("g", atLimit+"m"),
 	}, false, time.Now())
 	shared, _ := catalog.shared()
 	if !changed || len(shared) != 3 || shared[0].Name != "gpt-6" || shared[1].Name != atLimit ||
@@ -3076,11 +3081,13 @@ func catalogNames(models []aiGatewayCatalogModel) []string {
 // otherwise. Like LiteLLM, a name counts as priced when any deployment
 // behind it is.
 func TestAIGatewayCatalogLeavesOutUnpricedSharedModelsWhileTheGatewayBlocksThem(t *testing.T) {
+	priced := managedCatalogDeployment("priced", "priced")
+	priced.Priced = true
 	deployments := []aigateway.Deployment{
-		{ID: "a", ModelName: "priced", AccessGroups: []string{aiGatewaySharedAccessGroup}, Priced: true},
-		{ID: "b", ModelName: "unpriced", AccessGroups: []string{aiGatewaySharedAccessGroup}},
-		{ID: "c", ModelName: "unpriced", AccessGroups: []string{aiGatewaySharedAccessGroup}},
-		{ID: "d", ModelName: "mixed", AccessGroups: []string{aiGatewaySharedAccessGroup}},
+		priced,
+		managedCatalogDeployment("unpriced-a", "unpriced"),
+		managedCatalogDeployment("unpriced-b", "unpriced"),
+		managedCatalogDeployment("mixed", "mixed"),
 		{ID: "e", ModelName: "mixed", AccessGroups: []string{"cetirun-admin"}, Priced: true},
 	}
 	var blocking aiGatewayCatalog
@@ -3102,11 +3109,11 @@ func TestAIGatewayCatalogLeavesOutUnpricedSharedModelsWhileTheGatewayBlocksThem(
 func TestAIGatewayCatalogLeavesOutReservedSharedNames(t *testing.T) {
 	var catalog aiGatewayCatalog
 	_, skipped, _ := catalog.update([]aigateway.Deployment{
-		{ID: "a", ModelName: "cetirun-console-model", AccessGroups: []string{aiGatewaySharedAccessGroup}},
-		{ID: "b", ModelName: "CetiRun-Console-Model", AccessGroups: []string{aiGatewaySharedAccessGroup}},
-		{ID: "c", ModelName: "Copilot/gpt-5.5", AccessGroups: []string{aiGatewaySharedAccessGroup}},
-		{ID: "d", ModelName: "azure/gpt-4o", AccessGroups: []string{aiGatewaySharedAccessGroup}},
-		{ID: "e", ModelName: "my-cetirun-model", AccessGroups: []string{aiGatewaySharedAccessGroup}},
+		managedCatalogDeployment("a", "cetirun-console-model"),
+		managedCatalogDeployment("b", "CetiRun-Console-Model"),
+		managedCatalogDeployment("c", "Copilot/gpt-5.5"),
+		managedCatalogDeployment("d", "azure/gpt-4o"),
+		managedCatalogDeployment("e", "my-cetirun-model"),
 	}, false, time.Now())
 	shared, _ := catalog.shared()
 	if names := catalogNames(shared); !slices.Equal(names, []string{"azure/gpt-4o", "my-cetirun-model"}) || len(skipped) != 3 {
@@ -3119,7 +3126,7 @@ func TestAIGatewayCatalogLeavesOutReservedSharedNames(t *testing.T) {
 func TestAIGatewayCatalogFollowsTheGatewaysUnpricedSetting(t *testing.T) {
 	r, _, gateway := aiGatewayTestReconciler(t)
 	gateway.shared[0].Priced = true
-	gateway.shared = append(gateway.shared, aigateway.Deployment{ID: "cfg-3", ModelName: "unpriced", AccessGroups: []string{aiGatewaySharedAccessGroup}})
+	gateway.shared = append(gateway.shared, managedCatalogDeployment("unpriced", "unpriced"))
 	ctx := context.Background()
 	names := func() []string {
 		shared, _ := r.aiGatewayCatalog.shared()

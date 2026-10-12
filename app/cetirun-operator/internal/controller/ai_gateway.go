@@ -35,10 +35,6 @@ const (
 	// gateway-token Secret, which the Portal reads for browser-facing values.
 	aiGatewayKeySecretName  = "ai-gateway-virtual-key"
 	aiGatewayKeySecretField = "api-key"
-	// aiGatewaySharedAccessGroup is the Gateway access group of the models
-	// administrators shared with every Agent before Policy. It is retained
-	// only to recognize old catalog entries; policy-bound keys never receive it.
-	aiGatewaySharedAccessGroup = "cetirun-shared"
 	// aiGatewayModelAccessGroupPrefix identifies an opaque per-configured-model
 	// access group. The Gateway chart derives its suffix from the canonical
 	// model configuration; the controller only trusts groups returned by the
@@ -96,9 +92,6 @@ type AIGatewayConfig struct {
 	// in the operator namespace.
 	MasterKeySecretName string
 	MasterKeySecretKey  string
-	// DefaultBudget is retained as deployment configuration validation input.
-	// Policy-bound keys use the effective AgentPolicy USD budget.
-	DefaultBudget float64
 	// DefaultModel is the preferred default model of Agents that use the
 	// Gateway when the Agent names none, or names one it cannot use.
 	DefaultModel string
@@ -121,15 +114,6 @@ func ParseAIGatewayConfig(getenv func(string) string) (AIGatewayConfig, error) {
 	if cfg.MasterKeySecretKey == "" {
 		cfg.MasterKeySecretKey = "master-key"
 	}
-	if raw := strings.TrimSpace(getenv("AI_GATEWAY_DEFAULT_BUDGET")); raw != "" {
-		budget, err := strconv.ParseFloat(raw, 64)
-		// ParseFloat accepts NaN and infinities. NaN passes every comparison,
-		// and the key would be created without a budget.
-		if err != nil || math.IsNaN(budget) || math.IsInf(budget, 0) || budget <= 0 {
-			return AIGatewayConfig{}, fmt.Errorf("AI_GATEWAY_DEFAULT_BUDGET must be a positive number of US dollars")
-		}
-		cfg.DefaultBudget = budget
-	}
 	if cfg.CopilotProxyImage != "" && !validImageReference(cfg.CopilotProxyImage) {
 		return AIGatewayConfig{}, fmt.Errorf("AI_GATEWAY_COPILOT_PROXY_IMAGE must be an image reference with a tag or digest")
 	}
@@ -141,9 +125,6 @@ func ParseAIGatewayConfig(getenv func(string) string) (AIGatewayConfig, error) {
 	}
 	if cfg.MasterKeySecretName == "" {
 		return AIGatewayConfig{}, fmt.Errorf("AI_GATEWAY_MASTER_KEY_SECRET is required")
-	}
-	if cfg.Enabled && cfg.DefaultBudget == 0 {
-		return AIGatewayConfig{}, fmt.Errorf("AI_GATEWAY_DEFAULT_BUDGET is required when the AI Gateway is enabled")
 	}
 	return cfg, nil
 }
@@ -230,20 +211,6 @@ func aiGatewayTeamID(team string) string {
 		return ""
 	}
 	return aiGatewayTeamPrefix + team
-}
-
-// aiGatewayAccessGroups are the groups the Agent's key is granted: the shared
-// models unless the owner turned them off, and the Agent's own Copilot models.
-func (r *AgentReconciler) aiGatewayAccessGroups(instance *cetirunv1alpha1.Agent, copilot bool) []string {
-	var groups []string
-	if instance.Spec.SharedModelsEnabled() {
-		groups = append(groups, aiGatewaySharedAccessGroup)
-	}
-	if copilot {
-		groups = append(groups, copilotAccessGroup(instance))
-	}
-	slices.Sort(groups)
-	return groups
 }
 
 // aiGatewayGrant is the resolved, non-secret projection of Policy into a
