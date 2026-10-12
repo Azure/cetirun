@@ -172,6 +172,10 @@ func (h *Handler) defaultAgent(ctx context.Context, request admission.Request) a
 
 func (h *Handler) validateAgent(ctx context.Context, request admission.Request, agent, old *api.Agent) admission.Response {
 	if old != nil && !slices.Equal(agent.Finalizers, old.Finalizers) {
+		if h.config.NativeExecution && request.UserInfo.Username == h.config.ControllerUsername &&
+			authenticated(request.UserInfo) && nativeHoldReleaseOnly(request, agent, old) {
+			return h.validateNativeHoldRelease(ctx, request, old)
+		}
 		if request.UserInfo.Username == h.config.ControllerUsername && controllerFinalizerUpdate(agent, old) && rawMetadataOnly(request) {
 			return admission.Allowed("controller lifecycle metadata only")
 		}

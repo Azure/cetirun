@@ -33,7 +33,7 @@ import (
 
 const (
 	sandboxExecutionRequeue = 5 * time.Second
-	nativeStartAnnotation   = "sandbox.cetirun.microsoft.com/native-started"
+	nativeStartAnnotation   = w.NativeStartAnnotation
 )
 
 func validateNativeSandboxProfile(attempt *sandboxPreparationAttempt) error {
@@ -197,6 +197,11 @@ func (r *AgentReconciler) startKubernetesSandbox(ctx context.Context, requested 
 	}
 	if err := r.reserveNativeSandboxSources(ctx, agent, expected); err != nil {
 		return ctrl.Result{}, err
+	}
+	// Agent admission validates this native snapshot while Pod creation remains
+	// held. Persist it before requesting the one permitted Agent hold release.
+	if err := r.saveNativeExpectation(ctx, state, expected); err != nil {
+		return ctrl.Result{}, fmt.Errorf("record native start inputs: %w", err)
 	}
 	// Persist the one-shot boundary before admission can release a workload.
 	// An uncertain start remains held and requires delete/recreate, not replay.

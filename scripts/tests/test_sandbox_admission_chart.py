@@ -452,6 +452,12 @@ class SandboxAdmissionChartTests(unittest.TestCase):
         env = configured[("Deployment", "cetirun-operator")]["spec"]["template"]["spec"]["containers"][0]["env"]
         config = json.loads(next(item["value"] for item in env if item["name"] == "CETIRUN_SANDBOX_SOURCES"))
         self.assertIs(config["nativeExecution"], True)
+        admission_env = configured[("Deployment", NAME)]["spec"]["template"]["spec"]["containers"][0]["env"]
+        admission_config = json.loads(next(item["value"] for item in admission_env if item["name"] == "CETIRUN_SANDBOX_ADMISSION"))
+        self.assertIs(admission_config["nativeExecution"], True)
+        baseline_env = baseline[("Deployment", NAME)]["spec"]["template"]["spec"]["containers"][0]["env"]
+        baseline_config = json.loads(next(item["value"] for item in baseline_env if item["name"] == "CETIRUN_SANDBOX_ADMISSION"))
+        self.assertNotIn("nativeExecution", baseline_config)
         role = ("ClusterRole", "cetirun-operator-manager-role")
         added = [rule for rule in configured[role]["rules"] if rule not in baseline[role]["rules"]]
         self.assertEqual(added, [{"apiGroups": [""], "resources": ["nodes"], "verbs": ["get"]}])

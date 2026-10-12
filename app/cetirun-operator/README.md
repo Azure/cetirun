@@ -130,6 +130,13 @@ controller records its UID. Only after that durable record may the finalizer
 be removed; admission rejects subsequent Pod creation for that lifetime.
 Finalizer-only cleanup remains available after a hold or Agent deletion, and
 admission remains read-only.
+The chart conveys the same native opt-in to Agent admission. Before the
+controller removes an Agent's hold, it persists the selected source snapshot
+while Pod creation is still held. Admission permits only the configured
+controller's exact hold-finalizer removal after rechecking the current native
+receipt/start marker, owned stopped workload, source inputs and configured
+coordination reservation. Other finalizer changes keep their existing rules;
+neither a controller identity alone nor a status value grants native startup.
 The recorded expectation is also retained through foreground garbage collection
 and released only after owned namespace cleanup, so early Pod deletion cannot
 lose the record needed for finalization.

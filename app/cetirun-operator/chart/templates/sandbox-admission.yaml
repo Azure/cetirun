@@ -84,6 +84,9 @@
 {{- if $sandboxSources -}}
 {{- $_ := set $config "platformNamespace" $controllerNamespace -}}
 {{- $_ := set $config "platformConfigMapName" .Values.sandboxSources.platformConfigMapName -}}
+{{- if .Values.sandboxSources.nativeExecution -}}
+{{- $_ := set $config "nativeExecution" true -}}
+{{- end -}}
 {{- end -}}
 {{- if not (kindIs "slice" $admission.teamAssignments) -}}
 {{- fail "sandboxAdmission.teamAssignments must be a list" -}}

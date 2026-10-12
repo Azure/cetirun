@@ -25,7 +25,6 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -35,21 +34,7 @@ import (
 // SandboxPrerequisites authorizes one native Agent generation and its existing
 // platform-owned storage and native authentication Secret. It contains identities, never Secret
 // contents. Revision also covers the approved chart, helpers and native inputs.
-type SandboxPrerequisites struct {
-	AgentUID           types.UID
-	AgentGeneration    int64
-	Revision           string
-	ObservedAt         time.Time
-	NamespaceUID       types.UID
-	Home               sandboxworkload.ObjectIdentity
-	Skills             sandboxworkload.ObjectIdentity
-	SkillsMode         sandboxworkload.SkillsMode `json:",omitempty"`
-	RuntimeSecret      sandboxworkload.ObjectIdentity
-	ChartVersion       string
-	Helpers            sandboxworkload.Helpers
-	PublicationSources []sandboxworkload.SourceReference `json:",omitempty"`
-	Placement          *sandboxworkload.PlacementBinding `json:",omitempty"`
-}
+type SandboxPrerequisites = sandboxworkload.PreparationPrerequisites
 
 // SandboxPreparationSource is a trusted platform integration, not CR status or
 // tenant Helm values. Resolve must authorize the whole Agent generation without

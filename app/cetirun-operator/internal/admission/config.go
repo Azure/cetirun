@@ -25,6 +25,7 @@ const (
 )
 
 type Config struct {
+	NativeExecution           bool             `json:"nativeExecution,omitempty"`
 	ValidationMode            string           `json:"validationMode,omitempty"`
 	AdminUsers                []string         `json:"adminUsers"`
 	AdminGroups               []string         `json:"adminGroups"`
@@ -88,6 +89,9 @@ func (c Config) Validate() error {
 			c.PlatformNamespace != parts[2] {
 			return fmt.Errorf("Sandbox admission platform source requires an explicit ConfigMap name in the controller namespace")
 		}
+	}
+	if c.NativeExecution && (c.PlatformNamespace == "" || c.PlatformConfigMapName == "") {
+		return fmt.Errorf("native Agent hold release requires the configured platform source")
 	}
 	if c.CoordinationConfigMapName != "" || c.CoordinationConfigMapUID != "" {
 		if c.ValidationMode != ValidationStrict ||
