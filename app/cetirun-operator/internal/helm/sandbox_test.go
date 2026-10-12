@@ -59,6 +59,24 @@ func TestSandboxNativeProtectedRendering(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
+				runtimeIndex := slices.IndexFunc(template.Spec.Containers, func(container corev1.Container) bool {
+					return container.Name == "cetirun"
+				})
+				if runtimeIndex < 0 {
+					t.Fatal("protected native template has no runtime container")
+				}
+				container := template.Spec.Containers[runtimeIndex]
+				for name, probe := range map[string]*corev1.Probe{
+					"liveness": container.LivenessProbe, "readiness": container.ReadinessProbe, "startup": container.StartupProbe,
+				} {
+					if probe == nil || probe.Exec == nil || probe.HTTPGet != nil {
+						t.Fatalf("protected %s %s probe is not an in-container exec", typ, name)
+					}
+					command := strings.Join(probe.Exec.Command, " ")
+					if typ == "hermes" && !strings.Contains(command, "hermes-health-probe.py") {
+						t.Fatalf("Hermes %s probe does not use the protected loopback helper: %v", name, probe.Exec.Command)
+					}
+				}
 				if err := bundle.ValidateTemplate(template, prepared.Agent.Image); err != nil {
 					t.Fatal(err)
 				}
