@@ -184,15 +184,15 @@ func prepareRuntimeChart(chrt *chart.Chart, input map[string]any, validateRender
 	if descriptor.Type == "custom" {
 		return prepareCustomChart(chrt, input, request, validateRender)
 	}
-	profile, err := loadRuntimeProfile(chrt, descriptor, request.Registry)
+	values, err := prepareRuntimeValues(chrt, input)
+	if err != nil {
+		return nil, err
+	}
+	profile, err := loadRuntimeProfile(chrt, values, descriptor, request.Registry)
 	if err != nil {
 		return nil, err
 	}
 	resolved, err := agents.Resolve(request.Request, profile)
-	if err != nil {
-		return nil, err
-	}
-	values, err := prepareRuntimeValues(chrt, input)
 	if err != nil {
 		return nil, err
 	}
@@ -323,7 +323,7 @@ func prepareRuntimeChart(chrt *chart.Chart, input map[string]any, validateRender
 	}, nil
 }
 
-func loadRuntimeProfile(chrt *chart.Chart, descriptor agents.Descriptor, registry string) (agents.Profile, error) {
+func loadRuntimeProfile(chrt *chart.Chart, values map[string]any, descriptor agents.Descriptor, registry string) (agents.Profile, error) {
 	profilePath := "agents/" + descriptor.Type + "/profile.yaml"
 	var definition struct {
 		ContractVersion string   `json:"contractVersion"`
@@ -336,7 +336,10 @@ func loadRuntimeProfile(chrt *chart.Chart, descriptor agents.Descriptor, registr
 		return agents.Profile{}, fmt.Errorf("chart lacks a supported %s runtime profile", descriptor.Type)
 	}
 
-	baseImage := object(object(chrt.Values[descriptor.Type])["image"])
+	// Use the coalesced, schema-validated values so a deployment-owned digest
+	// pin becomes part of the profile identity. The controller rejects the same
+	// image path in per-Agent Helm values before this function is reached.
+	baseImage := object(object(values[descriptor.Type])["image"])
 	repository := text(baseImage["repository"])
 	if registry != "" {
 		repository = registry + "/" + descriptor.Type + "-gateway"

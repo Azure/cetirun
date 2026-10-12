@@ -913,6 +913,31 @@ func TestBuildHelmValues_CetiRunHelmValues(t *testing.T) {
 	}
 }
 
+func TestBuildHelmValues_PlatformBuiltinImageProfile(t *testing.T) {
+	instance := newTestInstance("alice", "Alice Smith", "example-team", "gateway-token")
+	instance.Spec.Agent.Type = cetirunv1alpha1.AgentTypeHermes
+	digest := "sha256:" + strings.Repeat("a", 64)
+	operatorValues := map[string]interface{}{
+		"hermes": map[string]interface{}{
+			"image": map[string]interface{}{"tag": "1.2.3", "digest": digest},
+		},
+	}
+
+	values, err := buildHelmValues(instance, nil, "example.com", "", operatorValues, "registry.example.com")
+	if err != nil {
+		t.Fatalf("platform image profile was rejected: %v", err)
+	}
+	image := values["hermes"].(map[string]interface{})["image"].(map[string]interface{})
+	if image["repository"] != "registry.example.com/hermes-gateway" || image["tag"] != "1.2.3" || image["digest"] != digest {
+		t.Fatalf("platform image profile was not preserved: %#v", image)
+	}
+
+	instance.Spec.Helm.Values["hermes"] = runtime.RawExtension{Raw: []byte(`{"image":{"digest":"` + digest + `"}}`)}
+	if _, err := buildHelmValues(instance, nil, "example.com", "", operatorValues, "registry.example.com"); err == nil {
+		t.Fatal("per-Agent built-in image profile was accepted")
+	}
+}
+
 // TestBuildHelmValues_CetiRunHelmValuesOverriddenByInstance verifies that
 // per-instance spec.helm.values takes precedence over operator-level values.
 func TestBuildHelmValues_CetiRunHelmValuesOverriddenByInstance(t *testing.T) {

@@ -117,6 +117,30 @@ func validateRuntimeOverrides(values map[string]any, agentType string) error {
 	return nil
 }
 
+// Platform image profiles are deployment-owned inputs. They may pin the
+// built-in images that spec.agent.image is qualified against, while all other
+// runtime-owned paths keep the same protection as per-Agent Helm values.
+func validatePlatformRuntimeOverrides(values map[string]any, agentType string) error {
+	filtered := make(map[string]any, len(values))
+	for key, value := range values {
+		filtered[key] = value
+	}
+	for _, builtinType := range []string{string(api.AgentTypeOpenClaw), string(api.AgentTypeHermes)} {
+		native, ok := filtered[builtinType].(map[string]any)
+		if !ok {
+			continue
+		}
+		withoutImage := make(map[string]any, len(native))
+		for key, value := range native {
+			if key != "image" {
+				withoutImage[key] = value
+			}
+		}
+		filtered[builtinType] = withoutImage
+	}
+	return validateRuntimeOverrides(filtered, agentType)
+}
+
 func (r *AgentReconciler) prepareAgent(instance *api.Agent, team *api.Team) (*helm.PreparedRelease, error) {
 	values, err := buildHelmValues(instance, team, r.DomainSuffix, r.SkillsStorageAccount, r.CetiRunHelmValues, r.ChartRegistry, r.DefaultModel)
 	if err != nil {

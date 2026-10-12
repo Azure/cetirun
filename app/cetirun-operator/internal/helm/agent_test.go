@@ -543,3 +543,35 @@ func TestMissingProfileAndQualifiedImage(t *testing.T) {
 		t.Fatal("chart without a profile fell through to legacy rendering")
 	}
 }
+
+func TestPlatformImageDigestQualifiesBuiltinRequest(t *testing.T) {
+	for _, typ := range []string{"hermes", "openclaw"} {
+		t.Run(typ, func(t *testing.T) {
+			input := sampleInput(typ, "openai", false)
+			digest := "sha256:" + strings.Repeat("a", 64)
+			repository := "registry.example.com/" + typ + "-gateway"
+			input[typ] = map[string]any{
+				"image": map[string]any{
+					"repository": repository,
+					"tag":        "1.2.3",
+					"digest":     digest,
+				},
+			}
+			image := repository + ":1.2.3@" + digest
+			input["agentRequest"].(map[string]any)["image"] = image
+
+			prepared, err := PrepareChart(testChart(t), input)
+			if err != nil {
+				t.Fatalf("matching platform digest was rejected: %v", err)
+			}
+			if prepared.Agent.Image != image {
+				t.Fatalf("resolved image = %q, want %q", prepared.Agent.Image, image)
+			}
+
+			input["agentRequest"].(map[string]any)["image"] = repository + ":1.2.3@sha256:" + strings.Repeat("b", 64)
+			if _, err := PrepareChart(testChart(t), input); err == nil {
+				t.Fatal("request with a different digest was accepted")
+			}
+		})
+	}
+}
