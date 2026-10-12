@@ -76,6 +76,9 @@ func TestSandboxNativeProtectedRendering(t *testing.T) {
 					if typ == "hermes" && !strings.Contains(command, "hermes-health-probe.py") {
 						t.Fatalf("Hermes %s probe does not use the protected loopback helper: %v", name, probe.Exec.Command)
 					}
+					if typ == "hermes" && !slices.Contains(probe.Exec.Command, "8642") {
+						t.Fatalf("Hermes %s probe does not use the resolved runtime port: %v", name, probe.Exec.Command)
+					}
 				}
 				if err := bundle.ValidateTemplate(template, prepared.Agent.Image); err != nil {
 					t.Fatal(err)

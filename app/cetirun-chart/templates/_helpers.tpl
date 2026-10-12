@@ -552,7 +552,7 @@ exec:
   command:
     - /usr/local/lib/hermes-agent/venv/bin/python
     - /etc/cetirun/hermes-health-probe.py
-    - {{ $root.Values.service.targetPort | quote }}
+    - {{ $root.Values.runtime.agent.port | quote }}
     - {{ $endpoint.path | quote }}
     - {{ mul (int .timeoutSeconds) 1000 | quote }}
 {{- else -}}
