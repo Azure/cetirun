@@ -80,13 +80,17 @@ than selecting one. Confirm that scope independently. It:
    preview feature if necessary.
 2. Creates or updates the resource group.
 3. Validates and creates the Bicep deployment.
-4. Enables Gateway API.
-5. Fetches credentials with `--overwrite-existing` and runs connected checks.
+4. Fetches credentials with `--overwrite-existing`.
+5. Applies the Container Insights agent settings in
+   `infra/cluster/container-azm-ms-agentconfig.yaml` to `kube-system`, and
+   stops with an error if it cannot.
+6. Enables Gateway API and runs connected checks.
 
 The helper requests user credentials by default. `AKS_ADMIN_CREDENTIALS=true`
 opts into local admin credentials only for an explicitly authorized bootstrap
 environment with local accounts enabled; it is not a fallback for an Azure
-RBAC failure.
+RBAC failure. Step 5 writes to `kube-system`, so the identity needs write
+access there, not only read access.
 
 **Connected, mutating example:** only after reviewing the script and parameters:
 
@@ -113,5 +117,29 @@ Cluster parameters enable Container Insights and Prometheus metrics by default.
 Inspect the workspace and data-collection resources, retention, access roles,
 and costs. A Log Analytics workspace with 30-day retention is created whenever
 `logAnalyticsWorkspaceId` is empty, even if `enableContainerInsights` is false.
+Container Insights collects through the cluster's monitoring add-on, which the
+template enables with its data collection rule: container stdout and stderr
+outside `kube-system`, Kubernetes inventory and events, and node and container
+performance data.
+
+By default the add-on also copies every container's environment variables,
+values taken from Secrets included, into the `ContainerInventory` table once a
+minute. CetiRun components keep credentials there. The settings in
+`infra/cluster/container-azm-ms-agentconfig.yaml`, which the helper applies,
+turn that off and join log lines longer than 16 KiB that the container runtime
+splits. The agent restarts itself to pick them up, within minutes. CetiRun's
+own containers that hold credentials also turn the collection off for
+themselves, but other workloads do not.
+
+Clusters created from earlier templates have the rule without the add-on, and
+collect no container logs. Apply the settings first, then enable the add-on:
+
+```bash
+kubectl apply -f infra/cluster/container-azm-ms-agentconfig.yaml
+az aks enable-addons --addons monitoring --enable-msi-auth-for-monitoring \
+  --resource-group "$RESOURCE_GROUP" --name "$CLUSTER_NAME" \
+  --workspace-resource-id "$LOG_ANALYTICS_WORKSPACE_ID"
+```
+
 The agent chart’s session logger is also enabled by default; see
 [Security](../../security/) before onboarding users.

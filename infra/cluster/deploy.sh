@@ -59,13 +59,6 @@ CLUSTER_NAME="$(az deployment group show \
   --name "$DEPLOYMENT_NAME" \
   --query 'properties.outputs.clusterName.value' -o tsv)"
 
-# Enable Gateway API
-az aks update \
-  --resource-group "$RG_NAME" \
-  --name "$CLUSTER_NAME" \
-  --enable-gateway-api \
-  --yes
-
 # Fetch kubeconfig
 credential_args=()
 if [[ "${AKS_ADMIN_CREDENTIALS}" == "true" ]]; then
@@ -76,6 +69,24 @@ az aks get-credentials \
   --name "$CLUSTER_NAME" \
   "${credential_args[@]}" \
   --overwrite-existing
+
+# Container Insights agent settings, applied before anything else runs on the
+# cluster: the agent stops collecting containers' environment variables, which
+# hold credentials, and joins log lines the container runtime split. Applied
+# whether or not Container Insights is on, so turning it on later is safe too.
+if ! kubectl apply -f "${SCRIPT_DIR}/container-azm-ms-agentconfig.yaml"; then
+  echo "Error: could not apply the Container Insights agent settings to kube-system." >&2
+  echo "Until they are applied, the agent collects every container's environment, credentials included." >&2
+  echo "Apply ${SCRIPT_DIR}/container-azm-ms-agentconfig.yaml with an identity that can write to kube-system before installing CetiRun." >&2
+  exit 1
+fi
+
+# Enable Gateway API
+az aks update \
+  --resource-group "$RG_NAME" \
+  --name "$CLUSTER_NAME" \
+  --enable-gateway-api \
+  --yes
 
 # Verify
 kubectl get nodes -o wide

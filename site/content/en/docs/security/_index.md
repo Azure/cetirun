@@ -120,9 +120,15 @@ calls, and tool results. For Hermes it follows
 version and configuration and is not necessarily a complete transcript.
 
 The [cluster template]({{< repo "infra/cluster/main.bicep" >}}) defaults
-`enableContainerInsights` and `enablePrometheusMetrics` to `true`. Its collection
-rules target configured Azure Log Analytics and Azure Monitor workspaces.
-Actual collection depends on deployed collectors, permissions, and settings.
+`enableContainerInsights` and `enablePrometheusMetrics` to `true`. It enables
+the Container Insights monitoring add-on, which collects container stdout and
+stderr, the session logger's output included, and managed Prometheus. Its
+collection rules target configured Azure Log Analytics and Azure Monitor
+workspaces. Actual collection depends on deployed collectors, permissions, and
+settings. By default the add-on also copies containers' environment variables,
+Secret values included; the
+[agent settings]({{< repo "infra/cluster/container-azm-ms-agentconfig.yaml" >}})
+that the cluster helper applies turn that off.
 The [Log Analytics template]({{< repo "infra/cluster/modules/aks-cluster.bicep" >}})
 sets 30-day retention when creating a workspace; existing workspaces,
 per-table settings, exports, and other stores may differ.

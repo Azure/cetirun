@@ -73,12 +73,24 @@ and [Teams adapter](app/cetirun-chart/agents/hermes/plugins/platforms/cetirun_te
 ### Infrastructure collection and traffic metadata
 
 The cluster template defaults `enableContainerInsights` and
-`enablePrometheusMetrics` to `true`. It defines data collection rules and
-associations for Container Insights, including ContainerLogV2, and for managed
-Prometheus. Collected data is directed to the configured Azure Log Analytics
-and Azure Monitor workspaces. Successful collection still depends on the
-deployed collectors, permissions, and settings; source configuration alone
-does not prove that a live cluster is collecting data.
+`enablePrometheusMetrics` to `true`. With them it enables the Container
+Insights monitoring add-on and managed Prometheus, and defines data collection
+rules and associations for Container Insights, including ContainerLogV2, and
+for managed Prometheus. Collected data is directed to the configured Azure Log
+Analytics and Azure Monitor workspaces. Container Insights then collects
+container stdout and stderr outside `kube-system`, including the session
+logger's output described above, together with Kubernetes inventory, events and
+performance data. Successful collection still depends on the deployed
+collectors, permissions, and settings; source configuration alone does not
+prove that a live cluster is collecting data.
+
+By default Container Insights also copies every container's environment
+variables, values taken from Kubernetes Secrets included, into its
+`ContainerInventory` table. The cluster helper applies
+`infra/cluster/container-azm-ms-agentconfig.yaml`, which turns that collection
+off for the cluster, and CetiRun containers that keep credentials in their
+environment turn it off for themselves with `AZMON_COLLECT_ENV=False`. A
+cluster that runs the add-on without these settings collects those values.
 
 The Istio chart defaults `egress.accessLog.enabled` to `true`. Its Envoy filters
 write traffic metadata to stdout, including timestamps, authority/host, HTTP
@@ -94,6 +106,7 @@ Whether a deployment collects those metrics depends on its monitoring setup.
 
 Source: [cluster defaults](infra/cluster/main.bicep),
 [collection destinations and retention](infra/cluster/modules/aks-cluster.bicep),
+[Container Insights agent settings](infra/cluster/container-azm-ms-agentconfig.yaml),
 [Istio defaults](infra/istio/values.yaml),
 [Envoy access-log fields](infra/istio/templates/egress/accesslog.yaml),
 and [operator metrics configuration](app/cetirun-operator/cmd/main.go).
