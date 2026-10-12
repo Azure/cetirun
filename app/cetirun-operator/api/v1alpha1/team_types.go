@@ -9,20 +9,11 @@ import (
 
 // TeamSpec defines team-wide configuration applied to every member instance.
 type TeamSpec struct {
-	// NormalAgentPolicyRef names the policy for normal-class Agents.
-	// A Team without any policy or Sandbox fields retains legacy execution.
+	// AgentPolicyRef names the policy applied to Agents in this Team.
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=253
 	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`
-	// +optional
-	NormalAgentPolicyRef string `json:"normalAgentPolicyRef,omitempty"`
-
-	// AdminAgentPolicyRef optionally names the policy for admin-class Agents.
-	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:validation:MaxLength=253
-	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`
-	// +optional
-	AdminAgentPolicyRef string `json:"adminAgentPolicyRef,omitempty"`
+	AgentPolicyRef string `json:"agentPolicyRef"`
 
 	// SandboxRefs lists the Sandboxes permitted for this Team.
 	// +kubebuilder:validation:MinItems=1
@@ -30,15 +21,13 @@ type TeamSpec struct {
 	// +kubebuilder:validation:items:MaxLength=253
 	// +kubebuilder:validation:items:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`
 	// +listType=set
-	// +optional
-	SandboxRefs []string `json:"sandboxRefs,omitempty"`
+	SandboxRefs []string `json:"sandboxRefs"`
 
 	// DefaultSandboxRef selects a listed Sandbox for newly created Agents.
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=253
 	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`
-	// +optional
-	DefaultSandboxRef string `json:"defaultSandboxRef,omitempty"`
+	DefaultSandboxRef string `json:"defaultSandboxRef"`
 
 	// MemberContext defines the team context injected into USER.md for every member instance.
 	// +optional
@@ -64,12 +53,6 @@ type TeamSpec struct {
 	// coordinates so that a PV+PVC are auto-provisioned per instance namespace.
 	// +optional
 	SkillStorage *SkillStorageSpec `json:"skillStorage,omitempty"`
-}
-
-// PolicyConfigured reports policy intent, including incomplete configurations.
-func (s TeamSpec) PolicyConfigured() bool {
-	return s.NormalAgentPolicyRef != "" || s.AdminAgentPolicyRef != "" ||
-		len(s.SandboxRefs) != 0 || s.DefaultSandboxRef != ""
 }
 
 // SkillStorageSpec describes a shared Azure Blob NFS container holding

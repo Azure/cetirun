@@ -405,9 +405,8 @@ func TestMissingRegistrySourceIsHeldBeforeChartResolution(t *testing.T) {
 		t.Fatalf("unexpected missing-source result: %v %v", result, err)
 	}
 	_ = r.Get(ctx, client.ObjectKeyFromObject(agent), agent)
-	condition := meta.FindStatusCondition(agent.Status.Conditions, api.ConditionRegistryCredentialsReady)
-	if agent.Status.Policy != nil || condition == nil || condition.Reason != "RegistrySourcePending" || condition.Status != metav1.ConditionFalse {
-		t.Fatalf("legacy Agent did not wait for its registry source: policy=%+v condition=%+v", agent.Status.Policy, condition)
+	if agent.Status.Phase != api.PhaseFailed || agent.Status.Policy == nil || agent.Status.Policy.Phase != "Denied" {
+		t.Fatalf("Agent without a valid policy was not held before registry/chart processing: phase=%q policy=%+v", agent.Status.Phase, agent.Status.Policy)
 	}
 	workloads := &appsv1.StatefulSetList{}
 	_ = r.List(ctx, workloads)

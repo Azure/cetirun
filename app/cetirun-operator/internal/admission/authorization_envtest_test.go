@@ -444,8 +444,8 @@ func TestAuthorizationAPIServerBindings(t *testing.T) {
 			t.Fatal("new creation did not use the new Team default")
 		}
 		agent.Spec.SandboxRef = ""
-		if err := admin.Update(ctx, agent); !apierrors.IsForbidden(err) || !strings.Contains(err.Error(), "existing Agents are never re-defaulted") {
-			t.Fatalf("served admission did not protect the existing Sandbox binding: %v", err)
+		if err := admin.Update(ctx, agent); !apierrors.IsInvalid(err) {
+			t.Fatalf("required Sandbox binding was removable: %v", err)
 		}
 	})
 	t.Run("missing references recover without clearing protected authority or the execution hold", func(t *testing.T) {

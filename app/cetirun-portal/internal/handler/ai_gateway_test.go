@@ -90,9 +90,9 @@ func TestCreateInstanceAIGatewayRequiresExistingTeam(t *testing.T) {
 	if w.Code != http.StatusBadRequest || errorCode(t, w) != "unknown_team" {
 		t.Fatalf("unknown team: status %d body %s", w.Code, w.Body.String())
 	}
-	// A legacy deployment with the Gateway disabled still permits no Team.
+	// Team and Sandbox bindings are required independently of the Gateway.
 	w, _ = createAgent(t, config.Config{}, `{"agent":{"type":"openclaw"}}`, gatewayTeam("aks"))
-	if w.Code != http.StatusCreated {
+	if w.Code != http.StatusBadRequest || errorCode(t, w) != "team_required" {
 		t.Fatalf("feature off without team: status %d body %s", w.Code, w.Body.String())
 	}
 	w, fc := createAgent(t, config.Config{}, `{"agent":{"type":"openclaw"},"team":"aks"}`, gatewayTeam("aks"))

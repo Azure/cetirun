@@ -24,23 +24,16 @@ held at zero replicas until a separately delivered execution adapter is enabled.
 An Agent is a long-lived user-owned environment; a Team
 supplies shared configuration, not access to private agent data.
 
-Agents can retain the legacy deployment path without creating a Sandbox or
-AgentPolicy. Omit `sandboxRef` and use either no Team or a Team with no policy
-or Sandbox fields. The default `policyClass: normal` alone does not opt in.
-Existing chart, runtime, Gateway, ownership, and admission requirements still
-apply; compatibility is not a bypass for requested policy.
+Every Agent names one Team and one Team-permitted Sandbox. Each Team references
+exactly one `AgentPolicy`, so selecting a Team also selects the policy. The
+effective settings are the intersection of that policy and the Agent's explicit
+requests for models, budget, skills, and identity.
 
-A policy-bound Agent names one Team and one Team-permitted Sandbox. Its `policyClass`
-selects either the Team's required normal policy or optional admin policy; it
-does not derive from the human caller's Portal role. The effective policy is
-the intersection of that administrator-selected `AgentPolicy` and the Agent's
-explicit requests for models, budget, skills, and identity.
-
-For a policy-bound Agent, the Operator resolves the selected Team, Sandbox, and policy before it can
+The Operator resolves the selected Team, Sandbox, and policy before it can
 retain compute or model access. It projects model names and a native monthly USD
 budget to a per-Agent AI Gateway virtual key, compiles the Sandbox/security/network
-revision, and records the expected Gateway, Sandbox, and credential revisions in
-Agent status. Missing, rejected, stale, or unreadable evidence fails closed.
+revision, and lets each component report its own execution state in Agent status.
+Missing, rejected, stale, or unreadable authorization evidence fails closed.
 There is no approval resource or separate governance workflow.
 
 The API replaces `OpenClawInstance` and `OpenClawTeam` without changing the
@@ -69,18 +62,17 @@ independently.
 `Sandbox` describes a reusable runtime, container resource declarations, private
 home storage and scratch. `AgentPolicy` describes selection, security, network,
 ingress and identity intent. Both configuration resources are cluster-scoped.
-Policy-enabled Teams bind a required normal policy, an optional admin policy, permitted
-Sandboxes and a creation default; an Agent binds a Sandbox and a normal/admin
-policy class. A human administrator's role does not select an Agent's class.
-These bindings coexist with the required `spec.agent` Harness configuration.
+Teams bind one required policy, permitted Sandboxes and a creation default; an
+Agent binds a Team and one of its permitted Sandboxes. These bindings coexist
+with the required `spec.agent` Harness configuration.
 
 The [sandbox package](internal/sandbox/) currently provides:
 
 - Pure defaulting, validation and deterministic normalization without mutating
   source objects.
-- Cross-resource validation of every configured Team Sandbox/policy pair.
-- Class-specific resolution with explicit authorization of Agent, Team,
-  Sandbox and AgentPolicy UIDs. Same-name replacement requires new authorization.
+- Cross-resource validation of every configured Team Sandbox/policy binding.
+- Resolution with explicit authorization of Agent, Team, Sandbox and
+  AgentPolicy UIDs. Same-name replacement requires new authorization.
 - A desired-configuration revision that excludes metadata, unselected policies,
   creation-default changes and unrelated model-access settings.
 - Qualified-capability checks and a freshness/identity check for trusted
@@ -242,9 +234,9 @@ volume and writer-journal UID. The complete writer tuple is persisted with
 the coordination ticket and must still match before reservation or cleanup.
 It rechecks sources without reading Secret contents or treating Agent status
 as authorization.
-Preparation still validates every permitted Team Sandbox and both policy
-slots. An execution reserves only its selected Sandbox and policy, so valid
-changes to an unused Sandbox or the other policy class do not require it to stop.
+Preparation still validates every permitted Team Sandbox and the Team's policy.
+An execution reserves only its selected Sandbox and policy, so valid changes to
+an unused Sandbox do not require it to stop.
 Non-secret sources use immutable UIDs and effective-input digests rather than
 treating the original observation resource version as lifetime configuration.
 Digests retain desired content, owner references, finalizers and recognized
@@ -540,41 +532,22 @@ synthetic runtime evidence, not a running proxy or an end-to-end model request.
 
 ### Current activation boundary
 
-Legacy Agents and Teams remain supported while Sandbox execution is opt-in.
-The CRD makes Agent `team`/`sandboxRef` and Team policy/Sandbox fields optional.
-Without policy intent, the controller continues the existing built-in or Custom
-runtime path, including provisioning, suspension, readiness, and deletion.
-Legacy Gateway model sources default on unless explicitly disabled. New legacy
-keys receive the deployment default budget; later administrator budget changes,
-spend, reset periods, and emergency blocks are preserved. Legacy shared catalog
-entries and current per-deployment shared-model groups remain usable.
+This API intentionally has no legacy-unbound mode. Every Agent requires
+`team` and `sandboxRef`. Every Team requires one policy, permitted
+Sandboxes, and a creation default. Agent creators may select any available
+Team; selecting one applies its policy and does not grant access to other
+Agents. Every AgentPolicy requires at least one supported built-in Harness.
+Custom is not a supported policy Harness in this contract.
 
-Setting any Team policy/Sandbox field opts that Team into the full binding
-contract: normal policy, permitted Sandboxes, and a creation default. Partial
-configuration is not a legacy fallback. Policy-bound Agents must explicitly
-request model sources. They require a permitted Sandbox and current
-authorization, and Custom remains unsupported in that policy contract.
-`policyClass` defaults to `normal`; `admin` requires an explicit Team
-admin-policy slot and administrator-controlled assignment.
-
-Portal creation accepts legacy Teams without a default Sandbox. With the
-Gateway disabled, it also accepts no Team, as before. With the Gateway enabled,
-it still requires an existing Team and supported model routing. Portal support
-for managing policy configuration is delivered separately. Admission continues
-to default governed creation and protect exact Team/Sandbox/policy UIDs.
-Later governed assignment or budget changes require an authorized administrator
-and a suspended Agent.
-
-This compatibility path does not clear existing hold/preparation finalizers,
-authorization records, or recorded policy/Sandbox status. Such lifetimes remain
-governed even after spec fields are removed. If an earlier mandatory-policy
-version has already held an old Agent, review its state and data-retention needs
-before recovery; do not strip authority markers or delete its namespace as an
-upgrade shortcut. Legacy mode does not claim AgentPolicy enforcement.
+The CRDs and Operator must be rolled out with an API writer that supplies this
+contract. Portal support for managing the configuration resources is delivered
+separately. Admission defaults creation-time selection and protects the exact
+Team/Sandbox/policy UIDs from same-name replacement. Later assignment or budget
+changes require an authorized administrator and a suspended Agent.
 
 The controller holds Agents that request Sandbox policy, belong to a Team
 with policy settings, or already have Sandbox status or a hold finalizer.
-It never passes them to legacy built-in or Custom runtime preparation or application.
+It never passes them to built-in or Custom runtime preparation or application.
 Before workload changes it persists a dedicated hold finalizer, which also
 keeps newly held Agents available for cleanup. Clearing spec fields cannot
 release that recorded hold, even if a later status write fails. If the initial

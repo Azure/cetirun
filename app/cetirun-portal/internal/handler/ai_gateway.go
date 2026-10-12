@@ -216,9 +216,6 @@ func (h *InstanceHandler) validateAIGatewayCreate(w http.ResponseWriter, r *http
 func (h *InstanceHandler) resolveTeamBinding(w http.ResponseWriter, r *http.Request, requestedTeam string) (string, string, bool) {
 	team := strings.TrimSpace(requestedTeam)
 	if team == "" {
-		if !h.Config.AIGatewayEnabled {
-			return "", "", true
-		}
 		writeError(w, http.StatusBadRequest, "team_required", "Choose a Team for the agent")
 		return "", "", false
 	}
@@ -232,13 +229,9 @@ func (h *InstanceHandler) resolveTeamBinding(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to check the Team")
 		return "", "", false
 	}
-	if !selectedTeam.Spec.PolicyConfigured() {
-		return team, "", true
-	}
 	sandboxRef := strings.TrimSpace(selectedTeam.Spec.DefaultSandboxRef)
-	if sandboxRef == "" || selectedTeam.Spec.NormalAgentPolicyRef == "" ||
-		!slices.Contains(selectedTeam.Spec.SandboxRefs, sandboxRef) {
-		writeError(w, http.StatusConflict, "team_not_configured", "The selected Team has incomplete policy or Sandbox configuration")
+	if sandboxRef == "" {
+		writeError(w, http.StatusConflict, "team_not_configured", "The selected Team has no default Sandbox")
 		return "", "", false
 	}
 	return team, sandboxRef, true

@@ -26,16 +26,14 @@ func TestSandboxBindingWireFormat(t *testing.T) {
 	agent := Agent{
 		Spec: AgentSpec{
 			Agent: HarnessSpec{Type: AgentTypeHermes},
-			Team:  "example-team", SandboxRef: "example-sandbox", PolicyClass: AgentPolicyClassAdmin,
-		},
+			Team:  "example-team", SandboxRef: "example-sandbox"},
 		Status: AgentStatus{Sandbox: &SandboxStatus{
-			TeamUID: "team-uid", SandboxUID: "sandbox-uid", PolicyClass: AgentPolicyClassAdmin,
-			AgentPolicyUID: "policy-uid", AppliedRevision: "example-revision",
+			TeamUID: "team-uid", SandboxUID: "sandbox-uid", AgentPolicyUID: "policy-uid", AppliedRevision: "example-revision",
 		}},
 	}
 	wire := apiJSONMap(t, agent)
 	spec := wire["spec"].(map[string]interface{})
-	if spec["team"] != "example-team" || spec["sandboxRef"] != "example-sandbox" || spec["policyClass"] != "admin" {
+	if spec["team"] != "example-team" || spec["sandboxRef"] != "example-sandbox" {
 		t.Fatalf("binding fields changed wire identity: %#v", spec)
 	}
 	if spec["agent"].(map[string]interface{})["type"] != "hermes" {
@@ -43,17 +41,17 @@ func TestSandboxBindingWireFormat(t *testing.T) {
 	}
 	status := wire["status"].(map[string]interface{})["sandbox"].(map[string]interface{})
 	want := map[string]interface{}{
-		"teamUID": "team-uid", "sandboxUID": "sandbox-uid", "policyClass": "admin",
+		"teamUID": "team-uid", "sandboxUID": "sandbox-uid",
 		"agentPolicyUID": "policy-uid", "appliedRevision": "example-revision",
 	}
 	if !reflect.DeepEqual(status, want) || ConditionSandboxReady != "SandboxReady" {
 		t.Fatalf("enforced binding wire format changed: %#v", status)
 	}
 	team := apiJSONMap(t, Team{Spec: TeamSpec{
-		NormalAgentPolicyRef: "normal-policy", AdminAgentPolicyRef: "admin-policy",
-		SandboxRefs: []string{"example-sandbox"}, DefaultSandboxRef: "example-sandbox",
+		AgentPolicyRef: "standard-policy",
+		SandboxRefs:    []string{"example-sandbox"}, DefaultSandboxRef: "example-sandbox",
 	}})["spec"].(map[string]interface{})
-	for _, key := range []string{"normalAgentPolicyRef", "adminAgentPolicyRef", "sandboxRefs", "defaultSandboxRef"} {
+	for _, key := range []string{"agentPolicyRef", "sandboxRefs", "defaultSandboxRef"} {
 		if _, found := team[key]; !found {
 			t.Errorf("Team wire format omits %s", key)
 		}
@@ -214,10 +212,12 @@ func TestGeneratedSandboxSchemaShapes(t *testing.T) {
 	requireSchemaProperties(t, policy.Properties["status"], "observedGeneration", "conditions")
 
 	agent := apiContractCRD(t, "agents").Spec.Versions[0].Schema.OpenAPIV3Schema
-	requireSchemaDefault(t, agent.Properties["spec"].Properties["policyClass"], `"normal"`)
+	if _, ok := agent.Properties["spec"].Properties["policyClass"]; ok {
+		t.Fatal("Agent must not expose a policy class selector")
+	}
 	for _, name := range []string{"sandboxRef", "team"} {
-		if _, ok := agent.Properties["spec"].Properties[name]; !ok || slices.Contains(agent.Properties["spec"].Required, name) {
-			t.Fatalf("Agent binding field %s must exist but remain optional for legacy Agents", name)
+		if !slices.Contains(agent.Properties["spec"].Required, name) {
+			t.Fatalf("policy-bound Agent field %s must be required", name)
 		}
 	}
 	if _, ok := agent.Properties["spec"].Properties["teamAuthorization"]; ok {
@@ -225,14 +225,14 @@ func TestGeneratedSandboxSchemaShapes(t *testing.T) {
 	}
 	requireSchemaProperties(t, agent.Properties["spec"].Properties["modelAccess"], "githubCopilot", "monthlyBudgetUSD", "sharedModels")
 	binding := agent.Properties["status"].Properties["sandbox"]
-	requireSchemaProperties(t, binding, "teamUID", "sandboxUID", "policyClass", "agentPolicyUID", "appliedRevision")
-	if len(binding.Required) != 5 || slices.Contains(agent.Properties["status"].Required, "sandbox") {
+	requireSchemaProperties(t, binding, "teamUID", "sandboxUID", "agentPolicyUID", "appliedRevision")
+	if len(binding.Required) != 4 || slices.Contains(agent.Properties["status"].Required, "sandbox") {
 		t.Fatal("an enforced binding must be complete when present and omitted before enforcement")
 	}
 	team := apiContractCRD(t, "teams").Spec.Versions[0].Schema.OpenAPIV3Schema.Properties["spec"]
-	for _, name := range []string{"normalAgentPolicyRef", "sandboxRefs", "defaultSandboxRef"} {
-		if _, ok := team.Properties[name]; !ok || slices.Contains(team.Required, name) {
-			t.Fatalf("Team binding field %s must exist but remain optional for legacy Teams", name)
+	for _, name := range []string{"agentPolicyRef", "sandboxRefs", "defaultSandboxRef"} {
+		if _, ok := team.Properties[name]; !ok || !slices.Contains(team.Required, name) {
+			t.Fatalf("policy-bound Team field %s must exist and be required", name)
 		}
 	}
 	if _, ok := team.Properties["membership"]; ok {
@@ -278,8 +278,6 @@ func TestGeneratedSandboxValidationMarkers(t *testing.T) {
 		{plural: "agentpolicies", path: []string{"spec", "network", "ingress"}, rules: 1},
 		{plural: "agentpolicies", path: []string{"spec", "network", "ingress", "mode"}, enum: []string{"authenticated", "disabled"}},
 		{plural: "agentpolicies", path: []string{"spec", "kubernetesAccess"}, required: []string{"serviceAccountName"}, rules: 1},
-		{plural: "agents", path: []string{"spec", "policyClass"}, enum: []string{"normal", "admin"}},
-		{plural: "agents", path: []string{"status", "sandbox", "policyClass"}, enum: []string{"normal", "admin"}},
 	} {
 		t.Run(tc.plural+"/"+field.NewPath(tc.path[0], tc.path[1:]...).String(), func(t *testing.T) {
 			schema := *apiContractCRD(t, tc.plural).Spec.Versions[0].Schema.OpenAPIV3Schema
