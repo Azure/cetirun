@@ -60,7 +60,7 @@ type aiGatewayCatalog struct {
 	groups map[string][]string
 	// modelGroups lists the collision-safe deployment groups for each shared
 	// model identifier. Policy resolution uses these groups rather than a
-	// display name or the broad legacy cetirun-shared group.
+	// display name or caller-supplied broad group.
 	modelGroups map[string][]string
 	// fingerprint identifies the concrete Gateway deployment set backing the
 	// managed access groups. It changes when a same-name backend is replaced,
@@ -111,13 +111,9 @@ func (c *aiGatewayCatalog) update(deployments []aigateway.Deployment, blockUnpri
 		for _, group := range deployment.AccessGroups {
 			groups[group] = append(groups[group], deployment.ID)
 		}
-		legacyShared := slices.Contains(deployment.AccessGroups, aiGatewaySharedAccessGroup)
 		managedGroups := trustedManagedModelGroups(deployment, groupMembers, idMembers)
 		policyBoundShared := deployment.ID != "" && len(managedGroups) > 0
-		// Keep publishing legacy shared models while old catalog consumers are
-		// present, but never resolve a Policy policy through their broad
-		// group. Only a per-deployment group below is authorization evidence.
-		if !legacyShared && !policyBoundShared {
+		if !policyBoundShared {
 			continue
 		}
 		if !aiGatewaySharedModelUsable(deployment.ModelName) {

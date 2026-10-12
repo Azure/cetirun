@@ -35,7 +35,7 @@ func gatewayCustomFixture(t *testing.T) (*KubernetesCustomBindings, *api.Agent, 
 	r := p.reconciler
 	r.CustomBindings = p
 	r.EventRecorder = record.NewFakeRecorder(100)
-	r.AIGateway = AIGatewayConfig{Enabled: true, URL: testAIGatewayURL, MasterKeySecretName: "gateway-auth", DefaultBudget: 10, CopilotProxyImage: testProxyImage}
+	r.AIGateway = AIGatewayConfig{Enabled: true, URL: testAIGatewayURL, MasterKeySecretName: "gateway-auth", CopilotProxyImage: testProxyImage}
 	gateway := newFakeAIGateway()
 	r.aiGatewayClientFactory = func(context.Context) (aiGatewayKeyClient, error) { return gateway, nil }
 	service := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "cetirun-ai-gateway", Namespace: "cetirun-system"}, Spec: corev1.ServiceSpec{
