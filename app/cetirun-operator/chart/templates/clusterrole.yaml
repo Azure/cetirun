@@ -38,7 +38,7 @@ rules:
   - apiGroups: ["storage.k8s.io"]
     resources: ["storageclasses"]
     verbs: ["get"]
-  {{- if and .Values.sandboxSources.enabled .Values.sandboxSources.placementConfigMapName }}
+  {{- if and .Values.sandboxSources.enabled (or .Values.sandboxSources.placementConfigMapName .Values.sandboxSources.nativeExecution) }}
   - apiGroups: [""]
     resources: ["nodes"]
     verbs: ["get"]
@@ -91,7 +91,8 @@ rules:
     verbs: ["get"]
   - apiGroups: [""]
     resources: ["pods"]
-    verbs: ["get", "list", "delete"]
+    # Recorded native lifetimes still need finalization after starts are disabled.
+    verbs: ["get", "list", "delete", "patch"]
   - apiGroups: [""]
     resources: ["endpoints"]
     resourceNames: ["kubernetes"]

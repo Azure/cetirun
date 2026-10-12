@@ -43,6 +43,7 @@ type SandboxPrerequisites struct {
 	NamespaceUID       types.UID
 	Home               sandboxworkload.ObjectIdentity
 	Skills             sandboxworkload.ObjectIdentity
+	SkillsMode         sandboxworkload.SkillsMode `json:",omitempty"`
 	RuntimeSecret      sandboxworkload.ObjectIdentity
 	ChartVersion       string
 	Helpers            sandboxworkload.Helpers
@@ -53,9 +54,10 @@ type SandboxPrerequisites struct {
 // SandboxPreparationSource is a trusted platform integration, not CR status or
 // tenant Helm values. Resolve must authorize the whole Agent generation without
 // stopping or requiring quiescence of its writer; execution rechecks it too.
-// CheckQuiesced must confirm that previous writers for the exact namespace/HOME
-// tuple have terminated or are durably fenced, including unreachable nodes.
-// API-level Pod absence alone is insufficient. Neither method grants a start.
+// The default path requires CheckQuiesced to confirm physical writer exclusion;
+// API-level Pod absence alone is insufficient. The explicit native profile uses
+// ordinary Kubernetes quiescence instead and cannot qualify failover or reuse.
+// Neither method grants a start.
 type SandboxPreparationSource interface {
 	Resolve(context.Context, *api.Agent, *api.Team) (SandboxPrerequisites, error)
 	CheckQuiesced(context.Context, *api.Agent, SandboxPrerequisites) error
@@ -67,9 +69,10 @@ type SandboxHelmInstaller interface {
 	SandboxStageDigest(context.Context, string, string) (string, error)
 }
 
-// SandboxPreparation wires held provisioning only. No production source is
-// installed by default, and this interface has no execution-permit operation.
+// SandboxPreparation wires protected provisioning. NativeExecution is a trusted
+// deployment opt-in, not tenant input or an independent enforcement receipt.
 type SandboxPreparation struct {
+	NativeExecution         bool
 	Configuration           SandboxConfigurationSource
 	Prerequisites           SandboxPreparationSource
 	Installer               SandboxHelmInstaller
@@ -157,6 +160,20 @@ func (r *AgentReconciler) prepareSandboxHeld(ctx context.Context, requested *api
 	if err != nil {
 		return err
 	}
+	if config.NativeExecution {
+		if !r.AIGateway.Enabled {
+			return fmt.Errorf("%w: native Sandbox execution requires the AI Gateway", sandboxpolicy.ErrUnsupportedControl)
+		}
+		if config.Placement != nil {
+			return fmt.Errorf("%w: native Sandbox execution does not support a placement registry", sandboxpolicy.ErrUnsupportedControl)
+		}
+		if err := validateNativeSandboxProfile(attempt); err != nil {
+			return err
+		}
+		if err := r.checkNativeSandboxUnused(ctx, requested); err != nil {
+			return err
+		}
+	}
 	if config.bootstrap != nil {
 		if err := r.bootstrapSandboxOwned(ctx, attempt); err != nil {
 			return fmt.Errorf("bootstrap Sandbox prerequisites: %w", err)
@@ -166,12 +183,10 @@ func (r *AgentReconciler) prepareSandboxHeld(ctx context.Context, requested *api
 			return err
 		}
 	}
-	// Policy enforcement is mandatory in the reconciler, but the protected
-	// Sandbox renderer does not yet have a typed Gateway endpoint/model/key
-	// projection. Bootstrap the protected namespace first so the Gateway key
-	// can be projected only after its UID is durably recorded, then stop before
-	// staging any workload from the legacy direct-provider value path.
-	if requested.Status.Policy != nil && requested.Status.Policy.EffectivePolicyRef != nil {
+	// Bootstrap first: the Gateway must validate the recorded namespace UID
+	// before projecting its key. Only the opt-in native path renders that key.
+	if requested.Status.Policy != nil && requested.Status.Policy.EffectivePolicyRef != nil &&
+		(!config.NativeExecution || !sandboxGatewayProjectionReady(attempt.agent)) {
 		return fmt.Errorf("%w: typed AI Gateway Sandbox projection is unavailable; execution remains held", sandboxpolicy.ErrUnsupportedControl)
 	}
 	prerequisites, err := config.Prerequisites.Resolve(ctx, attempt.agent.DeepCopy(), attempt.team.DeepCopy())
@@ -488,6 +503,11 @@ func (r *AgentReconciler) sandboxHelmValues(agent *api.Agent, team *api.Team) (m
 	if err != nil {
 		return nil, nil, err
 	}
+	if r.SandboxPreparation != nil && r.SandboxPreparation.NativeExecution {
+		if err := r.applyAIGatewayValues(platform, agent); err != nil {
+			return nil, nil, fmt.Errorf("apply typed AI Gateway Sandbox projection: %w", err)
+		}
+	}
 	user := map[string]any{}
 	for name, raw := range agent.Spec.Helm.Values {
 		var value any
@@ -521,6 +541,9 @@ func (r *AgentReconciler) sandboxPreparationStatus(ctx context.Context, expected
 		}
 	} else if prepared {
 		reason, message = "SandboxPrepared", "Native resources and controls are prepared at zero replicas; qualified start and enforcement observation are still required."
+		if r.SandboxPreparation != nil && r.SandboxPreparation.NativeExecution {
+			message = "Native resources are prepared at zero replicas for the supported single-start profile."
+		}
 		configStatus = metav1.ConditionTrue
 	}
 	for _, kind := range []string{api.ConditionReady, api.ConditionSandboxReady, api.ConditionAgentConfigReady} {

@@ -19,6 +19,13 @@ func (b *Bundle) ValidateTemplate(template *corev1.PodTemplateSpec, image string
 	if template == nil || image == "" {
 		return fmt.Errorf("a rendered native Pod template is required")
 	}
+	var finalizers []string
+	if b.input.GatewayKey != nil {
+		finalizers = []string{NativePodFinalizer}
+	}
+	if !slices.Equal(template.Finalizers, finalizers) {
+		return fmt.Errorf("native Pod lifetime protection differs from the bundle")
+	}
 	spec := &template.Spec
 	for key, value := range b.input.Controls.PodLabels {
 		if template.Labels[key] != value {
@@ -70,6 +77,9 @@ func (b *Bundle) ValidateTemplate(template *corev1.PodTemplateSpec, image string
 	initNames := []string{"init-home-data"}
 	if b.input.Helpers.Doctor {
 		initNames = append(initNames, "doctor")
+	}
+	if b.input.GatewayKey != nil {
+		initNames = append(initNames, "retire-copilot-sign-in", "retire-direct-model-auth")
 	}
 	if len(spec.Containers) != len(names) || len(spec.InitContainers) != len(initNames) {
 		return fmt.Errorf("unexpected native container or helper count")
@@ -142,7 +152,7 @@ func (b *Bundle) validateContainer(container corev1.Container, image string) err
 	case "cetirun":
 		mounts = append(mounts,
 			corev1.VolumeMount{Name: "config", MountPath: "/etc/cetirun", ReadOnly: true},
-			corev1.VolumeMount{Name: "shared-skills", MountPath: SkillsPath, ReadOnly: true})
+			corev1.VolumeMount{Name: b.input.SkillsMode.volume(skillsIdentity(b.input.Skills)).Name, MountPath: SkillsPath, ReadOnly: true})
 		mounts = append(mounts, b.input.Controls.VolumeMounts...)
 		for _, expected := range b.input.Controls.Environment {
 			found := false
@@ -169,6 +179,13 @@ func (b *Bundle) validateContainer(container corev1.Container, image string) err
 			len(container.Args) != 0 {
 			return fmt.Errorf("unapproved doctor helper")
 		}
+	case "retire-copilot-sign-in", "retire-direct-model-auth":
+		if b.input.GatewayKey == nil || b.input.AgentType != "openclaw" ||
+			!slices.Equal(container.Command, []string{"/bin/sh", "/etc/cetirun/" + container.Name + ".sh"}) ||
+			len(container.Args) != 0 {
+			return fmt.Errorf("unapproved native Gateway initializer")
+		}
+		mounts = append(mounts, corev1.VolumeMount{Name: "config", MountPath: "/etc/cetirun", ReadOnly: true})
 	case "logger":
 		mounts[0].MountPath, mounts[0].SubPath, mounts[0].ReadOnly = HomePath+"/."+b.input.AgentType, "."+b.input.AgentType, true
 		mounts = append(mounts, corev1.VolumeMount{Name: "config", MountPath: "/etc/cetirun", ReadOnly: true})
@@ -210,13 +227,12 @@ func (b *Bundle) validateVolumes(volumes []corev1.Volume) error {
 			EmptyDir: &corev1.EmptyDirVolumeSource{SizeLimit: ptr.To(b.input.Resolution.Sandbox.Storage.Scratch.SizeLimit)},
 		}},
 		"data": {Name: "data", VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: b.input.Home.Name}}},
-		"shared-skills": {Name: "shared-skills", VolumeSource: corev1.VolumeSource{
-			PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: b.input.Skills.Name, ReadOnly: true},
-		}},
 		"config": {Name: "config", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{
 			LocalObjectReference: corev1.LocalObjectReference{Name: b.input.WorkloadName + "-config"},
 		}}},
 	}
+	skills := b.input.SkillsMode.volume(skillsIdentity(b.input.Skills))
+	wanted[skills.Name] = skills
 	if b.input.Helpers.Desktop {
 		wanted["tmp-desktop"] = corev1.Volume{Name: "tmp-desktop", VolumeSource: corev1.VolumeSource{
 			EmptyDir: &corev1.EmptyDirVolumeSource{SizeLimit: ptr.To(b.input.Resolution.Sandbox.Storage.Scratch.SizeLimit)},
@@ -281,12 +297,16 @@ func (b *Bundle) Expect(template corev1.PodTemplateSpec, workload *appsv1.Statef
 	if err := b.ValidateTemplate(&template, template.Spec.Containers[0].Image); err != nil {
 		return Expectation{}, err
 	}
-	return Expectation{
+	expected := Expectation{
 		Version: ExpectationVersion, Binding: b.input.Resolution.Binding, Revision: b.input.Controls.Revision,
 		Agent: ObjectIdentity{Name: b.input.AgentName, UID: b.input.Resolution.Binding.AgentUID}, AgentGeneration: b.input.AgentGeneration,
 		Namespace: b.input.Namespace, Workload: ObjectIdentity{Name: workload.Name, UID: workload.UID},
 		WorkloadKind: AgentWorkload, ExecutionHeld: true, Template: *template.DeepCopy(), Overhead: b.Overhead(),
 		Sources: slices.Clone(sources), Home: ObjectIdentity{Name: b.input.Home.Name, UID: b.input.Home.UID},
-		Skills: ObjectIdentity{Name: b.input.Skills.Name, UID: b.input.Skills.UID},
-	}, nil
+		Skills: skillsIdentity(b.input.Skills), SkillsMode: b.input.SkillsMode,
+	}
+	if err := expected.ValidateSkills(); err != nil {
+		return Expectation{}, err
+	}
+	return expected, nil
 }

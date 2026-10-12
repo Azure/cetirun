@@ -50,6 +50,9 @@ func Run(ctx context.Context, restConfig *rest.Config, config Config, options Se
 	if config.PlacementConfigMapName != "" && options.PodStateNamespace != strings.Split(config.ControllerUsername, ":")[2] {
 		return fmt.Errorf("Sandbox placement requires Pod admission in the configured controller state namespace")
 	}
+	if config.CoordinationConfigMapName != "" && options.PodStateNamespace != strings.Split(config.ControllerUsername, ":")[2] {
+		return fmt.Errorf("Sandbox coordination requires Pod admission in the configured controller state namespace")
+	}
 	if options.CertDirectory == "" || options.Port < 1 || options.Port > 65535 {
 		return fmt.Errorf("Sandbox admission requires an explicit certificate directory and valid serving port")
 	}
@@ -103,7 +106,8 @@ func Run(ctx context.Context, restConfig *rest.Config, config Config, options Se
 	if options.PodStateNamespace != "" {
 		podHandler, err := NewPodHandler(manager.GetAPIReader(), PodConfig{
 			StateNamespace: options.PodStateNamespace, RequestTimeout: options.PodRequestTimeout,
-			PlacementConfigMapName: config.PlacementConfigMapName,
+			PlacementConfigMapName:    config.PlacementConfigMapName,
+			CoordinationConfigMapName: config.CoordinationConfigMapName, CoordinationConfigMapUID: config.CoordinationConfigMapUID,
 		})
 		if err != nil {
 			return err

@@ -8,12 +8,26 @@ import (
 	"fmt"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxcoordination"
 	w "github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
+
+func selectedSandboxExecutionSources(sources []w.SourceReference, binding sandbox.Binding) []w.SourceReference {
+	selected := make([]w.SourceReference, 0, len(sources))
+	for _, source := range sources {
+		if source.APIVersion == api.GroupVersion.String() &&
+			((source.Kind == "Sandbox" && source.UID != binding.SandboxUID) ||
+				(source.Kind == "AgentPolicy" && source.UID != binding.AgentPolicyUID)) {
+			continue
+		}
+		selected = append(selected, source)
+	}
+	return selected
+}
 
 func (r *AgentReconciler) executionSourceDigest(ctx context.Context, source w.SourceReference,
 	box string, class api.AgentPolicyClass, capture bool,
@@ -39,14 +53,7 @@ func (r *AgentReconciler) executionSourceDigest(ctx context.Context, source w.So
 		(capture && object.GetResourceVersion() != source.ResourceVersion) {
 		return "", fmt.Errorf("%w: effective source identity changed: %s", errSandboxSourceChanged, w.SourceKey(source))
 	}
-	if team, ok := object.(*api.Team); ok {
-		inputs, err := w.ExecutionTeamInputs(team)
-		if err != nil {
-			return "", err
-		}
-		return inputs.DigestFor(box, class)
-	}
-	return w.ExecutionObjectDigest(object)
+	return w.ExecutionSourceDigest(object, box, class)
 }
 
 func (r *AgentReconciler) captureExecutionSourceDigests(ctx context.Context, intent sandboxcoordination.Intent) (map[string]string, error) {

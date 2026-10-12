@@ -39,6 +39,12 @@ func TestParseSandboxSourcesConfig(t *testing.T) {
 		{name: "placement shares platform document", raw: strings.Replace(sandboxSourcesConfigJSON, `"enabled": true`, `"enabled": true, "placementConfigMapName":"sandbox-platform"`, 1), wantError: true},
 		{name: "bootstrap enabled", raw: strings.Replace(sandboxSourcesConfigJSON, `"enabled": true`, `"enabled": true, "bootstrapOwnedPrerequisites": true`, 1), enabled: true},
 		{name: "bootstrap requires sources", raw: `{"bootstrapOwnedPrerequisites":true}`, wantError: true},
+		{name: "native requires sources", raw: `{"nativeExecution":true}`, wantError: true},
+		{name: "native requires bootstrap", raw: strings.Replace(sandboxSourcesConfigJSON, `"enabled": true`, `"enabled": true, "nativeExecution": true`, 1), wantError: true},
+		{name: "native wrong type", raw: `{"nativeExecution":"true"}`, wantError: true},
+		{name: "native placement unsupported", raw: strings.Replace(sandboxSourcesConfigJSON, `"enabled": true`, `"enabled": true, "bootstrapOwnedPrerequisites": true, "nativeExecution": true, "placementConfigMapName": "sandbox-placement"`, 1), wantError: true},
+		{name: "native enabled", raw: strings.Replace(sandboxSourcesConfigJSON, `"enabled": true`, `"enabled": true, "bootstrapOwnedPrerequisites": true, "nativeExecution": true`, 1), enabled: true},
+		{name: "native rejects desktop", raw: strings.Replace(strings.Replace(sandboxSourcesConfigJSON, `"enabled": true`, `"enabled": true, "bootstrapOwnedPrerequisites": true, "nativeExecution": true`, 1), `"desktop": false`, `"desktop": true`, 1), wantError: true},
 		{name: "catalog requires sources", raw: `{"skillsCatalogConfigMapName":"published-skills"}`, wantError: true},
 		{name: "catalog requires bootstrap", raw: strings.Replace(sandboxSourcesConfigJSON, `"enabled": true`, `"enabled": true, "skillsCatalogConfigMapName":"published-skills"`, 1), wantError: true},
 		{name: "invalid catalog type", raw: `{"skillsCatalogConfigMapName":true}`, wantError: true},
@@ -102,7 +108,7 @@ func TestSandboxSourcesFactoryUsesAuthoritativeReadersWithoutFencing(t *testing.
 		prerequisites.Helpers != (sandboxworkload.Helpers{Doctor: true, Logger: true}) {
 		t.Fatal("prerequisite source was not bound to the approved native inputs")
 	}
-	if prerequisites.WriterExclusion != nil {
+	if prerequisites.WriterExclusion != nil || prerequisites.NativeQuiescence != nil || prepare.NativeExecution {
 		t.Fatal("startup installed unqualified writer-exclusion evidence")
 	}
 	if prerequisites.OperatorNamespace != "platform-system" || prerequisites.SkillsCatalogConfigMapName != "" {
@@ -118,6 +124,24 @@ func TestSandboxSourcesFactoryUsesAuthoritativeReadersWithoutFencing(t *testing.
 	}
 	if source, ok := selected.Prerequisites.(*controller.KubernetesSandboxPrerequisites); !ok || source.WriterExclusion != nil {
 		t.Fatal("placement selection installed an unqualified writer-exclusion provider")
+	}
+}
+
+func TestSandboxSourcesNativeOptInDoesNotInstallPhysicalFencing(t *testing.T) {
+	raw := strings.Replace(sandboxSourcesConfigJSON, `"enabled": true`, `"enabled": true, "bootstrapOwnedPrerequisites": true, "nativeExecution": true`, 1)
+	config, err := controller.ParseSandboxSourcesConfig(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader := fake.NewClientBuilder().WithScheme(testScheme()).Build()
+	prepare, err := controller.NewKubernetesSandboxPreparation(config, reader, &preparationInstaller{}, "platform-system", "0.1.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	prerequisites, ok := prepare.Prerequisites.(*controller.KubernetesSandboxPrerequisites)
+	if !ok || !prepare.NativeExecution || prerequisites.NativeQuiescence == nil ||
+		prerequisites.NativeQuiescence.APIReader != reader || prerequisites.WriterExclusion != nil {
+		t.Fatal("native opt-in did not preserve the distinction from physical writer exclusion")
 	}
 }
 

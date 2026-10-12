@@ -138,6 +138,9 @@ sandboxAdmission:
   # -- Optional UID-pinned coordination authority for Team/Sandbox/AgentPolicy
   # updates and deletions. Requires strict, enforced configuration and Pod admission.
   # Both fields are required. No state is created and no execution is enabled.
+  # Native execution uses this same authority for selected-source reservations;
+  # there is no separate sandboxSources coordination setting. Keep it configured
+  # until existing native executions have stopped and released their reservations.
   coordinationConfigMapName: ""
   coordinationConfigMapUID: ""
   # -- Timeout for each fail-closed webhook call; integer 1..30 when enforce=true.
@@ -177,11 +180,17 @@ sandboxAdmission:
 
 # -- Kubernetes capability declarations for configuration admission and held
 # native Sandbox preparation. Both use the same operator-namespace platform.json.
-# Does not qualify a platform or implement writer fencing. Execution stays held.
+# Does not qualify a platform or implement physical writer fencing.
 # Adds controller write permissions for compiled namespaced CiliumNetworkPolicies.
 # Adds only get permission on shared Istio Gateways for pinned access inputs.
 sandboxSources:
   enabled: false
+  # -- Opt in to the single-start normal OpenClaw/Kata/RWOP profile.
+  # Requires owned bootstrap and AI Gateway shared models. No resume or failover.
+  # When admission coordination is configured, reserve the selected sources
+  # until observed ordinary shutdown; this is not physical writer fencing.
+  # Disabling starts retains recorded native cleanup and Pod finalization RBAC.
+  nativeExecution: false
   # -- Create owned namespace, HOME and native authentication only for new namespaces.
   # Requires explicit Agent chart/image/port pins. Published content stays external.
   bootstrapOwnedPrerequisites: false
@@ -191,6 +200,9 @@ sandboxSources:
   platformConfigMapName: ""
   # -- Claims in each protected Agent namespace; never adopted by name.
   homeClaimName: home
+  # Native execution with no catalog and an empty effective skill selection uses
+  # a read-only in-Pod directory instead. The name may be empty only without a catalog;
+  # selecting any skill still requires a configured, existing skills claim.
   skillsClaimName: skills
   # -- Optional separate operator-namespace ConfigMap containing skills.json.
   # Requires owned bootstrap. Selects already-published Blob NFS content by Team UID;

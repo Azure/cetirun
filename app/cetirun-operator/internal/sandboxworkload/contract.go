@@ -30,6 +30,7 @@ const (
 	AgentWorkload           = "agent"
 	HomePath                = "/home/vibe"
 	SkillsPath              = "/home/vibe/.aks/skills"
+	NativePodFinalizer      = "cetirun.microsoft.com/native-pod-lifetime"
 )
 
 var (
@@ -78,9 +79,11 @@ type Input struct {
 	RuntimeClass      *nodev1.RuntimeClass
 	Home              *corev1.PersistentVolumeClaim
 	Skills            *corev1.PersistentVolumeClaim
+	SkillsMode        SkillsMode `json:",omitempty"`
 	Helpers           Helpers
 	Controls          Controls
 	AuthorizedSecrets []string
+	GatewayKey        *ObjectIdentity
 }
 
 // Accounting uses Kubernetes effective init/sidecar accounting. Pod contains
@@ -124,11 +127,15 @@ type Expectation struct {
 	WorkloadKind       string                 `json:"workloadKind"`
 	ControllerRevision string                 `json:"controllerRevision,omitempty"`
 	ExecutionHeld      bool                   `json:"executionHeld"`
+	SinglePod          bool                   `json:"singlePod,omitempty"`
+	PodUID             types.UID              `json:"podUID,omitempty"`
+	SourceDigests      map[string]string      `json:"sourceDigests,omitempty"`
 	Template           corev1.PodTemplateSpec `json:"template"`
 	Overhead           corev1.ResourceList    `json:"overhead,omitempty"`
 	Sources            []SourceReference      `json:"sources"`
 	Home               ObjectIdentity         `json:"home"`
 	Skills             ObjectIdentity         `json:"skills"`
+	SkillsMode         SkillsMode             `json:"skillsMode,omitempty"`
 	Placement          *PlacementBinding      `json:"placement,omitempty"`
 }
 

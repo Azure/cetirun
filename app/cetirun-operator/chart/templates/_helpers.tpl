@@ -43,6 +43,15 @@ Otherwise: repository:tag
 {{- if not (kindIs "bool" $sources.enabled) -}}
 {{- fail "sandboxSources.enabled must be a boolean" -}}
 {{- end -}}
+{{- if and (hasKey $sources "nativeExecution") (not (kindIs "bool" $sources.nativeExecution)) -}}
+{{- fail "sandboxSources.nativeExecution must be a boolean" -}}
+{{- end -}}
+{{- if and $sources.nativeExecution (not (and $sources.enabled $sources.bootstrapOwnedPrerequisites .Values.aiGateway.enabled)) -}}
+{{- fail "sandboxSources.nativeExecution requires enabled sources, owned bootstrap and AI Gateway" -}}
+{{- end -}}
+{{- if and $sources.nativeExecution $sources.placementConfigMapName -}}
+{{- fail "sandboxSources.nativeExecution uses RuntimeClass scheduling; a placement registry is unsupported" -}}
+{{- end -}}
 {{- if and (hasKey $sources "bootstrapOwnedPrerequisites") (not (kindIs "bool" $sources.bootstrapOwnedPrerequisites)) -}}
 {{- fail "sandboxSources.bootstrapOwnedPrerequisites must be a boolean" -}}
 {{- end -}}
@@ -73,7 +82,7 @@ Otherwise: repository:tag
 {{- end -}}
 {{- if $sources.enabled -}}
 {{- range $key, $_ := $sources -}}
-{{- if not (has $key (list "enabled" "bootstrapOwnedPrerequisites" "platformConfigMapName" "homeClaimName" "skillsClaimName" "skillsCatalogConfigMapName" "placementConfigMapName" "helpers")) -}}
+{{- if not (has $key (list "enabled" "nativeExecution" "bootstrapOwnedPrerequisites" "platformConfigMapName" "homeClaimName" "skillsClaimName" "skillsCatalogConfigMapName" "placementConfigMapName" "helpers")) -}}
 {{- fail (printf "unsupported sandboxSources field %s" $key) -}}
 {{- end -}}
 {{- end -}}
@@ -85,7 +94,8 @@ Otherwise: repository:tag
 {{- if not (kindIs "string" $name) -}}
 {{- fail (printf "sandboxSources.%s must be a resource name" $field) -}}
 {{- end -}}
-{{- if or (gt (len $name) 253) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$" $name)) -}}
+{{- $optionalSkills := and (eq $field "skillsClaimName") (eq $name "") (not $sources.skillsCatalogConfigMapName) -}}
+{{- if and (not $optionalSkills) (or (gt (len $name) 253) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$" $name))) -}}
 {{- fail (printf "sandboxSources.%s must be a valid resource name" $field) -}}
 {{- end -}}
 {{- end -}}
@@ -105,7 +115,13 @@ Otherwise: repository:tag
 {{- fail (printf "sandboxSources.helpers.%s must be a boolean" $field) -}}
 {{- end -}}
 {{- end -}}
+{{- if and $sources.nativeExecution $sources.helpers.desktop -}}
+{{- fail "sandboxSources.nativeExecution does not support the desktop helper" -}}
+{{- end -}}
 {{- $config := deepCopy $sources -}}
+{{- if not $sources.nativeExecution -}}
+{{- $_ := unset $config "nativeExecution" -}}
+{{- end -}}
 {{- if not $sources.bootstrapOwnedPrerequisites -}}
 {{- $_ := unset $config "bootstrapOwnedPrerequisites" -}}
 {{- end -}}
@@ -114,6 +130,13 @@ Otherwise: repository:tag
 {{- end -}}
 {{- if not $sources.placementConfigMapName -}}
 {{- $_ := unset $config "placementConfigMapName" -}}
+{{- end -}}
+{{- if .Values.sandboxAdmission.coordinationConfigMapName -}}
+{{- if eq .Values.sandboxAdmission.coordinationConfigMapName $sources.skillsCatalogConfigMapName -}}
+{{- fail "Sandbox coordination and skills catalog require separate ConfigMaps" -}}
+{{- end -}}
+{{- $_ := set $config "coordinationConfigMapName" .Values.sandboxAdmission.coordinationConfigMapName -}}
+{{- $_ := set $config "coordinationConfigMapUID" .Values.sandboxAdmission.coordinationConfigMapUID -}}
 {{- end -}}
 {{- $_ := set $config "admissionServiceAccount" "cetirun-sandbox-admission" -}}
 {{- toJson $config -}}

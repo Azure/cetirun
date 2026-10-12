@@ -57,6 +57,7 @@ type Bindings struct {
 	ChartVersion      string
 	NativeConfig      map[string]any
 	NativeOptions     map[string]any
+	NativeSandbox     bool
 	Model             ModelBinding
 	Skills            SkillsBinding
 	Integrations      Integrations
@@ -102,6 +103,7 @@ type GatewayModel struct {
 
 type SkillsBinding struct {
 	Shared    bool
+	Empty     bool `json:",omitempty"`
 	MountPath string
 	NPM       []string
 }

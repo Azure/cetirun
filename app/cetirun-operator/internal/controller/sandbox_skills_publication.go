@@ -221,7 +221,7 @@ func (p *KubernetesSandboxPrerequisites) publishedSkillsSources(ctx context.Cont
 ) ([]sandboxworkload.SourceReference, error) {
 	if namespace.Annotations[sandboxBootstrapAnnotation] == "" &&
 		!slices.Contains(agent.Finalizers, sandbox.BootstrapFinalizer) &&
-		skills.Annotations[sandboxBootstrapAnnotation] == "" {
+		(skills == nil || skills.Annotations[sandboxBootstrapAnnotation] == "") {
 		return nil, nil
 	}
 	if len(validation.IsDNS1123Label(p.OperatorNamespace)) != 0 {
@@ -234,6 +234,9 @@ func (p *KubernetesSandboxPrerequisites) publishedSkillsSources(ctx context.Cont
 	}
 	if receipt.Skills == nil {
 		return nil, nil
+	}
+	if skills == nil {
+		return nil, fmt.Errorf("%w: recorded skills publication requires its skills PVC; empty skills cannot replace it", sandboxworkload.ErrStorageTransitionRequired)
 	}
 	if p.SkillsCatalogConfigMapName != receipt.Skills.Catalog.Name {
 		return nil, fmt.Errorf("%w: recorded skills catalog selection changed; recovery is required", sandboxworkload.ErrStorageTransitionRequired)

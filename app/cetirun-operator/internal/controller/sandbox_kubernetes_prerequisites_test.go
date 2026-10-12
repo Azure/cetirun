@@ -5,6 +5,7 @@ package controller_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -141,6 +142,80 @@ func assertPrerequisiteRejection(t *testing.T, got controller.SandboxPrerequisit
 	t.Helper()
 	if err == nil || !reflect.DeepEqual(got, controller.SandboxPrerequisites{}) {
 		t.Fatalf("failed selection returned usable prerequisites: %+v, %v", got, err)
+	}
+}
+
+func TestKubernetesSandboxPrerequisitesNativeEmptySkillsSelection(t *testing.T) {
+	for _, tc := range []struct {
+		name                    string
+		native, claim, omitName bool
+		base, add, remove       []string
+		catalog                 string
+		wantEmpty, wantError    bool
+	}{
+		{name: "native absent selection", native: true, wantEmpty: true},
+		{name: "native explicit empty selection", native: true, base: []string{}, add: []string{}, wantEmpty: true},
+		{name: "native omitted claim name", native: true, omitName: true, wantEmpty: true},
+		{name: "native ignores unused existing claim", native: true, claim: true, wantEmpty: true},
+		{name: "remove all effective skills", native: true, base: []string{"example-skill"}, add: []string{"npm:example-skill"}, remove: []string{"example-skill", "npm:example-skill"}, wantEmpty: true},
+		{name: "remove wins over add", native: true, add: []string{"example-skill"}, remove: []string{"example-skill"}, wantEmpty: true},
+		{name: "remaining team skill", native: true, base: []string{"example-skill"}, wantError: true},
+		{name: "remaining added skill", native: true, add: []string{"example-skill"}, wantError: true},
+		{name: "removal leaves another skill", native: true, base: []string{"example-skill", "another-skill"}, remove: []string{"example-skill"}, wantError: true},
+		{name: "selected skill without claim name", native: true, omitName: true, add: []string{"example-skill"}, wantError: true},
+		{name: "selected skill retains existing claim", native: true, claim: true, base: []string{"example-skill"}},
+		{name: "catalog still requires claim", native: true, catalog: "skills-catalog", wantError: true},
+		{name: "catalog retains existing claim", native: true, claim: true, catalog: "skills-catalog"},
+		{name: "default empty selection requires claim", wantError: true},
+		{name: "default omitted name rejected", omitName: true, wantError: true},
+		{name: "default empty selection retains claim", claim: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newKubernetesPrerequisitesFixture(t, "openclaw")
+			f.source.NativeExecution, f.source.SkillsCatalogConfigMapName = tc.native, tc.catalog
+			if tc.omitName {
+				f.source.SkillsClaimName = ""
+			}
+			team := f.fixture.Team.DeepCopy()
+			team.Spec.Skills = tc.base
+			if err := f.client.Update(context.Background(), team); err != nil {
+				t.Fatal(err)
+			}
+			f.editAgent(t, func(agent *api.Agent) {
+				agent.Spec.SkillOverrides.Add, agent.Spec.SkillOverrides.Remove = tc.add, tc.remove
+			})
+			if !tc.claim {
+				if err := f.client.Delete(context.Background(), f.fixture.Input.Skills); err != nil {
+					t.Fatal(err)
+				}
+			}
+			got, err := f.resolve(t)
+			if tc.wantError {
+				assertPrerequisiteRejection(t, got, err)
+				if !strings.Contains(err.Error(), "skills") {
+					t.Fatal("missing skills source error was not explicit:", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.wantEmpty {
+				if got.SkillsMode != sandboxworkload.SkillsModeEmpty || got.Skills != (sandboxworkload.ObjectIdentity{}) ||
+					len(got.PublicationSources) != 0 || f.reader.reads[client.ObjectKeyFromObject(f.fixture.Input.Skills)] != 0 {
+					t.Fatal("empty selection read or invented a skills PVC/publication")
+				}
+			} else if got.SkillsMode != "" || got.Skills.UID != f.fixture.Input.Skills.UID {
+				t.Fatal("existing skills PVC path changed")
+			}
+			raw, err := json.Marshal(got)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(raw), `"SkillsMode"`) != tc.wantEmpty {
+				t.Fatal("default prerequisite serialized shape changed")
+			}
+		})
 	}
 }
 

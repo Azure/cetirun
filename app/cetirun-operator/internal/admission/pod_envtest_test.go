@@ -507,6 +507,7 @@ func TestPodAdmissionAPIServerBoundaries(t *testing.T) {
 		ControlPlaneStartTimeout: time.Minute, ControlPlaneStopTimeout: 30 * time.Second,
 	}
 	env.ControlPlane.GetAPIServer().Configure().Set("enable-admission-plugins", "PodTopologyLabels")
+	env.ControlPlane.GetAPIServer().Configure().Set("authorization-mode", "RBAC")
 	cfg, err := env.Start()
 	if err != nil {
 		_ = env.Stop()
@@ -938,6 +939,132 @@ func TestPodAdmissionAPIServerBoundaries(t *testing.T) {
 		t.Fatal("status/delete reached protected-write webhook")
 	}
 	unavailable.Store(false)
+	t.Run("native-single-pod-and-effective-source-pins", func(t *testing.T) {
+		expected.SinglePod, expected.PodUID = true, ""
+		expected.Template.Finalizers = []string{w.NativePodFinalizer}
+		expected.SourceDigests = map[string]string{}
+		for _, source := range expected.Sources {
+			if !w.EffectiveSource(source) {
+				continue
+			}
+			value := &unstructured.Unstructured{}
+			value.SetAPIVersion(source.APIVersion)
+			value.SetKind(source.Kind)
+			var object client.Object = value
+			if source.APIVersion == api.GroupVersion.String() && source.Kind == "Team" {
+				object = &api.Team{}
+			}
+			if source.APIVersion == "v1" && source.Kind == "PersistentVolumeClaim" {
+				object = &corev1.PersistentVolumeClaim{}
+			}
+			if err := cl.Get(ctx, client.ObjectKey{Namespace: source.Namespace, Name: source.Name}, object); err != nil {
+				t.Fatal(err)
+			}
+			digest, err := w.ExecutionSourceDigest(object, f.fixture.Sandbox.Name, expected.Binding.PolicyClass)
+			if claim, ok := object.(*corev1.PersistentVolumeClaim); ok {
+				digest, err = w.NativeClaimDigest(claim)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			expected.SourceDigests[w.SourceKey(source)] = digest
+		}
+		save := func() {
+			t.Helper()
+			if err := cl.Get(ctx, client.ObjectKeyFromObject(state), state); err != nil {
+				t.Fatal(err)
+			}
+			raw, err := json.Marshal(expected)
+			if err != nil {
+				t.Fatal(err)
+			}
+			state.Data[PodExpectationKey] = string(raw)
+			if err := cl.Update(ctx, state); err != nil {
+				t.Fatal(err)
+			}
+		}
+		save()
+		if err := cl.Get(ctx, client.ObjectKeyFromObject(workload), workload); err != nil {
+			t.Fatal(err)
+		}
+		workload.Spec.Template.Finalizers = []string{w.NativePodFinalizer}
+		if err := cl.Update(ctx, workload); err != nil {
+			t.Fatal(err)
+		}
+		workload.Status.Replicas, workload.Status.ReadyReplicas = 1, 1
+		if err := cl.Status().Update(ctx, workload); err != nil {
+			t.Fatal(err)
+		}
+		for _, identity := range []w.ObjectIdentity{expected.Home, expected.Skills} {
+			claim := &corev1.PersistentVolumeClaim{}
+			if err := cl.Get(ctx, client.ObjectKey{Namespace: expected.Namespace.Name, Name: identity.Name}, claim); err != nil {
+				t.Fatal(err)
+			}
+			claim.Spec.VolumeName = "bound-" + claim.Name
+			if err := cl.Update(ctx, claim); err != nil {
+				t.Fatal(err)
+			}
+			claim.Status.Phase = corev1.ClaimBound
+			if err := cl.Status().Update(ctx, claim); err != nil {
+				t.Fatal(err)
+			}
+		}
+		native := testfixture.Pod(expected)
+		native.Spec.Overhead = nil
+		if err := cl.Create(ctx, native); err != nil {
+			t.Fatal("native admission rejected status-only or claim-binding source changes:", err)
+		}
+		if err := cl.Delete(ctx, native, client.GracePeriodSeconds(0)); err != nil {
+			t.Fatal(err)
+		}
+		if err := cl.Get(ctx, client.ObjectKeyFromObject(native), native); err != nil {
+			t.Fatal("initial Pod disappeared before its lifetime was recorded:", err)
+		}
+		withoutProtection := native.DeepCopy()
+		withoutProtection.Finalizers = nil
+		if err := cl.Update(ctx, withoutProtection, client.DryRunAll); err == nil {
+			t.Fatal("unrecorded Pod protection was removable")
+		}
+		expected.PodUID = native.UID
+		expected.ExecutionHeld = true
+		save()
+		cleanup := nativeDisabledCleanupClient(t, ctx, cl, cfg, f.scheme)
+		beforeFinalize := native.DeepCopy()
+		native.Finalizers = nil
+		if err := wait.PollUntilContextTimeout(ctx, 100*time.Millisecond, 10*time.Second, true, func(ctx context.Context) (bool, error) {
+			err := cleanup.Patch(ctx, native, client.MergeFromWithOptions(beforeFinalize, client.MergeFromWithOptimisticLock{}), client.DryRunAll)
+			if apierrors.IsForbidden(err) {
+				return false, nil
+			}
+			return err == nil, err
+		}); err != nil {
+			t.Fatal("disabled manager role could not finalize the held native Pod:", err)
+		}
+		agent := &api.Agent{}
+		if err := cl.Get(ctx, client.ObjectKeyFromObject(f.fixture.Agent), agent); err != nil {
+			t.Fatal(err)
+		}
+		agent.Finalizers = append(agent.Finalizers, api.Finalizer)
+		if err := cl.Update(ctx, agent); err != nil {
+			t.Fatal(err)
+		}
+		if err := cl.Delete(ctx, agent); err != nil {
+			t.Fatal(err)
+		}
+		if err := cl.Get(ctx, client.ObjectKeyFromObject(native), native); err != nil {
+			t.Fatal(err)
+		}
+		beforeFinalize = native.DeepCopy()
+		native.Finalizers = nil
+		if err := cleanup.Patch(ctx, native, client.MergeFromWithOptions(beforeFinalize, client.MergeFromWithOptimisticLock{})); err != nil {
+			t.Fatal(err)
+		}
+		replacement := testfixture.Pod(expected)
+		replacement.Spec.Overhead = nil
+		if err := cl.Create(ctx, replacement); err == nil {
+			t.Fatalf("native admission did not enforce the recorded Pod lifetime: %v", err)
+		}
+	})
 	if err := cl.Delete(ctx, state); err != nil {
 		t.Fatal(err)
 	}

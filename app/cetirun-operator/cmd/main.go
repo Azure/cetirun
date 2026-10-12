@@ -296,10 +296,21 @@ func main() {
 		setupLog.Error(err, "unable to configure Sandbox sources")
 		os.Exit(1)
 	}
+	agentReconciler.SandboxNativeCoordination, err = controller.NewNativeSandboxCoordination(
+		sandboxSourcesConfig, mgr.GetClient(), mgr.GetAPIReader(), agentReconciler.OperatorNamespace,
+	)
+	if err != nil {
+		setupLog.Error(err, "unable to configure native Sandbox source coordination")
+		os.Exit(1)
+	}
 	var sandboxSource controller.SandboxConfigurationSource
 	if agentReconciler.SandboxPreparation != nil {
 		sandboxSource = agentReconciler.SandboxPreparation.Configuration
-		setupLog.Info("Kubernetes Sandbox sources enabled; qualified writer exclusion is unavailable and execution remains held")
+		if sandboxSourcesConfig.NativeExecution {
+			setupLog.Info("Native Sandbox execution enabled for the bounded OpenClaw profile; physical failover fencing is not provided")
+		} else {
+			setupLog.Info("Kubernetes Sandbox sources enabled; qualified writer exclusion is unavailable and execution remains held")
+		}
 	}
 	if err = agentReconciler.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Agent")

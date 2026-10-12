@@ -37,6 +37,7 @@ type SandboxWriterExclusionSource interface {
 // configuration, never Agent Helm values. It neither provisions nor adopts
 // resources, and no production WriterExclusion source is installed by default.
 type KubernetesSandboxPrerequisites struct {
+	NativeExecution            bool
 	APIReader                  client.Reader
 	HomeClaimName              string
 	SkillsClaimName            string
@@ -46,6 +47,7 @@ type KubernetesSandboxPrerequisites struct {
 	Helpers                    sandboxworkload.Helpers
 	Now                        func() time.Time
 	WriterExclusion            SandboxWriterExclusionSource
+	NativeQuiescence           *KubernetesNativeQuiescence
 }
 
 var _ SandboxPreparationSource = (*KubernetesSandboxPrerequisites)(nil)
@@ -69,7 +71,10 @@ func (p *KubernetesSandboxPrerequisites) resolve(ctx context.Context, requested 
 		return empty, fmt.Errorf("%w: Sandbox prerequisites require an authoritative API reader", sandboxpolicy.ErrUnavailable)
 	}
 	source := *p
-	for _, name := range []string{source.HomeClaimName, source.SkillsClaimName} {
+	for i, name := range []string{source.HomeClaimName, source.SkillsClaimName} {
+		if i == 1 && name == "" && source.NativeExecution && source.SkillsCatalogConfigMapName == "" {
+			continue
+		}
 		if len(validation.IsDNS1123Subdomain(name)) != 0 {
 			return empty, fmt.Errorf("%w: Sandbox HOME and skills require literal configured PVC names", sandboxpolicy.ErrUnavailable)
 		}
@@ -147,12 +152,28 @@ func (p *KubernetesSandboxPrerequisites) resolve(ctx context.Context, requested 
 		namespace.Annotations[sandboxworkload.AgentUIDAnnotation] != string(agent.UID) {
 		return empty, fmt.Errorf("Sandbox prerequisite namespace protection and exact Agent ownership are required")
 	}
-	home, skills := &corev1.PersistentVolumeClaim{}, &corev1.PersistentVolumeClaim{}
-	for _, claim := range []struct {
+	mode := sandboxSkillsMode(source.NativeExecution, source.SkillsCatalogConfigMapName, agent, team)
+	home := &corev1.PersistentVolumeClaim{}
+	var skills *corev1.PersistentVolumeClaim
+	claims := []struct {
 		name   string
 		object *corev1.PersistentVolumeClaim
-	}{{source.HomeClaimName, home}, {source.SkillsClaimName, skills}} {
+	}{{source.HomeClaimName, home}}
+	if mode != sandboxworkload.SkillsModeEmpty {
+		if source.SkillsClaimName == "" {
+			return empty, fmt.Errorf("%w: selected skills require a configured skills PVC or published skills catalog", sandboxpolicy.ErrUnavailable)
+		}
+		skills = &corev1.PersistentVolumeClaim{}
+		claims = append(claims, struct {
+			name   string
+			object *corev1.PersistentVolumeClaim
+		}{source.SkillsClaimName, skills})
+	}
+	for _, claim := range claims {
 		if err := source.readPrerequisite(ctx, client.ObjectKey{Namespace: namespace.Name, Name: claim.name}, claim.object); err != nil {
+			if claim.object == skills {
+				return empty, fmt.Errorf("Sandbox skills require the configured skills PVC or validated publication: %w", err)
+			}
 			return empty, err
 		}
 		if claim.object.Status.Phase == corev1.ClaimLost {
@@ -174,8 +195,8 @@ func (p *KubernetesSandboxPrerequisites) resolve(ctx context.Context, requested 
 	}
 	// Shared skills are read-only inputs, not HOME. They may be retained without
 	// owner references or owned by the current Team, and may use ReadWriteMany.
-	if skills.UID == home.UID || !sandboxPrerequisiteOwnersMatch(skills, agent, team) ||
-		ptr.Deref(skills.Spec.VolumeMode, corev1.PersistentVolumeFilesystem) != corev1.PersistentVolumeFilesystem {
+	if skills != nil && (skills.UID == home.UID || !sandboxPrerequisiteOwnersMatch(skills, agent, team) ||
+		ptr.Deref(skills.Spec.VolumeMode, corev1.PersistentVolumeFilesystem) != corev1.PersistentVolumeFilesystem) {
 		return empty, fmt.Errorf("Sandbox skills require a distinct current filesystem PVC without foreign ownership")
 	}
 	secret := &metav1.PartialObjectMetadata{TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Secret"}}
@@ -192,9 +213,16 @@ func (p *KubernetesSandboxPrerequisites) resolve(ctx context.Context, requested 
 	sources := []sandboxworkload.SourceReference{
 		agentSource, sandboxSource(team, api.GroupVersion.String(), "Team"),
 		sandboxSource(box, api.GroupVersion.String(), "Sandbox"), sandboxSource(namespace, "v1", "Namespace"),
-		sandboxSource(home, "v1", "PersistentVolumeClaim"), sandboxSource(skills, "v1", "PersistentVolumeClaim"),
-		sandboxSource(secret, "v1", "Secret"),
+		sandboxSource(home, "v1", "PersistentVolumeClaim"),
 	}
+	objects := []client.Object{team, box, namespace, home}
+	var skillsID sandboxworkload.ObjectIdentity
+	if skills != nil {
+		sources = append(sources, sandboxSource(skills, "v1", "PersistentVolumeClaim"))
+		objects = append(objects, skills)
+		skillsID = sandboxworkload.ObjectIdentity{Name: skills.Name, UID: skills.UID}
+	}
+	sources = append(sources, sandboxSource(secret, "v1", "Secret"))
 	sources = append(sources, publicationSources...)
 	revisionSources := slices.Clone(sources)
 	revisionAgent := agent.DeepCopy()
@@ -215,7 +243,7 @@ func (p *KubernetesSandboxPrerequisites) resolve(ctx context.Context, requested 
 	}
 	revisionInputs := make([]revisionInput, 0, len(revisionSources))
 	known := map[string]client.Object{}
-	for i, object := range []client.Object{team, box, namespace, home, skills} {
+	for i, object := range objects {
 		known[sandboxworkload.SourceKey(sources[i+1])] = object
 	}
 	verifier := &AgentReconciler{APIReader: source.APIReader}
@@ -247,7 +275,8 @@ func (p *KubernetesSandboxPrerequisites) resolve(ctx context.Context, requested 
 		Inputs       []revisionInput
 		ChartVersion string
 		Helpers      sandboxworkload.Helpers
-	}{"kubernetes-prerequisites-v2", revisionInputs, source.ChartVersion, source.Helpers})
+		SkillsMode   sandboxworkload.SkillsMode `json:",omitempty"`
+	}{"kubernetes-prerequisites-v2", revisionInputs, source.ChartVersion, source.Helpers, mode})
 	if err != nil {
 		return empty, err
 	}
@@ -259,9 +288,9 @@ func (p *KubernetesSandboxPrerequisites) resolve(ctx context.Context, requested 
 	}
 	return SandboxPrerequisites{
 		AgentUID: agent.UID, AgentGeneration: agent.Generation, Revision: revision, ObservedAt: observedAt,
-		NamespaceUID:  namespace.UID,
-		Home:          sandboxworkload.ObjectIdentity{Name: home.Name, UID: home.UID},
-		Skills:        sandboxworkload.ObjectIdentity{Name: skills.Name, UID: skills.UID},
+		NamespaceUID: namespace.UID,
+		Home:         sandboxworkload.ObjectIdentity{Name: home.Name, UID: home.UID},
+		Skills:       skillsID, SkillsMode: mode,
 		RuntimeSecret: sandboxworkload.ObjectIdentity{Name: secret.Name, UID: secret.UID},
 		ChartVersion:  source.ChartVersion, Helpers: source.Helpers,
 		PublicationSources: publicationSources,
@@ -303,7 +332,7 @@ func (p *KubernetesSandboxPrerequisites) CheckQuiesced(ctx context.Context, agen
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if p == nil || p.WriterExclusion == nil {
+	if p == nil || (p.WriterExclusion == nil && p.NativeQuiescence == nil) {
 		return fmt.Errorf("%w: no qualified guest-external Sandbox writer-exclusion source is installed", sandbox.ErrObservationUnavailable)
 	}
 	if agent == nil || agent.Namespace != "" || len(validation.IsDNS1123Subdomain(agent.Name)) != 0 ||
@@ -321,6 +350,9 @@ func (p *KubernetesSandboxPrerequisites) CheckQuiesced(ctx context.Context, agen
 		return err
 	}
 	prerequisites = copySandboxPrerequisites(prerequisites)
+	if p.NativeQuiescence != nil {
+		return p.NativeQuiescence.CheckQuiesced(ctx, agent.DeepCopy(), prerequisites)
+	}
 	if err := p.WriterExclusion.CheckQuiesced(ctx, agent.DeepCopy(), prerequisites); err != nil {
 		return err
 	}

@@ -38,6 +38,12 @@ func ValidatePod(pod *corev1.Pod, expected Expectation) error {
 		expected.Template.Annotations["sidecar.istio.io/inject"] != "false" {
 		return fmt.Errorf("a complete Agent workload expectation is required; helper classification is not supported")
 	}
+	if expected.SinglePod && expected.PodUID != "" && pod.UID != expected.PodUID {
+		return &PodMismatchError{[]string{"metadata.uid"}}
+	}
+	if err := expected.ValidateSkills(); err != nil {
+		return err
+	}
 	if expected.Placement != nil {
 		if err := expected.Placement.MatchesExpectation(expected); err != nil {
 			return err
@@ -61,7 +67,12 @@ func ValidatePod(pod *corev1.Pod, expected Expectation) error {
 	if !equality.Semantic.DeepEqual(pod.OwnerReferences, []metav1.OwnerReference{owner}) {
 		return &PodMismatchError{[]string{"metadata.ownerReferences"}}
 	}
-	if len(pod.Finalizers) != 0 {
+	finalizersValid := len(pod.Finalizers) == 0 && !expected.SinglePod
+	if expected.SinglePod && slices.Equal(expected.Template.Finalizers, []string{NativePodFinalizer}) {
+		finalizersValid = slices.Equal(pod.Finalizers, []string{NativePodFinalizer}) ||
+			(expected.PodUID == pod.UID && expected.PodUID != "" && len(pod.Finalizers) == 0)
+	}
+	if !finalizersValid {
 		return &PodMismatchError{[]string{"metadata.finalizers"}}
 	}
 	if !equalJSON(pod.Annotations, expected.Template.Annotations) {
@@ -94,6 +105,35 @@ func ValidatePod(pod *corev1.Pod, expected Expectation) error {
 		return &PodMismatchError{fields}
 	}
 	return nil
+}
+
+// ValidatePodOnNode permits only scheduling and topology labels verified against
+// the assigned Node. It does not supply independent runtime or fencing evidence.
+func ValidatePodOnNode(pod *corev1.Pod, node *corev1.Node, expected Expectation) error {
+	if pod == nil || node == nil || node.Name == "" || pod.Spec.NodeName != node.Name {
+		return &PodMismatchError{[]string{"spec.nodeName"}}
+	}
+	expected.Template = *expected.Template.DeepCopy()
+	if expected.Template.Spec.NodeName == "" {
+		expected.Template.Spec.NodeName = node.Name
+	}
+	for _, key := range []string{corev1.LabelTopologyRegion, corev1.LabelTopologyZone} {
+		value, present := pod.Labels[key]
+		if !present {
+			continue
+		}
+		current, found := node.Labels[key]
+		if !found || value != current {
+			return &PodMismatchError{[]string{"metadata.labels"}}
+		}
+		if _, pinned := expected.Template.Labels[key]; !pinned {
+			if expected.Template.Labels == nil {
+				expected.Template.Labels = map[string]string{}
+			}
+			expected.Template.Labels[key] = current
+		}
+	}
+	return ValidatePod(pod, expected)
 }
 
 func podDifferencePaths(a, b reflect.Value, path string, fields *[]string) {
@@ -153,7 +193,7 @@ func validateExpectedInventory(spec corev1.PodSpec) error {
 		allowed    []string
 	}{
 		{spec.Containers, []string{"cetirun", "logger", "desktop"}},
-		{spec.InitContainers, []string{"init-home-data", "doctor"}},
+		{spec.InitContainers, []string{"init-home-data", "doctor", "retire-copilot-sign-in", "retire-direct-model-auth"}},
 	} {
 		for _, container := range group.containers {
 			sc := container.SecurityContext
@@ -235,7 +275,7 @@ func SamePodTemplate(actual, expected corev1.PodTemplateSpec) bool {
 		return false
 	}
 	return equalJSON(a.Labels, b.Labels) && equalJSON(a.Annotations, b.Annotations) &&
-		len(a.Finalizers) == 0 && len(a.OwnerReferences) == 0 && equality.Semantic.DeepEqual(a.Spec, b.Spec)
+		slices.Equal(a.Finalizers, b.Finalizers) && len(a.OwnerReferences) == 0 && equality.Semantic.DeepEqual(a.Spec, b.Spec)
 }
 
 func defaultPod(spec *corev1.PodSpec) error {
@@ -292,15 +332,14 @@ func defaultPod(spec *corev1.PodSpec) error {
 		}
 	}
 	for _, key := range []string{"node.kubernetes.io/not-ready", "node.kubernetes.io/unreachable"} {
-		found := false
-		for _, toleration := range spec.Tolerations {
-			found = found || toleration.Key == key && toleration.Effect == corev1.TaintEffectNoExecute
-		}
-		if !found {
-			spec.Tolerations = append(spec.Tolerations, corev1.Toleration{
-				Key: key, Operator: corev1.TolerationOpExists, Effect: corev1.TaintEffectNoExecute, TolerationSeconds: ptr.To(int64(300)),
-			})
-		}
+		defaultToleration(spec, corev1.Toleration{
+			Key: key, Operator: corev1.TolerationOpExists, Effect: corev1.TaintEffectNoExecute, TolerationSeconds: ptr.To(int64(300)),
+		})
+	}
+	if ptr.Deref(spec.RuntimeClassName, "") != "" && spec.NodeSelector["kubernetes.azure.com/kata-vm-isolation"] == "true" {
+		defaultToleration(spec, corev1.Toleration{
+			Key: "node.kubernetes.io/memory-pressure", Operator: corev1.TolerationOpExists, Effect: corev1.TaintEffectNoSchedule,
+		})
 	}
 	slices.SortFunc(spec.Tolerations, func(a, b corev1.Toleration) int {
 		return strings.Compare(a.Key+"/"+string(a.Effect)+"/"+string(a.Operator)+"/"+a.Value, b.Key+"/"+string(b.Effect)+"/"+string(b.Operator)+"/"+b.Value)
@@ -313,6 +352,15 @@ func defaultPod(spec *corev1.PodSpec) error {
 	}
 	*spec = normalized
 	return nil
+}
+
+func defaultToleration(spec *corev1.PodSpec, expected corev1.Toleration) {
+	for _, toleration := range spec.Tolerations {
+		if toleration.Key == expected.Key && toleration.Effect == expected.Effect {
+			return
+		}
+	}
+	spec.Tolerations = append(spec.Tolerations, expected)
 }
 
 func defaultDownwardItems(items []corev1.DownwardAPIVolumeFile) {

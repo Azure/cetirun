@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -26,6 +27,7 @@ import (
 	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxbinding"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
 )
 
 const sandboxHoldFinalizer = sandbox.HoldFinalizer
@@ -194,7 +196,10 @@ func (r *AgentReconciler) stopSandboxBuiltin(ctx context.Context, agent *cetirun
 	reader := r.customReader()
 	namespace := instanceNamespace(agent.Name)
 	if err := reader.Get(ctx, types.NamespacedName{Name: namespace}, &corev1.Namespace{}); err != nil {
-		return client.IgnoreNotFound(err)
+		if apierrors.IsNotFound(err) {
+			return r.stopNativeSandboxReservation(ctx, agent)
+		}
+		return err
 	}
 	var failures []error
 	sts := &appsv1.StatefulSet{}
@@ -232,6 +237,18 @@ func (r *AgentReconciler) stopSandboxBuiltin(ctx context.Context, agent *cetirun
 	} else if err := r.Delete(ctx, route, client.Preconditions{UID: &route.UID, ResourceVersion: &route.ResourceVersion}); err != nil && !apierrors.IsNotFound(err) {
 		failures = append(failures, fmt.Errorf("remove sandbox-held route: %w", err))
 	}
+	if (r.SandboxPreparation != nil && r.SandboxPreparation.NativeExecution) ||
+		slices.Contains(sts.Spec.Template.Finalizers, sandboxworkload.NativePodFinalizer) ||
+		!agent.DeletionTimestamp.IsZero() {
+		if err := r.finishNativePodLifetime(ctx, agent); err != nil {
+			failures = append(failures, err)
+		}
+	}
+	if len(failures) == 0 {
+		if err := r.stopNativeSandboxReservation(ctx, agent); err != nil {
+			failures = append(failures, err)
+		}
+	}
 	return errors.Join(failures...)
 }
 
@@ -259,7 +276,8 @@ func (r *AgentReconciler) deleteSandboxBuiltin(ctx context.Context, agent *cetir
 	// Failed revocation or status writes must not skip independent shutdown.
 	revokeErr := r.revokeSandboxPreparationGrants(ctx, agent)
 	stopErr := r.stopSandboxBuiltin(ctx, agent)
-	if err := errors.Join(statusErr, revokeErr, stopErr); err != nil {
+	gatewayErr := r.deleteAIGatewayKey(ctx, agent)
+	if err := errors.Join(statusErr, revokeErr, stopErr, gatewayErr); err != nil {
 		return ctrl.Result{}, err
 	}
 	if err := r.cleanupRegistryCredentials(ctx, agent, true); err != nil {
@@ -275,9 +293,6 @@ func (r *AgentReconciler) deleteSandboxBuiltin(ctx context.Context, agent *cetir
 		if err := r.deleteAgentIdentity(ctx, agent); err != nil {
 			return ctrl.Result{}, fmt.Errorf("clean up sandbox-held Agent Identity: %w", err)
 		}
-	}
-	if err := r.deleteAIGatewayKey(ctx, agent); err != nil {
-		return ctrl.Result{}, fmt.Errorf("revoke sandbox-held AI Gateway key: %w", err)
 	}
 	ns := &corev1.Namespace{}
 	err := r.customReader().Get(ctx, types.NamespacedName{Name: instanceNamespace(agent.Name)}, ns)

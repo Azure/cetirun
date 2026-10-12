@@ -4,6 +4,10 @@ Licensed under the MIT License.
 */}}
 {{- define "cetirun.sandbox.validate" -}}
 {{- $s := .Values.sandboxWorkload -}}
+{{- $emptySkills := eq ($s.skillsMode | default "") "empty" -}}
+{{- if and (hasKey $s "skillsMode") (not $emptySkills) -}}
+{{- fail "Sandbox skillsMode must be empty when explicitly supplied" -}}
+{{- end -}}
 {{- if or (ne $s.contractVersion "v1") (ne $s.executionHeld true) (ne (int .Values.replicaCount) 0) -}}
 {{- fail "Sandbox render plans must retain the execution hold" -}}
 {{- end -}}
@@ -18,8 +22,13 @@ Licensed under the MIT License.
 {{- if or (eq (len $servers) 0) (gt (len $servers) 3) -}}
 {{- fail "Sandbox requires one to three compiler-selected DNS server IPs" -}}
 {{- end -}}
-{{- if or (not .Values.runtimeClassName) (not .Values.persistence.existingClaim) .Values.persistence.useStatefulSetVolumeClaim (not .Values.skills.existingClaim) -}}
+{{- if or (not .Values.runtimeClassName) (not .Values.persistence.existingClaim) .Values.persistence.useStatefulSetVolumeClaim (and (not $emptySkills) (not .Values.skills.existingClaim)) -}}
 {{- fail "Sandbox requires a runtime and separately owned existing HOME/skills claims" -}}
+{{- end -}}
+{{- if $emptySkills -}}
+{{- if or (ne (include "cetirun.agent.type" .) "openclaw") (not .Values.aiGateway.enabled) .Values.skills.shared .Values.skills.existingClaim .Values.skills.npm .Values.skills.clawHub (ne .Values.skills.mountPath "/home/vibe/.aks/skills") (ne (toJson ($s.podFinalizers | default list)) (toJson (list "cetirun.microsoft.com/native-pod-lifetime"))) -}}
+{{- fail "Sandbox empty skills require native OpenClaw Gateway lifetime protection, no shared claim or packages, and the fixed skills path" -}}
+{{- end -}}
 {{- end -}}
 {{- if or .Values.azureWorkloadIdentity.enabled .Values.agentIdentity.enabled (ne (include "cetirun.automountServiceAccountToken" .) "false") -}}
 {{- fail "Sandbox identities must use compiler-owned explicit projections" -}}

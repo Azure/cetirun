@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxcoordination"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxplacement"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
 	"github.com/Masterminds/semver/v3"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	strictjson "sigs.k8s.io/json"
@@ -19,12 +21,15 @@ import (
 // execution evidence. It does not configure a writer-exclusion implementation.
 type SandboxSourcesConfig struct {
 	Enabled                     bool                    `json:"enabled"`
+	NativeExecution             bool                    `json:"nativeExecution"`
 	BootstrapOwnedPrerequisites bool                    `json:"bootstrapOwnedPrerequisites"`
 	PlatformConfigMapName       string                  `json:"platformConfigMapName"`
 	HomeClaimName               string                  `json:"homeClaimName"`
 	SkillsClaimName             string                  `json:"skillsClaimName"`
 	SkillsCatalogConfigMapName  string                  `json:"skillsCatalogConfigMapName,omitempty"`
 	PlacementConfigMapName      string                  `json:"placementConfigMapName,omitempty"`
+	CoordinationConfigMapName   string                  `json:"coordinationConfigMapName,omitempty"`
+	CoordinationConfigMapUID    string                  `json:"coordinationConfigMapUID,omitempty"`
 	AdmissionServiceAccount     string                  `json:"admissionServiceAccount"`
 	Helpers                     sandboxworkload.Helpers `json:"helpers"`
 }
@@ -45,6 +50,24 @@ func ParseSandboxSourcesConfig(raw string) (SandboxSourcesConfig, error) {
 }
 
 func (config SandboxSourcesConfig) validate() error {
+	if config.CoordinationConfigMapName != "" || config.CoordinationConfigMapUID != "" {
+		if !config.Enabled || config.CoordinationConfigMapName == config.PlatformConfigMapName ||
+			config.CoordinationConfigMapName == config.PlacementConfigMapName ||
+			config.CoordinationConfigMapName == config.SkillsCatalogConfigMapName {
+			return fmt.Errorf("Sandbox coordination requires enabled sources and a separate authority ConfigMap")
+		}
+		if err := sandboxcoordination.ValidateAuthorityIdentity(sandboxworkload.ObjectIdentity{
+			Name: config.CoordinationConfigMapName, UID: types.UID(config.CoordinationConfigMapUID),
+		}); err != nil {
+			return err
+		}
+	}
+	if config.NativeExecution && (!config.Enabled || !config.BootstrapOwnedPrerequisites || config.Helpers.Desktop) {
+		return fmt.Errorf("native Sandbox execution requires enabled sources, owned bootstrap and no desktop helper")
+	}
+	if config.NativeExecution && config.PlacementConfigMapName != "" {
+		return fmt.Errorf("native Sandbox execution uses RuntimeClass scheduling; a placement registry is unsupported")
+	}
 	if config.PlacementConfigMapName != "" &&
 		(!config.Enabled || len(validation.IsDNS1123Subdomain(config.PlacementConfigMapName)) != 0 ||
 			config.PlacementConfigMapName == config.PlatformConfigMapName ||
@@ -69,6 +92,11 @@ func (config SandboxSourcesConfig) validate() error {
 		{"skillsClaimName", config.SkillsClaimName},
 		{"admissionServiceAccount", config.AdmissionServiceAccount},
 	} {
+		// Retain valid empty-skills settings when disabling new native starts.
+		// Prerequisite resolution still requires a claim for PVC-backed modes.
+		if field.name == "skillsClaimName" && field.value == "" && config.SkillsCatalogConfigMapName == "" {
+			continue
+		}
 		if len(validation.IsDNS1123Subdomain(field.value)) != 0 {
 			return fmt.Errorf("Sandbox sources require a valid %s", field.name)
 		}
@@ -79,9 +107,9 @@ func (config SandboxSourcesConfig) validate() error {
 	return nil
 }
 
-// NewKubernetesSandboxPreparation installs sources for held preparation, with
-// optional owned-resource bootstrap. A writer-exclusion adapter must be supplied separately;
-// the nil default never treats Kubernetes object state as fencing evidence.
+// NewKubernetesSandboxPreparation defaults to held preparation. NativeExecution
+// separately opts into Kubernetes single-start semantics, not physical fencing.
+// The default path still requires a qualified writer-exclusion adapter.
 func NewKubernetesSandboxPreparation(config SandboxSourcesConfig, reader client.Reader,
 	installer SandboxHelmInstaller, namespace, chartVersion string,
 ) (*SandboxPreparation, error) {
@@ -96,15 +124,20 @@ func NewKubernetesSandboxPreparation(config SandboxSourcesConfig, reader client.
 		return nil, fmt.Errorf("Sandbox sources require an authoritative reader, installer, operator namespace and approved chart version")
 	}
 	preparation := &SandboxPreparation{
+		NativeExecution: config.NativeExecution,
 		Configuration: &KubernetesSandboxConfigurationSource{
 			APIReader: reader, Namespace: namespace, Name: config.PlatformConfigMapName,
 		},
 		Prerequisites: &KubernetesSandboxPrerequisites{
-			APIReader: reader, HomeClaimName: config.HomeClaimName, SkillsClaimName: config.SkillsClaimName,
+			NativeExecution: config.NativeExecution,
+			APIReader:       reader, HomeClaimName: config.HomeClaimName, SkillsClaimName: config.SkillsClaimName,
 			OperatorNamespace: namespace, SkillsCatalogConfigMapName: config.SkillsCatalogConfigMapName,
 			ChartVersion: chartVersion, Helpers: config.Helpers,
 		},
 		Installer: installer, AdmissionServiceAccount: config.AdmissionServiceAccount,
+	}
+	if config.NativeExecution {
+		preparation.Prerequisites.(*KubernetesSandboxPrerequisites).NativeQuiescence = &KubernetesNativeQuiescence{APIReader: reader}
 	}
 	if config.PlacementConfigMapName != "" {
 		placement, err := sandboxplacement.NewHandler(reader, sandboxplacement.Config{

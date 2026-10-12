@@ -10,6 +10,7 @@ import (
 	"slices"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/aigateway"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxplatform"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxpolicy"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
@@ -54,11 +55,28 @@ func (r *AgentReconciler) sandboxPreparationInput(ctx context.Context, attempt *
 		!equality.Semantic.DeepEqual(namespace.OwnerReferences, owner) {
 		return fmt.Errorf("Sandbox namespace protection or UID ownership is not established")
 	}
-	home, skills := &corev1.PersistentVolumeClaim{}, &corev1.PersistentVolumeClaim{}
-	for _, claim := range []struct {
+	if err := inputs.SkillsMode.ValidateIdentity(inputs.Skills); err != nil {
+		return err
+	}
+	if inputs.SkillsMode == sandboxworkload.SkillsModeEmpty &&
+		(!config.NativeExecution || config.bootstrap == nil || len(inputs.PublicationSources) != 0 ||
+			sandboxSkillsMode(config.NativeExecution, config.bootstrap.SkillsCatalogConfigMapName, agent, attempt.team) != inputs.SkillsMode) {
+		return fmt.Errorf("empty skills require native execution, an empty effective selection and no configured catalog or publication")
+	}
+	home := &corev1.PersistentVolumeClaim{}
+	var skills *corev1.PersistentVolumeClaim
+	claims := []struct {
 		expected sandboxworkload.ObjectIdentity
 		object   *corev1.PersistentVolumeClaim
-	}{{inputs.Home, home}, {inputs.Skills, skills}} {
+	}{{inputs.Home, home}}
+	if inputs.SkillsMode != sandboxworkload.SkillsModeEmpty {
+		skills = &corev1.PersistentVolumeClaim{}
+		claims = append(claims, struct {
+			expected sandboxworkload.ObjectIdentity
+			object   *corev1.PersistentVolumeClaim
+		}{inputs.Skills, skills})
+	}
+	for _, claim := range claims {
 		if claim.expected.Name == "" || claim.expected.UID == "" {
 			return fmt.Errorf("Sandbox HOME and skills require explicit persisted identities")
 		}
@@ -96,18 +114,39 @@ func (r *AgentReconciler) sandboxPreparationInput(ctx context.Context, attempt *
 		Resolution: attempt.resolution, AgentName: agent.Name, AgentGeneration: agent.Generation,
 		AgentType: string(agent.Spec.Agent.Type), WorkloadName: instanceServiceName(agent.Name), ReleaseName: helmReleaseName(agent.Name),
 		Namespace: sandboxworkload.ObjectIdentity{Name: namespace.Name, UID: namespace.UID},
-		Home:      home, Skills: skills, RuntimeClass: runtimeClass,
+		Home:      home, Skills: skills, SkillsMode: inputs.SkillsMode, RuntimeClass: runtimeClass,
 		Helpers: inputs.Helpers, AuthorizedSecrets: []string{inputs.RuntimeSecret.Name},
 	}
 	attempt.sources = append(attempt.sources,
 		sandboxSource(namespace, "v1", "Namespace"),
 		sandboxSource(home, "v1", "PersistentVolumeClaim"),
-		sandboxSource(skills, "v1", "PersistentVolumeClaim"),
+	)
+	if skills != nil {
+		attempt.sources = append(attempt.sources, sandboxSource(skills, "v1", "PersistentVolumeClaim"))
+	}
+	attempt.sources = append(attempt.sources,
 		sandboxSource(secret, "v1", "Secret"),
 		sandboxSource(runtimeClass, "node.k8s.io/v1", "RuntimeClass"),
 		sandboxSource(storageClass, "storage.k8s.io/v1", "StorageClass"),
 	)
 	attempt.sources = append(attempt.sources, inputs.PublicationSources...)
+	if config.NativeExecution {
+		if !sandboxGatewayProjectionReady(agent) {
+			return fmt.Errorf("%w: current Gateway projection is required for native execution", sandboxpolicy.ErrUnavailable)
+		}
+		key := &corev1.Secret{}
+		if err := r.APIReader.Get(ctx, client.ObjectKey{Namespace: namespace.Name, Name: aiGatewayKeySecretName}, key); err != nil {
+			return fmt.Errorf("read Sandbox AI Gateway key projection: %w", err)
+		}
+		if key.UID == "" || key.ResourceVersion == "" || !key.DeletionTimestamp.IsZero() ||
+			!hasAgentOwner(key, agent) || key.Labels[aiGatewayAgentUIDLabel] != string(agent.UID) ||
+			!aigateway.ValidKeyValue(string(key.Data[aiGatewayKeySecretField])) {
+			return fmt.Errorf("Sandbox AI Gateway key projection is not owned and ready")
+		}
+		attempt.input.AuthorizedSecrets = append(attempt.input.AuthorizedSecrets, key.Name)
+		attempt.input.GatewayKey = &sandboxworkload.ObjectIdentity{Name: key.Name, UID: key.UID}
+		attempt.sources = append(attempt.sources, sandboxSource(key, "v1", "Secret"))
+	}
 	// Recheck captured versions before applying grants/workloads or accepting
 	// read-only reuse; durable bookkeeping can precede those checks.
 	return nil

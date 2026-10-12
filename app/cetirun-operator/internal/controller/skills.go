@@ -7,7 +7,16 @@ import (
 	"fmt"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
 )
+
+func sandboxSkillsMode(native bool, catalog string, agent *api.Agent, team *api.Team) sandboxworkload.SkillsMode {
+	if native && catalog == "" &&
+		len(computeEffectiveSkills(team, agent.Spec.SkillOverrides.Add, agent.Spec.SkillOverrides.Remove)) == 0 {
+		return sandboxworkload.SkillsModeEmpty
+	}
+	return ""
+}
 
 // applySkillValues keeps global, Team and per-Agent skill selection independent
 // of the Agent runtime. Package materialization remains runtime-specific.

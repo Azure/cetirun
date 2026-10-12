@@ -15,6 +15,7 @@ import (
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxbinding"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxcoordination"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxplacement"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
 	admissionv1 "k8s.io/api/admission/v1"
@@ -24,6 +25,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation"
@@ -48,15 +50,19 @@ type PodConfig struct {
 	StateNamespace string
 	// Optional placement registry also verifies Node-added topology labels.
 	PlacementConfigMapName string
+	// Same UID-pinned authority as configuration admission; never written here.
+	CoordinationConfigMapName string
+	CoordinationConfigMapUID  string
 	// RequestTimeout covers all authoritative reads, not each individual GET.
 	// The chart reserves 20% of the webhook timeout for transport and response.
 	RequestTimeout time.Duration
 }
 
 type PodHandler struct {
-	reader    client.Reader
-	config    PodConfig
-	placement *sandboxplacement.Handler
+	reader       client.Reader
+	config       PodConfig
+	placement    *sandboxplacement.Handler
+	coordination *sandboxcoordination.Store
 }
 
 func (h *PodHandler) Handle(ctx context.Context, request admission.Request) admission.Response {
@@ -76,6 +82,16 @@ func NewPodHandler(reader client.Reader, config PodConfig) (*PodHandler, error) 
 		return nil, fmt.Errorf("Pod admission request timeout must be positive and less than 30 seconds")
 	}
 	handler := &PodHandler{reader: reader, config: config}
+	if config.CoordinationConfigMapName != "" || config.CoordinationConfigMapUID != "" {
+		identity := sandboxworkload.ObjectIdentity{Name: config.CoordinationConfigMapName, UID: types.UID(config.CoordinationConfigMapUID)}
+		if err := sandboxcoordination.ValidateAuthorityIdentity(identity); err != nil {
+			return nil, err
+		}
+		if config.CoordinationConfigMapName == config.PlacementConfigMapName {
+			return nil, fmt.Errorf("Pod coordination and placement require separate ConfigMaps")
+		}
+		handler.coordination = &sandboxcoordination.Store{APIReader: reader, Namespace: config.StateNamespace, Identity: identity}
+	}
 	if config.PlacementConfigMapName != "" {
 		placement, err := sandboxplacement.NewHandler(reader, sandboxplacement.Config{
 			Namespace: config.StateNamespace, ConfigMapName: config.PlacementConfigMapName,
@@ -129,9 +145,13 @@ func (h *PodHandler) Validate(ctx context.Context, request admission.Request) ad
 	if podGarbageCollectorFinalizerUpdate(request, &pod) {
 		return admission.Allowed("garbage collector Pod finalization remains independent of policy admission")
 	}
-	expected, state, failure := h.readExpectation(ctx, request.Namespace)
+	releaseFinalizer := nativePodFinalizerRemoval(request, &pod)
+	expected, state, failure := h.readPodExpectation(ctx, request.Namespace, releaseFinalizer)
 	if failure != nil {
 		return rejectPod(ctx, request, failure)
+	}
+	if releaseFinalizer {
+		return h.releaseNativePodFinalizer(ctx, request, &pod, expected, state)
 	}
 	agent, binding, err := sandboxbinding.Read(ctx, h.reader, client.ObjectKey{Name: expected.Agent.Name})
 	if err != nil || agent.UID != expected.Agent.UID || agent.Generation != expected.AgentGeneration ||
@@ -141,8 +161,14 @@ func (h *PodHandler) Validate(ctx context.Context, request admission.Request) ad
 	if expected.ExecutionHeld || agent.Spec.Suspended || slices.Contains(agent.Finalizers, sandbox.HoldFinalizer) {
 		return rejectPod(ctx, request, podDenied("ExecutionHeld", sandboxworkload.ErrExecutionHeld.Error()))
 	}
+	if expected.SinglePod && expected.PodUID != "" && request.Operation == admissionv1.Create {
+		return rejectPod(ctx, request, podDenied("ReplacementUnsupported", "native Sandbox Pod replacement requires a new Agent"))
+	}
 	if expected.Placement != nil && h.placement == nil {
 		return rejectPod(ctx, request, podDenied("PlacementUnavailable", "recorded placement requires the configured authoritative placement reader"))
+	}
+	if failure := h.validateNativeReservation(ctx, expected); failure != nil {
+		return rejectPod(ctx, request, failure)
 	}
 	if failure := h.validatePodSources(ctx, expected, agent); failure != nil {
 		return rejectPod(ctx, request, failure)
@@ -201,10 +227,30 @@ func (h *PodHandler) Validate(ctx context.Context, request admission.Request) ad
 	if currentState.UID != state.UID || currentState.ResourceVersion != state.ResourceVersion {
 		return rejectPod(ctx, request, podDenied("ExpectationChanged", "Pod expectation changed during validation"))
 	}
+	if failure := h.validateNativeReservation(ctx, expected); failure != nil {
+		return rejectPod(ctx, request, failure)
+	}
 	if ctx.Err() != nil {
 		return rejectPod(ctx, request, podReadFailure("Expectation", ctx.Err()))
 	}
 	return admission.Allowed("final Pod matches current controller-owned expectations")
+}
+
+func (h *PodHandler) validateNativeReservation(ctx context.Context, expected sandboxworkload.Expectation) *podFailure {
+	if !expected.SinglePod || h.coordination == nil {
+		return nil
+	}
+	intent, err := sandboxcoordination.NativeIntentFor(expected)
+	if err != nil {
+		return podReadFailure("NativeReservation", err)
+	}
+	if err := h.coordination.AuthorizeNativeStart(ctx, intent); err != nil {
+		if errors.Is(err, sandboxcoordination.ErrConflict) {
+			return podDenied("NativeReservationRequired", "native Sandbox requires its current non-stopping source reservation")
+		}
+		return podReadFailure("NativeReservation", err)
+	}
+	return nil
 }
 
 func decodePod(raw []byte, target *corev1.Pod) error {
@@ -235,6 +281,10 @@ func podGarbageCollectorFinalizerUpdate(request admission.Request, pod *corev1.P
 }
 
 func (h *PodHandler) readExpectation(ctx context.Context, namespace string) (sandboxworkload.Expectation, *corev1.ConfigMap, *podFailure) {
+	return h.readPodExpectation(ctx, namespace, false)
+}
+
+func (h *PodHandler) readPodExpectation(ctx context.Context, namespace string, cleanup bool) (sandboxworkload.Expectation, *corev1.ConfigMap, *podFailure) {
 	var expected sandboxworkload.Expectation
 	if namespace == h.config.StateNamespace {
 		return expected, nil, podDenied("ControllerNamespace", "controller state is not an Agent namespace")
@@ -243,7 +293,7 @@ func (h *PodHandler) readExpectation(ctx context.Context, namespace string) (san
 	if err := h.reader.Get(ctx, client.ObjectKey{Name: namespace}, ns); err != nil {
 		return expected, nil, podReadFailure("Namespace", err)
 	}
-	if ns.UID == "" || !ns.DeletionTimestamp.IsZero() ||
+	if ns.UID == "" || (!cleanup && !ns.DeletionTimestamp.IsZero()) ||
 		ns.Labels[sandboxworkload.ProtectedNamespaceLabel] != "true" {
 		return expected, nil, podDenied("NamespaceInactive", "namespace is unprotected, absent or terminating")
 	}
@@ -258,7 +308,7 @@ func (h *PodHandler) readExpectation(ctx context.Context, namespace string) (san
 	problems, err := strictjson.UnmarshalStrict([]byte(raw), &expected)
 	if err != nil || len(problems) != 0 ||
 		len(state.Data) != 1 || len(state.BinaryData) != 0 || state.UID == "" || state.ResourceVersion == "" ||
-		!state.DeletionTimestamp.IsZero() || expected.Version != sandboxworkload.ExpectationVersion ||
+		(!cleanup && !state.DeletionTimestamp.IsZero()) || expected.Version != sandboxworkload.ExpectationVersion ||
 		expected.Namespace.Name != ns.Name || expected.Namespace.UID != ns.UID ||
 		expected.WorkloadKind != sandboxworkload.AgentWorkload || expected.Workload.Name == "" || expected.Workload.UID == "" ||
 		expected.Agent.Name == "" || expected.Agent.UID == "" || expected.Revision == "" ||
@@ -271,6 +321,9 @@ func (h *PodHandler) readExpectation(ctx context.Context, namespace string) (san
 		ns.Annotations[sandboxworkload.AgentUIDAnnotation] != string(expected.Agent.UID) ||
 		!equality.Semantic.DeepEqual(ns.OwnerReferences, []metav1.OwnerReference{sandboxworkload.AgentOwner(expected.Agent.Name, expected.Agent.UID)}) {
 		return expected, nil, podDenied("NamespaceOwnershipChanged", "namespace ownership differs from the controller-owned expectation")
+	}
+	if err := expected.ValidateSkills(); err != nil {
+		return expected, nil, podDenied("ExpectationInvalid", "invalid controller-owned skills source")
 	}
 	return expected, state, nil
 }
@@ -287,9 +340,11 @@ func (h *PodHandler) validatePodSources(ctx context.Context, expected sandboxwor
 		{"v1", "Namespace", "", expected.Namespace.Name}:                                               expected.Namespace.UID,
 		{"apps/v1", "StatefulSet", expected.Namespace.Name, expected.Workload.Name}:                    expected.Workload.UID,
 		{"v1", "PersistentVolumeClaim", expected.Namespace.Name, expected.Home.Name}:                   expected.Home.UID,
-		{"v1", "PersistentVolumeClaim", expected.Namespace.Name, expected.Skills.Name}:                 expected.Skills.UID,
 		{"v1", "ServiceAccount", expected.Namespace.Name, expected.Template.Spec.ServiceAccountName}:   "",
 		{"node.k8s.io/v1", "RuntimeClass", "", ptr.Deref(expected.Template.Spec.RuntimeClassName, "")}: "",
+	}
+	if expected.SkillsMode != sandboxworkload.SkillsModeEmpty {
+		required[objectKey{"v1", "PersistentVolumeClaim", expected.Namespace.Name, expected.Skills.Name}] = expected.Skills.UID
 	}
 	for _, source := range sandboxworkload.PodSourceReferences(expected.Template.Spec, expected.Namespace.Name) {
 		key := objectKey{source.APIVersion, source.Kind, source.Namespace, source.Name}
@@ -303,6 +358,11 @@ func (h *PodHandler) validatePodSources(ctx context.Context, expected sandboxwor
 		key := objectKey{source.APIVersion, source.Kind, source.Namespace, source.Name}
 		if !source.ValidIdentity() || seen[key] {
 			return podDenied("SourceInventoryInvalid", "source identities must be complete and unique")
+		}
+		if expected.SkillsMode == sandboxworkload.SkillsModeEmpty && source.APIVersion == "v1" &&
+			(source.Kind == "PersistentVolume" || (source.Kind == "PersistentVolumeClaim" &&
+				(source.Namespace != expected.Namespace.Name || source.Name != expected.Home.Name))) {
+			return podDenied("SourceInventoryInvalid", "empty skills cannot pin a skills PVC or publication volume")
 		}
 		if source.IsAgent() && (source.Name != expected.Agent.Name || source.Generation != expected.AgentGeneration) {
 			return podDenied("SourceBindingChanged", "Agent intent differs from the expectation")
@@ -370,6 +430,22 @@ func (h *PodHandler) readPodSource(ctx context.Context, expected sandboxworkload
 		return nil
 	}
 	var object client.Object = &metav1.PartialObjectMetadata{TypeMeta: metav1.TypeMeta{APIVersion: source.APIVersion, Kind: source.Kind}}
+	effectiveSource := expected.SinglePod && sandboxworkload.EffectiveSource(source)
+	if effectiveSource {
+		version, err := schema.ParseGroupVersion(source.APIVersion)
+		if err != nil {
+			return podDenied("SourceInvalid", "native source version is invalid")
+		}
+		value := &unstructured.Unstructured{}
+		value.SetGroupVersionKind(version.WithKind(source.Kind))
+		object = value
+		if source.APIVersion == api.GroupVersion.String() && source.Kind == "Team" {
+			object = &api.Team{}
+		}
+		if source.APIVersion == "v1" && source.Kind == "PersistentVolumeClaim" {
+			object = &corev1.PersistentVolumeClaim{}
+		}
+	}
 	var runtimeClass *nodev1.RuntimeClass
 	if source.APIVersion == "node.k8s.io/v1" && source.Kind == "RuntimeClass" && source.Namespace == "" &&
 		source.Name == ptr.Deref(expected.Template.Spec.RuntimeClassName, "") {
@@ -379,8 +455,28 @@ func (h *PodHandler) readPodSource(ctx context.Context, expected sandboxworkload
 	if err := h.reader.Get(ctx, client.ObjectKey{Namespace: source.Namespace, Name: source.Name}, object); err != nil {
 		return podReadFailure("Source", err)
 	}
-	if object.GetUID() != source.UID || object.GetResourceVersion() != source.ResourceVersion || !object.GetDeletionTimestamp().IsZero() {
+	workloadSource := expected.SinglePod && source.APIVersion == "apps/v1" && source.Kind == "StatefulSet" &&
+		source.Namespace == expected.Namespace.Name && source.Name == expected.Workload.Name && source.UID == expected.Workload.UID
+	// Native startup changes replicas and the StatefulSet controller updates
+	// status. Validate its complete current template/lifecycle in Validate.
+	if object.GetUID() != source.UID || (!workloadSource && !effectiveSource && object.GetResourceVersion() != source.ResourceVersion) || !object.GetDeletionTimestamp().IsZero() {
 		return podDenied("SourceChanged", "a source UID or revision changed, or the source is terminating")
+	}
+	if effectiveSource {
+		box := ""
+		for _, entry := range expected.Sources {
+			if entry.APIVersion == api.GroupVersion.String() && entry.Kind == "Sandbox" && entry.UID == expected.Binding.SandboxUID {
+				box = entry.Name
+			}
+		}
+		digest, err := sandboxworkload.ExecutionSourceDigest(object, box, expected.Binding.PolicyClass)
+		if claim, ok := object.(*corev1.PersistentVolumeClaim); ok {
+			digest, err = sandboxworkload.NativeClaimDigest(claim)
+		}
+		pinned := expected.SourceDigests[sandboxworkload.SourceKey(source)]
+		if err != nil || !sandboxworkload.ValidInputDigest(pinned) || digest != pinned {
+			return podDenied("SourceChanged", "native Sandbox effective source inputs changed")
+		}
 	}
 	if source.APIVersion == "v1" && source.Kind == "PersistentVolumeClaim" &&
 		source.Namespace == expected.Namespace.Name && source.Name == expected.Home.Name &&
