@@ -9,20 +9,23 @@ import (
 
 // TeamSpec defines team-wide configuration applied to every member instance.
 type TeamSpec struct {
-	// NormalAgentPolicyRef names the policy for normal-class Agents.
+	// AgentPolicyRef names the policy applied to every Agent in this Team.
 	// A Team without any policy or Sandbox fields retains legacy execution.
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=253
 	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`
 	// +optional
-	NormalAgentPolicyRef string `json:"normalAgentPolicyRef,omitempty"`
+	AgentPolicyRef string `json:"agentPolicyRef,omitempty"`
 
-	// AdminAgentPolicyRef optionally names the policy for admin-class Agents.
-	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:validation:MaxLength=253
-	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`
+	// DeprecatedNormalAgentPolicyRef retains old policy intent for rejection only.
+	// +kubebuilder:validation:MaxLength=0
 	// +optional
-	AdminAgentPolicyRef string `json:"adminAgentPolicyRef,omitempty"`
+	DeprecatedNormalAgentPolicyRef string `json:"normalAgentPolicyRef,omitempty"`
+
+	// DeprecatedAdminAgentPolicyRef retains old policy intent for rejection only.
+	// +kubebuilder:validation:MaxLength=0
+	// +optional
+	DeprecatedAdminAgentPolicyRef string `json:"adminAgentPolicyRef,omitempty"`
 
 	// SandboxRefs lists the Sandboxes permitted for this Team.
 	// +kubebuilder:validation:MinItems=1
@@ -68,7 +71,7 @@ type TeamSpec struct {
 
 // PolicyConfigured reports policy intent, including incomplete configurations.
 func (s TeamSpec) PolicyConfigured() bool {
-	return s.NormalAgentPolicyRef != "" || s.AdminAgentPolicyRef != "" ||
+	return s.AgentPolicyRef != "" || s.DeprecatedNormalAgentPolicyRef != "" || s.DeprecatedAdminAgentPolicyRef != "" ||
 		len(s.SandboxRefs) != 0 || s.DefaultSandboxRef != ""
 }
 

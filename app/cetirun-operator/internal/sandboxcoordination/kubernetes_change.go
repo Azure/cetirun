@@ -398,16 +398,19 @@ func newConfigurationChange(before, after client.Object, admission bool) (*confi
 	}
 	change := &configurationChange{before: oldImage, after: newImage}
 	if team, ok := oldImage.object.(*api.Team); ok {
-		if !sandbox.TeamPolicyConfigured(team) || !sandbox.TeamPolicyConfigured(newImage.object.(*api.Team)) {
-			// Legacy transitions have no complete selection on both sides.
-			// Reserve the whole Team rather than inventing a policy-class scope.
+		afterTeam := newImage.object.(*api.Team)
+		if !sandbox.TeamPolicyConfigured(team) || !sandbox.TeamPolicyConfigured(afterTeam) ||
+			team.Spec.DeprecatedNormalAgentPolicyRef != "" || team.Spec.DeprecatedAdminAgentPolicyRef != "" ||
+			afterTeam.Spec.DeprecatedNormalAgentPolicyRef != "" || afterTeam.Spec.DeprecatedAdminAgentPolicyRef != "" {
+			// Legacy and retired transitions have no complete selection on both sides.
+			// Reserve the whole Team rather than inventing a selection scope.
 			return change, nil
 		}
 		oldInputs, err := w.ExecutionTeamInputs(team)
 		if err != nil {
 			return nil, err
 		}
-		newInputs, err := w.ExecutionTeamInputs(newImage.object.(*api.Team))
+		newInputs, err := w.ExecutionTeamInputs(afterTeam)
 		if err != nil {
 			return nil, err
 		}

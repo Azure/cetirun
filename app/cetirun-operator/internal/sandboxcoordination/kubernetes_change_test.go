@@ -6,6 +6,7 @@ package sandboxcoordination
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -28,7 +29,7 @@ func configurationObject(kind string) client.Object {
 	switch kind {
 	case "Team":
 		return &api.Team{ObjectMeta: metav1.ObjectMeta{Name: "team"},
-			Spec: api.TeamSpec{NormalAgentPolicyRef: "policy", AdminAgentPolicyRef: "admin-policy",
+			Spec: api.TeamSpec{AgentPolicyRef: "policy",
 				SandboxRefs: []string{"sandbox", "spare"}, DefaultSandboxRef: "sandbox"}}
 	case "Sandbox":
 		resources := corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("100m"),
@@ -431,6 +432,49 @@ func TestConfigurationLegacyTeamTransitionsUseWholeTeamReservation(t *testing.T)
 	}
 }
 
+func TestRetiredTeamPolicyMigrationReservesWholeTeam(t *testing.T) {
+	for _, slot := range []string{"normal", "admin"} {
+		for _, active := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/active=%v", slot, active), func(t *testing.T) {
+				ctx := context.Background()
+				store, storage, object, _ := configurationFixture(t, "Team")
+				before := object.(*api.Team)
+				after := before.DeepCopy()
+				if active {
+					acquire(t, store, configurationIntent(t, before, "retired-transition"))
+				}
+				before.Spec.AgentPolicyRef = ""
+				if slot == "normal" {
+					before.Spec.DeprecatedNormalAgentPolicyRef = after.Spec.AgentPolicyRef
+				} else {
+					before.Spec.DeprecatedAdminAgentPolicyRef = after.Spec.AgentPolicyRef
+				}
+				if err := storage.Update(ctx, before); err != nil {
+					t.Fatal(err)
+				}
+				after.ResourceVersion = before.ResourceVersion
+				ticket, err := store.AcquireConfigurationChange(ctx, before, after)
+				if active {
+					if !errors.Is(err, ErrConflict) {
+						t.Fatalf("retired Team migration must conflict with an outstanding execution: %v", err)
+					}
+					return
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				if ticket.Change.Team != nil {
+					t.Fatal("retired Team migration must reserve the whole Team")
+				}
+				adapter := configurationAdapter(t, storage, storage, before, after)
+				if _, err := store.ReconcileChange(ctx, ticket, adapter); err != nil {
+					t.Fatal(err)
+				}
+			})
+		}
+	}
+}
+
 func configurationIntent(t *testing.T, before client.Object, suffix string) Intent {
 	t.Helper()
 	image, err := newConfigurationImage(before)
@@ -732,34 +776,27 @@ func TestKubernetesConfigurationUpdate(t *testing.T) {
 }
 
 func TestConfigurationTeamAffectedSelections(t *testing.T) {
-	for _, class := range []api.AgentPolicyClass{api.AgentPolicyClassNormal, api.AgentPolicyClassAdmin} {
-		for _, affected := range []bool{false, true} {
-			t.Run(string(class)+"/affected="+map[bool]string{false: "false", true: "true"}[affected], func(t *testing.T) {
-				store, storage, oldObject, _ := configurationFixture(t, "Team")
-				before := oldObject.(*api.Team)
-				acquire(t, store, teamIntent(t, before, "existing", class))
-				after := before.DeepCopy()
-				if (class == api.AgentPolicyClassNormal) == affected {
-					after.Spec.NormalAgentPolicyRef = "new-normal"
-				} else {
-					after.Spec.AdminAgentPolicyRef = "new-admin"
-				}
-				ticket, err := store.AcquireConfigurationChange(context.Background(), before, after)
-				if affected {
-					if !errors.Is(err, ErrConflict) {
-						t.Fatal("selected-class mutation acquired a reservation:", err)
-					}
-					return
-				}
-				if err != nil || ticket.Change.Team == nil {
-					t.Fatal("unselected class was unnecessarily blocked:", err)
-				}
-				if _, err := store.ReconcileChange(context.Background(), ticket,
-					configurationAdapter(t, storage, storage, before, after)); err != nil {
-					t.Fatal("unselected-class update failed:", err)
-				}
-			})
-		}
+	store, storage, oldObject, _ := configurationFixture(t, "Team")
+	before := oldObject.(*api.Team)
+	acquire(t, store, teamIntent(t, before, "existing"))
+	after := before.DeepCopy()
+	after.Spec.AgentPolicyRef = "new-policy"
+	if _, err := store.AcquireConfigurationChange(context.Background(), before, after); !errors.Is(err, ErrConflict) {
+		t.Fatal("Team policy mutation acquired a reservation:", err)
+	}
+
+	store, storage, oldObject, _ = configurationFixture(t, "Team")
+	before = oldObject.(*api.Team)
+	acquire(t, store, teamIntent(t, before, "existing"))
+	after = before.DeepCopy()
+	after.Spec.SandboxRefs = append(after.Spec.SandboxRefs, "another-spare")
+	ticket, err := store.AcquireConfigurationChange(context.Background(), before, after)
+	if err != nil || ticket.Change.Team == nil {
+		t.Fatal("unselected Sandbox mutation was unnecessarily blocked:", err)
+	}
+	if _, err := store.ReconcileChange(context.Background(), ticket,
+		configurationAdapter(t, storage, storage, before, after)); err != nil {
+		t.Fatal("unselected Sandbox update failed:", err)
 	}
 }
 
@@ -1108,7 +1145,7 @@ func TestConfigurationTicketTampering(t *testing.T) {
 			case "digest":
 				altered.Change.DesiredDigest = strings.Repeat("a", 64)
 			case "scope before":
-				altered.Change.Team.Before.NormalPolicy = "other"
+				altered.Change.Team.Before.Policy = "other"
 			case "scope after":
 				altered.Change.Team.After.Sandboxes[0] = "other"
 			case "no scope":
@@ -1209,9 +1246,9 @@ func TestConfigurationAuthorizationRejectsAuthorityAndSourceDrift(t *testing.T) 
 				case "digest":
 					state.Changes[0].DesiredDigest = strings.Repeat("a", 64)
 				case "scope before":
-					state.Changes[0].Team.Before.NormalPolicy = "other"
+					state.Changes[0].Team.Before.Policy = "other"
 				case "scope after":
-					state.Changes[0].Team.After.NormalPolicy = "other"
+					state.Changes[0].Team.After.Policy = "other"
 				}
 				if err := encode(authority, state); err != nil {
 					t.Fatal(err)
@@ -1232,9 +1269,9 @@ func TestConfigurationAuthorizationRejectsAuthorityAndSourceDrift(t *testing.T) 
 					t.Fatal(err)
 				}
 			case "before scope":
-				before.(*api.Team).Spec.NormalAgentPolicyRef = "other"
+				before.(*api.Team).Spec.AgentPolicyRef = "other"
 			case "after scope":
-				after.(*api.Team).Spec.AdminAgentPolicyRef = "other"
+				after.(*api.Team).Spec.AgentPolicyRef = "other"
 			}
 			store.Client = nil
 			if err := store.AuthorizeConfigurationUpdate(ctx, before, after); err == nil {

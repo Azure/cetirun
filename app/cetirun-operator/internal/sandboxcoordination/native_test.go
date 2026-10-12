@@ -31,7 +31,7 @@ func testNativeIntent(suffix string) NativeIntent {
 		Home:      w.ObjectIdentity{Name: "home", UID: types.UID("home-uid-" + suffix)},
 		Workload:  w.ObjectIdentity{Name: "agent-" + suffix, UID: types.UID("workload-uid-" + suffix)},
 		Binding: sandbox.Binding{AgentUID: types.UID("agent-uid-" + suffix), TeamUID: "team-uid",
-			SandboxUID: "sandbox-uid", AgentPolicyUID: "policy-uid", PolicyClass: api.AgentPolicyClassNormal},
+			SandboxUID: "sandbox-uid", AgentPolicyUID: "policy-uid"},
 		Revision: "native-revision",
 		Sources: []w.SourceReference{
 			source(api.GroupVersion.String(), "Team", "", "team", "team-uid"),
@@ -62,7 +62,7 @@ func TestNativeStatePreservesDefaultSerialization(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const baseline = `{"version":1,"executions":[],"changes":[]}`
+	const baseline = `{"version":2,"executions":[],"changes":[]}`
 	if object.Data[DataKey] != baseline {
 		t.Fatalf("default coordination wire format changed: %s", object.Data[DataKey])
 	}

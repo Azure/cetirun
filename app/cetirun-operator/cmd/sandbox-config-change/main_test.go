@@ -65,7 +65,7 @@ func cliFixture(t *testing.T) ([]string, sandboxcoordination.Store, client.WithW
 	before := &api.Team{TypeMeta: metav1.TypeMeta{APIVersion: api.GroupVersion.String(), Kind: "Team"},
 		ObjectMeta: metav1.ObjectMeta{Name: "team", UID: "team-uid", ResourceVersion: "1", Generation: 1,
 			CreationTimestamp: metav1.NewTime(time.Unix(1700000000, 0))},
-		Spec: api.TeamSpec{NormalAgentPolicyRef: "policy", SandboxRefs: []string{"sandbox", "spare"},
+		Spec: api.TeamSpec{AgentPolicyRef: "policy", SandboxRefs: []string{"sandbox", "spare"},
 			DefaultSandboxRef: "sandbox", MemberContext: api.TeamContextSpec{Role: syntheticBody}}}
 	after := before.DeepCopy()
 	after.Spec.DefaultSandboxRef = "spare"

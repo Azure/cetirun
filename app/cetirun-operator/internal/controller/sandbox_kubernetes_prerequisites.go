@@ -257,11 +257,11 @@ func (p *KubernetesSandboxPrerequisites) resolve(ctx context.Context, requested 
 				if err != nil {
 					return empty, err
 				}
-				input.Digest, err = teamInputs.DigestFor(agent.Spec.SandboxRef, binding.PolicyClass)
+				input.Digest, err = teamInputs.DigestFor(agent.Spec.SandboxRef)
 			case object != nil:
 				input.Digest, err = sandboxworkload.ExecutionObjectDigest(object)
 			default:
-				input.Digest, err = verifier.executionSourceDigest(ctx, reference, agent.Spec.SandboxRef, binding.PolicyClass, true)
+				input.Digest, err = verifier.executionSourceDigest(ctx, reference, agent.Spec.SandboxRef, true)
 			}
 			if err != nil {
 				return empty, err

@@ -73,11 +73,11 @@ func TestLegacyGatewayPreservesModelsBudgetAndKeyIdentity(t *testing.T) {
 
 func TestLegacyCompatibilityDoesNotBypassPolicyIntent(t *testing.T) {
 	for name, mutate := range map[string]func(*api.Agent){
-		"selected sandbox": func(a *api.Agent) { a.Spec.SandboxRef = "missing-sandbox" },
-		"admin class":      func(a *api.Agent) { a.Spec.PolicyClass = api.AgentPolicyClassAdmin },
-		"policy status":    func(a *api.Agent) { a.Status.Policy = &api.PolicyStatus{Phase: "Pending"} },
-		"policy grant":     func(a *api.Agent) { a.Status.AIGateway = &api.AIGatewayStatus{PolicyRevision: "previous"} },
-		"held lifetime":    func(a *api.Agent) { a.Finalizers = append(a.Finalizers, sandbox.HoldFinalizer) },
+		"selected sandbox":     func(a *api.Agent) { a.Spec.SandboxRef = "missing-sandbox" },
+		"retired policy class": func(a *api.Agent) { a.Spec.DeprecatedPolicyClass = "admin" },
+		"policy status":        func(a *api.Agent) { a.Status.Policy = &api.PolicyStatus{Phase: "Pending"} },
+		"policy grant":         func(a *api.Agent) { a.Status.AIGateway = &api.AIGatewayStatus{PolicyRevision: "previous"} },
+		"held lifetime":        func(a *api.Agent) { a.Finalizers = append(a.Finalizers, sandbox.HoldFinalizer) },
 		"policy budget": func(a *api.Agent) {
 			a.Spec.ModelAccess = &api.ModelAccessSpec{MonthlyBudgetUSD: "5"}
 		},
@@ -100,7 +100,7 @@ func TestLegacyCompatibilityDoesNotBypassPolicyIntent(t *testing.T) {
 		if err := r.Get(context.Background(), client.ObjectKey{Name: agent.Spec.Team}, team); err != nil {
 			t.Fatal(err)
 		}
-		team.Spec.NormalAgentPolicyRef = "missing-policy"
+		team.Spec.AgentPolicyRef = "missing-policy"
 		if err := r.Update(context.Background(), team); err != nil {
 			t.Fatal(err)
 		}

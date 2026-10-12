@@ -202,12 +202,9 @@ func (r *AgentReconciler) resolvePolicy(ctx context.Context, agent *api.Agent) (
 	if teamAccepted.Status != metav1.ConditionTrue {
 		return nil, policyDependency("Team acceptance observation has an unrecognized status")
 	}
-	policyRef := team.Spec.NormalAgentPolicyRef
-	if agent.Spec.PolicyClass == api.AgentPolicyClassAdmin {
-		policyRef = team.Spec.AdminAgentPolicyRef
-	}
+	policyRef := team.Spec.AgentPolicyRef
 	if policyRef == "" {
-		return nil, fmt.Errorf("Team has no policy for policyClass %q", agent.Spec.PolicyClass)
+		return nil, fmt.Errorf("Team has no AgentPolicy")
 	}
 	policy := &api.AgentPolicy{}
 	if err := r.Get(ctx, types.NamespacedName{Name: policyRef}, policy); err != nil {
@@ -344,7 +341,7 @@ func (r *AgentReconciler) desiredSandboxPolicyRevision(ctx context.Context, agen
 		}
 		resources.Sandboxes[name] = object
 	}
-	for _, name := range uniqueReferences([]string{team.Spec.NormalAgentPolicyRef, team.Spec.AdminAgentPolicyRef}) {
+	for _, name := range uniqueReferences([]string{team.Spec.AgentPolicyRef}) {
 		object := &api.AgentPolicy{}
 		if err := reader.Get(ctx, client.ObjectKey{Name: name}, object); err != nil {
 			if apierrors.IsNotFound(err) {
@@ -379,10 +376,7 @@ func (r *AgentReconciler) desiredSandboxPolicyRevision(ctx context.Context, agen
 	if !exists {
 		return "", policyDependency("Sandbox platform configuration for %q is unavailable", resolution.Sandbox.Type)
 	}
-	selectedPolicy := resources.AgentPolicies[team.Spec.NormalAgentPolicyRef]
-	if agent.Spec.PolicyClass == api.AgentPolicyClassAdmin {
-		selectedPolicy = resources.AgentPolicies[team.Spec.AdminAgentPolicyRef]
-	}
+	selectedPolicy := resources.AgentPolicies[team.Spec.AgentPolicyRef]
 	if err := sandboxpolicy.VerifyPolicyGrants(ctx, reader, selectedPolicy, platform.Grants); err != nil {
 		if errors.Is(err, sandboxpolicy.ErrUnavailable) {
 			return "", policyDependency("verify Sandbox policy grants: %w", err)
@@ -497,7 +491,7 @@ func (r *AgentReconciler) recordPolicy(ctx context.Context, agent *api.Agent, re
 			setCondition(&agent.Status.Conditions, api.ConditionPolicyApplied, metav1.ConditionFalse, "PolicyDenied", "Policy enforcement is withheld until the assignment and requests are valid")
 		}
 	} else {
-		status.EffectivePolicyRef = &api.EffectivePolicyReference{PolicyObjectReference: api.PolicyObjectReference{Name: resolution.policy.Name, UID: resolution.policy.UID, Generation: resolution.policy.Generation}, Class: agent.Spec.PolicyClass}
+		status.EffectivePolicyRef = &api.EffectivePolicyReference{PolicyObjectReference: api.PolicyObjectReference{Name: resolution.policy.Name, UID: resolution.policy.UID, Generation: resolution.policy.Generation}}
 		status.Enforcement = api.PolicyEnforcementStatus{Sandbox: api.PolicyRevisionExpectation{DesiredRevision: resolution.sandboxRevision}, Gateway: api.PolicyRevisionExpectation{DesiredRevision: resolution.gatewayRevision}, Credential: api.PolicyRevisionExpectation{DesiredRevision: resolution.credentialRevision}}
 		status.Phase = "Pending"
 		setCondition(&agent.Status.Conditions, api.ConditionPolicyResolved, metav1.ConditionTrue, "EffectivePolicyResolved", "The Team selection, requests, Sandbox, and effective AgentPolicy are valid")
@@ -521,15 +515,11 @@ func policyEnforcementVerified(agent *api.Agent, resolution *policyResolution) b
 		return false
 	}
 	sandboxReady := meta.FindStatusCondition(agent.Status.Conditions, api.ConditionSandboxReady)
-	class := agent.Spec.PolicyClass
-	if class == "" {
-		class = api.AgentPolicyClassNormal
-	}
 	if agent.Status.Sandbox == nil || agent.Status.Sandbox.AppliedRevision == "" ||
 		agent.Status.Sandbox.AppliedRevision != resolution.sandboxRevision ||
 		agent.Status.Sandbox.TeamUID != resolution.team.UID ||
 		agent.Status.Sandbox.AgentPolicyUID != resolution.policy.UID ||
-		agent.Status.Sandbox.PolicyClass != class || sandboxReady == nil ||
+		sandboxReady == nil ||
 		sandboxReady.Status != metav1.ConditionTrue || sandboxReady.ObservedGeneration != agent.Generation {
 		return false
 	}

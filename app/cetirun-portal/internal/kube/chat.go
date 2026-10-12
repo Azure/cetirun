@@ -60,10 +60,9 @@ func (c *Client) resolveChat(ctx context.Context, agent *api.Agent, caller chata
 		}
 		team = observed
 	}
-	if agent.Spec.SandboxRef != "" || (agent.Spec.PolicyClass != "" && agent.Spec.PolicyClass != api.AgentPolicyClassNormal) ||
-		agent.Status.Sandbox != nil || meta.FindStatusCondition(agent.Status.Conditions, api.ConditionSandboxReady) != nil ||
+	if agent.Spec.SandboxRef != "" || (agent.Spec.DeprecatedPolicyClass != "" && agent.Spec.DeprecatedPolicyClass != "normal") || agent.Status.Sandbox != nil || meta.FindStatusCondition(agent.Status.Conditions, api.ConditionSandboxReady) != nil ||
 		slices.Contains(agent.Finalizers, "cetirun.microsoft.com/sandbox-hold") || slices.Contains(agent.Finalizers, "cetirun.microsoft.com/sandbox-preparation") ||
-		team.Spec.NormalAgentPolicyRef != "" || team.Spec.AdminAgentPolicyRef != "" || len(team.Spec.SandboxRefs) > 0 || team.Spec.DefaultSandboxRef != "" {
+		team.Spec.PolicyConfigured() {
 		target.Reason = "sandbox_held"
 		return target, nil
 	}

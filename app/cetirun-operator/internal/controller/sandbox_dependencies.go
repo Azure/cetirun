@@ -60,7 +60,7 @@ func teamPolicyReferences(object client.Object) []string {
 	if !ok {
 		return nil
 	}
-	return uniqueReferences([]string{team.Spec.NormalAgentPolicyRef, team.Spec.AdminAgentPolicyRef})
+	return uniqueReferences([]string{team.Spec.AgentPolicyRef})
 }
 
 func uniqueReferences(names []string) []string {

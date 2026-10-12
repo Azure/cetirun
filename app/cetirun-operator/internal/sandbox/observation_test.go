@@ -29,7 +29,6 @@ func TestObservationBindsIdentityAndFreshness(t *testing.T) {
 		{"different Team", func(o *Observation) { o.Binding.TeamUID = "other" }, ErrObservationUnavailable},
 		{"different Sandbox", func(o *Observation) { o.Binding.SandboxUID = "other" }, ErrObservationUnavailable},
 		{"different policy", func(o *Observation) { o.Binding.AgentPolicyUID = "other" }, ErrObservationUnavailable},
-		{"different class", func(o *Observation) { o.Binding.PolicyClass = "admin" }, ErrObservationUnavailable},
 		{"different revision", func(o *Observation) { o.Revision = "other" }, ErrObservationUnavailable},
 		{"different Pod", func(o *Observation) { o.PodUID = "other" }, ErrObservationUnavailable},
 		{"different node", func(o *Observation) { o.NodeUID = "other" }, ErrObservationUnavailable},

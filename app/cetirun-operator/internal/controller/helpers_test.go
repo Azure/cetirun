@@ -1625,6 +1625,47 @@ func TestBuildHelmValues_WithTeam(t *testing.T) {
 	}
 }
 
+func TestBuildHelmValuesKeepsTeamContextAndSkillsIsolated(t *testing.T) {
+	for _, test := range []struct {
+		name, role, description, storageAccount, npmSkill, hubSkill string
+	}{
+		{"platform", "Platform Engineer", "Owns the platform", "platformskills", "npm:platform", "@platform/release"},
+		{"research", "Research Engineer", "Owns experimentation", "researchskills", "npm:research", "@research/evaluate"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			agent := newTestInstance(test.name, test.name, "", "gateway-token")
+			agent.Spec.Team = test.name
+			team := &cetirunv1alpha1.Team{
+				Spec: cetirunv1alpha1.TeamSpec{
+					MemberContext: cetirunv1alpha1.TeamContextSpec{
+						Role:        test.role,
+						Description: []string{test.description},
+					},
+					Skills: []string{test.npmSkill, test.hubSkill},
+					SkillStorage: &cetirunv1alpha1.SkillStorageSpec{
+						ResourceGroup: "rg-" + test.name, StorageAccount: test.storageAccount, ContainerName: "skills",
+					},
+				},
+			}
+
+			values, err := buildHelmValues(agent, team, "example.com", "", nil, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			user := values["user"].(map[string]interface{})
+			if user["role"] != test.role || !reflect.DeepEqual(user["description"], []interface{}{test.description}) {
+				t.Fatalf("Team context crossed into %s Agent values: %#v", test.name, user)
+			}
+			skills := values["skills"].(map[string]interface{})
+			if skills["storageAccount"] != test.storageAccount ||
+				!reflect.DeepEqual(skills["npm"], []interface{}{test.npmSkill[4:]}) ||
+				!reflect.DeepEqual(skills["clawHub"], []interface{}{test.hubSkill}) {
+				t.Fatalf("Team skills crossed into %s Agent values: %#v", test.name, skills)
+			}
+		})
+	}
+}
+
 func TestBuildHelmValues_NilTeam_Unchanged(t *testing.T) {
 	inst := newTestInstance("alice", "Alice", "aks", "gateway-token")
 	vals, err := buildHelmValues(inst, nil, "example.com", "", nil, "")

@@ -250,12 +250,9 @@ spec:
                     type: integer
                 type: object
               policyClass:
-                default: normal
-                description: PolicyClass selects the administrator-assigned Team policy
-                  slot.
-                enum:
-                - normal
-                - admin
+                description: DeprecatedPolicyClass retains old workload policy intent
+                  for rejection only.
+                maxLength: 0
                 type: string
               sandboxRef:
                 description: |-
@@ -731,11 +728,6 @@ spec:
                 properties:
                   effectivePolicyRef:
                     properties:
-                      class:
-                        enum:
-                        - normal
-                        - admin
-                        type: string
                       generation:
                         format: int64
                         type: integer
@@ -748,7 +740,6 @@ spec:
                           intent and helps make sure that UIDs and names do not get conflated.
                         type: string
                     required:
-                    - class
                     - generation
                     - name
                     - uid
@@ -812,11 +803,6 @@ spec:
                   appliedRevision:
                     minLength: 1
                     type: string
-                  policyClass:
-                    enum:
-                    - normal
-                    - admin
-                    type: string
                   sandboxUID:
                     description: |-
                       UID is a type that holds unique ID values, including UUIDs.  Because we
@@ -834,7 +820,6 @@ spec:
                 required:
                 - agentPolicyUID
                 - appliedRevision
-                - policyClass
                 - sandboxUID
                 - teamUID
                 type: object

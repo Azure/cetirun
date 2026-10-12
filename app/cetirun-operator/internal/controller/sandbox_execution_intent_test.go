@@ -161,8 +161,8 @@ func fillPreparedSourceInventory(t *testing.T, f *preparationFixture) w.Expectat
 }
 
 func TestSandboxExecutionReservesOnlySelectedConfiguration(t *testing.T) {
-	for _, class := range []api.AgentPolicyClass{api.AgentPolicyClassNormal, api.AgentPolicyClassAdmin} {
-		t.Run(string(class), func(t *testing.T) {
+	for _, policyName := range []string{"selected"} {
+		t.Run(policyName, func(t *testing.T) {
 			ctx := context.Background()
 			var unselectedPolicy *api.AgentPolicy
 			var unusedSandbox *api.Sandbox
@@ -188,13 +188,11 @@ func TestSandboxExecutionReservesOnlySelectedConfiguration(t *testing.T) {
 				if err := f.client.Get(ctx, client.ObjectKeyFromObject(f.fixture.Team), team); err != nil {
 					t.Fatal(err)
 				}
-				team.Spec.AdminAgentPolicyRef = admin.Name
 				team.Spec.SandboxRefs = append(team.Spec.SandboxRefs, unusedSandbox.Name)
 				if err := f.client.Update(ctx, team); err != nil {
 					t.Fatal(err)
 				}
 				agent := f.current(t)
-				agent.Spec.PolicyClass = class
 				agent.Generation++
 				authorization, err := sandboxbinding.Snapshot(agent, team, sandbox.Resources{
 					Sandboxes:     map[string]*api.Sandbox{f.fixture.Sandbox.Name: f.fixture.Sandbox, unusedSandbox.Name: unusedSandbox},
@@ -209,9 +207,6 @@ func TestSandboxExecutionReservesOnlySelectedConfiguration(t *testing.T) {
 				}
 				f.source.inputs.AgentGeneration = agent.Generation
 				unselectedPolicy = admin
-				if class == api.AgentPolicyClassAdmin {
-					unselectedPolicy = normal
-				}
 			})
 			expected := f.expectation(t)
 			intent, err := f.reconciler.SandboxExecutionIntent(ctx, f.current(t), target)
@@ -244,9 +239,20 @@ func TestSandboxExecutionReservesOnlySelectedConfiguration(t *testing.T) {
 					return source.UID == object.GetUID()
 				})
 				if index < 0 {
-					t.Fatal("preparation did not validate every Team configuration")
+					if object != unselectedPolicy {
+						t.Fatal("preparation did not validate every Team Sandbox")
+					}
 				}
-				before := expected.Sources[index]
+				before := w.SourceReference{
+					APIVersion: api.GroupVersion.String(), Kind: "AgentPolicy", Name: object.GetName(),
+					UID: object.GetUID(), ResourceVersion: object.GetResourceVersion(),
+				}
+				if index >= 0 {
+					if object == unselectedPolicy {
+						t.Fatal("an unrelated policy became a Team preparation dependency")
+					}
+					before = expected.Sources[index]
+				}
 				if slices.Contains(intent.Sources, before) {
 					t.Fatalf("execution reserved unselected %s %s", before.Kind, before.Name)
 				}
@@ -515,17 +521,13 @@ func TestSandboxExecutionTeamMutationPreservesUnaffectedSelection(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, mutation := range []string{"default", "other policy"} {
+	for range []string{"default"} {
 		before := &api.Team{}
 		if err := f.client.Get(ctx, client.ObjectKeyFromObject(f.fixture.Team), before); err != nil {
 			t.Fatal(err)
 		}
 		after := before.DeepCopy()
-		if mutation == "default" {
-			after.Spec.DefaultSandboxRef = spare.Name
-		} else {
-			after.Spec.AdminAgentPolicyRef = otherPolicy.Name
-		}
+		after.Spec.DefaultSandboxRef = spare.Name
 		change, err := store.AcquireTeamChange(ctx, before, after)
 		if err != nil {
 			t.Fatal("unrelated Team change required stopping normal execution:", err)
@@ -552,9 +554,9 @@ func TestSandboxExecutionTeamMutationPreservesUnaffectedSelection(t *testing.T) 
 		t.Fatal(err)
 	}
 	after := before.DeepCopy()
-	after.Spec.NormalAgentPolicyRef = otherPolicy.Name
+	after.Spec.AgentPolicyRef = otherPolicy.Name
 	if _, err := store.AcquireTeamChange(ctx, before, after); !errors.Is(err, sandboxcoordination.ErrConflict) {
-		t.Fatal("selected normal policy rebind was not excluded:", err)
+		t.Fatal("selected policy rebind was not excluded:", err)
 	}
 }
 

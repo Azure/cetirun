@@ -4,6 +4,7 @@
 package sandbox
 
 import (
+	"encoding/json"
 	"errors"
 	"reflect"
 	"strings"
@@ -69,8 +70,8 @@ func resolverFixture() ResolveInput {
 		Team: &cetirunv1alpha1.Team{
 			ObjectMeta: metav1.ObjectMeta{Name: "engineering", UID: "team-uid"},
 			Spec: cetirunv1alpha1.TeamSpec{
-				NormalAgentPolicyRef: "normal", AdminAgentPolicyRef: "operations",
-				SandboxRefs: []string{"standard"}, DefaultSandboxRef: "standard",
+				AgentPolicyRef: "normal",
+				SandboxRefs:    []string{"standard"}, DefaultSandboxRef: "standard",
 			},
 		},
 		Resources: Resources{
@@ -97,8 +98,7 @@ func resolverFixture() ResolveInput {
 		},
 		AuthorizedBinding: Binding{
 			AgentUID: "agent-uid", TeamUID: "team-uid", SandboxUID: "sandbox-uid",
-			AgentPolicyUID: "normal-uid", PolicyClass: cetirunv1alpha1.AgentPolicyClassNormal,
-		},
+			AgentPolicyUID: "normal-uid"},
 	}
 }
 
@@ -114,7 +114,7 @@ func mustResolve(t *testing.T, input ResolveInput) *Resolution {
 func TestValidateTeamStopsAtInvalidPersistedIdentity(t *testing.T) {
 	input := resolverFixture()
 	input.Team.UID = ""
-	input.Team.Spec.NormalAgentPolicyRef = "missing-policy"
+	input.Team.Spec.AgentPolicyRef = "missing-policy"
 	errs := ValidateTeam(input.Team, Resources{}, nil)
 	if len(errs) != 1 || errs[0].Field != "team.metadata.uid" {
 		t.Fatalf("invalid identity should not produce unrelated reference errors: %v", errs)
@@ -129,7 +129,6 @@ func TestResolveDefaultsAndIsolation(t *testing.T) {
 	beforePolicy := input.Resources.AgentPolicies["normal"].DeepCopy()
 	resolved := mustResolve(t, input)
 	if resolved.Sandbox.Type != cetirunv1alpha1.SandboxKata ||
-		resolved.Binding.PolicyClass != cetirunv1alpha1.AgentPolicyClassNormal ||
 		!(*resolved.AgentPolicy.Security.ReadOnlyRootFilesystem) ||
 		resolved.AgentPolicy.Network.Ingress.Mode != cetirunv1alpha1.AgentPolicyIngressAuthenticated ||
 		len(resolved.Revision) != 64 {
@@ -149,19 +148,55 @@ func TestResolveDefaultsAndIsolation(t *testing.T) {
 	}
 }
 
-func TestResolvePolicyClass(t *testing.T) {
+func TestResolveIndependentTeamPolicies(t *testing.T) {
 	input := resolverFixture()
 	input.Resources.AgentPolicies["operations"].Spec.Network.BlockedPorts = []cetirunv1alpha1.AgentPolicyPort{{Port: 25}}
 	normal := mustResolve(t, input)
-	input.Agent.Spec.PolicyClass = cetirunv1alpha1.AgentPolicyClassAdmin
-	input.AuthorizedBinding.PolicyClass = cetirunv1alpha1.AgentPolicyClassAdmin
+	input.Team.Name, input.Team.UID = "administration", "admin-team-uid"
+	input.Team.Spec.AgentPolicyRef = "operations"
+	input.Agent.Spec.Team = input.Team.Name
+	input.AuthorizedBinding.TeamUID = input.Team.UID
 	input.AuthorizedBinding.AgentPolicyUID = "operations-uid"
 	admin := mustResolve(t, input)
 	if len(normal.AgentPolicy.Network.BlockedPorts) != 0 || len(admin.AgentPolicy.Network.BlockedPorts) != 1 {
-		t.Fatal("normal and admin policies must be selected, not merged")
+		t.Fatal("independent Team policies must not be merged")
 	}
 	if admin.Binding.SandboxUID != normal.Binding.SandboxUID || admin.Revision == normal.Revision {
 		t.Fatal("shared Sandbox must not collapse distinct policy bindings")
+	}
+}
+
+func TestRetiredPolicyFieldsNeverFallBackToLegacy(t *testing.T) {
+	for _, raw := range []string{
+		`{"spec":{"normalAgentPolicyRef":"example-policy"}}`,
+		`{"spec":{"adminAgentPolicyRef":"example-policy"}}`,
+	} {
+		var team cetirunv1alpha1.Team
+		if err := json.Unmarshal([]byte(raw), &team); err != nil {
+			t.Fatal(err)
+		}
+		if !Requested(&cetirunv1alpha1.Agent{}, &team) || len(ValidateTeamConfiguration(team.Spec, Resources{}, nil)) == 0 {
+			t.Fatal("retired Team policy intent was lost during ordinary decoding")
+		}
+	}
+	for _, class := range []string{"admin", "unknown"} {
+		var agent cetirunv1alpha1.Agent
+		if err := json.Unmarshal([]byte(`{"spec":{"policyClass":"`+class+`"}}`), &agent); err != nil {
+			t.Fatal(err)
+		}
+		if !Requested(&agent, nil) || agent.Spec.SharedModelsEnabled() || agent.Spec.GitHubCopilotEnabled() {
+			t.Fatal("retired Agent policy intent acquired legacy model defaults")
+		}
+		if _, err := Resolve(ResolveInput{Agent: &agent}); err == nil {
+			t.Fatal("retired policy class was accepted")
+		}
+	}
+	var legacy cetirunv1alpha1.Agent
+	if err := json.Unmarshal([]byte(`{"spec":{"policyClass":"normal"}}`), &legacy); err != nil {
+		t.Fatal(err)
+	}
+	if Requested(&legacy, nil) || !legacy.Spec.SharedModelsEnabled() || !legacy.Spec.GitHubCopilotEnabled() {
+		t.Fatal("an old CRD's default normal value invented governance for a policy-free legacy Agent")
 	}
 }
 
@@ -197,15 +232,12 @@ func TestResolveRejectsInvalidReferences(t *testing.T) {
 		{"empty list", func(i *ResolveInput) { i.Team.Spec.SandboxRefs = nil }},
 		{"duplicate list", func(i *ResolveInput) { i.Team.Spec.SandboxRefs = []string{"standard", "standard"} }},
 		{"unlisted default", func(i *ResolveInput) { i.Team.Spec.DefaultSandboxRef = "absent" }},
-		{"missing normal slot", func(i *ResolveInput) { i.Team.Spec.NormalAgentPolicyRef = "" }},
-		{"unknown class", func(i *ResolveInput) { i.Agent.Spec.PolicyClass = "owner" }},
-		{"admin without slot", func(i *ResolveInput) {
-			i.Agent.Spec.PolicyClass = cetirunv1alpha1.AgentPolicyClassAdmin
-			i.Team.Spec.AdminAgentPolicyRef = ""
-		}},
+		{"missing Team policy", func(i *ResolveInput) { i.Team.Spec.AgentPolicyRef = "" }},
+		{"retired normal policy", func(i *ResolveInput) { i.Team.Spec.DeprecatedNormalAgentPolicyRef = "normal" }},
+		{"retired admin policy", func(i *ResolveInput) { i.Team.Spec.DeprecatedAdminAgentPolicyRef = "operations" }},
+		{"retired workload class", func(i *ResolveInput) { i.Agent.Spec.DeprecatedPolicyClass = "admin" }},
 		{"missing Sandbox", func(i *ResolveInput) { delete(i.Resources.Sandboxes, "standard") }},
 		{"missing selected policy", func(i *ResolveInput) { delete(i.Resources.AgentPolicies, "normal") }},
-		{"missing unselected policy", func(i *ResolveInput) { delete(i.Resources.AgentPolicies, "operations") }},
 		{"mismatched Sandbox name", func(i *ResolveInput) { i.Resources.Sandboxes["standard"].Name = "different" }},
 		{"mismatched policy name", func(i *ResolveInput) { i.Resources.AgentPolicies["normal"].Name = "different" }},
 		{"missing UID", func(i *ResolveInput) { i.Resources.Sandboxes["standard"].UID = "" }},
@@ -220,12 +252,6 @@ func TestResolveRejectsInvalidReferences(t *testing.T) {
 		{"unregistered runtime", func(i *ResolveInput) { i.Registrations = nil }},
 		{"zero capability registration", func(i *ResolveInput) {
 			i.Registrations[cetirunv1alpha1.SandboxKata] = Registration{Available: true}
-		}},
-		{"normal Kubernetes grant", func(i *ResolveInput) {
-			i.Resources.AgentPolicies["normal"].Spec.KubernetesAccess = &cetirunv1alpha1.AgentPolicyAdminKubernetesAccess{
-				ServiceAccountName: "operations",
-				RoleBindings:       []cetirunv1alpha1.AgentPolicyRoleBinding{{Namespace: "services", ClusterRoleName: "reader"}},
-			}
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -245,7 +271,7 @@ func TestResolveRequiresExplicitUIDAuthorization(t *testing.T) {
 		func(i *ResolveInput) { i.Team.UID = "replacement-team" },
 		func(i *ResolveInput) { i.Resources.Sandboxes["standard"].UID = "replacement-sandbox" },
 		func(i *ResolveInput) { i.Resources.AgentPolicies["normal"].UID = "replacement-policy" },
-		func(i *ResolveInput) { i.Agent.Spec.PolicyClass = cetirunv1alpha1.AgentPolicyClassAdmin },
+		func(i *ResolveInput) { i.Team.Spec.AgentPolicyRef = "operations" },
 	} {
 		input := resolverFixture()
 		change(&input)
@@ -257,7 +283,7 @@ func TestResolveRequiresExplicitUIDAuthorization(t *testing.T) {
 	input.Resources.AgentPolicies["normal"].UID = "replacement-policy"
 	input.Agent.Status.Sandbox = &cetirunv1alpha1.SandboxStatus{
 		TeamUID: "team-uid", SandboxUID: "sandbox-uid", AgentPolicyUID: "replacement-policy",
-		PolicyClass: cetirunv1alpha1.AgentPolicyClassNormal, AppliedRevision: "old",
+		AppliedRevision: "old",
 	}
 	if _, err := Resolve(input); !errors.Is(err, ErrUnauthorizedBinding) {
 		t.Fatalf("status must not substitute for authorization: %v", err)
@@ -272,12 +298,11 @@ func TestEveryConfiguredPairAndSelectedRuntimeHealth(t *testing.T) {
 	other.Name, other.UID, other.Spec.Type = "gvisor", "gvisor-uid", cetirunv1alpha1.SandboxGVisor
 	input.Resources.Sandboxes["gvisor"] = other
 	input.Team.Spec.SandboxRefs = append(input.Team.Spec.SandboxRefs, "gvisor")
-	input.Resources.AgentPolicies["normal"].Spec.SandboxSelection.AllowMultiple = true
 	input.Registrations[cetirunv1alpha1.SandboxGVisor] = Registration{Capabilities: fixtureCapabilities()}
 	if _, err := Resolve(input); err == nil {
-		t.Fatal("unselected admin slot must also permit multiple Sandboxes")
+		t.Fatal("Team policy must permit multiple Sandboxes")
 	}
-	input.Resources.AgentPolicies["operations"].Spec.SandboxSelection.AllowMultiple = true
+	input.Resources.AgentPolicies["normal"].Spec.SandboxSelection.AllowMultiple = true
 	mustResolve(t, input) // Unselected gVisor health does not stop a Kata consumer.
 	registration := input.Registrations[cetirunv1alpha1.SandboxGVisor]
 	registration.Capabilities.GuestExternalNetwork = false
@@ -321,7 +346,6 @@ func TestRevisionIncludesOnlyEffectiveConfiguration(t *testing.T) {
 		}},
 		{"explicit defaults", func(i *ResolveInput) {
 			i.Resources.Sandboxes["standard"].Spec.Type = cetirunv1alpha1.SandboxKata
-			i.Agent.Spec.PolicyClass = cetirunv1alpha1.AgentPolicyClassNormal
 			readonly := true
 			i.Resources.AgentPolicies["normal"].Spec.Security.ReadOnlyRootFilesystem = &readonly
 			i.Resources.AgentPolicies["normal"].Spec.Network.Ingress.Mode = cetirunv1alpha1.AgentPolicyIngressAuthenticated
@@ -392,7 +416,7 @@ func TestDefaultSelectionIsCreationOnly(t *testing.T) {
 	input := resolverFixture()
 	input.Agent.Spec.SandboxRef = ""
 	spec, err := DefaultAgentSelection(input.Agent.Spec, input.Team)
-	if err != nil || spec.SandboxRef != "standard" || spec.PolicyClass != cetirunv1alpha1.AgentPolicyClassNormal {
+	if err != nil || spec.SandboxRef != "standard" {
 		t.Fatalf("creation defaults = %+v, %v", spec, err)
 	}
 	if input.Agent.Spec.SandboxRef != "" {
@@ -406,7 +430,7 @@ func TestDefaultSelectionIsCreationOnly(t *testing.T) {
 		spec cetirunv1alpha1.AgentSpec
 	}{
 		{"wrong Team", cetirunv1alpha1.AgentSpec{Team: "other"}},
-		{"bad class", cetirunv1alpha1.AgentSpec{Team: "engineering", PolicyClass: "owner"}},
+		{"retired class", cetirunv1alpha1.AgentSpec{Team: "engineering", DeprecatedPolicyClass: "normal"}},
 		{"bad choice", cetirunv1alpha1.AgentSpec{Team: "engineering", SandboxRef: "other"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

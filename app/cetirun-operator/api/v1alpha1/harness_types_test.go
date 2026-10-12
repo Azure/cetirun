@@ -32,7 +32,7 @@ func TestNativeSandboxExampleUsesSupportedContract(t *testing.T) {
 	if err := yaml.UnmarshalStrict(raw, agent); err != nil {
 		t.Fatal(err)
 	}
-	if agent.Spec.Agent.Type != api.AgentTypeOpenClaw || agent.Spec.PolicyClass != api.AgentPolicyClassNormal ||
+	if agent.Spec.Agent.Type != api.AgentTypeOpenClaw ||
 		!agent.Spec.SharedModelsEnabled() || agent.Spec.GitHubCopilotEnabled() || len(agent.Spec.Helm.Values) != 0 ||
 		agent.Spec.Agent.Image == nil || agent.Spec.Agent.Port == nil || agent.Spec.Helm.Version == "" {
 		t.Fatal("native example is missing the explicit, supported runtime/model pins")
@@ -67,7 +67,7 @@ func TestNativeSandboxExampleUsesSupportedContract(t *testing.T) {
 	if len(seen) != 3 || box.Spec.Type != api.SandboxKata || box.Spec.Storage.Home.AccessMode != corev1.ReadWriteOncePod ||
 		agent.Spec.SandboxRef != box.Name || agent.Spec.Team != team.Name ||
 		team.Spec.DefaultSandboxRef != box.Name || !slices.Contains(team.Spec.SandboxRefs, box.Name) ||
-		team.Spec.NormalAgentPolicyRef != policy.Name || team.Spec.AdminAgentPolicyRef != "" ||
+		team.Spec.AgentPolicyRef != policy.Name ||
 		!slices.Contains(policy.Spec.ModelAccess.SharedModels.Allowed, agent.Spec.Model) ||
 		policy.Spec.Network.Ingress.Mode != api.AgentPolicyIngressAuthenticated {
 		t.Fatal("native example bindings do not form the supported profile")

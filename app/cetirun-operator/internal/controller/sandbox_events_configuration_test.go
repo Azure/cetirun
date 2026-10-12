@@ -128,11 +128,11 @@ func TestSandboxEventsCommittedConfigurationTransitions(t *testing.T) {
 			}
 			unresolved := map[string]any{
 				"agentUID": "unresolved", "teamUID": "unresolved", "sandboxUID": "unresolved",
-				"agentPolicyUID": "unresolved", "policyClass": "unresolved",
+				"agentPolicyUID": "unresolved",
 			}
 			attempted := map[string]any{
 				"agentUID": "unresolved", "teamUID": "unresolved", "sandboxUID": "unresolved",
-				"agentPolicyUID": string(policy.UID), "policyClass": "unresolved",
+				"agentPolicyUID": string(policy.UID),
 			}
 			if event["event"] != expectedType || event["reason"] != tc.reason ||
 				event["conditionStatus"] != string(tc.status) || event["condition"] != api.ConditionAgentPolicyAccepted ||

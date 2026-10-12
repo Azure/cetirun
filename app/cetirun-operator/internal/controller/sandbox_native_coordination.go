@@ -85,7 +85,7 @@ func (r *AgentReconciler) checkNativeSandboxReservation(ctx context.Context, exp
 		return fmt.Errorf("native Sandbox coordination requires authoritative source reads")
 	}
 	for _, source := range intent.Sources {
-		current, err := r.executionSourceDigest(ctx, source, intent.SelectedSandbox(), intent.Binding.PolicyClass, false)
+		current, err := r.executionSourceDigest(ctx, source, intent.SelectedSandbox(), false)
 		if err != nil {
 			return err
 		}

@@ -69,9 +69,9 @@ func newFixture(t *testing.T) fixture {
 	team := &api.Team{
 		ObjectMeta: metav1.ObjectMeta{Name: "engineering", UID: "team-uid", ResourceVersion: "1"},
 		Spec: api.TeamSpec{
-			NormalAgentPolicyRef: policy.Name,
-			SandboxRefs:          []string{box.Name},
-			DefaultSandboxRef:    box.Name,
+			AgentPolicyRef:    policy.Name,
+			SandboxRefs:       []string{box.Name},
+			DefaultSandboxRef: box.Name,
 		},
 	}
 	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(box, policy, team).Build()
@@ -96,7 +96,7 @@ func newFixture(t *testing.T) fixture {
 		},
 		Spec: api.AgentSpec{
 			Agent: api.HarnessSpec{Type: api.AgentTypeHermes}, User: api.UserSpec{Alias: "alice"},
-			GatewayTokenSecretRef: "gateway-token", Team: team.Name, SandboxRef: box.Name, PolicyClass: api.AgentPolicyClassNormal,
+			GatewayTokenSecretRef: "gateway-token", Team: team.Name, SandboxRef: box.Name,
 		},
 	}
 	return fixture{handler, cl, agent, team, box, policy}
@@ -171,19 +171,13 @@ func TestExplicitAdmissionAuthority(t *testing.T) {
 
 func TestCreationDefaultsNeverPromoteAdministrators(t *testing.T) {
 	f := newFixture(t)
-	f.agent.Spec.SandboxRef, f.agent.Spec.PolicyClass = "", ""
+	f.agent.Spec.SandboxRef = ""
 	req := requestFor(t, admissionv1.Create, f.agent, nil, "administrator")
 	response := f.handler.DefaultAgent(context.Background(), req)
 	requireResponse(t, response, true, "")
-	if len(response.Patches) != 3 || response.Patches[0].Path != "/spec/sandboxRef" || response.Patches[0].Value != "standard" ||
-		response.Patches[1].Path != "/spec/policyClass" || response.Patches[1].Value != api.AgentPolicyClassNormal {
+	if len(response.Patches) != 2 || response.Patches[0].Path != "/spec/sandboxRef" || response.Patches[0].Value != "standard" {
 		t.Fatalf("unexpected selection patch: %#v", response.Patches)
 	}
-	f.agent.Spec.PolicyClass = api.AgentPolicyClassAdmin
-	req = requestFor(t, admissionv1.Create, f.agent, nil, "administrator")
-	requireResponse(t, f.handler.DefaultAgent(context.Background(), req), false, "adminAgentPolicyRef")
-
-	f.agent.Spec.PolicyClass = api.AgentPolicyClassNormal
 	req = requestFor(t, admissionv1.Update, f.agent, f.agent.DeepCopy(), "administrator")
 	requireResponse(t, f.handler.DefaultAgent(context.Background(), req), true, "never re-default")
 	requireResponse(t, f.handler.Validate(context.Background(), req), false, "never re-defaulted")
@@ -195,7 +189,7 @@ func TestGeneratedNameCreatesRemainValidBeforeAndAfterNameAssignment(t *testing.
 			f := newFixture(t)
 			agent := f.agent.DeepCopy()
 			agent.Name, agent.GenerateName, agent.UID, agent.ResourceVersion = "", "generated-agent-", "", ""
-			agent.Spec.SandboxRef, agent.Spec.PolicyClass = "", ""
+			agent.Spec.SandboxRef = ""
 			if !governed {
 				agent.Spec.Team = ""
 			}
@@ -203,7 +197,7 @@ func TestGeneratedNameCreatesRemainValidBeforeAndAfterNameAssignment(t *testing.
 			response := f.handler.DefaultAgent(context.Background(), req)
 			requireResponse(t, response, true, "")
 			if governed {
-				if len(response.Patches) != 3 {
+				if len(response.Patches) != 2 {
 					t.Fatalf("governed generated-name creation did not receive defaults: %#v", response.Patches)
 				}
 				agent, _ = applyAgentPatches(t, req, response)
@@ -242,6 +236,39 @@ func TestLegacyBehaviorAndTeamEdits(t *testing.T) {
 	team.Spec.DefaultSandboxRef = "different"
 	req = requestFor(t, admissionv1.Update, team, f.team, "portal")
 	requireResponse(t, f.handler.Validate(context.Background(), req), false, "administrator")
+}
+
+func TestRetiredTeamPolicyChangesRequireAdministratorAndConsumerChecks(t *testing.T) {
+	for _, slot := range []string{"normal", "admin"} {
+		t.Run(slot, func(t *testing.T) {
+			f := newFixture(t)
+			before := f.team.DeepCopy()
+			before.Spec = api.TeamSpec{}
+			if slot == "normal" {
+				before.Spec.DeprecatedNormalAgentPolicyRef = f.policy.Name
+			} else {
+				before.Spec.DeprecatedAdminAgentPolicyRef = f.policy.Name
+			}
+			if err := f.client.Update(context.Background(), before); err != nil {
+				t.Fatal(err)
+			}
+			after := before.DeepCopy()
+			after.Spec = api.TeamSpec{}
+			requireResponse(t, f.handler.Validate(context.Background(), requestFor(t, admissionv1.Update, after, before, "portal")), false, "administrator")
+			f.agent.Spec.SandboxRef = ""
+			f.agent.ResourceVersion = ""
+			f.agent.Finalizers = nil
+			if err := f.client.Create(context.Background(), f.agent); err != nil {
+				t.Fatal(err)
+			}
+			requireResponse(t, f.handler.Validate(context.Background(), requestFor(t, admissionv1.Update, after, before, "administrator")), false, "inherited policy")
+			if err := f.client.Delete(context.Background(), f.agent); err != nil {
+				t.Fatal(err)
+			}
+			after.Spec = *f.team.Spec.DeepCopy()
+			requireResponse(t, f.handler.Validate(context.Background(), requestFor(t, admissionv1.Update, after, before, "administrator")), true, "")
+		})
+	}
 }
 
 func TestGarbageCollectorCanOnlyRemoveForegroundDeletionMetadata(t *testing.T) {
@@ -561,7 +588,7 @@ func TestTeamReferenceAndCompatibilityValidation(t *testing.T) {
 		edit func(*testing.T, *fixture)
 		want string
 	}{
-		{"missing policy", func(_ *testing.T, f *fixture) { f.team.Spec.NormalAgentPolicyRef = "missing" }, "Not found"},
+		{"missing policy", func(_ *testing.T, f *fixture) { f.team.Spec.AgentPolicyRef = "missing" }, "Not found"},
 		{"missing default", func(_ *testing.T, f *fixture) { f.team.Spec.DefaultSandboxRef = "missing" }, "sandboxRefs"},
 		{"duplicate selections", func(_ *testing.T, f *fixture) { f.team.Spec.SandboxRefs = append(f.team.Spec.SandboxRefs, "standard") }, "Duplicate"},
 		{"multiple denied by either policy", func(t *testing.T, f *fixture) {
@@ -579,7 +606,7 @@ func TestTeamReferenceAndCompatibilityValidation(t *testing.T) {
 			if err := f.client.Update(context.Background(), f.policy); err != nil {
 				t.Fatal(err)
 			}
-		}, "normal policy"},
+		}, "administrative Kubernetes access"},
 		{"unsupported optional FQDN", func(t *testing.T, f *fixture) {
 			f.policy.Spec.Network.BlockedFQDNs = []string{"blocked.example.com"}
 			if err := f.client.Update(context.Background(), f.policy); err != nil {
@@ -627,12 +654,14 @@ func TestConfigurationUpdatesCheckEveryReferencingTeam(t *testing.T) {
 	f := newFixture(t)
 	other := f.team.DeepCopy()
 	other.Name, other.UID, other.ResourceVersion = "other-team", "other-team-uid", ""
-	other.Spec.NormalAgentPolicyRef, other.Spec.AdminAgentPolicyRef = "", f.policy.Name
+	other.Spec.AgentPolicyRef = f.policy.Name
 	if err := f.client.Create(context.Background(), other); err != nil {
 		t.Fatal(err)
 	}
 	candidate := f.policy.DeepCopy()
-	candidate.Spec.Security.ReadOnlyRootFilesystem = new(false)
+	candidate.Spec.KubernetesAccess = &api.AgentPolicyAdminKubernetesAccess{
+		ServiceAccountName: "agent-admin", ClusterRoleBindings: []api.AgentPolicyClusterRoleBinding{{ClusterRoleName: "read-only"}},
+	}
 	req := requestFor(t, admissionv1.Update, candidate, f.policy, "administrator")
 	requireResponse(t, f.handler.Validate(context.Background(), req), false, "referencing Team")
 }

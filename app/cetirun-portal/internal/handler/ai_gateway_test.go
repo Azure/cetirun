@@ -29,7 +29,7 @@ func gatewayConfig() config.Config {
 
 func gatewayTeam(name string) *cetirunv1alpha1.Team {
 	return &cetirunv1alpha1.Team{ObjectMeta: metav1.ObjectMeta{Name: name}, Spec: cetirunv1alpha1.TeamSpec{
-		NormalAgentPolicyRef: "standard", SandboxRefs: []string{"standard"}, DefaultSandboxRef: "standard",
+		AgentPolicyRef: "standard", SandboxRefs: []string{"standard"}, DefaultSandboxRef: "standard",
 	}}
 }
 

@@ -48,7 +48,7 @@ func TestLegacyGatewayTeamDoesNotRequireSandbox(t *testing.T) {
 	if agent.Spec.SandboxRef != "" || !agent.Spec.SharedModelsEnabled() || !agent.Spec.GitHubCopilotEnabled() {
 		t.Fatal("legacy default model sources or Sandbox opt-out were lost")
 	}
-	team.Spec.NormalAgentPolicyRef = "example-policy"
+	team.Spec.AgentPolicyRef = "example-policy"
 	response, _ = createAgent(t, gatewayConfig(), `{"agent":{"type":"openclaw"},"team":"example-team"}`,
 		team, catalogConfigMap("example-model"))
 	if response.Code != http.StatusConflict || errorCode(t, response) != "team_not_configured" {

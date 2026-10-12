@@ -58,7 +58,6 @@ migration. Retention does not protect against a schema downgrade.
 | `agent.webUI` | Boolean, default false; Custom-only. When true, `agent.port` serves a Web UI rather than the Chat API; see [Agent Harness](../agent-harness/#custom-web-ui) |
 | `team` | Optional for legacy Agents; required for policy binding. Portal Gateway creation still requires an existing Team |
 | `sandboxRef` | Opt into a Team-permitted Sandbox; omitted for legacy execution |
-| `policyClass` | `normal` (default) or administrator-assigned `admin` |
 | `model` | Optional model name, at most 256 characters; policy-bound Agents must select a policy-allowed model |
 | `modelAccess.sharedModels` | Explicit request for policy-bound Agents; defaults on for legacy Agents |
 | `modelAccess.githubCopilot` | Explicit request for policy-bound Agents; defaults on for legacy Agents when the deployment offers Copilot |
@@ -145,7 +144,7 @@ check does not prove that an override will reconcile successfully.
 | `aiGateway` | AI Gateway state: phase and reason, key alias and ID (never the key), access groups, models, native USD budget/spend/reset observations, block state, and applied policy/pricing revisions |
 | `signInHelper` | Whether the workload serves the in-agent model sign-in helper that `/<instance>/cetirun-auth/` routes to; omitted until the operator records it |
 | `registryCredentials` | Receipt identifying the synchronized source Secret UID/resourceVersion and local pull Secret UID; not credential data or proof of successful image pulling |
-| `sandbox` | Last verified binding: `teamUID`, `sandboxUID`, `policyClass`, `agentPolicyUID`, `appliedRevision`; omitted before successful enforcement |
+| `sandbox` | Last verified binding: `teamUID`, `sandboxUID`, `agentPolicyUID`, `appliedRevision`; omitted before successful enforcement |
 | `policy` | Resolved effective policy plus desired Sandbox, Gateway, and credential revisions |
 
 `AgentConfigReady=False` with reason `AgentRuntimeNotImplemented` reports a
@@ -184,8 +183,7 @@ not material to paste into a public bug report.
 
 | Field under `spec` | Contract |
 | --- | --- |
-| `normalAgentPolicyRef` | Normal-class policy; required when this Team opts into policy |
-| `adminAgentPolicyRef` | Optional admin-class policy; never falls back to the normal policy |
+| `agentPolicyRef` | The Team's single policy; required when this Team opts into policy |
 | `sandboxRefs` | Nonempty permitted Sandbox set; required for a policy-enabled Team |
 | `defaultSandboxRef` | Listed creation default; required for a policy-enabled Team, not a later implicit reselection |
 | `memberContext.role` | Role rendered into runtime-specific team context |
@@ -199,17 +197,27 @@ not material to paste into a public bug report.
 | `skillStorage.storageSize` | Optional shared PVC request; chart default `100Gi` |
 | `skillStorage.mountPath` | Optional in-container path; chart default `/home/vibe/.aks/skills` |
 
+Retired `normalAgentPolicyRef`, `adminAgentPolicyRef` and Agent `policyClass`
+keys are rejection-only upgrade guards, not policy selectors. Every nonempty
+value is invalid. Stored old intent remains held until explicitly migrated;
+new resources use only `agentPolicyRef` and omit the retired keys.
+
 Instances select this object through `spec.team`. Selection applies the Team's
-runtime defaults and, when configured, normal policy; it does not grant access to another Agent's
+runtime defaults and, when configured, its single policy; it does not grant access to another Agent's
 data or runtime. There is no separate Team membership or authorization record.
-The optional admin policy remains an administrator-controlled selection. Model
-and credential entitlements come from the selected policy slot and are
-requested per Agent.
+Model and credential entitlements come from that policy and are requested per
+Agent.
+
+A Team used for administrative work is an independent Team with its own context
+and skills; it does not select a more privileged policy for another Team.
+Permission to manage Teams or AgentPolicies is a human control-plane permission
+enforced separately from workload authorization. Workload authorization comes
+from the selected Team, its `agentPolicyRef`, and the Agent's explicit requests.
 
 Teams with no policy or Sandbox fields retain legacy behavior. Setting any one
 of those fields opts into the full policy binding contract; partial bindings
 cannot fall back to legacy. The Team controller accepts a legacy Team without
-those references, or a policy-enabled Team after its policy slots and Sandbox
+those references, or a policy-enabled Team after its policy and Sandbox
 references form a valid current configuration. Runtime context
 persistence also differs:
 Hermes refreshes `TEAM.md` on initialization, while OpenClaw preserves an
@@ -236,8 +244,7 @@ schema acceptance do not grant access or prove enforcement.
 
 Policy assignment is opt-in, not a prerequisite for legacy deployment.
 An Agent with no Sandbox selection or recorded governed lifetime can use no
-Team or a Team without policy settings. `policyClass: normal` alone does not
-opt in. Such Agents retain the existing runtime flow and do not claim policy
+Team or a Team without policy settings. Such Agents retain the existing runtime flow and do not claim policy
 enforcement. For opted-in Agents, the controller resolves owner and Team
 authorization, the effective AgentPolicy, and the selected Sandbox before a
 workload may run. Invalid or unavailable authorization is fail-closed.
@@ -264,10 +271,14 @@ held by a mandatory-policy version. Review its ownership and retained data
 before recovery; removing spec fields is not permission to clear its recorded
 policy lifetime.
 
-The Agent creator selects a Team directly. Admission defaults the Team's Sandbox
-and normal policy class, then persists UID-bound references so same-name
-resource replacement cannot be adopted implicitly. Later Team, Sandbox, admin
-policy, or budget changes require an administrator and a suspended Agent.
+The Agent creator selects a Team directly. Admission defaults the Team's
+Sandbox, then persists UID-bound references so same-name resource replacement
+cannot be adopted implicitly. Later Team, Sandbox, policy, or budget changes
+require an administrator and a suspended Agent.
+Existing policy-enabled resources enter a controlled hold for cleanup. Changing
+or clearing references does not return them to legacy execution; changes require
+explicit reauthorization and an ordered stop-and-cleanup sequence. A lossless
+rolling migration between policies is not supported.
 Operator status reports desired per-domain revisions and only marks Policy
 Applied after matching enforcement evidence is current.
 

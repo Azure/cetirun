@@ -84,7 +84,7 @@ func (f *executionStatusFixture) historicalStatus(t *testing.T, ready bool) *api
 	agent := f.current(t)
 	agent.Status.Sandbox = &api.SandboxStatus{
 		TeamUID: "historical-team", SandboxUID: "historical-sandbox", AgentPolicyUID: "historical-policy",
-		PolicyClass: api.AgentPolicyClassNormal, AppliedRevision: "historical-applied-revision",
+		AppliedRevision: "historical-applied-revision",
 	}
 	agent.Status.ObservedGeneration = agent.Generation - 1
 	for _, kind := range []string{api.ConditionReady, api.ConditionSandboxReady} {
@@ -177,7 +177,7 @@ func TestSandboxExecutionStatusWriterAppliesOnlyVerifiedSandboxStatus(t *testing
 func assertAppliedExecutionStatus(t *testing.T, after, before *api.Agent, expected sandbox.ExecutionIdentity) {
 	t.Helper()
 	history := &api.SandboxStatus{TeamUID: expected.Binding.TeamUID, SandboxUID: expected.Binding.SandboxUID,
-		AgentPolicyUID: expected.Binding.AgentPolicyUID, PolicyClass: expected.Binding.PolicyClass, AppliedRevision: expected.Revision}
+		AgentPolicyUID: expected.Binding.AgentPolicyUID, AppliedRevision: expected.Revision}
 	if !reflect.DeepEqual(after.Status.Sandbox, history) || after.Status.ObservedGeneration != after.Generation ||
 		!apimeta.IsStatusConditionTrue(after.Status.Conditions, api.ConditionSandboxReady) ||
 		!reflect.DeepEqual(apimeta.FindStatusCondition(before.Status.Conditions, api.ConditionReady),
@@ -204,7 +204,6 @@ func TestSandboxExecutionStatusWriterRejectsUnverifiedObservations(t *testing.T)
 		{"Team", func(o *sandbox.Observation, _ time.Time) { o.Binding.TeamUID = "other-team" }},
 		{"Sandbox", func(o *sandbox.Observation, _ time.Time) { o.Binding.SandboxUID = "other-sandbox" }},
 		{"policy", func(o *sandbox.Observation, _ time.Time) { o.Binding.AgentPolicyUID = "other-policy" }},
-		{"class", func(o *sandbox.Observation, _ time.Time) { o.Binding.PolicyClass = api.AgentPolicyClassAdmin }},
 		{"revision", func(o *sandbox.Observation, _ time.Time) { o.Revision = "other-revision" }},
 		{"Pod", func(o *sandbox.Observation, _ time.Time) { o.PodUID = "other-pod" }},
 		{"node", func(o *sandbox.Observation, _ time.Time) { o.NodeUID = "other-node" }},

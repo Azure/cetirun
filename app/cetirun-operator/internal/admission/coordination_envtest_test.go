@@ -322,7 +322,7 @@ func testConfigurationDeletionThroughAdmission(t *testing.T, ctx context.Context
 		}
 	}
 	teamSpec := f.team.Spec
-	teamSpec.NormalAgentPolicyRef = supportPolicy.Name
+	teamSpec.AgentPolicyRef = supportPolicy.Name
 	teamSpec.SandboxRefs, teamSpec.DefaultSandboxRef = []string{supportBox.Name}, supportBox.Name
 	for _, before := range []client.Object{
 		&api.Team{ObjectMeta: metav1.ObjectMeta{Name: "delete-team"}, Spec: teamSpec},

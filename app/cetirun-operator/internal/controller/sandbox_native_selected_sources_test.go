@@ -27,7 +27,7 @@ func TestNativeSandboxIgnoresUnselectedConfigurationEdits(t *testing.T) {
 	if err := f.kube.Get(ctx, client.ObjectKey{Name: agent.Spec.SandboxRef}, box); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.kube.Get(ctx, client.ObjectKey{Name: team.Spec.NormalAgentPolicyRef}, policy); err != nil {
+	if err := f.kube.Get(ctx, client.ObjectKey{Name: team.Spec.AgentPolicyRef}, policy); err != nil {
 		t.Fatal(err)
 	}
 	policy.Spec.SandboxSelection.AllowMultiple = true
@@ -43,10 +43,6 @@ func TestNativeSandboxIgnoresUnselectedConfigurationEdits(t *testing.T) {
 		}
 	}
 	team.Spec.SandboxRefs = append(team.Spec.SandboxRefs, unusedBox.Name)
-	team.Spec.AdminAgentPolicyRef = otherPolicy.Name
-	if err := f.kube.Update(ctx, team); err != nil {
-		t.Fatal(err)
-	}
 	authorization, err := sandboxbinding.Snapshot(agent, team, sandbox.Resources{
 		Sandboxes:     map[string]*api.Sandbox{box.Name: box, unusedBox.Name: unusedBox},
 		AgentPolicies: map[string]*api.AgentPolicy{policy.Name: policy, otherPolicy.Name: otherPolicy},
