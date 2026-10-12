@@ -26,8 +26,14 @@ vi.mock("../../hooks/useInstance", () => ({
 
 const mockTeams = vi.hoisted(() => ({
   data: [
-    { name: "platform", role: "", provider: "github_copilot" },
-    { name: "security", role: "", provider: "anthropic" },
+    {
+      name: "platform", role: "", provider: "github_copilot",
+      policy: { name: "standard", harnesses: ["openclaw", "hermes"], sharedModels: [], githubCopilot: true },
+    },
+    {
+      name: "security", role: "", provider: "anthropic",
+      policy: { name: "standard", harnesses: ["openclaw", "hermes"], sharedModels: [], githubCopilot: false },
+    },
   ],
 }));
 
