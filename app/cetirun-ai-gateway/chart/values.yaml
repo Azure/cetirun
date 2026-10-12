@@ -268,6 +268,76 @@ redis:
     # -- Key within that Secret
     key: redis-password
 
+# -- A record of every model call, as one JSON line on the Gateway's stdout,
+# for whatever collects the cluster's container logs: Container Insights into a
+# Log Analytics workspace, for example. LiteLLM writes no such record itself,
+# and its export to Azure Blob Storage needs a LiteLLM Enterprise license.
+#
+# A line carries the call's metadata: the virtual key's alias and hash, the
+# user, the Team, and the Agent the CetiRun operator recorded on the key; the
+# model and provider; tokens, cached tokens among them; spend; duration and
+# time to first token; the client's address and user agent; and, for a failed
+# call, the error. It carries no request or response content. With Container
+# Insights:
+#
+#   ContainerLogV2
+#   | where ContainerName == "gateway"
+#   | where tostring(LogMessage.log_type) == "cetirun.ai_gateway.request"
+#
+# The collected lines are kept where the collector puts them, apart from the
+# Gateway's database.
+requestLog:
+  # -- Write the line for each call
+  enabled: true
+
+# -- LiteLLM's own record of each call, in its database table LiteLLM_SpendLogs,
+# which the console's request log pages read. It grows by one row per call and
+# is never trimmed unless a retention period is set in the console. Spend,
+# budgets and the daily usage totals the console's usage pages show are kept
+# either way. The cetirun-platform chart turns it off: the request log above
+# keeps the per-call record outside the database.
+spendLogs:
+  # -- Write a row to LiteLLM_SpendLogs for each call
+  enabled: true
+
+# -- LiteLLM's Prometheus metrics: requests, failures, tokens, spend and
+# latency by model, virtual key, user and Team, and the budget left on each.
+#
+# A separate process serves them on their own port, so a scrape never waits
+# behind model traffic. That port has no authentication: anything that can
+# reach it can read every key alias, user, Team and spend figure on it. Keep it
+# inside the cluster, and restrict it with a NetworkPolicy where other
+# workloads should not read it. CetiRun Agents reach only the Service port,
+# where LiteLLM also serves /metrics and requires a key.
+metrics:
+  # -- Serve the metrics
+  enabled: false
+  # -- Port of the metrics endpoint, at /metrics
+  port: 9090
+  # -- Labels left out of every metric. A client's address and user agent
+  # change with every Agent restart and client version, so each would start a
+  # new series; the user's email address is personal data that the other labels
+  # make unnecessary.
+  excludeLabels:
+    - client_ip
+    - user_agent
+    - user_email
+  # -- A PodMonitor for the Gateway pods, for a Prometheus that discovers
+  # targets that way.
+  podMonitor:
+    # -- Create the PodMonitor when the cluster serves its API. On a cluster
+    # without it, such as one without Azure Monitor managed Prometheus, the
+    # chart creates none rather than fail to install.
+    enabled: false
+    # -- azmonitoring.coreos.com/v1 for Azure Monitor managed Prometheus, or
+    # monitoring.coreos.com/v1 for the Prometheus Operator
+    apiVersion: azmonitoring.coreos.com/v1
+    # -- Scrape interval
+    interval: 30s
+    # -- Extra labels on the PodMonitor, for a Prometheus that selects
+    # monitors by label
+    labels: {}
+
 # -- Service exposing the Gateway inside the cluster
 service:
   # -- Service type. The Gateway is an internal endpoint; exposing it is the

@@ -53,6 +53,7 @@ spec:
             - migrate
           env:
             {{- include "cetirun-ai-gateway.databaseEnv" . | nindent 12 }}
+            {{- include "cetirun-ai-gateway.monitoringEnv" . | nindent 12 }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
       {{- end }}
@@ -68,10 +69,21 @@ spec:
             - /etc/litellm/config.yaml
             - --port
             - {{ .Values.service.port | quote }}
+            {{- if .Values.metrics.enabled }}
+            {{- /* LiteLLM starts a second process that serves the metrics on
+            this port, without authentication, and stops it with the proxy. */}}
+            - --prometheus_metrics_port
+            - {{ .Values.metrics.port | quote }}
+            {{- end }}
           ports:
             - name: http
               containerPort: {{ .Values.service.port }}
               protocol: TCP
+            {{- if .Values.metrics.enabled }}
+            - name: metrics
+              containerPort: {{ .Values.metrics.port }}
+              protocol: TCP
+            {{- end }}
           env:
             {{- include "cetirun-ai-gateway.proxyEnv" . | nindent 12 }}
           {{- if or .Values.providerCredentials.existingSecret .Values.providerCredentials.inline }}
@@ -95,10 +107,20 @@ spec:
             - name: config
               mountPath: /etc/litellm
               readOnly: true
+            {{- if .Values.metrics.enabled }}
+            - name: metrics
+              mountPath: {{ include "cetirun-ai-gateway.metricsDirectory" . }}
+            {{- end }}
       volumes:
         - name: config
           configMap:
             name: {{ include "cetirun-ai-gateway.configMapName" . }}
+        {{- if .Values.metrics.enabled }}
+        {{- /* LiteLLM clears it when the proxy starts, so samples from a
+        previous container never reappear. */}}
+        - name: metrics
+          emptyDir: {}
+        {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

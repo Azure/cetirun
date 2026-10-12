@@ -84,3 +84,17 @@ cetirun-ai-gateway:
   # An empty list is valid, but console-only models are not trusted shared
   # bindings. Agents need an authorized model entitlement before model use.
   models: []
+  # -- LiteLLM's Prometheus metrics, on a port of their own in each Gateway
+  # pod, and a PodMonitor for Azure Monitor managed Prometheus, which the
+  # CetiRun cluster template turns on. The PodMonitor is created only where
+  # the cluster serves its API.
+  metrics:
+    enabled: true
+    podMonitor:
+      enabled: true
+  # -- LiteLLM's own row per call in its database is not kept: the Gateway's
+  # request log on stdout records each call, and the cluster's log collection
+  # keeps it outside the database. Spend, budgets and daily usage totals are
+  # recorded either way.
+  spendLogs:
+    enabled: false

@@ -45,6 +45,11 @@ data:
       # Copilot route.
       enforce_fallback_model_access: true
       {{- end }}
+      {{- if not .Values.spendLogs.enabled }}
+      # No row per call in LiteLLM_SpendLogs. Spend, budgets and the daily
+      # usage totals are still recorded.
+      disable_spend_logs: true
+      {{- end }}
 
     litellm_settings:
       # No retries in the Gateway. LiteLLM retries a failed upstream call twice
@@ -59,6 +64,24 @@ data:
       # nothing. Azure OpenAI deployment names are not in that table, which
       # makes this the ordinary case rather than an edge one.
       block_requests_for_models_without_pricing: true
+      {{- end }}
+      # A caller cannot turn recording off for its own calls by sending
+      # "no-log": true.
+      global_disable_no_log_param: true
+      {{- $callbacks := list }}
+      {{- if .Values.requestLog.enabled }}
+      {{- $callbacks = append $callbacks "cetirun_ai_gateway.request_log.handler" }}
+      {{- end }}
+      {{- if .Values.metrics.enabled }}
+      {{- $callbacks = append $callbacks "prometheus" }}
+      {{- end }}
+      {{- if $callbacks }}
+      # requestLog and metrics: the image's per-request log line and LiteLLM's
+      # Prometheus metrics.
+      callbacks: {{ toJson $callbacks }}
+      {{- end }}
+      {{- if and .Values.metrics.enabled .Values.metrics.excludeLabels }}
+      prometheus_exclude_labels: {{ toJson .Values.metrics.excludeLabels }}
       {{- end }}
     {{- if include "cetirun-ai-gateway.redisEnabled" . }}
       # Redis is declared here for coordination, not for caching responses.

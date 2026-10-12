@@ -62,6 +62,7 @@ spec:
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
           env:
+            {{- include "cetirun-ai-gateway.monitoringEnv" . | nindent 12 }}
             - name: VALKEY_PASSWORD
               valueFrom:
                 secretKeyRef:

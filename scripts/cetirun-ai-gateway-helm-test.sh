@@ -480,6 +480,87 @@ echo "==> the auth Secret survives helm uninstall"
 auth_secret="$(render -s templates/secret.yaml)"
 assert_contains "helm.sh/resource-policy: keep" "the auth Secret is kept on uninstall" "${auth_secret}"
 
+# ----- Request log and metrics -----
+
+# LiteLLM writes no per-request record of its own. The image's callback writes
+# one JSON line of metadata per call to stdout, for the cluster's log
+# collection. It has no setting that adds request or response content.
+echo "==> every call is logged, without content"
+assert_contains 'callbacks: \["cetirun_ai_gateway.request_log.handler"\]' \
+  "the request log callback is registered by default" "${output}"
+assert_absent "CETIRUN_REQUEST_LOG_CONTENT" "no setting adds request or response content" "${output}"
+log_off="$(render --set requestLog.enabled=false)"
+assert_absent "callbacks:" "no callback is registered with the request log off" "${log_off}"
+
+# A client sending "no-log": true turned every logging callback off for its own
+# call, so the call never reached the request log or the metrics. The setting
+# that ignores the field holds whatever is turned on.
+echo "==> callers cannot turn recording off"
+assert_contains "global_disable_no_log_param: true" "a caller cannot turn recording off" "${output}"
+assert_contains "global_disable_no_log_param: true" "a caller cannot turn recording off with the request log off" \
+  "${log_off}"
+
+# LiteLLM's own row per call grows the database without limit. The platform
+# turns it off; the request log keeps the per-call record outside the database.
+echo "==> LiteLLM's spend log can be turned off"
+assert_absent "disable_spend_logs" "LiteLLM keeps its spend log by default" "${output}"
+assert_contains "disable_spend_logs: true" "spendLogs.enabled=false stops the spend log" \
+  "$(render --set spendLogs.enabled=false -s templates/configmap.yaml)"
+
+# Container Insights copies each container's environment, Secret values
+# included, into its ContainerInventory table once a minute unless collection
+# is turned off for the cluster or for the container. Every container here
+# that holds a credential in its environment turns it off for itself.
+echo "==> containers with credentials opt out of environment collection"
+azmon_count="$(grep -c 'name: AZMON_COLLECT_ENV$' <<< "${output}" || true)"
+[ "${azmon_count}" = "4" ] || {
+  echo "FAIL: AZMON_COLLECT_ENV is set on ${azmon_count} containers; expected the gateway, migrate, PostgreSQL and Valkey containers" >&2
+  exit 1
+}
+assert_contains "name: AZMON_COLLECT_ENV$" "the migrate init container opts out" "${init}"
+for template in deployment.yaml postgresql.yaml valkey.yaml; do
+  assert_contains 'value: "False"' "${template} opts out of environment collection" \
+    "$(render -s "templates/${template}" | grep -A1 'name: AZMON_COLLECT_ENV$')"
+done
+
+# The metrics are LiteLLM's. Served on the Service port they need a key, which
+# a scraper would have to hold; LiteLLM serves them on a port of their own,
+# from a separate process that reads the samples the proxy leaves in a shared
+# directory.
+echo "==> metrics are served on their own port when turned on"
+assert_absent "prometheus" "no metrics by default" "${output}"
+assert_absent "name: metrics" "no metrics port by default" "${gateway_pod}"
+metrics="$(render --set metrics.enabled=true)"
+metrics_pod="$(render --set metrics.enabled=true -s templates/deployment.yaml)"
+assert_contains 'callbacks: \["cetirun_ai_gateway.request_log.handler","prometheus"\]' \
+  "LiteLLM's Prometheus callback is registered" "${metrics}"
+assert_contains 'prometheus_exclude_labels: \["client_ip","user_agent","user_email"\]' \
+  "labels that change per client or carry email addresses are left out" "${metrics}"
+assert_contains "\- --prometheus_metrics_port$" "LiteLLM serves the metrics on a port of their own" "${metrics_pod}"
+assert_contains "containerPort: 9090$" "the metrics port is declared" "${metrics_pod}"
+assert_contains "name: PROMETHEUS_MULTIPROC_DIR$" "the proxy records samples where the metrics process reads them" "${metrics_pod}"
+assert_contains "emptyDir: {}" "the sample directory is the pod's own" "${metrics_pod}"
+assert_absent "9090" "the metrics port stays off the Service" "$(render --set metrics.enabled=true -s templates/service.yaml)"
+assert_absent "kind: PodMonitor" "no PodMonitor unless asked for" "${metrics}"
+
+# A PodMonitor on a cluster without its API fails the whole install, and the
+# platform asks for one by default. It is created only where the API exists:
+# Azure Monitor managed Prometheus serves azmonitoring.coreos.com.
+echo "==> the PodMonitor is created only where the cluster serves its API"
+monitor_args=(--set metrics.enabled=true --set metrics.podMonitor.enabled=true)
+assert_absent "kind: PodMonitor" "no PodMonitor on a cluster without the API" "$(render "${monitor_args[@]}")"
+monitor="$(render "${monitor_args[@]}" --api-versions azmonitoring.coreos.com/v1/PodMonitor -s templates/podmonitor.yaml)"
+assert_contains "apiVersion: azmonitoring.coreos.com/v1$" "the PodMonitor targets Azure Monitor managed Prometheus by default" "${monitor}"
+assert_contains "port: metrics$" "the PodMonitor scrapes the metrics port" "${monitor}"
+assert_contains "app.kubernetes.io/component: gateway$" "the PodMonitor selects the Gateway pods only" "${monitor}"
+assert_absent "kind: PodMonitor" "the Prometheus Operator's API does not satisfy the Azure one" \
+  "$(render "${monitor_args[@]}" --api-versions monitoring.coreos.com/v1/PodMonitor)"
+assert_contains "apiVersion: monitoring.coreos.com/v1$" "the Prometheus Operator's PodMonitor can be chosen" \
+  "$(render "${monitor_args[@]}" --set-string metrics.podMonitor.apiVersion=monitoring.coreos.com/v1 \
+    --api-versions monitoring.coreos.com/v1/PodMonitor -s templates/podmonitor.yaml)"
+assert_rejected "a PodMonitor without metrics" --set metrics.podMonitor.enabled=true
+assert_rejected "the metrics port on the Service port" --set metrics.enabled=true --set metrics.port=4000
+
 # ----- Exposure -----
 
 # The console is reached through a port-forward. A chart that ships an Ingress

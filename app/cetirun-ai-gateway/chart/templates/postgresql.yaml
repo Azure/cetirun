@@ -85,6 +85,7 @@ spec:
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
           env:
+            {{- include "cetirun-ai-gateway.monitoringEnv" . | nindent 12 }}
             - name: POSTGRES_USER
               value: litellm
             - name: POSTGRES_DB

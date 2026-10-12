@@ -297,3 +297,31 @@ Provider credentials must come from exactly one source.
 {{- fail "set either providerCredentials.existingSecret or providerCredentials.inline, not both." }}
 {{- end }}
 {{- end }}
+
+{{/*
+Where the proxy and the metrics process share their Prometheus samples.
+*/}}
+{{- define "cetirun-ai-gateway.metricsDirectory" -}}
+/tmp/litellm-metrics
+{{- end }}
+
+{{/*
+Whether the cluster serves the PodMonitor API the chart is configured for.
+Azure Monitor managed Prometheus installs azmonitoring.coreos.com; a cluster
+without it has no such API, and installing a PodMonitor there would fail.
+*/}}
+{{- define "cetirun-ai-gateway.podMonitorAvailable" -}}
+{{- if .Capabilities.APIVersions.Has (printf "%s/PodMonitor" .Values.metrics.podMonitor.apiVersion) }}true{{ end }}
+{{- end }}
+
+{{/*
+The metrics port has to be its own, and a PodMonitor needs metrics to scrape.
+*/}}
+{{- define "cetirun-ai-gateway.validateMetrics" -}}
+{{- if and .Values.metrics.enabled (eq (int .Values.metrics.port) (int .Values.service.port)) }}
+{{- fail (printf "metrics.port %d is also service.port. The metrics process needs a port of its own: set metrics.port to another one." (int .Values.metrics.port)) }}
+{{- end }}
+{{- if and .Values.metrics.podMonitor.enabled (not .Values.metrics.enabled) }}
+{{- fail "metrics.podMonitor.enabled is set while metrics.enabled is false, so the PodMonitor would have nothing to scrape. Set metrics.enabled as well, or turn the PodMonitor off." }}
+{{- end }}
+{{- end }}
