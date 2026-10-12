@@ -682,8 +682,8 @@ func TestSandboxPreparationMetadataOnlyReauthorization(t *testing.T) {
 	if err := f.client.Create(ctx, replacement); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.reconcile(); err != nil {
-		t.Fatal(err)
+	if err := f.reconcile(); err == nil || !errors.Is(err, sandbox.ErrUnauthorizedBinding) {
+		t.Fatalf("same-name policy replacement bypassed Sandbox authorization: %v", err)
 	}
 	denied := f.expectation(t)
 	if denied.Binding.AgentPolicyUID != before.Binding.AgentPolicyUID || f.installer.stages != 1 {
