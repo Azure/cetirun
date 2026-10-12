@@ -57,9 +57,8 @@ spec:
               member instance.
             properties:
               agentPolicyRef:
-                description: |-
-                  AgentPolicyRef names the policy applied to every Agent in this Team.
-                  A Team without any policy or Sandbox fields retains legacy execution.
+                description: AgentPolicyRef names the policy applied to Agents in
+                  this Team.
                 maxLength: 253
                 minLength: 1
                 pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
@@ -119,8 +118,8 @@ spec:
                     type: string
                   mountPath:
                     description: |-
-                      MountPath optionally adds a read-only skills alias for native Agents.
-                      The common skills view is always at "$HOME/.agents/skills".
+                      MountPath inside the container. Defaults to the chart default
+                      ("/home/vibe/.aks/skills") when empty.
                     type: string
                   resourceGroup:
                     description: ResourceGroup of the Azure storage account.
@@ -155,6 +154,10 @@ spec:
                 maxItems: 20
                 type: array
                 x-kubernetes-list-type: set
+            required:
+            - agentPolicyRef
+            - defaultSandboxRef
+            - sandboxRefs
             type: object
           status:
             description: TeamStatus defines the observed state of Team.

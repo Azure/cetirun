@@ -549,7 +549,7 @@ func TestCreateInstance_ReservedName(t *testing.T) {
 	}
 }
 
-func TestCreateLegacyInstanceWithoutTeam(t *testing.T) {
+func TestCreateInstanceRequiresTeam(t *testing.T) {
 	fc := newFakeClient()
 	h := &InstanceHandler{
 		Kube: kube.NewClient(fc),
@@ -564,8 +564,8 @@ func TestCreateLegacyInstanceWithoutTeam(t *testing.T) {
 
 	h.CreateInstance(w, req)
 
-	if w.Code != http.StatusCreated {
-		t.Errorf("status = %d, want %d (body=%s)", w.Code, http.StatusCreated, w.Body.String())
+	if w.Code != http.StatusBadRequest || errorCode(t, w) != "team_required" {
+		t.Errorf("status = %d, want %d team_required (body=%s)", w.Code, http.StatusBadRequest, w.Body.String())
 	}
 }
 
@@ -1175,8 +1175,8 @@ func TestUpdateInstance_MemberCannotClearTeam(t *testing.T) {
 
 	h.UpdateInstance(w, req)
 
-	if w.Code != http.StatusForbidden || errorCode(t, w) != "team_change_not_allowed" {
-		t.Errorf("status = %d, want %d team_change_not_allowed", w.Code, http.StatusForbidden)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusBadRequest)
 	}
 }
 
