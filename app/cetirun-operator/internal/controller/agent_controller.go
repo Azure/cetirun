@@ -541,20 +541,32 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		}
 	}
 
-	// 5. Set phase to Provisioning if still Pending (or empty).
+	// 5. Start provisioning. An Agent without a HelmDeployed condition is
+	// being created: its chart was never applied. Record the creation once,
+	// together with a HelmDeployed condition that stays until the chart is
+	// installed, so that a retry after a later failure does not report it
+	// again. This includes an Agent that failed before its first
+	// provisioning pass, for example while its chart could not be prepared.
+	// A deployed Agent can return to Pending, for example while it waits for
+	// registry credentials; that is not a creation.
+	creating := meta.FindStatusCondition(instance.Status.Conditions, cetirunv1alpha1.ConditionHelmDeployed) == nil
+	if creating {
+		setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionHelmDeployed,
+			metav1.ConditionFalse, "ChartNotInstalled", "Helm chart not installed yet")
+	}
 	if instance.Status.Phase == "" || instance.Status.Phase == cetirunv1alpha1.PhasePending {
-		// The Agent is being created when its chart was never applied. A
-		// deployed Agent can return to Pending, for example while it waits
-		// for registry credentials; that is not a creation.
-		creating := meta.FindStatusCondition(instance.Status.Conditions, cetirunv1alpha1.ConditionHelmDeployed) == nil
 		logger.V(1).Info("Setting phase to Provisioning", "alias", instance.Spec.User.Alias, "currentPhase", instance.Status.Phase)
 		if err := r.setPhase(ctx, instance, cetirunv1alpha1.PhaseProvisioning); err != nil {
 			return ctrl.Result{}, err
 		}
-		if creating {
-			r.EventRecorder.Eventf(instance, corev1.EventTypeNormal, "InstanceCreating",
-				"Creating agent for user %s", instance.Spec.User.Alias)
+	} else if creating {
+		if err := r.updateStatus(ctx, instance); err != nil {
+			return ctrl.Result{}, err
 		}
+	}
+	if creating {
+		r.EventRecorder.Eventf(instance, corev1.EventTypeNormal, "InstanceCreating",
+			"Creating agent for user %s", instance.Spec.User.Alias)
 	}
 
 	// 5a. Transition Ready/Suspended → Provisioning when a full reconcile is needed.

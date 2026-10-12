@@ -5,6 +5,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -23,6 +24,7 @@ import (
 	istiov1beta1 "istio.io/client-go/pkg/apis/networking/v1beta1"
 
 	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/helm"
 )
 
 var lifecycleEventReasons = []string{"InstanceCreating", "IngressConfigured", "InstanceReady", "InstanceSuspended"}
@@ -226,5 +228,89 @@ func TestInstanceCreatingIsRecordedOncePerCreation(t *testing.T) {
 	got, _ := lifecycleEvents(recorder)
 	if got["InstanceCreating"] != 1 || got["IngressConfigured"] != 1 || got["InstanceReady"] != 0 {
 		t.Fatalf("events while waiting for the Pod: %v", got)
+	}
+}
+
+// preparationHelm renders the chart like chartHelm, but its Prepare can be
+// made to fail, as it does when the chart cannot be downloaded.
+type preparationHelm struct {
+	chartHelm
+	failPrepare bool
+}
+
+func (h *preparationHelm) Prepare(namespace string, values map[string]any, chartVersion string) (*helm.PreparedRelease, error) {
+	if h.failPrepare {
+		return nil, errors.New("synthetic chart download failure")
+	}
+	return h.chartHelm.Prepare(namespace, values, chartVersion)
+}
+
+// An Agent whose chart could not be prepared before its first provisioning
+// pass is Failed without having been reported as created. Its creation is
+// reported when provisioning starts after all, and only once, also when a
+// later step of that creation is retried.
+func TestInstanceCreatingAfterAFailedFirstPreparation(t *testing.T) {
+	r, agent, gateway := legacyGatewayFixture(t)
+	chart := &preparationHelm{failPrepare: true}
+	r.HelmClient = chart
+	recorder := record.NewFakeRecorder(100)
+	r.EventRecorder = recorder
+	ctx := context.Background()
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: agent.Name}}
+	sts := &appsv1.StatefulSet{
+		ObjectMeta: metav1.ObjectMeta{Name: instanceServiceName(agent.Name), Namespace: instanceNamespace(agent.Name), Generation: 1},
+		Spec:       appsv1.StatefulSetSpec{Replicas: ptr.To[int32](1)},
+		Status:     appsv1.StatefulSetStatus{ReadyReplicas: 1, UpdatedReplicas: 1, ObservedGeneration: 1},
+	}
+	if err := r.Create(ctx, sts); err != nil {
+		t.Fatal(err)
+	}
+	stored := func() *cetirunv1alpha1.Agent {
+		t.Helper()
+		current := &cetirunv1alpha1.Agent{}
+		if err := r.Get(ctx, req.NamespacedName, current); err != nil {
+			t.Fatal(err)
+		}
+		return current
+	}
+
+	if _, err := r.Reconcile(ctx, req); err == nil {
+		t.Fatal("a failed chart preparation was not reported")
+	}
+	if phase := stored().Status.Phase; phase != cetirunv1alpha1.PhaseFailed {
+		t.Fatalf("phase = %q, want Failed", phase)
+	}
+	if got, _ := lifecycleEvents(recorder); got["InstanceCreating"] != 0 {
+		t.Fatalf("creation reported before provisioning started: %v", got)
+	}
+
+	// The chart can be prepared again, but the Agent's Gateway key cannot be
+	// created yet: provisioning starts and is retried before the chart is
+	// installed.
+	chart.failPrepare = false
+	gateway.getErr = errors.New("synthetic Gateway outage")
+	for i := 0; i < 3; i++ {
+		if _, err := r.Reconcile(ctx, req); err != nil {
+			t.Fatalf("reconcile %d: %v", i, err)
+		}
+	}
+	if chart.installs != 0 {
+		t.Fatalf("the chart was installed without the Agent's key: installs = %d", chart.installs)
+	}
+	if got, _ := lifecycleEvents(recorder); got["InstanceCreating"] != 1 {
+		t.Fatalf("creation reported %d times while it was retried, want once", got["InstanceCreating"])
+	}
+
+	gateway.getErr = nil
+	for i := 0; i < 4 && stored().Status.Phase != cetirunv1alpha1.PhaseReady; i++ {
+		if _, err := r.Reconcile(ctx, req); err != nil {
+			t.Fatalf("reconcile %d: %v", i, err)
+		}
+	}
+	if phase := stored().Status.Phase; phase != cetirunv1alpha1.PhaseReady || chart.installs != 1 {
+		t.Fatalf("phase = %q, installs = %d; want Ready after one install", phase, chart.installs)
+	}
+	if got, _ := lifecycleEvents(recorder); got["InstanceCreating"] != 0 || got["IngressConfigured"] != 1 || got["InstanceReady"] != 1 {
+		t.Fatalf("events when the creation completed: %v", got)
 	}
 }
