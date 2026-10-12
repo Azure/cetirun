@@ -49,13 +49,10 @@ type fakeHelmClient struct {
 	disableChatContract bool
 }
 
-// requireLegacyDirectRuntime documents tests for the pre-Policy execution
-// path. That path accepted an Agent without an authorized Team/Sandbox binding
-// and invoked Helm directly. Mandatory Policy intentionally removed it;
-// Sandbox preparation owns any future built-in runtime activation instead.
+// requireLegacyDirectRuntime identifies compatibility tests for Agents that
+// have never opted into Sandbox or AgentPolicy execution.
 func requireLegacyDirectRuntime(t *testing.T) {
 	t.Helper()
-	t.Skip("legacy direct runtime reconciliation was removed by mandatory Policy")
 }
 
 func (f *fakeHelmClient) Prepare(namespace string, values map[string]any, chartVersion string) (*helm.PreparedRelease, error) {
@@ -217,10 +214,10 @@ func newCR(alias string, phase string, conditions []metav1.Condition, generation
 		},
 		Spec: cetirunv1alpha1.AgentSpec{
 			Agent: cetirunv1alpha1.HarnessSpec{Type: cetirunv1alpha1.AgentTypeOpenClaw},
-			Team:  "test-team",
 			User: cetirunv1alpha1.UserSpec{
 				Alias:       alias,
 				DisplayName: "Test User",
+				Team:        "test-team",
 			},
 			GatewayTokenSecretRef: "gateway-token",
 			Helm: cetirunv1alpha1.HelmSpec{

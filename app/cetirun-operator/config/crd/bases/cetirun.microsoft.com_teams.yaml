@@ -96,8 +96,9 @@ spec:
                     type: string
                 type: object
               normalAgentPolicyRef:
-                description: NormalAgentPolicyRef names the policy for normal-class
-                  Agents.
+                description: |-
+                  NormalAgentPolicyRef names the policy for normal-class Agents.
+                  A Team without any policy or Sandbox fields retains legacy execution.
                 maxLength: 253
                 minLength: 1
                 pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
@@ -161,10 +162,6 @@ spec:
                 maxItems: 20
                 type: array
                 x-kubernetes-list-type: set
-            required:
-            - defaultSandboxRef
-            - normalAgentPolicyRef
-            - sandboxRefs
             type: object
           status:
             description: TeamStatus defines the observed state of Team.

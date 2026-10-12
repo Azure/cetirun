@@ -223,6 +223,37 @@ func TestAdmissionAPIServerBoundaries(t *testing.T) {
 		t.Fatal("mutating/validating admission did not become active:", err)
 	}
 
+	t.Run("legacy create and controller pinning remain available with admission enabled", func(t *testing.T) {
+		team := &api.Team{ObjectMeta: metav1.ObjectMeta{Name: "legacy-webhook-team"}}
+		create(team)
+		for _, teamName := range []string{"", team.Name} {
+			agent := &api.Agent{
+				ObjectMeta: metav1.ObjectMeta{GenerateName: "legacy-webhook-", Finalizers: []string{api.Finalizer}},
+				Spec: api.AgentSpec{
+					Agent: api.HarnessSpec{Type: api.AgentTypeOpenClaw}, Team: teamName,
+					User:                  api.UserSpec{Alias: "alice", DisplayName: "Example User", Team: "display-only"},
+					GatewayTokenSecretRef: "gateway-token",
+				},
+			}
+			if err := member.Create(ctx, agent); err != nil {
+				t.Fatal("legacy creation rejected by served admission:", err)
+			}
+			agent.Spec.Helm.Version = "0.1.28"
+			if err := controller.Update(ctx, agent); err != nil {
+				t.Fatal("legacy controller pin rejected by served admission:", err)
+			}
+			if agent.Spec.SandboxRef != "" || agent.Status.Policy != nil || sandboxbinding.Present(agent) {
+				t.Fatal("legacy admission invented a governed binding")
+			}
+		}
+		partial := &api.Team{
+			ObjectMeta: metav1.ObjectMeta{Name: "partial-policy-team"},
+			Spec:       api.TeamSpec{NormalAgentPolicyRef: f.policy.Name},
+		}
+		if err := cl.Create(ctx, partial); !apierrors.IsForbidden(err) {
+			t.Fatalf("partial policy Team was admitted as legacy: %v", err)
+		}
+	})
 	t.Run("persist defaults without elevating a human administrator", func(t *testing.T) {
 		agent := newAgent("governed-agent")
 		create(agent)

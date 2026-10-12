@@ -195,8 +195,9 @@ spec:
                 type: string
               modelAccess:
                 description: |-
-                  ModelAccess explicitly requests model sources when the platform AI
-                  Gateway is enabled. Omission grants no model source.
+                  ModelAccess requests model sources when the platform AI Gateway is
+                  enabled. Policy-bound Agents must explicitly request each source.
+                  Legacy Agents retain default-on sources unless explicitly disabled.
                 properties:
                   githubCopilot:
                     description: |-
@@ -257,7 +258,9 @@ spec:
                 - admin
                 type: string
               sandboxRef:
-                description: SandboxRef selects a Sandbox permitted by the Team.
+                description: |-
+                  SandboxRef opts into Sandbox execution and selects a Sandbox permitted
+                  by the Team. Legacy Agents omit it and use the existing runtime path.
                 maxLength: 253
                 minLength: 1
                 pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
@@ -339,14 +342,17 @@ spec:
                   email:
                     description: Email address for notifications (optional).
                     type: string
+                  team:
+                    description: |-
+                      Team is legacy display context, not a Team or policy assignment.
+                      Deprecated: use spec.team for Team configuration.
+                    type: string
                 required:
                 - alias
                 - displayName
                 type: object
             required:
             - agent
-            - sandboxRef
-            - team
             - user
             type: object
             x-kubernetes-validations:

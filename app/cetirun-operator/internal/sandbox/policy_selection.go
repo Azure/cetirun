@@ -22,6 +22,9 @@ func Requested(agent *api.Agent, team *api.Team) bool {
 		slices.Contains(agent.Finalizers, PreparationFinalizer) || slices.Contains(agent.Finalizers, BootstrapFinalizer) ||
 		agent.Spec.SandboxRef != "" ||
 		(agent.Spec.PolicyClass != "" && agent.Spec.PolicyClass != api.AgentPolicyClassNormal) ||
+		(agent.Spec.ModelAccess != nil && agent.Spec.ModelAccess.MonthlyBudgetUSD != "") ||
+		agent.Status.Policy != nil ||
+		(agent.Status.AIGateway != nil && agent.Status.AIGateway.PolicyRevision != "") ||
 		agent.Status.Sandbox != nil || meta.FindStatusCondition(agent.Status.Conditions, api.ConditionSandboxReady) != nil) {
 		return true
 	}
@@ -29,6 +32,5 @@ func Requested(agent *api.Agent, team *api.Team) bool {
 }
 
 func TeamPolicyConfigured(team *api.Team) bool {
-	return team != nil && (team.Spec.NormalAgentPolicyRef != "" || team.Spec.AdminAgentPolicyRef != "" ||
-		len(team.Spec.SandboxRefs) != 0 || team.Spec.DefaultSandboxRef != "")
+	return team != nil && team.Spec.PolicyConfigured()
 }

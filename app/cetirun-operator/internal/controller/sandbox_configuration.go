@@ -173,6 +173,9 @@ func (r *TeamReconciler) Reconcile(ctx context.Context, request ctrl.Request) (c
 }
 
 func (r *TeamReconciler) validate(ctx context.Context, team *api.Team) error {
+	if !team.Spec.PolicyConfigured() {
+		return nil
+	}
 	reader := r.APIReader
 	if reader == nil {
 		reader = r.Client

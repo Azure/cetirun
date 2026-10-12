@@ -76,7 +76,6 @@ func TestCustomGatewayExplicitImageSelection(t *testing.T) {
 }
 
 func TestCustomGatewayKeyBindingAndCopilot(t *testing.T) {
-	t.Skip("Custom execution remains held until a typed Sandbox execution adapter is available")
 	p, instance, gateway, b := gatewayCustomFixture(t)
 	ctx := context.Background()
 	if err := p.reconciler.bindCustomGateway(ctx, instance, &b); err != nil {
@@ -163,7 +162,6 @@ func TestCustomGatewayNeverFallsBack(t *testing.T) {
 }
 
 func TestCustomGatewayPublishesWorkloadReadinessBeforeCopilotRetry(t *testing.T) {
-	t.Skip("Custom execution remains held until a typed Sandbox execution adapter is available")
 	for _, tc := range []struct {
 		name             string
 		copilotPhase     string

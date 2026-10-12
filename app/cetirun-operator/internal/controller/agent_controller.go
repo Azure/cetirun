@@ -247,7 +247,8 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		return r.rejectReservedUIInstance(ctx, instance)
 	}
 
-	// Policy is mandatory for every non-deleting Agent. Resolve its
+	// Opted-in Agents remain policy-bound; never-governed Agents retain the
+	// legacy runtime path while Sandbox execution is being completed. Resolve its
 	// immutable owner/Team/policy binding before any Sandbox or workload
 	// recovery can make compute available.
 	policy, err := r.reconcilePolicy(ctx, instance)
@@ -753,7 +754,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	if err != nil {
 		return r.rejectAgentConfig(ctx, instance, err)
 	}
-	if !prepared.SupportsValuePath(aiGatewayChartValue, aiGatewayChartModelsValue) {
+	if sandboxRequested(instance, team) && !prepared.SupportsValuePath(aiGatewayChartValue, aiGatewayChartModelsValue) {
 		policyErr := fmt.Errorf("Agent chart %q does not support mandatory AI Gateway routing", instance.Spec.Helm.Version)
 		if err := r.recordPolicy(ctx, instance, nil, policyErr); err != nil {
 			return ctrl.Result{}, err
