@@ -586,17 +586,19 @@ func TestReconcileAIGatewayBlocksExistingKeyBeforePolicyBudgetUpdate(t *testing.
 	}
 }
 
-func TestReconcileAIGatewayBlocksExistingKeyWhenTeamPolicyBindingChanges(t *testing.T) {
+func TestReconcileAIGatewayProjectsCurrentTeamPolicyWithoutSandboxReauthorization(t *testing.T) {
 	ctx := context.Background()
 	agent := aiGatewayTestAgent(testAIGatewayTeam)
 	r, kube, gateway := aiGatewayTestReconciler(t, agent, aiGatewayNamespace())
 	if err := r.reconcileAIGateway(ctx, agent, true); err != nil {
 		t.Fatal(err)
 	}
+	oldRevision := agent.Status.AIGateway.PolicyRevision
 
 	replacement := aiGatewayTestPolicy()
 	replacement.Name = "replacement-policy"
 	replacement.UID = types.UID("replacement-policy-uid")
+	replacement.Spec.ModelAccess.GatewayBudget.DefaultMonthlyUSD = "20"
 	if err := kube.Create(ctx, replacement); err != nil {
 		t.Fatal(err)
 	}
@@ -609,16 +611,19 @@ func TestReconcileAIGatewayBlocksExistingKeyWhenTeamPolicyBindingChanges(t *test
 		t.Fatal(err)
 	}
 
-	if err := r.reconcileAIGateway(ctx, agent, true); err == nil {
-		t.Fatal("a changed Team policy binding was granted without explicit reauthorization")
+	if err := r.reconcileAIGateway(ctx, agent, true); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(gateway.budgetUpdateBlocks, []bool{true}) {
+		t.Fatalf("Gateway policy replacement observed blocked states %v, want [true]", gateway.budgetUpdateBlocks)
 	}
 	for _, key := range gateway.keys {
-		if !key.Blocked {
-			t.Fatal("the previous Gateway key was not blocked after the protected policy binding changed")
+		if key.Blocked {
+			t.Fatal("the replacement Gateway policy remained blocked after readback")
 		}
 	}
-	if len(gateway.ownerUpdates) != 0 || len(gateway.budgetUpdateBlocks) != 0 || len(gateway.updates) != 0 {
-		t.Fatal("the replacement policy modified the Gateway grant before binding reauthorization")
+	if agent.Status.AIGateway.PolicyRevision == oldRevision {
+		t.Fatal("Gateway policy revision did not change with the Team policy binding")
 	}
 }
 
