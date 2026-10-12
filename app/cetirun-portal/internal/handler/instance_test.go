@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -989,6 +990,34 @@ func TestDeleteInstance_NotFound(t *testing.T) {
 
 	if w.Code != http.StatusNotFound {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusNotFound)
+	}
+}
+
+func TestListTeamsIncludesUserFacingPolicyConstraints(t *testing.T) {
+	team := gatewayTeam("platform")
+	missing := gatewayTeam("broken")
+	missing.Spec.AgentPolicyRef = "missing"
+	policy := gatewayPolicy()
+	policy.Spec.Harnesses.Allowed = []cetirunv1alpha1.AgentType{cetirunv1alpha1.AgentTypeHermes}
+	policy.Spec.ModelAccess.Copilot.Allowed = false
+	policy.Spec.ModelAccess.SharedModels.Allowed = []string{"gpt-6"}
+	h := &InstanceHandler{Kube: kube.NewClient(newFakeClient(team, missing, policy))}
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/teams", nil)
+	w := httptest.NewRecorder()
+
+	h.ListTeams(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", w.Code, w.Body.String())
+	}
+	var got []TeamSummary
+	if err := json.NewDecoder(w.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Name != "platform" || got[0].Policy.Name != "standard" ||
+		!reflect.DeepEqual(got[0].Policy.Harnesses, []cetirunv1alpha1.AgentType{cetirunv1alpha1.AgentTypeHermes}) ||
+		!reflect.DeepEqual(got[0].Policy.SharedModels, []string{"gpt-6"}) || got[0].Policy.GitHubCopilot {
+		t.Fatalf("teams = %+v", got)
 	}
 }
 

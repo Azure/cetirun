@@ -19,11 +19,25 @@ vi.mock("../../hooks/useInstance", () => ({
   useCreateInstance: () => ({ mutate: mockMutate, isPending: false }),
 }));
 
+const mockTeams = vi.hoisted(() => ({
+  data: [{
+    name: "platform",
+    role: "",
+    provider: "",
+    policy: {
+      name: "standard",
+      harnesses: ["openclaw", "hermes"],
+      sharedModels: ["gpt-6", "gpt-6-mini"],
+      githubCopilot: true,
+    },
+  }],
+}));
+
 vi.mock("../../hooks/useTeams", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../hooks/useTeams")>();
   return {
     ...actual,
-    useTeams: () => ({ data: [{ name: "platform", role: "", provider: "" }], isLoading: false }),
+    useTeams: () => ({ data: mockTeams.data, isLoading: false }),
     useEffectiveTeamProvider: () => "github_copilot",
   };
 });
@@ -68,6 +82,12 @@ describe("CreateForm with the AI Gateway", () => {
       githubCopilot: true,
       agentTypes: ["openclaw", "hermes"],
     };
+    mockTeams.data[0].policy = {
+      name: "standard",
+      harnesses: ["openclaw", "hermes"],
+      sharedModels: ["gpt-6", "gpt-6-mini"],
+      githubCopilot: true,
+    };
   });
 
   it("requires a Team before an agent can be created", async () => {
@@ -80,12 +100,12 @@ describe("CreateForm with the AI Gateway", () => {
     expect(screen.getByRole("button", { name: "Create Agent" })).toBeEnabled();
   });
 
-  it("sends both model sources on by default for OpenClaw", async () => {
+  it("prefers Team shared models and keeps Copilot off by default", async () => {
     const user = userEvent.setup();
     renderForm();
     await chooseOpenClawAndTeam(user);
     expect(screen.getByRole("switch", { name: "Use shared models" })).toBeChecked();
-    expect(screen.getByRole("switch", { name: "Use GitHub Copilot" })).toBeChecked();
+    expect(screen.getByRole("switch", { name: "Use GitHub Copilot" })).not.toBeChecked();
     expect(screen.getByText(/gpt-6, gpt-6-mini/)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Create Agent" }));
     expect(mockMutate).toHaveBeenCalledWith(
@@ -93,7 +113,7 @@ describe("CreateForm with the AI Gateway", () => {
         agent: { type: "openclaw" },
         team: "platform",
         model: undefined,
-        modelAccess: { sharedModels: true, githubCopilot: true },
+        modelAccess: { sharedModels: true, githubCopilot: false },
       }),
     );
   });
@@ -102,8 +122,6 @@ describe("CreateForm with the AI Gateway", () => {
     const user = userEvent.setup();
     renderForm();
     await chooseOpenClawAndTeam(user);
-    await user.click(screen.getByRole("switch", { name: "Use GitHub Copilot" }));
-    expect(screen.getByRole("switch", { name: "Use GitHub Copilot" })).not.toBeChecked();
     await user.click(screen.getByRole("switch", { name: "Use shared models" }));
     const copilot = screen.getByRole("switch", { name: "Use GitHub Copilot" });
     expect(copilot).toBeChecked();
@@ -122,7 +140,7 @@ describe("CreateForm with the AI Gateway", () => {
     const copilot = screen.getByRole("switch", { name: "Use GitHub Copilot" });
     expect(copilot).toBeChecked();
     expect(copilot).toBeDisabled();
-    expect(screen.getByText("No shared models are available.")).toBeInTheDocument();
+    expect(screen.getByText("This Team has no currently available shared models.")).toBeInTheDocument();
     expect(screen.queryByRole("combobox", { name: /Default model/ })).not.toBeInTheDocument();
   });
 
@@ -149,7 +167,7 @@ describe("CreateForm with the AI Gateway", () => {
     const user = userEvent.setup();
     renderForm();
     await chooseOpenClawAndTeam(user);
-    expect(screen.getByText(/No models are available for new agents/)).toBeInTheDocument();
+    expect(screen.getByText(/grants no currently available model source/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Create Agent" })).toBeDisabled();
   });
 
@@ -166,7 +184,6 @@ describe("CreateForm with the AI Gateway", () => {
     const user = userEvent.setup();
     renderForm();
     await chooseOpenClawAndTeam(user);
-    await user.click(screen.getByRole("switch", { name: "Use GitHub Copilot" }));
     await user.selectOptions(screen.getByRole("combobox", { name: /Default model/ }), "gpt-6-mini");
     await user.click(screen.getByRole("button", { name: "Create Agent" }));
     expect(mockMutate).toHaveBeenCalledWith(
@@ -180,7 +197,6 @@ describe("CreateForm with the AI Gateway", () => {
     await user.selectOptions(screen.getByRole("combobox", { name: /Agent Type/ }), "hermes");
     await user.selectOptions(screen.getByRole("combobox", { name: /Team/ }), "platform");
     expect(screen.getByRole("switch", { name: "Use shared models" })).toBeChecked();
-    await user.click(screen.getByRole("switch", { name: "Use GitHub Copilot" }));
     await user.selectOptions(screen.getByRole("combobox", { name: /Default model/ }), "gpt-6-mini");
     await user.click(screen.getByRole("button", { name: "Create Agent" }));
     expect(mockMutate).toHaveBeenCalledWith(
@@ -190,6 +206,29 @@ describe("CreateForm with the AI Gateway", () => {
         modelAccess: { sharedModels: true, githubCopilot: false },
       }),
     );
+  });
+
+  it("limits model choices to the selected Team's AgentPolicy", async () => {
+    mockTeams.data[0].policy.sharedModels = ["gpt-6"];
+    mockTeams.data[0].policy.githubCopilot = false;
+    const user = userEvent.setup();
+    renderForm();
+    await chooseOpenClawAndTeam(user);
+    expect(screen.getByText(/Models allowed by this Team: gpt-6/)).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: "gpt-6-mini" })).not.toBeInTheDocument();
+    const copilot = screen.getByRole("switch", { name: "Use GitHub Copilot" });
+    expect(copilot).not.toBeChecked();
+    expect(copilot).toBeDisabled();
+    expect(screen.getByText(/AgentPolicy does not allow GitHub Copilot/)).toBeInTheDocument();
+  });
+
+  it("prevents a harness that the selected Team's AgentPolicy denies", async () => {
+    mockTeams.data[0].policy.harnesses = ["openclaw"];
+    const user = userEvent.setup();
+    renderForm();
+    await user.selectOptions(screen.getByRole("combobox", { name: /Team/ }), "platform");
+    expect(screen.getByText(/does not allow Hermes agents/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Create Agent" })).toBeDisabled();
   });
 
   it("refuses Hermes while the deployment's agent chart routes only OpenClaw", async () => {

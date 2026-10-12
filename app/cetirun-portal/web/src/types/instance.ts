@@ -5,6 +5,12 @@ export interface TeamSummary {
   name: string;
   role: string;
   provider: string;
+  policy: {
+    name: string;
+    harnesses: AgentType[];
+    sharedModels: string[];
+    githubCopilot: boolean;
+  };
 }
 
 export type AgentType = "openclaw" | "hermes" | "custom";

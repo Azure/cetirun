@@ -15,8 +15,9 @@ import (
 )
 
 // ModelAccessRequest selects the model sources of a new OpenClaw or Hermes
-// Agent when the platform AI Gateway is enabled. An omitted switch counts as
-// on.
+// Agent when the platform AI Gateway is enabled. Omitted switches select the
+// Team policy's preferred available source: shared models first, otherwise
+// GitHub Copilot.
 type ModelAccessRequest struct {
 	SharedModels  *bool `json:"sharedModels,omitempty"`
 	GitHubCopilot *bool `json:"githubCopilot,omitempty"`
@@ -183,32 +184,89 @@ func (h *InstanceHandler) validateAIGatewayCreate(w http.ResponseWriter, r *http
 				" agents through the AI Gateway. Ask an administrator to upgrade the agent chart.")
 		return "", "", nil, false
 	}
-	sharedAvailable := len(catalog.SharedModels) > 0
-	shared, copilot := sharedAvailable, catalog.GitHubCopilot
+	selectedTeam, err := h.Kube.GetTeam(r.Context(), team)
+	if err != nil {
+		slog.Error("Failed to reload Team policy binding", "team", team, "error", err)
+		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to check the Team policy")
+		return "", "", nil, false
+	}
+	policy, err := h.Kube.GetAgentPolicy(r.Context(), selectedTeam.Spec.AgentPolicyRef)
+	if err != nil {
+		if kube.IsNotFound(err) {
+			writeError(w, http.StatusConflict, "team_policy_unavailable", "The selected Team's AgentPolicy does not exist. Ask an administrator to repair the Team.")
+		} else {
+			slog.Error("Failed to read Team AgentPolicy", "team", team, "policy", selectedTeam.Spec.AgentPolicyRef, "error", err)
+			writeError(w, http.StatusInternalServerError, "internal_error", "Failed to check the Team policy")
+		}
+		return "", "", nil, false
+	}
+	if !slices.Contains(policy.Spec.Harnesses.Allowed, agentType) {
+		writeError(w, http.StatusConflict, "policy_denied", "The selected Team's AgentPolicy does not allow "+agentTypeNames[agentType]+" agents")
+		return "", "", nil, false
+	}
+	allowedShared := make(map[string]struct{}, len(policy.Spec.ModelAccess.SharedModels.Allowed))
+	for _, model := range policy.Spec.ModelAccess.SharedModels.Allowed {
+		allowedShared[model] = struct{}{}
+	}
+	sharedModels := make([]cetirunv1alpha1.AIGatewayCatalogModel, 0, len(catalog.SharedModels))
+	for _, model := range catalog.SharedModels {
+		if _, allowed := allowedShared[model.Name]; allowed {
+			sharedModels = append(sharedModels, model)
+		}
+	}
+	sharedAvailable := len(sharedModels) > 0
+	copilotAvailable := catalog.GitHubCopilot && policy.Spec.ModelAccess.Copilot.Allowed
+	// Prefer the Team's shared models. Copilot is opt-in when both sources are
+	// available, so creating an Agent never silently asks for a personal login.
+	shared, copilot := sharedAvailable, !sharedAvailable && copilotAvailable
 	if req.ModelAccess != nil {
 		if req.ModelAccess.SharedModels != nil {
 			shared = *req.ModelAccess.SharedModels
+			if !shared && req.ModelAccess.GitHubCopilot == nil {
+				copilot = copilotAvailable
+			}
 		}
 		if req.ModelAccess.GitHubCopilot != nil {
 			copilot = *req.ModelAccess.GitHubCopilot
 		}
 	}
 	if shared && !sharedAvailable {
-		writeError(w, http.StatusBadRequest, "invalid_model_access", "Shared models were requested, but this deployment currently offers none")
+		if len(policy.Spec.ModelAccess.SharedModels.Allowed) == 0 {
+			writeError(w, http.StatusBadRequest, "policy_denied", "Shared models were requested, but the selected Team's AgentPolicy grants none")
+		} else {
+			writeError(w, http.StatusBadRequest, "invalid_model_access", "Shared models were requested, but none granted by the selected Team are currently available")
+		}
 		return "", "", nil, false
 	}
-	if copilot && !catalog.GitHubCopilot {
-		writeError(w, http.StatusBadRequest, "invalid_model_access", "GitHub Copilot was requested, but this deployment does not offer it")
+	if copilot && !copilotAvailable {
+		if !policy.Spec.ModelAccess.Copilot.Allowed {
+			writeError(w, http.StatusBadRequest, "policy_denied", "GitHub Copilot was requested, but the selected Team's AgentPolicy does not allow it")
+		} else {
+			writeError(w, http.StatusBadRequest, "invalid_model_access", "GitHub Copilot was requested, but this deployment does not offer it")
+		}
 		return "", "", nil, false
 	}
 	if !shared && !copilot {
-		if !sharedAvailable && !catalog.GitHubCopilot {
+		if !sharedAvailable && !copilotAvailable {
 			writeError(w, http.StatusConflict, "no_model_source",
-				"No models are available: there are no shared models and GitHub Copilot is turned off. Ask an administrator to add a shared model.")
+				"The selected Team's AgentPolicy grants no currently available model source. Ask an administrator to update the policy or Gateway catalog.")
 		} else {
 			writeError(w, http.StatusBadRequest, "invalid_model_access", "Keep shared models or GitHub Copilot on")
 		}
 		return "", "", nil, false
+	}
+	if req.Model != "" {
+		modelAllowed := copilot && strings.HasPrefix(req.Model, cetirunv1alpha1.AIGatewayCopilotModelPrefix)
+		for _, model := range sharedModels {
+			if shared && model.Name == req.Model {
+				modelAllowed = true
+				break
+			}
+		}
+		if !modelAllowed {
+			writeError(w, http.StatusBadRequest, "policy_denied", "The requested default model is not allowed by the selected Team's AgentPolicy")
+			return "", "", nil, false
+		}
 	}
 	return team, sandboxRef, &cetirunv1alpha1.ModelAccessSpec{SharedModels: &shared, GitHubCopilot: &copilot}, true
 }

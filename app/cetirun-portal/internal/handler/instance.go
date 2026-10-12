@@ -142,9 +142,20 @@ type ConditionStatus struct {
 
 // TeamSummary is the JSON response element for GET /api/v1/teams.
 type TeamSummary struct {
-	Name     string `json:"name"`
-	Role     string `json:"role"`
-	Provider string `json:"provider"`
+	Name     string            `json:"name"`
+	Role     string            `json:"role"`
+	Provider string            `json:"provider"`
+	Policy   TeamPolicySummary `json:"policy"`
+}
+
+// TeamPolicySummary is the part of a Team's effective AgentPolicy that users
+// need while choosing a harness and model source. The Operator remains the
+// authoritative policy evaluator when it reconciles the Agent.
+type TeamPolicySummary struct {
+	Name          string                      `json:"name"`
+	Harnesses     []cetirunv1alpha1.AgentType `json:"harnesses"`
+	SharedModels  []string                    `json:"sharedModels"`
+	GitHubCopilot bool                        `json:"githubCopilot"`
 }
 
 // ErrorResponse is the standard error envelope.
@@ -1065,13 +1076,35 @@ func (h *InstanceHandler) ListTeams(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to list teams", http.StatusInternalServerError)
 		return
 	}
-	result := make([]TeamSummary, len(teams))
-	for i, t := range teams {
-		result[i] = TeamSummary{
+	policies, err := h.Kube.ListAgentPolicies(r.Context())
+	if err != nil {
+		slog.Error("failed to list team policies", "err", err)
+		http.Error(w, "failed to list team policies", http.StatusInternalServerError)
+		return
+	}
+	policiesByName := make(map[string]*cetirunv1alpha1.AgentPolicy, len(policies))
+	for i := range policies {
+		policiesByName[policies[i].Name] = &policies[i]
+	}
+	result := make([]TeamSummary, 0, len(teams))
+	for _, t := range teams {
+		policy := policiesByName[t.Spec.AgentPolicyRef]
+		if policy == nil {
+			// A Team whose policy disappeared cannot create a valid Agent. Keep
+			// it out of the user picker until the administrator repairs it.
+			continue
+		}
+		result = append(result, TeamSummary{
 			Name:     t.Name,
 			Role:     t.Spec.MemberContext.Role,
 			Provider: t.Spec.Defaults.Provider,
-		}
+			Policy: TeamPolicySummary{
+				Name:          policy.Name,
+				Harnesses:     append([]cetirunv1alpha1.AgentType(nil), policy.Spec.Harnesses.Allowed...),
+				SharedModels:  append([]string(nil), policy.Spec.ModelAccess.SharedModels.Allowed...),
+				GitHubCopilot: policy.Spec.ModelAccess.Copilot.Allowed,
+			},
+		})
 	}
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(result); err != nil {

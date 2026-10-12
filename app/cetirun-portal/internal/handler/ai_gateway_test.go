@@ -33,6 +33,21 @@ func gatewayTeam(name string) *cetirunv1alpha1.Team {
 	}}
 }
 
+func gatewayPolicy() *cetirunv1alpha1.AgentPolicy {
+	return &cetirunv1alpha1.AgentPolicy{ObjectMeta: metav1.ObjectMeta{Name: "standard"}, Spec: cetirunv1alpha1.AgentPolicySpec{
+		Harnesses: cetirunv1alpha1.AgentPolicyHarnesses{Allowed: []cetirunv1alpha1.AgentType{
+			cetirunv1alpha1.AgentTypeOpenClaw, cetirunv1alpha1.AgentTypeHermes,
+		}},
+		ModelAccess: cetirunv1alpha1.AgentPolicyModelAccess{
+			Copilot:      cetirunv1alpha1.AgentPolicyCopilotAccess{Allowed: true},
+			SharedModels: cetirunv1alpha1.AgentPolicySharedModelsAccess{Allowed: []string{"gpt-6", "gpt-6-mini"}},
+			GatewayBudget: &cetirunv1alpha1.AgentPolicyGatewayBudget{
+				DefaultMonthlyUSD: "1", MaxMonthlyUSD: "10",
+			},
+		},
+	}}
+}
+
 // catalogConfigMap publishes the shared models of a deployment that offers
 // GitHub Copilot.
 func catalogConfigMap(models ...string) *corev1.ConfigMap {
@@ -63,6 +78,18 @@ func routingCatalog(routing *cetirunv1alpha1.AIGatewayRouting, copilot bool, mod
 
 func createAgent(t *testing.T, cfg config.Config, body string, objs ...client.Object) (*httptest.ResponseRecorder, client.Client) {
 	t.Helper()
+	if cfg.AIGatewayEnabled {
+		hasPolicy := false
+		for _, obj := range objs {
+			if _, ok := obj.(*cetirunv1alpha1.AgentPolicy); ok {
+				hasPolicy = true
+				break
+			}
+		}
+		if !hasPolicy {
+			objs = append(objs, gatewayPolicy())
+		}
+	}
 	fc := newFakeClient(objs...)
 	h := &InstanceHandler{Kube: kube.NewClient(fc), Config: cfg}
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/instances", strings.NewReader(body))
@@ -144,7 +171,7 @@ func TestCreateInstanceAIGatewayModelAccessRules(t *testing.T) {
 		wantErrCode string
 		wantErrText string
 	}{
-		{name: "defaults", body: `{"agent":{"type":"openclaw"},"team":" aks "}`, catalog: catalogConfigMap("gpt-6"), wantStatus: http.StatusCreated, wantAccess: &[2]bool{true, true}},
+		{name: "defaults", body: `{"agent":{"type":"openclaw"},"team":" aks "}`, catalog: catalogConfigMap("gpt-6"), wantStatus: http.StatusCreated, wantAccess: &[2]bool{true, false}},
 		{name: "both on", body: openclaw + `,"modelAccess":{"sharedModels":true,"githubCopilot":true}}`,
 			catalog: catalogConfigMap("gpt-6"), wantStatus: http.StatusCreated, wantAccess: &[2]bool{true, true}},
 		{name: "explicit unavailable shared models", body: openclaw + `,"modelAccess":{"sharedModels":true,"githubCopilot":true}}`,
@@ -188,7 +215,7 @@ func TestCreateInstanceAIGatewayModelAccessRules(t *testing.T) {
 		{name: "hermes with an earlier operator's catalog", body: hermes, catalog: routingCatalog(nil, true, "gpt-6"),
 			wantStatus: http.StatusConflict, wantErrCode: "agent_chart_unsupported"},
 		{name: "openclaw with an earlier operator's catalog", body: openclaw + `}`, catalog: routingCatalog(nil, true, "gpt-6"),
-			wantStatus: http.StatusCreated, wantAccess: &[2]bool{true, true}},
+			wantStatus: http.StatusCreated, wantAccess: &[2]bool{true, false}},
 		{name: "openclaw on a chart older than the Gateway", body: openclaw + `}`, catalog: routingCatalog(routes(), true, "gpt-6"),
 			wantStatus: http.StatusConflict, wantErrCode: "agent_chart_unsupported", wantErrText: "upgrade the agent chart"},
 		// Until the operator has read its default chart, which a new Agent
@@ -233,6 +260,66 @@ func TestCreateInstanceAIGatewayModelAccessRules(t *testing.T) {
 					*access.SharedModels != tc.wantAccess[0] || *access.GitHubCopilot != tc.wantAccess[1] {
 					t.Fatalf("modelAccess = %+v, want %v", access, *tc.wantAccess)
 				}
+			}
+		})
+	}
+}
+
+func TestCreateInstanceRejectsTeamPolicyViolations(t *testing.T) {
+	cases := []struct {
+		name       string
+		body       string
+		editPolicy func(*cetirunv1alpha1.AgentPolicy)
+		wantStatus int
+		wantText   string
+	}{
+		{
+			name: "copilot denied",
+			body: `{"agent":{"type":"hermes"},"team":"aks","modelAccess":{"sharedModels":true,"githubCopilot":true}}`,
+			editPolicy: func(policy *cetirunv1alpha1.AgentPolicy) {
+				policy.Spec.ModelAccess.Copilot.Allowed = false
+			},
+			wantStatus: http.StatusBadRequest,
+			wantText:   "does not allow it",
+		},
+		{
+			name: "shared models denied",
+			body: `{"agent":{"type":"hermes"},"team":"aks","modelAccess":{"sharedModels":true,"githubCopilot":false}}`,
+			editPolicy: func(policy *cetirunv1alpha1.AgentPolicy) {
+				policy.Spec.ModelAccess.SharedModels.Allowed = nil
+			},
+			wantStatus: http.StatusBadRequest,
+			wantText:   "grants none",
+		},
+		{
+			name: "harness denied",
+			body: `{"agent":{"type":"hermes"},"team":"aks"}`,
+			editPolicy: func(policy *cetirunv1alpha1.AgentPolicy) {
+				policy.Spec.Harnesses.Allowed = []cetirunv1alpha1.AgentType{cetirunv1alpha1.AgentTypeOpenClaw}
+			},
+			wantStatus: http.StatusConflict,
+			wantText:   "does not allow Hermes agents",
+		},
+		{
+			name: "default model denied",
+			body: `{"agent":{"type":"hermes"},"team":"aks","model":"gpt-6-mini","modelAccess":{"sharedModels":true,"githubCopilot":false}}`,
+			editPolicy: func(policy *cetirunv1alpha1.AgentPolicy) {
+				policy.Spec.ModelAccess.SharedModels.Allowed = []string{"gpt-6"}
+			},
+			wantStatus: http.StatusBadRequest,
+			wantText:   "default model is not allowed",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			policy := gatewayPolicy()
+			tc.editPolicy(policy)
+			w, _ := createAgent(t, gatewayConfig(), tc.body, gatewayTeam("aks"), policy, catalogConfigMap("gpt-6", "gpt-6-mini"))
+			if w.Code != tc.wantStatus || !strings.Contains(w.Body.String(), tc.wantText) {
+				t.Fatalf("status %d body %s, want %d containing %q", w.Code, w.Body.String(), tc.wantStatus, tc.wantText)
+			}
+			if code := errorCode(t, w); code != "policy_denied" {
+				t.Fatalf("error code %q, want policy_denied", code)
 			}
 		})
 	}
