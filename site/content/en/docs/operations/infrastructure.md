@@ -141,5 +141,9 @@ az aks enable-addons --addons monitoring --enable-msi-auth-for-monitoring \
   --workspace-resource-id "$LOG_ANALYTICS_WORKSPACE_ID"
 ```
 
+On a cluster that has been running, the agent also uploads the log files the
+containers already have, once: log lines from before the add-on, back to the
+oldest file the node keeps, reach the workspace too.
+
 The agent chart’s session logger is also enabled by default; see
 [Security](../../security/) before onboarding users.
