@@ -117,8 +117,9 @@ func TestAdminPolicyRequiresMatchingModelAccessAndPositiveBudget(t *testing.T) {
 }
 
 func TestAdminPolicyUpdateAndDelete(t *testing.T) {
+	const policyName = "standard.policy"
 	policy := &cetirunv1alpha1.AgentPolicy{
-		ObjectMeta: metav1.ObjectMeta{Name: "standard", UID: "policy-uid"},
+		ObjectMeta: metav1.ObjectMeta{Name: policyName, UID: "policy-uid"},
 		Spec:       toAgentPolicySpec(validPolicyRequest()),
 	}
 	policy.Spec.Security.ReadOnlyRootFilesystem = new(bool)
@@ -132,7 +133,14 @@ func TestAdminPolicyUpdateAndDelete(t *testing.T) {
 	}
 	preserved := *policy.Spec.DeepCopy()
 	h := newAdminPolicyHandler(policy)
-	current, err := h.Kube.GetAgentPolicy(context.Background(), "standard")
+	get := httptest.NewRequest(http.MethodGet, "/api/v1/admin/policies/"+policyName, nil)
+	get.SetPathValue("name", policyName)
+	w := httptest.NewRecorder()
+	h.GetPolicy(w, get)
+	if w.Code != http.StatusOK {
+		t.Fatalf("get status %d: %s", w.Code, w.Body.String())
+	}
+	current, err := h.Kube.GetAgentPolicy(context.Background(), policyName)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,14 +149,14 @@ func TestAdminPolicyUpdateAndDelete(t *testing.T) {
 	req.UID, req.ResourceVersion = string(current.UID), current.ResourceVersion
 	req.Harnesses.Allowed = []cetirunv1alpha1.AgentType{cetirunv1alpha1.AgentTypeHermes}
 	body, _ := json.Marshal(req)
-	update := httptest.NewRequest(http.MethodPut, "/api/v1/admin/policies/standard", bytes.NewReader(body))
-	update.SetPathValue("name", "standard")
-	w := httptest.NewRecorder()
+	update := httptest.NewRequest(http.MethodPut, "/api/v1/admin/policies/"+policyName, bytes.NewReader(body))
+	update.SetPathValue("name", policyName)
+	w = httptest.NewRecorder()
 	h.UpdatePolicy(w, update)
 	if w.Code != http.StatusOK {
 		t.Fatalf("update status %d: %s", w.Code, w.Body.String())
 	}
-	stored, err := h.Kube.GetAgentPolicy(context.Background(), "standard")
+	stored, err := h.Kube.GetAgentPolicy(context.Background(), policyName)
 	if err != nil || len(stored.Spec.Harnesses.Allowed) != 1 || stored.Spec.Harnesses.Allowed[0] != cetirunv1alpha1.AgentTypeHermes {
 		t.Fatalf("stored policy = %+v, err=%v", stored, err)
 	}
@@ -161,8 +169,8 @@ func TestAdminPolicyUpdateAndDelete(t *testing.T) {
 		t.Fatalf("Portal update discarded component-specific policy controls: before=%+v after=%+v", preserved, stored.Spec)
 	}
 	deleteBody, _ := json.Marshal(map[string]string{"uid": string(stored.UID), "resourceVersion": stored.ResourceVersion})
-	deleteRequest := httptest.NewRequest(http.MethodDelete, "/api/v1/admin/policies/standard", bytes.NewReader(deleteBody))
-	deleteRequest.SetPathValue("name", "standard")
+	deleteRequest := httptest.NewRequest(http.MethodDelete, "/api/v1/admin/policies/"+policyName, bytes.NewReader(deleteBody))
+	deleteRequest.SetPathValue("name", policyName)
 	w = httptest.NewRecorder()
 	h.DeletePolicy(w, deleteRequest)
 	if w.Code != http.StatusNoContent {
