@@ -1613,7 +1613,7 @@
             },
             "then": {
                 "properties": {
-                    "agentType": {"const": "openclaw"},
+                    "agentType": {"enum": ["openclaw", "hermes"]},
                     "aiGateway": {
                         "properties": {"enabled": {"const": true}},
                         "required": ["enabled"]

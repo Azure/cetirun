@@ -40,12 +40,16 @@ type holdFixture struct {
 	receipt *corev1.ConfigMap
 }
 
-func nativeHoldFixture(t *testing.T) holdFixture {
+func nativeHoldFixture(t *testing.T, agentTypes ...api.AgentType) holdFixture {
 	t.Helper()
 	ctx := context.Background()
 	f := nativePodFixture(t)
 	agent := f.fixture.Agent.DeepCopy()
-	agent.Spec.Agent.Type = api.AgentTypeOpenClaw
+	agentType := api.AgentTypeOpenClaw
+	if len(agentTypes) != 0 {
+		agentType = agentTypes[0]
+	}
+	agent.Spec.Agent.Type = agentType
 	agent.Finalizers = []string{api.Finalizer, sandbox.HoldFinalizer, sandbox.PreparationFinalizer, sandbox.BootstrapFinalizer}
 	if err := f.client.Update(ctx, agent); err != nil {
 		t.Fatal(err)
@@ -149,6 +153,13 @@ func TestNativeAgentHoldReleaseRequiresExactOptInTransition(t *testing.T) {
 				t.Fatal("the generic finalizer predicate was weakened")
 			}
 		})
+	}
+}
+
+func TestNativeHermesAgentHoldReleaseUsesRecordedPreparation(t *testing.T) {
+	f := nativeHoldFixture(t, api.AgentTypeHermes)
+	if response := f.handler.Validate(context.Background(), f.request(t)); !response.Allowed {
+		t.Fatalf("recorded Hermes native preparation was rejected: %+v", response.Result)
 	}
 }
 

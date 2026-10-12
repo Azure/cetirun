@@ -65,8 +65,8 @@ func Build(input Input) (*Bundle, error) {
 		return nil, err
 	}
 	if input.SkillsMode == SkillsModeEmpty {
-		if input.Skills != nil || input.GatewayKey == nil || input.AgentType != "openclaw" {
-			return nil, fmt.Errorf("empty skills require native OpenClaw Gateway inputs without a skills PVC")
+		if input.Skills != nil || input.GatewayKey == nil {
+			return nil, fmt.Errorf("empty skills require native Gateway inputs without a skills PVC")
 		}
 	} else if input.Skills.Namespace != input.Namespace.Name ||
 		input.Skills.Name == input.Home.Name || !input.Skills.DeletionTimestamp.IsZero() ||
@@ -84,9 +84,9 @@ func Build(input Input) (*Bundle, error) {
 			return nil, fmt.Errorf("invalid authorized Secret name")
 		}
 	}
-	if key := input.GatewayKey; key != nil && (input.AgentType != "openclaw" || key.UID == "" ||
+	if key := input.GatewayKey; key != nil && (key.UID == "" ||
 		len(validation.IsDNS1123Subdomain(key.Name)) != 0 || !slices.Contains(input.AuthorizedSecrets, key.Name)) {
-		return nil, fmt.Errorf("native Gateway rendering requires an authorized OpenClaw key identity")
+		return nil, fmt.Errorf("native Gateway rendering requires an authorized key identity")
 	}
 	copy, err := clone(input)
 	if err != nil {
@@ -112,7 +112,7 @@ func Build(input Input) (*Bundle, error) {
 	if input.Helpers.Doctor {
 		spec.InitContainers = append(spec.InitContainers, corev1.Container{Resources: b.helperResources()})
 	}
-	if input.GatewayKey != nil {
+	if input.GatewayKey != nil && input.AgentType == "openclaw" {
 		spec.InitContainers = append(spec.InitContainers,
 			corev1.Container{Resources: b.helperResources()}, corev1.Container{Resources: b.helperResources()})
 	}

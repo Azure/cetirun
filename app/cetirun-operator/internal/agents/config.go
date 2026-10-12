@@ -19,9 +19,10 @@ import (
 // deterministic formatting/collection functions are exposed, with no lookup,
 // environment access, network access, or nested template evaluation.
 func RenderConfig(agent ResolvedAgent, bindings Bindings) (string, error) {
-	if bindings.Skills.Empty && (!bindings.NativeSandbox || !bindings.Model.Gateway || agent.Type != "openclaw" ||
+	if bindings.Skills.Empty && (!bindings.NativeSandbox || !bindings.Model.Gateway ||
+		(agent.Type != "openclaw" && agent.Type != "hermes") ||
 		bindings.Skills.Shared || len(bindings.Skills.NPM) != 0 || bindings.Skills.MountPath != "/home/vibe/.aks/skills") {
-		return "", fmt.Errorf("empty skills require the native OpenClaw Gateway's read-only skills directory without shared storage or packages")
+		return "", fmt.Errorf("empty skills require a native Gateway-backed harness and its read-only skills directory without shared storage or packages")
 	}
 	if len(bindings.TrustedProxyIPs) != 0 &&
 		(!bindings.NativeSandbox || !bindings.Model.Gateway || agent.Type != "openclaw" || bindings.Integrations.Tailscale) {

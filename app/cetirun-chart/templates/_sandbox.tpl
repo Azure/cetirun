@@ -36,8 +36,9 @@ Licensed under the MIT License.
 {{- fail "Sandbox requires a runtime and separately owned existing HOME/skills claims" -}}
 {{- end -}}
 {{- if $emptySkills -}}
-{{- if or (ne (include "cetirun.agent.type" .) "openclaw") (not .Values.aiGateway.enabled) .Values.skills.shared .Values.skills.existingClaim .Values.skills.npm .Values.skills.clawHub (ne .Values.skills.mountPath "/home/vibe/.aks/skills") (ne (toJson ($s.podFinalizers | default list)) (toJson (list "cetirun.microsoft.com/native-pod-lifetime"))) -}}
-{{- fail "Sandbox empty skills require native OpenClaw Gateway lifetime protection, no shared claim or packages, and the fixed skills path" -}}
+{{- $agentType := include "cetirun.agent.type" . -}}
+{{- if or (and (ne $agentType "openclaw") (ne $agentType "hermes")) (not .Values.aiGateway.enabled) .Values.skills.shared .Values.skills.existingClaim .Values.skills.npm .Values.skills.clawHub (ne .Values.skills.mountPath "/home/vibe/.aks/skills") (ne (toJson ($s.podFinalizers | default list)) (toJson (list "cetirun.microsoft.com/native-pod-lifetime"))) -}}
+{{- fail "Sandbox empty skills require native Gateway lifetime protection, no shared claim or packages, and the fixed skills path" -}}
 {{- end -}}
 {{- end -}}
 {{- if or .Values.azureWorkloadIdentity.enabled .Values.agentIdentity.enabled (ne (include "cetirun.automountServiceAccountToken" .) "false") -}}

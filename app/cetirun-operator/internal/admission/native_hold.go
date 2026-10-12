@@ -26,7 +26,7 @@ import (
 func nativeHoldReleaseOnly(request admission.Request, agent, old *api.Agent) bool {
 	if request.Operation != admissionv1.Update || old == nil || old.UID == "" || old.ResourceVersion == "" ||
 		old.Generation < 1 || !old.DeletionTimestamp.IsZero() || old.Spec.Suspended ||
-		old.Spec.Agent.Type != api.AgentTypeOpenClaw ||
+		(old.Spec.Agent.Type != api.AgentTypeOpenClaw && old.Spec.Agent.Type != api.AgentTypeHermes) ||
 		!rawMetadataOnly(request) {
 		return false
 	}

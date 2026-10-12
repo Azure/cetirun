@@ -177,25 +177,11 @@ func (a SandboxExecutionAccess) Publish(ctx context.Context, ticket sandboxcoord
 	if err != nil {
 		return err
 	}
-	native := buildVirtualService(agent, binding.Host, binding.Gateway.Namespace+"/"+binding.Gateway.Name)
-	if native == nil {
-		return fmt.Errorf("%w: native access renderer is unavailable", sandboxcoordination.ErrUnavailable)
+	routes, err := nativeSandboxUIRoutes(agent, binding.Host, binding.Gateway.Namespace+"/"+binding.Gateway.Name)
+	if err != nil {
+		return err
 	}
-	path := "/ui/" + intent.Agent.Name
-	for _, route := range native.Spec.Http {
-		nativeUI := len(route.Match) > 0
-		for _, match := range route.Match {
-			if match.Uri == nil || (match.Uri.GetExact() != path && match.Uri.GetPrefix() != path+"/") {
-				nativeUI = false
-			}
-		}
-		if nativeUI {
-			desired.Spec.Http = append(desired.Spec.Http, proto.Clone(route).(*istioapi.HTTPRoute))
-		}
-	}
-	if len(desired.Spec.Http) != 3 {
-		return fmt.Errorf("%w: expected only native UI redirect, HTTP and WebSocket routes", sandboxcoordination.ErrUnavailable)
-	}
+	desired.Spec.Http = append(desired.Spec.Http, routes...)
 	if !proto.Equal(&current.Spec, &desired.Spec) || current.Annotations[accessPhaseAnnotation] != "published" {
 		current.Spec = *desired.Spec.DeepCopy()
 		current.Annotations[accessPhaseAnnotation] = "published"
@@ -384,26 +370,92 @@ func (a SandboxExecutionAccess) absent(ctx context.Context, intent sandboxcoordi
 	return fmt.Errorf("%w: disabled ingress still has an access route object", sandboxcoordination.ErrConflict)
 }
 
+func nativeSandboxUIRoutes(agent *api.Agent, host, gateway string) ([]*istioapi.HTTPRoute, error) {
+	native := buildVirtualService(agent, host, gateway)
+	if native == nil {
+		return nil, fmt.Errorf("%w: native access renderer is unavailable", sandboxcoordination.ErrUnavailable)
+	}
+	path := "/ui/" + agent.Name
+	routes := []*istioapi.HTTPRoute{}
+	for _, route := range native.Spec.Http {
+		nativeUI := len(route.Match) > 0
+		for _, match := range route.Match {
+			if match.Uri == nil || (match.Uri.GetExact() != path && !strings.HasPrefix(match.Uri.GetPrefix(), path+"/")) {
+				nativeUI = false
+			}
+		}
+		if nativeUI {
+			routes = append(routes, proto.Clone(route).(*istioapi.HTTPRoute))
+		}
+	}
+	expected := 0
+	switch agent.Spec.Agent.Type {
+	case api.AgentTypeOpenClaw:
+		expected = 3 // redirect, WebSocket and HTTP UI routes
+	case api.AgentTypeHermes:
+		expected = 4 // redirect, API, health and dashboard routes
+	}
+	if len(routes) != expected || expected == 0 {
+		return nil, fmt.Errorf("%w: native UI route inventory is unsupported", sandboxcoordination.ErrUnavailable)
+	}
+	return routes, nil
+}
+
+func serviceBacksNativeUI(service *corev1.Service, workload *appsv1.StatefulSet, routes []*istioapi.HTTPRoute) bool {
+	host := service.Name + "." + service.Namespace + ".svc.cluster.local"
+	for _, route := range routes {
+		for _, destination := range route.Route {
+			if destination.Destination == nil || destination.Destination.Host != host || destination.Destination.Port == nil ||
+				!serviceBacksPort(service, workload, destination.Destination.Port.Number) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func serviceBacksPort(service *corev1.Service, workload *appsv1.StatefulSet, number uint32) bool {
+	for _, port := range service.Spec.Ports {
+		if port.NodePort != 0 || port.Protocol != corev1.ProtocolTCP || uint32(port.Port) != number {
+			continue
+		}
+		if port.TargetPort.Type == intstr.Int && port.TargetPort.IntVal == port.Port {
+			return true
+		}
+		if port.TargetPort.Type != intstr.String {
+			continue
+		}
+		for _, container := range workload.Spec.Template.Spec.Containers {
+			for _, target := range container.Ports {
+				if target.Name == port.TargetPort.StrVal && target.ContainerPort == port.Port && target.Protocol == corev1.ProtocolTCP {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
 func (a SandboxExecutionAccess) inputs(ctx context.Context, intent sandboxcoordination.Intent) (*api.Agent, *corev1.Service, *istio.Gateway, error) {
-	fail := func() (*api.Agent, *corev1.Service, *istio.Gateway, error) {
-		return nil, nil, nil, fmt.Errorf("%w: access requires explicit native Service and HTTPS Gateway bindings", sandboxcoordination.ErrUnavailable)
+	fail := func(reason string) (*api.Agent, *corev1.Service, *istio.Gateway, error) {
+		return nil, nil, nil, fmt.Errorf("%w: access requires explicit native Service and HTTPS Gateway bindings: %s", sandboxcoordination.ErrUnavailable, reason)
 	}
 	host := a.Reconciler.DomainSuffix
 	gatewayKey := strings.Split(a.Reconciler.IstioGateway, "/")
 	if len(validation.IsDNS1123Subdomain(host)) != 0 || host == "" || len(gatewayKey) != 2 ||
 		len(validation.IsDNS1123Label(gatewayKey[0])) != 0 || len(validation.IsDNS1123Subdomain(gatewayKey[1])) != 0 {
-		return fail()
+		return fail("platform host or Gateway reference is invalid")
 	}
 	agent := &api.Agent{}
 	if err := a.Reconciler.APIReader.Get(ctx, client.ObjectKey{Name: intent.Agent.Name}, agent); err != nil {
 		return nil, nil, nil, err
 	}
 	if agent.UID != intent.Agent.UID || agent.Generation != intent.AgentGeneration ||
-		agent.Spec.Agent.Type != api.AgentTypeOpenClaw || !sandboxPreparationSupported(agent) ||
+		(agent.Spec.Agent.Type != api.AgentTypeOpenClaw && agent.Spec.Agent.Type != api.AgentTypeHermes) || !sandboxPreparationSupported(agent) ||
 		intent.Workload.Name != instanceServiceName(agent.Name) ||
 		agent.Spec.Agent.Port == nil || *agent.Spec.Agent.Port < 1 || *agent.Spec.Agent.Port > 65535 ||
 		!sandboxAccessNameAllowed(agent.Name) {
-		return fail()
+		return fail("Agent identity, harness, port or workload binding is invalid")
 	}
 	service := &corev1.Service{}
 	if err := a.Reconciler.APIReader.Get(ctx, client.ObjectKey{Namespace: intent.Namespace.Name, Name: intent.Workload.Name}, service); err != nil {
@@ -419,38 +471,21 @@ func (a SandboxExecutionAccess) inputs(ctx context.Context, intent sandboxcoordi
 		len(service.Spec.ExternalIPs) != 0 || service.Spec.LoadBalancerClass != nil || service.Spec.LoadBalancerIP != "" ||
 		workload.UID != intent.Workload.UID || workload.Spec.Selector == nil || len(workload.Spec.Selector.MatchExpressions) != 0 ||
 		len(service.Spec.Selector) == 0 || !maps.Equal(service.Spec.Selector, workload.Spec.Selector.MatchLabels) {
-		return fail()
+		return fail("Service or StatefulSet ownership and selectors differ")
 	}
-	found := false
-	for _, port := range service.Spec.Ports {
-		if port.NodePort != 0 {
-			return fail()
-		}
-		if port.Port != *agent.Spec.Agent.Port || port.Protocol != corev1.ProtocolTCP {
-			continue
-		}
-		if port.TargetPort.Type == intstr.Int && port.TargetPort.IntVal == port.Port {
-			found = true
-		}
-		if port.TargetPort.Type == intstr.String {
-			for _, container := range workload.Spec.Template.Spec.Containers {
-				for _, target := range container.Ports {
-					if target.Name == port.TargetPort.StrVal && target.ContainerPort == port.Port && target.Protocol == corev1.ProtocolTCP {
-						found = true
-					}
-				}
-			}
-		}
+	routes, err := nativeSandboxUIRoutes(agent, host, a.Reconciler.IstioGateway)
+	if err != nil {
+		return fail("native UI routes are unavailable")
 	}
-	if !found {
-		return fail()
+	if !serviceBacksPort(service, workload, uint32(*agent.Spec.Agent.Port)) || !serviceBacksNativeUI(service, workload, routes) {
+		return fail("Service does not expose every native UI backend port")
 	}
 	gateway := &istio.Gateway{}
 	if err := a.Reconciler.APIReader.Get(ctx, client.ObjectKey{Namespace: gatewayKey[0], Name: gatewayKey[1]}, gateway); err != nil {
 		return nil, nil, nil, err
 	}
 	if gateway.UID == "" || gateway.ResourceVersion == "" || !gateway.DeletionTimestamp.IsZero() || len(gateway.Spec.Selector) == 0 {
-		return fail()
+		return fail("HTTPS Gateway identity is invalid")
 	}
 	for _, server := range gateway.Spec.Servers {
 		if server.Port != nil && server.Port.Number == 443 && server.Port.Protocol == "HTTPS" && server.Tls != nil &&
@@ -458,7 +493,7 @@ func (a SandboxExecutionAccess) inputs(ctx context.Context, intent sandboxcoordi
 			return agent, service, gateway, nil
 		}
 	}
-	return fail()
+	return fail("HTTPS Gateway does not serve the configured host")
 }
 
 func (a SandboxExecutionAccess) ingressNamespaces(ctx context.Context, intent sandboxcoordination.Intent, running bool) ([]w.SourceReference, error) {

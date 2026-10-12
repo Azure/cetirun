@@ -42,14 +42,22 @@ type accessFixture struct {
 }
 
 func newAccessFixture(t *testing.T, authenticated bool, ingressNamespaces ...string) *accessFixture {
+	return newHarnessAccessFixture(t, api.AgentTypeOpenClaw, authenticated, ingressNamespaces...)
+}
+
+func newHarnessAccessFixture(t *testing.T, agentType api.AgentType, authenticated bool, ingressNamespaces ...string) *accessFixture {
 	t.Helper()
 	ctx := context.Background()
 	if len(ingressNamespaces) == 0 {
 		ingressNamespaces = []string{"gateway-system"}
 	}
-	f, target := executionIntentFixture(t, "openclaw", func(f *preparationFixture) {
+	f, target := executionIntentFixture(t, string(agentType), func(f *preparationFixture) {
 		agent := f.current(t)
-		agent.Spec.Agent.Port = ptr.To(int32(18789))
+		port := int32(18789)
+		if agentType == api.AgentTypeHermes {
+			port = 8642
+		}
+		agent.Spec.Agent.Port = ptr.To(port)
 		if err := f.client.Update(ctx, agent); err != nil {
 			t.Fatal(err)
 		}
@@ -308,6 +316,34 @@ func TestSandboxAccessPublishesOnlyNativeUIAfterEvidence(t *testing.T) {
 	}
 	if got := f.route(t); got.ResourceVersion != current.ResourceVersion {
 		t.Fatal("unchanged access publication rewrote the route")
+	}
+}
+
+func TestSandboxAccessPublishesHermesNativeUI(t *testing.T) {
+	ctx := context.Background()
+	f := newHarnessAccessFixture(t, api.AgentTypeHermes, true)
+	f.run(t)
+	if err := f.access.Publish(ctx, f.ticket, f.observation, statusTestGuard); err != nil {
+		t.Fatal(err)
+	}
+	current := f.route(t)
+	if len(current.Spec.Http) != 4 {
+		t.Fatalf("Hermes native UI route count = %d, want 4", len(current.Spec.Http))
+	}
+	path := "/ui/" + f.intent.Agent.Name
+	ports := map[uint32]bool{}
+	for _, route := range current.Spec.Http {
+		for _, match := range route.Match {
+			if match.Uri.GetExact() != path && !strings.HasPrefix(match.Uri.GetPrefix(), path+"/") {
+				t.Fatal("Hermes native route exposed a non-UI path")
+			}
+		}
+		for _, destination := range route.Route {
+			ports[destination.Destination.Port.Number] = true
+		}
+	}
+	if !ports[8642] || !ports[9119] || len(ports) != 2 {
+		t.Fatalf("Hermes native routes use unexpected ports: %v", ports)
 	}
 }
 

@@ -40,8 +40,12 @@ func TestEmptySkillsBindingRequiresNativeConsistentInputs(t *testing.T) {
 		})
 	}
 	agent.Type = "hermes"
+	if _, err := RenderConfig(agent, bindings); err != nil {
+		t.Fatal("empty-skills binding was rejected for native Hermes:", err)
+	}
+	agent.Type = "custom"
 	if _, err := RenderConfig(agent, bindings); err == nil {
-		t.Fatal("empty-skills binding was accepted outside native OpenClaw")
+		t.Fatal("empty-skills binding was accepted outside a native Gateway-backed harness")
 	}
 	raw, err := json.Marshal(SkillsBinding{})
 	if err != nil || strings.Contains(string(raw), `"Empty"`) {

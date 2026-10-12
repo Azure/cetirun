@@ -78,7 +78,7 @@ func (b *Bundle) ValidateTemplate(template *corev1.PodTemplateSpec, image string
 	if b.input.Helpers.Doctor {
 		initNames = append(initNames, "doctor")
 	}
-	if b.input.GatewayKey != nil {
+	if b.input.GatewayKey != nil && b.input.AgentType == "openclaw" {
 		initNames = append(initNames, "retire-copilot-sign-in", "retire-direct-model-auth")
 	}
 	if len(spec.Containers) != len(names) || len(spec.InitContainers) != len(initNames) {
@@ -154,6 +154,22 @@ func (b *Bundle) validateContainer(container corev1.Container, image string) err
 			corev1.VolumeMount{Name: "config", MountPath: "/etc/cetirun", ReadOnly: true},
 			corev1.VolumeMount{Name: b.input.SkillsMode.volume(skillsIdentity(b.input.Skills)).Name, MountPath: SkillsPath, ReadOnly: true})
 		mounts = append(mounts, b.input.Controls.VolumeMounts...)
+		if b.input.GatewayKey != nil {
+			name := "OPENAI_API_KEY"
+			if b.input.AgentType == "hermes" {
+				name = "CETIRUN_GATEWAY_API_KEY"
+			}
+			var found bool
+			for _, env := range container.Env {
+				ref := env.ValueFrom
+				found = found || (env.Name == name && env.Value == "" && ref != nil && ref.SecretKeyRef != nil &&
+					ref.SecretKeyRef.Name == b.input.GatewayKey.Name && ref.SecretKeyRef.Key == "api-key" &&
+					!ptr.Deref(ref.SecretKeyRef.Optional, false))
+			}
+			if !found {
+				return fmt.Errorf("main container is missing the authorized native Gateway key")
+			}
+		}
 		for _, expected := range b.input.Controls.Environment {
 			found := false
 			for _, actual := range container.Env {
