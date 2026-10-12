@@ -696,7 +696,6 @@ func sandboxReleaseSeal(rel *release.Release) (sandboxStageSeal, error) {
 		seal.Home.Name == "" || seal.Home.UID == "" || seal.SkillsMode.ValidateIdentity(seal.Skills) != nil ||
 		seal.ReleaseName != rel.Name || seal.Namespace.Name != rel.Namespace ||
 		(seal.Runtime.Type != "openclaw" && seal.Runtime.Type != "hermes") ||
-		(seal.SkillsMode == sandboxworkload.SkillsModeEmpty && seal.Runtime.Type != "openclaw") ||
 		seal.Digest == "" || seal.Digest != seal.digest() ||
 		seal.ManifestHash != sandboxBytesHash([]byte(rel.Manifest)) || seal.ChartHash != sandboxJSONHash(rel.Chart) ||
 		len(rel.Hooks) != 0 || rel.Chart == nil || rel.Chart.Metadata == nil || rel.Chart.Metadata.Name != "cetirun" ||

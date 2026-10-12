@@ -83,6 +83,42 @@ func TestSandboxSDKStagesEmptySkillsWithoutClaimIdentity(t *testing.T) {
 	}
 }
 
+func TestSandboxSDKStagesHermesEmptySkillsWithoutClaimIdentity(t *testing.T) {
+	input := testfixture.New("hermes").Input
+	input.Skills, input.SkillsMode = nil, w.SkillsModeEmpty
+	input.Helpers.Desktop = false
+	input.GatewayKey = &w.ObjectIdentity{Name: "gateway-key", UID: "gateway-key-uid"}
+	input.AuthorizedSecrets = append(input.AuthorizedSecrets, input.GatewayKey.Name)
+	bundle, err := w.Build(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	values := sampleInput("hermes", "openai", false)
+	secrets := values["secrets"].(map[string]any)
+	secrets["existingSecret"], secrets["model"], secrets["apiBase"] = "runtime-secret", "example-model", "http://gateway.example.com/v1"
+	values["aiGateway"] = map[string]any{
+		"enabled": true, "keySecretName": input.GatewayKey.Name, "keySecretKey": "api-key",
+		"models": []any{map[string]any{"id": "example-model", "name": "Example"}},
+	}
+	prepared, err := PrepareSandboxChart(testChart(t), values, nil, bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, _, _ := sandboxSDKConfig()
+	if err := stageSandboxTest(prepared, cfg, sandboxStageCheck); err != nil {
+		t.Fatal("real Helm staging rejected Hermes empty skills:", err)
+	}
+	last, err := cfg.Releases.Last(input.ReleaseName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seal, err := sandboxReleaseSeal(last)
+	if err != nil || seal.Runtime.Type != "hermes" || seal.Skills != (w.ObjectIdentity{}) ||
+		seal.SkillsMode != w.SkillsModeEmpty {
+		t.Fatal("stored provenance lost Hermes empty skills identity:", err)
+	}
+}
+
 func TestSandboxSealPreservesDefaultSkillsWireShape(t *testing.T) {
 	seal := sandboxSealIdentity(testfixture.New("openclaw").Input)
 	raw, err := json.Marshal(seal)
