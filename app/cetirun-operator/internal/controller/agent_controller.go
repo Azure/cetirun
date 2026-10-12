@@ -214,6 +214,10 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		}
 		return ctrl.Result{}, fmt.Errorf("get Agent: %w", err)
 	}
+	// The phase stored when this reconcile started. Lifecycle events report
+	// transitions from it, so that the periodic full reconcile of an Agent
+	// at steady state records no events.
+	startPhase := instance.Status.Phase
 
 	if ns := instanceNamespace(instance.Name); ns == r.registryNamespace() || ns == registryauth.DefaultNamespace {
 		return r.rejectReservedRegistryInstance(ctx, instance)
@@ -506,7 +510,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 				}
 			} else {
 				prevIngressReady := isConditionTrue(instance.Status.Conditions, cetirunv1alpha1.ConditionIngressReady)
-				if err := r.ensureVirtualService(ctx, instance); err != nil {
+				if _, err := r.ensureVirtualService(ctx, instance); err != nil {
 					logger.Error(err, "VirtualService update failed (lightweight reconcile)", "alias", instance.Spec.User.Alias)
 					setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionIngressReady,
 						metav1.ConditionFalse, "VirtualServiceFailed", err.Error())
@@ -560,8 +564,12 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	releaseName := helmReleaseName(instance.Name)
 
 	logger.Info("Reconciling Agent", "alias", alias, "generation", instance.Generation)
-	r.EventRecorder.Eventf(instance, corev1.EventTypeNormal, "InstanceCreating",
-		"Creating agent for user %s", alias)
+	// Report the creation once: an Agent whose chart has never been applied
+	// has no HelmDeployed condition yet. Upgrades are reported by HelmInstalled.
+	if meta.FindStatusCondition(instance.Status.Conditions, cetirunv1alpha1.ConditionHelmDeployed) == nil {
+		r.EventRecorder.Eventf(instance, corev1.EventTypeNormal, "InstanceCreating",
+			"Creating agent for user %s", alias)
+	}
 
 	// 6. Ensure namespace.
 	logger.V(1).Info("Ensuring namespace", "namespace", ns)
@@ -873,7 +881,9 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 			logger.Error(err, "Failed to update status to Suspended", "alias", alias)
 			return ctrl.Result{}, err
 		}
-		r.EventRecorder.Event(instance, corev1.EventTypeNormal, "InstanceSuspended", "Instance suspended — scaled to zero and ingress removed")
+		if startPhase != cetirunv1alpha1.PhaseSuspended {
+			r.EventRecorder.Event(instance, corev1.EventTypeNormal, "InstanceSuspended", "Instance suspended — scaled to zero and ingress removed")
+		}
 		requeueAfter := 10 * time.Minute
 		if teamsRequeueAfter > 0 && teamsRequeueAfter < requeueAfter {
 			requeueAfter = teamsRequeueAfter
@@ -893,16 +903,18 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	// When Istio is guaranteed to be present, change this block to:
 	//   if err != nil { return r.failWith(ctx, instance, "VirtualServiceFailed", err.Error()) }
 	logger.V(1).Info("Ensuring VirtualService", "alias", alias)
-	if err := r.ensureVirtualService(ctx, instance); err != nil {
+	if result, err := r.ensureVirtualService(ctx, instance); err != nil {
 		logger.Error(err, "VirtualService creation/update failed (best-effort)", "alias", alias)
 		setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionIngressReady,
 			metav1.ConditionFalse, "VirtualServiceFailed", err.Error())
 	} else {
-		logger.V(1).Info("VirtualService ensured", "alias", alias)
+		logger.V(1).Info("VirtualService ensured", "alias", alias, "result", result)
 		setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionIngressReady,
 			metav1.ConditionTrue, "VirtualServiceCreated", "Istio ingress configured")
-		r.EventRecorder.Eventf(instance, corev1.EventTypeNormal, "IngressConfigured",
-			"Istio VirtualService created, instance accessible at %s", accessURLPathBased(instance.Name, r.DomainSuffix))
+		if result != controllerutil.OperationResultNone {
+			r.EventRecorder.Eventf(instance, corev1.EventTypeNormal, "IngressConfigured",
+				"Istio VirtualService %s, instance accessible at %s", result, accessURLPathBased(instance.Name, r.DomainSuffix))
+		}
 	}
 
 	// 11. Verify StatefulSet pod readiness before marking Ready.
@@ -971,7 +983,9 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		return ctrl.Result{}, err
 	}
 
-	r.EventRecorder.Event(instance, corev1.EventTypeNormal, "InstanceReady", "Agent fully operational")
+	if startPhase != cetirunv1alpha1.PhaseReady {
+		r.EventRecorder.Event(instance, corev1.EventTypeNormal, "InstanceReady", "Agent fully operational")
+	}
 	logger.Info("Reconciliation complete", "alias", alias, "accessURL", accessURLPathBased(instance.Name, r.DomainSuffix))
 	requeueAfter := 10 * time.Minute
 	if teamsRequeueAfter > 0 && teamsRequeueAfter < requeueAfter {
@@ -1572,12 +1586,13 @@ func (r *AgentReconciler) ensureMSTeamsSecretKeys(ctx context.Context, logger lo
 	return nil
 }
 
-// ensureVirtualService creates or updates the Istio VirtualService for this instance.
-func (r *AgentReconciler) ensureVirtualService(ctx context.Context, instance *cetirunv1alpha1.Agent, access ...customAccess) error {
+// ensureVirtualService creates or updates the Istio VirtualService for this
+// instance and reports whether it created, updated or left it unchanged.
+func (r *AgentReconciler) ensureVirtualService(ctx context.Context, instance *cetirunv1alpha1.Agent, access ...customAccess) (controllerutil.OperationResult, error) {
 	logger := log.FromContext(ctx)
 	desired := buildVirtualService(instance, r.DomainSuffix, r.IstioGateway, access...)
 	if desired == nil {
-		return fmt.Errorf("unsupported Agent native access")
+		return controllerutil.OperationResultNone, fmt.Errorf("unsupported Agent native access")
 	}
 	vsName := virtualServiceName(instance.Name)
 	vsNS := instanceNamespace(instance.Name)
@@ -1587,23 +1602,23 @@ func (r *AgentReconciler) ensureVirtualService(ctx context.Context, instance *ce
 	if errors.IsNotFound(err) {
 		logger.Info("Creating VirtualService", "name", vsName, "namespace", vsNS)
 		if err := r.Create(ctx, desired); err != nil {
-			return fmt.Errorf("create VirtualService: %w", err)
+			return controllerutil.OperationResultNone, fmt.Errorf("create VirtualService: %w", err)
 		}
-		return nil
+		return controllerutil.OperationResultCreated, nil
 	}
 	if err != nil {
-		return fmt.Errorf("get VirtualService: %w", err)
+		return controllerutil.OperationResultNone, fmt.Errorf("get VirtualService: %w", err)
 	}
 
 	// Update existing VirtualService by patching it with the desired spec fields.
 	// We avoid direct struct assignment because the proto message contains a sync.Mutex.
 	if instance.Spec.Agent.Type == cetirunv1alpha1.AgentTypeCustom && !hasAgentOwner(existing, instance) {
-		return fmt.Errorf("Custom platform route belongs to another owner")
+		return controllerutil.OperationResultNone, fmt.Errorf("Custom platform route belongs to another owner")
 	}
 	ownedAnnotationsMatch := instance.Spec.Agent.Type != cetirunv1alpha1.AgentTypeCustom ||
 		existing.Annotations[customAgentUID] == string(instance.UID)
 	if proto.Equal(&existing.Spec, &desired.Spec) && maps.Equal(existing.Labels, desired.Labels) && ownedAnnotationsMatch {
-		return nil
+		return controllerutil.OperationResultNone, nil
 	}
 	logger.V(1).Info("Updating VirtualService", "name", vsName, "namespace", vsNS)
 	existing.Spec.Hosts = desired.Spec.Hosts
@@ -1618,9 +1633,9 @@ func (r *AgentReconciler) ensureVirtualService(ctx context.Context, instance *ce
 		existing.Spec.ExportTo = desired.Spec.ExportTo
 	}
 	if err := r.Update(ctx, existing); err != nil {
-		return fmt.Errorf("update VirtualService: %w", err)
+		return controllerutil.OperationResultNone, fmt.Errorf("update VirtualService: %w", err)
 	}
-	return nil
+	return controllerutil.OperationResultUpdated, nil
 }
 
 // rejectReservedUIInstance removes the externally routable VirtualService for

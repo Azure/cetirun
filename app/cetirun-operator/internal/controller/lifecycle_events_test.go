@@ -1,0 +1,185 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
+package controller
+
+import (
+	"context"
+	"strings"
+	"testing"
+	"time"
+
+	appsv1 "k8s.io/api/apps/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/tools/record"
+	"k8s.io/utils/ptr"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+
+	istiov1beta1 "istio.io/client-go/pkg/apis/networking/v1beta1"
+
+	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+)
+
+var lifecycleEventReasons = []string{"InstanceCreating", "IngressConfigured", "InstanceReady", "InstanceSuspended"}
+
+// lifecycleEvents drains the recorder and counts the lifecycle events by
+// reason, with the message of the last IngressConfigured event.
+func lifecycleEvents(recorder *record.FakeRecorder) (map[string]int, string) {
+	counts := map[string]int{}
+	ingress := ""
+	for {
+		select {
+		case event := <-recorder.Events:
+			for _, reason := range lifecycleEventReasons {
+				if strings.Contains(event, " "+reason+" ") {
+					counts[reason]++
+					if reason == "IngressConfigured" {
+						ingress = event
+					}
+				}
+			}
+		default:
+			return counts, ingress
+		}
+	}
+}
+
+func TestEnsureVirtualServiceReportsWhatItChanged(t *testing.T) {
+	agent := aiGatewayTestAgent("events-team")
+	agent.Spec.SandboxRef = ""
+	scheme := runtime.NewScheme()
+	for _, add := range []func(*runtime.Scheme) error{clientgoscheme.AddToScheme, cetirunv1alpha1.AddToScheme, istiov1beta1.AddToScheme} {
+		if err := add(scheme); err != nil {
+			t.Fatal(err)
+		}
+	}
+	kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(agent).Build()
+	r := &AgentReconciler{Client: kube, Scheme: scheme, DomainSuffix: "example.com"}
+	ctx := context.Background()
+	key := types.NamespacedName{Namespace: instanceNamespace(agent.Name), Name: virtualServiceName(agent.Name)}
+
+	if result, err := r.ensureVirtualService(ctx, agent); err != nil || result != controllerutil.OperationResultCreated {
+		t.Fatalf("first ensure = %q, %v; want created", result, err)
+	}
+	created := &istiov1beta1.VirtualService{}
+	if err := kube.Get(ctx, key, created); err != nil {
+		t.Fatal(err)
+	}
+	if result, err := r.ensureVirtualService(ctx, agent); err != nil || result != controllerutil.OperationResultNone {
+		t.Fatalf("repeated ensure = %q, %v; want unchanged", result, err)
+	}
+	unchanged := &istiov1beta1.VirtualService{}
+	if err := kube.Get(ctx, key, unchanged); err != nil || unchanged.ResourceVersion != created.ResourceVersion {
+		t.Fatalf("an unchanged route was written again: %v", err)
+	}
+	r.IstioGateway = "other-namespace/other-gateway"
+	if result, err := r.ensureVirtualService(ctx, agent); err != nil || result != controllerutil.OperationResultUpdated {
+		t.Fatalf("changed ensure = %q, %v; want updated", result, err)
+	}
+}
+
+// A Ready Agent is reconciled in full whenever a verification falls due, by
+// default every ten minutes. Lifecycle events report state changes, so such a
+// pass records none; creation, readiness and suspension are reported once.
+func TestLifecycleEventsReportTransitionsOnly(t *testing.T) {
+	r, agent, _ := legacyGatewayFixture(t)
+	chart := &chartHelm{}
+	r.HelmClient = chart
+	recorder := record.NewFakeRecorder(100)
+	r.EventRecorder = recorder
+	ctx := context.Background()
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: agent.Name}}
+	sts := &appsv1.StatefulSet{
+		ObjectMeta: metav1.ObjectMeta{Name: instanceServiceName(agent.Name), Namespace: instanceNamespace(agent.Name), Generation: 1},
+		Spec:       appsv1.StatefulSetSpec{Replicas: ptr.To[int32](1)},
+		Status:     appsv1.StatefulSetStatus{ReadyReplicas: 1, UpdatedReplicas: 1, ObservedGeneration: 1},
+	}
+	if err := r.Create(ctx, sts); err != nil {
+		t.Fatal(err)
+	}
+	stored := func() *cetirunv1alpha1.Agent {
+		t.Helper()
+		current := &cetirunv1alpha1.Agent{}
+		if err := r.Get(ctx, req.NamespacedName, current); err != nil {
+			t.Fatal(err)
+		}
+		return current
+	}
+	reconcileUntil := func(phase string) {
+		t.Helper()
+		for i := 0; i < 4 && stored().Status.Phase != phase; i++ {
+			if _, err := r.Reconcile(ctx, req); err != nil {
+				t.Fatalf("reconcile %d: %v", i, err)
+			}
+		}
+		if got := stored().Status.Phase; got != phase {
+			t.Fatalf("phase = %q, want %q", got, phase)
+		}
+	}
+	// A verification that is due makes the next reconcile take the full path,
+	// as the periodic requeue does.
+	verificationDue := func() {
+		t.Helper()
+		current := stored()
+		if current.Status.AIGateway == nil {
+			t.Fatal("the Agent has no AI Gateway status to verify")
+		}
+		current.Status.AIGateway.LastVerifiedTime = &metav1.Time{Time: time.Now().Add(-2 * aiGatewayVerificationInterval)}
+		if err := r.Status().Update(ctx, current); err != nil {
+			t.Fatal(err)
+		}
+	}
+	expect := func(step string, want map[string]int) {
+		t.Helper()
+		got, ingress := lifecycleEvents(recorder)
+		for _, reason := range lifecycleEventReasons {
+			if got[reason] != want[reason] {
+				t.Errorf("%s: %d %s events, want %d", step, got[reason], reason, want[reason])
+			}
+		}
+		if want["IngressConfigured"] > 0 && !strings.Contains(ingress, "VirtualService created") {
+			t.Errorf("%s: IngressConfigured does not say the route was created: %q", step, ingress)
+		}
+	}
+
+	reconcileUntil(cetirunv1alpha1.PhaseReady)
+	if chart.installs != 1 {
+		t.Fatalf("installs = %d, want 1", chart.installs)
+	}
+	expect("creation", map[string]int{"InstanceCreating": 1, "IngressConfigured": 1, "InstanceReady": 1})
+
+	for pass := 1; pass <= 2; pass++ {
+		verificationDue()
+		verified := stored().Status.AIGateway.LastVerifiedTime.Time
+		if _, err := r.Reconcile(ctx, req); err != nil {
+			t.Fatal(err)
+		}
+		current := stored()
+		if !current.Status.AIGateway.LastVerifiedTime.After(verified) || current.Status.Phase != cetirunv1alpha1.PhaseReady {
+			t.Fatalf("pass %d did not run in full and stay Ready: %+v", pass, current.Status.AIGateway)
+		}
+		expect("periodic pass", nil)
+	}
+	if chart.installs != 1 {
+		t.Fatalf("a periodic pass reinstalled the chart: installs = %d", chart.installs)
+	}
+
+	current := stored()
+	current.Spec.Suspended = true
+	current.Generation++ // the fake client does not maintain the generation
+	if err := r.Update(ctx, current); err != nil {
+		t.Fatal(err)
+	}
+	reconcileUntil(cetirunv1alpha1.PhaseSuspended)
+	expect("suspension", map[string]int{"InstanceSuspended": 1})
+	verificationDue()
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	expect("suspended periodic pass", nil)
+}
