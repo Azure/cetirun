@@ -36,6 +36,8 @@ import (
 	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/aigateway"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/helm"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxbinding"
 )
 
 const (
@@ -293,14 +295,14 @@ func modelAccess(shared, copilot bool) *cetirunv1alpha1.ModelAccessSpec {
 }
 
 func aiGatewayTestTeam(name string) *cetirunv1alpha1.Team {
-	return &cetirunv1alpha1.Team{ObjectMeta: metav1.ObjectMeta{Name: name, Generation: 1}, Spec: cetirunv1alpha1.TeamSpec{
+	return &cetirunv1alpha1.Team{ObjectMeta: metav1.ObjectMeta{Name: name, UID: types.UID(name + "-uid"), Generation: 1}, Spec: cetirunv1alpha1.TeamSpec{
 		AgentPolicyRef: testPolicyName,
 		SandboxRefs:    []string{testSandboxName}, DefaultSandboxRef: testSandboxName,
 	}, Status: cetirunv1alpha1.TeamStatus{ObservedGeneration: 1, Conditions: []metav1.Condition{{Type: cetirunv1alpha1.ConditionTeamAccepted, Status: metav1.ConditionTrue, ObservedGeneration: 1}}}}
 }
 
 func aiGatewayTestPolicy() *cetirunv1alpha1.AgentPolicy {
-	return &cetirunv1alpha1.AgentPolicy{ObjectMeta: metav1.ObjectMeta{Name: testPolicyName, Generation: 1}, Spec: cetirunv1alpha1.AgentPolicySpec{
+	return &cetirunv1alpha1.AgentPolicy{ObjectMeta: metav1.ObjectMeta{Name: testPolicyName, UID: types.UID("policy-uid"), Generation: 1}, Spec: cetirunv1alpha1.AgentPolicySpec{
 		Harnesses: cetirunv1alpha1.AgentPolicyHarnesses{Allowed: []cetirunv1alpha1.AgentType{cetirunv1alpha1.AgentTypeOpenClaw, cetirunv1alpha1.AgentTypeHermes}},
 		ModelAccess: cetirunv1alpha1.AgentPolicyModelAccess{
 			SharedModels: cetirunv1alpha1.AgentPolicySharedModelsAccess{Allowed: []string{testSharedModelOne}}, Copilot: cetirunv1alpha1.AgentPolicyCopilotAccess{Allowed: true},
@@ -347,7 +349,33 @@ func aiGatewayTestReconciler(t *testing.T, objects ...client.Object) (*AgentReco
 			teams[agent.Spec.Team] = true
 		}
 	}
-	objects = append(objects, aiGatewayTestPolicy())
+	policyObjects := map[string]*cetirunv1alpha1.AgentPolicy{}
+	sandboxObjects := map[string]*cetirunv1alpha1.Sandbox{}
+	for _, object := range objects {
+		switch object := object.(type) {
+		case *cetirunv1alpha1.AgentPolicy:
+			policyObjects[object.Name] = object
+		case *cetirunv1alpha1.Sandbox:
+			sandboxObjects[object.Name] = object
+		}
+	}
+	if policyObjects[testPolicyName] == nil {
+		policy := aiGatewayTestPolicy()
+		objects = append(objects, policy)
+		policyObjects[policy.Name] = policy
+	}
+	teamObjects := map[string]*cetirunv1alpha1.Team{}
+	for _, object := range objects {
+		if team, ok := object.(*cetirunv1alpha1.Team); ok {
+			teamObjects[team.Name] = team
+		}
+	}
+	for _, object := range objects {
+		if agent, ok := object.(*cetirunv1alpha1.Agent); ok {
+			team := teamObjects[agent.Spec.Team]
+			authorizeAIGatewayTestAgent(t, agent, team, policyObjects[team.Spec.AgentPolicyRef], sandboxObjects[agent.Spec.SandboxRef])
+		}
+	}
 	kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).
 		WithStatusSubresource(&cetirunv1alpha1.Agent{}, &cetirunv1alpha1.Team{}, &cetirunv1alpha1.AgentPolicy{}).Build()
 	gateway := newFakeAIGateway()
@@ -366,6 +394,26 @@ func aiGatewayTestReconciler(t *testing.T, objects ...client.Object) (*AgentReco
 		}
 	}
 	return r, kube, gateway
+}
+
+func authorizeAIGatewayTestAgent(t *testing.T, agent *cetirunv1alpha1.Agent, team *cetirunv1alpha1.Team, policy *cetirunv1alpha1.AgentPolicy, box *cetirunv1alpha1.Sandbox) {
+	t.Helper()
+	if box == nil {
+		box = &cetirunv1alpha1.Sandbox{ObjectMeta: metav1.ObjectMeta{Name: agent.Spec.SandboxRef, UID: types.UID("sandbox-uid")}}
+	}
+	authorization, err := sandboxbinding.Snapshot(agent, team, sandbox.Resources{
+		Sandboxes: map[string]*cetirunv1alpha1.Sandbox{box.Name: box},
+		AgentPolicies: map[string]*cetirunv1alpha1.AgentPolicy{
+			policy.Name: policy,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if agent.Annotations == nil {
+		agent.Annotations = map[string]string{}
+	}
+	agent.Annotations[sandboxbinding.AuthorizationAnnotation] = authorization
 }
 
 func aiGatewayNamespace() *corev1.Namespace {
@@ -535,6 +583,42 @@ func TestReconcileAIGatewayBlocksExistingKeyBeforePolicyBudgetUpdate(t *testing.
 		if key.Blocked || key.MaxBudget == nil || *key.MaxBudget != 20 {
 			t.Fatalf("replacement grant was not read back and unblocked: %+v", key)
 		}
+	}
+}
+
+func TestReconcileAIGatewayBlocksExistingKeyWhenTeamPolicyBindingChanges(t *testing.T) {
+	ctx := context.Background()
+	agent := aiGatewayTestAgent(testAIGatewayTeam)
+	r, kube, gateway := aiGatewayTestReconciler(t, agent, aiGatewayNamespace())
+	if err := r.reconcileAIGateway(ctx, agent, true); err != nil {
+		t.Fatal(err)
+	}
+
+	replacement := aiGatewayTestPolicy()
+	replacement.Name = "replacement-policy"
+	replacement.UID = types.UID("replacement-policy-uid")
+	if err := kube.Create(ctx, replacement); err != nil {
+		t.Fatal(err)
+	}
+	team := &cetirunv1alpha1.Team{}
+	if err := kube.Get(ctx, types.NamespacedName{Name: testAIGatewayTeam}, team); err != nil {
+		t.Fatal(err)
+	}
+	team.Spec.AgentPolicyRef = replacement.Name
+	if err := kube.Update(ctx, team); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := r.reconcileAIGateway(ctx, agent, true); err == nil {
+		t.Fatal("a changed Team policy binding was granted without explicit reauthorization")
+	}
+	for _, key := range gateway.keys {
+		if !key.Blocked {
+			t.Fatal("the previous Gateway key was not blocked after the protected policy binding changed")
+		}
+	}
+	if len(gateway.ownerUpdates) != 0 || len(gateway.budgetUpdateBlocks) != 0 || len(gateway.updates) != 0 {
+		t.Fatal("the replacement policy modified the Gateway grant before binding reauthorization")
 	}
 }
 
@@ -750,10 +834,12 @@ func TestReconcileAIGatewayMovesKeyWhenTeamChanges(t *testing.T) {
 	if err := r.reconcileAIGateway(context.Background(), agent, true); err != nil {
 		t.Fatal(err)
 	}
-	if err := kube.Create(context.Background(), aiGatewayTestTeam("team-b")); err != nil {
+	teamB := aiGatewayTestTeam("team-b")
+	if err := kube.Create(context.Background(), teamB); err != nil {
 		t.Fatal(err)
 	}
 	agent.Spec.Team = "team-b"
+	authorizeAIGatewayTestAgent(t, agent, teamB, aiGatewayTestPolicy(), nil)
 	if err := r.reconcileAIGateway(context.Background(), agent, true); err != nil {
 		t.Fatal(err)
 	}
@@ -776,11 +862,13 @@ func TestReconcileAIGatewayRejectsOwnerUpdateWithoutMatchingReadback(t *testing.
 	if err := r.reconcileAIGateway(context.Background(), agent, true); err != nil {
 		t.Fatal(err)
 	}
-	if err := kube.Create(context.Background(), aiGatewayTestTeam("team-b")); err != nil {
+	teamB := aiGatewayTestTeam("team-b")
+	if err := kube.Create(context.Background(), teamB); err != nil {
 		t.Fatal(err)
 	}
 	gateway.ignoreOwnerUpdate = true
 	agent.Spec.Team = "team-b"
+	authorizeAIGatewayTestAgent(t, agent, teamB, aiGatewayTestPolicy(), nil)
 	if err := r.reconcileAIGateway(context.Background(), agent, true); err == nil {
 		t.Fatal("an owner update that the Gateway did not store must fail closed")
 	}

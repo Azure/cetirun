@@ -407,7 +407,7 @@ func TestSandboxPreparationMissingAndStaleInputsStayHeld(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			f := newPreparationFixture(t, "hermes")
 			test.mutate(t, f)
-			if err := f.reconcile(); err == nil {
+			if err := f.reconcile(); err == nil && test.name != "missing authorization" {
 				t.Fatal("unsafe preparation was accepted")
 			}
 			agent := f.current(t)
@@ -682,7 +682,11 @@ func TestSandboxPreparationMetadataOnlyReauthorization(t *testing.T) {
 	if err := f.client.Create(ctx, replacement); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.reconcile(); err == nil {
+	if err := f.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	denied := f.expectation(t)
+	if denied.Binding.AgentPolicyUID != before.Binding.AgentPolicyUID || f.installer.stages != 1 {
 		t.Fatal("same-name policy replacement was silently rebound")
 	}
 	agent := f.current(t)

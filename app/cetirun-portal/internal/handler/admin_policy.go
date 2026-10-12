@@ -15,6 +15,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/validation"
 
 	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-portal/internal/kube"
@@ -29,6 +30,10 @@ type AdminPolicyHandler struct {
 
 var policyNamePattern = regexp.MustCompile(`^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$`)
 var monthlyUSDAmountPattern = regexp.MustCompile(`^(0|[1-9][0-9]*)(\.[0-9]{1,6})?$`)
+
+func validAgentPolicyResourceName(name string) bool {
+	return len(validation.IsDNS1123Subdomain(name)) == 0
+}
 
 type AgentPolicyHarnessesDTO struct {
 	Allowed []cetirunv1alpha1.AgentType `json:"allowed"`
@@ -193,7 +198,7 @@ func (h *AdminPolicyHandler) ListPolicies(w http.ResponseWriter, r *http.Request
 // GetPolicy handles GET /api/v1/admin/policies/{name}.
 func (h *AdminPolicyHandler) GetPolicy(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
-	if !policyNamePattern.MatchString(name) {
+	if !validAgentPolicyResourceName(name) {
 		writeError(w, http.StatusBadRequest, "invalid_name", "Invalid policy name")
 		return
 	}
@@ -246,7 +251,7 @@ func (h *AdminPolicyHandler) CreatePolicy(w http.ResponseWriter, r *http.Request
 // UpdatePolicy handles PUT /api/v1/admin/policies/{name}.
 func (h *AdminPolicyHandler) UpdatePolicy(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
-	if !policyNamePattern.MatchString(name) {
+	if !validAgentPolicyResourceName(name) {
 		writeError(w, http.StatusBadRequest, "invalid_name", "Invalid policy name")
 		return
 	}
@@ -292,7 +297,7 @@ func (h *AdminPolicyHandler) UpdatePolicy(w http.ResponseWriter, r *http.Request
 // DeletePolicy handles DELETE /api/v1/admin/policies/{name}.
 func (h *AdminPolicyHandler) DeletePolicy(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
-	if !policyNamePattern.MatchString(name) {
+	if !validAgentPolicyResourceName(name) {
 		writeError(w, http.StatusBadRequest, "invalid_name", "Invalid policy name")
 		return
 	}
