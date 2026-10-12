@@ -249,6 +249,17 @@ func (p *PreparedRelease) validateSandboxNative(object unstructured.Unstructured
 		if err := decodeObject(object.Object, &config); err != nil || config.Name != name+"-config" || len(config.BinaryData) != 0 {
 			return fmt.Errorf("unexpected native Sandbox configuration")
 		}
+		if len(input.Controls.TrustedProxyIPs) != 0 {
+			var native struct {
+				Gateway struct {
+					TrustedProxies []string `json:"trustedProxies"`
+				} `json:"gateway"`
+			}
+			if err := json.Unmarshal([]byte(config.Data["openclaw.json"]), &native); err != nil ||
+				!slices.Equal(native.Gateway.TrustedProxies, input.Controls.TrustedProxyIPs) {
+				return fmt.Errorf("rendered OpenClaw proxy trust differs from the approved native ingress IPs")
+			}
+		}
 	case "v1/Service":
 		var service corev1.Service
 		if err := decodeObject(object.Object, &service); err != nil || service.Name != name ||

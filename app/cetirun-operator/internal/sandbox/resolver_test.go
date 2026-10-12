@@ -111,6 +111,54 @@ func mustResolve(t *testing.T, input ResolveInput) *Resolution {
 	return result
 }
 
+func TestNativeResolveRequiresExplicitModeAndNormalOpenClaw(t *testing.T) {
+	fixture := func() ResolveInput {
+		input := resolverFixture()
+		input.NativeExecution = true
+		input.Agent.Spec.Agent.Type = cetirunv1alpha1.AgentTypeOpenClaw
+		input.Team.Spec.AdminAgentPolicyRef = ""
+		input.Resources.AgentPolicies["normal"].Spec.Harnesses.Allowed = []cetirunv1alpha1.AgentType{cetirunv1alpha1.AgentTypeOpenClaw}
+		input.Registrations[cetirunv1alpha1.SandboxKata] = Registration{Capabilities: nativeCapabilities(), Available: true}
+		return input
+	}
+	resolved := mustResolve(t, fixture())
+	if resolved.Capabilities.Profile != ProfileNativeSingleStart ||
+		resolved.Capabilities.EnforcementObservation || resolved.Capabilities.RestrictiveFailure {
+		t.Fatal("resolution invented stronger native guarantees")
+	}
+	for name, mutate := range map[string]func(*ResolveInput){
+		"default mode": func(i *ResolveInput) { i.NativeExecution = false },
+		"Hermes":       func(i *ResolveInput) { i.Agent.Spec.Agent.Type = cetirunv1alpha1.AgentTypeHermes },
+		"admin selection": func(i *ResolveInput) {
+			i.Team.Spec.AdminAgentPolicyRef = "normal"
+			i.Agent.Spec.PolicyClass, i.AuthorizedBinding.PolicyClass = cetirunv1alpha1.AgentPolicyClassAdmin, cetirunv1alpha1.AgentPolicyClassAdmin
+		},
+		"RWO": func(i *ResolveInput) {
+			i.Resources.Sandboxes["standard"].Spec.Storage.Home.AccessMode = corev1.ReadWriteOnce
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			input := fixture()
+			mutate(&input)
+			if _, err := Resolve(input); err == nil {
+				t.Fatal("native-only registration authorized an unsupported execution")
+			}
+		})
+	}
+	unselected := fixture()
+	unselected.Team.Spec.AdminAgentPolicyRef = "normal"
+	mustResolve(t, unselected)
+	qualified := fixture()
+	registration := qualified.Registrations[cetirunv1alpha1.SandboxKata]
+	registration.Capabilities.Profile = ""
+	registration.Capabilities.EnforcementObservation, registration.Capabilities.RestrictiveFailure = true, true
+	qualified.Registrations[cetirunv1alpha1.SandboxKata] = registration
+	qualified.NativeExecution = false
+	if strong := mustResolve(t, qualified); strong.Revision == resolved.Revision {
+		t.Fatal("profile change did not invalidate the resolution with an unchanged platform revision")
+	}
+}
+
 func TestValidateTeamStopsAtInvalidPersistedIdentity(t *testing.T) {
 	input := resolverFixture()
 	input.Team.UID = ""

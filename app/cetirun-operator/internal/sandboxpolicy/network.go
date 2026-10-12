@@ -55,7 +55,21 @@ func canonicalPlatform(input Platform, capabilities sandbox.Capabilities) (Platf
 		return platform, err
 	}
 	adapter := platform.Adapter
-	if adapter.Name != AzureCNIOverlayCilium || !adapter.Qualified || adapter.Revision == "" {
+	if errs := sandbox.CheckCapabilityProfile(capabilities); len(errs) != 0 {
+		return platform, fmt.Errorf("%w: %v", ErrUnsupportedControl, errs.ToAggregate())
+	}
+	if capabilities.Profile == sandbox.ProfileNativeSingleStart {
+		if adapter.Name != Cilium || adapter.Qualified || adapter.Revision == "" {
+			return platform, fmt.Errorf("%w: native single-start requires an explicitly revisioned cilium adapter without full qualification", ErrUnsupportedControl)
+		}
+		if errs := sandbox.CheckNetworkCapabilities(capabilities); len(errs) != 0 {
+			return platform, fmt.Errorf("%w: %v", ErrUnsupportedControl, errs.ToAggregate())
+		}
+		if len(platform.Grants) != 0 || len(platform.Identities) != 0 ||
+			platform.KubernetesAudience != "" || platform.TokenExpirationSeconds != 0 {
+			return platform, fmt.Errorf("%w: native single-start does not support identity or token grants", ErrUnsupportedControl)
+		}
+	} else if adapter.Name != AzureCNIOverlayCilium || !adapter.Qualified || adapter.Revision == "" {
 		return platform, fmt.Errorf("%w: no qualified candidate adapter registration", ErrUnsupportedControl)
 	}
 	if !adapter.Available {
@@ -478,6 +492,14 @@ func compileNetwork(input CompileInput) (NetworkPlan, error) {
 			if destination.Peer.Namespace == "" {
 				return plan, fmt.Errorf("%w: authenticated ingress requires protected managed Gateway identities", ErrUnsupportedControl)
 			}
+			if input.NativeExecution {
+				for _, ip := range destination.Peer.IPs {
+					if !netip.MustParseAddr(ip).IsGlobalUnicast() {
+						return plan, fmt.Errorf("%w: native proxy trust requires unicast ingress peer IPs", ErrUnsupportedControl)
+					}
+					plan.TrustedProxyIPs = append(plan.TrustedProxyIPs, ip)
+				}
+			}
 			ingressPeers = append(ingressPeers, destination.Peer)
 			selector := []metav1.LabelSelector{peerSelector(destination.Peer)}
 			if err := budget.ingress(&spec.Ingress, IngressRule{FromEndpoints: selector, ToPorts: portRules(destination.Ports)}); err != nil {
@@ -499,6 +521,7 @@ func compileNetwork(input CompileInput) (NetworkPlan, error) {
 		if err := budget.ingress(&spec.IngressDeny, IngressRule{FromEntities: []string{"world", "host", "remote-node"}}); err != nil {
 			return plan, err
 		}
+		plan.TrustedProxyIPs = sortedUnique(plan.TrustedProxyIPs)
 	}
 	for _, rules := range []*[]EgressRule{&spec.Egress, &spec.EgressDeny} {
 		*rules, err = canonicalObjects(*rules)

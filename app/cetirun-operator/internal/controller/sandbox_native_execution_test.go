@@ -316,6 +316,60 @@ func TestNativeSandboxHeldToRunningRequiresCurrentPodReadiness(t *testing.T) {
 	}
 }
 
+func TestNativeSandboxReadyRepublishesVerifiedNamespace(t *testing.T) {
+	f := newNativeSandboxFixture(t, true)
+	f.ready(t)
+	before := f.current(t)
+	source, err := w.AgentSourceReference(before)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workload, stages := f.workload(t), f.installer.stages
+	for _, namespace := range []string{"", "untrusted-status-namespace"} {
+		agent := f.current(t)
+		agent.Status.Namespace = namespace
+		if err := f.kube.Status().Update(context.Background(), agent); err != nil {
+			t.Fatal(err)
+		}
+		f.reconcileOK(t)
+		f.assertReady(t)
+		after := f.current(t)
+		currentSource, err := w.AgentSourceReference(after)
+		if err != nil || currentSource != source || after.Generation != before.Generation {
+			t.Fatal("namespace status publication changed Agent authorization intent:", err)
+		}
+		currentWorkload := f.workload(t)
+		if currentWorkload.UID != workload.UID || !w.SamePodTemplate(currentWorkload.Spec.Template, workload.Spec.Template) ||
+			f.installer.stages != stages {
+			t.Fatal("namespace status repair changed or restaged the protected workload")
+		}
+	}
+}
+
+func TestNativeSandboxDoesNotPublishUnverifiedNamespace(t *testing.T) {
+	f := newNativeSandboxFixture(t, true)
+	f.prepare(t)
+	f.reconcileOK(t)
+	f.createPod(t, true)
+	_, expected := f.expectation(t)
+	namespace := &corev1.Namespace{}
+	ctx := context.Background()
+	if err := f.kube.Get(ctx, client.ObjectKey{Name: expected.Namespace.Name}, namespace); err != nil {
+		t.Fatal(err)
+	}
+	namespace.OwnerReferences = []metav1.OwnerReference{w.AgentOwner("other-agent", "other-agent-uid")}
+	if err := f.kube.Update(ctx, namespace); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.reconcile(); err == nil {
+		t.Fatal("native readiness accepted a namespace whose ownership changed")
+	}
+	f.assertNotReady(t)
+	if f.current(t).Status.Namespace != "" {
+		t.Fatal("unverified namespace was published for owner access")
+	}
+}
+
 func TestNativeSandboxReadinessToleratesAPIBindingAndStatusChurn(t *testing.T) {
 	f := newNativeSandboxFixture(t, true)
 	f.prepare(t)
@@ -652,6 +706,9 @@ func newNativeSandboxSkillsFixture(t *testing.T, native bool, skills []string) *
 	input.Policy.Spec.ModelAccess = aiGatewayTestPolicy().Spec.ModelAccess
 	input.Policy.Spec.ModelAccess.Copilot.Allowed = false
 	input.Policy.Spec.Network.Ingress.Mode = api.AgentPolicyIngressAuthenticated
+	if native {
+		input.Policy.Spec.Harnesses.Allowed = []api.AgentType{api.AgentTypeOpenClaw}
+	}
 	input.Policy.Status = api.AgentPolicyStatus{ObservedGeneration: 1, Conditions: []metav1.Condition{{
 		Type: api.ConditionAgentPolicyAccepted, Status: metav1.ConditionTrue, ObservedGeneration: 1,
 	}}}
@@ -694,6 +751,11 @@ func newNativeSandboxSkillsFixture(t *testing.T, native bool, skills []string) *
 				Ports: []api.AgentPolicyPort{{Port: 18789, Protocol: corev1.ProtocolTCP}},
 			}},
 		},
+	}
+	if native {
+		capabilities.Profile = sandbox.ProfileNativeSingleStart
+		capabilities.EnforcementObservation, capabilities.RestrictiveFailure = false, false
+		platform.Adapter.Name, platform.Adapter.Qualified = sandboxpolicy.Cilium, false
 	}
 	document := SandboxPlatformConfiguration{
 		Version: "v1", Registrations: map[api.SandboxType]sandbox.Registration{api.SandboxKata: {Capabilities: capabilities, Available: true}},
@@ -871,6 +933,9 @@ func (f *nativeSandboxFixture) assertReady(t *testing.T) {
 		t.Fatalf("current native Pod did not become Ready: phase=%s conditions=%v", agent.Status.Phase, agent.Status.Conditions)
 	}
 	_, expected := f.expectation(t)
+	if agent.Status.Namespace != expected.Namespace.Name {
+		t.Fatalf("Ready namespace = %q, want verified namespace %q", agent.Status.Namespace, expected.Namespace.Name)
+	}
 	if expected.PodUID != f.pod(t).UID || !expected.SinglePod || expected.ExecutionHeld {
 		t.Fatal("Ready was not tied to the admitted single Pod UID")
 	}
@@ -931,6 +996,9 @@ func (f *nativeSandboxFixture) assertGatewayProjection(t *testing.T, expected *w
 		rawConfig = configMap.Data["openclaw.json"]
 	}
 	var nativeConfig struct {
+		Gateway struct {
+			TrustedProxies []string `json:"trustedProxies"`
+		} `json:"gateway"`
 		Auth struct {
 			Profiles map[string]json.RawMessage `json:"profiles"`
 		} `json:"auth"`
@@ -950,6 +1018,9 @@ func (f *nativeSandboxFixture) assertGatewayProjection(t *testing.T, expected *w
 	}
 	if err := json.Unmarshal([]byte(rawConfig), &nativeConfig); err != nil {
 		t.Fatal("prepared OpenClaw config is not the typed native Gateway shape:", err)
+	}
+	if !slices.Equal(nativeConfig.Gateway.TrustedProxies, []string{"10.96.1.60"}) {
+		t.Fatal("native OpenClaw proxy trust differs from the approved ingress peer IPs")
 	}
 	provider, exists := nativeConfig.Models.Providers["openai"]
 	if nativeConfig.Auth.Profiles == nil || len(nativeConfig.Auth.Profiles) != 0 ||

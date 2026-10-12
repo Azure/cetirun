@@ -3,6 +3,11 @@ Copyright (c) Microsoft Corporation.
 Licensed under the MIT License.
 */}}
 {{- $config := deepCopy .Values.openclaw.config }}
+{{- if and .Values.sandboxWorkload (hasKey .Values.sandboxWorkload "trustedProxyIPs") }}
+{{- $gateway := dig "gateway" (dict) $config }}
+{{- $_ := set $gateway "trustedProxies" (.Values.sandboxWorkload.trustedProxyIPs | default list) }}
+{{- $_ := set $config "gateway" $gateway }}
+{{- end }}
 {{- /* CetiRun owns Tailscale Serve outside OpenClaw and forwards it to the
    ordinary Gateway listener over loopback. OpenClaw requires the immediate
    proxy source to be trusted before applying normal token and device auth. */}}

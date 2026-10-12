@@ -363,6 +363,7 @@ func (r *AgentReconciler) observeKubernetesSandbox(ctx context.Context, agent *a
 		current.Status.AccessURL = ""
 	}
 	binding := attempt.plan.Binding
+	current.Status.Namespace = expected.Namespace.Name
 	current.Status.Sandbox = &api.SandboxStatus{
 		TeamUID: binding.TeamUID, SandboxUID: binding.SandboxUID, PolicyClass: binding.PolicyClass,
 		AgentPolicyUID: binding.AgentPolicyUID, AppliedRevision: attempt.plan.Revision,
@@ -410,7 +411,8 @@ func (r *AgentReconciler) resolveRunningKubernetesSandbox(ctx context.Context, a
 		return nil, err
 	}
 	attempt.plan, err = sandboxpolicy.Compile(sandboxpolicy.CompileInput{
-		Resolution: *attempt.resolution, AgentName: agent.Name, Namespace: attempt.input.Namespace.Name, Platform: platform,
+		NativeExecution: r.SandboxPreparation.NativeExecution,
+		Resolution:      *attempt.resolution, AgentName: agent.Name, Namespace: attempt.input.Namespace.Name, Platform: platform,
 	})
 	return attempt, err
 }

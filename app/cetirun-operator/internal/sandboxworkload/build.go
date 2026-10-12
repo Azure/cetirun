@@ -159,6 +159,17 @@ func validateControls(input Input) error {
 	if err := validateDNSIPs(c.DNSIPs); err != nil {
 		return err
 	}
+	nativeIngress := input.GatewayKey != nil && input.AgentType == "openclaw" && c.IngressMode == api.AgentPolicyIngressAuthenticated
+	if nativeIngress != (len(c.TrustedProxyIPs) != 0) {
+		return fmt.Errorf("native authenticated ingress requires explicit compiler proxy IPs; other modes cannot grant proxy trust")
+	}
+	for i, value := range c.TrustedProxyIPs {
+		address, err := netip.ParseAddr(value)
+		if err != nil || address.Is4In6() || address.Zone() != "" || address.String() != value ||
+			!address.IsGlobalUnicast() || (i > 0 && c.TrustedProxyIPs[i-1] >= value) {
+			return fmt.Errorf("compiler proxy IPs must be sorted, distinct canonical unicast addresses, not CIDRs")
+		}
+	}
 	volumes := map[string]bool{}
 	for _, volume := range c.Volumes {
 		if volume.Name == "" || volumes[volume.Name] || slices.Contains([]string{"data", "tmp", "tmp-desktop", "config", "secrets", "shared-skills", "empty-skills"}, volume.Name) {

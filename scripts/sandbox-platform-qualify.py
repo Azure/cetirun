@@ -4,6 +4,9 @@
 """Explicit-target preflight and bounded Kata/Cilium network smoke tests.
 
 This does not register capabilities, authorize execution, or prove writer fencing.
+Deployment preflight reports native single-start configuration as unverified,
+not the stock writer-exclusion hold. Bootstrap, Gateway operation and effective
+skill selection still require separate evidence; completion is not E2E readiness.
 """
 
 import argparse
@@ -439,6 +442,10 @@ def source_bindings(kube, args, operator, admission):
     sources = inline_configuration(operator[2], "CETIRUN_SANDBOX_SOURCES", 16 * 1024)
     config = inline_configuration(admission[2], "CETIRUN_SANDBOX_ADMISSION", 16 * 1024)
     require_preflight(sources.get("enabled") is True, "sandbox-sources-disabled")
+    native_execution = sources.get("nativeExecution", False)
+    require_preflight(type(native_execution) is bool and
+                      config.get("nativeExecution", False) is native_execution,
+                      "native-execution-mode-mismatch")
     require_preflight(sources.get("admissionServiceAccount") == args.admission_service_account and
                       config.get("controllerUsername") == f"system:serviceaccount:{args.namespace}:{args.operator_service_account}" and
                       config.get("validationMode") == "strict" and config.get("platformNamespace") == args.namespace,
@@ -452,12 +459,27 @@ def source_bindings(kube, args, operator, admission):
                       not any(v in ("system:authenticated", "system:unauthenticated") or
                               v.startswith("system:serviceaccounts") for v in groups),
                       "unsupported-admission-administrators")
-    require_preflight(resource_name(sources.get("homeClaimName")) and resource_name(sources.get("skillsClaimName")) and
-                      sources["homeClaimName"] != sources["skillsClaimName"], "distinct-source-claims-required")
-    names = [sources.get(key) for key in ("platformConfigMapName", "placementConfigMapName")]
-    require_preflight(all(resource_name(n) for n in names) and names[0] != names[1] and
-                      names == [config.get(key) for key in ("platformConfigMapName", "placementConfigMapName")],
-                      "platform-placement-bindings-required")
+    catalog = sources.get("skillsCatalogConfigMapName", "")
+    if native_execution:
+        require_preflight(sources.get("bootstrapOwnedPrerequisites") is True, "native-owned-bootstrap-required")
+        gateway = environment_entry(operator[2], "AI_GATEWAY_ENABLED")
+        require_preflight("valueFrom" not in gateway and gateway.get("value") == "true",
+                          "native-gateway-enablement-required")
+        require_preflight(object_value(sources.get("helpers", {})).get("desktop", False) is False,
+                          "native-desktop-helper-unsupported")
+        require_preflight(all(c.get("placementConfigMapName", "") == "" for c in (sources, config)),
+                          "native-placement-unsupported")
+        require_preflight(catalog == "" or (resource_name(catalog) and catalog != sources.get("platformConfigMapName")),
+                          "native-skills-catalog-binding-invalid")
+    home, skills = sources.get("homeClaimName"), sources.get("skillsClaimName")
+    require_preflight(resource_name(home) and
+                      (resource_name(skills) or (native_execution and skills == "" and catalog == "")) and
+                      home != skills, "distinct-source-claims-required")
+    fields = ("platformConfigMapName",) if native_execution else ("platformConfigMapName", "placementConfigMapName")
+    names = [sources.get(key) for key in fields]
+    require_preflight(all(resource_name(n) for n in names) and len(set(names)) == len(names) and
+                      names == [config.get(key) for key in fields],
+                      "platform-bindings-required" if native_execution else "platform-placement-bindings-required")
     for name, key, limit in zip(names, ("platform.json", "placement.json"), (512 * 1024, 256 * 1024)):
         value = kube.get("configmap", name, args.namespace)
         document = preflight_json(object_value(value.get("data")).get(key), limit)
@@ -468,6 +490,7 @@ def source_bindings(kube, args, operator, admission):
         else:
             for field in ("nodes", "platformDaemonSets"):
                 array_value(document.get(field))
+    return native_execution
 
 
 def admission_service(kube, args, admission):
@@ -565,7 +588,7 @@ def admission_endpoints(kube, args, admission, selector):
     require_preflight(len(nodes) >= 2, "admission-replicas-not-spread")
 
 
-def webhook_wiring(kube, args, admission):
+def webhook_wiring(kube, args, admission, *, native_execution=False):
     timeout = admission[3].get("admission-pod-timeout")
     match = re.fullmatch(r"([0-9]{1,5})(ms|s)", timeout) if isinstance(timeout, str) else None
     require_preflight(match, "explicit-admission-request-budget-required", "unknown")
@@ -581,11 +604,14 @@ def webhook_wiring(kube, args, admission):
         ("validating", "cetirun-sandbox-pods", "sandbox-pods", "validate-sandbox-pods",
          [([""], ["v1"], ["CREATE", "UPDATE"], pod_resources, "Namespaced"),
           ([""], ["v1"], ["CONNECT"], ["pods/exec", "pods/attach", "pods/portforward"], "Namespaced")]),
-        ("validating", "cetirun-sandbox-placement", "sandbox-placement", "validate-sandbox-placement",
-         [([""], ["v1"], ["CREATE", "UPDATE"], pod_resources, "Namespaced"),
-          ([""], ["v1"], ["CREATE"], ["pods/binding", "bindings"], "Namespaced"),
-          ([""], ["v1"], ["UPDATE", "DELETE"], ["nodes"], "Cluster")]),
     )
+    if not native_execution:
+        definitions += (
+            ("validating", "cetirun-sandbox-placement", "sandbox-placement", "validate-sandbox-placement",
+             [([""], ["v1"], ["CREATE", "UPDATE"], pod_resources, "Namespaced"),
+              ([""], ["v1"], ["CREATE"], ["pods/binding", "bindings"], "Namespaced"),
+              ([""], ["v1"], ["UPDATE", "DELETE"], ["nodes"], "Cluster")]),
+        )
     ca = None
     for kind, name, hook_name, path, rules in definitions:
         value = kube.get(kind + "webhookconfiguration", name)
@@ -675,13 +701,18 @@ def deployment_preflight(args):
         with step("admission-deployment"):
             admission = deployed_workload(kube, args, "admission")
         with step("source-bindings"):
-            source_bindings(kube, args, operator, admission)
+            native_execution = source_bindings(kube, args, operator, admission)
+            if native_execution:
+                result["stockExecutionHold"] = "native-single-start-unverified"
+                result["unverified"].append({
+                    "check": "native-bootstrap-gateway-and-effective-skill-selection", "status": "unknown",
+                })
         with step("admission-service"):
             selector = admission_service(kube, args, admission)
         with step("admission-endpoints"):
             admission_endpoints(kube, args, admission, selector)
         with step("webhook-wiring"):
-            webhook_wiring(kube, args, admission)
+            webhook_wiring(kube, args, admission, native_execution=native_execution)
         with step("stable-observation"):
             kube.stable(config, version)
         result["status"] = "completed"

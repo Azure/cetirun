@@ -35,8 +35,16 @@ func (h *Handler) withPlatformSnapshot(ctx context.Context, request admission.Re
 }
 
 func (h *Handler) platformRegistrations(ctx context.Context) (map[api.SandboxType]sandbox.Registration, error) {
+	check := func(registrations map[api.SandboxType]sandbox.Registration) (map[api.SandboxType]sandbox.Registration, error) {
+		for _, registration := range registrations {
+			if err := sandbox.CheckExecutionProfile(registration.Capabilities, h.config.NativeExecution); err != nil {
+				return nil, err
+			}
+		}
+		return registrations, ctx.Err()
+	}
 	if h.platformSource == nil {
-		return h.registrations, nil
+		return check(h.registrations)
 	}
 	if h.platformSnapshot == nil {
 		snapshot, err := h.platformSource.Snapshot(ctx)
@@ -48,7 +56,7 @@ func (h *Handler) platformRegistrations(ctx context.Context) (map[api.SandboxTyp
 		}
 		h.platformSnapshot = &snapshot
 	}
-	return h.platformSnapshot.Registrations, ctx.Err()
+	return check(h.platformSnapshot.Registrations)
 }
 
 func (h *Handler) verifyPlatformSnapshot(ctx context.Context) error {

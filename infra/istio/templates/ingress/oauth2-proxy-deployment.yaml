@@ -1,6 +1,64 @@
-{{- $clientId := required "clientId is required for OAuth2 Proxy OIDC configuration" .Values.clientId -}}
-{{- $tenantId := required "tenantId is required for OAuth2 Proxy OIDC configuration" .Values.tenantId -}}
-{{- $allowedGroups := required "allowedGroups is required for OAuth2 Proxy group authorization" .Values.allowedGroups -}}
+{{- $mode := .Values.oauth2Proxy.mode -}}
+{{- if not (has $mode (list "entra-id" "local-oidc")) -}}
+{{- fail "oauth2Proxy.mode must be entra-id or local-oidc" -}}
+{{- end -}}
+{{- $isLocalOIDC := eq $mode "local-oidc" -}}
+{{- $localOIDC := .Values.oauth2Proxy.localOIDC -}}
+{{- if not (kindIs "map" $localOIDC) -}}
+{{- fail "oauth2Proxy.localOIDC must be an object" -}}
+{{- end -}}
+{{- range $key, $_ := $localOIDC -}}
+{{- if not (has $key (list "issuerURL" "clientID" "existingSecret" "clientSecretKey" "allowHTTP")) -}}
+{{- fail (printf "oauth2Proxy.localOIDC.%s is not supported; client credentials must reference an existing Secret" $key) -}}
+{{- end -}}
+{{- end -}}
+{{- if not (kindIs "bool" $localOIDC.allowHTTP) -}}
+{{- fail "oauth2Proxy.localOIDC.allowHTTP must be a boolean" -}}
+{{- end -}}
+{{- $clientId := "" -}}
+{{- $tenantId := "" -}}
+{{- $allowedGroups := "" -}}
+{{- if $isLocalOIDC -}}
+{{- range $key := list "issuerURL" "clientID" "existingSecret" "clientSecretKey" -}}
+{{- $value := get $localOIDC $key -}}
+{{- if or (not (kindIs "string" $value)) (eq (trim $value) "") -}}
+{{- fail (printf "oauth2Proxy.localOIDC.%s must be a non-empty string" $key) -}}
+{{- end -}}
+{{- if regexMatch `[[:space:][:cntrl:]]` $value -}}
+{{- fail (printf "oauth2Proxy.localOIDC.%s must not contain whitespace or control characters" $key) -}}
+{{- end -}}
+{{- end -}}
+{{- if not (regexMatch `^https?://[^/?#@]+(/[^?#]*)?$` $localOIDC.issuerURL) -}}
+{{- fail "oauth2Proxy.localOIDC.issuerURL must be an absolute HTTPS URL without userinfo, query or fragment; local HTTP also requires allowHTTP" -}}
+{{- end -}}
+{{- $issuer := urlParse $localOIDC.issuerURL -}}
+{{- $port := trimPrefix ":" (regexFind `:[0-9]+$` $issuer.host) -}}
+{{- if or (not $issuer.hostname) (hasSuffix ":" $issuer.host) (and $port (or (lt (atoi $port) 1) (gt (atoi $port) 65535))) -}}
+{{- fail "oauth2Proxy.localOIDC.issuerURL must have a hostname and a valid port" -}}
+{{- end -}}
+{{- if eq $issuer.scheme "http" -}}
+{{- if not $localOIDC.allowHTTP -}}
+{{- fail "oauth2Proxy.localOIDC.issuerURL requires HTTPS unless oauth2Proxy.localOIDC.allowHTTP is true" -}}
+{{- end -}}
+{{- if not (regexMatch `^(([a-z0-9]([-a-z0-9]*[a-z0-9])?\.)*localhost|127(\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])){3}|\[::1\])(:[0-9]+)?$` (lower $issuer.host)) -}}
+{{- fail "oauth2Proxy.localOIDC.issuerURL with HTTP must use a loopback address, localhost or a .localhost hostname" -}}
+{{- end -}}
+{{- end -}}
+{{- if or (gt (len $localOIDC.existingSecret) 253) (not (regexMatch `^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$` $localOIDC.existingSecret)) -}}
+{{- fail "oauth2Proxy.localOIDC.existingSecret must be a valid Secret name" -}}
+{{- end -}}
+{{- if or (gt (len $localOIDC.clientSecretKey) 253) (not (regexMatch `^[-._a-zA-Z0-9]+$` $localOIDC.clientSecretKey)) (eq $localOIDC.clientSecretKey ".") (hasPrefix ".." $localOIDC.clientSecretKey) -}}
+{{- fail "oauth2Proxy.localOIDC.clientSecretKey must be a valid Secret key" -}}
+{{- end -}}
+{{- $clientId = $localOIDC.clientID -}}
+{{- else -}}
+{{- if or $localOIDC.issuerURL $localOIDC.clientID $localOIDC.existingSecret $localOIDC.allowHTTP (not (has $localOIDC.clientSecretKey (list "client-secret"))) -}}
+{{- fail "oauth2Proxy.localOIDC settings require oauth2Proxy.mode=local-oidc" -}}
+{{- end -}}
+{{- $clientId = required "clientId is required for OAuth2 Proxy OIDC configuration" .Values.clientId -}}
+{{- $tenantId = required "tenantId is required for OAuth2 Proxy OIDC configuration" .Values.tenantId -}}
+{{- $allowedGroups = required "allowedGroups is required for OAuth2 Proxy group authorization" .Values.allowedGroups -}}
+{{- end -}}
 {{- $sessionStore := default (dict) (get .Values.oauth2Proxy "sessionStore") -}}
 {{- $redisSession := default (dict) (get $sessionStore "redis") -}}
 {{- $cookieSettings := default (dict) (get .Values.oauth2Proxy "cookie") -}}
@@ -49,7 +107,9 @@ spec:
       {{- end }}
       labels:
         app: oauth2-proxy
+        {{- if not $isLocalOIDC }}
         azure.workload.identity/use: "true"
+        {{- end }}
     spec:
       serviceAccountName: oauth2-proxy
       containers:
@@ -68,6 +128,13 @@ spec:
                 secretKeyRef:
                   name: oauth2-proxy-credentials
                   key: cookie-secret
+            {{- if $isLocalOIDC }}
+            - name: OAUTH2_PROXY_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $localOIDC.existingSecret | quote }}
+                  key: {{ $localOIDC.clientSecretKey | quote }}
+            {{- end }}
             {{- if eq $sessionStoreType "redis" }}
             - name: OAUTH2_PROXY_REDIS_PASSWORD
               valueFrom:
@@ -77,12 +144,23 @@ spec:
             {{- end }}
           args:
             - --http-address=0.0.0.0:4180
+            {{- if $isLocalOIDC }}
+            - --provider=oidc
+            - {{ printf "--oidc-issuer-url=%s" $localOIDC.issuerURL | quote }}
+            {{- else }}
             - --provider=entra-id
             - --oidc-issuer-url=https://login.microsoftonline.com/{{ $tenantId }}/v2.0
+            {{- end }}
             - --oidc-email-claim={{ $oidcEmailClaim }}
+            {{- if $isLocalOIDC }}
+            - {{ printf "--client-id=%s" $clientId | quote }}
+            {{- else }}
             - --client-id={{ $clientId }}
+            {{- end }}
             - --redirect-url=https://{{ .Values.domain }}/oauth2/callback
+            {{- if not $isLocalOIDC }}
             - --entra-id-federated-token-auth
+            {{- end }}
             - --cookie-secret=$(COOKIE_SECRET)
             - --cookie-domain={{ .Values.domain }}
             - --cookie-name=_cetirun_oauth2
@@ -118,7 +196,7 @@ spec:
             # before routing, so Agent workloads never receive this token.
             - --pass-authorization-header=true
             - --set-authorization-header=true
-            - --skip-jwt-bearer-tokens=true
+            - --skip-jwt-bearer-tokens={{ not $isLocalOIDC }}
             - --silence-ping-logging=true
             - --footer=-
           readinessProbe:

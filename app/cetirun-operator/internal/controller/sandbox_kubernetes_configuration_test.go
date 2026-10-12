@@ -165,6 +165,58 @@ func TestKubernetesSandboxConfigurationSourceSnapshot(t *testing.T) {
 	}
 }
 
+func TestKubernetesNativePlatformDeclaration(t *testing.T) {
+	for _, scenario := range []string{"bounded", "unknown profile", "observer claim", "missing baseline", "wrong runtime", "qualified adapter"} {
+		t.Run(scenario, func(t *testing.T) {
+			_, snapshot, objects := nativeConfigurationSnapshot()
+			document := controller.SandboxPlatformConfiguration{
+				Version: "v1", Registrations: snapshot.Registrations, Platforms: snapshot.Platforms,
+				RuntimeClasses: snapshot.RuntimeClasses, StorageClasses: snapshot.StorageClasses,
+			}
+			registration := document.Registrations[api.SandboxKata]
+			platform := document.Platforms[api.SandboxKata]
+			switch scenario {
+			case "unknown profile":
+				registration.Capabilities.Profile = "unknown"
+			case "observer claim":
+				registration.Capabilities.EnforcementObservation = true
+			case "missing baseline":
+				registration.Capabilities.NodeTraffic = false
+			case "qualified adapter":
+				platform.Adapter.Qualified = true
+			}
+			document.Registrations[api.SandboxKata], document.Platforms[api.SandboxKata] = registration, platform
+			if scenario == "wrong runtime" {
+				document.Registrations[api.SandboxGVisor], document.Platforms[api.SandboxGVisor] = registration, platform
+				delete(document.Registrations, api.SandboxKata)
+				delete(document.Platforms, api.SandboxKata)
+			}
+			cm := &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{Namespace: "platform-system", Name: "sandbox-platform", UID: "native-platform-uid", ResourceVersion: "1"},
+				Data:       map[string]string{controller.SandboxPlatformConfigurationKey: kubernetesPlatformJSON(t, document)},
+			}
+			source, _ := kubernetesPlatformSource(t, cm, objects)
+			if scenario != "bounded" {
+				if err := requireKubernetesPlatformFailure(t, source); !errors.Is(err, sandboxpolicy.ErrUnsupportedControl) {
+					t.Fatalf("invalid profile lost the unsupported category: %v", err)
+				}
+				return
+			}
+			actual, err := source.Snapshot(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			capabilities := actual.Registrations[api.SandboxKata].Capabilities
+			adapter := actual.Platforms[api.SandboxKata].Adapter
+			if capabilities.Profile != sandbox.ProfileNativeSingleStart ||
+				capabilities.EnforcementObservation || capabilities.RestrictiveFailure ||
+				adapter.Name != sandboxpolicy.Cilium || adapter.Qualified {
+				t.Fatal("Kubernetes source replaced bounded declarations with stronger or Azure guarantees")
+			}
+		})
+	}
+}
+
 func TestKubernetesSandboxConfigurationSourceScopesRoleFailuresToRequestedGrants(t *testing.T) {
 	failure := errors.New("synthetic role read failure")
 	for _, change := range []string{"missing", "UID", "resourceVersion", "rules", "terminating", "read failure", "duplicate approval"} {

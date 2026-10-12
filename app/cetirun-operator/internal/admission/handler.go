@@ -273,6 +273,13 @@ func (h *Handler) agentAuthorizationResources(ctx context.Context, operation adm
 	if errs := sandbox.ValidateTeam(team, resources, registrations); len(errs) != 0 {
 		return sandbox.Resources{}, admission.Denied(errs.ToAggregate().Error())
 	}
+	selected, errs := sandbox.NormalizeSandbox(resources.Sandboxes[spec.SandboxRef].Spec)
+	if len(errs) != 0 {
+		return sandbox.Resources{}, admission.Denied(errs.ToAggregate().Error())
+	}
+	if err := sandbox.CheckAgentProfile(registrations[selected.Type].Capabilities, spec.Agent.Type, spec.PolicyClass); err != nil {
+		return sandbox.Resources{}, admission.Denied(err.Error())
+	}
 	return resources, admission.Allowed("")
 }
 

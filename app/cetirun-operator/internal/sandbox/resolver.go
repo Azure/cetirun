@@ -38,6 +38,7 @@ type Resources struct {
 }
 
 type ResolveInput struct {
+	NativeExecution   bool
 	Agent             *cetirunv1alpha1.Agent
 	Team              *cetirunv1alpha1.Team
 	Resources         Resources
@@ -227,6 +228,12 @@ func Resolve(input ResolveInput) (*Resolution, error) {
 		return nil, errs.ToAggregate()
 	}
 	registration := input.Registrations[sandboxSpec.Type]
+	if err := CheckExecutionProfile(registration.Capabilities, input.NativeExecution); err != nil {
+		return nil, err
+	}
+	if err := CheckAgentProfile(registration.Capabilities, agent.Spec.Agent.Type, class); err != nil {
+		return nil, err
+	}
 	if !registration.Available {
 		return nil, fmt.Errorf("%w: %s", ErrRuntimeUnavailable, sandboxSpec.Type)
 	}
@@ -241,9 +248,10 @@ func Resolve(input ResolveInput) (*Resolution, error) {
 		Policy           PolicyProjection            `json:"policy"`
 		RuntimeClassName string                      `json:"runtimeClassName"`
 		PlatformRevision string                      `json:"platformRevision"`
+		Profile          string                      `json:"profile,omitempty"`
 	}{
 		"sandbox-foundation-v2", binding, sandboxSpec, ProjectPolicy(policySpec),
-		registration.Capabilities.RuntimeClassName, registration.Capabilities.Revision,
+		registration.Capabilities.RuntimeClassName, registration.Capabilities.Revision, registration.Capabilities.Profile,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("encode effective sandbox revision: %w", err)

@@ -126,6 +126,69 @@ func TestPlatformAdmissionProductionFactory(t *testing.T) {
 	requireResponse(t, f.handler.DefaultAgent(context.Background(), requestFor(t, admissionv1.Create, f.agent, nil, "member")), false, "non-normal")
 }
 
+func TestNativePlatformAdmissionRequiresIndependentOptIn(t *testing.T) {
+	for _, native := range []bool{false, true} {
+		t.Run(fmt.Sprintf("native-%t", native), func(t *testing.T) {
+			f, cm := newPlatformFixture(t)
+			var document sandboxplatform.Configuration
+			if err := json.Unmarshal([]byte(cm.Data[sandboxplatform.ConfigurationKey]), &document); err != nil {
+				t.Fatal(err)
+			}
+			registration := document.Registrations[api.SandboxKata]
+			registration.Capabilities.Profile = sandbox.ProfileNativeSingleStart
+			registration.Capabilities.EnforcementObservation, registration.Capabilities.RestrictiveFailure = false, false
+			registration.Capabilities.BlockedPorts = false
+			document.Registrations[api.SandboxKata] = registration
+			platform := document.Platforms[api.SandboxKata]
+			platform.Adapter.Name, platform.Adapter.Qualified = sandboxpolicy.Cilium, false
+			document.Platforms[api.SandboxKata] = platform
+			raw, err := json.Marshal(document)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cm.Data[sandboxplatform.ConfigurationKey] = string(raw)
+			ctx := context.Background()
+			if err := f.client.Update(ctx, cm); err != nil {
+				t.Fatal(err)
+			}
+			f.policy.Spec.Harnesses.Allowed = []api.AgentType{api.AgentTypeOpenClaw}
+			if err := f.client.Update(ctx, f.policy); err != nil {
+				t.Fatal(err)
+			}
+			config := platformFixtureConfig()
+			config.NativeExecution = native
+			f.handler, err = NewHandler(f.client, config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := requestFor(t, admissionv1.Create, f.team, nil, "administrator")
+			requireResponse(t, f.handler.Validate(ctx, request), native, "")
+			f.agent.Spec.Agent.Type = api.AgentTypeOpenClaw
+			f.agent.Spec.Team, f.agent.Spec.SandboxRef, f.agent.Spec.PolicyClass = "", "", ""
+			request = requestFor(t, admissionv1.Create, f.agent, nil, "member")
+			requireResponse(t, f.handler.DefaultAgent(ctx, request), native, "")
+			if native {
+				candidate := f.policy.DeepCopy()
+				candidate.Spec.Network.BlockedCIDRs = []string{"203.0.113.0/24"}
+				request = requestFor(t, admissionv1.Update, candidate, f.policy, "administrator")
+				requireResponse(t, f.handler.Validate(ctx, request), false, "native single-start")
+				f.team.Spec.AdminAgentPolicyRef = f.policy.Name
+				if err := f.client.Update(ctx, f.team); err != nil {
+					t.Fatal(err)
+				}
+				admin := f.agent.DeepCopy()
+				admin.Spec.Team, admin.Spec.SandboxRef, admin.Spec.PolicyClass = f.team.Name, f.box.Name, api.AgentPolicyClassAdmin
+				request = requestFor(t, admissionv1.Create, admin, nil, "administrator")
+				requireResponse(t, f.handler.DefaultAgent(ctx, request), false, "normal OpenClaw")
+			}
+			// Deleting a recorded Agent must not require fresh native authorization.
+			f.handler.config.NativeExecution = false
+			request = requestFor(t, admissionv1.Delete, f.agent, nil, "administrator")
+			requireResponse(t, f.handler.Validate(ctx, request), true, "")
+		})
+	}
+}
+
 func TestPlatformAdmissionNoLastKnownGoodFallback(t *testing.T) {
 	for _, failure := range []string{"missing", "malformed", "unqualified", "runtime replaced", "storage replaced"} {
 		t.Run(failure, func(t *testing.T) {

@@ -218,6 +218,13 @@ func (b *Bundle) Apply(values map[string]any) (map[string]any, error) {
 	if b.input.GatewayKey != nil {
 		overlay[ValuesKey].(map[string]any)["podFinalizers"] = []any{NativePodFinalizer}
 	}
+	if len(b.input.Controls.TrustedProxyIPs) != 0 {
+		proxies, err := jsonValue(b.input.Controls.TrustedProxyIPs)
+		if err != nil {
+			return nil, fmt.Errorf("encode protected native proxy IPs: %w", err)
+		}
+		overlay[ValuesKey].(map[string]any)["trustedProxyIPs"] = proxies
+	}
 	if b.input.SkillsMode == SkillsModeEmpty {
 		overlay[ValuesKey].(map[string]any)["skillsMode"] = string(SkillsModeEmpty)
 	}

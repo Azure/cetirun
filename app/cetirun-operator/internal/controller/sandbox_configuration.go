@@ -46,18 +46,20 @@ func (f SandboxConfigurationSourceFunc) Snapshot(ctx context.Context) (SandboxCo
 
 type SandboxReconciler struct {
 	client.Client
-	APIReader      client.Reader
-	Source         SandboxConfigurationSource
-	Now            func() time.Time
-	MaxSnapshotAge time.Duration
+	NativeExecution bool
+	APIReader       client.Reader
+	Source          SandboxConfigurationSource
+	Now             func() time.Time
+	MaxSnapshotAge  time.Duration
 }
 
 type AgentPolicyReconciler struct {
 	client.Client
-	APIReader      client.Reader
-	Source         SandboxConfigurationSource
-	Now            func() time.Time
-	MaxSnapshotAge time.Duration
+	NativeExecution bool
+	APIReader       client.Reader
+	Source          SandboxConfigurationSource
+	Now             func() time.Time
+	MaxSnapshotAge  time.Duration
 }
 
 // TeamReconciler records whether the Team's policy and Sandbox bindings are
@@ -218,7 +220,7 @@ func (r *SandboxReconciler) Reconcile(ctx context.Context, request ctrl.Request)
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	before := object.DeepCopy()
-	condition, observedAt, observeErr := assessSandboxPrerequisites(ctx, reader, object, r.Source, r.MaxSnapshotAge, r.Now)
+	condition, observedAt, observeErr := assessSandboxPrerequisites(ctx, reader, object, r.Source, r.MaxSnapshotAge, r.Now, r.NativeExecution)
 	now := configurationNow(r.Now)
 	if observeErr == nil && !observedAt.IsZero() {
 		if err := configurationSnapshotTime(observedAt, now, r.MaxSnapshotAge); err != nil {
@@ -271,7 +273,7 @@ func (r *AgentPolicyReconciler) Reconcile(ctx context.Context, request ctrl.Requ
 }
 
 func assessSandboxPrerequisites(ctx context.Context, reader client.Reader, object *api.Sandbox,
-	source SandboxConfigurationSource, maxAge time.Duration, clock func() time.Time,
+	source SandboxConfigurationSource, maxAge time.Duration, clock func() time.Time, nativeExecution bool,
 ) (metav1.Condition, time.Time, error) {
 	if !object.DeletionTimestamp.IsZero() {
 		return configurationCondition(metav1.ConditionFalse, "Terminating", "Sandbox configuration is terminating."), time.Time{}, nil
@@ -285,8 +287,9 @@ func assessSandboxPrerequisites(ctx context.Context, reader client.Reader, objec
 		return configurationCondition(metav1.ConditionUnknown, "PrerequisitesUnavailable", "Current platform prerequisite state is unavailable."), time.Time{}, err
 	}
 	registration, exists := snapshot.Registrations[spec.Type]
-	if !exists || !runtimePrerequisitesSupported(spec, registration.Capabilities) {
-		return configurationCondition(metav1.ConditionFalse, "UnsupportedControl", "Sandbox runtime and mandatory controls are not qualified."), snapshot.ObservedAt, nil
+	if !exists || sandbox.CheckExecutionProfile(registration.Capabilities, nativeExecution) != nil ||
+		!runtimePrerequisitesSupported(spec, registration.Capabilities) {
+		return configurationCondition(metav1.ConditionFalse, "UnsupportedControl", "Sandbox runtime and mandatory controls are not supported by the configured execution profile."), snapshot.ObservedAt, nil
 	}
 	if !registration.Available {
 		return configurationCondition(metav1.ConditionFalse, "RuntimeUnavailable", "The registered Sandbox runtime is unavailable."), snapshot.ObservedAt, nil
@@ -325,7 +328,11 @@ func assessSandboxPrerequisites(ctx context.Context, reader client.Reader, objec
 		!storageClass.DeletionTimestamp.IsZero() {
 		return configurationCondition(metav1.ConditionFalse, "ReferenceChanged", "StorageClass no longer matches the approved prerequisite."), snapshot.ObservedAt, nil
 	}
-	return configurationCondition(metav1.ConditionTrue, "PrerequisitesReady", "Registered runtime, storage and control prerequisites are available; Agent enforcement is checked separately."), snapshot.ObservedAt, nil
+	message := "Registered runtime, storage and control prerequisites are available; Agent enforcement is checked separately."
+	if registration.Capabilities.Profile == sandbox.ProfileNativeSingleStart {
+		message = "Native single-start runtime, storage and baseline network prerequisites are available; application and Node readiness are checked separately, without external observation or physical fencing."
+	}
+	return configurationCondition(metav1.ConditionTrue, "PrerequisitesReady", message), snapshot.ObservedAt, nil
 }
 
 func (r *AgentPolicyReconciler) assess(ctx context.Context, reader client.Reader, object *api.AgentPolicy) (metav1.Condition, time.Time, error) {
@@ -351,7 +358,12 @@ func (r *AgentPolicyReconciler) assess(ctx context.Context, reader client.Reader
 			failures = append(failures, fmt.Errorf("registration %s: %w: platform inventory is missing", key, sandboxpolicy.ErrUnavailable))
 			continue
 		}
-		err := sandboxpolicy.ValidatePolicyConfiguration(object, snapshot.Registrations[key].Capabilities, platform)
+		capabilities := snapshot.Registrations[key].Capabilities
+		if err := sandbox.CheckExecutionProfile(capabilities, r.NativeExecution); err != nil {
+			failures = append(failures, fmt.Errorf("registration %s: %w: %v", key, sandboxpolicy.ErrUnsupportedControl, err))
+			continue
+		}
+		err := sandboxpolicy.ValidatePolicyConfiguration(object, capabilities, platform)
 		if err == nil {
 			err = sandboxpolicy.VerifyPolicyGrants(ctx, reader, object, platform.Grants)
 		}
@@ -373,9 +385,8 @@ func (r *AgentPolicyReconciler) assess(ctx context.Context, reader client.Reader
 
 func runtimePrerequisitesSupported(spec api.SandboxSpec, capabilities sandbox.Capabilities) bool {
 	return len(validation.IsDNS1123Subdomain(capabilities.RuntimeClassName)) == 0 && capabilities.Revision != "" &&
-		capabilities.HostResourceLimits && capabilities.GuestExternalNetwork && capabilities.DenyPrecedence &&
-		capabilities.NodeTraffic && capabilities.DNSIPRestrictions && capabilities.EnforcementObservation &&
-		capabilities.RestrictiveFailure &&
+		capabilities.HostResourceLimits && len(sandbox.CheckNetworkCapabilities(capabilities)) == 0 &&
+		(capabilities.Profile != sandbox.ProfileNativeSingleStart || spec.Type == api.SandboxKata) &&
 		(!capabilities.RequirePerContainerResourceLimits || capabilities.PerContainerResourceLimits) &&
 		slices.Contains(capabilities.HomeAccessModes, spec.Storage.Home.AccessMode)
 }

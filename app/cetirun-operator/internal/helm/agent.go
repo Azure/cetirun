@@ -272,6 +272,11 @@ func prepareRuntimeChart(chrt *chart.Chart, input map[string]any, validateRender
 		NoSignInHelper: descriptor.Type == "openclaw" &&
 			(&PreparedRelease{chart: chrt}).SupportsValuePath("aiGateway", "copilotProxy"),
 	}
+	if proxies, present := object(values[sandboxworkload.ValuesKey])["trustedProxyIPs"]; present {
+		if err := decodeObject(proxies, &bindings.TrustedProxyIPs); err != nil || len(bindings.TrustedProxyIPs) == 0 {
+			return nil, fmt.Errorf("native proxy trust requires an explicit compiler-selected IP list")
+		}
+	}
 	// dig expects missing optional maps rather than explicit null.
 	for key, value := range bindings.NativeOptions {
 		if value == nil {

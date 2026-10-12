@@ -4,6 +4,7 @@
 package sandbox
 
 import (
+	"fmt"
 	"net/netip"
 	"slices"
 
@@ -14,10 +15,13 @@ import (
 	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 )
 
+const ProfileNativeSingleStart = "native-single-start"
+
 // Capabilities is trusted platform registration, not an Agent-controlled input.
-// Revision identifies the qualified chart, runtime, topology and grant inventory.
-// No production registration is supplied by the foundation implementation.
+// An empty Profile retains the qualified contract. The native profile declares
+// only bounded Kubernetes support, not external observation or physical fencing.
 type Capabilities struct {
+	Profile                           string                              `json:"profile,omitempty"`
 	RuntimeClassName                  string                              `json:"runtimeClassName"`
 	Revision                          string                              `json:"revision"`
 	HostResourceLimits                bool                                `json:"hostResourceLimits"`
@@ -47,6 +51,117 @@ type Registration struct {
 	Available    bool
 }
 
+// CheckExecutionProfile prevents a native-only registration from authorizing
+// the default held/externally observed execution path.
+func CheckExecutionProfile(capabilities Capabilities, nativeExecution bool) error {
+	if errs := CheckCapabilityProfile(capabilities); len(errs) != 0 {
+		return errs.ToAggregate()
+	}
+	if capabilities.Profile == ProfileNativeSingleStart && !nativeExecution {
+		return fmt.Errorf("registration profile %q requires explicit nativeExecution", ProfileNativeSingleStart)
+	}
+	return nil
+}
+
+func CheckAgentProfile(capabilities Capabilities, agentType cetirunv1alpha1.AgentType, class cetirunv1alpha1.AgentPolicyClass) error {
+	if errs := CheckCapabilityProfile(capabilities); len(errs) != 0 {
+		return errs.ToAggregate()
+	}
+	if capabilities.Profile == ProfileNativeSingleStart &&
+		(class != cetirunv1alpha1.AgentPolicyClassNormal || agentType != cetirunv1alpha1.AgentTypeOpenClaw) {
+		return fmt.Errorf("native single-start requires a normal OpenClaw Agent")
+	}
+	return nil
+}
+
+func CheckCapabilityProfile(capabilities Capabilities) field.ErrorList {
+	root := field.NewPath("registration")
+	switch capabilities.Profile {
+	case "":
+		return nil
+	case ProfileNativeSingleStart:
+	default:
+		return field.ErrorList{field.NotSupported(root.Child("profile"), capabilities.Profile, []string{"", ProfileNativeSingleStart})}
+	}
+	var errs field.ErrorList
+	if !capabilities.HostResourceLimits {
+		errs = append(errs, field.Required(root.Child("hostResourceLimits"), "native runtime resource limits must be supported"))
+	}
+	if !slices.Equal(capabilities.HomeAccessModes, []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOncePod}) {
+		errs = append(errs, field.Invalid(root.Child("homeAccessModes"), capabilities.HomeAccessModes, "native single-start requires only ReadWriteOncePod HOME"))
+	}
+	for _, control := range []struct {
+		name     string
+		declared bool
+	}{
+		{"perContainerResourceLimits", capabilities.PerContainerResourceLimits},
+		{"requirePerContainerResourceLimits", capabilities.RequirePerContainerResourceLimits},
+		{"blockedPorts", capabilities.BlockedPorts},
+		{"blockedFQDNs", capabilities.BlockedFQDNs},
+		{"mutualTLS", capabilities.MutualTLS},
+		{"kubernetesAccess", capabilities.KubernetesAccess},
+		{"entraID", capabilities.EntraID},
+		{"enforcementObservation", capabilities.EnforcementObservation},
+		{"restrictiveFailure", capabilities.RestrictiveFailure},
+	} {
+		if control.declared {
+			errs = append(errs, field.Forbidden(root.Child(control.name), "not a guarantee of the native single-start profile"))
+		}
+	}
+	return errs
+}
+
+func CheckNetworkCapabilities(capabilities Capabilities) field.ErrorList {
+	errs := CheckCapabilityProfile(capabilities)
+	for _, requirement := range []struct {
+		name          string
+		supported     bool
+		qualifiedOnly bool
+	}{
+		{"guestExternalNetwork", capabilities.GuestExternalNetwork, false},
+		{"denyPrecedence", capabilities.DenyPrecedence, false},
+		{"nodeTraffic", capabilities.NodeTraffic, false},
+		{"dnsIPRestrictions", capabilities.DNSIPRestrictions, false},
+		{"enforcementObservation", capabilities.EnforcementObservation, true},
+		{"restrictiveFailure", capabilities.RestrictiveFailure, true},
+	} {
+		if requirement.qualifiedOnly && capabilities.Profile == ProfileNativeSingleStart {
+			continue
+		}
+		if !requirement.supported {
+			errs = append(errs, field.Required(field.NewPath("registration", requirement.name), "mandatory control is not supported by the selected profile"))
+		}
+	}
+	return errs
+}
+
+// CheckNativePolicy bounds configuration support independently of declarations
+// for optional controls. It does not authorize an Agent or release a hold.
+func CheckNativePolicy(policy cetirunv1alpha1.AgentPolicySpec) field.ErrorList {
+	root := field.NewPath("spec")
+	var errs field.ErrorList
+	if !slices.Equal(policy.Harnesses.Allowed, []cetirunv1alpha1.AgentType{cetirunv1alpha1.AgentTypeOpenClaw}) {
+		errs = append(errs, field.Forbidden(root.Child("harnesses", "allowed"), "native single-start supports only OpenClaw"))
+	}
+	for _, control := range []struct {
+		path      *field.Path
+		requested bool
+	}{
+		{root.Child("network", "blockedCIDRs"), len(policy.Network.BlockedCIDRs) != 0},
+		{root.Child("network", "blockedFQDNs"), len(policy.Network.BlockedFQDNs) != 0},
+		{root.Child("network", "blockedPorts"), len(policy.Network.BlockedPorts) != 0},
+		{root.Child("network", "allowedInternalCIDRs"), len(policy.Network.AllowedInternalCIDRs) != 0},
+		{root.Child("network", "ingress", "requireMTLS"), policy.Network.Ingress.RequireMTLS},
+		{root.Child("kubernetesAccess"), policy.KubernetesAccess != nil},
+		{root.Child("entraID", "enabled"), policy.EntraID.Enabled},
+	} {
+		if control.requested {
+			errs = append(errs, field.Forbidden(control.path, "unsupported by the native single-start profile"))
+		}
+	}
+	return errs
+}
+
 // CheckCompatibility checks declared support, not runtime health or enforcement.
 func CheckCompatibility(sandbox cetirunv1alpha1.SandboxSpec, policy cetirunv1alpha1.AgentPolicySpec, capabilities Capabilities) field.ErrorList {
 	sandbox, errs := NormalizeSandbox(sandbox)
@@ -61,23 +176,17 @@ func CheckCompatibility(sandbox cetirunv1alpha1.SandboxSpec, policy cetirunv1alp
 		errs = append(errs, field.Invalid(root.Child("runtimeClassName"), capabilities.RuntimeClassName, "must name a registered RuntimeClass"))
 	}
 	if capabilities.Revision == "" {
-		errs = append(errs, field.Required(root.Child("revision"), "a qualified platform revision is required"))
+		errs = append(errs, field.Required(root.Child("revision"), "a platform revision is required"))
 	}
-	for _, requirement := range []struct {
-		name      string
-		supported bool
-	}{
-		{"hostResourceLimits", capabilities.HostResourceLimits},
-		{"guestExternalNetwork", capabilities.GuestExternalNetwork},
-		{"denyPrecedence", capabilities.DenyPrecedence},
-		{"nodeTraffic", capabilities.NodeTraffic},
-		{"dnsIPRestrictions", capabilities.DNSIPRestrictions},
-		{"enforcementObservation", capabilities.EnforcementObservation},
-		{"restrictiveFailure", capabilities.RestrictiveFailure},
-	} {
-		if !requirement.supported {
-			errs = append(errs, field.Required(root.Child(requirement.name), "mandatory control is not qualified"))
+	errs = append(errs, CheckNetworkCapabilities(capabilities)...)
+	if !capabilities.HostResourceLimits {
+		errs = append(errs, field.Required(root.Child("hostResourceLimits"), "mandatory control is not qualified"))
+	}
+	if capabilities.Profile == ProfileNativeSingleStart {
+		if sandbox.Type != cetirunv1alpha1.SandboxKata || sandbox.Storage.Home.AccessMode != corev1.ReadWriteOncePod {
+			errs = append(errs, field.Forbidden(field.NewPath("spec"), "native single-start requires Kata and ReadWriteOncePod HOME"))
 		}
+		errs = append(errs, CheckNativePolicy(policy)...)
 	}
 	if capabilities.RequirePerContainerResourceLimits && !capabilities.PerContainerResourceLimits {
 		errs = append(errs, field.Required(root.Child("perContainerResourceLimits"), "the platform requires independent container guarantees"))

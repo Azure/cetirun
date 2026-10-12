@@ -202,7 +202,8 @@ func (r *AgentReconciler) prepareSandboxHeld(ctx context.Context, requested *api
 		return err
 	}
 	attempt.plan, err = sandboxpolicy.Compile(sandboxpolicy.CompileInput{
-		Resolution: *attempt.resolution, AgentName: attempt.agent.Name,
+		NativeExecution: config.NativeExecution,
+		Resolution:      *attempt.resolution, AgentName: attempt.agent.Name,
 		Namespace: attempt.input.Namespace.Name, Platform: platform,
 	})
 	if err != nil {
@@ -334,14 +335,15 @@ func (r *AgentReconciler) resolveSandboxExecutionInputs(ctx context.Context, req
 		sources = append(sources, sandboxSource(object, api.GroupVersion.String(), "AgentPolicy"))
 	}
 	resolution, err := sandbox.Resolve(sandbox.ResolveInput{
-		Agent: agent, Team: team, Resources: resources, Registrations: snapshot.Registrations, AuthorizedBinding: authorized,
+		NativeExecution: config.NativeExecution,
+		Agent:           agent, Team: team, Resources: resources, Registrations: snapshot.Registrations, AuthorizedBinding: authorized,
 	})
 	if err != nil {
 		return nil, err
 	}
 	condition, _, err := assessSandboxPrerequisites(ctx, r.APIReader, resources.Sandboxes[agent.Spec.SandboxRef],
 		SandboxConfigurationSourceFunc(func(context.Context) (SandboxConfigurationSnapshot, error) { return snapshot, nil }),
-		config.MaxSnapshotAge, config.Now)
+		config.MaxSnapshotAge, config.Now, config.NativeExecution)
 	if err != nil {
 		return nil, err
 	}
