@@ -136,6 +136,36 @@ def native_values():
     }
 
 
+def hermes_native_values():
+    values = native_values()
+    values["agentType"] = "hermes"
+    values["runtime"] = {
+        "contractVersion": "v1",
+        "agent": {
+            "type": "hermes",
+            "image": "registry.example.com/hermes:example",
+            "username": "vibe",
+            "home": "/home/vibe",
+            "port": 8642,
+            "webUI": False,
+        },
+        "profileID": "hermes:0.21.5",
+        "configFiles": {"hermes-config.yaml": "model: example-model\n"},
+        "ports": [
+            {"name": "api", "number": 8642},
+            {"name": "dashboard", "number": 9119},
+        ],
+        "http": {
+            "portName": "api",
+            "healthPath": "/health",
+            "readinessPath": "/health",
+            "startupPath": "/health",
+        },
+        "environment": [],
+    }
+    return values
+
+
 def gateway_models(model, *, integrated):
     objects = render(GATEWAY_CHART, {"operatorIntegration": integrated, "models": [model]})
     config = yaml.safe_load(object_of_kind(objects, "ConfigMap")["data"]["config.yaml"])
@@ -207,7 +237,7 @@ class NativeGatewayChartTests(unittest.TestCase):
             (("skills", "clawHub"), ["example-skill"], "clawHub"),
             (("skills", "mountPath"), "/other-skills", "mountPath"),
             (("aiGateway", "enabled"), False, "enabled"),
-            (("agentType",), "hermes", "agentType"),
+            (("agentType",), "custom", "agentType"),
         ):
             with self.subTest(path=path, value=value):
                 values = native_values()
@@ -255,16 +285,22 @@ class NativeGatewayChartTests(unittest.TestCase):
         main = object_of_kind(objects, "StatefulSet")["spec"]["template"]["spec"]["containers"][0]
         self.assertFalse(any(kind in main for kind in ("livenessProbe", "readinessProbe", "startupProbe")))
 
-    def test_held_hermes_probes_are_unchanged(self):
-        values = native_values()
-        values["agentType"] = "hermes"
+    def test_held_hermes_probes_use_resolved_runtime_over_loopback(self):
+        values = hermes_native_values()
         objects = render(RUNTIME_CHART, values)
         main = object_of_kind(objects, "StatefulSet")["spec"]["template"]["spec"]["containers"][0]
         for kind in ("livenessProbe", "readinessProbe", "startupProbe"):
             with self.subTest(probe=kind):
-                self.assertEqual(main[kind]["httpGet"], {"path": "/health", "port": "api"})
-                self.assertNotIn("exec", main[kind])
-        self.assertNotIn("health-probe.cjs", object_of_kind(objects, "ConfigMap")["data"])
+                self.assertEqual(main[kind]["exec"]["command"][:4], [
+                    "/usr/local/lib/hermes-agent/venv/bin/python",
+                    "/etc/cetirun/hermes-health-probe.py",
+                    "8642",
+                    "/health",
+                ])
+                self.assertNotIn("httpGet", main[kind])
+        data = object_of_kind(objects, "ConfigMap")["data"]
+        self.assertIn("hermes-health-probe.py", data)
+        self.assertNotIn("health-probe.cjs", data)
 
     def test_packaged_chart_contains_the_native_runtime_assets(self):
         values = native_values()
