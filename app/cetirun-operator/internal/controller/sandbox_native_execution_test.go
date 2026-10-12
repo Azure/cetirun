@@ -101,11 +101,19 @@ func TestNativeSandboxSourcesRequireExplicitOptIn(t *testing.T) {
 }
 
 func TestNativeSandboxProfileRejectsUnsupportedOverrides(t *testing.T) {
+	for _, agentType := range []api.AgentType{api.AgentTypeOpenClaw, api.AgentTypeHermes} {
+		fixture := testfixture.New(string(agentType))
+		fixture.Agent.Spec.ModelAccess = modelAccess(true, false)
+		fixture.Input.Resolution.Sandbox.Storage.Home.AccessMode = corev1.ReadWriteOncePod
+		attempt := &sandboxPreparationAttempt{agent: fixture.Agent, resolution: fixture.Input.Resolution}
+		if err := validateNativeSandboxProfile(attempt); err != nil {
+			t.Fatalf("supported %s baseline rejected: %v", agentType, err)
+		}
+	}
 	for _, tc := range []struct {
 		name   string
 		mutate func(*sandboxPreparationAttempt)
 	}{
-		{"Hermes", func(a *sandboxPreparationAttempt) { a.agent.Spec.Agent.Type = api.AgentTypeHermes }},
 		{"non-Kata", func(a *sandboxPreparationAttempt) { a.resolution.Sandbox.Type = api.SandboxType("other") }},
 		{"RWO HOME", func(a *sandboxPreparationAttempt) {
 			a.resolution.Sandbox.Storage.Home.AccessMode = corev1.ReadWriteOnce
@@ -149,6 +157,18 @@ func TestNativeSandboxProfileRejectsUnsupportedOverrides(t *testing.T) {
 				t.Fatalf("unsupported native profile was accepted: %v", err)
 			}
 		})
+	}
+}
+
+func TestNativeHermesSandboxSharedModelLifecycle(t *testing.T) {
+	f := newNativeSandboxHarnessFixture(t, true, nil, api.AgentTypeHermes)
+	f.ready(t)
+	_, expected := f.expectation(t)
+	f.assertGatewayProjection(t, expected)
+	for _, container := range expected.Template.Spec.InitContainers {
+		if container.Name == "retire-copilot-sign-in" || container.Name == "retire-direct-model-auth" {
+			t.Fatal("Hermes native Sandbox rendered an OpenClaw-only cleanup helper")
+		}
 	}
 }
 
@@ -627,12 +647,17 @@ type nativeSandboxFixture struct {
 
 func newNativeSandboxFixture(t *testing.T, native bool) *nativeSandboxFixture {
 	t.Helper()
-	return newNativeSandboxSkillsFixture(t, native, []string{"example-skill"})
+	return newNativeSandboxHarnessFixture(t, native, []string{"example-skill"}, api.AgentTypeOpenClaw)
 }
 
 func newNativeSandboxSkillsFixture(t *testing.T, native bool, skills []string) *nativeSandboxFixture {
 	t.Helper()
-	input := testfixture.New("openclaw")
+	return newNativeSandboxHarnessFixture(t, native, skills, api.AgentTypeOpenClaw)
+}
+
+func newNativeSandboxHarnessFixture(t *testing.T, native bool, skills []string, agentType api.AgentType) *nativeSandboxFixture {
+	t.Helper()
+	input := testfixture.New(string(agentType))
 	input.Team.Spec.Skills = skills
 	input.Policy.Spec.Skills.Allowed = slices.Clone(skills)
 	chrt, err := loader.Load(filepath.Join("..", "..", "..", "cetirun-chart"))
@@ -642,8 +667,16 @@ func newNativeSandboxSkillsFixture(t *testing.T, native bool, skills []string) *
 	input.Agent.Finalizers = []string{api.Finalizer}
 	input.Agent.Spec.ModelAccess = modelAccess(true, false)
 	input.Agent.Spec.Helm.Version = chrt.Metadata.Version
-	input.Agent.Spec.Agent.Image = ptr.To("registry.example.com/openclaw-gateway:" + chrt.Metadata.AppVersion)
-	input.Agent.Spec.Agent.Port = ptr.To[int32](18789)
+	image := "openclaw-gateway"
+	if agentType == api.AgentTypeHermes {
+		image = "hermes-gateway"
+	}
+	input.Agent.Spec.Agent.Image = ptr.To("registry.example.com/" + image + ":" + chrt.Metadata.AppVersion)
+	port := int32(18789)
+	if agentType == api.AgentTypeHermes {
+		port = 8642
+	}
+	input.Agent.Spec.Agent.Port = ptr.To(port)
 	input.Agent.Status.Policy = &api.PolicyStatus{}
 	input.Team.Status = api.TeamStatus{ObservedGeneration: 1, Conditions: []metav1.Condition{{
 		Type: api.ConditionTeamAccepted, Status: metav1.ConditionTrue, ObservedGeneration: 1,
@@ -690,7 +723,7 @@ func newNativeSandboxSkillsFixture(t *testing.T, native bool, skills []string) *
 			}},
 			Ingress: []sandboxpolicy.Destination{{
 				Peer:  sandboxpolicy.Peer{Name: "ingress", Namespace: "platform", UID: "ingress-uid", IPs: []string{"10.96.1.60"}},
-				Ports: []api.AgentPolicyPort{{Port: 18789, Protocol: corev1.ProtocolTCP}},
+				Ports: nativeSandboxIngressPorts(agentType),
 			}},
 		},
 	}
@@ -743,6 +776,18 @@ func newNativeSandboxSkillsFixture(t *testing.T, native bool, skills []string) *
 		}
 	}
 	return f
+}
+
+func nativeSandboxIngressPorts(agentType api.AgentType) []api.AgentPolicyPort {
+	port := int32(18789)
+	if agentType == api.AgentTypeHermes {
+		port = 8642
+	}
+	ports := []api.AgentPolicyPort{{Port: port, Protocol: corev1.ProtocolTCP}}
+	if agentType == api.AgentTypeHermes {
+		ports = append(ports, api.AgentPolicyPort{Port: 9119, Protocol: corev1.ProtocolTCP})
+	}
+	return ports
 }
 
 func (f *nativeSandboxFixture) reconcile() (ctrl.Result, error) {
@@ -891,6 +936,10 @@ func (f *nativeSandboxFixture) assertGatewayProjection(t *testing.T, expected *w
 		t.Fatal("prepared Gateway key is not owned, pinned and verified with the fake Gateway")
 	}
 	projected := false
+	keyEnvironment := "OPENAI_API_KEY"
+	if agent.Spec.Agent.Type == api.AgentTypeHermes {
+		keyEnvironment = "CETIRUN_GATEWAY_API_KEY"
+	}
 	for _, container := range expected.Template.Spec.Containers {
 		if container.Name != f.installer.chart.Metadata.Name {
 			continue
@@ -900,7 +949,7 @@ func (f *nativeSandboxFixture) assertGatewayProjection(t *testing.T, expected *w
 		}
 		for _, env := range container.Env {
 			if env.ValueFrom != nil && env.ValueFrom.SecretKeyRef != nil && env.ValueFrom.SecretKeyRef.Name == secret.Name {
-				if env.Name != "OPENAI_API_KEY" || env.Value != "" ||
+				if env.Name != keyEnvironment || env.Value != "" ||
 					env.ValueFrom.SecretKeyRef.Key != aiGatewayKeySecretField || ptr.Deref(env.ValueFrom.SecretKeyRef.Optional, false) {
 					t.Fatal("Gateway key projection is not a required typed Secret reference")
 				}
@@ -927,7 +976,19 @@ func (f *nativeSandboxFixture) assertGatewayProjection(t *testing.T, expected *w
 		}, configMap); err != nil {
 			t.Fatal(err)
 		}
-		rawConfig = configMap.Data["openclaw.json"]
+		if agent.Spec.Agent.Type == api.AgentTypeHermes {
+			rawConfig = configMap.Data["hermes-config.yaml"]
+		} else {
+			rawConfig = configMap.Data["openclaw.json"]
+		}
+	}
+	if agent.Spec.Agent.Type == api.AgentTypeHermes {
+		for _, expected := range []string{"cetirun-gateway", testAIGatewayURL + "/v1", "CETIRUN_GATEWAY_API_KEY", testSharedModelOne} {
+			if !strings.Contains(rawConfig, expected) {
+				t.Fatalf("prepared Hermes config is missing %q", expected)
+			}
+		}
+		return
 	}
 	var nativeConfig struct {
 		Auth struct {

@@ -14,8 +14,12 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-func emptySkillsInput() w.Input {
-	input := testfixture.New("openclaw").Input
+func emptySkillsInput(agentTypes ...string) w.Input {
+	agentType := "openclaw"
+	if len(agentTypes) != 0 {
+		agentType = agentTypes[0]
+	}
+	input := testfixture.New(agentType).Input
 	input.Skills, input.SkillsMode = nil, w.SkillsModeEmpty
 	input.Helpers.Desktop = false
 	input.GatewayKey = &w.ObjectIdentity{Name: "gateway-key", UID: "gateway-key-uid"}
@@ -24,14 +28,15 @@ func emptySkillsInput() w.Input {
 }
 
 func TestEmptySkillsBundleRejectsInconsistentInputs(t *testing.T) {
-	if _, err := w.Build(emptySkillsInput()); err != nil {
-		t.Fatal(err)
+	for _, agentType := range []string{"openclaw", "hermes"} {
+		if _, err := w.Build(emptySkillsInput(agentType)); err != nil {
+			t.Fatalf("%s empty-skills baseline was rejected: %v", agentType, err)
+		}
 	}
 	for name, mutate := range map[string]func(*w.Input){
 		"unknown mode":      func(i *w.Input) { i.SkillsMode = "unsupported" },
 		"implicit empty":    func(i *w.Input) { i.SkillsMode = "" },
 		"non-native":        func(i *w.Input) { i.GatewayKey = nil },
-		"Hermes":            func(i *w.Input) { i.AgentType = "hermes"; i.Helpers.Doctor = false },
 		"empty PVC pointer": func(i *w.Input) { i.Skills = &corev1.PersistentVolumeClaim{} },
 		"PVC and empty": func(i *w.Input) {
 			i.Skills = &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: "skills", UID: "skills-uid"}}

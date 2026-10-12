@@ -366,7 +366,7 @@ func prepareRuntimeValues(chrt *chart.Chart, input map[string]any) (map[string]a
 		return nil, fmt.Errorf("coalesce runtime inputs: %w", err)
 	}
 	if err := chartutil.ValidateAgainstSchema(chrt, coalesced); err != nil {
-		return nil, fmt.Errorf("runtime inputs do not match the selected chart schema")
+		return nil, fmt.Errorf("runtime inputs do not match the selected chart schema: %w", err)
 	}
 	delete(coalesced, "agentRequest")
 
