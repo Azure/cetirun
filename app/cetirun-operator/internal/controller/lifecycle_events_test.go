@@ -169,7 +169,17 @@ func TestLifecycleEventsReportTransitionsOnly(t *testing.T) {
 		t.Fatalf("a periodic pass reinstalled the chart: installs = %d", chart.installs)
 	}
 
+	// A deployed Agent that returns to Pending, as it does while it waits for
+	// registry credentials, is not created again.
 	current := stored()
+	current.Status.Phase = cetirunv1alpha1.PhasePending
+	if err := r.Status().Update(ctx, current); err != nil {
+		t.Fatal(err)
+	}
+	reconcileUntil(cetirunv1alpha1.PhaseReady)
+	expect("return from Pending", map[string]int{"InstanceReady": 1})
+
+	current = stored()
 	current.Spec.Suspended = true
 	current.Generation++ // the fake client does not maintain the generation
 	if err := r.Update(ctx, current); err != nil {
@@ -182,4 +192,39 @@ func TestLifecycleEventsReportTransitionsOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	expect("suspended periodic pass", nil)
+}
+
+// A creation that takes several passes, here because the StatefulSet is not
+// ready yet, is reported once.
+func TestInstanceCreatingIsRecordedOncePerCreation(t *testing.T) {
+	r, agent, _ := legacyGatewayFixture(t)
+	r.HelmClient = &chartHelm{}
+	recorder := record.NewFakeRecorder(100)
+	r.EventRecorder = recorder
+	ctx := context.Background()
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: agent.Name}}
+	sts := &appsv1.StatefulSet{
+		ObjectMeta: metav1.ObjectMeta{Name: instanceServiceName(agent.Name), Namespace: instanceNamespace(agent.Name), Generation: 1},
+		Spec:       appsv1.StatefulSetSpec{Replicas: ptr.To[int32](1)},
+		Status:     appsv1.StatefulSetStatus{UpdatedReplicas: 1, ObservedGeneration: 1},
+	}
+	if err := r.Create(ctx, sts); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 4; i++ {
+		if _, err := r.Reconcile(ctx, req); err != nil {
+			t.Fatalf("reconcile %d: %v", i, err)
+		}
+	}
+	current := &cetirunv1alpha1.Agent{}
+	if err := r.Get(ctx, req.NamespacedName, current); err != nil {
+		t.Fatal(err)
+	}
+	if current.Status.Phase != cetirunv1alpha1.PhaseProvisioning {
+		t.Fatalf("phase = %q, want Provisioning while the Pod is not ready", current.Status.Phase)
+	}
+	got, _ := lifecycleEvents(recorder)
+	if got["InstanceCreating"] != 1 || got["IngressConfigured"] != 1 || got["InstanceReady"] != 0 {
+		t.Fatalf("events while waiting for the Pod: %v", got)
+	}
 }

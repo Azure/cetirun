@@ -543,9 +543,17 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 
 	// 5. Set phase to Provisioning if still Pending (or empty).
 	if instance.Status.Phase == "" || instance.Status.Phase == cetirunv1alpha1.PhasePending {
+		// The Agent is being created when its chart was never applied. A
+		// deployed Agent can return to Pending, for example while it waits
+		// for registry credentials; that is not a creation.
+		creating := meta.FindStatusCondition(instance.Status.Conditions, cetirunv1alpha1.ConditionHelmDeployed) == nil
 		logger.V(1).Info("Setting phase to Provisioning", "alias", instance.Spec.User.Alias, "currentPhase", instance.Status.Phase)
 		if err := r.setPhase(ctx, instance, cetirunv1alpha1.PhaseProvisioning); err != nil {
 			return ctrl.Result{}, err
+		}
+		if creating {
+			r.EventRecorder.Eventf(instance, corev1.EventTypeNormal, "InstanceCreating",
+				"Creating agent for user %s", instance.Spec.User.Alias)
 		}
 	}
 
@@ -564,12 +572,6 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	releaseName := helmReleaseName(instance.Name)
 
 	logger.Info("Reconciling Agent", "alias", alias, "generation", instance.Generation)
-	// Report the creation once: an Agent whose chart has never been applied
-	// has no HelmDeployed condition yet. Upgrades are reported by HelmInstalled.
-	if meta.FindStatusCondition(instance.Status.Conditions, cetirunv1alpha1.ConditionHelmDeployed) == nil {
-		r.EventRecorder.Eventf(instance, corev1.EventTypeNormal, "InstanceCreating",
-			"Creating agent for user %s", alias)
-	}
 
 	// 6. Ensure namespace.
 	logger.V(1).Info("Ensuring namespace", "namespace", ns)
