@@ -5,8 +5,6 @@ package controller
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -19,27 +17,18 @@ import (
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
-	strictjson "sigs.k8s.io/json"
 )
 
-const sandboxPreparationReceiptKey = "preparation.json"
+const sandboxPreparationReceiptKey = sandboxworkload.PreparationReceiptKey
 
-type sandboxPreparationReceipt struct {
-	Version         string               `json:"version"`
-	AgentName       string               `json:"agentName"`
-	AgentUID        types.UID            `json:"agentUID"`
-	NativeExecution bool                 `json:"nativeExecution,omitempty"`
-	Prerequisites   SandboxPrerequisites `json:"prerequisites"`
-}
+type sandboxPreparationReceipt = sandboxworkload.PreparationReceipt
 
 func (r *AgentReconciler) sandboxPreparationKey(agent *api.Agent) client.ObjectKey {
-	sum := sha256.Sum256([]byte(agent.UID))
 	return client.ObjectKey{
 		Namespace: r.sandboxGrantJournal().Namespace,
-		Name:      "sandbox-preparation-" + hex.EncodeToString(sum[:20]),
+		Name:      sandboxworkload.PreparationReceiptName(agent.UID),
 	}
 }
 
@@ -48,33 +37,14 @@ func (r *AgentReconciler) readSandboxPreparationReceipt(ctx context.Context, age
 	if err := r.customReader().Get(ctx, r.sandboxPreparationKey(agent), object); err != nil {
 		return nil, nil, err
 	}
-	var receipt sandboxPreparationReceipt
-	raw := object.Data[sandboxPreparationReceiptKey]
-	problems, err := strictjson.UnmarshalStrict([]byte(raw), &receipt)
-	owner := []metav1.OwnerReference{sandboxworkload.AgentOwner(agent.Name, agent.UID)}
-	if err != nil || len(problems) != 0 || len(raw) > 64*1024 || len(object.Data) != 1 || len(object.BinaryData) != 0 ||
-		object.UID == "" || object.ResourceVersion == "" ||
-		!equality.Semantic.DeepEqual(object.OwnerReferences, owner) ||
-		object.Annotations[sandboxworkload.AgentUIDAnnotation] != string(agent.UID) ||
-		!((receipt.Version == "v1" && receipt.Prerequisites.Placement == nil) ||
-			(receipt.Version == "v2" && receipt.Prerequisites.Placement != nil)) ||
-		receipt.AgentName != agent.Name || receipt.AgentUID != agent.UID ||
-		receipt.Prerequisites.AgentUID != agent.UID || receipt.Prerequisites.AgentGeneration < 1 ||
-		receipt.Prerequisites.NamespaceUID == "" || receipt.Prerequisites.Home.Name == "" || receipt.Prerequisites.Home.UID == "" {
-		return nil, nil, fmt.Errorf("Sandbox preparation ownership receipt is invalid")
+	receipt, err := sandboxworkload.DecodePreparationReceipt(object, sandboxworkload.ObjectIdentity{Name: agent.Name, UID: agent.UID})
+	if err != nil {
+		return nil, nil, err
 	}
 	if err := validateSandboxPlacementTuple(agent, receipt.Prerequisites); err != nil {
 		return nil, nil, err
 	}
-	if inputs := receipt.Prerequisites; inputs.SkillsMode != "" {
-		if err := inputs.SkillsMode.ValidateIdentity(inputs.Skills); err != nil {
-			return nil, nil, err
-		}
-		if len(inputs.PublicationSources) != 0 || inputs.Placement != nil {
-			return nil, nil, fmt.Errorf("empty skills preparation cannot contain a publication or non-native placement")
-		}
-	}
-	return object, &receipt, nil
+	return object, receipt, nil
 }
 
 func (r *AgentReconciler) recordSandboxPreparationReceipt(ctx context.Context, attempt *sandboxPreparationAttempt) error {
