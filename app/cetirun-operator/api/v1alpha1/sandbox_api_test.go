@@ -216,8 +216,8 @@ func TestGeneratedSandboxSchemaShapes(t *testing.T) {
 	agent := apiContractCRD(t, "agents").Spec.Versions[0].Schema.OpenAPIV3Schema
 	requireSchemaDefault(t, agent.Properties["spec"].Properties["policyClass"], `"normal"`)
 	for _, name := range []string{"sandboxRef", "team"} {
-		if !slices.Contains(agent.Properties["spec"].Required, name) {
-			t.Fatalf("policy-bound Agent field %s must be required", name)
+		if _, ok := agent.Properties["spec"].Properties[name]; !ok || slices.Contains(agent.Properties["spec"].Required, name) {
+			t.Fatalf("Agent binding field %s must exist but remain optional for legacy Agents", name)
 		}
 	}
 	if _, ok := agent.Properties["spec"].Properties["teamAuthorization"]; ok {
@@ -231,8 +231,8 @@ func TestGeneratedSandboxSchemaShapes(t *testing.T) {
 	}
 	team := apiContractCRD(t, "teams").Spec.Versions[0].Schema.OpenAPIV3Schema.Properties["spec"]
 	for _, name := range []string{"normalAgentPolicyRef", "sandboxRefs", "defaultSandboxRef"} {
-		if _, ok := team.Properties[name]; !ok || !slices.Contains(team.Required, name) {
-			t.Fatalf("policy-bound Team field %s must exist and be required", name)
+		if _, ok := team.Properties[name]; !ok || slices.Contains(team.Required, name) {
+			t.Fatalf("Team binding field %s must exist but remain optional for legacy Teams", name)
 		}
 	}
 	if _, ok := team.Properties["membership"]; ok {

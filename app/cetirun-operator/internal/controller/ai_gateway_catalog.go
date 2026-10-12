@@ -292,6 +292,19 @@ func (c *aiGatewayCatalog) shared() ([]aiGatewayCatalogModel, bool) {
 	return slices.Clone(c.sharedSet), c.known || c.seeded
 }
 
+// legacySharedGroups includes every trusted configured shared model; a legacy
+// Agent has no AgentPolicy allowlist. Call only after a live catalog refresh.
+func (c *aiGatewayCatalog) legacySharedGroups() []string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	var groups []string
+	for _, model := range c.sharedSet {
+		groups = append(groups, c.modelGroups[model.Name]...)
+	}
+	slices.Sort(groups)
+	return slices.Compact(groups)
+}
+
 // managedFingerprint is empty until a live Gateway listing establishes the
 // concrete access groups. Policy uses it in its expected Gateway
 // projection revision; callers must not treat a seeded display catalog as

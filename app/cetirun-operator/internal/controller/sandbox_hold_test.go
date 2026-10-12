@@ -346,7 +346,6 @@ func TestSandboxHoldRetainsHomeForAlreadyScaledWorkload(t *testing.T) {
 }
 
 func TestSandboxNormalDefaultPreservesLegacyReconciliation(t *testing.T) {
-	t.Skip("legacy ungoverned reconciliation was removed; Policy is mandatory")
 	agent := newCR("alice-work", cetirunv1alpha1.PhasePending, nil, 1, 0, "")
 	agent.Spec.PolicyClass = cetirunv1alpha1.AgentPolicyClassNormal
 	scheme := testScheme()
@@ -496,7 +495,6 @@ func TestSandboxHoldRecoversCustomCompletionWithoutReapplying(t *testing.T) {
 }
 
 func TestSandboxUngovernedCustomSuspensionDoesNotRequireTeam(t *testing.T) {
-	t.Skip("ungoverned Agents are no longer a supported API state")
 	agent, _, objects := customFixture("sandbox-suspended", nil)
 	agent.Spec.Team = "unavailable-team"
 	agent.Spec.Suspended = true

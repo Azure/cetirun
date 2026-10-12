@@ -36,8 +36,7 @@ const (
 	aiGatewayKeySecretName  = "ai-gateway-virtual-key"
 	aiGatewayKeySecretField = "api-key"
 	// aiGatewaySharedAccessGroup is the Gateway access group of the models
-	// administrators shared with every Agent before Policy. It is retained
-	// only to recognize old catalog entries; policy-bound keys never receive it.
+	// administrators share with legacy Agents. Policy-bound keys never receive it.
 	aiGatewaySharedAccessGroup = "cetirun-shared"
 	// aiGatewayModelAccessGroupPrefix identifies an opaque per-configured-model
 	// access group. The Gateway chart derives its suffix from the canonical
@@ -96,8 +95,8 @@ type AIGatewayConfig struct {
 	// in the operator namespace.
 	MasterKeySecretName string
 	MasterKeySecretKey  string
-	// DefaultBudget is retained as deployment configuration validation input.
-	// Policy-bound keys use the effective AgentPolicy USD budget.
+	// DefaultBudget initializes legacy keys without replacing later Gateway
+	// administrator changes. Policy-bound keys use the effective policy budget.
 	DefaultBudget float64
 	// DefaultModel is the preferred default model of Agents that use the
 	// Gateway when the Agent names none, or names one it cannot use.
@@ -246,17 +245,24 @@ func (r *AgentReconciler) aiGatewayAccessGroups(instance *cetirunv1alpha1.Agent,
 	return groups
 }
 
-// aiGatewayGrant is the resolved, non-secret projection of Policy into a
-// LiteLLM key. Shared model groups are always collision-safe groups observed
-// in the live catalog, never a model display name.
+// aiGatewayGrant is a non-secret key projection. Policy-bound shared grants
+// use only collision-safe deployment groups, never the legacy broad group.
 type aiGatewayGrant struct {
-	groups  []string
-	budget  float64
-	copilot bool
-	active  bool
+	groups      []string
+	budget      float64
+	copilot     bool
+	active      bool
+	policyBound bool
 }
 
 func (r *AgentReconciler) resolveAIGatewayGrant(ctx context.Context, client aiGatewayKeyClient, instance *cetirunv1alpha1.Agent) (aiGatewayGrant, error) {
+	required, err := r.agentPolicyRequired(ctx, instance)
+	if err != nil {
+		return aiGatewayGrant{}, err
+	}
+	if !required {
+		return r.resolveLegacyAIGatewayGrant(ctx, client, instance)
+	}
 	resolution, err := r.resolvePolicy(ctx, instance)
 	if err != nil {
 		return aiGatewayGrant{}, err
@@ -298,7 +304,28 @@ func (r *AgentReconciler) resolveAIGatewayGrant(ctx context.Context, client aiGa
 		groups = append(groups, copilotAccessGroup(instance))
 	}
 	slices.Sort(groups)
-	return aiGatewayGrant{groups: slices.Compact(groups), budget: budget, copilot: copilot, active: true}, nil
+	return aiGatewayGrant{groups: slices.Compact(groups), budget: budget, copilot: copilot, active: true, policyBound: true}, nil
+}
+
+func (r *AgentReconciler) resolveLegacyAIGatewayGrant(ctx context.Context, client aiGatewayKeyClient, instance *cetirunv1alpha1.Agent) (aiGatewayGrant, error) {
+	copilot := r.aiGatewayCopilotWanted(instance)
+	shared := instance.Spec.SharedModelsEnabled()
+	if !shared && !copilot {
+		return aiGatewayGrant{}, nil
+	}
+	groups := r.aiGatewayAccessGroups(instance, copilot)
+	if shared {
+		if err := r.refreshAIGatewayCatalogForGrant(ctx, client); err != nil {
+			return aiGatewayGrant{}, err
+		}
+		// Current Gateway charts use per-deployment groups. Preserve access
+		// to those as well as legacy catalog entries tagged cetirun-shared.
+		groups = append(groups, r.aiGatewayCatalog.legacySharedGroups()...)
+	}
+	slices.Sort(groups)
+	return aiGatewayGrant{
+		groups: slices.Compact(groups), budget: r.AIGateway.DefaultBudget, copilot: copilot, active: true,
+	}, nil
 }
 
 // aiGatewayKeyModels converts access groups to the key's model list. The
@@ -687,7 +714,7 @@ func (r *AgentReconciler) reconcileAIGateway(ctx context.Context, instance *ceti
 				return aiGatewayDegraded(instance, "KeyUpdateFailed", err)
 			}
 		}
-		if key.MaxBudget == nil || math.Abs(*key.MaxBudget-grant.budget) > 0.0000001 || key.BudgetDuration != aiGatewayBudgetDuration {
+		if grant.policyBound && (key.MaxBudget == nil || math.Abs(*key.MaxBudget-grant.budget) > 0.0000001 || key.BudgetDuration != aiGatewayBudgetDuration) {
 			if err := client.UpdateKeyBudget(ctx, token, grant.budget, aiGatewayBudgetDuration); err != nil {
 				return aiGatewayDegraded(instance, "KeyBudgetUpdateFailed", err)
 			}
@@ -702,7 +729,7 @@ func (r *AgentReconciler) reconcileAIGateway(ctx context.Context, instance *ceti
 	}
 	if key == nil || key.Alias != status.KeyAlias || key.TeamID != teamID || key.UserID != userID ||
 		!slices.Equal(sortedCopy(key.Models), models) ||
-		key.MaxBudget == nil || math.Abs(*key.MaxBudget-grant.budget) > 0.0000001 || key.BudgetDuration != aiGatewayBudgetDuration {
+		(grant.policyBound && (key.MaxBudget == nil || math.Abs(*key.MaxBudget-grant.budget) > 0.0000001 || key.BudgetDuration != aiGatewayBudgetDuration)) {
 		return aiGatewayDegraded(instance, "KeyReadbackMismatch", fmt.Errorf("the AI Gateway key does not match its resolved grant"))
 	}
 	if instance.Spec.Suspended {
@@ -731,7 +758,10 @@ func (r *AgentReconciler) reconcileAIGateway(ctx context.Context, instance *ceti
 	status.KeyID = token[:aiGatewayKeyIDLength]
 	status.AccessGroups = groups
 	status.Team = teamID
-	status.BudgetUSD = strconv.FormatFloat(*key.MaxBudget, 'f', -1, 64)
+	status.BudgetUSD = ""
+	if key.MaxBudget != nil {
+		status.BudgetUSD = strconv.FormatFloat(*key.MaxBudget, 'f', -1, 64)
+	}
 	status.BudgetDuration = key.BudgetDuration
 	status.Blocked = key.Blocked
 	if key.Spend != nil {

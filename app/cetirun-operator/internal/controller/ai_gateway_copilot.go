@@ -561,7 +561,11 @@ func (r *AgentReconciler) aiGatewayModelEntries(instance *cetirunv1alpha1.Agent)
 		if status != nil {
 			groups = status.AccessGroups
 		}
-		if models, known := r.aiGatewayCatalog.sharedForGroups(groups); known {
+		models, known := r.aiGatewayCatalog.sharedForGroups(groups)
+		if !sandboxRequested(instance, nil) {
+			models, known = r.aiGatewayCatalog.shared()
+		}
+		if known {
 			for _, model := range models {
 				sharedEntries = append(sharedEntries, aiGatewayModelEntry{
 					ID: model.Name, Name: model.Name, ContextWindow: model.ContextWindow, MaxTokens: model.MaxOutputTokens,

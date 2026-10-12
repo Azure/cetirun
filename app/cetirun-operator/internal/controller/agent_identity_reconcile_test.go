@@ -70,7 +70,8 @@ func TestPolicyDeniedSuspensionStopsOwnedRouteBeforeIdentityLookup(t *testing.T)
 			},
 		},
 		Spec: cetirunv1alpha1.AgentSpec{
-			Agent: cetirunv1alpha1.HarnessSpec{Type: cetirunv1alpha1.AgentTypeOpenClaw},
+			Agent:      cetirunv1alpha1.HarnessSpec{Type: cetirunv1alpha1.AgentTypeOpenClaw},
+			SandboxRef: "unavailable-sandbox",
 			User: cetirunv1alpha1.UserSpec{
 				Alias:       name,
 				DisplayName: "Suspended Identity",

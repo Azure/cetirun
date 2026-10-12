@@ -89,12 +89,19 @@ func (r *AgentReconciler) holdPolicyDependencyUnavailable(ctx context.Context, a
 	return result, errors.Join(blockErr, holdErr)
 }
 
-// reconcilePolicy resolves the declarative selection and effective
-// AgentPolicy. Workload,
+// reconcilePolicy resolves opted-in Agents and preserves the legacy path for
+// Agents and Teams with no policy intent or recorded governed lifetime. Workload,
 // Gateway, and credential controllers remain the authority for their own
 // applied evidence. Invalid selection is fail-closed before any workload
 // recovery can happen.
 func (r *AgentReconciler) reconcilePolicy(ctx context.Context, agent *api.Agent) (policyReconcileResult, error) {
+	required, err := r.agentPolicyRequired(ctx, agent)
+	if err != nil {
+		return policyReconcileResult{dependencyUnavailable: true}, err
+	}
+	if !required {
+		return policyReconcileResult{authorized: true, projectionsVerified: true}, nil
+	}
 	resolution, err := r.resolvePolicy(ctx, agent)
 	if err != nil {
 		result := policyReconcileResult{dependencyUnavailable: isPolicyDependencyError(err)}
@@ -106,6 +113,26 @@ func (r *AgentReconciler) reconcilePolicy(ctx context.Context, agent *api.Agent)
 		reprojectionHold:    policyReprojectionMustHold(agent, resolution),
 	}
 	return result, r.recordPolicy(ctx, agent, resolution, nil)
+}
+
+func (r *AgentReconciler) agentPolicyRequired(ctx context.Context, agent *api.Agent) (bool, error) {
+	if sandboxRequested(agent, nil) {
+		return true, nil
+	}
+	if agent.Spec.Team == "" {
+		return false, nil
+	}
+	reader := configurationReader(r.APIReader, r.Client)
+	team := &api.Team{}
+	if err := reader.Get(ctx, types.NamespacedName{Name: agent.Spec.Team}, team); err != nil {
+		if apierrors.IsNotFound(err) {
+			// The legacy reconcile path reports a missing Team without
+			// inventing a policy binding or granting a runtime fallback.
+			return false, nil
+		}
+		return false, policyDependency("read Team policy selection: %w", err)
+	}
+	return sandboxRequested(agent, team), nil
 }
 
 type policyResolution struct {

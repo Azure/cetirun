@@ -45,13 +45,16 @@ type AgentSpec struct {
 	// Team is the name of the Team this instance belongs to.
 	// The operator merges team defaults (user context, AI model, skills) into
 	// the instance configuration. Per-instance fields take precedence.
-	Team string `json:"team"`
+	// +optional
+	Team string `json:"team,omitempty"`
 
-	// SandboxRef selects a Sandbox permitted by the Team.
+	// SandboxRef opts into Sandbox execution and selects a Sandbox permitted
+	// by the Team. Legacy Agents omit it and use the existing runtime path.
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=253
 	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`
-	SandboxRef string `json:"sandboxRef"`
+	// +optional
+	SandboxRef string `json:"sandboxRef,omitempty"`
 
 	// PolicyClass selects the administrator-assigned Team policy slot.
 	// +kubebuilder:default=normal
@@ -65,8 +68,9 @@ type AgentSpec struct {
 	// +optional
 	Model string `json:"model,omitempty"`
 
-	// ModelAccess explicitly requests model sources when the platform AI
-	// Gateway is enabled. Omission grants no model source.
+	// ModelAccess requests model sources when the platform AI Gateway is
+	// enabled. Policy-bound Agents must explicitly request each source.
+	// Legacy Agents retain default-on sources unless explicitly disabled.
 	// +optional
 	ModelAccess *ModelAccessSpec `json:"modelAccess,omitempty"`
 
@@ -152,14 +156,21 @@ type ModelAccessSpec struct {
 	MonthlyBudgetUSD string `json:"monthlyBudgetUSD,omitempty"`
 }
 
-// SharedModelsEnabled reports whether shared models were explicitly requested.
+// SharedModelsEnabled preserves legacy defaults only without a Sandbox selection.
+// Policy resolution requires a Sandbox selection before evaluating these requests.
 func (s AgentSpec) SharedModelsEnabled() bool {
-	return s.ModelAccess != nil && s.ModelAccess.SharedModels != nil && *s.ModelAccess.SharedModels
+	if s.ModelAccess != nil && s.ModelAccess.SharedModels != nil {
+		return *s.ModelAccess.SharedModels
+	}
+	return s.SandboxRef == "" && (s.PolicyClass == "" || s.PolicyClass == AgentPolicyClassNormal)
 }
 
-// GitHubCopilotEnabled reports whether GitHub Copilot was explicitly requested.
+// GitHubCopilotEnabled preserves legacy defaults only without a Sandbox selection.
 func (s AgentSpec) GitHubCopilotEnabled() bool {
-	return s.ModelAccess != nil && s.ModelAccess.GitHubCopilot != nil && *s.ModelAccess.GitHubCopilot
+	if s.ModelAccess != nil && s.ModelAccess.GitHubCopilot != nil {
+		return *s.ModelAccess.GitHubCopilot
+	}
+	return s.SandboxRef == "" && (s.PolicyClass == "" || s.PolicyClass == AgentPolicyClassNormal)
 }
 
 // UserSpec identifies the user this instance is provisioned for.
@@ -177,6 +188,11 @@ type UserSpec struct {
 	// Email address for notifications (optional).
 	// +optional
 	Email string `json:"email,omitempty"`
+
+	// Team is legacy display context, not a Team or policy assignment.
+	// Deprecated: use spec.team for Team configuration.
+	// +optional
+	Team string `json:"team,omitempty"`
 }
 
 // HelmSpec allows per-instance Helm chart configuration overrides.

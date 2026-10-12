@@ -173,6 +173,7 @@ func TestPolicyEnforcementRejectsStaleSandboxEvidence(t *testing.T) {
 	}
 	agent := &api.Agent{
 		ObjectMeta: metav1.ObjectMeta{Generation: 7},
+		Spec:       api.AgentSpec{SandboxRef: "standard"},
 		Status: api.AgentStatus{
 			Sandbox: &api.SandboxStatus{TeamUID: resolution.team.UID, AgentPolicyUID: resolution.policy.UID,
 				PolicyClass: api.AgentPolicyClassNormal, AppliedRevision: resolution.sandboxRevision},
