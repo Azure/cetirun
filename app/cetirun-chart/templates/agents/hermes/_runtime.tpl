@@ -311,6 +311,10 @@ Hermes configmap data
 {{ .Files.Get "agents/hermes/bootstrap/hermes-init-home.sh" | indent 4 }}
   hermes-apply-config.py: |
 {{ .Files.Get "agents/hermes/bootstrap/hermes-apply-config.py" | indent 4 }}
+  {{- if .Values.sandboxWorkload }}
+  hermes-health-probe.py: |
+{{ .Files.Get "agents/hermes/bootstrap/hermes-health-probe.py" | indent 4 }}
+  {{- end }}
   init-skills.sh: |
 {{ .Files.Get "configs/init-skills.sh" | indent 4 }}
   {{- if not (include "cetirun.agent.hermes.gatewayRouted" .) }}

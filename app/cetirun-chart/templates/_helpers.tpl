@@ -532,16 +532,26 @@ port: {{ .Values.runtime.http.portName }}
 {{- end }}
 
 {{/*
-Protected OpenClaw probes run inside the container, without host ingress grants.
+Protected native probes run inside the container, without host ingress grants.
 */}}
 {{- define "cetirun.agent.healthProbe" -}}
 {{- $root := .root -}}
-{{- if and $root.Values.sandboxWorkload (eq (include "cetirun.agent.type" $root) "openclaw") -}}
+{{- $type := include "cetirun.agent.type" $root -}}
+{{- if and $root.Values.sandboxWorkload (eq $type "openclaw") -}}
 {{- $endpoint := include .pathPort $root | fromYaml -}}
 exec:
   command:
     - node
     - /etc/cetirun/health-probe.cjs
+    - {{ $root.Values.service.targetPort | quote }}
+    - {{ $endpoint.path | quote }}
+    - {{ mul (int .timeoutSeconds) 1000 | quote }}
+{{- else if and $root.Values.sandboxWorkload (eq $type "hermes") -}}
+{{- $endpoint := include .pathPort $root | fromYaml -}}
+exec:
+  command:
+    - /usr/local/lib/hermes-agent/venv/bin/python
+    - /etc/cetirun/hermes-health-probe.py
     - {{ $root.Values.service.targetPort | quote }}
     - {{ $endpoint.path | quote }}
     - {{ mul (int .timeoutSeconds) 1000 | quote }}
