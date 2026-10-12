@@ -206,7 +206,7 @@ func buildHelmValuesCore(instance *cetirunv1alpha1.Agent, team *cetirunv1alpha1.
 	if err := validateAgentRuntime(instance.Spec.Agent); err != nil {
 		return nil, err
 	}
-	if err := validateRuntimeOverrides(cetirunHelmValues, string(instance.Spec.Agent.Type)); err != nil {
+	if err := validatePlatformRuntimeOverrides(cetirunHelmValues, string(instance.Spec.Agent.Type)); err != nil {
 		return nil, err
 	}
 	alias := instance.Spec.User.Alias
