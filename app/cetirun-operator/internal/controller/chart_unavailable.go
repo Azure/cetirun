@@ -60,10 +60,18 @@ func (r *AgentReconciler) preparationFailed(ctx context.Context, instance *api.A
 	// or provisioning wait for a different prerequisite.
 	var observeErr error
 	ready := meta.FindStatusCondition(instance.Status.Conditions, api.ConditionReady)
+	workloadOnly := ready != nil && (ready.Status == metav1.ConditionTrue || ready.Reason == "PodNotReady")
 	if !instance.Spec.Suspended &&
-		(instance.Status.Phase == api.PhaseReady || (instance.Status.Phase == api.PhaseProvisioning &&
-			ready != nil && ready.Reason == "PodNotReady")) {
-		_, _, observeErr = r.observeWorkload(ctx, instance)
+		(instance.Status.Phase == api.PhaseReady || instance.Status.Phase == api.PhaseProvisioning) {
+		var workloadReady bool
+		workloadReady, _, observeErr = r.observeWorkload(ctx, instance)
+		if workloadOnly && isConditionTrue(instance.Status.Conditions, builtInPrerequisitesReady) {
+			setWorkloadReadiness(instance, workloadReady)
+		} else if workloadOnly && (!workloadReady || instance.Status.Phase == api.PhaseProvisioning) {
+			instance.Status.Phase = api.PhaseProvisioning
+			setCondition(&instance.Status.Conditions, api.ConditionReady,
+				metav1.ConditionFalse, "PrerequisitesPending", "Agent prerequisites must be reconciled before readiness can recover")
+		}
 	}
 	// Write only a change: each status write starts another reconcile.
 	if !equality.Semantic.DeepEqual(*previous, instance.Status) {

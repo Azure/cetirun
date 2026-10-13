@@ -159,8 +159,13 @@ installed for its current generation cannot be downloaded, reason
 stays unchanged, and the operator retries every 30 seconds. Workload health is
 still observed: lost ready replicas or an unreadable StatefulSet make a running
 Agent `Provisioning` with `PodReady=False` and `Ready=False`; readiness recovers
-when the workload does, even while the registry remains unavailable. Suspension
-and failures or waits for other prerequisites are preserved.
+when the workload does, even while the registry remains unavailable, provided
+`BuiltInPrerequisitesReady=True` records a completed prerequisite pass. A later
+prerequisite failure clears that condition independently of `PodReady`; a
+healthy Pod alone cannot clear that failure. An older status without this
+condition needs a successful full reconcile before readiness can recover.
+Suspension and failures or waits for other prerequisites are preserved. The
+deployed access URL is retained until the corresponding route is reconciled.
 `AgentConfigResolved` reports a prepared
 built-in configuration, not runtime readiness. The API does not expose a separate
 `status.agent` structure.

@@ -491,16 +491,6 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 			// VirtualService is up to date (may change after operator upgrade).
 			bypassSkipCache := false
 			statusChanged := false
-			// The canonical native UI route is controller-owned state. Keep it
-			// current even when the instance otherwise qualifies for the lightweight
-			// reconcile path after an operator upgrade.
-			if instance.Status.Phase == cetirunv1alpha1.PhaseReady {
-				canonicalAccessURL := accessURLPathBased(instance.Name, r.DomainSuffix)
-				if instance.Status.AccessURL != canonicalAccessURL {
-					instance.Status.AccessURL = canonicalAccessURL
-					statusChanged = true
-				}
-			}
 			if instance.Status.Phase == cetirunv1alpha1.PhaseSuspended {
 				vsName := virtualServiceName(instance.Name)
 				nsCheck := instanceNamespace(instance.Name)
@@ -521,6 +511,11 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 						metav1.ConditionFalse, "VirtualServiceFailed", err.Error())
 					statusChanged = statusChanged || prevIngressReady
 				} else {
+					canonicalAccessURL := accessURLPathBased(instance.Name, r.DomainSuffix)
+					if instance.Status.AccessURL != canonicalAccessURL {
+						instance.Status.AccessURL = canonicalAccessURL
+						statusChanged = true
+					}
 					setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionIngressReady,
 						metav1.ConditionTrue, "VirtualServiceCreated", "Istio ingress configured")
 					statusChanged = statusChanged || !prevIngressReady
@@ -591,6 +586,17 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	logger.Info("Reconciling Agent", "alias", alias, "generation", instance.Generation)
 
 	// 6. Ensure namespace.
+	// Track prerequisite progress independently of the previous Ready reason.
+	// Persist invalidation before calling prerequisites, including ones whose
+	// error paths return without writing status themselves.
+	prerequisitesPending := meta.IsStatusConditionFalse(instance.Status.Conditions, builtInPrerequisitesReady)
+	setCondition(&instance.Status.Conditions, builtInPrerequisitesReady,
+		metav1.ConditionFalse, "PrerequisitesPending", "Reconciling Agent prerequisites")
+	if !prerequisitesPending {
+		if err := r.updateStatus(ctx, instance); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
 	logger.V(1).Info("Ensuring namespace", "namespace", ns)
 	if err := r.ensureNamespace(ctx, ns, alias, instance); err != nil {
 		return r.failWith(ctx, instance, "ProvisioningFailed", fmt.Sprintf("ensure namespace: %v", err))
@@ -929,6 +935,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 			metav1.ConditionFalse, "VirtualServiceFailed", err.Error())
 	} else {
 		logger.V(1).Info("VirtualService ensured", "alias", alias, "result", result)
+		instance.Status.AccessURL = accessURLPathBased(instance.Name, r.DomainSuffix)
 		setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionIngressReady,
 			metav1.ConditionTrue, "VirtualServiceCreated", "Istio ingress configured")
 		if result != controllerutil.OperationResultNone {
@@ -938,15 +945,19 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	}
 
 	// 11. Verify StatefulSet pod readiness before marking Ready.
+	setCondition(&instance.Status.Conditions, builtInPrerequisitesReady,
+		metav1.ConditionTrue, "PrerequisitesResolved", "Blocking Agent prerequisites reconciled")
 	workloadReady, workloadResult, err := r.observeWorkload(ctx, instance)
+	setWorkloadReadiness(instance, workloadReady)
 	if !workloadReady {
 		_ = r.updateStatus(ctx, instance)
 		return workloadResult, err
 	}
 
-	// 12. Mark Ready. observeWorkload set the phase, the access URL and the
-	// Ready condition.
+	// 12. Persist Ready after prerequisites and workload observation.
 	now := metav1.Now()
+	instance.Status.Namespace = ns
+	instance.Status.HelmReleaseName = releaseName
 	instance.Status.LastReconcileTime = &now
 	if err := r.updateStatus(ctx, instance); err != nil {
 		logger.Error(err, "Failed to update status to Ready", "alias", alias)

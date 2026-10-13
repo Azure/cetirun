@@ -14,6 +14,7 @@ import (
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/helm"
+	istiov1beta1 "istio.io/client-go/pkg/apis/networking/v1beta1"
 	appsv1 "k8s.io/api/apps/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -351,6 +352,144 @@ func TestChartUnavailablePreservesOtherLifecycleStates(t *testing.T) {
 				t.Fatalf("healthy Pod overrode lifecycle state: %+v", current.Status)
 			}
 		})
+	}
+}
+
+func TestChartUnavailableKeepsDeployedURL(t *testing.T) {
+	f := newDeployedAgent(t)
+	ctx := context.Background()
+	a := f.agent(t)
+	oldURL := a.Status.AccessURL
+	key := types.NamespacedName{Namespace: instanceNamespace(a.Name), Name: virtualServiceName(a.Name)}
+	before := &istiov1beta1.VirtualService{}
+	if err := f.r.Get(ctx, key, before); err != nil {
+		t.Fatal(err)
+	}
+	f.r.DomainSuffix = "changed.example.com"
+	f.chart.err = &helm.ChartDownloadError{Version: "0.1.28", Err: errors.New("synthetic outage")}
+	for range 2 {
+		if _, err := f.r.Reconcile(ctx, f.req); err != nil {
+			t.Fatal(err)
+		}
+		if f.agent(t).Status.AccessURL != oldURL {
+			t.Fatal("outage changed the deployed URL")
+		}
+		after := &istiov1beta1.VirtualService{}
+		if err := f.r.Get(ctx, key, after); err != nil {
+			t.Fatal(err)
+		}
+		if after.ResourceVersion != before.ResourceVersion {
+			t.Fatal("outage changed the route")
+		}
+	}
+	f.chart.err = nil
+	if _, err := f.r.Reconcile(ctx, f.req); err != nil {
+		t.Fatal(err)
+	}
+	after := &istiov1beta1.VirtualService{}
+	if err := f.r.Get(ctx, key, after); err != nil {
+		t.Fatal(err)
+	}
+	if f.agent(t).Status.AccessURL == oldURL || after.ResourceVersion == before.ResourceVersion {
+		t.Fatal("route recovery did not update the URL and route")
+	}
+}
+
+func TestChartUnavailableOlderStatusNeedsPrerequisitePass(t *testing.T) {
+	f := newDeployedAgent(t)
+	ctx := context.Background()
+	f.verificationDue(t)
+	a := f.agent(t)
+	meta.RemoveStatusCondition(&a.Status.Conditions, builtInPrerequisitesReady)
+	if err := f.r.Status().Update(ctx, a); err != nil {
+		t.Fatal(err)
+	}
+	f.chart.err = &helm.ChartDownloadError{Version: "0.1.28", Err: errors.New("synthetic outage")}
+	sts := &appsv1.StatefulSet{}
+	key := types.NamespacedName{Namespace: instanceNamespace(a.Name), Name: instanceServiceName(a.Name)}
+	for _, replicas := range []int32{0, 1} {
+		if err := f.r.Get(ctx, key, sts); err != nil {
+			t.Fatal(err)
+		}
+		sts.Status.ReadyReplicas = replicas
+		if err := f.r.Status().Update(ctx, sts); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.r.Reconcile(ctx, f.req); err != nil {
+			t.Fatal(err)
+		}
+		if f.agent(t).Status.Phase == api.PhaseReady {
+			t.Fatal("older status recovered without prerequisite evidence")
+		}
+	}
+	f.chart.err = nil
+	if _, err := f.r.Reconcile(ctx, f.req); err != nil {
+		t.Fatal(err)
+	}
+	if f.agent(t).Status.Phase != api.PhaseReady {
+		t.Fatal("successful full pass did not restore readiness")
+	}
+}
+
+func TestChartUnavailableDoesNotHideLaterIdentityFailure(t *testing.T) {
+	f := newDeployedAgent(t)
+	ctx := context.Background()
+	f.verificationDue(t)
+	sts := &appsv1.StatefulSet{}
+	key := types.NamespacedName{Namespace: instanceNamespace(f.req.Name), Name: instanceServiceName(f.req.Name)}
+	if err := f.r.Get(ctx, key, sts); err != nil {
+		t.Fatal(err)
+	}
+	sts.Status.ReadyReplicas = 0
+	if err := f.r.Status().Update(ctx, sts); err != nil {
+		t.Fatal(err)
+	}
+	outage := &helm.ChartDownloadError{Version: "0.1.28", Err: errors.New("synthetic outage")}
+	f.chart.err = outage
+	if _, err := f.r.Reconcile(ctx, f.req); err != nil {
+		t.Fatal(err)
+	}
+	if meta.FindStatusCondition(f.agent(t).Status.Conditions, api.ConditionReady).Reason != "PodNotReady" {
+		t.Fatal("missing initial workload wait")
+	}
+	// Exercise the actual identity cleanup lookup after chart recovery. A
+	// canonical existing binding requires a directory read even with no spec.
+	a := f.agent(t)
+	a.Status.AgentIdentity = &api.AgentIdentityStatus{ClientID: testAgentIdentityClientID, ObjectID: testAgentIdentityObjectID}
+	if err := f.r.Status().Update(ctx, a); err != nil {
+		t.Fatal(err)
+	}
+	f.r.agentIdentityGraphClientFactory = func() (agentIdentityDirectoryClient, error) { return nil, errors.New("synthetic directory outage") }
+	f.chart.err = nil
+	if _, err := f.r.Reconcile(ctx, f.req); err != nil {
+		t.Fatal(err)
+	}
+	a = f.agent(t)
+	if !meta.IsStatusConditionFalse(a.Status.Conditions, api.ConditionAgentIdentityReady) || !meta.IsStatusConditionFalse(a.Status.Conditions, builtInPrerequisitesReady) {
+		t.Fatalf("identity failure not recorded: %+v", a.Status)
+	}
+	f.warnings()
+	if err := f.r.Get(ctx, key, sts); err != nil {
+		t.Fatal(err)
+	}
+	sts.Status.ReadyReplicas = 1
+	if err := f.r.Status().Update(ctx, sts); err != nil {
+		t.Fatal(err)
+	}
+	f.chart.err = outage
+	for range 2 {
+		if _, err := f.r.Reconcile(ctx, f.req); err != nil {
+			t.Fatal(err)
+		}
+		a = f.agent(t)
+		if a.Status.Phase == api.PhaseReady || !meta.IsStatusConditionFalse(a.Status.Conditions, api.ConditionReady) || !meta.IsStatusConditionTrue(a.Status.Conditions, api.ConditionPodReady) {
+			t.Fatalf("Pod recovery hid identity failure: %+v", a.Status)
+		}
+		for len(f.recorder.Events) > 0 {
+			if e := <-f.recorder.Events; strings.Contains(e, "Normal InstanceReady ") {
+				t.Fatal(e)
+			}
+		}
 	}
 }
 
