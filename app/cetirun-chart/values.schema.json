@@ -4,6 +4,16 @@
     "title": "CetiRun Helm Chart Values Schema",
     "description": "JSON Schema for validating CetiRun agent chart values",
     "properties": {
+        "memoryContext": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["enabled", "image", "home"],
+            "properties": {
+                "enabled": {"type": "boolean"},
+                "image": {"type": "string", "maxLength": 512},
+                "home": {"type": "string", "pattern": "^/home/[a-z_][a-z0-9_-]*$"}
+            }
+        },
         "sandboxWorkload": {
             "type": ["object", "null"],
             "description": "Internal protected Sandbox render plan; not an execution authorization",
@@ -1492,7 +1502,7 @@
                 },
                 "mountPath": {
                     "type": "string",
-                    "description": "Mount path inside the pod (must be absolute)",
+                    "description": "Optional read-only alias of the common skills view for native Agents (must be absolute)",
                     "pattern": "^/",
                     "minLength": 1,
                     "default": "/home/vibe/.aks/skills"

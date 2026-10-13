@@ -562,6 +562,9 @@ func (r *AgentReconciler) configHash(instance *cetirunv1alpha1.Agent, team *ceti
 		config = append(config, revision)
 	}
 	config = append(config, teamRV)
+	if r.MemoryEnabled || r.MemoryImage != "" {
+		config = append(config, "memory-context/v2", r.MemoryImage, r.MemoryRegistry)
+	}
 	return operatorConfigHash(
 		r.DomainSuffix, gwSecretHash, r.SkillsStorageAccount,
 		hashCetiRunHelmValues(r.CetiRunHelmValues), r.ChartRegistry,

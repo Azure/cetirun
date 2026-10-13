@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/agents"
@@ -65,7 +66,7 @@ func agentConfigMessage(ctx context.Context, err error) string {
 // User and deployment overrides cannot inject a prepared plan or replace its
 // primary image/port. Unrelated deployment settings keep their existing scope.
 func validateRuntimeOverrides(values map[string]any, agentType string) error {
-	for _, key := range []string{"runtime", "agentRequest", "imagePullSecrets", "customBindings"} {
+	for _, key := range []string{"runtime", "agentRequest", "imagePullSecrets", "customBindings", "memoryContext"} {
 		if _, ok := values[key]; ok {
 			return fmt.Errorf("helm.values.%s is reserved for the platform", key)
 		}
@@ -98,7 +99,8 @@ func validateRuntimeOverrides(values map[string]any, agentType string) error {
 	if extraEnv, ok := values["extraEnv"].([]any); ok {
 		for _, item := range extraEnv {
 			entry, _ := item.(map[string]any)
-			if entry["name"] == "CETIRUN_AGENT_BROKER_URL" {
+			name, _ := entry["name"].(string)
+			if name == "CETIRUN_AGENT_BROKER_URL" || strings.HasPrefix(name, "CETIRUN_MEMORY_") {
 				return fmt.Errorf("helm.values.extraEnv contains a platform-reserved environment variable")
 			}
 		}
@@ -138,6 +140,7 @@ func (r *AgentReconciler) prepareAgent(instance *api.Agent, team *api.Team) (*he
 	if err != nil {
 		return nil, err
 	}
+	values["memoryOptions"] = r.memoryOptions()
 	return r.HelmClient.Prepare(instanceNamespace(instance.Name), values, instance.Spec.Helm.Version)
 }
 

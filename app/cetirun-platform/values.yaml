@@ -6,6 +6,9 @@
 # -- Shared release coordinates propagated automatically to the Operator,
 # Portal and AI Gateway subcharts.
 global:
+  # -- Optional full Memory image override. Empty follows registry/version.
+  memoryContext:
+    image: ""
   # -- Enable both Portal Chat and its private runtime caller. No database.
   portalChat:
     enabled: false

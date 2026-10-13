@@ -232,6 +232,97 @@ Routine initialization does not import old OAuth credentials or migrate between
 Agent types. Existing credentials and the native authentication helpers remain
 available.
 
+## Private Memory Context
+
+Memory Context is enabled by default for OpenClaw, Hermes and Custom Agents on
+the ordinary deployment path. Sandbox-bound workloads retain their upstream
+contract without Memory asset injection.
+It uses a separate image, not a separate Helm release or service. Operator's
+`memoryContext.image` is an optional full image reference. When it is empty,
+Operator selects `cetirun-memory-context:<appVersion>` from each Agent's pinned
+runtime chart and its publication registry. Changing the platform's default Chart
+version does not change assets for an already pinned Agent. Charts without Memory
+support retain their previous behavior until the owner upgrades the Agent's Chart.
+Set `global.memoryContext.image`, or the more specific
+`cetirun-operator.memoryContext.image`, in the platform chart to override it for all
+Agents whose Charts support Memory.
+The standalone runtime chart uses `memoryContext.image` with the same release
+defaults. Release tags and explicit SHA-256 digests are accepted; `latest` is not.
+A release tag selects a version, not immutable bytes. Supply a digest when exact
+image pinning is required. The matching Memory image must be published with the
+release before deploying it.
+
+Set `memoryContext.enabled: false` on the Operator or standalone runtime chart
+to omit Memory delivery. An empty image no longer disables it.
+For OpenClaw and Hermes, disabling Memory preserves the direct read-only shared
+Skills PVC mount at `skills.mountPath`; updates do not require a new context snapshot.
+
+### Common initialization and discovery
+
+The `memory-assets` init container installs the helper, adapters and source
+instructions into an `emptyDir`. The existing HOME initializer, using the Agent's
+own image, then runs the common context composer. All three Harness types receive:
+
+```text
+$HOME/.agents/AGENTS.md
+$HOME/.agents/skills/cetirun-memory/SKILL.md
+$HOME/.agents/skills/cetirun-memory/references/requests.md
+$HOME/.agents/skills/<shared-skill>/...
+```
+
+The composer builds one complete view and mounts it read-only at `$HOME/.agents`.
+It reads shared skills from a separate read-only source mount during init; the
+main container never mounts the shared PVC over `.agents/skills`. A shared
+`cetirun-memory` directory or another collision with canonical skills fails
+initialization rather than replacing a platform skill. The sources and the PVC's
+existing `.agents` files are preserved. Shared storage provisioning is unchanged.
+For native Agents, a non-default `skills.mountPath` exposes an additional read-only
+alias of the composed skills view, not a second source over the canonical path.
+
+The view is stable for the Pod's lifetime and rebuilt for a new Pod. Publish
+shared content before replacement; copying a concurrently changing shared source
+is not a transactional snapshot. The binary and adapters remain available
+read-only at `/opt/cetirun-memory`. Private notes stay in
+`$HOME/.cetirun/memory` on the existing HOME volume, outside the instruction view.
+Existing HOME context files and older note directories are preserved, not imported
+automatically. An owner can import selected legacy files with `import plan` and
+`import apply`; the helper retains those source files and marks imported claims for review.
+
+Directory placement and host discovery are separate:
+
+- OpenClaw loads workspace `AGENTS.md`, not `$HOME/.agents/AGENTS.md` automatically.
+  Its Memory plugin explicitly loads the common file. CetiRun also configures
+  `skills.load.extraDirs` with `$HOME/.agents/skills`, including for non-default
+  OpenClaw state directories.
+- Hermes discovers project `AGENTS.md` from its working directory and Git-root
+  chain. Its Memory plugin explicitly loads the common file, while
+  `skills.external_dirs` points to `$HOME/.agents/skills`.
+- Custom images must load the common context and skills and connect the helper
+  through a native adapter or MCP. The Pi example does this through its SDK; it
+  neither assembles the view nor replaces skills from another asset directory.
+  Mounting files alone does not register tools or lifecycle hooks in an arbitrary
+  Custom application.
+
+These discovery rules are documented by [OpenClaw Skills](https://docs.openclaw.ai/tools/skills),
+[OpenClaw workspace files](https://docs.openclaw.ai/concepts/agent-workspace),
+[Hermes Skills](https://hermes-agent.nousresearch.com/docs/user-guide/features/skills#external-skill-directories)
+and [Hermes context files](https://hermes-agent.nousresearch.com/docs/user-guide/features/context-files).
+
+### Runtime behavior
+
+Reads, writes and bounded method learning are enabled by default. Both installed profiles,
+`memory-retrieval-v1` and `artifact-contract-v1`, are available. Model-based
+fixture evaluation still requires a supported native route and is limited to
+four extra model requests per store in a rolling 24-hour window. It does not run
+without an active request or change tool permissions.
+
+There is no Memory policy ConfigMap, installation identity or Portal policy
+editor. The helper does not bind stored notes to an Agent or namespace UID;
+the platform still assigns separate HOME volumes and enforces its existing
+user access rules. `/memory off` and `/memory no-capture` remain conversation
+restrictions on supported native entrypoints. They do not delete notes or
+disable the Harness's own history. Private methods are not published as Team Skills.
+
 ## Private registries
 
 Portal accepts a write-only Registry username and password or token. It creates

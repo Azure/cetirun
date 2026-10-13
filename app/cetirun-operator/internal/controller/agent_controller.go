@@ -83,8 +83,11 @@ type AgentReconciler struct {
 	DomainSuffix                string
 	SkillsStorageAccount        string
 	CetiRunHelmValues           map[string]interface{} // Operator-level Helm value overrides for all instances
-	ChartRegistry               string                 // OCI registry host (e.g. "registry.example.com"), derived from chart repo URL
-	DefaultModel                string                 // Default GitHub Copilot model when spec.model is empty
+	MemoryImage                 string
+	MemoryEnabled               bool
+	MemoryRegistry              string
+	ChartRegistry               string // OCI registry host (e.g. "registry.example.com"), derived from chart repo URL
+	DefaultModel                string // Default GitHub Copilot model when spec.model is empty
 	CustomBindings              CustomBindingProvider
 	ChatAccess                  chataccess.Config
 	SandboxPreparation          *SandboxPreparation
@@ -756,6 +759,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	if err := r.applyAIGatewayValues(helmValues, instance); err != nil {
 		return r.rejectAgentConfig(ctx, instance, err)
 	}
+	helmValues["memoryOptions"] = r.memoryOptions()
 	if prepared.SupportsValuePath(aiGatewayChartValue, aiGatewayChartCopilotValue, aiGatewayChartResponsesValue) {
 		r.applyCopilotResponsesModels(helmValues, instance)
 	}

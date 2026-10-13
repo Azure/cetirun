@@ -277,7 +277,7 @@ export function TeamEditPage() {
               onChange={(_, data) =>
                 setForm({ ...form, storage: { ...form.storage, mountPath: data.value } })
               }
-              placeholder="e.g. /home/vibe/.aks/skills (default)"
+              placeholder="e.g. /home/vibe/.agents/skills (default)"
             />
           </Field>
         </div>

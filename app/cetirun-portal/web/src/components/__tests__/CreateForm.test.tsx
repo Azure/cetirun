@@ -157,6 +157,7 @@ describe("CreateForm", () => {
     await user.click(screen.getByText("Create Agent"));
 
     expect(mockMutate).toHaveBeenCalledWith({
+
       instanceName: "my-instance",
       agent: { type: "hermes" },
       displayName: undefined,
@@ -182,6 +183,7 @@ describe("CreateForm", () => {
     await user.click(screen.getByText("Create Agent"));
 
     expect(mockMutate).toHaveBeenCalledWith({
+
       instanceName: "my-instance",
       agent: { type: "hermes" },
       displayName: undefined,
@@ -220,6 +222,7 @@ describe("CreateForm", () => {
     await user.click(screen.getByText("Create Agent"));
 
     expect(mockMutate).toHaveBeenCalledWith({
+
       instanceName: "my-instance",
       agent: { type: "hermes" },
       displayName: "Custom Name",
@@ -241,6 +244,7 @@ describe("CreateForm", () => {
     await user.click(screen.getByText("Create Agent"));
 
     expect(mockMutate).toHaveBeenCalledWith({
+
       instanceName: undefined,
       agent: { type: "openclaw" },
       displayName: undefined,
@@ -262,6 +266,7 @@ describe("CreateForm", () => {
     await user.click(screen.getByText("Create Agent"));
 
     expect(mockMutate).toHaveBeenCalledWith({
+
       instanceName: undefined,
       agent: { type: "openclaw" },
       displayName: undefined,
@@ -275,6 +280,15 @@ describe("CreateForm", () => {
   it("submit button is enabled even without team selected", () => {
     renderWithQuery(<CreateForm />);
     expect(screen.getByText("Create Agent")).not.toBeDisabled();
+  });
+
+  it("explains automatic Memory defaults without sending policy settings", async () => {
+    const user = userEvent.setup();
+    renderWithQuery(<CreateForm />);
+    expect(screen.getByText(/memory and bounded learning are enabled automatically/)).toBeInTheDocument();
+    expect(screen.queryByRole("switch", { name: /private memory/ })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Create Agent" }));
+    expect(mockMutate.mock.calls[0][0]).not.toHaveProperty("memory");
   });
 
   it("only shows Copilot model selection for the effective Copilot provider", async () => {

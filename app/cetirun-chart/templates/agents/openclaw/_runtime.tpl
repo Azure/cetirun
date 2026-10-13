@@ -80,6 +80,7 @@ OpenClaw init containers
   {{- end }}
   command: ["/bin/sh", "/etc/cetirun/init-home.sh"]
   env:
+    {{- include "cetirun.context.initEnv" . | nindent 4 }}
     - name: CETIRUN_INIT_IMAGE
       value: {{ include "cetirun.image" . | quote }}
     {{- if dig "git" "azureDevOps" "enabled" true .Values.openclaw }}
@@ -96,6 +97,7 @@ OpenClaw init containers
     {{- end }}
     {{- end }}
   volumeMounts:
+    {{- include "cetirun.context.initMounts" . | nindent 4 }}
     - name: data
       mountPath: /home-data
     - name: tmp
@@ -135,6 +137,10 @@ OpenClaw init containers
       mountPath: /home/vibe
     - name: tmp
       mountPath: /tmp
+    {{- if include "cetirun.memory.enabled" . }}
+    {{- include "cetirun.memory.mounts" . | nindent 4 }}
+    {{- include "cetirun.context.mount" . | nindent 4 }}
+    {{- end }}
 {{- end }}
 {{- if (.Values.aiGateway | default dict).enabled }}
 # The owner signs in to GitHub Copilot through the Portal, and that token

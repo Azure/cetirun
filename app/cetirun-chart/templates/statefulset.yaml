@@ -45,6 +45,7 @@ spec:
     spec:
       {{- include "cetirun.platform.podSettings" . | nindent 6 }}
       initContainers:
+        {{- include "cetirun.memory.init" . | nindent 8 }}
         {{- include "cetirun.agent.initContainers" . | nindent 8 }}
       {{- with .Values.initContainers }}
         {{- toYaml . | nindent 8 }}
@@ -80,6 +81,7 @@ spec:
               protocol: TCP
             {{- end }}
           env:
+            {{- include "cetirun.memory.env" . | nindent 12 }}
             - name: NODE_ENV
               value: "production"
             # Node 22+ enables Happy Eyeballs (autoSelectFamily) by default.
@@ -196,8 +198,10 @@ spec:
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:
+            {{- include "cetirun.memory.mounts" . | nindent 12 }}
             - name: data
               mountPath: /home/vibe
+            {{- include "cetirun.context.mount" . | nindent 12 }}
             - name: tmp
               mountPath: /tmp
             - name: config
@@ -207,7 +211,7 @@ spec:
             - name: empty-skills
               mountPath: /home/vibe/.aks/skills
               readOnly: true
-            {{- else if .Values.skills.shared }}
+            {{- else if and .Values.skills.shared (or .Values.sandboxWorkload (not (include "cetirun.context.enabled" .))) }}
             - name: shared-skills
               mountPath: {{ .Values.skills.mountPath }}
               readOnly: true
@@ -265,6 +269,8 @@ spec:
               mountPath: /tmp
         {{- end }}
       volumes:
+        {{- include "cetirun.memory.volumes" . | nindent 8 }}
+        {{- include "cetirun.context.volume" . | nindent 8 }}
         {{- include "cetirun.platform.temporaryVolumes" . | nindent 8 }}
         - name: config
           configMap:

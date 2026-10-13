@@ -177,6 +177,83 @@ seed_home_once() {
   HOME_SEEDED_THIS_RUN=$(seed_home_data)
 }
 
+check_agent_context() {
+  if [ -n "${CETIRUN_MEMORY_ASSETS:-}" ]; then
+    [ "$CETIRUN_MEMORY_ASSETS" = /opt/cetirun-memory ] &&
+      [ -r "$CETIRUN_MEMORY_ASSETS/manifest.json" ] &&
+      [ -r "$CETIRUN_MEMORY_ASSETS/AGENTS.md" ] &&
+      [ -r "$CETIRUN_MEMORY_ASSETS/skills/cetirun-memory/SKILL.md" ] || {
+        init_error "MemoryAssetsUnavailable"
+        return 1
+      }
+  fi
+  if [ -n "${CETIRUN_SHARED_SKILLS_DIR:-}" ]; then
+    [ -d "$CETIRUN_SHARED_SKILLS_DIR" ] && [ -r "$CETIRUN_SHARED_SKILLS_DIR" ] &&
+      [ -x "$CETIRUN_SHARED_SKILLS_DIR" ] || {
+        init_error "SharedSkillsUnavailable"
+        return 1
+      }
+  fi
+  if [ -n "${CETIRUN_MEMORY_ASSETS:-}" ] || [ -n "${CETIRUN_SHARED_SKILLS_DIR:-}" ]; then
+    [ -n "${CETIRUN_CONTEXT_VIEW:-}" ] && [ -d "$CETIRUN_CONTEXT_VIEW" ] &&
+      [ ! -L "$CETIRUN_CONTEXT_VIEW" ] && [ -w "$CETIRUN_CONTEXT_VIEW" ] || {
+        init_error "ContextViewUnavailable"
+        return 1
+      }
+  fi
+}
+
+# Compose one per-Pod view before mounting it read-only at $HOME/.agents.
+# Sources and the PVC's own .agents contents are never modified.
+prepare_agent_context() (
+  set -e
+  [ -n "${CETIRUN_CONTEXT_VIEW:-}" ] || exit 0
+  home_ensure_dir .agents
+  view=$CETIRUN_CONTEXT_VIEW
+  [ ! -L "$view/current" ] || { init_error "InvalidContextView"; exit 1; }
+  [ ! -e "$view/current" ] || {
+    [ -f "$view/current/.ready" ] || { init_error "IncompleteContextView"; exit 1; }
+    exit 0
+  }
+  stage=$(mktemp -d "$view/.context.XXXXXX")
+  trap 'rm -rf "$stage"' 0
+  mkdir "$stage/skills"
+  if [ -n "${CETIRUN_CONTEXT_DIR:-}" ]; then
+    # Only the platform ConfigMap projection may use Kubernetes-owned links.
+    cp -RL "$CETIRUN_CONTEXT_DIR/AGENTS.md" "$stage/AGENTS.md"
+    for entry in "$CETIRUN_CONTEXT_DIR/skills"/* "$CETIRUN_CONTEXT_DIR/skills"/.[!.]* "$CETIRUN_CONTEXT_DIR/skills"/..?*; do
+      [ -e "$entry" ] || [ -L "$entry" ] || continue
+      if [ -n "${CETIRUN_MEMORY_ASSETS:-}" ] && [ "${entry##*/}" = cetirun-memory ]; then continue; fi
+      cp -RL "$entry" "$stage/skills/${entry##*/}"
+    done
+  else
+    : > "$stage/AGENTS.md"
+  fi
+  if [ -n "${CETIRUN_MEMORY_ASSETS:-}" ]; then
+    chmod u+w "$stage/AGENTS.md"
+    if [ -s "$stage/AGENTS.md" ]; then printf '\n' >> "$stage/AGENTS.md"; fi
+    while IFS= read -r line || [ -n "$line" ]; do
+      printf '%s\n' "$line" >> "$stage/AGENTS.md"
+    done < "$CETIRUN_MEMORY_ASSETS/AGENTS.md"
+    cp -R "$CETIRUN_MEMORY_ASSETS/skills/cetirun-memory" "$stage/skills/cetirun-memory"
+  fi
+  if [ -n "${CETIRUN_SHARED_SKILLS_DIR:-}" ]; then
+    for entry in "$CETIRUN_SHARED_SKILLS_DIR"/* "$CETIRUN_SHARED_SKILLS_DIR"/.[!.]* "$CETIRUN_SHARED_SKILLS_DIR"/..?*; do
+      [ -e "$entry" ] || [ -L "$entry" ] || continue
+      name=${entry##*/}
+      if [ "$name" = cetirun-memory ] || [ -e "$stage/skills/$name" ] || [ -L "$stage/skills/$name" ]; then
+        init_error "SharedSkillConflictsWithCanonicalContext"
+        exit 1
+      fi
+      special=$(find "$entry" ! -type d ! -type f ! -type l -print)
+      [ -z "$special" ] || { init_error "UnsupportedSkillFile"; exit 1; }
+      cp -RP "$entry" "$stage/skills/$name"
+    done
+  fi
+  printf 'context-v1\n' > "$stage/.ready"
+  mv "$stage" "$view/current"
+)
+
 run_agent_init() {
   set -e
   check_common_tools
@@ -196,9 +273,10 @@ run_agent_init() {
     command -v "$stage" >/dev/null 2>&1 || { init_error "InitStageMissing: $stage"; return 1; }
   done
   agent_check_requirements
+  check_agent_context
   printf '[agent-init] seed_home_once\n' >&2
   seed_home_once
-  for stage in agent_prepare_home agent_apply_config agent_prepare_integrations agent_verify; do
+  for stage in agent_prepare_home agent_apply_config agent_prepare_integrations prepare_agent_context agent_verify; do
     printf '[agent-init] %s\n' "$stage" >&2
     "$stage"
   done

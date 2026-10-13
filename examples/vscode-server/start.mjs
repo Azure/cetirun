@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 import { spawn } from "node:child_process";
-import { mkdir, readFile, realpath, symlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, realpath, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { createProxy, validateConfig } from "./proxy.mjs";
@@ -16,7 +16,7 @@ async function linkOnce(target, link) {
   }
 }
 
-export async function prepareHome(home, install, commit) {
+export async function prepareHome(home, install, commit, env = process.env) {
   const context = path.join(home, ".agents");
   if (!await readFile(path.join(context, "AGENTS.md"), "utf8") ||
       !await readFile(path.join(context, "skills/cetirun-memory/SKILL.md"), "utf8")) throw new Error("Platform context is missing");
@@ -36,7 +36,33 @@ export async function prepareHome(home, install, commit) {
     "chat.includeReferencedInstructions": true };
   try { await writeFile(path.join(data, "data/Machine/settings.json"), JSON.stringify(settings, null, 2) + "\n", { flag: "wx", mode: 0o600 }); }
   catch (error) { if (error.code !== "EEXIST") throw error; }
-  return { cliData, data, settings, workspace: path.join(home, "workspace") };
+  const workspace = path.join(home, "workspace");
+  if (env.CETIRUN_MEMORY_ASSETS) {
+    try { await configureMemoryTools(workspace, env); }
+    catch { console.warn("Memory MCP configuration unavailable; existing workspace files were preserved."); }
+  }
+  return { cliData, data, settings, workspace };
+}
+
+// Keep VS Code's normal server/workspace trust prompt. No allow-all approval
+// setting is written, and an existing user configuration is never overwritten.
+export async function configureMemoryTools(workspace, env) {
+  if (env.CETIRUN_MEMORY_ASSETS !== "/opt/cetirun-memory") throw new Error("Memory asset binding is invalid");
+  const directory = path.join(workspace, ".vscode");
+  try { const info = await lstat(directory); if (!info.isDirectory() || info.isSymbolicLink()) throw new Error("Memory MCP configuration conflicts with the workspace"); }
+  catch (error) { if (error.code !== "ENOENT") throw error; await mkdir(directory, { mode: 0o700 }); }
+  const configuration = { servers: { "cetirun-memory": { type: "stdio", command: "/opt/cetirun-memory/bin/cetirun-memory", args: ["mcp", "--stdio", "--owner-private"], cwd: "${workspaceFolder}" } } };
+  const target = path.join(directory, "mcp.json");
+  try { await writeFile(target, JSON.stringify(configuration, null, 2) + "\n", { flag: "wx", mode: 0o600 }); }
+  catch (error) {
+    if (error.code !== "EEXIST") throw error;
+    const info = await lstat(target);
+    if (info.isSymbolicLink() || !info.isFile() || info.size > 65536) throw new Error("Memory MCP configuration conflicts with the workspace");
+    const existing = JSON.parse(await readFile(target, "utf8"));
+    if (JSON.stringify(existing.servers?.["cetirun-memory"]) !== JSON.stringify(configuration.servers["cetirun-memory"])) {
+      throw new Error("Existing MCP configuration is preserved. Add the platform cetirun-memory stdio server explicitly before enabling Memory in this workspace.");
+    }
+  }
 }
 
 export async function main() {

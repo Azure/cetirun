@@ -15,9 +15,10 @@ import tempfile
 
 
 ROOT = Path(__file__).resolve().parents[2]
-COMPONENTS = ("operator", "portal", "agent-broker")
+COMPONENTS = ("operator", "portal", "agent-broker", "memory-context")
 MODULES = {"internal": "app/internal", **{name: f"app/cetirun-{name}" for name in COMPONENTS}}
 WORKFLOWS = (
+    "memory-context-ci.yml",
     "operator-ci.yml",
     "portal-ci.yml",
     "agent-broker-ci.yml",

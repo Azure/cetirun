@@ -96,9 +96,11 @@ and [Hermes initializer]({{< repo "app/cetirun-chart/agents/hermes/bootstrap/her
 ## Skills
 
 Skills are directories with a `SKILL.md` entry point. User workspace skills live
-on the persistent home; team-shared material can be mounted at
-`/home/vibe/.aks/skills` read-only. Runtime-specific configuration determines how
-the agent discovers and prioritizes these directories.
+on the persistent home. Runtime init composes team-shared material and the
+platform Memory skill into a read-only `$HOME/.agents/skills` view. It is refreshed
+for each new Pod, not by changes to the shared source during a Pod's lifetime.
+Runtime-specific configuration determines how the agent discovers and prioritizes
+these directories. See [Memory initialization](../../reference/agent-harness/#common-initialization-and-discovery).
 
 The operator computes `(team skills ∪ add) − remove`, sorts the result, and
 deduplicates it. Removal wins when an identifier appears in both override
@@ -125,8 +127,9 @@ initialization preserves those entries.
 
 Team `skillStorage` enables a static PV/PVC against an existing Blob container;
 it does not create the Azure account or populate skills. Shared storage defaults
-are NFS, `azureblob-nfs-premium`, `100Gi`, and `/home/vibe/.aks/skills` unless
-overridden. Arrange the CSI driver, storage permissions, and network access.
+are NFS, `azureblob-nfs-premium` and `100Gi`. The common discovery path is
+`$HOME/.agents/skills`; native `skillStorage.mountPath` can add a read-only alias.
+Arrange the CSI driver, storage permissions, and network access.
 
 For shared storage, `skills.protocol`, `skills.secretName`, and
 `skills.mountOptions` become static PV settings. They cannot be changed in place

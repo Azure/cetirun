@@ -204,6 +204,63 @@ class CustomInitializationTests(unittest.TestCase):
         self.env["CETIRUN_CONTEXT_VIEW"] = str(view)
         return shared, view
 
+    def prepare_memory(self):
+        assets = self.root / "memory-assets"
+        (assets / "skills/cetirun-memory/references").mkdir(parents=True)
+        (assets / "manifest.json").write_text('{}')
+        (assets / "AGENTS.md").write_text("Current controlled memory contract\n")
+        (assets / "skills/cetirun-memory/SKILL.md").write_text("Current private memory skill")
+        (assets / "skills/cetirun-memory/references/requests.md").write_text("Native tool requests")
+        # Relocate only the fixed mountpoint for a non-root executable test.
+        script = self.root / "init-common-fixture.sh"
+        script.write_text(COMMON.read_text().replace("/opt/cetirun-memory", str(assets)))
+        self.env["CETIRUN_INIT_COMMON"] = str(script)
+        self.env["CETIRUN_MEMORY_ASSETS"] = str(assets)
+        return assets
+
+    def test_memory_skill_replaces_only_the_readonly_view_and_preserves_team_skills(self):
+        shared, view = self.prepare_shared_skills()
+        assets = self.prepare_memory()
+        (self.source / ".agents/skills/cetirun-memory").mkdir(parents=True)
+        (self.source / ".agents/skills/cetirun-memory/SKILL.md").write_text("Private image copy, preserve")
+        before = {name: (assets / name).read_bytes() for name in ("AGENTS.md", "skills/cetirun-memory/SKILL.md")}
+        result = self.run_init()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("synthetic canonical contract", (view / "current/AGENTS.md").read_text())
+        self.assertIn("Current controlled memory contract", (view / "current/AGENTS.md").read_text())
+        self.assertEqual((view / "current/skills/cetirun-memory/references/requests.md").read_text(), "Native tool requests")
+        self.assertEqual((view / "current/skills/team-skill/SKILL.md").read_bytes(), (shared / "team-skill/SKILL.md").read_bytes())
+        self.assertEqual((self.target / ".agents/skills/cetirun-memory/SKILL.md").read_text(), "Private image copy, preserve")
+        self.assertEqual(self.run_init().returncode, 0)
+        self.assertEqual(before, {name: (assets / name).read_bytes() for name in before})
+
+    def test_memory_view_does_not_require_team_skills(self):
+        self.prepare_memory()
+        view = self.root / "memory-view"
+        view.mkdir()
+        self.env["CETIRUN_CONTEXT_VIEW"] = str(view)
+        result = self.run_init()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((view / "current/skills/cetirun-memory/SKILL.md").read_text(), "Current private memory skill")
+
+    def test_memory_upgrade_preserves_existing_context_and_legacy_notes(self):
+        self.assertEqual(self.run_init().returncode, 0)
+        old_context = self.target / ".agents/AGENTS.md"
+        old_context.write_text("Existing private context")
+        legacy_notes = self.target / "memory/notes.md"
+        legacy_notes.parent.mkdir()
+        legacy_notes.write_text("Existing synthetic private notes")
+        self.prepare_memory()
+        view = self.root / "upgrade-view"
+        view.mkdir()
+        self.env["CETIRUN_CONTEXT_VIEW"] = str(view)
+        result = self.run_init()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(old_context.read_text(), "Existing private context")
+        self.assertEqual(legacy_notes.read_text(), "Existing synthetic private notes")
+        self.assertFalse((self.target / ".cetirun/memory").exists())
+        self.assertEqual((view / "current/skills/cetirun-memory/SKILL.md").read_text(), "Current private memory skill")
+
     def test_shared_skills_are_materialized_without_modifying_home_or_sources(self):
         shared, view = self.prepare_shared_skills()
         (self.source / ".agents/skills/team-skill").mkdir(parents=True)

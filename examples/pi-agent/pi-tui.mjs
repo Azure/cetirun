@@ -21,18 +21,18 @@ export async function main(args = process.argv.slice(2)) {
   const {
     createAgentSessionFromServices, createAgentSessionRuntime, InteractiveMode, SessionManager,
   } = await import("@earendil-works/pi-coding-agent");
-  const { createPiServices, PI_TOOLS } = await import("./pi-runtime.mjs");
-  const initial = await createPiServices(process.env.HOME);
+  const { createPiServices, piTools } = await import("./pi-runtime.mjs");
+  const initial = await createPiServices(process.env.HOME, path.join(process.env.HOME, "workspace"), process.env, "pi-tui");
   if (initial.modelAccess) await initial.modelAccess.models(AbortSignal.timeout(10_000));
   process.chdir(initial.cwd);
 
   // Pi reuses this factory for /new, /resume and /fork, so each session keeps
   // the same approved context and private authentication directory.
   const createRuntime = async ({ cwd, sessionManager, sessionStartEvent }) => {
-    const services = await createPiServices(process.env.HOME, cwd);
+    const services = await createPiServices(process.env.HOME, cwd, process.env, "pi-tui");
     if (services.modelAccess) await services.modelAccess.models(AbortSignal.timeout(10_000));
     const result = await createAgentSessionFromServices({
-      services, sessionManager, sessionStartEvent, tools: PI_TOOLS,
+      services, sessionManager, sessionStartEvent, tools: piTools(services.resourceLoader),
     });
     return { ...result, services, diagnostics: services.diagnostics };
   };

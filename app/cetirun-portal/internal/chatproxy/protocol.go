@@ -49,9 +49,10 @@ type Message struct {
 }
 
 type Request struct {
-	Model    string    `json:"model"`
-	Messages []Message `json:"messages"`
-	Stream   bool      `json:"stream"`
+	Model      string    `json:"model"`
+	Messages   []Message `json:"messages"`
+	Stream     bool      `json:"stream"`
+	MemoryMode string    `json:"-"`
 }
 
 func DecodeRequest(raw []byte) (Request, error) {

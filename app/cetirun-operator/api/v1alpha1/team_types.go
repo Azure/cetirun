@@ -94,8 +94,8 @@ type SkillStorageSpec struct {
 	// +optional
 	StorageSize string `json:"storageSize,omitempty"`
 
-	// MountPath inside the container. Defaults to the chart default
-	// ("/home/vibe/.aks/skills") when empty.
+	// MountPath optionally adds a read-only skills alias for native Agents.
+	// The common skills view is always at "$HOME/.agents/skills".
 	// +optional
 	MountPath string `json:"mountPath,omitempty"`
 }

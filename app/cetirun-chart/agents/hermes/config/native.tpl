@@ -62,10 +62,12 @@ Licensed under the MIT License.
 {{- $_ := set $platforms "cetirun_teams" $cetirunTeams }}
 {{- $_ := set $config "platforms" $platforms }}
 {{- end }}
-{{- if .Values.skills.shared }}
+{{- if or .Values.skills.shared (and (not .Values.sandboxWorkload) (dig "enabled" false (.Values.memoryContext | default dict))) }}
 {{- $skills := dig "skills" (dict) $config }}
 {{- $existingDirs := dig "external_dirs" (list) $skills }}
-{{- $_ := set $skills "external_dirs" (append $existingDirs .Values.skills.mountPath | uniq) }}
+{{- $skillsPath := "/home/vibe/.agents/skills" }}
+{{- if or .Values.sandboxWorkload (not (dig "enabled" false (.Values.memoryContext | default dict))) }}{{- $skillsPath = .Values.skills.mountPath }}{{- end }}
+{{- $_ := set $skills "external_dirs" (append $existingDirs $skillsPath | uniq) }}
 {{- $_ := set $config "skills" $skills }}
 {{- end }}
 {{- if .Values.skills.npm }}
@@ -74,5 +76,10 @@ Licensed under the MIT License.
 {{- $npmDirs := .SkillDirs }}
 {{- $_ := set $skills "external_dirs" (concat $existingDirs $npmDirs | uniq) }}
 {{- $_ := set $config "skills" $skills }}
+{{- end }}
+{{- if and (not .Values.sandboxWorkload) (dig "enabled" false (.Values.memoryContext | default dict)) }}
+{{- $plugins := dig "plugins" (dict) $config }}
+{{- $_ := set $plugins "enabled" (append (dig "enabled" (list) $plugins) "cetirun-memory-context" | uniq) }}
+{{- $_ := set $config "plugins" $plugins }}
 {{- end }}
 {{ $config | toYaml }}

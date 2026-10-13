@@ -204,7 +204,7 @@ RUN groupadd --gid 1024 vibe && \
   useradd -s /bin/bash --uid 1024 --gid 1024 -m vibe
 
 WORKDIR /home/vibe
-USER vibe
+USER 1024:1024
 
 ENV DISPLAY=:99
 

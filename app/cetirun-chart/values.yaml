@@ -673,7 +673,8 @@ skills:
   storageAccount: ""
   # -- Blob container name
   containerName: aks-skills
-  # -- Mount path inside the pod
+  # -- Shared skills are included in $HOME/.agents/skills. A different path
+  # adds a read-only alias to the same composed view for native Agents.
   mountPath: /home/vibe/.aks/skills
   # -- ClawHub skill package names (reserved for future init-skills implementation).
   clawHub: []
@@ -701,3 +702,9 @@ podDisruptionBudget:
 execRestriction:
   # -- Enable the exec restriction policy
   enabled: true
+memoryContext:
+  # -- Install the helper in ordinary Agent runtimes; protected Sandbox rendering retains its upstream contract.
+  enabled: true
+  # -- Optional full image reference; empty follows global.registry/version.
+  image: ""
+  home: /home/vibe

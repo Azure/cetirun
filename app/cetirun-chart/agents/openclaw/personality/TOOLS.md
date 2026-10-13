@@ -4,7 +4,7 @@ Skills define _how_ tools work. This file is for _your_ specifics — the stuff 
 
 ## Shared Skills
 
-AKS shared skills are mounted at `/home/vibe/.aks/skills` (read-only). These are synced from the aks-skills repo and include skills like kusto-query, icm-read, tsg-search, code-search, and geneva-query. Check individual SKILL.md files in each skill directory for usage details.
+Shared skills are available at `$HOME/.agents/skills` (read-only), alongside the platform's `cetirun-memory` skill. Check individual SKILL.md files in each skill directory for usage details.
 
 ## What Else Goes Here
 

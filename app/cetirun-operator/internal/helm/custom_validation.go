@@ -446,7 +446,11 @@ func (p *PreparedRelease) validateCustomObject(obj map[string]any, kind, name st
 		if p.desktopEnabled() {
 			containerCount++
 		}
-		if len(pod.Containers) != containerCount || len(pod.InitContainers) != 1 ||
+		initCount := 1
+		if b.Memory != nil {
+			initCount++
+		}
+		if len(pod.Containers) != containerCount || len(pod.InitContainers) != initCount ||
 			pod.AutomountServiceAccountToken == nil || *pod.AutomountServiceAccountToken || pod.ServiceAccountName != name ||
 			!reflect.DeepEqual(pod.SecurityContext, &corev1.PodSecurityContext{RunAsNonRoot: ptr.To(true),
 				FSGroup: ptr.To(b.Home.FSGroup), FSGroupChangePolicy: ptr.To(corev1.FSGroupChangeOnRootMismatch),
@@ -454,6 +458,9 @@ func (p *PreparedRelease) validateCustomObject(obj map[string]any, kind, name st
 			return fail()
 		}
 		if p.desktopEnabled() && !equality.Semantic.DeepEqual(pod.Containers[1], p.desktopContainer()) {
+			return fail()
+		}
+		if b.Memory != nil && !equality.Semantic.DeepEqual(pod.InitContainers[0], memoryInit(b.Memory)) {
 			return fail()
 		}
 		for _, key := range []string{"initContainers", "containers"} {
@@ -468,6 +475,9 @@ func (p *PreparedRelease) validateCustomObject(obj map[string]any, kind, name st
 			}
 		}
 		main, init := pod.Containers[0], pod.InitContainers[0]
+		if b.Memory != nil {
+			init = pod.InitContainers[1]
+		}
 		expectedResources, err := runtimebindings.ValidateResources(p.Values["resources"])
 		if err != nil || !equality.Semantic.DeepEqual(main.Resources, expectedResources) {
 			return fail()
@@ -493,6 +503,9 @@ func (p *PreparedRelease) validateCustomObject(obj map[string]any, kind, name st
 				corev1.EnvVar{Name: "CETIRUN_WEB_BASE_PATH", Value: "/ui/" + b.AgentName + "/"},
 				corev1.EnvVar{Name: "CETIRUN_WEB_INSTANCE", Value: b.AgentUID})
 		}
+		if b.Memory != nil {
+			env = append(env, memoryEnvironment(p.Agent.HomeDir)...)
+		}
 		if main.Name != p.chart.Name() || init.Name != "init-home-data" || len(main.Command) != 0 ||
 			!reflect.DeepEqual(init.Command, []string{"/bin/sh", "/etc/cetirun/custom-init-home.sh"}) ||
 			!reflect.DeepEqual(main.Env, env) || !reflect.DeepEqual(init.Env, p.customInitEnv()) {
@@ -512,10 +525,17 @@ func (p *PreparedRelease) validateCustomObject(obj map[string]any, kind, name st
 			_, pvc := p.sharedSkillsNames(b.Namespace.Name)
 			volumes = append(volumes,
 				corev1.Volume{Name: "shared-skills", VolumeSource: corev1.VolumeSource{
-					PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: pvc, ReadOnly: true}}},
-				corev1.Volume{Name: "context-view", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}})
+					PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: pvc, ReadOnly: true}}})
 		}
-		if !reflect.DeepEqual(main.VolumeMounts, p.customMainMounts()) ||
+		if p.sharedSkillsEnabled() || b.Memory != nil {
+			volumes = append(volumes, runtimebindings.ContextVolume())
+		}
+		mounts := p.customMainMounts()
+		if b.Memory != nil {
+			mounts = append(mounts, memoryMounts()...)
+			volumes = append(volumes, memoryVolumes()...)
+		}
+		if !reflect.DeepEqual(main.VolumeMounts, mounts) ||
 			!reflect.DeepEqual(init.VolumeMounts, p.customInitMounts()) || !reflect.DeepEqual(pod.Volumes, volumes) {
 			return fail()
 		}

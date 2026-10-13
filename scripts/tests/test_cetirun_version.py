@@ -45,6 +45,7 @@ REJECTED_VERSIONS = (
 )
 
 VERSION_FILES = (
+    "app/cetirun-memory-context/assets/adapters/openclaw/package.json",
     "app/cetirun-chart/Chart.yaml",
     "app/cetirun-operator/chart/Chart.yaml",
     "app/cetirun-portal/chart/Chart.yaml",
@@ -121,7 +122,7 @@ class CetiRunVersionTests(unittest.TestCase):
                         continue  # Updated by Helm, not the Python setter.
                     self.assertIn(version, (self.root / relative).read_text(), relative)
                 self.assertEqual(
-                    MODULE.top_level_yaml(self.root / VERSION_FILES[0], "version"), version
+                    MODULE.top_level_yaml(self.root / "app/cetirun-chart/Chart.yaml", "version"), version
                 )
                 for relative in (
                     "app/cetirun-portal/web/package.json",
@@ -133,7 +134,13 @@ class CetiRunVersionTests(unittest.TestCase):
                     self.assertEqual(json.loads((self.root / relative).read_text())["version"], version)
 
     @unittest.skipUnless(shutil.which("helm") and shutil.which("make"), "requires Helm and Make")
+    @patch.dict(os.environ, {"MAKEFLAGS": " -- VERSION=9.8.7", "VERSION": "9.8.7"})
     def test_make_set_version(self):
+        # Each fixture tests its own version, not the outer Make invocation's.
+        env = {
+            name: value for name, value in os.environ.items()
+            if name not in {"MAKEFLAGS", "MFLAGS", "MAKELEVEL", "MAKEOVERRIDES", "MAKEFILES", "VERSION"}
+        }
         for relative in ("Makefile", "scripts/cetirun-version.py", "scripts/cetirun-release-metadata.sh"):
             destination = self.root / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
@@ -147,7 +154,7 @@ class CetiRunVersionTests(unittest.TestCase):
                     if target == "set-version":
                         command.append(f"VERSION={version}")
                     result = subprocess.run(
-                        command, cwd=self.root, text=True, capture_output=True, timeout=30
+                        command, cwd=self.root, env=env, text=True, capture_output=True, timeout=30
                     )
                     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 MODULE.check_version(version)

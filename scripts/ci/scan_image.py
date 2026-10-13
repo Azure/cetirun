@@ -17,6 +17,7 @@ TRIVY = (
     "@sha256:493766e398dcdb680b4084ba396139c495466f4229698b5da7be79d61fa5f5b3"
 )
 IMAGES = (
+    "cetirun-memory-context:validation",
     "cetirun-operator:validation",
     "cetirun-terminal:validation",
     "cetirun-portal:validation",

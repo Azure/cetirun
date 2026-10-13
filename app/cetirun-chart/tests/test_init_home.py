@@ -142,6 +142,104 @@ def test_corrupt_config_is_preserved_and_not_logged(agent):
     assert "[agent-init] complete" not in result.stderr
 
 
+def test_openclaw_disabling_memory_removes_only_platform_plugin_config(agent):
+    if agent["kind"] != "openclaw":
+        return
+    source = agent["config"] / "openclaw.json"
+    config = json.loads(source.read_text())
+    config["plugins"] = {
+        "allow": ["cetirun-memory-context", "fixture-plugin"],
+        "load": {"paths": ["/opt/cetirun-memory/adapters/openclaw", "/fixture/plugin"]},
+        "entries": {"cetirun-memory-context": {"enabled": True}, "fixture-plugin": {"enabled": True}},
+    }
+    config["skills"] = {"load": {"extraDirs": ["/home/vibe/.agents/skills", "/fixture/skills"]}}
+    source.write_text(json.dumps(config))
+    assert run(agent).returncode == 0
+    del config["plugins"]
+    del config["skills"]
+    source.write_text(json.dumps(config))
+    disabled = run(agent)
+    assert disabled.returncode == 0, disabled.stderr
+    saved = read_config(agent)
+    assert saved["plugins"]["allow"] == ["fixture-plugin"]
+    assert saved["plugins"]["load"]["paths"] == ["/fixture/plugin"]
+    assert saved["plugins"]["entries"] == {"fixture-plugin": {"enabled": True}}
+    assert saved["skills"]["load"]["extraDirs"] == ["/fixture/skills"]
+    assert run(agent).returncode == 0
+    assert read_config(agent) == saved
+
+
+def test_memory_upgrade_preserves_home_plugin_and_skill_lists(agent):
+    assert run(agent).returncode == 0
+    saved = read_config(agent)
+    source = agent["config"] / ("openclaw.json" if agent["kind"] == "openclaw" else "hermes-config.yaml")
+    desired = yaml.safe_load(source.read_text())
+    if agent["kind"] == "openclaw":
+        saved["plugins"] = {"allow": ["home-plugin"], "load": {"paths": ["/fixture/home-plugin"]},
+                            "entries": {"home-plugin": {"enabled": True}}}
+        saved["skills"] = {"load": {"extraDirs": ["/fixture/home-skills"]}}
+        desired["plugins"] = {"allow": ["home-plugin", "cetirun-memory-context", "chart-plugin"],
+                              "load": {"paths": ["/opt/cetirun-memory/adapters/openclaw", "/fixture/chart-plugin"]},
+                              "entries": {"cetirun-memory-context": {"enabled": True}, "chart-plugin": {"enabled": True}}}
+        desired["skills"] = {"load": {"extraDirs": ["/home/vibe/.agents/skills", "/fixture/chart-skills"]}}
+    else:
+        saved["plugins"] = {"enabled": ["home-plugin"]}
+        saved["skills"] = {"external_dirs": ["/fixture/home-skills"]}
+        desired["plugins"] = {"enabled": ["cetirun-memory-context", "chart-plugin"]}
+        desired["skills"] = {"external_dirs": ["/home/vibe/.agents/skills", "/fixture/chart-skills"]}
+    agent["config_file"].write_text(json.dumps(saved))
+    source.write_text(json.dumps(desired))
+    for _ in range(2):
+        result = run(agent)
+        assert result.returncode == 0, result.stderr
+        enabled = read_config(agent)
+        if agent["kind"] == "openclaw":
+            assert enabled["plugins"]["allow"] == ["home-plugin", "cetirun-memory-context", "chart-plugin"]
+            assert enabled["plugins"]["load"]["paths"] == ["/fixture/home-plugin", "/opt/cetirun-memory/adapters/openclaw", "/fixture/chart-plugin"]
+            assert enabled["skills"]["load"]["extraDirs"] == ["/fixture/home-skills", "/home/vibe/.agents/skills", "/fixture/chart-skills"]
+        else:
+            assert enabled["plugins"]["enabled"] == ["home-plugin", "cetirun-memory-context", "chart-plugin"]
+            assert enabled["skills"]["external_dirs"] == ["/fixture/home-skills", "/home/vibe/.agents/skills", "/fixture/chart-skills"]
+    if agent["kind"] == "openclaw":
+        desired["plugins"] = {"allow": ["home-plugin", "chart-plugin"], "load": {"paths": ["/fixture/chart-plugin"]}}
+        desired["skills"] = {"load": {"extraDirs": ["/fixture/chart-skills"]}}
+    else:
+        desired["plugins"] = {"enabled": ["chart-plugin"]}
+        desired["skills"] = {"external_dirs": ["/fixture/chart-skills"]}
+    source.write_text(json.dumps(desired))
+    for _ in range(2):
+        result = run(agent)
+        assert result.returncode == 0, result.stderr
+        disabled = read_config(agent)
+        if agent["kind"] == "openclaw":
+            assert disabled["plugins"]["allow"] == ["home-plugin", "chart-plugin"]
+            assert disabled["plugins"]["load"]["paths"] == ["/fixture/home-plugin", "/fixture/chart-plugin"]
+            assert disabled["skills"]["load"]["extraDirs"] == ["/fixture/home-skills", "/fixture/chart-skills"]
+            assert "cetirun-memory-context" not in disabled["plugins"]["entries"]
+        else:
+            assert disabled["plugins"]["enabled"] == ["home-plugin", "chart-plugin"]
+            assert disabled["skills"]["external_dirs"] == ["/fixture/home-skills", "/fixture/chart-skills"]
+
+
+def test_hermes_null_generated_sections_preserve_home_lists(agent):
+    if agent["kind"] != "hermes":
+        return
+    assert run(agent).returncode == 0
+    saved = read_config(agent)
+    saved["plugins"] = {"enabled": ["home-plugin", "cetirun-memory-context"]}
+    saved["skills"] = {"external_dirs": ["/fixture/home-skills", "/home/vibe/.agents/skills"]}
+    agent["config_file"].write_text(json.dumps(saved))
+    source = agent["config"] / "hermes-config.yaml"
+    desired = yaml.safe_load(source.read_text())
+    desired.update(plugins=None, skills=None)
+    source.write_text(json.dumps(desired))
+    result = run(agent)
+    assert result.returncode == 0, result.stderr
+    actual = read_config(agent)
+    assert actual["plugins"]["enabled"] == ["home-plugin"]
+    assert actual["skills"]["external_dirs"] == ["/fixture/home-skills"]
+
+
 def test_native_failure_after_seed_resumes_without_recopy(agent):
     source = agent["config"] / ("openclaw.json" if agent["kind"] == "openclaw" else "hermes-config.yaml")
     saved = source.read_text()

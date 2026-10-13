@@ -43,7 +43,7 @@ func NewClient() *Client {
 	return &Client{HTTP: &http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
 }
 
-func (c *Client) do(ctx context.Context, target Target, method, route string, body io.Reader) (*http.Response, error) {
+func (c *Client) do(ctx context.Context, target Target, method, route string, body io.Reader, memoryMode string) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, method, target.BaseURL+route, body)
 	if err != nil {
 		return nil, ErrProtocol
@@ -55,6 +55,9 @@ func (c *Client) do(ctx context.Context, target Target, method, route string, bo
 		req.Header.Set("X-Envoy-Max-Retries", "0")
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Accept", "text/event-stream, application/json")
+		if memoryMode == "off" || memoryMode == "no-capture" {
+			req.Header.Set("X-CetiRun-Memory-Mode", memoryMode)
+		}
 	}
 	res, err := c.HTTP.Do(req)
 	if err != nil {
@@ -74,7 +77,7 @@ func readBounded(reader io.Reader, limit int64) ([]byte, error) {
 func (c *Client) Models(ctx context.Context, target Target) (Models, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	res, err := c.do(ctx, target, http.MethodGet, "/v1/models", nil)
+	res, err := c.do(ctx, target, http.MethodGet, "/v1/models", nil, "")
 	if err != nil {
 		return Models{}, err
 	}
@@ -100,7 +103,7 @@ func Error(w http.ResponseWriter, status int, code, message string) {
 func (c *Client) Complete(ctx context.Context, w http.ResponseWriter, target Target, request Request, requestID string) {
 	raw, _ := json.Marshal(request)
 	w.Header().Set("X-CetiRun-Chat-Dispatch", "started")
-	res, err := c.do(ctx, target, http.MethodPost, "/v1/chat/completions", io.NopCloser(strings.NewReader(string(raw))))
+	res, err := c.do(ctx, target, http.MethodPost, "/v1/chat/completions", io.NopCloser(strings.NewReader(string(raw))), request.MemoryMode)
 	if err != nil {
 		Error(w, 502, "agent_request_failed", "The connection ended. The Agent may have executed this request.")
 		return
