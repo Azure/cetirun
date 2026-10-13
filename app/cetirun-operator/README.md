@@ -382,6 +382,9 @@ and [explicit command](cmd/sandbox-config-change/) submit real Team, Sandbox and
 AgentPolicy updates and deletions through the coordination protocol. They are not
 a runtime adapter or an execution switch. Creation, Agent changes and other
 execution sources remain outside this command.
+The public [configuration coordination client](configurationcoordination/) is
+the narrow in-process facade for trusted platform writers such as the Portal;
+it reuses these adapters and does not define a second protocol.
 
 Both before and proposed objects must retain the original name, UID and resource
 version. The adapter verifies the authoritative before image, pins the complete

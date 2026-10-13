@@ -119,6 +119,14 @@ aiGateway:
   # operator's namespace).
   catalogNamespace: cetirun-system
 
+# -- Optional UID-pinned authority shared with strict Sandbox admission.
+# Configure all three fields when protected AgentPolicy updates and deletions
+# must use the platform's configuration-change coordination protocol.
+configurationCoordination:
+  namespace: ""
+  name: ""
+  uid: ""
+
 agentIdentity:
   tenantId: ""
   portalClientId: ""

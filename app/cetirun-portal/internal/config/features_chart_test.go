@@ -45,3 +45,37 @@ func TestCustomChartKeepsAgentIdentitySeparate(t *testing.T) {
 		}
 	}
 }
+
+func TestConfigurationCoordinationChartWiring(t *testing.T) {
+	helm, err := exec.LookPath("helm")
+	if err != nil {
+		t.Skip("Helm is required for the Portal chart rendering check")
+	}
+	base := []string{"template", "portal", "../../chart", "--set", "istio.host=portal.example.com"}
+	partial := append(append([]string{}, base...), "--set", "configurationCoordination.name=configuration-state")
+	output, err := exec.Command(helm, partial...).CombinedOutput()
+	if err == nil || !strings.Contains(string(output), "requires namespace, name and uid together") {
+		t.Fatalf("partial coordination authority was accepted: %v\n%s", err, output)
+	}
+	configured := append(append([]string{}, base...),
+		"--set", "configurationCoordination.namespace=cetirun-system",
+		"--set", "configurationCoordination.name=configuration-state",
+		"--set", "configurationCoordination.uid=authority-uid")
+	output, err = exec.Command(helm, configured...).CombinedOutput()
+	if err != nil {
+		t.Fatalf("coordination chart render: %v\n%s", err, output)
+	}
+	rendered := string(output)
+	for _, expected := range []string{
+		"name: CONFIGURATION_COORDINATION_NAMESPACE",
+		"name: CONFIGURATION_COORDINATION_NAME",
+		"name: CONFIGURATION_COORDINATION_UID",
+		"name: cetirun-portal-configuration-coordination",
+		`resourceNames: ["configuration-state"]`,
+		`verbs: ["get", "update"]`,
+	} {
+		if !strings.Contains(rendered, expected) {
+			t.Errorf("coordination chart output is missing %q", expected)
+		}
+	}
+}

@@ -288,6 +288,14 @@ func (h *AdminPolicyHandler) UpdatePolicy(w http.ResponseWriter, r *http.Request
 			writeError(w, http.StatusConflict, "policy_changed", kube.ErrAgentPolicyChanged.Error())
 			return
 		}
+		if kube.IsConfigurationCoordinationConflict(err) {
+			writeError(w, http.StatusConflict, "policy_change_conflict", "Another coordinated policy change or governed execution is in progress; retry after it completes")
+			return
+		}
+		if kube.IsConfigurationCoordinationUnavailable(err) {
+			writeError(w, http.StatusServiceUnavailable, "policy_change_unavailable", "Policy coordination is unavailable or the write outcome is uncertain; do not resubmit until an administrator recovers the recorded operation")
+			return
+		}
 		slog.Error("admin: update agent policy failed", "name", name, "error", err)
 		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to update agent policy")
 		return
@@ -322,6 +330,14 @@ func (h *AdminPolicyHandler) DeletePolicy(w http.ResponseWriter, r *http.Request
 		}
 		if errors.Is(err, kube.ErrAgentPolicyChanged) || apierrors.IsConflict(err) {
 			writeError(w, http.StatusConflict, "policy_changed", kube.ErrAgentPolicyChanged.Error())
+			return
+		}
+		if kube.IsConfigurationCoordinationConflict(err) {
+			writeError(w, http.StatusConflict, "policy_change_conflict", "Another coordinated policy change or governed execution is in progress; retry after it completes")
+			return
+		}
+		if kube.IsConfigurationCoordinationUnavailable(err) {
+			writeError(w, http.StatusServiceUnavailable, "policy_change_unavailable", "Policy coordination is unavailable or the delete outcome is uncertain; do not resubmit until an administrator recovers the recorded operation")
 			return
 		}
 		slog.Error("admin: delete agent policy failed", "name", name, "error", err)

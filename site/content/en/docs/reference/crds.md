@@ -308,9 +308,26 @@ These admin-only endpoints manage `AgentPolicy` resources:
 - `GET`, `PUT`, and `DELETE /api/v1/admin/policies/{name}`
 
 Update and delete requests include the UID and resource version returned by a
-previous read. Stale requests fail with `409 Conflict`. Updates patch only the
+previous read. Stale requests fail with `409 Conflict`. Updates change only the
 Portal-managed fields and preserve security, network, identity, Kubernetes
 access, and other fields owned by their executing components.
+
+When strict Sandbox admission uses a UID-pinned configuration authority, set
+the Portal chart's `configurationCoordination.namespace`, `name`, and `uid` to
+the same authority configured by the Operator. The platform chart rejects
+mismatched values. The Portal then reserves the exact whole-resource mutation,
+records `Changing` before submitting one conditional Update or background
+Delete, observes the result, and releases only a definitively completed
+operation. Its namespaced Role permits access only to the named authority
+ConfigMap. UID/resource-version checks remain request concurrency protection;
+they do not replace this admission contract.
+
+A competing reservation returns `409 Conflict`. An unavailable authority or
+uncertain API write returns `503 Service Unavailable` and deliberately retains
+the reservation; do not blindly repeat the mutation. Recover the recorded
+operation with the Operator's configuration-change procedure and the exact
+original inputs. Creation is not covered because configuration coordination
+protects updates and deletions, not new resources.
 
 The API validates model access and budgets as one unit: Copilot or shared model
 access requires a positive default and maximum monthly USD budget, and the

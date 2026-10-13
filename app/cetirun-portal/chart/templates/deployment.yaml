@@ -77,6 +77,14 @@ spec:
             - name: AI_GATEWAY_CATALOG_NAMESPACE
               value: {{ default "cetirun-system" ((.Values.aiGateway).catalogNamespace) | quote }}
             {{- end }}
+            {{- if .Values.configurationCoordination.name }}
+            - name: CONFIGURATION_COORDINATION_NAMESPACE
+              value: {{ .Values.configurationCoordination.namespace | quote }}
+            - name: CONFIGURATION_COORDINATION_NAME
+              value: {{ .Values.configurationCoordination.name | quote }}
+            - name: CONFIGURATION_COORDINATION_UID
+              value: {{ .Values.configurationCoordination.uid | quote }}
+            {{- end }}
             {{- if default false ((.Values.features).agentIdentityEnabled) }}
             - name: ENTRA_TENANT_ID
               value: {{ required "agentIdentity.tenantId is required when Agent Identity is enabled" .Values.agentIdentity.tenantId | quote }}

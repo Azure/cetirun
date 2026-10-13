@@ -189,7 +189,9 @@ func TestAdminPolicyRejectsStaleUpdateAndDelete(t *testing.T) {
 		t.Fatal(err)
 	}
 	version := kube.AgentPolicyVersion{UID: stale.UID, ResourceVersion: stale.ResourceVersion}
-	if _, err := h.Kube.UpdateAgentPolicySpec(context.Background(), "standard", stale.Spec, version); err != nil {
+	changed := *stale.Spec.DeepCopy()
+	changed.Harnesses.Allowed = []cetirunv1alpha1.AgentType{cetirunv1alpha1.AgentTypeHermes}
+	if _, err := h.Kube.UpdateAgentPolicySpec(context.Background(), "standard", changed, version); err != nil {
 		t.Fatal(err)
 	}
 	req := validPolicyRequest()
