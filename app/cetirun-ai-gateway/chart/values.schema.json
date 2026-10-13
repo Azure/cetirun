@@ -217,6 +217,55 @@
             },
             "required": ["bundled"]
         },
+        "requestLog": {
+            "type": "object",
+            "description": "One JSON line of metadata on stdout for every model call, for the cluster's container log collection. No request or response content. Registered by the image's entrypoint, not in LiteLLM's configuration.",
+            "properties": {
+                "enabled": {"type": "boolean", "description": "Write the line for each call", "default": true}
+            }
+        },
+        "spendLogs": {
+            "type": "object",
+            "description": "LiteLLM's own row per call in LiteLLM_SpendLogs, read by the console's request log pages. Spend, budgets and daily usage totals are kept either way. Turned off only together with the request log. The cetirun-platform chart turns it off.",
+            "properties": {
+                "enabled": {"type": "boolean", "description": "Write a row to LiteLLM_SpendLogs for each call. false needs requestLog.enabled.", "default": true}
+            }
+        },
+        "metrics": {
+            "type": "object",
+            "description": "LiteLLM's Prometheus metrics, served on a separate port without authentication",
+            "properties": {
+                "enabled": {"type": "boolean", "description": "Serve the metrics", "default": false},
+                "port": {
+                    "type": ["integer", "null"],
+                    "description": "Port of the metrics endpoint, at /metrics. Unset, it is 9090, or 9091 when service.port is 9090. Must differ from service.port.",
+                    "minimum": 1,
+                    "maximum": 65535,
+                    "default": null
+                },
+                "excludeLabels": {
+                    "type": "array",
+                    "description": "Labels left out of every metric",
+                    "items": {"type": "string", "minLength": 1},
+                    "default": ["client_ip", "user_agent", "user_email"]
+                },
+                "podMonitor": {
+                    "type": "object",
+                    "description": "A PodMonitor for the Gateway pods, created only when the cluster serves its API",
+                    "properties": {
+                        "enabled": {"type": "boolean", "default": false},
+                        "apiVersion": {
+                            "type": "string",
+                            "description": "azmonitoring.coreos.com/v1 for Azure Monitor managed Prometheus, monitoring.coreos.com/v1 for the Prometheus Operator",
+                            "enum": ["azmonitoring.coreos.com/v1", "monitoring.coreos.com/v1"],
+                            "default": "azmonitoring.coreos.com/v1"
+                        },
+                        "interval": {"type": "string", "description": "Scrape interval", "minLength": 1, "default": "30s"},
+                        "labels": {"type": "object", "additionalProperties": {"type": "string"}, "default": {}}
+                    }
+                }
+            }
+        },
         "service": {
             "type": "object",
             "properties": {

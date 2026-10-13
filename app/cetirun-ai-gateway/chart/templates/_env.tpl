@@ -76,4 +76,40 @@ Everything the proxy needs, including credentials held in chart-managed Secrets.
       name: {{ include "cetirun-ai-gateway.redisPasswordSecret" . }}
       key: {{ include "cetirun-ai-gateway.redisPasswordKey" . }}
 {{- end }}
+{{- if .Values.metrics.enabled }}
+{{- /* The proxy records its samples in files here, and the separate metrics
+       process serves them from there. Set from the start, so every sample the
+       proxy records goes to the files. */}}
+- name: PROMETHEUS_MULTIPROC_DIR
+  value: {{ include "cetirun-ai-gateway.metricsDirectory" . }}
+{{- end }}
+{{- if .Values.requestLog.enabled }}
+{{- /* The image's entrypoint registers the request log callback in code,
+       outside LiteLLM's configuration: a configured callback depends on how
+       LiteLLM combines its configuration with settings saved in its database,
+       and an image without the callback cannot start with a configuration
+       that names it. An image built before the request log ignores these
+       variables. */}}
+- name: CETIRUN_REQUEST_LOG
+  value: "true"
+{{- if not .Values.spendLogs.enabled }}
+{{- /* Applied by the entrypoint only together with the request log, so a
+       Gateway that cannot write the request log keeps LiteLLM's spend log. */}}
+- name: CETIRUN_SPEND_LOGS
+  value: "false"
+{{- end }}
+{{- end }}
+{{ include "cetirun-ai-gateway.monitoringEnv" . }}
+{{- end }}
+
+{{/*
+Every container of the release that holds a credential in its environment gets
+this. Container Insights otherwise copies each container's environment, values
+from Secrets included, into its ContainerInventory table once a minute, on any
+cluster where environment variable collection is on, as it is by default. It
+only applies to that collection; nothing else reads the variable.
+*/}}
+{{- define "cetirun-ai-gateway.monitoringEnv" -}}
+- name: AZMON_COLLECT_ENV
+  value: "False"
 {{- end }}

@@ -297,3 +297,57 @@ Provider credentials must come from exactly one source.
 {{- fail "set either providerCredentials.existingSecret or providerCredentials.inline, not both." }}
 {{- end }}
 {{- end }}
+
+{{/*
+Where the proxy and the metrics process share their Prometheus samples.
+*/}}
+{{- define "cetirun-ai-gateway.metricsDirectory" -}}
+/tmp/litellm-metrics
+{{- end }}
+
+{{/*
+Whether the cluster serves the PodMonitor API the chart is configured for.
+Azure Monitor managed Prometheus installs azmonitoring.coreos.com; a cluster
+without it has no such API, and installing a PodMonitor there would fail.
+*/}}
+{{- define "cetirun-ai-gateway.podMonitorAvailable" -}}
+{{- if .Capabilities.APIVersions.Has (printf "%s/PodMonitor" .Values.metrics.podMonitor.apiVersion) }}true{{ end }}
+{{- end }}
+
+{{/*
+The metrics port: metrics.port when set, otherwise 9090, or 9091 when the proxy
+already listens on 9090 (service.port), so turning metrics on never needs a
+port to be chosen by hand.
+*/}}
+{{- define "cetirun-ai-gateway.metricsPort" -}}
+{{- if .Values.metrics.port -}}
+{{- int .Values.metrics.port -}}
+{{- else if eq (int .Values.service.port) 9090 -}}
+9091
+{{- else -}}
+9090
+{{- end -}}
+{{- end }}
+
+{{/*
+A metrics port set by hand has to be its own, and a PodMonitor needs metrics
+to scrape.
+*/}}
+{{- define "cetirun-ai-gateway.validateMetrics" -}}
+{{- if and .Values.metrics.enabled .Values.metrics.port (eq (int .Values.metrics.port) (int .Values.service.port)) }}
+{{- fail (printf "metrics.port %d is also service.port. The metrics process needs a port of its own: set metrics.port to another one, or leave it unset to have one chosen." (int .Values.metrics.port)) }}
+{{- end }}
+{{- if and .Values.metrics.podMonitor.enabled (not .Values.metrics.enabled) }}
+{{- fail "metrics.podMonitor.enabled is set while metrics.enabled is false, so the PodMonitor would have nothing to scrape. Set metrics.enabled as well, or turn the PodMonitor off." }}
+{{- end }}
+{{- end }}
+
+{{/*
+LiteLLM's spend log is turned off only in favour of the request log, which then
+keeps the record of each call.
+*/}}
+{{- define "cetirun-ai-gateway.validateRequestRecords" -}}
+{{- if and (not .Values.spendLogs.enabled) (not .Values.requestLog.enabled) }}
+{{- fail "spendLogs.enabled is false while requestLog.enabled is false, which would leave no record of each call. LiteLLM's spend log is turned off only together with the request log: set requestLog.enabled as well, or keep spendLogs.enabled." }}
+{{- end }}
+{{- end }}

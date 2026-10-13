@@ -698,9 +698,13 @@ This is why the chart writes as little as possible into those blocks.
 ### Values the chart owns
 
 `model_list`; `general_settings.store_model_in_db`; in `litellm_settings`,
-`num_retries`, the unpriced-model block and, when Redis is configured, the Redis
+`num_retries`, the unpriced-model block, `global_disable_no_log_param`, the
+metrics callback and its settings, and, when Redis is configured, the Redis
 cache; and `router_settings` when Redis is configured. Everything else in
-LiteLLM's configuration is left alone.
+LiteLLM's configuration is left alone. The request log and the spend log
+setting are not in LiteLLM's configuration at all: the image's entrypoint
+applies them (see [One log line per call](#one-log-line-per-call)), so saving
+a settings block cannot remove them.
 
 ### Models added through the console survive upgrades
 
@@ -769,6 +773,181 @@ minutes:
 A highly available PostgreSQL keeps this to the length of a failover. The spend
 lost is bounded by what the Gateway serves meanwhile, which the 503s keep small.
 
+## Request log and metrics
+
+LiteLLM keeps a record of each call in its database, which the console's request
+view reads, and daily totals per key, user, Team and model. Neither leaves the
+Gateway. For collection elsewhere, the chart adds a log line per call and can
+serve LiteLLM's Prometheus metrics. Measured on LiteLLM 1.101.0, on AKS with
+Container Insights and Azure Monitor managed Prometheus.
+
+### One log line per call
+
+With `requestLog.enabled`, the default, each model call writes one JSON line to
+the Gateway's stdout, through a callback in the image. It records the call's
+metadata: the virtual key's alias and hash, the user, the Team, and the Agent,
+from the metadata the CetiRun operator puts on the key; the model, the provider
+model and the provider's host; tokens, with cached and reasoning tokens where
+the provider reports them; spend; duration and, when streamed, time to first
+token; the client's address and user agent; and, for a failure, the error.
+Abridged:
+
+```json
+{"log_type":"cetirun.ai_gateway.request","schema_version":1,"time":"2026-10-08T13:13:27.780Z","status":"success","route":"/v1/chat/completions","stream":false,"model":"gpt-4o","provider_model":"azure/prod-gpt-4o","prompt_tokens":1000,"completion_tokens":1000,"cached_tokens":800,"spend":0.014,"key_alias":"cetirun-alice-agent-1234","user_id":"alice","team_alias":"research","key_metadata":{"cetirun_agent":"alice-agent","cetirun_team":"research"},"duration_ms":686}
+```
+
+Every call was recorded: across two replicas, 40 calls made 40 lines, covering
+the Chat Completions and Responses APIs, streamed and not, and failures. The
+spend in the lines added up to the key's spend.
+
+With Container Insights, `ContainerLogV2` parses each line into the dynamic
+`LogMessage` column:
+
+```kusto
+ContainerLogV2
+| where ContainerName == "gateway"
+| where tostring(LogMessage.log_type) == "cetirun.ai_gateway.request"
+| summarize calls = count(), spend = sum(todouble(LogMessage.spend))
+    by agent = tostring(LogMessage.key_metadata.cetirun_agent), model = tostring(LogMessage.model)
+```
+
+Lines reached the Log Analytics workspace about 80 seconds after the call, and
+each was billed at 1.4 to 1.9 KB, the larger ones for the Responses API, whose
+response IDs are long.
+
+The cluster has to be collecting container logs. On AKS that takes the
+monitoring add-on: a Container Insights data collection rule and its
+association alone, without the add-on, collected nothing, and no `ama-logs`
+pods ran.
+
+**No content.** The line carries no request or response content, and has no
+setting that adds it. Values a client chooses, such as tags and the user
+agent, are cut short, and a line stays under 15 KiB: container runtimes split
+longer lines, and Container Insights stores the pieces as separate records,
+none of them valid JSON. The callback also drops a client's
+`litellm_request_debug` field: with it, LiteLLM printed that call's prompt and
+the provider's raw response to the log.
+
+**Callers cannot leave it out.** A client can ask LiteLLM to skip its logging
+callbacks for a call by sending `"no-log": true`; measured without the chart's
+setting, such a call wrote no line. The chart always sets
+`litellm_settings.global_disable_no_log_param`, which makes LiteLLM ignore the
+field.
+
+**Registered by the image, not in LiteLLM's configuration.** The chart sets
+`CETIRUN_REQUEST_LOG=true` on the Gateway container, and the image's entrypoint
+registers the callback before LiteLLM loads its configuration. A callback
+listed in `litellm_settings.callbacks` would depend on how LiteLLM combines its
+configuration file with settings saved in its database: reading its
+configuration with the database connected, it replaces a configured list with
+a saved one. LiteLLM 1.101.0 reads the file before it connects and adds saved
+callbacks to the configured ones later, so a saved list left a configured
+callback in place when tested, but that rests on LiteLLM's startup order. A
+configuration that names the callback also keeps an image without it from
+starting: an image built before the request log exited at startup with an
+`ImportError`. The entrypoint's registration depends on neither, and an image
+built before the request log ignores the variable and starts with the chart's
+configuration.
+
+The proxy runs as one uvicorn process per pod, as LiteLLM starts by default.
+The entrypoint refuses more workers, or another server, since they would load
+LiteLLM again without the callback; scale with `replicaCount` instead.
+
+### LiteLLM's spend log
+
+`spendLogs.enabled: false` has LiteLLM write no row per call to
+`LiteLLM_SpendLogs`. The table grows by one row for every call and is never
+trimmed unless a retention period is set in the console. The cetirun-platform
+chart turns it off, since the request log keeps the per-call record outside the
+database.
+
+It is turned off only together with the request log, so no configuration leaves
+the Gateway without a record of each call: `spendLogs.enabled: false` needs
+`requestLog.enabled`, and the image's entrypoint turns the spend log off only
+once it has registered the request log callback. It sets LiteLLM's
+`disable_spend_logs` in the proxy process, not in `general_settings`, so the
+setting is not saved with a settings block and does not outlive a rollback; a
+`disable_spend_logs` written in `general_settings` still wins. An image built
+before the request log keeps writing the table.
+
+Measured with it off: 16 calls added no row, while the key's, Team's and user's
+spend each grew by exactly the calls' cost, budgets held, and the daily totals
+counted all 16. The console's usage pages read those totals and keep working.
+Its request log pages, which read `LiteLLM_SpendLogs`, stay empty. LiteLLM
+reads the setting when the proxy starts.
+
+### Credentials and Container Insights
+
+Container Insights copies the environment of every container, values taken
+from Secrets included, into its `ContainerInventory` table once a minute,
+unless environment collection is turned off for the cluster or for the
+container. The Gateway holds its master key, salt key, database connection
+string and provider keys in its environment. Every container in this chart
+that holds a credential sets `AZMON_COLLECT_ENV=False`, which turns that
+collection off for itself; the CetiRun cluster template also turns it off for
+the whole cluster.
+
+### Metrics
+
+`metrics.enabled` registers LiteLLM's Prometheus callback and serves the
+metrics at `/metrics` on `metrics.port`. Left unset, that is 9090, or 9091 when
+`service.port`, where the proxy listens, is 9090, so turning metrics on never
+needs a port chosen by hand. LiteLLM runs a
+separate process for that port, which reads the samples the proxy leaves in a
+directory they share, so a scrape never waits behind model traffic. Each
+replica serves its own samples; sum them across pods.
+
+That port has no authentication. LiteLLM also serves `/metrics` on the Service
+port, where only the master key is accepted: an Agent's key and a key without
+route limits were both refused with 401. The metrics port is not on the
+Service. Anything that can reach a Gateway pod can read every key alias, user,
+Team and spend figure the metrics carry, so restrict the port with a
+NetworkPolicy where other workloads should not read it. A CetiRun Agent's
+egress reaches only the Service port.
+
+The metrics carry the key alias and hash, user, Team, model and route as labels:
+for example `litellm_spend_metric_total`, `litellm_proxy_total_requests_metric_total`,
+`litellm_input_cached_tokens_metric_total` and `litellm_remaining_api_key_budget_metric`.
+`metrics.excludeLabels` leaves out the client's address and user agent, which
+start a new series with every Agent restart and client version, and the user's
+email address.
+
+For Azure Monitor managed Prometheus, set `metrics.podMonitor.enabled`. The
+chart creates a PodMonitor of `azmonitoring.coreos.com/v1`, the API the managed
+collector reads, when the cluster serves that API, and none otherwise, so an
+install does not fail on a cluster without managed Prometheus. Set
+`metrics.podMonitor.apiVersion` to `monitoring.coreos.com/v1` for the
+Prometheus Operator. The cetirun-platform chart turns on both the metrics and
+the PodMonitor. Measured: both replicas were scraped, and in the Azure Monitor
+workspace
+
+```promql
+sum by (api_key_alias, team_alias, user, requested_model) (litellm_spend_metric_total)
+```
+
+returned each key's spend. Querying the workspace needs the Monitoring Data
+Reader role on it.
+
+Counters lose the increments a label set makes before its first scrape and
+start again from zero when a pod restarts, so use the metrics for rates,
+trends and alerts, and the request log or the daily totals for exact spend.
+
+### Reading the totals
+
+LiteLLM's token counts include cached tokens. `prompt_tokens` counts every
+input token, and the daily totals' `cache_read_input_tokens` is the part of it
+read from the provider's prompt cache, which is charged at the lower cache
+rate. So the token counts priced at the full input rate come to more than the
+recorded spend, by the cache discount. Measured with 4,000 of 20,000 input
+tokens cached at a quarter of the input rate: the full-rate figure was 0.40,
+the recorded spend 0.37, and pricing the cached part at its own rate gave 0.37.
+
+`LiteLLM_SpendLogs`, the console's per-request record, is keyed on the
+provider's response ID, and LiteLLM silently skips a row whose ID it already
+holds. Real providers return a new ID with every response. A test backend that
+repeats one ID keeps one row for all its answers: five calls left one row while
+the key was charged for five.
+
 ## Migrations
 
 LiteLLM applies migrations on startup by default. The chart instead runs them in
@@ -810,7 +989,9 @@ non-root user 65532.
   migrations applied and the proxy became ready.
 - `cetirun-ai-gateway migrate` applies migrations; any other arguments start
   the proxy. Starting never touches a database, because the same image serves
-  the per-agent Copilot proxy, which has none.
+  the per-agent Copilot proxy, which has none. With `CETIRUN_REQUEST_LOG=true`,
+  which the chart sets, the proxy starts in the entrypoint's own process with
+  the request log callback registered.
 
 To move to a new LiteLLM release, regenerate `requirements.txt` from that
 release's upstream image, rebuild, and let the build's `pip check` name any
@@ -846,37 +1027,28 @@ cache across callers, and an uninstall that deleted the salt key while the
 database kept everything encrypted with it. It also checks behaviours only a
 running Gateway can show: that an upstream failure is not retried, that a
 replica shutting down finishes the request it is serving, that replicas
-migrate in turn, and that the bundled services refuse clients without their
-passwords.
+migrate in turn, that the bundled services refuse clients without their
+passwords, that every answered call reaches both the spend log and the request
+log, that with the spend log turned off calls are still charged and logged but
+add no spend log row, that a call sent with `"no-log": true` is still logged,
+that the metrics port serves a pod's requests while the Service port still
+requires a key, and that a `callbacks` list saved in LiteLLM's database leaves
+the request log, and the spend log setting, in place. With
+`PREVIOUS_IMAGE_TAG` set to an image built before the request log, it also
+checks that the chart still starts that image and that LiteLLM's spend log
+stays on with it.
 
 Its checks were confirmed by putting each original problem back and watching
-the test fail at the check meant to catch it. Doing that also exposed a
-weakness in the test itself, since fixed: counting every table passed on an
+the test fail at the check meant to catch it. Doing that also exposed
+weaknesses in the test itself, since fixed: counting every table passed on an
 empty database, because migration creates its own bookkeeping table even when
-it applies nothing.
+it applies nothing; and its mock provider answered every call with the same
+response ID, so LiteLLM's spend log kept one success however many there were,
+which this README once recorded as a gap in LiteLLM.
 
 ## Known gaps
 
 Recorded and deferred: none of these stops the Gateway from serving agents.
-
-**Per-request logs are incomplete with Redis configured.** In
-`LiteLLM_SpendLogs`, failed requests were recorded but successful ones mostly
-were not, even minutes later, with no error logged. Without Redis the same table
-was complete. This affects the console's request log view.
-
-**The daily aggregate does not reconcile for cached requests.** For an agent
-session where most input came from Azure's prompt cache, the token counts in
-`LiteLLM_DailyUserSpend`, priced at the rates LiteLLM holds for the model, come
-to about a third more than the spend recorded beside them. Either the token
-columns overcount or the spend undercounts. The spend figure is what budgets are
-enforced against, and it matches the key's spend in the console.
-
-What is established: the cost LiteLLM computes for an individual request is
-correct. In a controlled test through the same Responses API bridge an agent
-uses, non-streaming, with and without cache hits, each request's charge matched
-the model's rates to the token. What is not: that a streamed agent session's
-recorded spend equals the sum of those per-request costs. Settling it needs
-per-request logs, which is the first gap.
 
 **Not in the chart yet.** Redis TLS, which Azure Cache for Redis requires; a
 PodDisruptionBudget and anti-affinity; and LiteLLM's routing, fallback and

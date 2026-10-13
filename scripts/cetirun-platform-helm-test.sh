@@ -86,6 +86,30 @@ for flag in AI_GATEWAY_ENABLED FEATURE_AI_GATEWAY_ENABLED; do
     exit 1
   }
 done
+# The platform keeps each call's record outside the Gateway's database and
+# serves the Gateway's metrics for managed Prometheus. The Gateway's entrypoint
+# writes the request log and turns LiteLLM's spend log off together with it.
+grep -A1 'name: CETIRUN_REQUEST_LOG$' <<< "${output}" | grep -q 'value: "true"' || {
+  echo "FAIL: the bundled AI Gateway does not write its request log" >&2
+  exit 1
+}
+grep -A1 'name: CETIRUN_SPEND_LOGS$' <<< "${output}" | grep -q 'value: "false"' || {
+  echo "FAIL: the bundled AI Gateway still writes LiteLLM's spend log" >&2
+  exit 1
+}
+grep -q -- '- --prometheus_metrics_port$' <<< "${output}" || {
+  echo "FAIL: the bundled AI Gateway does not serve its metrics" >&2
+  exit 1
+}
+if grep -q 'kind: PodMonitor' <<< "${output}"; then
+  echo "FAIL: the platform rendered a PodMonitor for a cluster without its API" >&2
+  exit 1
+fi
+monitored=$(helm template platform "${chart_dir}" "${base_args[@]}" --api-versions azmonitoring.coreos.com/v1/PodMonitor)
+grep -q 'kind: PodMonitor' <<< "${monitored}" || {
+  echo "FAIL: the platform rendered no PodMonitor on a cluster with managed Prometheus" >&2
+  exit 1
+}
 for crd_name in agents.cetirun.microsoft.com teams.cetirun.microsoft.com \
   sandboxes.cetirun.microsoft.com agentpolicies.cetirun.microsoft.com; do
   grep -q "name: ${crd_name}" <<< "${output}" || {

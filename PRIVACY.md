@@ -72,6 +72,32 @@ Source: [chart defaults](app/cetirun-chart/values.yaml),
 [operator reconciliation](app/cetirun-operator/internal/controller/agent_controller.go),
 and [Teams adapter](app/cetirun-chart/agents/hermes/plugins/platforms/cetirun_teams/adapter.py).
 
+### AI Gateway request log and metrics
+
+The AI Gateway's `requestLog.enabled` defaults to `true`. Each model call then
+writes one JSON line to the Gateway's stdout with the call's metadata: the
+virtual key's alias and hash, the user ID, the Team, the Agent's name and UID
+recorded on the key, the model, token counts, spend, timing, the client's
+address and user agent, and error text for failed calls. Error text can quote
+the provider's response. The line carries no request or response content.
+
+`metrics.enabled` defaults to `false` in the Gateway chart and `true` in the
+platform chart. Turned on, each Gateway pod serves Prometheus metrics without
+authentication on a separate port. Their labels include virtual key aliases
+and hashes, user IDs and Team names alongside spend, and anything that can
+reach the port can read them. The platform chart also creates a PodMonitor, so
+Azure Monitor managed Prometheus collects them where it runs.
+
+The Gateway's PostgreSQL database keeps daily spend totals per key, user and
+Team, and, unless `spendLogs.enabled` is `false` as the platform chart sets it,
+LiteLLM's own record of each call.
+
+Source: [Gateway chart defaults](app/cetirun-ai-gateway/chart/values.yaml),
+[platform chart defaults](app/cetirun-platform/values.yaml),
+[request log callback](app/cetirun-ai-gateway/cetirun_ai_gateway/request_log.py),
+the [entrypoint that registers it](app/cetirun-ai-gateway/entrypoint.py),
+and [LiteLLM configuration](app/cetirun-ai-gateway/chart/templates/configmap.yaml).
+
 ### Infrastructure collection and traffic metadata
 
 The cluster template defaults `enableContainerInsights` and
@@ -215,8 +241,9 @@ and [Log Analytics configuration](infra/cluster/modules/aks-cluster.bicep).
 - Tell users which models, tools, channels, and monitoring systems receive their
   data, including whether conversation content is collected in logs.
 - Review `logger.enabled`, agent logging, `desktop.logging`,
-  `egress.accessLog.enabled`, collection rules, and metrics scraping separately.
-  Turning off the session logger alone does not disable the other paths.
+  `egress.accessLog.enabled`, the AI Gateway's `requestLog` and `metrics`,
+  collection rules, and metrics scraping separately. Turning off the session
+  logger alone does not disable the other paths.
 - Restrict access to the portal, Kubernetes Secrets, workspace volumes, desktop
   and terminal endpoints, operational logs, and monitoring workspaces. Evaluate
   administrators and automation identities as data-access roles.

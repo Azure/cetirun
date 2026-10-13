@@ -37,6 +37,10 @@ release_name="${RELEASE_NAME:-gateway}"
 # workflow builds it with scripts/ai-gateway-docker-build.sh.
 image_repository="${IMAGE_REPOSITORY:-local.cetirun.invalid/cetirun-ai-gateway}"
 image_tag="${IMAGE_TAG:-cluster-test}"
+# Optional: an image built before the request log existed, also loaded into the
+# cluster. With it set, the test checks that the chart still starts that image.
+previous_image_repository="${PREVIOUS_IMAGE_REPOSITORY:-${image_repository}}"
+previous_image_tag="${PREVIOUS_IMAGE_TAG:-}"
 keep="${KEEP:-false}"
 
 for tool in kubectl helm curl jq; do
@@ -116,14 +120,17 @@ stringData:
 # completion tokens, so spend per request is exact. A request whose content
 # contains "fail429" is answered with a 429, and GET /stats reports how many
 # such requests arrived, so the test can count upstream attempts. One whose
-# content contains "sleepN" is answered after N seconds.
+# content contains "sleepN" is answered after N seconds. Every response has an
+# id of its own, as a real provider's does: LiteLLM keys its per-request spend
+# log on that id and skips a row whose id it has already stored, so a mock that
+# repeated one id kept a single success in the log however many it served.
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: mock-provider
 data:
   mock_provider.py: |
-    import json, re, time
+    import json, re, time, uuid
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
     failed = {"count": 0}
     class H(BaseHTTPRequestHandler):
@@ -145,7 +152,7 @@ data:
             if delay:
                 time.sleep(int(delay.group(1)))
             self._send(json.dumps({
-                "id": "chatcmpl-mock", "object": "chat.completion",
+                "id": f"chatcmpl-{uuid.uuid4().hex}", "object": "chat.completion",
                 "created": int(time.time()), "model": "mock-model",
                 "choices": [{"index": 0, "finish_reason": "stop",
                              "message": {"role": "assistant", "content": "mock-ok"}}],
@@ -272,7 +279,8 @@ forward_pods() {
     fail "expected two ready Gateway pods, found ${#pods[@]}"
   fi
   pod_ports=()
-  for pod in "${pods[@]:0:2}"; do
+  pod_names=("${pods[@]:0:2}")
+  for pod in "${pod_names[@]}"; do
     kubectl port-forward -n "${namespace}" "pod/${pod}" "${port}:4000" >/dev/null 2>&1 &
     forward_pids+=("$!")
     pod_ports+=("${port}")
@@ -315,6 +323,17 @@ api_post() {
   local port="$1" path="$2" body="$3"
   curl -fs -m 30 -X POST "http://127.0.0.1:${port}${path}" \
     -H "Authorization: Bearer ${master_key}" -H 'Content-Type: application/json' -d "${body}"
+}
+
+# Successful calls in LiteLLM's per-request spend log.
+spend_log_successes() {
+  kubectl exec -n "${namespace}" "${postgresql_pod}" -- psql -U litellm -d litellm -tAc \
+    "SELECT count(*) FROM \"LiteLLM_SpendLogs\" WHERE status = 'success'"
+}
+
+# The image's request log lines a Gateway pod has written to stdout.
+request_log() {  # request_log POD
+  kubectl logs -n "${namespace}" "$1" -c gateway | grep '^{"log_type":"cetirun.ai_gateway.request"' || true
 }
 
 # The Gateway Deployment carries the chart's fullname, which also prefixes the
@@ -464,6 +483,37 @@ done
   || fail "a \$0.10 budget allowed ${allowed} requests across two replicas; expected 5"
 pass "\$0.10 budget allowed ${allowed} requests across both replicas"
 
+# Every answered call is recorded twice: in LiteLLM's spend log, which the
+# console's request view reads, and in the image's request log on stdout, for
+# the cluster's log collection. The answered calls so far are the two with the
+# master key and those the budget allowed, spread over both replicas. LiteLLM
+# writes the spend log in batches, a few seconds behind.
+echo "==> Every answered call is recorded, in the spend log and the request log"
+answered=$((2 + allowed))
+recorded=""
+for _ in $(seq 1 30); do
+  recorded="$(spend_log_successes)"
+  [ "${recorded}" = "${answered}" ] && break
+  sleep 2
+done
+[ "${recorded}" = "${answered}" ] \
+  || fail "LiteLLM_SpendLogs holds ${recorded} successful calls; ${answered} were answered"
+logged=0
+all_lines=""
+for pod in "${pod_names[@]}"; do
+  lines="$(request_log "${pod}")"
+  all_lines+="${lines}"$'\n'
+  logged=$((logged + $(grep -c '"status":"success"' <<< "${lines}" || true)))
+done
+[ "${logged}" = "${answered}" ] || fail "the request log holds ${logged} successful calls; ${answered} were answered"
+grep -q "\"key_hash\":\"[0-9a-f]\{64\}\".*\"user_agent\":\"curl" <<< "${all_lines}" \
+  || fail "the request log lines do not carry the caller"
+# The prompt was "test" and every answer "mock-ok". The log never carries content.
+if grep -q 'mock-ok' <<< "${all_lines}"; then
+  fail "the request log carries response content"
+fi
+pass "${answered} answered calls in the spend log and in the request log, without content"
+
 # A model stored in the database is encrypted with the salt key. It is what an
 # upgrade has to preserve.
 echo "==> A database-backed model"
@@ -519,9 +569,14 @@ pass "a 45-second request completed while its replica shut down, and the replica
 # starts, reports healthy, and silently stops serving every database-backed
 # model. Offline tests cannot check preservation, because lookup returns
 # nothing under helm template.
+#
+# The upgrade also changes what is recorded, as the cetirun-platform chart
+# does: the metrics are turned on and LiteLLM's spend log off.
 echo "==> Upgrading ${release_name}"
+spend_logs_before_upgrade="$(spend_log_successes)"
 helm upgrade "${release_name}" "${chart_dir}" -n "${namespace}" -f "${values_file}" \
-  --set-string podAnnotations.cluster-test/revision=2 --wait --timeout 10m >/dev/null \
+  --set-string podAnnotations.cluster-test/revision=2 --set metrics.enabled=true --set spendLogs.enabled=false \
+  --wait --timeout 10m >/dev/null \
   || fail "upgrade did not complete"
 pass "upgrade completed"
 
@@ -536,6 +591,114 @@ port_a="${pod_ports[0]}"
 [ "$(chat "${port_a}" "${master_key}" mock-db)" = "200" ] \
   || fail "database-backed model stopped working after upgrade; stored credentials may be unreadable: $(last_body)"
 pass "database-backed model still decrypts and serves after upgrade"
+
+# With LiteLLM's spend log off, a call adds no row to LiteLLM_SpendLogs. It is
+# still charged to the key, and the request log still records it, one call per
+# replica.
+echo "==> With the spend log off, calls are charged and recorded in the request log only"
+spend_key="$(api_post "${port_a}" /key/generate '{"models":["mock-priced"],"max_budget":10}' | jq -r .key)" \
+  || fail "could not create a virtual key"
+for port in "${pod_ports[@]}"; do
+  [ "$(chat "${port}" "${spend_key}" mock-priced)" = "200" ] || fail "a call with the spend log off failed: $(last_body)"
+done
+spend_key_spend=""
+for _ in $(seq 1 30); do
+  spend_key_spend="$(curl -fs -m 30 "http://127.0.0.1:${port_a}/key/info?key=${spend_key}" \
+    -H "Authorization: Bearer ${master_key}" | jq -r '.info.spend')"
+  [ "${spend_key_spend}" = "0.04" ] && break
+  sleep 2
+done
+[ "${spend_key_spend}" = "0.04" ] || fail "two \$0.02 calls charged the key ${spend_key_spend}"
+sleep 15
+spend_logs_after="$(spend_log_successes)"
+# The database-backed model's call right after the upgrade can be the only one
+# the old replicas had not written yet.
+[ "${spend_logs_after}" -le $((spend_logs_before_upgrade + 1)) ] \
+  || fail "LiteLLM_SpendLogs grew from ${spend_logs_before_upgrade} to ${spend_logs_after} with the spend log off"
+key_hash_of() {
+  in_mock_pod 'import hashlib, sys; print(hashlib.sha256(sys.argv[1].encode()).hexdigest())' "$1"
+}
+logged_for() {  # logged_for KEY: request log lines for that key across both pods
+  local hash count=0
+  hash="$(key_hash_of "$1")"
+  for pod in "${pod_names[@]}"; do
+    count=$((count + $(request_log "${pod}" | grep -c "\"key_hash\":\"${hash}\"" || true)))
+  done
+  echo "${count}"
+}
+spend_logged="$(logged_for "${spend_key}")"
+[ "${spend_logged}" = "2" ] || fail "the request log holds ${spend_logged} of the 2 calls made with the spend log off"
+pass "2 calls charged \$0.04 and in the request log, none in LiteLLM_SpendLogs"
+
+# LiteLLM lets a caller skip the logging callbacks for its own call by sending
+# "no-log": true. The chart has LiteLLM ignore that field, so a caller cannot
+# keep a call out of the request log.
+echo "==> A caller cannot keep a call out of the request log"
+nolog_key="$(api_post "${port_a}" /key/generate '{"models":["mock-priced"],"max_budget":10}' | jq -r .key)" \
+  || fail "could not create a virtual key"
+nolog_status="$(curl -s -m 60 -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:${port_a}/v1/chat/completions" \
+  -H "Authorization: Bearer ${nolog_key}" -H 'Content-Type: application/json' \
+  -d '{"model":"mock-priced","messages":[{"role":"user","content":"test"}],"no-log":true}')"
+[ "${nolog_status}" = "200" ] || fail "a call sent with no-log failed (${nolog_status})"
+sleep 2
+[ "$(logged_for "${nolog_key}")" = "1" ] || fail "a call sent with no-log is missing from the request log"
+pass "a call sent with no-log is in the request log"
+
+# LiteLLM serves the metrics from a separate process, on a port of their own,
+# from samples the proxy leaves in a directory they share. Only a running pod
+# shows the two meet. On the Service port, /metrics stays behind the master key.
+echo "==> Metrics are served on their own port"
+metrics_ip="$(kubectl get pod "${pod_names[0]}" -n "${namespace}" -o jsonpath='{.status.podIP}')"
+metrics_text="$(in_mock_pod '
+import sys, urllib.request
+print(urllib.request.urlopen(sys.argv[1], timeout=30).read().decode())
+' "http://${metrics_ip}:9090/metrics")" || fail "the metrics port did not answer"
+grep -q '^litellm_proxy_total_requests_metric_total{.*requested_model="mock-db"' <<< "${metrics_text}" \
+  || fail "the metrics port does not report the request the pod just served"
+if grep -q 'client_ip=' <<< "${metrics_text}"; then
+  fail "the metrics carry the client address, which the chart leaves out"
+fi
+status="$(curl -s -m 30 -o /dev/null -w '%{http_code}' "http://127.0.0.1:${port_a}/metrics")"
+[ "${status}" = "401" ] || fail "/metrics on the Service port answered ${status} without a key"
+pass "the metrics port reports the pod's requests; the Service port still requires a key"
+
+# LiteLLM replaces a configured callbacks list with one saved in its database
+# when it reads its configuration with the database connected. LiteLLM 1.101.0
+# reads the file before it connects, so a configured callback survived a saved
+# list when tested, but that rests on LiteLLM's startup order. The image's
+# entrypoint registers the request log outside the list, so a saved list leaves
+# it, and the spend log setting that goes with it, in place in any case.
+echo "==> A callbacks list saved in LiteLLM's database leaves the request log in place"
+kubectl exec -i -n "${namespace}" "${postgresql_pod}" -- psql -U litellm -d litellm -v ON_ERROR_STOP=1 -q \
+  >/dev/null <<'SQL' || fail "could not save a callbacks list in LiteLLM_Config"
+INSERT INTO "LiteLLM_Config" (param_name, param_value)
+VALUES ('litellm_settings', '{"callbacks": ["prometheus"]}')
+ON CONFLICT (param_name) DO UPDATE SET param_value = EXCLUDED.param_value;
+SQL
+stop_forwards
+kubectl rollout restart "deployment/${fullname}" -n "${namespace}" >/dev/null
+kubectl rollout status "deployment/${fullname}" -n "${namespace}" --timeout=600s >/dev/null \
+  || fail "the Gateway did not restart with a callbacks list saved in its database"
+forward_pods
+port_a="${pod_ports[0]}"
+saved_key="$(api_post "${port_a}" /key/generate '{"models":["mock-priced"],"max_budget":10}' | jq -r .key)" \
+  || fail "could not create a virtual key"
+saved_spend_logs_before="$(spend_log_successes)"
+for port in "${pod_ports[@]}"; do
+  [ "$(chat "${port}" "${saved_key}" mock-priced)" = "200" ] \
+    || fail "a call with a callbacks list saved in the database failed: $(last_body)"
+done
+sleep 15
+saved_logged="$(logged_for "${saved_key}")"
+[ "${saved_logged}" = "2" ] \
+  || fail "with a callbacks list saved in LiteLLM's database, the request log holds ${saved_logged} of the 2 calls"
+saved_spend_logs_after="$(spend_log_successes)"
+[ "${saved_spend_logs_after}" = "${saved_spend_logs_before}" ] \
+  || fail "with a callbacks list saved in LiteLLM's database, LiteLLM_SpendLogs grew from ${saved_spend_logs_before} to ${saved_spend_logs_after}"
+kubectl exec -n "${namespace}" "${postgresql_pod}" -- psql -U litellm -d litellm -tAc \
+  "DELETE FROM \"LiteLLM_Config\" WHERE param_name = 'litellm_settings'" >/dev/null \
+  || fail "could not remove the saved callbacks list"
+pass "with a callbacks list saved in the database, 2 calls are in the request log and none in LiteLLM_SpendLogs"
 
 # ----- Uninstall and install again -------------------------------------------
 
@@ -569,5 +732,34 @@ port_a="${pod_ports[0]}"
 [ "$(chat "${port_a}" "${master_key}" mock-db)" = "200" ] \
   || fail "database-backed model stopped working after uninstall and install: $(last_body)"
 pass "the kept database was found again, and its model decrypts and serves"
+
+# ----- An image built before the request log ---------------------------------
+
+# A release can keep an image built before the request log existed, for example
+# one pinned by digest across a chart upgrade. That image does not have the
+# callback: with the callback named in LiteLLM's configuration, it exited at
+# startup with an ImportError. The chart must start it, and LiteLLM's spend log
+# must stay on with it: nothing else would record each call.
+if [ -n "${previous_image_tag}" ]; then
+  echo "==> An image built before the request log starts and keeps LiteLLM's spend log"
+  stop_forwards
+  helm upgrade "${release_name}" "${chart_dir}" -n "${namespace}" -f "${values_file}" \
+    --set-string image.repository="${previous_image_repository}" --set-string image.tag="${previous_image_tag}" \
+    --set metrics.enabled=true --set spendLogs.enabled=false --wait --timeout 10m >/dev/null \
+    || fail "the chart did not start ${previous_image_repository}:${previous_image_tag}"
+  forward_pods
+  port_a="${pod_ports[0]}"
+  previous_key="$(api_post "${port_a}" /key/generate '{"models":["mock-priced"],"max_budget":10}' | jq -r .key)" \
+    || fail "could not create a virtual key"
+  previous_spend_logs_before="$(spend_log_successes)"
+  for port in "${pod_ports[@]}"; do
+    [ "$(chat "${port}" "${previous_key}" mock-priced)" = "200" ] || fail "a call to the previous image failed: $(last_body)"
+  done
+  sleep 15
+  previous_spend_logs_after="$(spend_log_successes)"
+  [ "${previous_spend_logs_after}" -ge $((previous_spend_logs_before + 2)) ] \
+    || fail "with the previous image, LiteLLM_SpendLogs grew from ${previous_spend_logs_before} to ${previous_spend_logs_after} for 2 calls"
+  pass "the previous image serves, and LiteLLM's spend log recorded its 2 calls"
+fi
 
 echo "All Gateway cluster checks passed."
