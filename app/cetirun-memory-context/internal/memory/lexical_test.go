@@ -47,9 +47,48 @@ func TestStemMatchesPorterReference(t *testing.T) {
 
 func TestWordsSplitsFoldsAndFiltersText(t *testing.T) {
 	got := words("The user's 2 spare Bikes were stored at Rootcraft.example; 记住偏好")
-	want := []string{"user", "2", "spare", "bike", "store", "rootcraft", "exampl", "记住", "住偏", "偏好"}
+	want := []string{"user", "2", "spare", "bike", "store", "rootcraft", "exampl", "记", "记住", "住", "住偏", "偏", "偏好", "好"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("words = %q, want %q", got, want)
+	}
+	for text, want := range map[string][]string{
+		"我的猫":              {"我的", "的猫", "猫"},
+		"ブラックコーヒーが好き":      {"ブラ", "ラッ", "ック", "クコ", "コー", "ーヒ", "ヒー", "ーが", "が好", "好", "好き"},
+		"커피를":              {"커", "커피", "피", "피를"},
+		"Café ＶＰＮ Ærø":     {"cafe", "vpn", "aero"},
+		"cafe\u0301 naïve": {"cafe", "naiv"},
+	} {
+		if got := words(text); !slices.Equal(got, want) {
+			t.Errorf("words(%q) = %q, want %q", text, got, want)
+		}
+	}
+}
+
+func TestTextSearchFindsWordsInTextWithoutSpaces(t *testing.T) {
+	f := newFixture(t)
+	for title, body := range map[string]string{
+		"咖啡偏好":    "我每天早上喝美式咖啡，不加糖，也不喝茶。",
+		"宠物信息":    "家里养了一只猫，叫小白。",
+		"飲み物の好み":  "ブラックコーヒーが好きです。",
+		"음료 취향":   "아침에 커피를 마십니다.",
+		"Lunch":   "The team meets at the café on Fridays.",
+		"Network": "Use the office ＶＰＮ for the build server.",
+	} {
+		note := testNote(title)
+		note.Body = body
+		f.note(t, note)
+	}
+	for query, want := range map[string]string{
+		"茶": "咖啡偏好", "猫": "宠物信息", "小白": "宠物信息", "コーヒー": "飲み物の好み", "커피": "음료 취향",
+		"cafe": "Lunch", "cafe\u0301": "Lunch", "VPN": "Network", "ＶＰＮ": "Network",
+	} {
+		result := f.call(t, "query", Query{QueryTerms: []string{query}}).Data.(QueryResult)
+		if result.Stage != "text" || len(result.Hits) == 0 || result.Hits[0].Note.Title != want {
+			t.Errorf("%q: stage=%s hits=%v, want %q first", query, result.Stage, titles(result.Hits), want)
+		}
+	}
+	if result := f.call(t, "query", Query{QueryTerms: []string{"的"}}).Data.(QueryResult); len(result.Hits) != 0 {
+		t.Errorf("a function character alone matched: %v", titles(result.Hits))
 	}
 }
 

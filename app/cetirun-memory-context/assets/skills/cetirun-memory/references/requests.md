@@ -100,11 +100,14 @@ in `partial.omitted`.
 
 When no exact stage matches, the `text` stage ranks notes by the words they share with the query. Words
 come from the title, aliases, keywords, tags and body; common English endings are folded (`bikes` and
-`bike`, `booked` and `booking`), words longer than 40 characters are matched as written, and frequent
-function words are ignored. A word in the title or an alias counts more than the same word in the body,
-and rare words count more than common ones. Equal scores fall back to the exact-stage order: more specific
-scope, newer evidence, then ID. Each hit lists its `matchedWords`; `textMatches` counts every note that
-shared at least one word, so most of that count is weak matches.
+`bike`, `booked` and `booking`), as are accents and full-width letters (`café` and `cafe`, `ＶＰＮ` and
+`VPN`). Chinese and Japanese, written without spaces, and Korean are matched by single characters and
+overlapping character pairs, so `猫` and `コーヒー` are found inside a sentence. Words longer than 40
+characters are matched as written, and frequent function words are ignored. A word in the title or an
+alias counts more than the same word in the body, and rare words count more than common ones. Equal
+scores fall back to the exact-stage order: more specific scope, newer evidence, then ID. Each hit lists
+its `matchedWords`; `textMatches` counts every note that shared at least one word, so most of that count
+is weak matches.
 
 `partial` describes an incomplete lookup. `unscanned` counts records the helper did not read; `omitted`
 counts exact matches, or selected hits, left out by the result or output limit (`ResultLimit`,
