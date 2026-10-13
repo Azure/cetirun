@@ -44,7 +44,9 @@ and [Hermes configuration templates](app/cetirun-chart/templates/agents/hermes/_
 `logger.enabled` defaults to `true`. For OpenClaw, the logger sidecar follows
 active session JSONL files beneath `/home/vibe/.openclaw/agents` and writes new
 lines to stdout. Those records can contain user input, assistant output, tool
-calls, and tool results. For Hermes, it follows
+calls, and tool results. OpenClaw as packaged in the agent image keeps its
+sessions in SQLite instead and writes no such files, so the logger currently
+exports nothing for OpenClaw. For Hermes, it follows
 `/home/vibe/.hermes/logs/gateway.log`; its content depends on the installed
 Hermes version and configuration, and is not necessarily a complete transcript.
 

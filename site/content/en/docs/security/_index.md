@@ -115,7 +115,9 @@ CetiRun erasure schedule. See the storage and deletion details in
 that follows files from their current end and writes new records to stdout
 without redaction. For OpenClaw it follows active session JSONL under
 `/home/vibe/.openclaw/agents`; these records can include prompts, responses, tool
-calls, and tool results. For Hermes it follows
+calls, and tool results. OpenClaw as packaged in the agent image keeps its
+sessions in SQLite and writes no such files, so the logger currently exports
+nothing for OpenClaw. For Hermes it follows
 `/home/vibe/.hermes/logs/gateway.log`, whose content depends on the installed
 version and configuration and is not necessarily a complete transcript.
 
