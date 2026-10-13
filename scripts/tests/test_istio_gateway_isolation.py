@@ -14,12 +14,14 @@ TEMPLATE = (
     / "ingress"
     / "envoy-filter-alias.yaml"
 )
+SECURITY_HEADERS_TEMPLATE = TEMPLATE.with_name("envoy-filter-security-headers.yaml")
 
 
 class IstioGatewayIsolationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.source = TEMPLATE.read_text(encoding="utf-8")
+        cls.security_headers = SECURITY_HEADERS_TEMPLATE.read_text(encoding="utf-8")
 
     def _lua_string_list(self, name):
         match = re.search(rf"local {name} = \{{([^\n]*)\}}", self.source)
@@ -174,6 +176,74 @@ class IstioGatewayIsolationTests(unittest.TestCase):
             '                  -- Do not let credentials reach a fallback route',
             self.source,
         )
+
+    def test_native_ui_routes_restore_only_the_browser_authorization(self):
+        # The security headers filter runs before ext-auth and records the
+        # client's Authorization in dynamic metadata, never in a header.
+        self.assertIn("name: envoy.filters.http.ext_authz", self.security_headers)
+        self.assertIn("operation: INSERT_BEFORE", self.security_headers)
+        self.assertIn(
+            'local authorization = handle:headers():get("authorization")\n'
+            '                if authorization and authorization ~= "" then\n'
+            '                  handle:streamInfo():dynamicMetadata():set("cetirun", "client_authorization", authorization)',
+            self.security_headers,
+        )
+        self.assertNotIn("client_authorization", self.security_headers.split("function envoy_on_response")[1])
+
+        # The ownership filter restores it only after the dedicated route
+        # credentials, only on owned /ui/<instance>/ routes of the Portal
+        # host other than the native Agent API, and never when OAuth2 Proxy
+        # accepted it as the identity.
+        self.assertIn(
+            '                  headers:replace("authorization", "Bearer " .. api_key)\n'
+            "                elseif is_native_ui_path(path, authority) and not is_native_agent_api_path(path, authority) then\n",
+            self.source,
+        )
+        self.assertIn(
+            "                  if client and not same_credential(client, identity_token) then\n"
+            '                    headers:replace("authorization", client)',
+            self.source,
+        )
+        self.assertIn(
+            "return request_host(authority) == PORTAL_DOMAIN and\n"
+            '                  path:match("^/ui/[^/]+/") ~= nil',
+            self.source,
+        )
+        identity = self.source.index('local identity_token = headers:get("authorization")')
+        removal = self.source.index('headers:remove("authorization")', identity)
+        restore = self.source.index('headers:replace("authorization", client)', removal)
+        self.assertLess(identity, removal)
+        self.assertLess(removal, restore)
+        self.assertEqual(self.source.count('headers:replace("authorization", client)'), 1)
+
+        # same_credential and bearer_token, as Python.
+        def bearer_token(value):
+            match = re.fullmatch(r"\s*[Bb][Ee][Aa][Rr][Ee][Rr]\s+(\S+)\s*", value or "")
+            return match.group(1) if match else None
+
+        def same_credential(a, b):
+            if not a or not b:
+                return False
+            if a == b:
+                return True
+            token = bearer_token(a)
+            return token is not None and token == bearer_token(b)
+
+        self.assertIn(
+            'return value:match("^%s*[Bb][Ee][Aa][Rr][Ee][Rr]%s+(%S+)%s*$")',
+            self.source,
+        )
+        cases = {
+            ("Bearer agent-token", "Bearer id-token"): False,
+            ("Bearer id-token", "Bearer id-token"): True,
+            ("bearer id-token", "Bearer id-token"): True,
+            ("Basic dXNlcjpwYXNz", "Bearer id-token"): False,
+            (None, "Bearer id-token"): False,
+            ("Bearer agent-token", None): False,
+        }
+        for (client, identity), expected in cases.items():
+            with self.subTest(client=client, identity=identity):
+                self.assertEqual(same_credential(client, identity), expected)
 
 
 if __name__ == "__main__":

@@ -120,6 +120,32 @@ spec:
                 return path == "/v1/models" or path == "/v1/chat/completions"
               end
 
+              function is_native_ui_path(path, authority)
+                return request_host(authority) == PORTAL_DOMAIN and
+                  path:match("^/ui/[^/]+/") ~= nil
+              end
+
+              -- The Authorization header the client sent, before ext-auth
+              -- replaced it. The security headers filter records it.
+              function client_authorization(request_handle)
+                local meta = request_handle:streamInfo():dynamicMetadata():get("cetirun")
+                local value = meta and meta["client_authorization"]
+                if type(value) ~= "string" or value == "" then return nil end
+                return value
+              end
+
+              function bearer_token(value)
+                if not value then return nil end
+                return value:match("^%s*[Bb][Ee][Aa][Rr][Ee][Rr]%s+(%S+)%s*$")
+              end
+
+              function same_credential(a, b)
+                if not a or not b then return false end
+                if a == b then return true end
+                local token = bearer_token(a)
+                return token ~= nil and token == bearer_token(b)
+              end
+
               function request_host(authority)
                 local value = (authority or ""):lower()
                 local host = value:match("^([^:]+)$")
@@ -178,6 +204,8 @@ spec:
                 local headers = request_handle:headers()
                 local auth_key = headers:get(CETIRUN_AUTH_KEY_HEADER)
                 local api_key = headers:get(AGENT_API_KEY_HEADER)
+                -- After ext-auth, Authorization carries the user's ID token.
+                local identity_token = headers:get("authorization")
                 headers:remove(CETIRUN_AUTH_KEY_HEADER)
                 headers:remove(AGENT_API_KEY_HEADER)
                 headers:remove("authorization")
@@ -185,6 +213,16 @@ spec:
                   headers:replace("authorization", "Bearer " .. auth_key)
                 elseif is_native_agent_api_path(path, authority) and valid_instance_key(api_key) then
                   headers:replace("authorization", "Bearer " .. api_key)
+                elseif is_native_ui_path(path, authority) and not is_native_agent_api_path(path, authority) then
+                  -- Native Agent UIs, such as the OpenClaw Control UI,
+                  -- authenticate their own HTTP requests with Authorization.
+                  -- Restore the value the browser sent, unless OAuth2 Proxy
+                  -- accepted that credential as the user's identity. The
+                  -- native Agent API keeps its dedicated header only.
+                  local client = client_authorization(request_handle)
+                  if client and not same_credential(client, identity_token) then
+                    headers:replace("authorization", client)
+                  end
                 end
               end
 
@@ -340,7 +378,8 @@ spec:
                 -- Agent UI.
                 strip_portal_session_cookie(request_handle)
                 -- OAuth2 Proxy owns Authorization. Restore a workload bearer
-                -- from its purpose-specific transport header only after the
+                -- from its purpose-specific transport header, or the browser's
+                -- own Authorization on a native Agent UI route, only after the
                 -- ownership check succeeds and only on its exact route family.
                 forward_instance_key(request_handle, path_only, authority)
               end

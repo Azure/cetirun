@@ -115,6 +115,18 @@ grep -Fq 'path:match("^/ui/[^/]+/v1/chat/completions$") ~= nil' <<< "${output}" 
   echo "FAIL: native Agent API credential is not restricted to retained API routes" >&2
   exit 1
 }
+grep -Fq 'handle:streamInfo():dynamicMetadata():set("cetirun", "client_authorization", authorization)' <<< "${output}" || {
+  echo "FAIL: security headers filter did not record the client's Authorization before ext-auth" >&2
+  exit 1
+}
+grep -Fq 'if client and not same_credential(client, identity_token) then' <<< "${output}" || {
+  echo "FAIL: ownership filter could forward the credential OAuth2 Proxy accepted as the user's identity" >&2
+  exit 1
+}
+grep -Fq 'path:match("^/ui/[^/]+/") ~= nil' <<< "${output}" || {
+  echo "FAIL: the browser's Authorization is not restricted to native Agent UI routes" >&2
+  exit 1
+}
 grep -Fq 'key:match("^[A-Za-z0-9_+/=-]+$") ~= nil' <<< "${output}" || {
   echo "FAIL: ownership filter did not accept existing standard Base64 auth keys" >&2
   exit 1
