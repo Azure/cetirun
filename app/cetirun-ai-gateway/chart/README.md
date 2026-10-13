@@ -448,6 +448,12 @@ filter by, so LiteLLM spreads its requests for a `copilot/` name over every
 Agent's proxy. The operator creates teams and keys without such grants; do not
 add them in the console.
 
+The operator also limits how many requests each Agent's key may have in flight
+at once: ten, by its `aiGateway.defaultMaxParallelRequests`, set when the key is
+created. The Gateway counts them across replicas in Redis. Measured with a
+limit of two across two replicas: of six concurrent requests, two were served
+and four refused with a 429 at once.
+
 ## Credentials
 
 Four distinct things:

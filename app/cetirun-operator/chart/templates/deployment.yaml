@@ -135,6 +135,8 @@ spec:
               value: {{ .Values.aiGateway.masterKeySecret.key | quote }}
             - name: AI_GATEWAY_DEFAULT_BUDGET
               value: {{ .Values.aiGateway.defaultBudget | toString | quote }}
+            - name: AI_GATEWAY_DEFAULT_MAX_PARALLEL_REQUESTS
+              value: {{ .Values.aiGateway.defaultMaxParallelRequests | default 0 | int | toString | quote }}
             - name: AI_GATEWAY_DEFAULT_MODEL
               value: {{ .Values.aiGateway.defaultModel | quote }}
             - name: AI_GATEWAY_COPILOT_PROXY_IMAGE

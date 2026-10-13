@@ -103,13 +103,15 @@ A Hermes instance pinned to a chart version without this provider keeps its
 own provider and sign-in until its chart is upgraded; its owner then signs in
 again with **Sign in with GitHub**.
 
-Each instance has its own virtual key with a monthly budget. The instance page
-lists its models and sets the default; saving a new default restarts the
-instance. When an administrator adds or removes a shared model, changes its
-limits, or changes whether it is offered through its price or the Gateway's
-setting, the operator updates every instance that uses shared models, which
-restarts them. A restarting instance shows as provisioning for a short while,
-and its UI is unavailable until it is ready again.
+Each instance has its own virtual key with a monthly budget and a limit of ten
+requests in flight at once (the operator's
+`aiGateway.defaultMaxParallelRequests`). The instance page lists its models and
+sets the default; saving a new default restarts the instance. When an
+administrator adds or removes a shared model, changes its limits, or changes
+whether it is offered through its price or the Gateway's setting, the operator
+updates every instance that uses shared models, which restarts them. A
+restarting instance shows as provisioning for a short while, and its UI is
+unavailable until it is ready again.
 
 OpenClaw also sends short internal tasks, such as generated session titles and
 activity recaps, to a utility model. On the Gateway, an instance's utility

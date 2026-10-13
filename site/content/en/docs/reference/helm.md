@@ -359,6 +359,7 @@ Source: [operator values]({{< repo "app/cetirun-operator/chart/values.yaml" >}})
 | `image` | Operator image pin; `IfNotPresent`, empty tag falls back to `appVersion` |
 | `imagePullSecrets` | Declared in values, but not rendered into the operator Deployment |
 | `azure.*` | Optional Teams provisioning configuration |
+| `aiGateway.defaultMaxParallelRequests` | `10`; how many requests each Agent's AI Gateway key may have in flight at once, across the Gateway's replicas. More are refused with a 429 until one finishes; a streamed response counts until it ends. Written when a key is created, so a limit changed later in the Gateway is kept; `0` sets none |
 | `sandboxSources.enabled` | `false`; opt in to Kubernetes capability declarations for configuration admission and sources for held native Sandbox preparation |
 | `sandboxSources.bootstrapOwnedPrerequisites` | `false`; additionally bootstrap owned namespace, operator access, HOME and native authentication for new namespaces only; requires explicit Agent chart/image/port pins |
 | `sandboxSources.platformConfigMapName` | Empty; existing operator-namespace ConfigMap containing versioned `platform.json`, shared by configuration admission and the controller |

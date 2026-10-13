@@ -88,6 +88,9 @@ type GenerateRequest struct {
 	// user. The team must exist; the user need not.
 	TeamID string
 	UserID string
+	// MaxParallelRequests limits how many requests the key may have in flight
+	// at once, counted across the Gateway's replicas. Zero sets no limit.
+	MaxParallelRequests int
 }
 
 // Client calls the Gateway management API with the master key.
@@ -210,6 +213,9 @@ func (c *Client) GenerateKey(ctx context.Context, req GenerateRequest) error {
 	}
 	if req.UserID != "" {
 		body["user_id"] = req.UserID
+	}
+	if req.MaxParallelRequests > 0 {
+		body["max_parallel_requests"] = req.MaxParallelRequests
 	}
 	status, err := c.do(ctx, http.MethodPost, "/key/generate", body, nil)
 	var apiErr *APIError

@@ -265,7 +265,7 @@ func (f *fakeAIGateway) modelNames() []string {
 func aiGatewayTestConfig() AIGatewayConfig {
 	return AIGatewayConfig{
 		Enabled: true, URL: testAIGatewayURL, MasterKeySecretName: "cetirun-ai-gateway-auth", MasterKeySecretKey: "master-key",
-		DefaultBudget: 10, CopilotProxyImage: testProxyImage,
+		DefaultBudget: 10, DefaultMaxParallelRequests: 10, CopilotProxyImage: testProxyImage,
 	}
 }
 
@@ -476,7 +476,7 @@ func TestReconcileAIGatewayCreatesKeyAfterPersistingSecret(t *testing.T) {
 	wantGroups := sortedCopy([]string{testManagedGroup, copilotGroup()})
 	if req.Key != value || req.Alias != "cetirun-alice-"+testAIGatewayUID || !slices.Equal(req.Models, wantGroups) ||
 		req.MaxBudget != 10 || req.BudgetDuration != "1mo" || req.Metadata["cetirun_agent_uid"] != testAIGatewayUID ||
-		req.TeamID != aiGatewayTeamPrefix+testAIGatewayTeam || req.UserID != "alice" {
+		req.TeamID != aiGatewayTeamPrefix+testAIGatewayTeam || req.UserID != "alice" || req.MaxParallelRequests != 10 {
 		t.Fatalf("unexpected create request %+v", req)
 	}
 	if !gateway.teams[aiGatewayTeamPrefix+testAIGatewayTeam] || !gateway.users["alice"] ||
@@ -1830,12 +1830,23 @@ func TestParseAIGatewayConfig(t *testing.T) {
 	valid := map[string]string{
 		"AI_GATEWAY_ENABLED": "true", "AI_GATEWAY_URL": testAIGatewayURL + "/", "AI_GATEWAY_MASTER_KEY_SECRET": "cetirun-ai-gateway-auth",
 		"AI_GATEWAY_DEFAULT_BUDGET": "12.5", "AI_GATEWAY_DEFAULT_MODEL": "shared-model",
-		"AI_GATEWAY_COPILOT_PROXY_IMAGE": "registry.example.com/cetirun-ai-gateway:0.1.1@sha256:" + strings.Repeat("a", 64),
+		"AI_GATEWAY_DEFAULT_MAX_PARALLEL_REQUESTS": "10",
+		"AI_GATEWAY_COPILOT_PROXY_IMAGE":           "registry.example.com/cetirun-ai-gateway:0.1.1@sha256:" + strings.Repeat("a", 64),
 	}
 	cfg, err = ParseAIGatewayConfig(env(valid))
 	if err != nil || !cfg.Enabled || cfg.URL != testAIGatewayURL || cfg.MasterKeySecretKey != "master-key" || cfg.DefaultBudget != 12.5 ||
-		!strings.HasPrefix(cfg.CopilotProxyImage, "registry.example.com/") {
+		cfg.DefaultMaxParallelRequests != 10 || !strings.HasPrefix(cfg.CopilotProxyImage, "registry.example.com/") {
 		t.Fatalf("valid configuration: %+v %v", cfg, err)
+	}
+	// An operator chart from before the limit renders no variable; keys are
+	// then created without one, as before.
+	unlimited := map[string]string{}
+	for key, value := range valid {
+		unlimited[key] = value
+	}
+	delete(unlimited, "AI_GATEWAY_DEFAULT_MAX_PARALLEL_REQUESTS")
+	if cfg, err := ParseAIGatewayConfig(env(unlimited)); err != nil || cfg.DefaultMaxParallelRequests != 0 {
+		t.Fatalf("no concurrency limit configured: %+v %v", cfg, err)
 	}
 	for name, override := range map[string][2]string{
 		"external URL":       {"AI_GATEWAY_URL", "http://gateway.example.com:4000"},
@@ -1850,9 +1861,12 @@ func TestParseAIGatewayConfig(t *testing.T) {
 		"bad digest":         {"AI_GATEWAY_COPILOT_PROXY_IMAGE", "registry.example.com/x@sha256:123"},
 		// NaN passes every comparison, so a key created with it would get no
 		// budget at all; an infinite budget is no cap either.
-		"NaN budget":      {"AI_GATEWAY_DEFAULT_BUDGET", "NaN"},
-		"infinite budget": {"AI_GATEWAY_DEFAULT_BUDGET", "+Inf"},
-		"Infinity budget": {"AI_GATEWAY_DEFAULT_BUDGET", "Infinity"},
+		"NaN budget":                 {"AI_GATEWAY_DEFAULT_BUDGET", "NaN"},
+		"infinite budget":            {"AI_GATEWAY_DEFAULT_BUDGET", "+Inf"},
+		"Infinity budget":            {"AI_GATEWAY_DEFAULT_BUDGET", "Infinity"},
+		"negative concurrency limit": {"AI_GATEWAY_DEFAULT_MAX_PARALLEL_REQUESTS", "-1"},
+		"fractional concurrency":     {"AI_GATEWAY_DEFAULT_MAX_PARALLEL_REQUESTS", "2.5"},
+		"concurrency not a number":   {"AI_GATEWAY_DEFAULT_MAX_PARALLEL_REQUESTS", "ten"},
 	} {
 		values := map[string]string{}
 		for key, value := range valid {

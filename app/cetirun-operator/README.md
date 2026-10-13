@@ -606,8 +606,12 @@ Without policy intent, the controller continues the existing built-in or Custom
 runtime path, including provisioning, suspension, readiness, and deletion.
 Legacy Gateway model sources default on unless explicitly disabled. New legacy
 keys receive the deployment default budget; later administrator budget changes,
-spend, reset periods, and emergency blocks are preserved. Legacy shared catalog
-entries and current per-deployment shared-model groups remain usable.
+spend, reset periods, and emergency blocks are preserved. Every new key, legacy
+or policy-bound, also receives the deployment's limit on requests in flight,
+`aiGateway.defaultMaxParallelRequests` (10); a limit an administrator changes
+later in the Gateway is kept, and keys created before the setting have none.
+Legacy shared catalog entries and current per-deployment shared-model groups
+remain usable.
 
 Setting any Team policy/Sandbox field opts that Team into the full binding
 contract: one policy, permitted Sandboxes, and a creation default. Partial

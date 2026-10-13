@@ -112,17 +112,28 @@ func TestGenerateKeySendsRestrictedKey(t *testing.T) {
 	client, requests := testServer(t, func(recordedRequest) (int, string) { return 200, `{}` })
 	err := client.GenerateKey(context.Background(), GenerateRequest{
 		Key: "sk-value", Alias: "cetirun-a", Models: []string{"cetirun-shared"}, MaxBudget: 10,
-		BudgetDuration: "1mo", Metadata: map[string]string{"cetirun_agent": "a"},
+		BudgetDuration: "1mo", Metadata: map[string]string{"cetirun_agent": "a"}, MaxParallelRequests: 10,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	body := (*requests)[0].body
-	if body["key"] != "sk-value" || body["key_alias"] != "cetirun-a" || body["max_budget"] != float64(10) || body["budget_duration"] != "1mo" {
+	if body["key"] != "sk-value" || body["key_alias"] != "cetirun-a" || body["max_budget"] != float64(10) || body["budget_duration"] != "1mo" ||
+		body["max_parallel_requests"] != float64(10) {
 		t.Fatalf("unexpected body %v", body)
 	}
 	if routes, _ := body["allowed_routes"].([]any); len(routes) != 1 || routes[0] != LLMAPIRoutes {
 		t.Fatalf("allowed_routes = %v", body["allowed_routes"])
+	}
+}
+
+func TestGenerateKeyWithoutConcurrencyLimitSendsNone(t *testing.T) {
+	client, requests := testServer(t, func(recordedRequest) (int, string) { return 200, `{}` })
+	if err := client.GenerateKey(context.Background(), GenerateRequest{Key: "sk-v", Alias: "a", Models: []string{NoModels}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := (*requests)[0].body["max_parallel_requests"]; ok {
+		t.Fatalf("a key without a limit must not send one: %v", (*requests)[0].body)
 	}
 }
 

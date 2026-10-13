@@ -257,6 +257,12 @@ aiGateway:
   # -- Monthly budget in US dollars written when a key is created. Changes an
   # administrator makes later in the Gateway are kept.
   defaultBudget: 10000
+  # -- How many requests each Agent's key may have in flight at once, across
+  # the Gateway's replicas; more are refused with a 429 until one finishes. A
+  # streamed response counts until it ends. Written when a key is created;
+  # changes an administrator makes later in the Gateway are kept. 0 sets no
+  # limit.
+  defaultMaxParallelRequests: 10
   # -- Preferred default model of Agents that name none. Agents fall back to
   # the first model available to them when it is not.
   defaultModel: ""

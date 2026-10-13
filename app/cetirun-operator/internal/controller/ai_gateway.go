@@ -98,6 +98,11 @@ type AIGatewayConfig struct {
 	// DefaultBudget initializes legacy keys without replacing later Gateway
 	// administrator changes. Policy-bound keys use the effective policy budget.
 	DefaultBudget float64
+	// DefaultMaxParallelRequests is how many requests a new key may have in
+	// flight at once; zero sets no limit. Like DefaultBudget for legacy keys,
+	// it is written only when the key is created, so a limit an administrator
+	// changes later in the Gateway is kept.
+	DefaultMaxParallelRequests int
 	// DefaultModel is the preferred default model of Agents that use the
 	// Gateway when the Agent names none, or names one it cannot use.
 	DefaultModel string
@@ -128,6 +133,13 @@ func ParseAIGatewayConfig(getenv func(string) string) (AIGatewayConfig, error) {
 			return AIGatewayConfig{}, fmt.Errorf("AI_GATEWAY_DEFAULT_BUDGET must be a positive number of US dollars")
 		}
 		cfg.DefaultBudget = budget
+	}
+	if raw := strings.TrimSpace(getenv("AI_GATEWAY_DEFAULT_MAX_PARALLEL_REQUESTS")); raw != "" {
+		limit, err := strconv.Atoi(raw)
+		if err != nil || limit < 0 {
+			return AIGatewayConfig{}, fmt.Errorf("AI_GATEWAY_DEFAULT_MAX_PARALLEL_REQUESTS must be a whole number of requests, 0 for no limit")
+		}
+		cfg.DefaultMaxParallelRequests = limit
 	}
 	if cfg.CopilotProxyImage != "" && !validImageReference(cfg.CopilotProxyImage) {
 		return AIGatewayConfig{}, fmt.Errorf("AI_GATEWAY_COPILOT_PROXY_IMAGE must be an image reference with a tag or digest")
@@ -637,8 +649,9 @@ func (r *AgentReconciler) reconcileAIGateway(ctx context.Context, instance *ceti
 		request := aigateway.GenerateRequest{
 			Key: value, Alias: status.KeyAlias, Models: models,
 			MaxBudget: grant.budget, BudgetDuration: aiGatewayBudgetDuration,
-			Blocked: instance.Spec.Suspended,
-			TeamID:  teamID, UserID: userID,
+			MaxParallelRequests: r.AIGateway.DefaultMaxParallelRequests,
+			Blocked:             instance.Spec.Suspended,
+			TeamID:              teamID, UserID: userID,
 			Metadata: map[string]string{
 				"cetirun_agent": instance.Name, "cetirun_agent_uid": string(instance.UID),
 				"cetirun_user": instance.Spec.User.Alias, "cetirun_team": instance.Spec.Team,
