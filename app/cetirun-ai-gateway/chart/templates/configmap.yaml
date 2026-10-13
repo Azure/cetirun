@@ -66,11 +66,12 @@ data:
       {{- /* The request log is not registered here: the image's entrypoint
       registers it, and turns LiteLLM's spend log off with it (see
       cetirun-ai-gateway.proxyEnv). */}}
-      {{- if .Values.metrics.enabled }}
+      {{- $metrics := (include "cetirun-ai-gateway.logsAndMetrics" . | fromJson).metrics }}
+      {{- if $metrics.enabled }}
       # metrics: LiteLLM's Prometheus metrics.
       callbacks: ["prometheus"]
-      {{- if .Values.metrics.excludeLabels }}
-      prometheus_exclude_labels: {{ toJson .Values.metrics.excludeLabels }}
+      {{- if $metrics.excludeLabels }}
+      prometheus_exclude_labels: {{ toJson $metrics.excludeLabels }}
       {{- end }}
       {{- end }}
     {{- if include "cetirun-ai-gateway.redisEnabled" . }}

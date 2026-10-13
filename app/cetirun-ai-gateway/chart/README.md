@@ -712,6 +712,13 @@ They live in the database rather than in the configuration file, and a chart
 upgrade does not remove them. Note that a console-added model whose name matches
 one in `models` becomes an additional backend rather than an override.
 
+### Upgrading with `--reuse-values`
+
+`helm upgrade --reuse-values` keeps the values of the chart version a release
+was installed with, without the defaults of settings added since. A release
+installed before `requestLog`, `spendLogs` and `metrics` existed upgrades with
+their defaults: the request log on, LiteLLM's spend log kept, metrics off.
+
 ## Availability
 
 ### Rollouts let requests in flight finish
@@ -821,10 +828,15 @@ association alone, without the add-on, collected nothing, and no `ama-logs`
 pods ran.
 
 **No content.** The line carries no request or response content, and has no
-setting that adds it. Values a client chooses, such as tags and the user
-agent, are cut short, and a line stays under 15 KiB: container runtimes split
-longer lines, and Container Insights stores the pieces as separate records,
-none of them valid JSON. The callback also drops a client's
+setting that adds it. Every string in it is cut short: 256 characters, or
+1,024 for the request ID and the error text. Clients choose many of them: the
+session ID, which LiteLLM records as `trace_id`, the call ID header, the model
+name, the end user, the user agent and the tags. A line never exceeds 15 KiB:
+container runtimes split longer lines, and Container Insights stores the
+pieces as separate records, none of them valid JSON. Should escaping make a
+line longer, which control characters can, the error text, the client's tags
+and extra key metadata go first, then the longest strings are cut, and the line
+carries `"truncated": true`. The callback also drops a client's
 `litellm_request_debug` field: with it, LiteLLM printed that call's prompt and
 the provider's raw response to the log.
 
