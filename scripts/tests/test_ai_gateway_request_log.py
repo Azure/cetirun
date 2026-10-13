@@ -12,6 +12,7 @@ import importlib.util
 import io
 import json
 import pathlib
+import random
 import sys
 import types
 import unittest
@@ -100,6 +101,46 @@ def success_payload(**overrides):
     }
     payload.update(overrides)
     return payload
+
+
+def failure_payload(**overrides):
+    payload = success_payload(
+        status="failure",
+        end_user="alice-end-user",
+        error_information={
+            "error_class": "BadRequestError",
+            "error_code": "400",
+            "llm_provider": "azure",
+            "error_message": "bad request",
+            "error_rate_limit_type": "tokens",
+            "error_budget_entity_type": "key",
+        },
+    )
+    payload.update(overrides)
+    return payload
+
+
+def flooded(value, text, keep=("status",)):
+    """value with every string in it replaced by text(), apart from the keys in keep."""
+    if isinstance(value, str):
+        return text()
+    if isinstance(value, dict):
+        return {key: item if key in keep else flooded(item, text, keep) for key, item in value.items()}
+    if isinstance(value, list):
+        return [flooded(item, text, keep) for item in value]
+    return value
+
+
+def strings_in(value, path=()):
+    """(path, string) for every string in value."""
+    if isinstance(value, str):
+        yield path, value
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            yield from strings_in(item, path + (key,))
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            yield from strings_in(item, path + (index,))
 
 
 class RequestLogTest(unittest.TestCase):
@@ -204,6 +245,82 @@ class RequestLogTest(unittest.TestCase):
         self.assertEqual(record["key_alias"], "cetirun-alice-agent-1234")
         self.assertEqual(record["error_class"], "BadRequestError")
         self.assertNotIn("request", record)
+
+    def test_identifiers_the_client_chooses_are_capped(self):
+        # LiteLLM records a request's metadata.session_id as trace_id; clients
+        # also choose the call ID header, the model name and their address.
+        payload = success_payload(
+            trace_id="s" * 100_000,
+            litellm_call_id="c" * 100_000,
+            requester_ip_address="i" * 100_000,
+            model_group="m" * 100_000,
+            custom_llm_provider="p" * 100_000,
+            call_type="t" * 100_000,
+            model_id="d" * 100_000,
+        )
+        payload["metadata"]["user_api_key_request_route"] = "/v1/" + "r" * 100_000
+        record = self.handler().record(payload)
+        for field in ("trace_id", "call_id", "client_ip", "model", "provider", "call_type", "deployment_id", "route"):
+            self.assertEqual(len(record[field]), self.module.FREE_TEXT_MAX_CHARS, field)
+        line = self.handler().line(payload)
+        self.assertLessEqual(len(line.encode("utf-8")), self.module.MAX_LINE_BYTES)
+        self.assertNotIn("truncated", json.loads(line))
+
+    def test_every_string_in_a_record_is_capped(self):
+        record = self.handler().record(flooded(failure_payload(), lambda: "x" * 100_000))
+        limits = {"request_id": self.module.REQUEST_ID_MAX_CHARS, "error_message": self.module.ERROR_MESSAGE_MAX_CHARS}
+        for path, value in strings_in(record):
+            self.assertLessEqual(len(value), limits.get(path[0], self.module.FREE_TEXT_MAX_CHARS), path)
+        self.assertEqual(len(record["request_tags"]), 1)
+        self.assertEqual(len(record["key_metadata"]), 4)
+
+    def test_a_line_never_exceeds_the_limit(self):
+        # A control character takes six bytes in JSON, so capped strings can
+        # still add up to more than the limit.
+        payload = flooded(failure_payload(), lambda: "\x01" * 100_000)
+        payload["metadata"]["user_api_key_hash"] = "88dc28d0f030c55ed4ab77ed8faf098196cb1c05df778539800c9f1243fe6b4b"
+        line = self.handler().line(payload)
+        self.assertLessEqual(len(line.encode("utf-8")), self.module.MAX_LINE_BYTES)
+        record = json.loads(line)
+        self.assertIs(record["truncated"], True)
+        self.assertEqual(record["log_type"], "cetirun.ai_gateway.request")
+        self.assertEqual(record["status"], "failure")
+        self.assertEqual(record["key_hash"], payload["metadata"]["user_api_key_hash"])
+
+    def test_a_line_fits_whatever_the_strings(self):
+        rng = random.Random(166)
+        alphabet = ["a", "\u00e9", "\u4e2d", "\U0001f600", '"', "\\", "\n", "\x01", "\u2028"]
+        for _ in range(100):
+            def text():
+                return "".join(rng.choices(alphabet, k=rng.choice([0, 10, 300, 1100])))
+            payload = flooded(failure_payload() if rng.random() < 0.5 else success_payload(), text)
+            line = self.handler().line(payload)
+            self.assertLessEqual(len(line.encode("utf-8")), self.module.MAX_LINE_BYTES)
+            self.assertNotIn("\n", line)
+            json.loads(line, parse_constant=self.fail)
+
+    def test_numbers_json_cannot_carry_are_left_out(self):
+        payload = success_payload(response_cost=float("nan"), prompt_tokens=float("inf"))
+        payload["metadata"]["user_api_key_auth_metadata"]["cetirun_ratio"] = float("-inf")
+        record = json.loads(self.handler().line(payload), parse_constant=self.fail)
+        self.assertNotIn("spend", record)
+        self.assertNotIn("prompt_tokens", record)
+        self.assertNotIn("cetirun_ratio", record["key_metadata"])
+
+    def test_only_the_call_is_identified_when_nothing_else_fits(self):
+        huge = 10 ** 4000
+        payload = success_payload(prompt_tokens=huge, completion_tokens=huge, total_tokens=huge, response_cost=huge)
+        payload["metadata"]["usage_object"] = {"cache_read_input_tokens": huge, "cache_creation_input_tokens": huge}
+        line = self.handler().line(payload)
+        self.assertLessEqual(len(line.encode("utf-8")), self.module.MAX_LINE_BYTES)
+        self.assertEqual(json.loads(line), {
+            "log_type": "cetirun.ai_gateway.request",
+            "schema_version": 1,
+            "time": "2026-10-08T12:00:02.500Z",
+            "status": "success",
+            "call_id": "call-1",
+            "truncated": True,
+        })
 
     def test_events_write_one_line_each(self):
         handler = self.handler()

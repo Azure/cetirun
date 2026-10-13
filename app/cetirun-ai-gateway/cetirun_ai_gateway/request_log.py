@@ -10,7 +10,8 @@ Analytics workspace, with nothing more to deploy or authorize.
 
 The record is metadata only: the caller (virtual key, user, Team, and the Agent
 the CetiRun operator recorded on the key), the model, tokens, spend, timing and
-the outcome. Request and response content is never written.
+the outcome. Request and response content is never written. Every string in it
+is capped, and a line never exceeds MAX_LINE_BYTES (see ``shortened``).
 
 A client can ask LiteLLM for per-request debug output with
 litellm_request_debug, which makes LiteLLM print that request's prompt and the
@@ -25,6 +26,7 @@ can replace.
 
 import datetime
 import json
+import math
 import sys
 from urllib.parse import urlsplit
 
@@ -37,9 +39,13 @@ SCHEMA_VERSION = 1
 # does not join the pieces again stores each as its own line, none of them
 # valid JSON. Container Insights does that unless multiline logging is on.
 MAX_LINE_BYTES = 15 * 1024
-ERROR_MESSAGE_MAX_CHARS = 1024
-# Values a client or an administrator chooses freely are cut to this length.
+# Every string in a record is cut to FREE_TEXT_MAX_CHARS characters, apart from
+# the request ID and the error text, which have limits of their own. Clients
+# choose many of them: the session ID LiteLLM records as trace_id, the call ID
+# header, the model name, the end user, the user agent and the tags.
 FREE_TEXT_MAX_CHARS = 256
+REQUEST_ID_MAX_CHARS = 1024
+ERROR_MESSAGE_MAX_CHARS = 1024
 MAX_REQUEST_TAGS = 20
 # Metadata the CetiRun operator puts on each Agent's virtual key.
 KEY_METADATA_PREFIX = "cetirun_"
@@ -75,9 +81,16 @@ def endpoint_origin(api_base):
     return f"{origin}:{parts.port}" if parts.port else origin
 
 
+def finite(value):
+    """Whether value is a number JSON can carry: not a bool, NaN or infinity."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    return isinstance(value, int) or math.isfinite(value)
+
+
 def first_number(*values):
     for value in values:
-        if isinstance(value, (int, float)) and not isinstance(value, bool):
+        if finite(value):
             return value
     return None
 
@@ -114,6 +127,53 @@ def without_empty(record):
     return {key: value for key, value in record.items() if value is not None and value != {} and value != []}
 
 
+def shortened(record):
+    """The record cut down until its line is at most MAX_LINE_BYTES.
+
+    Every string in a record is capped, so this only happens when JSON escaping
+    lengthens many characters: a control character takes six bytes. The error
+    text goes first, then the client's tags, then key metadata beyond what the
+    operator sets. If the line is still too long, the longest strings are cut
+    until it fits: cutting n characters from a string shortens its JSON by at
+    least n bytes. The record says "truncated": true. Should the line still be
+    too long with every string empty, only the fields that identify the call
+    remain.
+    """
+    cut = dict(record, truncated=True)
+    if isinstance(cut.get("key_metadata"), dict):
+        cut["key_metadata"] = dict(cut["key_metadata"])
+
+    def excess():
+        return len(dump(cut).encode("utf-8")) - MAX_LINE_BYTES
+
+    over = excess()
+    message = cut.get("error_message")
+    if over > 0 and message:
+        data = message.encode("utf-8")
+        cut["error_message"] = data[: max(0, len(data) - over)].decode("utf-8", "ignore")
+    if excess() > 0:
+        cut.pop("request_tags", None)
+    if excess() > 0 and isinstance(cut.get("key_metadata"), dict):
+        cut["key_metadata"] = {
+            name: value for name, value in cut["key_metadata"].items() if name in OPERATOR_KEY_METADATA
+        }
+    places = [cut] + ([cut["key_metadata"]] if isinstance(cut.get("key_metadata"), dict) else [])
+    while (over := excess()) > 0:
+        strings = [(place, name) for place in places for name, value in place.items() if isinstance(value, str) and value]
+        if not strings:
+            return {
+                "log_type": LOG_TYPE,
+                "schema_version": SCHEMA_VERSION,
+                "time": clip(record.get("time"), 64),
+                "status": clip(record.get("status"), 64),
+                "call_id": clip(record.get("call_id"), 64),
+                "truncated": True,
+            }
+        place, name = max(strings, key=lambda found: len(dump(found[0][found[1]]).encode("utf-8")))
+        place[name] = place[name][: max(0, len(place[name]) - over)]
+    return without_empty(cut)
+
+
 class RequestLog(CustomLogger):
     """Writes the record of each completed or failed call to stdout."""
 
@@ -146,9 +206,10 @@ class RequestLog(CustomLogger):
         usage = as_dict(metadata.get("usage_object")) or as_dict(hidden.get("usage_object"))
         error = as_dict(payload.get("error_information"))
         key_metadata = {
-            name: value if isinstance(value, (int, float)) else clip(value)
+            clip(name): clip(value) if isinstance(value, str) else value
             for name, value in as_dict(metadata.get("user_api_key_auth_metadata")).items()
-            if isinstance(name, str) and name.startswith(KEY_METADATA_PREFIX) and isinstance(value, (str, int, float))
+            if isinstance(name, str) and name.startswith(KEY_METADATA_PREFIX)
+            and (isinstance(value, (str, bool)) or finite(value))
         }
         tags = [
             clip(tag)
@@ -165,18 +226,18 @@ class RequestLog(CustomLogger):
             "schema_version": SCHEMA_VERSION,
             "time": iso_time(end),
             "start_time": iso_time(start),
-            "status": status,
-            "request_id": clip(payload.get("id"), 1024),
-            "call_id": payload.get("litellm_call_id"),
-            "trace_id": payload.get("trace_id"),
-            "route": metadata.get("user_api_key_request_route"),
-            "call_type": payload.get("call_type"),
+            "status": clip(status),
+            "request_id": clip(payload.get("id"), REQUEST_ID_MAX_CHARS),
+            "call_id": clip(payload.get("litellm_call_id")),
+            "trace_id": clip(payload.get("trace_id")),
+            "route": clip(metadata.get("user_api_key_request_route")),
+            "call_type": clip(payload.get("call_type")),
             "stream": stream,
             "model": clip(payload.get("model_group") or payload.get("model")),
             "provider_model": clip(hidden.get("litellm_model_name") or payload.get("model")),
-            "provider": payload.get("custom_llm_provider"),
-            "deployment_id": payload.get("model_id"),
-            "api_base": endpoint_origin(payload.get("api_base") or hidden.get("api_base")),
+            "provider": clip(payload.get("custom_llm_provider")),
+            "deployment_id": clip(payload.get("model_id")),
+            "api_base": clip(endpoint_origin(payload.get("api_base") or hidden.get("api_base"))),
             "duration_ms": milliseconds(start, end),
             "time_to_first_token_ms": milliseconds(start, payload.get("completionStartTime")) if stream else None,
             "prompt_tokens": first_number(payload.get("prompt_tokens")),
@@ -186,13 +247,13 @@ class RequestLog(CustomLogger):
             "spend": first_number(payload.get("response_cost")),
             "response_cache_hit": payload.get("cache_hit") if isinstance(payload.get("cache_hit"), bool) else None,
             "key_alias": clip(metadata.get("user_api_key_alias")),
-            "key_hash": metadata.get("user_api_key_hash"),
+            "key_hash": clip(metadata.get("user_api_key_hash")),
             "user_id": clip(metadata.get("user_api_key_user_id")),
             "team_id": clip(metadata.get("user_api_key_team_id")),
             "team_alias": clip(metadata.get("user_api_key_team_alias")),
             "end_user": clip(payload.get("end_user") or metadata.get("user_api_key_end_user_id")),
             "key_metadata": key_metadata,
-            "client_ip": payload.get("requester_ip_address") or metadata.get("requester_ip_address"),
+            "client_ip": clip(payload.get("requester_ip_address") or metadata.get("requester_ip_address")),
             "user_agent": clip(payload.get("user_agent") or metadata.get("user_agent")),
             "request_tags": tags,
         }
@@ -204,36 +265,19 @@ class RequestLog(CustomLogger):
                     "error_code": None if error.get("error_code") is None else clip(error.get("error_code")),
                     "error_provider": clip(error.get("llm_provider")),
                     "error_message": clip(message, ERROR_MESSAGE_MAX_CHARS) if message else None,
-                    "rate_limit_type": error.get("error_rate_limit_type"),
-                    "budget_entity_type": error.get("error_budget_entity_type"),
+                    "rate_limit_type": clip(error.get("error_rate_limit_type")),
+                    "budget_entity_type": clip(error.get("error_budget_entity_type")),
                 }
             )
         return without_empty(record)
 
     def line(self, payload):
+        """The record as one line of JSON, never longer than MAX_LINE_BYTES."""
         record = self.record(payload)
         text = dump(record)
-        # The fields above are capped, so a line stays well under the limit.
-        # Should it not, the error text goes first, then the client's tags,
-        # then key metadata beyond what the operator sets: the rest is what
-        # every record must keep. JSON escaping only ever lengthens a string,
-        # so removing as many bytes from a value as the line is over brings the
-        # line within the limit.
-        excess = len(text.encode("utf-8")) - MAX_LINE_BYTES
-        message = record.get("error_message")
-        if excess > 0 and message:
-            data = message.encode("utf-8")
-            record["error_message"] = data[: max(0, len(data) - excess)].decode("utf-8", "ignore")
-            text = dump(record)
-        if len(text.encode("utf-8")) > MAX_LINE_BYTES:
-            record.pop("request_tags", None)
-            text = dump(record)
-        if len(text.encode("utf-8")) > MAX_LINE_BYTES and "key_metadata" in record:
-            record["key_metadata"] = {
-                name: value for name, value in record["key_metadata"].items() if name in OPERATOR_KEY_METADATA
-            }
-            text = dump(without_empty(record))
-        return text
+        if len(text.encode("utf-8")) <= MAX_LINE_BYTES:
+            return text
+        return dump(shortened(record))
 
 
 handler = RequestLog()

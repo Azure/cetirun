@@ -583,6 +583,25 @@ assert_contains "containerPort: 9100$" "a metrics port set by hand is used" \
   "$(render --set metrics.enabled=true --set metrics.port=9100 -s templates/deployment.yaml)"
 assert_rejected "the metrics port on the Service port" --set metrics.enabled=true --set metrics.port=4000
 
+# helm upgrade --reuse-values keeps the values of the chart version a release
+# was installed with, so a release from before the request log and metrics has
+# none of their settings; reading them directly failed the upgrade with a nil
+# pointer. Without them, the chart renders as with their defaults. Setting a
+# map to null removes it, as --reuse-values leaves it.
+echo "==> a release from before these settings upgrades with --reuse-values"
+reuse_args=(--set metrics=null --set requestLog=null --set spendLogs=null)
+for template in deployment.yaml configmap.yaml; do
+  [ "$(render "${reuse_args[@]}" -s "templates/${template}")" = "$(render -s "templates/${template}")" ] || {
+    echo "FAIL: without the request log and metrics settings, ${template} differs from its default render" >&2
+    exit 1
+  }
+done
+[ "$(render --set metrics.enabled=true --set metrics.podMonitor=null -s templates/deployment.yaml)" \
+  = "$(render --set metrics.enabled=true -s templates/deployment.yaml)" ] || {
+  echo "FAIL: without the PodMonitor settings, the Deployment differs from its default render" >&2
+  exit 1
+}
+
 # ----- Exposure -----
 
 # The console is reached through a port-forward. A chart that ships an Ingress

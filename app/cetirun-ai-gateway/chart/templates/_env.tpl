@@ -76,14 +76,15 @@ Everything the proxy needs, including credentials held in chart-managed Secrets.
       name: {{ include "cetirun-ai-gateway.redisPasswordSecret" . }}
       key: {{ include "cetirun-ai-gateway.redisPasswordKey" . }}
 {{- end }}
-{{- if .Values.metrics.enabled }}
+{{- $settings := include "cetirun-ai-gateway.logsAndMetrics" . | fromJson }}
+{{- if $settings.metrics.enabled }}
 {{- /* The proxy records its samples in files here, and the separate metrics
        process serves them from there. Set from the start, so every sample the
        proxy records goes to the files. */}}
 - name: PROMETHEUS_MULTIPROC_DIR
   value: {{ include "cetirun-ai-gateway.metricsDirectory" . }}
 {{- end }}
-{{- if .Values.requestLog.enabled }}
+{{- if $settings.requestLog.enabled }}
 {{- /* The image's entrypoint registers the request log callback in code,
        outside LiteLLM's configuration: a configured callback depends on how
        LiteLLM combines its configuration with settings saved in its database,
@@ -92,7 +93,7 @@ Everything the proxy needs, including credentials held in chart-managed Secrets.
        variables. */}}
 - name: CETIRUN_REQUEST_LOG
   value: "true"
-{{- if not .Values.spendLogs.enabled }}
+{{- if not $settings.spendLogs.enabled }}
 {{- /* Applied by the entrypoint only together with the request log, so a
        Gateway that cannot write the request log keeps LiteLLM's spend log. */}}
 - name: CETIRUN_SPEND_LOGS

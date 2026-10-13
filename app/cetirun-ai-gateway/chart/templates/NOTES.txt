@@ -65,28 +65,29 @@ of every key budget and rate limit, which multiplies the effective limit by the
 replica count.
 {{- end }}
 
-{{- if .Values.requestLog.enabled }}
+{{- $settings := include "cetirun-ai-gateway.logsAndMetrics" . | fromJson }}
+{{- if $settings.requestLog.enabled }}
 
 Each model call writes one JSON line of metadata to the Gateway's stdout, with
 "log_type":"cetirun.ai_gateway.request", for the cluster's log collection. It
 carries no request or response content.
 {{- end }}
 
-{{- if not .Values.spendLogs.enabled }}
+{{- if not $settings.spendLogs.enabled }}
 
 LiteLLM writes no row per call to LiteLLM_SpendLogs, so the console's request
 log pages stay empty. Spend, budgets and daily usage totals are kept. An image
 built before the request log keeps writing those rows.
 {{- end }}
 
-{{- if .Values.metrics.enabled }}
+{{- if $settings.metrics.enabled }}
 
 Prometheus metrics are served on port {{ include "cetirun-ai-gateway.metricsPort" . }} of each Gateway pod, at
 /metrics, without authentication. They name every key, user and Team with its
 spend; keep that port away from workloads that should not read them.
-{{- if and .Values.metrics.podMonitor.enabled (not (include "cetirun-ai-gateway.podMonitorAvailable" .)) }}
+{{- if and $settings.metrics.podMonitor.enabled (not (include "cetirun-ai-gateway.podMonitorAvailable" .)) }}
 
-No PodMonitor was created: the cluster does not serve {{ .Values.metrics.podMonitor.apiVersion }}/PodMonitor.
+No PodMonitor was created: the cluster does not serve {{ $settings.metrics.podMonitor.apiVersion }}/PodMonitor.
 On AKS, enable Azure Monitor managed Prometheus and upgrade the release.
 {{- end }}
 {{- end }}

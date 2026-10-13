@@ -644,6 +644,32 @@ sleep 2
 [ "$(logged_for "${nolog_key}")" = "1" ] || fail "a call sent with no-log is missing from the request log"
 pass "a call sent with no-log is in the request log"
 
+# Clients choose some of what the record carries: LiteLLM records a request's
+# metadata.session_id as its trace_id. A line longer than 16 KiB is split by the
+# container runtime into pieces that are not valid JSON, so every string is
+# capped and a line never exceeds 15 KiB. An uncapped trace_id once made a
+# 100 KB session ID a 100 KB line.
+echo "==> A request log line stays within 15 KiB whatever the caller sends"
+long_key="$(api_post "${port_a}" /key/generate '{"models":["mock-priced"],"max_budget":10}' | jq -r .key)" \
+  || fail "could not create a virtual key"
+head -c 100000 /dev/zero | tr '\0' 's' > "${work_dir}/session-id"
+jq -n --rawfile session "${work_dir}/session-id" \
+  '{model: "mock-priced", messages: [{role: "user", content: "test"}], metadata: {session_id: $session}}' \
+  > "${work_dir}/long-session.json"
+long_status="$(curl -s -m 60 -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:${port_a}/v1/chat/completions" \
+  -H "Authorization: Bearer ${long_key}" -H 'Content-Type: application/json' --data-binary "@${work_dir}/long-session.json")"
+[ "${long_status}" = "200" ] || fail "a call with a 100 KB session ID failed (${long_status})"
+sleep 2
+long_hash="$(key_hash_of "${long_key}")"
+long_lines="$(for pod in "${pod_names[@]}"; do request_log "${pod}" | grep "\"key_hash\":\"${long_hash}\"" || true; done)"
+[ "$(grep -c . <<< "${long_lines}")" = "1" ] \
+  || fail "expected one request log line for the call with a 100 KB session ID, found $(grep -c . <<< "${long_lines}")"
+long_bytes="$(head -n 1 <<< "${long_lines}" | tr -d '\n' | wc -c)"
+[ "${long_bytes}" -le 15360 ] || fail "the request log line for a 100 KB session ID is ${long_bytes} bytes; the limit is 15 KiB"
+jq -e '(.trace_id | length) == 256' <<< "${long_lines}" >/dev/null \
+  || fail "the session ID did not reach the request log line as a capped trace_id"
+pass "a call with a 100 KB session ID wrote one line of ${long_bytes} bytes, its trace_id capped at 256 characters"
+
 # LiteLLM serves the metrics from a separate process, on a port of their own,
 # from samples the proxy leaves in a directory they share. Only a running pod
 # shows the two meet. On the Service port, /metrics stays behind the master key.

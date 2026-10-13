@@ -1,3 +1,4 @@
+{{- $metricsEnabled := (include "cetirun-ai-gateway.logsAndMetrics" . | fromJson).metrics.enabled }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -69,7 +70,7 @@ spec:
             - /etc/litellm/config.yaml
             - --port
             - {{ .Values.service.port | quote }}
-            {{- if .Values.metrics.enabled }}
+            {{- if $metricsEnabled }}
             {{- /* LiteLLM starts a second process that serves the metrics on
             this port, without authentication, and stops it with the proxy. */}}
             - --prometheus_metrics_port
@@ -79,7 +80,7 @@ spec:
             - name: http
               containerPort: {{ .Values.service.port }}
               protocol: TCP
-            {{- if .Values.metrics.enabled }}
+            {{- if $metricsEnabled }}
             - name: metrics
               containerPort: {{ include "cetirun-ai-gateway.metricsPort" . }}
               protocol: TCP
@@ -107,7 +108,7 @@ spec:
             - name: config
               mountPath: /etc/litellm
               readOnly: true
-            {{- if .Values.metrics.enabled }}
+            {{- if $metricsEnabled }}
             - name: metrics
               mountPath: {{ include "cetirun-ai-gateway.metricsDirectory" . }}
             {{- end }}
@@ -115,7 +116,7 @@ spec:
         - name: config
           configMap:
             name: {{ include "cetirun-ai-gateway.configMapName" . }}
-        {{- if .Values.metrics.enabled }}
+        {{- if $metricsEnabled }}
         {{- /* LiteLLM clears it when the proxy starts, so samples from a
         previous container never reappear. */}}
         - name: metrics

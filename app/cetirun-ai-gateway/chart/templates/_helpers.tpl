@@ -306,12 +306,41 @@ Where the proxy and the metrics process share their Prometheus samples.
 {{- end }}
 
 {{/*
+The requestLog, spendLogs and metrics settings, as JSON, with the defaults in
+values.yaml for whatever is missing. helm upgrade --reuse-values keeps the
+values of the chart version a release was installed with, so a release from
+before these settings has none of them. Templates read them through this,
+with fromJson, never from .Values directly. The render tests check that
+rendering without the settings gives the same manifests as rendering with the
+defaults.
+*/}}
+{{- define "cetirun-ai-gateway.logsAndMetrics" -}}
+{{- $requestLog := .Values.requestLog | default dict -}}
+{{- $spendLogs := .Values.spendLogs | default dict -}}
+{{- $metrics := .Values.metrics | default dict -}}
+{{- $podMonitor := $metrics.podMonitor | default dict -}}
+{{- $settings := dict -}}
+{{- $_ := set $settings "requestLog" (dict "enabled" (dig "enabled" true $requestLog)) -}}
+{{- $_ = set $settings "spendLogs" (dict "enabled" (dig "enabled" true $spendLogs)) -}}
+{{- $monitor := dict "enabled" (dig "enabled" false $podMonitor) -}}
+{{- $_ = set $monitor "apiVersion" (dig "apiVersion" "azmonitoring.coreos.com/v1" $podMonitor) -}}
+{{- $_ = set $monitor "interval" (dig "interval" "30s" $podMonitor) -}}
+{{- $_ = set $monitor "labels" (dig "labels" dict $podMonitor) -}}
+{{- $metricsSettings := dict "enabled" (dig "enabled" false $metrics) "port" (dig "port" nil $metrics) -}}
+{{- $_ = set $metricsSettings "excludeLabels" (dig "excludeLabels" (list "client_ip" "user_agent" "user_email") $metrics) -}}
+{{- $_ = set $metricsSettings "podMonitor" $monitor -}}
+{{- $_ = set $settings "metrics" $metricsSettings -}}
+{{- toJson $settings -}}
+{{- end }}
+
+{{/*
 Whether the cluster serves the PodMonitor API the chart is configured for.
 Azure Monitor managed Prometheus installs azmonitoring.coreos.com; a cluster
 without it has no such API, and installing a PodMonitor there would fail.
 */}}
 {{- define "cetirun-ai-gateway.podMonitorAvailable" -}}
-{{- if .Capabilities.APIVersions.Has (printf "%s/PodMonitor" .Values.metrics.podMonitor.apiVersion) }}true{{ end }}
+{{- $podMonitor := (include "cetirun-ai-gateway.logsAndMetrics" . | fromJson).metrics.podMonitor -}}
+{{- if .Capabilities.APIVersions.Has (printf "%s/PodMonitor" $podMonitor.apiVersion) }}true{{ end }}
 {{- end }}
 
 {{/*
@@ -320,8 +349,9 @@ already listens on 9090 (service.port), so turning metrics on never needs a
 port to be chosen by hand.
 */}}
 {{- define "cetirun-ai-gateway.metricsPort" -}}
-{{- if .Values.metrics.port -}}
-{{- int .Values.metrics.port -}}
+{{- $metrics := (include "cetirun-ai-gateway.logsAndMetrics" . | fromJson).metrics -}}
+{{- if $metrics.port -}}
+{{- int $metrics.port -}}
 {{- else if eq (int .Values.service.port) 9090 -}}
 9091
 {{- else -}}
@@ -334,10 +364,11 @@ A metrics port set by hand has to be its own, and a PodMonitor needs metrics
 to scrape.
 */}}
 {{- define "cetirun-ai-gateway.validateMetrics" -}}
-{{- if and .Values.metrics.enabled .Values.metrics.port (eq (int .Values.metrics.port) (int .Values.service.port)) }}
-{{- fail (printf "metrics.port %d is also service.port. The metrics process needs a port of its own: set metrics.port to another one, or leave it unset to have one chosen." (int .Values.metrics.port)) }}
+{{- $metrics := (include "cetirun-ai-gateway.logsAndMetrics" . | fromJson).metrics -}}
+{{- if and $metrics.enabled $metrics.port (eq (int $metrics.port) (int .Values.service.port)) }}
+{{- fail (printf "metrics.port %d is also service.port. The metrics process needs a port of its own: set metrics.port to another one, or leave it unset to have one chosen." (int $metrics.port)) }}
 {{- end }}
-{{- if and .Values.metrics.podMonitor.enabled (not .Values.metrics.enabled) }}
+{{- if and $metrics.podMonitor.enabled (not $metrics.enabled) }}
 {{- fail "metrics.podMonitor.enabled is set while metrics.enabled is false, so the PodMonitor would have nothing to scrape. Set metrics.enabled as well, or turn the PodMonitor off." }}
 {{- end }}
 {{- end }}
@@ -347,7 +378,8 @@ LiteLLM's spend log is turned off only in favour of the request log, which then
 keeps the record of each call.
 */}}
 {{- define "cetirun-ai-gateway.validateRequestRecords" -}}
-{{- if and (not .Values.spendLogs.enabled) (not .Values.requestLog.enabled) }}
+{{- $settings := include "cetirun-ai-gateway.logsAndMetrics" . | fromJson -}}
+{{- if and (not $settings.spendLogs.enabled) (not $settings.requestLog.enabled) }}
 {{- fail "spendLogs.enabled is false while requestLog.enabled is false, which would leave no record of each call. LiteLLM's spend log is turned off only together with the request log: set requestLog.enabled as well, or keep spendLogs.enabled." }}
 {{- end }}
 {{- end }}
