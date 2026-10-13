@@ -94,6 +94,16 @@ assert generation() == recorded
 host.hooks["pre_llm_call"](session_id="hermes-fixture", platform="cli", turn_id="turn-1b", user_message="Next turn", model="model")
 host.middleware["llm_request"](original, session_id="hermes-fixture", provider="fixture", model="model", api_mode="chat_completions", api_request_id="request-4")
 assert generation() == recorded + 1
+# Long native turn IDs are valid bindings too. Their injection must be
+# recorded by the real helper, once per turn, without exceeding eventId's cap.
+for turn_id in ("t" * 210, "t" * 256):
+    host.hooks["pre_llm_call"](session_id="hermes-fixture", platform="api_server", turn_id=turn_id, user_message="Long turn", model="model")
+    before = generation()
+    request = host.middleware["llm_request"](original, session_id="hermes-fixture", provider="fixture", model="model", api_mode="chat_completions")
+    assert "Hermes private fixture" in request["request"]["messages"][-1]["content"]
+    assert generation() == before + 1, "long turn lost its injection record"
+    host.middleware["llm_request"](original, session_id="hermes-fixture", provider="fixture", model="model", api_mode="chat_completions")
+    assert generation() == before + 1, "same turn recorded twice"
 host.hooks["post_tool_call"](session_id="hermes-fixture", tool_name="fixture_tool", tool_call_id="failure-1", status="error", result="Do not persist raw outputs")
 prepared = json.loads(tool({"command": "prepare", "payload": {}}))
 assert prepared["data"]["observations"][0]["assurance"] == "adapter-observed"

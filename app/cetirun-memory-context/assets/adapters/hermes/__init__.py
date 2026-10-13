@@ -131,8 +131,8 @@ class MemorySession:
             self.turn_text = self.context()
             refs = self.injected
             if refs and self.writable():
-                key = hashlib.sha256(json.dumps(refs, sort_keys=True).encode()).hexdigest()
-                self.call("injected", {"refs": refs}, event_id=self.binding["opportunityId"] + "-injected-" + key)
+                key = hashlib.sha256(json.dumps([self.binding["opportunityId"], refs], sort_keys=True).encode()).hexdigest()
+                self.call("injected", {"refs": refs}, event_id="injected-" + key)
             self.injected = []
         return self.turn_text
 
