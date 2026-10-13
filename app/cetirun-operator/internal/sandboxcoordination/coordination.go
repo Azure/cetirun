@@ -179,7 +179,7 @@ func NewState(namespace, name string) (*corev1.ConfigMap, error) {
 	object := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{
 		Namespace: namespace, Name: name, Finalizers: []string{Finalizer},
 	}}
-	if err := encode(object, record{Version: 2, Executions: []Execution{}, Changes: []Change{}}); err != nil {
+	if err := encode(object, record{Version: 1, Executions: []Execution{}, Changes: []Change{}}); err != nil {
 		return nil, err
 	}
 	return object, nil
@@ -567,7 +567,7 @@ func encode(object *corev1.ConfigMap, state record) error {
 }
 
 func validateRecord(state record) error {
-	if state.Version != 2 || state.Executions == nil || state.Changes == nil ||
+	if state.Version != 1 || state.Executions == nil || state.Changes == nil ||
 		len(state.Executions)+len(state.Changes)+len(state.NativeReservations) > MaxEntries {
 		return fmt.Errorf("%w: invalid version, inventory or entry bound", ErrUnavailable)
 	}

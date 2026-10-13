@@ -213,7 +213,7 @@ func Resolve(input ResolveInput) (*Resolution, error) {
 		RuntimeClassName string                      `json:"runtimeClassName"`
 		PlatformRevision string                      `json:"platformRevision"`
 	}{
-		"sandbox-foundation-v3", binding, sandboxSpec, ProjectPolicy(policySpec),
+		"sandbox-foundation-v1", binding, sandboxSpec, ProjectPolicy(policySpec),
 		registration.Capabilities.RuntimeClassName, registration.Capabilities.Revision,
 	})
 	if err != nil {

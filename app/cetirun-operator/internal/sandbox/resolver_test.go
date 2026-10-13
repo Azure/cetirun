@@ -120,6 +120,14 @@ func TestValidateTeamStopsAtInvalidPersistedIdentity(t *testing.T) {
 	}
 }
 
+func TestFoundationRevisionUsesV1Domain(t *testing.T) {
+	const expectedRevision = "39efbdbf83b160e3e032255dbc0df12bc80d9787e0a7866f2b0faff9a622e644"
+	resolved := mustResolve(t, resolverFixture())
+	if resolved.Revision != expectedRevision {
+		t.Fatalf("v1 foundation revision = %q, want %q", resolved.Revision, expectedRevision)
+	}
+}
+
 func TestResolveDefaultsAndIsolation(t *testing.T) {
 	input := resolverFixture()
 	beforeAgent := input.Agent.DeepCopy()

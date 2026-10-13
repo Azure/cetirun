@@ -118,6 +118,14 @@ func adminFixture() CompileInput {
 	return input
 }
 
+func TestControlRevisionUsesV1Domain(t *testing.T) {
+	const expectedRevision = "e8c4036fa1c44fca437c8ee5d379937123ed0a9fbbde85115287c01848725c9d"
+	plan := mustCompile(t, compilerFixture())
+	if plan.Revision != expectedRevision {
+		t.Fatalf("v1 control revision = %q, want %q", plan.Revision, expectedRevision)
+	}
+}
+
 func TestCompileDefaultControls(t *testing.T) {
 	input := compilerFixture()
 	plan := mustCompile(t, input)

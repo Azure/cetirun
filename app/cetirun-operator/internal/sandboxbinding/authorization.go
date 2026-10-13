@@ -25,7 +25,7 @@ import (
 const (
 	AuthorizationAnnotation = "cetirun.microsoft.com/sandbox-authorization"
 	ReauthorizeAnnotation   = "cetirun.microsoft.com/sandbox-reauthorize"
-	recordVersion           = "v2"
+	recordVersion           = "v1"
 )
 
 type reference struct {

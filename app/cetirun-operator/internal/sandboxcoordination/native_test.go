@@ -62,7 +62,7 @@ func TestNativeStatePreservesDefaultSerialization(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const baseline = `{"version":2,"executions":[],"changes":[]}`
+	const baseline = `{"version":1,"executions":[],"changes":[]}`
 	if object.Data[DataKey] != baseline {
 		t.Fatalf("default coordination wire format changed: %s", object.Data[DataKey])
 	}

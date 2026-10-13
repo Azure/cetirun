@@ -583,10 +583,11 @@ fields are removed from the API and CRD schemas. New resources use only the
 Team's `agentPolicyRef`; there are no compatibility fields, policy-class
 branches, or migration readers for the former dual-policy design. This contract
 targets a new system, not an upgrade of an existing governed deployment.
-Authorization snapshots use `v2`, Pod expectations use `v3`, and coordination
-records use version `2`. Create new authorities and workloads with these
-formats; older serialized state is not silently reauthorized or adopted. These
-version checks remain fail-closed and are not a supported migration path.
+Authorization snapshots and Pod expectations use `v1`; coordination records
+use version `1`. Policy foundation and compiled-control revisions also use `v1`
+domains. These are the initial single-policy formats, not version upgrades of
+the undeployed dual-policy design. Strict decoding, ownership checks and
+explicit reauthorization remain fail-closed; no migration readers are added.
 
 The controller holds Agents that request Sandbox policy, belong to a Team
 with policy settings, or already have Sandbox status or a hold finalizer.
@@ -862,10 +863,10 @@ RuntimeClass/StorageClass, namespace, claims, Pod sources and compiled controls.
 The Agent instead pins UID, generation, and a digest of its spec, protected
 authorization/reauthorization metadata and lifecycle holds. Status writes and
 unrelated labels/annotations do not invalidate it; metadata-only reauthorization
-still does. This is expectation format `v3`, separate from the unchanged render
-contract. Old expectations fail closed until the controller rebuilds them;
-upgrade controller and admission together, without editing stored JSON or
-lifting holds to bypass version checks.
+still does. This is expectation format `v1`, separate from the render contract.
+Controller and admission use the same initial format; malformed or unsupported
+expectations fail closed. Do not edit stored JSON or lift holds to bypass these
+checks.
 
 Successful attempts refresh every 15 seconds, so source changes, prerequisite
 expiry and explicit reauthorization are not missed. An unchanged attempt uses
@@ -904,11 +905,11 @@ including the Kubernetes template-replacement patch form. A stale generation
 does not acquire a current revision pin. Both operator and admission receive
 read-only `get` access to ControllerRevisions.
 
-These references use the `v3` expectation source format; they are not
-another intent journal or an execution permit. Valid older held expectations
-without the pins are rebuilt through guarded preparation. Older controllers
-may omit them, so a future start action must explicitly require the complete
-current identities rather than infer qualification from format version alone.
+These references use the `v1` expectation source format; they are not
+another intent journal or an execution permit. Held expectations without the
+current pins are rebuilt through guarded preparation. A start action must
+explicitly require the complete current identities rather than infer
+qualification from format version alone.
 No preparation-receipt upgrade, attempt history, new finalizer or GC lifecycle
 is introduced. The existing `v1` cleanup receipt retains its 64 KiB bound and
 historical namespace/HOME tuple; unsupported receipt formats still fail closed.

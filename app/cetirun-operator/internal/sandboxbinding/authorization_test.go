@@ -53,6 +53,9 @@ func TestSnapshotPersistsBeforeAgentNameUIDOrSuccessfulApply(t *testing.T) {
 	if record != agent.Annotations[AuthorizationAnnotation] {
 		t.Fatal("creation metadata must not bind a caller-supplied Agent name or UID")
 	}
+	if !strings.HasPrefix(record, `{"version":"v1",`) {
+		t.Fatalf("authorization must use the v1 format: %s", record)
+	}
 	if _, err := AuthorizedBinding(agent); err == nil {
 		t.Fatal("an unpersisted create request is not authorized for execution")
 	}
@@ -86,8 +89,11 @@ func TestAuthorizationRejectsMalformedOrDetachedRecords(t *testing.T) {
 		{"unknown", func(a *api.Agent) {
 			a.Annotations[AuthorizationAnnotation] = strings.Replace(a.Annotations[AuthorizationAnnotation], `"version":`, `"unknown":true,"version":`, 1)
 		}},
-		{"legacy version", func(a *api.Agent) {
-			a.Annotations[AuthorizationAnnotation] = strings.Replace(a.Annotations[AuthorizationAnnotation], `"v2"`, `"v1"`, 1)
+		{"unsupported v2", func(agent *api.Agent) {
+			agent.Annotations[AuthorizationAnnotation] = strings.Replace(agent.Annotations[AuthorizationAnnotation], `"v1"`, `"v2"`, 1)
+		}},
+		{"unsupported v3", func(agent *api.Agent) {
+			agent.Annotations[AuthorizationAnnotation] = strings.Replace(agent.Annotations[AuthorizationAnnotation], `"v1"`, `"v3"`, 1)
 		}},
 		{"trailing", func(a *api.Agent) { a.Annotations[AuthorizationAnnotation] += " {}" }},
 		{"duplicate", func(a *api.Agent) {

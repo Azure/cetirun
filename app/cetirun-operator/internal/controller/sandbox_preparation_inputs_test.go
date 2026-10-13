@@ -85,7 +85,7 @@ func TestSandboxPreparationStartInputPins(t *testing.T) {
 				}, journal); err != nil {
 					t.Fatal(err)
 				}
-				if expected.Version != "v3" || expected.ControllerRevision != "" || !slices.Contains(expected.Sources, w.SourceReference{
+				if expected.Version != "v1" || expected.ControllerRevision != "" || !slices.Contains(expected.Sources, w.SourceReference{
 					APIVersion: "v1", Kind: "ConfigMap", Namespace: journal.Namespace, Name: journal.Name,
 					UID: journal.UID, ResourceVersion: journal.ResourceVersion,
 				}) {

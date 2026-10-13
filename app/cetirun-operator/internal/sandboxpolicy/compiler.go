@@ -84,7 +84,7 @@ func Compile(input CompileInput) (*Plan, error) {
 		Identity     IdentityPlan
 		Network      NetworkPlan
 	}{
-		"sandbox-controls-v2", binding, input.AgentName, input.Namespace,
+		"sandbox-controls-v1", binding, input.AgentName, input.Namespace,
 		resolution.Sandbox, sandbox.ProjectPolicy(resolution.AgentPolicy), capabilities, platform.Adapter,
 		platform.Topology, grants, approval, identity, network,
 	})

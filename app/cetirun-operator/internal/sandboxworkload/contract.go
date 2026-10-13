@@ -20,7 +20,7 @@ import (
 const (
 	MaxPreparationSources   = 128
 	ContractVersion         = "v1"
-	ExpectationVersion      = "v3"
+	ExpectationVersion      = "v1"
 	ValuesKey               = "sandboxWorkload"
 	RevisionAnnotation      = "cetirun.microsoft.com/sandbox-revision"
 	AgentUIDAnnotation      = "cetirun.microsoft.com/agent-uid"

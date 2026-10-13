@@ -9,17 +9,24 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 )
 
-func TestPodExpectationObjectRejectsOlderExpectationVersions(t *testing.T) {
+func TestPodExpectationObjectUsesOnlyV1(t *testing.T) {
 	expected := Expectation{
 		Version:   ExpectationVersion,
 		Agent:     ObjectIdentity{Name: "agent", UID: types.UID("agent-uid")},
 		Namespace: ObjectIdentity{Name: "workloads", UID: types.UID("namespace-uid")},
 	}
+	if expected.Version != "v1" {
+		t.Fatalf("expectation must use v1, got %q", expected.Version)
+	}
 	if _, err := PodExpectationObject("operator-state", expected); err != nil {
 		t.Fatal(err)
 	}
-	expected.Version = "v2"
-	if _, err := PodExpectationObject("operator-state", expected); err == nil {
-		t.Fatal("older expectation version was accepted")
+	for _, version := range []string{"", "v2", "v3"} {
+		t.Run(version, func(t *testing.T) {
+			expected.Version = version
+			if _, err := PodExpectationObject("operator-state", expected); err == nil {
+				t.Fatal("unsupported expectation version was accepted")
+			}
+		})
 	}
 }
