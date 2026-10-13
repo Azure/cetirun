@@ -525,14 +525,50 @@ type operation struct {
 	Payload json.RawMessage `json:"payload"`
 }
 
+// feedbackReminder bounds how long the latest pending observation prompts the
+// model to prepare and propose. Pending observations stay available to
+// prepare afterwards.
+const feedbackReminder = 24 * time.Hour
+
+// freshFeedback reports whether the newest pending observation is recent
+// enough to remind the model of it.
+func (v *snapshot) freshFeedback(now time.Time) bool {
+	if len(v.m.Pending) == 0 {
+		return false
+	}
+	ref, ok := v.m.Objects[v.m.Pending[len(v.m.Pending)-1]]
+	if !ok {
+		return false
+	}
+	var o Observation
+	if v.read(ref, &o) != nil {
+		return false
+	}
+	at, err := time.Parse(time.RFC3339, o.ObservedAt)
+	return err == nil && now.Sub(at) < feedbackReminder
+}
+
+// processObservations removes observations from the pending list.
+func (v *snapshot) processObservations(ids []string) {
+	for _, id := range ids {
+		if slices.Contains(v.m.Pending, id) {
+			v.m.Processed[id] = true
+			v.m.Pending = slices.DeleteFunc(v.m.Pending, func(x string) bool { return x == id })
+		}
+	}
+}
+
 func (s *Store) commitBatch(v *snapshot, r Request) (writeResult, error) {
 	var input batchInput
 	if err := Decode(r.Payload, &input); err != nil {
 		return writeResult{}, err
 	}
-	if len(input.Operations) < 1 || len(input.Operations) > 8 || len(input.ProcessedObservationIDs) > 8 {
+	// A batch without operations only marks observations as processed, for
+	// feedback that needs no change.
+	if len(input.Operations) > 8 || len(input.ProcessedObservationIDs) > 8 || len(input.Operations) == 0 && len(input.ProcessedObservationIDs) == 0 {
 		return writeResult{}, problem(2, "InvalidInput")
 	}
+	pending := slices.Clone(v.m.Pending)
 	result := writeResult{Refs: []Ref{}}
 	for _, raw := range input.Operations {
 		var op operation
@@ -559,14 +595,14 @@ func (s *Store) commitBatch(v *snapshot, r Request) (writeResult, error) {
 		result.Refs = append(result.Refs, next.Refs...)
 	}
 	for _, id := range input.ProcessedObservationIDs {
-		if !slices.Contains(v.m.Pending, id) || v.m.Tombstones[id] {
+		// A proposal in this batch may already have processed the observation.
+		if !slices.Contains(pending, id) && !slices.Contains(v.m.Pending, id) || v.m.Tombstones[id] {
 			return result, problem(3, "Conflict")
 		}
 		if !v.allowed(v.m.Objects[id], r) {
 			return result, problem(4, "DisclosureNotAllowed")
 		}
-		v.m.Processed[id] = true
-		v.m.Pending = slices.DeleteFunc(v.m.Pending, func(x string) bool { return x == id })
+		v.processObservations([]string{id})
 	}
 	return result, nil
 }

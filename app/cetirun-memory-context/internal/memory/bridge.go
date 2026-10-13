@@ -249,7 +249,7 @@ func (s *Store) bridgeContext(ctx context.Context, r Request, canonical string, 
 			refs = append(refs, item.Ref)
 		}
 	}
-	if !r.RequestContext.NoCapture && len(v.m.Pending) > 0 {
+	if !r.RequestContext.NoCapture && v.freshFeedback(s.now()) {
 		text += "\nPending observed feedback is available. Within this task's existing budget, use cetirun_memory prepare and propose at most one falsifiable, scoped method. Never infer business success from a completed turn.\n"
 	}
 	if partial != nil {

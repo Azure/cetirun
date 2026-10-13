@@ -169,6 +169,8 @@ func (s *Store) propose(v *snapshot, r Request) (writeResult, error) {
 		return writeResult{}, err
 	}
 	v.m.ProcedureStates[ref.Key()] = methodState{State: "candidate"}
+	// The candidate is the response to the observations it cites.
+	v.processObservations(proc.SourceObservationIDs)
 	return writeResult{Refs: []Ref{ref}, State: "candidate"}, nil
 }
 func corpusDigest(corpus []corpusNote) string {

@@ -110,7 +110,7 @@ func (s *Store) NativeContext(ctx context.Context, entrypoint string, raw []byte
 	if partial != nil {
 		out.WriteString("Navigation is partial. Query a specific title or alias; do not infer absence from this list.\n")
 	}
-	if len(v.m.Pending) > 0 && !input.NoCapture {
+	if !input.NoCapture && v.freshFeedback(s.now()) {
 		out.WriteString("Pending observations exist. At an allowed task boundary, read the skill, prepare a bounded batch, and consider one falsifiable candidate; do not add model turns.\n")
 	}
 	return out.String()
