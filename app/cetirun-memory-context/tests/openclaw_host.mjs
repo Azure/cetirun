@@ -65,8 +65,16 @@ try {
   const globals = await native("hook-runner-global-C81Znoo2.mjs");
   globals.i({ ...registry, typedHooks });
   const { _: buildPrompt } = await native("agent-harness-runtime-Cq-eu9so.mjs");
-  const context = { sessionId: "sdk-owner", runId: "sdk-run", workspaceDir: process.env.MEMORY_TEST_WORKSPACE,
-    agentId: "main", messageProvider: "webchat", inputProvenance: { kind: "external_user" } };
+  // The context OpenClaw's embedded runner builds for an owner's Control UI turn
+  // (attempt-prompt-build.ts), from OpenClaw's own builders: chat.send uses the
+  // internal "webchat" route to the session key, with no input provenance and,
+  // for an operator UI client, no sender ID.
+  const { t: channelFields, n: identityFields } = await native("hook-agent-context-C33rGaR3.mjs");
+  const context = { sessionId: "sdk-owner", sessionKey: "agent:main:main", runId: "sdk-run", workspaceDir: process.env.MEMORY_TEST_WORKSPACE,
+    agentId: "main", trigger: "user",
+    ...channelFields({ sessionKey: "agent:main:main", messageProvider: "webchat", currentChannelId: "agent:main:main", messageTo: "agent:main:main" }),
+    ...identityFields({ trigger: "user" }) };
+  assert.equal(context.channel, "webchat");
   const enabled = await buildPrompt({ prompt: "Synthetic ordinary task", developerInstructions: "Synthetic fixture contract.", messages: [], ctx: context });
   assert.ok(enabled.prompt.includes("PRIVATE-MEMORY-FIXTURE-CONTENT"), "native builder did not run the Memory plugin");
   const disabled = await buildPrompt({ prompt: "/memory off", developerInstructions: "Synthetic fixture contract.", messages: [], ctx: { ...context, runId: "sdk-off" } });

@@ -38,6 +38,49 @@ function note(f) {
     temporalClass: "historical", status: "active", revalidation: { mode: "on-change" }, sources: [{ kind: "fixture", ref: "native-fixture-source", origin: "external-claim", assurance: "reported", observedAt: "2026-10-08T00:00:00Z" }] };
 }
 
+// The before_prompt_build context OpenClaw 2026.9.6 builds for an owner's
+// Control UI or TUI turn: embedded-agent-runner/run/attempt-prompt-build.ts with
+// buildAgentHookContextChannelFields. chat.send leaves the provenance unset, the
+// channel falls back to the "webchat" provider, the internal route uses the
+// session key as the target, and operator UI clients carry no sender ID.
+function controlUiContext(overrides = {}) {
+  return { sessionId: "web-session", sessionKey: "agent:main:main", runId: "run-1", agentId: "main", trigger: "user",
+    messageProvider: "webchat", channel: "webchat", channelId: "agent:main:main", chatId: "agent:main:main", ...overrides };
+}
+function channelContext(provider, chatType, overrides = {}) {
+  return controlUiContext({ messageProvider: provider, channel: provider, channelId: "fixture-conversation", chatId: "fixture-conversation",
+    senderId: "fixture-sender", channelContext: { sender: { id: "fixture-sender" }, chat: { id: "fixture-conversation", ...(chatType ? { type: chatType } : {}) } },
+    ...overrides });
+}
+
+test("OpenClaw treats only the owner's operator turns as private", () => {
+  const cases = [
+    ["Control UI or TUI turn", controlUiContext(), true],
+    ["dashboard session", controlUiContext({ sessionKey: "agent:main:dashboard:fixture", channelId: "agent:main:dashboard:fixture" }), true],
+    ["operator input marked as a person's input", controlUiContext({ inputProvenance: { kind: "external_user", sourceChannel: "fixture" } }), true],
+    ["local CLI turn", controlUiContext({ messageProvider: "cli", channel: "cli" }), true],
+    ["channel direct message a channel plugin marks as the owner",
+      channelContext("msteams", "direct", { channelContext: { sender: { id: "fixture-sender", isOwner: true }, chat: { id: "fixture-conversation", type: "direct" } } }), true],
+    ["another Gateway client, such as the public webchat client", controlUiContext({ senderId: "webchat-ui" }), false],
+    ["heartbeat", controlUiContext({ trigger: "heartbeat" }), false],
+    ["cron job", controlUiContext({ trigger: "cron", jobId: "fixture-job", sessionKey: "agent:main:cron:fixture-job:run:fixture-run" }), false],
+    ["memory flush", controlUiContext({ trigger: "memory" }), false],
+    ["turn without a trigger", controlUiContext({ trigger: undefined }), false],
+    ["inter-session message", controlUiContext({ inputProvenance: { kind: "inter_session", sourceTool: "sessions_send" } }), false],
+    ["internal system input", controlUiContext({ inputProvenance: { kind: "internal_system", sourceTool: "fixture" } }), false],
+    ["person's input relayed from another session", controlUiContext({ inputProvenance: { kind: "external_user", sourceSessionKey: "agent:main:other" } }), false],
+    ["sub-agent session", controlUiContext({ sessionKey: "agent:main:subagent:fixture" }), false],
+    ["cron session", controlUiContext({ sessionKey: "agent:main:cron:fixture-job" }), false],
+    ["webchat turn routed to another channel", controlUiContext({ channel: "slack" }), false],
+    ["voice transcript from a paired node", controlUiContext({ messageProvider: "node", channel: "node",
+      inputProvenance: { kind: "external_user", sourceChannel: "voice", sourceTool: "gateway.voice.transcript" } }), false],
+    ["channel direct message", channelContext("msteams", "direct"), false],
+    ["channel message without a chat type", channelContext("telegram"), false],
+    ["group chat", channelContext("slack", "group"), false],
+  ];
+  for (const [name, ctx, expected] of cases) assert.equal(privateOrigin(ctx), expected, name);
+});
+
 test("generic Custom bridge runs the real helper, records usage, and obeys restrictions", async t => {
   const f = await fixture(t);
   const session = f.bridge.session(f.binding);
@@ -69,7 +112,7 @@ test("OpenClaw hooks use native origin, refresh context, and preserve unrelated 
   let factory, modelCalls = 0;
   registerMemory({ runtime: { version: "2026.9.6", llm: { complete: async () => { modelCalls++; throw new Error("no model authorized"); } } },
     on: (name, fn) => hooks.set(name, fn), registerTool: registration => { assert.equal(registration.contextVersion, 2); factory = registration.create; } }, { bridge: f.bridge });
-  const ctx = { sessionId: "web-session", runId: "run-1", workspaceDir: f.workspace, messageProvider: "webchat", inputProvenance: { kind: "external_user" }, modelProviderId: "fixture", modelId: "model", assertInvocationCurrent() {} };
+  const ctx = controlUiContext({ workspaceDir: f.workspace, modelProviderId: "fixture", modelId: "model", assertInvocationCurrent() {} });
   const messages = [{ role: "user", content: "Unrelated native history" }];
   const event = { prompt: "fixture", currentUserMessage: "fixture", currentUserMessageId: "request-1", messages };
   assert.equal(privateOrigin(ctx), true);
@@ -87,7 +130,7 @@ test("OpenClaw hooks use native origin, refresh context, and preserve unrelated 
   await hooks.get("before_prompt_build")({ ...event, currentUserMessage: "/memory no-capture", currentUserMessageId: "request-3" }, { ...ctx, runId: "run-3" });
   const denied = await factory({ ...ctx, runId: "run-3" }).execute("native-write-2", { command: "capture", payload: { note: note(f) } });
   assert.equal(denied.details.reason, "CaptureProhibited");
-  const shared = await hooks.get("before_prompt_build")({ ...event, currentUserMessageId: "shared-request" }, { ...ctx, runId: "run-4", channel: "slack", channelContext: { chat: { type: "group" } } });
+  const shared = await hooks.get("before_prompt_build")({ ...event, currentUserMessageId: "shared-request" }, { ...channelContext("slack", "group"), runId: "run-4", workspaceDir: f.workspace, sessionId: "web-session" });
   assert.ok(!shared.prependContext.includes("Private fixture marker"));
   await hooks.get("agent_end")({ success: true }, { ...ctx, runId: "run-4" });
   assert.equal(modelCalls, 0);
@@ -126,8 +169,7 @@ async function openclawFixture(t, bridgeOverride) {
   let factory;
   registerMemory({ runtime: { version: "2026.9.6" }, on: (name, fn) => hooks.set(name, fn),
     registerTool: registration => { factory = registration.create; } }, { bridge: bridgeOverride?.(f.bridge) ?? f.bridge });
-  const ctx = { sessionId: "sdk-shape", runId: "owner-1", workspaceDir: f.workspace, messageProvider: "webchat",
-    inputProvenance: { kind: "external_user" }, assertInvocationCurrent() {} };
+  const ctx = controlUiContext({ sessionId: "sdk-shape", runId: "owner-1", workspaceDir: f.workspace, assertInvocationCurrent() {} });
   return { ...f, hooks, ctx, tool: context => factory(context) };
 }
 
@@ -143,7 +185,7 @@ test("OpenClaw internal restrictions do not become owner preferences", async t =
   const f = await openclawFixture(t);
   const event = { prompt: "Synthetic owner task", messages: [] };
   await f.hooks.get("before_prompt_build")(event, f.ctx);
-  const internal = await f.hooks.get("before_prompt_build")(event, { ...f.ctx, runId: "internal", inputProvenance: { kind: "internal" } });
+  const internal = await f.hooks.get("before_prompt_build")(event, { ...f.ctx, runId: "internal", inputProvenance: { kind: "internal_system", sourceTool: "fixture" } });
   assert.ok(!internal.prependContext.includes("Private fixture marker"));
   const resumed = await f.hooks.get("before_prompt_build")(event, { ...f.ctx, runId: "owner-2" });
   assert.ok(resumed.prependContext.includes("Private fixture marker"), "internal turn permanently disabled owner Memory");
@@ -163,6 +205,29 @@ test("OpenClaw outbound guard is armed before asynchronous injection accounting"
       assert.ok(f.hooks.get("before_tool_call")({ toolName }, f.ctx)?.requireApproval, `${toolName} raced the Memory guard`);
     }
   } finally { release(); await accounting; }
+});
+
+test("OpenClaw turns that cannot use Memory start no helper for context or the boundary", async t => {
+  const calls = [];
+  const f = await openclawFixture(t, bridge => ({ ...bridge, session(binding, signal) {
+    const session = bridge.session(binding, signal);
+    return { ...session,
+      async ownerPreference(text) { calls.push("ownerPreference"); return session.ownerPreference(text); },
+      async context(options) { calls.push("context"); return session.context(options); },
+      async boundary() { calls.push("boundary"); return session.boundary(); } };
+  } }));
+  const group = { ...channelContext("slack", "group"), sessionId: "group-session", runId: "group-1", workspaceDir: f.workspace };
+  const shared = await f.hooks.get("before_prompt_build")({ prompt: "Synthetic group question", messages: [] }, group);
+  assert.match(shared.prependContext, /not available in this conversation/);
+  await f.hooks.get("agent_end")({ success: true }, group);
+  const off = { ...f.ctx, runId: "owner-off" };
+  assert.match((await f.hooks.get("before_prompt_build")({ prompt: "/memory off", messages: [] }, off)).prependContext, /off for this conversation/);
+  await f.hooks.get("agent_end")({ success: true }, off);
+  assert.deepEqual(calls, []);
+  const on = { ...f.ctx, runId: "owner-on" };
+  assert.ok((await f.hooks.get("before_prompt_build")({ prompt: "/memory on", messages: [] }, on)).prependContext.includes("Private fixture marker"));
+  await f.hooks.get("agent_end")({ success: true }, on);
+  assert.deepEqual(calls, ["ownerPreference", "context", "boundary"]);
 });
 
 test("pinned Hermes host APIs load the adapter and execute bounded native calls", { skip: !process.env.MEMORY_HERMES_SOURCE }, async t => {

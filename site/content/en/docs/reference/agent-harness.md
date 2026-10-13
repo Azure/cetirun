@@ -316,6 +316,13 @@ fixture evaluation still requires a supported native route and is limited to
 four extra model requests per store in a rolling 24-hour window. It does not run
 without an active request or change tool permissions.
 
+The Memory adapters use private memory only in the owner's own conversations:
+for OpenClaw, turns the owner sends from the Control UI or the TUI; for Hermes,
+its CLI, TUI and API server sessions. In other conversations, such as channel
+conversations (Microsoft Teams, Slack, Telegram and others), heartbeats,
+scheduled jobs, sub-agents and messages between sessions, the adapters inject
+no notes and the Memory tool does not read or save notes.
+
 There is no Memory policy ConfigMap, installation identity or Portal policy
 editor. The helper does not bind stored notes to an Agent or namespace UID;
 the platform still assigns separate HOME volumes and enforces its existing
