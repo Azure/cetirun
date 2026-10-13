@@ -3,13 +3,37 @@
 
 import { createMemoryBridge, digest, MEMORY_TOOL, restrictiveMode, restoredRestrictions } from "../common/bridge.mjs";
 
+// OpenClaw 2026.9.6 builds the before_prompt_build context in its embedded and
+// CLI runners. A person's turn has trigger "user"; heartbeats, cron jobs and
+// memory flushes have their own triggers. Ordinary input carries no provenance,
+// which OpenClaw itself treats as a person's input, while inter-session and
+// internal handoffs are marked. "webchat" is the Gateway's internal channel,
+// whose provider is also reported as the channel. Operator UI clients (the
+// Control UI and the TUI) send no sender ID; other Gateway clients, including
+// the public webchat client, do. On CetiRun only the Agent's owner reaches the
+// operator UI.
+const OWNER_SURFACES = new Set(["webchat", "cli"]);
+
+function personInput(provenance) {
+  return !provenance || provenance.kind === "external_user" && !provenance.originSessionId &&
+    !provenance.sourceSessionKey && !provenance.sourceRole && !provenance.jobId;
+}
+
+function delegatedSession(sessionKey) {
+  const rest = /^agent:[^:]*:(.*)$/i.exec(sessionKey ?? "")?.[1]?.toLowerCase() ?? "";
+  return rest.startsWith("cron:") || /(^|:)subagent:/.test(rest);
+}
+
 export function privateOrigin(ctx) {
-  if (ctx.jobId || ctx.inputProvenance?.kind !== "external_user" || ctx.inputProvenance?.originSessionId || ctx.inputProvenance?.sourceSessionKey || ctx.inputProvenance?.sourceRole || ctx.inputProvenance?.jobId) return false;
+  if (ctx.trigger !== "user" || ctx.jobId || !personInput(ctx.inputProvenance) || delegatedSession(ctx.sessionKey)) return false;
   const chat = ctx.channelContext?.chat;
   if (["group", "channel", "room"].includes(chat?.type)) return false;
-  if (["webchat", "cli"].includes(ctx.messageProvider) && !ctx.channel) return true;
+  if (OWNER_SURFACES.has(ctx.messageProvider) && (!ctx.channel || ctx.channel === ctx.messageProvider) && !ctx.senderId) return true;
   return chat?.type === "direct" && ctx.channelContext?.sender?.isOwner === true;
 }
+
+const NOT_PRIVATE = "CetiRun Memory is not available in this conversation. Do not read or save private memory, or claim to have done so.";
+const TURNED_OFF = "CetiRun Memory is off for this conversation. Do not read or save private memory, or claim to have done so.";
 
 // The pinned direct chat-completions transport disables SDK retries. Other
 // transports can replay or switch transport, so they are not qualified here.
@@ -36,6 +60,9 @@ export function registerMemory(api, options = {}) {
   const sessions = new Map();
   const key = ctx => ctx.sessionId ?? ctx.sessionKey;
   const prune = () => { if (sessions.size > 128) { const id = sessions.keys().next().value; sessions.get(id)?.controller.abort(); sessions.delete(id); } };
+  // Turns that cannot use Memory get a fixed notice without starting the helper.
+  const turnContext = session => !session.owner ? NOT_PRIVATE : session.memory.binding.noMemory ? TURNED_OFF :
+    session.memory.context({ includeCanonical: false });
   api.on("before_prompt_build", async (event, ctx) => {
     const bridge = await bridgePromise;
     if (!bridge) return { prependSystemContext: "CetiRun Memory is unavailable. Do not claim private memory was read or saved, or bypass the missing native binding." };
@@ -46,7 +73,7 @@ export function registerMemory(api, options = {}) {
     const ownerText = event.currentUserMessage ?? event.prompt ?? "";
     const opportunity = event.currentUserMessageId ?? ctx.runId ?? digest(ownerText);
     if (previous?.runId === ctx.runId && previous?.opportunity === opportunity && previous.owner === owner && previous.ownerText === ownerText && !previous.controller.signal.aborted) {
-      const context = await previous.memory.context({ includeCanonical: false });
+      const context = await turnContext(previous);
       ctx.hookInvocation?.assertActive();
       if (previous.controller.signal.aborted || sessions.get(id) !== previous) return;
       previous.injected ||= owner && !previous.memory.binding.noMemory;
@@ -69,8 +96,8 @@ export function registerMemory(api, options = {}) {
       injected: previous?.runId === ctx.runId && previous.injected || false };
     sessions.set(id, session);
     prune();
-    if (owner) await memory.ownerPreference(ownerText);
-    const context = await memory.context({ includeCanonical: false });
+    if (owner && !memory.binding.noMemory) await memory.ownerPreference(ownerText);
+    const context = await turnContext(session);
     ctx.hookInvocation?.assertActive();
     if (controller.signal.aborted || sessions.get(id) !== session) return;
     session.injected ||= owner && !memory.binding.noMemory;
@@ -117,7 +144,8 @@ export function registerMemory(api, options = {}) {
   api.on("agent_end", async (event, ctx) => {
     const session = sessions.get(key(ctx));
     if (!session || session.runId !== ctx.runId) return;
-    if (event.success) await session.memory.boundary();
+    const { noCapture, noMemory } = session.memory.binding;
+    if (event.success && session.owner && !noCapture && !noMemory) await session.memory.boundary();
     session.controller.abort();
   });
   for (const hook of ["before_reset", "session_end"]) api.on(hook, (_event, ctx) => {
