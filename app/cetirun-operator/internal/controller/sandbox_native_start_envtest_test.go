@@ -29,6 +29,7 @@ import (
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/helm"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxbinding"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxcoordination"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxpolicy"
 	w "github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload/testfixture"
@@ -86,7 +87,7 @@ func TestNativeSandboxStartAPIServer(t *testing.T) {
 			name = "served-hold-release-and-cleanup"
 		}
 		t.Run(name, func(t *testing.T) {
-			h := newNativeStartAPIHarness(t, enabled)
+			h := newNativeStartAPIHarness(t, enabled, false)
 			f := h.nativeSandboxFixture
 			f.reconcileOK(t)
 			f.assertNotReady(t)
@@ -175,8 +176,14 @@ func TestNativeSandboxStartAPIServer(t *testing.T) {
 			if observed.PodUID != pod.UID || slices.Contains(f.pod(t).Finalizers, w.NativePodFinalizer) {
 				t.Fatal("controller did not persist and release the real first-Pod lifetime")
 			}
+			claimBound := changeNativeClaimDuringRecheck(f, running.Home, func(ctx context.Context, key client.ObjectKey) error {
+				return bindNativeTestClaim(ctx, h.admin, key)
+			})
 			h.observeReadyPod(t, pod)
 			f.reconcileOK(t)
+			if !claimBound() {
+				t.Fatal("served startup did not exercise concurrent HOME binding")
+			}
 			f.assertReady(t)
 			ready := f.current(t)
 			if ready.Status.Namespace != running.Namespace.Name || ready.Status.Namespace != pod.Namespace ||
@@ -215,9 +222,10 @@ type nativeStartAPIHarness struct {
 	member       client.Client
 	holdRequests chan nativeStartAdmissionObservation
 	localHelm    *nativeStartLocalHelm
+	sources      SandboxSourcesConfig
 }
 
-func newNativeStartAPIHarness(t *testing.T, admissionNative bool) *nativeStartAPIHarness {
+func newNativeStartAPIHarness(t *testing.T, admissionNative, coordinated bool) *nativeStartAPIHarness {
 	t.Helper()
 	if os.Getenv("USE_EXISTING_CLUSTER") == "true" {
 		t.Fatal("native start regression refuses an existing cluster")
@@ -271,6 +279,15 @@ func newNativeStartAPIHarness(t *testing.T, admissionNative bool) *nativeStartAP
 	t.Cleanup(cancel)
 	const namespace, controllerSA, memberName = "cetirun-system", "cetirun-operator", "native-member"
 	h.create(t, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace}})
+	var coordinationName, coordinationUID string
+	if coordinated {
+		authority, err := sandboxcoordination.NewState(namespace, "native-start-coordination")
+		if err != nil {
+			t.Fatal(err)
+		}
+		h.create(t, authority)
+		coordinationName, coordinationUID = authority.Name, string(authority.UID)
+	}
 
 	mux := http.NewServeMux()
 	server := httptest.NewTLSServer(mux)
@@ -291,8 +308,10 @@ func newNativeStartAPIHarness(t *testing.T, admissionNative bool) *nativeStartAP
 		"sandboxAdmission": map[string]any{
 			"enabled": true, "enforce": true, "podsEnabled": true, "validationMode": "strict",
 			"tlsSecretName": "synthetic-admission-tls", "caBundle": base64.StdEncoding.EncodeToString(ca),
-			"adminGroups":     []any{"system:masters"},
-			"teamAssignments": []any{map[string]any{"team": "team-example", "users": []any{memberName}}},
+			"adminGroups":               []any{"system:masters"},
+			"teamAssignments":           []any{map[string]any{"team": "team-example", "users": []any{memberName}}},
+			"coordinationConfigMapName": coordinationName,
+			"coordinationConfigMapUID":  coordinationUID,
 		},
 	}, chartutil.ReleaseOptions{Name: "native-start", Namespace: namespace}, capabilities)
 	if err != nil {
@@ -370,6 +389,7 @@ func newNativeStartAPIHarness(t *testing.T, admissionNative bool) *nativeStartAP
 	if !sourcesConfig.NativeExecution || !admissionConfig.NativeExecution || len(webhooks) != 3 {
 		t.Fatal("rendered deployment did not wire native execution and both Agent webhooks plus Pod admission")
 	}
+	h.sources = sourcesConfig
 	serviceAccountClient := func(name string) (client.WithWatch, *rest.Config) {
 		scoped := rest.CopyConfig(cfg)
 		scoped.Impersonate = rest.ImpersonationConfig{
@@ -421,6 +441,10 @@ func newNativeStartAPIHarness(t *testing.T, admissionNative bool) *nativeStartAP
 	if err != nil {
 		t.Fatal(err)
 	}
+	r.SandboxNativeCoordination, err = NewNativeSandboxCoordination(sourcesConfig, controllerClient, controllerClient, namespace)
+	if err != nil {
+		t.Fatal(err)
+	}
 	input := testfixture.New("openclaw")
 	h.nativeSandboxFixture = &nativeSandboxFixture{r: r, kube: controllerClient, gateway: gateway, agent: input.Agent}
 	h.installPlatform(t, input, admissionNative)
@@ -431,7 +455,9 @@ func newNativeStartAPIHarness(t *testing.T, admissionNative bool) *nativeStartAP
 	if err != nil {
 		t.Fatal(err)
 	}
-	podHandler, err := sandboxadmission.NewPodHandler(admissionClient, sandboxadmission.PodConfig{StateNamespace: namespace})
+	podHandler, err := sandboxadmission.NewPodHandler(admissionClient, sandboxadmission.PodConfig{
+		StateNamespace: namespace, CoordinationConfigMapName: coordinationName, CoordinationConfigMapUID: coordinationUID,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -663,7 +689,7 @@ func (h *nativeStartAPIHarness) assertNoRoute(t *testing.T) {
 
 func (h *nativeStartAPIHarness) observeReadyPod(t *testing.T, pod *corev1.Pod) {
 	t.Helper()
-	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "synthetic-native-node"}}
+	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "synthetic-" + h.agent.Name + "-node"}}
 	h.create(t, node)
 	node.Status.Conditions = []corev1.NodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionTrue}}
 	if err := h.admin.Status().Update(h.ctx, node); err != nil {
@@ -685,7 +711,7 @@ func (h *nativeStartAPIHarness) observeReadyPod(t *testing.T, pod *corev1.Pod) {
 func (h *nativeStartAPIHarness) cleanupAgent(t *testing.T, pod *corev1.Pod, state, receipt *corev1.ConfigMap) {
 	t.Helper()
 	agent := h.current(t)
-	if err := h.member.Delete(h.ctx, agent); err != nil {
+	if err := h.member.Delete(h.ctx, agent, client.Preconditions{UID: &agent.UID, ResourceVersion: &agent.ResourceVersion}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := h.reconcile(); err == nil || !strings.Contains(err.Error(), "ordinary Pod termination") {
@@ -862,7 +888,11 @@ func (h *nativeStartLocalHelm) StageSandbox(ctx context.Context, namespace, name
 		return err
 	}
 	workload := &appsv1.StatefulSet{}
-	key := client.ObjectKey{Namespace: namespace, Name: instanceServiceName("example")}
+	alias, validNamespace := strings.CutPrefix(namespace, "cetirun-")
+	if !validNamespace || name != helmReleaseName(alias) {
+		return fmt.Errorf("local native release differs from its Agent namespace")
+	}
+	key := client.ObjectKey{Namespace: namespace, Name: instanceServiceName(alias)}
 	if err := h.admin.Get(ctx, key, workload); err != nil {
 		return err
 	}

@@ -399,6 +399,13 @@ exceptions in `scripts/license_headers.py` must retain their own notices.
 
   This installs only the manifest-pinned `kube-apiserver`, `etcd` and `kubectl`
   binaries, not a cluster, global tool replacement or a runtime qualification.
+  Native controller cases in `test-envtest` exercise the current single-policy
+  Team contract through real Agent/Pod admission and Helm SDK actions. They cover
+  concurrent HOME binding during readiness, two Agents sharing a policy with
+  independent HOME and model keys, guarded policy mutation, and ordinary cleanup
+  after restarting with new native starts disabled. Platform, Gateway, scheduler
+  and kubelet observations remain synthetic; these are not native UI/model/tool
+  acceptance, physical fencing or CSI qualification.
   The focused `make -C app/cetirun-operator test-sandbox-lifecycle` target
   exercises durable writer-history and start/shared-change coordination with
   those same isolated API servers. Provider responses and physical

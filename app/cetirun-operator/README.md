@@ -222,6 +222,14 @@ The authority name/UID is derived from the existing admission configuration;
 keep that authority configured until native cleanup finishes. This reservation
 does not enroll a qualified writer or claim physical-fencing evidence.
 
+After native start, HOME and skills prerequisite rechecks use the same
+binding-tolerant claim digest as Pod admission. Ordinary delayed binding, claim
+status updates and the Kubernetes PVC-protection finalizer do not stop the
+single-start lifetime even when they occur between reads. Claim UID, ownership,
+storage requests and protected metadata still have to match; lost, missing,
+terminating or unreadable claims fail closed. Held preparation retains its
+strict snapshot checks, and this does not authorize replacement or start replay.
+
 This is **Kubernetes workload readiness, not guest-external enforcement proof or
 physical failover fencing**. ReadWriteOncePod and ordinary Pod termination do
 not establish the stronger writer-exclusion contract below. Do not force-delete
