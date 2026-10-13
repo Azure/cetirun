@@ -202,9 +202,6 @@ func TestNativeCompatibilityKeepsBaselineWithoutFencingClaims(t *testing.T) {
 		})
 	}
 	for name, mutate := range map[string]func(*cetirunv1alpha1.AgentPolicySpec){
-		"Hermes": func(p *cetirunv1alpha1.AgentPolicySpec) {
-			p.Harnesses.Allowed = append(p.Harnesses.Allowed, cetirunv1alpha1.AgentTypeHermes)
-		},
 		"CIDR": func(p *cetirunv1alpha1.AgentPolicySpec) { p.Network.BlockedCIDRs = []string{"203.0.113.0/24"} },
 		"FQDN": func(p *cetirunv1alpha1.AgentPolicySpec) { p.Network.BlockedFQDNs = []string{"blocked.example.com"} },
 		"port": func(p *cetirunv1alpha1.AgentPolicySpec) {
@@ -227,6 +224,19 @@ func TestNativeCompatibilityKeepsBaselineWithoutFencingClaims(t *testing.T) {
 			mutate(requested)
 			if errs := CheckCompatibility(box, *requested, nativeCapabilities()); len(errs) == 0 {
 				t.Fatal("unsupported explicit native policy accepted")
+			}
+		})
+	}
+	for name, harnesses := range map[string][]cetirunv1alpha1.AgentType{
+		"Hermes":   {cetirunv1alpha1.AgentTypeHermes},
+		"both":     {cetirunv1alpha1.AgentTypeHermes, cetirunv1alpha1.AgentTypeOpenClaw},
+		"OpenClaw": {cetirunv1alpha1.AgentTypeOpenClaw},
+	} {
+		t.Run(name, func(t *testing.T) {
+			requested := policy.DeepCopy()
+			requested.Harnesses.Allowed = harnesses
+			if errs := CheckCompatibility(box, *requested, nativeCapabilities()); len(errs) != 0 {
+				t.Fatalf("supported native built-in policy rejected: %v", errs.ToAggregate())
 			}
 		})
 	}

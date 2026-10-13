@@ -224,7 +224,7 @@ func Resolve(input ResolveInput) (*Resolution, error) {
 		PlatformRevision string                      `json:"platformRevision"`
 		Profile          string                      `json:"profile,omitempty"`
 	}{
-		"sandbox-foundation-v2", binding, sandboxSpec, ProjectPolicy(policySpec),
+		"sandbox-foundation-v1", binding, sandboxSpec, ProjectPolicy(policySpec),
 		registration.Capabilities.RuntimeClassName, registration.Capabilities.Revision, registration.Capabilities.Profile,
 	})
 	if err != nil {

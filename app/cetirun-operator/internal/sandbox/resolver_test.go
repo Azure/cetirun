@@ -110,7 +110,7 @@ func mustResolve(t *testing.T, input ResolveInput) *Resolution {
 	return result
 }
 
-func TestNativeResolveRequiresExplicitModeAndOpenClaw(t *testing.T) {
+func TestNativeResolveRequiresExplicitModeAndBuiltInHarness(t *testing.T) {
 	fixture := func() ResolveInput {
 		input := resolverFixture()
 		input.NativeExecution = true
@@ -124,9 +124,12 @@ func TestNativeResolveRequiresExplicitModeAndOpenClaw(t *testing.T) {
 		resolved.Capabilities.EnforcementObservation || resolved.Capabilities.RestrictiveFailure {
 		t.Fatal("resolution invented stronger native guarantees")
 	}
+	hermes := fixture()
+	hermes.Agent.Spec.Agent.Type = cetirunv1alpha1.AgentTypeHermes
+	hermes.Resources.AgentPolicies["normal"].Spec.Harnesses.Allowed = []cetirunv1alpha1.AgentType{cetirunv1alpha1.AgentTypeHermes}
+	mustResolve(t, hermes)
 	for name, mutate := range map[string]func(*ResolveInput){
 		"default mode": func(i *ResolveInput) { i.NativeExecution = false },
-		"Hermes":       func(i *ResolveInput) { i.Agent.Spec.Agent.Type = cetirunv1alpha1.AgentTypeHermes },
 		"Kubernetes access": func(i *ResolveInput) {
 			i.Resources.AgentPolicies["normal"].Spec.KubernetesAccess = &cetirunv1alpha1.AgentPolicyAdminKubernetesAccess{
 				ServiceAccountName: "operations",

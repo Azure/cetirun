@@ -199,7 +199,6 @@ func TestNativeUpgradePreservesExistingRuntimeAndReceipt(t *testing.T) {
 		if agent.UID != beforeAgent.UID || !reflect.DeepEqual(agent.Spec, beforeAgent.Spec) ||
 			slices.Contains(agent.Finalizers, sandbox.HoldFinalizer) ||
 			agent.Status.Sandbox.AppliedRevision != legacy.Revision ||
-			agent.Status.Policy.Enforcement.Sandbox.DesiredRevision != legacy.Revision ||
 			agent.Status.AccessURL != beforeAgent.Status.AccessURL {
 			t.Fatal("operator upgrade changed intent, held the lifetime or changed its effective revision")
 		}

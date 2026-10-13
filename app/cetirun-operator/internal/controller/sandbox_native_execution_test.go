@@ -739,7 +739,7 @@ func newNativeSandboxHarnessFixture(t *testing.T, native bool, skills []string, 
 	input.Policy.Spec.ModelAccess.Copilot.Allowed = false
 	input.Policy.Spec.Network.Ingress.Mode = api.AgentPolicyIngressAuthenticated
 	if native {
-		input.Policy.Spec.Harnesses.Allowed = []api.AgentType{api.AgentTypeOpenClaw}
+		input.Policy.Spec.Harnesses.Allowed = []api.AgentType{agentType}
 	}
 	input.Policy.Status = api.AgentPolicyStatus{ObservedGeneration: 1, Conditions: []metav1.Condition{{
 		Type: api.ConditionAgentPolicyAccepted, Status: metav1.ConditionTrue, ObservedGeneration: 1,
@@ -820,7 +820,8 @@ func newNativeSandboxHarnessFixture(t *testing.T, native bool, skills []string, 
 	f.reconcileOK(t)
 	namespace := &corev1.Namespace{}
 	if err := kube.Get(context.Background(), client.ObjectKey{Name: instanceNamespace(input.Agent.Name)}, namespace); err != nil {
-		t.Fatal("cold reconciliation did not bootstrap the namespace:", err)
+		current := f.current(t)
+		t.Fatalf("cold reconciliation did not bootstrap the namespace: %v; phase=%s conditions=%+v policy=%+v", err, current.Status.Phase, current.Status.Conditions, current.Status.Policy)
 	}
 	f.assertNotReady(t)
 	// The fake API has no namespace controller to create the default account.

@@ -213,6 +213,12 @@ func (r *AgentReconciler) prepareSandboxHeld(ctx context.Context, requested *api
 	if err != nil {
 		return err
 	}
+	// Trusted proxy projection is an OpenClaw runtime contract. Hermes uses
+	// the same compiler-owned ingress allowlist but does not consume OpenClaw's
+	// gateway.trustedProxies setting.
+	if attempt.agent.Spec.Agent.Type == api.AgentTypeHermes {
+		attempt.input.Controls.TrustedProxyIPs = nil
+	}
 	bundle, err := sandboxworkload.Build(attempt.input)
 	if err != nil {
 		return err

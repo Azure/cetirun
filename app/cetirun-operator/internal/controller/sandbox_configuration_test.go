@@ -116,7 +116,7 @@ func nativeConfigurationSnapshot() (*api.Sandbox, controller.SandboxConfiguratio
 	return box, snapshot, objects
 }
 
-func TestNativeConfigurationRequiresExplicitExecutionMode(t *testing.T) {
+func TestNativeConfigurationRequiresExplicitSandboxExecutionMode(t *testing.T) {
 	for _, native := range []bool{false, true} {
 		t.Run(map[bool]string{false: "default rejects native", true: "native accepts baseline"}[native], func(t *testing.T) {
 			box, snapshot, objects := nativeConfigurationSnapshot()
@@ -145,15 +145,17 @@ func TestNativeConfigurationRequiresExplicitExecutionMode(t *testing.T) {
 			if err := kube.Get(ctx, client.ObjectKeyFromObject(policy), policy); err != nil {
 				t.Fatal(err)
 			}
-			want := metav1.ConditionFalse
+			wantSandbox := metav1.ConditionFalse
 			if native {
-				want = metav1.ConditionTrue
+				wantSandbox = metav1.ConditionTrue
 			}
-			for _, conditions := range [][]metav1.Condition{box.Status.Conditions, policy.Status.Conditions} {
-				if len(conditions) != 1 || conditions[0].Status != want ||
-					(!native && conditions[0].Reason != "UnsupportedControl") {
-					t.Fatalf("configuration status ignored execution mode: %+v", conditions)
-				}
+			if conditions := box.Status.Conditions; len(conditions) != 1 || conditions[0].Status != wantSandbox ||
+				(!native && conditions[0].Reason != "UnsupportedControl") {
+				t.Fatalf("Sandbox configuration status ignored execution mode: %+v", conditions)
+			}
+			if conditions := policy.Status.Conditions; len(conditions) != 1 || conditions[0].Status != metav1.ConditionTrue ||
+				conditions[0].Reason != "PolicyAccepted" {
+				t.Fatalf("AgentPolicy declaration acceptance depended on execution mode: %+v", conditions)
 			}
 		})
 	}

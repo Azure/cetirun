@@ -67,8 +67,8 @@ func CheckAgentProfile(capabilities Capabilities, agentType cetirunv1alpha1.Agen
 	if errs := CheckCapabilityProfile(capabilities); len(errs) != 0 {
 		return errs.ToAggregate()
 	}
-	if capabilities.Profile == ProfileNativeSingleStart && agentType != cetirunv1alpha1.AgentTypeOpenClaw {
-		return fmt.Errorf("native single-start requires an OpenClaw Agent")
+	if capabilities.Profile == ProfileNativeSingleStart && !nativeAgentTypeSupported(agentType) {
+		return fmt.Errorf("native single-start requires an OpenClaw or Hermes Agent")
 	}
 	return nil
 }
@@ -139,8 +139,10 @@ func CheckNetworkCapabilities(capabilities Capabilities) field.ErrorList {
 func CheckNativePolicy(policy cetirunv1alpha1.AgentPolicySpec) field.ErrorList {
 	root := field.NewPath("spec")
 	var errs field.ErrorList
-	if !slices.Equal(policy.Harnesses.Allowed, []cetirunv1alpha1.AgentType{cetirunv1alpha1.AgentTypeOpenClaw}) {
-		errs = append(errs, field.Forbidden(root.Child("harnesses", "allowed"), "native single-start supports only OpenClaw"))
+	if len(policy.Harnesses.Allowed) == 0 || slices.ContainsFunc(policy.Harnesses.Allowed, func(agentType cetirunv1alpha1.AgentType) bool {
+		return !nativeAgentTypeSupported(agentType)
+	}) {
+		errs = append(errs, field.Forbidden(root.Child("harnesses", "allowed"), "native single-start supports only OpenClaw and Hermes"))
 	}
 	for _, control := range []struct {
 		path      *field.Path
@@ -159,6 +161,10 @@ func CheckNativePolicy(policy cetirunv1alpha1.AgentPolicySpec) field.ErrorList {
 		}
 	}
 	return errs
+}
+
+func nativeAgentTypeSupported(agentType cetirunv1alpha1.AgentType) bool {
+	return agentType == cetirunv1alpha1.AgentTypeOpenClaw || agentType == cetirunv1alpha1.AgentTypeHermes
 }
 
 // CheckCompatibility checks declared support, not runtime health or enforcement.

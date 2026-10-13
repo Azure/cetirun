@@ -28,6 +28,13 @@ type TeamInputs struct {
 	Sandboxes    []string `json:"sandboxes"`
 }
 
+type teamSharedSpec struct {
+	MemberContext api.TeamContextSpec   `json:"memberContext,omitempty"`
+	Defaults      api.TeamDefaultsSpec  `json:"defaults,omitempty"`
+	Skills        []string              `json:"skills,omitempty"`
+	SkillStorage  *api.SkillStorageSpec `json:"skillStorage,omitempty"`
+}
+
 func (inputs TeamInputs) DeepCopy() TeamInputs {
 	inputs.Sandboxes = slices.Clone(inputs.Sandboxes)
 	return inputs
@@ -63,13 +70,18 @@ func ExecutionTeamInputs(team *api.Team) (TeamInputs, error) {
 	if team == nil || team.UID == "" || team.ResourceVersion == "" || !team.DeletionTimestamp.IsZero() {
 		return TeamInputs{}, fmt.Errorf("current persisted Team identity is required")
 	}
-	spec := team.Spec.DeepCopy()
-	spec.AgentPolicyRef, spec.DefaultSandboxRef = "", ""
-	spec.SandboxRefs = nil
-	spec.Skills = slices.Clone(spec.Skills)
+	// Keep the shared projection independent of selection-field JSON tags. A
+	// field becoming required must not invalidate a running Sandbox when the
+	// effective Team inputs are unchanged.
+	spec := teamSharedSpec{
+		MemberContext: team.Spec.MemberContext,
+		Defaults:      team.Spec.Defaults,
+		Skills:        slices.Clone(team.Spec.Skills),
+		SkillStorage:  team.Spec.SkillStorage,
+	}
 	slices.Sort(spec.Skills)
 	shared, err := inputDigest(struct {
-		Spec     *api.TeamSpec
+		Spec     teamSharedSpec
 		Metadata executionMetadata
 	}{spec, effectiveMetadata(team)})
 	if err != nil {

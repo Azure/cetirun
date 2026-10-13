@@ -456,8 +456,9 @@ func (r *AgentReconciler) verifyNativeSandboxSources(ctx context.Context, expect
 			if err != nil {
 				return err
 			}
-			if !w.ValidInputDigest(expected.SourceDigests[w.SourceKey(source)]) || current != expected.SourceDigests[w.SourceKey(source)] {
-				return fmt.Errorf("native Sandbox execution source changed")
+			key := w.SourceKey(source)
+			if !w.ValidInputDigest(expected.SourceDigests[key]) || current != expected.SourceDigests[key] {
+				return fmt.Errorf("native Sandbox execution source %s changed", key)
 			}
 		default:
 			if _, err := r.readSandboxSource(ctx, source); err != nil {
