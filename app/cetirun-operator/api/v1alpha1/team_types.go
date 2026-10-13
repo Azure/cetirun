@@ -17,16 +17,6 @@ type TeamSpec struct {
 	// +optional
 	AgentPolicyRef string `json:"agentPolicyRef,omitempty"`
 
-	// DeprecatedNormalAgentPolicyRef retains old policy intent for rejection only.
-	// +kubebuilder:validation:MaxLength=0
-	// +optional
-	DeprecatedNormalAgentPolicyRef string `json:"normalAgentPolicyRef,omitempty"`
-
-	// DeprecatedAdminAgentPolicyRef retains old policy intent for rejection only.
-	// +kubebuilder:validation:MaxLength=0
-	// +optional
-	DeprecatedAdminAgentPolicyRef string `json:"adminAgentPolicyRef,omitempty"`
-
 	// SandboxRefs lists the Sandboxes permitted for this Team.
 	// +kubebuilder:validation:MinItems=1
 	// +kubebuilder:validation:items:MinLength=1
@@ -71,8 +61,7 @@ type TeamSpec struct {
 
 // PolicyConfigured reports policy intent, including incomplete configurations.
 func (s TeamSpec) PolicyConfigured() bool {
-	return s.AgentPolicyRef != "" || s.DeprecatedNormalAgentPolicyRef != "" || s.DeprecatedAdminAgentPolicyRef != "" ||
-		len(s.SandboxRefs) != 0 || s.DefaultSandboxRef != ""
+	return s.AgentPolicyRef != "" || len(s.SandboxRefs) != 0 || s.DefaultSandboxRef != ""
 }
 
 // SkillStorageSpec describes a shared Azure Blob NFS container holding

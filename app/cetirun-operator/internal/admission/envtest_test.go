@@ -254,26 +254,6 @@ func TestAdmissionAPIServerBoundaries(t *testing.T) {
 			t.Fatalf("partial policy Team was admitted as legacy: %v", err)
 		}
 	})
-	t.Run("retired selectors cannot be pruned into legacy creation", func(t *testing.T) {
-		for _, class := range []string{"normal", "admin"} {
-			agent := newAgent("retired-" + class)
-			agent.Spec.DeprecatedPolicyClass = class
-			if err := cl.Create(ctx, agent); !apierrors.IsInvalid(err) && !apierrors.IsForbidden(err) {
-				t.Fatalf("retired class %s was not rejected: %v", class, err)
-			}
-		}
-		for _, slot := range []string{"normal", "admin"} {
-			team := &api.Team{ObjectMeta: metav1.ObjectMeta{Name: "retired-" + slot}}
-			if slot == "normal" {
-				team.Spec.DeprecatedNormalAgentPolicyRef = f.policy.Name
-			} else {
-				team.Spec.DeprecatedAdminAgentPolicyRef = f.policy.Name
-			}
-			if err := cl.Create(ctx, team); !apierrors.IsInvalid(err) && !apierrors.IsForbidden(err) {
-				t.Fatalf("retired slot %s was not rejected: %v", slot, err)
-			}
-		}
-	})
 	t.Run("persist defaults without elevating a human administrator", func(t *testing.T) {
 		agent := newAgent("governed-agent")
 		create(agent)

@@ -78,9 +78,6 @@ type Resolution struct {
 // authorized caller; Resolve never reselects an existing Agent's missing Sandbox.
 func DefaultAgentSelection(spec cetirunv1alpha1.AgentSpec, team *cetirunv1alpha1.Team) (cetirunv1alpha1.AgentSpec, error) {
 	spec = *spec.DeepCopy()
-	if spec.DeprecatedPolicyClass != "" {
-		return spec, fmt.Errorf("spec.policyClass is retired; select a Team with agentPolicyRef instead")
-	}
 	if team == nil || team.Name == "" || spec.Team != team.Name || !team.DeletionTimestamp.IsZero() {
 		return spec, fmt.Errorf("spec.team must name the authorized, non-terminating Team")
 	}
@@ -172,9 +169,6 @@ func Resolve(input ResolveInput) (*Resolution, error) {
 	if input.Agent == nil {
 		return nil, fmt.Errorf("Agent is required")
 	}
-	if input.Agent.Spec.DeprecatedPolicyClass != "" {
-		return nil, fmt.Errorf("spec.policyClass is retired; explicit migration is required")
-	}
 	if errs := validateIdentity(input.Agent.ObjectMeta, input.Agent.Name, field.NewPath("agent")); len(errs) != 0 {
 		return nil, errs.ToAggregate()
 	}
@@ -233,14 +227,6 @@ func Resolve(input ResolveInput) (*Resolution, error) {
 func validateTeamSpec(spec cetirunv1alpha1.TeamSpec) field.ErrorList {
 	root := field.NewPath("spec")
 	var errs field.ErrorList
-	for _, retired := range []struct{ name, value string }{
-		{"normalAgentPolicyRef", spec.DeprecatedNormalAgentPolicyRef},
-		{"adminAgentPolicyRef", spec.DeprecatedAdminAgentPolicyRef},
-	} {
-		if retired.value != "" {
-			errs = append(errs, field.Forbidden(root.Child(retired.name), "retired policy slots require explicit migration to agentPolicyRef"))
-		}
-	}
 	for _, ref := range []struct{ name, value string }{
 		{"agentPolicyRef", spec.AgentPolicyRef},
 		{"defaultSandboxRef", spec.DefaultSandboxRef},

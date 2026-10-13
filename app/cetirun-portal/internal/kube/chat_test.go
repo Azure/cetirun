@@ -46,12 +46,6 @@ func TestResolveChatWithoutTeamStillHonorsAgentPolicy(t *testing.T) {
 	if err != nil || value.Available || value.Reason != "sandbox_held" {
 		t.Fatalf("unassigned Agent escaped its Sandbox hold: %+v %v", value, err)
 	}
-	agent.Spec.SandboxRef = ""
-	agent.Spec.DeprecatedPolicyClass = "admin"
-	value, err = c.ResolveChat(context.Background(), agent, chattest.Caller)
-	if err != nil || value.Available || value.Reason != "sandbox_held" {
-		t.Fatalf("retired policy class escaped its Sandbox hold: %+v %v", value, err)
-	}
 }
 
 func TestResolveChatRejectsStaleForeignAndUnsupportedTargets(t *testing.T) {

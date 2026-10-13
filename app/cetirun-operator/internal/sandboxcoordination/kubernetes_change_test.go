@@ -6,7 +6,6 @@ package sandboxcoordination
 import (
 	"context"
 	"errors"
-	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -429,49 +428,6 @@ func TestConfigurationLegacyTeamTransitionsUseWholeTeamReservation(t *testing.T)
 				t.Fatal("legacy Team transition could not complete:", err)
 			}
 		})
-	}
-}
-
-func TestRetiredTeamPolicyMigrationReservesWholeTeam(t *testing.T) {
-	for _, slot := range []string{"normal", "admin"} {
-		for _, active := range []bool{false, true} {
-			t.Run(fmt.Sprintf("%s/active=%v", slot, active), func(t *testing.T) {
-				ctx := context.Background()
-				store, storage, object, _ := configurationFixture(t, "Team")
-				before := object.(*api.Team)
-				after := before.DeepCopy()
-				if active {
-					acquire(t, store, configurationIntent(t, before, "retired-transition"))
-				}
-				before.Spec.AgentPolicyRef = ""
-				if slot == "normal" {
-					before.Spec.DeprecatedNormalAgentPolicyRef = after.Spec.AgentPolicyRef
-				} else {
-					before.Spec.DeprecatedAdminAgentPolicyRef = after.Spec.AgentPolicyRef
-				}
-				if err := storage.Update(ctx, before); err != nil {
-					t.Fatal(err)
-				}
-				after.ResourceVersion = before.ResourceVersion
-				ticket, err := store.AcquireConfigurationChange(ctx, before, after)
-				if active {
-					if !errors.Is(err, ErrConflict) {
-						t.Fatalf("retired Team migration must conflict with an outstanding execution: %v", err)
-					}
-					return
-				}
-				if err != nil {
-					t.Fatal(err)
-				}
-				if ticket.Change.Team != nil {
-					t.Fatal("retired Team migration must reserve the whole Team")
-				}
-				adapter := configurationAdapter(t, storage, storage, before, after)
-				if _, err := store.ReconcileChange(ctx, ticket, adapter); err != nil {
-					t.Fatal(err)
-				}
-			})
-		}
 	}
 }
 

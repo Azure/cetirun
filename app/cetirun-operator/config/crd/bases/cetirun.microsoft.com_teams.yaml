@@ -56,11 +56,6 @@ spec:
             description: TeamSpec defines team-wide configuration applied to every
               member instance.
             properties:
-              adminAgentPolicyRef:
-                description: DeprecatedAdminAgentPolicyRef retains old policy intent
-                  for rejection only.
-                maxLength: 0
-                type: string
               agentPolicyRef:
                 description: |-
                   AgentPolicyRef names the policy applied to every Agent in this Team.
@@ -101,11 +96,6 @@ spec:
                     description: Role is the team member's role, e.g. "Engineer".
                     type: string
                 type: object
-              normalAgentPolicyRef:
-                description: DeprecatedNormalAgentPolicyRef retains old policy intent
-                  for rejection only.
-                maxLength: 0
-                type: string
               sandboxRefs:
                 description: SandboxRefs lists the Sandboxes permitted for this Team.
                 items:

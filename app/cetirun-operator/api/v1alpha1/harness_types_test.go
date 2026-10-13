@@ -243,6 +243,39 @@ func TestWebUISerializationAndCopy(t *testing.T) {
 	}
 }
 
+func TestGeneratedSinglePolicySchemas(t *testing.T) {
+	for _, testCase := range []struct {
+		filename          string
+		removedProperties []string
+		teamPolicy        bool
+	}{
+		{"cetirun.microsoft.com_agents.yaml", []string{"policyClass"}, false},
+		{"cetirun.microsoft.com_teams.yaml", []string{"normalAgentPolicyRef", "adminAgentPolicyRef"}, true},
+	} {
+		for _, directory := range []string{"../../config/crd/bases/", "../../chart/templates/crds/"} {
+			t.Run(directory+testCase.filename, func(t *testing.T) {
+				raw, err := os.ReadFile(directory + testCase.filename)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var definition apiextensionsv1.CustomResourceDefinition
+				if err := yaml.UnmarshalStrict(raw, &definition); err != nil {
+					t.Fatal(err)
+				}
+				properties := definition.Spec.Versions[0].Schema.OpenAPIV3Schema.Properties["spec"].Properties
+				for _, property := range testCase.removedProperties {
+					if _, exists := properties[property]; exists {
+						t.Fatalf("removed policy field %s remains in the schema", property)
+					}
+				}
+				if testCase.teamPolicy && properties["agentPolicyRef"].Type != "string" {
+					t.Fatal("Team schema must expose the single agentPolicyRef")
+				}
+			})
+		}
+	}
+}
+
 func TestGeneratedAgentSchema(t *testing.T) {
 	raw, err := os.ReadFile("../../config/crd/bases/cetirun.microsoft.com_agents.yaml")
 	if err != nil {

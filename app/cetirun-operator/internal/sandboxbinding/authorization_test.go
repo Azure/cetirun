@@ -101,8 +101,8 @@ func TestAuthorizationRejectsMalformedOrDetachedRecords(t *testing.T) {
 		}},
 		{"different Team", func(a *api.Agent) { a.Spec.Team = "other-team" }},
 		{"different Sandbox", func(a *api.Agent) { a.Spec.SandboxRef = "other-box" }},
-		{"legacy class", func(a *api.Agent) {
-			a.Annotations[AuthorizationAnnotation] = strings.Replace(a.Annotations[AuthorizationAnnotation], `"agentPolicy":`, `"policyClass":"admin","agentPolicy":`, 1)
+		{"unexpected binding field", func(a *api.Agent) {
+			a.Annotations[AuthorizationAnnotation] = strings.Replace(a.Annotations[AuthorizationAnnotation], `"agentPolicy":`, `"unexpected":true,"agentPolicy":`, 1)
 		}},
 		{"no Agent UID", func(a *api.Agent) { a.UID = "" }},
 		{"no Agent name", func(a *api.Agent) { a.Name = "" }},
@@ -223,7 +223,7 @@ func TestExplicitReauthorizationFormatIsCompleteAndStrict(t *testing.T) {
 	for _, raw := range []string{
 		"", "null", "{}", raw + " {}", strings.Replace(raw, `"requestID":`, `"unknown":true,"requestID":`, 1),
 		strings.Replace(raw, `"operation-1"`, `""`, 1), strings.Replace(raw, `"agent-uid"`, `"*"`, 1),
-		strings.Replace(raw, `"team-uid"`, `""`, 1), strings.Replace(raw, `"binding":`, `"policyClass":"admin","binding":`, 1),
+		strings.Replace(raw, `"team-uid"`, `""`, 1), strings.Replace(raw, `"binding":`, `"unexpected":true,"binding":`, 1),
 	} {
 		if _, err := ParseReauthorization(raw); err == nil {
 			t.Fatalf("invalid explicit request accepted: %s", raw)

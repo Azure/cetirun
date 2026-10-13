@@ -578,16 +578,15 @@ policy-enabled resources require controlled stop and cleanup before a changed
 binding can be explicitly reauthorized. No lossless rolling migration between
 policies is supported.
 
-The old `normalAgentPolicyRef`, `adminAgentPolicyRef` and `policyClass` keys
-remain only as rejection guards: their schema permits no nonempty value.
-Stored policy intent stays governed and held, never falls back to legacy,
-and requires explicit migration. The old CRD's default `normal` value alone
-does not invent policy intent for an otherwise policy-free legacy Agent.
-New resources omit these retired keys. Removing retired Team references requires
-administrator authorization and consumer validation; coordinated migration
-reserves the entire Team rather than interpreting an old policy slot.
+The pre-release `normalAgentPolicyRef`, `adminAgentPolicyRef` and `policyClass`
+fields are removed from the API and CRD schemas. New resources use only the
+Team's `agentPolicyRef`; there are no compatibility fields, policy-class
+branches, or migration readers for the former dual-policy design. This contract
+targets a new system, not an upgrade of an existing governed deployment.
 Authorization snapshots use `v2`, Pod expectations use `v3`, and coordination
-records use version `2`; old records are not silently reauthorized or adopted.
+records use version `2`. Create new authorities and workloads with these
+formats; older serialized state is not silently reauthorized or adopted. These
+version checks remain fail-closed and are not a supported migration path.
 
 The controller holds Agents that request Sandbox policy, belong to a Team
 with policy settings, or already have Sandbox status or a hold finalizer.

@@ -249,11 +249,6 @@ spec:
                     format: int32
                     type: integer
                 type: object
-              policyClass:
-                description: DeprecatedPolicyClass retains old workload policy intent
-                  for rejection only.
-                maxLength: 0
-                type: string
               sandboxRef:
                 description: |-
                   SandboxRef opts into Sandbox execution and selects a Sandbox permitted

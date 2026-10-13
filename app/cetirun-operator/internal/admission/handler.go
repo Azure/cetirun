@@ -443,8 +443,6 @@ func references(team *api.Team, object client.Object) bool {
 
 func sameTeamPolicy(a, b api.TeamSpec) bool {
 	return a.AgentPolicyRef == b.AgentPolicyRef &&
-		a.DeprecatedNormalAgentPolicyRef == b.DeprecatedNormalAgentPolicyRef &&
-		a.DeprecatedAdminAgentPolicyRef == b.DeprecatedAdminAgentPolicyRef &&
 		a.DefaultSandboxRef == b.DefaultSandboxRef && slices.Equal(a.SandboxRefs, b.SandboxRefs)
 }
 

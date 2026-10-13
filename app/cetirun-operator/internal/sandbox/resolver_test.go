@@ -4,7 +4,6 @@
 package sandbox
 
 import (
-	"encoding/json"
 	"errors"
 	"reflect"
 	"strings"
@@ -166,40 +165,6 @@ func TestResolveIndependentTeamPolicies(t *testing.T) {
 	}
 }
 
-func TestRetiredPolicyFieldsNeverFallBackToLegacy(t *testing.T) {
-	for _, raw := range []string{
-		`{"spec":{"normalAgentPolicyRef":"example-policy"}}`,
-		`{"spec":{"adminAgentPolicyRef":"example-policy"}}`,
-	} {
-		var team cetirunv1alpha1.Team
-		if err := json.Unmarshal([]byte(raw), &team); err != nil {
-			t.Fatal(err)
-		}
-		if !Requested(&cetirunv1alpha1.Agent{}, &team) || len(ValidateTeamConfiguration(team.Spec, Resources{}, nil)) == 0 {
-			t.Fatal("retired Team policy intent was lost during ordinary decoding")
-		}
-	}
-	for _, class := range []string{"admin", "unknown"} {
-		var agent cetirunv1alpha1.Agent
-		if err := json.Unmarshal([]byte(`{"spec":{"policyClass":"`+class+`"}}`), &agent); err != nil {
-			t.Fatal(err)
-		}
-		if !Requested(&agent, nil) || agent.Spec.SharedModelsEnabled() || agent.Spec.GitHubCopilotEnabled() {
-			t.Fatal("retired Agent policy intent acquired legacy model defaults")
-		}
-		if _, err := Resolve(ResolveInput{Agent: &agent}); err == nil {
-			t.Fatal("retired policy class was accepted")
-		}
-	}
-	var legacy cetirunv1alpha1.Agent
-	if err := json.Unmarshal([]byte(`{"spec":{"policyClass":"normal"}}`), &legacy); err != nil {
-		t.Fatal(err)
-	}
-	if Requested(&legacy, nil) || !legacy.Spec.SharedModelsEnabled() || !legacy.Spec.GitHubCopilotEnabled() {
-		t.Fatal("an old CRD's default normal value invented governance for a policy-free legacy Agent")
-	}
-}
-
 func TestResolveRevisionUsesOnlySandboxPolicyProjection(t *testing.T) {
 	input := resolverFixture()
 	baseline := mustResolve(t, input).Revision
@@ -233,9 +198,6 @@ func TestResolveRejectsInvalidReferences(t *testing.T) {
 		{"duplicate list", func(i *ResolveInput) { i.Team.Spec.SandboxRefs = []string{"standard", "standard"} }},
 		{"unlisted default", func(i *ResolveInput) { i.Team.Spec.DefaultSandboxRef = "absent" }},
 		{"missing Team policy", func(i *ResolveInput) { i.Team.Spec.AgentPolicyRef = "" }},
-		{"retired normal policy", func(i *ResolveInput) { i.Team.Spec.DeprecatedNormalAgentPolicyRef = "normal" }},
-		{"retired admin policy", func(i *ResolveInput) { i.Team.Spec.DeprecatedAdminAgentPolicyRef = "operations" }},
-		{"retired workload class", func(i *ResolveInput) { i.Agent.Spec.DeprecatedPolicyClass = "admin" }},
 		{"missing Sandbox", func(i *ResolveInput) { delete(i.Resources.Sandboxes, "standard") }},
 		{"missing selected policy", func(i *ResolveInput) { delete(i.Resources.AgentPolicies, "normal") }},
 		{"mismatched Sandbox name", func(i *ResolveInput) { i.Resources.Sandboxes["standard"].Name = "different" }},
@@ -430,7 +392,6 @@ func TestDefaultSelectionIsCreationOnly(t *testing.T) {
 		spec cetirunv1alpha1.AgentSpec
 	}{
 		{"wrong Team", cetirunv1alpha1.AgentSpec{Team: "other"}},
-		{"retired class", cetirunv1alpha1.AgentSpec{Team: "engineering", DeprecatedPolicyClass: "normal"}},
 		{"bad choice", cetirunv1alpha1.AgentSpec{Team: "engineering", SandboxRef: "other"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

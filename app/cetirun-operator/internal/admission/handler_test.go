@@ -238,39 +238,6 @@ func TestLegacyBehaviorAndTeamEdits(t *testing.T) {
 	requireResponse(t, f.handler.Validate(context.Background(), req), false, "administrator")
 }
 
-func TestRetiredTeamPolicyChangesRequireAdministratorAndConsumerChecks(t *testing.T) {
-	for _, slot := range []string{"normal", "admin"} {
-		t.Run(slot, func(t *testing.T) {
-			f := newFixture(t)
-			before := f.team.DeepCopy()
-			before.Spec = api.TeamSpec{}
-			if slot == "normal" {
-				before.Spec.DeprecatedNormalAgentPolicyRef = f.policy.Name
-			} else {
-				before.Spec.DeprecatedAdminAgentPolicyRef = f.policy.Name
-			}
-			if err := f.client.Update(context.Background(), before); err != nil {
-				t.Fatal(err)
-			}
-			after := before.DeepCopy()
-			after.Spec = api.TeamSpec{}
-			requireResponse(t, f.handler.Validate(context.Background(), requestFor(t, admissionv1.Update, after, before, "portal")), false, "administrator")
-			f.agent.Spec.SandboxRef = ""
-			f.agent.ResourceVersion = ""
-			f.agent.Finalizers = nil
-			if err := f.client.Create(context.Background(), f.agent); err != nil {
-				t.Fatal(err)
-			}
-			requireResponse(t, f.handler.Validate(context.Background(), requestFor(t, admissionv1.Update, after, before, "administrator")), false, "inherited policy")
-			if err := f.client.Delete(context.Background(), f.agent); err != nil {
-				t.Fatal(err)
-			}
-			after.Spec = *f.team.Spec.DeepCopy()
-			requireResponse(t, f.handler.Validate(context.Background(), requestFor(t, admissionv1.Update, after, before, "administrator")), true, "")
-		})
-	}
-}
-
 func TestGarbageCollectorCanOnlyRemoveForegroundDeletionMetadata(t *testing.T) {
 	for _, username := range []string{
 		"system:kube-controller-manager",
@@ -627,6 +594,22 @@ func TestTeamReferenceAndCompatibilityValidation(t *testing.T) {
 		req := requestFor(t, admissionv1.Create, f.team, nil, "administrator")
 		requireResponse(t, f.handler.Validate(context.Background(), req), true, "")
 	})
+}
+
+func TestTeamPolicyReferenceBlocksDeletionWithoutCoordination(t *testing.T) {
+	fixture := newFixture(t)
+	if fixture.handler.coordination != nil {
+		t.Fatal("test requires configuration coordination to be disabled")
+	}
+	var agents api.AgentList
+	if err := fixture.client.List(context.Background(), &agents); err != nil {
+		t.Fatal(err)
+	}
+	if len(agents.Items) != 0 {
+		t.Fatal("Team policy protection must not depend on Agent consumers")
+	}
+	request := requestFor(t, admissionv1.Delete, fixture.policy, nil, "administrator")
+	requireResponse(t, fixture.handler.Validate(context.Background(), request), false, "still referenced by Team")
 }
 
 func TestReferencingConsumersBlockInvalidation(t *testing.T) {

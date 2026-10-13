@@ -56,14 +56,6 @@ func TestSandboxBindingWireFormat(t *testing.T) {
 			t.Errorf("Team wire format omits %s", key)
 		}
 	}
-	for _, key := range []string{"normalAgentPolicyRef", "adminAgentPolicyRef"} {
-		if _, found := team[key]; found {
-			t.Fatalf("Team still exposes obsolete policy slot %s", key)
-		}
-	}
-	if _, found := spec["policyClass"]; found {
-		t.Fatal("Agent still exposes a policy class")
-	}
 }
 
 func TestSandboxAPIRejectsUnknownAndMalformedWireFields(t *testing.T) {
@@ -220,9 +212,6 @@ func TestGeneratedSandboxSchemaShapes(t *testing.T) {
 	requireSchemaProperties(t, policy.Properties["status"], "observedGeneration", "conditions")
 
 	agent := apiContractCRD(t, "agents").Spec.Versions[0].Schema.OpenAPIV3Schema
-	if guard := agent.Properties["spec"].Properties["policyClass"]; guard.MaxLength == nil || *guard.MaxLength != 0 || len(guard.Enum) != 0 {
-		t.Fatal("Agent schema must reject every nonempty retired policy class")
-	}
 	for _, name := range []string{"sandboxRef", "team"} {
 		if _, ok := agent.Properties["spec"].Properties[name]; !ok || slices.Contains(agent.Properties["spec"].Required, name) {
 			t.Fatalf("Agent binding field %s must exist but remain optional for legacy Agents", name)
@@ -238,11 +227,6 @@ func TestGeneratedSandboxSchemaShapes(t *testing.T) {
 		t.Fatal("an enforced binding must be complete when present and omitted before enforcement")
 	}
 	team := apiContractCRD(t, "teams").Spec.Versions[0].Schema.OpenAPIV3Schema.Properties["spec"]
-	for _, name := range []string{"normalAgentPolicyRef", "adminAgentPolicyRef"} {
-		if guard := team.Properties[name]; guard.MaxLength == nil || *guard.MaxLength != 0 {
-			t.Fatalf("Team schema must reject every nonempty retired slot %s", name)
-		}
-	}
 	for _, name := range []string{"agentPolicyRef", "sandboxRefs", "defaultSandboxRef"} {
 		if _, ok := team.Properties[name]; !ok || slices.Contains(team.Required, name) {
 			t.Fatalf("Team binding field %s must exist but remain optional for legacy Teams", name)

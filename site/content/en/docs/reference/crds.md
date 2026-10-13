@@ -197,10 +197,11 @@ not material to paste into a public bug report.
 | `skillStorage.storageSize` | Optional shared PVC request; chart default `100Gi` |
 | `skillStorage.mountPath` | Optional in-container path; chart default `/home/vibe/.aks/skills` |
 
-Retired `normalAgentPolicyRef`, `adminAgentPolicyRef` and Agent `policyClass`
-keys are rejection-only upgrade guards, not policy selectors. Every nonempty
-value is invalid. Stored old intent remains held until explicitly migrated;
-new resources use only `agentPolicyRef` and omit the retired keys.
+Each Team has a single `agentPolicyRef`; Agents do not select a policy class.
+The pre-release `normalAgentPolicyRef`, `adminAgentPolicyRef` and Agent
+`policyClass` fields are removed from the API and its CRD schemas. This is a new
+system contract, not a backward-compatible upgrade of the dual-policy design.
+No compatibility fields or migration path are provided for that design.
 
 Instances select this object through `spec.team`. Selection applies the Team's
 runtime defaults and, when configured, its single policy; it does not grant access to another Agent's

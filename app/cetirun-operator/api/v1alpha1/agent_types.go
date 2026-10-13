@@ -56,11 +56,6 @@ type AgentSpec struct {
 	// +optional
 	SandboxRef string `json:"sandboxRef,omitempty"`
 
-	// DeprecatedPolicyClass retains old workload policy intent for rejection only.
-	// +kubebuilder:validation:MaxLength=0
-	// +optional
-	DeprecatedPolicyClass string `json:"policyClass,omitempty"`
-
 	// Model is the Agent's preferred default model as exposed by the platform
 	// AI Gateway, such as a shared model or copilot/<model>. Policy resolution rejects
 	// an explicitly requested model that is outside the effective policy.
@@ -162,7 +157,7 @@ func (s AgentSpec) SharedModelsEnabled() bool {
 	if s.ModelAccess != nil && s.ModelAccess.SharedModels != nil {
 		return *s.ModelAccess.SharedModels
 	}
-	return s.SandboxRef == "" && (s.DeprecatedPolicyClass == "" || s.DeprecatedPolicyClass == "normal")
+	return s.SandboxRef == ""
 }
 
 // GitHubCopilotEnabled preserves legacy defaults only without a Sandbox selection.
@@ -170,7 +165,7 @@ func (s AgentSpec) GitHubCopilotEnabled() bool {
 	if s.ModelAccess != nil && s.ModelAccess.GitHubCopilot != nil {
 		return *s.ModelAccess.GitHubCopilot
 	}
-	return s.SandboxRef == "" && (s.DeprecatedPolicyClass == "" || s.DeprecatedPolicyClass == "normal")
+	return s.SandboxRef == ""
 }
 
 // UserSpec identifies the user this instance is provisioned for.
