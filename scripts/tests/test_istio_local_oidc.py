@@ -27,6 +27,7 @@ ENTRA_VALUES = {
     "allowedGroups": "lint-group",
     "cookieSecret": "lint-cookie-secret",
 }
+NO_ENV_COLLECTION = {"name": "AZMON_COLLECT_ENV", "value": "False"}
 COOKIE_ENV = {
     "name": "COOKIE_SECRET",
     "valueFrom": {
@@ -136,7 +137,7 @@ class IstioLocalOIDCTests(unittest.TestCase):
         )
         container = pod["spec"]["containers"][0]
         self.assertEqual(container["args"], ENTRA_ARGS)
-        self.assertEqual(container["env"], [COOKIE_ENV])
+        self.assertEqual(container["env"], [NO_ENV_COLLECTION, COOKIE_ENV])
         account = objects[("ServiceAccount", "oauth2-proxy")]
         self.assertEqual(
             account["metadata"]["annotations"],
@@ -159,7 +160,7 @@ class IstioLocalOIDCTests(unittest.TestCase):
         del pod["metadata"]["labels"]["azure.workload.identity/use"]
         container = pod["spec"]["containers"][0]
         container["args"] = local_args(values["oauth2Proxy"]["localOIDC"]["issuerURL"])
-        container["env"] = [COOKIE_ENV, client_secret_env()]
+        container["env"] = [NO_ENV_COLLECTION, COOKIE_ENV, client_secret_env()]
         account = expected[("ServiceAccount", "oauth2-proxy")]
         del account["metadata"]["annotations"]
         del account["metadata"]["labels"]["azure.workload.identity/use"]
@@ -173,7 +174,10 @@ class IstioLocalOIDCTests(unittest.TestCase):
         values["oauth2Proxy"]["localOIDC"]["clientSecretKey"] = "oidc-client-secret"
         objects = self.render(values)
         container = objects[("Deployment", "oauth2-proxy")]["spec"]["template"]["spec"]["containers"][0]
-        self.assertEqual(container["env"], [COOKIE_ENV, client_secret_env("oidc-client-secret")])
+        self.assertEqual(
+            container["env"],
+            [NO_ENV_COLLECTION, COOKIE_ENV, client_secret_env("oidc-client-secret")],
+        )
 
     def test_local_oidc_preserves_redis_sessions(self):
         values = local_values()
@@ -197,7 +201,7 @@ class IstioLocalOIDCTests(unittest.TestCase):
         expected_args[index] = "--scope=openid email profile offline_access"
         self.assertEqual(container["args"], expected_args)
         self.assertEqual(container["env"], [
-            COOKIE_ENV, client_secret_env(),
+            NO_ENV_COLLECTION, COOKIE_ENV, client_secret_env(),
             {
                 "name": "OAUTH2_PROXY_REDIS_PASSWORD",
                 "valueFrom": {
@@ -227,7 +231,7 @@ class IstioLocalOIDCTests(unittest.TestCase):
                 objects = self.render(values)
                 container = objects[("Deployment", "oauth2-proxy")]["spec"]["template"]["spec"]["containers"][0]
                 self.assertEqual(container["args"], local_args(issuer))
-                self.assertEqual(container["env"], [COOKIE_ENV, client_secret_env()])
+                self.assertEqual(container["env"], [NO_ENV_COLLECTION, COOKIE_ENV, client_secret_env()])
 
     def test_rejects_nonlocal_http_and_invalid_issuer_urls(self):
         for issuer in (
