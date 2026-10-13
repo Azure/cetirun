@@ -75,12 +75,13 @@ carries no request or response content.
 {{- if not .Values.spendLogs.enabled }}
 
 LiteLLM writes no row per call to LiteLLM_SpendLogs, so the console's request
-log pages stay empty. Spend, budgets and daily usage totals are kept.
+log pages stay empty. Spend, budgets and daily usage totals are kept. An image
+built before the request log keeps writing those rows.
 {{- end }}
 
 {{- if .Values.metrics.enabled }}
 
-Prometheus metrics are served on port {{ .Values.metrics.port }} of each Gateway pod, at
+Prometheus metrics are served on port {{ include "cetirun-ai-gateway.metricsPort" . }} of each Gateway pod, at
 /metrics, without authentication. They name every key, user and Team with its
 spend; keep that port away from workloads that should not read them.
 {{- if and .Values.metrics.podMonitor.enabled (not (include "cetirun-ai-gateway.podMonitorAvailable" .)) }}

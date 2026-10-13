@@ -73,7 +73,7 @@ spec:
             {{- /* LiteLLM starts a second process that serves the metrics on
             this port, without authentication, and stops it with the proxy. */}}
             - --prometheus_metrics_port
-            - {{ .Values.metrics.port | quote }}
+            - {{ include "cetirun-ai-gateway.metricsPort" . | quote }}
             {{- end }}
           ports:
             - name: http
@@ -81,7 +81,7 @@ spec:
               protocol: TCP
             {{- if .Values.metrics.enabled }}
             - name: metrics
-              containerPort: {{ .Values.metrics.port }}
+              containerPort: {{ include "cetirun-ai-gateway.metricsPort" . }}
               protocol: TCP
             {{- end }}
           env:

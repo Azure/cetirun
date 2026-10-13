@@ -17,8 +17,10 @@ litellm_request_debug, which makes LiteLLM print that request's prompt and the
 provider's raw response to the log. The callback drops that field from every
 request, so content stays out of the log.
 
-LiteLLM loads it from litellm_settings.callbacks as
-"cetirun_ai_gateway.request_log.handler".
+The image's entrypoint registers ``handler`` with LiteLLM before the proxy
+loads its configuration, when CETIRUN_REQUEST_LOG is set, rather than listing
+it in litellm_settings.callbacks, which settings saved in LiteLLM's database
+can replace.
 """
 
 import datetime

@@ -286,6 +286,10 @@ redis:
 #
 # The collected lines are kept where the collector puts them, apart from the
 # Gateway's database.
+#
+# The image's entrypoint registers the callback that writes the lines, rather
+# than LiteLLM's configuration, so settings saved through the console cannot
+# remove it. An image built before the request log ignores this setting.
 requestLog:
   # -- Write the line for each call
   enabled: true
@@ -296,8 +300,12 @@ requestLog:
 # budgets and the daily usage totals the console's usage pages show are kept
 # either way. The cetirun-platform chart turns it off: the request log above
 # keeps the per-call record outside the database.
+#
+# It is turned off only together with the request log: the image's entrypoint
+# does both, so an image built before the request log keeps writing the table.
 spendLogs:
-  # -- Write a row to LiteLLM_SpendLogs for each call
+  # -- Write a row to LiteLLM_SpendLogs for each call. false needs
+  # requestLog.enabled.
   enabled: true
 
 # -- LiteLLM's Prometheus metrics: requests, failures, tokens, spend and
@@ -312,8 +320,9 @@ spendLogs:
 metrics:
   # -- Serve the metrics
   enabled: false
-  # -- Port of the metrics endpoint, at /metrics
-  port: 9090
+  # -- Port of the metrics endpoint, at /metrics. Unset, it is 9090, or 9091
+  # when service.port is 9090.
+  port: null
   # -- Labels left out of every metric. A client's address and user agent
   # change with every Agent restart and client version, so each would start a
   # new series; the user's email address is personal data that the other labels

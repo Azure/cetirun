@@ -11,6 +11,10 @@ proxy with them.
 Starting the proxy never touches a database by itself. The same image serves
 the shared Gateway, which has PostgreSQL, and the per-agent Copilot proxy, which
 has none, so migrating is a separate, explicit step.
+
+With CETIRUN_REQUEST_LOG set, the proxy runs in this process, with the image's
+request log callback registered before LiteLLM loads its configuration (see
+``gateway``).
 """
 
 import os
@@ -32,6 +36,14 @@ LIBPQ_PARAMETERS = {"sslmode", "connect_timeout", "application_name"}
 # device-code sign-in here: signing in is the Portal's job, and a request that
 # reached GitHub from the proxy would hang waiting for a user who is not there.
 DISABLED_URL = "http://127.0.0.1:9/disabled"
+
+# Set by the Gateway chart. CETIRUN_REQUEST_LOG=true turns the request log on;
+# CETIRUN_SPEND_LOGS=false then also turns LiteLLM's own row per call off.
+REQUEST_LOG_ENV = "CETIRUN_REQUEST_LOG"
+SPEND_LOGS_ENV = "CETIRUN_SPEND_LOGS"
+# Ways of starting the proxy other than one uvicorn server in this process.
+# Their workers would load LiteLLM afresh, without the callback.
+OTHER_SERVERS = ("--run_gunicorn", "--run_hypercorn", "--run_granian", "--reload")
 
 
 def migrations_schema():
@@ -159,6 +171,69 @@ def copilot_proxy(args):
     os.execvpe("litellm", ["litellm", *args], copilot_proxy_environment(token_file, os.environ))
 
 
+def worker_count(args, environ):
+    """The number of proxy workers LiteLLM would start with these arguments."""
+    count = environ.get("NUM_WORKERS", "1")
+    for index, arg in enumerate(args):
+        if arg == "--num_workers" and index + 1 < len(args):
+            count = args[index + 1]
+        elif arg.startswith("--num_workers="):
+            count = arg.split("=", 1)[1]
+    try:
+        return int(count)
+    except ValueError:
+        return 1  # LiteLLM rejects it itself
+
+
+def gateway(args, environ=None):
+    """Start the LiteLLM proxy, with the request log when the chart asks for it.
+
+    The request log callback is registered here, in code, rather than in
+    litellm_settings.callbacks. A configured callback depends on how LiteLLM
+    combines its configuration file with settings saved in its database, where
+    a saved callbacks list can replace the configured one, and an image without
+    the module cannot start with a configuration that names it, as after a
+    rollback. Registered here, the callback depends on neither, and an image
+    built before the request log ignores these variables and starts with the
+    chart's configuration.
+
+    LiteLLM's own row per call is turned off only here, once the callback is
+    registered, never on its own: no configuration leaves a Gateway without a
+    record of each call. LiteLLM reads the setting when it loads its
+    configuration and keeps this value unless general_settings sets one.
+
+    The callback is registered in this process, so the proxy has to run in it:
+    one uvicorn server, as LiteLLM starts by default.
+    """
+    environ = os.environ if environ is None else environ
+    spend_logs_off = environ.get(SPEND_LOGS_ENV, "").strip().lower() == "false"
+    if environ.get(REQUEST_LOG_ENV, "").strip().lower() != "true":
+        if spend_logs_off:
+            print(f"{SPEND_LOGS_ENV}=false is ignored without {REQUEST_LOG_ENV}=true: "
+                  "LiteLLM keeps its spend log while nothing replaces it", flush=True)
+        os.execvp("litellm", ["litellm", *args])
+    if worker_count(args, environ) > 1 or any(arg.split("=", 1)[0] in OTHER_SERVERS for arg in args):
+        sys.exit("the request log needs the proxy in one uvicorn process: workers started otherwise "
+                 "would run without it. Scale with replicas instead.")
+
+    import litellm
+    from cetirun_ai_gateway.request_log import handler
+
+    litellm.logging_callback_manager.add_litellm_callback(handler)
+    print("request log callback registered", flush=True)
+    if spend_logs_off:
+        from litellm.proxy import proxy_server
+
+        if not hasattr(proxy_server, "disable_spend_logs"):
+            sys.exit("this LiteLLM has no proxy_server.disable_spend_logs; the spend log cannot be turned off")
+        proxy_server.disable_spend_logs = True
+        print("LiteLLM's spend log is off; the request log records each call", flush=True)
+
+    from litellm.proxy.proxy_cli import run_server
+
+    run_server.main(args=list(args), prog_name="litellm")
+
+
 def main():
     main_with(sys.argv[1:])
 
@@ -168,7 +243,7 @@ def main_with(args):
         migrate()
     if args[:1] == ["copilot-proxy"]:
         copilot_proxy(args[1:])
-    os.execvp("litellm", ["litellm", *args])
+    gateway(args)
 
 
 if __name__ == "__main__":

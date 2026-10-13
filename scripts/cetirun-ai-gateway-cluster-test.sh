@@ -37,6 +37,10 @@ release_name="${RELEASE_NAME:-gateway}"
 # workflow builds it with scripts/ai-gateway-docker-build.sh.
 image_repository="${IMAGE_REPOSITORY:-local.cetirun.invalid/cetirun-ai-gateway}"
 image_tag="${IMAGE_TAG:-cluster-test}"
+# Optional: an image built before the request log existed, also loaded into the
+# cluster. With it set, the test checks that the chart still starts that image.
+previous_image_repository="${PREVIOUS_IMAGE_REPOSITORY:-${image_repository}}"
+previous_image_tag="${PREVIOUS_IMAGE_TAG:-}"
 keep="${KEEP:-false}"
 
 for tool in kubectl helm curl jq; do
@@ -658,6 +662,44 @@ status="$(curl -s -m 30 -o /dev/null -w '%{http_code}' "http://127.0.0.1:${port_
 [ "${status}" = "401" ] || fail "/metrics on the Service port answered ${status} without a key"
 pass "the metrics port reports the pod's requests; the Service port still requires a key"
 
+# LiteLLM replaces a configured callbacks list with one saved in its database
+# when it reads its configuration with the database connected. LiteLLM 1.101.0
+# reads the file before it connects, so a configured callback survived a saved
+# list when tested, but that rests on LiteLLM's startup order. The image's
+# entrypoint registers the request log outside the list, so a saved list leaves
+# it, and the spend log setting that goes with it, in place in any case.
+echo "==> A callbacks list saved in LiteLLM's database leaves the request log in place"
+kubectl exec -i -n "${namespace}" "${postgresql_pod}" -- psql -U litellm -d litellm -v ON_ERROR_STOP=1 -q \
+  >/dev/null <<'SQL' || fail "could not save a callbacks list in LiteLLM_Config"
+INSERT INTO "LiteLLM_Config" (param_name, param_value)
+VALUES ('litellm_settings', '{"callbacks": ["prometheus"]}')
+ON CONFLICT (param_name) DO UPDATE SET param_value = EXCLUDED.param_value;
+SQL
+stop_forwards
+kubectl rollout restart "deployment/${fullname}" -n "${namespace}" >/dev/null
+kubectl rollout status "deployment/${fullname}" -n "${namespace}" --timeout=600s >/dev/null \
+  || fail "the Gateway did not restart with a callbacks list saved in its database"
+forward_pods
+port_a="${pod_ports[0]}"
+saved_key="$(api_post "${port_a}" /key/generate '{"models":["mock-priced"],"max_budget":10}' | jq -r .key)" \
+  || fail "could not create a virtual key"
+saved_spend_logs_before="$(spend_log_successes)"
+for port in "${pod_ports[@]}"; do
+  [ "$(chat "${port}" "${saved_key}" mock-priced)" = "200" ] \
+    || fail "a call with a callbacks list saved in the database failed: $(last_body)"
+done
+sleep 15
+saved_logged="$(logged_for "${saved_key}")"
+[ "${saved_logged}" = "2" ] \
+  || fail "with a callbacks list saved in LiteLLM's database, the request log holds ${saved_logged} of the 2 calls"
+saved_spend_logs_after="$(spend_log_successes)"
+[ "${saved_spend_logs_after}" = "${saved_spend_logs_before}" ] \
+  || fail "with a callbacks list saved in LiteLLM's database, LiteLLM_SpendLogs grew from ${saved_spend_logs_before} to ${saved_spend_logs_after}"
+kubectl exec -n "${namespace}" "${postgresql_pod}" -- psql -U litellm -d litellm -tAc \
+  "DELETE FROM \"LiteLLM_Config\" WHERE param_name = 'litellm_settings'" >/dev/null \
+  || fail "could not remove the saved callbacks list"
+pass "with a callbacks list saved in the database, 2 calls are in the request log and none in LiteLLM_SpendLogs"
+
 # ----- Uninstall and install again -------------------------------------------
 
 # The database outlives the release: the bundled PostgreSQL's volume is kept on
@@ -690,5 +732,34 @@ port_a="${pod_ports[0]}"
 [ "$(chat "${port_a}" "${master_key}" mock-db)" = "200" ] \
   || fail "database-backed model stopped working after uninstall and install: $(last_body)"
 pass "the kept database was found again, and its model decrypts and serves"
+
+# ----- An image built before the request log ---------------------------------
+
+# A release can keep an image built before the request log existed, for example
+# one pinned by digest across a chart upgrade. That image does not have the
+# callback: with the callback named in LiteLLM's configuration, it exited at
+# startup with an ImportError. The chart must start it, and LiteLLM's spend log
+# must stay on with it: nothing else would record each call.
+if [ -n "${previous_image_tag}" ]; then
+  echo "==> An image built before the request log starts and keeps LiteLLM's spend log"
+  stop_forwards
+  helm upgrade "${release_name}" "${chart_dir}" -n "${namespace}" -f "${values_file}" \
+    --set-string image.repository="${previous_image_repository}" --set-string image.tag="${previous_image_tag}" \
+    --set metrics.enabled=true --set spendLogs.enabled=false --wait --timeout 10m >/dev/null \
+    || fail "the chart did not start ${previous_image_repository}:${previous_image_tag}"
+  forward_pods
+  port_a="${pod_ports[0]}"
+  previous_key="$(api_post "${port_a}" /key/generate '{"models":["mock-priced"],"max_budget":10}' | jq -r .key)" \
+    || fail "could not create a virtual key"
+  previous_spend_logs_before="$(spend_log_successes)"
+  for port in "${pod_ports[@]}"; do
+    [ "$(chat "${port}" "${previous_key}" mock-priced)" = "200" ] || fail "a call to the previous image failed: $(last_body)"
+  done
+  sleep 15
+  previous_spend_logs_after="$(spend_log_successes)"
+  [ "${previous_spend_logs_after}" -ge $((previous_spend_logs_before + 2)) ] \
+    || fail "with the previous image, LiteLLM_SpendLogs grew from ${previous_spend_logs_before} to ${previous_spend_logs_after} for 2 calls"
+  pass "the previous image serves, and LiteLLM's spend log recorded its 2 calls"
+fi
 
 echo "All Gateway cluster checks passed."

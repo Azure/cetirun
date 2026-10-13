@@ -93,6 +93,7 @@ LiteLLM's own record of each call.
 Source: [Gateway chart defaults](app/cetirun-ai-gateway/chart/values.yaml),
 [platform chart defaults](app/cetirun-platform/values.yaml),
 [request log callback](app/cetirun-ai-gateway/cetirun_ai_gateway/request_log.py),
+the [entrypoint that registers it](app/cetirun-ai-gateway/entrypoint.py),
 and [LiteLLM configuration](app/cetirun-ai-gateway/chart/templates/configmap.yaml).
 
 ### Infrastructure collection and traffic metadata

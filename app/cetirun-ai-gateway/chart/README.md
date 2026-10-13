@@ -697,12 +697,14 @@ This is why the chart writes as little as possible into those blocks.
 
 ### Values the chart owns
 
-`model_list`; `general_settings.store_model_in_db` and, with `spendLogs`
-off, `disable_spend_logs`; in `litellm_settings`, `num_retries`, the
-unpriced-model block, `global_disable_no_log_param`, the callbacks and
-settings of the request log and metrics, and, when Redis is configured, the
-Redis cache; and `router_settings` when Redis is configured. Everything else in
-LiteLLM's configuration is left alone.
+`model_list`; `general_settings.store_model_in_db`; in `litellm_settings`,
+`num_retries`, the unpriced-model block, `global_disable_no_log_param`, the
+metrics callback and its settings, and, when Redis is configured, the Redis
+cache; and `router_settings` when Redis is configured. Everything else in
+LiteLLM's configuration is left alone. The request log and the spend log
+setting are not in LiteLLM's configuration at all: the image's entrypoint
+applies them (see [One log line per call](#one-log-line-per-call)), so saving
+a settings block cannot remove them.
 
 ### Models added through the console survive upgrades
 
@@ -832,19 +834,47 @@ setting, such a call wrote no line. The chart always sets
 `litellm_settings.global_disable_no_log_param`, which makes LiteLLM ignore the
 field.
 
+**Registered by the image, not in LiteLLM's configuration.** The chart sets
+`CETIRUN_REQUEST_LOG=true` on the Gateway container, and the image's entrypoint
+registers the callback before LiteLLM loads its configuration. A callback
+listed in `litellm_settings.callbacks` would depend on how LiteLLM combines its
+configuration file with settings saved in its database: reading its
+configuration with the database connected, it replaces a configured list with
+a saved one. LiteLLM 1.101.0 reads the file before it connects and adds saved
+callbacks to the configured ones later, so a saved list left a configured
+callback in place when tested, but that rests on LiteLLM's startup order. A
+configuration that names the callback also keeps an image without it from
+starting: an image built before the request log exited at startup with an
+`ImportError`. The entrypoint's registration depends on neither, and an image
+built before the request log ignores the variable and starts with the chart's
+configuration.
+
+The proxy runs as one uvicorn process per pod, as LiteLLM starts by default.
+The entrypoint refuses more workers, or another server, since they would load
+LiteLLM again without the callback; scale with `replicaCount` instead.
+
 ### LiteLLM's spend log
 
-`spendLogs.enabled: false` sets `general_settings.disable_spend_logs`: LiteLLM
-then writes no row per call to `LiteLLM_SpendLogs`. The table grows by one row
-for every call and is never trimmed unless a retention period is set in the
-console. The cetirun-platform chart turns it off, since the request log keeps
-the per-call record outside the database.
+`spendLogs.enabled: false` has LiteLLM write no row per call to
+`LiteLLM_SpendLogs`. The table grows by one row for every call and is never
+trimmed unless a retention period is set in the console. The cetirun-platform
+chart turns it off, since the request log keeps the per-call record outside the
+database.
+
+It is turned off only together with the request log, so no configuration leaves
+the Gateway without a record of each call: `spendLogs.enabled: false` needs
+`requestLog.enabled`, and the image's entrypoint turns the spend log off only
+once it has registered the request log callback. It sets LiteLLM's
+`disable_spend_logs` in the proxy process, not in `general_settings`, so the
+setting is not saved with a settings block and does not outlive a rollback; a
+`disable_spend_logs` written in `general_settings` still wins. An image built
+before the request log keeps writing the table.
 
 Measured with it off: 16 calls added no row, while the key's, Team's and user's
 spend each grew by exactly the calls' cost, budgets held, and the daily totals
 counted all 16. The console's usage pages read those totals and keep working.
-Its request log pages, which read `LiteLLM_SpendLogs`, stay empty. The setting
-is read when the proxy starts.
+Its request log pages, which read `LiteLLM_SpendLogs`, stay empty. LiteLLM
+reads the setting when the proxy starts.
 
 ### Credentials and Container Insights
 
@@ -860,7 +890,9 @@ the whole cluster.
 ### Metrics
 
 `metrics.enabled` registers LiteLLM's Prometheus callback and serves the
-metrics on `metrics.port`, 9090 by default, at `/metrics`. LiteLLM runs a
+metrics at `/metrics` on `metrics.port`. Left unset, that is 9090, or 9091 when
+`service.port`, where the proxy listens, is 9090, so turning metrics on never
+needs a port chosen by hand. LiteLLM runs a
 separate process for that port, which reads the samples the proxy leaves in a
 directory they share, so a scrape never waits behind model traffic. Each
 replica serves its own samples; sum them across pods.
@@ -957,7 +989,9 @@ non-root user 65532.
   migrations applied and the proxy became ready.
 - `cetirun-ai-gateway migrate` applies migrations; any other arguments start
   the proxy. Starting never touches a database, because the same image serves
-  the per-agent Copilot proxy, which has none.
+  the per-agent Copilot proxy, which has none. With `CETIRUN_REQUEST_LOG=true`,
+  which the chart sets, the proxy starts in the entrypoint's own process with
+  the request log callback registered.
 
 To move to a new LiteLLM release, regenerate `requirements.txt` from that
 release's upstream image, rebuild, and let the build's `pip check` name any
@@ -997,8 +1031,12 @@ migrate in turn, that the bundled services refuse clients without their
 passwords, that every answered call reaches both the spend log and the request
 log, that with the spend log turned off calls are still charged and logged but
 add no spend log row, that a call sent with `"no-log": true` is still logged,
-and that the metrics port serves a pod's requests while the Service port still
-requires a key.
+that the metrics port serves a pod's requests while the Service port still
+requires a key, and that a `callbacks` list saved in LiteLLM's database leaves
+the request log, and the spend log setting, in place. With
+`PREVIOUS_IMAGE_TAG` set to an image built before the request log, it also
+checks that the chart still starts that image and that LiteLLM's spend log
+stays on with it.
 
 Its checks were confirmed by putting each original problem back and watching
 the test fail at the check meant to catch it. Doing that also exposed

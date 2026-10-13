@@ -484,13 +484,19 @@ assert_contains "helm.sh/resource-policy: keep" "the auth Secret is kept on unin
 
 # LiteLLM writes no per-request record of its own. The image's callback writes
 # one JSON line of metadata per call to stdout, for the cluster's log
-# collection. It has no setting that adds request or response content.
+# collection. It has no setting that adds request or response content. The
+# image's entrypoint registers it, not LiteLLM's configuration: a configured
+# callback depends on how LiteLLM combines its configuration with settings
+# saved in its database, and an image without it cannot start with a
+# configuration that names it.
 echo "==> every call is logged, without content"
-assert_contains 'callbacks: \["cetirun_ai_gateway.request_log.handler"\]' \
-  "the request log callback is registered by default" "${output}"
+assert_contains 'value: "true"' "the request log is turned on by default" \
+  "$(grep -A1 'name: CETIRUN_REQUEST_LOG$' <<< "${gateway_pod}")"
+assert_absent "cetirun_ai_gateway" "the request log callback stays out of LiteLLM's configuration" "${output}"
+assert_absent "callbacks:" "LiteLLM's configuration lists no callback without metrics" "${output}"
 assert_absent "CETIRUN_REQUEST_LOG_CONTENT" "no setting adds request or response content" "${output}"
 log_off="$(render --set requestLog.enabled=false)"
-assert_absent "callbacks:" "no callback is registered with the request log off" "${log_off}"
+assert_absent "CETIRUN_REQUEST_LOG" "the request log can be turned off" "${log_off}"
 
 # A client sending "no-log": true turned every logging callback off for its own
 # call, so the call never reached the request log or the metrics. The setting
@@ -502,10 +508,16 @@ assert_contains "global_disable_no_log_param: true" "a caller cannot turn record
 
 # LiteLLM's own row per call grows the database without limit. The platform
 # turns it off; the request log keeps the per-call record outside the database.
-echo "==> LiteLLM's spend log can be turned off"
-assert_absent "disable_spend_logs" "LiteLLM keeps its spend log by default" "${output}"
-assert_contains "disable_spend_logs: true" "spendLogs.enabled=false stops the spend log" \
-  "$(render --set spendLogs.enabled=false -s templates/configmap.yaml)"
+# The entrypoint turns it off only together with the request log, so an image
+# without the request log keeps it, and never in LiteLLM's configuration, where
+# a saved settings block would keep it off after a rollback.
+echo "==> LiteLLM's spend log is turned off only together with the request log"
+assert_absent "CETIRUN_SPEND_LOGS" "LiteLLM keeps its spend log by default" "${output}"
+spend_off="$(render --set spendLogs.enabled=false)"
+assert_contains 'value: "false"' "spendLogs.enabled=false has the entrypoint stop the spend log" \
+  "$(grep -A1 'name: CETIRUN_SPEND_LOGS$' <<< "${spend_off}")"
+assert_absent "disable_spend_logs" "the spend log setting stays out of LiteLLM's configuration" "${spend_off}"
+assert_rejected "the spend log off without the request log" --set spendLogs.enabled=false --set requestLog.enabled=false
 
 # Container Insights copies each container's environment, Secret values
 # included, into its ContainerInventory table once a minute unless collection
@@ -532,8 +544,7 @@ assert_absent "prometheus" "no metrics by default" "${output}"
 assert_absent "name: metrics" "no metrics port by default" "${gateway_pod}"
 metrics="$(render --set metrics.enabled=true)"
 metrics_pod="$(render --set metrics.enabled=true -s templates/deployment.yaml)"
-assert_contains 'callbacks: \["cetirun_ai_gateway.request_log.handler","prometheus"\]' \
-  "LiteLLM's Prometheus callback is registered" "${metrics}"
+assert_contains 'callbacks: \["prometheus"\]' "LiteLLM's Prometheus callback is registered" "${metrics}"
 assert_contains 'prometheus_exclude_labels: \["client_ip","user_agent","user_email"\]' \
   "labels that change per client or carry email addresses are left out" "${metrics}"
 assert_contains "\- --prometheus_metrics_port$" "LiteLLM serves the metrics on a port of their own" "${metrics_pod}"
@@ -559,6 +570,17 @@ assert_contains "apiVersion: monitoring.coreos.com/v1$" "the Prometheus Operator
   "$(render "${monitor_args[@]}" --set-string metrics.podMonitor.apiVersion=monitoring.coreos.com/v1 \
     --api-versions monitoring.coreos.com/v1/PodMonitor -s templates/podmonitor.yaml)"
 assert_rejected "a PodMonitor without metrics" --set metrics.podMonitor.enabled=true
+
+# The proxy listens on service.port. A Gateway that already listened on 9090
+# kept failing its upgrade once the platform turned metrics on at 9090; the
+# metrics take 9091 then, and only a port set by hand can collide.
+echo "==> the metrics port never takes the proxy's"
+moved="$(render --set metrics.enabled=true --set service.port=9090 -s templates/deployment.yaml)"
+assert_contains "containerPort: 9091$" "the metrics move to 9091 when the proxy listens on 9090" "${moved}"
+assert_contains '"9091"' "LiteLLM serves the metrics on 9091 then" \
+  "$(grep -A1 -- '- --prometheus_metrics_port$' <<< "${moved}")"
+assert_contains "containerPort: 9100$" "a metrics port set by hand is used" \
+  "$(render --set metrics.enabled=true --set metrics.port=9100 -s templates/deployment.yaml)"
 assert_rejected "the metrics port on the Service port" --set metrics.enabled=true --set metrics.port=4000
 
 # ----- Exposure -----
