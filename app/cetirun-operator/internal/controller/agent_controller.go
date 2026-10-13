@@ -433,7 +433,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		var err error
 		prepared, err = r.prepareAgent(instance, team)
 		if err != nil {
-			return r.rejectAgentConfig(ctx, instance, err)
+			return r.preparationFailed(ctx, instance, err)
 		}
 		before := instance.DeepCopy()
 		if pinAgentDefaults(&instance.Spec.Agent, prepared.Agent) {
@@ -540,7 +540,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		var err error
 		prepared, err = r.prepareAgent(instance, team)
 		if err != nil {
-			return r.rejectAgentConfig(ctx, instance, err)
+			return r.preparationFailed(ctx, instance, err)
 		}
 	}
 

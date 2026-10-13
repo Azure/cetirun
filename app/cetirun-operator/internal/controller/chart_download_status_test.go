@@ -10,23 +10,31 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/helm"
+	appsv1 "k8s.io/api/apps/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 )
 
-// failingPrepareHelm fails every chart preparation with err.
+// failingPrepareHelm renders the chart like chartHelm, but fails every chart
+// preparation with err while err is set.
 type failingPrepareHelm struct {
 	chartHelm
 	err error
 }
 
-func (h *failingPrepareHelm) Prepare(string, map[string]any, string) (*helm.PreparedRelease, error) {
-	return nil, h.err
+func (h *failingPrepareHelm) Prepare(namespace string, values map[string]any, chartVersion string) (*helm.PreparedRelease, error) {
+	if h.err != nil {
+		return nil, h.err
+	}
+	return h.chartHelm.Prepare(namespace, values, chartVersion)
 }
 
 // The Agent's conditions and Warning event report a chart download failure
@@ -83,5 +91,199 @@ func TestChartDownloadFailureIsReportedWithAFixedMessage(t *testing.T) {
 				t.Fatalf("warning events = %q, want one with message %q", warnings, tc.want)
 			}
 		})
+	}
+}
+
+// deployedAgent is a Ready Agent whose chart was installed for its current
+// generation, with a chart client whose preparation can be made to fail.
+type deployedAgent struct {
+	r        *AgentReconciler
+	chart    *failingPrepareHelm
+	recorder *record.FakeRecorder
+	req      ctrl.Request
+}
+
+func newDeployedAgent(t *testing.T) *deployedAgent {
+	t.Helper()
+	r, agent, _ := legacyGatewayFixture(t)
+	f := &deployedAgent{r: r, chart: &failingPrepareHelm{}, recorder: record.NewFakeRecorder(100),
+		req: ctrl.Request{NamespacedName: types.NamespacedName{Name: agent.Name}}}
+	r.HelmClient, r.EventRecorder = f.chart, f.recorder
+	sts := &appsv1.StatefulSet{
+		ObjectMeta: metav1.ObjectMeta{Name: instanceServiceName(agent.Name), Namespace: instanceNamespace(agent.Name), Generation: 1},
+		Spec:       appsv1.StatefulSetSpec{Replicas: ptr.To[int32](1)},
+		Status:     appsv1.StatefulSetStatus{ReadyReplicas: 1, UpdatedReplicas: 1, ObservedGeneration: 1},
+	}
+	if err := r.Create(context.Background(), sts); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 4 && f.agent(t).Status.Phase != api.PhaseReady; i++ {
+		if _, err := r.Reconcile(context.Background(), f.req); err != nil {
+			t.Fatalf("reconcile %d: %v", i, err)
+		}
+	}
+	if phase := f.agent(t).Status.Phase; phase != api.PhaseReady || f.chart.installs != 1 {
+		t.Fatalf("phase = %q, installs = %d; want a Ready Agent after one install", phase, f.chart.installs)
+	}
+	f.warnings()
+	return f
+}
+
+func (f *deployedAgent) agent(t *testing.T) *api.Agent {
+	t.Helper()
+	current := &api.Agent{}
+	if err := f.r.Get(context.Background(), f.req.NamespacedName, current); err != nil {
+		t.Fatal(err)
+	}
+	return current
+}
+
+// verificationDue makes the next reconcile take the full path, as the
+// periodic AI Gateway verification does every ten minutes.
+func (f *deployedAgent) verificationDue(t *testing.T) {
+	t.Helper()
+	current := f.agent(t)
+	current.Status.AIGateway.LastVerifiedTime = &metav1.Time{Time: time.Now().Add(-2 * aiGatewayVerificationInterval)}
+	if err := f.r.Status().Update(context.Background(), current); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// warnings drains the recorder and returns its Warning events.
+func (f *deployedAgent) warnings() []string {
+	var warnings []string
+	for len(f.recorder.Events) > 0 {
+		if event := <-f.recorder.Events; strings.HasPrefix(event, "Warning ") {
+			warnings = append(warnings, event)
+		}
+	}
+	return warnings
+}
+
+// A periodic full reconcile downloads the Agent's chart again. When that
+// download fails while the Agent runs the chart of its current generation,
+// the Agent stays Ready and its release untouched, AgentConfigReady reports
+// the temporary failure once, and the reconcile is retried until the
+// download works again.
+func TestChartDownloadFailureKeepsADeployedAgent(t *testing.T) {
+	f := newDeployedAgent(t)
+	ctx := context.Background()
+	f.verificationDue(t)
+	f.chart.err = &helm.ChartDownloadError{Chart: "oci://registry.example.com/helm/cetirun:0.1.28", Version: "0.1.28",
+		Err: errors.New("synthetic registry outage")}
+	want := "Agent chart 0.1.28 could not be downloaded from the registry; the deployed Agent is unchanged and the operator will retry"
+
+	for pass := 1; pass <= 2; pass++ {
+		before := f.agent(t)
+		result, err := f.r.Reconcile(ctx, f.req)
+		if err != nil || result.RequeueAfter != chartUnavailableRetry {
+			t.Fatalf("pass %d: result = %+v, err = %v; want a retry after %s", pass, result, err, chartUnavailableRetry)
+		}
+		current := f.agent(t)
+		if current.Status.Phase != api.PhaseReady || !meta.IsStatusConditionTrue(current.Status.Conditions, api.ConditionReady) {
+			t.Fatalf("pass %d: phase = %q, Ready = %+v; want the Agent to stay Ready", pass, current.Status.Phase,
+				meta.FindStatusCondition(current.Status.Conditions, api.ConditionReady))
+		}
+		condition := meta.FindStatusCondition(current.Status.Conditions, api.ConditionAgentConfigReady)
+		if condition == nil || condition.Status != metav1.ConditionFalse || condition.Reason != chartUnavailableReason || condition.Message != want {
+			t.Fatalf("pass %d: AgentConfigReady = %+v, want reason %s and message %q", pass, condition, chartUnavailableReason, want)
+		}
+		warnings := f.warnings()
+		if pass == 1 && (len(warnings) != 1 || warnings[0] != "Warning "+chartUnavailableReason+" "+want) {
+			t.Fatalf("first failure: warning events = %q, want one %s event", warnings, chartUnavailableReason)
+		}
+		if pass == 2 && (len(warnings) != 0 || current.ResourceVersion != before.ResourceVersion) {
+			t.Fatalf("a repeated failure wrote the status or recorded events again: %q", warnings)
+		}
+	}
+	if f.chart.installs != 1 {
+		t.Fatalf("installs = %d; a download failure must not touch the release", f.chart.installs)
+	}
+
+	// The download works again: the pass completes, verifies the Agent's
+	// Gateway key and reports the configuration as resolved, without
+	// reinstalling the chart.
+	verified := f.agent(t).Status.AIGateway.LastVerifiedTime.Time
+	f.chart.err = nil
+	if _, err := f.r.Reconcile(ctx, f.req); err != nil {
+		t.Fatal(err)
+	}
+	current := f.agent(t)
+	condition := meta.FindStatusCondition(current.Status.Conditions, api.ConditionAgentConfigReady)
+	if current.Status.Phase != api.PhaseReady || condition == nil || condition.Status != metav1.ConditionTrue ||
+		!current.Status.AIGateway.LastVerifiedTime.After(verified) || f.chart.installs != 1 {
+		t.Fatalf("recovery: phase = %q, AgentConfigReady = %+v, installs = %d", current.Status.Phase, condition, f.chart.installs)
+	}
+	if warnings := f.warnings(); len(warnings) != 0 {
+		t.Fatalf("recovery recorded warnings: %q", warnings)
+	}
+}
+
+// A download failure is temporary only for an Agent whose chart is
+// installed for its current generation. Other preparation errors, and a
+// download failure after a spec change, still reject the configuration.
+func TestDeployedAgentStillRejectsOtherPreparationFailures(t *testing.T) {
+	for name, tc := range map[string]struct {
+		err        error
+		specChange bool
+		want       string
+	}{
+		"configuration error": {
+			err:  errors.New("helm.values.image must use spec.agent.image"),
+			want: "helm.values.image must use spec.agent.image",
+		},
+		"download after a spec change": {
+			err: &helm.ChartDownloadError{Chart: "oci://registry.example.com/helm/cetirun:0.1.29", Version: "0.1.29",
+				Err: errors.New("synthetic registry outage")},
+			specChange: true,
+			want:       "Agent chart 0.1.29 could not be downloaded from the registry; the operator will retry",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newDeployedAgent(t)
+			ctx := context.Background()
+			f.verificationDue(t)
+			if tc.specChange {
+				current := f.agent(t)
+				current.Spec.Helm.Version = "0.1.29"
+				current.Generation++ // the fake client does not maintain the generation
+				if err := f.r.Update(ctx, current); err != nil {
+					t.Fatal(err)
+				}
+			}
+			f.chart.err = tc.err
+			if _, err := f.r.Reconcile(ctx, f.req); err == nil {
+				t.Fatal("the preparation failure was not reported")
+			}
+			current := f.agent(t)
+			condition := meta.FindStatusCondition(current.Status.Conditions, api.ConditionAgentConfigReady)
+			if current.Status.Phase != api.PhaseFailed || condition == nil || condition.Reason != "AgentConfigInvalid" || condition.Message != tc.want {
+				t.Fatalf("phase = %q, AgentConfigReady = %+v; want Failed with AgentConfigInvalid and message %q",
+					current.Status.Phase, condition, tc.want)
+			}
+		})
+	}
+}
+
+func TestChartInstalledForGeneration(t *testing.T) {
+	installed := metav1.Condition{Type: api.ConditionHelmDeployed, Status: metav1.ConditionTrue, Reason: "ChartInstalled"}
+	notInstalled := metav1.Condition{Type: api.ConditionHelmDeployed, Status: metav1.ConditionFalse, Reason: "ChartNotInstalled"}
+	for name, tc := range map[string]struct {
+		conditions []metav1.Condition
+		observed   int64
+		want       bool
+	}{
+		"installed for the current generation": {[]metav1.Condition{installed}, 3, true},
+		"installed for an earlier generation":  {[]metav1.Condition{installed}, 2, false},
+		"chart not installed":                  {[]metav1.Condition{notInstalled}, 3, false},
+		"no HelmDeployed condition":            {nil, 3, false},
+	} {
+		agent := &api.Agent{
+			ObjectMeta: metav1.ObjectMeta{Generation: 3},
+			Status:     api.AgentStatus{Conditions: tc.conditions, ObservedGeneration: tc.observed},
+		}
+		if got := chartInstalledForGeneration(agent); got != tc.want {
+			t.Errorf("%s: got %v, want %v", name, got, tc.want)
+		}
 	}
 }
