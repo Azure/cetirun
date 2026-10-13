@@ -97,12 +97,25 @@ WORKDIR /usr/local/lib/hermes-agent
 # checkout with its checked-in uv.lock instead of reconstructing dependencies
 # from a PyPI wheel. Browser binaries are omitted because CetiRun supplies a
 # separate Chrome/CDP desktop sidecar.
+# Exporting the hash-locked closure lets pip consume artifacts directly from
+# feeds that proxy them through Azure DevOps. Dependency resolution stays with
+# uv because the lock intentionally contains overrides of upstream constraints.
 COPY --from=hermes-source --chown=vibe:vibe \
   /usr/local/lib/hermes-agent/ /usr/local/lib/hermes-agent/
 
-RUN UV_DEFAULT_INDEX="${PYPI_INDEX_URL}" \
-      uv sync --python /usr/bin/python3 --frozen --extra all \
-        --extra anthropic --extra azure-identity && \
+RUN --mount=type=cache,id=cetirun-hermes-pip,target=/tmp/pip-cache,uid=1024,gid=1024 \
+    export PIP_CACHE_DIR=/tmp/pip-cache PIP_INDEX_URL="${PYPI_INDEX_URL}" && \
+    uv export --quiet --python /usr/bin/python3 --frozen --extra all \
+      --extra anthropic --extra azure-identity --no-emit-project \
+      --format requirements.txt --output-file /tmp/hermes-requirements.txt && \
+    /usr/bin/python3 -m venv "${UV_PROJECT_ENVIRONMENT}" && \
+    "${UV_PROJECT_ENVIRONMENT}/bin/pip" install \
+      --disable-pip-version-check --no-deps --require-hashes \
+      --index-url "${PYPI_INDEX_URL}" \
+      --requirement /tmp/hermes-requirements.txt && \
+    "${UV_PROJECT_ENVIRONMENT}/bin/pip" install \
+      --disable-pip-version-check --no-deps --editable . && \
+    rm /tmp/hermes-requirements.txt && \
     printf '%s\n' docker > .install_method && \
     printf '%s\n' "${HERMES_GIT_SHA}" > .hermes_build_sha
 
