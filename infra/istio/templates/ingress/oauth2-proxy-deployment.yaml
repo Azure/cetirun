@@ -70,10 +70,17 @@
 {{- $redisPasswordKey := default "redis-password" (get $redisSession "passwordKey") -}}
 {{- $redisSecretData := dict -}}
 {{- $cookieExpire := default "45m" (get $cookieSettings "expire") -}}
+{{- $csrfPerRequestLimit := 20 -}}
+{{- if hasKey $cookieSettings "csrfPerRequestLimit" -}}
+{{- $csrfPerRequestLimit = get $cookieSettings "csrfPerRequestLimit" -}}
+{{- end -}}
 {{- $redisCookieExpire := default "8h" (get $redisSettings "cookieExpire") -}}
 {{- $redisCookieRefresh := default "30m" (get $redisSettings "cookieRefresh") -}}
 {{- if not (has $sessionStoreType (list "cookie" "redis")) -}}
 {{- fail "oauth2Proxy.sessionStore.type must be cookie or redis" -}}
+{{- end -}}
+{{- if not (regexMatch "^[1-9][0-9]*$" (toString $csrfPerRequestLimit)) -}}
+{{- fail "oauth2Proxy.cookie.csrfPerRequestLimit must be a positive integer" -}}
 {{- end -}}
 {{- if not (has $oidcEmailClaim (list "preferred_username" "email")) -}}
 {{- fail "oauth2Proxy.emailClaim must be preferred_username or email" -}}
@@ -170,6 +177,11 @@ spec:
             - --cookie-name=_cetirun_oauth2
             - --cookie-secure=true
             - --cookie-samesite=lax
+            # Every sign-in keeps its own CSRF cookie, so sign-ins started at
+            # the same time, by a page reload and a background request or by
+            # two tabs, do not overwrite each other's.
+            - --cookie-csrf-per-request=true
+            - --cookie-csrf-per-request-limit={{ $csrfPerRequestLimit }}
             {{- if eq $sessionStoreType "redis" }}
             - --cookie-expire={{ $redisCookieExpire }}
             - --cookie-refresh={{ $redisCookieRefresh }}
@@ -180,6 +192,13 @@ spec:
             {{- end }}
             - --email-domain={{ .Values.emailDomain }}
             - --skip-provider-button=true
+            # A browser cannot follow a sign-in redirect from a script. Requests
+            # to the Portal API, to Agent UI APIs and for Agent UI assets (an
+            # Agent UI can request dozens at once) answer 401 when the session
+            # has expired, instead of each starting a sign-in.
+            - --api-route=^/api/
+            - --api-route=^/ui/[^/]+/api/
+            - --api-route=^/ui/[^/]+/assets/
             {{- range (splitList "," $allowedGroups) }}
             {{- if ne (. | trim) "" }}
             - --allowed-group={{ . | trim }}

@@ -33,6 +33,25 @@ assert_ownership_target() {
   }
 }
 
+# Concurrent sign-ins keep separate CSRF cookies, and API requests answer 401
+# instead of starting a sign-in, in every session store mode.
+assert_sign_in_flags() {
+  local output="$1"
+  local limit="$2"
+  local flag
+  for flag in \
+    '- --cookie-csrf-per-request=true' \
+    "- --cookie-csrf-per-request-limit=${limit}" \
+    '- --api-route=^/api/' \
+    '- --api-route=^/ui/[^/]+/api/' \
+    '- --api-route=^/ui/[^/]+/assets/'; do
+    grep -Fxq -- "            ${flag}" <<< "${output}" || {
+      echo "FAIL: oauth2-proxy did not render ${flag}" >&2
+      exit 1
+    }
+  done
+}
+
 echo "==> helm template cetirun-istio (standalone portal default)"
 output=$(helm template cetirun-istio "${chart_dir}" "${base_args[@]}")
 assert_ownership_target "${output}" "cetirun-portal.cetirun-portal.svc.cluster.local"
@@ -58,6 +77,10 @@ grep -Fq 'local PORTAL_COOKIE_NAME = "_cetirun_oauth2"' <<< "${output}" || {
 }
 grep -Fq 'name:match("^" .. PORTAL_COOKIE_NAME .. "_%d+$")' <<< "${output}" || {
   echo "FAIL: ownership filter did not handle chunked Portal session cookies" >&2
+  exit 1
+}
+grep -Fq 'name:match("^" .. PORTAL_COOKIE_NAME .. "_[%w_%-]*csrf$")' <<< "${output}" || {
+  echo "FAIL: ownership filter did not remove OAuth2 Proxy sign-in cookies" >&2
   exit 1
 }
 [[ "$(grep -Ec '^[[:space:]]+strip_portal_session_cookie\(request_handle\)$' <<< "${output}")" == 2 ]] || {
@@ -122,6 +145,7 @@ grep -A1 'name: AZMON_COLLECT_ENV$' <<< "${output}" | grep -Fq 'value: "False"' 
   echo "FAIL: oauth2-proxy does not keep its cookie secret out of Container Insights" >&2
   exit 1
 }
+assert_sign_in_flags "${output}" 20
 if grep -Fq -- 'offline_access' <<< "${output}" ||
   grep -Fq -- '--session-store-type=redis' <<< "${output}" ||
   grep -Fq -- 'OAUTH2_PROXY_REDIS_PASSWORD' <<< "${output}" ||
@@ -163,6 +187,12 @@ grep -Fq -- '- --cookie-refresh=30m' <<< "${redis_output}" || {
   echo "FAIL: Redis oauth2-proxy did not refresh the Portal session before ID-token expiry" >&2
   exit 1
 }
+assert_sign_in_flags "${redis_output}" 20
+
+echo "==> helm template cetirun-istio (CSRF cookie limit)"
+limit_output=$(helm template cetirun-istio "${chart_dir}" "${base_args[@]}" \
+  --set oauth2Proxy.cookie.csrfPerRequestLimit=50)
+assert_sign_in_flags "${limit_output}" 50
 policy_output=$(helm template cetirun-istio "${chart_dir}" "${base_args[@]}" \
   --show-only templates/ingress/authorization-policy.yaml)
 callback_count="$(grep -Fc '/api/v1/agent-authorization/callback' <<< "${policy_output}")"
@@ -251,3 +281,10 @@ if helm template cetirun-istio "${chart_dir}" "${base_args[@]}" \
   echo "FAIL: invalid OIDC email claim rendered successfully" >&2
   exit 1
 fi
+for limit in 0 -1 1.5 many; do
+  if helm template cetirun-istio "${chart_dir}" "${base_args[@]}" \
+    --set "oauth2Proxy.cookie.csrfPerRequestLimit=${limit}" >/dev/null 2>&1; then
+    echo "FAIL: CSRF cookie limit ${limit} rendered successfully" >&2
+    exit 1
+  fi
+done

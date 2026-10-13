@@ -123,6 +123,10 @@ oauth2Proxy:
       passwordKey: redis-password
   cookie:
     expire: "45m"
+    # Each sign-in keeps its own CSRF cookie for up to 15 minutes. Starting a
+    # sign-in deletes the oldest of them beyond this number (about 200 bytes
+    # each; they are never forwarded to Agents).
+    csrfPerRequestLimit: 20
   redis:
     cookieExpire: "8h"
     cookieRefresh: "30m"

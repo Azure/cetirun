@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { getInstance, createInstance, deleteInstanceByName, updateInstance, upgradeInstance } from "./instance";
+import { getInstance, createInstance, deleteInstanceByName, downloadTeamsApp, updateInstance, upgradeInstance } from "./instance";
 
 /** Build a minimal mock Response with headers and redirected. */
 function mockResponse(init: {
@@ -348,5 +348,39 @@ describe("apiFetch session expiry detection", () => {
     );
 
     await expect(deleteInstanceByName("abc", { uid: "agent-uid", resourceVersion: "7" })).resolves.toBeUndefined();
+  });
+
+  it("throws session expired on 401 (OAuth2 Proxy API route)", async () => {
+    global.fetch = vi.fn().mockResolvedValue(
+      mockResponse({ ok: false, status: 401, json: () => Promise.resolve({}) }),
+    );
+
+    await expect(getInstance()).rejects.toThrow("Session expired, please refresh the page");
+  });
+});
+
+describe("downloadTeamsApp session expiry detection", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("throws session expired on 401", async () => {
+    global.fetch = vi.fn().mockResolvedValue(
+      mockResponse({ ok: false, status: 401, json: () => Promise.resolve({}) }),
+    );
+
+    await expect(downloadTeamsApp("abc")).rejects.toThrow("Session expired, please refresh the page");
+  });
+
+  it("reports other errors with the server's message", async () => {
+    global.fetch = vi.fn().mockResolvedValue(
+      mockResponse({
+        ok: false,
+        status: 409,
+        json: () => Promise.resolve({ error: { message: "Teams is not configured" } }),
+      }),
+    );
+
+    await expect(downloadTeamsApp("abc")).rejects.toThrow("Teams is not configured");
   });
 });
