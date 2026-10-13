@@ -194,7 +194,7 @@ func (r *AgentReconciler) readSandboxSource(ctx context.Context, source sandboxw
 	return sandboxSource(object, source.APIVersion, source.Kind), nil
 }
 
-func (r *AgentReconciler) verifySandboxSources(ctx context.Context, sources []sandboxworkload.SourceReference) error {
+func validateSandboxSourceInventory(sources []sandboxworkload.SourceReference) error {
 	if len(sources) == 0 || len(sources) > sandboxworkload.MaxPreparationSources {
 		return fmt.Errorf("Sandbox source inventory exceeds the supported bound")
 	}
@@ -205,6 +205,15 @@ func (r *AgentReconciler) verifySandboxSources(ctx context.Context, sources []sa
 			return fmt.Errorf("Sandbox source identities must be complete and unique")
 		}
 		seen[key] = true
+	}
+	return nil
+}
+
+func (r *AgentReconciler) verifySandboxSources(ctx context.Context, sources []sandboxworkload.SourceReference) error {
+	if err := validateSandboxSourceInventory(sources); err != nil {
+		return err
+	}
+	for _, source := range sources {
 		if _, err := r.readSandboxSource(ctx, source); err != nil {
 			return err
 		}

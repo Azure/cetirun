@@ -280,7 +280,34 @@ func (p *KubernetesSandboxPrerequisites) resolve(ctx context.Context, requested 
 	if err != nil {
 		return empty, err
 	}
-	if err := verifier.verifySandboxSources(ctx, sources); err != nil {
+	recheckedSources := sources
+	if source.NativeExecution && !held {
+		if err := validateSandboxSourceInventory(sources); err != nil {
+			return empty, err
+		}
+		recheckedSources = slices.Clone(sources)
+		for _, claim := range claims {
+			reference := sandboxSource(claim.object, "v1", "PersistentVolumeClaim")
+			before, err := sandboxworkload.NativeClaimDigest(claim.object)
+			if err != nil {
+				return empty, err
+			}
+			after, err := verifier.nativeSourceDigest(ctx, reference, agent.Spec.SandboxRef, false)
+			if err != nil {
+				return empty, fmt.Errorf("recheck native Sandbox claim: %w", err)
+			}
+			if before != after {
+				return empty, fmt.Errorf("%w: native Sandbox claim storage or ownership changed: %s",
+					errSandboxSourceChanged, sandboxworkload.SourceKey(reference))
+			}
+			// Native admission already permits ordinary binding of these exact
+			// claims. Do not turn a binding-only read race into a one-shot hold.
+			recheckedSources = slices.DeleteFunc(recheckedSources, func(candidate sandboxworkload.SourceReference) bool {
+				return candidate == reference
+			})
+		}
+	}
+	if err := verifier.verifySandboxSources(ctx, recheckedSources); err != nil {
 		return empty, fmt.Errorf("recheck Sandbox prerequisites: %w", err)
 	}
 	if err := ctx.Err(); err != nil {
