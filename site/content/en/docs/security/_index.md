@@ -131,7 +131,8 @@ workspaces. Actual collection depends on deployed collectors, permissions, and
 settings. By default the add-on also copies containers' environment variables,
 Secret values included; the
 [agent settings]({{< repo "infra/cluster/container-azm-ms-agentconfig.yaml" >}})
-that the cluster helper applies turn that off.
+that the cluster helper creates, or checks on a cluster that has its own,
+turn that off.
 The [Log Analytics template]({{< repo "infra/cluster/modules/aks-cluster.bicep" >}})
 sets 30-day retention when creating a workspace; existing workspaces,
 per-table settings, exports, and other stores may differ.

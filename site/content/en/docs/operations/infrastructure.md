@@ -81,9 +81,11 @@ than selecting one. Confirm that scope independently. It:
 2. Creates or updates the resource group.
 3. Validates and creates the Bicep deployment.
 4. Fetches credentials with `--overwrite-existing`.
-5. Applies the Container Insights agent settings in
-   `infra/cluster/container-azm-ms-agentconfig.yaml` to `kube-system`, and
-   stops with an error if it cannot.
+5. Creates the Container Insights agent settings in
+   `infra/cluster/container-azm-ms-agentconfig.yaml` in `kube-system`, and
+   stops with an error if it cannot. If the cluster already has agent
+   settings, it leaves them unchanged and stops unless they turn off
+   environment variable collection.
 6. Enables Gateway API and runs connected checks.
 
 The helper requests user credentials by default. `AKS_ADMIN_CREDENTIALS=true`
@@ -125,21 +127,26 @@ performance data.
 By default the add-on also copies every container's environment variables,
 values taken from Secrets included, into the `ContainerInventory` table once a
 minute. CetiRun components keep credentials there. The settings in
-`infra/cluster/container-azm-ms-agentconfig.yaml`, which the helper applies,
+`infra/cluster/container-azm-ms-agentconfig.yaml`, which the helper creates,
 turn that off and join log lines longer than 16 KiB that the container runtime
 splits. The agent restarts itself to pick them up, within minutes. CetiRun's
 own containers that hold credentials also turn the collection off for
 themselves, but other workloads do not.
 
 Clusters created from earlier templates have the rule without the add-on, and
-collect no container logs. Apply the settings first, then enable the add-on:
+collect no container logs. Create the settings first, then enable the add-on:
 
 ```bash
-kubectl apply -f infra/cluster/container-azm-ms-agentconfig.yaml
+kubectl create -f infra/cluster/container-azm-ms-agentconfig.yaml
 az aks enable-addons --addons monitoring --enable-msi-auth-for-monitoring \
   --resource-group "$RESOURCE_GROUP" --name "$CLUSTER_NAME" \
   --workspace-resource-id "$LOG_ANALYTICS_WORKSPACE_ID"
 ```
+
+If `kube-system` already has a `container-azm-ms-agentconfig` ConfigMap, the
+create fails. Add the file's two settings to that ConfigMap's
+`log-data-collection-settings` instead of applying the file over it, which
+would replace those settings as a whole, including any namespaces they exclude.
 
 On a cluster that has been running, the agent also uploads the log files the
 containers already have, once: log lines from before the add-on, back to the

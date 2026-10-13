@@ -89,9 +89,10 @@ prove that a live cluster is collecting data.
 
 By default Container Insights also copies every container's environment
 variables, values taken from Kubernetes Secrets included, into its
-`ContainerInventory` table. The cluster helper applies
-`infra/cluster/container-azm-ms-agentconfig.yaml`, which turns that collection
-off for the cluster, and CetiRun containers that keep credentials in their
+`ContainerInventory` table. The cluster helper creates the settings in
+`infra/cluster/container-azm-ms-agentconfig.yaml`, which turn that collection
+off for the cluster; on a cluster that already has agent settings, it checks
+that they do. CetiRun containers that keep credentials in their
 environment turn it off for themselves with `AZMON_COLLECT_ENV=False`. A
 cluster that runs the add-on without these settings collects those values.
 

@@ -1,9 +1,15 @@
 # Settings for the Container Insights agent (ama-logs), which the cluster
-# template turns on. deploy.sh applies this file right after the cluster is
-# created, before anything else is installed on it. On a cluster that already
-# runs the monitoring add-on, apply it before installing CetiRun:
+# template turns on. deploy.sh creates them right after the cluster is created,
+# before anything else is installed on it. On a cluster that runs the
+# monitoring add-on without them, create them before installing CetiRun:
 #
-#   kubectl apply -f infra/cluster/container-azm-ms-agentconfig.yaml
+#   kubectl create -f infra/cluster/container-azm-ms-agentconfig.yaml
+#
+# If kube-system already has a ConfigMap of this name, add the two settings
+# below to its log-data-collection-settings instead: applying this file over it
+# replaces those settings as a whole, including any namespaces it excludes.
+# deploy.sh leaves such a ConfigMap unchanged and stops if it does not turn off
+# environment variable collection.
 #
 # The agent reads it from kube-system under this name and restarts itself to
 # pick it up, which took about four minutes when measured. Settings it leaves
