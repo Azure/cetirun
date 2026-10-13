@@ -45,6 +45,10 @@ spec:
 
               -- Store request path and host in dynamic metadata so the response
               -- phase can access them (response handles cannot read request headers).
+              -- Also record the Authorization header the client sent: ext-auth
+              -- replaces it with the user's ID token, and the ownership filter
+              -- restores the client's own value on native Agent UI routes.
+              -- Dynamic metadata is never forwarded outside the gateway.
               function envoy_on_request(handle)
                 for _, h in ipairs(AUTH_HEADERS_TO_STRIP) do
                   handle:headers():remove(h)
@@ -53,6 +57,10 @@ spec:
                 local host = handle:headers():get(":authority") or ""
                 handle:streamInfo():dynamicMetadata():set("cetirun", "path", path)
                 handle:streamInfo():dynamicMetadata():set("cetirun", "host", host)
+                local authorization = handle:headers():get("authorization")
+                if authorization and authorization ~= "" then
+                  handle:streamInfo():dynamicMetadata():set("cetirun", "client_authorization", authorization)
+                end
               end
 
               function envoy_on_response(handle)
