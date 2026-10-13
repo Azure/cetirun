@@ -18,6 +18,7 @@ ADAPTER = "memory-adapter/v1"
 NATIVE_VERSION = "0.21.5"
 COMMANDS = ("status", "query", "capture", "prepare", "commit", "propose", "check", "advance",
             "select", "retire", "revise", "record-source-check", "record-use", "trace", "lint", "source", "evaluate")
+MEMORY_OFF = "CetiRun Memory is off for this conversation. Do not read or save private memory, or claim to have done so."
 
 
 def model_revision(provider, model, base_url, api_mode):
@@ -66,6 +67,13 @@ class MemorySession:
         self.checks, self.injected = [], []
         self.loop = self.task = None
         self.model_lock = threading.Lock()
+        self.turn_text = None
+
+    def private(self):
+        return self.binding["audience"] == "owner-private"
+
+    def writable(self):
+        return self.private() and not self.binding["noCapture"] and not self.binding["noMemory"]
 
     def stop(self):
         self.cancelled.set()
@@ -114,10 +122,19 @@ class MemorySession:
         self.injected = result.get("data", {}).get("refs", []) if result.get("ok") else []
         return result["data"]["context"] if result.get("ok") else "CetiRun Memory: " + result.get("reason", "unavailable") + ". Do not read or save private memory."
 
-    def record_injection(self, request_id):
-        if self.injected and not self.binding["noCapture"]:
-            self.call("injected", {"refs": self.injected}, event_id=request_id)
-        self.injected = []
+    def turn_context(self):
+        """Read the view once per turn; a tool loop sends several model requests."""
+        if self.turn_text is None:
+            if self.binding["noMemory"]:
+                self.turn_text = MEMORY_OFF
+                return self.turn_text
+            self.turn_text = self.context()
+            refs = self.injected
+            if refs and self.writable():
+                key = hashlib.sha256(json.dumps(refs, sort_keys=True).encode()).hexdigest()
+                self.call("injected", {"refs": refs}, event_id=self.binding["opportunityId"] + "-injected-" + key)
+            self.injected = []
+        return self.turn_text
 
     def tool(self, args, call_id, executor):
         if set(args) - {"command", "payload"} or args.get("command") not in COMMANDS or not isinstance(args.get("payload"), dict):
@@ -268,7 +285,7 @@ def register(ctx, *, root=None, session_factory=MemorySession, executor=bounded_
             sessions[session_id] = session_factory(root, binding)
             if len(sessions) > 128:
                 sessions.pop(next(iter(sessions))).stop()
-        if private and isinstance(user_message, str) and user_message.lower().startswith(("remember my preference:", "记住我的偏好：")):
+        if sessions[session_id].writable() and isinstance(user_message, str) and user_message.lower().startswith(("remember my preference:", "记住我的偏好：")):
             sessions[session_id].call("owner-preference", {"message": user_message}, event_id=binding["opportunityId"] + "-preference")
 
     def request(request, session_id="", provider="", model="", api_request_id="", base_url="", **kwargs):
@@ -278,16 +295,19 @@ def register(ctx, *, root=None, session_factory=MemorySession, executor=bounded_
         current.binding["model"] = provider + "/" + model
         current.binding["modelRevision"] = model_revision(provider, model, base_url, kwargs.get("api_mode"))
         current.binding["modelEvaluation"] = kwargs.get("api_mode") in ("chat_completions", "chat", "openai")
+        # Other people's platforms and sub-agents get no Memory context. Their
+        # requests stay unchanged; the tool still refuses private access.
+        if not current.private():
+            return None
         messages = request.get("messages")
         if not isinstance(messages, list):
             # Do not guess another transport's message schema.
             return None
-        text = current.context()
+        text = current.turn_context()
         if text.startswith(memory_contract):
             text = text[len(memory_contract):].lstrip()
         next_request = dict(request)
         next_request["messages"] = [*messages, {"role": "user", "content": text}]
-        current.record_injection(api_request_id or str(uuid.uuid4()))
         return {"request": next_request, "source": "cetirun-memory-context", "reason": "current private Memory view"}
 
     def tool(args, **kwargs):
@@ -317,7 +337,7 @@ def register(ctx, *, root=None, session_factory=MemorySession, executor=bounded_
         current = state(session_id)
         if current and tool_name == "cetirun_memory" and status == "cancelled":
             current.stop()
-        elif current and tool_name != "cetirun_memory" and status in ("error", "blocked"):
+        elif current and current.writable() and tool_name != "cetirun_memory" and status in ("error", "blocked"):
             current.call("feedback", {"tool": tool_name, "category": "failure" if status == "error" else "permission-denied"}, event_id=tool_call_id or str(uuid.uuid4()))
 
     def outbound(tool_name="", session_id="", **_kwargs):
@@ -328,7 +348,7 @@ def register(ctx, *, root=None, session_factory=MemorySession, executor=bounded_
     def finish(session_id="", turn_id="", completed=False, interrupted=False, **_kwargs):
         current = state(session_id)
         if current and (not turn_id or current.binding["opportunityId"] == turn_id):
-            if completed and not interrupted:
+            if completed and not interrupted and current.writable():
                 current.call("boundary")
             current.stop()
 
