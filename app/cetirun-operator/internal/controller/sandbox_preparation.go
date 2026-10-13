@@ -325,7 +325,7 @@ func (r *AgentReconciler) resolveSandboxExecutionInputs(ctx context.Context, req
 		resources.Sandboxes[name] = object
 		sources = append(sources, sandboxSource(object, api.GroupVersion.String(), "Sandbox"))
 	}
-	for _, name := range uniqueReferences([]string{team.Spec.NormalAgentPolicyRef, team.Spec.AdminAgentPolicyRef}) {
+	for _, name := range uniqueReferences([]string{team.Spec.AgentPolicyRef}) {
 		object := &api.AgentPolicy{}
 		if err := r.APIReader.Get(ctx, client.ObjectKey{Name: name}, object); err != nil {
 			return nil, err
@@ -356,10 +356,7 @@ func (r *AgentReconciler) resolveSandboxExecutionInputs(ctx context.Context, req
 }
 
 func (a *sandboxPreparationAttempt) selectedPolicy() *api.AgentPolicy {
-	name := a.team.Spec.NormalAgentPolicyRef
-	if a.agent.Spec.PolicyClass == api.AgentPolicyClassAdmin {
-		name = a.team.Spec.AdminAgentPolicyRef
-	}
+	name := a.team.Spec.AgentPolicyRef
 	return &api.AgentPolicy{
 		ObjectMeta: metav1.ObjectMeta{Name: name, UID: a.resolution.Binding.AgentPolicyUID},
 		Spec:       a.resolution.AgentPolicy,

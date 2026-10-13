@@ -212,7 +212,7 @@ func TestAdmissionAPIServerBoundaries(t *testing.T) {
 	newAgent := func(name string) *api.Agent {
 		agent := f.agent.DeepCopy()
 		agent.ObjectMeta = metav1.ObjectMeta{Name: name, Finalizers: []string{api.Finalizer}}
-		agent.Spec.SandboxRef, agent.Spec.PolicyClass = "", ""
+		agent.Spec.SandboxRef = ""
 		return agent
 	}
 	if err := wait.PollUntilContextTimeout(ctx, 50*time.Millisecond, 10*time.Second, true, func(ctx context.Context) (bool, error) {
@@ -248,7 +248,7 @@ func TestAdmissionAPIServerBoundaries(t *testing.T) {
 		}
 		partial := &api.Team{
 			ObjectMeta: metav1.ObjectMeta{Name: "partial-policy-team"},
-			Spec:       api.TeamSpec{NormalAgentPolicyRef: f.policy.Name},
+			Spec:       api.TeamSpec{AgentPolicyRef: f.policy.Name},
 		}
 		if err := cl.Create(ctx, partial); !apierrors.IsForbidden(err) {
 			t.Fatalf("partial policy Team was admitted as legacy: %v", err)
@@ -261,7 +261,7 @@ func TestAdmissionAPIServerBoundaries(t *testing.T) {
 		if err := cl.Get(ctx, client.ObjectKeyFromObject(agent), &stored); err != nil {
 			t.Fatal(err)
 		}
-		if stored.Spec.SandboxRef != f.box.Name || stored.Spec.PolicyClass != api.AgentPolicyClassNormal {
+		if stored.Spec.SandboxRef != f.box.Name {
 			t.Fatal("creation defaults were not persisted, or human authority elevated the workload")
 		}
 	})
@@ -274,7 +274,7 @@ func TestAdmissionAPIServerBoundaries(t *testing.T) {
 		if !strings.HasPrefix(agent.Name, agent.GenerateName) {
 			t.Fatalf("API server did not assign the requested generated name: %q", agent.Name)
 		}
-		if agent.Spec.SandboxRef != f.box.Name || agent.Spec.PolicyClass != api.AgentPolicyClassNormal {
+		if agent.Spec.SandboxRef != f.box.Name {
 			t.Fatal("governed generated-name Agent did not persist creation defaults")
 		}
 	})
@@ -283,7 +283,7 @@ func TestAdmissionAPIServerBoundaries(t *testing.T) {
 		if err := cl.Create(ctx, agent, client.DryRunAll); err != nil {
 			t.Fatal(err)
 		}
-		if agent.Spec.SandboxRef != f.box.Name || agent.Spec.PolicyClass != api.AgentPolicyClassNormal {
+		if agent.Spec.SandboxRef != f.box.Name {
 			t.Fatal("dry run did not apply normal creation defaults")
 		}
 		if err := cl.Get(ctx, client.ObjectKeyFromObject(agent), &api.Agent{}); !apierrors.IsNotFound(err) {

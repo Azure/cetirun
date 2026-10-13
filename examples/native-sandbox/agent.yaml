@@ -7,7 +7,6 @@ metadata:
 spec:
   team: native-example
   sandboxRef: native-example
-  policyClass: normal
   agent:
     type: openclaw
     image: registry.example.com/cetirun:0.1.1

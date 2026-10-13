@@ -280,7 +280,7 @@ func TestHelmManagedCRDUpgrade(t *testing.T) {
 			team := &unstructured.Unstructured{Object: map[string]any{
 				"apiVersion": api.GroupVersion.String(), "kind": "Team",
 				"metadata": map[string]any{"name": user.name},
-				"spec": map[string]any{"normalAgentPolicyRef": f.policy.Name,
+				"spec": map[string]any{"agentPolicyRef": f.policy.Name,
 					"sandboxRefs": []any{f.box.Name}, "defaultSandboxRef": f.box.Name,
 					"futureConfiguration": "preserve-me"},
 			}}

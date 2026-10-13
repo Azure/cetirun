@@ -25,13 +25,12 @@ func TestSandboxConfigurationWatchesIncludePendingBindings(t *testing.T) {
 	team := &api.Team{
 		ObjectMeta: metav1.ObjectMeta{Name: "research"},
 		Spec: api.TeamSpec{
-			SandboxRefs: []string{"kata"}, DefaultSandboxRef: "kata",
-			NormalAgentPolicyRef: "member", AdminAgentPolicyRef: "operations",
+			SandboxRefs: []string{"kata"}, DefaultSandboxRef: "kata", AgentPolicyRef: "member",
 		},
 	}
 	otherTeam := &api.Team{
 		ObjectMeta: metav1.ObjectMeta{Name: "other"},
-		Spec:       api.TeamSpec{SandboxRefs: []string{"other"}, NormalAgentPolicyRef: "other"},
+		Spec:       api.TeamSpec{SandboxRefs: []string{"other"}, AgentPolicyRef: "other"},
 	}
 	agent := func(name, team, sandbox string) *api.Agent {
 		return &api.Agent{ObjectMeta: metav1.ObjectMeta{Name: name}, Spec: api.AgentSpec{Team: team, SandboxRef: sandbox}}
@@ -58,11 +57,8 @@ func TestSandboxConfigurationWatchesIncludePendingBindings(t *testing.T) {
 		{"sandbox", func() []reconcile.Request {
 			return r.enqueueInstancesForSandbox(context.Background(), &api.Sandbox{ObjectMeta: metav1.ObjectMeta{Name: "kata"}})
 		}, []string{"direct-binding", "pending-default", "selected"}},
-		{"normal-policy", func() []reconcile.Request {
+		{"policy", func() []reconcile.Request {
 			return r.enqueueInstancesForAgentPolicy(context.Background(), &api.AgentPolicy{ObjectMeta: metav1.ObjectMeta{Name: "member"}})
-		}, []string{"pending-default", "selected"}},
-		{"admin-policy", func() []reconcile.Request {
-			return r.enqueueInstancesForAgentPolicy(context.Background(), &api.AgentPolicy{ObjectMeta: metav1.ObjectMeta{Name: "operations"}})
 		}, []string{"pending-default", "selected"}},
 		{"unexpected-type", func() []reconcile.Request {
 			return r.enqueueInstancesForSandbox(context.Background(), team)
@@ -83,7 +79,7 @@ func TestSandboxConfigurationWatchesIncludePendingBindings(t *testing.T) {
 func TestSandboxDependencyIndexesDoNotMutateResources(t *testing.T) {
 	team := &api.Team{Spec: api.TeamSpec{
 		SandboxRefs: []string{"z", "a", "z", ""}, DefaultSandboxRef: "default",
-		NormalAgentPolicyRef: "shared", AdminAgentPolicyRef: "shared",
+		AgentPolicyRef: "shared",
 	}}
 	before := team.DeepCopy()
 	if got := teamSandboxReferences(team); !reflect.DeepEqual(got, []string{"a", "default", "z"}) {

@@ -28,7 +28,7 @@ func TestSandboxSDKRefreshesJournalBeforeWorkloadBindingCreation(t *testing.T) {
 	for _, mode := range []string{"absent", "deleted during preflight", "same-owner replacement"} {
 		t.Run(mode, func(t *testing.T) {
 			ctx := context.Background()
-			prepared, _, target := sandboxSDKAdminPlans(t)
+			prepared, _, target := sandboxSDKKubernetesAccessPlans(t)
 			cfg, api, releaseStore := sandboxSDKConfig()
 			input := prepared.sandboxBundle.Identity()
 			desired := []sandboxpolicy.BindingReference{}

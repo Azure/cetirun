@@ -394,30 +394,37 @@ func TestPodAdmissionMetadataOnlyReauthorizationInvalidatesIntent(t *testing.T) 
 	}
 }
 
-func TestPodAdmissionRejectsLegacyAgentSourceContract(t *testing.T) {
-	for _, legacyVersion := range []bool{false, true} {
-		t.Run(fmt.Sprintf("legacy-version=%v", legacyVersion), func(t *testing.T) {
-			f := newPodFixture(t)
-			if legacyVersion {
-				f.expected.Version = "v1"
+func TestPodAdmissionRejectsUnsupportedExpectationOrInvalidAgentSource(t *testing.T) {
+	for _, scenario := range []struct {
+		name    string
+		version string
+	}{
+		{"status-sensitive Agent source", ""},
+		{"unsupported v2", "v2"},
+		{"unsupported v3", "v3"},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			fixture := newPodFixture(t)
+			if scenario.version != "" {
+				fixture.expected.Version = scenario.version
 			} else {
-				for i := range f.expected.Sources {
-					if f.expected.Sources[i].IsAgent() {
-						f.expected.Sources[i].Generation, f.expected.Sources[i].IntentDigest = 0, ""
-						f.expected.Sources[i].ResourceVersion = f.fixture.Agent.ResourceVersion
+				for sourceIndex := range fixture.expected.Sources {
+					if fixture.expected.Sources[sourceIndex].IsAgent() {
+						fixture.expected.Sources[sourceIndex].Generation, fixture.expected.Sources[sourceIndex].IntentDigest = 0, ""
+						fixture.expected.Sources[sourceIndex].ResourceVersion = fixture.fixture.Agent.ResourceVersion
 					}
 				}
 			}
-			raw, err := json.Marshal(f.expected)
+			raw, err := json.Marshal(fixture.expected)
 			if err != nil {
 				t.Fatal(err)
 			}
-			f.state.Data[PodExpectationKey] = string(raw)
-			if err := f.client.Update(context.Background(), f.state); err != nil {
+			fixture.state.Data[PodExpectationKey] = string(raw)
+			if err := fixture.client.Update(context.Background(), fixture.state); err != nil {
 				t.Fatal(err)
 			}
-			if response := f.handler.Validate(context.Background(), podRequest(t, f.pod, admissionv1.Create, nil)); response.Allowed {
-				t.Fatal("old version or status-sensitive Agent source was accepted")
+			if response := fixture.handler.Validate(context.Background(), podRequest(t, fixture.pod, admissionv1.Create, nil)); response.Allowed {
+				t.Fatal("unsupported version or status-sensitive Agent source was accepted")
 			}
 		})
 	}

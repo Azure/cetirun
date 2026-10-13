@@ -295,8 +295,8 @@ func modelAccess(shared, copilot bool) *cetirunv1alpha1.ModelAccessSpec {
 
 func aiGatewayTestTeam(name string) *cetirunv1alpha1.Team {
 	return &cetirunv1alpha1.Team{ObjectMeta: metav1.ObjectMeta{Name: name, Generation: 1}, Spec: cetirunv1alpha1.TeamSpec{
-		NormalAgentPolicyRef: testPolicyName,
-		SandboxRefs:          []string{testSandboxName}, DefaultSandboxRef: testSandboxName,
+		AgentPolicyRef:    testPolicyName,
+		SandboxRefs:       []string{testSandboxName}, DefaultSandboxRef: testSandboxName,
 	}, Status: cetirunv1alpha1.TeamStatus{ObservedGeneration: 1, Conditions: []metav1.Condition{{Type: cetirunv1alpha1.ConditionTeamAccepted, Status: metav1.ConditionTrue, ObservedGeneration: 1}}}}
 }
 

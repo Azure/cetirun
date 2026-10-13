@@ -233,7 +233,7 @@ func (h *InstanceHandler) resolveTeamBinding(w http.ResponseWriter, r *http.Requ
 		return team, "", true
 	}
 	sandboxRef := strings.TrimSpace(selectedTeam.Spec.DefaultSandboxRef)
-	if sandboxRef == "" || selectedTeam.Spec.NormalAgentPolicyRef == "" ||
+	if sandboxRef == "" || selectedTeam.Spec.AgentPolicyRef == "" ||
 		!slices.Contains(selectedTeam.Spec.SandboxRefs, sandboxRef) {
 		writeError(w, http.StatusConflict, "team_not_configured", "The selected Team has incomplete policy or Sandbox configuration")
 		return "", "", false

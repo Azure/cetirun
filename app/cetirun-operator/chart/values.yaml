@@ -185,7 +185,7 @@ sandboxAdmission:
 # Adds only get permission on shared Istio Gateways for pinned access inputs.
 sandboxSources:
   enabled: false
-  # -- Opt in to the single-start normal OpenClaw/Kata/RWOP profile.
+  # -- Opt in to the single-start OpenClaw/Kata/RWOP profile.
   # Requires owned bootstrap and AI Gateway shared models. No resume or failover.
   # When admission coordination is configured, reserve the selected sources
   # until observed ordinary shutdown; this is not physical writer fencing.

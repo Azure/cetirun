@@ -960,7 +960,7 @@ func TestPodAdmissionAPIServerBoundaries(t *testing.T) {
 			if err := cl.Get(ctx, client.ObjectKey{Namespace: source.Namespace, Name: source.Name}, object); err != nil {
 				t.Fatal(err)
 			}
-			digest, err := w.ExecutionSourceDigest(object, f.fixture.Sandbox.Name, expected.Binding.PolicyClass)
+			digest, err := w.ExecutionSourceDigest(object, f.fixture.Sandbox.Name)
 			if claim, ok := object.(*corev1.PersistentVolumeClaim); ok {
 				digest, err = w.NativeClaimDigest(claim)
 			}

@@ -515,7 +515,6 @@ func TestKubernetesPrerequisiteRevisionIgnoresUnselectedTeamChanges(t *testing.T
 	}
 	team.Spec.SandboxRefs = append(team.Spec.SandboxRefs, "spare-sandbox")
 	team.Spec.DefaultSandboxRef = "spare-sandbox"
-	team.Spec.AdminAgentPolicyRef = "new-admin-policy"
 	if err := f.client.Update(ctx, team); err != nil {
 		t.Fatal(err)
 	}
@@ -523,12 +522,21 @@ func TestKubernetesPrerequisiteRevisionIgnoresUnselectedTeamChanges(t *testing.T
 	if err != nil || next.Revision != first.Revision {
 		t.Fatal("unselected Team changes invalidated whole-generation effective approval:", err)
 	}
-	team.Spec.MemberContext.Role = "changed-shared-input"
+	team.Spec.AgentPolicyRef = "new-policy"
 	if err := f.client.Update(ctx, team); err != nil {
 		t.Fatal(err)
 	}
 	next, err = f.resolve(t)
 	if err != nil || next.Revision == first.Revision {
+		t.Fatal("Team policy change did not invalidate prerequisite approval:", err)
+	}
+	previous := next.Revision
+	team.Spec.MemberContext.Role = "changed-shared-input"
+	if err := f.client.Update(ctx, team); err != nil {
+		t.Fatal(err)
+	}
+	next, err = f.resolve(t)
+	if err != nil || next.Revision == previous {
 		t.Fatal("shared Team runtime input did not invalidate prerequisite approval:", err)
 	}
 }

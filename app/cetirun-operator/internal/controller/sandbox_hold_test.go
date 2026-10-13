@@ -112,17 +112,13 @@ func TestSandboxOptInDoesNotRunLegacyHelm(t *testing.T) {
 		mutate func(*cetirunv1alpha1.Agent, *cetirunv1alpha1.Team)
 	}{
 		{"selected Sandbox", func(a *cetirunv1alpha1.Agent, _ *cetirunv1alpha1.Team) { a.Spec.SandboxRef = "standard" }},
-		{"admin class", func(a *cetirunv1alpha1.Agent, _ *cetirunv1alpha1.Team) {
-			a.Spec.PolicyClass = cetirunv1alpha1.AgentPolicyClassAdmin
-		}},
-		{"invalid class", func(a *cetirunv1alpha1.Agent, _ *cetirunv1alpha1.Team) { a.Spec.PolicyClass = "owner" }},
 		{"governed Team", func(_ *cetirunv1alpha1.Agent, team *cetirunv1alpha1.Team) {
-			team.Spec.NormalAgentPolicyRef = "normal"
+			team.Spec.AgentPolicyRef = "normal"
 			team.Spec.SandboxRefs = []string{"standard"}
 			team.Spec.DefaultSandboxRef = "standard"
 		}},
 		{"partial Team binding", func(_ *cetirunv1alpha1.Agent, team *cetirunv1alpha1.Team) {
-			team.Spec.AdminAgentPolicyRef = "operations"
+			team.Spec.AgentPolicyRef = "operations"
 		}},
 		{"prior applied binding", func(a *cetirunv1alpha1.Agent, _ *cetirunv1alpha1.Team) {
 			a.Status.Sandbox = &cetirunv1alpha1.SandboxStatus{AppliedRevision: "previous"}
@@ -184,7 +180,7 @@ func TestSandboxHoldStopsExistingWorkloadAndPreservesHome(t *testing.T) {
 	agent.Spec.SandboxRef = "standard"
 	agent.Status.AccessURL = "https://portal.example.com/ui/alice-work/"
 	agent.Status.Sandbox = &cetirunv1alpha1.SandboxStatus{
-		TeamUID: "team-uid", SandboxUID: "sandbox-uid", PolicyClass: cetirunv1alpha1.AgentPolicyClassNormal,
+		TeamUID: "team-uid", SandboxUID: "sandbox-uid",
 		AgentPolicyUID: "policy-uid", AppliedRevision: "previous",
 	}
 	sts := statefulSet(agent.Name, 1)
@@ -347,7 +343,6 @@ func TestSandboxHoldRetainsHomeForAlreadyScaledWorkload(t *testing.T) {
 
 func TestSandboxNormalDefaultPreservesLegacyReconciliation(t *testing.T) {
 	agent := newCR("alice-work", cetirunv1alpha1.PhasePending, nil, 1, 0, "")
-	agent.Spec.PolicyClass = cetirunv1alpha1.AgentPolicyClassNormal
 	scheme := testScheme()
 	client := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(agent).
 		WithObjects(agent, instanceNamespace(agent.Name), gatewayTokenSecret(agent.Name), statefulSet(agent.Name, 0)).Build()
@@ -455,7 +450,7 @@ func TestSandboxHoldRecoversCustomCompletionWithoutReapplying(t *testing.T) {
 			current := scenario.current()
 			if teamBinding {
 				team := &cetirunv1alpha1.Team{ObjectMeta: metav1.ObjectMeta{Name: "engineering"},
-					Spec: cetirunv1alpha1.TeamSpec{NormalAgentPolicyRef: "normal"}}
+					Spec: cetirunv1alpha1.TeamSpec{AgentPolicyRef: "normal"}}
 				if err := scenario.client.Create(context.Background(), team); err != nil {
 					t.Fatal(err)
 				}
@@ -498,7 +493,6 @@ func TestSandboxUngovernedCustomSuspensionDoesNotRequireTeam(t *testing.T) {
 	agent, _, objects := customFixture("sandbox-suspended", nil)
 	agent.Spec.Team = "unavailable-team"
 	agent.Spec.Suspended = true
-	agent.Spec.PolicyClass = cetirunv1alpha1.AgentPolicyClassNormal
 	client := fake.NewClientBuilder().WithScheme(testScheme()).WithStatusSubresource(agent).WithObjects(objects...).Build()
 	helm := &fakeHelmClient{useHarness: true}
 	reconciler := &controller.AgentReconciler{Client: client, HelmClient: helm}

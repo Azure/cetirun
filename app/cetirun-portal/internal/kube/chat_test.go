@@ -72,8 +72,8 @@ func TestResolveChatRejectsStaleForeignAndUnsupportedTargets(t *testing.T) {
 		"broad caller": func(_ *api.Agent, o []client.Object) {
 			o[5].(*networkv1.NetworkPolicy).Spec.Ingress[0].From[0].PodSelector = nil
 		},
-		"governed Team": func(_ *api.Agent, o []client.Object) { o[6].(*api.Team).Spec.DefaultSandboxRef = "held" },
-		"missing peer":  func(_ *api.Agent, o []client.Object) { o[5].(*networkv1.NetworkPolicy).Spec.Ingress = nil },
+		"policy-bound Team": func(_ *api.Agent, o []client.Object) { o[6].(*api.Team).Spec.AgentPolicyRef = "held-policy" },
+		"missing peer":      func(_ *api.Agent, o []client.Object) { o[5].(*networkv1.NetworkPolicy).Spec.Ingress = nil },
 		"retrying route": func(_ *api.Agent, o []client.Object) {
 			o[7].(*unstructured.Unstructured).Object["spec"].(map[string]any)["http"].([]any)[0].(map[string]any)["retries"] = map[string]any{"attempts": int64(2)}
 		},

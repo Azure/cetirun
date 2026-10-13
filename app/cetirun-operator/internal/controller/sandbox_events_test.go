@@ -80,14 +80,14 @@ func sandboxEventAgentFixture(t *testing.T) (*api.Agent, SandboxStatusInput) {
 			Finalizers: []string{sandbox.HoldFinalizer},
 		},
 		Spec: api.AgentSpec{
-			Team: "event-team", SandboxRef: "event-sandbox", PolicyClass: api.AgentPolicyClassNormal,
+			Team: "event-team", SandboxRef: "event-sandbox",
 			Agent: api.HarnessSpec{Type: api.AgentTypeHermes}, User: api.UserSpec{Alias: "event-example"},
 		},
 		Status: api.AgentStatus{Phase: api.PhasePending, ObservedGeneration: 2},
 	}
 	team := &api.Team{
 		ObjectMeta: metav1.ObjectMeta{Name: agent.Spec.Team, UID: "00000000-0000-4000-8000-000000000002"},
-		Spec:       api.TeamSpec{SandboxRefs: []string{agent.Spec.SandboxRef}, NormalAgentPolicyRef: "event-policy"},
+		Spec:       api.TeamSpec{SandboxRefs: []string{agent.Spec.SandboxRef}, AgentPolicyRef: "event-policy"},
 	}
 	box := &api.Sandbox{ObjectMeta: metav1.ObjectMeta{Name: agent.Spec.SandboxRef, UID: "00000000-0000-4000-8000-000000000003"}}
 	policy := &api.AgentPolicy{ObjectMeta: metav1.ObjectMeta{Name: "event-policy", UID: "00000000-0000-4000-8000-000000000004"}}
@@ -189,7 +189,6 @@ func TestSandboxEventsAppliedOnlyAfterCommittedVerifiedStatus(t *testing.T) {
 	expectedBinding := sandboxEventBinding{
 		AgentUID: string(agent.UID), TeamUID: string(input.Expected.Binding.TeamUID),
 		SandboxUID: string(input.Expected.Binding.SandboxUID), AgentPolicyUID: string(input.Expected.Binding.AgentPolicyUID),
-		PolicyClass: string(api.AgentPolicyClassNormal),
 	}
 	if event.Event != "sandbox.policy.applied" || event.Logger != "sandbox-policy" ||
 		event.Reason != "PolicyApplied" || event.Condition != api.ConditionSandboxReady ||
@@ -280,7 +279,6 @@ func TestSandboxEventsFailedAndLostRetainPriorAppliedBinding(t *testing.T) {
 				event.AppliedBinding.AgentPolicyUID != string(history.AgentPolicyUID) ||
 				event.AppliedBinding.TeamUID != string(history.TeamUID) ||
 				event.AppliedBinding.SandboxUID != string(history.SandboxUID) ||
-				event.AppliedBinding.PolicyClass != string(history.PolicyClass) ||
 				event.AttemptedRevision != sandboxEventUnresolved || event.AppliedRevision != history.AppliedRevision {
 				t.Fatalf("attempt or prior application was mislabeled: %+v", event)
 			}
@@ -439,7 +437,7 @@ func TestSandboxEventsMissingReferencesAndOpaqueValues(t *testing.T) {
 			agent.Status.AccessURL = "https://agent.example.com/synthetic-private-endpoint"
 			agent.Status.Sandbox = &api.SandboxStatus{
 				TeamUID: "synthetic-historical-team", SandboxUID: "synthetic-historical-sandbox",
-				AgentPolicyUID: "synthetic-historical-policy", PolicyClass: api.AgentPolicyClassAdmin,
+				AgentPolicyUID: "synthetic-historical-policy",
 				AppliedRevision: "sk-dummy " + strings.Repeat("synthetic-opaque-revision", 200),
 			}
 			ctx, capture := captureSandboxEvents(t)
@@ -481,7 +479,6 @@ func TestSandboxEventsMissingReferencesAndOpaqueValues(t *testing.T) {
 	}
 	agent, input := sandboxEventAgentFixture(t)
 	agent.Annotations = nil
-	agent.Spec.PolicyClass = ""
 	input.Failure = sandbox.ErrEnforcementPending
 	ctx, capture := captureSandboxEvents(t)
 	r := &AgentReconciler{Client: sandboxEventClient(t, agent)}
@@ -493,9 +490,8 @@ func TestSandboxEventsMissingReferencesAndOpaqueValues(t *testing.T) {
 	}
 	event := capture.events[0]
 	if event.Reason != "EnforcementPending" || event.Event != "sandbox.enforcement.failed" ||
-		event.AppliedBinding != unresolvedSandboxEventBinding() || event.AppliedRevision != sandboxEventUnresolved ||
-		event.AttemptedBinding.PolicyClass != sandboxEventUnresolved {
-		t.Fatal("unresolved identities or class received invented defaults")
+		event.AppliedBinding != unresolvedSandboxEventBinding() || event.AppliedRevision != sandboxEventUnresolved {
+		t.Fatal("unresolved identities received invented defaults")
 	}
 }
 
@@ -687,7 +683,7 @@ func TestSandboxEventsPreparationFailureRequiresCommittedStatus(t *testing.T) {
 
 func TestSandboxEventsPreserveOrdinaryUngovernedStatusWrites(t *testing.T) {
 	agent, _ := sandboxEventAgentFixture(t)
-	agent.Spec.Team, agent.Spec.SandboxRef, agent.Spec.PolicyClass = "", "", ""
+	agent.Spec.Team, agent.Spec.SandboxRef = "", ""
 	agent.Annotations, agent.Finalizers = nil, nil
 	ctx, capture := captureSandboxEvents(t)
 	backing := sandboxEventClient(t, agent)

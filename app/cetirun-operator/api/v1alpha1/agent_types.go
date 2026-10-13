@@ -56,11 +56,6 @@ type AgentSpec struct {
 	// +optional
 	SandboxRef string `json:"sandboxRef,omitempty"`
 
-	// PolicyClass selects the administrator-assigned Team policy slot.
-	// +kubebuilder:default=normal
-	// +optional
-	PolicyClass AgentPolicyClass `json:"policyClass,omitempty"`
-
 	// Model is the Agent's preferred default model as exposed by the platform
 	// AI Gateway, such as a shared model or copilot/<model>. Policy resolution rejects
 	// an explicitly requested model that is outside the effective policy.
@@ -162,7 +157,7 @@ func (s AgentSpec) SharedModelsEnabled() bool {
 	if s.ModelAccess != nil && s.ModelAccess.SharedModels != nil {
 		return *s.ModelAccess.SharedModels
 	}
-	return s.SandboxRef == "" && (s.PolicyClass == "" || s.PolicyClass == AgentPolicyClassNormal)
+	return s.SandboxRef == ""
 }
 
 // GitHubCopilotEnabled preserves legacy defaults only without a Sandbox selection.
@@ -170,7 +165,7 @@ func (s AgentSpec) GitHubCopilotEnabled() bool {
 	if s.ModelAccess != nil && s.ModelAccess.GitHubCopilot != nil {
 		return *s.ModelAccess.GitHubCopilot
 	}
-	return s.SandboxRef == "" && (s.PolicyClass == "" || s.PolicyClass == AgentPolicyClassNormal)
+	return s.SandboxRef == ""
 }
 
 // UserSpec identifies the user this instance is provisioned for.
@@ -311,7 +306,6 @@ type PolicyObjectReference struct {
 
 type EffectivePolicyReference struct {
 	PolicyObjectReference `json:",inline"`
-	Class                 AgentPolicyClass `json:"class"`
 }
 
 type PolicyEnforcementStatus struct {
@@ -653,8 +647,6 @@ type SandboxStatus struct {
 	// +kubebuilder:validation:Type=string
 	// +kubebuilder:validation:MinLength=1
 	SandboxUID types.UID `json:"sandboxUID"`
-
-	PolicyClass AgentPolicyClass `json:"policyClass"`
 
 	// +kubebuilder:validation:Type=string
 	// +kubebuilder:validation:MinLength=1

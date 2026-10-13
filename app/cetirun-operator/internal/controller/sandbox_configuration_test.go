@@ -297,7 +297,7 @@ func TestTeamDependencyReadFailureIsUnknownAndRetryable(t *testing.T) {
 	policy := &api.AgentPolicy{ObjectMeta: metav1.ObjectMeta{Name: "normal", UID: "normal-uid"}}
 	box := &api.Sandbox{ObjectMeta: metav1.ObjectMeta{Name: "standard", UID: "standard-uid"}}
 	team := &api.Team{ObjectMeta: metav1.ObjectMeta{Name: "example", UID: "team-uid", Generation: 3}, Spec: api.TeamSpec{
-		NormalAgentPolicyRef: policy.Name, DefaultSandboxRef: box.Name, SandboxRefs: []string{box.Name},
+		AgentPolicyRef: policy.Name, DefaultSandboxRef: box.Name, SandboxRefs: []string{box.Name},
 	}}
 	base := fake.NewClientBuilder().WithScheme(configurationScheme(t)).WithStatusSubresource(team).
 		WithObjects(policy, box, team).Build()

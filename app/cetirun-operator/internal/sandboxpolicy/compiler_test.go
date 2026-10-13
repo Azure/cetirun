@@ -38,7 +38,7 @@ func compilerFixture() CompileInput {
 			AgentPolicy: api.AgentPolicySpec{Harnesses: api.AgentPolicyHarnesses{Allowed: []api.AgentType{api.AgentTypeHermes}}},
 			Binding: sandbox.Binding{
 				AgentUID: "example-agent-uid", TeamUID: "example-team-uid", SandboxUID: "example-sandbox-uid",
-				AgentPolicyUID: "example-policy-uid", PolicyClass: api.AgentPolicyClassNormal,
+				AgentPolicyUID: "example-policy-uid",
 			},
 			Revision: "synthetic-foundation",
 			Sandbox: api.SandboxSpec{
@@ -98,7 +98,6 @@ func mustCompile(t *testing.T, input CompileInput) *Plan {
 
 func adminFixture() CompileInput {
 	input := compilerFixture()
-	input.Resolution.Binding.PolicyClass = api.AgentPolicyClassAdmin
 	input.Resolution.AgentPolicy.KubernetesAccess = &api.AgentPolicyAdminKubernetesAccess{
 		ServiceAccountName:  "example-dedicated",
 		RoleBindings:        []api.AgentPolicyRoleBinding{{Namespace: "operations", ClusterRoleName: "view"}},
@@ -117,6 +116,14 @@ func adminFixture() CompileInput {
 			Rules: []rbacv1.PolicyRule{{APIGroups: []string{""}, Resources: []string{"nodes"}, Verbs: []string{"get"}}}},
 	}
 	return input
+}
+
+func TestControlRevisionUsesV1Domain(t *testing.T) {
+	const expectedRevision = "e8c4036fa1c44fca437c8ee5d379937123ed0a9fbbde85115287c01848725c9d"
+	plan := mustCompile(t, compilerFixture())
+	if plan.Revision != expectedRevision {
+		t.Fatalf("v1 control revision = %q, want %q", plan.Revision, expectedRevision)
+	}
 }
 
 func TestCompileDefaultControls(t *testing.T) {
@@ -419,7 +426,6 @@ func TestCompileRejectsUnapprovedAndIncompatibleIdentity(t *testing.T) {
 		name   string
 		mutate func(*CompileInput)
 	}{
-		{"normal admin grant", func(i *CompileInput) { i.Resolution.Binding.PolicyClass = api.AgentPolicyClassNormal }},
 		{"no approvals", func(i *CompileInput) { i.Platform.Grants = nil }},
 		{"wrong policy approval", func(i *CompileInput) { i.Platform.Grants[0].PolicyUID = "foreign-policy" }},
 		{"wrong namespace scope", func(i *CompileInput) { i.Platform.Grants[0].Namespace = "foreign-namespace" }},

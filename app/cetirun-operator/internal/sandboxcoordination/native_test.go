@@ -31,7 +31,7 @@ func testNativeIntent(suffix string) NativeIntent {
 		Home:      w.ObjectIdentity{Name: "home", UID: types.UID("home-uid-" + suffix)},
 		Workload:  w.ObjectIdentity{Name: "agent-" + suffix, UID: types.UID("workload-uid-" + suffix)},
 		Binding: sandbox.Binding{AgentUID: types.UID("agent-uid-" + suffix), TeamUID: "team-uid",
-			SandboxUID: "sandbox-uid", AgentPolicyUID: "policy-uid", PolicyClass: api.AgentPolicyClassNormal},
+			SandboxUID: "sandbox-uid", AgentPolicyUID: "policy-uid"},
 		Revision: "native-revision",
 		Sources: []w.SourceReference{
 			source(api.GroupVersion.String(), "Team", "", "team", "team-uid"),

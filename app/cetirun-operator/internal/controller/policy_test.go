@@ -144,7 +144,7 @@ func TestPolicyReprojectionHoldsOnlyActiveOldProjection(t *testing.T) {
 	// A matching verified projection has no hold transition.
 	agent.Status.Policy.Enforcement.Gateway.DesiredRevision = resolution.gatewayRevision
 	agent.Status.Sandbox = &api.SandboxStatus{AppliedRevision: resolution.sandboxRevision, TeamUID: resolution.team.UID,
-		AgentPolicyUID: resolution.policy.UID, PolicyClass: api.AgentPolicyClassNormal}
+		AgentPolicyUID: resolution.policy.UID}
 	agent.Status.AIGateway = &api.AIGatewayStatus{Phase: api.AIGatewayPhaseReady, Routed: true, PolicyRevision: resolution.gatewayRevision}
 	agent.Status.Conditions = []metav1.Condition{{Type: api.ConditionSandboxReady, Status: metav1.ConditionTrue, ObservedGeneration: agent.Generation}}
 	if policyReprojectionMustHold(agent, resolution) {
@@ -176,7 +176,7 @@ func TestPolicyEnforcementRejectsStaleSandboxEvidence(t *testing.T) {
 		Spec:       api.AgentSpec{SandboxRef: "standard"},
 		Status: api.AgentStatus{
 			Sandbox: &api.SandboxStatus{TeamUID: resolution.team.UID, AgentPolicyUID: resolution.policy.UID,
-				PolicyClass: api.AgentPolicyClassNormal, AppliedRevision: resolution.sandboxRevision},
+				AppliedRevision: resolution.sandboxRevision},
 			Conditions: []metav1.Condition{{Type: api.ConditionSandboxReady, Status: metav1.ConditionTrue, ObservedGeneration: 7}},
 		},
 	}
@@ -187,7 +187,6 @@ func TestPolicyEnforcementRejectsStaleSandboxEvidence(t *testing.T) {
 		"revision":   func(a *api.Agent) { a.Status.Sandbox.AppliedRevision = "sandbox-old" },
 		"team":       func(a *api.Agent) { a.Status.Sandbox.TeamUID = "old-team" },
 		"policy":     func(a *api.Agent) { a.Status.Sandbox.AgentPolicyUID = "old-policy" },
-		"class":      func(a *api.Agent) { a.Status.Sandbox.PolicyClass = api.AgentPolicyClassAdmin },
 		"generation": func(a *api.Agent) { a.Status.Conditions[0].ObservedGeneration-- },
 	} {
 		t.Run(name, func(t *testing.T) {

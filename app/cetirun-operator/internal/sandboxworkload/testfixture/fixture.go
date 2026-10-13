@@ -62,12 +62,12 @@ func New(agentType string) Fixture {
 	}
 	team := &api.Team{
 		ObjectMeta: metav1.ObjectMeta{Name: "team-example", UID: "team-uid", ResourceVersion: "1", Generation: 1},
-		Spec:       api.TeamSpec{SandboxRefs: []string{box.Name}, DefaultSandboxRef: box.Name, NormalAgentPolicyRef: policy.Name},
+		Spec:       api.TeamSpec{SandboxRefs: []string{box.Name}, DefaultSandboxRef: box.Name, AgentPolicyRef: policy.Name},
 	}
 	agent := &api.Agent{
 		ObjectMeta: metav1.ObjectMeta{Name: "example", UID: "agent-uid", ResourceVersion: "1", Generation: 1},
 		Spec: api.AgentSpec{
-			Team: team.Name, SandboxRef: box.Name, PolicyClass: api.AgentPolicyClassNormal,
+			Team: team.Name, SandboxRef: box.Name,
 			Agent: api.HarnessSpec{Type: api.AgentType(agentType)}, GatewayTokenSecretRef: "runtime-secret",
 			User: api.UserSpec{Alias: "example", DisplayName: "Example"},
 		},

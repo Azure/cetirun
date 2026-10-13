@@ -23,7 +23,7 @@ import (
 func sandboxStatusFixture() (*api.Agent, controller.SandboxStatusInput) {
 	agent := &api.Agent{
 		ObjectMeta: metav1.ObjectMeta{Name: "example-agent", UID: "example-agent-uid", Generation: 5},
-		Spec:       api.AgentSpec{Team: "example-team", SandboxRef: "example-sandbox", PolicyClass: api.AgentPolicyClassNormal},
+		Spec:       api.AgentSpec{Team: "example-team", SandboxRef: "example-sandbox"},
 		Status: api.AgentStatus{
 			ObservedGeneration: 3, AccessURL: "https://portal.example.com/ui/example-agent/",
 			Conditions: []metav1.Condition{{
@@ -34,7 +34,7 @@ func sandboxStatusFixture() (*api.Agent, controller.SandboxStatusInput) {
 	}
 	binding := sandbox.Binding{
 		AgentUID: agent.UID, TeamUID: "example-team-uid", SandboxUID: "example-sandbox-uid",
-		AgentPolicyUID: "example-policy-uid", PolicyClass: api.AgentPolicyClassNormal,
+		AgentPolicyUID: "example-policy-uid",
 	}
 	expected := sandbox.ExecutionIdentity{
 		Binding: binding, Revision: "synthetic-compiled-revision", PodUID: "example-pod-uid",
@@ -149,7 +149,7 @@ func TestSandboxAgentStatusCommitsAtomicallyAndRetainsAppliedHistory(t *testing.
 	}
 	expected := &api.SandboxStatus{
 		TeamUID: input.Expected.Binding.TeamUID, SandboxUID: input.Expected.Binding.SandboxUID,
-		AgentPolicyUID: input.Expected.Binding.AgentPolicyUID, PolicyClass: input.Expected.Binding.PolicyClass,
+		AgentPolicyUID: input.Expected.Binding.AgentPolicyUID,
 		AppliedRevision: input.Plan.Revision,
 	}
 	if !reflect.DeepEqual(agent.Status.Sandbox, expected) || agent.Status.ObservedGeneration != agent.Generation {

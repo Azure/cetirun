@@ -45,7 +45,7 @@ func nativePodSkillsFixture(t *testing.T, emptySkills bool) podFixture {
 			if object.GetName() != source.Name || object.GetNamespace() != source.Namespace || object.GetUID() != source.UID {
 				continue
 			}
-			digest, err := w.ExecutionSourceDigest(object, f.fixture.Sandbox.Name, f.expected.Binding.PolicyClass)
+			digest, err := w.ExecutionSourceDigest(object, f.fixture.Sandbox.Name)
 			if claim, ok := object.(*corev1.PersistentVolumeClaim); ok {
 				digest, err = w.NativeClaimDigest(claim)
 			}
