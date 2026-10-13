@@ -197,7 +197,7 @@ not material to paste into a public bug report.
 | `skillStorage.containerName` | Required when `skillStorage` is present; existing skills container |
 | `skillStorage.storageClassName` | Optional override; chart default `azureblob-nfs-premium` |
 | `skillStorage.storageSize` | Optional shared PVC request; chart default `100Gi` |
-| `skillStorage.mountPath` | Optional in-container path; chart default `/home/vibe/.aks/skills` |
+| `skillStorage.mountPath` | Optional read-only alias for native Agents; common view at `$HOME/.agents/skills` |
 
 Instances select this object through `spec.team`. Selection applies the Team's
 runtime defaults and, when configured, normal policy; it does not grant access to another Agent's

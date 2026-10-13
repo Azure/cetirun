@@ -302,20 +302,20 @@ RUN cd /usr/local/share/npm-global/lib && \
 
 # Create config directories and symlink shared skills for opencode and codex
 RUN mkdir -p /home/vibe/.codex /home/vibe/.kube /home/vibe/.config/opencode && \
-    ln -s /home/vibe/.aks/skills /home/vibe/.config/opencode/skills && \
-    ln -s /home/vibe/.aks/skills /home/vibe/.codex/skills
+    ln -s /home/vibe/.agents/skills /home/vibe/.config/opencode/skills && \
+    ln -s /home/vibe/.agents/skills /home/vibe/.codex/skills
 
 # Prepare shared-skills plugin for Claude Code.
-# When skills.shared is enabled, Azure Blob Storage is mounted at /home/vibe/.aks/skills.
+# Runtime init publishes Memory and optional shared skills at /home/vibe/.agents/skills.
 # Claude Code discovers skills via plugins, so we create a local marketplace with a
-# symlinked skills/ dir. Dangling symlink is harmless when skills.shared is off.
+# symlinked skills/ dir. The link is unused outside a configured Agent runtime.
 RUN mkdir -p /home/vibe/.aks-skills/.claude-plugin \
              /home/vibe/.aks-skills/plugins/aks-shared-skills/.claude-plugin && \
     echo '{"$schema":"https://anthropic.com/claude-code/marketplace.schema.json","name":"aks-local","metadata":{"version":"0.1.0","description":"AKS shared skills from Azure Blob Storage","pluginRoot":"./plugins"},"owner":{"name":"CetiRun"},"plugins":[{"name":"aks-shared-skills","description":"AKS shared skills synced from Azure Blob Storage","version":"0.1.0","source":"./plugins/aks-shared-skills","strict":false}]}' \
       > /home/vibe/.aks-skills/.claude-plugin/marketplace.json && \
     echo '{"name":"aks-shared-skills","description":"AKS shared skills from Azure Blob Storage","version":"0.1.0"}' \
       > /home/vibe/.aks-skills/plugins/aks-shared-skills/.claude-plugin/plugin.json && \
-    ln -s /home/vibe/.aks/skills /home/vibe/.aks-skills/plugins/aks-shared-skills/skills
+    ln -s /home/vibe/.agents/skills /home/vibe/.aks-skills/plugins/aks-shared-skills/skills
 
 
 # Environments for vibe-kanban

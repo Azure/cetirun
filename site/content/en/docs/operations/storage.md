@@ -111,7 +111,12 @@ network isolation, and backups need separate review.
 
 Configure `skills.resourceGroup`, `skills.storageAccount`, and
 `skills.containerName`, or provide the equivalent `Team.skillStorage`.
-The default mount path is `/home/vibe/.aks/skills`.
+Runtime init reads the shared claim without modifying it and combines its skills
+with Memory in a per-Pod view at `$HOME/.agents/skills`. The Agent receives this
+view read-only; the shared claim is not mounted over the Memory skill directory.
+The view is rebuilt when a new Pod starts. Publish shared material before a
+controlled replacement. An explicit native `skills.mountPath` adds an alias of
+the same read-only view.
 
 NFS is the default. `skills.protocol` also accepts `fuse` and `fuse2` for
 separately configured Blobfuse mounts. Those modes require `skills.secretName`

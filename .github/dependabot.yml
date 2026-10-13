@@ -15,6 +15,7 @@ updates:
   - package-ecosystem: "docker"
     directories:
       - "/app/cetirun-agent-broker"
+      - "/app/cetirun-memory-context"
       - "/app/cetirun-chart"
       - "/app/cetirun-operator"
       - "/app/cetirun-portal"
@@ -29,6 +30,7 @@ updates:
   - package-ecosystem: "gomod"
     directories:
       - "/app/internal"
+      - "/app/cetirun-memory-context"
       - "/app/cetirun-agent-broker"
       - "/app/cetirun-operator"
       - "/app/cetirun-portal"

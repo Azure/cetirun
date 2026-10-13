@@ -1,0 +1,6 @@
+{
+  "id": "cetirun-memory-context",
+  "name": "CetiRun private memory contract",
+  "contracts": { "tools": ["cetirun_memory"] },
+  "configSchema": { "type": "object", "additionalProperties": false, "properties": {} }
+}

@@ -65,6 +65,7 @@ type Bindings struct {
 	ReservedPorts     []PortBinding
 	ContextRevision   string
 	AgentManagedModel bool
+	MemoryEnabled     bool
 	WebBasePath       string
 	WebInstance       string
 	// NoSignInHelper reports that the selected chart runs no in-agent model

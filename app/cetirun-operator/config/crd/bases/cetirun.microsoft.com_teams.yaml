@@ -126,8 +126,8 @@ spec:
                     type: string
                   mountPath:
                     description: |-
-                      MountPath inside the container. Defaults to the chart default
-                      ("/home/vibe/.aks/skills") when empty.
+                      MountPath optionally adds a read-only skills alias for native Agents.
+                      The common skills view is always at "$HOME/.agents/skills".
                     type: string
                   resourceGroup:
                     description: ResourceGroup of the Azure storage account.

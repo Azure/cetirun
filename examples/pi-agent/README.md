@@ -32,7 +32,7 @@ platform requirements beyond this example.
 | [agent-api.mjs](agent-api.mjs) | HTTP contract, input validation, streaming, limits and cancellation. |
 | [pi-runtime.mjs](pi-runtime.mjs) | Pi SDK sessions, model discovery and tool execution. |
 | [gateway-runtime.mjs](gateway-runtime.mjs) | Model discovery and requests through the platform AI Gateway, with memory-only credentials and no automatic retries. |
-| [pi-resources.mjs](pi-resources.mjs) | Load approved context and skills without global extensions or runtime package installation. |
+| [pi-resources.mjs](pi-resources.mjs) | Load the common `$HOME/.agents` view and connect Memory through the Pi SDK. |
 | [pi-tui.mjs](pi-tui.mjs) | Start Pi's native interactive mode with the same context and private auth directory. |
 | [auth-api.mjs](auth-api.mjs), [copilot-auth.mjs](copilot-auth.mjs) | Loopback-only login/status/cancel API and its operations CLI. |
 | [http.mjs](http.mjs) | Shared HTTP I/O and server lifecycle helpers. |

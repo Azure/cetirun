@@ -90,6 +90,7 @@ spec:
     spec:
       {{- include "cetirun.platform.podSettings" . | nindent 6 }}
       initContainers:
+        {{- include "cetirun.memory.init" . | nindent 8 }}
         - name: init-home-data
           image: {{ $r.agent.image | quote }}
           imagePullPolicy: IfNotPresent
@@ -107,12 +108,7 @@ spec:
               value: /etc/cetirun/init-home-common.sh
             - name: CETIRUN_CONTEXT_DIR
               value: /etc/cetirun-context
-            {{- if .Values.skills.shared }}
-            - name: CETIRUN_SHARED_SKILLS_DIR
-              value: /etc/cetirun-shared-skills
-            - name: CETIRUN_CONTEXT_VIEW
-              value: /etc/cetirun-context-view
-            {{- end }}
+            {{- include "cetirun.context.initEnv" . | nindent 12 }}
           volumeMounts:
             - name: data
               mountPath: /home-data
@@ -124,13 +120,7 @@ spec:
               readOnly: true
             - name: tmp
               mountPath: /tmp
-            {{- if .Values.skills.shared }}
-            - name: shared-skills
-              mountPath: /etc/cetirun-shared-skills
-              readOnly: true
-            - name: context-view
-              mountPath: /etc/cetirun-context-view
-            {{- end }}
+            {{- include "cetirun.context.initMounts" . | nindent 12 }}
       containers:
         - name: {{ .Chart.Name }}
           image: {{ $r.agent.image | quote }}
@@ -150,6 +140,7 @@ spec:
               value: {{ .value | quote }}
               {{- end }}
             {{- end }}
+            {{- include "cetirun.memory.env" . | nindent 12 }}
           {{- if $r.ports }}
           ports:
             {{- range $r.ports }}
@@ -176,14 +167,16 @@ spec:
           volumeMounts:
             - name: data
               mountPath: {{ $r.agent.home | quote }}
-            - name: {{ ternary "context-view" "context" .Values.skills.shared }}
+            {{- if include "cetirun.context.enabled" . }}
+            {{- include "cetirun.context.mount" . | nindent 12 }}
+            {{- else }}
+            - name: context
               mountPath: {{ printf "%s/.agents" $r.agent.home | quote }}
               readOnly: true
-              {{- if .Values.skills.shared }}
-              subPath: current
-              {{- end }}
+            {{- end }}
             - name: tmp
               mountPath: /tmp
+            {{- include "cetirun.memory.mounts" . | nindent 12 }}
         {{- if .Values.desktop.enabled }}
         {{- include "cetirun.platform.desktop" . | nindent 8 }}
         {{- end }}
@@ -207,9 +200,9 @@ spec:
           persistentVolumeClaim:
             claimName: {{ include "cetirun.sharedSkillsPVCName" . }}
             readOnly: true
-        - name: context-view
-          emptyDir: {}
         {{- end }}
+        {{- include "cetirun.context.volume" . | nindent 8 }}
+        {{- include "cetirun.memory.volumes" . | nindent 8 }}
   {{- if semverCompare ">=1.25-0" .Capabilities.KubeVersion.Version }}
   persistentVolumeClaimRetentionPolicy:
     whenDeleted: Retain

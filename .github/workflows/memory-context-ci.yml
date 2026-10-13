@@ -1,0 +1,117 @@
+name: Memory Context CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: memory-context-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  go-build-test:
+    name: Memory Context Go checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: app/cetirun-memory-context
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: .go-version
+          cache: false
+      - name: Vet and test the file protocol
+        run: |
+          go vet ./...
+          go test -race ./... -count=1
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+      - name: Test native adapters against the file helper
+        run: node --test tests/native.test.mjs
+      - name: Provision pinned native hosts for loopback qualification
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - name: Install pinned native host test dependencies
+        working-directory: .
+        run: |
+          native_dir="$RUNNER_TEMP/cetirun-memory-native"
+          mkdir "$native_dir"
+          mkdir "$native_dir/hermes" "$native_dir/openclaw"
+          curl -fsSL --max-time 300 https://codeload.github.com/NousResearch/hermes-agent/tar.gz/refs/tags/v2026.9.24 -o "$native_dir/hermes.tgz"
+          echo "15b15ce4e6ec8ea424a081823709d1e17f0943e7b42b59597d24ebb94cbd1742  $native_dir/hermes.tgz" | sha256sum --check
+          tar xzf "$native_dir/hermes.tgz" --strip-components=1 -C "$native_dir/hermes"
+          curl -fsSL --max-time 300 https://registry.npmjs.org/openclaw/-/openclaw-2026.9.6.tgz -o "$native_dir/openclaw.tgz"
+          node -e 'const fs=require("node:fs"),c=require("node:crypto");if(c.createHash("sha512").update(fs.readFileSync(process.argv[1])).digest("base64")!=="Ie0kyQSCVfFqixsgVg39vevUDq01Ch5u3+7Yu5Y3qARczmdAe+lzp8bVnO9925rHiW/+CFp70zfORCyPmCH31g==")throw Error("OpenClaw integrity mismatch")' "$native_dir/openclaw.tgz"
+          npm --prefix "$native_dir/openclaw" install --registry=https://registry.npmjs.org --ignore-scripts --omit=dev --omit=optional --no-audit --no-fund "$native_dir/openclaw.tgz"
+          npm --prefix examples/pi-agent ci --ignore-scripts --registry=https://registry.npmjs.org
+          python3 -m venv "$native_dir/venv"
+          "$native_dir/venv/bin/pip" install 'openai==2.24.0' 'httpx[socks]==0.28.1' 'python-dotenv==1.2.2' 'rich==14.3.3' 'requests==2.33.0' 'ruamel.yaml==0.18.17' 'packaging==26.0' 'pydantic==2.13.4' 'PyYAML==6.0.3'
+      - name: Qualify native registration and bounded model dispatch
+        working-directory: .
+        env:
+          MEMORY_OPENCLAW_SOURCE: ${{ runner.temp }}/cetirun-memory-native/openclaw/node_modules/openclaw
+          MEMORY_HERMES_SOURCE: ${{ runner.temp }}/cetirun-memory-native/hermes
+          MEMORY_HERMES_PYTHON: ${{ runner.temp }}/cetirun-memory-native/venv/bin/python
+          MEMORY_PI_NATIVE: 'true'
+          NO_PROXY: 127.0.0.1,localhost
+        run: node --test app/cetirun-memory-context/tests/native.test.mjs
+      - name: Build both supported architectures
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o bin/cetirun-memory-amd64 ./cmd/cetirun-memory
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o bin/cetirun-memory-arm64 ./cmd/cetirun-memory
+      - name: Install govulncheck
+        env:
+          GOTOOLCHAIN: local
+          GOTELEMETRY: "off"
+        run: GOBIN="$RUNNER_TEMP/cetirun-tools" go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
+      - name: Check reachable Go vulnerabilities
+        env:
+          GOFLAGS: "-mod=readonly"
+          GOWORK: "off"
+          GOTOOLCHAIN: local
+          GOTELEMETRY: "off"
+        run: '"$RUNNER_TEMP/cetirun-tools/govulncheck" ./...'
+
+  docker-build:
+    name: Memory Context image CVEs
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Build asset image without publishing
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: app/cetirun-memory-context/Dockerfile
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: cetirun-memory-context:validation
+          cache-from: type=gha,scope=cetirun-memory-context
+          cache-to: type=gha,mode=max,scope=cetirun-memory-context
+      - name: Validate non-root asset installation without HOME or network access
+        run: >-
+          docker run --rm --network none --read-only --cap-drop ALL
+          --security-opt no-new-privileges
+          --tmpfs /memory-assets:rw,nosuid,nodev,mode=0775,gid=1024
+          cetirun-memory-context:validation install-assets /memory-assets
+      - name: Gate image on fixable high and critical CVEs
+        run: python3 scripts/ci/scan_image.py --image cetirun-memory-context:validation

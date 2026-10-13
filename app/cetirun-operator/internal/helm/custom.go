@@ -32,7 +32,7 @@ func prepareCustomChart(chrt *chart.Chart, input map[string]any, request AgentRe
 	overrides := map[string]any{}
 	for key, value := range input {
 		switch key {
-		case "agentRequest", "agentType", "customBindings", "replicaCount", "fullnameOverride":
+		case "agentRequest", "agentType", "customBindings", "replicaCount", "fullnameOverride", "memoryOptions":
 		default:
 			overrides[key] = value
 		}
@@ -43,6 +43,14 @@ func prepareCustomChart(chrt *chart.Chart, input map[string]any, request AgentRe
 	agent, err := agents.ResolveCustom(request.Request)
 	if err != nil {
 		return nil, err
+	}
+	if memory, configured, err := resolveMemory(input, chrt, agent.HomeDir); err != nil {
+		return nil, err
+	} else if configured {
+		if bindings.Memory != nil {
+			return nil, fmt.Errorf("Memory binding and platform options cannot both be supplied")
+		}
+		bindings.Memory = memory
 	}
 	if err := bindings.Validate(agent); err != nil {
 		return nil, err
@@ -62,7 +70,7 @@ func prepareCustomChart(chrt *chart.Chart, input map[string]any, request AgentRe
 	}
 	values := map[string]any{}
 	for key, value := range input {
-		if key != "customBindings" && key != "agentRequest" {
+		if key != "customBindings" && key != "agentRequest" && key != "memoryOptions" {
 			values[key] = value
 		}
 	}
@@ -77,6 +85,16 @@ func prepareCustomChart(chrt *chart.Chart, input map[string]any, request AgentRe
 	coalesced, err = chartutil.CoalesceValues(chrt, coalesced)
 	if err != nil {
 		return nil, fmt.Errorf("coalesce effective custom values")
+	}
+	if bindings.Memory != nil {
+		if _, ok := chrt.Values["memoryContext"]; !ok {
+			return nil, fmt.Errorf("the selected Chart does not support Memory Context")
+		}
+	}
+	if _, supported := chrt.Values["memoryContext"]; supported {
+		for key, value := range bindings.Memory.Values() {
+			ensureObject(coalesced, "memoryContext")[key] = value
+		}
 	}
 	for _, key := range []string{"runtimeClassName", "nodeSelector"} {
 		if value, present := input[key]; present && value == nil {
@@ -186,14 +204,18 @@ func customWorkloadDigest(chrt *chart.Chart, agent agents.ResolvedAgent, binding
 	if desktop["enabled"] == true {
 		settings["desktopVersion"] = chrt.Metadata.AppVersion
 	}
-	data, err := json.Marshal(map[string]any{
+	input := map[string]any{
 		"agent": agent, "contribution": contribution, "settings": settings,
 		"agentUID": bindings.AgentUID,
 		"home":     home,
 		"model":    bindings.Model, "context": bindings.Context,
 		"commonInit": string(asset(chrt, "configs/init-home-common.sh")),
 		"customInit": string(asset(chrt, "agents/custom/bootstrap/init-home.sh")),
-	})
+	}
+	if bindings.Memory != nil {
+		input["memory"] = bindings.Memory
+	}
+	data, err := json.Marshal(input)
 	if err != nil {
 		return "", err
 	}

@@ -15,3 +15,5 @@
 {{- include "cetirun.validateSkills" . -}}
 {{- include "cetirun.validateDesktopBrowserConfig" . -}}
 {{- end -}}
+{{- include "cetirun.memory.validate" . -}}
+{{- include "cetirun.context.validate" . -}}

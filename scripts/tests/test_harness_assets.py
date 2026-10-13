@@ -15,6 +15,12 @@ CHART = ROOT / "app/cetirun-chart"
 
 
 class HarnessAssetsTests(unittest.TestCase):
+    def test_base_cli_skill_links_follow_the_common_view(self):
+        source = (CHART / "Dockerfile.base").read_text()
+        for target in (".config/opencode/skills", ".codex/skills", ".aks-skills/plugins/aks-shared-skills/skills"):
+            self.assertIn(f"ln -s /home/vibe/.agents/skills /home/vibe/{target}", source)
+        self.assertNotIn("/home/vibe/.aks/skills", source)
+
     def test_teams_discovery_does_not_import_runtime_dependencies(self):
         path = CHART / "agents/hermes/plugins/platforms/cetirun_teams/__init__.py"
         code = compile(path.read_text(), str(path), "exec")

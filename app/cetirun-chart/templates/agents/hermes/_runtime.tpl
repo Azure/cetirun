@@ -95,6 +95,7 @@ Hermes init containers
   {{- end }}
   command: ["/bin/sh", "/etc/cetirun/hermes-init-home.sh"]
   env:
+    {{- include "cetirun.context.initEnv" . | nindent 4 }}
     - name: CETIRUN_INIT_IMAGE
       value: {{ include "cetirun.image" . | quote }}
     - name: HERMES_HOME
@@ -108,6 +109,7 @@ Hermes init containers
       value: {{ dig "hermes" "keyEnv" "CETIRUN_GATEWAY_API_KEY" .Values.aiGateway | quote }}
     {{- end }}
   volumeMounts:
+    {{- include "cetirun.context.initMounts" . | nindent 4 }}
     - name: data
       mountPath: /home-data
     - name: tmp

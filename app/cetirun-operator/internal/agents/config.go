@@ -87,8 +87,9 @@ func nativeTemplateContext(agent ResolvedAgent, bindings Bindings) map[string]an
 		gateway["hermes"] = map[string]any{"keyEnv": bindings.Model.GatewayKeyEnv}
 	}
 	values := map[string]any{
-		agent.Type:  native,
-		"aiGateway": gateway,
+		"memoryContext": map[string]any{"enabled": bindings.MemoryEnabled},
+		agent.Type:      native,
+		"aiGateway":     gateway,
 		"secrets": map[string]any{
 			"provider":           bindings.Model.Provider,
 			"model":              bindings.Model.Name,

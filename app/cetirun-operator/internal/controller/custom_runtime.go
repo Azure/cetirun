@@ -176,6 +176,9 @@ func (r *AgentReconciler) reconcileCustom(ctx context.Context, instance *api.Age
 	} else if instance.Status.AIGateway != nil {
 		return r.customWaiting(ctx, instance, "ModelAccessTransitionRequired", "Gateway model access cannot be changed to image-owned authentication implicitly")
 	}
+	if bindings.Memory != nil {
+		return r.customWaiting(ctx, instance, "MemoryBindingRejected", "Only the Memory asset owner may supply a binding")
+	}
 	if err := bindings.Validate(resolved); err != nil {
 		return r.customWaiting(ctx, instance, "CustomBindingRejected", err.Error())
 	}
@@ -230,6 +233,7 @@ func (r *AgentReconciler) reconcileCustom(ctx context.Context, instance *api.Age
 	values["agentRequest"] = runtimeRequest(instance, "")
 	values["agentRequest"].(map[string]any)["releaseName"] = helmReleaseName(instance.Name)
 	values["customBindings"] = bindings
+	values["memoryOptions"] = r.memoryOptions()
 	values["fullnameOverride"] = instanceServiceName(instance.Name)
 	values["replicaCount"] = 1
 	current := &appsv1.StatefulSet{}

@@ -92,6 +92,13 @@ agent_apply_config() (
   filter='
     .[-1] as $source
     | reduce .[] as $item ({}; . * $item)
+    | if $source.plugins.entries["cetirun-memory-context"].enabled != true then
+        if (.plugins.entries | type) == "object" then .plugins.entries |= del(.["cetirun-memory-context"]) else . end
+        | if (.plugins.allow | type) == "array" then .plugins.allow |= map(select(. != "cetirun-memory-context")) else . end
+        | if (.plugins.load.paths | type) == "array" then .plugins.load.paths |= map(select(. != "/opt/cetirun-memory/adapters/openclaw")) else . end
+        | if (.skills.load.extraDirs | type) == "array" and (($source.skills.load.extraDirs // []) | index("/home/vibe/.agents/skills") | not)
+          then .skills.load.extraDirs |= map(select(. != "/home/vibe/.agents/skills")) else . end
+      else . end
     | if $gateway then
         .agents.defaults.models = ($source.agents.defaults.models // {})
         | if $native_gateway then

@@ -91,8 +91,8 @@ func (p *PreparedRelease) customSkillsObjects(namespace string) map[string]platf
 
 func (p *PreparedRelease) customMainMounts() []corev1.VolumeMount {
 	context := corev1.VolumeMount{Name: "context", MountPath: p.Agent.HomeDir + "/.agents", ReadOnly: true}
-	if p.sharedSkillsEnabled() {
-		context.Name, context.SubPath = "context-view", "current"
+	if p.sharedSkillsEnabled() || object(p.Values["memoryContext"])["enabled"] == true {
+		context = runtimebindings.ContextMount(p.Agent.HomeDir)
 	}
 	return []corev1.VolumeMount{{Name: "data", MountPath: p.Agent.HomeDir}, context, {Name: "tmp", MountPath: "/tmp"}}
 }
@@ -102,12 +102,7 @@ func (p *PreparedRelease) customInitMounts() []corev1.VolumeMount {
 		{Name: "data", MountPath: "/home-data"}, {Name: "config", MountPath: "/etc/cetirun", ReadOnly: true},
 		{Name: "context", MountPath: "/etc/cetirun-context", ReadOnly: true}, {Name: "tmp", MountPath: "/tmp"},
 	}
-	if p.sharedSkillsEnabled() {
-		mounts = append(mounts,
-			corev1.VolumeMount{Name: "shared-skills", MountPath: "/etc/cetirun-shared-skills", ReadOnly: true},
-			corev1.VolumeMount{Name: "context-view", MountPath: "/etc/cetirun-context-view"})
-	}
-	return mounts
+	return append(mounts, runtimebindings.ContextInitMounts(p.sharedSkillsEnabled(), object(p.Values["memoryContext"])["enabled"] == true)...)
 }
 
 func (p *PreparedRelease) customInitEnv() []corev1.EnvVar {
@@ -117,9 +112,5 @@ func (p *PreparedRelease) customInitEnv() []corev1.EnvVar {
 		{Name: "CETIRUN_INIT_COMMON", Value: "/etc/cetirun/init-home-common.sh"},
 		{Name: "CETIRUN_CONTEXT_DIR", Value: "/etc/cetirun-context"},
 	}
-	if p.sharedSkillsEnabled() {
-		env = append(env, corev1.EnvVar{Name: "CETIRUN_SHARED_SKILLS_DIR", Value: "/etc/cetirun-shared-skills"},
-			corev1.EnvVar{Name: "CETIRUN_CONTEXT_VIEW", Value: "/etc/cetirun-context-view"})
-	}
-	return env
+	return append(env, runtimebindings.ContextInitEnvironment(p.sharedSkillsEnabled(), object(p.Values["memoryContext"])["enabled"] == true)...)
 }

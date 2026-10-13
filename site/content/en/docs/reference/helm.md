@@ -269,7 +269,7 @@ Sources: [OpenClaw helpers]({{< repo "app/cetirun-chart/templates/agents/opencla
 | `sidecarScope.enabled` | `true`; limits service discovery scope |
 | `logger.enabled`, `logger.scanInterval` | `true`, 30 seconds |
 | `skills.shared` | `false`; optional static Blob CSI PV/PVC |
-| `skills.protocol`, `skills.mountPath` | `nfs`, `/home/vibe/.aks/skills` |
+| `skills.protocol`, `skills.mountPath` | `nfs`, `/home/vibe/.aks/skills`; ordinary Agents expose this as a read-only alias to the composed view |
 | `skills.secretName`, `skills.mountOptions` | Empty, `[]`; non-NFS protocols require a namespace-local staging Secret |
 | `skills.npm`, `skills.clawHub` | Empty lists; ClawHub installer is not implemented |
 | `skills.npmRegistry` | Environment-specific feed; explicitly select your approved reachable registry |

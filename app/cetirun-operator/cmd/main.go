@@ -65,6 +65,8 @@ func main() {
 	var domainSuffix string
 	var istioGateway string
 	var defaultModel string
+	var memoryImage string
+	var memoryEnabled bool
 	var showVersion bool
 	var mode string
 	var admissionCertDir string
@@ -90,6 +92,8 @@ func main() {
 	flag.StringVar(&istioGateway, "istio-gateway", controller.DefaultIstioGateway,
 		"Istio Gateway namespace/name used by instance VirtualServices.")
 	flag.StringVar(&defaultModel, "default-model", "gpt-6-astra", "Default GitHub Copilot model for instances without spec.model.")
+	flag.BoolVar(&memoryEnabled, "memory-context-enabled", true, "Install Memory Context for Agents.")
+	flag.StringVar(&memoryImage, "memory-context-image", "", "Memory Context image override; empty uses each selected runtime chart's registry and appVersion.")
 	flag.BoolVar(&showVersion, "version", false, "Print version information and exit.")
 
 	opts := zap.Options{
@@ -146,6 +150,9 @@ func main() {
 	// This is passed to the reconciler to override the chart's default
 	// image.repository so that all clusters pull images from the correct ACR.
 	chartRegistry := extractRegistryHost(chartRepoURL)
+	if !memoryEnabled {
+		memoryImage = ""
+	}
 	setupLog.Info("Using OCI chart repository", "url", chartRepoURL, "version", chartVersion, "registry", chartRegistry)
 	if chartRegistry != "" {
 		setupLog.Info("Overriding agent image repositories",
@@ -254,6 +261,7 @@ func main() {
 	}
 	agentReconciler := &controller.AgentReconciler{
 		Client:                         mgr.GetClient(),
+		APIReader:                      mgr.GetAPIReader(),
 		Scheme:                         mgr.GetScheme(),
 		EventRecorder:                  mgr.GetEventRecorderFor("cetirun-operator"),
 		HelmClient:                     helmClient,
@@ -265,6 +273,9 @@ func main() {
 		DomainSuffix:                   domainSuffix,
 		SkillsStorageAccount:           skillsStorageAccount,
 		CetiRunHelmValues:              cetirunHelmValues,
+		MemoryImage:                    memoryImage,
+		MemoryEnabled:                  memoryEnabled,
+		MemoryRegistry:                 memoryRegistry(chartRepoURL),
 		ChartRegistry:                  chartRegistry,
 		DefaultModel:                   defaultModel,
 		RegistryCredentialNamespace:    getEnvOrDefault("REGISTRY_CREDENTIAL_NAMESPACE", registryauth.DefaultNamespace),
@@ -349,6 +360,16 @@ func getEnvOrDefault(key, defaultVal string) string {
 		return v
 	}
 	return defaultVal
+}
+
+func memoryRegistry(repoURL string) string {
+	registry := extractRegistryHost(repoURL)
+	// Published charts and images share the registry prefix, including staging
+	// paths. The hostname alone would select a different image repository.
+	if prefix, ok := strings.CutSuffix(strings.TrimPrefix(repoURL, "oci://"), "/helm/cetirun"); ok {
+		registry = prefix
+	}
+	return registry
 }
 
 // extractRegistryHost extracts the registry hostname from an OCI chart URL.

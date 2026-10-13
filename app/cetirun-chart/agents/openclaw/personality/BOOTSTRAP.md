@@ -18,8 +18,8 @@ Update `USER.md` with what you learn.
 
 Check for these shared skills and follow their onboarding instructions:
 
-1. **Proactive Agent** — If `/home/vibe/.aks/skills/proactive-agent/SKILL.md` exists, read it and follow its onboarding steps.
-2. **Self-Improvement** — If `/home/vibe/.aks/skills/self-improvement/SKILL.md` exists, read it and follow its onboarding steps.
+1. **Proactive Agent** — If `$HOME/.agents/skills/proactive-agent/SKILL.md` exists, read it and follow its onboarding steps.
+2. **Self-Improvement** — If `$HOME/.agents/skills/self-improvement/SKILL.md` exists, read it and follow its onboarding steps.
 
 ## When You're Done
 

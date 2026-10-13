@@ -12,7 +12,7 @@ spec:
     provider: "github_copilot"
   # Optional: shared Azure Blob NFS storage holding team-wide skills tree.
   # When set, the operator auto-provisions a PV+PVC per instance namespace
-  # and mounts the container read-only at /home/vibe/.aks/skills.
+  # and includes its skills in the read-only $HOME/.agents/skills view.
   # skillStorage:
   #   resourceGroup: my-rg
   #   storageAccount: myskillsaccount

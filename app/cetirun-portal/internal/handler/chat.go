@@ -133,6 +133,13 @@ func (h *ChatHandler) Complete(w http.ResponseWriter, r *http.Request) {
 		chatproxy.Error(w, 400, "invalid_chat_request", "Only bounded text messages and a model are supported.")
 		return
 	}
+	switch r.Header.Get("X-CetiRun-Memory-Mode") {
+	case "", "off", "no-capture":
+		request.MemoryMode = r.Header.Get("X-CetiRun-Memory-Mode")
+	default:
+		chatproxy.Error(w, 400, "invalid_memory_mode", "Only off or no-capture restrictions are supported.")
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Minute)
 	defer cancel()
 	models, err := h.Proxy.Models(ctx, target)
