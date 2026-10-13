@@ -204,7 +204,8 @@ security headers filter records the value the browser sent, before ext-auth,
 in the request's dynamic metadata, which never leaves the gateway. After the
 ownership check, the ownership filter restores it on owned
 `/ui/<instance>/` routes, unless OAuth2 Proxy accepted that same credential as
-the user's identity. On other owned Agent routes, such as the Terminal and
+the user's identity. The native Agent API routes below keep accepting only
+their dedicated header. On other owned Agent routes, such as the Terminal and
 Desktop, the filter removes `Authorization` unless one of the route-bound
 credentials below applies.
 

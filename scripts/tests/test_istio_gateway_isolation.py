@@ -155,10 +155,11 @@ class IstioGatewayIsolationTests(unittest.TestCase):
 
         # The ownership filter restores it only after the dedicated route
         # credentials, only on owned /ui/<instance>/ routes of the Portal
-        # host, and never when OAuth2 Proxy accepted it as the identity.
+        # host other than the native Agent API, and never when OAuth2 Proxy
+        # accepted it as the identity.
         self.assertIn(
             '                  headers:replace("authorization", "Bearer " .. api_key)\n'
-            "                elseif is_native_ui_path(path, authority) then\n",
+            "                elseif is_native_ui_path(path, authority) and not is_native_agent_api_path(path, authority) then\n",
             self.source,
         )
         self.assertIn(

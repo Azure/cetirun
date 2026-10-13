@@ -210,11 +210,12 @@ spec:
                   headers:replace("authorization", "Bearer " .. auth_key)
                 elseif is_native_agent_api_path(path, authority) and valid_instance_key(api_key) then
                   headers:replace("authorization", "Bearer " .. api_key)
-                elseif is_native_ui_path(path, authority) then
+                elseif is_native_ui_path(path, authority) and not is_native_agent_api_path(path, authority) then
                   -- Native Agent UIs, such as the OpenClaw Control UI,
                   -- authenticate their own HTTP requests with Authorization.
                   -- Restore the value the browser sent, unless OAuth2 Proxy
-                  -- accepted that credential as the user's identity.
+                  -- accepted that credential as the user's identity. The
+                  -- native Agent API keeps its dedicated header only.
                   local client = client_authorization(request_handle)
                   if client and not same_credential(client, identity_token) then
                     headers:replace("authorization", client)
