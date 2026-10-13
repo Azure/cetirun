@@ -90,7 +90,10 @@ automatically; `trace` reports `HistoryCompacted` after that happens and is not 
 - `forget plan`: `{"refs":[...]}`; `forget apply`: `{"plan":...}` with the plan and digest unchanged. The
   plan lists exactly what will be removed.
 - `import plan`: `{"files":["/absolute/selected/home/file.md"]}`; `import apply`: `{"plan":...}` with the
-  plan and digest unchanged.
+  plan and digest unchanged. Files that usually hold credentials, keys or shell history are refused with
+  `SensitiveContent`: those under `.ssh`, `.aws`, `.azure`, `.kube` or `.docker`, `.env` files,
+  `.git-credentials`, and the harnesses' configuration and auth files. Text that looks like a token or
+  key is refused as well.
 
 ## How `query` finds notes
 
