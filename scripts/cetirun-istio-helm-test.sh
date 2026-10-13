@@ -116,6 +116,12 @@ grep -Fq -- '- --cookie-expire=45m' <<< "${output}" || {
   echo "FAIL: cookie-only oauth2-proxy did not expire before the ID token" >&2
   exit 1
 }
+# Container Insights copies a container's environment, Secret values included,
+# into its ContainerInventory table unless collection is off for the container.
+grep -A1 'name: AZMON_COLLECT_ENV$' <<< "${output}" | grep -Fq 'value: "False"' || {
+  echo "FAIL: oauth2-proxy does not keep its cookie secret out of Container Insights" >&2
+  exit 1
+}
 if grep -Fq -- 'offline_access' <<< "${output}" ||
   grep -Fq -- '--session-store-type=redis' <<< "${output}" ||
   grep -Fq -- 'OAUTH2_PROXY_REDIS_PASSWORD' <<< "${output}" ||

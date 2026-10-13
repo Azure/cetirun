@@ -83,6 +83,10 @@ spec:
           imagePullPolicy: IfNotPresent
           args: ["copilot-proxy", "--config", "/etc/litellm/config.yaml", "--port", "4000"]
           env:
+            # Container Insights copies a container's environment, the proxy's
+            # key included, unless collection is off for it.
+            - name: AZMON_COLLECT_ENV
+              value: "False"
             - name: LITELLM_MASTER_KEY
               valueFrom:
                 secretKeyRef:

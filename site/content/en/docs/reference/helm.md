@@ -290,6 +290,8 @@ general cluster-admin exception. Do not disable it as a troubleshooting shortcut
 
 The [logger script]({{< repo "app/cetirun-chart/configs/session-logger.sh" >}})
 tails recent OpenClaw session JSONL files or the Hermes gateway log to stdout.
+OpenClaw as packaged in the agent image keeps its sessions in SQLite and writes
+no such files, so for OpenClaw the logger currently exports nothing.
 It starts at the end of each file and does not replay history. Collection
 requires a separate log pipeline; this sidecar is not a complete audit archive.
 
