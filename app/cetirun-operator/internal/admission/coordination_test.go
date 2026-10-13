@@ -108,47 +108,6 @@ func TestConfigurationCoordinationRetainsNormalAuthorization(t *testing.T) {
 		requestFor(t, admissionv1.Update, after, f.policy, "administrator")), true, "")
 }
 
-func TestConfigurationCoordinationAllowsLegacyTeamTransitions(t *testing.T) {
-	for _, transition := range []struct {
-		name                          string
-		beforeGoverned, afterGoverned bool
-	}{
-		{"legacy update", false, false},
-		{"add governance", false, true},
-		{"remove governance", true, false},
-	} {
-		t.Run(transition.name, func(t *testing.T) {
-			ctx := context.Background()
-			f, store := coordinatedFixture(t)
-			before := f.team.DeepCopy()
-			governed := *before.Spec.DeepCopy()
-			if !transition.beforeGoverned {
-				before.Spec = api.TeamSpec{}
-				if err := f.client.Update(ctx, before); err != nil {
-					t.Fatal(err)
-				}
-			}
-			after := before.DeepCopy()
-			if transition.afterGoverned {
-				after.Spec = governed
-			} else {
-				after.Spec = api.TeamSpec{}
-			}
-			after.Annotations = map[string]string{"example.com/change": "legacy-transition"}
-			request := requestFor(t, admissionv1.Update, after, before, "administrator")
-			requireResponse(t, f.handler.Validate(ctx, request), false, "CoordinationRequired")
-			ticket, err := store.AcquireConfigurationChange(ctx, before, after)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, err := store.BeginChange(ctx, ticket); err != nil {
-				t.Fatal(err)
-			}
-			requireResponse(t, f.handler.Validate(ctx, request), true, "")
-		})
-	}
-}
-
 func TestConfigurationCoordinationIsReadOnlyForDryRun(t *testing.T) {
 	ctx := context.Background()
 	f, store := coordinatedFixture(t)

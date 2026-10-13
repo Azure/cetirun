@@ -98,7 +98,7 @@ func TestConfigurationDeletionRequiresSubmittedReservation(t *testing.T) {
 	}
 }
 
-func TestConfigurationDeletionRetainsReferenceAndLegacyRules(t *testing.T) {
+func TestConfigurationDeletionRetainsReferenceAndAgentRules(t *testing.T) {
 	ctx := context.Background()
 	f, store := coordinatedFixture(t)
 	ticket, err := store.AcquireConfigurationDeletion(ctx, f.policy)
@@ -110,28 +110,7 @@ func TestConfigurationDeletionRetainsReferenceAndLegacyRules(t *testing.T) {
 	}
 	requireResponse(t, f.handler.Validate(ctx, coordinatedDeleteRequest(t, f.policy, "administrator")), false, "")
 
-	legacy := &api.Team{ObjectMeta: metav1.ObjectMeta{Name: "legacy", UID: "legacy-uid"}}
-	if err := f.client.Create(ctx, legacy); err != nil {
-		t.Fatal(err)
-	}
-	request := coordinatedDeleteRequest(t, legacy, "member")
-	requireResponse(t, f.handler.Validate(ctx, request), false, "CoordinationRequired")
-	ticket, err = store.AcquireConfigurationDeletion(ctx, legacy)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.BeginChange(ctx, ticket); err != nil {
-		t.Fatal(err)
-	}
-	requireResponse(t, f.handler.Validate(ctx, request), true, "")
 	requireResponse(t, f.handler.Validate(ctx, requestFor(t, admissionv1.Delete, f.agent, nil, "member")), true, "")
-
-	defaults := newFixture(t)
-	requireResponse(t, defaults.handler.Validate(ctx,
-		requestFor(t, admissionv1.Delete, legacy, nil, "member")), true, "")
-	if defaults.handler.coordination != nil {
-		t.Fatal("deletion coordination became default-on")
-	}
 }
 
 func TestConfigurationDeletionCannotUseUpdateTicket(t *testing.T) {

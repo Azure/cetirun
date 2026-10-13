@@ -491,24 +491,32 @@ func TestSandboxHoldRecoversCustomCompletionWithoutReapplying(t *testing.T) {
 	}
 }
 
-func TestSandboxUngovernedCustomSuspensionDoesNotRequireTeam(t *testing.T) {
-	t.Skip("ungoverned Agents are no longer a supported API state")
-	agent, _, objects := customFixture("sandbox-suspended", nil)
-	agent.Spec.Team = "unavailable-team"
-	agent.Spec.Suspended = true
-	client := fake.NewClientBuilder().WithScheme(testScheme()).WithStatusSubresource(agent).WithObjects(objects...).Build()
-	helm := &fakeHelmClient{useHarness: true}
-	reconciler := &controller.AgentReconciler{Client: client, HelmClient: helm}
-	key := types.NamespacedName{Name: agent.Name}
-	if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: key}); err != nil {
-		t.Fatal(err)
-	}
-	if err := client.Get(context.Background(), key, agent); err != nil {
-		t.Fatal(err)
-	}
-	if agent.Status.Phase != cetirunv1alpha1.PhaseSuspended || helm.prepareCalls != 0 || helm.installCalled ||
-		findCondition(agent.Status.Conditions, cetirunv1alpha1.ConditionSandboxReady) != nil {
-		t.Fatal("policy lookup blocked or changed ordinary Custom suspension")
+func TestCustomSuspensionDoesNotRequireTeamPolicyResolution(t *testing.T) {
+	for _, existingTeam := range []bool{false, true} {
+		t.Run(map[bool]string{false: "missing optional Team", true: "policy-configured Team"}[existingTeam], func(t *testing.T) {
+			agent, _, objects := customFixture("sandbox-suspended", nil)
+			agent.Spec.Team = "engineering"
+			agent.Spec.Suspended = true
+			if existingTeam {
+				objects = append(objects, &cetirunv1alpha1.Team{ObjectMeta: metav1.ObjectMeta{Name: agent.Spec.Team}, Spec: cetirunv1alpha1.TeamSpec{
+					AgentPolicyRef: "normal", SandboxRefs: []string{"normal"}, DefaultSandboxRef: "normal",
+				}})
+			}
+			client := fake.NewClientBuilder().WithScheme(testScheme()).WithStatusSubresource(agent).WithObjects(objects...).Build()
+			helm := &fakeHelmClient{useHarness: true}
+			reconciler := &controller.AgentReconciler{Client: client, HelmClient: helm}
+			key := types.NamespacedName{Name: agent.Name}
+			if _, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: key}); err != nil {
+				t.Fatal(err)
+			}
+			if err := client.Get(context.Background(), key, agent); err != nil {
+				t.Fatal(err)
+			}
+			if agent.Status.Phase != cetirunv1alpha1.PhaseSuspended || helm.prepareCalls != 0 || helm.installCalled ||
+				findCondition(agent.Status.Conditions, cetirunv1alpha1.ConditionSandboxReady) != nil {
+				t.Fatal("policy lookup blocked or changed ordinary Custom suspension")
+			}
+		})
 	}
 }
 

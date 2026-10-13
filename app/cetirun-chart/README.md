@@ -107,24 +107,24 @@ These checks do not qualify runtime isolation, host resource enforcement, CSI
 writer exclusion, network enforcement or identity federation. Legacy chart
 defaults remain unchanged when the protected contract is absent.
 
-### Native OpenClaw Gateway packaging
+### Native built-in Gateway packaging
 
-The native OpenClaw MVP reuses the protected renderer and the existing
-OpenClaw image. It does not add an alternative image, an Istio sidecar, or a
-Helm value that authorizes execution. The controller owns Sandbox/AgentPolicy
-selection, owner access, activation and deletion; the chart still prepares a
-held workload. Rendering alone does not test any of those live operations.
+The first native profile reuses the protected renderer and the existing
+OpenClaw or Hermes image. It does not add an alternative image, an Istio
+sidecar, or a Helm value that authorizes execution. The controller owns
+Sandbox/AgentPolicy selection, owner access, activation and deletion; the chart
+still prepares a held workload. Rendering alone does not authorize execution.
 
 The Operator supplies this contract:
 
 | Values | Runtime use |
 | --- | --- |
-| `agentType: openclaw`, `sandboxWorkload.contractVersion: v1` | Explicit protected OpenClaw profile; preparation retains `executionHeld: true` and `replicaCount: 0` |
+| `agentType: openclaw` or `hermes`, `sandboxWorkload.contractVersion: v1` | Explicit protected built-in profile; preparation retains `executionHeld: true` and `replicaCount: 0` |
 | `runtimeClassName`, `sandboxWorkload` resources, DNS, security and enforcement objects | The selected Sandbox's compiled runtime controls, never legacy network defaults |
 | `persistence.existingClaim`, `skills.existingClaim` | Separately owned HOME and read-only skills storage |
 | `sandboxWorkload.skillsMode: empty` (internal, otherwise omitted) | Replaces only the skills claim with an unpopulated `emptyDir`, mounted read-only at `/home/vibe/.aks/skills` in the main container |
-| `openclaw.image.repository`, `tag`, optional `digest` | The same existing OpenClaw image for the Agent and its initializers; shared registry/version overrides remain supported |
-| `aiGateway.enabled: true`, `keySecretName`, `keySecretKey` | The Agent's virtual key, passed as `OPENAI_API_KEY` through a Secret reference only in the main container |
+| `<agentType>.image.repository`, `tag`, optional `digest` | The selected deployment-owned built-in image profile |
+| `aiGateway.enabled: true`, `keySecretName`, `keySecretKey` | The Agent's virtual key, passed through a Secret reference only in the main container |
 | `aiGateway.models`, `secrets.provider: openai`, `secrets.model`, `secrets.apiBase` | The authorized model list, default and Gateway endpoint; missing endpoints and defaults outside that list fail rendering |
 | `openclaw.config.gateway` | Controller-selected ingress/auth configuration, copied without persisted auth overrides on each native start |
 
@@ -137,19 +137,19 @@ select the empty-skills mode, after resolving Team skills and Agent additions
 and removals. It requires no new public flag. HOME remains a PVC, the chart
 remains held, and the initial Pod lifetime finalizer is preserved.
 The schema and renderer reject combining the empty mode with a shared claim,
-package requests, another mount path, a non-OpenClaw runtime or missing native
+package requests, another mount path, a non-built-in runtime or missing native
 Gateway/lifetime inputs. No helper can populate the empty skills volume.
 Requested skills and configured catalogs continue to use the existing validated
 PVC/publication path; errors never select an empty fallback.
 
-Protected OpenClaw startup, readiness and liveness probes use the image's
-existing Node runtime to request `/startupz`, `/readyz` and `/healthz` over
-`127.0.0.1` inside the main container. The helper is packaged in the read-only
-ConfigMap mount at `/etc/cetirun/health-probe.cjs`; no new image is needed.
+Protected startup, readiness and liveness probes run inside the main container
+and connect to `127.0.0.1`. OpenClaw uses its existing Node runtime and the
+read-only `/etc/cetirun/health-probe.cjs`; Hermes uses its existing Python
+environment and `/etc/cetirun/hermes-health-probe.py` to request `/health`.
 It accepts HTTP 200-399 without following redirects, sends no model credentials,
 and exits nonzero on HTTP errors, connection failures or its bounded deadline.
-Probe timing, thresholds and enablement settings are preserved. Legacy OpenClaw
-and held Hermes renders retain their existing HTTP probes.
+Probe timing, thresholds and enablement settings are preserved. Renders outside
+the protected native profile retain their ordinary HTTP probes.
 
 These exec probes require no host/remote-node ingress exception or network
 compiler change. They report Kubernetes container health only, not

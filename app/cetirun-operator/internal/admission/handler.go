@@ -107,10 +107,6 @@ func (h *Handler) validate(ctx context.Context, request admission.Request) admis
 			return admission.Allowed("Team policy is unchanged")
 		}
 	}
-	if team, ok := object.(*api.Team); ok &&
-		(request.Operation == admissionv1.Create || request.Operation == admissionv1.Delete) && !sandbox.TeamPolicyConfigured(team) {
-		return admission.Allowed("legacy Team")
-	}
 	if !h.config.administrator(request.UserInfo) {
 		return admission.Denied("Sandbox configuration writes require an explicitly authorized administrator")
 	}
@@ -120,12 +116,6 @@ func (h *Handler) validate(ctx context.Context, request admission.Request) admis
 
 	switch candidate := object.(type) {
 	case *api.Team:
-		if !sandbox.TeamPolicyConfigured(candidate) {
-			if response := h.checkTeamConsumers(ctx, candidate, true); !response.Allowed {
-				return response
-			}
-			return admission.Allowed("unreferenced Team policy removed")
-		}
 		resources, err := h.resources(ctx, candidate.Spec, sandbox.Resources{})
 		if err != nil {
 			return dependencyError(ctx, err)
@@ -217,18 +207,15 @@ func (h *Handler) validateAgent(ctx context.Context, request admission.Request, 
 	if assigned != "" && team == nil {
 		return admission.Denied("the administratively assigned Team does not exist")
 	}
-	if !sandbox.Requested(agent, team) && !sandbox.Requested(old, nil) &&
-		!sandboxbinding.Present(agent) && !sandboxbinding.Present(old) {
-		if old != nil && old.Spec.Team != agent.Spec.Team {
-			previousTeam, err := h.team(ctx, old.Spec.Team)
-			if err != nil {
-				return dependencyError(ctx, err)
-			}
-			if sandbox.TeamPolicyConfigured(previousTeam) {
-				return admission.Denied("policy-bound Agents cannot return to the legacy path by changing Team")
-			}
+	if agent.Spec.Agent.Type == api.AgentTypeCustom && !sandbox.Requested(agent, nil) &&
+		!sandbox.Requested(old, nil) && !sandboxbinding.Present(agent) && !sandboxbinding.Present(old) {
+		if agent.Spec.SandboxRef != "" {
+			return admission.Denied("Custom Agents must not select a native Sandbox")
 		}
-		return admission.Allowed("legacy Agent")
+		return admission.Allowed("Custom Agent uses the separate runtime contract")
+	}
+	if agent.Spec.Agent.Type == api.AgentTypeCustom {
+		return admission.Denied("Custom Agents cannot use or retain a native Sandbox authorization")
 	}
 	if !h.config.administrator(request.UserInfo) {
 		if err := h.memberAuthority(request, agent); err != nil {

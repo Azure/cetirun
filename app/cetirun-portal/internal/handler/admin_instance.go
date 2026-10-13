@@ -124,6 +124,9 @@ func instanceAgentIdentityPhase(ins *cetirunv1alpha1.Agent) string {
 // instancePolicyPhase reports policy resolution only. Gateway, Sandbox and
 // identity execution are intentionally exposed through their own statuses.
 func instancePolicyPhase(ins *cetirunv1alpha1.Agent) string {
+	if ins.Spec.Agent.Type == cetirunv1alpha1.AgentTypeCustom {
+		return "Not applicable"
+	}
 	if ins.Status.Policy == nil || ins.Status.Policy.Phase == "" {
 		return "Unknown"
 	}

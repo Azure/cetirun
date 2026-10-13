@@ -27,7 +27,9 @@ budget no greater than the policy maximum.
 Custom Agents use the separate Custom runtime contract. They may use Team
 configuration, and may explicitly use the platform Gateway integration, but
 they do not resolve or execute an AgentPolicy and must not set `sandboxRef`.
-This is an explicit runtime boundary, not a missing-policy fallback.
+This is an explicit runtime boundary, not a missing-policy fallback. The Portal
+shows Policy as `Not applicable` for Custom Agents rather than implying that a
+policy is pending.
 
 The four cluster-scoped CRDs are:
 

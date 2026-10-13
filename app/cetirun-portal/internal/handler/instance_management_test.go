@@ -137,7 +137,7 @@ func TestCustomCreateUsesExistingPortalAuthentication(t *testing.T) {
 				t.Fatalf("created %d Agents, want 1", len(instances))
 			}
 			stored := instances[0]
-			if stored.Spec.User.Alias != strings.Split(tc.user, "@")[0] || stored.Spec.Team != tc.team || stored.Spec.SandboxRef != "standard" ||
+			if stored.Spec.User.Alias != strings.Split(tc.user, "@")[0] || stored.Spec.Team != tc.team || stored.Spec.SandboxRef != "" ||
 				stored.Annotations[api.AnnotationOwnerTenantID] != "" || stored.Annotations[api.AnnotationOwnerObjectID] != "" ||
 				stored.Spec.AgentIdentity != nil || stored.Spec.GatewayTokenSecretRef != "" {
 				t.Fatal("Custom creation changed the existing owner or native integration boundary")

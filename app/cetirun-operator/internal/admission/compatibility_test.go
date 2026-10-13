@@ -39,6 +39,8 @@ func addUnknownField(t *testing.T, raw *runtime.RawExtension, section, name stri
 func TestCompatibleAdmissionAcceptsFutureStatusWithoutPatchingIt(t *testing.T) {
 	f := newFixture(t)
 	agent := f.agent.DeepCopy()
+	agent.Spec.Agent.Type = api.AgentTypeCustom
+	agent.Spec.GatewayTokenSecretRef = ""
 	agent.Spec.Team, agent.Spec.SandboxRef = "", ""
 	updated := agent.DeepCopy()
 	updated.Labels = map[string]string{"example.com/note": "updated"}
@@ -72,12 +74,14 @@ func TestCompatibleAdmissionPreservesExistingChecks(t *testing.T) {
 	requireResponse(t, f.handler.Validate(context.Background(), request), false, "exactly one JSON object")
 }
 
-func TestCompatibleUnknownSpecChangesCannotUseLegacyAuthority(t *testing.T) {
+func TestCompatibleUnknownSpecChangesCannotUseOrdinaryAuthority(t *testing.T) {
 	f := newFixture(t)
 	f.handler.config.ValidationMode = ValidationCompatible
 	agent := f.agent.DeepCopy()
+	agent.Spec.Agent.Type = api.AgentTypeCustom
+	agent.Spec.GatewayTokenSecretRef = ""
 	agent.Spec.Team, agent.Spec.SandboxRef = "", ""
-	team := &api.Team{ObjectMeta: metav1.ObjectMeta{Name: "legacy-team"}}
+	team := f.team.DeepCopy()
 	for _, object := range []client.Object{agent, team} {
 		t.Run(object.GetObjectKind().GroupVersionKind().Kind+"/"+object.GetName(), func(t *testing.T) {
 			request := requestFor(t, admissionv1.Update, object, object, "member")
@@ -90,25 +94,6 @@ func TestCompatibleUnknownSpecChangesCannotUseLegacyAuthority(t *testing.T) {
 			request = requestFor(t, admissionv1.Create, object, nil, "member")
 			addUnknownField(t, &request.Object, "spec", "futureConfiguration", "new")
 			requireResponse(t, f.handler.Validate(context.Background(), request), false, "unrecognized")
-		})
-	}
-}
-
-func TestCompatibleLegacyTeamDeletionWithFutureSpec(t *testing.T) {
-	for _, user := range []string{"member", "portal", testController, "administrator"} {
-		t.Run(user, func(t *testing.T) {
-			f := newFixture(t)
-			team := &api.Team{ObjectMeta: metav1.ObjectMeta{Name: "legacy-team"}}
-			request := requestFor(t, admissionv1.Delete, team, nil, user)
-			addUnknownField(t, &request.OldObject, "spec", "futureConfiguration", "preserve-me")
-			for _, mode := range []string{"", ValidationCompatible} {
-				f.handler.config.ValidationMode = mode
-				requireResponse(t, f.handler.Validate(context.Background(), request), true, "legacy")
-			}
-			f.handler.reader = unavailableReader{}
-			requireResponse(t, f.handler.Validate(context.Background(), request), true, "legacy")
-			f.handler.config.ValidationMode = ValidationStrict
-			requireResponse(t, f.handler.Validate(context.Background(), request), false, "unknown field")
 		})
 	}
 }

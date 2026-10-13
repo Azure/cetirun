@@ -116,6 +116,11 @@ func TestAdminInstanceComponentPhasesRemainIndependentFromPolicy(t *testing.T) {
 	if got := instanceAgentIdentityPhase(notRequested); got != "Not requested" {
 		t.Errorf("empty identity = %q, want Not requested", got)
 	}
+
+	custom := &cetirunv1alpha1.Agent{Spec: cetirunv1alpha1.AgentSpec{Agent: cetirunv1alpha1.HarnessSpec{Type: cetirunv1alpha1.AgentTypeCustom}}}
+	if got := instancePolicyPhase(custom); got != "Not applicable" {
+		t.Errorf("Custom policy = %q, want Not applicable", got)
+	}
 }
 
 func TestAdminInstanceComponentPhasesShowUpdatingWhenStale(t *testing.T) {

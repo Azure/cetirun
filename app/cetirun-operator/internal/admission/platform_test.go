@@ -119,7 +119,7 @@ func TestPlatformAdmissionProductionFactory(t *testing.T) {
 	if len(response.Patches) == 0 || f.handler.platformSnapshot != nil || f.handler.registrations != nil {
 		t.Fatal("production source must serve request-local decisions without persisting registration state")
 	}
-	requireResponse(t, f.handler.DefaultAgent(context.Background(), requestFor(t, admissionv1.Create, f.agent, nil, "outsider")), true, "legacy")
+	requireResponse(t, f.handler.DefaultAgent(context.Background(), requestFor(t, admissionv1.Create, f.agent, nil, "outsider")), false, "built-in Agents require a Team")
 	f.agent.Spec.Team = f.team.Name
 	requireResponse(t, f.handler.DefaultAgent(context.Background(), requestFor(t, admissionv1.Create, f.agent, nil, "outsider")), false, "assigned Team")
 }
@@ -387,12 +387,14 @@ func TestPlatformAdmissionOutageDoesNotBlockIndependentRequests(t *testing.T) {
 	if err := f.client.Delete(context.Background(), cm); err != nil {
 		t.Fatal(err)
 	}
-	legacy := f.agent.DeepCopy()
-	legacy.Spec.Team, legacy.Spec.SandboxRef = "", ""
+	custom := f.agent.DeepCopy()
+	custom.Spec.Agent.Type = api.AgentTypeCustom
+	custom.Spec.GatewayTokenSecretRef = ""
+	custom.Spec.Team, custom.Spec.SandboxRef = "", ""
 	plain := f.policy.DeepCopy()
 	plain.Name = "unreferenced"
 	requests := []admission.Request{
-		requestFor(t, admissionv1.Create, legacy, nil, "unassigned-member"),
+		requestFor(t, admissionv1.Create, custom, nil, "unassigned-member"),
 		requestFor(t, admissionv1.Delete, f.agent, nil, "member"),
 		requestFor(t, admissionv1.Create, plain, nil, "administrator"),
 		requestFor(t, admissionv1.Delete, plain, nil, "administrator"),
@@ -414,7 +416,7 @@ func TestPlatformAdmissionOutageDoesNotBlockIndependentRequests(t *testing.T) {
 			requireResponse(t, f.handler.Validate(context.Background(), request), true, "")
 		})
 	}
-	requireResponse(t, f.handler.DefaultAgent(context.Background(), requests[0]), true, "legacy")
+	requireResponse(t, f.handler.DefaultAgent(context.Background(), requests[0]), true, "separate runtime contract")
 	requireResponse(t, f.handler.Validate(context.Background(), requestFor(t, admissionv1.Delete, f.policy, nil, "administrator")), false, "referenced")
 }
 

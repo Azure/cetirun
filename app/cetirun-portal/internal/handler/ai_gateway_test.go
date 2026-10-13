@@ -133,13 +133,13 @@ func TestCreateInstanceAIGatewayRequiresExistingTeam(t *testing.T) {
 	if created.Spec.Team != "aks" || created.Spec.SandboxRef != "standard" {
 		t.Fatalf("binding = %q/%q, want aks/standard", created.Spec.Team, created.Spec.SandboxRef)
 	}
-	// A Custom Agent gets a key too, so it needs a Team as well. It is not
-	// routed, so the model switches do not apply to it.
+	// Custom uses a separate runtime contract. Team context is optional and
+	// never assigns the Team's AgentPolicy or native Sandbox.
 	custom := gatewayConfig()
 	custom.AllowedAgentTypes = []string{"openclaw", "custom"}
 	customAgent := `"agent":{"type":"custom","image":"` + managementImage + `","username":"assistant"}`
 	w, _ = createAgent(t, custom, `{`+customAgent+`}`, gatewayTeam("aks"))
-	if w.Code != http.StatusBadRequest || errorCode(t, w) != "team_required" {
+	if w.Code != http.StatusCreated {
 		t.Fatalf("custom without team: status %d body %s", w.Code, w.Body.String())
 	}
 	w, fc = createAgent(t, custom, `{`+customAgent+`,"team":"aks","modelAccess":{"githubCopilot":false}}`, gatewayTeam("aks"))
@@ -150,8 +150,8 @@ func TestCreateInstanceAIGatewayRequiresExistingTeam(t *testing.T) {
 	if err := fc.Get(context.Background(), client.ObjectKey{Name: "alice"}, agent); err != nil {
 		t.Fatal(err)
 	}
-	if agent.Spec.Team != "aks" || agent.Spec.ModelAccess != nil {
-		t.Fatalf("custom: team %q modelAccess %+v, want aks and unset", agent.Spec.Team, agent.Spec.ModelAccess)
+	if agent.Spec.Team != "aks" || agent.Spec.SandboxRef != "" || agent.Spec.ModelAccess != nil {
+		t.Fatalf("custom: team %q sandbox %q modelAccess %+v, want aks, no Sandbox and unset model access", agent.Spec.Team, agent.Spec.SandboxRef, agent.Spec.ModelAccess)
 	}
 }
 

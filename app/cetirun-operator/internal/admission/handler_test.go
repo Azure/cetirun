@@ -183,25 +183,27 @@ func TestCreationDefaultsNeverPromoteAdministrators(t *testing.T) {
 }
 
 func TestGeneratedNameCreatesRemainValidBeforeAndAfterNameAssignment(t *testing.T) {
-	for _, governed := range []bool{false, true} {
-		t.Run(fmt.Sprintf("governed=%v", governed), func(t *testing.T) {
+	for _, builtIn := range []bool{false, true} {
+		t.Run(fmt.Sprintf("built-in=%v", builtIn), func(t *testing.T) {
 			f := newFixture(t)
 			agent := f.agent.DeepCopy()
 			agent.Name, agent.GenerateName, agent.UID, agent.ResourceVersion = "", "generated-agent-", "", ""
 			agent.Spec.SandboxRef = ""
-			if !governed {
+			if !builtIn {
+				agent.Spec.Agent.Type = api.AgentTypeCustom
 				agent.Spec.Team = ""
+				agent.Spec.GatewayTokenSecretRef = ""
 			}
 			req := requestFor(t, admissionv1.Create, agent, nil, "administrator")
 			response := f.handler.DefaultAgent(context.Background(), req)
 			requireResponse(t, response, true, "")
-			if governed {
+			if builtIn {
 				if len(response.Patches) != 2 {
-					t.Fatalf("governed generated-name creation did not receive defaults: %#v", response.Patches)
+					t.Fatalf("built-in generated-name creation did not receive defaults: %#v", response.Patches)
 				}
 				agent, _ = applyAgentPatches(t, req, response)
 			} else if len(response.Patches) != 0 {
-				t.Fatalf("legacy generated-name creation acquired defaults: %#v", response.Patches)
+				t.Fatalf("Custom generated-name creation acquired native Sandbox defaults: %#v", response.Patches)
 			}
 			requireResponse(t, f.handler.Validate(context.Background(), requestFor(t, admissionv1.Create, agent, nil, "administrator")), true, "")
 
@@ -217,15 +219,17 @@ func TestGeneratedNameCreatesRemainValidBeforeAndAfterNameAssignment(t *testing.
 	}
 }
 
-func TestLegacyBehaviorAndTeamEdits(t *testing.T) {
+func TestCustomAgentUsesTeamWithoutPolicyOrSandboxBinding(t *testing.T) {
 	f := newFixture(t)
-	f.agent.Spec.Team, f.agent.Spec.SandboxRef = "", ""
+	f.agent.Spec.Agent.Type = api.AgentTypeCustom
+	f.agent.Spec.GatewayTokenSecretRef = ""
+	f.agent.Spec.SandboxRef = ""
 	req := requestFor(t, admissionv1.Create, f.agent, nil, "portal")
-	requireResponse(t, f.handler.Validate(context.Background(), req), true, "legacy")
+	requireResponse(t, f.handler.Validate(context.Background(), req), true, "separate runtime contract")
 	response := f.handler.DefaultAgent(context.Background(), req)
-	requireResponse(t, response, true, "legacy")
+	requireResponse(t, response, true, "separate runtime contract")
 	if len(response.Patches) != 0 {
-		t.Fatal("legacy Agent must not acquire Sandbox bindings")
+		t.Fatal("Custom Agent must not acquire native Sandbox bindings")
 	}
 	team := f.team.DeepCopy()
 	team.Spec.MemberContext.Role = "updated application context"
@@ -235,6 +239,25 @@ func TestLegacyBehaviorAndTeamEdits(t *testing.T) {
 	team.Spec.DefaultSandboxRef = "different"
 	req = requestFor(t, admissionv1.Update, team, f.team, "portal")
 	requireResponse(t, f.handler.Validate(context.Background(), req), false, "administrator")
+}
+
+func TestRuntimeKindDefinesPolicyBoundary(t *testing.T) {
+	t.Run("built-in requires Team", func(t *testing.T) {
+		f := newFixture(t)
+		f.agent.Spec.Team, f.agent.Spec.SandboxRef = "", ""
+		req := requestFor(t, admissionv1.Create, f.agent, nil, "administrator")
+		requireResponse(t, f.handler.DefaultAgent(context.Background(), req), false, "built-in Agents require a Team")
+		requireResponse(t, f.handler.Validate(context.Background(), req), false, "policy-configured Team")
+	})
+
+	t.Run("Custom forbids native Sandbox", func(t *testing.T) {
+		f := newFixture(t)
+		f.agent.Spec.Agent.Type = api.AgentTypeCustom
+		f.agent.Spec.GatewayTokenSecretRef = ""
+		req := requestFor(t, admissionv1.Create, f.agent, nil, "administrator")
+		requireResponse(t, f.handler.DefaultAgent(context.Background(), req), false, "must not select a native Sandbox")
+		requireResponse(t, f.handler.Validate(context.Background(), req), false, "cannot use or retain a native Sandbox")
+	})
 }
 
 func TestGarbageCollectorCanOnlyRemoveForegroundDeletionMetadata(t *testing.T) {
@@ -318,25 +341,7 @@ func TestGarbageCollectorRejectsOtherFinalizerUpdates(t *testing.T) {
 	}
 }
 
-func TestLegacyTeamDeletionPreservesExistingAuthorization(t *testing.T) {
-	for _, user := range []string{"portal", testController, "administrator"} {
-		t.Run(user, func(t *testing.T) {
-			f := newFixture(t)
-			f.team.Spec = api.TeamSpec{}
-			f.agent.Spec.SandboxRef = ""
-			f.agent.ResourceVersion = ""
-			if err := f.client.Create(context.Background(), f.agent); err != nil {
-				t.Fatal(err)
-			}
-			req := requestFor(t, admissionv1.Delete, f.team, nil, user)
-			requireResponse(t, f.handler.Validate(context.Background(), req), true, "legacy")
-			f.handler.reader = unavailableReader{}
-			requireResponse(t, f.handler.Validate(context.Background(), req), true, "legacy")
-		})
-	}
-}
-
-func TestTeamRemovalProtectsInheritedPolicy(t *testing.T) {
+func TestTeamCannotDropRequiredPolicyBindings(t *testing.T) {
 	f := newFixture(t)
 	f.agent.Spec.SandboxRef = ""
 	f.agent.ResourceVersion = ""
@@ -346,18 +351,16 @@ func TestTeamRemovalProtectsInheritedPolicy(t *testing.T) {
 	}
 	ungoverned := f.team.DeepCopy()
 	ungoverned.Spec = api.TeamSpec{}
-	for _, req := range []admission.Request{
-		requestFor(t, admissionv1.Delete, f.team, nil, "administrator"),
-		requestFor(t, admissionv1.Update, ungoverned, f.team, "administrator"),
-	} {
-		requireResponse(t, f.handler.Validate(context.Background(), req), false, "inherited policy")
-		requireResponse(t, f.handler.Validate(context.Background(), req), false, f.agent.Name)
-	}
+	req := requestFor(t, admissionv1.Delete, f.team, nil, "administrator")
+	requireResponse(t, f.handler.Validate(context.Background(), req), false, "inherited policy")
+	requireResponse(t, f.handler.Validate(context.Background(), req), false, f.agent.Name)
+	req = requestFor(t, admissionv1.Update, ungoverned, f.team, "administrator")
+	requireResponse(t, f.handler.Validate(context.Background(), req), false, "Required value")
 	if err := f.client.Delete(context.Background(), f.agent); err != nil {
 		t.Fatal(err)
 	}
-	req := requestFor(t, admissionv1.Update, ungoverned, f.team, "administrator")
-	requireResponse(t, f.handler.Validate(context.Background(), req), true, "unreferenced")
+	req = requestFor(t, admissionv1.Update, ungoverned, f.team, "administrator")
+	requireResponse(t, f.handler.Validate(context.Background(), req), false, "Required value")
 }
 
 func TestMissingCreateDefaultNamesTheMutatingWebhook(t *testing.T) {
@@ -613,7 +616,7 @@ func TestReferencingConsumersBlockInvalidation(t *testing.T) {
 	team := f.team.DeepCopy()
 	team.Spec = api.TeamSpec{}
 	req = requestFor(t, admissionv1.Update, team, f.team, "administrator")
-	requireResponse(t, f.handler.Validate(context.Background(), req), false, "referencing Agent")
+	requireResponse(t, f.handler.Validate(context.Background(), req), false, "Required value")
 }
 
 func TestConfigurationUpdatesCheckEveryReferencingTeam(t *testing.T) {

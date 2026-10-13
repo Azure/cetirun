@@ -32,7 +32,7 @@ func TestNativeSandboxExampleUsesSupportedContract(t *testing.T) {
 	if err := yaml.UnmarshalStrict(raw, agent); err != nil {
 		t.Fatal(err)
 	}
-	if agent.Spec.Agent.Type != api.AgentTypeOpenClaw ||
+	if agent.Spec.Agent.Type != api.AgentTypeHermes ||
 		!agent.Spec.SharedModelsEnabled() || agent.Spec.GitHubCopilotEnabled() || len(agent.Spec.Helm.Values) != 0 ||
 		agent.Spec.Agent.Image == nil || agent.Spec.Agent.Port == nil || agent.Spec.Helm.Version == "" {
 		t.Fatal("native example is missing the explicit, supported runtime/model pins")

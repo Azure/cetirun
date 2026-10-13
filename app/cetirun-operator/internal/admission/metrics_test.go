@@ -243,7 +243,7 @@ func TestAdmissionMetricsDurationBoundsLabelsAndHTTPExposition(t *testing.T) {
 	}
 }
 
-func TestAdmissionMetricsPreserveLegacyAndCleanupPaths(t *testing.T) {
+func TestAdmissionMetricsPreserveCustomAndCleanupPaths(t *testing.T) {
 	f := newFixture(t)
 	reader := &unavailablePodReader{}
 	f.handler.reader = reader
@@ -251,10 +251,12 @@ func TestAdmissionMetricsPreserveLegacyAndCleanupPaths(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	legacy := f.agent.DeepCopy()
-	legacy.Name, legacy.GenerateName, legacy.UID, legacy.ResourceVersion = "", "generated-agent-", "", ""
-	legacy.Spec.Team, legacy.Spec.SandboxRef = "", ""
-	create := requestFor(t, admissionv1.Create, legacy, nil, "portal")
+	custom := f.agent.DeepCopy()
+	custom.Name, custom.GenerateName, custom.UID, custom.ResourceVersion = "", "generated-agent-", "", ""
+	custom.Spec.Agent.Type = api.AgentTypeCustom
+	custom.Spec.GatewayTokenSecretRef = ""
+	custom.Spec.Team, custom.Spec.SandboxRef = "", ""
+	create := requestFor(t, admissionv1.Create, custom, nil, "portal")
 	team := f.team.DeepCopy()
 	team.Spec.MemberContext.Role = "synthetic updated application context"
 	old := f.agent.DeepCopy()
@@ -286,11 +288,11 @@ func TestAdmissionMetricsPreserveLegacyAndCleanupPaths(t *testing.T) {
 		before := test.handler(context.Background(), test.request)
 		after := instrumentAdmission(test.name, test.handler)(context.Background(), test.request)
 		if !before.Allowed || !reflect.DeepEqual(before, after) {
-			t.Fatalf("%s instrumentation changed a legacy/maintenance response", test.name)
+			t.Fatalf("%s instrumentation changed a Custom/maintenance response", test.name)
 		}
 	}
 	if reader.calls != 0 {
-		t.Fatal("metrics made legacy/maintenance paths depend on resource reads")
+		t.Fatal("metrics made Custom/maintenance paths depend on resource reads")
 	}
 }
 

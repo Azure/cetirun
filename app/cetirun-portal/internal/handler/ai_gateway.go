@@ -143,25 +143,40 @@ func (h *InstanceHandler) GetAIGatewayCatalog(w http.ResponseWriter, r *http.Req
 	writeJSON(w, http.StatusOK, h.sharedModelCatalog(r.Context()))
 }
 
-// validateAIGatewayCreate applies the Team and AI Gateway rules to a new Agent:
-// it must name an existing Team with a default Sandbox, and an OpenClaw or Hermes Agent must be of a
-// type the operator's agent chart routes through the Gateway, once the
+// validateAIGatewayCreate applies the Team and AI Gateway rules to a new Agent.
+// A built-in Agent must name an existing Team with a default Sandbox and be of
+// a type the operator's agent chart routes through the Gateway, once the
 // operator has read that chart, and have a model to use, from shared models
 // it keeps on while the catalog lists at least one, or from GitHub Copilot it
 // keeps on while the deployment offers it. Omitted switches select the sources
 // currently offered by the deployment. The normalized, explicit model access
 // is always returned for a Gateway-routed built-in Agent so the Portal and
-// Agent API do not assign different meanings to an omitted modelAccess.
+// Agent API do not assign different meanings to an omitted modelAccess. A
+// Custom Agent may name a Team for context, but receives no policy or Sandbox.
 func (h *InstanceHandler) validateAIGatewayCreate(w http.ResponseWriter, r *http.Request, req CreateInstanceRequest, agentType cetirunv1alpha1.AgentType) (string, string, *cetirunv1alpha1.ModelAccessSpec, bool) {
+	if agentType == cetirunv1alpha1.AgentTypeCustom {
+		team := strings.TrimSpace(req.Team)
+		if team == "" {
+			return "", "", nil, true
+		}
+		if _, err := h.Kube.GetTeam(r.Context(), team); err != nil {
+			if kube.IsNotFound(err) {
+				writeError(w, http.StatusBadRequest, "unknown_team", "Selected Team does not exist")
+			} else {
+				slog.Error("Failed to check Custom Agent Team", "team", team, "error", err)
+				writeError(w, http.StatusInternalServerError, "internal_error", "Failed to check the Team")
+			}
+			return "", "", nil, false
+		}
+		// Custom may consume Team context, but it never inherits the Team's
+		// AgentPolicy or native Sandbox selection.
+		return team, "", nil, true
+	}
 	team, sandboxRef, ok := h.resolveTeamBinding(w, r, req.Team)
 	if !ok {
 		return "", "", nil, false
 	}
 	if !h.Config.AIGatewayEnabled {
-		return team, sandboxRef, nil, true
-	}
-	if agentType != cetirunv1alpha1.AgentTypeOpenClaw && agentType != cetirunv1alpha1.AgentTypeHermes {
-		// Custom Agents bring their own models.
 		return team, sandboxRef, nil, true
 	}
 	catalog := h.sharedModelCatalog(r.Context())

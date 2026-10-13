@@ -63,8 +63,14 @@ func (h *Handler) defaultAgentCreation(ctx context.Context, request admission.Re
 	desired := agent.DeepCopy()
 	desired.Spec.Team = name
 	patches := selectionPatches(agent, desired)
-	if !sandbox.Requested(desired, team) {
-		return admission.Patched("legacy Agent; preserve any trusted Team assignment", patches...)
+	if desired.Spec.Agent.Type == api.AgentTypeCustom {
+		if desired.Spec.SandboxRef != "" {
+			return admission.Denied("Custom Agents must not select a native Sandbox")
+		}
+		return admission.Patched("Custom Agent uses the separate runtime contract; preserve any trusted Team assignment", patches...)
+	}
+	if team == nil {
+		return admission.Denied("built-in Agents require a Team with an AgentPolicy and Sandbox assignment")
 	}
 	if !h.config.administrator(request.UserInfo) {
 		if err := h.memberAuthority(request, desired); err != nil {

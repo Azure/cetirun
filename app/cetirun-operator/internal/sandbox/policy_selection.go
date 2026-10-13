@@ -16,13 +16,19 @@ const (
 	BootstrapFinalizer   = "cetirun.microsoft.com/sandbox-bootstrap"
 )
 
-// Requested detects policy assignment intent, not a valid or enforced binding.
+// Requested detects native Sandbox intent, not a valid or enforced binding.
+// A Custom Agent does not acquire Sandbox intent merely because its optional
+// Team has a policy assignment. Durable Sandbox state is still recognized so
+// that an invalid or interrupted transition remains fail-closed.
 func Requested(agent *api.Agent, team *api.Team) bool {
 	if agent != nil && (slices.Contains(agent.Finalizers, HoldFinalizer) ||
 		slices.Contains(agent.Finalizers, PreparationFinalizer) || slices.Contains(agent.Finalizers, BootstrapFinalizer) ||
 		agent.Spec.SandboxRef != "" ||
 		agent.Status.Sandbox != nil || meta.FindStatusCondition(agent.Status.Conditions, api.ConditionSandboxReady) != nil) {
 		return true
+	}
+	if agent != nil && agent.Spec.Agent.Type == api.AgentTypeCustom {
+		return false
 	}
 	return TeamPolicyConfigured(team)
 }
