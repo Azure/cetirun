@@ -25,6 +25,29 @@ describe("PolicyEditPage", () => {
     vi.mocked(policyAPI.updatePolicy).mockReset();
   });
 
+  it("shows one-per-line examples for list fields", () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={["/admin/policies/create"]}>
+          <Routes>
+            <Route path="/admin/policies/create" element={<PolicyEditPage />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    expect(screen.getByRole("textbox", { name: "Allowed skills" })).toHaveAttribute(
+      "placeholder",
+      "skill-a\nnpm:@scope/skill-b\nskill-c@1.2.0",
+    );
+    expect(screen.getByRole("textbox", { name: "Allowed shared models" })).toHaveAttribute(
+      "placeholder",
+      "gpt-4.1\ngpt-4o-mini",
+    );
+    expect(screen.getAllByText(/commas are not separators/i)).toHaveLength(2);
+  });
+
   it("edits a policy named new instead of entering create mode", async () => {
     vi.mocked(policyAPI.getPolicy).mockResolvedValue({
       name: "new",

@@ -127,17 +127,17 @@ export function PolicyEditPage() {
       <Text weight="semibold">Allowed harnesses</Text>
       <Switch checked={form.openclaw} label="OpenClaw" onChange={(_, data) => setForm({ ...form, openclaw: data.checked })} />
       <Switch checked={form.hermes} label="Hermes" onChange={(_, data) => setForm({ ...form, hermes: data.checked })} />
-      <Field label="Allowed skills" hint="One skill identifier per line. Leave empty to allow no Team or Agent skills."><Textarea rows={4} value={form.skills} onChange={(_, data) => setForm({ ...form, skills: data.value })} /></Field>
+      <Field label="Allowed skills" hint="Enter one skill identifier per line; commas are not separators. Leave empty to allow no Team or Agent skills."><Textarea rows={4} value={form.skills} onChange={(_, data) => setForm({ ...form, skills: data.value })} placeholder={"skill-a\nnpm:@scope/skill-b\nskill-c@1.2.0"} /></Field>
       <Divider />
       <Text weight="semibold">AI Gateway</Text>
       <Switch checked={form.copilot} label="Allow GitHub Copilot" onChange={(_, data) => {
         const copilot = data.checked;
         setForm({ ...form, copilot, budgetEnabled: copilot || form.sharedModels.trim() !== "" ? form.budgetEnabled : false });
       }} />
-      <Field label="Allowed shared models" hint="One exact Gateway catalog model name per line."><Textarea rows={4} value={form.sharedModels} onChange={(_, data) => {
+      <Field label="Allowed shared models" hint="Enter one exact Gateway catalog model name per line; commas are not separators."><Textarea rows={4} value={form.sharedModels} onChange={(_, data) => {
         const sharedModels = data.value;
         setForm({ ...form, sharedModels, budgetEnabled: form.copilot || sharedModels.trim() !== "" ? form.budgetEnabled : false });
-      }} placeholder="e.g. gpt-4.1" /></Field>
+      }} placeholder={"gpt-4.1\ngpt-4o-mini"} /></Field>
       <Switch checked={form.budgetEnabled} label="Set monthly Gateway budget" onChange={(_, data) => setForm({ ...form, budgetEnabled: data.checked })} />
       {form.budgetEnabled && <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
         <Field label="Default monthly USD" required><Input value={form.defaultMonthlyUSD} onChange={(_, data) => setForm({ ...form, defaultMonthlyUSD: data.value })} placeholder="e.g. 20" /></Field>
