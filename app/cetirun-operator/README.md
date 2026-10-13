@@ -183,13 +183,21 @@ Native owner access uses the existing `/ui/<agent>/` route and authentication
 deployment. An unauthenticated sign-in challenge alone is not an access test.
 For authenticated native ingress, the protected renderer replaces OpenClaw's
 `gateway.trustedProxies` with the sorted exact IPs of the approved ingress peers
-from the same platform snapshot. The compiler revision covers that list and
-the rendered configuration must match it; no CIDR-wide or loopback fallback is
-added. The ingress proxy must overwrite or safely rebuild forwarded-client
-headers. Proxy trust does not bypass Gateway authentication, owner authorization
-or device authentication. The `sandboxWorkload.trustedProxyIPs` hook is supplied
+from the same platform snapshot. The compiler revision binds those IPs through
+the canonical topology, and the rendered configuration must match the derived
+list; no CIDR-wide or loopback fallback is added. The ingress proxy must overwrite
+or safely rebuild forwarded-client headers. Proxy trust does not bypass Gateway
+authentication, owner authorization or device authentication. The
+`sandboxWorkload.trustedProxyIPs` hook is supplied
 only for authenticated native execution; held and legacy rendering without that
 hook preserve their existing proxy configuration.
+Adding this render projection does not change the existing
+`sandbox-controls-v2` digest for otherwise unchanged inputs. An already-running
+native lifetime keeps its old runtime configuration, workload, route, expectation
+and consumed start marker across an Operator upgrade; it is not automatically
+re-rendered or restarted to adopt new proxy settings. Actual policy, topology
+or execution-source changes still fail closed. Use normal deletion and a new
+Agent lifetime when an existing workload needs the new rendering.
 
 With coordinated configuration admission enabled, native startup reserves the
 bound Team, selected Sandbox and effective policy in the same coordination

@@ -79,6 +79,10 @@ func Compile(input CompileInput) (*Plan, error) {
 	capabilities.IPFamilies = sortedUnique(capabilities.IPFamilies)
 	capabilities.Protocols = sortedUnique(capabilities.Protocols)
 	capabilities.HomeAccessModes = sortedUnique(capabilities.HomeAccessModes)
+	// Canonical topology already binds proxy IPs. Preserve the v2 digest for
+	// existing lifetimes; new renderings seal the derived projection separately.
+	revisionNetwork := network
+	revisionNetwork.TrustedProxyIPs = nil
 	plan.Revision, err = digest(struct {
 		Version      string
 		Binding      sandbox.Binding
@@ -96,7 +100,7 @@ func Compile(input CompileInput) (*Plan, error) {
 	}{
 		"sandbox-controls-v2", binding, input.AgentName, input.Namespace,
 		resolution.Sandbox, sandbox.ProjectPolicy(resolution.AgentPolicy), capabilities, platform.Adapter,
-		platform.Topology, grants, approval, identity, network,
+		platform.Topology, grants, approval, identity, revisionNetwork,
 	})
 	if err != nil {
 		return nil, err

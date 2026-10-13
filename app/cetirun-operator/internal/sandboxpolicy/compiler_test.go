@@ -130,6 +130,22 @@ func TestCompileNativeProfilePreservesNetworkBaseline(t *testing.T) {
 	}
 }
 
+func TestCompileNativeProxyProjectionPreservesV2ControlRevision(t *testing.T) {
+	input := compilerFixture()
+	input.Resolution.AgentPolicy.Network.Ingress.Mode = api.AgentPolicyIngressAuthenticated
+	withoutProjection := mustCompile(t, input)
+	input.NativeExecution = true
+	withProjection := mustCompile(t, input)
+	if withProjection.Revision != withoutProjection.Revision || len(withProjection.Network.TrustedProxyIPs) == 0 ||
+		!reflect.DeepEqual(withProjection.Resources, withoutProjection.Resources) {
+		t.Fatal("derived proxy projection changed the existing v2 control revision or network resources")
+	}
+	input.Platform.Topology.Ingress[0].Peer.IPs = []string{"10.96.1.61"}
+	if changed := mustCompile(t, input); changed.Revision == withProjection.Revision {
+		t.Fatal("preserving v2 hashing stopped binding actual ingress topology changes")
+	}
+}
+
 func TestCompileNativeProfileFailsClosed(t *testing.T) {
 	for name, mutate := range map[string]func(*CompileInput){
 		"default mode":      func(i *CompileInput) { i.NativeExecution = false },
