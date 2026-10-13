@@ -47,6 +47,7 @@ POLICY_FILES = {
 }
 POINTERS = {
     "docs/agent-harness-contract.md": "reference/agent-harness.md",
+    "docs/agent-policy.md": "reference/crds.md",
     "docs/guides/msteams.md": "guides/msteams.md",
     "docs/guides/tailscale.md": "guides/tailscale.md",
     "docs/live-copilot-model-selection.design.md": "guides/models.md",

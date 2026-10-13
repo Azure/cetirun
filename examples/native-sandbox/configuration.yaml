@@ -27,7 +27,7 @@ metadata:
   name: native-example
 spec:
   harnesses:
-    allowed: [openclaw]
+    allowed: [hermes]
   skills:
     allowed: []
   modelAccess:

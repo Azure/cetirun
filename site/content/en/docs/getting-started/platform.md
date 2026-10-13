@@ -338,9 +338,9 @@ The operator chart bundles all four CRDs as ordinary templates. Helm upgrades th
 with the release, and their retention annotation keeps them on uninstall.
 The default compatible admission mode tolerates newer CR fields without
 disabling existing validation or authorization. No external CRD apply script is
-needed for compatible schema changes. Review
-[API compatibility](../../reference/crds/#existing-installations) before
-upgrading an existing installation. The
+needed for compatible schema changes. This initial product contract does not
+provide resource or policy migration; deploy matching components and CRDs to a
+new installation. The
 [portal helper]({{< repo "app/cetirun-portal/deploy/deploy.sh" >}})
 expects the operator/CRDs to be prepared separately and labels its namespace
 for Istio injection. Set `ISTIO_REV` to the actual installed revision instead of

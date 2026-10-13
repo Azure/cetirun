@@ -67,7 +67,7 @@ class ApiDocumentationTests(unittest.TestCase):
         self.assertIn("scripts/cetirun-platform-deploy.sh", install)
         self.assertIn("PORTAL_AUTH_NAMESPACE=cetirun-system", install)
         self.assertIn("Helm upgrades the CRDs", install)
-        self.assertIn("does not convert, adopt, or delete", reference)
+        self.assertIn("No compatibility fields or migration path", reference)
 
     def test_portal_creation_labels_match_source(self):
         guide = (SITE / "content/en/docs/getting-started/first-instance.md").read_text()

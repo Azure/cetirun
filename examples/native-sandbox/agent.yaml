@@ -8,10 +8,10 @@ spec:
   team: native-example
   sandboxRef: native-example
   agent:
-    type: openclaw
+    type: hermes
     image: registry.example.com/cetirun:0.1.1
     username: vibe
-    port: 18789
+    port: 8642
   user:
     alias: alice
     displayName: Example Owner

@@ -18,28 +18,6 @@ An Agent is a long-lived, user-owned environment, not an execution or template.
 A Team supplies shared configuration and skills, not shared access to private
 data. Pod replacement does not create a new Agent.
 
-## Existing installations
-
-Older installations may contain `OpenClawInstance` and `OpenClawTeam` objects
-in the same API group and version. The operator and portal no longer register
-those legacy kinds. Installing these CRDs does not convert, adopt, or delete
-legacy objects. The policy-bound API is a replacement contract, not a data
-migration.
-
-Do not delete legacy CRs or CRDs as an upgrade shortcut. Old finalizers can
-uninstall workloads and delete namespaces; deleting a CRD removes its stored
-objects. Review data retention and resource ownership before handing an
-existing installation over to the new API.
-
-The cluster scope, finalizer, namespace/release names, and PVC behavior are
-retained. Harness configuration uses required `spec.agent`; the old
-`spec.agentType` field is not supported. There is no automatic resource
-conversion or field migration. Helm manages the current CRDs as templates and
-upgrades their schemas with the release. Their retention annotation prevents
-uninstall from deleting them. Earlier unmanaged CRDs need a separately reviewed
-ownership handover; the chart does not force adoption or perform schema/data
-migration. Retention does not protect against a schema downgrade.
-
 ## Agent
 
 | Field under `spec` | Contract |
@@ -56,11 +34,11 @@ migration. Retention does not protect against a schema downgrade.
 | `agent.username` | Defaults to `vibe`; immutable, non-root image username |
 | `agent.port` | HTTP port, 1–65535; required for Custom Web UI, otherwise optional. Omitted for Custom means headless |
 | `agent.webUI` | Boolean, default false; Custom-only. When true, `agent.port` serves a Web UI rather than the Chat API; see [Agent Harness](../agent-harness/#custom-web-ui) |
-| `team` | Optional for legacy Agents; required for policy binding. Portal Gateway creation still requires an existing Team |
-| `sandboxRef` | Opt into a Team-permitted Sandbox; omitted for legacy execution |
-| `model` | Optional model name, at most 256 characters; policy-bound Agents must select a policy-allowed model |
-| `modelAccess.sharedModels` | Explicit request for policy-bound Agents; defaults on for legacy Agents |
-| `modelAccess.githubCopilot` | Explicit request for policy-bound Agents; defaults on for legacy Agents when the deployment offers Copilot |
+| `team` | Required at runtime for Hermes/OpenClaw; selects the single Team-assigned policy. Optional Team configuration for Custom |
+| `sandboxRef` | Required at runtime for Hermes/OpenClaw and must be permitted by the Team; omitted by Custom |
+| `model` | Optional model name, at most 256 characters; must be included in the effective request and policy |
+| `modelAccess.sharedModels` | Explicit shared AI Gateway model request; omission grants none |
+| `modelAccess.githubCopilot` | Explicit Copilot request; omission grants none |
 | `modelAccess.monthlyBudgetUSD` | Optional LiteLLM USD monthly budget override, bounded by the policy maximum |
 | `skillOverrides.add` / `remove` | Set-like skill lists, at most 20 per list; effective IDs are `(team ∪ add) − remove` |
 | `helm.version` | Agent chart pin; backfilled from the operator default on first reconciliation |
@@ -145,7 +123,7 @@ check does not prove that an override will reconcile successfully.
 | `signInHelper` | Whether the workload serves the in-agent model sign-in helper that `/<instance>/cetirun-auth/` routes to; omitted until the operator records it |
 | `registryCredentials` | Receipt identifying the synchronized source Secret UID/resourceVersion and local pull Secret UID; not credential data or proof of successful image pulling |
 | `sandbox` | Last verified binding: `teamUID`, `sandboxUID`, `agentPolicyUID`, `appliedRevision`; omitted before successful enforcement |
-| `policy` | Resolved effective policy plus desired Sandbox, Gateway, and credential revisions |
+| `policy` | Current resolution only: `Resolved` with the effective policy reference, or `Denied`; component execution is reported elsewhere |
 
 `AgentConfigReady=False` with reason `AgentRuntimeNotImplemented` reports a
 setting that cannot be provisioned, such as a non-default built-in username.
@@ -161,7 +139,7 @@ does not prove that the registry accepted the credentials or the image was
 pulled; inspect Pod readiness and pull events separately. Custom readiness also
 depends on its validated platform bindings, not just schema acceptance.
 
-Other condition types include `PolicyResolved`, `PolicyApplied`, `Ready`,
+Other condition types include `PolicyResolved`, `Ready`,
 `HelmDeployed`, `IngressReady`, `PodReady`,
 `TailscaleReady`, and `TeamsReady`. Check them independently; overall readiness
 can be true while ingress creation or Teams provisioning failed.
@@ -185,9 +163,9 @@ not material to paste into a public bug report.
 
 | Field under `spec` | Contract |
 | --- | --- |
-| `agentPolicyRef` | The Team's single policy; required when this Team opts into policy |
-| `sandboxRefs` | Nonempty permitted Sandbox set; required for a policy-enabled Team |
-| `defaultSandboxRef` | Listed creation default; required for a policy-enabled Team, not a later implicit reselection |
+| `agentPolicyRef` | The Team's single policy; required |
+| `sandboxRefs` | Nonempty permitted Sandbox set; required |
+| `defaultSandboxRef` | Required listed creation default; not a later implicit reselection |
 | `memberContext.role` | Role rendered into runtime-specific team context |
 | `memberContext.description` | Context lines, at most 20 |
 | `defaults.provider` | String without a CRD enum; chart supports `github_copilot`, `openai`, `anthropic`; instance Helm settings take precedence |
@@ -206,7 +184,7 @@ system contract, not a backward-compatible upgrade of the dual-policy design.
 No compatibility fields or migration path are provided for that design.
 
 Instances select this object through `spec.team`. Selection applies the Team's
-runtime defaults and, when configured, its single policy; it does not grant access to another Agent's
+runtime defaults and its single policy to built-in Agents; it does not grant access to another Agent's
 data or runtime. There is no separate Team membership or authorization record.
 Model and credential entitlements come from that policy and are requested per
 Agent.
@@ -217,12 +195,9 @@ Permission to manage Teams or AgentPolicies is a human control-plane permission
 enforced separately from workload authorization. Workload authorization comes
 from the selected Team, its `agentPolicyRef`, and the Agent's explicit requests.
 
-Teams with no policy or Sandbox fields retain legacy behavior. Setting any one
-of those fields opts into the full policy binding contract; partial bindings
-cannot fall back to legacy. The Team controller accepts a legacy Team without
-those references, or a policy-enabled Team after its policy and Sandbox
-references form a valid current configuration. Runtime context
-persistence also differs:
+Every Team has a complete policy/Sandbox binding. The Team controller accepts
+the Team only after its policy and Sandbox references form a valid current
+configuration. Runtime context persistence also differs:
 Hermes refreshes `TEAM.md` on initialization, while OpenClaw preserves an
 initialized workspace's `USER.md`. See [configure a team](../../guides/teams/).
 
@@ -245,19 +220,18 @@ selection constraints, read-only root filesystem, network and ingress controls,
 and optional Kubernetes or Entra identity intent. Configuration references and
 schema acceptance do not grant access or prove enforcement.
 
-Policy assignment is opt-in, not a prerequisite for legacy deployment.
-An Agent with no Sandbox selection or recorded governed lifetime can use no
-Team or a Team without policy settings. Such Agents retain the existing runtime flow and do not claim policy
-enforcement. For opted-in Agents, the controller resolves owner and Team
-authorization, the effective AgentPolicy, and the selected Sandbox before a
-workload may run. Invalid or unavailable authorization is fail-closed.
+Policy assignment is mandatory for built-in Hermes and OpenClaw Agents. The
+controller resolves the Team assignment, effective AgentPolicy, selected
+Sandbox, and explicit Agent requests before a workload may run. Invalid or
+unavailable authorization is fail-closed. Custom Agents use a separate runtime
+contract and do not resolve AgentPolicy.
 
 The native Sandbox path compiles and stages protected resources at zero
-replicas. Execution remains held unless the separately configured, default-off
-native execution profile is enabled and its supported prerequisites pass.
-Custom has a typed Gateway binding but no typed Sandbox execution adapter;
-policy-bound Custom Agents remain held, while ungoverned Custom Agents retain
-their existing runtime provider path.
+replicas. With the explicit, default-off native execution profile enabled, it
+starts either Hermes or OpenClaw after the current UID-bound authorization,
+qualified Sandbox prerequisites, admission expectation, and exact AI Gateway
+projection match. Custom has a typed Gateway binding but no native Sandbox
+adapter and must omit `sandboxRef`.
 
 The controller records a hold finalizer before changing workloads, so a failed
 status update cannot release the recorded hold. Explicit suspension remains
@@ -268,33 +242,30 @@ verified namespace, without Helm uninstall hooks, and retains finalizers until
 cleanup completes. Home storage is retained during a hold, not after explicit
 namespace deletion.
 Agent Identity authorization and directory cleanup remains a blocking deletion
-step for held built-in Agents, including when the runtime namespace is absent.
-Compatibility does not automatically release an old Agent that was already
-held by a mandatory-policy version. Review its ownership and retained data
-before recovery; removing spec fields is not permission to clear its recorded
-policy lifetime.
+step for built-in Agents, including when the runtime namespace is absent.
 
 The Agent creator selects a Team directly. Admission defaults the Team's
 Sandbox, then persists UID-bound references so same-name resource replacement
 cannot be adopted implicitly. Later Team, Sandbox, policy, or budget changes
 require an administrator and a suspended Agent.
-Existing policy-enabled resources enter a controlled hold for cleanup. Changing
-or clearing references does not return them to legacy execution; changes require
-explicit reauthorization and an ordered stop-and-cleanup sequence. A lossless
-rolling migration between policies is not supported.
-Operator status reports desired per-domain revisions and only marks Policy
-Applied after matching enforcement evidence is current.
+Existing resources enter a controlled hold for cleanup when their protected
+binding changes. Changes require explicit reauthorization and an ordered
+stop-and-cleanup sequence. A lossless rolling migration between policies is not
+supported. The Operator reports only policy resolution. Gateway, Sandbox, and
+Agent Identity each report their own execution status; there is no aggregate
+`PolicyApplied` condition.
 
 AgentPolicy additionally allowlists built-in Harnesses, skills, exact Gateway
 model names, Copilot, and Agent Identity. A model entitlement requires a native
 LiteLLM default and maximum monthly USD budget. Custom is not an allowed policy
-Harness. Agent Identity cannot complete aggregate `PolicyApplied` until a typed
-credential-service executor supplies matching read-back evidence.
+Harness. The first executable native profile supports Hermes/OpenClaw, Kata,
+ReadWriteOncePod HOME, baseline networking, and shared Gateway models. Copilot,
+Agent Identity, Tailscale, Teams, desktop, Kubernetes grants, arbitrary Helm
+overrides, and custom network controls fail closed as unsupported by that
+profile.
 
-Production Sandbox start and observation still require implementation and
-qualification. See the
-[operator foundation notes]({{< repo "app/cetirun-operator/README.md" >}})
-for the execution-hold, authority, and validation boundaries.
+See the [AgentPolicy architecture]({{< repo "docs/agent-policy.md" >}}) for
+component ownership and status boundaries.
 
 ## Schema and implementation
 

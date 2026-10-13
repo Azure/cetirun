@@ -1,8 +1,10 @@
 # Native Sandbox first run
 
-This example exercises one OpenClaw Agent with a Kata Sandbox and a
-shared AI Gateway model. It is an explicitly enabled, single-start profile,
-not a production failover or complete AgentPolicy conformance test.
+This example exercises one Hermes Agent with a Kata Sandbox and a shared AI
+Gateway model. The same profile supports OpenClaw when the Agent type, image,
+port, and policy harness allowlist are changed together. It is an explicitly
+enabled, single-start profile, not a production failover or complete
+AgentPolicy conformance test.
 
 ## Prepare one authorized target
 
