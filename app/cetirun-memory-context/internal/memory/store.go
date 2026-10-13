@@ -475,6 +475,9 @@ func (s *Store) write(ctx context.Context, r Request, command string, maintenanc
 			return writeResult{}, v.m.Generation, err
 		}
 	}
+	if err := v.removeAbandonedTransactions(ctx); err != nil {
+		return writeResult{}, v.m.Generation, err
+	}
 	if err := v.collectHistory(ctx); err != nil {
 		return writeResult{}, v.m.Generation, err
 	}
@@ -519,9 +522,6 @@ func (s *Store) write(ctx context.Context, r Request, command string, maintenanc
 			}
 			delete(v.m.Requests, oldest)
 		}
-		if err := v.compactHistory(); err != nil {
-			return writeResult{}, before, err
-		}
 		views, err := v.renderViews()
 		if err != nil {
 			return writeResult{}, before, err
@@ -533,6 +533,15 @@ func (s *Store) write(ctx context.Context, r Request, command string, maintenanc
 			if _, exists := views[name]; !exists {
 				v.m.Views[name] = viewHash{Previous: hash.Current}
 			}
+		}
+		// Views first, so the size checked here is the manifest that commits.
+		// An oversized write fails before anything durable is written.
+		manifestSize, err := v.compactHistory()
+		if err != nil {
+			return writeResult{}, before, err
+		}
+		if manifestSize > MaxManifest {
+			return writeResult{}, before, problem(5, "LimitReached")
 		}
 		tx = transaction{hash, before, v.m, v.files, result}
 		data, err := encode(tx)

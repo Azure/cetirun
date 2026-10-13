@@ -215,6 +215,26 @@ type diskFile struct {
 	Size int64
 }
 
+// names lists up to 1024 entries of a directory below the root.
+func (s *safeFS) names(name string) ([]string, error) {
+	dir, base, err := s.parent(name, false)
+	if err != nil {
+		return nil, err
+	}
+	defer dir.Close()
+	fd, err := syscall.Openat(int(dir.Fd()), base, syscall.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, err
+	}
+	f := os.NewFile(uintptr(fd), name)
+	defer f.Close()
+	names, err := f.Readdirnames(1024)
+	if errors.Is(err, io.EOF) {
+		return names, nil
+	}
+	return names, err
+}
+
 func (s *safeFS) removeDirectory(name string) error {
 	dir, base, err := s.parent(name, false)
 	if err != nil {
