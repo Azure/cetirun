@@ -157,7 +157,6 @@ describe("CreateForm", () => {
     await user.click(screen.getByText("Create Agent"));
 
     expect(mockMutate).toHaveBeenCalledWith({
-
       instanceName: "my-instance",
       agent: { type: "hermes" },
       displayName: undefined,
@@ -183,7 +182,6 @@ describe("CreateForm", () => {
     await user.click(screen.getByText("Create Agent"));
 
     expect(mockMutate).toHaveBeenCalledWith({
-
       instanceName: "my-instance",
       agent: { type: "hermes" },
       displayName: undefined,
@@ -222,7 +220,6 @@ describe("CreateForm", () => {
     await user.click(screen.getByText("Create Agent"));
 
     expect(mockMutate).toHaveBeenCalledWith({
-
       instanceName: "my-instance",
       agent: { type: "hermes" },
       displayName: "Custom Name",
@@ -244,7 +241,6 @@ describe("CreateForm", () => {
     await user.click(screen.getByText("Create Agent"));
 
     expect(mockMutate).toHaveBeenCalledWith({
-
       instanceName: undefined,
       agent: { type: "openclaw" },
       displayName: undefined,
@@ -266,7 +262,6 @@ describe("CreateForm", () => {
     await user.click(screen.getByText("Create Agent"));
 
     expect(mockMutate).toHaveBeenCalledWith({
-
       instanceName: undefined,
       agent: { type: "openclaw" },
       displayName: undefined,
