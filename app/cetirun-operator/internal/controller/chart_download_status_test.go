@@ -21,16 +21,19 @@ import (
 	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 // failingPrepareHelm renders the chart like chartHelm, but fails every chart
 // preparation with err while err is set.
 type failingPrepareHelm struct {
 	chartHelm
-	err error
+	err      error
+	prepares int
 }
 
 func (h *failingPrepareHelm) Prepare(namespace string, values map[string]any, chartVersion string) (*helm.PreparedRelease, error) {
+	h.prepares++
 	if h.err != nil {
 		return nil, h.err
 	}
@@ -171,7 +174,7 @@ func TestChartDownloadFailureKeepsADeployedAgent(t *testing.T) {
 	f.verificationDue(t)
 	f.chart.err = &helm.ChartDownloadError{Chart: "oci://registry.example.com/helm/cetirun:0.1.28", Version: "0.1.28",
 		Err: errors.New("synthetic registry outage")}
-	want := "Agent chart 0.1.28 could not be downloaded from the registry; the deployed Agent is unchanged and the operator will retry"
+	want := "Agent chart 0.1.28 could not be downloaded from the registry; the deployed release is unchanged and the operator will retry"
 
 	for pass := 1; pass <= 2; pass++ {
 		before := f.agent(t)
@@ -216,6 +219,138 @@ func TestChartDownloadFailureKeepsADeployedAgent(t *testing.T) {
 	}
 	if warnings := f.warnings(); len(warnings) != 0 {
 		t.Fatalf("recovery recorded warnings: %q", warnings)
+	}
+}
+
+// Registry availability must not freeze the workload's health or suppress retries.
+func TestChartUnavailableObservesWorkload(t *testing.T) {
+	f := newDeployedAgent(t)
+	ctx := context.Background()
+	f.verificationDue(t)
+	f.chart.err = &helm.ChartDownloadError{Version: "0.1.28", Err: errors.New("synthetic outage")}
+	reconcile := func() {
+		t.Helper()
+		before := f.chart.prepares
+		result, err := f.r.Reconcile(ctx, f.req)
+		if err != nil || result.RequeueAfter != chartUnavailableRetry || f.chart.prepares <= before {
+			t.Fatalf("result=%+v err=%v prepares=%d (before %d)", result, err, f.chart.prepares, before)
+		}
+		if f.chart.installs != 1 || !chartUnavailable(f.agent(t)) {
+			t.Fatal("download failure changed the release or lost its condition")
+		}
+	}
+	reconcile()
+	f.warnings()
+	// Make verification fresh: the chart-unavailable condition alone must keep
+	// retries on the full path, including after the Pod recovers.
+	a := f.agent(t)
+	a.Status.AIGateway.LastVerifiedTime = &metav1.Time{Time: time.Now()}
+	if err := f.r.Status().Update(ctx, a); err != nil {
+		t.Fatal(err)
+	}
+	sts := &appsv1.StatefulSet{}
+	key := types.NamespacedName{Namespace: instanceNamespace(a.Name), Name: instanceServiceName(a.Name)}
+	for _, replicas := range []int32{0, 1} {
+		if err := f.r.Get(ctx, key, sts); err != nil {
+			t.Fatal(err)
+		}
+		sts.Status.ReadyReplicas = replicas
+		if err := f.r.Status().Update(ctx, sts); err != nil {
+			t.Fatal(err)
+		}
+		reconcile()
+		current := f.agent(t)
+		wantPhase := api.PhaseProvisioning
+		if replicas == 1 {
+			wantPhase = api.PhaseReady
+		}
+		if current.Status.Phase != wantPhase {
+			t.Fatalf("phase=%s want %s", current.Status.Phase, wantPhase)
+		}
+		for _, kind := range []string{api.ConditionPodReady, api.ConditionReady} {
+			if meta.IsStatusConditionTrue(current.Status.Conditions, kind) != (replicas == 1) {
+				t.Fatalf("%s did not follow ready replicas: %+v", kind, current.Status.Conditions)
+			}
+		}
+		var events []string
+		for len(f.recorder.Events) > 0 {
+			events = append(events, <-f.recorder.Events)
+		}
+		if replicas == 0 && len(events) != 0 || replicas == 1 && (len(events) != 1 || !strings.Contains(events[0], "Normal InstanceReady ")) {
+			t.Fatalf("health transition events=%v", events)
+		}
+		reconcile()
+		if f.agent(t).ResourceVersion != current.ResourceVersion || len(f.recorder.Events) != 0 {
+			t.Fatal("unchanged health wrote status or emitted events")
+		}
+	}
+	f.chart.err = nil
+	if _, err := f.r.Reconcile(ctx, f.req); err != nil {
+		t.Fatal(err)
+	}
+	if !meta.IsStatusConditionTrue(f.agent(t).Status.Conditions, api.ConditionAgentConfigReady) || f.chart.installs != 1 {
+		t.Fatal("registry recovery did not clear the condition without reinstalling")
+	}
+}
+
+type unavailableStatefulSetClient struct{ client.Client }
+
+func (c unavailableStatefulSetClient) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+	if _, ok := obj.(*appsv1.StatefulSet); ok {
+		return errors.New("synthetic StatefulSet read failure")
+	}
+	return c.Client.Get(ctx, key, obj, opts...)
+}
+
+func TestChartUnavailableCannotReadWorkload(t *testing.T) {
+	for _, missing := range []bool{true, false} {
+		t.Run(fmt.Sprintf("missing=%t", missing), func(t *testing.T) {
+			f := newDeployedAgent(t)
+			ctx := context.Background()
+			f.verificationDue(t)
+			f.chart.err = &helm.ChartDownloadError{Version: "0.1.28", Err: errors.New("synthetic outage")}
+			a := f.agent(t)
+			if missing {
+				sts := &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: instanceServiceName(a.Name), Namespace: instanceNamespace(a.Name)}}
+				if err := f.r.Delete(ctx, sts); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				f.r.Client = unavailableStatefulSetClient{f.r.Client}
+			}
+			_, err := f.r.Reconcile(ctx, f.req)
+			if (err != nil) == missing {
+				t.Fatalf("missing=%t err=%v", missing, err)
+			}
+			a = f.agent(t)
+			if a.Status.Phase != api.PhaseProvisioning || !meta.IsStatusConditionFalse(a.Status.Conditions, api.ConditionReady) ||
+				!meta.IsStatusConditionFalse(a.Status.Conditions, api.ConditionPodReady) || f.chart.installs != 1 {
+				t.Fatalf("unreadable workload retained readiness: %+v", a.Status)
+			}
+		})
+	}
+}
+
+func TestChartUnavailablePreservesOtherLifecycleStates(t *testing.T) {
+	for _, phase := range []string{api.PhaseSuspended, api.PhaseFailed, api.PhaseProvisioning} {
+		t.Run(string(phase), func(t *testing.T) {
+			f := newDeployedAgent(t)
+			ctx := context.Background()
+			a := f.agent(t)
+			a.Status.Phase = phase
+			setCondition(&a.Status.Conditions, api.ConditionReady, metav1.ConditionFalse, "OtherPrerequisite", "Waiting for another prerequisite")
+			if err := f.r.Status().Update(ctx, a); err != nil {
+				t.Fatal(err)
+			}
+			_, err := f.r.preparationFailed(ctx, a, &helm.ChartDownloadError{Version: "0.1.28", Err: errors.New("synthetic outage")})
+			if err != nil {
+				t.Fatal(err)
+			}
+			current := f.agent(t)
+			if current.Status.Phase != phase || meta.FindStatusCondition(current.Status.Conditions, api.ConditionReady).Reason != "OtherPrerequisite" {
+				t.Fatalf("healthy Pod overrode lifecycle state: %+v", current.Status)
+			}
+		})
 	}
 }
 

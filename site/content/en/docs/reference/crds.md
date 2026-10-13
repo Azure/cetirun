@@ -155,8 +155,12 @@ Agent or after a spec change; the operator log records the registry's error
 for the latter. Every full reconcile downloads the chart again, including the
 periodic passes of a running Agent. When the chart of an Agent that is already
 installed for its current generation cannot be downloaded, reason
-`AgentChartUnavailable` reports the temporary failure: the phase and the
-workload stay unchanged, and the operator retries every 30 seconds.
+`AgentChartUnavailable` reports the temporary failure: the deployed release
+stays unchanged, and the operator retries every 30 seconds. Workload health is
+still observed: lost ready replicas or an unreadable StatefulSet make a running
+Agent `Provisioning` with `PodReady=False` and `Ready=False`; readiness recovers
+when the workload does, even while the registry remains unavailable. Suspension
+and failures or waits for other prerequisites are preserved.
 `AgentConfigResolved` reports a prepared
 built-in configuration, not runtime readiness. The API does not expose a separate
 `status.agent` structure.

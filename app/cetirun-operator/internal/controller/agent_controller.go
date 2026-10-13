@@ -479,8 +479,10 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 
 		identityVerificationDue := agentIdentityVerificationDue(instance, time.Now())
 		aiGatewayDue := r.aiGatewayReconcileDue(instance, time.Now())
+		// An Agent whose chart could not be downloaded takes the full path,
+		// which retries the download, until a download succeeds.
 		if instance.Status.ObservedGeneration == instance.Generation &&
-			!identityVerificationDue && !aiGatewayDue &&
+			!identityVerificationDue && !aiGatewayDue && !chartUnavailable(instance) &&
 			instance.Status.ObservedOperatorHash == r.configHash(instance, team, gwSecretHash, teamResourceVersion(team)) {
 			// Lightweight: ensure VirtualService is up to date (may change after operator upgrade).
 			// Update ConditionIngressReady so CR status reflects the actual VS state.
@@ -936,66 +938,16 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	}
 
 	// 11. Verify StatefulSet pod readiness before marking Ready.
-	stsName := instanceServiceName(instance.Name)
-	sts := &appsv1.StatefulSet{}
-	stsKey := types.NamespacedName{Namespace: ns, Name: stsName}
-	if err := r.Get(ctx, stsKey, sts); err != nil {
-		if errors.IsNotFound(err) {
-			logger.Info("StatefulSet not found yet, requeueing", "name", stsName, "namespace", ns)
-			setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionPodReady,
-				metav1.ConditionFalse, "StatefulSetNotFound", fmt.Sprintf("StatefulSet %s not found", stsName))
-			setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionReady,
-				metav1.ConditionFalse, "PodNotReady", "StatefulSet not found")
-			_ = r.updateStatus(ctx, instance)
-			return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
-		}
-		logger.Error(err, "Failed to get StatefulSet", "name", stsName, "namespace", ns)
-		setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionPodReady,
-			metav1.ConditionFalse, "StatefulSetGetFailed", fmt.Sprintf("Failed to get StatefulSet %s: %v", stsName, err))
-		setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionReady,
-			metav1.ConditionFalse, "PodNotReady", "Failed to get StatefulSet")
+	workloadReady, workloadResult, err := r.observeWorkload(ctx, instance)
+	if !workloadReady {
 		_ = r.updateStatus(ctx, instance)
-		return ctrl.Result{}, err
+		return workloadResult, err
 	}
 
-	desiredReplicas := int32(1)
-	if sts.Spec.Replicas != nil {
-		desiredReplicas = *sts.Spec.Replicas
-	}
-	rolloutComplete := (sts.Status.UpdatedReplicas >= desiredReplicas || registryOnlyRollout(sts)) &&
-		sts.Status.ReadyReplicas >= desiredReplicas &&
-		(sts.Status.ObservedGeneration >= sts.Generation || registryOnlyRollout(sts))
-	if !rolloutComplete {
-		logger.Info("StatefulSet rollout not complete, requeueing",
-			"statefulset", stsName,
-			"readyReplicas", sts.Status.ReadyReplicas,
-			"updatedReplicas", sts.Status.UpdatedReplicas,
-			"desiredReplicas", desiredReplicas,
-			"stsGeneration", sts.Generation,
-			"stsObservedGeneration", sts.Status.ObservedGeneration)
-		setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionPodReady,
-			metav1.ConditionFalse, "PodNotReady",
-			fmt.Sprintf("Waiting for rollout (ready: %d, updated: %d, desired: %d)",
-				sts.Status.ReadyReplicas, sts.Status.UpdatedReplicas, desiredReplicas))
-		setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionReady,
-			metav1.ConditionFalse, "PodNotReady", "StatefulSet rollout not complete")
-		instance.Status.Phase = cetirunv1alpha1.PhaseProvisioning
-		_ = r.updateStatus(ctx, instance)
-		return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
-	}
-
-	setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionPodReady,
-		metav1.ConditionTrue, "PodReady", "StatefulSet pod is running and ready")
-
-	// 12. Mark Ready.
+	// 12. Mark Ready. observeWorkload set the phase, the access URL and the
+	// Ready condition.
 	now := metav1.Now()
-	instance.Status.Phase = cetirunv1alpha1.PhaseReady
-	instance.Status.AccessURL = accessURLPathBased(instance.Name, r.DomainSuffix)
-	instance.Status.Namespace = ns
-	instance.Status.HelmReleaseName = releaseName
 	instance.Status.LastReconcileTime = &now
-	setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionReady,
-		metav1.ConditionTrue, "InstanceReady", "Instance is fully operational")
 	if err := r.updateStatus(ctx, instance); err != nil {
 		logger.Error(err, "Failed to update status to Ready", "alias", alias)
 		return ctrl.Result{}, err
