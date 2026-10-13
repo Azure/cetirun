@@ -120,7 +120,9 @@ stringData:
 # completion tokens, so spend per request is exact. A request whose content
 # contains "fail429" is answered with a 429, and GET /stats reports how many
 # such requests arrived, so the test can count upstream attempts. One whose
-# content contains "sleepN" is answered after N seconds. Every response has an
+# content contains "sleepN" is answered after N seconds. Any request under
+# /broken is answered with a 500, and counted, to stand in for a failing
+# deployment. Every response has an
 # id of its own, as a real provider's does: LiteLLM keys its per-request spend
 # log on that id and skips a row whose id it has already stored, so a mock that
 # repeated one id kept a single success in the log however many it served.
@@ -132,7 +134,7 @@ data:
   mock_provider.py: |
     import json, re, time, uuid
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-    failed = {"count": 0}
+    failed = {"count": 0, "broken": 0}
     class H(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
         def _send(self, body, code=200):
@@ -144,6 +146,10 @@ data:
         def do_POST(self):
             n = int(self.headers.get("Content-Length", 0))
             raw = self.rfile.read(n) if n else b""
+            if self.path.startswith("/broken"):
+                failed["broken"] += 1
+                self._send(b'{"error":{"message":"server error (mock)","code":"500"}}', 500)
+                return
             if b"fail429" in raw:
                 failed["count"] += 1
                 self._send(b'{"error":{"message":"rate limited (mock)","code":"429"}}', 429)
@@ -161,7 +167,7 @@ data:
             }).encode())
         def do_GET(self):
             if self.path.startswith("/stats"):
-                self._send(json.dumps({"failed": failed["count"]}).encode())
+                self._send(json.dumps({"failed": failed["count"], "broken": failed["broken"]}).encode())
                 return
             self._send(b'{"status":"ok"}')
         def log_message(self, *a):
@@ -229,6 +235,27 @@ models:
       model: openai/mock-model
       api_base: http://mock-provider:8080
       api_key: os.environ/MOCK_PROVIDER_KEY
+  # Two deployments behind one name, the second always failing and nine times
+  # as likely to be picked, to check that a request failing on one deployment
+  # is sent to the other.
+  - model_name: mock-failover
+    litellm_params:
+      model: openai/mock-model
+      api_base: http://mock-provider:8080
+      api_key: os.environ/MOCK_PROVIDER_KEY
+      weight: 1
+    model_info:
+      input_cost_per_token: 0.00001
+      output_cost_per_token: 0.00001
+  - model_name: mock-failover
+    litellm_params:
+      model: openai/mock-model
+      api_base: http://mock-provider:8080/broken
+      api_key: os.environ/MOCK_PROVIDER_KEY
+      weight: 9
+    model_info:
+      input_cost_per_token: 0.00001
+      output_cost_per_token: 0.00001
 providerCredentials:
   existingSecret: gateway-provider-keys
 EOF
@@ -460,6 +487,35 @@ attempts="$(in_mock_pod "import urllib.request; print(urllib.request.urlopen('ht
 [ "${attempts}" = "1" ] || fail "one failing request produced ${attempts} upstream attempts; the Gateway is retrying"
 pass "an upstream 429 went straight back to the client, one attempt"
 
+# A caller could ask LiteLLM for retries of its own, with num_retries in the
+# body or the x-litellm-num-retries header: one failing request then made four
+# upstream calls. The image's callback drops those fields.
+echo "==> A caller cannot change the retries"
+retry_request() {  # retry_request BODY [CURL_ARGS...]
+  curl -s -m 60 -o /dev/null -X POST "http://127.0.0.1:${port_a}/v1/chat/completions" "${@:2}" \
+    -H "Authorization: Bearer ${master_key}" -H 'Content-Type: application/json' -d "$1" || true
+}
+retry_request '{"model":"mock-priced","messages":[{"role":"user","content":"fail429"}]}' -H 'x-litellm-num-retries: 3'
+retry_request '{"model":"mock-priced","num_retries":3,"messages":[{"role":"user","content":"fail429"}]}'
+attempts="$(in_mock_pod "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8080/stats').read().decode())" \
+  | jq -r .failed)"
+[ "${attempts}" = "3" ] || fail "two failing requests asking for retries made $((attempts - 1)) upstream attempts; a caller changed the retries"
+pass "a caller's num_retries, in the body or a header, added no upstream attempt"
+
+# Two deployments behind one name, one always failing: a request that fails on
+# one deployment is sent once more, to the other. Without that, about half the
+# requests failed.
+echo "==> A request failing on one deployment is sent to another"
+for i in $(seq 1 10); do
+  if [ $((i % 2)) -eq 1 ]; then port="${port_a}"; else port="${port_b}"; fi
+  status="$(chat "${port}" "${master_key}" mock-failover)"
+  [ "${status}" = "200" ] || fail "request ${i} to a model with a failing deployment got ${status}: $(last_body)"
+done
+broken="$(in_mock_pod "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8080/stats').read().decode())" \
+  | jq -r .broken)"
+[ "${broken}" -ge 1 ] || fail "no request reached the failing deployment, so the failover was not exercised"
+pass "10 of 10 requests answered, ${broken} of them after their first deployment failed"
+
 # Without shared state each replica enforces its own copy of a budget, so two
 # replicas allow twice the configured spend. Alternating between the two pods
 # directly is what makes this a test of coordination rather than of one pod.
@@ -486,10 +542,11 @@ pass "\$0.10 budget allowed ${allowed} requests across both replicas"
 # Every answered call is recorded twice: in LiteLLM's spend log, which the
 # console's request view reads, and in the image's request log on stdout, for
 # the cluster's log collection. The answered calls so far are the two with the
-# master key and those the budget allowed, spread over both replicas. LiteLLM
+# master key, the ten to the model with a failing deployment, each recorded
+# once, and those the budget allowed, spread over both replicas. LiteLLM
 # writes the spend log in batches, a few seconds behind.
 echo "==> Every answered call is recorded, in the spend log and the request log"
-answered=$((2 + allowed))
+answered=$((12 + allowed))
 recorded=""
 for _ in $(seq 1 30); do
   recorded="$(spend_log_successes)"

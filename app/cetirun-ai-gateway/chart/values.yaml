@@ -129,6 +129,60 @@ models: []
 # the Gateway would serve.
 blockUnpricedModels: true
 
+# -- How a request reaches one of the deployments that serve its model_name,
+# and what happens when that deployment fails. The chart ships these
+# defaults; which deployments serve a model, and which model falls back to
+# which, are the administrator's. See the README's Routing section for what
+# each setting was measured to do.
+#
+# Several entries in models with the same model_name are deployments of one
+# model. LiteLLM spreads requests across them at random, or by the weight, rpm
+# or tpm set in each entry's litellm_params (set it on every entry), and keeps
+# entries with a higher litellm_params.order in reserve until those with a
+# lower one are unavailable.
+router:
+  # -- Send a request that failed on one deployment once more, to another
+  # deployment of the same model_name (LiteLLM's enable_weighted_failover).
+  # This is not a retry: the failed deployment is not tried again, and a model
+  # with a single deployment gets no second attempt. Measured with one of two
+  # deployments failing: 13 of 30 requests failed without it, none with it.
+  failover: true
+  # -- Send a Responses API request that continues an earlier response
+  # (previous_response_id) to the deployment that produced it, the only one
+  # that has it. Measured across two deployments: 6 of 20 continuations failed
+  # without it, none with it.
+  continuationAffinity: true
+  # -- Keep each Responses API conversation on the deployment that encrypted
+  # its reasoning, or on one with the same endpoint and key (LiteLLM's
+  # encrypted_content_affinity). Agents such as OpenClaw send the encrypted
+  # reasoning back with every turn, and only the Azure OpenAI resource or
+  # OpenAI organization that produced it can read it. Turn this on when one
+  # model_name is served by more than one resource or organization. With the
+  # LiteLLM in this image, a conversation whose deployment is unavailable fails
+  # until that deployment is back, rather than moving to another.
+  encryptedContentAffinity: false
+  # -- Models to try when a request to a model fails, in LiteLLM's format: a
+  # list of maps from a model_name to the model_names to try, in order. With
+  # operatorIntegration, a target is tried only if the caller's key may use it.
+  #   fallbacks:
+  #     - gpt-4o: [gpt-4o-mini]
+  fallbacks: []
+  # -- The same, for requests too long for the model's context window.
+  contextWindowFallbacks: []
+  # -- Probe the deployments of the models configured above in the background,
+  # and send requests only to those that answered their last probe. Each probe
+  # is a real call, with max_tokens 16, from each replica, and writes a request
+  # log line. Models added through the console or registered by the CetiRun
+  # operator, such as each Agent's GitHub Copilot models, are never probed. Set
+  # model_info.mode on a model that is not a chat model, such as an embedding
+  # or image model, so it is probed the right way. When every deployment of a
+  # model failed its probe, requests are still sent.
+  healthChecks:
+    # -- Run the probes and route by their results
+    enabled: false
+    # -- Seconds between probes
+    intervalSeconds: 300
+
 # -- Provider API keys, surfaced to the proxy as environment variables and
 # referenced from the model list as `os.environ/NAME`.
 providerCredentials:

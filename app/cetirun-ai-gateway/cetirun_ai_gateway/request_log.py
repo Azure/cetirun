@@ -18,6 +18,12 @@ litellm_request_debug, which makes LiteLLM print that request's prompt and the
 provider's raw response to the log. The callback drops that field from every
 request, so content stays out of the log.
 
+A client can also change the Gateway's retry settings for its own request,
+with num_retries in the body or the x-litellm-num-retries header, or with
+model_group_retry_policy. The Gateway does not retry: agents retry on their
+own, and the two multiply. The callback drops those fields from every request
+as well.
+
 The image's entrypoint registers ``handler`` with LiteLLM before the proxy
 loads its configuration, when CETIRUN_REQUEST_LOG is set, rather than listing
 it in litellm_settings.callbacks, which settings saved in LiteLLM's database
@@ -55,6 +61,10 @@ OPERATOR_KEY_METADATA = ("cetirun_agent", "cetirun_agent_uid", "cetirun_user", "
 USER_AGENT_TAG_PREFIX = "User-Agent:"
 # A request body field that makes LiteLLM log that request's content.
 DEBUG_PARAMETER = "litellm_request_debug"
+# Request fields that change the Gateway's retries for that request. LiteLLM
+# also puts the x-litellm-num-retries header into num_retries before the
+# callback sees the request. Each made one failing request four upstream calls.
+RETRY_PARAMETERS = ("num_retries", "model_group_retry_policy")
 
 
 def iso_time(timestamp):
@@ -184,6 +194,8 @@ class RequestLog(CustomLogger):
     async def async_pre_call_hook(self, user_api_key_dict, cache, data, call_type):
         if isinstance(data, dict):
             data.pop(DEBUG_PARAMETER, None)
+            for name in RETRY_PARAMETERS:
+                data.pop(name, None)
         return None
 
     async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):

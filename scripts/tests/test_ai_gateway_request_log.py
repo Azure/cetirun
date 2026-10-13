@@ -343,6 +343,20 @@ class RequestLogTest(unittest.TestCase):
         self.assertIsNone(result)
         self.assertEqual(data, {"model": "gpt-4o"})
 
+    def test_callers_cannot_change_the_retries(self):
+        # num_retries also carries the x-litellm-num-retries header: LiteLLM
+        # copies it into the request before the callback runs. max_retries
+        # stays: measured, it did not add an upstream call.
+        data = {
+            "model": "gpt-4o",
+            "num_retries": 3,
+            "model_group_retry_policy": {"gpt-4o": {"InternalServerErrorRetries": 3}},
+            "max_retries": 3,
+            "messages": [{"role": "user", "content": "hi"}],
+        }
+        asyncio.run(self.handler().async_pre_call_hook(None, None, data, "acompletion"))
+        self.assertEqual(data, {"model": "gpt-4o", "max_retries": 3, "messages": [{"role": "user", "content": "hi"}]})
+
     def test_no_content_setting_remains(self):
         source = (PACKAGE / "request_log.py").read_text(encoding="utf-8")
         self.assertNotIn("CETIRUN_REQUEST_LOG_CONTENT", source)

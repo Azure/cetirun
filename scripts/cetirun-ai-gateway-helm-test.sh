@@ -226,6 +226,66 @@ assert_contains "mode: default_off" "the Redis cache does not answer requests by
 echo "==> the Gateway does not retry upstream failures"
 assert_contains "num_retries: 0" "LiteLLM's default retries are turned off" "${output}"
 
+# ----- Routing -----
+
+# Several deployments behind one model name: a request that fails on one is sent
+# once more, to another. It is not a retry, so num_retries stays 0. Measured with
+# one of two deployments failing: 13 of 30 requests failed without it, none with
+# it.
+echo "==> a failed request is sent to another deployment of the model"
+assert_contains "enable_weighted_failover: true" "failover is on by default" "${output}"
+assert_contains "enable_weighted_failover: true" "failover does not depend on Redis" "${single}"
+assert_absent "enable_weighted_failover" "failover can be turned off" "$(render --set router.failover=false)"
+
+# A Responses API continuation (previous_response_id) works only on the
+# deployment that produced the earlier response. Measured across two
+# deployments: 6 of 20 continuations failed without the check.
+echo "==> a continuation goes to the deployment that has the earlier response"
+assert_contains 'optional_pre_call_checks: \["responses_api_deployment_check"\]' \
+  "continuations are kept on their deployment by default" "${output}"
+
+# Only the resource that encrypted a model's reasoning can read it. With the
+# LiteLLM in the image, the check makes a conversation whose deployment is down
+# fail until that deployment is back, so it is the administrator's choice.
+echo "==> encrypted reasoning affinity is turned on deliberately"
+assert_absent "encrypted_content_affinity" "encrypted reasoning affinity is off by default" "${output}"
+assert_contains 'optional_pre_call_checks: \["responses_api_deployment_check","encrypted_content_affinity"\]' \
+  "encrypted reasoning affinity can be turned on" "$(render --set router.encryptedContentAffinity=true)"
+assert_absent "optional_pre_call_checks" "no pre-call checks when both are off" \
+  "$(render --set router.continuationAffinity=false)"
+assert_absent "router_settings" "no router settings without Redis or anything to set" \
+  "$(render --set redis.bundled.enabled=false --set replicaCount=1 --set router.failover=false --set router.continuationAffinity=false)"
+
+echo "==> fallbacks are the administrator's"
+assert_absent "fallbacks:" "no fallbacks by default" "${output}"
+assert_contains 'fallbacks: \[{"lint-model":\["other-model"\]}\]' "configured fallbacks reach the router" \
+  "$(render --set 'router.fallbacks[0].lint-model[0]=other-model')"
+assert_contains 'context_window_fallbacks: \[{"lint-model":\["long-model"\]}\]' \
+  "configured context window fallbacks reach the router" \
+  "$(render --set 'router.contextWindowFallbacks[0].lint-model[0]=long-model')"
+assert_rejected "a fallback target that is not a list" --set-string 'router.fallbacks[0].lint-model=other-model'
+
+# Each probe is a real call. Probing the GitHub Copilot routes the CetiRun
+# operator registers for each Agent would spend the users' own quota, so only
+# the models configured here are probed, and a router's own models are probed
+# rather than the router.
+echo "==> background health checks are turned on deliberately, for the configured models"
+assert_absent "background_health_checks" "no health checks by default" "${output}"
+health="$(render --set router.healthChecks.enabled=true \
+  --set-string 'models[1].model_name=auto-route' --set-string 'models[1].litellm_params.model=auto_router/complexity_router' \
+  --set-string 'models[1].litellm_params.input_cost_per_token=0.00001' \
+  --set-string 'models[1].litellm_params.output_cost_per_token=0.00001' \
+  --set-string 'models[1].litellm_params.complexity_router_config.tiers.SIMPLE=lint-model' \
+  --set-string 'models[2].model_name=lint-model' --set-string 'models[2].litellm_params.model=openai/lint-model-2')"
+assert_contains "background_health_checks: true" "health checks can be turned on" "${health}"
+assert_contains 'background_health_check_model_groups: \["lint-model"\]' \
+  "only the configured models are probed, each once, and not a router" "${health}"
+assert_contains "enable_health_check_routing: true" "requests go only to deployments that answered" "${health}"
+assert_contains "health_check_interval: 300$" "probes every five minutes by default" "${health}"
+assert_contains "health_check_staleness_threshold: 600$" "a result counts for two intervals" "${health}"
+assert_contains "health_check_ignore_transient_errors: true" "a probe answered with 429 does not exclude a deployment" "${health}"
+assert_rejected "a probe interval under 30 seconds" --set router.healthChecks.enabled=true --set router.healthChecks.intervalSeconds=10
+
 # ----- Shutdown -----
 
 # LiteLLM finishes requests in flight when stopped and sets no limit of its own,
@@ -584,18 +644,23 @@ assert_contains "containerPort: 9100$" "a metrics port set by hand is used" \
 assert_rejected "the metrics port on the Service port" --set metrics.enabled=true --set metrics.port=4000
 
 # helm upgrade --reuse-values keeps the values of the chart version a release
-# was installed with, so a release from before the request log and metrics has
-# none of their settings; reading them directly failed the upgrade with a nil
-# pointer. Without them, the chart renders as with their defaults. Setting a
-# map to null removes it, as --reuse-values leaves it.
+# was installed with, so a release from before the request log, metrics and
+# router settings has none of them; reading them directly failed the upgrade
+# with a nil pointer. Without them, the chart renders as with their defaults.
+# Setting a map to null removes it, as --reuse-values leaves it.
 echo "==> a release from before these settings upgrades with --reuse-values"
-reuse_args=(--set metrics=null --set requestLog=null --set spendLogs=null)
+reuse_args=(--set metrics=null --set requestLog=null --set spendLogs=null --set router=null)
 for template in deployment.yaml configmap.yaml; do
   [ "$(render "${reuse_args[@]}" -s "templates/${template}")" = "$(render -s "templates/${template}")" ] || {
-    echo "FAIL: without the request log and metrics settings, ${template} differs from its default render" >&2
+    echo "FAIL: without the request log, metrics and router settings, ${template} differs from its default render" >&2
     exit 1
   }
 done
+[ "$(render --set router.healthChecks.enabled=true --set router.healthChecks.intervalSeconds=null -s templates/configmap.yaml)" \
+  = "$(render --set router.healthChecks.enabled=true -s templates/configmap.yaml)" ] || {
+  echo "FAIL: without the probe interval, the health checks differ from their default render" >&2
+  exit 1
+}
 [ "$(render --set metrics.enabled=true --set metrics.podMonitor=null -s templates/deployment.yaml)" \
   = "$(render --set metrics.enabled=true -s templates/deployment.yaml)" ] || {
   echo "FAIL: without the PodMonitor settings, the Deployment differs from its default render" >&2

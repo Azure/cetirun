@@ -45,6 +45,23 @@ data:
       # Copilot route.
       enforce_fallback_model_access: true
       {{- end }}
+      {{- $router := include "cetirun-ai-gateway.router" . | fromJson }}
+      {{- if $router.healthChecks.enabled }}
+      {{- $interval := int $router.healthChecks.intervalSeconds }}
+      # router.healthChecks: probe the deployments of the configured models in
+      # the background, and route only to those that answered. Each probe is a
+      # real call. Models outside this list, such as those the CetiRun operator
+      # registers for each Agent's GitHub Copilot, are never probed: their
+      # probes would spend the users' own quota. A probe answered with 429 or
+      # 408 counts as healthy, since cooldowns already handle those on live
+      # requests. A result is trusted for two intervals.
+      background_health_checks: true
+      health_check_interval: {{ $interval }}
+      background_health_check_model_groups: {{ include "cetirun-ai-gateway.healthCheckModels" . }}
+      enable_health_check_routing: true
+      health_check_staleness_threshold: {{ mul 2 $interval }}
+      health_check_ignore_transient_errors: true
+      {{- end }}
 
     litellm_settings:
       # No retries in the Gateway. LiteLLM retries a failed upstream call twice
@@ -74,7 +91,8 @@ data:
       prometheus_exclude_labels: {{ toJson $metrics.excludeLabels }}
       {{- end }}
       {{- end }}
-    {{- if include "cetirun-ai-gateway.redisEnabled" . }}
+    {{- $redis := include "cetirun-ai-gateway.redisEnabled" . }}
+    {{- if $redis }}
       # Redis is declared here for coordination, not for caching responses.
       #
       # Budgets and rate limits are only shared across replicas once LiteLLM's
@@ -95,14 +113,42 @@ data:
         {{- if include "cetirun-ai-gateway.redisPasswordSecret" . }}
         password: os.environ/REDIS_PASSWORD
         {{- end }}
+    {{- end }}
+    {{- $checks := list }}
+    {{- if $router.continuationAffinity }}
+    {{- $checks = append $checks "responses_api_deployment_check" }}
+    {{- end }}
+    {{- if $router.encryptedContentAffinity }}
+    {{- $checks = append $checks "encrypted_content_affinity" }}
+    {{- end }}
+    {{- if or $redis $router.failover $checks $router.fallbacks $router.contextWindowFallbacks }}
 
-    # Redis has to be declared in both blocks. Configuring only litellm_settings
-    # leaves router coordination unset: budgets keep doubling across replicas
-    # while the deployment looks correctly configured and Redis stays empty.
     router_settings:
+      {{- if $redis }}
+      # Redis has to be declared in both blocks. Configuring only
+      # litellm_settings leaves router coordination unset: budgets keep
+      # doubling across replicas while the deployment looks correctly
+      # configured and Redis stays empty.
       redis_host: {{ include "cetirun-ai-gateway.redisHost" . | quote }}
       redis_port: {{ include "cetirun-ai-gateway.redisPort" . }}
       {{- if include "cetirun-ai-gateway.redisPasswordSecret" . }}
       redis_password: os.environ/REDIS_PASSWORD
+      {{- end }}
+      {{- end }}
+      {{- if $router.failover }}
+      # router.failover: a request that failed on one deployment is sent once
+      # more, to another deployment of the same model. Not a retry: the
+      # failed deployment is not tried again, and num_retries stays 0.
+      enable_weighted_failover: true
+      {{- end }}
+      {{- if $checks }}
+      # router.continuationAffinity and router.encryptedContentAffinity.
+      optional_pre_call_checks: {{ toJson $checks }}
+      {{- end }}
+      {{- with $router.fallbacks }}
+      fallbacks: {{ toJson . }}
+      {{- end }}
+      {{- with $router.contextWindowFallbacks }}
+      context_window_fallbacks: {{ toJson . }}
       {{- end }}
     {{- end }}

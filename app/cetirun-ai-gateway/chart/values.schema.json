@@ -103,6 +103,70 @@
             "description": "Refuse requests to models whose price LiteLLM does not know. A model missing from the price table costs zero, and budget checks are skipped for zero-cost models, so a budget would silently not apply. Azure OpenAI deployment names are not in that table.",
             "default": true
         },
+        "router": {
+            "type": "object",
+            "description": "How a request reaches one of the deployments that serve its model_name, and what happens when that deployment fails. Rendered into LiteLLM's router_settings and general_settings.",
+            "properties": {
+                "failover": {
+                    "type": "boolean",
+                    "description": "Send a request that failed on one deployment once more, to another deployment of the same model_name (LiteLLM's enable_weighted_failover). Not a retry of the failed deployment.",
+                    "default": true
+                },
+                "continuationAffinity": {
+                    "type": "boolean",
+                    "description": "Send a Responses API request that continues an earlier response (previous_response_id) to the deployment that produced it.",
+                    "default": true
+                },
+                "encryptedContentAffinity": {
+                    "type": "boolean",
+                    "description": "Keep each Responses API conversation on the deployment that encrypted its reasoning, or one with the same endpoint and key (LiteLLM's encrypted_content_affinity). For a model_name served by more than one Azure OpenAI resource or OpenAI organization.",
+                    "default": false
+                },
+                "fallbacks": {
+                    "type": "array",
+                    "description": "Models to try when a request to a model fails: a list of maps from a model_name to the model_names to try, in order.",
+                    "items": {
+                        "type": "object",
+                        "minProperties": 1,
+                        "additionalProperties": {
+                            "type": "array",
+                            "items": {"type": "string", "minLength": 1}
+                        }
+                    },
+                    "default": []
+                },
+                "contextWindowFallbacks": {
+                    "type": "array",
+                    "description": "Models to try when a request is too long for the model's context window, in the format of fallbacks.",
+                    "items": {
+                        "type": "object",
+                        "minProperties": 1,
+                        "additionalProperties": {
+                            "type": "array",
+                            "items": {"type": "string", "minLength": 1}
+                        }
+                    },
+                    "default": []
+                },
+                "healthChecks": {
+                    "type": "object",
+                    "description": "Background probes of the deployments of the configured models, and routing only to those that answered. Models added through the console or registered by the CetiRun operator are never probed.",
+                    "properties": {
+                        "enabled": {
+                            "type": "boolean",
+                            "description": "Run the probes and route by their results",
+                            "default": false
+                        },
+                        "intervalSeconds": {
+                            "type": "integer",
+                            "description": "Seconds between probes",
+                            "minimum": 30,
+                            "default": 300
+                        }
+                    }
+                }
+            }
+        },
         "providerCredentials": {
             "type": "object",
             "description": "Provider API keys, surfaced as environment variables and referenced from models as os.environ/NAME",
