@@ -283,7 +283,10 @@ func TestEvaluationExpiryPreservesAttemptsAndDailyBudget(t *testing.T) {
 	nextDay := f.store.now().Add(25 * time.Hour)
 	f.store.now = func() time.Time { return nextDay }
 	f.native(t, binding, "evaluation-next", "", refInput{Ref: second})
-	if result, code := f.store.NativeEvent(context.Background(), nativeEvent(binding, "evaluation-next", "", refInput{Ref: first}), "contract"); code != 7 || result.Reason != "EvidenceInsufficient" {
+	// The expired calls count as unknown results: the candidate's selection can
+	// no longer complete, so it ends without dispatching the case again.
+	result, code := f.store.NativeEvent(context.Background(), nativeEvent(binding, "evaluation-next", "", refInput{Ref: first}), "contract")
+	if ended, ok := result.Data.(writeResult); code != 0 || !ok || ended.State != "EvaluationIncomplete" {
 		t.Fatal("expired unknown dispatch was repeated", result)
 	}
 	v, err := f.store.open()

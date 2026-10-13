@@ -72,13 +72,16 @@ automatically; `trace` reports `HistoryCompacted` after that happens and is not 
   and `mark-note-state` take a `revise` payload; `add-procedure-version` takes a retrieval-plan `propose`
   payload. Send a native playbook through standalone `propose`, because the adapter adds its model and
   runtime compatibility only for that command; do not write those fields yourself. List only
-  observations this batch actually processed. The helper validates the whole batch before publishing it.
-  An unknown result is resolved with the original request ID. Batching does not raise task or storage
-  limits.
+  observations this batch actually processed. A batch with no operations and one to eight
+  `processedObservationIds` dismisses observations that need no change. The helper validates the whole
+  batch before publishing it. An unknown result is resolved with the original request ID. Batching does
+  not raise task or storage limits.
 - `revise`: `{"ref":...,"note":...,"reason":"correction","evidenceRefs":[]}`.
-- `prepare`: `{}`; returns up to eight pending observations.
+- `prepare`: `{}`; returns up to eight pending observations. The Memory context reminds you of pending
+  observations for 24 hours after the latest one; `prepare` keeps listing them until they are processed.
 - `propose`: `{"procedure":...}`. `check`, `advance`, `retire` and `trace` take `{"ref":...}`, where a
-  ref is `{id, revision, digest}` from an earlier response.
+  ref is `{id, revision, digest}` from an earlier response. A proposal marks the observations in its
+  `sourceObservationIds` as processed.
 - `select`: `{"queryTerms":["exact title"]}`. In a writable bounded-auto context it records one lookup
   opportunity; read-only and noCapture contexts never start a trial.
 - `record-source-check`: `{"check":{"targetRef":...,"sourceRef":"source","currentVersion":null,
@@ -163,10 +166,13 @@ are enabled by default. Evaluation runs only when `status` reports `modelEvaluat
 budget remains: at most four extra model requests per store in a rolling 24-hour window. Each run
 reserves one tool-free native request; baseline and candidate cost one slot each, and a timeout,
 cancellation or unknown result still uses its slot. Do not retry an unknown dispatch, ask for another
-model turn, change provider or bypass the request limit. The helper's fixed checker scores the result,
-and `check` and `advance` handle selection, limited trial, adoption and regression quarantine. An active
-synthetic method applies only to that profile's fixtures. It never accepts prompts, model URLs,
-credentials, expected answers or executable checks.
+model turn, change provider or bypass the request limit. A selection call that does not complete ends
+the candidate's evaluation (`rejected`, reason `EvaluationIncomplete`); propose a new revision to try
+again. During a trial, a case whose calls did not both complete counts for neither side, and a trial
+without enough evidence ends with `TrialExhausted` and releases its slot. The helper's fixed checker
+scores the result, and `check` and `advance` handle selection, limited trial, adoption and regression
+quarantine. An active synthetic method applies only to that profile's fixtures. It never accepts prompts,
+model URLs, credentials, expected answers or executable checks.
 
 Reservations expire from the rolling budget after 24 hours. Compact per-method results and the fixed
 fixture set retain attempted cases and exposure, so expiration does not retry an unknown dispatch or

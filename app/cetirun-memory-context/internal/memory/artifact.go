@@ -307,8 +307,15 @@ func (s *Store) nativeEvaluation(ctx context.Context, r Request, event NativeEve
 				return writeResult{}, problem(3, "Conflict")
 			}
 		}
-		caseID, variant := -1, ""
 		caseSet := artifactSetDigest()
+		if phase == "selection" && v.selectionIncomplete(input.Ref, baseline, caseSet) {
+			// Unknown dispatches are never retried, so this candidate can no
+			// longer be scored. Spend no more requests on it.
+			state.State, state.Reason = "rejected", "EvaluationIncomplete"
+			v.m.ProcedureStates[input.Ref.Key()] = state
+			return writeResult{Refs: []Ref{input.Ref}, State: "EvaluationIncomplete"}, nil
+		}
+		caseID, variant := -1, ""
 		for i := start; i < end; i++ {
 			if phase == "prospective" && (v.artifactExposed(input.Ref, caseSet, i) || !strings.HasSuffix(digest([]byte(fmt.Sprintf("%d/%s", i, procedureFingerprint(proc)))), "0")) {
 				continue
@@ -377,7 +384,7 @@ func (s *Store) nativeEvaluation(ctx context.Context, r Request, event NativeEve
 		return failed(out, err)
 	}
 	// Replaying a consumed reservation must not dispatch the model again.
-	if event.Event == "evaluation-next" && ticket == nil && result.State != "TrialExhausted" {
+	if event.Event == "evaluation-next" && ticket == nil && result.State != "TrialExhausted" && result.State != "EvaluationIncomplete" {
 		return failed(out, problem(3, "DispatchOutcomeUnknown"))
 	}
 	if ticket != nil {
@@ -465,13 +472,29 @@ func (s *Store) artifactResults(v *snapshot, ref Ref, proc Procedure, phase stri
 		if !baseOK || !candidateOK || !base.Finished || !candidate.Finished {
 			continue
 		}
+		// A pair without two completed calls is not evidence either way. It
+		// must not make every later check fail, or hold a trial slot forever.
 		if base.Outcome != "completed" || candidate.Outcome != "completed" {
-			return nil, problem(7, "EvidenceInsufficient")
+			continue
 		}
 		_, _, group := artifactCase(i)
 		results = append(results, CaseResult{Key: fmt.Sprintf("%s/%d", artifactRevision, i), Group: group, Correct: candidate.Correct, BaselineCorrect: base.Correct})
 	}
 	return results, nil
+}
+
+// selectionIncomplete reports whether a finished selection call of the
+// candidate did not complete. Selection needs both of its fixed cases, and a
+// case is never dispatched twice, so such a candidate cannot be checked.
+func (v *snapshot) selectionIncomplete(ref Ref, baseline *Ref, caseSet string) bool {
+	for i := 0; i < 2; i++ {
+		for _, variant := range []string{"baseline", "candidate"} {
+			if call, ok := v.artifactCall(ref, baseline, "selection", i, variant, caseSet); ok && call.Finished && call.Outcome != "completed" {
+				return true
+			}
+		}
+	}
+	return false
 }
 func (s *Store) checkArtifact(v *snapshot, r Request, ref Ref, proc Procedure) (writeResult, error) {
 	if err := s.artifactDependencies(v, r, proc); err != nil {
@@ -480,6 +503,12 @@ func (s *Store) checkArtifact(v *snapshot, r Request, ref Ref, proc Procedure) (
 	state := v.m.ProcedureStates[ref.Key()]
 	if state.State != "candidate" {
 		return writeResult{}, problem(3, "Conflict")
+	}
+	baseline := v.m.Slots[artifactSlot(proc.Scope)].Active
+	if v.selectionIncomplete(ref, baseline, artifactSetDigest()) {
+		state.State, state.Reason = "rejected", "EvaluationIncomplete"
+		v.m.ProcedureStates[ref.Key()] = state
+		return writeResult{Refs: []Ref{ref}, State: state.State}, nil
 	}
 	results, err := s.artifactResults(v, ref, proc, "selection")
 	if err != nil {
@@ -493,7 +522,6 @@ func (s *Store) checkArtifact(v *snapshot, r Request, ref Ref, proc Procedure) (
 		improved = improved || result.Correct && !result.BaselineCorrect
 		regression = regression || !result.Correct && result.BaselineCorrect
 	}
-	baseline := v.m.Slots[artifactSlot(proc.Scope)].Active
 	baseDigest := digest([]byte("artifact-native-baseline/v1"))
 	if baseline != nil {
 		baseDigest = baseline.Digest
