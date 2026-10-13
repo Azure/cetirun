@@ -7,7 +7,7 @@ COPY app/cetirun-agent-broker/go.mod ./
 COPY app/cetirun-agent-broker/ ./
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -o /agent-broker .
 
-FROM mcr.microsoft.com/azurelinux/distroless/base:3.0@sha256:2b5cec59b51cb0509157e3a1b730e19aa42912b99d7f5300b87eac7000bfea19
+FROM mcr.microsoft.com/azurelinux/distroless/base:3.0@sha256:431ae1dc2924c41ae54c97c25676990f0c61d6295f42f5d07783c6976f58f1ef
 COPY --from=builder /agent-broker /agent-broker
 USER 65532:65532
 EXPOSE 8080
