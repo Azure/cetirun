@@ -291,6 +291,38 @@ LiteLLM default and maximum monthly USD budget. Custom is not an allowed policy
 Harness. Agent Identity cannot complete aggregate `PolicyApplied` until a typed
 credential-service executor supplies matching read-back evidence.
 
+### AgentPolicy administration
+
+The admin Portal manages a deliberately small subset of the cluster-scoped
+`AgentPolicy`: allowed Harnesses, allowed skills, Copilot access, shared model
+names, and the LiteLLM monthly budget expressed in US dollars. It does not
+interpret or enforce a Policy. Sandbox and AI Gateway components remain
+responsible for the fields they execute. Editing a Policy that is already bound
+outside the Portal can affect those consumers.
+
+#### HTTP API
+
+These admin-only endpoints manage `AgentPolicy` resources:
+
+- `GET` and `POST /api/v1/admin/policies`
+- `GET`, `PUT`, and `DELETE /api/v1/admin/policies/{name}`
+
+Update and delete requests include the UID and resource version returned by a
+previous read. Stale requests fail with `409 Conflict`. Updates patch only the
+Portal-managed fields and preserve security, network, identity, Kubernetes
+access, and other fields owned by their executing components.
+
+The API validates model access and budgets as one unit: Copilot or shared model
+access requires a positive default and maximum monthly USD budget, and the
+default cannot exceed the maximum.
+
+#### Activation boundary
+
+The Portal provides no control for `Team.spec.agentPolicyRef`, `sandboxRefs`,
+or `defaultSandboxRef`. An administrator must use another Kubernetes client to
+bind a Policy. Portal binding should be added only after the Sandbox and AI
+Gateway execution paths are completed and validated.
+
 Production Sandbox start and observation still require implementation and
 qualification. See the
 [operator foundation notes]({{< repo "app/cetirun-operator/README.md" >}})
