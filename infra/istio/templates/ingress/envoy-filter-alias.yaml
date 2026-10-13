@@ -74,10 +74,13 @@ spec:
               local CETIRUN_AUTH_KEY_HEADER = "x-cetirun-auth-key"
               local AGENT_API_KEY_HEADER = "x-cetirun-agent-api-key"
 
+              -- The Portal session cookie, its chunks, and OAuth2 Proxy's
+              -- sign-in (CSRF) cookies, one per sign-in in progress.
               function is_portal_cookie_name(name)
                 if not name then return false end
                 return name == PORTAL_COOKIE_NAME or
-                  name:match("^" .. PORTAL_COOKIE_NAME .. "_%d+$") ~= nil
+                  name:match("^" .. PORTAL_COOKIE_NAME .. "_%d+$") ~= nil or
+                  name:match("^" .. PORTAL_COOKIE_NAME .. "_[%w_%-]*csrf$") ~= nil
               end
 
               function strip_portal_session_cookie(request_handle)
@@ -332,8 +335,9 @@ spec:
                   return
                 end
                 -- Portal authentication is complete and ownership has been
-                -- verified. Remove only the Portal session cookie before routing
-                -- to the instance; preserve cookies owned by the Agent UI.
+                -- verified. Remove only the Portal session and sign-in cookies
+                -- before routing to the instance; preserve cookies owned by the
+                -- Agent UI.
                 strip_portal_session_cookie(request_handle)
                 -- OAuth2 Proxy owns Authorization. Restore a workload bearer
                 -- from its purpose-specific transport header only after the

@@ -81,7 +81,7 @@ export async function downloadTeamsApp(instanceName: string): Promise<void> {
   }
 
   const ct = response.headers.get("content-type") || "";
-  if (response.redirected || ct.includes("text/html")) {
+  if (response.status === 401 || response.redirected || ct.includes("text/html")) {
     throw new Error("Session expired, please refresh the page");
   }
 

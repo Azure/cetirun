@@ -72,6 +72,43 @@ class IstioGatewayIsolationTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertEqual(is_exempt_path(path), expected)
 
+    def test_portal_sign_in_cookies_never_reach_agents(self):
+        # OAuth2 Proxy names a CSRF cookie per sign-in when
+        # --cookie-csrf-per-request is on: <session cookie>_<8 characters of
+        # the state hash>_csrf, or <session cookie>_csrf otherwise.
+        for line in (
+            'return name == PORTAL_COOKIE_NAME or',
+            'name:match("^" .. PORTAL_COOKIE_NAME .. "_%d+$") ~= nil or',
+            'name:match("^" .. PORTAL_COOKIE_NAME .. "_[%w_%-]*csrf$") ~= nil',
+        ):
+            with self.subTest(line=line):
+                self.assertIn(line, self.source)
+
+        # The Lua patterns above, as Python regular expressions.
+        def is_portal_cookie_name(name):
+            return (
+                name == "_cetirun_oauth2"
+                or re.fullmatch(r"_cetirun_oauth2_\d+", name) is not None
+                or re.fullmatch(r"_cetirun_oauth2_[A-Za-z0-9_-]*csrf", name) is not None
+            )
+
+        cases = {
+            "_cetirun_oauth2": True,
+            "_cetirun_oauth2_0": True,
+            "_cetirun_oauth2_12": True,
+            "_cetirun_oauth2_csrf": True,
+            "_cetirun_oauth2_D2Wd31uG_csrf": True,
+            "_cetirun_oauth2_-j84Ob9O_csrf": True,
+            "_cetirun_oauth2_6Ys_ZHE7_csrf": True,
+            "_cetirun_oauth2_csrf_extra": False,
+            "_cetirun_oauth2x": False,
+            "agent_session": False,
+            "openclaw_csrf": False,
+        }
+        for name, expected in cases.items():
+            with self.subTest(name=name):
+                self.assertEqual(is_portal_cookie_name(name), expected)
+
     def test_instance_branch_preserves_ownership_and_credential_isolation(self):
         token_removal = self.source.index(
             'request_handle:headers():remove("x-cetirun-portal-id-token")'

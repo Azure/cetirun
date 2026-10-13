@@ -161,6 +161,17 @@ release. The chart hashes the live Secret data into the OAuth2 Proxy Pod
 template, so that Helm reconciliation rolls the Pods and loads the new
 password. A Secret update by itself does not restart existing Pods.
 
+### Expired sessions
+
+After a session expires, the next page load signs the user in again. OAuth2
+Proxy keeps a separate CSRF cookie for each sign-in in progress, so sign-ins
+started at the same time, by a page reload and background requests or by
+several tabs, do not invalidate each other. Starting a sign-in deletes the
+oldest of these cookies beyond `oauth2Proxy.cookie.csrfPerRequestLimit`
+(default 20). Requests below `/api/` and `/ui/<instance>/api/` answer `401`
+instead of redirecting to Entra, because a browser cannot follow that redirect
+from a script; the Portal then asks the user to refresh the page.
+
 ## Authentication and ownership
 
 ```text
@@ -207,7 +218,8 @@ The ownership filter extracts the instance from `/ui/<instance>/` or
 the first path segment for other instance services, then calls the portal's
 internal ownership endpoint. Before forwarding a normal or webhook request to
 an instance workload, it removes the `_cetirun_oauth2` Portal session cookie
-(including chunk suffixes) while retaining cookies owned by the Agent UI.
+(including chunk suffixes) and OAuth2 Proxy's sign-in (CSRF) cookies while
+retaining cookies owned by the Agent UI.
 Portal routes retain the Portal cookie. The filter does not compare a subdomain
 with an owner alias. The portal namespace requires actual sidecar injection, enforced
 NetworkPolicy, and its chart's authorization policy.
