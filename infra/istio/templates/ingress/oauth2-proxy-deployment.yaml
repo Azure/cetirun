@@ -114,11 +114,13 @@ spec:
             {{- end }}
             - --email-domain={{ .Values.emailDomain }}
             - --skip-provider-button=true
-            # A browser cannot follow a sign-in redirect from an API request.
-            # Requests to the Portal API and to Agent UI APIs answer 401 when
-            # the session has expired, instead of starting a sign-in.
+            # A browser cannot follow a sign-in redirect from a script. Requests
+            # to the Portal API, to Agent UI APIs and for Agent UI assets (an
+            # Agent UI can request dozens at once) answer 401 when the session
+            # has expired, instead of each starting a sign-in.
             - --api-route=^/api/
             - --api-route=^/ui/[^/]+/api/
+            - --api-route=^/ui/[^/]+/assets/
             {{- range (splitList "," $allowedGroups) }}
             {{- if ne (. | trim) "" }}
             - --allowed-group={{ . | trim }}

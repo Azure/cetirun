@@ -43,7 +43,8 @@ assert_sign_in_flags() {
     '- --cookie-csrf-per-request=true' \
     "- --cookie-csrf-per-request-limit=${limit}" \
     '- --api-route=^/api/' \
-    '- --api-route=^/ui/[^/]+/api/'; do
+    '- --api-route=^/ui/[^/]+/api/' \
+    '- --api-route=^/ui/[^/]+/assets/'; do
     grep -Fxq -- "            ${flag}" <<< "${output}" || {
       echo "FAIL: oauth2-proxy did not render ${flag}" >&2
       exit 1

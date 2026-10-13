@@ -168,9 +168,11 @@ Proxy keeps a separate CSRF cookie for each sign-in in progress, so sign-ins
 started at the same time, by a page reload and background requests or by
 several tabs, do not invalidate each other. Starting a sign-in deletes the
 oldest of these cookies beyond `oauth2Proxy.cookie.csrfPerRequestLimit`
-(default 20). Requests below `/api/` and `/ui/<instance>/api/` answer `401`
-instead of redirecting to Entra, because a browser cannot follow that redirect
-from a script; the Portal then asks the user to refresh the page.
+(default 20). Requests below `/api/`, `/ui/<instance>/api/` and
+`/ui/<instance>/assets/` answer `401` instead of redirecting to Entra: a
+browser cannot follow that redirect from a script, and an Agent UI can request
+dozens of assets at once, each of which would otherwise start a sign-in. The
+Portal then asks the user to refresh the page.
 
 ## Authentication and ownership
 
