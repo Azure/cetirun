@@ -19,7 +19,10 @@ import (
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/aigateway"
+	helmfixture "github.com/Azure/CetiRun/app/cetirun-operator/internal/helm/testfixture"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxbinding"
+	w "github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
 	"google.golang.org/protobuf/proto"
 	"helm.sh/helm/v3/pkg/chart/loader"
 	istiov1beta1 "istio.io/client-go/pkg/apis/networking/v1beta1"
@@ -112,6 +115,46 @@ func oldNativeUpgradeFixture(t *testing.T) (*nativeSandboxFixture, oldNativeUpgr
 		t.Fatal(err)
 	}
 	return &nativeSandboxFixture{r: r, kube: kube, gateway: gateway, installer: installer, agent: agent}, state
+}
+
+func TestNativeUpgradePreparesExistingAgentWithPinnedPreProxyChart(t *testing.T) {
+	f := newNativeSandboxFixture(t, true)
+	if err := helmfixture.RestorePreProxyContract(f.installer.chart); err != nil {
+		t.Fatal(err)
+	}
+	original := f.current(t)
+	if original.Spec.Helm.Version == "" || original.Annotations[sandboxbinding.AuthorizationAnnotation] == "" || f.installer.stages != 0 {
+		t.Fatal("fixture must be an authorized, pinned Agent awaiting preparation")
+	}
+	receipt := &corev1.ConfigMap{}
+	receiptKey := client.ObjectKey{Namespace: f.r.OperatorNamespace, Name: w.PreparationReceiptName(original.UID)}
+	if err := f.kube.Get(context.Background(), receiptKey, receipt); !apierrors.IsNotFound(err) {
+		t.Fatal("pending fixture unexpectedly has reusable preparation:", err)
+	}
+	f.r.ChartVersion = "999.0.0"
+	f.prepare(t)
+	current := f.current(t)
+	if !reflect.DeepEqual(current.Spec, original.Spec) || current.UID != original.UID ||
+		current.Annotations[sandboxbinding.AuthorizationAnnotation] != original.Annotations[sandboxbinding.AuthorizationAnnotation] ||
+		f.installer.prepared.ChartVersion != original.Spec.Helm.Version {
+		t.Fatal("upgrade changed the pending Agent's pin, intent or authorization")
+	}
+	if err := f.kube.Get(context.Background(), receiptKey, receipt); err != nil {
+		t.Fatal(err)
+	}
+	recorded, err := w.DecodePreparationReceipt(receipt, w.ObjectIdentity{Name: original.Name, UID: original.UID})
+	if err != nil || recorded.Prerequisites.ChartVersion != original.Spec.Helm.Version {
+		t.Fatal("preparation did not retain the old chart pin:", err)
+	}
+	_, expected := f.expectation(t)
+	if !expected.ExecutionHeld || expected.SinglePod || f.installer.stages != 1 {
+		t.Fatal("old pinned chart did not complete guarded held preparation")
+	}
+	f.assertGatewayProjection(t, expected)
+	f.ready(t)
+	if f.installer.stages != 1 {
+		t.Fatal("completed pinned preparation was not reusable")
+	}
 }
 
 func TestNativeUpgradePreservesExistingRuntimeAndReceipt(t *testing.T) {

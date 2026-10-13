@@ -194,6 +194,11 @@ authentication, owner authorization or device authentication. The
 `sandboxWorkload.trustedProxyIPs` hook is supplied
 only for authenticated native execution; held and legacy rendering without that
 hook preserve their existing proxy configuration.
+Native Agents awaiting preparation can retain chart pins predating this hook.
+For those charts, the protected renderer supplies the exact proxy list through
+the existing `openclaw.config.gateway.trustedProxies` value and omits the
+unsupported hook. It retains the original chart schema and final proxy-list
+validation without rewriting the Agent's pin or authorization.
 Adding this render projection does not change the existing
 `sandbox-controls-v2` digest for otherwise unchanged inputs. An already-running
 native lifetime keeps its old runtime configuration, workload, route, expectation
