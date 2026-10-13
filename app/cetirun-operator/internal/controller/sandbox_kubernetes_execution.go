@@ -39,9 +39,9 @@ const (
 
 func validateNativeSandboxProfile(attempt *sandboxPreparationAttempt) error {
 	agent, box, policy := attempt.agent, attempt.resolution.Sandbox, attempt.resolution.AgentPolicy
-	if (agent.Spec.Agent.Type != api.AgentTypeOpenClaw && agent.Spec.Agent.Type != api.AgentTypeHermes) ||
+	if agent.Spec.Agent.Type != api.AgentTypeOpenClaw ||
 		box.Type != api.SandboxKata || box.Storage.Home.AccessMode != corev1.ReadWriteOncePod {
-		return fmt.Errorf("%w: native execution requires OpenClaw or Hermes, Kata and ReadWriteOncePod HOME", sandboxpolicy.ErrUnsupportedControl)
+		return fmt.Errorf("%w: native execution requires OpenClaw, Kata and ReadWriteOncePod HOME", sandboxpolicy.ErrUnsupportedControl)
 	}
 	if !agent.Spec.SharedModelsEnabled() || agent.Spec.GitHubCopilotEnabled() ||
 		agent.Spec.Tailscale != nil || agent.Spec.MSTeams != nil || agentIdentityRequested(agent) ||
@@ -85,8 +85,8 @@ func sandboxGatewayProjectionReady(agent *api.Agent) bool {
 		return false
 	}
 	policy := agent.Status.Policy.EffectivePolicyRef
-	desired := gatewayPolicyRevision(agent, aiGatewayGrant{
-		policyName: policy.Name, policyUID: policy.UID,
+	desired := gatewayGrantRevision(agent, aiGatewayGrant{
+		policyName: policy.Name, policyUID: policy.UID, policyBound: true,
 		groups: slices.Clone(status.AccessGroups), budget: budget,
 	})
 	return desired != "" && status.PolicyRevision == desired

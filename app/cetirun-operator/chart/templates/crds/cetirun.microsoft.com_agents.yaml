@@ -249,7 +249,9 @@ spec:
                     type: integer
                 type: object
               sandboxRef:
-                description: SandboxRef selects a Sandbox permitted by the Team.
+                description: |-
+                  SandboxRef selects a Sandbox permitted by the Team. It is required for
+                  platform-managed OpenClaw and Hermes Agents and omitted by Custom Agents.
                 maxLength: 253
                 minLength: 1
                 pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
@@ -311,7 +313,9 @@ spec:
                 type: object
               team:
                 description: |-
-                  Team is the name of the Team this instance belongs to.
+                  Team is the name of the Team this instance belongs to. Platform-managed
+                  OpenClaw and Hermes Agents require a Team with an AgentPolicy; Custom
+                  Agents use the separate Custom runtime contract.
                   The operator merges team defaults (user context, AI model, skills) into
                   the instance configuration. Per-instance fields take precedence.
                 type: string
@@ -331,14 +335,17 @@ spec:
                   email:
                     description: Email address for notifications (optional).
                     type: string
+                  team:
+                    description: |-
+                      Team is legacy display context, not a Team or policy assignment.
+                      Deprecated: use spec.team for Team configuration.
+                    type: string
                 required:
                 - alias
                 - displayName
                 type: object
             required:
             - agent
-            - sandboxRef
-            - team
             - user
             type: object
             x-kubernetes-validations:
@@ -376,8 +383,8 @@ spec:
                   credentialPolicyRevision:
                     description: |-
                       CredentialPolicyRevision is reserved for a future typed credential
-                      service read-back. The legacy bearer issuer must leave it empty; only the
-                      credential component may report its own policy execution revision.
+                      service read-back. The legacy bearer issuer must leave it empty and cannot
+                      satisfy aggregate Policy application readiness.
                     type: string
                   displayName:
                     description: |-

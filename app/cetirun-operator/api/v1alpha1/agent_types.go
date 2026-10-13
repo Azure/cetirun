@@ -42,16 +42,21 @@ type AgentSpec struct {
 	// +kubebuilder:validation:Required
 	User UserSpec `json:"user"`
 
-	// Team is the name of the Team this instance belongs to.
+	// Team is the name of the Team this instance belongs to. Platform-managed
+	// OpenClaw and Hermes Agents require a Team with an AgentPolicy; Custom
+	// Agents use the separate Custom runtime contract.
 	// The operator merges team defaults (user context, AI model, skills) into
 	// the instance configuration. Per-instance fields take precedence.
-	Team string `json:"team"`
+	// +optional
+	Team string `json:"team,omitempty"`
 
-	// SandboxRef selects a Sandbox permitted by the Team.
+	// SandboxRef selects a Sandbox permitted by the Team. It is required for
+	// platform-managed OpenClaw and Hermes Agents and omitted by Custom Agents.
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=253
 	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`
-	SandboxRef string `json:"sandboxRef"`
+	// +optional
+	SandboxRef string `json:"sandboxRef,omitempty"`
 
 	// Model is the Agent's preferred default model as exposed by the platform
 	// AI Gateway, such as a shared model or copilot/<model>. Policy resolution rejects
@@ -172,6 +177,11 @@ type UserSpec struct {
 	// Email address for notifications (optional).
 	// +optional
 	Email string `json:"email,omitempty"`
+
+	// Team is legacy display context, not a Team or policy assignment.
+	// Deprecated: use spec.team for Team configuration.
+	// +optional
+	Team string `json:"team,omitempty"`
 }
 
 // HelmSpec allows per-instance Helm chart configuration overrides.
@@ -343,8 +353,8 @@ type AgentIdentityStatus struct {
 	Reason string `json:"reason,omitempty"`
 
 	// CredentialPolicyRevision is reserved for a future typed credential
-	// service read-back. The legacy bearer issuer must leave it empty; only the
-	// credential component may report its own policy execution revision.
+	// service read-back. The legacy bearer issuer must leave it empty and cannot
+	// satisfy aggregate Policy application readiness.
 	// +optional
 	CredentialPolicyRevision string `json:"credentialPolicyRevision,omitempty"`
 }

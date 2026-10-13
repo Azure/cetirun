@@ -8,66 +8,24 @@ import (
 	"strings"
 	"testing"
 
-	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxbinding"
 )
 
-func TestSandboxGatewayNamespaceRequiresExactAgentOwnership(t *testing.T) {
-	ctx := context.Background()
-	scheme := runtime.NewScheme()
-	if err := corev1.AddToScheme(scheme); err != nil {
-		t.Fatal(err)
-	}
-	if err := api.AddToScheme(scheme); err != nil {
-		t.Fatal(err)
-	}
-	agent := &api.Agent{ObjectMeta: metav1.ObjectMeta{Name: "example", UID: types.UID("agent-uid")}}
-	kube := fake.NewClientBuilder().WithScheme(scheme).Build()
-	r := &AgentReconciler{Client: kube}
-	if err := r.ensureSandboxGatewayNamespace(ctx, agent); err != nil {
-		t.Fatal(err)
-	}
-	namespace := &corev1.Namespace{}
-	if err := kube.Get(ctx, types.NamespacedName{Name: instanceNamespace(agent.Name)}, namespace); err != nil {
-		t.Fatal(err)
-	}
-	if !hasAgentOwner(namespace, agent) || namespace.Labels["app.kubernetes.io/managed-by"] != "cetirun-operator" {
-		t.Fatalf("namespace is not bound to the exact Agent: %+v", namespace.ObjectMeta)
-	}
-	if err := r.ensureSandboxGatewayNamespace(ctx, agent); err != nil {
-		t.Fatalf("idempotent ownership check failed: %v", err)
-	}
-
-	foreign := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: instanceNamespace("foreign")}}
-	foreignKube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(foreign).Build()
-	foreignAgent := &api.Agent{ObjectMeta: metav1.ObjectMeta{Name: "foreign", UID: types.UID("foreign-agent-uid")}}
-	if err := (&AgentReconciler{Client: foreignKube}).ensureSandboxGatewayNamespace(ctx, foreignAgent); err == nil {
-		t.Fatal("same-name foreign namespace was adopted")
-	}
-}
-
 func TestResolvePolicyIgnoresSandboxReadiness(t *testing.T) {
-	policy := acceptedPolicy()
-	team := &api.Team{ObjectMeta: metav1.ObjectMeta{Name: "team", UID: types.UID("team-uid")}, Spec: api.TeamSpec{
-		AgentPolicyRef: policy.Name, SandboxRefs: []string{"unready"}, DefaultSandboxRef: "unready",
-		Skills: []string{"allowed", "removed"},
-	}}
-	agent := &api.Agent{ObjectMeta: metav1.ObjectMeta{Name: "agent", UID: types.UID("agent-uid")}, Spec: api.AgentSpec{
-		Team: "team", SandboxRef: "unready", Agent: api.HarnessSpec{Type: api.AgentTypeOpenClaw},
-		SkillOverrides: api.SkillOverrideSpec{Remove: []string{"removed"}},
-		ModelAccess:    &api.ModelAccessSpec{GitHubCopilot: boolPointer(true)},
-	}}
-	scheme := runtime.NewScheme()
-	if err := api.AddToScheme(scheme); err != nil {
-		t.Fatal(err)
-	}
-	r := &AgentReconciler{Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(policy, team, agent).Build()}
-	resolution, err := r.resolvePolicy(context.Background(), agent)
+	policy, team, box := acceptedPolicyFixture()
+	team.Spec.Skills = []string{"allowed", "removed"}
+	agent := authorizedAgent(t, team, policy, box)
+	agent.Spec.SkillOverrides.Remove = []string{"removed"}
+	agent.Spec.ModelAccess = &api.ModelAccessSpec{GitHubCopilot: boolPointer(true)}
+
+	resolution, err := policyReconciler(t, policy, team).resolvePolicy(context.Background(), agent)
 	if err != nil {
 		t.Fatalf("resolve policy: %v", err)
 	}
@@ -77,81 +35,167 @@ func TestResolvePolicyIgnoresSandboxReadiness(t *testing.T) {
 }
 
 func TestResolvePolicyRejectsEffectiveSkillOutsideAllowlist(t *testing.T) {
-	policy := acceptedPolicy()
-	team := &api.Team{ObjectMeta: metav1.ObjectMeta{Name: "team", UID: types.UID("team-uid")}, Spec: api.TeamSpec{AgentPolicyRef: policy.Name, SandboxRefs: []string{"box"}, DefaultSandboxRef: "box", Skills: []string{"denied"}}}
-	agent := &api.Agent{ObjectMeta: metav1.ObjectMeta{Name: "agent", UID: types.UID("agent-uid")}, Spec: api.AgentSpec{Team: team.Name, SandboxRef: "box", Agent: api.HarnessSpec{Type: api.AgentTypeOpenClaw}}}
-	scheme := runtime.NewScheme()
-	if err := api.AddToScheme(scheme); err != nil {
-		t.Fatal(err)
-	}
-	r := &AgentReconciler{Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(policy, team).Build()}
-	if _, err := r.resolvePolicy(context.Background(), agent); err == nil {
+	policy, team, box := acceptedPolicyFixture()
+	team.Spec.Skills = []string{"denied"}
+	agent := authorizedAgent(t, team, policy, box)
+
+	if _, err := policyReconciler(t, policy, team).resolvePolicy(context.Background(), agent); err == nil {
 		t.Fatal("expected policy denial for an unapproved skill")
 	}
 }
 
-func TestResolvePolicyUsesCurrentTeamPolicyWithoutSandboxAuthorization(t *testing.T) {
-	policy := acceptedPolicy()
-	team := &api.Team{ObjectMeta: metav1.ObjectMeta{Name: "team", UID: types.UID("team-uid")}, Spec: api.TeamSpec{
-		AgentPolicyRef: policy.Name, SandboxRefs: []string{"box"}, DefaultSandboxRef: "box",
-	}}
-	agent := &api.Agent{ObjectMeta: metav1.ObjectMeta{Name: "agent", UID: types.UID("agent-uid")}, Spec: api.AgentSpec{
-		Team: team.Name, SandboxRef: "box", Agent: api.HarnessSpec{Type: api.AgentTypeOpenClaw},
-		ModelAccess: &api.ModelAccessSpec{GitHubCopilot: boolPointer(true)},
-	}}
+func TestResolvePolicyRequiresProtectedAuthorization(t *testing.T) {
+	policy, team, _ := acceptedPolicyFixture()
+	agent := &api.Agent{
+		ObjectMeta: metav1.ObjectMeta{Name: "agent", UID: types.UID("agent-uid")},
+		Spec: api.AgentSpec{
+			Team: team.Name, SandboxRef: "box", Agent: api.HarnessSpec{Type: api.AgentTypeOpenClaw},
+		},
+	}
 
+	if _, err := policyReconciler(t, policy, team).resolvePolicy(context.Background(), agent); err == nil || !strings.Contains(err.Error(), "protected") {
+		t.Fatalf("Agent without protected authorization was resolved: %v", err)
+	}
+}
+
+func TestResolvePolicyRejectsPolicyUIDReplacement(t *testing.T) {
+	policy, team, box := acceptedPolicyFixture()
+	agent := authorizedAgent(t, team, policy, box)
 	replacement := policy.DeepCopy()
 	replacement.UID = types.UID("replacement-policy-uid")
-	scheme := runtime.NewScheme()
-	if err := api.AddToScheme(scheme); err != nil {
-		t.Fatal(err)
+
+	if _, err := policyReconciler(t, replacement, team).resolvePolicy(context.Background(), agent); err == nil || !strings.Contains(err.Error(), "protected authorization") {
+		t.Fatalf("replacement AgentPolicy was resolved without reauthorization: %v", err)
 	}
-	r := &AgentReconciler{Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(replacement, team, agent).Build()}
-	resolution, err := r.resolvePolicy(context.Background(), agent)
-	if err != nil {
-		t.Fatalf("resolve policy without Sandbox authorization: %v", err)
+}
+
+func TestResolvePolicyRejectsTeamUIDReplacement(t *testing.T) {
+	policy, team, box := acceptedPolicyFixture()
+	agent := authorizedAgent(t, team, policy, box)
+	replacement := team.DeepCopy()
+	replacement.UID = types.UID("replacement-team-uid")
+
+	if _, err := policyReconciler(t, policy, replacement).resolvePolicy(context.Background(), agent); err == nil || !strings.Contains(err.Error(), "protected authorization") {
+		t.Fatalf("replacement Team was resolved without reauthorization: %v", err)
 	}
-	if resolution.policy.UID != replacement.UID {
-		t.Fatalf("resolved AgentPolicy UID = %q, want current UID %q", resolution.policy.UID, replacement.UID)
+}
+
+func TestResolvePolicyEnforcesAgentIdentity(t *testing.T) {
+	tests := []struct {
+		name     string
+		identity api.AgentPolicyAgentIdentity
+		request  *api.AgentIdentitySpec
+		want     string
+	}{
+		{
+			name: "required but omitted", identity: api.AgentPolicyAgentIdentity{Required: true, Allowed: true, CredentialServices: []string{"azure-resource-manager"}},
+			want: "requires Agent Identity",
+		},
+		{
+			name: "requested but denied", identity: api.AgentPolicyAgentIdentity{}, request: &api.AgentIdentitySpec{Enabled: true},
+			want: "not permitted",
+		},
+		{
+			name: "requested with supported service", identity: api.AgentPolicyAgentIdentity{Allowed: true, CredentialServices: []string{"azure-resource-manager"}},
+			request: &api.AgentIdentitySpec{Enabled: true},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			policy, team, box := acceptedPolicyFixture()
+			policy.Spec.AgentIdentity = test.identity
+			agent := authorizedAgent(t, team, policy, box)
+			agent.Spec.AgentIdentity = test.request
+			_, err := policyReconciler(t, policy, team).resolvePolicy(context.Background(), agent)
+			if test.want == "" && err != nil {
+				t.Fatalf("resolve policy: %v", err)
+			}
+			if test.want != "" && (err == nil || !strings.Contains(err.Error(), test.want)) {
+				t.Fatalf("resolve policy error = %v, want substring %q", err, test.want)
+			}
+		})
 	}
 }
 
 func TestResolvePolicyRejectsTerminatingReferences(t *testing.T) {
 	for _, terminating := range []string{"Team", "AgentPolicy"} {
 		t.Run(terminating, func(t *testing.T) {
-			policy := acceptedPolicy()
-			team := &api.Team{ObjectMeta: metav1.ObjectMeta{Name: "team"}, Spec: api.TeamSpec{AgentPolicyRef: policy.Name, SandboxRefs: []string{"box"}, DefaultSandboxRef: "box"}}
+			policy, team, box := acceptedPolicyFixture()
+			agent := authorizedAgent(t, team, policy, box)
+			now := metav1.Now()
 			if terminating == "Team" {
-				now := metav1.Now()
 				team.DeletionTimestamp = &now
 				team.Finalizers = []string{"test"}
 			} else {
-				now := metav1.Now()
 				policy.DeletionTimestamp = &now
 				policy.Finalizers = []string{"test"}
 			}
-			agent := &api.Agent{ObjectMeta: metav1.ObjectMeta{Name: "agent"}, Spec: api.AgentSpec{Team: team.Name, Agent: api.HarnessSpec{Type: api.AgentTypeOpenClaw}}}
-			scheme := runtime.NewScheme()
-			if err := api.AddToScheme(scheme); err != nil {
-				t.Fatal(err)
-			}
-			r := &AgentReconciler{Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(policy, team).Build()}
-			if _, err := r.resolvePolicy(context.Background(), agent); err == nil || !strings.Contains(err.Error(), "terminating") {
+			if _, err := policyReconciler(t, policy, team).resolvePolicy(context.Background(), agent); err == nil || !strings.Contains(err.Error(), "terminating") {
 				t.Fatalf("terminating %s was resolved: %v", terminating, err)
 			}
 		})
 	}
 }
 
-func acceptedPolicy() *api.AgentPolicy {
-	return &api.AgentPolicy{ObjectMeta: metav1.ObjectMeta{Name: "policy", UID: types.UID("policy-uid"), Generation: 1}, Spec: api.AgentPolicySpec{
-		Harnesses: api.AgentPolicyHarnesses{Allowed: []api.AgentType{api.AgentTypeOpenClaw}},
-		Skills:    api.AgentPolicySkills{Allowed: []string{"allowed"}},
-		ModelAccess: api.AgentPolicyModelAccess{
-			Copilot:       api.AgentPolicyCopilotAccess{Allowed: true},
-			GatewayBudget: &api.AgentPolicyGatewayBudget{DefaultMonthlyUSD: "1", MaxMonthlyUSD: "2"},
+func policyReconciler(t *testing.T, objects ...runtime.Object) *AgentReconciler {
+	t.Helper()
+	scheme := runtime.NewScheme()
+	if err := api.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	return &AgentReconciler{Client: fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(objects...).Build()}
+}
+
+func acceptedPolicyFixture() (*api.AgentPolicy, *api.Team, *api.Sandbox) {
+	policy := &api.AgentPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: "policy", UID: types.UID("policy-uid"), Generation: 1},
+		Spec: api.AgentPolicySpec{
+			Harnesses: api.AgentPolicyHarnesses{Allowed: []api.AgentType{api.AgentTypeOpenClaw}},
+			Skills:    api.AgentPolicySkills{Allowed: []string{"allowed"}},
+			ModelAccess: api.AgentPolicyModelAccess{
+				Copilot:       api.AgentPolicyCopilotAccess{Allowed: true},
+				GatewayBudget: &api.AgentPolicyGatewayBudget{DefaultMonthlyUSD: "1", MaxMonthlyUSD: "2"},
+			},
 		},
-	}, Status: api.AgentPolicyStatus{ObservedGeneration: 1, Conditions: []metav1.Condition{{Type: api.ConditionAgentPolicyAccepted, Status: metav1.ConditionTrue, ObservedGeneration: 1}}}}
+		Status: api.AgentPolicyStatus{
+			ObservedGeneration: 1,
+			Conditions: []metav1.Condition{{
+				Type: api.ConditionAgentPolicyAccepted, Status: metav1.ConditionTrue, ObservedGeneration: 1,
+			}},
+		},
+	}
+	team := &api.Team{
+		ObjectMeta: metav1.ObjectMeta{Name: "team", UID: types.UID("team-uid"), Generation: 1},
+		Spec: api.TeamSpec{
+			AgentPolicyRef: policy.Name, SandboxRefs: []string{"box"}, DefaultSandboxRef: "box",
+		},
+		Status: api.TeamStatus{
+			ObservedGeneration: 1,
+			Conditions: []metav1.Condition{{
+				Type: api.ConditionTeamAccepted, Status: metav1.ConditionTrue, ObservedGeneration: 1,
+			}},
+		},
+	}
+	box := &api.Sandbox{ObjectMeta: metav1.ObjectMeta{Name: "box", UID: types.UID("sandbox-uid")}}
+	return policy, team, box
+}
+
+func authorizedAgent(t *testing.T, team *api.Team, policy *api.AgentPolicy, box *api.Sandbox) *api.Agent {
+	t.Helper()
+	agent := &api.Agent{
+		ObjectMeta: metav1.ObjectMeta{Name: "agent", UID: types.UID("agent-uid"), Annotations: map[string]string{}},
+		Spec: api.AgentSpec{
+			Team: team.Name, SandboxRef: box.Name, Agent: api.HarnessSpec{Type: api.AgentTypeOpenClaw},
+		},
+	}
+	snapshot, err := sandboxbinding.Snapshot(agent, team, sandbox.Resources{
+		Sandboxes: map[string]*api.Sandbox{box.Name: box}, AgentPolicies: map[string]*api.AgentPolicy{policy.Name: policy},
+	})
+	if err != nil {
+		t.Fatalf("create protected authorization: %v", err)
+	}
+	agent.Annotations[sandboxbinding.AuthorizationAnnotation] = snapshot
+	return agent
 }
 
 func boolPointer(value bool) *bool { return &value }

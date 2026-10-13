@@ -22,6 +22,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxbinding"
 	ctrl "sigs.k8s.io/controller-runtime"
 )
 
@@ -115,11 +116,21 @@ func (r *AgentReconciler) stopPolicyWorkload(ctx context.Context, agent *api.Age
 // deliberately does not wait for a Sandbox, Gateway, or Agent Identity to
 // execute its own projection: those components publish their own status.
 func (r *AgentReconciler) reconcilePolicy(ctx context.Context, agent *api.Agent) (policyReconcileResult, error) {
+	if agent.Spec.Agent.Type == api.AgentTypeCustom {
+		return policyReconcileResult{authorized: true}, nil
+	}
 	resolution, err := r.resolvePolicy(ctx, agent)
 	if err != nil {
 		return policyReconcileResult{dependencyUnavailable: isPolicyDependencyError(err)}, r.recordPolicy(ctx, agent, nil, err)
 	}
 	return policyReconcileResult{authorized: true}, r.recordPolicy(ctx, agent, resolution, nil)
+}
+
+// agentPolicyRequired keeps AI Gateway and Agent reconciliation on the same
+// explicit boundary. Platform-managed built-in harnesses require a Team policy;
+// Custom images use the separately configured Custom runtime contract.
+func (r *AgentReconciler) agentPolicyRequired(_ context.Context, agent *api.Agent) (bool, error) {
+	return agent != nil && agent.Spec.Agent.Type != api.AgentTypeCustom, nil
 }
 
 type policyResolution struct {
@@ -147,8 +158,11 @@ func isPolicyDependencyError(err error) bool {
 }
 
 func (r *AgentReconciler) resolvePolicy(ctx context.Context, agent *api.Agent) (*policyResolution, error) {
-	if agent.Spec.Team == "" {
-		return nil, fmt.Errorf("policy resolution requires spec.team")
+	if agent == nil || agent.Spec.Agent.Type == api.AgentTypeCustom {
+		return nil, fmt.Errorf("Custom Agents do not support AgentPolicy")
+	}
+	if agent.Spec.Team == "" || agent.Spec.SandboxRef == "" {
+		return nil, fmt.Errorf("policy resolution requires spec.team and spec.sandboxRef")
 	}
 	team := &api.Team{}
 	if err := r.Get(ctx, types.NamespacedName{Name: agent.Spec.Team}, team); err != nil {
@@ -159,6 +173,20 @@ func (r *AgentReconciler) resolvePolicy(ctx context.Context, agent *api.Agent) (
 	}
 	if !team.DeletionTimestamp.IsZero() {
 		return nil, fmt.Errorf("Team %q is terminating", team.Name)
+	}
+	if team.Spec.DefaultSandboxRef == "" || !slices.Contains(team.Spec.SandboxRefs, team.Spec.DefaultSandboxRef) ||
+		!slices.Contains(team.Spec.SandboxRefs, agent.Spec.SandboxRef) {
+		return nil, fmt.Errorf("Agent Sandbox is not permitted by the current Team")
+	}
+	if team.Status.ObservedGeneration != team.Generation {
+		return nil, policyDependency("Team observation is pending for generation %d", team.Generation)
+	}
+	teamAccepted := meta.FindStatusCondition(team.Status.Conditions, api.ConditionTeamAccepted)
+	if teamAccepted == nil || teamAccepted.ObservedGeneration != team.Generation || teamAccepted.Status == metav1.ConditionUnknown {
+		return nil, policyDependency("Team acceptance observation is unavailable")
+	}
+	if teamAccepted.Status != metav1.ConditionTrue {
+		return nil, fmt.Errorf("Team policy assignment is not accepted")
 	}
 	if team.Spec.AgentPolicyRef == "" {
 		return nil, fmt.Errorf("Team has no AgentPolicy assignment")
@@ -183,6 +211,13 @@ func (r *AgentReconciler) resolvePolicy(ctx context.Context, agent *api.Agent) (
 	if policyAccepted.Status != metav1.ConditionTrue {
 		return nil, fmt.Errorf("effective AgentPolicy is not accepted")
 	}
+	authorized, err := sandboxbinding.AuthorizedBinding(agent)
+	if err != nil {
+		return nil, fmt.Errorf("read protected Team policy assignment: %w", err)
+	}
+	if authorized.TeamUID != team.UID || authorized.AgentPolicyUID != policy.UID {
+		return nil, fmt.Errorf("current Team policy assignment differs from the protected authorization")
+	}
 	if !slices.Contains(policy.Spec.Harnesses.Allowed, agent.Spec.Agent.Type) {
 		return nil, fmt.Errorf("Agent harness %q is not allowed by policy", agent.Spec.Agent.Type)
 	}
@@ -190,6 +225,9 @@ func (r *AgentReconciler) resolvePolicy(ctx context.Context, agent *api.Agent) (
 		return nil, err
 	}
 	if _, _, err := effectivePolicyModels(agent, policy); err != nil {
+		return nil, err
+	}
+	if err := validatePolicyIdentity(agent, policy); err != nil {
 		return nil, err
 	}
 	return &policyResolution{team: team, policy: policy}, nil
@@ -262,6 +300,18 @@ func validateBudget(value, maximum string) error {
 	m, valid := new(big.Rat).SetString(maximum)
 	if !valid || m.Sign() <= 0 || v.Cmp(m) > 0 {
 		return fmt.Errorf("gateway budget exceeds the policy maximum")
+	}
+	return nil
+}
+
+func validatePolicyIdentity(agent *api.Agent, policy *api.AgentPolicy) error {
+	requested := agent.Spec.AgentIdentity != nil && agent.Spec.AgentIdentity.Enabled
+	identity := policy.Spec.AgentIdentity
+	if identity.Required && !requested {
+		return fmt.Errorf("policy requires Agent Identity")
+	}
+	if requested && (!identity.Allowed || !slices.Contains(identity.CredentialServices, "azure-resource-manager")) {
+		return fmt.Errorf("Agent Identity is not permitted by policy")
 	}
 	return nil
 }

@@ -254,25 +254,28 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		return r.rejectReservedUIInstance(ctx, instance)
 	}
 
-	// Policy is mandatory for every non-deleting Agent. Resolve its
-	// immutable owner/Team/policy binding before any Sandbox or workload
-	// recovery can make compute available.
-	policy, err := r.reconcilePolicy(ctx, instance)
-	if policy.dependencyUnavailable {
-		// A transient Team, policy, or Gateway catalog failure cannot prove a
-		// denial. Preserve the key identity and spend record, but block it and
-		// stop compute until fresh authorization evidence is available.
-		result, holdErr := r.holdPolicyDependencyUnavailable(ctx, instance)
-		return result, stderrors.Join(err, holdErr)
-	} else if err != nil {
-		// Status persistence is not part of the authorization boundary. If it
-		// fails, revoke access and stop compute before returning the joined
-		// error; an old workload must never survive because status storage was
-		// temporarily unavailable.
-		result, holdErr := r.holdPolicyDenied(ctx, instance)
-		return result, stderrors.Join(err, holdErr)
-	} else if !policy.authorized {
-		return r.holdPolicyDenied(ctx, instance)
+	// Platform-managed built-in harnesses must resolve their immutable
+	// Team/Policy binding before any Sandbox or workload recovery. Custom images
+	// use the separately configured Custom runtime contract and never silently
+	// bypass an AgentPolicy assigned to a built-in harness.
+	policy := policyReconcileResult{authorized: true}
+	if instance.Spec.Agent.Type != cetirunv1alpha1.AgentTypeCustom {
+		var err error
+		policy, err = r.reconcilePolicy(ctx, instance)
+		if policy.dependencyUnavailable {
+			// A transient Team or Policy read cannot prove a denial. Preserve the
+			// key identity, but block it and stop compute until current evidence is
+			// available.
+			result, holdErr := r.holdPolicyDependencyUnavailable(ctx, instance)
+			return result, stderrors.Join(err, holdErr)
+		} else if err != nil {
+			// Status persistence is not part of the authorization boundary. Stop
+			// access even when reporting the denial failed.
+			result, holdErr := r.holdPolicyDenied(ctx, instance)
+			return result, stderrors.Join(err, holdErr)
+		} else if !policy.authorized {
+			return r.holdPolicyDenied(ctx, instance)
+		}
 	}
 
 	if sandboxRequested(instance, nil) {
@@ -284,22 +287,13 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		// authorization to fall back to direct model credentials.
 		var namespaceErr, projectionErr error
 		if r.AIGateway.Enabled {
-			if r.SandboxPreparation == nil {
-				// Gateway execution is independent of Sandbox execution. A deployment
-				// without a Sandbox preparation adapter still needs the smallest
-				// Agent-owned namespace in which Gateway can project its key.
-				namespaceErr = r.ensureSandboxGatewayNamespace(ctx, instance)
-			} else {
-				namespace := &corev1.Namespace{}
-				namespaceErr = r.customReader().Get(ctx, types.NamespacedName{Name: instanceNamespace(instance.Name)}, namespace)
-				if namespaceErr == nil {
-					namespaceErr = r.validateSandboxBootstrapNamespace(ctx, instance, namespace)
-				}
-			}
-			if namespaceErr != nil && !errors.IsNotFound(namespaceErr) {
-				logger.Error(namespaceErr, "Policy-bound AI Gateway projection is waiting for an owned Sandbox namespace")
-			} else if namespaceErr == nil {
-				if err := r.reconcileAIGateway(ctx, instance, true); err != nil {
+			namespace := &corev1.Namespace{}
+			namespaceErr = r.customReader().Get(ctx, types.NamespacedName{Name: instanceNamespace(instance.Name)}, namespace)
+			if namespaceErr == nil {
+				if err := r.validateSandboxBootstrapNamespace(ctx, instance, namespace); err != nil {
+					namespaceErr = err
+					logger.Error(err, "Policy-bound AI Gateway projection is waiting for a protected Sandbox namespace")
+				} else if err := r.reconcileAIGateway(ctx, instance, true); err != nil {
 					projectionErr = stderrors.Join(err, r.updateStatus(ctx, instance))
 					// Keep progressing through holdSandbox so ingress/compute remain
 					// stopped even when the Gateway control plane is unavailable.
@@ -307,6 +301,9 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 				} else if err := r.updateStatus(ctx, instance); err != nil {
 					return ctrl.Result{}, err
 				}
+			} else if !errors.IsNotFound(namespaceErr) {
+				namespaceErr = fmt.Errorf("inspect policy-bound Agent namespace: %w", namespaceErr)
+				logger.Error(namespaceErr, "Policy-bound AI Gateway projection cannot verify its namespace")
 			}
 		}
 		var result ctrl.Result
@@ -709,10 +706,10 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		instance.Status.AIGateway.Routed = false
 	}
 
-	// Re-evaluate after component projection. Policy resolution remains separate
-	// from component readiness; Gateway, Sandbox, and identity publish their own
-	// enforcement status and do not turn Policy back into a global readiness gate.
-	policy, err = r.reconcilePolicy(ctx, instance)
+	// Re-evaluate the declarative authorization after component projection.
+	// Gateway, Sandbox, and Agent Identity report their own readiness; their
+	// execution state does not turn Policy into an aggregate readiness gate.
+	policy, err := r.reconcilePolicy(ctx, instance)
 	if policy.dependencyUnavailable {
 		result, holdErr := r.holdPolicyDependencyUnavailable(ctx, instance)
 		return result, stderrors.Join(err, holdErr)
@@ -778,7 +775,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	if err != nil {
 		return r.rejectAgentConfig(ctx, instance, err)
 	}
-	if !prepared.SupportsValuePath(aiGatewayChartValue, aiGatewayChartModelsValue) {
+	if sandboxRequested(instance, team) && !prepared.SupportsValuePath(aiGatewayChartValue, aiGatewayChartModelsValue) {
 		policyErr := fmt.Errorf("Agent chart %q does not support mandatory AI Gateway routing", instance.Spec.Helm.Version)
 		if err := r.recordPolicy(ctx, instance, nil, policyErr); err != nil {
 			return ctrl.Result{}, err
