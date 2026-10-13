@@ -5,7 +5,9 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/agents"
@@ -13,6 +15,7 @@ import (
 	"github.com/Azure/CetiRun/app/internal/registryauth"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 func runtimeRequest(instance *api.Agent, registry string) map[string]any {
@@ -41,15 +44,29 @@ func runtimeRequest(instance *api.Agent, registry string) map[string]any {
 }
 
 func (r *AgentReconciler) rejectAgentConfig(ctx context.Context, instance *api.Agent, err error) (ctrl.Result, error) {
+	message := agentConfigMessage(ctx, err)
 	setCondition(&instance.Status.Conditions, api.ConditionAgentConfigReady,
-		metav1.ConditionFalse, "AgentConfigInvalid", err.Error())
-	return r.failWith(ctx, instance, "AgentConfigInvalid", err.Error())
+		metav1.ConditionFalse, "AgentConfigInvalid", message)
+	return r.failWith(ctx, instance, "AgentConfigInvalid", message)
+}
+
+// agentConfigMessage is what the Agent's conditions and Warning event say
+// about err. The cause of a chart download failure comes from the registry
+// and gives the Agent's owner nothing to act on, so only the operator log
+// records it.
+func agentConfigMessage(ctx context.Context, err error) string {
+	var download *helm.ChartDownloadError
+	if !errors.As(err, &download) {
+		return err.Error()
+	}
+	log.FromContext(ctx).Error(err, "Agent chart download failed")
+	return fmt.Sprintf("Agent chart %s could not be downloaded from the registry; the operator will retry", download.Version)
 }
 
 // User and deployment overrides cannot inject a prepared plan or replace its
 // primary image/port. Unrelated deployment settings keep their existing scope.
 func validateRuntimeOverrides(values map[string]any, agentType string) error {
-	for _, key := range []string{"runtime", "agentRequest", "imagePullSecrets", "customBindings"} {
+	for _, key := range []string{"runtime", "agentRequest", "imagePullSecrets", "customBindings", "memoryContext"} {
 		if _, ok := values[key]; ok {
 			return fmt.Errorf("helm.values.%s is reserved for the platform", key)
 		}
@@ -82,7 +99,8 @@ func validateRuntimeOverrides(values map[string]any, agentType string) error {
 	if extraEnv, ok := values["extraEnv"].([]any); ok {
 		for _, item := range extraEnv {
 			entry, _ := item.(map[string]any)
-			if entry["name"] == "CETIRUN_AGENT_BROKER_URL" {
+			name, _ := entry["name"].(string)
+			if name == "CETIRUN_AGENT_BROKER_URL" || strings.HasPrefix(name, "CETIRUN_MEMORY_") {
 				return fmt.Errorf("helm.values.extraEnv contains a platform-reserved environment variable")
 			}
 		}
@@ -122,6 +140,7 @@ func (r *AgentReconciler) prepareAgent(instance *api.Agent, team *api.Team) (*he
 	if err != nil {
 		return nil, err
 	}
+	values["memoryOptions"] = r.memoryOptions()
 	return r.HelmClient.Prepare(instanceNamespace(instance.Name), values, instance.Spec.Helm.Version)
 }
 

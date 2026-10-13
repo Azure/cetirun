@@ -73,6 +73,7 @@ async function handleChat(request, response, runtime, activity, runs) {
 
   let input;
   try {
+    if (![undefined, "off", "no-capture"].includes(request.headers["x-cetirun-memory-mode"])) throw new Error("Invalid Memory restriction");
     input = validateChat(await readJSON(request));
   } catch {
     return writeJSON(response, 400, { error: { message: "Invalid text chat request" } });
@@ -97,6 +98,7 @@ async function handleChat(request, response, runtime, activity, runs) {
     const stream = input.stream ? startStream(response, completion, controller) : undefined;
     const result = await runtime.run({
       ...input,
+      memory: { noMemory: request.headers["x-cetirun-memory-mode"] === "off", noCapture: ["off", "no-capture"].includes(request.headers["x-cetirun-memory-mode"]) },
       signal,
       onText: stream ? (text) => stream.chunk({ content: text }) : undefined,
     });

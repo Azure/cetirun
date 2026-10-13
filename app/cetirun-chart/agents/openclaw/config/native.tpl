@@ -293,10 +293,18 @@ Licensed under the MIT License.
 {{- if $channels }}
 {{- $_ := set $config "channels" $channels }}
 {{- end }}
-{{- if or .Values.skills.shared (eq (dig "skillsMode" "" (.Values.sandboxWorkload | default dict)) "empty") }}
+{{- $emptySkills := eq (dig "skillsMode" "" (.Values.sandboxWorkload | default dict)) "empty" }}
+{{- $contextSkills := and (not .Values.sandboxWorkload) (dig "enabled" false (.Values.memoryContext | default dict)) }}
+{{- $directSkills := and (not $contextSkills) (or .Values.skills.shared $emptySkills) }}
+{{- if or $contextSkills $directSkills }}
 {{- $skills := dig "skills" (dict) $config }}
 {{- $load := dig "load" (dict) $skills }}
+{{- if $contextSkills }}
+{{- $_ := set $load "extraDirs" (append (dig "extraDirs" (list) $load) "/home/vibe/.agents/skills" | uniq) }}
+{{- end }}
+{{- if $directSkills }}
 {{- $_ := set $load "extraDirs" (list .Values.skills.mountPath) }}
+{{- end }}
 {{- $_ := set $load "watch" true }}
 {{- $_ := set $skills "load" $load }}
 {{- $_ := set $config "skills" $skills }}
@@ -313,6 +321,25 @@ Licensed under the MIT License.
 {{- end }}
 {{- /* Add meta block so the config observer does not flag this as anomalous.
    OpenClaw uses meta.lastTouchedVersion to track the last writer. */}}
+{{- if and (not .Values.sandboxWorkload) (dig "enabled" false (.Values.memoryContext | default dict)) }}
+{{- $plugins := dig "plugins" (dict) $config }}
+{{- $pluginLoad := dig "load" (dict) $plugins }}
+{{- $_ := set $pluginLoad "paths" (append (dig "paths" (list) $pluginLoad) "/opt/cetirun-memory/adapters/openclaw" | uniq) }}
+{{- $_ := set $plugins "load" $pluginLoad }}
+{{- $_ := set $plugins "allow" (append (dig "allow" (list) $plugins) "cetirun-memory-context" | uniq) }}
+{{- $entries := dig "entries" (dict) $plugins }}
+{{- $memoryPlugin := deepCopy (dig "cetirun-memory-context" (dict) $entries) }}
+{{- $memoryHooks := dig "hooks" (dict) $memoryPlugin }}
+{{- if or (and (hasKey $plugins "enabled") (not $plugins.enabled)) (and (hasKey $memoryPlugin "enabled") (not $memoryPlugin.enabled)) (and (hasKey $memoryHooks "allowConversationAccess") (not $memoryHooks.allowConversationAccess)) (and (hasKey $memoryHooks "allowPromptInjection") (not $memoryHooks.allowPromptInjection)) }}
+{{- $_ := required "Memory Context conflicts with an explicitly disabled OpenClaw plugin or hook" "" }}
+{{- end }}
+{{- $_ := set $memoryHooks "allowConversationAccess" true }}
+{{- $_ := set $memoryPlugin "hooks" $memoryHooks }}
+{{- $_ := set $memoryPlugin "enabled" true }}
+{{- $_ := set $entries "cetirun-memory-context" $memoryPlugin }}
+{{- $_ := set $plugins "entries" $entries }}
+{{- $_ := set $config "plugins" $plugins }}
+{{- end }}
 {{- $meta := dig "meta" (dict) $config }}
 {{- $_ := set $meta "lastTouchedVersion" (.Chart.Version | default "unknown") }}
 {{- $_ := set $config "meta" $meta }}

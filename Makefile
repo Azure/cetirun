@@ -32,7 +32,11 @@ help:
 
 check: lint test
 
-test: ci-test python-test go-test portal-test
+test: ci-test python-test go-test portal-test memory-native-test
+
+.PHONY: memory-native-test
+memory-native-test:
+	node --test app/cetirun-memory-context/tests/native.test.mjs
 
 lint: version-check license-check python-check go-lint portal-lint chart-check bicep-check shell-check workflow-check
 
@@ -52,6 +56,7 @@ set-version:
 	$(PYTHON) -B scripts/cetirun-version.py check "$(VERSION)"
 
 build-images:
+	REGISTRY="$(REGISTRY)" VERSION="$(VERSION)" GIT_SHA="$(GIT_SHA)" PUSH=false bash scripts/memory-context-docker-build.sh
 	REGISTRY="$(REGISTRY)" VERSION="$(VERSION)" GIT_SHA="$(GIT_SHA)" PUSH=false BUILD_HERMES=true scripts/cetirun-docker-build.sh
 	REGISTRY="$(REGISTRY)" VERSION="$(VERSION)" GIT_SHA="$(GIT_SHA)" PUSH=false bash scripts/pi-agent-docker-build.sh
 	REGISTRY="$(REGISTRY)" VERSION="$(VERSION)" GIT_SHA="$(GIT_SHA)" PUSH=false scripts/operator-docker-build.sh
@@ -60,6 +65,7 @@ build-images:
 	REGISTRY="$(REGISTRY)" VERSION="$(VERSION)" GIT_SHA="$(GIT_SHA)" PUSH=false scripts/ai-gateway-docker-build.sh
 
 publish-images: require-registry version-check
+	REGISTRY="$(REGISTRY)" VERSION="$(VERSION)" GIT_SHA="$(GIT_SHA)" PUSH=true bash scripts/memory-context-docker-build.sh
 	REGISTRY="$(REGISTRY)" VERSION="$(VERSION)" GIT_SHA="$(GIT_SHA)" PUSH=true BUILD_HERMES=true scripts/cetirun-docker-build.sh
 	REGISTRY="$(REGISTRY)" VERSION="$(VERSION)" GIT_SHA="$(GIT_SHA)" PUSH=true bash scripts/pi-agent-docker-build.sh
 	REGISTRY="$(REGISTRY)" VERSION="$(VERSION)" GIT_SHA="$(GIT_SHA)" PUSH=true scripts/operator-docker-build.sh

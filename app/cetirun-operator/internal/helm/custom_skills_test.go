@@ -137,10 +137,10 @@ func TestCustomSkillsTamperingIsRejected(t *testing.T) {
 		{"shared-skills-pv.yaml", "driver: blob.csi.azure.com", "driver: disk.csi.azure.com"},
 		{"shared-skills-pv.yaml", "namespace: {{ .Release.Namespace }}", "namespace: other-agent"},
 		{"shared-skills-pvc.yaml", `volumeName: {{ include "cetirun.sharedSkillsPVName" . }}`, "volumeName: foreign-volume"},
-		{"agents/custom/_runtime.tpl", "subPath: current", "subPath: other"},
-		{"agents/custom/_runtime.tpl", "mountPath: /etc/cetirun-shared-skills\n              readOnly: true", "mountPath: /etc/cetirun-shared-skills\n              readOnly: false"},
+		{"_context.tpl", "subPath: current", "subPath: other"},
+		{"_context.tpl", "mountPath: /etc/cetirun-shared-skills\n  readOnly: true", "mountPath: /etc/cetirun-shared-skills\n  readOnly: false"},
 		{"agents/custom/_runtime.tpl", "claimName: {{ include \"cetirun.sharedSkillsPVCName\" . }}\n            readOnly: true", "claimName: foreign-claim\n            readOnly: true"},
-		{"agents/custom/_runtime.tpl", "mountPath: /etc/cetirun-context-view", "mountPath: /home-data"},
+		{"_context.tpl", "mountPath: /etc/cetirun-context-view", "mountPath: /home-data"},
 	} {
 		t.Run(test.file+"/"+test.to, func(t *testing.T) {
 			ch := testChart(t)

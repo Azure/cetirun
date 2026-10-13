@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"slices"
 	"strings"
 	"testing"
@@ -33,6 +34,10 @@ func TestExportNativeUpgradeFixture(t *testing.T) {
 	output := os.Getenv("CETIRUN_UPGRADE_FIXTURE_OUT")
 	if output == "" {
 		t.Skip("explicit output path required")
+	}
+	source, err := exec.Command("git", "rev-parse", "HEAD").Output()
+	if err != nil || strings.TrimSpace(string(source)) != "6414494154151b2daf74d39d1e989ebeb7ea5020" {
+		t.Fatal("export requires the pinned pre-proxy single-policy source revision:", err)
 	}
 	original := cryptorand.Reader
 	cryptorand.Reader = bytes.NewReader(bytes.Repeat([]byte{0x42}, 1<<20))
@@ -98,7 +103,7 @@ func TestExportNativeUpgradeFixture(t *testing.T) {
 		GatewayKeys   map[string]*aigateway.Key `json:"gatewayKeys"`
 		Objects       []json.RawMessage         `json:"objects"`
 	}{
-		"3a9e4de5423a64f40a945c1d2941cba3d691cdbe",
+		strings.TrimSpace(string(source)),
 		"Synthetic old native runtime and receipt. The test hydrates only deterministic dummy Secret values and the empty-render checksum; no live cluster or credentials.",
 		fmt.Sprintf("%x", sha256.Sum256(objectJSON)),
 		expected.Revision, state.Name, receipt.Name, f.installer.digest, f.gateway.keys, objects,

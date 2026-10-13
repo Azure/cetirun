@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"strings"
 
-	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxpolicy"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
@@ -29,8 +28,8 @@ func validateObjects(input Input) error {
 	access := input.Resolution.AgentPolicy.KubernetesAccess
 	grants := map[grantScope]bool{}
 	if access != nil {
-		if c.Binding.PolicyClass != api.AgentPolicyClassAdmin || access.ServiceAccountName != c.ServiceAccountName {
-			return fmt.Errorf("compiled Kubernetes bindings require the selected admin ServiceAccount")
+		if access.ServiceAccountName != c.ServiceAccountName {
+			return fmt.Errorf("compiled Kubernetes bindings require the selected dedicated ServiceAccount")
 		}
 		for _, grant := range access.RoleBindings {
 			grants[grantScope{namespace: grant.Namespace, role: grant.ClusterRoleName}] = false

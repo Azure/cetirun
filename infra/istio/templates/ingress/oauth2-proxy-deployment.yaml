@@ -123,6 +123,10 @@ spec:
               name: metrics
               protocol: TCP
           env:
+            # Container Insights copies a container's environment, the cookie
+            # secret included, unless collection is off for it.
+            - name: AZMON_COLLECT_ENV
+              value: "False"
             - name: COOKIE_SECRET
               valueFrom:
                 secretKeyRef:

@@ -49,6 +49,53 @@ class HomeInitializationTests(unittest.TestCase):
     def seeded(self):
         return (self.target / ".cetirun-home-seeded").is_file()
 
+    def context_fixture(self, shared=True):
+        assets, view = self.root / "memory-assets", self.root / "context-view"
+        (assets / "skills/cetirun-memory/references").mkdir(parents=True)
+        view.mkdir()
+        (assets / "manifest.json").write_text("{}")
+        (assets / "AGENTS.md").write_text("Synthetic common Memory instructions.\n")
+        (assets / "skills/cetirun-memory/SKILL.md").write_text("Synthetic Memory skill.\n")
+        (assets / "skills/cetirun-memory/references/requests.md").write_text("Synthetic reference.\n")
+        common = self.root / "common.sh"
+        common.write_text(COMMON.read_text().replace("/opt/cetirun-memory", str(assets)))
+        self.env.update(COMMON=str(common), CETIRUN_MEMORY_ASSETS=str(assets), CETIRUN_CONTEXT_VIEW=str(view))
+        if shared:
+            source = self.root / "shared"
+            (source / "team-skill").mkdir(parents=True)
+            (source / "team-skill/SKILL.md").write_text("Synthetic shared skill.\n")
+            self.env["CETIRUN_SHARED_SKILLS_DIR"] = str(source)
+        return assets, view
+
+    def test_native_common_init_composes_memory_and_shared_skills(self):
+        assets, view = self.context_fixture()
+        (self.source / ".agents/skills/cetirun-memory").mkdir(parents=True)
+        (self.source / ".agents/skills/cetirun-memory/SKILL.md").write_text("Preserve image content")
+        result = self.run_init()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((view / "current/AGENTS.md").read_bytes(), (assets / "AGENTS.md").read_bytes())
+        self.assertEqual((view / "current/skills/cetirun-memory/references/requests.md").read_text(), "Synthetic reference.\n")
+        self.assertEqual((view / "current/skills/team-skill/SKILL.md").read_text(), "Synthetic shared skill.\n")
+        self.assertEqual((self.target / ".agents/skills/cetirun-memory/SKILL.md").read_text(), "Preserve image content")
+        self.assertFalse((self.target / ".cetirun/memory").exists())
+
+    def test_native_memory_initializes_without_shared_storage(self):
+        _, view = self.context_fixture(shared=False)
+        result = self.run_init()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([p.name for p in (view / "current/skills").iterdir()], ["cetirun-memory"])
+
+    def test_native_shared_collision_does_not_publish_partial_context(self):
+        assets, view = self.context_fixture()
+        source = Path(self.env["CETIRUN_SHARED_SKILLS_DIR"])
+        (source / "cetirun-memory").mkdir()
+        (source / "cetirun-memory/SKILL.md").write_text("Conflicting shared copy")
+        result = self.run_init()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("SharedSkillConflictsWithCanonicalContext", result.stderr)
+        self.assertEqual(list(view.iterdir()), [])
+        self.assertEqual((assets / "skills/cetirun-memory/SKILL.md").read_text(), "Synthetic Memory skill.\n")
+
     def test_lost_found_shape(self):
         for kind in ("directory", "file", "symlink"):
             with self.subTest(kind=kind):

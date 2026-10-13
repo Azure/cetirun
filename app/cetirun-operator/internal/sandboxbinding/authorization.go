@@ -37,11 +37,10 @@ type reference struct {
 // name and UID after mutation (including generateName), so neither is copied
 // from the incoming create request. Admission forbids transplanting the record.
 type authorization struct {
-	Version     string               `json:"version"`
-	Team        reference            `json:"team"`
-	Sandbox     reference            `json:"sandbox"`
-	PolicyClass api.AgentPolicyClass `json:"policyClass"`
-	AgentPolicy reference            `json:"agentPolicy"`
+	Version     string    `json:"version"`
+	Team        reference `json:"team"`
+	Sandbox     reference `json:"sandbox"`
+	AgentPolicy reference `json:"agentPolicy"`
 }
 
 // Reauthorization is explicit administrator intent, not an authorization record.
@@ -105,12 +104,10 @@ func AuthorizedBinding(agent *api.Agent) (sandbox.Binding, error) {
 	}
 	canonical, err := json.Marshal(record)
 	if err != nil || !bytes.Equal(canonical, []byte(raw)) || record.Version != recordVersion ||
-		!validReference(record.Team) || !validReference(record.Sandbox) || !validReference(record.AgentPolicy) ||
-		(record.PolicyClass != api.AgentPolicyClassNormal && record.PolicyClass != api.AgentPolicyClassAdmin) {
+		!validReference(record.Team) || !validReference(record.Sandbox) || !validReference(record.AgentPolicy) {
 		return sandbox.Binding{}, fmt.Errorf("%w: authorization record is not a canonical supported snapshot", sandbox.ErrUnauthorizedBinding)
 	}
-	if record.Team.Name != agent.Spec.Team || record.Sandbox.Name != agent.Spec.SandboxRef ||
-		record.PolicyClass != agent.Spec.PolicyClass {
+	if record.Team.Name != agent.Spec.Team || record.Sandbox.Name != agent.Spec.SandboxRef {
 		return sandbox.Binding{}, fmt.Errorf("%w: Agent selection differs from its protected authorization", sandbox.ErrUnauthorizedBinding)
 	}
 	return record.binding(agent.UID), nil
@@ -151,9 +148,8 @@ func ParseReauthorization(raw string) (Reauthorization, error) {
 func (r Reauthorization) validate() error {
 	if !exact(r.RequestID) || len(r.RequestID) > 128 ||
 		!exact(string(r.Binding.AgentUID)) || !exact(string(r.Binding.TeamUID)) ||
-		!exact(string(r.Binding.SandboxUID)) || !exact(string(r.Binding.AgentPolicyUID)) ||
-		(r.Binding.PolicyClass != api.AgentPolicyClassNormal && r.Binding.PolicyClass != api.AgentPolicyClassAdmin) {
-		return fmt.Errorf("explicit reauthorization requires a nonempty requestID and exact Agent, Team, Sandbox, policy class and AgentPolicy UIDs")
+		!exact(string(r.Binding.SandboxUID)) || !exact(string(r.Binding.AgentPolicyUID)) {
+		return fmt.Errorf("explicit reauthorization requires a nonempty requestID and exact Agent, Team, Sandbox and AgentPolicy UIDs")
 	}
 	return nil
 }
@@ -163,15 +159,7 @@ func current(agent *api.Agent, team *api.Team, resources sandbox.Resources) (aut
 		!slices.Contains(team.Spec.SandboxRefs, agent.Spec.SandboxRef) {
 		return authorization{}, fmt.Errorf("authorization requires the selected live Team and permitted Sandbox")
 	}
-	var policyName string
-	switch agent.Spec.PolicyClass {
-	case api.AgentPolicyClassNormal:
-		policyName = team.Spec.NormalAgentPolicyRef
-	case api.AgentPolicyClassAdmin:
-		policyName = team.Spec.AdminAgentPolicyRef
-	default:
-		return authorization{}, fmt.Errorf("authorization requires an explicitly persisted policy class")
-	}
+	policyName := team.Spec.AgentPolicyRef
 	box, policy := resources.Sandboxes[agent.Spec.SandboxRef], resources.AgentPolicies[policyName]
 	if box == nil || policy == nil || policyName == "" ||
 		box.Name != agent.Spec.SandboxRef || policy.Name != policyName || !live(box) || !live(policy) {
@@ -179,14 +167,14 @@ func current(agent *api.Agent, team *api.Team, resources sandbox.Resources) (aut
 	}
 	return authorization{
 		Version: recordVersion, Team: reference{team.Name, team.UID}, Sandbox: reference{box.Name, box.UID},
-		PolicyClass: agent.Spec.PolicyClass, AgentPolicy: reference{policy.Name, policy.UID},
+		AgentPolicy: reference{policy.Name, policy.UID},
 	}, nil
 }
 
 func (a authorization) binding(agentUID types.UID) sandbox.Binding {
 	return sandbox.Binding{
 		AgentUID: agentUID, TeamUID: a.Team.UID, SandboxUID: a.Sandbox.UID,
-		PolicyClass: a.PolicyClass, AgentPolicyUID: a.AgentPolicy.UID,
+		AgentPolicyUID: a.AgentPolicy.UID,
 	}
 }
 

@@ -29,7 +29,7 @@ const (
 )
 
 type sandboxMetricLabels struct {
-	runtime, class, status, reason string
+	runtime, status, reason string
 }
 
 type sandboxMetricsCollector struct {
@@ -70,7 +70,7 @@ func newSandboxMetricsCollector(source cache.Cache) *sandboxMetricsCollector {
 		agentsDesc: prometheus.NewDesc(
 			"cetirun_sandbox_agents",
 			"Agents with Sandbox intent or retained hold/history, by declared runtime and reported status; not runtime qualification or fresh enforcement evidence. Only populated groups are emitted.",
-			[]string{"runtime", "class", "status", "reason"}, nil,
+			[]string{"runtime", "status", "reason"}, nil,
 		),
 		collectionSuccessDesc: prometheus.NewDesc(
 			"cetirun_sandbox_metrics_collection_success",
@@ -157,7 +157,7 @@ func (c *sandboxMetricsCollector) collect(ctx context.Context, ch chan<- prometh
 	}
 	for labels, count := range groups {
 		ch <- prometheus.MustNewConstMetric(c.agentsDesc, prometheus.GaugeValue, float64(count),
-			labels.runtime, labels.class, labels.status, labels.reason)
+			labels.runtime, labels.status, labels.reason)
 	}
 	ch <- prometheus.MustNewConstMetric(c.collectionSuccessDesc, prometheus.GaugeValue, 1)
 }
@@ -220,7 +220,6 @@ func (c *sandboxMetricsCollector) collectSnapshot(ctx context.Context) (map[sand
 		status, reason := sandboxMetricReportedStatus(agent)
 		labels := sandboxMetricLabels{
 			runtime: sandboxMetricRuntime(agent, sandboxesByName[agent.Spec.SandboxRef]),
-			class:   sandboxMetricClass(agent.Spec.PolicyClass),
 			status:  string(status),
 			reason:  reason,
 		}
@@ -244,15 +243,6 @@ func sandboxMetricRuntime(agent *api.Agent, box *api.Sandbox) string {
 	switch box.Spec.Type {
 	case api.SandboxKata, api.SandboxGVisor:
 		return string(box.Spec.Type)
-	default:
-		return "unknown"
-	}
-}
-
-func sandboxMetricClass(class api.AgentPolicyClass) string {
-	switch class {
-	case api.AgentPolicyClassNormal, api.AgentPolicyClassAdmin:
-		return string(class)
 	default:
 		return "unknown"
 	}

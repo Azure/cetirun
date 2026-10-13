@@ -90,8 +90,22 @@ agent_apply_config() (
       { init_error "OpenClawNativeModelConfigInvalid"; exit 1; }
   fi
   filter='
-    .[-1] as $source
+    . as $inputs
+    | .[-1] as $source
     | reduce .[] as $item ({}; . * $item)
+    | reduce [["plugins", "load", "paths"], ["skills", "load", "extraDirs"]][] as $path
+        (. ; [$inputs[] | getpath($path) | select(. != null)] as $lists
+          | if ($lists | length) == 0 then .
+            elif all($lists[]; type == "array" and all(.[]; type == "string")) then
+              setpath($path; reduce ($lists | add)[] as $entry ([]; if index($entry) == null then . + [$entry] else . end))
+            else error("invalid plugin or skills list") end)
+    | if $source.plugins.entries["cetirun-memory-context"].enabled != true then
+        if (.plugins.entries | type) == "object" then .plugins.entries |= del(.["cetirun-memory-context"]) else . end
+        | if (.plugins.allow | type) == "array" then .plugins.allow |= map(select(. != "cetirun-memory-context")) else . end
+        | if (.plugins.load.paths | type) == "array" then .plugins.load.paths |= map(select(. != "/opt/cetirun-memory/adapters/openclaw")) else . end
+        | if (.skills.load.extraDirs | type) == "array" and (($source.skills.load.extraDirs // []) | index("/home/vibe/.agents/skills") | not)
+          then .skills.load.extraDirs |= map(select(. != "/home/vibe/.agents/skills")) else . end
+      else . end
     | if $gateway then
         .agents.defaults.models = ($source.agents.defaults.models // {})
         | if $native_gateway then

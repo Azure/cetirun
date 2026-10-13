@@ -16,6 +16,24 @@ AKS_ADMIN_CREDENTIALS="${AKS_ADMIN_CREDENTIALS:-false}"
 RG_NAME="${RESOURCE_GROUP:?RESOURCE_GROUP is required}"
 LOCATION="${LOCATION:?LOCATION is required}"
 
+AGENT_SETTINGS_NAME="container-azm-ms-agentconfig"
+AGENT_SETTINGS_FILE="${SCRIPT_DIR}/${AGENT_SETTINGS_NAME}.yaml"
+
+# agent_setting_is SECTION VALUE: succeeds when the Container Insights agent
+# settings on stdin set "enabled = VALUE" in [SECTION].
+agent_setting_is() {
+  awk -v want_section="$1" -v want_value="$2" '
+    /^[[:space:]]*\[/ { section = $0; gsub(/[][[:space:]]/, "", section); next }
+    section == want_section && /^[[:space:]]*enabled[[:space:]]*=/ {
+      value = $0
+      sub(/^[^=]*=[[:space:]]*/, "", value)
+      sub(/[[:space:]]*(#.*)?$/, "", value)
+      found = (value == want_value)
+    }
+    END { exit found ? 0 : 1 }
+  '
+}
+
 # Pre-flight: ensure aks-preview extension is installed and up-to-date
 # --enable-gateway-api requires aks-preview >= 19.0.0b4
 az extension add --name aks-preview --upgrade --yes 2>/dev/null \
@@ -59,13 +77,6 @@ CLUSTER_NAME="$(az deployment group show \
   --name "$DEPLOYMENT_NAME" \
   --query 'properties.outputs.clusterName.value' -o tsv)"
 
-# Enable Gateway API
-az aks update \
-  --resource-group "$RG_NAME" \
-  --name "$CLUSTER_NAME" \
-  --enable-gateway-api \
-  --yes
-
 # Fetch kubeconfig
 credential_args=()
 if [[ "${AKS_ADMIN_CREDENTIALS}" == "true" ]]; then
@@ -76,6 +87,54 @@ az aks get-credentials \
   --name "$CLUSTER_NAME" \
   "${credential_args[@]}" \
   --overwrite-existing
+
+# Container Insights agent settings, in place before anything else runs on the
+# cluster: the agent stops collecting containers' environment variables, which
+# hold credentials, and joins log lines the container runtime split. Set up
+# whether or not Container Insights is on, so turning it on later is safe too.
+#
+# A cluster that already has agent settings keeps them. They are checked, not
+# replaced: replacing them would drop the cluster's own collection settings,
+# such as namespaces it excludes, for every workload.
+if ! existing_settings="$(kubectl get configmap "${AGENT_SETTINGS_NAME}" -n kube-system --ignore-not-found -o name)"; then
+  echo "Error: could not read the Container Insights agent settings in kube-system." >&2
+  exit 1
+fi
+if [[ -z "${existing_settings}" ]]; then
+  if ! kubectl create -f "${AGENT_SETTINGS_FILE}"; then
+    echo "Error: could not create the Container Insights agent settings in kube-system." >&2
+    echo "Until they exist, the agent collects every container's environment, credentials included." >&2
+    echo "Create them from ${AGENT_SETTINGS_FILE} with an identity that can write to kube-system before installing CetiRun." >&2
+    exit 1
+  fi
+else
+  if ! log_settings="$(kubectl get configmap "${AGENT_SETTINGS_NAME}" -n kube-system \
+    -o 'jsonpath={.data.log-data-collection-settings}')"; then
+    echo "Error: could not read kube-system/${AGENT_SETTINGS_NAME}." >&2
+    exit 1
+  fi
+  if ! agent_setting_is log_collection_settings.env_var false <<< "${log_settings}"; then
+    echo "Error: kube-system/${AGENT_SETTINGS_NAME} already exists and does not turn off environment variable collection." >&2
+    echo "It was left unchanged, since replacing it would drop the cluster's own collection settings." >&2
+    echo "Add these settings to its log-data-collection-settings, as in ${AGENT_SETTINGS_FILE}, then run this script again:" >&2
+    echo "  [log_collection_settings.env_var]" >&2
+    echo "     enabled = false" >&2
+    echo "  [log_collection_settings.enable_multiline_logs]" >&2
+    echo "     enabled = true" >&2
+    exit 1
+  fi
+  echo "kube-system/${AGENT_SETTINGS_NAME} already exists and turns off environment variable collection; left unchanged."
+  if ! agent_setting_is log_collection_settings.enable_multiline_logs true <<< "${log_settings}"; then
+    echo "Note: it does not turn on multiline logs, so lines longer than 16 KiB are stored in pieces." >&2
+  fi
+fi
+
+# Enable Gateway API
+az aks update \
+  --resource-group "$RG_NAME" \
+  --name "$CLUSTER_NAME" \
+  --enable-gateway-api \
+  --yes
 
 # Verify
 kubectl get nodes -o wide

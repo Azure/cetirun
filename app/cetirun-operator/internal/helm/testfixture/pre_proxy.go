@@ -12,7 +12,7 @@ import (
 )
 
 // RestorePreProxyContract reconstructs the three chart assets changed by the
-// proxy hook and verifies their exact bytes at public revision 3a9e4de5423a64f40a945c1d2941cba3d691cdbe.
+// proxy hook and verifies their exact bytes at public revision 6414494154151b2daf74d39d1e989ebeb7ea5020.
 func RestorePreProxyContract(chrt *chart.Chart) error {
 	assets := map[string]*[]byte{"values.schema.json": &chrt.Schema}
 	for _, files := range [][]*chart.File{chrt.Files, chrt.Templates} {
@@ -31,7 +31,7 @@ func RestorePreProxyContract(chrt *chart.Chart) error {
 {{- $_ := set $config "gateway" $gateway }}
 {{- end }}
 `,
-			checksum: "b48917b34fe70814e3de7b9e67337f667db980d77f04e96621f550e6a0e5a05f",
+			checksum: "8bf84a1d564eba85382a71e29f9e2c3261e70c0b7ca4acf95e520377fdbf8abf",
 		},
 		"templates/_sandbox.tpl": {
 			addition: `{{- if hasKey $s "trustedProxyIPs" -}}
@@ -59,7 +59,7 @@ func RestorePreProxyContract(chrt *chart.Chart) error {
                     }
                 },
 `,
-			checksum: "f82f8be07eda05d20260def6b7f6e7b3cf8879cd07eda3220c9c222617e67234",
+			checksum: "8bdf6a6367048be1d1d818061cf0a268181b0e82324c1834259f2b069320aaaa",
 		},
 	} {
 		data, exists := assets[name]

@@ -185,7 +185,7 @@ sandboxAdmission:
 # Adds only get permission on shared Istio Gateways for pinned access inputs.
 sandboxSources:
   enabled: false
-  # -- Opt in to the single-start normal OpenClaw/Kata/RWOP profile.
+  # -- Opt in to the single-start OpenClaw/Kata/RWOP profile.
   # Requires owned bootstrap and AI Gateway shared models. No resume or failover.
   # When admission coordination is configured, reserve the selected sources
   # until observed ordinary shutdown; this is not physical writer fencing.
@@ -326,3 +326,9 @@ azure:
   # -- FIC Issuer IDs mapping (JSON object: {"tenantId":"issuerId",...}).
   # Used when the tenant requires a trusted issuer for Federated Identity Credentials.
   ficIssuerIds: ""
+memoryContext:
+  # -- Install Memory for Agents with a compatible pinned Chart. Request-level restrictions still apply.
+  enabled: true
+  # -- Optional full image reference. Empty uses cetirun-memory-context from
+  # each selected runtime chart's registry and appVersion. A digest may pin exact bytes.
+  image: ""

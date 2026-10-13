@@ -42,7 +42,7 @@ func testIntent(suffix string) Intent {
 		Preparation:      preparation, IngressMode: api.AgentPolicyIngressAuthenticated,
 		Expected: sandbox.ExecutionIdentity{
 			Binding: sandbox.Binding{AgentUID: agent.UID, TeamUID: "team-uid", SandboxUID: "sandbox-uid",
-				AgentPolicyUID: "policy-uid", PolicyClass: api.AgentPolicyClassNormal},
+				AgentPolicyUID: "policy-uid"},
 			Revision: "compiled-revision", PodUID: types.UID("pod-uid-" + suffix),
 			NodeUID: types.UID("node-uid-" + suffix), EnforcementEpoch: "epoch-" + suffix,
 		},
@@ -284,14 +284,16 @@ func TestConcurrentStartAndChangeHaveOneCASWinner(t *testing.T) {
 
 func TestMissingCorruptOrReplacedAuthorityNeverRecoversFromNames(t *testing.T) {
 	for name, mutate := range map[string]func(*corev1.ConfigMap){
-		"UID":         func(o *corev1.ConfigMap) { o.UID = "replacement-authority" },
-		"protection":  func(o *corev1.ConfigMap) { o.Finalizers = nil },
-		"null":        func(o *corev1.ConfigMap) { o.Data[DataKey] = "null" },
-		"duplicate":   func(o *corev1.ConfigMap) { o.Data[DataKey] = `{"version":1,"version":1,"executions":[],"changes":[]}` },
-		"unknown":     func(o *corev1.ConfigMap) { o.Data[DataKey] = `{"version":1,"executions":[],"changes":[],"allow":true}` },
-		"inventory":   func(o *corev1.ConfigMap) { o.Data[DataKey] = `{"version":1,"executions":null,"changes":[]}` },
-		"extra data":  func(o *corev1.ConfigMap) { o.Data["unexpected"] = "synthetic" },
-		"binary data": func(o *corev1.ConfigMap) { o.BinaryData = map[string][]byte{"unexpected": []byte("synthetic")} },
+		"UID":            func(o *corev1.ConfigMap) { o.UID = "replacement-authority" },
+		"protection":     func(o *corev1.ConfigMap) { o.Finalizers = nil },
+		"null":           func(o *corev1.ConfigMap) { o.Data[DataKey] = "null" },
+		"unsupported v2": func(object *corev1.ConfigMap) { object.Data[DataKey] = `{"version":2,"executions":[],"changes":[]}` },
+		"unsupported v3": func(object *corev1.ConfigMap) { object.Data[DataKey] = `{"version":3,"executions":[],"changes":[]}` },
+		"duplicate":      func(o *corev1.ConfigMap) { o.Data[DataKey] = `{"version":1,"version":1,"executions":[],"changes":[]}` },
+		"unknown":        func(o *corev1.ConfigMap) { o.Data[DataKey] = `{"version":1,"executions":[],"changes":[],"allow":true}` },
+		"inventory":      func(o *corev1.ConfigMap) { o.Data[DataKey] = `{"version":1,"executions":null,"changes":[]}` },
+		"extra data":     func(o *corev1.ConfigMap) { o.Data["unexpected"] = "synthetic" },
+		"binary data":    func(o *corev1.ConfigMap) { o.BinaryData = map[string][]byte{"unexpected": []byte("synthetic")} },
 		"metadata bound": func(o *corev1.ConfigMap) {
 			o.Annotations = map[string]string{"example.com/large": strings.Repeat("x", MaxBytes)}
 		},

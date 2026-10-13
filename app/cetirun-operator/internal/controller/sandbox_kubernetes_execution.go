@@ -38,9 +38,9 @@ const (
 
 func validateNativeSandboxProfile(attempt *sandboxPreparationAttempt) error {
 	agent, box, policy := attempt.agent, attempt.resolution.Sandbox, attempt.resolution.AgentPolicy
-	if agent.Spec.Agent.Type != api.AgentTypeOpenClaw || attempt.resolution.Binding.PolicyClass != api.AgentPolicyClassNormal ||
+	if agent.Spec.Agent.Type != api.AgentTypeOpenClaw ||
 		box.Type != api.SandboxKata || box.Storage.Home.AccessMode != corev1.ReadWriteOncePod {
-		return fmt.Errorf("%w: native execution requires normal OpenClaw, Kata and ReadWriteOncePod HOME", sandboxpolicy.ErrUnsupportedControl)
+		return fmt.Errorf("%w: native execution requires OpenClaw, Kata and ReadWriteOncePod HOME", sandboxpolicy.ErrUnsupportedControl)
 	}
 	if !agent.Spec.SharedModelsEnabled() || agent.Spec.GitHubCopilotEnabled() ||
 		agent.Spec.Tailscale != nil || agent.Spec.MSTeams != nil || agentIdentityRequested(agent) ||
@@ -189,7 +189,7 @@ func (r *AgentReconciler) startKubernetesSandbox(ctx context.Context, requested 
 		if !w.EffectiveSource(source) {
 			continue
 		}
-		digest, err := r.nativeSourceDigest(ctx, source, agent.Spec.SandboxRef, expected.Binding.PolicyClass, true)
+		digest, err := r.nativeSourceDigest(ctx, source, agent.Spec.SandboxRef, true)
 		if err != nil {
 			return ctrl.Result{}, err
 		}
@@ -365,7 +365,7 @@ func (r *AgentReconciler) observeKubernetesSandbox(ctx context.Context, agent *a
 	binding := attempt.plan.Binding
 	current.Status.Namespace = expected.Namespace.Name
 	current.Status.Sandbox = &api.SandboxStatus{
-		TeamUID: binding.TeamUID, SandboxUID: binding.SandboxUID, PolicyClass: binding.PolicyClass,
+		TeamUID: binding.TeamUID, SandboxUID: binding.SandboxUID,
 		AgentPolicyUID: binding.AgentPolicyUID, AppliedRevision: attempt.plan.Revision,
 	}
 	current.Status.Phase, current.Status.ObservedGeneration = api.PhaseReady, current.Generation
@@ -417,9 +417,9 @@ func (r *AgentReconciler) resolveRunningKubernetesSandbox(ctx context.Context, a
 	return attempt, err
 }
 
-func (r *AgentReconciler) nativeSourceDigest(ctx context.Context, source w.SourceReference, box string, class api.AgentPolicyClass, capture bool) (string, error) {
+func (r *AgentReconciler) nativeSourceDigest(ctx context.Context, source w.SourceReference, box string, capture bool) (string, error) {
 	if source.APIVersion != "v1" || source.Kind != "PersistentVolumeClaim" {
-		return r.executionSourceDigest(ctx, source, box, class, capture)
+		return r.executionSourceDigest(ctx, source, box, capture)
 	}
 	claim := &corev1.PersistentVolumeClaim{}
 	if err := r.APIReader.Get(ctx, client.ObjectKey{Namespace: source.Namespace, Name: source.Name}, claim); err != nil {
@@ -440,7 +440,7 @@ func (r *AgentReconciler) verifyNativeSandboxSources(ctx context.Context, expect
 			// The complete live workload is checked separately after its scale.
 		case w.EffectiveSource(source):
 			digests++
-			current, err := r.nativeSourceDigest(ctx, source, agent.Spec.SandboxRef, expected.Binding.PolicyClass, false)
+			current, err := r.nativeSourceDigest(ctx, source, agent.Spec.SandboxRef, false)
 			if err != nil {
 				return err
 			}

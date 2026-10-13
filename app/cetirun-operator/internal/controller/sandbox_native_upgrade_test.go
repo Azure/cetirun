@@ -69,7 +69,7 @@ func oldNativeUpgradeFixture(t *testing.T) (*nativeSandboxFixture, oldNativeUpgr
 	if err != nil {
 		t.Fatal(err)
 	}
-	if state.SourceCommit != "3a9e4de5423a64f40a945c1d2941cba3d691cdbe" ||
+	if state.SourceCommit != "6414494154151b2daf74d39d1e989ebeb7ea5020" ||
 		fmt.Sprintf("%x", sha256.Sum256(objectsJSON)) != state.ObjectsSHA256 {
 		t.Fatal("old controller fixture provenance or hydrated object bytes changed")
 	}

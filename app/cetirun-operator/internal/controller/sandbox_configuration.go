@@ -120,7 +120,7 @@ func (r *TeamReconciler) enqueueTeams(ctx context.Context, matches func(*api.Tea
 
 func (r *TeamReconciler) enqueueTeamsForAgentPolicy(ctx context.Context, object client.Object) []reconcile.Request {
 	return r.enqueueTeams(ctx, func(team *api.Team) bool {
-		return team.Spec.NormalAgentPolicyRef == object.GetName() || team.Spec.AdminAgentPolicyRef == object.GetName()
+		return team.Spec.AgentPolicyRef == object.GetName()
 	})
 }
 
@@ -182,15 +182,15 @@ func (r *TeamReconciler) validate(ctx context.Context, team *api.Team) error {
 	if reader == nil {
 		reader = r.Client
 	}
-	if team.Spec.NormalAgentPolicyRef == "" || team.Spec.DefaultSandboxRef == "" || len(team.Spec.SandboxRefs) == 0 || !slices.Contains(team.Spec.SandboxRefs, team.Spec.DefaultSandboxRef) {
+	if team.Spec.AgentPolicyRef == "" || team.Spec.DefaultSandboxRef == "" || len(team.Spec.SandboxRefs) == 0 || !slices.Contains(team.Spec.SandboxRefs, team.Spec.DefaultSandboxRef) {
 		return invalidTeamConfiguration("Team policy and Sandbox bindings are incomplete")
 	}
 	policy := &api.AgentPolicy{}
-	if err := reader.Get(ctx, types.NamespacedName{Name: team.Spec.NormalAgentPolicyRef}, policy); err != nil {
+	if err := reader.Get(ctx, types.NamespacedName{Name: team.Spec.AgentPolicyRef}, policy); err != nil {
 		if apierrors.IsNotFound(err) {
-			return invalidTeamConfiguration("normal AgentPolicy %q does not exist", team.Spec.NormalAgentPolicyRef)
+			return invalidTeamConfiguration("AgentPolicy %q does not exist", team.Spec.AgentPolicyRef)
 		}
-		return fmt.Errorf("normal AgentPolicy is unavailable: %w", err)
+		return fmt.Errorf("AgentPolicy is unavailable: %w", err)
 	}
 	for _, name := range team.Spec.SandboxRefs {
 		box := &api.Sandbox{}
@@ -199,15 +199,6 @@ func (r *TeamReconciler) validate(ctx context.Context, team *api.Team) error {
 				return invalidTeamConfiguration("Sandbox %q does not exist", name)
 			}
 			return fmt.Errorf("Sandbox %q is unavailable: %w", name, err)
-		}
-	}
-	if team.Spec.AdminAgentPolicyRef != "" {
-		admin := &api.AgentPolicy{}
-		if err := reader.Get(ctx, types.NamespacedName{Name: team.Spec.AdminAgentPolicyRef}, admin); err != nil {
-			if apierrors.IsNotFound(err) {
-				return invalidTeamConfiguration("admin AgentPolicy %q does not exist", team.Spec.AdminAgentPolicyRef)
-			}
-			return fmt.Errorf("admin AgentPolicy is unavailable: %w", err)
 		}
 	}
 	return nil

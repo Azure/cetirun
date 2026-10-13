@@ -170,8 +170,8 @@ func TestAdminTeamUpdatePreservesGovernance(t *testing.T) {
 	team := &cetirunv1alpha1.Team{
 		ObjectMeta: metav1.ObjectMeta{Name: "governed"},
 		Spec: cetirunv1alpha1.TeamSpec{
-			NormalAgentPolicyRef: "normal", AdminAgentPolicyRef: "admin",
-			SandboxRefs: []string{"standard", "restricted"}, DefaultSandboxRef: "standard",
+			AgentPolicyRef: "governed-policy",
+			SandboxRefs:    []string{"standard", "restricted"}, DefaultSandboxRef: "standard",
 			MemberContext: cetirunv1alpha1.TeamContextSpec{Role: "old"},
 		},
 	}

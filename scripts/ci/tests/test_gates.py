@@ -102,7 +102,14 @@ class GateTests(unittest.TestCase):
         commands = [call.args[0] for call in run.call_args_list]
         self.assertEqual(sum(c[:2] == ["helm", "lint"] for c in commands), 8)
         self.assertEqual(sum(c[:2] == ["helm", "template"] for c in commands), 8)
-        self.assertEqual(len({c[3] for c in commands if c[:2] == ["helm", "lint"]}), 7)
+        self.assertEqual(
+            {str(Path(c[3]).relative_to(self.root)) for c in commands if c[:2] == ["helm", "lint"]},
+            {
+                "app/cetirun-chart", "app/cetirun-operator/chart", "app/cetirun-portal/chart",
+                "app/cetirun-agent-broker/chart", "app/cetirun-ai-gateway/chart",
+                "app/cetirun-platform", "infra/istio",
+            },
+        )
         self.assertTrue(all("--strict" in c for c in commands if c[1] == "lint"))
         self.assertEqual(sum(c[:2] == ["helm", "dependency"] for c in commands), 1)
         self.assertEqual(sum(c[:2] == ["bash", str(self.root / "scripts/cetirun-istio-helm-test.sh")] for c in commands), 1)

@@ -87,7 +87,8 @@ type Custom struct {
 	Context           Context       `json:"context"`
 	Network           Network       `json:"network"`
 	// Only the Registry synchronizer supplies this stable, namespace-local name.
-	PullSecretName string `json:"pullSecretName,omitempty"`
+	PullSecretName string  `json:"pullSecretName,omitempty"`
+	Memory         *Memory `json:"memory,omitempty"`
 }
 
 func (b Custom) HarnessBindings() agents.Bindings {
@@ -116,6 +117,9 @@ func validPeer(peer Peer) bool {
 }
 
 func (b Custom) Validate(agent agents.ResolvedAgent) error {
+	if err := b.Memory.Validate(agent.HomeDir); err != nil {
+		return err
+	}
 	if b.PullSecretName != "" && (len(validation.IsDNS1123Label(b.PullSecretName)) != 0 ||
 		b.PullSecretName != "registry-pull-"+strings.ReplaceAll(b.AgentUID, "-", "")) {
 		return fmt.Errorf("RegistryBindingInvalid: pull Secret must belong to this Agent UID")

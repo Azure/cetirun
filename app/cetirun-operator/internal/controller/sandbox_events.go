@@ -27,7 +27,6 @@ type sandboxEventBinding struct {
 	TeamUID        string `json:"teamUID"`
 	SandboxUID     string `json:"sandboxUID"`
 	AgentPolicyUID string `json:"agentPolicyUID"`
-	PolicyClass    string `json:"policyClass"`
 }
 
 type sandboxTransitionEvent struct {
@@ -69,13 +68,11 @@ func sandboxAgentTransition(agent *api.Agent, history *api.SandboxStatus) sandbo
 		appliedRevision: sandboxEventUnresolved,
 	}
 	event.attemptedBinding.AgentUID = event.resourceUID
-	event.attemptedBinding.PolicyClass = sandboxEventClass(agent.Spec.PolicyClass)
 	authorized, authorizationErr := sandboxbinding.AuthorizedBinding(agent)
 	if authorizationErr == nil {
 		event.attemptedBinding = sandboxEventBinding{
 			AgentUID: sandboxEventUID(authorized.AgentUID), TeamUID: sandboxEventUID(authorized.TeamUID),
 			SandboxUID: sandboxEventUID(authorized.SandboxUID), AgentPolicyUID: sandboxEventUID(authorized.AgentPolicyUID),
-			PolicyClass: sandboxEventClass(authorized.PolicyClass),
 		}
 		event.attemptedBindingSource = "authorization"
 	}
@@ -85,7 +82,7 @@ func sandboxAgentTransition(agent *api.Agent, history *api.SandboxStatus) sandbo
 		if condition.Reason != "PolicyApplied" || agent.Status.ObservedGeneration != agent.Generation ||
 			authorizationErr != nil || applied == nil ||
 			applied.AppliedRevision == "" || applied.TeamUID != authorized.TeamUID || applied.SandboxUID != authorized.SandboxUID ||
-			applied.AgentPolicyUID != authorized.AgentPolicyUID || applied.PolicyClass != authorized.PolicyClass {
+			applied.AgentPolicyUID != authorized.AgentPolicyUID {
 			return sandboxTransitionEvent{}
 		}
 		event.event = "sandbox.policy.applied"
@@ -114,7 +111,6 @@ func sandboxAgentTransition(agent *api.Agent, history *api.SandboxStatus) sandbo
 		event.appliedBinding = sandboxEventBinding{
 			AgentUID: event.resourceUID, TeamUID: sandboxEventUID(history.TeamUID),
 			SandboxUID: sandboxEventUID(history.SandboxUID), AgentPolicyUID: sandboxEventUID(history.AgentPolicyUID),
-			PolicyClass: sandboxEventClass(history.PolicyClass),
 		}
 		event.appliedRevision = sandboxEventRevision(history.AppliedRevision)
 	}
@@ -186,7 +182,7 @@ func (event sandboxTransitionEvent) correlation() string {
 		event.attemptedBindingSource, event.attemptedRevision, event.appliedRevision,
 	}
 	for _, binding := range []sandboxEventBinding{event.attemptedBinding, event.appliedBinding} {
-		fields = append(fields, binding.AgentUID, binding.TeamUID, binding.SandboxUID, binding.AgentPolicyUID, binding.PolicyClass)
+		fields = append(fields, binding.AgentUID, binding.TeamUID, binding.SandboxUID, binding.AgentPolicyUID)
 	}
 	return sandboxEventDigest(strings.Join(fields, "\x00"))
 }
@@ -194,16 +190,7 @@ func (event sandboxTransitionEvent) correlation() string {
 func unresolvedSandboxEventBinding() sandboxEventBinding {
 	return sandboxEventBinding{
 		AgentUID: sandboxEventUnresolved, TeamUID: sandboxEventUnresolved, SandboxUID: sandboxEventUnresolved,
-		AgentPolicyUID: sandboxEventUnresolved, PolicyClass: sandboxEventUnresolved,
-	}
-}
-
-func sandboxEventClass(class api.AgentPolicyClass) string {
-	switch class {
-	case api.AgentPolicyClassNormal, api.AgentPolicyClassAdmin:
-		return string(class)
-	default:
-		return sandboxEventUnresolved
+		AgentPolicyUID: sandboxEventUnresolved,
 	}
 }
 

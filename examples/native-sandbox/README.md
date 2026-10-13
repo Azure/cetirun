@@ -1,6 +1,6 @@
 # Native Sandbox first run
 
-This example exercises one normal OpenClaw Agent with a Kata Sandbox and a
+This example exercises one OpenClaw Agent with a Kata Sandbox and a
 shared AI Gateway model. It is an explicitly enabled, single-start profile,
 not a production failover or complete AgentPolicy conformance test.
 

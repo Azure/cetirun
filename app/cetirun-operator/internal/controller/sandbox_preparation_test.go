@@ -581,12 +581,11 @@ func (f *preparationFixture) makeAdmin(t *testing.T) *rbacv1.ClusterRole {
 		}
 	}
 	team := f.fixture.Team.DeepCopy()
-	team.Spec.AdminAgentPolicyRef = policy.Name
+	team.Spec.AgentPolicyRef = policy.Name
 	if err := f.client.Update(ctx, team); err != nil {
 		t.Fatal(err)
 	}
 	agent := f.current(t)
-	agent.Spec.PolicyClass = api.AgentPolicyClassAdmin
 	agent.Generation++
 	authorization, err := sandboxbinding.Snapshot(agent, team, sandbox.Resources{
 		Sandboxes:     map[string]*api.Sandbox{f.fixture.Sandbox.Name: f.fixture.Sandbox},

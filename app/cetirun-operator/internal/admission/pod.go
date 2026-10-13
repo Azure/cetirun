@@ -469,7 +469,7 @@ func (h *PodHandler) readPodSource(ctx context.Context, expected sandboxworkload
 				box = entry.Name
 			}
 		}
-		digest, err := sandboxworkload.ExecutionSourceDigest(object, box, expected.Binding.PolicyClass)
+		digest, err := sandboxworkload.ExecutionSourceDigest(object, box)
 		if claim, ok := object.(*corev1.PersistentVolumeClaim); ok {
 			digest, err = sandboxworkload.NativeClaimDigest(claim)
 		}

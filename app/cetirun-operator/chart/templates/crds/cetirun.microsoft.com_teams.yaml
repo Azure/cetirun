@@ -56,9 +56,10 @@ spec:
             description: TeamSpec defines team-wide configuration applied to every
               member instance.
             properties:
-              adminAgentPolicyRef:
-                description: AdminAgentPolicyRef optionally names the policy for admin-class
-                  Agents.
+              agentPolicyRef:
+                description: |-
+                  AgentPolicyRef names the policy applied to every Agent in this Team.
+                  A Team without any policy or Sandbox fields retains legacy execution.
                 maxLength: 253
                 minLength: 1
                 pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
@@ -95,14 +96,6 @@ spec:
                     description: Role is the team member's role, e.g. "Engineer".
                     type: string
                 type: object
-              normalAgentPolicyRef:
-                description: |-
-                  NormalAgentPolicyRef names the policy for normal-class Agents.
-                  A Team without any policy or Sandbox fields retains legacy execution.
-                maxLength: 253
-                minLength: 1
-                pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
-                type: string
               sandboxRefs:
                 description: SandboxRefs lists the Sandboxes permitted for this Team.
                 items:
@@ -126,8 +119,8 @@ spec:
                     type: string
                   mountPath:
                     description: |-
-                      MountPath inside the container. Defaults to the chart default
-                      ("/home/vibe/.aks/skills") when empty.
+                      MountPath optionally adds a read-only skills alias for native Agents.
+                      The common skills view is always at "$HOME/.agents/skills".
                     type: string
                   resourceGroup:
                     description: ResourceGroup of the Azure storage account.

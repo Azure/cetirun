@@ -153,6 +153,34 @@ func TestClientModelsAndCancellation(t *testing.T) {
 	}
 }
 
+func TestClientForwardsOnlyRestrictiveMemoryHeader(t *testing.T) {
+	for _, mode := range []string{"off", "no-capture", "", "enabled"} {
+		t.Run(mode, func(t *testing.T) {
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				expected := mode
+				if mode == "enabled" {
+					expected = ""
+				}
+				if r.Header.Get("X-CetiRun-Memory-Mode") != expected {
+					t.Error("wrong restriction forwarded")
+				}
+				body, _ := io.ReadAll(r.Body)
+				if strings.Contains(string(body), "Memory") || strings.Contains(string(body), "memory") {
+					t.Error("HTTP body contract changed")
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, `{"choices":[{"index":0,"message":{"role":"assistant","content":"fixture"},"finish_reason":"stop"}]}`)
+			}))
+			defer upstream.Close()
+			w := httptest.NewRecorder()
+			NewClient().Complete(context.Background(), w, Target{BaseURL: upstream.URL}, Request{Model: "fixture", MemoryMode: mode}, "fixture")
+			if w.Code != 200 {
+				t.Fatal(w.Body.String())
+			}
+		})
+	}
+}
+
 func TestLimiterBoundsAndRelease(t *testing.T) {
 	var l Limiter
 	release, ok := l.Acquire("a", "one")

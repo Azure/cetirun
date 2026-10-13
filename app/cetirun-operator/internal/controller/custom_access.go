@@ -22,7 +22,7 @@ func (r *AgentReconciler) configureCustomAccess(ctx context.Context, instance *a
 	status := metav1.ConditionFalse
 	reason, message := "PlatformAccessDisabled", "Platform desktop, terminal and Agent Web UI are disabled"
 	if access.desktop || access.terminal || webUI {
-		if err := r.ensureVirtualService(ctx, instance, access); err != nil {
+		if _, err := r.ensureVirtualService(ctx, instance, access); err != nil {
 			reason, message = "PlatformRouteUnavailable", err.Error()
 		} else {
 			status = metav1.ConditionTrue

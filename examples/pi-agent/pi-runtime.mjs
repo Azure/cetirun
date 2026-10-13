@@ -11,14 +11,17 @@ import { gatewayAccess, gatewayConfiguration, gatewayCredentials, GATEWAY_PROVID
 
 export const PROVIDER = "github-copilot";
 export const PI_TOOLS = ["read", "bash", "edit", "write", "grep", "find", "ls"];
+export function piTools(resources) {
+  return resources.memoryEnabled ? [...PI_TOOLS, "cetirun_memory"] : PI_TOOLS;
+}
 const HTTP_TOOL_BUDGET = 8;
 
 /** Shared inputs for HTTP and TUI; neither loads arbitrary HOME extensions. */
-export async function createPiServices(home, cwd = path.join(home, "workspace"), env = process.env) {
+export async function createPiServices(home, cwd = path.join(home, "workspace"), env = process.env, platform = "pi-http") {
   const agentDir = path.join(home, ".pi", "agent");
   await mkdir(agentDir, { recursive: true, mode: 0o700 });
   await mkdir(cwd, { recursive: true, mode: 0o700 });
-  const resourceLoader = await approvedResources(home);
+  const resourceLoader = await approvedResources(home, env, cwd, platform);
   const gateway = gatewayConfiguration(env);
   const modelRuntime = await ModelRuntime.create({
     ...(gateway ? { credentials: gatewayCredentials() } : { authPath: path.join(agentDir, "auth.json") }),
@@ -32,6 +35,7 @@ export async function createPiServices(home, cwd = path.join(home, "workspace"),
     enableInstallTelemetry: false,
   });
   const modelAccess = gateway ? gatewayAccess(modelRuntime, gateway) : undefined;
+  resourceLoader.setMemoryModelRuntime?.(modelRuntime);
   return { cwd, agentDir, modelRuntime, resourceLoader, settingsManager, modelAccess, diagnostics: [] };
 }
 
@@ -73,15 +77,16 @@ export async function createPiRuntime(home, env = process.env) {
         },
       });
     },
-    async run({ model: id, messages, signal, onText }) {
+    async run({ model: id, messages, signal, onText, memory }) {
       const model = (await availableModels(signal)).find((candidate) => candidate.id === id);
       if (!model) throw new Error("Requested model is unavailable");
 
       const { sessionManager, prompt, systemPrompt } = replayHTTPHistory(cwd, model, messages);
+      const resources = await approvedResources(home, env, cwd, "pi-http", undefined, { ...memory, signal, modelRuntime });
       const { session } = await createAgentSession({
         cwd, agentDir, model, modelRuntime, sessionManager,
-        resourceLoader: { ...resourceLoader, getAppendSystemPrompt: () => systemPrompt },
-        tools: PI_TOOLS,
+        resourceLoader: { ...resources, getAppendSystemPrompt: () => systemPrompt },
+        tools: piTools(resources),
         settingsManager: SettingsManager.inMemory({
           compaction: { enabled: false },
           retry: { enabled: false },

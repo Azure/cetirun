@@ -25,11 +25,10 @@ var (
 )
 
 type Binding struct {
-	AgentUID       types.UID                        `json:"agentUID"`
-	TeamUID        types.UID                        `json:"teamUID"`
-	SandboxUID     types.UID                        `json:"sandboxUID"`
-	PolicyClass    cetirunv1alpha1.AgentPolicyClass `json:"policyClass"`
-	AgentPolicyUID types.UID                        `json:"agentPolicyUID"`
+	AgentUID       types.UID `json:"agentUID"`
+	TeamUID        types.UID `json:"teamUID"`
+	SandboxUID     types.UID `json:"sandboxUID"`
+	AgentPolicyUID types.UID `json:"agentPolicyUID"`
 }
 
 type Resources struct {
@@ -86,14 +85,8 @@ func DefaultAgentSelection(spec cetirunv1alpha1.AgentSpec, team *cetirunv1alpha1
 	if errs := validateTeamSpec(team.Spec); len(errs) != 0 {
 		return spec, fmt.Errorf("invalid Team bindings: %w", errs.ToAggregate())
 	}
-	if spec.PolicyClass == "" {
-		spec.PolicyClass = cetirunv1alpha1.AgentPolicyClassNormal
-	}
 	if spec.SandboxRef == "" {
 		spec.SandboxRef = team.Spec.DefaultSandboxRef
-	}
-	if _, err := selectedPolicyRef(spec.PolicyClass, team.Spec); err != nil {
-		return spec, err
 	}
 	if !slices.Contains(team.Spec.SandboxRefs, spec.SandboxRef) {
 		return spec, fmt.Errorf("spec.sandboxRef %q is not permitted by Team %q", spec.SandboxRef, team.Name)
@@ -101,8 +94,8 @@ func DefaultAgentSelection(spec cetirunv1alpha1.AgentSpec, team *cetirunv1alpha1
 	return spec, nil
 }
 
-// ValidateTeam checks every configured Sandbox/policy pair, including unselected
-// slots. Availability is checked only for the selected runtime during Resolve.
+// ValidateTeam checks the Team policy against every configured Sandbox.
+// Availability is checked only for the selected runtime during Resolve.
 func ValidateTeam(team *cetirunv1alpha1.Team, resources Resources, registrations map[cetirunv1alpha1.SandboxType]Registration) field.ErrorList {
 	if team == nil {
 		return field.ErrorList{field.Required(field.NewPath("team"), "referenced Team is missing")}
@@ -140,49 +133,34 @@ func ValidateTeamConfiguration(spec cetirunv1alpha1.TeamSpec, resources Resource
 		}
 	}
 
-	for _, slot := range []struct {
-		name   string
-		ref    string
-		normal bool
-	}{
-		{"normalAgentPolicyRef", team.Spec.NormalAgentPolicyRef, true},
-		{"adminAgentPolicyRef", team.Spec.AdminAgentPolicyRef, false},
-	} {
-		if slot.ref == "" {
+	ref := team.Spec.AgentPolicyRef
+	path := field.NewPath("agentPolicies").Key(ref)
+	policy := resources.AgentPolicies[ref]
+	if policy == nil {
+		return append(errs, field.NotFound(path, ref))
+	}
+	errs = append(errs, validateIdentity(policy.ObjectMeta, ref, path)...)
+	policySpec, policyErrs := NormalizeAgentPolicy(policy.Spec)
+	errs = append(errs, policyErrs...)
+	if len(policyErrs) != 0 {
+		return errs
+	}
+	if len(team.Spec.SandboxRefs) > 1 && !policySpec.SandboxSelection.AllowMultiple {
+		errs = append(errs, field.Forbidden(field.NewPath("spec", "sandboxRefs"), fmt.Sprintf("policy %q permits only one Sandbox", ref)))
+	}
+	for _, name := range team.Spec.SandboxRefs {
+		box, valid := sandboxes[name]
+		if !valid {
 			continue
 		}
-		path := field.NewPath("agentPolicies").Key(slot.ref)
-		policy := resources.AgentPolicies[slot.ref]
-		if policy == nil {
-			errs = append(errs, field.NotFound(path, slot.ref))
+		registration, found := registrations[box.Type]
+		if !found {
+			errs = append(errs, field.NotFound(field.NewPath("registrations"), box.Type))
 			continue
 		}
-		errs = append(errs, validateIdentity(policy.ObjectMeta, slot.ref, path)...)
-		spec, specErrs := NormalizeAgentPolicy(policy.Spec)
-		errs = append(errs, specErrs...)
-		if len(specErrs) != 0 {
-			continue
-		}
-		if slot.normal && spec.KubernetesAccess != nil {
-			errs = append(errs, field.Forbidden(field.NewPath("spec", slot.name), "normal policy must omit kubernetesAccess"))
-		}
-		if len(team.Spec.SandboxRefs) > 1 && !spec.SandboxSelection.AllowMultiple {
-			errs = append(errs, field.Forbidden(field.NewPath("spec", "sandboxRefs"), fmt.Sprintf("policy %q permits only one Sandbox", slot.ref)))
-		}
-		for _, name := range team.Spec.SandboxRefs {
-			sandbox, valid := sandboxes[name]
-			if !valid {
-				continue
-			}
-			registration, found := registrations[sandbox.Type]
-			if !found {
-				errs = append(errs, field.NotFound(field.NewPath("registrations"), sandbox.Type))
-				continue
-			}
-			if compatibilityErrs := CheckCompatibility(sandbox, spec, registration.Capabilities); len(compatibilityErrs) != 0 {
-				errs = append(errs, field.Invalid(field.NewPath("spec", slot.name), slot.ref,
-					fmt.Sprintf("Sandbox %q is incompatible: %v", name, compatibilityErrs.ToAggregate())))
-			}
+		if compatibilityErrs := CheckCompatibility(box, policySpec, registration.Capabilities); len(compatibilityErrs) != 0 {
+			errs = append(errs, field.Invalid(field.NewPath("spec", "agentPolicyRef"), ref,
+				fmt.Sprintf("Sandbox %q is incompatible: %v", name, compatibilityErrs.ToAggregate())))
 		}
 	}
 	return errs
@@ -205,22 +183,15 @@ func Resolve(input ResolveInput) (*Resolution, error) {
 	if agent.Spec.SandboxRef == "" || !slices.Contains(team.Spec.SandboxRefs, agent.Spec.SandboxRef) {
 		return nil, fmt.Errorf("Agent spec.sandboxRef must persist one of Team %q's permitted Sandboxes", team.Name)
 	}
-	class := agent.Spec.PolicyClass
-	if class == "" {
-		class = cetirunv1alpha1.AgentPolicyClassNormal
-	}
-	ref, err := selectedPolicyRef(class, team.Spec)
-	if err != nil {
-		return nil, err
-	}
+	ref := team.Spec.AgentPolicyRef
 	sandbox := input.Resources.Sandboxes[agent.Spec.SandboxRef]
 	policy := input.Resources.AgentPolicies[ref]
 	binding := Binding{
 		AgentUID: agent.UID, TeamUID: team.UID, SandboxUID: sandbox.UID,
-		PolicyClass: class, AgentPolicyUID: policy.UID,
+		AgentPolicyUID: policy.UID,
 	}
 	if input.AuthorizedBinding != binding {
-		return nil, fmt.Errorf("%w: authorize the current Agent, Team, Sandbox, policy class and AgentPolicy UIDs explicitly", ErrUnauthorizedBinding)
+		return nil, fmt.Errorf("%w: authorize the current Agent, Team, Sandbox and AgentPolicy UIDs explicitly", ErrUnauthorizedBinding)
 	}
 	sandboxSpec, sandboxErrs := NormalizeSandbox(sandbox.Spec)
 	policySpec, policyErrs := NormalizeAgentPolicy(policy.Spec)
@@ -231,7 +202,7 @@ func Resolve(input ResolveInput) (*Resolution, error) {
 	if err := CheckExecutionProfile(registration.Capabilities, input.NativeExecution); err != nil {
 		return nil, err
 	}
-	if err := CheckAgentProfile(registration.Capabilities, agent.Spec.Agent.Type, class); err != nil {
+	if err := CheckAgentProfile(registration.Capabilities, agent.Spec.Agent.Type); err != nil {
 		return nil, err
 	}
 	if !registration.Available {
@@ -250,7 +221,7 @@ func Resolve(input ResolveInput) (*Resolution, error) {
 		PlatformRevision string                      `json:"platformRevision"`
 		Profile          string                      `json:"profile,omitempty"`
 	}{
-		"sandbox-foundation-v2", binding, sandboxSpec, ProjectPolicy(policySpec),
+		"sandbox-foundation-v1", binding, sandboxSpec, ProjectPolicy(policySpec),
 		registration.Capabilities.RuntimeClassName, registration.Capabilities.Revision, registration.Capabilities.Profile,
 	})
 	if err != nil {
@@ -261,36 +232,16 @@ func Resolve(input ResolveInput) (*Resolution, error) {
 	return resolution, nil
 }
 
-func selectedPolicyRef(class cetirunv1alpha1.AgentPolicyClass, team cetirunv1alpha1.TeamSpec) (string, error) {
-	switch class {
-	case cetirunv1alpha1.AgentPolicyClassNormal:
-		if team.NormalAgentPolicyRef == "" {
-			return "", fmt.Errorf("Team normalAgentPolicyRef is required")
-		}
-		return team.NormalAgentPolicyRef, nil
-	case cetirunv1alpha1.AgentPolicyClassAdmin:
-		if team.AdminAgentPolicyRef == "" {
-			return "", fmt.Errorf("admin policyClass requires Team adminAgentPolicyRef")
-		}
-		return team.AdminAgentPolicyRef, nil
-	default:
-		return "", fmt.Errorf("invalid policyClass %q", class)
-	}
-}
-
 func validateTeamSpec(spec cetirunv1alpha1.TeamSpec) field.ErrorList {
 	root := field.NewPath("spec")
 	var errs field.ErrorList
 	for _, ref := range []struct{ name, value string }{
-		{"normalAgentPolicyRef", spec.NormalAgentPolicyRef},
+		{"agentPolicyRef", spec.AgentPolicyRef},
 		{"defaultSandboxRef", spec.DefaultSandboxRef},
 	} {
 		if len(validation.IsDNS1123Subdomain(ref.value)) != 0 {
 			errs = append(errs, field.Invalid(root.Child(ref.name), ref.value, "a valid resource name is required"))
 		}
-	}
-	if spec.AdminAgentPolicyRef != "" && len(validation.IsDNS1123Subdomain(spec.AdminAgentPolicyRef)) != 0 {
-		errs = append(errs, field.Invalid(root.Child("adminAgentPolicyRef"), spec.AdminAgentPolicyRef, "must be a valid resource name"))
 	}
 	if len(spec.SandboxRefs) == 0 {
 		errs = append(errs, field.Required(root.Child("sandboxRefs"), "at least one Sandbox is required"))

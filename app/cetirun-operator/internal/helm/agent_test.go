@@ -200,18 +200,24 @@ func TestInitRuntimeWiring(t *testing.T) {
 		for _, item := range init {
 			c := object(item)
 			names = append(names, text(c["name"]))
+			if c["name"] == "memory-assets" {
+				if c["image"] != "cetirun.azurecr.io/cetirun-memory-context:"+chrt.Metadata.AppVersion {
+					t.Fatal("Memory init does not use the release image")
+				}
+				continue
+			}
 			if c["image"] != image {
 				t.Fatalf("%s init image differs from main image", c["name"])
 			}
 		}
-		want := []string{"init-home-data", "init-skills"}
+		want := []string{"memory-assets", "init-home-data", "init-skills"}
 		if typ == "openclaw" {
-			want = []string{"init-home-data", "doctor", "init-skills"}
+			want = []string{"memory-assets", "init-home-data", "doctor", "init-skills"}
 		}
 		if !reflect.DeepEqual(names, want) {
 			t.Fatalf("%s init order: %v", typ, names)
 		}
-		seed := object(init[0])
+		seed := object(init[1])
 		bound := false
 		for _, item := range array(seed["env"]) {
 			if object(item)["name"] == "CETIRUN_INIT_IMAGE" {
@@ -249,6 +255,9 @@ func TestNativeRenderBaseline(t *testing.T) {
 				}
 				t.Run(name, func(t *testing.T) {
 					input := sampleInput(typ, provider, enabled)
+					// The original snapshots predate Memory; its default-on delivery
+					// has dedicated tests and must not rewrite these baselines.
+					input["memoryContext"] = map[string]any{"enabled": false}
 					// Pin the original StorageClass input; defaults are tested separately.
 					input["persistence"] = map[string]any{"storageClass": ""}
 					path := filepath.Join("testdata", "harness", name+".json")
@@ -412,7 +421,11 @@ func TestNativeReleaseVersionWiring(t *testing.T) {
 						}
 					}
 					for _, item := range array(pod["initContainers"]) {
-						if object(item)["image"] != wantImage {
+						expected := wantImage
+						if object(item)["name"] == "memory-assets" {
+							expected = "cetirun.azurecr.io/cetirun-memory-context:" + version
+						}
+						if object(item)["image"] != expected {
 							t.Errorf("%s init image does not use %s", mode, version)
 						}
 					}

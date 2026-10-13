@@ -109,6 +109,11 @@ def set_version(version):
             1,
         )
     replace(
+        ROOT / "app/cetirun-memory-context/assets/adapters/openclaw/package.json",
+        r'^  "version": "[^"]+",$',
+        f'  "version": "{version}",',
+    )
+    replace(
         ROOT
         / "app/cetirun-chart/agents/hermes/plugins/platforms/cetirun_teams/plugin.yaml",
         r"^version:\s*.*$",
@@ -156,6 +161,7 @@ def check_version(version):
         errors.append("app/cetirun-platform/Chart.lock: dependency versions differ")
 
     expected_text = {
+        "app/cetirun-memory-context/assets/adapters/openclaw/package.json": f'"version": "{version}"',
         "app/cetirun-operator/chart/values.yaml": f'version: "{version}"',
         "app/cetirun-operator/cmd/main.go": f'"chart-version", "{version}"',
         "app/cetirun-operator/deploy/deploy.sh": f"CHART_VERSION:-{version}",

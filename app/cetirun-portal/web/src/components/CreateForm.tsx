@@ -347,6 +347,13 @@ export function CreateForm({ onCreated }: { onCreated?: () => void }) {
         />
       )}
 
+      <p style={{ margin: 0, fontSize: 12 }}>
+        When Memory assets are installed, memory and bounded learning are enabled automatically.
+        Qualified entrypoints may use up to four extra model requests per day for synthetic method
+        checks. Conversation-level memory restrictions still apply; Team Skills and tool permissions
+        are unchanged.
+      </p>
+
       <Button
         type="submit"
         appearance="primary"

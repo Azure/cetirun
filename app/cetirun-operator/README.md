@@ -26,14 +26,14 @@ supplies shared configuration, not access to private agent data.
 
 Agents can retain the legacy deployment path without creating a Sandbox or
 AgentPolicy. Omit `sandboxRef` and use either no Team or a Team with no policy
-or Sandbox fields. The default `policyClass: normal` alone does not opt in.
+or Sandbox fields.
 Existing chart, runtime, Gateway, ownership, and admission requirements still
 apply; compatibility is not a bypass for requested policy.
 
-A policy-bound Agent names one Team and one Team-permitted Sandbox. Its `policyClass`
-selects either the Team's required normal policy or optional admin policy; it
-does not derive from the human caller's Portal role. The effective policy is
-the intersection of that administrator-selected `AgentPolicy` and the Agent's
+A policy-bound Agent names one Team and one Team-permitted Sandbox. The Team's
+single `agentPolicyRef` selects its policy; it does not derive from the human
+caller's Portal role. The effective policy is the intersection of that
+administrator-selected `AgentPolicy` and the Agent's
 explicit requests for models, budget, skills, and identity.
 
 For a policy-bound Agent, the Operator resolves the selected Team, Sandbox, and policy before it can
@@ -69,9 +69,9 @@ independently.
 `Sandbox` describes a reusable runtime, container resource declarations, private
 home storage and scratch. `AgentPolicy` describes selection, security, network,
 ingress and identity intent. Both configuration resources are cluster-scoped.
-Policy-enabled Teams bind a required normal policy, an optional admin policy, permitted
-Sandboxes and a creation default; an Agent binds a Sandbox and a normal/admin
-policy class. A human administrator's role does not select an Agent's class.
+Policy-enabled Teams bind one policy, permitted Sandboxes and a creation
+default; an Agent binds a Sandbox. A human administrator's role does not select
+the workload policy.
 These bindings coexist with the required `spec.agent` Harness configuration.
 
 The [sandbox package](internal/sandbox/) currently provides:
@@ -79,7 +79,7 @@ The [sandbox package](internal/sandbox/) currently provides:
 - Pure defaulting, validation and deterministic normalization without mutating
   source objects.
 - Cross-resource validation of every configured Team Sandbox/policy pair.
-- Class-specific resolution with explicit authorization of Agent, Team,
+- Single-policy resolution with explicit authorization of Agent, Team,
   Sandbox and AgentPolicy UIDs. Same-name replacement requires new authorization.
 - A desired-configuration revision that excludes metadata, unselected policies,
   creation-default changes and unrelated model-access settings.
@@ -108,12 +108,12 @@ native starts are disabled; admission still limits protected Pod updates.
 The native profile uses the registered RuntimeClass's scheduling constraints;
 the separate durable placement registry is unsupported and rejected.
 
-The supported profile is one normal-class OpenClaw Agent, a Kata Sandbox with
+The supported profile is one OpenClaw Agent, a Kata Sandbox with
 ReadWriteOncePod HOME, and shared Gateway model access. It uses the selected
 Sandbox's resources/storage and the selected AgentPolicy's model entitlement
 and budget. Per-Agent Gateway keys are projected through owned Secrets, not
 embedded provider credentials. Custom CIDR/FQDN/port rules, internal-network
-exceptions, required mTLS, admin/identity grants, Copilot sidecars, desktop,
+exceptions, required mTLS, Kubernetes/identity grants, Copilot sidecars, desktop,
 Tailscale, Teams and arbitrary Agent Helm overrides are rejected before start.
 Existing baseline network controls are retained.
 
@@ -199,9 +199,9 @@ For those charts, the protected renderer supplies the exact proxy list through
 the existing `openclaw.config.gateway.trustedProxies` value and omits the
 unsupported hook. It retains the original chart schema and final proxy-list
 validation without rewriting the Agent's pin or authorization.
-Adding this render projection does not change the existing
-`sandbox-controls-v2` digest for otherwise unchanged inputs. An already-running
-native lifetime keeps its old runtime configuration, workload, route, expectation
+Within the single-policy API contract, adding this render projection does not
+change the existing `sandbox-controls-v1` digest for otherwise unchanged inputs.
+An already-running native lifetime keeps its old runtime configuration, workload, route, expectation
 and consumed start marker across an Operator upgrade; it is not automatically
 re-rendered or restarted to adopt new proxy settings. Actual policy, topology
 or execution-source changes still fail closed. Use normal deletion and a new
@@ -213,7 +213,7 @@ store before its one-shot start marker. Pending configuration changes prevent
 that reservation; relevant configuration writers are blocked while it is active
 or stopping. Pod admission and readiness recheck the reservation read-only.
 Ordinary cleanup releases it only after observing quiescence. Unused Sandbox
-and other policy-slot edits do not become native execution inputs.
+and unrelated AgentPolicy edits do not become native execution inputs.
 Once first-Pod admission is released, an unobserved creation outcome keeps the
 reservation held even if replicas are zero and no Pod is currently listed.
 The initial Pod must be observed and ordinarily terminated; an uncertain start
@@ -294,9 +294,9 @@ volume and writer-journal UID. The complete writer tuple is persisted with
 the coordination ticket and must still match before reservation or cleanup.
 It rechecks sources without reading Secret contents or treating Agent status
 as authorization.
-Preparation still validates every permitted Team Sandbox and both policy
-slots. An execution reserves only its selected Sandbox and policy, so valid
-changes to an unused Sandbox or the other policy class do not require it to stop.
+Preparation still validates every permitted Team Sandbox against the Team policy.
+An execution reserves its selected Sandbox and the Team policy, so valid
+changes to an unused Sandbox or another Team's policy do not require it to stop.
 Non-secret sources use immutable UIDs and effective-input digests rather than
 treating the original observation resource version as lifetime configuration.
 Digests retain desired content, owner references, finalizers and recognized
@@ -331,8 +331,8 @@ including when the API still shows the old object.
 
 `AcquireTeamChange` derives the affected execution selections from an
 authoritative before image and the complete proposed Team mutation. Changing
-only the creation default or another policy-class slot can coexist with
-unaffected executions. Changing their selected slot, removing their Sandbox
+only the creation default can coexist with unaffected executions.
+Changing the Team policy, removing their Sandbox
 membership, replacing the Team or changing shared runtime inputs cannot.
 Team mutations still serialize with one another, pin the exact before
 UID/resource version and full desired mutation digest, and retain unknown
@@ -379,7 +379,7 @@ Both before and proposed objects must retain the original name, UID and resource
 version. The adapter verifies the authoritative before image, pins the complete
 proposed write, reserves the affected scope and records submission intent before
 one resource-version-conditional Update. Governed-to-governed Team changes retain
-per-class selection scoping; legacy updates and transitions into or out of
+selected-Sandbox scoping; legacy updates and transitions into or out of
 governance conservatively reserve the entire Team. Schema defaults (including
 omitted port protocols) are applied to independent input copies before pinning
 and submitting the write. Explicit values, list order and duplicates are not
@@ -419,7 +419,7 @@ without resubmitting it.
 
 For deletion, use `--action delete --before FILE` without `--after`.
 The [deletion adapter](internal/sandboxcoordination/kubernetes_delete.go) reserves
-the entire source, including all Team policy classes, and persists submission
+the entire source and persists submission
 intent before one background Delete with exact UID and resourceVersion
 preconditions. Existing reference checks and Kubernetes authorization still
 apply. It neither removes finalizers nor adopts a replacement object.
@@ -602,13 +602,10 @@ spend, reset periods, and emergency blocks are preserved. Legacy shared catalog
 entries and current per-deployment shared-model groups remain usable.
 
 Setting any Team policy/Sandbox field opts that Team into the full binding
-contract: normal policy, permitted Sandboxes, and a creation default. Partial
+contract: one policy, permitted Sandboxes, and a creation default. Partial
 configuration is not a legacy fallback. Policy-bound Agents must explicitly
 request model sources. They require a permitted Sandbox and current
 authorization, and Custom remains unsupported in that policy contract.
-`policyClass` defaults to `normal`; `admin` requires an explicit Team
-admin-policy slot and administrator-controlled assignment.
-
 Portal creation accepts legacy Teams without a default Sandbox. With the
 Gateway disabled, it also accepts no Team, as before. With the Gateway enabled,
 it still requires an existing Team and supported model routing. Portal support
@@ -623,6 +620,26 @@ governed even after spec fields are removed. If an earlier mandatory-policy
 version has already held an old Agent, review its state and data-retention needs
 before recovery; do not strip authority markers or delete its namespace as an
 upgrade shortcut. Legacy mode does not claim AgentPolicy enforcement.
+
+An administrative Team is a separate Team with its own context and skills; it
+does not create a privileged policy lane for other Teams. A person's permission
+to manage Teams or AgentPolicies is a control-plane authorization distinct from
+workload authorization. The latter comes only from the Agent's selected Team,
+that Team's `agentPolicyRef`, and the Agent's explicit requests. Existing
+policy-enabled resources require controlled stop and cleanup before a changed
+binding can be explicitly reauthorized. No lossless rolling migration between
+policies is supported.
+
+The pre-release `normalAgentPolicyRef`, `adminAgentPolicyRef` and `policyClass`
+fields are removed from the API and CRD schemas. New resources use only the
+Team's `agentPolicyRef`; there are no compatibility fields, policy-class
+branches, or migration readers for the former dual-policy design. This contract
+targets a new system, not an upgrade of an existing governed deployment.
+Authorization snapshots and Pod expectations use `v1`; coordination records
+use version `1`. Policy foundation and compiled-control revisions also use `v1`
+domains. These are the initial single-policy formats, not version upgrades of
+the undeployed dual-policy design. Strict decoding, ownership checks and
+explicit reauthorization remain fail-closed; no migration readers are added.
 
 The controller holds Agents that request Sandbox policy, belong to a Team
 with policy settings, or already have Sandbox status or a hold finalizer.
@@ -698,10 +715,9 @@ healthy admission leaves their Sandbox selection unchanged.
 This increment implements:
 
 - Explicit administrator usernames/groups for shared policy configuration,
-  and trusted Team assignments for normal-class member Agents. Kubernetes RBAC
+  and trusted Team assignments for policy-bound member Agents. Kubernetes RBAC
   must also authorize the operation.
   Portal administrators do not automatically acquire this independent authority.
-  A human administrator's Agent still defaults to the `normal` policy class.
 - Creation-only Agent selection defaulting, followed by validation against the
   current Team. Existing Agents are never silently re-defaulted. Portal writes
   use its administrator identity and may preserve the Team selected by the
@@ -766,7 +782,7 @@ sandboxAdmission:
 
 Every matching user/group must identify the same Team; conflicting memberships
 reject instead of picking a precedence order. Assignments do not grant Kubernetes
-RBAC permissions or access to the `admin` workload policy class. An unassigned
+RBAC permissions or independently approved workload grants. An unassigned
 caller cannot create or update a policy-bound member Agent. Do not map a shared
 Portal ServiceAccount as if it identified the individual human caller.
 
@@ -805,8 +821,8 @@ Admission stamps `cetirun.microsoft.com/sandbox-authorization` during creation.
 Callers cannot supply, copy, remove or directly rewrite that record. Existing
 unrecorded policy-bound Agents and changed reference UIDs require an administrator
 to update `cetirun.microsoft.com/sandbox-reauthorize` with a fresh `requestID`
-and the exact current `binding` tuple: Agent, Team, Sandbox and AgentPolicy UIDs,
-plus policy class. The mutator validates that request and replaces the snapshot
+and the exact current `binding` tuple: Agent, Team, Sandbox and AgentPolicy UIDs.
+The mutator validates that request and replaces the snapshot
 atomically with the Agent update. Reauthorization changes metadata, not
 necessarily generation; consumers must not rely only on generation changes.
 `sandboxbinding.Read` reads the persisted authorization through an uncached
@@ -899,10 +915,10 @@ RuntimeClass/StorageClass, namespace, claims, Pod sources and compiled controls.
 The Agent instead pins UID, generation, and a digest of its spec, protected
 authorization/reauthorization metadata and lifecycle holds. Status writes and
 unrelated labels/annotations do not invalidate it; metadata-only reauthorization
-still does. This is expectation format `v2`, separate from the unchanged render
-contract. Old expectations fail closed until the controller rebuilds them;
-upgrade controller and admission together, without editing stored JSON or
-lifting holds to bypass version checks.
+still does. This is expectation format `v1`, separate from the render contract.
+Controller and admission use the same initial format; malformed or unsupported
+expectations fail closed. Do not edit stored JSON or lift holds to bypass these
+checks.
 
 Successful attempts refresh every 15 seconds, so source changes, prerequisite
 expiry and explicit reauthorization are not missed. An unchanged attempt uses
@@ -941,11 +957,11 @@ including the Kubernetes template-replacement patch form. A stale generation
 does not acquire a current revision pin. Both operator and admission receive
 read-only `get` access to ControllerRevisions.
 
-These references use the existing `v2` expectation source format; they are not
-another intent journal or an execution permit. Valid older held expectations
-without the pins are rebuilt through guarded preparation. Older controllers
-may omit them, so a future start action must explicitly require the complete
-current identities rather than infer qualification from format version alone.
+These references use the `v1` expectation source format; they are not
+another intent journal or an execution permit. Held expectations without the
+current pins are rebuilt through guarded preparation. A start action must
+explicitly require the complete current identities rather than infer
+qualification from format version alone.
 No preparation-receipt upgrade, attempt history, new finalizer or GC lifecycle
 is introduced. The existing `v1` cleanup receipt retains its 64 KiB bound and
 historical namespace/HOME tuple; unsupported receipt formats still fail closed.
@@ -1923,7 +1939,7 @@ and its metrics-only informer initialization.
 
 | Metric | Meaning |
 | --- | --- |
-| `cetirun_sandbox_agents{runtime,class,status,reason}` | Counts explicit or Team policy-bound Sandbox intent and retained-held/history Agents by their reported status. Ordinary policy-free Agents are excluded. |
+| `cetirun_sandbox_agents{runtime,status,reason}` | Counts explicit or Team policy-bound Sandbox intent and retained-held/history Agents by their reported status. Ordinary policy-free Agents are excluded. The obsolete `class` label is removed. |
 | `cetirun_sandbox_metrics_collection_success` | `1` when the complete cached snapshot was collected; `0` when collection is unavailable or fails. Failed collection emits no partial fleet counts. |
 
 Startup initializes the shared Agent, Team and Sandbox informers on every
@@ -1942,8 +1958,8 @@ to reconciliation or status writes.
 An empty or legacy-only fleet has successful collection and no fleet series;
 it is different from failed collection or an unavailable scrape target.
 
-Labels are bounded: `runtime` is `kata`, `gvisor` or `unknown`; `class` is
-`normal`, `admin` or `unknown`; `status` is `True`, `False` or `Unknown`;
+Labels are bounded: `runtime` is `kata`, `gvisor` or `unknown`;
+`status` is `True`, `False` or `Unknown`;
 `reason` uses an allowlist and bounded fallback categories. Names, UIDs,
 namespaces, revisions, messages, provider errors and arbitrary values never
 become metric labels. Runtime classification requires the current,
@@ -1956,7 +1972,7 @@ it is not independently reverified by the collector.
 Intentional suspension and deletion take precedence over old conditions and
 remain distinguishable from failures. Applied-binding history alone is not
 current readiness. Cached Team policy fields count as intent only: they
-never assign a class, select a Sandbox or establish an authorization binding.
+never select a Sandbox or establish an authorization binding.
 
 **These are cached status reports, not fresh enforcement evidence.** A declared
 runtime label does not qualify its adapter, and `SandboxPrepared` still means

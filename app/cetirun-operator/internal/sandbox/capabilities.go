@@ -63,13 +63,12 @@ func CheckExecutionProfile(capabilities Capabilities, nativeExecution bool) erro
 	return nil
 }
 
-func CheckAgentProfile(capabilities Capabilities, agentType cetirunv1alpha1.AgentType, class cetirunv1alpha1.AgentPolicyClass) error {
+func CheckAgentProfile(capabilities Capabilities, agentType cetirunv1alpha1.AgentType) error {
 	if errs := CheckCapabilityProfile(capabilities); len(errs) != 0 {
 		return errs.ToAggregate()
 	}
-	if capabilities.Profile == ProfileNativeSingleStart &&
-		(class != cetirunv1alpha1.AgentPolicyClassNormal || agentType != cetirunv1alpha1.AgentTypeOpenClaw) {
-		return fmt.Errorf("native single-start requires a normal OpenClaw Agent")
+	if capabilities.Profile == ProfileNativeSingleStart && agentType != cetirunv1alpha1.AgentTypeOpenClaw {
+		return fmt.Errorf("native single-start requires an OpenClaw Agent")
 	}
 	return nil
 }

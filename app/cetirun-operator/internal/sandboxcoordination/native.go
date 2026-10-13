@@ -90,7 +90,6 @@ func (intent NativeIntent) Validate() error {
 		len(validation.IsDNS1123Label(intent.Namespace.Name)) != 0 ||
 		!identity(intent.Home) || !identity(intent.Workload) || !literal(intent.Revision, 256) ||
 		intent.Binding.AgentUID != intent.Agent.UID ||
-		(intent.Binding.PolicyClass != api.AgentPolicyClassNormal && intent.Binding.PolicyClass != api.AgentPolicyClassAdmin) ||
 		len(intent.Sources) != 3 || len(intent.SourceDigests) != 3 {
 		return fmt.Errorf("%w: exact native lifetime and three selected configurations are required", ErrUnavailable)
 	}
@@ -263,7 +262,7 @@ func compatibleNativeIntents(a, b NativeIntent) error {
 		a.Home.UID == b.Home.UID || a.Workload.UID == b.Workload.UID {
 		return ErrConflict
 	}
-	return compatibleNativeSources(a, b.Sources, b.SourceDigests, b.SelectedSandbox(), b.Binding.PolicyClass)
+	return compatibleNativeSources(a, b.Sources, b.SourceDigests, b.SelectedSandbox())
 }
 
 func compatibleNativeExecution(native NativeIntent, execution Intent) error {
@@ -272,11 +271,10 @@ func compatibleNativeExecution(native NativeIntent, execution Intent) error {
 		native.Home.UID == execution.Home.UID || native.Workload.UID == execution.Workload.UID {
 		return ErrConflict
 	}
-	return compatibleNativeSources(native, execution.Sources, execution.SourceDigests,
-		execution.SelectedSandbox(), execution.Expected.Binding.PolicyClass)
+	return compatibleNativeSources(native, execution.Sources, execution.SourceDigests, execution.SelectedSandbox())
 }
 
-func compatibleNativeSources(native NativeIntent, sources []w.SourceReference, digests map[string]string, box string, class api.AgentPolicyClass) error {
+func compatibleNativeSources(native NativeIntent, sources []w.SourceReference, digests map[string]string, box string) error {
 	for _, selected := range native.Sources {
 		for _, source := range sources {
 			if sourceKey(selected) != sourceKey(source) {
@@ -285,7 +283,7 @@ func compatibleNativeSources(native NativeIntent, sources []w.SourceReference, d
 			if selected.UID != source.UID {
 				return ErrConflict
 			}
-			if source.Kind == "Team" && (native.SelectedSandbox() != box || native.Binding.PolicyClass != class) {
+			if source.Kind == "Team" && native.SelectedSandbox() != box {
 				continue
 			}
 			if native.SourceDigests[w.SourceKey(selected)] != digests[w.SourceKey(source)] {

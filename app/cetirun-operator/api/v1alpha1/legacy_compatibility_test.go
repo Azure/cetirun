@@ -18,7 +18,7 @@ func TestLegacyResourcesDoNotRequirePolicyBindings(t *testing.T) {
 		}
 	}
 	team := apiContractCRD(t, "teams").Spec.Versions[0].Schema.OpenAPIV3Schema.Properties["spec"]
-	for _, field := range []string{"normalAgentPolicyRef", "sandboxRefs", "defaultSandboxRef"} {
+	for _, field := range []string{"agentPolicyRef", "sandboxRefs", "defaultSandboxRef"} {
 		if slices.Contains(team.Required, field) {
 			t.Errorf("legacy Team creation requires new binding %s", field)
 		}

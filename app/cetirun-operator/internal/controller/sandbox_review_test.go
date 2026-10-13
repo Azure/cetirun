@@ -186,7 +186,7 @@ func TestNewTeamHeldAgentDeletionChecksNamespaceOwnership(t *testing.T) {
 			agent.Finalizers = nil
 			agent.Spec.Team = "governed"
 			team := &api.Team{ObjectMeta: metav1.ObjectMeta{Name: "governed"},
-				Spec: api.TeamSpec{NormalAgentPolicyRef: "normal"}}
+				Spec: api.TeamSpec{AgentPolicyRef: "normal"}}
 			namespace := instanceNamespace(agent.Name)
 			ownSandboxResources(agent, namespace)
 			if !owned {

@@ -270,7 +270,13 @@ resource aksCluster 'Microsoft.ContainerService/managedClusters@2026-01-01' = {
       snapshotController: { enabled: true }
     }
 
-    addonProfiles: {
+    // The monitoring add-on runs the Container Insights agent (ama-logs), with
+    // managed identity authentication. What it collects, ContainerLogV2
+    // included, and where it sends it are set by containerInsightsDcr and its
+    // association below. The rule and association alone collect nothing: on a
+    // cluster without the add-on no agent ran and ContainerLogV2 stayed empty.
+    // (containerInsights was removed from azureMonitorProfile in API 2026-01-01)
+    addonProfiles: union({
       azureKeyvaultSecretsProvider: {
         enabled: true
         config: {
@@ -278,11 +284,16 @@ resource aksCluster 'Microsoft.ContainerService/managedClusters@2026-01-01' = {
           rotationPollInterval: '2m'
         }
       }
-    }
+    }, enableContainerInsights ? {
+      omsagent: {
+        enabled: true
+        config: {
+          logAnalyticsWorkspaceResourceID: logAnalyticsWorkspaceResourceId
+          useAADAuth: 'true'
+        }
+      }
+    } : {})
 
-    // Container Insights is configured via the DCR at
-    // containerInsightsDcr / containerInsightsDcrAssociation below.
-    // (containerInsights was removed from azureMonitorProfile in API 2026-01-01)
     azureMonitorProfile: {
       metrics: { enabled: enablePrometheusMetrics }
     }

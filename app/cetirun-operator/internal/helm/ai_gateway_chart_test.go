@@ -330,6 +330,12 @@ func TestAIGatewayChartBridgesResponsesOnlyCopilotModels(t *testing.T) {
 // template.
 func proxyTemplateAnnotations(t *testing.T, rendered map[string]string) map[string]string {
 	t.Helper()
+	return proxyDeployment(t, rendered).Spec.Template.Annotations
+}
+
+// proxyDeployment returns the Copilot proxy's Deployment.
+func proxyDeployment(t *testing.T, rendered map[string]string) *appsv1.Deployment {
+	t.Helper()
 	for _, document := range strings.Split(rendered["cetirun/templates/copilot-proxy.yaml"], "\n---") {
 		if !strings.Contains(document, "kind: Deployment") {
 			continue
@@ -338,10 +344,39 @@ func proxyTemplateAnnotations(t *testing.T, rendered map[string]string) map[stri
 		if err := yaml.Unmarshal([]byte(document), deployment); err != nil {
 			t.Fatal(err)
 		}
-		return deployment.Spec.Template.Annotations
+		return deployment
 	}
 	t.Fatal("no proxy Deployment rendered")
 	return nil
+}
+
+// Container Insights copies a container's environment, Secret values included,
+// into its ContainerInventory table unless collection is off for the container.
+// The proxy holds its master key there.
+func TestAIGatewayChartKeepsTheProxyKeyOutOfContainerInsights(t *testing.T) {
+	input := aiGatewayInput("openclaw", "openai")
+	input["aiGateway"].(map[string]any)["copilotProxy"] = map[string]any{
+		"enabled": true, "image": "registry.example.com/cetirun-ai-gateway:1.0.0",
+		"masterKeySecretName": "ai-gateway-copilot-proxy", "tokenSecretName": "github-copilot-token",
+	}
+	rendered, err := renderAIGateway(t, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	containers := proxyDeployment(t, rendered).Spec.Template.Spec.Containers
+	if len(containers) == 0 {
+		t.Fatal("the proxy Deployment has no container")
+	}
+	for _, container := range containers {
+		if envVar(container, "LITELLM_MASTER_KEY") == nil {
+			continue
+		}
+		if got := envVar(container, "AZMON_COLLECT_ENV"); got == nil || got.Value != "False" {
+			t.Errorf("container %s holds the proxy key without AZMON_COLLECT_ENV=False: %v", container.Name, got)
+		}
+		return
+	}
+	t.Fatal("no proxy container holds the master key")
 }
 
 func TestAIGatewayChartRestartsTheProxyForANewMasterKey(t *testing.T) {

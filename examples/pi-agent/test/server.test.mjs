@@ -59,6 +59,19 @@ test("invalid extensions and history are rejected before execution", async (t) =
   assert.equal(f.calls(), 0);
 });
 
+test("HTTP Memory restrictions reach the native runtime and cannot widen policy", async t => {
+  const seen = [];
+  const f = await fixture(t, { run: async input => { seen.push(input.memory); return { text: "fixture" }; } });
+  for (const mode of ["off", "no-capture"]) {
+    const response = await fetch(f.base + "/v1/chat/completions", { ...post(chat), headers: { ...post(chat).headers, "X-CetiRun-Memory-Mode": mode } });
+    assert.equal(response.status, 200); await response.json();
+  }
+  assert.deepEqual(seen, [{ noMemory: true, noCapture: true }, { noMemory: false, noCapture: true }]);
+  const response = await fetch(f.base + "/v1/chat/completions", { ...post(chat), headers: { ...post(chat).headers, "X-CetiRun-Memory-Mode": "enabled" } });
+  assert.equal(response.status, 400);
+  assert.equal(seen.length, 2);
+});
+
 test("auth is separate, rejects browser requests, and requires policy consent", async (t) => {
   let logins = 0;
   const f = await fixture(t, { login: async () => { logins++; } });

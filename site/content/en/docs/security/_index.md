@@ -115,14 +115,24 @@ CetiRun erasure schedule. See the storage and deletion details in
 that follows files from their current end and writes new records to stdout
 without redaction. For OpenClaw it follows active session JSONL under
 `/home/vibe/.openclaw/agents`; these records can include prompts, responses, tool
-calls, and tool results. For Hermes it follows
+calls, and tool results. OpenClaw as packaged in the agent image keeps its
+sessions in SQLite and writes no such files, so the logger currently exports
+nothing for OpenClaw. For Hermes it follows
 `/home/vibe/.hermes/logs/gateway.log`, whose content depends on the installed
 version and configuration and is not necessarily a complete transcript.
 
 The [cluster template]({{< repo "infra/cluster/main.bicep" >}}) defaults
-`enableContainerInsights` and `enablePrometheusMetrics` to `true`. Its collection
-rules target configured Azure Log Analytics and Azure Monitor workspaces.
-Actual collection depends on deployed collectors, permissions, and settings.
+`enableContainerInsights` and `enablePrometheusMetrics` to `true`. It enables
+managed Prometheus and the Container Insights monitoring add-on. The add-on
+collects container stdout and stderr, including the session logger's output and
+what Agents print themselves, which can include conversation text. Its
+collection rules target configured Azure Log Analytics and Azure Monitor
+workspaces. Actual collection depends on deployed collectors, permissions, and
+settings. By default the add-on also copies containers' environment variables,
+Secret values included; the
+[agent settings]({{< repo "infra/cluster/container-azm-ms-agentconfig.yaml" >}})
+that the cluster helper creates, or checks on a cluster that has its own,
+turn that off.
 The [Log Analytics template]({{< repo "infra/cluster/modules/aks-cluster.bicep" >}})
 sets 30-day retention when creating a workspace; existing workspaces,
 per-table settings, exports, and other stores may differ.

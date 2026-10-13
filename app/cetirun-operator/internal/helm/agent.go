@@ -184,6 +184,20 @@ func prepareRuntimeChart(chrt *chart.Chart, input map[string]any, validateRender
 	if descriptor.Type == "custom" {
 		return prepareCustomChart(chrt, input, request, validateRender)
 	}
+	if memory, configured, err := resolveMemory(input, chrt, "/home/vibe"); err != nil {
+		return nil, err
+	} else if configured {
+		inputCopy := make(map[string]any, len(input))
+		for key, value := range input {
+			if key != "memoryOptions" && key != "memoryContext" {
+				inputCopy[key] = value
+			}
+		}
+		if declaresValuePath(chrt.Values, []string{"memoryContext"}) {
+			inputCopy["memoryContext"] = memory.Values()
+		}
+		input = inputCopy
+	}
 	profile, err := loadRuntimeProfile(chrt, descriptor, request.Registry)
 	if err != nil {
 		return nil, err
@@ -246,6 +260,7 @@ func prepareRuntimeChart(chrt *chart.Chart, input map[string]any, validateRender
 		})
 	}
 	bindings := agents.Bindings{
+		MemoryEnabled: values[sandboxworkload.ValuesKey] == nil && object(values["memoryContext"])["enabled"] == true,
 		ProfileID:     profile.ID,
 		ChartVersion:  chrt.Metadata.Version,
 		NativeConfig:  config,

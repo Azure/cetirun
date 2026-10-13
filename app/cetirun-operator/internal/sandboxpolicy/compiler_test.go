@@ -38,7 +38,7 @@ func compilerFixture() CompileInput {
 			AgentPolicy: api.AgentPolicySpec{Harnesses: api.AgentPolicyHarnesses{Allowed: []api.AgentType{api.AgentTypeHermes}}},
 			Binding: sandbox.Binding{
 				AgentUID: "example-agent-uid", TeamUID: "example-team-uid", SandboxUID: "example-sandbox-uid",
-				AgentPolicyUID: "example-policy-uid", PolicyClass: api.AgentPolicyClassNormal,
+				AgentPolicyUID: "example-policy-uid",
 			},
 			Revision: "synthetic-foundation",
 			Sandbox: api.SandboxSpec{
@@ -130,7 +130,7 @@ func TestCompileNativeProfilePreservesNetworkBaseline(t *testing.T) {
 	}
 }
 
-func TestCompileNativeProxyProjectionPreservesV2ControlRevision(t *testing.T) {
+func TestCompileNativeProxyProjectionPreservesV1ControlRevision(t *testing.T) {
 	input := compilerFixture()
 	input.Resolution.AgentPolicy.Network.Ingress.Mode = api.AgentPolicyIngressAuthenticated
 	withoutProjection := mustCompile(t, input)
@@ -138,26 +138,31 @@ func TestCompileNativeProxyProjectionPreservesV2ControlRevision(t *testing.T) {
 	withProjection := mustCompile(t, input)
 	if withProjection.Revision != withoutProjection.Revision || len(withProjection.Network.TrustedProxyIPs) == 0 ||
 		!reflect.DeepEqual(withProjection.Resources, withoutProjection.Resources) {
-		t.Fatal("derived proxy projection changed the existing v2 control revision or network resources")
+		t.Fatal("derived proxy projection changed the existing v1 control revision or network resources")
 	}
 	input.Platform.Topology.Ingress[0].Peer.IPs = []string{"10.96.1.61"}
 	if changed := mustCompile(t, input); changed.Revision == withProjection.Revision {
-		t.Fatal("preserving v2 hashing stopped binding actual ingress topology changes")
+		t.Fatal("preserving v1 hashing stopped binding actual ingress topology changes")
 	}
 }
 
 func TestCompileNativeProfileFailsClosed(t *testing.T) {
 	for name, mutate := range map[string]func(*CompileInput){
-		"default mode":      func(i *CompileInput) { i.NativeExecution = false },
-		"unknown profile":   func(i *CompileInput) { i.Resolution.Capabilities.Profile = "unknown" },
-		"default contract":  func(i *CompileInput) { i.Resolution.Capabilities.Profile = "" },
-		"unavailable":       func(i *CompileInput) { i.Platform.Adapter.Available = false },
-		"qualified claim":   func(i *CompileInput) { i.Platform.Adapter.Qualified = true },
-		"Azure label":       func(i *CompileInput) { i.Platform.Adapter.Name = AzureCNIOverlayCilium },
-		"observer claim":    func(i *CompileInput) { i.Resolution.Capabilities.EnforcementObservation = true },
-		"fencing claim":     func(i *CompileInput) { i.Resolution.Capabilities.RestrictiveFailure = true },
-		"non-Kata":          func(i *CompileInput) { i.Resolution.Sandbox.Type = api.SandboxGVisor },
-		"admin class":       func(i *CompileInput) { i.Resolution.Binding.PolicyClass = api.AgentPolicyClassAdmin },
+		"default mode":     func(i *CompileInput) { i.NativeExecution = false },
+		"unknown profile":  func(i *CompileInput) { i.Resolution.Capabilities.Profile = "unknown" },
+		"default contract": func(i *CompileInput) { i.Resolution.Capabilities.Profile = "" },
+		"unavailable":      func(i *CompileInput) { i.Platform.Adapter.Available = false },
+		"qualified claim":  func(i *CompileInput) { i.Platform.Adapter.Qualified = true },
+		"Azure label":      func(i *CompileInput) { i.Platform.Adapter.Name = AzureCNIOverlayCilium },
+		"observer claim":   func(i *CompileInput) { i.Resolution.Capabilities.EnforcementObservation = true },
+		"fencing claim":    func(i *CompileInput) { i.Resolution.Capabilities.RestrictiveFailure = true },
+		"non-Kata":         func(i *CompileInput) { i.Resolution.Sandbox.Type = api.SandboxGVisor },
+		"Kubernetes access": func(i *CompileInput) {
+			i.Resolution.AgentPolicy.KubernetesAccess = &api.AgentPolicyAdminKubernetesAccess{
+				ServiceAccountName: "operations",
+				RoleBindings:       []api.AgentPolicyRoleBinding{{Namespace: "operations", ClusterRoleName: "view"}},
+			}
+		},
 		"missing inventory": func(i *CompileInput) { i.Platform.Topology.ManagementCIDRs = nil },
 		"missing DNS":       func(i *CompileInput) { i.Platform.Topology.DNSResolverIPs = nil },
 		"missing UDP":       func(i *CompileInput) { i.Resolution.Capabilities.Protocols = []corev1.Protocol{corev1.ProtocolTCP} },
@@ -219,7 +224,6 @@ func TestNativeProxyTrustUsesOnlyCanonicalIngressIPs(t *testing.T) {
 
 func adminFixture() CompileInput {
 	input := compilerFixture()
-	input.Resolution.Binding.PolicyClass = api.AgentPolicyClassAdmin
 	input.Resolution.AgentPolicy.KubernetesAccess = &api.AgentPolicyAdminKubernetesAccess{
 		ServiceAccountName:  "example-dedicated",
 		RoleBindings:        []api.AgentPolicyRoleBinding{{Namespace: "operations", ClusterRoleName: "view"}},
@@ -238,6 +242,14 @@ func adminFixture() CompileInput {
 			Rules: []rbacv1.PolicyRule{{APIGroups: []string{""}, Resources: []string{"nodes"}, Verbs: []string{"get"}}}},
 	}
 	return input
+}
+
+func TestControlRevisionUsesV1Domain(t *testing.T) {
+	const expectedRevision = "e8c4036fa1c44fca437c8ee5d379937123ed0a9fbbde85115287c01848725c9d"
+	plan := mustCompile(t, compilerFixture())
+	if plan.Revision != expectedRevision {
+		t.Fatalf("v1 control revision = %q, want %q", plan.Revision, expectedRevision)
+	}
 }
 
 func TestCompileDefaultControls(t *testing.T) {
@@ -540,7 +552,6 @@ func TestCompileRejectsUnapprovedAndIncompatibleIdentity(t *testing.T) {
 		name   string
 		mutate func(*CompileInput)
 	}{
-		{"normal admin grant", func(i *CompileInput) { i.Resolution.Binding.PolicyClass = api.AgentPolicyClassNormal }},
 		{"no approvals", func(i *CompileInput) { i.Platform.Grants = nil }},
 		{"wrong policy approval", func(i *CompileInput) { i.Platform.Grants[0].PolicyUID = "foreign-policy" }},
 		{"wrong namespace scope", func(i *CompileInput) { i.Platform.Grants[0].Namespace = "foreign-namespace" }},

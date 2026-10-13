@@ -448,7 +448,7 @@ func newNativeStartAPIHarness(t *testing.T, admissionNative bool) *nativeStartAP
 
 	agent := input.Agent.DeepCopy()
 	agent.ObjectMeta = metav1.ObjectMeta{Name: input.Agent.Name}
-	agent.Spec.Team, agent.Spec.SandboxRef, agent.Spec.PolicyClass = "", "", ""
+	agent.Spec.Team, agent.Spec.SandboxRef = "", ""
 	agent.Spec.ModelAccess = modelAccess(true, false)
 	agent.Spec.Helm.Version = runtimeChart.Metadata.Version
 	agent.Spec.Agent.Image = ptr.To("registry.example.com/openclaw-gateway:" + runtimeChart.Metadata.AppVersion)
@@ -458,7 +458,7 @@ func newNativeStartAPIHarness(t *testing.T, admissionNative bool) *nativeStartAP
 		probe := agent.DeepCopy()
 		lastErr = h.member.Create(ctx, probe, client.DryRunAll)
 		return lastErr == nil && sandboxbinding.Present(probe) && probe.Spec.Team == input.Team.Name &&
-			probe.Spec.SandboxRef == input.Sandbox.Name && probe.Spec.PolicyClass == api.AgentPolicyClassNormal, nil
+			probe.Spec.SandboxRef == input.Sandbox.Name, nil
 	}); err != nil {
 		t.Fatalf("served Agent defaulting/validation did not become ready: %v; last create: %v", err, lastErr)
 	}
@@ -466,7 +466,7 @@ func newNativeStartAPIHarness(t *testing.T, admissionNative bool) *nativeStartAP
 		t.Fatalf("create native Agent through served admission: %v", err)
 	}
 	if agent.UID == "" || !sandboxbinding.Present(agent) || agent.Spec.Team != input.Team.Name ||
-		agent.Spec.SandboxRef != input.Sandbox.Name || agent.Spec.PolicyClass != api.AgentPolicyClassNormal {
+		agent.Spec.SandboxRef != input.Sandbox.Name {
 		t.Fatal("API creation did not persist the server-authorized default selection")
 	}
 	h.agent = agent

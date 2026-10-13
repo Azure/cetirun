@@ -140,7 +140,7 @@ func TestNativeEmptySkillsAPIServerAdmission(t *testing.T) {
 		}
 		expected.Sources = append(expected.Sources, source)
 		if w.EffectiveSource(source) {
-			digest, err := w.ExecutionSourceDigest(object, f.fixture.Sandbox.Name, expected.Binding.PolicyClass)
+			digest, err := w.ExecutionSourceDigest(object, f.fixture.Sandbox.Name)
 			if claim, ok := object.(*corev1.PersistentVolumeClaim); ok {
 				digest, err = w.NativeClaimDigest(claim)
 			}

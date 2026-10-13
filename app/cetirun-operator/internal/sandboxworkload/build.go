@@ -27,8 +27,7 @@ func Build(input Input) (*Bundle, error) {
 		return nil, fmt.Errorf("a shared Sandbox resolution is required")
 	}
 	binding := input.Resolution.Binding
-	if binding.AgentUID == "" || binding.TeamUID == "" || binding.SandboxUID == "" || binding.AgentPolicyUID == "" ||
-		(binding.PolicyClass != api.AgentPolicyClassNormal && binding.PolicyClass != api.AgentPolicyClassAdmin) {
+	if binding.AgentUID == "" || binding.TeamUID == "" || binding.SandboxUID == "" || binding.AgentPolicyUID == "" {
 		return nil, fmt.Errorf("the resolved UID binding is incomplete")
 	}
 	if input.AgentType != "openclaw" && input.AgentType != "hermes" {

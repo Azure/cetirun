@@ -25,8 +25,7 @@ func Compile(input CompileInput) (*Plan, error) {
 	resolution := input.Resolution
 	binding := resolution.Binding
 	if binding.AgentUID == "" || binding.TeamUID == "" || binding.SandboxUID == "" ||
-		binding.AgentPolicyUID == "" || resolution.Revision == "" ||
-		(binding.PolicyClass != api.AgentPolicyClassNormal && binding.PolicyClass != api.AgentPolicyClassAdmin) {
+		binding.AgentPolicyUID == "" || resolution.Revision == "" {
 		return nil, fmt.Errorf("%w: a complete authorized resolution is required", sandbox.ErrUnauthorizedBinding)
 	}
 	if len(validation.IsDNS1123Subdomain(input.AgentName)) != 0 ||
@@ -36,9 +35,6 @@ func Compile(input CompileInput) (*Plan, error) {
 	}
 	if err := sandbox.CheckExecutionProfile(resolution.Capabilities, input.NativeExecution); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrUnsupportedControl, err)
-	}
-	if resolution.Capabilities.Profile == sandbox.ProfileNativeSingleStart && binding.PolicyClass != api.AgentPolicyClassNormal {
-		return nil, fmt.Errorf("%w: native single-start supports only the normal policy class", ErrUnsupportedControl)
 	}
 	if err := validateControlInput(resolution.AgentPolicy, input.Platform); err != nil {
 		return nil, err
@@ -51,9 +47,6 @@ func Compile(input CompileInput) (*Plan, error) {
 	resolution.Sandbox, resolution.AgentPolicy = normalizedSandbox, normalizedPolicy
 	if errs := sandbox.CheckCompatibility(resolution.Sandbox, resolution.AgentPolicy, resolution.Capabilities); len(errs) != 0 {
 		return nil, fmt.Errorf("%w: %v", ErrUnsupportedControl, errs.ToAggregate())
-	}
-	if binding.PolicyClass == api.AgentPolicyClassNormal && resolution.AgentPolicy.KubernetesAccess != nil {
-		return nil, fmt.Errorf("%w: normal policy cannot receive Kubernetes grants", ErrUnapprovedGrant)
 	}
 	platform, err := canonicalPlatform(input.Platform, resolution.Capabilities)
 	if err != nil {
@@ -79,7 +72,7 @@ func Compile(input CompileInput) (*Plan, error) {
 	capabilities.IPFamilies = sortedUnique(capabilities.IPFamilies)
 	capabilities.Protocols = sortedUnique(capabilities.Protocols)
 	capabilities.HomeAccessModes = sortedUnique(capabilities.HomeAccessModes)
-	// Canonical topology already binds proxy IPs. Preserve the v2 digest for
+	// Canonical topology already binds proxy IPs. Preserve the v1 digest for
 	// existing lifetimes; new renderings seal the derived projection separately.
 	revisionNetwork := network
 	revisionNetwork.TrustedProxyIPs = nil
@@ -98,7 +91,7 @@ func Compile(input CompileInput) (*Plan, error) {
 		Identity     IdentityPlan
 		Network      NetworkPlan
 	}{
-		"sandbox-controls-v2", binding, input.AgentName, input.Namespace,
+		"sandbox-controls-v1", binding, input.AgentName, input.Namespace,
 		resolution.Sandbox, sandbox.ProjectPolicy(resolution.AgentPolicy), capabilities, platform.Adapter,
 		platform.Topology, grants, approval, identity, revisionNetwork,
 	})

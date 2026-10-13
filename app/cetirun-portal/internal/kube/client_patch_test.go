@@ -91,7 +91,7 @@ func TestPortalPatchesPreserveFutureFields(t *testing.T) {
 				spec := object.(*api.Team).Spec.DeepCopy()
 				spec.Defaults.Provider, spec.MemberContext.Role = "anthropic", "Reviewer"
 				spec.Skills, spec.SkillStorage.StorageSize = []string{"new-skill"}, "2Gi"
-				spec.NormalAgentPolicyRef = "must-not-change-governance"
+				spec.AgentPolicyRef = "must-not-change-governance"
 				return c.UpdateTeamSpec(ctx, object.GetName(), *spec)
 			},
 		},
@@ -152,8 +152,8 @@ func TestPortalPatchesPreserveFutureFields(t *testing.T) {
 			if tc.team {
 				kind, resource, expected = "Team", "teams", &api.Team{}
 				spec = map[string]any{
-					"normalAgentPolicyRef": "normal-policy", "adminAgentPolicyRef": "admin-policy",
-					"sandboxRefs": []string{"example-sandbox"}, "defaultSandboxRef": "example-sandbox",
+					"agentPolicyRef": "policy",
+					"sandboxRefs":    []string{"example-sandbox"}, "defaultSandboxRef": "example-sandbox",
 					"defaults":      map[string]any{"provider": "github_copilot", "futureDefaults": "keep-defaults"},
 					"memberContext": map[string]any{"role": "Engineer", "futureContext": "keep-context"},
 					"skills":        []string{"old-skill"},

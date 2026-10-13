@@ -113,7 +113,7 @@ func TestPlatformAdmissionProductionFactory(t *testing.T) {
 	for _, object := range []client.Object{f.team, f.box, f.policy} {
 		requireResponse(t, f.handler.Validate(context.Background(), requestFor(t, admissionv1.Create, object, nil, "administrator")), true, "")
 	}
-	f.agent.Spec.SandboxRef, f.agent.Spec.PolicyClass, f.agent.Spec.Team = "", "", ""
+	f.agent.Spec.SandboxRef, f.agent.Spec.Team = "", ""
 	response := f.handler.DefaultAgent(context.Background(), requestFor(t, admissionv1.Create, f.agent, nil, "member"))
 	requireResponse(t, response, true, "")
 	if len(response.Patches) == 0 || f.handler.platformSnapshot != nil || f.handler.registrations != nil {
@@ -122,8 +122,6 @@ func TestPlatformAdmissionProductionFactory(t *testing.T) {
 	requireResponse(t, f.handler.DefaultAgent(context.Background(), requestFor(t, admissionv1.Create, f.agent, nil, "outsider")), true, "legacy")
 	f.agent.Spec.Team = f.team.Name
 	requireResponse(t, f.handler.DefaultAgent(context.Background(), requestFor(t, admissionv1.Create, f.agent, nil, "outsider")), false, "assigned Team")
-	f.agent.Spec.PolicyClass = api.AgentPolicyClassAdmin
-	requireResponse(t, f.handler.DefaultAgent(context.Background(), requestFor(t, admissionv1.Create, f.agent, nil, "member")), false, "non-normal")
 }
 
 func TestNativePlatformAdmissionRequiresIndependentOptIn(t *testing.T) {
@@ -164,7 +162,7 @@ func TestNativePlatformAdmissionRequiresIndependentOptIn(t *testing.T) {
 			request := requestFor(t, admissionv1.Create, f.team, nil, "administrator")
 			requireResponse(t, f.handler.Validate(ctx, request), native, "")
 			f.agent.Spec.Agent.Type = api.AgentTypeOpenClaw
-			f.agent.Spec.Team, f.agent.Spec.SandboxRef, f.agent.Spec.PolicyClass = "", "", ""
+			f.agent.Spec.Team, f.agent.Spec.SandboxRef = "", ""
 			request = requestFor(t, admissionv1.Create, f.agent, nil, "member")
 			requireResponse(t, f.handler.DefaultAgent(ctx, request), native, "")
 			if native {
@@ -172,14 +170,18 @@ func TestNativePlatformAdmissionRequiresIndependentOptIn(t *testing.T) {
 				candidate.Spec.Network.BlockedCIDRs = []string{"203.0.113.0/24"}
 				request = requestFor(t, admissionv1.Update, candidate, f.policy, "administrator")
 				requireResponse(t, f.handler.Validate(ctx, request), false, "native single-start")
-				f.team.Spec.AdminAgentPolicyRef = f.policy.Name
-				if err := f.client.Update(ctx, f.team); err != nil {
+				candidate = f.policy.DeepCopy()
+				candidate.Spec.KubernetesAccess = &api.AgentPolicyAdminKubernetesAccess{
+					ServiceAccountName: "operations",
+					RoleBindings:       []api.AgentPolicyRoleBinding{{Namespace: "operations", ClusterRoleName: "view"}},
+				}
+				request = requestFor(t, admissionv1.Update, candidate, f.policy, "administrator")
+				requireResponse(t, f.handler.Validate(ctx, request), false, "native single-start")
+				if err := f.client.Update(ctx, candidate); err != nil {
 					t.Fatal(err)
 				}
-				admin := f.agent.DeepCopy()
-				admin.Spec.Team, admin.Spec.SandboxRef, admin.Spec.PolicyClass = f.team.Name, f.box.Name, api.AgentPolicyClassAdmin
-				request = requestFor(t, admissionv1.Create, admin, nil, "administrator")
-				requireResponse(t, f.handler.DefaultAgent(ctx, request), false, "normal OpenClaw")
+				request = requestFor(t, admissionv1.Create, f.agent, nil, "member")
+				requireResponse(t, f.handler.DefaultAgent(ctx, request), false, "native single-start")
 			}
 			// Deleting a recorded Agent must not require fresh native authorization.
 			f.handler.config.NativeExecution = false
@@ -242,7 +244,7 @@ func TestPlatformAdmissionScopesExecutionProfiles(t *testing.T) {
 				t.Fatal(err)
 			}
 			team := f.team.DeepCopy()
-			team.Spec.NormalAgentPolicyRef = alternate.Name
+			team.Spec.AgentPolicyRef = alternate.Name
 			requireResponse(t, f.handler.Validate(ctx, requestFor(t, admissionv1.Update, team, f.team, "administrator")), true, "")
 
 			f.agent.Spec.Agent.Type = api.AgentTypeOpenClaw
@@ -386,7 +388,7 @@ func TestPlatformAdmissionOutageDoesNotBlockIndependentRequests(t *testing.T) {
 		t.Fatal(err)
 	}
 	legacy := f.agent.DeepCopy()
-	legacy.Spec.Team, legacy.Spec.SandboxRef, legacy.Spec.PolicyClass = "", "", api.AgentPolicyClassNormal
+	legacy.Spec.Team, legacy.Spec.SandboxRef = "", ""
 	plain := f.policy.DeepCopy()
 	plain.Name = "unreferenced"
 	requests := []admission.Request{
@@ -501,9 +503,6 @@ func TestPlatformAdmissionSuspensionOnly(t *testing.T) {
 					}},
 					{"Sandbox binding", func(r *admission.Request) {
 						addUnknownField(t, &r.Object, "spec", "sandboxRef", "another-sandbox")
-					}},
-					{"policy class", func(r *admission.Request) {
-						addUnknownField(t, &r.Object, "spec", "policyClass", api.AgentPolicyClassAdmin)
 					}},
 					{"model", func(r *admission.Request) {
 						addUnknownField(t, &r.Object, "spec", "model", "another-model")

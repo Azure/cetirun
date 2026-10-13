@@ -21,7 +21,6 @@ func Requested(agent *api.Agent, team *api.Team) bool {
 	if agent != nil && (slices.Contains(agent.Finalizers, HoldFinalizer) ||
 		slices.Contains(agent.Finalizers, PreparationFinalizer) || slices.Contains(agent.Finalizers, BootstrapFinalizer) ||
 		agent.Spec.SandboxRef != "" ||
-		(agent.Spec.PolicyClass != "" && agent.Spec.PolicyClass != api.AgentPolicyClassNormal) ||
 		(agent.Spec.ModelAccess != nil && agent.Spec.ModelAccess.MonthlyBudgetUSD != "") ||
 		agent.Status.Policy != nil ||
 		(agent.Status.AIGateway != nil && agent.Status.AIGateway.PolicyRevision != "") ||

@@ -3,7 +3,7 @@
 
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, realpath, rm, writeFile, symlink, unlink } from "node:fs/promises";
 import http from "node:http";
 import net from "node:net";
 import os from "node:os";
@@ -13,9 +13,35 @@ import vm from "node:vm";
 import { fileURLToPath } from "node:url";
 import { scopeBrowserStorage } from "../browser-storage.mjs";
 import { adaptHTML, createProxy, scopedCookie, validateConfig } from "../proxy.mjs";
-import { prepareHome } from "../start.mjs";
+import { prepareHome, configureMemoryTools } from "../start.mjs";
 
 const basePath = "/ui/example/";
+
+test("Memory MCP bootstrap preserves trust, user servers and conflicting files", async t => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "vscode-memory-fixture-"));
+  t.after(() => rm(workspace, { recursive: true, force: true }));
+  const env = { CETIRUN_MEMORY_ASSETS: "/opt/cetirun-memory" };
+  await configureMemoryTools(workspace, env);
+  const file = path.join(workspace, ".vscode/mcp.json");
+  const config = JSON.parse(await readFile(file, "utf8"));
+  assert.deepEqual(config.servers["cetirun-memory"].args, ["mcp", "--stdio", "--owner-private"]);
+  assert.equal(config.servers["cetirun-memory"].cwd, "${workspaceFolder}");
+  assert.ok(!JSON.stringify(config).includes("autoApprove"));
+  config.servers.fixture = { type: "stdio", command: "fixture" };
+  await writeFile(file, JSON.stringify(config));
+  await configureMemoryTools(workspace, env);
+  assert.deepEqual(JSON.parse(await readFile(file, "utf8")), config);
+  config.servers["cetirun-memory"].command = "owner-tool";
+  await writeFile(file, JSON.stringify(config));
+  await assert.rejects(configureMemoryTools(workspace, env), /preserved/);
+  assert.deepEqual(JSON.parse(await readFile(file, "utf8")), config);
+  await unlink(file);
+  const other = path.join(workspace, "owner.json");
+  await writeFile(other, "preserve owner file");
+  await symlink(other, file);
+  await assert.rejects(configureMemoryTools(workspace, env), /conflicts/);
+  assert.equal(await readFile(other, "utf8"), "preserve owner file");
+});
 async function listen(server) {
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   return server.address().port;

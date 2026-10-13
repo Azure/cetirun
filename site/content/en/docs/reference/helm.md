@@ -269,7 +269,7 @@ Sources: [OpenClaw helpers]({{< repo "app/cetirun-chart/templates/agents/opencla
 | `sidecarScope.enabled` | `true`; limits service discovery scope |
 | `logger.enabled`, `logger.scanInterval` | `true`, 30 seconds |
 | `skills.shared` | `false`; optional static Blob CSI PV/PVC |
-| `skills.protocol`, `skills.mountPath` | `nfs`, `/home/vibe/.aks/skills` |
+| `skills.protocol`, `skills.mountPath` | `nfs`, `/home/vibe/.aks/skills`; ordinary Agents expose this as a read-only alias to the composed view |
 | `skills.secretName`, `skills.mountOptions` | Empty, `[]`; non-NFS protocols require a namespace-local staging Secret |
 | `skills.npm`, `skills.clawHub` | Empty lists; ClawHub installer is not implemented |
 | `skills.npmRegistry` | Environment-specific feed; explicitly select your approved reachable registry |
@@ -290,6 +290,8 @@ general cluster-admin exception. Do not disable it as a troubleshooting shortcut
 
 The [logger script]({{< repo "app/cetirun-chart/configs/session-logger.sh" >}})
 tails recent OpenClaw session JSONL files or the Hermes gateway log to stdout.
+OpenClaw as packaged in the agent image keeps its sessions in SQLite and writes
+no such files, so for OpenClaw the logger currently exports nothing.
 It starts at the end of each file and does not replay history. Collection
 requires a separate log pipeline; this sidecar is not a complete audit archive.
 
