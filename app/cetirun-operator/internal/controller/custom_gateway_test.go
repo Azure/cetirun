@@ -217,6 +217,36 @@ func TestCustomGatewayRequiresExplicitBudget(t *testing.T) {
 	}
 }
 
+func TestCustomGatewayBudgetChangeBlocksAndRepairsExistingKey(t *testing.T) {
+	p, instance, gateway, binding := gatewayCustomFixture(t)
+	ctx := context.Background()
+	if err := p.reconciler.bindCustomGateway(ctx, instance, &binding); err != nil {
+		t.Fatal(err)
+	}
+	if len(gateway.generated) != 1 || gateway.generated[0].MaxBudget != 10 {
+		t.Fatalf("initial Custom Gateway key = %+v, want one key with budget 10", gateway.generated)
+	}
+	if instance.Status.AIGateway == nil || instance.Status.AIGateway.PolicyRevision != "" {
+		t.Fatalf("Custom Gateway grant must not report an AgentPolicy revision: %+v", instance.Status.AIGateway)
+	}
+
+	p.reconciler.AIGateway.CustomBudget = 2
+	if err := p.reconciler.bindCustomGateway(ctx, instance, &binding); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(gateway.budgetUpdateBlocks, []bool{true}) {
+		t.Fatalf("Custom budget update observed blocked states %v, want [true]", gateway.budgetUpdateBlocks)
+	}
+	for _, key := range gateway.keys {
+		if key.Blocked || key.MaxBudget == nil || *key.MaxBudget != 2 || key.BudgetDuration != aiGatewayBudgetDuration {
+			t.Fatalf("Custom Gateway grant was not repaired, read back, and unblocked: %+v", key)
+		}
+	}
+	if instance.Status.AIGateway.BudgetUSD != "2" || instance.Status.AIGateway.PolicyRevision != "" {
+		t.Fatalf("Custom Gateway status does not match the deployment grant: %+v", instance.Status.AIGateway)
+	}
+}
+
 func TestCustomGatewayPublishesWorkloadReadinessBeforeCopilotRetry(t *testing.T) {
 	t.Skip("Custom execution remains held until a typed Sandbox execution adapter is available")
 	for _, tc := range []struct {

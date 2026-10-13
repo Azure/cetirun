@@ -51,10 +51,14 @@ export function CreateForm({ onCreated }: { onCreated?: () => void }) {
   const selectedTeam = teams.find((candidate) => candidate.name === team);
   const effectiveProvider = useEffectiveTeamProvider(team);
   const custom = agentType === "custom";
+  const builtIn = !custom;
   const gatewayOn = !!features?.aiGatewayEnabled;
-  // OpenClaw and Hermes take their models from the AI Gateway.
-  const gatewayModels = gatewayOn && (agentType === "openclaw" || agentType === "hermes");
-  const usesGitHubCopilot = !custom && effectiveProvider === GITHUB_COPILOT_PROVIDER && !gatewayModels;
+  // Built-in Agents always route platform model traffic through the Gateway.
+  // Custom Agents can explicitly request its sources, but their approved
+  // runtime decides whether that request is consumed.
+  const gatewayModels = gatewayOn && (agentType === "openclaw" || agentType === "hermes" || custom);
+  const builtInGatewayModels = gatewayModels && builtIn;
+  const usesGitHubCopilot = builtIn && effectiveProvider === GITHUB_COPILOT_PROVIDER && !gatewayModels;
   const catalogQuery = useAIGatewayCatalog(gatewayModels);
   const catalog = catalogQuery.data;
   const catalogKnown = !!catalog?.known;
@@ -63,26 +67,30 @@ export function CreateForm({ onCreated }: { onCreated?: () => void }) {
   // chart. A catalog without the list comes from an earlier operator, which
   // routes only OpenClaw.
   const routedAgentTypes = catalog?.agentTypes === undefined ? ["openclaw"] : catalog.agentTypes;
-  const agentTypesUnknown = gatewayModels && catalogKnown && routedAgentTypes === null;
+  const agentTypesUnknown = builtInGatewayModels && catalogKnown && routedAgentTypes === null;
   const chartUnsupported =
-    gatewayModels && catalogKnown && routedAgentTypes !== null && !routedAgentTypes.includes(agentType);
+    builtInGatewayModels && catalogKnown && routedAgentTypes !== null && !routedAgentTypes.includes(agentType);
   const sharedModels = useMemo(() => {
-    if (!catalog?.known || !selectedTeam) return [];
+    if (!catalog?.known) return [];
+    if (custom) return catalog.sharedModels;
+    if (!selectedTeam) return [];
     const allowed = new Set(selectedTeam.policy.sharedModels);
     return catalog.sharedModels.filter((model) => allowed.has(model.name));
-  }, [catalog, selectedTeam]);
+  }, [catalog, custom, selectedTeam]);
   const sharedAvailable = sharedModels.length > 0;
-  const copilotOffered = catalogKnown && !!catalog?.githubCopilot && !!selectedTeam?.policy.githubCopilot;
-  const harnessAllowed = !selectedTeam || selectedTeam.policy.harnesses.includes(agentType);
+  const copilotOffered = custom
+    ? catalogKnown && !!catalog?.githubCopilot
+    : catalogKnown && !!catalog?.githubCopilot && !!selectedTeam?.policy.githubCopilot;
+  const harnessAllowed = custom || !selectedTeam || selectedTeam.policy.harnesses.includes(agentType);
   // An OpenClaw or Hermes agent needs a model to use: shared models while any are
   // available, or GitHub Copilot while the deployment offers it. Without
   // GitHub Copilot, shared models stay on; with no shared model on,
   // GitHub Copilot does.
-  const sharedForced = !copilotOffered && sharedAvailable;
+  const sharedForced = builtIn && !copilotOffered && sharedAvailable;
   const effectiveShared = sharedForced || useSharedModels;
-  const copilotForced = copilotOffered && (!effectiveShared || !sharedAvailable);
+  const copilotForced = builtIn && copilotOffered && (!effectiveShared || !sharedAvailable);
   const effectiveCopilot = copilotOffered && (copilotForced || useCopilot);
-  const noModelSource = catalogKnown && !!selectedTeam && !sharedAvailable && !copilotOffered;
+  const noModelSource = builtInGatewayModels && catalogKnown && !!selectedTeam && !sharedAvailable && !copilotOffered;
 
   const allowedAgentTypes = useMemo(
     () => features?.allowedAgentTypes ?? DEFAULT_AGENT_TYPES,
@@ -106,6 +114,16 @@ export function CreateForm({ onCreated }: { onCreated?: () => void }) {
   useEffect(() => {
     if (!features?.agentIdentityEnabled || agentType === "custom") setAgentIdentityEnabled(false);
   }, [agentType, features?.agentIdentityEnabled]);
+
+  useEffect(() => {
+    // Unlike built-in Agents, a Custom runtime must receive an explicit
+    // Gateway-source request. Do not carry built-in defaults across a switch.
+    if (custom) {
+      setUseSharedModels(false);
+      setUseCopilot(false);
+      setGatewayModel("");
+    }
+  }, [custom]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -134,10 +152,14 @@ export function CreateForm({ onCreated }: { onCreated?: () => void }) {
       team: team || undefined,
       gatewayToken: !custom ? gatewayToken || undefined : undefined,
       tailscaleAuthKey: !custom ? tailscaleAuthKey || undefined : undefined,
-      model: gatewayModels ? gatewayModel || undefined : usesGitHubCopilot ? model.trim() || undefined : undefined,
+      model: builtInGatewayModels ? gatewayModel || undefined : usesGitHubCopilot ? model.trim() || undefined : undefined,
       teamsEnabled: !custom ? teamsEnabled || undefined : undefined,
       agentIdentityEnabled: !custom ? agentIdentityEnabled || undefined : undefined,
-      modelAccess: gatewayModels ? { sharedModels: effectiveShared, githubCopilot: effectiveCopilot } : undefined,
+      modelAccess: builtInGatewayModels
+        ? { sharedModels: effectiveShared, githubCopilot: effectiveCopilot }
+        : custom && (effectiveShared || effectiveCopilot)
+          ? { sharedModels: effectiveShared, githubCopilot: effectiveCopilot }
+          : undefined,
     });
   };
 
@@ -235,7 +257,7 @@ export function CreateForm({ onCreated }: { onCreated?: () => void }) {
         </>
       )}
 
-      <TeamPicker value={team} onChange={setTeam} required={gatewayOn} />
+      <TeamPicker value={team} onChange={setTeam} required={builtIn} />
 
       {usesGitHubCopilot && <CopilotModelPicker value={model} onChange={setModel} />}
 
@@ -259,14 +281,23 @@ export function CreateForm({ onCreated }: { onCreated?: () => void }) {
 
       {gatewayModels && !chartUnsupported && !agentTypesUnknown && harnessAllowed && (
         <>
+          {custom && (
+            <MessageBar intent="info">
+              Request platform AI Gateway model access only when this approved Custom image is configured to use it. This does not use a Team policy or Sandbox.
+            </MessageBar>
+          )}
           <Field
             hint={
               sharedAvailable
-                ? `Models allowed by this Team: ${sharedModels.map((m) => m.name).join(", ")}`
+                ? custom
+                  ? `Available platform models: ${sharedModels.map((m) => m.name).join(", ")}`
+                  : `Models allowed by this Team: ${sharedModels.map((m) => m.name).join(", ")}`
                 : catalogQuery.isLoading
                   ? "Loading the shared models..."
                   : catalogKnown
-                    ? selectedTeam
+                    ? custom
+                      ? "No shared models are currently available."
+                      : selectedTeam
                       ? "This Team has no currently available shared models."
                       : "Choose a Team to see its allowed models."
                     : undefined
@@ -274,9 +305,9 @@ export function CreateForm({ onCreated }: { onCreated?: () => void }) {
           >
             <Switch
               checked={effectiveShared}
-              disabled={sharedForced}
+              disabled={sharedForced || !catalogKnown || !sharedAvailable}
               onChange={(_, data) => setUseSharedModels(!!data.checked)}
-              label="Use shared models"
+              label={custom ? "Request shared models" : "Use shared models"}
             />
           </Field>
           <Field
@@ -285,7 +316,9 @@ export function CreateForm({ onCreated }: { onCreated?: () => void }) {
                 ? catalogKnown
                   ? selectedTeam?.policy.githubCopilot
                     ? "GitHub Copilot is turned off for this deployment."
-                    : "This Team's AgentPolicy does not allow GitHub Copilot."
+                    : custom
+                      ? "GitHub Copilot is turned off for this deployment."
+                      : "This Team's AgentPolicy does not allow GitHub Copilot."
                   : undefined
                 : copilotForced
                   ? "Required when shared models are off or none are available. Sign in with GitHub once the agent is created."
@@ -294,12 +327,12 @@ export function CreateForm({ onCreated }: { onCreated?: () => void }) {
           >
             <Switch
               checked={effectiveCopilot}
-              disabled={!copilotOffered || copilotForced}
+              disabled={!catalogKnown || !copilotOffered || copilotForced}
               onChange={(_, data) => setUseCopilot(!!data.checked)}
-              label="Use GitHub Copilot"
+              label={custom ? "Request GitHub Copilot" : "Use GitHub Copilot"}
             />
           </Field>
-          {effectiveShared && sharedAvailable && (
+          {builtIn && effectiveShared && sharedAvailable && (
             <Field label="Default model (optional)" hint="GitHub Copilot models can be chosen after sign-in.">
               <Select value={gatewayModel} onChange={(event) => setGatewayModel(event.target.value)}>
                 <option value="">(automatic)</option>
@@ -375,8 +408,8 @@ export function CreateForm({ onCreated }: { onCreated?: () => void }) {
           createMutation.isPending ||
           featuresLoading ||
           allowedAgentTypes.length === 0 ||
-          (gatewayOn && !team) ||
-          (gatewayModels && (!catalogKnown || noModelSource || chartUnsupported || agentTypesUnknown || !harnessAllowed))
+          (builtIn && !team) ||
+          (builtInGatewayModels && (!catalogKnown || noModelSource || chartUnsupported || agentTypesUnknown || !harnessAllowed))
         }
       >
         {createMutation.isPending ? "Creating..." : "Create Agent"}

@@ -9,6 +9,6 @@ export interface Features {
   agentIdentityEnabled: boolean;
   maxInstancesPerUser: number; // 0 = unlimited
   allowedAgentTypes?: AgentType[];
-  /** The platform AI Gateway: model sources, GitHub Copilot sign-in, Team required. */
+  /** The platform AI Gateway: model sources and GitHub Copilot sign-in. */
   aiGatewayEnabled?: boolean;
 }

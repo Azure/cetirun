@@ -108,6 +108,7 @@ describe("CreateForm", () => {
     expect(mockMutate.mock.calls[0][0].agent).toEqual({ type: "custom", image: "registry.example.com/editor:1", username: "vibe", port: 8080, webUI: true });
     await user.selectOptions(screen.getByRole("combobox", { name: "Agent Type" }), "hermes");
     expect(screen.queryByRole("switch", { name: "Serve Web UI" })).toBeNull();
+    await user.selectOptions(screen.getByRole("combobox", { name: /Team/ }), "platform");
     await user.click(screen.getByRole("button", { name: "Create Agent" }));
     expect(mockMutate.mock.calls[1][0].agent).not.toHaveProperty("webUI");
   });
@@ -121,6 +122,9 @@ describe("CreateForm", () => {
     await user.click(screen.getByLabelText("Use private registry credentials"));
     await user.type(screen.getByLabelText(/Registry username/), "synthetic-user");
     await user.type(screen.getByLabelText(/Registry password or token/), "synthetic-token");
+    if (type !== "custom") {
+      await user.selectOptions(screen.getByRole("combobox", { name: /Team/ }), "platform");
+    }
     await user.click(screen.getByRole("button", { name: "Create Agent" }));
     const first = mockMutate.mock.calls[0][0];
     expect(first.agent).toMatchObject({ type, image });
@@ -146,7 +150,7 @@ describe("CreateForm", () => {
     renderWithQuery(<CreateForm />);
 
     expect(screen.getByText("Display Name (optional)")).toBeInTheDocument();
-    expect(screen.getByText("Team (optional)")).toBeInTheDocument();
+    expect(screen.getByText("Team")).toBeInTheDocument();
     expect(screen.getByText("Gateway Token (optional)")).toBeInTheDocument();
     expect(screen.getByText("Tailscale Auth Key (optional)")).toBeInTheDocument();
     expect(screen.getByText("Create Agent")).toBeInTheDocument();
@@ -160,6 +164,7 @@ describe("CreateForm", () => {
       screen.getByPlaceholderText("e.g. my-project (leave blank for default)"),
       "my-instance",
     );
+    await user.selectOptions(screen.getByRole("combobox", { name: /Team/ }), "platform");
     await user.click(screen.getByText("Create Agent"));
 
     expect(mockMutate).toHaveBeenCalledWith({
@@ -167,7 +172,7 @@ describe("CreateForm", () => {
       instanceName: "my-instance",
       agent: { type: "hermes" },
       displayName: undefined,
-      team: undefined,
+      team: "platform",
       gatewayToken: undefined,
       tailscaleAuthKey: undefined,
       teamsEnabled: undefined,
@@ -247,6 +252,7 @@ describe("CreateForm", () => {
       screen.getByRole("combobox", { name: /Agent Type/ }),
       "openclaw",
     );
+    await user.selectOptions(screen.getByRole("combobox", { name: /Team/ }), "platform");
     await user.click(screen.getByText("Create Agent"));
 
     expect(mockMutate).toHaveBeenCalledWith({
@@ -254,7 +260,7 @@ describe("CreateForm", () => {
       instanceName: undefined,
       agent: { type: "openclaw" },
       displayName: undefined,
-      team: undefined,
+      team: "platform",
       gatewayToken: undefined,
       tailscaleAuthKey: undefined,
       teamsEnabled: undefined,
@@ -269,6 +275,7 @@ describe("CreateForm", () => {
     const agentTypeSelect = screen.getByRole("combobox", { name: /Agent Type/ });
     await waitFor(() => expect(agentTypeSelect).toHaveValue("openclaw"));
     expect(agentTypeSelect).toBeDisabled();
+    await user.selectOptions(screen.getByRole("combobox", { name: /Team/ }), "platform");
     await user.click(screen.getByText("Create Agent"));
 
     expect(mockMutate).toHaveBeenCalledWith({
@@ -276,16 +283,16 @@ describe("CreateForm", () => {
       instanceName: undefined,
       agent: { type: "openclaw" },
       displayName: undefined,
-      team: undefined,
+      team: "platform",
       gatewayToken: undefined,
       tailscaleAuthKey: undefined,
       teamsEnabled: undefined,
     });
   });
 
-  it("submit button is enabled even without team selected", () => {
+  it("requires a Team for a built-in Agent", () => {
     renderWithQuery(<CreateForm />);
-    expect(screen.getByText("Create Agent")).not.toBeDisabled();
+    expect(screen.getByText("Create Agent")).toBeDisabled();
   });
 
   it("explains automatic Memory defaults without sending policy settings", async () => {
@@ -293,6 +300,7 @@ describe("CreateForm", () => {
     renderWithQuery(<CreateForm />);
     expect(screen.getByText(/memory and bounded learning are enabled automatically/)).toBeInTheDocument();
     expect(screen.queryByRole("switch", { name: /private memory/ })).not.toBeInTheDocument();
+    await user.selectOptions(screen.getByRole("combobox", { name: /Team/ }), "platform");
     await user.click(screen.getByRole("button", { name: "Create Agent" }));
     expect(mockMutate.mock.calls[0][0]).not.toHaveProperty("memory");
   });

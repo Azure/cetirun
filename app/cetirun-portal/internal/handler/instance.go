@@ -88,8 +88,9 @@ type CreateInstanceRequest struct {
 	Model                string                    `json:"model,omitempty"`
 	TeamsEnabled         bool                      `json:"teamsEnabled,omitempty"`
 	AgentIdentityEnabled bool                      `json:"agentIdentityEnabled,omitempty"`
-	// ModelAccess applies to OpenClaw and Hermes Agents when the AI Gateway
-	// is enabled.
+	// ModelAccess requests AI Gateway sources. Built-in Agents are authorized
+	// by their Team policy; Custom Agents retain this only for an explicitly
+	// Gateway-qualified Custom runtime.
 	ModelAccess *ModelAccessRequest `json:"modelAccess,omitempty"`
 }
 

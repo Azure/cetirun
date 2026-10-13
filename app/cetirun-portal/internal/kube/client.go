@@ -100,8 +100,9 @@ type CreateInstanceOptions struct {
 	OwnerObjectID        string
 	SandboxRef           string
 	Annotations          map[string]string
-	// ModelAccess is written only when set. The API treats omission as no
-	// explicit model-source request; the Portal form supplies both switches.
+	// ModelAccess is written only when set. Built-in Agents receive normalized
+	// policy-bound switches; Custom Agents receive it only for an explicit
+	// Gateway-source request.
 	ModelAccess *cetirunv1alpha1.ModelAccessSpec
 }
 

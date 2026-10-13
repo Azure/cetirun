@@ -138,11 +138,19 @@ func TestCreateInstanceAIGatewayRequiresExistingTeam(t *testing.T) {
 	custom := gatewayConfig()
 	custom.AllowedAgentTypes = []string{"openclaw", "custom"}
 	customAgent := `"agent":{"type":"custom","image":"` + managementImage + `","username":"assistant"}`
-	w, _ = createAgent(t, custom, `{`+customAgent+`}`, gatewayTeam("aks"))
+	w, fc = createAgent(t, custom, `{`+customAgent+`,"modelAccess":{"sharedModels":true}}`, gatewayTeam("aks"))
 	if w.Code != http.StatusCreated {
 		t.Fatalf("custom without team: status %d body %s", w.Code, w.Body.String())
 	}
-	w, fc = createAgent(t, custom, `{`+customAgent+`,"team":"aks","modelAccess":{"githubCopilot":false}}`, gatewayTeam("aks"))
+	withoutTeam := &cetirunv1alpha1.Agent{}
+	if err := fc.Get(context.Background(), client.ObjectKey{Name: "alice"}, withoutTeam); err != nil {
+		t.Fatal(err)
+	}
+	if withoutTeam.Spec.Team != "" || withoutTeam.Spec.SandboxRef != "" || withoutTeam.Spec.ModelAccess == nil ||
+		withoutTeam.Spec.ModelAccess.SharedModels == nil || !*withoutTeam.Spec.ModelAccess.SharedModels {
+		t.Fatalf("Custom without Team = %+v, want no Team or Sandbox and retained shared-model request", withoutTeam.Spec)
+	}
+	w, fc = createAgent(t, custom, `{`+customAgent+`,"team":"aks","modelAccess":{"sharedModels":true,"githubCopilot":true}}`, gatewayTeam("aks"))
 	if w.Code != http.StatusCreated {
 		t.Fatalf("custom with team: status %d body %s", w.Code, w.Body.String())
 	}
@@ -150,8 +158,10 @@ func TestCreateInstanceAIGatewayRequiresExistingTeam(t *testing.T) {
 	if err := fc.Get(context.Background(), client.ObjectKey{Name: "alice"}, agent); err != nil {
 		t.Fatal(err)
 	}
-	if agent.Spec.Team != "aks" || agent.Spec.SandboxRef != "" || agent.Spec.ModelAccess != nil {
-		t.Fatalf("custom: team %q sandbox %q modelAccess %+v, want aks, no Sandbox and unset model access", agent.Spec.Team, agent.Spec.SandboxRef, agent.Spec.ModelAccess)
+	if agent.Spec.Team != "aks" || agent.Spec.SandboxRef != "" || agent.Spec.ModelAccess == nil ||
+		agent.Spec.ModelAccess.SharedModels == nil || !*agent.Spec.ModelAccess.SharedModels ||
+		agent.Spec.ModelAccess.GitHubCopilot == nil || !*agent.Spec.ModelAccess.GitHubCopilot {
+		t.Fatalf("custom: team %q sandbox %q modelAccess %+v, want aks, no Sandbox and retained explicit Gateway request", agent.Spec.Team, agent.Spec.SandboxRef, agent.Spec.ModelAccess)
 	}
 }
 

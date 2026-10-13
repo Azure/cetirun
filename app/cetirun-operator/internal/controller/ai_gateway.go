@@ -73,6 +73,9 @@ const (
 	// placed before an old policy projection is replaced. It may be cleared
 	// only after the new key grant has been read back successfully.
 	aiGatewayReasonPolicyReprojection = "PolicyReprojection"
+	// aiGatewayReasonGrantReprojection is the equivalent temporary block for a
+	// deployment-owned Custom runtime grant, which is not an AgentPolicy.
+	aiGatewayReasonGrantReprojection = "GrantReprojection"
 	// aiGatewayReasonDisabled reports an Agent whose chart takes its models
 	// only from the Gateway in a deployment that has not enabled it.
 	aiGatewayReasonDisabled = "AIGatewayDisabled"
@@ -333,9 +336,10 @@ func (r *AgentReconciler) resolveCustomAIGatewayGrant(ctx context.Context, clien
 }
 
 func gatewayGrantRevision(instance *cetirunv1alpha1.Agent, grant aiGatewayGrant) string {
-	version := "custom-gateway-v1"
-	if grant.policyBound {
-		version = "agent-policy-gateway-v1"
+	// PolicyRevision is Policy-owned evidence. Custom Gateway access uses the
+	// deployment contract and must not masquerade as an AgentPolicy revision.
+	if !grant.policyBound {
+		return ""
 	}
 	revision, err := policyHash(struct {
 		Version    string    `json:"version"`
@@ -345,7 +349,7 @@ func gatewayGrantRevision(instance *cetirunv1alpha1.Agent, grant aiGatewayGrant)
 		User       string    `json:"user"`
 		Groups     []string  `json:"groups"`
 		Budget     float64   `json:"budget"`
-	}{version, grant.policyName, grant.policyUID, instance.Spec.Team, instance.Spec.User.Alias, grant.groups, grant.budget})
+	}{"agent-policy-gateway-v1", grant.policyName, grant.policyUID, instance.Spec.Team, instance.Spec.User.Alias, grant.groups, grant.budget})
 	if err != nil {
 		return ""
 	}
@@ -727,13 +731,18 @@ func (r *AgentReconciler) reconcileAIGateway(ctx context.Context, instance *ceti
 			return aiGatewayDegraded(instance, "KeyBlocked", fmt.Errorf("the AI Gateway key is blocked outside a CetiRun suspension or no-entitlement transition"))
 		}
 		grantDrift := !slices.Equal(sortedCopy(key.Models), models) || key.TeamID != teamID || key.UserID != userID ||
-			(grant.policyBound && (key.MaxBudget == nil || math.Abs(*key.MaxBudget-grant.budget) > 0.0000001 || key.BudgetDuration != aiGatewayBudgetDuration))
-		// Updating a policy-bound key in place must not leave the old grant
+			key.MaxBudget == nil || math.Abs(*key.MaxBudget-grant.budget) > 0.0000001 || key.BudgetDuration != aiGatewayBudgetDuration
+		// Updating a managed key in place must not leave the old grant
 		// usable between management calls. Persist ownership of the block first,
 		// block the key, repair it, read it back, and only then unblock it below.
-		if grant.policyBound && grantDrift && !key.Blocked {
-			if err := r.recordAIGatewayBlockIntent(ctx, instance, aiGatewayReasonPolicyReprojection,
-				"The AI Gateway key will be blocked while its resolved grant is repaired"); err != nil {
+		if grantDrift && !key.Blocked {
+			reason := aiGatewayReasonPolicyReprojection
+			message := "The AI Gateway key will be blocked while its resolved policy grant is repaired"
+			if !grant.policyBound {
+				reason = aiGatewayReasonGrantReprojection
+				message = "The AI Gateway key will be blocked while its Custom runtime grant is repaired"
+			}
+			if err := r.recordAIGatewayBlockIntent(ctx, instance, reason, message); err != nil {
 				return fmt.Errorf("persist AI Gateway grant repair intent: %w", err)
 			}
 			if err := client.SetKeyBlocked(ctx, token, true); err != nil {
@@ -765,7 +774,7 @@ func (r *AgentReconciler) reconcileAIGateway(ctx context.Context, instance *ceti
 				return aiGatewayDegraded(instance, "KeyUpdateFailed", err)
 			}
 		}
-		if grant.policyBound && (key.MaxBudget == nil || math.Abs(*key.MaxBudget-grant.budget) > 0.0000001 || key.BudgetDuration != aiGatewayBudgetDuration) {
+		if key.MaxBudget == nil || math.Abs(*key.MaxBudget-grant.budget) > 0.0000001 || key.BudgetDuration != aiGatewayBudgetDuration {
 			if err := client.UpdateKeyBudget(ctx, token, grant.budget, aiGatewayBudgetDuration); err != nil {
 				return aiGatewayDegraded(instance, "KeyBudgetUpdateFailed", err)
 			}
@@ -780,7 +789,7 @@ func (r *AgentReconciler) reconcileAIGateway(ctx context.Context, instance *ceti
 	}
 	if key == nil || key.Alias != status.KeyAlias || key.TeamID != teamID || key.UserID != userID ||
 		!slices.Equal(sortedCopy(key.Models), models) ||
-		(grant.policyBound && (key.MaxBudget == nil || math.Abs(*key.MaxBudget-grant.budget) > 0.0000001 || key.BudgetDuration != aiGatewayBudgetDuration)) {
+		key.MaxBudget == nil || math.Abs(*key.MaxBudget-grant.budget) > 0.0000001 || key.BudgetDuration != aiGatewayBudgetDuration {
 		return aiGatewayDegraded(instance, "KeyReadbackMismatch", fmt.Errorf("the AI Gateway key does not match its resolved grant"))
 	}
 	if instance.Spec.Suspended {
@@ -877,7 +886,8 @@ func (r *AgentReconciler) reconcileAIGateway(ctx context.Context, instance *ceti
 }
 
 func aiGatewayOperatorOwnedBlock(reason string) bool {
-	return reason == aiGatewayReasonSuspended || reason == aiGatewayReasonNoModels || reason == aiGatewayReasonPolicyReprojection
+	return reason == aiGatewayReasonSuspended || reason == aiGatewayReasonNoModels ||
+		reason == aiGatewayReasonPolicyReprojection || reason == aiGatewayReasonGrantReprojection
 }
 
 // recordAIGatewayBlockIntent durably records why CetiRun is allowed to own a

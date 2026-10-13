@@ -14,10 +14,11 @@ import (
 	"github.com/Azure/CetiRun/app/cetirun-portal/internal/kube"
 )
 
-// ModelAccessRequest selects the model sources of a new OpenClaw or Hermes
-// Agent when the platform AI Gateway is enabled. Omitted switches select the
-// Team policy's preferred available source: shared models first, otherwise
-// GitHub Copilot.
+// ModelAccessRequest selects requested model sources for a new Agent. For
+// OpenClaw and Hermes, omitted switches select the Team policy's preferred
+// available source: shared models first, otherwise GitHub Copilot. For
+// Custom, the request is meaningful only when its platform-owned runtime
+// binding selects the AI Gateway; it never grants a Team policy entitlement.
 type ModelAccessRequest struct {
 	SharedModels  *bool `json:"sharedModels,omitempty"`
 	GitHubCopilot *bool `json:"githubCopilot,omitempty"`
@@ -152,12 +153,13 @@ func (h *InstanceHandler) GetAIGatewayCatalog(w http.ResponseWriter, r *http.Req
 // currently offered by the deployment. The normalized, explicit model access
 // is always returned for a Gateway-routed built-in Agent so the Portal and
 // Agent API do not assign different meanings to an omitted modelAccess. A
-// Custom Agent may name a Team for context, but receives no policy or Sandbox.
+// Custom Agent may name a Team for context, but receives no policy or Sandbox;
+// its explicit model-source request is retained for a Gateway-qualified runtime.
 func (h *InstanceHandler) validateAIGatewayCreate(w http.ResponseWriter, r *http.Request, req CreateInstanceRequest, agentType cetirunv1alpha1.AgentType) (string, string, *cetirunv1alpha1.ModelAccessSpec, bool) {
 	if agentType == cetirunv1alpha1.AgentTypeCustom {
 		team := strings.TrimSpace(req.Team)
 		if team == "" {
-			return "", "", nil, true
+			return "", "", requestedModelAccess(req.ModelAccess), true
 		}
 		if _, err := h.Kube.GetTeam(r.Context(), team); err != nil {
 			if kube.IsNotFound(err) {
@@ -169,8 +171,10 @@ func (h *InstanceHandler) validateAIGatewayCreate(w http.ResponseWriter, r *http
 			return "", "", nil, false
 		}
 		// Custom may consume Team context, but it never inherits the Team's
-		// AgentPolicy or native Sandbox selection.
-		return team, "", nil, true
+		// AgentPolicy or native Sandbox selection. Its approved runtime alone
+		// decides whether it uses the Gateway, so retain only its explicit
+		// source request and leave all policy evaluation to the runtime.
+		return team, "", requestedModelAccess(req.ModelAccess), true
 	}
 	team, sandboxRef, ok := h.resolveTeamBinding(w, r, req.Team)
 	if !ok {
@@ -284,6 +288,22 @@ func (h *InstanceHandler) validateAIGatewayCreate(w http.ResponseWriter, r *http
 		}
 	}
 	return team, sandboxRef, &cetirunv1alpha1.ModelAccessSpec{SharedModels: &shared, GitHubCopilot: &copilot}, true
+}
+
+func requestedModelAccess(request *ModelAccessRequest) *cetirunv1alpha1.ModelAccessSpec {
+	if request == nil {
+		return nil
+	}
+	access := &cetirunv1alpha1.ModelAccessSpec{}
+	if request.SharedModels != nil {
+		shared := *request.SharedModels
+		access.SharedModels = &shared
+	}
+	if request.GitHubCopilot != nil {
+		copilot := *request.GitHubCopilot
+		access.GitHubCopilot = &copilot
+	}
+	return access
 }
 
 func (h *InstanceHandler) resolveTeamBinding(w http.ResponseWriter, r *http.Request, requestedTeam string) (string, string, bool) {

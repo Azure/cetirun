@@ -114,7 +114,8 @@ export interface CreateInstanceRequest {
   model?: string;
   teamsEnabled?: boolean;
   agentIdentityEnabled?: boolean;
-  /** OpenClaw Agents with the AI Gateway enabled. */
+  /** Explicit AI Gateway source request. Built-in Agents are policy-bound;
+   * Custom Agents use it only when their approved runtime selects the Gateway. */
   modelAccess?: ModelAccess;
 }
 

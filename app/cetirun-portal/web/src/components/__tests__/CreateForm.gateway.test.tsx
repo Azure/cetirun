@@ -269,23 +269,23 @@ describe("CreateForm with the AI Gateway", () => {
     }
   });
 
-  it("offers no model switches for Custom but still requires a Team", async () => {
+  it("lets Custom omit a Team and explicitly request Gateway sources", async () => {
     mockFeatures.data = { ...mockFeatures.data, allowedAgentTypes: ["openclaw", "hermes", "custom"] };
     try {
       const user = userEvent.setup();
       renderForm();
       await user.selectOptions(screen.getByRole("combobox", { name: /Agent Type/ }), "custom");
       await user.type(screen.getByRole("textbox", { name: /Agent Image/ }), "registry.example.com/team/agent:1.0");
-      expect(screen.queryByRole("switch", { name: "Use shared models" })).not.toBeInTheDocument();
-      expect(screen.getByRole("button", { name: "Create Agent" })).toBeDisabled();
-      await user.selectOptions(screen.getByRole("combobox", { name: /Team/ }), "platform");
+      expect(screen.getByText("Team (optional)")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Create Agent" })).toBeEnabled();
+      await user.click(screen.getByRole("switch", { name: "Request shared models" }));
       await user.click(screen.getByRole("button", { name: "Create Agent" }));
       expect(mockMutate).toHaveBeenCalledWith(
         expect.objectContaining({
           agent: { type: "custom", image: "registry.example.com/team/agent:1.0", username: "vibe" },
-          team: "platform",
+          team: undefined,
           model: undefined,
-          modelAccess: undefined,
+          modelAccess: { sharedModels: true, githubCopilot: false },
         }),
       );
     } finally {
