@@ -257,6 +257,11 @@ aiGateway:
   # -- Preferred default model of Agents that name none. Agents fall back to
   # the first model available to them when it is not.
   defaultModel: ""
+  # -- Monthly USD budget for a Custom runtime explicitly qualified through
+  # customRuntime.gatewayImages. Built-in runtimes ignore this value and use
+  # the budget resolved from their AgentPolicy. Leave empty when no Custom
+  # runtime uses the platform Gateway.
+  customMonthlyBudgetUSD: ""
   # -- Per-Agent GitHub Copilot proxy. Agents keep it unless their owner
   # turns GitHub Copilot off. It runs the AI Gateway image. Turned off here,
   # OpenClaw Agents use only shared models, and the Portal creates none while

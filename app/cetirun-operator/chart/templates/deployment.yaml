@@ -135,6 +135,10 @@ spec:
               value: {{ .Values.aiGateway.masterKeySecret.key | quote }}
             - name: AI_GATEWAY_DEFAULT_MODEL
               value: {{ .Values.aiGateway.defaultModel | quote }}
+            {{- if .Values.aiGateway.customMonthlyBudgetUSD }}
+            - name: AI_GATEWAY_CUSTOM_BUDGET
+              value: {{ .Values.aiGateway.customMonthlyBudgetUSD | quote }}
+            {{- end }}
             - name: AI_GATEWAY_COPILOT_PROXY_IMAGE
               value: {{ include "cetirun-operator.copilotProxyImage" . | quote }}
             {{- end }}

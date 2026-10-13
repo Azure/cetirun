@@ -46,7 +46,7 @@ func gatewayCustomFixture(t *testing.T) (*KubernetesCustomBindings, *api.Agent, 
 	}
 	r.CustomBindings = p
 	r.EventRecorder = record.NewFakeRecorder(100)
-	r.AIGateway = AIGatewayConfig{Enabled: true, URL: testAIGatewayURL, MasterKeySecretName: "gateway-auth", CopilotProxyImage: testProxyImage}
+	r.AIGateway = AIGatewayConfig{Enabled: true, URL: testAIGatewayURL, MasterKeySecretName: "gateway-auth", CustomBudget: 10, CopilotProxyImage: testProxyImage}
 	gateway := newFakeAIGateway()
 	r.aiGatewayClientFactory = func(context.Context) (aiGatewayKeyClient, error) { return gateway, nil }
 	service := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "cetirun-ai-gateway", Namespace: "cetirun-system"}, Spec: corev1.ServiceSpec{
@@ -203,6 +203,17 @@ func TestCustomGatewayNeverFallsBack(t *testing.T) {
 				t.Fatal("Gateway failure was not persisted")
 			}
 		})
+	}
+}
+
+func TestCustomGatewayRequiresExplicitBudget(t *testing.T) {
+	p, instance, gateway, b := gatewayCustomFixture(t)
+	p.reconciler.AIGateway.CustomBudget = 0
+	if err := p.reconciler.bindCustomGateway(context.Background(), instance, &b); err == nil || !strings.Contains(err.Error(), "explicit deployment-owned monthly USD budget") {
+		t.Fatalf("missing Custom Gateway budget was not rejected: %v", err)
+	}
+	if len(gateway.generated) != 0 || b.Model.Name != "" {
+		t.Fatal("a Custom Gateway credential was issued without an explicit budget")
 	}
 }
 

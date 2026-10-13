@@ -92,9 +92,10 @@ type AIGatewayConfig struct {
 	// in the operator namespace.
 	MasterKeySecretName string
 	MasterKeySecretKey  string
-	// DefaultBudget initializes legacy keys without replacing later Gateway
-	// administrator changes. Policy-bound keys use the effective policy budget.
-	DefaultBudget float64
+	// CustomBudget is the deployment-owned monthly USD budget for Custom
+	// runtimes explicitly qualified to use the platform Gateway. Built-in
+	// runtimes always take their budget from the resolved AgentPolicy.
+	CustomBudget float64
 	// DefaultModel is the preferred default model of Agents that use the
 	// Gateway when the Agent names none, or names one it cannot use.
 	DefaultModel string
@@ -117,14 +118,14 @@ func ParseAIGatewayConfig(getenv func(string) string) (AIGatewayConfig, error) {
 	if cfg.MasterKeySecretKey == "" {
 		cfg.MasterKeySecretKey = "master-key"
 	}
-	if raw := strings.TrimSpace(getenv("AI_GATEWAY_DEFAULT_BUDGET")); raw != "" {
+	if raw := strings.TrimSpace(getenv("AI_GATEWAY_CUSTOM_BUDGET")); raw != "" {
 		budget, err := strconv.ParseFloat(raw, 64)
 		// ParseFloat accepts NaN and infinities. NaN passes every comparison,
 		// and the key would be created without a budget.
 		if err != nil || math.IsNaN(budget) || math.IsInf(budget, 0) || budget <= 0 {
-			return AIGatewayConfig{}, fmt.Errorf("AI_GATEWAY_DEFAULT_BUDGET must be a positive number of US dollars")
+			return AIGatewayConfig{}, fmt.Errorf("AI_GATEWAY_CUSTOM_BUDGET must be a positive number of US dollars")
 		}
-		cfg.DefaultBudget = budget
+		cfg.CustomBudget = budget
 	}
 	if cfg.CopilotProxyImage != "" && !validImageReference(cfg.CopilotProxyImage) {
 		return AIGatewayConfig{}, fmt.Errorf("AI_GATEWAY_COPILOT_PROXY_IMAGE must be an image reference with a tag or digest")
@@ -137,9 +138,6 @@ func ParseAIGatewayConfig(getenv func(string) string) (AIGatewayConfig, error) {
 	}
 	if cfg.MasterKeySecretName == "" {
 		return AIGatewayConfig{}, fmt.Errorf("AI_GATEWAY_MASTER_KEY_SECRET is required")
-	}
-	if cfg.Enabled && cfg.DefaultBudget == 0 {
-		return AIGatewayConfig{}, fmt.Errorf("AI_GATEWAY_DEFAULT_BUDGET is required when the AI Gateway is enabled")
 	}
 	return cfg, nil
 }
@@ -315,6 +313,9 @@ func (r *AgentReconciler) resolveCustomAIGatewayGrant(ctx context.Context, clien
 	if !shared && !copilot {
 		return aiGatewayGrant{}, nil
 	}
+	if r.AIGateway.CustomBudget <= 0 {
+		return aiGatewayGrant{}, fmt.Errorf("Custom Gateway access requires an explicit deployment-owned monthly USD budget")
+	}
 	groups := r.aiGatewayAccessGroups(instance, copilot)
 	if shared {
 		if err := r.refreshAIGatewayCatalogForGrant(ctx, client); err != nil {
@@ -327,7 +328,7 @@ func (r *AgentReconciler) resolveCustomAIGatewayGrant(ctx context.Context, clien
 	}
 	slices.Sort(groups)
 	return aiGatewayGrant{
-		groups: slices.Compact(groups), budget: r.AIGateway.DefaultBudget, copilot: copilot, active: true,
+		groups: slices.Compact(groups), budget: r.AIGateway.CustomBudget, copilot: copilot, active: true,
 	}, nil
 }
 

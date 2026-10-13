@@ -115,8 +115,10 @@ shared models are mapped to collision-safe Gateway access groups from the live
 catalog. A policy-bound key never receives a broad legacy shared-model group.
 
 Custom Gateway access is a separate explicit runtime choice. When selected, it
-uses the currently configured shared-model groups and does not pretend that an
-AgentPolicy granted them.
+uses the currently configured shared-model groups and the deployment-owned
+`aiGateway.customMonthlyBudgetUSD`; it does not pretend that an AgentPolicy
+granted either. The Custom budget is optional unless an approved Custom image
+is explicitly configured to use the Gateway.
 
 ## Failure and change behavior
 

@@ -2020,12 +2020,12 @@ func TestParseAIGatewayConfig(t *testing.T) {
 	}
 	valid := map[string]string{
 		"AI_GATEWAY_ENABLED": "true", "AI_GATEWAY_URL": testAIGatewayURL + "/", "AI_GATEWAY_MASTER_KEY_SECRET": "cetirun-ai-gateway-auth",
-		"AI_GATEWAY_DEFAULT_BUDGET":      "10",
+		"AI_GATEWAY_CUSTOM_BUDGET":       "10",
 		"AI_GATEWAY_DEFAULT_MODEL":       "shared-model",
 		"AI_GATEWAY_COPILOT_PROXY_IMAGE": "registry.example.com/cetirun-ai-gateway:0.1.1@sha256:" + strings.Repeat("a", 64),
 	}
 	cfg, err = ParseAIGatewayConfig(env(valid))
-	if err != nil || !cfg.Enabled || cfg.URL != testAIGatewayURL || cfg.MasterKeySecretKey != "master-key" ||
+	if err != nil || !cfg.Enabled || cfg.URL != testAIGatewayURL || cfg.MasterKeySecretKey != "master-key" || cfg.CustomBudget != 10 ||
 		!strings.HasPrefix(cfg.CopilotProxyImage, "registry.example.com/") {
 		t.Fatalf("valid configuration: %+v %v", cfg, err)
 	}
@@ -2055,6 +2055,24 @@ func TestParseAIGatewayConfig(t *testing.T) {
 	registryPort["AI_GATEWAY_COPILOT_PROXY_IMAGE"] = "registry.example.com:5000/cetirun-ai-gateway:0.1.1"
 	if _, err := ParseAIGatewayConfig(env(registryPort)); err != nil {
 		t.Errorf("a registry with a port is valid: %v", err)
+	}
+	withoutCustomBudget := map[string]string{}
+	for key, value := range valid {
+		withoutCustomBudget[key] = value
+	}
+	delete(withoutCustomBudget, "AI_GATEWAY_CUSTOM_BUDGET")
+	if cfg, err := ParseAIGatewayConfig(env(withoutCustomBudget)); err != nil || cfg.CustomBudget != 0 {
+		t.Errorf("a Gateway used only by policy-bound Agents does not need a Custom budget: %+v %v", cfg, err)
+	}
+	for _, value := range []string{"0", "-1", "NaN", "+Inf", "not-a-number"} {
+		invalidBudget := map[string]string{}
+		for key, original := range valid {
+			invalidBudget[key] = original
+		}
+		invalidBudget["AI_GATEWAY_CUSTOM_BUDGET"] = value
+		if _, err := ParseAIGatewayConfig(env(invalidBudget)); err == nil {
+			t.Errorf("invalid Custom Gateway budget %q accepted", value)
+		}
 	}
 }
 
