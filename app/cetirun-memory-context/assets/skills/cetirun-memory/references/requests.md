@@ -53,7 +53,8 @@ cooperative protocol, not isolation from a hostile process. Shared and unknown e
 response; `init` uses 0. Read-only commands may omit it. Never put secrets in source refs.
 No policy file or installation identity is required.
 
-Write receipts cover the latest 128 successful writes. A missing older receipt is an unknown outcome,
+Write receipts cover the latest 128 successful writes; when the store's manifest nears its size limit,
+the helper keeps fewer, but at least the latest 32. A missing older receipt is an unknown outcome,
 not permission to replay the operation. Use/change history has the same retention window, except for
 records still referenced by retained receipts or persistent objects. The helper removes obsolete history
 automatically; `trace` reports `HistoryCompacted` after that happens and is not a complete activity log.

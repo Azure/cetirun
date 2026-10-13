@@ -5,38 +5,84 @@ package memory
 
 import (
 	"context"
+	"errors"
+	"path"
+	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 )
 
-const retainedHistory = 128
+const (
+	retainedHistory = 128
+	// minimumHistory is the shortest window kept when the manifest would
+	// otherwise exceed MaxManifest. Its receipts still resolve recent unknown
+	// outcomes.
+	minimumHistory = 32
+)
+
+// historyWindows are tried in order until the encoded manifest fits.
+var historyWindows = []int64{retainedHistory, 96, 64, 48, minimumHistory}
+
+var transactionName = regexp.MustCompile(`^[a-f0-9]{64}\.json$`)
 
 func historyObject(id string) bool {
 	return strings.HasPrefix(id, "use-") || strings.HasPrefix(id, "change-")
 }
 
-func (v *snapshot) compactHistory() error {
-	keep := map[string]bool{}
+// compactHistory keeps the use/change records and write receipts of the
+// latest retainedHistory generations, and history that a persistent object
+// still references. The number of generations alone does not bound the
+// manifest, and a rejected write never moves the window, so when the encoded
+// manifest would exceed MaxManifest fewer generations are kept, down to
+// minimumHistory. It returns the encoded manifest size; the caller rejects a
+// manifest that still does not fit.
+func (v *snapshot) compactHistory() (int, error) {
+	generations := map[string]int64{}
 	for id, ref := range v.m.Objects {
 		if !historyObject(id) {
-			keep[id] = true
 			continue
 		}
-		var generation int64
 		if strings.HasPrefix(id, "use-") {
 			var use Use
 			if err := v.read(ref, &use); err != nil {
-				return err
+				return 0, err
 			}
-			generation = use.ManifestGeneration + 1
+			generations[id] = use.ManifestGeneration + 1
 		} else {
 			var change Change
 			if err := v.read(ref, &change); err != nil {
-				return err
+				return 0, err
 			}
-			generation = change.GenerationAfter
+			generations[id] = change.GenerationAfter
 		}
-		if generation > v.m.Generation-retainedHistory {
+	}
+	size := 0
+	for _, window := range historyWindows {
+		v.retainHistory(window, generations)
+		data, err := encode(v.m)
+		if err != nil {
+			return 0, err
+		}
+		if size = len(data); size <= MaxManifest {
+			break
+		}
+	}
+	return size, nil
+}
+
+// retainHistory drops receipts, and use/change records that nothing retained
+// references, from generations older than the window.
+func (v *snapshot) retainHistory(window int64, generations map[string]int64) {
+	oldest := v.m.Generation - window
+	for key, receipt := range v.m.Requests {
+		if receipt.Generation <= oldest {
+			delete(v.m.Requests, key)
+		}
+	}
+	keep := map[string]bool{}
+	for id := range v.m.Objects {
+		if generation, history := generations[id]; !history || generation > oldest {
 			keep[id] = true
 		}
 	}
@@ -64,6 +110,94 @@ func (v *snapshot) compactHistory() error {
 			delete(v.m.Dependencies, id)
 			v.m.HistoryCompacted = true
 		}
+	}
+}
+
+// removeAbandonedTransactions deletes journals that can no longer commit, so a
+// failed attempt neither keeps its data on disk nor fills the root until every
+// write fails. A journal that cannot be decoded can never be replayed, and one
+// cut short by a crash has no objects yet, since objects are written after
+// their journal; collectHistory would otherwise reject every write. The commit
+// path rejects a journal whose manifest exceeds MaxManifest and replays a
+// journal only at its own expected generation. An older journal whose receipt
+// is retained has committed, so only the journal goes. Without a receipt, an
+// attempt from the last minimumHistory generations never committed, so its
+// object files go as well; older journals stay because their receipts may
+// already be compacted. Removal is best effort: a file that cannot be removed
+// keeps its journal for a later write and does not fail this one. The caller
+// holds the write lock.
+func (v *snapshot) removeAbandonedTransactions(ctx context.Context) error {
+	names, err := v.fs.names("transactions")
+	if errors.Is(err, syscall.ENOENT) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	current := map[string]bool{}
+	for _, ref := range v.m.Objects {
+		if object, err := objectPath(ref); err == nil {
+			current[object] = true
+		}
+	}
+journals:
+	for _, name := range names {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if !transactionName.MatchString(name) {
+			continue
+		}
+		journal := "transactions/" + name
+		data, err := v.fs.read(journal, MaxInput*4)
+		if err != nil {
+			continue
+		}
+		var tx transaction
+		if Decode(data, &tx) != nil {
+			_ = v.fs.remove(journal)
+			continue
+		}
+		if tx.Manifest.Generation != tx.ExpectedGeneration+1 {
+			continue
+		}
+		manifest, err := encode(tx.Manifest)
+		if err != nil {
+			continue
+		}
+		committed := false
+		if len(manifest) <= MaxManifest {
+			if tx.ExpectedGeneration >= v.m.Generation {
+				continue
+			}
+			receipt, ok := v.m.Requests[strings.TrimSuffix(name, ".json")]
+			committed = ok && receipt.Generation == tx.Manifest.Generation
+			if !committed && tx.Manifest.Generation <= v.m.Generation-minimumHistory {
+				continue
+			}
+		}
+		if !committed {
+			staged := map[string]bool{}
+			for _, ref := range tx.Manifest.Objects {
+				if object, err := objectPath(ref); err == nil {
+					staged[object] = true
+				}
+			}
+			for _, file := range tx.Files {
+				if !staged[file.Name] || current[file.Name] {
+					continue
+				}
+				// An attempt can stop before writing an object, so its
+				// directory may not exist.
+				if v.fs.remove(file.Name) != nil {
+					continue journals
+				}
+				if err := v.fs.removeDirectory(path.Dir(file.Name)); err != nil && !errors.Is(err, syscall.ENOENT) {
+					continue journals
+				}
+			}
+		}
+		_ = v.fs.remove(journal)
 	}
 	return nil
 }
