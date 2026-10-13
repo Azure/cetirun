@@ -53,6 +53,11 @@ cooperative protocol, not isolation from a hostile process. Shared and unknown e
 response; `init` uses 0. Read-only commands may omit it. Never put secrets in source refs.
 No policy file or installation identity is required.
 
+Write receipts cover the latest 128 successful writes. A missing older receipt is an unknown outcome,
+not permission to replay the operation. Use/change history has the same retention window, except for
+records still referenced by retained receipts or persistent objects. The helper removes obsolete history
+automatically; `trace` reports `HistoryCompacted` after that happens and is not a complete activity log.
+
 ## Payloads
 
 - `query`: `{"queryTerms":["lakeside bakery"],"view":"search","limit":5}`. One to eight terms. A term can be
@@ -140,6 +145,8 @@ not part of a plan; it runs only when the plan's exact stages find nothing. The 
 profile checks a plan against exact-match cases drawn from the store's own titles, aliases and keywords.
 A native query selects the active or trial method itself and records the injection; with the CLI, call
 `select` and pass its use ref to `query`.
+Changing the note corpus invalidates an in-flight retrieval trial and releases its slot. The approved
+baseline remains available; the candidate needs a fresh `check` before starting another trial.
 
 A playbook payload has `steps`, `expectedEvidence` and `stopConditions` arrays. Its compatibility adds
 `adapter`, `nativeVersion`, `model` and `modelRevision`, which the adapter fills from the current session;
@@ -156,6 +163,10 @@ model turn, change provider or bypass the request limit. The helper's fixed chec
 and `check` and `advance` handle selection, limited trial, adoption and regression quarantine. An active
 synthetic method applies only to that profile's fixtures. It never accepts prompts, model URLs,
 credentials, expected answers or executable checks.
+
+Reservations expire from the rolling budget after 24 hours. Compact per-method results and the fixed
+fixture set retain attempted cases and exposure, so expiration does not retry an unknown dispatch or
+make an already exposed case independent again.
 
 The installed executors qualify OpenClaw 2026.9.6's configured direct chat-completions route, Hermes
 0.21.5's task-local OpenAI-compatible route and Pi 0.87.1's native chat-completions route. Other

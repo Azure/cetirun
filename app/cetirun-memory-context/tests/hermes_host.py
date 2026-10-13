@@ -81,9 +81,18 @@ with patch.object(plugins, "get_plugin_manager", return_value=manager):
     changed = native_tool("query", {"queryTerms": [note["title"]]}, "query-after")
     assert changed["data"]["hits"][0]["review"]["needsRecheck"] is True
     assert changed["data"]["hits"][0]["review"]["reviewReason"] == "SourceChanged"
-    manager.invoke_hook("on_session_end", session_id="native-hermes", completed=True)
+    manager.invoke_hook("pre_llm_call", session_id="native-hermes", platform="api_server", turn_id="overlap-a", model="fixture", user_message="First turn")
+    manager.invoke_hook("pre_llm_call", session_id="native-hermes", platform="api_server", turn_id="overlap-b", model="fixture", user_message="Second turn")
+    manager.invoke_hook("on_session_end", session_id="native-hermes", turn_id="overlap-a", completed=True)
+    surviving = json.loads(registry.dispatch("cetirun_memory", {"command": "status", "payload": {}}, session_id="native-hermes"))
+    assert surviving["ok"], surviving
+    manager.invoke_hook("on_session_end", session_id="native-hermes", turn_id="overlap-b", completed=True)
     closed = json.loads(registry.dispatch("cetirun_memory", {"command": "query", "payload": {"queryTerms": ["fixture"]}}, session_id="native-hermes"))
     assert closed["reason"] == "Cancelled"
+    manager.invoke_hook("pre_llm_call", session_id="native-hermes", platform="api_server", turn_id="final-turn", model="fixture", user_message="Final turn")
+    manager.invoke_hook("on_session_finalize", session_id="native-hermes")
+    finalized = json.loads(registry.dispatch("cetirun_memory", {"command": "status", "payload": {}}, session_id="native-hermes"))
+    assert finalized["reason"] == "Cancelled"
 
 from agent.auxiliary_client import set_runtime_main, reset_runtime_main
 

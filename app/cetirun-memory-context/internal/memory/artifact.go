@@ -51,6 +51,125 @@ type artifactRecord struct {
 	Tokens   *int   `json:"tokens,omitempty"`
 }
 
+type artifactOutcome struct {
+	Finished bool   `json:"finished"`
+	Outcome  string `json:"outcome"`
+	Correct  bool   `json:"correct"`
+}
+type artifactPhase struct {
+	Baseline *Ref                       `json:"baseline"`
+	Calls    map[string]artifactOutcome `json:"calls"`
+}
+type artifactEvidence struct {
+	CaseSetDigest string                   `json:"caseSetDigest"`
+	Phases        map[string]artifactPhase `json:"phases"`
+}
+type artifactExposure struct {
+	CaseSetDigest string   `json:"caseSetDigest"`
+	Owners        []string `json:"owners"`
+}
+
+func (v *snapshot) compactArtifactCalls(now time.Time) error {
+	set := artifactSetDigest()
+	for id, call := range v.m.ExtraCalls {
+		at, err := time.Parse(time.RFC3339, call.ReservedAt)
+		if err != nil || now.Before(at) {
+			return problem(5, "BudgetExhausted")
+		}
+		if now.Sub(at) < 24*time.Hour {
+			continue
+		}
+		if call.CaseSetDigest == set {
+			if call.Case < 0 || call.Case >= 66 {
+				return problem(6, "IntegrityMismatch")
+			}
+			if v.m.ArtifactExposure == nil || v.m.ArtifactExposure.CaseSetDigest != set {
+				v.m.ArtifactExposure = &artifactExposure{CaseSetDigest: set, Owners: make([]string, 66)}
+			}
+			owner := "*"
+			if call.Candidate.Valid() {
+				owner = digest([]byte(call.Candidate.Key()))
+			}
+			old := v.m.ArtifactExposure.Owners[call.Case]
+			if old != "" && old != owner {
+				owner = "*"
+			}
+			v.m.ArtifactExposure.Owners[call.Case] = owner
+			if err := v.retainArtifactOutcome(call); err != nil {
+				return err
+			}
+		}
+		delete(v.m.ExtraCalls, id)
+	}
+	for key, state := range v.m.ProcedureStates {
+		if !slices.Contains([]string{"candidate", "checked", "trial", "active"}, state.State) {
+			state.ArtifactEvidence = nil
+			v.m.ProcedureStates[key] = state
+		}
+	}
+	return nil
+}
+
+func (v *snapshot) retainArtifactOutcome(call ModelCall) error {
+	state := v.m.ProcedureStates[call.Candidate.Key()]
+	if !call.Candidate.Valid() || !slices.Contains([]string{"candidate", "checked", "trial", "active"}, state.State) || call.ProfileRevision != artifactRevision {
+		return nil
+	}
+	if !slices.Contains([]string{"selection", "prospective", "usage"}, call.Phase) || !slices.Contains([]string{"baseline", "candidate"}, call.Variant) {
+		return problem(6, "IntegrityMismatch")
+	}
+	var proc Procedure
+	if err := v.read(call.Candidate, &proc); err != nil {
+		return err
+	}
+	if !sameRef(call.Baseline, v.m.Slots[artifactSlot(proc.Scope)].Active) || state.State == "active" && call.Phase != "usage" {
+		return nil
+	}
+	if state.ArtifactEvidence == nil || state.ArtifactEvidence.CaseSetDigest != call.CaseSetDigest {
+		state.ArtifactEvidence = &artifactEvidence{CaseSetDigest: call.CaseSetDigest, Phases: map[string]artifactPhase{}}
+	}
+	phase := state.ArtifactEvidence.Phases[call.Phase]
+	if phase.Calls == nil || !sameRef(phase.Baseline, call.Baseline) {
+		phase = artifactPhase{Baseline: call.Baseline, Calls: map[string]artifactOutcome{}}
+	}
+	outcome := artifactOutcome{Finished: call.Finished, Outcome: call.Outcome, Correct: call.Correct}
+	if !call.Finished {
+		outcome = artifactOutcome{Finished: true, Outcome: "unknown"}
+	}
+	phase.Calls[fmt.Sprintf("%d/%s", call.Case, call.Variant)] = outcome
+	state.ArtifactEvidence.Phases[call.Phase] = phase
+	v.m.ProcedureStates[call.Candidate.Key()] = state
+	return nil
+}
+
+func (v *snapshot) artifactCall(candidate Ref, baseline *Ref, phase string, index int, variant, set string) (artifactOutcome, bool) {
+	for _, call := range v.m.ExtraCalls {
+		if call.Candidate == candidate && sameRef(call.Baseline, baseline) && call.Phase == phase && call.Case == index && call.Variant == variant && call.CaseSetDigest == set && call.ProfileRevision == artifactRevision {
+			return artifactOutcome{call.Finished, call.Outcome, call.Correct}, true
+		}
+	}
+	evidence := v.m.ProcedureStates[candidate.Key()].ArtifactEvidence
+	if evidence != nil && evidence.CaseSetDigest == set {
+		recorded := evidence.Phases[phase]
+		if sameRef(recorded.Baseline, baseline) {
+			outcome, ok := recorded.Calls[fmt.Sprintf("%d/%s", index, variant)]
+			return outcome, ok
+		}
+	}
+	return artifactOutcome{}, false
+}
+
+func (v *snapshot) artifactExposed(candidate Ref, set string, index int) bool {
+	if artifactCaseExposed(v.m.ExtraCalls, candidate, set, index) {
+		return true
+	}
+	if exposure := v.m.ArtifactExposure; exposure != nil && exposure.CaseSetDigest == set {
+		owner := exposure.Owners[index]
+		return owner != "" && owner != digest([]byte(candidate.Key()))
+	}
+	return false
+}
+
 func artifactCase(index int) (string, []byte, string) {
 	// Inputs are public synthetic records. Only the parent checker gets the
 	// expected value; a model sees the task, fixture and optional method.
@@ -169,6 +288,13 @@ func (s *Store) nativeEvaluation(ctx context.Context, r Request, event NativeEve
 		if state.Exhausted || !slices.Contains([]string{"candidate", "trial", "active"}, state.State) {
 			return writeResult{}, problem(3, "Conflict")
 		}
+		now := s.now()
+		if last, err := time.Parse(time.RFC3339, v.m.LastWriteAt); err != nil || now.Before(last) {
+			return writeResult{}, problem(5, "BudgetExhausted")
+		}
+		if err := v.compactArtifactCalls(now); err != nil {
+			return writeResult{}, err
+		}
 		baseline := v.m.Slots[artifactSlot(proc.Scope)].Active
 		phase := "selection"
 		start, end := 0, 2
@@ -184,7 +310,7 @@ func (s *Store) nativeEvaluation(ctx context.Context, r Request, event NativeEve
 		caseID, variant := -1, ""
 		caseSet := artifactSetDigest()
 		for i := start; i < end; i++ {
-			if phase == "prospective" && (artifactCaseExposed(v.m.ExtraCalls, input.Ref, caseSet, i) || !strings.HasSuffix(digest([]byte(fmt.Sprintf("%d/%s", i, procedureFingerprint(proc)))), "0")) {
+			if phase == "prospective" && (v.artifactExposed(input.Ref, caseSet, i) || !strings.HasSuffix(digest([]byte(fmt.Sprintf("%d/%s", i, procedureFingerprint(proc)))), "0")) {
 				continue
 			}
 			variants := []string{"baseline", "candidate"}
@@ -192,13 +318,7 @@ func (s *Store) nativeEvaluation(ctx context.Context, r Request, event NativeEve
 				variants = []string{"candidate"}
 			}
 			for _, candidateVariant := range variants {
-				found := false
-				for _, call := range v.m.ExtraCalls {
-					if call.Candidate == input.Ref && sameRef(call.Baseline, baseline) && call.Case == i && call.Phase == phase && call.Variant == candidateVariant && call.CaseSetDigest == caseSet {
-						found = true
-						break
-					}
-				}
+				_, found := v.artifactCall(input.Ref, baseline, phase, i, candidateVariant, caseSet)
 				if !found {
 					caseID, variant = i, candidateVariant
 					break
@@ -230,21 +350,7 @@ func (s *Store) nativeEvaluation(ctx context.Context, r Request, event NativeEve
 			}
 			return writeResult{}, problem(7, "EvidenceInsufficient")
 		}
-		now := s.now()
-		if last, err := time.Parse(time.RFC3339, v.m.LastWriteAt); err != nil || now.Before(last) {
-			return writeResult{}, problem(5, "BudgetExhausted")
-		}
-		count := 0
-		for _, call := range v.m.ExtraCalls {
-			at, err := time.Parse(time.RFC3339, call.ReservedAt)
-			if err != nil || now.Before(at) {
-				return writeResult{}, problem(5, "BudgetExhausted")
-			}
-			if now.Sub(at) < 24*time.Hour {
-				count++
-			}
-		}
-		if count >= MaxExtraTurnsPer24h || len(v.m.ExtraCalls) >= 128 {
+		if len(v.m.ExtraCalls) >= MaxExtraTurnsPer24h {
 			return writeResult{}, problem(5, "BudgetExhausted")
 		}
 		call := ModelCall{ID: newID("call"), Candidate: input.Ref, Baseline: baseline, ProfileRevision: artifactRevision, CaseSetDigest: artifactSetDigest(), Case: caseID, Phase: phase, Variant: variant, ContextKey: r.nativeContextKey, Compatibility: proc.Compatibility, ReservedAt: timestamp(now)}
@@ -351,22 +457,12 @@ func (s *Store) artifactResults(v *snapshot, ref Ref, proc Procedure, phase stri
 	}
 	caseSet := artifactSetDigest()
 	for i := start; i < end; i++ {
-		if phase == "prospective" && artifactCaseExposed(v.m.ExtraCalls, ref, caseSet, i) {
+		if phase == "prospective" && v.artifactExposed(ref, caseSet, i) {
 			continue
 		}
-		var base, candidate *ModelCall
-		for _, call := range v.m.ExtraCalls {
-			if call.Candidate != ref || !sameRef(call.Baseline, baseline) || call.Case != i || call.Phase != phase || call.CaseSetDigest != caseSet || call.ProfileRevision != artifactRevision {
-				continue
-			}
-			copy := call
-			if call.Variant == "baseline" {
-				base = &copy
-			} else {
-				candidate = &copy
-			}
-		}
-		if base == nil || candidate == nil || !base.Finished || !candidate.Finished {
+		base, baseOK := v.artifactCall(ref, baseline, phase, i, "baseline", caseSet)
+		candidate, candidateOK := v.artifactCall(ref, baseline, phase, i, "candidate", caseSet)
+		if !baseOK || !candidateOK || !base.Finished || !candidate.Finished {
 			continue
 		}
 		if base.Outcome != "completed" || candidate.Outcome != "completed" {

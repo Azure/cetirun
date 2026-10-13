@@ -12,6 +12,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"syscall"
 )
 
 var atomicTemporaryName = regexp.MustCompile(`^\.tmp-tx-[a-f0-9]{32}$`)
@@ -222,6 +223,9 @@ func (s *Store) forgetApply(v *snapshot, r Request) (writeResult, error) {
 		return writeResult{}, problem(3, "Conflict")
 	}
 	for _, id := range plan.ObjectIDs {
+		if strings.HasPrefix(id, "note-") {
+			v.notesChanged = true
+		}
 		v.m.Tombstones[id] = true
 		delete(v.m.Objects, id)
 		delete(v.m.Dependencies, id)
@@ -234,8 +238,25 @@ func (s *Store) forgetApply(v *snapshot, r Request) (writeResult, error) {
 		}
 		for key := range v.m.ProcedureStates {
 			if strings.HasPrefix(key, id+"/") {
+				if exposure := v.m.ArtifactExposure; exposure != nil {
+					for i, owner := range exposure.Owners {
+						if owner == digest([]byte(key)) {
+							exposure.Owners[i] = "*"
+						}
+					}
+				}
 				delete(v.m.ProcedureStates, key)
 			}
+		}
+	}
+	for key, state := range v.m.ProcedureStates {
+		if state.ArtifactEvidence != nil {
+			for phase, evidence := range state.ArtifactEvidence.Phases {
+				if evidence.Baseline != nil && v.m.Tombstones[evidence.Baseline.ID] {
+					delete(state.ArtifactEvidence.Phases, phase)
+				}
+			}
+			v.m.ProcedureStates[key] = state
 		}
 	}
 	for key, current := range v.m.Slots {
@@ -264,20 +285,11 @@ func (s *Store) forgetApply(v *snapshot, r Request) (writeResult, error) {
 	return writeResult{Refs: []Ref{}, PurgePending: true}, nil
 }
 func (s *Store) purge(ctx context.Context, planDigest string) bool {
-	v, err := s.open()
+	v, err := s.openSnapshot(ctx, syscall.LOCK_EX)
 	if err != nil {
 		return false
 	}
 	defer v.fs.close()
-	unlock, err := v.fs.lock(ctx)
-	if err != nil {
-		return false
-	}
-	defer unlock()
-	v.m, err = readManifest(v.fs)
-	if err != nil {
-		return false
-	}
 	plan, ok := v.m.Purges[planDigest]
 	if !ok || plan.Digest != plan.hash() {
 		return false
@@ -312,6 +324,10 @@ func (s *Store) trace(v *snapshot, r Request) (traceResult, error) {
 		return traceResult{}, problem(4, "DisclosureNotAllowed")
 	}
 	result := traceResult{Entries: []traceEntry{}, Partial: Partial{Reasons: []string{"RegisteredReferencesOnly", "UnobservedActivityUnknown"}}}
+	if v.m.HistoryCompacted {
+		result.Partial.LimitHit = true
+		result.Partial.Reasons = append(result.Partial.Reasons, "HistoryCompacted")
+	}
 	ids := []string{}
 	for id := range v.m.Objects {
 		ids = append(ids, id)

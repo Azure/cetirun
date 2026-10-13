@@ -21,7 +21,7 @@ func (s *Store) Execute(ctx context.Context, command string, r Request) (Respons
 		if err := Decode(r.Payload, &input); err != nil {
 			return failed(response, err)
 		}
-		v, err := s.open()
+		v, err := s.openRead(ctx)
 		if errors.Is(err, syscall.ENOENT) {
 			response.OK = true
 			response.Data = map[string]any{"initialized": false, "contractVersion": ContractVersion, "helperABI": HelperABI, "mode": "enabled", "learning": defaultLearning()}
@@ -91,7 +91,7 @@ func (s *Store) Execute(ctx context.Context, command string, r Request) (Respons
 			response.Data = data
 			return response, 0
 		}
-		v, err := s.open()
+		v, err := s.openRead(ctx)
 		if err != nil {
 			return failed(response, err)
 		}

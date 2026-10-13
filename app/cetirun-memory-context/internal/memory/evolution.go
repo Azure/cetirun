@@ -493,7 +493,15 @@ func (s *Store) advance(v *snapshot, r Request) (writeResult, error) {
 	if err != nil {
 		return writeResult{}, err
 	}
-	if partial != nil || eval.CorpusDigest != corpusDigest(corpus) {
+	if partial != nil {
+		return writeResult{}, problem(7, "EvidenceInsufficient")
+	}
+	if eval.CorpusDigest != corpusDigest(corpus) {
+		key := scopeKey(proc.Scope)
+		if sameRef(v.m.Slots[key].Trial, &input.Ref) {
+			v.resetRetrievalTrial(key)
+			return writeResult{Refs: []Ref{input.Ref}, State: "candidate"}, nil
+		}
 		return writeResult{}, problem(7, "EvidenceInsufficient")
 	}
 	for _, ref := range proc.RequiredKnowledgeRefs {
@@ -555,6 +563,19 @@ func sameRef(a, b *Ref) bool {
 		return a == nil && b == nil
 	}
 	return *a == *b
+}
+
+func (v *snapshot) resetRetrievalTrial(key string) {
+	current := v.m.Slots[key]
+	if current.Trial == nil {
+		return
+	}
+	state := v.m.ProcedureStates[current.Trial.Key()]
+	state.State, state.Reason = "candidate", "CorpusChanged"
+	state.Evaluation, state.TrialSeen, state.TrialPassed = nil, nil, nil
+	v.m.ProcedureStates[current.Trial.Key()] = state
+	current.Trial = nil
+	v.m.Slots[key] = current
 }
 
 type selectInput struct {
@@ -632,10 +653,12 @@ func (s *Store) selectMethod(v *snapshot, r Request, record bool) (writeResult, 
 		if err != nil {
 			return writeResult{}, err
 		}
-		if partial != nil || eval.CorpusDigest != corpusDigest(corpus) {
+		if partial != nil {
 			return writeResult{}, problem(7, "EvidenceInsufficient")
 		}
-		if !state.TrialSeen[opportunity] && len(state.TrialSeen) < 32 {
+		if eval.CorpusDigest != corpusDigest(corpus) {
+			v.resetRetrievalTrial(key)
+		} else if !state.TrialSeen[opportunity] && len(state.TrialSeen) < 32 {
 			state.TrialSeen[opportunity] = true
 			base := Baseline()
 			if current.Active != nil {

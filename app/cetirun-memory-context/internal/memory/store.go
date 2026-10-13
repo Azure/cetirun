@@ -60,12 +60,13 @@ type slot struct {
 	Baseline *Ref `json:"baseline"`
 }
 type methodState struct {
-	State       string            `json:"state"`
-	Reason      string            `json:"reason,omitempty"`
-	Evaluation  *Ref              `json:"evaluation,omitempty"`
-	TrialSeen   map[string]bool   `json:"trialSeen,omitempty"`
-	TrialPassed map[string]string `json:"trialPassed,omitempty"`
-	Exhausted   bool              `json:"exhausted,omitempty"`
+	State            string            `json:"state"`
+	Reason           string            `json:"reason,omitempty"`
+	Evaluation       *Ref              `json:"evaluation,omitempty"`
+	TrialSeen        map[string]bool   `json:"trialSeen,omitempty"`
+	TrialPassed      map[string]string `json:"trialPassed,omitempty"`
+	Exhausted        bool              `json:"exhausted,omitempty"`
+	ArtifactEvidence *artifactEvidence `json:"artifactEvidence,omitempty"`
 }
 type budgetEntry struct {
 	At      string `json:"at"`
@@ -73,23 +74,25 @@ type budgetEntry struct {
 	Lineage string `json:"lineage"`
 }
 type manifest struct {
-	SchemaVersion   string                  `json:"schemaVersion"`
-	Generation      int64                   `json:"generation"`
-	Objects         map[string]Ref          `json:"objects"`
-	Dependencies    map[string][]Ref        `json:"dependencies"`
-	ProcedureStates map[string]methodState  `json:"procedureStates"`
-	Slots           map[string]slot         `json:"activeSlots"`
-	SourceChecks    map[string][]Ref        `json:"sourceChecks"`
-	Pending         []string                `json:"pendingObservationIds"`
-	Processed       map[string]bool         `json:"processedSources"`
-	Requests        map[string]writeReceipt `json:"requests"`
-	Views           map[string]viewHash     `json:"views"`
-	Tombstones      map[string]bool         `json:"tombstones"`
-	Purges          map[string]ForgetPlan   `json:"purges"`
-	Budgets         []budgetEntry           `json:"budgets"`
-	ExhaustedTrials map[string]bool         `json:"exhaustedTrials"`
-	LastWriteAt     string                  `json:"lastWriteAt"`
-	ExtraCalls      map[string]ModelCall    `json:"extraCalls,omitempty"`
+	SchemaVersion    string                  `json:"schemaVersion"`
+	Generation       int64                   `json:"generation"`
+	Objects          map[string]Ref          `json:"objects"`
+	Dependencies     map[string][]Ref        `json:"dependencies"`
+	ProcedureStates  map[string]methodState  `json:"procedureStates"`
+	Slots            map[string]slot         `json:"activeSlots"`
+	SourceChecks     map[string][]Ref        `json:"sourceChecks"`
+	Pending          []string                `json:"pendingObservationIds"`
+	Processed        map[string]bool         `json:"processedSources"`
+	Requests         map[string]writeReceipt `json:"requests"`
+	Views            map[string]viewHash     `json:"views"`
+	Tombstones       map[string]bool         `json:"tombstones"`
+	Purges           map[string]ForgetPlan   `json:"purges"`
+	Budgets          []budgetEntry           `json:"budgets"`
+	ExhaustedTrials  map[string]bool         `json:"exhaustedTrials"`
+	LastWriteAt      string                  `json:"lastWriteAt"`
+	ExtraCalls       map[string]ModelCall    `json:"extraCalls,omitempty"`
+	ArtifactExposure *artifactExposure       `json:"artifactExposure,omitempty"`
+	HistoryCompacted bool                    `json:"historyCompacted,omitempty"`
 }
 
 func emptyManifest() manifest {
@@ -117,10 +120,11 @@ type transaction struct {
 	Result             writeResult   `json:"result"`
 }
 type snapshot struct {
-	fs    *safeFS
-	m     manifest
-	added map[string][]byte
-	files []pendingFile
+	fs           *safeFS
+	m            manifest
+	added        map[string][]byte
+	files        []pendingFile
+	notesChanged bool
 }
 
 func (s *Store) point(name string) error {
@@ -129,7 +133,10 @@ func (s *Store) point(name string) error {
 	}
 	return nil
 }
-func (s *Store) open() (*snapshot, error) {
+func (s *Store) openRead(ctx context.Context) (*snapshot, error) {
+	return s.openSnapshot(ctx, syscall.LOCK_SH)
+}
+func (s *Store) openSnapshot(ctx context.Context, mode int) (*snapshot, error) {
 	f, err := openRoot(s.Config.Root, false)
 	if err != nil {
 		return nil, err
@@ -145,6 +152,12 @@ func (s *Store) open() (*snapshot, error) {
 	}
 	if metadata.SchemaVersion != SchemaVersion {
 		return fail(problem(6, "SchemaUnsupported"))
+	}
+	if mode != 0 {
+		f.unlock, err = f.lockMode(ctx, mode)
+		if err != nil {
+			return fail(err)
+		}
 	}
 	m, err := readManifest(f)
 	if err != nil {
@@ -180,6 +193,16 @@ func readManifest(f *safeFS) (manifest, error) {
 	}
 	if m.ExtraCalls == nil {
 		m.ExtraCalls = map[string]ModelCall{}
+	}
+	if exposure := m.ArtifactExposure; exposure != nil {
+		if !digestPattern.MatchString(exposure.CaseSetDigest) || len(exposure.Owners) != 66 {
+			return m, problem(6, "IntegrityMismatch")
+		}
+		for _, owner := range exposure.Owners {
+			if owner != "" && owner != "*" && !digestPattern.MatchString(owner) {
+				return m, problem(6, "IntegrityMismatch")
+			}
+		}
 	}
 	for id, ref := range m.Objects {
 		if id != ref.ID || !ref.Valid() || m.Tombstones[id] {
@@ -307,6 +330,9 @@ func (v *snapshot) save(id string, revision int64, value any) (Ref, error) {
 	v.added[ref.Key()] = b
 	v.files = append(v.files, pendingFile{name, b})
 	v.m.Objects[id] = ref
+	if strings.HasPrefix(id, "note-") {
+		v.notesChanged = true
+	}
 	dependencies, err := dependencies(v, ref)
 	if err != nil {
 		return Ref{}, err
@@ -334,6 +360,11 @@ func (s *Store) init(ctx context.Context, r Request) (writeResult, int64, error)
 		return writeResult{}, 0, err
 	}
 	defer f.close()
+	unlockRoot, err := f.lockRoot(ctx)
+	if err != nil {
+		return writeResult{}, 0, err
+	}
+	defer unlockRoot()
 	b, err := f.read("meta.json", 4096)
 	if errors.Is(err, syscall.ENOENT) {
 		dirFD, openErr := syscall.Openat(int(f.root.Fd()), ".", syscall.O_RDONLY|syscall.O_DIRECTORY|syscall.O_CLOEXEC, 0)
@@ -370,7 +401,7 @@ func (s *Store) init(ctx context.Context, r Request) (writeResult, int64, error)
 		if err != nil {
 			return writeResult{}, 0, err
 		}
-		return writeResult{Saved: true}, m.Generation, nil
+		return writeResult{Saved: true, Refs: []Ref{}}, m.Generation, nil
 	} else if !errors.Is(headErr, syscall.ENOENT) {
 		return writeResult{}, 0, headErr
 	}
@@ -414,20 +445,11 @@ func (s *Store) write(ctx context.Context, r Request, command string, maintenanc
 	if err := validateContext(r, true, maintenance); err != nil {
 		return writeResult{}, 0, err
 	}
-	v, err := s.open()
+	v, err := s.openSnapshot(ctx, syscall.LOCK_EX)
 	if err != nil {
 		return writeResult{}, 0, err
 	}
 	defer v.fs.close()
-	unlock, err := v.fs.lock(ctx)
-	if err != nil {
-		return writeResult{}, 0, err
-	}
-	defer unlock()
-	v.m, err = readManifest(v.fs)
-	if err != nil {
-		return writeResult{}, 0, err
-	}
 	key, hash := requestKey(r.RequestID), requestHash(command, r)
 	if receipt, ok := v.m.Requests[key]; ok {
 		if !requestDigestMatches(receipt.Digest, command, r, receipt.Generation-1) {
@@ -453,6 +475,9 @@ func (s *Store) write(ctx context.Context, r Request, command string, maintenanc
 			return writeResult{}, v.m.Generation, err
 		}
 	}
+	if err := v.collectHistory(ctx); err != nil {
+		return writeResult{}, v.m.Generation, err
+	}
 	txPath := "transactions/" + key + ".json"
 	var tx transaction
 	if data, readErr := v.fs.read(txPath, MaxInput*4); readErr == nil {
@@ -467,6 +492,13 @@ func (s *Store) write(ctx context.Context, r Request, command string, maintenanc
 		if err != nil {
 			return writeResult{}, v.m.Generation, err
 		}
+		if v.notesChanged {
+			for key, current := range v.m.Slots {
+				if current.Trial != nil && !strings.HasPrefix(key, ArtifactProfile+"/") {
+					v.resetRetrievalTrial(key)
+				}
+			}
+		}
 		before := v.m.Generation
 		v.m.Generation++
 		v.m.LastWriteAt = timestamp(s.now())
@@ -476,16 +508,19 @@ func (s *Store) write(ctx context.Context, r Request, command string, maintenanc
 		}
 		result.Saved = true
 		v.m.Requests[key] = writeReceipt{hash, v.m.Generation, result}
-		if len(v.m.Requests) > 128 {
+		for len(v.m.Requests) > retainedHistory {
 			oldest := ""
-			var age int64 = 1 << 62
+			var age int64
 			for k, x := range v.m.Requests {
-				if x.Generation < age {
+				if oldest == "" || x.Generation < age || x.Generation == age && k < oldest {
 					age = x.Generation
 					oldest = k
 				}
 			}
 			delete(v.m.Requests, oldest)
+		}
+		if err := v.compactHistory(); err != nil {
+			return writeResult{}, before, err
 		}
 		views, err := v.renderViews()
 		if err != nil {
@@ -713,20 +748,11 @@ func (s *Store) repair(ctx context.Context, r Request) (int64, error) {
 	if err := validateContext(r, true, false); err != nil {
 		return 0, err
 	}
-	v, err := s.open()
+	v, err := s.openSnapshot(ctx, syscall.LOCK_EX)
 	if err != nil {
 		return 0, err
 	}
 	defer v.fs.close()
-	unlock, err := v.fs.lock(ctx)
-	if err != nil {
-		return 0, err
-	}
-	defer unlock()
-	v.m, err = readManifest(v.fs)
-	if err != nil {
-		return 0, err
-	}
 	if *r.ExpectedGeneration != v.m.Generation {
 		return v.m.Generation, problem(3, "Conflict")
 	}

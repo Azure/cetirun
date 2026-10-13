@@ -325,11 +325,16 @@ def register(ctx, *, root=None, session_factory=MemorySession, executor=bounded_
         if current and current.binding["audience"] == "owner-private" and not current.binding["noMemory"] and tool_name in ("send_message", "delegate_task"):
             return {"action": "approve", "message": "This task may contain Agent-private memory. Confirm the exact recipient and minimum outgoing content; a child receives no automatic Memory access."}
 
-    def finish(session_id="", completed=False, interrupted=False, **_kwargs):
+    def finish(session_id="", turn_id="", completed=False, interrupted=False, **_kwargs):
         current = state(session_id)
-        if current:
+        if current and (not turn_id or current.binding["opportunityId"] == turn_id):
             if completed and not interrupted:
                 current.call("boundary")
+            current.stop()
+
+    def finalize(session_id="", **_kwargs):
+        current = state(session_id)
+        if current:
             current.stop()
 
     ctx.register_system_prompt_section("cetirun-memory-context", canonical, max_chars=4000)
@@ -339,7 +344,7 @@ def register(ctx, *, root=None, session_factory=MemorySession, executor=bounded_
     ctx.register_hook("post_tool_call", feedback)
     ctx.register_hook("pre_tool_call", outbound)
     ctx.register_hook("on_session_end", finish)
-    ctx.register_hook("on_session_finalize", finish)
+    ctx.register_hook("on_session_finalize", finalize)
     ctx.register_tool(name="cetirun_memory", toolset="cetirun_memory", handler=tool, schema={
         "name": "cetirun_memory", "description": "Use this Agent's private Memory: look up earlier conversations before answering, save facts, preferences, decisions and your own recommendations worth keeping, correct notes, and propose scoped method candidates. Read the cetirun-memory skill for payload formats. This tool cannot grant authority, change request restrictions or shared skills.",
         "parameters": {"type": "object", "additionalProperties": False, "properties": {

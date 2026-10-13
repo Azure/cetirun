@@ -78,14 +78,14 @@ func (s *Store) nativeRequest(ctx context.Context, request Request, initialize b
 	if err := validateContext(request, false, false); err != nil {
 		return request, err
 	}
-	v, err := s.open()
+	v, err := s.openRead(ctx)
 	if errors.Is(err, syscall.ENOENT) && initialize && !request.RequestContext.NoCapture && (request.RequestContext.Delegation == nil || !request.RequestContext.Delegation.NoCapture) {
 		zero := int64(0)
 		initRequest := request
 		initRequest.RequestID = "adapter-init-" + requestKey(s.Config.Root+ContractVersion)
 		initRequest.ExpectedGeneration = &zero
 		if _, _, err = s.init(ctx, initRequest); err == nil {
-			v, err = s.open()
+			v, err = s.openRead(ctx)
 		}
 	}
 	if err != nil {
@@ -201,7 +201,7 @@ func (s *Store) NativeEvent(ctx context.Context, event NativeEvent, canonical st
 
 func (s *Store) bridgeContext(ctx context.Context, r Request, canonical string, b NativeBinding) (Response, int) {
 	out := Response{OK: true, Reason: "OK"}
-	v, err := s.open()
+	v, err := s.openRead(ctx)
 	if errors.Is(err, syscall.ENOENT) {
 		out.Data = map[string]any{"context": canonical + "\nThe private store is not initialized. Use cetirun_memory when there is relevant knowledge to save.", "refs": []Ref{}, "adapter": AdapterVersion}
 		return out, 0
@@ -314,7 +314,7 @@ func (s *Store) nativeBoundary(ctx context.Context, r Request) (Response, int) {
 	if r.RequestContext.NoCapture || r.RequestContext.Delegation != nil {
 		return out, 0
 	}
-	v, err := s.open()
+	v, err := s.openRead(ctx)
 	if errors.Is(err, syscall.ENOENT) {
 		return out, 0
 	}
@@ -342,6 +342,7 @@ func (s *Store) nativeBoundary(ctx context.Context, r Request) (Response, int) {
 		}
 		r.Payload, _ = encode(refInput{Ref: ref})
 		r.RequestID += "-" + strings.TrimPrefix(ref.Digest, "sha256:")[:12]
+		v.fs.close()
 		r, err = s.nativeRequest(ctx, r, false)
 		if err != nil {
 			return failed(out, err)
@@ -360,7 +361,7 @@ func (s *Store) bridgeSource(ctx context.Context, r Request) (Response, int) {
 	if err := Decode(r.Payload, &input); err != nil {
 		return failed(out, err)
 	}
-	v, err := s.open()
+	v, err := s.openRead(ctx)
 	if err != nil {
 		return failed(out, err)
 	}

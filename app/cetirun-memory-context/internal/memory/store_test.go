@@ -20,6 +20,10 @@ type fixture struct {
 	home  string
 }
 
+func (s *Store) open() (*snapshot, error) {
+	return s.openSnapshot(context.Background(), 0)
+}
+
 func newFixture(t *testing.T) fixture {
 	t.Helper()
 	home := t.TempDir()

@@ -15,11 +15,13 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unsafe"
 )
 
 type safeFS struct {
-	root  *os.File
-	fault func(string) error
+	root   *os.File
+	fault  func(string) error
+	unlock func()
 }
 
 func openRoot(name string, create bool) (*safeFS, error) {
@@ -51,7 +53,13 @@ func openRoot(name string, create bool) (*safeFS, error) {
 	return &safeFS{root: os.NewFile(uintptr(fd), name)}, nil
 }
 
-func (s *safeFS) close() error { return s.root.Close() }
+func (s *safeFS) close() error {
+	if s.unlock != nil {
+		s.unlock()
+		s.unlock = nil
+	}
+	return s.root.Close()
+}
 func relative(name string) bool {
 	return name != "" && !strings.ContainsAny(name, "\\\x00") && !strings.HasPrefix(name, "/") && name != ".." && !strings.HasPrefix(name, "../") && path.Clean(name) == name
 }
@@ -207,6 +215,24 @@ type diskFile struct {
 	Size int64
 }
 
+func (s *safeFS) removeDirectory(name string) error {
+	dir, base, err := s.parent(name, false)
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	pointer, err := syscall.BytePtrFromString(base)
+	if err != nil {
+		return err
+	}
+	const atRemoveDir = 0x200
+	_, _, errno := syscall.Syscall(syscall.SYS_UNLINKAT, dir.Fd(), uintptr(unsafe.Pointer(pointer)), atRemoveDir)
+	if errno != 0 && errno != syscall.ENOENT && errno != syscall.ENOTEMPTY {
+		return errno
+	}
+	return dir.Sync()
+}
+
 func (s *safeFS) inventory() ([]diskFile, int64, error) {
 	files := []diskFile{}
 	var size int64
@@ -271,11 +297,35 @@ func (s *safeFS) inventory() ([]diskFile, int64, error) {
 }
 
 func (s *safeFS) lock(ctx context.Context) (func(), error) {
+	return s.lockMode(ctx, syscall.LOCK_EX)
+}
+
+func (s *safeFS) lockMode(ctx context.Context, mode int) (func(), error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	f, err := s.open("state/write.lock", syscall.O_RDWR|syscall.O_CREAT, true)
+	flags := syscall.O_RDONLY
+	if mode == syscall.LOCK_EX {
+		flags = syscall.O_RDWR | syscall.O_CREAT
+	}
+	f, err := s.open("state/write.lock", flags, mode == syscall.LOCK_EX)
 	if err != nil {
+		return nil, err
+	}
+	return lockFile(ctx, f, mode)
+}
+
+func (s *safeFS) lockRoot(ctx context.Context) (func(), error) {
+	fd, err := syscall.Openat(int(s.root.Fd()), ".", syscall.O_RDONLY|syscall.O_DIRECTORY|syscall.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, err
+	}
+	return lockFile(ctx, os.NewFile(uintptr(fd), "."), syscall.LOCK_EX)
+}
+
+func lockFile(ctx context.Context, f *os.File, operation int) (func(), error) {
+	if err := ctx.Err(); err != nil {
+		f.Close()
 		return nil, err
 	}
 	deadline := time.NewTimer(2 * time.Second)
@@ -283,7 +333,7 @@ func (s *safeFS) lock(ctx context.Context) (func(), error) {
 	tick := time.NewTicker(20 * time.Millisecond)
 	defer tick.Stop()
 	for {
-		err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		err := syscall.Flock(int(f.Fd()), operation|syscall.LOCK_NB)
 		if err == nil {
 			return func() { _ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN); _ = f.Close() }, nil
 		}

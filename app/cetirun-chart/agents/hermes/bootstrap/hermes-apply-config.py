@@ -75,6 +75,25 @@ def merge(base: Any, override: Any) -> Any:
     return result
 
 
+def reconcile_memory_lists(existing: dict[str, Any], generated: dict[str, Any], merged: dict[str, Any]) -> None:
+    for section, key, owned in (
+        ("plugins", "enabled", "cetirun-memory-context"),
+        ("skills", "external_dirs", "/home/vibe/.agents/skills"),
+    ):
+        saved, desired = existing.get(section) or {}, generated.get(section) or {}
+        if not isinstance(saved, dict) or not isinstance(desired, dict):
+            raise ValueError("invalid plugin or skills configuration")
+        if key not in saved and key not in desired:
+            continue
+        before, after = saved.get(key) or [], desired.get(key) or []
+        if not isinstance(before, list) or not isinstance(after, list) or not all(isinstance(item, str) for item in before + after):
+            raise ValueError("plugin and skills paths must be lists of strings")
+        values = [item for item in before if item != owned or item in after]
+        if not isinstance(merged.get(section), dict):
+            merged[section] = {}
+        merged[section][key] = list(dict.fromkeys(values + after))
+
+
 def check_destination(root: Path, relative: Path) -> Path:
     target = root
     for part in relative.parts:
@@ -175,6 +194,7 @@ def main() -> int:
         generated = read_yaml(args.config)
         generated_env = read_env(args.env)
         desired_config = merge(existing_config, generated)
+        reconcile_memory_lists(existing_config, generated, desired_config)
         on_gateway = args.gateway_key_env is not None
         retire = False
         if on_gateway:

@@ -67,7 +67,7 @@ func (s *Store) NativeContext(ctx context.Context, entrypoint string, raw []byte
 	out.WriteString(canonical)
 	scopeJSON, _ := json.Marshal(scope)
 	fmt.Fprintf(&out, "\nMemory runtime: contract=%s, mode=enabled, learning=bounded-auto, noCapture=%t, scope=%s.\n", ContractVersion, input.NoCapture, scopeJSON)
-	v, err := s.open()
+	v, err := s.openRead(ctx)
 	if err != nil {
 		out.WriteString("Read helper status before using the store. Initialize only a new root when writing is allowed; never reset an unknown root.\n")
 		return out.String()
@@ -143,14 +143,14 @@ func (s *Store) captureNativePreference(ctx context.Context, r Request, body, se
 	}
 	key := requestKey(session + "\n" + scopeKey(r.RequestContext.Scope) + "\n" + body)
 	r.RequestID = "native-" + key
-	v, err := s.open()
+	v, err := s.openRead(ctx)
 	if err != nil {
 		zero := int64(0)
 		r.ExpectedGeneration = &zero
 		if _, _, err := s.init(ctx, r); err != nil {
 			return err
 		}
-		v, err = s.open()
+		v, err = s.openRead(ctx)
 		if err != nil {
 			return err
 		}
