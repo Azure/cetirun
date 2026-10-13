@@ -150,7 +150,9 @@ check does not prove that an override will reconcile successfully.
 
 `AgentConfigReady=False` with reason `AgentRuntimeNotImplemented` reports a
 setting that cannot be provisioned, such as a non-default built-in username.
-`AgentConfigInvalid` reports rejected profile, image or port settings;
+`AgentConfigInvalid` reports rejected profile, image or port settings, and a
+built-in Agent chart that could not be downloaded from the registry; the
+operator log records the registry's error for the latter.
 `AgentConfigResolved` reports a prepared
 built-in configuration, not runtime readiness. The API does not expose a separate
 `status.agent` structure.

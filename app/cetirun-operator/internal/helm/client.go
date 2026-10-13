@@ -76,7 +76,7 @@ func (c *Client) loadChart(cfg *action.Configuration, namespace, version string)
 
 	chartPath, err := install.LocateChart(chartURL, cli.New())
 	if err != nil {
-		return nil, fmt.Errorf("locate OCI chart %s: %w", chartURL, err)
+		return nil, &ChartDownloadError{Chart: chartURL, Version: version, Err: err}
 	}
 
 	chrt, err := loader.Load(chartPath)
