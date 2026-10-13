@@ -67,6 +67,10 @@ func New(agentType string) Fixture {
 	team := &api.Team{
 		ObjectMeta: metav1.ObjectMeta{Name: "team-example", UID: "team-uid", ResourceVersion: "1", Generation: 1},
 		Spec:       api.TeamSpec{SandboxRefs: []string{box.Name}, DefaultSandboxRef: box.Name, AgentPolicyRef: policy.Name},
+		Status: api.TeamStatus{ObservedGeneration: 1, Conditions: []metav1.Condition{{
+			Type: api.ConditionTeamAccepted, Status: metav1.ConditionTrue,
+			Reason: "TeamAccepted", ObservedGeneration: 1,
+		}}},
 	}
 	agent := &api.Agent{
 		ObjectMeta: metav1.ObjectMeta{Name: "example", UID: "agent-uid", ResourceVersion: "1", Generation: 1},

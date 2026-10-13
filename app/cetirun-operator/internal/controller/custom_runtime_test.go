@@ -283,6 +283,7 @@ func customFixture(name string, port *int32) (*api.Agent, runtimebindings.Custom
 	cr := newCR(name, api.PhasePending, nil, 1, 0, "")
 	cr.UID = types.UID(name + "-agent-uid")
 	cr.Spec.User.Alias = "same-user"
+	cr.Spec.Team = ""
 	image := "registry.example.com/agent@sha256:" + strings.Repeat("a", 64)
 	cr.Spec.Agent = api.HarnessSpec{Type: api.AgentTypeCustom, Image: ptr.To(image), Username: ptr.To("worker"), Port: port}
 	cr.Spec.GatewayTokenSecretRef = ""

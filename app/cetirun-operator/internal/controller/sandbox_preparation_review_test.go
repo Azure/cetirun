@@ -41,6 +41,18 @@ func TestSandboxPreparationUnsupportedIntegrationsRemainCleanlyHeld(t *testing.T
 		for _, previouslyPrepared := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/prepared=%v", name, previouslyPrepared), func(t *testing.T) {
 				f := newPreparationFixture(t, "openclaw")
+				if name == "identity" {
+					policy := &api.AgentPolicy{}
+					if err := f.client.Get(context.Background(), client.ObjectKey{Name: f.fixture.Policy.Name}, policy); err != nil {
+						t.Fatal(err)
+					}
+					policy.Spec.AgentIdentity = api.AgentPolicyAgentIdentity{
+						Allowed: true, CredentialServices: []string{"azure-resource-manager"},
+					}
+					if err := f.client.Update(context.Background(), policy); err != nil {
+						t.Fatal(err)
+					}
+				}
 				if previouslyPrepared {
 					if err := f.reconcile(); err != nil {
 						t.Fatal(err)

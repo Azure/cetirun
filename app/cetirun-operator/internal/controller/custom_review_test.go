@@ -610,7 +610,7 @@ func TestCustomDeletingOrphanedRecordsCanFinish(t *testing.T) {
 	}
 }
 
-func TestControllerPlatformConfigurationParity(t *testing.T) {
+func TestCustomControllerPreservesPlatformConfiguration(t *testing.T) {
 	requireLegacyCustomRuntime(t)
 	configuration := map[string]any{
 		"tolerations": []any{map[string]any{"key": "agents", "operator": "Equal", "value": "true", "effect": "NoSchedule"}},
@@ -620,13 +620,8 @@ func TestControllerPlatformConfigurationParity(t *testing.T) {
 		"topologySpreadConstraints": []any{map[string]any{"maxSkew": 1, "topologyKey": "kubernetes.io/hostname", "whenUnsatisfiable": "ScheduleAnyway",
 			"labelSelector": map[string]any{"matchLabels": map[string]any{"app": "agents"}}}},
 	}
-	run := func(typ api.AgentType) map[string]map[string]any {
+	run := func() map[string]map[string]any {
 		cr, bindings, objects := customFixture("example", nil)
-		if typ != api.AgentTypeCustom {
-			cr = newCR("example", api.PhasePending, nil, 1, 0, "")
-			cr.Spec.Agent.Type = typ
-			objects = []client.Object{cr}
-		}
 		scheme := testScheme()
 		c := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&api.Agent{}).WithObjects(objects...).Build()
 		h := &fakeHelmClient{useHarness: true}
@@ -640,15 +635,20 @@ func TestControllerPlatformConfigurationParity(t *testing.T) {
 			}
 		}
 		if !h.installCalled {
-			t.Fatalf("%s did not reach the actual preparation path", typ)
+			t.Fatal("Custom Agent did not reach the runtime preparation path")
 		}
 		network := h.lastValues["networkPolicy"].(map[string]any)
 		if network["istioNamespace"] != "aks-istio-system" || network["istioIngressNamespace"] != "aks-istio-ingress" {
-			t.Fatalf("%s lost platform defaults: %v", typ, network)
+			t.Fatalf("Custom runtime lost platform defaults: %v", network)
 		}
 		desktop := h.lastValues["desktop"].(map[string]any)
 		if desktop["novncPathPrefix"] != "example/desktop/" || desktop["image"].(map[string]any)["repository"] != "registry.example.com/cetirun-desktop" {
 			t.Fatal("controller did not preserve desktop routing/image defaults")
+		}
+		for _, field := range []string{"tolerations", "affinity", "topologySpreadConstraints"} {
+			if !reflect.DeepEqual(h.lastValues[field], configuration[field]) {
+				t.Fatalf("Custom runtime lost platform scheduling field %s", field)
+			}
 		}
 		ch, err := loader.Load("../../../cetirun-chart")
 		if err != nil {
@@ -681,27 +681,5 @@ func TestControllerPlatformConfigurationParity(t *testing.T) {
 		}
 		return result
 	}
-	custom := run(api.AgentTypeCustom)
-	for _, typ := range []api.AgentType{api.AgentTypeHermes, api.AgentTypeOpenClaw} {
-		native := run(typ)
-		network := custom["NetworkPolicy"]["spec"].(map[string]any)
-		egress := network["egress"].([]any)
-		if !reflect.DeepEqual(egress[1:], native["NetworkPolicy"]["spec"].(map[string]any)["egress"]) {
-			t.Fatal("shared network egress diverged across controller paths")
-		}
-		hosts := func(objects map[string]map[string]any) []any {
-			return objects["Sidecar"]["spec"].(map[string]any)["egress"].([]any)[0].(map[string]any)["hosts"].([]any)
-		}
-		if !reflect.DeepEqual(hosts(custom)[:len(hosts(native))], hosts(native)) {
-			t.Fatal("shared mesh discovery scope diverged")
-		}
-		pod := func(objects map[string]map[string]any) map[string]any {
-			return objects["StatefulSet"]["spec"].(map[string]any)["template"].(map[string]any)["spec"].(map[string]any)
-		}
-		for _, field := range []string{"tolerations", "affinity", "topologySpreadConstraints", "runtimeClassName", "nodeSelector"} {
-			if !reflect.DeepEqual(pod(custom)[field], pod(native)[field]) {
-				t.Fatalf("platform scheduling %s diverged", field)
-			}
-		}
-	}
+	_ = run()
 }

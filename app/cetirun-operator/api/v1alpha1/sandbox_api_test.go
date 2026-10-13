@@ -216,8 +216,8 @@ func TestGeneratedSandboxSchemaShapes(t *testing.T) {
 		t.Fatal("Agent must not expose a policy class selector")
 	}
 	for _, name := range []string{"sandboxRef", "team"} {
-		if !slices.Contains(agent.Properties["spec"].Required, name) {
-			t.Fatalf("policy-bound Agent field %s must be required", name)
+		if slices.Contains(agent.Properties["spec"].Required, name) {
+			t.Fatalf("Custom Agent field %s must remain optional", name)
 		}
 	}
 	if _, ok := agent.Properties["spec"].Properties["teamAuthorization"]; ok {

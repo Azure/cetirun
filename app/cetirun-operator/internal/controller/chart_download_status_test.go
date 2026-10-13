@@ -14,20 +14,9 @@ import (
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/helm"
 	"k8s.io/apimachinery/pkg/api/meta"
-	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
-	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
-
-// failingPrepareHelm fails every chart preparation with err.
-type failingPrepareHelm struct {
-	chartHelm
-	err error
-}
-
-func (h *failingPrepareHelm) Prepare(string, map[string]any, string) (*helm.PreparedRelease, error) {
-	return nil, h.err
-}
 
 // The Agent's conditions and Warning event report a chart download failure
 // with a fixed message, and other errors with their own text. The phase and
@@ -49,19 +38,17 @@ func TestChartDownloadFailureIsReportedWithAFixedMessage(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			r, agent, _ := legacyGatewayFixture(t)
-			r.HelmClient = &failingPrepareHelm{err: tc.err}
+			r, agent, _ := customExecutionFixture(t)
 			recorder := record.NewFakeRecorder(100)
 			r.EventRecorder = recorder
 			ctx := context.Background()
-			req := ctrl.Request{NamespacedName: types.NamespacedName{Name: agent.Name}}
 
-			_, err := r.Reconcile(ctx, req)
+			_, err := r.rejectAgentConfig(ctx, agent, tc.err)
 			if err == nil || strings.Contains(err.Error(), "storage.example.com") {
-				t.Fatalf("reconcile error = %v", err)
+				t.Fatalf("reported error = %v", err)
 			}
 			current := &api.Agent{}
-			if err := r.Get(ctx, req.NamespacedName, current); err != nil {
+			if err := r.Get(ctx, client.ObjectKeyFromObject(agent), current); err != nil {
 				t.Fatal(err)
 			}
 			if current.Status.Phase != api.PhaseFailed {

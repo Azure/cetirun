@@ -239,7 +239,7 @@ func (a *sandboxSDKAPI) object(t *testing.T, kind string) *unstructured.Unstruct
 	return nil
 }
 
-func sandboxSDKAdminPlans(t *testing.T) (*PreparedRelease, *PreparedRelease, *unstructured.Unstructured) {
+func sandboxSDKKubernetesAccessPlans(t *testing.T) (*PreparedRelease, *PreparedRelease, *unstructured.Unstructured) {
 	t.Helper()
 	fixture := testfixture.New("hermes")
 	fixture.Input.Helpers.Desktop = false
@@ -358,7 +358,7 @@ func sandboxSDKAdminPlans(t *testing.T) (*PreparedRelease, *PreparedRelease, *un
 }
 
 func TestSandboxSDKRetiredBindingReplacementIsNeverPruned(t *testing.T) {
-	previous, next, retired := sandboxSDKAdminPlans(t)
+	previous, next, retired := sandboxSDKKubernetesAccessPlans(t)
 	cfg, api, store := sandboxSDKConfig()
 	if err := stageSandboxTest(previous, cfg, sandboxStageCheck); err != nil {
 		t.Fatal(err)

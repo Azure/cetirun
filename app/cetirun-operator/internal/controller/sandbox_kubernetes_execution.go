@@ -39,9 +39,9 @@ const (
 
 func validateNativeSandboxProfile(attempt *sandboxPreparationAttempt) error {
 	agent, box, policy := attempt.agent, attempt.resolution.Sandbox, attempt.resolution.AgentPolicy
-	if agent.Spec.Agent.Type != api.AgentTypeOpenClaw ||
+	if (agent.Spec.Agent.Type != api.AgentTypeOpenClaw && agent.Spec.Agent.Type != api.AgentTypeHermes) ||
 		box.Type != api.SandboxKata || box.Storage.Home.AccessMode != corev1.ReadWriteOncePod {
-		return fmt.Errorf("%w: native execution requires OpenClaw, Kata and ReadWriteOncePod HOME", sandboxpolicy.ErrUnsupportedControl)
+		return fmt.Errorf("%w: native execution requires OpenClaw or Hermes, Kata and ReadWriteOncePod HOME", sandboxpolicy.ErrUnsupportedControl)
 	}
 	if !agent.Spec.SharedModelsEnabled() || agent.Spec.GitHubCopilotEnabled() ||
 		agent.Spec.Tailscale != nil || agent.Spec.MSTeams != nil || agentIdentityRequested(agent) ||

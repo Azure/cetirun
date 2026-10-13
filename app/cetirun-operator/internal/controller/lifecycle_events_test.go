@@ -89,15 +89,23 @@ func TestEnsureVirtualServiceReportsWhatItChanged(t *testing.T) {
 // default every ten minutes. Lifecycle events report state changes, so such a
 // pass records none; creation, readiness and suspension are reported once.
 func TestLifecycleEventsReportTransitionsOnly(t *testing.T) {
-	r, agent, _ := legacyGatewayFixture(t)
+	r, agent, _ := customExecutionFixture(t)
 	chart := &chartHelm{}
 	r.HelmClient = chart
 	recorder := record.NewFakeRecorder(100)
 	r.EventRecorder = recorder
 	ctx := context.Background()
 	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: agent.Name}}
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	if chart.lastPrepared == nil {
+		t.Fatal("Custom chart was not installed")
+	}
+	workloadMeta := customLifecycleWorkloadMeta(agent)
+	workloadMeta.Annotations[customPlanHash] = chart.lastPrepared.WorkloadHash
 	sts := &appsv1.StatefulSet{
-		ObjectMeta: metav1.ObjectMeta{Name: instanceServiceName(agent.Name), Namespace: instanceNamespace(agent.Name), Generation: 1},
+		ObjectMeta: workloadMeta,
 		Spec:       appsv1.StatefulSetSpec{Replicas: ptr.To[int32](1)},
 		Status:     appsv1.StatefulSetStatus{ReadyReplicas: 1, UpdatedReplicas: 1, ObservedGeneration: 1},
 	}
@@ -119,8 +127,8 @@ func TestLifecycleEventsReportTransitionsOnly(t *testing.T) {
 				t.Fatalf("reconcile %d: %v", i, err)
 			}
 		}
-		if got := stored().Status.Phase; got != phase {
-			t.Fatalf("phase = %q, want %q", got, phase)
+		if current := stored(); current.Status.Phase != phase {
+			t.Fatalf("status = %+v, want phase %q", current.Status, phase)
 		}
 	}
 	// A verification that is due makes the next reconcile take the full path,
@@ -153,7 +161,7 @@ func TestLifecycleEventsReportTransitionsOnly(t *testing.T) {
 	if chart.installs != 1 {
 		t.Fatalf("installs = %d, want 1", chart.installs)
 	}
-	expect("creation", map[string]int{"InstanceCreating": 1, "IngressConfigured": 1, "InstanceReady": 1})
+	expect("creation", map[string]int{"InstanceCreating": 1, "InstanceReady": 1})
 
 	for pass := 1; pass <= 2; pass++ {
 		verificationDue()
@@ -199,14 +207,23 @@ func TestLifecycleEventsReportTransitionsOnly(t *testing.T) {
 // A creation that takes several passes, here because the StatefulSet is not
 // ready yet, is reported once.
 func TestInstanceCreatingIsRecordedOncePerCreation(t *testing.T) {
-	r, agent, _ := legacyGatewayFixture(t)
-	r.HelmClient = &chartHelm{}
+	r, agent, _ := customExecutionFixture(t)
+	chart := &chartHelm{}
+	r.HelmClient = chart
 	recorder := record.NewFakeRecorder(100)
 	r.EventRecorder = recorder
 	ctx := context.Background()
 	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: agent.Name}}
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	if chart.lastPrepared == nil {
+		t.Fatal("Custom chart was not installed")
+	}
+	workloadMeta := customLifecycleWorkloadMeta(agent)
+	workloadMeta.Annotations[customPlanHash] = chart.lastPrepared.WorkloadHash
 	sts := &appsv1.StatefulSet{
-		ObjectMeta: metav1.ObjectMeta{Name: instanceServiceName(agent.Name), Namespace: instanceNamespace(agent.Name), Generation: 1},
+		ObjectMeta: workloadMeta,
 		Spec:       appsv1.StatefulSetSpec{Replicas: ptr.To[int32](1)},
 		Status:     appsv1.StatefulSetStatus{UpdatedReplicas: 1, ObservedGeneration: 1},
 	}
@@ -223,10 +240,10 @@ func TestInstanceCreatingIsRecordedOncePerCreation(t *testing.T) {
 		t.Fatal(err)
 	}
 	if current.Status.Phase != cetirunv1alpha1.PhaseProvisioning {
-		t.Fatalf("phase = %q, want Provisioning while the Pod is not ready", current.Status.Phase)
+		t.Fatalf("status = %+v, want Provisioning while the Pod is not ready", current.Status)
 	}
 	got, _ := lifecycleEvents(recorder)
-	if got["InstanceCreating"] != 1 || got["IngressConfigured"] != 1 || got["InstanceReady"] != 0 {
+	if got["InstanceCreating"] != 1 || got["IngressConfigured"] != 0 || got["InstanceReady"] != 0 {
 		t.Fatalf("events while waiting for the Pod: %v", got)
 	}
 }
@@ -250,21 +267,13 @@ func (h *preparationHelm) Prepare(namespace string, values map[string]any, chart
 // reported when provisioning starts after all, and only once, also when a
 // later step of that creation is retried.
 func TestInstanceCreatingAfterAFailedFirstPreparation(t *testing.T) {
-	r, agent, gateway := legacyGatewayFixture(t)
+	r, agent, gateway := customExecutionFixture(t)
 	chart := &preparationHelm{failPrepare: true}
 	r.HelmClient = chart
 	recorder := record.NewFakeRecorder(100)
 	r.EventRecorder = recorder
 	ctx := context.Background()
 	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: agent.Name}}
-	sts := &appsv1.StatefulSet{
-		ObjectMeta: metav1.ObjectMeta{Name: instanceServiceName(agent.Name), Namespace: instanceNamespace(agent.Name), Generation: 1},
-		Spec:       appsv1.StatefulSetSpec{Replicas: ptr.To[int32](1)},
-		Status:     appsv1.StatefulSetStatus{ReadyReplicas: 1, UpdatedReplicas: 1, ObservedGeneration: 1},
-	}
-	if err := r.Create(ctx, sts); err != nil {
-		t.Fatal(err)
-	}
 	stored := func() *cetirunv1alpha1.Agent {
 		t.Helper()
 		current := &cetirunv1alpha1.Agent{}
@@ -274,11 +283,11 @@ func TestInstanceCreatingAfterAFailedFirstPreparation(t *testing.T) {
 		return current
 	}
 
-	if _, err := r.Reconcile(ctx, req); err == nil {
-		t.Fatal("a failed chart preparation was not reported")
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatal(err)
 	}
-	if phase := stored().Status.Phase; phase != cetirunv1alpha1.PhaseFailed {
-		t.Fatalf("phase = %q, want Failed", phase)
+	if phase := stored().Status.Phase; phase != cetirunv1alpha1.PhasePending {
+		t.Fatalf("phase = %q, want Pending while chart preparation is retried", phase)
 	}
 	if got, _ := lifecycleEvents(recorder); got["InstanceCreating"] != 0 {
 		t.Fatalf("creation reported before provisioning started: %v", got)
@@ -297,11 +306,27 @@ func TestInstanceCreatingAfterAFailedFirstPreparation(t *testing.T) {
 	if chart.installs != 0 {
 		t.Fatalf("the chart was installed without the Agent's key: installs = %d", chart.installs)
 	}
-	if got, _ := lifecycleEvents(recorder); got["InstanceCreating"] != 1 {
-		t.Fatalf("creation reported %d times while it was retried, want once", got["InstanceCreating"])
+	if got, _ := lifecycleEvents(recorder); got["InstanceCreating"] != 0 {
+		t.Fatalf("creation reported before the Gateway binding was available: %v", got)
 	}
 
 	gateway.getErr = nil
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	if chart.lastPrepared == nil {
+		t.Fatal("Custom chart was not installed after dependencies recovered")
+	}
+	workloadMeta := customLifecycleWorkloadMeta(agent)
+	workloadMeta.Annotations[customPlanHash] = chart.lastPrepared.WorkloadHash
+	sts := &appsv1.StatefulSet{
+		ObjectMeta: workloadMeta,
+		Spec:       appsv1.StatefulSetSpec{Replicas: ptr.To[int32](1)},
+		Status:     appsv1.StatefulSetStatus{ReadyReplicas: 1, UpdatedReplicas: 1, ObservedGeneration: 1},
+	}
+	if err := r.Create(ctx, sts); err != nil {
+		t.Fatal(err)
+	}
 	for i := 0; i < 4 && stored().Status.Phase != cetirunv1alpha1.PhaseReady; i++ {
 		if _, err := r.Reconcile(ctx, req); err != nil {
 			t.Fatalf("reconcile %d: %v", i, err)
@@ -310,7 +335,15 @@ func TestInstanceCreatingAfterAFailedFirstPreparation(t *testing.T) {
 	if phase := stored().Status.Phase; phase != cetirunv1alpha1.PhaseReady || chart.installs != 1 {
 		t.Fatalf("phase = %q, installs = %d; want Ready after one install", phase, chart.installs)
 	}
-	if got, _ := lifecycleEvents(recorder); got["InstanceCreating"] != 0 || got["IngressConfigured"] != 1 || got["InstanceReady"] != 1 {
+	if got, _ := lifecycleEvents(recorder); got["InstanceCreating"] != 1 || got["IngressConfigured"] != 0 || got["InstanceReady"] != 1 {
 		t.Fatalf("events when the creation completed: %v", got)
+	}
+}
+
+func customLifecycleWorkloadMeta(agent *cetirunv1alpha1.Agent) metav1.ObjectMeta {
+	return metav1.ObjectMeta{
+		Name: instanceServiceName(agent.Name), Namespace: instanceNamespace(agent.Name), Generation: 1,
+		Annotations:     map[string]string{customAgentUID: string(agent.UID)},
+		OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(agent, cetirunv1alpha1.GroupVersion.WithKind("Agent"))},
 	}
 }

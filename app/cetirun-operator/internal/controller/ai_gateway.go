@@ -35,9 +35,6 @@ const (
 	// gateway-token Secret, which the Portal reads for browser-facing values.
 	aiGatewayKeySecretName  = "ai-gateway-virtual-key"
 	aiGatewayKeySecretField = "api-key"
-	// aiGatewaySharedAccessGroup is the Gateway access group of the models
-	// administrators share with legacy Agents. Policy-bound keys never receive it.
-	aiGatewaySharedAccessGroup = "cetirun-shared"
 	// aiGatewayModelAccessGroupPrefix identifies an opaque per-configured-model
 	// access group. The Gateway chart derives its suffix from the canonical
 	// model configuration; the controller only trusts groups returned by the
@@ -231,13 +228,11 @@ func aiGatewayTeamID(team string) string {
 	return aiGatewayTeamPrefix + team
 }
 
-// aiGatewayAccessGroups are the groups the Agent's key is granted: the shared
-// models unless the owner turned them off, and the Agent's own Copilot models.
+// aiGatewayAccessGroups returns per-Agent groups. Shared model groups are
+// resolved separately from the live catalog so this helper can never grant the
+// former broad shared-model group.
 func (r *AgentReconciler) aiGatewayAccessGroups(instance *cetirunv1alpha1.Agent, copilot bool) []string {
 	var groups []string
-	if instance.Spec.SharedModelsEnabled() {
-		groups = append(groups, aiGatewaySharedAccessGroup)
-	}
 	if copilot {
 		groups = append(groups, copilotAccessGroup(instance))
 	}
@@ -328,7 +323,7 @@ func (r *AgentReconciler) resolveCustomAIGatewayGrant(ctx context.Context, clien
 		// Custom Gateway access is an explicit platform runtime decision rather
 		// than an AgentPolicy grant. It receives the deployment's configured
 		// shared model groups.
-		groups = append(groups, r.aiGatewayCatalog.legacySharedGroups()...)
+		groups = append(groups, r.aiGatewayCatalog.configuredSharedGroups()...)
 	}
 	slices.Sort(groups)
 	return aiGatewayGrant{
@@ -729,6 +724,21 @@ func (r *AgentReconciler) reconcileAIGateway(ctx context.Context, instance *ceti
 		// would make a later resume silently unblock it.
 		if key.Blocked && !aiGatewayOperatorOwnedBlock(status.Reason) {
 			return aiGatewayDegraded(instance, "KeyBlocked", fmt.Errorf("the AI Gateway key is blocked outside a CetiRun suspension or no-entitlement transition"))
+		}
+		grantDrift := !slices.Equal(sortedCopy(key.Models), models) || key.TeamID != teamID || key.UserID != userID ||
+			(grant.policyBound && (key.MaxBudget == nil || math.Abs(*key.MaxBudget-grant.budget) > 0.0000001 || key.BudgetDuration != aiGatewayBudgetDuration))
+		// Updating a policy-bound key in place must not leave the old grant
+		// usable between management calls. Persist ownership of the block first,
+		// block the key, repair it, read it back, and only then unblock it below.
+		if grant.policyBound && grantDrift && !key.Blocked {
+			if err := r.recordAIGatewayBlockIntent(ctx, instance, aiGatewayReasonPolicyReprojection,
+				"The AI Gateway key will be blocked while its resolved grant is repaired"); err != nil {
+				return fmt.Errorf("persist AI Gateway grant repair intent: %w", err)
+			}
+			if err := client.SetKeyBlocked(ctx, token, true); err != nil {
+				return aiGatewayDegraded(instance, "KeyBlockFailed", err)
+			}
+			key.Blocked = true
 		}
 		// Suspend is a revocation boundary. Block before doing any other
 		// update; later read-back proves the key stayed the same.

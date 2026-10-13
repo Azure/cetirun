@@ -682,14 +682,18 @@ func TestSandboxPreparationMetadataOnlyReauthorization(t *testing.T) {
 	if err := f.client.Create(ctx, replacement); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.reconcile(); err == nil || !errors.Is(err, sandbox.ErrUnauthorizedBinding) {
-		t.Fatalf("same-name policy replacement bypassed Sandbox authorization: %v", err)
+	if err := f.reconcile(); err != nil {
+		t.Fatalf("policy denial should be reported in status, not as a retryable controller error: %v", err)
 	}
 	denied := f.expectation(t)
 	if denied.Binding.AgentPolicyUID != before.Binding.AgentPolicyUID || f.installer.stages != 1 {
 		t.Fatal("same-name policy replacement was silently rebound")
 	}
 	agent := f.current(t)
+	condition := apimeta.FindStatusCondition(agent.Status.Conditions, api.ConditionPolicyResolved)
+	if condition == nil || condition.Status != metav1.ConditionFalse || condition.Reason != "PolicyDenied" {
+		t.Fatalf("same-name policy replacement was not denied: %+v", condition)
+	}
 	// Simulate the admission-owned result, not a controller authorization write.
 	authorization, err := sandboxbinding.Snapshot(agent, f.fixture.Team, sandbox.Resources{
 		Sandboxes:     map[string]*api.Sandbox{f.fixture.Sandbox.Name: f.fixture.Sandbox},

@@ -598,7 +598,7 @@ func TestReconcileAIGatewayBlocksExistingKeyBeforePolicyBudgetUpdate(t *testing.
 	}
 }
 
-func TestReconcileAIGatewayProjectsCurrentTeamPolicyWithoutSandboxReauthorization(t *testing.T) {
+func TestReconcileAIGatewayRejectsTeamPolicyReplacementWithoutReauthorization(t *testing.T) {
 	ctx := context.Background()
 	agent := aiGatewayTestAgent(testAIGatewayTeam)
 	r, kube, gateway := aiGatewayTestReconciler(t, agent, aiGatewayNamespace())
@@ -623,19 +623,16 @@ func TestReconcileAIGatewayProjectsCurrentTeamPolicyWithoutSandboxReauthorizatio
 		t.Fatal(err)
 	}
 
-	if err := r.reconcileAIGateway(ctx, agent, true); err != nil {
-		t.Fatal(err)
-	}
-	if !slices.Equal(gateway.budgetUpdateBlocks, []bool{true}) {
-		t.Fatalf("Gateway policy replacement observed blocked states %v, want [true]", gateway.budgetUpdateBlocks)
+	if err := r.reconcileAIGateway(ctx, agent, true); err == nil {
+		t.Fatal("replacement AgentPolicy was projected without protected binding reauthorization")
 	}
 	for _, key := range gateway.keys {
-		if key.Blocked {
-			t.Fatal("the replacement Gateway policy remained blocked after readback")
+		if !key.Blocked {
+			t.Fatal("the existing Gateway key remained active after binding authorization became stale")
 		}
 	}
-	if agent.Status.AIGateway.PolicyRevision == oldRevision {
-		t.Fatal("Gateway policy revision did not change with the Team policy binding")
+	if agent.Status.AIGateway.PolicyRevision != oldRevision {
+		t.Fatal("an unauthorized replacement changed the recorded Gateway grant")
 	}
 }
 
@@ -2023,6 +2020,7 @@ func TestParseAIGatewayConfig(t *testing.T) {
 	}
 	valid := map[string]string{
 		"AI_GATEWAY_ENABLED": "true", "AI_GATEWAY_URL": testAIGatewayURL + "/", "AI_GATEWAY_MASTER_KEY_SECRET": "cetirun-ai-gateway-auth",
+		"AI_GATEWAY_DEFAULT_BUDGET":      "10",
 		"AI_GATEWAY_DEFAULT_MODEL":       "shared-model",
 		"AI_GATEWAY_COPILOT_PROXY_IMAGE": "registry.example.com/cetirun-ai-gateway:0.1.1@sha256:" + strings.Repeat("a", 64),
 	}
@@ -2178,9 +2176,10 @@ func TestAIGatewayCatalogQueuesAgentsWhoseCopilotRoutesAreGone(t *testing.T) {
 // chartHelm renders the real agent chart so the test covers chart support
 // detection and the rendered wiring, not just the values map.
 type chartHelm struct {
-	installs   int
-	lastValues map[string]any
-	uninstalls int
+	installs     int
+	lastValues   map[string]any
+	lastPrepared *helm.PreparedRelease
+	uninstalls   int
 }
 
 func (h *chartHelm) Prepare(_ string, values map[string]any, chartVersion string) (*helm.PreparedRelease, error) {
@@ -2199,6 +2198,7 @@ func (h *chartHelm) Refresh(prepared *helm.PreparedRelease, values map[string]an
 func (h *chartHelm) InstallOrUpgrade(_, _ string, prepared *helm.PreparedRelease) error {
 	h.installs++
 	h.lastValues = prepared.Values
+	h.lastPrepared = prepared
 	return nil
 }
 

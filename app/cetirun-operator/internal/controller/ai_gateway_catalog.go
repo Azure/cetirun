@@ -320,6 +320,24 @@ func (c *aiGatewayCatalog) resolvedGroups(models []string) ([]string, bool) {
 	return slices.Compact(groups), true
 }
 
+// configuredSharedGroups returns every collision-safe shared deployment group
+// currently configured by the platform. Custom runtimes may receive this set
+// only after explicitly selecting the Custom Gateway integration; policy-bound
+// runtimes instead use resolvedGroups for their exact AgentPolicy model list.
+func (c *aiGatewayCatalog) configuredSharedGroups() []string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if !c.known {
+		return nil
+	}
+	groups := []string{}
+	for _, modelGroups := range c.modelGroups {
+		groups = append(groups, modelGroups...)
+	}
+	slices.Sort(groups)
+	return slices.Compact(groups)
+}
+
 // sharedForGroups returns the published model entries that are reachable by
 // the supplied collision-safe groups. It is used when rendering a policy-bound
 // workload so an allowed display name cannot accidentally reintroduce another

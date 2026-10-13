@@ -413,7 +413,7 @@ func TestSandboxHoldCustomRuntimePreservesOwnership(t *testing.T) {
 				t.Fatal(err)
 			}
 			condition := findCondition(actual.Status.Conditions, cetirunv1alpha1.ConditionSandboxReady)
-			wantReason := "PolicyDenied"
+			wantReason := "UnsupportedControl"
 			wantReplicas := int32(0)
 			if foreign {
 				wantReason = "PolicyApplyFailed"

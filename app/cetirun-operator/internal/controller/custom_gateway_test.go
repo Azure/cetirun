@@ -21,6 +21,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
@@ -32,7 +33,17 @@ func gatewayCustomFixture(t *testing.T) (*KubernetesCustomBindings, *api.Agent, 
 	t.Helper()
 	p, instance := readyProvider(t)
 	p.config.GatewayImages = []string{*instance.Spec.Agent.Image}
+	instance.Spec.ModelAccess = modelAccess(false, true)
+	instance.Spec.Helm.Values = map[string]runtime.RawExtension{
+		"ttyd": {Raw: []byte(`{"enabled":false}`)},
+	}
+	if err := p.reconciler.Update(context.Background(), instance); err != nil {
+		t.Fatal(err)
+	}
 	r := p.reconciler
+	if err := istiov1beta1.AddToScheme(r.Scheme); err != nil {
+		t.Fatal(err)
+	}
 	r.CustomBindings = p
 	r.EventRecorder = record.NewFakeRecorder(100)
 	r.AIGateway = AIGatewayConfig{Enabled: true, URL: testAIGatewayURL, MasterKeySecretName: "gateway-auth", CopilotProxyImage: testProxyImage}
@@ -51,6 +62,39 @@ func gatewayCustomFixture(t *testing.T) (*KubernetesCustomBindings, *api.Agent, 
 	}
 	return p, instance, gateway, b
 }
+
+func customExecutionFixture(t *testing.T) (*AgentReconciler, *api.Agent, *fakeAIGateway) {
+	t.Helper()
+	provider, instance, gateway, bindings := gatewayCustomFixture(t)
+	instance.Spec.ModelAccess = modelAccess(true, false)
+	if err := provider.reconciler.Update(context.Background(), instance); err != nil {
+		t.Fatal(err)
+	}
+	provider.reconciler.CustomBindings = &immediateCustomProvider{bindings: bindings}
+	return provider.reconciler, instance, gateway
+}
+
+type immediateCustomProvider struct {
+	bindings runtimebindings.Custom
+}
+
+func (p *immediateCustomProvider) Resolve(context.Context, *api.Agent, *api.Team) (runtimebindings.Custom, error) {
+	return p.bindings, nil
+}
+
+func (*immediateCustomProvider) UsesAIGateway(*api.Agent) bool { return true }
+
+func (p *immediateCustomProvider) ApproveApply(context.Context, *api.Agent, *appsv1.StatefulSet, CustomApplyOperation) (CustomApplyLease, error) {
+	return p, nil
+}
+
+func (p *immediateCustomProvider) ResumeApply(context.Context, *api.Agent, CustomApplyOperation) (CustomApplyLease, error) {
+	return p, nil
+}
+
+func (*immediateCustomProvider) Check(context.Context) error { return nil }
+
+func (*immediateCustomProvider) Complete(context.Context, CustomApplyOutcome) error { return nil }
 
 func TestCustomGatewayExplicitImageSelection(t *testing.T) {
 	p, instance := readyProvider(t)
