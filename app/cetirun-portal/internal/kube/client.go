@@ -30,6 +30,7 @@ var ErrUnsupportedCustomUpdate = stderrors.New("Custom does not support Gateway 
 var ErrInstanceChanged = stderrors.New("Agent changed or was replaced; reload before saving")
 var ErrInstanceDeleting = stderrors.New("Agent is being deleted")
 var ErrOperatorConfigurationUnavailable = stderrors.New("Operator release configuration is unavailable")
+var ErrAgentPolicyChanged = stderrors.New("AgentPolicy changed or was replaced; reload before saving")
 
 func IsUnsupportedCustomUpdate(err error) bool {
 	return stderrors.Is(err, ErrUnsupportedCustomUpdate)
@@ -888,4 +889,81 @@ func (c *Client) DeleteTeam(ctx context.Context, name string) error {
 		ObjectMeta: metav1.ObjectMeta{Name: name},
 	}
 	return c.client.Delete(ctx, team)
+}
+
+// ListAgentPolicies returns all cluster-scoped AgentPolicy resources.
+func (c *Client) ListAgentPolicies(ctx context.Context) ([]cetirunv1alpha1.AgentPolicy, error) {
+	list := &cetirunv1alpha1.AgentPolicyList{}
+	if err := c.client.List(ctx, list); err != nil {
+		return nil, err
+	}
+	return list.Items, nil
+}
+
+// GetAgentPolicy retrieves a cluster-scoped AgentPolicy by name.
+func (c *Client) GetAgentPolicy(ctx context.Context, name string) (*cetirunv1alpha1.AgentPolicy, error) {
+	policy := &cetirunv1alpha1.AgentPolicy{}
+	if err := c.client.Get(ctx, client.ObjectKey{Name: name}, policy); err != nil {
+		return nil, err
+	}
+	return policy, nil
+}
+
+// CreateAgentPolicy creates a new cluster-scoped AgentPolicy.
+func (c *Client) CreateAgentPolicy(ctx context.Context, policy *cetirunv1alpha1.AgentPolicy) (*cetirunv1alpha1.AgentPolicy, error) {
+	if err := c.client.Create(ctx, policy); err != nil {
+		return nil, err
+	}
+	return policy, nil
+}
+
+// AgentPolicyVersion identifies the exact AgentPolicy an administrator read.
+type AgentPolicyVersion struct {
+	UID             types.UID
+	ResourceVersion string
+}
+
+func validateAgentPolicyVersion(policy *cetirunv1alpha1.AgentPolicy, version AgentPolicyVersion) error {
+	if version.UID == "" || version.ResourceVersion == "" || policy.UID != version.UID || policy.ResourceVersion != version.ResourceVersion {
+		return ErrAgentPolicyChanged
+	}
+	return nil
+}
+
+// UpdateAgentPolicySpec updates the policy fields managed by Portal while
+// preserving component-specific controls that Portal does not expose.
+func (c *Client) UpdateAgentPolicySpec(ctx context.Context, name string, spec cetirunv1alpha1.AgentPolicySpec, version AgentPolicyVersion) (*cetirunv1alpha1.AgentPolicy, error) {
+	var result *cetirunv1alpha1.AgentPolicy
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		policy, err := c.GetAgentPolicy(ctx, name)
+		if err != nil {
+			return err
+		}
+		if err := validateAgentPolicyVersion(policy, version); err != nil {
+			return err
+		}
+		before := policy.DeepCopy()
+		managed := spec.DeepCopy()
+		policy.Spec.Harnesses = managed.Harnesses
+		policy.Spec.Skills = managed.Skills
+		policy.Spec.ModelAccess = managed.ModelAccess
+		if err := c.client.Patch(ctx, policy, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{}), client.FieldValidation(metav1.FieldValidationStrict)); err != nil {
+			return fmt.Errorf("update agent policy: %w", err)
+		}
+		result = policy
+		return nil
+	})
+	return result, err
+}
+
+// DeleteAgentPolicy deletes the exact AgentPolicy the caller read.
+func (c *Client) DeleteAgentPolicy(ctx context.Context, name string, version AgentPolicyVersion) error {
+	policy, err := c.GetAgentPolicy(ctx, name)
+	if err != nil {
+		return err
+	}
+	if err := validateAgentPolicyVersion(policy, version); err != nil {
+		return err
+	}
+	return c.client.Delete(ctx, policy, client.Preconditions{UID: &policy.UID, ResourceVersion: &policy.ResourceVersion})
 }
