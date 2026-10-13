@@ -18,48 +18,116 @@ import (
 
 var stopWords = map[string]bool{}
 
+// Frequent function characters are not searched on their own. They still
+// count inside the character pairs around them.
+var stopCharacters = map[rune]bool{}
+
 func init() {
 	for _, w := range strings.Fields(`a an and are as at be been but by can could did do does for from had has have how i if in into is it its me my of on or our so than that the their them then there these they this those to us was we were what when where which who whom why will with would you your about any some just also very`) {
 		stopWords[w] = true
 	}
+	for _, r := range "的了着吗吧呢啊呀之和与及或也就都而是在这那个们一我你他她它은는이가을를의에도와과로" {
+		stopCharacters[r] = true
+	}
 }
 
-// words splits text into lower-case letter and digit runs, folds common
-// English inflections, splits Han text into overlapping character pairs and
-// drops function words.
+// latinFold maps lower-case Latin letters with diacritics to their base
+// letters, so that "café" and "cafe" share a search key.
+var latinFold = func() map[rune]string {
+	fold := map[rune]string{}
+	for base, letters := range map[string]string{
+		"a": "àáâãäåāăą", "ae": "æ", "c": "çćĉċč", "d": "ďđð", "e": "èéêëēĕėęě", "g": "ĝğġģ", "h": "ĥħ",
+		"i": "ìíîïĩīĭįı", "ij": "ĳ", "j": "ĵ", "k": "ķ", "l": "ĺļľŀł", "n": "ñńņňŉŋ", "o": "òóôõöøōŏő",
+		"oe": "œ", "r": "ŕŗř", "s": "śŝşšſ", "ss": "ß", "t": "ţťŧ", "th": "þ", "u": "ùúûüũūŭůűų",
+		"w": "ŵ", "y": "ýÿŷ", "z": "źżž",
+	} {
+		for _, r := range letters {
+			fold[r] = base
+		}
+	}
+	return fold
+}()
+
+// Search classes of a rune.
+const (
+	separator = iota
+	wordRune
+	cjkRune    // Han, hiragana and katakana: no spaces between words
+	hangulRune // Korean: particles attach to the word
+)
+
+func runeClass(r rune) int {
+	switch {
+	case unicode.Is(unicode.Han, r) || unicode.Is(unicode.Hiragana, r) || unicode.Is(unicode.Katakana, r) || r == 'ー':
+		return cjkRune
+	case unicode.Is(unicode.Hangul, r):
+		return hangulRune
+	case unicode.IsLetter(r) || unicode.IsDigit(r):
+		return wordRune
+	}
+	return separator
+}
+
+// pieces splits a run of CJK or Hangul characters into overlapping pairs,
+// plus single Han characters and Hangul syllables. A single kana is mostly an
+// inflection or particle and is only searched within its pairs.
+func pieces(run []rune) []string {
+	out := []string{}
+	for i, r := range run {
+		single := (unicode.Is(unicode.Han, r) || unicode.Is(unicode.Hangul, r)) && !stopCharacters[r]
+		if single {
+			out = append(out, string(r))
+		}
+		if i+1 < len(run) {
+			out = append(out, string(run[i:i+2]))
+		}
+	}
+	return out
+}
+
+// words splits text into lower-case search words. Letter and digit runs fold
+// full-width forms and Latin diacritics, drop combining marks and fold common
+// English inflections; function words are dropped. Text written without spaces
+// (Chinese, Japanese) and Korean is searched by single characters and
+// overlapping character pairs.
 func words(text string) []string {
 	out := []string{}
 	var run []rune
+	class := separator
 	flush := func() {
 		if len(run) == 0 {
 			return
 		}
-		if unicode.Is(unicode.Han, run[0]) {
-			if len(run) == 1 {
-				out = append(out, string(run))
-			}
-			for i := 0; i+1 < len(run); i++ {
-				out = append(out, string(run[i:i+2]))
-			}
+		if class == cjkRune || class == hangulRune {
+			out = append(out, pieces(run)...)
 		} else if w := string(run); !stopWords[w] && (len(run) > 1 || unicode.IsDigit(run[0])) {
 			out = append(out, stem(w))
 		}
-		run = run[:0]
+		run, class = run[:0], separator
 	}
 	for _, r := range strings.ToLower(text) {
-		switch {
-		case unicode.Is(unicode.Han, r):
-			if len(run) > 0 && !unicode.Is(unicode.Han, run[0]) {
-				flush()
-			}
+		if r >= 0xFF01 && r <= 0xFF5E {
+			r -= 0xFEE0 // full-width ASCII
+		}
+		if unicode.Is(unicode.Mn, r) {
+			continue // composed and decomposed forms match
+		}
+		if unicode.Is(unicode.Mc, r) && class != separator {
 			run = append(run, r)
-		case unicode.IsLetter(r) || unicode.IsDigit(r):
-			if len(run) > 0 && unicode.Is(unicode.Han, run[0]) {
-				flush()
-			}
-			run = append(run, r)
-		default:
+			continue
+		}
+		next := runeClass(r)
+		if next != class {
 			flush()
+		}
+		if next == separator {
+			continue
+		}
+		class = next
+		if base, ok := latinFold[r]; ok {
+			run = append(run, []rune(base)...)
+		} else {
+			run = append(run, r)
 		}
 	}
 	flush()
