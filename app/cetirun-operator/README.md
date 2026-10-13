@@ -140,7 +140,10 @@ including mandatory `enforcementObservation`, `restrictiveFailure` and the
 qualified `azure-cni-overlay-cilium` adapter. Unknown profiles fail closed.
 Native-only registrations require the explicit native option in both controller
 and configuration admission; they cannot authorize the default held/external
-execution path. Disabling the option blocks new authorization/start, but does
+execution path. Admission checks the option for an Agent's selected Sandbox
+and for all referenced Sandboxes when validating Team policy. An unused native
+registration does not block requests using qualified Sandboxes.
+Disabling the option blocks new native authorization/start, but does
 not disable recorded lifetime cleanup. No profile qualifies a platform merely
 by declaring its capabilities.
 

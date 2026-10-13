@@ -189,6 +189,111 @@ func TestNativePlatformAdmissionRequiresIndependentOptIn(t *testing.T) {
 	}
 }
 
+func TestPlatformAdmissionScopesExecutionProfiles(t *testing.T) {
+	for _, source := range []string{"platform", "injected"} {
+		t.Run(source, func(t *testing.T) {
+			f, cm := newPlatformFixture(t)
+			var document sandboxplatform.Configuration
+			if err := json.Unmarshal([]byte(cm.Data[sandboxplatform.ConfigurationKey]), &document); err != nil {
+				t.Fatal(err)
+			}
+			qualified := document.Registrations[api.SandboxKata]
+			qualified.Capabilities.RuntimeClassName = "test-gvisor"
+			document.Registrations[api.SandboxGVisor] = qualified
+			document.RuntimeClasses["test-gvisor"] = sandboxplatform.RuntimePrerequisite{UID: "gvisor-runtime-uid", Handler: "gvisor"}
+			document.Platforms[api.SandboxGVisor] = document.Platforms[api.SandboxKata]
+			native := document.Registrations[api.SandboxKata]
+			native.Capabilities.Profile = sandbox.ProfileNativeSingleStart
+			native.Capabilities.EnforcementObservation, native.Capabilities.RestrictiveFailure = false, false
+			native.Capabilities.BlockedPorts = false
+			document.Registrations[api.SandboxKata] = native
+			platform := document.Platforms[api.SandboxKata]
+			platform.Adapter.Name, platform.Adapter.Qualified = sandboxpolicy.Cilium, false
+			document.Platforms[api.SandboxKata] = platform
+			raw, err := json.Marshal(document)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cm.Data[sandboxplatform.ConfigurationKey] = string(raw)
+			f.box.Spec.Type = api.SandboxGVisor
+			f.policy.Spec.Harnesses.Allowed = []api.AgentType{api.AgentTypeOpenClaw}
+			ctx := context.Background()
+			for _, object := range []client.Object{cm, f.box, f.policy} {
+				if err := f.client.Update(ctx, object); err != nil {
+					t.Fatal(err)
+				}
+			}
+			runtimeClass := &nodev1.RuntimeClass{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-gvisor", UID: "gvisor-runtime-uid"}, Handler: "gvisor",
+			}
+			if err := f.client.Create(ctx, runtimeClass); err != nil {
+				t.Fatal(err)
+			}
+			if source == "injected" {
+				f.handler.platformSource = nil
+				f.handler.registrations = document.Registrations
+			}
+			for _, object := range []client.Object{f.team, f.box, f.policy} {
+				requireResponse(t, f.handler.Validate(ctx, requestFor(t, admissionv1.Create, object, nil, "administrator")), true, "")
+			}
+			alternate := f.policy.DeepCopy()
+			alternate.Name, alternate.UID, alternate.ResourceVersion = "alternate-policy", "alternate-policy-uid", ""
+			if err := f.client.Create(ctx, alternate); err != nil {
+				t.Fatal(err)
+			}
+			team := f.team.DeepCopy()
+			team.Spec.NormalAgentPolicyRef = alternate.Name
+			requireResponse(t, f.handler.Validate(ctx, requestFor(t, admissionv1.Update, team, f.team, "administrator")), true, "")
+
+			f.agent.Spec.Agent.Type = api.AgentTypeOpenClaw
+			old := admitAgent(t, f.handler, requestFor(t, admissionv1.Create, f.agent, nil, "member"))
+			updated := old.DeepCopy()
+			requestReauthorization(t, f.handler, updated, "qualified-reauthorization")
+			admitAgent(t, f.handler, requestFor(t, admissionv1.Update, updated, old, "administrator"))
+
+			box := f.box.DeepCopy()
+			box.Name, box.UID, box.ResourceVersion, box.Spec.Type = "native", "native-sandbox-uid", "", api.SandboxKata
+			if err := f.client.Create(ctx, box); err != nil {
+				t.Fatal(err)
+			}
+			f.policy.Spec.SandboxSelection.AllowMultiple = true
+			if err := f.client.Update(ctx, f.policy); err != nil {
+				t.Fatal(err)
+			}
+			team = f.team.DeepCopy()
+			team.Spec.SandboxRefs = append(team.Spec.SandboxRefs, box.Name)
+			requireResponse(t, f.handler.Validate(ctx, requestFor(t, admissionv1.Update, team, f.team, "administrator")), false, "nativeExecution")
+			if err := f.client.Update(ctx, team); err != nil {
+				t.Fatal(err)
+			}
+			admitAgent(t, f.handler, requestFor(t, admissionv1.Create, f.agent, nil, "member"))
+			requestReauthorization(t, f.handler, updated, "qualified-mixed-team")
+			admitAgent(t, f.handler, requestFor(t, admissionv1.Update, updated, old, "administrator"))
+			for _, object := range []client.Object{box, f.policy} {
+				requireResponse(t, f.handler.Validate(ctx, requestFor(t, admissionv1.Create, object, nil, "administrator")), false, "nativeExecution")
+			}
+			previous := team.DeepCopy()
+			team.Spec.SandboxRefs, team.Spec.DefaultSandboxRef = []string{box.Name}, box.Name
+			requireResponse(t, f.handler.Validate(ctx, requestFor(t, admissionv1.Update, team, previous, "administrator")), false, "nativeExecution")
+			if err := f.client.Update(ctx, team); err != nil {
+				t.Fatal(err)
+			}
+			f.agent.Spec.SandboxRef = box.Name
+			request := requestFor(t, admissionv1.Create, f.agent, nil, "member")
+			requireResponse(t, f.handler.DefaultAgent(ctx, request), false, "nativeExecution")
+			updated = old.DeepCopy()
+			updated.Spec.SandboxRef = box.Name
+			requestReauthorization(t, f.handler, updated, "native-reauthorization")
+			request = requestFor(t, admissionv1.Update, updated, old, "administrator")
+			requireResponse(t, f.handler.DefaultAgent(ctx, request), false, "nativeExecution")
+			requireResponse(t, f.handler.Validate(ctx, request), false, "nativeExecution")
+
+			f.handler.config.NativeExecution = true
+			admitAgent(t, f.handler, request)
+		})
+	}
+}
+
 func TestPlatformAdmissionNoLastKnownGoodFallback(t *testing.T) {
 	for _, failure := range []string{"missing", "malformed", "unqualified", "runtime replaced", "storage replaced"} {
 		t.Run(failure, func(t *testing.T) {

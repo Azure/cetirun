@@ -35,16 +35,8 @@ func (h *Handler) withPlatformSnapshot(ctx context.Context, request admission.Re
 }
 
 func (h *Handler) platformRegistrations(ctx context.Context) (map[api.SandboxType]sandbox.Registration, error) {
-	check := func(registrations map[api.SandboxType]sandbox.Registration) (map[api.SandboxType]sandbox.Registration, error) {
-		for _, registration := range registrations {
-			if err := sandbox.CheckExecutionProfile(registration.Capabilities, h.config.NativeExecution); err != nil {
-				return nil, err
-			}
-		}
-		return registrations, ctx.Err()
-	}
 	if h.platformSource == nil {
-		return check(h.registrations)
+		return h.registrations, ctx.Err()
 	}
 	if h.platformSnapshot == nil {
 		snapshot, err := h.platformSource.Snapshot(ctx)
@@ -56,7 +48,24 @@ func (h *Handler) platformRegistrations(ctx context.Context) (map[api.SandboxTyp
 		}
 		h.platformSnapshot = &snapshot
 	}
-	return check(h.platformSnapshot.Registrations)
+	return h.platformSnapshot.Registrations, ctx.Err()
+}
+
+func (h *Handler) checkTeamExecutionProfiles(spec api.TeamSpec, resources sandbox.Resources, registrations map[api.SandboxType]sandbox.Registration) error {
+	for _, name := range spec.SandboxRefs {
+		box := resources.Sandboxes[name]
+		if box == nil {
+			return fmt.Errorf("referenced Sandbox %q is missing", name)
+		}
+		selected, errs := sandbox.NormalizeSandbox(box.Spec)
+		if len(errs) != 0 {
+			return errs.ToAggregate()
+		}
+		if err := sandbox.CheckExecutionProfile(registrations[selected.Type].Capabilities, h.config.NativeExecution); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (h *Handler) verifyPlatformSnapshot(ctx context.Context) error {
