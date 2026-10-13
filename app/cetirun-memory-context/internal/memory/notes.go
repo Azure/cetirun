@@ -24,7 +24,7 @@ var secretPattern = regexp.MustCompile(`(?i)(-----BEGIN [A-Z ]*PRIVATE KEY-----|
 	`\b[a-z][a-z0-9+.-]*://[^/\s:@]+:[^/\s@]+@)`)
 
 // credentialAssignment matches a value assigned to a name that ends like a
-// credential: KEY=value, "token": "value", password: value.
+// credential: API_KEY=value, "token": "value", password: value.
 var credentialAssignment = regexp.MustCompile(`(?i)[a-z0-9_.-]*(?:api[_-]?key|access[_-]?key|account[_-]?key|auth[_-]?key|private[_-]?key|secret[_-]?key|signing[_-]?key|secret|token|passw(?:or)?d|credentials?)["']?\s*[:=]\s*["']?([^\s"'<>,;]+)`)
 
 func validText(text string, max int) bool {

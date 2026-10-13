@@ -113,4 +113,26 @@ func TestImportRefusesCredentialFiles(t *testing.T) {
 	if response, code := importPlan(write("notes/setup.md", "export GITHUB"+"_TOKEN="+syntheticToken("", 32))); code != 2 || response.Reason != "SensitiveContent" {
 		t.Fatalf("a note with a token: code %d, reason %s; want SensitiveContent", code, response.Reason)
 	}
+	// Apply rechecks both path and content even for an internally consistent
+	// plan supplied by a caller. A later refused file must not commit earlier
+	// files from the same batch.
+	for _, rel := range []string{".env", "notes/assignment.md"} {
+		body := "API_KEY=" + syntheticToken("", 32)
+		if rel == ".env" {
+			body = "Synthetic plain text."
+		}
+		name := write(rel, body)
+		plan := f.call(t, "import-plan", importInput{Files: []string{files[0]}}).Data.(ImportPlan)
+		plan.Files = append(plan.Files, ImportFile{Path: name, Digest: digest([]byte(body))})
+		plan.Digest = plan.hash()
+		request := f.request(t, importApplyInput{Plan: plan})
+		before := *request.ExpectedGeneration
+		response, code := f.store.Execute(context.Background(), "import-apply", request)
+		if code != 2 || response.Reason != "SensitiveContent" {
+			t.Fatalf("apply %s: code %d, reason %s", rel, code, response.Reason)
+		}
+		if after := *f.request(t, struct{}{}).ExpectedGeneration; after != before {
+			t.Fatalf("refused batch changed generation: %d -> %d", before, after)
+		}
+	}
 }
