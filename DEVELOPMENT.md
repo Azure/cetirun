@@ -371,14 +371,16 @@ exceptions in `scripts/license_headers.py` must retain their own notices.
   admission expectations. It also checks current grant-journal and owned
   ControllerRevision pins, API resource-version conflicts, post-write source
   races and restart without adding another receipt/history format.
-  The ControllerRevision producer is synthetic, not a running StatefulSet
-  controller. It stages OpenClaw/Hermes resources at zero replicas;
-  it does not start containers, install a production provider, or deploy to an
-  existing cluster. These tests inject their platform and fencing dependencies.
-  Their results do not qualify the opt-in Kubernetes-backed sources or a
-  production writer-exclusion adapter. Stock startup leaves writer exclusion
-  unavailable, so enabling sources alone cannot finish held preparation or
-  lift execution holds.
+  The ControllerRevision producer used by this test is synthetic, not a running
+  StatefulSet controller. The test stages OpenClaw/Hermes resources at zero
+  replicas; it does not start containers or deploy to an existing cluster.
+  These tests inject their platform and fencing dependencies, so their results
+  do not qualify a live runtime. In the product controller, native Hermes and
+  OpenClaw startup is available only when `sandboxSources.nativeExecution` is
+  explicitly enabled and every live storage, Kata, networking, gateway and
+  writer-safety prerequisite passes. That opt-in live path may lift the hold and
+  start the workload; the offline integration test cannot establish that those
+  cluster prerequisites are present.
   Normal unit tests also cover stale inputs, metadata-only
   refresh/reauthorization, partial writes, restart, grant revocation, suspension
   and ordered cleanup. Regression tests count read/write requests for unchanged
