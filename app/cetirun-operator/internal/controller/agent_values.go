@@ -5,6 +5,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
@@ -13,6 +14,7 @@ import (
 	"github.com/Azure/CetiRun/app/internal/registryauth"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 func runtimeRequest(instance *api.Agent, registry string) map[string]any {
@@ -41,9 +43,23 @@ func runtimeRequest(instance *api.Agent, registry string) map[string]any {
 }
 
 func (r *AgentReconciler) rejectAgentConfig(ctx context.Context, instance *api.Agent, err error) (ctrl.Result, error) {
+	message := agentConfigMessage(ctx, err)
 	setCondition(&instance.Status.Conditions, api.ConditionAgentConfigReady,
-		metav1.ConditionFalse, "AgentConfigInvalid", err.Error())
-	return r.failWith(ctx, instance, "AgentConfigInvalid", err.Error())
+		metav1.ConditionFalse, "AgentConfigInvalid", message)
+	return r.failWith(ctx, instance, "AgentConfigInvalid", message)
+}
+
+// agentConfigMessage is what the Agent's conditions and Warning event say
+// about err. The cause of a chart download failure comes from the registry
+// and gives the Agent's owner nothing to act on, so only the operator log
+// records it.
+func agentConfigMessage(ctx context.Context, err error) string {
+	var download *helm.ChartDownloadError
+	if !errors.As(err, &download) {
+		return err.Error()
+	}
+	log.FromContext(ctx).Error(err, "Agent chart download failed")
+	return fmt.Sprintf("Agent chart %s could not be downloaded from the registry; the operator will retry", download.Version)
 }
 
 // User and deployment overrides cannot inject a prepared plan or replace its
