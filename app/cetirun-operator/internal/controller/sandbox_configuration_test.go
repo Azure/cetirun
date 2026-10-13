@@ -103,6 +103,62 @@ func nativePolicyHarnesses() api.AgentPolicyHarnesses {
 	return api.AgentPolicyHarnesses{Allowed: []api.AgentType{api.AgentTypeOpenClaw, api.AgentTypeHermes}}
 }
 
+func nativeConfigurationSnapshot() (*api.Sandbox, controller.SandboxConfigurationSnapshot, []client.Object) {
+	box, snapshot, objects := sandboxConfigurationFixture()
+	registration := snapshot.Registrations[api.SandboxKata]
+	registration.Capabilities.Profile = sandbox.ProfileNativeSingleStart
+	registration.Capabilities.EnforcementObservation, registration.Capabilities.RestrictiveFailure = false, false
+	registration.Capabilities.BlockedPorts, registration.Capabilities.KubernetesAccess, registration.Capabilities.EntraID = false, false, false
+	snapshot.Registrations[api.SandboxKata] = registration
+	platform := snapshot.Platforms[api.SandboxKata]
+	platform.Adapter.Name, platform.Adapter.Qualified = sandboxpolicy.Cilium, false
+	snapshot.Platforms[api.SandboxKata] = platform
+	return box, snapshot, objects
+}
+
+func TestNativeConfigurationRequiresExplicitExecutionMode(t *testing.T) {
+	for _, native := range []bool{false, true} {
+		t.Run(map[bool]string{false: "default rejects native", true: "native accepts baseline"}[native], func(t *testing.T) {
+			box, snapshot, objects := nativeConfigurationSnapshot()
+			policy := &api.AgentPolicy{
+				ObjectMeta: metav1.ObjectMeta{Name: "example-policy", UID: "example-policy-uid", Generation: 1},
+				Spec:       api.AgentPolicySpec{Harnesses: api.AgentPolicyHarnesses{Allowed: []api.AgentType{api.AgentTypeOpenClaw}}},
+			}
+			kube := fake.NewClientBuilder().WithScheme(configurationScheme(t)).WithStatusSubresource(box, policy).
+				WithObjects(append(objects, box, policy)...).Build()
+			source := controller.SandboxConfigurationSourceFunc(func(context.Context) (controller.SandboxConfigurationSnapshot, error) {
+				return snapshot, nil
+			})
+			now := func() time.Time { return snapshot.ObservedAt }
+			boxController := &controller.SandboxReconciler{Client: kube, Source: source, Now: now, NativeExecution: native}
+			policyController := &controller.AgentPolicyReconciler{Client: kube, Source: source, Now: now, NativeExecution: native}
+			ctx := context.Background()
+			if _, err := boxController.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(box)}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := policyController.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(policy)}); err != nil {
+				t.Fatal(err)
+			}
+			if err := kube.Get(ctx, client.ObjectKeyFromObject(box), box); err != nil {
+				t.Fatal(err)
+			}
+			if err := kube.Get(ctx, client.ObjectKeyFromObject(policy), policy); err != nil {
+				t.Fatal(err)
+			}
+			want := metav1.ConditionFalse
+			if native {
+				want = metav1.ConditionTrue
+			}
+			for _, conditions := range [][]metav1.Condition{box.Status.Conditions, policy.Status.Conditions} {
+				if len(conditions) != 1 || conditions[0].Status != want ||
+					(!native && conditions[0].Reason != "UnsupportedControl") {
+					t.Fatalf("configuration status ignored execution mode: %+v", conditions)
+				}
+			}
+		})
+	}
+}
+
 func configurationScheme(t *testing.T) *runtime.Scheme {
 	t.Helper()
 	scheme := runtime.NewScheme()

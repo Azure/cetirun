@@ -144,6 +144,31 @@ def gateway_models(model, *, integrated):
 
 @unittest.skipUnless(shutil.which("helm"), "requires Helm 3 or 4")
 class NativeGatewayChartTests(unittest.TestCase):
+    def test_governed_proxy_trust_uses_only_compiler_selected_peers(self):
+        values = native_values()
+        values["openclaw"]["config"]["gateway"] = {
+            "trustedProxies": ["0.0.0.0/0", "127.0.0.6"],
+        }
+        values["sandboxWorkload"]["trustedProxyIPs"] = ["192.0.2.24", "2001:db8::24"]
+        objects = render(RUNTIME_CHART, values)
+        config = json.loads(object_of_kind(objects, "ConfigMap")["data"]["openclaw.json"])
+        self.assertEqual(config["gateway"]["trustedProxies"], ["192.0.2.24", "2001:db8::24"])
+        values["sandboxWorkload"]["trustedProxyIPs"] = []
+        objects = render(RUNTIME_CHART, values)
+        config = json.loads(object_of_kind(objects, "ConfigMap")["data"]["openclaw.json"])
+        self.assertEqual(config["gateway"]["trustedProxies"], [])
+        values["sandboxWorkload"].pop("trustedProxyIPs")
+        objects = render(RUNTIME_CHART, values)
+        config = json.loads(object_of_kind(objects, "ConfigMap")["data"]["openclaw.json"])
+        self.assertEqual(config["gateway"]["trustedProxies"], ["0.0.0.0/0", "127.0.0.6"])
+
+    def test_governed_proxy_trust_rejects_malformed_internal_values(self):
+        for value in ("192.0.2.24", False, [False], [""], ["0.0.0.0/0"], ["localhost"]):
+            with self.subTest(value=value):
+                values = native_values()
+                values["sandboxWorkload"]["trustedProxyIPs"] = value
+                render(RUNTIME_CHART, values, error="trustedProxyIPs")
+
     def test_empty_skills_are_read_only_without_extra_storage_or_grants(self):
         values = native_values()
         values["sandboxWorkload"]["podFinalizers"] = ["cetirun.microsoft.com/native-pod-lifetime"]
@@ -325,6 +350,7 @@ class NativeGatewayChartTests(unittest.TestCase):
         ))
         config = json.loads(object_of_kind(objects, "ConfigMap")["data"]["openclaw.json"])
         self.assertIn("other", config["models"]["providers"])
+        self.assertEqual(config["gateway"]["trustedProxies"], ["127.0.0.6"])
         self.assertNotIn("health-probe.cjs", object_of_kind(objects, "ConfigMap")["data"])
         for kind, path in (
             ("livenessProbe", "/healthz"), ("readinessProbe", "/readyz"), ("startupProbe", "/startupz"),

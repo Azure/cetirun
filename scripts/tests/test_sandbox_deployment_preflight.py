@@ -55,7 +55,7 @@ def arguments():
     ]
 
 
-def fixture():
+def fixture(*, native=False):
     objects = {}
 
     def put(path, kind, name, *, uid=None, namespace=None, **fields):
@@ -86,6 +86,11 @@ def fixture():
         "platformNamespace": NAMESPACE, "platformConfigMapName": "selected-platform",
         "placementConfigMapName": "selected-placement",
     }
+    if native:
+        sources.update(nativeExecution=True, bootstrapOwnedPrerequisites=True, skillsClaimName="")
+        config["nativeExecution"] = True
+        sources.pop("placementConfigMapName")
+        config.pop("placementConfigMapName")
     operator = {
         "name": "manager", "image": IMAGE, "args": ["--leader-elect=true", "--domain-suffix=example.com"],
         "env": [
@@ -94,6 +99,8 @@ def fixture():
             {"name": "CETIRUN_SANDBOX_SOURCES", "value": json.dumps(sources)},
         ],
     }
+    if native:
+        operator["env"].append({"name": "AI_GATEWAY_ENABLED", "value": "true"})
     admission = {
         "name": "admission", "image": SERVER_IMAGE,
         "args": ["--mode=sandbox-admission", "--admission-port=9443",
@@ -124,9 +131,10 @@ def fixture():
     put(PLATFORM, "ConfigMap", "selected-platform", namespace=NAMESPACE, data={"platform.json": json.dumps({
         "version": "v1", "registrations": {}, "platforms": {}, "runtimeClasses": {}, "storageClasses": {},
     })})
-    put(PLACEMENT, "ConfigMap", "selected-placement", namespace=NAMESPACE, data={"placement.json": json.dumps({
-        "version": "v1", "nodes": [], "platformDaemonSets": [],
-    })})
+    if not native:
+        put(PLACEMENT, "ConfigMap", "selected-placement", namespace=NAMESPACE, data={"placement.json": json.dumps({
+            "version": "v1", "nodes": [], "platformDaemonSets": [],
+        })})
     put(SERVICE, "Service", "cetirun-sandbox-admission", namespace=NAMESPACE, spec={
         "type": "ClusterIP", "clusterIP": "192.0.2.100", "selector": {"app": "selected-admission"},
         "ports": [{"name": "admission", "port": 443, "targetPort": "admission", "protocol": "TCP"}],
@@ -179,6 +187,8 @@ def fixture():
           ([""], ["v1"], ["CREATE"], ["pods/binding", "bindings"], "Namespaced"),
           ([""], ["v1"], ["UPDATE", "DELETE"], ["nodes"], "Cluster")]),
     ):
+        if native and hook == "sandbox-placement":
+            continue
         webhook = {
             "name": hook + ".cetirun.microsoft.com", "failurePolicy": "Fail", "sideEffects": "None",
             "matchPolicy": "Equivalent", "admissionReviewVersions": ["v1"], "timeoutSeconds": 5,
@@ -199,8 +209,8 @@ def fixture():
 
 
 class KubectlDouble:
-    def __init__(self):
-        self.responses = fixture()
+    def __init__(self, *, native=False):
+        self.responses = fixture(native=native)
         self.calls = []
         self.counts = {}
         self.processes = []
@@ -254,6 +264,18 @@ class DeploymentPreflightTests(unittest.TestCase):
             self.assertIn(reason, [check["reason"] for check in result["checks"]])
         return result
 
+    def update_configuration(self, double, path, update):
+        name = "CETIRUN_SANDBOX_SOURCES" if path == OPERATOR else "CETIRUN_SANDBOX_ADMISSION"
+        env = double.responses[path]["spec"]["template"]["spec"]["containers"][0]["env"]
+        entry = next(e for e in env if e["name"] == name)
+        value = json.loads(entry["value"])
+        update(value)
+        entry["value"] = json.dumps(value)
+        if path == SERVER:
+            for pod in ("admission-a", "admission-b"):
+                env = double.responses[CORE + "pods/" + pod]["spec"]["containers"][0]["env"]
+                next(e for e in env if e["name"] == name)["value"] = entry["value"]
+
     def test_exact_target_and_named_gets_complete_only_scoped_observations(self):
         code, result, double = self.run_preflight()
         self.assertEqual(code, 0)
@@ -274,6 +296,181 @@ class DeploymentPreflightTests(unittest.TestCase):
         output = json.dumps(result)
         for value in (NAMESPACE, IMAGE, SERVER_IMAGE, "192.0.2.", "admin@example.com", "selected-context", "cluster-uid", CA):
             self.assertNotIn(value, output)
+
+    def test_native_profile_is_scoped_without_claiming_execution_or_skill_selection(self):
+        code, result, double = self.run_preflight(KubectlDouble(native=True))
+        self.assertEqual(code, 0)
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["executionReadiness"], "unknown")
+        self.assertEqual(result["stockExecutionHold"], "native-single-start-unverified")
+        self.assertEqual(set(result), {"version", "mode", "status", "qualifiesExecution", "executionReadiness",
+                                       "stockExecutionHold", "checks", "unverified"})
+        self.assertEqual(len(result["checks"]), 11)
+        self.assertTrue(all(check["status"] == "observed" for check in result["checks"]))
+        self.assertEqual(len(result["unverified"]), 6)
+        self.assertTrue(all(check["status"] == "unknown" for check in result["unverified"]))
+        self.assertIn({"check": "native-bootstrap-gateway-and-effective-skill-selection", "status": "unknown"},
+                      result["unverified"])
+        self.assertEqual(set(double.counts), set(double.responses))
+        self.assertTrue(all(count >= 2 for count in double.counts.values()))
+        self.assertLessEqual(len(double.calls), qualify.DeploymentKubernetes.MAX_COMMANDS)
+        self.assertNotIn(PLACEMENT, double.counts)
+        self.assertNotIn(ADMISSION + "validatingwebhookconfigurations/cetirun-sandbox-placement", double.counts)
+        output = json.dumps(result)
+        for value in (NAMESPACE, IMAGE, SERVER_IMAGE, "192.0.2.", "admin@example.com", "selected-context", "cluster-uid", CA):
+            self.assertNotIn(value, output)
+
+    def test_native_optional_bindings_and_configured_skills_are_not_selection_evidence(self):
+        for skills, catalog in (("", ""), ("skills", ""), ("skills", "selected-skills-catalog")):
+            with self.subTest(skills=skills, catalog=catalog):
+                double = KubectlDouble(native=True)
+                self.update_configuration(double, OPERATOR, lambda c: c.update(
+                    skillsClaimName=skills, skillsCatalogConfigMapName=catalog, placementConfigMapName=""))
+                self.update_configuration(double, SERVER, lambda c: c.update(placementConfigMapName=""))
+                code, result, double = self.run_preflight(double)
+                self.assertEqual(code, 0)
+                self.assertEqual(result["executionReadiness"], "unknown")
+                self.assertIn({"check": "native-bootstrap-gateway-and-effective-skill-selection", "status": "unknown"},
+                              result["unverified"])
+                self.assertEqual(set(double.counts), set(double.responses))
+
+    def test_native_execution_flags_must_be_explicit_matching_booleans(self):
+        for path in (OPERATOR, SERVER):
+            for value in (False, None, "true", "false", 1, 0, [], {}):
+                with self.subTest(path=path, value=value):
+                    double = KubectlDouble(native=True)
+                    self.update_configuration(double, path, lambda c: c.update(nativeExecution=value))
+                    self.assert_blocked(double, "native-execution-mode-mismatch")
+                    self.assertNotIn(PLATFORM, double.counts)
+            double = KubectlDouble(native=True)
+            self.update_configuration(double, path, lambda c: c.pop("nativeExecution"))
+            self.assert_blocked(double, "native-execution-mode-mismatch")
+        for value in ("true", "false", 1, 0, None):
+            with self.subTest(matching_invalid=value):
+                double = KubectlDouble()
+                for path in (OPERATOR, SERVER):
+                    self.update_configuration(double, path, lambda c: c.update(nativeExecution=value))
+                self.assert_blocked(double, "native-execution-mode-mismatch")
+
+    def test_native_requires_owned_bootstrap_and_no_desktop_helper(self):
+        for value in (False, None, "true", 1):
+            with self.subTest(bootstrap=value):
+                double = KubectlDouble(native=True)
+                self.update_configuration(double, OPERATOR, lambda c: c.update(bootstrapOwnedPrerequisites=value))
+                self.assert_blocked(double, "native-owned-bootstrap-required")
+                self.assertNotIn(PLATFORM, double.counts)
+        double = KubectlDouble(native=True)
+        self.update_configuration(double, OPERATOR, lambda c: c.pop("bootstrapOwnedPrerequisites"))
+        self.assert_blocked(double, "native-owned-bootstrap-required")
+        for value in (True, None, "false", 0):
+            with self.subTest(desktop=value):
+                double = KubectlDouble(native=True)
+                self.update_configuration(double, OPERATOR, lambda c: c["helpers"].update(desktop=value))
+                self.assert_blocked(double, "native-desktop-helper-unsupported")
+
+    def test_native_requires_explicit_inline_gateway_enablement(self):
+        for value in ("false", "True", " true ", "", True, 1, None):
+            with self.subTest(value=value):
+                double = KubectlDouble(native=True)
+                env = double.responses[OPERATOR]["spec"]["template"]["spec"]["containers"][0]["env"]
+                next(e for e in env if e["name"] == "AI_GATEWAY_ENABLED")["value"] = value
+                self.assert_blocked(double, "native-gateway-enablement-required")
+                self.assertNotIn(PLATFORM, double.counts)
+        for change in ("missing", "duplicate", "indirect"):
+            with self.subTest(change=change):
+                double = KubectlDouble(native=True)
+                env = double.responses[OPERATOR]["spec"]["template"]["spec"]["containers"][0]["env"]
+                entry = next(e for e in env if e["name"] == "AI_GATEWAY_ENABLED")
+                if change == "missing":
+                    env.remove(entry)
+                elif change == "duplicate":
+                    env.append(copy.deepcopy(entry))
+                else:
+                    entry["valueFrom"] = {"secretKeyRef": {"name": "never-read", "key": "enabled"}}
+                self.assert_blocked(double)
+                self.assertNotIn(PLATFORM, double.counts)
+                self.assertFalse(any("/secrets/" in c[-1] for c in double.calls))
+
+    def test_native_rejects_placement_in_either_process_before_followup_reads(self):
+        for path in (OPERATOR, SERVER):
+            for value in ("selected-placement", None, False, [], {}):
+                with self.subTest(path=path, value=value):
+                    double = KubectlDouble(native=True)
+                    self.update_configuration(double, path, lambda c: c.update(placementConfigMapName=value))
+                    self.assert_blocked(double, "native-placement-unsupported")
+                    self.assertNotIn(PLATFORM, double.counts)
+                    self.assertNotIn(SERVICE, double.counts)
+
+    def test_native_claims_and_catalog_bindings_fail_closed(self):
+        for value in (None, False, 1, "INVALID", "home", [], {}):
+            with self.subTest(skills=value):
+                double = KubectlDouble(native=True)
+                self.update_configuration(double, OPERATOR, lambda c: c.update(skillsClaimName=value))
+                self.assert_blocked(double, "distinct-source-claims-required")
+        double = KubectlDouble(native=True)
+        self.update_configuration(double, OPERATOR, lambda c: c.pop("skillsClaimName"))
+        self.assert_blocked(double, "distinct-source-claims-required")
+        double = KubectlDouble(native=True)
+        self.update_configuration(double, OPERATOR, lambda c: c.update(skillsCatalogConfigMapName="selected-catalog"))
+        self.assert_blocked(double, "distinct-source-claims-required")
+        for value in (None, False, 1, "INVALID", "selected-platform", [], {}):
+            with self.subTest(catalog=value):
+                double = KubectlDouble(native=True)
+                self.update_configuration(double, OPERATOR, lambda c: c.update(
+                    skillsClaimName="skills", skillsCatalogConfigMapName=value))
+                self.assert_blocked(double, "native-skills-catalog-binding-invalid")
+                self.assertNotIn(PLATFORM, double.counts)
+
+    def test_explicitly_disabled_native_mode_keeps_the_held_path(self):
+        double = KubectlDouble()
+        for path in (OPERATOR, SERVER):
+            self.update_configuration(double, path, lambda c: c.update(nativeExecution=False))
+        code, result, double = self.run_preflight(double)
+        self.assertEqual(code, 0)
+        self.assertEqual(result["stockExecutionHold"], "writer-exclusion-unavailable")
+        self.assertEqual(len(result["unverified"]), 5)
+        self.assertEqual(set(double.counts), set(double.responses))
+        for path, update, reason in (
+            (OPERATOR, {"skillsClaimName": ""}, "distinct-source-claims-required"),
+            (OPERATOR, {"placementConfigMapName": ""}, "platform-placement-bindings-required"),
+            (SERVER, {"placementConfigMapName": ""}, "platform-placement-bindings-required"),
+        ):
+            with self.subTest(path=path, update=update):
+                double = KubectlDouble()
+                self.update_configuration(double, path, lambda c: c.update(update))
+                self.assert_blocked(double, reason)
+
+    def test_native_profile_still_requires_platform_common_webhooks_and_stable_reads(self):
+        for update, reason in (
+            ({"platformConfigMapName": "other-platform"}, "platform-bindings-required"),
+            ({"homeClaimName": ""}, "distinct-source-claims-required"),
+        ):
+            double = KubectlDouble(native=True)
+            self.update_configuration(double, OPERATOR, lambda c: c.update(update))
+            self.assert_blocked(double, reason)
+        double = KubectlDouble(native=True)
+        double.responses[PLATFORM]["data"]["platform.json"] = '{"version":"v2"}'
+        self.assert_blocked(double, "source-document-version-mismatch")
+        for path in (
+            ADMISSION + "validatingwebhookconfigurations/cetirun-sandbox-admission",
+            ADMISSION + "mutatingwebhookconfigurations/cetirun-sandbox-admission",
+            ADMISSION + "validatingwebhookconfigurations/cetirun-sandbox-pods",
+        ):
+            with self.subTest(webhook=path):
+                double = KubectlDouble(native=True)
+                double.responses[path]["webhooks"][0]["failurePolicy"] = "Ignore"
+                self.assert_blocked(double, "webhook-fail-closed-wiring-mismatch")
+        for selected in (OPERATOR, SERVER, PLATFORM, POD):
+            with self.subTest(drift=selected):
+                double = KubectlDouble(native=True)
+
+                def change(key, count, value):
+                    if key == selected and count > 1:
+                        value["metadata"]["resourceVersion"] = "changed"
+                    return value
+
+                double.change = change
+                self.assert_blocked(double, "resource-version-drift")
 
     def test_every_input_pin_is_mandatory_before_any_command(self):
         args = arguments()

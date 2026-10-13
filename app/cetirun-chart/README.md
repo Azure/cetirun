@@ -107,9 +107,9 @@ These checks do not qualify runtime isolation, host resource enforcement, CSI
 writer exclusion, network enforcement or identity federation. Legacy chart
 defaults remain unchanged when the protected contract is absent.
 
-### Normal OpenClaw Gateway packaging
+### Native OpenClaw Gateway packaging
 
-The normal-class OpenClaw MVP reuses the protected renderer and the existing
+The native OpenClaw MVP reuses the protected renderer and the existing
 OpenClaw image. It does not add an alternative image, an Istio sidecar, or a
 Helm value that authorizes execution. The controller owns Sandbox/AgentPolicy
 selection, owner access, activation and deletion; the chart still prepares a

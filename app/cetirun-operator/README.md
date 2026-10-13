@@ -113,9 +113,39 @@ ReadWriteOncePod HOME, and shared Gateway model access. It uses the selected
 Sandbox's resources/storage and the selected AgentPolicy's model entitlement
 and budget. Per-Agent Gateway keys are projected through owned Secrets, not
 embedded provider credentials. Custom CIDR/FQDN/port rules, internal-network
-exceptions, required mTLS, admin/identity grants, Copilot sidecars, desktop,
+exceptions, required mTLS, Kubernetes/identity grants, Copilot sidecars, desktop,
 Tailscale, Teams and arbitrary Agent Helm overrides are rejected before start.
 Existing baseline network controls are retained.
+
+Platform registration must state the guarantee it actually provides. A bounded
+registration uses `registrations.kata.Capabilities.profile: "native-single-start"`
+in `platform.json`, with `platforms.kata.adapter` set to
+`{"name":"cilium","revision":"<probed-version>","qualified":false,"available":true}`.
+This generic Cilium identifier does not assert Azure CNI or Azure topology.
+The profile requires actual Kata resource limits, only `ReadWriteOncePod` HOME,
+and the existing guest-external network, deny-precedence, node-traffic and DNS
+IP restrictions. Declare `hostResourceLimits`, `guestExternalNetwork`,
+`denyPrecedence`, `nodeTraffic` and `dnsIPRestrictions` only after establishing
+those controls. TCP and UDP, the actual IP families, revisioned complete
+topology, DNS/Gateway peers, and pinned RuntimeClass/StorageClass identities
+remain required; read-only root and ingress support must match the selected
+policy. Its policy harness allow-list contains only `openclaw`.
+`enforcementObservation`, `restrictiveFailure`, per-container guarantee flags,
+custom port/FQDN support, mTLS, Kubernetes access and Entra ID flags must be
+`false`; identity/token grant declarations are unsupported. These are not
+physical fencing or guest-external runtime-observation guarantees.
+
+The empty/omitted capabilities profile retains the existing qualified contract,
+including mandatory `enforcementObservation`, `restrictiveFailure` and the
+qualified `azure-cni-overlay-cilium` adapter. Unknown profiles fail closed.
+Native-only registrations require the explicit native option in both controller
+and configuration admission; they cannot authorize the default held/external
+execution path. Admission checks the option for an Agent's selected Sandbox
+and for all referenced Sandboxes when validating Team policy. An unused native
+registration does not block requests using qualified Sandboxes.
+Disabling the option blocks new native authorization/start, but does
+not disable recorded lifetime cleanup. No profile qualifies a platform merely
+by declaring its capabilities.
 
 When this native profile has no `sandboxSources.skillsCatalogConfigMapName` and
 the effective skills `(Team skills + Agent additions) - Agent removals` are
@@ -154,6 +184,28 @@ finalization do not block first creation; changed ownership/profile or lost
 claims are still rejected.
 Native owner access uses the existing `/ui/<agent>/` route and authentication
 deployment. An unauthenticated sign-in challenge alone is not an access test.
+For authenticated native ingress, the protected renderer replaces OpenClaw's
+`gateway.trustedProxies` with the sorted exact IPs of the approved ingress peers
+from the same platform snapshot. The compiler revision binds those IPs through
+the canonical topology, and the rendered configuration must match the derived
+list; no CIDR-wide or loopback fallback is added. The ingress proxy must overwrite
+or safely rebuild forwarded-client headers. Proxy trust does not bypass Gateway
+authentication, owner authorization or device authentication. The
+`sandboxWorkload.trustedProxyIPs` hook is supplied
+only for authenticated native execution; held and legacy rendering without that
+hook preserve their existing proxy configuration.
+Native Agents awaiting preparation can retain chart pins predating this hook.
+For those charts, the protected renderer supplies the exact proxy list through
+the existing `openclaw.config.gateway.trustedProxies` value and omits the
+unsupported hook. It retains the original chart schema and final proxy-list
+validation without rewriting the Agent's pin or authorization.
+Within the single-policy API contract, adding this render projection does not
+change the existing `sandbox-controls-v1` digest for otherwise unchanged inputs.
+An already-running native lifetime keeps its old runtime configuration, workload, route, expectation
+and consumed start marker across an Operator upgrade; it is not automatically
+re-rendered or restarted to adopt new proxy settings. Actual policy, topology
+or execution-source changes still fail closed. Use normal deletion and a new
+Agent lifetime when an existing workload needs the new rendering.
 
 With coordinated configuration admission enabled, native startup reserves the
 bound Team, selected Sandbox and effective policy in the same coordination
@@ -161,7 +213,7 @@ store before its one-shot start marker. Pending configuration changes prevent
 that reservation; relevant configuration writers are blocked while it is active
 or stopping. Pod admission and readiness recheck the reservation read-only.
 Ordinary cleanup releases it only after observing quiescence. Unused Sandbox
-and other policy-slot edits do not become native execution inputs.
+and unrelated AgentPolicy edits do not become native execution inputs.
 Once first-Pod admission is released, an unobserved creation outcome keeps the
 reservation held even if replicas are zero and no Pod is currently listed.
 The initial Pod must be observed and ordinarily terminated; an uncertain start

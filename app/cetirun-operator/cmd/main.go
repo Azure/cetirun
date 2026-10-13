@@ -327,11 +327,11 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "Agent")
 		os.Exit(1)
 	}
-	if err := (&controller.SandboxReconciler{Source: sandboxSource}).SetupWithManager(mgr); err != nil {
+	if err := (&controller.SandboxReconciler{Source: sandboxSource, NativeExecution: sandboxSourcesConfig.NativeExecution}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Sandbox")
 		os.Exit(1)
 	}
-	if err := (&controller.AgentPolicyReconciler{Source: sandboxSource}).SetupWithManager(mgr); err != nil {
+	if err := (&controller.AgentPolicyReconciler{Source: sandboxSource, NativeExecution: sandboxSourcesConfig.NativeExecution}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "AgentPolicy")
 		os.Exit(1)
 	}

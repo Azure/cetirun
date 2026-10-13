@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"text/template"
 
@@ -21,6 +22,10 @@ func RenderConfig(agent ResolvedAgent, bindings Bindings) (string, error) {
 	if bindings.Skills.Empty && (!bindings.NativeSandbox || !bindings.Model.Gateway || agent.Type != "openclaw" ||
 		bindings.Skills.Shared || len(bindings.Skills.NPM) != 0 || bindings.Skills.MountPath != "/home/vibe/.aks/skills") {
 		return "", fmt.Errorf("empty skills require the native OpenClaw Gateway's read-only skills directory without shared storage or packages")
+	}
+	if len(bindings.TrustedProxyIPs) != 0 &&
+		(!bindings.NativeSandbox || !bindings.Model.Gateway || agent.Type != "openclaw" || bindings.Integrations.Tailscale) {
+		return "", fmt.Errorf("compiler proxy trust requires native OpenClaw Gateway inputs without Tailscale")
 	}
 	renderer, err := template.New("native-config").Funcs(nativeTemplateFunctions()).Parse(bindings.ConfigTemplate)
 	if err != nil {
@@ -119,6 +124,9 @@ func nativeTemplateContext(agent ResolvedAgent, bindings Bindings) map[string]an
 	}
 	if bindings.NativeSandbox {
 		values["sandboxWorkload"] = map[string]any{"contractVersion": "v1"}
+		if len(bindings.TrustedProxyIPs) != 0 {
+			values["sandboxWorkload"].(map[string]any)["trustedProxyIPs"] = slices.Clone(bindings.TrustedProxyIPs)
+		}
 		if bindings.Skills.Empty {
 			values["sandboxWorkload"].(map[string]any)["skillsMode"] = "empty"
 		}

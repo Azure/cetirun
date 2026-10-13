@@ -4,7 +4,10 @@
 package sandboxworkload_test
 
 import (
+	"encoding/json"
 	"errors"
+	"slices"
+	"strings"
 	"testing"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
@@ -17,6 +20,73 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 )
+
+func TestNativeProxyTrustRequiresBoundedOpenClawIngress(t *testing.T) {
+	fixture := func() w.Input {
+		input := testfixture.New("openclaw").Input
+		input.Resolution.Capabilities.AuthenticatedIngress = true
+		input.GatewayKey = &w.ObjectIdentity{Name: "gateway-key", UID: "gateway-key-uid"}
+		input.AuthorizedSecrets = append(input.AuthorizedSecrets, input.GatewayKey.Name)
+		input.Controls.IngressMode, input.Resolution.AgentPolicy.Network.Ingress.Mode = api.AgentPolicyIngressAuthenticated, api.AgentPolicyIngressAuthenticated
+		input.Controls.TrustedProxyIPs = []string{"192.0.2.10", "2001:db8::10"}
+		return input
+	}
+	input := fixture()
+	bundle, err := w.Build(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	values := map[string]any{
+		"secrets":   map[string]any{"existingSecret": "runtime-secret"},
+		"aiGateway": map[string]any{"enabled": true, "keySecretName": input.GatewayKey.Name, "keySecretKey": "api-key"},
+		w.ValuesKey: map[string]any{"trustedProxyIPs": []any{"0.0.0.0/0"}},
+	}
+	projected, err := bundle.Apply(values)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !equality.Semantic.DeepEqual(projected[w.ValuesKey].(map[string]any)["trustedProxyIPs"], []any{"192.0.2.10", "2001:db8::10"}) {
+		t.Fatal("protected proxy trust was lost or merged with a broader value")
+	}
+	input.Controls.TrustedProxyIPs[0] = "192.0.2.11"
+	if !slices.Equal(bundle.Identity().Controls.TrustedProxyIPs, []string{"192.0.2.10", "2001:db8::10"}) {
+		t.Fatal("bundle aliases caller proxy trust")
+	}
+	for name, mutate := range map[string]func(*w.Input){
+		"missing proxies":   func(i *w.Input) { i.Controls.TrustedProxyIPs = nil },
+		"CIDR":              func(i *w.Input) { i.Controls.TrustedProxyIPs = []string{"0.0.0.0/0"} },
+		"unspecified":       func(i *w.Input) { i.Controls.TrustedProxyIPs = []string{"::"} },
+		"loopback":          func(i *w.Input) { i.Controls.TrustedProxyIPs = []string{"127.0.0.6"} },
+		"noncanonical":      func(i *w.Input) { i.Controls.TrustedProxyIPs = []string{"2001:0db8::10"} },
+		"duplicates":        func(i *w.Input) { i.Controls.TrustedProxyIPs = []string{"192.0.2.10", "192.0.2.10"} },
+		"unsorted":          func(i *w.Input) { slices.Reverse(i.Controls.TrustedProxyIPs) },
+		"no native Gateway": func(i *w.Input) { i.GatewayKey = nil },
+		"disabled ingress": func(i *w.Input) {
+			i.Controls.IngressMode, i.Resolution.AgentPolicy.Network.Ingress.Mode = api.AgentPolicyIngressDisabled, api.AgentPolicyIngressDisabled
+		},
+		"Hermes": func(i *w.Input) { i.AgentType, i.Helpers.Doctor = "hermes", false },
+	} {
+		t.Run(name, func(t *testing.T) {
+			input := fixture()
+			mutate(&input)
+			if _, err := w.Build(input); err == nil {
+				t.Fatal("invalid or non-native proxy trust accepted")
+			}
+		})
+	}
+	for _, user := range []map[string]any{
+		{w.ValuesKey: map[string]any{"trustedProxyIPs": []any{"192.0.2.10"}}},
+		{"openclaw": map[string]any{"config": map[string]any{"gateway": map[string]any{"trustedProxies": []any{"192.0.2.10"}}}}},
+	} {
+		if err := w.ValidateUserValues(user, input.AuthorizedSecrets); err == nil {
+			t.Fatal("an Agent supplied its own proxy trust")
+		}
+	}
+	raw, err := json.Marshal(testfixture.New("openclaw").Input.Controls)
+	if err != nil || strings.Contains(string(raw), "TrustedProxyIPs") {
+		t.Fatal("default non-native controls gained serialized proxy trust:", err)
+	}
+}
 
 func TestBundleRejectsUnboundOrIncompatibleInputs(t *testing.T) {
 	cases := map[string]func(*w.Input){

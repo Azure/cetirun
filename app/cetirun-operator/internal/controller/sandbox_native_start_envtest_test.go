@@ -178,6 +178,14 @@ func TestNativeSandboxStartAPIServer(t *testing.T) {
 			h.observeReadyPod(t, pod)
 			f.reconcileOK(t)
 			f.assertReady(t)
+			ready := f.current(t)
+			if ready.Status.Namespace != running.Namespace.Name || ready.Status.Namespace != pod.Namespace ||
+				!slices.ContainsFunc(running.Sources, func(source w.SourceReference) bool {
+					return source.APIVersion == "v1" && source.Kind == "Secret" && source.UID != "" &&
+						source.Namespace == ready.Status.Namespace && source.Name == ready.Spec.GatewayTokenSecretRef
+				}) {
+				t.Fatal("served Ready status cannot locate the pinned runtime Secret through the existing namespace/ref contract")
+			}
 			pods := &corev1.PodList{}
 			if err := h.admin.List(h.ctx, pods, client.InNamespace(pod.Namespace)); err != nil || len(pods.Items) != 1 {
 				t.Fatalf("native start must have exactly one admitted Pod: count=%d error=%v", len(pods.Items), err)
@@ -415,7 +423,7 @@ func newNativeStartAPIHarness(t *testing.T, admissionNative bool) *nativeStartAP
 	}
 	input := testfixture.New("openclaw")
 	h.nativeSandboxFixture = &nativeSandboxFixture{r: r, kube: controllerClient, gateway: gateway, agent: input.Agent}
-	h.installPlatform(t, input)
+	h.installPlatform(t, input, admissionNative)
 	// Deliberate deployment skew is the failure case: the controller is enabled
 	// but the independently served admission process still has its safe default.
 	admissionConfig.NativeExecution = admissionNative
@@ -465,7 +473,7 @@ func newNativeStartAPIHarness(t *testing.T, admissionNative bool) *nativeStartAP
 	return h
 }
 
-func (h *nativeStartAPIHarness) installPlatform(t *testing.T, input testfixture.Fixture) {
+func (h *nativeStartAPIHarness) installPlatform(t *testing.T, input testfixture.Fixture, nativeProfile bool) {
 	t.Helper()
 	runtimeClass := input.Input.RuntimeClass.DeepCopy()
 	runtimeClass.ObjectMeta = metav1.ObjectMeta{Name: runtimeClass.Name}
@@ -492,6 +500,12 @@ func (h *nativeStartAPIHarness) installPlatform(t *testing.T, input testfixture.
 				Ports: []api.AgentPolicyPort{{Port: 18789, Protocol: corev1.ProtocolTCP}},
 			}},
 		},
+	}
+	if nativeProfile {
+		capabilities.Profile = sandbox.ProfileNativeSingleStart
+		capabilities.EnforcementObservation, capabilities.RestrictiveFailure = false, false
+		platform.Adapter.Name, platform.Adapter.Qualified = sandboxpolicy.Cilium, false
+		input.Policy.Spec.Harnesses.Allowed = []api.AgentType{api.AgentTypeOpenClaw}
 	}
 	document := SandboxPlatformConfiguration{
 		Version: "v1", Registrations: map[api.SandboxType]sandbox.Registration{api.SandboxKata: {Capabilities: capabilities, Available: true}},
@@ -524,8 +538,8 @@ func (h *nativeStartAPIHarness) installPlatform(t *testing.T, input testfixture.
 		name string
 		run  func(context.Context, ctrl.Request) (ctrl.Result, error)
 	}{
-		{input.Sandbox.Name, (&SandboxReconciler{Client: h.kube, APIReader: h.kube, Source: h.r.SandboxPreparation.Configuration}).Reconcile},
-		{input.Policy.Name, (&AgentPolicyReconciler{Client: h.kube, APIReader: h.kube, Source: h.r.SandboxPreparation.Configuration}).Reconcile},
+		{input.Sandbox.Name, (&SandboxReconciler{Client: h.kube, APIReader: h.kube, Source: h.r.SandboxPreparation.Configuration, NativeExecution: true}).Reconcile},
+		{input.Policy.Name, (&AgentPolicyReconciler{Client: h.kube, APIReader: h.kube, Source: h.r.SandboxPreparation.Configuration, NativeExecution: true}).Reconcile},
 		{input.Team.Name, (&TeamReconciler{Client: h.kube, APIReader: h.kube}).Reconcile},
 	} {
 		if _, err := step.run(h.ctx, ctrl.Request{NamespacedName: client.ObjectKey{Name: step.name}}); err != nil {

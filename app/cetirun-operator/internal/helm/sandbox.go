@@ -69,7 +69,7 @@ func PrepareSandboxChart(chrt *chart.Chart, platform, user map[string]any, bundl
 		return nil, err
 	}
 	merged = chartutil.CoalesceTables(overrides, merged)
-	merged, err = bundle.Apply(merged)
+	merged, err = applySandboxChartValues(chrt, merged, bundle)
 	if err != nil {
 		return nil, err
 	}
@@ -77,7 +77,7 @@ func PrepareSandboxChart(chrt *chart.Chart, platform, user map[string]any, bundl
 	if err != nil {
 		return nil, configurationError(err)
 	}
-	prepared.Values, err = bundle.Apply(prepared.Values)
+	prepared.Values, err = applySandboxChartValues(chrt, prepared.Values, bundle)
 	if err != nil {
 		return nil, err
 	}
@@ -87,6 +87,34 @@ func PrepareSandboxChart(chrt *chart.Chart, platform, user map[string]any, bundl
 	}
 	prepared.sealedInput = prepared.inputDigest()
 	return prepared, nil
+}
+
+func applySandboxChartValues(chrt *chart.Chart, values map[string]any, bundle *sandboxworkload.Bundle) (map[string]any, error) {
+	values, err := bundle.Apply(values)
+	if err != nil {
+		return nil, err
+	}
+	protected := object(values[sandboxworkload.ValuesKey])
+	proxies, present := protected["trustedProxyIPs"]
+	if !present {
+		return values, nil
+	}
+	var schema any
+	if len(chrt.Schema) != 0 {
+		if err := json.Unmarshal(chrt.Schema, &schema); err != nil {
+			return nil, fmt.Errorf("Sandbox chart has an invalid schema")
+		}
+	}
+	properties := object(object(schema)["properties"])
+	sandboxProperties := object(object(properties[sandboxworkload.ValuesKey])["properties"])
+	if _, supported := sandboxProperties["trustedProxyIPs"]; !supported {
+		// Older pinned charts have a closed protected-values schema, but their
+		// native template already consumes this existing OpenClaw config field.
+		config := ensureObject(ensureObject(values, "openclaw"), "config")
+		ensureObject(config, "gateway")["trustedProxies"] = proxies
+		delete(protected, "trustedProxyIPs")
+	}
+	return values, nil
 }
 
 // SandboxTemplate returns a copy of the chart-rendered template. It has no
@@ -248,6 +276,17 @@ func (p *PreparedRelease) validateSandboxNative(object unstructured.Unstructured
 		var config corev1.ConfigMap
 		if err := decodeObject(object.Object, &config); err != nil || config.Name != name+"-config" || len(config.BinaryData) != 0 {
 			return fmt.Errorf("unexpected native Sandbox configuration")
+		}
+		if len(input.Controls.TrustedProxyIPs) != 0 {
+			var native struct {
+				Gateway struct {
+					TrustedProxies []string `json:"trustedProxies"`
+				} `json:"gateway"`
+			}
+			if err := json.Unmarshal([]byte(config.Data["openclaw.json"]), &native); err != nil ||
+				!slices.Equal(native.Gateway.TrustedProxies, input.Controls.TrustedProxyIPs) {
+				return fmt.Errorf("rendered OpenClaw proxy trust differs from the approved native ingress IPs")
+			}
 		}
 	case "v1/Service":
 		var service corev1.Service

@@ -19,8 +19,8 @@ import (
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
 )
 
-// Compile has no side effects. Successful compilation does not release the
-// execution hold: current guest-external observation is independently required.
+// Compile has no side effects and never releases an execution hold. Qualified
+// execution requires external observation; native single-start has its own gate.
 func Compile(input CompileInput) (*Plan, error) {
 	resolution := input.Resolution
 	binding := resolution.Binding
@@ -32,6 +32,9 @@ func Compile(input CompileInput) (*Plan, error) {
 		len(validation.IsDNS1123Label(input.Namespace)) != 0 ||
 		len(validation.IsValidLabelValue(string(binding.AgentUID))) != 0 {
 		return nil, fmt.Errorf("valid Agent name, UID label and workload namespace are required")
+	}
+	if err := sandbox.CheckExecutionProfile(resolution.Capabilities, input.NativeExecution); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrUnsupportedControl, err)
 	}
 	if err := validateControlInput(resolution.AgentPolicy, input.Platform); err != nil {
 		return nil, err
@@ -69,6 +72,10 @@ func Compile(input CompileInput) (*Plan, error) {
 	capabilities.IPFamilies = sortedUnique(capabilities.IPFamilies)
 	capabilities.Protocols = sortedUnique(capabilities.Protocols)
 	capabilities.HomeAccessModes = sortedUnique(capabilities.HomeAccessModes)
+	// Canonical topology already binds proxy IPs. Preserve the v1 digest for
+	// existing lifetimes; new renderings seal the derived projection separately.
+	revisionNetwork := network
+	revisionNetwork.TrustedProxyIPs = nil
 	plan.Revision, err = digest(struct {
 		Version      string
 		Binding      sandbox.Binding
@@ -86,7 +93,7 @@ func Compile(input CompileInput) (*Plan, error) {
 	}{
 		"sandbox-controls-v1", binding, input.AgentName, input.Namespace,
 		resolution.Sandbox, sandbox.ProjectPolicy(resolution.AgentPolicy), capabilities, platform.Adapter,
-		platform.Topology, grants, approval, identity, network,
+		platform.Topology, grants, approval, identity, revisionNetwork,
 	})
 	if err != nil {
 		return nil, err
@@ -181,10 +188,13 @@ func supportedPolicy(policy api.AgentPolicySpec, capabilities sandbox.Capabiliti
 	if policy.Network.Ingress.RequireMTLS {
 		return fmt.Errorf("%w: guest-external mTLS has no qualified implementation", ErrUnsupportedControl)
 	}
-	if !capabilities.GuestExternalNetwork || !capabilities.DenyPrecedence ||
-		!capabilities.NodeTraffic || !capabilities.DNSIPRestrictions ||
-		!capabilities.EnforcementObservation || !capabilities.RestrictiveFailure {
-		return fmt.Errorf("%w: mandatory network and observation controls are not qualified", ErrUnsupportedControl)
+	if errs := sandbox.CheckNetworkCapabilities(capabilities); len(errs) != 0 {
+		return fmt.Errorf("%w: %v", ErrUnsupportedControl, errs.ToAggregate())
+	}
+	if capabilities.Profile == sandbox.ProfileNativeSingleStart {
+		if errs := sandbox.CheckNativePolicy(policy); len(errs) != 0 {
+			return fmt.Errorf("%w: %v", ErrUnsupportedControl, errs.ToAggregate())
+		}
 	}
 	if len(policy.Network.BlockedPorts) > 0 && !capabilities.BlockedPorts ||
 		policy.Network.Ingress.Mode == api.AgentPolicyIngressAuthenticated && !capabilities.AuthenticatedIngress ||

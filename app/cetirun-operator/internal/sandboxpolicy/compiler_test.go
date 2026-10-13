@@ -96,6 +96,132 @@ func mustCompile(t *testing.T, input CompileInput) *Plan {
 	return plan
 }
 
+func nativeCompilerFixture() CompileInput {
+	input := compilerFixture()
+	input.NativeExecution = true
+	input.Resolution.AgentPolicy.Harnesses.Allowed = []api.AgentType{api.AgentTypeOpenClaw}
+	capabilities := &input.Resolution.Capabilities
+	capabilities.Profile = sandbox.ProfileNativeSingleStart
+	capabilities.EnforcementObservation, capabilities.RestrictiveFailure = false, false
+	capabilities.BlockedPorts, capabilities.KubernetesAccess, capabilities.EntraID = false, false, false
+	input.Platform.Adapter.Name, input.Platform.Adapter.Qualified = Cilium, false
+	input.Platform.KubernetesAudience, input.Platform.TokenExpirationSeconds = "", 0
+	return input
+}
+
+func TestCompileNativeProfilePreservesNetworkBaseline(t *testing.T) {
+	input := nativeCompilerFixture()
+	native := mustCompile(t, input)
+	if native.Network.Adapter != Cilium || native.Identity.AutomountServiceAccountToken ||
+		len(native.Identity.Bindings) != 0 || len(native.Identity.Volumes) != 0 {
+		t.Fatal("native compilation mislabeled its adapter or granted identity access")
+	}
+	policy := &api.AgentPolicy{ObjectMeta: metav1.ObjectMeta{Name: "normal", UID: "normal-uid"}, Spec: input.Resolution.AgentPolicy}
+	if err := ValidatePolicyConfiguration(policy, input.Resolution.Capabilities, input.Platform); err != nil {
+		t.Fatal("bounded standalone policy was rejected:", err)
+	}
+	input.NativeExecution = false
+	input.Resolution.Capabilities.Profile = ""
+	input.Resolution.Capabilities.EnforcementObservation, input.Resolution.Capabilities.RestrictiveFailure = true, true
+	input.Platform.Adapter.Name, input.Platform.Adapter.Qualified = AzureCNIOverlayCilium, true
+	qualified := mustCompile(t, input)
+	if native.Revision == qualified.Revision || !reflect.DeepEqual(native.Network.Policy.Spec, qualified.Network.Policy.Spec) {
+		t.Fatal("bounded profile must have its own revision without weakening baseline network rules")
+	}
+}
+
+func TestCompileNativeProxyProjectionPreservesV1ControlRevision(t *testing.T) {
+	input := compilerFixture()
+	input.Resolution.AgentPolicy.Network.Ingress.Mode = api.AgentPolicyIngressAuthenticated
+	withoutProjection := mustCompile(t, input)
+	input.NativeExecution = true
+	withProjection := mustCompile(t, input)
+	if withProjection.Revision != withoutProjection.Revision || len(withProjection.Network.TrustedProxyIPs) == 0 ||
+		!reflect.DeepEqual(withProjection.Resources, withoutProjection.Resources) {
+		t.Fatal("derived proxy projection changed the existing v1 control revision or network resources")
+	}
+	input.Platform.Topology.Ingress[0].Peer.IPs = []string{"10.96.1.61"}
+	if changed := mustCompile(t, input); changed.Revision == withProjection.Revision {
+		t.Fatal("preserving v1 hashing stopped binding actual ingress topology changes")
+	}
+}
+
+func TestCompileNativeProfileFailsClosed(t *testing.T) {
+	for name, mutate := range map[string]func(*CompileInput){
+		"default mode":     func(i *CompileInput) { i.NativeExecution = false },
+		"unknown profile":  func(i *CompileInput) { i.Resolution.Capabilities.Profile = "unknown" },
+		"default contract": func(i *CompileInput) { i.Resolution.Capabilities.Profile = "" },
+		"unavailable":      func(i *CompileInput) { i.Platform.Adapter.Available = false },
+		"qualified claim":  func(i *CompileInput) { i.Platform.Adapter.Qualified = true },
+		"Azure label":      func(i *CompileInput) { i.Platform.Adapter.Name = AzureCNIOverlayCilium },
+		"observer claim":   func(i *CompileInput) { i.Resolution.Capabilities.EnforcementObservation = true },
+		"fencing claim":    func(i *CompileInput) { i.Resolution.Capabilities.RestrictiveFailure = true },
+		"non-Kata":         func(i *CompileInput) { i.Resolution.Sandbox.Type = api.SandboxGVisor },
+		"Kubernetes access": func(i *CompileInput) {
+			i.Resolution.AgentPolicy.KubernetesAccess = &api.AgentPolicyAdminKubernetesAccess{
+				ServiceAccountName: "operations",
+				RoleBindings:       []api.AgentPolicyRoleBinding{{Namespace: "operations", ClusterRoleName: "view"}},
+			}
+		},
+		"missing inventory": func(i *CompileInput) { i.Platform.Topology.ManagementCIDRs = nil },
+		"missing DNS":       func(i *CompileInput) { i.Platform.Topology.DNSResolverIPs = nil },
+		"missing UDP":       func(i *CompileInput) { i.Resolution.Capabilities.Protocols = []corev1.Protocol{corev1.ProtocolTCP} },
+		"token audience":    func(i *CompileInput) { i.Platform.KubernetesAudience = "https://kubernetes.default.svc" },
+		"custom CIDR":       func(i *CompileInput) { i.Resolution.AgentPolicy.Network.BlockedCIDRs = []string{"203.0.113.0/24"} },
+		"custom port": func(i *CompileInput) {
+			i.Resolution.AgentPolicy.Network.BlockedPorts = []api.AgentPolicyPort{{Port: 25}}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			input := nativeCompilerFixture()
+			mutate(&input)
+			if _, err := Compile(input); err == nil {
+				t.Fatal("unsupported or unavailable native registration compiled")
+			}
+		})
+	}
+	input := compilerFixture()
+	input.Platform.Adapter.Name = Cilium
+	if _, err := Compile(input); !errors.Is(err, ErrUnsupportedControl) {
+		t.Fatal("generic Cilium expanded the default qualified contract:", err)
+	}
+}
+
+func TestNativeProxyTrustUsesOnlyCanonicalIngressIPs(t *testing.T) {
+	input := nativeCompilerFixture()
+	input.Platform.Topology.Ingress[0].Peer.IPs = []string{"2001:db8::60", "10.96.1.60", "10.244.0.60", "10.244.0.60"}
+	plan := mustCompile(t, input)
+	want := []string{"10.244.0.60", "10.96.1.60", "2001:db8::60"}
+	if !slices.Equal(plan.Network.TrustedProxyIPs, want) {
+		t.Fatalf("proxy trust does not match exact canonical ingress IPs: %v", plan.Network.TrustedProxyIPs)
+	}
+	input.Platform.Topology.Ingress[0].Peer.IPs = slices.Clone(want)
+	if canonical := mustCompile(t, input); canonical.Revision != plan.Revision {
+		t.Fatal("peer IP ordering/duplicates changed canonical proxy trust")
+	}
+	input.Platform.Topology.Ingress[0].Peer.IPs[0] = "10.244.0.61"
+	if changed := mustCompile(t, input); changed.Revision == plan.Revision ||
+		slices.Equal(changed.Network.TrustedProxyIPs, plan.Network.TrustedProxyIPs) {
+		t.Fatal("ingress membership did not change proxy trust and the effective revision")
+	}
+	input.Resolution.AgentPolicy.Network.Ingress.Mode = api.AgentPolicyIngressDisabled
+	if disabled := mustCompile(t, input); len(disabled.Network.TrustedProxyIPs) != 0 {
+		t.Fatal("disabled ingress granted proxy trust")
+	}
+	if qualified := mustCompile(t, compilerFixture()); len(qualified.Network.TrustedProxyIPs) != 0 {
+		t.Fatal("default non-native compilation gained proxy trust")
+	}
+	for _, address := range []string{"0.0.0.0/0", "::/0", "10.244.0.0/16", "0.0.0.0", "::", "127.0.0.1", "::1", "169.254.1.1", "fe80::1", "224.0.0.1", "proxy.example.com"} {
+		t.Run(address, func(t *testing.T) {
+			input := nativeCompilerFixture()
+			input.Platform.Topology.Ingress[0].Peer.IPs = []string{address}
+			if _, err := Compile(input); err == nil {
+				t.Fatal("non-unicast address or broad proxy trust accepted")
+			}
+		})
+	}
+}
+
 func adminFixture() CompileInput {
 	input := compilerFixture()
 	input.Resolution.AgentPolicy.KubernetesAccess = &api.AgentPolicyAdminKubernetesAccess{

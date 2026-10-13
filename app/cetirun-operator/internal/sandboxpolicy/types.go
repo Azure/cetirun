@@ -21,6 +21,7 @@ import (
 const (
 	// AzureCNIOverlayCilium is a candidate, not a production registration.
 	AzureCNIOverlayCilium   = "azure-cni-overlay-cilium"
+	Cilium                  = "cilium"
 	AgentUIDLabel           = "sandbox.cetirun.microsoft.com/agent-uid"
 	PeerUIDLabel            = "sandbox.cetirun.microsoft.com/peer-uid"
 	RevisionAnnotation      = "sandbox.cetirun.microsoft.com/revision"
@@ -41,6 +42,8 @@ var (
 // AdapterRegistration must describe independently qualified managed versions,
 // Cilium deny/port-range and endpoint/CIDR semantics, protected peer labels, and
 // restrictive failure behavior. There are deliberately no default registrations.
+// The native-single-start profile instead uses Cilium with Qualified=false;
+// its explicit baseline declarations do not qualify external observation/fencing.
 type AdapterRegistration struct {
 	Name      string `json:"name"`
 	Revision  string `json:"revision"`
@@ -128,10 +131,11 @@ type Platform struct {
 }
 
 type CompileInput struct {
-	Resolution sandbox.Resolution
-	AgentName  string
-	Namespace  string
-	Platform   Platform
+	NativeExecution bool
+	Resolution      sandbox.Resolution
+	AgentName       string
+	Namespace       string
+	Platform        Platform
 }
 
 // Plan contains desired resources, never observed status. Render Resources
@@ -149,10 +153,11 @@ type Plan struct {
 }
 
 type NetworkPlan struct {
-	Adapter     string                     `json:"adapter"`
-	IngressMode api.AgentPolicyIngressMode `json:"ingressMode"`
-	DNSIPs      []string                   `json:"dnsIPs"`
-	Policy      CiliumNetworkPolicy        `json:"policy"`
+	Adapter         string                     `json:"adapter"`
+	IngressMode     api.AgentPolicyIngressMode `json:"ingressMode"`
+	DNSIPs          []string                   `json:"dnsIPs"`
+	TrustedProxyIPs []string                   `json:"trustedProxyIPs,omitempty"`
+	Policy          CiliumNetworkPolicy        `json:"policy"`
 }
 
 type IdentityPlan struct {

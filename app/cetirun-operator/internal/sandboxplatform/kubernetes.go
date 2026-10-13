@@ -262,6 +262,10 @@ func validateSandboxPlatformConfiguration(document Configuration) error {
 			return fmt.Errorf("%w: unsupported Sandbox registration key", sandboxpolicy.ErrUnsupportedControl)
 		}
 		capabilities := registration.Capabilities
+		if len(sandbox.CheckCapabilityProfile(capabilities)) != 0 ||
+			(capabilities.Profile == sandbox.ProfileNativeSingleStart && kind != api.SandboxKata) {
+			return fmt.Errorf("%w: unsupported Sandbox capability profile", sandboxpolicy.ErrUnsupportedControl)
+		}
 		_, runtimeExists := document.RuntimeClasses[capabilities.RuntimeClassName]
 		if !runtimeExists || !sandboxPlatformValue(capabilities.Revision) ||
 			(capabilities.RequirePerContainerResourceLimits && !capabilities.PerContainerResourceLimits) {

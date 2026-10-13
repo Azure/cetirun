@@ -367,7 +367,8 @@ func (r *AgentReconciler) desiredSandboxPolicyRevision(ctx context.Context, agen
 	}
 	registrations[selected.Spec.Type] = registration
 	resolution, err := sandbox.Resolve(sandbox.ResolveInput{
-		Agent: agent, Team: team, Resources: resources, Registrations: registrations, AuthorizedBinding: authorized,
+		NativeExecution: r.SandboxPreparation.NativeExecution,
+		Agent:           agent, Team: team, Resources: resources, Registrations: registrations, AuthorizedBinding: authorized,
 	})
 	if err != nil {
 		return "", err
@@ -384,7 +385,8 @@ func (r *AgentReconciler) desiredSandboxPolicyRevision(ctx context.Context, agen
 		return "", err
 	}
 	plan, err := sandboxpolicy.Compile(sandboxpolicy.CompileInput{
-		Resolution: *resolution, AgentName: agent.Name, Namespace: instanceNamespace(agent.Name), Platform: platform,
+		NativeExecution: r.SandboxPreparation.NativeExecution,
+		Resolution:      *resolution, AgentName: agent.Name, Namespace: instanceNamespace(agent.Name), Platform: platform,
 	})
 	if err != nil {
 		if errors.Is(err, sandboxpolicy.ErrUnavailable) {

@@ -4,6 +4,16 @@ Licensed under the MIT License.
 */}}
 {{- define "cetirun.sandbox.validate" -}}
 {{- $s := .Values.sandboxWorkload -}}
+{{- if hasKey $s "trustedProxyIPs" -}}
+{{- if not (kindIs "slice" $s.trustedProxyIPs) -}}
+{{- fail "Sandbox trustedProxyIPs must be a compiler-selected list" -}}
+{{- end -}}
+{{- range $s.trustedProxyIPs -}}
+{{- if or (not (kindIs "string" .)) (empty .) -}}
+{{- fail "Sandbox trustedProxyIPs must contain nonempty compiler-selected IPs" -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
 {{- $emptySkills := eq ($s.skillsMode | default "") "empty" -}}
 {{- if and (hasKey $s "skillsMode") (not $emptySkills) -}}
 {{- fail "Sandbox skillsMode must be empty when explicitly supplied" -}}

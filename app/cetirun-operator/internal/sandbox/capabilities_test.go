@@ -155,3 +155,79 @@ func compatibilityPolicy(policy cetirunv1alpha1.AgentPolicySpec) cetirunv1alpha1
 	policy.Harnesses.Allowed = []cetirunv1alpha1.AgentType{cetirunv1alpha1.AgentTypeHermes}
 	return policy
 }
+
+func nativeCapabilities() Capabilities {
+	capabilities := fixtureCapabilities()
+	capabilities.Profile = ProfileNativeSingleStart
+	capabilities.EnforcementObservation, capabilities.RestrictiveFailure, capabilities.BlockedPorts = false, false, false
+	capabilities.Protocols = []corev1.Protocol{corev1.ProtocolTCP, corev1.ProtocolUDP}
+	return capabilities
+}
+
+func TestNativeCompatibilityKeepsBaselineWithoutFencingClaims(t *testing.T) {
+	input := resolverFixture()
+	box := input.Resources.Sandboxes["standard"].Spec
+	policy := cetirunv1alpha1.AgentPolicySpec{Harnesses: cetirunv1alpha1.AgentPolicyHarnesses{
+		Allowed: []cetirunv1alpha1.AgentType{cetirunv1alpha1.AgentTypeOpenClaw},
+	}}
+	if errs := CheckCompatibility(box, policy, nativeCapabilities()); len(errs) != 0 {
+		t.Fatal("bounded native baseline rejected:", errs)
+	}
+	for name, mutate := range map[string]func(*Capabilities){
+		"unknown profile": func(c *Capabilities) { c.Profile = "other" },
+		"empty profile still requires qualification": func(c *Capabilities) { c.Profile = "" },
+		"host limits":       func(c *Capabilities) { c.HostResourceLimits = false },
+		"external network":  func(c *Capabilities) { c.GuestExternalNetwork = false },
+		"deny precedence":   func(c *Capabilities) { c.DenyPrecedence = false },
+		"node traffic":      func(c *Capabilities) { c.NodeTraffic = false },
+		"DNS restrictions":  func(c *Capabilities) { c.DNSIPRestrictions = false },
+		"read-only root":    func(c *Capabilities) { c.ReadOnlyRootFilesystem = false },
+		"authenticated":     func(c *Capabilities) { c.AuthenticatedIngress = false },
+		"RWOP":              func(c *Capabilities) { c.HomeAccessModes = []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce} },
+		"external observer": func(c *Capabilities) { c.EnforcementObservation = true },
+		"physical fencing":  func(c *Capabilities) { c.RestrictiveFailure = true },
+		"container quotas":  func(c *Capabilities) { c.PerContainerResourceLimits = true },
+		"port support":      func(c *Capabilities) { c.BlockedPorts = true },
+		"FQDN support":      func(c *Capabilities) { c.BlockedFQDNs = true },
+		"mTLS support":      func(c *Capabilities) { c.MutualTLS = true },
+		"admin support":     func(c *Capabilities) { c.KubernetesAccess = true },
+		"Entra support":     func(c *Capabilities) { c.EntraID = true },
+	} {
+		t.Run(name, func(t *testing.T) {
+			capabilities := nativeCapabilities()
+			mutate(&capabilities)
+			if errs := CheckCompatibility(box, policy, capabilities); len(errs) == 0 {
+				t.Fatal("incomplete or overstated native registration accepted")
+			}
+		})
+	}
+	for name, mutate := range map[string]func(*cetirunv1alpha1.AgentPolicySpec){
+		"Hermes": func(p *cetirunv1alpha1.AgentPolicySpec) {
+			p.Harnesses.Allowed = append(p.Harnesses.Allowed, cetirunv1alpha1.AgentTypeHermes)
+		},
+		"CIDR": func(p *cetirunv1alpha1.AgentPolicySpec) { p.Network.BlockedCIDRs = []string{"203.0.113.0/24"} },
+		"FQDN": func(p *cetirunv1alpha1.AgentPolicySpec) { p.Network.BlockedFQDNs = []string{"blocked.example.com"} },
+		"port": func(p *cetirunv1alpha1.AgentPolicySpec) {
+			p.Network.BlockedPorts = []cetirunv1alpha1.AgentPolicyPort{{Port: 25}}
+		},
+		"internal": func(p *cetirunv1alpha1.AgentPolicySpec) {
+			p.Network.AllowedInternalCIDRs = []cetirunv1alpha1.AgentPolicyCIDRRule{{CIDR: "192.0.2.0/24", Ports: []cetirunv1alpha1.AgentPolicyPort{{Port: 443}}}}
+		},
+		"mTLS":  func(p *cetirunv1alpha1.AgentPolicySpec) { p.Network.Ingress.RequireMTLS = true },
+		"Entra": func(p *cetirunv1alpha1.AgentPolicySpec) { p.EntraID.Enabled = true },
+		"admin": func(p *cetirunv1alpha1.AgentPolicySpec) {
+			p.KubernetesAccess = &cetirunv1alpha1.AgentPolicyAdminKubernetesAccess{
+				ServiceAccountName: "operations",
+				RoleBindings:       []cetirunv1alpha1.AgentPolicyRoleBinding{{Namespace: "services", ClusterRoleName: "reader"}},
+			}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			requested := policy.DeepCopy()
+			mutate(requested)
+			if errs := CheckCompatibility(box, *requested, nativeCapabilities()); len(errs) == 0 {
+				t.Fatal("unsupported explicit native policy accepted")
+			}
+		})
+	}
+}

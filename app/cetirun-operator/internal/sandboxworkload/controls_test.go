@@ -24,6 +24,7 @@ func TestControlsPreserveCompilerDNSAndDistinctRevisions(t *testing.T) {
 		Identity:  sandboxpolicy.IdentityPlan{ServiceAccountName: "default"},
 		Resources: fixture.Input.Controls.Objects,
 	}
+
 	for i := range plan.Resources {
 		annotations := plan.Resources[i].GetAnnotations()
 		annotations[sandboxpolicy.RevisionAnnotation] = plan.Revision
@@ -55,5 +56,20 @@ func TestControlsPreserveCompilerDNSAndDistinctRevisions(t *testing.T) {
 	plan.Identity.AutomountServiceAccountToken = true
 	if _, err := w.ControlsFromPlan(plan); err == nil {
 		t.Fatal("compiler automount override was accepted")
+	}
+}
+
+func TestControlsPreserveNativeProxyIPsWithoutAliasing(t *testing.T) {
+	plan := sandboxpolicy.Plan{Network: sandboxpolicy.NetworkPlan{TrustedProxyIPs: []string{"192.0.2.10", "2001:db8::10"}}}
+	controls, err := w.ControlsFromPlan(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(controls.TrustedProxyIPs, plan.Network.TrustedProxyIPs) {
+		t.Fatal("native proxy IPs were not carried from the compiler")
+	}
+	plan.Network.TrustedProxyIPs[0] = "192.0.2.11"
+	if controls.TrustedProxyIPs[0] != "192.0.2.10" {
+		t.Fatal("proxy carrier aliases compiler output")
 	}
 }

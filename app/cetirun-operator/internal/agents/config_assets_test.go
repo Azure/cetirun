@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"text/template"
@@ -45,6 +46,48 @@ func TestEmptySkillsBindingRequiresNativeConsistentInputs(t *testing.T) {
 	raw, err := json.Marshal(SkillsBinding{})
 	if err != nil || strings.Contains(string(raw), `"Empty"`) {
 		t.Fatal("legacy runtime binding serialized shape changed:", err)
+	}
+}
+
+func TestNativeProxyBindingReachesTemplateWithoutChangingLegacyInputs(t *testing.T) {
+	bindings := Bindings{
+		NativeSandbox: true, Model: ModelBinding{Gateway: true},
+		TrustedProxyIPs: []string{"192.0.2.10", "2001:db8::10"},
+		ConfigTemplate:  `{{ dig "trustedProxyIPs" (list) (.Values.sandboxWorkload | default dict) | toPrettyJson }}`,
+	}
+	agent := ResolvedAgent{Type: "openclaw"}
+	rendered, err := RenderConfig(agent, bindings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var proxies []string
+	if err := json.Unmarshal([]byte(rendered), &proxies); err != nil || !slices.Equal(proxies, bindings.TrustedProxyIPs) {
+		t.Fatal("typed native proxy binding did not reach the shared native template:", err)
+	}
+	for name, mutate := range map[string]func(*Bindings){
+		"non-native": func(b *Bindings) { b.NativeSandbox = false },
+		"no Gateway": func(b *Bindings) { b.Model.Gateway = false },
+		"Tailscale":  func(b *Bindings) { b.Integrations.Tailscale = true },
+	} {
+		t.Run(name, func(t *testing.T) {
+			changed := bindings
+			mutate(&changed)
+			if _, err := RenderConfig(agent, changed); err == nil {
+				t.Fatal("native proxy trust reached a different execution mode")
+			}
+		})
+	}
+	if _, err := RenderConfig(ResolvedAgent{Type: "hermes"}, bindings); err == nil {
+		t.Fatal("native proxy binding reached Hermes")
+	}
+	bindings.TrustedProxyIPs = nil
+	rendered, err = RenderConfig(agent, bindings)
+	if err != nil || strings.TrimSpace(rendered) != "[]" {
+		t.Fatal("omitted proxy binding invented a fallback:", err)
+	}
+	raw, err := json.Marshal(Bindings{})
+	if err != nil || strings.Contains(string(raw), `"TrustedProxyIPs"`) {
+		t.Fatal("default binding serialized shape changed:", err)
 	}
 }
 

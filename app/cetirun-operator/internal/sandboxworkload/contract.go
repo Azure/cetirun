@@ -46,6 +46,7 @@ type Controls struct {
 	ResolutionRevision string
 	Binding            sandbox.Binding
 	DNSIPs             []string
+	TrustedProxyIPs    []string `json:",omitempty"`
 	IngressMode        api.AgentPolicyIngressMode
 	ServiceAccountName string
 	Volumes            []corev1.Volume

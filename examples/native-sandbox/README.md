@@ -1,6 +1,6 @@
 # Native Sandbox first run
 
-This example exercises one normal OpenClaw Agent with a Kata Sandbox and a
+This example exercises one OpenClaw Agent with a Kata Sandbox and a
 shared AI Gateway model. It is an explicitly enabled, single-start profile,
 not a production failover or complete AgentPolicy conformance test.
 
@@ -23,6 +23,18 @@ from the same integration build. The platform must already have:
   groups must match the chart-derived policy bindings.
 - The existing native ingress/authentication deployment and an authorized
   owner who can sign in. An HTTPS redirect alone does not prove owner access.
+
+For the bounded native profile, the platform registration explicitly selects
+`capabilities.profile: native-single-start` (the JSON field is
+`registrations.kata.Capabilities.profile`). It does not claim an independent
+enforcement observer or physical failover fencing. The runtime, host resource
+limits, baseline network controls, storage and selected ingress mode still need
+their actual deployment checks; do not enable this profile to bypass them.
+
+Native OpenClaw runs without a same-Pod Istio proxy. Its proxy trust is therefore
+derived from the registered ingress peer IPs, not the legacy `127.0.0.6` sidecar
+address. The controller passes only those exact addresses through its protected
+render plan. Do not use a wildcard proxy range or a per-Agent Helm override.
 
 This minimal example selects no skills. With no skills catalog configured, the
 native profile supplies an empty read-only skills directory and needs no shared
@@ -106,7 +118,7 @@ jq -e --arg name "$AGENT_NAME" \
   '.metadata.name == $name and (.metadata.uid | type == "string" and length > 0)' \
   "$STATE_DIR/created.json" >/dev/null
 k wait --for=condition=Ready "agent/$AGENT_NAME" --timeout=10m
-k get agent "$AGENT_NAME" -o jsonpath='{.status.accessURL}'
+k get agent "$AGENT_NAME" -o jsonpath='{.status.accessUrl}'
 ```
 
 If creation's outcome is uncertain, inspect it through authoritative reads
@@ -115,9 +127,20 @@ before taking further action. Do not retry creation or delete by name.
 1. Verify the actual Pod is running the selected image and RuntimeClass, with
    the expected volumes and current application readiness. Record failures
    rather than modifying replicas, expectations or finalizers.
-2. Open the returned native URL as the owner, sign in normally, and exercise
-   the UI/session including WebSocket connection. Confirm unauthenticated
-   access cannot use the Agent.
+2. Open the returned native URL as the owner and sign in normally. The existing
+   Portal Overview provides **Copy credential** for the Gateway token after
+   the controller publishes the verified workload namespace. Paste that token
+   into the native UI, or use OpenClaw's browser-only `#token=` handoff; never
+   put it in a query string, log, example file or shared receipt.
+   A new browser still needs normal device pairing. If OpenClaw asks for
+   approval, use the existing owner-authenticated web terminal and run
+   `openclaw devices approve <exact-current-request-id>` after checking the
+   request. The registered ingress destinations must include TCP `7681` for
+   that terminal as well as the actual OpenClaw listener, from the approved
+   ingress peers only. This is an explicit owner approval, not Kubernetes Pod
+   exec or disabled device authentication. Verify an authenticated native
+   WebSocket session; a handshake challenge alone is insufficient. Confirm
+   unauthenticated and nonowner access cannot use the Agent.
 3. Select the permitted real model and obtain a response through the Gateway.
 4. Ask the Agent to make a harmless request carrying a fresh random nonce to
    a task-owned synthetic witness endpoint permitted by baseline networking.
