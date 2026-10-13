@@ -34,6 +34,13 @@ The Gateway checks router fallbacks against the key as well
 access groups: a team or key allowed every model, or a `copilot/` name
 directly, spreads requests for that name over every instance's proxy.
 
+A shared model can also be a router that the administrator configures in the
+Gateway: for each request it picks one of several shared models, such as a
+cheaper one for simple requests. An instance that may use the router reaches
+every model the router can pick. See the Gateway chart's
+[Smart routing]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#smart-routing)
+section.
+
 The create form offers both sources, on by default, and a new OpenClaw or Hermes
 instance needs a model to use: shared models while at least one is offered, or
 GitHub Copilot while the deployment offers it. GitHub Copilot stays on while

@@ -13,6 +13,11 @@ the CetiRun operator recorded on the key), the model, tokens, spend, timing and
 the outcome. Request and response content is never written. Every string in it
 is capped, and a line never exceeds MAX_LINE_BYTES (see ``shortened``).
 
+A call to one of LiteLLM's auto routers also records the tier the router chose,
+why, and its score; the model it chose is the call's provider model. The call
+LiteLLM makes to classify such a request, when the router uses a model for
+that, is a line of its own, marked with its origin.
+
 A client can ask LiteLLM for per-request debug output with
 litellm_request_debug, which makes LiteLLM print that request's prompt and the
 provider's raw response to the log. The callback drops that field from every
@@ -65,6 +70,19 @@ DEBUG_PARAMETER = "litellm_request_debug"
 # also puts the x-litellm-num-retries header into num_retries before the
 # callback sees the request. Each made one failing request four upstream calls.
 RETRY_PARAMETERS = ("num_retries", "model_group_retry_policy")
+# Where LiteLLM marks a call it makes itself, such as an auto router's
+# classifier call: in the call's own metadata, not in the logging payload.
+CALL_ORIGIN_KEY = "internal_call_origin"
+
+
+def call_origin(kwargs):
+    """The origin LiteLLM recorded on a call it made itself, or None."""
+    params = as_dict(kwargs.get("litellm_params"))
+    for name in ("metadata", "litellm_metadata"):
+        origin = as_dict(params.get(name)).get(CALL_ORIGIN_KEY)
+        if isinstance(origin, str) and origin:
+            return origin
+    return None
 
 
 def iso_time(timestamp):
@@ -209,14 +227,17 @@ class RequestLog(CustomLogger):
         if not isinstance(payload, dict):
             return
         stream = self.stream or sys.stdout
-        stream.write(self.line(payload) + "\n")
+        stream.write(self.line(payload, call_origin(kwargs)) + "\n")
         stream.flush()
 
-    def record(self, payload):
+    def record(self, payload, origin=None):
         metadata = as_dict(payload.get("metadata"))
         hidden = as_dict(payload.get("hidden_params"))
         usage = as_dict(metadata.get("usage_object")) or as_dict(hidden.get("usage_object"))
         error = as_dict(payload.get("error_information"))
+        # Only the router's verdict: its signals and keywords quote the prompt,
+        # and the tier's parameters can carry credentials.
+        routing = as_dict(metadata.get("routing_decision"))
         key_metadata = {
             clip(name): clip(value) if isinstance(value, str) else value
             for name, value in as_dict(metadata.get("user_api_key_auth_metadata")).items()
@@ -244,12 +265,17 @@ class RequestLog(CustomLogger):
             "trace_id": clip(payload.get("trace_id")),
             "route": clip(metadata.get("user_api_key_request_route")),
             "call_type": clip(payload.get("call_type")),
+            "call_origin": clip(origin),
             "stream": stream,
             "model": clip(payload.get("model_group") or payload.get("model")),
             "provider_model": clip(hidden.get("litellm_model_name") or payload.get("model")),
             "provider": clip(payload.get("custom_llm_provider")),
             "deployment_id": clip(payload.get("model_id")),
             "api_base": clip(endpoint_origin(payload.get("api_base") or hidden.get("api_base"))),
+            "routing_tier": clip(routing.get("tier")),
+            "routing_cause": clip(routing.get("cause")),
+            "routing_score": first_number(routing.get("score")),
+            "classifier_cost": first_number(routing.get("classifier_cost")),
             "duration_ms": milliseconds(start, end),
             "time_to_first_token_ms": milliseconds(start, payload.get("completionStartTime")) if stream else None,
             "prompt_tokens": first_number(payload.get("prompt_tokens")),
@@ -283,9 +309,9 @@ class RequestLog(CustomLogger):
             )
         return without_empty(record)
 
-    def line(self, payload):
+    def line(self, payload, origin=None):
         """The record as one line of JSON, never longer than MAX_LINE_BYTES."""
-        record = self.record(payload)
+        record = self.record(payload, origin)
         text = dump(record)
         if len(text.encode("utf-8")) <= MAX_LINE_BYTES:
             return text

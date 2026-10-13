@@ -357,6 +357,46 @@ class RequestLogTest(unittest.TestCase):
         asyncio.run(self.handler().async_pre_call_hook(None, None, data, "acompletion"))
         self.assertEqual(data, {"model": "gpt-4o", "max_retries": 3, "messages": [{"role": "user", "content": "hi"}]})
 
+    def test_an_auto_router_decision_is_recorded_without_the_prompt(self):
+        payload = success_payload(model_group="auto", model="gpt-4o-mini")
+        payload["metadata"]["routing_decision"] = {
+            "router_model_name": "auto",
+            "router_type": "complexity",
+            "routed_model": "gpt-4o-mini",
+            "cause": "heuristic_scorer",
+            "tier": "SIMPLE",
+            "score": -0.15,
+            "classifier_cost": 0.00002,
+            "signals": ["simple (private question)"],
+            "matched_keyword": "private question",
+            "tier_litellm_params": {"api_key": "sk-not-for-the-log"},
+        }
+        handler = self.handler()
+        record = handler.record(payload)
+        self.assertEqual(record["model"], "auto")
+        self.assertEqual(record["provider_model"], "azure/prod")
+        self.assertEqual(record["routing_tier"], "SIMPLE")
+        self.assertEqual(record["routing_cause"], "heuristic_scorer")
+        self.assertEqual(record["routing_score"], -0.15)
+        self.assertEqual(record["classifier_cost"], 0.00002)
+        line = handler.line(payload)
+        self.assertNotIn("private question", line)
+        self.assertNotIn("sk-not-for-the-log", line)
+
+    def test_a_call_without_a_router_has_no_routing_fields(self):
+        record = self.handler().record(success_payload())
+        for name in ("routing_tier", "routing_cause", "routing_score", "classifier_cost", "call_origin"):
+            self.assertNotIn(name, record)
+
+    def test_a_call_litellm_makes_itself_is_marked(self):
+        handler = self.handler()
+        kwargs = {
+            "standard_logging_object": success_payload(),
+            "litellm_params": {"metadata": {"internal_call_origin": "autorouter_classifier"}},
+        }
+        asyncio.run(handler.async_log_success_event(kwargs, None, None, None))
+        self.assertEqual(json.loads(handler.stream.getvalue())["call_origin"], "autorouter_classifier")
+
     def test_no_content_setting_remains(self):
         source = (PACKAGE / "request_log.py").read_text(encoding="utf-8")
         self.assertNotIn("CETIRUN_REQUEST_LOG_CONTENT", source)

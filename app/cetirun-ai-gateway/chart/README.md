@@ -490,6 +490,75 @@ live when called with the master key, including the Agents' GitHub Copilot
 routes; with them on, it returns the last results. Agents' keys are refused
 there.
 
+### Smart routing
+
+An entry in `models` whose `litellm_params.model` is
+`auto_router/complexity_router` is a router (LiteLLM's auto routing): for each
+request, it picks one of four tiers, and sends the request to the model
+configured for that tier.
+
+```yaml
+models:
+  - model_name: auto
+    litellm_params:
+      model: auto_router/complexity_router
+      # Only for the unpriced-model check; see below.
+      input_cost_per_token: 0.00001
+      output_cost_per_token: 0.00004
+      complexity_router_config:
+        tiers:
+          SIMPLE: gpt-4o-mini
+          MEDIUM: gpt-4o
+          COMPLEX: gpt-4o
+          REASONING: o3
+      complexity_router_default_model: gpt-4o
+    model_info:
+      # The smallest of its models', for agents that read the limits.
+      max_input_tokens: 128000
+      max_output_tokens: 16384
+```
+
+The chart ships the mechanism; the tiers, their models and any keyword rules are
+the administrator's. Measured with LiteLLM's default classifier, which scores
+the latest message without a model call: "What is 2+2?" went to the simple
+tier, a request for code to the medium one. A classifier that asks a model
+(`classifier_type: llm`) makes that call for every request, charged to the
+caller's key; the request log records it as a line of its own, with
+`"call_origin": "autorouter_classifier"`. Anyone can move a request one tier
+up by writing LiteLLM's escalation keyword, `LITELLM ESCALATE`, into it.
+
+**The router's name needs a price.** The unpriced-model block applies to it like
+any model, so the chart requires `input_cost_per_token` and
+`output_cost_per_token` in its `litellm_params`, above zero; a price in
+`model_info` is not enough. Measured: each call was charged at the price of the
+model it picked, not the router's, and a key's budget held: with a $0.0001
+budget, the fourth call was refused.
+
+**Using the router uses its models.** A key that may use the router reaches every
+model of its tiers, whether or not it may use them directly; a key that may use
+the models but not the router cannot use the router. With
+`operatorIntegration`, an AgentPolicy that grants the router grants its models.
+The chart rejects a tier, default model or classifier model that is not
+configured in `models`.
+
+**A conversation can change model.** Each request is classified on its own, so
+one conversation can move between tiers. On the same Azure OpenAI resource that
+kept working, encrypted reasoning included; across resources, an agent such as
+OpenClaw then retries the turn without its encrypted reasoning. Keep a router's
+models on one resource. LiteLLM can keep a conversation on its first tier
+(`session_affinity`, or `classification_mode: user_turn`) only for clients that
+send a session ID it recognizes; OpenClaw 2026.9.6 sends none it does.
+
+**One custom router.** Without a LiteLLM licence, at most one router may define
+its own tiers or classifier prompt: with two, the proxy refused to start. The
+chart rejects the second.
+
+The request log line of a routed call carries the router's name as `model`, the
+model it picked as `provider_model`, and `routing_tier`, `routing_cause`,
+`routing_score` and, with a model classifier, `classifier_cost`. Whether a
+configuration saves money without lowering the quality of the answers is not
+measured here; that needs the requests themselves.
+
 ### Settings saved in the console
 
 These settings are in LiteLLM's `router_settings` and `general_settings`.

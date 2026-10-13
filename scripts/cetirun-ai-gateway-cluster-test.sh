@@ -256,6 +256,16 @@ models:
     model_info:
       input_cost_per_token: 0.00001
       output_cost_per_token: 0.00001
+  # A LiteLLM auto router over the priced model, its own name priced at twice
+  # the model's.
+  - model_name: mock-auto
+    litellm_params:
+      model: auto_router/complexity_router
+      input_cost_per_token: 0.00002
+      output_cost_per_token: 0.00002
+      complexity_router_config:
+        tiers: {SIMPLE: mock-priced, MEDIUM: mock-priced, COMPLEX: mock-priced, REASONING: mock-priced}
+      complexity_router_default_model: mock-priced
 providerCredentials:
   existingSecret: gateway-provider-keys
 EOF
@@ -578,6 +588,21 @@ api_post "${port_a}" /model/new '{"model_name":"mock-db","litellm_params":{"mode
   || fail "could not add a model through the management API"
 [ "$(chat "${port_a}" "${master_key}" mock-db)" = "200" ] || fail "database-backed model was not served: $(last_body)"
 pass "model added through the management API and served"
+
+# A LiteLLM auto router picks one of the configured models for each request.
+# Its own name carries a price, twice the model's here, only to pass the
+# unpriced-model check: the call is charged as the model it picked, and the
+# request log records the router, the model and the router's decision.
+echo "==> An auto router picks a configured model and records its decision"
+[ "$(chat "${port_a}" "${master_key}" mock-auto "What is 2+2?")" = "200" ] \
+  || fail "a request to the auto router failed: $(last_body)"
+routed_line="$(request_log "${pod_names[0]}" | grep '"model":"mock-auto"' | tail -n 1 || true)"
+[ -n "${routed_line}" ] || fail "the request log has no line for the auto router's call"
+jq -e '.provider_model == "openai/mock-model" and .routing_tier == "SIMPLE" and (.routing_cause | length > 0)' \
+  <<< "${routed_line}" >/dev/null || fail "the auto router's line does not carry its decision: ${routed_line}"
+jq -e '.spend > 0.0199 and .spend < 0.0201' <<< "${routed_line}" >/dev/null \
+  || fail "the auto router's call was not charged at the price of the model it picked: ${routed_line}"
+pass "the auto router sent a simple request to the configured model, charged at that model's price"
 
 # LiteLLM finishes requests in flight when it is stopped, with no limit of its
 # own, so the pod's grace period decides whether a long response survives a

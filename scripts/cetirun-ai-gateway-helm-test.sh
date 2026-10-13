@@ -286,6 +286,71 @@ assert_contains "health_check_staleness_threshold: 600$" "a result counts for tw
 assert_contains "health_check_ignore_transient_errors: true" "a probe answered with 429 does not exclude a deployment" "${health}"
 assert_rejected "a probe interval under 30 seconds" --set router.healthChecks.enabled=true --set router.healthChecks.intervalSeconds=10
 
+# A LiteLLM auto router is an entry in models whose model is
+# auto_router/complexity_router. Its own name is checked against the unpriced
+# model block like any model; measured, each call is charged at the price of the
+# model it picks and budgets hold. A price of zero would make LiteLLM's notion
+# of a free model the only thing between it and the budget checks, so the
+# chart wants one above zero. Its tiers have to be models served here, and
+# without a LiteLLM licence the proxy refuses to start with more than one
+# router that writes its own classifier prompt.
+echo "==> an auto router is priced, routes to models configured here, and fits the licence"
+router_dir="$(mktemp -d)"
+trap 'rm -rf "${router_dir}"' EXIT
+default_router_config='tiers: {SIMPLE: lint-model, MEDIUM: [lint-model, big-model], COMPLEX: big-model, REASONING: big-model}'
+router_values() {  # router_values FILE [ROUTER_CONFIG] [INPUT_PRICE]: a router named auto over lint-model and big-model
+  local file="$1" config="${2:-${default_router_config}}" price="${3:-0.00001}"
+  cat > "${file}" <<EOF
+models:
+  - model_name: lint-model
+    litellm_params: {model: openai/lint-model}
+  - model_name: big-model
+    litellm_params: {model: openai/big-model}
+  - model_name: auto
+    litellm_params:
+      model: auto_router/complexity_router
+      input_cost_per_token: ${price}
+      output_cost_per_token: 0.00004
+      complexity_router_config:
+        ${config}
+      complexity_router_default_model: big-model
+EOF
+}
+router_values "${router_dir}/valid.yaml"
+routed="$(helm template "${release_name}" "${chart_dir}" -f "${router_dir}/valid.yaml" --set operatorIntegration=true)"
+assert_contains "model: auto_router/complexity_router" "a router configured in models reaches LiteLLM" "${routed}"
+assert_contains 'background_health_check_model_groups: \["lint-model","big-model"\]' \
+  "a router is not probed itself" \
+  "$(helm template "${release_name}" "${chart_dir}" -f "${router_dir}/valid.yaml" --set router.healthChecks.enabled=true)"
+router_rejected() {  # router_rejected DESCRIPTION FILE
+  if helm template "${release_name}" "${chart_dir}" -f "$2" > /dev/null 2>&1; then
+    echo "FAIL: $1 should have been rejected" >&2
+    exit 1
+  fi
+}
+router_values "${router_dir}/zero.yaml" "" 0
+router_rejected "a router priced at zero" "${router_dir}/zero.yaml"
+grep -v 'cost_per_token' "${router_dir}/valid.yaml" > "${router_dir}/unpriced.yaml"
+router_rejected "an unpriced router" "${router_dir}/unpriced.yaml"
+helm template "${release_name}" "${chart_dir}" -f "${router_dir}/unpriced.yaml" --set blockUnpricedModels=false > /dev/null \
+  || { echo "FAIL: an unpriced router was rejected with blockUnpricedModels off" >&2; exit 1; }
+router_values "${router_dir}/unknown.yaml" 'tiers: {SIMPLE: lint-model, COMPLEX: elsewhere}'
+router_rejected "a router tier outside models" "${router_dir}/unknown.yaml"
+router_values "${router_dir}/itself.yaml" 'tiers: {SIMPLE: lint-model, COMPLEX: auto}'
+router_rejected "a router tier that is a router" "${router_dir}/itself.yaml"
+router_values "${router_dir}/no-tiers.yaml" 'classifier_type: heuristic'
+router_rejected "a router without tiers" "${router_dir}/no-tiers.yaml"
+router_values "${router_dir}/one-prompt.yaml" \
+  'tiers: {SIMPLE: lint-model, COMPLEX: big-model}
+        classifier_type: llm
+        classifier_llm_config: {model: lint-model, system_prompt: rubric}'
+helm template "${release_name}" "${chart_dir}" -f "${router_dir}/one-prompt.yaml" > /dev/null \
+  || { echo "FAIL: one router with its own classifier prompt was rejected" >&2; exit 1; }
+sed -n '/model_name: auto$/,$p' "${router_dir}/one-prompt.yaml" | sed 's/model_name: auto$/model_name: auto-two/' \
+  > "${router_dir}/second.yaml"
+cat "${router_dir}/one-prompt.yaml" "${router_dir}/second.yaml" > "${router_dir}/two-prompts.yaml"
+router_rejected "two routers with their own classifier prompt" "${router_dir}/two-prompts.yaml"
+
 # ----- Shutdown -----
 
 # LiteLLM finishes requests in flight when stopped and sets no limit of its own,
