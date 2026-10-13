@@ -169,7 +169,24 @@ func TestNativePlatformAdmissionRequiresIndependentOptIn(t *testing.T) {
 				candidate := f.policy.DeepCopy()
 				candidate.Spec.Network.BlockedCIDRs = []string{"203.0.113.0/24"}
 				request = requestFor(t, admissionv1.Update, candidate, f.policy, "administrator")
-				requireResponse(t, f.handler.Validate(ctx, request), false, "native single-start")
+				requireResponse(t, f.handler.Validate(ctx, request), true, "")
+				candidate.Spec.Network.BlockedPorts = []api.AgentPolicyPort{{Port: 18080, Protocol: corev1.ProtocolTCP}}
+				request = requestFor(t, admissionv1.Update, candidate, f.policy, "administrator")
+				requireResponse(t, f.handler.Validate(ctx, request), false, "blockedPorts")
+				registration.Capabilities.BlockedPorts = true
+				document.Registrations[api.SandboxKata] = registration
+				raw, err = json.Marshal(document)
+				if err != nil {
+					t.Fatal(err)
+				}
+				cm.Data[sandboxplatform.ConfigurationKey] = string(raw)
+				if err := f.client.Update(ctx, cm); err != nil {
+					t.Fatal(err)
+				}
+				requireResponse(t, f.handler.Validate(ctx, request), true, "")
+				candidate.Spec.Network.BlockedPorts[0].Protocol = corev1.ProtocolUDP
+				request = requestFor(t, admissionv1.Update, candidate, f.policy, "administrator")
+				requireResponse(t, f.handler.Validate(ctx, request), true, "")
 				candidate = f.policy.DeepCopy()
 				candidate.Spec.KubernetesAccess = &api.AgentPolicyAdminKubernetesAccess{
 					ServiceAccountName: "operations",

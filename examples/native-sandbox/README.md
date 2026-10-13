@@ -69,6 +69,16 @@ target's admission TLS/administrator/coordination settings, domain, registry,
 Gateway configuration and source registries through your normal private
 deployment configuration. Do not commit that configuration.
 
+On AKS, the control plane can append its system-namespace exclusions to admission
+webhooks. Deployment preflight remains strict by default. An administrator may
+explicitly pass `--allow-aks-system-exclusions` to `deployment-preflight` to accept
+only the two exact `NotIn` clauses for `control-plane: ["true"]` and
+`kubernetes.azure.com/managedby: ["aks"]`, in addition to the original protected
+namespace selector. Missing, changed, duplicated or additional clauses remain
+blocked. This option does not alter webhooks or their failure policy; Agent
+namespaces must not carry those system labels. Preflight still does not qualify
+the runtime, test actual network enforcement or establish application readiness.
+
 Copy [configuration.yaml](configuration.yaml) and [agent.yaml](agent.yaml) to a
 private run directory. Replace `native-home` with the registered CSI storage
 class, `example-model` with the exact authorized Gateway catalog ID, the image
@@ -151,8 +161,45 @@ before taking further action. Do not retry creation or delete by name.
 The legacy full `scripts/e2e-test.sh` flow is not this profile's acceptance run:
 its suspend/resume and legacy integration checks are outside this profile.
 Reuse its explicit-target/UID ownership principles, not its broader assertions.
-Custom network rules, Copilot sidecars, identity grants and live reconfiguration
-are unsupported here and must not be silently ignored.
+FQDN rules, internal-network exceptions, SCTP port denies, Copilot sidecars,
+identity grants and live reconfiguration are unsupported here and must not be
+silently ignored.
+
+### Optional CIDR and TCP/UDP denies
+
+The policy can include `network.blockedCIDRs` for registered address families
+and `network.blockedPorts` for TCP/UDP. For example, these synthetic values deny
+one documentation subnet and two destination ports:
+
+```yaml
+network:
+  blockedCIDRs:
+    - 198.51.100.0/24
+  blockedPorts:
+    - {port: 18080, protocol: TCP}
+    - {port: 18081, protocol: UDP}
+  ingress:
+    mode: authenticated
+```
+
+This is a policy fragment, not a complete AgentPolicy or a reachable test
+endpoint. Port denies require verified platform support recorded as
+`registrations.kata.Capabilities.blockedPorts: true`; the baseline example does
+not set that flag. Rules cannot block required DNS or Gateway traffic.
+The existing public-egress baseline remains; these fields are not a public
+destination allowlist or FQDN policy.
+
+On an authorized target, use separate Team/Policy bindings for a restricted
+Agent and a control Agent. Compare both against the same independently observed
+task-owned endpoint, including a known-working allowed port for each protocol.
+Verify DNS and a real permitted model request still work. Service failures and
+generic transport errors must not count as policy denials. Do not use the
+documentation addresses above as though a listener exists there.
+
+Apply Team/Sandbox/AgentPolicy changes only through the supported coordination
+path after their consumers have completed cleanup. Keep the approved platform
+inventory fixed during the run. A fresh Agent can test a changed policy;
+this is not resume, live rollout or transfer of an existing HOME.
 
 ## Delete and verify cleanup
 

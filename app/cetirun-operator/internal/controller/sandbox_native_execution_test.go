@@ -122,14 +122,13 @@ func TestNativeSandboxProfileRejectsUnsupportedOverrides(t *testing.T) {
 		{"Helm", func(a *sandboxPreparationAttempt) {
 			a.agent.Spec.Helm.Values = map[string]runtime.RawExtension{"replicaCount": {Raw: []byte("1")}}
 		}},
-		{"blocked CIDR", func(a *sandboxPreparationAttempt) {
-			a.resolution.AgentPolicy.Network.BlockedCIDRs = []string{"203.0.113.0/24"}
-		}},
 		{"blocked FQDN", func(a *sandboxPreparationAttempt) {
 			a.resolution.AgentPolicy.Network.BlockedFQDNs = []string{"blocked.example.com"}
 		}},
-		{"blocked port", func(a *sandboxPreparationAttempt) {
-			a.resolution.AgentPolicy.Network.BlockedPorts = []api.AgentPolicyPort{{Port: 443, Protocol: corev1.ProtocolTCP}}
+		{"blocked SCTP port", func(a *sandboxPreparationAttempt) {
+			a.resolution.Capabilities.BlockedPorts = true
+			a.resolution.Capabilities.Protocols = append(a.resolution.Capabilities.Protocols, corev1.ProtocolSCTP)
+			a.resolution.AgentPolicy.Network.BlockedPorts = []api.AgentPolicyPort{{Port: 443, Protocol: corev1.ProtocolSCTP}}
 		}},
 		{"internal CIDR", func(a *sandboxPreparationAttempt) {
 			a.resolution.AgentPolicy.Network.AllowedInternalCIDRs = []api.AgentPolicyCIDRRule{{CIDR: "192.0.2.0/24", Ports: []api.AgentPolicyPort{{Port: 443}}}}
