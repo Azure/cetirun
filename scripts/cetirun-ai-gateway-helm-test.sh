@@ -325,6 +325,21 @@ assert_contains "model: auto_router/complexity_router" "a router configured in m
 assert_contains 'background_health_check_model_groups: \["lint-model","big-model"\]' \
   "a router is not probed itself" \
   "$(helm template "${release_name}" "${chart_dir}" -f "${router_dir}/valid.yaml" --set router.healthChecks.enabled=true)"
+
+# OpenClaw sends its own context as the last user message, between markers. A
+# router classifies the newest message a person wrote, so without the markers
+# every OpenClaw request was classified by that block: measured, all of them
+# went to the simple tier, a request for code included.
+echo "==> a router skips OpenClaw's context when it classifies"
+assert_contains "open: <<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>" "a router reads past OpenClaw's context" "${routed}"
+assert_contains "open: <system-reminder>" "and keeps LiteLLM's own markers" "${routed}"
+standalone="$(helm template "${release_name}" "${chart_dir}" -f "${router_dir}/valid.yaml" --set operatorIntegration=false)"
+assert_contains "open: <<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>" "also without the operator integration" "${standalone}"
+router_values "${router_dir}/own-markers.yaml" "${default_router_config}
+        reminder_markers: [{open: '<ctx>', close: '</ctx>'}]"
+own="$(helm template "${release_name}" "${chart_dir}" -f "${router_dir}/own-markers.yaml")"
+assert_contains "open: <ctx>" "a router's own markers are kept" "${own}"
+assert_absent "OPENCLAW_INTERNAL_CONTEXT" "and not extended" "${own}"
 router_rejected() {  # router_rejected DESCRIPTION FILE
   if helm template "${release_name}" "${chart_dir}" -f "$2" > /dev/null 2>&1; then
     echo "FAIL: $1 should have been rejected" >&2

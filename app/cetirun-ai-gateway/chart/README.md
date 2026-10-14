@@ -535,6 +535,16 @@ any model, so the chart requires `input_cost_per_token` and
 model it picked, not the router's, and a key's budget held: with a $0.0001
 budget, the fourth call was refused.
 
+**OpenClaw's own context is skipped.** The classifier reads the newest message
+a person wrote. OpenClaw 2026.9.6 sends its own context as a last user message
+between `<<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>` and
+`<<<END_OPENCLAW_INTERNAL_CONTEXT>>>`, and classified by that block every
+OpenClaw request went to the simple tier, a request for code included. Unless a
+router sets its own `reminder_markers`, the chart adds that pair and LiteLLM's
+own, `<system-reminder>`, whose blocks the classifier leaves out; the request
+for code then went to the medium tier. OpenClaw called the router through Chat
+Completions, without reasoning settings.
+
 **Using the router uses its models.** A key that may use the router reaches every
 model of its tiers, whether or not it may use them directly; a key that may use
 the models but not the router cannot use the router. With

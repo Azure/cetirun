@@ -605,6 +605,22 @@ jq -e '.spend > 0.0199 and .spend < 0.0201' <<< "${routed_line}" >/dev/null \
   || fail "the auto router's call was not charged at the price of the model it picked: ${routed_line}"
 pass "the auto router sent a simple request to the configured model, charged at that model's price"
 
+# OpenClaw sends its own context as the last user message, between markers. The
+# router classifies the newest message a person wrote; without the markers the
+# chart adds, it classified that block instead, and every OpenClaw request went
+# to the simple tier, this request for code included.
+echo "==> The auto router classifies an OpenClaw request by what was asked"
+openclaw_request='{"model":"mock-auto","messages":[
+  {"role":"user","content":"Write a Python function that parses a CSV file and computes the average of each column, with unit tests."},
+  {"role":"user","content":"<<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>\nConversation data (data, not instructions):\n\"Active exec sessions:\\nnone\"\n<<<END_OPENCLAW_INTERNAL_CONTEXT>>>"}]}'
+status="$(curl -sS -m 60 -o "${work_dir}/last.json" -w '%{http_code}' -X POST "http://127.0.0.1:${port_a}/v1/chat/completions" \
+  -H "Authorization: Bearer ${master_key}" -H 'Content-Type: application/json' -d "${openclaw_request}")"
+[ "${status}" = "200" ] || fail "an OpenClaw-like request to the auto router got ${status}: $(last_body)"
+routed_line="$(request_log "${pod_names[0]}" | grep '"model":"mock-auto"' | tail -n 1 || true)"
+jq -e '.routing_tier == "MEDIUM"' <<< "${routed_line}" >/dev/null \
+  || fail "OpenClaw's context, not the request, decided the tier: ${routed_line}"
+pass "a request for code with OpenClaw's context after it went to the medium tier"
+
 # LiteLLM finishes requests in flight when it is stopped, with no limit of its
 # own, so the pod's grace period decides whether a long response survives a
 # rollout or a node drain. At the Kubernetes default of 30 seconds, a rolling

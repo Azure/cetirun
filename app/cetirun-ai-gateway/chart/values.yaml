@@ -86,7 +86,9 @@ fullnameOverride: ""
 # this list, and its own name needs input_cost_per_token and
 # output_cost_per_token above zero in litellm_params; calls are charged at the
 # price of the model picked. A key that may use the router reaches all of its
-# models. See the README's Smart routing section.
+# models. Unless it sets reminder_markers, the chart adds the markers around
+# OpenClaw's own context, so the router classifies what was asked. See the
+# README's Smart routing section.
 #
 # Example:
 #   models:

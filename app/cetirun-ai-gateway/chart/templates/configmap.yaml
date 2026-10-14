@@ -19,21 +19,35 @@ metadata:
 data:
   config.yaml: |
     model_list:
-      {{- if .Values.operatorIntegration }}
       {{- $models := list }}
       {{- range .Values.models }}
       {{- $model := deepCopy . }}
+      {{- if $.Values.operatorIntegration }}
       {{- $suffix := sha256sum (toJson $model) | trunc 16 }}
       {{- $info := deepCopy ($model.model_info | default dict) }}
       {{- $_ := set $info "id" (printf "cetirun-shared-%s" $suffix) }}
       {{- $_ = set $info "access_groups" (append ($info.access_groups | default list) (printf "cetirun-model-%s" $suffix) | uniq) }}
       {{- $_ = set $model "model_info" $info }}
+      {{- end }}
+      {{- /* A complexity router classifies the newest message a person wrote,
+      leaving out blocks between reminder markers. OpenClaw sends its own
+      context as a final user message between the markers below, so without
+      them every OpenClaw request was classified by that block and went to the
+      simple tier. LiteLLM's own pair is listed too, since a list replaces its
+      default. A router that sets reminder_markers keeps its own. Added after
+      the ID above, so the binding stays the administrator's configuration. */}}
+      {{- $params := $model.litellm_params | default dict }}
+      {{- if eq (toString (get $params "model")) "auto_router/complexity_router" }}
+      {{- $config := deepCopy (get $params "complexity_router_config" | default dict) }}
+      {{- if not (hasKey $config "reminder_markers") }}
+      {{- $_ := set $config "reminder_markers" (list (dict "open" "<<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>" "close" "<<<END_OPENCLAW_INTERNAL_CONTEXT>>>") (dict "open" "<system-reminder>" "close" "</system-reminder>")) }}
+      {{- $_ = set $params "complexity_router_config" $config }}
+      {{- $_ = set $model "litellm_params" $params }}
+      {{- end }}
+      {{- end }}
       {{- $models = append $models $model }}
       {{- end }}
       {{- toYaml $models | nindent 6 }}
-      {{- else }}
-      {{- toYaml .Values.models | nindent 6 }}
-      {{- end }}
 
     general_settings:
       # Required for the management API and the admin console to persist models.
