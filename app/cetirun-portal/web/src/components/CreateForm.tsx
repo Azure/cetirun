@@ -100,8 +100,8 @@ export function CreateForm({ onCreated }: { onCreated?: () => void }) {
   }, [effectiveShared, sharedModels, gatewayModel]);
 
   useEffect(() => {
-    if (!features?.agentIdentityEnabled || agentType === "custom") setAgentIdentityEnabled(false);
-  }, [agentType, features?.agentIdentityEnabled]);
+    if (!features?.agentIdentityEnabled) setAgentIdentityEnabled(false);
+  }, [features?.agentIdentityEnabled]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -132,7 +132,7 @@ export function CreateForm({ onCreated }: { onCreated?: () => void }) {
       tailscaleAuthKey: !custom ? tailscaleAuthKey || undefined : undefined,
       model: gatewayModels ? gatewayModel || undefined : usesGitHubCopilot ? model.trim() || undefined : undefined,
       teamsEnabled: !custom ? teamsEnabled || undefined : undefined,
-      agentIdentityEnabled: !custom ? agentIdentityEnabled || undefined : undefined,
+      agentIdentityEnabled: agentIdentityEnabled || undefined,
       modelAccess: gatewayModels ? { sharedModels: effectiveShared, githubCopilot: effectiveCopilot } : undefined,
     });
   };
@@ -339,7 +339,7 @@ export function CreateForm({ onCreated }: { onCreated?: () => void }) {
         label="Enable Microsoft Teams Integration"
       />}
 
-      {features?.agentIdentityEnabled && agentType !== "custom" && (
+      {features?.agentIdentityEnabled && (
         <Switch
           checked={agentIdentityEnabled}
           onChange={(_, data) => setAgentIdentityEnabled(!!data.checked)}

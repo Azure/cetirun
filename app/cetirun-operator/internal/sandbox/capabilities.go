@@ -95,7 +95,6 @@ func CheckCapabilityProfile(capabilities Capabilities) field.ErrorList {
 	}{
 		{"perContainerResourceLimits", capabilities.PerContainerResourceLimits},
 		{"requirePerContainerResourceLimits", capabilities.RequirePerContainerResourceLimits},
-		{"blockedPorts", capabilities.BlockedPorts},
 		{"blockedFQDNs", capabilities.BlockedFQDNs},
 		{"mutualTLS", capabilities.MutualTLS},
 		{"kubernetesAccess", capabilities.KubernetesAccess},
@@ -142,20 +141,43 @@ func CheckNativePolicy(policy cetirunv1alpha1.AgentPolicySpec) field.ErrorList {
 	if !slices.Equal(policy.Harnesses.Allowed, []cetirunv1alpha1.AgentType{cetirunv1alpha1.AgentTypeOpenClaw}) {
 		errs = append(errs, field.Forbidden(root.Child("harnesses", "allowed"), "native single-start supports only OpenClaw"))
 	}
+	errs = append(errs, CheckNativeNetworkPolicy(policy.Network)...)
 	for _, control := range []struct {
 		path      *field.Path
 		requested bool
 	}{
-		{root.Child("network", "blockedCIDRs"), len(policy.Network.BlockedCIDRs) != 0},
-		{root.Child("network", "blockedFQDNs"), len(policy.Network.BlockedFQDNs) != 0},
-		{root.Child("network", "blockedPorts"), len(policy.Network.BlockedPorts) != 0},
-		{root.Child("network", "allowedInternalCIDRs"), len(policy.Network.AllowedInternalCIDRs) != 0},
-		{root.Child("network", "ingress", "requireMTLS"), policy.Network.Ingress.RequireMTLS},
 		{root.Child("kubernetesAccess"), policy.KubernetesAccess != nil},
 		{root.Child("entraID", "enabled"), policy.EntraID.Enabled},
 	} {
 		if control.requested {
 			errs = append(errs, field.Forbidden(control.path, "unsupported by the native single-start profile"))
+		}
+	}
+	return errs
+}
+
+// CheckNativeNetworkPolicy bounds the native path independently of optional
+// capability declarations. Compatibility and compilation still validate those
+// capabilities, address families and conflicts with required destinations.
+func CheckNativeNetworkPolicy(network cetirunv1alpha1.AgentPolicyNetwork) field.ErrorList {
+	root := field.NewPath("spec", "network")
+	var errs field.ErrorList
+	for _, control := range []struct {
+		path      *field.Path
+		requested bool
+	}{
+		{root.Child("blockedFQDNs"), len(network.BlockedFQDNs) != 0},
+		{root.Child("allowedInternalCIDRs"), len(network.AllowedInternalCIDRs) != 0},
+		{root.Child("ingress", "requireMTLS"), network.Ingress.RequireMTLS},
+	} {
+		if control.requested {
+			errs = append(errs, field.Forbidden(control.path, "unsupported by the native single-start profile"))
+		}
+	}
+	for i, port := range network.BlockedPorts {
+		if port.Protocol != "" && port.Protocol != corev1.ProtocolTCP && port.Protocol != corev1.ProtocolUDP {
+			errs = append(errs, field.NotSupported(root.Child("blockedPorts").Index(i).Child("protocol"),
+				port.Protocol, []string{string(corev1.ProtocolTCP), string(corev1.ProtocolUDP)}))
 		}
 	}
 	return errs

@@ -137,7 +137,7 @@ func (h *Handler) validate(ctx context.Context, request admission.Request) admis
 		if errs := sandbox.ValidateTeamConfiguration(candidate.Spec, resources, registrations); len(errs) != 0 {
 			return admission.Denied(errs.ToAggregate().Error())
 		}
-		if err := h.checkTeamExecutionProfiles(candidate.Spec, resources, registrations); err != nil {
+		if err := h.checkTeamExecutionProfiles(ctx, candidate.Spec, resources, registrations); err != nil {
 			return admission.Denied(err.Error())
 		}
 		return h.checkTeamConsumers(ctx, candidate, false)
@@ -286,6 +286,10 @@ func (h *Handler) agentAuthorizationResources(ctx context.Context, operation adm
 	if err := sandbox.CheckAgentProfile(registrations[selected.Type].Capabilities, spec.Agent.Type); err != nil {
 		return sandbox.Resources{}, admission.Denied(err.Error())
 	}
+	if err := h.checkNativeNetworkBinding(ctx, selected.Type, resources.AgentPolicies[team.Spec.AgentPolicyRef],
+		registrations[selected.Type].Capabilities); err != nil {
+		return sandbox.Resources{}, admission.Denied(err.Error())
+	}
 	return resources, admission.Allowed("")
 }
 
@@ -390,7 +394,7 @@ func (h *Handler) checkReferencingTeams(ctx context.Context, candidate client.Ob
 			if errs := sandbox.ValidateTeam(team, resources, registrations); len(errs) != 0 {
 				return admission.Denied(fmt.Sprintf("configuration %q would invalidate referencing Team %q: %v", candidate.GetName(), team.Name, errs.ToAggregate()))
 			}
-			if err := h.checkTeamExecutionProfiles(team.Spec, resources, registrations); err != nil {
+			if err := h.checkTeamExecutionProfiles(ctx, team.Spec, resources, registrations); err != nil {
 				return admission.Denied(err.Error())
 			}
 		}

@@ -18,6 +18,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -204,7 +205,7 @@ func (r *AgentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 }
 
 // Reconcile implements the reconciliation loop.
-func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (result ctrl.Result, reconcileErr error) {
 	logger := log.FromContext(ctx).WithValues("name", req.Name)
 
 	// 1. Fetch the CR.
@@ -433,7 +434,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		var err error
 		prepared, err = r.prepareAgent(instance, team)
 		if err != nil {
-			return r.rejectAgentConfig(ctx, instance, err)
+			return r.preparationFailed(ctx, instance, err)
 		}
 		before := instance.DeepCopy()
 		if pinAgentDefaults(&instance.Spec.Agent, prepared.Agent) {
@@ -479,8 +480,10 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 
 		identityVerificationDue := agentIdentityVerificationDue(instance, time.Now())
 		aiGatewayDue := r.aiGatewayReconcileDue(instance, time.Now())
+		// An Agent whose chart could not be downloaded takes the full path,
+		// which retries the download, until a download succeeds.
 		if instance.Status.ObservedGeneration == instance.Generation &&
-			!identityVerificationDue && !aiGatewayDue &&
+			!identityVerificationDue && !aiGatewayDue && !chartUnavailable(instance) &&
 			instance.Status.ObservedOperatorHash == r.configHash(instance, team, gwSecretHash, teamResourceVersion(team)) {
 			// Lightweight: ensure VirtualService is up to date (may change after operator upgrade).
 			// Update ConditionIngressReady so CR status reflects the actual VS state.
@@ -489,16 +492,6 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 			// VirtualService is up to date (may change after operator upgrade).
 			bypassSkipCache := false
 			statusChanged := false
-			// The canonical native UI route is controller-owned state. Keep it
-			// current even when the instance otherwise qualifies for the lightweight
-			// reconcile path after an operator upgrade.
-			if instance.Status.Phase == cetirunv1alpha1.PhaseReady {
-				canonicalAccessURL := accessURLPathBased(instance.Name, r.DomainSuffix)
-				if instance.Status.AccessURL != canonicalAccessURL {
-					instance.Status.AccessURL = canonicalAccessURL
-					statusChanged = true
-				}
-			}
 			if instance.Status.Phase == cetirunv1alpha1.PhaseSuspended {
 				vsName := virtualServiceName(instance.Name)
 				nsCheck := instanceNamespace(instance.Name)
@@ -519,6 +512,11 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 						metav1.ConditionFalse, "VirtualServiceFailed", err.Error())
 					statusChanged = statusChanged || prevIngressReady
 				} else {
+					canonicalAccessURL := accessURLPathBased(instance.Name, r.DomainSuffix)
+					if instance.Status.AccessURL != canonicalAccessURL {
+						instance.Status.AccessURL = canonicalAccessURL
+						statusChanged = true
+					}
 					setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionIngressReady,
 						metav1.ConditionTrue, "VirtualServiceCreated", "Istio ingress configured")
 					statusChanged = statusChanged || !prevIngressReady
@@ -540,7 +538,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		var err error
 		prepared, err = r.prepareAgent(instance, team)
 		if err != nil {
-			return r.rejectAgentConfig(ctx, instance, err)
+			return r.preparationFailed(ctx, instance, err)
 		}
 	}
 
@@ -589,6 +587,19 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	logger.Info("Reconciling Agent", "alias", alias, "generation", instance.Generation)
 
 	// 6. Ensure namespace.
+	// Keep completed evidence stable while rechecking prerequisites. Invalidate
+	// it only on an early exit, including errors that do not persist status.
+	// Successful workload-only waits must not publish False then True: each
+	// status change enqueues another reconcile independently of RequeueAfter.
+	prerequisitesComplete := false
+	defer func() {
+		if prerequisitesComplete || meta.IsStatusConditionFalse(instance.Status.Conditions, builtInPrerequisitesReady) {
+			return
+		}
+		setCondition(&instance.Status.Conditions, builtInPrerequisitesReady,
+			metav1.ConditionFalse, "PrerequisitesPending", "Agent prerequisites did not complete")
+		reconcileErr = stderrors.Join(reconcileErr, r.updateStatus(ctx, instance))
+	}()
 	logger.V(1).Info("Ensuring namespace", "namespace", ns)
 	if err := r.ensureNamespace(ctx, ns, alias, instance); err != nil {
 		return r.failWith(ctx, instance, "ProvisioningFailed", fmt.Sprintf("ensure namespace: %v", err))
@@ -927,6 +938,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 			metav1.ConditionFalse, "VirtualServiceFailed", err.Error())
 	} else {
 		logger.V(1).Info("VirtualService ensured", "alias", alias, "result", result)
+		instance.Status.AccessURL = accessURLPathBased(instance.Name, r.DomainSuffix)
 		setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionIngressReady,
 			metav1.ConditionTrue, "VirtualServiceCreated", "Istio ingress configured")
 		if result != controllerutil.OperationResultNone {
@@ -936,66 +948,21 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	}
 
 	// 11. Verify StatefulSet pod readiness before marking Ready.
-	stsName := instanceServiceName(instance.Name)
-	sts := &appsv1.StatefulSet{}
-	stsKey := types.NamespacedName{Namespace: ns, Name: stsName}
-	if err := r.Get(ctx, stsKey, sts); err != nil {
-		if errors.IsNotFound(err) {
-			logger.Info("StatefulSet not found yet, requeueing", "name", stsName, "namespace", ns)
-			setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionPodReady,
-				metav1.ConditionFalse, "StatefulSetNotFound", fmt.Sprintf("StatefulSet %s not found", stsName))
-			setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionReady,
-				metav1.ConditionFalse, "PodNotReady", "StatefulSet not found")
-			_ = r.updateStatus(ctx, instance)
-			return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
-		}
-		logger.Error(err, "Failed to get StatefulSet", "name", stsName, "namespace", ns)
-		setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionPodReady,
-			metav1.ConditionFalse, "StatefulSetGetFailed", fmt.Sprintf("Failed to get StatefulSet %s: %v", stsName, err))
-		setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionReady,
-			metav1.ConditionFalse, "PodNotReady", "Failed to get StatefulSet")
+	prerequisitesComplete = true
+	setCondition(&instance.Status.Conditions, builtInPrerequisitesReady,
+		metav1.ConditionTrue, "PrerequisitesResolved", "Blocking Agent prerequisites reconciled")
+	workloadReady, workloadResult, err := r.observeWorkload(ctx, instance)
+	setWorkloadReadiness(instance, workloadReady)
+	if !workloadReady {
 		_ = r.updateStatus(ctx, instance)
-		return ctrl.Result{}, err
+		return workloadResult, err
 	}
 
-	desiredReplicas := int32(1)
-	if sts.Spec.Replicas != nil {
-		desiredReplicas = *sts.Spec.Replicas
-	}
-	rolloutComplete := (sts.Status.UpdatedReplicas >= desiredReplicas || registryOnlyRollout(sts)) &&
-		sts.Status.ReadyReplicas >= desiredReplicas &&
-		(sts.Status.ObservedGeneration >= sts.Generation || registryOnlyRollout(sts))
-	if !rolloutComplete {
-		logger.Info("StatefulSet rollout not complete, requeueing",
-			"statefulset", stsName,
-			"readyReplicas", sts.Status.ReadyReplicas,
-			"updatedReplicas", sts.Status.UpdatedReplicas,
-			"desiredReplicas", desiredReplicas,
-			"stsGeneration", sts.Generation,
-			"stsObservedGeneration", sts.Status.ObservedGeneration)
-		setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionPodReady,
-			metav1.ConditionFalse, "PodNotReady",
-			fmt.Sprintf("Waiting for rollout (ready: %d, updated: %d, desired: %d)",
-				sts.Status.ReadyReplicas, sts.Status.UpdatedReplicas, desiredReplicas))
-		setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionReady,
-			metav1.ConditionFalse, "PodNotReady", "StatefulSet rollout not complete")
-		instance.Status.Phase = cetirunv1alpha1.PhaseProvisioning
-		_ = r.updateStatus(ctx, instance)
-		return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
-	}
-
-	setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionPodReady,
-		metav1.ConditionTrue, "PodReady", "StatefulSet pod is running and ready")
-
-	// 12. Mark Ready.
+	// 12. Persist Ready after prerequisites and workload observation.
 	now := metav1.Now()
-	instance.Status.Phase = cetirunv1alpha1.PhaseReady
-	instance.Status.AccessURL = accessURLPathBased(instance.Name, r.DomainSuffix)
 	instance.Status.Namespace = ns
 	instance.Status.HelmReleaseName = releaseName
 	instance.Status.LastReconcileTime = &now
-	setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionReady,
-		metav1.ConditionTrue, "InstanceReady", "Instance is fully operational")
 	if err := r.updateStatus(ctx, instance); err != nil {
 		logger.Error(err, "Failed to update status to Ready", "alias", alias)
 		return ctrl.Result{}, err
@@ -1753,6 +1720,10 @@ func (r *AgentReconciler) updateStatus(ctx context.Context, instance *cetirunv1a
 	if instance.ResourceVersion == "" || current.ResourceVersion != instance.ResourceVersion || current.UID != instance.UID {
 		return errors.NewConflict(cetirunv1alpha1.GroupVersion.WithResource("agents").GroupResource(), instance.Name,
 			fmt.Errorf("Agent changed before its status could be patched"))
+	}
+	// An unchanged status must not issue a patch or generate a watch event.
+	if equality.Semantic.DeepEqual(current.Status, instance.Status) {
+		return nil
 	}
 	before := current.DeepCopy()
 	current.Status = *instance.Status.DeepCopy()

@@ -16,6 +16,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -23,6 +24,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"github.com/Azure/CetiRun/app/cetirun-operator/configurationcoordination"
 	"github.com/Azure/CetiRun/app/cetirun-portal/internal/agentconfig"
 )
 
@@ -30,6 +32,15 @@ var ErrUnsupportedCustomUpdate = stderrors.New("Custom does not support Gateway 
 var ErrInstanceChanged = stderrors.New("Agent changed or was replaced; reload before saving")
 var ErrInstanceDeleting = stderrors.New("Agent is being deleted")
 var ErrOperatorConfigurationUnavailable = stderrors.New("Operator release configuration is unavailable")
+var ErrAgentPolicyChanged = stderrors.New("AgentPolicy changed or was replaced; reload before saving")
+
+func IsConfigurationCoordinationConflict(err error) bool {
+	return configurationcoordination.IsConflict(err)
+}
+
+func IsConfigurationCoordinationUnavailable(err error) bool {
+	return configurationcoordination.IsUnavailable(err)
+}
 
 func IsUnsupportedCustomUpdate(err error) bool {
 	return stderrors.Is(err, ErrUnsupportedCustomUpdate)
@@ -108,6 +119,7 @@ const chartVersionTTL = 5 * time.Minute
 // Client wraps controller-runtime client for Agent operations.
 type Client struct {
 	client                      client.Client
+	configurationCoordination   ConfigurationCoordination
 	chartVersionMu              sync.RWMutex
 	chartVersionVal             string
 	chartVersionErr             error
@@ -116,9 +128,22 @@ type Client struct {
 	registryCredentialNamespace string
 }
 
+// ConfigurationCoordination serializes writes protected by the optional
+// UID-pinned Sandbox configuration authority.
+type ConfigurationCoordination interface {
+	Update(context.Context, client.Object, client.Object) error
+	Delete(context.Context, client.Object) error
+}
+
 // NewClient creates a new kube Client.
 func NewClient(c client.Client) *Client {
 	return &Client{client: c}
+}
+
+// SetConfigurationCoordination enables coordinated Team, Sandbox and
+// AgentPolicy writes for operations that opt into the protocol.
+func (c *Client) SetConfigurationCoordination(coordination ConfigurationCoordination) {
+	c.configurationCoordination = coordination
 }
 
 // GetInstance retrieves an Agent by alias (cluster-scoped).
@@ -144,7 +169,7 @@ func (c *Client) CreateInstance(ctx context.Context, alias, displayName, team, e
 		return nil, err
 	}
 	identityEnabled := len(optional) > 0 && optional[0].AgentIdentityEnabled
-	if agent.Type == cetirunv1alpha1.AgentTypeCustom && (gatewayToken != "" || tailscaleAuthKey != "" || teamsEnabled || identityEnabled) {
+	if agent.Type == cetirunv1alpha1.AgentTypeCustom && (gatewayToken != "" || tailscaleAuthKey != "" || teamsEnabled) {
 		return nil, ErrUnsupportedCustomUpdate
 	}
 	if identityEnabled && (optional[0].OwnerTenantID == "" || optional[0].OwnerObjectID == "") {
@@ -888,4 +913,97 @@ func (c *Client) DeleteTeam(ctx context.Context, name string) error {
 		ObjectMeta: metav1.ObjectMeta{Name: name},
 	}
 	return c.client.Delete(ctx, team)
+}
+
+// ListAgentPolicies returns all cluster-scoped AgentPolicy resources.
+func (c *Client) ListAgentPolicies(ctx context.Context) ([]cetirunv1alpha1.AgentPolicy, error) {
+	list := &cetirunv1alpha1.AgentPolicyList{}
+	if err := c.client.List(ctx, list); err != nil {
+		return nil, err
+	}
+	return list.Items, nil
+}
+
+// GetAgentPolicy retrieves a cluster-scoped AgentPolicy by name.
+func (c *Client) GetAgentPolicy(ctx context.Context, name string) (*cetirunv1alpha1.AgentPolicy, error) {
+	policy := &cetirunv1alpha1.AgentPolicy{}
+	if err := c.client.Get(ctx, client.ObjectKey{Name: name}, policy); err != nil {
+		return nil, err
+	}
+	return policy, nil
+}
+
+// CreateAgentPolicy creates a new cluster-scoped AgentPolicy.
+func (c *Client) CreateAgentPolicy(ctx context.Context, policy *cetirunv1alpha1.AgentPolicy) (*cetirunv1alpha1.AgentPolicy, error) {
+	if err := c.client.Create(ctx, policy); err != nil {
+		return nil, err
+	}
+	return policy, nil
+}
+
+// AgentPolicyVersion identifies the exact AgentPolicy an administrator read.
+type AgentPolicyVersion struct {
+	UID             types.UID
+	ResourceVersion string
+}
+
+func validateAgentPolicyVersion(policy *cetirunv1alpha1.AgentPolicy, version AgentPolicyVersion) error {
+	if version.UID == "" || version.ResourceVersion == "" || policy.UID != version.UID || policy.ResourceVersion != version.ResourceVersion {
+		return ErrAgentPolicyChanged
+	}
+	return nil
+}
+
+// UpdateAgentPolicySpec updates the policy fields managed by Portal while
+// preserving component-specific controls that Portal does not expose.
+func (c *Client) UpdateAgentPolicySpec(ctx context.Context, name string, spec cetirunv1alpha1.AgentPolicySpec, version AgentPolicyVersion) (*cetirunv1alpha1.AgentPolicy, error) {
+	policy, err := c.GetAgentPolicy(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateAgentPolicyVersion(policy, version); err != nil {
+		return nil, err
+	}
+	before := policy.DeepCopy()
+	managed := spec.DeepCopy()
+	policy.Spec.Harnesses = managed.Harnesses
+	policy.Spec.Skills = managed.Skills
+	policy.Spec.ModelAccess = managed.ModelAccess
+	if equality.Semantic.DeepEqual(before.Spec, policy.Spec) {
+		return policy, nil
+	}
+	if c.configurationCoordination != nil {
+		if err := c.configurationCoordination.Update(ctx, before, policy); err != nil {
+			return nil, fmt.Errorf("update agent policy through configuration coordination: %w", err)
+		}
+		updated, err := c.GetAgentPolicy(ctx, name)
+		if err != nil {
+			return nil, fmt.Errorf("read coordinated agent policy update: %w", err)
+		}
+		return updated, nil
+	}
+	if err := c.client.Patch(ctx, policy, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{}), client.FieldValidation(metav1.FieldValidationStrict)); err != nil {
+		return nil, fmt.Errorf("update agent policy: %w", err)
+	}
+	return policy, nil
+}
+
+// DeleteAgentPolicy deletes the exact AgentPolicy the caller read.
+func (c *Client) DeleteAgentPolicy(ctx context.Context, name string, version AgentPolicyVersion) error {
+	policy, err := c.GetAgentPolicy(ctx, name)
+	if err != nil {
+		return err
+	}
+	if err := validateAgentPolicyVersion(policy, version); err != nil {
+		return err
+	}
+	if c.configurationCoordination != nil {
+		if err := c.configurationCoordination.Delete(ctx, policy); err != nil {
+			return fmt.Errorf("delete agent policy through configuration coordination: %w", err)
+		}
+		return nil
+	}
+	return c.client.Delete(ctx, policy,
+		client.Preconditions{UID: &policy.UID, ResourceVersion: &policy.ResourceVersion},
+		client.PropagationPolicy(metav1.DeletePropagationBackground))
 }

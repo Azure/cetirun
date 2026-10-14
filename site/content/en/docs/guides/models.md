@@ -132,6 +132,20 @@ as false with the reason `KeySecretLost`, with an `AIGatewayKeySecretLost`
 event. Restore the Secret, or delete the key in the Gateway to have a new one
 created with the default budget.
 
+With `operatorIntegration` enabled, the Gateway sets
+`general_settings.user_api_key_cache_ttl` to zero. Each new virtual-key
+request checks current database authorization instead of reusing a previous
+worker's cached grant. Redis coordination for budgets and rate limits stays
+enabled, and response caching remains off unless requested. Standalone
+Gateways retain their existing authentication-cache defaults.
+
+This trades extra database reads and dependence on database availability for
+fresh authorization. Requests can return service-unavailable responses while
+database connections recover. Allow the Gateway rollout to finish on every replica
+before relying on the new setting. Requests already authorized or in flight
+are not cancelled by a subsequent key change. This is not a guarantee about
+stopping Agent processes or revoking credentials held by other services.
+
 An instance's configuration lists at most 256 models. Its GitHub Copilot
 models, at most 128, all stay; shared models fill the rest in name order, and
 the instance's default model and the deployment's default are kept. The

@@ -353,10 +353,6 @@ spec:
                 for custom agents
               rule: 'self.agent.type == ''custom'' ? !has(self.gatewayTokenSecretRef)
                 : has(self.gatewayTokenSecretRef)'
-            - fieldPath: .agentIdentity
-              message: agentIdentity is not supported for custom agents
-              rule: '!has(self.agentIdentity) || !has(self.agentIdentity.enabled)
-                || !self.agentIdentity.enabled || self.agent.type != ''custom'''
           status:
             description: AgentStatus defines the observed state of Agent.
             properties:

@@ -28,6 +28,10 @@ replicaCount: 2
 # a model the key may not use, such as another Agent's GitHub Copilot route.
 # Configured shared models also receive a chart-derived deployment ID and
 # access group, allowing AgentPolicy to grant one exact configured backend.
+# Managed Gateway authentication uses current database authorization for each
+# new virtual-key request (general_settings.user_api_key_cache_ttl=0), rather
+# than a cached key grant. This adds database reads and requires database
+# availability; Redis budget/rate-limit coordination remains enabled.
 # The cetirun-platform chart turns this on; turn it on for a Gateway installed
 # separately for CetiRun as well. Off, the Gateway keeps its standalone
 # behaviour.

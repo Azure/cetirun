@@ -169,6 +169,9 @@ func (r *AgentReconciler) reconcileCustom(ctx context.Context, instance *api.Age
 		bindings.Namespace.Name != instanceNamespace(instance.Name) {
 		return r.customWaiting(ctx, instance, "CustomBindingRejected", "Platform bindings do not belong to this Agent generation")
 	}
+	if ready, err := r.bindCustomAgentIdentity(ctx, instance, &bindings); err != nil || !ready {
+		return r.customWaiting(ctx, instance, "AgentIdentityBindingPending", "The instance Agent Identity binding is not ready")
+	}
 	if r.customGatewaySelected(instance) {
 		if err := r.bindCustomGateway(ctx, instance, &bindings); err != nil {
 			return r.customWaiting(ctx, instance, "AIGatewayBindingPending", "The approved AI Gateway binding is not ready")

@@ -182,6 +182,40 @@ func TestManagementRejectsOldUnknownAndNativeCustomFields(t *testing.T) {
 	}
 }
 
+func TestCustomAgentIdentityRequiresFeatureAndVerifiedOwner(t *testing.T) {
+	for _, test := range []struct {
+		name              string
+		enabled, verified bool
+		status            int
+	}{
+		{"enabled", true, true, http.StatusCreated},
+		{"disabled", false, true, http.StatusBadRequest},
+		{"unverified", true, false, http.StatusForbidden},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			h := customManagementHandler()
+			h.Config.AgentIdentityEnabled = test.enabled
+			body := `{"agent":{"type":"custom","image":"` + managementImage + `"},"agentIdentityEnabled":true}`
+			request := managementRequest(http.MethodPost, body)
+			if !test.verified {
+				request = withClaims(httptest.NewRequest(http.MethodPost, "/api/v1/instance", strings.NewReader(body)), "alice", "Alice", "alice@example.com")
+			}
+			response := httptest.NewRecorder()
+			h.CreateInstance(response, request)
+			if response.Code != test.status {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+			if test.status == http.StatusCreated {
+				instance, err := h.Kube.GetInstance(context.Background(), "alice")
+				if err != nil || instance.Spec.AgentIdentity == nil || !instance.Spec.AgentIdentity.Enabled ||
+					instance.Annotations[api.AnnotationOwnerObjectID] != managementOwner || instance.Spec.GatewayTokenSecretRef != "" {
+					t.Fatalf("Custom identity owner or native credential boundary changed: %v", err)
+				}
+			}
+		})
+	}
+}
+
 func TestDefaultBuiltinCreationUsesExistingPortalIdentity(t *testing.T) {
 	for _, kind := range []string{"hermes", "openclaw"} {
 		h := customManagementHandler()

@@ -32,7 +32,6 @@ type SkillOverrideSpec struct {
 
 // AgentSpec defines the desired state of Agent.
 // +kubebuilder:validation:XValidation:rule="self.agent.type == 'custom' ? !has(self.gatewayTokenSecretRef) : has(self.gatewayTokenSecretRef)",message="gatewayTokenSecretRef is required for built-in agents and forbidden for custom agents",fieldPath=".gatewayTokenSecretRef"
-// +kubebuilder:validation:XValidation:rule="!has(self.agentIdentity) || !has(self.agentIdentity.enabled) || !self.agentIdentity.enabled || self.agent.type != 'custom'",message="agentIdentity is not supported for custom agents",fieldPath=".agentIdentity"
 type AgentSpec struct {
 	// Agent is the required per-instance Agent configuration.
 	// +required

@@ -5,11 +5,13 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"regexp"
 	"strings"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
@@ -26,6 +28,56 @@ type AdminTeamHandler struct {
 // teamNamePattern enforces a DNS-1123 label for the cluster-scoped team
 // name. Mirrors the alias pattern used elsewhere in the portal.
 var teamNamePattern = regexp.MustCompile(`^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$`)
+
+// Only expose known field paths, never arbitrary map keys or admission messages.
+var teamValidationFieldPattern = regexp.MustCompile(`^(metadata\.name|spec(\.(agentPolicyRef|defaultSandboxRef|` +
+	`sandboxRefs(\[[0-9]+\])?|skills(\[[0-9]+\])?|memberContext(\.(role|description(\[[0-9]+\])?))?|` +
+	`defaults(\.provider)?|skillStorage(\.(resourceGroup|storageAccount|containerName|storageClassName|storageSize|mountPath))?))?)$`)
+
+func teamValidationMessage(err error) string {
+	message := "Team configuration was rejected by the cluster."
+	var status apierrors.APIStatus
+	if !errors.As(err, &status) || status.Status().Details == nil {
+		return message + " Ask a platform administrator to check the Team requirements and Portal logs."
+	}
+	var fields []string
+	governanceRequired := false
+	for _, cause := range status.Status().Details.Causes {
+		if !teamValidationFieldPattern.MatchString(cause.Field) {
+			continue
+		}
+		// Kubernetes messages may include rejected values or webhook internals.
+		// Use fixed descriptions for structured cause types instead.
+		reason := "Invalid value"
+		switch cause.Type {
+		case metav1.CauseTypeFieldValueRequired:
+			reason = "Required value"
+			if cause.Field == "spec.agentPolicyRef" || cause.Field == "spec.defaultSandboxRef" || cause.Field == "spec.sandboxRefs" {
+				governanceRequired = true
+			}
+		case metav1.CauseTypeFieldValueDuplicate:
+			reason = "Duplicate value"
+		case metav1.CauseTypeFieldValueNotSupported:
+			reason = "Unsupported value"
+		case metav1.CauseTypeFieldValueNotFound:
+			reason = "Referenced value was not found"
+		case metav1.CauseTypeTooLong:
+			reason = "Value is too long"
+		case metav1.CauseTypeTooMany:
+			reason = "Too many items"
+		case metav1.CauseTypeForbidden:
+			reason = "Field is not allowed"
+		}
+		fields = append(fields, cause.Field+": "+reason)
+	}
+	if len(fields) > 0 {
+		message += " " + strings.Join(fields, "; ") + "."
+	}
+	if governanceRequired {
+		return message + " The cluster requires Agent Policy/Sandbox settings that this form cannot configure. Ask a platform administrator to configure the Team and verify that the Portal and installed CRDs are compatible."
+	}
+	return message + " Check the Team fields; if the required setting is unavailable, ask a platform administrator to check the Team requirements and Portal logs."
+}
 
 // TeamSkillStorageDTO mirrors cetirunv1alpha1.SkillStorageSpec.
 type TeamSkillStorageDTO struct {
@@ -193,6 +245,10 @@ func (h *AdminTeamHandler) CreateTeam(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		slog.Error("admin: create team failed", "name", req.Name, "error", err)
+		if apierrors.IsInvalid(err) {
+			writeError(w, http.StatusUnprocessableEntity, "invalid_team", teamValidationMessage(err))
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to create team")
 		return
 	}
@@ -234,6 +290,10 @@ func (h *AdminTeamHandler) UpdateTeam(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		slog.Error("admin: update team failed", "name", name, "error", err)
+		if apierrors.IsInvalid(err) {
+			writeError(w, http.StatusUnprocessableEntity, "invalid_team", teamValidationMessage(err))
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to update team")
 		return
 	}

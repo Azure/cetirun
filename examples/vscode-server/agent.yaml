@@ -8,6 +8,9 @@ metadata:
 spec:
   team: example-team
   sandboxRef: standard
+  modelAccess:
+    sharedModels: true
+    githubCopilot: false
   user:
     alias: example-user
     displayName: Example User
