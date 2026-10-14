@@ -44,6 +44,7 @@ func New(
 	api.HandleFunc("GET /api/v1/instances/{name}/chat/v1/models", chatHandler.Models)
 	api.HandleFunc("POST /api/v1/instances/{name}/chat/v1/chat/completions", chatHandler.Complete)
 	api.HandleFunc("GET /api/v1/me", meHandler.GetMe)
+	api.HandleFunc("GET /api/v1/instance/create-options", instanceHandler.GetCreateOptions)
 	api.HandleFunc("GET /api/v1/instance", instanceHandler.GetInstance)
 	api.HandleFunc("POST /api/v1/instance", instanceHandler.CreateInstance)
 	api.HandleFunc("PATCH /api/v1/instance", instanceHandler.UpdateInstance)

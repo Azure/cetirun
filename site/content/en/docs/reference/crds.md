@@ -356,6 +356,37 @@ The API validates model access and budgets as one unit: Copilot or shared model
 access requires a positive default and maximum monthly USD budget, and the
 default cannot exceed the maximum.
 
+#### Agent creation options
+
+The creation form selects a Team before offering Harness and model choices.
+`GET /api/v1/instance/create-options?team=<name>` requires a signed-in user and
+returns the selected Team, Policy name when bound, allowed Agent types, effective
+Gateway catalog, Agent Identity availability/requirement, and any configuration
+blocker. Responses use `Cache-Control: no-store`. This endpoint does not expose
+administrative Policy fields or grant runtime authorization.
+
+Harness choices intersect deployment settings with `harnesses.allowed`. Shared
+models intersect the Gateway catalog with `modelAccess.sharedModels.allowed`;
+Copilot requires both deployment availability and Policy permission. Required
+Agent Identity is selected automatically and cannot be turned off. It also
+requires the deployment feature, verified owner, Policy credential-service
+entitlement, and Entra capability. Missing prerequisites block creation.
+
+Both Agent creation endpoints re-read the same constraints before writing an
+Agent or credentials, including a private-registry creation retry. Explicitly
+forbidden choices are rejected; omitted model-source switches use the currently
+available sources and are persisted as explicit booleans. The default model must
+belong to an enabled, authorized source. Team default Skills must satisfy the
+Policy; the runtime continues to apply its default Gateway budget. No Skills or
+budget editor is added to the Agent form.
+
+Incomplete Team bindings, missing or deleting Policies, unreadable dependencies,
+and no available Harness/model source cannot fall back to unrestricted creation.
+A Team without Policy/Sandbox settings retains optional policy assignment.
+Policy-controlled native Agents require the AI Gateway. Configuration admission
+and runtime enforcement remain responsible for final authorization and execution;
+available form choices do not establish Sandbox readiness.
+
 #### Activation boundary
 
 The Portal provides no control for `Team.spec.agentPolicyRef`, `sandboxRefs`,

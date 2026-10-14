@@ -998,6 +998,7 @@ func TestUpdateInstance_Success(t *testing.T) {
 	instance := sampleInstance()
 	instance.Spec.Suspended = true
 	platform := gatewayTeam("platform")
+	platform.Spec.AgentPolicyRef = "standard"
 	platform.Spec.SandboxRefs, platform.Spec.DefaultSandboxRef = []string{"restricted"}, "restricted"
 	fc := newFakeClient(instance, platform)
 	h := &InstanceHandler{
