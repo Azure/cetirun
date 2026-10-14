@@ -225,8 +225,11 @@ type nativeStartAPIHarness struct {
 	sources      SandboxSourcesConfig
 }
 
-func newNativeStartAPIHarness(t *testing.T, admissionNative, coordinated bool) *nativeStartAPIHarness {
+func newNativeStartAPIHarness(t *testing.T, admissionNative, coordinated bool, network ...api.AgentPolicyNetwork) *nativeStartAPIHarness {
 	t.Helper()
+	if len(network) > 1 {
+		t.Fatal("native API fixture accepts at most one network policy")
+	}
 	if os.Getenv("USE_EXISTING_CLUSTER") == "true" {
 		t.Fatal("native start regression refuses an existing cluster")
 	}
@@ -447,7 +450,7 @@ func newNativeStartAPIHarness(t *testing.T, admissionNative, coordinated bool) *
 	}
 	input := testfixture.New("openclaw")
 	h.nativeSandboxFixture = &nativeSandboxFixture{r: r, kube: controllerClient, gateway: gateway, agent: input.Agent}
-	h.installPlatform(t, input, admissionNative)
+	h.installPlatform(t, input, admissionNative, network...)
 	// Deliberate deployment skew is the failure case: the controller is enabled
 	// but the independently served admission process still has its safe default.
 	admissionConfig.NativeExecution = admissionNative
@@ -499,7 +502,7 @@ func newNativeStartAPIHarness(t *testing.T, admissionNative, coordinated bool) *
 	return h
 }
 
-func (h *nativeStartAPIHarness) installPlatform(t *testing.T, input testfixture.Fixture, nativeProfile bool) {
+func (h *nativeStartAPIHarness) installPlatform(t *testing.T, input testfixture.Fixture, nativeProfile bool, network ...api.AgentPolicyNetwork) {
 	t.Helper()
 	runtimeClass := input.Input.RuntimeClass.DeepCopy()
 	runtimeClass.ObjectMeta = metav1.ObjectMeta{Name: runtimeClass.Name}
@@ -532,6 +535,10 @@ func (h *nativeStartAPIHarness) installPlatform(t *testing.T, input testfixture.
 		capabilities.EnforcementObservation, capabilities.RestrictiveFailure = false, false
 		platform.Adapter.Name, platform.Adapter.Qualified = sandboxpolicy.Cilium, false
 		input.Policy.Spec.Harnesses.Allowed = []api.AgentType{api.AgentTypeOpenClaw}
+	}
+	if len(network) == 1 {
+		input.Policy.Spec.Network = *network[0].DeepCopy()
+		capabilities.BlockedPorts = len(input.Policy.Spec.Network.BlockedPorts) != 0
 	}
 	document := SandboxPlatformConfiguration{
 		Version: "v1", Registrations: map[api.SandboxType]sandbox.Registration{api.SandboxKata: {Capabilities: capabilities, Available: true}},

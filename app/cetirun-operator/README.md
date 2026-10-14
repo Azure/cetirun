@@ -112,7 +112,8 @@ The supported profile is one OpenClaw Agent, a Kata Sandbox with
 ReadWriteOncePod HOME, and shared Gateway model access. It uses the selected
 Sandbox's resources/storage and the selected AgentPolicy's model entitlement
 and budget. Per-Agent Gateway keys are projected through owned Secrets, not
-embedded provider credentials. Custom CIDR/FQDN/port rules, internal-network
+embedded provider credentials. CIDR denies and supported TCP/UDP destination-port
+denies are compiled into the owned Cilium policy. FQDN rules, internal-network
 exceptions, required mTLS, Kubernetes/identity grants, Copilot sidecars, desktop,
 Tailscale, Teams and arbitrary Agent Helm overrides are rejected before start.
 Existing baseline network controls are retained.
@@ -131,9 +132,27 @@ topology, DNS/Gateway peers, and pinned RuntimeClass/StorageClass identities
 remain required; read-only root and ingress support must match the selected
 policy. Its policy harness allow-list contains only `openclaw`.
 `enforcementObservation`, `restrictiveFailure`, per-container guarantee flags,
-custom port/FQDN support, mTLS, Kubernetes access and Entra ID flags must be
+FQDN support, mTLS, Kubernetes access and Entra ID flags must be
 `false`; identity/token grant declarations are unsupported. These are not
 physical fencing or guest-external runtime-observation guarantees.
+
+`network.blockedCIDRs` uses the registered address families and the existing
+guest-external deny baseline. `network.blockedPorts` additionally requires
+`registrations.kata.Capabilities.blockedPorts: true`; it is never enabled by
+default or inferred from TCP/UDP connectivity. Declare that support only after
+verifying actual deny behavior on the selected Cilium/runtime combination.
+Native port denies support TCP and UDP only; an omitted protocol means TCP.
+SCTP is rejected even if a broader registration lists it. Rules that block
+required DNS/Gateway destinations or ports are rejected, not silently removed.
+Admission checks these conflicts against current topology when a policy is
+bound to a native Sandbox, when a referenced policy changes, and when an Agent
+is authorized. An unreferenced policy definition alone does not select a
+platform. Capability-only injected registrations cannot authorize native deny
+rules without the matching topology. Configure port support before creating
+consumers; changing platform inventory is not a live capability upgrade.
+Public destinations outside the deny rules retain the existing egress posture.
+These controls do not enable live policy rollout: selected configuration remains
+reserved for the single-start lifetime, and actual source drift still holds it.
 
 The empty/omitted capabilities profile retains the existing qualified contract,
 including mandatory `enforcementObservation`, `restrictiveFailure` and the

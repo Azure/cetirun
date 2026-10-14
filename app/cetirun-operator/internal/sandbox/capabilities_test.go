@@ -164,6 +164,71 @@ func nativeCapabilities() Capabilities {
 	return capabilities
 }
 
+func TestNativeNetworkCompatibility(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		network cetirunv1alpha1.AgentPolicyNetwork
+	}{
+		{name: "CIDR", network: cetirunv1alpha1.AgentPolicyNetwork{BlockedCIDRs: []string{"198.51.100.0/24"}}},
+		{name: "TCP", network: cetirunv1alpha1.AgentPolicyNetwork{
+			BlockedPorts: []cetirunv1alpha1.AgentPolicyPort{{Port: 8080, Protocol: corev1.ProtocolTCP}},
+		}},
+		{name: "UDP", network: cetirunv1alpha1.AgentPolicyNetwork{
+			BlockedPorts: []cetirunv1alpha1.AgentPolicyPort{{Port: 8080, Protocol: corev1.ProtocolUDP}},
+		}},
+		{name: "CIDR and default TCP", network: cetirunv1alpha1.AgentPolicyNetwork{
+			BlockedCIDRs: []string{"198.51.100.0/24"},
+			BlockedPorts: []cetirunv1alpha1.AgentPolicyPort{{Port: 8080}},
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			input := resolverFixture()
+			policy := cetirunv1alpha1.AgentPolicySpec{
+				Harnesses: cetirunv1alpha1.AgentPolicyHarnesses{Allowed: []cetirunv1alpha1.AgentType{cetirunv1alpha1.AgentTypeOpenClaw}},
+				Network:   tc.network,
+			}
+			capabilities := nativeCapabilities()
+			capabilities.BlockedPorts = len(tc.network.BlockedPorts) != 0
+			if errs := CheckCompatibility(input.Resources.Sandboxes["standard"].Spec, policy, capabilities); len(errs) != 0 {
+				t.Fatalf("supported native network restrictions were rejected: %v", errs.ToAggregate())
+			}
+		})
+	}
+}
+
+func TestNativeNetworkCompatibilityRetainsCapabilityChecks(t *testing.T) {
+	input := resolverFixture()
+	box := input.Resources.Sandboxes["standard"].Spec
+	policy := cetirunv1alpha1.AgentPolicySpec{
+		Harnesses: cetirunv1alpha1.AgentPolicyHarnesses{Allowed: []cetirunv1alpha1.AgentType{cetirunv1alpha1.AgentTypeOpenClaw}},
+	}
+	for _, tc := range []struct {
+		name      string
+		network   cetirunv1alpha1.AgentPolicyNetwork
+		configure func(*Capabilities)
+	}{
+		{name: "ports not declared", network: cetirunv1alpha1.AgentPolicyNetwork{
+			BlockedPorts: []cetirunv1alpha1.AgentPolicyPort{{Port: 18080}},
+		}, configure: func(c *Capabilities) { c.BlockedPorts = false }},
+		{name: "IPv6 not declared", network: cetirunv1alpha1.AgentPolicyNetwork{
+			BlockedCIDRs: []string{"2001:db8::/32"},
+		}, configure: func(c *Capabilities) { c.IPFamilies = []corev1.IPFamily{corev1.IPv4Protocol} }},
+		{name: "SCTP declared but unsupported", network: cetirunv1alpha1.AgentPolicyNetwork{
+			BlockedPorts: []cetirunv1alpha1.AgentPolicyPort{{Port: 18080, Protocol: corev1.ProtocolSCTP}},
+		}, configure: func(c *Capabilities) { c.Protocols = append(c.Protocols, corev1.ProtocolSCTP) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			capabilities := nativeCapabilities()
+			capabilities.BlockedPorts = true
+			tc.configure(&capabilities)
+			policy.Network = tc.network
+			if errs := CheckCompatibility(box, policy, capabilities); len(errs) == 0 {
+				t.Fatal("native network control exceeded its declared or supported capabilities")
+			}
+		})
+	}
+}
+
 func TestNativeCompatibilityKeepsBaselineWithoutFencingClaims(t *testing.T) {
 	input := resolverFixture()
 	box := input.Resources.Sandboxes["standard"].Spec
@@ -187,7 +252,6 @@ func TestNativeCompatibilityKeepsBaselineWithoutFencingClaims(t *testing.T) {
 		"external observer": func(c *Capabilities) { c.EnforcementObservation = true },
 		"physical fencing":  func(c *Capabilities) { c.RestrictiveFailure = true },
 		"container quotas":  func(c *Capabilities) { c.PerContainerResourceLimits = true },
-		"port support":      func(c *Capabilities) { c.BlockedPorts = true },
 		"FQDN support":      func(c *Capabilities) { c.BlockedFQDNs = true },
 		"mTLS support":      func(c *Capabilities) { c.MutualTLS = true },
 		"admin support":     func(c *Capabilities) { c.KubernetesAccess = true },
@@ -205,7 +269,6 @@ func TestNativeCompatibilityKeepsBaselineWithoutFencingClaims(t *testing.T) {
 		"Hermes": func(p *cetirunv1alpha1.AgentPolicySpec) {
 			p.Harnesses.Allowed = append(p.Harnesses.Allowed, cetirunv1alpha1.AgentTypeHermes)
 		},
-		"CIDR": func(p *cetirunv1alpha1.AgentPolicySpec) { p.Network.BlockedCIDRs = []string{"203.0.113.0/24"} },
 		"FQDN": func(p *cetirunv1alpha1.AgentPolicySpec) { p.Network.BlockedFQDNs = []string{"blocked.example.com"} },
 		"port": func(p *cetirunv1alpha1.AgentPolicySpec) {
 			p.Network.BlockedPorts = []cetirunv1alpha1.AgentPolicyPort{{Port: 25}}

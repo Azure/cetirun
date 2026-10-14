@@ -12,6 +12,7 @@ import (
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandbox"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxplatform"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxpolicy"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 )
 
@@ -51,7 +52,7 @@ func (h *Handler) platformRegistrations(ctx context.Context) (map[api.SandboxTyp
 	return h.platformSnapshot.Registrations, ctx.Err()
 }
 
-func (h *Handler) checkTeamExecutionProfiles(spec api.TeamSpec, resources sandbox.Resources, registrations map[api.SandboxType]sandbox.Registration) error {
+func (h *Handler) checkTeamExecutionProfiles(ctx context.Context, spec api.TeamSpec, resources sandbox.Resources, registrations map[api.SandboxType]sandbox.Registration) error {
 	for _, name := range spec.SandboxRefs {
 		box := resources.Sandboxes[name]
 		if box == nil {
@@ -64,8 +65,38 @@ func (h *Handler) checkTeamExecutionProfiles(spec api.TeamSpec, resources sandbo
 		if err := sandbox.CheckExecutionProfile(registrations[selected.Type].Capabilities, h.config.NativeExecution); err != nil {
 			return err
 		}
+		if err := h.checkNativeNetworkBinding(ctx, selected.Type, resources.AgentPolicies[spec.AgentPolicyRef],
+			registrations[selected.Type].Capabilities); err != nil {
+			return err
+		}
 	}
 	return nil
+}
+
+func (h *Handler) checkNativeNetworkBinding(ctx context.Context, kind api.SandboxType, policy *api.AgentPolicy, capabilities sandbox.Capabilities) error {
+	if capabilities.Profile != sandbox.ProfileNativeSingleStart {
+		return nil
+	}
+	if policy == nil {
+		return fmt.Errorf("native network validation requires the selected AgentPolicy")
+	}
+	if len(policy.Spec.Network.BlockedCIDRs) == 0 && len(policy.Spec.Network.BlockedPorts) == 0 {
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if h.platformSnapshot == nil {
+		return fmt.Errorf("%w: native network restrictions require a current platform topology", sandboxpolicy.ErrUnavailable)
+	}
+	platform, ok := h.platformSnapshot.Platforms[kind]
+	if !ok {
+		return fmt.Errorf("%w: the selected native network platform is missing", sandboxpolicy.ErrUnavailable)
+	}
+	if err := sandboxpolicy.ValidatePolicyConfiguration(policy, capabilities, platform); err != nil {
+		return err
+	}
+	return ctx.Err()
 }
 
 func (h *Handler) verifyPlatformSnapshot(ctx context.Context) error {
