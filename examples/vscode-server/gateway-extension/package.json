@@ -3,7 +3,7 @@
   "displayName": "CetiRun AI Gateway",
   "description": "Configure the instance AI Gateway in native Copilot Chat.",
   "publisher": "cetirun",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "license": "MIT",
   "engines": { "vscode": "^1.139.0" },
   "main": "./extension.cjs",

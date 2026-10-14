@@ -1,12 +1,15 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-const { createHash } = require("node:crypto");
+const { createHash, randomBytes, scrypt } = require("node:crypto");
+const { promisify } = require("node:util");
 const { GROUP, gatewayConfiguration, discoverModels, providerGroup, parseGroups, mergeGatewayGroup } = require("./gateway.cjs");
 
 const STATE = "gatewayConfiguration";
 const digest = value => createHash("sha256").update(JSON.stringify(value)).digest("hex");
+const deriveSignature = promisify(scrypt);
 const isGateway = group => group.name === GROUP && group.vendor === "customendpoint";
+const isSecretReference = value => typeof value === "string" && /^\$\{input:chat\.lm\.secret\.[^}]+\}$/.test(value);
 const setupMessages = new Set([
   "Invalid Gateway binding", "Gateway model discovery failed", "Gateway catalog is too large",
   "Invalid Gateway catalog", "No Gateway models are available", "Invalid language model configuration",
@@ -38,7 +41,6 @@ async function configure(vscode, context, env = process.env, fetcher = fetch) {
   const ids = await discoverModels(config, fetcher);
   if (!ids.length) throw new Error("No Gateway models are available");
   const group = providerGroup(config, ids);
-  const signature = digest(group);
   const previous = context.globalState.get(STATE);
   let state = previous;
   let document;
@@ -58,10 +60,14 @@ async function configure(vscode, context, env = process.env, fetcher = fetch) {
   const original = document.getText();
   const groups = parseGroups(original);
   const owned = groups.filter(isGateway);
-  if (owned.length > 1 || (owned.length && digest(owned[0]) !== previous?.groupDigest)) {
+  if (owned.length > 1 || (owned.length &&
+      (!isSecretReference(owned[0].apiKey) || digest(owned[0]) !== previous?.groupDigest))) {
     throw new Error("Existing Gateway configuration was edited; it is preserved");
   }
-  if (!owned.length || previous?.signature !== signature) {
+  const signatureSalt = typeof previous?.signatureSalt === "string" && /^[a-f0-9]{32}$/.test(previous.signatureSalt)
+    ? previous.signatureSalt : randomBytes(16).toString("hex");
+  const signature = (await deriveSignature(JSON.stringify(group), signatureSalt, 32)).toString("hex");
+  if (!owned.length || previous?.signatureSalt !== signatureSalt || previous?.signature !== signature) {
     const withoutGateway = JSON.stringify(groups.filter(group => !isGateway(group)), null, 2) + "\n";
     if (owned.length) await replaceDocument(vscode, document, original, withoutGateway);
     try {
@@ -76,15 +82,15 @@ async function configure(vscode, context, env = process.env, fetcher = fetch) {
     const nativeText = document.getText();
     const savedGroups = parseGroups(nativeText);
     const saved = savedGroups.filter(isGateway);
-    if (saved.length !== 1 || !/^\$\{input:chat\.lm\.secret\.[^}]+\}$/.test(saved[0].apiKey)) {
+    if (saved.length !== 1 || !isSecretReference(saved[0].apiKey)) {
       throw new Error("Native Gateway secret storage was not confirmed");
     }
-    if (digest(savedGroups.filter(group => !isGateway(group))) !== digest(groups.filter(group => !isGateway(group)))) {
+    if (JSON.stringify(savedGroups.filter(group => !isGateway(group))) !== JSON.stringify(groups.filter(group => !isGateway(group)))) {
       throw new Error("Model configuration changed during setup");
     }
     // Native addition normalizes the whole JSON file; restore unrelated formatting and comments.
     await replaceDocument(vscode, document, nativeText, mergeGatewayGroup(original, saved[0]));
-    state = { uri: document.uri.toString(), signature, groupDigest: digest(saved[0]), defaults: previous?.defaults };
+    state = { uri: document.uri.toString(), signature, signatureSalt, groupDigest: digest(saved[0]), defaults: previous?.defaults };
     await context.globalState.update(STATE, state);
   }
   const settings = vscode.workspace.getConfiguration("chat");

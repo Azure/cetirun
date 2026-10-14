@@ -5,6 +5,8 @@ import assert from "node:assert/strict";
 import http from "node:http";
 import { readFile } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
+import * as crypto from "node:crypto";
+import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import vm from "node:vm";
 import test from "node:test";
@@ -184,6 +186,97 @@ test("restart refreshes owned models and rotated key, preserving explicit settin
   assert.equal(f.settings.get("utilitySmallModel").globalValue, "customendpoint/new-model");
 });
 
+test("credential signatures use independent salts and remain stable across restarts", async () => {
+  const a = editorFixture(), b = editorFixture();
+  await a.run();
+  await b.run();
+  const first = a.state.get("gatewayConfiguration");
+  const second = b.state.get("gatewayConfiguration");
+  assert.match(first.signatureSalt, /^[a-f0-9]{32}$/);
+  assert.notEqual(first.signatureSalt, second.signatureSalt);
+  assert.notEqual(first.signature, second.signature);
+  const expected = await promisify(crypto.scrypt)(JSON.stringify(providerGroup(gatewayConfiguration(env), ["example-model"])), first.signatureSalt, 32);
+  assert.equal(first.signature, expected.toString("hex"));
+  await a.run();
+  assert.deepEqual(a.state.get("gatewayConfiguration"), first);
+  assert.equal(a.secrets.size, 1);
+});
+
+test("key-only rotation refreshes native secrets without changing the signature salt", async () => {
+  const f = editorFixture();
+  await f.run();
+  const before = f.state.get("gatewayConfiguration");
+  const rotated = { ...env, OPENAI_API_KEY: "sk-dummy-rotated" };
+  await f.run(["example-model"], rotated);
+  const after = f.state.get("gatewayConfiguration");
+  assert.equal(after.signatureSalt, before.signatureSalt);
+  assert.notEqual(after.signature, before.signature);
+  assert.equal(f.secrets.get("chat.lm.secret.fixture1"), rotated.OPENAI_API_KEY);
+  assert.ok(!JSON.stringify([...f.state]).includes(rotated.OPENAI_API_KEY));
+  await f.run(["example-model"], rotated);
+  assert.equal(f.secrets.size, 2);
+});
+
+test("legacy signatures migrate once and failed migration preserves state and user edits", async () => {
+  for (const binding of [env, { ...env, OPENAI_API_KEY: "sk-dummy-rotated" }]) {
+    const f = editorFixture("[]", { utilityModel: { globalValue: "owner/utility" } });
+    await f.run();
+    const { signatureSalt, ...legacy } = f.state.get("gatewayConfiguration");
+    legacy.signature = "0".repeat(64);
+    f.state.set("gatewayConfiguration", legacy);
+    const original = f.text;
+    f.failNative = true;
+    await assert.rejects(f.run(["example-model"], binding), /Native Gateway model setup failed/);
+    assert.equal(f.text, original);
+    assert.deepEqual(f.state.get("gatewayConfiguration"), legacy);
+    f.failNative = false;
+    await f.run(["example-model"], binding);
+    assert.match(f.state.get("gatewayConfiguration").signatureSalt, /^[a-f0-9]{32}$/);
+    assert.equal(f.secrets.size, 2);
+    assert.equal(f.secrets.get("chat.lm.secret.fixture1"), binding.OPENAI_API_KEY);
+    assert.equal(f.settings.get("utilityModel").globalValue, "owner/utility");
+    await f.run(["example-model"], binding);
+    assert.equal(f.secrets.size, 2);
+  }
+});
+
+test("plaintext keys never reach the fast hash, including user-edited model groups", async () => {
+  const source = await readFile(new URL("../gateway-extension/extension.cjs", import.meta.url), "utf8");
+  const sandbox = { module: { exports: {} }, require: name => {
+    if (name === "./gateway.cjs") return gateway;
+    if (name === "node:util") return { promisify };
+    assert.equal(name, "node:crypto");
+    return { ...crypto, createHash: algorithm => {
+      const hash = crypto.createHash(algorithm);
+      return { update: value => {
+        assert.ok(!value.includes("sk-dummy"), "Plaintext keys must not enter SHA-256");
+        return hash.update(value);
+      } };
+    } };
+  } };
+  vm.runInNewContext(source, sandbox);
+  const f = editorFixture('[{"name":"Owner","vendor":"other","apiKey":"sk-dummy-owner"}]');
+  const run = () => sandbox.module.exports.configure(f.vscode, f.context, env, catalog("example-model"));
+  await run();
+  const original = f.text;
+  const current = f.state.get("gatewayConfiguration");
+  for (const key of ["sk-dummy-edited", "${input:chat.lm.secret.user-edited}"]) {
+    for (const legacy of [false, true]) {
+      const state = { ...current };
+      if (legacy) delete state.signatureSalt;
+      f.state.set("gatewayConfiguration", state);
+      const groups = parseGroups(original);
+      groups.find(group => group.name === GROUP).apiKey = key;
+      f.text = JSON.stringify(groups);
+      const edited = f.text;
+      await assert.rejects(run(), /Existing Gateway configuration was edited/);
+      assert.equal(f.text, edited);
+      assert.deepEqual(f.state.get("gatewayConfiguration"), state);
+      assert.equal(f.secrets.size, 1);
+    }
+  }
+});
+
 test("bootstrap waits for the browser model editor to reach the remote extension host", async () => {
   const f = editorFixture();
   f.delayEditor = true;
@@ -266,7 +359,8 @@ test("activation reports a sanitized warning without leaking a failed provider r
   const sandbox = { module: { exports: {} }, process: { env }, fetch: async () => { throw new Error("sk-dummy private response"); },
     require: name => {
       if (name === "./gateway.cjs") return gateway;
-      if (name === "node:crypto") return { createHash: () => assert.fail("No configuration should be written") };
+      if (name === "node:crypto") return { ...crypto, randomBytes: () => assert.fail("No configuration should be written") };
+      if (name === "node:util") return { promisify };
       assert.equal(name, "vscode");
       return { commands: { registerCommand: () => ({ dispose() {} }) },
         workspace: { getConfiguration: () => ({ get: () => undefined }) },
