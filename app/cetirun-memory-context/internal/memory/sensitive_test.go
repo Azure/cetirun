@@ -6,11 +6,103 @@ package memory
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
+
+func TestReviseRetainsLegacySourceContent(t *testing.T) {
+	for _, field := range []string{"ref", "currentRef", "version"} {
+		t.Run(field, func(t *testing.T) {
+			f := newFixture(t)
+			note := testNote("legacy provenance")
+			if err := note.validate(); err != nil {
+				t.Fatal(err)
+			}
+			signed := "https://storage.example.com/note?sig=synthetic"
+			switch field {
+			case "ref":
+				note.Sources[0].Ref = signed
+			case "currentRef":
+				note.Sources[0].CurrentRef = &signed
+			case "version":
+				version := syntheticToken("gh"+"p_", 36)
+				note.Sources[0].Version = &version
+			}
+			// Seed the synthetic pre-upgrade record through the store writer:
+			// current capture must refuse it, but its digest and lineage are valid.
+			note.ID, note.Revision = newID("note"), 1
+			note.UpdatedAt = timestamp(f.store.now())
+			result, _, err := f.store.write(context.Background(), f.request(t, struct{}{}), "fixture-legacy", false, func(v *snapshot) (writeResult, error) {
+				ref, err := v.save(note.ID, note.Revision, note)
+				return writeResult{Refs: []Ref{ref}}, err
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			ref := result.Refs[0]
+			child := testNote("derived note")
+			child.DerivedFrom = []Derived{{Ref: ref, Role: "support"}}
+			childRef := f.note(t, child)
+			originalSources := append([]Source(nil), note.Sources...)
+			note.Body = "Corrected harmless body."
+			ref = f.call(t, "revise", reviseInput{Ref: ref, Note: note, Reason: "Correct the body"}).Data.(writeResult).Refs[0]
+			note.Revision = ref.Revision
+			note.Status = "deprecated"
+			payload, _ := encode(reviseInput{Ref: ref, Note: note, Reason: "Retire the statement"})
+			op, _ := encode(operation{Type: "mark-note-state", Payload: payload})
+			ref = f.call(t, "commit", batchInput{Operations: []json.RawMessage{op}}).Data.(writeResult).Refs[0]
+			note.Revision = ref.Revision
+			v, err := f.store.open()
+			if err != nil {
+				t.Fatal(err)
+			}
+			var stored Note
+			err = v.read(ref, &stored)
+			childPresent := v.m.Objects[childRef.ID] == childRef && !v.m.Tombstones[childRef.ID]
+			v.fs.close()
+			if err != nil || !reflect.DeepEqual(stored.Sources, originalSources) || stored.Body != note.Body || stored.Status != "deprecated" || !childPresent {
+				t.Fatalf("revision lost provenance, changes or derivative: %+v, %v", stored, err)
+			}
+
+			for _, change := range []string{"body", "new source", "changed source", "assurance", "drop source"} {
+				t.Run(change, func(t *testing.T) {
+					changed := note
+					changed.Sources = append([]Source(nil), note.Sources...)
+					want := "InvalidInput"
+					switch change {
+					case "body":
+						changed.Body = "API_KEY=" + syntheticToken("", 32)
+					case "new source":
+						extra := testNote("extra").Sources[0]
+						extra.Kind = "other-fixture"
+						extra.Ref = signed
+						changed.Sources = append(changed.Sources, extra)
+					case "changed source":
+						changed.Sources[0].Ref = signed + "-changed"
+					case "assurance":
+						changed.Sources[0].Assurance = "adapter-observed"
+					case "drop source":
+						changed.Sources = testNote("replacement").Sources
+						want = "SourceLineageRequired"
+					}
+					response, code := f.store.Execute(context.Background(), "revise", f.request(t, reviseInput{Ref: ref, Note: changed, Reason: "Synthetic revision"}))
+					if code != 2 || response.Reason != want {
+						t.Fatalf("%s: code %d, %+v", change, code, response)
+					}
+				})
+			}
+			copy := note
+			copy.ID, copy.Revision, copy.UpdatedAt = "", 0, ""
+			if response, code := f.store.Execute(context.Background(), "capture", f.request(t, captureInput{Note: &copy})); code != 2 || response.Reason != "InvalidInput" {
+				t.Fatalf("new capture accepted legacy credential provenance: %+v", response)
+			}
+		})
+	}
+}
 
 // syntheticToken builds a token-shaped value at run time, so that this source
 // holds no string in a credential format.

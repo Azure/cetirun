@@ -125,13 +125,21 @@ func (n *Note) validate(preservedSources ...Source) error {
 	}
 	for i := range n.Sources {
 		s := &n.Sources[i]
-		if !identityPattern.MatchString(s.Kind) || !validSource(s.Ref) || s.CurrentRef != nil && !validSource(*s.CurrentRef) || !validTime(s.ObservedAt) || s.Version != nil && !validText(*s.Version, 256) {
+		// Only the complete, unchanged source read from the existing note may
+		// retain text accepted before the secret checks were tightened. Revise
+		// requires this provenance to survive, so rechecking it would prevent
+		// even harmless body/status corrections. New or edited sources still
+		// pass every content check; callers cannot supply preservedSources.
+		preserved := slices.ContainsFunc(preservedSources, func(original Source) bool { return reflect.DeepEqual(original, *s) })
+		if !identityPattern.MatchString(s.Kind) || !validTime(s.ObservedAt) {
+			return problem(2, "InvalidInput")
+		}
+		if !preserved && (!validSource(s.Ref) || s.CurrentRef != nil && !validSource(*s.CurrentRef) || s.Version != nil && !validText(*s.Version, 256)) {
 			return problem(2, "InvalidInput")
 		}
 		if !slices.Contains([]string{"user-stated", "tool-observed", "external-claim", "agent-inferred"}, s.Origin) {
 			return problem(2, "InvalidInput")
 		}
-		preserved := slices.ContainsFunc(preservedSources, func(original Source) bool { return reflect.DeepEqual(original, *s) })
 		if s.Assurance != "" && s.Assurance != "reported" && !preserved {
 			return problem(2, "InvalidInput")
 		}

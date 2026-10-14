@@ -95,6 +95,12 @@ automatically; `trace` reports `HistoryCompacted` after that happens and is not 
   `.git-credentials`, and the harnesses' configuration and auth files. Text that looks like a token or
   key is refused as well.
 
+When revising an existing note, keep its source records unchanged. Sources already
+stored may be retained exactly even if a newer text check would refuse them as
+new input; this allows body and status corrections without losing provenance.
+New or changed sources and the revised note's other text still pass the current
+checks. This applies to `revise` and batch `revise-note`/`mark-note-state` operations.
+
 ## How `query` finds notes
 
 The helper reads every note in scope, up to the store's capacity, and tries three exact stages in order.
