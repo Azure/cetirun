@@ -12,10 +12,17 @@ import (
 	"reflect"
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"github.com/Azure/CetiRun/app/cetirun-operator/configurationcoordination"
 	"github.com/Azure/CetiRun/app/cetirun-portal/internal/kube"
 )
 
@@ -213,4 +220,152 @@ func TestAdminPolicyRejectsStaleUpdateAndDelete(t *testing.T) {
 	if w.Code != http.StatusConflict {
 		t.Fatalf("stale delete status %d, want 409: %s", w.Code, w.Body.String())
 	}
+}
+
+func TestAdminPolicyClassifiesCoordinatedUnavailableErrors(testContext *testing.T) {
+	for _, test := range []struct {
+		name          string
+		mutationErr   error
+		initialGetErr error
+		wantStatus    int
+		wantCode      string
+	}{
+		{
+			name:        "coordinated not found",
+			mutationErr: apierrors.NewNotFound(schema.GroupResource{Group: "cetirun.microsoft.com", Resource: "agentpolicies"}, "standard"),
+			wantStatus:  http.StatusServiceUnavailable,
+			wantCode:    "policy_change_unavailable",
+		},
+		{
+			name:        "coordinated forbidden",
+			mutationErr: apierrors.NewForbidden(schema.GroupResource{Group: "cetirun.microsoft.com", Resource: "agentpolicies"}, "standard", nil),
+			wantStatus:  http.StatusServiceUnavailable,
+			wantCode:    "policy_change_unavailable",
+		},
+		{
+			name:        "coordinated conflict",
+			mutationErr: apierrors.NewConflict(schema.GroupResource{Group: "cetirun.microsoft.com", Resource: "agentpolicies"}, "standard", nil),
+			wantStatus:  http.StatusServiceUnavailable,
+			wantCode:    "policy_change_unavailable",
+		},
+		{
+			name:          "initial not found",
+			initialGetErr: apierrors.NewNotFound(schema.GroupResource{Group: "cetirun.microsoft.com", Resource: "agentpolicies"}, "standard"),
+			wantStatus:    http.StatusNotFound,
+			wantCode:      "policy_not_found",
+		},
+		{
+			name:          "initial forbidden",
+			initialGetErr: apierrors.NewForbidden(schema.GroupResource{Group: "cetirun.microsoft.com", Resource: "agentpolicies"}, "standard", nil),
+			wantStatus:    http.StatusForbidden,
+			wantCode:      "policy_forbidden",
+		},
+	} {
+		for _, operation := range []struct {
+			name   string
+			invoke func(*AdminPolicyHandler, kube.AgentPolicyVersion) *httptest.ResponseRecorder
+		}{
+			{
+				name: "update",
+				invoke: func(handler *AdminPolicyHandler, version kube.AgentPolicyVersion) *httptest.ResponseRecorder {
+					req := validPolicyRequest()
+					req.Name = ""
+					req.Harnesses.Allowed = []cetirunv1alpha1.AgentType{cetirunv1alpha1.AgentTypeHermes}
+					req.UID = string(version.UID)
+					req.ResourceVersion = version.ResourceVersion
+					body, err := json.Marshal(req)
+					if err != nil {
+						testContext.Fatal(err)
+					}
+					request := httptest.NewRequest(http.MethodPut, "/api/v1/admin/policies/standard", bytes.NewReader(body))
+					request.SetPathValue("name", "standard")
+					response := httptest.NewRecorder()
+					handler.UpdatePolicy(response, request)
+					return response
+				},
+			},
+			{
+				name: "delete",
+				invoke: func(handler *AdminPolicyHandler, version kube.AgentPolicyVersion) *httptest.ResponseRecorder {
+					body, err := json.Marshal(map[string]string{"uid": string(version.UID), "resourceVersion": version.ResourceVersion})
+					if err != nil {
+						testContext.Fatal(err)
+					}
+					request := httptest.NewRequest(http.MethodDelete, "/api/v1/admin/policies/standard", bytes.NewReader(body))
+					request.SetPathValue("name", "standard")
+					response := httptest.NewRecorder()
+					handler.DeletePolicy(response, request)
+					return response
+				},
+			},
+		} {
+			testContext.Run(test.name+"/"+operation.name, func(testContext *testing.T) {
+				handler, version := newCoordinatedAdminPolicyHandler(testContext, test.mutationErr, test.initialGetErr)
+				response := operation.invoke(handler, version)
+				if response.Code != test.wantStatus {
+					testContext.Fatalf("status %d, want %d: %s", response.Code, test.wantStatus, response.Body.String())
+				}
+				var payload ErrorResponse
+				if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+					testContext.Fatal(err)
+				}
+				if payload.Error.Code != test.wantCode {
+					testContext.Fatalf("error code %q, want %q", payload.Error.Code, test.wantCode)
+				}
+			})
+		}
+	}
+}
+
+func newCoordinatedAdminPolicyHandler(testContext *testing.T, mutationErr, initialGetErr error) (*AdminPolicyHandler, kube.AgentPolicyVersion) {
+	testContext.Helper()
+	authority := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace:  "cetirun-system",
+			Name:       "configuration-coordination",
+			UID:        types.UID("authority-uid"),
+			Finalizers: []string{"sandbox.cetirun.microsoft.com/coordination"},
+		},
+		Data: map[string]string{"coordination.json": `{"version":1,"executions":[],"changes":[]}`},
+	}
+	policy := &cetirunv1alpha1.AgentPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: "standard", UID: types.UID("policy-uid")},
+		Spec:       toAgentPolicySpec(validPolicyRequest()),
+	}
+	storage := fake.NewClientBuilder().WithScheme(newScheme()).WithGlobalResourceVersionCounter().WithObjects(authority, policy).Build()
+	current := &cetirunv1alpha1.AgentPolicy{}
+	if err := storage.Get(context.Background(), client.ObjectKeyFromObject(policy), current); err != nil {
+		testContext.Fatal(err)
+	}
+	writer := interceptor.NewClient(storage, interceptor.Funcs{
+		Get: func(ctx context.Context, storage client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if _, ok := obj.(*cetirunv1alpha1.AgentPolicy); ok && initialGetErr != nil {
+				return initialGetErr
+			}
+			return storage.Get(ctx, key, obj, opts...)
+		},
+		Update: func(ctx context.Context, storage client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+			if _, ok := obj.(*cetirunv1alpha1.AgentPolicy); ok && mutationErr != nil {
+				return mutationErr
+			}
+			return storage.Update(ctx, obj, opts...)
+		},
+		Delete: func(ctx context.Context, storage client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+			if _, ok := obj.(*cetirunv1alpha1.AgentPolicy); ok && mutationErr != nil {
+				return mutationErr
+			}
+			return storage.Delete(ctx, obj, opts...)
+		},
+	})
+	coordination, err := configurationcoordination.New(writer, storage, configurationcoordination.Authority{
+		Namespace: authority.Namespace,
+		Name:      authority.Name,
+		UID:       authority.UID,
+	})
+	if err != nil {
+		testContext.Fatal(err)
+	}
+	portal := kube.NewClient(writer)
+	portal.SetConfigurationCoordination(coordination)
+	return &AdminPolicyHandler{Kube: portal}, kube.AgentPolicyVersion{UID: current.UID, ResourceVersion: current.ResourceVersion}
 }

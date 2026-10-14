@@ -124,7 +124,8 @@ type Change struct {
 	Phase         Phase             `json:"phase"`
 	Team          *TeamChange       `json:"team,omitempty"`
 	// UnchangedDigest pins equal before/after effective Sandbox or AgentPolicy inputs.
-	UnchangedDigest string `json:"unchangedDigest,omitempty"`
+	UnchangedDigest       string `json:"unchangedDigest,omitempty"`
+	DeletionContentDigest string `json:"deletionContentDigest,omitempty"`
 }
 
 type TeamChange struct {
@@ -230,7 +231,7 @@ func (s Store) AcquireExecution(ctx context.Context, intent Intent) (Ticket, err
 }
 
 func (s Store) AcquireChange(ctx context.Context, before w.SourceReference, desiredDigest string) (ChangeTicket, error) {
-	return s.acquireChange(ctx, before, desiredDigest, nil, "")
+	return s.acquireChange(ctx, before, desiredDigest, nil, "", "")
 }
 
 // AcquireTeamChange derives the affected execution selections from an exact
@@ -290,10 +291,10 @@ func (s Store) AcquireTeamChange(ctx context.Context, before, after *api.Team) (
 		!current.DeletionTimestamp.IsZero() || oldDigest != currentDigest {
 		return ChangeTicket{}, ErrConflict
 	}
-	return s.acquireChange(ctx, reference, desiredDigest, scope, "")
+	return s.acquireChange(ctx, reference, desiredDigest, scope, "", "")
 }
 
-func (s Store) acquireChange(ctx context.Context, before w.SourceReference, desiredDigest string, team *TeamChange, unchangedDigest string) (ChangeTicket, error) {
+func (s Store) acquireChange(ctx context.Context, before w.SourceReference, desiredDigest string, team *TeamChange, unchangedDigest, deletionContentDigest string) (ChangeTicket, error) {
 	if !validSource(before) || !digest(desiredDigest) {
 		return ChangeTicket{}, fmt.Errorf("%w: change requires an exact source and desired-content digest", ErrUnavailable)
 	}
@@ -314,14 +315,15 @@ func (s Store) acquireChange(ctx context.Context, before w.SourceReference, desi
 	for _, existing := range state.Changes {
 		if sourceKey(existing.Before) == sourceKey(before) {
 			if existing.Before == before && existing.DesiredDigest == desiredDigest &&
-				existing.UnchangedDigest == unchangedDigest && equality.Semantic.DeepEqual(existing.Team, team) {
+				existing.UnchangedDigest == unchangedDigest && existing.DeletionContentDigest == deletionContentDigest &&
+				equality.Semantic.DeepEqual(existing.Team, team) {
 				return ChangeTicket{object.UID, cloneChange(existing)}, nil
 			}
 			return ChangeTicket{}, ErrConflict
 		}
 	}
 	change := Change{ID: rand.Text(), Before: before, DesiredDigest: desiredDigest, Phase: Reserved,
-		Team: team, UnchangedDigest: unchangedDigest}
+		Team: team, UnchangedDigest: unchangedDigest, DeletionContentDigest: deletionContentDigest}
 	state.Changes = append(state.Changes, change)
 	if err := s.write(ctx, object, state); err != nil {
 		return ChangeTicket{}, err
@@ -394,11 +396,11 @@ func (s Store) BeginChange(ctx context.Context, ticket ChangeTicket) (ChangeTick
 		if equality.Semantic.DeepEqual(change, ticket.Change) {
 			state.Changes[i].Phase = Changing
 			if err := s.write(ctx, object, state); err != nil {
-				return ChangeTicket{}, err
+				return ChangeTicket{}, fmt.Errorf("%w: configuration submission intent outcome is uncertain: %w", ErrUnavailable, err)
 			}
 			ticket.Change.Phase = Changing
 			if err := s.CheckChange(ctx, ticket); err != nil {
-				return ChangeTicket{}, err
+				return ChangeTicket{}, fmt.Errorf("%w: configuration submission intent could not be confirmed: %w", ErrUnavailable, err)
 			}
 			return ticket, nil
 		}
@@ -629,6 +631,11 @@ func validateRecord(state record) error {
 				change.Before.APIVersion != api.GroupVersion.String() || change.Before.Namespace != "" ||
 				(change.Before.Kind != "Sandbox" && change.Before.Kind != "AgentPolicy")) {
 			return fmt.Errorf("%w: invalid unchanged configuration digest", ErrUnavailable)
+		}
+		if change.DeletionContentDigest != "" {
+			if err := validateConfigurationDeletion(change); err != nil {
+				return err
+			}
 		}
 		for _, execution := range state.Executions {
 			if changeAffects(execution.Intent, change) {

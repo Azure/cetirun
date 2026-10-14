@@ -65,8 +65,8 @@
 {{- $portalCoordinationNamespace := $portalCoordination.namespace | default "" }}
 {{- $portalCoordinationName := $portalCoordination.name | default "" }}
 {{- $portalCoordinationUID := $portalCoordination.uid | default "" }}
-{{- if or $operatorCoordinationName $operatorCoordinationUID $portalCoordinationNamespace $portalCoordinationName $portalCoordinationUID }}
-{{- if not (and $operator.enabled $portal.enabled) }}
+{{- if and $portal.enabled (or $operatorCoordinationName $operatorCoordinationUID $portalCoordinationNamespace $portalCoordinationName $portalCoordinationUID) }}
+{{- if not $operator.enabled }}
 {{- fail "configuration coordination requires both Operator and Portal" }}
 {{- end }}
 {{- if or (ne $portalCoordinationNamespace $operator.namespace) (ne $portalCoordinationName $operatorCoordinationName) (ne $portalCoordinationUID $operatorCoordinationUID) }}

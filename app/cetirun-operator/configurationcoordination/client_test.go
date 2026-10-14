@@ -16,6 +16,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -114,6 +115,138 @@ func TestClientRetainsReservationWhenUpdateOutcomeIsUnknown(t *testing.T) {
 	ticket, err := store.ReadConfigurationChange(ctx, before, after)
 	if err != nil || ticket.Change.Phase != sandboxcoordination.Changing {
 		t.Fatalf("unknown outcome did not retain its Changing reservation: ticket=%+v err=%v", ticket, err)
+	}
+}
+
+func TestClientRetainsReservationWhenSubmissionIntentReplyIsLost(testContext *testing.T) {
+	for _, action := range []string{"update", "delete"} {
+		testContext.Run(action, func(testContext *testing.T) {
+			ctx := context.Background()
+			storage, store, authority, before := coordinationFixture(testContext)
+			mutations := 0
+			writer := interceptor.NewClient(storage, interceptor.Funcs{
+				Update: func(ctx context.Context, storage client.WithWatch, object client.Object, opts ...client.UpdateOption) error {
+					if authority, ok := object.(*corev1.ConfigMap); ok {
+						var state struct {
+							Changes []sandboxcoordination.Change `json:"changes"`
+						}
+						if err := json.Unmarshal([]byte(authority.Data[sandboxcoordination.DataKey]), &state); err != nil {
+							testContext.Fatal(err)
+						}
+						if len(state.Changes) == 1 && state.Changes[0].Phase == sandboxcoordination.Changing {
+							if err := storage.Update(ctx, object, opts...); err != nil {
+								return err
+							}
+							return errors.New("synthetic lost submission intent reply")
+						}
+					} else {
+						mutations++
+					}
+					return storage.Update(ctx, object, opts...)
+				},
+				Delete: func(context.Context, client.WithWatch, client.Object, ...client.DeleteOption) error {
+					mutations++
+					return errors.New("unconfirmed submission intent must not delete")
+				},
+			})
+			coordinator, err := New(writer, storage, authority)
+			if err != nil {
+				testContext.Fatal(err)
+			}
+			var ticket sandboxcoordination.ChangeTicket
+			if action == "update" {
+				after := before.DeepCopy()
+				after.Spec.Harnesses.Allowed = []api.AgentType{api.AgentTypeHermes}
+				err = coordinator.Update(ctx, before, after)
+				ticket, _ = store.ReadConfigurationChange(ctx, before, after)
+			} else {
+				err = coordinator.Delete(ctx, before)
+				ticket, _ = store.ReadConfigurationDeletion(ctx, before)
+			}
+			if !IsUnavailable(err) || mutations != 0 || ticket.Change.Phase != sandboxcoordination.Changing {
+				testContext.Fatalf("lost intent reply did not preserve an unavailable, unsubmitted Changing operation: %v %+v writes=%d", err, ticket, mutations)
+			}
+		})
+	}
+}
+
+func TestClientRequiresRecoveryWhenReleaseFails(testContext *testing.T) {
+	resource := schema.GroupResource{Resource: "configmaps"}
+	for _, action := range []string{"update", "delete"} {
+		for _, cause := range []error{
+			apierrors.NewNotFound(resource, "configuration-coordination"),
+			apierrors.NewForbidden(resource, "configuration-coordination", errors.New("synthetic denied release")),
+			apierrors.NewConflict(resource, "configuration-coordination", errors.New("synthetic conflicting release")),
+		} {
+			testContext.Run(action+"/"+cause.Error(), func(testContext *testing.T) {
+				ctx := context.Background()
+				storage, store, authority, before := coordinationFixture(testContext)
+				deletes := 0
+				writer := interceptor.NewClient(storage, interceptor.Funcs{
+					Update: func(ctx context.Context, storage client.WithWatch, object client.Object, opts ...client.UpdateOption) error {
+						if authority, ok := object.(*corev1.ConfigMap); ok {
+							var state struct {
+								Changes []sandboxcoordination.Change `json:"changes"`
+							}
+							if err := json.Unmarshal([]byte(authority.Data[sandboxcoordination.DataKey]), &state); err != nil {
+								testContext.Fatal(err)
+							}
+							if len(state.Changes) == 0 {
+								return cause
+							}
+						}
+						return storage.Update(ctx, object, opts...)
+					},
+					Delete: func(ctx context.Context, storage client.WithWatch, object client.Object, opts ...client.DeleteOption) error {
+						deletes++
+						return storage.Delete(ctx, object, opts...)
+					},
+				})
+				coordinator, err := New(writer, storage, authority)
+				if err != nil {
+					testContext.Fatal(err)
+				}
+				if action == "update" {
+					after := before.DeepCopy()
+					after.Spec.Harnesses.Allowed = []api.AgentType{api.AgentTypeHermes}
+					err = coordinator.Update(ctx, before, after)
+				} else {
+					err = coordinator.Delete(ctx, before)
+				}
+				if !IsUnavailable(err) || !errors.Is(err, cause) {
+					testContext.Fatalf("release failure did not require recovery while retaining its API status: %v", err)
+				}
+				journal := &corev1.ConfigMap{}
+				if err := storage.Get(ctx, client.ObjectKey{Namespace: authority.Namespace, Name: authority.Name}, journal); err != nil {
+					testContext.Fatal(err)
+				}
+				var state struct {
+					Changes []sandboxcoordination.Change `json:"changes"`
+				}
+				if err := json.Unmarshal([]byte(journal.Data[sandboxcoordination.DataKey]), &state); err != nil || len(state.Changes) != 1 ||
+					state.Changes[0].Phase != sandboxcoordination.Changing {
+					testContext.Fatalf("release failure did not retain its Changing reservation: %+v %v", state, err)
+				}
+				if action != "delete" {
+					return
+				}
+				if err := storage.Get(ctx, client.ObjectKeyFromObject(before), &api.AgentPolicy{}); !apierrors.IsNotFound(err) {
+					testContext.Fatal("deletion did not commit before its release failure:", err)
+				}
+				ticket, err := store.ReadConfigurationDeletionOperation(ctx, state.Changes[0].ID)
+				if err != nil {
+					testContext.Fatal("Portal deletion was not recoverable without its original body:", err)
+				}
+				adapter, err := sandboxcoordination.NewKubernetesDeletionRecoveryAdapter(storage, ticket)
+				if err != nil {
+					testContext.Fatal(err)
+				}
+				if _, err := store.ReconcileChange(ctx, ticket, adapter); err != nil || deletes != 1 {
+					testContext.Fatal("recovery failed or replayed the committed Delete:", err)
+				}
+				assertNoChanges(testContext, store)
+			})
+		}
 	}
 }
 

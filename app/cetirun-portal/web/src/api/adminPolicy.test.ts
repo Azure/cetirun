@@ -39,4 +39,13 @@ describe("admin policy API", () => {
     fetchMock.mockResolvedValue(jsonResponse(409, { error: { code: "policy_changed", message: "Reload and try again." } }));
     await expect(updatePolicy("standard", request)).rejects.toThrow("Reload and try again.");
   });
+
+  it("rejects an unavailable policy deletion", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse(503, { error: { code: "policy_change_unavailable", message: "Recover the recorded operation before retrying." } }),
+    );
+    await expect(deletePolicy({ name: "standard", uid: "policy-uid", resourceVersion: "42" })).rejects.toThrow(
+      "Recover the recorded operation before retrying.",
+    );
+  });
 });

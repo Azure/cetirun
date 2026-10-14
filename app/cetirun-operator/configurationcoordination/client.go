@@ -74,8 +74,7 @@ func (c *Client) Update(ctx context.Context, before, after client.Object) error 
 	if err != nil {
 		return err
 	}
-	_, err = c.store.ReconcileChange(ctx, ticket, adapter)
-	return err
+	return c.reconcileChange(ctx, ticket, adapter)
 }
 
 // Delete reserves and submits one exact UID/resourceVersion-conditional
@@ -89,7 +88,14 @@ func (c *Client) Delete(ctx context.Context, before client.Object) error {
 	if err != nil {
 		return err
 	}
-	_, err = c.store.ReconcileChange(ctx, ticket, adapter)
+	return c.reconcileChange(ctx, ticket, adapter)
+}
+
+func (coordinator *Client) reconcileChange(ctx context.Context, ticket sandboxcoordination.ChangeTicket, adapter sandboxcoordination.ChangeAdapter) error {
+	ticket, err := coordinator.store.ReconcileChange(ctx, ticket, adapter)
+	if err != nil && ticket.Change.Phase == sandboxcoordination.Changing {
+		return fmt.Errorf("%w: recorded configuration operation requires recovery: %w", sandboxcoordination.ErrUnavailable, err)
+	}
 	return err
 }
 

@@ -43,6 +43,7 @@ const usage = `Usage: sandbox-config-change
   --authority-namespace NAMESPACE --authority-name NAME --authority-uid UID
   --before FILE --after FILE [--action observe|update] [--timeout 30s]
   --before FILE --action observe-delete|delete [--timeout 30s]
+  --operation-id ID --action observe-delete|delete [--timeout 30s]
 
 observe is the default and has no side effects: it only looks up the exact
 recorded operation and, if changing, observes its current configuration.
@@ -54,9 +55,10 @@ matching committed version permits update to release the reservation.
 delete is a separate explicit opt-in and forbids --after. It reserves the whole
 original source and submits one UID/resourceVersion-conditional background Delete.
 observe-delete only observes that exact recorded deletion; it never writes.
-Recovery uses the SAME original --before file. A terminating original UID or its
-absence establishes acceptance, not completion of finalizers/dependent cleanup.
-Explicit delete then releases the change reservation without resubmission.
+Recovery uses the SAME original --before file, or the recorded --operation-id
+when its journal entry has deletion recovery metadata. A terminating original
+UID or its absence establishes acceptance, not completion of finalizers/dependent
+cleanup. Explicit delete then releases the change reservation without resubmission.
 No resources are created. No readiness, finalizer or admission overrides exist.
 
 Each input is exactly one strict YAML/JSON cetirun.microsoft.com/v1alpha1 Team,
@@ -70,7 +72,8 @@ including changes that only omit defaults, are rejected before reservation.
 
 Unknown, failed and never-submitted changing operations remain reserved.
 After any uncertain result, run --action observe (updates) or observe-delete
-(deletions) with the SAME inputs. Do not refresh their UID/resourceVersion,
+(deletions) with the SAME inputs. A deletion with recorded recovery metadata
+may instead use its --operation-id. Do not refresh their UID/resourceVersion,
 replay a write, or edit the journal.
 An applied-reservation-retained observation is read-only; explicit update can
 then reconcile that same changing operation to release it, without submission.
@@ -88,13 +91,13 @@ Exit 0 = successful observation/completion, 1 = uncertain/unavailable/I/O failur
 `
 
 const observationInstruction = "run --action observe with the same --before and --after inputs; do not replay an Update or edit the coordination journal"
-const deletionObservationInstruction = "run --action observe-delete with the same --before input; do not replay a Delete or edit the coordination journal"
+const deletionObservationInstruction = "run --action observe-delete with the same --before input or recorded --operation-id; do not replay a Delete or edit the coordination journal"
 
 type options struct {
-	kubeconfig, contextName                string
-	authorityNamespace, authorityName, uid string
-	beforePath, afterPath, action          string
-	timeout                                time.Duration
+	kubeconfig, contextName                    string
+	authorityNamespace, authorityName, uid     string
+	beforePath, afterPath, operationID, action string
+	timeout                                    time.Duration
 }
 
 type clientFactory func(options) (client.Client, client.Reader, error)
@@ -124,6 +127,7 @@ func runWithClientFactory(ctx context.Context, args []string, stdout, stderr io.
 	flags.StringVar(&o.uid, "authority-uid", "", "pinned coordination ConfigMap UID")
 	flags.StringVar(&o.beforePath, "before", "", "persisted original image")
 	flags.StringVar(&o.afterPath, "after", "", "desired image with original UID/resourceVersion")
+	flags.StringVar(&o.operationID, "operation-id", "", "recorded changing deletion operation")
 	flags.StringVar(&o.action, "action", "observe", "observe, update, observe-delete or delete")
 	flags.DurationVar(&o.timeout, "timeout", 30*time.Second, "overall deadline, at most 5m")
 	if err := flags.Parse(args); err != nil {
@@ -139,13 +143,15 @@ func runWithClientFactory(ctx context.Context, args []string, stdout, stderr io.
 	}
 	deleting := o.action == "delete" || o.action == "observe-delete"
 	observing := o.action == "observe" || o.action == "observe-delete"
+	hasBefore, hasOperationID := o.beforePath != "", o.operationID != ""
 	if flags.NArg() != 0 || !filepath.IsAbs(o.kubeconfig) || !boundedToken(o.contextName, 256) ||
 		len(validation.IsDNS1123Label(o.authorityNamespace)) != 0 ||
 		len(validation.IsDNS1123Subdomain(o.authorityName)) != 0 || !boundedToken(o.uid, 128) ||
-		o.beforePath == "" || (deleting && o.afterPath != "") || (!deleting && o.afterPath == "") ||
+		(deleting && (hasBefore == hasOperationID || o.afterPath != "" || (hasOperationID && !boundedToken(o.operationID, 128)))) ||
+		(!deleting && (!hasBefore || hasOperationID || o.afterPath == "")) ||
 		(!deleting && o.action != "observe" && o.action != "update") ||
 		o.timeout <= 0 || o.timeout > 5*time.Minute {
-		fmt.Fprintln(stderr, "sandbox-config-change: explicit identities and --before are required; updates require --after, deletions forbid it; action must be observe, update, observe-delete or delete and timeout must be positive and at most 5m; see --help")
+		fmt.Fprintln(stderr, "sandbox-config-change: explicit identities are required; updates require --before and --after, deletions require exactly one of --before or --operation-id and forbid --after; action must be observe, update, observe-delete or delete and timeout must be positive and at most 5m; see --help")
 		return 2
 	}
 	ctx, cancel := context.WithTimeout(ctx, o.timeout)
@@ -154,10 +160,14 @@ func runWithClientFactory(ctx context.Context, args []string, stdout, stderr io.
 		fmt.Fprintln(stderr, "sandbox-config-change: request canceled before any client operation")
 		return 1
 	}
-	before, err := readConfiguration(o.beforePath)
-	if err != nil {
-		fmt.Fprintln(stderr, "sandbox-config-change: --before must contain one bounded strict supported configuration object")
-		return 2
+	var before client.Object
+	var err error
+	if hasBefore {
+		before, err = readConfiguration(o.beforePath)
+		if err != nil {
+			fmt.Fprintln(stderr, "sandbox-config-change: --before must contain one bounded strict supported configuration object")
+			return 2
+		}
 	}
 	var after client.Object
 	if !deleting {
@@ -175,39 +185,53 @@ func runWithClientFactory(ctx context.Context, args []string, stdout, stderr io.
 	if observing {
 		writer = nil
 	}
-	var adapter sandboxcoordination.ChangeAdapter
-	if deleting {
-		adapter, err = sandboxcoordination.NewKubernetesDeleteAdapter(writer, reader, before)
-	} else {
-		adapter, err = sandboxcoordination.NewKubernetesChangeAdapter(writer, reader, before, after)
-	}
-	if err != nil {
-		fmt.Fprintln(stderr, "sandbox-config-change: invalid original nonterminating configuration or proposed update; preserve exact persisted identities and server fields")
-		return 2
-	}
 	store := sandboxcoordination.Store{Client: writer, APIReader: reader,
 		Namespace: o.authorityNamespace, Identity: w.ObjectIdentity{Name: o.authorityName, UID: types.UID(o.uid)}}
 	result := operationStatus{
 		Action: o.action, Status: "unavailable", AuthorityNamespace: store.Namespace, Authority: store.Identity,
-		Source: w.SourceReference{APIVersion: api.GroupVersion.String(), Kind: before.GetObjectKind().GroupVersionKind().Kind,
-			Name: before.GetName(), UID: before.GetUID(), ResourceVersion: before.GetResourceVersion()},
+	}
+	if before != nil {
+		result.Source = w.SourceReference{APIVersion: api.GroupVersion.String(), Kind: before.GetObjectKind().GroupVersionKind().Kind,
+			Name: before.GetName(), UID: before.GetUID(), ResourceVersion: before.GetResourceVersion()}
 	}
 	var ticket sandboxcoordination.ChangeTicket
-	switch o.action {
-	case "observe-delete":
-		ticket, err = store.ReadConfigurationDeletion(ctx, before)
-	case "delete":
-		ticket, err = store.AcquireConfigurationDeletion(ctx, before)
-	case "observe":
-		ticket, err = store.ReadConfigurationChange(ctx, before, after)
-	case "update":
-		ticket, err = store.AcquireConfigurationChange(ctx, before, after)
+	var adapter sandboxcoordination.ChangeAdapter
+	if deleting && hasOperationID {
+		ticket, err = store.ReadConfigurationDeletionOperation(ctx, o.operationID)
+		if err == nil {
+			result.Source = ticket.Change.Before
+			result.Operation, result.Phase = ticket.Change.ID, ticket.Change.Phase
+			adapter, err = sandboxcoordination.NewKubernetesDeletionRecoveryAdapter(reader, ticket)
+		}
+	} else {
+		if deleting {
+			adapter, err = sandboxcoordination.NewKubernetesDeleteAdapter(writer, reader, before)
+		} else {
+			adapter, err = sandboxcoordination.NewKubernetesChangeAdapter(writer, reader, before, after)
+		}
+		if err == nil {
+			switch o.action {
+			case "observe-delete":
+				ticket, err = store.ReadConfigurationDeletion(ctx, before)
+			case "delete":
+				ticket, err = store.AcquireConfigurationDeletion(ctx, before)
+			case "observe":
+				ticket, err = store.ReadConfigurationChange(ctx, before, after)
+			case "update":
+				ticket, err = store.AcquireConfigurationChange(ctx, before, after)
+			}
+		}
 	}
 	if err != nil {
+		if adapter == nil && !(deleting && hasOperationID) {
+			fmt.Fprintln(stderr, "sandbox-config-change: invalid original nonterminating configuration or proposed update; preserve exact persisted identities and server fields")
+			return 2
+		}
 		fmt.Fprintln(stderr, "sandbox-config-change: exact operation unavailable;", observationHint(o.action))
 		return printStatus(stdout, stderr, result, 1)
 	}
 	result.Operation, result.Phase = ticket.Change.ID, ticket.Change.Phase
+	result.Source = ticket.Change.Before
 	if observing {
 		if ticket.Change.Phase == sandboxcoordination.Reserved {
 			result.Status = "reserved"
