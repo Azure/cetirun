@@ -296,6 +296,76 @@ func TestChartUnavailableObservesWorkload(t *testing.T) {
 
 type unavailableStatefulSetClient struct{ client.Client }
 
+// Count requests, not just resource versions: even a no-op status patch must
+// not be used as the polling mechanism while the workload stays unready.
+type countingAgentStatusClient struct {
+	client.Client
+	writes int
+}
+
+func (c *countingAgentStatusClient) Status() client.SubResourceWriter {
+	return &countingAgentStatusWriter{SubResourceWriter: c.Client.Status(), owner: c}
+}
+
+type countingAgentStatusWriter struct {
+	client.SubResourceWriter
+	owner *countingAgentStatusClient
+}
+
+func (w *countingAgentStatusWriter) Patch(ctx context.Context, obj client.Object, patch client.Patch, opts ...client.SubResourcePatchOption) error {
+	if _, ok := obj.(*api.Agent); ok {
+		w.owner.writes++
+	}
+	return w.SubResourceWriter.Patch(ctx, obj, patch, opts...)
+}
+
+func (w *countingAgentStatusWriter) Update(ctx context.Context, obj client.Object, opts ...client.SubResourceUpdateOption) error {
+	if _, ok := obj.(*api.Agent); ok {
+		w.owner.writes++
+	}
+	return w.SubResourceWriter.Update(ctx, obj, opts...)
+}
+
+func TestUnreadyWorkloadKeepsPrerequisitesStable(t *testing.T) {
+	f := newDeployedAgent(t)
+	ctx := context.Background()
+	f.verificationDue(t)
+	sts := &appsv1.StatefulSet{}
+	key := types.NamespacedName{Namespace: instanceNamespace(f.req.Name), Name: instanceServiceName(f.req.Name)}
+	if err := f.r.Get(ctx, key, sts); err != nil {
+		t.Fatal(err)
+	}
+	sts.Status.ReadyReplicas = 0
+	if err := f.r.Status().Update(ctx, sts); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.r.Reconcile(ctx, f.req); err != nil {
+		t.Fatal(err)
+	}
+	f.warnings()
+	before := f.agent(t)
+	condition := *meta.FindStatusCondition(before.Status.Conditions, builtInPrerequisitesReady)
+	if condition.Status != metav1.ConditionTrue || before.Status.Phase != api.PhaseProvisioning {
+		t.Fatalf("not a workload-only wait: %+v", before.Status)
+	}
+	counter := &countingAgentStatusClient{Client: f.r.Client}
+	f.r.Client = counter
+	for pass := 0; pass < 4; pass++ {
+		result, err := f.r.Reconcile(ctx, f.req)
+		if err != nil || result.RequeueAfter != 15*time.Second {
+			t.Fatalf("pass %d: result=%+v err=%v", pass, result, err)
+		}
+		current := f.agent(t)
+		if counter.writes != 0 || current.ResourceVersion != before.ResourceVersion ||
+			*meta.FindStatusCondition(current.Status.Conditions, builtInPrerequisitesReady) != condition || len(f.recorder.Events) != 0 {
+			t.Fatalf("pass %d changed steady wait: writes=%d RV=%s (was %s)", pass, counter.writes, current.ResourceVersion, before.ResourceVersion)
+		}
+	}
+	if f.chart.installs != 1 {
+		t.Fatal("workload wait reinstalled the release")
+	}
+}
+
 func (c unavailableStatefulSetClient) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
 	if _, ok := obj.(*appsv1.StatefulSet); ok {
 		return errors.New("synthetic StatefulSet read failure")

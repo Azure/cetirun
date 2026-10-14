@@ -18,6 +18,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -204,7 +205,7 @@ func (r *AgentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 }
 
 // Reconcile implements the reconciliation loop.
-func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (result ctrl.Result, reconcileErr error) {
 	logger := log.FromContext(ctx).WithValues("name", req.Name)
 
 	// 1. Fetch the CR.
@@ -586,17 +587,19 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	logger.Info("Reconciling Agent", "alias", alias, "generation", instance.Generation)
 
 	// 6. Ensure namespace.
-	// Track prerequisite progress independently of the previous Ready reason.
-	// Persist invalidation before calling prerequisites, including ones whose
-	// error paths return without writing status themselves.
-	prerequisitesPending := meta.IsStatusConditionFalse(instance.Status.Conditions, builtInPrerequisitesReady)
-	setCondition(&instance.Status.Conditions, builtInPrerequisitesReady,
-		metav1.ConditionFalse, "PrerequisitesPending", "Reconciling Agent prerequisites")
-	if !prerequisitesPending {
-		if err := r.updateStatus(ctx, instance); err != nil {
-			return ctrl.Result{}, err
+	// Keep completed evidence stable while rechecking prerequisites. Invalidate
+	// it only on an early exit, including errors that do not persist status.
+	// Successful workload-only waits must not publish False then True: each
+	// status change enqueues another reconcile independently of RequeueAfter.
+	prerequisitesComplete := false
+	defer func() {
+		if prerequisitesComplete || meta.IsStatusConditionFalse(instance.Status.Conditions, builtInPrerequisitesReady) {
+			return
 		}
-	}
+		setCondition(&instance.Status.Conditions, builtInPrerequisitesReady,
+			metav1.ConditionFalse, "PrerequisitesPending", "Agent prerequisites did not complete")
+		reconcileErr = stderrors.Join(reconcileErr, r.updateStatus(ctx, instance))
+	}()
 	logger.V(1).Info("Ensuring namespace", "namespace", ns)
 	if err := r.ensureNamespace(ctx, ns, alias, instance); err != nil {
 		return r.failWith(ctx, instance, "ProvisioningFailed", fmt.Sprintf("ensure namespace: %v", err))
@@ -945,6 +948,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	}
 
 	// 11. Verify StatefulSet pod readiness before marking Ready.
+	prerequisitesComplete = true
 	setCondition(&instance.Status.Conditions, builtInPrerequisitesReady,
 		metav1.ConditionTrue, "PrerequisitesResolved", "Blocking Agent prerequisites reconciled")
 	workloadReady, workloadResult, err := r.observeWorkload(ctx, instance)
@@ -1716,6 +1720,10 @@ func (r *AgentReconciler) updateStatus(ctx context.Context, instance *cetirunv1a
 	if instance.ResourceVersion == "" || current.ResourceVersion != instance.ResourceVersion || current.UID != instance.UID {
 		return errors.NewConflict(cetirunv1alpha1.GroupVersion.WithResource("agents").GroupResource(), instance.Name,
 			fmt.Errorf("Agent changed before its status could be patched"))
+	}
+	// An unchanged status must not issue a patch or generate a watch event.
+	if equality.Semantic.DeepEqual(current.Status, instance.Status) {
+		return nil
 	}
 	before := current.DeepCopy()
 	current.Status = *instance.Status.DeepCopy()
