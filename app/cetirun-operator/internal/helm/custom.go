@@ -86,6 +86,20 @@ func prepareCustomChart(chrt *chart.Chart, input map[string]any, request AgentRe
 	if err != nil {
 		return nil, fmt.Errorf("coalesce effective custom values")
 	}
+	if bindings.AgentIdentity != nil {
+		if chrt.Metadata.Annotations["cetirun.microsoft.com/custom-agent-identity"] != "v1" ||
+			len(asset(chrt, "configs/cetirun-agent")) == 0 || len(asset(chrt, "skills/azure/SKILL.md")) == 0 {
+			return nil, fmt.Errorf("the selected Chart does not support Custom Agent Identity")
+		}
+		namespace, err := runtimebindings.AgentIdentityBrokerNamespace(bindings.AgentIdentity.BrokerURL)
+		if err != nil {
+			return nil, err
+		}
+		coalesced["agentIdentity"] = map[string]any{"enabled": true, "brokerURL": bindings.AgentIdentity.BrokerURL}
+		ensureObject(coalesced, "networkPolicy")["agentIdentityBrokerNamespace"] = namespace
+	} else {
+		coalesced["agentIdentity"] = map[string]any{"enabled": false, "brokerURL": ""}
+	}
 	if bindings.Memory != nil {
 		if _, ok := chrt.Values["memoryContext"]; !ok {
 			return nil, fmt.Errorf("the selected Chart does not support Memory Context")
@@ -214,6 +228,11 @@ func customWorkloadDigest(chrt *chart.Chart, agent agents.ResolvedAgent, binding
 	}
 	if bindings.Memory != nil {
 		input["memory"] = bindings.Memory
+	}
+	if bindings.AgentIdentity != nil {
+		input["agentIdentity"] = bindings.AgentIdentity
+		input["agentCLI"] = string(asset(chrt, "configs/cetirun-agent"))
+		input["azureSkill"] = string(asset(chrt, "skills/azure/SKILL.md"))
 	}
 	data, err := json.Marshal(input)
 	if err != nil {

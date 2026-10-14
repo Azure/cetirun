@@ -169,7 +169,7 @@ func (c *Client) CreateInstance(ctx context.Context, alias, displayName, team, e
 		return nil, err
 	}
 	identityEnabled := len(optional) > 0 && optional[0].AgentIdentityEnabled
-	if agent.Type == cetirunv1alpha1.AgentTypeCustom && (gatewayToken != "" || tailscaleAuthKey != "" || teamsEnabled || identityEnabled) {
+	if agent.Type == cetirunv1alpha1.AgentTypeCustom && (gatewayToken != "" || tailscaleAuthKey != "" || teamsEnabled) {
 		return nil, ErrUnsupportedCustomUpdate
 	}
 	if identityEnabled && (optional[0].OwnerTenantID == "" || optional[0].OwnerObjectID == "") {

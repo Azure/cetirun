@@ -12,6 +12,16 @@ fi
 LEGACY_HOME_MARKER=
 
 agent_check_requirements() {
+  if [ "${CETIRUN_AGENT_IDENTITY_ENABLED:-false}" = true ]; then
+    command -v python3 >/dev/null 2>&1 && [ -x /usr/bin/az ] || {
+      init_error "AgentIdentityDependenciesMissing: image requires python3 and /usr/bin/az"
+      return 1
+    }
+    python3 -c 'import os; assert hasattr(os, "memfd_create")' || {
+      init_error "AgentIdentityDependenciesMissing: Linux Python with memfd_create is required"
+      return 1
+    }
+  fi
   [ -r "$SOURCE_HOME" ] && [ -x "$SOURCE_HOME" ] && [ -w "$TARGET_HOME" ] || {
     init_error "HomePermissionsInvalid"
     return 1

@@ -141,6 +141,11 @@ func (r *AgentReconciler) deleteCustom(ctx context.Context, instance *api.Agent)
 	if err := errors.Join(revokeErr, stopErr, terminalErr, routeErr, statusErr); err != nil {
 		return ctrl.Result{}, err
 	}
+	if agentIdentityRequested(instance) || (instance.Status.AgentIdentity != nil && instance.Status.AgentIdentity.Phase != api.AgentIdentityPhaseDisabled) {
+		if err := r.deleteAgentIdentity(ctx, instance); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
 	if instance.Status.AIGateway != nil || r.customGatewaySelected(instance) {
 		if err := r.deleteAIGatewayKey(ctx, instance); err != nil {
 			return ctrl.Result{}, err
