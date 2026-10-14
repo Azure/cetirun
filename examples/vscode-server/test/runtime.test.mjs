@@ -14,6 +14,7 @@ import { fileURLToPath } from "node:url";
 import { scopeBrowserStorage } from "../browser-storage.mjs";
 import { adaptHTML, createProxy, scopedCookie, validateConfig } from "../proxy.mjs";
 import { prepareHome, configureMemoryTools } from "../start.mjs";
+import "./gateway-cases.mjs";
 
 const basePath = "/ui/example/";
 
