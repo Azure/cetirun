@@ -430,11 +430,12 @@ A reasoning model can return its reasoning encrypted, and only the Azure
 OpenAI resource or OpenAI organization that produced it can read it. Agents
 that keep no state on the provider, such as OpenClaw, ask for it and send it
 back with every turn. Measured on Azure OpenAI: another model on the same
-resource accepted it, and a reasoning item from elsewhere was refused with a
-400, `invalid_encrypted_content`. OpenClaw then retries the turn once without
-the encrypted reasoning. So when one model is served by more than one resource,
-a conversation that has been on both pays an extra call, and loses the
-reasoning it had, on every later turn: 61 of 84 turns in the test.
+resource accepted it, and a made-up or altered item was refused with a 400,
+`invalid_encrypted_content`. That another resource refuses it the same way was
+measured against mock resources only. OpenClaw then retries the turn once
+without the encrypted reasoning. So when one model is served by more than one
+resource, a conversation that has been on both pays an extra call, and loses
+the reasoning it had, on every later turn: 61 of 84 turns in the test.
 
 `router.encryptedContentAffinity` keeps each conversation on the deployment
 that encrypted its reasoning, or on one with the same endpoint and key
