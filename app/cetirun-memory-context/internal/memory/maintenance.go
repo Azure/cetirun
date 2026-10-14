@@ -414,12 +414,51 @@ type importApplyInput struct {
 }
 
 func (p ImportPlan) hash() string { p.Digest = ""; b, _ := encode(p); return digest(b) }
+
+// Files in HOME that conventionally hold credentials, private keys or shell
+// history, which import refuses whatever their content: their formats vary
+// too much for the secret check alone.
+var (
+	credentialDirectories = []string{".ssh/", ".gnupg/", ".aws/", ".azure/", ".kube/", ".docker/", ".config/gh/",
+		".config/gcloud/", ".config/github-copilot/", ".password-store/", ".local/share/keyrings/",
+		".openclaw/credentials/"}
+	credentialPaths = []string{".hermes/config.yaml"}
+	credentialNames = []string{".env", ".netrc", "_netrc", ".git-credentials", ".npmrc", ".pypirc", ".pgpass", ".my.cnf",
+		".boto", ".s3cfg", ".dockercfg", ".htpasswd", ".vault-token", ".history", ".viminfo", ".lesshst", "credentials",
+		"credentials.json", ".credentials.json", "oauth_creds.json", "auth.json", "auth-profiles.json", "kubeconfig"}
+	credentialNamePatterns = []string{".env.*", "*_history", "id_rsa*", "id_dsa*", "id_ecdsa*", "id_ed25519*", "*.pem", "*.key",
+		"*.p12", "*.pfx", "*.jks", "*.keystore", "*.kdbx", "*.kubeconfig", "client_secret*.json", "openclaw.json*"}
+)
+
+// credentialFile reports whether a HOME-relative path is such a file.
+func credentialFile(rel string) bool {
+	if slices.Contains(credentialPaths, rel) || slices.ContainsFunc(credentialDirectories, func(dir string) bool { return strings.HasPrefix(rel, dir) }) {
+		return true
+	}
+	// OpenClaw keeps each agent's provider auth profiles and model credentials
+	// in agents/<id>/agent/.
+	if parts := strings.Split(rel, "/"); len(parts) > 4 && parts[0] == ".openclaw" && parts[1] == "agents" && parts[3] == "agent" {
+		return true
+	}
+	name := strings.ToLower(filepath.Base(rel))
+	if slices.Contains(credentialNames, name) {
+		return true
+	}
+	return slices.ContainsFunc(credentialNamePatterns, func(pattern string) bool {
+		matched, _ := filepath.Match(pattern, name)
+		return matched
+	})
+}
+
 func (s *Store) importFile(name string) ([]byte, error) {
 	// Only individually selected files inside this instance's HOME are read.
 	home := filepath.Dir(filepath.Dir(s.Config.Root))
 	rel, err := filepath.Rel(home, name)
 	if err != nil || !filepath.IsAbs(name) || !relative(rel) || strings.HasPrefix(rel, ".cetirun/memory/") {
 		return nil, problem(2, "InvalidPath")
+	}
+	if credentialFile(rel) {
+		return nil, problem(2, "SensitiveContent")
 	}
 	fs, err := openRoot(home, false)
 	if err != nil {

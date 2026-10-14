@@ -287,6 +287,14 @@ read-only at `/opt/cetirun-memory`. Private notes stay in
 Existing HOME context files and older note directories are preserved, not imported
 automatically. An owner can import selected legacy files with `import plan` and
 `import apply`; the helper retains those source files and marks imported claims for review.
+Import refuses files that usually hold credentials, keys or shell history, such
+as those under `.ssh`, `.aws`, `.azure` or `.kube`, `.env` files,
+`.git-credentials` and the harnesses' configuration, and the helper refuses
+text that looks like a token or key.
+Revisions may retain an existing note's complete source records unchanged,
+including provenance accepted before these checks were tightened. This keeps
+body and status corrections possible without deleting source lineage. New or
+changed sources and other revised text must pass the current checks.
 
 Directory placement and host discovery are separate:
 

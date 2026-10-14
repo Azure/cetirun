@@ -14,10 +14,49 @@ import (
 	"unicode/utf8"
 )
 
-var secretPattern = regexp.MustCompile(`(?i)(-----BEGIN [A-Z ]*PRIVATE KEY-----|\bBearer\s+[A-Za-z0-9._~+/-]{8,}|\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}|[?&](?:access_token|api_key|password|secret|token)=)`)
+// secretPattern matches text that carries a credential: a private key, a
+// bearer or API token in a well-known format, a JSON Web Token, credentials
+// in a URL, or a credential URL parameter. Token formats are matched with
+// their case.
+var secretPattern = regexp.MustCompile(`(?i)(-----BEGIN [A-Z ]*PRIVATE KEY-----|\bBearer\s+[A-Za-z0-9._~+/-]{8,}|\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}|[?&](?:access_token|api_key|password|secret|token|sig)=|` +
+	`(?-i:\bgh[pousr]_[A-Za-z0-9]{30,}|\bgithub_pat_[A-Za-z0-9_]{22,}|\bglpat-[A-Za-z0-9_-]{20,}|\bxox[abposr]-[A-Za-z0-9-]{10,}|\b(?:AKIA|ASIA)[0-9A-Z]{16}\b|\bAIza[0-9A-Za-z_-]{35}|\bnpm_[A-Za-z0-9]{36}|` +
+	`\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,})|` +
+	`\b[a-z][a-z0-9+.-]*://[^/\s:@]+:[^/\s@]+@)`)
+
+// credentialAssignment matches a value assigned to a name that ends like a
+// credential: API_KEY=value, "token": "value", password: value.
+var credentialAssignment = regexp.MustCompile(`(?i)[a-z0-9_.-]*(?:api[_-]?key|access[_-]?key|account[_-]?key|auth[_-]?key|private[_-]?key|secret[_-]?key|signing[_-]?key|secret|token|passw(?:or)?d|credentials?)["']?\s*[:=]\s*["']?([^\s"'<>,;]+)`)
 
 func validText(text string, max int) bool {
-	return len(text) <= max && utf8.ValidString(text) && !strings.ContainsRune(text, 0) && !secretPattern.MatchString(text)
+	return len(text) <= max && utf8.ValidString(text) && !strings.ContainsRune(text, 0) && !secretPattern.MatchString(text) && !assignsCredential(text)
+}
+
+// assignsCredential reports whether text assigns a token-like value to a
+// credential name. Values that are short, read as words, numbers or dates, or
+// refer elsewhere (a path, a URL, a variable or a template) do not count.
+func assignsCredential(text string) bool {
+	for _, match := range credentialAssignment.FindAllStringSubmatch(text, -1) {
+		if tokenLike(match[1]) {
+			return true
+		}
+	}
+	return false
+}
+
+func tokenLike(value string) bool {
+	if len(value) < 16 || strings.ContainsAny(value[:1], "/~.$%{[(") || strings.Contains(value, "://") {
+		return false
+	}
+	letters, digits := 0, 0
+	for _, c := range value {
+		switch {
+		case c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z':
+			letters++
+		case c >= '0' && c <= '9':
+			digits++
+		}
+	}
+	return letters >= 4 && digits >= 2
 }
 func validTime(value *string) bool {
 	if value == nil {
@@ -86,13 +125,21 @@ func (n *Note) validate(preservedSources ...Source) error {
 	}
 	for i := range n.Sources {
 		s := &n.Sources[i]
-		if !identityPattern.MatchString(s.Kind) || !validSource(s.Ref) || s.CurrentRef != nil && !validSource(*s.CurrentRef) || !validTime(s.ObservedAt) || s.Version != nil && !validText(*s.Version, 256) {
+		// Only the complete, unchanged source read from the existing note may
+		// retain text accepted before the secret checks were tightened. Revise
+		// requires this provenance to survive, so rechecking it would prevent
+		// even harmless body/status corrections. New or edited sources still
+		// pass every content check; callers cannot supply preservedSources.
+		preserved := slices.ContainsFunc(preservedSources, func(original Source) bool { return reflect.DeepEqual(original, *s) })
+		if !identityPattern.MatchString(s.Kind) || !validTime(s.ObservedAt) {
+			return problem(2, "InvalidInput")
+		}
+		if !preserved && (!validSource(s.Ref) || s.CurrentRef != nil && !validSource(*s.CurrentRef) || s.Version != nil && !validText(*s.Version, 256)) {
 			return problem(2, "InvalidInput")
 		}
 		if !slices.Contains([]string{"user-stated", "tool-observed", "external-claim", "agent-inferred"}, s.Origin) {
 			return problem(2, "InvalidInput")
 		}
-		preserved := slices.ContainsFunc(preservedSources, func(original Source) bool { return reflect.DeepEqual(original, *s) })
 		if s.Assurance != "" && s.Assurance != "reported" && !preserved {
 			return problem(2, "InvalidInput")
 		}
