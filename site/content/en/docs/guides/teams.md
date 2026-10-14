@@ -10,6 +10,16 @@ It does not define a membership roster, verify Entra group membership, or
 authorize access to another user's instance. Portal administrators can manage
 teams; instance owners can select a team.
 
+When the cluster rejects a Team create or update, the Portal shows the known
+field paths and validation reasons, such as `spec.agentPolicyRef: Required value`.
+If the error names `agentPolicyRef`, `defaultSandboxRef`, or `sandboxRefs` as
+required, the cluster requires Agent Policy/Sandbox settings that the Team form
+does not configure. Ask a platform administrator to configure the Team and
+verify that the Portal and installed CRDs are compatible. Other validation
+errors should be corrected in the indicated fields before retrying. Unexpected
+server failures retain a generic message; administrators can inspect Portal
+logs for details.
+
 Save a configuration such as:
 
 ```yaml

@@ -22,8 +22,9 @@ or preference, or a recommendation you gave.
 
 1. Call `status` once. Memory reads, writes and bounded learning are enabled by default, with both
    installed learning profiles. Status and generation say nothing about whether a remembered fact is
-   true. Respect the current request's `noCapture` and `noMemory` restrictions. A shared or unknown
-   audience gets no private memory.
+   true. Respect the current request's `noCapture` and `noMemory` restrictions. When the audience is
+   shared or unknown, the adapter injects no notes and the tool refuses requests; do not read or save
+   private memory there by other means.
 2. Query with the distinctive words of the question: names, places, products, titles, numbers, activities.
    The helper first returns notes whose title, alias or keyword equals a query term (stages `exact-title`,
    `alias`, `keywords`). If none does, it ranks notes by the words they share with the query across title,

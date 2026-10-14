@@ -94,7 +94,11 @@ func (p *PreparedRelease) customMainMounts() []corev1.VolumeMount {
 	if p.sharedSkillsEnabled() || object(p.Values["memoryContext"])["enabled"] == true {
 		context = runtimebindings.ContextMount(p.Agent.HomeDir)
 	}
-	return []corev1.VolumeMount{{Name: "data", MountPath: p.Agent.HomeDir}, context, {Name: "tmp", MountPath: "/tmp"}}
+	mounts := []corev1.VolumeMount{{Name: "data", MountPath: p.Agent.HomeDir}, context, {Name: "tmp", MountPath: "/tmp"}}
+	if object(p.Values["agentIdentity"])["enabled"] == true {
+		mounts = append(mounts, corev1.VolumeMount{Name: "agent-identity-tools", MountPath: "/usr/local/bin/cetirun-agent", SubPath: "cetirun-agent", ReadOnly: true})
+	}
+	return mounts
 }
 
 func (p *PreparedRelease) customInitMounts() []corev1.VolumeMount {
@@ -111,6 +115,9 @@ func (p *PreparedRelease) customInitEnv() []corev1.EnvVar {
 		{Name: "CETIRUN_INIT_IMAGE", Value: p.Agent.Image},
 		{Name: "CETIRUN_INIT_COMMON", Value: "/etc/cetirun/init-home-common.sh"},
 		{Name: "CETIRUN_CONTEXT_DIR", Value: "/etc/cetirun-context"},
+	}
+	if object(p.Values["agentIdentity"])["enabled"] == true {
+		env = append(env, corev1.EnvVar{Name: "CETIRUN_AGENT_IDENTITY_ENABLED", Value: "true"})
 	}
 	return append(env, runtimebindings.ContextInitEnvironment(p.sharedSkillsEnabled(), object(p.Values["memoryContext"])["enabled"] == true)...)
 }

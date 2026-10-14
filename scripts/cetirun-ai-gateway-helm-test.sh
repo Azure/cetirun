@@ -165,6 +165,9 @@ assert_absent "enforce_fallback_model_access" "a standalone Gateway keeps LiteLL
 integration="$(render --set operatorIntegration=true)"
 assert_contains "enforce_fallback_model_access: true" \
   "the operator integration checks fallback targets against the caller's key" "${integration}"
+assert_absent "user_api_key_cache_ttl" "standalone authentication-cache defaults are unchanged" "${output}"
+assert_contains "user_api_key_cache_ttl: 0" \
+  "managed keys use current authorization instead of cached grants" "${integration}"
 
 # ----- Image -----
 

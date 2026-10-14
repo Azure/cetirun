@@ -134,7 +134,7 @@ data:
   mock_provider.py: |
     import json, re, time, uuid
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-    failed = {"count": 0, "broken": 0}
+    requests = {"failed": 0, "total": 0, "broken": 0}
     class H(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
         def _send(self, body, code=200):
@@ -144,14 +144,15 @@ data:
             self.end_headers()
             self.wfile.write(body)
         def do_POST(self):
+            requests["total"] += 1
             n = int(self.headers.get("Content-Length", 0))
             raw = self.rfile.read(n) if n else b""
             if self.path.startswith("/broken"):
-                failed["broken"] += 1
+                requests["broken"] += 1
                 self._send(b'{"error":{"message":"server error (mock)","code":"500"}}', 500)
                 return
             if b"fail429" in raw:
-                failed["count"] += 1
+                requests["failed"] += 1
                 self._send(b'{"error":{"message":"rate limited (mock)","code":"429"}}', 429)
                 return
             delay = re.search(rb"sleep(\d+)", raw)
@@ -167,7 +168,7 @@ data:
             }).encode())
         def do_GET(self):
             if self.path.startswith("/stats"):
-                self._send(json.dumps({"failed": failed["count"], "broken": failed["broken"]}).encode())
+                self._send(json.dumps(requests).encode())
                 return
             self._send(b'{"status":"ok"}')
         def log_message(self, *a):
@@ -308,7 +309,7 @@ forward_pods() {
   pod_ports=()
   pod_names=("${pods[@]:0:2}")
   for pod in "${pod_names[@]}"; do
-    kubectl port-forward -n "${namespace}" "pod/${pod}" "${port}:4000" >/dev/null 2>&1 &
+    kubectl port-forward -n "${namespace}" "pod/${pod}" "${port}:4000" >"${work_dir}/port-forward-${port}.log" 2>&1 &
     forward_pids+=("$!")
     pod_ports+=("${port}")
     port=$((port + 1))
@@ -331,7 +332,7 @@ forward_pods() {
 # so a test built from varied requests cannot notice one being switched on.
 chat() {
   local port="$1" key="$2" model="$3" content="${4:-test}"
-  curl -s -m 60 -o "${work_dir}/last.json" -D "${work_dir}/last.headers" -w '%{http_code}' \
+  curl -sS -m 60 -o "${work_dir}/last.json" -D "${work_dir}/last.headers" -w '%{http_code}' \
     -X POST "http://127.0.0.1:${port}/v1/chat/completions" \
     -H "Authorization: Bearer ${key}" -H 'Content-Type: application/json' \
     -d "{\"model\":\"${model}\",\"messages\":[{\"role\":\"user\",\"content\":\"${content}\"}]}"
@@ -783,6 +784,143 @@ kubectl exec -n "${namespace}" "${postgresql_pod}" -- psql -U litellm -d litellm
   || fail "could not remove the saved callbacks list"
 pass "with a callbacks list saved in the database, 2 calls are in the request log and none in LiteLLM_SpendLogs"
 
+# ----- Managed key authorization --------------------------------------------
+
+provider_requests() {
+  in_mock_pod 'import json, urllib.request
+print(json.load(urllib.request.urlopen("http://mock-provider:8080/stats", timeout=10))["total"])'
+}
+
+key_requests() {  # key_requests KEY MODEL EXPECTED_STATUS
+  local key="$1" model="$2" expected="$3" port status
+  for port in "${pod_ports[@]}"; do
+    if ! status="$(chat "${port}" "${key}" "${model}")"; then
+      tail -n 20 "${work_dir}/port-forward-${port}.log" >&2
+      fail "key request transport failed on ${port}"
+    fi
+    if [ "${expected}" = denied ]; then
+      case "${status}" in
+        401|403) ;;
+        *) fail "new request on ${port} used outdated authorization: expected 401/403, got ${status}" ;;
+      esac
+    else
+      [ "${status}" = "${expected}" ] || fail "key request on ${port}: expected ${expected}, got ${status}"
+      jq -e '.choices[0].message.content == "mock-ok"' "${work_dir}/last.json" >/dev/null \
+        || fail "the allowed request did not return the provider response"
+    fi
+  done
+}
+
+managed_key_freshness() {
+  local phase="$1" control_key target_key target_hash before alias budget_key allowed i port status
+  echo "==> Current key authorization on both replicas (${phase})"
+  control_key="$(api_post "${port_a}" /key/generate '{"models":["mock-priced"],"max_budget":10}' | jq -er .key)" \
+    || fail "could not create the independent key control"
+  target_key="$(api_post "${port_a}" /key/generate '{"models":["mock-priced"],"max_budget":10}' | jq -er .key)" \
+    || fail "could not create the deletion target"
+  target_hash="$(key_hash_of "${target_key}")"
+  key_requests "${control_key}" mock-priced 200
+  key_requests "${target_key}" mock-priced 200
+  before="$(provider_requests)"
+  api_post "${port_a}" /key/delete "$(jq -nc --arg key "${target_hash}" '{keys:[$key]}')" >/dev/null \
+    || fail "key deletion by hash failed"
+  # No polling, cache flush, restart or sleep after management success: check
+  # the very next new request on each separately addressed, prewarmed replica.
+  key_requests "${target_key}" mock-priced denied
+  [ "$(provider_requests)" = "${before}" ] || fail "a deleted key reached the provider"
+  key_requests "${control_key}" mock-priced 200
+  pass "deletion by hash denies new requests on both replicas; the control still serves"
+
+  alias="cluster-test-current-${phase}"
+  target_key="$(api_post "${port_a}" /key/generate \
+    "$(jq -nc --arg alias "${alias}" '{key_alias:$alias,models:["mock-priced","mock-db"],max_budget:10}')" | jq -er .key)" \
+    || fail "could not create the key-change target"
+  key_requests "${target_key}" mock-priced 200
+  key_requests "${target_key}" mock-db 200
+  before="$(provider_requests)"
+  api_post "${port_a}" /key/update \
+    "$(jq -nc --arg key "${target_key}" '{key:$key,models:["mock-db"]}')" >/dev/null \
+    || fail "model entitlement update failed"
+  key_requests "${target_key}" mock-priced denied
+  [ "$(provider_requests)" = "${before}" ] || fail "a removed model entitlement reached the provider"
+  key_requests "${target_key}" mock-db 200
+  key_requests "${control_key}" mock-priced 200
+  pass "removed model entitlement is denied on both replicas; retained access still serves"
+
+  before="$(provider_requests)"
+  api_post "${port_a}" /key/block "$(jq -nc --arg key "${target_key}" '{key:$key}')" >/dev/null \
+    || fail "key block failed"
+  key_requests "${target_key}" mock-db denied
+  [ "$(provider_requests)" = "${before}" ] || fail "a blocked key reached the provider"
+  key_requests "${control_key}" mock-priced 200
+  api_post "${port_a}" /key/unblock "$(jq -nc --arg key "${target_key}" '{key:$key}')" >/dev/null \
+    || fail "key unblock failed"
+  key_requests "${target_key}" mock-db 200
+  key_requests "${target_key}" mock-priced denied
+  pass "block and unblock are current on both replicas without restoring removed entitlements"
+
+  before="$(provider_requests)"
+  api_post "${port_a}" /key/delete "$(jq -nc --arg alias "${alias}" '{key_aliases:[$alias]}')" >/dev/null \
+    || fail "key deletion by alias failed"
+  key_requests "${target_key}" mock-db denied
+  [ "$(provider_requests)" = "${before}" ] || fail "a key deleted by alias reached the provider"
+  key_requests "${control_key}" mock-priced 200
+  pass "deletion by alias denies new requests on both replicas; the control still serves"
+
+  budget_key="$(api_post "${port_a}" /key/generate '{"models":["mock-priced"],"max_budget":0.10}' | jq -er .key)" \
+    || fail "could not create the managed budget control"
+  allowed=0
+  for i in $(seq 0 15); do
+    port="${pod_ports[$((i % 2))]}"
+    status="$(chat "${port}" "${budget_key}" mock-priced)" || fail "managed budget request transport failed"
+    if [ "${status}" = 200 ]; then
+      allowed=$((allowed + 1))
+      served_from_cache && fail "managed budget request was answered from the response cache"
+    else
+      [ "${status}" = 429 ] || fail "managed budget returned ${status}, not a budget rejection"
+      jq -e '.error.message | test("budget"; "i")' "${work_dir}/last.json" >/dev/null \
+        || fail "managed budget request was rejected for a different reason"
+    fi
+    sleep 0.3
+  done
+  [ "${allowed}" -ge 5 ] && [ "${allowed}" -le 6 ] \
+    || fail "managed budget allowed ${allowed} requests, expected 5-6 across both replicas"
+  pass "managed budget remains coordinated across replicas, without response-cache hits"
+}
+
+# Exercise a standalone-to-managed upgrade with existing keys and saved DB
+# settings. The rendered value alone cannot establish its effective precedence
+# in the pinned LiteLLM runtime.
+echo "==> Upgrading to managed authentication with stored settings"
+kubectl exec -i -n "${namespace}" "${postgresql_pod}" -- psql -U litellm -d litellm -v ON_ERROR_STOP=1 -q \
+  >/dev/null <<'SQL' || fail "could not save general settings in LiteLLM_Config"
+INSERT INTO "LiteLLM_Config" (param_name, param_value)
+VALUES ('general_settings', '{"user_api_key_cache_ttl": 120}')
+ON CONFLICT (param_name) DO UPDATE SET param_value = EXCLUDED.param_value;
+SQL
+stop_forwards
+helm upgrade "${release_name}" "${chart_dir}" -n "${namespace}" -f "${values_file}" \
+  --set operatorIntegration=true --set metrics.enabled=true --set spendLogs.enabled=false \
+  --wait --timeout 10m >/dev/null || fail "managed authentication upgrade did not complete"
+forward_pods
+port_a="${pod_ports[0]}"
+[ "$(secret_value salt-key)" = "${salt_before}" ] || fail "managed upgrade changed the salt key"
+[ "$(secret_value master-key)" = "${master_key}" ] || fail "managed upgrade changed the master key"
+key_requests "${saved_key}" mock-priced 200
+managed_key_freshness upgrade
+
+stop_forwards
+kubectl rollout restart "deployment/${fullname}" -n "${namespace}" >/dev/null
+kubectl rollout status "deployment/${fullname}" -n "${namespace}" --timeout=600s >/dev/null \
+  || fail "managed Gateway restart did not complete"
+forward_pods
+port_a="${pod_ports[0]}"
+key_requests "${saved_key}" mock-priced 200
+managed_key_freshness restart
+kubectl exec -n "${namespace}" "${postgresql_pod}" -- psql -U litellm -d litellm -v ON_ERROR_STOP=1 -tAc \
+  "DELETE FROM \"LiteLLM_Config\" WHERE param_name = 'general_settings'" >/dev/null \
+  || fail "could not remove the saved general settings"
+
 # ----- Uninstall and install again -------------------------------------------
 
 # The database outlives the release: the bundled PostgreSQL's volume is kept on
@@ -805,6 +943,7 @@ kubectl get secret "${postgresql_name}" -n "${namespace}" >/dev/null 2>&1 \
 pass "auth Secret, database Secret and database volume kept on uninstall"
 
 helm install "${release_name}" "${chart_dir}" -n "${namespace}" -f "${values_file}" \
+  --set operatorIntegration=true \
   --wait --timeout 10m >/dev/null || fail "install after uninstall did not complete"
 [ "$(secret_value salt-key)" = "${salt_before}" ] || fail "the salt key changed across uninstall and install"
 [ "$(secret_value master-key)" = "${master_key}" ] || fail "the master key changed across uninstall and install"
@@ -815,6 +954,8 @@ port_a="${pod_ports[0]}"
 [ "$(chat "${port_a}" "${master_key}" mock-db)" = "200" ] \
   || fail "database-backed model stopped working after uninstall and install: $(last_body)"
 pass "the kept database was found again, and its model decrypts and serves"
+key_requests "${saved_key}" mock-priced 200
+managed_key_freshness reinstall
 
 # ----- An image built before the request log ---------------------------------
 

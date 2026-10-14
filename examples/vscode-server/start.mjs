@@ -6,6 +6,7 @@ import { lstat, mkdir, readFile, realpath, symlink, writeFile } from "node:fs/pr
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { createProxy, validateConfig } from "./proxy.mjs";
+import gateway from "./gateway-extension/gateway.cjs";
 
 async function linkOnce(target, link) {
   try { await symlink(target, link); }
@@ -78,6 +79,7 @@ export async function main() {
   if (process.env.VSCODE_SERVER_LICENSE_ACCEPTED !== "true") throw new Error("VS Code Server license acceptance is required");
   const home = process.env.HOME;
   if (!home || !path.isAbsolute(home) || home === "/") throw new Error("An absolute instance HOME is required");
+  gateway.gatewayConfiguration(process.env);
   const install = "/opt/vscode";
   const commit = (await readFile(path.join(install, "commit"), "utf8")).trim();
   if (!/^[a-f0-9]{40}$/.test(commit)) throw new Error("Invalid pinned VS Code commit");

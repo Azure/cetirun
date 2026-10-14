@@ -44,6 +44,9 @@ data:
       # reach a model the key may not use, such as another Agent's GitHub
       # Copilot route.
       enforce_fallback_model_access: true
+      # Managed keys must use current authorization on each new request.
+      # Keep Redis budget/rate-limit coordination, not worker-local key grants.
+      user_api_key_cache_ttl: 0
       {{- end }}
       {{- $router := include "cetirun-ai-gateway.router" . | fromJson }}
       {{- if $router.healthChecks.enabled }}

@@ -339,17 +339,11 @@ func TestGeneratedAgentSchema(t *testing.T) {
 			t.Errorf("independent spec.%s missing", name)
 		}
 	}
-	foundCustomAgentIdentityGate := false
 	for _, validation := range spec.XValidations {
-		if strings.Contains(validation.Rule, "!has(self.agentIdentity.enabled)") &&
-			strings.Contains(validation.Rule, "!self.agentIdentity.enabled") &&
+		if strings.Contains(validation.Rule, "agentIdentity") &&
 			strings.Contains(validation.Rule, "self.agent.type != 'custom'") {
-			foundCustomAgentIdentityGate = true
-			break
+			t.Fatal("schema must permit opt-in Agent Identity for Custom agents")
 		}
-	}
-	if !foundCustomAgentIdentityGate {
-		t.Fatal("schema must reject Agent Identity for custom agents")
 	}
 	for _, column := range crd.Spec.Versions[0].AdditionalPrinterColumns {
 		if column.Name == "Agent" {

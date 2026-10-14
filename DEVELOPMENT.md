@@ -221,6 +221,31 @@ bash scripts/cetirun-agent-broker-helm-test.sh
 These are offline checks. They do not call Microsoft Entra, the Auth SDK, Key
 Vault, ARM, Resource Graph, or a Kubernetes cluster.
 
+The Agent workload's `cetirun-agent az rest` wrapper has separate offline tests:
+
+```bash
+python3 -B -m unittest discover -s app/cetirun-chart/tests -p 'test_agent*.py' -v
+python3 -B -m unittest discover -s scripts/tests -p test_agent_id_runtime_assets.py -v
+```
+
+The wrapper runs on Linux and uses `/usr/bin/az`, `/dev/stdin`, and anonymous
+memory-backed file descriptors under `/proc/self/fd`. When Azure CLI is installed,
+the tests exercise it against a loopback fixture using synthetic tokens and an
+isolated configuration directory. Otherwise, the real-CLI test is explicitly
+skipped; the mocked and subprocess tests still run. This does not qualify the
+CLI version in a built runtime image or validate a real OBO session.
+
+Custom Agent Identity also uses the Operator's typed runtime bindings and final
+manifest validation. Run its focused checks with:
+
+```bash
+go -C app/cetirun-operator test ./internal/runtimebindings ./internal/helm ./internal/controller -run 'TestCustomAgentIdentity|TestAgentIdentityBrokerNamespace' -count=1
+```
+
+The Custom image supplies Python and Azure CLI; the platform mounts the shared
+CLI and Azure skill read-only. Identity creation and cleanup use the existing
+controller lifecycle, not image-owned credentials or new Azure role assignments.
+
 `npm --prefix app/cetirun-portal/web run dev` starts a local frontend server.
 Its API proxy expects a backend on localhost and injects development identity
 headers. Keep it local; it is not a production authentication configuration.
@@ -423,7 +448,11 @@ exceptions in `scripts/license_headers.py` must retain their own notices.
   a cluster as part of an offline check. It requires separately authorized
   before/after configuration inputs and an explicitly pinned authority.
   The same suites cover conditional configuration deletion and observation-only
-  recovery using the original before input. Real API cases exercise UID/version
+  recovery using the original before input or, for a Portal deletion with
+  recorded recovery metadata, its operation ID without a body. Both paths retain
+  the same UID/metadata safety and do not prove physical cleanup. Existing
+  records without the optional metadata require `--before`; upgrade all strict
+  journal readers before issuing new metadata. Real API cases exercise UID/version
   conflicts, replacement protection, served deletion admission and independent
   finalizer cleanup; no live cluster or physical writer is involved.
   Running-input tests additionally check a synthetic held-to-running handoff

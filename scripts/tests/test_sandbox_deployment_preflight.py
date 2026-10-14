@@ -242,6 +242,60 @@ class KubectlDouble:
 
 
 class DeploymentPreflightTests(unittest.TestCase):
+    def test_aks_selector_exclusions_require_explicit_opt_in_and_exact_clauses(self):
+        required = {"matchExpressions": [{"key": "cetirun.microsoft.com/sandbox-protected", "operator": "Exists"}]}
+        additions = [
+            {"key": "control-plane", "operator": "NotIn", "values": ["true"]},
+            {"key": "kubernetes.azure.com/managedby", "operator": "NotIn", "values": ["aks"]},
+        ]
+        for expected in ({}, required):
+            clauses = copy.deepcopy(expected.get("matchExpressions", []) + additions)
+            actual = {"matchExpressions": clauses}
+            self.assertFalse(qualify.webhook_namespace_selector_matches(actual, expected))
+            self.assertTrue(qualify.webhook_namespace_selector_matches(actual, expected, True))
+            self.assertTrue(qualify.webhook_namespace_selector_matches({"matchExpressions": list(reversed(clauses))}, expected, True))
+            invalid = [
+                None, {"matchLabels": {"skip": "true"}}, {"matchExpressions": []},
+                {"matchExpressions": clauses[:-1]}, {"matchExpressions": clauses + [clauses[-1]]},
+                {"matchExpressions": clauses, "matchLabels": {}},
+            ]
+            for field, value in (("key", "tenant-controlled"), ("operator", "In"), ("values", ["aks", "extra"])):
+                changed = copy.deepcopy(clauses)
+                changed[-1][field] = value
+                invalid.append({"matchExpressions": changed})
+            for selector in invalid:
+                with self.subTest(expected=expected, selector=selector):
+                    self.assertFalse(qualify.webhook_namespace_selector_matches(selector, expected, True))
+        self.assertTrue(qualify.webhook_namespace_selector_matches(required, required))
+
+    def test_aks_selector_option_does_not_apply_to_other_modes(self):
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            code = qualify.main(["preflight", "--kubeconfig", "/example/config", "--context", "example",
+                                 "--cluster-uid", "example-uid", "--allow-aks-system-exclusions"])
+        self.assertEqual(code, 2)
+        self.assertIn("requires deployment-preflight", json.loads(output.getvalue())["error"])
+
+    def test_exact_aks_exclusions_pass_only_opted_in_complete_preflight(self):
+        for native in (False, True):
+            for enabled in (False, True):
+                with self.subTest(native=native, enabled=enabled):
+                    double = KubectlDouble(native=native)
+                    for value in double.responses.values():
+                        for hook in value.get("webhooks", []):
+                            selector = hook.setdefault("namespaceSelector", {})
+                            selector.setdefault("matchExpressions", []).extend([
+                                {"key": "control-plane", "operator": "NotIn", "values": ["true"]},
+                                {"key": "kubernetes.azure.com/managedby", "operator": "NotIn", "values": ["aks"]},
+                            ])
+                    args = arguments() + (["--allow-aks-system-exclusions"] if enabled else [])
+                    code, result, _ = self.run_preflight(double, args)
+                    self.assertEqual(code, 0 if enabled else 1)
+                    if enabled:
+                        self.assertTrue(all(c["status"] == "observed" for c in result["checks"]))
+                        self.assertEqual(result["executionReadiness"], "unknown")
+                    else:
+                        self.assertIn("webhook-resource-wiring-mismatch", [c["reason"] for c in result["checks"]])
+
     def run_preflight(self, double=None, args=None):
         double = double or KubectlDouble()
         with patch.object(qualify.subprocess, "Popen", side_effect=double.spawn), \

@@ -167,7 +167,14 @@ func TestCompileNativeProfileFailsClosed(t *testing.T) {
 		"missing DNS":       func(i *CompileInput) { i.Platform.Topology.DNSResolverIPs = nil },
 		"missing UDP":       func(i *CompileInput) { i.Resolution.Capabilities.Protocols = []corev1.Protocol{corev1.ProtocolTCP} },
 		"token audience":    func(i *CompileInput) { i.Platform.KubernetesAudience = "https://kubernetes.default.svc" },
-		"custom CIDR":       func(i *CompileInput) { i.Resolution.AgentPolicy.Network.BlockedCIDRs = []string{"203.0.113.0/24"} },
+		"unqualified blocked ports": func(i *CompileInput) {
+			i.Resolution.AgentPolicy.Network.BlockedPorts = []api.AgentPolicyPort{{Port: 18080, Protocol: corev1.ProtocolTCP}}
+		},
+		"SCTP port despite declaration": func(i *CompileInput) {
+			i.Resolution.Capabilities.BlockedPorts = true
+			i.Resolution.Capabilities.Protocols = append(i.Resolution.Capabilities.Protocols, corev1.ProtocolSCTP)
+			i.Resolution.AgentPolicy.Network.BlockedPorts = []api.AgentPolicyPort{{Port: 18080, Protocol: corev1.ProtocolSCTP}}
+		},
 		"custom port": func(i *CompileInput) {
 			i.Resolution.AgentPolicy.Network.BlockedPorts = []api.AgentPolicyPort{{Port: 25}}
 		},

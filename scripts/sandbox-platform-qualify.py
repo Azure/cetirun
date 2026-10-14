@@ -588,6 +588,23 @@ def admission_endpoints(kube, args, admission, selector):
     require_preflight(len(nodes) >= 2, "admission-replicas-not-spread")
 
 
+def webhook_namespace_selector_matches(actual, expected, allow_aks_system_exclusions=False):
+    if actual == expected:
+        return True
+    if not allow_aks_system_exclusions or not isinstance(actual, dict):
+        return False
+    if set(actual) != {"matchExpressions"}:
+        return False
+    expressions = actual["matchExpressions"]
+    if not isinstance(expressions, list):
+        return False
+    required = expected.get("matchExpressions", []) + [
+        {"key": "control-plane", "operator": "NotIn", "values": ["true"]},
+        {"key": "kubernetes.azure.com/managedby", "operator": "NotIn", "values": ["aks"]},
+    ]
+    return len(expressions) == len(required) and all(expressions.count(item) == 1 for item in required)
+
+
 def webhook_wiring(kube, args, admission, *, native_execution=False):
     timeout = admission[3].get("admission-pod-timeout")
     match = re.fullmatch(r"([0-9]{1,5})(ms|s)", timeout) if isinstance(timeout, str) else None
@@ -642,7 +659,9 @@ def webhook_wiring(kube, args, admission, *, native_execution=False):
         namespace_selector = ({"matchExpressions": [{"key": "cetirun.microsoft.com/sandbox-protected", "operator": "Exists"}]}
                               if name == "cetirun-sandbox-pods" else {})
         require_preflight(hook.get("rules") == expected and not hook.get("objectSelector") and
-                          hook.get("namespaceSelector", {}) == namespace_selector,
+                          webhook_namespace_selector_matches(
+                              hook.get("namespaceSelector", {}), namespace_selector,
+                              getattr(args, "allow_aks_system_exclusions", False)),
                           "webhook-resource-wiring-mismatch")
         require_preflight(kind != "mutating" or hook.get("reinvocationPolicy") == "Never",
                           "webhook-reinvocation-mismatch")
@@ -965,6 +984,8 @@ def main(argv=None):
                         help="network-smoke transport (default TCP); not valid for read-only modes")
     parser.add_argument("--allow-test-resources", action="store_true")
     deployment = parser.add_argument_group("deployment-preflight (explicit workload pins required)")
+    deployment.add_argument("--allow-aks-system-exclusions", action="store_true",
+                            help="also accept the exact two AKS-managed system-namespace exclusions; no other selector changes")
     deployment.add_argument("--namespace")
     for role in ("operator", "admission"):
         for field in ("deployment", "uid", "image", "service-account", "service-account-uid"):
@@ -978,6 +999,10 @@ def main(argv=None):
     if args.network_protocol is not None and args.mode != "network-smoke":
         print(json.dumps({"version": "v1", "mode": args.mode, "status": "blocked", "qualifiesExecution": False,
                           "error": "--network-protocol requires network-smoke"}))
+        return 2
+    if args.allow_aks_system_exclusions and args.mode != "deployment-preflight":
+        print(json.dumps({"version": "v1", "mode": args.mode, "status": "blocked", "qualifiesExecution": False,
+                          "error": "--allow-aks-system-exclusions requires deployment-preflight"}))
         return 2
     if args.mode == "deployment-preflight":
         return deployment_preflight(args)

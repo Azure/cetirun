@@ -2,13 +2,20 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 
-"""Typed Agent Identity client for bounded Azure read-only operations."""
+"""Agent Identity client for Azure discovery and delegated ARM REST requests."""
 
 import argparse
+from contextlib import ExitStack
 import json
 import os
 import re
+import selectors
+import signal
+import stat
+import subprocess
 import sys
+import tempfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -31,6 +38,21 @@ MAX_RESPONSE_BYTES = 2 << 20
 MAX_RESULT_ITEMS = 100
 MAX_ARM_PAGES = 20
 HTTP_TIMEOUT_SECONDS = 20
+AZ_EXECUTABLE = "/usr/bin/az"
+AZ_TIMEOUT_SECONDS = 60
+MAX_REQUEST_BYTES = 256 << 10
+MAX_STDERR_BYTES = 64 << 10
+API_VERSION_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}(?:-preview)?$")
+BLOCKED_ARM_OPERATIONS = frozenset({
+    "accessprofiles", "listclusteradmincredential", "listclusterusercredential",
+    "listcredentials", "listcredential", "listkeys", "listsecrets",
+    "regeneratekey", "regeneratekeys", "runcommand", "runcommands", "commandresults",
+})
+SENSITIVE_FIELDS = frozenset({
+    "authorization", "accesstoken", "refreshtoken", "clientsecret",
+    "password", "secret", "sastoken", "kubeconfig", "kubeconfigs",
+    "connectionstring", "primarykey", "secondarykey", "privatekey",
+})
 
 
 class InvalidRequestError(ValueError):
@@ -41,7 +63,15 @@ class BrokerConfigurationError(RuntimeError):
     """The operator-injected Broker endpoint is unavailable or unsafe."""
 
 
+class AzureCLIError(RuntimeError):
+    """The child did not produce a bounded, successful response."""
+
+
 class CLIArgumentParser(argparse.ArgumentParser):
+    def __init__(self, *args, **kwargs):
+        kwargs["allow_abbrev"] = False
+        super().__init__(*args, **kwargs)
+
     def error(self, _message: str) -> None:
         raise InvalidRequestError("command arguments are invalid")
 
@@ -392,8 +422,240 @@ def resources(
     }
 
 
+def arm_path_parts(path: str) -> list[str]:
+    if not path.startswith("/") or path.endswith("/") or len(path) > 4096:
+        raise InvalidRequestError("invalid ARM path")
+    decoded = []
+    for part in path[1:].split("/"):
+        try:
+            value = urllib.parse.unquote(part, errors="strict")
+        except UnicodeError as exc:
+            raise InvalidRequestError("invalid ARM path encoding") from exc
+        if (
+            not value or value in {".", ".."}
+            or any(char in value for char in "/\\%?#{}")
+            or any(ord(char) <= 0x20 or ord(char) == 0x7F for char in value)
+        ):
+            raise InvalidRequestError("invalid ARM path segment")
+        decoded.append(value)
+    if decoded[0].lower() != "subscriptions" or (
+        len(decoded) > 1 and not is_subscription_id(decoded[1])
+    ):
+        raise InvalidRequestError("only subscription-scoped ARM paths are supported")
+    return decoded
+
+
+def rest_body(value: str) -> bytes:
+    try:
+        if value.startswith("@"):
+            descriptor = os.open(value[1:], os.O_RDONLY | os.O_NONBLOCK)
+            with os.fdopen(descriptor, "rb") as source:
+                if not stat.S_ISREG(os.fstat(source.fileno()).st_mode):
+                    raise ValueError("body must be a regular file")
+                body = source.read(MAX_REQUEST_BYTES + 1)
+        else:
+            body = value.encode("utf-8")
+        if len(body) > MAX_REQUEST_BYTES:
+            raise ValueError("body is too large")
+        document = json.loads(body)
+        if not isinstance(document, dict):
+            raise ValueError("body must be an object")
+        encoded = json.dumps(document, ensure_ascii=True, allow_nan=False).encode()
+        if len(encoded) > MAX_REQUEST_BYTES:
+            raise ValueError("encoded body is too large")
+        return encoded
+    except (OSError, ValueError, UnicodeError, RecursionError) as exc:
+        raise InvalidRequestError("invalid JSON request body") from exc
+
+
+def validate_arm_rest(args: argparse.Namespace) -> None:
+    raw = args.url
+    if len(raw) > 8192 or any(ord(char) <= 0x20 or ord(char) == 0x7F for char in raw):
+        raise InvalidRequestError("invalid ARM URL")
+    try:
+        parsed = urllib.parse.urlsplit(raw)
+        if parsed.scheme or parsed.netloc:
+            if (
+                parsed.scheme != "https" or parsed.hostname != ARM_HOST
+                or parsed.port is not None or parsed.username is not None
+            ):
+                raise InvalidRequestError("URL is outside ARM")
+        if parsed.fragment or raw.startswith("//"):
+            raise InvalidRequestError("invalid ARM URL")
+        parts = arm_path_parts(parsed.path)
+        query = urllib.parse.parse_qs(parsed.query, keep_blank_values=True, max_num_fields=32)
+    except ValueError as exc:
+        raise InvalidRequestError("invalid ARM URL") from exc
+    versions = query.get("api-version", [])
+    if len(versions) != 1 or not API_VERSION_PATTERN.fullmatch(versions[0]):
+        raise InvalidRequestError("one explicit api-version is required")
+    if any(key.lower() == "api-version" and key != "api-version" for key in query):
+        raise InvalidRequestError("ambiguous api-version")
+    if any(key.lower() in {"access_token", "authorization", "sig"} for key in query):
+        raise InvalidRequestError("credentials cannot be supplied in the URL")
+    normalized = [part.lower() for part in parts]
+    operations, providers = set(), set()
+    for index in range(2, len(normalized), 2):
+        if normalized[index] == "providers":
+            if index + 1 < len(normalized):
+                providers.add(normalized[index + 1])
+        else:
+            operations.add(normalized[index])
+    if BLOCKED_ARM_OPERATIONS.intersection(operations):
+        raise InvalidRequestError("credential and remote-command APIs are not supported")
+    if args.method not in {"get", "head"}:
+        if not args.allow_write:
+            fail({"code": "write_not_enabled", "message": "Write requests require explicit --allow-write"})
+        if "microsoft.authorization" in providers or "moveresources" in operations:
+            raise InvalidRequestError("permission management and resource moves are not supported")
+        if "microsoft.resources" in providers and "deployments" in operations:
+            raise InvalidRequestError("ARM deployments are not supported")
+    elif args.body is not None:
+        raise InvalidRequestError("read requests do not accept a body")
+    if args.scope:
+        scopes = [arm_path_parts(scope) for scope in args.scope]
+        if not any(
+            len(scope) >= 2 and normalized[:len(scope)] == [part.lower() for part in scope]
+            for scope in scopes
+        ):
+            raise InvalidRequestError("request is outside the selected resource scopes")
+    args.url = ARM_BASE_URL + "/" + "/".join(
+        urllib.parse.quote(part, safe="-_.()") for part in parts
+    ) + "?" + parsed.query
+    if args.body is not None:
+        args.body = rest_body(args.body)
+
+
+def az_environment(config_dir: str) -> dict[str, str]:
+    return {
+        "PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "NETRC": os.devnull,
+        "AZURE_CONFIG_DIR": config_dir,
+        "AZURE_EXTENSION_DIR": config_dir + "/extensions",
+        "AZURE_CORE_COLLECT_TELEMETRY": "false",
+        "AZURE_CORE_CHECK_VERSION": "false",
+        "AZURE_CORE_ONLY_SHOW_ERRORS": "true",
+        "AZURE_CORE_NO_COLOR": "true",
+        "AZURE_LOGGING_ENABLE_LOG_FILE": "false",
+        "AZURE_EXTENSION_USE_DYNAMIC_INSTALL": "no",
+        "PYTHONDONTWRITEBYTECODE": "1",
+    }
+
+
+def run_az(command: list[str], headers: bytes, environment: dict, pass_fds: tuple) -> tuple:
+    process = subprocess.Popen(
+        command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        env=environment, pass_fds=pass_fds, start_new_session=True, bufsize=0,
+    )
+    output, diagnostics = bytearray(), bytearray()
+    pending = memoryview(headers)
+    deadline = time.monotonic() + AZ_TIMEOUT_SECONDS
+    try:
+        with selectors.DefaultSelector() as selector:
+            for stream, events in (
+                (process.stdin, selectors.EVENT_WRITE),
+                (process.stdout, selectors.EVENT_READ),
+                (process.stderr, selectors.EVENT_READ),
+            ):
+                os.set_blocking(stream.fileno(), False)
+                selector.register(stream, events)
+            while selector.get_map():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise AzureCLIError("Azure CLI timed out")
+                for key, _events in selector.select(remaining):
+                    stream = key.fileobj
+                    if stream is process.stdin:
+                        try:
+                            pending = pending[os.write(stream.fileno(), pending[:4096]):]
+                        except BrokenPipeError:
+                            pending = memoryview(b"")
+                        if not pending:
+                            selector.unregister(stream)
+                            stream.close()
+                    else:
+                        chunk = os.read(stream.fileno(), 65536)
+                        if not chunk:
+                            selector.unregister(stream)
+                            stream.close()
+                            continue
+                        target = output if stream is process.stdout else diagnostics
+                        limit = MAX_RESPONSE_BYTES if stream is process.stdout else MAX_STDERR_BYTES
+                        if len(target) + len(chunk) > limit:
+                            raise AzureCLIError("Azure CLI output exceeded its limit")
+                        target.extend(chunk)
+        return process.wait(timeout=max(0.01, deadline - time.monotonic())), bytes(output), bytes(diagnostics)
+    finally:
+        if process.poll() is None:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.wait()
+        for stream in (process.stdin, process.stdout, process.stderr):
+            stream.close()
+
+
+def redact_arm_response(value: object) -> object:
+    if isinstance(value, dict):
+        return {
+            key: "[REDACTED]" if re.sub(r"[-_]", "", key.lower()) in SENSITIVE_FIELDS
+            else redact_arm_response(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [redact_arm_response(item) for item in value]
+    return value
+
+
+def az_rest(args: argparse.Namespace, token: str) -> dict:
+    writing = args.method not in {"get", "head"}
+    command = [
+        AZ_EXECUTABLE, "rest", "--method", args.method, "--url", args.url,
+        "--headers", "@/dev/stdin", "--skip-authorization-header",
+        "--only-show-errors", "--output", "json",
+    ]
+    try:
+        with tempfile.TemporaryDirectory(prefix="cetirun-az-") as config_dir, ExitStack() as stack:
+            pass_fds = ()
+            if args.body is not None:
+                body_file = stack.enter_context(os.fdopen(os.memfd_create("cetirun-arm-body"), "w+b"))
+                body_file.write(args.body)
+                body_file.seek(0)
+                pass_fds = (body_file.fileno(),)
+                command.extend(["--body", f"@/proc/self/fd/{body_file.fileno()}"])
+            headers = json.dumps({"Authorization": "Bearer " + token}).encode()
+            code, output, diagnostics = run_az(command, headers, az_environment(config_dir), pass_fds)
+        if token.encode() in output or token.encode() in diagnostics:
+            raise AzureCLIError("Azure CLI returned credential material")
+        if code != 0:
+            if not writing:
+                if re.search(rb"\b(AuthorizationFailed|AuthenticationFailed|Forbidden|Unauthorized)\b", diagnostics):
+                    azure_error(403)
+                if re.search(rb"\b(TooManyRequests|Throttled)\b", diagnostics):
+                    azure_error(429)
+                if re.search(rb"\b(ResourceNotFound|ResourceGroupNotFound)\b", diagnostics):
+                    fail({"code": "not_found", "message": "Azure could not find the requested resource"})
+            raise AzureCLIError("Azure CLI request failed")
+        response = redact_arm_response(json.loads(output)) if output.strip() else None
+        result = {"response": response}
+        if writing:
+            result["completion"] = "not_tracked"
+        if len(json.dumps(result, indent=2, sort_keys=True).encode()) + 1 > MAX_RESPONSE_BYTES:
+            raise AzureCLIError("formatted response exceeded its limit")
+    except (OSError, AttributeError, ValueError, UnicodeError, RecursionError,
+            AzureCLIError, subprocess.TimeoutExpired):
+        fail({
+            "code": "write_outcome_unknown" if writing else "dependency_unavailable",
+            "message": (
+                "The write outcome is unknown; inspect the resource before retrying"
+                if writing else "Azure CLI did not return a bounded successful JSON response"
+            ),
+        })
+    return result
+
+
 def parser() -> argparse.ArgumentParser:
-    root = CLIArgumentParser(prog="cetirun-agent", description="CetiRun typed Agent Identity tools")
+    root = CLIArgumentParser(prog="cetirun-agent", description="CetiRun Agent Identity tools")
     groups = root.add_subparsers(dest="group", required=True)
     auth = groups.add_parser("auth")
     auth_commands = auth.add_subparsers(dest="command", required=True)
@@ -416,6 +678,14 @@ def parser() -> argparse.ArgumentParser:
     resource = azure_commands.add_parser("resource")
     show = resource.add_subparsers(dest="operation", required=True).add_parser("show")
     show.add_argument("--id", required=True)
+    az = groups.add_parser("az", help="Use delegated ARM credentials with Azure CLI")
+    rest = az.add_subparsers(dest="command", required=True).add_parser("rest")
+    rest.add_argument("--url", "--uri", "-u", required=True)
+    rest.add_argument("--method", "-m", type=str.lower, default="get",
+                      choices=("get", "head", "put", "patch", "post", "delete"))
+    rest.add_argument("--body", "-b", help="JSON object or @file; write requests only")
+    rest.add_argument("--scope", action="append", help="Optional ARM resource/RG path guard; repeat for multiple scopes")
+    rest.add_argument("--allow-write", action="store_true", help="Explicitly enable a write request; does not grant Azure RBAC")
     return root
 
 
@@ -427,6 +697,9 @@ def main() -> int:
                 "GET" if args.command == "status" else "POST",
                 "/v1/auth/status" if args.command == "status" else "/v1/auth/start-link",
             )
+        elif args.group == "az":
+            validate_arm_rest(args)
+            result = az_rest(args, issue_arm_token())
         else:
             # Reject malformed typed arguments before asking the Broker for a
             # credential. This keeps invalid model-generated requests from

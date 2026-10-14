@@ -178,6 +178,95 @@ if grep -q 'name: cetirun-portal' <<< "${output}"; then
   exit 1
 fi
 
+admission_args=(
+  --kube-version 1.37.0
+  --set cetirun-operator.sandboxAdmission.enabled=true
+  --set cetirun-operator.sandboxAdmission.enforce=true
+  --set cetirun-operator.sandboxAdmission.podsEnabled=true
+  --set-string cetirun-operator.sandboxAdmission.validationMode=strict
+  --set-string cetirun-operator.sandboxAdmission.tlsSecretName=sandbox-admission-tls
+  --set-string cetirun-operator.sandboxAdmission.caBundle=LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tClFRPT0KLS0tLS1FTkQgQ0VSVElGSUNBVEUtLS0tLQ==
+  --set-string 'cetirun-operator.sandboxAdmission.adminUsers[0]=platform-admin@example.com'
+  --set-string cetirun-operator.sandboxAdmission.coordinationConfigMapName=configuration-coordination
+  --set-string cetirun-operator.sandboxAdmission.coordinationConfigMapUID=11111111-1111-1111-1111-111111111111
+)
+portal_coordination_args=(
+  --set-string cetirun-portal.configurationCoordination.namespace=cetirun-system
+  --set-string cetirun-portal.configurationCoordination.name=configuration-coordination
+  --set-string cetirun-portal.configurationCoordination.uid=11111111-1111-1111-1111-111111111111
+)
+
+echo "==> helm template platform (operator-only admission coordination)"
+output=$(helm template platform "${chart_dir}" "${base_args[@]}" "${admission_args[@]}" \
+  --set cetirun-portal.enabled=false)
+grep -q 'name: cetirun-sandbox-admission' <<< "${output}" || {
+  echo "FAIL: operator admission was not rendered" >&2
+  exit 1
+}
+grep -q 'coordinationConfigMapName\\":\\"configuration-coordination' <<< "${output}" || {
+  echo "FAIL: operator admission did not render the coordination ConfigMap name" >&2
+  exit 1
+}
+grep -q 'coordinationConfigMapUID\\":\\"11111111-1111-1111-1111-111111111111' <<< "${output}" || {
+  echo "FAIL: operator admission did not render the coordination ConfigMap UID" >&2
+  exit 1
+}
+
+echo "==> helm template platform (operator coordination without Portal authority, expect failure)"
+if output=$(helm template platform "${chart_dir}" "${base_args[@]}" "${admission_args[@]}" 2>&1); then
+  echo "FAIL: platform rendered Operator coordination without matching Portal authority" >&2
+  exit 1
+fi
+grep -Fq 'cetirun-portal.configurationCoordination must exactly match' <<< "${output}" || {
+  echo "FAIL: platform did not reject the missing Portal authority with a coordination mismatch" >&2
+  exit 1
+}
+
+echo "==> helm template platform (Portal disabled with inherited coordination values)"
+output=$(helm template platform "${chart_dir}" "${base_args[@]}" "${admission_args[@]}" \
+  "${portal_coordination_args[@]}" \
+  --set cetirun-portal.enabled=false \
+  --set-string cetirun-portal.configurationCoordination.namespace=stale-namespace \
+  --set-string cetirun-portal.configurationCoordination.name=stale-coordination \
+  --set-string cetirun-portal.configurationCoordination.uid=22222222-2222-2222-2222-222222222222)
+if grep -q 'name: cetirun-portal' <<< "${output}"; then
+  echo "FAIL: portal rendered while disabled with inherited coordination values" >&2
+  exit 1
+fi
+
+echo "==> helm template platform (matched Operator and Portal coordination)"
+output=$(helm template platform "${chart_dir}" "${base_args[@]}" "${admission_args[@]}" \
+  "${portal_coordination_args[@]}")
+grep -A1 'name: CONFIGURATION_COORDINATION_UID$' <<< "${output}" | grep -q 'value: "11111111-1111-1111-1111-111111111111"' || {
+  echo "FAIL: Portal did not render the matched coordination ConfigMap UID" >&2
+  exit 1
+}
+
+for field in namespace name uid; do
+  echo "==> helm template platform (mismatched Portal coordination ${field}, expect failure)"
+  if output=$(helm template platform "${chart_dir}" "${base_args[@]}" "${admission_args[@]}" \
+    "${portal_coordination_args[@]}" \
+    --set-string "cetirun-portal.configurationCoordination.${field}=mismatched" 2>&1); then
+    echo "FAIL: platform rendered mismatched Portal coordination ${field}" >&2
+    exit 1
+  fi
+  grep -Fq 'cetirun-portal.configurationCoordination must exactly match' <<< "${output}" || {
+    echo "FAIL: platform did not reject mismatched Portal coordination ${field} with a coordination mismatch" >&2
+    exit 1
+  }
+done
+
+echo "==> helm template platform (Portal coordination without Operator, expect failure)"
+if output=$(helm template platform "${chart_dir}" "${base_args[@]}" "${admission_args[@]}" \
+  "${portal_coordination_args[@]}" --set cetirun-operator.enabled=false 2>&1); then
+  echo "FAIL: platform rendered Portal coordination without Operator" >&2
+  exit 1
+fi
+grep -Fq 'configuration coordination requires both Operator and Portal' <<< "${output}" || {
+  echo "FAIL: platform did not reject Portal coordination without Operator with the required dependency" >&2
+  exit 1
+}
+
 echo "==> helm template platform (portal only)"
 output=$(helm template platform "${chart_dir}" "${base_args[@]}" --set cetirun-operator.enabled=false)
 if grep -q 'name: cetirun-operator' <<< "${output}"; then

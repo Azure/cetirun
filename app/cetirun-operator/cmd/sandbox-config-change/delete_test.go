@@ -9,6 +9,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -119,12 +120,162 @@ func TestCLIDeleteAndObservationRecovery(t *testing.T) {
 	}
 }
 
+func TestCLIDeletionRecoveryByOperationID(testContext *testing.T) {
+	for _, scenario := range []string{"committed", "lost reply", "crash"} {
+		testContext.Run(scenario, func(testContext *testing.T) {
+			args, store, storage, before, _ := cliFixture(testContext)
+			deleteArgs := args[:len(args)-2]
+			deletes := 0
+			writer := interceptor.NewClient(storage, interceptor.Funcs{
+				Delete: func(ctx context.Context, client client.WithWatch, object client.Object, options ...client.DeleteOption) error {
+					deletes++
+					if err := client.Delete(ctx, object, options...); err != nil {
+						return err
+					}
+					if scenario == "lost reply" {
+						return errors.New("lost reply")
+					}
+					return nil
+				},
+			})
+			var operation string
+			switch scenario {
+			case "lost reply":
+				code, status, message := invoke(testContext, append(deleteArgs, "--action", "delete"), injectedClients(writer))
+				if code != 1 || status.Status != "uncertain" || !strings.Contains(message, deletionObservationInstruction) {
+					testContext.Fatal("lost reply did not retain its deletion operation:", message)
+				}
+				operation = status.Operation
+			case "committed":
+				ticket, err := store.AcquireConfigurationDeletion(context.Background(), before)
+				if err != nil {
+					testContext.Fatal(err)
+				}
+				ticket, err = store.BeginChange(context.Background(), ticket)
+				if err != nil {
+					testContext.Fatal(err)
+				}
+				adapter, err := sandboxcoordination.NewKubernetesDeleteAdapter(writer, storage, before)
+				if err != nil {
+					testContext.Fatal(err)
+				}
+				if err := adapter.Submit(context.Background(), ticket, func(ctx context.Context) error {
+					return store.CheckChange(ctx, ticket)
+				}); err != nil {
+					testContext.Fatal(err)
+				}
+				operation = ticket.Change.ID
+			case "crash":
+				ticket, err := store.AcquireConfigurationDeletion(context.Background(), before)
+				if err != nil {
+					testContext.Fatal(err)
+				}
+				ticket, err = store.BeginChange(context.Background(), ticket)
+				if err != nil {
+					testContext.Fatal(err)
+				}
+				if err := writer.Delete(context.Background(), before); err != nil {
+					testContext.Fatal(err)
+				}
+				operation = ticket.Change.ID
+			}
+			beforePath := deleteArgs[len(deleteArgs)-1]
+			if err := os.Remove(beforePath); err != nil {
+				testContext.Fatal(err)
+			}
+			recoveryArgs := append(append([]string{}, deleteArgs[:len(deleteArgs)-2]...), "--operation-id", operation)
+			observer := interceptor.NewClient(storage, interceptor.Funcs{
+				Update: func(context.Context, client.WithWatch, client.Object, ...client.UpdateOption) error {
+					return errors.New("operation-id observation must not write")
+				},
+				Delete: func(context.Context, client.WithWatch, client.Object, ...client.DeleteOption) error {
+					return errors.New("operation-id observation must not delete")
+				},
+			})
+			code, observed, message := invoke(testContext, append(recoveryArgs, "--action", "observe-delete"), injectedClients(observer))
+			if code != 0 || observed.Status != "deletion-accepted-reservation-retained" ||
+				observed.Operation != operation || observed.Source.Name != before.Name || observed.Source.UID != before.UID {
+				testContext.Fatal("operation-id observation did not retain its recorded deletion:", message)
+			}
+			if _, err := store.ReadConfigurationDeletion(context.Background(), before); err != nil {
+				testContext.Fatal("operation-id observation released the deletion reservation:", err)
+			}
+			code, recovered, message := invoke(testContext, append(recoveryArgs, "--action", "delete"), injectedClients(writer))
+			if code != 0 || recovered.Status != "deletion-accepted" || recovered.Operation != operation || deletes != 1 {
+				testContext.Fatal("operation-id recovery resubmitted or did not release the deletion:", message)
+			}
+			if _, err := store.ReadConfigurationDeletion(context.Background(), before); !errors.Is(err, sandboxcoordination.ErrUnavailable) {
+				testContext.Fatal("operation-id recovery retained the released deletion:", err)
+			}
+		})
+	}
+}
+
+func TestCLIDeletionOperationIDRejectsInvalidTicket(testContext *testing.T) {
+	for _, scenario := range []string{"missing", "update", "reserved", "wrong authority"} {
+		testContext.Run(scenario, func(testContext *testing.T) {
+			args, store, storage, before, after := cliFixture(testContext)
+			var operation string
+			switch scenario {
+			case "update":
+				ticket, err := store.AcquireConfigurationChange(context.Background(), before, after)
+				if err != nil {
+					testContext.Fatal(err)
+				}
+				ticket, err = store.BeginChange(context.Background(), ticket)
+				if err != nil {
+					testContext.Fatal(err)
+				}
+				operation = ticket.Change.ID
+			case "reserved", "wrong authority":
+				ticket, err := store.AcquireConfigurationDeletion(context.Background(), before)
+				if err != nil {
+					testContext.Fatal(err)
+				}
+				if scenario == "wrong authority" {
+					ticket, err = store.BeginChange(context.Background(), ticket)
+					if err != nil {
+						testContext.Fatal(err)
+					}
+				}
+				operation = ticket.Change.ID
+			default:
+				operation = "missing-operation"
+			}
+			operationArgs := append(append([]string{}, args[:len(args)-4]...), "--operation-id", operation, "--action", "observe-delete")
+			if scenario == "wrong authority" {
+				for index, argument := range operationArgs {
+					if argument == "--authority-uid" {
+						operationArgs[index+1] = "wrong-authority-uid"
+					}
+				}
+			}
+			deletes := 0
+			writer := interceptor.NewClient(storage, interceptor.Funcs{
+				Delete: func(context.Context, client.WithWatch, client.Object, ...client.DeleteOption) error {
+					deletes++
+					return errors.New("invalid operation must not delete")
+				},
+			})
+			code, status, message := invoke(testContext, operationArgs, injectedClients(writer))
+			if code != 1 || status.Status != "unavailable" || deletes != 0 || !strings.Contains(message, deletionObservationInstruction) {
+				testContext.Fatal("invalid operation-id ticket was accepted:", message)
+			}
+		})
+	}
+}
+
 func TestCLIDeleteRequiresExplicitActionAndForbidsAfter(t *testing.T) {
 	args, store, storage, before, _ := cliFixture(t)
+	deleteArgs := args[:len(args)-2]
+	operationArgs := append(append([]string{}, deleteArgs[:len(deleteArgs)-2]...), "--operation-id", "recorded-operation")
 	for _, invalid := range [][]string{
-		args[:len(args)-2],
+		deleteArgs,
 		append(append([]string{}, args...), "--action", "delete"),
 		append(append([]string{}, args...), "--action", "observe-delete"),
+		append(append([]string{}, deleteArgs...), "--operation-id", "recorded-operation", "--action", "delete"),
+		append(append([]string{}, operationArgs...), "--after", args[len(args)-1], "--action", "delete"),
+		append(append([]string{}, operationArgs...), "--after", args[len(args)-1], "--action", "observe"),
 	} {
 		calls := 0
 		factory := func(options) (client.Client, client.Reader, error) {

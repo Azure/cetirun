@@ -87,8 +87,9 @@ type Custom struct {
 	Context           Context       `json:"context"`
 	Network           Network       `json:"network"`
 	// Only the Registry synchronizer supplies this stable, namespace-local name.
-	PullSecretName string  `json:"pullSecretName,omitempty"`
-	Memory         *Memory `json:"memory,omitempty"`
+	PullSecretName string         `json:"pullSecretName,omitempty"`
+	Memory         *Memory        `json:"memory,omitempty"`
+	AgentIdentity  *AgentIdentity `json:"agentIdentity,omitempty"`
 }
 
 func (b Custom) HarnessBindings() agents.Bindings {
@@ -117,6 +118,16 @@ func validPeer(peer Peer) bool {
 }
 
 func (b Custom) Validate(agent agents.ResolvedAgent) error {
+	if b.AgentIdentity != nil {
+		if _, err := AgentIdentityBrokerNamespace(b.AgentIdentity.BrokerURL); err != nil {
+			return err
+		}
+		for _, file := range b.Context.Files {
+			if file == "skills/azure" || strings.HasPrefix(file, "skills/azure/") {
+				return fmt.Errorf("AgentIdentityBindingInvalid: the managed Azure skill conflicts with Custom context")
+			}
+		}
+	}
 	if err := b.Memory.Validate(agent.HomeDir); err != nil {
 		return err
 	}
