@@ -54,6 +54,11 @@ type Config struct {
 	// AIGatewayCatalogNamespace is the operator namespace, where the operator
 	// publishes the shared models.
 	AIGatewayCatalogNamespace string
+	// ConfigurationCoordination pins the authority shared with strict Sandbox
+	// admission for protected Team, Sandbox and AgentPolicy mutations.
+	ConfigurationCoordinationNamespace string
+	ConfigurationCoordinationName      string
+	ConfigurationCoordinationUID       string
 }
 
 // Load reads configuration from environment variables.
@@ -61,23 +66,26 @@ func Load() Config {
 	var chatLabels map[string]string
 	_ = json.Unmarshal([]byte(os.Getenv("CHAT_CALLER_LABELS")), &chatLabels)
 	return Config{
-		CustomChatEnabled:           os.Getenv("FEATURE_CUSTOM_CHAT_ENABLED") == "true",
-		ChatIdentityRealm:           os.Getenv("CHAT_IDENTITY_REALM"),
-		ChatCaller:                  chataccess.Caller{Namespace: os.Getenv("CHAT_CALLER_NAMESPACE"), PodLabels: chatLabels},
-		ListenAddr:                  envOrDefault("LISTEN_ADDR", ":8080"),
-		InternalListenAddr:          envOrDefault("INTERNAL_LISTEN_ADDR", ":8081"),
-		TailscaleEnabled:            os.Getenv("FEATURE_TAILSCALE_ENABLED") == "true",
-		NoticeBanner:                os.Getenv("NOTICE_BANNER"),
-		MaxInstancesPerUser:         envOrDefaultInt("MAX_INSTANCES_PER_USER", 1),
-		AllowedAgentTypes:           envOrDefaultAgentTypes("ALLOWED_AGENT_TYPES", defaultAllowedAgentTypes),
-		AgentIdentityEnabled:        os.Getenv("FEATURE_AGENT_IDENTITY_ENABLED") == "true",
-		EntraTenantID:               envOrDefault("ENTRA_TENANT_ID", ""),
-		PortalClientID:              envOrDefault("PORTAL_OIDC_CLIENT_ID", ""),
-		AgentIdentityBrokerURL:      envOrDefault("AGENT_ID_BROKER_URL", "http://cetirun-agent-broker.cetirun-credentials.svc.cluster.local:8080"),
-		PortalOrigin:                envOrDefault("PORTAL_ORIGIN", ""),
-		RegistryCredentialNamespace: envOrDefault("REGISTRY_CREDENTIAL_NAMESPACE", "cetirun-registry-credentials"),
-		AIGatewayEnabled:            os.Getenv("FEATURE_AI_GATEWAY_ENABLED") == "true",
-		AIGatewayCatalogNamespace:   envOrDefault("AI_GATEWAY_CATALOG_NAMESPACE", "cetirun-system"),
+		CustomChatEnabled:                  os.Getenv("FEATURE_CUSTOM_CHAT_ENABLED") == "true",
+		ChatIdentityRealm:                  os.Getenv("CHAT_IDENTITY_REALM"),
+		ChatCaller:                         chataccess.Caller{Namespace: os.Getenv("CHAT_CALLER_NAMESPACE"), PodLabels: chatLabels},
+		ListenAddr:                         envOrDefault("LISTEN_ADDR", ":8080"),
+		InternalListenAddr:                 envOrDefault("INTERNAL_LISTEN_ADDR", ":8081"),
+		TailscaleEnabled:                   os.Getenv("FEATURE_TAILSCALE_ENABLED") == "true",
+		NoticeBanner:                       os.Getenv("NOTICE_BANNER"),
+		MaxInstancesPerUser:                envOrDefaultInt("MAX_INSTANCES_PER_USER", 1),
+		AllowedAgentTypes:                  envOrDefaultAgentTypes("ALLOWED_AGENT_TYPES", defaultAllowedAgentTypes),
+		AgentIdentityEnabled:               os.Getenv("FEATURE_AGENT_IDENTITY_ENABLED") == "true",
+		EntraTenantID:                      envOrDefault("ENTRA_TENANT_ID", ""),
+		PortalClientID:                     envOrDefault("PORTAL_OIDC_CLIENT_ID", ""),
+		AgentIdentityBrokerURL:             envOrDefault("AGENT_ID_BROKER_URL", "http://cetirun-agent-broker.cetirun-credentials.svc.cluster.local:8080"),
+		PortalOrigin:                       envOrDefault("PORTAL_ORIGIN", ""),
+		RegistryCredentialNamespace:        envOrDefault("REGISTRY_CREDENTIAL_NAMESPACE", "cetirun-registry-credentials"),
+		AIGatewayEnabled:                   os.Getenv("FEATURE_AI_GATEWAY_ENABLED") == "true",
+		AIGatewayCatalogNamespace:          envOrDefault("AI_GATEWAY_CATALOG_NAMESPACE", "cetirun-system"),
+		ConfigurationCoordinationNamespace: envOrDefault("CONFIGURATION_COORDINATION_NAMESPACE", ""),
+		ConfigurationCoordinationName:      envOrDefault("CONFIGURATION_COORDINATION_NAME", ""),
+		ConfigurationCoordinationUID:       envOrDefault("CONFIGURATION_COORDINATION_UID", ""),
 	}
 }
 

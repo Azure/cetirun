@@ -62,7 +62,7 @@ func (s Store) AcquireConfigurationChange(ctx context.Context, before, after cli
 	if team, ok := change.before.object.(*api.Team); ok && change.team != nil {
 		return s.AcquireTeamChange(ctx, team, change.after.object.(*api.Team))
 	}
-	return s.acquireChange(ctx, change.before.reference, change.after.digest, nil, change.unchangedDigest)
+	return s.acquireChange(ctx, change.before.reference, change.after.digest, nil, change.unchangedDigest, "")
 }
 
 // ReadConfigurationChange only looks up the exact journaled update. It neither

@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"sync/atomic"
 
+	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	w "github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -37,7 +38,7 @@ func (s Store) AcquireConfigurationDeletion(ctx context.Context, before client.O
 	if err := deletion.source().checkBefore(ctx, s.APIReader); err != nil {
 		return ChangeTicket{}, err
 	}
-	return s.acquireChange(ctx, deletion.before.reference, deletion.digest, nil, "")
+	return s.acquireChange(ctx, deletion.before.reference, deletion.digest, nil, "", deletion.before.digest)
 }
 
 // ReadConfigurationDeletion only finds the exact recorded operation.
@@ -54,6 +55,29 @@ func (s Store) ReadConfigurationDeletion(ctx context.Context, before client.Obje
 		return ChangeTicket{}, fmt.Errorf("%w: configuration deletion is not recorded", ErrUnavailable)
 	}
 	return ticket, nil
+}
+
+func (store Store) ReadConfigurationDeletionOperation(ctx context.Context, operationID string) (ChangeTicket, error) {
+	if !literal(operationID, 128) {
+		return ChangeTicket{}, fmt.Errorf("%w: an exact deletion operation ID is required", ErrUnavailable)
+	}
+	object, state, err := store.read(ctx)
+	if err != nil {
+		return ChangeTicket{}, err
+	}
+	for _, change := range state.Changes {
+		if change.ID != operationID {
+			continue
+		}
+		if change.Phase != Changing || change.DeletionContentDigest == "" {
+			return ChangeTicket{}, fmt.Errorf("%w: operation-only recovery requires a recorded Changing deletion", ErrConflict)
+		}
+		if err := validateConfigurationDeletion(change); err != nil {
+			return ChangeTicket{}, err
+		}
+		return ChangeTicket{object.UID, cloneChange(change)}, nil
+	}
+	return ChangeTicket{}, fmt.Errorf("%w: configuration deletion operation is not recorded", ErrUnavailable)
 }
 
 // AuthorizeConfigurationDeletion is read-only and supplements ordinary deletion
@@ -105,6 +129,23 @@ func NewKubernetesDeleteAdapter(writer client.Client, reader client.Reader, befo
 		return nil, fmt.Errorf("%w: an authoritative configuration reader is required", ErrUnavailable)
 	}
 	return &KubernetesDeleteAdapter{writer: writer, reader: reader, deletion: deletion}, nil
+}
+
+func NewKubernetesDeletionRecoveryAdapter(reader client.Reader, ticket ChangeTicket) (*KubernetesDeleteAdapter, error) {
+	if reader == nil || !literal(string(ticket.AuthorityUID), 128) || !literal(ticket.Change.ID, 128) ||
+		ticket.Change.Phase != Changing {
+		return nil, fmt.Errorf("%w: an authoritative reader and Changing deletion ticket are required", ErrUnavailable)
+	}
+	if err := validateConfigurationDeletion(ticket.Change); err != nil {
+		return nil, err
+	}
+	return &KubernetesDeleteAdapter{
+		reader: reader,
+		deletion: &configurationDeletion{
+			before: configurationImage{reference: ticket.Change.Before, digest: ticket.Change.DeletionContentDigest},
+			digest: ticket.Change.DesiredDigest,
+		},
+	}, nil
 }
 
 func (a *KubernetesDeleteAdapter) Submit(ctx context.Context, ticket ChangeTicket, guard func(context.Context) error) error {
@@ -202,16 +243,41 @@ func newConfigurationDeletion(before client.Object) (*configurationDeletion, err
 	if !image.object.GetDeletionTimestamp().IsZero() || image.object.GetDeletionGracePeriodSeconds() != nil {
 		return nil, fmt.Errorf("%w: deletion requires the original nonterminating configuration", ErrConflict)
 	}
+	operationDigest, err := configurationDeletionDigest(image.reference, image.digest)
+	if err != nil {
+		return nil, err
+	}
+	return &configurationDeletion{before: image, digest: operationDigest}, nil
+}
+
+func configurationDeletionDigest(before w.SourceReference, contentDigest string) (string, error) {
 	raw, err := json.Marshal(struct {
 		Operation string
 		Before    w.SourceReference
 		Content   string
-	}{"configuration-background-delete-v1", image.reference, image.digest})
+	}{"configuration-background-delete-v1", before, contentDigest})
 	if err != nil {
-		return nil, fmt.Errorf("%w: configuration deletion encoding failed", ErrUnavailable)
+		return "", fmt.Errorf("%w: configuration deletion encoding failed", ErrUnavailable)
 	}
 	sum := sha256.Sum256(raw)
-	return &configurationDeletion{before: image, digest: hex.EncodeToString(sum[:])}, nil
+	return hex.EncodeToString(sum[:]), nil
+}
+
+func validateConfigurationDeletion(change Change) error {
+	before := change.Before
+	if !validSource(before) || before.APIVersion != api.GroupVersion.String() || before.Namespace != "" ||
+		(before.Kind != "Team" && before.Kind != "Sandbox" && before.Kind != "AgentPolicy") ||
+		!digest(change.DeletionContentDigest) || change.Team != nil || change.UnchangedDigest != "" {
+		return fmt.Errorf("%w: invalid configuration deletion recovery metadata", ErrUnavailable)
+	}
+	expected, err := configurationDeletionDigest(before, change.DeletionContentDigest)
+	if err != nil {
+		return err
+	}
+	if change.DesiredDigest != expected {
+		return fmt.Errorf("%w: configuration deletion recovery digest does not match its operation", ErrUnavailable)
+	}
+	return nil
 }
 
 func (d *configurationDeletion) source() *configurationChange {
@@ -220,5 +286,6 @@ func (d *configurationDeletion) source() *configurationChange {
 
 func (d *configurationDeletion) matches(recorded Change) bool {
 	return recorded.Before == d.before.reference && recorded.DesiredDigest == d.digest &&
-		recorded.Team == nil && recorded.UnchangedDigest == ""
+		recorded.Team == nil && recorded.UnchangedDigest == "" &&
+		(recorded.DeletionContentDigest == "" || recorded.DeletionContentDigest == d.before.digest)
 }

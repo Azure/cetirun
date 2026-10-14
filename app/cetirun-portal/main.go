@@ -17,12 +17,14 @@ import (
 	"time"
 
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	ctrlconfig "sigs.k8s.io/controller-runtime/pkg/client/config"
 
 	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"github.com/Azure/CetiRun/app/cetirun-operator/configurationcoordination"
 	"github.com/Azure/CetiRun/app/cetirun-portal/internal/auth"
 	"github.com/Azure/CetiRun/app/cetirun-portal/internal/buildinfo"
 	"github.com/Azure/CetiRun/app/cetirun-portal/internal/config"
@@ -95,6 +97,18 @@ func main() {
 
 	// Create handlers.
 	kubeClient := kube.NewClient(k8sClient)
+	if cfg.ConfigurationCoordinationName != "" || cfg.ConfigurationCoordinationNamespace != "" || cfg.ConfigurationCoordinationUID != "" {
+		coordination, err := configurationcoordination.New(k8sClient, k8sClient, configurationcoordination.Authority{
+			Namespace: cfg.ConfigurationCoordinationNamespace,
+			Name:      cfg.ConfigurationCoordinationName,
+			UID:       types.UID(cfg.ConfigurationCoordinationUID),
+		})
+		if err != nil {
+			slog.Error("Invalid configuration coordination authority", "error", err)
+			os.Exit(1)
+		}
+		kubeClient.SetConfigurationCoordination(coordination)
+	}
 	kubeClient.SetRegistryCredentialNamespace(cfg.RegistryCredentialNamespace)
 	instanceHandler := &handler.InstanceHandler{Kube: kubeClient, Config: cfg}
 	healthHandler := &handler.HealthHandler{KubeClient: k8sClient}
@@ -103,6 +117,7 @@ func main() {
 	meHandler := &handler.MeHandler{ChatIdentityRealm: cfg.ChatIdentityRealm}
 	adminTeamHandler := &handler.AdminTeamHandler{Kube: kubeClient}
 	adminInstanceHandler := &handler.AdminInstanceHandler{Kube: kubeClient}
+	adminPolicyHandler := &handler.AdminPolicyHandler{Kube: kubeClient}
 	var agentAuthorizationHandler *handler.AgentAuthorizationHandler
 	if cfg.AgentIdentityEnabled {
 		agentAuthorizationHandler = handler.NewAgentAuthorizationHandler(kubeClient, cfg.AgentIdentityBrokerURL, cfg.PortalOrigin)
@@ -116,7 +131,7 @@ func main() {
 	}
 
 	// Build and start public server.
-	mux := server.New(dist, instanceHandler, healthHandler, featuresHandler, configHandler, meHandler, adminTeamHandler, adminInstanceHandler, authMiddleware, requireAdmin, agentAuthorizationHandler)
+	mux := server.New(dist, instanceHandler, healthHandler, featuresHandler, configHandler, meHandler, adminTeamHandler, adminInstanceHandler, adminPolicyHandler, authMiddleware, requireAdmin, agentAuthorizationHandler)
 	srv := &http.Server{
 		Addr:    cfg.ListenAddr,
 		Handler: mux,

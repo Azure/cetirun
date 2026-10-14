@@ -58,3 +58,18 @@
 {{- fail (printf "cetirun-portal.aiGateway.catalogNamespace is %s, but cetirun-operator.namespace is %s: the operator publishes the shared models in its own namespace, where the Portal reads them, so set both to the same namespace" $catalogNamespace $operator.namespace) }}
 {{- end }}
 {{- end }}
+{{- $operatorAdmission := $operator.sandboxAdmission | default dict }}
+{{- $portalCoordination := $portal.configurationCoordination | default dict }}
+{{- $operatorCoordinationName := $operatorAdmission.coordinationConfigMapName | default "" }}
+{{- $operatorCoordinationUID := $operatorAdmission.coordinationConfigMapUID | default "" }}
+{{- $portalCoordinationNamespace := $portalCoordination.namespace | default "" }}
+{{- $portalCoordinationName := $portalCoordination.name | default "" }}
+{{- $portalCoordinationUID := $portalCoordination.uid | default "" }}
+{{- if and $portal.enabled (or $operatorCoordinationName $operatorCoordinationUID $portalCoordinationNamespace $portalCoordinationName $portalCoordinationUID) }}
+{{- if not $operator.enabled }}
+{{- fail "configuration coordination requires both Operator and Portal" }}
+{{- end }}
+{{- if or (ne $portalCoordinationNamespace $operator.namespace) (ne $portalCoordinationName $operatorCoordinationName) (ne $portalCoordinationUID $operatorCoordinationUID) }}
+{{- fail "cetirun-portal.configurationCoordination must exactly match the Operator namespace and sandboxAdmission coordination ConfigMap name/UID" }}
+{{- end }}
+{{- end }}

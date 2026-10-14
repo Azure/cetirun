@@ -291,6 +291,64 @@ LiteLLM default and maximum monthly USD budget. Custom is not an allowed policy
 Harness. Agent Identity cannot complete aggregate `PolicyApplied` until a typed
 credential-service executor supplies matching read-back evidence.
 
+### AgentPolicy administration
+
+The admin Portal manages a deliberately small subset of the cluster-scoped
+`AgentPolicy`: allowed Harnesses, allowed skills, Copilot access, shared model
+names, and the LiteLLM monthly budget expressed in US dollars. It does not
+interpret or enforce a Policy. Sandbox and AI Gateway components remain
+responsible for the fields they execute. Editing a Policy that is already bound
+outside the Portal can affect those consumers.
+
+#### HTTP API
+
+These admin-only endpoints manage `AgentPolicy` resources:
+
+- `GET` and `POST /api/v1/admin/policies`
+- `GET`, `PUT`, and `DELETE /api/v1/admin/policies/{name}`
+
+Update and delete requests include the UID and resource version returned by a
+previous read. Stale requests fail with `409 Conflict`. Updates change only the
+Portal-managed fields and preserve security, network, identity, Kubernetes
+access, and other fields owned by their executing components.
+
+When strict Sandbox admission uses a UID-pinned configuration authority, set
+the Portal chart's `configurationCoordination.namespace`, `name`, and `uid` to
+the same authority configured by the Operator. The platform chart rejects
+mismatched values. The Portal then reserves the exact whole-resource mutation,
+records `Changing` before submitting one conditional Update or background
+Delete, observes the result, and releases only a definitively completed
+operation. Its namespaced Role permits access only to the named authority
+ConfigMap. UID/resource-version checks remain request concurrency protection;
+they do not replace this admission contract.
+
+A competing reservation returns `409 Conflict`. An unavailable authority or
+uncertain API write returns `503 Service Unavailable` and deliberately retains
+the reservation; do not blindly repeat the mutation. Recover the recorded
+operation with the Operator's configuration-change procedure. Update recovery
+requires the exact original inputs. New deletion reservations durably record
+the content digest needed for recovery: an administrator can use the operation
+ID from the pinned authority journal with
+`--action observe-delete --operation-id ID`, even after the policy and the
+Portal request are gone.
+Observation retains the reservation; explicit `--action delete --operation-id ID`
+releases it only after verifying that the original UID is absent or terminating,
+without resubmitting a Delete. Older deletion reservations still require the
+original `--before` input. Upgrade all coordination readers before issuing
+reservations with the new recovery metadata. Creation is not covered because
+configuration coordination protects updates and deletions, not new resources.
+
+The API validates model access and budgets as one unit: Copilot or shared model
+access requires a positive default and maximum monthly USD budget, and the
+default cannot exceed the maximum.
+
+#### Activation boundary
+
+The Portal provides no control for `Team.spec.agentPolicyRef`, `sandboxRefs`,
+or `defaultSandboxRef`. An administrator must use another Kubernetes client to
+bind a Policy. Portal binding should be added only after the Sandbox and AI
+Gateway execution paths are completed and validated.
+
 Production Sandbox start and observation still require implementation and
 qualification. See the
 [operator foundation notes]({{< repo "app/cetirun-operator/README.md" >}})

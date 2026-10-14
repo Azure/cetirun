@@ -401,6 +401,9 @@ and [explicit command](cmd/sandbox-config-change/) submit real Team, Sandbox and
 AgentPolicy updates and deletions through the coordination protocol. They are not
 a runtime adapter or an execution switch. Creation, Agent changes and other
 execution sources remain outside this command.
+The public [configuration coordination client](configurationcoordination/) is
+the narrow in-process facade for trusted platform writers such as the Portal;
+it reuses these adapters and does not define a second protocol.
 
 Both before and proposed objects must retain the original name, UID and resource
 version. The adapter verifies the authoritative before image, pins the complete
@@ -452,13 +455,18 @@ preconditions. Existing reference checks and Kubernetes authorization still
 apply. It neither removes finalizers nor adopts a replacement object.
 
 After an uncertain Delete result, retain the original before file and use
-`--action observe-delete --before FILE`. An unchanged object or failed read
+`--action observe-delete --before FILE`. Portal deletion recovery may instead
+use the recorded operation ID with `--action observe-delete --operation-id ID`,
+without retaining the body: the UID-pinned journal supplies only the recorded
+source identity and deletion-content hash. An unchanged object or failed read
 keeps the outcome unknown and its reservation retained. An authoritative
 observation of the original UID terminating at a different resourceVersion,
 or of that UID's absence, establishes deletion acceptance: a delayed old
 conditional Delete cannot change it or a same-name replacement. Observation
 alone does not release the reservation. Repeating explicit `--action delete`
-then finishes the same recorded operation without resubmission.
+with the same `--before` or `--operation-id` then finishes the same recorded
+operation without resubmission. This proves neither physical cleanup nor
+completion of finalizers or dependent cleanup.
 The CLI reports `deletion-accepted`, not resource or dependent cleanup completion.
 Release after the terminating transition allows normal finalizer cleanup to
 finish. Missing authority remains an error, never permission to delete.
@@ -467,9 +475,10 @@ larger or newer specification cannot block recovery for the original UID.
 Reservation, admission and submission still validate the complete original
 before image and enforce the same conditional Delete.
 
-The journal format is unchanged: deletion has its own desired-operation digest
-and conservative whole-source scope. Update tickets cannot authorize deletion.
-Older update-only clients cannot reconcile a deletion; keep a deletion-capable
+Deletion records include a content hash for metadata-only recovery, not a body.
+Existing records without that optional metadata require `--before`. Update
+tickets cannot authorize deletion. Upgrade all strict journal readers before
+issuing deletion records with the new metadata, and keep a deletion-capable
 client available until its outstanding operations complete.
 
 Build locally:
@@ -479,8 +488,9 @@ make -C app/cetirun-operator build-sandbox-config-change
 ```
 
 Using the command requires separate authorization for the exact cluster and
-mutation. It requires explicit kubeconfig/context, authority namespace/name/UID
-and the original before file (plus after for updates); there is no implicit
+mutation. It requires explicit kubeconfig/context and authority namespace/name/UID.
+Updates require the original before file plus after input; deletion requires the
+original before file or a recorded operation ID. There is no implicit
 current-cluster fallback. The default action observes an update; deletion
 observation requires `--action observe-delete`. Mutation requires explicit
 `--action update` or `--action delete`. Inputs are

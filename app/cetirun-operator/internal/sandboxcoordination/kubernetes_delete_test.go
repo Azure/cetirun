@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 
 	w "github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
@@ -33,6 +34,172 @@ func deletionOptions(before client.Object) metav1.DeleteOptions {
 			UID: ptr.To(before.GetUID()), ResourceVersion: ptr.To(before.GetResourceVersion()),
 		},
 		PropagationPolicy: ptr.To(metav1.DeletePropagationBackground),
+	}
+}
+
+func TestConfigurationDeletionOperationRecovery(testContext *testing.T) {
+	for _, kind := range []string{"Team", "Sandbox", "AgentPolicy"} {
+		for _, scenario := range []string{"removed", "terminating", "replacement", "unchanged", "observation unavailable", "release unavailable"} {
+			testContext.Run(kind+"/"+scenario, func(testContext *testing.T) {
+				ctx := context.Background()
+				store, storage, before, _ := configurationFixture(testContext, kind)
+				if scenario == "terminating" {
+					before.SetFinalizers([]string{"example.com/retain"})
+					if err := storage.Update(ctx, before); err != nil {
+						testContext.Fatal(err)
+					}
+				}
+				ticket, err := store.AcquireConfigurationDeletion(ctx, before)
+				if err != nil || ticket.Change.DeletionContentDigest == "" {
+					testContext.Fatal("deletion did not durably record its recovery digest:", err)
+				}
+				ticket, err = store.BeginChange(ctx, ticket)
+				if err != nil {
+					testContext.Fatal(err)
+				}
+				if scenario != "unchanged" {
+					if err := storage.Delete(ctx, before, client.PropagationPolicy(metav1.DeletePropagationBackground)); err != nil {
+						testContext.Fatal(err)
+					}
+				}
+				if scenario == "replacement" {
+					replacement := before.DeepCopyObject().(client.Object)
+					replacement.SetUID("replacement-uid")
+					replacement.SetResourceVersion("")
+					if err := storage.Create(ctx, replacement); err != nil {
+						testContext.Fatal(err)
+					}
+				}
+				recovered, err := store.ReadConfigurationDeletionOperation(ctx, ticket.Change.ID)
+				if err != nil || !reflect.DeepEqual(ticket, recovered) {
+					testContext.Fatal("operation ID did not recover the exact durable deletion:", err)
+				}
+				deletes := 0
+				reader := interceptor.NewClient(storage, interceptor.Funcs{
+					Get: func(ctx context.Context, storage client.WithWatch, key client.ObjectKey, object client.Object, opts ...client.GetOption) error {
+						if _, metadata := object.(*metav1.PartialObjectMetadata); metadata && scenario == "observation unavailable" {
+							return errors.New("synthetic metadata read unavailable")
+						}
+						return storage.Get(ctx, key, object, opts...)
+					},
+					Delete: func(context.Context, client.WithWatch, client.Object, ...client.DeleteOption) error {
+						deletes++
+						return errors.New("recovery must never submit a Delete")
+					},
+				})
+				adapter, err := NewKubernetesDeletionRecoveryAdapter(reader, recovered)
+				if err != nil {
+					testContext.Fatal(err)
+				}
+				if err := adapter.Submit(ctx, recovered, func(context.Context) error { return nil }); err == nil || deletes != 0 {
+					testContext.Fatal("operation-only adapter permitted a mutation")
+				}
+				if scenario == "release unavailable" {
+					store.Client = interceptor.NewClient(storage, interceptor.Funcs{
+						Update: func(context.Context, client.WithWatch, client.Object, ...client.UpdateOption) error {
+							return errors.New("synthetic authority write unavailable")
+						},
+					})
+				}
+				_, err = store.ReconcileChange(ctx, recovered, adapter)
+				uncertain := scenario == "unchanged" || scenario == "observation unavailable" || scenario == "release unavailable"
+				if uncertain {
+					if err == nil || store.CheckChange(ctx, recovered) != nil {
+						testContext.Fatal("uncertain recovery lost its reservation:", err)
+					}
+				} else if err != nil {
+					testContext.Fatal("definitive deletion could not release its reservation:", err)
+				} else if _, err := store.ReadConfigurationDeletionOperation(ctx, recovered.Change.ID); !errors.Is(err, ErrUnavailable) {
+					testContext.Fatal("completed operation remained recorded:", err)
+				}
+				if deletes != 0 {
+					testContext.Fatal("operation-only recovery replayed a Delete")
+				}
+				if scenario == "replacement" || scenario == "terminating" {
+					current := before.DeepCopyObject().(client.Object)
+					if err := storage.Get(ctx, client.ObjectKeyFromObject(before), current); err != nil {
+						testContext.Fatal(err)
+					}
+					if scenario == "replacement" && current.GetUID() != "replacement-uid" {
+						testContext.Fatal("recovery changed a replacement")
+					}
+					if scenario == "terminating" && len(current.GetFinalizers()) != 1 {
+						testContext.Fatal("recovery removed finalizers")
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestConfigurationDeletionOperationRejectsUnrecoverableTickets(testContext *testing.T) {
+	for _, scenario := range []string{"reserved", "update", "legacy", "wrong authority", "unknown operation", "missing authority", "tampered digest"} {
+		testContext.Run(scenario, func(testContext *testing.T) {
+			ctx := context.Background()
+			store, storage, before, after := configurationFixture(testContext, "AgentPolicy")
+			var ticket ChangeTicket
+			var err error
+			if scenario == "update" {
+				ticket, err = store.AcquireConfigurationChange(ctx, before, after)
+			} else {
+				ticket, err = store.AcquireConfigurationDeletion(ctx, before)
+			}
+			if err != nil {
+				testContext.Fatal(err)
+			}
+			if scenario != "reserved" {
+				ticket, err = store.BeginChange(ctx, ticket)
+				if err != nil {
+					testContext.Fatal(err)
+				}
+			}
+			operationID := ticket.Change.ID
+			switch scenario {
+			case "wrong authority":
+				store.Identity.UID = "different-authority-uid"
+			case "unknown operation":
+				operationID = "missing-operation"
+			case "missing authority":
+				authority := &corev1.ConfigMap{}
+				if err := storage.Get(ctx, client.ObjectKey{Namespace: store.Namespace, Name: store.Identity.Name}, authority); err != nil {
+					testContext.Fatal(err)
+				}
+				authority.Finalizers = nil
+				if err := storage.Update(ctx, authority); err != nil {
+					testContext.Fatal(err)
+				}
+				if err := storage.Delete(ctx, authority); err != nil {
+					testContext.Fatal(err)
+				}
+			case "legacy", "tampered digest":
+				object, state, err := store.read(ctx)
+				if err != nil {
+					testContext.Fatal(err)
+				}
+				if scenario == "legacy" {
+					state.Changes[0].DeletionContentDigest = ""
+					if err := store.write(ctx, object, state); err != nil {
+						testContext.Fatal(err)
+					}
+					if _, err := store.ReadConfigurationDeletion(ctx, before); err != nil {
+						testContext.Fatal("legacy deletion no longer supports original-input recovery:", err)
+					}
+				} else {
+					original := state.Changes[0].DeletionContentDigest
+					tampered := strings.Repeat("0", 64)
+					if original == tampered {
+						tampered = strings.Repeat("1", 64)
+					}
+					object.Data[DataKey] = strings.Replace(object.Data[DataKey], original, tampered, 1)
+					if err := storage.Update(ctx, object); err != nil {
+						testContext.Fatal(err)
+					}
+				}
+			}
+			if _, err := store.ReadConfigurationDeletionOperation(ctx, operationID); err == nil {
+				testContext.Fatal("unrecoverable operation was accepted without the original input")
+			}
+		})
 	}
 }
 
