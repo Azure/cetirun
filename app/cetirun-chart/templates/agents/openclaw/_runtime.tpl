@@ -78,7 +78,11 @@ OpenClaw init containers
   resources:
     {{- toYaml .helperResources | nindent 4 }}
   {{- end }}
+  {{- if .Values.sandboxWorkload }}
+  command: ["/usr/bin/tini", "-g", "--", "/bin/sh", "/etc/cetirun/init-home.sh"]
+  {{- else }}
   command: ["/bin/sh", "/etc/cetirun/init-home.sh"]
+  {{- end }}
   env:
     {{- include "cetirun.context.initEnv" . | nindent 4 }}
     - name: CETIRUN_INIT_IMAGE
@@ -126,7 +130,11 @@ OpenClaw init containers
   resources:
     {{- toYaml .helperResources | nindent 4 }}
   {{- end }}
+  {{- if .Values.sandboxWorkload }}
+  command: ["/usr/bin/tini", "-g", "--", "openclaw", "doctor", "--fix", "--non-interactive", "--yes"]
+  {{- else }}
   command: ["openclaw", "doctor", "--fix", "--non-interactive", "--yes"]
+  {{- end }}
   env:
     - name: OPENCLAW_STATE_DIR
       value: "/home/vibe/.openclaw"
@@ -167,7 +175,11 @@ OpenClaw init containers
   resources:
     {{- toYaml .helperResources | nindent 4 }}
   {{- end }}
+  {{- if .Values.sandboxWorkload }}
+  command: ["/usr/bin/tini", "-g", "--", "/bin/sh", "/etc/cetirun/retire-copilot-sign-in.sh"]
+  {{- else }}
   command: ["/bin/sh", "/etc/cetirun/retire-copilot-sign-in.sh"]
+  {{- end }}
   env:
     - name: OPENCLAW_STATE_DIR
       value: "/home/vibe/.openclaw"
@@ -188,7 +200,7 @@ OpenClaw init containers
     {{- toYaml .Values.sandboxWorkload.securityContext | nindent 4 }}
   resources:
     {{- toYaml .Values.sandboxWorkload.helperResources | nindent 4 }}
-  command: ["/bin/sh", "/etc/cetirun/retire-direct-model-auth.sh"]
+  command: ["/usr/bin/tini", "-g", "--", "/bin/sh", "/etc/cetirun/retire-direct-model-auth.sh"]
   env:
     - name: OPENCLAW_STATE_DIR
       value: "/home/vibe/.openclaw"
