@@ -150,8 +150,22 @@ check does not prove that an override will reconcile successfully.
 `AgentConfigReady=False` with reason `AgentRuntimeNotImplemented` reports a
 setting that cannot be provisioned, such as a non-default built-in username.
 `AgentConfigInvalid` reports rejected profile, image or port settings, and a
-built-in Agent chart that could not be downloaded from the registry; the
-operator log records the registry's error for the latter.
+built-in Agent chart that could not be downloaded from the registry for a new
+Agent or after a spec change; the operator log records the registry's error
+for the latter. Every full reconcile downloads the chart again, including the
+periodic passes of a running Agent. When the chart of an Agent that is already
+installed for its current generation cannot be downloaded, reason
+`AgentChartUnavailable` reports the temporary failure: the deployed release
+stays unchanged, and the operator retries every 30 seconds. Workload health is
+still observed: lost ready replicas or an unreadable StatefulSet make a running
+Agent `Provisioning` with `PodReady=False` and `Ready=False`; readiness recovers
+when the workload does, even while the registry remains unavailable, provided
+`BuiltInPrerequisitesReady=True` records a completed prerequisite pass. A later
+prerequisite failure clears that condition independently of `PodReady`; a
+healthy Pod alone cannot clear that failure. An older status without this
+condition needs a successful full reconcile before readiness can recover.
+Suspension and failures or waits for other prerequisites are preserved. The
+deployed access URL is retained until the corresponding route is reconciled.
 `AgentConfigResolved` reports a prepared
 built-in configuration, not runtime readiness. The API does not expose a separate
 `status.agent` structure.
