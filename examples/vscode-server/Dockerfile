@@ -13,6 +13,8 @@ RUN test "$ACCEPT_VSCODE_SERVER_LICENSE_TERMS" = true \
     && python3 install.py --arch "$TARGETARCH" --output /opt/vscode \
     && for tool in sh cp mkdir mv rm chmod mktemp find cmp git node; do command -v "$tool" >/dev/null || exit 1; done
 COPY start.mjs proxy.mjs browser-storage.mjs ./
+COPY gateway-extension ./gateway-extension
+RUN cp -a gateway-extension /opt/vscode/server/extensions/cetirun-gateway-config
 LABEL org.opencontainers.image.licenses="MIT AND LicenseRef-Microsoft-VS-Code-Server" \
       org.opencontainers.image.description="Official VS Code Server with GitHub Copilot for an individual CetiRun development workspace"
 ENV HOME=/home/vibe VSCODE_SERVER_LICENSE_ACCEPTED=true
