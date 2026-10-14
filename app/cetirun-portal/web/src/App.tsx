@@ -11,6 +11,8 @@ import { AdminLayout } from "./pages/admin/AdminLayout";
 import { TeamListPage } from "./pages/admin/TeamListPage";
 import { TeamEditPage } from "./pages/admin/TeamEditPage";
 import { PolicyListPage } from "./pages/admin/PolicyListPage";
+import { SandboxListPage } from "./pages/admin/SandboxListPage";
+import { SandboxEditPage } from "./pages/admin/SandboxEditPage";
 import { PolicyEditPage } from "./pages/admin/PolicyEditPage";
 import { InstanceListPage as AdminInstanceListPage } from "./pages/admin/InstanceListPage";
 import "./components/Layout.css";
@@ -47,10 +49,13 @@ export default function App() {
               <Route index element={<Navigate to="teams" replace />} />
               <Route path="teams" element={<TeamListPage />} />
               <Route path="teams/new" element={<TeamEditPage />} />
-              <Route path="teams/:name" element={<TeamEditPage />} />
+              <Route path="teams/:name/edit" element={<TeamEditPage />} />
               <Route path="policies" element={<PolicyListPage />} />
               <Route path="policies/new" element={<PolicyEditPage />} />
               <Route path="policies/:name/edit" element={<PolicyEditPage />} />
+              <Route path="sandboxes" element={<SandboxListPage />} />
+              <Route path="sandboxes/new" element={<SandboxEditPage />} />
+              <Route path="sandboxes/:name/edit" element={<SandboxEditPage />} />
               <Route path="instances" element={<AdminInstanceListPage />} />
             </Route>
           </Route>

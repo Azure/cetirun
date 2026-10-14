@@ -883,38 +883,6 @@ func (c *Client) CreateTeam(ctx context.Context, team *cetirunv1alpha1.Team) (*c
 	return team, nil
 }
 
-// UpdateTeamSpec replaces the Portal-editable fields, preserving governance
-// fields from the latest stored Team on every conflict retry.
-func (c *Client) UpdateTeamSpec(ctx context.Context, name string, newSpec cetirunv1alpha1.TeamSpec) (*cetirunv1alpha1.Team, error) {
-	var result *cetirunv1alpha1.Team
-	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		team, err := c.GetTeam(ctx, name)
-		if err != nil {
-			return err
-		}
-		before := team.DeepCopy()
-		editable := newSpec.DeepCopy()
-		team.Spec.MemberContext = editable.MemberContext
-		team.Spec.Defaults = editable.Defaults
-		team.Spec.Skills = editable.Skills
-		team.Spec.SkillStorage = editable.SkillStorage
-		if err := c.client.Patch(ctx, team, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{})); err != nil {
-			return fmt.Errorf("update team: %w", err)
-		}
-		result = team
-		return nil
-	})
-	return result, err
-}
-
-// DeleteTeam deletes a Team by name.
-func (c *Client) DeleteTeam(ctx context.Context, name string) error {
-	team := &cetirunv1alpha1.Team{
-		ObjectMeta: metav1.ObjectMeta{Name: name},
-	}
-	return c.client.Delete(ctx, team)
-}
-
 // ListAgentPolicies returns all cluster-scoped AgentPolicy resources.
 func (c *Client) ListAgentPolicies(ctx context.Context) ([]cetirunv1alpha1.AgentPolicy, error) {
 	list := &cetirunv1alpha1.AgentPolicyList{}

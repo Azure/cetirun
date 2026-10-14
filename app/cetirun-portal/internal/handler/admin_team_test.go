@@ -10,7 +10,6 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"reflect"
 	"strings"
 	"testing"
 
@@ -18,6 +17,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/validation/field"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
@@ -26,6 +26,16 @@ import (
 )
 
 func newAdminTeamHandler(objs ...client.Object) *AdminTeamHandler {
+	objs = append(objs,
+		&cetirunv1alpha1.AgentPolicy{ObjectMeta: metav1.ObjectMeta{Name: "standard-policy"}, Spec: cetirunv1alpha1.AgentPolicySpec{Skills: cetirunv1alpha1.AgentPolicySkills{Allowed: []string{"npm:@scope/skill"}}}},
+		&cetirunv1alpha1.AgentPolicy{ObjectMeta: metav1.ObjectMeta{Name: "governed-policy"}},
+		&cetirunv1alpha1.Sandbox{ObjectMeta: metav1.ObjectMeta{Name: "standard"}},
+		&cetirunv1alpha1.Sandbox{ObjectMeta: metav1.ObjectMeta{Name: "restricted"}})
+	for _, obj := range objs {
+		if obj.GetUID() == "" {
+			obj.SetUID("test-" + types.UID(obj.GetName()))
+		}
+	}
 	c := newFakeClient(objs...)
 	return &AdminTeamHandler{Kube: kube.NewClient(c)}
 }
@@ -84,7 +94,8 @@ func TestAdminTeam_Get_NotFound(t *testing.T) {
 func TestAdminTeam_Create(t *testing.T) {
 	h := newAdminTeamHandler()
 	body, _ := json.Marshal(TeamUpsertRequest{
-		Name:            "sre",
+		Name:           "sre",
+		AgentPolicyRef: "standard-policy", SandboxRefs: []string{"standard"}, DefaultSandboxRef: "standard",
 		Role:            "SRE",
 		DefaultProvider: "anthropic",
 		Skills:          []string{"npm:@scope/skill"},
@@ -134,7 +145,7 @@ func TestAdminTeam_WriteErrors(t *testing.T) {
 	}{
 		{
 			name: "required governance", err: missingGovernance, status: http.StatusUnprocessableEntity, code: "invalid_team",
-			contains: []string{"spec.agentPolicyRef: Required value", "spec.defaultSandboxRef: Required value", "spec.sandboxRefs: Required value", "this form cannot configure", "Portal and installed CRDs are compatible"},
+			contains: []string{"spec.agentPolicyRef: Required value", "spec.defaultSandboxRef: Required value", "spec.sandboxRefs: Required value", "Check the Team fields"},
 		},
 		{
 			name: "invalid skill", err: invalidSkill, status: http.StatusUnprocessableEntity, code: "invalid_team",
@@ -146,7 +157,7 @@ func TestAdminTeam_WriteErrors(t *testing.T) {
 		},
 		{
 			name: "unknown failure", err: errors.New("sensitive-transport-detail"), status: http.StatusInternalServerError, code: "internal_error",
-			contains: []string{"Failed to"},
+			contains: []string{"Unable to"},
 		},
 		{
 			name: "forbidden", err: apierrors.NewForbidden(schema.GroupResource{Resource: "teams"}, "example-team", errors.New("sensitive-rbac-detail")),
@@ -156,7 +167,11 @@ func TestAdminTeam_WriteErrors(t *testing.T) {
 	for _, operation := range []string{"create", "update"} {
 		for _, tt := range tests {
 			t.Run(operation+"/"+tt.name, func(t *testing.T) {
-				base := newFakeClient(&cetirunv1alpha1.Team{ObjectMeta: metav1.ObjectMeta{Name: "example-team"}})
+				base := newFakeClient(
+					&cetirunv1alpha1.Team{ObjectMeta: metav1.ObjectMeta{Name: "example-team", UID: "team-uid"}},
+					&cetirunv1alpha1.AgentPolicy{ObjectMeta: metav1.ObjectMeta{Name: "standard"}},
+					&cetirunv1alpha1.Sandbox{ObjectMeta: metav1.ObjectMeta{Name: "standard"}},
+				)
 				c := interceptor.NewClient(base.(client.WithWatch), interceptor.Funcs{
 					Create: func(context.Context, client.WithWatch, client.Object, ...client.CreateOption) error { return tt.err },
 					Patch: func(context.Context, client.WithWatch, client.Object, client.Patch, ...client.PatchOption) error {
@@ -164,11 +179,14 @@ func TestAdminTeam_WriteErrors(t *testing.T) {
 					},
 				})
 				h := &AdminTeamHandler{Kube: kube.NewClient(c)}
+				current, err := h.Kube.GetTeam(context.Background(), "example-team")
+				if err != nil { t.Fatal(err) }
+				body, _ := json.Marshal(TeamUpsertRequest{Name: "example-team", Role: "Engineer", UID: string(current.UID), ResourceVersion: current.ResourceVersion, AgentPolicyRef: "standard", SandboxRefs: []string{"standard"}, DefaultSandboxRef: "standard"})
 				w := httptest.NewRecorder()
 				if operation == "create" {
-					h.CreateTeam(w, httptest.NewRequest(http.MethodPost, "/api/v1/admin/teams", strings.NewReader(`{"name":"example-team"}`)))
+					h.CreateTeam(w, httptest.NewRequest(http.MethodPost, "/api/v1/admin/teams", bytes.NewReader(body)))
 				} else {
-					r := httptest.NewRequest(http.MethodPut, "/api/v1/admin/teams/example-team", strings.NewReader(`{"role":"Engineer"}`))
+					r := httptest.NewRequest(http.MethodPut, "/api/v1/admin/teams/example-team", bytes.NewReader(body))
 					r.SetPathValue("name", "example-team")
 					h.UpdateTeam(w, r)
 				}
@@ -239,7 +257,9 @@ func TestAdminTeam_Update(t *testing.T) {
 			MemberContext: cetirunv1alpha1.TeamContextSpec{Role: "old"},
 		},
 	})
-	body, _ := json.Marshal(TeamUpsertRequest{Role: "new"})
+	current, _ := h.Kube.GetTeam(context.Background(), "aks")
+	body, _ := json.Marshal(TeamUpsertRequest{Role: "new", UID: string(current.UID), ResourceVersion: current.ResourceVersion,
+		AgentPolicyRef: "standard-policy", SandboxRefs: []string{"standard"}, DefaultSandboxRef: "standard"})
 	req := httptest.NewRequest(http.MethodPut, "/api/v1/admin/teams/aks", bytes.NewReader(body))
 	req.SetPathValue("name", "aks")
 	w := httptest.NewRecorder()
@@ -254,7 +274,7 @@ func TestAdminTeam_Update(t *testing.T) {
 	}
 }
 
-func TestAdminTeamUpdatePreservesGovernance(t *testing.T) {
+func TestAdminTeamUpdatePersistsSelectedGovernance(t *testing.T) {
 	team := &cetirunv1alpha1.Team{
 		ObjectMeta: metav1.ObjectMeta{Name: "governed"},
 		Spec: cetirunv1alpha1.TeamSpec{
@@ -264,7 +284,10 @@ func TestAdminTeamUpdatePreservesGovernance(t *testing.T) {
 		},
 	}
 	h := newAdminTeamHandler(team)
-	req := httptest.NewRequest(http.MethodPut, "/api/v1/admin/teams/governed", bytes.NewBufferString(`{"role":"new"}`))
+	current, _ := h.Kube.GetTeam(context.Background(), team.Name)
+	body, _ := json.Marshal(TeamUpsertRequest{Role: "new", UID: string(current.UID), ResourceVersion: current.ResourceVersion,
+		AgentPolicyRef: "standard-policy", SandboxRefs: []string{"restricted"}, DefaultSandboxRef: "restricted"})
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/admin/teams/governed", bytes.NewReader(body))
 	req.SetPathValue("name", team.Name)
 	w := httptest.NewRecorder()
 	h.UpdateTeam(w, req)
@@ -275,10 +298,8 @@ func TestAdminTeamUpdatePreservesGovernance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := team.Spec.DeepCopy()
-	want.MemberContext.Role = "new"
-	if !reflect.DeepEqual(got.Spec, *want) {
-		t.Fatalf("ordinary Portal edit changed governance: got %+v, want %+v", got.Spec, *want)
+	if got.Spec.AgentPolicyRef != "standard-policy" || len(got.Spec.SandboxRefs) != 1 || got.Spec.SandboxRefs[0] != "restricted" || got.Spec.DefaultSandboxRef != "restricted" || got.Spec.MemberContext.Role != "new" {
+		t.Fatalf("binding update lost fields: %+v", got.Spec)
 	}
 }
 
@@ -286,11 +307,65 @@ func TestAdminTeam_Delete(t *testing.T) {
 	h := newAdminTeamHandler(&cetirunv1alpha1.Team{
 		ObjectMeta: metav1.ObjectMeta{Name: "aks"},
 	})
-	req := httptest.NewRequest(http.MethodDelete, "/api/v1/admin/teams/aks", nil)
+	current, _ := h.Kube.GetTeam(context.Background(), "aks")
+	body, _ := json.Marshal(map[string]string{"uid": string(current.UID), "resourceVersion": current.ResourceVersion})
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/admin/teams/aks", bytes.NewReader(body))
 	req.SetPathValue("name", "aks")
 	w := httptest.NewRecorder()
 	h.DeleteTeam(w, req)
 	if w.Code != http.StatusNoContent {
 		t.Errorf("status %d, want 204", w.Code)
+	}
+}
+
+func TestAdminTeamRejectsIncompleteOrUnavailableBindings(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		change func(*TeamUpsertRequest)
+	}{
+		{"missing policy", func(r *TeamUpsertRequest) { r.AgentPolicyRef = "" }},
+		{"missing Sandboxes", func(r *TeamUpsertRequest) { r.SandboxRefs = nil }},
+		{"invalid default", func(r *TeamUpsertRequest) { r.DefaultSandboxRef = "restricted" }},
+		{"duplicate Sandbox", func(r *TeamUpsertRequest) { r.SandboxRefs = []string{"standard", "standard"} }},
+		{"unknown policy", func(r *TeamUpsertRequest) { r.AgentPolicyRef = "missing" }},
+		{"unknown Sandbox", func(r *TeamUpsertRequest) { r.SandboxRefs = []string{"missing"}; r.DefaultSandboxRef = "missing" }},
+		{"forbidden Skill", func(r *TeamUpsertRequest) { r.Skills = []string{"unapproved"} }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			h := newAdminTeamHandler()
+			request := TeamUpsertRequest{Name: "example", AgentPolicyRef: "standard-policy", SandboxRefs: []string{"standard"}, DefaultSandboxRef: "standard"}
+			test.change(&request)
+			body, _ := json.Marshal(request)
+			w := httptest.NewRecorder()
+			h.CreateTeam(w, httptest.NewRequest(http.MethodPost, "/api/v1/admin/teams", bytes.NewReader(body)))
+			if w.Code < 400 || w.Code >= 500 {
+				t.Fatalf("unexpected result: %d %s", w.Code, w.Body.String())
+			}
+			_, err := h.Kube.GetTeam(context.Background(), "example")
+			if !kube.IsNotFound(err) {
+				t.Fatal("invalid binding created a Team")
+			}
+		})
+	}
+}
+
+func TestAdminTeamRequiresCurrentVersion(t *testing.T) {
+	for _, version := range []string{"", "stale"} {
+		h := newAdminTeamHandler(&cetirunv1alpha1.Team{ObjectMeta: metav1.ObjectMeta{Name: "example"}})
+		current, _ := h.Kube.GetTeam(context.Background(), "example")
+		request := TeamUpsertRequest{Name: current.Name, UID: string(current.UID), ResourceVersion: version,
+			AgentPolicyRef: "standard-policy", SandboxRefs: []string{"standard"}, DefaultSandboxRef: "standard"}
+		body, _ := json.Marshal(request)
+		r := httptest.NewRequest(http.MethodPut, "/api/v1/admin/teams/example", bytes.NewReader(body))
+		r.SetPathValue("name", "example")
+		w := httptest.NewRecorder()
+		h.UpdateTeam(w, r)
+		want := http.StatusConflict
+		if version == "" {
+			want = http.StatusPreconditionRequired
+		}
+		if w.Code != want {
+			t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+		}
 	}
 }

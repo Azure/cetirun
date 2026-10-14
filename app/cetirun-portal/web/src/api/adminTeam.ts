@@ -13,6 +13,11 @@ export interface TeamSkillStorage {
 }
 
 export interface TeamDTO {
+  uid: string;
+  resourceVersion: string;
+  agentPolicyRef: string;
+  sandboxRefs: string[];
+  defaultSandboxRef: string;
   name: string;
   role?: string;
   description?: string[];
@@ -23,6 +28,11 @@ export interface TeamDTO {
 }
 
 export interface TeamUpsertRequest {
+  uid?: string;
+  resourceVersion?: string;
+  agentPolicyRef: string;
+  sandboxRefs: string[];
+  defaultSandboxRef: string;
   name?: string;
   role?: string;
   description?: string[];
@@ -71,9 +81,10 @@ export async function updateTeam(name: string, req: TeamUpsertRequest): Promise<
   return response.json();
 }
 
-export async function deleteTeam(name: string): Promise<void> {
-  const response = await apiFetch(`/api/v1/admin/teams/${encodeURIComponent(name)}`, {
+export async function deleteTeam(team: Pick<TeamDTO, "name" | "uid" | "resourceVersion">): Promise<void> {
+  const response = await apiFetch(`/api/v1/admin/teams/${encodeURIComponent(team.name)}`, {
     method: "DELETE",
+    body: JSON.stringify({ uid: team.uid, resourceVersion: team.resourceVersion }),
   });
   if (!response.ok && response.status !== 404) {
     throw new Error(await parseError(response, "Failed to delete team"));

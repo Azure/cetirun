@@ -251,6 +251,35 @@ only passed to the reserved `skills.clawHub` list, not installed. Shared storage
 uses chart-level protocol and mount options; those are not fields on
 `skillStorage`. See [configuration and skills](../../concepts/configuration/).
 
+### Team and Sandbox administration
+
+Portal administrators can create and edit Teams with `agentPolicyRef`,
+`sandboxRefs`, and `defaultSandboxRef`. The Portal requires complete bindings,
+validates referenced resources, and checks that the default belongs to the
+allowed Sandbox set and Team Skills are permitted by the Policy. The Team DTO
+returns these fields along with `uid` and `resourceVersion`; updates and deletes
+must send those two version fields. A stale version returns `409 Conflict`,
+and missing version fields return `428 Precondition Required`.
+
+The **Admin → Sandboxes** pages manage the complete Sandbox configuration:
+runtime type, Agent and helper resource requests/limits, HOME storage, and
+scratch size. They use these admin-only endpoints:
+
+- `GET` and `POST /api/v1/admin/sandboxes`
+- `GET`, `PUT`, and `DELETE /api/v1/admin/sandboxes/{name}`
+
+The Sandbox request contains `name`, `type`, `resources`, and `storage` with
+the same structure as the CRD spec. Updates and deletes also require the `uid`
+and `resourceVersion` returned by a read. The response reports `ready` only
+from a condition for the current generation. Saving a Sandbox does not
+install a runtime or establish runtime readiness.
+
+Team and Sandbox changes use the existing configuration coordination client
+when configured, including conditional writes, retained uncertain outcomes,
+and background deletion. Admission remains responsible for platform
+compatibility and current consumer checks. Kubernetes validation/admission
+rejections are shown in the editor, while transport failures stay in logs.
+
 ## Sandbox and AgentPolicy
 
 `Sandbox` describes the prepared `kata` or `gvisor` runtime, Agent/helper
