@@ -19,7 +19,8 @@ func (s Store) ReadConfigurationUpdate(ctx context.Context, object client.Object
 		return ChangeTicket{}, false, err
 	}
 	return s.matchConfigurationTicket(ctx, image.reference, func(change Change) bool {
-		return change.Before.UID == image.reference.UID && change.Phase == Changing && change.DeletionContentDigest == ""
+		return change.Before.UID == image.reference.UID &&
+			(change.Phase == Reserved || change.Phase == Changing) && change.DeletionContentDigest == ""
 	})
 }
 

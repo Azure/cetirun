@@ -132,7 +132,7 @@ type Client struct {
 // UID-pinned Sandbox configuration authority.
 type ConfigurationCoordination interface {
 	Update(context.Context, client.Object, client.Object) error
-	RecoverUpdate(context.Context, client.Object) error
+	RecoverUpdate(context.Context, client.Object, client.Object) error
 	Delete(context.Context, client.Object) error
 }
 
@@ -930,17 +930,17 @@ func (c *Client) UpdateAgentPolicySpec(ctx context.Context, name string, spec ce
 	if err != nil {
 		return nil, err
 	}
-	if err := c.recoverConfigurationUpdate(ctx, policy); err != nil {
-		return nil, err
-	}
-	if err := validateAgentPolicyVersion(policy, version); err != nil {
-		return nil, err
-	}
 	before := policy.DeepCopy()
 	managed := spec.DeepCopy()
 	policy.Spec.Harnesses = managed.Harnesses
 	policy.Spec.Skills = managed.Skills
 	policy.Spec.ModelAccess = managed.ModelAccess
+	if err := c.recoverConfigurationUpdate(ctx, before, policy); err != nil {
+		return nil, err
+	}
+	if err := validateAgentPolicyVersion(policy, version); err != nil {
+		return nil, err
+	}
 	if equality.Semantic.DeepEqual(before.Spec, policy.Spec) {
 		return policy, nil
 	}

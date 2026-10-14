@@ -21,7 +21,7 @@ type recordingPolicyCoordination struct {
 	deleted client.Object
 }
 
-func (r *recordingPolicyCoordination) RecoverUpdate(context.Context, client.Object) error {
+func (r *recordingPolicyCoordination) RecoverUpdate(context.Context, client.Object, client.Object) error {
 	return nil
 }
 

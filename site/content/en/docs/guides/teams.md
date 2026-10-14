@@ -36,6 +36,11 @@ committed content at a newer version of the same resource UID. This recovery
 works across Portal restarts and never replays the original write. A stale save
 still returns a version conflict; an uncertain outcome retains its reservation.
 
+If an update stops before submission while its operation is still `Reserved`,
+retry the same configuration with the original resource UID and version. Only
+that exact request can resume the reservation and submit the update. A changed
+request or an unchanged save cannot replace or discard the reserved operation.
+
 When the cluster rejects a Team create or update, the Portal shows known field
 paths and validation reasons. Correct the indicated fields before retrying.
 Unexpected server failures retain a generic message; administrators can inspect

@@ -133,7 +133,11 @@ func TestUpdateRecoveryCannotAdoptDeletionOrReservedOperation(t *testing.T) {
 			if scenario == "replacement" {
 				current.SetUID("replacement-uid")
 			}
-			if _, _, err := store.ReadConfigurationUpdate(ctx, current); !errors.Is(err, ErrConflict) {
+			if recovered, found, err := store.ReadConfigurationUpdate(ctx, current); scenario == "reserved" {
+				if err != nil || !found || recovered.Change.ID != ticket.Change.ID || recovered.Change.Phase != Reserved {
+					t.Fatalf("reserved update lookup: ticket=%+v found=%v err=%v", recovered, found, err)
+				}
+			} else if !errors.Is(err, ErrConflict) {
 				t.Fatal("invalid recovery lookup accepted:", err)
 			}
 			if _, err := NewKubernetesUpdateRecoveryAdapter(storage, ticket, current); !errors.Is(err, ErrConflict) {

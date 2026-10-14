@@ -30,9 +30,9 @@ func checkConfigurationVersion(object client.Object, version ConfigurationVersio
 	return nil
 }
 
-func (c *Client) recoverConfigurationUpdate(ctx context.Context, object client.Object) error {
+func (c *Client) recoverConfigurationUpdate(ctx context.Context, before, after client.Object) error {
 	if c.configurationCoordination != nil {
-		if err := c.configurationCoordination.RecoverUpdate(ctx, object); err != nil {
+		if err := c.configurationCoordination.RecoverUpdate(ctx, before, after); err != nil {
 			return fmt.Errorf("observe recorded configuration update: %w", err)
 		}
 	}
@@ -64,14 +64,14 @@ func (c *Client) UpdateTeamSpec(ctx context.Context, name string, spec api.TeamS
 	if err != nil {
 		return nil, err
 	}
-	if err := c.recoverConfigurationUpdate(ctx, team); err != nil {
+	before := team.DeepCopy()
+	team.Spec = *spec.DeepCopy()
+	if err := c.recoverConfigurationUpdate(ctx, before, team); err != nil {
 		return nil, err
 	}
 	if err := checkConfigurationVersion(team, version); err != nil {
 		return nil, err
 	}
-	before := team.DeepCopy()
-	team.Spec = *spec.DeepCopy()
 	if equality.Semantic.DeepEqual(before.Spec, team.Spec) {
 		return team, nil
 	}
@@ -120,14 +120,14 @@ func (c *Client) UpdateSandboxSpec(ctx context.Context, name string, spec api.Sa
 	if err != nil {
 		return nil, err
 	}
-	if err := c.recoverConfigurationUpdate(ctx, box); err != nil {
+	before := box.DeepCopy()
+	box.Spec = *spec.DeepCopy()
+	if err := c.recoverConfigurationUpdate(ctx, before, box); err != nil {
 		return nil, err
 	}
 	if err := checkConfigurationVersion(box, version); err != nil {
 		return nil, err
 	}
-	before := box.DeepCopy()
-	box.Spec = *spec.DeepCopy()
 	if equality.Semantic.DeepEqual(before.Spec, box.Spec) {
 		return box, nil
 	}
