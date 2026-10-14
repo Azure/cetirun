@@ -77,6 +77,23 @@ func (c *Client) Update(ctx context.Context, before, after client.Object) error 
 	return c.reconcileChange(ctx, ticket, adapter)
 }
 
+// RecoverUpdate releases an outstanding update only when an authoritative read
+// proves its desired content committed to the same UID at a superseding version.
+// This works after a process restart without the original before/after objects.
+// No ticket is a no-op; an uncertain outcome retains its reservation. This never
+// submits a configuration write or changes a caller's version preconditions.
+func (c *Client) RecoverUpdate(ctx context.Context, object client.Object) error {
+	ticket, found, err := c.store.ReadConfigurationUpdate(ctx, object)
+	if err != nil || !found {
+		return err
+	}
+	adapter, err := sandboxcoordination.NewKubernetesUpdateRecoveryAdapter(c.reader, ticket, object)
+	if err != nil {
+		return err
+	}
+	return c.reconcileChange(ctx, ticket, adapter)
+}
+
 // Delete reserves and submits one exact UID/resourceVersion-conditional
 // background Delete. An uncertain outcome deliberately retains the reservation.
 func (c *Client) Delete(ctx context.Context, before client.Object) error {

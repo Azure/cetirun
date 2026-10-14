@@ -574,11 +574,6 @@ func (h *InstanceHandler) CreateInstance(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusBadRequest, "reserved_name", "Instance name is reserved for platform credentials")
 		return
 	}
-	team, sandboxRef, modelAccess, ok := h.validateAIGatewayCreate(w, r, req, agent.Type)
-	if !ok {
-		return
-	}
-
 	if req.RegistryAuth != nil {
 		w.Header().Set("Cache-Control", "no-store")
 		if !h.registryOriginAllowed(r) || registryCaller(claims) == "" {
@@ -592,6 +587,11 @@ func (h *InstanceHandler) CreateInstance(w http.ResponseWriter, r *http.Request)
 		if h.resumeRegistryCreate(w, r, instanceName, req, claims) {
 			return
 		}
+	}
+
+	team, sandboxRef, modelAccess, ok := h.validateAIGatewayCreate(w, r, req, agent.Type)
+	if !ok {
+		return
 	}
 
 	if h.Config.MaxInstancesPerUser > 0 {

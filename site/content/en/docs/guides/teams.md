@@ -28,6 +28,14 @@ before submitting again. Deployments with configuration coordination use the
 same protected update/delete flow as Agent Policy administration. Existing
 Agent consumers may need to be suspended before a binding can change.
 
+If an update succeeds in the cluster but its response or coordination release
+fails, reload the editor and save again. Portal checks the recorded operation
+against the current resource before handling the save, including an unchanged
+configuration. It releases the reservation only after observing the exact
+committed content at a newer version of the same resource UID. This recovery
+works across Portal restarts and never replays the original write. A stale save
+still returns a version conflict; an uncertain outcome retains its reservation.
+
 When the cluster rejects a Team create or update, the Portal shows known field
 paths and validation reasons. Correct the indicated fields before retrying.
 Unexpected server failures retain a generic message; administrators can inspect

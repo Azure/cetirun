@@ -240,88 +240,106 @@ func TestKubernetesConfigurationAPIServer(t *testing.T) {
 
 	for _, kind := range []string{"Team", "Sandbox", "AgentPolicy"} {
 		for _, scenario := range []string{"success", "lost-reply", "failed-request", "never-submitted"} {
-			t.Run(kind+"/"+scenario, func(t *testing.T) {
-				store, before, after := newFixture(t, kind, scenario)
-				updates := 0
-				writer := interceptor.NewClient(storage, interceptor.Funcs{
-					Update: func(ctx context.Context, c client.WithWatch, object client.Object, opts ...client.UpdateOption) error {
-						updates++
-						if scenario == "failed-request" {
-							return errors.New("synthetic request did not reach the API")
+			for _, recovery := range []string{"original-images", "journal"} {
+				t.Run(kind+"/"+scenario+"/"+recovery, func(t *testing.T) {
+					store, before, after := newFixture(t, kind, scenario+"-"+recovery)
+					updates := 0
+					writer := interceptor.NewClient(storage, interceptor.Funcs{
+						Update: func(ctx context.Context, c client.WithWatch, object client.Object, opts ...client.UpdateOption) error {
+							updates++
+							if scenario == "failed-request" {
+								return errors.New("synthetic request did not reach the API")
+							}
+							if object.GetUID() != before.GetUID() || object.GetResourceVersion() != before.GetResourceVersion() {
+								t.Fatal("adapter changed its original API preconditions")
+							}
+							if err := c.Update(ctx, object, opts...); err != nil {
+								return err
+							}
+							if scenario == "lost-reply" {
+								return errors.New("synthetic lost response after real API commit")
+							}
+							return nil
+						},
+					})
+					ticket, err := store.AcquireConfigurationChange(ctx, before, after)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if scenario == "never-submitted" {
+						ticket, err = store.BeginChange(ctx, ticket)
+						if err != nil {
+							t.Fatal(err)
 						}
-						if object.GetUID() != before.GetUID() || object.GetResourceVersion() != before.GetResourceVersion() {
-							t.Fatal("adapter changed its original API preconditions")
+					}
+					ticket, err = store.ReconcileChange(ctx, ticket, configurationAdapter(t, writer, storage, before, after))
+					if scenario == "success" {
+						if err != nil || updates != 1 {
+							t.Fatalf("real Update failed: updates=%d error=%v", updates, err)
 						}
-						if err := c.Update(ctx, object, opts...); err != nil {
-							return err
+					} else {
+						if err == nil || ticket.Change.Phase != Changing {
+							t.Fatal("uncertain operation lost its submission intent:", err)
 						}
-						if scenario == "lost-reply" {
-							return errors.New("synthetic lost response after real API commit")
+						restartedClient, err := client.NewWithWatch(config, client.Options{Scheme: scheme})
+						if err != nil {
+							t.Fatal(err)
 						}
-						return nil
-					},
+						restarted := Store{Client: restartedClient, APIReader: restartedClient, Namespace: store.Namespace, Identity: store.Identity}
+						var recovered ChangeTicket
+						var adapter ChangeAdapter
+						if recovery == "original-images" {
+							recovered, err = restarted.AcquireConfigurationChange(ctx, before, after)
+							adapter = configurationAdapter(t, writer, restartedClient, before, after)
+						} else {
+							current := configurationObject(kind)
+							if err := restartedClient.Get(ctx, client.ObjectKeyFromObject(before), current); err != nil {
+								t.Fatal(err)
+							}
+							var found bool
+							recovered, found, err = restarted.ReadConfigurationUpdate(ctx, current)
+							if err != nil || !found {
+								t.Fatal("journal recovery lookup failed:", err)
+							}
+							adapter, err = NewKubernetesUpdateRecoveryAdapter(restartedClient, recovered, current)
+						}
+						if err != nil || recovered.Change.ID != ticket.Change.ID || recovered.Change.Phase != Changing {
+							t.Fatal("exact recovery failed:", err)
+						}
+						_, err = restarted.ReconcileChange(ctx, recovered, adapter)
+						if scenario != "lost-reply" {
+							if err == nil {
+								t.Fatal("unchanged source was inferred aborted")
+							}
+							if err := store.CheckChange(ctx, ticket); err != nil {
+								t.Fatal("unchanged source stopped excluding other writes:", err)
+							}
+							expected := 1
+							if scenario == "never-submitted" {
+								expected = 0
+							}
+							if updates != expected {
+								t.Fatal("recovery retried an uncertain request")
+							}
+							return
+						}
+						if err != nil || updates != 1 {
+							t.Fatal("real committed write was not recovered without resubmission:", err)
+						}
+					}
+					current := before.DeepCopyObject().(client.Object)
+					if err := storage.Get(ctx, client.ObjectKeyFromObject(before), current); err != nil {
+						t.Fatal(err)
+					}
+					if current.GetUID() != before.GetUID() || current.GetResourceVersion() == before.GetResourceVersion() ||
+						current.GetGeneration() != before.GetGeneration()+1 {
+						t.Fatal("real API did not preserve UID and advance resourceVersion/generation")
+					}
+					if err := storage.Update(ctx, after.DeepCopyObject().(client.Object)); !apierrors.IsConflict(err) {
+						t.Fatal("old-RV delayed request could mutate an observed committed version:", err)
+					}
 				})
-				ticket, err := store.AcquireConfigurationChange(ctx, before, after)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if scenario == "never-submitted" {
-					ticket, err = store.BeginChange(ctx, ticket)
-					if err != nil {
-						t.Fatal(err)
-					}
-				}
-				ticket, err = store.ReconcileChange(ctx, ticket, configurationAdapter(t, writer, storage, before, after))
-				if scenario == "success" {
-					if err != nil || updates != 1 {
-						t.Fatalf("real Update failed: updates=%d error=%v", updates, err)
-					}
-				} else {
-					if err == nil || ticket.Change.Phase != Changing {
-						t.Fatal("uncertain operation lost its submission intent:", err)
-					}
-					restartedClient, err := client.NewWithWatch(config, client.Options{Scheme: scheme})
-					if err != nil {
-						t.Fatal(err)
-					}
-					restarted := Store{Client: restartedClient, APIReader: restartedClient, Namespace: store.Namespace, Identity: store.Identity}
-					recovered, err := restarted.AcquireConfigurationChange(ctx, before, after)
-					if err != nil || recovered.Change.ID != ticket.Change.ID || recovered.Change.Phase != Changing {
-						t.Fatal("exact recovery with original file identities failed:", err)
-					}
-					_, err = restarted.ReconcileChange(ctx, recovered, configurationAdapter(t, writer, restartedClient, before, after))
-					if scenario != "lost-reply" {
-						if err == nil {
-							t.Fatal("unchanged source was inferred aborted")
-						}
-						if err := store.CheckChange(ctx, ticket); err != nil {
-							t.Fatal("unchanged source stopped excluding other writes:", err)
-						}
-						expected := 1
-						if scenario == "never-submitted" {
-							expected = 0
-						}
-						if updates != expected {
-							t.Fatal("recovery retried an uncertain request")
-						}
-						return
-					}
-					if err != nil || updates != 1 {
-						t.Fatal("real committed write was not recovered without resubmission:", err)
-					}
-				}
-				current := before.DeepCopyObject().(client.Object)
-				if err := storage.Get(ctx, client.ObjectKeyFromObject(before), current); err != nil {
-					t.Fatal(err)
-				}
-				if current.GetUID() != before.GetUID() || current.GetResourceVersion() == before.GetResourceVersion() ||
-					current.GetGeneration() != before.GetGeneration()+1 {
-					t.Fatal("real API did not preserve UID and advance resourceVersion/generation")
-				}
-				if err := storage.Update(ctx, after.DeepCopyObject().(client.Object)); !apierrors.IsConflict(err) {
-					t.Fatal("old-RV delayed request could mutate an observed committed version:", err)
-				}
-			})
+			}
 		}
 	}
 

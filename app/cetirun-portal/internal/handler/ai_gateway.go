@@ -144,6 +144,13 @@ func (h *InstanceHandler) GetAIGatewayCatalog(w http.ResponseWriter, r *http.Req
 // validateAIGatewayCreate uses the same current options as the form and records
 // explicit model switches. The caller must run it before any creation writes.
 func (h *InstanceHandler) validateAIGatewayCreate(w http.ResponseWriter, r *http.Request, req CreateInstanceRequest, agentType cetirunv1alpha1.AgentType) (string, string, *cetirunv1alpha1.ModelAccessSpec, bool) {
+	return h.validateAIGatewaySelection(w, r, req, agentType, true)
+}
+
+// validateAIGatewaySelection always checks current permissions and model sources.
+// Default-chart suitability applies only when creating an Agent. A matched
+// retained creation keeps its own chart, whose routing the Operator reconciles.
+func (h *InstanceHandler) validateAIGatewaySelection(w http.ResponseWriter, r *http.Request, req CreateInstanceRequest, agentType cetirunv1alpha1.AgentType, newAgent bool) (string, string, *cetirunv1alpha1.ModelAccessSpec, bool) {
 	options, err := h.resolveCreationOptions(r, req.Team)
 	if err != nil {
 		writeManagementError(w, err)
@@ -172,10 +179,10 @@ func (h *InstanceHandler) validateAIGatewayCreate(w http.ResponseWriter, r *http
 	if !catalog.Known {
 		return reject(http.StatusServiceUnavailable, "model_sources_unknown", "The AI Gateway has not published its models yet. Try again in a minute.")
 	}
-	if catalog.AgentTypes == nil {
+	if newAgent && catalog.AgentTypes == nil {
 		return reject(http.StatusServiceUnavailable, "agent_types_unknown", "The operator has not read its agent chart yet. Try again in a minute.")
 	}
-	if !slices.Contains(catalog.AgentTypes, agentType) {
+	if newAgent && !slices.Contains(catalog.AgentTypes, agentType) {
 		return reject(http.StatusConflict, "agent_chart_unsupported", "This deployment's agent chart does not route "+agentTypeNames[agentType]+" agents through the AI Gateway. Ask an administrator to upgrade the agent chart.")
 	}
 	sharedAvailable, copilotAvailable := len(catalog.SharedModels) > 0, catalog.GitHubCopilot

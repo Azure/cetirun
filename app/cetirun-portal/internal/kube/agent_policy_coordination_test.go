@@ -21,6 +21,10 @@ type recordingPolicyCoordination struct {
 	deleted client.Object
 }
 
+func (r *recordingPolicyCoordination) RecoverUpdate(context.Context, client.Object) error {
+	return nil
+}
+
 func (r *recordingPolicyCoordination) Update(ctx context.Context, before, after client.Object) error {
 	r.before = before.DeepCopyObject().(client.Object)
 	r.after = after.DeepCopyObject().(client.Object)

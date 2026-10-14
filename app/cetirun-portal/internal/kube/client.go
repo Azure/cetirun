@@ -132,6 +132,7 @@ type Client struct {
 // UID-pinned Sandbox configuration authority.
 type ConfigurationCoordination interface {
 	Update(context.Context, client.Object, client.Object) error
+	RecoverUpdate(context.Context, client.Object) error
 	Delete(context.Context, client.Object) error
 }
 
@@ -927,6 +928,9 @@ func validateAgentPolicyVersion(policy *cetirunv1alpha1.AgentPolicy, version Age
 func (c *Client) UpdateAgentPolicySpec(ctx context.Context, name string, spec cetirunv1alpha1.AgentPolicySpec, version AgentPolicyVersion) (*cetirunv1alpha1.AgentPolicy, error) {
 	policy, err := c.GetAgentPolicy(ctx, name)
 	if err != nil {
+		return nil, err
+	}
+	if err := c.recoverConfigurationUpdate(ctx, policy); err != nil {
 		return nil, err
 	}
 	if err := validateAgentPolicyVersion(policy, version); err != nil {

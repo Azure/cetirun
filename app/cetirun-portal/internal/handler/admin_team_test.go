@@ -16,8 +16,8 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
@@ -180,7 +180,9 @@ func TestAdminTeam_WriteErrors(t *testing.T) {
 				})
 				h := &AdminTeamHandler{Kube: kube.NewClient(c)}
 				current, err := h.Kube.GetTeam(context.Background(), "example-team")
-				if err != nil { t.Fatal(err) }
+				if err != nil {
+					t.Fatal(err)
+				}
 				body, _ := json.Marshal(TeamUpsertRequest{Name: "example-team", Role: "Engineer", UID: string(current.UID), ResourceVersion: current.ResourceVersion, AgentPolicyRef: "standard", SandboxRefs: []string{"standard"}, DefaultSandboxRef: "standard"})
 				w := httptest.NewRecorder()
 				if operation == "create" {

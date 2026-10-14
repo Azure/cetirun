@@ -250,7 +250,7 @@ func (h *InstanceHandler) resumeRegistryCreate(w http.ResponseWriter, r *http.Re
 	if access := existing.Spec.ModelAccess; access != nil {
 		persisted.ModelAccess = &ModelAccessRequest{SharedModels: access.SharedModels, GitHubCopilot: access.GitHubCopilot}
 	}
-	if _, _, _, ok := h.validateAIGatewayCreate(w, r, persisted, existing.Spec.Agent.Type); !ok {
+	if _, _, _, ok := h.validateAIGatewaySelection(w, r, persisted, existing.Spec.Agent.Type, false); !ok {
 		return true
 	}
 	if err := h.Kube.SaveRegistryCredentials(r.Context(), existing, *req.RegistryAuth, true); err != nil {

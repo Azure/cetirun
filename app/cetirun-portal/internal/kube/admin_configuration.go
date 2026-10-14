@@ -30,6 +30,15 @@ func checkConfigurationVersion(object client.Object, version ConfigurationVersio
 	return nil
 }
 
+func (c *Client) recoverConfigurationUpdate(ctx context.Context, object client.Object) error {
+	if c.configurationCoordination != nil {
+		if err := c.configurationCoordination.RecoverUpdate(ctx, object); err != nil {
+			return fmt.Errorf("observe recorded configuration update: %w", err)
+		}
+	}
+	return nil
+}
+
 func (c *Client) updateConfiguration(ctx context.Context, before, after client.Object) error {
 	if c.configurationCoordination != nil {
 		if err := c.configurationCoordination.Update(ctx, before, after); err != nil {
@@ -53,6 +62,9 @@ func (c *Client) deleteConfiguration(ctx context.Context, object client.Object) 
 func (c *Client) UpdateTeamSpec(ctx context.Context, name string, spec api.TeamSpec, version ConfigurationVersion) (*api.Team, error) {
 	team, err := c.GetTeam(ctx, name)
 	if err != nil {
+		return nil, err
+	}
+	if err := c.recoverConfigurationUpdate(ctx, team); err != nil {
 		return nil, err
 	}
 	if err := checkConfigurationVersion(team, version); err != nil {
@@ -106,6 +118,9 @@ func (c *Client) CreateSandbox(ctx context.Context, box *api.Sandbox) (*api.Sand
 func (c *Client) UpdateSandboxSpec(ctx context.Context, name string, spec api.SandboxSpec, version ConfigurationVersion) (*api.Sandbox, error) {
 	box, err := c.GetSandbox(ctx, name)
 	if err != nil {
+		return nil, err
+	}
+	if err := c.recoverConfigurationUpdate(ctx, box); err != nil {
 		return nil, err
 	}
 	if err := checkConfigurationVersion(box, version); err != nil {
