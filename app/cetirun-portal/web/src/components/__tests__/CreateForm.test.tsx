@@ -8,7 +8,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { CreateForm } from "../CreateForm";
 
 const mockFeatures = vi.hoisted(() => ({
-  data: { tailscaleEnabled: true, allowedAgentTypes: ["openclaw", "hermes"] },
+  data: { tailscaleEnabled: true, agentIdentityEnabled: false, allowedAgentTypes: ["openclaw", "hermes"] },
 }));
 
 vi.mock("../../hooks/useFeatures", () => ({
@@ -51,6 +51,7 @@ describe("CreateForm", () => {
     mockMutate.mockClear();
     mockFeatures.data = {
       tailscaleEnabled: true,
+      agentIdentityEnabled: false,
       allowedAgentTypes: ["openclaw", "hermes"],
     };
   });
@@ -85,6 +86,21 @@ describe("CreateForm", () => {
     fireEvent.submit(screen.getByRole("button", { name: "Create Agent" }).closest("form")!);
     expect(mockMutate).not.toHaveBeenCalled();
     expect(screen.getByText(/HTTP port must be an integer/)).toBeInTheDocument();
+  });
+
+  it("allows Custom to opt into Agent Identity without native credentials", async () => {
+    mockFeatures.data.allowedAgentTypes = ["custom"];
+    mockFeatures.data.agentIdentityEnabled = true;
+    const user = userEvent.setup();
+    renderWithQuery(<CreateForm />);
+    await user.type(await screen.findByLabelText(/Agent Image/), "registry.example.com/assistant:1");
+    await user.click(screen.getByLabelText("Enable Microsoft Entra Agent Identity"));
+    await user.click(screen.getByRole("button", { name: "Create Agent" }));
+    const input = JSON.parse(JSON.stringify(mockMutate.mock.calls[0][0]));
+    expect(input.agentIdentityEnabled).toBe(true);
+    expect(input.agent.type).toBe("custom");
+    expect(input).not.toHaveProperty("gatewayToken");
+    expect(input).not.toHaveProperty("teamsEnabled");
   });
 
   it("creates a Web UI with the shared port and does not carry the flag to built-ins", async () => {
