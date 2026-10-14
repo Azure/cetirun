@@ -144,6 +144,28 @@ def gateway_models(model, *, integrated):
 
 @unittest.skipUnless(shutil.which("helm"), "requires Helm 3 or 4")
 class NativeGatewayChartTests(unittest.TestCase):
+    def test_managed_gateway_auth_cache_uses_current_authorization(self):
+        for integrated in (False, True):
+            for replicas in (1, 2):
+                with self.subTest(integrated=integrated, replicas=replicas):
+                    objects = render(GATEWAY_CHART, {
+                        "operatorIntegration": integrated,
+                        "replicaCount": replicas,
+                        "models": [MODEL],
+                    })
+                    config = yaml.safe_load(object_of_kind(objects, "ConfigMap")["data"]["config.yaml"])
+                    settings = config["general_settings"]
+                    if integrated:
+                        self.assertIn("user_api_key_cache_ttl", settings)
+                        self.assertIs(type(settings["user_api_key_cache_ttl"]), int)
+                        self.assertEqual(settings["user_api_key_cache_ttl"], 0)
+                        self.assertTrue(settings["enforce_fallback_model_access"])
+                    else:
+                        self.assertNotIn("user_api_key_cache_ttl", settings)
+                    self.assertTrue(config["litellm_settings"]["cache"])
+                    self.assertEqual(config["litellm_settings"]["cache_params"]["mode"], "default_off")
+                    self.assertIn("redis_host", config["router_settings"])
+
     def test_governed_proxy_trust_uses_only_compiler_selected_peers(self):
         values = native_values()
         values["openclaw"]["config"]["gateway"] = {
