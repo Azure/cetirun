@@ -91,13 +91,12 @@ namespace: the operator reads the Gateway master key from there. See the
 [Gateway chart](../cetirun-ai-gateway/chart/README.md) for its settings, under
 `cetirun-ai-gateway` here.
 
-Shared models are the Gateway's models in the access group `cetirun-shared`.
-Agents are offered only those, whether a model is set in
-`cetirun-ai-gateway.models` or added later in the Gateway console: a model
-without the access group is served by the Gateway but given to no Agent. While
-the Gateway blocks unpriced models, as it does by default, each one also needs
-a price. For example, with the provider key in a Secret you create in the
-release namespace:
+Shared models are the models set in `cetirun-ai-gateway.models`. The Gateway
+chart gives each one a deployment ID and an access group of its own, and the
+operator offers it through them: Agents without a policy are offered every one,
+and policy-bound Agents the ones their AgentPolicy grants. While the Gateway
+blocks unpriced models, as it does by default, each one also needs a price. For
+example, with the provider key in a Secret you create in the release namespace:
 
 ```yaml
 cetirun-ai-gateway:
@@ -112,16 +111,21 @@ cetirun-ai-gateway:
         # Must support the Responses API: agents' tool calls are sent there.
         api_version: "2025-04-01-preview"
       model_info:
-        access_groups: ["cetirun-shared"]
         # The price; or set input_cost_per_token and output_cost_per_token.
         base_model: azure/gpt-4o
 ```
 
+The access group `cetirun-shared` is no longer needed on these models. Leave it
+on a model that has it: any change to a model's settings gives it a new
+deployment ID and access group, and Agents reach the model again only once the
+operator has updated their keys.
+
 Shared models are optional. Without them OpenClaw Agents use their owners'
 GitHub Copilot; with `cetirun-operator.aiGateway.copilotProxy.enabled` turned
-off, the Portal creates no OpenClaw Agent until a shared model is offered. To
-add shared models in the console, give them the access group and a price
-there, and open the console with:
+off, the Portal creates no OpenClaw Agent until a shared model is offered. A
+model added in the console is shared only with the access group
+`cetirun-shared` and a price, and only with Agents without a policy. Open the
+console with:
 
 ```bash
 kubectl get secret cetirun-ai-gateway-auth -n cetirun-system \
