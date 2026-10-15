@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 import { useEffect, useState, type FormEvent } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Title2,
@@ -15,6 +15,8 @@ import {
   Text,
   Divider,
   tokens,
+  Select,
+  Checkbox,
 } from "@fluentui/react-components";
 import {
   createTeam,
@@ -25,7 +27,15 @@ import {
   type TeamUpsertRequest,
 } from "../../api/adminTeam";
 
+import { listPolicies } from "../../api/adminPolicy";
+import { listSandboxes } from "../../api/adminSandbox";
+
 interface FormState {
+  uid: string;
+  resourceVersion: string;
+  agentPolicyRef: string;
+  sandboxRefs: string[];
+  defaultSandboxRef: string;
   name: string;
   role: string;
   description: string; // newline-separated
@@ -47,6 +57,8 @@ const emptyStorage: TeamSkillStorage = {
 function fromDTO(t: TeamDTO): FormState {
   return {
     name: t.name,
+    uid: t.uid, resourceVersion: t.resourceVersion,
+    agentPolicyRef: t.agentPolicyRef, sandboxRefs: t.sandboxRefs, defaultSandboxRef: t.defaultSandboxRef,
     role: t.role || "",
     description: (t.description || []).join("\n"),
     defaultProvider: t.defaultProvider || "",
@@ -65,6 +77,8 @@ function toRequest(s: FormState): TeamUpsertRequest {
 
   const req: TeamUpsertRequest = {
     name: s.name.trim(),
+    uid: s.uid || undefined, resourceVersion: s.resourceVersion || undefined,
+    agentPolicyRef: s.agentPolicyRef, sandboxRefs: s.sandboxRefs, defaultSandboxRef: s.defaultSandboxRef,
     role: s.role.trim() || undefined,
     description: splitLines(s.description),
     defaultProvider: s.defaultProvider.trim() || undefined,
@@ -89,10 +103,11 @@ export function TeamEditPage() {
   const { name } = useParams<{ name: string }>();
   const navigate = useNavigate();
   const qc = useQueryClient();
-  const isCreate = !name || name === "new";
+  const isCreate = !name;
 
   const [form, setForm] = useState<FormState>({
     name: "",
+    uid: "", resourceVersion: "", agentPolicyRef: "", sandboxRefs: [], defaultSandboxRef: "",
     role: "",
     description: "",
     defaultProvider: "",
@@ -112,7 +127,19 @@ export function TeamEditPage() {
     if (existing) setForm(fromDTO(existing));
   }, [existing]);
 
+  const policiesQuery = useQuery({ queryKey: ["admin", "policies"], queryFn: listPolicies, retry: false });
+  const sandboxesQuery = useQuery({ queryKey: ["admin", "sandboxes"], queryFn: listSandboxes, retry: false });
+  const policies = policiesQuery.data || [];
+  const sandboxes = (sandboxesQuery.data || []).filter(box => !box.deleting);
+  const configurationError = policiesQuery.error || sandboxesQuery.error;
+  const loadingConfiguration = policiesQuery.isFetching || sandboxesQuery.isFetching;
+  const validBindings = policies.some(policy => policy.name === form.agentPolicyRef) &&
+    form.sandboxRefs.length > 0 && form.sandboxRefs.every(ref => sandboxes.some(box => box.name === ref)) &&
+    form.sandboxRefs.includes(form.defaultSandboxRef);
+
   const onSuccess = () => {
+    qc.invalidateQueries({ queryKey: ["teams"] });
+    qc.invalidateQueries({ queryKey: ["instance-create-options"] });
     qc.invalidateQueries({ queryKey: ["admin", "teams"] });
     if (name) qc.invalidateQueries({ queryKey: ["admin", "team", name] });
     navigate("/admin/teams");
@@ -131,7 +158,12 @@ export function TeamEditPage() {
 
   const onSubmit = (e: FormEvent) => {
     e.preventDefault();
+    if (createMut.isPending || updateMut.isPending) return;
     setSubmitError(null);
+    if (loadingConfiguration || configurationError || !validBindings) {
+      setSubmitError("Choose an available Agent Policy, allowed Sandboxes, and a default Sandbox.");
+      return;
+    }
     const req = toRequest(form);
     if (isCreate) {
       if (!/^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$/.test(req.name || "")) {
@@ -165,6 +197,43 @@ export function TeamEditPage() {
           placeholder="e.g. aks"
         />
       </Field>
+
+      <Divider />
+      <Text weight="semibold">Agent policy and Sandbox</Text>
+      {loadingConfiguration && <Spinner label="Loading policies and Sandboxes..." />}
+      {configurationError && <MessageBar intent="error">
+        {configurationError.message}
+        <Button type="button" onClick={() => { void policiesQuery.refetch(); void sandboxesQuery.refetch(); }}>Retry configuration</Button>
+      </MessageBar>}
+      {!loadingConfiguration && !configurationError && policies.length === 0 && <MessageBar intent="info">Create an <Link to="/admin/policies/new">Agent Policy</Link> before creating this Team.</MessageBar>}
+      {!loadingConfiguration && !configurationError && sandboxes.length === 0 && <MessageBar intent="info">Create a <Link to="/admin/sandboxes/new">Sandbox</Link> before creating this Team.</MessageBar>}
+      <Field label="Agent Policy" required hint="Controls the harnesses, Skills and model access available to this Team.">
+        <Select value={form.agentPolicyRef} disabled={loadingConfiguration} onChange={event => setForm({ ...form, agentPolicyRef: event.target.value })}>
+          <option value="">Choose a policy</option>
+          {form.agentPolicyRef && !policies.some(policy => policy.name === form.agentPolicyRef) && <option value={form.agentPolicyRef} disabled>{form.agentPolicyRef} (unavailable)</option>}
+          {policies.map(policy => <option key={policy.name} value={policy.name}>{policy.name}</option>)}
+        </Select>
+      </Field>
+      <fieldset style={{ border: 0, padding: 0, margin: 0 }}>
+        <legend>Allowed Sandboxes (required)</legend>
+        <Text size={300}>Reusable runtime, resource and storage settings. Manage them in Sandboxes.</Text>
+        <div style={{ display: "flex", flexDirection: "column" }}>
+          {[...new Set([...sandboxes.map(box => box.name), ...form.sandboxRefs])].map(ref => <Checkbox key={ref}
+            label={sandboxes.some(box => box.name === ref) ? ref : `${ref} (unavailable)`}
+            checked={form.sandboxRefs.includes(ref)} disabled={loadingConfiguration}
+            onChange={(_, data) => {
+              const refs = data.checked ? [...form.sandboxRefs, ref] : form.sandboxRefs.filter(value => value !== ref);
+              setForm({ ...form, sandboxRefs: refs, defaultSandboxRef: refs.includes(form.defaultSandboxRef) ? form.defaultSandboxRef : refs[0] || "" });
+            }} />)}
+        </div>
+      </fieldset>
+      <Field label="Default Sandbox" required hint="Used when a member creates an Agent.">
+        <Select value={form.defaultSandboxRef} disabled={loadingConfiguration || form.sandboxRefs.length === 0} onChange={event => setForm({ ...form, defaultSandboxRef: event.target.value })}>
+          <option value="">Choose a default Sandbox</option>
+          {form.sandboxRefs.map(ref => <option key={ref} value={ref}>{ref}</option>)}
+        </Select>
+      </Field>
+      <Text size={300}>Changing settings for a Team with Agents may require suspending those Agents first.</Text>
 
       <Field label="Role" hint="A short label describing the team's role.">
         <Input
@@ -286,7 +355,7 @@ export function TeamEditPage() {
       <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 8 }}>
         {submitError && <MessageBar intent="error">{submitError}</MessageBar>}
         <div style={{ display: "flex", gap: 8 }}>
-          <Button appearance="primary" type="submit" disabled={pending}>
+          <Button appearance="primary" type="submit" disabled={pending || loadingConfiguration || !!configurationError || !validBindings}>
             {pending ? "Saving..." : isCreate ? "Create" : "Save"}
           </Button>
           <Button

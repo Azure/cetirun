@@ -245,6 +245,7 @@ func TestChartRBACContract(t *testing.T) {
 			want: map[string][]string{
 				"agents":        {"get", "list", "create", "update", "patch", "delete"},
 				"teams":         {"get", "list", "create", "update", "patch", "delete"},
+				"sandboxes":     {"get", "list", "create", "update", "patch", "delete"},
 				"agentpolicies": {"get", "list", "create", "update", "patch", "delete"},
 			},
 		},

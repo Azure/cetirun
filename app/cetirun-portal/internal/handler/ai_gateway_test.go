@@ -28,9 +28,7 @@ func gatewayConfig() config.Config {
 }
 
 func gatewayTeam(name string) *cetirunv1alpha1.Team {
-	return &cetirunv1alpha1.Team{ObjectMeta: metav1.ObjectMeta{Name: name}, Spec: cetirunv1alpha1.TeamSpec{
-		AgentPolicyRef: "standard", SandboxRefs: []string{"standard"}, DefaultSandboxRef: "standard",
-	}}
+	return &cetirunv1alpha1.Team{ObjectMeta: metav1.ObjectMeta{Name: name}}
 }
 
 // catalogConfigMap publishes the shared models of a deployment that offers
@@ -103,8 +101,8 @@ func TestCreateInstanceAIGatewayRequiresExistingTeam(t *testing.T) {
 	if err := fc.Get(context.Background(), client.ObjectKey{Name: "alice"}, created); err != nil {
 		t.Fatal(err)
 	}
-	if created.Spec.Team != "aks" || created.Spec.SandboxRef != "standard" {
-		t.Fatalf("binding = %q/%q, want aks/standard", created.Spec.Team, created.Spec.SandboxRef)
+	if created.Spec.Team != "aks" || created.Spec.SandboxRef != "" {
+		t.Fatalf("binding = %q/%q, want aks with no Sandbox binding", created.Spec.Team, created.Spec.SandboxRef)
 	}
 	// A Custom Agent gets a key too, so it needs a Team as well. It is not
 	// routed, so the model switches do not apply to it.
@@ -144,9 +142,9 @@ func TestCreateInstanceAIGatewayModelAccessRules(t *testing.T) {
 		wantErrCode string
 		wantErrText string
 	}{
-		{name: "defaults", body: `{"agent":{"type":"openclaw"},"team":" aks "}`, catalog: catalogConfigMap("gpt-6"), wantStatus: http.StatusCreated},
+		{name: "defaults", body: `{"agent":{"type":"openclaw"},"team":" aks "}`, catalog: catalogConfigMap("gpt-6"), wantStatus: http.StatusCreated, wantAccess: &[2]bool{true, true}},
 		{name: "both on", body: openclaw + `,"modelAccess":{"sharedModels":true,"githubCopilot":true}}`,
-			catalog: catalogConfigMap(), wantStatus: http.StatusCreated, wantAccess: &[2]bool{true, true}},
+			catalog: catalogConfigMap("gpt-6"), wantStatus: http.StatusCreated, wantAccess: &[2]bool{true, true}},
 		{name: "both off", body: openclaw + `,"modelAccess":{"sharedModels":false,"githubCopilot":false}}`,
 			catalog: catalogConfigMap("gpt-6"), wantStatus: http.StatusBadRequest, wantErrCode: "invalid_model_access"},
 		{name: "shared off", body: openclaw + `,"modelAccess":{"sharedModels":false}}`,
@@ -161,7 +159,7 @@ func TestCreateInstanceAIGatewayModelAccessRules(t *testing.T) {
 		{name: "copilot off with an unpublished catalog", body: openclaw + `,"modelAccess":{"githubCopilot":false}}`,
 			wantStatus: http.StatusServiceUnavailable, wantErrCode: "model_sources_unknown"},
 		// A deployment without the Copilot proxy offers only shared models.
-		{name: "no copilot, shared models", body: openclaw + `}`, catalog: publishedCatalog(false, "gpt-6"), wantStatus: http.StatusCreated},
+		{name: "no copilot, shared models", body: openclaw + `}`, catalog: publishedCatalog(false, "gpt-6"), wantStatus: http.StatusCreated, wantAccess: &[2]bool{true, false}},
 		{name: "no copilot, shared off", body: openclaw + `,"modelAccess":{"sharedModels":false}}`,
 			catalog: publishedCatalog(false, "gpt-6"), wantStatus: http.StatusBadRequest, wantErrCode: "invalid_model_access"},
 		{name: "no copilot, no shared models", body: openclaw + `}`, catalog: publishedCatalog(false),
@@ -181,10 +179,10 @@ func TestCreateInstanceAIGatewayModelAccessRules(t *testing.T) {
 		// agent's own provider.
 		{name: "hermes on a chart that routes only OpenClaw", body: hermes, catalog: routingCatalog(routes(cetirunv1alpha1.AgentTypeOpenClaw), true, "gpt-6"),
 			wantStatus: http.StatusConflict, wantErrCode: "agent_chart_unsupported", wantErrText: "does not route Hermes agents"},
-		{name: "hermes with an earlier operator's catalog", body: hermes, catalog: routingCatalog(nil, true, "gpt-6"),
-			wantStatus: http.StatusConflict, wantErrCode: "agent_chart_unsupported"},
-		{name: "openclaw with an earlier operator's catalog", body: openclaw + `}`, catalog: routingCatalog(nil, true, "gpt-6"),
-			wantStatus: http.StatusCreated},
+		{name: "hermes with missing routing", body: hermes, catalog: routingCatalog(nil, true, "gpt-6"),
+			wantStatus: http.StatusServiceUnavailable, wantErrCode: "agent_types_unknown"},
+		{name: "openclaw with missing routing", body: openclaw + `}`, catalog: routingCatalog(nil, true, "gpt-6"),
+			wantStatus: http.StatusServiceUnavailable, wantErrCode: "agent_types_unknown"},
 		{name: "openclaw on a chart older than the Gateway", body: openclaw + `}`, catalog: routingCatalog(routes(), true, "gpt-6"),
 			wantStatus: http.StatusConflict, wantErrCode: "agent_chart_unsupported", wantErrText: "upgrade the agent chart"},
 		// Until the operator has read its default chart, which a new Agent
@@ -217,8 +215,8 @@ func TestCreateInstanceAIGatewayModelAccessRules(t *testing.T) {
 			if err := fc.Get(context.Background(), client.ObjectKey{Name: "alice"}, agent); err != nil {
 				t.Fatal(err)
 			}
-			if agent.Spec.Team != "aks" || agent.Spec.SandboxRef != "standard" {
-				t.Fatalf("binding = %q/%q, want aks/standard", agent.Spec.Team, agent.Spec.SandboxRef)
+			if agent.Spec.Team != "aks" || agent.Spec.SandboxRef != "" {
+				t.Fatalf("binding = %q/%q, want aks with no Sandbox binding", agent.Spec.Team, agent.Spec.SandboxRef)
 			}
 			switch {
 			case tc.wantAccess == nil && agent.Spec.ModelAccess != nil:
@@ -355,13 +353,12 @@ func TestGetAIGatewayCatalog(t *testing.T) {
 	if !slices.Equal(resp.AgentTypes, []cetirunv1alpha1.AgentType{cetirunv1alpha1.AgentTypeOpenClaw, cetirunv1alpha1.AgentTypeHermes}) {
 		t.Fatalf("the published agent types must reach the form, got %v", resp.AgentTypes)
 	}
-	// A catalog from an earlier operator lists no agent types: it routes
-	// only OpenClaw.
+	// Missing routing is unknown and must not imply support for a harness.
 	resp = AIGatewayCatalogResponse{}
 	w = get(gatewayConfig(), routingCatalog(nil, true, "gpt-6"))
 	if err := json.NewDecoder(bytes.NewReader(w.Body.Bytes())).Decode(&resp); err != nil ||
-		!slices.Equal(resp.AgentTypes, []cetirunv1alpha1.AgentType{cetirunv1alpha1.AgentTypeOpenClaw}) {
-		t.Fatalf("earlier operator: resp %+v err %v", resp, err)
+		resp.AgentTypes != nil {
+		t.Fatalf("missing routing: resp %+v err %v", resp, err)
 	}
 	// Until the operator has read its default chart, the agent types are
 	// null, which the create form reads as unknown.

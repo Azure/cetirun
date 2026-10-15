@@ -108,6 +108,7 @@ type CreateInstanceOptions struct {
 	OwnerTenantID        string
 	OwnerObjectID        string
 	SandboxRef           string
+	ChartVersion         string
 	Annotations          map[string]string
 	// ModelAccess is written only when set: an Agent without it has both
 	// model sources on.
@@ -132,6 +133,7 @@ type Client struct {
 // UID-pinned Sandbox configuration authority.
 type ConfigurationCoordination interface {
 	Update(context.Context, client.Object, client.Object) error
+	RecoverUpdate(context.Context, client.Object, client.Object) error
 	Delete(context.Context, client.Object) error
 }
 
@@ -227,6 +229,7 @@ func (c *Client) CreateInstance(ctx context.Context, alias, displayName, team, e
 	}
 	if len(optional) > 0 {
 		instance.Annotations = maps.Clone(optional[0].Annotations)
+		instance.Spec.Helm.Version = optional[0].ChartVersion
 	}
 	if len(optional) > 0 && optional[0].OwnerTenantID != "" && optional[0].OwnerObjectID != "" {
 		if instance.Annotations == nil {
@@ -883,38 +886,6 @@ func (c *Client) CreateTeam(ctx context.Context, team *cetirunv1alpha1.Team) (*c
 	return team, nil
 }
 
-// UpdateTeamSpec replaces the Portal-editable fields, preserving governance
-// fields from the latest stored Team on every conflict retry.
-func (c *Client) UpdateTeamSpec(ctx context.Context, name string, newSpec cetirunv1alpha1.TeamSpec) (*cetirunv1alpha1.Team, error) {
-	var result *cetirunv1alpha1.Team
-	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		team, err := c.GetTeam(ctx, name)
-		if err != nil {
-			return err
-		}
-		before := team.DeepCopy()
-		editable := newSpec.DeepCopy()
-		team.Spec.MemberContext = editable.MemberContext
-		team.Spec.Defaults = editable.Defaults
-		team.Spec.Skills = editable.Skills
-		team.Spec.SkillStorage = editable.SkillStorage
-		if err := c.client.Patch(ctx, team, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{})); err != nil {
-			return fmt.Errorf("update team: %w", err)
-		}
-		result = team
-		return nil
-	})
-	return result, err
-}
-
-// DeleteTeam deletes a Team by name.
-func (c *Client) DeleteTeam(ctx context.Context, name string) error {
-	team := &cetirunv1alpha1.Team{
-		ObjectMeta: metav1.ObjectMeta{Name: name},
-	}
-	return c.client.Delete(ctx, team)
-}
-
 // ListAgentPolicies returns all cluster-scoped AgentPolicy resources.
 func (c *Client) ListAgentPolicies(ctx context.Context) ([]cetirunv1alpha1.AgentPolicy, error) {
 	list := &cetirunv1alpha1.AgentPolicyList{}
@@ -961,14 +932,17 @@ func (c *Client) UpdateAgentPolicySpec(ctx context.Context, name string, spec ce
 	if err != nil {
 		return nil, err
 	}
-	if err := validateAgentPolicyVersion(policy, version); err != nil {
-		return nil, err
-	}
 	before := policy.DeepCopy()
 	managed := spec.DeepCopy()
 	policy.Spec.Harnesses = managed.Harnesses
 	policy.Spec.Skills = managed.Skills
 	policy.Spec.ModelAccess = managed.ModelAccess
+	if err := c.recoverConfigurationUpdate(ctx, before, policy); err != nil {
+		return nil, err
+	}
+	if err := validateAgentPolicyVersion(policy, version); err != nil {
+		return nil, err
+	}
 	if equality.Semantic.DeepEqual(before.Spec, policy.Spec) {
 		return policy, nil
 	}

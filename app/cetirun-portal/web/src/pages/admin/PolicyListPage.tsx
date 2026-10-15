@@ -62,7 +62,7 @@ export function PolicyListPage() {
         </Button>
       </div>
       <Text block style={{ marginBottom: 16 }}>
-        Policies declare which harnesses, skills, and AI Gateway model access an Agent may use. This page does not bind Policies to Teams; Gateway and Sandbox own execution.
+        Policies declare which harnesses, skills, and AI Gateway model access an Agent may use. Assign a Policy and its allowed Sandboxes in the Team editor.
       </Text>
       {isLoading && <Spinner label="Loading policies..." />}
       {error && <MessageBar intent="error">Failed to load: {error.message}</MessageBar>}

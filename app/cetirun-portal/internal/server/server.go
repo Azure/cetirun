@@ -44,6 +44,7 @@ func New(
 	api.HandleFunc("GET /api/v1/instances/{name}/chat/v1/models", chatHandler.Models)
 	api.HandleFunc("POST /api/v1/instances/{name}/chat/v1/chat/completions", chatHandler.Complete)
 	api.HandleFunc("GET /api/v1/me", meHandler.GetMe)
+	api.HandleFunc("GET /api/v1/instance/create-options", instanceHandler.GetCreateOptions)
 	api.HandleFunc("GET /api/v1/instance", instanceHandler.GetInstance)
 	api.HandleFunc("POST /api/v1/instance", instanceHandler.CreateInstance)
 	api.HandleFunc("PATCH /api/v1/instance", instanceHandler.UpdateInstance)
@@ -80,6 +81,12 @@ func New(
 	// applied to the entire /api/ subtree). Mounted on a child mux so
 	// requireAdmin only wraps these routes.
 	adminMux := http.NewServeMux()
+	adminSandboxHandler := &handler.AdminSandboxHandler{Kube: adminTeamHandler.Kube}
+	adminMux.HandleFunc("GET /api/v1/admin/sandboxes", adminSandboxHandler.ListSandboxes)
+	adminMux.HandleFunc("POST /api/v1/admin/sandboxes", adminSandboxHandler.CreateSandbox)
+	adminMux.HandleFunc("GET /api/v1/admin/sandboxes/{name}", adminSandboxHandler.GetSandbox)
+	adminMux.HandleFunc("PUT /api/v1/admin/sandboxes/{name}", adminSandboxHandler.UpdateSandbox)
+	adminMux.HandleFunc("DELETE /api/v1/admin/sandboxes/{name}", adminSandboxHandler.DeleteSandbox)
 	adminMux.HandleFunc("GET /api/v1/admin/teams", adminTeamHandler.ListTeams)
 	adminMux.HandleFunc("POST /api/v1/admin/teams", adminTeamHandler.CreateTeam)
 	adminMux.HandleFunc("GET /api/v1/admin/teams/{name}", adminTeamHandler.GetTeam)

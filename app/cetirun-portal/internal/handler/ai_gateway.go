@@ -11,12 +11,11 @@ import (
 	"strings"
 
 	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
-	"github.com/Azure/CetiRun/app/cetirun-portal/internal/kube"
 )
 
 // ModelAccessRequest selects the model sources of a new OpenClaw or Hermes
-// Agent when the platform AI Gateway is enabled. An omitted switch counts as
-// on.
+// Agent when the platform AI Gateway is enabled. Omitted switches use the
+// sources currently available to the selected Team.
 type ModelAccessRequest struct {
 	SharedModels  *bool `json:"sharedModels,omitempty"`
 	GitHubCopilot *bool `json:"githubCopilot,omitempty"`
@@ -123,8 +122,8 @@ func (h *InstanceHandler) sharedModelCatalog(ctx context.Context) AIGatewayCatal
 	case !known:
 		agentTypes = []cetirunv1alpha1.AgentType{}
 	case catalog.Routing == nil:
-		// A catalog from an earlier operator, which routes only OpenClaw.
-		agentTypes = []cetirunv1alpha1.AgentType{cetirunv1alpha1.AgentTypeOpenClaw}
+		// Routing must be explicitly published before native creation.
+		agentTypes = nil
 	default:
 		// Null while the operator has not read its default agent chart.
 		agentTypes = catalog.Routing.AgentTypes
@@ -142,103 +141,71 @@ func (h *InstanceHandler) GetAIGatewayCatalog(w http.ResponseWriter, r *http.Req
 	writeJSON(w, http.StatusOK, h.sharedModelCatalog(r.Context()))
 }
 
-// validateAIGatewayCreate applies the Team and AI Gateway rules to a new Agent:
-// it must name an existing Team with a default Sandbox, and an OpenClaw or Hermes Agent must be of a
-// type the operator's agent chart routes through the Gateway, once the
-// operator has read that chart, and have a model to use, from shared models
-// it keeps on while the catalog lists at least one, or from GitHub Copilot it
-// keeps on while the deployment offers it. Omitted switches count as on. It
-// returns the Team and Sandbox to record and the model access to write, or
-// writes the error response and returns false.
+// validateAIGatewayCreate uses the same current options as the form and records
+// explicit model switches. The caller must run it before any creation writes.
 func (h *InstanceHandler) validateAIGatewayCreate(w http.ResponseWriter, r *http.Request, req CreateInstanceRequest, agentType cetirunv1alpha1.AgentType) (string, string, *cetirunv1alpha1.ModelAccessSpec, bool) {
-	team, sandboxRef, ok := h.resolveTeamBinding(w, r, req.Team)
-	if !ok {
-		return "", "", nil, false
-	}
-	if !h.Config.AIGatewayEnabled {
-		return team, sandboxRef, nil, true
-	}
-	if agentType != cetirunv1alpha1.AgentTypeOpenClaw && agentType != cetirunv1alpha1.AgentTypeHermes {
-		// Custom Agents bring their own models.
-		return team, sandboxRef, nil, true
-	}
-	shared, copilot := true, true
-	if req.ModelAccess != nil {
-		shared = req.ModelAccess.SharedModels == nil || *req.ModelAccess.SharedModels
-		copilot = req.ModelAccess.GitHubCopilot == nil || *req.ModelAccess.GitHubCopilot
-	}
-	if !shared && !copilot {
-		writeError(w, http.StatusBadRequest, "invalid_model_access", "Keep shared models or GitHub Copilot on")
-		return "", "", nil, false
-	}
-	catalog := h.sharedModelCatalog(r.Context())
-	if !catalog.Known {
-		writeError(w, http.StatusServiceUnavailable, "model_sources_unknown", "The AI Gateway has not published its models yet. Try again in a minute.")
-		return "", "", nil, false
-	}
-	if catalog.AgentTypes == nil {
-		// The operator has not read its default agent chart, which the new
-		// Agent would be pinned to.
-		writeError(w, http.StatusServiceUnavailable, "agent_types_unknown",
-			"The operator has not read its agent chart yet. Try again in a minute.")
-		return "", "", nil, false
-	}
-	if !slices.Contains(catalog.AgentTypes, agentType) {
-		// The operator would leave the Agent off the Gateway and hand the
-		// Gateway's model names to the agent's own provider.
-		writeError(w, http.StatusConflict, "agent_chart_unsupported",
-			"This deployment's agent chart does not route "+agentTypeNames[agentType]+
-				" agents through the AI Gateway. Ask an administrator to upgrade the agent chart.")
-		return "", "", nil, false
-	}
-	sharedAvailable := len(catalog.SharedModels) > 0
-	if !(shared && sharedAvailable) && !(copilot && catalog.GitHubCopilot) {
-		switch {
-		case !sharedAvailable && !catalog.GitHubCopilot:
-			writeError(w, http.StatusConflict, "no_model_source",
-				"No models are available: there are no shared models and GitHub Copilot is turned off. Ask an administrator to add a shared model.")
-		case !catalog.GitHubCopilot:
-			writeError(w, http.StatusBadRequest, "invalid_model_access", "GitHub Copilot is turned off for this deployment. Keep shared models on.")
-		default:
-			writeError(w, http.StatusBadRequest, "invalid_model_access", "GitHub Copilot is required because no shared models are available")
-		}
-		return "", "", nil, false
-	}
-	if req.ModelAccess == nil {
-		return team, sandboxRef, nil, true
-	}
-	return team, sandboxRef, &cetirunv1alpha1.ModelAccessSpec{SharedModels: &shared, GitHubCopilot: &copilot}, true
+	return h.validateAIGatewaySelection(w, r, req, agentType, true)
 }
 
-func (h *InstanceHandler) resolveTeamBinding(w http.ResponseWriter, r *http.Request, requestedTeam string) (string, string, bool) {
-	team := strings.TrimSpace(requestedTeam)
-	if team == "" {
-		if !h.Config.AIGatewayEnabled {
-			return "", "", true
-		}
-		writeError(w, http.StatusBadRequest, "team_required", "Choose a Team for the agent")
-		return "", "", false
-	}
-	selectedTeam, err := h.Kube.GetTeam(r.Context(), team)
+// validateAIGatewaySelection always checks current permissions and model sources.
+// Default-chart suitability applies only when creating an Agent. A matched
+// retained creation keeps its own chart, whose routing the Operator reconciles.
+func (h *InstanceHandler) validateAIGatewaySelection(w http.ResponseWriter, r *http.Request, req CreateInstanceRequest, agentType cetirunv1alpha1.AgentType, newAgent bool) (string, string, *cetirunv1alpha1.ModelAccessSpec, bool) {
+	options, err := h.resolveCreationOptions(r, req.Team)
 	if err != nil {
-		if kube.IsNotFound(err) {
-			writeError(w, http.StatusBadRequest, "unknown_team", "Team '"+team+"' does not exist")
-			return "", "", false
+		writeManagementError(w, err)
+		return "", "", nil, false
+	}
+	reject := func(status int, code, message string) (string, string, *cetirunv1alpha1.ModelAccessSpec, bool) {
+		writeError(w, status, code, message)
+		return "", "", nil, false
+	}
+	if options.Blocked != nil {
+		return reject(http.StatusConflict, options.Blocked.Code, options.Blocked.Message)
+	}
+	if !slices.Contains(options.AllowedAgentTypes, agentType) {
+		return reject(http.StatusForbidden, "agent_type_not_allowed", "This Agent type is not allowed by the deployment or the selected Team's Policy")
+	}
+	if options.AgentIdentity.Required && !req.AgentIdentityEnabled {
+		return reject(http.StatusForbidden, "policy_identity_required", "The selected Team's Policy requires Agent Identity")
+	}
+	if req.AgentIdentityEnabled && !options.AgentIdentity.Allowed {
+		return reject(http.StatusForbidden, "policy_identity_not_allowed", "Agent Identity is not available to this owner under the selected Team's Policy and deployment settings")
+	}
+	if !options.AIGatewayEnabled || agentType == cetirunv1alpha1.AgentTypeCustom {
+		return options.Team, options.sandboxRef, nil, true
+	}
+	catalog := options.Gateway
+	if !catalog.Known {
+		return reject(http.StatusServiceUnavailable, "model_sources_unknown", "The AI Gateway has not published its models yet. Try again in a minute.")
+	}
+	if newAgent && catalog.AgentTypes == nil {
+		return reject(http.StatusServiceUnavailable, "agent_types_unknown", "The operator has not read its agent chart yet. Try again in a minute.")
+	}
+	if newAgent && !slices.Contains(catalog.AgentTypes, agentType) {
+		return reject(http.StatusConflict, "agent_chart_unsupported", "This deployment's agent chart does not route "+agentTypeNames[agentType]+" agents through the AI Gateway. Ask an administrator to upgrade the agent chart.")
+	}
+	sharedAvailable, copilotAvailable := len(catalog.SharedModels) > 0, catalog.GitHubCopilot
+	if !sharedAvailable && !copilotAvailable {
+		return reject(http.StatusConflict, "no_model_source", "No models are available under the selected Team's Policy and deployment settings")
+	}
+	shared, copilot := sharedAvailable, copilotAvailable
+	if req.ModelAccess != nil {
+		if req.ModelAccess.SharedModels != nil {
+			shared = *req.ModelAccess.SharedModels
 		}
-		slog.Error("Failed to read Team", "team", team, "error", err)
-		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to check the Team")
-		return "", "", false
+		if req.ModelAccess.GitHubCopilot != nil {
+			copilot = *req.ModelAccess.GitHubCopilot
+		}
 	}
-	if !selectedTeam.Spec.PolicyConfigured() {
-		return team, "", true
+	if (shared && !sharedAvailable) || (copilot && !copilotAvailable) || (!shared && !copilot) {
+		return reject(http.StatusBadRequest, "invalid_model_access", "Choose at least one model source allowed by the selected Team's Policy and available in this deployment")
 	}
-	sandboxRef := strings.TrimSpace(selectedTeam.Spec.DefaultSandboxRef)
-	if sandboxRef == "" || selectedTeam.Spec.AgentPolicyRef == "" ||
-		!slices.Contains(selectedTeam.Spec.SandboxRefs, sandboxRef) {
-		writeError(w, http.StatusConflict, "team_not_configured", "The selected Team has incomplete policy or Sandbox configuration")
-		return "", "", false
+	model := strings.TrimSpace(req.Model)
+	if model != "" && !(shared && slices.ContainsFunc(catalog.SharedModels, func(candidate cetirunv1alpha1.AIGatewayCatalogModel) bool { return candidate.Name == model })) && !(copilot && strings.HasPrefix(model, cetirunv1alpha1.AIGatewayCopilotModelPrefix) && !isAIGatewayPlaceholder(model)) {
+		return reject(http.StatusForbidden, "model_not_allowed", "The requested default model is not available under the selected Team's Policy and model sources")
 	}
-	return team, sandboxRef, true
+	return options.Team, options.sandboxRef, &cetirunv1alpha1.ModelAccessSpec{SharedModels: &shared, GitHubCopilot: &copilot}, true
 }
 
 // aiGatewayRouted reports whether the Agent's model traffic uses the Gateway,

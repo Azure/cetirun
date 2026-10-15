@@ -700,7 +700,7 @@ func TestTeamCRUD(t *testing.T) {
 
 	// Create
 	created, err := c.CreateTeam(ctx, &cetirunv1alpha1.Team{
-		ObjectMeta: metav1.ObjectMeta{Name: "aks"},
+		ObjectMeta: metav1.ObjectMeta{Name: "aks", UID: "team-uid"},
 		Spec: cetirunv1alpha1.TeamSpec{
 			Defaults: cetirunv1alpha1.TeamDefaultsSpec{Provider: "github_copilot"},
 		},
@@ -733,7 +733,7 @@ func TestTeamCRUD(t *testing.T) {
 	// Update
 	updated, err := c.UpdateTeamSpec(ctx, "aks", cetirunv1alpha1.TeamSpec{
 		MemberContext: cetirunv1alpha1.TeamContextSpec{Role: "AKS Engineer"},
-	})
+	}, ConfigurationVersion{UID: got.UID, ResourceVersion: got.ResourceVersion})
 	if err != nil {
 		t.Fatalf("UpdateTeamSpec: %v", err)
 	}
@@ -745,7 +745,7 @@ func TestTeamCRUD(t *testing.T) {
 	}
 
 	// Delete
-	if err := c.DeleteTeam(ctx, "aks"); err != nil {
+	if err := c.DeleteTeam(ctx, "aks", ConfigurationVersion{UID: updated.UID, ResourceVersion: updated.ResourceVersion}); err != nil {
 		t.Fatalf("DeleteTeam: %v", err)
 	}
 	if _, err := c.GetTeam(ctx, "aks"); err == nil {

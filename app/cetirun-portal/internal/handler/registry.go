@@ -243,6 +243,16 @@ func (h *InstanceHandler) resumeRegistryCreate(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusConflict, "instance_exists", "This name is already in use; manage credentials on the existing instance")
 		return true
 	}
+	// A retry resumes the persisted Agent, whose explicit source switches can
+	// differ from today's defaults for the original request's omitted fields.
+	// Revalidate that actual configuration before writing its credentials.
+	persisted := req
+	if access := existing.Spec.ModelAccess; access != nil {
+		persisted.ModelAccess = &ModelAccessRequest{SharedModels: access.SharedModels, GitHubCopilot: access.GitHubCopilot}
+	}
+	if _, _, _, ok := h.validateAIGatewaySelection(w, r, persisted, existing.Spec.Agent.Type, false); !ok {
+		return true
+	}
 	if err := h.Kube.SaveRegistryCredentials(r.Context(), existing, *req.RegistryAuth, true); err != nil {
 		writeRegistryError(w, err, existing)
 		return true
