@@ -201,6 +201,109 @@ path after their consumers have completed cleanup. Keep the approved platform
 inventory fixed during the run. A fresh Agent can test a changed policy;
 this is not resume, live rollout or transfer of an existing HOME.
 
+### Repeat the network comparison
+
+[native-network-check.py](../../scripts/native-network-check.py) checks the
+network portion of this first run. It makes only explicit-target Kubernetes
+reads and credential-free requests to your witnesses. It does not create or
+delete Agents, change policies, execute in protected Pods, or establish owner
+authentication, real model/tool use or runtime qualification.
+
+Use three fresh OpenClaw Agents from this example, with distinct Team and
+AgentPolicy objects and the same approved Sandbox/artifact configuration:
+
+| Role | Policy controls |
+| --- | --- |
+| `control` | No `blockedCIDRs` or `blockedPorts` |
+| `cidr` | One CIDR covering the restricted witness, but not the outside witness; no port denies |
+| `ports` | TCP `18080` and UDP `18081` denied; no CIDR denies |
+
+The Agents must be Ready before preparing a run. Supply the exact names rather
+than assuming these role names are their resource names.
+
+Deploy [network-witness.py](network-witness.py) on **two separate task-owned
+IP addresses outside the platform's internal/management ranges**. It needs
+Python 3 and TCP `18080`/`18082`, UDP `18081`/`18083`; the latter port of each
+protocol is the allowed control. Restrict access to the validation participants.
+It defaults to loopback; non-loopback binding needs explicit permission:
+
+```bash
+python3 network-witness.py --listen-address 0.0.0.0 --allow-public-listen \
+  --allow-peer "$VALIDATION_CLIENT_CIDR" --allow-peer "$CLUSTER_EGRESS_CIDR"
+```
+
+Include every verified egress address used by the test Agents, plus the
+validation host. Peer ranges are required beyond loopback and unrestricted
+`/0` ranges are rejected. No credential is used for witness access.
+
+This fixture stores only generated synthetic run/nonce pairs in memory. Do not
+send credentials or other data to it. Replacing a witness or overflowing its
+bounded event log invalidates a prepared run. Do not use a customer service,
+an arbitrary public endpoint or the documentation IP ranges as a live witness.
+
+On the validation host, create a private plan after checking the target and
+the Agents' current configuration:
+
+```bash
+python3 -B scripts/native-network-check.py prepare \
+  --kubeconfig "$KUBECONFIG" --context "$ADMIN_CONTEXT" --cluster-uid "$CLUSTER_UID" \
+  --control-agent "$CONTROL_AGENT" --cidr-agent "$CIDR_AGENT" --ports-agent "$PORT_AGENT" \
+  --restricted-witness "$RESTRICTED_WITNESS_IP" --outside-witness "$OUTSIDE_WITNESS_IP" \
+  --dns-name "$APPROVED_GATEWAY_DNS_NAME" --output "$STATE_DIR/network-plan.json"
+```
+
+The file is created exclusively with owner-only permissions. It contains
+private resource identities and endpoints, not credentials; do not commit or
+publish it. The checker pins Agent/configuration/namespace/Pod/runtime/image
+identities and its own source. Kubernetes client authentication must use the
+explicit verified-HTTPS context without plugins or impersonation.
+
+Generate each phase's readable probe command:
+
+```bash
+python3 -B scripts/native-network-check.py command \
+  --plan "$STATE_DIR/network-plan.json" --phase control-before
+```
+
+Run that command through the **normal owner-authenticated terminal of the
+control Agent**, not Kubernetes exec/attach/port-forward. Save its single
+`CETIRUN_NETWORK_RESULT=` output line privately as `control-before.txt`.
+Repeat for `cidr` in the CIDR Agent and `ports` in the port-restricted Agent,
+then `control-after` in the control Agent. Do not replay a phase: duplicate
+nonces fail validation. Probes have a 60-second deadline and check the recorded
+hostname, DNS resolution, and all eight destination/protocol/port combinations.
+The command supervises the complete probe in a separate process, including
+native DNS resolution. On timeout or cancellation, it terminates and reaps the
+worker before failing without a result line; partial observations are not accepted.
+
+Verify within 30 minutes, using the same checker source and unchanged Agents:
+
+```bash
+python3 -B scripts/native-network-check.py verify \
+  --kubeconfig "$KUBECONFIG" --context "$ADMIN_CONTEXT" --cluster-uid "$CLUSTER_UID" \
+  --plan "$STATE_DIR/network-plan.json" \
+  --result "$STATE_DIR/control-before.txt" --result "$STATE_DIR/cidr.txt" \
+  --result "$STATE_DIR/ports.txt" --result "$STATE_DIR/control-after.txt"
+```
+
+Verification independently reads both witnesses and rechecks the source pins
+before and after collecting evidence. Positive controls must bracket the
+restricted probes. An allowed packet needs its matching witness receipt; a
+denied packet must have no receipt and the expected timeout type. Refused
+connections, malformed replies, post-connect TCP timeouts, missing controls,
+stale/replayed results, source drift and unknown observations fail the check.
+Each witness request made by `prepare` or `verify` has a five-second total
+deadline covering connection, response headers and body collection. Continued
+partial responses do not reset that deadline; an overrun closes the connection
+and fails with `witness-deadline-exceeded`.
+No polling-to-success or request retry turns those failures into a pass.
+
+A passing summary covers 32 network checks, including eight expected denials.
+It deliberately leaves `qualifiesExecution` false and owner access, model/tool
+use and cleanup as `not-tested`. Continue the separate first-run steps above
+and below on the same build; do not promote this network result to an E2E pass.
+Keep initial failures, and remove the two task witnesses after validation.
+
 ## Delete and verify cleanup
 
 Recheck the target UID. Compare the current Agent with the creation receipt,
