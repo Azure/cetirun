@@ -17,6 +17,7 @@ import re
 import shlex
 import socket
 import sys
+import time
 import uuid
 
 
@@ -68,19 +69,67 @@ def checker_digest():
     })
 
 
+def remaining_timeout(deadline):
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError
+    return remaining
+
+
+class WitnessSocket(socket.socket):
+    def __init__(self, address, deadline):
+        family = socket.AF_INET6 if ipaddress.ip_address(address).version == 6 else socket.AF_INET
+        super().__init__(family, socket.SOCK_STREAM)
+        self.deadline = deadline
+
+    def connect(self, address):
+        self.settimeout(remaining_timeout(self.deadline))
+        return super().connect(address)
+
+    def sendall(self, data, flags=0):
+        self.settimeout(remaining_timeout(self.deadline))
+        return super().sendall(data, flags)
+
+    def recv_into(self, buffer, nbytes=0, flags=0):
+        # HTTPResponse's buffered makefile reads status, headers and bodies here.
+        self.settimeout(remaining_timeout(self.deadline))
+        return super().recv_into(buffer, nbytes, flags)
+
+
+class WitnessConnection(http.client.HTTPConnection):
+    def __init__(self, address, port, timeout):
+        super().__init__(address, port, timeout=timeout)
+        self.deadline = time.monotonic() + timeout
+
+    def connect(self):
+        # Witness targets are literal IPs; no DNS resolver can outlive the budget.
+        self.sock = WitnessSocket(self.host, self.deadline)
+        self.sock.connect((self.host, self.port))
+
+
 def request_json(address, path, port=18082, timeout=5):
-    connection = http.client.HTTPConnection(address, port, timeout=timeout)
+    require(type(timeout) in (int, float) and math.isfinite(timeout) and timeout > 0, "invalid-witness-timeout")
+    connection = WitnessConnection(address, port, timeout)
+    response = None
     try:
         connection.request("GET", path, headers={"Connection": "close"})
         response = connection.getresponse()
         require(response.status == 200, "witness-http-status")
         raw = response.read(MAX_BYTES + 1)
         require(len(raw) <= MAX_BYTES, "witness-response-too-large")
-        return document(raw.decode("utf-8"))
+        result = document(raw.decode("utf-8"))
+        remaining_timeout(connection.deadline)
+        return result
+    except TimeoutError as error:
+        raise CheckError("witness-deadline-exceeded") from error
     except (OSError, http.client.HTTPException, UnicodeError) as error:
         raise CheckError("witness-request-failed") from error
     finally:
-        connection.close()
+        try:
+            if response is not None:
+                response.close()
+        finally:
+            connection.close()
 
 
 def receipt(value, run, nonce, protocol, port):

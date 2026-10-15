@@ -12,10 +12,12 @@ import json
 from pathlib import Path
 import shlex
 import signal
+import socket
 import socketserver
 import subprocess
 import tempfile
 import threading
+import time
 import unittest
 from unittest.mock import Mock, patch
 
@@ -71,6 +73,118 @@ def successful_run(phases=check.PHASES, sources=None):
 
 
 class NativeNetworkCheckTests(unittest.TestCase):
+    def test_witness_deadline_bounds_progressing_status_headers_and_body(self):
+        body = b'{"valid":true,"padding":"' + b"x" * 24 + b'"}'
+        status = b"HTTP/1.1 200 OK\r\n"
+        headers = b"Content-Length: " + str(len(body)).encode() + b"\r\nConnection: close\r\n\r\n"
+        cases = {
+            "status": (b"", [bytes([byte]) for byte in status], headers + body),
+            "headers": (status, [bytes([byte]) for byte in b"X-Progress: " + b"x" * 24 + b"\r\n"], headers + body),
+            "body": (status + headers, [bytes([byte]) for byte in body], b""),
+            "chunked-body": (
+                status + b"Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n",
+                [b"1\r\n" + bytes([byte]) + b"\r\n" for byte in body], b"0\r\n\r\n",
+            ),
+        }
+        for phase, (prefix, chunks, suffix) in cases.items():
+            with self.subTest(phase=phase):
+                stop = threading.Event()
+                sent = []
+                sockets = []
+                socket_type = check.WitnessSocket
+
+                def tracked_socket(address, deadline):
+                    value = socket_type(address, deadline)
+                    sockets.append(value)
+                    return value
+
+                class Handler(socketserver.BaseRequestHandler):
+                    def handle(self):
+                        self.request.settimeout(2)
+                        try:
+                            request = b""
+                            while b"\r\n\r\n" not in request:
+                                part = self.request.recv(4096)
+                                if not part:
+                                    return
+                                request += part
+                            self.request.sendall(prefix)
+                            for chunk in chunks:
+                                if stop.wait(0.04):
+                                    return
+                                self.request.sendall(chunk)
+                                sent.append(chunk)
+                            self.request.sendall(suffix)
+                        except (BrokenPipeError, ConnectionResetError):
+                            pass
+
+                with socketserver.ThreadingTCPServer(("127.0.0.1", 0), Handler) as server:
+                    thread = threading.Thread(target=server.serve_forever, daemon=True)
+                    thread.start()
+                    try:
+                        started = time.monotonic()
+                        with patch.object(check, "WitnessSocket", side_effect=tracked_socket), \
+                                self.assertRaisesRegex(check.CheckError, "witness-deadline-exceeded"):
+                            check.request_json("127.0.0.1", "/healthz", port=server.server_address[1], timeout=0.4)
+                        self.assertLess(time.monotonic() - started, 1.15)
+                        self.assertGreaterEqual(len(sent), 2, "the witness must make progress before the deadline")
+                        self.assertEqual(len(sockets), 1)
+                        self.assertEqual(sockets[0].fileno(), -1, "the timed-out connection must be closed")
+                    finally:
+                        stop.set()
+                        server.shutdown()
+                        thread.join(timeout=2)
+
+    def test_connect_send_and_buffered_reads_share_one_deadline(self):
+        with patch.object(check.time, "monotonic", side_effect=[10, 10.2, 10.5, 10.7, 11]), \
+                patch.object(socket.socket, "connect") as connect, \
+                patch.object(socket.socket, "sendall") as send, \
+                patch.object(socket.socket, "recv_into", return_value=1) as receive:
+            connection = check.WitnessConnection("127.0.0.1", 18082, timeout=1)
+            try:
+                connection.connect()
+                self.assertAlmostEqual(connection.sock.gettimeout(), 0.8)
+                connection.sock.sendall(b"x")
+                self.assertAlmostEqual(connection.sock.gettimeout(), 0.5)
+                self.assertEqual(connection.sock.recv_into(bytearray(1)), 1)
+                self.assertAlmostEqual(connection.sock.gettimeout(), 0.3)
+                with self.assertRaises(TimeoutError):
+                    connection.sock.recv_into(bytearray(1))
+                connect.assert_called_once_with(("127.0.0.1", 18082))
+                send.assert_called_once_with(b"x", 0)
+                receive.assert_called_once()
+            finally:
+                connection.close()
+
+    def test_witness_socket_uses_literal_ipv4_and_ipv6_without_dns(self):
+        for address, family in (("127.0.0.1", socket.AF_INET), ("::1", socket.AF_INET6)):
+            if family == socket.AF_INET6 and not socket.has_ipv6:
+                continue
+            with self.subTest(address=address), patch.object(check.socket, "getaddrinfo") as resolve:
+                with check.WitnessSocket(address, time.monotonic() + 1) as endpoint:
+                    self.assertEqual(endpoint.family, family)
+                resolve.assert_not_called()
+
+    def test_invalid_witness_timeout_fails_before_opening_a_connection(self):
+        for timeout in (None, True, 0, -1, float("nan"), float("inf")):
+            with self.subTest(timeout=timeout), patch.object(check, "WitnessConnection") as connection:
+                with self.assertRaisesRegex(check.CheckError, "invalid-witness-timeout"):
+                    check.request_json("192.0.2.10", "/healthz", timeout=timeout)
+                connection.assert_not_called()
+
+    def test_response_completed_after_deadline_is_rejected_and_closed(self):
+        connection = Mock()
+        connection.deadline = 10
+        response = connection.getresponse.return_value
+        response.status = 200
+        response.read.return_value = b'{"valid":true}'
+        with patch.object(check, "WitnessConnection", return_value=connection), \
+                patch.object(check.time, "monotonic", return_value=10):
+            with self.assertRaisesRegex(check.CheckError, "witness-deadline-exceeded"):
+                check.request_json("192.0.2.10", "/healthz")
+        response.close.assert_called_once()
+        connection.close.assert_called_once()
+
     def test_complete_run_requires_both_controls_and_independent_witnesses(self):
         plan, reports, events = successful_run()
         result = check.verify_observations(plan, reports, events)
@@ -259,11 +373,13 @@ class NativeNetworkCheckTests(unittest.TestCase):
     def test_witness_http_does_not_follow_redirects(self):
         connection = Mock()
         connection.getresponse.return_value.status = 302
-        with patch.object(check.http.client, "HTTPConnection", return_value=connection) as factory:
+        with patch.object(check, "WitnessConnection", return_value=connection) as factory:
             with self.assertRaisesRegex(check.CheckError, "witness-http-status"):
                 check.request_json("192.0.2.10", "/healthz")
         factory.assert_called_once()
         connection.getresponse.return_value.read.assert_not_called()
+        connection.getresponse.return_value.close.assert_called_once()
+        connection.close.assert_called_once()
 
     def test_real_tcp_udp_receipts_and_capacity_failure(self):
         observations = witness.Observations()
@@ -383,6 +499,46 @@ class FakeSources:
 
 
 class NativeNetworkSourceTests(unittest.TestCase):
+    def test_prepare_and_verify_report_deadline_failure_without_private_diagnostics(self):
+        for mode in ("prepare", "verify"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                kube = FakeSources()
+                common = ["--kubeconfig", "/example/private/kubeconfig",
+                          "--context", "example", "--cluster-uid", "example-cluster"]
+                if mode == "prepare":
+                    args = ["prepare", *common, "--control-agent", "control",
+                            "--cidr-agent", "cidr", "--ports-agent", "ports",
+                            "--restricted-witness", "192.0.2.10", "--outside-witness", "198.51.100.20",
+                            "--dns-name", "gateway.example.com", "--output", str(root / "plan.json")]
+                else:
+                    plan, reports, _ = successful_run(sources=kube)
+                    plan["clusterUID"] = "example-cluster"
+                    plan["digest"] = check.fingerprint({key: value for key, value in plan.items() if key != "digest"})
+                    (root / "plan.json").write_text(json.dumps(plan), encoding="utf-8")
+                    args = ["verify", *common, "--plan", str(root / "plan.json")]
+                    for index, report in enumerate(reports):
+                        report["planDigest"] = plan["digest"]
+                        path = root / f"report-{index}.json"
+                        path.write_text(json.dumps(report), encoding="utf-8")
+                        args.extend(("--result", str(path)))
+                connection = Mock()
+                connection.getresponse.side_effect = TimeoutError(SENTINEL)
+                with patch.object(check, "client", return_value=kube), \
+                        patch.object(check, "WitnessConnection", return_value=connection), \
+                        contextlib.redirect_stdout(io.StringIO()) as output, \
+                        contextlib.redirect_stderr(io.StringIO()) as errors:
+                    code = check.main(args)
+                self.assertEqual(code, 1)
+                self.assertEqual(json.loads(output.getvalue()), {
+                    "status": "failed", "reason": "witness-deadline-exceeded", "qualifiesExecution": False,
+                })
+                self.assertNotIn(SENTINEL, output.getvalue() + errors.getvalue())
+                self.assertNotIn("192.0.2.10", output.getvalue() + errors.getvalue())
+                connection.close.assert_called_once()
+                if mode == "prepare":
+                    self.assertFalse((root / "plan.json").exists(), "a timed-out witness must not produce a plan")
+
     def test_actual_selected_policies_are_checked_without_writes_or_secret_reads(self):
         kube = FakeSources()
         selected = {role: check.snapshot(kube, role) for role in ("control", "cidr", "ports")}

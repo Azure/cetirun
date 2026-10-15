@@ -289,6 +289,10 @@ restricted probes. An allowed packet needs its matching witness receipt; a
 denied packet must have no receipt and the expected timeout type. Refused
 connections, malformed replies, post-connect TCP timeouts, missing controls,
 stale/replayed results, source drift and unknown observations fail the check.
+Each witness request made by `prepare` or `verify` has a five-second total
+deadline covering connection, response headers and body collection. Continued
+partial responses do not reset that deadline; an overrun closes the connection
+and fails with `witness-deadline-exceeded`.
 No polling-to-success or request retry turns those failures into a pass.
 
 A passing summary covers 32 network checks, including eight expected denials.
