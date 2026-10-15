@@ -108,6 +108,7 @@ type CreateInstanceOptions struct {
 	OwnerTenantID        string
 	OwnerObjectID        string
 	SandboxRef           string
+	ChartVersion         string
 	Annotations          map[string]string
 	// ModelAccess is written only when set: an Agent without it has both
 	// model sources on.
@@ -228,6 +229,7 @@ func (c *Client) CreateInstance(ctx context.Context, alias, displayName, team, e
 	}
 	if len(optional) > 0 {
 		instance.Annotations = maps.Clone(optional[0].Annotations)
+		instance.Spec.Helm.Version = optional[0].ChartVersion
 	}
 	if len(optional) > 0 && optional[0].OwnerTenantID != "" && optional[0].OwnerObjectID != "" {
 		if instance.Annotations == nil {

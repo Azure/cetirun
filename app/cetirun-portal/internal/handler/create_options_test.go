@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
+	"github.com/Azure/CetiRun/app/cetirun-portal/internal/config"
 	"github.com/Azure/CetiRun/app/cetirun-portal/internal/kube"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -38,6 +39,10 @@ func creationPolicyHandler(team *api.Team, policy *api.AgentPolicy) (*InstanceHa
 	cfg := gatewayConfig()
 	cfg.AllowedAgentTypes = []string{"hermes", "openclaw", "custom"}
 	cfg.AgentIdentityEnabled = true
+	cfg.SandboxRuntimes = map[string]config.SandboxRuntime{
+		"hermes":   {ChartVersion: "1.2.3", Image: "registry.example.com/hermes@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Port: 8642},
+		"openclaw": {ChartVersion: "1.2.3", Image: "registry.example.com/openclaw@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", Port: 18789},
+	}
 	return &InstanceHandler{Kube: kube.NewClient(fc), Config: cfg}, fc
 }
 
@@ -337,6 +342,8 @@ func TestRegistryRetryValidatesPersistedSourcesRatherThanNewDefaults(t *testing.
 	}
 	h.Config.AIGatewayEnabled = true
 	h.Config.AIGatewayCatalogNamespace = "cetirun-system"
+	configured, _ := creationPolicyHandler(team, policy)
+	h.Config.SandboxRuntimes = configured.Config.SandboxRuntimes
 	original := createdPartialRegistryForPolicy(t, h)
 	if !original.Spec.GitHubCopilotEnabled() {
 		t.Fatal("fixture must persist Copilot on")
