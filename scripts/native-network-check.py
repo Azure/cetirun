@@ -11,10 +11,12 @@ import inspect
 import ipaddress
 import json
 import math
+import multiprocessing
 import os
 from pathlib import Path
 import re
 import shlex
+import signal
 import socket
 import sys
 import time
@@ -26,6 +28,7 @@ PORTS = (("TCP", 18080), ("TCP", 18082), ("UDP", 18081), ("UDP", 18083))
 HEX = r"[0-9a-f]{32}"
 MAX_BYTES = 1024 * 1024
 MAX_AGE = 1800
+PROBE_TIMEOUT = 60
 RESULT_PREFIX = "CETIRUN_NETWORK_RESULT="
 PROTECTED = "cetirun.microsoft.com/sandbox-protected"
 AGENT_UID = "sandbox.cetirun.microsoft.com/agent-uid"
@@ -208,6 +211,75 @@ def run_probe(payload):
             "planDigest": payload["planDigest"], "agentUID": payload["agentUID"],
             "podUID": payload["podUID"], "hostname": payload["hostname"],
             "dnsResolved": True, "markers": markers, "checks": checks}
+
+
+def probe_worker(receiver, sender, payload):
+    receiver.close()
+    with sender, open(os.devnull, "wb") as output:
+        os.dup2(output.fileno(), 1)
+        os.dup2(output.fileno(), 2)
+        signal.signal(signal.SIGTERM, signal.SIG_DFL)
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+        raw = json.dumps(run_probe(payload), separators=(",", ":")).encode("utf-8")
+        require(len(raw) <= MAX_BYTES, "probe-result-too-large")
+        sender.sendall(raw)
+
+
+def supervised_probe(payload):
+    require("fork" in multiprocessing.get_all_start_methods(), "probe-supervision-unavailable")
+    expires = time.monotonic() + PROBE_TIMEOUT
+    receiver, sender = socket.socketpair()
+    worker = multiprocessing.get_context("fork").Process(target=probe_worker, args=(receiver, sender, payload))
+    cancelled = None
+
+    def cancel(signum, _frame):
+        nonlocal cancelled
+        # Finish process creation and reap the child before reporting cancellation.
+        if cancelled is None:
+            cancelled = signum
+
+    previous = {sig: signal.signal(sig, cancel) for sig in (signal.SIGINT, signal.SIGTERM)}
+    try:
+        worker.start()
+        sender.close()
+        data = bytearray()
+        # Drain bounded output while the child runs; a full buffer must not prevent its exit.
+        while cancelled is None:
+            receiver.settimeout(min(remaining_timeout(expires), 0.05))
+            try:
+                chunk = receiver.recv(min(65536, MAX_BYTES + 1 - len(data)))
+            except TimeoutError:
+                continue
+            if not chunk:
+                break
+            data.extend(chunk)
+            require(len(data) <= MAX_BYTES, "probe-result-too-large")
+        while worker.is_alive() and cancelled is None:
+            worker.join(timeout=min(remaining_timeout(expires), 0.05))
+        if cancelled is None:
+            remaining_timeout(expires)
+            require(worker.exitcode == 0, "probe-worker-failed")
+            result = document(data.decode("utf-8"))
+            require(result.get("status") == "observed", "probe-worker-result-invalid")
+            remaining_timeout(expires)
+    except TimeoutError as error:
+        raise CheckError("probe-deadline-exceeded") from error
+    finally:
+        try:
+            if worker.pid is not None:
+                if worker.is_alive():
+                    worker.kill()
+                worker.join(timeout=1)
+                require(not worker.is_alive(), "probe-cleanup-unconfirmed")
+            worker.close()
+        finally:
+            receiver.close()
+            sender.close()
+            for sig, handler in previous.items():
+                signal.signal(sig, handler)
+    if cancelled is not None:
+        raise SystemExit(128 + cancelled)
+    return result
 
 
 def validate_targets(targets, dns_name):
@@ -511,21 +583,18 @@ def verify_bindings(kube, bindings):
 
 def command(plan, phase):
     payload = probe_payload(plan, phase)
-    functions = (require, document, receipt, exchange, run_probe)
-    program = "import http.client,ipaddress,json,re,signal,socket,sys\n"
-    program += f"MAX_BYTES={MAX_BYTES}\nHEX={HEX!r}\n"
+    functions = (require, document, remaining_timeout, receipt, exchange, run_probe, probe_worker, supervised_probe)
+    program = "import http.client,ipaddress,json,multiprocessing,os,re,signal,socket,sys,time\n"
+    program += f"MAX_BYTES={MAX_BYTES}\nHEX={HEX!r}\nPROBE_TIMEOUT={PROBE_TIMEOUT}\n"
     program += "class CheckError(Exception): pass\n"
     program += "\n".join(inspect.getsource(function) for function in functions)
     program += (
-        "\ndef deadline(*_): raise CheckError('probe-deadline-exceeded')\n"
-        "signal.signal(signal.SIGALRM,deadline)\nsignal.alarm(60)\n"
-        "try:\n"
-        " result=run_probe(json.loads(sys.argv[1]))\n"
+        "\ntry:\n"
+        " result=supervised_probe(json.loads(sys.argv[1]))\n"
         f" print({RESULT_PREFIX!r}+json.dumps(result,separators=(',',':')))\n"
-        "except (CheckError,KeyError,TypeError,ValueError) as error:\n"
+        "except (CheckError,KeyError,TypeError,ValueError,OSError,KeyboardInterrupt,SystemExit) as error:\n"
         " print('Native network probe failed; no result accepted.',file=sys.stderr)\n"
-        " sys.exit(1)\n"
-        "finally: signal.alarm(0)\n"
+        " sys.exit(error.code if isinstance(error,SystemExit) else 130 if isinstance(error,KeyboardInterrupt) else 1)\n"
     )
     return shlex.join(["python3", "-c", program, json.dumps(payload, separators=(",", ":"))])
 

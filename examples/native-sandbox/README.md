@@ -272,6 +272,9 @@ Repeat for `cidr` in the CIDR Agent and `ports` in the port-restricted Agent,
 then `control-after` in the control Agent. Do not replay a phase: duplicate
 nonces fail validation. Probes have a 60-second deadline and check the recorded
 hostname, DNS resolution, and all eight destination/protocol/port combinations.
+The command supervises the complete probe in a separate process, including
+native DNS resolution. On timeout or cancellation, it terminates and reaps the
+worker before failing without a result line; partial observations are not accepted.
 
 Verify within 30 minutes, using the same checker source and unchanged Agents:
 

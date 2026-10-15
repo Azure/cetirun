@@ -9,12 +9,16 @@ import importlib.util
 import ipaddress
 import io
 import json
+import os
 from pathlib import Path
+import platform
 import shlex
+import shutil
 import signal
 import socket
 import socketserver
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -430,7 +434,8 @@ class NativeNetworkCheckTests(unittest.TestCase):
                 server.shutdown()
                 thread.join(timeout=5)
 
-    @unittest.skipUnless(hasattr(signal, "SIGALRM"), "owner probe requires the native Linux runtime")
+    @unittest.skipUnless("fork" in check.multiprocessing.get_all_start_methods(),
+                         "owner probe requires a fork-capable runtime")
     def test_generated_command_runs_the_checked_probe_without_kubernetes(self):
         plan, _, _ = successful_run()
         command = check.command(plan, "control-before")
@@ -443,6 +448,241 @@ class NativeNetworkCheckTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertNotIn(check.RESULT_PREFIX, result.stdout)
         self.assertIn("no result accepted", result.stderr)
+
+
+@unittest.skipUnless("fork" in check.multiprocessing.get_all_start_methods(),
+                     "owner probe requires a fork-capable runtime")
+class NativeNetworkSupervisionTests(unittest.TestCase):
+    def test_generated_command_emits_one_complete_successful_result(self):
+        plan, reports, _ = successful_run()
+        original_source = check.inspect.getsource
+
+        def source(function):
+            if function is check.run_probe:
+                return f"def run_probe(payload):\n return {reports[0]!r}\n"
+            return original_source(function)
+
+        with patch.object(check.inspect, "getsource", side_effect=source):
+            args = shlex.split(check.command(plan, "control-before"))
+        result = subprocess.run(args, text=True, capture_output=True, timeout=5, check=False)
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stderr, "")
+        self.assertEqual(result.stdout.count(check.RESULT_PREFIX), 1)
+        self.assertEqual(json.loads(result.stdout.removeprefix(check.RESULT_PREFIX)), reports[0])
+
+    def test_successful_result_and_large_output_are_preserved_and_reaped(self):
+        _, reports, _ = successful_run()
+        for result in (reports[0], {"status": "observed", "padding": "x" * (256 * 1024)}):
+            with self.subTest(size=len(json.dumps(result))):
+                previous = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}
+                children = check.multiprocessing.active_children()
+                with patch.object(check, "run_probe", return_value=result), \
+                        patch.object(check, "PROBE_TIMEOUT", 2):
+                    self.assertEqual(check.supervised_probe({}), result)
+                self.assertEqual(check.multiprocessing.active_children(), children)
+                for sig, handler in previous.items():
+                    self.assertEqual(signal.getsignal(sig), handler)
+
+    def test_deadline_closes_sockets_and_reaps_worker(self):
+        sockets = []
+        pids = []
+        socket_pair = check.socket.socketpair
+        process_type = check.multiprocessing.get_context("fork").Process
+        original_start = process_type.start
+        previous = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}
+
+        def pair():
+            endpoints = socket_pair()
+            sockets.extend(endpoints)
+            return endpoints
+
+        def start(worker):
+            original_start(worker)
+            pids.append(worker.pid)
+
+        with patch.object(check, "run_probe", side_effect=lambda _: time.sleep(5)), \
+                patch.object(check, "PROBE_TIMEOUT", 0.1), \
+                patch.object(check.socket, "socketpair", side_effect=pair), \
+                patch.object(process_type, "start", start):
+            started = time.monotonic()
+            with self.assertRaisesRegex(check.CheckError, "probe-deadline-exceeded"):
+                check.supervised_probe({})
+            self.assertLess(time.monotonic() - started, 1)
+        self.assertEqual(len(pids), 1)
+        with self.assertRaises(ChildProcessError):
+            os.waitpid(pids[0], os.WNOHANG)
+        self.assertEqual([endpoint.fileno() for endpoint in sockets], [-1, -1])
+        for sig, handler in previous.items():
+            self.assertEqual(signal.getsignal(sig), handler)
+
+    def test_unavailable_supervision_fails_before_network(self):
+        with patch.object(check.multiprocessing, "get_all_start_methods", return_value=[]), \
+                patch.object(check, "run_probe") as probe, \
+                patch.object(check.socket, "socketpair") as pair:
+            with self.assertRaisesRegex(check.CheckError, "probe-supervision-unavailable"):
+                check.supervised_probe({})
+            probe.assert_not_called()
+            pair.assert_not_called()
+
+    def test_worker_result_must_be_bounded_observed_and_exit_successfully(self):
+        for result, reason in (
+            ({"status": "failed"}, "probe-worker-result-invalid"),
+            ({"status": "observed", "padding": "x" * check.MAX_BYTES}, "probe-worker-failed"),
+        ):
+            with self.subTest(reason=reason), patch.object(check, "run_probe", return_value=result):
+                with self.assertRaisesRegex(check.CheckError, reason):
+                    check.supervised_probe({})
+        original = check.probe_worker
+
+        def fail_after_result(*args):
+            original(*args)
+            os._exit(1)
+
+        with patch.object(check, "run_probe", return_value={"status": "observed"}), \
+                patch.object(check, "probe_worker", fail_after_result):
+            with self.assertRaisesRegex(check.CheckError, "probe-worker-failed"):
+                check.supervised_probe({})
+
+    def test_cancellation_during_process_start_still_reaps_worker(self):
+        process_type = check.multiprocessing.get_context("fork").Process
+        original_start = process_type.start
+        for signum in (signal.SIGINT, signal.SIGTERM):
+            with self.subTest(signum=signum):
+                pids = []
+                previous = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}
+
+                def start(worker):
+                    original_start(worker)
+                    pids.append(worker.pid)
+                    os.kill(os.getpid(), signum)
+
+                with patch.object(process_type, "start", start), \
+                        patch.object(check, "run_probe", side_effect=lambda _: time.sleep(5)):
+                    with self.assertRaises(SystemExit) as exited:
+                        check.supervised_probe({})
+                self.assertEqual(exited.exception.code, 128 + signum)
+                self.assertEqual(len(pids), 1)
+                with self.assertRaises(ChildProcessError):
+                    os.waitpid(pids[0], os.WNOHANG)
+                for sig, handler in previous.items():
+                    self.assertEqual(signal.getsignal(sig), handler)
+
+    def test_generated_command_sanitizes_worker_and_start_failures(self):
+        plan, _, _ = successful_run()
+        args = shlex.split(check.command(plan, "control-before"))
+        process_type = check.multiprocessing.get_context("fork").Process
+        failures = (
+            patch.object(check.socket, "gethostname", side_effect=RuntimeError(SENTINEL)),
+            patch.object(process_type, "start", side_effect=OSError(SENTINEL)),
+        )
+        for failure in failures:
+            previous = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}
+            with failure, patch.object(sys, "argv", ["-c", args[3]]), \
+                    contextlib.redirect_stdout(io.StringIO()) as output, \
+                    contextlib.redirect_stderr(io.StringIO()) as errors:
+                with self.assertRaises(SystemExit) as exited:
+                    exec(args[2], {})
+            self.assertEqual(exited.exception.code, 1)
+            self.assertEqual(output.getvalue(), "")
+            self.assertEqual(errors.getvalue(), "Native network probe failed; no result accepted.\n")
+            for sig, handler in previous.items():
+                self.assertEqual(signal.getsignal(sig), handler)
+
+
+@unittest.skipUnless(sys.platform.startswith("linux") and platform.libc_ver()[0] == "glibc" and
+                     shutil.which("cc"), "Linux/glibc and a C compiler are required for native DNS tests")
+class NativeNetworkDNSDeadlineTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        temporary = tempfile.TemporaryDirectory(prefix="cetirun-network-dns-")
+        cls.addClassCleanup(temporary.cleanup)
+        cls.library = Path(temporary.name) / "stalled-dns.so"
+        subprocess.run([
+            "cc", "-shared", "-fPIC", "-Wall", "-Wextra", "-Werror",
+            str(Path(__file__).with_name("fixtures") / "stalled_dns.c"),
+            "-o", str(cls.library), "-lresolv",
+        ], capture_output=True, text=True, timeout=15, check=True)
+
+    def run_stalled_resolver(self, signum=None, deadline=1):
+        wrapper = r'''
+import ctypes, http.client, json, os, pathlib, socket, sys
+program, raw, library, port, pid_file = sys.argv[1:]
+payload = json.loads(raw)
+native = ctypes.CDLL(library)
+native.cetirun_test_dns.argtypes = [ctypes.c_ushort]
+native.cetirun_test_dns.restype = ctypes.c_int
+original = socket.getaddrinfo
+def resolve(host, service, *args, **kwargs):
+    assert host == "nonresponding.example.invalid"
+    assert native.cetirun_test_dns(int(port)) == 0
+    pathlib.Path(pid_file).write_text(str(os.getpid()))
+    return original(host + ".", service, *args, **kwargs)
+class Marker:
+    status = 200
+    def __init__(self, *_args, **_kwargs): pass
+    def connect(self): pass
+    def request(self, method, path): self.nonce = path.rsplit("/", 1)[1]
+    def getresponse(self): return self
+    def read(self, _limit):
+        return json.dumps({"run": payload["run"], "nonce": self.nonce, "protocol": "TCP",
+                           "port": 18082, "instance": "b" * 32, "sequence": 1}).encode()
+    def close(self): pass
+socket.gethostname = lambda: payload["hostname"]
+socket.getaddrinfo = resolve
+http.client.HTTPConnection = Marker
+sys.argv = ["-c", raw]
+exec(program)
+'''
+        plan, _, _ = successful_run()
+        plan["dnsName"] = "nonresponding.example.invalid"
+        plan["digest"] = check.fingerprint({key: value for key, value in plan.items() if key != "digest"})
+        with patch.object(check, "PROBE_TIMEOUT", 30 if signum else deadline):
+            command = shlex.split(check.command(plan, "control-before"))
+        with tempfile.TemporaryDirectory(prefix="cetirun-network-worker-") as directory, \
+                socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as dns:
+            dns.bind(("127.0.0.1", 0))
+            dns.settimeout(5)
+            pid_file = Path(directory) / "worker.pid"
+            started = time.monotonic()
+            process = subprocess.Popen([
+                sys.executable, "-B", "-c", wrapper, *command[2:], str(self.library),
+                str(dns.getsockname()[1]), str(pid_file),
+            ], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, start_new_session=True)
+            try:
+                query, sender = dns.recvfrom(512)
+                self.assertEqual(sender[0], "127.0.0.1")
+                self.assertIn(b"\rnonresponding\x07example\x07invalid\x00", query)
+                worker_pid = int(pid_file.read_text())
+                if signum is not None:
+                    started = time.monotonic()
+                    process.send_signal(signum)
+                budget = 3 if signum else deadline + 2
+                try:
+                    stdout, stderr = process.communicate(timeout=budget)
+                except subprocess.TimeoutExpired:
+                    raise AssertionError("the generated probe did not bound the stalled native resolver") from None
+                self.assertLess(time.monotonic() - started, budget)
+                self.assertEqual(stdout, "")
+                self.assertEqual(stderr, "Native network probe failed; no result accepted.\n")
+                self.assertNotEqual(worker_pid, process.pid)
+                with self.assertRaises(ProcessLookupError):
+                    os.kill(worker_pid, 0)
+                return process.returncode
+            finally:
+                with contextlib.suppress(ProcessLookupError):
+                    os.killpg(process.pid, signal.SIGKILL)
+                process.communicate(timeout=5)
+
+    def test_native_getaddrinfo_deadline_kills_and_reaps_worker(self):
+        self.assertEqual(check.PROBE_TIMEOUT, 60)
+        self.assertEqual(self.run_stalled_resolver(), 1)
+
+    def test_sigterm_during_native_getaddrinfo_kills_and_reaps_worker(self):
+        self.assertEqual(self.run_stalled_resolver(signal.SIGTERM), 143)
+
+    def test_sigint_during_native_getaddrinfo_kills_and_reaps_worker(self):
+        self.assertEqual(self.run_stalled_resolver(signal.SIGINT), 130)
 
 
 class FakeSources:
