@@ -70,6 +70,7 @@ type Helpers struct {
 }
 
 type Input struct {
+	Reconciled        bool
 	Resolution        *sandbox.Resolution
 	AgentName         string
 	AgentGeneration   int64

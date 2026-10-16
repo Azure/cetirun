@@ -95,10 +95,62 @@ registration revision must represent qualified runtime/chart/topology/grant
 inventory, not merely the existence of a RuntimeClass.
 An observation validator checks an adapter's input; it does not generate evidence.
 
-### Native execution profile (explicit opt-in)
+### Common Sandbox reconciliation (explicit opt-in)
 
-`sandboxSources.nativeExecution: true` enables a bounded Kubernetes execution
-path in the shipped controller. It defaults to `false` and requires enabled,
+With `sandboxSources.nativeExecution: true`, new OpenClaw and Hermes Agents use
+the ordinary controller's feature assembly, Harness adapters, Helm apply,
+readiness, model integration and deletion flow. The selected Sandbox adds runtime,
+resource, HOME, network and credential constraints to that flow; there is no
+fallback deployment mode. The switch still defaults to `false`.
+
+Shared-only, Copilot-only and mixed model configurations use the existing
+Gateway and per-Agent Copilot proxy. The proxy is a separate Deployment, not a
+sidecar: it cannot mount HOME or consume the Agent's runtime/model credentials.
+Its optional controller-owned `aiGateway.copilotProxy.replicaCount` permits
+authentication preparation independently of the Agent replica count. Suspension
+and policy revocation stop both components. Pre-login creation does not grant
+Copilot model access; the Portal continues to report sign-in required.
+
+The same protected expectation ConfigMap now has a version-2 representation for
+these lifetimes. It records the current chart-owned workloads, complete source
+identities and compiled controls. Pod admission verifies StatefulSet or
+Deployment/ReplicaSet ownership and the current authorized template, rather than
+permanently consuming one Pod UID or fixing helper names. Common helpers and
+chart components remain subject to runtime, privilege, storage and credential
+constraints. Config/key/model updates use normal Helm reconciliation and preserve
+HOME and the existing Gateway spending identity. Missing or foreign ownership is
+not repaired by adopting resources or clearing protection markers.
+
+Portal runtime profiles are optional: when absent, the controller pins
+chart/image/port from its selected trusted chart, with narrowly authorized
+admission updates. Explicit requests and configured profiles are still validated.
+The protected path disables the ordinary immutable-StatefulSet replacement hook;
+unsupported storage/type transitions require a deliberate handoff, not orphaning
+the old HOME writer.
+
+Existing version-1 preparation/start records remain readable and retain their
+recorded lifecycle and cleanup. They are not a second feature-development path
+or an automatic conversion of a running lifetime. The historical
+`native-single-start` capability-profile identifier remains accepted for
+configuration compatibility; new version-2 lifetimes have the common lifecycle.
+FQDN/mTLS and identity grants still require supported policy capabilities.
+Kubernetes shutdown, RWOP and successful rolling updates do **not** establish
+physical writer fencing, failed-node recovery, durable restart requests or
+cross-node migration guarantees.
+
+When the optional configuration-coordination authority is configured, these
+lifetimes reserve their selected Team/Sandbox/policy too. A normal desired-template
+generation can refresh that reservation only while the selected source identities
+and effective inputs are unchanged. Shared configuration changes remain excluded
+until suspension or deletion has acknowledged controller shutdown and ordinary
+Kubernetes quiescence. This is a logical configuration reservation, not a physical
+workload identity or writer-fencing receipt; unknown shutdown outcomes remain held.
+
+### Retained single-start profile and capability registration
+
+The following single-start lifecycle notes describe earlier version-1 records;
+new version-2 lifetimes use the common flow above. The explicit native option
+requires enabled,
 enforced configuration/Pod admission, `sandboxSources.enabled`,
 `sandboxSources.bootstrapOwnedPrerequisites`, and an enabled AI Gateway.
 The controller receives the same option through `CETIRUN_SANDBOX_SOURCES`.
@@ -108,7 +160,7 @@ native starts are disabled; admission still limits protected Pod updates.
 The native profile uses the registered RuntimeClass's scheduling constraints;
 the separate durable placement registry is unsupported and rejected.
 
-The supported profile is one OpenClaw Agent, a Kata Sandbox with
+Those earlier execution records support one OpenClaw Agent, a Kata Sandbox with
 ReadWriteOncePod HOME, and shared Gateway model access. It uses the selected
 Sandbox's resources/storage and the selected AgentPolicy's model entitlement
 and budget. Per-Agent Gateway keys are projected through owned Secrets, not
@@ -130,7 +182,8 @@ IP restrictions. Declare `hostResourceLimits`, `guestExternalNetwork`,
 those controls. TCP and UDP, the actual IP families, revisioned complete
 topology, DNS/Gateway peers, and pinned RuntimeClass/StorageClass identities
 remain required; read-only root and ingress support must match the selected
-policy. Its policy harness allow-list contains only `openclaw`.
+policy. The configuration harness allow-list supports `openclaw` and `hermes`;
+the earlier single-start executor itself remains OpenClaw-only.
 `enforcementObservation`, `restrictiveFailure`, per-container guarantee flags,
 FQDN support, mTLS, Kubernetes access and Entra ID flags must be
 `false`; identity/token grant declarations are unsupported. These are not

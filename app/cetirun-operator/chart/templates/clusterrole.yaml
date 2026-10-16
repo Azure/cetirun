@@ -87,7 +87,7 @@ rules:
     resources: ["statefulsets", "deployments"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: ["apps"]
-    resources: ["controllerrevisions"]
+    resources: ["controllerrevisions", "replicasets"]
     verbs: ["get"]
   - apiGroups: [""]
     resources: ["pods"]

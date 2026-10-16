@@ -33,6 +33,25 @@ func TestSandboxCreatePinsRuntimeBeforeFirstWrite(t *testing.T) {
 	}
 }
 
+func TestSandboxCreateUsesCommonControllerDefaults(t *testing.T) {
+	team, policy := creationPolicy()
+	h, _ := creationPolicyHandler(team, policy)
+	h.Config.SandboxRuntimes = nil
+	w := httptest.NewRecorder()
+	h.CreateInstance(w, managementRequest(http.MethodPost, `{"agent":{"type":"hermes"},"team":"policy-team","modelAccess":{"sharedModels":true,"githubCopilot":false}}`))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create without a redundant profile: %d %s", w.Code, w.Body.String())
+	}
+	agent, err := h.Kube.GetInstance(context.Background(), "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if agent.Spec.Helm.Version != "" || agent.Spec.Agent.Image != nil || agent.Spec.Agent.Port != nil ||
+		agent.Spec.SandboxRef != team.Spec.DefaultSandboxRef {
+		t.Fatal("Portal did not preserve Sandbox selection while leaving trusted defaults to the common controller")
+	}
+}
+
 func TestSandboxCreateRequiresValidRuntimeWithoutWrites(t *testing.T) {
 	for _, profile := range []config.SandboxRuntime{
 		{},

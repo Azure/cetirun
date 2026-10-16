@@ -266,8 +266,8 @@ func TestNativeCompatibilityKeepsBaselineWithoutFencingClaims(t *testing.T) {
 		})
 	}
 	for name, mutate := range map[string]func(*cetirunv1alpha1.AgentPolicySpec){
-		"Hermes": func(p *cetirunv1alpha1.AgentPolicySpec) {
-			p.Harnesses.Allowed = append(p.Harnesses.Allowed, cetirunv1alpha1.AgentTypeHermes)
+		"Custom": func(p *cetirunv1alpha1.AgentPolicySpec) {
+			p.Harnesses.Allowed = append(p.Harnesses.Allowed, cetirunv1alpha1.AgentTypeCustom)
 		},
 		"FQDN": func(p *cetirunv1alpha1.AgentPolicySpec) { p.Network.BlockedFQDNs = []string{"blocked.example.com"} },
 		"port": func(p *cetirunv1alpha1.AgentPolicySpec) {

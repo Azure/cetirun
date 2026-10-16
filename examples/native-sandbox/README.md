@@ -36,6 +36,14 @@ derived from the registered ingress peer IPs, not the legacy `127.0.0.6` sidecar
 address. The controller passes only those exact addresses through its protected
 render plan. Do not use a wildcard proxy range or a per-Agent Helm override.
 
+The packaged native OpenClaw init containers use `/usr/bin/tini -g --` to
+supervise the existing HOME, doctor and credential-retirement commands.
+Use the matching OpenClaw image, which includes this init process; an older
+image without it cannot run the updated initializer commands. Helper failures
+keep their exit status, and resource limits, authentication cleanup and the
+execution hold are unchanged. Standalone OpenClaw entrypoints are unchanged.
+Existing prepared templates retain their exact recorded command expectations.
+
 This minimal example selects no skills. With no skills catalog configured, the
 native profile supplies an empty read-only skills directory and needs no shared
 skills PVC or NFS publication. When any skill is selected, configure the existing

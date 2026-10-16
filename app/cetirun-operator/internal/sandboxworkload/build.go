@@ -65,8 +65,8 @@ func Build(input Input) (*Bundle, error) {
 		return nil, err
 	}
 	if input.SkillsMode == SkillsModeEmpty {
-		if input.Skills != nil || input.GatewayKey == nil || input.AgentType != "openclaw" {
-			return nil, fmt.Errorf("empty skills require native OpenClaw Gateway inputs without a skills PVC")
+		if input.Skills != nil || input.GatewayKey == nil || (input.AgentType != "openclaw" && !input.Reconciled) {
+			return nil, fmt.Errorf("empty skills require native Gateway inputs without a skills PVC")
 		}
 	} else if input.Skills.Namespace != input.Namespace.Name ||
 		input.Skills.Name == input.Home.Name || !input.Skills.DeletionTimestamp.IsZero() ||
@@ -84,7 +84,7 @@ func Build(input Input) (*Bundle, error) {
 			return nil, fmt.Errorf("invalid authorized Secret name")
 		}
 	}
-	if key := input.GatewayKey; key != nil && (input.AgentType != "openclaw" || key.UID == "" ||
+	if key := input.GatewayKey; key != nil && ((input.AgentType != "openclaw" && !input.Reconciled) || key.UID == "" ||
 		len(validation.IsDNS1123Subdomain(key.Name)) != 0 || !slices.Contains(input.AuthorizedSecrets, key.Name)) {
 		return nil, fmt.Errorf("native Gateway rendering requires an authorized OpenClaw key identity")
 	}
@@ -158,7 +158,7 @@ func validateControls(input Input) error {
 	if err := validateDNSIPs(c.DNSIPs); err != nil {
 		return err
 	}
-	nativeIngress := input.GatewayKey != nil && input.AgentType == "openclaw" && c.IngressMode == api.AgentPolicyIngressAuthenticated
+	nativeIngress := input.GatewayKey != nil && (input.AgentType == "openclaw" || input.Reconciled) && c.IngressMode == api.AgentPolicyIngressAuthenticated
 	if nativeIngress != (len(c.TrustedProxyIPs) != 0) {
 		return fmt.Errorf("native authenticated ingress requires explicit compiler proxy IPs; other modes cannot grant proxy trust")
 	}

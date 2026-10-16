@@ -684,8 +684,18 @@ func newNativeSandboxFixture(t *testing.T, native bool) *nativeSandboxFixture {
 }
 
 func newNativeSandboxSkillsFixture(t *testing.T, native bool, skills []string) *nativeSandboxFixture {
+	return newSandboxRuntimeFixture(t, native, skills, false)
+}
+
+func newSandboxRuntimeFixture(t *testing.T, native bool, skills []string, reconciled bool) *nativeSandboxFixture {
+	return newSandboxRuntimeFixtureForAgent(t, native, skills, reconciled, "openclaw", true, false)
+}
+
+func newSandboxRuntimeFixtureForAgent(t *testing.T, native bool, skills []string, reconciled bool, kind string, shared, copilot bool,
+	setup ...func(*AgentReconciler, client.Client),
+) *nativeSandboxFixture {
 	t.Helper()
-	input := testfixture.New("openclaw")
+	input := testfixture.New(kind)
 	input.Team.Spec.Skills = skills
 	input.Policy.Spec.Skills.Allowed = slices.Clone(skills)
 	chrt, err := loader.Load(filepath.Join("..", "..", "..", "cetirun-chart"))
@@ -693,19 +703,22 @@ func newNativeSandboxSkillsFixture(t *testing.T, native bool, skills []string) *
 		t.Fatal(err)
 	}
 	input.Agent.Finalizers = []string{api.Finalizer}
-	input.Agent.Spec.ModelAccess = modelAccess(true, false)
+	input.Agent.Spec.ModelAccess = modelAccess(shared, copilot)
 	input.Agent.Spec.Helm.Version = chrt.Metadata.Version
-	input.Agent.Spec.Agent.Image = ptr.To("registry.example.com/openclaw-gateway:" + chrt.Metadata.AppVersion)
+	input.Agent.Spec.Agent.Image = ptr.To("registry.example.com/" + kind + "-gateway:" + chrt.Metadata.AppVersion)
 	input.Agent.Spec.Agent.Port = ptr.To[int32](18789)
+	if kind == "hermes" {
+		input.Agent.Spec.Agent.Port = ptr.To[int32](8642)
+	}
 	input.Agent.Status.Policy = &api.PolicyStatus{}
 	input.Team.Status = api.TeamStatus{ObservedGeneration: 1, Conditions: []metav1.Condition{{
 		Type: api.ConditionTeamAccepted, Status: metav1.ConditionTrue, ObservedGeneration: 1,
 	}}}
 	input.Policy.Spec.ModelAccess = aiGatewayTestPolicy().Spec.ModelAccess
-	input.Policy.Spec.ModelAccess.Copilot.Allowed = false
+	input.Policy.Spec.ModelAccess.Copilot.Allowed = copilot
 	input.Policy.Spec.Network.Ingress.Mode = api.AgentPolicyIngressAuthenticated
 	if native {
-		input.Policy.Spec.Harnesses.Allowed = []api.AgentType{api.AgentTypeOpenClaw}
+		input.Policy.Spec.Harnesses.Allowed = []api.AgentType{api.AgentType(kind)}
 	}
 	input.Policy.Status = api.AgentPolicyStatus{ObservedGeneration: 1, Conditions: []metav1.Condition{{
 		Type: api.ConditionAgentPolicyAccepted, Status: metav1.ConditionTrue, ObservedGeneration: 1,
@@ -723,7 +736,15 @@ func newNativeSandboxSkillsFixture(t *testing.T, native bool, skills []string) *
 				creates++
 				object.SetUID(types.UID(fmt.Sprintf("native-synthetic-%d", creates)))
 			}
-			return c.Create(ctx, object, opts...)
+			if err := c.Create(ctx, object, opts...); err != nil {
+				return err
+			}
+			if namespace, ok := object.(*corev1.Namespace); reconciled && ok {
+				return c.Create(ctx, &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{
+					Name: "default", Namespace: namespace.Name, UID: types.UID("synthetic-default-" + namespace.Name),
+				}})
+			}
+			return nil
 		},
 	})
 	r.Client, r.APIReader = kube, kube
@@ -778,9 +799,15 @@ func newNativeSandboxSkillsFixture(t *testing.T, native bool, skills []string) *
 	}
 	config.NativeExecution = native
 	installer := &nativeSandboxInstaller{kube: kube, chart: chrt}
+	if reconciled {
+		r.HelmClient = &sharedSandboxInstaller{nativeSandboxInstaller: installer}
+	}
 	r.SandboxPreparation, err = NewKubernetesSandboxPreparation(config, kube, installer, r.OperatorNamespace, chrt.Metadata.Version)
 	if err != nil {
 		t.Fatal(err)
+	}
+	for _, configure := range setup {
+		configure(r, kube)
 	}
 	f := &nativeSandboxFixture{r: r, kube: kube, gateway: gateway, installer: installer, agent: input.Agent}
 	f.reconcileOK(t)
@@ -792,7 +819,7 @@ func newNativeSandboxSkillsFixture(t *testing.T, native bool, skills []string) *
 	// The fake API has no namespace controller to create the default account.
 	serviceAccount := input.ServiceAccount.DeepCopy()
 	serviceAccount.UID, serviceAccount.ResourceVersion = "", ""
-	if err := kube.Create(context.Background(), serviceAccount); err != nil {
+	if err := kube.Create(context.Background(), serviceAccount); err != nil && !(reconciled && apierrors.IsAlreadyExists(err)) {
 		t.Fatal(err)
 	}
 	if len(skills) != 0 {
@@ -803,10 +830,27 @@ func newNativeSandboxSkillsFixture(t *testing.T, native bool, skills []string) *
 			t.Fatal(err)
 		}
 	}
+	if reconciled {
+		f.reconcileOK(t)
+	}
 	return f
 }
 
 func (f *nativeSandboxFixture) reconcile() (ctrl.Result, error) {
+	if f.r.HelmClient == nil {
+		agent := &api.Agent{}
+		if err := f.kube.Get(context.Background(), client.ObjectKey{Name: f.agent.Name}, agent); err != nil {
+			return ctrl.Result{}, err
+		}
+		// Seed a pre-upgrade single-start receipt with the retained implementation.
+		// Once persisted, exercise the public reconciler's upgrade/cleanup path.
+		if agent.DeletionTimestamp.IsZero() && !slices.Contains(agent.Finalizers, sandbox.PreparationFinalizer) {
+			if _, err := f.r.reconcilePolicy(context.Background(), agent); err != nil {
+				return ctrl.Result{}, err
+			}
+			return f.r.reconcileRecordedNativeSandbox(context.Background(), agent)
+		}
+	}
 	return f.r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKey{Name: f.agent.Name}})
 }
 

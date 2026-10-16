@@ -114,11 +114,11 @@ features:
   # requires both.
   aiGatewayEnabled: true
 
-# -- Approved built-in runtime inputs for Sandbox creation. Each configured
-# type needs chartVersion (matching the Operator), a digest-pinned image from
-# that chart's runtime profile, and port (OpenClaw 18789 or Hermes 8642).
-# Configure only runtimes supported by the selected Sandbox platform.
-# Missing/invalid profiles reject creation before any Kubernetes write.
+# -- Optional approved built-in runtime pins for Sandbox creation. Without an
+# entry, the common controller pins chart/image/port from its selected chart.
+# Each configured entry still needs chartVersion, a digest-pinned image and
+# the matching port (OpenClaw 18789 or Hermes 8642); invalid entries reject
+# creation before any Kubernetes write. Explicit requests remain unchanged.
 sandboxRuntimeProfiles: {}
 
 aiGateway:

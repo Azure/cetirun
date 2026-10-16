@@ -14,10 +14,48 @@ import (
 // RestorePreProxyContract reconstructs the three chart assets changed by the
 // proxy hook and verifies their exact bytes at public revision 6414494154151b2daf74d39d1e989ebeb7ea5020.
 func RestorePreProxyContract(chrt *chart.Chart) error {
+	if gateway, ok := chrt.Values["aiGateway"].(map[string]any); ok {
+		if proxy, ok := gateway["copilotProxy"].(map[string]any); ok {
+			delete(proxy, "replicaCount")
+		}
+	}
 	assets := map[string]*[]byte{"values.schema.json": &chrt.Schema}
 	for _, files := range [][]*chart.File{chrt.Files, chrt.Templates} {
 		for _, file := range files {
 			assets[file.Name] = &file.Data
+		}
+	}
+	// Reverse later source changes before verifying the immutable old fixture.
+	for name, replacements := range map[string][][2]string{
+		"values.schema.json": {
+			{"                        \"replicaCount\": {\"type\": [\"integer\", \"null\"], \"minimum\": 0, \"maximum\": 1, \"default\": null},\n", ""},
+			{`"executionHeld": {"type": "boolean"},
+                "reconciled": {"const": true}`, `"executionHeld": {"const": true}`},
+			{`"agentType": {"enum": ["openclaw", "hermes"]}`, `"agentType": {"const": "openclaw"}`},
+			{`"sandboxWorkload": {
+                        "anyOf": [
+                            {"required": ["podFinalizers"]},
+                            {"required": ["reconciled"], "properties": {"reconciled": {"const": true}}}
+                        ]
+                    }`, `"sandboxWorkload": {"required": ["podFinalizers"]}`},
+		},
+		"templates/_sandbox.tpl": {
+			{`{{- $reconciled := $s.reconciled | default false -}}
+{{- if or (ne $s.contractVersion "v1") (and (not $reconciled) (or (ne $s.executionHeld true) (ne (int .Values.replicaCount) 0))) (and $reconciled (or $s.executionHeld (gt (int .Values.replicaCount) 1) (lt (int .Values.replicaCount) 0))) -}}`,
+				`{{- if or (ne $s.contractVersion "v1") (ne $s.executionHeld true) (ne (int .Values.replicaCount) 0) -}}`},
+			{`(and (not $reconciled) (ne (include "cetirun.agent.type" .) "openclaw"))`, `(ne (include "cetirun.agent.type" .) "openclaw")`},
+			{`(and (not $reconciled) (ne (toJson ($s.podFinalizers | default list)) (toJson (list "cetirun.microsoft.com/native-pod-lifetime"))))`,
+				`(ne (toJson ($s.podFinalizers | default list)) (toJson (list "cetirun.microsoft.com/native-pod-lifetime")))`},
+			{`(and (not $reconciled) (or .Values.initContainers .Values.sidecars .Values.extraVolumes .Values.extraVolumeMounts .Values.extraEnvFrom))`,
+				`.Values.initContainers .Values.sidecars .Values.extraVolumes .Values.extraVolumeMounts .Values.extraEnvFrom`},
+		},
+	} {
+		data := assets[name]
+		if data == nil {
+			return fmt.Errorf("missing historical chart input %s", name)
+		}
+		for _, replacement := range replacements {
+			*data = bytes.ReplaceAll(*data, []byte(replacement[0]), []byte(replacement[1]))
 		}
 	}
 	for name, change := range map[string]struct {

@@ -6,6 +6,7 @@ package helm
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -73,6 +74,9 @@ func PrepareSandboxChart(chrt *chart.Chart, platform, user map[string]any, bundl
 	if err != nil {
 		return nil, err
 	}
+	if options, present := platform["memoryOptions"]; present {
+		merged["memoryOptions"] = options
+	}
 	prepared, err := prepareRuntimeChart(chrt, merged, false)
 	if err != nil {
 		return nil, configurationError(err)
@@ -87,6 +91,34 @@ func PrepareSandboxChart(chrt *chart.Chart, platform, user map[string]any, bundl
 	}
 	prepared.sealedInput = prepared.inputDigest()
 	return prepared, nil
+}
+
+// ReconcileSandbox reuses the already loaded chart and normal feature values.
+// The controller publishes its current admission expectation before applying it.
+func (p *PreparedRelease) ReconcileSandbox(values map[string]any, bundle *sandboxworkload.Bundle,
+	guard func(context.Context) error,
+) (*PreparedRelease, error) {
+	if p == nil || p.chart == nil || bundle == nil || !bundle.Identity().Reconciled || guard == nil {
+		return nil, fmt.Errorf("Sandbox reconciliation requires a current bundle and guarded apply")
+	}
+	prepared, err := PrepareSandboxChart(p.chart, values, nil, bundle)
+	if err != nil {
+		return nil, err
+	}
+	prepared.sandboxGuard = guard
+	return prepared, nil
+}
+
+func (p *PreparedRelease) ReconcileExpectation() (sandboxworkload.ReconcileExpectation, error) {
+	if p.sandboxReconcile == nil || p.sealedInput != p.inputDigest() {
+		return sandboxworkload.ReconcileExpectation{}, fmt.Errorf("current Sandbox render expectation is unavailable")
+	}
+	raw, err := json.Marshal(p.sandboxReconcile)
+	var result sandboxworkload.ReconcileExpectation
+	if err == nil {
+		err = json.Unmarshal(raw, &result)
+	}
+	return result, err
 }
 
 func applySandboxChartValues(chrt *chart.Chart, values map[string]any, bundle *sandboxworkload.Bundle) (map[string]any, error) {
@@ -137,6 +169,16 @@ func (p *PreparedRelease) SandboxManifest() ([]byte, error) {
 // before validating and sealing the complete manifest.
 func (p *PreparedRelease) prepareAndValidateSandboxRender() error {
 	input := p.sandboxBundle.Identity()
+	if input.Reconciled {
+		p.sandboxReconcile = &sandboxworkload.ReconcileExpectation{
+			Version:         sandboxworkload.ReconcileExpectationVersion,
+			Agent:           sandboxworkload.ObjectIdentity{Name: input.AgentName, UID: input.Resolution.Binding.AgentUID},
+			AgentGeneration: input.AgentGeneration, Namespace: input.Namespace,
+			Binding: input.Controls.Binding, Revision: input.Controls.Revision,
+			Home:     sandboxworkload.ObjectIdentity{Name: input.Home.Name, UID: input.Home.UID},
+			Controls: slices.Clone(input.Controls.Objects),
+		}
+	}
 	values, err := chartutil.ToRenderValues(p.chart, p.Values, chartutil.ReleaseOptions{
 		Name: input.ReleaseName, Namespace: input.Namespace.Name, IsInstall: true, Revision: 1,
 	}, chartutil.DefaultCapabilities)
@@ -206,18 +248,25 @@ func (p *PreparedRelease) prepareAndValidateSandboxRender() error {
 				if object.GetNamespace() != input.Namespace.Name {
 					return fmt.Errorf("foreign native Sandbox object")
 				}
-				if native[object.GetKind()] {
+				if !input.Reconciled && native[object.GetKind()] {
 					return fmt.Errorf("unexpected additional native Sandbox object")
 				}
 				owner := []metav1.OwnerReference{sandboxworkload.AgentOwner(input.AgentName, input.Resolution.Binding.AgentUID)}
-				if object.GetKind() == "ConfigMap" || object.GetKind() == "Service" {
+				if input.Reconciled || object.GetKind() == "ConfigMap" || object.GetKind() == "Service" {
 					if len(object.GetOwnerReferences()) != 0 && !equality.Semantic.DeepEqual(object.GetOwnerReferences(), owner) {
 						return fmt.Errorf("native Sandbox source has foreign ownership")
 					}
 					object.SetOwnerReferences(owner)
 				}
-				if err := p.validateSandboxNative(object); err != nil {
+				validate := p.validateSandboxNative
+				if input.Reconciled {
+					validate = p.validateReconciledObject
+				}
+				if err := validate(object); err != nil {
 					return err
+				}
+				if input.Reconciled && (object.GetKind() == "ConfigMap" || object.GetKind() == "ServiceAccount" || object.GetKind() == "NetworkPolicy" || object.GetKind() == "Service") {
+					p.sandboxReconcile.Controls = append(p.sandboxReconcile.Controls, *object.DeepCopy())
 				}
 				native[object.GetKind()] = true
 			}
@@ -237,6 +286,9 @@ func (p *PreparedRelease) prepareAndValidateSandboxRender() error {
 	sum := sha256.Sum256(p.manifest)
 	p.manifestHash, p.PlanHash = hex.EncodeToString(sum[:]), input.Controls.Revision
 	p.WorkloadHash = p.manifestHash
+	if p.sandboxReconcile != nil {
+		p.sandboxReconcile.PlanHash = p.manifestHash
+	}
 	return nil
 }
 

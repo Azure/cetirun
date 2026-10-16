@@ -11,7 +11,7 @@ const timeoutMs = Number(rawTimeout);
 if (
   args.length !== 3 ||
   !/^[0-9]+$/.test(rawPort) || !Number.isInteger(port) || port < 1 || port > 65535 ||
-  !["/healthz", "/readyz", "/startupz"].includes(path) ||
+  !["/health", "/healthz", "/readyz", "/startupz"].includes(path) ||
   !/^[0-9]+$/.test(rawTimeout) || !Number.isInteger(timeoutMs) ||
   timeoutMs < 1 || timeoutMs > 2147483647
 ) {

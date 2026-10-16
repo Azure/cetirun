@@ -222,6 +222,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 	// transitions from it, so that the periodic full reconcile of an Agent
 	// at steady state records no events.
 	startPhase := instance.Status.Phase
+	reconciledSandbox := r.usesReconciledSandbox(instance)
 
 	if ns := instanceNamespace(instance.Name); ns == r.registryNamespace() || ns == registryauth.DefaultNamespace {
 		return r.rejectReservedRegistryInstance(ctx, instance)
@@ -229,6 +230,10 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 
 	// 2. Handle deletion.
 	if !instance.DeletionTimestamp.IsZero() {
+		recorded, readErr := r.recordedReconciledSandbox(ctx, instance)
+		if readErr == nil && recorded {
+			return r.handleDelete(ctx, instance)
+		}
 		if controllerutil.ContainsFinalizer(instance, sandbox.PreparationFinalizer) ||
 			controllerutil.ContainsFinalizer(instance, sandbox.BootstrapFinalizer) {
 			return r.deleteSandboxBuiltin(ctx, instance)
@@ -276,48 +281,21 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 	} else if !policy.authorized {
 		return r.holdPolicyDenied(ctx, instance)
 	} else if policy.reprojectionHold {
-		return r.holdPolicyReprojection(ctx, instance)
+		if !reconciledSandbox {
+			return r.holdPolicyReprojection(ctx, instance)
+		}
+		if err := r.holdReconciledPolicyChange(ctx, instance); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 
-	if sandboxRequested(instance, nil) {
-		// Policy-bound native workloads are rendered only through the held Sandbox
-		// path below, so they never reach the legacy Gateway reconciliation in
-		// this function.  Project the virtual key as soon as the protected
-		// namespace exists.  Bootstrap deliberately creates that namespace
-		// first; a missing namespace on the first pass is therefore not an
-		// authorization to fall back to direct model credentials.
-		var namespaceErr, projectionErr error
-		if r.AIGateway.Enabled {
-			namespace := &corev1.Namespace{}
-			namespaceErr = r.customReader().Get(ctx, types.NamespacedName{Name: instanceNamespace(instance.Name)}, namespace)
-			if namespaceErr == nil {
-				if err := r.validateSandboxBootstrapNamespace(ctx, instance, namespace); err != nil {
-					namespaceErr = err
-					logger.Error(err, "Policy-bound AI Gateway projection is waiting for a protected Sandbox namespace")
-				} else if err := r.reconcileAIGateway(ctx, instance, true); err != nil {
-					projectionErr = stderrors.Join(err, r.updateStatus(ctx, instance))
-					// Keep progressing through holdSandbox so ingress/compute remain
-					// stopped even when the Gateway control plane is unavailable.
-					logger.Error(err, "Policy-bound AI Gateway projection remains pending")
-				} else if err := r.updateStatus(ctx, instance); err != nil {
-					return ctrl.Result{}, err
-				}
-			} else if !errors.IsNotFound(namespaceErr) {
-				namespaceErr = fmt.Errorf("inspect policy-bound Agent namespace: %w", namespaceErr)
-				logger.Error(namespaceErr, "Policy-bound AI Gateway projection cannot verify its namespace")
-			}
+	if sandboxRequested(instance, nil) && !reconciledSandbox {
+		return r.reconcileRecordedNativeSandbox(ctx, instance)
+	}
+	if reconciledSandbox && r.SandboxNativeCoordination != nil && controllerutil.ContainsFinalizer(instance, sandbox.HoldFinalizer) {
+		if err := stderrors.Join(r.stopReconciledAuxiliaries(ctx, instance), r.stopSandboxBuiltin(ctx, instance)); err != nil {
+			return ctrl.Result{RequeueAfter: 5 * time.Second}, err
 		}
-		var result ctrl.Result
-		var holdErr error
-		if namespaceErr == nil && projectionErr == nil && r.SandboxPreparation != nil && r.SandboxPreparation.NativeExecution {
-			result, holdErr = r.reconcileKubernetesSandbox(ctx, instance)
-		} else {
-			result, holdErr = r.holdSandbox(ctx, instance)
-		}
-		if namespaceErr != nil && !errors.IsNotFound(namespaceErr) {
-			return result, stderrors.Join(namespaceErr, holdErr)
-		}
-		return result, stderrors.Join(projectionErr, holdErr)
 	}
 
 	// Inspect Team policy before runtime recovery can retain a Ready state.
@@ -328,7 +306,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 		team = &cetirunv1alpha1.Team{}
 		teamErr = r.Get(ctx, types.NamespacedName{Name: instance.Spec.Team}, team)
 	}
-	if teamErr == nil && sandboxRequested(instance, team) {
+	if teamErr == nil && sandboxRequested(instance, team) && !reconciledSandbox {
 		return r.holdSandbox(ctx, instance)
 	}
 
@@ -453,7 +431,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 	// skip cache and trigger a full reconcile with Helm upgrade.
 	gwSecretHash := ""
 	gatewaySecretResourceVersion := ""
-	if instance.Status.Phase == cetirunv1alpha1.PhaseReady || instance.Status.Phase == cetirunv1alpha1.PhaseSuspended {
+	if !reconciledSandbox && (instance.Status.Phase == cetirunv1alpha1.PhaseReady || instance.Status.Phase == cetirunv1alpha1.PhaseSuspended) {
 		gwSecret := &corev1.Secret{}
 		gwSecretKey := types.NamespacedName{
 			Namespace: instanceNamespace(instance.Name),
@@ -601,8 +579,14 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 		reconcileErr = stderrors.Join(reconcileErr, r.updateStatus(ctx, instance))
 	}()
 	logger.V(1).Info("Ensuring namespace", "namespace", ns)
-	if err := r.ensureNamespace(ctx, ns, alias, instance); err != nil {
-		return r.failWith(ctx, instance, "ProvisioningFailed", fmt.Sprintf("ensure namespace: %v", err))
+	var namespaceErr error
+	if reconciledSandbox {
+		namespaceErr = r.bootstrapReconciledSandbox(ctx, instance)
+	} else {
+		namespaceErr = r.ensureNamespace(ctx, ns, alias, instance)
+	}
+	if namespaceErr != nil {
+		return r.failWith(ctx, instance, "ProvisioningFailed", fmt.Sprintf("ensure namespace: %v", namespaceErr))
 	}
 
 	// 6a. Ensure namespaced Role + RoleBinding so the operator's access to Secrets,
@@ -716,6 +700,11 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 		// stay in the Gateway until the Agent is deleted.
 		instance.Status.AIGateway.Routed = false
 	}
+	if reconciledSandbox {
+		if err := r.updateStatus(ctx, instance); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
 
 	// The initial projection must be allowed to execute, but it is not a
 	// workload authorization. Re-evaluate after the Gateway projection has had
@@ -733,7 +722,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 	if !policy.authorized {
 		return r.holdPolicyDenied(ctx, instance)
 	}
-	if !policy.projectionsVerified {
+	if !policy.projectionsVerified && !reconciledSandbox {
 		return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
 	}
 
@@ -780,6 +769,15 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 	if prepared.SupportsValuePath(aiGatewayChartValue, aiGatewayChartCopilotValue, aiGatewayChartSignInValue) {
 		applyCopilotSignInGeneration(helmValues, instance)
 	}
+	if prepared.SupportsValuePath(aiGatewayChartValue, aiGatewayChartCopilotValue, "replicaCount") {
+		gateway, _ := helmValues[aiGatewayChartValue].(map[string]any)
+		if proxy, ok := gateway[aiGatewayChartCopilotValue].(map[string]any); ok && proxy["enabled"] == true {
+			proxy["replicaCount"] = 1
+			if instance.Spec.Suspended {
+				proxy["replicaCount"] = 0
+			}
+		}
+	}
 	{
 		secret := &corev1.Secret{}
 		if err := r.Get(ctx, types.NamespacedName{Namespace: ns, Name: instance.Spec.GatewayTokenSecretRef}, secret); err != nil {
@@ -787,7 +785,16 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 		}
 		helmValues["agentRequest"].(map[string]any)["tailscaleEnabled"] = len(secret.Data["TAILSCALE_AUTH_KEY"]) > 0
 	}
-	prepared, err = r.HelmClient.Refresh(prepared, helmValues)
+	if gatewaySecretResourceVersion != "" {
+		helmValues["podAnnotations"] = deepMerge(helmValues["podAnnotations"], map[string]interface{}{
+			gatewaySecretResourceVersionAnnotation: gatewaySecretResourceVersion,
+		})
+	}
+	if reconciledSandbox {
+		prepared, err = r.prepareReconciledSandbox(ctx, instance, prepared, helmValues)
+	} else {
+		prepared, err = r.HelmClient.Refresh(prepared, helmValues)
+	}
 	if err != nil {
 		return r.rejectAgentConfig(ctx, instance, err)
 	}
@@ -802,6 +809,25 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 	setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionAgentConfigReady,
 		metav1.ConditionTrue, "AgentConfigResolved", "Built-in Harness configuration resolved")
 	helmValues = prepared.Values
+	if reconciledSandbox {
+		alreadyDeployed = isConditionTrue(instance.Status.Conditions, cetirunv1alpha1.ConditionHelmDeployed) &&
+			instance.Status.ObservedGeneration == instance.Generation &&
+			instance.Status.ObservedOperatorHash == r.configHash(instance, team, gwSecretHash, teamResourceVersion(team))+":"+prepared.WorkloadHash
+		if alreadyDeployed {
+			alreadyDeployed, err = r.reconciledSandboxApplied(ctx, instance, prepared)
+			if err != nil {
+				result, holdErr := r.holdPolicyDependencyUnavailable(ctx, instance)
+				return result, stderrors.Join(err, holdErr)
+			}
+		}
+		held := !instance.Spec.Suspended && controllerutil.ContainsFinalizer(instance, sandbox.HoldFinalizer)
+		if err := r.releaseReconciledHold(ctx, instance); err != nil {
+			return ctrl.Result{}, err
+		}
+		if held {
+			return ctrl.Result{Requeue: true}, nil
+		}
+	}
 	if !alreadyDeployed && instance.Spec.Agent.RegistrySecretRef != nil {
 		sa, err := registryServiceAccount(helmValues, instanceServiceName(instance.Name))
 		if err != nil {
@@ -810,15 +836,6 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 		if err := registryauth.CheckIsolation(ctx, r.registryClient(), r.registryNamespace(), ns, sa, instance.Spec.Agent.RegistrySecretRef.Name); err != nil {
 			return r.registryWaiting(ctx, instance, "RegistryIsolationUnverified")
 		}
-	}
-	// existingSecret is not rendered by the chart and therefore cannot
-	// contribute to checksum/secret. Its resourceVersion is non-sensitive and
-	// changes on every Secret update, so include it in the Pod template to roll
-	// the workload after any environment-backed credential changes.
-	if gatewaySecretResourceVersion != "" {
-		helmValues["podAnnotations"] = deepMerge(helmValues["podAnnotations"], map[string]interface{}{
-			gatewaySecretResourceVersionAnnotation: gatewaySecretResourceVersion,
-		})
 	}
 	if !alreadyDeployed {
 		if err := r.checkRegistryIntent(ctx, instance); err != nil {
@@ -839,6 +856,9 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 		// (e.g. while polling for pod readiness) can skip the Helm install.
 		instance.Status.ObservedGeneration = instance.Generation
 		instance.Status.ObservedOperatorHash = r.configHash(instance, team, gwSecretHash, teamResourceVersion(team))
+		if reconciledSandbox {
+			instance.Status.ObservedOperatorHash += ":" + prepared.WorkloadHash
+		}
 		r.EventRecorder.Eventf(instance, corev1.EventTypeNormal, "HelmInstalled",
 			"Helm chart openclaw installed in namespace %s", ns)
 	} else {
@@ -860,6 +880,11 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 	// StatefulSet's whenScaled: Retain retention policy.
 	if instance.Spec.Suspended {
 		logger.Info("Instance is suspended, removing ingress and marking Suspended", "alias", alias)
+		if reconciledSandbox {
+			if err := r.stopNativeSandboxReservation(ctx, instance); err != nil {
+				return ctrl.Result{RequeueAfter: 5 * time.Second}, err
+			}
+		}
 		// Delete VirtualService so users see connection refused instead of 503.
 		vsName := virtualServiceName(instance.Name)
 		vs := &istiov1beta1.VirtualService{}
@@ -926,6 +951,18 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 		return ctrl.Result{RequeueAfter: requeueAfter}, nil
 	}
 
+	if reconciledSandbox {
+		workloadReady, workloadResult, err := r.observeWorkload(ctx, instance)
+		if !workloadReady {
+			setWorkloadReadiness(instance, false)
+			return workloadResult, stderrors.Join(err, r.updateStatus(ctx, instance))
+		}
+		if err := r.observeReconciledSandbox(ctx, instance, prepared); err != nil {
+			result, holdErr := r.holdPolicyDependencyUnavailable(ctx, instance)
+			return result, stderrors.Join(err, holdErr)
+		}
+	}
+
 	// 10a. Ensure VirtualService (non-suspended path).
 	// TODO: VirtualService failure should block Ready (return error, set phase=Failed).
 	// Currently best-effort because Istio is not installed on all test clusters.
@@ -936,11 +973,21 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 		logger.Error(err, "VirtualService creation/update failed (best-effort)", "alias", alias)
 		setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionIngressReady,
 			metav1.ConditionFalse, "VirtualServiceFailed", err.Error())
+		if reconciledSandbox {
+			instance.Status.AccessURL = ""
+			instance.Status.Phase = cetirunv1alpha1.PhaseProvisioning
+			setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionReady,
+				metav1.ConditionFalse, "VirtualServiceFailed", "Current Sandbox ingress is not established")
+			return ctrl.Result{RequeueAfter: 15 * time.Second}, stderrors.Join(err, r.updateStatus(ctx, instance))
+		}
 	} else {
 		logger.V(1).Info("VirtualService ensured", "alias", alias, "result", result)
-		instance.Status.AccessURL = accessURLPathBased(instance.Name, r.DomainSuffix)
-		setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionIngressReady,
-			metav1.ConditionTrue, "VirtualServiceCreated", "Istio ingress configured")
+		ingress := meta.FindStatusCondition(instance.Status.Conditions, cetirunv1alpha1.ConditionIngressReady)
+		if !reconciledSandbox || ingress == nil || ingress.Reason != "IngressDisabled" {
+			instance.Status.AccessURL = accessURLPathBased(instance.Name, r.DomainSuffix)
+			setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionIngressReady,
+				metav1.ConditionTrue, "VirtualServiceCreated", "Istio ingress configured")
+		}
 		if result != controllerutil.OperationResultNone {
 			r.EventRecorder.Eventf(instance, corev1.EventTypeNormal, "IngressConfigured",
 				"Istio VirtualService %s, instance accessible at %s", result, accessURLPathBased(instance.Name, r.DomainSuffix))
@@ -986,6 +1033,10 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 func (r *AgentReconciler) handleDelete(ctx context.Context, instance *cetirunv1alpha1.Agent) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 	alias := instance.Spec.User.Alias
+	reconciledSandbox, err := r.recordedReconciledSandbox(ctx, instance)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
 
 	if !controllerutil.ContainsFinalizer(instance, cetirunv1alpha1.Finalizer) {
 		return ctrl.Result{}, nil
@@ -1001,6 +1052,11 @@ func (r *AgentReconciler) handleDelete(ctx context.Context, instance *cetirunv1a
 
 	ns := instanceNamespace(instance.Name)
 	releaseName := helmReleaseName(instance.Name)
+	if reconciledSandbox {
+		if err := stderrors.Join(r.deleteAIGatewayKey(ctx, instance), r.stopSandboxBuiltin(ctx, instance), r.stopReconciledAuxiliaries(ctx, instance)); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
 
 	// Delete Teams Azure resources (best-effort, never blocks deletion).
 	r.deleteTeams(ctx, instance)
@@ -1060,13 +1116,29 @@ func (r *AgentReconciler) handleDelete(ctx context.Context, instance *cetirunv1a
 			return ctrl.Result{}, fmt.Errorf("get namespace %s for deletion: %w", ns, err)
 		}
 	} else {
+		if reconciledSandbox {
+			if err := r.checkSandboxBootstrapCleanup(ctx, instance); err != nil {
+				return ctrl.Result{RequeueAfter: 5 * time.Second}, err
+			}
+			if err := r.releaseSandboxBootstrapResources(ctx, instance, nsObj); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
 		if err := r.Delete(ctx, nsObj); err != nil && !errors.IsNotFound(err) {
 			logger.Error(err, "delete namespace failed", "namespace", ns)
 		} else {
 			logger.V(1).Info("Namespace deletion initiated", "namespace", ns)
 		}
+		if reconciledSandbox {
+			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+		}
 	}
 
+	if reconciledSandbox {
+		if err := r.finishSandboxBootstrap(ctx, instance); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
 	// Remove finalizer.
 	before := instance.DeepCopy()
 	controllerutil.RemoveFinalizer(instance, cetirunv1alpha1.Finalizer)
@@ -1574,10 +1646,33 @@ func (r *AgentReconciler) ensureMSTeamsSecretKeys(ctx context.Context, logger lo
 // ensureVirtualService creates or updates the Istio VirtualService for this
 // instance and reports whether it created, updated or left it unchanged.
 func (r *AgentReconciler) ensureVirtualService(ctx context.Context, instance *cetirunv1alpha1.Agent, access ...customAccess) (controllerutil.OperationResult, error) {
+	if r.usesReconciledSandbox(instance) {
+		resolution, err := r.resolvePolicy(ctx, instance)
+		if err != nil {
+			return controllerutil.OperationResultNone, err
+		}
+		if resolution.policy.Spec.Network.Ingress.Mode == cetirunv1alpha1.AgentPolicyIngressDisabled {
+			err := r.withdrawKubernetesSandboxRoute(ctx, instance)
+			instance.Status.AccessURL = ""
+			setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionIngressReady,
+				metav1.ConditionTrue, "IngressDisabled", "Sandbox ingress is disabled")
+			return controllerutil.OperationResultNone, err
+		}
+	}
 	logger := log.FromContext(ctx)
 	desired := buildVirtualService(instance, r.DomainSuffix, r.IstioGateway, access...)
 	if desired == nil {
 		return controllerutil.OperationResultNone, fmt.Errorf("unsupported Agent native access")
+	}
+	reconciled := r.usesReconciledSandbox(instance)
+	if reconciled {
+		if err := controllerutil.SetControllerReference(instance, desired, r.Scheme); err != nil {
+			return controllerutil.OperationResultNone, err
+		}
+		if desired.Annotations == nil {
+			desired.Annotations = map[string]string{}
+		}
+		desired.Annotations[customAgentUID] = string(instance.UID)
 	}
 	vsName := virtualServiceName(instance.Name)
 	vsNS := instanceNamespace(instance.Name)
@@ -1594,13 +1689,16 @@ func (r *AgentReconciler) ensureVirtualService(ctx context.Context, instance *ce
 	if err != nil {
 		return controllerutil.OperationResultNone, fmt.Errorf("get VirtualService: %w", err)
 	}
+	if reconciled && !sandboxBuiltinOwned(existing, instance) {
+		return controllerutil.OperationResultNone, fmt.Errorf("Sandbox route ownership is unconfirmed; existing routes are not adopted")
+	}
 
 	// Update existing VirtualService by patching it with the desired spec fields.
 	// We avoid direct struct assignment because the proto message contains a sync.Mutex.
 	if instance.Spec.Agent.Type == cetirunv1alpha1.AgentTypeCustom && !hasAgentOwner(existing, instance) {
 		return controllerutil.OperationResultNone, fmt.Errorf("Custom platform route belongs to another owner")
 	}
-	ownedAnnotationsMatch := instance.Spec.Agent.Type != cetirunv1alpha1.AgentTypeCustom ||
+	ownedAnnotationsMatch := (!reconciled && instance.Spec.Agent.Type != cetirunv1alpha1.AgentTypeCustom) ||
 		existing.Annotations[customAgentUID] == string(instance.UID)
 	if proto.Equal(&existing.Spec, &desired.Spec) && maps.Equal(existing.Labels, desired.Labels) && ownedAnnotationsMatch {
 		return controllerutil.OperationResultNone, nil
@@ -1610,7 +1708,7 @@ func (r *AgentReconciler) ensureVirtualService(ctx context.Context, instance *ce
 	existing.Spec.Gateways = desired.Spec.Gateways
 	existing.Spec.Http = desired.Spec.Http
 	existing.Labels = desired.Labels
-	if instance.Spec.Agent.Type == cetirunv1alpha1.AgentTypeCustom {
+	if reconciled || instance.Spec.Agent.Type == cetirunv1alpha1.AgentTypeCustom {
 		if existing.Annotations == nil {
 			existing.Annotations = map[string]string{}
 		}

@@ -128,6 +128,9 @@ func (r *AgentReconciler) stopNativeSandboxReservation(ctx context.Context, agen
 		!slices.Contains(current.Finalizers, sandbox.HoldFinalizer)) {
 		return fmt.Errorf("native Sandbox cleanup requires an observed hold, suspension or deletion")
 	}
+	if intent.Reconciled {
+		return r.stopReconciledReservation(ctx, current, ticket)
+	}
 	_, expected, err := r.readNativeSandboxExpectation(ctx, current, true)
 	if err != nil {
 		return fmt.Errorf("read native admission outcome before releasing configuration: %w", err)

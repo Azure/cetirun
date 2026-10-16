@@ -20,7 +20,8 @@
             "additionalProperties": false,
             "properties": {
                 "contractVersion": {"const": "v1"},
-                "executionHeld": {"const": true},
+                "executionHeld": {"type": "boolean"},
+                "reconciled": {"const": true},
                 "skillsMode": {
                     "const": "empty",
                     "description": "Internal native empty-selection source; omitted for the existing skills PVC path"
@@ -286,6 +287,7 @@
                     "additionalProperties": false,
                     "properties": {
                         "enabled": {"type": "boolean", "default": false},
+                        "replicaCount": {"type": ["integer", "null"], "minimum": 0, "maximum": 1, "default": null},
                         "image": {"type": "string", "default": ""},
                         "masterKeySecretName": {"type": "string", "default": ""},
                         "masterKeyId": {
@@ -1613,12 +1615,17 @@
             },
             "then": {
                 "properties": {
-                    "agentType": {"const": "openclaw"},
+                    "agentType": {"enum": ["openclaw", "hermes"]},
                     "aiGateway": {
                         "properties": {"enabled": {"const": true}},
                         "required": ["enabled"]
                     },
-                    "sandboxWorkload": {"required": ["podFinalizers"]},
+                    "sandboxWorkload": {
+                        "anyOf": [
+                            {"required": ["podFinalizers"]},
+                            {"required": ["reconciled"], "properties": {"reconciled": {"const": true}}}
+                        ]
+                    },
                     "skills": {
                         "properties": {
                             "shared": {"const": false},

@@ -236,8 +236,13 @@ func (c *Client) InstallOrUpgrade(namespace, releaseName string, prepared *Prepa
 	if prepared == nil || prepared.chart == nil {
 		return fmt.Errorf("release must be prepared before installation")
 	}
-	if prepared.sandboxBundle != nil || prepared.Values[sandboxworkload.ValuesKey] != nil {
+	if (prepared.sandboxBundle != nil || prepared.Values[sandboxworkload.ValuesKey] != nil) && prepared.sandboxReconcile == nil {
 		return sandboxworkload.ErrExecutionHeld
+	}
+	if prepared.sandboxReconcile != nil {
+		if err := prepared.checkSandboxReconcile(context.Background()); err != nil {
+			return err
+		}
 	}
 	if err := prepared.ValidateCustom(namespace, releaseName); err != nil {
 		return err
@@ -281,6 +286,10 @@ func (c *Client) InstallOrUpgrade(namespace, releaseName string, prepared *Prepa
 		upgrade.Wait = false
 		upgrade.MaxHistory = 10
 		upgrade.DisableHooks = noHooks
+		if prepared.sandboxReconcile != nil {
+			upgrade.DisableHooks = true
+			upgrade.PostRenderer = reconciledSandboxRenderer{prepared}
+		}
 		if _, err := upgrade.Run(releaseName, chrt, values); err != nil {
 			return fmt.Errorf("helm upgrade %s: %w", releaseName, err)
 		}
@@ -290,6 +299,10 @@ func (c *Client) InstallOrUpgrade(namespace, releaseName string, prepared *Prepa
 		install.ReleaseName = releaseName
 		install.CreateNamespace = false
 		install.Wait = false
+		if prepared.sandboxReconcile != nil {
+			install.DisableHooks = true
+			install.PostRenderer = reconciledSandboxRenderer{prepared}
+		}
 		_, err := install.Run(chrt, values)
 		if err != nil {
 			// Another reconcile loop may have raced us to the install.
