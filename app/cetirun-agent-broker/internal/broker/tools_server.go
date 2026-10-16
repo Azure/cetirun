@@ -21,6 +21,7 @@ import (
 
 const defaultGrantTTL = 30 * 24 * time.Hour
 const maxGrantTTL = 90 * 24 * time.Hour
+const connectionBindingHeader = "X-CetiRun-Connection-Binding"
 
 type connectionStartRequest struct {
 	Provider string `json:"provider"`
@@ -62,7 +63,7 @@ func ownerFromPortal(r *http.Request) (Owner, error) {
 
 func (s *Server) portalGrantAgent(r *http.Request, owner Owner) (Agent, error) {
 	agent, err := s.store.getAgent(r.Context(), r.PathValue("name"))
-	if err != nil || !sameOwner(Owner{agent.OwnerTenantID, agent.OwnerObjectID}, owner) || subtle.ConstantTimeCompare([]byte(agent.UID), []byte(r.Header.Get("X-CetiRun-Instance-UID"))) != 1 {
+	if err != nil || agent.Deleting || !sameOwner(Owner{agent.OwnerTenantID, agent.OwnerObjectID}, owner) || subtle.ConstantTimeCompare([]byte(agent.UID), []byte(r.Header.Get("X-CetiRun-Instance-UID"))) != 1 {
 		return Agent{}, errors.New("instance ownership is invalid")
 	}
 	return agent, nil
@@ -79,6 +80,9 @@ func (s *Server) connectionsList(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeAPIError(w, http.StatusServiceUnavailable, "dependency_unavailable", "Connection storage is unavailable", correlation)
 		return
+	}
+	for index := range connections {
+		connections[index] = projectedConnection(connections[index])
 	}
 	writeJSON(w, http.StatusOK, connections)
 }
@@ -98,6 +102,11 @@ func (s *Server) connectionStart(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusBadRequest, "invalid_request", "The provider is not supported", correlation)
 		return
 	}
+	browserBindingHash, err := githubBrowserBindingHash(input.Provider, r.Header.Get(connectionBindingHeader))
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, "invalid_request", "GitHub sign-in requires a browser binding proof", correlation)
+		return
+	}
 	state, verifier, nonce, err := authorizationRandomValues(randomValue)
 	if err != nil {
 		writeAPIError(w, http.StatusServiceUnavailable, "dependency_unavailable", "Connection could not be started", correlation)
@@ -113,7 +122,7 @@ func (s *Server) connectionStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := s.currentTime().UTC()
-	record := &connectionRecord{Connection: Connection{ID: opaqueID(), Provider: input.Provider, Capabilities: []string{}, Revision: 1, Status: "connecting", CreatedAt: now, UpdatedAt: now, Owner: owner}, Transaction: &connectionTransaction{Provider: input.Provider, StateHash: stateHash(state), CodeVerifier: verifier, Nonce: nonce, ExpiresAt: now.Add(s.cfg.TransactionTTL)}}
+	record := &connectionRecord{Connection: Connection{ID: opaqueID(), Provider: input.Provider, Mode: modeDelegated, Capabilities: []string{}, Revision: 1, Status: "connecting", CreatedAt: now, UpdatedAt: now, Owner: owner}, Transaction: &connectionTransaction{Provider: input.Provider, StateHash: stateHash(state), BrowserBindingHash: browserBindingHash, CodeVerifier: verifier, Nonce: nonce, ExpiresAt: now.Add(s.cfg.TransactionTTL)}}
 	if err := s.store.putConnection(r.Context(), record, ""); err != nil {
 		status, code := http.StatusServiceUnavailable, "dependency_unavailable"
 		if errors.Is(err, errConflict) {
@@ -122,7 +131,7 @@ func (s *Server) connectionStart(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, status, code, "Connection state changed; retry", correlation)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"id": record.Connection.ID, "authorizationUrl": authorizationURL, "expiresAt": record.Transaction.ExpiresAt})
+	writeJSON(w, http.StatusOK, connectionStartResponse(record, authorizationURL))
 }
 
 func (s *Server) connectionGet(w http.ResponseWriter, r *http.Request) {
@@ -132,7 +141,7 @@ func (s *Server) connectionGet(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusForbidden, "forbidden", "Verified owner identity is required", correlation)
 		return
 	}
-	record, _, err := s.store.getConnection(r.Context(), r.PathValue("id"))
+	record, _, err := s.store.getOwnedConnection(r.Context(), owner, r.PathValue("id"))
 	if errors.Is(err, errNotFound) || (err == nil && (record.Deleted || !sameOwner(record.Connection.Owner, owner))) {
 		writeAPIError(w, http.StatusNotFound, "not_found", "Connection not found", correlation)
 		return
@@ -152,7 +161,7 @@ func (s *Server) connectionDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for attempt := 0; attempt < 3; attempt++ {
-		record, version, err := s.store.getConnection(r.Context(), r.PathValue("id"))
+		record, version, err := s.store.getOwnedConnection(r.Context(), owner, r.PathValue("id"))
 		if errors.Is(err, errNotFound) || (err == nil && (record.Deleted || !sameOwner(record.Connection.Owner, owner))) {
 			writeAPIError(w, http.StatusNotFound, "not_found", "Connection not found", correlation)
 			return
@@ -190,13 +199,22 @@ func (s *Server) connectionReconnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for attempt := 0; attempt < 3; attempt++ {
-		record, version, err := s.store.getConnection(r.Context(), r.PathValue("id"))
+		record, version, err := s.store.getOwnedConnection(r.Context(), owner, r.PathValue("id"))
 		if errors.Is(err, errNotFound) || (err == nil && (record.Deleted || !sameOwner(record.Connection.Owner, owner))) {
 			writeAPIError(w, http.StatusNotFound, "not_found", "Connection not found", correlation)
 			return
 		}
 		if err != nil {
 			writeAPIError(w, http.StatusServiceUnavailable, "dependency_unavailable", "Connection storage is unavailable", correlation)
+			return
+		}
+		if connectionMode(record.Connection) != modeDelegated {
+			writeAPIError(w, http.StatusBadRequest, "invalid_request", "Independent identities do not use personal sign-in", correlation)
+			return
+		}
+		browserBindingHash, err := githubBrowserBindingHash(record.Connection.Provider, r.Header.Get(connectionBindingHeader))
+		if err != nil {
+			writeAPIError(w, http.StatusBadRequest, "invalid_request", "GitHub sign-in requires a browser binding proof", correlation)
 			return
 		}
 		provider := s.providers
@@ -213,14 +231,14 @@ func (s *Server) connectionReconnect(w http.ResponseWriter, r *http.Request) {
 		record.Connection.Status = "connecting"
 		record.Connection.Revision++
 		record.Connection.UpdatedAt = now
-		record.Transaction = &connectionTransaction{Provider: record.Connection.Provider, StateHash: stateHash(state), CodeVerifier: verifier, Nonce: nonce, ExpectedAccountID: record.Connection.AccountID, ExpiresAt: now.Add(s.cfg.TransactionTTL)}
+		record.Transaction = &connectionTransaction{Provider: record.Connection.Provider, StateHash: stateHash(state), BrowserBindingHash: browserBindingHash, CodeVerifier: verifier, Nonce: nonce, ExpectedAccountID: record.Connection.AccountID, ExpiresAt: now.Add(s.cfg.TransactionTTL)}
 		if err := s.store.putConnection(r.Context(), record, version); errors.Is(err, errConflict) {
 			continue
 		} else if err != nil {
 			writeAPIError(w, http.StatusServiceUnavailable, "dependency_unavailable", "Connection could not be started", correlation)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"id": record.Connection.ID, "authorizationUrl": authorizationURL, "expiresAt": record.Transaction.ExpiresAt})
+		writeJSON(w, http.StatusOK, connectionStartResponse(record, authorizationURL))
 		return
 	}
 	writeAPIError(w, http.StatusConflict, "conflict", "Connection state changed; retry", correlation)
@@ -243,6 +261,10 @@ func (s *Server) connectionCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tx := *record.Transaction
+	if tx.Provider == "github" && (!portalPrincipalAllowed(r.Header.Get("X-Forwarded-Client-Cert"), s.cfg) || !githubBrowserBindingMatches(tx, r.Header.Get(connectionBindingHeader))) {
+		s.callbackPage(w, false)
+		return
+	}
 	record.Transaction.Consumed = true
 	if err := s.store.putConnection(r.Context(), record, version); err != nil {
 		s.callbackPage(w, false)
@@ -284,6 +306,40 @@ func (s *Server) connectionCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.callbackPage(w, true)
+}
+
+func githubBrowserBindingHash(provider, proof string) (string, error) {
+	if provider != "github" {
+		return "", nil
+	}
+	if !validGitHubBrowserBindingProof(proof) {
+		return "", errors.New("GitHub browser binding proof is invalid")
+	}
+	return stateHash(proof), nil
+}
+
+func githubBrowserBindingMatches(tx connectionTransaction, proof string) bool {
+	if !validGitHubBrowserBindingProof(proof) || tx.BrowserBindingHash == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(stateHash(proof)), []byte(tx.BrowserBindingHash)) == 1
+}
+
+func validGitHubBrowserBindingProof(proof string) bool {
+	if !validOAuthState(proof) {
+		return false
+	}
+	decoded, err := base64.RawURLEncoding.DecodeString(proof)
+	return err == nil && len(decoded) == 32
+}
+
+func connectionStartResponse(record *connectionRecord, authorizationURL string) map[string]any {
+	return map[string]any{
+		"id":                     record.Connection.ID,
+		"authorizationUrl":       authorizationURL,
+		"expiresAt":              record.Transaction.ExpiresAt,
+		"browserBindingRequired": record.Transaction.Provider == "github",
+	}
 }
 
 func (s *Server) finishConnectionCallback(ctx context.Context, record *connectionRecord, tx connectionTransaction, code string) (providerCredential, string, string, error) {
@@ -354,13 +410,17 @@ func (s *Server) grantCreate(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &input) {
 		return
 	}
-	connection, _, err := s.store.getConnection(r.Context(), input.ConnectionID)
+	connection, _, err := s.store.getConnectionForAgent(r.Context(), agent, input.ConnectionID)
 	if errors.Is(err, errNotFound) || (err == nil && (connection.Deleted || !sameOwner(connection.Connection.Owner, owner))) {
 		writeAPIError(w, http.StatusNotFound, "not_found", "Connection not found", correlation)
 		return
 	}
 	if err != nil {
 		writeAPIError(w, http.StatusServiceUnavailable, "dependency_unavailable", "Connection storage is unavailable", correlation)
+		return
+	}
+	if !s.connectionMatchesAgent(connection.Connection, agent) {
+		writeAPIError(w, http.StatusForbidden, "identity_changed", "The identity is not bound to this Agent", correlation)
 		return
 	}
 	grant, err := buildGrant(input, owner, agent.UID, connection.Connection, s.currentTime())
@@ -379,7 +439,25 @@ func (s *Server) grantCreate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if err := s.store.putGrant(r.Context(), &grantRecord{Grant: grant}, ""); err != nil {
+	// The immutable instance/connection key turns the Kubernetes Secret name
+	// into an atomic uniqueness boundary. The preceding list retains backwards
+	// compatibility with active grants created before this key existed; this
+	// check closes the list-then-create race for new grants.
+	resourceVersion := ""
+	if prior, version, err := s.store.getGrant(r.Context(), grant.ID, agent); err == nil {
+		if prior.Grant.ConnectionID != grant.ConnectionID || prior.Grant.InstanceUID != grant.InstanceUID || !sameOwner(prior.Grant.Owner, grant.Owner) || activeGrant(prior.Grant, s.currentTime()) {
+			writeAPIError(w, http.StatusConflict, "conflict", "An active grant already exists for this connection", correlation)
+			return
+		}
+		// Reusing a revoked or expired deterministic record preserves the old
+		// revoke-then-create behavior without allowing a second active record.
+		grant.Revision = prior.Grant.Revision + 1
+		resourceVersion = version
+	} else if !errors.Is(err, errNotFound) {
+		writeAPIError(w, http.StatusServiceUnavailable, "dependency_unavailable", "Grant storage is unavailable", correlation)
+		return
+	}
+	if err := s.store.putGrant(r.Context(), &grantRecord{Grant: grant, InstanceName: agent.Name, InstanceNamespace: agent.Namespace}, resourceVersion); err != nil {
 		status := http.StatusServiceUnavailable
 		if errors.Is(err, errConflict) {
 			status = http.StatusConflict
@@ -411,7 +489,7 @@ func (s *Server) grantUpdate(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusPreconditionRequired, "revision_required", "If-Match revision is required", correlation)
 		return
 	}
-	record, version, err := s.store.getGrant(r.Context(), r.PathValue("id"))
+	record, version, err := s.store.getGrant(r.Context(), r.PathValue("id"), agent)
 	if errors.Is(err, errNotFound) || (err == nil && (!sameOwner(record.Grant.Owner, owner) || record.Grant.InstanceUID != agent.UID || record.Grant.Revoked)) {
 		writeAPIError(w, http.StatusNotFound, "not_found", "Grant not found", correlation)
 		return
@@ -428,9 +506,13 @@ func (s *Server) grantUpdate(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusBadRequest, "invalid_request", "A grant connection cannot be changed", correlation)
 		return
 	}
-	connection, _, err := s.store.getConnection(r.Context(), input.ConnectionID)
+	connection, _, err := s.store.getConnectionForAgent(r.Context(), agent, input.ConnectionID)
 	if err != nil || connection.Deleted || !sameOwner(connection.Connection.Owner, owner) {
 		writeAPIError(w, http.StatusNotFound, "not_found", "Connection not found", correlation)
+		return
+	}
+	if !s.connectionMatchesAgent(connection.Connection, agent) {
+		writeAPIError(w, http.StatusForbidden, "identity_changed", "The identity is not bound to this Agent", correlation)
 		return
 	}
 	updated, err := buildGrant(input, owner, agent.UID, connection.Connection, s.currentTime())
@@ -439,7 +521,7 @@ func (s *Server) grantUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	updated.ID, updated.CreatedAt, updated.Revision = record.Grant.ID, record.Grant.CreatedAt, record.Grant.Revision+1
-	if err := s.store.putGrant(r.Context(), &grantRecord{Grant: updated}, version); err != nil {
+	if err := s.store.putGrant(r.Context(), &grantRecord{Grant: updated, InstanceName: agent.Name, InstanceNamespace: agent.Namespace}, version); err != nil {
 		status := http.StatusServiceUnavailable
 		if errors.Is(err, errConflict) {
 			status = http.StatusConflict
@@ -467,7 +549,7 @@ func (s *Server) grantDelete(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusPreconditionRequired, "revision_required", "If-Match revision is required", correlation)
 		return
 	}
-	record, version, err := s.store.getGrant(r.Context(), r.PathValue("id"))
+	record, version, err := s.store.getGrant(r.Context(), r.PathValue("id"), agent)
 	if errors.Is(err, errNotFound) || (err == nil && (!sameOwner(record.Grant.Owner, owner) || record.Grant.InstanceUID != agent.UID || record.Grant.Revoked)) {
 		writeAPIError(w, http.StatusNotFound, "not_found", "Grant not found", correlation)
 		return
@@ -481,6 +563,7 @@ func (s *Server) grantDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	record.Grant.Revoked, record.Grant.Revision, record.Grant.UpdatedAt = true, record.Grant.Revision+1, s.currentTime().UTC()
+	record.InstanceName, record.InstanceNamespace = agent.Name, agent.Namespace
 	if err := s.store.putGrant(r.Context(), record, version); err != nil {
 		status := http.StatusServiceUnavailable
 		if errors.Is(err, errConflict) {
@@ -507,14 +590,32 @@ func buildGrant(input grantRequest, owner Owner, instanceUID string, connection 
 		return AgentGrant{}, errors.New("tools must not contain duplicates")
 	}
 	for _, tool := range tools {
-		if tool == "*" || !contains(connection.Capabilities, tool) || !toolMatchesProvider(connection.Provider, tool) {
+		if tool == "*" || !contains(connectionCapabilities(connection), tool) || !toolMatchesProvider(connection.Provider, tool) {
 			return AgentGrant{}, errors.New("tools are not available for the connection")
+		}
+		if azureWriteTool(tool) && connectionMode(connection) != modeAgent {
+			return AgentGrant{}, errors.New("Azure write tools require an independent Agent identity")
 		}
 	}
 	if err := validateConstraints(tools, input.Constraints); err != nil {
 		return AgentGrant{}, err
 	}
-	return AgentGrant{ID: opaqueID(), InstanceUID: instanceUID, ConnectionID: input.ConnectionID, Tools: tools, Constraints: input.Constraints, ExpiresAt: input.ExpiresAt.UTC(), Revision: 1, Owner: owner, CreatedAt: now.UTC(), UpdatedAt: now.UTC()}, nil
+	grant := AgentGrant{ID: grantKey(instanceUID, input.ConnectionID), InstanceUID: instanceUID, ConnectionID: input.ConnectionID, Tools: tools, Constraints: input.Constraints, ExpiresAt: input.ExpiresAt.UTC(), Revision: 1, Owner: owner, CreatedAt: now.UTC(), UpdatedAt: now.UTC()}
+	if connectionMode(connection) == modeAgent {
+		if connection.Identity == nil || connection.Identity.InstanceUID != instanceUID || identityAuthorizationSource(connection.Provider) == "" {
+			return AgentGrant{}, errors.New("independent identity binding is invalid")
+		}
+		for _, id := range input.Constraints.SubscriptionIDs {
+			if !uuidPattern.MatchString(id) {
+				return AgentGrant{}, errors.New("Azure subscription IDs must be UUIDs")
+			}
+		}
+		if len(input.Constraints.SubscriptionIDs) > 20 {
+			return AgentGrant{}, errors.New("at most 20 subscriptions may be requested")
+		}
+		grant.Authorization = &ResourceAuthorization{State: "pending", Source: "direct_rbac", BindingRevision: connection.Revision, Reason: "resource_owner_grant_required"}
+	}
+	return grant, nil
 }
 
 func validateConstraints(tools []string, constraints Constraints) error {
@@ -528,6 +629,18 @@ func validateConstraints(tools []string, constraints Constraints) error {
 	}
 	if hasPrefixTool(tools, "azure_") && len(constraints.SubscriptionIDs) == 0 {
 		return errors.New("Azure tools require subscriptionIds")
+	}
+	if hasAzureWriteTool(tools) {
+		if len(constraints.ResourceGroupNames) == 0 || len(constraints.ResourceGroupNames) > 20 {
+			return errors.New("Azure write tools require 1 to 20 resourceGroupNames")
+		}
+		seen := map[string]bool{}
+		for _, name := range constraints.ResourceGroupNames {
+			if !safeResourceGroupName(name) || seen[strings.ToLower(name)] {
+				return errors.New("resourceGroupNames must contain unique safe Azure resource group names")
+			}
+			seen[strings.ToLower(name)] = true
+		}
 	}
 	if hasPrefixTool(tools, "github_") && len(constraints.RepositoryIDs) == 0 {
 		return errors.New("GitHub tools require repositoryIds")
@@ -581,7 +694,7 @@ func (s *Server) checkToolAuthorization(ctx context.Context, input toolRequest, 
 	if input.Tool == "" || input.ConnectionID == "" || input.Arguments == nil {
 		return workloadIdentity{}, nil, AgentGrant{}, toolRequest{}, toolAuthorizationFailure("invalid_request", http.StatusBadRequest)
 	}
-	connection, _, err := s.store.getConnection(ctx, input.ConnectionID)
+	connection, _, err := s.store.getConnectionForAgent(ctx, identity.Agent, input.ConnectionID)
 	if err != nil {
 		if errors.Is(err, errNotFound) {
 			return workloadIdentity{}, nil, AgentGrant{}, toolRequest{}, toolAuthorizationFailure("grant_required", http.StatusForbidden)
@@ -589,7 +702,7 @@ func (s *Server) checkToolAuthorization(ctx context.Context, input toolRequest, 
 		return workloadIdentity{}, nil, AgentGrant{}, toolRequest{}, toolAuthorizationFailure("dependency_unavailable", http.StatusServiceUnavailable)
 	}
 	owner := Owner{TenantID: identity.Agent.OwnerTenantID, ObjectID: identity.Agent.OwnerObjectID}
-	if !sameOwner(owner, connection.Connection.Owner) {
+	if !sameOwner(owner, connection.Connection.Owner) || !s.connectionMatchesAgent(connection.Connection, identity.Agent) {
 		return workloadIdentity{}, nil, AgentGrant{}, toolRequest{}, toolAuthorizationFailure("permission_denied", http.StatusForbidden)
 	}
 	if connection.Deleted || connection.Connection.Status == "disconnected" {
@@ -605,7 +718,7 @@ func (s *Server) checkToolAuthorization(ctx context.Context, input toolRequest, 
 	var grant *AgentGrant
 	for index := range grants {
 		candidate := &grants[index]
-		if candidate.ConnectionID == input.ConnectionID && candidate.InstanceUID == identity.Agent.UID && sameOwner(candidate.Owner, owner) && activeGrant(*candidate, s.currentTime()) && contains(candidate.Tools, input.Tool) {
+		if candidate.ConnectionID == input.ConnectionID && candidate.InstanceUID == identity.Agent.UID && sameOwner(candidate.Owner, owner) && effectiveGrant(*candidate, connection.Connection, s.currentTime()) && contains(candidate.Tools, input.Tool) {
 			if grant != nil {
 				return workloadIdentity{}, nil, AgentGrant{}, toolRequest{}, toolAuthorizationFailure("grant_required", http.StatusForbidden)
 			}
@@ -615,7 +728,7 @@ func (s *Server) checkToolAuthorization(ctx context.Context, input toolRequest, 
 	if grant == nil {
 		return workloadIdentity{}, nil, AgentGrant{}, toolRequest{}, toolAuthorizationFailure("grant_required", http.StatusForbidden)
 	}
-	if !contains(connection.Connection.Capabilities, input.Tool) || !toolMatchesProvider(connection.Connection.Provider, input.Tool) || validateToolArguments(input.Tool, input.Arguments, grant.Constraints) != nil {
+	if !contains(connectionCapabilities(connection.Connection), input.Tool) || !toolMatchesProvider(connection.Connection.Provider, input.Tool) || (azureWriteTool(input.Tool) && connectionMode(connection.Connection) != modeAgent) || validateToolArguments(input.Tool, input.Arguments, grant.Constraints) != nil {
 		return workloadIdentity{}, nil, AgentGrant{}, toolRequest{}, toolAuthorizationFailure("permission_denied", http.StatusForbidden)
 	}
 	if requireVersions && (input.CatalogVersion != catalogVersion || input.GrantRevision != grant.Revision || input.ConnectionRevision != connection.Connection.Revision) {
@@ -655,16 +768,16 @@ func (s *Server) toolAuthorizationsList(w http.ResponseWriter, r *http.Request) 
 		if grant.InstanceUID != identity.Agent.UID || !sameOwner(grant.Owner, owner) || !activeGrant(grant, s.currentTime()) {
 			continue
 		}
-		connection, _, err := s.store.getConnection(r.Context(), grant.ConnectionID)
-		if err != nil || connection.Deleted || connection.Connection.Status != "connected" || !sameOwner(connection.Connection.Owner, owner) {
+		connection, _, err := s.store.getConnectionForAgent(r.Context(), identity.Agent, grant.ConnectionID)
+		if err != nil || connection.Deleted || connection.Connection.Status != "connected" || !sameOwner(connection.Connection.Owner, owner) || !s.connectionMatchesAgent(connection.Connection, identity.Agent) || !effectiveGrant(grant, connection.Connection, s.currentTime()) {
 			continue
 		}
-		grant.Tools = allowedTools(grant.Tools, connection.Connection.Capabilities)
+		grant.Tools = allowedTools(grant.Tools, connectionCapabilities(connection.Connection))
 		if len(grant.Tools) == 0 {
 			continue
 		}
 		active = append(active, grant)
-		connections = append(connections, connection.Connection)
+		connections = append(connections, projectedConnection(connection.Connection))
 		tools = append(tools, grant.Tools...)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"instanceUid": identity.Agent.UID, "connections": dedupeConnections(connections), "grants": active, "tools": uniqueStrings(tools), "catalogVersion": catalogVersion})
@@ -676,7 +789,7 @@ func (s *Server) toolAuthorizationsCheck(w http.ResponseWriter, r *http.Request)
 		writeToolAuthorizationError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"instanceUid": identity.Agent.UID, "connection": connection.Connection, "grant": grant, "catalogVersion": catalogVersion})
+	writeJSON(w, http.StatusOK, map[string]any{"instanceUid": identity.Agent.UID, "connection": projectedConnection(connection.Connection), "grant": grant, "catalogVersion": catalogVersion})
 }
 
 func (s *Server) toolCredentialsIssue(w http.ResponseWriter, r *http.Request) {
@@ -685,8 +798,12 @@ func (s *Server) toolCredentialsIssue(w http.ResponseWriter, r *http.Request) {
 		writeToolAuthorizationError(w, r, err)
 		return
 	}
-	token, expiresAt, err := s.issueToolCredential(r.Context(), connection, input.Tool, identity.Agent)
+	token, expiresAt, err := s.issueToolCredential(r.Context(), connection, grant, input.Tool, identity.Agent)
 	if err != nil {
+		if connectionMode(connection.Connection) == modeAgent {
+			writeAPIError(w, http.StatusServiceUnavailable, "dependency_unavailable", "Agent credential acquisition failed; personal sign-in is not used", correlationID(r))
+			return
+		}
 		writeAPIError(w, http.StatusUnauthorized, "interaction_required", "Reconnect the provider account in the CetiRun Portal", correlationID(r))
 		return
 	}
@@ -704,15 +821,27 @@ func (s *Server) toolCredentialsIssue(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusConflict, "authorization_changed", "Authorization changed; recheck before issuing", correlationID(r))
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"instanceUid": currentIdentity.Agent.UID, "connection": current.Connection, "grant": currentGrant, "catalogVersion": catalogVersion, "accessToken": token, "expiresAt": expiresAt})
+	writeJSON(w, http.StatusOK, map[string]any{"instanceUid": currentIdentity.Agent.UID, "connection": projectedConnection(current.Connection), "grant": currentGrant, "catalogVersion": catalogVersion, "accessToken": token, "expiresAt": expiresAt})
 }
 
-func (s *Server) issueToolCredential(ctx context.Context, connection *connectionRecord, tool string, agent Agent) (string, time.Time, error) {
+func (s *Server) issueToolCredential(ctx context.Context, connection *connectionRecord, grant AgentGrant, tool string, agent Agent) (string, time.Time, error) {
+	if !s.connectionMatchesAgent(connection.Connection, agent) {
+		return "", time.Time{}, errors.New("identity binding changed")
+	}
+	if connectionMode(connection.Connection) == modeAgent {
+		return s.issueAgentCredential(ctx, connection.Connection, agent)
+	}
 	if connection.Credential == nil {
 		return "", time.Time{}, errors.New("credential is unavailable")
 	}
 	credential := *connection.Credential
-	if time.Until(credential.ExpiresAt) < 2*time.Minute {
+	if credential.NonExpiring && (connection.Connection.Provider != "github" || !credential.ExpiresAt.IsZero()) {
+		return "", time.Time{}, errors.New("provider credential has an invalid non-expiring marker")
+	}
+	if !credential.NonExpiring && credential.ExpiresAt.IsZero() {
+		return "", time.Time{}, errors.New("provider credential is missing an expiry")
+	}
+	if !credential.NonExpiring && time.Until(credential.ExpiresAt) < 2*time.Minute {
 		provider := s.providers
 		if provider == nil {
 			provider = newProviderClient(s.cfg)
@@ -731,7 +860,7 @@ func (s *Server) issueToolCredential(ctx context.Context, connection *connection
 		}
 		credential = refreshed
 	}
-	if time.Now().After(credential.ExpiresAt) {
+	if !credential.NonExpiring && time.Now().After(credential.ExpiresAt) {
 		return "", time.Time{}, errors.New("provider credential expired")
 	}
 	if connection.Connection.Provider == "azure" || connection.Connection.Provider == "microsoft" {
@@ -759,11 +888,31 @@ func (s *Server) issueToolCredential(ctx context.Context, connection *connection
 		}
 		return token, expiresAt, nil
 	}
+	if connection.Connection.Provider == "github" {
+		// GitHub OAuth Apps may issue non-expiring user tokens. This is CetiRun's
+		// internal MCP issuance validity, not an upstream token expiry: the Agent
+		// runtime never receives this access token. Keep it short so MCP returns
+		// for grant and revocation checks.
+		expiresAt := s.currentTime().UTC().Add(5 * time.Minute)
+		if !credential.NonExpiring && credential.ExpiresAt.Before(expiresAt) {
+			expiresAt = credential.ExpiresAt
+		}
+		if grant.ExpiresAt.Before(expiresAt) {
+			expiresAt = grant.ExpiresAt
+		}
+		if !expiresAt.After(s.currentTime()) {
+			return "", time.Time{}, errors.New("provider credential is expiring")
+		}
+		return credential.AccessToken, expiresAt, nil
+	}
 	return credential.AccessToken, credential.ExpiresAt, nil
 }
 
 func validateToolArguments(tool string, arguments map[string]any, constraints Constraints) error {
-	if providerForTool(tool) == "azure" {
+	if tool == "azure_subscriptions_list" && len(constraints.SubscriptionIDs) == 0 {
+		return errors.New("subscription constraints are required")
+	}
+	if providerForTool(tool) == "azure" && tool != "azure_subscriptions_list" {
 		subscription := stringArgument(arguments, "subscription_id")
 		if subscription == "" {
 			subscription = subscriptionFromResourceID(stringArgument(arguments, "resource_id"))
@@ -771,6 +920,9 @@ func validateToolArguments(tool string, arguments map[string]any, constraints Co
 		if !contains(constraints.SubscriptionIDs, subscription) {
 			return errors.New("subscription is not allowed")
 		}
+	}
+	if azureWriteTool(tool) && !containsFold(constraints.ResourceGroupNames, stringArgument(arguments, "resource_group_name")) {
+		return errors.New("resource group is not allowed")
 	}
 	if providerForTool(tool) == "github" {
 		if !contains(constraints.RepositoryIDs, stringArgument(arguments, "repository_id")) {
@@ -819,6 +971,10 @@ func opaqueID() string {
 	}
 	return hex.EncodeToString(data)
 }
+
+func grantKey(instanceUID, connectionID string) string {
+	return "grant-" + stateHash(instanceUID + "\x00" + connectionID)[:40]
+}
 func validProvider(provider string) bool {
 	return provider == "azure" || provider == "microsoft" || provider == "github" || provider == "google"
 }
@@ -829,6 +985,14 @@ func toolMatchesProvider(provider, tool string) bool {
 func contains(values []string, expected string) bool {
 	for _, value := range values {
 		if value == expected {
+			return true
+		}
+	}
+	return false
+}
+func containsFold(values []string, expected string) bool {
+	for _, value := range values {
+		if strings.EqualFold(value, expected) {
 			return true
 		}
 	}
@@ -860,6 +1024,36 @@ func hasPrefixTool(tools []string, prefix string) bool {
 		}
 	}
 	return false
+}
+func azureWriteTool(tool string) bool {
+	return tool == "azure_resource_groups_create" || tool == "azure_resource_group_tags_update"
+}
+func hasAzureWriteTool(tools []string) bool {
+	for _, tool := range tools {
+		if azureWriteTool(tool) {
+			return true
+		}
+	}
+	return false
+}
+func safeResourceGroupName(name string) bool {
+	if len(name) == 0 || len(name) > 90 || strings.Contains(name, "..") || strings.HasSuffix(name, ".") || strings.HasSuffix(name, "/") {
+		return false
+	}
+	for index := 0; index < len(name); index++ {
+		character := name[index]
+		alphaNumeric := character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' || character >= '0' && character <= '9'
+		if index == 0 {
+			if !alphaNumeric {
+				return false
+			}
+			continue
+		}
+		if !alphaNumeric && !strings.ContainsRune("_.()-", rune(character)) {
+			return false
+		}
+	}
+	return true
 }
 func ifMatchRevision(r *http.Request) (uint64, bool) {
 	value := strings.Trim(r.Header.Get("If-Match"), `"`)

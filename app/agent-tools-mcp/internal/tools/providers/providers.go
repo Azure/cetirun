@@ -24,6 +24,53 @@ const maxResponseBytes = 256 << 10
 const maxMailBodyBytes = 64 << 10
 const maxItems = 100
 
+type requestIDCaptureKey struct{}
+
+// WithRequestIDCapture registers a bounded audit callback for provider request
+// identifiers. It deliberately exposes no response body, URL, or credentials.
+func WithRequestIDCapture(ctx context.Context, capture func(string)) context.Context {
+	if capture == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, requestIDCaptureKey{}, capture)
+}
+
+func captureRequestID(ctx context.Context, headers http.Header) {
+	capture, _ := ctx.Value(requestIDCaptureKey{}).(func(string))
+	if capture == nil {
+		return
+	}
+	for _, name := range []string{"x-ms-request-id", "x-ms-correlation-request-id", "request-id", "x-github-request-id", "x-goog-request-id"} {
+		if value := strings.TrimSpace(headerValue(headers, name)); safeRequestID(value) {
+			capture(value)
+		}
+	}
+}
+
+func headerValue(headers http.Header, name string) string {
+	if value := headers.Get(name); value != "" {
+		return value
+	}
+	for key, values := range headers {
+		if strings.EqualFold(key, name) && len(values) > 0 {
+			return values[0]
+		}
+	}
+	return ""
+}
+
+func safeRequestID(value string) bool {
+	if len(value) == 0 || len(value) > 256 {
+		return false
+	}
+	for _, character := range value {
+		if !(character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' || character >= '0' && character <= '9' || strings.ContainsRune("-_.:/", character)) {
+			return false
+		}
+	}
+	return true
+}
+
 type Client struct{ http *http.Client }
 type Error struct {
 	Code    string
@@ -128,9 +175,149 @@ func (c *Client) azure(ctx context.Context, tool string, args map[string]any, li
 			return nil, denied()
 		}
 		return map[string]any{"resource": pick(reply.Data[0], "id", "name", "type", "location", "kind", "tags")}, nil
+	case "azure_resource_groups_create":
+		subscription, resourceGroup, err := authorizedAzureResourceGroup(args, limits)
+		if err != nil {
+			return nil, err
+		}
+		location := stringArg(args, "location")
+		if !safeAzureLocation(location) || !safeOperationID(stringArg(args, "operation_id")) {
+			return nil, &Error{Code: "invalid_request"}
+		}
+		resourceGroupURL := azureResourceGroupURL(base, subscription, resourceGroup)
+		exists, err := c.azureResourceGroupExists(ctx, resourceGroupURL, token)
+		if err != nil {
+			return nil, err
+		}
+		if exists {
+			return nil, &Error{Code: "invalid_request"}
+		}
+		var reply map[string]any
+		var headers http.Header
+		if err := c.requestHeadersResponse(ctx, http.MethodPut, resourceGroupURL+"?api-version=2021-04-01", map[string]any{"location": location}, token, nil, &reply, &headers); err != nil {
+			return nil, err
+		}
+		return azureResourceGroupCreateResult(reply, headers, subscription, resourceGroup)
+	case "azure_resource_group_tags_update":
+		subscription, resourceGroup, err := authorizedAzureResourceGroup(args, limits)
+		if err != nil {
+			return nil, err
+		}
+		if !safeOperationID(stringArg(args, "operation_id")) || !safeTags(args["tags"]) {
+			return nil, &Error{Code: "invalid_request"}
+		}
+		var reply map[string]any
+		var headers http.Header
+		endpoint := azureResourceGroupURL(base, subscription, resourceGroup) + "/providers/Microsoft.Resources/tags/default?api-version=2021-04-01"
+		body := map[string]any{"operation": "Merge", "properties": map[string]any{"tags": args["tags"]}}
+		if err := c.requestHeadersResponse(ctx, http.MethodPatch, endpoint, body, token, nil, &reply, &headers); err != nil {
+			return nil, err
+		}
+		return azureResourceGroupTagsResult(reply, headers, subscription, resourceGroup)
 	default:
 		return nil, denied()
 	}
+}
+
+func authorizedAzureResourceGroup(args map[string]any, limits brokerclient.Constraints) (string, string, error) {
+	subscription, resourceGroup := stringArg(args, "subscription_id"), stringArg(args, "resource_group_name")
+	if !safeAzureSubscriptionID(subscription) || !safeResourceGroupName(resourceGroup) {
+		return "", "", &Error{Code: "invalid_request"}
+	}
+	if !contains(limits.SubscriptionIDs, subscription) || !containsFold(limits.ResourceGroupNames, resourceGroup) {
+		return "", "", denied()
+	}
+	return subscription, resourceGroup, nil
+}
+
+func azureResourceGroupURL(base, subscription, resourceGroup string) string {
+	return base + "/subscriptions/" + url.PathEscape(subscription) + "/resourceGroups/" + url.PathEscape(resourceGroup)
+}
+
+// azureResourceGroupExists gives creation an explicit conflict check. ARM does
+// not provide a documented create-only precondition for this resource, so this
+// check deliberately does not claim to make a concurrent external create
+// atomic with the following PUT.
+func (c *Client) azureResourceGroupExists(ctx context.Context, endpoint, token string) (bool, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint+"?api-version=2021-04-01", nil)
+	if err != nil {
+		return false, &Error{Code: "invalid_request"}
+	}
+	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("Accept", "application/json")
+	response, err := c.http.Do(request)
+	if err != nil {
+		return false, &Error{Code: "dependency_unavailable"}
+	}
+	defer response.Body.Close()
+	captureRequestID(ctx, response.Header)
+	payload, err := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
+	if err != nil || len(payload) > maxResponseBytes {
+		return false, &Error{Code: "dependency_unavailable"}
+	}
+	switch response.StatusCode {
+	case http.StatusNotFound:
+		return false, nil
+	case http.StatusOK:
+		return true, nil
+	case http.StatusUnauthorized, http.StatusForbidden:
+		return false, denied()
+	case http.StatusTooManyRequests:
+		return false, &Error{Code: "throttled"}
+	default:
+		return false, &Error{Code: "dependency_unavailable"}
+	}
+}
+
+func azureResourceGroupCreateResult(reply map[string]any, headers http.Header, subscription, resourceGroup string) (map[string]any, error) {
+	resourceGroupID := "/subscriptions/" + subscription + "/resourceGroups/" + resourceGroup
+	if !strings.EqualFold(text(reply["id"]), resourceGroupID) || !strings.EqualFold(text(reply["name"]), resourceGroup) || !safeAzureLocation(text(reply["location"])) {
+		return nil, &Error{Code: "dependency_unavailable", Unknown: true}
+	}
+	properties, _ := reply["properties"].(map[string]any)
+	provisioningState := text(properties["provisioningState"])
+	if !safeProviderValue(provisioningState, 64) {
+		return nil, &Error{Code: "dependency_unavailable", Unknown: true}
+	}
+	result := map[string]any{"resource_group_id": text(reply["id"]), "name": text(reply["name"]), "location": text(reply["location"]), "provisioning_state": provisioningState}
+	if requestID := azureRequestID(headers); requestID != "" {
+		result["request_id"] = requestID
+	}
+	if correlationID := azureCorrelationID(headers); correlationID != "" {
+		result["correlation_id"] = correlationID
+	}
+	return map[string]any{"status": "succeeded", "result": result}, nil
+}
+
+func azureResourceGroupTagsResult(reply map[string]any, headers http.Header, subscription, resourceGroup string) (map[string]any, error) {
+	resourceGroupID := "/subscriptions/" + subscription + "/resourceGroups/" + resourceGroup
+	resourceID := text(reply["id"])
+	expectedID := resourceGroupID + "/providers/Microsoft.Resources/tags/default"
+	if !strings.EqualFold(resourceID, expectedID) {
+		return nil, &Error{Code: "dependency_unavailable", Unknown: true}
+	}
+	result := map[string]any{"resource_id": resourceID, "resource_group_id": resourceGroupID, "operation": "Merge"}
+	if requestID := azureRequestID(headers); requestID != "" {
+		result["request_id"] = requestID
+	}
+	if correlationID := azureCorrelationID(headers); correlationID != "" {
+		result["correlation_id"] = correlationID
+	}
+	return map[string]any{"status": "succeeded", "result": result}, nil
+}
+
+func azureRequestID(headers http.Header) string {
+	if value := strings.TrimSpace(headerValue(headers, "x-ms-request-id")); safeRequestID(value) {
+		return value
+	}
+	return ""
+}
+
+func azureCorrelationID(headers http.Header) string {
+	if value := strings.TrimSpace(headerValue(headers, "x-ms-correlation-request-id")); safeRequestID(value) {
+		return value
+	}
+	return ""
 }
 
 func (c *Client) github(ctx context.Context, tool string, args map[string]any, limits brokerclient.Constraints, token string) (map[string]any, error) {
@@ -425,12 +612,16 @@ func (c *Client) requestHeadersResponse(ctx context.Context, method, endpoint st
 	if responseHeaders != nil {
 		*responseHeaders = response.Header.Clone()
 	}
+	captureRequestID(ctx, response.Header)
 	payload, err := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
 	if err != nil || len(payload) > maxResponseBytes {
 		return &Error{Code: "dependency_unavailable", Unknown: method != http.MethodGet}
 	}
 	if response.StatusCode == http.StatusTooManyRequests {
 		return &Error{Code: "throttled"}
+	}
+	if response.StatusCode == http.StatusUnauthorized && request.URL.Scheme == "https" && request.URL.Host == "api.github.com" {
+		return &Error{Code: "interaction_required"}
 	}
 	if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden {
 		return &Error{Code: "permission_denied"}
@@ -454,6 +645,14 @@ func (c *Client) requestHeadersResponse(ctx context.Context, method, endpoint st
 func contains(values []string, value string) bool {
 	for _, candidate := range values {
 		if candidate == value {
+			return true
+		}
+	}
+	return false
+}
+func containsFold(values []string, value string) bool {
+	for _, candidate := range values {
+		if strings.EqualFold(candidate, value) {
 			return true
 		}
 	}
@@ -536,6 +735,84 @@ func safeARMIDSegment(value string) bool {
 	}
 	for _, character := range value {
 		if !(character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' || character >= '0' && character <= '9' || strings.ContainsRune("._~-:", character)) {
+			return false
+		}
+	}
+	return true
+}
+func safeAzureSubscriptionID(value string) bool {
+	if value == "" || len(value) > 64 {
+		return false
+	}
+	for _, character := range value {
+		if !(character >= '0' && character <= '9' || character >= 'a' && character <= 'f' || character >= 'A' && character <= 'F' || character == '-') {
+			return false
+		}
+	}
+	return true
+}
+func safeResourceGroupName(value string) bool {
+	if len(value) == 0 || len(value) > 90 || strings.Contains(value, "..") || strings.HasSuffix(value, ".") {
+		return false
+	}
+	for index, character := range value {
+		if (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') || (character >= '0' && character <= '9') || strings.ContainsRune("_.()-", character) {
+			if index != 0 || (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') || (character >= '0' && character <= '9') {
+				continue
+			}
+		}
+		return false
+	}
+	return true
+}
+func safeAzureLocation(value string) bool {
+	if len(value) < 2 || len(value) > 64 {
+		return false
+	}
+	for _, character := range value {
+		if !(character >= 'a' && character <= 'z') && !(character >= 'A' && character <= 'Z') && !(character >= '0' && character <= '9') {
+			return false
+		}
+	}
+	return true
+}
+func safeOperationID(value string) bool {
+	if len(value) < 8 || len(value) > 128 {
+		return false
+	}
+	for index, character := range value {
+		if (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') || (character >= '0' && character <= '9') {
+			continue
+		}
+		if index > 0 && strings.ContainsRune("._-", character) {
+			continue
+		}
+		return false
+	}
+	return true
+}
+func safeTags(value any) bool {
+	tags, ok := value.(map[string]any)
+	if !ok || len(tags) == 0 || len(tags) > 50 {
+		return false
+	}
+	for key, value := range tags {
+		if len(key) == 0 || len(key) > 128 || strings.ContainsAny(key, "\r\n") {
+			return false
+		}
+		text, ok := value.(string)
+		if !ok || len(text) == 0 || len(text) > 256 || strings.ContainsAny(text, "\r\n") {
+			return false
+		}
+	}
+	return true
+}
+func safeProviderValue(value string, maximum int) bool {
+	if len(value) == 0 || len(value) > maximum {
+		return false
+	}
+	for _, character := range value {
+		if !(character >= 'a' && character <= 'z') && !(character >= 'A' && character <= 'Z') && !(character >= '0' && character <= '9') && !strings.ContainsRune("._-", character) {
 			return false
 		}
 	}

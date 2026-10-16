@@ -36,11 +36,14 @@ type secretDocument struct {
 }
 
 type secretMetadata struct {
-	Name            string            `json:"name"`
-	Namespace       string            `json:"namespace,omitempty"`
-	ResourceVersion string            `json:"resourceVersion,omitempty"`
-	Labels          map[string]string `json:"labels,omitempty"`
-	OwnerReferences []ownerReference  `json:"ownerReferences,omitempty"`
+	DeletionTimestamp *time.Time        `json:"deletionTimestamp,omitempty"`
+	UID               string            `json:"uid,omitempty"`
+	Name              string            `json:"name"`
+	Namespace         string            `json:"namespace,omitempty"`
+	ResourceVersion   string            `json:"resourceVersion,omitempty"`
+	Labels            map[string]string `json:"labels,omitempty"`
+	Annotations       map[string]string `json:"annotations,omitempty"`
+	OwnerReferences   []ownerReference  `json:"ownerReferences,omitempty"`
 }
 
 type ownerReference struct {
@@ -51,6 +54,9 @@ type ownerReference struct {
 }
 
 type secretList struct {
+	Metadata struct {
+		Continue string `json:"continue"`
+	} `json:"metadata"`
 	Items []secretDocument `json:"items"`
 }
 
@@ -60,10 +66,18 @@ type agentDocument struct {
 		UID               string            `json:"uid"`
 		Annotations       map[string]string `json:"annotations"`
 		DeletionTimestamp *time.Time        `json:"deletionTimestamp"`
+		Finalizers        []string          `json:"finalizers"`
 	} `json:"metadata"`
 	Spec struct {
-		Suspended bool `json:"suspended"`
-		User      struct {
+		Suspended   bool   `json:"suspended"`
+		SandboxRef  string `json:"sandboxRef"`
+		ModelAccess *struct {
+			MonthlyBudgetUSD string `json:"monthlyBudgetUSD"`
+		} `json:"modelAccess"`
+		Agent struct {
+			Type string `json:"type"`
+		} `json:"agent"`
+		User struct {
 			Alias string `json:"alias"`
 		} `json:"user"`
 		AgentIdentity *struct {
@@ -71,11 +85,20 @@ type agentDocument struct {
 		} `json:"agentIdentity"`
 	} `json:"spec"`
 	Status struct {
-		Phase         string `json:"phase"`
-		Namespace     string `json:"namespace"`
+		Phase     string           `json:"phase"`
+		Namespace string           `json:"namespace"`
+		Policy    *json.RawMessage `json:"policy"`
+		Sandbox   *json.RawMessage `json:"sandbox"`
+		AIGateway *struct {
+			PolicyRevision string `json:"policyRevision"`
+		} `json:"aiGateway"`
+		Conditions []struct {
+			Type string `json:"type"`
+		} `json:"conditions"`
 		AgentIdentity *struct {
 			Phase    string `json:"phase"`
 			ClientID string `json:"clientId"`
+			ObjectID string `json:"objectId"`
 		} `json:"agentIdentity"`
 	} `json:"status"`
 }
@@ -109,11 +132,14 @@ type workloadIdentity struct {
 }
 
 type kubeClient struct {
-	baseURL   string
-	namespace string
-	tokenFile string
-	client    *http.Client
-	wrapper   keyWrapper
+	recordNamespaceDeleting bool
+	agentNamespaces         bool
+	recordAgent             *Agent
+	baseURL                 string
+	namespace               string
+	tokenFile               string
+	client                  *http.Client
+	wrapper                 keyWrapper
 }
 
 func newKubeClient(cfg Config, wrapper keyWrapper) (*kubeClient, error) {
@@ -135,9 +161,10 @@ func newKubeClient(cfg Config, wrapper keyWrapper) (*kubeClient, error) {
 		return nil, errors.New("Kubernetes service CA is invalid")
 	}
 	return &kubeClient{
-		baseURL:   "https://" + host + ":" + port,
-		namespace: cfg.StoreNamespace,
-		tokenFile: tokenFile,
+		baseURL:         "https://" + host + ":" + port,
+		agentNamespaces: cfg.AgentRecordNamespaces,
+		namespace:       cfg.StoreNamespace,
+		tokenFile:       tokenFile,
 		client: &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{
 			MinVersion: tls.VersionTLS12,
 			RootCAs:    pool,
@@ -342,19 +369,52 @@ func tokenReviewAudienceAccepted(audiences []string, expected string) bool {
 
 func agentFromDocument(document agentDocument) Agent {
 	agent := Agent{
-		Name:           document.Metadata.Name,
-		UID:            document.Metadata.UID,
-		Namespace:      document.Status.Namespace,
-		OwnerTenantID:  document.Metadata.Annotations["agentidentity.cetirun.microsoft.com/owner-tenant-id"],
-		OwnerObjectID:  document.Metadata.Annotations["agentidentity.cetirun.microsoft.com/owner-object-id"],
-		ServiceAccount: workloadServiceAccount(document.Metadata.Name),
-		WorkloadReady:  document.Status.Phase == "Ready" && !document.Spec.Suspended && document.Metadata.DeletionTimestamp == nil,
+		Deleting: document.Metadata.DeletionTimestamp != nil, RuntimeType: document.Spec.Agent.Type,
+		Name:               document.Metadata.Name,
+		UnsupportedRuntime: agentDocumentSandboxRequested(document) || (document.Spec.Agent.Type != "hermes" && document.Spec.Agent.Type != "openclaw"),
+		UID:                document.Metadata.UID,
+		Namespace:          document.Status.Namespace,
+		OwnerTenantID:      document.Metadata.Annotations["agentidentity.cetirun.microsoft.com/owner-tenant-id"],
+		OwnerObjectID:      document.Metadata.Annotations["agentidentity.cetirun.microsoft.com/owner-object-id"],
+		ServiceAccount:     workloadServiceAccount(document.Metadata.Name),
+		WorkloadReady:      document.Status.Phase == "Ready" && !document.Spec.Suspended && document.Metadata.DeletionTimestamp == nil,
 	}
 	if document.Spec.AgentIdentity != nil && document.Spec.AgentIdentity.Enabled && document.Status.AgentIdentity != nil {
 		agent.AgentIdentityClientID = document.Status.AgentIdentity.ClientID
+		agent.AgentIdentityObjectID = document.Status.AgentIdentity.ObjectID
 		agent.AgentIdentityReady = agent.WorkloadReady && document.Status.AgentIdentity.Phase == "Ready" && agent.AgentIdentityClientID != ""
 	}
 	return agent
+}
+
+// Match the persisted Agent signals used by the Operator's sandbox.Requested
+// and deletion routing. Team policy is materialized into these finalizers or
+// status fields before a Sandbox workload is provisioned. Checking sandboxRef
+// alone misses policy-selected and recovery-held Agents.
+func agentDocumentSandboxRequested(document agentDocument) bool {
+	for _, key := range []string{"cetirun.microsoft.com/sandbox-authorization", "cetirun.microsoft.com/sandbox-reauthorize"} {
+		if _, present := document.Metadata.Annotations[key]; present {
+			return true
+		}
+	}
+	for _, finalizer := range document.Metadata.Finalizers {
+		switch finalizer {
+		case "cetirun.microsoft.com/sandbox-hold", "cetirun.microsoft.com/sandbox-preparation", "cetirun.microsoft.com/sandbox-bootstrap":
+			return true
+		}
+	}
+	if document.Spec.SandboxRef != "" ||
+		(document.Spec.ModelAccess != nil && document.Spec.ModelAccess.MonthlyBudgetUSD != "") ||
+		document.Status.Policy != nil || document.Status.Sandbox != nil ||
+		(document.Status.AIGateway != nil && document.Status.AIGateway.PolicyRevision != "") {
+		return true
+	}
+	for _, condition := range document.Status.Conditions {
+		if condition.Type == "SandboxReady" {
+			return true
+		}
+	}
+	return false
 }
 
 func firstExtra(extra map[string][]string, key string) string {
@@ -413,19 +473,43 @@ func recordRevision(data map[string]string) uint64 {
 func (k *kubeClient) getToolSecret(ctx context.Context, kind, id string) (secretDocument, error) {
 	var secret secretDocument
 	_, err := k.request(ctx, http.MethodGet, "/api/v1/namespaces/"+url.PathEscape(k.namespace)+"/secrets/"+url.PathEscape(toolRecordName(kind, id)), nil, &secret)
+	if err == nil && k.recordAgent != nil && !recordOwnedBy(secret, *k.recordAgent) {
+		return secret, errors.New("Agent record ownership is invalid")
+	}
 	return secret, err
 }
 
-func (k *kubeClient) putToolSecret(ctx context.Context, kind, id string, labels map[string]string, data map[string]string, resourceVersion string) error {
+func (k *kubeClient) putToolSecret(ctx context.Context, kind, id string, labels, annotations, data map[string]string, resourceVersion string) error {
 	labels["app.kubernetes.io/managed-by"] = "cetirun-agent-broker"
 	labels["agenttools.cetirun.microsoft.com/record-type"] = kind
-	secret := secretDocument{APIVersion: "v1", Kind: "Secret", Metadata: secretMetadata{Name: toolRecordName(kind, id), Namespace: k.namespace, ResourceVersion: resourceVersion, Labels: labels}, Data: data}
+	secret := secretDocument{APIVersion: "v1", Kind: "Secret", Metadata: secretMetadata{Name: toolRecordName(kind, id), Namespace: k.namespace, ResourceVersion: resourceVersion, Labels: labels, Annotations: annotations}, Data: data}
+	if k.recordAgent != nil {
+		secret.Metadata.OwnerReferences = []ownerReference{agentRecordOwner(*k.recordAgent)}
+	}
 	endpoint, method := "/api/v1/namespaces/"+url.PathEscape(k.namespace)+"/secrets", http.MethodPost
 	if resourceVersion != "" {
 		endpoint, method = endpoint+"/"+url.PathEscape(secret.Metadata.Name), http.MethodPut
 	}
 	_, err := k.request(ctx, method, endpoint, secret, nil)
 	return err
+}
+
+// recordInstanceMetadata projects display snapshots without changing the
+// encrypted UID/owner binding. Full names remain in annotations; short DNS
+// labels are also available to kubectl -L and label selectors.
+func recordInstanceMetadata(labels map[string]string, name, namespace string) map[string]string {
+	annotations := map[string]string{}
+	for key, value := range map[string]string{"instance-name": name, "instance-namespace": namespace} {
+		if value == "" {
+			continue
+		}
+		qualified := "agenttools.cetirun.microsoft.com/" + key
+		annotations[qualified] = value
+		if dnsLabel(value) {
+			labels[qualified] = value
+		}
+	}
+	return annotations
 }
 
 func (k *kubeClient) encodeConnection(ctx context.Context, record *connectionRecord) (map[string]string, error) {
@@ -482,10 +566,37 @@ func (k *kubeClient) getConnection(ctx context.Context, id string) (*connectionR
 		return nil, "", err
 	}
 	record, err := k.decodeConnection(ctx, secret)
+	if err == nil {
+		err = k.validateConnectionLocation(record)
+	}
 	return record, secret.Metadata.ResourceVersion, err
 }
 
 func (k *kubeClient) putConnection(ctx context.Context, record *connectionRecord, resourceVersion string) error {
+	if k.agentNamespaces && connectionMode(record.Connection) == modeAgent {
+		if record.Connection.Identity == nil {
+			return errors.New("Agent identity binding is missing")
+		}
+		target, err := k.agentRecordStore(ctx, record.Connection.Identity.InstanceUID)
+		if err != nil {
+			return err
+		}
+		if target.recordAgent.Deleting {
+			return errors.New("Agent is deleting")
+		}
+		if err := target.validateConnectionLocation(record); err != nil {
+			return err
+		}
+		record.InstanceName, record.InstanceNamespace = target.recordAgent.Name, target.recordAgent.Namespace
+		return target.putConnection(ctx, record, resourceVersion)
+	}
+	if err := k.validateConnectionLocation(record); err != nil {
+		return err
+	}
+	if k.recordAgent != nil && (k.recordAgent.Deleting || k.recordNamespaceDeleting) {
+		return errors.New("Agent is deleting")
+	}
+
 	data, err := k.encodeConnection(ctx, record)
 	if err != nil {
 		return err
@@ -496,23 +607,25 @@ func (k *kubeClient) putConnection(ctx context.Context, record *connectionRecord
 		"agenttools.cetirun.microsoft.com/owner-object": record.Connection.Owner.ObjectID,
 		"agenttools.cetirun.microsoft.com/provider":     record.Connection.Provider,
 		"agenttools.cetirun.microsoft.com/account-id":   record.Connection.AccountID,
+		"agenttools.cetirun.microsoft.com/mode":         connectionMode(record.Connection),
+	}
+	var annotations map[string]string
+	if connectionMode(record.Connection) == modeAgent && record.Connection.Identity != nil {
+		labels["agenttools.cetirun.microsoft.com/instance-uid"] = record.Connection.Identity.InstanceUID
+		annotations = recordInstanceMetadata(labels, record.InstanceName, record.InstanceNamespace)
 	}
 	if record.Transaction != nil {
 		labels["agenttools.cetirun.microsoft.com/state-hash"] = record.Transaction.StateHash[:48]
 	}
-	return k.putToolSecret(ctx, "connection", record.Connection.ID, labels, data, resourceVersion)
+	return k.putToolSecret(ctx, "connection", record.Connection.ID, labels, annotations, data, resourceVersion)
 }
 
 func (k *kubeClient) connectionRecords(ctx context.Context, selector string) ([]struct {
 	record  *connectionRecord
 	version string
 }, error) {
-	endpoint := "/api/v1/namespaces/" + url.PathEscape(k.namespace) + "/secrets"
-	if selector != "" {
-		endpoint += "?labelSelector=" + url.QueryEscape(selector)
-	}
-	var list secretList
-	if _, err := k.request(ctx, http.MethodGet, endpoint, nil, &list); err != nil {
+	list, err := k.listToolSecrets(ctx, "connection", selector)
+	if err != nil {
 		return nil, err
 	}
 	result := make([]struct {
@@ -525,6 +638,9 @@ func (k *kubeClient) connectionRecords(ctx context.Context, selector string) ([]
 		}
 		record, err := k.decodeConnection(ctx, secret)
 		if err != nil {
+			return nil, err
+		}
+		if err := k.validateConnectionLocation(record); err != nil {
 			return nil, err
 		}
 		result = append(result, struct {
@@ -542,10 +658,24 @@ func (k *kubeClient) listConnections(ctx context.Context, owner Owner) ([]Connec
 	}
 	connections := make([]Connection, 0, len(records))
 	for _, item := range records {
-		if !item.record.Deleted && sameOwner(item.record.Connection.Owner, owner) {
+		if !item.record.Deleted && sameOwner(item.record.Connection.Owner, owner) && (!k.agentNamespaces || connectionMode(item.record.Connection) == modeDelegated) {
 			connections = append(connections, item.record.Connection)
 		}
 	}
+	if k.agentNamespaces {
+		stores, err := k.ownerAgentStores(ctx, owner)
+		if err != nil {
+			return nil, err
+		}
+		for _, target := range stores {
+			local, err := target.listConnections(ctx, owner)
+			if err != nil {
+				return nil, err
+			}
+			connections = append(connections, local...)
+		}
+	}
+
 	sort.Slice(connections, func(i, j int) bool { return connections[i].CreatedAt.Before(connections[j].CreatedAt) })
 	return connections, nil
 }
@@ -610,16 +740,59 @@ func (k *kubeClient) decodeGrant(ctx context.Context, secret secretDocument) (*g
 	return record, nil
 }
 
-func (k *kubeClient) getGrant(ctx context.Context, id string) (*grantRecord, string, error) {
+func (k *kubeClient) getGrant(ctx context.Context, id string, agents ...Agent) (*grantRecord, string, error) {
+	if k.agentNamespaces {
+		if len(agents) != 1 {
+			return nil, "", errors.New("Agent scope is required")
+		}
+		target, err := k.agentRecordStore(ctx, agents[0].UID)
+		if err != nil {
+			return nil, "", err
+		}
+		return target.getGrant(ctx, id)
+	}
 	secret, err := k.getToolSecret(ctx, "grant", id)
 	if err != nil {
 		return nil, "", err
 	}
 	record, err := k.decodeGrant(ctx, secret)
+	if err == nil {
+		err = k.validateGrantLocation(record)
+	}
 	return record, secret.Metadata.ResourceVersion, err
 }
 
 func (k *kubeClient) putGrant(ctx context.Context, record *grantRecord, resourceVersion string) error {
+	if k.agentNamespaces {
+		target, err := k.agentRecordStore(ctx, record.Grant.InstanceUID)
+		if err != nil {
+			return err
+		}
+		if target.recordAgent.Deleting && !record.Grant.Revoked {
+			return errors.New("Agent is deleting")
+		}
+		if err := target.validateGrantLocation(record); err != nil {
+			return err
+		}
+		if !record.Grant.Revoked {
+			connection, _, err := k.getConnectionForAgent(ctx, *target.recordAgent, record.Grant.ConnectionID)
+			if err != nil {
+				return err
+			}
+			if err := k.ensureConnectionReference(ctx, *target.recordAgent, connection.Connection); err != nil {
+				return err
+			}
+		}
+		record.InstanceName, record.InstanceNamespace = target.recordAgent.Name, target.recordAgent.Namespace
+		return target.putGrant(ctx, record, resourceVersion)
+	}
+	if err := k.validateGrantLocation(record); err != nil {
+		return err
+	}
+	if k.recordAgent != nil && (k.recordAgent.Deleting || k.recordNamespaceDeleting) {
+		return errors.New("Agent is deleting")
+	}
+
 	data, err := k.encodeGrant(ctx, record)
 	if err != nil {
 		return err
@@ -632,19 +805,16 @@ func (k *kubeClient) putGrant(ctx context.Context, record *grantRecord, resource
 		"agenttools.cetirun.microsoft.com/instance-uid":  grant.InstanceUID,
 		"agenttools.cetirun.microsoft.com/connection-id": grant.ConnectionID,
 	}
-	return k.putToolSecret(ctx, "grant", grant.ID, labels, data, resourceVersion)
+	annotations := recordInstanceMetadata(labels, record.InstanceName, record.InstanceNamespace)
+	return k.putToolSecret(ctx, "grant", grant.ID, labels, annotations, data, resourceVersion)
 }
 
 func (k *kubeClient) grantRecords(ctx context.Context, selector string) ([]struct {
 	record  *grantRecord
 	version string
 }, error) {
-	endpoint := "/api/v1/namespaces/" + url.PathEscape(k.namespace) + "/secrets"
-	if selector != "" {
-		endpoint += "?labelSelector=" + url.QueryEscape(selector)
-	}
-	var list secretList
-	if _, err := k.request(ctx, http.MethodGet, endpoint, nil, &list); err != nil {
+	list, err := k.listToolSecrets(ctx, "grant", selector)
+	if err != nil {
 		return nil, err
 	}
 	result := make([]struct {
@@ -659,6 +829,9 @@ func (k *kubeClient) grantRecords(ctx context.Context, selector string) ([]struc
 		if err != nil {
 			return nil, err
 		}
+		if err := k.validateGrantLocation(record); err != nil {
+			return nil, err
+		}
 		result = append(result, struct {
 			record  *grantRecord
 			version string
@@ -668,6 +841,13 @@ func (k *kubeClient) grantRecords(ctx context.Context, selector string) ([]struc
 }
 
 func (k *kubeClient) listGrants(ctx context.Context, owner Owner, instanceUID string) ([]AgentGrant, error) {
+	if k.agentNamespaces {
+		target, err := k.agentRecordStore(ctx, instanceUID)
+		if err != nil {
+			return nil, err
+		}
+		return target.listGrants(ctx, owner, instanceUID)
+	}
 	selector := "agenttools.cetirun.microsoft.com/owner-tenant=" + owner.TenantID + ",agenttools.cetirun.microsoft.com/owner-object=" + owner.ObjectID
 	if instanceUID != "" {
 		selector += ",agenttools.cetirun.microsoft.com/instance-uid=" + instanceUID

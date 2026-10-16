@@ -542,8 +542,15 @@ func (r *AgentReconciler) configHash(instance *cetirunv1alpha1.Agent, team *ceti
 		r.AzureSubscriptionID, r.AzureResourceGroup, r.AzureBotNamePrefix,
 		r.AzureTenantID, r.AzureOIDCIssuerURL,
 	}
-	if r.ToolsMCPURL != "" {
-		config = append(config, r.ToolsMCPURL, r.ToolsMCPAudience, r.ToolsMCPCASecretName, agentIdentityRuntimeRevision)
+	if enabled, err := r.toolsMCPEnabledFor(instance); err != nil {
+		// Reconcile rejects invalid allowlists before this hash is used. Retaining
+		// their raw value here still prevents an invalid configuration from sharing
+		// a skip-cache entry with a valid one.
+		config = append(config, "invalid-tools-mcp-runtime-types", strings.Join(r.ToolsMCPRuntimeTypes, ","))
+	} else if enabled {
+		runtimeTypes, _ := normalizeToolsMCPRuntimeTypes(r.ToolsMCPRuntimeTypes)
+		config = append(config, r.ToolsMCPURL, r.ToolsMCPAudience, r.ToolsMCPCASecretName,
+			string(instance.Spec.Agent.Type), strings.Join(runtimeTypes, ","), agentIdentityRuntimeRevision)
 	}
 	// Preserve the existing hash for deployments and Agents that do not use
 	// Agent Identity. This prevents an unrelated operator upgrade from rolling

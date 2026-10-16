@@ -223,6 +223,14 @@ sandboxSources:
 toolsMCP:
   url: ""
   audience: agent-tools-mcp
+  # The Broker ServiceAccount receives Secret access only through Roles in
+  # Agent namespaces. Leave both fields empty to keep this disabled.
+  brokerNamespace: ""
+  brokerServiceAccount: ""
+  # Native runtime allowlist. Restrict to hermes during a Hermes-only rollout.
+  runtimeTypes:
+    - hermes
+    - openclaw
   # Existing CA-only source Secret in the operator namespace; distributed to each Agent.
   caSecretName: ""
 

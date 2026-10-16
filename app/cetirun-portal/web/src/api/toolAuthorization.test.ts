@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 import { describe, expect, it, vi } from "vitest";
-import { createToolGrant, deleteToolGrant, listToolGrants, startConnection, ToolAuthorizationError, updateToolGrant } from "./toolAuthorization";
+import { createToolGrant, createToolIdentity, deleteToolGrant, listToolGrants, startConnection, ToolAuthorizationError, updateToolGrant, verifyToolGrant } from "./toolAuthorization";
 
 describe("tool authorization API", () => {
   it("uses canonical connection and grant paths without browser credentials", async () => {
@@ -29,6 +29,16 @@ describe("tool authorization API", () => {
     expect(fetch).toHaveBeenLastCalledWith("/api/v1/instances/agent-a/tool-grants/grant-1", expect.objectContaining({ method: "DELETE", headers: expect.objectContaining({ "If-Match": "7" }) }));
   });
 
+  it("creates an Azure Agent binding and verifies with an optimistic revision", async () => {
+    global.fetch = vi.fn().mockResolvedValue(new Response(`{"id":"agent-identity","mode":"agent"}`, { status: 200, headers: { "Content-Type": "application/json" } }));
+    await createToolIdentity("agent-a");
+    expect(fetch).toHaveBeenLastCalledWith("/api/v1/instances/agent-a/tool-identities", expect.objectContaining({ method: "POST", body: JSON.stringify({ provider: "azure" }) }));
+
+    global.fetch = vi.fn().mockResolvedValue(new Response(`{"id":"grant-1","authorization":{"state":"pending"}}`, { status: 200, headers: { "Content-Type": "application/json" } }));
+    await verifyToolGrant("agent-a", "grant-1", 7);
+    expect(fetch).toHaveBeenLastCalledWith("/api/v1/instances/agent-a/tool-grants/grant-1/verify", expect.objectContaining({ method: "POST", headers: expect.objectContaining({ "If-Match": "7" }) }));
+  });
+
   it("retains Portal error codes for unsupported runtimes", async () => {
     global.fetch = vi.fn().mockResolvedValue(new Response(`{"error":{"code":"unsupported_sandbox","message":"Agent Tools MCP is not available to Sandbox Agents"}}`, { status: 400, headers: { "Content-Type": "application/json" } }));
 
@@ -37,5 +47,10 @@ describe("tool authorization API", () => {
       message: "Agent Tools MCP is not available to Sandbox Agents",
       code: "unsupported_sandbox",
     } satisfies Partial<ToolAuthorizationError>);
+  });
+
+  it("marks historical grants read-only when the runtime was migrated", async () => {
+    global.fetch = vi.fn().mockResolvedValue(new Response(`[{"id":"grant-1"}]`, { status: 200, headers: { "Content-Type": "application/json", "X-CetiRun-Tool-Grants-Read-Only": "true" } }));
+    await expect(listToolGrants("agent-a")).resolves.toMatchObject({ grants: [{ id: "grant-1" }], readOnly: true });
   });
 });

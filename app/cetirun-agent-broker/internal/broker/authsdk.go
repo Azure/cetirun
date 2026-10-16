@@ -69,7 +69,7 @@ func authSDKValidationFailureCategory(err error) (string, bool) {
 }
 
 func newAuthSDKClient(cfg Config) *authSDKClient {
-	return &authSDKClient{baseURL: cfg.AuthSDKURL, client: &http.Client{Timeout: cfg.RequestTimeout}}
+	return &authSDKClient{baseURL: cfg.AuthSDKURL, client: &http.Client{Timeout: cfg.RequestTimeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
 }
 
 func (c *authSDKClient) ready(ctx context.Context) error {

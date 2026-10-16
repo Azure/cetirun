@@ -113,6 +113,9 @@ type AgentReconciler struct {
 	ToolsMCPURL                    string
 	ToolsMCPAudience               string
 	ToolsMCPCASecretName           string
+	ToolsMCPRuntimeTypes           []string
+	ToolsMCPBrokerNamespace        string
+	ToolsMCPBrokerServiceAccount   string
 	// agentIdentityGraphClientFactory is test-only dependency injection. A nil
 	// factory constructs the deployment's workload-identity-backed Graph client.
 	agentIdentityGraphClientFactory func() (agentIdentityDirectoryClient, error)
@@ -454,15 +457,27 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 	// We read the gateway Secret content hash here so that external Secret
 	// modifications (token rotation, tailscale key update) invalidate the
 	// skip cache and trigger a full reconcile with Helm upgrade.
-	toolsCAHash, err := r.toolsMCPCAHash(ctx)
+	toolsMCPEnabled, err := r.toolsMCPEnabledFor(instance)
 	if err != nil {
-		return r.failWith(ctx, instance, "ProvisioningFailed", "Tools MCP CA trust is unavailable")
+		return r.rejectAgentConfig(ctx, instance, err)
+	}
+	toolsCAHash := ""
+	if toolsMCPEnabled {
+		toolsCAHash, err = r.toolsMCPCAHash(ctx)
+		if err != nil {
+			return r.failWith(ctx, instance, "ProvisioningFailed", "Tools MCP CA trust is unavailable")
+		}
 	}
 	gwSecretHash := ""
 	gatewaySecretResourceVersion := ""
 	if instance.Status.Phase == cetirunv1alpha1.PhaseReady || instance.Status.Phase == cetirunv1alpha1.PhaseSuspended {
-		if err := r.ensureToolsMCPCA(ctx, instance); err != nil {
+		if err := r.reconcileToolsMCPBrokerRBAC(ctx, instance, !sandboxRequested(instance, team)); err != nil {
 			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+		}
+		if toolsMCPEnabled {
+			if err := r.ensureToolsMCPCA(ctx, instance); err != nil {
+				return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+			}
 		}
 		gwSecret := &corev1.Secret{}
 		gwSecretKey := types.NamespacedName{
@@ -622,8 +637,13 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 	if err := r.ensureNamespacedRBAC(ctx, ns); err != nil {
 		return r.failWith(ctx, instance, "ProvisioningFailed", fmt.Sprintf("ensure namespaced RBAC: %v", err))
 	}
-	if err := r.ensureToolsMCPCA(ctx, instance); err != nil {
-		return r.failWith(ctx, instance, "ProvisioningFailed", "Tools MCP CA trust distribution failed")
+	if err := r.reconcileToolsMCPBrokerRBAC(ctx, instance, !sandboxRequested(instance, team)); err != nil {
+		return r.failWith(ctx, instance, "ProvisioningFailed", "Tools MCP Broker storage access setup failed")
+	}
+	if toolsMCPEnabled {
+		if err := r.ensureToolsMCPCA(ctx, instance); err != nil {
+			return r.failWith(ctx, instance, "ProvisioningFailed", "Tools MCP CA trust distribution failed")
+		}
 	}
 
 	// 7. Ensure gateway token secret.
@@ -779,6 +799,7 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 		ToolsMCPURL:          r.ToolsMCPURL,
 		ToolsMCPAudience:     r.ToolsMCPAudience,
 		ToolsMCPCASecretName: r.ToolsMCPCASecretName,
+		ToolsMCPRuntimeTypes: r.ToolsMCPRuntimeTypes,
 	})
 	if err != nil {
 		return r.rejectAgentConfig(ctx, instance, err)
@@ -1026,6 +1047,13 @@ func (r *AgentReconciler) handleDelete(ctx context.Context, instance *cetirunv1a
 
 	// Agent Identity cleanup is blocking. Removing the finalizer before the
 	// authorization record and directory principal are gone would orphan them.
+	// An Agent first observed while deleting bypasses normal reconciliation, so
+	// grant the Broker access to its existing namespace before cleanup. This
+	// never creates a namespace solely to complete deletion.
+	if err := r.ensureToolsMCPBrokerCleanupRBAC(ctx, instance); err != nil {
+		logger.Error(err, "Broker cleanup access setup failed; retaining finalizer", "instance", instance.Name)
+		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+	}
 	if agentIdentityRequested(instance) || instance.Status.AgentIdentity != nil {
 		if err := r.deleteAgentIdentity(ctx, instance); err != nil {
 			logger.Error(err, "Agent Identity cleanup failed; retaining finalizer", "instance", instance.Name)

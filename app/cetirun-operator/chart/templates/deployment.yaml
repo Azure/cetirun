@@ -1,3 +1,8 @@
+{{- if empty .Values.toolsMCP.runtimeTypes }}{{ fail "toolsMCP.runtimeTypes must include at least one qualified runtime" }}{{ end }}
+{{- range .Values.toolsMCP.runtimeTypes }}
+{{- if not (has . (list "hermes" "openclaw")) }}{{ fail "toolsMCP.runtimeTypes supports only hermes and openclaw" }}{{ end }}
+{{- end }}
+{{- if ne (empty .Values.toolsMCP.brokerNamespace) (empty .Values.toolsMCP.brokerServiceAccount) }}{{ fail "toolsMCP.brokerNamespace and toolsMCP.brokerServiceAccount must be set together" }}{{ end }}
 {{- $sandboxSources := include "cetirun-operator.sandboxSourcesConfig" . -}}
 {{- $chat := deepCopy .Values.chatAccess -}}
 {{- if default false ((.Values.global.portalChat | default dict).enabled) -}}
@@ -116,8 +121,14 @@ spec:
               value: {{ .Values.toolsMCP.url | quote }}
             - name: WORKLOAD_TOKEN_AUDIENCE
               value: {{ .Values.toolsMCP.audience | quote }}
+            - name: TOOLS_MCP_RUNTIME_TYPES
+              value: {{ join "," .Values.toolsMCP.runtimeTypes | quote }}
             - name: TOOLS_MCP_CA_SECRET_NAME
               value: {{ .Values.toolsMCP.caSecretName | quote }}
+            - name: TOOLS_MCP_BROKER_NAMESPACE
+              value: {{ .Values.toolsMCP.brokerNamespace | quote }}
+            - name: TOOLS_MCP_BROKER_SERVICE_ACCOUNT
+              value: {{ .Values.toolsMCP.brokerServiceAccount | quote }}
             - name: AGENT_ID_CLEANUP_ENABLED
               value: {{ .Values.agentIdentity.cleanupEnabled | quote }}
             {{- if or .Values.agentIdentity.enabled .Values.agentIdentity.cleanupEnabled }}

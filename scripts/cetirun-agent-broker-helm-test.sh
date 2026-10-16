@@ -29,7 +29,22 @@ output="$(helm template broker-test "${chart_dir}" "${values[@]}")"
 grep -Fq 'automountServiceAccountToken: false' <<<"${output}"
 grep -Fq 'istio.io/rev: "asm-example"' <<<"${output}"
 grep -Fq "image: \"ghcr.io/azure/cetirun-agent-broker:${app_version}\"" <<<"${output}"
-grep -Fq 'image: "mcr.microsoft.com/entra-sdk/auth-sidecar:1.0.0-azurelinux3.0-distroless@sha256:b3e6204abb87daa9c414dcade11f16060e030d114b81ecbd8bd2a7346e107523"' <<<"${output}"
+grep -Fq 'image: "mcr.microsoft.com/entra-sdk/auth-sidecar:1.1.2-azurelinux3.0-distroless@sha256:73a8763100c93c3da1a3ed1ba3af2c6122c0517687354dceded30537a1aee97f"' <<<"${output}"
+grep -Fq 'name: AzureAd__ClientCredentials__0__SignedAssertionFileDiskPath' <<<"${output}"
+grep -Fq 'value: /var/run/secrets/azure/tokens/azure-identity-token' <<<"${output}"
+if grep -Fq 'value: $(AZURE_FEDERATED_TOKEN_FILE)' <<<"${output}"; then
+  echo 'SDK assertion path must not depend on a later webhook-injected variable' >&2
+  exit 1
+fi
+grep -Fq 'name: Sidecar__AllowOverrides__GetAuthorizationHeader' <<<"${output}"
+oauth_output="$(helm template broker-test "${chart_dir}" "${values[@]}" --set-string providers.github.credentialsSecretName=github-oauth-example)"
+grep -Fq 'name: GITHUB_OAUTH_CLIENT_ID' <<<"${oauth_output}"
+grep -Fq 'name: GITHUB_OAUTH_CLIENT_SECRET' <<<"${oauth_output}"
+grep -Fq 'name: "github-oauth-example"' <<<"${oauth_output}"
+if grep -Fq 'name: GITHUB_APP_' <<<"${oauth_output}"; then
+  echo 'FAIL: personal GitHub OAuth must not configure GitHub App credentials' >&2
+  exit 1
+fi
 if grep -Fq ':latest' <<<"${output}"; then
   echo "FAIL: chart rendered a latest image tag" >&2
   exit 1

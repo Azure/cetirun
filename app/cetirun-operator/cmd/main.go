@@ -259,6 +259,19 @@ func main() {
 		setupLog.Error(err, "invalid Custom runtime configuration")
 		os.Exit(1)
 	}
+	if raw, present := os.LookupEnv("TOOLS_MCP_RUNTIME_TYPES"); present && strings.TrimSpace(raw) == "" {
+		setupLog.Error(fmt.Errorf("empty runtime allowlist"), "invalid Tools MCP runtime configuration")
+		os.Exit(1)
+	}
+	toolsMCPRuntimeTypes, err := controller.ParseToolsMCPRuntimeTypes(os.Getenv("TOOLS_MCP_RUNTIME_TYPES"))
+	if err != nil {
+		setupLog.Error(err, "invalid Tools MCP runtime configuration")
+		os.Exit(1)
+	}
+	if _, err := controller.ParseToolsMCPBrokerStorageConfig(os.Getenv("TOOLS_MCP_BROKER_NAMESPACE"), os.Getenv("TOOLS_MCP_BROKER_SERVICE_ACCOUNT")); err != nil {
+		setupLog.Error(err, "invalid Tools MCP Broker storage configuration")
+		os.Exit(1)
+	}
 	agentReconciler := &controller.AgentReconciler{
 		Client:                         mgr.GetClient(),
 		APIReader:                      mgr.GetAPIReader(),
@@ -293,6 +306,9 @@ func main() {
 		ToolsMCPURL:                    os.Getenv("TOOLS_MCP_URL"),
 		ToolsMCPAudience:               os.Getenv("WORKLOAD_TOKEN_AUDIENCE"),
 		ToolsMCPCASecretName:           os.Getenv("TOOLS_MCP_CA_SECRET_NAME"),
+		ToolsMCPRuntimeTypes:           toolsMCPRuntimeTypes,
+		ToolsMCPBrokerNamespace:        os.Getenv("TOOLS_MCP_BROKER_NAMESPACE"),
+		ToolsMCPBrokerServiceAccount:   os.Getenv("TOOLS_MCP_BROKER_SERVICE_ACCOUNT"),
 		AIGateway:                      aiGatewayConfig,
 	}
 	if customConfig.Enabled {

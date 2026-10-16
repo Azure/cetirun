@@ -43,7 +43,8 @@ type Config struct {
 	AgentIdentityEnabled bool
 	// AgentToolsEnabled exposes owner-scoped external account connections and
 	// per-instance tool grants. It independently requires verified owner claims.
-	AgentToolsEnabled bool
+	AgentToolsEnabled      bool
+	AgentToolsRuntimeTypes []string
 	// EntraTenantID and PortalClientID identify the issuer and audience of the
 	// ID token passed by oauth2-proxy to the Portal backend.
 	EntraTenantID  string
@@ -82,6 +83,7 @@ func Load() Config {
 		AllowedAgentTypes:                  envOrDefaultAgentTypes("ALLOWED_AGENT_TYPES", defaultAllowedAgentTypes),
 		SandboxRuntimes:                    loadSandboxRuntimes(os.Getenv("SANDBOX_RUNTIME_PROFILES")),
 		AgentIdentityEnabled:               os.Getenv("FEATURE_AGENT_IDENTITY_ENABLED") == "true",
+		AgentToolsRuntimeTypes:             strings.Split(envOrDefault("TOOLS_MCP_RUNTIME_TYPES", "hermes,openclaw"), ","),
 		AgentToolsEnabled:                  os.Getenv("FEATURE_AGENT_TOOLS_ENABLED") == "true",
 		EntraTenantID:                      envOrDefault("ENTRA_TENANT_ID", ""),
 		PortalClientID:                     envOrDefault("PORTAL_OIDC_CLIENT_ID", ""),

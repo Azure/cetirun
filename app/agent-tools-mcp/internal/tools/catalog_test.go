@@ -9,8 +9,8 @@ import (
 )
 
 func TestCatalogHasFixedCompleteToolSet(t *testing.T) {
-	if got := len(Catalog()); got != 18 {
-		t.Fatalf("catalog size = %d, want 18", got)
+	if got := len(Catalog()); got != 20 {
+		t.Fatalf("catalog size = %d, want 20", got)
 	}
 	seen := map[string]bool{}
 	for _, spec := range Catalog() {
@@ -18,6 +18,44 @@ func TestCatalogHasFixedCompleteToolSet(t *testing.T) {
 			t.Fatalf("duplicate tool %q", spec.Name)
 		}
 		seen[spec.Name] = true
+	}
+}
+
+func TestAzureWriteSchemasAreStrictAndMarkedWrite(t *testing.T) {
+	create, found := Find("azure_resource_groups_create")
+	if !found || !create.Write {
+		t.Fatal("Azure resource group create is not a write tool")
+	}
+	validCreate := json.RawMessage(`{"connection_id":"conn-demo","subscription_id":"11111111-1111-1111-1111-111111111111","resource_group_name":"agent-test-rg","location":"eastus","operation_id":"operation-1"}`)
+	arguments, err := DecodeArguments(validCreate, create.InputSchema)
+	if err != nil || ValidateToolArguments(create.Name, arguments) != nil {
+		t.Fatalf("valid create arguments rejected: %v", err)
+	}
+	for _, raw := range []json.RawMessage{
+		json.RawMessage(`{"connection_id":"conn-demo","subscription_id":"11111111-1111-1111-1111-111111111111","resource_group_name":"../outside","location":"eastus","operation_id":"operation-1"}`),
+		json.RawMessage(`{"connection_id":"conn-demo","subscription_id":"11111111-1111-1111-1111-111111111111","resource_group_name":"agent-test-rg.","location":"eastus","operation_id":"operation-1"}`),
+		json.RawMessage(`{"connection_id":"conn-demo","subscription_id":"11111111-1111-1111-1111-111111111111","resource_group_name":"agent-test-rg","location":"east us","operation_id":"operation-1"}`),
+	} {
+		if arguments, err := DecodeArguments(raw, create.InputSchema); err == nil && ValidateToolArguments(create.Name, arguments) == nil {
+			t.Fatalf("unsafe create arguments accepted: %s", raw)
+		}
+	}
+
+	tags, found := Find("azure_resource_group_tags_update")
+	if !found || !tags.Write {
+		t.Fatal("Azure resource group tags update is not a write tool")
+	}
+	tooMany := "{"
+	for index := 0; index < 51; index++ {
+		if index > 0 {
+			tooMany += ","
+		}
+		tooMany += `"tag` + string(rune('a'+index%26)) + `-` + string(rune('a'+index/26)) + `":"value"`
+	}
+	tooMany += "}"
+	raw := json.RawMessage(`{"connection_id":"conn-demo","subscription_id":"11111111-1111-1111-1111-111111111111","resource_group_name":"agent-test-rg","tags":` + tooMany + `,"operation_id":"operation-1"}`)
+	if _, err := DecodeArguments(raw, tags.InputSchema); err == nil {
+		t.Fatal("tag map above the maximum was accepted")
 	}
 }
 

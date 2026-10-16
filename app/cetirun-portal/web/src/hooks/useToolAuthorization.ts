@@ -4,6 +4,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   createToolGrant,
+  createToolIdentity,
   deleteConnection,
   deleteToolGrant,
   listConnections,
@@ -11,7 +12,9 @@ import {
   reconnectConnection,
   startConnection,
   updateToolGrant,
+  verifyToolGrant,
   type ConnectionProvider,
+  type ToolIdentityInput,
   type ToolGrantInput,
 } from "../api/toolAuthorization";
 
@@ -38,5 +41,14 @@ export function useToolGrants(name: string, enabled: boolean) {
     create: useMutation({ mutationFn: (input: ToolGrantInput) => createToolGrant(name, input), onSuccess: refresh }),
     update: useMutation({ mutationFn: ({ id, input }: { id: string; input: ToolGrantInput & { revision: number } }) => updateToolGrant(name, id, input), onSuccess: refresh }),
     remove: useMutation({ mutationFn: ({ id, revision }: { id: string; revision: number }) => deleteToolGrant(name, id, revision), onSuccess: refresh }),
+    verify: useMutation({ mutationFn: ({ id, revision }: { id: string; revision: number }) => verifyToolGrant(name, id, revision), onSuccess: refresh }),
   };
+}
+
+export function useToolIdentity(name: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: ToolIdentityInput) => createToolIdentity(name, input),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["tool-connections"] }),
+  });
 }

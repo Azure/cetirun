@@ -79,8 +79,10 @@ func New(
 		api.HandleFunc("DELETE /api/v1/connections/{id}", toolConnectionsHandler.DeleteConnection)
 		api.HandleFunc("POST /api/v1/connections/{id}/reconnect", toolConnectionsHandler.ReconnectConnection)
 		api.HandleFunc("GET /api/v1/instances/{name}/tool-grants", toolConnectionsHandler.ListToolGrants)
+		api.HandleFunc("POST /api/v1/instances/{name}/tool-identities", toolConnectionsHandler.CreateToolIdentity)
 		api.HandleFunc("POST /api/v1/instances/{name}/tool-grants", toolConnectionsHandler.CreateToolGrant)
 		api.HandleFunc("PUT /api/v1/instances/{name}/tool-grants/{id}", toolConnectionsHandler.UpdateToolGrant)
+		api.HandleFunc("POST /api/v1/instances/{name}/tool-grants/{id}/verify", toolConnectionsHandler.VerifyToolGrant)
 		api.HandleFunc("DELETE /api/v1/instances/{name}/tool-grants/{id}", toolConnectionsHandler.DeleteToolGrant)
 	}
 

@@ -3,10 +3,18 @@
 
 import { apiFetch } from "./fetch";
 
-export const TOOL_CATALOG_VERSION = "2026-10-10";
+export const TOOL_CATALOG_VERSION = "2026-10-16";
 
 export type ConnectionProvider = "azure" | "microsoft" | "github" | "google";
-export type ConnectionStatus = "connecting" | "connected" | "interaction_required" | "disconnected";
+export type ConnectionMode = "agent" | "delegated";
+export type ConnectionStatus = "connecting" | "connected" | "interaction_required" | "disconnected" | "pending" | "ready";
+
+export interface AgentIdentity {
+  instanceUid: string;
+  tenantId: string;
+  principalId: string;
+  clientId: string;
+}
 
 export interface Connection {
   id: string;
@@ -16,6 +24,10 @@ export interface Connection {
   revision: number;
   status: ConnectionStatus;
   createdAt: string;
+  /** Absent records were created before independent Agent identities existed. */
+  mode?: ConnectionMode;
+  /** Present only for Broker-derived independent Agent identities. */
+  identity?: AgentIdentity;
 }
 
 export interface ConnectionStart {
@@ -26,6 +38,8 @@ export interface ConnectionStart {
 
 export interface ToolConstraints {
   subscriptionIds: string[];
+  /** Absent from grants created before Azure write operations were available. */
+  resourceGroupNames?: string[];
   repositoryIds: string[];
   baseBranches: string[];
   calendarIds: string[];
@@ -42,6 +56,23 @@ export interface ToolGrant {
   constraints: ToolConstraints;
   expiresAt: string;
   revision: number;
+  authorization?: ToolGrantAuthorization;
+}
+
+export interface ToolGrantList {
+  grants: ToolGrant[];
+  readOnly: boolean;
+}
+
+export interface ToolGrantAuthorization {
+  state: "pending" | "verified";
+  source: "direct_rbac";
+  verifiedAt?: string;
+  validUntil?: string;
+  reason?: string;
+  scopes?: string[];
+  actions?: string[];
+  requestIds?: string[];
 }
 
 export interface ToolGrantInput {
@@ -92,8 +123,16 @@ export async function deleteConnection(id: string): Promise<void> {
   }
 }
 
-export async function listToolGrants(name: string, signal?: AbortSignal): Promise<ToolGrant[]> {
-  return parse(await apiFetch(`/api/v1/instances/${encodeURIComponent(name)}/tool-grants`, { signal }));
+export async function listToolGrants(name: string, signal?: AbortSignal): Promise<ToolGrantList> {
+  const response = await apiFetch(`/api/v1/instances/${encodeURIComponent(name)}/tool-grants`, { signal });
+  const grants = await parse<ToolGrant[]>(response);
+  return { grants, readOnly: response.headers.get("X-CetiRun-Tool-Grants-Read-Only") === "true" };
+}
+
+export type ToolIdentityInput = { provider: "azure" };
+
+export async function createToolIdentity(name: string, input: ToolIdentityInput = { provider: "azure" }): Promise<Connection> {
+  return parse(await apiFetch(`/api/v1/instances/${encodeURIComponent(name)}/tool-identities`, { method: "POST", body: JSON.stringify(input) }));
 }
 
 export async function createToolGrant(name: string, input: ToolGrantInput): Promise<ToolGrant> {
@@ -109,4 +148,8 @@ export async function deleteToolGrant(name: string, id: string, revision: number
   if (!response.ok) {
     throw await responseError(response, "Could not revoke this tool grant");
   }
+}
+
+export async function verifyToolGrant(name: string, id: string, revision: number): Promise<ToolGrant> {
+  return parse(await apiFetch(`/api/v1/instances/${encodeURIComponent(name)}/tool-grants/${encodeURIComponent(id)}/verify`, { method: "POST", headers: { "If-Match": String(revision) } }));
 }

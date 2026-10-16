@@ -28,13 +28,19 @@ func Catalog() []Spec {
 	operation := field("operation_id", stringSchema(8, 128, `^[A-Za-z0-9][A-Za-z0-9._-]*$`))
 	repository := field("repository_id", stringSchema(1, 32, `^[0-9]+$`))
 	calendar := field("calendar_id", stringSchema(1, 256, ""))
+	azureSubscription := field("subscription_id", stringSchema(1, 64, `^[0-9a-fA-F-]+$`))
+	resourceGroup := field("resource_group_name", stringSchema(1, 90, `^[A-Za-z0-9](?:[A-Za-z0-9_.()\-]*[A-Za-z0-9_()\-])?$`))
+	location := field("location", stringSchema(2, 64, `^[A-Za-z0-9]+$`))
+	tags := field("tags", mapSchema(1, 50, stringSchema(1, 256, `^[^\r\n]+$`)))
 	return []Spec{
 		{"connections_status", "List this instance's authorized connections without credentials.", object(nil), false},
 		{"connections_start_link", "Return the configured Portal page for connecting accounts and managing grants.", object(nil), false},
 		{"azure_subscriptions_list", "List authorized Azure subscriptions.", object([]property{connection}), false},
-		{"azure_resource_groups_list", "List resource groups in one authorized subscription.", object([]property{connection, field("subscription_id", stringSchema(1, 64, `^[0-9a-fA-F-]+$`))}), false},
-		{"azure_resources_search", "Search authorized Azure resources using fixed structured filters.", object([]property{connection, field("subscription_id", stringSchema(1, 64, `^[0-9a-fA-F-]+$`)), optional("resource_type", stringSchema(1, 160, `^[A-Za-z0-9./]+$`)), optional("name_prefix", stringSchema(1, 128, `^[A-Za-z0-9._ -]+$`))}), false},
+		{"azure_resource_groups_list", "List resource groups in one authorized subscription.", object([]property{connection, azureSubscription}), false},
+		{"azure_resources_search", "Search authorized Azure resources using fixed structured filters.", object([]property{connection, azureSubscription, optional("resource_type", stringSchema(1, 160, `^[A-Za-z0-9./]+$`)), optional("name_prefix", stringSchema(1, 128, `^[A-Za-z0-9._ -]+$`))}), false},
 		{"azure_resource_show", "Get one Azure resource by a canonical resource ID.", object([]property{connection, field("resource_id", stringSchema(16, 1024, `^/subscriptions/[0-9a-fA-F-]+/[A-Za-z0-9._~:/-]+$`))}), false},
+		{"azure_resource_groups_create", "Create one pre-authorized Azure resource group. The resource group name and subscription must be granted explicitly.", object([]property{connection, azureSubscription, resourceGroup, location, operation}), true},
+		{"azure_resource_group_tags_update", "Merge tags on one pre-authorized Azure resource group. The resource group name and subscription must be granted explicitly.", object([]property{connection, azureSubscription, resourceGroup, tags, operation}), true},
 		{"github_repositories_get", "Get an authorized GitHub repository.", object([]property{connection, repository}), false},
 		{"github_contents_get", "Get bounded text content from an authorized GitHub repository.", object([]property{connection, repository, field("path", stringSchema(1, 512, `^[^\\]+$`)), optional("ref", stringSchema(1, 256, ""))}), false},
 		{"github_issues_list", "List issues from an authorized GitHub repository.", object([]property{connection, repository, optional("state", enumSchema("open", "closed", "all"))}), false},
@@ -96,6 +102,9 @@ func emailSchema() map[string]any {
 func emailArray() map[string]any {
 	return map[string]any{"type": "array", "minItems": 1, "maxItems": 50, "items": emailSchema()}
 }
+func mapSchema(minimum, maximum int, values map[string]any) map[string]any {
+	return map[string]any{"type": "object", "properties": map[string]any{}, "required": []string{}, "additionalProperties": values, "minProperties": minimum, "maxProperties": maximum}
+}
 
 func Find(name string) (Spec, bool) {
 	for _, spec := range Catalog() {
@@ -123,6 +132,18 @@ func DecodeArguments(raw json.RawMessage, schema map[string]any) (map[string]any
 }
 
 func ValidateToolArguments(tool string, arguments map[string]any) error {
+	switch tool {
+	case "azure_resource_groups_create", "azure_resource_group_tags_update":
+		if !safeAzureSubscriptionID(stringArgument(arguments, "subscription_id")) || !safeResourceGroupName(stringArgument(arguments, "resource_group_name")) || !safeOperationID(stringArgument(arguments, "operation_id")) {
+			return errors.New("Azure write arguments have invalid format")
+		}
+		if tool == "azure_resource_groups_create" && !safeAzureLocation(stringArgument(arguments, "location")) {
+			return errors.New("location has invalid format")
+		}
+		if tool == "azure_resource_group_tags_update" && !safeTags(arguments["tags"]) {
+			return errors.New("tags must be a bounded flat string map")
+		}
+	}
 	start, hasStart := arguments["start"].(string)
 	end, hasEnd := arguments["end"].(string)
 	if !hasStart && !hasEnd {
@@ -147,8 +168,15 @@ func validate(value any, schema map[string]any, path string) error {
 		if !ok {
 			return fmt.Errorf("%s must be an object", path)
 		}
-		properties := schema["properties"].(map[string]any)
-		for _, required := range schema["required"].([]string) {
+		if minimum, ok := schema["minProperties"].(int); ok && len(objectValue) < minimum {
+			return fmt.Errorf("%s has too few properties", path)
+		}
+		if maximum, ok := schema["maxProperties"].(int); ok && len(objectValue) > maximum {
+			return fmt.Errorf("%s has too many properties", path)
+		}
+		properties, _ := schema["properties"].(map[string]any)
+		required, _ := schema["required"].([]string)
+		for _, required := range required {
 			if _, found := objectValue[required]; !found {
 				return fmt.Errorf("%s.%s is required", path, required)
 			}
@@ -156,7 +184,15 @@ func validate(value any, schema map[string]any, path string) error {
 		for key, nested := range objectValue {
 			nestedSchema, found := properties[key]
 			if !found {
-				return fmt.Errorf("%s.%s is not allowed", path, key)
+				additional, additionalFound := schema["additionalProperties"]
+				if !additionalFound || additional == false {
+					return fmt.Errorf("%s.%s is not allowed", path, key)
+				}
+				var allowed bool
+				nestedSchema, allowed = additional.(map[string]any)
+				if !allowed {
+					return fmt.Errorf("%s.%s is not allowed", path, key)
+				}
 			}
 			if err := validate(nested, nestedSchema.(map[string]any), path+"."+key); err != nil {
 				return err
@@ -229,4 +265,81 @@ func validEmail(value string) bool {
 	}
 	parsed, err := mail.ParseAddress(value)
 	return err == nil && parsed.Address == value && strings.Count(value, "@") == 1 && strings.LastIndex(value, ".") > strings.LastIndex(value, "@")+1
+}
+
+func stringArgument(arguments map[string]any, key string) string {
+	value, _ := arguments[key].(string)
+	return value
+}
+
+func safeAzureSubscriptionID(value string) bool {
+	if value == "" || len(value) > 64 {
+		return false
+	}
+	for _, character := range value {
+		if !(character >= '0' && character <= '9' || character >= 'a' && character <= 'f' || character >= 'A' && character <= 'F' || character == '-') {
+			return false
+		}
+	}
+	return true
+}
+
+func safeResourceGroupName(value string) bool {
+	if len(value) == 0 || len(value) > 90 || strings.Contains(value, "..") || strings.HasSuffix(value, ".") {
+		return false
+	}
+	for index, character := range value {
+		if (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') || (character >= '0' && character <= '9') || strings.ContainsRune("_.()-", character) {
+			if index != 0 || (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') || (character >= '0' && character <= '9') {
+				continue
+			}
+		}
+		return false
+	}
+	return true
+}
+
+func safeAzureLocation(value string) bool {
+	if len(value) < 2 || len(value) > 64 {
+		return false
+	}
+	for _, character := range value {
+		if !(character >= 'a' && character <= 'z') && !(character >= 'A' && character <= 'Z') && !(character >= '0' && character <= '9') {
+			return false
+		}
+	}
+	return true
+}
+
+func safeOperationID(value string) bool {
+	if len(value) < 8 || len(value) > 128 {
+		return false
+	}
+	for index, character := range value {
+		if (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') || (character >= '0' && character <= '9') {
+			continue
+		}
+		if index > 0 && strings.ContainsRune("._-", character) {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func safeTags(value any) bool {
+	tags, ok := value.(map[string]any)
+	if !ok || len(tags) == 0 || len(tags) > 50 {
+		return false
+	}
+	for key, value := range tags {
+		if len(key) == 0 || len(key) > 128 || strings.ContainsAny(key, "\r\n") {
+			return false
+		}
+		text, ok := value.(string)
+		if !ok || len(text) == 0 || len(text) > 256 || strings.ContainsAny(text, "\r\n") {
+			return false
+		}
+	}
+	return true
 }

@@ -4,6 +4,7 @@
 package broker
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -39,6 +40,29 @@ func providerTools(provider string) []string {
 	}
 }
 
+// connectionCapabilities projects the fixed catalog for independent Azure
+// identities. It deliberately does not persist a catalog migration: existing
+// grants retain their selected tools, while an existing Agent connection can
+// discover newly introduced tools and request a separate grant for them.
+func connectionCapabilities(connection Connection) []string {
+	if connectionMode(connection) == modeAgent && connection.Provider == "azure" {
+		return []string{
+			"azure_subscriptions_list",
+			"azure_resource_groups_list",
+			"azure_resources_search",
+			"azure_resource_show",
+			"azure_resource_groups_create",
+			"azure_resource_group_tags_update",
+		}
+	}
+	return connection.Capabilities
+}
+
+func projectedConnection(connection Connection) Connection {
+	connection.Capabilities = connectionCapabilities(connection)
+	return connection
+}
+
 func providerForTool(tool string) string {
 	if strings.HasPrefix(tool, "azure_") {
 		return "azure"
@@ -58,11 +82,15 @@ func (p *providerClient) authorizationURL(provider, state, verifier, nonce strin
 	case "azure", "microsoft":
 		return newOAuthClient(p.cfg).authorizationURL(state, nonce, pkceChallenge(verifier), ""), nil
 	case "github":
-		if p.cfg.GitHubAppClientID == "" || p.cfg.GitHubAppClientSecret == "" {
-			return "", errors.New("GitHub App OAuth is not configured")
+		if p.cfg.GitHubOAuthClientID == "" || p.cfg.GitHubOAuthClientSecret == "" {
+			return "", errors.New("GitHub OAuth is not configured")
 		}
-		values.Set("client_id", p.cfg.GitHubAppClientID)
+		values.Set("client_id", p.cfg.GitHubOAuthClientID)
 		values.Set("redirect_uri", p.cfg.RedirectURI)
+		// The repo scope is intentionally coarse because GitHub OAuth Apps cannot
+		// express CetiRun's repository- and tool-level grants. CetiRun applies
+		// those restrictions before each tool credential is issued.
+		values.Set("scope", "repo")
 		return "https://github.com/login/oauth/authorize?" + values.Encode(), nil
 	case "google":
 		if p.cfg.GoogleClientID == "" || p.cfg.GoogleClientSecret == "" {
@@ -88,7 +116,7 @@ func (p *providerClient) exchangeCode(ctx context.Context, provider, code, verif
 	endpoint, clientID, secret := "", "", ""
 	switch provider {
 	case "github":
-		endpoint, clientID, secret = "https://github.com/login/oauth/access_token", p.cfg.GitHubAppClientID, p.cfg.GitHubAppClientSecret
+		endpoint, clientID, secret = "https://github.com/login/oauth/access_token", p.cfg.GitHubOAuthClientID, p.cfg.GitHubOAuthClientSecret
 	case "google":
 		endpoint, clientID, secret = "https://oauth2.googleapis.com/token", p.cfg.GoogleClientID, p.cfg.GoogleClientSecret
 		values.Set("redirect_uri", p.cfg.RedirectURI)
@@ -98,7 +126,7 @@ func (p *providerClient) exchangeCode(ctx context.Context, provider, code, verif
 	values.Set("client_id", clientID)
 	values.Set("client_secret", secret)
 	values.Set("grant_type", "authorization_code")
-	credential, err := p.tokenRequest(ctx, endpoint, values)
+	credential, err := p.tokenRequest(ctx, provider, endpoint, values)
 	if err != nil {
 		return providerCredential{}, "", "", err
 	}
@@ -115,6 +143,9 @@ func credentialFromOAuth(tokens oauthTokens) providerCredential {
 }
 
 func (p *providerClient) refresh(ctx context.Context, provider string, current providerCredential) (providerCredential, error) {
+	if current.NonExpiring {
+		return providerCredential{}, errors.New("provider credential does not support refresh")
+	}
 	if current.RefreshToken == "" {
 		return providerCredential{}, errors.New("provider refresh token is unavailable")
 	}
@@ -135,8 +166,8 @@ func (p *providerClient) refresh(ctx context.Context, provider string, current p
 	switch provider {
 	case "github":
 		endpoint = "https://github.com/login/oauth/access_token"
-		values.Set("client_id", p.cfg.GitHubAppClientID)
-		values.Set("client_secret", p.cfg.GitHubAppClientSecret)
+		values.Set("client_id", p.cfg.GitHubOAuthClientID)
+		values.Set("client_secret", p.cfg.GitHubOAuthClientSecret)
 	case "google":
 		endpoint = "https://oauth2.googleapis.com/token"
 		values.Set("client_id", p.cfg.GoogleClientID)
@@ -144,7 +175,7 @@ func (p *providerClient) refresh(ctx context.Context, provider string, current p
 	default:
 		return providerCredential{}, errors.New("unsupported provider")
 	}
-	next, err := p.tokenRequest(ctx, endpoint, values)
+	next, err := p.tokenRequest(ctx, provider, endpoint, values)
 	if err != nil {
 		return providerCredential{}, err
 	}
@@ -155,7 +186,7 @@ func (p *providerClient) refresh(ctx context.Context, provider string, current p
 	return next, nil
 }
 
-func (p *providerClient) tokenRequest(ctx context.Context, endpoint string, values url.Values) (providerCredential, error) {
+func (p *providerClient) tokenRequest(ctx context.Context, provider, endpoint string, values url.Values) (providerCredential, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(values.Encode()))
 	if err != nil {
 		return providerCredential{}, err
@@ -171,15 +202,29 @@ func (p *providerClient) tokenRequest(ctx context.Context, endpoint string, valu
 		return providerCredential{}, errors.New("provider token endpoint rejected the request")
 	}
 	var payload struct {
-		AccessToken  string `json:"access_token"`
-		RefreshToken string `json:"refresh_token"`
-		ExpiresIn    int64  `json:"expires_in"`
-		Scope        string `json:"scope"`
+		AccessToken  string          `json:"access_token"`
+		RefreshToken string          `json:"refresh_token"`
+		ExpiresIn    json.RawMessage `json:"expires_in"`
+		Scope        string          `json:"scope"`
 	}
-	if json.NewDecoder(io.LimitReader(response.Body, 64<<10)).Decode(&payload) != nil || payload.AccessToken == "" || payload.ExpiresIn <= 0 {
+	if json.NewDecoder(io.LimitReader(response.Body, 64<<10)).Decode(&payload) != nil || payload.AccessToken == "" {
 		return providerCredential{}, errors.New("provider token endpoint returned an invalid response")
 	}
-	return providerCredential{AccessToken: payload.AccessToken, RefreshToken: payload.RefreshToken, ExpiresAt: time.Now().UTC().Add(time.Duration(payload.ExpiresIn) * time.Second), Scopes: strings.Fields(payload.Scope)}, nil
+	if len(payload.ExpiresIn) == 0 {
+		if provider != "github" {
+			return providerCredential{}, errors.New("provider token endpoint returned an invalid response")
+		}
+		return providerCredential{AccessToken: payload.AccessToken, RefreshToken: payload.RefreshToken, NonExpiring: true, Scopes: githubScopes(payload.Scope)}, nil
+	}
+	var expiresIn int64
+	if bytes.Equal(bytes.TrimSpace(payload.ExpiresIn), []byte("null")) || json.Unmarshal(payload.ExpiresIn, &expiresIn) != nil || expiresIn <= 0 || expiresIn > int64(time.Duration(1<<63-1)/time.Second) {
+		return providerCredential{}, errors.New("provider token endpoint returned an invalid response")
+	}
+	credential := providerCredential{AccessToken: payload.AccessToken, RefreshToken: payload.RefreshToken, ExpiresAt: time.Now().UTC().Add(time.Duration(expiresIn) * time.Second), Scopes: strings.Fields(payload.Scope)}
+	if provider == "github" {
+		credential.Scopes = githubScopes(payload.Scope)
+	}
+	return credential, nil
 }
 
 func (p *providerClient) account(ctx context.Context, provider, token string) (string, string, error) {
@@ -231,7 +276,12 @@ func (p *providerClient) account(ctx context.Context, provider, token string) (s
 
 func capabilitiesForOAuth(provider string, scopes []string) []string {
 	if provider == "github" {
-		return providerTools(provider)
+		for _, scope := range scopes {
+			if scope == "repo" || scope == "public_repo" {
+				return providerTools(provider)
+			}
+		}
+		return nil
 	}
 	capabilities := []string{}
 	if contains(scopes, "https://www.googleapis.com/auth/gmail.readonly") {
@@ -244,6 +294,11 @@ func capabilitiesForOAuth(provider string, scopes []string) []string {
 		capabilities = append(capabilities, "calendar_events_list", "calendar_events_create")
 	}
 	return capabilities
+}
+
+func githubScopes(raw string) []string {
+	parts := strings.FieldsFunc(raw, func(r rune) bool { return r == ',' || r == ' ' || r == '\t' || r == '\n' || r == '\r' })
+	return uniqueStrings(parts)
 }
 
 func microsoftCapabilities(accessToken, provider string) []string {

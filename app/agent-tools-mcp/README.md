@@ -39,6 +39,8 @@ write additionally requires `operation_id` (`8..128` characters matching
 | `azure_resource_groups_list` | `connection_id`, `subscription_id` | none |
 | `azure_resources_search` | `connection_id`, `subscription_id` | `resource_type`, `name_prefix` |
 | `azure_resource_show` | `connection_id`, `resource_id` | none |
+| `azure_resource_groups_create` | `connection_id`, `subscription_id`, `resource_group_name`, `location`, `operation_id` | none |
+| `azure_resource_group_tags_update` | `connection_id`, `subscription_id`, `resource_group_name`, `tags`, `operation_id` | none |
 | `github_repositories_get` | `connection_id`, `repository_id` | none |
 | `github_contents_get` | `connection_id`, `repository_id`, `path` | `ref` |
 | `github_issues_list`, `github_pull_requests_list` | `connection_id`, `repository_id` | `state` |
@@ -56,6 +58,16 @@ opaque bounded strings. `start` and `end` require RFC3339 offsets. `to`, `cc`,
 `bcc`, and `attendees` are arrays of 1..50 plain email addresses.
 
 ## Write records and deployment
+
+Azure writes require independent Agent identity, an explicitly selected write
+tool, `subscriptionIds`, and `resourceGroupNames` in the grant. Resource-group
+names are exact, case-insensitive allowlist entries; wildcards are rejected.
+The Broker verifies direct subscription RBAC for `*/read` and the selected
+write actions. Reader alone cannot verify a write grant. Tags use ARM's Merge
+operation and preserve unrelated tags. Creation rejects an existing group
+before PUT, but a concurrent external creation can still turn that PUT into
+an update; this is not an atomic create-only guarantee. Delegated Azure
+connections remain read-only.
 
 Before a write is sent, the service CAS-creates a record in the dedicated
 operation-record namespace. The key binds instance UID, connection, tool, and
@@ -92,3 +104,9 @@ make chart-lint
 
 These are offline checks. They do not authenticate to Kubernetes, the Broker,
 Azure, Microsoft Graph, GitHub, Google, or a live MCP runtime.
+
+GitHub tools use personal OAuth connections (`mode=delegated`). GitHub identifies
+the connected user as the actor. CetiRun enforces each instance grant and logs
+the Agent UID, connection ID, grant revision and provider request IDs; it does
+not accept GitHub App installation identities or distribute provider tokens to
+Agent workloads.

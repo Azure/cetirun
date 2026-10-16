@@ -14,6 +14,72 @@ bash scripts/cetirun-helm-test.sh
 Documentation validation is `make -C site check`. It does not run deployment,
 publication, or end-to-end scripts.
 
+## Agent tool authorization metadata inventory
+
+`agent-tools-inspect.py` is a read-only command-line inventory for Agent tool
+authorization records. It separates the central namespace's delegated personal
+Connections from Agent-local independent Connections and AgentGrants. An
+Agent-local `connection-reference` is shown in its own table: it contains no
+credential and is not a duplicate Connection. It links an Agent-local Grant to
+an owner-matched central delegated Connection.
+
+Record identity is the Secret namespace plus record ID. The command joins each
+record's immutable Agent UID with the live cluster-scoped Agent resource, so a
+deleted or recreated Agent is shown as `deleted/unresolved` rather than being
+matched by name. A delegated personal connection can be shared by several
+Agent-local references and grants; an unreferenced connection is shown as
+`unassigned/unknown`. Grant validity is always reported as
+`unknown/not evaluated`: this command does not decrypt its encrypted payload
+and record presence does not establish an active permission.
+
+Use an explicit kubeconfig. `--context` is optional, and the command does not
+change either the kubeconfig or its current context. The central credential
+namespace defaults to `cetirun-credentials`; pass `--namespace` when the
+Broker was configured differently. Without an Agent filter, the command lists
+each live Agent's `status.namespace` individually; it never uses `kubectl get
+secrets -A`. A Pending Agent may not have `status.namespace`; it is listed in
+the output's `scope.unqueriedAgents` with its UID, name, and reason, and no
+Agent-local Secret query is attempted. With `--agent`, it queries only the
+selected live Agent namespace plus the central namespace. A selected Pending
+Agent therefore produces a clearly incomplete central-only view. This
+intentionally does not claim visibility of references in other Agent
+namespaces. A deleted UID has no safely discoverable namespace, so
+`--agent-uid` then reports central records only.
+
+An Agent-filtered view includes only its independent Connections, Connections
+resolved by its Grants, and central delegated Connections reached through its
+own local references. Other owners' central accounts are not shown.
+
+```bash
+python3 -B scripts/agent-tools-inspect.py \
+  --kubeconfig "$TEST_KUBECONFIG" --context "$TEST_CONTEXT"
+
+python3 -B scripts/agent-tools-inspect.py \
+  --kubeconfig "$TEST_KUBECONFIG" --context "$TEST_CONTEXT" \
+  --agent my-agent --output json
+```
+
+The command receives a fixed JSONPath projection of selected Secret labels and
+display annotations from `kubectl`. Kubectl can fetch complete Secret objects
+for that client-side projection, requiring normal Secret list permission. The
+script does not receive, decrypt, or print the payload, and does not contact
+Key Vault or provider APIs. Each query has a 15-second request timeout; more
+than 8 MiB of projected output is rejected. A missing `status.namespace` is
+reported as unqueried; a namespace that does exist but is missing or forbidden
+when queried stops the inspection and is never reported as an empty record set.
+The inventory is not an atomic snapshot across the separate metadata queries.
+
+Old central Connections and Grants remain visible as legacy central relations.
+Connections without a mode label show an unknown mode rather than an inferred
+delegated identity. New display labels and annotations are only display hints;
+UID and owner matches remain authoritative.
+
+Offline coverage uses synthetic kubectl subprocess results only:
+
+```bash
+python3 -B -m unittest scripts/tests/test_agent_tools_inspect.py -v
+```
+
 ## Explicit-target application E2E lifecycle
 
 `e2e-test.sh` is a connected application smoke test, not an offline check.

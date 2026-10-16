@@ -19,7 +19,7 @@ SYNC_SCRIPT = CHART / "configs" / "builtin-skill-sync.sh"
 
 
 class AgentIDRuntimeAssetTests(unittest.TestCase):
-    def test_azure_skill_is_typed_read_only_and_handles_auth_states(self):
+    def test_azure_skill_has_typed_reads_opt_in_writes_and_auth_states(self):
         content = SKILL.read_text(encoding="utf-8")
         self.assertIn("name: azure-readonly", content)
         for command in (
@@ -29,6 +29,8 @@ class AgentIDRuntimeAssetTests(unittest.TestCase):
             "azure_resource_groups_list",
             "azure_resources_search",
             "azure_resource_show",
+            "azure_resource_groups_create",
+            "azure_resource_group_tags_update",
         ):
             with self.subTest(command=command):
                 self.assertIn(command, content)
@@ -53,6 +55,8 @@ class AgentIDRuntimeAssetTests(unittest.TestCase):
             with self.subTest(error_code=error_code):
                 self.assertIn(error_code, content)
         self.assertIn("untrusted data", content)
+        self.assertIn("Read access never implies write permission", content)
+        self.assertIn("execution_unknown", content)
         self.assertIn("`actionUrl`", content)
         self.assertNotIn("cetirun-agent", content)
 

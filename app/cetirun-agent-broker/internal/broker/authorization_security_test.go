@@ -51,6 +51,7 @@ func newAuthorizationFixture(t *testing.T, provider, tool string, constraints Co
 	now := time.Now().UTC().Truncate(time.Second)
 	fixture := &authorizationFixture{secrets: map[string]secretDocument{}}
 	fixture.agent.Metadata.Name = "agent"
+	fixture.agent.Spec.Agent.Type = "openclaw"
 	fixture.agent.Metadata.UID = "11111111-1111-1111-1111-111111111111"
 	fixture.agent.Metadata.Annotations = map[string]string{
 		"agentidentity.cetirun.microsoft.com/owner-tenant-id": owner.TenantID,
@@ -407,6 +408,7 @@ func TestReconnectNeverReplacesAccountEvenWithoutActiveGrants(t *testing.T) {
 	for _, grantState := range []string{"active", "expired", "absent"} {
 		t.Run(grantState, func(t *testing.T) {
 			fixture := newAuthorizationFixture(t, "github", "github_issues_list", Constraints{RepositoryIDs: []string{"42"}})
+			fixture.server.cfg.PortalNamespace, fixture.server.cfg.PortalServiceAccount = "portal", "portal"
 			if grantState == "expired" {
 				fixture.mutateGrant(t, func(grant *AgentGrant) { grant.ExpiresAt = time.Now().Add(-time.Hour) })
 			} else if grantState == "absent" {
@@ -417,7 +419,8 @@ func TestReconnectNeverReplacesAccountEvenWithoutActiveGrants(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			record.Transaction = &connectionTransaction{Provider: "github", StateHash: stateHash(state), ExpectedAccountID: record.Connection.AccountID, ExpiresAt: time.Now().Add(time.Hour)}
+			browserBinding := strings.Repeat("b", 43)
+			record.Transaction = &connectionTransaction{Provider: "github", StateHash: stateHash(state), BrowserBindingHash: stateHash(browserBinding), ExpectedAccountID: record.Connection.AccountID, ExpiresAt: time.Now().Add(time.Hour)}
 			record.Connection.Status, record.Credential = "connecting", nil
 			if err := fixture.server.store.putConnection(context.Background(), record, version); err != nil {
 				t.Fatal(err)
@@ -429,7 +432,10 @@ func TestReconnectNeverReplacesAccountEvenWithoutActiveGrants(t *testing.T) {
 				return securityJSONResponse(t, http.StatusOK, map[string]any{"id": 99, "login": "different-account"}), nil
 			})}}
 			response := httptest.NewRecorder()
-			fixture.server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/connections/callback?state="+state+"&code=synthetic-code", nil))
+			callback := httptest.NewRequest(http.MethodGet, "/api/v1/connections/callback?state="+state+"&code=synthetic-code", nil)
+			callback.Header.Set(connectionBindingHeader, browserBinding)
+			callback.Header.Set("X-Forwarded-Client-Cert", "URI=spiffe://cluster.local/ns/portal/sa/portal")
+			fixture.server.Handler().ServeHTTP(response, callback)
 			current, _, err := fixture.server.store.getConnection(context.Background(), record.Connection.ID)
 			if err != nil || current.Connection.AccountID != "original-account" || current.Credential != nil || current.Connection.Status != "interaction_required" || current.Transaction != nil || !strings.Contains(response.Body.String(), "could not be completed") {
 				t.Fatalf("reconnect changed account (%s): %#v, %v, %s", grantState, current, err, response.Body)

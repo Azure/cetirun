@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"reflect"
 	"strings"
 	"time"
@@ -26,6 +27,7 @@ type Service struct {
 	portalURL  string
 	operations *operations
 	providers  providerClient
+	logger     *slog.Logger
 }
 
 type kubernetesClient interface {
@@ -93,7 +95,8 @@ func (s *Service) Call(ctx context.Context, caller identity.Caller, tool string,
 		}
 		connections := []any{}
 		for _, connection := range result.Connections {
-			connections = append(connections, map[string]any{"id": connection.ID, "provider": connection.Provider, "account_display": connection.AccountDisplay, "capabilities": connection.Capabilities, "status": connection.Status, "created_at": connection.CreatedAt})
+			mode, executor := connectionExecutor(connection)
+			connections = append(connections, map[string]any{"id": connection.ID, "provider": connection.Provider, "mode": mode, "executor_identity": executor, "account_display": connection.AccountDisplay, "capabilities": connection.Capabilities, "status": connection.Status, "created_at": connection.CreatedAt})
 		}
 		return map[string]any{"connections": connections}, nil
 	}
@@ -119,6 +122,12 @@ func (s *Service) Call(ctx context.Context, caller identity.Caller, tool string,
 	if !validAuthorization(issue.CheckResponse, caller, tool, connectionID) || !reflect.DeepEqual(check, issue.CheckResponse) || strings.TrimSpace(issue.AccessToken) == "" || expired(issue.ExpiresAt) {
 		return nil, &ToolError{Code: "authorization_changed"}
 	}
+	execute := func() (map[string]any, error) {
+		audit := executionAudit{logger: s.auditLogger(), caller: caller, connection: check.Connection, grant: check.Grant, tool: tool}
+		result, executeErr := s.providers.Execute(providers.WithRequestIDCapture(ctx, audit.captureRequestID), check.Connection.Provider, tool, arguments, check.Grant.Constraints, issue.AccessToken)
+		audit.log(executeErr)
+		return result, executeErr
+	}
 
 	if spec, ok := Find(tool); ok && spec.Write {
 		operationID, _ := arguments["operation_id"].(string)
@@ -129,7 +138,7 @@ func (s *Service) Call(ctx context.Context, caller identity.Caller, tool string,
 		if existing != nil {
 			return existing, nil
 		}
-		result, executeErr := s.providers.Execute(ctx, check.Connection.Provider, tool, arguments, check.Grant.Constraints, issue.AccessToken)
+		result, executeErr := execute()
 		if executeErr != nil {
 			if uncertainWrite(executeErr) {
 				if err := s.operations.Finish(ctx, caller.InstanceUID, connectionID, check.Grant.ID, tool, operationID, arguments, "unknown", nil, "execution_unknown"); err != nil {
@@ -148,7 +157,7 @@ func (s *Service) Call(ctx context.Context, caller identity.Caller, tool string,
 		}
 		return result, nil
 	}
-	result, err := s.providers.Execute(ctx, check.Connection.Provider, tool, arguments, check.Grant.Constraints, issue.AccessToken)
+	result, err := execute()
 	if err != nil {
 		return nil, providerError(err)
 	}
@@ -178,7 +187,75 @@ func uncertainWrite(err error) bool {
 	return !ok || typed.Unknown || typed.Code == "dependency_unavailable"
 }
 func validAuthorization(check brokerclient.CheckResponse, caller identity.Caller, tool, connectionID string) bool {
-	return check.ValidCatalog() == nil && connectionID != "" && check.InstanceUID == caller.InstanceUID && check.Connection.ID == connectionID && check.Connection.Status == "connected" && providerAllowed(tool, check.Connection.Provider) && containsTool(check.Connection.Capabilities, tool) && check.Grant.ID != "" && check.Grant.InstanceUID == caller.InstanceUID && check.Grant.ConnectionID == connectionID && containsTool(check.Grant.Tools, tool) && !expired(check.Grant.ExpiresAt)
+	return check.ValidCatalog() == nil && connectionID != "" && check.InstanceUID == caller.InstanceUID && check.Connection.ID == connectionID && check.Connection.Status == "connected" && validConnectionAuthorization(check.Connection, check.Grant, caller.InstanceUID) && providerAllowed(tool, check.Connection.Provider) && containsTool(check.Connection.Capabilities, tool) && check.Grant.ID != "" && check.Grant.InstanceUID == caller.InstanceUID && check.Grant.ConnectionID == connectionID && containsTool(check.Grant.Tools, tool) && !expired(check.Grant.ExpiresAt)
+}
+
+func validConnectionAuthorization(connection brokerclient.Connection, grant brokerclient.Grant, instanceUID string) bool {
+	switch connection.Mode {
+	case "", "delegated":
+		return connection.Identity == nil && grant.Authorization == nil
+	case "agent":
+		identity, authorization := connection.Identity, grant.Authorization
+		if connection.Provider != "azure" || identity == nil || authorization == nil || identity.InstanceUID != instanceUID || strings.TrimSpace(identity.TenantID) == "" || strings.TrimSpace(identity.PrincipalID) == "" || strings.TrimSpace(identity.ClientID) == "" || authorization.State != "verified" || authorization.Source != "direct_rbac" || authorization.BindingRevision == 0 || authorization.BindingRevision != connection.Revision {
+			return false
+		}
+		verifiedAt, err := time.Parse(time.RFC3339, authorization.VerifiedAt)
+		return err == nil && !verifiedAt.After(time.Now()) && !expired(authorization.ValidUntil)
+	default:
+		return false
+	}
+}
+
+func connectionExecutor(connection brokerclient.Connection) (string, map[string]any) {
+	if connection.Mode == "agent" && connection.Provider == "azure" && connection.Identity != nil {
+		return "agent", map[string]any{"principal_id": connection.Identity.PrincipalID, "client_id": connection.Identity.ClientID, "tenant_id": connection.Identity.TenantID}
+	}
+	if connection.Mode == "" || connection.Mode == "delegated" {
+		return "delegated", map[string]any{"type": "delegated"}
+	}
+	return "unknown", map[string]any{"type": "unknown"}
+}
+
+type executionAudit struct {
+	logger     *slog.Logger
+	caller     identity.Caller
+	connection brokerclient.Connection
+	grant      brokerclient.Grant
+	tool       string
+	requestIDs []string
+}
+
+func (a *executionAudit) captureRequestID(id string) {
+	for _, existing := range a.requestIDs {
+		if existing == id {
+			return
+		}
+	}
+	a.requestIDs = append(a.requestIDs, id)
+}
+
+func (a executionAudit) log(executeErr error) {
+	mode, _ := connectionExecutor(a.connection)
+	executorPrincipal := "delegated"
+	if mode == "agent" && a.connection.Identity != nil {
+		executorPrincipal = a.connection.Identity.PrincipalID
+	}
+	result := "succeeded"
+	if executeErr != nil {
+		result = toolCode(providerError(executeErr))
+	}
+	attributes := []any{"agent_uid", a.caller.InstanceUID, "mode", mode, "provider", a.connection.Provider, "connection_id", a.connection.ID, "executor_principal", executorPrincipal, "grant_id", a.grant.ID, "grant_revision", a.grant.Revision, "tool", a.tool, "result", result}
+	if len(a.requestIDs) > 0 {
+		attributes = append(attributes, "provider_request_ids", a.requestIDs)
+	}
+	a.logger.Info("agent tool execution", attributes...)
+}
+
+func (s *Service) auditLogger() *slog.Logger {
+	if s.logger != nil {
+		return s.logger
+	}
+	return slog.Default()
 }
 func containsTool(tools []string, tool string) bool {
 	for _, item := range tools {

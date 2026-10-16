@@ -1,3 +1,7 @@
+{{- if empty .Values.toolService.runtimeTypes }}{{ fail "toolService.runtimeTypes must include at least one qualified runtime" }}{{ end }}
+{{- range .Values.toolService.runtimeTypes }}
+{{- if not (has . (list "hermes" "openclaw")) }}{{ fail "toolService.runtimeTypes supports only hermes and openclaw" }}{{ end }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -53,6 +57,8 @@ spec:
               value: {{ .Values.portal.namespace | quote }}
             - name: PORTAL_SERVICE_ACCOUNT
               value: {{ .Values.portal.serviceAccount | quote }}
+            - name: TOOLS_MCP_RUNTIME_TYPES
+              value: {{ join "," .Values.toolService.runtimeTypes | quote }}
             - name: TOOL_SERVICE_NAMESPACE
               value: {{ .Values.toolService.namespace | quote }}
             - name: TOOL_SERVICE_ACCOUNT
@@ -64,12 +70,12 @@ spec:
             - name: MICROSOFT_OBO_PERMISSIONS
               value: {{ join " " .Values.agentIdentity.graphPermissions | quote }}
             {{- if .Values.providers.github.credentialsSecretName }}
-            - name: GITHUB_APP_CLIENT_ID
+            - name: GITHUB_OAUTH_CLIENT_ID
               valueFrom:
                 secretKeyRef:
                   name: {{ .Values.providers.github.credentialsSecretName | quote }}
                   key: {{ .Values.providers.github.clientIDKey | quote }}
-            - name: GITHUB_APP_CLIENT_SECRET
+            - name: GITHUB_OAUTH_CLIENT_SECRET
               valueFrom:
                 secretKeyRef:
                   name: {{ .Values.providers.github.credentialsSecretName | quote }}
@@ -91,6 +97,8 @@ spec:
               value: {{ .Values.agentIdentity.keyVaultKeyUrl | quote }}
             - name: AZURE_CLIENT_ID
               value: {{ .Values.agentIdentity.encryptionClientId | quote }}
+            - name: AGENT_RECORD_NAMESPACES
+              value: {{ .Values.agentRecordNamespaces | quote }}
             - name: AUTHORIZATION_STORE_NAMESPACE
               valueFrom:
                 fieldRef:
@@ -133,7 +141,7 @@ spec:
           resources:
             {{- toYaml .Values.resources.broker | nindent 12 }}
         - name: auth-sdk
-          image: {{ include "cetirun-agent-broker.image" (dict "repository" .Values.authSDK.repository "tag" .Values.authSDK.tag "digest" .Values.authSDK.digest "defaultTag" "1.0.0-azurelinux3.0-distroless") | quote }}
+          image: {{ include "cetirun-agent-broker.image" (dict "repository" .Values.authSDK.repository "tag" .Values.authSDK.tag "digest" .Values.authSDK.digest "defaultTag" "1.1.2-azurelinux3.0-distroless") | quote }}
           imagePullPolicy: {{ .Values.authSDK.pullPolicy }}
           env:
             - name: AzureAd__Instance
@@ -146,8 +154,10 @@ spec:
               value: {{ .Values.agentIdentity.blueprintClientId | quote }}
             - name: AzureAd__ClientCredentials__0__SourceType
               value: SignedAssertionFilePath
-            - name: AzureAd__ClientCredentials__0__SignedAssertionFilePath
-              value: $(AZURE_FEDERATED_TOKEN_FILE)
+            - name: AzureAd__ClientCredentials__0__SignedAssertionFileDiskPath
+              # The workload identity webhook appends its environment variables
+              # after these entries; Kubernetes cannot expand a later variable.
+              value: /var/run/secrets/azure/tokens/azure-identity-token
             - name: DownstreamApis__AzureResourceManager__BaseUrl
               value: https://management.azure.com/
             {{- range $index, $scope := .Values.agentIdentity.armScopes }}
@@ -160,6 +170,8 @@ spec:
             - name: DownstreamApis__MicrosoftGraph__Scopes__{{ $index }}
               value: {{ $scope | quote }}
             {{- end }}
+            - name: Sidecar__AllowOverrides__GetAuthorizationHeader
+              value: "true"
             - name: ASPNETCORE_URLS
               value: http://127.0.0.1:5000
             - name: Logging__LogLevel__Default

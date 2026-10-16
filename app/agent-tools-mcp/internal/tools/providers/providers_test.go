@@ -10,6 +10,8 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -75,6 +77,19 @@ func TestGitHubContentsRejectsTraversalWithoutProviderCall(t *testing.T) {
 	}
 }
 
+func TestRequestIDCaptureUsesOnlySafeProviderHeaders(t *testing.T) {
+	requestIDs := []string{}
+	ctx := WithRequestIDCapture(context.Background(), func(value string) { requestIDs = append(requestIDs, value) })
+	headers := make(http.Header)
+	headers.Set("X-Ms-Request-Id", "azure-request-1")
+	headers.Set("X-GitHub-Request-Id", "github/request:2")
+	headers.Set("Request-Id", "unsafe value\nnext")
+	captureRequestID(ctx, headers)
+	if !reflect.DeepEqual(requestIDs, []string{"azure-request-1", "github/request:2"}) {
+		t.Fatalf("request IDs = %#v", requestIDs)
+	}
+}
+
 func TestGitHubRejectsRedirectFromInjectedClient(t *testing.T) {
 	calls := 0
 	client := New(&http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
@@ -87,6 +102,27 @@ func TestGitHubRejectsRedirectFromInjectedClient(t *testing.T) {
 	}
 	if calls != 1 {
 		t.Fatalf("redirect requests = %d, want 1", calls)
+	}
+}
+
+func TestGitHubRevokedOAuthRequiresReconnect(t *testing.T) {
+	for _, test := range []struct {
+		name, endpoint, code string
+		status               int
+	}{
+		{"revoked GitHub token", "https://api.github.com/repositories/123", "interaction_required", http.StatusUnauthorized},
+		{"GitHub repository or organization restriction", "https://api.github.com/repositories/123", "permission_denied", http.StatusForbidden},
+		{"Azure behavior preserved", "https://management.azure.com/subscriptions", "permission_denied", http.StatusUnauthorized},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			client := New(&http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+				return &http.Response{StatusCode: test.status, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{}`))}, nil
+			})})
+			err := client.request(context.Background(), http.MethodGet, test.endpoint, nil, "synthetic-provider-token", nil)
+			if typed, ok := err.(*Error); !ok || typed.Code != test.code || typed.Unknown {
+				t.Fatalf("error = %#v, want %s without uncertain execution", err, test.code)
+			}
+		})
 	}
 }
 
@@ -159,6 +195,107 @@ func TestAzureResourceShowBindsReturnedResourceID(t *testing.T) {
 	if typed, ok := err.(*Error); !ok || typed.Code != "permission_denied" {
 		t.Fatalf("error = %v, want permission_denied", err)
 	}
+}
+
+func TestAzureResourceGroupCreateChecksAbsenceAndUsesFixedPUT(t *testing.T) {
+	const subscription = "11111111-1111-1111-1111-111111111111"
+	const resourceGroup = "Agent-Test-RG"
+	calls := 0
+	client := New(&http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		calls++
+		switch calls {
+		case 1:
+			if request.Method != http.MethodGet || request.URL.String() != "https://management.azure.com/subscriptions/"+subscription+"/resourceGroups/"+resourceGroup+"?api-version=2021-04-01" {
+				t.Fatalf("unexpected existence request %s %s", request.Method, request.URL)
+			}
+			return &http.Response{StatusCode: http.StatusNotFound, Header: http.Header{"x-ms-request-id": []string{"absence-check"}}, Body: io.NopCloser(strings.NewReader(`{"error":"not found"}`))}, nil
+		case 2:
+			if request.Method != http.MethodPut || request.URL.String() != "https://management.azure.com/subscriptions/"+subscription+"/resourceGroups/"+resourceGroup+"?api-version=2021-04-01" {
+				t.Fatalf("unexpected create request %s %s", request.Method, request.URL)
+			}
+			var body map[string]any
+			if err := json.NewDecoder(request.Body).Decode(&body); err != nil || !reflect.DeepEqual(body, map[string]any{"location": "eastus"}) {
+				t.Fatalf("create body = %#v, error = %v", body, err)
+			}
+			return &http.Response{StatusCode: http.StatusCreated, Header: http.Header{"x-ms-request-id": []string{"create-request"}, "x-ms-correlation-request-id": []string{"create-correlation"}}, Body: io.NopCloser(strings.NewReader(`{"id":"/subscriptions/` + subscription + `/resourceGroups/` + resourceGroup + `","name":"` + resourceGroup + `","location":"eastus","properties":{"provisioningState":"Succeeded"}}`))}, nil
+		default:
+			t.Fatalf("unexpected provider request %d", calls)
+			return nil, nil
+		}
+	})})
+	result, err := client.Execute(context.Background(), "azure", "azure_resource_groups_create", map[string]any{"subscription_id": subscription, "resource_group_name": resourceGroup, "location": "eastus", "operation_id": "create-rg-1"}, brokerclient.Constraints{SubscriptionIDs: []string{subscription}, ResourceGroupNames: []string{"agent-test-rg"}}, "synthetic-provider-token")
+	if err != nil || calls != 2 {
+		t.Fatalf("result = %#v, error = %v, calls = %d", result, err, calls)
+	}
+	writeResult := result["result"].(map[string]any)
+	if result["status"] != "succeeded" || writeResult["resource_group_id"] != "/subscriptions/"+subscription+"/resourceGroups/"+resourceGroup || writeResult["provisioning_state"] != "Succeeded" || writeResult["request_id"] != "create-request" || writeResult["correlation_id"] != "create-correlation" {
+		t.Fatalf("unexpected create result %#v", result)
+	}
+}
+
+func TestAzureResourceGroupCreateRejectsExistingGroupWithoutPUT(t *testing.T) {
+	calls := 0
+	client := New(&http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		calls++
+		if request.Method != http.MethodGet {
+			t.Fatalf("unexpected request %s", request.Method)
+		}
+		return jsonResponse(`{"id":"existing"}`), nil
+	})})
+	_, err := client.Execute(context.Background(), "azure", "azure_resource_groups_create", map[string]any{"subscription_id": "123", "resource_group_name": "agent-test-rg", "location": "eastus", "operation_id": "create-rg-1"}, brokerclient.Constraints{SubscriptionIDs: []string{"123"}, ResourceGroupNames: []string{"agent-test-rg"}}, "synthetic-provider-token")
+	if typed, ok := err.(*Error); !ok || typed.Code != "invalid_request" || typed.Unknown || calls != 1 {
+		t.Fatalf("error = %#v, calls = %d", err, calls)
+	}
+}
+
+func TestAzureResourceGroupTagsUpdateUsesFixedMergePayload(t *testing.T) {
+	const subscription = "123"
+	const resourceGroup = "agent-test-rg"
+	client := New(&http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if request.Method != http.MethodPatch || request.URL.String() != "https://management.azure.com/subscriptions/123/resourceGroups/agent-test-rg/providers/Microsoft.Resources/tags/default?api-version=2021-04-01" {
+			t.Fatalf("unexpected tags request %s %s", request.Method, request.URL)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil || !reflect.DeepEqual(body, map[string]any{"operation": "Merge", "properties": map[string]any{"tags": map[string]any{"purpose": "agent-audit", "environment": "test"}}}) {
+			t.Fatalf("tags body = %#v, error = %v", body, err)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"x-ms-request-id": []string{"tags-request"}, "x-ms-correlation-request-id": []string{"tags-correlation"}}, Body: io.NopCloser(strings.NewReader(`{"id":"/subscriptions/123/resourceGroups/agent-test-rg/providers/Microsoft.Resources/tags/default"}`))}, nil
+	})})
+	result, err := client.Execute(context.Background(), "azure", "azure_resource_group_tags_update", map[string]any{"subscription_id": subscription, "resource_group_name": resourceGroup, "tags": map[string]any{"purpose": "agent-audit", "environment": "test"}, "operation_id": "tag-rg-01"}, brokerclient.Constraints{SubscriptionIDs: []string{subscription}, ResourceGroupNames: []string{resourceGroup}}, "synthetic-provider-token")
+	if err != nil || result["result"].(map[string]any)["request_id"] != "tags-request" || result["result"].(map[string]any)["correlation_id"] != "tags-correlation" {
+		t.Fatalf("result = %#v, error = %v", result, err)
+	}
+}
+
+func TestAzureWriteRejectsOutOfScopeOrInvalidArgumentsWithoutProviderCall(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		tool string
+		args map[string]any
+	}{
+		{"subscription", "azure_resource_groups_create", map[string]any{"subscription_id": "outside", "resource_group_name": "agent-test-rg", "location": "eastus", "operation_id": "create-rg-1"}},
+		{"resource group", "azure_resource_groups_create", map[string]any{"subscription_id": "123", "resource_group_name": "other-rg", "location": "eastus", "operation_id": "create-rg-1"}},
+		{"traversal", "azure_resource_groups_create", map[string]any{"subscription_id": "123", "resource_group_name": "../agent-test-rg", "location": "eastus", "operation_id": "create-rg-1"}},
+		{"trailing dot", "azure_resource_groups_create", map[string]any{"subscription_id": "123", "resource_group_name": "agent-test-rg.", "location": "eastus", "operation_id": "create-rg-1"}},
+		{"tag bounds", "azure_resource_group_tags_update", map[string]any{"subscription_id": "123", "resource_group_name": "agent-test-rg", "tags": tooManyTags(), "operation_id": "tag-rg-01"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			calls := 0
+			client := New(&http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) { calls++; return nil, nil })})
+			_, err := client.Execute(context.Background(), "azure", test.tool, test.args, brokerclient.Constraints{SubscriptionIDs: []string{"123"}, ResourceGroupNames: []string{"agent-test-rg"}}, "synthetic-provider-token")
+			if err == nil || calls != 0 {
+				t.Fatalf("error = %v, provider calls = %d", err, calls)
+			}
+		})
+	}
+}
+
+func tooManyTags() map[string]any {
+	tags := make(map[string]any, 51)
+	for index := 0; index < 51; index++ {
+		tags["tag-"+strconv.Itoa(index)] = "value"
+	}
+	return tags
 }
 
 func TestGmailMessageRejectsHeaderInjectionAndEncodesSubject(t *testing.T) {

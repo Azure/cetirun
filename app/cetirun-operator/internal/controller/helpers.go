@@ -192,6 +192,7 @@ type AgentIdentityHelmConfig struct {
 	ToolsMCPURL          string
 	ToolsMCPAudience     string
 	ToolsMCPCASecretName string
+	ToolsMCPRuntimeTypes []string
 }
 
 func buildHelmValues(instance *cetirunv1alpha1.Agent, team *cetirunv1alpha1.Team, domainSuffix string, skillsStorageAccount string, cetirunHelmValues map[string]interface{}, chartRegistry string, defaultModels ...string) (map[string]interface{}, error) {
@@ -444,7 +445,11 @@ func buildHelmValuesCore(instance *cetirunv1alpha1.Agent, team *cetirunv1alpha1.
 			"automountToken": false,
 		})
 	}
-	if agentIdentityConfig.ToolsMCPURL != "" {
+	toolsMCPEnabled, err := toolsMCPRuntimeAllowed(agentType, agentIdentityConfig.ToolsMCPRuntimeTypes)
+	if err != nil {
+		return nil, err
+	}
+	if agentIdentityConfig.ToolsMCPURL != "" && toolsMCPEnabled {
 		namespace, err := toolsMCPNamespace(agentIdentityConfig.ToolsMCPURL)
 		if err != nil {
 			return nil, err

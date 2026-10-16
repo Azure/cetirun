@@ -19,7 +19,7 @@ import (
 	"time"
 )
 
-const CatalogVersion = "2026-10-10"
+const CatalogVersion = "2026-10-16"
 
 type Client struct {
 	baseURL *url.URL
@@ -37,17 +37,29 @@ type Request struct {
 }
 
 type Connection struct {
-	ID             string   `json:"id"`
-	Provider       string   `json:"provider"`
-	AccountDisplay string   `json:"accountDisplay"`
-	Capabilities   []string `json:"capabilities"`
-	Revision       uint64   `json:"revision"`
-	Status         string   `json:"status"`
-	CreatedAt      string   `json:"createdAt"`
+	Mode           string           `json:"mode,omitempty"`
+	Identity       *IdentityBinding `json:"identity,omitempty"`
+	ID             string           `json:"id"`
+	Provider       string           `json:"provider"`
+	AccountDisplay string           `json:"accountDisplay"`
+	Capabilities   []string         `json:"capabilities"`
+	Revision       uint64           `json:"revision"`
+	Status         string           `json:"status"`
+	CreatedAt      string           `json:"createdAt"`
+}
+
+// IdentityBinding is derived by the Broker from the immutable Agent resource.
+// It must never be supplied by the workload.
+type IdentityBinding struct {
+	InstanceUID string `json:"instanceUid"`
+	TenantID    string `json:"tenantId"`
+	PrincipalID string `json:"principalId"`
+	ClientID    string `json:"clientId"`
 }
 
 type Constraints struct {
 	SubscriptionIDs    []string `json:"subscriptionIds"`
+	ResourceGroupNames []string `json:"resourceGroupNames"`
 	RepositoryIDs      []string `json:"repositoryIds"`
 	BaseBranches       []string `json:"baseBranches"`
 	CalendarIDs        []string `json:"calendarIds"`
@@ -57,13 +69,28 @@ type Constraints struct {
 }
 
 type Grant struct {
-	ID           string      `json:"id"`
-	InstanceUID  string      `json:"instanceUid"`
-	ConnectionID string      `json:"connectionId"`
-	Tools        []string    `json:"tools"`
-	Constraints  Constraints `json:"constraints"`
-	ExpiresAt    string      `json:"expiresAt"`
-	Revision     uint64      `json:"revision"`
+	Authorization *ResourceAuthorization `json:"authorization,omitempty"`
+	ID            string                 `json:"id"`
+	InstanceUID   string                 `json:"instanceUid"`
+	ConnectionID  string                 `json:"connectionId"`
+	Tools         []string               `json:"tools"`
+	Constraints   Constraints            `json:"constraints"`
+	ExpiresAt     string                 `json:"expiresAt"`
+	Revision      uint64                 `json:"revision"`
+}
+
+// ResourceAuthorization is provider-derived evidence for an independent
+// identity. A pending record is intentionally not effective authorization.
+type ResourceAuthorization struct {
+	State           string   `json:"state"`
+	Source          string   `json:"source"`
+	VerifiedAt      string   `json:"verifiedAt,omitempty"`
+	ValidUntil      string   `json:"validUntil,omitempty"`
+	Reason          string   `json:"reason,omitempty"`
+	Scopes          []string `json:"scopes,omitempty"`
+	Actions         []string `json:"actions,omitempty"`
+	RequestIDs      []string `json:"requestIds,omitempty"`
+	BindingRevision uint64   `json:"bindingRevision"`
 }
 
 type ListResponse struct {

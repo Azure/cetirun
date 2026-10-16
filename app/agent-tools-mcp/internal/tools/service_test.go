@@ -4,11 +4,13 @@
 package tools
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 	"sync"
@@ -83,6 +85,8 @@ func persistedSecret(secret operationSecret, version string) operationSecret {
 func secretName(path string) string { return path[strings.LastIndex(path, "/")+1:] }
 
 type fakeBroker struct {
+	list         brokerclient.ListResponse
+	listErr      error
 	check        brokerclient.CheckResponse
 	issue        brokerclient.IssueResponse
 	checkErr     error
@@ -93,7 +97,7 @@ type fakeBroker struct {
 }
 
 func (b *fakeBroker) List(context.Context, string) (brokerclient.ListResponse, error) {
-	return brokerclient.ListResponse{}, nil
+	return b.list, b.listErr
 }
 
 func (b *fakeBroker) Check(_ context.Context, _ brokerclient.Request) (brokerclient.CheckResponse, error) {
@@ -221,6 +225,13 @@ func TestServiceRejectsInvalidAuthorizationBindings(t *testing.T) {
 		{name: "issue revision", mutate: func(b *fakeBroker) { b.issue.Grant.Revision++ }},
 		{name: "issue constraint", mutate: func(b *fakeBroker) { b.issue.Grant.Constraints.RepositoryIDs = []string{"99"} }},
 		{name: "issue capability", mutate: func(b *fakeBroker) { b.issue.Connection.Capabilities = []string{"github_comments_create"} }},
+		{name: "issue mode", mutate: func(b *fakeBroker) { b.issue.Connection.Mode = "agent" }},
+		{name: "issue identity", mutate: func(b *fakeBroker) {
+			b.issue.Connection.Identity = &brokerclient.IdentityBinding{InstanceUID: "instance-1", TenantID: "tenant-1", PrincipalID: "principal-1", ClientID: "client-1"}
+		}},
+		{name: "issue evidence", mutate: func(b *fakeBroker) {
+			b.issue.Grant.Authorization = &brokerclient.ResourceAuthorization{State: "verified", Source: "direct_rbac", BindingRevision: 7}
+		}},
 		{name: "issue grant expiry", mutate: func(b *fakeBroker) {
 			b.issue.Grant.ExpiresAt = time.Now().Add(2 * time.Hour).UTC().Format(time.RFC3339)
 		}},
@@ -238,6 +249,158 @@ func TestServiceRejectsInvalidAuthorizationBindings(t *testing.T) {
 				t.Fatalf("provider calls = %d, want 0", provider.calls)
 			}
 		})
+	}
+}
+
+func TestValidAuthorizationFailsClosedForIdentityEvidence(t *testing.T) {
+	now := time.Now().UTC()
+	valid := brokerclient.CheckResponse{
+		InstanceUID: "instance-1", CatalogVersion: brokerclient.CatalogVersion,
+		Connection: brokerclient.Connection{Mode: "agent", ID: "connection-1", Provider: "azure", Capabilities: []string{"azure_subscriptions_list"}, Revision: 7, Status: "connected", Identity: &brokerclient.IdentityBinding{InstanceUID: "instance-1", TenantID: "tenant-1", PrincipalID: "principal-1", ClientID: "client-1"}},
+		Grant:      brokerclient.Grant{ID: "grant-1", InstanceUID: "instance-1", ConnectionID: "connection-1", Tools: []string{"azure_subscriptions_list"}, ExpiresAt: now.Add(time.Hour).Format(time.RFC3339), Revision: 11, Authorization: &brokerclient.ResourceAuthorization{State: "verified", Source: "direct_rbac", BindingRevision: 7, VerifiedAt: time.Now().Add(-time.Minute).Format(time.RFC3339), ValidUntil: now.Add(time.Hour).Format(time.RFC3339)}},
+	}
+	tests := []struct {
+		name   string
+		mutate func(*brokerclient.CheckResponse)
+	}{
+		{name: "valid", mutate: func(*brokerclient.CheckResponse) {}},
+		{name: "unknown mode", mutate: func(value *brokerclient.CheckResponse) { value.Connection.Mode = "other" }},
+		{name: "wrong identity uid", mutate: func(value *brokerclient.CheckResponse) { value.Connection.Identity.InstanceUID = "other" }},
+		{name: "missing principal", mutate: func(value *brokerclient.CheckResponse) { value.Connection.Identity.PrincipalID = "" }},
+		{name: "pending evidence", mutate: func(value *brokerclient.CheckResponse) { value.Grant.Authorization.State = "pending" }},
+		{name: "expired evidence", mutate: func(value *brokerclient.CheckResponse) {
+			value.Grant.Authorization.ValidUntil = now.Add(-time.Hour).Format(time.RFC3339)
+		}},
+		{name: "missing evidence expiry", mutate: func(value *brokerclient.CheckResponse) { value.Grant.Authorization.ValidUntil = "" }},
+		{name: "missing verification time", mutate: func(value *brokerclient.CheckResponse) { value.Grant.Authorization.VerifiedAt = "" }},
+		{name: "future verification time", mutate: func(value *brokerclient.CheckResponse) {
+			value.Grant.Authorization.VerifiedAt = now.Add(time.Hour).Format(time.RFC3339)
+		}},
+		{name: "binding revision", mutate: func(value *brokerclient.CheckResponse) { value.Grant.Authorization.BindingRevision++ }},
+		{name: "legacy identity", mutate: func(value *brokerclient.CheckResponse) { value.Connection.Mode = ""; value.Grant.Authorization = nil }},
+		{name: "legacy evidence", mutate: func(value *brokerclient.CheckResponse) {
+			value.Connection.Mode = "delegated"
+			value.Connection.Identity = nil
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			value := valid
+			value.Connection.Identity = cloneIdentity(valid.Connection.Identity)
+			value.Grant.Authorization = cloneAuthorization(valid.Grant.Authorization)
+			test.mutate(&value)
+			got := validAuthorization(value, identity.Caller{InstanceUID: "instance-1"}, "azure_subscriptions_list", "connection-1")
+			if got != (test.name == "valid") {
+				t.Fatalf("validAuthorization() = %t", got)
+			}
+		})
+	}
+}
+
+func cloneIdentity(value *brokerclient.IdentityBinding) *brokerclient.IdentityBinding {
+	if value == nil {
+		return nil
+	}
+	copy := *value
+	return &copy
+}
+
+func TestGitHubIndependentIdentityIsNotAccepted(t *testing.T) {
+	service, broker, provider, _ := newTestService(map[string]any{"status": "succeeded"}, nil)
+	broker.check.Connection.Mode = "agent"
+	broker.check.Connection.Identity = &brokerclient.IdentityBinding{InstanceUID: "instance-1"}
+	broker.check.Grant.Authorization = &brokerclient.ResourceAuthorization{State: "verified", Source: "github_app_installation", BindingRevision: broker.check.Connection.Revision}
+	_, err := service.Call(context.Background(), identity.Caller{Proof: "synthetic-workload-proof", InstanceUID: "instance-1"}, "github_issues_create", writeArguments("operation-old-installation"))
+	if toolErrorCode(err) != "authorization_changed" || provider.calls != 0 {
+		t.Fatalf("legacy installation authorization = %v, provider calls = %d", err, provider.calls)
+	}
+}
+
+func cloneAuthorization(value *brokerclient.ResourceAuthorization) *brokerclient.ResourceAuthorization {
+	if value == nil {
+		return nil
+	}
+	copy := *value
+	return &copy
+}
+
+func TestConnectionsStatusShowsModeAndSafeExecutorIdentity(t *testing.T) {
+	service, broker, _, _ := newTestService(map[string]any{}, nil)
+	broker.list = brokerclient.ListResponse{InstanceUID: "instance-1", CatalogVersion: brokerclient.CatalogVersion, Connections: []brokerclient.Connection{
+		{ID: "agent", Provider: "azure", Mode: "agent", AccountDisplay: "must-not-be-used-for-agent", Identity: &brokerclient.IdentityBinding{InstanceUID: "instance-1", TenantID: "tenant-1", PrincipalID: "principal-1", ClientID: "client-1"}},
+		{ID: "legacy", Provider: "github", AccountDisplay: "octocat"},
+	}}
+	result, err := service.Call(context.Background(), identity.Caller{Proof: "synthetic-workload-proof", InstanceUID: "instance-1"}, "connections_status", map[string]any{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	connections := result["connections"].([]any)
+	agent := connections[0].(map[string]any)
+	if agent["mode"] != "agent" || agent["executor_identity"].(map[string]any)["principal_id"] != "principal-1" {
+		t.Fatalf("agent status = %#v", agent)
+	}
+	delegated := connections[1].(map[string]any)
+	if delegated["mode"] != "delegated" || delegated["executor_identity"].(map[string]any)["type"] != "delegated" {
+		t.Fatalf("delegated status = %#v", delegated)
+	}
+}
+
+func TestServiceExecutionAuditDoesNotLogArgumentsOrCredentials(t *testing.T) {
+	service, _, _, _ := newTestService(map[string]any{"status": "succeeded"}, nil)
+	var output bytes.Buffer
+	service.logger = slog.New(slog.NewJSONHandler(&output, nil))
+	_, err := service.Call(context.Background(), identity.Caller{Proof: "synthetic-workload-proof", InstanceUID: "instance-1"}, "github_issues_create", writeArguments("operation-audit"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	audit := output.String()
+	for _, expected := range []string{`"agent_uid":"instance-1"`, `"mode":"delegated"`, `"provider":"github"`, `"connection_id":"connection-1"`, `"executor_principal":"delegated"`, `"grant_id":"grant-1"`, `"grant_revision":11`, `"tool":"github_issues_create"`, `"result":"succeeded"`} {
+		if !strings.Contains(audit, expected) {
+			t.Fatalf("audit missing %s: %s", expected, audit)
+		}
+	}
+	for _, sensitive := range []string{"synthetic-access-token", "Synthetic issue", "synthetic-workload-proof", "repository_id"} {
+		if strings.Contains(audit, sensitive) {
+			t.Fatalf("audit leaked %q: %s", sensitive, audit)
+		}
+	}
+}
+
+func TestServiceRejectsChangedAgentEvidenceAndAuditsAgentPrincipal(t *testing.T) {
+	service, broker, provider, _ := newTestService(map[string]any{"status": "succeeded"}, nil)
+	expiresAt := time.Now().UTC().Add(time.Hour)
+	check := agentCheckResponse(expiresAt)
+	issue := agentCheckResponse(expiresAt)
+	broker.check = check
+	broker.issue.CheckResponse = issue
+	broker.issue.ExpiresAt = expiresAt.Format(time.RFC3339)
+	broker.issue.AccessToken = "agent-token-must-not-appear"
+
+	// Provider-derived evidence changed after Check: fail before execution.
+	broker.issue.Grant.Authorization.Scopes = []string{"/subscriptions/other"}
+	_, err := service.Call(context.Background(), identity.Caller{Proof: "synthetic-workload-proof", InstanceUID: "instance-1"}, "azure_subscriptions_list", map[string]any{"connection_id": "connection-1"})
+	if toolErrorCode(err) != "authorization_changed" || provider.calls != 0 {
+		t.Fatalf("changed evidence result = %v, calls = %d", err, provider.calls)
+	}
+
+	broker.issue.CheckResponse = agentCheckResponse(expiresAt)
+	var output bytes.Buffer
+	service.logger = slog.New(slog.NewJSONHandler(&output, nil))
+	_, err = service.Call(context.Background(), identity.Caller{Proof: "synthetic-workload-proof", InstanceUID: "instance-1"}, "azure_subscriptions_list", map[string]any{"connection_id": "connection-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	audit := output.String()
+	if !strings.Contains(audit, `"mode":"agent"`) || !strings.Contains(audit, `"executor_principal":"principal-1"`) || strings.Contains(audit, "agent-token-must-not-appear") {
+		t.Fatalf("agent audit = %s", audit)
+	}
+}
+
+func agentCheckResponse(expiresAt time.Time) brokerclient.CheckResponse {
+	return brokerclient.CheckResponse{
+		InstanceUID: "instance-1", CatalogVersion: brokerclient.CatalogVersion,
+		Connection: brokerclient.Connection{Mode: "agent", ID: "connection-1", Provider: "azure", Capabilities: []string{"azure_subscriptions_list"}, Revision: 7, Status: "connected", Identity: &brokerclient.IdentityBinding{InstanceUID: "instance-1", TenantID: "tenant-1", PrincipalID: "principal-1", ClientID: "client-1"}},
+		Grant:      brokerclient.Grant{ID: "grant-1", InstanceUID: "instance-1", ConnectionID: "connection-1", Tools: []string{"azure_subscriptions_list"}, ExpiresAt: expiresAt.Format(time.RFC3339), Revision: 11, Authorization: &brokerclient.ResourceAuthorization{State: "verified", Source: "direct_rbac", BindingRevision: 7, VerifiedAt: time.Now().Add(-time.Minute).Format(time.RFC3339), ValidUntil: expiresAt.Format(time.RFC3339)}},
 	}
 }
 

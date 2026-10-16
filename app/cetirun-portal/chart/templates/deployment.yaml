@@ -1,3 +1,7 @@
+{{- if empty .Values.agentTools.runtimeTypes }}{{ fail "agentTools.runtimeTypes must include at least one qualified runtime" }}{{ end }}
+{{- range .Values.agentTools.runtimeTypes }}
+{{- if not (has . (list "hermes" "openclaw")) }}{{ fail "agentTools.runtimeTypes supports only hermes and openclaw" }}{{ end }}
+{{- end }}
 {{- $sharedChat := .Values.global.portalChat | default dict -}}
 {{- $chatEnabled := or .Values.chat.enabled (default false $sharedChat.enabled) -}}
 {{- $chatRealm := default .Values.chat.identityRealm $sharedChat.identityRealm -}}
@@ -73,6 +77,8 @@ spec:
               value: {{ .Values.sandboxRuntimeProfiles | toJson | quote }}
             - name: FEATURE_AGENT_IDENTITY_ENABLED
               value: {{ default false ((.Values.features).agentIdentityEnabled) | quote }}
+            - name: TOOLS_MCP_RUNTIME_TYPES
+              value: {{ join "," .Values.agentTools.runtimeTypes | quote }}
             - name: FEATURE_AGENT_TOOLS_ENABLED
               value: {{ default false ((.Values.features).agentToolsEnabled) | quote }}
             - name: FEATURE_AI_GATEWAY_ENABLED

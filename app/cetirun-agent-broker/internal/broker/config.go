@@ -32,16 +32,18 @@ type Config struct {
 	EncryptionClientID      string
 	AuthSDKURL              string
 	StoreNamespace          string
+	AgentRecordNamespaces   bool
 	FederatedTokenFile      string
 	KubernetesTokenFile     string
 	KubernetesCAFile        string
 	OperatorNamespace       string
 	OperatorServiceAccount  string
+	ToolRuntimeTypes        []string
 	ToolServiceNamespace    string
 	ToolServiceAccount      string
 	WorkloadTokenAudience   string
-	GitHubAppClientID       string
-	GitHubAppClientSecret   string
+	GitHubOAuthClientID     string
+	GitHubOAuthClientSecret string
 	GoogleClientID          string
 	GoogleClientSecret      string
 	AzureOBOPermissions     []string
@@ -51,7 +53,12 @@ type Config struct {
 }
 
 func LoadConfig() (Config, error) {
+	layout := env("AGENT_RECORD_NAMESPACES", "false")
+	if layout != "true" && layout != "false" {
+		return Config{}, errors.New("AGENT_RECORD_NAMESPACES must be true or false")
+	}
 	cfg := Config{
+		AgentRecordNamespaces:   layout == "true",
 		ListenAddress:           env("LISTEN_ADDR", ":8080"),
 		TLSListenAddress:        env("TLS_LISTEN_ADDR", ":8443"),
 		TLSCertFile:             os.Getenv("TLS_CERT_FILE"),
@@ -74,17 +81,23 @@ func LoadConfig() (Config, error) {
 		KubernetesCAFile:        env("KUBERNETES_CA_FILE", "/var/run/cetirun/kubernetes/ca.crt"),
 		OperatorNamespace:       os.Getenv("OPERATOR_NAMESPACE"),
 		OperatorServiceAccount:  os.Getenv("OPERATOR_SERVICE_ACCOUNT"),
+		ToolRuntimeTypes:        strings.Split(env("TOOLS_MCP_RUNTIME_TYPES", "hermes,openclaw"), ","),
 		ToolServiceNamespace:    os.Getenv("TOOL_SERVICE_NAMESPACE"),
 		ToolServiceAccount:      os.Getenv("TOOL_SERVICE_ACCOUNT"),
 		WorkloadTokenAudience:   env("WORKLOAD_TOKEN_AUDIENCE", "agent-tools-mcp"),
-		GitHubAppClientID:       os.Getenv("GITHUB_APP_CLIENT_ID"),
-		GitHubAppClientSecret:   os.Getenv("GITHUB_APP_CLIENT_SECRET"),
+		GitHubOAuthClientID:     os.Getenv("GITHUB_OAUTH_CLIENT_ID"),
+		GitHubOAuthClientSecret: os.Getenv("GITHUB_OAUTH_CLIENT_SECRET"),
 		GoogleClientID:          os.Getenv("GOOGLE_OAUTH_CLIENT_ID"),
 		GoogleClientSecret:      os.Getenv("GOOGLE_OAUTH_CLIENT_SECRET"),
 		AzureOBOPermissions:     strings.Fields(os.Getenv("AZURE_OBO_PERMISSIONS")),
 		MicrosoftOBOPermissions: strings.Fields(os.Getenv("MICROSOFT_OBO_PERMISSIONS")),
 		TransactionTTL:          10 * time.Minute,
 		RequestTimeout:          15 * time.Second,
+	}
+	for _, kind := range cfg.ToolRuntimeTypes {
+		if kind != "hermes" && kind != "openclaw" {
+			return Config{}, errors.New("TOOLS_MCP_RUNTIME_TYPES must list hermes or openclaw")
+		}
 	}
 	for _, value := range []string{cfg.TenantID, cfg.BlueprintClientID, cfg.AuthorizationClientID, cfg.EncryptionClientID} {
 		if !uuidPattern.MatchString(value) {

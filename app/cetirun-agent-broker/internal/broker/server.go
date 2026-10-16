@@ -23,6 +23,7 @@ type Server struct {
 	oauth     *oauthClient
 	authSDK   *authSDKClient
 	providers *providerClient
+	arm       *armAuthorizationClient
 	mux       *http.ServeMux
 	tlsMux    *http.ServeMux
 	now       func() time.Time
@@ -66,6 +67,8 @@ func (s *Server) routes() {
 	s.mux.Handle("POST /v1/connections/{id}/reconnect", s.portalOnly(s.connectionReconnect))
 	s.mux.HandleFunc("GET /api/v1/connections/callback", s.connectionCallback)
 	s.mux.HandleFunc("POST /api/v1/connections/callback", s.connectionCallback)
+	s.mux.Handle("POST /v1/instances/{name}/tool-identities", s.portalOnly(s.agentIdentityCreate))
+	s.mux.Handle("POST /v1/instances/{name}/tool-grants/{id}/verify", s.portalOnly(s.grantVerify))
 	s.mux.Handle("GET /v1/instances/{name}/tool-grants", s.portalOnly(s.grantsList))
 	s.mux.Handle("POST /v1/instances/{name}/tool-grants", s.portalOnly(s.grantCreate))
 	s.mux.Handle("PUT /v1/instances/{name}/tool-grants/{id}", s.portalOnly(s.grantUpdate))
@@ -114,7 +117,7 @@ func (s *Server) operatorDeleteAuthorization(w http.ResponseWriter, r *http.Requ
 		writeAPIError(w, http.StatusNotFound, "instance_not_found", "Instance not found", correlationID(r))
 		return
 	}
-	if err := s.store.revokeGrantsForInstance(r.Context(), agent.UID); err != nil {
+	if err := s.store.deleteAgentRecords(r.Context(), agent); err != nil {
 		writeAPIError(w, http.StatusServiceUnavailable, "dependency_unavailable", "Grant state could not be revoked", correlationID(r))
 		return
 	}

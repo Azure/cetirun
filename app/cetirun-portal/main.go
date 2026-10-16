@@ -122,6 +122,7 @@ func main() {
 	var toolConnectionsHandler *handler.ToolConnectionsHandler
 	if cfg.AgentToolsEnabled {
 		toolConnectionsHandler = handler.NewToolConnectionsHandler(kubeClient, cfg.AgentToolsBrokerURL, cfg.PortalOrigin)
+		toolConnectionsHandler.RuntimeTypes = cfg.AgentToolsRuntimeTypes
 	}
 
 	// Serve embedded SPA.

@@ -142,4 +142,5 @@ agentIdentity:
   brokerURL: "http://cetirun-agent-broker.cetirun-credentials.svc.cluster.local:8080"
 
 agentTools:
+  runtimeTypes: [hermes, openclaw]
   brokerURL: "http://cetirun-agent-broker.cetirun-credentials.svc.cluster.local:8080"
