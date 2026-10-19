@@ -101,7 +101,7 @@ func (r *AgentReconciler) bindCustomGateway(ctx context.Context, instance *api.A
 		}
 		models, _ := parseCopilotModels(instance.Annotations[api.AnnotationCopilotModels])
 		for _, model := range models {
-			if model.ResponsesOnly && slices.Contains(copilot.Models, aiGatewayCopilotModelPrefix+model.ID) {
+			if model.ResponsesOnly && copilotModelName(copilot, model.ID) != "" {
 				b.Copilot.ResponsesModels = append(b.Copilot.ResponsesModels, model.ID)
 			}
 		}

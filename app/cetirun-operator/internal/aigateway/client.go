@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -68,6 +69,9 @@ type Key struct {
 	BudgetResetAt *time.Time
 	TeamID        string
 	UserID        string
+	// Aliases maps a model name the key's callers send to the model name the
+	// Gateway serves the request with (LiteLLM's key aliases).
+	Aliases map[string]string
 }
 
 // GenerateRequest creates a key with a caller-chosen value, which lets the
@@ -88,6 +92,8 @@ type GenerateRequest struct {
 	// user. The team must exist; the user need not.
 	TeamID string
 	UserID string
+	// Aliases are the key's model aliases; see Key.Aliases.
+	Aliases map[string]string
 }
 
 // Client calls the Gateway management API with the master key.
@@ -149,6 +155,7 @@ func (c *Client) GetKey(ctx context.Context, token string) (*Key, error) {
 			BudgetResetAt  *string  `json:"budget_reset_at"`
 			TeamID         *string  `json:"team_id"`
 			UserID         *string  `json:"user_id"`
+			Aliases        any      `json:"aliases"`
 		} `json:"info"`
 	}
 	status, err := c.do(ctx, http.MethodGet, "/key/info?"+query.Encode(), nil, &response)
@@ -162,7 +169,7 @@ func (c *Client) GetKey(ctx context.Context, token string) (*Key, error) {
 	key := &Key{
 		Alias: info.KeyAlias, Models: info.Models, MaxBudget: info.MaxBudget,
 		BudgetDuration: info.BudgetDuration, Blocked: info.Blocked != nil && *info.Blocked, Spend: info.Spend,
-		TeamID: deref(info.TeamID), UserID: deref(info.UserID),
+		TeamID: deref(info.TeamID), UserID: deref(info.UserID), Aliases: keyAliases(info.Aliases),
 	}
 	if info.BudgetResetAt != nil && strings.TrimSpace(*info.BudgetResetAt) != "" {
 		resetAt, err := time.Parse(time.RFC3339, *info.BudgetResetAt)
@@ -210,6 +217,9 @@ func (c *Client) GenerateKey(ctx context.Context, req GenerateRequest) error {
 	}
 	if req.UserID != "" {
 		body["user_id"] = req.UserID
+	}
+	if len(req.Aliases) > 0 {
+		body["aliases"] = req.Aliases
 	}
 	status, err := c.do(ctx, http.MethodPost, "/key/generate", body, nil)
 	var apiErr *APIError
@@ -325,6 +335,104 @@ type Deployment struct {
 	// /model/info fills unknown prices with zero, so such a model counts as
 	// unpriced here.
 	Priced bool
+	// Model is litellm_params.model, the provider model LiteLLM calls, and
+	// BaseModel model_info.base_model, the price-table entry the deployment
+	// is billed as, when set.
+	Model     string
+	BaseModel string
+	// Routing is how LiteLLM weighs the deployment against the others of its
+	// model name.
+	Routing Routing
+}
+
+// Routing holds the litellm_params fields that decide which of a model name's
+// deployments LiteLLM sends a request to. A nil field is not set.
+type Routing struct {
+	// Order: deployments with a higher order serve only while those with
+	// the lowest are unavailable.
+	Order *int64
+	// Weight, RPM and TPM weigh the deployments of one order against each
+	// other.
+	Weight *float64
+	RPM    *int64
+	TPM    *int64
+}
+
+// IsZero reports whether no routing field is set.
+func (r Routing) IsZero() bool {
+	return r.Order == nil && r.Weight == nil && r.RPM == nil && r.TPM == nil
+}
+
+// String renders the set fields in a stable form.
+func (r Routing) String() string {
+	var parts []string
+	if r.Order != nil {
+		parts = append(parts, fmt.Sprintf("order=%d", *r.Order))
+	}
+	if r.Weight != nil {
+		parts = append(parts, fmt.Sprintf("weight=%g", *r.Weight))
+	}
+	if r.RPM != nil {
+		parts = append(parts, fmt.Sprintf("rpm=%d", *r.RPM))
+	}
+	if r.TPM != nil {
+		parts = append(parts, fmt.Sprintf("tpm=%d", *r.TPM))
+	}
+	return strings.Join(parts, ",")
+}
+
+func (r Routing) params(params map[string]any) {
+	if r.Order != nil {
+		params["order"] = *r.Order
+	}
+	if r.Weight != nil {
+		params["weight"] = *r.Weight
+	}
+	if r.RPM != nil {
+		params["rpm"] = *r.RPM
+	}
+	if r.TPM != nil {
+		params["tpm"] = *r.TPM
+	}
+}
+
+// routing reads the routing fields of a deployment's litellm_params. A field
+// that is not a positive number counts as not set, as LiteLLM's routing
+// ignores it.
+func routing(params map[string]json.RawMessage) Routing {
+	var out Routing
+	if value, ok := positiveNumber(params["order"]); ok && value == math.Trunc(value) {
+		order := int64(value)
+		out.Order = &order
+	}
+	if value, ok := positiveNumber(params["weight"]); ok {
+		out.Weight = &value
+	}
+	if value, ok := positiveNumber(params["rpm"]); ok && value == math.Trunc(value) {
+		rpm := int64(value)
+		out.RPM = &rpm
+	}
+	if value, ok := positiveNumber(params["tpm"]); ok && value == math.Trunc(value) {
+		tpm := int64(value)
+		out.TPM = &tpm
+	}
+	return out
+}
+
+func positiveNumber(raw json.RawMessage) (float64, bool) {
+	var value float64
+	if len(raw) == 0 || json.Unmarshal(raw, &value) != nil || value <= 0 || math.IsInf(value, 0) || value > 1<<53 {
+		return 0, false
+	}
+	return value, true
+}
+
+func stringValue(raw json.RawMessage) string {
+	var value string
+	if len(raw) == 0 || json.Unmarshal(raw, &value) != nil {
+		return ""
+	}
+	return value
 }
 
 // ListModels returns every model deployment the Gateway serves.
@@ -342,11 +450,12 @@ func (c *Client) ListModels(ctx context.Context) ([]Deployment, error) {
 	deployments := make([]Deployment, 0, len(response.Data))
 	for _, item := range response.Data {
 		var info struct {
-			ID              string   `json:"id"`
-			AccessGroups    []string `json:"access_groups"`
-			DBModel         *bool    `json:"db_model"`
-			MaxInputTokens  *float64 `json:"max_input_tokens"`
-			MaxOutputTokens *float64 `json:"max_output_tokens"`
+			ID              string          `json:"id"`
+			AccessGroups    []string        `json:"access_groups"`
+			DBModel         *bool           `json:"db_model"`
+			MaxInputTokens  *float64        `json:"max_input_tokens"`
+			MaxOutputTokens *float64        `json:"max_output_tokens"`
+			BaseModel       json.RawMessage `json:"base_model"`
 		}
 		var fields map[string]any
 		if len(item.ModelInfo) > 0 {
@@ -362,6 +471,8 @@ func (c *Client) ListModels(ctx context.Context) ([]Deployment, error) {
 			FromDatabase: info.DBModel != nil && *info.DBModel, DatabaseSourceKnown: info.DBModel != nil,
 			MaxInputTokens: tokens(info.MaxInputTokens), MaxOutputTokens: tokens(info.MaxOutputTokens),
 			Priced: declaresPrice(item.LiteLLMParams) || hasPrice(fields),
+			Model:  stringValue(item.LiteLLMParams["model"]), BaseModel: stringValue(info.BaseModel),
+			Routing: routing(item.LiteLLMParams),
 		})
 	}
 	return deployments, nil
@@ -440,6 +551,11 @@ type ModelRequest struct {
 	AccessGroups []string
 	// BaseModel names the price-table entry when Model's own name has none.
 	BaseModel string
+	// Routing sets the deployment's routing fields.
+	Routing Routing
+	// NoCooldown sets litellm_params.cooldown_time to 0: LiteLLM never takes
+	// the deployment out of rotation after a failure.
+	NoCooldown bool
 }
 
 // AddModel registers a deployment. The Gateway rejects a second deployment
@@ -455,6 +571,10 @@ func (c *Client) AddModel(ctx context.Context, req ModelRequest) error {
 	params := map[string]any{"model": req.Model, "api_base": req.APIBase}
 	if req.APIKey != "" {
 		params["api_key"] = req.APIKey
+	}
+	req.Routing.params(params)
+	if req.NoCooldown {
+		params["cooldown_time"] = 0
 	}
 	_, err := c.do(ctx, http.MethodPost, "/model/new", map[string]any{
 		"model_name": req.ModelName, "litellm_params": params, "model_info": info,

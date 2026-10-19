@@ -13,7 +13,6 @@ import (
 	"math/big"
 	"reflect"
 	"slices"
-	"strings"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -420,7 +419,7 @@ func effectivePolicyModels(agent *api.Agent, policy *api.AgentPolicy) (string, [
 	if shared {
 		models = append(models, policy.Spec.ModelAccess.SharedModels.Allowed...)
 	}
-	if agent.Spec.Model != "" && !(shared && slices.Contains(models, agent.Spec.Model)) && !(copilot && strings.HasPrefix(agent.Spec.Model, api.AIGatewayCopilotModelPrefix)) {
+	if agent.Spec.Model != "" && !(shared && slices.Contains(models, agent.Spec.Model)) && !(copilot && copilotDefaultModelAllowed(agent.Spec.Model)) {
 		return "", nil, fmt.Errorf("requested default model %q is not authorized", agent.Spec.Model)
 	}
 	if !shared && !copilot {

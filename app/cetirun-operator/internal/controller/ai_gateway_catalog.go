@@ -70,6 +70,9 @@ type aiGatewayCatalog struct {
 	// zero value is the Gateway's default, which refuses requests for
 	// models without a price.
 	allowsUnpriced bool
+	// copilotMerge is what Copilot registration needs of the listing (see
+	// ai_gateway_copilot_merge.go).
+	copilotMerge copilotMergeView
 }
 
 func (c *aiGatewayCatalog) age(now time.Time) time.Duration {
@@ -97,7 +100,9 @@ func (c *aiGatewayCatalog) update(deployments []aigateway.Deployment, blockUnpri
 		if deployment.ID != "" {
 			idMembers[deployment.ID]++
 		}
-		if deployment.Priced {
+		// An Agent's Copilot route may serve a shared model's name; it does
+		// not price the shared deployments.
+		if deployment.Priced && !copilotRoute(deployment) {
 			priced[deployment.ModelName] = true
 		}
 		for _, group := range managedModelGroups(deployment.AccessGroups) {
@@ -106,11 +111,13 @@ func (c *aiGatewayCatalog) update(deployments []aigateway.Deployment, blockUnpri
 	}
 	byName := map[string]aiGatewayCatalogModel{}
 	modelGroups := map[string][]string{}
+	merge := newCopilotMergeView()
 	for _, deployment := range deployments {
 		ids[deployment.ID] = true
 		for _, group := range deployment.AccessGroups {
 			groups[group] = append(groups[group], deployment.ID)
 		}
+		merge.serve(deployment)
 		legacyShared := slices.Contains(deployment.AccessGroups, aiGatewaySharedAccessGroup)
 		managedGroups := trustedManagedModelGroups(deployment, groupMembers, idMembers)
 		policyBoundShared := deployment.ID != "" && len(managedGroups) > 0
@@ -137,6 +144,7 @@ func (c *aiGatewayCatalog) update(deployments []aigateway.Deployment, blockUnpri
 		model.ContextWindow = smallerPositive(model.ContextWindow, deployment.MaxInputTokens)
 		model.MaxOutputTokens = smallerPositive(model.MaxOutputTokens, deployment.MaxOutputTokens)
 		byName[deployment.ModelName] = model
+		merge.share(deployment)
 		if policyBoundShared {
 			modelGroups[deployment.ModelName] = append(modelGroups[deployment.ModelName], managedGroups...)
 		}
@@ -157,6 +165,7 @@ func (c *aiGatewayCatalog) update(deployments []aigateway.Deployment, blockUnpri
 	changed := !(c.known || c.seeded) || !slices.Equal(c.sharedSet, shared) || c.fingerprint != fingerprint
 	c.known, c.seeded, c.fetchedAt, c.sharedSet, c.ids, c.groups, c.modelGroups, c.fingerprint = true, false, now, shared, ids, groups, modelGroups, fingerprint
 	c.allowsUnpriced = !blockUnpriced
+	c.copilotMerge = merge
 	return changed, skipped, unpriced
 }
 

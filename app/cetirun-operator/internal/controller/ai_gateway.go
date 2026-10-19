@@ -189,6 +189,7 @@ type aiGatewayKeyClient interface {
 	AddModel(context.Context, aigateway.ModelRequest) error
 	DeleteModel(context.Context, string) error
 	PricedModels(context.Context) (map[string]bool, error)
+	UpdateKeyAliases(context.Context, string, map[string]string) error
 }
 
 func (r *AgentReconciler) aiGatewayClient(ctx context.Context) (aiGatewayKeyClient, error) {
@@ -639,6 +640,7 @@ func (r *AgentReconciler) reconcileAIGateway(ctx context.Context, instance *ceti
 			MaxBudget: grant.budget, BudgetDuration: aiGatewayBudgetDuration,
 			Blocked: instance.Spec.Suspended,
 			TeamID:  teamID, UserID: userID,
+			Aliases: copilotKeyAliases(status.Copilot),
 			Metadata: map[string]string{
 				"cetirun_agent": instance.Name, "cetirun_agent_uid": string(instance.UID),
 				"cetirun_user": instance.Spec.User.Alias, "cetirun_team": instance.Spec.Team,
@@ -799,6 +801,7 @@ func (r *AgentReconciler) reconcileAIGateway(ctx context.Context, instance *ceti
 	// Copilot registration problems are reported on the Copilot status and
 	// never block the key: shared models keep working.
 	r.reconcileAIGatewayCopilot(ctx, client, instance, copilot && !instance.Spec.Suspended)
+	r.reconcileAIGatewayKeyAliases(ctx, client, instance, token, key)
 	r.refreshAIGatewayCatalog(ctx, client)
 	if routed {
 		entries, defaultModel, omitted := r.aiGatewayModelEntries(instance)
@@ -1268,8 +1271,8 @@ func (r *AgentReconciler) applyCopilotResponsesModels(values map[string]any, ins
 	}
 	registered := map[string]bool{}
 	if status := instance.Status.AIGateway; status != nil && status.Copilot != nil {
-		for _, name := range status.Copilot.Models {
-			registered[strings.TrimPrefix(name, aiGatewayCopilotModelPrefix)] = true
+		for _, route := range copilotRoutes(status.Copilot) {
+			registered[route.Model] = true
 		}
 	}
 	models, _ := parseCopilotModels(instance.Annotations[cetirunv1alpha1.AnnotationCopilotModels])
@@ -1323,7 +1326,7 @@ func applyCopilotSignInGeneration(values map[string]any, instance *cetirunv1alph
 // model can decide a routed Agent's default: the Agent names no model, or
 // names one that is not among its models.
 func aiGatewayUsesDeploymentDefault(instance *cetirunv1alpha1.Agent) bool {
-	model := strings.TrimSpace(instance.Spec.Model)
+	model := aiGatewayRequestedModel(instance)
 	if model == "" {
 		return true
 	}

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"slices"
 	"strings"
@@ -82,6 +83,8 @@ type fakeAIGateway struct {
 	// prices; the tests about prices turn it on.
 	blockUnpriced bool
 	blockErr      error
+	aliasUpdates  []map[string]string
+	aliasErr      error
 }
 
 func newFakeAIGateway() *fakeAIGateway {
@@ -106,6 +109,7 @@ func (f *fakeAIGateway) GetKey(_ context.Context, token string) (*aigateway.Key,
 	}
 	copied := *key
 	copied.Models = slices.Clone(key.Models)
+	copied.Aliases = maps.Clone(key.Aliases)
 	return &copied, nil
 }
 
@@ -122,8 +126,24 @@ func (f *fakeAIGateway) GenerateKey(_ context.Context, req aigateway.GenerateReq
 	budget := req.MaxBudget
 	f.keys[aigateway.Token(req.Key)] = &aigateway.Key{
 		Alias: req.Alias, Models: slices.Clone(req.Models), MaxBudget: &budget, BudgetDuration: req.BudgetDuration,
-		Blocked: req.Blocked, TeamID: req.TeamID, UserID: req.UserID,
+		Blocked: req.Blocked, TeamID: req.TeamID, UserID: req.UserID, Aliases: maps.Clone(req.Aliases),
 	}
+	return nil
+}
+
+func (f *fakeAIGateway) UpdateKeyAliases(_ context.Context, token string, aliases map[string]string) error {
+	if f.aliasErr != nil {
+		return f.aliasErr
+	}
+	key, ok := f.keys[token]
+	if !ok {
+		return &aigateway.APIError{StatusCode: 404, Message: "not found"}
+	}
+	key.Aliases = maps.Clone(aliases)
+	if len(aliases) == 0 {
+		key.Aliases = nil
+	}
+	f.aliasUpdates = append(f.aliasUpdates, maps.Clone(aliases))
 	return nil
 }
 
@@ -219,6 +239,7 @@ func (f *fakeAIGateway) ListModels(context.Context) ([]aigateway.Deployment, err
 		deployments = append(deployments, aigateway.Deployment{
 			ID: id, ModelName: model.ModelName, AccessGroups: model.AccessGroups,
 			FromDatabase: true, DatabaseSourceKnown: true, Priced: true,
+			Model: model.Model, BaseModel: model.BaseModel, Routing: model.Routing,
 		})
 	}
 	return deployments, nil
@@ -1037,7 +1058,8 @@ func TestReconcileAIGatewayCopilotSignInRegistersPricedModels(t *testing.T) {
 	if copilot.Phase != cetirunv1alpha1.AIGatewayCopilotPhaseReady {
 		t.Fatalf("copilot status %+v", copilot)
 	}
-	wantNames := []string{"copilot/claude-sonnet-4.5", "copilot/gpt-5.5"}
+	// A Copilot model that is no shared model's real model keeps its own ID.
+	wantNames := []string{"claude-sonnet-4.5", "gpt-5.5"}
 	if !slices.Equal(copilot.Models, wantNames) || !slices.Equal(gateway.modelNames(), wantNames) {
 		t.Fatalf("registered %v, gateway %v", copilot.Models, gateway.modelNames())
 	}
@@ -1050,11 +1072,14 @@ func TestReconcileAIGatewayCopilotSignInRegistersPricedModels(t *testing.T) {
 			model.Model != "litellm_proxy/"+strings.TrimPrefix(model.ModelName, "copilot/") {
 			t.Fatalf("unexpected route %s: %+v", id, model)
 		}
-		if model.ModelName == "copilot/claude-sonnet-4.5" && model.BaseModel != "claude-sonnet-4-5" {
+		if !model.NoCooldown || !model.Routing.IsZero() {
+			t.Fatalf("a route of its own is never cooled down and copies no routing: %+v", model)
+		}
+		if model.ModelName == "claude-sonnet-4.5" && model.BaseModel != "claude-sonnet-4-5" {
 			t.Fatalf("Copilot's dotted Claude name must be priced by the dashed entry, got %q", model.BaseModel)
 		}
 	}
-	wantModels := []string{testSharedModelOne, "copilot/claude-sonnet-4.5", "copilot/gpt-5.5"}
+	wantModels := []string{testSharedModelOne, "claude-sonnet-4.5", "gpt-5.5"}
 	if !slices.Equal(agent.Status.AIGateway.Models, wantModels) {
 		t.Fatalf("agent models %v, want %v", agent.Status.AIGateway.Models, wantModels)
 	}
@@ -1073,7 +1098,7 @@ func TestReconcileAIGatewayCopilotSignInRegistersPricedModels(t *testing.T) {
 	if err := r.reconcileAIGateway(context.Background(), agent, true); err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(gateway.modelNames(), []string{"copilot/gpt-5.5"}) || !slices.Equal(agent.Status.AIGateway.Copilot.Models, []string{"copilot/gpt-5.5"}) {
+	if !slices.Equal(gateway.modelNames(), []string{"gpt-5.5"}) || !slices.Equal(agent.Status.AIGateway.Copilot.Models, []string{"gpt-5.5"}) {
 		t.Fatalf("stale routes must be removed: gateway %v status %v", gateway.modelNames(), agent.Status.AIGateway.Copilot.Models)
 	}
 
@@ -1088,7 +1113,7 @@ func TestReconcileAIGatewayCopilotSignInRegistersPricedModels(t *testing.T) {
 	if err := r.reconcileAIGateway(context.Background(), agent, true); err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(gateway.modelNames(), []string{"copilot/gpt-5.5"}) {
+	if !slices.Equal(gateway.modelNames(), []string{"gpt-5.5"}) {
 		t.Fatalf("a lost route must be re-added, gateway %v", gateway.modelNames())
 	}
 
@@ -1125,13 +1150,13 @@ func TestReconcileAIGatewayCopilotRemovesUnrecordedObsoleteRoutes(t *testing.T) 
 	if err := r.reconcileAIGateway(context.Background(), agent, true); err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(gateway.modelNames(), []string{"copilot/gpt-5.5"}) {
+	if !slices.Equal(gateway.modelNames(), []string{"gpt-5.5"}) {
 		t.Fatalf("setup: gateway %v", gateway.modelNames())
 	}
 	obsolete := copilotRegistrationID(agent, "gpt-5.5", "0badc0de")
-	gateway.models[obsolete] = aigateway.ModelRequest{ID: obsolete, ModelName: "copilot/gpt-5.5", APIKey: "sk-obsolete", AccessGroups: []string{copilotGroup()}}
+	gateway.models[obsolete] = aigateway.ModelRequest{ID: obsolete, ModelName: "gpt-5.5", APIKey: "sk-obsolete", AccessGroups: []string{copilotGroup()}}
 	other := aiGatewayCopilotGroupPrefix + "another-agent-uid-gpt-5.5-0badc0de"
-	gateway.models[other] = aigateway.ModelRequest{ID: other, ModelName: "copilot/gpt-5.5", AccessGroups: []string{aiGatewayCopilotGroupPrefix + "another-agent-uid"}}
+	gateway.models[other] = aigateway.ModelRequest{ID: other, ModelName: "gpt-5.5", AccessGroups: []string{aiGatewayCopilotGroupPrefix + "another-agent-uid"}}
 	if slices.Contains(agent.Status.AIGateway.Copilot.Registered, obsolete) {
 		t.Fatal("setup: the obsolete route must not be recorded")
 	}
@@ -1148,7 +1173,7 @@ func TestReconcileAIGatewayCopilotRemovesUnrecordedObsoleteRoutes(t *testing.T) 
 	if _, ok := gateway.models[other]; !ok {
 		t.Fatal("another Agent's route must stay")
 	}
-	if names := gateway.modelNames(); !slices.Equal(names, []string{"copilot/gpt-5.5", "copilot/gpt-5.5"}) {
+	if names := gateway.modelNames(); !slices.Equal(names, []string{"gpt-5.5", "gpt-5.5"}) {
 		t.Fatalf("this Agent's current route must stay: %v", names)
 	}
 	if copilot := agent.Status.AIGateway.Copilot; copilot.Phase != cetirunv1alpha1.AIGatewayCopilotPhaseReady ||
@@ -2649,7 +2674,7 @@ func TestReconcileAIGatewayCopilotUsesModelsOnlyWithTheirSignIn(t *testing.T) {
 
 	storeToken("first", time.Now())
 	recordModels("first", `[{"id":"gpt-5.5"}]`)
-	if copilot := reconcile(); copilot.Phase != cetirunv1alpha1.AIGatewayCopilotPhaseReady || !slices.Equal(gateway.modelNames(), []string{"copilot/gpt-5.5"}) {
+	if copilot := reconcile(); copilot.Phase != cetirunv1alpha1.AIGatewayCopilotPhaseReady || !slices.Equal(gateway.modelNames(), []string{"gpt-5.5"}) {
 		t.Fatalf("a consistent sign-in registers its models: %+v %v", copilot, gateway.modelNames())
 	}
 
@@ -2657,7 +2682,7 @@ func TestReconcileAIGatewayCopilotUsesModelsOnlyWithTheirSignIn(t *testing.T) {
 	// as they are meanwhile.
 	storeToken("second", time.Now())
 	if copilot := reconcile(); copilot.Phase != cetirunv1alpha1.AIGatewayCopilotPhaseStarting || copilot.Reason != "SignInCompleting" ||
-		!slices.Equal(gateway.modelNames(), []string{"copilot/gpt-5.5"}) {
+		!slices.Equal(gateway.modelNames(), []string{"gpt-5.5"}) {
 		t.Fatalf("models of the previous sign-in are awaited, not dropped yet: %+v %v", copilot, gateway.modelNames())
 	}
 
@@ -2672,7 +2697,7 @@ func TestReconcileAIGatewayCopilotUsesModelsOnlyWithTheirSignIn(t *testing.T) {
 	// The second sign-in's models arrive.
 	recordModels("second", `[{"id":"claude-sonnet-4.5"}]`)
 	if copilot := reconcile(); copilot.Phase != cetirunv1alpha1.AIGatewayCopilotPhaseReady ||
-		!slices.Equal(gateway.modelNames(), []string{"copilot/claude-sonnet-4.5"}) {
+		!slices.Equal(gateway.modelNames(), []string{"claude-sonnet-4.5"}) {
 		t.Fatalf("the models of the stored sign-in are registered: %+v %v", copilot, gateway.modelNames())
 	}
 }
@@ -2731,7 +2756,7 @@ func TestReconcileAIGatewayCopilotUsesOnlyCompletedSignIns(t *testing.T) {
 	// Completed, it is used.
 	storeToken("fenced", time.Now().Add(-copilotSignInGrace-time.Minute))
 	if copilot := reconcile(); copilot.Phase != cetirunv1alpha1.AIGatewayCopilotPhaseReady ||
-		!slices.Equal(gateway.modelNames(), []string{"copilot/gpt-5.5"}) {
+		!slices.Equal(gateway.modelNames(), []string{"gpt-5.5"}) {
 		t.Fatalf("a completed sign-in's models are registered: %+v %v", copilot, gateway.modelNames())
 	}
 
@@ -2745,7 +2770,7 @@ func TestReconcileAIGatewayCopilotUsesOnlyCompletedSignIns(t *testing.T) {
 	delete(agent.Annotations, cetirunv1alpha1.AnnotationCopilotSignInGeneration)
 	agent.Annotations[cetirunv1alpha1.AnnotationCopilotModels] = `[{"id":"claude-sonnet-4.5"}]`
 	if copilot := reconcile(); copilot.Phase != cetirunv1alpha1.AIGatewayCopilotPhaseReady ||
-		!slices.Equal(gateway.modelNames(), []string{"copilot/claude-sonnet-4.5"}) {
+		!slices.Equal(gateway.modelNames(), []string{"claude-sonnet-4.5"}) {
 		t.Fatalf("a sign-in from before generations keeps its models: %+v %v", copilot, gateway.modelNames())
 	}
 }

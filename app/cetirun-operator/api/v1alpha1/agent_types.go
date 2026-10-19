@@ -56,7 +56,8 @@ type AgentSpec struct {
 	SandboxRef string `json:"sandboxRef,omitempty"`
 
 	// Model is the Agent's preferred default model as exposed by the platform
-	// AI Gateway, such as a shared model or copilot/<model>. Policy resolution rejects
+	// AI Gateway, such as a shared model or a GitHub Copilot model;
+	// copilot/<model> names a Copilot model by its ID. Policy resolution rejects
 	// an explicitly requested model that is outside the effective policy.
 	// +kubebuilder:validation:MaxLength=256
 	// +optional
@@ -490,10 +491,17 @@ type AIGatewayCopilotStatus struct {
 	// +optional
 	AccessGroup string `json:"accessGroup,omitempty"`
 
-	// Models are the registered Copilot models, as the Agent sees them.
+	// Models are the registered Copilot models, as the Agent names them: the
+	// name of the shared model a Copilot model is the same model as, or the
+	// Copilot model's own ID.
 	// +listType=atomic
 	// +optional
 	Models []string `json:"models,omitempty"`
+
+	// Routes pairs each registered Copilot model with its name in the Gateway.
+	// +listType=atomic
+	// +optional
+	Routes []AIGatewayCopilotRoute `json:"routes,omitempty"`
 
 	// Registered are the Gateway model IDs registered for this Agent's proxy.
 	// +listType=atomic
@@ -506,6 +514,13 @@ type AIGatewayCopilotStatus struct {
 	// +optional
 	Unpriced []string `json:"unpriced,omitempty"`
 
+	// Skipped lists the account's models left out because a shared model
+	// already has their name and is another model, or one the Agent is not
+	// granted.
+	// +listType=atomic
+	// +optional
+	Skipped []string `json:"skipped,omitempty"`
+
 	// ProxyKeyID identifies the proxy's master key without revealing it: the
 	// first characters of the key's SHA-256 hash. The proxy reads the key
 	// when it starts, so a new key restarts it.
@@ -515,6 +530,21 @@ type AIGatewayCopilotStatus struct {
 	// Reason is a stable, non-sensitive machine-readable status reason.
 	// +optional
 	Reason string `json:"reason,omitempty"`
+}
+
+// AIGatewayCopilotRoute is one of the Agent's registered Copilot models.
+type AIGatewayCopilotRoute struct {
+	// Model is the Copilot model's ID.
+	Model string `json:"model"`
+
+	// Name is the model's name in the Gateway, which the Agent uses.
+	Name string `json:"name"`
+
+	// Shared reports that Name is a shared model's name: the Gateway serves
+	// the Agent's requests for it from the shared model's deployments and
+	// from this Copilot model.
+	// +optional
+	Shared bool `json:"shared,omitempty"`
 }
 
 // GitHub Copilot proxy phases.
@@ -563,8 +593,11 @@ const (
 
 // Model names the AI Gateway gives an Agent.
 const (
-	// AIGatewayCopilotModelPrefix prefixes the Gateway names of an Agent's
-	// GitHub Copilot models, such as copilot/gpt-5.5.
+	// AIGatewayCopilotModelPrefix is reserved in the Gateway for an Agent's
+	// GitHub Copilot models: copilot/<model ID>, such as copilot/gpt-5.5,
+	// names a Copilot model by its ID. Agents use the model's Gateway name,
+	// a shared model's name or the ID itself; the Gateway keeps copilot/<ID>
+	// as a key alias of that name for earlier clients.
 	AIGatewayCopilotModelPrefix = "copilot/"
 	// AIGatewaySignInRequiredModel and AIGatewayNoModelsModel are the
 	// placeholder default models of an Agent without any model yet: its

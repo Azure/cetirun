@@ -189,7 +189,8 @@ spec:
               model:
                 description: |-
                   Model is the Agent's preferred default model as exposed by the platform
-                  AI Gateway, such as a shared model or copilot/<model>. Policy resolution rejects
+                  AI Gateway, such as a shared model or a GitHub Copilot model;
+                  copilot/<model> names a Copilot model by its ID. Policy resolution rejects
                   an explicitly requested model that is outside the effective policy.
                 maxLength: 256
                 type: string
@@ -457,8 +458,10 @@ spec:
                           Only this Agent's key is granted it.
                         type: string
                       models:
-                        description: Models are the registered Copilot models, as
-                          the Agent sees them.
+                        description: |-
+                          Models are the registered Copilot models, as the Agent names them: the
+                          name of the shared model a Copilot model is the same model as, or the
+                          Copilot model's own ID.
                         items:
                           type: string
                         type: array
@@ -488,6 +491,41 @@ spec:
                       registered:
                         description: Registered are the Gateway model IDs registered
                           for this Agent's proxy.
+                        items:
+                          type: string
+                        type: array
+                        x-kubernetes-list-type: atomic
+                      routes:
+                        description: Routes pairs each registered Copilot model with
+                          its name in the Gateway.
+                        items:
+                          description: AIGatewayCopilotRoute is one of the Agent's
+                            registered Copilot models.
+                          properties:
+                            model:
+                              description: Model is the Copilot model's ID.
+                              type: string
+                            name:
+                              description: Name is the model's name in the Gateway,
+                                which the Agent uses.
+                              type: string
+                            shared:
+                              description: |-
+                                Shared reports that Name is a shared model's name: the Gateway serves
+                                the Agent's requests for it from the shared model's deployments and
+                                from this Copilot model.
+                              type: boolean
+                          required:
+                          - model
+                          - name
+                          type: object
+                        type: array
+                        x-kubernetes-list-type: atomic
+                      skipped:
+                        description: |-
+                          Skipped lists the account's models left out because a shared model
+                          already has their name and is another model, or one the Agent is not
+                          granted.
                         items:
                           type: string
                         type: array
