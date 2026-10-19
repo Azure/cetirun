@@ -164,7 +164,10 @@ the instance's key:
 - a GitHub Copilot tier works for an instance once its owner has signed in to
   GitHub Copilot with an account that offers that model. Every member's
   account is assumed to offer the same models; a router whose tiers are all
-  shared models works at once.
+  shared models works at once. A Copilot tier only ever uses the instance's
+  own sign-in: if its model is not available to the instance when a request
+  arrives, for example just after a sign-out and before the operator withdraws
+  the router, the Gateway sends the request to the router's medium model.
 
 An instance that cannot use a router reports why in
 `status.aiGateway.modelRouters`, and its Portal page shows the reason. Changing
