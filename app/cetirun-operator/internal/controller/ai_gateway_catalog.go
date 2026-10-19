@@ -70,6 +70,23 @@ type aiGatewayCatalog struct {
 	// zero value is the Gateway's default, which refuses requests for
 	// models without a price.
 	allowsUnpriced bool
+	// rollout holds back listings that change the view while the Gateway
+	// is rolling out; see ai_gateway_rollout.go.
+	rollout aiGatewayRollout
+}
+
+// changedBy reports whether a listing would change a view taken from an
+// earlier listing. Without such a view it reports false: there is nothing
+// to keep.
+func (c *aiGatewayCatalog) changedBy(deployments []aigateway.Deployment, blockUnpriced bool) bool {
+	c.mu.RLock()
+	scratch := aiGatewayCatalog{known: c.known, sharedSet: c.sharedSet, fingerprint: c.fingerprint}
+	c.mu.RUnlock()
+	if !scratch.known {
+		return false
+	}
+	changed, _, _ := scratch.update(deployments, blockUnpriced, time.Time{})
+	return changed
 }
 
 func (c *aiGatewayCatalog) age(now time.Time) time.Duration {
@@ -457,6 +474,9 @@ func (r *AgentReconciler) refreshAIGatewayCatalogWithin(ctx context.Context, cli
 		log.FromContext(ctx).Info("reading whether the AI Gateway blocks unpriced models failed; keeping the last setting",
 			"blocks", blockUnpriced, "error", err.Error())
 	}
+	if r.holdAIGatewayCatalog(ctx, deployments, blockUnpriced, time.Now()) {
+		return false
+	}
 	changed, skipped, unpriced := catalog.update(deployments, blockUnpriced, time.Now())
 	if len(skipped) > 0 {
 		log.FromContext(ctx).Info("shared models with names Agents cannot use are left out", "models", skipped)
@@ -483,6 +503,11 @@ func (r *AgentReconciler) refreshAIGatewayCatalogForGrant(ctx context.Context, c
 	blockUnpriced, err := client.BlockUnpricedModels(ctx)
 	if err != nil {
 		return fmt.Errorf("read AI Gateway pricing policy for Policy grant: %w", err)
+	}
+	if r.holdAIGatewayCatalog(ctx, deployments, blockUnpriced, time.Now()) {
+		// While the Gateway rolls out, the grant uses the view of the last
+		// listing adopted, which was live; the hold is bounded.
+		return nil
 	}
 	changed, skipped, unpriced := catalog.update(deployments, blockUnpriced, time.Now())
 	if len(skipped) > 0 {
@@ -548,12 +573,22 @@ func (p *AIGatewayCatalogPublisher) Start(ctx context.Context) error {
 	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	maxAge := interval / 2
 	for {
-		p.Reconciler.publishAIGatewayCatalog(ctx, interval/2)
+		p.Reconciler.publishAIGatewayCatalog(ctx, maxAge)
+		maxAge = interval / 2
+		var recheck <-chan time.Time
+		if p.Reconciler.aiGatewayCatalog.rollout.waiting() {
+			recheck = time.After(aiGatewayRolloutRecheck)
+		}
 		select {
 		case <-ctx.Done():
 			return nil
 		case <-ticker.C:
+		case <-recheck:
+			// A change held during a Gateway rollout is listed again soon,
+			// whatever the age of the catalog.
+			maxAge = 0
 		}
 	}
 }
