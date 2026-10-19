@@ -344,9 +344,6 @@ func TestRuntimeProfileValidation(t *testing.T) {
 			}
 			request["port"] = 5900
 			input["desktop"] = map[string]any{"enabled": false}
-			if typ == "openclaw" {
-				input["openclaw"] = map[string]any{"config": map[string]any{"browser": map[string]any{"attachOnly": false}}}
-			}
 			prepared, err = PrepareChart(chrt, input)
 			if err != nil || prepared.Agent.Port == nil || *prepared.Agent.Port != 5900 {
 				t.Fatalf("disabled desktop should release port 5900: %v", err)
