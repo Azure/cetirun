@@ -243,7 +243,9 @@ func managedModelGroups(groups []string) []string {
 // change in which names are bound, or in a name's groups, re-projects
 // policy-bound Agents. Editing a configured model's endpoint, provider
 // parameters, price or other metadata changes its deployment ID but neither
-// its name nor its group, and leaves Agents running.
+// its name nor its group, so it leaves the fingerprint unchanged. (A model
+// that loses its price while the Gateway blocks unpriced models leaves the
+// shared models, which removes its name.)
 //
 // That is safe because an AgentPolicy authorizes exact catalog model names
 // (AgentPolicySharedModelsAccess.Allowed), not deployments: any deployment

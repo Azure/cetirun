@@ -81,7 +81,8 @@ deployment ID of the form above, and serves the model name the group is
 derived from. A console deployment under the same name is not automatically
 trusted or granted. A console deployment that copies the group makes the
 Operator distrust it, and Agents lose that model until the copy is removed.
-Two identical entries share one deployment ID, so the Operator trusts neither.
+Two identical entries render the same deployment ID; if the Gateway lists it
+twice, the Operator does not trust the group.
 
 Earlier versions of this chart derived the group from the complete model
 configuration, so editing a model changed its group, and Agents could not use
