@@ -1495,6 +1495,19 @@ func TestAIGatewayRevision(t *testing.T) {
 	if signedIn == rotated {
 		t.Fatal("a new Copilot model list must change the revision, so the next reconcile registers it")
 	}
+	// A Copilot model that joins a shared model leaves the Agent's model list
+	// as it is; the revision must still change, since the proxy's
+	// Responses-only models follow the routes.
+	agent.Status.AIGateway.Copilot = &cetirunv1alpha1.AIGatewayCopilotStatus{Phase: cetirunv1alpha1.AIGatewayCopilotPhaseReady}
+	if !r.aiGatewayCopilotActive(agent) {
+		t.Fatal("the test Agent must have GitHub Copilot active")
+	}
+	beforeJoin := r.aiGatewayRevision(agent)
+	agent.Status.AIGateway.Copilot.Routes = []cetirunv1alpha1.AIGatewayCopilotRoute{{Model: "gpt-5.5", Name: testSharedModelOne, Shared: true}}
+	if r.aiGatewayRevision(agent) == beforeJoin {
+		t.Fatal("a Copilot route joining a shared model must change the revision")
+	}
+	agent.Status.AIGateway.Copilot = nil
 	r.refreshAIGatewayCatalogWithin(context.Background(), gateway, 0)
 	withCatalog := r.aiGatewayRevision(agent)
 	gateway.shared = append(gateway.shared, aigateway.Deployment{ID: "cfg-3", ModelName: "new-shared", AccessGroups: []string{aiGatewaySharedAccessGroup}})

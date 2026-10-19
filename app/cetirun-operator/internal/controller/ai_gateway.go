@@ -1365,6 +1365,16 @@ func (r *AgentReconciler) aiGatewayRevision(instance *cetirunv1alpha1.Agent) str
 		if r.aiGatewayCopilotActive(instance) && status.Copilot.ProxyKeyID != "" {
 			parts = append(parts, "proxy-key", status.Copilot.ProxyKeyID)
 		}
+		// The proxy's Responses-only models follow the registered routes. A
+		// Copilot model that joins a shared model leaves the Agent's model
+		// list as it is, so the routes count on their own.
+		if r.aiGatewayCopilotActive(instance) {
+			var routes []string
+			for _, route := range copilotRoutes(status.Copilot) {
+				routes = append(routes, route.Model+"="+route.Name)
+			}
+			parts = append(parts, "copilot-routes", strings.Join(routes, ","))
+		}
 	}
 	if annotation := instance.Annotations[cetirunv1alpha1.AnnotationCopilotModels]; annotation != "" {
 		sum := sha256.Sum256([]byte(annotation))
