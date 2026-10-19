@@ -50,8 +50,10 @@ Gateway's next health check takes it out of rotation.
 Any other Copilot model keeps its own ID, such as `gpt-5.5`, and only the
 instance's Copilot subscription serves it: a 429 from Copilot reaches the
 instance as it is, and the next request goes to Copilot again. If a shared model
-already has that name but is another model, or one the instance may not use,
-the Copilot model is left out, and the instance page lists it as not offered.
+already has that name but is another model, the Copilot model is left out, and
+the instance page lists it as not offered. If it is the same model but one the
+instance may not use, the instance keeps that name for its own Copilot model,
+which only its own key reaches.
 Clients configured with the earlier `copilot/<model>` names keep working: the
 operator keeps those names as aliases on the instance's key, and an instance
 whose default model is `copilot/<model>` uses the model's current name.
