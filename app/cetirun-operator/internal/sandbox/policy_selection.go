@@ -12,7 +12,7 @@ import (
 
 const (
 	HoldFinalizer        = "cetirun.microsoft.com/sandbox-hold"
-	PreparationFinalizer = "cetirun.microsoft.com/sandbox-preparation"
+	PreparationFinalizer = api.SandboxPreparationFinalizer
 	BootstrapFinalizer   = "cetirun.microsoft.com/sandbox-bootstrap"
 )
 

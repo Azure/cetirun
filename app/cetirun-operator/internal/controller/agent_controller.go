@@ -853,6 +853,11 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 		if err := r.checkRegistryIntent(ctx, instance); err != nil {
 			return ctrl.Result{Requeue: true}, nil
 		}
+		if instance.Spec.RestartRequestID != "" && !instance.Spec.Suspended {
+			if err := r.checkAgentGeneration(ctx, instance); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
 		logger.Info("Installing/upgrading Helm chart", "release", releaseName, "namespace", ns)
 		if err := r.HelmClient.InstallOrUpgrade(ns, releaseName, prepared); err != nil {
 			logger.Error(err, "Helm install/upgrade failed", "release", releaseName)

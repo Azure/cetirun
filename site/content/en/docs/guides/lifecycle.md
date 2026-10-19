@@ -1,6 +1,6 @@
 ---
 title: "Manage instance lifecycle"
-description: "Check instance health, update a chart, and suspend, resume, or delete an instance."
+description: "Check instance health, request a retained restart, update, suspend, resume, or delete an instance."
 weight: 40
 ---
 
@@ -64,6 +64,42 @@ idle-suspend/resume policy in this controller.
 Resume by setting `suspended` to `false`. Reconciliation must restore both the
 workload and routing before handing access back to the user.
 Suspension does not delete Teams cloud resources or revoke a tailnet device.
+
+## Restart while retaining HOME
+
+For a current, ready Agent, choose **Restart Agent** in Portal and confirm the
+interruption. This requests a replacement Pod through the existing controller;
+it does not delete the Agent, namespace or HOME PVC. Persistent files and the
+existing Gateway key identity and spending history are retained. Active process
+sessions are interrupted, and Pod-local temporary files are not retained.
+
+The owner API is `POST /api/v1/instances/{name}/restart`. Send the current
+`uid` and `resourceVersion` in the JSON body and an `Idempotency-Key` header
+containing a fresh 16-128 character ID made of letters, digits, `_` or `-`.
+Reuse the same ID and body when retrying an uncertain response. The accepted
+ID is persisted as `spec.restartRequestID`; a repeated current ID does not
+request another restart, including after a Portal restart. A stale request
+cannot replace a newer request or a same-name replacement Agent.
+
+HTTP `202` means the request was accepted, not that the replacement is ready.
+Portal reports the desired `restartRequestId` and
+`observedRestartRequestId` separately. The Operator records
+`status.observedRestartRequestID` only after observing the requested template
+on the current ready Pod. It does not count the old Pod's Ready status or a
+successful Helm apply as completion. A pending request prevents another restart.
+
+Suspension and deletion take precedence; restart cannot resume a suspended
+Agent. Current policy and runtime checks still apply. Earlier single-start
+Sandbox lifetimes reject this operation rather than converting their records.
+Custom Agents use their existing approved shutdown and apply path, not a new
+executor. Use matching Operator, Portal, CRDs and runtime chart versions that
+support this operation; a chart that omits the requested template marker cannot
+produce a completed restart.
+
+This operation is a normal retained restart. It does not provide node migration,
+force deletion, physical writer fencing, or recovery from an unreachable source.
+Completion is a Kubernetes workload observation, not a new model-inference or
+storage-failover qualification.
 
 ## Pin and update a chart
 

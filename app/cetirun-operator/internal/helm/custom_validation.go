@@ -392,11 +392,18 @@ func (p *PreparedRelease) validateCustomObject(obj map[string]any, kind, name st
 			return fail()
 		}
 		annotations := sts.Spec.Template.Annotations
+		annotationCount := 4 + len(object(p.Values["podAnnotations"]))
+		if b.RestartRequestID != "" {
+			annotationCount++
+			if annotations["cetirun.microsoft.com/restart-request-id"] != b.RestartRequestID {
+				return fail()
+			}
+		}
 		if !onlyKeys(object(object(object(obj["spec"])["template"])["metadata"]), "labels", "annotations") {
 			return fail()
 		}
 		if !reflect.DeepEqual(sts.Spec.Template.Labels, customLabels(p.chart.Name(), p.releaseName)) ||
-			len(annotations) != 4+len(object(p.Values["podAnnotations"])) ||
+			len(annotations) != annotationCount ||
 			annotations["cetirun.microsoft.com/custom-plan-hash"] != p.WorkloadHash ||
 			annotations["cetirun.microsoft.com/model-revision"] != b.Model.Revision ||
 			annotations["cetirun.microsoft.com/context-revision"] != b.Context.Revision ||

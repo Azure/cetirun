@@ -229,6 +229,9 @@ func customWorkloadDigest(chrt *chart.Chart, agent agents.ResolvedAgent, binding
 	if bindings.Memory != nil {
 		input["memory"] = bindings.Memory
 	}
+	if bindings.RestartRequestID != "" {
+		input["restartRequestID"] = bindings.RestartRequestID
+	}
 	if bindings.AgentIdentity != nil {
 		input["agentIdentity"] = bindings.AgentIdentity
 		input["agentCLI"] = string(asset(chrt, "configs/cetirun-agent"))

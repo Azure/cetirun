@@ -2,7 +2,34 @@
 // Licensed under the MIT License.
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { getInstance, createInstance, deleteInstanceByName, downloadTeamsApp, updateInstance, upgradeInstance } from "./instance";
+import { getInstance, createInstance, deleteInstanceByName, downloadTeamsApp, updateInstance, upgradeInstance, restartInstanceByName } from "./instance";
+
+describe("restartInstanceByName", () => {
+  it("sends the same idempotency key and version on retries", async () => {
+    const request = { uid: "agent-uid", resourceVersion: "7", requestId: "request-00000001" };
+    const response = { restartRequestId: request.requestId, restartAvailable: false };
+    global.fetch = vi.fn().mockImplementation(() => Promise.resolve(new Response(JSON.stringify(response), {
+      status: 202, headers: { "Content-Type": "application/json" },
+    })));
+    await expect(restartInstanceByName("alice", request)).resolves.toEqual(response);
+    await restartInstanceByName("alice", request);
+    expect(fetch).toHaveBeenCalledTimes(2);
+    for (const call of vi.mocked(fetch).mock.calls) {
+      expect(call).toEqual(["/api/v1/instances/alice/restart", expect.objectContaining({
+        method: "POST", headers: expect.objectContaining({ "Idempotency-Key": request.requestId }),
+        body: JSON.stringify({ uid: request.uid, resourceVersion: request.resourceVersion }),
+      })]);
+    }
+  });
+
+  it("surfaces a rejected stale or suspended restart", async () => {
+    global.fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      error: { code: "restart_unavailable", message: "a suspended Agent cannot be restarted" },
+    }), { status: 409, headers: { "Content-Type": "application/json" } }));
+    await expect(restartInstanceByName("alice", { uid: "agent-uid", resourceVersion: "7", requestId: "request-00000001" }))
+      .rejects.toThrow("a suspended Agent cannot be restarted");
+  });
+});
 
 /** Build a minimal mock Response with headers and redirected. */
 function mockResponse(init: {

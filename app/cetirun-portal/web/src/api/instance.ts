@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import type { Instance, InstanceVersion, CreateInstanceRequest, UpdateInstanceRequest, StatusResponse } from "../types/instance";
+import type { Instance, InstanceVersion, CreateInstanceRequest, UpdateInstanceRequest, RestartInstanceRequest, StatusResponse } from "../types/instance";
 import { apiFetch } from "./fetch";
 
 export type InstanceResponse = Instance;
@@ -114,6 +114,19 @@ export async function upgradeInstanceByName(name: string, version: InstanceVersi
   if (!response.ok) {
     const err = await response.json();
     throw new Error(err.error?.message || "Failed to upgrade instance");
+  }
+  return response.json();
+}
+
+export async function restartInstanceByName(name: string, request: RestartInstanceRequest): Promise<Instance> {
+  const response = await apiFetch(`/api/v1/instances/${encodeURIComponent(name)}/restart`, {
+    method: "POST",
+    headers: { "Idempotency-Key": request.requestId },
+    body: JSON.stringify({ uid: request.uid, resourceVersion: request.resourceVersion }),
+  });
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message || "Failed to request Agent restart");
   }
   return response.json();
 }

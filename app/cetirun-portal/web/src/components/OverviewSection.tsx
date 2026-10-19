@@ -46,6 +46,7 @@ import { CopilotModelPicker } from "./CopilotModelPicker";
 import { AgentAuthorizationBlock } from "./AgentAuthorizationBlock";
 import { RegistryAuthBlock } from "./RegistryAuthBlock";
 import { AIGatewayBlock } from "./AIGatewayBlock";
+import { RestartAgentButton } from "./RestartAgentButton";
 
 const dialogListStyle: React.CSSProperties = {
   margin: "4px 0 0 0",
@@ -372,6 +373,7 @@ export function OverviewSection({ instance }: { instance: Instance }) {
             </Button>
           )}
           <Button appearance="secondary" icon={<Edit20Regular />} onClick={openEditDialog} disabled={updateMutation.isPending}>Edit Agent</Button>
+          {(instance.restartAvailable || instance.restartRequestId) && <RestartAgentButton key={instance.uid} instance={instance} />}
           <Button appearance="secondary" onClick={() => { setDeleteVersion({ uid: instance.uid, resourceVersion: instance.resourceVersion }); setConfirmOpen(true); }} disabled={deleteMutation.isPending}>
             {deleteMutation.isPending ? "Deleting..." : "Delete Agent"}
           </Button>

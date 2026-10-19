@@ -11,12 +11,13 @@ import {
   updateInstanceByName,
   upgradeInstance,
   upgradeInstanceByName,
+  restartInstanceByName,
   getInstanceStatus,
   getInstanceStatusByName,
   fetchInstances,
   fetchInstanceByName,
 } from "../api/instance";
-import type { InstanceVersion, CreateInstanceRequest, UpdateInstanceRequest } from "../types/instance";
+import type { InstanceVersion, CreateInstanceRequest, UpdateInstanceRequest, RestartInstanceRequest } from "../types/instance";
 
 const INSTANCE_KEY = ["instance"] as const;
 
@@ -130,6 +131,19 @@ export function useUpgradeInstanceByName(name: string) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["instance", name] });
       queryClient.invalidateQueries({ queryKey: ["instance", name, "status"] });
+      queryClient.invalidateQueries({ queryKey: ["instances"] });
+    },
+  });
+}
+
+export function useRestartInstanceByName(name: string) {
+  const queryClient = useQueryClient();
+  const viewer = useViewerKey();
+  return useMutation({
+    mutationFn: (request: RestartInstanceRequest) => restartInstanceByName(name, request),
+    onSuccess: (instance) => {
+      queryClient.setQueryData(["instance", name, viewer], instance);
+      queryClient.invalidateQueries({ queryKey: ["instance", name] });
       queryClient.invalidateQueries({ queryKey: ["instances"] });
     },
   });
