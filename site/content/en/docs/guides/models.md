@@ -23,16 +23,47 @@ sources:
   price in `litellm_params`; a zero in `model_info` alone cannot be told apart
   from a missing price.
 - **GitHub Copilot** models come from the owner's own Copilot subscription,
-  through a small proxy per instance that only the Gateway can reach. They
-  appear as `copilot/<model>`. The operator's `aiGateway.copilotProxy.enabled`
-  turns the proxy off for the whole deployment.
+  through a small proxy per instance that only the Gateway can reach. The
+  operator's `aiGateway.copilotProxy.enabled` turns the proxy off for the whole
+  deployment.
 
-Each instance's key reaches only its own access groups: `cetirun-shared` and the
-instance's own Copilot group, so its `copilot/<model>` names reach its own proxy.
-The Gateway checks router fallbacks against the key as well
-(`operatorIntegration`). Keep teams and keys in the Gateway console limited to
-access groups: a team or key allowed every model, or a `copilot/` name
-directly, spreads requests for that name over every instance's proxy.
+An instance sees one name per model. A Copilot model that is the same model as
+a shared model the instance may use takes that shared model's name, and the
+instance lists it once. The operator compares the Copilot model's ID with each
+deployment's `model_info.base_model`, or its `litellm_params.model` when the
+Gateway's price table prices that name, ignoring the provider prefix, letter
+case, and dots versus dashes. A Copilot model with a date version, such as
+`gpt-4.1-2025-04-14`, is never merged, and when several shared models match,
+the first name in sort order is used. Requests for the name are then served by
+the shared deployments or by the instance's own Copilot subscription, as the
+Gateway's routing strategy chooses. The instance's Copilot route copies the
+shared model's routing fields (`order`, `weight`, `rpm`, `tpm`), so standby
+deployments stay in reserve as configured. Either way, a request counts against
+the instance's budget at the model's list price. When Copilot fails, the Gateway
+takes the instance's Copilot route out of rotation for a few seconds and sends
+its requests to the shared deployments: at once after a 429, and for other
+errors once most of the route's recent requests have failed, so a few requests
+can fail first.
+
+Any other Copilot model keeps its own ID, such as `gpt-5.5`, and only the
+instance's Copilot subscription serves it: a 429 from Copilot reaches the
+instance as it is, and the next request goes to Copilot again. If a shared model
+already has that name but is another model, or one the instance may not use,
+the Copilot model is left out, and the instance page lists it as not offered.
+Clients configured with the earlier `copilot/<model>` names keep working: the
+operator keeps those names as aliases on the instance's key, and an instance
+whose default model is `copilot/<model>` uses the model's current name.
+
+The Gateway's health checks probe every Copilot model too, every five minutes by
+default. Each probe is a real call, so it spends the owner's Copilot allowance.
+
+Each instance's key reaches only its own access groups: those of the shared
+models it may use and the instance's own Copilot group, so its Copilot models
+reach only its own proxy, also under a shared model's name. The Gateway checks
+router fallbacks against the key as well (`operatorIntegration`), and its guard
+keeps every key that does not hold an instance's Copilot group, such as the
+master key or a key allowed every model, away from that instance's Copilot
+routes. Keep teams and keys in the Gateway console limited to access groups.
 
 The create form offers both sources, on by default, and a new OpenClaw or Hermes
 instance needs a model to use: shared models while at least one is offered, or
@@ -108,8 +139,14 @@ lists its models and sets the default; saving a new default restarts the
 instance. When an administrator adds or removes a shared model, changes its
 limits, or changes whether it is offered through its price or the Gateway's
 setting, the operator updates every instance that uses shared models, which
-restarts them. A restarting instance shows as provisioning for a short while,
-and its UI is unavailable until it is ready again.
+restarts them, and registers their Copilot models again under the names that
+now apply. A change to a shared model's base model or routing fields alone
+reaches the Copilot routes at each instance's next verification, within ten
+minutes. A restarting instance shows as provisioning for a short while, and its
+UI is unavailable until it is ready again. After an upgrade from a version that
+named Copilot models `copilot/<model>`, the operator registers each instance's
+Copilot models under their new names at its next verification, and the instance
+restarts with its new model list.
 
 OpenClaw also sends short internal tasks, such as generated session titles and
 activity recaps, to a utility model. On the Gateway, an instance's utility
@@ -141,11 +178,13 @@ stopping Agent processes or revoking credentials held by other services.
 
 An instance's configuration lists at most 256 models. Its GitHub Copilot
 models, at most 128, all stay; shared models fill the rest in name order, and
-the instance's default model and the deployment's default are kept. The
+the instance's default model, the deployment's default and the shared models
+that are Copilot models too are kept. The
 operator reports the shared models it leaves out in an `AIGatewayModelsLimited`
 event on the Agent.
 
 Sources: [operator reconcile]({{< repo "app/cetirun-operator/internal/controller/ai_gateway.go" >}}),
+[Copilot model names]({{< repo "app/cetirun-operator/internal/controller/ai_gateway_copilot_merge.go" >}}),
 [shared-model catalog]({{< repo "app/cetirun-operator/internal/controller/ai_gateway_catalog.go" >}}),
 [Copilot proxy template]({{< repo "app/cetirun-chart/templates/copilot-proxy.yaml" >}}),
 and [portal sign-in]({{< repo "app/cetirun-portal/internal/handler/copilot_login.go" >}}).

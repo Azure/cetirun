@@ -198,9 +198,10 @@ templates or in `helm get values` output.
 
 Model names beginning with `cetirun-` are rejected: that prefix belongs to models
 the CetiRun operator registers automatically. With `operatorIntegration` on, names
-beginning with `copilot/` are rejected too: `copilot/<model>` names each CetiRun
-Agent's GitHub Copilot models. A standalone Gateway may keep serving models under
-`copilot/`. Both prefixes are matched in any letter case. The console checks
+beginning with `copilot/` are rejected too: the operator keeps `copilot/<model>`
+as an alias of each CetiRun Agent's GitHub Copilot model on that Agent's key,
+and the alias takes precedence over a model of the same name. A standalone
+Gateway may keep serving models under `copilot/`. Both prefixes are matched in any letter case. The console checks
 neither, so do not add models under them there; the operator leaves such shared
 models out of the model list it configures for Agents. It does the same for names
 under `openai/`, which the agent chart refuses as a provider prefix, and names
@@ -485,8 +486,19 @@ cost: a request the provider refuses as invalid, with a 400, is sent to the
 other deployment too before the error reaches the client.
 
 The GitHub Copilot routes the CetiRun operator registers for each Agent share
-one name per model, `copilot/<model>`, and are told apart by access group. With
-failover on, no Agent's request reached another Agent's route.
+names with the shared models and with each other's, and are told apart by
+access group. With failover on, no Agent's request reached another Agent's
+route.
+
+With `router.deploymentAffinity` on, a key stays on the deployment that served
+it last, and failover cannot move it while that deployment is still in
+rotation: it moves once LiteLLM has cooled the deployment down. LiteLLM does
+that at once after a 429 from a model with other deployments, and for other
+errors only after repeated failures, weighed against the deployment's
+successes in the current minute. Measured with a key kept on a deployment that
+returned 500: the first 2 of 10 requests failed, the other 8 went to another
+deployment; right after 30 successful requests in the same minute, 8 of 8
+failed. With 429, none of 10 failed.
 
 ### A continuation stays on its deployment
 
@@ -669,11 +681,39 @@ and are refused on `/health`. Create keys through the API the same way:
 ### Serving CetiRun Agents
 
 The CetiRun operator gives each Agent a key restricted to access groups, and
-registers the Agent's GitHub Copilot models under `copilot/<model>` in a group of
-the Agent's own, each pointing at that Agent's proxy. Set `operatorIntegration:
-true` for such a Gateway; the `cetirun-platform` chart sets it for the Gateway it
-installs. It reserves the `copilot/` prefix, see [Reserved names](#reserved-names),
-and sets `general_settings.enforce_fallback_model_access`.
+registers the Agent's GitHub Copilot models in a group of the Agent's own,
+`cetirun-copilot-<Agent UID>`, each pointing at that Agent's proxy. Set
+`operatorIntegration: true` for such a Gateway; the `cetirun-platform` chart sets
+it for the Gateway it installs. It reserves the `copilot/` prefix, see
+[Reserved names](#reserved-names), and sets
+`general_settings.enforce_fallback_model_access`.
+
+An Agent sees one name per model. A Copilot model goes under the name of a
+shared model the Agent is granted when they are the same model: the shared
+model's real model is each of its deployments' `model_info.base_model` or,
+without one, its `litellm_params.model` when LiteLLM's price table prices that
+name, and all its deployments must agree. Both sides are compared without the
+provider prefix, in lower case, with dots as dashes, so `claude-sonnet-4.5`
+matches `anthropic/claude-sonnet-4-5`. A Copilot model with a date version, such
+as `gpt-4.1-2025-04-14`, is never merged, and when several shared models match,
+the first name in sort order is used. Such a route copies the shared model's
+routing fields: the lowest `litellm_params.order` of its deployments and, of the
+deployments at that order, the largest `weight`, `rpm` and `tpm` any of them
+sets. `router.routingStrategy` then spreads the Agent's requests over the shared
+deployments and its own route, and LiteLLM's default cooldown takes a failing
+route out of rotation, see [Failover](#a-failed-request-goes-to-another-deployment).
+Spend is counted at the model's list price either way.
+
+Any other Copilot model goes under its own ID, such as `gpt-5.5`, with
+`litellm_params.cooldown_time: 0`: it is the only deployment the Agent's key
+reaches under that name, so a 429 from Copilot reaches the Agent as it is,
+instead of taking the route out of rotation for every request. If a model the
+Gateway serves already has that name, a shared model of another real model or
+one the Agent is not granted, the Copilot model is left out and reported on the
+Agent (`status.aiGateway.copilot.skipped`). The operator keeps `copilot/<model>`,
+the names of earlier versions, as aliases on the Agent's key. When the shared
+models change, it registers the routes again with the names and fields that
+then apply.
 
 LiteLLM checks a key against the requested model only. A fallback the Gateway
 is configured with, in `router_settings` or the console, is chosen after that
@@ -683,14 +723,15 @@ match none. So a shared model's fallback to a Copilot model could reach another
 Agent's proxy. With the setting, LiteLLM skips a fallback target the caller's key
 could not request directly.
 
-The groups only separate Agents while keys and teams are limited to them. To
-LiteLLM, a key or team allowed every model, or a `copilot/` name directly, has
-no group to filter by, so it would spread that key's requests for a `copilot/`
-name over every Agent's proxy. The image's guard callback prevents that: a key
-reaches a per-Agent GitHub Copilot route only if it holds that route's access
-group; keys granted every model, such as the master key, do not reach them.
-The operator creates teams and keys without such grants; do not add them in
-the console.
+The groups only separate Agents while keys and teams are limited to them.
+LiteLLM narrows a key granted a model only through access groups to the
+deployments in those groups, but a key or team allowed every model, or a model
+name directly, has no group to filter by, so it would spread that key's requests
+for a name Copilot routes share over every Agent's proxy. The image's guard
+callback prevents that: a key reaches a per-Agent GitHub Copilot route only if
+it holds that route's access group; keys granted every model, such as the master
+key, reach only the shared deployments of a shared model's name. The operator
+creates teams and keys without such grants; do not add them in the console.
 
 ### The guard callback
 
@@ -703,11 +744,11 @@ the console cannot remove it. It:
   [Upstream errors are not retried](#upstream-errors-are-not-retried);
 - leaves the per-Agent GitHub Copilot routes out of a request unless the
   calling key holds the route's access group, `cetirun-copilot-<Agent UID>`.
-  A key granted every model, such as the master key, a key holding `*` or a
-  `copilot/` model name, and a request whose key LiteLLM does not pass on,
-  reach none of them; asking for a `copilot/` model, such a key gets LiteLLM's
-  "No deployments available" 429. Every other deployment is left as it is. An
-  auto router's choice of tier is held to the same rule;
+  A key granted every model, such as the master key, a key holding `*` or the
+  model name of a route, and a request whose key LiteLLM does not pass on,
+  reach none of them; asking for a name only Copilot routes serve, such a key
+  gets LiteLLM's "No deployments available" 429. Every other deployment is left
+  as it is. An auto router's choice of tier is held to the same rule;
 - keeps error messages free of LiteLLM's internal deployment list: error
   messages returned to callers no longer include LiteLLM's internal list of
   deployments in cooldown. The response keeps its status, 429, the "Try again
@@ -725,6 +766,21 @@ reached only its own route, 6 of 6; a key granted every proxy model, a key
 granted the `copilot/` name and the master key got the 429; and the 429 for a
 model with every deployment in cooldown carried no deployment list on the
 Chat Completions, Responses and Anthropic Messages APIs.
+
+Measured again with two Agents' routes under a shared model's name next to its
+two shared deployments, and under a name of their own: 12 keys of each Agent,
+5 requests each, reached the shared deployments and their own route, never the
+other Agent's; shared-only keys, 12 keys granted every proxy model and the master
+key reached only the shared deployments; the master key, a key granted every
+proxy model and a key granted the name directly got the 429 for the name only
+Copilot routes serve. A route with the copied `order: 1` next to a primary and a
+standby took requests with the primary and none went to the standby; with the
+primary failing, a shared-only key's requests all went to the standby. A route
+of its own name answering 429 passed the 429 on and served the next request
+right after; the same route without `cooldown_time: 0` answered "No deployments
+available" until its cooldown ended, a few seconds later. `copilot/<model>` aliases on the key reached the
+Agent's own route on the Chat Completions and Responses APIs; a key without the
+alias got 403.
 
 ## Credentials
 

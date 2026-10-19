@@ -58,7 +58,7 @@ migration. Retention does not protect against a schema downgrade.
 | `agent.webUI` | Boolean, default false; Custom-only. When true, `agent.port` serves a Web UI rather than the Chat API; see [Agent Harness](../agent-harness/#custom-web-ui) |
 | `team` | Optional for legacy Agents; required for policy binding. Portal Gateway creation still requires an existing Team |
 | `sandboxRef` | Opt into a Team-permitted Sandbox; omitted for legacy execution |
-| `model` | Optional model name, at most 256 characters; policy-bound Agents must select a policy-allowed model |
+| `model` | Optional model name, at most 256 characters; policy-bound Agents must select a policy-allowed shared model or, when the policy allows Copilot, a Copilot model by its Gateway name or as `copilot/<model ID>` |
 | `modelAccess.sharedModels` | Explicit request for policy-bound Agents; defaults on for legacy Agents |
 | `modelAccess.githubCopilot` | Explicit request for policy-bound Agents; defaults on for legacy Agents when the deployment offers Copilot |
 | `modelAccess.monthlyBudgetUSD` | Optional LiteLLM USD monthly budget override, bounded by the policy maximum |
@@ -141,7 +141,7 @@ check does not prove that an override will reconcile successfully.
 | `observedOperatorHash` | Applied configuration fingerprint used by the reconciliation cache, including the gateway Secret content hash and referenced team's resource version |
 | `lastReconcileTime` | Timestamp written by full Ready/suspension handling; can also be written while suspension ingress removal is failing |
 | `msteams` | Teams state, message, resolved app and bot resource identifiers |
-| `aiGateway` | AI Gateway state: phase and reason, key alias and ID (never the key), access groups, models, native USD budget/spend/reset observations, block state, and applied policy/pricing revisions |
+| `aiGateway` | AI Gateway state: phase and reason, key alias and ID (never the key), access groups, models, native USD budget/spend/reset observations, block state, and applied policy/pricing revisions; for GitHub Copilot, each registered model's Gateway name (`copilot.routes`) and the models left out for lack of a price (`copilot.unpriced`) or because a shared model has their name (`copilot.skipped`) |
 | `signInHelper` | Whether the workload serves the in-agent model sign-in helper that `/<instance>/cetirun-auth/` routes to; omitted until the operator records it |
 | `registryCredentials` | Receipt identifying the synchronized source Secret UID/resourceVersion and local pull Secret UID; not credential data or proof of successful image pulling |
 | `sandbox` | Last verified binding: `teamUID`, `sandboxUID`, `agentPolicyUID`, `appliedRevision`; omitted before successful enforcement |
