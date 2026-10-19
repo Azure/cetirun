@@ -18,7 +18,7 @@ import (
 // policyAIGatewayKeyLimits returns the request limits the policy sets on the
 // virtual key of every Agent that uses it. The limits are deliberately not
 // part of the Gateway policy revision: changing them updates each key in
-// place and never fences or restarts an Agent.
+// place and does not start a policy reprojection.
 func policyAIGatewayKeyLimits(policy *cetirunv1alpha1.AgentPolicy) (aigateway.KeyLimits, error) {
 	if policy == nil || policy.Spec.ModelAccess.RateLimits == nil {
 		return aigateway.KeyLimits{}, nil

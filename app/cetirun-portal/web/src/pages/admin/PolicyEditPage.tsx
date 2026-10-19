@@ -165,7 +165,7 @@ export function PolicyEditPage() {
       </div>}
       <Divider />
       <Text weight="semibold">AI Gateway limits per Agent</Text>
-      <Text size={200}>Every Agent of a Team that uses this policy gets these limits on its own Gateway key; Agents do not share them. Leave a field empty for no limit. A change applies to running Agents without a restart.</Text>
+      <Text size={200}>Every Agent of a Team that uses this policy gets these limits on its own Gateway key; Agents do not share them. Leave a field empty for no limit. A change is applied to each Agent's existing key.</Text>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
         <Field label="Max parallel requests" hint="At least 1."><Input inputMode="numeric" value={form.limits.maxParallelRequests} onChange={(_, data) => setLimits({ maxParallelRequests: data.value })} placeholder="No limit" /></Field>
         <Field label="Requests per minute" hint="At least 1."><Input inputMode="numeric" value={form.limits.rpm} onChange={(_, data) => setLimits({ rpm: data.value })} placeholder="No limit" /></Field>
