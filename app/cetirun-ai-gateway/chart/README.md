@@ -306,7 +306,7 @@ OpenClaw 2026.9.6 and Hermes v2026.9.24 against an exhausted key:
 | --- | --- | --- |
 | 402 | stops after one request: a billing error, the API key has run out of credits | stops after one request: billing or credits exhausted |
 | 422 | stops after one request: the provider rejected the request schema or tool payload | stops after one request: the request was rejected as malformed |
-| 429 | 10 attempts over about two minutes, then "API rate limit reached" | 3 attempts, then asks the user to wait a minute and retry |
+| 429 | 10 attempts over two to two and a half minutes, then "API rate limit reached" | 3 attempts, then asks the user to wait a minute and retry |
 
 With 402 both agents stop at once and say that credit ran out, which is
 closest to the cause; with 429 they keep retrying although the budget only
