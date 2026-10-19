@@ -9,10 +9,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"testing"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/helm"
+	"github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxcoordination"
 	w "github.com/Azure/CetiRun/app/cetirun-operator/internal/sandboxworkload"
 	istiov1beta1 "istio.io/client-go/pkg/apis/networking/v1beta1"
 	appsv1 "k8s.io/api/apps/v1"
@@ -301,6 +303,113 @@ func TestReconciledSandboxSuspensionKeepsHomeAndKey(t *testing.T) {
 			if workload.Replicas != want {
 				t.Fatal("Agent and auxiliary suspension states differ")
 			}
+		}
+	}
+}
+
+func TestReconciledSandboxFinishesStoppingReservationBeforeResume(t *testing.T) {
+	for _, kind := range []string{"openclaw", "hermes"} {
+		for _, acknowledged := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/acknowledged=%v", kind, acknowledged), func(t *testing.T) {
+				ctx := context.Background()
+				f := newSandboxRuntimeFixtureForAgent(t, true, nil, true, kind, true, true,
+					func(r *AgentReconciler, kube client.Client) {
+						authority, err := sandboxcoordination.NewState(r.OperatorNamespace, "resume-coordination")
+						if err != nil {
+							t.Fatal(err)
+						}
+						if err := kube.Create(ctx, authority); err != nil {
+							t.Fatal(err)
+						}
+						r.SandboxNativeCoordination = &sandboxcoordination.Store{
+							Client: kube, APIReader: kube, Namespace: authority.Namespace,
+							Identity: w.ObjectIdentity{Name: authority.Name, UID: authority.UID},
+						}
+					})
+				agent := f.current(t)
+				if agent.Spec.Suspended || slices.Contains(agent.Finalizers, sandboxHoldFinalizer) {
+					t.Fatal("fixture must start with current resume intent and no hold marker")
+				}
+				expected := reconciledExpectationForTest(t, f)
+				keyID, stages := agent.Status.AIGateway.KeyID, f.installer.stages
+				store := f.r.SandboxNativeCoordination
+				ticket, found, err := store.ReadNative(ctx, agent.UID)
+				if err != nil || !found {
+					t.Fatal("missing initial source reservation:", err)
+				}
+				if _, err := store.BeginNativeStop(ctx, ticket); err != nil {
+					t.Fatal(err)
+				}
+				for _, desired := range expected.Workloads {
+					key := client.ObjectKey{Namespace: expected.Namespace.Name, Name: desired.Identity.Name}
+					if desired.Kind == "StatefulSet" {
+						workload := &appsv1.StatefulSet{}
+						if err := f.kube.Get(ctx, key, workload); err != nil {
+							t.Fatal(err)
+						}
+						workload.Spec.Replicas = ptr.To[int32](0)
+						if err := f.kube.Update(ctx, workload); err != nil {
+							t.Fatal(err)
+						}
+						workload.Status.ObservedGeneration = workload.Generation
+						workload.Status.Replicas = 0
+						if !acknowledged {
+							workload.Status.Replicas = 1
+						}
+						if err := f.kube.Status().Update(ctx, workload); err != nil {
+							t.Fatal(err)
+						}
+					} else {
+						workload := &appsv1.Deployment{}
+						if err := f.kube.Get(ctx, key, workload); err != nil {
+							t.Fatal(err)
+						}
+						workload.Spec.Replicas = ptr.To[int32](0)
+						if err := f.kube.Update(ctx, workload); err != nil {
+							t.Fatal(err)
+						}
+						workload.Status.ObservedGeneration = workload.Generation
+						workload.Status.Replicas = 0
+						if err := f.kube.Status().Update(ctx, workload); err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
+				_, reconcileErr := f.reconcile()
+				if !slices.Contains(f.current(t).Finalizers, sandboxHoldFinalizer) || f.installer.stages != stages {
+					t.Fatal("pending stop did not restore the hold before any new workload apply")
+				}
+				current, found, err := store.ReadNative(ctx, agent.UID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !acknowledged {
+					if reconcileErr == nil || !found || current.Reservation.ID != ticket.Reservation.ID ||
+						current.Reservation.Phase != sandboxcoordination.Stopping {
+						t.Fatal("unacknowledged shutdown released or replaced its stopping reservation:", reconcileErr)
+					}
+					return
+				}
+				if reconcileErr != nil || found {
+					t.Fatal("acknowledged stop did not finish before resume:", reconcileErr)
+				}
+				for range 3 {
+					f.reconcileOK(t)
+				}
+				current, found, err = store.ReadNative(ctx, agent.UID)
+				updated := reconciledExpectationForTest(t, f)
+				if err != nil || !found || current.Reservation.Phase != sandboxcoordination.Reserved ||
+					current.Reservation.ID == ticket.Reservation.ID || updated.Home != expected.Home ||
+					f.current(t).Status.AIGateway.KeyID != keyID || len(f.gateway.generated) != 1 ||
+					slices.Contains(f.current(t).Finalizers, sandboxHoldFinalizer) {
+					t.Fatal("resume did not reacquire current authority while preserving HOME and key identity:", err)
+				}
+				for _, workload := range updated.Workloads {
+					if workload.Replicas != 1 {
+						t.Fatal("resume did not restore the Agent and auxiliary workloads")
+					}
+				}
+			})
 		}
 	}
 }

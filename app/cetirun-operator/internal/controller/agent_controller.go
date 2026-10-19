@@ -292,6 +292,17 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 	if sandboxRequested(instance, nil) && !reconciledSandbox {
 		return r.reconcileRecordedNativeSandbox(ctx, instance)
 	}
+	if reconciledSandbox && r.SandboxNativeCoordination != nil && !instance.Spec.Suspended &&
+		!controllerutil.ContainsFinalizer(instance, sandbox.HoldFinalizer) {
+		ticket, found, err := r.SandboxNativeCoordination.ReadNative(ctx, instance.UID)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		// A newer resume intent must not strand or supersede a recorded stop.
+		if found && ticket.Reservation.Phase == sandboxcoordination.Stopping {
+			return r.holdReconciledSandbox(ctx, instance)
+		}
+	}
 	if reconciledSandbox && r.SandboxNativeCoordination != nil && controllerutil.ContainsFinalizer(instance, sandbox.HoldFinalizer) {
 		if err := stderrors.Join(r.stopReconciledAuxiliaries(ctx, instance), r.stopSandboxBuiltin(ctx, instance)); err != nil {
 			return ctrl.Result{RequeueAfter: 5 * time.Second}, err

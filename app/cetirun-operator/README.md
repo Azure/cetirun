@@ -145,6 +145,9 @@ and effective inputs are unchanged. Shared configuration changes remain excluded
 until suspension or deletion has acknowledged controller shutdown and ordinary
 Kubernetes quiescence. This is a logical configuration reservation, not a physical
 workload identity or writer-fencing receipt; unknown shutdown outcomes remain held.
+A resume that encounters a recorded stop restores the hold and finishes that
+guarded shutdown before acquiring new authority. A missing hold marker alone
+does not discard the pending stop or establish quiescence.
 
 ### Retained single-start profile and capability registration
 
