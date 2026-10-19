@@ -580,9 +580,10 @@ fi
 pass "${answered} answered calls in the spend log and in the request log, without content"
 
 # A model stored in the database is encrypted with the salt key. It is what an
-# upgrade has to preserve.
+# upgrade has to preserve. LiteLLM 1.105 keeps a price given through the
+# management API only in litellm_params; it drops one in model_info.
 echo "==> A database-backed model"
-api_post "${port_a}" /model/new '{"model_name":"mock-db","litellm_params":{"model":"openai/mock-model","api_base":"http://mock-provider:8080","api_key":"sk-literal-encrypted-at-rest"},"model_info":{"input_cost_per_token":0.00001,"output_cost_per_token":0.00001}}' >/dev/null \
+api_post "${port_a}" /model/new '{"model_name":"mock-db","litellm_params":{"model":"openai/mock-model","api_base":"http://mock-provider:8080","api_key":"sk-literal-encrypted-at-rest","input_cost_per_token":0.00001,"output_cost_per_token":0.00001}}' >/dev/null \
   || fail "could not add a model through the management API"
 [ "$(chat "${port_a}" "${master_key}" mock-db)" = "200" ] || fail "database-backed model was not served: $(last_body)"
 pass "model added through the management API and served"
