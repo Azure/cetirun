@@ -23,10 +23,15 @@ import (
 
 const (
 	testSmallModel       = "gpt-6-nano"
-	testSmallGroup       = "cetirun-model-test-small"
-	testSmallDeployment  = "cetirun-shared-test-small"
 	testRouterName       = "auto"
 	testLegacyRouterTeam = "legacy-team"
+)
+
+// The small shared model's group and ID, in the form the Gateway chart
+// renders for its name.
+var (
+	testSmallGroup      = aiGatewayModelAccessGroupPrefix + aiGatewayModelBinding(testSmallModel)
+	testSmallDeployment = managedTestDeploymentID(testSmallModel, 1)
 )
 
 var fakeRouterRequests sync.Map // *fakeAIGateway -> []aigateway.RouterRequest
@@ -257,7 +262,8 @@ func TestPolicyBoundAgentGetsAllowedRouter(t *testing.T) {
 	r, kube, gateway := aiGatewayTestReconciler(t, agent, team, aiGatewayNamespace())
 	addSmallSharedModel(gateway)
 	gateway.shared = append(gateway.shared, aigateway.Deployment{
-		ID: "cetirun-shared-test-wide", ModelName: "admin-wide", AccessGroups: []string{"cetirun-model-test-wide"}, DatabaseSourceKnown: true,
+		ID: managedTestDeploymentID("admin-wide", 2), ModelName: "admin-wide",
+		AccessGroups: []string{aiGatewayModelAccessGroupPrefix + aiGatewayModelBinding("admin-wide")}, DatabaseSourceKnown: true,
 	})
 	allowTestPolicyModels(t, kube, testSmallModel, testRouterName, "auto-wide")
 	reconcileRouters(t, r, kube, testAIGatewayTeam)

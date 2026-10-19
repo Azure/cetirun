@@ -5,6 +5,7 @@ package controller
 
 import (
 	"context"
+	"hash/fnv"
 	"maps"
 	"slices"
 	"testing"
@@ -68,12 +69,15 @@ func TestCopilotRoutingCopiesThePrimaryLevel(t *testing.T) {
 	}
 }
 
-// sharedDeployment is a chart-configured shared deployment with its own
-// trusted per-deployment group.
+// sharedDeployment is a chart-configured shared deployment: its ID and group
+// take the form the Gateway chart renders for name, and suffix stands for its
+// configuration, so entries of one name share the group.
 func sharedDeployment(suffix, name string, mutate func(*aigateway.Deployment)) aigateway.Deployment {
+	entry := fnv.New32a()
+	_, _ = entry.Write([]byte(suffix))
 	deployment := aigateway.Deployment{
-		ID: aiGatewaySharedDeploymentIDPrefix + suffix, ModelName: name, DatabaseSourceKnown: true, Priced: true,
-		AccessGroups: []string{aiGatewaySharedAccessGroup, aiGatewayModelAccessGroupPrefix + suffix},
+		ID: managedTestDeploymentID(name, int(entry.Sum32())), ModelName: name, DatabaseSourceKnown: true, Priced: true,
+		AccessGroups: []string{aiGatewaySharedAccessGroup, aiGatewayModelAccessGroupPrefix + aiGatewayModelBinding(name)},
 	}
 	if mutate != nil {
 		mutate(&deployment)
