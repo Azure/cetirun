@@ -227,7 +227,7 @@ func (r *TeamModelRouterReconciler) Reconcile(ctx context.Context, request ctrl.
 		// Coalesce with the catalog publisher's and the Agents' listings; a
 		// catalog older than twice that is not trusted to add or remove
 		// registrations.
-		r.Agents.refreshAIGatewayCatalogWithin(ctx, gateway, aiGatewayCatalogMaxAge)
+		r.Agents.refreshAIGatewayCatalog(ctx, gateway)
 		if r.Agents.aiGatewayCatalog.age(time.Now()) > 2*aiGatewayCatalogMaxAge {
 			err = fmt.Errorf("the AI Gateway's models could not be listed")
 		}
@@ -429,12 +429,17 @@ func (r *TeamModelRouterReconciler) patchStatus(ctx context.Context, before, tea
 // shared model the router calls on the Agent's behalf; it need not be in the
 // policy's list. copilot reports whether the Agent's Copilot models are
 // granted at all.
-func (r *AgentReconciler) aiGatewayModelRouterGrant(instance *api.Agent, team *api.Team, policy *api.AgentPolicy, copilot bool) ([]string, []api.AIGatewayModelRouterStatus) {
+func (r *AgentReconciler) aiGatewayModelRouterGrant(ctx context.Context, client aiGatewayKeyClient, instance *api.Agent, team *api.Team, policy *api.AgentPolicy, copilot bool) ([]string, []api.AIGatewayModelRouterStatus) {
 	if team == nil || len(team.Spec.ModelRouters) == 0 {
 		return nil, nil
 	}
-	shared, known := r.aiGatewayCatalog.shared()
-	if !known {
+	if client != nil {
+		r.refreshAIGatewayCatalog(ctx, client)
+	}
+	shared, _ := r.aiGatewayCatalog.shared()
+	if _, listed := r.aiGatewayCatalog.has(""); !listed {
+		// Nothing can be checked without a listed catalog (a seeded one
+		// names shared models only): grant no router until there is one.
 		return nil, nil
 	}
 	registeredCopilot := map[string]bool{}
@@ -611,7 +616,7 @@ func (r *AgentReconciler) refreshAIGatewayRouterGrant(ctx context.Context, clien
 	if status == nil || !grant.routersEvaluated {
 		return nil
 	}
-	groups, routers := r.aiGatewayModelRouterGrant(instance, grant.team, grant.policy, grant.copilot)
+	groups, routers := r.aiGatewayModelRouterGrant(ctx, client, instance, grant.team, grant.policy, grant.copilot)
 	if slices.Equal(groups, grant.routerGroups) {
 		status.ModelRouters = routers
 		return nil

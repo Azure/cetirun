@@ -314,7 +314,7 @@ func (r *AgentReconciler) resolveAIGatewayGrant(ctx context.Context, client aiGa
 	if copilot {
 		groups = append(groups, copilotAccessGroup(instance))
 	}
-	routerGroups, routers := r.aiGatewayModelRouterGrant(instance, resolution.team, resolution.policy, copilot)
+	routerGroups, routers := r.aiGatewayModelRouterGrant(ctx, client, instance, resolution.team, resolution.policy, copilot)
 	groups = append(groups, routerGroups...)
 	slices.Sort(groups)
 	return aiGatewayGrant{
@@ -342,7 +342,7 @@ func (r *AgentReconciler) resolveLegacyAIGatewayGrant(ctx context.Context, clien
 	if err != nil {
 		return aiGatewayGrant{}, err
 	}
-	routerGroups, routers := r.aiGatewayModelRouterGrant(instance, team, nil, copilot)
+	routerGroups, routers := r.aiGatewayModelRouterGrant(ctx, client, instance, team, nil, copilot)
 	groups = append(groups, routerGroups...)
 	slices.Sort(groups)
 	return aiGatewayGrant{
