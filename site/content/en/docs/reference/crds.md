@@ -141,7 +141,7 @@ check does not prove that an override will reconcile successfully.
 | `observedOperatorHash` | Applied configuration fingerprint used by the reconciliation cache, including the gateway Secret content hash and referenced team's resource version |
 | `lastReconcileTime` | Timestamp written by full Ready/suspension handling; can also be written while suspension ingress removal is failing |
 | `msteams` | Teams state, message, resolved app and bot resource identifiers |
-| `aiGateway` | AI Gateway state: phase and reason, key alias and ID (never the key), access groups, models, native USD budget/spend/reset observations, block state, and applied policy/pricing revisions |
+| `aiGateway` | AI Gateway state: phase and reason, key alias and ID (never the key), access groups, models, native USD budget/spend/reset observations, block state, and applied policy/pricing revisions; `modelRouters` lists the Team's smart-routing models with `granted`, the internal `model` name when granted, the configured limits, or the `reason` it is not granted |
 | `signInHelper` | Whether the workload serves the in-agent model sign-in helper that `/<instance>/cetirun-auth/` routes to; omitted until the operator records it |
 | `registryCredentials` | Receipt identifying the synchronized source Secret UID/resourceVersion and local pull Secret UID; not credential data or proof of successful image pulling |
 | `sandbox` | Last verified binding: `teamUID`, `sandboxUID`, `agentPolicyUID`, `appliedRevision`; omitted before successful enforcement |
@@ -212,6 +212,19 @@ not material to paste into a public bug report.
 | `skillStorage.storageClassName` | Optional override; chart default `azureblob-nfs-premium` |
 | `skillStorage.storageSize` | Optional shared PVC request; chart default `100Gi` |
 | `skillStorage.mountPath` | Optional read-only alias for native Agents; common view at `$HOME/.agents/skills` |
+| `modelRouters` | Smart-routing models, at most 10, keyed by `name`; see [smart routing](../../guides/teams/#smart-routing) |
+| `modelRouters[].name` | Model name instances request: 1 to 64 characters without whitespace or `/`, not starting with `cetirun-` in any letter case |
+| `modelRouters[].classifier.type` | `heuristic` (default) or `llm`; LiteLLM's licence-limited classifier types are not accepted |
+| `modelRouters[].classifier.model` | Shared model that classifies requests; required for `llm` and not allowed for `heuristic` |
+| `modelRouters[].tiers.simple`, `.medium`, `.complex` | Required model of each tier: a shared model name, or `copilot/<model>` for a GitHub Copilot model; `medium` also takes requests that cannot be classified |
+| `modelRouters[].tiers.reasoning` | Optional; empty uses the `complex` model |
+
+| Field under `status` | Contract |
+| --- | --- |
+| `modelRouters[].name` | Router name from `spec.modelRouters` |
+| `modelRouters[].gatewayModel` | Internal Gateway model name instances send requests to; stable while the router's configuration changes |
+| `modelRouters[].ready` / `message` | Whether the router is registered with its current configuration, and why not |
+| `conditions[type=ModelRoutersReady]` | `True` when every router is registered; `False` names each router that is not; `Unknown` while the Gateway cannot be reached |
 
 Each Team has a single `agentPolicyRef`; Agents do not select a policy class.
 The pre-release `normalAgentPolicyRef`, `adminAgentPolicyRef` and Agent

@@ -39,7 +39,8 @@ Gateway: for each request it picks one of several shared models, such as a
 cheaper one for simple requests. An instance that may use the router reaches
 every model the router can pick. See the Gateway chart's
 [Smart routing]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#smart-routing)
-section.
+section. A Team's own routers are granted per instance instead; see
+[Smart-routing models](#smart-routing-models).
 
 The create form offers both sources, on by default, and a new OpenClaw or Hermes
 instance needs a model to use: shared models while at least one is offered, or
@@ -156,6 +157,31 @@ Sources: [operator reconcile]({{< repo "app/cetirun-operator/internal/controller
 [shared-model catalog]({{< repo "app/cetirun-operator/internal/controller/ai_gateway_catalog.go" >}}),
 [Copilot proxy template]({{< repo "app/cetirun-chart/templates/copilot-proxy.yaml" >}}),
 and [portal sign-in]({{< repo "app/cetirun-portal/internal/handler/copilot_login.go" >}}).
+
+### Smart-routing models
+
+A Team can also define its own smart-routing models in the Portal; see
+[Configure a team](../teams/#smart-routing). An instance that may use one
+lists it under its name, such as `auto`, and the create form offers the names
+the Team's Policy allows as the default model. The instance's configuration
+carries the router's internal Gateway name as the model ID: OpenClaw shows
+the router's name, while Hermes lists the internal name. Choosing the router's
+name as the default model selects it. The instance is configured with the
+smallest context window and output limit among the router's tier models that
+the Gateway reports, so a request sized for the router fits every tier.
+
+Each request is charged to the instance's key at the price of the tier model it
+is sent to, and a model classifier's calls are charged too; the router's own
+price in the Gateway only satisfies the check for unpriced models. The key's
+budget applies as usual. A per-model rate limit is matched against the model
+name the instance requests, the router's internal name, so a per-model limit on
+a tier model does not apply to requests that go through a router.
+
+An instance that cannot use one of its Team's routers shows why on its page:
+for example, the Policy does not list the router, a tier uses a model the
+Policy does not allow, or a GitHub Copilot tier waits for its owner to sign in.
+Before the operator has registered a router, the instance shows it as not
+registered yet.
 
 ## GitHub Copilot in the portal
 

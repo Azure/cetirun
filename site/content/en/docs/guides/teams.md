@@ -99,7 +99,84 @@ The Team controller reports whether configuration references are accepted.
 Inspect each member instance's conditions and effective configuration for
 runtime readiness; accepted Team configuration is not runtime enforcement.
 
+## Smart routing
+
+A Team can define up to ten smart-routing models (`spec.modelRouters`). Each is
+a model name, such as `auto`, `auto-gpt` or `auto-claude`, that the Team's
+instances can choose like any other model. For each request, the AI Gateway
+classifies how demanding the request is and sends it to the model of that
+tier. Administrators define routers on the Team page in the Portal, under
+**Smart routing**; members see only whether they may use a router name, never
+its configuration. Routers made in the Gateway's own console are not managed
+by CetiRun, and the routers of the Gateway chart's `models` stay as they are.
+
+Each router has:
+
+- a **name**, 1 to 64 characters without spaces or slashes, not starting with
+  the reserved `cetirun-` prefix, and not the name of a shared model;
+- a **classifier**: `heuristic` (the default) scores each request locally
+  without a model call; `llm` asks a shared model to classify each request,
+  and those calls are charged to the instance;
+- four **tiers**, `simple`, `medium`, `complex` and `reasoning`, each naming a
+  shared model, or `copilot/<model>` for a GitHub Copilot model. `reasoning`
+  may be left empty to use the `complex` model. Requests the router cannot
+  classify go to the `medium` model.
+
+```yaml
+spec:
+  modelRouters:
+    - name: auto
+      tiers:
+        simple: small-model
+        medium: medium-model
+        complex: large-model
+    - name: auto-copilot
+      classifier:
+        type: llm
+        model: small-model
+      tiers:
+        simple: copilot/fast-model
+        medium: medium-model
+        complex: copilot/large-model
+        reasoning: large-model
+```
+
+The operator registers each router in the AI Gateway under an internal name
+and reports it on the Team: `status.modelRouters` lists each router as ready or
+explains why it is not, and the `ModelRoutersReady` condition summarizes them.
+A router is not registered while a tier or the classifier names a model the
+Gateway does not offer as a shared model; the message names the router and the
+tier. A changed router replaces its registration under the same internal name,
+so instances keep their configuration, and a removed router is unregistered.
+
+An instance gets a router only when it may use every model the router sends
+requests to, because the Gateway does not check a router's tier models against
+the instance's key:
+
+- with an Agent Policy, the Policy's allowed shared models must list the
+  router's name and each shared tier, and GitHub Copilot tiers need Copilot to
+  be allowed. The classifier must be a shared model, but need not be listed;
+- the instance must use shared models for a router with a shared tier or a
+  model classifier;
+- a GitHub Copilot tier works for an instance once its owner has signed in to
+  GitHub Copilot with an account that offers that model. Every member's
+  account is assumed to offer the same models; a router whose tiers are all
+  shared models works at once.
+
+An instance that cannot use a router reports why in
+`status.aiGateway.modelRouters`, and its Portal page shows the reason. Changing
+a router's tiers or classifier updates instance keys and registrations; it
+does not change the Policy's Gateway projection. Only the limits the instance
+is configured with for the router follow the tiers, as described in
+[Choose a model](../models/#smart-routing-models).
+
+LiteLLM limits some router features to a single router per Gateway without a
+LiteLLM licence: the `heuristic_v2`, `capability` and `llm_v2` classifiers,
+custom tier sets and custom classifier prompts. A Team cannot use them; the
+Gateway chart's own routers can, within that limit.
+
 Sources: [team event handling]({{< repo "app/cetirun-operator/internal/controller/agent_controller.go" >}}),
 [team defaults and skills]({{< repo "app/cetirun-operator/internal/controller/helpers.go" >}}),
+[team model routers]({{< repo "app/cetirun-operator/internal/controller/ai_gateway_routers.go" >}}),
 [admin team handlers]({{< repo "app/cetirun-portal/internal/handler/admin_team.go" >}}),
 and [runtime initialization]({{< repo "app/cetirun-chart/agents/hermes/bootstrap/hermes-init-home.sh" >}}).
