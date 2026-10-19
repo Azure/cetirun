@@ -35,6 +35,7 @@ jobs:
           cache-dependency-path: |
             app/cetirun-operator/go.sum
             app/internal/go.sum
+            app/cetirun-portal/go.sum
 
       - name: Check shared internal packages
         working-directory: app/internal
@@ -73,6 +74,22 @@ jobs:
           GOTOOLCHAIN: local
           GOFLAGS: "-mod=readonly"
         run: make test-envtest
+
+      - name: Download Portal API test modules
+        working-directory: app/cetirun-portal
+        env:
+          GOTOOLCHAIN: local
+        run: go mod download
+
+      - name: Test Portal restart API admission
+        working-directory: app/cetirun-portal
+        env:
+          GOPROXY: "off"
+          GOTOOLCHAIN: local
+          GOFLAGS: "-mod=readonly"
+          KUBECONFIG: /dev/null
+          USE_EXISTING_CLUSTER: "false"
+        run: go test -tags=envtest ./internal/kube -run '^TestRetainedRestartThroughServedAPI$' -count=1
 
       - name: Run go build
         run: |
