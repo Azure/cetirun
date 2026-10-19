@@ -319,7 +319,7 @@ func (r *AgentReconciler) resolveLegacyAIGatewayGrant(ctx context.Context, clien
 		if err := r.refreshAIGatewayCatalogForGrant(ctx, client); err != nil {
 			return aiGatewayGrant{}, err
 		}
-		// Current Gateway charts use per-deployment groups. Preserve access
+		// Current Gateway charts use per-model-name groups. Preserve access
 		// to those as well as legacy catalog entries tagged cetirun-shared.
 		groups = append(groups, r.aiGatewayCatalog.legacySharedGroups()...)
 	}
