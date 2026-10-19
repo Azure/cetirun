@@ -446,24 +446,39 @@ cat "${router_dir}/one-prompt.yaml" "${router_dir}/second.yaml" > "${router_dir}
 router_rejected "two routers with their own classifier prompt" "${router_dir}/two-prompts.yaml"
 # Without a licence, LiteLLM 1.105.1 lets one router claim each licensed
 # capability: heuristic_v2, capability and llm_v2 classifiers, and its own
-# tiers or classifier prompt. One of each is fine.
-licensed_pair() {  # licensed_pair FILE FIRST_EXTRA SECOND_EXTRA: two routers, auto and auto-two
-  router_values "$1" "${default_router_config}
-        $2"
-  sed -n '/model_name: auto$/,$p' "$1" | sed 's/model_name: auto$/model_name: auto-two/' \
-    | sed "s|^        $2\$|        $3|" > "${router_dir}/pair-second.yaml"
-  cat "${router_dir}/pair-second.yaml" >> "$1"
+# tiers or classifier prompt. One of each is fine; a model classifier with
+# LiteLLM's own prompt claims none.
+two_routers() {  # two_routers FILE FIRST_SETTINGS SECOND_SETTINGS: routers auto and auto-two over lint-model
+  cat > "$1" <<EOF
+models:
+  - model_name: lint-model
+    litellm_params: {model: openai/lint-model}
+  - model_name: auto
+    litellm_params:
+      model: auto_router/complexity_router
+      input_cost_per_token: 0.00001
+      output_cost_per_token: 0.00001
+      complexity_router_config: {tiers: {SIMPLE: lint-model}, $2}
+  - model_name: auto-two
+    litellm_params:
+      model: auto_router/complexity_router
+      input_cost_per_token: 0.00001
+      output_cost_per_token: 0.00001
+      complexity_router_config: {tiers: {SIMPLE: lint-model}, $3}
+EOF
 }
 for type in heuristic_v2 capability llm_v2; do
-  licensed_pair "${router_dir}/two-${type}.yaml" "classifier_type: ${type}" "classifier_type: ${type}"
+  two_routers "${router_dir}/two-${type}.yaml" "classifier_type: ${type}" "classifier_type: ${type}"
   router_rejected "two routers with classifier_type ${type}" "${router_dir}/two-${type}.yaml"
 done
-licensed_pair "${router_dir}/mixed.yaml" "classifier_type: heuristic_v2" "classifier_type: llm_v2"
+two_routers "${router_dir}/mixed.yaml" "classifier_type: heuristic_v2" \
+  "classifier_type: llm, classifier_llm_config: {model: lint-model, system_prompt: rubric}"
 helm template "${release_name}" "${chart_dir}" -f "${router_dir}/mixed.yaml" > /dev/null \
-  || { echo "FAIL: one heuristic_v2 and one llm_v2 router were rejected" >&2; exit 1; }
-licensed_pair "${router_dir}/heuristic-prompts.yaml" "classification_prompt: one" "classification_prompt: two"
-helm template "${release_name}" "${chart_dir}" -f "${router_dir}/heuristic-prompts.yaml" > /dev/null \
-  || { echo "FAIL: a prompt that a heuristic router never reads was counted" >&2; exit 1; }
+  || { echo "FAIL: one heuristic_v2 router and one with its own classifier prompt were rejected" >&2; exit 1; }
+two_routers "${router_dir}/shipped-prompts.yaml" "classifier_type: llm, classifier_llm_config: {model: lint-model}" \
+  "classifier_type: llm, classifier_llm_config: {model: lint-model}"
+helm template "${release_name}" "${chart_dir}" -f "${router_dir}/shipped-prompts.yaml" > /dev/null \
+  || { echo "FAIL: two model classifiers with LiteLLM's own prompt were counted" >&2; exit 1; }
 
 # ----- Shutdown -----
 
