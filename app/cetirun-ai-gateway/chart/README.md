@@ -416,7 +416,10 @@ applies.
   or else LiteLLM's price table entry for its `litellm_params.model`; it does
   not read `base_model` or `model_info`. A deployment with neither counts as
   the most expensive, which is the usual case for Azure OpenAI deployment
-  names, so set the prices in `litellm_params`.
+  names, so set the prices in `litellm_params`. With health checks on,
+  LiteLLM 1.105.1 logs an error with a traceback for every probe under this
+  strategy, since its cost tracker looks for a deployment ID that probes do
+  not carry; requests are not affected.
 
 LiteLLM's other strategies are refused: `usage-based-routing` selects without
 running LiteLLM's auto routers and pre-call checks, and the others need
@@ -457,7 +460,10 @@ last probe is skipped before anything is sent. A request that fails on order 1
 is sent to order 2 within the same request, with every routing strategy.
 Requests return to order 1 once its probe passes again, or, without health
 checks, once its cooldown ends. Deployment affinity is off for such a model;
-see [A key stays on its deployment](#a-key-stays-on-its-deployment).
+see [A key stays on its deployment](#a-key-stays-on-its-deployment). Measured
+on LiteLLM 1.105.1 with mock deployments: with order 1 failing its probes, a
+key's requests went to order 2, and once order 1 passed again they went back
+to it.
 
 ### A failed request goes to another deployment
 
@@ -524,7 +530,9 @@ for a model to the deployment that served its last one, for an hour (LiteLLM's
 deployment that saw it, so an agent that keeps its conversation on one
 deployment pays less and waits less for each turn. With Redis, every replica
 sees the same choice. While that deployment is unavailable, the key's requests
-go to the others.
+go to the others. Measured on LiteLLM 1.105.1 with two replicas and two
+deployments: four keys sent 10 requests each, alternating between the
+replicas, and each key's 10 reached one deployment.
 
 It is off for a model whose deployments set `litellm_params.order`: LiteLLM
 applies the choice before it keeps only the lowest order, and renews it only
@@ -576,7 +584,12 @@ With Redis, which the chart requires above one replica, one replica probes at
 a time, under a lock in Redis, and the others use its results
 (`use_shared_health_check`); the chart sets `DEFAULT_SHARED_HEALTH_CHECK_TTL`
 to the interval so a shared result is not reused past the next probe. Without
-Redis, the single replica probes on its own.
+Redis, the single replica probes on its own. Measured on LiteLLM 1.105.1 with
+two replicas, a 30-second interval and six mock deployments, two of them added
+through the management API with per-Agent Copilot access groups: each
+deployment was probed twice in 65 seconds, and with one of a model's two
+deployments failing its probes, 12 of 12 requests went to the other and none
+reached it.
 
 Each probe writes a line to the request log with `"call_origin":
 "health_check"` and the key alias `litellm-internal-health-check`; leave those
@@ -689,17 +702,26 @@ the console cannot remove it. It:
   calling key holds the route's access group, `cetirun-copilot-<Agent UID>`.
   A key granted every model, such as the master key, a key holding `*` or a
   `copilot/` model name, and a request whose key LiteLLM does not pass on,
-  reach none of them. Every other deployment is left as it is. An auto
-  router's choice of tier is held to the same rule;
+  reach none of them; asking for a `copilot/` model, such a key gets LiteLLM's
+  "No deployments available" 429. Every other deployment is left as it is. An
+  auto router's choice of tier is held to the same rule;
 - keeps error messages free of LiteLLM's internal deployment list: error
   messages returned to callers no longer include LiteLLM's internal list of
   deployments in cooldown. The response keeps its status, 429, the "Try again
-  in N seconds" wording and the `retry-after` header. The Gateway's own log and
-  the request log keep the full message.
+  in N seconds" wording and, on the Chat Completions and Responses APIs, the
+  `retry-after` header; LiteLLM sets none on its Anthropic Messages API. The
+  Gateway's own log and the request log keep the full message.
 
 With `operatorIntegration` off, the guard's request fields and error messages
 apply all the same; a standalone Gateway has no `cetirun-copilot-` groups for
 it to separate.
+
+Measured on LiteLLM 1.105.1 with two replicas and two Copilot routes added
+through the management API under one `copilot/` name: each of two Agent keys
+reached only its own route, 6 of 6; a key granted every proxy model, a key
+granted the `copilot/` name and the master key got the 429; and the 429 for a
+model with every deployment in cooldown carried no deployment list on the
+Chat Completions, Responses and Anthropic Messages APIs.
 
 ## Credentials
 
@@ -1139,7 +1161,10 @@ the stored health check results with them
 (`maximum_health_check_retention_period`). Spend, budgets and the daily usage
 totals are kept beyond it. Set it empty to keep every row. A retention period
 saved in the console's settings wins over the chart's, as for any
-`general_settings` key.
+`general_settings` key. Measured on LiteLLM 1.105.1 with the request log on:
+every call, probes included, added a row, none with a prompt, and the proxy
+started with the retention settings without complaint; the daily deletion
+itself was not observed.
 
 `spendLogs.enabled: false` has LiteLLM write no row per call. It is turned off
 only together with the request log, so no configuration leaves the Gateway
