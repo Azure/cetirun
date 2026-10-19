@@ -315,3 +315,52 @@ func TestCopilotDefaultModelNamesAndAliases(t *testing.T) {
 		t.Fatal("without Copilot a default outside the policy's shared models is refused")
 	}
 }
+
+// A Copilot route under a shared model's name is priced by its base model. It
+// must not make an unpriced shared model look priced, nor become a shared
+// model itself, nor change the policy's view of the shared models.
+func TestAIGatewayCatalogIgnoresCopilotRoutesUnderSharedNames(t *testing.T) {
+	var catalog aiGatewayCatalog
+	shared := sharedDeployment("plain", "plain-model", nil)
+	shared.Priced = false
+	route := aigateway.Deployment{ID: "cetirun-copilot-uid-x-1", ModelName: "plain-model", AccessGroups: []string{"cetirun-copilot-uid"},
+		FromDatabase: true, DatabaseSourceKnown: true, Priced: true, BaseModel: "gpt-5.5", MaxInputTokens: 10}
+	_, _, unpriced := catalog.update([]aigateway.Deployment{shared, route}, true, time.Now())
+	if models, _ := catalog.shared(); len(models) != 0 || !slices.Equal(unpriced, []string{"plain-model"}) {
+		t.Fatalf("an unpriced shared model stays out while the Gateway blocks unpriced models: %+v %v", models, unpriced)
+	}
+	shared.Priced = true
+	catalog.update([]aigateway.Deployment{shared}, true, time.Now())
+	fingerprint, _ := catalog.managedFingerprint()
+	if changed, _, _ := catalog.update([]aigateway.Deployment{shared, route}, true, time.Now()); changed {
+		t.Fatal("a Copilot route joining a shared name is no catalog change")
+	}
+	models, _ := catalog.shared()
+	view, _ := catalog.copilotMergeSnapshot()
+	after, _ := catalog.managedFingerprint()
+	if len(models) != 1 || models[0].ContextWindow != 0 || after != fingerprint || len(view.shared["plain-model"]) != 1 || !view.served["plain-model"] {
+		t.Fatalf("the route is not part of the shared model: %+v view %+v", models, view.shared)
+	}
+}
+
+// Without a catalog, an Agent keeps the shared models last configured; its
+// Copilot models under their own IDs are not taken for shared ones.
+func TestAIGatewayModelEntriesWithoutCatalogKeepCopilotModelsApart(t *testing.T) {
+	r, _, _ := aiGatewayTestReconciler(t)
+	agent := routedAgent()
+	agent.Spec.SandboxRef, agent.Status.Policy = "", nil
+	agent.Status.AIGateway.Models = []string{testSharedModelOne, "team-gpt", "gpt-4o"}
+	agent.Status.AIGateway.Copilot = &cetirunv1alpha1.AIGatewayCopilotStatus{
+		Models: []string{"gpt-4o", "team-gpt"},
+		Routes: []cetirunv1alpha1.AIGatewayCopilotRoute{{Model: "gpt-4o", Name: "gpt-4o"}, {Model: "gpt-5.5", Name: "team-gpt", Shared: true}},
+	}
+	entries, _, _ := r.aiGatewayModelEntries(agent)
+	got := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		got = append(got, entry.ID+"="+entry.Name)
+	}
+	want := []string{testSharedModelOne + "=" + testSharedModelOne, "team-gpt=team-gpt", "gpt-4o=gpt-4o" + copilotModelNameSuffix}
+	if !slices.Equal(got, want) {
+		t.Fatalf("entries %v, want %v", got, want)
+	}
+}
