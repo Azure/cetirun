@@ -311,26 +311,36 @@ assert_contains 'context_window_fallbacks: \[{"lint-model":\["long-model"\]}\]' 
   "$(render --set 'router.contextWindowFallbacks[0].lint-model[0]=long-model')"
 assert_rejected "a fallback target that is not a list" --set-string 'router.fallbacks[0].lint-model=other-model'
 
-# Each probe is a real call. Probing the GitHub Copilot routes the CetiRun
-# operator registers for each Agent would spend the users' own quota, so only
-# the models configured here are probed, and a router's own models are probed
-# rather than the router.
-echo "==> background health checks are turned on deliberately, for the configured models"
-assert_absent "background_health_checks" "no health checks by default" "${output}"
-health="$(render --set router.healthChecks.enabled=true \
-  --set-string 'models[1].model_name=auto-route' --set-string 'models[1].litellm_params.model=auto_router/complexity_router' \
-  --set-string 'models[1].litellm_params.input_cost_per_token=0.00001' \
-  --set-string 'models[1].litellm_params.output_cost_per_token=0.00001' \
-  --set-string 'models[1].litellm_params.complexity_router_config.tiers.SIMPLE=lint-model' \
-  --set-string 'models[2].model_name=lint-model' --set-string 'models[2].litellm_params.model=openai/lint-model-2')"
-assert_contains "background_health_checks: true" "health checks can be turned on" "${health}"
-assert_contains 'background_health_check_model_groups: \["lint-model"\]' \
-  "only the configured models are probed, each once, and not a router" "${health}"
-assert_contains "enable_health_check_routing: true" "requests go only to deployments that answered" "${health}"
-assert_contains "health_check_interval: 300$" "probes every five minutes by default" "${health}"
-assert_contains "health_check_staleness_threshold: 600$" "a result counts for two intervals" "${health}"
-assert_contains "health_check_ignore_transient_errors: true" "a probe answered with 429 does not exclude a deployment" "${health}"
-assert_rejected "a probe interval under 30 seconds" --set router.healthChecks.enabled=true --set router.healthChecks.intervalSeconds=10
+# Each probe is a real call, to every deployment: those configured here, those
+# added later and the operator's per-Agent GitHub Copilot routes. LiteLLM never
+# probes an auto router itself. With Redis, one replica probes under a lock and
+# the others reuse its results for one interval.
+echo "==> background health checks probe every deployment, once for all replicas"
+assert_contains "background_health_checks: true" "health checks are on by default" "${output}"
+assert_absent "background_health_check_model_groups" "every deployment is probed, not a chosen list" "${output}"
+assert_contains "enable_health_check_routing: true" "requests go only to deployments that answered" "${output}"
+assert_contains "health_check_interval: 300$" "probes every five minutes by default" "${output}"
+assert_contains "health_check_staleness_threshold: 600$" "a result counts for two intervals" "${output}"
+assert_contains "health_check_ignore_transient_errors: true" "a probe answered with 429 does not exclude a deployment" "${output}"
+assert_contains "use_shared_health_check: true" "with Redis, one replica probes for all" "${output}"
+grep -A1 'name: DEFAULT_SHARED_HEALTH_CHECK_TTL$' <<< "${output}" | grep -q 'value: "300"' || {
+  echo "FAIL: shared probe results are not reused past the next probe" >&2
+  exit 1
+}
+grep -A1 'name: DEFAULT_SHARED_HEALTH_CHECK_TTL$' <<< "$(render --set router.healthChecks.intervalSeconds=120)" \
+  | grep -q 'value: "120"' || {
+  echo "FAIL: the shared result lifetime does not follow the probe interval" >&2
+  exit 1
+}
+assert_contains "health_check_interval: 120$" "the probe interval can be changed" "$(render --set router.healthChecks.intervalSeconds=120)"
+assert_absent "use_shared_health_check" "a single replica without Redis probes on its own" "${single}"
+assert_absent "DEFAULT_SHARED_HEALTH_CHECK_TTL" "no shared results without Redis" "${single}"
+assert_contains "background_health_checks: true" "a single replica without Redis still probes" "${single}"
+off="$(render --set router.healthChecks.enabled=false)"
+assert_absent "background_health_checks" "health checks can be turned off" "${off}"
+assert_absent "use_shared_health_check" "no shared health checks when off" "${off}"
+assert_absent "DEFAULT_SHARED_HEALTH_CHECK_TTL" "no shared result lifetime when off" "${off}"
+assert_rejected "a probe interval under 30 seconds" --set router.healthChecks.intervalSeconds=10
 
 # ----- Shutdown -----
 
@@ -702,11 +712,13 @@ for template in deployment.yaml configmap.yaml; do
     exit 1
   }
 done
-[ "$(render --set router.healthChecks.enabled=true --set router.healthChecks.intervalSeconds=null -s templates/configmap.yaml)" \
-  = "$(render --set router.healthChecks.enabled=true -s templates/configmap.yaml)" ] || {
-  echo "FAIL: without the probe interval, the health checks differ from their default render" >&2
-  exit 1
-}
+for template in configmap.yaml deployment.yaml; do
+  [ "$(render --set router.healthChecks.intervalSeconds=null -s "templates/${template}")" \
+    = "$(render -s "templates/${template}")" ] || {
+    echo "FAIL: without the probe interval, ${template} differs from its default render" >&2
+    exit 1
+  }
+done
 [ "$(render --set metrics.enabled=true --set metrics.podMonitor=null -s templates/deployment.yaml)" \
   = "$(render --set metrics.enabled=true -s templates/deployment.yaml)" ] || {
   echo "FAIL: without the PodMonitor settings, the Deployment differs from its default render" >&2

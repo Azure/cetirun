@@ -13,6 +13,10 @@ the CetiRun operator recorded on the key), the model, tokens, spend, timing and
 the outcome. Request and response content is never written. Every string in it
 is capped, and a line never exceeds MAX_LINE_BYTES (see ``shortened``).
 
+A call LiteLLM makes itself is marked with its origin in call_origin: a
+background health check probe is "health_check", so usage figures can leave
+probes out.
+
 A client can ask LiteLLM for per-request debug output with
 litellm_request_debug, which makes LiteLLM print that request's prompt and the
 provider's raw response to the log. The callback drops that field from every
@@ -65,6 +69,32 @@ DEBUG_PARAMETER = "litellm_request_debug"
 # also puts the x-litellm-num-retries header into num_retries before the
 # callback sees the request. Each made one failing request four upstream calls.
 RETRY_PARAMETERS = ("num_retries", "model_group_retry_policy")
+# Where LiteLLM marks a call it makes itself: in the call's own metadata, not in
+# the logging payload.
+CALL_ORIGIN_KEY = "internal_call_origin"
+# The identity LiteLLM gives its background health check probes, as key hash,
+# alias and Team. Clients can choose request tags, not these.
+HEALTH_CHECK_ACCOUNT = "litellm-internal-health-check"
+HEALTH_CHECK_ORIGIN = "health_check"
+
+
+def call_origin(kwargs):
+    """The origin LiteLLM recorded on a call it made itself, or None."""
+    params = as_dict(kwargs.get("litellm_params"))
+    for name in ("metadata", "litellm_metadata"):
+        origin = as_dict(params.get(name)).get(CALL_ORIGIN_KEY)
+        if isinstance(origin, str) and origin:
+            return origin
+    return None
+
+
+def is_health_check(metadata):
+    """Whether the call is one of LiteLLM's background health check probes."""
+    return HEALTH_CHECK_ACCOUNT in (
+        metadata.get("user_api_key_hash"),
+        metadata.get("user_api_key_alias"),
+        metadata.get("user_api_key_team_id"),
+    )
 
 
 def iso_time(timestamp):
@@ -209,14 +239,16 @@ class RequestLog(CustomLogger):
         if not isinstance(payload, dict):
             return
         stream = self.stream or sys.stdout
-        stream.write(self.line(payload) + "\n")
+        stream.write(self.line(payload, call_origin(kwargs)) + "\n")
         stream.flush()
 
-    def record(self, payload):
+    def record(self, payload, origin=None):
         metadata = as_dict(payload.get("metadata"))
         hidden = as_dict(payload.get("hidden_params"))
         usage = as_dict(metadata.get("usage_object")) or as_dict(hidden.get("usage_object"))
         error = as_dict(payload.get("error_information"))
+        if is_health_check(metadata):
+            origin = HEALTH_CHECK_ORIGIN
         key_metadata = {
             clip(name): clip(value) if isinstance(value, str) else value
             for name, value in as_dict(metadata.get("user_api_key_auth_metadata")).items()
@@ -244,6 +276,7 @@ class RequestLog(CustomLogger):
             "trace_id": clip(payload.get("trace_id")),
             "route": clip(metadata.get("user_api_key_request_route")),
             "call_type": clip(payload.get("call_type")),
+            "call_origin": clip(origin),
             "stream": stream,
             "model": clip(payload.get("model_group") or payload.get("model")),
             "provider_model": clip(hidden.get("litellm_model_name") or payload.get("model")),
@@ -283,9 +316,9 @@ class RequestLog(CustomLogger):
             )
         return without_empty(record)
 
-    def line(self, payload):
+    def line(self, payload, origin=None):
         """The record as one line of JSON, never longer than MAX_LINE_BYTES."""
-        record = self.record(payload)
+        record = self.record(payload, origin)
         text = dump(record)
         if len(text.encode("utf-8")) <= MAX_LINE_BYTES:
             return text

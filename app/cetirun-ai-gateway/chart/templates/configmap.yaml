@@ -51,19 +51,23 @@ data:
       {{- $router := include "cetirun-ai-gateway.router" . | fromJson }}
       {{- if $router.healthChecks.enabled }}
       {{- $interval := int $router.healthChecks.intervalSeconds }}
-      # router.healthChecks: probe the deployments of the configured models in
-      # the background, and route only to those that answered. Each probe is a
-      # real call. Models outside this list, such as those the CetiRun operator
-      # registers for each Agent's GitHub Copilot, are never probed: their
-      # probes would spend the users' own quota. A probe answered with 429 or
-      # 408 counts as healthy, since cooldowns already handle those on live
-      # requests. A result is trusted for two intervals.
+      # router.healthChecks: probe every deployment in the background, those
+      # configured here and those added later, such as the GitHub Copilot
+      # routes the CetiRun operator registers for each Agent, and route only to
+      # those that answered. Each probe is a real call. LiteLLM's auto routers
+      # are not probed themselves. A probe answered with 429 or 408 counts as
+      # healthy, since cooldowns already handle those on live requests. A
+      # result is trusted for two intervals.
       background_health_checks: true
       health_check_interval: {{ $interval }}
-      background_health_check_model_groups: {{ include "cetirun-ai-gateway.healthCheckModels" . }}
       enable_health_check_routing: true
       health_check_staleness_threshold: {{ mul 2 $interval }}
       health_check_ignore_transient_errors: true
+      {{- if include "cetirun-ai-gateway.redisEnabled" . }}
+      # One replica probes at a time, under a lock in Redis, and the others
+      # use its results (DEFAULT_SHARED_HEALTH_CHECK_TTL, set to the interval).
+      use_shared_health_check: true
+      {{- end }}
       {{- end }}
 
     litellm_settings:

@@ -161,12 +161,12 @@
                 },
                 "healthChecks": {
                     "type": "object",
-                    "description": "Background probes of the deployments of the configured models, and routing only to those that answered. Models added through the console or registered by the CetiRun operator are never probed.",
+                    "description": "Background probes of every deployment, including those added through the console and the operator's per-Agent GitHub Copilot routes, and routing only to those that answered. With Redis, one replica probes for all.",
                     "properties": {
                         "enabled": {
                             "type": "boolean",
                             "description": "Run the probes and route by their results",
-                            "default": false
+                            "default": true
                         },
                         "intervalSeconds": {
                             "type": "integer",

@@ -190,17 +190,22 @@ router:
   fallbacks: []
   # -- The same, for requests too long for the model's context window.
   contextWindowFallbacks: []
-  # -- Probe the deployments of the models configured above in the background,
-  # and send requests only to those that answered their last probe. Each probe
-  # is a real call, with max_tokens 16, from each replica, and writes a request
-  # log line. Models added through the console or registered by the CetiRun
-  # operator, such as each Agent's GitHub Copilot models, are never probed. Set
-  # model_info.mode on a model that is not a chat model, such as an embedding
-  # or image model, so it is probed the right way. When every deployment of a
-  # model failed its probe, requests are still sent.
+  # -- Probe every deployment in the background, and send requests only to
+  # those that answered their last probe: the models configured above, those
+  # added through the console, and the GitHub Copilot routes the CetiRun
+  # operator registers for each Agent. Each probe is a real call, with
+  # max_tokens 16, and writes a request log line marked as a probe
+  # (call_origin health_check). A probe of an Agent's GitHub Copilot route
+  # spends that Agent owner's own Copilot allowance. With Redis, one replica
+  # probes for all of them. Set model_info.mode on a model that is not a chat
+  # model, such as an embedding or image model, so it is probed the right way,
+  # and model_info.disable_background_health_check: true on a model that
+  # should not be probed. When every deployment of a model failed its probe,
+  # requests are still sent. The results are kept in PostgreSQL and shown by
+  # /health/latest and the console.
   healthChecks:
     # -- Run the probes and route by their results
-    enabled: false
+    enabled: true
     # -- Seconds between probes
     intervalSeconds: 300
 

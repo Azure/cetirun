@@ -350,22 +350,8 @@ through this, with fromJson.
 {{- $_ = set $settings "deploymentAffinity" (dig "deploymentAffinity" true $router) -}}
 {{- $_ = set $settings "fallbacks" (dig "fallbacks" list $router) -}}
 {{- $_ = set $settings "contextWindowFallbacks" (dig "contextWindowFallbacks" list $router) -}}
-{{- $_ = set $settings "healthChecks" (dict "enabled" (dig "enabled" false $health) "intervalSeconds" (dig "intervalSeconds" 300 $health)) -}}
+{{- $_ = set $settings "healthChecks" (dict "enabled" (dig "enabled" true $health) "intervalSeconds" (dig "intervalSeconds" 300 $health)) -}}
 {{- toJson $settings -}}
-{{- end }}
-
-{{/*
-The model names the background health checks probe: those configured in
-models, apart from LiteLLM auto routers, whose own models are probed instead.
-*/}}
-{{- define "cetirun-ai-gateway.healthCheckModels" -}}
-{{- $names := list -}}
-{{- range .Values.models -}}
-{{- if not (hasPrefix "auto_router/" (toString (get (.litellm_params | default dict) "model"))) -}}
-{{- $names = append $names .model_name -}}
-{{- end -}}
-{{- end -}}
-{{- toJson (uniq $names) -}}
 {{- end }}
 
 {{/*

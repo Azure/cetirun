@@ -552,27 +552,38 @@ unreachable: a fallback group turned 6 failed requests of 30 into none.
 
 ### Health checks
 
-`router.healthChecks.enabled`, off by default, probes the deployments of the
-models in `models` every `router.healthChecks.intervalSeconds`, 300 by default,
-and sends requests only to those that answered their last probe. Measured with
-one of two deployments failing: every request went to the other one, where 10
-of 30 failed without health checks. When every deployment of a model fails its
-probe, requests are still sent.
+`router.healthChecks.enabled`, on by default, probes every deployment every
+`router.healthChecks.intervalSeconds`, 300 by default, and sends requests only
+to those that answered their last probe. Measured with one of two deployments
+failing: every request went to the other one, where 10 of 30 failed without
+health checks. When every deployment of a model fails its probe, requests are
+still sent.
 
-Each probe is a real call, with `max_tokens` 16, from each replica, and writes
-a line to the request log under the key alias `litellm-internal-health-check`.
-Only the models configured in `models` are probed: models added through the
-console and the GitHub Copilot models the CetiRun operator registers for each
-Agent are not, since probing those would spend the users' own quota. A router
-from LiteLLM's auto routing is not probed itself; its models are. Set
+Every deployment means the models in `models`, those added through the
+console, and the GitHub Copilot routes the CetiRun operator registers for each
+Agent. Each probe is a real call, with `max_tokens` 16, so a probe of an
+Agent's Copilot route spends that Agent owner's own GitHub Copilot allowance:
+about 288 small calls a day per route at the default interval. A router from
+LiteLLM's auto routing is not probed itself; its models are. Set
 `model_info.mode` on a model that is not a chat model, such as an embedding or
-image model, so it is probed the right way. A probe answered with 429 or 408
-counts as healthy: cooldowns handle those on live requests.
+image model, so it is probed the right way, and
+`model_info.disable_background_health_check: true` on a model that should not
+be probed. A probe answered with 429 or 408 counts as healthy: cooldowns
+handle those on live requests.
 
-With health checks off, LiteLLM's `/health` endpoint probes every deployment
-live when called with the master key, including the Agents' GitHub Copilot
-routes; with them on, it returns the last results. Agents' keys are refused
-there.
+With Redis, which the chart requires above one replica, one replica probes at
+a time, under a lock in Redis, and the others use its results
+(`use_shared_health_check`); the chart sets `DEFAULT_SHARED_HEALTH_CHECK_TTL`
+to the interval so a shared result is not reused past the next probe. Without
+Redis, the single replica probes on its own.
+
+Each probe writes a line to the request log with `"call_origin":
+"health_check"` and the key alias `litellm-internal-health-check`; leave those
+lines out of usage figures. The results are kept in PostgreSQL, for
+`spendLogs.retention` like the spend log, and `/health/latest` and the
+console show the latest result of each deployment. `/health` returns the last
+results too; with health checks off, it probes every deployment live when
+called with the master key. Agents' keys are refused there.
 
 ### Settings saved in the console
 
@@ -934,8 +945,8 @@ one in `models` becomes an additional backend rather than an override.
 was installed with, without the defaults of settings added since. A release
 installed before `requestLog`, `spendLogs` and `metrics` existed upgrades with
 their defaults: the request log on, LiteLLM's spend log kept, metrics off. One
-installed before `router` gets its defaults too: `simple-shuffle`, failover
-and the affinity checks on, health checks off, no fallbacks.
+installed before `router` gets its defaults too: `simple-shuffle`, failover,
+the affinity checks and health checks on, no fallbacks.
 
 ## Availability
 
@@ -1015,6 +1026,8 @@ from the metadata the CetiRun operator puts on the key; the model, the provider
 model and the provider's host; tokens, with cached and reasoning tokens where
 the provider reports them; spend; duration and, when streamed, time to first
 token; the client's address and user agent; and, for a failure, the error.
+A call LiteLLM makes itself carries its origin in `call_origin`: a background
+health check probe is `"health_check"`, so usage figures can leave it out.
 Abridged:
 
 ```json
