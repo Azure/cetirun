@@ -71,6 +71,50 @@ type AgentPolicyModelAccess struct {
 	SharedModels AgentPolicySharedModelsAccess `json:"sharedModels,omitempty"`
 	// +optional
 	GatewayBudget *AgentPolicyGatewayBudget `json:"gatewayBudget,omitempty"`
+	// RateLimits applies the same Gateway request limits to the virtual key
+	// of every Agent that uses this policy. Each key keeps its own counters,
+	// so Agents do not share a limit. An omitted field is unlimited.
+	// +optional
+	RateLimits *AgentPolicyRateLimits `json:"rateLimits,omitempty"`
+}
+
+// AgentPolicyRateLimits are per-key AI Gateway limits. The Gateway rejects
+// every request of a key with a zero limit, so a limit is either a positive
+// value or omitted; there is no zero or "unlimited" value.
+type AgentPolicyRateLimits struct {
+	// MaxParallelRequests limits the key's requests in flight at once.
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	MaxParallelRequests *int64 `json:"maxParallelRequests,omitempty"`
+	// RPM limits the key's requests per minute across all of its models.
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	RPM *int64 `json:"rpm,omitempty"`
+	// TPM limits the key's tokens per minute across all of its models. The
+	// Gateway reserves a request's input tokens plus its maximum output
+	// tokens before calling the model, so a limit below the context window
+	// plus the maximum output of a model rejects long requests to it.
+	// +kubebuilder:validation:Minimum=4096
+	// +optional
+	TPM *int64 `json:"tpm,omitempty"`
+	// PerModel limits requests for individual models. A key is the exact
+	// Gateway model name the Agent requests, not a display label.
+	// +kubebuilder:validation:MaxProperties=64
+	// +kubebuilder:validation:XValidation:rule="self.all(model, size(model) >= 1 && size(model) <= 256 && !model.matches('[[:space:]]'))",message="perModel keys must be Gateway model names of 1 to 256 characters without whitespace"
+	// +optional
+	PerModel map[string]AgentPolicyModelRateLimit `json:"perModel,omitempty"`
+}
+
+// +kubebuilder:validation:XValidation:rule="has(self.rpm) || has(self.tpm)",message="a per-model limit must set rpm, tpm, or both"
+type AgentPolicyModelRateLimit struct {
+	// RPM limits the key's requests per minute for this model.
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	RPM *int64 `json:"rpm,omitempty"`
+	// TPM limits the key's tokens per minute for this model.
+	// +kubebuilder:validation:Minimum=4096
+	// +optional
+	TPM *int64 `json:"tpm,omitempty"`
 }
 
 type AgentPolicyCopilotAccess struct {

@@ -68,6 +68,8 @@ type Key struct {
 	BudgetResetAt *time.Time
 	TeamID        string
 	UserID        string
+	// Limits are the key's stored request limits.
+	Limits KeyLimits
 }
 
 // GenerateRequest creates a key with a caller-chosen value, which lets the
@@ -88,6 +90,8 @@ type GenerateRequest struct {
 	// user. The team must exist; the user need not.
 	TeamID string
 	UserID string
+	// Limits are the key's request limits; absent limits are unlimited.
+	Limits KeyLimits
 }
 
 // Client calls the Gateway management API with the master key.
@@ -149,6 +153,7 @@ func (c *Client) GetKey(ctx context.Context, token string) (*Key, error) {
 			BudgetResetAt  *string  `json:"budget_reset_at"`
 			TeamID         *string  `json:"team_id"`
 			UserID         *string  `json:"user_id"`
+			keyLimitsInfo
 		} `json:"info"`
 	}
 	status, err := c.do(ctx, http.MethodGet, "/key/info?"+query.Encode(), nil, &response)
@@ -162,7 +167,7 @@ func (c *Client) GetKey(ctx context.Context, token string) (*Key, error) {
 	key := &Key{
 		Alias: info.KeyAlias, Models: info.Models, MaxBudget: info.MaxBudget,
 		BudgetDuration: info.BudgetDuration, Blocked: info.Blocked != nil && *info.Blocked, Spend: info.Spend,
-		TeamID: deref(info.TeamID), UserID: deref(info.UserID),
+		TeamID: deref(info.TeamID), UserID: deref(info.UserID), Limits: info.limits(),
 	}
 	if info.BudgetResetAt != nil && strings.TrimSpace(*info.BudgetResetAt) != "" {
 		resetAt, err := time.Parse(time.RFC3339, *info.BudgetResetAt)
@@ -189,6 +194,9 @@ func (c *Client) GenerateKey(ctx context.Context, req GenerateRequest) error {
 	if len(req.Models) == 0 {
 		return fmt.Errorf("virtual key model list must not be empty; an empty list grants every model")
 	}
+	if err := req.Limits.Validate(); err != nil {
+		return err
+	}
 	body := map[string]any{
 		"key":            req.Key,
 		"key_alias":      req.Alias,
@@ -196,6 +204,7 @@ func (c *Client) GenerateKey(ctx context.Context, req GenerateRequest) error {
 		"allowed_routes": []string{LLMAPIRoutes},
 		"metadata":       req.Metadata,
 	}
+	req.Limits.addTo(body)
 	if req.MaxBudget > 0 {
 		body["max_budget"] = req.MaxBudget
 	}

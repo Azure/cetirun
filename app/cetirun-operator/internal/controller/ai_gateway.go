@@ -177,6 +177,7 @@ type aiGatewayKeyClient interface {
 	GenerateKey(context.Context, aigateway.GenerateRequest) error
 	UpdateKeyModels(context.Context, string, []string) error
 	UpdateKeyBudget(context.Context, string, float64, string) error
+	UpdateKeyLimits(context.Context, string, aigateway.KeyLimits) error
 	SetKeyBlocked(context.Context, string, bool) error
 	UpdateKeyOwner(context.Context, string, string, string) error
 	DeleteKeys(context.Context, []string) error
@@ -253,6 +254,9 @@ type aiGatewayGrant struct {
 	copilot     bool
 	active      bool
 	policyBound bool
+	// limits are the policy's per-key request limits; set only when
+	// policyBound, and kept out of the Gateway policy revision.
+	limits aigateway.KeyLimits
 }
 
 func (r *AgentReconciler) resolveAIGatewayGrant(ctx context.Context, client aiGatewayKeyClient, instance *cetirunv1alpha1.Agent) (aiGatewayGrant, error) {
@@ -304,7 +308,11 @@ func (r *AgentReconciler) resolveAIGatewayGrant(ctx context.Context, client aiGa
 		groups = append(groups, copilotAccessGroup(instance))
 	}
 	slices.Sort(groups)
-	return aiGatewayGrant{groups: slices.Compact(groups), budget: budget, copilot: copilot, active: true, policyBound: true}, nil
+	limits, err := policyAIGatewayKeyLimits(resolution.policy)
+	if err != nil {
+		return aiGatewayGrant{}, err
+	}
+	return aiGatewayGrant{groups: slices.Compact(groups), budget: budget, copilot: copilot, active: true, policyBound: true, limits: limits}, nil
 }
 
 func (r *AgentReconciler) resolveLegacyAIGatewayGrant(ctx context.Context, client aiGatewayKeyClient, instance *cetirunv1alpha1.Agent) (aiGatewayGrant, error) {
@@ -639,6 +647,7 @@ func (r *AgentReconciler) reconcileAIGateway(ctx context.Context, instance *ceti
 			MaxBudget: grant.budget, BudgetDuration: aiGatewayBudgetDuration,
 			Blocked: instance.Spec.Suspended,
 			TeamID:  teamID, UserID: userID,
+			Limits: grant.limits,
 			Metadata: map[string]string{
 				"cetirun_agent": instance.Name, "cetirun_agent_uid": string(instance.UID),
 				"cetirun_user": instance.Spec.User.Alias, "cetirun_team": instance.Spec.Team,
@@ -719,6 +728,9 @@ func (r *AgentReconciler) reconcileAIGateway(ctx context.Context, instance *ceti
 				return aiGatewayDegraded(instance, "KeyBudgetUpdateFailed", err)
 			}
 		}
+		if err := r.reconcileAIGatewayKeyLimits(ctx, client, instance, token, key, grant); err != nil {
+			return aiGatewayDegraded(instance, "KeyLimitsUpdateFailed", err)
+		}
 	}
 	// Management responses are not enforcement evidence. Re-read the stored
 	// key after every create/update and reject drift before exposing the
@@ -728,7 +740,7 @@ func (r *AgentReconciler) reconcileAIGateway(ctx context.Context, instance *ceti
 		return aiGatewayDegraded(instance, "GatewayUnavailable", err)
 	}
 	if key == nil || key.Alias != status.KeyAlias || key.TeamID != teamID || key.UserID != userID ||
-		!slices.Equal(sortedCopy(key.Models), models) ||
+		!slices.Equal(sortedCopy(key.Models), models) || !aiGatewayKeyLimitsMatch(key, grant) ||
 		(grant.policyBound && (key.MaxBudget == nil || math.Abs(*key.MaxBudget-grant.budget) > 0.0000001 || key.BudgetDuration != aiGatewayBudgetDuration)) {
 		return aiGatewayDegraded(instance, "KeyReadbackMismatch", fmt.Errorf("the AI Gateway key does not match its resolved grant"))
 	}
