@@ -13,7 +13,7 @@ export function RateLimitsSummary({ limits, intro }: { limits?: AgentPolicyRateL
   const lines = describeRateLimits(limits);
   if (lines.length === 0) return null;
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 2 }} aria-label="AI Gateway limits">
+    <div role="group" style={{ display: "flex", flexDirection: "column", gap: 2 }} aria-label="AI Gateway limits">
       <Text size={200} weight="semibold">Limits</Text>
       <Text size={200} style={{ color: tokens.colorNeutralForeground3 }}>{intro}</Text>
       <ul style={{ margin: 0, paddingLeft: 20 }}>
