@@ -301,9 +301,15 @@
         },
         "spendLogs": {
             "type": "object",
-            "description": "LiteLLM's own row per call in LiteLLM_SpendLogs, read by the console's request log pages. Spend, budgets and daily usage totals are kept either way. Turned off only together with the request log. The cetirun-platform chart turns it off.",
+            "description": "LiteLLM's own row per call in LiteLLM_SpendLogs, read by the console's request log pages, kept for retention. Spend, budgets and daily usage totals are kept either way. Turned off only together with the request log.",
             "properties": {
-                "enabled": {"type": "boolean", "description": "Write a row to LiteLLM_SpendLogs for each call. false needs requestLog.enabled.", "default": true}
+                "enabled": {"type": "boolean", "description": "Write a row to LiteLLM_SpendLogs for each call. false needs requestLog.enabled.", "default": true},
+                "retention": {
+                    "type": "string",
+                    "description": "How long LiteLLM keeps the spend log rows and the stored health check results (maximum_spend_logs_retention_period): a number with h, d, w or mo. Empty keeps them forever.",
+                    "pattern": "^([1-9][0-9]*(h|d|w|mo))?$",
+                    "default": "7d"
+                }
             }
         },
         "metrics": {

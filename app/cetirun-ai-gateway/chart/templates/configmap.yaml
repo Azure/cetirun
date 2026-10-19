@@ -69,6 +69,12 @@ data:
       use_shared_health_check: true
       {{- end }}
       {{- end }}
+      {{- with (include "cetirun-ai-gateway.logsAndMetrics" . | fromJson).spendLogs.retention }}
+      # spendLogs.retention: once a day, LiteLLM deletes the rows of its spend
+      # log older than this, and the stored health check results as well.
+      maximum_spend_logs_retention_period: {{ . | quote }}
+      maximum_health_check_retention_period: {{ . | quote }}
+      {{- end }}
 
     litellm_settings:
       # No retries in the Gateway. LiteLLM retries a failed upstream call twice

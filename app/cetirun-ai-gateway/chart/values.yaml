@@ -375,11 +375,11 @@ requestLog:
   enabled: true
 
 # -- LiteLLM's own record of each call, in its database table LiteLLM_SpendLogs,
-# which the console's request log pages read. It grows by one row per call and
-# is never trimmed unless a retention period is set in the console. Spend,
-# budgets and the daily usage totals the console's usage pages show are kept
-# either way. The cetirun-platform chart turns it off: the request log above
-# keeps the per-call record outside the database.
+# which the console's request log pages read. It grows by one row per call;
+# retention below keeps it short. Spend, budgets and the daily usage totals the
+# console's usage pages show are kept either way. Prompts and responses are not
+# stored in it. The request log above keeps the per-call record outside the
+# database, for as long as the log collector keeps it.
 #
 # It is turned off only together with the request log: the image's entrypoint
 # does both, so an image built before the request log keeps writing the table.
@@ -387,6 +387,10 @@ spendLogs:
   # -- Write a row to LiteLLM_SpendLogs for each call. false needs
   # requestLog.enabled.
   enabled: true
+  # -- How long LiteLLM keeps those rows, and the stored health check results:
+  # a number with h, d, w or mo, such as 7d. Once a day it deletes older ones.
+  # Empty keeps them forever.
+  retention: 7d
 
 # -- LiteLLM's Prometheus metrics: requests, failures, tokens, spend and
 # latency by model, virtual key, user and Team, and the budget left on each.

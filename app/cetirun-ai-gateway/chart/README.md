@@ -138,8 +138,9 @@ For a release called `gateway` the claim is
 bundled resources' names are shortened and carry a hash instead.
 
 The volume's size and storage class are fixed at install. The default size is
-100Gi: the database keeps the spend log of every agent using the Gateway, so it
-grows with the number of agents and how long they run. A StatefulSet's
+100Gi: the database keeps the spend log of every agent using the Gateway, for
+`spendLogs.retention`, so it grows with the number of agents and how much they
+run. A StatefulSet's
 volume claim template cannot be changed, so Kubernetes refuses an upgrade that
 changes `postgresql.bundled.persistence.size` or `storageClass`: measured,
 going from 8Gi to 16Gi failed with `spec.volumeClaimTemplates` and left the
@@ -921,8 +922,8 @@ This is why the chart writes as little as possible into those blocks.
 
 ### Values the chart owns
 
-`model_list`; `general_settings.store_model_in_db`, and the health check
-settings when `router.healthChecks` is on; in `litellm_settings`,
+`model_list`; `general_settings.store_model_in_db`, the spend log retention,
+and the health check settings when `router.healthChecks` is on; in `litellm_settings`,
 `num_retries`, the unpriced-model block, `global_disable_no_log_param`, the
 metrics callback and its settings, and, when Redis is configured, the Redis
 cache; and in `router_settings`, Redis when it is configured, the routing
@@ -944,7 +945,8 @@ one in `models` becomes an additional backend rather than an override.
 `helm upgrade --reuse-values` keeps the values of the chart version a release
 was installed with, without the defaults of settings added since. A release
 installed before `requestLog`, `spendLogs` and `metrics` existed upgrades with
-their defaults: the request log on, LiteLLM's spend log kept, metrics off. One
+their defaults: the request log on, LiteLLM's spend log kept for seven days,
+metrics off. One
 installed before `router` gets its defaults too: `simple-shuffle`, failover,
 the affinity checks and health checks on, no fallbacks.
 
@@ -1098,14 +1100,21 @@ LiteLLM again without the callback; scale with `replicaCount` instead.
 
 ### LiteLLM's spend log
 
-`spendLogs.enabled: false` has LiteLLM write no row per call to
-`LiteLLM_SpendLogs`. The table grows by one row for every call and is never
-trimmed unless a retention period is set in the console. The cetirun-platform
-chart turns it off, since the request log keeps the per-call record outside the
-database.
+LiteLLM writes a row per call to `LiteLLM_SpendLogs`, which the console's
+request log pages read. The row holds the call's metadata, not its prompt or
+response: the chart does not set `store_prompts_in_spend_logs`. The table
+grows by one row for every call, so `spendLogs.retention`, `7d` by default,
+renders LiteLLM's `maximum_spend_logs_retention_period`: once a day, LiteLLM
+deletes the rows older than that, in batches, from one replica at a time, and
+the stored health check results with them
+(`maximum_health_check_retention_period`). Spend, budgets and the daily usage
+totals are kept beyond it. Set it empty to keep every row. A retention period
+saved in the console's settings wins over the chart's, as for any
+`general_settings` key.
 
-It is turned off only together with the request log, so no configuration leaves
-the Gateway without a record of each call: `spendLogs.enabled: false` needs
+`spendLogs.enabled: false` has LiteLLM write no row per call. It is turned off
+only together with the request log, so no configuration leaves the Gateway
+without a record of each call: `spendLogs.enabled: false` needs
 `requestLog.enabled`, and the image's entrypoint turns the spend log off only
 once it has registered the request log callback. It sets LiteLLM's
 `disable_spend_logs` in the proxy process, not in `general_settings`, so the

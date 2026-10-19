@@ -635,6 +635,17 @@ assert_contains 'value: "false"' "spendLogs.enabled=false has the entrypoint sto
 assert_absent "disable_spend_logs" "the spend log setting stays out of LiteLLM's configuration" "${spend_off}"
 assert_rejected "the spend log off without the request log" --set spendLogs.enabled=false --set requestLog.enabled=false
 
+# The spend log grows by a row per call; LiteLLM deletes older rows once a day,
+# and the stored health check results with them. Prompts are never stored.
+echo "==> LiteLLM's spend log is kept for seven days"
+assert_contains 'maximum_spend_logs_retention_period: "7d"' "spend log rows are kept for seven days by default" "${output}"
+assert_contains 'maximum_health_check_retention_period: "7d"' "health check results are kept as long" "${output}"
+assert_contains 'maximum_spend_logs_retention_period: "30d"' "the retention can be changed" \
+  "$(render --set-string spendLogs.retention=30d)"
+assert_absent "retention_period" "an empty retention keeps every row" "$(render --set-string spendLogs.retention=)"
+assert_rejected "a retention LiteLLM cannot read" --set-string spendLogs.retention=week
+assert_absent "store_prompts_in_spend_logs" "prompts stay out of the spend log" "${output}"
+
 # Container Insights copies each container's environment, Secret values
 # included, into its ContainerInventory table once a minute unless collection
 # is turned off for the cluster or for the container. Every container here
