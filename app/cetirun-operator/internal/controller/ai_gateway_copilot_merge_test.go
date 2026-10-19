@@ -128,24 +128,33 @@ func TestReconcileAIGatewayCopilotJoinsTheSharedModelOfTheSameRealModel(t *testi
 		t.Fatalf("copilot status %+v", copilot)
 	}
 	routes := routesByModel(gateway)
-	merged, own := routes["gpt-5.5"], routes["gpt-4o-2024-11-20"]
-	if len(routes) != 2 || merged.ModelName != "team-gpt" || merged.NoCooldown || merged.Routing.String() != "order=1,weight=2" ||
+	merged, own, joined := routes["gpt-5.5"], routes["gpt-4o-2024-11-20"], routes["gpt-4.1"]
+	if len(routes) != 3 || merged.ModelName != "team-gpt" || merged.NoCooldown || merged.Routing.String() != "order=1,weight=2" ||
 		!slices.Equal(merged.AccessGroups, []string{copilotGroup()}) || merged.BaseModel != "gpt-5.5" {
 		t.Fatalf("the Copilot model joins the shared model at its primary level: %+v", routes)
 	}
 	if own.ModelName != "gpt-4o-2024-11-20" || !own.NoCooldown || !own.Routing.IsZero() {
 		t.Fatalf("a dated model keeps its own name and is never cooled down: %+v", own)
 	}
-	wantRoutes := []cetirunv1alpha1.AIGatewayCopilotRoute{
-		{Model: "gpt-4o-2024-11-20", Name: "gpt-4o-2024-11-20"}, {Model: "gpt-5.5", Name: "team-gpt", Shared: true},
+	// The same model as a shared model the Agent is not granted, under that
+	// name: only the Agent's own access group reaches the route, so the
+	// Agent's key gets its own Copilot route there and never the shared
+	// deployment; it shares nothing, so it is never cooled down.
+	if joined.ModelName != "gpt-4.1" || !joined.NoCooldown || !joined.Routing.IsZero() ||
+		!slices.Equal(joined.AccessGroups, []string{copilotGroup()}) {
+		t.Fatalf("a Copilot model the Agent is not granted the shared model of keeps the name in its own group: %+v", joined)
 	}
-	if !slices.Equal(copilot.Routes, wantRoutes) || !slices.Equal(copilot.Models, []string{"gpt-4o-2024-11-20", "team-gpt"}) ||
-		!slices.Equal(copilot.Skipped, []string{"claude-sonnet-4.5", "gpt-4.1"}) || !slices.Equal(copilot.Unpriced, []string{"grok-code-fast-1"}) {
+	wantRoutes := []cetirunv1alpha1.AIGatewayCopilotRoute{
+		{Model: "gpt-4.1", Name: "gpt-4.1"}, {Model: "gpt-4o-2024-11-20", Name: "gpt-4o-2024-11-20"},
+		{Model: "gpt-5.5", Name: "team-gpt", Shared: true},
+	}
+	if !slices.Equal(copilot.Routes, wantRoutes) || !slices.Equal(copilot.Models, []string{"gpt-4.1", "gpt-4o-2024-11-20", "team-gpt"}) ||
+		!slices.Equal(copilot.Skipped, []string{"claude-sonnet-4.5"}) || !slices.Equal(copilot.Unpriced, []string{"grok-code-fast-1"}) {
 		t.Fatalf("copilot status %+v", copilot)
 	}
 	// The Agent sees one entry per model: the shared model stands for the
 	// Copilot model, with the smaller limits.
-	wantModels := []string{"claude-sonnet-4.5", testSharedModelOne, "team-4o", "team-gpt", "gpt-4o-2024-11-20"}
+	wantModels := []string{"claude-sonnet-4.5", testSharedModelOne, "team-4o", "team-gpt", "gpt-4.1", "gpt-4o-2024-11-20"}
 	if !slices.Equal(agent.Status.AIGateway.Models, wantModels) || agent.Status.AIGateway.DefaultModel != "team-gpt" {
 		t.Fatalf("models %v default %q", agent.Status.AIGateway.Models, agent.Status.AIGateway.DefaultModel)
 	}
@@ -159,7 +168,7 @@ func TestReconcileAIGatewayCopilotJoinsTheSharedModelOfTheSameRealModel(t *testi
 		}
 	}
 	key := gateway.keys[aigateway.Token(string(readSecret(t, kube, aiGatewayKeySecretName).Data[aiGatewayKeySecretField]))]
-	wantAliases := map[string]string{"copilot/gpt-5.5": "team-gpt", "copilot/gpt-4o-2024-11-20": "gpt-4o-2024-11-20"}
+	wantAliases := map[string]string{"copilot/gpt-5.5": "team-gpt", "copilot/gpt-4o-2024-11-20": "gpt-4o-2024-11-20", "copilot/gpt-4.1": "gpt-4.1"}
 	if !maps.Equal(key.Aliases, wantAliases) {
 		t.Fatalf("earlier copilot/ names stay usable as key aliases: %v", key.Aliases)
 	}

@@ -178,8 +178,12 @@ func (r *AgentReconciler) aiGatewayEntitledShared(instance *cetirunv1alpha1.Agen
 // placeCopilotModels decides each Copilot model's Gateway name. A model goes
 // under the name of a shared model the Agent is granted whose real model is
 // the same, the first such name in sort order when there are several. Any
-// other model goes under its own ID, unless a model the Gateway serves has
-// that name: it is skipped, as the Agent cannot share that name. ok is false
+// other model goes under its own ID. When a model the Gateway serves already
+// has that ID, the Copilot model joins the name only if it is the same real
+// model, which the Agent is not granted: the route stays in the Agent's own
+// access group, so the Agent's key reaches only its own route under that
+// name, and like any route it does not share, it is never cooled down.
+// Otherwise it is skipped, as the name means another model. ok is false
 // until the Gateway has been listed.
 func (r *AgentReconciler) placeCopilotModels(instance *cetirunv1alpha1.Agent, models []cetirunv1alpha1.CopilotModel, priced map[string]bool) (map[string]copilotPlacement, []string, bool) {
 	view, known := r.aiGatewayCatalog.copilotMergeSnapshot()
@@ -200,14 +204,15 @@ func (r *AgentReconciler) placeCopilotModels(instance *cetirunv1alpha1.Agent, mo
 	placements := map[string]copilotPlacement{}
 	var skipped []string
 	for _, model := range models {
-		if !datedModelID(model.ID) {
+		sameModel := !datedModelID(model.ID)
+		if sameModel {
 			if i := slices.IndexFunc(byReal[realModelKey(model.ID)], func(name string) bool { return entitled[name] }); i >= 0 {
 				name := byReal[realModelKey(model.ID)][i]
 				placements[model.ID] = copilotPlacement{name: name, shared: true, routing: copilotRouting(view.shared[name])}
 				continue
 			}
 		}
-		if view.served[model.ID] {
+		if view.served[model.ID] && !(sameModel && slices.Contains(byReal[realModelKey(model.ID)], model.ID)) {
 			skipped = append(skipped, model.ID)
 			continue
 		}

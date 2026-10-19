@@ -514,9 +514,8 @@ type AIGatewayCopilotStatus struct {
 	// +optional
 	Unpriced []string `json:"unpriced,omitempty"`
 
-	// Skipped lists the account's models left out because a shared model
-	// already has their name and is another model, or one the Agent is not
-	// granted.
+	// Skipped lists the account's models left out because a model the Gateway
+	// serves already has their name and is another model.
 	// +listType=atomic
 	// +optional
 	Skipped []string `json:"skipped,omitempty"`

@@ -712,9 +712,11 @@ Any other Copilot model goes under its own ID, such as `gpt-5.5`, with
 `litellm_params.cooldown_time: 0`: it is the only deployment the Agent's key
 reaches under that name, so a 429 from Copilot reaches the Agent as it is,
 instead of taking the route out of rotation for every request. If a model the
-Gateway serves already has that name, a shared model of another real model or
-one the Agent is not granted, the Copilot model is left out and reported on the
-Agent (`status.aiGateway.copilot.skipped`). The operator keeps `copilot/<model>`,
+Gateway serves already has that name and is another real model, the Copilot
+model is left out and reported on the Agent (`status.aiGateway.copilot.skipped`).
+When it is the same real model, as a shared model the Agent is not granted,
+the route takes that name in the Agent's own access group: the Agent's key
+reaches only its own Copilot route there, never the shared deployments. The operator keeps `copilot/<model>`,
 the names of earlier versions, as aliases on the Agent's key. When the shared
 models change, it registers the routes again with the names and fields that
 then apply.
