@@ -246,7 +246,7 @@ may already serve a model under such a name.
 {{- if $.Values.operatorIntegration }}
 {{- $info := .model_info | default dict }}
 {{- if hasKey $info "id" }}
-{{- fail (printf "model %s configures reserved model_info.id; operatorIntegration derives the deployment identity from the complete model configuration" .model_name) }}
+{{- fail (printf "model %s configures reserved model_info.id; operatorIntegration derives the deployment identity from the model name and its complete configuration" .model_name) }}
 {{- end }}
 {{- range ($info.access_groups | default list) }}
 {{- if hasPrefix "cetirun-model-" (lower (printf "%v" .)) }}

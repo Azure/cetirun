@@ -255,9 +255,12 @@ func (r *AgentReconciler) resolvePolicy(ctx context.Context, agent *api.Agent) (
 		return nil, err
 	}
 	// A display catalog is not authorization evidence. Read the current managed
-	// deployment groups before computing the Gateway projection revision so a
-	// same-name backend replacement invalidates both the projection and any
-	// previously computed grant for the old backend.
+	// model groups before computing the Gateway projection revision, so a
+	// change in which shared model names are bound, or to which groups,
+	// invalidates both the projection and any previously computed grant. The
+	// fingerprint covers model names and their trusted groups only; see
+	// aiGatewayCatalogFingerprint for why configuration edits that keep a
+	// name leave the revision, and therefore running Agents, unchanged.
 	catalogFingerprint := ""
 	if agent.Spec.SharedModelsEnabled() {
 		gateway, err := r.aiGatewayClient(ctx)

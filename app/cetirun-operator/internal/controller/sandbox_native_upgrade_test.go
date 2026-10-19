@@ -51,6 +51,38 @@ type oldNativeUpgradeState struct {
 
 func oldNativeUpgradeFixture(t *testing.T) (*nativeSandboxFixture, oldNativeUpgradeState) {
 	t.Helper()
+	f, state := oldNativeUpgradeFixtureAsRecorded(t)
+	// The fixture's Gateway grant was made under its source revision's
+	// binding rule, which derived each model group from the complete model
+	// configuration. Groups now follow the model name, so an Agent granted
+	// under the earlier rule gets a new Gateway policy revision once, and a
+	// running native Agent is held for it like for any changed input (see
+	// TestNativeUpgradeStillHoldsChangedInputs). Record the current Gateway
+	// revision, as a completed re-projection would, so that the remaining
+	// upgrade checks cover the native runtime itself. The key keeps the
+	// earlier group; the operator replaces it without a hold.
+	ctx := context.Background()
+	resolution, err := f.r.resolvePolicy(ctx, f.agent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent := f.current(t)
+	if agent.Status.Policy.Enforcement.Gateway.DesiredRevision == resolution.gatewayRevision {
+		t.Fatal("test setup: the recorded Gateway revision already follows the current binding rule")
+	}
+	agent.Status.Policy.Enforcement.Gateway.DesiredRevision = resolution.gatewayRevision
+	agent.Status.AIGateway.PolicyRevision = resolution.gatewayRevision
+	if err := f.kube.Status().Update(ctx, agent); err != nil {
+		t.Fatal(err)
+	}
+	f.agent = agent
+	return f, state
+}
+
+// oldNativeUpgradeFixtureAsRecorded loads the fixture exactly as its source
+// revision left it, Gateway grant included.
+func oldNativeUpgradeFixtureAsRecorded(t *testing.T) (*nativeSandboxFixture, oldNativeUpgradeState) {
+	t.Helper()
 	raw, err := os.ReadFile(filepath.Join("testdata", "native-upgrade", "pre-proxy.json"))
 	if err != nil {
 		t.Fatal(err)
@@ -231,9 +263,16 @@ func TestNativeUpgradePreservesExistingRuntimeAndReceipt(t *testing.T) {
 }
 
 func TestNativeUpgradeStillHoldsChangedInputs(t *testing.T) {
-	for _, change := range []string{"ingress peer", "runtime config"} {
+	// A native Agent granted under the earlier per-configuration model
+	// groups gets a new Gateway policy revision once, and is held like for
+	// any other changed input: native execution is single-start.
+	for _, change := range []string{"ingress peer", "runtime config", "earlier model groups"} {
 		t.Run(change, func(t *testing.T) {
-			f, legacy := oldNativeUpgradeFixture(t)
+			load := oldNativeUpgradeFixture
+			if change == "earlier model groups" {
+				load = oldNativeUpgradeFixtureAsRecorded
+			}
+			f, legacy := load(t)
 			ctx := context.Background()
 			if change == "ingress peer" {
 				platform := &corev1.ConfigMap{}
@@ -255,7 +294,7 @@ func TestNativeUpgradeStillHoldsChangedInputs(t *testing.T) {
 				if err := f.kube.Update(ctx, platform); err != nil {
 					t.Fatal(err)
 				}
-			} else {
+			} else if change == "runtime config" {
 				workload := f.workload(t)
 				config := &corev1.ConfigMap{}
 				if err := f.kube.Get(ctx, client.ObjectKey{Namespace: workload.Namespace, Name: workload.Name + "-config"}, config); err != nil {

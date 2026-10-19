@@ -2,7 +2,7 @@
   Generated LiteLLM configuration.
 
   Provider parameters are passed through unchanged. Operator integration adds
-  a per-configuration model binding; standalone model lists stay unchanged.
+  a model binding per model name; standalone model lists stay unchanged.
 
   The chart writes as little as possible into the settings blocks below. Editing
   any field of one of these blocks in the admin console persists the whole block
@@ -20,13 +20,19 @@ data:
   config.yaml: |
     model_list:
       {{- if .Values.operatorIntegration }}
+      {{- /* Agent keys are granted the access group, which depends on the
+      model name only: editing a model's other settings keeps every Agent's
+      grant. The deployment ID adds a hash of the complete entry, so entries
+      of one name stay distinct. The operator recomputes the name hash, so
+      keep it the plain SHA-256 of model_name. */}}
       {{- $models := list }}
       {{- range .Values.models }}
       {{- $model := deepCopy . }}
-      {{- $suffix := sha256sum (toJson $model) | trunc 16 }}
+      {{- $binding := sha256sum $model.model_name | trunc 16 }}
+      {{- $configuration := sha256sum (toJson $model) | trunc 16 }}
       {{- $info := deepCopy ($model.model_info | default dict) }}
-      {{- $_ := set $info "id" (printf "cetirun-shared-%s" $suffix) }}
-      {{- $_ = set $info "access_groups" (append ($info.access_groups | default list) (printf "cetirun-model-%s" $suffix) | uniq) }}
+      {{- $_ := set $info "id" (printf "cetirun-shared-%s-%s" $binding $configuration) }}
+      {{- $_ = set $info "access_groups" (append ($info.access_groups | default list) (printf "cetirun-model-%s" $binding) | uniq) }}
       {{- $_ = set $model "model_info" $info }}
       {{- $models = append $models $model }}
       {{- end }}

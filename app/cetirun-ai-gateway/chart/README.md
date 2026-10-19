@@ -53,19 +53,45 @@ OpenAI](#azure-openai).
 ### CetiRun AgentPolicy model bindings
 
 With `operatorIntegration: true`, each chart-configured model gets a
-`cetirun-model-<hash>` access group and matching `cetirun-shared-<hash>`
-deployment ID. The suffix is the first 16 hexadecimal characters of SHA-256
-over the complete model object's canonical JSON, before those generated fields
-are added. Existing non-reserved access groups and provider parameters remain
-unchanged. The chart rejects a supplied `model_info.id` or access group using
-the reserved `cetirun-model-` prefix.
+`cetirun-model-<name hash>` access group and a
+`cetirun-shared-<name hash>-<configuration hash>` deployment ID. The name hash
+is the first 16 hexadecimal characters of SHA-256 over `model_name`. The
+configuration hash is the same over the complete model object's canonical
+JSON, before those generated fields are added. Entries with the same
+`model_name`, such as load-balanced deployments of one model, share the group
+and keep distinct IDs. Existing non-reserved access groups and provider
+parameters remain unchanged. The chart rejects a supplied `model_info.id` or
+access group using the reserved `cetirun-model-` prefix.
 
-The Operator requires an exact, unique ID/group pair before granting a shared
-model through AgentPolicy. A same-name console deployment is not automatically
-trusted or granted. Changing the configured endpoint, provider parameters,
-pricing or other model metadata changes the binding; the Operator must
-reconcile the new grant before the Agent can use it. Rotating the value of a
-referenced Secret does not change this configuration hash.
+Agent keys are granted the group, which follows the model name, the identity
+an AgentPolicy grants. Changing a configured model's endpoint, provider
+parameters, price or other metadata changes only its deployment ID: Agents
+keep their grant, and the Operator neither updates their keys nor holds
+policy-bound Agents for it. Changes that reach an Agent's own configuration
+still update it as before: a model's token limits, or a model without a price
+leaving the list while the Gateway blocks unpriced models. Rotating the value
+of a referenced Secret changes neither ID nor group. Adding or removing a
+model name adds or removes a group; when its catalog refresh sees that, the
+Operator updates the keys of Agents with shared models and re-projects
+policy-bound Agents.
+
+The Operator trusts a group only while every deployment carrying it is
+configured in this chart rather than added through the console, has a unique
+deployment ID of the form above, and serves the model name the group is
+derived from. A console deployment under the same name is not automatically
+trusted or granted. A console deployment that copies the group makes the
+Operator distrust it, and Agents lose that model until the copy is removed.
+Two identical entries share one deployment ID, so the Operator trusts neither.
+
+Earlier versions of this chart derived the group from the complete model
+configuration, so editing a model changed its group, and Agents could not use
+the model until the Operator granted the new one. Upgrading changes every
+group once. Upgrade this chart together with the Operator, as the platform
+chart does: the Operator trusts only groups of the current form. It updates
+the keys of Agents with shared models when its catalog refresh sees the new
+groups, and re-projects policy-bound Agents once. Native Sandbox Agents are
+single-start, so they stay held after that re-projection until they are
+recreated.
 
 This behavior is opt-in. Standalone Gateways retain their existing model list
 and custom deployment IDs unchanged when `operatorIntegration` is false. The

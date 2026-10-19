@@ -109,7 +109,10 @@ instance. When an administrator adds or removes a shared model, changes its
 limits, or changes whether it is offered through its price or the Gateway's
 setting, the operator updates every instance that uses shared models, which
 restarts them. A restarting instance shows as provisioning for a short while,
-and its UI is unavailable until it is ready again.
+and its UI is unavailable until it is ready again. Other changes to a shared
+model, such as its endpoint, provider parameters or price, keep the access
+groups instances are granted: the Gateway chart derives a model's group from
+its name alone. Instances keep using the model, and none of them restarts.
 
 OpenClaw also sends short internal tasks, such as generated session titles and
 activity recaps, to a utility model. On the Gateway, an instance's utility
