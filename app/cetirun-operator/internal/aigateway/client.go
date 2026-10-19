@@ -556,6 +556,12 @@ type ModelRequest struct {
 	// NoCooldown sets litellm_params.cooldown_time to 0: LiteLLM never takes
 	// the deployment out of rotation after a failure.
 	NoCooldown bool
+	// ProbeWithoutRetries sets model_info.health_check_params.max_retries to
+	// 0. The Gateway's background health check calls deployments outside its
+	// router, so the provider client's own retries apply: two more calls for
+	// each failed probe, which a rate-limited upstream answers with more
+	// rate limiting.
+	ProbeWithoutRetries bool
 }
 
 // AddModel registers a deployment. The Gateway rejects a second deployment
@@ -567,6 +573,9 @@ func (c *Client) AddModel(ctx context.Context, req ModelRequest) error {
 	info := map[string]any{"id": req.ID, "access_groups": req.AccessGroups}
 	if req.BaseModel != "" {
 		info["base_model"] = req.BaseModel
+	}
+	if req.ProbeWithoutRetries {
+		info["health_check_params"] = map[string]any{"max_retries": 0}
 	}
 	params := map[string]any{"model": req.Model, "api_base": req.APIBase}
 	if req.APIKey != "" {

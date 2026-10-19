@@ -193,6 +193,13 @@ func copilotRevision(parts ...string) string {
 	return hex.EncodeToString(sum[:])[:8]
 }
 
+// copilotRouteFormat names what every Copilot route carries besides its
+// per-Agent fields: here, health check probes without the provider client's
+// retries, so one GitHub account's probes do not multiply when GitHub rate
+// limits them. It is part of each route's revision, so a change to it
+// registers the existing routes again.
+const copilotRouteFormat = "probe-without-retries"
+
 // reconcileAIGatewayCopilot keeps the Agent's Copilot proxy credentials and
 // model routes in line with the owner's sign-in. The proxy reads the token
 // Secret, which the Portal writes; the Portal also records the account's
@@ -303,11 +310,11 @@ func (r *AgentReconciler) reconcileAIGatewayCopilot(ctx context.Context, client 
 				unpriced = append(unpriced, model.ID)
 				continue
 			}
-			id := copilotRegistrationID(instance, model.ID, copilotRevision(append([]string{proxyURL, proxyKey, base}, copilotPlacementRevision(placement)...)...))
+			id := copilotRegistrationID(instance, model.ID, copilotRevision(append([]string{copilotRouteFormat, proxyURL, proxyKey, base}, copilotPlacementRevision(placement)...)...))
 			desired[id] = copilotRegistration{model: model, placement: placement, request: aigateway.ModelRequest{
 				ID: id, ModelName: placement.name, Model: "litellm_proxy/" + model.ID,
 				APIBase: proxyURL, APIKey: proxyKey, AccessGroups: []string{copilot.AccessGroup}, BaseModel: base,
-				Routing: placement.routing, NoCooldown: !placement.shared,
+				Routing: placement.routing, NoCooldown: !placement.shared, ProbeWithoutRetries: true,
 			}}
 		}
 	}

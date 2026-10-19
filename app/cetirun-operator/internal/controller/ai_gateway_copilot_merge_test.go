@@ -136,6 +136,11 @@ func TestReconcileAIGatewayCopilotJoinsTheSharedModelOfTheSameRealModel(t *testi
 	if own.ModelName != "gpt-4o-2024-11-20" || !own.NoCooldown || !own.Routing.IsZero() {
 		t.Fatalf("a dated model keeps its own name and is never cooled down: %+v", own)
 	}
+	for _, route := range routes {
+		if !route.ProbeWithoutRetries {
+			t.Fatalf("every Copilot route is probed without the provider client's retries: %+v", route)
+		}
+	}
 	// The same model as a shared model the Agent is not granted, under that
 	// name: only the Agent's own access group reaches the route, so the
 	// Agent's key gets its own Copilot route there and never the shared
