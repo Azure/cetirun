@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -16,6 +17,8 @@ import (
 	"unicode/utf8"
 
 	"helm.sh/helm/v3/pkg/chart/loader"
+	"helm.sh/helm/v3/pkg/chartutil"
+	"helm.sh/helm/v3/pkg/engine"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -30,6 +33,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/event"
+	sigsyaml "sigs.k8s.io/yaml"
 
 	istiov1beta1 "istio.io/client-go/pkg/apis/networking/v1beta1"
 
@@ -2999,6 +3003,99 @@ func TestAIGatewayCatalogRejectsForgedOrCollidingManagedBindings(t *testing.T) {
 				t.Fatalf("untrusted binding resolved to %v, complete=%v", groups, complete)
 			}
 		})
+	}
+}
+
+// gatewayChartDeployments renders the AI Gateway chart with operatorIntegration
+// and lists its model_list the way LiteLLM reports configured models.
+func gatewayChartDeployments(t *testing.T, models []any) []aigateway.Deployment {
+	t.Helper()
+	chrt, err := loader.Load(filepath.Join("..", "..", "..", "cetirun-ai-gateway", "chart"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	values, err := chartutil.ToRenderValues(chrt, map[string]any{"operatorIntegration": true, "models": models},
+		chartutil.ReleaseOptions{Name: "gateway", Namespace: "cetirun-system", IsInstall: true}, chartutil.DefaultCapabilities)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rendered, err := engine.Render(chrt, values)
+	if err != nil {
+		t.Fatal(err)
+	}
+	configMap := &corev1.ConfigMap{}
+	if err := sigsyaml.Unmarshal([]byte(rendered["cetirun-ai-gateway/templates/configmap.yaml"]), configMap); err != nil {
+		t.Fatal(err)
+	}
+	var config struct {
+		ModelList []struct {
+			ModelName string `json:"model_name"`
+			ModelInfo struct {
+				ID           string   `json:"id"`
+				AccessGroups []string `json:"access_groups"`
+			} `json:"model_info"`
+		} `json:"model_list"`
+	}
+	if err := sigsyaml.Unmarshal([]byte(configMap.Data["config.yaml"]), &config); err != nil {
+		t.Fatal(err)
+	}
+	deployments := make([]aigateway.Deployment, 0, len(config.ModelList))
+	for _, model := range config.ModelList {
+		deployments = append(deployments, aigateway.Deployment{
+			ID: model.ModelInfo.ID, ModelName: model.ModelName, AccessGroups: model.ModelInfo.AccessGroups,
+			DatabaseSourceKnown: true, Priced: true,
+		})
+	}
+	return deployments
+}
+
+// The Gateway chart and the operator must derive the same binding: the
+// operator trusts the groups the chart renders, for load-balanced entries of
+// one name and for names beyond ASCII, and an edit to an entry keeps them.
+func TestAIGatewayCatalogTrustsTheGatewayChartsBindings(t *testing.T) {
+	entry := func(name, model, apiBase string, price float64) map[string]any {
+		return map[string]any{
+			"model_name":     name,
+			"litellm_params": map[string]any{"model": model, "api_base": apiBase},
+			"model_info":     map[string]any{"input_cost_per_token": price, "access_groups": []any{aiGatewaySharedAccessGroup}},
+		}
+	}
+	const other = "modèle-example"
+	models := []any{
+		entry(testSharedModelOne, "azure/first", "https://first.example.com/", 0.001),
+		entry(testSharedModelOne, "azure/second", "https://second.example.com/", 0.001),
+		entry(other, "openai/example", "https://models.example.com/v1", 0.002),
+	}
+	rendered := gatewayChartDeployments(t, models)
+	if len(rendered) != 3 || rendered[0].ID == rendered[1].ID ||
+		!slices.Equal(rendered[0].AccessGroups, []string{aiGatewaySharedAccessGroup, testManagedGroup}) ||
+		!slices.Equal(rendered[1].AccessGroups, rendered[0].AccessGroups) {
+		t.Fatalf("unexpected chart bindings: %+v", rendered)
+	}
+	var catalog aiGatewayCatalog
+	catalog.update(rendered, true, time.Now())
+	otherGroup := aiGatewayModelAccessGroupPrefix + aiGatewayModelBinding(other)
+	groups, complete := catalog.resolvedGroups([]string{testSharedModelOne, other})
+	if !complete || !slices.Equal(groups, sortedCopy([]string{testManagedGroup, otherGroup})) {
+		t.Fatalf("the chart's bindings are not trusted: groups=%v complete=%v", groups, complete)
+	}
+	fingerprint, _ := catalog.managedFingerprint()
+
+	edited := slices.Clone(models)
+	edited[0] = entry(testSharedModelOne, "azure/replacement", "https://replacement.example.com/", 0.003)
+	editedDeployments := gatewayChartDeployments(t, edited)
+	if editedDeployments[0].ID == rendered[0].ID {
+		t.Fatal("an edited entry must get a new deployment ID")
+	}
+	if changed, _, _ := catalog.update(editedDeployments, true, time.Now()); changed {
+		t.Fatal("an edit to a chart entry changed the managed catalog")
+	}
+	if after, _ := catalog.managedFingerprint(); after != fingerprint {
+		t.Fatal("an edit to a chart entry changed the managed fingerprint")
+	}
+	if groups, complete := catalog.resolvedGroups([]string{testSharedModelOne, other}); !complete ||
+		!slices.Equal(groups, sortedCopy([]string{testManagedGroup, otherGroup})) {
+		t.Fatalf("an edit to a chart entry changed its trusted groups: %v", groups)
 	}
 }
 
