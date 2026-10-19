@@ -525,6 +525,48 @@ spec:
                       the Gateway.
                     format: date-time
                     type: string
+                  modelRouters:
+                    description: |-
+                      ModelRouters reports the smart-routing models of the Agent's Team for
+                      this Agent: those granted, and why the others are not.
+                    items:
+                      description: |-
+                        AIGatewayModelRouterStatus reports one smart-routing model of the Agent's
+                        Team for this Agent: whether the Agent's key was granted it, and if not why.
+                      properties:
+                        contextWindow:
+                          description: |-
+                            ContextWindow and MaxTokens are the smallest limits among the router's
+                            tier models that the Gateway reports, which the Agent is configured with.
+                          format: int64
+                          type: integer
+                        granted:
+                          description: Granted reports whether the Agent's key may
+                            use the router.
+                          type: boolean
+                        maxTokens:
+                          format: int64
+                          type: integer
+                        model:
+                          description: |-
+                            Model is the Gateway model name the Agent sends requests for the
+                            router to. Set only when the router is granted.
+                          type: string
+                        name:
+                          description: Name is the router's name, the model name the
+                            owner chooses.
+                          type: string
+                        reason:
+                          description: Reason explains why the router is not granted.
+                          type: string
+                      required:
+                      - granted
+                      - name
+                      type: object
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - name
+                    x-kubernetes-list-type: map
                   models:
                     description: |-
                       Models are the model names the Agent is configured with, as the Agent

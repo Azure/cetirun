@@ -605,7 +605,8 @@ func (r *AgentReconciler) aiGatewayModelEntries(instance *cetirunv1alpha1.Agent)
 			})
 		}
 	}
-	sharedEntries, omitted := keepSharedModels(sharedEntries, aiGatewayMaxModels-len(copilotEntries),
+	routerEntries := aiGatewayRouterEntries(instance)
+	sharedEntries, omitted := keepSharedModels(sharedEntries, aiGatewayMaxModels-len(copilotEntries)-len(routerEntries),
 		strings.TrimSpace(instance.Spec.Model), r.AIGateway.DefaultModel)
 	var shared, copilot []string
 	for _, entry := range sharedEntries {
@@ -615,18 +616,23 @@ func (r *AgentReconciler) aiGatewayModelEntries(instance *cetirunv1alpha1.Agent)
 		copilot = append(copilot, entry.ID)
 	}
 	entries := append(sharedEntries, copilotEntries...)
+	entries = append(entries, routerEntries...)
 	available := func(name string) bool {
 		return name != "" && (slices.Contains(shared, name) || slices.Contains(copilot, name))
 	}
 	switch {
 	case available(strings.TrimSpace(instance.Spec.Model)):
 		return entries, strings.TrimSpace(instance.Spec.Model), omitted
+	case aiGatewayRouterDefault(instance) != "":
+		return entries, aiGatewayRouterDefault(instance), omitted
 	case available(r.AIGateway.DefaultModel):
 		return entries, r.AIGateway.DefaultModel, omitted
 	case len(shared) > 0:
 		return entries, shared[0], omitted
 	case len(copilot) > 0:
 		return entries, copilot[0], omitted
+	case len(routerEntries) > 0:
+		return entries, routerEntries[0].ID, omitted
 	}
 	placeholder := aiGatewayNoModelsModel
 	if r.aiGatewayCopilotWanted(instance) {

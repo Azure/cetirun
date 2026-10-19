@@ -253,6 +253,13 @@ type aiGatewayGrant struct {
 	copilot     bool
 	active      bool
 	policyBound bool
+	// Team model routers (ai_gateway_routers.go): the inputs of the router
+	// grant, the router groups in groups and each router's status.
+	team             *cetirunv1alpha1.Team
+	policy           *cetirunv1alpha1.AgentPolicy
+	routerGroups     []string
+	routers          []cetirunv1alpha1.AIGatewayModelRouterStatus
+	routersEvaluated bool
 }
 
 func (r *AgentReconciler) resolveAIGatewayGrant(ctx context.Context, client aiGatewayKeyClient, instance *cetirunv1alpha1.Agent) (aiGatewayGrant, error) {
@@ -294,17 +301,26 @@ func (r *AgentReconciler) resolveAIGatewayGrant(ctx context.Context, client aiGa
 		if err := r.refreshAIGatewayCatalogForGrant(ctx, client); err != nil {
 			return aiGatewayGrant{}, err
 		}
+		sharedModels, err := r.aiGatewayPolicySharedModels(ctx, models)
+		if err != nil {
+			return aiGatewayGrant{}, err
+		}
 		var complete bool
-		groups, complete = r.aiGatewayCatalog.resolvedGroups(models)
-		if !complete || len(groups) == 0 {
+		groups, complete = r.aiGatewayCatalog.resolvedGroups(sharedModels)
+		if !complete || (len(groups) == 0 && len(sharedModels) > 0) {
 			return aiGatewayGrant{}, fmt.Errorf("the Gateway catalog has no collision-safe deployment group for an authorized shared model")
 		}
 	}
 	if copilot {
 		groups = append(groups, copilotAccessGroup(instance))
 	}
+	routerGroups, routers := r.aiGatewayModelRouterGrant(instance, resolution.team, resolution.policy, copilot)
+	groups = append(groups, routerGroups...)
 	slices.Sort(groups)
-	return aiGatewayGrant{groups: slices.Compact(groups), budget: budget, copilot: copilot, active: true, policyBound: true}, nil
+	return aiGatewayGrant{
+		groups: slices.Compact(groups), budget: budget, copilot: copilot, active: true, policyBound: true,
+		team: resolution.team, policy: resolution.policy, routerGroups: routerGroups, routers: routers, routersEvaluated: true,
+	}, nil
 }
 
 func (r *AgentReconciler) resolveLegacyAIGatewayGrant(ctx context.Context, client aiGatewayKeyClient, instance *cetirunv1alpha1.Agent) (aiGatewayGrant, error) {
@@ -322,9 +338,16 @@ func (r *AgentReconciler) resolveLegacyAIGatewayGrant(ctx context.Context, clien
 		// to those as well as legacy catalog entries tagged cetirun-shared.
 		groups = append(groups, r.aiGatewayCatalog.legacySharedGroups()...)
 	}
+	team, err := r.aiGatewayAgentTeam(ctx, instance)
+	if err != nil {
+		return aiGatewayGrant{}, err
+	}
+	routerGroups, routers := r.aiGatewayModelRouterGrant(instance, team, nil, copilot)
+	groups = append(groups, routerGroups...)
 	slices.Sort(groups)
 	return aiGatewayGrant{
 		groups: slices.Compact(groups), budget: r.AIGateway.DefaultBudget, copilot: copilot, active: true,
+		team: team, routerGroups: routerGroups, routers: routers, routersEvaluated: true,
 	}, nil
 }
 
@@ -591,6 +614,7 @@ func (r *AgentReconciler) reconcileAIGateway(ctx context.Context, instance *ceti
 		}
 		status = ensureAIGatewayStatus(instance)
 		status.Routed, status.AccessGroups, status.Models, status.DefaultModel, status.Blocked = false, nil, nil, "", blocked
+		status.ModelRouters = nil
 		status.Phase, status.Reason = cetirunv1alpha1.AIGatewayPhaseReady, aiGatewayReasonNoModels
 		setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionAIGatewayReady,
 			metav1.ConditionFalse, aiGatewayReasonNoModels, "The effective policy grants no AI Gateway model source")
@@ -795,10 +819,15 @@ func (r *AgentReconciler) reconcileAIGateway(ctx context.Context, instance *ceti
 		status.LastVerifiedTime = &now
 	}
 	status.Routed = routed
+	status.ModelRouters = grant.routers
 
 	// Copilot registration problems are reported on the Copilot status and
 	// never block the key: shared models keep working.
 	r.reconcileAIGatewayCopilot(ctx, client, instance, copilot && !instance.Spec.Suspended)
+	if err := r.refreshAIGatewayRouterGrant(ctx, client, instance, grant); err != nil {
+		r.EventRecorder.Eventf(instance, corev1.EventTypeWarning, "AIGatewayModelRoutersFailed",
+			"Updating the AI Gateway key's model routers after the GitHub Copilot registration failed: %v", err)
+	}
 	r.refreshAIGatewayCatalog(ctx, client)
 	if routed {
 		entries, defaultModel, omitted := r.aiGatewayModelEntries(instance)
@@ -1361,6 +1390,9 @@ func (r *AgentReconciler) aiGatewayRevision(instance *cetirunv1alpha1.Agent) str
 		// roll it.
 		if r.aiGatewayCopilotActive(instance) && status.Copilot.ProxyKeyID != "" {
 			parts = append(parts, "proxy-key", status.Copilot.ProxyKeyID)
+		}
+		if routers := aiGatewayRouterRevision(instance); routers != "" {
+			parts = append(parts, routers)
 		}
 	}
 	if annotation := instance.Annotations[cetirunv1alpha1.AnnotationCopilotModels]; annotation != "" {
