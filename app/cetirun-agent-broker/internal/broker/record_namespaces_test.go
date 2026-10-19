@@ -62,8 +62,12 @@ func (fixture *namespaceFixture) serveHTTP(response http.ResponseWriter, request
 		fixture.writeJSON(response, http.StatusOK, agentList{Items: []agentDocument{fixture.agent}})
 		return
 	}
+	if request.Method == http.MethodGet && request.URL.Path == "/apis/cetirun.microsoft.com/v1alpha1/agents/agent" {
+		fixture.writeJSON(response, http.StatusOK, fixture.agent)
+		return
+	}
 	if request.Method == http.MethodGet && request.URL.Path == "/api/v1/namespaces/agents" {
-		fixture.writeJSON(response, http.StatusOK, map[string]any{"metadata": secretMetadata{OwnerReferences: []ownerReference{agentRecordOwner(agentFromDocument(fixture.agent))}}})
+		fixture.writeJSON(response, http.StatusOK, map[string]any{"metadata": secretMetadata{Name: "agents", OwnerReferences: []ownerReference{agentRecordOwner(agentFromDocument(fixture.agent))}}})
 		return
 	}
 	const prefix = "/api/v1/namespaces/"

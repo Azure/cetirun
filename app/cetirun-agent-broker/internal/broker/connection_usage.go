@@ -91,8 +91,8 @@ func (k *kubeClient) connectionBindingRecords(ctx context.Context, owner Owner, 
 	stores := []*kubeClient{k}
 	if k.agentNamespaces {
 		stores = nil
-		var list agentList
-		if _, err := k.request(ctx, http.MethodGet, "/apis/cetirun.microsoft.com/v1alpha1/agents", nil, &list); err != nil {
+		list, err := k.listAgents(ctx)
+		if err != nil {
 			return nil, err
 		}
 		for _, document := range list.Items {

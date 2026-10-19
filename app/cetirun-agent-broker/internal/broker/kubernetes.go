@@ -104,6 +104,9 @@ type agentDocument struct {
 }
 
 type agentList struct {
+	Metadata struct {
+		Continue string `json:"continue"`
+	} `json:"metadata"`
 	Items []agentDocument `json:"items"`
 }
 
@@ -207,9 +210,9 @@ func (k *kubeClient) request(ctx context.Context, method, endpoint string, body 
 		return 0, errors.New("Kubernetes API is unavailable")
 	}
 	defer resp.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
-		return resp.StatusCode, errors.New("cannot read Kubernetes API response")
+	data, err := io.ReadAll(io.LimitReader(resp.Body, (1<<20)+1))
+	if err != nil || len(data) > 1<<20 {
+		return resp.StatusCode, errors.New("cannot read bounded Kubernetes API response")
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		if resp.StatusCode == http.StatusNotFound {
@@ -248,36 +251,44 @@ func (k *kubeClient) getAgentByWorkload(ctx context.Context, namespace, serviceA
 	if !dnsLabel(namespace) || !dnsLabel(serviceAccount) {
 		return Agent{}, errors.New("workload identity is invalid")
 	}
-	var list agentList
-	if _, err := k.request(ctx, http.MethodGet, "/apis/cetirun.microsoft.com/v1alpha1/agents", nil, &list); err != nil {
+	var ns struct {
+		Metadata secretMetadata `json:"metadata"`
+	}
+	if _, err := k.request(ctx, http.MethodGet, "/api/v1/namespaces/"+url.PathEscape(namespace), nil, &ns); err != nil {
 		return Agent{}, err
 	}
-	var match *Agent
-	for _, document := range list.Items {
-		if document.Status.Namespace != namespace || workloadServiceAccount(document.Metadata.Name) != serviceAccount {
-			continue
-		}
-		agent, err := k.getAgent(ctx, document.Metadata.Name)
-		if err != nil {
-			return Agent{}, err
-		}
-		if match != nil {
-			return Agent{}, errors.New("workload identity maps to multiple instances")
-		}
-		match = &agent
-	}
-	if match == nil {
+	if ns.Metadata.Name != namespace || ns.Metadata.DeletionTimestamp != nil {
 		return Agent{}, errNotFound
 	}
-	return *match, nil
+	var owner ownerReference
+	foundOwner := false
+	for _, ref := range ns.Metadata.OwnerReferences {
+		if ref.Kind == "Agent" && ref.APIVersion == "cetirun.microsoft.com/v1alpha1" {
+			if foundOwner {
+				return Agent{}, errNotFound
+			}
+			owner, foundOwner = ref, true
+		}
+	}
+	if !dnsLabel(owner.Name) || !uuidPattern.MatchString(owner.UID) {
+		return Agent{}, errNotFound
+	}
+	agent, err := k.getAgent(ctx, owner.Name)
+	if err != nil {
+		return Agent{}, err
+	}
+	if agent.Name != owner.Name || agent.UID != owner.UID || agent.Namespace != namespace || workloadServiceAccount(agent.Name) != serviceAccount {
+		return Agent{}, errNotFound
+	}
+	return agent, nil
 }
 
 func (k *kubeClient) getAgentByUID(ctx context.Context, uid string) (Agent, error) {
 	if !uuidPattern.MatchString(uid) {
 		return Agent{}, errors.New("instance UID is invalid")
 	}
-	var list agentList
-	if _, err := k.request(ctx, http.MethodGet, "/apis/cetirun.microsoft.com/v1alpha1/agents", nil, &list); err != nil {
+	list, err := k.listAgents(ctx)
+	if err != nil {
 		return Agent{}, err
 	}
 	var match *Agent
@@ -586,7 +597,7 @@ func (k *kubeClient) putConnection(ctx context.Context, record *connectionRecord
 		if record.Connection.Identity == nil {
 			return errors.New("Agent identity binding is missing")
 		}
-		target, err := k.agentRecordStore(ctx, record.Connection.Identity.InstanceUID)
+		target, err := k.agentRecordStore(ctx, record.Connection.Identity.InstanceUID, record.InstanceName)
 		if err != nil {
 			return err
 		}
@@ -754,7 +765,7 @@ func (k *kubeClient) getBinding(ctx context.Context, id string, agents ...Agent)
 		if len(agents) != 1 {
 			return nil, "", errors.New("Agent scope is required")
 		}
-		target, err := k.agentRecordStore(ctx, agents[0].UID)
+		target, err := k.agentRecordStore(ctx, agents[0].UID, agents[0].Name)
 		if err != nil {
 			return nil, "", err
 		}
@@ -773,7 +784,7 @@ func (k *kubeClient) getBinding(ctx context.Context, id string, agents ...Agent)
 
 func (k *kubeClient) putBinding(ctx context.Context, record *bindingRecord, resourceVersion string) error {
 	if k.agentNamespaces {
-		target, err := k.agentRecordStore(ctx, record.Binding.InstanceUID)
+		target, err := k.agentRecordStore(ctx, record.Binding.InstanceUID, record.InstanceName)
 		if err != nil {
 			return err
 		}
@@ -849,9 +860,9 @@ func (k *kubeClient) bindingRecords(ctx context.Context, selector string) ([]str
 	return result, nil
 }
 
-func (k *kubeClient) listBindings(ctx context.Context, owner Owner, instanceUID string) ([]ConnectionBinding, error) {
+func (k *kubeClient) listBindings(ctx context.Context, owner Owner, instanceUID string, names ...string) ([]ConnectionBinding, error) {
 	if k.agentNamespaces {
-		target, err := k.agentRecordStore(ctx, instanceUID)
+		target, err := k.agentRecordStore(ctx, instanceUID, names...)
 		if err != nil {
 			return nil, err
 		}
@@ -881,4 +892,30 @@ func sameOwner(left, right Owner) bool {
 
 func activeBinding(grant ConnectionBinding, now time.Time) bool {
 	return !grant.Revoked && grant.Enabled
+}
+
+// listAgents bounds each API response while preserving complete management results.
+func (k *kubeClient) listAgents(ctx context.Context) (agentList, error) {
+	result := agentList{}
+	continuation := ""
+	seen := map[string]bool{}
+	for {
+		query := url.Values{"limit": {"50"}}
+		if continuation != "" {
+			query.Set("continue", continuation)
+		}
+		var page agentList
+		if _, err := k.request(ctx, http.MethodGet, "/apis/cetirun.microsoft.com/v1alpha1/agents?"+query.Encode(), nil, &page); err != nil {
+			return agentList{}, err
+		}
+		result.Items = append(result.Items, page.Items...)
+		if page.Metadata.Continue == "" {
+			return result, nil
+		}
+		if seen[page.Metadata.Continue] {
+			return agentList{}, errors.New("Kubernetes pagination did not advance")
+		}
+		seen[page.Metadata.Continue] = true
+		continuation = page.Metadata.Continue
+	}
 }

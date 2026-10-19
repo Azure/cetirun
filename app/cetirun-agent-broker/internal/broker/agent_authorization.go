@@ -61,12 +61,17 @@ func (s *Server) agentIdentityCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	binding := &IdentityBinding{InstanceUID: agent.UID, TenantID: s.cfg.TenantID, ClientID: agent.AgentIdentityClientID, PrincipalID: agent.AgentIdentityObjectID}
 	c := Connection{Provider: input.Provider, Mode: modeAgent, Identity: binding}
+	if !s.cfg.connectionModeEnabled(c) {
+		writeAPIError(w, http.StatusServiceUnavailable, "dependency_unavailable", "This identity mode is disabled", correlation)
+		return
+	}
 	if !s.connectionMatchesAgent(c, agent) || !uuidPattern.MatchString(binding.ClientID) || !uuidPattern.MatchString(binding.PrincipalID) {
 		writeAPIError(w, http.StatusConflict, "identity_not_ready", "Enable Agent Identity on a supported instance and wait for provisioning", correlation)
 		return
 	}
 	// A deterministic binding key makes concurrent create requests idempotent.
 	c.ID = "agent-" + stateHash(agent.UID + "/azure/" + strings.ToLower(binding.TenantID+"/"+binding.PrincipalID+"/"+binding.ClientID))[:40]
+	auditTarget(r, c.ID, agent.UID, "")
 	existing, _, err := s.store.getConnectionForAgent(r.Context(), agent, c.ID)
 	if err == nil {
 		if existing.Deleted || !sameOwner(existing.Connection.Owner, owner) || !s.connectionMatchesAgent(existing.Connection, agent) {
@@ -83,10 +88,16 @@ func (s *Server) agentIdentityCreate(w http.ResponseWriter, r *http.Request) {
 	now := s.currentTime().UTC()
 	c.Owner, c.Revision, c.Status, c.CreatedAt, c.UpdatedAt = owner, 1, "connected", now, now
 	c.AccountDisplay, c.AccountID, c.Services = "Agent "+agent.Name, binding.PrincipalID, connectionServices(c)
+	auditMutation(r)
 	if err := s.store.putConnection(r.Context(), &connectionRecord{Connection: c, InstanceName: agent.Name, InstanceNamespace: agent.Namespace}, ""); err != nil {
-		writeAPIError(w, http.StatusConflict, "conflict", "Identity state changed; reload before retrying", correlation)
+		status, code := http.StatusServiceUnavailable, "dependency_unavailable"
+		if errors.Is(err, errConflict) {
+			status, code = http.StatusConflict, "conflict"
+		}
+		writeAPIError(w, status, code, "Identity state changed; reload before retrying", correlation)
 		return
 	}
+	auditCommit(r)
 	writeJSON(w, http.StatusOK, c)
 }
 
@@ -116,5 +127,5 @@ func (s *Server) connectionMatchesAgent(c Connection, agent Agent) bool {
 	if s.cfg.ToolRuntimeTypes != nil && !contains(s.cfg.ToolRuntimeTypes, agent.RuntimeType) {
 		return false
 	}
-	return connectionMatchesAgent(c, agent, s.cfg.TenantID)
+	return s.cfg.connectionModeEnabled(c) && connectionMatchesAgent(c, agent, s.cfg.TenantID)
 }

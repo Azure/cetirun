@@ -30,6 +30,12 @@ tls:
   keyKey: tls.key
   clientCAKey: ca.crt
 
+identityModes:
+  azureAgent:
+    enabled: true
+  microsoftDelegated:
+    enabled: true
+
 agentIdentity:
   tenantId: ""
   blueprintClientId: ""

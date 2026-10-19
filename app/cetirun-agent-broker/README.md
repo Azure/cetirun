@@ -46,8 +46,10 @@ The three internal routes are registered only on the direct mTLS listener:
 Input contains `callerProof`, `connectionId`, `service`, `contractVersion`, and
 (for issuance) connection/binding revisions. It contains no REST arguments or
 operation policy. The Broker independently TokenReviews the Pod-bound proof,
-checks the live Pod/ServiceAccount/Agent, owner and binding, and resolves the
-service from the trusted profile. Identity, connection and binding are rechecked
+checks the live Pod and ServiceAccount, follows the namespace Agent owner
+reference to a named Agent GET, validates its immutable UID, owner and binding,
+and resolves the service from the trusted profile. Identity, connection and
+binding are rechecked
 after OAuth refresh or app-only/OBO acquisition before returning a credential.
 
 Independent Azure uses the platform-derived tenant, child Agent client ID and
@@ -61,6 +63,42 @@ HTTP `:8080` serves Portal/Operator mesh APIs; HTTPS `:8443` serves MCP internal
 APIs. The latter validates a client certificate with exactly the configured
 MCP ServiceAccount SPIFFE URI SAN, never an XFCC header. Configure `tls.enabled`,
 server certificate and client CA, plus MCP's client certificate and Broker CA.
+
+## Availability and identity modes
+
+Both chart switches default to `true`:
+
+```yaml
+identityModes:
+  azureAgent:
+    enabled: true
+  microsoftDelegated:
+    enabled: true
+```
+
+They map to `AZURE_AGENT_ENABLED` and `MICROSOFT_DELEGATED_ENABLED`. Disabling a
+mode blocks new connections and credential issuance for that mode; it does not
+delete saved Connections or bindings. The blueprint client ID is required when
+either Entra mode is enabled; the authorization client ID is required only for
+Microsoft delegated mode. Common tenant and Key Vault encryption configuration
+remains required, including for GitHub/Google-only deployments.
+
+Disabling Microsoft delegated mode removes the Auth SDK container and its
+scratch volumes from the chart. Broker `/readyz` reports local readiness without
+calling the SDK. SDK request failures affect delegated Azure/Microsoft Graph
+issuance, not independent Azure or GitHub/Google flows. When enabled, the SDK
+still shares the Broker Pod: scheduling, resource exhaustion and container/Pod
+failure can affect the deployment. This change is not Pod-level isolation.
+
+Broker TLS and MCP serving/client TLS reload mounted material every five
+seconds without a restart. Invalid updates retain the previous valid snapshot;
+expired leaf material fails new TLS handshakes or outbound requests. Rotate CAs
+by distributing old+new trust first, then replacing leaf certificates, then
+removing old trust. Allow for Kubernetes projection and poll delays. In-flight
+requests and established server connections can finish. See the
+[MCP trust boundary](../agent-tools-mcp/README.md#runtime-and-trust-boundaries)
+for mount and rollover details. Broker shutdown cancels reload/maintenance loops
+and allows HTTP requests up to ten seconds to drain.
 
 ## Personal OAuth
 
@@ -80,8 +118,13 @@ healthy repeat logins preserve credentials and bindings. Reauthorization keeps
 old credentials until successful sign-in to the same account. Explicit refresh
 `invalid_grant` marks sign-in required; transport failures do not. Old duplicate
 Connections retain their IDs, with `canonicalConnectionId` projected for selection.
-Expired transactions are removed on the owner's next sign-in after a one-hour
-result retention period.
+Expired transactions are removed at startup, every five minutes, and on the
+owner's next sign-in, once one hour has elapsed after transaction expiry.
+Cleanup scans paginated authorization Secrets in the Broker credential
+namespace, checks encrypted record identity and uses UID/resourceVersion delete
+preconditions. Corrupt records are skipped with a warning; concurrent cleanup
+conflicts are harmless. Connections, account indexes, references and revocation
+tombstones are outside this sweep.
 
 GitHub uses an OAuth App with `repo` scope, configured by
 `providers.github.credentialsSecretName` (`client-id`, `client-secret`). Calls
@@ -113,7 +156,11 @@ Per-Agent storage is mandatory for this contract. There is no migration command
 or compatibility reader for the previous grant model. The Broker resolves the
 namespace from live Agent state and checks its owner reference. Encrypted
 records bind owner, immutable IDs and revisions. Labels and display snapshots
-support inventory only and cannot establish authority.
+support inventory only and cannot establish authority. Workload authentication
+uses namespace ownership and named Agent reads, without a cluster-wide Agent
+list fallback. Management inventory scans use pages of 50 Agents, with a 1 MiB
+response bound per page; a failed, oversized or repeated page fails the entire
+scan rather than returning partial results.
 
 The Operator supplies Broker Secret RBAC in ordinary managed Agent namespaces.
 This is namespace-wide Secret access, not label-scoped isolation. Records are
@@ -122,6 +169,23 @@ records with UID/resourceVersion preconditions before releasing the Agent
 finalizer. Namespace/Agent garbage collection also owns their lifetime. Personal
 credentials survive deletion of any individual Agent. Unsupported runtimes,
 including Sandbox, do not receive Broker Secret access.
+
+## Audit
+
+Broker emits structured started/completed events for OAuth start/reauthorize/
+completion, independent identity connection, binding connect/update/disconnect,
+account removal, Operator cleanup and internal credential operations. Events
+include correlation ID, duration, HTTP status, outcome and verified owner/target
+IDs when available. A confirmed storage commit is recorded as succeeded;
+ambiguous storage failures after a mutation starts are `execution_unknown`.
+An OAuth error page is not a successful account connection. An interrupted
+request may have only a started event, so logs are not a durable transaction
+ledger. Queries, credentials, request/response bodies and headers are not logged.
+
+MCP audit adds the validated provider method/path, stable executor account ID,
+Agent and connection/binding revisions, and upstream results. MCP uses the same
+correlation for its Broker calls and provider request. These IDs correlate
+observations; they do not deduplicate execution.
 
 ## Offline checks
 

@@ -6,6 +6,7 @@ package broker
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"sort"
 	"strings"
@@ -35,6 +36,10 @@ func (k *kubeClient) getOAuthRecord(ctx context.Context, kind, id string) (*conn
 }
 
 func (s *Server) startAuthorization(w http.ResponseWriter, r *http.Request, owner Owner, provider, target, accountID string) {
+	if !s.cfg.connectionModeEnabled(Connection{Provider: provider, Mode: modeDelegated}) {
+		writeAPIError(w, 503, "dependency_unavailable", "This identity mode is disabled", correlationID(r))
+		return
+	}
 	proof, err := connectionBrowserBindingHash(provider, r.Header.Get(connectionBindingHeader))
 	if err != nil {
 		writeAPIError(w, 400, "invalid_request", "Personal sign-in requires a browser binding proof", correlationID(r))
@@ -62,29 +67,51 @@ func (s *Server) startAuthorization(w http.ResponseWriter, r *http.Request, owne
 		writeAPIError(w, 503, "dependency_unavailable", "Sign-in storage is unavailable", correlationID(r))
 		return
 	}
+	auditTarget(r, target, "", "")
+	auditMutation(r)
 	if err := s.store.putOAuthRecord(r.Context(), "authorization", record, ""); err != nil {
 		writeAPIError(w, 503, "dependency_unavailable", "Sign-in could not be started", correlationID(r))
 		return
 	}
+	auditCommit(r)
 	writeJSON(w, 200, map[string]any{"authorizationId": id, "connectionId": target, "authorizationUrl": location, "expiresAt": record.Transaction.ExpiresAt, "browserBindingRequired": requiresConnectionBrowserBinding(provider)})
 }
 
 // Retain results briefly for the initiating window, then remove abandoned and
-// completed transactions on the owner's next sign-in. No credential is stored.
+// completed transactions during maintenance or the next sign-in.
 func (k *kubeClient) pruneAuthorizations(ctx context.Context, owner Owner, now time.Time) error {
-	list, err := k.listToolSecrets(ctx, "authorization", recordLabelPrefix+"owner-tenant="+owner.TenantID+","+recordLabelPrefix+"owner-object="+owner.ObjectID)
+	return k.pruneAuthorizationRecords(ctx, &owner, now)
+}
+
+func (k *kubeClient) pruneAuthorizationRecords(ctx context.Context, owner *Owner, now time.Time) error {
+	selector := ""
+	if owner != nil {
+		selector = recordLabelPrefix + "owner-tenant=" + owner.TenantID + "," + recordLabelPrefix + "owner-object=" + owner.ObjectID
+	}
+	list, err := k.listToolSecrets(ctx, "authorization", selector)
 	if err != nil {
 		return err
 	}
 	for _, secret := range list.Items {
-		record, err := k.decodeConnection(ctx, secret)
-		if err != nil {
+		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if !sameOwner(record.Connection.Owner, owner) {
-			return errors.New("authorization owner changed")
+		if secret.Metadata.Labels[recordLabelPrefix+"record-type"] != "authorization" {
+			continue
 		}
-		if record.Transaction != nil && now.After(record.Transaction.ExpiresAt.Add(time.Hour)) {
+		record, err := k.decodeConnection(ctx, secret)
+		if err != nil {
+			slog.Warn("OAuth transaction cleanup skipped invalid record", "record_id", secret.Metadata.Name)
+			continue
+		}
+		if owner != nil && !sameOwner(record.Connection.Owner, *owner) {
+			return errors.New("OAuth transaction owner changed")
+		}
+		if record.Credential != nil || record.Transaction == nil || record.Transaction.ExpiresAt.IsZero() || record.Connection.ID == "" || secret.Metadata.Name != toolRecordName("authorization", record.Connection.ID) {
+			slog.Warn("OAuth transaction cleanup skipped unexpected record", "record_id", secret.Metadata.Name)
+			continue
+		}
+		if now.After(record.Transaction.ExpiresAt.Add(time.Hour)) {
 			if err := k.deleteToolSecret(ctx, secret); err != nil && !errors.Is(err, errNotFound) && !errors.Is(err, errConflict) {
 				return err
 			}
@@ -129,7 +156,7 @@ func (s *Server) connectionCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	id := "oauth-" + stateHash(state)[:40]
 	record, version, err := s.store.getOAuthRecord(r.Context(), "authorization", id)
-	if err != nil || record.Transaction == nil || record.Transaction.StateHash != stateHash(state) || record.Transaction.Consumed || !validProvider(record.Transaction.Provider) || !s.currentTime().Before(record.Transaction.ExpiresAt) {
+	if err != nil || record.Transaction == nil || record.Transaction.StateHash != stateHash(state) || record.Transaction.Consumed || !validProvider(record.Transaction.Provider) || !s.cfg.connectionModeEnabled(Connection{Provider: record.Transaction.Provider, Mode: modeDelegated}) || !s.currentTime().Before(record.Transaction.ExpiresAt) {
 		s.callbackPage(w, false, id)
 		return
 	}
@@ -148,9 +175,14 @@ func (s *Server) connectionCallback(w http.ResponseWriter, r *http.Request) {
 	if r.Form.Get("error") == "" && validAuthorizationCode(code) {
 		credential, display, accountID, finishErr := s.finishConnectionCallback(r.Context(), record, tx, code)
 		if finishErr == nil && accountID != "" && (tx.ExpectedAccountID == "" || accountID == tx.ExpectedAccountID) {
+			auditOwner(r, record.Connection.Owner)
+			auditMutation(r)
 			result, err = s.store.completeAccount(r.Context(), record.Connection.Owner, tx, credential, display, accountID, s.currentTime().UTC())
 			if err != nil {
 				result = ""
+			} else {
+				auditTarget(r, result, "", "")
+				auditCommit(r)
 			}
 		}
 	}

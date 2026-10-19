@@ -52,12 +52,19 @@ type tokenReview struct {
 	} `json:"status"`
 }
 
+type ownerReference struct {
+	APIVersion string `json:"apiVersion"`
+	Kind       string `json:"kind"`
+	Name       string `json:"name"`
+	UID        string `json:"uid"`
+}
 type objectMeta struct {
-	Name              string     `json:"name"`
-	Namespace         string     `json:"namespace"`
-	UID               string     `json:"uid"`
-	ResourceVersion   string     `json:"resourceVersion"`
-	DeletionTimestamp *time.Time `json:"deletionTimestamp"`
+	OwnerReferences   []ownerReference `json:"ownerReferences"`
+	Name              string           `json:"name"`
+	Namespace         string           `json:"namespace"`
+	UID               string           `json:"uid"`
+	ResourceVersion   string           `json:"resourceVersion"`
+	DeletionTimestamp *time.Time       `json:"deletionTimestamp"`
 }
 
 type pod struct {
@@ -84,10 +91,6 @@ type agent struct {
 			ClientID string `json:"clientId"`
 		} `json:"agentIdentity"`
 	} `json:"status"`
-}
-
-type agentList struct {
-	Items []agent `json:"items"`
 }
 
 func NewKubernetes(cfg config.Config) (*Kubernetes, error) {
@@ -148,24 +151,35 @@ func (k *Kubernetes) Authenticate(ctx context.Context, bearer string) (Caller, e
 	if err := k.request(ctx, http.MethodGet, "/api/v1/namespaces/"+namespace+"/serviceaccounts/"+serviceAccountName, nil, &currentServiceAccount); err != nil || currentServiceAccount.Metadata.DeletionTimestamp != nil || currentServiceAccount.Metadata.UID != serviceAccountUID || currentServiceAccount.Metadata.UID != review.Status.User.UID {
 		return Caller{}, errors.New("workload ServiceAccount binding is invalid")
 	}
-	var agents agentList
-	if err := k.request(ctx, http.MethodGet, "/apis/cetirun.microsoft.com/v1alpha1/agents", nil, &agents); err != nil {
+	// Namespace ownership locates the Agent without a cluster-wide list. The
+	// owner reference is only a locator: compare it with the live Agent below.
+	var ns struct {
+		Metadata objectMeta `json:"metadata"`
+	}
+	if err := k.request(ctx, http.MethodGet, "/api/v1/namespaces/"+namespace, nil, &ns); err != nil || ns.Metadata.DeletionTimestamp != nil || ns.Metadata.Name != namespace {
+		return Caller{}, errors.New("workload namespace is unavailable")
+	}
+	var owner ownerReference
+	foundOwner := false
+	for _, ref := range ns.Metadata.OwnerReferences {
+		if ref.Kind == "Agent" && ref.APIVersion == "cetirun.microsoft.com/v1alpha1" {
+			if foundOwner {
+				return Caller{}, errors.New("ambiguous namespace owner")
+			}
+			owner, foundOwner = ref, true
+		}
+	}
+	if owner.UID == "" || !dnsLabel(owner.Name) {
+		return Caller{}, errors.New("namespace has no Agent owner")
+	}
+	var item agent
+	if err := k.request(ctx, http.MethodGet, "/apis/cetirun.microsoft.com/v1alpha1/agents/"+owner.Name, nil, &item); err != nil {
 		return Caller{}, errors.New("instance binding is unavailable")
 	}
-	var instanceUID string
-	for _, item := range agents.Items {
-		if item.Metadata.DeletionTimestamp != nil || item.Spec.Suspended || item.Status.Phase != "Ready" || item.Status.Namespace != namespace || instanceServiceName(item.Metadata.Name) != serviceAccountName || item.Metadata.UID == "" {
-			continue
-		}
-		if instanceUID != "" {
-			return Caller{}, errors.New("workload maps to multiple executable instances")
-		}
-		instanceUID = item.Metadata.UID
-	}
-	if instanceUID == "" {
+	if item.Metadata.Name != owner.Name || item.Metadata.UID != owner.UID || item.Metadata.DeletionTimestamp != nil || item.Spec.Suspended || item.Status.Phase != "Ready" || item.Status.Namespace != namespace || instanceServiceName(item.Metadata.Name) != serviceAccountName {
 		return Caller{}, errors.New("workload does not map to an executable instance")
 	}
-	return Caller{Proof: bearer, InstanceUID: instanceUID}, nil
+	return Caller{Proof: bearer, InstanceUID: item.Metadata.UID}, nil
 }
 
 func audienceMatches(audiences []string, expected string) bool {

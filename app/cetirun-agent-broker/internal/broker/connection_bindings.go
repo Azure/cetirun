@@ -56,7 +56,7 @@ func (s *Server) bindingsList(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	bindings, err := s.store.listBindings(r.Context(), owner, agent.UID)
+	bindings, err := s.store.listBindings(r.Context(), owner, agent.UID, agent.Name)
 	if err != nil {
 		writeAPIError(w, 503, "dependency_unavailable", "Binding storage is unavailable", correlationID(r))
 		return
@@ -123,6 +123,8 @@ func (s *Server) bindingSave(w http.ResponseWriter, r *http.Request, update bool
 		writeAPIError(w, 404, "not_found", "Binding not found", correlationID(r))
 		return
 	}
+	auditTarget(r, binding.ConnectionID, agent.UID, binding.ID)
+	auditMutation(r)
 	token, err := s.store.reserveBinding(r.Context(), connection.Connection, agent, binding, s.currentTime())
 	if err != nil {
 		status, code := 503, "dependency_unavailable"
@@ -148,6 +150,7 @@ func (s *Server) bindingSave(w http.ResponseWriter, r *http.Request, update bool
 	if prior != nil {
 		_ = s.store.releaseBindingReservation(r.Context(), owner, binding.ConnectionID, prior.ReservationToken)
 	}
+	auditCommit(r)
 	writeJSON(w, http.StatusOK, binding)
 }
 
@@ -174,6 +177,8 @@ func (s *Server) bindingDelete(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, 409, "conflict", "Binding revision changed", correlationID(r))
 		return
 	}
+	auditTarget(r, record.Binding.ConnectionID, agent.UID, record.Binding.ID)
+	auditMutation(r)
 	// Keep a tombstone so re-creation cannot reuse a previously issued revision.
 	record.Binding.Revoked, record.Binding.Enabled = true, false
 	record.Binding.Revision++
@@ -187,5 +192,6 @@ func (s *Server) bindingDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = s.store.releaseBindingReservation(r.Context(), owner, record.Binding.ConnectionID, record.ReservationToken)
+	auditCommit(r)
 	w.WriteHeader(http.StatusNoContent)
 }

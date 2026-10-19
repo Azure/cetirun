@@ -96,11 +96,13 @@ type ListResponse struct {
 }
 
 type CheckResponse struct {
-	InstanceUID     string     `json:"instanceUid"`
-	Connection      Connection `json:"connection"`
-	Binding         Binding    `json:"binding"`
-	Service         string     `json:"service"`
-	ContractVersion string     `json:"contractVersion"`
+	// Stable provider account ID, only included in internal check/issue responses.
+	ExecutorAccountID string     `json:"executorAccountId,omitempty"`
+	InstanceUID       string     `json:"instanceUid"`
+	Connection        Connection `json:"connection"`
+	Binding           Binding    `json:"binding"`
+	Service           string     `json:"service"`
+	ContractVersion   string     `json:"contractVersion"`
 }
 
 type IssueResponse struct {

@@ -19,8 +19,18 @@ func agentRecordOwner(agent Agent) ownerReference {
 
 // agentRecordStore resolves authority from the live Agent and namespace, never
 // from a caller-supplied namespace or a persisted display snapshot.
-func (k *kubeClient) agentRecordStore(ctx context.Context, uid string) (*kubeClient, error) {
-	agent, err := k.getAgentByUID(ctx, uid)
+func (k *kubeClient) agentRecordStore(ctx context.Context, uid string, names ...string) (*kubeClient, error) {
+	var agent Agent
+	var err error
+	if len(names) == 1 && names[0] != "" {
+		// A stored name is only a lookup hint. Recreated objects must not gain access.
+		agent, err = k.getAgent(ctx, names[0])
+		if err == nil && agent.UID != uid {
+			return nil, errNotFound
+		}
+	} else {
+		agent, err = k.getAgentByUID(ctx, uid)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -79,7 +89,7 @@ func (k *kubeClient) getConnectionForAgent(ctx context.Context, agent Agent, id 
 	if !k.agentNamespaces {
 		return k.getConnection(ctx, id)
 	}
-	target, err := k.agentRecordStore(ctx, agent.UID)
+	target, err := k.recordStoreForAgent(ctx, agent)
 	if err != nil {
 		return nil, "", err
 	}
@@ -104,8 +114,8 @@ func (k *kubeClient) getConnectionForAgent(ctx context.Context, agent Agent, id 
 }
 
 func (k *kubeClient) ownerAgentStores(ctx context.Context, owner Owner) ([]*kubeClient, error) {
-	var agents agentList
-	if _, err := k.request(ctx, http.MethodGet, "/apis/cetirun.microsoft.com/v1alpha1/agents", nil, &agents); err != nil {
+	agents, err := k.listAgents(ctx)
+	if err != nil {
 		return nil, err
 	}
 	result := []*kubeClient{}
@@ -186,7 +196,7 @@ func (k *kubeClient) ensureConnectionReference(ctx context.Context, agent Agent,
 	if !k.agentNamespaces || connectionMode(connection) != modeDelegated {
 		return nil
 	}
-	target, err := k.agentRecordStore(ctx, agent.UID)
+	target, err := k.recordStoreForAgent(ctx, agent)
 	if err != nil {
 		return err
 	}

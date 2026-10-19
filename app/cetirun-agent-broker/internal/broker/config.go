@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -15,6 +16,11 @@ import (
 var uuidPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
 type Config struct {
+	// Disabled flags preserve enabled defaults for embedded configurations.
+	DisableAzureAgent            bool
+	DisableMicrosoftDelegated    bool
+	AuthorizationCleanupInterval time.Duration
+
 	ListenAddress           string
 	TLSListenAddress        string
 	TLSCertFile             string
@@ -83,13 +89,31 @@ func LoadConfig() (Config, error) {
 		GoogleClientSecret:      os.Getenv("GOOGLE_OAUTH_CLIENT_SECRET"),
 		TransactionTTL:          10 * time.Minute,
 		RequestTimeout:          15 * time.Second,
+
+		AuthorizationCleanupInterval: 5 * time.Minute,
 	}
+	azureAgent, err := strconv.ParseBool(env("AZURE_AGENT_ENABLED", "true"))
+	if err != nil {
+		return Config{}, errors.New("AZURE_AGENT_ENABLED must be a boolean")
+	}
+	microsoftDelegated, err := strconv.ParseBool(env("MICROSOFT_DELEGATED_ENABLED", "true"))
+	if err != nil {
+		return Config{}, errors.New("MICROSOFT_DELEGATED_ENABLED must be a boolean")
+	}
+	cfg.DisableAzureAgent, cfg.DisableMicrosoftDelegated = !azureAgent, !microsoftDelegated
 	for _, kind := range cfg.ToolRuntimeTypes {
 		if kind != "hermes" && kind != "openclaw" {
 			return Config{}, errors.New("TOOLS_MCP_RUNTIME_TYPES must list hermes or openclaw")
 		}
 	}
-	for _, value := range []string{cfg.TenantID, cfg.BlueprintClientID, cfg.AuthorizationClientID, cfg.EncryptionClientID} {
+	requiredIDs := []string{cfg.TenantID, cfg.EncryptionClientID}
+	if azureAgent || microsoftDelegated {
+		requiredIDs = append(requiredIDs, cfg.BlueprintClientID)
+	}
+	if microsoftDelegated {
+		requiredIDs = append(requiredIDs, cfg.AuthorizationClientID)
+	}
+	for _, value := range requiredIDs {
 		if !uuidPattern.MatchString(value) {
 			return Config{}, errors.New("Agent Identity UUID configuration is missing or invalid")
 		}
@@ -124,4 +148,14 @@ func env(name, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func (c Config) connectionModeEnabled(connection Connection) bool {
+	if connectionMode(connection) == modeAgent {
+		return !c.DisableAzureAgent
+	}
+	if connection.Provider == "azure" || connection.Provider == "microsoft" {
+		return !c.DisableMicrosoftDelegated
+	}
+	return true
 }

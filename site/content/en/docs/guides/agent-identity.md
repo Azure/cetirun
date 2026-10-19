@@ -220,13 +220,52 @@ and rechecks revisions after credential acquisition. An already-sent request
 cannot be recalled. This contract has no migration or compatibility workflow
 for the earlier AgentGrant model.
 
-Provider credentials stay inside Broker/MCP and never enter Agent workloads.
+Execution bearer credentials stay inside Broker/MCP and never enter Agent
+workloads. This does not filter other secrets returned by an authorized resource
+API, such as resource access keys; provider permissions determine that access.
 MCP has no Kubernetes Secret API permissions or operation-record store. Broker
 has namespace-wide Secret permissions only in its own and permitted ordinary
 Agent namespaces; labels do not provide Kubernetes RBAC isolation.
 
-Platform audit records Agent UID, executor account or principal, connection and
-binding revisions, service, correlation, platform rejection and provider status
-/request IDs. Credentials and request/response bodies are not logged by default.
+Platform audit records Agent UID, stable executor account ID or principal,
+connection/binding revisions, service, HTTP method, validated target path,
+duration, stage and started/completed outcome. The same MCP correlation ID
+reaches Broker and the upstream request; provider status/request IDs are
+recorded when available. Queries, headers, credentials and request/response
+bodies are excluded. Paths may identify resources or mailboxes, so audit access
+should be restricted. A missing completion or `execution_unknown` requires
+checking provider state before retrying; these logs are not an execution ledger.
+Broker also records identity, OAuth, binding and account-management events with
+verified owner/target IDs and storage outcomes.
+
+## Deployment reliability
+
+Broker chart settings `identityModes.azureAgent.enabled` and
+`identityModes.microsoftDelegated.enabled` both default to `true`. Disable the
+second when only independent Azure and personal GitHub/Google are required; the
+chart then omits the Entra Auth SDK container. Broker readiness does not call
+the SDK, and its failures do not block unrelated provider code paths. When
+enabled, the SDK remains in the same Pod and shares its operational fate.
+Disabling a mode blocks its use without deleting saved connections. Key Vault
+configuration remains required for encrypted personal credentials.
+
+MCP and Broker authenticate workloads through live Pod/ServiceAccount checks,
+a namespace Agent owner reference and a named Agent GET with UID verification.
+There is no workload fallback to a global Agent list. Remaining management
+inventory scans are paginated and fail rather than return incomplete results.
+Abandoned and completed OAuth transactions are swept at startup and every five
+minutes, once an hour has elapsed after expiry. Corrupt records are skipped;
+Connections, account indexes and binding tombstones are not swept.
+
+Broker/MCP reload mounted TLS certificates, keys and trust bundles every five
+seconds. Invalid replacements retain valid previous material; expired leaf
+material fails new handshakes or outbound requests. Stage CA rollover by first
+distributing old+new trust to every peer, then rotating leaf certificates, then
+removing old trust. Account for Secret projection and reload delays. Existing
+requests can finish; changing trust does not immediately revoke established
+connections. See the [component configuration](https://github.com/Azure/cetirun/tree/main/app/cetirun-agent-broker)
+for identity flags and the [MCP configuration](https://github.com/Azure/cetirun/tree/main/app/agent-tools-mcp)
+for TLS mounts and trust boundaries.
+
 Local automated tests use synthetic providers; a deployment still needs explicit
 live qualification for its identity, OAuth configuration and native runtime.

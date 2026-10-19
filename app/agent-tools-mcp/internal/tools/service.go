@@ -70,25 +70,20 @@ func (s *Service) Call(ctx context.Context, caller identity.Caller, tool string,
 	if randomErr != nil {
 		return nil, &ToolError{Code: "dependency_unavailable"}
 	}
+	ctx = agenttools.WithCorrelation(ctx, correlation)
+	started := time.Now()
 	var check brokerclient.CheckResponse
-	service := ""
+	service, method, targetPath := "", "", ""
 	status := 0
 	stage := "platform"
 	requestIDs := []string{}
-	defer func() {
-		outcome := "succeeded"
-		if status >= 400 {
-			outcome = "provider_error"
+	logEvent := func(phase, outcome string) {
+		attributes := []any{"agent_uid", caller.InstanceUID, "tool", tool, "service", service, "correlation_id", correlation, "stage", stage, "phase", phase, "outcome", outcome, "duration_ms", time.Since(started).Milliseconds()}
+		if method != "" {
+			attributes = append(attributes, "method", method, "path", targetPath)
 		}
-		if err != nil {
-			outcome = err.Error()
-			if typed, ok := err.(*ToolError); ok {
-				typed.CorrelationID = correlation
-			}
-		}
-		attributes := []any{"agent_uid", caller.InstanceUID, "tool", tool, "service", service, "correlation_id", correlation, "stage", stage, "outcome", outcome}
 		if check.Connection.ID != "" {
-			attributes = append(attributes, "connection_id", check.Connection.ID, "connection_revision", check.Connection.Revision, "binding_id", check.Binding.ID, "binding_revision", check.Binding.Revision, "mode", check.Connection.Mode, "executor_account", check.Connection.AccountDisplay)
+			attributes = append(attributes, "connection_id", agenttools.AuditText(check.Connection.ID, 128), "connection_revision", check.Connection.Revision, "binding_id", agenttools.AuditText(check.Binding.ID, 128), "binding_revision", check.Binding.Revision, "mode", check.Connection.Mode, "executor_account", agenttools.AuditText(check.Connection.AccountDisplay, 256), "executor_account_id", agenttools.AuditText(check.ExecutorAccountID, 256))
 			if check.Connection.Identity != nil {
 				attributes = append(attributes, "executor_principal", check.Connection.Identity.PrincipalID)
 			}
@@ -101,6 +96,19 @@ func (s *Service) Call(ctx context.Context, caller identity.Caller, tool string,
 			logger = slog.Default()
 		}
 		logger.Info("agent service request", attributes...)
+	}
+	defer func() {
+		outcome := "succeeded"
+		if status >= 400 {
+			outcome = "provider_error"
+		}
+		if err != nil {
+			outcome = err.Error()
+			if typed, ok := err.(*ToolError); ok {
+				typed.CorrelationID = correlation
+			}
+		}
+		logEvent("completed", outcome)
 	}()
 	if err = ValidateToolArguments(tool, arguments); err != nil {
 		return nil, &ToolError{Code: "invalid_request"}
@@ -145,7 +153,11 @@ func (s *Service) Call(ctx context.Context, caller identity.Caller, tool string,
 	if e != nil {
 		return nil, &ToolError{Code: "invalid_request"}
 	}
-	service = input.Service
+	service, method = input.Service, input.Method
+	target, _ := providers.Target(input)
+	// Escaping can expand each validated path byte to three ASCII characters.
+	targetPath = agenttools.AuditText(target.EscapedPath(), 32768)
+	logEvent("started", "pending")
 	check, e = s.broker.Check(ctx, brokerclient.NewRequest(caller.Proof, service, input.ConnectionID, nil, nil))
 	if e != nil {
 		return nil, brokerError(e)
@@ -161,6 +173,7 @@ func (s *Service) Call(ctx context.Context, caller identity.Caller, tool string,
 		return nil, &ToolError{Code: "authorization_changed"}
 	}
 	stage = "provider"
+	logEvent("started", "pending")
 	response, e := s.providers.Execute(ctx, input, issued.AccessToken, correlation)
 	status = response.Status
 	requestIDs = response.RequestIDs

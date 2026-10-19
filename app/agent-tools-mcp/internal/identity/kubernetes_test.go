@@ -15,13 +15,24 @@ import (
 
 func TestAuthenticateValidatesCurrentWorkloadBinding(t *testing.T) {
 	for _, test := range []struct {
-		name    string
-		mutate  func(map[string]any, map[string]any, map[string]any, map[string]any)
-		allowed bool
+		name             string
+		namespaceVariant string
+		mutate           func(map[string]any, map[string]any, map[string]any, map[string]any)
+		allowed          bool
 	}{
 		{name: "pod bound without Entra identity", allowed: true},
+		{name: "missing namespace owner", namespaceVariant: "missing"},
+		{name: "duplicate namespace owner", namespaceVariant: "duplicate"},
+		{name: "deleting namespace", namespaceVariant: "deleting"},
+		{name: "unavailable namespace", namespaceVariant: "unavailable"},
 		{name: "wrong audience", mutate: func(review, pod, account, agent map[string]any) { review["audiences"] = []string{"other"} }},
 		{name: "no audiences", mutate: func(review, pod, account, agent map[string]any) { delete(review, "audiences") }},
+		{name: "recreated Agent", mutate: func(review, pod, account, agent map[string]any) {
+			agent["metadata"].(map[string]any)["uid"] = "new-instance"
+		}},
+		{name: "wrong Agent namespace", mutate: func(review, pod, account, agent map[string]any) {
+			agent["status"].(map[string]any)["namespace"] = "another-namespace"
+		}},
 		{name: "recreated pod", mutate: func(review, pod, account, agent map[string]any) { pod["metadata"].(map[string]any)["uid"] = "new-pod" }},
 		{name: "recreated account", mutate: func(review, pod, account, agent map[string]any) {
 			account["metadata"].(map[string]any)["uid"] = "new-account"
@@ -60,8 +71,23 @@ func TestAuthenticateValidatesCurrentWorkloadBinding(t *testing.T) {
 					result = pod
 				case "/api/v1/namespaces/cetirun-agent-a/serviceaccounts/openclaw-agent-a-cetirun":
 					result = account
-				case "/apis/cetirun.microsoft.com/v1alpha1/agents":
-					result = map[string]any{"items": []any{agent}}
+				case "/api/v1/namespaces/cetirun-agent-a":
+					owner := map[string]string{"apiVersion": "cetirun.microsoft.com/v1alpha1", "kind": "Agent", "name": "agent-a", "uid": "instance-uid"}
+					meta := map[string]any{"name": "cetirun-agent-a", "ownerReferences": []any{owner}}
+					switch test.namespaceVariant {
+					case "missing":
+						delete(meta, "ownerReferences")
+					case "duplicate":
+						meta["ownerReferences"] = []any{owner, owner}
+					case "deleting":
+						meta["deletionTimestamp"] = "2026-10-10T00:00:00Z"
+					case "unavailable":
+						http.Error(writer, "unavailable", http.StatusServiceUnavailable)
+						return
+					}
+					result = map[string]any{"metadata": meta}
+				case "/apis/cetirun.microsoft.com/v1alpha1/agents/agent-a":
+					result = agent
 				default:
 					t.Errorf("unexpected path %s", request.URL.Path)
 					http.NotFound(writer, request)

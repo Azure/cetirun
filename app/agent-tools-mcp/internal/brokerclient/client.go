@@ -6,24 +6,25 @@ package brokerclient
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
-	"crypto/x509"
 	"encoding/json"
 	"errors"
-	"github.com/Azure/CetiRun/app/internal/agenttools"
 	"io"
 	"net/http"
 	"net/url"
-	"os"
 	"strings"
 	"time"
+
+	"github.com/Azure/CetiRun/app/internal/agenttools"
+	"github.com/Azure/CetiRun/app/internal/tlsreload"
 )
 
 const ContractVersion = agenttools.ContractVersion
 
 type Client struct {
-	baseURL *url.URL
-	http    *http.Client
+	tls       *tlsreload.Reloader
+	transport *tlsreload.Transport
+	baseURL   *url.URL
+	http      *http.Client
 }
 type Request = agenttools.Request
 type Connection = agenttools.Connection
@@ -62,19 +63,13 @@ func NewMutualTLS(baseURL *url.URL, caFile, certFile, keyFile string) (*Client, 
 	if err != nil {
 		return nil, err
 	}
-	certificate, err := tls.LoadX509KeyPair(certFile, keyFile)
+	material, err := tlsreload.New(tlsreload.Files{Certificate: certFile, Key: keyFile, CA: caFile})
 	if err != nil {
 		return nil, errors.New("Broker client identity is unavailable")
 	}
-	ca, err := os.ReadFile(caFile)
-	if err != nil {
-		return nil, errors.New("Broker TLS trust is unavailable")
-	}
-	roots := x509.NewCertPool()
-	if !roots.AppendCertsFromPEM(ca) {
-		return nil, errors.New("Broker TLS trust is invalid")
-	}
-	client.http.Transport = &http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS13, RootCAs: roots, Certificates: []tls.Certificate{certificate}}}
+	client.tls = material
+	client.transport = material.ClientTransport()
+	client.http.Transport = client.transport
 	return client, nil
 }
 
@@ -109,6 +104,9 @@ func (c *Client) call(ctx context.Context, path string, input any, output any) e
 	}
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Accept", "application/json")
+	if id := agenttools.Correlation(ctx); id != "" {
+		request.Header.Set("X-Correlation-ID", id)
+	}
 	response, err := c.http.Do(request)
 	if err != nil {
 		return &Error{Code: "dependency_unavailable"}
@@ -141,4 +139,11 @@ func safeCode(code string) string {
 
 func NewRequest(proof, service, connectionID string, bindingRevision, connectionRevision *uint64) Request {
 	return Request{CallerProof: strings.TrimSpace(proof), Service: service, ConnectionID: connectionID, BindingRevision: bindingRevision, ConnectionRevision: connectionRevision, ContractVersion: ContractVersion}
+}
+
+// RunTLSReload keeps mounted Broker identity and trust current until shutdown.
+func (c *Client) RunTLSReload(ctx context.Context) {
+	if c.tls != nil {
+		c.tls.Run(ctx, c.transport.CloseIdleConnections)
+	}
 }

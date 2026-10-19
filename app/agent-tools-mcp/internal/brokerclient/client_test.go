@@ -25,6 +25,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/Azure/CetiRun/app/internal/agenttools"
 )
 
 const (
@@ -37,6 +39,9 @@ func TestNewMutualTLSLoadsFilesAndRequiresClientCertificate(t *testing.T) {
 	var handled atomic.Int32
 	server := newMutualTLSServer(t, fixture, http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		handled.Add(1)
+		if request.Header.Get("X-Correlation-ID") != "mcp-correlation" {
+			t.Error("MCP correlation did not reach Broker")
+		}
 		if request.TLS == nil || len(request.TLS.PeerCertificates) == 0 {
 			t.Error("Broker accepted a request without a client certificate")
 		}
@@ -60,7 +65,7 @@ func TestNewMutualTLSLoadsFilesAndRequiresClientCertificate(t *testing.T) {
 	if err != nil {
 		t.Fatal("NewMutualTLS rejected generated certificate files")
 	}
-	response, err := client.List(context.Background(), testCallerProof)
+	response, err := client.List(agenttools.WithCorrelation(context.Background(), "mcp-correlation"), testCallerProof)
 	if err != nil || response.InstanceUID != "instance-uid" {
 		t.Fatal("mutual TLS Broker request failed")
 	}

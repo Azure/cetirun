@@ -60,3 +60,38 @@ class AgentToolsMCPChartTests(unittest.TestCase):
             self.assertEqual(env["TOOLS_MCP_CA_SECRET_NAME"], "tools-ca")
             self.assertIn("AGENT_ID_BROKER_URL", env)
             self.assertEqual(env["AGENT_ID_ENABLED"], "false")
+
+    def test_broker_identity_modes_control_sdk_and_configuration(self):
+        chart = ROOT / "app/cetirun-agent-broker/chart"
+        common = [
+            "agentIdentity.tenantId=11111111-1111-1111-1111-111111111111",
+            "agentIdentity.encryptionClientId=22222222-2222-2222-2222-222222222222",
+            "agentIdentity.keyVaultKeyUrl=https://example.vault.azure.net/keys/cache",
+            "agentIdentity.redirectUri=https://portal.example.com/api/v1/connections/callback",
+            "agentIdentity.portalOrigin=https://portal.example.com",
+            "agentIdentity.portalBaseUrl=https://portal.example.com",
+            "istio.revision=asm-example", "istio.sidecarInjection=true",
+        ]
+        for autonomous, delegated in ((False, False), (True, False), (False, True), (True, True)):
+            with self.subTest(autonomous=autonomous, delegated=delegated):
+                flags = common + [
+                    f"identityModes.azureAgent.enabled={str(autonomous).lower()}",
+                    f"identityModes.microsoftDelegated.enabled={str(delegated).lower()}",
+                ]
+                if autonomous or delegated:
+                    flags.append("agentIdentity.blueprintClientId=33333333-3333-3333-3333-333333333333")
+                if delegated:
+                    flags.append("agentIdentity.authorizationClientId=44444444-4444-4444-4444-444444444444")
+                extra = tuple(arg for flag in flags for arg in ("--set", flag))
+                rendered = self.render(chart, chart / "values.yaml", "credentials", extra)
+                self.assertEqual(rendered.returncode, 0, rendered.stderr)
+                objects = [value for value in yaml.safe_load_all(rendered.stdout) if value]
+                pod = next(v for v in objects if v["kind"] == "Deployment")["spec"]["template"]["spec"]
+                self.assertEqual(any(c["name"] == "auth-sdk" for c in pod["containers"]), delegated)
+                self.assertEqual(any(v["name"] == "auth-sdk-keys" for v in pod["volumes"]), delegated)
+                env = {value["name"]: value.get("value") for value in pod["containers"][0]["env"]}
+                self.assertEqual(env["AZURE_AGENT_ENABLED"], str(autonomous).lower())
+                self.assertEqual(env["MICROSOFT_DELEGATED_ENABLED"], str(delegated).lower())
+                if autonomous or delegated:
+                    invalid = self.render(chart, chart / "values.yaml", "credentials", (*extra, "--set", "agentIdentity.blueprintClientId="))
+                    self.assertNotEqual(invalid.returncode, 0)

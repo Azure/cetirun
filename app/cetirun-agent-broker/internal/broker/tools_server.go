@@ -148,6 +148,8 @@ func (s *Server) connectionDelete(w http.ResponseWriter, r *http.Request) {
 			writeAPIError(w, 409, "connection_in_use", "Disconnect this account from its Agents before removing it", correlation)
 			return
 		}
+		auditTarget(r, record.Connection.ID, "", "")
+		auditMutation(r)
 		record.Deleted, record.Credential, record.Transaction = true, nil, nil
 		record.Connection.Status, record.Connection.Services, record.Connection.AccountDisplay, record.Connection.AccountID = "disconnected", nil, "", ""
 		record.Connection.Revision++
@@ -158,6 +160,7 @@ func (s *Server) connectionDelete(w http.ResponseWriter, r *http.Request) {
 			writeAPIError(w, http.StatusServiceUnavailable, "dependency_unavailable", "Connection could not be removed", correlation)
 			return
 		}
+		auditCommit(r)
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}

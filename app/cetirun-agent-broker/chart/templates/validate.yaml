@@ -1,7 +1,9 @@
 {{- $identity := .Values.agentIdentity -}}
-{{- range $name, $value := dict "tenantId" $identity.tenantId "blueprintClientId" $identity.blueprintClientId "authorizationClientId" $identity.authorizationClientId "encryptionClientId" $identity.encryptionClientId "keyVaultKeyUrl" $identity.keyVaultKeyUrl "redirectUri" $identity.redirectUri "portalOrigin" $identity.portalOrigin "portalBaseUrl" $identity.portalBaseUrl -}}
+{{- range $name, $value := dict "tenantId" $identity.tenantId "encryptionClientId" $identity.encryptionClientId "keyVaultKeyUrl" $identity.keyVaultKeyUrl "redirectUri" $identity.redirectUri "portalOrigin" $identity.portalOrigin "portalBaseUrl" $identity.portalBaseUrl -}}
 {{- if empty $value }}{{ fail (printf "agentIdentity.%s is required" $name) }}{{ end -}}
 {{- end -}}
+{{- if and (or .Values.identityModes.azureAgent.enabled .Values.identityModes.microsoftDelegated.enabled) (empty $identity.blueprintClientId) }}{{ fail "agentIdentity.blueprintClientId is required for enabled Entra modes" }}{{ end -}}
+{{- if and .Values.identityModes.microsoftDelegated.enabled (empty $identity.authorizationClientId) }}{{ fail "agentIdentity.authorizationClientId is required for Microsoft delegated mode" }}{{ end -}}
 {{- if not (hasPrefix "https://" $identity.redirectUri) }}{{ fail "agentIdentity.redirectUri must use HTTPS" }}{{ end -}}
 {{- if not (hasPrefix "https://" $identity.portalOrigin) }}{{ fail "agentIdentity.portalOrigin must use HTTPS" }}{{ end -}}
 {{- if not (hasPrefix "https://" $identity.portalBaseUrl) }}{{ fail "agentIdentity.portalBaseUrl must use HTTPS" }}{{ end -}}

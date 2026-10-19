@@ -274,6 +274,9 @@ func (c *Client) Execute(ctx context.Context, input Request, token, correlation 
 	for name, value := range input.Headers {
 		request.Header.Set(name, value)
 	}
+	// A platform tracing header is sent for every service. Providers may ignore
+	// it; their response request IDs remain the external lookup reference.
+	request.Header.Set("X-CetiRun-Correlation-ID", correlation)
 	profile, _ := agenttools.LookupService(input.Service)
 	if profile.Provider == "azure" {
 		request.Header.Set("x-ms-client-request-id", correlation)

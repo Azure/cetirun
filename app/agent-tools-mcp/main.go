@@ -5,7 +5,6 @@ package main
 
 import (
 	"context"
-	"crypto/tls"
 	"log"
 	"net/http"
 	"os"
@@ -18,6 +17,7 @@ import (
 	"github.com/Azure/CetiRun/app/agent-tools-mcp/internal/identity"
 	"github.com/Azure/CetiRun/app/agent-tools-mcp/internal/mcp"
 	"github.com/Azure/CetiRun/app/agent-tools-mcp/internal/tools"
+	"github.com/Azure/CetiRun/app/internal/tlsreload"
 )
 
 func main() {
@@ -37,6 +37,15 @@ func main() {
 		log.Printf("Broker client error: %v", err)
 		os.Exit(1)
 	}
+	material, err := tlsreload.New(tlsreload.Files{Certificate: cfg.TLSCertFile, Key: cfg.TLSKeyFile})
+	if err != nil {
+		log.Printf("TLS configuration error: %v", err)
+		os.Exit(1)
+	}
+	lifecycle, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	go material.Run(lifecycle, nil)
+	go broker.RunTLSReload(lifecycle)
 	service := tools.New(kube, broker, cfg)
 	server := &http.Server{
 		Addr:              cfg.ListenAddress,
@@ -45,20 +54,18 @@ func main() {
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      35 * time.Second,
 		IdleTimeout:       60 * time.Second,
-		TLSConfig:         &tls.Config{MinVersion: tls.VersionTLS12},
+		TLSConfig:         material.ServerConfig(false),
 	}
 
 	go func() {
 		log.Printf("agent tools MCP listening on %s", cfg.ListenAddress)
-		if err := server.ListenAndServeTLS(cfg.TLSCertFile, cfg.TLSKeyFile); err != nil && err != http.ErrServerClosed {
+		if err := server.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {
 			log.Printf("server error: %v", err)
 			os.Exit(1)
 		}
 	}()
 
-	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
-	<-stop
+	<-lifecycle.Done()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := server.Shutdown(ctx); err != nil {

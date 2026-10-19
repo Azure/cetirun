@@ -4,20 +4,23 @@
 package broker
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"html/template"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/Azure/CetiRun/app/internal/agenttools"
 )
 
 const maxRequestBody = 64 << 10
 
 type Server struct {
+	logger    *slog.Logger
 	cfg       Config
 	store     *kubeClient
 	oauth     *oauthClient
@@ -39,25 +42,16 @@ func NewServer(cfg Config) (*Server, error) {
 	return server, nil
 }
 
-func (s *Server) Handler() http.Handler { return requestSecurityHeaders(s.mux) }
+func (s *Server) Handler() http.Handler { return requestSecurityHeaders(s.auditManagement(s.mux)) }
 
-func (s *Server) TLSHandler() http.Handler { return requestSecurityHeaders(s.tlsMux) }
+func (s *Server) TLSHandler() http.Handler {
+	return requestSecurityHeaders(s.auditManagement(s.tlsMux))
+}
 
 func (s *Server) routes() {
 	s.mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
-	s.mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
-		if s.authSDK == nil {
-			writeAPIError(w, http.StatusServiceUnavailable, "dependency_unavailable", "Auth SDK is unavailable", correlationID(r))
-			return
-		}
-		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
-		defer cancel()
-		if err := s.authSDK.ready(ctx); err != nil {
-			writeAPIError(w, http.StatusServiceUnavailable, "dependency_unavailable", "Auth SDK is unavailable", correlationID(r))
-			return
-		}
-		w.WriteHeader(http.StatusNoContent)
-	})
+	// Provider availability is checked by the relevant request, not Pod readiness.
+	s.mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
 	s.mux.HandleFunc("DELETE /operator/v1/instances/{uid}/authorization", s.operatorDeleteAuthorization)
 	s.mux.Handle("GET /v1/connections", s.portalOnly(s.connectionsList))
 	s.mux.Handle("POST /v1/connections/start", s.portalOnly(s.connectionStart))
@@ -83,6 +77,8 @@ func requestSecurityHeaders(next http.Handler) http.Handler {
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "no-referrer")
+		r.Header.Set("X-Correlation-ID", correlationID(r))
+		w.Header().Set("X-Correlation-ID", r.Header.Get("X-Correlation-ID"))
 		next.ServeHTTP(w, r)
 	})
 }
@@ -92,6 +88,9 @@ func (s *Server) portalOnly(next http.HandlerFunc) http.Handler {
 		if !portalPrincipalAllowed(r.Header.Get("X-Forwarded-Client-Cert"), s.cfg) {
 			writeAPIError(w, http.StatusForbidden, "forbidden", "Verified Portal workload identity is required", correlationID(r))
 			return
+		}
+		if owner, err := ownerFromPortal(r); err == nil {
+			auditOwner(r, owner)
 		}
 		next(w, r)
 	})
@@ -117,10 +116,13 @@ func (s *Server) operatorDeleteAuthorization(w http.ResponseWriter, r *http.Requ
 		writeAPIError(w, http.StatusNotFound, "instance_not_found", "Instance not found", correlationID(r))
 		return
 	}
+	auditTarget(r, "", agent.UID, "")
+	auditMutation(r)
 	if err := s.store.deleteAgentRecords(r.Context(), agent); err != nil {
 		writeAPIError(w, http.StatusServiceUnavailable, "dependency_unavailable", "Binding state could not be revoked", correlationID(r))
 		return
 	}
+	auditCommit(r)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -253,7 +255,7 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, target any) bool {
 }
 
 func correlationID(r *http.Request) string {
-	if value := r.Header.Get("X-Correlation-ID"); value != "" && len(value) <= 128 {
+	if value := r.Header.Get("X-Correlation-ID"); value != "" && len(value) <= 128 && agenttools.AuditText(value, 128) == value {
 		return value
 	}
 	value, err := randomValue(16)

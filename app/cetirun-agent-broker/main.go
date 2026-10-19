@@ -4,15 +4,17 @@
 package main
 
 import (
-	"crypto/tls"
-	"crypto/x509"
+	"context"
 	"errors"
 	"log/slog"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/Azure/CetiRun/app/cetirun-agent-broker/internal/broker"
+	"github.com/Azure/CetiRun/app/internal/tlsreload"
 )
 
 func main() {
@@ -26,35 +28,50 @@ func main() {
 		slog.Error("initialize service", "error", err)
 		os.Exit(1)
 	}
-	server := &http.Server{Addr: cfg.ListenAddress, Handler: service.Handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second}
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	servers := []*http.Server{{Addr: cfg.ListenAddress, Handler: service.Handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second}}
 	if cfg.TLSCertFile != "" {
-		certificate, err := tls.LoadX509KeyPair(cfg.TLSCertFile, cfg.TLSKeyFile)
+		material, err := tlsreload.New(tlsreload.Files{Certificate: cfg.TLSCertFile, Key: cfg.TLSKeyFile, CA: cfg.TLSClientCAFile})
 		if err != nil {
-			slog.Error("load TLS certificate", "error", err)
+			slog.Error("load TLS material", "error", err)
 			os.Exit(1)
 		}
-		clientCAPEM, err := os.ReadFile(cfg.TLSClientCAFile)
-		if err != nil {
-			slog.Error("read TLS client CA", "error", err)
-			os.Exit(1)
-		}
-		clientCAs := x509.NewCertPool()
-		if !clientCAs.AppendCertsFromPEM(clientCAPEM) {
-			slog.Error("load TLS client CA", "error", errors.New("no certificates found"))
-			os.Exit(1)
-		}
-		tlsServer := &http.Server{Addr: cfg.TLSListenAddress, Handler: service.TLSHandler(), TLSConfig: &tls.Config{Certificates: []tls.Certificate{certificate}, ClientCAs: clientCAs, ClientAuth: tls.RequireAndVerifyClientCert, MinVersion: tls.VersionTLS12}, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second}
+		go material.Run(ctx, nil)
+		servers = append(servers, &http.Server{Addr: cfg.TLSListenAddress, Handler: service.TLSHandler(), TLSConfig: material.ServerConfig(true), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second})
+	}
+	go service.RunMaintenance(ctx)
+	failures := make(chan error, len(servers))
+	for _, server := range servers {
 		go func() {
-			slog.Info("Agent Identity Broker TLS listener started", "address", cfg.TLSListenAddress)
-			if tlsErr := tlsServer.ListenAndServeTLS("", ""); tlsErr != nil && tlsErr != http.ErrServerClosed {
-				slog.Error("serve TLS", "error", tlsErr)
-				os.Exit(1)
+			slog.Info("Agent Identity Broker listener started", "address", server.Addr)
+			if server.TLSConfig != nil {
+				failures <- server.ListenAndServeTLS("", "")
+			} else {
+				failures <- server.ListenAndServe()
 			}
 		}()
 	}
-	slog.Info("Agent Identity Broker listening", "address", cfg.ListenAddress)
-	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		slog.Error("serve", "error", err)
+	failed := false
+	select {
+	case <-ctx.Done():
+	case err := <-failures:
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			slog.Error("serve", "error", err)
+			failed = true
+		}
+		stop()
+	}
+	shutdown, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	for _, server := range servers {
+		if err := server.Shutdown(shutdown); err != nil {
+			slog.Error("shutdown", "error", err)
+			_ = server.Close()
+			failed = true
+		}
+	}
+	if failed {
 		os.Exit(1)
 	}
 }

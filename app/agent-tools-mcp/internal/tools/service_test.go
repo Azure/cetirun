@@ -16,20 +16,23 @@ import (
 )
 
 type fakeBroker struct {
-	check       brokerclient.CheckResponse
-	issueChange func(*brokerclient.IssueResponse)
-	err         error
-	issued      int
+	check        brokerclient.CheckResponse
+	issueChange  func(*brokerclient.IssueResponse)
+	err          error
+	issued       int
+	correlations []string
 }
 
 func (f *fakeBroker) List(context.Context, string) (brokerclient.ListResponse, error) {
 	return brokerclient.ListResponse{InstanceUID: f.check.InstanceUID, Connections: []agenttools.Connection{f.check.Connection}, Bindings: []agenttools.Binding{f.check.Binding}, ContractVersion: agenttools.ContractVersion}, f.err
 }
-func (f *fakeBroker) Check(context.Context, brokerclient.Request) (brokerclient.CheckResponse, error) {
+func (f *fakeBroker) Check(ctx context.Context, _ brokerclient.Request) (brokerclient.CheckResponse, error) {
+	f.correlations = append(f.correlations, agenttools.Correlation(ctx))
 	return f.check, f.err
 }
-func (f *fakeBroker) Issue(_ context.Context, r brokerclient.Request) (brokerclient.IssueResponse, error) {
+func (f *fakeBroker) Issue(ctx context.Context, r brokerclient.Request) (brokerclient.IssueResponse, error) {
 	f.issued++
+	f.correlations = append(f.correlations, agenttools.Correlation(ctx))
 	if r.BindingRevision == nil || *r.BindingRevision != f.check.Binding.Revision || r.ConnectionRevision == nil || *r.ConnectionRevision != f.check.Connection.Revision {
 		panic("revision not forwarded")
 	}
@@ -54,7 +57,7 @@ func (f *fakeProvider) Execute(_ context.Context, _ providers.Request, token, id
 }
 func serviceFixture() (*Service, *fakeBroker, *fakeProvider, identity.Caller, *bytes.Buffer) {
 	caller := identity.Caller{InstanceUID: "agent-uid", Proof: "private-workload-proof"}
-	broker := &fakeBroker{check: brokerclient.CheckResponse{InstanceUID: caller.InstanceUID, Service: "github", ContractVersion: agenttools.ContractVersion, Connection: agenttools.Connection{ID: "c", Mode: "delegated", Provider: "github", Status: "connected", AccountDisplay: "person@example.com", Services: []string{"github"}, Revision: 3}, Binding: agenttools.Binding{ID: "b", InstanceUID: caller.InstanceUID, ConnectionID: "c", Services: []string{"github"}, Enabled: true, Revision: 4}}}
+	broker := &fakeBroker{check: brokerclient.CheckResponse{InstanceUID: caller.InstanceUID, Service: "github", ExecutorAccountID: "stable-account-id", ContractVersion: agenttools.ContractVersion, Connection: agenttools.Connection{ID: "c", Mode: "delegated", Provider: "github", Status: "connected", AccountDisplay: "person@example.com", Services: []string{"github"}, Revision: 3}, Binding: agenttools.Binding{ID: "b", InstanceUID: caller.InstanceUID, ConnectionID: "c", Services: []string{"github"}, Enabled: true, Revision: 4}}}
 	provider := &fakeProvider{}
 	log := &bytes.Buffer{}
 	return &Service{broker: broker, providers: provider, logger: slog.New(slog.NewJSONHandler(log, nil))}, broker, provider, caller, log
@@ -110,5 +113,46 @@ func TestStableCatalogAndDynamicServiceDiscovery(t *testing.T) {
 	result, err := s.Call(context.Background(), caller, "services_list", map[string]any{})
 	if err != nil || len(result["services"].([]any)) != 0 {
 		t.Fatal("disabled binding remained discoverable")
+	}
+}
+
+func TestRESTAuditLifecycleAndPrivacy(t *testing.T) {
+	for _, unknown := range []bool{false, true} {
+		s, b, p, caller, log := serviceFixture()
+		args := arguments()
+		args["query"] = map[string]any{"q": "private-query"}
+		args["headers"] = map[string]string{"If-Match": "private-header"}
+		if unknown {
+			p.err = &providers.Error{Code: "execution_unknown", Unknown: true}
+		}
+		result, err := s.Call(context.Background(), caller, "service_request", args)
+		id := ""
+		if unknown {
+			if err == nil {
+				t.Fatal("unknown outcome lost")
+			}
+			id = err.(*ToolError).CorrelationID
+		} else {
+			if err != nil {
+				t.Fatal(err)
+			}
+			id = result["correlation_id"].(string)
+		}
+		if len(b.correlations) != 2 || b.correlations[0] != id || b.correlations[1] != id {
+			t.Fatal("Broker calls did not share correlation")
+		}
+		for _, expected := range []string{`"method":"POST"`, `"path":"/repos/example/project/issues"`, `"duration_ms":`, `"phase":"started"`, `"phase":"completed"`, `"executor_account_id":"stable-account-id"`} {
+			if !strings.Contains(log.String(), expected) {
+				t.Fatalf("audit missing %s", expected)
+			}
+		}
+		for _, private := range []string{"private-query", "private-header", "private-body", "synthetic-private-token", "private-workload-proof"} {
+			if strings.Contains(log.String(), private) {
+				t.Fatalf("audit leaked %s", private)
+			}
+		}
+		if unknown && !strings.Contains(log.String(), `"outcome":"execution_unknown"`) {
+			t.Fatal("unknown outcome unaudited")
+		}
 	}
 }

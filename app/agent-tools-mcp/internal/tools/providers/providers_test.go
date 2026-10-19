@@ -41,6 +41,9 @@ func TestArbitraryServiceRoutesAndProviderAuthority(t *testing.T) {
 				if r.URL.Host != item.host || r.URL.Path != item.fullPath || r.Method != item.method || r.Header.Get("Authorization") != "Bearer synthetic-token" || r.GetBody != nil {
 					t.Fatalf("unexpected service request: %s", r.URL)
 				}
+				if r.Header.Get("X-CetiRun-Correlation-ID") != "correlation" {
+					t.Error("provider request lost platform correlation")
+				}
 				return jsonResponse(403, `{"error":{"code":"ProviderDenied"},"nextPageToken":"opaque-page"}`), nil
 			}))
 			input := Request{ConnectionID: "c", Service: item.service, Path: item.path, Method: item.method, Query: map[string]any{"pageToken": "a+b /?"}}
@@ -58,7 +61,7 @@ func TestRejectsUnsafeRequestBeforeCredentialUse(t *testing.T) {
 		r.Path = p
 		tests = append(tests, r)
 	}
-	for _, h := range []string{"Authorization", "Host", "Cookie", "X-Forwarded-Host", "Proxy-Authorization", "Content-Type", "Accept", "Idempotency-Key"} {
+	for _, h := range []string{"Authorization", "Host", "Cookie", "X-Forwarded-Host", "Proxy-Authorization", "Content-Type", "Accept", "Idempotency-Key", "X-CetiRun-Correlation-ID"} {
 		r := restRequest()
 		r.Headers = map[string]string{h: "value"}
 		tests = append(tests, r)

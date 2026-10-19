@@ -94,6 +94,8 @@ func newAuthorizationFixture(t *testing.T, provider, service string) *authorizat
 			}}), nil
 		}
 		switch path {
+		case "/api/v1/namespaces/agents":
+			return securityJSONResponse(t, http.StatusOK, map[string]any{"metadata": secretMetadata{Name: "agents", OwnerReferences: []ownerReference{{APIVersion: "cetirun.microsoft.com/v1alpha1", Kind: "Agent", Name: "agent", UID: "11111111-1111-1111-1111-111111111111"}}}}), nil
 		case "/api/v1/namespaces/agents/serviceaccounts/openclaw-agent-cetirun":
 			return securityJSONResponse(t, http.StatusOK, map[string]any{"metadata": map[string]string{"uid": "service-account-uid"}}), nil
 		case "/api/v1/namespaces/agents/pods/agent-pod":

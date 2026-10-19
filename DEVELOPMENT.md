@@ -96,6 +96,7 @@ report the narrower validation scope.
 ```bash
 go -C app/internal test ./... -count=1
 go -C app/internal vet ./...
+go -C app/internal test -race ./agenttools ./tlsreload -count=1
 ```
 
 The root `make go-test` and `make go-lint` targets include this module.
@@ -232,7 +233,8 @@ Held Sandbox and Custom runtimes do not support this integration and fail closed
 
 See [Agent Tools MCP](app/agent-tools-mcp/README.md) and the
 [authorization guide](site/content/en/docs/guides/agent-identity.md) for the
-TLS, Broker service identity, CA distribution, and owner preauthorization setup.
+TLS reload, Broker service identity, CA distribution, and Agent connection
+binding setup.
 
 Custom Agent Identity requests are rejected before identity provisioning or
 workload preparation. The previous `cetirun-agent az rest` wrapper and its

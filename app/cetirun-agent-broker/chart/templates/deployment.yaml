@@ -41,6 +41,10 @@ spec:
             - name: https
               containerPort: 8443
           env:
+            - name: AZURE_AGENT_ENABLED
+              value: {{ .Values.identityModes.azureAgent.enabled | quote }}
+            - name: MICROSOFT_DELEGATED_ENABLED
+              value: {{ .Values.identityModes.microsoftDelegated.enabled | quote }}
             - name: ENTRA_TENANT_ID
               value: {{ .Values.agentIdentity.tenantId | quote }}
             - name: AGENT_ID_BLUEPRINT_CLIENT_ID
@@ -134,6 +138,7 @@ spec:
             readOnlyRootFilesystem: true
           resources:
             {{- toYaml .Values.resources.broker | nindent 12 }}
+        {{- if .Values.identityModes.microsoftDelegated.enabled }}
         - name: auth-sdk
           image: {{ include "cetirun-agent-broker.image" (dict "repository" .Values.authSDK.repository "tag" .Values.authSDK.tag "digest" .Values.authSDK.digest "defaultTag" "1.1.2-azurelinux3.0-distroless") | quote }}
           imagePullPolicy: {{ .Values.authSDK.pullPolicy }}
@@ -184,7 +189,9 @@ spec:
             runAsGroup: 1654
           resources:
             {{- toYaml .Values.resources.authSDK | nindent 12 }}
+        {{- end }}
       volumes:
+        {{- if .Values.identityModes.microsoftDelegated.enabled }}
         - name: auth-sdk-keys
           emptyDir:
             medium: Memory
@@ -193,6 +200,7 @@ spec:
           emptyDir:
             medium: Memory
             sizeLimit: 16Mi
+        {{- end }}
         - name: kubernetes-api-credential
           projected:
             defaultMode: 0440

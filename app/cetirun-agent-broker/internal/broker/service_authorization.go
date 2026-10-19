@@ -36,7 +36,7 @@ func bindingView(b ConnectionBinding) agenttools.Binding {
 }
 
 func serviceAuthorization(identity workloadIdentity, connection *connectionRecord, binding ConnectionBinding, service string) agenttools.CheckResponse {
-	return agenttools.CheckResponse{InstanceUID: identity.Agent.UID, Connection: connectionView(connection.Connection), Binding: bindingView(binding), Service: service, ContractVersion: agenttools.ContractVersion}
+	return agenttools.CheckResponse{ExecutorAccountID: connection.Connection.AccountID, InstanceUID: identity.Agent.UID, Connection: connectionView(connection.Connection), Binding: bindingView(binding), Service: service, ContractVersion: agenttools.ContractVersion}
 }
 
 func (s *Server) checkServiceAuthorization(ctx context.Context, input serviceRequest, requireVersions bool) (workloadIdentity, *connectionRecord, ConnectionBinding, error) {
@@ -79,6 +79,9 @@ func (s *Server) checkServiceAuthorization(ctx context.Context, input serviceReq
 		return fail("dependency_unavailable", 503)
 	}
 	c := connection.Connection
+	if !s.cfg.connectionModeEnabled(c) {
+		return fail("dependency_unavailable", 503)
+	}
 	if !sameOwner(c.Owner, owner) || !s.connectionMatchesAgent(c, identity.Agent) || c.Provider != service.Provider || !contains(connectionServices(c), input.Service) {
 		return fail("permission_denied", 403)
 	}
@@ -113,7 +116,7 @@ func (s *Server) toolAuthorizationsList(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	owner := Owner{identity.Agent.OwnerTenantID, identity.Agent.OwnerObjectID}
-	bindings, err := s.store.listBindings(r.Context(), owner, identity.Agent.UID)
+	bindings, err := s.store.listBindings(r.Context(), owner, identity.Agent.UID, identity.Agent.Name)
 	if err != nil {
 		writeAPIError(w, 503, "dependency_unavailable", "Binding storage is unavailable", correlationID(r))
 		return
@@ -150,6 +153,7 @@ func (s *Server) toolAuthorizationsCheck(w http.ResponseWriter, r *http.Request)
 		writeToolAuthorizationError(w, r, err)
 		return
 	}
+	auditTarget(r, connection.Connection.ID, identity.Agent.UID, binding.ID)
 	writeJSON(w, http.StatusOK, serviceAuthorization(identity, connection, binding, input.Service))
 }
 
@@ -163,6 +167,7 @@ func (s *Server) toolCredentialsIssue(w http.ResponseWriter, r *http.Request) {
 		writeToolAuthorizationError(w, r, err)
 		return
 	}
+	auditTarget(r, connection.Connection.ID, identity.Agent.UID, binding.ID)
 	token, expiresAt, err := s.issueServiceCredential(r.Context(), connection, input.Service, identity.Agent)
 	if err != nil {
 		code, status := "dependency_unavailable", 503
