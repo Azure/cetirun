@@ -87,17 +87,20 @@ data:
       # configured here and those added later, such as the GitHub Copilot
       # routes the CetiRun operator registers for each Agent, and route only to
       # those that answered. Each probe is a real call. LiteLLM's auto routers
-      # are not probed themselves. A probe answered with 429 or 408 counts as
-      # healthy, since cooldowns already handle those on live requests. A
-      # result is trusted for two intervals.
+      # are not probed themselves. A probe answered with 429 or 408 is ignored
+      # for routing: the deployment keeps its previous state and no cooldown
+      # starts, though /health lists it as unhealthy. A result is trusted for
+      # two intervals. At most health_check_concurrency probes run at once.
       background_health_checks: true
       health_check_interval: {{ $interval }}
+      health_check_concurrency: {{ int $router.healthChecks.concurrency }}
       enable_health_check_routing: true
       health_check_staleness_threshold: {{ mul 2 $interval }}
       health_check_ignore_transient_errors: true
       {{- if include "cetirun-ai-gateway.redisEnabled" . }}
       # One replica probes at a time, under a lock in Redis, and the others
-      # use its results (DEFAULT_SHARED_HEALTH_CHECK_TTL, set to the interval).
+      # use its results (DEFAULT_SHARED_HEALTH_CHECK_TTL, set to the interval,
+      # as is DEFAULT_SHARED_HEALTH_CHECK_LOCK_TTL so a long cycle keeps the lock).
       use_shared_health_check: true
       {{- end }}
       {{- end }}
@@ -115,6 +118,11 @@ data:
       # retrying twice itself would turn into nine. Retrying a 429 makes rate
       # limiting worse. Errors go straight back to the caller, which decides.
       num_retries: 0
+      # budgetExceededStatusCode: the status of a request refused because the
+      # key's or team's budget is exhausted. LiteLLM's default, 422, makes
+      # agents report a malformed request; 429 makes them retry it as a rate
+      # limit.
+      budget_exceeded_status_code: {{ include "cetirun-ai-gateway.budgetExceededStatusCode" . }}
       {{- if .Values.blockUnpricedModels }}
       # A model missing from LiteLLM's price table costs zero, and budget checks
       # are skipped for zero-cost models, so a budget on a key silently does

@@ -470,8 +470,46 @@ through this, with fromJson.
 {{- $_ = set $settings "deploymentAffinity" (dig "deploymentAffinity" true $router) -}}
 {{- $_ = set $settings "fallbacks" (dig "fallbacks" list $router) -}}
 {{- $_ = set $settings "contextWindowFallbacks" (dig "contextWindowFallbacks" list $router) -}}
-{{- $_ = set $settings "healthChecks" (dict "enabled" (dig "enabled" true $health) "intervalSeconds" (dig "intervalSeconds" 300 $health)) -}}
+{{- $_ = set $settings "healthChecks" (dict "enabled" (dig "enabled" true $health) "intervalSeconds" (dig "intervalSeconds" 300 $health) "concurrency" (dig "concurrency" 8 $health)) -}}
 {{- toJson $settings -}}
+{{- end }}
+
+{{/*
+The status of a request refused for an exhausted budget, 402 unless set, for
+the same reason as cetirun-ai-gateway.router: a release installed before the
+setting upgrades with --reuse-values.
+*/}}
+{{- define "cetirun-ai-gateway.budgetExceededStatusCode" -}}
+{{- if kindIs "invalid" .Values.budgetExceededStatusCode -}}
+402
+{{- else -}}
+{{- .Values.budgetExceededStatusCode -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+Whether to create the Gateway's PodDisruptionBudget: on unless turned off, and
+only above one replica, where it cannot block the drain of the only one.
+*/}}
+{{- define "cetirun-ai-gateway.podDisruptionBudgetEnabled" -}}
+{{- $pdb := .Values.podDisruptionBudget | default dict -}}
+{{- if and (dig "enabled" true $pdb) (gt (int .Values.replicaCount) 1) }}true{{ end }}
+{{- end }}
+
+{{/*
+A budget status the agents were measured with, and a positive probe
+concurrency: LiteLLM treats 0 as no limit.
+*/}}
+{{- define "cetirun-ai-gateway.validateLimits" -}}
+{{- $code := include "cetirun-ai-gateway.budgetExceededStatusCode" . -}}
+{{- if not (has $code (list "402" "422" "429")) }}
+{{- fail (printf "budgetExceededStatusCode %s is not supported. Use 402 (agents report exhausted credits), 422 (agents report a malformed request) or 429 (agents retry it as a rate limit)." $code) }}
+{{- end }}
+{{- $router := include "cetirun-ai-gateway.router" . | fromJson -}}
+{{- $concurrency := $router.healthChecks.concurrency -}}
+{{- if or (not (kindIs "float64" $concurrency)) (lt (float64 $concurrency) 1.0) (ne (float64 $concurrency) (float64 (int $concurrency))) }}
+{{- fail (printf "router.healthChecks.concurrency %v is not a positive whole number. It limits how many probes run at once." $concurrency) }}
+{{- end }}
 {{- end }}
 
 {{/*
