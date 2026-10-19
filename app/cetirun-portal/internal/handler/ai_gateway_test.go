@@ -285,6 +285,21 @@ func TestInstanceResponseDescribesAIGateway(t *testing.T) {
 		t.Fatalf("placeholder-only response = %+v", gw)
 	}
 
+	// Copilot models that are a shared model too are reported as such, once;
+	// those whose name a shared model already has are reported as skipped.
+	merged := routedAgent()
+	merged.Status.AIGateway.Models = []string{"gpt-6", "o-mini"}
+	merged.Status.AIGateway.Copilot = &cetirunv1alpha1.AIGatewayCopilotStatus{
+		Phase: cetirunv1alpha1.AIGatewayCopilotPhaseReady, Models: []string{"gpt-6", "o-mini"}, Skipped: []string{"gpt-5"},
+		Routes: []cetirunv1alpha1.AIGatewayCopilotRoute{
+			{Model: "gpt-6", Name: "gpt-6", Shared: true}, {Model: "gpt-6-preview", Name: "gpt-6", Shared: true}, {Model: "o-mini", Name: "o-mini"},
+		},
+	}
+	if gw := aiGatewayResponse(merged); strings.Join(gw.Models, ",") != "gpt-6,o-mini" || !slices.Equal(gw.Copilot.Shared, []string{"gpt-6"}) ||
+		!slices.Equal(gw.Copilot.Skipped, []string{"gpt-5"}) {
+		t.Fatalf("merged response = %+v copilot %+v", gw, gw.Copilot)
+	}
+
 	unrouted := sampleInstance()
 	unrouted.Spec.GatewayTokenSecretRef = "gateway-token"
 	fc = newFakeClient(unrouted, gatewayTokenSecret("cetirun-alice"))

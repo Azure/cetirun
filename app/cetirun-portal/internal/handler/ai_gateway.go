@@ -44,10 +44,17 @@ type AIGatewayCopilotResponse struct {
 	// Phase is SignInRequired, Starting, Ready or Degraded.
 	Phase  string `json:"phase,omitempty"`
 	Reason string `json:"reason,omitempty"`
-	// Models are the registered Copilot models, as the Agent names them.
+	// Models are the registered Copilot models, as the Agent names them: a
+	// shared model's name or the Copilot model's own ID.
 	Models []string `json:"models"`
 	// Unpriced are the account's models left out for lack of a price.
 	Unpriced []string `json:"unpriced,omitempty"`
+	// Shared are the shared models the Agent's Copilot account serves too:
+	// requests for them may go to either.
+	Shared []string `json:"shared,omitempty"`
+	// Skipped are the account's models left out because a shared model
+	// already has their name.
+	Skipped []string `json:"skipped,omitempty"`
 }
 
 // AIGatewayCatalogResponse is the JSON response for GET /api/v1/ai-gateway/catalog.
@@ -104,6 +111,12 @@ func aiGatewayResponse(instance *cetirunv1alpha1.Agent) *AIGatewayResponse {
 			Reason:   copilot.Reason,
 			Models:   append([]string{}, copilot.Models...),
 			Unpriced: append([]string(nil), copilot.Unpriced...),
+			Skipped:  append([]string(nil), copilot.Skipped...),
+		}
+		for _, route := range copilot.Routes {
+			if route.Shared && !slices.Contains(resp.Copilot.Shared, route.Name) {
+				resp.Copilot.Shared = append(resp.Copilot.Shared, route.Name)
+			}
 		}
 	}
 	return resp

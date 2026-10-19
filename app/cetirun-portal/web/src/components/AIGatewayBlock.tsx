@@ -202,9 +202,19 @@ export function AIGatewayBlock({ instance }: { instance: Instance }) {
               Copilot models could not be registered ({copilot.reason}). Signing in again may help.
             </Text>
           )}
+          {copilot.shared && copilot.shared.length > 0 && (
+            <Text size={200} style={{ color: tokens.colorNeutralForeground3 }}>
+              Also served by your Copilot subscription: {copilot.shared.join(", ")}
+            </Text>
+          )}
           {copilot.unpriced && copilot.unpriced.length > 0 && (
             <Text size={200} style={{ color: tokens.colorNeutralForeground3 }}>
               Not offered because the Gateway has no price for them: {copilot.unpriced.join(", ")}
+            </Text>
+          )}
+          {copilot.skipped && copilot.skipped.length > 0 && (
+            <Text size={200} style={{ color: tokens.colorNeutralForeground3 }}>
+              Not offered because a shared model already has their name: {copilot.skipped.join(", ")}
             </Text>
           )}
           <div>

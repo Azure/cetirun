@@ -81,6 +81,10 @@ export interface AIGatewayInfo {
     models: string[];
     /** Account models left out because the Gateway has no price for them. */
     unpriced?: string[];
+    /** Shared models the account serves too; requests for them may go to either. */
+    shared?: string[];
+    /** Account models left out because a shared model already has their name. */
+    skipped?: string[];
   };
 }
 
