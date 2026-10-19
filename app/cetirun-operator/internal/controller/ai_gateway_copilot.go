@@ -650,9 +650,9 @@ func (r *AgentReconciler) aiGatewayModelEntries(instance *cetirunv1alpha1.Agent)
 			})
 		}
 	}
-	requested := aiGatewayRequestedModel(instance)
+	requested, deploymentDefault := aiGatewayRequestedModel(instance), aiGatewayModelName(instance, r.AIGateway.DefaultModel)
 	sharedEntries, omitted := keepSharedModels(sharedEntries, aiGatewayMaxModels-len(copilotEntries),
-		append([]string{requested, r.AIGateway.DefaultModel}, merged...)...)
+		append([]string{requested, deploymentDefault}, merged...)...)
 	var shared, copilot []string
 	for _, entry := range sharedEntries {
 		shared = append(shared, entry.ID)
@@ -667,8 +667,8 @@ func (r *AgentReconciler) aiGatewayModelEntries(instance *cetirunv1alpha1.Agent)
 	switch {
 	case available(requested):
 		return entries, requested, omitted
-	case available(r.AIGateway.DefaultModel):
-		return entries, r.AIGateway.DefaultModel, omitted
+	case available(deploymentDefault):
+		return entries, deploymentDefault, omitted
 	case len(shared) > 0:
 		return entries, shared[0], omitted
 	case len(copilot) > 0:

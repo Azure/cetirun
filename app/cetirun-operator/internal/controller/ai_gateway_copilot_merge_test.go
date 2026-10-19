@@ -187,6 +187,13 @@ func TestReconcileAIGatewayCopilotJoinsTheSharedModelOfTheSameRealModel(t *testi
 		!slices.Contains(gateway.deletedModels, merged.ID) {
 		t.Fatalf("a changed routing replaces the route: %+v deleted %v", routes, gateway.deletedModels)
 	}
+
+	// A deployment default may name a Copilot model the earlier way too.
+	agent.Spec.Model = ""
+	r.AIGateway.DefaultModel = "copilot/gpt-4o-2024-11-20"
+	if _, def, _ := r.aiGatewayModelEntries(agent); def != "gpt-4o-2024-11-20" {
+		t.Fatalf("a copilot/<ID> deployment default names the model's route: %q", def)
+	}
 }
 
 func ptrFloat(value float64) *float64 { return &value }

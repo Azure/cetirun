@@ -255,10 +255,15 @@ func copilotModelName(copilot *cetirunv1alpha1.AIGatewayCopilotStatus, id string
 }
 
 // aiGatewayRequestedModel is the Agent's own choice of default model.
-// copilot/<ID>, the form Copilot models had before they took shared models'
-// names or their own IDs, names the Copilot model's route.
 func aiGatewayRequestedModel(instance *cetirunv1alpha1.Agent) string {
-	model := strings.TrimSpace(instance.Spec.Model)
+	return aiGatewayModelName(instance, instance.Spec.Model)
+}
+
+// aiGatewayModelName returns the name the Agent uses for a model it is
+// configured with. copilot/<ID>, the form Copilot models had before they took
+// shared models' names or their own IDs, names the Copilot model's route.
+func aiGatewayModelName(instance *cetirunv1alpha1.Agent, model string) string {
+	model = strings.TrimSpace(model)
 	if id, ok := strings.CutPrefix(model, aiGatewayCopilotModelPrefix); ok && instance.Status.AIGateway != nil {
 		if name := copilotModelName(instance.Status.AIGateway.Copilot, id); name != "" {
 			return name
