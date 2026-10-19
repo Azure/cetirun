@@ -274,6 +274,11 @@ class RequestLog(CustomLogger):
             "routing_tier": clip(routing.get("tier")),
             "routing_cause": clip(routing.get("cause")),
             "routing_score": first_number(routing.get("score")),
+            # A keyword or a prompt too long for the decided tier moved it up.
+            "routing_escalated": (
+                True if routing.get("escalated") is True or routing.get("context_escalated") is True else None
+            ),
+            "classifier_model": clip(routing.get("classifier_model")),
             "classifier_cost": first_number(routing.get("classifier_cost")),
             "duration_ms": milliseconds(start, end),
             "time_to_first_token_ms": milliseconds(start, payload.get("completionStartTime")) if stream else None,

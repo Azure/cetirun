@@ -384,6 +384,10 @@ class RequestLogTest(unittest.TestCase):
             "tier": "SIMPLE",
             "score": -0.15,
             "classifier_cost": 0.00002,
+            "classifier_model": "gpt-4o-mini",
+            "escalated": False,
+            "context_escalated": True,
+            "context_escalation_original_tier": "SIMPLE",
             "signals": ["simple (private question)"],
             "matched_keyword": "private question",
             "tier_litellm_params": {"api_key": "sk-not-for-the-log"},
@@ -396,13 +400,21 @@ class RequestLogTest(unittest.TestCase):
         self.assertEqual(record["routing_cause"], "heuristic_scorer")
         self.assertEqual(record["routing_score"], -0.15)
         self.assertEqual(record["classifier_cost"], 0.00002)
+        self.assertEqual(record["classifier_model"], "gpt-4o-mini")
+        self.assertIs(record["routing_escalated"], True)
         line = handler.line(payload)
         self.assertNotIn("private question", line)
         self.assertNotIn("sk-not-for-the-log", line)
 
+    def test_a_request_left_on_its_tier_is_not_marked_escalated(self):
+        payload = success_payload(model_group="auto")
+        payload["metadata"]["routing_decision"] = {"tier": "MEDIUM", "escalated": False, "context_escalated": False}
+        self.assertNotIn("routing_escalated", self.handler().record(payload))
+
     def test_a_call_without_a_router_has_no_routing_fields(self):
         record = self.handler().record(success_payload())
-        for name in ("routing_tier", "routing_cause", "routing_score", "classifier_cost", "call_origin"):
+        for name in ("routing_tier", "routing_cause", "routing_score", "classifier_cost", "classifier_model",
+                     "routing_escalated", "call_origin"):
             self.assertNotIn(name, record)
 
     def test_a_call_litellm_makes_itself_is_marked(self):

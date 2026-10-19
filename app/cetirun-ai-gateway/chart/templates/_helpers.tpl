@@ -270,9 +270,11 @@ price of the model the router picks, and budgets hold. A price above zero is
 required, so that LiteLLM never takes the router for a free model. A complexity
 router's tiers, default model and classifier model have to be models configured
 here: LiteLLM's own defaults name models this Gateway may not serve. Without a
-LiteLLM licence, at most one complexity router may define its own tiers or
-classifier prompt, and at most one may use classifier_type heuristic_v2: the
-proxy refuses to start with more.
+LiteLLM licence, LiteLLM 1.105.1 lets at most one complexity router claim each
+licensed capability: classifier_type heuristic_v2, classifier_type capability,
+classifier_type llm_v2, and its own tier_definitions or classifier prompt; the
+proxy refuses to start with more. reminder_markers, when a router sets them,
+have to be {open, close} pairs, as LiteLLM 1.105.1 requires.
 */}}
 {{- define "cetirun-ai-gateway.validateRouters" -}}
 {{- $plain := list -}}
@@ -281,8 +283,7 @@ proxy refuses to start with more.
 {{- $plain = append $plain .model_name -}}
 {{- end -}}
 {{- end -}}
-{{- $custom := list -}}
-{{- $heuristicV2 := list -}}
+{{- $licensed := dict -}}
 {{- range .Values.models -}}
 {{- $params := .litellm_params | default dict -}}
 {{- $kind := toString (get $params "model") -}}
@@ -328,21 +329,56 @@ proxy refuses to start with more.
 {{- end -}}
 {{- end -}}
 {{- $type := toString (get $config "classifier_type" | default "heuristic") -}}
-{{- $writesPrompt := and (has $type (list "llm" "heuristic_first" "hybrid")) (or (get $llm "system_prompt") (get $config "classification_prompt") (get $config "classification_examples")) -}}
-{{- if or (kindIs "slice" (get $config "tier_definitions")) $writesPrompt -}}
-{{- $custom = append $custom $name -}}
+{{- /* The licence class LiteLLM 1.105.1 counts this router in, the first that
+       applies (router_utils/auto_router_model_naming.py). */ -}}
+{{- $writesPrompt := false -}}
+{{- if has $type (list "llm" "capability" "llm_v2" "heuristic_first" "hybrid") -}}
+{{- range $field := list "classification_prompt" "classification_examples" -}}
+{{- if and (hasKey $config $field) (not (kindIs "invalid" (index $config $field))) -}}
+{{- $writesPrompt = true -}}
 {{- end -}}
-{{- if eq $type "heuristic_v2" -}}
-{{- $heuristicV2 = append $heuristicV2 $name -}}
+{{- end -}}
+{{- if and (hasKey $llm "system_prompt") (not (kindIs "invalid" (index $llm "system_prompt"))) -}}
+{{- $writesPrompt = true -}}
+{{- end -}}
+{{- else if eq $type "jev" -}}
+{{- if kindIs "string" (get (get $config "jev_classifier_config" | default dict) "instructions") -}}
+{{- $writesPrompt = true -}}
+{{- end -}}
+{{- end -}}
+{{- $class := "" -}}
+{{- if has $type (list "heuristic_v2" "capability" "llm_v2") -}}
+{{- $class = $type -}}
+{{- else if or (kindIs "slice" (get $config "tier_definitions")) $writesPrompt -}}
+{{- $class = "tier_or_classifier_prompt" -}}
+{{- end -}}
+{{- if $class -}}
+{{- $_ := set $licensed $class (append (get $licensed $class | default list) $name) -}}
+{{- end -}}
+{{- if hasKey $config "reminder_markers" -}}
+{{- $markers := get $config "reminder_markers" -}}
+{{- if or (not (kindIs "slice" $markers)) (not $markers) -}}
+{{- fail (printf "auto router %s: complexity_router_config.reminder_markers must be a list of {open, close} pairs, such as {open: \"<system-reminder>\", close: \"</system-reminder>\"}; LiteLLM 1.105.1 refuses anything else." $name) -}}
+{{- end -}}
+{{- range $markers -}}
+{{- $pair := . -}}
+{{- if not (kindIs "map" $pair) -}}
+{{- fail (printf "auto router %s: each reminder_markers entry must be an {open, close} pair, not %v." $name $pair) -}}
+{{- end -}}
+{{- $open := lower (trim (toString (get $pair "open"))) -}}
+{{- $close := lower (trim (toString (get $pair "close"))) -}}
+{{- if or (not (kindIs "string" (get $pair "open"))) (not (kindIs "string" (get $pair "close"))) (not $open) (not $close) (eq $open $close) -}}
+{{- fail (printf "auto router %s: reminder_markers entry %v needs open and close, two different strings that are not blank." $name (toJson $pair)) -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}
-{{- if gt (len $custom) 1 -}}
-{{- fail (printf "auto routers %s each define their own tiers or classifier prompt. Without a LiteLLM licence at most one may, and the proxy refuses to start with more." (join ", " $custom)) -}}
 {{- end -}}
-{{- if gt (len $heuristicV2) 1 -}}
-{{- fail (printf "auto routers %s each use classifier_type heuristic_v2. Without a LiteLLM licence at most one may, and the proxy refuses to start with more." (join ", " $heuristicV2)) -}}
+{{- end -}}
+{{- range $class, $names := $licensed -}}
+{{- if gt (len $names) 1 -}}
+{{- fail (printf "auto routers %s each claim LiteLLM's licensed %s capability. Without a LiteLLM licence at most one router may claim each of: classifier_type heuristic_v2, classifier_type capability, classifier_type llm_v2, and its own tier_definitions or classifier prompt; the proxy refuses to start with more." (join ", " $names) $class) -}}
+{{- end -}}
 {{- end -}}
 {{- end }}
 

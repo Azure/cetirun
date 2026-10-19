@@ -651,7 +651,25 @@ OpenClaw request went to the simple tier, a request for code included. Unless a
 router sets its own `reminder_markers`, the chart adds that pair and LiteLLM's
 own, `<system-reminder>`, whose blocks the classifier leaves out; the request
 for code then went to the medium tier. OpenClaw called the router through Chat
-Completions, without reasoning settings.
+Completions, without reasoning settings. A router's own `reminder_markers`
+replace the chart's and have to be a list of `{open, close}` pairs, two
+different strings that are not blank, as LiteLLM 1.105.1 requires; the chart
+rejects anything else rather than let the proxy refuse to start.
+
+**The agent keeps its conversation and its limits.** Unless a router sets them,
+the chart changes three of LiteLLM 1.105.1's router defaults:
+
+- `context_compaction: false`. LiteLLM would otherwise rewrite the
+  conversation history near the chosen model's input limit, with extra model
+  calls. Agents such as OpenClaw and Hermes compact their own context.
+- `max_tokens_from_tier_model: false`. LiteLLM would otherwise replace the
+  caller's `max_tokens` with the output limit of the tier's model; the
+  caller's value is forwarded instead.
+- `enable_context_window_escalation: true`. A long conversation whose newest
+  message is simple would otherwise land on a tier whose models cannot hold
+  it, and the provider would refuse it. LiteLLM moves it to the lowest tier
+  with a model whose declared window fits; set `max_input_tokens` in each
+  model's `model_info` for that.
 
 **Using the router uses its models.** A key that may use the router reaches every
 model of its tiers, whether or not it may use them directly; a key that may use
@@ -662,21 +680,98 @@ configured in `models`.
 
 **A conversation can change model.** Each request is classified on its own, so
 one conversation can move between tiers. On the same Azure OpenAI resource that
-kept working, encrypted reasoning included; across resources, an agent such as
-OpenClaw then retries the turn without its encrypted reasoning. Keep a router's
-models on one resource. LiteLLM can keep a conversation on its first tier
-(`session_affinity`, or `classification_mode: user_turn`) only for clients that
-send a session ID it recognizes; OpenClaw 2026.9.6 sends none it does.
+kept working, encrypted reasoning included. Across resources, with LiteLLM
+1.101.0, an agent such as OpenClaw retried the turn without its encrypted
+reasoning; LiteLLM 1.105.1, with `router.encryptedContentAffinity` on, leaves
+out the reasoning the new resource cannot read before it sends the turn
+(from LiteLLM's source; not measured here). Either way that reasoning is lost,
+so keep a router's models on one resource where you can. LiteLLM can keep a
+conversation on its first tier (`session_affinity`, or `classification_mode:
+user_turn`) only for clients that send a session ID it recognizes; OpenClaw
+2026.9.6 sends none it does.
 
-**One custom router.** Without a LiteLLM licence, at most one router may define
-its own tiers or classifier prompt: with two, the proxy refused to start. The
-chart rejects the second.
+**One router per licensed capability.** Without a LiteLLM licence, LiteLLM
+1.105.1 lets at most one router claim each of: `classifier_type: heuristic_v2`,
+`classifier_type: capability`, `classifier_type: llm_v2`, and its own
+`tier_definitions` or classifier prompt (`classifier_llm_config.system_prompt`,
+`classification_prompt` or `classification_examples`, with a classifier that
+calls a model). With two in one class, the proxy refused to start; the chart
+rejects the second. One router in each class is accepted.
 
 The request log line of a routed call carries the router's name as `model`, the
 model it picked as `provider_model`, and `routing_tier`, `routing_cause`,
-`routing_score` and, with a model classifier, `classifier_cost`. Whether a
-configuration saves money without lowering the quality of the answers is not
-measured here; that needs the requests themselves.
+`routing_score`, `routing_escalated` when an escalation keyword or the prompt's
+length moved it up a tier, and, with a model classifier, `classifier_model` and
+`classifier_cost`. Whether a configuration saves money without lowering the
+quality of the answers is not measured here; that needs the requests
+themselves.
+
+#### A router across providers
+
+A router's tiers can mix providers: here GPT models on Azure OpenAI for the
+simple and medium tiers, and a Claude model deployed in Azure AI Foundry for
+the complex and reasoning tiers. Adjacent tiers on the same provider keep a
+conversation that moves one tier up or down on its provider.
+
+```yaml
+models:
+  - model_name: gpt-mini
+    litellm_params:
+      model: azure/my-gpt-mini-deployment
+      api_base: https://example.openai.azure.com/
+      api_key: os.environ/AZURE_OPENAI_KEY
+      api_version: "2025-04-01-preview"
+    model_info:
+      base_model: azure/gpt-4o-mini
+      max_input_tokens: 128000
+  - model_name: gpt-main
+    litellm_params:
+      model: azure/my-gpt-deployment
+      api_base: https://example.openai.azure.com/
+      api_key: os.environ/AZURE_OPENAI_KEY
+      api_version: "2025-04-01-preview"
+    model_info:
+      base_model: azure/gpt-4o
+      max_input_tokens: 128000
+  - model_name: claude
+    litellm_params:
+      model: azure_ai/my-claude-deployment
+      api_base: https://example.services.ai.azure.com/anthropic
+      api_key: os.environ/AZURE_AI_FOUNDRY_KEY
+      # The Claude model rejects some OpenAI parameters, such as temperature
+      # with top_p, or a forced tool_choice; LiteLLM drops those it rejects.
+      drop_params: true
+      # Prompt caching on the system message and the newest message.
+      cache_control_injection_points:
+        - location: message
+          role: system
+        - location: message
+          index: -1
+      input_cost_per_token: 0.000003
+      output_cost_per_token: 0.000015
+    model_info:
+      max_input_tokens: 200000
+  - model_name: auto
+    litellm_params:
+      model: auto_router/complexity_router
+      input_cost_per_token: 0.000003
+      output_cost_per_token: 0.000015
+      complexity_router_config:
+        classification_mode: user_turn
+        tiers:
+          SIMPLE: gpt-mini
+          MEDIUM: gpt-main
+          COMPLEX: claude
+          REASONING: claude
+      complexity_router_default_model: gpt-main
+```
+
+Offer such a router to clients that use the Chat Completions API. A client
+using the Responses API or Anthropic's Messages API sends the provider's own
+reasoning items back with each turn; at a switch between providers, the other
+provider's reasoning is dropped or the request may be refused. The provider's
+prompt cache starts again at every switch, so a conversation that changes
+provider pays the full input price for that turn.
 
 ### Settings saved in the console
 

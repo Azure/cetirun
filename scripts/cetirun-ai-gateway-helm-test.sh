@@ -378,6 +378,23 @@ assert_contains "model: auto_router/complexity_router" "a router configured in m
 assert_absent "background_health_check_model_groups" \
   "every deployment is probed; LiteLLM never probes a router itself" "${routed}"
 
+# LiteLLM 1.105.1 compacts a conversation near the model's input limit with
+# extra model calls, replaces the caller's max_tokens with the tier model's
+# ceiling, and refuses a request too long for the decided tier's models. The
+# chart changes those defaults, unless a router sets them itself.
+echo "==> a router leaves the conversation and max_tokens to the agent, and moves a request that does not fit"
+assert_contains "context_compaction: false" "no compaction by the Gateway" "${routed}"
+assert_contains "max_tokens_from_tier_model: false" "the caller's max_tokens is forwarded" "${routed}"
+assert_contains "enable_context_window_escalation: true" "a request too long for its tier moves to one that fits" "${routed}"
+router_values "${router_dir}/own-defaults.yaml" "${default_router_config}
+        context_compaction: {trigger_ratio: 0.9}
+        max_tokens_from_tier_model: true
+        enable_context_window_escalation: false"
+own_defaults="$(helm template "${release_name}" "${chart_dir}" -f "${router_dir}/own-defaults.yaml")"
+assert_contains "trigger_ratio: 0.9" "a router's own compaction is kept" "${own_defaults}"
+assert_contains "max_tokens_from_tier_model: true" "a router's own max_tokens setting is kept" "${own_defaults}"
+assert_contains "enable_context_window_escalation: false" "a router's own escalation setting is kept" "${own_defaults}"
+
 # OpenClaw sends its own context as the last user message, between markers. A
 # router classifies the newest message a person wrote, so without the markers
 # every OpenClaw request was classified by that block: measured, all of them
@@ -398,6 +415,13 @@ router_rejected() {  # router_rejected DESCRIPTION FILE
     exit 1
   fi
 }
+# LiteLLM 1.105.1 takes only {open, close} pairs, two different strings that
+# are not blank, and refuses to start otherwise.
+for markers in "['<system-reminder>']" "[]" "[{open: '<a>'}]" "[{open: '##', close: '##'}]" "[{open: '<a>', close: ' '}]"; do
+  router_values "${router_dir}/bad-markers.yaml" "${default_router_config}
+        reminder_markers: ${markers}"
+  router_rejected "reminder_markers ${markers}" "${router_dir}/bad-markers.yaml"
+done
 router_values "${router_dir}/zero.yaml" "" 0
 router_rejected "a router priced at zero" "${router_dir}/zero.yaml"
 grep -v 'cost_per_token' "${router_dir}/valid.yaml" > "${router_dir}/unpriced.yaml"
@@ -420,6 +444,26 @@ sed -n '/model_name: auto$/,$p' "${router_dir}/one-prompt.yaml" | sed 's/model_n
   > "${router_dir}/second.yaml"
 cat "${router_dir}/one-prompt.yaml" "${router_dir}/second.yaml" > "${router_dir}/two-prompts.yaml"
 router_rejected "two routers with their own classifier prompt" "${router_dir}/two-prompts.yaml"
+# Without a licence, LiteLLM 1.105.1 lets one router claim each licensed
+# capability: heuristic_v2, capability and llm_v2 classifiers, and its own
+# tiers or classifier prompt. One of each is fine.
+licensed_pair() {  # licensed_pair FILE FIRST_EXTRA SECOND_EXTRA: two routers, auto and auto-two
+  router_values "$1" "${default_router_config}
+        $2"
+  sed -n '/model_name: auto$/,$p' "$1" | sed 's/model_name: auto$/model_name: auto-two/' \
+    | sed "s|^        $2\$|        $3|" > "${router_dir}/pair-second.yaml"
+  cat "${router_dir}/pair-second.yaml" >> "$1"
+}
+for type in heuristic_v2 capability llm_v2; do
+  licensed_pair "${router_dir}/two-${type}.yaml" "classifier_type: ${type}" "classifier_type: ${type}"
+  router_rejected "two routers with classifier_type ${type}" "${router_dir}/two-${type}.yaml"
+done
+licensed_pair "${router_dir}/mixed.yaml" "classifier_type: heuristic_v2" "classifier_type: llm_v2"
+helm template "${release_name}" "${chart_dir}" -f "${router_dir}/mixed.yaml" > /dev/null \
+  || { echo "FAIL: one heuristic_v2 and one llm_v2 router were rejected" >&2; exit 1; }
+licensed_pair "${router_dir}/heuristic-prompts.yaml" "classification_prompt: one" "classification_prompt: two"
+helm template "${release_name}" "${chart_dir}" -f "${router_dir}/heuristic-prompts.yaml" > /dev/null \
+  || { echo "FAIL: a prompt that a heuristic router never reads was counted" >&2; exit 1; }
 
 # ----- Shutdown -----
 

@@ -87,8 +87,10 @@ fullnameOverride: ""
 # output_cost_per_token above zero in litellm_params; calls are charged at the
 # price of the model picked. A key that may use the router reaches all of its
 # models. Unless it sets reminder_markers, the chart adds the markers around
-# OpenClaw's own context, so the router classifies what was asked. See the
-# README's Smart routing section.
+# OpenClaw's own context, so the router classifies what was asked; unless it
+# sets them, context_compaction and max_tokens_from_tier_model are off and
+# enable_context_window_escalation is on. See the README's Smart routing
+# section.
 #
 # Example:
 #   models:
