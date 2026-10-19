@@ -138,8 +138,9 @@ For a release called `gateway` the claim is
 bundled resources' names are shortened and carry a hash instead.
 
 The volume's size and storage class are fixed at install. The default size is
-100Gi: the database keeps the spend log of every agent using the Gateway, so it
-grows with the number of agents and how long they run. A StatefulSet's
+100Gi: the database keeps the spend log of every agent using the Gateway, for
+`spendLogs.retention`, so it grows with the number of agents and how much they
+run. A StatefulSet's
 volume claim template cannot be changed, so Kubernetes refuses an upgrade that
 changes `postgresql.bundled.persistence.size` or `storageClass`: measured,
 going from 8Gi to 16Gi failed with `spec.volumeClaimTemplates` and left the
@@ -371,9 +372,9 @@ running with, so it stays at zero. Replaying that save stored
 A caller cannot turn retries back on for its own request. LiteLLM accepts
 `num_retries` in the request body or the `x-litellm-num-retries` header, and
 `model_group_retry_policy`; measured, each made one failing request four
-upstream calls. The image's request log callback drops those fields, and the
-cluster test checks it. With `requestLog.enabled` off the callback is not
-registered, and they are not dropped.
+upstream calls. The image's guard callback, which the entrypoint always
+registers, drops those fields, and the cluster test checks it; see
+[The guard callback](#the-guard-callback).
 
 Sending a failed request to another deployment of the same model is not a
 retry; see [Routing](#routing).
@@ -382,24 +383,95 @@ retry; see [Routing](#routing).
 
 Several entries in `models` with the same `model_name` are deployments of one
 model: two Azure OpenAI resources, for example, or Azure OpenAI and OpenAI.
-LiteLLM picks one at random for each request, or by the `weight`, `rpm` or
-`tpm` in each entry's `litellm_params`; set the same field on every entry, since
-LiteLLM looks at the first entry to choose which one to use. An entry with a
-higher `litellm_params.order` is kept in reserve until those with a lower one
-are unavailable. Which deployments serve a model, and which model falls back to
+`router.routingStrategy` chooses one of them for each request; see
+[Choosing a deployment](#choosing-a-deployment). An entry with a higher
+`litellm_params.order` is kept in reserve until those with a lower one are
+unavailable. Which deployments serve a model, and which model falls back to
 which, are the administrator's; the `router` values set the rest.
 
 Measured with two Gateway replicas and the bundled Valkey, against mock
 deployments standing in for separate Azure OpenAI resources, with an
 OpenClaw-like client and with OpenClaw itself, and checked against Azure
-OpenAI where noted.
+OpenAI where noted. The figures in tables were measured on LiteLLM 1.101.0,
+the image's previous release; what changed in 1.105.1 is said where it
+applies.
+
+### Choosing a deployment
+
+`router.routingStrategy` sets LiteLLM's `routing_strategy`:
+
+- `simple-shuffle`, the default, picks at random, or in proportion to the
+  `weight`, `rpm` or `tpm` in each entry's `litellm_params`: the first of the
+  three that any entry sets to a positive value. Only this strategy sends a
+  failed request to another deployment of the same model (`router.failover`).
+- `least-busy` picks the deployment with the fewest requests in flight. Each
+  replica counts only its own requests.
+- `latency-based-routing` picks the deployment with the fastest recent
+  responses. Each replica measures its own.
+- `usage-based-routing-v2` picks the deployment with the fewest tokens this
+  minute, skipping those over their `rpm` or `tpm`. The counts are kept in
+  Redis, so every replica sees them; each request adds Redis calls.
+- `cost-based-routing` picks the cheapest deployment. A deployment's price is
+  `input_cost_per_token` and `output_cost_per_token` in its `litellm_params`,
+  or else LiteLLM's price table entry for its `litellm_params.model`; it does
+  not read `base_model` or `model_info`. A deployment with neither counts as
+  the most expensive, which is the usual case for Azure OpenAI deployment
+  names, so set the prices in `litellm_params`. With health checks on,
+  LiteLLM 1.105.1 logs an error with a traceback for every probe under this
+  strategy, since its cost tracker looks for a deployment ID that probes do
+  not carry; requests are not affected.
+
+LiteLLM's other strategies are refused: `usage-based-routing` selects without
+running LiteLLM's auto routers and pre-call checks, and the others need
+settings the chart does not provide. Each of `weight`, `order`, `rpm` and `tpm`
+has to be set on every entry of a model or on none, and the chart refuses a
+model that sets one on only some: LiteLLM gives an entry without `weight`,
+`rpm` or `tpm` no requests while another has it, and leaves an entry without
+`order` out while another has one.
+
+### Primary and standby deployments
+
+`litellm_params.order` keeps deployments in reserve. Here a discounted provider
+serves the model first, and Azure OpenAI stands by:
+
+```yaml
+models:
+  - model_name: gpt-4o
+    litellm_params:
+      model: openai/gpt-4o
+      api_base: https://discount.example.com/v1
+      api_key: os.environ/DISCOUNT_KEY
+      order: 1
+      input_cost_per_token: 0.000002
+      output_cost_per_token: 0.000008
+  - model_name: gpt-4o
+    litellm_params:
+      model: azure/my-gpt-4o-deployment
+      api_base: https://example.openai.azure.com/
+      api_key: os.environ/AZURE_PROD_KEY
+      api_version: "2025-04-01-preview"
+      order: 2
+    model_info:
+      base_model: azure/gpt-4o
+```
+
+Requests go to order 1. With health checks on, a deployment that failed its
+last probe is skipped before anything is sent. A request that fails on order 1
+is sent to order 2 within the same request, with every routing strategy.
+Requests return to order 1 once its probe passes again, or, without health
+checks, once its cooldown ends. Deployment affinity is off for such a model;
+see [A key stays on its deployment](#a-key-stays-on-its-deployment). Measured
+on LiteLLM 1.105.1 with mock deployments: with order 1 failing its probes, a
+key's requests went to order 2, and once order 1 passed again they went back
+to it.
 
 ### A failed request goes to another deployment
 
 `router.failover`, on by default, sends a request that failed on one
 deployment once more, to another deployment of the same model (LiteLLM's
-`enable_weighted_failover`). The failed deployment is not tried again, and a
-model with a single deployment gets no second attempt, so `num_retries` stays 0.
+`enable_weighted_failover`), with the `simple-shuffle` strategy only. The
+failed deployment is not tried again, and a model with a single deployment
+gets no second attempt, so `num_retries` stays 0.
 
 | One of two deployments failing | Requests failed, of 30 |
 | --- | --- |
@@ -437,17 +509,37 @@ without the encrypted reasoning. So when one model is served by more than one
 resource, a conversation that has been on both pays an extra call, and loses
 the reasoning it had, on every later turn: 61 of 84 turns in the test.
 
-`router.encryptedContentAffinity` keeps each conversation on the deployment
-that encrypted its reasoning, or on one with the same endpoint and key
-(LiteLLM's `encrypted_content_affinity`). It marks the items it returns, so it
-needs no state in Redis, and turning it off later is safe: the marks are removed
-from every request either way. It is off by default because the LiteLLM in the
-image fails a pinned conversation rather than moving it: while its deployment
-is down, every turn fails, and for the few seconds it stays in cooldown
-afterwards turns get a 503 or 429; then it continues there. A deployment that
-authenticates without an API key is never treated as sharing an endpoint and key
-with another. Turn it on when one model name is served by more than one
-resource or organization.
+`router.encryptedContentAffinity`, on by default, keeps each conversation on
+the deployment that encrypted its reasoning, or on one with the same endpoint
+and key (LiteLLM's `encrypted_content_affinity`). It marks the items it
+returns, so it needs no state in Redis, and turning it off later is safe: the
+marks are removed from every request either way. When that deployment is
+unavailable, LiteLLM 1.105.1 sends the turn to another deployment and leaves
+out the encrypted reasoning the new one cannot read, so the conversation
+continues without that reasoning rather than failing; LiteLLM 1.101.0 failed
+every such turn until the deployment was back, which is why the check used to
+be off by default. A deployment that authenticates without an API key is never
+treated as sharing an endpoint and key with another. The check applies to
+every model: LiteLLM cannot turn it off for one.
+
+### A key stays on its deployment
+
+`router.deploymentAffinity`, on by default, sends each virtual key's requests
+for a model to the deployment that served its last one, for an hour (LiteLLM's
+`deployment_affinity`). Providers cache the start of a prompt on the
+deployment that saw it, so an agent that keeps its conversation on one
+deployment pays less and waits less for each turn. With Redis, every replica
+sees the same choice. While that deployment is unavailable, the key's requests
+go to the others. Measured on LiteLLM 1.105.1 with two replicas and two
+deployments: four keys sent 10 requests each, alternating between the
+replicas, and each key's 10 reached one deployment.
+
+It is off for a model whose deployments set `litellm_params.order`: LiteLLM
+applies the choice before it keeps only the lowest order, and renews it only
+when the chosen deployment serves, so a key that reached the standby while the
+primary was down would stay on the standby after the primary is back. The
+chart turns it off for such a model in `model_group_affinity_config`, which
+keeps the other checks on for it.
 
 ### Fallbacks
 
@@ -469,27 +561,43 @@ unreachable: a fallback group turned 6 failed requests of 30 into none.
 
 ### Health checks
 
-`router.healthChecks.enabled`, off by default, probes the deployments of the
-models in `models` every `router.healthChecks.intervalSeconds`, 300 by default,
-and sends requests only to those that answered their last probe. Measured with
-one of two deployments failing: every request went to the other one, where 10
-of 30 failed without health checks. When every deployment of a model fails its
-probe, requests are still sent.
+`router.healthChecks.enabled`, on by default, probes every deployment every
+`router.healthChecks.intervalSeconds`, 300 by default, and sends requests only
+to those that answered their last probe. Measured with one of two deployments
+failing: every request went to the other one, where 10 of 30 failed without
+health checks. When every deployment of a model fails its probe, requests are
+still sent.
 
-Each probe is a real call, with `max_tokens` 16, from each replica, and writes
-a line to the request log under the key alias `litellm-internal-health-check`.
-Only the models configured in `models` are probed: models added through the
-console and the GitHub Copilot models the CetiRun operator registers for each
-Agent are not, since probing those would spend the users' own quota. A router
-from LiteLLM's auto routing is not probed itself; its models are. Set
+Every deployment means the models in `models`, those added through the
+console, and the GitHub Copilot routes the CetiRun operator registers for each
+Agent. Each probe is a real call, with `max_tokens` 16, so a probe of an
+Agent's Copilot route spends that Agent owner's own GitHub Copilot allowance:
+about 288 small calls a day per route at the default interval. A router from
+LiteLLM's auto routing is not probed itself; its models are. Set
 `model_info.mode` on a model that is not a chat model, such as an embedding or
-image model, so it is probed the right way. A probe answered with 429 or 408
-counts as healthy: cooldowns handle those on live requests.
+image model, so it is probed the right way, and
+`model_info.disable_background_health_check: true` on a model that should not
+be probed. A probe answered with 429 or 408 counts as healthy: cooldowns
+handle those on live requests.
 
-With health checks off, LiteLLM's `/health` endpoint probes every deployment
-live when called with the master key, including the Agents' GitHub Copilot
-routes; with them on, it returns the last results. Agents' keys are refused
-there.
+With Redis, which the chart requires above one replica, one replica probes at
+a time, under a lock in Redis, and the others use its results
+(`use_shared_health_check`); the chart sets `DEFAULT_SHARED_HEALTH_CHECK_TTL`
+to the interval so a shared result is not reused past the next probe. Without
+Redis, the single replica probes on its own. Measured on LiteLLM 1.105.1 with
+two replicas, a 30-second interval and six mock deployments, two of them added
+through the management API with per-Agent Copilot access groups: each
+deployment was probed twice in 65 seconds, and with one of a model's two
+deployments failing its probes, 12 of 12 requests went to the other and none
+reached it.
+
+Each probe writes a line to the request log with `"call_origin":
+"health_check"` and the key alias `litellm-internal-health-check`; leave those
+lines out of usage figures. The results are kept in PostgreSQL, for
+`spendLogs.retention` like the spend log, and `/health/latest` and the
+console show the latest result of each deployment. `/health` returns the last
+results too; with health checks off, it probes every deployment live when
+called with the master key. Agents' keys are refused there.
 
 ### Smart routing
 
@@ -651,11 +759,48 @@ match none. So a shared model's fallback to a Copilot model could reach another
 Agent's proxy. With the setting, LiteLLM skips a fallback target the caller's key
 could not request directly.
 
-The groups only separate Agents while keys and teams are limited to them. A key
-or team allowed every model, or a `copilot/` name directly, has no group to
-filter by, so LiteLLM spreads its requests for a `copilot/` name over every
-Agent's proxy. The operator creates teams and keys without such grants; do not
-add them in the console.
+The groups only separate Agents while keys and teams are limited to them. To
+LiteLLM, a key or team allowed every model, or a `copilot/` name directly, has
+no group to filter by, so it would spread that key's requests for a `copilot/`
+name over every Agent's proxy. The image's guard callback prevents that: a key
+reaches a per-Agent GitHub Copilot route only if it holds that route's access
+group; keys granted every model, such as the master key, do not reach them.
+The operator creates teams and keys without such grants; do not add them in
+the console.
+
+### The guard callback
+
+The image's entrypoint always registers a second callback, the guard, before
+LiteLLM loads its configuration, whatever `requestLog` says. Settings saved in
+the console cannot remove it. It:
+
+- drops request fields a caller could use to change the Gateway for its own
+  call: `litellm_request_debug`, and the retry fields described under
+  [Upstream errors are not retried](#upstream-errors-are-not-retried);
+- leaves the per-Agent GitHub Copilot routes out of a request unless the
+  calling key holds the route's access group, `cetirun-copilot-<Agent UID>`.
+  A key granted every model, such as the master key, a key holding `*` or a
+  `copilot/` model name, and a request whose key LiteLLM does not pass on,
+  reach none of them; asking for a `copilot/` model, such a key gets LiteLLM's
+  "No deployments available" 429. Every other deployment is left as it is. An
+  auto router's choice of tier is held to the same rule;
+- keeps error messages free of LiteLLM's internal deployment list: error
+  messages returned to callers no longer include LiteLLM's internal list of
+  deployments in cooldown. The response keeps its status, 429, the "Try again
+  in N seconds" wording and, on the Chat Completions and Responses APIs, the
+  `retry-after` header; LiteLLM sets none on its Anthropic Messages API. The
+  Gateway's own log and the request log keep the full message.
+
+With `operatorIntegration` off, the guard's request fields and error messages
+apply all the same; a standalone Gateway has no `cetirun-copilot-` groups for
+it to separate.
+
+Measured on LiteLLM 1.105.1 with two replicas and two Copilot routes added
+through the management API under one `copilot/` name: each of two Agent keys
+reached only its own route, 6 of 6; a key granted every proxy model, a key
+granted the `copilot/` name and the master key got the 429; and the 429 for a
+model with every deployment in cooldown carried no deployment list on the
+Chat Completions, Responses and Anthropic Messages APIs.
 
 ## Credentials
 
@@ -906,12 +1051,13 @@ This is why the chart writes as little as possible into those blocks.
 
 ### Values the chart owns
 
-`model_list`; `general_settings.store_model_in_db`, and the health check
-settings when `router.healthChecks` is on; in `litellm_settings`,
+`model_list`; `general_settings.store_model_in_db`, the spend log retention,
+and the health check settings when `router.healthChecks` is on; in `litellm_settings`,
 `num_retries`, the unpriced-model block, `global_disable_no_log_param`, the
 metrics callback and its settings, and, when Redis is configured, the Redis
-cache; and in `router_settings`, Redis when it is configured, and the failover,
-the two affinity checks and the fallbacks of `router`. Everything else in
+cache; and in `router_settings`, Redis when it is configured, the routing
+strategy, and the failover, the affinity checks and the fallbacks of `router`.
+Everything else in
 LiteLLM's configuration is left alone. The request log and the spend log
 setting are not in LiteLLM's configuration at all: the image's entrypoint
 applies them (see [One log line per call](#one-log-line-per-call)), so saving
@@ -928,9 +1074,10 @@ one in `models` becomes an additional backend rather than an override.
 `helm upgrade --reuse-values` keeps the values of the chart version a release
 was installed with, without the defaults of settings added since. A release
 installed before `requestLog`, `spendLogs` and `metrics` existed upgrades with
-their defaults: the request log on, LiteLLM's spend log kept, metrics off. One
-installed before `router` gets its defaults too: failover and continuation
-affinity on, the rest off.
+their defaults: the request log on, LiteLLM's spend log kept for seven days,
+metrics off. One
+installed before `router` gets its defaults too: `simple-shuffle`, failover,
+the affinity checks and health checks on, no fallbacks.
 
 ## Availability
 
@@ -1010,6 +1157,8 @@ from the metadata the CetiRun operator puts on the key; the model, the provider
 model and the provider's host; tokens, with cached and reasoning tokens where
 the provider reports them; spend; duration and, when streamed, time to first
 token; the client's address and user agent; and, for a failure, the error.
+A call LiteLLM makes itself carries its origin in `call_origin`: a background
+health check probe is `"health_check"`, so usage figures can leave it out.
 Abridged:
 
 ```json
@@ -1049,7 +1198,7 @@ container runtimes split longer lines, and Container Insights stores the
 pieces as separate records, none of them valid JSON. Should escaping make a
 line longer, which control characters can, the error text, the client's tags
 and extra key metadata go first, then the longest strings are cut, and the line
-carries `"truncated": true`. The callback also drops a client's
+carries `"truncated": true`. The image's guard callback also drops a client's
 `litellm_request_debug` field: with it, LiteLLM printed that call's prompt and
 the provider's raw response to the log.
 
@@ -1076,18 +1225,29 @@ configuration.
 
 The proxy runs as one uvicorn process per pod, as LiteLLM starts by default.
 The entrypoint refuses more workers, or another server, since they would load
-LiteLLM again without the callback; scale with `replicaCount` instead.
+LiteLLM again without the image's callbacks, the guard included, whatever
+`requestLog` says; scale with `replicaCount` instead.
 
 ### LiteLLM's spend log
 
-`spendLogs.enabled: false` has LiteLLM write no row per call to
-`LiteLLM_SpendLogs`. The table grows by one row for every call and is never
-trimmed unless a retention period is set in the console. The cetirun-platform
-chart turns it off, since the request log keeps the per-call record outside the
-database.
+LiteLLM writes a row per call to `LiteLLM_SpendLogs`, which the console's
+request log pages read. The row holds the call's metadata, not its prompt or
+response: the chart does not set `store_prompts_in_spend_logs`. The table
+grows by one row for every call, so `spendLogs.retention`, `7d` by default,
+renders LiteLLM's `maximum_spend_logs_retention_period`: once a day, LiteLLM
+deletes the rows older than that, in batches, from one replica at a time, and
+the stored health check results with them
+(`maximum_health_check_retention_period`). Spend, budgets and the daily usage
+totals are kept beyond it. Set it empty to keep every row. A retention period
+saved in the console's settings wins over the chart's, as for any
+`general_settings` key. Measured on LiteLLM 1.105.1 with the request log on:
+every call, probes included, added a row, none with a prompt, and the proxy
+started with the retention settings without complaint; the daily deletion
+itself was not observed.
 
-It is turned off only together with the request log, so no configuration leaves
-the Gateway without a record of each call: `spendLogs.enabled: false` needs
+`spendLogs.enabled: false` has LiteLLM write no row per call. It is turned off
+only together with the request log, so no configuration leaves the Gateway
+without a record of each call: `spendLogs.enabled: false` needs
 `requestLog.enabled`, and the image's entrypoint turns the spend log off only
 once it has registered the request log callback. It sets LiteLLM's
 `disable_spend_logs` in the proxy process, not in `general_settings`, so the
@@ -1198,25 +1358,26 @@ appropriate at a single replica.
 ## Image
 
 The Gateway runs `cetirun-ai-gateway`, built from `app/cetirun-ai-gateway` and
-published with the other CetiRun images. It is open-source LiteLLM, installed as
-pinned packages on the Azure Linux Python base from MCR, running as the
-non-root user 65532.
+published with the other CetiRun images. It is open-source LiteLLM, 1.105.1,
+installed as pinned packages on the Azure Linux Python base from MCR, running as
+the non-root user 65532.
 
 - `requirements.txt` is the exact package set of the upstream LiteLLM image for
   the same release, installed with `--no-deps`, so nothing else is pulled in.
   The differences are deliberate: `litellm-enterprise`, which carries the
   BerriAI Enterprise License, is left out; two backports that Python 3.12
-  needs are added; and packages with known security advisories are moved to
-  patched versions, with the advisories marked in the file. The build fails
-  if the enterprise package is present.
+  needs are added; and a package with a known security advisory is moved to a
+  patched version, with the advisory marked in the file. The 1.105.1 set needs
+  no such move. The build fails if the enterprise package is present, or if
+  `pip check` finds a requirement the set does not meet.
 - The prisma CLI and engines are installed at build time, so migrations need
   neither npm nor network access. Measured on a network with no route out:
   migrations applied and the proxy became ready.
 - `cetirun-ai-gateway migrate` applies migrations; any other arguments start
   the proxy. Starting never touches a database, because the same image serves
-  the per-agent Copilot proxy, which has none. With `CETIRUN_REQUEST_LOG=true`,
-  which the chart sets, the proxy starts in the entrypoint's own process with
-  the request log callback registered.
+  the per-agent Copilot proxy, which has none. The Gateway proxy starts in the
+  entrypoint's own process with the guard callback registered, and, with
+  `CETIRUN_REQUEST_LOG=true`, which the chart sets, the request log callback.
 
 To move to a new LiteLLM release, regenerate `requirements.txt` from that
 release's upstream image, rebuild, and let the build's `pip check` name any
@@ -1277,12 +1438,6 @@ Recorded and deferred: none of these stops the Gateway from serving agents.
 
 **Not in the chart yet.** Redis TLS, which Azure Cache for Redis requires; and
 a PodDisruptionBudget and anti-affinity. LiteLLM supports both.
-
-**Encrypted reasoning affinity fails closed.** With the LiteLLM in the image,
-`router.encryptedContentAffinity` fails a conversation whose deployment is
-unavailable rather than moving it. Later LiteLLM releases drop the encrypted
-reasoning and move the conversation instead; with them it could be on by
-default.
 
 **Prices are not pinned to the image.** LiteLLM fetches its price table from
 GitHub at startup and falls back to the copy it ships with when that fails, so

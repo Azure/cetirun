@@ -36,6 +36,8 @@ type Config struct {
 	MaxInstancesPerUser int
 	// AllowedAgentTypes controls type availability in the form and backend.
 	AllowedAgentTypes []string
+	// SandboxRuntimes pins deployment-approved built-in creation inputs.
+	SandboxRuntimes map[string]SandboxRuntime
 	// AgentIdentityEnabled requires cryptographically verified Entra owner
 	// claims and exposes the per-instance authorization experience.
 	AgentIdentityEnabled bool
@@ -75,6 +77,7 @@ func Load() Config {
 		NoticeBanner:                       os.Getenv("NOTICE_BANNER"),
 		MaxInstancesPerUser:                envOrDefaultInt("MAX_INSTANCES_PER_USER", 1),
 		AllowedAgentTypes:                  envOrDefaultAgentTypes("ALLOWED_AGENT_TYPES", defaultAllowedAgentTypes),
+		SandboxRuntimes:                    loadSandboxRuntimes(os.Getenv("SANDBOX_RUNTIME_PROFILES")),
 		AgentIdentityEnabled:               os.Getenv("FEATURE_AGENT_IDENTITY_ENABLED") == "true",
 		EntraTenantID:                      envOrDefault("ENTRA_TENANT_ID", ""),
 		PortalClientID:                     envOrDefault("PORTAL_OIDC_CLIENT_ID", ""),

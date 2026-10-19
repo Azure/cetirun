@@ -269,6 +269,13 @@ models:
       complexity_router_default_model: mock-priced
 providerCredentials:
   existingSecret: gateway-provider-keys
+# The checks below count calls and spend exactly and need the failing
+# deployment of mock-failover to be tried: no background probes, which would
+# add calls and keep requests away from it, and no key kept on one deployment.
+router:
+  deploymentAffinity: false
+  healthChecks:
+    enabled: false
 EOF
 
 # ----- Helpers against the running Gateway ----------------------------------

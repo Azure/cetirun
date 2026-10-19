@@ -10,17 +10,43 @@ It does not define a membership roster, verify Entra group membership, or
 authorize access to another user's instance. Portal administrators can manage
 teams; instance owners can select a team.
 
-When the cluster rejects a Team create or update, the Portal shows the known
-field paths and validation reasons, such as `spec.agentPolicyRef: Required value`.
-If the error names `agentPolicyRef`, `defaultSandboxRef`, or `sandboxRefs` as
-required, the cluster requires Agent Policy/Sandbox settings that the Team form
-does not configure. Ask a platform administrator to configure the Team and
-verify that the Portal and installed CRDs are compatible. Other validation
-errors should be corrected in the indicated fields before retrying. Unexpected
-server failures retain a generic message; administrators can inspect Portal
-logs for details.
+In the Portal, create an **Agent Policy** and a **Sandbox** under **Admin**
+first. A Sandbox selects Kata or gVisor, CPU/memory/ephemeral-storage requests
+and limits for the Agent and each helper, a HOME StorageClass and size, and a
+scratch size limit. The runtime and StorageClass must already be available;
+creating this configuration does not install them.
 
-Save a configuration such as:
+Then choose **Admin → Teams → New Team**. Select the Agent Policy, one or more
+allowed Sandboxes, and a default Sandbox from that set. Portal-created Teams
+require all three bindings. The editor links to missing prerequisites and
+shows configuration admission errors when the cluster rejects a selection.
+Team Skills must be allowed by the selected Policy.
+
+Updates and deletions include the resource UID and version that the editor
+read. If another administrator changed or replaced the resource, reload it
+before submitting again. Deployments with configuration coordination use the
+same protected update/delete flow as Agent Policy administration. Existing
+Agent consumers may need to be suspended before a binding can change.
+
+If an update succeeds in the cluster but its response or coordination release
+fails, reload the editor and save again. Portal checks the recorded operation
+against the current resource before handling the save, including an unchanged
+configuration. It releases the reservation only after observing the exact
+committed content at a newer version of the same resource UID. This recovery
+works across Portal restarts and never replays the original write. A stale save
+still returns a version conflict; an uncertain outcome retains its reservation.
+
+If an update stops before submission while its operation is still `Reserved`,
+retry the same configuration with the original resource UID and version. Only
+that exact request can resume the reservation and submit the update. A changed
+request or an unchanged save cannot replace or discard the reserved operation.
+
+When the cluster rejects a Team create or update, the Portal shows known field
+paths and validation reasons. Correct the indicated fields before retrying.
+Unexpected server failures retain a generic message; administrators can inspect
+Portal logs for details.
+
+The corresponding configuration is:
 
 ```yaml
 apiVersion: cetirun.microsoft.com/v1alpha1
@@ -28,6 +54,10 @@ kind: Team
 metadata:
   name: platform
 spec:
+  agentPolicyRef: standard-policy
+  sandboxRefs:
+    - standard
+  defaultSandboxRef: standard
   memberContext:
     role: Engineer
     description:
@@ -61,13 +91,13 @@ against separate Helm configuration or user-installed files.
 
 Applying a team or editing its provider/context triggers reconciliation of
 member instances. Review the affected users before applying a change.
-Deleting a referenced team is not a cascade-delete or safe detach: the portal's
-delete handler does not check for members, and their next reconciliation can
-fail with `TeamNotFound`. Move references deliberately before deleting a team.
+Deleting a referenced team is not a cascade-delete or safe detach. Move
+references deliberately before deleting a team; configuration admission
+continues to enforce its consumer and cleanup requirements.
 
-Team status fields are defined in the schema but are not populated by a
-team-status reconciler. Inspect each member instance's conditions and effective
-configuration instead of waiting for a team-wide Ready condition.
+The Team controller reports whether configuration references are accepted.
+Inspect each member instance's conditions and effective configuration for
+runtime readiness; accepted Team configuration is not runtime enforcement.
 
 Sources: [team event handling]({{< repo "app/cetirun-operator/internal/controller/agent_controller.go" >}}),
 [team defaults and skills]({{< repo "app/cetirun-operator/internal/controller/helpers.go" >}}),

@@ -20,7 +20,7 @@ export interface AIGatewayCatalog {
    * The agent types the deployment's agent chart routes through the Gateway;
    * null while the operator has not read that chart.
    */
-  agentTypes?: AgentType[] | null;
+  agentTypes: AgentType[] | null;
 }
 
 export type CopilotLoginState = "none" | "pending" | "succeeded" | "expired" | "denied" | "failed";

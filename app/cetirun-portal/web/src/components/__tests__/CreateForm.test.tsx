@@ -15,6 +15,15 @@ vi.mock("../../hooks/useFeatures", () => ({
   useFeatures: () => ({ data: mockFeatures.data, isLoading: false }),
 }));
 
+vi.mock("../../hooks/useCreateOptions", () => ({
+  useCreateOptions: (team: string) => ({
+    data: { team, allowedAgentTypes: mockFeatures.data.allowedAgentTypes, aiGatewayEnabled: false,
+      gateway: { known: false, sharedModels: [], githubCopilot: false, agentTypes: [] },
+      agentIdentity: { allowed: mockFeatures.data.agentIdentityEnabled, required: false } },
+    isFetching: false, refetch: vi.fn(),
+  }),
+}));
+
 const mockMutate = vi.fn();
 const mockCreateOptions = vi.hoisted(() => ({ onSettled: undefined as undefined | (() => void) }));
 vi.mock("../../hooks/useInstance", () => ({

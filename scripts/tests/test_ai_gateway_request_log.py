@@ -337,25 +337,42 @@ class RequestLogTest(unittest.TestCase):
         self.assertEqual(record["request_tags"], ["nightly"])
         self.assertEqual(record["user_agent"], "OpenClaw/1.0")
 
-    def test_client_debug_output_is_always_dropped(self):
-        data = {"model": "gpt-4o", "litellm_request_debug": True}
-        result = asyncio.run(self.handler().async_pre_call_hook(None, None, data, "acompletion"))
-        self.assertIsNone(result)
-        self.assertEqual(data, {"model": "gpt-4o"})
+    def test_health_check_probes_are_marked(self):
+        # LiteLLM calls its background probes as this key, alias and Team.
+        payload = success_payload(request_tags=["litellm-internal-health-check"])
+        payload["metadata"].update({
+            "user_api_key_hash": "litellm-internal-health-check",
+            "user_api_key_alias": "litellm-internal-health-check",
+            "user_api_key_team_id": "litellm-internal-health-check",
+            "user_api_key_auth_metadata": {},
+        })
+        handler = self.handler()
+        asyncio.run(handler.async_log_success_event({"standard_logging_object": payload}, None, None, None))
+        record = json.loads(handler.stream.getvalue())
+        self.assertEqual(record["call_origin"], "health_check")
+        self.assertEqual(record["key_alias"], "litellm-internal-health-check")
 
-    def test_callers_cannot_change_the_retries(self):
-        # num_retries also carries the x-litellm-num-retries header: LiteLLM
-        # copies it into the request before the callback runs. max_retries
-        # stays: measured, it did not add an upstream call.
-        data = {
-            "model": "gpt-4o",
-            "num_retries": 3,
-            "model_group_retry_policy": {"gpt-4o": {"InternalServerErrorRetries": 3}},
-            "max_retries": 3,
-            "messages": [{"role": "user", "content": "hi"}],
-        }
-        asyncio.run(self.handler().async_pre_call_hook(None, None, data, "acompletion"))
-        self.assertEqual(data, {"model": "gpt-4o", "max_retries": 3, "messages": [{"role": "user", "content": "hi"}]})
+    def test_a_client_tag_does_not_mark_a_call_as_a_probe(self):
+        record = self.handler().record(success_payload(request_tags=["litellm-internal-health-check"]))
+        self.assertNotIn("call_origin", record)
+        self.assertEqual(record["request_tags"], ["litellm-internal-health-check"])
+
+    def test_calls_litellm_makes_itself_carry_their_origin(self):
+        handler = self.handler()
+        for bucket in ("metadata", "litellm_metadata"):
+            kwargs = {
+                "standard_logging_object": success_payload(),
+                "litellm_params": {bucket: {"internal_call_origin": "autorouter_classifier"}},
+            }
+            asyncio.run(handler.async_log_success_event(kwargs, None, None, None))
+        asyncio.run(handler.async_log_success_event({"standard_logging_object": success_payload()}, None, None, None))
+        origins = [json.loads(line).get("call_origin") for line in handler.stream.getvalue().splitlines()]
+        self.assertEqual(origins, ["autorouter_classifier", "autorouter_classifier", None])
+
+    def test_requests_are_left_to_the_guard(self):
+        # The guard, registered whether or not the request log is, drops the
+        # fields that would add content to the log or change the retries.
+        self.assertNotIn("async_pre_call_hook", vars(self.module.RequestLog))
 
     def test_an_auto_router_decision_is_recorded_without_the_prompt(self):
         payload = success_payload(model_group="auto", model="gpt-4o-mini")

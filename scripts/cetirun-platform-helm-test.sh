@@ -86,15 +86,19 @@ for flag in AI_GATEWAY_ENABLED FEATURE_AI_GATEWAY_ENABLED; do
     exit 1
   }
 done
-# The platform keeps each call's record outside the Gateway's database and
-# serves the Gateway's metrics for managed Prometheus. The Gateway's entrypoint
-# writes the request log and turns LiteLLM's spend log off together with it.
+# The platform writes the Gateway's request log and keeps LiteLLM's spend log
+# for seven days, so the console's request log pages work, and serves the
+# Gateway's metrics for managed Prometheus.
 grep -A1 'name: CETIRUN_REQUEST_LOG$' <<< "${output}" | grep -q 'value: "true"' || {
   echo "FAIL: the bundled AI Gateway does not write its request log" >&2
   exit 1
 }
-grep -A1 'name: CETIRUN_SPEND_LOGS$' <<< "${output}" | grep -q 'value: "false"' || {
-  echo "FAIL: the bundled AI Gateway still writes LiteLLM's spend log" >&2
+if grep -q 'name: CETIRUN_SPEND_LOGS$' <<< "${output}"; then
+  echo "FAIL: the bundled AI Gateway turns LiteLLM's spend log off" >&2
+  exit 1
+fi
+grep -q 'maximum_spend_logs_retention_period: "7d"' <<< "${output}" || {
+  echo "FAIL: the bundled AI Gateway keeps LiteLLM's spend log without a retention period" >&2
   exit 1
 }
 grep -q -- '- --prometheus_metrics_port$' <<< "${output}" || {

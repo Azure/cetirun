@@ -231,6 +231,36 @@ assert_contains "num_retries: 0" "LiteLLM's default retries are turned off" "${o
 
 # ----- Routing -----
 
+# Only the strategies LiteLLM selects with on its asynchronous path, which runs
+# the auto routers and the pre-call checks, are accepted.
+echo "==> the routing strategy is the administrator's, among those that run the pre-call checks"
+assert_contains 'routing_strategy: "simple-shuffle"' "deployments are chosen at random by default" "${output}"
+assert_contains 'routing_strategy: "simple-shuffle"' "the strategy does not depend on Redis" "${single}"
+for strategy in least-busy latency-based-routing usage-based-routing-v2 cost-based-routing; do
+  assert_contains "routing_strategy: \"${strategy}\"" "${strategy} can be chosen" \
+    "$(render --set "router.routingStrategy=${strategy}")"
+done
+assert_rejected "usage-based-routing, which skips the pre-call checks" --set router.routingStrategy=usage-based-routing
+assert_rejected "an unknown routing strategy" --set router.routingStrategy=round-robin
+
+# simple-shuffle weighs by the first of weight, rpm and tpm with a positive
+# value and gives a deployment without it no requests; a deployment without
+# order is left out whenever another has one.
+echo "==> weight, order, rpm and tpm are set on every deployment of a model or on none"
+second=(--set-string 'models[1].model_name=lint-model' --set-string 'models[1].litellm_params.model=openai/lint-model-2')
+for field in weight order rpm tpm; do
+  assert_rejected "${field} on one of two deployments" "${second[@]}" --set "models[0].litellm_params.${field}=1"
+  render "${second[@]}" --set "models[0].litellm_params.${field}=1" --set "models[1].litellm_params.${field}=2" > /dev/null || {
+    echo "FAIL: ${field} on both deployments of a model should render" >&2
+    exit 1
+  }
+done
+render "${second[@]}" --set-string 'models[2].model_name=other-model' --set-string 'models[2].litellm_params.model=openai/other' \
+  --set 'models[2].litellm_params.weight=1' > /dev/null || {
+  echo "FAIL: a model with one deployment may set weight" >&2
+  exit 1
+}
+
 # Several deployments behind one model name: a request that fails on one is sent
 # once more, to another. It is not a retry, so num_retries stays 0. Measured with
 # one of two deployments failing: 13 of 30 requests failed without it, none with
@@ -242,22 +272,35 @@ assert_absent "enable_weighted_failover" "failover can be turned off" "$(render 
 
 # A Responses API continuation (previous_response_id) works only on the
 # deployment that produced the earlier response. Measured across two
-# deployments: 6 of 20 continuations failed without the check.
-echo "==> a continuation goes to the deployment that has the earlier response"
-assert_contains 'optional_pre_call_checks: \["responses_api_deployment_check"\]' \
-  "continuations are kept on their deployment by default" "${output}"
-
-# Only the resource that encrypted a model's reasoning can read it. With the
-# LiteLLM in the image, the check makes a conversation whose deployment is down
-# fail until that deployment is back, so it is the administrator's choice.
-echo "==> encrypted reasoning affinity is turned on deliberately"
-assert_absent "encrypted_content_affinity" "encrypted reasoning affinity is off by default" "${output}"
+# deployments: 6 of 20 continuations failed without the check. Only the
+# resource that encrypted a model's reasoning can read it; LiteLLM 1.105.1
+# moves a conversation whose deployment is down and leaves that reasoning out.
+# A key kept on one deployment keeps the provider's prompt cache.
+echo "==> continuations, encrypted reasoning and keys stay on their deployment"
+assert_contains 'optional_pre_call_checks: \["responses_api_deployment_check","encrypted_content_affinity","deployment_affinity"\]' \
+  "the three affinity checks are on by default" "${output}"
+assert_contains 'optional_pre_call_checks: \["responses_api_deployment_check","deployment_affinity"\]' \
+  "encrypted reasoning affinity can be turned off" "$(render --set router.encryptedContentAffinity=false)"
 assert_contains 'optional_pre_call_checks: \["responses_api_deployment_check","encrypted_content_affinity"\]' \
-  "encrypted reasoning affinity can be turned on" "$(render --set router.encryptedContentAffinity=true)"
-assert_absent "optional_pre_call_checks" "no pre-call checks when both are off" \
-  "$(render --set router.continuationAffinity=false)"
-assert_absent "router_settings" "no router settings without Redis or anything to set" \
-  "$(render --set redis.bundled.enabled=false --set replicaCount=1 --set router.failover=false --set router.continuationAffinity=false)"
+  "deployment affinity can be turned off" "$(render --set router.deploymentAffinity=false)"
+assert_absent "optional_pre_call_checks" "no pre-call checks when all are off" \
+  "$(render --set router.continuationAffinity=false --set router.encryptedContentAffinity=false --set router.deploymentAffinity=false)"
+assert_absent "model_group_affinity_config" "no per-model affinity without standby deployments" "${output}"
+
+# Deployment affinity pins a key before LiteLLM keeps only the lowest order, so
+# a key pinned to a standby would stay there after the primary is back. It is
+# off for such a model; the other checks stay on for it.
+echo "==> deployment affinity is off for a model with standby deployments"
+ordered="$(render "${second[@]}" --set 'models[0].litellm_params.order=1' --set 'models[1].litellm_params.order=2' \
+  --set-string 'models[2].model_name=other-model' --set-string 'models[2].litellm_params.model=openai/other')"
+assert_contains 'model_group_affinity_config: {"lint-model":\["responses_api_deployment_check","encrypted_content_affinity"\]}' \
+  "only the ordered model leaves deployment affinity out, keeping the other checks" "${ordered}"
+assert_contains 'model_group_affinity_config: {"lint-model":\[\]}' "a model with standby deployments can have no checks at all" \
+  "$(render "${second[@]}" --set 'models[0].litellm_params.order=1' --set 'models[1].litellm_params.order=2' \
+    --set router.continuationAffinity=false --set router.encryptedContentAffinity=false)"
+assert_absent "model_group_affinity_config" "nothing to turn off without deployment affinity" \
+  "$(render "${second[@]}" --set 'models[0].litellm_params.order=1' --set 'models[1].litellm_params.order=2' \
+    --set router.deploymentAffinity=false)"
 
 echo "==> fallbacks are the administrator's"
 assert_absent "fallbacks:" "no fallbacks by default" "${output}"
@@ -268,26 +311,36 @@ assert_contains 'context_window_fallbacks: \[{"lint-model":\["long-model"\]}\]' 
   "$(render --set 'router.contextWindowFallbacks[0].lint-model[0]=long-model')"
 assert_rejected "a fallback target that is not a list" --set-string 'router.fallbacks[0].lint-model=other-model'
 
-# Each probe is a real call. Probing the GitHub Copilot routes the CetiRun
-# operator registers for each Agent would spend the users' own quota, so only
-# the models configured here are probed, and a router's own models are probed
-# rather than the router.
-echo "==> background health checks are turned on deliberately, for the configured models"
-assert_absent "background_health_checks" "no health checks by default" "${output}"
-health="$(render --set router.healthChecks.enabled=true \
-  --set-string 'models[1].model_name=auto-route' --set-string 'models[1].litellm_params.model=auto_router/complexity_router' \
-  --set-string 'models[1].litellm_params.input_cost_per_token=0.00001' \
-  --set-string 'models[1].litellm_params.output_cost_per_token=0.00001' \
-  --set-string 'models[1].litellm_params.complexity_router_config.tiers.SIMPLE=lint-model' \
-  --set-string 'models[2].model_name=lint-model' --set-string 'models[2].litellm_params.model=openai/lint-model-2')"
-assert_contains "background_health_checks: true" "health checks can be turned on" "${health}"
-assert_contains 'background_health_check_model_groups: \["lint-model"\]' \
-  "only the configured models are probed, each once, and not a router" "${health}"
-assert_contains "enable_health_check_routing: true" "requests go only to deployments that answered" "${health}"
-assert_contains "health_check_interval: 300$" "probes every five minutes by default" "${health}"
-assert_contains "health_check_staleness_threshold: 600$" "a result counts for two intervals" "${health}"
-assert_contains "health_check_ignore_transient_errors: true" "a probe answered with 429 does not exclude a deployment" "${health}"
-assert_rejected "a probe interval under 30 seconds" --set router.healthChecks.enabled=true --set router.healthChecks.intervalSeconds=10
+# Each probe is a real call, to every deployment: those configured here, those
+# added later and the operator's per-Agent GitHub Copilot routes. LiteLLM never
+# probes an auto router itself. With Redis, one replica probes under a lock and
+# the others reuse its results for one interval.
+echo "==> background health checks probe every deployment, once for all replicas"
+assert_contains "background_health_checks: true" "health checks are on by default" "${output}"
+assert_absent "background_health_check_model_groups" "every deployment is probed, not a chosen list" "${output}"
+assert_contains "enable_health_check_routing: true" "requests go only to deployments that answered" "${output}"
+assert_contains "health_check_interval: 300$" "probes every five minutes by default" "${output}"
+assert_contains "health_check_staleness_threshold: 600$" "a result counts for two intervals" "${output}"
+assert_contains "health_check_ignore_transient_errors: true" "a probe answered with 429 does not exclude a deployment" "${output}"
+assert_contains "use_shared_health_check: true" "with Redis, one replica probes for all" "${output}"
+grep -A1 'name: DEFAULT_SHARED_HEALTH_CHECK_TTL$' <<< "${output}" | grep -q 'value: "300"' || {
+  echo "FAIL: shared probe results are not reused past the next probe" >&2
+  exit 1
+}
+grep -A1 'name: DEFAULT_SHARED_HEALTH_CHECK_TTL$' <<< "$(render --set router.healthChecks.intervalSeconds=120)" \
+  | grep -q 'value: "120"' || {
+  echo "FAIL: the shared result lifetime does not follow the probe interval" >&2
+  exit 1
+}
+assert_contains "health_check_interval: 120$" "the probe interval can be changed" "$(render --set router.healthChecks.intervalSeconds=120)"
+assert_absent "use_shared_health_check" "a single replica without Redis probes on its own" "${single}"
+assert_absent "DEFAULT_SHARED_HEALTH_CHECK_TTL" "no shared results without Redis" "${single}"
+assert_contains "background_health_checks: true" "a single replica without Redis still probes" "${single}"
+off="$(render --set router.healthChecks.enabled=false)"
+assert_absent "background_health_checks" "health checks can be turned off" "${off}"
+assert_absent "use_shared_health_check" "no shared health checks when off" "${off}"
+assert_absent "DEFAULT_SHARED_HEALTH_CHECK_TTL" "no shared result lifetime when off" "${off}"
+assert_rejected "a probe interval under 30 seconds" --set router.healthChecks.intervalSeconds=10
 
 # A LiteLLM auto router is an entry in models whose model is
 # auto_router/complexity_router. Its own name is checked against the unpriced
@@ -322,9 +375,8 @@ EOF
 router_values "${router_dir}/valid.yaml"
 routed="$(helm template "${release_name}" "${chart_dir}" -f "${router_dir}/valid.yaml" --set operatorIntegration=true)"
 assert_contains "model: auto_router/complexity_router" "a router configured in models reaches LiteLLM" "${routed}"
-assert_contains 'background_health_check_model_groups: \["lint-model","big-model"\]' \
-  "a router is not probed itself" \
-  "$(helm template "${release_name}" "${chart_dir}" -f "${router_dir}/valid.yaml" --set router.healthChecks.enabled=true)"
+assert_absent "background_health_check_model_groups" \
+  "every deployment is probed; LiteLLM never probes a router itself" "${routed}"
 
 # OpenClaw sends its own context as the last user message, between markers. A
 # router classifies the newest message a person wrote, so without the markers
@@ -662,6 +714,17 @@ assert_contains 'value: "false"' "spendLogs.enabled=false has the entrypoint sto
 assert_absent "disable_spend_logs" "the spend log setting stays out of LiteLLM's configuration" "${spend_off}"
 assert_rejected "the spend log off without the request log" --set spendLogs.enabled=false --set requestLog.enabled=false
 
+# The spend log grows by a row per call; LiteLLM deletes older rows once a day,
+# and the stored health check results with them. Prompts are never stored.
+echo "==> LiteLLM's spend log is kept for seven days"
+assert_contains 'maximum_spend_logs_retention_period: "7d"' "spend log rows are kept for seven days by default" "${output}"
+assert_contains 'maximum_health_check_retention_period: "7d"' "health check results are kept as long" "${output}"
+assert_contains 'maximum_spend_logs_retention_period: "30d"' "the retention can be changed" \
+  "$(render --set-string spendLogs.retention=30d)"
+assert_absent "retention_period" "an empty retention keeps every row" "$(render --set-string spendLogs.retention=)"
+assert_rejected "a retention LiteLLM cannot read" --set-string spendLogs.retention=week
+assert_absent "store_prompts_in_spend_logs" "prompts stay out of the spend log" "${output}"
+
 # Container Insights copies each container's environment, Secret values
 # included, into its ContainerInventory table once a minute unless collection
 # is turned off for the cluster or for the container. Every container here
@@ -739,11 +802,13 @@ for template in deployment.yaml configmap.yaml; do
     exit 1
   }
 done
-[ "$(render --set router.healthChecks.enabled=true --set router.healthChecks.intervalSeconds=null -s templates/configmap.yaml)" \
-  = "$(render --set router.healthChecks.enabled=true -s templates/configmap.yaml)" ] || {
-  echo "FAIL: without the probe interval, the health checks differ from their default render" >&2
-  exit 1
-}
+for template in configmap.yaml deployment.yaml; do
+  [ "$(render --set router.healthChecks.intervalSeconds=null -s "templates/${template}")" \
+    = "$(render -s "templates/${template}")" ] || {
+    echo "FAIL: without the probe interval, ${template} differs from its default render" >&2
+    exit 1
+  }
+done
 [ "$(render --set metrics.enabled=true --set metrics.podMonitor=null -s templates/deployment.yaml)" \
   = "$(render --set metrics.enabled=true -s templates/deployment.yaml)" ] || {
   echo "FAIL: without the PodMonitor settings, the Deployment differs from its default render" >&2

@@ -23,8 +23,8 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-func TestPortalTeamUpdatePreservesConcurrentGovernance(t *testing.T) {
-	team := &api.Team{ObjectMeta: metav1.ObjectMeta{Name: "governed"}, Spec: api.TeamSpec{
+func TestPortalTeamUpdateRejectsConcurrentGovernance(t *testing.T) {
+	team := &api.Team{ObjectMeta: metav1.ObjectMeta{Name: "governed", UID: "team-uid"}, Spec: api.TeamSpec{
 		AgentPolicyRef: "old-policy",
 		SandboxRefs:    []string{"old"}, DefaultSandboxRef: "old",
 		Skills: []string{"old-skill"},
@@ -47,17 +47,25 @@ func TestPortalTeamUpdatePreservesConcurrentGovernance(t *testing.T) {
 			}
 			return c.Patch(ctx, obj, patch, opts...)
 		}}).Build()
-	got, err := NewClient(c).UpdateTeamSpec(context.Background(), team.Name, api.TeamSpec{
-		MemberContext:  api.TeamContextSpec{Role: "new-role"},
-		AgentPolicyRef: "must-not-override",
-	})
-	if err != nil {
+	current := &api.Team{}
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(team), current); err != nil {
 		t.Fatal(err)
 	}
-	if updates != 2 || got.Spec.AgentPolicyRef != "new-policy" ||
-		!slices.Equal(got.Spec.SandboxRefs, []string{"new"}) || got.Spec.DefaultSandboxRef != "new" ||
-		got.Spec.MemberContext.Role != "new-role" || len(got.Spec.Skills) != 0 {
-		t.Fatalf("retry lost concurrent governance or Portal replacement semantics: %+v", got.Spec)
+	_, err := NewClient(c).UpdateTeamSpec(context.Background(), team.Name, api.TeamSpec{
+		MemberContext:  api.TeamContextSpec{Role: "new-role"},
+		AgentPolicyRef: "requested-policy",
+	}, ConfigurationVersion{UID: current.UID, ResourceVersion: current.ResourceVersion})
+	if !apierrors.IsConflict(err) {
+		t.Fatalf("expected conflict, got %v", err)
+	}
+	got := &api.Team{}
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(team), got); err != nil {
+		t.Fatal(err)
+	}
+	if updates != 1 || got.Spec.AgentPolicyRef != "new-policy" ||
+		!slices.Equal(got.Spec.SandboxRefs, []string{"new"}) || got.Spec.MemberContext.Role != "" ||
+		!slices.Equal(got.Spec.Skills, []string{"old-skill"}) {
+		t.Fatalf("conflicting configuration was overwritten: %+v", got.Spec)
 	}
 }
 

@@ -14,20 +14,17 @@ the outcome. Request and response content is never written. Every string in it
 is capped, and a line never exceeds MAX_LINE_BYTES (see ``shortened``).
 
 A call to one of LiteLLM's auto routers also records the tier the router chose,
-why, and its score; the model it chose is the call's provider model. The call
-LiteLLM makes to classify such a request, when the router uses a model for
-that, is a line of its own, marked with its origin.
+why, and its score; the model it chose is the call's provider model. A call
+LiteLLM makes itself is marked with its origin in call_origin: the call an auto
+router makes to classify a request, when the router uses a model for that, is
+a line of its own with the classifier's origin, and a background health check
+probe is "health_check", so usage figures can leave probes out.
 
 A client can ask LiteLLM for per-request debug output with
 litellm_request_debug, which makes LiteLLM print that request's prompt and the
-provider's raw response to the log. The callback drops that field from every
-request, so content stays out of the log.
-
-A client can also change the Gateway's retry settings for its own request,
-with num_retries in the body or the x-litellm-num-retries header, or with
-model_group_retry_policy. The Gateway does not retry: agents retry on their
-own, and the two multiply. The callback drops those fields from every request
-as well.
+provider's raw response to the log. The image's guard callback (guard.py),
+which is always registered, drops that field from every request, so content
+stays out of the log, with the fields that would change the Gateway's retries.
 
 The image's entrypoint registers ``handler`` with LiteLLM before the proxy
 loads its configuration, when CETIRUN_REQUEST_LOG is set, rather than listing
@@ -64,15 +61,13 @@ OPERATOR_KEY_METADATA = ("cetirun_agent", "cetirun_agent_uid", "cetirun_user", "
 # LiteLLM tags every request with the client's user agent, which the record
 # already carries in its own field.
 USER_AGENT_TAG_PREFIX = "User-Agent:"
-# A request body field that makes LiteLLM log that request's content.
-DEBUG_PARAMETER = "litellm_request_debug"
-# Request fields that change the Gateway's retries for that request. LiteLLM
-# also puts the x-litellm-num-retries header into num_retries before the
-# callback sees the request. Each made one failing request four upstream calls.
-RETRY_PARAMETERS = ("num_retries", "model_group_retry_policy")
 # Where LiteLLM marks a call it makes itself, such as an auto router's
 # classifier call: in the call's own metadata, not in the logging payload.
 CALL_ORIGIN_KEY = "internal_call_origin"
+# The identity LiteLLM gives its background health check probes, as key hash,
+# alias and Team. Clients can choose request tags, not these.
+HEALTH_CHECK_ACCOUNT = "litellm-internal-health-check"
+HEALTH_CHECK_ORIGIN = "health_check"
 
 
 def call_origin(kwargs):
@@ -83,6 +78,15 @@ def call_origin(kwargs):
         if isinstance(origin, str) and origin:
             return origin
     return None
+
+
+def is_health_check(metadata):
+    """Whether the call is one of LiteLLM's background health check probes."""
+    return HEALTH_CHECK_ACCOUNT in (
+        metadata.get("user_api_key_hash"),
+        metadata.get("user_api_key_alias"),
+        metadata.get("user_api_key_team_id"),
+    )
 
 
 def iso_time(timestamp):
@@ -209,13 +213,6 @@ class RequestLog(CustomLogger):
         super().__init__()
         self.stream = stream
 
-    async def async_pre_call_hook(self, user_api_key_dict, cache, data, call_type):
-        if isinstance(data, dict):
-            data.pop(DEBUG_PARAMETER, None)
-            for name in RETRY_PARAMETERS:
-                data.pop(name, None)
-        return None
-
     async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
         self.write(kwargs)
 
@@ -238,6 +235,8 @@ class RequestLog(CustomLogger):
         # Only the router's verdict: its signals and keywords quote the prompt,
         # and the tier's parameters can carry credentials.
         routing = as_dict(metadata.get("routing_decision"))
+        if is_health_check(metadata):
+            origin = HEALTH_CHECK_ORIGIN
         key_metadata = {
             clip(name): clip(value) if isinstance(value, str) else value
             for name, value in as_dict(metadata.get("user_api_key_auth_metadata")).items()

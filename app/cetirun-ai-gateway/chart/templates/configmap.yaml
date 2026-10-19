@@ -65,19 +65,29 @@ data:
       {{- $router := include "cetirun-ai-gateway.router" . | fromJson }}
       {{- if $router.healthChecks.enabled }}
       {{- $interval := int $router.healthChecks.intervalSeconds }}
-      # router.healthChecks: probe the deployments of the configured models in
-      # the background, and route only to those that answered. Each probe is a
-      # real call. Models outside this list, such as those the CetiRun operator
-      # registers for each Agent's GitHub Copilot, are never probed: their
-      # probes would spend the users' own quota. A probe answered with 429 or
-      # 408 counts as healthy, since cooldowns already handle those on live
-      # requests. A result is trusted for two intervals.
+      # router.healthChecks: probe every deployment in the background, those
+      # configured here and those added later, such as the GitHub Copilot
+      # routes the CetiRun operator registers for each Agent, and route only to
+      # those that answered. Each probe is a real call. LiteLLM's auto routers
+      # are not probed themselves. A probe answered with 429 or 408 counts as
+      # healthy, since cooldowns already handle those on live requests. A
+      # result is trusted for two intervals.
       background_health_checks: true
       health_check_interval: {{ $interval }}
-      background_health_check_model_groups: {{ include "cetirun-ai-gateway.healthCheckModels" . }}
       enable_health_check_routing: true
       health_check_staleness_threshold: {{ mul 2 $interval }}
       health_check_ignore_transient_errors: true
+      {{- if include "cetirun-ai-gateway.redisEnabled" . }}
+      # One replica probes at a time, under a lock in Redis, and the others
+      # use its results (DEFAULT_SHARED_HEALTH_CHECK_TTL, set to the interval).
+      use_shared_health_check: true
+      {{- end }}
+      {{- end }}
+      {{- with (include "cetirun-ai-gateway.logsAndMetrics" . | fromJson).spendLogs.retention }}
+      # spendLogs.retention: once a day, LiteLLM deletes the rows of its spend
+      # log older than this, and the stored health check results as well.
+      maximum_spend_logs_retention_period: {{ . | quote }}
+      maximum_health_check_retention_period: {{ . | quote }}
       {{- end }}
 
     litellm_settings:
@@ -131,6 +141,8 @@ data:
         password: os.environ/REDIS_PASSWORD
         {{- end }}
     {{- end }}
+    {{- /* The checks besides deployment affinity, which a model with standby
+           deployments keeps when deployment affinity is off for it. */}}
     {{- $checks := list }}
     {{- if $router.continuationAffinity }}
     {{- $checks = append $checks "responses_api_deployment_check" }}
@@ -138,7 +150,11 @@ data:
     {{- if $router.encryptedContentAffinity }}
     {{- $checks = append $checks "encrypted_content_affinity" }}
     {{- end }}
-    {{- if or $redis $router.failover $checks $router.fallbacks $router.contextWindowFallbacks }}
+    {{- $groupChecks := $checks }}
+    {{- if $router.deploymentAffinity }}
+    {{- $checks = append $checks "deployment_affinity" }}
+    {{- end }}
+    {{- $ordered := include "cetirun-ai-gateway.orderedModelNames" . | fromJsonArray }}
 
     router_settings:
       {{- if $redis }}
@@ -152,6 +168,8 @@ data:
       redis_password: os.environ/REDIS_PASSWORD
       {{- end }}
       {{- end }}
+      # router.routingStrategy: how one of a model's deployments is chosen.
+      routing_strategy: {{ $router.routingStrategy | quote }}
       {{- if $router.failover }}
       # router.failover: a request that failed on one deployment is sent once
       # more, to another deployment of the same model. Not a retry: the
@@ -159,8 +177,19 @@ data:
       enable_weighted_failover: true
       {{- end }}
       {{- if $checks }}
-      # router.continuationAffinity and router.encryptedContentAffinity.
+      # router.continuationAffinity, router.encryptedContentAffinity and
+      # router.deploymentAffinity.
       optional_pre_call_checks: {{ toJson $checks }}
+      {{- end }}
+      {{- if and $router.deploymentAffinity $ordered }}
+      # No deployment affinity for models with standby deployments (order):
+      # a key pinned to a standby would stay there after the primary is back.
+      # The other checks stay on for them.
+      {{- $groups := dict }}
+      {{- range $ordered }}
+      {{- $_ := set $groups . $groupChecks }}
+      {{- end }}
+      model_group_affinity_config: {{ toJson $groups }}
       {{- end }}
       {{- with $router.fallbacks }}
       fallbacks: {{ toJson . }}
@@ -168,4 +197,3 @@ data:
       {{- with $router.contextWindowFallbacks }}
       context_window_fallbacks: {{ toJson . }}
       {{- end }}
-    {{- end }}

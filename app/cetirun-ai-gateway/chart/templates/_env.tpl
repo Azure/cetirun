@@ -76,6 +76,15 @@ Everything the proxy needs, including credentials held in chart-managed Secrets.
       name: {{ include "cetirun-ai-gateway.redisPasswordSecret" . }}
       key: {{ include "cetirun-ai-gateway.redisPasswordKey" . }}
 {{- end }}
+{{- $router := include "cetirun-ai-gateway.router" . | fromJson }}
+{{- if and $router.healthChecks.enabled (include "cetirun-ai-gateway.redisEnabled" .) }}
+{{- /* The replicas share probe results through Redis (use_shared_health_check).
+       LiteLLM reuses a shared result for this many seconds, 300 unless set,
+       whatever the probe interval; set to the interval, a result is never
+       reused past the next probe. */}}
+- name: DEFAULT_SHARED_HEALTH_CHECK_TTL
+  value: {{ int $router.healthChecks.intervalSeconds | quote }}
+{{- end }}
 {{- $settings := include "cetirun-ai-gateway.logsAndMetrics" . | fromJson }}
 {{- if $settings.metrics.enabled }}
 {{- /* The proxy records its samples in files here, and the separate metrics

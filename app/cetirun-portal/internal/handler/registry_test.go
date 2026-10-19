@@ -450,3 +450,67 @@ func TestRegistryForeignSourceAndDeletingAgent(t *testing.T) {
 		t.Fatal("deleting instance accepted mutation")
 	}
 }
+
+func TestRegistryRetryKeepsRetainedChartWhenDefaultRoutingChanges(t *testing.T) {
+	for _, scenario := range []struct {
+		name   string
+		types  []api.AgentType
+		status int
+		code   string
+	}{
+		{"unknown", nil, http.StatusServiceUnavailable, "agent_types_unknown"},
+		{"unsupported", []api.AgentType{api.AgentTypeOpenClaw}, http.StatusConflict, "agent_chart_unsupported"},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			ctx := context.Background()
+			failing := true
+			h, storage := registryHandler(t, &failing)
+			h.Config.AIGatewayEnabled = true
+			h.Config.AIGatewayCatalogNamespace = "cetirun-system"
+			catalog := catalogConfigMap("gpt-6-mini")
+			if err := storage.Create(ctx, catalog); err != nil {
+				t.Fatal(err)
+			}
+			original := createdPartialRegistryForPolicy(t, h)
+			// The Operator pins the chart accepted at creation, independently of
+			// a later default-chart change or transient catalog-routing read.
+			original.Spec.Helm = api.HelmSpec{Version: "1.0.0"}
+			if err := storage.Update(ctx, original); err != nil {
+				t.Fatal(err)
+			}
+			changed := routingCatalog(&api.AIGatewayRouting{Chart: "oci://registry.example.com/helm/cetirun:2.0.0", AgentTypes: scenario.types}, true, "gpt-6-mini")
+			catalog.Data = changed.Data
+			if err := storage.Update(ctx, catalog); err != nil {
+				t.Fatal(err)
+			}
+			failing = false
+			h.Kube = kube.NewClient(storage) // No process-local recovery state.
+			for range 2 {                    // Recover credentials, then recover the completed response.
+				w := httptest.NewRecorder()
+				h.CreateInstance(w, registryRequest(http.MethodPost, registryCreateBody, nil))
+				if w.Code != http.StatusOK {
+					t.Fatalf("retained retry: %d %s", w.Code, w.Body.String())
+				}
+			}
+			current, err := h.Kube.GetInstanceByName(ctx, original.Name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if current.UID != original.UID || current.Spec.Helm.Version != "1.0.0" || !h.Kube.RegistryAuthConfigured(ctx, current) {
+				t.Fatal("retry did not preserve and complete the retained Agent")
+			}
+			// A different creation still requires the current default chart.
+			body := strings.Replace(registryCreateBody, `"team":"aks"`, `"team":"aks","instanceName":"second"`, 1)
+			r := registryRequest(http.MethodPost, body, nil)
+			r.Header.Set("Idempotency-Key", "synthetic-create-request-0002")
+			w := httptest.NewRecorder()
+			h.CreateInstance(w, r)
+			if w.Code != scenario.status || errorCode(t, w) != scenario.code {
+				t.Fatalf("new create: %d %s", w.Code, w.Body.String())
+			}
+			if _, err := h.Kube.GetInstanceByName(ctx, "alice-second"); !kube.IsNotFound(err) {
+				t.Fatal("new Agent bypassed the default-chart check")
+			}
+		})
+	}
+}

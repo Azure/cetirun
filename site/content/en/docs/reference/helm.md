@@ -133,9 +133,15 @@ ttyd uses an origin check. Template validation rejects known port collisions;
 the entrypoint validates the port and shell. Neither is a replacement for
 authenticated ingress. Do not expose terminal, noVNC, or Chrome debugging ports
 directly to an untrusted network.
-Disabling the desktop also requires disabling OpenClaw browser `attachOnly`
-or configuring a compatible browser path; template validation rejects
-`desktop.enabled=false` with `attachOnly=true`.
+Setting `desktop.enabled=false` automatically defaults OpenClaw browser
+`attachOnly` to `false` and `headless` to `true`, removing the dependency on the
+desktop's CDP endpoint. With the desktop enabled, these defaults are `true` and `false`.
+Explicit boolean values under `openclaw.config.browser` override these defaults;
+omitted or null values use the desktop-dependent defaults. Template validation
+still rejects an enabled browser with explicit `attachOnly=true` when the desktop
+is disabled. Set `openclaw.config.browser.enabled=false` to disable browser use.
+Browser automation without the desktop requires a compatible Chrome/Chromium
+executable in the Agent image; disabling the desktop does not install one.
 
 ### Resources and availability
 
@@ -226,8 +232,9 @@ for OpenAI/Anthropic, configure both the provider's model and credentials.
 
 ### Agent configuration and health
 
-`openclaw.config` supplies the native configuration. Browser support is enabled,
-`headless` is false, the gateway attaches to the desktop CDP profile, and logging is `info`.
+`openclaw.config` supplies the native configuration. Browser support is enabled
+and logging is `info`. With the default desktop enabled, the gateway attaches to
+its headed CDP browser; without the desktop, it defaults to headless browser mode.
 The chart enables the OpenClaw doctor init step through `openclaw.doctor.enabled`.
 It runs `openclaw doctor --fix --non-interactive --yes` on the persistent home;
 this is a startup mutation, not a read-only diagnostic. The `doctor.enabled`
@@ -321,12 +328,13 @@ runtime agent values remain under `cetirun-operator.cetirun.helmValues`.
 | `cetirun-ai-gateway.operatorIntegration` | `true`; required while the Gateway is installed. Reserves `copilot/` model names for the Agents' GitHub Copilot routes and checks router fallback targets against the caller's key. Set it on a separately installed Gateway too |
 | `cetirun-ai-gateway.models` | `[]`; shared models every OpenClaw and Hermes Agent can use, each with `model_info.access_groups: ["cetirun-shared"]` and, while the Gateway blocks unpriced models, a price. Empty is valid: OpenClaw and Hermes Agents then use their owners' GitHub Copilot |
 | `cetirun-ai-gateway.requestLog.enabled` | `true`; one JSON line per model call on the Gateway's stdout, with the caller, model, tokens, spend and timing, for the cluster's log collection. It carries no request or response content |
-| `cetirun-ai-gateway.spendLogs.enabled` | `false` in the platform (the Gateway chart defaults to `true`); LiteLLM writes no row per call to `LiteLLM_SpendLogs`, so the LiteLLM console's request log pages stay empty. Spend, budgets and daily usage totals are kept. Turned off only together with the request log |
+| `cetirun-ai-gateway.spendLogs.enabled`, `spendLogs.retention` | `true` and `7d`; LiteLLM writes a row per call to `LiteLLM_SpendLogs`, which the LiteLLM console's request log pages read, without prompts or responses, and deletes rows older than the retention once a day, with the stored health check results. Spend, budgets and daily usage totals are kept beyond it. Turned off only together with the request log |
 | `cetirun-ai-gateway.metrics.enabled` | `true` in the platform (the Gateway chart defaults to `false`); serves LiteLLM's Prometheus metrics on port 9090 of each Gateway pod (9091 when the Gateway itself listens on 9090), without authentication. `metrics.podMonitor.enabled`, also `true` in the platform, adds a PodMonitor for Azure Monitor managed Prometheus when the cluster serves its API |
-| `cetirun-ai-gateway.router.failover`, `router.continuationAffinity` | `true`; with several deployments behind one model name, a request that failed on one is sent once more to another (not a retry), and a Responses API continuation goes to the deployment that stored the earlier response. See the [Gateway chart README]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#routing) |
-| `cetirun-ai-gateway.router.encryptedContentAffinity` | `false`; keeps each Responses API conversation on the deployment that encrypted its reasoning. Turn it on when one model name is served by more than one Azure OpenAI resource or OpenAI organization |
+| `cetirun-ai-gateway.router.routingStrategy` | `simple-shuffle`; how one of a model's deployments is chosen: also `least-busy`, `latency-based-routing`, `usage-based-routing-v2` or `cost-based-routing`. See the [Gateway chart README]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#choosing-a-deployment) |
+| `cetirun-ai-gateway.router.failover`, `router.continuationAffinity` | `true`; with several deployments behind one model name, a request that failed on one is sent once more to another (not a retry; `simple-shuffle` only), and a Responses API continuation goes to the deployment that stored the earlier response. See the [Gateway chart README]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#routing) |
+| `cetirun-ai-gateway.router.encryptedContentAffinity`, `router.deploymentAffinity` | `true`; keeps each Responses API conversation on the deployment that encrypted its reasoning, moving it without that reasoning when the deployment is unavailable, and keeps each key on the deployment that served it last, for the provider's prompt cache. Deployment affinity is off for models whose deployments set `order` |
+| `cetirun-ai-gateway.router.healthChecks.enabled`, `router.healthChecks.intervalSeconds` | `true` and `300`; probes every deployment, including each Agent's GitHub Copilot routes, which spends the owner's Copilot allowance, and routes only to those that answered. With Redis, one replica probes for all |
 | `cetirun-ai-gateway.router.fallbacks`, `router.contextWindowFallbacks` | `[]`; models to try when a model fails, or when a request is too long for it. Each target is checked against the Agent's key |
-| `cetirun-ai-gateway.router.healthChecks.enabled` | `false`; probes the deployments of the configured models every `router.healthChecks.intervalSeconds` (300) and routes only to those that answered. Each probe is a real call; the Agents' GitHub Copilot routes are never probed |
 | `cetirun-operator.aiGateway.enabled`, `cetirun-portal.features.aiGatewayEnabled` | `true`; required, the chart refuses to install with either off |
 | `cetirun-operator.domainSuffix`, `cetirun-portal.istio.host` | Required deployment domain for enabled components |
 | `cetirun-operator.istioGateway`, `cetirun-portal.istio.gateway` | Matching Gateway resource in `namespace/name` form |

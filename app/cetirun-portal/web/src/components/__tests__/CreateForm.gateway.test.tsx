@@ -38,11 +38,15 @@ const mockCatalog = vi.hoisted(() => ({
     known: boolean;
     sharedModels: { name: string }[];
     githubCopilot: boolean;
-    agentTypes?: string[] | null;
+    agentTypes: string[] | null;
   },
 }));
-vi.mock("../../hooks/useAIGateway", () => ({
-  useAIGatewayCatalog: (enabled: boolean) => ({ data: enabled ? mockCatalog.data : undefined, isLoading: false }),
+vi.mock("../../hooks/useCreateOptions", () => ({
+  useCreateOptions: (team: string, enabled: boolean) => ({
+    data: enabled ? { team, allowedAgentTypes: mockFeatures.data.allowedAgentTypes, aiGatewayEnabled: true,
+      gateway: mockCatalog.data, agentIdentity: { allowed: false, required: false } } : undefined,
+    isFetching: false, refetch: vi.fn(),
+  }),
 }));
 
 function renderForm() {
@@ -55,8 +59,8 @@ function renderForm() {
 }
 
 async function chooseOpenClawAndTeam(user: ReturnType<typeof userEvent.setup>) {
-  await user.selectOptions(screen.getByRole("combobox", { name: /Agent Type/ }), "openclaw");
   await user.selectOptions(screen.getByRole("combobox", { name: /Team/ }), "platform");
+  await user.selectOptions(screen.getByRole("combobox", { name: /Agent Type/ }), "openclaw");
 }
 
 describe("CreateForm with the AI Gateway", () => {
@@ -115,26 +119,23 @@ describe("CreateForm with the AI Gateway", () => {
   });
 
   it("requires GitHub Copilot when no shared model is available", async () => {
-    mockCatalog.data = { known: true, sharedModels: [], githubCopilot: true };
+    mockCatalog.data = { agentTypes: ["hermes", "openclaw"], known: true, sharedModels: [], githubCopilot: true };
     const user = userEvent.setup();
     renderForm();
     await chooseOpenClawAndTeam(user);
     const copilot = screen.getByRole("switch", { name: "Use GitHub Copilot" });
     expect(copilot).toBeChecked();
     expect(copilot).toBeDisabled();
-    expect(screen.getByText("No shared models are available.")).toBeInTheDocument();
+    expect(screen.queryByRole("switch", { name: "Use shared models" })).not.toBeInTheDocument();
     expect(screen.queryByRole("combobox", { name: /Default model/ })).not.toBeInTheDocument();
   });
 
   it("keeps shared models on when the deployment offers no GitHub Copilot", async () => {
-    mockCatalog.data = { known: true, sharedModels: [{ name: "gpt-6" }], githubCopilot: false };
+    mockCatalog.data = { agentTypes: ["hermes", "openclaw"], known: true, sharedModels: [{ name: "gpt-6" }], githubCopilot: false };
     const user = userEvent.setup();
     renderForm();
     await chooseOpenClawAndTeam(user);
-    const copilot = screen.getByRole("switch", { name: "Use GitHub Copilot" });
-    expect(copilot).not.toBeChecked();
-    expect(copilot).toBeDisabled();
-    expect(screen.getByText("GitHub Copilot is turned off for this deployment.")).toBeInTheDocument();
+    expect(screen.queryByRole("switch", { name: "Use GitHub Copilot" })).not.toBeInTheDocument();
     const shared = screen.getByRole("switch", { name: "Use shared models" });
     expect(shared).toBeChecked();
     expect(shared).toBeDisabled();
@@ -145,7 +146,7 @@ describe("CreateForm with the AI Gateway", () => {
   });
 
   it("refuses an OpenClaw agent when no model source is available", async () => {
-    mockCatalog.data = { known: true, sharedModels: [], githubCopilot: false };
+    mockCatalog.data = { agentTypes: ["hermes", "openclaw"], known: true, sharedModels: [], githubCopilot: false };
     const user = userEvent.setup();
     renderForm();
     await chooseOpenClawAndTeam(user);
@@ -154,7 +155,7 @@ describe("CreateForm with the AI Gateway", () => {
   });
 
   it("waits for the published model sources before creating an OpenClaw agent", async () => {
-    mockCatalog.data = { known: false, sharedModels: [], githubCopilot: false };
+    mockCatalog.data = { agentTypes: ["hermes", "openclaw"], known: false, sharedModels: [], githubCopilot: false };
     const user = userEvent.setup();
     renderForm();
     await chooseOpenClawAndTeam(user);
@@ -177,8 +178,8 @@ describe("CreateForm with the AI Gateway", () => {
   it("offers Hermes the same model sources as OpenClaw", async () => {
     const user = userEvent.setup();
     renderForm();
-    await user.selectOptions(screen.getByRole("combobox", { name: /Agent Type/ }), "hermes");
     await user.selectOptions(screen.getByRole("combobox", { name: /Team/ }), "platform");
+    await user.selectOptions(screen.getByRole("combobox", { name: /Agent Type/ }), "hermes");
     expect(screen.getByRole("switch", { name: "Use shared models" })).toBeChecked();
     await user.click(screen.getByRole("switch", { name: "Use GitHub Copilot" }));
     await user.selectOptions(screen.getByRole("combobox", { name: /Default model/ }), "gpt-6-mini");
@@ -196,8 +197,8 @@ describe("CreateForm with the AI Gateway", () => {
     mockCatalog.data = { ...mockCatalog.data, agentTypes: ["openclaw"] };
     const user = userEvent.setup();
     renderForm();
-    await user.selectOptions(screen.getByRole("combobox", { name: /Agent Type/ }), "hermes");
     await user.selectOptions(screen.getByRole("combobox", { name: /Team/ }), "platform");
+    await user.selectOptions(screen.getByRole("combobox", { name: /Agent Type/ }), "hermes");
     expect(screen.getByText(/does not route Hermes agents through the AI Gateway/)).toBeInTheDocument();
     expect(screen.getByText(/upgrade the agent chart/)).toBeInTheDocument();
     expect(screen.queryByRole("switch", { name: "Use shared models" })).not.toBeInTheDocument();
@@ -207,19 +208,11 @@ describe("CreateForm with the AI Gateway", () => {
     expect(screen.getByRole("button", { name: "Create Agent" })).toBeEnabled();
   });
 
-  it("routes only OpenClaw with an earlier operator's catalog", async () => {
-    mockCatalog.data = { known: true, sharedModels: [{ name: "gpt-6" }], githubCopilot: true };
-    const user = userEvent.setup();
-    renderForm();
-    await user.selectOptions(screen.getByRole("combobox", { name: /Team/ }), "platform");
-    expect(screen.getByText(/does not route Hermes agents through the AI Gateway/)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Create Agent" })).toBeDisabled();
-  });
-
   it("waits until the operator has read its agent chart", async () => {
     mockCatalog.data = { ...mockCatalog.data, agentTypes: null };
     const user = userEvent.setup();
     renderForm();
+    await user.selectOptions(screen.getByRole("combobox", { name: /Team/ }), "platform");
     for (const type of ["hermes", "openclaw"]) {
       await user.selectOptions(screen.getByRole("combobox", { name: /Agent Type/ }), type);
       await user.selectOptions(screen.getByRole("combobox", { name: /Team/ }), "platform");
@@ -235,11 +228,11 @@ describe("CreateForm with the AI Gateway", () => {
     try {
       const user = userEvent.setup();
       renderForm();
+      expect(screen.getByRole("button", { name: "Create Agent" })).toBeDisabled();
+      await user.selectOptions(screen.getByRole("combobox", { name: /Team/ }), "platform");
       await user.selectOptions(screen.getByRole("combobox", { name: /Agent Type/ }), "custom");
       await user.type(screen.getByRole("textbox", { name: /Agent Image/ }), "registry.example.com/team/agent:1.0");
       expect(screen.queryByRole("switch", { name: "Use shared models" })).not.toBeInTheDocument();
-      expect(screen.getByRole("button", { name: "Create Agent" })).toBeDisabled();
-      await user.selectOptions(screen.getByRole("combobox", { name: /Team/ }), "platform");
       await user.click(screen.getByRole("button", { name: "Create Agent" }));
       expect(mockMutate).toHaveBeenCalledWith(
         expect.objectContaining({
