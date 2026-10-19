@@ -12,8 +12,8 @@ network access.
 | `app/cetirun-operator/` | Go Kubernetes operator, API types, and generated CRDs |
 | `app/cetirun-portal/` | Go portal backend and its Helm chart |
 | `app/cetirun-portal/web/` | React and TypeScript portal frontend |
-| `app/cetirun-agent-broker/` | Owner Connections, per-Agent grants, encrypted OAuth state, and internal token issuance |
-| `app/agent-tools-mcp/` | Standalone workload-authenticated MCP server and fixed personal-service tools |
+| `app/cetirun-agent-broker/` | Owner Connections, per-Agent connection bindings, encrypted OAuth state, and internal token issuance |
+| `app/agent-tools-mcp/` | Standalone workload-authenticated MCP server and generic JSON REST service execution |
 | `app/internal/` | Shared Go implementation packages for Registry credentials and terminal policy |
 | `app/cetirun-chart/` | Runtime Helm chart, container definitions, and runtime plugins |
 | `infra/` | Infrastructure definitions and Istio configuration |
@@ -206,11 +206,11 @@ build above until a working lint entry point is added.
 
 ### Agent Identity Broker
 
-The Broker owns owner-scoped Connections, per-instance AgentGrants, OAuth/OBO,
+The Broker owns owner-scoped Connections, per-instance ConnectionBindings, OAuth/OBO,
 and encrypted credential storage. Agent Tools MCP is a separate native remote
 MCP server in `app/agent-tools-mcp/`: it verifies a Pod-bound workload token,
 asks the Broker to independently verify the instance and authorization, and
-executes fixed Azure, GitHub, Microsoft Graph, and Google adapters. Provider
+executes JSON REST requests against fixed Azure, GitHub, Microsoft Graph, and Google service profiles. Provider
 tokens never enter Agent workloads. There is no MCP bridge or direct Agent
 token-issuance route. Run both components' checks with:
 

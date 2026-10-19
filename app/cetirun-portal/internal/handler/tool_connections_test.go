@@ -48,7 +48,6 @@ func TestToolConnectionsListForwardsOnlyVerifiedOwner(t *testing.T) {
 		for key, expected := range map[string]string{
 			"X-CetiRun-Owner-Tenant-ID": toolOwnerTenant,
 			"X-CetiRun-Owner-Object-ID": toolOwnerObject,
-			"X-CetiRun-Catalog-Version": toolCatalogVersion,
 		} {
 			if got := r.Header.Get(key); got != expected {
 				t.Errorf("%s = %q, want %q", key, got, expected)
@@ -85,9 +84,9 @@ func TestToolConnectionsRejectsUnverifiedOwner(t *testing.T) {
 	}
 }
 
-func TestToolGrantUsesOwnedInstanceUIDWithoutAgentIdentity(t *testing.T) {
+func TestConnectionBindingUsesOwnedInstanceUIDWithoutAgentIdentity(t *testing.T) {
 	broker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet || r.URL.Path != "/v1/instances/alice-agent/tool-grants" {
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/instances/alice-agent/connection-bindings" {
 			t.Fatalf("unexpected Broker request: %s %s", r.Method, r.URL.Path)
 		}
 		if got := r.Header.Get("X-CetiRun-Instance-UID"); got != toolInstanceUID {
@@ -98,11 +97,11 @@ func TestToolGrantUsesOwnedInstanceUIDWithoutAgentIdentity(t *testing.T) {
 	defer broker.Close()
 	handler := NewToolConnectionsHandler(kube.NewClient(newFakeClient(toolInstance())), broker.URL, "https://portal.example.invalid")
 	handler.HTTPClient = broker.Client()
-	request := verifiedToolRequest(httptest.NewRequest(http.MethodGet, "/api/v1/instances/alice-agent/tool-grants", nil))
+	request := verifiedToolRequest(httptest.NewRequest(http.MethodGet, "/api/v1/instances/alice-agent/connection-bindings", nil))
 	request.SetPathValue("name", "alice-agent")
 	response := httptest.NewRecorder()
 
-	handler.ListToolGrants(response, request)
+	handler.ListConnectionBindings(response, request)
 	if response.Code != http.StatusOK {
 		t.Fatalf("response = %d %s", response.Code, response.Body.String())
 	}
@@ -147,7 +146,7 @@ func TestToolIdentityUsesOwnedInstanceUIDAndOnlyAzure(t *testing.T) {
 	}
 }
 
-func TestToolGrantMutationsRejectCustomAgentsButHistoryLists(t *testing.T) {
+func TestConnectionBindingMutationsRejectCustomAgentsButHistoryLists(t *testing.T) {
 	instance := toolInstance()
 	instance.Spec.Agent.Type = cetirunv1alpha1.AgentTypeCustom
 	called := 0
@@ -161,13 +160,13 @@ func TestToolGrantMutationsRejectCustomAgentsButHistoryLists(t *testing.T) {
 	defer broker.Close()
 	handler := NewToolConnectionsHandler(kube.NewClient(newFakeClient(instance)), broker.URL, "https://portal.example.invalid")
 	handler.HTTPClient = broker.Client()
-	request := verifiedToolRequest(httptest.NewRequest(http.MethodGet, "/api/v1/instances/alice-agent/tool-grants", nil))
+	request := verifiedToolRequest(httptest.NewRequest(http.MethodGet, "/api/v1/instances/alice-agent/connection-bindings", nil))
 	request.SetPathValue("name", "alice-agent")
 	response := httptest.NewRecorder()
 
-	handler.ListToolGrants(response, request)
-	if response.Code != http.StatusOK || called != 1 || response.Header().Get("X-CetiRun-Tool-Grants-Read-Only") != "true" {
-		t.Fatalf("history response = %d %s, downstream calls = %d, read-only = %q", response.Code, response.Body.String(), called, response.Header().Get("X-CetiRun-Tool-Grants-Read-Only"))
+	handler.ListConnectionBindings(response, request)
+	if response.Code != http.StatusOK || called != 1 || response.Header().Get("X-CetiRun-Connection-Bindings-Read-Only") != "true" {
+		t.Fatalf("history response = %d %s, downstream calls = %d, read-only = %q", response.Code, response.Body.String(), called, response.Header().Get("X-CetiRun-Connection-Bindings-Read-Only"))
 	}
 
 	request = verifiedToolRequest(httptest.NewRequest(http.MethodPost, "/api/v1/instances/alice-agent/tool-identities", strings.NewReader(`{"provider":"azure"}`)))
@@ -181,7 +180,7 @@ func TestToolGrantMutationsRejectCustomAgentsButHistoryLists(t *testing.T) {
 	}
 }
 
-func TestToolGrantHistoryListsSandboxedAgentsButVerificationRejects(t *testing.T) {
+func TestConnectionBindingHistoryListsSandboxedAgentsButCreationRejects(t *testing.T) {
 	instance := toolInstance()
 	instance.Spec.SandboxRef = "restricted"
 	called := 0
@@ -195,32 +194,32 @@ func TestToolGrantHistoryListsSandboxedAgentsButVerificationRejects(t *testing.T
 	defer broker.Close()
 	handler := NewToolConnectionsHandler(kube.NewClient(newFakeClient(instance)), broker.URL, "https://portal.example.invalid")
 	handler.HTTPClient = broker.Client()
-	request := verifiedToolRequest(httptest.NewRequest(http.MethodGet, "/api/v1/instances/alice-agent/tool-grants", nil))
+	request := verifiedToolRequest(httptest.NewRequest(http.MethodGet, "/api/v1/instances/alice-agent/connection-bindings", nil))
 	request.SetPathValue("name", "alice-agent")
 	response := httptest.NewRecorder()
 
-	handler.ListToolGrants(response, request)
-	if response.Code != http.StatusOK || called != 1 || response.Header().Get("X-CetiRun-Tool-Grants-Read-Only") != "true" {
-		t.Fatalf("history response = %d %s, downstream calls = %d, read-only = %q", response.Code, response.Body.String(), called, response.Header().Get("X-CetiRun-Tool-Grants-Read-Only"))
+	handler.ListConnectionBindings(response, request)
+	if response.Code != http.StatusOK || called != 1 || response.Header().Get("X-CetiRun-Connection-Bindings-Read-Only") != "true" {
+		t.Fatalf("history response = %d %s, downstream calls = %d, read-only = %q", response.Code, response.Body.String(), called, response.Header().Get("X-CetiRun-Connection-Bindings-Read-Only"))
 	}
 
-	request = verifiedToolRequest(httptest.NewRequest(http.MethodPost, "/api/v1/instances/alice-agent/tool-grants/grant-1/verify", nil))
+	request = verifiedToolRequest(httptest.NewRequest(http.MethodPost, "/api/v1/instances/alice-agent/connection-bindings", nil))
 	request.Header.Set("Origin", "https://portal.example.invalid")
 	request.Header.Set("If-Match", "7")
 	request.SetPathValue("name", "alice-agent")
 	request.SetPathValue("id", "grant-1")
 	response = httptest.NewRecorder()
-	handler.VerifyToolGrant(response, request)
+	handler.CreateConnectionBinding(response, request)
 	if response.Code != http.StatusBadRequest || called != 1 || !strings.Contains(response.Body.String(), "unsupported_sandbox") {
 		t.Fatalf("verification response = %d %s, downstream calls = %d", response.Code, response.Body.String(), called)
 	}
 }
 
-func TestToolGrantsAllowSandboxCleanup(t *testing.T) {
+func TestConnectionBindingsAllowSandboxCleanup(t *testing.T) {
 	instance := toolInstance()
 	instance.Spec.SandboxRef = "restricted"
 	broker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodDelete || r.URL.Path != "/v1/instances/alice-agent/tool-grants/grant-1" {
+		if r.Method != http.MethodDelete || r.URL.Path != "/v1/instances/alice-agent/connection-bindings/grant-1" {
 			t.Fatalf("unexpected Broker request: %s %s", r.Method, r.URL.Path)
 		}
 		if got := r.Header.Get("If-Match"); got != "7" {
@@ -231,57 +230,57 @@ func TestToolGrantsAllowSandboxCleanup(t *testing.T) {
 	defer broker.Close()
 	handler := NewToolConnectionsHandler(kube.NewClient(newFakeClient(instance)), broker.URL, "https://portal.example.invalid")
 	handler.HTTPClient = broker.Client()
-	request := verifiedToolRequest(httptest.NewRequest(http.MethodDelete, "/api/v1/instances/alice-agent/tool-grants/grant-1", nil))
+	request := verifiedToolRequest(httptest.NewRequest(http.MethodDelete, "/api/v1/instances/alice-agent/connection-bindings/grant-1", nil))
 	request.Header.Set("Origin", "https://portal.example.invalid")
 	request.Header.Set("If-Match", `"7"`)
 	request.SetPathValue("name", "alice-agent")
 	request.SetPathValue("id", "grant-1")
 	response := httptest.NewRecorder()
 
-	handler.DeleteToolGrant(response, request)
+	handler.DeleteConnectionBinding(response, request)
 	if response.Code != http.StatusNoContent {
 		t.Fatalf("response = %d %s", response.Code, response.Body.String())
 	}
 }
 
-func TestToolGrantUpdateRequiresRevisionAndBoundedExpiry(t *testing.T) {
+func TestConnectionBindingUpdateRequiresRevisionAndKnownService(t *testing.T) {
 	handler := NewToolConnectionsHandler(kube.NewClient(newFakeClient(toolInstance())), "http://unused.invalid", "https://portal.example.invalid")
 	now := time.Date(2026, 10, 10, 0, 0, 0, 0, time.UTC)
 	handler.Now = func() time.Time { return now }
-	request := verifiedToolRequest(httptest.NewRequest(http.MethodPut, "/api/v1/instances/alice-agent/tool-grants/grant-1", strings.NewReader(`{"connectionId":"conn-1","tools":["github_contents_get"],"constraints":{},"expiresAt":"2027-01-09T00:00:01Z"}`)))
+	request := verifiedToolRequest(httptest.NewRequest(http.MethodPut, "/api/v1/instances/alice-agent/connection-bindings/grant-1", strings.NewReader(`{"connectionId":"conn-1","services":["unknown_service"],"enabled":true}`)))
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Origin", "https://portal.example.invalid")
 	request.SetPathValue("name", "alice-agent")
 	request.SetPathValue("id", "grant-1")
 	response := httptest.NewRecorder()
 
-	handler.UpdateToolGrant(response, request)
-	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "invalid_expiry") {
+	handler.UpdateConnectionBinding(response, request)
+	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "invalid_request") {
 		t.Fatalf("response = %d %s", response.Code, response.Body.String())
 	}
 
-	request = verifiedToolRequest(httptest.NewRequest(http.MethodPut, "/api/v1/instances/alice-agent/tool-grants/grant-1", strings.NewReader(`{"connectionId":"conn-1","tools":["github_contents_get"],"constraints":{},"expiresAt":"2026-10-11T00:00:00Z"}`)))
+	request = verifiedToolRequest(httptest.NewRequest(http.MethodPut, "/api/v1/instances/alice-agent/connection-bindings/grant-1", strings.NewReader(`{"connectionId":"conn-1","services":["github"],"enabled":true}`)))
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Origin", "https://portal.example.invalid")
 	request.SetPathValue("name", "alice-agent")
 	request.SetPathValue("id", "grant-1")
 	response = httptest.NewRecorder()
-	handler.UpdateToolGrant(response, request)
+	handler.UpdateConnectionBinding(response, request)
 	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "revision_required") {
 		t.Fatalf("response = %d %s", response.Code, response.Body.String())
 	}
 }
 
-func TestToolGrantUpdateUsesCurrentRevisionAtBrokerBoundary(t *testing.T) {
+func TestConnectionBindingUpdateUsesCurrentRevisionAtBrokerBoundary(t *testing.T) {
 	broker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPut || r.URL.Path != "/v1/instances/alice-agent/tool-grants/grant-1" {
+		if r.Method != http.MethodPut || r.URL.Path != "/v1/instances/alice-agent/connection-bindings/grant-1" {
 			t.Fatalf("unexpected Broker request: %s %s", r.Method, r.URL.Path)
 		}
 		if got := r.Header.Get("If-Match"); got != "7" {
 			t.Fatalf("If-Match = %q, want 7", got)
 		}
 		body, err := io.ReadAll(r.Body)
-		if err != nil || strings.Contains(string(body), "revision") {
+		if err != nil || !strings.Contains(string(body), `"revision":7`) {
 			t.Fatalf("body = %q, err = %v", body, err)
 		}
 		_, _ = w.Write([]byte(`{"id":"grant-1","revision":8}`))
@@ -290,59 +289,20 @@ func TestToolGrantUpdateUsesCurrentRevisionAtBrokerBoundary(t *testing.T) {
 	handler := NewToolConnectionsHandler(kube.NewClient(newFakeClient(toolInstance())), broker.URL, "https://portal.example.invalid")
 	handler.HTTPClient = broker.Client()
 	handler.Now = func() time.Time { return time.Date(2026, 10, 10, 0, 0, 0, 0, time.UTC) }
-	request := verifiedToolRequest(httptest.NewRequest(http.MethodPut, "/api/v1/instances/alice-agent/tool-grants/grant-1", strings.NewReader(`{"connectionId":"conn-1","tools":["github_contents_get"],"constraints":{"repositoryIds":["1"]},"expiresAt":"2026-10-11T00:00:00Z","revision":7}`)))
+	request := verifiedToolRequest(httptest.NewRequest(http.MethodPut, "/api/v1/instances/alice-agent/connection-bindings/grant-1", strings.NewReader(`{"connectionId":"conn-1","services":["github"],"enabled":true,"revision":7}`)))
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Origin", "https://portal.example.invalid")
 	request.SetPathValue("name", "alice-agent")
 	request.SetPathValue("id", "grant-1")
 	response := httptest.NewRecorder()
 
-	handler.UpdateToolGrant(response, request)
+	handler.UpdateConnectionBinding(response, request)
 	if response.Code != http.StatusOK {
 		t.Fatalf("response = %d %s", response.Code, response.Body.String())
 	}
 }
 
-func TestToolGrantVerificationUsesCurrentRevisionAtBrokerBoundary(t *testing.T) {
-	broker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || r.URL.Path != "/v1/instances/alice-agent/tool-grants/grant-1/verify" {
-			t.Fatalf("unexpected Broker request: %s %s", r.Method, r.URL.Path)
-		}
-		if got := r.Header.Get("If-Match"); got != "7" {
-			t.Fatalf("If-Match = %q, want 7", got)
-		}
-		if got := r.Header.Get("X-CetiRun-Instance-UID"); got != toolInstanceUID {
-			t.Fatalf("instance UID header = %q", got)
-		}
-		_, _ = w.Write([]byte(`{"id":"grant-1","authorization":{"state":"pending"}}`))
-	}))
-	defer broker.Close()
-	handler := NewToolConnectionsHandler(kube.NewClient(newFakeClient(toolInstance())), broker.URL, "https://portal.example.invalid")
-	handler.HTTPClient = broker.Client()
-	request := verifiedToolRequest(httptest.NewRequest(http.MethodPost, "/api/v1/instances/alice-agent/tool-grants/grant-1/verify", nil))
-	request.Header.Set("Origin", "https://portal.example.invalid")
-	request.Header.Set("If-Match", `"7"`)
-	request.SetPathValue("name", "alice-agent")
-	request.SetPathValue("id", "grant-1")
-	response := httptest.NewRecorder()
-
-	handler.VerifyToolGrant(response, request)
-	if response.Code != http.StatusOK {
-		t.Fatalf("response = %d %s", response.Code, response.Body.String())
-	}
-
-	request = verifiedToolRequest(httptest.NewRequest(http.MethodPost, "/api/v1/instances/alice-agent/tool-grants/grant-1/verify", nil))
-	request.Header.Set("Origin", "https://portal.example.invalid")
-	request.SetPathValue("name", "alice-agent")
-	request.SetPathValue("id", "grant-1")
-	response = httptest.NewRecorder()
-	handler.VerifyToolGrant(response, request)
-	if response.Code != http.StatusPreconditionRequired || !strings.Contains(response.Body.String(), "revision_required") {
-		t.Fatalf("response = %d %s", response.Code, response.Body.String())
-	}
-}
-
-func TestToolGrantsHideOtherOwners(t *testing.T) {
+func TestConnectionBindingsHideOtherOwners(t *testing.T) {
 	instance := toolInstance()
 	instance.Annotations[cetirunv1alpha1.AnnotationOwnerObjectID] = "44444444-4444-4444-4444-444444444444"
 	called := false
@@ -350,11 +310,11 @@ func TestToolGrantsHideOtherOwners(t *testing.T) {
 	defer broker.Close()
 	handler := NewToolConnectionsHandler(kube.NewClient(newFakeClient(instance)), broker.URL, "https://portal.example.invalid")
 	handler.HTTPClient = broker.Client()
-	request := verifiedToolRequest(httptest.NewRequest(http.MethodGet, "/api/v1/instances/alice-agent/tool-grants", nil))
+	request := verifiedToolRequest(httptest.NewRequest(http.MethodGet, "/api/v1/instances/alice-agent/connection-bindings", nil))
 	request.SetPathValue("name", "alice-agent")
 	response := httptest.NewRecorder()
 
-	handler.ListToolGrants(response, request)
+	handler.ListConnectionBindings(response, request)
 	if response.Code != http.StatusNotFound || called {
 		t.Fatalf("response = %d, downstream called = %t", response.Code, called)
 	}
@@ -395,7 +355,18 @@ func TestStartConnectionRestrictsProviderAndRequestBody(t *testing.T) {
 	}
 }
 
-func TestGitHubConnectionBindingUsesStateScopedSecureCookie(t *testing.T) {
+func TestPersonalConnectionBindingUsesStateScopedSecureCookie(t *testing.T) {
+	for _, provider := range []string{"github", "google"} {
+		t.Run(provider, func(t *testing.T) { testPersonalConnectionBinding(t, provider) })
+	}
+}
+
+func testPersonalConnectionBinding(t *testing.T, provider string) {
+	t.Helper()
+	authorizationEndpoint := "https://github.com/login/oauth/authorize"
+	if provider == "google" {
+		authorizationEndpoint = "https://accounts.google.com/o/oauth2/v2/auth"
+	}
 	now := time.Date(2026, time.October, 16, 10, 0, 0, 0, time.UTC)
 	state, err := newConnectionBinding()
 	if err != nil {
@@ -411,7 +382,7 @@ func TestGitHubConnectionBindingUsesStateScopedSecureCookie(t *testing.T) {
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"id":                     "conn-1",
-				"authorizationUrl":       "https://github.com/login/oauth/authorize?state=" + state,
+				"authorizationUrl":       authorizationEndpoint + "?state=" + state,
 				"expiresAt":              now.Add(5 * time.Minute).Format(time.RFC3339),
 				"browserBindingRequired": true,
 			})
@@ -432,7 +403,7 @@ func TestGitHubConnectionBindingUsesStateScopedSecureCookie(t *testing.T) {
 	handler.HTTPClient = broker.Client()
 	handler.Now = func() time.Time { return now }
 
-	start := verifiedToolRequest(httptest.NewRequest(http.MethodPost, "/api/v1/connections/start", strings.NewReader(`{"provider":"github"}`)))
+	start := verifiedToolRequest(httptest.NewRequest(http.MethodPost, "/api/v1/connections/start", strings.NewReader(`{"provider":"`+provider+`"}`)))
 	start.Header.Set("Content-Type", "application/json")
 	start.Header.Set("Origin", "https://portal.example.invalid")
 	start.Header.Set(connectionBindingHeader, "browser-spoof")
@@ -446,7 +417,7 @@ func TestGitHubConnectionBindingUsesStateScopedSecureCookie(t *testing.T) {
 		t.Fatalf("cookie count = %d", len(cookies))
 	}
 	cookie := cookies[0]
-	expectedName, ok := githubBindingCookieName(state)
+	expectedName, ok := connectionBindingCookieName(state)
 	if !ok || cookie.Name != expectedName || cookie.Value != generatedBinding || cookie.Path != "/" || !cookie.Secure || !cookie.HttpOnly || cookie.SameSite != http.SameSiteLaxMode || cookie.MaxAge < 1 || cookie.MaxAge > 600 {
 		t.Fatalf("unsafe binding cookie: %#v", cookie)
 	}
@@ -465,7 +436,7 @@ func TestGitHubConnectionBindingUsesStateScopedSecureCookie(t *testing.T) {
 	}
 }
 
-func TestGitHubCallbackDoesNotForwardMissingOrWrongBindingCookie(t *testing.T) {
+func TestPersonalCallbackDoesNotForwardMissingOrWrongBindingCookie(t *testing.T) {
 	state, err := newConnectionBinding()
 	if err != nil {
 		t.Fatal(err)
@@ -482,7 +453,7 @@ func TestGitHubCallbackDoesNotForwardMissingOrWrongBindingCookie(t *testing.T) {
 	handler := NewToolConnectionsHandler(nil, broker.URL, "https://portal.example.invalid")
 	handler.HTTPClient = broker.Client()
 
-	for _, cookie := range []*http.Cookie{nil, {Name: githubBindingCookiePrefix + "other", Value: state, Path: "/", Secure: true, HttpOnly: true}} {
+	for _, cookie := range []*http.Cookie{nil, {Name: connectionBindingCookiePrefix + "other", Value: state, Path: "/", Secure: true, HttpOnly: true}} {
 		callback := httptest.NewRequest(http.MethodGet, "/api/v1/connections/callback?state="+url.QueryEscape(state)+"&code=code-1", nil)
 		callback.Header.Set(connectionBindingHeader, "browser-spoof")
 		if cookie != nil {
@@ -545,7 +516,7 @@ func TestGitHubReconnectCreatesIndependentStateBoundCookies(t *testing.T) {
 			t.Fatalf("reconnect response = %d %s", response.Code, response.Body.String())
 		}
 		cookies := response.Result().Cookies()
-		if len(cookies) != 1 || !strings.HasPrefix(cookies[0].Name, githubBindingCookiePrefix) || !cookies[0].Secure || !cookies[0].HttpOnly || cookies[0].MaxAge < 1 || cookies[0].MaxAge > 600 {
+		if len(cookies) != 1 || !strings.HasPrefix(cookies[0].Name, connectionBindingCookiePrefix) || !cookies[0].Secure || !cookies[0].HttpOnly || cookies[0].MaxAge < 1 || cookies[0].MaxAge > 600 {
 			t.Fatalf("reconnect cookie = %#v", cookies)
 		}
 		cookieNames = append(cookieNames, cookies[0].Name)
@@ -559,7 +530,7 @@ func TestToolRuntimeQualificationListsHistoryButBlocksManagement(t *testing.T) {
 	instance := toolInstance()
 	instance.Spec.Agent.Type = cetirunv1alpha1.AgentTypeOpenClaw
 	broker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet || r.URL.Path != "/v1/instances/alice-agent/tool-grants" {
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/instances/alice-agent/connection-bindings" {
 			t.Fatalf("unexpected Broker request: %s %s", r.Method, r.URL.Path)
 		}
 		_, _ = w.Write([]byte(`[{"id":"grant-1","revision":7}]`))
@@ -568,12 +539,12 @@ func TestToolRuntimeQualificationListsHistoryButBlocksManagement(t *testing.T) {
 	h := NewToolConnectionsHandler(kube.NewClient(newFakeClient(instance)), broker.URL, "https://portal.example.com")
 	h.HTTPClient = broker.Client()
 	h.RuntimeTypes = []string{"hermes"}
-	request := verifiedToolRequest(httptest.NewRequest(http.MethodGet, "/api/v1/instances/alice-agent/tool-grants", nil))
+	request := verifiedToolRequest(httptest.NewRequest(http.MethodGet, "/api/v1/instances/alice-agent/connection-bindings", nil))
 	request.SetPathValue("name", "alice-agent")
 	response := httptest.NewRecorder()
-	h.ListToolGrants(response, request)
-	if response.Code != http.StatusOK || response.Header().Get("X-CetiRun-Tool-Grants-Read-Only") != "true" {
-		t.Fatalf("history response = %d %s, read-only = %q", response.Code, response.Body.String(), response.Header().Get("X-CetiRun-Tool-Grants-Read-Only"))
+	h.ListConnectionBindings(response, request)
+	if response.Code != http.StatusOK || response.Header().Get("X-CetiRun-Connection-Bindings-Read-Only") != "true" {
+		t.Fatalf("history response = %d %s, read-only = %q", response.Code, response.Body.String(), response.Header().Get("X-CetiRun-Connection-Bindings-Read-Only"))
 	}
 
 	request = verifiedToolRequest(httptest.NewRequest(http.MethodPost, "/api/v1/instances/alice-agent/tool-identities", nil))
@@ -583,5 +554,61 @@ func TestToolRuntimeQualificationListsHistoryButBlocksManagement(t *testing.T) {
 	h.CreateToolIdentity(response, request)
 	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "unsupported_agent_type") {
 		t.Fatalf("management response = %d %s", response.Code, response.Body.String())
+	}
+}
+
+func TestIndependentAuthorizationResponseAndUsageProxy(t *testing.T) {
+	for _, operation := range []string{"start", "authorization", "usage"} {
+		t.Run(operation, func(t *testing.T) {
+			broker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Header.Get("X-CetiRun-Owner-Object-ID") != toolOwnerObject || r.Header.Get("Authorization") != "" {
+					t.Fatal("invalid owner forwarding")
+				}
+				switch operation {
+				case "start":
+					if r.URL.Path != "/v1/connections/start" {
+						t.Fatal(r.URL.Path)
+					}
+					_, _ = w.Write([]byte(`{"authorizationId":"oauth-123","authorizationUrl":"https://provider.example.com/authorize","expiresAt":"2026-10-19T16:00:00Z"}`))
+				case "authorization":
+					if r.URL.Path != "/v1/connection-authorizations/oauth-123" {
+						t.Fatal(r.URL.Path)
+					}
+					_, _ = w.Write([]byte(`{"authorizationId":"oauth-123","status":"complete","connectionId":"canonical"}`))
+				case "usage":
+					if r.URL.Path != "/v1/connections/connection-123/usage" {
+						t.Fatal(r.URL.Path)
+					}
+					_, _ = w.Write([]byte(`{"connectionId":"connection-123","agents":[],"canRemove":true}`))
+				}
+			}))
+			defer broker.Close()
+			h := NewToolConnectionsHandler(nil, broker.URL, "https://portal.example.com")
+			h.HTTPClient = broker.Client()
+			r := verifiedToolRequest(httptest.NewRequest("POST", "/", strings.NewReader(`{"provider":"microsoft"}`)))
+			r.Header.Set("Origin", "https://portal.example.com")
+			r.Header.Set("Content-Type", "application/json")
+			r.Header.Set("Authorization", "Bearer synthetic-browser-token")
+			w := httptest.NewRecorder()
+			switch operation {
+			case "start":
+				h.StartConnection(w, r)
+			case "authorization":
+				r.SetPathValue("id", "oauth-123")
+				h.GetConnectionAuthorization(w, r)
+			case "usage":
+				r.SetPathValue("id", "connection-123")
+				h.GetConnectionUsage(w, r)
+			}
+			if w.Code != 200 {
+				t.Fatalf("status %d: %s", w.Code, w.Body)
+			}
+			if operation == "start" {
+				var payload map[string]any
+				if json.Unmarshal(w.Body.Bytes(), &payload) != nil || payload["authorizationId"] != "oauth-123" || payload["connectionId"] != nil {
+					t.Fatal("authorization ID without a Connection ID was lost")
+				}
+			}
+		})
 	}
 }

@@ -12,11 +12,7 @@ import (
 // Shared personal credentials are never owned or deleted by an Agent.
 func (k *kubeClient) deleteAgentRecords(ctx context.Context, agent Agent) error {
 	stores := []*kubeClient{}
-	// Unsupported runtimes (including Sandbox) cannot use instance grants and
-	// do not receive Broker Secret RBAC. Their finalizer must still clean legacy
-	// central records. Any local records from a previous supported runtime carry
-	// the immutable Agent owner reference and are removed by Agent/namespace GC;
-	// do not expand Sandbox access solely to perform eager cleanup.
+	// Unsupported runtimes rely on namespace/Agent garbage collection.
 	if k.agentNamespaces && agent.Namespace != "" && !agent.UnsupportedRuntime {
 		target, err := k.agentRecordStore(ctx, agent.UID)
 		if err != nil && !errors.Is(err, errNotFound) {
@@ -26,12 +22,12 @@ func (k *kubeClient) deleteAgentRecords(ctx context.Context, agent Agent) error 
 			stores = append(stores, target)
 		}
 	}
-	central := *k
-	central.agentNamespaces, central.recordAgent = false, nil
-	stores = append(stores, &central)
+	if !k.agentNamespaces {
+		stores = append(stores, k)
+	}
 	owner := Owner{agent.OwnerTenantID, agent.OwnerObjectID}
 	for _, target := range stores {
-		grants, err := target.listToolSecrets(ctx, "grant", recordLabelPrefix+"instance-uid="+agent.UID)
+		grants, err := target.listToolSecrets(ctx, "binding", recordLabelPrefix+"instance-uid="+agent.UID)
 		if errors.Is(err, errNotFound) && target.recordAgent != nil {
 			continue
 		}
@@ -39,18 +35,18 @@ func (k *kubeClient) deleteAgentRecords(ctx context.Context, agent Agent) error 
 			return err
 		}
 		for _, secret := range grants.Items {
-			record, err := target.decodeGrant(ctx, secret)
+			record, err := target.decodeBinding(ctx, secret)
 			if err != nil {
 				return err
 			}
-			if record.Grant.InstanceUID != agent.UID || !sameOwner(record.Grant.Owner, owner) || secret.Metadata.Name != toolRecordName("grant", record.Grant.ID) {
-				return errors.New("Grant cleanup ownership is invalid")
+			if record.Binding.InstanceUID != agent.UID || !sameOwner(record.Binding.Owner, owner) || secret.Metadata.Name != toolRecordName("binding", record.Binding.ID) {
+				return errors.New("Binding cleanup ownership is invalid")
 			}
 			if err := target.deleteToolSecret(ctx, secret); err != nil {
 				return err
 			}
 		}
-		// Older independent Connections did not have an instance UID label.
+		// Shared personal credentials are outside the Agent record store.
 		connections, err := target.listToolSecrets(ctx, "connection", recordLabelPrefix+"owner-tenant="+owner.TenantID+","+recordLabelPrefix+"owner-object="+owner.ObjectID)
 		if errors.Is(err, errNotFound) && target.recordAgent != nil {
 			continue

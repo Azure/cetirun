@@ -1,1030 +1,367 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+// Package providers executes JSON REST requests using platform-owned profiles.
 package providers
 
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"io"
 	"mime"
+	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
-	"strconv"
+	"path"
 	"strings"
 	"time"
+	"unicode/utf8"
 
-	"github.com/Azure/CetiRun/app/agent-tools-mcp/internal/brokerclient"
+	"github.com/Azure/CetiRun/app/internal/agenttools"
 )
 
-const maxResponseBytes = 256 << 10
-const maxMailBodyBytes = 64 << 10
-const maxItems = 100
+const MaxBodyBytes = 256 << 10
+const MaxResponseBytes = 256 << 10
 
-type requestIDCaptureKey struct{}
-
-// WithRequestIDCapture registers a bounded audit callback for provider request
-// identifiers. It deliberately exposes no response body, URL, or credentials.
-func WithRequestIDCapture(ctx context.Context, capture func(string)) context.Context {
-	if capture == nil {
-		return ctx
-	}
-	return context.WithValue(ctx, requestIDCaptureKey{}, capture)
+type Request struct {
+	ConnectionID string            `json:"connection_id"`
+	Service      string            `json:"service"`
+	Method       string            `json:"method"`
+	Path         string            `json:"path"`
+	Query        map[string]any    `json:"query,omitempty"`
+	Headers      map[string]string `json:"headers,omitempty"`
+	Body         json.RawMessage   `json:"body,omitempty"`
 }
-
-func captureRequestID(ctx context.Context, headers http.Header) {
-	capture, _ := ctx.Value(requestIDCaptureKey{}).(func(string))
-	if capture == nil {
-		return
-	}
-	for _, name := range []string{"x-ms-request-id", "x-ms-correlation-request-id", "request-id", "x-github-request-id", "x-goog-request-id"} {
-		if value := strings.TrimSpace(headerValue(headers, name)); safeRequestID(value) {
-			capture(value)
-		}
-	}
+type Result struct {
+	Status        int               `json:"status"`
+	Body          any               `json:"body"`
+	Headers       map[string]string `json:"headers"`
+	RequestIDs    []string          `json:"request_ids"`
+	CorrelationID string            `json:"correlation_id"`
 }
-
-func headerValue(headers http.Header, name string) string {
-	if value := headers.Get(name); value != "" {
-		return value
-	}
-	for key, values := range headers {
-		if strings.EqualFold(key, name) && len(values) > 0 {
-			return values[0]
-		}
-	}
-	return ""
-}
-
-func safeRequestID(value string) bool {
-	if len(value) == 0 || len(value) > 256 {
-		return false
-	}
-	for _, character := range value {
-		if !(character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' || character >= '0' && character <= '9' || strings.ContainsRune("-_.:/", character)) {
-			return false
-		}
-	}
-	return true
-}
-
-type Client struct{ http *http.Client }
 type Error struct {
 	Code    string
 	Unknown bool
 }
 
-func (err *Error) Error() string { return err.Code }
+func (e *Error) Error() string { return e.Code }
 
-func New(client *http.Client) *Client {
-	if client == nil {
-		client = &http.Client{Timeout: 10 * time.Second}
+type Client struct{ http *http.Client }
+
+func New(transport http.RoundTripper) *Client {
+	if transport == nil {
+		// A fresh HTTP/1 connection per call prevents net/http's replay on a reused
+		// connection or HTTP/2 REFUSED_STREAM. No proxy, redirects or retry loop.
+		transport = &http.Transport{
+			DialContext: publicDial, DisableKeepAlives: true, DisableCompression: true,
+			TLSClientConfig:     &tls.Config{MinVersion: tls.VersionTLS12},
+			TLSNextProto:        map[string]func(string, *tls.Conn) http.RoundTripper{},
+			TLSHandshakeTimeout: 5 * time.Second, ResponseHeaderTimeout: 10 * time.Second,
+			MaxResponseHeaderBytes: 32 << 10,
+		}
 	}
-	configured := *client
-	configured.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	return &Client{http: &configured}
+	return &Client{http: &http.Client{Transport: transport, Timeout: 20 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
 }
 
-func (c *Client) Execute(ctx context.Context, provider, tool string, arguments map[string]any, constraints brokerclient.Constraints, accessToken string) (map[string]any, error) {
-	switch provider {
-	case "azure":
-		return c.azure(ctx, tool, arguments, constraints, accessToken)
-	case "github":
-		return c.github(ctx, tool, arguments, constraints, accessToken)
-	case "microsoft":
-		return c.microsoft(ctx, tool, arguments, constraints, accessToken)
-	case "google":
-		return c.google(ctx, tool, arguments, constraints, accessToken)
+func publicIP(ip netip.Addr) bool {
+	ip = ip.Unmap()
+	if !ip.IsValid() || !ip.IsGlobalUnicast() || ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsUnspecified() {
+		return false
+	}
+	for _, raw := range []string{"100.64.0.0/10", "192.0.0.0/24", "192.0.2.0/24", "198.18.0.0/15", "198.51.100.0/24", "203.0.113.0/24", "240.0.0.0/4", "2001:db8::/32", "64:ff9b::/96", "64:ff9b:1::/48"} {
+		if netip.MustParsePrefix(raw).Contains(ip) {
+			return false
+		}
+	}
+	return true
+}
+func publicDial(ctx context.Context, network, address string) (net.Conn, error) {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil || port != "443" {
+		return nil, errors.New("invalid service address")
+	}
+	allowed := false
+	for _, s := range agenttools.Services() {
+		u, _ := url.Parse(s.Origin)
+		if host == u.Hostname() {
+			allowed = true
+		}
+	}
+	if !allowed {
+		return nil, errors.New("invalid service host")
+	}
+	addresses, err := net.DefaultResolver.LookupNetIP(ctx, "ip", host)
+	if err != nil || len(addresses) == 0 {
+		return nil, errors.New("service DNS unavailable")
+	}
+	// Validate the whole answer and dial the checked IP, avoiding a second lookup.
+	for _, ip := range addresses {
+		if !publicIP(ip) {
+			return nil, errors.New("service DNS address rejected")
+		}
+	}
+	return (&net.Dialer{Timeout: 5 * time.Second}).DialContext(ctx, network, net.JoinHostPort(addresses[0].String(), port))
+}
+
+func Decode(arguments map[string]any) (Request, error) {
+	encoded, err := json.Marshal(arguments)
+	if err != nil || len(encoded) > MaxBodyBytes+32768 {
+		return Request{}, &Error{Code: "invalid_request"}
+	}
+	var input Request
+	decoder := json.NewDecoder(bytes.NewReader(encoded))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&input) != nil {
+		return Request{}, &Error{Code: "invalid_request"}
+	}
+	_, err = Target(input)
+	return input, err
+}
+
+func Target(input Request) (*url.URL, error) {
+	invalid := func() (*url.URL, error) { return nil, &Error{Code: "invalid_request"} }
+	profile, ok := agenttools.LookupService(input.Service)
+	if !ok || len(input.ConnectionID) == 0 || len(input.ConnectionID) > 128 {
+		return invalid()
+	}
+	switch input.Method {
+	case "GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS":
 	default:
-		return nil, &Error{Code: "permission_denied"}
+		return invalid()
 	}
-}
-
-func (c *Client) azure(ctx context.Context, tool string, args map[string]any, limits brokerclient.Constraints, token string) (map[string]any, error) {
-	base := "https://management.azure.com"
-	switch tool {
-	case "azure_subscriptions_list":
-		var reply struct {
-			Value    []map[string]any `json:"value"`
-			NextLink string           `json:"nextLink"`
+	p := input.Path
+	if len(p) == 0 || len(p) > 8192 || !strings.HasPrefix(p, "/") || strings.HasPrefix(p, "//") || !utf8.ValidString(p) || strings.ContainsAny(p, "?#\\\r\n\x00") {
+		return invalid()
+	}
+	// Decode once and reject encoded separators and nested escapes; neither a
+	// gateway nor provider can reinterpret the path as traversal or an origin.
+	decoded, err := url.PathUnescape(p)
+	if err != nil || !utf8.ValidString(decoded) || strings.ContainsAny(decoded, "%\\?#\r\n\x00") || strings.Contains(decoded, "//") {
+		return invalid()
+	}
+	for _, segment := range strings.Split(decoded, "/") {
+		if segment == "." || segment == ".." {
+			return invalid()
 		}
-		if err := c.request(ctx, http.MethodGet, base+"/subscriptions?api-version=2022-12-01&$top=100", nil, token, &reply); err != nil {
-			return nil, err
+	}
+	if strings.Count(p, "/") != strings.Count(decoded, "/") {
+		return invalid()
+	}
+	for _, r := range decoded {
+		if r < 0x20 || r == 0x7f {
+			return invalid()
 		}
-		items := []any{}
-		for _, item := range reply.Value {
-			if contains(limits.SubscriptionIDs, text(item["subscriptionId"])) {
-				items = append(items, pick(item, "subscriptionId", "displayName", "state", "tenantId"))
+	}
+	base, err := url.Parse(profile.Origin)
+	if err != nil {
+		return invalid()
+	}
+	base.Path = strings.TrimSuffix(profile.BasePath, "/") + decoded
+	if path.Clean(base.Path) != strings.TrimSuffix(base.Path, "/") && base.Path != "/" {
+		return invalid()
+	}
+	if !strings.HasPrefix(base.Path, profile.BasePath) {
+		return invalid()
+	}
+	query := url.Values{}
+	if len(input.Query) > 100 {
+		return invalid()
+	}
+	for key, value := range input.Query {
+		if len(key) == 0 || len(key) > 256 || strings.ContainsAny(key, "\r\n\x00") {
+			return invalid()
+		}
+		switch strings.ToLower(key) {
+		case "access_token", "oauth_token", "authorization", "api_key", "key":
+			return invalid()
+		}
+		add := func(v string) bool {
+			if len(v) > 8192 || strings.ContainsAny(v, "\r\n\x00") {
+				return false
+			}
+			query.Add(key, v)
+			return true
+		}
+		switch values := value.(type) {
+		case string:
+			if !add(values) {
+				return invalid()
+			}
+		case []any:
+			if len(values) > 100 {
+				return invalid()
+			}
+			for _, item := range values {
+				v, ok := item.(string)
+				if !ok || !add(v) {
+					return invalid()
+				}
+			}
+		case []string:
+			if len(values) > 100 {
+				return invalid()
+			}
+			for _, v := range values {
+				if !add(v) {
+					return invalid()
+				}
+			}
+		default:
+			return invalid()
+		}
+	}
+	base.RawQuery = query.Encode()
+	if len(base.RawQuery) > 16384 {
+		return invalid()
+	}
+	seen := map[string]bool{}
+	for name, value := range input.Headers {
+		lower := strings.ToLower(name)
+		if seen[lower] || len(value) > 4096 || strings.ContainsAny(value, "\r\n\x00") {
+			return invalid()
+		}
+		seen[lower] = true
+		switch lower {
+		case "if-match", "if-none-match", "prefer", "consistencylevel", "x-github-api-version":
+		default:
+			return invalid()
+		}
+		for _, r := range value {
+			if r < 0x20 || r == 0x7f {
+				return invalid()
 			}
 		}
-		return listed(items, pageTruncated(len(reply.Value), reply.NextLink != "", false)), nil
-	case "azure_resource_groups_list":
-		subscription := stringArg(args, "subscription_id")
-		if !contains(limits.SubscriptionIDs, subscription) {
-			return nil, denied()
-		}
-		var reply struct {
-			Value    []map[string]any `json:"value"`
-			NextLink string           `json:"nextLink"`
-		}
-		if err := c.request(ctx, http.MethodGet, base+"/subscriptions/"+url.PathEscape(subscription)+"/resourcegroups?api-version=2021-04-01&$top=100", nil, token, &reply); err != nil {
-			return nil, err
-		}
-		return listed(pickSlice(reply.Value, "id", "name", "location"), pageTruncated(len(reply.Value), reply.NextLink != "", false)), nil
-	case "azure_resources_search":
-		subscription := stringArg(args, "subscription_id")
-		if !contains(limits.SubscriptionIDs, subscription) {
-			return nil, denied()
-		}
-		query := "Resources | where subscriptionId == '" + strings.ToLower(subscription) + "'"
-		if resourceType, ok := args["resource_type"].(string); ok {
-			query += " | where type =~ '" + resourceType + "'"
-		}
-		if prefix, ok := args["name_prefix"].(string); ok {
-			query += " | where name startswith '" + prefix + "'"
-		}
-		query += " | project id, name, type, location, resourceGroup, subscriptionId | limit 100"
-		body := map[string]any{"subscriptions": []string{subscription}, "query": query, "options": map[string]any{"$top": maxItems}}
-		var reply struct {
-			Data            []map[string]any `json:"data"`
-			ResultTruncated any              `json:"resultTruncated"`
-			SkipToken       string           `json:"$skipToken"`
-		}
-		if err := c.request(ctx, http.MethodPost, base+"/providers/Microsoft.ResourceGraph/resources?api-version=2021-03-01", body, token, &reply); err != nil {
-			return nil, err
-		}
-		return listed(pickSlice(reply.Data, "id", "name", "type", "location", "resourceGroup", "subscriptionId"), pageTruncated(len(reply.Data), reply.SkipToken != "", boolValue(reply.ResultTruncated))), nil
-	case "azure_resource_show":
-		resourceID := stringArg(args, "resource_id")
-		subscription, ok := canonicalAzureResourceID(resourceID)
-		if !ok || !contains(limits.SubscriptionIDs, subscription) {
-			return nil, denied()
-		}
-		query := "Resources | where id =~ '" + strings.ReplaceAll(resourceID, "'", "''") + "' | project id, name, type, location, kind, tags | limit 1"
-		body := map[string]any{"subscriptions": []string{subscription}, "query": query, "options": map[string]any{"$top": 1}}
-		var reply struct {
-			Data []map[string]any `json:"data"`
-		}
-		if err := c.request(ctx, http.MethodPost, base+"/providers/Microsoft.ResourceGraph/resources?api-version=2021-03-01", body, token, &reply); err != nil {
-			return nil, err
-		}
-		if len(reply.Data) != 1 || !strings.EqualFold(text(reply.Data[0]["id"]), resourceID) {
-			return nil, denied()
-		}
-		return map[string]any{"resource": pick(reply.Data[0], "id", "name", "type", "location", "kind", "tags")}, nil
-	case "azure_resource_groups_create":
-		subscription, resourceGroup, err := authorizedAzureResourceGroup(args, limits)
-		if err != nil {
-			return nil, err
-		}
-		location := stringArg(args, "location")
-		if !safeAzureLocation(location) || !safeOperationID(stringArg(args, "operation_id")) {
-			return nil, &Error{Code: "invalid_request"}
-		}
-		resourceGroupURL := azureResourceGroupURL(base, subscription, resourceGroup)
-		exists, err := c.azureResourceGroupExists(ctx, resourceGroupURL, token)
-		if err != nil {
-			return nil, err
-		}
-		if exists {
-			return nil, &Error{Code: "invalid_request"}
-		}
-		var reply map[string]any
-		var headers http.Header
-		if err := c.requestHeadersResponse(ctx, http.MethodPut, resourceGroupURL+"?api-version=2021-04-01", map[string]any{"location": location}, token, nil, &reply, &headers); err != nil {
-			return nil, err
-		}
-		return azureResourceGroupCreateResult(reply, headers, subscription, resourceGroup)
-	case "azure_resource_group_tags_update":
-		subscription, resourceGroup, err := authorizedAzureResourceGroup(args, limits)
-		if err != nil {
-			return nil, err
-		}
-		if !safeOperationID(stringArg(args, "operation_id")) || !safeTags(args["tags"]) {
-			return nil, &Error{Code: "invalid_request"}
-		}
-		var reply map[string]any
-		var headers http.Header
-		endpoint := azureResourceGroupURL(base, subscription, resourceGroup) + "/providers/Microsoft.Resources/tags/default?api-version=2021-04-01"
-		body := map[string]any{"operation": "Merge", "properties": map[string]any{"tags": args["tags"]}}
-		if err := c.requestHeadersResponse(ctx, http.MethodPatch, endpoint, body, token, nil, &reply, &headers); err != nil {
-			return nil, err
-		}
-		return azureResourceGroupTagsResult(reply, headers, subscription, resourceGroup)
-	default:
-		return nil, denied()
 	}
+	if len(input.Body) > MaxBodyBytes || (len(input.Body) > 0 && !json.Valid(input.Body)) {
+		return invalid()
+	}
+	if (input.Method == "GET" || input.Method == "HEAD") && len(input.Body) > 0 {
+		return invalid()
+	}
+	// Validate the final origin, not only the input path.
+	if base.Scheme != "https" || base.User != nil || base.Host != strings.TrimPrefix(profile.Origin, "https://") || base.Fragment != "" {
+		return invalid()
+	}
+	return base, nil
 }
 
-func authorizedAzureResourceGroup(args map[string]any, limits brokerclient.Constraints) (string, string, error) {
-	subscription, resourceGroup := stringArg(args, "subscription_id"), stringArg(args, "resource_group_name")
-	if !safeAzureSubscriptionID(subscription) || !safeResourceGroupName(resourceGroup) {
-		return "", "", &Error{Code: "invalid_request"}
-	}
-	if !contains(limits.SubscriptionIDs, subscription) || !containsFold(limits.ResourceGroupNames, resourceGroup) {
-		return "", "", denied()
-	}
-	return subscription, resourceGroup, nil
-}
-
-func azureResourceGroupURL(base, subscription, resourceGroup string) string {
-	return base + "/subscriptions/" + url.PathEscape(subscription) + "/resourceGroups/" + url.PathEscape(resourceGroup)
-}
-
-// azureResourceGroupExists gives creation an explicit conflict check. ARM does
-// not provide a documented create-only precondition for this resource, so this
-// check deliberately does not claim to make a concurrent external create
-// atomic with the following PUT.
-func (c *Client) azureResourceGroupExists(ctx context.Context, endpoint, token string) (bool, error) {
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint+"?api-version=2021-04-01", nil)
+func (c *Client) Execute(ctx context.Context, input Request, token, correlation string) (Result, error) {
+	target, err := Target(input)
 	if err != nil {
-		return false, &Error{Code: "invalid_request"}
+		return Result{}, err
 	}
-	request.Header.Set("Authorization", "Bearer "+token)
-	request.Header.Set("Accept", "application/json")
-	response, err := c.http.Do(request)
+	if token == "" || strings.ContainsAny(token, "\r\n") {
+		return Result{}, &Error{Code: "dependency_unavailable"}
+	}
+	request, err := http.NewRequestWithContext(ctx, input.Method, target.String(), io.NopCloser(bytes.NewReader(input.Body)))
 	if err != nil {
-		return false, &Error{Code: "dependency_unavailable"}
+		return Result{}, &Error{Code: "invalid_request"}
 	}
-	defer response.Body.Close()
-	captureRequestID(ctx, response.Header)
-	payload, err := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
-	if err != nil || len(payload) > maxResponseBytes {
-		return false, &Error{Code: "dependency_unavailable"}
-	}
-	switch response.StatusCode {
-	case http.StatusNotFound:
-		return false, nil
-	case http.StatusOK:
-		return true, nil
-	case http.StatusUnauthorized, http.StatusForbidden:
-		return false, denied()
-	case http.StatusTooManyRequests:
-		return false, &Error{Code: "throttled"}
-	default:
-		return false, &Error{Code: "dependency_unavailable"}
-	}
-}
-
-func azureResourceGroupCreateResult(reply map[string]any, headers http.Header, subscription, resourceGroup string) (map[string]any, error) {
-	resourceGroupID := "/subscriptions/" + subscription + "/resourceGroups/" + resourceGroup
-	if !strings.EqualFold(text(reply["id"]), resourceGroupID) || !strings.EqualFold(text(reply["name"]), resourceGroup) || !safeAzureLocation(text(reply["location"])) {
-		return nil, &Error{Code: "dependency_unavailable", Unknown: true}
-	}
-	properties, _ := reply["properties"].(map[string]any)
-	provisioningState := text(properties["provisioningState"])
-	if !safeProviderValue(provisioningState, 64) {
-		return nil, &Error{Code: "dependency_unavailable", Unknown: true}
-	}
-	result := map[string]any{"resource_group_id": text(reply["id"]), "name": text(reply["name"]), "location": text(reply["location"]), "provisioning_state": provisioningState}
-	if requestID := azureRequestID(headers); requestID != "" {
-		result["request_id"] = requestID
-	}
-	if correlationID := azureCorrelationID(headers); correlationID != "" {
-		result["correlation_id"] = correlationID
-	}
-	return map[string]any{"status": "succeeded", "result": result}, nil
-}
-
-func azureResourceGroupTagsResult(reply map[string]any, headers http.Header, subscription, resourceGroup string) (map[string]any, error) {
-	resourceGroupID := "/subscriptions/" + subscription + "/resourceGroups/" + resourceGroup
-	resourceID := text(reply["id"])
-	expectedID := resourceGroupID + "/providers/Microsoft.Resources/tags/default"
-	if !strings.EqualFold(resourceID, expectedID) {
-		return nil, &Error{Code: "dependency_unavailable", Unknown: true}
-	}
-	result := map[string]any{"resource_id": resourceID, "resource_group_id": resourceGroupID, "operation": "Merge"}
-	if requestID := azureRequestID(headers); requestID != "" {
-		result["request_id"] = requestID
-	}
-	if correlationID := azureCorrelationID(headers); correlationID != "" {
-		result["correlation_id"] = correlationID
-	}
-	return map[string]any{"status": "succeeded", "result": result}, nil
-}
-
-func azureRequestID(headers http.Header) string {
-	if value := strings.TrimSpace(headerValue(headers, "x-ms-request-id")); safeRequestID(value) {
-		return value
-	}
-	return ""
-}
-
-func azureCorrelationID(headers http.Header) string {
-	if value := strings.TrimSpace(headerValue(headers, "x-ms-correlation-request-id")); safeRequestID(value) {
-		return value
-	}
-	return ""
-}
-
-func (c *Client) github(ctx context.Context, tool string, args map[string]any, limits brokerclient.Constraints, token string) (map[string]any, error) {
-	base, repository := "https://api.github.com", stringArg(args, "repository_id")
-	if !safeGitHubRepositoryID(repository) || !contains(limits.RepositoryIDs, repository) {
-		return nil, denied()
-	}
-	if tool == "github_contents_get" && !safeGitHubPath(stringArg(args, "path")) {
-		return nil, &Error{Code: "invalid_request"}
-	}
-	header := map[string]string{"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
-	canonicalPath, resolved, err := c.githubRepository(ctx, base, repository, token, header)
-	if err != nil {
-		return nil, err
-	}
-	switch tool {
-	case "github_repositories_get":
-		var reply map[string]any
-		if err := c.requestHeaders(ctx, http.MethodGet, base+canonicalPath, nil, token, header, &reply); err != nil {
-			return nil, err
-		}
-		if text(reply["id"]) != repository {
-			return nil, denied()
-		}
-		if text(reply["full_name"]) != text(resolved["full_name"]) {
-			return nil, denied()
-		}
-		return map[string]any{"repository": pick(reply, "id", "full_name", "description", "private", "default_branch", "html_url", "updated_at")}, nil
-	case "github_contents_get":
-		contentPath := stringArg(args, "path")
-		value := base + canonicalPath + "/contents/" + escapeGitHubPath(contentPath)
-		if ref, ok := args["ref"].(string); ok {
-			value += "?ref=" + url.QueryEscape(ref)
-		}
-		var reply map[string]any
-		if err := c.requestHeaders(ctx, http.MethodGet, value, nil, token, header, &reply); err != nil {
-			return nil, err
-		}
-		content, err := decodeGitHubContent(reply)
-		if err != nil {
-			return nil, &Error{Code: "invalid_request"}
-		}
-		return map[string]any{"path": text(reply["path"]), "sha": text(reply["sha"]), "content": content, "truncated": false}, nil
-	case "github_issues_list", "github_pull_requests_list":
-		resource := "/issues"
-		if tool == "github_pull_requests_list" {
-			resource = "/pulls"
-		}
-		state := "open"
-		if selected, ok := args["state"].(string); ok {
-			state = selected
-		}
-		var reply []map[string]any
-		var responseHeaders http.Header
-		if err := c.requestHeadersResponse(ctx, http.MethodGet, base+canonicalPath+resource+"?state="+url.QueryEscape(state)+"&per_page=100", nil, token, header, &reply, &responseHeaders); err != nil {
-			return nil, err
-		}
-		return listed(pickSlice(reply, "number", "title", "state", "html_url", "created_at", "updated_at", "user"), pageTruncated(len(reply), githubHasNextPage(responseHeaders), false)), nil
-	case "github_issues_create":
-		body := map[string]any{"title": stringArg(args, "title")}
-		if value, ok := args["body"].(string); ok {
-			body["body"] = value
-		}
-		var reply map[string]any
-		if err := c.requestHeaders(ctx, http.MethodPost, base+canonicalPath+"/issues", body, token, header, &reply); err != nil {
-			return nil, err
-		}
-		return writeResult(reply, "number", "html_url", "state")
-	case "github_comments_create":
-		number := integerArg(args, "issue_number")
-		var reply map[string]any
-		if err := c.requestHeaders(ctx, http.MethodPost, base+canonicalPath+"/issues/"+strconv.FormatInt(number, 10)+"/comments", map[string]any{"body": stringArg(args, "body")}, token, header, &reply); err != nil {
-			return nil, err
-		}
-		return writeResult(reply, "id", "html_url", "created_at")
-	case "github_pull_requests_create":
-		baseBranch := stringArg(args, "base_branch")
-		if len(limits.BaseBranches) > 0 && !contains(limits.BaseBranches, baseBranch) {
-			return nil, denied()
-		}
-		body := map[string]any{"title": stringArg(args, "title"), "head": stringArg(args, "head"), "base": baseBranch}
-		if value, ok := args["body"].(string); ok {
-			body["body"] = value
-		}
-		var reply map[string]any
-		if err := c.requestHeaders(ctx, http.MethodPost, base+canonicalPath+"/pulls", body, token, header, &reply); err != nil {
-			return nil, err
-		}
-		return writeResult(reply, "number", "html_url", "state")
-	default:
-		return nil, denied()
-	}
-}
-
-func (c *Client) microsoft(ctx context.Context, tool string, args map[string]any, limits brokerclient.Constraints, token string) (map[string]any, error) {
-	return c.graph(ctx, "https://graph.microsoft.com/v1.0", tool, args, limits, token)
-}
-
-func (c *Client) google(ctx context.Context, tool string, args map[string]any, limits brokerclient.Constraints, token string) (map[string]any, error) {
-	if strings.HasPrefix(tool, "mail_") {
-		return c.gmail(ctx, tool, args, limits, token)
-	}
-	return c.googleCalendar(ctx, tool, args, limits, token)
-}
-
-func (c *Client) graph(ctx context.Context, base, tool string, args map[string]any, limits brokerclient.Constraints, token string) (map[string]any, error) {
-	switch tool {
-	case "mail_messages_search":
-		query := "$top=100&$select=id,subject,from,receivedDateTime,bodyPreview"
-		filter := graphMailFilter(args)
-		if filter != "" {
-			query += "&$filter=" + url.QueryEscape(filter)
-		}
-		var reply struct {
-			Value    []map[string]any `json:"value"`
-			NextLink string           `json:"@odata.nextLink"`
-		}
-		if err := c.request(ctx, http.MethodGet, base+"/me/messages?"+query, nil, token, &reply); err != nil {
-			return nil, err
-		}
-		return listed(pickSlice(reply.Value, "id", "subject", "from", "receivedDateTime", "bodyPreview"), pageTruncated(len(reply.Value), reply.NextLink != "", false)), nil
-	case "mail_messages_get":
-		var reply map[string]any
-		if err := c.request(ctx, http.MethodGet, base+"/me/messages/"+url.PathEscape(stringArg(args, "message_id"))+"?$select=id,subject,from,toRecipients,receivedDateTime,bodyPreview,body", nil, token, &reply); err != nil {
-			return nil, err
-		}
-		return map[string]any{"message": pick(reply, "id", "subject", "from", "toRecipients", "receivedDateTime", "bodyPreview", "body")}, nil
-	case "mail_send":
-		if !allowedRecipients(args, limits) {
-			return nil, denied()
-		}
-		body := map[string]any{"message": map[string]any{"subject": stringArg(args, "subject"), "body": map[string]string{"contentType": "Text", "content": stringArg(args, "body")}, "toRecipients": graphRecipients(args, "to"), "ccRecipients": graphRecipients(args, "cc"), "bccRecipients": graphRecipients(args, "bcc")}, "saveToSentItems": true}
-		if err := c.request(ctx, http.MethodPost, base+"/me/sendMail", body, token, nil); err != nil {
-			return nil, err
-		}
-		return map[string]any{"status": "accepted"}, nil
-	case "calendar_events_list":
-		calendar := stringArg(args, "calendar_id")
-		if !contains(limits.CalendarIDs, calendar) {
-			return nil, denied()
-		}
-		query := "startDateTime=" + url.QueryEscape(stringArg(args, "start")) + "&endDateTime=" + url.QueryEscape(stringArg(args, "end")) + "&$top=100&$select=id,subject,start,end,organizer,attendees,webLink"
-		var reply struct {
-			Value    []map[string]any `json:"value"`
-			NextLink string           `json:"@odata.nextLink"`
-		}
-		if err := c.request(ctx, http.MethodGet, base+"/me/calendars/"+url.PathEscape(calendar)+"/calendarView?"+query, nil, token, &reply); err != nil {
-			return nil, err
-		}
-		return listed(pickSlice(reply.Value, "id", "subject", "start", "end", "organizer", "attendees", "webLink"), pageTruncated(len(reply.Value), reply.NextLink != "", false)), nil
-	case "calendar_events_create":
-		calendar := stringArg(args, "calendar_id")
-		if !contains(limits.CalendarIDs, calendar) || (!limits.AllowInvites && hasArray(args, "attendees")) || (hasArray(args, "attendees") && !allowedRecipients(args, limits)) {
-			return nil, denied()
-		}
-		body := map[string]any{"subject": stringArg(args, "subject"), "start": graphDate(stringArg(args, "start")), "end": graphDate(stringArg(args, "end")), "attendees": graphRecipients(args, "attendees")}
-		if value, ok := args["body"].(string); ok {
-			body["body"] = map[string]string{"contentType": "Text", "content": value}
-		}
-		var reply map[string]any
-		if err := c.request(ctx, http.MethodPost, base+"/me/calendars/"+url.PathEscape(calendar)+"/events", body, token, &reply); err != nil {
-			return nil, err
-		}
-		return writeResult(reply, "id", "webLink", "subject")
-	default:
-		return nil, denied()
-	}
-}
-
-func (c *Client) gmail(ctx context.Context, tool string, args map[string]any, limits brokerclient.Constraints, token string) (map[string]any, error) {
-	base := "https://gmail.googleapis.com/gmail/v1/users/me"
-	switch tool {
-	case "mail_messages_search":
-		query := gmailQuery(args)
-		var reply struct {
-			Messages      []map[string]any `json:"messages"`
-			NextPageToken string           `json:"nextPageToken"`
-		}
-		endpoint := base + "/messages?maxResults=100"
-		if query != "" {
-			endpoint += "&q=" + url.QueryEscape(query)
-		}
-		if err := c.request(ctx, http.MethodGet, endpoint, nil, token, &reply); err != nil {
-			return nil, err
-		}
-		items := []any{}
-		for _, item := range reply.Messages {
-			items = append(items, pick(item, "id", "threadId"))
-		}
-		return listed(items, pageTruncated(len(reply.Messages), reply.NextPageToken != "", false)), nil
-	case "mail_messages_get":
-		var reply map[string]any
-		if err := c.request(ctx, http.MethodGet, base+"/messages/"+url.PathEscape(stringArg(args, "message_id"))+"?format=full", nil, token, &reply); err != nil {
-			return nil, err
-		}
-		message := pick(reply, "id", "threadId", "labelIds", "snippet", "internalDate")
-		payload, _ := reply["payload"].(map[string]any)
-		for key, value := range gmailHeaders(payload) {
-			message[key] = value
-		}
-		body, err := gmailTextBody(payload)
-		if err != nil {
-			return nil, &Error{Code: "dependency_unavailable"}
-		}
-		message["body"] = body
-		return map[string]any{"message": message}, nil
-	case "mail_send":
-		if !allowedRecipients(args, limits) {
-			return nil, denied()
-		}
-		raw, err := gmailMessage(args)
-		if err != nil {
-			return nil, &Error{Code: "invalid_request"}
-		}
-		var reply map[string]any
-		if err := c.request(ctx, http.MethodPost, base+"/messages/send", map[string]string{"raw": raw}, token, &reply); err != nil {
-			return nil, err
-		}
-		return writeResult(reply, "id", "threadId", "labelIds")
-	default:
-		return nil, denied()
-	}
-}
-
-func (c *Client) googleCalendar(ctx context.Context, tool string, args map[string]any, limits brokerclient.Constraints, token string) (map[string]any, error) {
-	calendar := stringArg(args, "calendar_id")
-	if !contains(limits.CalendarIDs, calendar) {
-		return nil, denied()
-	}
-	base := "https://www.googleapis.com/calendar/v3/calendars/" + url.PathEscape(calendar) + "/events"
-	switch tool {
-	case "calendar_events_list":
-		endpoint := base + "?singleEvents=true&orderBy=startTime&maxResults=100&timeMin=" + url.QueryEscape(stringArg(args, "start")) + "&timeMax=" + url.QueryEscape(stringArg(args, "end"))
-		var reply struct {
-			Items         []map[string]any `json:"items"`
-			NextPageToken string           `json:"nextPageToken"`
-		}
-		if err := c.request(ctx, http.MethodGet, endpoint, nil, token, &reply); err != nil {
-			return nil, err
-		}
-		return listed(pickSlice(reply.Items, "id", "summary", "start", "end", "organizer", "attendees", "htmlLink"), pageTruncated(len(reply.Items), reply.NextPageToken != "", false)), nil
-	case "calendar_events_create":
-		if (!limits.AllowInvites && hasArray(args, "attendees")) || (hasArray(args, "attendees") && !allowedRecipients(args, limits)) {
-			return nil, denied()
-		}
-		body := map[string]any{"summary": stringArg(args, "subject"), "start": map[string]string{"dateTime": stringArg(args, "start")}, "end": map[string]string{"dateTime": stringArg(args, "end")}, "attendees": googleAttendees(args)}
-		if value, ok := args["body"].(string); ok {
-			body["description"] = value
-		}
-		var reply map[string]any
-		if err := c.request(ctx, http.MethodPost, base+"?sendUpdates=all", body, token, &reply); err != nil {
-			return nil, err
-		}
-		return writeResult(reply, "id", "htmlLink", "summary")
-	default:
-		return nil, denied()
-	}
-}
-
-func (c *Client) request(ctx context.Context, method, endpoint string, body any, token string, output any) error {
-	return c.requestHeaders(ctx, method, endpoint, body, token, nil, output)
-}
-func (c *Client) requestHeaders(ctx context.Context, method, endpoint string, body any, token string, headers map[string]string, output any) error {
-	return c.requestHeadersResponse(ctx, method, endpoint, body, token, headers, output, nil)
-}
-func (c *Client) requestHeadersResponse(ctx context.Context, method, endpoint string, body any, token string, headers map[string]string, output any, responseHeaders *http.Header) error {
-	var reader io.Reader
-	if body != nil {
-		encoded, err := json.Marshal(body)
-		if err != nil {
-			return &Error{Code: "invalid_request"}
-		}
-		reader = bytes.NewReader(encoded)
-	}
-	request, err := http.NewRequestWithContext(ctx, method, endpoint, reader)
-	if err != nil {
-		return &Error{Code: "invalid_request"}
-	}
-	request.Header.Set("Authorization", "Bearer "+token)
-	request.Header.Set("Accept", "application/json")
-	if body != nil {
+	request.GetBody = nil // No implicit replay, including requests with JSON bodies.
+	if len(input.Body) == 0 {
+		request.Body = nil
+	} else {
+		request.ContentLength = int64(len(input.Body))
 		request.Header.Set("Content-Type", "application/json")
 	}
-	for name, value := range headers {
+	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("Accept", "application/json")
+	request.Header.Set("User-Agent", "CetiRun-Agent-Services/1")
+	for name, value := range input.Headers {
 		request.Header.Set(name, value)
+	}
+	profile, _ := agenttools.LookupService(input.Service)
+	if profile.Provider == "azure" {
+		request.Header.Set("x-ms-client-request-id", correlation)
+	}
+	if profile.Provider == "microsoft" {
+		request.Header.Set("client-request-id", correlation)
+		request.Header.Set("return-client-request-id", "true")
 	}
 	response, err := c.http.Do(request)
 	if err != nil {
-		return &Error{Code: "dependency_unavailable", Unknown: method != http.MethodGet}
+		return Result{}, &Error{Code: "execution_unknown", Unknown: true}
 	}
 	defer response.Body.Close()
-	if responseHeaders != nil {
-		*responseHeaders = response.Header.Clone()
+	result := Result{Status: response.StatusCode, Headers: map[string]string{}, RequestIDs: []string{}, CorrelationID: correlation}
+	for _, name := range []string{"x-ms-request-id", "x-ms-correlation-request-id", "request-id", "x-github-request-id", "x-guploader-uploadid"} {
+		if value := response.Header.Get(name); safeResponseHeader(value, token) && len(value) < 1024 {
+			result.RequestIDs = append(result.RequestIDs, value)
+		}
 	}
-	captureRequestID(ctx, response.Header)
-	payload, err := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
-	if err != nil || len(payload) > maxResponseBytes {
-		return &Error{Code: "dependency_unavailable", Unknown: method != http.MethodGet}
+	for _, name := range []string{"etag", "retry-after", "location", "azure-asyncoperation", "operation-location", "link", "x-ratelimit-remaining", "x-ratelimit-reset"} {
+		if value := response.Header.Get(name); safeResponseHeader(value, token) {
+			result.Headers[name] = value
+		}
 	}
-	if response.StatusCode == http.StatusTooManyRequests {
-		return &Error{Code: "throttled"}
+	// 304 is a cache result; all redirect responses are returned without following.
+	if response.StatusCode >= 300 && response.StatusCode < 400 && response.StatusCode != 304 {
+		return result, &Error{Code: "redirect_rejected"}
 	}
-	if response.StatusCode == http.StatusUnauthorized && request.URL.Scheme == "https" && request.URL.Host == "api.github.com" {
-		return &Error{Code: "interaction_required"}
+	payload, err := io.ReadAll(io.LimitReader(response.Body, MaxResponseBytes+1))
+	if err != nil || len(payload) > MaxResponseBytes {
+		return result, &Error{Code: "execution_unknown", Unknown: true}
 	}
-	if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden {
-		return &Error{Code: "permission_denied"}
-	}
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return &Error{Code: "dependency_unavailable", Unknown: method != http.MethodGet}
-	}
-	if output != nil {
-		if len(payload) == 0 {
-			return &Error{Code: "dependency_unavailable", Unknown: method != http.MethodGet}
+	if len(payload) > 0 {
+		contentType, _, err := mime.ParseMediaType(response.Header.Get("Content-Type"))
+		if err != nil || !(contentType == "application/json" || strings.HasSuffix(contentType, "+json")) {
+			// The provider may have applied a write before returning an unsupported
+			// representation. Do not report this as a request rejected before execution.
+			return result, &Error{Code: "execution_unknown", Unknown: true}
 		}
 		decoder := json.NewDecoder(bytes.NewReader(payload))
 		decoder.UseNumber()
-		if err := decoder.Decode(output); err != nil || decoder.Decode(&struct{}{}) != io.EOF {
-			return &Error{Code: "dependency_unavailable", Unknown: method != http.MethodGet}
+		if decoder.Decode(&result.Body) != nil || decoder.Decode(&struct{}{}) != io.EOF {
+			result.Body = nil
+			return result, &Error{Code: "execution_unknown", Unknown: true}
 		}
 	}
-	return nil
-}
-
-func contains(values []string, value string) bool {
-	for _, candidate := range values {
-		if candidate == value {
-			return true
-		}
+	// Do not let an upstream echo disclose the bearer credential, including escaped
+	// JSON strings or header values. Resource data otherwise remains intact.
+	if containsCredential(result.Body, token) || containsCredential(result.Headers, token) {
+		result.Body = nil
+		return result, &Error{Code: "execution_unknown", Unknown: true}
 	}
-	return false
+	return result, nil
 }
-func containsFold(values []string, value string) bool {
-	for _, candidate := range values {
-		if strings.EqualFold(candidate, value) {
-			return true
-		}
-	}
-	return false
-}
-func denied() error { return &Error{Code: "permission_denied"} }
-func text(value any) string {
-	switch item := value.(type) {
+func containsCredential(value any, token string) bool {
+	switch v := value.(type) {
 	case string:
-		return item
-	case json.Number:
-		return item.String()
-	case float64:
-		return strconv.FormatInt(int64(item), 10)
-	default:
-		return ""
-	}
-}
-func stringArg(args map[string]any, key string) string { value, _ := args[key].(string); return value }
-func integerArg(args map[string]any, key string) int64 {
-	value, _ := args[key].(json.Number)
-	integer, _ := value.Int64()
-	return integer
-}
-func pick(input map[string]any, keys ...string) map[string]any {
-	output := map[string]any{}
-	for _, key := range keys {
-		if value, found := input[key]; found {
-			output[key] = value
-		}
-	}
-	return output
-}
-func pickSlice(input []map[string]any, keys ...string) []any {
-	output := make([]any, 0, len(input))
-	for _, item := range input {
-		output = append(output, pick(item, keys...))
-	}
-	return output
-}
-func listed(items []any, truncated bool) map[string]any {
-	if len(items) > maxItems {
-		items, truncated = items[:maxItems], true
-	}
-	return map[string]any{"items": items, "truncated": truncated, "next_cursor": nil}
-}
-func writeResult(reply map[string]any, keys ...string) (map[string]any, error) {
-	result := pick(reply, keys...)
-	if len(reply) == 0 || len(result) == 0 || text(reply[keys[0]]) == "" {
-		return nil, &Error{Code: "dependency_unavailable", Unknown: true}
-	}
-	return map[string]any{"status": "succeeded", "result": result}, nil
-}
-
-func canonicalAzureResourceID(resourceID string) (string, bool) {
-	parts := strings.Split(resourceID, "/")
-	if len(parts) < 7 || parts[0] != "" || !strings.EqualFold(parts[1], "subscriptions") || !safeARMIDSegment(parts[2]) {
-		return "", false
-	}
-	providers := 3
-	if len(parts) > 3 && strings.EqualFold(parts[3], "resourceGroups") {
-		if len(parts) < 9 || !safeARMIDSegment(parts[4]) {
-			return "", false
-		}
-		providers = 5
-	}
-	if len(parts) < providers+4 || !strings.EqualFold(parts[providers], "providers") || !safeARMIDSegment(parts[providers+1]) || (len(parts)-(providers+2))%2 != 0 {
-		return "", false
-	}
-	for _, part := range parts[1:] {
-		if !safeARMIDSegment(part) {
-			return "", false
-		}
-	}
-	return parts[2], true
-}
-func safeARMIDSegment(value string) bool {
-	if value == "" || value == "." || value == ".." {
-		return false
-	}
-	for _, character := range value {
-		if !(character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' || character >= '0' && character <= '9' || strings.ContainsRune("._~-:", character)) {
-			return false
-		}
-	}
-	return true
-}
-func safeAzureSubscriptionID(value string) bool {
-	if value == "" || len(value) > 64 {
-		return false
-	}
-	for _, character := range value {
-		if !(character >= '0' && character <= '9' || character >= 'a' && character <= 'f' || character >= 'A' && character <= 'F' || character == '-') {
-			return false
-		}
-	}
-	return true
-}
-func safeResourceGroupName(value string) bool {
-	if len(value) == 0 || len(value) > 90 || strings.Contains(value, "..") || strings.HasSuffix(value, ".") {
-		return false
-	}
-	for index, character := range value {
-		if (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') || (character >= '0' && character <= '9') || strings.ContainsRune("_.()-", character) {
-			if index != 0 || (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') || (character >= '0' && character <= '9') {
-				continue
+		return strings.Contains(v, token)
+	case map[string]any:
+		for k, x := range v {
+			if strings.Contains(k, token) || containsCredential(x, token) {
+				return true
 			}
 		}
-		return false
-	}
-	return true
-}
-func safeAzureLocation(value string) bool {
-	if len(value) < 2 || len(value) > 64 {
-		return false
-	}
-	for _, character := range value {
-		if !(character >= 'a' && character <= 'z') && !(character >= 'A' && character <= 'Z') && !(character >= '0' && character <= '9') {
-			return false
+	case map[string]string:
+		for k, x := range v {
+			if strings.Contains(k, token) || strings.Contains(x, token) {
+				return true
+			}
 		}
-	}
-	return true
-}
-func safeOperationID(value string) bool {
-	if len(value) < 8 || len(value) > 128 {
-		return false
-	}
-	for index, character := range value {
-		if (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') || (character >= '0' && character <= '9') {
-			continue
-		}
-		if index > 0 && strings.ContainsRune("._-", character) {
-			continue
-		}
-		return false
-	}
-	return true
-}
-func safeTags(value any) bool {
-	tags, ok := value.(map[string]any)
-	if !ok || len(tags) == 0 || len(tags) > 50 {
-		return false
-	}
-	for key, value := range tags {
-		if len(key) == 0 || len(key) > 128 || strings.ContainsAny(key, "\r\n") {
-			return false
-		}
-		text, ok := value.(string)
-		if !ok || len(text) == 0 || len(text) > 256 || strings.ContainsAny(text, "\r\n") {
-			return false
-		}
-	}
-	return true
-}
-func safeProviderValue(value string, maximum int) bool {
-	if len(value) == 0 || len(value) > maximum {
-		return false
-	}
-	for _, character := range value {
-		if !(character >= 'a' && character <= 'z') && !(character >= 'A' && character <= 'Z') && !(character >= '0' && character <= '9') && !strings.ContainsRune("._-", character) {
-			return false
-		}
-	}
-	return true
-}
-func escapeGitHubPath(path string) string {
-	parts := strings.Split(path, "/")
-	for index := range parts {
-		parts[index] = url.PathEscape(parts[index])
-	}
-	return strings.Join(parts, "/")
-}
-func safeGitHubPath(path string) bool {
-	for _, segment := range strings.Split(path, "/") {
-		if segment == "" || segment == "." || segment == ".." {
-			return false
-		}
-	}
-	return true
-}
-func decodeGitHubContent(reply map[string]any) (string, error) {
-	if text(reply["encoding"]) != "base64" {
-		return "", errors.New("unexpected content encoding")
-	}
-	decoded, err := base64.StdEncoding.DecodeString(strings.ReplaceAll(text(reply["content"]), "\n", ""))
-	if err != nil || len(decoded) > maxResponseBytes {
-		return "", errors.New("invalid content")
-	}
-	return string(decoded), nil
-}
-func (c *Client) githubRepository(ctx context.Context, base, repository, token string, headers map[string]string) (string, map[string]any, error) {
-	var reply map[string]any
-	if err := c.requestHeaders(ctx, http.MethodGet, base+"/repositories/"+url.PathEscape(repository), nil, token, headers, &reply); err != nil {
-		return "", nil, err
-	}
-	fullName := text(reply["full_name"])
-	if text(reply["id"]) != repository || !safeGitHubRepository(fullName) {
-		return "", nil, denied()
-	}
-	parts := strings.Split(fullName, "/")
-	return "/repos/" + url.PathEscape(parts[0]) + "/" + url.PathEscape(parts[1]), reply, nil
-}
-func safeGitHubRepository(fullName string) bool {
-	parts := strings.Split(fullName, "/")
-	return len(parts) == 2 && safeGitHubPath(parts[0]) && safeGitHubPath(parts[1])
-}
-func safeGitHubRepositoryID(value string) bool {
-	if value == "" {
-		return false
-	}
-	for _, character := range value {
-		if character < '0' || character > '9' {
-			return false
-		}
-	}
-	return true
-}
-func pageTruncated(count int, hasNext, providerTruncated bool) bool {
-	return providerTruncated || hasNext || count >= maxItems
-}
-func boolValue(value any) bool {
-	if boolean, ok := value.(bool); ok {
-		return boolean
-	}
-	textValue := strings.TrimSpace(strings.ToLower(text(value)))
-	return textValue == "true"
-}
-func githubHasNextPage(headers http.Header) bool {
-	for _, value := range headers.Values("Link") {
-		for _, link := range strings.Split(value, ",") {
-			if strings.Contains(link, "rel=\"next\"") || strings.Contains(link, "rel=next") {
+	case []any:
+		for _, x := range v {
+			if containsCredential(x, token) {
 				return true
 			}
 		}
 	}
 	return false
 }
-func hasArray(args map[string]any, key string) bool {
-	values, ok := args[key].([]any)
-	return ok && len(values) > 0
-}
-func emails(args map[string]any, key string) []string {
-	values, _ := args[key].([]any)
-	output := make([]string, 0, len(values))
-	for _, value := range values {
-		if address, ok := value.(string); ok {
-			output = append(output, strings.ToLower(address))
-		}
+
+func safeResponseHeader(value, token string) bool {
+	if value == "" || len(value) > 8192 || strings.Contains(value, token) {
+		return false
 	}
-	return output
-}
-func allowedRecipients(args map[string]any, limits brokerclient.Constraints) bool {
-	for _, key := range []string{"to", "cc", "bcc", "attendees"} {
-		for _, address := range emails(args, key) {
-			at := strings.LastIndex(address, "@")
-			if at <= 0 || (!contains(limits.RecipientAddresses, address) && !contains(limits.RecipientDomains, address[at+1:])) {
-				return false
-			}
+	for _, r := range value {
+		if r < 0x20 || r == 0x7f {
+			return false
 		}
 	}
 	return true
-}
-func graphRecipients(args map[string]any, key string) []map[string]any {
-	output := []map[string]any{}
-	for _, address := range emails(args, key) {
-		output = append(output, map[string]any{"emailAddress": map[string]string{"address": address}})
-	}
-	return output
-}
-func googleAttendees(args map[string]any) []map[string]string {
-	output := []map[string]string{}
-	for _, address := range emails(args, "attendees") {
-		output = append(output, map[string]string{"email": address})
-	}
-	return output
-}
-func graphDate(value string) map[string]string {
-	parsed, err := time.Parse(time.RFC3339, value)
-	if err != nil {
-		return map[string]string{"dateTime": value, "timeZone": "UTC"}
-	}
-	return map[string]string{"dateTime": parsed.UTC().Format("2006-01-02T15:04:05"), "timeZone": "UTC"}
-}
-func graphMailFilter(args map[string]any) string {
-	values := []string{}
-	if subject, ok := args["subject"].(string); ok {
-		values = append(values, "contains(subject,'"+strings.ReplaceAll(subject, "'", "''")+"')")
-	}
-	if from, ok := args["from"].(string); ok {
-		values = append(values, "from/emailAddress/address eq '"+strings.ReplaceAll(from, "'", "''")+"'")
-	}
-	if start, ok := args["start"].(string); ok {
-		values = append(values, "receivedDateTime ge "+start)
-	}
-	if end, ok := args["end"].(string); ok {
-		values = append(values, "receivedDateTime le "+end)
-	}
-	return strings.Join(values, " and ")
-}
-func gmailQuery(args map[string]any) string {
-	values := []string{}
-	if subject, ok := args["subject"].(string); ok {
-		values = append(values, "subject:"+strconv.Quote(subject))
-	}
-	if from, ok := args["from"].(string); ok {
-		values = append(values, "from:"+from)
-	}
-	if start, ok := args["start"].(string); ok {
-		values = append(values, "after:"+start[:10])
-	}
-	if end, ok := args["end"].(string); ok {
-		values = append(values, "before:"+end[:10])
-	}
-	return strings.Join(values, " ")
-}
-func gmailHeaders(payload map[string]any) map[string]any {
-	output := map[string]any{}
-	headers, _ := payload["headers"].([]any)
-	decoder := new(mime.WordDecoder)
-	for _, header := range headers {
-		value, _ := header.(map[string]any)
-		name, content := strings.ToLower(text(value["name"])), text(value["value"])
-		if name != "subject" && name != "from" && name != "to" {
-			continue
-		}
-		if decoded, err := decoder.DecodeHeader(content); err == nil {
-			content = decoded
-		}
-		output[name] = content
-	}
-	return output
-}
-func gmailTextBody(payload map[string]any) (string, error) {
-	if strings.EqualFold(strings.Split(text(payload["mimeType"]), ";")[0], "text/plain") && text(payload["filename"]) == "" {
-		body, _ := payload["body"].(map[string]any)
-		data := text(body["data"])
-		if data != "" {
-			decoded, err := base64.RawURLEncoding.DecodeString(data)
-			if err != nil {
-				decoded, err = base64.URLEncoding.DecodeString(data)
-			}
-			if err != nil || len(decoded) > maxMailBodyBytes {
-				return "", errors.New("invalid mail body")
-			}
-			return string(decoded), nil
-		}
-	}
-	parts, _ := payload["parts"].([]any)
-	for _, part := range parts {
-		value, _ := part.(map[string]any)
-		body, err := gmailTextBody(value)
-		if err != nil {
-			return "", err
-		}
-		if body != "" {
-			return body, nil
-		}
-	}
-	return "", nil
-}
-func gmailMessage(args map[string]any) (string, error) {
-	subject := stringArg(args, "subject")
-	if strings.ContainsAny(subject, "\r\n") {
-		return "", errors.New("invalid subject")
-	}
-	lines := []string{"To: " + strings.Join(emails(args, "to"), ", ")}
-	if cc := emails(args, "cc"); len(cc) > 0 {
-		lines = append(lines, "Cc: "+strings.Join(cc, ", "))
-	}
-	if bcc := emails(args, "bcc"); len(bcc) > 0 {
-		lines = append(lines, "Bcc: "+strings.Join(bcc, ", "))
-	}
-	lines = append(lines, "Subject: "+mime.QEncoding.Encode("UTF-8", subject), "MIME-Version: 1.0", "Content-Type: text/plain; charset=utf-8", "", stringArg(args, "body"))
-	return base64.RawURLEncoding.EncodeToString([]byte(strings.Join(lines, "\r\n"))), nil
 }

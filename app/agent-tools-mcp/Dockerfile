@@ -2,8 +2,9 @@
 # Licensed under the MIT License.
 
 FROM mcr.microsoft.com/oss/go/microsoft/golang:1.27.2-1@sha256:91e046cbf8a47a056e5a3c59b40d5a6d40aa7ad70c8657107212ccd5b3d11029 AS builder
-WORKDIR /src
-COPY app/agent-tools-mcp/go.mod ./
+WORKDIR /src/app/agent-tools-mcp
+COPY app/internal/ /src/app/internal/
+COPY app/cetirun-operator/go.mod /src/app/cetirun-operator/go.mod
 COPY app/agent-tools-mcp/ ./
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -o /agent-tools-mcp .
 

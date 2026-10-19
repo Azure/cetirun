@@ -43,12 +43,6 @@ agentIdentity:
     - https://management.azure.com/user_impersonation
   graphScopes:
     - https://graph.microsoft.com/.default
-  armPermissions:
-    - user_impersonation
-  graphPermissions:
-    - Mail.Read
-    - Mail.Send
-    - Calendars.ReadWrite
 
 portal:
   namespace: cetirun-portal
@@ -96,8 +90,3 @@ resources:
     limits:
       cpu: 500m
       memory: 256Mi
-
-# Enable after Operator per-Agent Broker RBAC and a quiesced record migration.
-# Default false preserves existing releases until their explicit cutover.
-# Personal OAuth credentials always remain in the Broker namespace.
-agentRecordNamespaces: false

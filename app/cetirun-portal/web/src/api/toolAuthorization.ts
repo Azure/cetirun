@@ -3,8 +3,6 @@
 
 import { apiFetch } from "./fetch";
 
-export const TOOL_CATALOG_VERSION = "2026-10-16";
-
 export type ConnectionProvider = "azure" | "microsoft" | "github" | "google";
 export type ConnectionMode = "agent" | "delegated";
 export type ConnectionStatus = "connecting" | "connected" | "interaction_required" | "disconnected" | "pending" | "ready";
@@ -17,71 +15,38 @@ export interface AgentIdentity {
 }
 
 export interface Connection {
+  canonicalConnectionId?: string;
   id: string;
   provider: ConnectionProvider;
   accountDisplay: string;
-  capabilities: string[];
+  services: string[];
+  scopes: string[];
   revision: number;
   status: ConnectionStatus;
   createdAt: string;
-  /** Absent records were created before independent Agent identities existed. */
-  mode?: ConnectionMode;
+  /** Executor identity mode. */
+  mode: ConnectionMode;
   /** Present only for Broker-derived independent Agent identities. */
   identity?: AgentIdentity;
 }
 
 export interface ConnectionStart {
+  authorizationId: string;
   authorizationUrl: string;
   expiresAt: string;
-  connectionId: string;
+  connectionId?: string;
 }
 
-export interface ToolConstraints {
-  subscriptionIds: string[];
-  /** Absent from grants created before Azure write operations were available. */
-  resourceGroupNames?: string[];
-  repositoryIds: string[];
-  baseBranches: string[];
-  calendarIds: string[];
-  recipientAddresses: string[];
-  recipientDomains: string[];
-  allowInvites: boolean;
-}
-
-export interface ToolGrant {
+export interface ConnectionBinding {
   id: string;
   instanceUid: string;
   connectionId: string;
-  tools: string[];
-  constraints: ToolConstraints;
-  expiresAt: string;
+  services: string[];
+  enabled: boolean;
   revision: number;
-  authorization?: ToolGrantAuthorization;
 }
-
-export interface ToolGrantList {
-  grants: ToolGrant[];
-  readOnly: boolean;
-}
-
-export interface ToolGrantAuthorization {
-  state: "pending" | "verified";
-  source: "direct_rbac";
-  verifiedAt?: string;
-  validUntil?: string;
-  reason?: string;
-  scopes?: string[];
-  actions?: string[];
-  requestIds?: string[];
-}
-
-export interface ToolGrantInput {
-  connectionId: string;
-  tools: string[];
-  constraints: ToolConstraints;
-  expiresAt: string;
-  revision?: number;
-}
+export interface ConnectionBindingList { bindings: ConnectionBinding[]; readOnly: boolean }
+export interface ConnectionBindingInput { connectionId: string; services: string[]; enabled: boolean; revision?: number }
 
 export class ToolAuthorizationError extends Error {
   constructor(message: string, readonly code?: string) {
@@ -123,10 +88,10 @@ export async function deleteConnection(id: string): Promise<void> {
   }
 }
 
-export async function listToolGrants(name: string, signal?: AbortSignal): Promise<ToolGrantList> {
-  const response = await apiFetch(`/api/v1/instances/${encodeURIComponent(name)}/tool-grants`, { signal });
-  const grants = await parse<ToolGrant[]>(response);
-  return { grants, readOnly: response.headers.get("X-CetiRun-Tool-Grants-Read-Only") === "true" };
+export async function listConnectionBindings(name: string, signal?: AbortSignal): Promise<ConnectionBindingList> {
+  const response = await apiFetch(`/api/v1/instances/${encodeURIComponent(name)}/connection-bindings`, { signal });
+  const bindings = await parse<ConnectionBinding[]>(response);
+  return { bindings, readOnly: response.headers.get("X-CetiRun-Connection-Bindings-Read-Only") === "true" };
 }
 
 export type ToolIdentityInput = { provider: "azure" };
@@ -135,21 +100,34 @@ export async function createToolIdentity(name: string, input: ToolIdentityInput 
   return parse(await apiFetch(`/api/v1/instances/${encodeURIComponent(name)}/tool-identities`, { method: "POST", body: JSON.stringify(input) }));
 }
 
-export async function createToolGrant(name: string, input: ToolGrantInput): Promise<ToolGrant> {
-  return parse(await apiFetch(`/api/v1/instances/${encodeURIComponent(name)}/tool-grants`, { method: "POST", body: JSON.stringify(input) }));
+export async function createConnectionBinding(name: string, input: ConnectionBindingInput): Promise<ConnectionBinding> {
+  return parse(await apiFetch(`/api/v1/instances/${encodeURIComponent(name)}/connection-bindings`, { method: "POST", body: JSON.stringify(input) }));
 }
 
-export async function updateToolGrant(name: string, id: string, input: ToolGrantInput & { revision: number }): Promise<ToolGrant> {
-  return parse(await apiFetch(`/api/v1/instances/${encodeURIComponent(name)}/tool-grants/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify(input) }));
+export async function updateConnectionBinding(name: string, id: string, input: ConnectionBindingInput & { revision: number }): Promise<ConnectionBinding> {
+  return parse(await apiFetch(`/api/v1/instances/${encodeURIComponent(name)}/connection-bindings/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify(input) }));
 }
 
-export async function deleteToolGrant(name: string, id: string, revision: number): Promise<void> {
-  const response = await apiFetch(`/api/v1/instances/${encodeURIComponent(name)}/tool-grants/${encodeURIComponent(id)}`, { method: "DELETE", headers: { "If-Match": String(revision) } });
+export async function deleteConnectionBinding(name: string, id: string, revision: number): Promise<void> {
+  const response = await apiFetch(`/api/v1/instances/${encodeURIComponent(name)}/connection-bindings/${encodeURIComponent(id)}`, { method: "DELETE", headers: { "If-Match": String(revision) } });
   if (!response.ok) {
-    throw await responseError(response, "Could not revoke this tool grant");
+    throw await responseError(response, "Could not remove this connection binding");
   }
 }
 
-export async function verifyToolGrant(name: string, id: string, revision: number): Promise<ToolGrant> {
-  return parse(await apiFetch(`/api/v1/instances/${encodeURIComponent(name)}/tool-grants/${encodeURIComponent(id)}/verify`, { method: "POST", headers: { "If-Match": String(revision) } }));
+export interface ConnectionAuthorization {
+  authorizationId: string;
+  status: "pending" | "complete" | "failed";
+  connectionId?: string;
+}
+export interface ConnectionUsage {
+  connectionId: string;
+  agents: { instanceUid: string; instanceName: string; instanceNamespace: string }[];
+  canRemove: boolean;
+}
+export async function getConnectionAuthorization(id: string, signal?: AbortSignal): Promise<ConnectionAuthorization> {
+  return parse(await apiFetch(`/api/v1/connection-authorizations/${encodeURIComponent(id)}`, { signal }));
+}
+export async function getConnectionUsage(id: string, signal?: AbortSignal): Promise<ConnectionUsage> {
+  return parse(await apiFetch(`/api/v1/connections/${encodeURIComponent(id)}/usage`, { signal }));
 }

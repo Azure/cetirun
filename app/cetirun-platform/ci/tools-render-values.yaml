@@ -11,8 +11,6 @@ agent-tools-mcp:
     clientTLSSecretName: tools-broker-client-tls
   portal:
     baseURL: https://portal.example.invalid
-  operationRecords:
-    namespace: cetirun-tools-operations
   istio:
     sidecarInjection: true
     revision: asm-example

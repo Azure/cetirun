@@ -21,19 +21,19 @@ import (
 	cetirunv1alpha1 "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-portal/internal/auth"
 	"github.com/Azure/CetiRun/app/cetirun-portal/internal/kube"
+	"github.com/Azure/CetiRun/app/internal/agenttools"
 )
 
 const (
 	maxToolBrokerResponseBytes = 1 << 20
 	maxToolRequestBytes        = 64 << 10
-	toolCatalogVersion         = "2026-10-16"
-	maxGrantLifetime           = 90 * 24 * time.Hour
-	githubBindingLifetime      = 10 * time.Minute
-	githubBindingCookiePrefix  = "__Host-cetirun-github-oauth-"
-	connectionBindingHeader    = "X-CetiRun-Connection-Binding"
+	connectionBindingLifetime  = 10 * time.Minute
+	// Preserve the cookie prefix for in-flight GitHub authorizations during upgrades.
+	connectionBindingCookiePrefix = "__Host-cetirun-github-oauth-"
+	connectionBindingHeader       = "X-CetiRun-Connection-Binding"
 )
 
-// ToolConnectionsHandler exposes owner-scoped connection and grant management.
+// ToolConnectionsHandler exposes owner-scoped connection and binding management.
 // It never receives or returns provider credentials; it only proxies bounded,
 // validated control-plane requests to the protected Broker boundary.
 type ToolConnectionsHandler struct {
@@ -76,13 +76,13 @@ func (h *ToolConnectionsHandler) ConnectionCallback(w http.ResponseWriter, r *ht
 		}
 	}
 	state := form.Get("state")
-	cookieName, validState := githubBindingCookieName(state)
+	cookieName, validState := connectionBindingCookieName(state)
 	binding := ""
 	if validState {
 		if cookie, err := r.Cookie(cookieName); err == nil && validConnectionBinding(cookie.Value) {
 			binding = cookie.Value
 		}
-		clearGitHubBindingCookie(w, cookieName)
+		clearConnectionBindingCookie(w, cookieName)
 	}
 	request, err := http.NewRequestWithContext(r.Context(), http.MethodPost, h.BrokerBaseURL+"/api/v1/connections/callback", strings.NewReader(form.Encode()))
 	if err != nil {
@@ -121,7 +121,7 @@ func (h *ToolConnectionsHandler) StartConnection(w http.ResponseWriter, r *http.
 		return
 	}
 	binding := ""
-	if provider == "github" {
+	if provider == "github" || provider == "google" {
 		var err error
 		binding, err = newConnectionBinding()
 		if err != nil {
@@ -139,6 +139,22 @@ func (h *ToolConnectionsHandler) GetConnection(w http.ResponseWriter, r *http.Re
 		return
 	}
 	h.forward(w, r, http.MethodGet, "/v1/connections/"+url.PathEscape(r.PathValue("id")), headers, nil)
+}
+
+func (h *ToolConnectionsHandler) GetConnectionAuthorization(w http.ResponseWriter, r *http.Request) {
+	headers, ok := h.ownerHeaders(w, r)
+	if !ok {
+		return
+	}
+	h.forward(w, r, http.MethodGet, "/v1/connection-authorizations/"+url.PathEscape(r.PathValue("id")), headers, nil)
+}
+
+func (h *ToolConnectionsHandler) GetConnectionUsage(w http.ResponseWriter, r *http.Request) {
+	headers, ok := h.ownerHeaders(w, r)
+	if !ok {
+		return
+	}
+	h.forward(w, r, http.MethodGet, "/v1/connections/"+url.PathEscape(r.PathValue("id"))+"/usage", headers, nil)
 }
 
 func (h *ToolConnectionsHandler) DeleteConnection(w http.ResponseWriter, r *http.Request) {
@@ -163,17 +179,17 @@ func (h *ToolConnectionsHandler) ReconnectConnection(w http.ResponseWriter, r *h
 	h.forwardConnectionAuthorization(w, r, "/v1/connections/"+url.PathEscape(r.PathValue("id"))+"/reconnect", headers, nil, binding, false)
 }
 
-func (h *ToolConnectionsHandler) ListToolGrants(w http.ResponseWriter, r *http.Request) {
+func (h *ToolConnectionsHandler) ListConnectionBindings(w http.ResponseWriter, r *http.Request) {
 	headers, ok := h.instanceOwnerHeaders(w, r, false, true)
 	if !ok {
 		return
 	}
-	// Listing historical grants remains available after a runtime migration so
+	// Listing existing bindings remains available after a runtime change so
 	// the owner can obtain each revision and revoke it. Mutations remain gated.
 	if h.instanceToolAccessReadOnly(r) {
-		w.Header().Set("X-CetiRun-Tool-Grants-Read-Only", "true")
+		w.Header().Set("X-CetiRun-Connection-Bindings-Read-Only", "true")
 	}
-	h.forward(w, r, http.MethodGet, "/v1/instances/"+url.PathEscape(r.PathValue("name"))+"/tool-grants", headers, nil)
+	h.forward(w, r, http.MethodGet, "/v1/instances/"+url.PathEscape(r.PathValue("name"))+"/connection-bindings", headers, nil)
 }
 
 // CreateToolIdentity creates the provider binding for the immutable Agent UID.
@@ -192,68 +208,46 @@ func (h *ToolConnectionsHandler) CreateToolIdentity(w http.ResponseWriter, r *ht
 	h.forward(w, r, http.MethodPost, path, headers, body)
 }
 
-func (h *ToolConnectionsHandler) CreateToolGrant(w http.ResponseWriter, r *http.Request) {
+func (h *ToolConnectionsHandler) CreateConnectionBinding(w http.ResponseWriter, r *http.Request) {
 	headers, ok := h.instanceOwnerHeaders(w, r, true, false)
 	if !ok {
 		return
 	}
-	body, _, ok := h.readGrant(w, r, false)
+	body, _, ok := h.readBinding(w, r, false)
 	if !ok {
 		return
 	}
-	h.forward(w, r, http.MethodPost, "/v1/instances/"+url.PathEscape(r.PathValue("name"))+"/tool-grants", headers, body)
+	h.forward(w, r, http.MethodPost, "/v1/instances/"+url.PathEscape(r.PathValue("name"))+"/connection-bindings", headers, body)
 }
 
-func (h *ToolConnectionsHandler) UpdateToolGrant(w http.ResponseWriter, r *http.Request) {
+func (h *ToolConnectionsHandler) UpdateConnectionBinding(w http.ResponseWriter, r *http.Request) {
 	headers, ok := h.instanceOwnerHeaders(w, r, true, false)
 	if !ok {
 		return
 	}
-	body, revision, ok := h.readGrant(w, r, true)
+	body, revision, ok := h.readBinding(w, r, true)
 	if !ok {
 		return
 	}
 	headers["If-Match"] = revision
-	path := fmt.Sprintf("/v1/instances/%s/tool-grants/%s", url.PathEscape(r.PathValue("name")), url.PathEscape(r.PathValue("id")))
+	path := fmt.Sprintf("/v1/instances/%s/connection-bindings/%s", url.PathEscape(r.PathValue("name")), url.PathEscape(r.PathValue("id")))
 	h.forward(w, r, http.MethodPut, path, headers, body)
 }
 
-func (h *ToolConnectionsHandler) DeleteToolGrant(w http.ResponseWriter, r *http.Request) {
-	// Keep stale grants revocable after an Agent moves to a Sandbox runtime.
+func (h *ToolConnectionsHandler) DeleteConnectionBinding(w http.ResponseWriter, r *http.Request) {
+	// Keep stale bindings removable after an Agent moves to a Sandbox runtime.
 	headers, ok := h.instanceOwnerHeaders(w, r, true, true)
 	if !ok {
 		return
 	}
 	revision := strings.Trim(r.Header.Get("If-Match"), `"`)
 	if revision == "" {
-		writeError(w, http.StatusPreconditionRequired, "revision_required", "Grant revision is required for revocation")
+		writeError(w, http.StatusPreconditionRequired, "revision_required", "Binding revision is required for revocation")
 		return
 	}
 	headers["If-Match"] = revision
-	path := fmt.Sprintf("/v1/instances/%s/tool-grants/%s", url.PathEscape(r.PathValue("name")), url.PathEscape(r.PathValue("id")))
+	path := fmt.Sprintf("/v1/instances/%s/connection-bindings/%s", url.PathEscape(r.PathValue("name")), url.PathEscape(r.PathValue("id")))
 	h.forward(w, r, http.MethodDelete, path, headers, nil)
-}
-
-// VerifyToolGrant asks the Broker to obtain provider-derived authorization
-// evidence. A local browser action is never treated as an approval.
-func (h *ToolConnectionsHandler) VerifyToolGrant(w http.ResponseWriter, r *http.Request) {
-	headers, ok := h.instanceOwnerHeaders(w, r, true, false)
-	if !ok {
-		return
-	}
-	revision := strings.Trim(r.Header.Get("If-Match"), `"`)
-	if revision == "" {
-		writeError(w, http.StatusPreconditionRequired, "revision_required", "Grant revision is required for verification")
-		return
-	}
-	numericRevision, err := strconv.ParseUint(revision, 10, 64)
-	if err != nil || numericRevision == 0 {
-		writeError(w, http.StatusBadRequest, "revision_required", "Grant revision is required for verification")
-		return
-	}
-	headers["If-Match"] = revision
-	path := fmt.Sprintf("/v1/instances/%s/tool-grants/%s/verify", url.PathEscape(r.PathValue("name")), url.PathEscape(r.PathValue("id")))
-	h.forward(w, r, http.MethodPost, path, headers, nil)
 }
 
 func (h *ToolConnectionsHandler) ownerHeaders(w http.ResponseWriter, r *http.Request) (map[string]string, bool) {
@@ -265,7 +259,6 @@ func (h *ToolConnectionsHandler) ownerHeaders(w http.ResponseWriter, r *http.Req
 	return map[string]string{
 		"X-CetiRun-Owner-Tenant-ID": claims.TenantID,
 		"X-CetiRun-Owner-Object-ID": claims.ObjectID,
-		"X-CetiRun-Catalog-Version": toolCatalogVersion,
 	}, true
 }
 
@@ -390,50 +383,40 @@ func readConnectionStart(w http.ResponseWriter, r *http.Request) ([]byte, string
 	return body, request.Provider, true
 }
 
-type toolGrantRequest struct {
-	ConnectionID string          `json:"connectionId"`
-	Tools        []string        `json:"tools"`
-	Constraints  json.RawMessage `json:"constraints"`
-	ExpiresAt    time.Time       `json:"expiresAt"`
-	Revision     json.RawMessage `json:"revision"`
+type connectionBindingRequest struct {
+	ConnectionID string   `json:"connectionId"`
+	Services     []string `json:"services"`
+	Enabled      bool     `json:"enabled"`
+	Revision     uint64   `json:"revision,omitempty"`
 }
 
-type brokerGrantRequest struct {
-	ConnectionID string          `json:"connectionId"`
-	Tools        []string        `json:"tools"`
-	Constraints  json.RawMessage `json:"constraints"`
-	ExpiresAt    time.Time       `json:"expiresAt"`
-}
-
-func (h *ToolConnectionsHandler) readGrant(w http.ResponseWriter, r *http.Request, requireRevision bool) ([]byte, string, bool) {
-	var request toolGrantRequest
+func (h *ToolConnectionsHandler) readBinding(w http.ResponseWriter, r *http.Request, requireRevision bool) ([]byte, string, bool) {
+	var request connectionBindingRequest
 	if !decodeJSON(w, r, &request) {
 		return nil, "", false
 	}
-	if request.ConnectionID == "" || len(request.Tools) == 0 || len(request.Constraints) == 0 || request.ExpiresAt.IsZero() {
-		writeError(w, http.StatusBadRequest, "invalid_request", "connectionId, tools, constraints, and expiresAt are required")
+	if !request.Enabled || request.ConnectionID == "" || len(request.ConnectionID) > 128 || len(request.Services) == 0 || len(request.Services) > 5 {
+		writeError(w, 400, "invalid_request", "Connection and services are required")
 		return nil, "", false
 	}
-	now := h.now()
-	if request.ExpiresAt.Before(now) || request.ExpiresAt.After(now.Add(maxGrantLifetime)) {
-		writeError(w, http.StatusBadRequest, "invalid_expiry", "Grant expiry must be in the next 90 days")
-		return nil, "", false
-	}
-	revision := ""
-	if requireRevision {
-		var numericRevision uint64
-		if len(request.Revision) == 0 || bytes.Equal(request.Revision, []byte("null")) || json.Unmarshal(request.Revision, &numericRevision) != nil || numericRevision == 0 {
-			writeError(w, http.StatusBadRequest, "revision_required", "Grant revision is required for updates")
+	seen := map[string]bool{}
+	for _, id := range request.Services {
+		if _, ok := agenttools.LookupService(id); !ok || seen[id] {
+			writeError(w, 400, "invalid_request", "Unknown or duplicate service")
 			return nil, "", false
 		}
-		revision = fmt.Sprintf("%d", numericRevision)
+		seen[id] = true
 	}
-	body, err := json.Marshal(brokerGrantRequest{ConnectionID: request.ConnectionID, Tools: request.Tools, Constraints: request.Constraints, ExpiresAt: request.ExpiresAt})
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_request", "Tool grant request is invalid")
+	if requireRevision && request.Revision == 0 {
+		writeError(w, 400, "revision_required", "Binding revision is required for updates")
 		return nil, "", false
 	}
-	return body, revision, true
+	body, err := json.Marshal(request)
+	if err != nil {
+		writeError(w, 400, "invalid_request", "Invalid connection binding")
+		return nil, "", false
+	}
+	return body, strconv.FormatUint(request.Revision, 10), true
 }
 
 func decodeJSON(w http.ResponseWriter, r *http.Request, value any) bool {
@@ -456,6 +439,7 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, value any) bool {
 }
 
 type connectionAuthorizationResponse struct {
+	AuthorizationID        string          `json:"authorizationId"`
 	ID                     string          `json:"id"`
 	ConnectionID           string          `json:"connectionId"`
 	AuthorizationURL       string          `json:"authorizationUrl"`
@@ -463,7 +447,7 @@ type connectionAuthorizationResponse struct {
 	BrowserBindingRequired bool            `json:"browserBindingRequired"`
 }
 
-// forwardConnectionAuthorization keeps browser-bound GitHub OAuth proof out
+// forwardConnectionAuthorization keeps browser-bound personal OAuth proof out
 // of JSON and binds it to the callback state using an HttpOnly host cookie.
 func (h *ToolConnectionsHandler) forwardConnectionAuthorization(w http.ResponseWriter, incoming *http.Request, path string, headers map[string]string, body []byte, binding string, normalizeStart bool) {
 	h.forwardWithConnectionAuthorization(w, incoming, http.MethodPost, path, headers, body, binding, normalizeStart)
@@ -510,36 +494,26 @@ func (h *ToolConnectionsHandler) forwardWithConnectionAuthorization(w http.Respo
 		if authorization.ConnectionID == "" {
 			authorization.ConnectionID = authorization.ID
 		}
-		if normalizeStart && authorization.ConnectionID == "" {
+		if authorization.AuthorizationID == "" && authorization.ConnectionID == "" {
 			writeError(w, http.StatusBadGateway, "dependency_invalid", "Agent Tools service returned an invalid response")
 			return
 		}
 		if authorization.BrowserBindingRequired {
-			if !validConnectionBinding(binding) || !h.setGitHubBindingCookie(w, authorization.AuthorizationURL, authorization.ExpiresAt, binding) {
+			if !validConnectionBinding(binding) || !h.setConnectionBindingCookie(w, authorization.AuthorizationURL, authorization.ExpiresAt, binding) {
 				writeError(w, http.StatusBadGateway, "dependency_invalid", "Agent Tools service returned an invalid response")
 				return
 			}
-			// The proof and the fact that a binding is required are both internal
-			// control-plane details. Never expose either to browser JavaScript.
-			payload, err = json.Marshal(struct {
-				ConnectionID     string          `json:"connectionId,omitempty"`
-				AuthorizationURL string          `json:"authorizationUrl"`
-				ExpiresAt        json.RawMessage `json:"expiresAt"`
-			}{authorization.ConnectionID, authorization.AuthorizationURL, authorization.ExpiresAt})
-			if err != nil {
-				writeError(w, http.StatusBadGateway, "dependency_invalid", "Agent Tools service returned an invalid response")
-				return
-			}
-		} else if normalizeStart {
-			payload, err = json.Marshal(struct {
-				ConnectionID     string          `json:"connectionId"`
-				AuthorizationURL string          `json:"authorizationUrl"`
-				ExpiresAt        json.RawMessage `json:"expiresAt"`
-			}{authorization.ConnectionID, authorization.AuthorizationURL, authorization.ExpiresAt})
-			if err != nil {
-				writeError(w, http.StatusBadGateway, "dependency_invalid", "Agent Tools service returned an invalid response")
-				return
-			}
+		}
+		// The initiating window must verify this owner-scoped transaction.
+		payload, err = json.Marshal(struct {
+			AuthorizationID  string          `json:"authorizationId,omitempty"`
+			ConnectionID     string          `json:"connectionId,omitempty"`
+			AuthorizationURL string          `json:"authorizationUrl"`
+			ExpiresAt        json.RawMessage `json:"expiresAt"`
+		}{authorization.AuthorizationID, authorization.ConnectionID, authorization.AuthorizationURL, authorization.ExpiresAt})
+		if err != nil {
+			writeError(w, 502, "dependency_invalid", "Invalid authorization response")
+			return
 		}
 	}
 	for _, key := range []string{"Content-Type", "Cache-Control", "Content-Security-Policy", "Referrer-Policy", "X-Content-Type-Options"} {
@@ -565,15 +539,15 @@ func validConnectionBinding(value string) bool {
 	return err == nil && len(decoded) == 32 && base64.RawURLEncoding.EncodeToString(decoded) == value
 }
 
-func githubBindingCookieName(state string) (string, bool) {
+func connectionBindingCookieName(state string) (string, bool) {
 	if !validConnectionBinding(state) {
 		return "", false
 	}
 	sum := sha256.Sum256([]byte(state))
-	return githubBindingCookiePrefix + base64.RawURLEncoding.EncodeToString(sum[:]), true
+	return connectionBindingCookiePrefix + base64.RawURLEncoding.EncodeToString(sum[:]), true
 }
 
-func githubAuthorizationState(authorizationURL string) (string, bool) {
+func connectionAuthorizationState(authorizationURL string) (string, bool) {
 	parsed, err := url.ParseRequestURI(authorizationURL)
 	if err != nil || parsed.Scheme != "https" || parsed.Host == "" {
 		return "", false
@@ -585,8 +559,8 @@ func githubAuthorizationState(authorizationURL string) (string, bool) {
 	return query.Get("state"), true
 }
 
-func (h *ToolConnectionsHandler) setGitHubBindingCookie(w http.ResponseWriter, authorizationURL string, expiresAt json.RawMessage, binding string) bool {
-	state, ok := githubAuthorizationState(authorizationURL)
+func (h *ToolConnectionsHandler) setConnectionBindingCookie(w http.ResponseWriter, authorizationURL string, expiresAt json.RawMessage, binding string) bool {
+	state, ok := connectionAuthorizationState(authorizationURL)
 	if !ok {
 		return false
 	}
@@ -599,14 +573,14 @@ func (h *ToolConnectionsHandler) setGitHubBindingCookie(w http.ResponseWriter, a
 		return false
 	}
 	lifetime := expiresAtTime.Sub(h.now())
-	if lifetime <= 0 || lifetime > githubBindingLifetime {
+	if lifetime <= 0 || lifetime > connectionBindingLifetime {
 		return false
 	}
 	seconds := int((lifetime + time.Second - 1) / time.Second)
-	if seconds < 1 || seconds > int(githubBindingLifetime/time.Second) {
+	if seconds < 1 || seconds > int(connectionBindingLifetime/time.Second) {
 		return false
 	}
-	cookieName, _ := githubBindingCookieName(state)
+	cookieName, _ := connectionBindingCookieName(state)
 	http.SetCookie(w, &http.Cookie{
 		Name:     cookieName,
 		Value:    binding,
@@ -620,7 +594,7 @@ func (h *ToolConnectionsHandler) setGitHubBindingCookie(w http.ResponseWriter, a
 	return true
 }
 
-func clearGitHubBindingCookie(w http.ResponseWriter, name string) {
+func clearConnectionBindingCookie(w http.ResponseWriter, name string) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     name,
 		Value:    "",

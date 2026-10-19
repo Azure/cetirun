@@ -25,32 +25,32 @@ func inventorySecret(t *testing.T, fixture *authorizationFixture, kind, id strin
 	return secret
 }
 
-func TestGrantCreateStoresTrustedInstanceDisplayMetadata(t *testing.T) {
-	fixture := newAuthorizationFixture(t, "github", "github_issues_list", Constraints{RepositoryIDs: []string{"42"}})
-	fixture.mutateGrant(t, func(grant *AgentGrant) {
+func TestBindingCreateStoresTrustedInstanceDisplayMetadata(t *testing.T) {
+	fixture := newAuthorizationFixture(t, "github", "github")
+	fixture.mutateBinding(t, func(grant *ConnectionBinding) {
 		grant.Revoked = true
 		grant.Revision++
 	})
 
-	response := grantCreateRequest(t, fixture)
+	response := bindingCreateRequest(t, fixture)
 	if response.Code != http.StatusOK {
 		t.Fatalf("grant create = %d: %s", response.Code, response.Body.String())
 	}
-	var created AgentGrant
+	var created ConnectionBinding
 	result := response.Result()
 	defer result.Body.Close()
 	if err := json.NewDecoder(result.Body).Decode(&created); err != nil {
 		t.Fatal(err)
 	}
 
-	stored, _, err := fixture.server.store.getGrant(context.Background(), created.ID)
+	stored, _, err := fixture.server.store.getBinding(context.Background(), created.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if stored.InstanceName != fixture.agent.Metadata.Name || stored.InstanceNamespace != fixture.agent.Status.Namespace {
 		t.Fatalf("encrypted grant display snapshot = (%q, %q), want (%q, %q)", stored.InstanceName, stored.InstanceNamespace, fixture.agent.Metadata.Name, fixture.agent.Status.Namespace)
 	}
-	secret := inventorySecret(t, fixture, "grant", created.ID)
+	secret := inventorySecret(t, fixture, "binding", created.ID)
 	if got := secret.Metadata.Annotations[instanceNameMetadata]; got != fixture.agent.Metadata.Name {
 		t.Fatalf("grant instance-name annotation = %q, want %q", got, fixture.agent.Metadata.Name)
 	}
@@ -104,7 +104,7 @@ func TestConnectionDisplayMetadataDoesNotChangeEncryptedIdentityAuthority(t *tes
 }
 
 func TestDelegatedConnectionNeverGetsExclusiveAgentMetadata(t *testing.T) {
-	fixture := newAuthorizationFixture(t, "github", "github_issues_list", Constraints{RepositoryIDs: []string{"42"}})
+	fixture := newAuthorizationFixture(t, "github", "github")
 	record, version, err := fixture.server.store.getConnection(context.Background(), fixture.connection.Connection.ID)
 	if err != nil {
 		t.Fatal(err)

@@ -18,17 +18,17 @@ publication, or end-to-end scripts.
 
 `agent-tools-inspect.py` is a read-only command-line inventory for Agent tool
 authorization records. It separates the central namespace's delegated personal
-Connections from Agent-local independent Connections and AgentGrants. An
+Connections from Agent-local independent Connections and ConnectionBindings. An
 Agent-local `connection-reference` is shown in its own table: it contains no
-credential and is not a duplicate Connection. It links an Agent-local Grant to
+credential and is not a duplicate Connection. It links an Agent-local Binding to
 an owner-matched central delegated Connection.
 
 Record identity is the Secret namespace plus record ID. The command joins each
 record's immutable Agent UID with the live cluster-scoped Agent resource, so a
 deleted or recreated Agent is shown as `deleted/unresolved` rather than being
 matched by name. A delegated personal connection can be shared by several
-Agent-local references and grants; an unreferenced connection is shown as
-`unassigned/unknown`. Grant validity is always reported as
+Agent-local references and bindings; an unreferenced connection is shown as
+`unassigned/unknown`. Binding validity is always reported as
 `unknown/not evaluated`: this command does not decrypt its encrypted payload
 and record presence does not establish an active permission.
 
@@ -47,7 +47,7 @@ namespaces. A deleted UID has no safely discoverable namespace, so
 `--agent-uid` then reports central records only.
 
 An Agent-filtered view includes only its independent Connections, Connections
-resolved by its Grants, and central delegated Connections reached through its
+resolved by its Bindings, and central delegated Connections reached through its
 own local references. Other owners' central accounts are not shown.
 
 ```bash
@@ -69,7 +69,7 @@ reported as unqueried; a namespace that does exist but is missing or forbidden
 when queried stops the inspection and is never reported as an empty record set.
 The inventory is not an atomic snapshot across the separate metadata queries.
 
-Old central Connections and Grants remain visible as legacy central relations.
+Old central Connections and Bindings remain visible as legacy central relations.
 Connections without a mode label show an unknown mode rather than an inferred
 delegated identity. New display labels and annotations are only display hints;
 UID and owner matches remain authoritative.

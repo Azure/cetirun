@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
-"""Read-only inventory of CetiRun Agent tool Connection and Grant record metadata.
+"""Read-only inventory of CetiRun Agent tool Connection and Binding record metadata.
 
 The command receives only selected metadata projected by kubectl JSONPath.
 Kubectl can fetch full Secret objects to perform this client-side projection;
@@ -217,18 +217,18 @@ def _connection_match(candidates: Iterable[SecretRecord], connection_id: str, ow
 
 
 def inventory(agents: list[Agent], central_namespace: str, connections: list[SecretRecord],
-              grants: list[SecretRecord], references: list[SecretRecord], selected_uids: set[str],
+              bindings: list[SecretRecord], references: list[SecretRecord], selected_uids: set[str],
               reference_scope: str, unqueried_agents: list[dict]) -> dict:
     """Relate credential records without treating an Agent-local reference as a credential.
 
     Connection IDs are opaque and can recur in different namespaces.  A local
-    Grant first resolves an owner-matched local Connection.  Otherwise it must
+    Binding first resolves an owner-matched local Connection.  Otherwise it must
     have an owner-matched local connection-reference before it can resolve to a
-    central Connection.  The direct central fallback exists solely for legacy
-    central Grant records created before Agent-local reference records.
+    central Connection. Bindings in the central namespace are not valid Agent
+    associations.
     """
     agent_by_uid = {agent.uid: agent for agent in agents}
-    displayed_grants = [grant for grant in grants if not selected_uids or grant.instance_uid in selected_uids]
+    displayed_bindings = [binding for binding in bindings if not selected_uids or binding.instance_uid in selected_uids]
     central_connections = [record for record in connections if record.namespace == central_namespace]
     local_connections: dict[str, list[SecretRecord]] = {}
     local_references: dict[str, list[SecretRecord]] = {}
@@ -238,32 +238,31 @@ def inventory(agents: list[Agent], central_namespace: str, connections: list[Sec
     for reference in references:
         local_references.setdefault(reference.namespace, []).append(reference)
 
-    def resolve(grant: SecretRecord) -> tuple[Optional[SecretRecord], Optional[SecretRecord], str]:
-        if grant.namespace == central_namespace:
-            connection, status = _connection_match(central_connections, grant.connection_id, grant)
-            return connection, None, status
-        connection, status = _connection_match(local_connections.get(grant.namespace, []), grant.connection_id, grant)
+    def resolve(binding: SecretRecord) -> tuple[Optional[SecretRecord], Optional[SecretRecord], str]:
+        if binding.namespace == central_namespace:
+            return None, None, "invalid-binding-namespace"
+        connection, status = _connection_match(local_connections.get(binding.namespace, []), binding.connection_id, binding)
         if connection or status in ("owner-mismatch", "ambiguous/unresolved"):
             return connection, None, status
-        reference, reference_status = _connection_match(local_references.get(grant.namespace, []), grant.connection_id, grant)
+        reference, reference_status = _connection_match(local_references.get(binding.namespace, []), binding.connection_id, binding)
         if reference is not None:
             # A reference is valid only when its two fixed labels agree. It is
             # credential-free and never becomes a Connection record itself.
             if reference.connection_id != reference.record_id:
                 return None, reference, "malformed-reference/unresolved"
-            connection, central_status = _connection_match(central_connections, reference.connection_id, grant)
+            connection, central_status = _connection_match(central_connections, reference.connection_id, binding)
             return connection, reference, "referenced-central/" + central_status
         if reference_status in ("owner-mismatch", "ambiguous/unresolved"):
             return None, None, "reference-" + reference_status
         # There is no local reference. Do not use a central record for a new
-        # local Grant; a direct central join is reserved for legacy records.
+        # local Binding.
         return None, None, "reference-missing/unresolved"
 
-    resolved = [(grant, *resolve(grant)) for grant in displayed_grants]
+    resolved = [(binding, *resolve(binding)) for binding in displayed_bindings]
     consumers_by_connection: dict[tuple[str, str], list[SecretRecord]] = {}
-    for grant, connection, _, _ in resolved:
+    for binding, connection, _, _ in resolved:
         if connection is not None:
-            consumers_by_connection.setdefault(_record_key(connection), []).append(grant)
+            consumers_by_connection.setdefault(_record_key(connection), []).append(binding)
 
     displayed_references = references
     displayed_connections = connections
@@ -271,7 +270,7 @@ def inventory(agents: list[Agent], central_namespace: str, connections: list[Sec
         # A selected Agent must not see unrelated central delegated accounts
         # merely because they share the central credential namespace. Retain
         # only its own references, its bound independent Connections, and the
-        # Connections reached by its Grants or valid local references.
+        # Connections reached by its Bindings or valid local references.
         displayed_references = [reference for reference in references if reference.instance_uid in selected_uids]
         selected_connection_keys = set(consumers_by_connection)
         for connection in connections:
@@ -287,14 +286,14 @@ def inventory(agents: list[Agent], central_namespace: str, connections: list[Sec
 
     rendered_connections = []
     for connection in sorted(displayed_connections, key=lambda item: (item.namespace, item.record_id, item.name)):
-        consumer_grants = consumers_by_connection.get(_record_key(connection), [])
-        consumers = [agent_reference(grant.instance_uid, agent_by_uid, grant.instance_name_snapshot, grant.instance_namespace_snapshot)
-                     for grant in sorted(consumer_grants, key=lambda item: (item.instance_uid, item.namespace, item.record_id))]
+        consumer_bindings = consumers_by_connection.get(_record_key(connection), [])
+        consumers = [agent_reference(binding.instance_uid, agent_by_uid, binding.instance_name_snapshot, binding.instance_namespace_snapshot)
+                     for binding in sorted(consumer_bindings, key=lambda item: (item.instance_uid, item.namespace, item.record_id))]
         binding = agent_reference(connection.instance_uid, agent_by_uid, connection.instance_name_snapshot, connection.instance_namespace_snapshot)
         if connection.instance_uid:
             relation = "independent-identity-binding"
         elif consumers:
-            relation = "shared-or-delegated-via-grant" if connection.mode == "delegated" else "grant-reference/mode-unknown"
+            relation = "shared-or-delegated-via-binding" if connection.mode == "delegated" else "binding-reference/mode-unknown"
         else:
             relation = "unassigned/unknown"
         rendered_connections.append({
@@ -308,7 +307,7 @@ def inventory(agents: list[Agent], central_namespace: str, connections: list[Sec
             "credentialStorage": "central" if connection.namespace == central_namespace else "agent-local",
             "relation": relation,
             "binding": binding if connection.instance_uid else None,
-            "grantConsumers": consumers,
+            "bindingConsumers": consumers,
         })
 
     rendered_references = []
@@ -335,12 +334,12 @@ def inventory(agents: list[Agent], central_namespace: str, connections: list[Sec
             },
         })
 
-    rendered_grants = []
+    rendered_bindings = []
     relations = []
-    for grant, connection, reference, connection_resolution in sorted(resolved, key=lambda item: (item[0].namespace, item[0].instance_uid, item[0].record_id)):
-        agent = agent_reference(grant.instance_uid, agent_by_uid, grant.instance_name_snapshot, grant.instance_namespace_snapshot)
+    for binding, connection, reference, connection_resolution in sorted(resolved, key=lambda item: (item[0].namespace, item[0].instance_uid, item[0].record_id)):
+        agent = agent_reference(binding.instance_uid, agent_by_uid, binding.instance_name_snapshot, binding.instance_namespace_snapshot)
         connection_summary = {
-            "recordId": grant.connection_id or None,
+            "recordId": binding.connection_id or None,
             "secretNamespace": connection.namespace if connection else None,
             "secretName": connection.name if connection else None,
             "resolution": connection_resolution,
@@ -350,24 +349,24 @@ def inventory(agents: list[Agent], central_namespace: str, connections: list[Sec
             "secretName": reference.name,
             "recordId": reference.record_id or None,
         }
-        rendered_grants.append({
-            "secretNamespace": grant.namespace or None,
-            "secretName": grant.name,
-            "recordId": grant.record_id or None,
+        rendered_bindings.append({
+            "secretNamespace": binding.namespace or None,
+            "secretName": binding.name,
+            "recordId": binding.record_id or None,
             "connection": connection_summary,
             "reference": reference_summary,
-            "owner": _owner(grant),
+            "owner": _owner(binding),
             "agent": agent,
             "validity": "unknown/not evaluated (encrypted record)",
         })
         relations.append({
-            "grantSecretNamespace": grant.namespace or None,
-            "grantRecordId": grant.record_id or None,
-            "grantSecretName": grant.name,
+            "bindingSecretNamespace": binding.namespace or None,
+            "bindingRecordId": binding.record_id or None,
+            "bindingSecretName": binding.name,
             "referenceSecretNamespace": reference.namespace if reference else None,
             "referenceSecretName": reference.name if reference else None,
             "connectionSecretNamespace": connection.namespace if connection else None,
-            "connectionRecordId": grant.connection_id or None,
+            "connectionRecordId": binding.connection_id or None,
             "connectionSecretName": connection.name if connection else None,
             "connectionResolution": connection_resolution,
             "agent": agent,
@@ -382,9 +381,9 @@ def inventory(agents: list[Agent], central_namespace: str, connections: list[Sec
         "agents": [asdict(agent) for agent in sorted(displayed_agents, key=lambda item: (item.name, item.uid))],
         "connections": rendered_connections,
         "connectionReferences": rendered_references,
-        "grants": rendered_grants,
+        "bindings": rendered_bindings,
         "relations": relations,
-        "validity": "unknown/not evaluated: grant payload is encrypted; record presence is not an active permission decision",
+        "validity": "unknown/not evaluated: binding payload is encrypted; record presence is not an active permission decision",
     }
 
 
@@ -410,7 +409,7 @@ def render_table(result: dict) -> str:
             connection["secretNamespace"], connection["secretName"], connection["recordId"], connection["credentialStorage"],
             connection["provider"], connection["mode"], connection["relation"],
             binding["uid"], binding["name"], binding["namespace"],
-            ", ".join(sorted({consumer["name"] or consumer["uid"] or "unknown" for consumer in connection["grantConsumers"]})) or None,
+            ", ".join(sorted({consumer["name"] or consumer["uid"] or "unknown" for consumer in connection["bindingConsumers"]})) or None,
         )))
     if not result["connections"]:
         lines.append("(none)")
@@ -424,27 +423,27 @@ def render_table(result: dict) -> str:
         )))
     if not result["connectionReferences"]:
         lines.append("(none)")
-    lines.extend(["", "GRANTS", "SECRET NAMESPACE\tSECRET\tRECORD ID\tCONNECTION ID\tCONNECTION NAMESPACE\tCONNECTION\tCONNECTION STATUS\tAGENT UID\tAGENT NAME\tWORKLOAD NAMESPACE\tRESOLUTION\tVALIDITY"])
-    for grant in result["grants"]:
-        agent = grant["agent"]
-        connection = grant["connection"]
+    lines.extend(["", "BINDINGS", "SECRET NAMESPACE\tSECRET\tRECORD ID\tCONNECTION ID\tCONNECTION NAMESPACE\tCONNECTION\tCONNECTION STATUS\tAGENT UID\tAGENT NAME\tWORKLOAD NAMESPACE\tRESOLUTION\tVALIDITY"])
+    for binding in result["bindings"]:
+        agent = binding["agent"]
+        connection = binding["connection"]
         lines.append("\t".join(_cell(value) for value in (
-            grant["secretNamespace"], grant["secretName"], grant["recordId"], connection["recordId"], connection["secretNamespace"],
+            binding["secretNamespace"], binding["secretName"], binding["recordId"], connection["recordId"], connection["secretNamespace"],
             connection["secretName"], connection["resolution"],
-            agent["uid"], agent["name"], agent["namespace"], agent["resolution"], grant["validity"],
+            agent["uid"], agent["name"], agent["namespace"], agent["resolution"], binding["validity"],
         )))
-    if not result["grants"]:
+    if not result["bindings"]:
         lines.append("(none)")
-    lines.extend(["", "RELATIONS", "GRANT NAMESPACE\tGRANT ID\tREFERENCE NAMESPACE\tREFERENCE\tCONNECTION NAMESPACE\tCONNECTION ID\tAGENT UID\tAGENT NAME\tRESOLUTION"])
+    lines.extend(["", "RELATIONS", "BINDING NAMESPACE\tBINDING ID\tREFERENCE NAMESPACE\tREFERENCE\tCONNECTION NAMESPACE\tCONNECTION ID\tAGENT UID\tAGENT NAME\tRESOLUTION"])
     for relation in result["relations"]:
         agent = relation["agent"]
         lines.append("\t".join(_cell(value) for value in (
-            relation["grantSecretNamespace"], relation["grantRecordId"], relation["referenceSecretNamespace"], relation["referenceSecretName"],
+            relation["bindingSecretNamespace"], relation["bindingRecordId"], relation["referenceSecretNamespace"], relation["referenceSecretName"],
             relation["connectionSecretNamespace"], relation["connectionRecordId"], agent["uid"], agent["name"], relation["connectionResolution"],
         )))
     if not result["relations"]:
         lines.append("(none)")
-    lines.append("\nValidity: unknown/not evaluated; encrypted grant payloads were not decrypted. References have no credential and may include revoked or expired grants.")
+    lines.append("\nValidity: unknown/not evaluated; encrypted binding payloads were not decrypted. References have no credential and may include revoked or disabled bindings.")
     return "\n".join(lines)
 
 
@@ -492,14 +491,14 @@ def main(argv: Optional[list[str]] = None) -> int:
             if agent.namespace != args.namespace:
                 namespaces.add(agent.namespace)
         connections = list_records(kubectl, args.namespace, "connection")
-        grants = list_records(kubectl, args.namespace, "grant")
+        bindings: list[SecretRecord] = []
         references: list[SecretRecord] = []
         for namespace in sorted(namespaces):
             # An absent or forbidden namespace stops inspection. It is never
             # represented as an empty record set because that would conceal an
             # incomplete authorization inventory.
             connections.extend(list_records(kubectl, namespace, "connection"))
-            grants.extend(list_records(kubectl, namespace, "grant"))
+            bindings.extend(list_records(kubectl, namespace, "binding"))
             references.extend(list_records(kubectl, namespace, "connection-reference"))
         if not selected_uids:
             reference_scope = (
@@ -513,7 +512,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             )
         else:
             reference_scope = "central namespace only; requested Agent UID is not currently live"
-        result = inventory(agents, args.namespace, connections, grants, references, selected_uids, reference_scope, unqueried_agents)
+        result = inventory(agents, args.namespace, connections, bindings, references, selected_uids, reference_scope, unqueried_agents)
         if args.output == "json":
             print(json.dumps(result, sort_keys=True, indent=2))
         else:

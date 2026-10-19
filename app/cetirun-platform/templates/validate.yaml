@@ -24,9 +24,7 @@
 {{- if not ($portal.features | default dict).agentToolsEnabled }}
 {{- fail "cetirun-portal.features.agentToolsEnabled must be true when Agent Tools MCP is enabled" }}
 {{- end }}
-{{- if eq $tools.operationRecords.namespace .Release.Namespace }}
-{{- fail "Agent Tools MCP operation records must use a separate namespace" }}
-{{- end }}
+
 {{- end }}
 {{- if default false ((.Values.global.portalChat | default dict).enabled) }}
 {{- if or (not $portal.enabled) (not $operator.enabled) }}

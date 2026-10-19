@@ -5,8 +5,6 @@ package broker
 
 import "time"
 
-const catalogVersion = "2026-10-16"
-
 type Owner struct {
 	TenantID string `json:"-"`
 	ObjectID string `json:"-"`
@@ -25,58 +23,36 @@ type IdentityBinding struct {
 	ClientID    string `json:"clientId,omitempty"`
 }
 
-// ResourceAuthorization records provider evidence independently of the request.
-type ResourceAuthorization struct {
-	State           string     `json:"state"`
-	Source          string     `json:"source"`
-	VerifiedAt      *time.Time `json:"verifiedAt,omitempty"`
-	ValidUntil      *time.Time `json:"validUntil,omitempty"`
-	Reason          string     `json:"reason,omitempty"`
-	Scopes          []string   `json:"scopes,omitempty"`
-	Actions         []string   `json:"actions,omitempty"`
-	RequestIDs      []string   `json:"requestIds,omitempty"`
-	BindingRevision uint64     `json:"bindingRevision"`
-}
-
 type Connection struct {
-	Mode           string           `json:"mode,omitempty"`
-	Identity       *IdentityBinding `json:"identity,omitempty"`
-	ID             string           `json:"id"`
-	Provider       string           `json:"provider"`
-	AccountDisplay string           `json:"accountDisplay"`
-	Capabilities   []string         `json:"capabilities"`
-	Revision       uint64           `json:"revision"`
-	Status         string           `json:"status"`
-	CreatedAt      time.Time        `json:"createdAt"`
-	UpdatedAt      time.Time        `json:"-"`
-	Owner          Owner            `json:"-"`
-	AccountID      string           `json:"-"`
+	CanonicalConnectionID string           `json:"canonicalConnectionId,omitempty"`
+	Mode                  string           `json:"mode,omitempty"`
+	Identity              *IdentityBinding `json:"identity,omitempty"`
+	ID                    string           `json:"id"`
+	Provider              string           `json:"provider"`
+	AccountDisplay        string           `json:"accountDisplay"`
+	Services              []string         `json:"services"`
+	Scopes                []string         `json:"scopes"`
+	Revision              uint64           `json:"revision"`
+	Status                string           `json:"status"`
+	CreatedAt             time.Time        `json:"createdAt"`
+	UpdatedAt             time.Time        `json:"-"`
+	Owner                 Owner            `json:"-"`
+	AccountID             string           `json:"-"`
 }
 
-type Constraints struct {
-	SubscriptionIDs    []string `json:"subscriptionIds"`
-	ResourceGroupNames []string `json:"resourceGroupNames"`
-	RepositoryIDs      []string `json:"repositoryIds"`
-	BaseBranches       []string `json:"baseBranches"`
-	CalendarIDs        []string `json:"calendarIds"`
-	RecipientAddresses []string `json:"recipientAddresses"`
-	RecipientDomains   []string `json:"recipientDomains"`
-	AllowInvites       bool     `json:"allowInvites"`
-}
-
-type AgentGrant struct {
-	Authorization *ResourceAuthorization `json:"authorization,omitempty"`
-	ID            string                 `json:"id"`
-	InstanceUID   string                 `json:"instanceUid"`
-	ConnectionID  string                 `json:"connectionId"`
-	Tools         []string               `json:"tools"`
-	Constraints   Constraints            `json:"constraints"`
-	ExpiresAt     time.Time              `json:"expiresAt"`
-	Revision      uint64                 `json:"revision"`
-	Owner         Owner                  `json:"-"`
-	Revoked       bool                   `json:"-"`
-	CreatedAt     time.Time              `json:"-"`
-	UpdatedAt     time.Time              `json:"-"`
+// ConnectionBinding permits one Agent to use selected services of a Connection.
+// Provider RBAC or OAuth scopes determine which resource operations succeed.
+type ConnectionBinding struct {
+	ID           string    `json:"id"`
+	InstanceUID  string    `json:"instanceUid"`
+	ConnectionID string    `json:"connectionId"`
+	Services     []string  `json:"services"`
+	Enabled      bool      `json:"enabled"`
+	Revision     uint64    `json:"revision"`
+	Owner        Owner     `json:"-"`
+	Revoked      bool      `json:"-"`
+	CreatedAt    time.Time `json:"-"`
+	UpdatedAt    time.Time `json:"-"`
 }
 
 type providerCredential struct {
@@ -91,8 +67,11 @@ type providerCredential struct {
 }
 
 type connectionTransaction struct {
-	Provider  string `json:"provider"`
-	StateHash string `json:"stateHash"`
+	TargetConnectionID string `json:"targetConnectionId,omitempty"`
+	ResultConnectionID string `json:"resultConnectionId,omitempty"`
+	Status             string `json:"status,omitempty"`
+	Provider           string `json:"provider"`
+	StateHash          string `json:"stateHash"`
 	// BrowserBindingHash is present only for GitHub OAuth transactions. The
 	// Portal holds the corresponding browser secret in an HttpOnly cookie.
 	BrowserBindingHash string    `json:"browserBindingHash,omitempty"`
@@ -104,20 +83,22 @@ type connectionTransaction struct {
 }
 
 type connectionRecord struct {
-	Connection  Connection             `json:"connection"`
-	Credential  *providerCredential    `json:"credential,omitempty"`
-	Transaction *connectionTransaction `json:"transaction,omitempty"`
-	Deleted     bool                   `json:"deleted"`
+	References  map[string]bindingReservation `json:"references,omitempty"`
+	Connection  Connection                    `json:"connection"`
+	Credential  *providerCredential           `json:"credential,omitempty"`
+	Transaction *connectionTransaction        `json:"transaction,omitempty"`
+	Deleted     bool                          `json:"deleted"`
 	// Display snapshots come from the trusted Agent resource. They are never
 	// used to resolve ownership or authorize calls; instance UID remains binding.
 	InstanceName      string `json:"instanceName,omitempty"`
 	InstanceNamespace string `json:"instanceNamespace,omitempty"`
 }
 
-type grantRecord struct {
-	Grant             AgentGrant `json:"grant"`
-	InstanceName      string     `json:"instanceName,omitempty"`
-	InstanceNamespace string     `json:"instanceNamespace,omitempty"`
+type bindingRecord struct {
+	ReservationToken  string            `json:"reservationToken,omitempty"`
+	Binding           ConnectionBinding `json:"binding"`
+	InstanceName      string            `json:"instanceName,omitempty"`
+	InstanceNamespace string            `json:"instanceNamespace,omitempty"`
 }
 
 type Agent struct {

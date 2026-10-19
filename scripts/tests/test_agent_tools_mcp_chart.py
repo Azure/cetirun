@@ -32,10 +32,14 @@ class AgentToolsMCPChartTests(unittest.TestCase):
         env = {value["name"]: value.get("value") for value in pod["containers"][0]["env"]}
         self.assertEqual(env["AGENT_BROKER_BASE_URL"], "https://cetirun-agent-broker.cetirun-credentials.svc.cluster.local")
         roles = [value for value in objects if value["kind"] == "Role"]
-        self.assertTrue(all(value["metadata"]["namespace"] == "cetirun-tools-operations" for value in roles))
+        self.assertEqual(roles, [])
+        self.assertNotIn("OPERATION_RECORDS_NAMESPACE", env)
+        for role in (value for value in objects if value["kind"] in ("Role", "ClusterRole")):
+            for rule in role["rules"]:
+                self.assertNotIn("secrets", rule.get("resources", []))
         self.assertNotIn("client-secret", rendered.stdout)
         self.assertIn("15012", rendered.stdout)
-        denied = self.render(chart, chart / "ci/render-values.yaml", "cetirun-tools-operations")
+        denied = self.render(chart, chart / "ci/render-values.yaml", "cetirun-credentials")
         self.assertNotEqual(denied.returncode, 0)
 
     def test_full_stack_uses_separate_broker_and_native_mcp(self):

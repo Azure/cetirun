@@ -49,8 +49,6 @@ spec:
               value: /var/run/cetirun/broker-tls/tls.key
             - name: WORKLOAD_TOKEN_AUDIENCE
               value: {{ .Values.workloadTokenAudience | quote }}
-            - name: OPERATION_RECORDS_NAMESPACE
-              value: {{ .Values.operationRecords.namespace | quote }}
             {{- if .Values.portal.baseURL }}
             - name: PORTAL_BASE_URL
               value: {{ .Values.portal.baseURL | quote }}

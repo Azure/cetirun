@@ -4,11 +4,9 @@
 package main
 
 import (
-	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -22,19 +20,6 @@ func main() {
 	if err != nil {
 		slog.Error("invalid configuration", "error", err)
 		os.Exit(1)
-	}
-	if len(os.Args) > 1 && os.Args[1] == "migrate-agent-records" {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-		defer cancel()
-		result, migrateErr := broker.MigrateAgentRecords(ctx, cfg)
-		if migrateErr != nil {
-			slog.Error("migrate Agent records", "error", migrateErr)
-			os.Exit(1)
-		}
-		fmt.Printf("agent connections moved=%d resumed=%d; delegated connections kept=%d; grants moved=%d resumed=%d; connection references created=%d\n",
-			result.AgentConnectionsMoved, result.AgentConnectionsResumed, result.DelegatedConnectionsKept,
-			result.GrantsMoved, result.GrantsResumed, result.ConnectionReferencesCreated)
-		return
 	}
 	service, err := broker.NewServer(cfg)
 	if err != nil {

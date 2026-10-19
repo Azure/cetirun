@@ -40,7 +40,7 @@ func TestNewMutualTLSLoadsFilesAndRequiresClientCertificate(t *testing.T) {
 		if request.TLS == nil || len(request.TLS.PeerCertificates) == 0 {
 			t.Error("Broker accepted a request without a client certificate")
 		}
-		if request.URL.Path != "/internal/v1/tool-authorizations/list" {
+		if request.URL.Path != "/internal/v1/service-authorizations/list" {
 			t.Errorf("unexpected Broker path %q", request.URL.Path)
 			http.NotFound(writer, request)
 			return
@@ -51,7 +51,7 @@ func TestNewMutualTLSLoadsFilesAndRequiresClientCertificate(t *testing.T) {
 			http.Error(writer, "invalid request", http.StatusBadRequest)
 			return
 		}
-		_ = json.NewEncoder(writer).Encode(ListResponse{InstanceUID: "instance-uid", CatalogVersion: CatalogVersion})
+		_ = json.NewEncoder(writer).Encode(ListResponse{InstanceUID: "instance-uid", ContractVersion: ContractVersion})
 	}))
 	defer server.Close()
 
@@ -110,10 +110,10 @@ func TestClientBoundsResponsesAndSanitizesRedirectFailures(t *testing.T) {
 	var redirectTargetHits atomic.Int32
 	server := newMutualTLSServer(t, fixture, http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
-		case "/internal/v1/tool-authorizations/check":
+		case "/internal/v1/service-authorizations/check":
 			writer.Header().Set("Content-Type", "application/json")
 			_, _ = writer.Write([]byte(`{"response":"` + testResponseKey + strings.Repeat("x", 1<<20) + `"}`))
-		case "/internal/v1/tool-credentials/issue":
+		case "/internal/v1/service-credentials/issue":
 			writer.Header().Set("Location", "/redirect-target?credential="+testResponseKey)
 			writer.Header().Set("Content-Type", "application/json")
 			writer.WriteHeader(http.StatusFound)
@@ -132,10 +132,10 @@ func TestClientBoundsResponsesAndSanitizesRedirectFailures(t *testing.T) {
 		t.Fatal("NewMutualTLS rejected generated certificate files")
 	}
 
-	_, err = client.Check(context.Background(), NewRequest(testCallerProof, "tool", "connection", map[string]any{}, nil, nil))
+	_, err = client.Check(context.Background(), NewRequest(testCallerProof, "tool", "connection", nil, nil))
 	assertErrorCode(t, err, "dependency_unavailable", testCallerProof, testResponseKey)
 
-	_, err = client.Issue(context.Background(), NewRequest(testCallerProof, "tool", "connection", map[string]any{}, nil, nil))
+	_, err = client.Issue(context.Background(), NewRequest(testCallerProof, "tool", "connection", nil, nil))
 	assertErrorCode(t, err, "dependency_unavailable", testCallerProof, testResponseKey)
 	if redirectTargetHits.Load() != 0 {
 		t.Fatal("Broker client followed a redirect")

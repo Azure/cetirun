@@ -120,6 +120,7 @@ RUN npm --min-release-age=0 install \
 # Seed OpenClaw personality files into the workspace skeleton.
 COPY --chown=vibe:vibe agents/openclaw/personality/ /home/vibe/.openclaw/workspace/
 COPY --chown=vibe:vibe skills/azure/ /home/vibe/.openclaw/skills/azure/
+COPY --chown=vibe:vibe skills/personal-services/ /home/vibe/.openclaw/skills/personal-services/
 
 COPY --chown=vibe:vibe agents/openclaw/bootstrap/entrypoint.sh /usr/local/bin/entrypoint.sh
 

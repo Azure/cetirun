@@ -45,6 +45,15 @@ if grep -Fq 'name: GITHUB_APP_' <<<"${oauth_output}"; then
   echo 'FAIL: personal GitHub OAuth must not configure GitHub App credentials' >&2
   exit 1
 fi
+google_output="$(helm template broker-test "${chart_dir}" "${values[@]}" --set-string providers.google.credentialsSecretName=google-oauth-example --set-string providers.google.clientIDKey=google-client-id --set-string providers.google.clientSecretKey=google-client-secret)"
+grep -A4 -F 'name: GOOGLE_OAUTH_CLIENT_ID' <<<"${google_output}" | grep -Fq 'name: "google-oauth-example"'
+grep -A4 -F 'name: GOOGLE_OAUTH_CLIENT_ID' <<<"${google_output}" | grep -Fq 'key: "google-client-id"'
+grep -A4 -F 'name: GOOGLE_OAUTH_CLIENT_SECRET' <<<"${google_output}" | grep -Fq 'name: "google-oauth-example"'
+grep -A4 -F 'name: GOOGLE_OAUTH_CLIENT_SECRET' <<<"${google_output}" | grep -Fq 'key: "google-client-secret"'
+if grep -Fq 'name: GOOGLE_OAUTH_' <<<"${output}"; then
+  echo 'FAIL: Google OAuth credentials must require an explicit Secret reference' >&2
+  exit 1
+fi
 if grep -Fq ':latest' <<<"${output}"; then
   echo "FAIL: chart rendered a latest image tag" >&2
   exit 1

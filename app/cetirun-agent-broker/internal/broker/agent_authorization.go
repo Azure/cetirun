@@ -7,20 +7,12 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"reflect"
 	"strings"
 	"time"
 )
 
 type toolIdentityRequest struct {
 	Provider string `json:"provider"`
-}
-
-func identityAuthorizationSource(provider string) string {
-	if provider == "azure" {
-		return "direct_rbac"
-	}
-	return ""
 }
 
 func connectionMode(c Connection) string {
@@ -47,19 +39,6 @@ func connectionMatchesAgent(c Connection, agent Agent, tenant string) bool {
 	}
 }
 
-func effectiveGrant(g AgentGrant, c Connection, now time.Time) bool {
-	if !activeGrant(g, now) {
-		return false
-	}
-	if connectionMode(c) == modeDelegated {
-		return g.Authorization == nil
-	}
-	a := g.Authorization
-	source := identityAuthorizationSource(c.Provider)
-	return connectionMode(c) == modeAgent && source != "" && a != nil && a.State == "verified" && a.Source == source &&
-		a.BindingRevision == c.Revision && a.VerifiedAt != nil && !a.VerifiedAt.After(now) && a.ValidUntil != nil && now.Before(*a.ValidUntil)
-}
-
 func (s *Server) agentIdentityCreate(w http.ResponseWriter, r *http.Request) {
 	correlation := correlationID(r)
 	owner, err := ownerFromPortal(r)
@@ -67,7 +46,7 @@ func (s *Server) agentIdentityCreate(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusForbidden, "forbidden", "Verified owner is required", correlation)
 		return
 	}
-	agent, err := s.portalGrantAgent(r, owner)
+	agent, err := s.portalBindingAgent(r, owner)
 	if err != nil {
 		writeAPIError(w, http.StatusForbidden, "forbidden", "Instance owner binding is invalid", correlation)
 		return
@@ -103,90 +82,12 @@ func (s *Server) agentIdentityCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	now := s.currentTime().UTC()
 	c.Owner, c.Revision, c.Status, c.CreatedAt, c.UpdatedAt = owner, 1, "connected", now, now
-	c.AccountDisplay, c.AccountID, c.Capabilities = "Agent "+agent.Name, binding.PrincipalID, connectionCapabilities(c)
+	c.AccountDisplay, c.AccountID, c.Services = "Agent "+agent.Name, binding.PrincipalID, connectionServices(c)
 	if err := s.store.putConnection(r.Context(), &connectionRecord{Connection: c, InstanceName: agent.Name, InstanceNamespace: agent.Namespace}, ""); err != nil {
 		writeAPIError(w, http.StatusConflict, "conflict", "Identity state changed; reload before retrying", correlation)
 		return
 	}
 	writeJSON(w, http.StatusOK, c)
-}
-
-func (s *Server) grantVerify(w http.ResponseWriter, r *http.Request) {
-	correlation := correlationID(r)
-	owner, err := ownerFromPortal(r)
-	if err != nil {
-		writeAPIError(w, http.StatusForbidden, "forbidden", "Verified owner is required", correlation)
-		return
-	}
-	agent, err := s.portalGrantAgent(r, owner)
-	if err != nil {
-		writeAPIError(w, http.StatusForbidden, "forbidden", "Instance binding is invalid", correlation)
-		return
-	}
-	expected, ok := ifMatchRevision(r)
-	if !ok {
-		writeAPIError(w, http.StatusPreconditionRequired, "revision_required", "If-Match revision is required", correlation)
-		return
-	}
-	record, version, err := s.store.getGrant(r.Context(), r.PathValue("id"), agent)
-	if err != nil || record.Grant.InstanceUID != agent.UID || !sameOwner(record.Grant.Owner, owner) || !activeGrant(record.Grant, s.currentTime()) {
-		writeAPIError(w, http.StatusNotFound, "not_found", "Active request not found", correlation)
-		return
-	}
-	if record.Grant.Revision != expected {
-		writeAPIError(w, http.StatusConflict, "conflict", "Authorization revision changed", correlation)
-		return
-	}
-	connection, _, err := s.store.getConnectionForAgent(r.Context(), agent, record.Grant.ConnectionID)
-	if err != nil || connection.Deleted || connection.Connection.Status != "connected" || !sameOwner(connection.Connection.Owner, owner) || connectionMode(connection.Connection) != modeAgent || !s.connectionMatchesAgent(connection.Connection, agent) {
-		writeAPIError(w, http.StatusConflict, "identity_changed", "Independent identity binding is unavailable", correlation)
-		return
-	}
-	var evidence *ResourceAuthorization
-	if connection.Connection.Provider == "azure" {
-		actions, actionsErr := requiredARMActions(record.Grant.Tools)
-		if actionsErr != nil {
-			writeAPIError(w, http.StatusBadRequest, "invalid_request", "Grant contains unsupported Azure tools", correlation)
-			return
-		}
-		evidence = &ResourceAuthorization{State: "pending", Source: "direct_rbac", Reason: "provider_verification_unavailable", BindingRevision: connection.Connection.Revision}
-		token, _, tokenErr := s.issueAgentCredential(r.Context(), connection.Connection, agent)
-		if tokenErr == nil {
-			arm := s.arm
-			if arm == nil {
-				arm = newARMAuthorizationClient(s.cfg.RequestTimeout)
-			}
-			scopes, requestIDs, verifyErr := arm.verify(r.Context(), token, connection.Connection.Identity.PrincipalID, record.Grant.Constraints.SubscriptionIDs, actions)
-			if verifyErr == nil {
-				now, until := s.currentTime().UTC(), record.Grant.ExpiresAt
-				evidence.State, evidence.Reason = "verified", ""
-				evidence.VerifiedAt, evidence.ValidUntil = &now, &until
-				evidence.Scopes, evidence.Actions, evidence.RequestIDs = scopes, actions, requestIDs
-			} else if errors.Is(verifyErr, errDownstreamForbidden) {
-				evidence.Reason = "resource_owner_grant_required"
-			}
-		}
-	} else {
-		writeAPIError(w, http.StatusBadRequest, "unsupported_identity_mode", "Independent identity is not provisioned for this provider", correlation)
-		return
-	}
-	// Recheck platform identity and binding after the external request. CAS also
-	// prevents a concurrent edit/revoke from being overwritten by verification.
-	currentAgent, agentErr := s.portalGrantAgent(r, owner)
-	current, _, connectionErr := s.store.getConnectionForAgent(r.Context(), agent, connection.Connection.ID)
-	if agentErr != nil || connectionErr != nil || !reflect.DeepEqual(agent, currentAgent) || current.Deleted || !reflect.DeepEqual(current.Connection, connection.Connection) || !activeGrant(record.Grant, s.currentTime()) {
-		writeAPIError(w, http.StatusConflict, "authorization_changed", "Identity or authorization changed during verification", correlation)
-		return
-	}
-	record.Grant.Authorization = evidence
-	record.Grant.Revision++
-	record.Grant.UpdatedAt = s.currentTime().UTC()
-	record.InstanceName, record.InstanceNamespace = agent.Name, agent.Namespace
-	if err := s.store.putGrant(r.Context(), record, version); err != nil {
-		writeAPIError(w, http.StatusConflict, "conflict", "Authorization changed during verification", correlation)
-		return
-	}
-	writeJSON(w, http.StatusOK, record.Grant)
 }
 
 func (s *Server) issueAgentCredential(ctx context.Context, connection Connection, agent Agent) (string, time.Time, error) {

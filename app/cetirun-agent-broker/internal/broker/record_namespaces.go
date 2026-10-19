@@ -67,15 +67,14 @@ func (k *kubeClient) validateConnectionLocation(record *connectionRecord) error 
 	return nil
 }
 
-func (k *kubeClient) validateGrantLocation(record *grantRecord) error {
-	if a := k.recordAgent; a != nil && (record.Grant.InstanceUID != a.UID || !sameOwner(record.Grant.Owner, Owner{a.OwnerTenantID, a.OwnerObjectID})) {
-		return errors.New("Grant does not belong to the Agent namespace")
+func (k *kubeClient) validateBindingLocation(record *bindingRecord) error {
+	if a := k.recordAgent; a != nil && (record.Binding.InstanceUID != a.UID || !sameOwner(record.Binding.Owner, Owner{a.OwnerTenantID, a.OwnerObjectID})) {
+		return errors.New("Binding does not belong to the Agent namespace")
 	}
 	return nil
 }
 
-// There is deliberately no fallback to a central independent Connection or
-// Grant after cutover. A retained migration source must never restore authority.
+// Agent identities and bindings have no central-record fallback.
 func (k *kubeClient) getConnectionForAgent(ctx context.Context, agent Agent, id string) (*connectionRecord, string, error) {
 	if !k.agentNamespaces {
 		return k.getConnection(ctx, id)
@@ -181,7 +180,7 @@ func validConnectionReference(secret secretDocument, agent Agent, id string) boo
 		len(secret.Data) == 0 && reflect.DeepEqual(secret.Metadata.OwnerReferences, []ownerReference{agentRecordOwner(agent)})
 }
 
-// This credential-free reference is for inventory/lifecycle only. Grant and
+// This credential-free reference is for inventory/lifecycle only. Binding and
 // decrypted owner checks remain the authority for using the shared credential.
 func (k *kubeClient) ensureConnectionReference(ctx context.Context, agent Agent, connection Connection) error {
 	if !k.agentNamespaces || connectionMode(connection) != modeDelegated {

@@ -76,14 +76,15 @@ func New(
 		api.HandleFunc("GET /api/v1/connections", toolConnectionsHandler.ListConnections)
 		api.HandleFunc("POST /api/v1/connections/start", toolConnectionsHandler.StartConnection)
 		api.HandleFunc("GET /api/v1/connections/{id}", toolConnectionsHandler.GetConnection)
+		api.HandleFunc("GET /api/v1/connection-authorizations/{id}", toolConnectionsHandler.GetConnectionAuthorization)
+		api.HandleFunc("GET /api/v1/connections/{id}/usage", toolConnectionsHandler.GetConnectionUsage)
 		api.HandleFunc("DELETE /api/v1/connections/{id}", toolConnectionsHandler.DeleteConnection)
 		api.HandleFunc("POST /api/v1/connections/{id}/reconnect", toolConnectionsHandler.ReconnectConnection)
-		api.HandleFunc("GET /api/v1/instances/{name}/tool-grants", toolConnectionsHandler.ListToolGrants)
+		api.HandleFunc("GET /api/v1/instances/{name}/connection-bindings", toolConnectionsHandler.ListConnectionBindings)
 		api.HandleFunc("POST /api/v1/instances/{name}/tool-identities", toolConnectionsHandler.CreateToolIdentity)
-		api.HandleFunc("POST /api/v1/instances/{name}/tool-grants", toolConnectionsHandler.CreateToolGrant)
-		api.HandleFunc("PUT /api/v1/instances/{name}/tool-grants/{id}", toolConnectionsHandler.UpdateToolGrant)
-		api.HandleFunc("POST /api/v1/instances/{name}/tool-grants/{id}/verify", toolConnectionsHandler.VerifyToolGrant)
-		api.HandleFunc("DELETE /api/v1/instances/{name}/tool-grants/{id}", toolConnectionsHandler.DeleteToolGrant)
+		api.HandleFunc("POST /api/v1/instances/{name}/connection-bindings", toolConnectionsHandler.CreateConnectionBinding)
+		api.HandleFunc("PUT /api/v1/instances/{name}/connection-bindings/{id}", toolConnectionsHandler.UpdateConnectionBinding)
+		api.HandleFunc("DELETE /api/v1/instances/{name}/connection-bindings/{id}", toolConnectionsHandler.DeleteConnectionBinding)
 	}
 
 	// Admin API: gated by RequireAdmin (in addition to the auth middleware

@@ -29,11 +29,6 @@ portal:
 
 workloadTokenAudience: agent-tools-mcp
 
-operationRecords:
-  # Dedicated namespace for only 7-day write operation records, never provider credentials.
-  namespace: cetirun-agent-tools-mcp-operations
-  createNamespace: true
-
 istio:
   enabled: true
   sidecarInjection: false

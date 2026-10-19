@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -44,7 +45,7 @@ func (f *fakeService) Call(context.Context, identity.Caller, string, map[string]
 
 func TestToolsCallRejectsUnknownArgumentsBeforeService(t *testing.T) {
 	fake := &fakeService{}
-	request := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"azure_subscriptions_list","arguments":{"connection_id":"conn-demo","extra":"no"}}}`))
+	request := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"service_request","arguments":{"connection_id":"conn-demo","service":"azure_arm","method":"GET","path":"/subscriptions","extra":"no"}}}`))
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Authorization", "Bearer synthetic-workload-proof")
 	request.Header.Set("MCP-Protocol-Version", protocolVersion)
@@ -56,8 +57,58 @@ func TestToolsCallRejectsUnknownArgumentsBeforeService(t *testing.T) {
 	if fake.calls != 0 {
 		t.Fatalf("service calls = %d, want 0", fake.calls)
 	}
-	if !strings.Contains(response.Body.String(), `"isError":true`) || !strings.Contains(response.Body.String(), `invalid_request`) {
+	if !strings.Contains(response.Body.String(), `"isError":true`) || !strings.Contains(response.Body.String(), `invalid_request`) || !strings.Contains(response.Body.String(), `"correlation_id":"`) {
 		t.Fatalf("unexpected response %s", response.Body.String())
+	}
+}
+
+func TestToolsCallPreservesProviderDiagnosticsForNativeClients(t *testing.T) {
+	for _, scenario := range []struct {
+		name   string
+		result map[string]any
+		err    error
+		status float64
+		code   string
+	}{
+		{"provider-denied", map[string]any{"status": 403, "body": map[string]any{"error": "ProviderDenied"}, "correlation_id": "trace-id", "request_ids": []string{"upstream-id"}}, nil, 403, ""},
+		{"response-read-failed", nil, &tools.ToolError{Code: "execution_unknown", CorrelationID: "trace-id", ProviderStatus: 201, RequestIDs: []string{"upstream-id"}}, 201, "execution_unknown"},
+		{"response-too-large", map[string]any{"status": 202, "body": strings.Repeat("x", maxToolResultBytes), "correlation_id": "trace-id", "request_ids": []string{"upstream-id"}}, nil, 202, "execution_unknown"},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			fake := &fakeService{result: scenario.result, err: scenario.err}
+			request := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"service_request","arguments":{"connection_id":"conn-demo","service":"github","method":"POST","path":"/repos/example/project/issues","body":{"title":"Example"}}}}`))
+			request.Header.Set("Content-Type", "application/json")
+			request.Header.Set("Authorization", "Bearer synthetic-workload-proof")
+			request.Header.Set("MCP-Protocol-Version", protocolVersion)
+			response := httptest.NewRecorder()
+			New(fake).ServeHTTP(response, request)
+			var payload struct {
+				Result struct {
+					IsError    bool                    `json:"isError"`
+					Content    []struct{ Text string } `json:"content"`
+					Structured map[string]any          `json:"structuredContent"`
+				} `json:"result"`
+			}
+			if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &payload) != nil || !payload.Result.IsError || len(payload.Result.Content) != 1 || fake.calls != 1 {
+				t.Fatalf("invalid error response: %d %s", response.Code, response.Body.String())
+			}
+			var textResult map[string]any
+			if json.Unmarshal([]byte(strings.TrimPrefix(payload.Result.Content[0].Text, untrustedExternalDataNotice)), &textResult) != nil || !reflect.DeepEqual(textResult, payload.Result.Structured) {
+				t.Fatal("text-only clients lost structured diagnostics")
+			}
+			statusKey := "status"
+			if scenario.code != "" {
+				statusKey = "provider_status"
+				if textResult["code"] != scenario.code {
+					t.Fatalf("wrong error code: %#v", textResult)
+				}
+			} else if !reflect.DeepEqual(textResult["body"], map[string]any{"error": "ProviderDenied"}) {
+				t.Fatal("provider error body was lost")
+			}
+			if textResult[statusKey] != scenario.status || textResult["correlation_id"] != "trace-id" || !reflect.DeepEqual(textResult["request_ids"], []any{"upstream-id"}) {
+				t.Fatalf("provider diagnostics were lost: %#v", textResult)
+			}
+		})
 	}
 }
 
@@ -82,9 +133,9 @@ func TestInitializeNegotiatesSupportedVersionAfterAuthentication(t *testing.T) {
 	}
 }
 
-func TestToolsCallReturnsSanitizedBusinessData(t *testing.T) {
-	fake := &fakeService{result: map[string]any{"value": "completed", "access_token": "synthetic-access-token"}}
-	request := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"azure_subscriptions_list","arguments":{"connection_id":"conn-demo"}}}`))
+func TestToolsCallPreservesPaginationAndMarksExternalData(t *testing.T) {
+	fake := &fakeService{result: map[string]any{"value": "completed", "nextPageToken": "opaque-page"}}
+	request := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"service_request","arguments":{"connection_id":"conn-demo","service":"azure_arm","method":"GET","path":"/subscriptions"}}}`))
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Authorization", "Bearer synthetic-workload-proof")
 	request.Header.Set("MCP-Protocol-Version", protocolVersion)
@@ -92,9 +143,6 @@ func TestToolsCallReturnsSanitizedBusinessData(t *testing.T) {
 	New(fake).ServeHTTP(response, request)
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200: %s", response.Code, response.Body.String())
-	}
-	if strings.Contains(response.Body.String(), "synthetic-access-token") {
-		t.Fatalf("response exposed a token: %s", response.Body.String())
 	}
 	var payload struct {
 		Result struct {
@@ -107,20 +155,20 @@ func TestToolsCallReturnsSanitizedBusinessData(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
 		t.Fatal(err)
 	}
-	if len(payload.Result.Content) != 1 || payload.Result.Content[0].Text != untrustedExternalDataNotice+`{"value":"completed"}` || payload.Result.Structured["value"] != "completed" {
+	if len(payload.Result.Content) != 1 || payload.Result.Content[0].Text != untrustedExternalDataNotice+`{"nextPageToken":"opaque-page","value":"completed"}` || payload.Result.Structured["value"] != "completed" {
 		t.Fatalf("unexpected tool result %#v", payload.Result)
 	}
 }
 
 func TestToolsCallRejectsOversizedBusinessData(t *testing.T) {
 	fake := &fakeService{result: map[string]any{"value": strings.Repeat("x", maxToolResultBytes)}}
-	request := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"azure_subscriptions_list","arguments":{"connection_id":"conn-demo"}}}`))
+	request := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"service_request","arguments":{"connection_id":"conn-demo","service":"azure_arm","method":"GET","path":"/subscriptions"}}}`))
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Authorization", "Bearer synthetic-workload-proof")
 	request.Header.Set("MCP-Protocol-Version", protocolVersion)
 	response := httptest.NewRecorder()
 	New(fake).ServeHTTP(response, request)
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"isError":true`) || !strings.Contains(response.Body.String(), "dependency_unavailable") {
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"isError":true`) || !strings.Contains(response.Body.String(), "execution_unknown") {
 		t.Fatalf("oversized response = %d %s", response.Code, response.Body.String())
 	}
 }
@@ -177,7 +225,7 @@ func TestMCPExecutableMethodsRequireID(t *testing.T) {
 		{name: "boolean id", body: `{"jsonrpc":"2.0","id":true,"method":"initialize"}`},
 		{name: "initialize", body: `{"jsonrpc":"2.0","method":"initialize"}`},
 		{name: "tools list", body: `{"jsonrpc":"2.0","method":"tools/list"}`, headers: map[string]string{"MCP-Protocol-Version": protocolVersion}},
-		{name: "tools call", body: `{"jsonrpc":"2.0","method":"tools/call","params":{"name":"azure_subscriptions_list","arguments":{"connection_id":"conn-demo"}}}`, headers: map[string]string{"MCP-Protocol-Version": protocolVersion}},
+		{name: "tools call", body: `{"jsonrpc":"2.0","method":"tools/call","params":{"name":"service_request","arguments":{"connection_id":"conn-demo","service":"azure_arm","method":"GET","path":"/subscriptions"}}}`, headers: map[string]string{"MCP-Protocol-Version": protocolVersion}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

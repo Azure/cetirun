@@ -13,15 +13,14 @@ import (
 const DefaultAudience = "agent-tools-mcp"
 
 type Config struct {
-	ListenAddress             string
-	TLSCertFile               string
-	TLSKeyFile                string
-	BrokerBaseURL             *url.URL
-	WorkloadTokenAudience     string
-	PortalBaseURL             *url.URL
-	KubernetesTokenFile       string
-	KubernetesCAFile          string
-	OperationRecordsNamespace string
+	ListenAddress         string
+	TLSCertFile           string
+	TLSKeyFile            string
+	BrokerBaseURL         *url.URL
+	WorkloadTokenAudience string
+	PortalBaseURL         *url.URL
+	KubernetesTokenFile   string
+	KubernetesCAFile      string
 }
 
 func Load() (Config, error) {
@@ -40,10 +39,6 @@ func Load() (Config, error) {
 	if audience == "" {
 		audience = DefaultAudience
 	}
-	namespace := strings.TrimSpace(os.Getenv("OPERATION_RECORDS_NAMESPACE"))
-	if !dnsLabel(namespace) {
-		return Config{}, errors.New("OPERATION_RECORDS_NAMESPACE is required and must be a DNS label")
-	}
 	listen := strings.TrimSpace(os.Getenv("LISTEN_ADDRESS"))
 	if listen == "" {
 		listen = ":8443"
@@ -53,15 +48,14 @@ func Load() (Config, error) {
 		return Config{}, errors.New("TLS_CERT_FILE and TLS_KEY_FILE are required")
 	}
 	return Config{
-		ListenAddress:             listen,
-		TLSCertFile:               certFile,
-		TLSKeyFile:                keyFile,
-		BrokerBaseURL:             broker,
-		WorkloadTokenAudience:     audience,
-		PortalBaseURL:             portal,
-		KubernetesTokenFile:       valueOr("KUBERNETES_TOKEN_FILE", "/var/run/cetirun/kubernetes/token"),
-		KubernetesCAFile:          valueOr("KUBERNETES_CA_FILE", "/var/run/cetirun/kubernetes/ca.crt"),
-		OperationRecordsNamespace: namespace,
+		ListenAddress:         listen,
+		TLSCertFile:           certFile,
+		TLSKeyFile:            keyFile,
+		BrokerBaseURL:         broker,
+		WorkloadTokenAudience: audience,
+		PortalBaseURL:         portal,
+		KubernetesTokenFile:   valueOr("KUBERNETES_TOKEN_FILE", "/var/run/cetirun/kubernetes/token"),
+		KubernetesCAFile:      valueOr("KUBERNETES_CA_FILE", "/var/run/cetirun/kubernetes/ca.crt"),
 	}, nil
 }
 
@@ -78,17 +72,4 @@ func valueOr(key, fallback string) string {
 		return value
 	}
 	return fallback
-}
-
-func dnsLabel(value string) bool {
-	if len(value) == 0 || len(value) > 63 || value[0] == '-' || value[len(value)-1] == '-' {
-		return false
-	}
-	for _, character := range value {
-		if (character >= 'a' && character <= 'z') || (character >= '0' && character <= '9') || character == '-' {
-			continue
-		}
-		return false
-	}
-	return true
 }

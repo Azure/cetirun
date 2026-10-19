@@ -23,7 +23,6 @@ type Server struct {
 	oauth     *oauthClient
 	authSDK   *authSDKClient
 	providers *providerClient
-	arm       *armAuthorizationClient
 	mux       *http.ServeMux
 	tlsMux    *http.ServeMux
 	now       func() time.Time
@@ -62,20 +61,21 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("DELETE /operator/v1/instances/{uid}/authorization", s.operatorDeleteAuthorization)
 	s.mux.Handle("GET /v1/connections", s.portalOnly(s.connectionsList))
 	s.mux.Handle("POST /v1/connections/start", s.portalOnly(s.connectionStart))
+	s.mux.Handle("GET /v1/connection-authorizations/{id}", s.portalOnly(s.authorizationGet))
+	s.mux.Handle("GET /v1/connections/{id}/usage", s.portalOnly(s.connectionUsage))
 	s.mux.Handle("GET /v1/connections/{id}", s.portalOnly(s.connectionGet))
 	s.mux.Handle("DELETE /v1/connections/{id}", s.portalOnly(s.connectionDelete))
 	s.mux.Handle("POST /v1/connections/{id}/reconnect", s.portalOnly(s.connectionReconnect))
 	s.mux.HandleFunc("GET /api/v1/connections/callback", s.connectionCallback)
 	s.mux.HandleFunc("POST /api/v1/connections/callback", s.connectionCallback)
 	s.mux.Handle("POST /v1/instances/{name}/tool-identities", s.portalOnly(s.agentIdentityCreate))
-	s.mux.Handle("POST /v1/instances/{name}/tool-grants/{id}/verify", s.portalOnly(s.grantVerify))
-	s.mux.Handle("GET /v1/instances/{name}/tool-grants", s.portalOnly(s.grantsList))
-	s.mux.Handle("POST /v1/instances/{name}/tool-grants", s.portalOnly(s.grantCreate))
-	s.mux.Handle("PUT /v1/instances/{name}/tool-grants/{id}", s.portalOnly(s.grantUpdate))
-	s.mux.Handle("DELETE /v1/instances/{name}/tool-grants/{id}", s.portalOnly(s.grantDelete))
-	s.tlsMux.Handle("POST /internal/v1/tool-authorizations/list", s.toolOnly(s.toolAuthorizationsList))
-	s.tlsMux.Handle("POST /internal/v1/tool-authorizations/check", s.toolOnly(s.toolAuthorizationsCheck))
-	s.tlsMux.Handle("POST /internal/v1/tool-credentials/issue", s.toolOnly(s.toolCredentialsIssue))
+	s.mux.Handle("GET /v1/instances/{name}/connection-bindings", s.portalOnly(s.bindingsList))
+	s.mux.Handle("POST /v1/instances/{name}/connection-bindings", s.portalOnly(s.bindingCreate))
+	s.mux.Handle("PUT /v1/instances/{name}/connection-bindings/{id}", s.portalOnly(s.bindingUpdate))
+	s.mux.Handle("DELETE /v1/instances/{name}/connection-bindings/{id}", s.portalOnly(s.bindingDelete))
+	s.tlsMux.Handle("POST /internal/v1/service-authorizations/list", s.toolOnly(s.toolAuthorizationsList))
+	s.tlsMux.Handle("POST /internal/v1/service-authorizations/check", s.toolOnly(s.toolAuthorizationsCheck))
+	s.tlsMux.Handle("POST /internal/v1/service-credentials/issue", s.toolOnly(s.toolCredentialsIssue))
 }
 
 func requestSecurityHeaders(next http.Handler) http.Handler {
@@ -118,21 +118,25 @@ func (s *Server) operatorDeleteAuthorization(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	if err := s.store.deleteAgentRecords(r.Context(), agent); err != nil {
-		writeAPIError(w, http.StatusServiceUnavailable, "dependency_unavailable", "Grant state could not be revoked", correlationID(r))
+		writeAPIError(w, http.StatusServiceUnavailable, "dependency_unavailable", "Binding state could not be revoked", correlationID(r))
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (s *Server) callbackPage(w http.ResponseWriter, success bool) {
+func (s *Server) callbackPage(w http.ResponseWriter, success bool, ids ...string) {
+	id := ""
+	if len(ids) == 1 {
+		id = ids[0]
+	}
 	status, message := "failed", "Sign-in could not be completed. Close this window and retry from the Portal."
 	if success {
 		status, message = "complete", "Sign-in complete. You may close this window."
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Content-Security-Policy", "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'")
-	templatePage := template.Must(template.New("callback").Parse(`<!doctype html><html><head><meta charset="utf-8"><title>Connection</title></head><body><p>{{.Message}}</p><script>if(window.opener){window.opener.postMessage({type:"cetirun-connection",status:{{.Status}}},{{.Origin}});}window.close();</script></body></html>`))
-	_ = templatePage.Execute(w, map[string]string{"Status": status, "Origin": s.cfg.PortalOrigin, "Message": message})
+	templatePage := template.Must(template.New("callback").Parse(`<!doctype html><html><head><meta charset="utf-8"><title>Connection</title></head><body><p>{{.Message}}</p><script>if(window.opener){window.opener.postMessage({type:"cetirun-connection",status:{{.Status}},authorizationId:{{.AuthorizationID}}},{{.Origin}});}window.close();</script></body></html>`))
+	_ = templatePage.Execute(w, map[string]string{"AuthorizationID": id, "Status": status, "Origin": s.cfg.PortalOrigin, "Message": message})
 }
 
 func (s *Server) currentTime() time.Time {

@@ -46,65 +46,65 @@ class AgentToolsInspectTests(unittest.TestCase):
             record("agent-tools-connection-github", "github", namespace=NAMESPACE_A, record_type="connection-reference", provider="github", mode="delegated", instance_uid=UID_A, connection_id="github"),
             record("agent-tools-connection-github", "github", namespace=NAMESPACE_B, record_type="connection-reference", provider="github", mode="delegated", instance_uid=UID_B, connection_id="github"),
         ]
-        grants = [
-            record("agent-tools-grant-a", "grant-a", namespace=NAMESPACE_A, record_type="grant", instance_uid=UID_A, connection_id="github"),
-            record("agent-tools-grant-b", "grant-b", namespace=NAMESPACE_B, record_type="grant", instance_uid=UID_B, connection_id="github"),
+        bindings = [
+            record("agent-tools-binding-a", "binding-a", namespace=NAMESPACE_A, record_type="binding", instance_uid=UID_A, connection_id="github"),
+            record("agent-tools-binding-b", "binding-b", namespace=NAMESPACE_B, record_type="binding", instance_uid=UID_B, connection_id="github"),
         ]
 
-        result = inspect.inventory(agents, CENTRAL, [central_connection], grants, refs, set(), "all live Agent namespaces queried", [])
+        result = inspect.inventory(agents, CENTRAL, [central_connection], bindings, refs, set(), "all live Agent namespaces queried", [])
 
         self.assertEqual(len(result["connections"]), 1)
         self.assertEqual(result["connections"][0]["credentialStorage"], "central")
-        self.assertEqual({consumer["name"] for consumer in result["connections"][0]["grantConsumers"]}, {"agent-a", "agent-b"})
+        self.assertEqual({consumer["name"] for consumer in result["connections"][0]["bindingConsumers"]}, {"agent-a", "agent-b"})
         self.assertEqual(len(result["connectionReferences"]), 2)
         self.assertTrue(all(item["credentialStorage"] == "none/reference" for item in result["connectionReferences"]))
-        self.assertTrue(all(grant["connection"]["resolution"] == "referenced-central/present" for grant in result["grants"]))
+        self.assertTrue(all(binding["connection"]["resolution"] == "referenced-central/present" for binding in result["bindings"]))
         self.assertIn("CONNECTION REFERENCES (credential-free, non-authoritative)", inspect.render_table(result))
 
     def test_owner_mismatch_does_not_link_reference_or_central_credential(self):
         agents = [inspect.Agent("agent-a", UID_A, NAMESPACE_A)]
         central_connection = record("central", "github", owner="owner-a", provider="github", mode="delegated")
         reference = record("reference", "github", owner="owner-b", namespace=NAMESPACE_A, record_type="connection-reference", instance_uid=UID_A, connection_id="github")
-        grant = record("grant", "grant", owner="owner-b", namespace=NAMESPACE_A, record_type="grant", instance_uid=UID_A, connection_id="github")
+        binding = record("binding", "binding", owner="owner-b", namespace=NAMESPACE_A, record_type="binding", instance_uid=UID_A, connection_id="github")
 
-        result = inspect.inventory(agents, CENTRAL, [central_connection], [grant], [reference], set(), "all live Agent namespaces queried", [])
+        result = inspect.inventory(agents, CENTRAL, [central_connection], [binding], [reference], set(), "all live Agent namespaces queried", [])
 
-        self.assertEqual(result["connections"][0]["grantConsumers"], [])
+        self.assertEqual(result["connections"][0]["bindingConsumers"], [])
         self.assertEqual(result["connectionReferences"][0]["centralConnection"]["resolution"], "owner-mismatch")
-        self.assertEqual(result["grants"][0]["connection"]["resolution"], "referenced-central/owner-mismatch")
+        self.assertEqual(result["bindings"][0]["connection"]["resolution"], "referenced-central/owner-mismatch")
 
-    def test_legacy_central_grant_still_resolves_in_central_namespace(self):
+    def test_central_binding_cannot_resolve_as_agent_authority(self):
         agents = [inspect.Agent("agent-a", UID_A, NAMESPACE_A)]
         central_connection = record("central", "github", provider="github")
-        central_grant = record("legacy-grant", "legacy", record_type="grant", instance_uid=UID_A, connection_id="github")
+        central_binding = record("legacy-binding", "legacy", record_type="binding", instance_uid=UID_A, connection_id="github")
 
-        result = inspect.inventory(agents, CENTRAL, [central_connection], [central_grant], [], set(), "all live Agent namespaces queried", [])
+        result = inspect.inventory(agents, CENTRAL, [central_connection], [central_binding], [], set(), "all live Agent namespaces queried", [])
 
-        self.assertEqual(result["grants"][0]["connection"]["secretNamespace"], CENTRAL)
-        self.assertEqual(result["grants"][0]["connection"]["resolution"], "present")
-        self.assertEqual(result["connections"][0]["relation"], "grant-reference/mode-unknown")
+        self.assertIsNone(result["bindings"][0]["connection"]["secretNamespace"])
+        self.assertEqual(result["bindings"][0]["connection"]["resolution"], "invalid-binding-namespace")
+        self.assertEqual(result["connections"][0]["relation"], "unassigned/unknown")
 
     def test_same_record_id_in_different_namespaces_does_not_collide(self):
         agents = [inspect.Agent("agent-a", UID_A, NAMESPACE_A)]
         central = record("central-github", "shared", provider="github", mode="delegated")
         local = record("local-azure", "shared", namespace=NAMESPACE_A, provider="azure", mode="agent", instance_uid=UID_A)
-        grant = record("local-grant", "grant", namespace=NAMESPACE_A, record_type="grant", instance_uid=UID_A, connection_id="shared")
+        binding = record("local-binding", "binding", namespace=NAMESPACE_A, record_type="binding", instance_uid=UID_A, connection_id="shared")
 
-        result = inspect.inventory(agents, CENTRAL, [central, local], [grant], [], set(), "all live Agent namespaces queried", [])
+        result = inspect.inventory(agents, CENTRAL, [central, local], [binding], [], set(), "all live Agent namespaces queried", [])
 
         self.assertEqual(len(result["connections"]), 2)
-        self.assertEqual(result["grants"][0]["connection"]["secretName"], "local-azure")
-        self.assertEqual(result["grants"][0]["connection"]["secretNamespace"], NAMESPACE_A)
+        self.assertEqual(result["bindings"][0]["connection"]["secretName"], "local-azure")
+        self.assertEqual(result["bindings"][0]["connection"]["secretNamespace"], NAMESPACE_A)
         central_row = next(item for item in result["connections"] if item["secretNamespace"] == CENTRAL)
-        self.assertEqual(central_row["grantConsumers"], [])
+        self.assertEqual(central_row["bindingConsumers"], [])
 
     def test_agent_filter_does_not_reassociate_recreated_name(self):
         agents = [inspect.Agent("recreated", UID_A, NAMESPACE_A)]
         central = record("central", "github", provider="github", mode="delegated")
         stale_ref = record("reference", "github", namespace=NAMESPACE_A, record_type="connection-reference", instance_uid=UID_B, connection_id="github", instance_name="recreated")
-        stale_grant = record("grant", "old", namespace=NAMESPACE_A, record_type="grant", instance_uid=UID_B, connection_id="github", instance_name="recreated")
-        result = inspect.inventory(agents, CENTRAL, [central], [stale_grant], [stale_ref], {UID_A}, "selected live Agent namespace plus central namespace queried", [])
-        self.assertEqual(result["grants"], [])
+        stale_binding = record("binding", "old", namespace=NAMESPACE_A, record_type="binding", instance_uid=UID_B, connection_id="github", instance_name="recreated")
+        result = inspect.inventory(agents, CENTRAL, [central], [stale_binding], [stale_ref], {UID_A}, "selected live Agent namespace plus central namespace queried", [])
+        self.assertEqual(result["bindings"], [])
         self.assertEqual(result["connections"], [])
 
     def test_agent_filter_hides_unrelated_central_connection_from_other_owner(self):
@@ -115,25 +115,25 @@ class AgentToolsInspectTests(unittest.TestCase):
                              record_type="connection-reference", instance_uid=UID_A, connection_id="github-a")
         reference_b = record("reference-b", "github-b", owner="owner-b", namespace=NAMESPACE_B,
                              record_type="connection-reference", instance_uid=UID_B, connection_id="github-b")
-        grant_a = record("grant-a", "grant-a", owner="owner-a", namespace=NAMESPACE_A,
-                         record_type="grant", instance_uid=UID_A, connection_id="github-a")
-        grant_b = record("grant-b", "grant-b", owner="owner-b", namespace=NAMESPACE_B,
-                         record_type="grant", instance_uid=UID_B, connection_id="github-b")
+        binding_a = record("binding-a", "binding-a", owner="owner-a", namespace=NAMESPACE_A,
+                         record_type="binding", instance_uid=UID_A, connection_id="github-a")
+        binding_b = record("binding-b", "binding-b", owner="owner-b", namespace=NAMESPACE_B,
+                         record_type="binding", instance_uid=UID_B, connection_id="github-b")
 
         result = inspect.inventory(
-            agents, CENTRAL, [connection_a, connection_b], [grant_a, grant_b], [reference_a, reference_b],
+            agents, CENTRAL, [connection_a, connection_b], [binding_a, binding_b], [reference_a, reference_b],
             {UID_A}, "selected live Agent namespace plus central namespace queried", [],
         )
 
         self.assertEqual([item["secretName"] for item in result["connections"]], ["central-a"])
         self.assertEqual([item["secretName"] for item in result["connectionReferences"]], ["reference-a"])
-        self.assertEqual([item["secretName"] for item in result["grants"]], ["grant-a"])
+        self.assertEqual([item["secretName"] for item in result["bindings"]], ["binding-a"])
 
     def test_kubectl_uses_metadata_projection_explicit_target_and_discards_stderr(self):
         client = inspect.Kubectl("/tmp/explicit-config", "chosen")
         with patch.object(inspect.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "")) as run:
             client.metadata_list(
-                "secrets", CENTRAL, inspect.PREFIX + "record-type=grant",
+                "secrets", CENTRAL, inspect.PREFIX + "record-type=binding",
                 ("name", "id", "mode", "instance_uid", "instance_name_snapshot"),
             )
         command = run.call_args.args[0]
@@ -162,10 +162,10 @@ class AgentToolsInspectTests(unittest.TestCase):
         payload = json.loads(rendered)
         self.assertEqual(payload["scope"]["referenceCoverage"], "selected live Agent namespace plus central namespace queried")
         commands = [call.args[0] for call in run.call_args_list]
-        self.assertEqual(len(commands), 6)
+        self.assertEqual(len(commands), 5)
         namespaces = [command[command.index("--namespace") + 1] for command in commands[1:]]
-        self.assertEqual(namespaces[:2], [CENTRAL, CENTRAL])
-        self.assertEqual(namespaces[2:], [NAMESPACE_A, NAMESPACE_A, NAMESPACE_A])
+        self.assertEqual(namespaces[:1], [CENTRAL])
+        self.assertEqual(namespaces[1:], [NAMESPACE_A, NAMESPACE_A, NAMESPACE_A])
         self.assertTrue(all("--all-namespaces" not in command and "-A" not in command for command in commands))
 
     def test_unfiltered_inventory_skips_pending_agent_and_reports_it(self):
@@ -182,7 +182,7 @@ class AgentToolsInspectTests(unittest.TestCase):
         self.assertIn("Pending/no-namespace", payload["scope"]["referenceCoverage"])
         commands = [call.args[0] for call in run.call_args_list]
         namespaces = [command[command.index("--namespace") + 1] for command in commands[1:]]
-        self.assertEqual(namespaces, [CENTRAL, CENTRAL, NAMESPACE_A, NAMESPACE_A, NAMESPACE_A])
+        self.assertEqual(namespaces, [CENTRAL, NAMESPACE_A, NAMESPACE_A, NAMESPACE_A])
 
     def test_pending_selected_agent_reports_incomplete_scope_and_queries_central_only(self):
         agent_output = rows(("ready-agent", UID_A, NAMESPACE_A), ("pending-agent", UID_B, ""))
@@ -195,8 +195,8 @@ class AgentToolsInspectTests(unittest.TestCase):
         self.assertEqual(payload["scope"]["referenceCoverage"], "central namespace only; selected live Agent has no workload namespace")
         self.assertEqual(payload["scope"]["unqueriedAgents"][0]["uid"], UID_B)
         commands = [call.args[0] for call in run.call_args_list]
-        self.assertEqual(len(commands), 3)
-        self.assertEqual([command[command.index("--namespace") + 1] for command in commands[1:]], [CENTRAL, CENTRAL])
+        self.assertEqual(len(commands), 2)
+        self.assertEqual([command[command.index("--namespace") + 1] for command in commands[1:]], [CENTRAL])
 
     def test_missing_or_forbidden_agent_namespace_is_not_treated_as_empty(self):
         agent_output = rows(("agent-a", UID_A, NAMESPACE_A))

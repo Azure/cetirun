@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"github.com/Azure/CetiRun/app/internal/agenttools"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -37,7 +38,7 @@ func TestGitHubOAuthAuthorizationURLUsesPersonalOAuthAppAndRepoScope(t *testing.
 }
 
 func TestGitHubOAuthCallbackStoresExplicitNonExpiringCredential(t *testing.T) {
-	fixture := newAuthorizationFixture(t, "github", "github_issues_list", Constraints{RepositoryIDs: []string{"42"}})
+	fixture := newAuthorizationFixture(t, "github", "github")
 	fixture.server.cfg.PortalNamespace, fixture.server.cfg.PortalServiceAccount = "portal", "portal"
 	state := strings.Repeat("a", 43)
 	browserBinding := strings.Repeat("c", 43)
@@ -45,11 +46,12 @@ func TestGitHubOAuthCallbackStoresExplicitNonExpiringCredential(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	record.Connection.Status = "connecting"
-	record.Transaction = &connectionTransaction{Provider: "github", StateHash: stateHash(state), BrowserBindingHash: stateHash(browserBinding), CodeVerifier: strings.Repeat("b", 43), ExpiresAt: time.Now().Add(time.Hour)}
+	record.Connection.Status, record.Connection.AccountID, record.Credential = "interaction_required", "42", nil
+	tx := &connectionTransaction{TargetConnectionID: record.Connection.ID, ExpectedAccountID: "42", Provider: "github", StateHash: stateHash(state), BrowserBindingHash: stateHash(browserBinding), CodeVerifier: strings.Repeat("b", 43), ExpiresAt: time.Now().Add(time.Hour)}
 	if err := fixture.server.store.putConnection(context.Background(), record, version); err != nil {
 		t.Fatal(err)
 	}
+	stageOAuthTransaction(t, fixture, tx)
 	fixture.server.providers = &providerClient{cfg: Config{GitHubOAuthClientID: "github-client-id", GitHubOAuthClientSecret: "github-client-secret"}, client: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		switch request.URL.String() {
 		case "https://github.com/login/oauth/access_token":
@@ -76,66 +78,87 @@ func TestGitHubOAuthCallbackStoresExplicitNonExpiringCredential(t *testing.T) {
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "Sign-in complete") || current.Credential == nil {
 		t.Fatalf("GitHub OAuth callback failed: status=%d body=%q record=%#v", response.Code, response.Body.String(), current)
 	}
-	if !current.Credential.NonExpiring || !current.Credential.ExpiresAt.IsZero() || current.Credential.RefreshToken != "" || !contains(current.Credential.Scopes, "github_issues_create") || len(current.Connection.Capabilities) != len(providerTools("github")) || current.Connection.AccountID != "42" || current.Connection.AccountDisplay != "octocat" {
-		t.Fatalf("GitHub OAuth callback persisted invalid metadata: nonExpiring=%t expiresAt=%s hasRefresh=%t scopes=%q capabilities=%q account=%q display=%q", current.Credential.NonExpiring, current.Credential.ExpiresAt, current.Credential.RefreshToken != "", current.Credential.Scopes, current.Connection.Capabilities, current.Connection.AccountID, current.Connection.AccountDisplay)
+	if !current.Credential.NonExpiring || !current.Credential.ExpiresAt.IsZero() || current.Credential.RefreshToken != "" || !contains(current.Credential.Scopes, "repo") || len(current.Connection.Services) != len(agenttools.ProviderServices("github")) || current.Connection.AccountID != "42" || current.Connection.AccountDisplay != "octocat" {
+		t.Fatalf("GitHub OAuth callback persisted invalid metadata: nonExpiring=%t expiresAt=%s hasRefresh=%t scopes=%q capabilities=%q account=%q display=%q", current.Credential.NonExpiring, current.Credential.ExpiresAt, current.Credential.RefreshToken != "", current.Credential.Scopes, current.Connection.Services, current.Connection.AccountID, current.Connection.AccountDisplay)
 	}
 }
 
-func TestGitHubOAuthStartCallbackAndReconnectRequireBrowserBinding(t *testing.T) {
-	fixture := newAuthorizationFixture(t, "github", "github_issues_list", Constraints{RepositoryIDs: []string{"42"}})
+func TestPersonalOAuthStartCallbackAndReconnectRequireBrowserBinding(t *testing.T) {
+	for _, provider := range []string{"github", "google"} {
+		t.Run(provider, func(t *testing.T) { testPersonalOAuthStartCallbackAndReconnectRequireBrowserBinding(t, provider) })
+	}
+}
+
+func testPersonalOAuthStartCallbackAndReconnectRequireBrowserBinding(t *testing.T, provider string) {
+	t.Helper()
+	fixture := personalOAuthFixture(t, provider)
 	fixture.server.cfg.PortalNamespace, fixture.server.cfg.PortalServiceAccount = "portal", "portal"
 	fixture.server.cfg.GitHubOAuthClientID, fixture.server.cfg.GitHubOAuthClientSecret = "github-client-id", "github-client-secret"
+	fixture.server.cfg.GoogleClientID, fixture.server.cfg.GoogleClientSecret = "google-client-id", "google-client-secret"
 	fixture.server.cfg.TransactionTTL = 10 * time.Minute
 	firstBinding := strings.Repeat("a", 43)
-	start := httptest.NewRequest(http.MethodPost, "/v1/connections/start", strings.NewReader(`{"provider":"github"}`))
+	start := httptest.NewRequest(http.MethodPost, "/v1/connections/start", strings.NewReader(`{"provider":"`+provider+`"}`))
 	setPortalRequestHeaders(start, fixture.grant.Owner, firstBinding)
 	started := httptest.NewRecorder()
 	fixture.server.Handler().ServeHTTP(started, start)
 	var startResponse struct {
-		ID                     string `json:"id"`
+		ID                     string `json:"authorizationId"`
 		AuthorizationURL       string `json:"authorizationUrl"`
 		BrowserBindingRequired bool   `json:"browserBindingRequired"`
 	}
 	if started.Code != http.StatusOK || json.NewDecoder(started.Body).Decode(&startResponse) != nil || startResponse.ID == "" || !startResponse.BrowserBindingRequired {
-		t.Fatalf("GitHub start response = %d %s", started.Code, started.Body)
+		t.Fatalf("OAuth start response = %d %s", started.Code, started.Body)
 	}
 	authorizationURL, err := url.Parse(startResponse.AuthorizationURL)
 	if err != nil || authorizationURL.Query().Get("state") == "" {
-		t.Fatalf("GitHub start authorization URL = %q", startResponse.AuthorizationURL)
+		t.Fatalf("OAuth start authorization URL = %q", startResponse.AuthorizationURL)
 	}
 	state := authorizationURL.Query().Get("state")
-	record, _, err := fixture.server.store.getConnection(context.Background(), startResponse.ID)
+	record, _, err := fixture.server.store.getOAuthRecord(context.Background(), "authorization", startResponse.ID)
 	if err != nil || record.Transaction == nil || record.Transaction.BrowserBindingHash != stateHash(firstBinding) {
-		t.Fatalf("GitHub start transaction did not retain only the binding hash: %#v, %v", record, err)
+		t.Fatalf("OAuth start transaction did not retain only the binding hash: %#v, %v", record, err)
 	}
-	fixture.server.providers = githubOAuthCallbackProvider(t, fixture.server.cfg)
+	fixture.server.providers = personalOAuthCallbackProvider(t, fixture.server.cfg)
 	callback := httptest.NewRequest(http.MethodGet, "/api/v1/connections/callback?state="+state+"&code=synthetic-code", nil)
 	setPortalCallbackHeaders(callback, firstBinding)
 	completed := httptest.NewRecorder()
 	fixture.server.Handler().ServeHTTP(completed, callback)
 	if completed.Code != http.StatusOK || !strings.Contains(completed.Body.String(), "Sign-in complete") {
-		t.Fatalf("GitHub bound callback = %d %s", completed.Code, completed.Body)
+		t.Fatalf("OAuth bound callback = %d %s", completed.Code, completed.Body)
 	}
 
+	completedRecord, _, err := fixture.server.store.getOAuthRecord(context.Background(), "authorization", startResponse.ID)
+	if err != nil || completedRecord.Transaction.ResultConnectionID == "" {
+		t.Fatal("missing authorization result")
+	}
+	connectionID := completedRecord.Transaction.ResultConnectionID
 	secondBinding := strings.Repeat("b", 43)
-	reconnect := httptest.NewRequest(http.MethodPost, "/v1/connections/"+startResponse.ID+"/reconnect", nil)
+	reconnect := httptest.NewRequest(http.MethodPost, "/v1/connections/"+connectionID+"/reconnect", nil)
 	setPortalRequestHeaders(reconnect, fixture.grant.Owner, secondBinding)
 	reconnected := httptest.NewRecorder()
 	fixture.server.Handler().ServeHTTP(reconnected, reconnect)
 	var reconnectResponse struct {
+		ID                     string `json:"authorizationId"`
 		AuthorizationURL       string `json:"authorizationUrl"`
 		BrowserBindingRequired bool   `json:"browserBindingRequired"`
 	}
 	if reconnected.Code != http.StatusOK || json.NewDecoder(reconnected.Body).Decode(&reconnectResponse) != nil || reconnectResponse.AuthorizationURL == "" || !reconnectResponse.BrowserBindingRequired {
-		t.Fatalf("GitHub reconnect response = %d %s", reconnected.Code, reconnected.Body)
+		t.Fatalf("OAuth reconnect response = %d %s", reconnected.Code, reconnected.Body)
 	}
-	record, _, err = fixture.server.store.getConnection(context.Background(), startResponse.ID)
+	record, _, err = fixture.server.store.getOAuthRecord(context.Background(), "authorization", reconnectResponse.ID)
 	if err != nil || record.Transaction == nil || record.Transaction.BrowserBindingHash != stateHash(secondBinding) {
-		t.Fatalf("GitHub reconnect transaction did not rotate the binding: %#v, %v", record, err)
+		t.Fatalf("OAuth reconnect transaction did not rotate the binding: %#v, %v", record, err)
 	}
 }
 
-func TestGitHubOAuthCallbackFailsClosedWithoutBoundPortalRequest(t *testing.T) {
+func TestPersonalOAuthCallbackFailsClosedWithoutBoundPortalRequest(t *testing.T) {
+	for _, provider := range []string{"github", "google"} {
+		t.Run(provider, func(t *testing.T) { testPersonalOAuthCallbackFailsClosedWithoutBoundPortalRequest(t, provider) })
+	}
+}
+
+func testPersonalOAuthCallbackFailsClosedWithoutBoundPortalRequest(t *testing.T, provider string) {
+	t.Helper()
 	tests := []struct {
 		name    string
 		proof   string
@@ -149,10 +172,14 @@ func TestGitHubOAuthCallbackFailsClosedWithoutBoundPortalRequest(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			fixture := newAuthorizationFixture(t, "github", "github_issues_list", Constraints{RepositoryIDs: []string{"42"}})
+			fixture := personalOAuthFixture(t, provider)
+			fixture.server.providers = &providerClient{client: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+				t.Fatal("unbound callback must not call the provider")
+				return nil, nil
+			})}}
 			fixture.server.cfg.PortalNamespace, fixture.server.cfg.PortalServiceAccount = "portal", "portal"
 			state, expectedProof := strings.Repeat("a", 43), strings.Repeat("b", 43)
-			record, version, err := fixture.server.store.getConnection(context.Background(), fixture.connection.Connection.ID)
+			record, _, err := fixture.server.store.getConnection(context.Background(), fixture.connection.Connection.ID)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -160,11 +187,9 @@ func TestGitHubOAuthCallbackFailsClosedWithoutBoundPortalRequest(t *testing.T) {
 			if test.legacy {
 				bindingHash = ""
 			}
-			record.Connection.Status = "connecting"
-			record.Transaction = &connectionTransaction{Provider: "github", StateHash: stateHash(state), BrowserBindingHash: bindingHash, CodeVerifier: strings.Repeat("d", 43), ExpiresAt: time.Now().Add(time.Hour)}
-			if err := fixture.server.store.putConnection(context.Background(), record, version); err != nil {
-				t.Fatal(err)
-			}
+
+			record.Transaction = &connectionTransaction{Provider: provider, StateHash: stateHash(state), BrowserBindingHash: bindingHash, CodeVerifier: strings.Repeat("d", 43), ExpiresAt: time.Now().Add(time.Hour)}
+			id := stageOAuthTransaction(t, fixture, record.Transaction)
 			callback := httptest.NewRequest(http.MethodGet, "/api/v1/connections/callback?state="+state+"&code=synthetic-code", nil)
 			if test.proof != "" {
 				callback.Header.Set(connectionBindingHeader, test.proof)
@@ -174,15 +199,15 @@ func TestGitHubOAuthCallbackFailsClosedWithoutBoundPortalRequest(t *testing.T) {
 			}
 			response := httptest.NewRecorder()
 			fixture.server.Handler().ServeHTTP(response, callback)
-			current, _, err := fixture.server.store.getConnection(context.Background(), fixture.connection.Connection.ID)
-			if err != nil || response.Code != http.StatusOK || strings.Contains(response.Body.String(), "Sign-in complete") || current.Transaction == nil || current.Transaction.Consumed || current.Connection.Status != "connecting" {
-				t.Fatalf("unbound GitHub callback was not rejected before consumption: status=%d body=%q record=%#v err=%v", response.Code, response.Body.String(), current, err)
+			current, _, err := fixture.server.store.getOAuthRecord(context.Background(), "authorization", id)
+			if err != nil || response.Code != http.StatusOK || strings.Contains(response.Body.String(), "Sign-in complete") || current.Transaction == nil || current.Transaction.Consumed {
+				t.Fatalf("unbound OAuth callback was not rejected before consumption: status=%d body=%q record=%#v err=%v", response.Code, response.Body.String(), current, err)
 			}
 		})
 	}
 }
 
-func githubOAuthCallbackProvider(t *testing.T, cfg Config) *providerClient {
+func personalOAuthCallbackProvider(t *testing.T, cfg Config) *providerClient {
 	t.Helper()
 	return &providerClient{cfg: cfg, client: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		switch request.URL.String() {
@@ -190,6 +215,10 @@ func githubOAuthCallbackProvider(t *testing.T, cfg Config) *providerClient {
 			return securityJSONResponse(t, http.StatusOK, map[string]any{"access_token": "synthetic-github-token", "scope": "repo"}), nil
 		case "https://api.github.com/user":
 			return securityJSONResponse(t, http.StatusOK, map[string]any{"id": 42, "login": "octocat"}), nil
+		case "https://oauth2.googleapis.com/token":
+			return securityJSONResponse(t, http.StatusOK, map[string]any{"access_token": "synthetic-google-token", "refresh_token": "synthetic-google-refresh", "expires_in": 3600, "scope": "https://www.googleapis.com/auth/gmail.readonly"}), nil
+		case "https://openidconnect.googleapis.com/v1/userinfo":
+			return securityJSONResponse(t, http.StatusOK, map[string]any{"sub": "google-account", "email": "person@example.com"}), nil
 		default:
 			t.Fatalf("unexpected request: %s", request.URL)
 			return nil, nil
@@ -239,13 +268,11 @@ func TestOnlyGitHubAllowsAnExplicitNonExpiringTokenResponse(t *testing.T) {
 	if scopes := githubScopes("repo, gist repo\nread:user"); len(scopes) != 3 || !contains(scopes, "repo") || !contains(scopes, "gist") || !contains(scopes, "read:user") {
 		t.Fatalf("GitHub scopes were not normalized: %#v", scopes)
 	}
-	if capabilities := capabilitiesForOAuth("github", githubScopes("gist, read:user")); len(capabilities) != 0 {
-		t.Fatalf("GitHub OAuth advertised repository tools without repo scope: %#v", capabilities)
-	}
+
 }
 
-func TestGitHubToolCredentialIsShortLivedAndBoundedByGrant(t *testing.T) {
-	fixture := newAuthorizationFixture(t, "github", "github_issues_list", Constraints{RepositoryIDs: []string{"42"}})
+func TestGitHubToolCredentialIsShortLivedAndBoundedByBinding(t *testing.T) {
+	fixture := newAuthorizationFixture(t, "github", "github")
 	now := time.Date(2026, 10, 16, 0, 0, 0, 0, time.UTC)
 	fixture.server.now = func() time.Time { return now }
 	record, version, err := fixture.server.store.getConnection(context.Background(), fixture.connection.Connection.ID)
@@ -257,17 +284,11 @@ func TestGitHubToolCredentialIsShortLivedAndBoundedByGrant(t *testing.T) {
 	if err := fixture.server.store.putConnection(context.Background(), record, version); err != nil {
 		t.Fatal(err)
 	}
-	grant := fixture.grant
-	grant.ExpiresAt = now.Add(2 * time.Minute)
-	token, expiresAt, err := fixture.server.issueToolCredential(context.Background(), record, grant, "github_issues_list", agentFromDocument(fixture.agent))
-	if err != nil || token != "synthetic-provider-token" || !expiresAt.Equal(grant.ExpiresAt) {
-		t.Fatalf("GitHub non-expiring issuance = %q, %s, %v", token, expiresAt, err)
+	token, expiresAt, err := fixture.server.issueServiceCredential(context.Background(), record, "github", agentFromDocument(fixture.agent))
+	if err != nil || token != "synthetic-provider-token" || !expiresAt.Equal(now.Add(5*time.Minute)) {
+		t.Fatalf("short-lived issuance = %s, %v", expiresAt, err)
 	}
-	grant.ExpiresAt = now.Add(20 * time.Minute)
-	_, expiresAt, err = fixture.server.issueToolCredential(context.Background(), record, grant, "github_issues_list", agentFromDocument(fixture.agent))
-	if err != nil || !expiresAt.Equal(now.Add(5*time.Minute)) {
-		t.Fatalf("GitHub internal credential lifetime = %s, %v", expiresAt, err)
-	}
+
 }
 
 func TestNonExpiringCredentialMarkerFailsClosedForInvalidShapes(t *testing.T) {
@@ -283,11 +304,11 @@ func TestNonExpiringCredentialMarkerFailsClosedForInvalidShapes(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			tool, constraints := "github_issues_list", Constraints{RepositoryIDs: []string{"42"}}
+			service := "github"
 			if test.provider == "google" {
-				tool, constraints = "mail_messages_get", Constraints{}
+				service = "google_gmail"
 			}
-			fixture := newAuthorizationFixture(t, test.provider, tool, constraints)
+			fixture := newAuthorizationFixture(t, test.provider, service)
 			record, version, err := fixture.server.store.getConnection(context.Background(), fixture.connection.Connection.ID)
 			if err != nil {
 				t.Fatal(err)
@@ -296,7 +317,7 @@ func TestNonExpiringCredentialMarkerFailsClosedForInvalidShapes(t *testing.T) {
 			if err := fixture.server.store.putConnection(context.Background(), record, version); err != nil {
 				t.Fatal(err)
 			}
-			if _, _, err := fixture.server.issueToolCredential(context.Background(), record, fixture.grant, tool, agentFromDocument(fixture.agent)); err == nil {
+			if _, _, err := fixture.server.issueServiceCredential(context.Background(), record, service, agentFromDocument(fixture.agent)); err == nil {
 				t.Fatal("invalid non-expiring credential shape issued a tool credential")
 			}
 		})
@@ -304,15 +325,12 @@ func TestNonExpiringCredentialMarkerFailsClosedForInvalidShapes(t *testing.T) {
 }
 
 func TestLegacyGitHubAgentModeFailsClosed(t *testing.T) {
-	fixture := newAuthorizationFixture(t, "github", "github_issues_list", Constraints{RepositoryIDs: []string{"42"}})
+	fixture := newAuthorizationFixture(t, "github", "github")
 	legacy := fixture.connection.Connection
 	legacy.Mode = modeAgent
 	legacy.Identity = &IdentityBinding{InstanceUID: fixture.agent.Metadata.UID}
 	if fixture.server.connectionMatchesAgent(legacy, agentFromDocument(fixture.agent)) {
 		t.Fatal("legacy GitHub independent identity remained usable")
-	}
-	if _, err := buildGrant(grantRequest{ConnectionID: legacy.ID, Tools: []string{"github_issues_list"}, Constraints: Constraints{RepositoryIDs: []string{"42"}}, ExpiresAt: time.Now().Add(time.Hour)}, legacy.Owner, fixture.agent.Metadata.UID, legacy, time.Now()); err == nil {
-		t.Fatal("legacy GitHub independent identity accepted a new grant")
 	}
 	record, version, err := fixture.server.store.getConnection(context.Background(), legacy.ID)
 	if err != nil {
@@ -322,8 +340,16 @@ func TestLegacyGitHubAgentModeFailsClosed(t *testing.T) {
 	if err := fixture.server.store.putConnection(context.Background(), record, version); err != nil {
 		t.Fatal(err)
 	}
-	input := toolRequest{CallerProof: "synthetic-workload-proof", Tool: "github_issues_list", ConnectionID: legacy.ID, Arguments: map[string]any{"repository_id": "42"}, GrantRevision: fixture.grant.Revision, ConnectionRevision: legacy.Revision, CatalogVersion: catalogVersion}
-	if _, _, _, _, err := fixture.server.checkToolAuthorization(context.Background(), input, true); err == nil {
-		t.Fatal("persisted legacy GitHub independent identity retained tool access")
+	if response := fixture.request(t, "/internal/v1/service-authorizations/check"); response.Code != http.StatusForbidden {
+		t.Fatalf("unsupported identity accepted: %d", response.Code)
 	}
+
+}
+
+func personalOAuthFixture(t *testing.T, provider string) *authorizationFixture {
+	t.Helper()
+	if provider == "google" {
+		return newAuthorizationFixture(t, provider, "google_gmail")
+	}
+	return newAuthorizationFixture(t, provider, "github")
 }

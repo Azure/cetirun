@@ -10,7 +10,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"errors"
-	"fmt"
+	"github.com/Azure/CetiRun/app/internal/agenttools"
 	"io"
 	"net/http"
 	"net/url"
@@ -19,100 +19,19 @@ import (
 	"time"
 )
 
-const CatalogVersion = "2026-10-16"
+const ContractVersion = agenttools.ContractVersion
 
 type Client struct {
 	baseURL *url.URL
 	http    *http.Client
 }
-
-type Request struct {
-	CallerProof        string         `json:"callerProof"`
-	Tool               string         `json:"tool"`
-	ConnectionID       string         `json:"connectionId"`
-	Arguments          map[string]any `json:"arguments"`
-	GrantRevision      *uint64        `json:"grantRevision,omitempty"`
-	ConnectionRevision *uint64        `json:"connectionRevision,omitempty"`
-	CatalogVersion     string         `json:"catalogVersion"`
-}
-
-type Connection struct {
-	Mode           string           `json:"mode,omitempty"`
-	Identity       *IdentityBinding `json:"identity,omitempty"`
-	ID             string           `json:"id"`
-	Provider       string           `json:"provider"`
-	AccountDisplay string           `json:"accountDisplay"`
-	Capabilities   []string         `json:"capabilities"`
-	Revision       uint64           `json:"revision"`
-	Status         string           `json:"status"`
-	CreatedAt      string           `json:"createdAt"`
-}
-
-// IdentityBinding is derived by the Broker from the immutable Agent resource.
-// It must never be supplied by the workload.
-type IdentityBinding struct {
-	InstanceUID string `json:"instanceUid"`
-	TenantID    string `json:"tenantId"`
-	PrincipalID string `json:"principalId"`
-	ClientID    string `json:"clientId"`
-}
-
-type Constraints struct {
-	SubscriptionIDs    []string `json:"subscriptionIds"`
-	ResourceGroupNames []string `json:"resourceGroupNames"`
-	RepositoryIDs      []string `json:"repositoryIds"`
-	BaseBranches       []string `json:"baseBranches"`
-	CalendarIDs        []string `json:"calendarIds"`
-	RecipientAddresses []string `json:"recipientAddresses"`
-	RecipientDomains   []string `json:"recipientDomains"`
-	AllowInvites       bool     `json:"allowInvites"`
-}
-
-type Grant struct {
-	Authorization *ResourceAuthorization `json:"authorization,omitempty"`
-	ID            string                 `json:"id"`
-	InstanceUID   string                 `json:"instanceUid"`
-	ConnectionID  string                 `json:"connectionId"`
-	Tools         []string               `json:"tools"`
-	Constraints   Constraints            `json:"constraints"`
-	ExpiresAt     string                 `json:"expiresAt"`
-	Revision      uint64                 `json:"revision"`
-}
-
-// ResourceAuthorization is provider-derived evidence for an independent
-// identity. A pending record is intentionally not effective authorization.
-type ResourceAuthorization struct {
-	State           string   `json:"state"`
-	Source          string   `json:"source"`
-	VerifiedAt      string   `json:"verifiedAt,omitempty"`
-	ValidUntil      string   `json:"validUntil,omitempty"`
-	Reason          string   `json:"reason,omitempty"`
-	Scopes          []string `json:"scopes,omitempty"`
-	Actions         []string `json:"actions,omitempty"`
-	RequestIDs      []string `json:"requestIds,omitempty"`
-	BindingRevision uint64   `json:"bindingRevision"`
-}
-
-type ListResponse struct {
-	InstanceUID    string       `json:"instanceUid"`
-	Connections    []Connection `json:"connections"`
-	Grants         []Grant      `json:"grants"`
-	Tools          []string     `json:"tools"`
-	CatalogVersion string       `json:"catalogVersion"`
-}
-
-type CheckResponse struct {
-	InstanceUID    string     `json:"instanceUid"`
-	Connection     Connection `json:"connection"`
-	Grant          Grant      `json:"grant"`
-	CatalogVersion string     `json:"catalogVersion"`
-}
-
-type IssueResponse struct {
-	CheckResponse
-	AccessToken string `json:"accessToken"`
-	ExpiresAt   string `json:"expiresAt"`
-}
+type Request = agenttools.Request
+type Connection = agenttools.Connection
+type Binding = agenttools.Binding
+type IdentityBinding = agenttools.IdentityBinding
+type ListResponse = agenttools.ListResponse
+type CheckResponse = agenttools.CheckResponse
+type IssueResponse = agenttools.IssueResponse
 
 type apiError struct {
 	Error struct {
@@ -161,21 +80,21 @@ func NewMutualTLS(baseURL *url.URL, caFile, certFile, keyFile string) (*Client, 
 
 func (c *Client) List(ctx context.Context, callerProof string) (ListResponse, error) {
 	var result ListResponse
-	err := c.call(ctx, "/internal/v1/tool-authorizations/list", Request{CallerProof: callerProof, Tool: "connections_status", Arguments: map[string]any{}, CatalogVersion: CatalogVersion}, &result)
+	err := c.call(ctx, "/internal/v1/service-authorizations/list", Request{CallerProof: callerProof, ContractVersion: ContractVersion}, &result)
 	return result, err
 }
 
 func (c *Client) Check(ctx context.Context, request Request) (CheckResponse, error) {
 	var result CheckResponse
-	request.CatalogVersion = CatalogVersion
-	err := c.call(ctx, "/internal/v1/tool-authorizations/check", request, &result)
+	request.ContractVersion = ContractVersion
+	err := c.call(ctx, "/internal/v1/service-authorizations/check", request, &result)
 	return result, err
 }
 
 func (c *Client) Issue(ctx context.Context, request Request) (IssueResponse, error) {
 	var result IssueResponse
-	request.CatalogVersion = CatalogVersion
-	err := c.call(ctx, "/internal/v1/tool-credentials/issue", request, &result)
+	request.ContractVersion = ContractVersion
+	err := c.call(ctx, "/internal/v1/service-credentials/issue", request, &result)
 	return result, err
 }
 
@@ -213,24 +132,13 @@ func (c *Client) call(ctx context.Context, path string, input any, output any) e
 }
 
 func safeCode(code string) string {
-	allowed := map[string]bool{"unauthenticated": true, "grant_required": true, "permission_denied": true, "interaction_required": true, "invalid_request": true, "authorization_changed": true, "throttled": true, "dependency_unavailable": true}
+	allowed := map[string]bool{"unauthenticated": true, "binding_required": true, "permission_denied": true, "interaction_required": true, "invalid_request": true, "authorization_changed": true, "throttled": true, "dependency_unavailable": true}
 	if allowed[code] {
 		return code
 	}
 	return "dependency_unavailable"
 }
 
-func NewRequest(callerProof, tool, connectionID string, arguments map[string]any, grantRevision, connectionRevision *uint64) Request {
-	return Request{CallerProof: strings.TrimSpace(callerProof), Tool: tool, ConnectionID: connectionID, Arguments: arguments, GrantRevision: grantRevision, ConnectionRevision: connectionRevision, CatalogVersion: CatalogVersion}
-}
-
-func (c Connection) ValidProvider() bool {
-	return c.Provider == "azure" || c.Provider == "microsoft" || c.Provider == "github" || c.Provider == "google"
-}
-
-func (r CheckResponse) ValidCatalog() error {
-	if r.CatalogVersion != CatalogVersion || !r.Connection.ValidProvider() || r.InstanceUID == "" || r.Grant.ID == "" {
-		return fmt.Errorf("invalid Broker authorization response")
-	}
-	return nil
+func NewRequest(proof, service, connectionID string, bindingRevision, connectionRevision *uint64) Request {
+	return Request{CallerProof: strings.TrimSpace(proof), Service: service, ConnectionID: connectionID, BindingRevision: bindingRevision, ConnectionRevision: connectionRevision, ContractVersion: ContractVersion}
 }

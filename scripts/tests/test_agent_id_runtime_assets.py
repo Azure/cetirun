@@ -5,6 +5,7 @@
 
 import hashlib
 import os
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -19,46 +20,15 @@ SYNC_SCRIPT = CHART / "configs" / "builtin-skill-sync.sh"
 
 
 class AgentIDRuntimeAssetTests(unittest.TestCase):
-    def test_azure_skill_has_typed_reads_opt_in_writes_and_auth_states(self):
-        content = SKILL.read_text(encoding="utf-8")
-        self.assertIn("name: azure-readonly", content)
-        for command in (
-            "connections_status",
-            "connections_start_link",
-            "azure_subscriptions_list",
-            "azure_resource_groups_list",
-            "azure_resources_search",
-            "azure_resource_show",
-            "azure_resource_groups_create",
-            "azure_resource_group_tags_update",
-        ):
-            with self.subTest(command=command):
-                self.assertIn(command, content)
-        for prohibited in (
-            "`az`",
-            "Azure PowerShell",
-            "direct ARM",
-            "raw KQL",
-            "access token",
-            "write, delete, deployment, policy",
-        ):
-            with self.subTest(prohibited=prohibited):
-                self.assertIn(prohibited, content)
-        for error_code in (
-            "grant_required",
-            "interaction_required",
-            "permission_denied",
-            "throttled",
-            "dependency_unavailable",
-            "invalid_request",
-        ):
-            with self.subTest(error_code=error_code):
-                self.assertIn(error_code, content)
-        self.assertIn("untrusted data", content)
-        self.assertIn("Read access never implies write permission", content)
-        self.assertIn("execution_unknown", content)
-        self.assertIn("`actionUrl`", content)
-        self.assertNotIn("cetirun-agent", content)
+    def test_service_skills_describe_generic_execution_and_outcomes(self):
+        for directory in (SKILL.parent, CHART / "skills" / "personal-services"):
+            content = (directory / "SKILL.md").read_text()
+            for tool in ("connections_status", "services_list", "service_request", "connections_start_link"):
+                self.assertIn(tool, content)
+            for rule in ("execution_unknown", "correlation", "relative", "untrusted data"):
+                self.assertIn(rule, content)
+            self.assertNotIn("azure_resource_groups_create", content)
+            self.assertEqual(self._manifest(directory)["content_sha256"], self._payload_checksum(directory))
 
     def test_both_runtime_images_package_the_same_skill(self):
         expected_destinations = {
@@ -77,11 +47,14 @@ class AgentIDRuntimeAssetTests(unittest.TestCase):
                     content,
                 )
         self.assertTrue((SKILL.parent / MANIFEST_NAME).is_file())
+        for runtime in ("openclaw", "hermes"):
+            content = (CHART / "agents" / runtime / "Dockerfile").read_text()
+            self.assertIn(f"skills/personal-services/ /home/vibe/.{runtime}/skills/personal-services/", content)
 
     def test_managed_manifest_matches_skill_payload(self):
         manifest = self._manifest(SKILL.parent)
         self.assertEqual(manifest["format"], "1")
-        self.assertEqual(manifest["skill"], "azure-readonly")
+        self.assertEqual(manifest["skill"], "azure-rest")
         self.assertTrue(manifest["version"].isdigit())
         self.assertEqual(manifest["content_sha256"], self._payload_checksum(SKILL.parent))
         self.assertNotIn("awk", SYNC_SCRIPT.read_text(encoding="utf-8"))
@@ -136,6 +109,33 @@ class AgentIDRuntimeAssetTests(unittest.TestCase):
                 self.assertEqual((installed / "SKILL.md").read_text(), "new managed payload\n")
                 self.assertEqual(self._manifest(installed)["version"], "2")
                 self.assertIn("Installed managed skill: azure", result.stdout)
+
+    def test_sync_installs_and_revalidates_actual_service_skills(self):
+        for runtime in ("openclaw", "hermes"):
+            with self.subTest(runtime=runtime), tempfile.TemporaryDirectory() as directory:
+                destination = Path(directory) / f".{runtime}" / "skills"
+                source = CHART / "skills"
+                for attempt in range(2):
+                    result = self._sync(source, destination)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertNotIn("WARNING", result.stderr)
+                    for name in ("azure", "personal-services"):
+                        installed = destination / name
+                        self.assertEqual(self._payload_checksum(installed), self._payload_checksum(source / name))
+                        self.assertEqual(self._manifest(installed), self._manifest(source / name))
+                        self.assertIn(("Installed managed skill: " if attempt == 0 else "Managed skill is current: ") + name, result.stdout)
+
+    def test_sync_preserves_payload_with_a_different_skill_identity(self):
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / "skills"
+            source = CHART / "skills"
+            shutil.copytree(source, destination)
+            manifest = destination / "personal-services" / MANIFEST_NAME
+            manifest.write_text(manifest.read_text().replace("skill=personal-services-rest", "skill=another-service"))
+            result = self._sync(source, destination)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("preserving customized managed skill personal-services", result.stderr)
+            self.assertEqual(self._manifest(destination / "personal-services")["skill"], "another-service")
 
     def test_sync_upgrades_an_unmodified_old_managed_skill_for_both_runtimes(self):
         for runtime in ("openclaw", "hermes"):

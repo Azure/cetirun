@@ -65,10 +65,6 @@ spec:
               value: {{ .Values.toolService.serviceAccount | quote }}
             - name: WORKLOAD_TOKEN_AUDIENCE
               value: agent-tools-mcp
-            - name: AZURE_OBO_PERMISSIONS
-              value: {{ join " " .Values.agentIdentity.armPermissions | quote }}
-            - name: MICROSOFT_OBO_PERMISSIONS
-              value: {{ join " " .Values.agentIdentity.graphPermissions | quote }}
             {{- if .Values.providers.github.credentialsSecretName }}
             - name: GITHUB_OAUTH_CLIENT_ID
               valueFrom:
@@ -97,8 +93,6 @@ spec:
               value: {{ .Values.agentIdentity.keyVaultKeyUrl | quote }}
             - name: AZURE_CLIENT_ID
               value: {{ .Values.agentIdentity.encryptionClientId | quote }}
-            - name: AGENT_RECORD_NAMESPACES
-              value: {{ .Values.agentRecordNamespaces | quote }}
             - name: AUTHORIZATION_STORE_NAMESPACE
               valueFrom:
                 fieldRef:

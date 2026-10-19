@@ -3,19 +3,17 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  createToolGrant,
+  createConnectionBinding,
   createToolIdentity,
-  deleteConnection,
-  deleteToolGrant,
+  deleteConnectionBinding,
   listConnections,
-  listToolGrants,
+  listConnectionBindings,
   reconnectConnection,
   startConnection,
-  updateToolGrant,
-  verifyToolGrant,
+  updateConnectionBinding,
   type ConnectionProvider,
   type ToolIdentityInput,
-  type ToolGrantInput,
+  type ConnectionBindingInput,
 } from "../api/toolAuthorization";
 
 export function useToolConnections(enabled: boolean) {
@@ -27,21 +25,21 @@ export function useToolConnections(enabled: boolean) {
     connections,
     start: useMutation({ mutationFn: (provider: ConnectionProvider) => startConnection(provider), onSuccess: refresh }),
     reconnect: useMutation({ mutationFn: reconnectConnection, onSuccess: refresh }),
-    remove: useMutation({ mutationFn: deleteConnection, onSuccess: refresh }),
   };
 }
 
-export function useToolGrants(name: string, enabled: boolean) {
+export function useConnectionBindings(name: string, enabled: boolean) {
   const queryClient = useQueryClient();
-  const queryKey = ["tool-grants", name] as const;
-  const grants = useQuery({ queryKey, queryFn: ({ signal }) => listToolGrants(name, signal), enabled });
-  const refresh = () => queryClient.invalidateQueries({ queryKey });
+  const queryKey = ["connection-bindings", name] as const;
+  const bindings = useQuery({ queryKey, queryFn: ({ signal }) => listConnectionBindings(name, signal), enabled });
+  const refresh = async () => {
+    await Promise.all([queryClient.invalidateQueries({ queryKey }), queryClient.invalidateQueries({ queryKey: ["connection-usage"] })]);
+  };
   return {
-    grants,
-    create: useMutation({ mutationFn: (input: ToolGrantInput) => createToolGrant(name, input), onSuccess: refresh }),
-    update: useMutation({ mutationFn: ({ id, input }: { id: string; input: ToolGrantInput & { revision: number } }) => updateToolGrant(name, id, input), onSuccess: refresh }),
-    remove: useMutation({ mutationFn: ({ id, revision }: { id: string; revision: number }) => deleteToolGrant(name, id, revision), onSuccess: refresh }),
-    verify: useMutation({ mutationFn: ({ id, revision }: { id: string; revision: number }) => verifyToolGrant(name, id, revision), onSuccess: refresh }),
+    bindings,
+    create: useMutation({ mutationFn: (input: ConnectionBindingInput) => createConnectionBinding(name, input), onSuccess: refresh }),
+    update: useMutation({ mutationFn: ({ id, input }: { id: string; input: ConnectionBindingInput & { revision: number } }) => updateConnectionBinding(name, id, input), onSuccess: refresh }),
+    remove: useMutation({ mutationFn: ({ id, revision }: { id: string; revision: number }) => deleteConnectionBinding(name, id, revision), onSuccess: refresh }),
   };
 }
 

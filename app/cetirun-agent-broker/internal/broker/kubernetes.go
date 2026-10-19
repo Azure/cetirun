@@ -162,7 +162,7 @@ func newKubeClient(cfg Config, wrapper keyWrapper) (*kubeClient, error) {
 	}
 	return &kubeClient{
 		baseURL:         "https://" + host + ":" + port,
-		agentNamespaces: cfg.AgentRecordNamespaces,
+		agentNamespaces: true,
 		namespace:       cfg.StoreNamespace,
 		tokenFile:       tokenFile,
 		client: &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{
@@ -456,8 +456,8 @@ func connectionAAD(connection Connection) []byte {
 	return []byte(fmt.Sprintf("agent-tools-connection-v1\x00%s\x00%s\x00%s\x00%s\x00%s\x00%d", connection.ID, connection.Owner.TenantID, connection.Owner.ObjectID, connection.Provider, connection.AccountID, connection.Revision))
 }
 
-func grantAAD(grant AgentGrant) []byte {
-	return []byte(fmt.Sprintf("agent-tools-grant-v1\x00%s\x00%s\x00%s\x00%s\x00%s\x00%d", grant.ID, grant.Owner.TenantID, grant.Owner.ObjectID, grant.InstanceUID, grant.ConnectionID, grant.Revision))
+func bindingAAD(grant ConnectionBinding) []byte {
+	return []byte(fmt.Sprintf("agent-tools-binding-v1\x00%s\x00%s\x00%s\x00%s\x00%s\x00%d", grant.ID, grant.Owner.TenantID, grant.Owner.ObjectID, grant.InstanceUID, grant.ConnectionID, grant.Revision))
 }
 
 func recordRevision(data map[string]string) uint64 {
@@ -512,12 +512,16 @@ func recordInstanceMetadata(labels map[string]string, name, namespace string) ma
 	return annotations
 }
 
-func (k *kubeClient) encodeConnection(ctx context.Context, record *connectionRecord) (map[string]string, error) {
+func (k *kubeClient) encodeConnection(ctx context.Context, record *connectionRecord, kinds ...string) (map[string]string, error) {
 	plain, err := json.Marshal(storedConnectionRecord{connectionRecord: record, OwnerTenantID: record.Connection.Owner.TenantID, OwnerObjectID: record.Connection.Owner.ObjectID, AccountID: record.Connection.AccountID, UpdatedAt: record.Connection.UpdatedAt})
 	if err != nil {
 		return nil, err
 	}
-	envelope, err := seal(ctx, k.wrapper, plain, connectionAAD(record.Connection))
+	aad := connectionAAD(record.Connection)
+	if len(kinds) == 1 {
+		aad = append([]byte(kinds[0]+"\x00"), aad...)
+	}
+	envelope, err := seal(ctx, k.wrapper, plain, aad)
 	if err != nil {
 		return nil, err
 	}
@@ -543,7 +547,12 @@ func (k *kubeClient) decodeConnection(ctx context.Context, secret secretDocument
 		return nil, errors.New("connection record encoding is invalid")
 	}
 	stub := Connection{ID: id, Owner: Owner{TenantID: ownerTenant, ObjectID: ownerObject}, Provider: provider, AccountID: secret.Metadata.Labels["agenttools.cetirun.microsoft.com/account-id"], Revision: revision}
-	plain, err := openEnvelope(ctx, k.wrapper, envelope, connectionAAD(stub))
+	aad := connectionAAD(stub)
+	kind := secret.Metadata.Labels[recordLabelPrefix+"record-type"]
+	if kind == "authorization" || kind == "account-index" {
+		aad = append([]byte(kind+"\x00"), aad...)
+	}
+	plain, err := openEnvelope(ctx, k.wrapper, envelope, aad)
 	if err != nil {
 		return nil, err
 	}
@@ -692,20 +701,20 @@ func (k *kubeClient) findConnectionByState(ctx context.Context, state string) (*
 	return records[0].record, records[0].version, nil
 }
 
-func (k *kubeClient) encodeGrant(ctx context.Context, record *grantRecord) (map[string]string, error) {
-	plain, err := json.Marshal(storedGrantRecord{grantRecord: record, OwnerTenantID: record.Grant.Owner.TenantID, OwnerObjectID: record.Grant.Owner.ObjectID, Revoked: record.Grant.Revoked, CreatedAt: record.Grant.CreatedAt, UpdatedAt: record.Grant.UpdatedAt})
+func (k *kubeClient) encodeBinding(ctx context.Context, record *bindingRecord) (map[string]string, error) {
+	plain, err := json.Marshal(storedBindingRecord{bindingRecord: record, OwnerTenantID: record.Binding.Owner.TenantID, OwnerObjectID: record.Binding.Owner.ObjectID, Revoked: record.Binding.Revoked, CreatedAt: record.Binding.CreatedAt, UpdatedAt: record.Binding.UpdatedAt})
 	if err != nil {
 		return nil, err
 	}
-	envelope, err := seal(ctx, k.wrapper, plain, grantAAD(record.Grant))
+	envelope, err := seal(ctx, k.wrapper, plain, bindingAAD(record.Binding))
 	if err != nil {
 		return nil, err
 	}
-	return map[string]string{"envelope.json": base64.StdEncoding.EncodeToString(envelope), "revision": base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf("%d", record.Grant.Revision)))}, nil
+	return map[string]string{"envelope.json": base64.StdEncoding.EncodeToString(envelope), "revision": base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf("%d", record.Binding.Revision)))}, nil
 }
 
-type storedGrantRecord struct {
-	*grantRecord
+type storedBindingRecord struct {
+	*bindingRecord
 	OwnerTenantID string    `json:"ownerTenantId"`
 	OwnerObjectID string    `json:"ownerObjectId"`
 	Revoked       bool      `json:"revoked"`
@@ -713,9 +722,9 @@ type storedGrantRecord struct {
 	UpdatedAt     time.Time `json:"updatedAt"`
 }
 
-func (k *kubeClient) decodeGrant(ctx context.Context, secret secretDocument) (*grantRecord, error) {
+func (k *kubeClient) decodeBinding(ctx context.Context, secret secretDocument) (*bindingRecord, error) {
 	id, ownerTenant, ownerObject, instanceUID, connectionID := secret.Metadata.Labels["agenttools.cetirun.microsoft.com/id"], secret.Metadata.Labels["agenttools.cetirun.microsoft.com/owner-tenant"], secret.Metadata.Labels["agenttools.cetirun.microsoft.com/owner-object"], secret.Metadata.Labels["agenttools.cetirun.microsoft.com/instance-uid"], secret.Metadata.Labels["agenttools.cetirun.microsoft.com/connection-id"]
-	stub := AgentGrant{ID: id, Owner: Owner{TenantID: ownerTenant, ObjectID: ownerObject}, InstanceUID: instanceUID, ConnectionID: connectionID, Revision: recordRevision(secret.Data)}
+	stub := ConnectionBinding{ID: id, Owner: Owner{TenantID: ownerTenant, ObjectID: ownerObject}, InstanceUID: instanceUID, ConnectionID: connectionID, Revision: recordRevision(secret.Data)}
 	if id == "" || ownerTenant == "" || ownerObject == "" || instanceUID == "" || connectionID == "" || stub.Revision == 0 {
 		return nil, errors.New("grant record metadata is invalid")
 	}
@@ -723,24 +732,24 @@ func (k *kubeClient) decodeGrant(ctx context.Context, secret secretDocument) (*g
 	if err != nil {
 		return nil, errors.New("grant record encoding is invalid")
 	}
-	plain, err := openEnvelope(ctx, k.wrapper, envelope, grantAAD(stub))
+	plain, err := openEnvelope(ctx, k.wrapper, envelope, bindingAAD(stub))
 	if err != nil {
 		return nil, err
 	}
-	stored := storedGrantRecord{grantRecord: &grantRecord{}}
+	stored := storedBindingRecord{bindingRecord: &bindingRecord{}}
 	if json.Unmarshal(plain, &stored) != nil {
 		return nil, errors.New("grant record is invalid")
 	}
-	record := stored.grantRecord
-	record.Grant.Owner = Owner{TenantID: stored.OwnerTenantID, ObjectID: stored.OwnerObjectID}
-	record.Grant.Revoked, record.Grant.CreatedAt, record.Grant.UpdatedAt = stored.Revoked, stored.CreatedAt, stored.UpdatedAt
-	if record.Grant.ID != id || record.Grant.Revision != stub.Revision || !sameOwner(record.Grant.Owner, stub.Owner) || record.Grant.InstanceUID != instanceUID || record.Grant.ConnectionID != connectionID {
+	record := stored.bindingRecord
+	record.Binding.Owner = Owner{TenantID: stored.OwnerTenantID, ObjectID: stored.OwnerObjectID}
+	record.Binding.Revoked, record.Binding.CreatedAt, record.Binding.UpdatedAt = stored.Revoked, stored.CreatedAt, stored.UpdatedAt
+	if record.Binding.ID != id || record.Binding.Revision != stub.Revision || !sameOwner(record.Binding.Owner, stub.Owner) || record.Binding.InstanceUID != instanceUID || record.Binding.ConnectionID != connectionID {
 		return nil, errors.New("grant record is invalid")
 	}
 	return record, nil
 }
 
-func (k *kubeClient) getGrant(ctx context.Context, id string, agents ...Agent) (*grantRecord, string, error) {
+func (k *kubeClient) getBinding(ctx context.Context, id string, agents ...Agent) (*bindingRecord, string, error) {
 	if k.agentNamespaces {
 		if len(agents) != 1 {
 			return nil, "", errors.New("Agent scope is required")
@@ -749,33 +758,33 @@ func (k *kubeClient) getGrant(ctx context.Context, id string, agents ...Agent) (
 		if err != nil {
 			return nil, "", err
 		}
-		return target.getGrant(ctx, id)
+		return target.getBinding(ctx, id)
 	}
-	secret, err := k.getToolSecret(ctx, "grant", id)
+	secret, err := k.getToolSecret(ctx, "binding", id)
 	if err != nil {
 		return nil, "", err
 	}
-	record, err := k.decodeGrant(ctx, secret)
+	record, err := k.decodeBinding(ctx, secret)
 	if err == nil {
-		err = k.validateGrantLocation(record)
+		err = k.validateBindingLocation(record)
 	}
 	return record, secret.Metadata.ResourceVersion, err
 }
 
-func (k *kubeClient) putGrant(ctx context.Context, record *grantRecord, resourceVersion string) error {
+func (k *kubeClient) putBinding(ctx context.Context, record *bindingRecord, resourceVersion string) error {
 	if k.agentNamespaces {
-		target, err := k.agentRecordStore(ctx, record.Grant.InstanceUID)
+		target, err := k.agentRecordStore(ctx, record.Binding.InstanceUID)
 		if err != nil {
 			return err
 		}
-		if target.recordAgent.Deleting && !record.Grant.Revoked {
+		if target.recordAgent.Deleting && !record.Binding.Revoked {
 			return errors.New("Agent is deleting")
 		}
-		if err := target.validateGrantLocation(record); err != nil {
+		if err := target.validateBindingLocation(record); err != nil {
 			return err
 		}
-		if !record.Grant.Revoked {
-			connection, _, err := k.getConnectionForAgent(ctx, *target.recordAgent, record.Grant.ConnectionID)
+		if !record.Binding.Revoked {
+			connection, _, err := k.getConnectionForAgent(ctx, *target.recordAgent, record.Binding.ConnectionID)
 			if err != nil {
 				return err
 			}
@@ -784,20 +793,20 @@ func (k *kubeClient) putGrant(ctx context.Context, record *grantRecord, resource
 			}
 		}
 		record.InstanceName, record.InstanceNamespace = target.recordAgent.Name, target.recordAgent.Namespace
-		return target.putGrant(ctx, record, resourceVersion)
+		return target.putBinding(ctx, record, resourceVersion)
 	}
-	if err := k.validateGrantLocation(record); err != nil {
+	if err := k.validateBindingLocation(record); err != nil {
 		return err
 	}
 	if k.recordAgent != nil && (k.recordAgent.Deleting || k.recordNamespaceDeleting) {
 		return errors.New("Agent is deleting")
 	}
 
-	data, err := k.encodeGrant(ctx, record)
+	data, err := k.encodeBinding(ctx, record)
 	if err != nil {
 		return err
 	}
-	grant := record.Grant
+	grant := record.Binding
 	labels := map[string]string{
 		"agenttools.cetirun.microsoft.com/id":            grant.ID,
 		"agenttools.cetirun.microsoft.com/owner-tenant":  grant.Owner.TenantID,
@@ -806,60 +815,60 @@ func (k *kubeClient) putGrant(ctx context.Context, record *grantRecord, resource
 		"agenttools.cetirun.microsoft.com/connection-id": grant.ConnectionID,
 	}
 	annotations := recordInstanceMetadata(labels, record.InstanceName, record.InstanceNamespace)
-	return k.putToolSecret(ctx, "grant", grant.ID, labels, annotations, data, resourceVersion)
+	return k.putToolSecret(ctx, "binding", grant.ID, labels, annotations, data, resourceVersion)
 }
 
-func (k *kubeClient) grantRecords(ctx context.Context, selector string) ([]struct {
-	record  *grantRecord
+func (k *kubeClient) bindingRecords(ctx context.Context, selector string) ([]struct {
+	record  *bindingRecord
 	version string
 }, error) {
-	list, err := k.listToolSecrets(ctx, "grant", selector)
+	list, err := k.listToolSecrets(ctx, "binding", selector)
 	if err != nil {
 		return nil, err
 	}
 	result := make([]struct {
-		record  *grantRecord
+		record  *bindingRecord
 		version string
 	}, 0, len(list.Items))
 	for _, secret := range list.Items {
-		if secret.Metadata.Labels["agenttools.cetirun.microsoft.com/record-type"] != "grant" {
+		if secret.Metadata.Labels["agenttools.cetirun.microsoft.com/record-type"] != "binding" {
 			continue
 		}
-		record, err := k.decodeGrant(ctx, secret)
+		record, err := k.decodeBinding(ctx, secret)
 		if err != nil {
 			return nil, err
 		}
-		if err := k.validateGrantLocation(record); err != nil {
+		if err := k.validateBindingLocation(record); err != nil {
 			return nil, err
 		}
 		result = append(result, struct {
-			record  *grantRecord
+			record  *bindingRecord
 			version string
 		}{record, secret.Metadata.ResourceVersion})
 	}
 	return result, nil
 }
 
-func (k *kubeClient) listGrants(ctx context.Context, owner Owner, instanceUID string) ([]AgentGrant, error) {
+func (k *kubeClient) listBindings(ctx context.Context, owner Owner, instanceUID string) ([]ConnectionBinding, error) {
 	if k.agentNamespaces {
 		target, err := k.agentRecordStore(ctx, instanceUID)
 		if err != nil {
 			return nil, err
 		}
-		return target.listGrants(ctx, owner, instanceUID)
+		return target.listBindings(ctx, owner, instanceUID)
 	}
 	selector := "agenttools.cetirun.microsoft.com/owner-tenant=" + owner.TenantID + ",agenttools.cetirun.microsoft.com/owner-object=" + owner.ObjectID
 	if instanceUID != "" {
 		selector += ",agenttools.cetirun.microsoft.com/instance-uid=" + instanceUID
 	}
-	records, err := k.grantRecords(ctx, selector)
+	records, err := k.bindingRecords(ctx, selector)
 	if err != nil {
 		return nil, err
 	}
-	grants := make([]AgentGrant, 0, len(records))
+	grants := make([]ConnectionBinding, 0, len(records))
 	for _, item := range records {
-		if sameOwner(item.record.Grant.Owner, owner) {
-			grants = append(grants, item.record.Grant)
+		if sameOwner(item.record.Binding.Owner, owner) {
+			grants = append(grants, item.record.Binding)
 		}
 	}
 	sort.Slice(grants, func(i, j int) bool { return grants[i].CreatedAt.Before(grants[j].CreatedAt) })
@@ -870,29 +879,6 @@ func sameOwner(left, right Owner) bool {
 	return sameIdentityID(left.TenantID, right.TenantID) && sameIdentityID(left.ObjectID, right.ObjectID)
 }
 
-func activeGrant(grant AgentGrant, now time.Time) bool {
-	return !grant.Revoked && now.Before(grant.ExpiresAt)
-}
-
-func (k *kubeClient) revokeGrantsForInstance(ctx context.Context, instanceUID string) error {
-	records, err := k.grantRecords(ctx, "agenttools.cetirun.microsoft.com/instance-uid="+instanceUID)
-	if err != nil {
-		return err
-	}
-	for _, item := range records {
-		if item.record.Grant.Revoked {
-			continue
-		}
-		updated := item.record
-		updated.Grant.Revoked = true
-		updated.Grant.Revision++
-		updated.Grant.UpdatedAt = time.Now().UTC()
-		if err := k.putGrant(ctx, updated, item.version); err != nil {
-			if errors.Is(err, errConflict) {
-				return errConflict
-			}
-			return err
-		}
-	}
-	return nil
+func activeBinding(grant ConnectionBinding, now time.Time) bool {
+	return !grant.Revoked && grant.Enabled
 }

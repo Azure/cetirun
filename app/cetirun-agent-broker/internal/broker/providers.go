@@ -14,6 +14,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/Azure/CetiRun/app/internal/agenttools"
 )
 
 type providerClient struct {
@@ -25,55 +27,17 @@ func newProviderClient(cfg Config) *providerClient {
 	return &providerClient{cfg: cfg, client: &http.Client{Timeout: cfg.RequestTimeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
 }
 
-func providerTools(provider string) []string {
-	switch provider {
-	case "azure":
-		return []string{"azure_subscriptions_list", "azure_resource_groups_list", "azure_resources_search", "azure_resource_show"}
-	case "microsoft":
-		return []string{"mail_messages_search", "mail_messages_get", "mail_send", "calendar_events_list", "calendar_events_create"}
-	case "github":
-		return []string{"github_repositories_get", "github_contents_get", "github_issues_list", "github_pull_requests_list", "github_issues_create", "github_comments_create", "github_pull_requests_create"}
-	case "google":
-		return []string{"mail_messages_search", "mail_messages_get", "mail_send", "calendar_events_list", "calendar_events_create"}
-	default:
-		return nil
-	}
-}
-
-// connectionCapabilities projects the fixed catalog for independent Azure
-// identities. It deliberately does not persist a catalog migration: existing
-// grants retain their selected tools, while an existing Agent connection can
-// discover newly introduced tools and request a separate grant for them.
-func connectionCapabilities(connection Connection) []string {
-	if connectionMode(connection) == modeAgent && connection.Provider == "azure" {
-		return []string{
-			"azure_subscriptions_list",
-			"azure_resource_groups_list",
-			"azure_resources_search",
-			"azure_resource_show",
-			"azure_resource_groups_create",
-			"azure_resource_group_tags_update",
-		}
-	}
-	return connection.Capabilities
+func connectionServices(connection Connection) []string {
+	return agenttools.ProviderServices(connection.Provider)
 }
 
 func projectedConnection(connection Connection) Connection {
-	connection.Capabilities = connectionCapabilities(connection)
+	connection.Mode = connectionMode(connection)
+	connection.Services = connectionServices(connection)
+	if connection.Scopes == nil {
+		connection.Scopes = []string{}
+	}
 	return connection
-}
-
-func providerForTool(tool string) string {
-	if strings.HasPrefix(tool, "azure_") {
-		return "azure"
-	}
-	if strings.HasPrefix(tool, "github_") {
-		return "github"
-	}
-	if strings.HasPrefix(tool, "mail_") || strings.HasPrefix(tool, "calendar_") {
-		return "messaging"
-	}
-	return ""
 }
 
 func (p *providerClient) authorizationURL(provider, state, verifier, nonce string) (string, error) {
@@ -88,8 +52,8 @@ func (p *providerClient) authorizationURL(provider, state, verifier, nonce strin
 		values.Set("client_id", p.cfg.GitHubOAuthClientID)
 		values.Set("redirect_uri", p.cfg.RedirectURI)
 		// The repo scope is intentionally coarse because GitHub OAuth Apps cannot
-		// express CetiRun's repository- and tool-level grants. CetiRun applies
-		// those restrictions before each tool credential is issued.
+		// select individual repository permissions. GitHub enforces the account's
+		// actual permissions when executing each API request.
 		values.Set("scope", "repo")
 		return "https://github.com/login/oauth/authorize?" + values.Encode(), nil
 	case "google":
@@ -100,6 +64,9 @@ func (p *providerClient) authorizationURL(provider, state, verifier, nonce strin
 		values.Set("redirect_uri", p.cfg.RedirectURI)
 		values.Set("response_type", "code")
 		values.Set("access_type", "offline")
+		// A new connection or reconnect must receive its own refresh token;
+		// Google may omit it when reusing previously granted consent.
+		values.Set("prompt", "consent")
 		values.Set("include_granted_scopes", "false")
 		values.Set("scope", "openid email https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/calendar")
 		return "https://accounts.google.com/o/oauth2/v2/auth?" + values.Encode(), nil
@@ -130,11 +97,14 @@ func (p *providerClient) exchangeCode(ctx context.Context, provider, code, verif
 	if err != nil {
 		return providerCredential{}, "", "", err
 	}
+	if provider == "google" && credential.RefreshToken == "" {
+		return providerCredential{}, "", "", errors.New("Google offline access was not granted")
+	}
 	accountID, display, err := p.account(ctx, provider, credential.AccessToken)
 	if err != nil {
 		return providerCredential{}, "", "", err
 	}
-	credential.Scopes = capabilitiesForOAuth(provider, credential.Scopes)
+
 	return credential, display, accountID, nil
 }
 
@@ -147,7 +117,7 @@ func (p *providerClient) refresh(ctx context.Context, provider string, current p
 		return providerCredential{}, errors.New("provider credential does not support refresh")
 	}
 	if current.RefreshToken == "" {
-		return providerCredential{}, errors.New("provider refresh token is unavailable")
+		return providerCredential{}, newOAuthTokenError(oauthTokenInvalidGrant)
 	}
 	if provider == "azure" || provider == "microsoft" {
 		tokens, err := newOAuthClient(p.cfg).refresh(ctx, current.RefreshToken)
@@ -158,7 +128,9 @@ func (p *providerClient) refresh(ctx context.Context, provider string, current p
 		if next.RefreshToken == "" {
 			next.RefreshToken = current.RefreshToken
 		}
-		next.Scopes = current.Scopes
+		if len(next.Scopes) == 0 {
+			next.Scopes = current.Scopes
+		}
 		return next, nil
 	}
 	values := url.Values{"grant_type": {"refresh_token"}, "refresh_token": {current.RefreshToken}}
@@ -182,7 +154,9 @@ func (p *providerClient) refresh(ctx context.Context, provider string, current p
 	if next.RefreshToken == "" {
 		next.RefreshToken = current.RefreshToken
 	}
-	next.Scopes = current.Scopes
+	if len(next.Scopes) == 0 {
+		next.Scopes = current.Scopes
+	}
 	return next, nil
 }
 
@@ -199,6 +173,13 @@ func (p *providerClient) tokenRequest(ctx context.Context, provider, endpoint st
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
+		var failure struct {
+			Error string `json:"error"`
+		}
+		_ = json.NewDecoder(io.LimitReader(response.Body, 64<<10)).Decode(&failure)
+		if (response.StatusCode == 400 || response.StatusCode == 401) && failure.Error == "invalid_grant" {
+			return providerCredential{}, newOAuthTokenError(oauthTokenInvalidGrant)
+		}
 		return providerCredential{}, errors.New("provider token endpoint rejected the request")
 	}
 	var payload struct {
@@ -274,83 +255,7 @@ func (p *providerClient) account(ctx context.Context, provider, token string) (s
 	return sub, email, nil
 }
 
-func capabilitiesForOAuth(provider string, scopes []string) []string {
-	if provider == "github" {
-		for _, scope := range scopes {
-			if scope == "repo" || scope == "public_repo" {
-				return providerTools(provider)
-			}
-		}
-		return nil
-	}
-	capabilities := []string{}
-	if contains(scopes, "https://www.googleapis.com/auth/gmail.readonly") {
-		capabilities = append(capabilities, "mail_messages_search", "mail_messages_get")
-	}
-	if contains(scopes, "https://www.googleapis.com/auth/gmail.send") {
-		capabilities = append(capabilities, "mail_send")
-	}
-	if contains(scopes, "https://www.googleapis.com/auth/calendar") || contains(scopes, "https://www.googleapis.com/auth/calendar.events") {
-		capabilities = append(capabilities, "calendar_events_list", "calendar_events_create")
-	}
-	return capabilities
-}
-
 func githubScopes(raw string) []string {
 	parts := strings.FieldsFunc(raw, func(r rune) bool { return r == ',' || r == ' ' || r == '\t' || r == '\n' || r == '\r' })
 	return uniqueStrings(parts)
-}
-
-func microsoftCapabilities(accessToken, provider string) []string {
-	claims := map[string]any{}
-	parts := strings.Split(accessToken, ".")
-	if len(parts) != 3 || decodePart(parts[1], &claims) != nil {
-		return nil
-	}
-	return microsoftPermissionCapabilities(strings.Fields(stringClaim(claims, "scp")), provider)
-}
-
-func microsoftPermissionCapabilities(permissions []string, provider string) []string {
-	scopes := strings.Join(permissions, " ")
-	if provider == "azure" {
-		if scopeContains(scopes, "user_impersonation") || scopeContains(scopes, "https://management.azure.com/user_impersonation") {
-			return providerTools("azure")
-		}
-		return nil
-	}
-	if provider != "microsoft" {
-		return nil
-	}
-	capabilities := []string{}
-	if scopeContains(scopes, "Mail.Read") || scopeContains(scopes, "Mail.ReadWrite") {
-		capabilities = append(capabilities, "mail_messages_search", "mail_messages_get")
-	}
-	if scopeContains(scopes, "Mail.Send") {
-		capabilities = append(capabilities, "mail_send")
-	}
-	if scopeContains(scopes, "Calendars.Read") || scopeContains(scopes, "Calendars.ReadWrite") {
-		capabilities = append(capabilities, "calendar_events_list")
-	}
-	if scopeContains(scopes, "Calendars.ReadWrite") {
-		capabilities = append(capabilities, "calendar_events_create")
-	}
-	return capabilities
-}
-
-func configuredOBOCapabilities(cfg Config, provider string) []string {
-	if provider == "azure" {
-		return microsoftPermissionCapabilities(cfg.AzureOBOPermissions, provider)
-	}
-	if provider == "microsoft" {
-		return microsoftPermissionCapabilities(cfg.MicrosoftOBOPermissions, provider)
-	}
-	return nil
-}
-
-func microsoftTokenAllowsTool(accessToken, tool string) bool {
-	provider := "microsoft"
-	if providerForTool(tool) == "azure" {
-		provider = "azure"
-	}
-	return contains(microsoftCapabilities(accessToken, provider), tool)
 }

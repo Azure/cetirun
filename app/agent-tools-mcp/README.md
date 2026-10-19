@@ -1,112 +1,108 @@
 # Agent Tools MCP
 
-`agent-tools-mcp` is the standalone, stateless Streamable HTTP MCP
-server for CetiRun's fixed Azure, GitHub, Microsoft, and Google tools. It
-accepts only Kubernetes Pod-bound workload tokens at `POST /mcp`, validates the
-current Pod, ServiceAccount, and Agent binding, and asks the Agent Broker to
-recheck each tool authorization and issue a per-call, in-memory provider token.
+A stateless Streamable HTTP MCP service for JSON REST access through trusted
+Agent connections. Provider RBAC and OAuth permissions determine resource
+access. CetiRun checks which Agent can use a connection and its services; it
+does not maintain a second per-operation or per-resource permission catalog.
 
-The server does not read Broker credential Secrets, store provider credentials,
-or expose a credential endpoint to Agent workloads. It has no cross-call access
-token or authorization cache. Provider endpoints are fixed in code; redirects
-and arbitrary provider URLs are rejected.
+## Tools and request contract
 
-## Runtime contract
+- `connections_status`: this Agent's enabled bindings, accounts, identity mode,
+  services, actual reported OAuth scopes and connection status; no credentials.
+- `connections_start_link`: the configured Portal URL for connection management.
+- `services_list`: bound services, their fixed origins and base paths.
+- `service_request`: execute one JSON REST request.
 
-- MCP protocol: `2025-11-25`, Streamable HTTP, `initialize`, `tools/list`, and
-  `tools/call` at HTTPS `/mcp`; no authorization session state is retained.
-- Agent clients read their projected token from
-  `/var/run/cetirun/tools/token` and send it as `Authorization: Bearer ...`.
-  The service never reads that Agent file; it forwards the received proof only
-  to the Broker internal APIs for independent TokenReview verification.
-- `AGENT_BROKER_BASE_URL` is required and must be an HTTPS origin.
-  `WORKLOAD_TOKEN_AUDIENCE` defaults to `agent-tools-mcp`.
-- The server itself uses a separate projected Kubernetes API token at
-  `/var/run/cetirun/kubernetes/token`. `TLS_CERT_FILE` and `TLS_KEY_FILE` are
-  required for the HTTPS listener, defaulted by the chart to mounted secret
-  files.
+Example arguments:
 
-## Fixed tool argument schemas
+```json
+{
+  "connection_id": "example-connection",
+  "service": "azure_arm",
+  "method": "POST",
+  "path": "/providers/Microsoft.ResourceGraph/resources",
+  "query": {"api-version": "2022-10-01"},
+  "body": {"query": "Resources | project id, name | take 10"}
+}
+```
 
-All tool inputs are JSON objects with `additionalProperties: false`; every
-write additionally requires `operation_id` (`8..128` characters matching
-`[A-Za-z0-9][A-Za-z0-9._-]*`). Strings and arrays have bounded lengths.
+All paths start with `/` and are relative to the service's base path. Query
+values are strings or arrays of strings. Headers are optional and restricted
+to `If-Match`, `If-None-Match`, `Prefer`, `ConsistencyLevel`, and
+`X-GitHub-Api-Version`. `body` is an optional JSON value, limited to 256 KiB;
+GET and HEAD bodies are rejected. Methods are GET, HEAD, POST, PUT, PATCH,
+DELETE and OPTIONS. HTTP method is not a permission classification.
 
-| Tools | Required keys | Optional keys |
+| Service | Origin | Base path |
 | --- | --- | --- |
-| `connections_status`, `connections_start_link` | none | none |
-| `azure_subscriptions_list` | `connection_id` | none |
-| `azure_resource_groups_list` | `connection_id`, `subscription_id` | none |
-| `azure_resources_search` | `connection_id`, `subscription_id` | `resource_type`, `name_prefix` |
-| `azure_resource_show` | `connection_id`, `resource_id` | none |
-| `azure_resource_groups_create` | `connection_id`, `subscription_id`, `resource_group_name`, `location`, `operation_id` | none |
-| `azure_resource_group_tags_update` | `connection_id`, `subscription_id`, `resource_group_name`, `tags`, `operation_id` | none |
-| `github_repositories_get` | `connection_id`, `repository_id` | none |
-| `github_contents_get` | `connection_id`, `repository_id`, `path` | `ref` |
-| `github_issues_list`, `github_pull_requests_list` | `connection_id`, `repository_id` | `state` |
-| `github_issues_create` | `connection_id`, `repository_id`, `title`, `operation_id` | `body` |
-| `github_comments_create` | `connection_id`, `repository_id`, `issue_number`, `body`, `operation_id` | none |
-| `github_pull_requests_create` | `connection_id`, `repository_id`, `title`, `head`, `base_branch`, `operation_id` | `body` |
-| `mail_messages_search` | `connection_id` | `subject`, `from`, `start`, `end` |
-| `mail_messages_get` | `connection_id`, `message_id` | none |
-| `mail_send` | `connection_id`, `to`, `subject`, `body`, `operation_id` | `cc`, `bcc` |
-| `calendar_events_list` | `connection_id`, `calendar_id`, `start`, `end` | none |
-| `calendar_events_create` | `connection_id`, `calendar_id`, `start`, `end`, `subject`, `operation_id` | `body`, `attendees` |
+| `azure_arm` | `https://management.azure.com` | `/` |
+| `github` | `https://api.github.com` | `/` |
+| `microsoft_graph` | `https://graph.microsoft.com` | `/v1.0/` |
+| `google_gmail` | `https://gmail.googleapis.com` | `/gmail/v1/` |
+| `google_calendar` | `https://www.googleapis.com` | `/calendar/v3/` |
 
-`repository_id` is a numeric stable GitHub ID; calendar and connection IDs are
-opaque bounded strings. `start` and `end` require RFC3339 offsets. `to`, `cc`,
-`bcc`, and `attendees` are arrays of 1..50 plain email addresses.
+The shared `app/internal/agenttools` package fixes services, providers and token
+audiences. A new JSON API route under an existing service requires no MCP tool,
+Broker permission catalog or Portal operation editor. Runtime skills describe
+API versions, bodies, pagination and polling. Skills do not confer authority.
+Binary transfer, streaming and multipart requests are outside v1.
 
-## Write records and deployment
+Results contain `status` (provider HTTP status), `body`, filtered `headers`,
+`request_ids`, and a CetiRun `correlation_id`. Provider 401/403 errors remain
+provider results; platform identity or binding failures are separate tool
+errors. External data is untrusted. Pagination fields are preserved.
 
-Azure writes require independent Agent identity, an explicitly selected write
-tool, `subscriptionIds`, and `resourceGroupNames` in the grant. Resource-group
-names are exact, case-insensitive allowlist entries; wildcards are rejected.
-The Broker verifies direct subscription RBAC for `*/read` and the selected
-write actions. Reader alone cannot verify a write grant. Tags use ARM's Merge
-operation and preserve unrelated tags. Creation rejects an existing group
-before PUT, but a concurrent external creation can still turn that PUT into
-an update; this is not an atomic create-only guarantee. Delegated Azure
-connections remain read-only.
+## Execution guarantees
 
-Before a write is sent, the service CAS-creates a record in the dedicated
-operation-record namespace. The key binds instance UID, connection, tool, and
-operation ID, so changing a grant does not resend a write. Only a parameter
-digest and safe result/status are stored. Results are replayable for seven
-days; expired records become compact terminal tombstones when accessed. An
-interrupted or uncertain write returns `execution_unknown` and is never retried
-automatically. Tombstones are not automatically garbage-collected in this
-version: deleting them removes duplicate-prevention history and must be a
-separately authorized operator retention decision.
+The Agent cannot choose an origin, token audience, OAuth scopes or authentication
+header. Encoded traversal, scheme-relative/absolute URLs, redirects, proxy
+headers, cookies and authentication overrides are rejected. The production
+transport validates public DNS answers, dials a checked IP without another
+lookup, verifies TLS, disables proxies, HTTP/2 and connection reuse, and does
+not automatically retry any request. This includes POST queries.
 
-The Helm chart requires an existing TLS Secret, Istio sidecar injection and
-STRICT mTLS policy, a dedicated ServiceAccount, and an isolated operation
-record namespace. RBAC grants TokenReview plus only the Pod, ServiceAccount,
-Agent binding reads and operation-record Secret operations. It deliberately
-does not mount provider credentials or a credential Secret.
+Each request is bounded by a 20-second provider timeout, 256 KiB response body
+and 32 KiB response headers. The whole MCP call has a 30-second deadline.
+Pagination and async polling are separate calls, subject to the same checks.
+Convert a provider next link to the discovered service's relative path/query
+only after checking its origin and base path; never pass an absolute URL.
 
-## Broker service identity
+`execution_unknown` means an effect may already have occurred, including when
+reading a response failed or exceeded the limit. Inspect provider state before
+considering another call. There is no operation ledger or exactly-once promise;
+a correlation ID is not an idempotency key. Provider-specific conditional
+requests may be used where documented.
 
-The HTTPS Broker connection uses a mounted client TLS identity, not an API key.
-Set `broker.clientTLSSecretName` to a Secret containing `tls.crt`, `tls.key`,
-and `ca.crt`. The certificate URI SAN must identify this service's dedicated
-ServiceAccount, and the Broker independently verifies it. Istio remains an
-additional network/service boundary; encrypted HTTPS is not assumed to carry
-proxy-injected identity headers.
+Audit records identify the real Agent, connection/binding revisions, executor
+account or principal, service, correlation, platform rejection or provider
+status and request IDs. Credentials, request paths/query/body and response
+bodies are not logged by default. Injected bearer credentials are never returned
+to Agents, even if a provider echoes one in JSON.
 
-## Local checks
+## Runtime and trust boundaries
+
+MCP protocol `2025-11-25` runs over HTTPS `/mcp`. Native clients send the rotating
+Pod-bound proof from `/var/run/cetirun/tools/token` with audience
+`agent-tools-mcp`. MCP verifies live Pod/ServiceAccount/Agent state; the Broker
+independently repeats verification. Broker list/check/issue use direct mTLS.
+Check and issuance must agree on connection and binding revisions. No cross-call
+authorization or provider-token cache is maintained by MCP.
+
+Set `AGENT_BROKER_BASE_URL` to an HTTPS origin. The chart mounts the MCP server
+TLS Secret and `broker.clientTLSSecretName` containing `tls.crt`, `tls.key`,
+`ca.crt`. The client certificate has the dedicated ServiceAccount's exact
+SPIFFE URI SAN. Istio is an additional network boundary. Kubernetes RBAC allows
+TokenReview and Pod/ServiceAccount/Agent reads only; MCP has no Secret API access
+and no operation-record namespace.
+
+## Offline checks
 
 ```bash
 go test ./... -count=1
+go test -race ./...
 go vet ./...
 make chart-lint
 ```
 
-These are offline checks. They do not authenticate to Kubernetes, the Broker,
-Azure, Microsoft Graph, GitHub, Google, or a live MCP runtime.
-
-GitHub tools use personal OAuth connections (`mode=delegated`). GitHub identifies
-the connected user as the actor. CetiRun enforces each instance grant and logs
-the Agent UID, connection ID, grant revision and provider request IDs; it does
-not accept GitHub App installation identities or distribute provider tokens to
-Agent workloads.
+These checks use synthetic providers and Kubernetes fixtures. They do not
+qualify live Azure, GitHub, Google, Microsoft Graph or native Agent behavior.
