@@ -22,7 +22,11 @@ type CreateOptionsResponse struct {
 	AIGatewayEnabled  bool                     `json:"aiGatewayEnabled"`
 	Gateway           AIGatewayCatalogResponse `json:"gateway"`
 	AgentIdentity     CreateIdentityOptions    `json:"agentIdentity"`
-	Blocked           *ErrorDetail             `json:"blocked,omitempty"`
+	// ModelRouters are the names of the Team's smart-routing models the
+	// selected Team's Policy allows. Whether an Agent can use one also
+	// depends on its model sources; the operator decides and reports it.
+	ModelRouters []string     `json:"modelRouters"`
+	Blocked      *ErrorDetail `json:"blocked,omitempty"`
 }
 
 type CreateIdentityOptions struct {
@@ -62,6 +66,7 @@ func (h *InstanceHandler) resolveCreationOptions(r *http.Request, requestedTeam 
 		AIGatewayEnabled: h.Config.AIGatewayEnabled,
 		Gateway:          AIGatewayCatalogResponse{SharedModels: []api.AIGatewayCatalogModel{}, AgentTypes: []api.AgentType{}},
 		AgentIdentity:    CreateIdentityOptions{Allowed: h.Config.AgentIdentityEnabled && claims.TenantID != "" && claims.ObjectID != ""},
+		ModelRouters:     []string{},
 	}, sandboxRef: sandboxRef}
 	for _, kind := range []api.AgentType{api.AgentTypeHermes, api.AgentTypeOpenClaw, api.AgentTypeCustom} {
 		if h.Config.AgentTypeAllowed(string(kind)) {
@@ -70,6 +75,7 @@ func (h *InstanceHandler) resolveCreationOptions(r *http.Request, requestedTeam 
 	}
 	if h.Config.AIGatewayEnabled {
 		options.Gateway = h.sharedModelCatalog(r.Context())
+		options.ModelRouters = teamModelRouterNames(team, nil)
 	}
 	block := func(code, message string) (*creationOptions, error) {
 		options.Blocked = &ErrorDetail{Code: code, Message: message}
@@ -100,6 +106,9 @@ func (h *InstanceHandler) resolveCreationOptions(r *http.Request, requestedTeam 
 			return !slices.Contains(policy.Spec.ModelAccess.SharedModels.Allowed, model.Name)
 		})
 		options.Gateway.GitHubCopilot = options.Gateway.GitHubCopilot && policy.Spec.ModelAccess.Copilot.Allowed
+		if h.Config.AIGatewayEnabled {
+			options.ModelRouters = teamModelRouterNames(team, policy)
+		}
 		identity := policy.Spec.AgentIdentity
 		options.AgentIdentity.Required = identity.Required
 		options.AgentIdentity.Allowed = options.AgentIdentity.Allowed && identity.Allowed && policy.Spec.EntraID.Enabled && slices.Contains(identity.CredentialServices, "azure-resource-manager")

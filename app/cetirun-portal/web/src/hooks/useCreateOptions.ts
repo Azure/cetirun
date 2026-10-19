@@ -13,6 +13,8 @@ export interface CreateOptions {
   aiGatewayEnabled: boolean;
   gateway: AIGatewayCatalog;
   agentIdentity: { allowed: boolean; required: boolean };
+  /** The Team's smart-routing models the Team's Policy allows, by name. */
+  modelRouters?: string[];
   blocked?: { code: string; message: string };
 }
 

@@ -155,6 +155,16 @@ export function AIGatewayBlock({ instance }: { instance: Instance }) {
         <Text size={200} style={{ color: tokens.colorNeutralForeground3 }}>{emptyHint}</Text>
       )}
 
+      {(gateway.modelRouters ?? []).some((router) => !router.granted) && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 2 }} aria-label="Unavailable smart-routing models">
+          {(gateway.modelRouters ?? []).filter((router) => !router.granted).map((router) => (
+            <Text key={router.name} size={200} style={{ color: tokens.colorNeutralForeground3 }}>
+              Smart-routing model {router.name} is not available to this agent{router.reason ? `: ${router.reason}` : "."}
+            </Text>
+          ))}
+        </div>
+      )}
+
       {custom && (
         <Text size={200}>Choose a model in Chat from the models this Agent exposes.</Text>
       )}

@@ -82,6 +82,8 @@ export interface AIGatewayInfo {
     /** Account models left out because the Gateway has no price for them. */
     unpriced?: string[];
   };
+  /** The Team's smart-routing models for this Agent: usable or why not. */
+  modelRouters?: { name: string; granted: boolean; reason?: string }[];
 }
 
 export interface ModelAccess {

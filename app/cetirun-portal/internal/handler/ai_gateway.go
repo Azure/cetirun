@@ -37,6 +37,10 @@ type AIGatewayResponse struct {
 	Models       []string                  `json:"models"`
 	DefaultModel string                    `json:"defaultModel,omitempty"`
 	Copilot      *AIGatewayCopilotResponse `json:"copilot,omitempty"`
+	// ModelRouters are the Team's smart-routing models for this Agent, by
+	// name: whether the Agent may use each, and why not. Models and
+	// DefaultModel name granted routers by these names too.
+	ModelRouters []AIGatewayModelRouterResponse `json:"modelRouters,omitempty"`
 }
 
 // AIGatewayCopilotResponse describes the Agent's GitHub Copilot proxy.
@@ -106,6 +110,7 @@ func aiGatewayResponse(instance *cetirunv1alpha1.Agent) *AIGatewayResponse {
 			Unpriced: append([]string(nil), copilot.Unpriced...),
 		}
 	}
+	applyModelRouterNames(resp, status)
 	return resp
 }
 
@@ -202,7 +207,8 @@ func (h *InstanceHandler) validateAIGatewaySelection(w http.ResponseWriter, r *h
 		return reject(http.StatusBadRequest, "invalid_model_access", "Choose at least one model source allowed by the selected Team's Policy and available in this deployment")
 	}
 	model := strings.TrimSpace(req.Model)
-	if model != "" && !(shared && slices.ContainsFunc(catalog.SharedModels, func(candidate cetirunv1alpha1.AIGatewayCatalogModel) bool { return candidate.Name == model })) && !(copilot && strings.HasPrefix(model, cetirunv1alpha1.AIGatewayCopilotModelPrefix) && !isAIGatewayPlaceholder(model)) {
+	if model != "" && !(shared && slices.ContainsFunc(catalog.SharedModels, func(candidate cetirunv1alpha1.AIGatewayCatalogModel) bool { return candidate.Name == model })) && !(copilot && strings.HasPrefix(model, cetirunv1alpha1.AIGatewayCopilotModelPrefix) && !isAIGatewayPlaceholder(model)) &&
+		!slices.Contains(options.ModelRouters, model) {
 		return reject(http.StatusForbidden, "model_not_allowed", "The requested default model is not available under the selected Team's Policy and model sources")
 	}
 	return options.Team, options.sandboxRef, &cetirunv1alpha1.ModelAccessSpec{SharedModels: &shared, GitHubCopilot: &copilot}, true
