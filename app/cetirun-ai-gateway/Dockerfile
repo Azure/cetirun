@@ -35,16 +35,10 @@ COPY requirements.txt /tmp/requirements.txt
 # --no-deps: the list is the complete set, so nothing outside it, including
 # litellm-enterprise, is pulled in. Wheels only, so nothing is compiled here.
 #
-# pip check must pass, with one exception that the upstream image ships as
-# well: langfuse, a logging integration the Gateway does not configure,
-# declares packaging<25 while the set has 26. Anything else fails the build.
+# pip check must pass: a requirement the set does not meet fails the build.
 RUN python3 -m venv /app/.venv && \
     pip install --index-url "${PYPI_INDEX_URL}" --no-deps --only-binary=:all: -r /tmp/requirements.txt && \
-    { pip check > /tmp/pip-check.txt || true; } && \
-    cat /tmp/pip-check.txt && \
-    if grep -v -x -e 'No broken requirements found.' \
-         -e 'langfuse 2.59.7 has requirement packaging<25.0,>=23.2, but you have packaging 26.2.' \
-         /tmp/pip-check.txt | grep -q .; then exit 1; fi
+    pip check
 
 RUN schema="$(python -c 'import litellm_proxy_extras, os; print(os.path.join(os.path.dirname(litellm_proxy_extras.__file__), "schema.prisma"))')" && \
     HOME=/opt/prisma XDG_CACHE_HOME=/opt/prisma/.cache PRISMA_BINARY_CACHE_DIR=/opt/prisma/binaries \

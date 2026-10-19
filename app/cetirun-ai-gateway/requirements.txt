@@ -1,9 +1,9 @@
 # Python packages of the CetiRun AI Gateway image, installed with --no-deps, so
 # this list is the complete set.
 #
-# It is the exact package set of the upstream LiteLLM v1.101.0 image
-# (ghcr.io/berriai/litellm@sha256:d295634e09c648dcdb72c4cc2dd226f5fb87823a73e88cbbed6f205e4deb044b,
-# built from BerriAI/litellm commit 18243cd7af4c3325165ba68b21379e2719e051c7)
+# It is the exact package set of the upstream LiteLLM v1.105.1 image
+# (ghcr.io/berriai/litellm@sha256:b7b9e2c306343721802253d0dd9436b9634a2eb4e14da7c7cf06c5c7b7530802,
+# built from BerriAI/litellm commit d665dc1a6315847fcad6cc2c1264ceb47c06abce)
 # minus litellm-enterprise. That package carries the BerriAI Enterprise License,
 # which allows production use only with a BerriAI subscription; the Gateway uses
 # the open-source proxy only, which imports it only inside try blocks. Keeping
@@ -23,14 +23,13 @@ aiosignal==1.4.0
 annotated-doc==0.0.4
 annotated-types==0.7.0
 anthropic==0.84.0
-# Upstream has 4.13.0: GHSA-82r6-8w77-94w6, critical, fixed in 4.14.2.
 anyio==4.14.2
 APScheduler==3.11.2
 asgiref==3.11.1
 attrs==26.1.0
 aurelio-sdk==0.0.19
 aws-sdk-signers==0.3.0
-aws_sdk_bedrock_runtime==0.7.0
+aws_sdk_bedrock_runtime==0.11.0
 awscrt==0.32.2
 azure-ai-contentsafety==1.0.0
 azure-core==1.41.0
@@ -45,7 +44,7 @@ bytecode==0.17.0
 certifi==2026.4.22
 cffi==2.0.0
 charset-normalizer==3.4.7
-click==8.3.3
+click==8.5.0
 colorama==0.4.6
 coloredlogs==15.0.1
 colorlog==6.10.1
@@ -63,9 +62,9 @@ Expression==5.6.0
 fastapi==0.136.3
 fastapi-sso==0.19.0
 fastuuid==0.14.0
-filelock==3.29.0
+filelock==3.32.7
 frozenlist==1.8.0
-fsspec==2026.6.0
+fsspec==2026.7.0
 google-api-core==2.30.3
 google-auth==2.52.0
 google-cloud-aiplatform==1.133.0
@@ -74,6 +73,7 @@ google-cloud-core==2.6.0
 google-cloud-iam==2.19.1
 google-cloud-kms==2.24.2
 google-cloud-resource-manager==1.17.0
+google-cloud-speech==2.40.0
 google-cloud-storage==3.10.1
 google-crc32c==1.8.0
 google-genai==1.37.0
@@ -85,14 +85,19 @@ grpcio==1.78.0
 grpcio-status==1.71.2
 gunicorn==23.0.0
 h11==0.16.0
-hf-xet==1.5.0
+h2==4.4.1
+hf-xet==1.6.0
 hiredis==3.4.0
+hpack==4.2.0
 httpcore==1.0.9
+httpcore2==2.13.0
 httpx==0.28.1
 httpx-sse==0.4.3
-huggingface_hub==1.14.0
+httpx2==2.13.0
+huggingface_hub==1.32.0
 humanfriendly==10.0
-idna==3.15
+hyperframe==6.1.0
+idna==3.19
 ijson==3.5.1
 importlib_metadata==8.5.0
 inquirerpy==0.3.4
@@ -103,15 +108,16 @@ jmespath==1.1.0
 json-rpc==1.15.0
 jsonschema==4.26.0
 jsonschema-specifications==2025.9.1
-langfuse==2.59.7
-litellm==1.101.0
-litellm-proxy-extras==0.4.94
+langfuse==4.15.2
+litellm==1.105.1
+litellm-proxy-extras==0.4.105
 llm-sandbox==0.3.39
 lxml==6.1.1
 mangum==0.17.0
 markdown-it-py==4.2.0
 MarkupSafe==3.0.3
-mcp==1.28.1
+mcp==2.2.0
+mcp-types==2.2.0
 mdurl==0.1.2
 ml-dtypes==0.4.1
 msal==1.37.0
@@ -119,22 +125,20 @@ msal-extensions==1.3.1
 multidict==6.9.1
 nodeenv==1.10.0
 numpy==2.4.4
-# Upstream has 3.3.1: GHSA-xpv3-w29h-x7cv and GHSA-hj66-6f7g-4r5v;
-# both are medium severity and fixed in 4.0.0.
 oauthlib==4.0.0
 openai==2.33.0
-opentelemetry-api==1.28.0
-opentelemetry-exporter-otlp==1.28.0
-opentelemetry-exporter-otlp-proto-common==1.28.0
-opentelemetry-exporter-otlp-proto-grpc==1.28.0
-opentelemetry-exporter-otlp-proto-http==1.28.0
-opentelemetry-instrumentation==0.49b0
-opentelemetry-instrumentation-asgi==0.49b0
-opentelemetry-instrumentation-fastapi==0.49b0
-opentelemetry-proto==1.28.0
-opentelemetry-sdk==1.28.0
-opentelemetry-semantic-conventions==0.49b0
-opentelemetry-util-http==0.49b0
+opentelemetry-api==1.33.1
+opentelemetry-exporter-otlp==1.33.1
+opentelemetry-exporter-otlp-proto-common==1.33.1
+opentelemetry-exporter-otlp-proto-grpc==1.33.1
+opentelemetry-exporter-otlp-proto-http==1.33.1
+opentelemetry-instrumentation==0.54b1
+opentelemetry-instrumentation-asgi==0.54b1
+opentelemetry-instrumentation-fastapi==0.54b1
+opentelemetry-proto==1.33.1
+opentelemetry-sdk==1.33.1
+opentelemetry-semantic-conventions==0.54b1
+opentelemetry-util-http==0.54b1
 orjson==3.11.6
 packaging==26.2
 pfzy==0.3.4
@@ -179,13 +183,12 @@ rq==2.7.0
 s3transfer==0.17.0
 semantic-router==0.1.15
 sentry-sdk==2.21.0
-shellingham==1.5.4
 six==1.17.0
-smithy-aws-core==0.7.0
+smithy-aws-core==0.11.0
 smithy-aws-event-stream==0.3.0
-smithy-core==0.6.0
-smithy-http==0.4.2
-smithy-json==0.2.3
+smithy-core==0.8.1
+smithy-http==0.5.0
+smithy-json==0.3.0
 sniffio==1.3.1
 soundfile==0.12.1
 sse-starlette==3.4.4
@@ -195,9 +198,9 @@ tenacity==8.5.0
 tiktoken==0.12.0
 tokenizers==0.23.1
 tomlkit==0.15.0
-tornado==6.5.9
+tornado==6.5.10
 tqdm==4.67.3
-typer==0.25.1
+truststore==0.10.4
 typing-inspection==0.4.2
 typing_extensions==4.15.0
 tzlocal==5.3.1

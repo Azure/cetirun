@@ -1119,17 +1119,18 @@ appropriate at a single replica.
 ## Image
 
 The Gateway runs `cetirun-ai-gateway`, built from `app/cetirun-ai-gateway` and
-published with the other CetiRun images. It is open-source LiteLLM, installed as
-pinned packages on the Azure Linux Python base from MCR, running as the
-non-root user 65532.
+published with the other CetiRun images. It is open-source LiteLLM, 1.105.1,
+installed as pinned packages on the Azure Linux Python base from MCR, running as
+the non-root user 65532.
 
 - `requirements.txt` is the exact package set of the upstream LiteLLM image for
   the same release, installed with `--no-deps`, so nothing else is pulled in.
   The differences are deliberate: `litellm-enterprise`, which carries the
   BerriAI Enterprise License, is left out; two backports that Python 3.12
-  needs are added; and packages with known security advisories are moved to
-  patched versions, with the advisories marked in the file. The build fails
-  if the enterprise package is present.
+  needs are added; and a package with a known security advisory is moved to a
+  patched version, with the advisory marked in the file. The 1.105.1 set needs
+  no such move. The build fails if the enterprise package is present, or if
+  `pip check` finds a requirement the set does not meet.
 - The prisma CLI and engines are installed at build time, so migrations need
   neither npm nor network access. Measured on a network with no route out:
   migrations applied and the proxy became ready.
