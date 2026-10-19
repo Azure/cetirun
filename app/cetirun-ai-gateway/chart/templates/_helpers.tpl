@@ -343,9 +343,11 @@ through this, with fromJson.
 {{- $router := .Values.router | default dict -}}
 {{- $health := $router.healthChecks | default dict -}}
 {{- $settings := dict -}}
-{{- $_ := set $settings "failover" (dig "failover" true $router) -}}
+{{- $_ := set $settings "routingStrategy" (dig "routingStrategy" "simple-shuffle" $router) -}}
+{{- $_ = set $settings "failover" (dig "failover" true $router) -}}
 {{- $_ = set $settings "continuationAffinity" (dig "continuationAffinity" true $router) -}}
-{{- $_ = set $settings "encryptedContentAffinity" (dig "encryptedContentAffinity" false $router) -}}
+{{- $_ = set $settings "encryptedContentAffinity" (dig "encryptedContentAffinity" true $router) -}}
+{{- $_ = set $settings "deploymentAffinity" (dig "deploymentAffinity" true $router) -}}
 {{- $_ = set $settings "fallbacks" (dig "fallbacks" list $router) -}}
 {{- $_ = set $settings "contextWindowFallbacks" (dig "contextWindowFallbacks" list $router) -}}
 {{- $_ = set $settings "healthChecks" (dict "enabled" (dig "enabled" false $health) "intervalSeconds" (dig "intervalSeconds" 300 $health)) -}}
@@ -364,6 +366,66 @@ models, apart from LiteLLM auto routers, whose own models are probed instead.
 {{- end -}}
 {{- end -}}
 {{- toJson (uniq $names) -}}
+{{- end }}
+
+{{/*
+The routing strategies the chart accepts: those LiteLLM selects with on its
+asynchronous path, which runs the auto routers and the pre-call checks.
+usage-based-routing (v1) selects synchronously and skips both; lar1 needs
+client metadata, and provider-budget-routing selects nothing itself.
+*/}}
+{{- define "cetirun-ai-gateway.routingStrategies" -}}
+{{- toJson (list "simple-shuffle" "least-busy" "latency-based-routing" "usage-based-routing-v2" "cost-based-routing") -}}
+{{- end }}
+
+{{/*
+The model names some of whose deployments set litellm_params.order, so one
+deployment is a standby for another. Deployment affinity is off for them: it
+pins a key to a deployment before LiteLLM keeps only the lowest order, and
+refreshes the pin only when that deployment serves, so a key pinned to a
+standby would stay there after the primary recovered.
+*/}}
+{{- define "cetirun-ai-gateway.orderedModelNames" -}}
+{{- $names := list -}}
+{{- range .Values.models -}}
+{{- if hasKey (.litellm_params | default dict) "order" -}}
+{{- $names = append $names (toString .model_name) -}}
+{{- end -}}
+{{- end -}}
+{{- toJson (uniq $names) -}}
+{{- end }}
+
+{{/*
+A routing strategy the chart supports, and each of weight, order, rpm and tpm
+set on every deployment of a model or on none. simple-shuffle weighs by the
+first of weight, rpm and tpm with a positive value and gives a deployment
+without it weight 0; a deployment without order is left out whenever another
+has one.
+*/}}
+{{- define "cetirun-ai-gateway.validateRouting" -}}
+{{- $router := include "cetirun-ai-gateway.router" . | fromJson -}}
+{{- $strategies := include "cetirun-ai-gateway.routingStrategies" . | fromJsonArray -}}
+{{- if not (has (toString $router.routingStrategy) $strategies) }}
+{{- fail (printf "router.routingStrategy %q is not supported. Use one of %s: the chart's auto routers and pre-call checks run only with these." (toString $router.routingStrategy) (join ", " $strategies)) }}
+{{- end }}
+{{- $deployments := dict -}}
+{{- range .Values.models -}}
+{{- $name := toString .model_name -}}
+{{- $_ := set $deployments $name (append (get $deployments $name | default list) (.litellm_params | default dict)) -}}
+{{- end -}}
+{{- range $name, $params := $deployments -}}
+{{- range $field := list "weight" "order" "rpm" "tpm" -}}
+{{- $set := 0 -}}
+{{- range $params -}}
+{{- if and (hasKey . $field) (not (kindIs "invalid" (index . $field))) -}}
+{{- $set = add1 $set -}}
+{{- end -}}
+{{- end -}}
+{{- if and (gt $set 0) (lt $set (len $params)) }}
+{{- fail (printf "model %s sets litellm_params.%s on %d of its %d deployments. Set it on every deployment of the model or on none: LiteLLM gives a deployment without %s no share of the requests, or leaves it out." $name $field $set (len $params) $field) }}
+{{- end -}}
+{{- end -}}
+{{- end -}}
 {{- end }}
 
 {{/*

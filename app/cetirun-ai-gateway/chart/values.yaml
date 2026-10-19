@@ -140,11 +140,21 @@ blockUnpricedModels: true
 # each setting was measured to do.
 #
 # Several entries in models with the same model_name are deployments of one
-# model. LiteLLM spreads requests across them at random, or by the weight, rpm
-# or tpm set in each entry's litellm_params (set it on every entry), and keeps
-# entries with a higher litellm_params.order in reserve until those with a
-# lower one are unavailable.
+# model. LiteLLM chooses among them by routingStrategy below; with the default,
+# at random, or by the weight, rpm or tpm set in each entry's litellm_params.
+# An entry with a higher litellm_params.order is kept in reserve until those
+# with a lower one are unavailable. The chart refuses a model that sets
+# weight, order, rpm or tpm on some of its entries but not all.
 router:
+  # -- How LiteLLM chooses one of a model's deployments: simple-shuffle (at
+  # random, or by weight, rpm or tpm), least-busy (fewest requests in flight on
+  # this replica), latency-based-routing (fastest recent responses on this
+  # replica), usage-based-routing-v2 (lowest tokens per minute, counted in
+  # Redis, within each deployment's rpm and tpm), or cost-based-routing
+  # (cheapest by litellm_params prices or LiteLLM's price table for
+  # litellm_params.model). Other LiteLLM strategies are refused: they skip
+  # the auto routers and the pre-call checks.
+  routingStrategy: simple-shuffle
   # -- Send a request that failed on one deployment once more, to another
   # deployment of the same model_name (LiteLLM's enable_weighted_failover).
   # This is not a retry: the failed deployment is not tried again, and a model
@@ -160,11 +170,18 @@ router:
   # its reasoning, or on one with the same endpoint and key (LiteLLM's
   # encrypted_content_affinity). Agents such as OpenClaw send the encrypted
   # reasoning back with every turn, and only the Azure OpenAI resource or
-  # OpenAI organization that produced it can read it. Turn this on when one
-  # model_name is served by more than one resource or organization. With the
-  # LiteLLM in this image, a conversation whose deployment is unavailable fails
-  # until that deployment is back, rather than moving to another.
-  encryptedContentAffinity: false
+  # OpenAI organization that produced it can read it. When that deployment is
+  # unavailable, the conversation moves to another, and the encrypted
+  # reasoning the new deployment cannot read is left out of the request. It
+  # applies to every model; it cannot be turned off for one.
+  encryptedContentAffinity: true
+  # -- Keep each virtual key on the deployment that served its last request to
+  # a model, for an hour (LiteLLM's deployment_affinity), so the provider's
+  # prompt cache keeps working. While that deployment is unavailable, the
+  # key's requests go to the others. Off for a model whose deployments set
+  # litellm_params.order: a key kept on a standby would stay there after the
+  # primary is back.
+  deploymentAffinity: true
   # -- Models to try when a request to a model fails, in LiteLLM's format: a
   # list of maps from a model_name to the model_names to try, in order. With
   # operatorIntegration, a target is tried only if the caller's key may use it.

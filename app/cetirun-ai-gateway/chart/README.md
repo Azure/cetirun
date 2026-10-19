@@ -382,24 +382,89 @@ retry; see [Routing](#routing).
 
 Several entries in `models` with the same `model_name` are deployments of one
 model: two Azure OpenAI resources, for example, or Azure OpenAI and OpenAI.
-LiteLLM picks one at random for each request, or by the `weight`, `rpm` or
-`tpm` in each entry's `litellm_params`; set the same field on every entry, since
-LiteLLM looks at the first entry to choose which one to use. An entry with a
-higher `litellm_params.order` is kept in reserve until those with a lower one
-are unavailable. Which deployments serve a model, and which model falls back to
+`router.routingStrategy` chooses one of them for each request; see
+[Choosing a deployment](#choosing-a-deployment). An entry with a higher
+`litellm_params.order` is kept in reserve until those with a lower one are
+unavailable. Which deployments serve a model, and which model falls back to
 which, are the administrator's; the `router` values set the rest.
 
 Measured with two Gateway replicas and the bundled Valkey, against mock
 deployments standing in for separate Azure OpenAI resources, with an
 OpenClaw-like client and with OpenClaw itself, and checked against Azure
-OpenAI where noted.
+OpenAI where noted. The figures in tables were measured on LiteLLM 1.101.0,
+the image's previous release; what changed in 1.105.1 is said where it
+applies.
+
+### Choosing a deployment
+
+`router.routingStrategy` sets LiteLLM's `routing_strategy`:
+
+- `simple-shuffle`, the default, picks at random, or in proportion to the
+  `weight`, `rpm` or `tpm` in each entry's `litellm_params`: the first of the
+  three that any entry sets to a positive value. Only this strategy sends a
+  failed request to another deployment of the same model (`router.failover`).
+- `least-busy` picks the deployment with the fewest requests in flight. Each
+  replica counts only its own requests.
+- `latency-based-routing` picks the deployment with the fastest recent
+  responses. Each replica measures its own.
+- `usage-based-routing-v2` picks the deployment with the fewest tokens this
+  minute, skipping those over their `rpm` or `tpm`. The counts are kept in
+  Redis, so every replica sees them; each request adds Redis calls.
+- `cost-based-routing` picks the cheapest deployment. A deployment's price is
+  `input_cost_per_token` and `output_cost_per_token` in its `litellm_params`,
+  or else LiteLLM's price table entry for its `litellm_params.model`; it does
+  not read `base_model` or `model_info`. A deployment with neither counts as
+  the most expensive, which is the usual case for Azure OpenAI deployment
+  names, so set the prices in `litellm_params`.
+
+LiteLLM's other strategies are refused: `usage-based-routing` selects without
+running LiteLLM's auto routers and pre-call checks, and the others need
+settings the chart does not provide. Each of `weight`, `order`, `rpm` and `tpm`
+has to be set on every entry of a model or on none, and the chart refuses a
+model that sets one on only some: LiteLLM gives an entry without `weight`,
+`rpm` or `tpm` no requests while another has it, and leaves an entry without
+`order` out while another has one.
+
+### Primary and standby deployments
+
+`litellm_params.order` keeps deployments in reserve. Here a discounted provider
+serves the model first, and Azure OpenAI stands by:
+
+```yaml
+models:
+  - model_name: gpt-4o
+    litellm_params:
+      model: openai/gpt-4o
+      api_base: https://discount.example.com/v1
+      api_key: os.environ/DISCOUNT_KEY
+      order: 1
+      input_cost_per_token: 0.000002
+      output_cost_per_token: 0.000008
+  - model_name: gpt-4o
+    litellm_params:
+      model: azure/my-gpt-4o-deployment
+      api_base: https://example.openai.azure.com/
+      api_key: os.environ/AZURE_PROD_KEY
+      api_version: "2025-04-01-preview"
+      order: 2
+    model_info:
+      base_model: azure/gpt-4o
+```
+
+Requests go to order 1. With health checks on, a deployment that failed its
+last probe is skipped before anything is sent. A request that fails on order 1
+is sent to order 2 within the same request, with every routing strategy.
+Requests return to order 1 once its probe passes again, or, without health
+checks, once its cooldown ends. Deployment affinity is off for such a model;
+see [A key stays on its deployment](#a-key-stays-on-its-deployment).
 
 ### A failed request goes to another deployment
 
 `router.failover`, on by default, sends a request that failed on one
 deployment once more, to another deployment of the same model (LiteLLM's
-`enable_weighted_failover`). The failed deployment is not tried again, and a
-model with a single deployment gets no second attempt, so `num_retries` stays 0.
+`enable_weighted_failover`), with the `simple-shuffle` strategy only. The
+failed deployment is not tried again, and a model with a single deployment
+gets no second attempt, so `num_retries` stays 0.
 
 | One of two deployments failing | Requests failed, of 30 |
 | --- | --- |
@@ -437,17 +502,35 @@ without the encrypted reasoning. So when one model is served by more than one
 resource, a conversation that has been on both pays an extra call, and loses
 the reasoning it had, on every later turn: 61 of 84 turns in the test.
 
-`router.encryptedContentAffinity` keeps each conversation on the deployment
-that encrypted its reasoning, or on one with the same endpoint and key
-(LiteLLM's `encrypted_content_affinity`). It marks the items it returns, so it
-needs no state in Redis, and turning it off later is safe: the marks are removed
-from every request either way. It is off by default because the LiteLLM in the
-image fails a pinned conversation rather than moving it: while its deployment
-is down, every turn fails, and for the few seconds it stays in cooldown
-afterwards turns get a 503 or 429; then it continues there. A deployment that
-authenticates without an API key is never treated as sharing an endpoint and key
-with another. Turn it on when one model name is served by more than one
-resource or organization.
+`router.encryptedContentAffinity`, on by default, keeps each conversation on
+the deployment that encrypted its reasoning, or on one with the same endpoint
+and key (LiteLLM's `encrypted_content_affinity`). It marks the items it
+returns, so it needs no state in Redis, and turning it off later is safe: the
+marks are removed from every request either way. When that deployment is
+unavailable, LiteLLM 1.105.1 sends the turn to another deployment and leaves
+out the encrypted reasoning the new one cannot read, so the conversation
+continues without that reasoning rather than failing; LiteLLM 1.101.0 failed
+every such turn until the deployment was back, which is why the check used to
+be off by default. A deployment that authenticates without an API key is never
+treated as sharing an endpoint and key with another. The check applies to
+every model: LiteLLM cannot turn it off for one.
+
+### A key stays on its deployment
+
+`router.deploymentAffinity`, on by default, sends each virtual key's requests
+for a model to the deployment that served its last one, for an hour (LiteLLM's
+`deployment_affinity`). Providers cache the start of a prompt on the
+deployment that saw it, so an agent that keeps its conversation on one
+deployment pays less and waits less for each turn. With Redis, every replica
+sees the same choice. While that deployment is unavailable, the key's requests
+go to the others.
+
+It is off for a model whose deployments set `litellm_params.order`: LiteLLM
+applies the choice before it keeps only the lowest order, and renews it only
+when the chosen deployment serves, so a key that reached the standby while the
+primary was down would stay on the standby after the primary is back. The
+chart turns it off for such a model in `model_group_affinity_config`, which
+keeps the other checks on for it.
 
 ### Fallbacks
 
@@ -831,8 +914,9 @@ This is why the chart writes as little as possible into those blocks.
 settings when `router.healthChecks` is on; in `litellm_settings`,
 `num_retries`, the unpriced-model block, `global_disable_no_log_param`, the
 metrics callback and its settings, and, when Redis is configured, the Redis
-cache; and in `router_settings`, Redis when it is configured, and the failover,
-the two affinity checks and the fallbacks of `router`. Everything else in
+cache; and in `router_settings`, Redis when it is configured, the routing
+strategy, and the failover, the affinity checks and the fallbacks of `router`.
+Everything else in
 LiteLLM's configuration is left alone. The request log and the spend log
 setting are not in LiteLLM's configuration at all: the image's entrypoint
 applies them (see [One log line per call](#one-log-line-per-call)), so saving
@@ -850,8 +934,8 @@ one in `models` becomes an additional backend rather than an override.
 was installed with, without the defaults of settings added since. A release
 installed before `requestLog`, `spendLogs` and `metrics` existed upgrades with
 their defaults: the request log on, LiteLLM's spend log kept, metrics off. One
-installed before `router` gets its defaults too: failover and continuation
-affinity on, the rest off.
+installed before `router` gets its defaults too: `simple-shuffle`, failover
+and the affinity checks on, health checks off, no fallbacks.
 
 ## Availability
 
@@ -1199,12 +1283,6 @@ Recorded and deferred: none of these stops the Gateway from serving agents.
 
 **Not in the chart yet.** Redis TLS, which Azure Cache for Redis requires; and
 a PodDisruptionBudget and anti-affinity. LiteLLM supports both.
-
-**Encrypted reasoning affinity fails closed.** With the LiteLLM in the image,
-`router.encryptedContentAffinity` fails a conversation whose deployment is
-unavailable rather than moving it. Later LiteLLM releases drop the encrypted
-reasoning and move the conversation instead; with them it could be on by
-default.
 
 **Prices are not pinned to the image.** LiteLLM fetches its price table from
 GitHub at startup and falls back to the copy it ships with when that fails, so

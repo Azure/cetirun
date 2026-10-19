@@ -117,6 +117,8 @@ data:
         password: os.environ/REDIS_PASSWORD
         {{- end }}
     {{- end }}
+    {{- /* The checks besides deployment affinity, which a model with standby
+           deployments keeps when deployment affinity is off for it. */}}
     {{- $checks := list }}
     {{- if $router.continuationAffinity }}
     {{- $checks = append $checks "responses_api_deployment_check" }}
@@ -124,7 +126,11 @@ data:
     {{- if $router.encryptedContentAffinity }}
     {{- $checks = append $checks "encrypted_content_affinity" }}
     {{- end }}
-    {{- if or $redis $router.failover $checks $router.fallbacks $router.contextWindowFallbacks }}
+    {{- $groupChecks := $checks }}
+    {{- if $router.deploymentAffinity }}
+    {{- $checks = append $checks "deployment_affinity" }}
+    {{- end }}
+    {{- $ordered := include "cetirun-ai-gateway.orderedModelNames" . | fromJsonArray }}
 
     router_settings:
       {{- if $redis }}
@@ -138,6 +144,8 @@ data:
       redis_password: os.environ/REDIS_PASSWORD
       {{- end }}
       {{- end }}
+      # router.routingStrategy: how one of a model's deployments is chosen.
+      routing_strategy: {{ $router.routingStrategy | quote }}
       {{- if $router.failover }}
       # router.failover: a request that failed on one deployment is sent once
       # more, to another deployment of the same model. Not a retry: the
@@ -145,8 +153,19 @@ data:
       enable_weighted_failover: true
       {{- end }}
       {{- if $checks }}
-      # router.continuationAffinity and router.encryptedContentAffinity.
+      # router.continuationAffinity, router.encryptedContentAffinity and
+      # router.deploymentAffinity.
       optional_pre_call_checks: {{ toJson $checks }}
+      {{- end }}
+      {{- if and $router.deploymentAffinity $ordered }}
+      # No deployment affinity for models with standby deployments (order):
+      # a key pinned to a standby would stay there after the primary is back.
+      # The other checks stay on for them.
+      {{- $groups := dict }}
+      {{- range $ordered }}
+      {{- $_ := set $groups . $groupChecks }}
+      {{- end }}
+      model_group_affinity_config: {{ toJson $groups }}
       {{- end }}
       {{- with $router.fallbacks }}
       fallbacks: {{ toJson . }}
@@ -154,4 +173,3 @@ data:
       {{- with $router.contextWindowFallbacks }}
       context_window_fallbacks: {{ toJson . }}
       {{- end }}
-    {{- end }}

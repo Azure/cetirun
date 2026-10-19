@@ -231,6 +231,36 @@ assert_contains "num_retries: 0" "LiteLLM's default retries are turned off" "${o
 
 # ----- Routing -----
 
+# Only the strategies LiteLLM selects with on its asynchronous path, which runs
+# the auto routers and the pre-call checks, are accepted.
+echo "==> the routing strategy is the administrator's, among those that run the pre-call checks"
+assert_contains 'routing_strategy: "simple-shuffle"' "deployments are chosen at random by default" "${output}"
+assert_contains 'routing_strategy: "simple-shuffle"' "the strategy does not depend on Redis" "${single}"
+for strategy in least-busy latency-based-routing usage-based-routing-v2 cost-based-routing; do
+  assert_contains "routing_strategy: \"${strategy}\"" "${strategy} can be chosen" \
+    "$(render --set "router.routingStrategy=${strategy}")"
+done
+assert_rejected "usage-based-routing, which skips the pre-call checks" --set router.routingStrategy=usage-based-routing
+assert_rejected "an unknown routing strategy" --set router.routingStrategy=round-robin
+
+# simple-shuffle weighs by the first of weight, rpm and tpm with a positive
+# value and gives a deployment without it no requests; a deployment without
+# order is left out whenever another has one.
+echo "==> weight, order, rpm and tpm are set on every deployment of a model or on none"
+second=(--set-string 'models[1].model_name=lint-model' --set-string 'models[1].litellm_params.model=openai/lint-model-2')
+for field in weight order rpm tpm; do
+  assert_rejected "${field} on one of two deployments" "${second[@]}" --set "models[0].litellm_params.${field}=1"
+  render "${second[@]}" --set "models[0].litellm_params.${field}=1" --set "models[1].litellm_params.${field}=2" > /dev/null || {
+    echo "FAIL: ${field} on both deployments of a model should render" >&2
+    exit 1
+  }
+done
+render "${second[@]}" --set-string 'models[2].model_name=other-model' --set-string 'models[2].litellm_params.model=openai/other' \
+  --set 'models[2].litellm_params.weight=1' > /dev/null || {
+  echo "FAIL: a model with one deployment may set weight" >&2
+  exit 1
+}
+
 # Several deployments behind one model name: a request that fails on one is sent
 # once more, to another. It is not a retry, so num_retries stays 0. Measured with
 # one of two deployments failing: 13 of 30 requests failed without it, none with
@@ -242,22 +272,35 @@ assert_absent "enable_weighted_failover" "failover can be turned off" "$(render 
 
 # A Responses API continuation (previous_response_id) works only on the
 # deployment that produced the earlier response. Measured across two
-# deployments: 6 of 20 continuations failed without the check.
-echo "==> a continuation goes to the deployment that has the earlier response"
-assert_contains 'optional_pre_call_checks: \["responses_api_deployment_check"\]' \
-  "continuations are kept on their deployment by default" "${output}"
-
-# Only the resource that encrypted a model's reasoning can read it. With the
-# LiteLLM in the image, the check makes a conversation whose deployment is down
-# fail until that deployment is back, so it is the administrator's choice.
-echo "==> encrypted reasoning affinity is turned on deliberately"
-assert_absent "encrypted_content_affinity" "encrypted reasoning affinity is off by default" "${output}"
+# deployments: 6 of 20 continuations failed without the check. Only the
+# resource that encrypted a model's reasoning can read it; LiteLLM 1.105.1
+# moves a conversation whose deployment is down and leaves that reasoning out.
+# A key kept on one deployment keeps the provider's prompt cache.
+echo "==> continuations, encrypted reasoning and keys stay on their deployment"
+assert_contains 'optional_pre_call_checks: \["responses_api_deployment_check","encrypted_content_affinity","deployment_affinity"\]' \
+  "the three affinity checks are on by default" "${output}"
+assert_contains 'optional_pre_call_checks: \["responses_api_deployment_check","deployment_affinity"\]' \
+  "encrypted reasoning affinity can be turned off" "$(render --set router.encryptedContentAffinity=false)"
 assert_contains 'optional_pre_call_checks: \["responses_api_deployment_check","encrypted_content_affinity"\]' \
-  "encrypted reasoning affinity can be turned on" "$(render --set router.encryptedContentAffinity=true)"
-assert_absent "optional_pre_call_checks" "no pre-call checks when both are off" \
-  "$(render --set router.continuationAffinity=false)"
-assert_absent "router_settings" "no router settings without Redis or anything to set" \
-  "$(render --set redis.bundled.enabled=false --set replicaCount=1 --set router.failover=false --set router.continuationAffinity=false)"
+  "deployment affinity can be turned off" "$(render --set router.deploymentAffinity=false)"
+assert_absent "optional_pre_call_checks" "no pre-call checks when all are off" \
+  "$(render --set router.continuationAffinity=false --set router.encryptedContentAffinity=false --set router.deploymentAffinity=false)"
+assert_absent "model_group_affinity_config" "no per-model affinity without standby deployments" "${output}"
+
+# Deployment affinity pins a key before LiteLLM keeps only the lowest order, so
+# a key pinned to a standby would stay there after the primary is back. It is
+# off for such a model; the other checks stay on for it.
+echo "==> deployment affinity is off for a model with standby deployments"
+ordered="$(render "${second[@]}" --set 'models[0].litellm_params.order=1' --set 'models[1].litellm_params.order=2' \
+  --set-string 'models[2].model_name=other-model' --set-string 'models[2].litellm_params.model=openai/other')"
+assert_contains 'model_group_affinity_config: {"lint-model":\["responses_api_deployment_check","encrypted_content_affinity"\]}' \
+  "only the ordered model leaves deployment affinity out, keeping the other checks" "${ordered}"
+assert_contains 'model_group_affinity_config: {"lint-model":\[\]}' "a model with standby deployments can have no checks at all" \
+  "$(render "${second[@]}" --set 'models[0].litellm_params.order=1' --set 'models[1].litellm_params.order=2' \
+    --set router.continuationAffinity=false --set router.encryptedContentAffinity=false)"
+assert_absent "model_group_affinity_config" "nothing to turn off without deployment affinity" \
+  "$(render "${second[@]}" --set 'models[0].litellm_params.order=1' --set 'models[1].litellm_params.order=2' \
+    --set router.deploymentAffinity=false)"
 
 echo "==> fallbacks are the administrator's"
 assert_absent "fallbacks:" "no fallbacks by default" "${output}"

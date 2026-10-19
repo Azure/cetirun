@@ -107,6 +107,12 @@
             "type": "object",
             "description": "How a request reaches one of the deployments that serve its model_name, and what happens when that deployment fails. Rendered into LiteLLM's router_settings and general_settings.",
             "properties": {
+                "routingStrategy": {
+                    "type": "string",
+                    "description": "How LiteLLM chooses one of a model's deployments (router_settings.routing_strategy). Only the strategies that run the auto routers and the pre-call checks are accepted.",
+                    "enum": ["simple-shuffle", "least-busy", "latency-based-routing", "usage-based-routing-v2", "cost-based-routing"],
+                    "default": "simple-shuffle"
+                },
                 "failover": {
                     "type": "boolean",
                     "description": "Send a request that failed on one deployment once more, to another deployment of the same model_name (LiteLLM's enable_weighted_failover). Not a retry of the failed deployment.",
@@ -119,8 +125,13 @@
                 },
                 "encryptedContentAffinity": {
                     "type": "boolean",
-                    "description": "Keep each Responses API conversation on the deployment that encrypted its reasoning, or one with the same endpoint and key (LiteLLM's encrypted_content_affinity). For a model_name served by more than one Azure OpenAI resource or OpenAI organization.",
-                    "default": false
+                    "description": "Keep each Responses API conversation on the deployment that encrypted its reasoning, or one with the same endpoint and key (LiteLLM's encrypted_content_affinity). When that deployment is unavailable, the conversation moves and the reasoning the new deployment cannot read is left out.",
+                    "default": true
+                },
+                "deploymentAffinity": {
+                    "type": "boolean",
+                    "description": "Keep each virtual key on the deployment that served its last request to a model, for an hour (LiteLLM's deployment_affinity). Off for models whose deployments set litellm_params.order.",
+                    "default": true
                 },
                 "fallbacks": {
                     "type": "array",
