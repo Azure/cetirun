@@ -770,6 +770,28 @@ The chart creates no PodDisruptionBudget and sets no anti-affinity, so both
 replicas can land on one node and be evicted together when it is drained. On a
 multi-node cluster, use `affinity` to spread them.
 
+### Pods keep their configuration until they are replaced
+
+The generated configuration is mounted as a single file (`subPath`), so
+Kubernetes does not update it inside running pods; a configuration change
+replaces the pods instead (`checksum/config`). With the ConfigMap mounted as a
+directory, Kubernetes updated the file in the old pods about a minute after an
+upgrade. LiteLLM re-reads its configuration file every 30 seconds while models
+are stored in the database and removes each configured model whose deployment
+ID is no longer in the file, without adding the new entry until it restarts.
+An upgrade that edited a model therefore made the old pods stop serving it
+until they were replaced. Now each pod serves the configuration it started
+with, and the edited model stays available throughout the rollout.
+
+During a rollout the Service sends requests to old and new pods, which can
+list different models when a model is added, removed or renamed. The CetiRun
+operator lists the models through the Service, so it waits while the ready
+pods behind the Gateway Service belong to more than one pod template, checks
+again every 15 seconds, and applies the new model list once when one template
+serves the Gateway. It keeps its previous view for at most ten minutes of a
+rollout, and does not wait when it cannot read the Gateway's Service or pods.
+Agents are not updated or restarted while the rollout runs.
+
 ### When Redis is unavailable
 
 Requests keep being served. Readiness does not depend on Redis, so the replicas

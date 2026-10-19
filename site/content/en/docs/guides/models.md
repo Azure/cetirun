@@ -15,7 +15,12 @@ OpenClaw and Hermes instances take all their models from the Gateway, from two
 sources:
 
 - **Shared models** are the models an administrator configures in the Gateway
-  with the access group `cetirun-shared`. They keep the administrator's names.
+  chart's `models`, which gives each a deployment ID and an access group
+  derived from its name. They keep the administrator's names. Instances without
+  a policy are offered all of them, and policy-bound instances those their
+  AgentPolicy grants. A model added in the Gateway's console is shared only
+  with the access group `cetirun-shared`, and only with instances without a
+  policy.
   While the Gateway blocks requests for unpriced models, as it does by default
   (`blockUnpricedModels`), the operator offers only shared models with a price.
   It reads the setting from the Gateway, so a change made in the Gateway's
@@ -27,7 +32,8 @@ sources:
   appear as `copilot/<model>`. The operator's `aiGateway.copilotProxy.enabled`
   turns the proxy off for the whole deployment.
 
-Each instance's key reaches only its own access groups: `cetirun-shared` and the
+Each instance's key reaches only its own access groups: those of its shared
+models, with `cetirun-shared` for an instance without a policy, and the
 instance's own Copilot group, so its `copilot/<model>` names reach its own proxy.
 The Gateway checks router fallbacks against the key as well
 (`operatorIntegration`). Keep teams and keys in the Gateway console limited to
@@ -113,6 +119,10 @@ and its UI is unavailable until it is ready again. Other changes to a shared
 model, such as its endpoint, provider parameters or price, keep the access
 groups instances are granted: the Gateway chart derives a model's group from
 its name alone. Instances keep using the model, and none of them restarts.
+A Gateway upgrade does not interrupt instances either. Each Gateway pod keeps
+the configuration it started with until it is replaced, and the operator waits
+for the rollout to finish before it applies a changed model list, so instances
+are updated once rather than once for each replaced pod.
 
 OpenClaw also sends short internal tasks, such as generated session titles and
 activity recaps, to a utility model. On the Gateway, an instance's utility
