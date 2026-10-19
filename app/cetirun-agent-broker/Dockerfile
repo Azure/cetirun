@@ -1,7 +1,7 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 
-FROM mcr.microsoft.com/oss/go/microsoft/golang:1.27.2-1@sha256:91e046cbf8a47a056e5a3c59b40d5a6d40aa7ad70c8657107212ccd5b3d11029 AS builder
+FROM mcr.microsoft.com/oss/go/microsoft/golang:1.27.2-1@sha256:c5e8b4403616d5d4e85a87bf7d2be4f117798e1fac2bbf9734ea0db1a226412b AS builder
 WORKDIR /src
 COPY app/cetirun-agent-broker/go.mod ./
 COPY app/cetirun-agent-broker/ ./
