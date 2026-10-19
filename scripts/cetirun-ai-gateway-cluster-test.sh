@@ -926,7 +926,9 @@ managed_key_freshness() {
       allowed=$((allowed + 1))
       served_from_cache && fail "managed budget request was answered from the response cache"
     else
-      [ "${status}" = 429 ] || fail "managed budget returned ${status}, not a budget rejection"
+      # LiteLLM 1.105 answers an exhausted budget with 422 (it was 429), so
+      # clients no longer take it for a rate limit and retry.
+      [ "${status}" = 422 ] || fail "managed budget returned ${status}, not a budget rejection"
       jq -e '.error.message | test("budget"; "i")' "${work_dir}/last.json" >/dev/null \
         || fail "managed budget request was rejected for a different reason"
     fi
