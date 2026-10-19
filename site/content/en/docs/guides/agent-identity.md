@@ -180,9 +180,11 @@ X-GitHub-Api-Version. The platform supplies bearer authentication. The Agent
 cannot choose token audience/scopes, arbitrary hosts, cookies or auth headers.
 
 Adding API usage under an existing service needs API knowledge in a skill, not
-a new fixed MCP tool or permission editor. Built-in Azure and personal-service
-skills provide examples, pagination and asynchronous polling guidance. POST can
-be a read query, such as Azure Resource Graph; methods do not classify authority.
+a new fixed MCP tool or permission editor. The built-in `connected-services`
+skill explains the shared request workflow. The Agent reads its Azure, GitHub
+or Google references as needed for API examples, pagination and asynchronous
+polling. POST can be a read query, such as Azure Resource Graph; methods do not
+classify authority.
 
 Results contain provider `status`, JSON `body`, filtered response `headers`,
 provider `request_ids`, and CetiRun `correlation_id`. Provider HTTP 401/403 is

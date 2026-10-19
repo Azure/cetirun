@@ -171,8 +171,7 @@ COPY --chown=vibe:vibe agents/hermes/bootstrap/hermes-copilot-auth.py /usr/local
 COPY --chown=vibe:vibe configs/cetirun-auth-service.py /usr/local/share/cetirun/cetirun-auth-service.py
 COPY --chown=vibe:vibe configs/builtin-skill-sync.sh /usr/local/share/cetirun/builtin-skill-sync.sh
 COPY --chown=vibe:vibe agents/hermes/bootstrap/hermes-entrypoint.sh /usr/local/bin/hermes-entrypoint.sh
-COPY --chown=vibe:vibe skills/azure/ /home/vibe/.hermes/skills/azure/
-COPY --chown=vibe:vibe skills/personal-services/ /home/vibe/.hermes/skills/personal-services/
+COPY --chown=vibe:vibe skills/connected-services/ /home/vibe/.hermes/skills/connected-services/
 RUN chmod 755 /usr/local/bin/hermes-entrypoint.sh \
     /usr/local/share/cetirun/builtin-skill-sync.sh \
     /usr/local/share/cetirun/hermes-auth.sh \

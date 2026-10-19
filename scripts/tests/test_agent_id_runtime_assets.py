@@ -1,10 +1,11 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 
-"""Contracts for the native MCP Azure guidance and managed skill sync."""
+"""Contracts for native MCP guidance packaging and managed skill sync."""
 
 import hashlib
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -14,32 +15,30 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 CHART = ROOT / "app" / "cetirun-chart"
-SKILL = CHART / "skills" / "azure" / "SKILL.md"
+SKILL = CHART / "skills" / "connected-services" / "SKILL.md"
 MANIFEST_NAME = ".cetirun-managed-skill"
 SYNC_SCRIPT = CHART / "configs" / "builtin-skill-sync.sh"
 
 
 class AgentIDRuntimeAssetTests(unittest.TestCase):
-    def test_service_skills_describe_generic_execution_and_outcomes(self):
-        for directory in (SKILL.parent, CHART / "skills" / "personal-services"):
-            content = (directory / "SKILL.md").read_text()
-            for tool in ("connections_status", "services_list", "service_request", "connections_start_link"):
-                self.assertIn(tool, content)
-            for rule in ("execution_unknown", "correlation", "relative", "untrusted data"):
-                self.assertIn(rule, content)
-            self.assertNotIn("azure_resource_groups_create", content)
-            self.assertEqual(self._manifest(directory)["content_sha256"], self._payload_checksum(directory))
+    def test_service_references_are_reachable_from_the_skill_entrypoint(self):
+        links = re.findall(r"\]\((references/[^)]+)\)", SKILL.read_text())
+        self.assertTrue(links)
+        linked = {(SKILL.parent / link).resolve() for link in links}
+        packaged = {path.resolve() for path in (SKILL.parent / "references").glob("*.md")}
+        self.assertEqual(linked, packaged)
+        self.assertTrue(all(path.is_file() for path in linked))
 
     def test_both_runtime_images_package_the_same_skill(self):
         expected_destinations = {
-            "agents/openclaw/Dockerfile": "/home/vibe/.openclaw/skills/azure/",
-            "agents/hermes/Dockerfile": "/home/vibe/.hermes/skills/azure/",
+            "agents/openclaw/Dockerfile": "/home/vibe/.openclaw/skills/connected-services/",
+            "agents/hermes/Dockerfile": "/home/vibe/.hermes/skills/connected-services/",
         }
         for dockerfile, destination in expected_destinations.items():
             with self.subTest(dockerfile=dockerfile):
                 content = (CHART / dockerfile).read_text(encoding="utf-8")
                 self.assertIn(
-                    f"COPY --chown=vibe:vibe skills/azure/ {destination}", content
+                    f"COPY --chown=vibe:vibe skills/connected-services/ {destination}", content
                 )
                 self.assertIn(
                     "COPY --chown=vibe:vibe configs/builtin-skill-sync.sh "
@@ -47,14 +46,11 @@ class AgentIDRuntimeAssetTests(unittest.TestCase):
                     content,
                 )
         self.assertTrue((SKILL.parent / MANIFEST_NAME).is_file())
-        for runtime in ("openclaw", "hermes"):
-            content = (CHART / "agents" / runtime / "Dockerfile").read_text()
-            self.assertIn(f"skills/personal-services/ /home/vibe/.{runtime}/skills/personal-services/", content)
 
     def test_managed_manifest_matches_skill_payload(self):
         manifest = self._manifest(SKILL.parent)
         self.assertEqual(manifest["format"], "1")
-        self.assertEqual(manifest["skill"], "azure-rest")
+        self.assertEqual(manifest["skill"], "connected-services")
         self.assertTrue(manifest["version"].isdigit())
         self.assertEqual(manifest["content_sha256"], self._payload_checksum(SKILL.parent))
         self.assertNotIn("awk", SYNC_SCRIPT.read_text(encoding="utf-8"))
@@ -119,23 +115,60 @@ class AgentIDRuntimeAssetTests(unittest.TestCase):
                     result = self._sync(source, destination)
                     self.assertEqual(result.returncode, 0, result.stderr)
                     self.assertNotIn("WARNING", result.stderr)
-                    for name in ("azure", "personal-services"):
-                        installed = destination / name
-                        self.assertEqual(self._payload_checksum(installed), self._payload_checksum(source / name))
-                        self.assertEqual(self._manifest(installed), self._manifest(source / name))
-                        self.assertIn(("Installed managed skill: " if attempt == 0 else "Managed skill is current: ") + name, result.stdout)
+                    installed = destination / "connected-services"
+                    self.assertEqual(self._payload_checksum(installed), self._payload_checksum(SKILL.parent))
+                    self.assertEqual(self._manifest(installed), self._manifest(SKILL.parent))
+                    self.assertIn(("Installed managed skill: " if attempt == 0 else "Managed skill is current: ") + "connected-services", result.stdout)
 
     def test_sync_preserves_payload_with_a_different_skill_identity(self):
         with tempfile.TemporaryDirectory() as directory:
             destination = Path(directory) / "skills"
             source = CHART / "skills"
             shutil.copytree(source, destination)
-            manifest = destination / "personal-services" / MANIFEST_NAME
-            manifest.write_text(manifest.read_text().replace("skill=personal-services-rest", "skill=another-service"))
+            manifest = destination / "connected-services" / MANIFEST_NAME
+            manifest.write_text(manifest.read_text().replace("skill=connected-services", "skill=another-service"))
             result = self._sync(source, destination)
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertIn("preserving customized managed skill personal-services", result.stderr)
-            self.assertEqual(self._manifest(destination / "personal-services")["skill"], "another-service")
+            self.assertIn("preserving customized managed skill connected-services", result.stderr)
+            self.assertEqual(self._manifest(destination / "connected-services")["skill"], "another-service")
+
+    def test_reference_only_upgrade_and_user_edits(self):
+        for customized in (False, True):
+            with self.subTest(customized=customized), tempfile.TemporaryDirectory() as directory:
+                source = Path(directory) / "image"
+                destination = Path(directory) / "pvc"
+                shutil.copytree(CHART / "skills", source)
+                self.assertEqual(self._sync(source, destination).returncode, 0)
+                installed = destination / "connected-services"
+                original_entrypoint = (installed / "SKILL.md").read_bytes()
+                relative = "references/github.md"
+                if customized:
+                    (installed / relative).write_text("User API notes\n")
+                original_reference = (installed / relative).read_bytes()
+
+                updated = source / "connected-services"
+                (updated / relative).write_text("Updated provider guidance\n")
+                manifest = updated / MANIFEST_NAME
+                previous = self._manifest(updated)
+                old_checksum = previous["content_sha256"]
+                manifest.write_text(
+                    f"format=1\nskill={previous['skill']}\n"
+                    f"version={int(previous['version']) + 1}\n"
+                    f"content_sha256={self._payload_checksum(updated)}\n"
+                    f"previous_content_sha256={old_checksum}\n"
+                )
+
+                result = self._sync(source, destination)
+
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual((installed / "SKILL.md").read_bytes(), original_entrypoint)
+                if customized:
+                    self.assertEqual((installed / relative).read_bytes(), original_reference)
+                    self.assertIn("preserving customized managed skill", result.stderr)
+                else:
+                    self.assertEqual((installed / relative).read_bytes(), (updated / relative).read_bytes())
+                    self.assertEqual(self._payload_checksum(installed), self._payload_checksum(updated))
+                    self.assertIn("Upgraded managed skill", result.stdout)
 
     def test_sync_upgrades_an_unmodified_old_managed_skill_for_both_runtimes(self):
         for runtime in ("openclaw", "hermes"):

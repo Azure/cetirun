@@ -43,8 +43,10 @@ DELETE and OPTIONS. HTTP method is not a permission classification.
 
 The shared `app/internal/agenttools` package fixes services, providers and token
 audiences. A new JSON API route under an existing service requires no MCP tool,
-Broker permission catalog or Portal operation editor. Runtime skills describe
-API versions, bodies, pagination and polling. Skills do not confer authority.
+Broker permission catalog or Portal operation editor. The runtime's
+`connected-services` skill provides the shared request workflow and references
+for Azure, GitHub and Google API versions, bodies, pagination and polling.
+References are read only for the selected service. Skills do not confer authority.
 Binary transfer, streaming and multipart requests are outside v1.
 
 Results contain `status` (provider HTTP status), `body`, filtered `headers`,
