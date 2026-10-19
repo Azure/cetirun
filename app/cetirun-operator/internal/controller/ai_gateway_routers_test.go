@@ -15,6 +15,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/aigateway"
@@ -439,5 +440,45 @@ func TestRouterNamesDoNotBreakPolicyResolution(t *testing.T) {
 	allowTestPolicyModels(t, kube, "no-such-model")
 	if _, err := r.resolvePolicy(context.Background(), agent); err == nil || !isPolicyDependencyError(err) {
 		t.Fatalf("an unknown model must still be refused: %v", err)
+	}
+}
+
+func TestRemovedRouterQueuesTheAgentsGrantedIt(t *testing.T) {
+	agent := aiGatewayTestAgent(testAIGatewayTeam)
+	agent.Status.AIGateway = &api.AIGatewayStatus{ModelRouters: []api.AIGatewayModelRouterStatus{
+		{Name: "gone", Model: "cetirun-router-0000000000000000", Granted: true},
+	}}
+	r, kube, gateway := aiGatewayTestReconciler(t, agent, aiGatewayNamespace())
+	if err := kube.Status().Update(context.Background(), agent); err != nil {
+		t.Fatal(err)
+	}
+	gateway.models["cetirun-router-0000000000000000-deadbeef"] = aigateway.ModelRequest{
+		ID: "cetirun-router-0000000000000000-deadbeef", ModelName: "cetirun-router-0000000000000000",
+		AccessGroups: []string{"cetirun-router-0000000000000000"},
+	}
+	r.aiGatewayEvents = make(chan event.GenericEvent, 4)
+	reconcileRouters(t, r, kube, testAIGatewayTeam)
+	if _, ok := gateway.models["cetirun-router-0000000000000000-deadbeef"]; ok {
+		t.Fatal("the stale registration must be removed")
+	}
+	select {
+	case queued := <-r.aiGatewayEvents:
+		if queued.Object.GetName() != agent.Name {
+			t.Fatalf("queued %s", queued.Object.GetName())
+		}
+	default:
+		t.Fatal("the Agent granted the removed router must be queued")
+	}
+}
+
+func TestTeamModelRoutersReportADisabledGateway(t *testing.T) {
+	team := routerTeam(testRouter(testRouterName, testSmallModel, testSharedModelOne, testSharedModelOne))
+	r, kube, gateway := aiGatewayTestReconciler(t, team)
+	r.AIGateway.Enabled = false
+	current := reconcileRouters(t, r, kube, testAIGatewayTeam)
+	condition := apimeta.FindStatusCondition(current.Status.Conditions, api.ConditionTeamModelRoutersReady)
+	if condition == nil || condition.Status != metav1.ConditionUnknown || !strings.Contains(condition.Message, "not enabled") ||
+		len(current.Status.ModelRouters) != 1 || current.Status.ModelRouters[0].Ready || len(routerRequests(gateway)) != 0 {
+		t.Fatalf("condition %+v routers %+v", condition, current.Status.ModelRouters)
 	}
 }

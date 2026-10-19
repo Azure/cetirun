@@ -148,6 +148,9 @@ A router is not registered while a tier or the classifier names a model the
 Gateway does not offer as a shared model; the message names the router and the
 tier. A changed router replaces its registration under the same internal name,
 so instances keep their configuration, and a removed router is unregistered.
+The registrations appear in the Gateway's console under their internal
+`cetirun-router-` names; change them on the Team, not in the console, which
+the operator does not watch for edits.
 
 An instance gets a router only when it may use every model the router sends
 requests to, because the Gateway does not check a router's tier models against
