@@ -616,7 +616,10 @@ probe of a cycle at once: measured on LiteLLM 1.105.1, every deployment was
 probed within about 100 ms, and one GitHub account answered 11 to 43 of a
 cycle's Copilot probes with 429. LiteLLM retries a failed probe at the SDK
 level, which adds calls, unless the deployment sets
-`model_info.health_check_params: {max_retries: 0}`.
+`model_info.health_check_params: {max_retries: 0}`. The CetiRun operator
+registers every GitHub Copilot route that way: measured on LiteLLM 1.105.1
+against an upstream answering 429, a route registered with it got one call per
+probe, and one without it three.
 
 A probe answered with 429 or 408 is ignored for routing: the deployment keeps
 the state of its previous probe, for up to two intervals, and no cooldown

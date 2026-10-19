@@ -221,7 +221,8 @@ router:
   # requests are still sent. A probe answered with 429 or 408 does not change
   # routing: the deployment keeps its previous state, though /health lists it
   # as unhealthy. LiteLLM retries a failed probe unless the model sets
-  # model_info.health_check_params: {max_retries: 0}. The results are kept in
+  # model_info.health_check_params: {max_retries: 0}, as the CetiRun operator
+  # does for each Agent's GitHub Copilot routes. The results are kept in
   # PostgreSQL and shown by /health/latest and the console.
   healthChecks:
     # -- Run the probes and route by their results
