@@ -297,11 +297,24 @@ matched those rates exactly.
 ### When a budget runs out
 
 Budgets are in US dollars; there is no token allowance. A request over budget is
-refused with HTTP 422 and `Budget has been exceeded!` (measured on LiteLLM
-1.105.1). Before 1.105 LiteLLM answered 429, which clients treated as rate
-limiting: an agent retried several times and then told the user to wait,
-although the budget only came back at its reset. 422 is not a rate-limit
-status; how each agent reports it was not measured.
+refused with HTTP 402 and `Budget has been exceeded!` by default
+(`budgetExceededStatusCode`). LiteLLM's own default is 422 since 1.105, and 429
+before that. The status decides what an agent does next. Measured with
+OpenClaw 2026.9.6 and Hermes v2026.9.24 against an exhausted key:
+
+| Status | OpenClaw | Hermes |
+| --- | --- | --- |
+| 402 | stops after one request: a billing error, the API key has run out of credits | stops after one request: billing or credits exhausted |
+| 422 | stops after one request: the provider rejected the request schema or tool payload | stops after one request: the request was rejected as malformed |
+| 429 | 10 attempts over about two minutes, then "API rate limit reached" | 3 attempts, then asks the user to wait a minute and retry |
+
+With 402 both agents stop at once and say that credit ran out, which is
+closest to the cause; with 429 they keep retrying although the budget only
+comes back at its reset. The wording for 402 still points at the provider's
+billing or API key rather than the Gateway's budget, so a user may look for the
+problem in the wrong place. To choose another status, set
+`budgetExceededStatusCode` to 422 or 429; the chart refuses any other value.
+Other agents and other versions were not measured.
 
 A `budget_duration` of `30d` or `1mo` resets on the first of each month, UTC,
 rather than thirty days after the key was created. Resets are applied by a
@@ -583,13 +596,28 @@ LiteLLM's auto routing is not probed itself; its models are. Set
 `model_info.mode` on a model that is not a chat model, such as an embedding or
 image model, so it is probed the right way, and
 `model_info.disable_background_health_check: true` on a model that should not
-be probed. A probe answered with 429 or 408 counts as healthy: cooldowns
-handle those on live requests.
+be probed.
+
+Probes start at most `router.healthChecks.concurrency` at a time, 8 by
+default (`health_check_concurrency`). Without a limit LiteLLM starts every
+probe of a cycle at once: measured on LiteLLM 1.105.1, every deployment was
+probed within about 100 ms, and one GitHub account answered 11 to 43 of a
+cycle's Copilot probes with 429. LiteLLM retries a failed probe at the SDK
+level, which adds calls, unless the deployment sets
+`model_info.health_check_params: {max_retries: 0}`.
+
+A probe answered with 429 or 408 is ignored for routing: the deployment keeps
+the state of its previous probe, for up to two intervals, and no cooldown
+starts. `/health` and the stored results still list it as unhealthy. The
+results are stored in PostgreSQL.
 
 With Redis, which the chart requires above one replica, one replica probes at
 a time, under a lock in Redis, and the others use its results
 (`use_shared_health_check`); the chart sets `DEFAULT_SHARED_HEALTH_CHECK_TTL`
-to the interval so a shared result is not reused past the next probe. Without
+to the interval so a shared result is not reused past the next probe, and
+`DEFAULT_SHARED_HEALTH_CHECK_LOCK_TTL` to the interval as well: the lock
+otherwise expires after 60 seconds, and a longer cycle would let another
+replica probe every deployment again. Without
 Redis, the single replica probes on its own. Measured on LiteLLM 1.105.1 with
 two replicas, a 30-second interval and six mock deployments, two of them added
 through the management API with per-Agent Copilot access groups: each
@@ -1036,9 +1064,15 @@ Deleting one of two replicas while requests flowed through the Service, both
 normally and by force, failed none of 100 requests on a single-node test
 cluster.
 
-The chart creates no PodDisruptionBudget and sets no anti-affinity, so both
-replicas can land on one node and be evicted together when it is drained. On a
-multi-node cluster, use `affinity` to spread them.
+Above one replica the chart creates a PodDisruptionBudget for the Gateway pods
+with `maxUnavailable: 1` (`podDisruptionBudget.enabled`, on by default), so a
+node drain evicts one replica at a time and waits while another is
+unavailable. It is not created for a single replica, and `maxUnavailable`
+rather than `minAvailable` means it does not block a drain even when the
+Deployment has been scaled down to one pod. The bundled PostgreSQL and Valkey
+have none. The chart sets no anti-affinity, so both replicas can still land on
+one node and be lost together when that node fails. On a multi-node cluster,
+use `affinity` to spread them.
 
 ### When Redis is unavailable
 
@@ -1374,7 +1408,7 @@ which this README once recorded as a gap in LiteLLM.
 Recorded and deferred: none of these stops the Gateway from serving agents.
 
 **Not in the chart yet.** Redis TLS, which Azure Cache for Redis requires; and
-a PodDisruptionBudget and anti-affinity. LiteLLM supports both.
+anti-affinity for the Gateway replicas (set `affinity` by hand).
 
 **Prices are not pinned to the image.** LiteLLM fetches its price table from
 GitHub at startup and falls back to the copy it ships with when that fails, so

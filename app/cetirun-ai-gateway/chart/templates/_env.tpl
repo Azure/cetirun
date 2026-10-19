@@ -84,6 +84,12 @@ Everything the proxy needs, including credentials held in chart-managed Secrets.
        reused past the next probe. */}}
 - name: DEFAULT_SHARED_HEALTH_CHECK_TTL
   value: {{ int $router.healthChecks.intervalSeconds | quote }}
+{{- /* The lock that makes one replica probe for all expires after this many
+       seconds, 60 unless set. A cycle that runs longer, as one with many
+       deployments and a concurrency limit can, would let another replica take
+       the lock and probe everything again. */}}
+- name: DEFAULT_SHARED_HEALTH_CHECK_LOCK_TTL
+  value: {{ int $router.healthChecks.intervalSeconds | quote }}
 {{- end }}
 {{- $settings := include "cetirun-ai-gateway.logsAndMetrics" . | fromJson }}
 {{- if $settings.metrics.enabled }}

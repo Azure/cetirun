@@ -18,6 +18,17 @@
             "minimum": 1,
             "default": 2
         },
+        "podDisruptionBudget": {
+            "type": "object",
+            "description": "A PodDisruptionBudget for the Gateway pods with maxUnavailable 1, created only when replicaCount is above 1.",
+            "properties": {
+                "enabled": {
+                    "type": "boolean",
+                    "description": "Create the PodDisruptionBudget when replicaCount is above 1",
+                    "default": true
+                }
+            }
+        },
         "operatorIntegration": {
             "type": "boolean",
             "description": "Serve CetiRun Agents: derive shared-model deployment/access-group bindings from chart configuration, reserve the copilot/ model-name prefix for per-Agent GitHub Copilot routes, and check router fallback targets against the caller's key (general_settings.enforce_fallback_model_access). The cetirun-platform chart turns it on.",
@@ -103,6 +114,12 @@
             "description": "Refuse requests to models whose price LiteLLM does not know. A model missing from the price table costs zero, and budget checks are skipped for zero-cost models, so a budget would silently not apply. Azure OpenAI deployment names are not in that table.",
             "default": true
         },
+        "budgetExceededStatusCode": {
+            "type": "integer",
+            "description": "HTTP status of a request refused because its key's or team's budget is exhausted (LiteLLM's budget_exceeded_status_code). 402 makes agents report exhausted credits; 422 a malformed request; 429 a rate limit they retry.",
+            "enum": [402, 422, 429],
+            "default": 402
+        },
         "router": {
             "type": "object",
             "description": "How a request reaches one of the deployments that serve its model_name, and what happens when that deployment fails. Rendered into LiteLLM's router_settings and general_settings.",
@@ -173,6 +190,12 @@
                             "description": "Seconds between probes",
                             "minimum": 30,
                             "default": 300
+                        },
+                        "concurrency": {
+                            "type": "integer",
+                            "description": "Probes in flight at once (general_settings.health_check_concurrency)",
+                            "minimum": 1,
+                            "default": 8
                         }
                     }
                 }

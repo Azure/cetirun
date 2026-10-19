@@ -19,6 +19,14 @@ global:
 # section for why this is not optional. The bundled Valkey provides it.
 replicaCount: 2
 
+# -- A PodDisruptionBudget for the Gateway pods, with maxUnavailable 1, so a
+# node drain evicts one replica at a time. Created only when replicaCount is
+# above 1, and with maxUnavailable rather than minAvailable it does not block
+# a drain even when the Deployment is scaled down to one pod. It does not
+# spread the replicas across nodes; use affinity for that.
+podDisruptionBudget:
+  enabled: true
+
 # -- Serve CetiRun Agents. The CetiRun operator gives each Agent a virtual key
 # restricted to access groups, and registers each Agent's GitHub Copilot
 # models under copilot/<model> in the Agent's own group. Turned on, the chart
@@ -133,6 +141,14 @@ models: []
 # the Gateway would serve.
 blockUnpricedModels: true
 
+# -- The HTTP status of a request refused because its key's or team's budget
+# is exhausted (LiteLLM's budget_exceeded_status_code): 402, 422 or 429.
+# Measured with OpenClaw 2026.9.6 and Hermes v2026.9.24: with 402 both stop
+# after one request and report exhausted credits or billing; with 422 both
+# stop but report a malformed request; with 429 both retry it as a rate limit
+# and tell the user to wait. See the README's "When a budget runs out".
+budgetExceededStatusCode: 402
+
 # -- How a request reaches one of the deployments that serve its model_name,
 # and what happens when that deployment fails. The chart ships these
 # defaults; which deployments serve a model, and which model falls back to
@@ -201,13 +217,21 @@ router:
   # model, such as an embedding or image model, so it is probed the right way,
   # and model_info.disable_background_health_check: true on a model that
   # should not be probed. When every deployment of a model failed its probe,
-  # requests are still sent. The results are kept in PostgreSQL and shown by
-  # /health/latest and the console.
+  # requests are still sent. A probe answered with 429 or 408 does not change
+  # routing: the deployment keeps its previous state, though /health lists it
+  # as unhealthy. LiteLLM retries a failed probe unless the model sets
+  # model_info.health_check_params: {max_retries: 0}. The results are kept in
+  # PostgreSQL and shown by /health/latest and the console.
   healthChecks:
     # -- Run the probes and route by their results
     enabled: true
     # -- Seconds between probes
     intervalSeconds: 300
+    # -- Probes in flight at once (LiteLLM's health_check_concurrency). Without
+    # a limit every deployment is probed at the same moment, and a provider
+    # account that serves many of them, such as one GitHub account's Copilot
+    # routes, answers the burst with 429.
+    concurrency: 8
 
 # -- Provider API keys, surfaced to the proxy as environment variables and
 # referenced from the model list as `os.environ/NAME`.
