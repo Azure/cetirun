@@ -42,7 +42,8 @@ Use the matching OpenClaw image, which includes this init process; an older
 image without it cannot run the updated initializer commands. Helper failures
 keep their exit status, and resource limits, authentication cleanup and the
 execution hold are unchanged. Standalone OpenClaw entrypoints are unchanged.
-Existing prepared templates retain their exact recorded command expectations.
+Existing prepared templates retain their exact recorded command expectations;
+this does not replace or restart an existing native lifetime.
 
 This minimal example selects no skills. With no skills catalog configured, the
 native profile supplies an empty read-only skills directory and needs no shared

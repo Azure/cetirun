@@ -3,6 +3,16 @@ Copyright (c) Microsoft Corporation.
 Licensed under the MIT License.
 */}}
 {{- $config := deepCopy .Values.openclaw.config }}
+{{- /* Use the desktop's headed browser when available; otherwise let OpenClaw
+   launch a headless browser. Explicit boolean preferences take precedence. */}}
+{{- $browser := dig "browser" (dict) $config | default dict }}
+{{- if eq (index $browser "attachOnly") nil }}
+{{- $_ := set $browser "attachOnly" .Values.desktop.enabled }}
+{{- end }}
+{{- if eq (index $browser "headless") nil }}
+{{- $_ := set $browser "headless" (not .Values.desktop.enabled) }}
+{{- end }}
+{{- $_ := set $config "browser" $browser }}
 {{- if and .Values.sandboxWorkload (hasKey .Values.sandboxWorkload "trustedProxyIPs") }}
 {{- $gateway := dig "gateway" (dict) $config }}
 {{- $_ := set $gateway "trustedProxies" (.Values.sandboxWorkload.trustedProxyIPs | default list) }}
