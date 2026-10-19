@@ -251,6 +251,35 @@ only passed to the reserved `skills.clawHub` list, not installed. Shared storage
 uses chart-level protocol and mount options; those are not fields on
 `skillStorage`. See [configuration and skills](../../concepts/configuration/).
 
+### Team and Sandbox administration
+
+Portal administrators can create and edit Teams with `agentPolicyRef`,
+`sandboxRefs`, and `defaultSandboxRef`. The Portal requires complete bindings,
+validates referenced resources, and checks that the default belongs to the
+allowed Sandbox set and Team Skills are permitted by the Policy. The Team DTO
+returns these fields along with `uid` and `resourceVersion`; updates and deletes
+must send those two version fields. A stale version returns `409 Conflict`,
+and missing version fields return `428 Precondition Required`.
+
+The **Admin → Sandboxes** pages manage the complete Sandbox configuration:
+runtime type, Agent and helper resource requests/limits, HOME storage, and
+scratch size. They use these admin-only endpoints:
+
+- `GET` and `POST /api/v1/admin/sandboxes`
+- `GET`, `PUT`, and `DELETE /api/v1/admin/sandboxes/{name}`
+
+The Sandbox request contains `name`, `type`, `resources`, and `storage` with
+the same structure as the CRD spec. Updates and deletes also require the `uid`
+and `resourceVersion` returned by a read. The response reports `ready` only
+from a condition for the current generation. Saving a Sandbox does not
+install a runtime or establish runtime readiness.
+
+Team and Sandbox changes use the existing configuration coordination client
+when configured, including conditional writes, retained uncertain outcomes,
+and background deletion. Admission remains responsible for platform
+compatibility and current consumer checks. Kubernetes validation/admission
+rejections are shown in the editor, while transport failures stay in logs.
+
 ## Sandbox and AgentPolicy
 
 `Sandbox` describes the prepared `kata` or `gvisor` runtime, Agent/helper
@@ -355,6 +384,37 @@ configuration coordination protects updates and deletions, not new resources.
 The API validates model access and budgets as one unit: Copilot or shared model
 access requires a positive default and maximum monthly USD budget, and the
 default cannot exceed the maximum.
+
+#### Agent creation options
+
+The creation form selects a Team before offering Harness and model choices.
+`GET /api/v1/instance/create-options?team=<name>` requires a signed-in user and
+returns the selected Team, Policy name when bound, allowed Agent types, effective
+Gateway catalog, Agent Identity availability/requirement, and any configuration
+blocker. Responses use `Cache-Control: no-store`. This endpoint does not expose
+administrative Policy fields or grant runtime authorization.
+
+Harness choices intersect deployment settings with `harnesses.allowed`. Shared
+models intersect the Gateway catalog with `modelAccess.sharedModels.allowed`;
+Copilot requires both deployment availability and Policy permission. Required
+Agent Identity is selected automatically and cannot be turned off. It also
+requires the deployment feature, verified owner, Policy credential-service
+entitlement, and Entra capability. Missing prerequisites block creation.
+
+Both Agent creation endpoints re-read the same constraints before writing an
+Agent or credentials, including a private-registry creation retry. Explicitly
+forbidden choices are rejected; omitted model-source switches use the currently
+available sources and are persisted as explicit booleans. The default model must
+belong to an enabled, authorized source. Team default Skills must satisfy the
+Policy; the runtime continues to apply its default Gateway budget. No Skills or
+budget editor is added to the Agent form.
+
+Incomplete Team bindings, missing or deleting Policies, unreadable dependencies,
+and no available Harness/model source cannot fall back to unrestricted creation.
+A Team without Policy/Sandbox settings retains optional policy assignment.
+Policy-controlled native Agents require the AI Gateway. Configuration admission
+and runtime enforcement remain responsible for final authorization and execution;
+available form choices do not establish Sandbox readiness.
 
 #### Activation boundary
 

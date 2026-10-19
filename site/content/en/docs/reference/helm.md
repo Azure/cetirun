@@ -133,9 +133,15 @@ ttyd uses an origin check. Template validation rejects known port collisions;
 the entrypoint validates the port and shell. Neither is a replacement for
 authenticated ingress. Do not expose terminal, noVNC, or Chrome debugging ports
 directly to an untrusted network.
-Disabling the desktop also requires disabling OpenClaw browser `attachOnly`
-or configuring a compatible browser path; template validation rejects
-`desktop.enabled=false` with `attachOnly=true`.
+Setting `desktop.enabled=false` automatically defaults OpenClaw browser
+`attachOnly` to `false` and `headless` to `true`, removing the dependency on the
+desktop's CDP endpoint. With the desktop enabled, these defaults are `true` and `false`.
+Explicit boolean values under `openclaw.config.browser` override these defaults;
+omitted or null values use the desktop-dependent defaults. Template validation
+still rejects an enabled browser with explicit `attachOnly=true` when the desktop
+is disabled. Set `openclaw.config.browser.enabled=false` to disable browser use.
+Browser automation without the desktop requires a compatible Chrome/Chromium
+executable in the Agent image; disabling the desktop does not install one.
 
 ### Resources and availability
 
@@ -226,8 +232,9 @@ for OpenAI/Anthropic, configure both the provider's model and credentials.
 
 ### Agent configuration and health
 
-`openclaw.config` supplies the native configuration. Browser support is enabled,
-`headless` is false, the gateway attaches to the desktop CDP profile, and logging is `info`.
+`openclaw.config` supplies the native configuration. Browser support is enabled
+and logging is `info`. With the default desktop enabled, the gateway attaches to
+its headed CDP browser; without the desktop, it defaults to headless browser mode.
 The chart enables the OpenClaw doctor init step through `openclaw.doctor.enabled`.
 It runs `openclaw doctor --fix --non-interactive --yes` on the persistent home;
 this is a startup mutation, not a read-only diagnostic. The `doctor.enabled`

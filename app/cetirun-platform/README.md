@@ -77,6 +77,21 @@ Each component chart remains independently installable. Moving existing
 standalone releases into this umbrella requires a separately planned handover;
 the chart never adopts resources owned by another release.
 
+## Sandbox creation profiles
+
+Configure `cetirun-portal.sandboxRuntimeProfiles` for each supported built-in
+Sandbox runtime. Each entry contains `chartVersion`, a digest-pinned `image`,
+and `port` (18789 for OpenClaw, 8642 for Hermes). The chart version must match
+the Operator's configured runtime chart, and that chart's profile must approve
+the image and port. Only configure harnesses supported by the selected platform;
+the native single-start profile currently supports OpenClaw.
+
+The Portal records these inputs in the initial Agent creation request, so users
+do not enter deployment coordinates in the creation form. Explicit image/port
+requests remain subject to admission. Missing or invalid deployment profiles
+reject creation before any Agent, namespace or Secret is written. These defaults
+do not authorize a runtime or change the selected AgentPolicy/Sandbox checks.
+
 ## AI Gateway
 
 OpenClaw and Hermes Agents take their models from the AI Gateway, so the

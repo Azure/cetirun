@@ -171,17 +171,17 @@ func (b *Bundle) validateContainer(container corev1.Container, image string) err
 			script = "/etc/cetirun/hermes-init-home.sh"
 			mounts = append(mounts, corev1.VolumeMount{Name: "secrets", MountPath: "/etc/cetirun-secrets", ReadOnly: true})
 		}
-		if !slices.Equal(container.Command, []string{"/bin/sh", script}) || len(container.Args) != 0 {
+		if !b.matchesInitCommand(container.Command, []string{"/bin/sh", script}) || len(container.Args) != 0 {
 			return fmt.Errorf("unapproved HOME initializer")
 		}
 	case "doctor":
-		if !slices.Equal(container.Command, []string{"openclaw", "doctor", "--fix", "--non-interactive", "--yes"}) ||
+		if !b.matchesInitCommand(container.Command, []string{"openclaw", "doctor", "--fix", "--non-interactive", "--yes"}) ||
 			len(container.Args) != 0 {
 			return fmt.Errorf("unapproved doctor helper")
 		}
 	case "retire-copilot-sign-in", "retire-direct-model-auth":
 		if b.input.GatewayKey == nil || b.input.AgentType != "openclaw" ||
-			!slices.Equal(container.Command, []string{"/bin/sh", "/etc/cetirun/" + container.Name + ".sh"}) ||
+			!b.matchesInitCommand(container.Command, []string{"/bin/sh", "/etc/cetirun/" + container.Name + ".sh"}) ||
 			len(container.Args) != 0 {
 			return fmt.Errorf("unapproved native Gateway initializer")
 		}
@@ -207,6 +207,16 @@ func (b *Bundle) validateContainer(container corev1.Container, image string) err
 		return fmt.Errorf("%s has unapproved HOME, skills, scratch or identity mounts", container.Name)
 	}
 	return nil
+}
+
+func (b *Bundle) matchesInitCommand(actual, expected []string) bool {
+	// Existing chart preparations retain their exact original entrypoints.
+	if slices.Equal(actual, expected) {
+		return true
+	}
+	return b.input.AgentType == "openclaw" && len(actual) == len(expected)+3 &&
+		slices.Equal(actual[:3], []string{"/usr/bin/tini", "-g", "--"}) &&
+		slices.Equal(actual[3:], expected)
 }
 
 func sortMounts(mounts []corev1.VolumeMount) {

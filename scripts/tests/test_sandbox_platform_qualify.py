@@ -101,6 +101,7 @@ class SandboxPlatformQualificationTests(unittest.TestCase):
         self.assertEqual(args[0][:7], ["kubectl", "--kubeconfig", "/example/test-config", "--context", "test-context", "--request-timeout=15s", "get"])
         self.assertEqual(kwargs["timeout"], 30)
         self.assertFalse(kwargs["check"])
+        self.assertEqual(kwargs["env"]["KUBECTL_KUBERC"], "false")
 
     def test_wrong_cluster_denies_before_other_reads(self):
         client = qualify.Kubernetes("/example/test-config", "test-context", "expected-uid")

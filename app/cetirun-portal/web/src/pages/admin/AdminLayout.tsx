@@ -37,6 +37,9 @@ export function AdminLayout() {
         <NavLink to="/admin/policies" style={navStyle}>
           Agent policies
         </NavLink>
+        <NavLink to="/admin/sandboxes" style={navStyle}>
+          Sandboxes
+        </NavLink>
         <NavLink to="/admin/instances" style={navStyle}>
           Agents
         </NavLink>

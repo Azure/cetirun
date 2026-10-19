@@ -120,6 +120,7 @@ class Kubernetes:
                 self.prefix + args,
                 input=None if document is None else json.dumps(document),
                 text=True, capture_output=True, timeout=timeout, check=False,
+                env={**os.environ, "KUBECTL_KUBERC": "false"},
             )
         except (OSError, subprocess.TimeoutExpired) as error:
             raise QualificationError("Explicit-target Kubernetes command unavailable or timed out") from error

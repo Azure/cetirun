@@ -126,6 +126,9 @@ COPY --chown=vibe:vibe agents/openclaw/bootstrap/entrypoint.sh /usr/local/bin/en
 
 USER root
 COPY --chown=vibe:vibe configs/builtin-skill-sync.sh /usr/local/share/cetirun/builtin-skill-sync.sh
+RUN tdnf install -y tini && tdnf clean all && \
+    test -x /usr/bin/tini
+RUN result=0; /usr/bin/tini -s -g -- /bin/sh -c 'exit 37' || result=$?; test "$result" -eq 37
 RUN chmod 755 /usr/local/share/cetirun/builtin-skill-sync.sh \
     /usr/local/bin/cetirun-agent \
     /usr/local/bin/entrypoint.sh

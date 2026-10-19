@@ -114,6 +114,13 @@ features:
   # requires both.
   aiGatewayEnabled: true
 
+# -- Approved built-in runtime inputs for Sandbox creation. Each configured
+# type needs chartVersion (matching the Operator), a digest-pinned image from
+# that chart's runtime profile, and port (OpenClaw 18789 or Hermes 8642).
+# Configure only runtimes supported by the selected Sandbox platform.
+# Missing/invalid profiles reject creation before any Kubernetes write.
+sandboxRuntimeProfiles: {}
+
 aiGateway:
   # -- Namespace where the operator publishes the shared-model catalog (the
   # operator's namespace).

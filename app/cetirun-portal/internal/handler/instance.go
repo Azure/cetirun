@@ -621,6 +621,22 @@ func (h *InstanceHandler) CreateInstance(w http.ResponseWriter, r *http.Request)
 		SandboxRef:           sandboxRef,
 		ModelAccess:          modelAccess,
 	}
+	if sandboxRef != "" && agent.Type != cetirunv1alpha1.AgentTypeCustom {
+		runtime, available := h.Config.SandboxRuntimeFor(agent.Type)
+		if !available {
+			writeError(w, http.StatusServiceUnavailable, "runtime_unavailable", "The selected agent runtime is not configured for Sandbox creation; ask an administrator to configure its approved runtime profile")
+			return
+		}
+		// Preserve explicit requests so admission can validate their qualification.
+		// Defaults come from deployment configuration, never browser authority.
+		if agent.Image == nil {
+			agent.Image = &runtime.Image
+		}
+		if agent.Port == nil {
+			agent.Port = &runtime.Port
+		}
+		options.ChartVersion = runtime.ChartVersion
+	}
 	if req.RegistryAuth != nil {
 		id, err := kube.RegistryID()
 		if err != nil {

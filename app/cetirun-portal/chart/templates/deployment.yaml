@@ -69,6 +69,8 @@ spec:
               value: {{ if hasKey ((.Values.features) | default dict) "maxInstancesPerUser" }}{{ .Values.features.maxInstancesPerUser | quote }}{{ else }}"1"{{ end }}
             - name: ALLOWED_AGENT_TYPES
               value: {{ join "," (default (list "hermes" "openclaw") ((.Values.features).allowedAgentTypes)) | quote }}
+            - name: SANDBOX_RUNTIME_PROFILES
+              value: {{ .Values.sandboxRuntimeProfiles | toJson | quote }}
             - name: FEATURE_AGENT_IDENTITY_ENABLED
               value: {{ default false ((.Values.features).agentIdentityEnabled) | quote }}
             - name: FEATURE_AI_GATEWAY_ENABLED

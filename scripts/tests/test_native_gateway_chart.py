@@ -144,6 +144,28 @@ def gateway_models(model, *, integrated):
 
 @unittest.skipUnless(shutil.which("helm"), "requires Helm 3 or 4")
 class NativeGatewayChartTests(unittest.TestCase):
+    def test_native_initializers_have_an_init_process_without_changing_their_work(self):
+        values = native_values()
+        objects = render(RUNTIME_CHART, values)
+        pod = object_of_kind(objects, "StatefulSet")["spec"]["template"]["spec"]
+        expected = {
+            "init-home-data": ["/bin/sh", "/etc/cetirun/init-home.sh"],
+            "doctor": ["openclaw", "doctor", "--fix", "--non-interactive", "--yes"],
+            "retire-copilot-sign-in": ["/bin/sh", "/etc/cetirun/retire-copilot-sign-in.sh"],
+            "retire-direct-model-auth": ["/bin/sh", "/etc/cetirun/retire-direct-model-auth.sh"],
+        }
+        self.assertEqual({container["name"] for container in pod["initContainers"]}, set(expected))
+        for container in pod["initContainers"]:
+            with self.subTest(container=container["name"]):
+                self.assertEqual(container["command"], ["/usr/bin/tini", "-g", "--", *expected[container["name"]]])
+                self.assertFalse(container.get("args"))
+                self.assertEqual(container["resources"], values["sandboxWorkload"]["helperResources"])
+                self.assertEqual(container["securityContext"], values["sandboxWorkload"]["securityContext"])
+        self.assertEqual(pod["resources"], values["sandboxWorkload"]["podResources"])
+        self.assertEqual(pod["runtimeClassName"], values["runtimeClassName"])
+        self.assertEqual(object_of_kind(objects, "StatefulSet")["spec"]["replicas"], 0)
+        self.assertFalse(pod["automountServiceAccountToken"])
+
     def test_managed_gateway_auth_cache_uses_current_authorization(self):
         for integrated in (False, True):
             for replicas in (1, 2):
