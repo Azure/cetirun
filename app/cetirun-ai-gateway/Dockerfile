@@ -72,8 +72,9 @@ ENV PATH=/app/.venv/bin:${PATH} \
 COPY --from=builder /app/.venv /app/.venv
 COPY --from=builder /opt/prisma /opt/prisma
 COPY entrypoint.py /usr/local/bin/cetirun-ai-gateway
-# CetiRun's additions to the proxy, such as the per-request log callback that
-# the entrypoint registers when the chart turns the request log on.
+# CetiRun's additions to the proxy: the guard callback the entrypoint always
+# registers, and the per-request log callback it registers when the chart turns
+# the request log on.
 COPY cetirun_ai_gateway /opt/cetirun-ai-gateway/python/cetirun_ai_gateway
 
 # Runs as the base image's nonroot user (65532). The checks fail the build
@@ -81,8 +82,8 @@ COPY cetirun_ai_gateway /opt/cetirun-ai-gateway/python/cetirun_ai_gateway
 # missing CLI, or that carries the enterprise package. /app/schema.prisma is
 # where the proxy's startup schema-drift check looks, as in the upstream image;
 # migrations use the copy with migrations beside it (entrypoint.py). The last
-# check loads the request log callback against the LiteLLM installed here, and
-# the LiteLLM entry points the entrypoint uses to register it, so a LiteLLM
+# check loads both callbacks against the LiteLLM installed here, and the
+# LiteLLM entry points the entrypoint uses to register them, so a LiteLLM
 # upgrade that moves what they build on fails the build, not the proxy's start.
 RUN chmod 0755 /usr/local/bin/cetirun-ai-gateway && \
     test "$(id -un 65532)" = nonroot && \
@@ -93,7 +94,7 @@ RUN chmod 0755 /usr/local/bin/cetirun-ai-gateway && \
     test -f /opt/prisma/binaries/node_modules/prisma/build/index.js && \
     python -c "from prisma.client import BINARY_PATHS; paths = list(BINARY_PATHS.query_engine.values()); assert paths and all(p.startswith('/opt/prisma/') for p in paths), paths" && \
     python -c "import importlib.util, sys; sys.exit(importlib.util.find_spec('litellm_enterprise') is not None)" && \
-    LITELLM_LOCAL_MODEL_COST_MAP=True python -c "import litellm; from litellm.integrations.custom_logger import CustomLogger; from cetirun_ai_gateway.request_log import handler; assert isinstance(handler, CustomLogger); assert callable(litellm.logging_callback_manager.add_litellm_callback); from litellm.proxy.proxy_cli import run_server; assert callable(run_server.main)"
+    LITELLM_LOCAL_MODEL_COST_MAP=True python -c "import litellm; from litellm.integrations.custom_logger import CustomLogger; from cetirun_ai_gateway.request_log import handler; from cetirun_ai_gateway.guard import handler as guard; assert isinstance(handler, CustomLogger) and isinstance(guard, CustomLogger); assert callable(litellm.logging_callback_manager.add_litellm_callback); from litellm.proxy.proxy_cli import run_server; assert callable(run_server.main)"
 
 USER 65532:65532
 WORKDIR /app

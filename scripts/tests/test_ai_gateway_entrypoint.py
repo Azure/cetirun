@@ -76,7 +76,7 @@ class CopilotProxyModeTest(unittest.TestCase):
 
 
 class GatewayModeTest(unittest.TestCase):
-    """The Gateway proxy, with and without the request log.
+    """The Gateway proxy, always with the guard, with and without the request log.
 
     LiteLLM is not installed for these tests: stand-ins record what the
     entrypoint registers and in which order relative to starting the proxy.
@@ -88,6 +88,7 @@ class GatewayModeTest(unittest.TestCase):
         self.entrypoint = load_entrypoint()
         self.events = []
         self.handler = object()
+        self.guard = object()
         test = self
 
         class RunServer:
@@ -109,6 +110,8 @@ class GatewayModeTest(unittest.TestCase):
         package.__path__ = []
         request_log = types.ModuleType("cetirun_ai_gateway.request_log")
         request_log.handler = self.handler
+        guard = types.ModuleType("cetirun_ai_gateway.guard")
+        guard.handler = self.guard
         self.modules = {
             "litellm": litellm,
             "litellm.proxy": proxy,
@@ -116,6 +119,7 @@ class GatewayModeTest(unittest.TestCase):
             "litellm.proxy.proxy_cli": proxy_cli,
             "cetirun_ai_gateway": package,
             "cetirun_ai_gateway.request_log": request_log,
+            "cetirun_ai_gateway.guard": guard,
         }
 
     def start(self, environ, args=None):
@@ -128,22 +132,24 @@ class GatewayModeTest(unittest.TestCase):
                 self.entrypoint.gateway(self.ARGS if args is None else args, environ)
         return raised.exception.code
 
-    def test_without_the_request_log_litellm_starts_as_before(self):
+    def test_without_the_request_log_the_guard_is_still_registered(self):
         self.start({})
-        self.assertEqual(self.events, [("exec", "litellm", ["litellm", *self.ARGS])])
+        self.assertEqual(self.events, [("callback", self.guard), ("run", self.ARGS, "litellm", False)])
 
     def test_the_spend_log_stays_on_without_the_request_log(self):
         self.start({"CETIRUN_SPEND_LOGS": "false"})
-        self.assertEqual(self.events, [("exec", "litellm", ["litellm", *self.ARGS])])
+        self.assertEqual(self.events, [("callback", self.guard), ("run", self.ARGS, "litellm", False)])
         self.assertFalse(self.proxy_server.disable_spend_logs)
 
     def test_the_request_log_is_registered_before_the_proxy_starts(self):
         self.start({"CETIRUN_REQUEST_LOG": "true"})
-        self.assertEqual(self.events, [("callback", self.handler), ("run", self.ARGS, "litellm", False)])
+        self.assertEqual(self.events, [
+            ("callback", self.guard), ("callback", self.handler), ("run", self.ARGS, "litellm", False)])
 
     def test_the_spend_log_is_turned_off_together_with_the_request_log(self):
         self.start({"CETIRUN_REQUEST_LOG": "true", "CETIRUN_SPEND_LOGS": "false"})
-        self.assertEqual(self.events, [("callback", self.handler), ("run", self.ARGS, "litellm", True)])
+        self.assertEqual(self.events, [
+            ("callback", self.guard), ("callback", self.handler), ("run", self.ARGS, "litellm", True)])
 
     def test_workers_that_would_load_litellm_again_are_refused(self):
         cases = [
@@ -151,23 +157,24 @@ class GatewayModeTest(unittest.TestCase):
             ({}, ["--port", "4000", "--num_workers=3"]),
             ({"NUM_WORKERS": "4"}, ["--port", "4000"]),
             ({}, ["--port", "4000", "--run_gunicorn"]),
+            ({"CETIRUN_REQUEST_LOG": "true"}, ["--port", "4000", "--num_workers", "2"]),
         ]
         for environ, args in cases:
             with self.subTest(environ=environ, args=args):
                 self.events.clear()
-                code = self.start({"CETIRUN_REQUEST_LOG": "true", **environ}, args)
+                code = self.start(environ, args)
                 self.assertIn("one uvicorn process", str(code))
                 self.assertEqual(self.events, [])
 
     def test_one_worker_is_accepted(self):
         self.start({"CETIRUN_REQUEST_LOG": "true", "NUM_WORKERS": "1"}, ["--port", "4000", "--num_workers", "1"])
-        self.assertEqual(self.events[0], ("callback", self.handler))
+        self.assertEqual(self.events[:2], [("callback", self.guard), ("callback", self.handler)])
 
     def test_a_litellm_without_the_spend_log_setting_does_not_start(self):
         del self.proxy_server.disable_spend_logs
         code = self.start({"CETIRUN_REQUEST_LOG": "true", "CETIRUN_SPEND_LOGS": "false"})
         self.assertIn("disable_spend_logs", str(code))
-        self.assertEqual(self.events, [("callback", self.handler)])
+        self.assertEqual(self.events, [("callback", self.guard), ("callback", self.handler)])
 
     def test_other_arguments_start_the_gateway(self):
         with mock.patch.object(self.entrypoint, "gateway") as gateway:

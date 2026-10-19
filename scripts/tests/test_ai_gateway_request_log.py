@@ -369,25 +369,10 @@ class RequestLogTest(unittest.TestCase):
         origins = [json.loads(line).get("call_origin") for line in handler.stream.getvalue().splitlines()]
         self.assertEqual(origins, ["autorouter_classifier", "autorouter_classifier", None])
 
-    def test_client_debug_output_is_always_dropped(self):
-        data = {"model": "gpt-4o", "litellm_request_debug": True}
-        result = asyncio.run(self.handler().async_pre_call_hook(None, None, data, "acompletion"))
-        self.assertIsNone(result)
-        self.assertEqual(data, {"model": "gpt-4o"})
-
-    def test_callers_cannot_change_the_retries(self):
-        # num_retries also carries the x-litellm-num-retries header: LiteLLM
-        # copies it into the request before the callback runs. max_retries
-        # stays: measured, it did not add an upstream call.
-        data = {
-            "model": "gpt-4o",
-            "num_retries": 3,
-            "model_group_retry_policy": {"gpt-4o": {"InternalServerErrorRetries": 3}},
-            "max_retries": 3,
-            "messages": [{"role": "user", "content": "hi"}],
-        }
-        asyncio.run(self.handler().async_pre_call_hook(None, None, data, "acompletion"))
-        self.assertEqual(data, {"model": "gpt-4o", "max_retries": 3, "messages": [{"role": "user", "content": "hi"}]})
+    def test_requests_are_left_to_the_guard(self):
+        # The guard, registered whether or not the request log is, drops the
+        # fields that would add content to the log or change the retries.
+        self.assertNotIn("async_pre_call_hook", vars(self.module.RequestLog))
 
     def test_no_content_setting_remains(self):
         source = (PACKAGE / "request_log.py").read_text(encoding="utf-8")

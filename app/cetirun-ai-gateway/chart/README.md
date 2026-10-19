@@ -372,9 +372,9 @@ running with, so it stays at zero. Replaying that save stored
 A caller cannot turn retries back on for its own request. LiteLLM accepts
 `num_retries` in the request body or the `x-litellm-num-retries` header, and
 `model_group_retry_policy`; measured, each made one failing request four
-upstream calls. The image's request log callback drops those fields, and the
-cluster test checks it. With `requestLog.enabled` off the callback is not
-registered, and they are not dropped.
+upstream calls. The image's guard callback, which the entrypoint always
+registers, drops those fields, and the cluster test checks it; see
+[The guard callback](#the-guard-callback).
 
 Sending a failed request to another deployment of the same model is not a
 retry; see [Routing](#routing).
@@ -667,11 +667,39 @@ match none. So a shared model's fallback to a Copilot model could reach another
 Agent's proxy. With the setting, LiteLLM skips a fallback target the caller's key
 could not request directly.
 
-The groups only separate Agents while keys and teams are limited to them. A key
-or team allowed every model, or a `copilot/` name directly, has no group to
-filter by, so LiteLLM spreads its requests for a `copilot/` name over every
-Agent's proxy. The operator creates teams and keys without such grants; do not
-add them in the console.
+The groups only separate Agents while keys and teams are limited to them. To
+LiteLLM, a key or team allowed every model, or a `copilot/` name directly, has
+no group to filter by, so it would spread that key's requests for a `copilot/`
+name over every Agent's proxy. The image's guard callback prevents that: a key
+reaches a per-Agent GitHub Copilot route only if it holds that route's access
+group; keys granted every model, such as the master key, do not reach them.
+The operator creates teams and keys without such grants; do not add them in
+the console.
+
+### The guard callback
+
+The image's entrypoint always registers a second callback, the guard, before
+LiteLLM loads its configuration, whatever `requestLog` says. Settings saved in
+the console cannot remove it. It:
+
+- drops request fields a caller could use to change the Gateway for its own
+  call: `litellm_request_debug`, and the retry fields described under
+  [Upstream errors are not retried](#upstream-errors-are-not-retried);
+- leaves the per-Agent GitHub Copilot routes out of a request unless the
+  calling key holds the route's access group, `cetirun-copilot-<Agent UID>`.
+  A key granted every model, such as the master key, a key holding `*` or a
+  `copilot/` model name, and a request whose key LiteLLM does not pass on,
+  reach none of them. Every other deployment is left as it is. An auto
+  router's choice of tier is held to the same rule;
+- keeps error messages free of LiteLLM's internal deployment list: error
+  messages returned to callers no longer include LiteLLM's internal list of
+  deployments in cooldown. The response keeps its status, 429, the "Try again
+  in N seconds" wording and the `retry-after` header. The Gateway's own log and
+  the request log keep the full message.
+
+With `operatorIntegration` off, the guard's request fields and error messages
+apply all the same; a standalone Gateway has no `cetirun-copilot-` groups for
+it to separate.
 
 ## Credentials
 
@@ -1069,7 +1097,7 @@ container runtimes split longer lines, and Container Insights stores the
 pieces as separate records, none of them valid JSON. Should escaping make a
 line longer, which control characters can, the error text, the client's tags
 and extra key metadata go first, then the longest strings are cut, and the line
-carries `"truncated": true`. The callback also drops a client's
+carries `"truncated": true`. The image's guard callback also drops a client's
 `litellm_request_debug` field: with it, LiteLLM printed that call's prompt and
 the provider's raw response to the log.
 
@@ -1096,7 +1124,8 @@ configuration.
 
 The proxy runs as one uvicorn process per pod, as LiteLLM starts by default.
 The entrypoint refuses more workers, or another server, since they would load
-LiteLLM again without the callback; scale with `replicaCount` instead.
+LiteLLM again without the image's callbacks, the guard included, whatever
+`requestLog` says; scale with `replicaCount` instead.
 
 ### LiteLLM's spend log
 
@@ -1242,9 +1271,9 @@ the non-root user 65532.
   migrations applied and the proxy became ready.
 - `cetirun-ai-gateway migrate` applies migrations; any other arguments start
   the proxy. Starting never touches a database, because the same image serves
-  the per-agent Copilot proxy, which has none. With `CETIRUN_REQUEST_LOG=true`,
-  which the chart sets, the proxy starts in the entrypoint's own process with
-  the request log callback registered.
+  the per-agent Copilot proxy, which has none. The Gateway proxy starts in the
+  entrypoint's own process with the guard callback registered, and, with
+  `CETIRUN_REQUEST_LOG=true`, which the chart sets, the request log callback.
 
 To move to a new LiteLLM release, regenerate `requirements.txt` from that
 release's upstream image, rebuild, and let the build's `pip check` name any
