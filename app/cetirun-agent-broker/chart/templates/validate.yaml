@@ -11,3 +11,10 @@
 {{- if not .Values.istio.sidecarInjection }}{{ fail "istio.sidecarInjection must be true to confirm that the release namespace has injection enabled" }}{{ end -}}
 {{- if empty .Values.istio.revision }}{{ fail "istio.revision is required for revision-based sidecar injection" }}{{ end -}}
 {{- if or (empty .Values.operator.namespace) (empty .Values.operator.serviceAccount) }}{{ fail "operator namespace and ServiceAccount are required" }}{{ end -}}
+
+{{- if ne .Values.connectionBindings.enabled .Values.tls.enabled }}{{ fail "connectionBindings.enabled and tls.enabled must match" }}{{ end -}}
+{{- if .Values.connectionBindings.enabled -}}
+{{- range $name, $value := dict "tls.secretName" .Values.tls.secretName "tls.certKey" .Values.tls.certKey "tls.keyKey" .Values.tls.keyKey "tls.clientCAKey" .Values.tls.clientCAKey "toolService.namespace" .Values.toolService.namespace "toolService.serviceAccount" .Values.toolService.serviceAccount "toolService.workloadTokenAudience" .Values.toolService.workloadTokenAudience "portal.namespace" .Values.portal.namespace "portal.serviceAccount" .Values.portal.serviceAccount -}}
+{{- if empty $value }}{{ fail (printf "%s is required for connection bindings" $name) }}{{ end -}}
+{{- end -}}
+{{- end -}}
