@@ -484,6 +484,17 @@ class SandboxAdmissionChartTests(unittest.TestCase):
                     "apiGroups": [""], "resources": ["pods"],
                     "verbs": ["get", "list", "delete", "patch"],
                 }, rules)
+                self.assertEqual([
+                    rule for rule in rules
+                    if "apps" in rule["apiGroups"] and "replicasets" in rule["resources"]
+                ], [{
+                    "apiGroups": ["apps"], "resources": ["replicasets"],
+                    "verbs": ["get", "list"],
+                }])
+                self.assertIn({
+                    "apiGroups": ["apps"], "resources": ["controllerrevisions"],
+                    "verbs": ["get"],
+                }, rules)
 
     def test_native_empty_skills_claim_name_is_optional_without_extra_grants(self):
         admission = self.enforced_values(podsEnabled=True)

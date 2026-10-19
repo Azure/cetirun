@@ -87,8 +87,11 @@ rules:
     resources: ["statefulsets", "deployments"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: ["apps"]
-    resources: ["controllerrevisions", "replicasets"]
+    resources: ["controllerrevisions"]
     verbs: ["get"]
+  - apiGroups: ["apps"]
+    resources: ["replicasets"]
+    verbs: ["get", "list"]
   - apiGroups: [""]
     resources: ["pods"]
     # Recorded native lifetimes still need finalization after starts are disabled.

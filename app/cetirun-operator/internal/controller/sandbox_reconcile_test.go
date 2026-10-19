@@ -313,19 +313,7 @@ func TestReconciledSandboxFinishesStoppingReservationBeforeResume(t *testing.T) 
 			t.Run(fmt.Sprintf("%s/acknowledged=%v", kind, acknowledged), func(t *testing.T) {
 				ctx := context.Background()
 				f := newSandboxRuntimeFixtureForAgent(t, true, nil, true, kind, true, true,
-					func(r *AgentReconciler, kube client.Client) {
-						authority, err := sandboxcoordination.NewState(r.OperatorNamespace, "resume-coordination")
-						if err != nil {
-							t.Fatal(err)
-						}
-						if err := kube.Create(ctx, authority); err != nil {
-							t.Fatal(err)
-						}
-						r.SandboxNativeCoordination = &sandboxcoordination.Store{
-							Client: kube, APIReader: kube, Namespace: authority.Namespace,
-							Identity: w.ObjectIdentity{Name: authority.Name, UID: authority.UID},
-						}
-					})
+					withReconciledCoordination(t))
 				agent := f.current(t)
 				if agent.Spec.Suspended || slices.Contains(agent.Finalizers, sandboxHoldFinalizer) {
 					t.Fatal("fixture must start with current resume intent and no hold marker")
@@ -408,6 +396,136 @@ func TestReconciledSandboxFinishesStoppingReservationBeforeResume(t *testing.T) 
 					if workload.Replicas != 1 {
 						t.Fatal("resume did not restore the Agent and auxiliary workloads")
 					}
+				}
+			})
+		}
+	}
+}
+
+func withReconciledCoordination(t *testing.T) func(*AgentReconciler, client.Client) {
+	t.Helper()
+	return func(r *AgentReconciler, kube client.Client) {
+		authority, err := sandboxcoordination.NewState(r.OperatorNamespace, "resume-coordination")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := kube.Create(context.Background(), authority); err != nil {
+			t.Fatal(err)
+		}
+		r.SandboxNativeCoordination = &sandboxcoordination.Store{
+			Client: kube, APIReader: kube, Namespace: authority.Namespace,
+			Identity: w.ObjectIdentity{Name: authority.Name, UID: authority.UID},
+		}
+	}
+}
+
+func TestReconciledSandboxStopWaitsForMissingAuxiliaryChildren(t *testing.T) {
+	for _, kind := range []string{"openclaw", "hermes"} {
+		for _, scenario := range []string{"unobserved-controller", "removed-controller", "remaining-replicaset", "remaining-pod"} {
+			t.Run(kind+"/"+scenario, func(t *testing.T) {
+				ctx := context.Background()
+				f := newSandboxRuntimeFixtureForAgent(t, true, nil, true, kind, false, true,
+					withReconciledCoordination(t))
+				if scenario != "unobserved-controller" {
+					f.reconcileOK(t)
+				}
+				expected := reconciledExpectationForTest(t, f)
+				if scenario == "unobserved-controller" {
+					for index := range expected.Workloads {
+						if expected.Workloads[index].Kind == "Deployment" {
+							expected.Workloads[index].Identity.UID = ""
+						}
+					}
+					unobserved, err := expected.Object(f.r.OperatorNamespace)
+					if err != nil {
+						t.Fatal(err)
+					}
+					state := &corev1.ConfigMap{}
+					if err := f.kube.Get(ctx, client.ObjectKeyFromObject(unobserved), state); err != nil {
+						t.Fatal(err)
+					}
+					state.Data = unobserved.Data
+					if err := f.kube.Update(ctx, state); err != nil {
+						t.Fatal(err)
+					}
+				}
+				var auxiliary w.RenderedWorkload
+				for _, workload := range expected.Workloads {
+					if workload.Kind == "Deployment" {
+						auxiliary = workload
+					}
+				}
+				if auxiliary.Identity.Name == "" ||
+					(auxiliary.Identity.UID == "") != (scenario == "unobserved-controller") {
+					t.Fatal("fixture did not retain the requested controller-observation boundary")
+				}
+				agent := f.current(t)
+				keyID := agent.Status.AIGateway.KeyID
+				store := f.r.SandboxNativeCoordination
+				ticket, found, err := store.ReadNative(ctx, agent.UID)
+				if err != nil || !found {
+					t.Fatal("missing source reservation:", err)
+				}
+				if _, err := store.BeginNativeStop(ctx, ticket); err != nil {
+					t.Fatal(err)
+				}
+				main := f.workload(t)
+				main.Spec.Replicas = ptr.To[int32](0)
+				if err := f.kube.Update(ctx, main); err != nil {
+					t.Fatal(err)
+				}
+				main.Status.ObservedGeneration, main.Status.Replicas = main.Generation, 0
+				if err := f.kube.Status().Update(ctx, main); err != nil {
+					t.Fatal(err)
+				}
+				proxy := &appsv1.Deployment{}
+				if err := f.kube.Get(ctx, client.ObjectKey{
+					Namespace: expected.Namespace.Name, Name: auxiliary.Identity.Name,
+				}, proxy); err != nil {
+					t.Fatal(err)
+				}
+				if err := f.kube.Delete(ctx, proxy); err != nil {
+					t.Fatal(err)
+				}
+				var child client.Object
+				switch scenario {
+				case "remaining-replicaset":
+					child = &appsv1.ReplicaSet{ObjectMeta: metav1.ObjectMeta{
+						Name: "old-proxy-replicaset", Namespace: expected.Namespace.Name,
+						OwnerReferences: []metav1.OwnerReference{{
+							APIVersion: "apps/v1", Kind: "Deployment", Name: proxy.Name, UID: proxy.UID, Controller: ptr.To(true),
+						}},
+					}, Spec: appsv1.ReplicaSetSpec{Replicas: ptr.To[int32](1)}}
+				case "remaining-pod":
+					child = &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+						Name: "late-proxy-pod", Namespace: expected.Namespace.Name,
+					}, Status: corev1.PodStatus{Phase: corev1.PodPending}}
+				}
+				if child != nil {
+					if err := f.kube.Create(ctx, child); err != nil {
+						t.Fatal(err)
+					}
+					if _, err := f.reconcile(); err == nil {
+						t.Fatal("controller absence concealed a remaining ReplicaSet or Pod")
+					}
+					current, found, err := store.ReadNative(ctx, agent.UID)
+					if err != nil || !found || current.Reservation.Phase != sandboxcoordination.Stopping ||
+						current.Reservation.ID != ticket.Reservation.ID {
+						t.Fatal("remaining child released or replaced its source reservation:", err)
+					}
+					if err := f.kube.Delete(ctx, child); err != nil {
+						t.Fatal(err)
+					}
+				}
+				for range 4 {
+					f.reconcileOK(t)
+				}
+				current, found, err := store.ReadNative(ctx, agent.UID)
+				if err != nil || !found || current.Reservation.Phase != sandboxcoordination.Reserved ||
+					current.Reservation.ID == ticket.Reservation.ID ||
+					reconciledExpectationForTest(t, f).Home != expected.Home ||
+					f.current(t).Status.AIGateway.KeyID != keyID || len(f.gateway.generated) != 1 {
+					t.Fatal("observed auxiliary removal could not resume with retained identity:", err)
 				}
 			})
 		}

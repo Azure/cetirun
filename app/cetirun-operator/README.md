@@ -148,6 +148,12 @@ workload identity or writer-fencing receipt; unknown shutdown outcomes remain he
 A resume that encounters a recorded stop restores the hold and finishes that
 guarded shutdown before acquiring new authority. A missing hold marker alone
 does not discard the pending stop or establish quiescence.
+Removed or never-created auxiliary Deployments still require their ReplicaSets
+and namespace Pods to be absent. Their absence does not replace the main HOME
+workload's acknowledged shutdown.
+The Operator lists auxiliary ReplicaSets in the affected namespace; the chart
+retains this read/list permission when new native starts are disabled so existing
+lifetimes can finish cleanup.
 
 ### Retained single-start profile and capability registration
 

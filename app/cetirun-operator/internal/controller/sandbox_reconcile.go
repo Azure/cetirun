@@ -475,6 +475,23 @@ func (r *AgentReconciler) stopReconciledReservation(ctx context.Context, agent *
 			stopped = ptr.Deref(workload.Spec.Replicas, 1) == 0 &&
 				workload.Status.ObservedGeneration >= workload.Generation && workload.Status.Replicas == 0
 		}
+		if apierrors.IsNotFound(err) && desired.Kind == "Deployment" {
+			// A removed or never-created auxiliary has no HOME writer. Its
+			// ReplicaSets must be gone; namespace Pods are checked below.
+			var replicas appsv1.ReplicaSetList
+			if err := r.customReader().List(ctx, &replicas, client.InNamespace(expected.Namespace.Name)); err != nil {
+				return fmt.Errorf("observe removed Sandbox auxiliary children: %w", err)
+			}
+			for _, replica := range replicas.Items {
+				if slices.ContainsFunc(replica.OwnerReferences, func(owner metav1.OwnerReference) bool {
+					return owner.Kind == "Deployment" && (owner.Name == desired.Identity.Name ||
+						(desired.Identity.UID != "" && owner.UID == desired.Identity.UID))
+				}) {
+					return fmt.Errorf("common Sandbox source reservation waits for removed auxiliary ReplicaSets")
+				}
+			}
+			continue
+		}
 		if err != nil {
 			return fmt.Errorf("observe common controller shutdown: %w", err)
 		}
