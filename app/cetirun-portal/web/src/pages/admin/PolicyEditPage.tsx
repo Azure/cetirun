@@ -12,6 +12,15 @@ import {
   type AgentPolicyDTO,
   type AgentPolicyUpsertRequest,
 } from "../../api/adminPolicy";
+import {
+  emptyRateLimitForm,
+  MAX_MODEL_LIMITS,
+  rateLimitFormFrom,
+  rateLimitsFromForm,
+  TPM_HINT,
+  type RateLimitForm,
+  type RateLimitRow,
+} from "../../utils/rateLimits";
 
 interface FormState {
   name: string;
@@ -25,11 +34,12 @@ interface FormState {
   budgetEnabled: boolean;
   defaultMonthlyUSD: string;
   maxMonthlyUSD: string;
+  limits: RateLimitForm;
 }
 
 const emptyForm: FormState = {
   name: "", uid: "", resourceVersion: "", openclaw: true, hermes: false, skills: "", copilot: false,
-  sharedModels: "", budgetEnabled: false, defaultMonthlyUSD: "", maxMonthlyUSD: "",
+  sharedModels: "", budgetEnabled: false, defaultMonthlyUSD: "", maxMonthlyUSD: "", limits: emptyRateLimitForm,
 };
 
 function fromDTO(policy: AgentPolicyDTO): FormState {
@@ -45,6 +55,7 @@ function fromDTO(policy: AgentPolicyDTO): FormState {
     budgetEnabled: !!policy.modelAccess?.gatewayBudget,
     defaultMonthlyUSD: policy.modelAccess?.gatewayBudget?.defaultMonthlyUSD || "",
     maxMonthlyUSD: policy.modelAccess?.gatewayBudget?.maxMonthlyUSD || "",
+    limits: rateLimitFormFrom(policy.modelAccess?.rateLimits),
   };
 }
 
@@ -113,8 +124,17 @@ export function PolicyEditPage() {
       setSubmitError("Name must be a DNS-1123 label: lowercase, start with a letter, max 63 chars.");
       return;
     }
+    const limits = rateLimitsFromForm(form.limits);
+    if (limits.error) {
+      setSubmitError(limits.error);
+      return;
+    }
+    if (limits.limits) request.modelAccess!.rateLimits = limits.limits;
     if (isCreate) createMutation.mutate(request); else updateMutation.mutate(request);
   };
+  const setLimits = (limits: Partial<RateLimitForm>) => setForm({ ...form, limits: { ...form.limits, ...limits } });
+  const setRow = (index: number, row: Partial<RateLimitRow>) =>
+    setLimits({ perModel: form.limits.perModel.map((current, i) => (i === index ? { ...current, ...row } : current)) });
   if (!isCreate && isLoading) return <Spinner label="Loading policy..." />;
   if (!isCreate && error) return <MessageBar intent="error">Failed to load: {error.message}</MessageBar>;
   const pending = createMutation.isPending || updateMutation.isPending;
@@ -143,6 +163,27 @@ export function PolicyEditPage() {
         <Field label="Default monthly USD" required><Input value={form.defaultMonthlyUSD} onChange={(_, data) => setForm({ ...form, defaultMonthlyUSD: data.value })} placeholder="e.g. 20" /></Field>
         <Field label="Maximum monthly USD" required><Input value={form.maxMonthlyUSD} onChange={(_, data) => setForm({ ...form, maxMonthlyUSD: data.value })} placeholder="e.g. 50" /></Field>
       </div>}
+      <Divider />
+      <Text weight="semibold">AI Gateway limits per Agent</Text>
+      <Text size={200}>Every Agent of a Team that uses this policy gets these limits on its own Gateway key; Agents do not share them. Leave a field empty for no limit. A change applies to running Agents without a restart.</Text>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
+        <Field label="Max parallel requests" hint="At least 1."><Input inputMode="numeric" value={form.limits.maxParallelRequests} onChange={(_, data) => setLimits({ maxParallelRequests: data.value })} placeholder="No limit" /></Field>
+        <Field label="Requests per minute" hint="At least 1."><Input inputMode="numeric" value={form.limits.rpm} onChange={(_, data) => setLimits({ rpm: data.value })} placeholder="No limit" /></Field>
+        <Field label="Tokens per minute" hint="At least 4,096."><Input inputMode="numeric" value={form.limits.tpm} onChange={(_, data) => setLimits({ tpm: data.value })} placeholder="No limit" /></Field>
+      </div>
+      <Text size={200}>{TPM_HINT}</Text>
+      <Text size={200}>Total limits count every request of the key, including GitHub Copilot models. A per-model limit applies to the exact model name the Agent requests; for an auto router that is the router's name, not the model it picks.</Text>
+      {form.limits.perModel.map((row, index) => (
+        <div key={index} style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr auto", gap: 8, alignItems: "center" }}>
+          <Input aria-label={`Model name ${index + 1}`} value={row.model} onChange={(_, data) => setRow(index, { model: data.value })} placeholder="Gateway model name" />
+          <Input aria-label={`Requests per minute for model ${index + 1}`} inputMode="numeric" value={row.rpm} onChange={(_, data) => setRow(index, { rpm: data.value })} placeholder="RPM" />
+          <Input aria-label={`Tokens per minute for model ${index + 1}`} inputMode="numeric" value={row.tpm} onChange={(_, data) => setRow(index, { tpm: data.value })} placeholder="TPM" />
+          <Button type="button" appearance="subtle" onClick={() => setLimits({ perModel: form.limits.perModel.filter((_, i) => i !== index) })}>Remove</Button>
+        </div>
+      ))}
+      <div>
+        <Button type="button" disabled={form.limits.perModel.length >= MAX_MODEL_LIMITS} onClick={() => setLimits({ perModel: [...form.limits.perModel, { model: "", rpm: "", tpm: "" }] })}>Add per-model limit</Button>
+      </div>
       {submitError && <MessageBar intent="error">{submitError}</MessageBar>}
       <div style={{ display: "flex", gap: 8 }}>
         <Button appearance="primary" type="submit" disabled={pending}>{pending ? "Saving..." : isCreate ? "Create" : "Save"}</Button>

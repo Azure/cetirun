@@ -22,7 +22,10 @@ type CreateOptionsResponse struct {
 	AIGatewayEnabled  bool                     `json:"aiGatewayEnabled"`
 	Gateway           AIGatewayCatalogResponse `json:"gateway"`
 	AgentIdentity     CreateIdentityOptions    `json:"agentIdentity"`
-	Blocked           *ErrorDetail             `json:"blocked,omitempty"`
+	// RateLimits are the AI Gateway limits the selected Team's policy sets on
+	// each Agent's key; absent when it sets none.
+	RateLimits *AgentPolicyRateLimitsDTO `json:"rateLimits,omitempty"`
+	Blocked    *ErrorDetail              `json:"blocked,omitempty"`
 }
 
 type CreateIdentityOptions struct {
@@ -84,6 +87,7 @@ func (h *InstanceHandler) resolveCreationOptions(r *http.Request, requestedTeam 
 			return nil, &managementError{http.StatusServiceUnavailable, "policy_unavailable", "Unable to read the selected Team's Agent Policy; retry after it is available"}
 		}
 		options.PolicyName = policy.Name
+		options.RateLimits = toAgentPolicyRateLimitsDTO(policy.Spec.ModelAccess.RateLimits)
 		if !policy.DeletionTimestamp.IsZero() {
 			return block("policy_unavailable", "The selected Team's Agent Policy is being deleted")
 		}

@@ -60,6 +60,8 @@ type AgentPolicyModelAccessDTO struct {
 	Copilot       AgentPolicyCopilotAccessDTO      `json:"copilot,omitempty"`
 	SharedModels  AgentPolicySharedModelsAccessDTO `json:"sharedModels,omitempty"`
 	GatewayBudget *AgentPolicyGatewayBudgetDTO     `json:"gatewayBudget,omitempty"`
+	// RateLimits replaces the policy's limits on save; omitting it removes them.
+	RateLimits *AgentPolicyRateLimitsDTO `json:"rateLimits,omitempty"`
 }
 
 // AgentPolicyDTO exposes the fields managed by the Portal. Updates preserve
@@ -95,6 +97,7 @@ func toAgentPolicyDTO(policy *cetirunv1alpha1.AgentPolicy) AgentPolicyDTO {
 			Copilot:       AgentPolicyCopilotAccessDTO{Allowed: policy.Spec.ModelAccess.Copilot.Allowed},
 			SharedModels:  AgentPolicySharedModelsAccessDTO{Allowed: append([]string(nil), policy.Spec.ModelAccess.SharedModels.Allowed...)},
 			GatewayBudget: toAgentPolicyGatewayBudgetDTO(policy.Spec.ModelAccess.GatewayBudget),
+			RateLimits:    toAgentPolicyRateLimitsDTO(policy.Spec.ModelAccess.RateLimits),
 		},
 		CreatedAt: policy.CreationTimestamp.UTC().Format("2006-01-02T15:04:05Z"),
 	}
@@ -118,6 +121,7 @@ func toAgentPolicySpec(req AgentPolicyUpsertRequest) cetirunv1alpha1.AgentPolicy
 			Copilot:       cetirunv1alpha1.AgentPolicyCopilotAccess{Allowed: req.ModelAccess.Copilot.Allowed},
 			SharedModels:  cetirunv1alpha1.AgentPolicySharedModelsAccess{Allowed: append([]string(nil), req.ModelAccess.SharedModels.Allowed...)},
 			GatewayBudget: toAgentPolicyGatewayBudget(req.ModelAccess.GatewayBudget),
+			RateLimits:    toAgentPolicyRateLimits(req.ModelAccess.RateLimits),
 		},
 	}
 }
@@ -171,7 +175,7 @@ func validateAgentPolicyRequest(req AgentPolicyUpsertRequest) string {
 			return "sharedModels.allowed entries must be non-empty model identifiers without whitespace"
 		}
 	}
-	return ""
+	return validateAgentPolicyRateLimits(req.ModelAccess.RateLimits)
 }
 
 func agentPolicyVersion(req AgentPolicyUpsertRequest) (kube.AgentPolicyVersion, string) {

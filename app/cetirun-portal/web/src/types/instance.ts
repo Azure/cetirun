@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+import type { AgentPolicyRateLimits } from "./rateLimits";
+
 export interface TeamSummary {
   name: string;
   role: string;
@@ -82,6 +84,8 @@ export interface AIGatewayInfo {
     /** Account models left out because the Gateway has no price for them. */
     unpriced?: string[];
   };
+  /** Limits the Agent's policy sets on its key; absent when there are none. */
+  rateLimits?: AgentPolicyRateLimits;
 }
 
 export interface ModelAccess {
