@@ -298,8 +298,11 @@ matched those rates exactly.
 ### When a budget runs out
 
 Budgets are in US dollars; there is no token allowance. A request over budget is
-refused with HTTP 429 and `Budget has been exceeded!`. Clients treat 429 as rate
-limiting, so an agent usually retries a few times before it reports the error.
+refused with HTTP 422 and `Budget has been exceeded!` (measured on LiteLLM
+1.105.1). Before 1.105 LiteLLM answered 429, which clients treated as rate
+limiting: an agent retried several times and then told the user to wait,
+although the budget only came back at its reset. 422 is not a rate-limit
+status; how each agent reports it was not measured.
 
 A `budget_duration` of `30d` or `1mo` resets on the first of each month, UTC,
 rather than thirty days after the key was created. Resets are applied by a
