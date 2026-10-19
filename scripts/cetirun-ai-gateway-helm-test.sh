@@ -342,6 +342,31 @@ assert_absent "use_shared_health_check" "no shared health checks when off" "${of
 assert_absent "DEFAULT_SHARED_HEALTH_CHECK_TTL" "no shared result lifetime when off" "${off}"
 assert_rejected "a probe interval under 30 seconds" --set router.healthChecks.intervalSeconds=10
 
+# Without a limit LiteLLM starts every probe at once: one GitHub account
+# answered 11 to 43 of a cycle's Copilot probes with 429. LiteLLM reads the
+# limit from general_settings, and treats 0 as no limit.
+echo "==> probes run a few at a time, under one lock per cycle"
+assert_contains "health_check_concurrency: 8$" "at most eight probes run at once by default" "${output}"
+assert_contains "health_check_concurrency: 3$" "the probe concurrency can be changed" \
+  "$(render --set router.healthChecks.concurrency=3)"
+assert_contains "health_check_concurrency: 8$" "a single replica limits its probes too" "${single}"
+assert_absent "health_check_concurrency" "no probe concurrency when probes are off" "${off}"
+assert_rejected "a probe concurrency of 0, which LiteLLM reads as no limit" --set router.healthChecks.concurrency=0
+assert_rejected "a negative probe concurrency" --set router.healthChecks.concurrency=-1
+# The probing replica's lock expires after 60 seconds unless set. A longer cycle
+# would let another replica take it and probe every deployment again.
+grep -A1 'name: DEFAULT_SHARED_HEALTH_CHECK_LOCK_TTL$' <<< "${output}" | grep -q 'value: "300"' || {
+  echo "FAIL: the shared probe lock does not last one interval" >&2
+  exit 1
+}
+grep -A1 'name: DEFAULT_SHARED_HEALTH_CHECK_LOCK_TTL$' <<< "$(render --set router.healthChecks.intervalSeconds=120)" \
+  | grep -q 'value: "120"' || {
+  echo "FAIL: the shared probe lock does not follow the probe interval" >&2
+  exit 1
+}
+assert_absent "DEFAULT_SHARED_HEALTH_CHECK_LOCK_TTL" "no shared probe lock without Redis" "${single}"
+assert_absent "DEFAULT_SHARED_HEALTH_CHECK_LOCK_TTL" "no shared probe lock when off" "${off}"
+
 # A LiteLLM auto router is an entry in models whose model is
 # auto_router/complexity_router. Its own name is checked against the unpriced
 # model block like any model; measured, each call is charged at the price of the
@@ -479,6 +504,44 @@ two_routers "${router_dir}/shipped-prompts.yaml" "classifier_type: llm, classifi
   "classifier_type: llm, classifier_llm_config: {model: lint-model}"
 helm template "${release_name}" "${chart_dir}" -f "${router_dir}/shipped-prompts.yaml" > /dev/null \
   || { echo "FAIL: two model classifiers with LiteLLM's own prompt were counted" >&2; exit 1; }
+
+# ----- Budgets -----
+
+# LiteLLM 1.105 refuses a request over budget with 422 unless told otherwise.
+# Measured with OpenClaw 2026.9.6 and Hermes v2026.9.24: 422 reads to both as a
+# malformed request, 429 as a rate limit they retry, 402 as exhausted credits.
+echo "==> a request over budget is refused with 402"
+assert_contains "budget_exceeded_status_code: 402$" "a budget refusal is 402 by default" "${output}"
+assert_contains "budget_exceeded_status_code: 402$" "a budget refusal does not depend on Redis" "${single}"
+for code in 422 429; do
+  assert_contains "budget_exceeded_status_code: ${code}$" "${code} can be chosen for a budget refusal" \
+    "$(render --set budgetExceededStatusCode=${code})"
+done
+assert_rejected "a budget refusal status that agents were not measured with" --set budgetExceededStatusCode=500
+assert_rejected "a budget refusal status given as text" --set-string budgetExceededStatusCode=402
+
+# ----- Disruptions -----
+
+# A node drain evicts one Gateway replica at a time. maxUnavailable rather than
+# minAvailable, and only above one replica, so the budget never blocks a drain.
+echo "==> the Gateway replicas are drained one at a time"
+pdb="$(render -s templates/poddisruptionbudget.yaml)"
+assert_contains "kind: PodDisruptionBudget" "two replicas get a PodDisruptionBudget" "${pdb}"
+assert_contains "apiVersion: policy/v1$" "the PodDisruptionBudget uses policy/v1" "${pdb}"
+assert_contains "maxUnavailable: 1$" "one replica at a time may be evicted" "${pdb}"
+assert_absent "minAvailable" "the budget never requires a replica to stay up" "${pdb}"
+assert_contains "app.kubernetes.io/component: gateway$" "the budget selects the Gateway pods" \
+  "$(awk '/^  selector:/{f=1} f' <<< "${pdb}")"
+[ "$(awk '/^  selector:/{f=1} f' <<< "${pdb}")" \
+  = "$(awk '/^  selector:/{f=1} /^  template:/{f=0} f' <<< "$(render -s templates/deployment.yaml)")" ] || {
+  echo "FAIL: the PodDisruptionBudget does not select exactly the Deployment's pods" >&2
+  exit 1
+}
+assert_absent "kind: PodDisruptionBudget" "a single replica gets no PodDisruptionBudget" "${single}"
+assert_absent "kind: PodDisruptionBudget" "the PodDisruptionBudget can be turned off" \
+  "$(render --set podDisruptionBudget.enabled=false)"
+assert_contains "kind: PodDisruptionBudget" "three replicas get a PodDisruptionBudget" \
+  "$(render --set replicaCount=3)"
 
 # ----- Shutdown -----
 
@@ -854,19 +917,22 @@ assert_rejected "the metrics port on the Service port" --set metrics.enabled=tru
 # with a nil pointer. Without them, the chart renders as with their defaults.
 # Setting a map to null removes it, as --reuse-values leaves it.
 echo "==> a release from before these settings upgrades with --reuse-values"
-reuse_args=(--set metrics=null --set requestLog=null --set spendLogs=null --set router=null)
-for template in deployment.yaml configmap.yaml; do
+reuse_args=(--set metrics=null --set requestLog=null --set spendLogs=null --set router=null
+  --set budgetExceededStatusCode=null --set podDisruptionBudget=null)
+for template in deployment.yaml configmap.yaml poddisruptionbudget.yaml; do
   [ "$(render "${reuse_args[@]}" -s "templates/${template}")" = "$(render -s "templates/${template}")" ] || {
-    echo "FAIL: without the request log, metrics and router settings, ${template} differs from its default render" >&2
+    echo "FAIL: without the request log, metrics, router, budget status and disruption budget settings, ${template} differs from its default render" >&2
     exit 1
   }
 done
 for template in configmap.yaml deployment.yaml; do
-  [ "$(render --set router.healthChecks.intervalSeconds=null -s "templates/${template}")" \
-    = "$(render -s "templates/${template}")" ] || {
-    echo "FAIL: without the probe interval, ${template} differs from its default render" >&2
-    exit 1
-  }
+  for setting in intervalSeconds concurrency; do
+    [ "$(render --set "router.healthChecks.${setting}=null" -s "templates/${template}")" \
+      = "$(render -s "templates/${template}")" ] || {
+      echo "FAIL: without router.healthChecks.${setting}, ${template} differs from its default render" >&2
+      exit 1
+    }
+  done
 done
 [ "$(render --set metrics.enabled=true --set metrics.podMonitor=null -s templates/deployment.yaml)" \
   = "$(render --set metrics.enabled=true -s templates/deployment.yaml)" ] || {
