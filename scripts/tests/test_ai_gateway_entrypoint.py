@@ -75,6 +75,43 @@ class CopilotProxyModeTest(unittest.TestCase):
             self.assertEqual(started, [("litellm", ["litellm", "--config", "/etc/litellm/config.yaml", "--port", "4000"], str(path))])
 
 
+class RequestLogIndexTest(unittest.TestCase):
+    """The request log indexes LiteLLM 1.105 builds after its migrations, not in them."""
+
+    def setUp(self):
+        self.entrypoint = load_entrypoint()
+
+    def build(self, manager):
+        package = types.ModuleType("litellm_proxy_extras")
+        package.__path__ = []
+        utils = types.ModuleType("litellm_proxy_extras.utils")
+        if manager is not None:
+            utils.ProxyExtrasDBManager = manager
+        modules = {"litellm_proxy_extras": package, "litellm_proxy_extras.utils": utils}
+        with mock.patch.dict(sys.modules, modules), mock.patch("builtins.print") as printed:
+            self.entrypoint.build_request_log_indexes()
+        return " ".join(str(call.args[0]) for call in printed.call_args_list)
+
+    def test_the_indexes_are_built_after_the_migrations(self):
+        calls = []
+        manager = types.SimpleNamespace(build_request_log_indexes=lambda: calls.append("built") or True)
+        self.assertIn("in place", self.build(manager))
+        self.assertEqual(calls, ["built"])
+
+    def test_an_unfinished_build_does_not_fail_the_migration(self):
+        self.assertIn("next migration tries again",
+                      self.build(types.SimpleNamespace(build_request_log_indexes=lambda: False)))
+
+        def broken():
+            raise RuntimeError("database went away")
+
+        self.assertIn("database went away", self.build(types.SimpleNamespace(build_request_log_indexes=broken)))
+
+    def test_a_litellm_without_the_step_has_nothing_to_build(self):
+        self.assertEqual(self.build(types.SimpleNamespace()), "")
+        self.assertEqual(self.build(None), "")
+
+
 class GatewayModeTest(unittest.TestCase):
     """The Gateway proxy, always with the guard, with and without the request log.
 

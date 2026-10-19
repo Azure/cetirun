@@ -927,7 +927,17 @@ Measured from `v1.101.0` to `v1.102.0` with data in place, on the upstream
 image before the chart moved to its own: six migrations applied, virtual keys
 and their spend preserved, models added through the console still decrypted and
 served, and a budget partly spent before the upgrade was enforced exactly after
-it.
+it. Measured again from 1.101.0 to 1.105.1, with the entrypoint's `migrate` on
+the upstream 1.105.1 image: 30 migrations applied in six seconds, the key and
+its spend kept, a model added through the console still decrypted and served,
+and the key's budget enforced after it.
+
+From 1.105, LiteLLM builds two indexes on `LiteLLM_SpendLogs` after the
+migrations rather than in one, so that building them never blocks writes. Its
+proxies build them only when they migrate themselves, which the chart's do not,
+so the `migrate` step builds them after the migrations; without them, queries
+on the spend log are slower. A build that could not finish does not fail the
+step: the next pod's migration tries again.
 
 ### Rolling back
 
