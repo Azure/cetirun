@@ -462,6 +462,29 @@ class NativeGatewayChartTests(unittest.TestCase):
     def test_standalone_gateway_model_configuration_is_unchanged(self):
         self.assertEqual(gateway_models(MODEL, integrated=False), [MODEL])
 
+    def test_running_gateway_pods_keep_the_configuration_they_started_with(self):
+        # A directory mount is updated inside running pods, and LiteLLM's
+        # periodic re-read then removed an edited model from the old pods.
+        for integrated in (False, True):
+            with self.subTest(integrated=integrated):
+                objects = render(GATEWAY_CHART, {"operatorIntegration": integrated, "models": [MODEL]})
+                deployment = object_of_kind(objects, "Deployment")
+                pod = deployment["spec"]["template"]["spec"]
+                config_volume = next(volume for volume in pod["volumes"] if "configMap" in volume)
+                mounts = [
+                    mount
+                    for container in [*pod.get("initContainers", []), *pod["containers"]]
+                    for mount in container.get("volumeMounts", [])
+                    if mount["name"] == config_volume["name"]
+                ]
+                self.assertEqual(mounts, [{
+                    "name": config_volume["name"], "mountPath": "/etc/litellm/config.yaml",
+                    "subPath": "config.yaml", "readOnly": True,
+                }])
+                gateway = next(container for container in pod["containers"] if container["name"] == "gateway")
+                self.assertIn("/etc/litellm/config.yaml", gateway["args"])
+                self.assertTrue(deployment["spec"]["template"]["metadata"]["annotations"]["checksum/config"])
+
 
 @unittest.skipUnless(shutil.which("node"), "requires Node for the runtime health probe")
 class NativeHealthProbeTests(unittest.TestCase):

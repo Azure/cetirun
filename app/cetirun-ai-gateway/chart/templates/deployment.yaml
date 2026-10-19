@@ -105,8 +105,17 @@ spec:
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:
+            {{- /* The file, not the directory: Kubernetes updates a directory-mounted
+            ConfigMap inside running pods, and LiteLLM re-reads its configuration
+            file every 30 seconds while models are stored in the database, removing
+            each configured model whose ID is no longer in the file without adding
+            the new entry. During an upgrade that edits a model, the old pods then
+            stopped serving it until they were replaced. Mounted with subPath, a
+            pod keeps the configuration it started with, and checksum/config
+            replaces the pods when the configuration changes. */}}
             - name: config
-              mountPath: /etc/litellm
+              mountPath: /etc/litellm/config.yaml
+              subPath: config.yaml
               readOnly: true
             {{- if $metricsEnabled }}
             - name: metrics

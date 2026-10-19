@@ -106,6 +106,14 @@ assert_contains "kind: Service" "Service is rendered" "${output}"
 assert_contains "kind: ConfigMap" "ConfigMap is rendered" "${output}"
 assert_contains "model_name: lint-model" "configured model reaches the LiteLLM config" "${output}"
 assert_contains "\- \-\-config" "the config path is passed explicitly" "${output}"
+# Mounted as a directory, the file changed inside running pods after an
+# upgrade, and LiteLLM's periodic re-read removed an edited model from the old
+# pods until they were replaced. subPath keeps each pod's file as it started.
+gateway_deployment="$(render -s templates/deployment.yaml)"
+config_mount="$(awk '/^            - name: config$/ { n = 4 } n > 0 { print; n-- }' <<< "${gateway_deployment}")"
+assert_contains "mountPath: /etc/litellm/config.yaml$" "the configuration is mounted as a file" "${config_mount}"
+assert_contains "subPath: config.yaml$" "the configuration file is mounted with subPath" "${config_mount}"
+assert_absent "mountPath: /etc/litellm$" "the configuration directory is not mounted" "${gateway_deployment}"
 
 # Names are read from the rendered objects rather than rebuilt here: the chart
 # shortens long names, and uses the release name alone when it already
