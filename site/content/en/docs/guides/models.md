@@ -43,7 +43,9 @@ the instance's budget at the model's list price. When Copilot fails, the Gateway
 takes the instance's Copilot route out of rotation for a few seconds and sends
 its requests to the shared deployments: at once after a 429, and for other
 errors once most of the route's recent requests have failed, so a few requests
-can fail first.
+can fail first. While the instance's proxy itself cannot be reached, for example
+while it restarts after a sign-in, the requests sent to it fail until the
+Gateway's next health check takes it out of rotation.
 
 Any other Copilot model keeps its own ID, such as `gpt-5.5`, and only the
 instance's Copilot subscription serves it: a 429 from Copilot reaches the

@@ -702,7 +702,11 @@ deployments at that order, the largest `weight`, `rpm` and `tpm` any of them
 sets. `router.routingStrategy` then spreads the Agent's requests over the shared
 deployments and its own route, and LiteLLM's default cooldown takes a failing
 route out of rotation, see [Failover](#a-failed-request-goes-to-another-deployment).
-Spend is counted at the model's list price either way.
+LiteLLM neither cools down nor retries elsewhere a request that could not
+connect, as when the Agent's proxy is down: until the health checks take the
+route out of rotation at their next probe (`router.healthChecks`), the requests
+that land on it fail. Measured with a route whose proxy refused connections:
+4 of 20 requests failed. Spend is counted at the model's list price either way.
 
 Any other Copilot model goes under its own ID, such as `gpt-5.5`, with
 `litellm_params.cooldown_time: 0`: it is the only deployment the Agent's key
