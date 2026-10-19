@@ -535,11 +535,14 @@ deployments: four keys sent 10 requests each, alternating between the
 replicas, and each key's 10 reached one deployment.
 
 It is off for a model whose deployments set `litellm_params.order`: LiteLLM
-applies the choice before it keeps only the lowest order, and renews it only
-when the chosen deployment serves, so a key that reached the standby while the
-primary was down would stay on the standby after the primary is back. The
-chart turns it off for such a model in `model_group_affinity_config`, which
-keeps the other checks on for it.
+applies the choice before it keeps only the lowest order, and keeps the first
+choice for the hour, so a key that reached the standby while the primary was
+down would stay on the standby after the primary is back. The chart turns it
+off for such a model in `model_group_affinity_config`, which keeps the other
+checks on for it. Measured on LiteLLM 1.105.1: a key whose first requests came
+while the primary was failing its probes went to the standby; once the primary
+passed again, with affinity on for that model all 6 of its requests stayed on
+the standby, with the chart's setting all 6 went back to the primary.
 
 ### Fallbacks
 
@@ -1101,7 +1104,17 @@ Measured from `v1.101.0` to `v1.102.0` with data in place, on the upstream
 image before the chart moved to its own: six migrations applied, virtual keys
 and their spend preserved, models added through the console still decrypted and
 served, and a budget partly spent before the upgrade was enforced exactly after
-it.
+it. Measured again from 1.101.0 to 1.105.1, with the entrypoint's `migrate` on
+the upstream 1.105.1 image: 30 migrations applied in six seconds, the key and
+its spend kept, a model added through the console still decrypted and served,
+and the key's budget enforced after it.
+
+From 1.105, LiteLLM builds two indexes on `LiteLLM_SpendLogs` after the
+migrations rather than in one, so that building them never blocks writes. Its
+proxies build them only when they migrate themselves, which the chart's do not,
+so the `migrate` step builds them after the migrations; without them, queries
+on the spend log are slower. A build that could not finish does not fail the
+step: the next pod's migration tries again.
 
 ### Rolling back
 

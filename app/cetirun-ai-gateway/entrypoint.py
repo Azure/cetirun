@@ -120,8 +120,41 @@ def migrate():
     schema, count = migrations_schema()
     print(f"applying migrations from {schema} ({count} migrations)", flush=True)
     result = subprocess.run(["prisma", "migrate", "deploy", "--schema", str(schema)], check=False)
+    if result.returncode == 0:
+        build_request_log_indexes()
     connection.close()
     sys.exit(result.returncode)
+
+
+def build_request_log_indexes():
+    """Build the indexes on LiteLLM's request log that its migrations leave out.
+
+    LiteLLM 1.105 builds two indexes on LiteLLM_SpendLogs after `prisma migrate
+    deploy` rather than in a migration, so that building them never blocks
+    inserts: its own migration job does it, or a proxy that migrated itself.
+    The Gateway's proxies start with schema updates disabled, so this step
+    builds them. It holds no transaction open, as the index build needs.
+
+    The proxy serves without them, only with slower request log queries, so a
+    build that could not finish does not fail the migration; the next pod's
+    migration tries again. A LiteLLM without the step has nothing to build.
+    """
+    try:
+        from litellm_proxy_extras.utils import ProxyExtrasDBManager
+    except ImportError:
+        return
+    build = getattr(ProxyExtrasDBManager, "build_request_log_indexes", None)
+    if build is None:
+        return
+    try:
+        built = build()
+    except Exception as error:  # LiteLLM promises not to raise; a failure here must not fail the migration
+        built = False
+        print(f"building the request log indexes failed: {error}", flush=True)
+    if built:
+        print("request log indexes are in place", flush=True)
+    else:
+        print("the request log indexes are not all in place; the next migration tries again", flush=True)
 
 
 def token_present(path):
