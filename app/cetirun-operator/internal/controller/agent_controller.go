@@ -570,8 +570,9 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 	// determined that generation or operator config has changed, so an upgrade
 	// will happen. We only set the phase in-memory here; it will be persisted
 	// by the next updateStatus call (after Helm install or on error), avoiding
-	// an extra status write that would trigger a redundant reconcile.
-	if instance.Status.Phase == cetirunv1alpha1.PhaseReady || instance.Status.Phase == cetirunv1alpha1.PhaseSuspended {
+	// an extra status write that would trigger a redundant reconcile. Sandbox
+	// source/drift checks also run at steady state, so wait for an actual apply.
+	if !reconciledSandbox && (instance.Status.Phase == cetirunv1alpha1.PhaseReady || instance.Status.Phase == cetirunv1alpha1.PhaseSuspended) {
 		instance.Status.Phase = cetirunv1alpha1.PhaseProvisioning
 	}
 
@@ -858,6 +859,9 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 		if err := r.checkRegistryIntent(ctx, instance); err != nil {
 			return ctrl.Result{Requeue: true}, nil
 		}
+		if reconciledSandbox {
+			instance.Status.Phase = cetirunv1alpha1.PhaseProvisioning
+		}
 		logger.Info("Installing/upgrading Helm chart", "release", releaseName, "namespace", ns)
 		if err := r.HelmClient.InstallOrUpgrade(ns, releaseName, prepared); err != nil {
 			logger.Error(err, "Helm install/upgrade failed", "release", releaseName)
@@ -888,6 +892,18 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 	}
 	if err := r.recoverRegistryPull(ctx, instance); err != nil {
 		return ctrl.Result{}, err
+	}
+
+	// Preserve the heartbeat between periodic passes; its own status event must
+	// not schedule an endless series of otherwise unchanged Sandbox reconciles.
+	reconciledAt := metav1.Now()
+	if reconciledSandbox && alreadyDeployed && startPhase == instance.Status.Phase &&
+		(startPhase == cetirunv1alpha1.PhaseReady || startPhase == cetirunv1alpha1.PhaseSuspended) &&
+		instance.Status.LastReconcileTime != nil {
+		elapsed := reconciledAt.Sub(instance.Status.LastReconcileTime.Time)
+		if elapsed >= 0 && elapsed < 10*time.Minute {
+			reconciledAt = *instance.Status.LastReconcileTime
+		}
 	}
 
 	// 10. Handle suspended instances.
@@ -943,11 +959,10 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 			metav1.ConditionFalse, "Suspended", "Pod scaled to zero — instance is suspended")
 		setCondition(&instance.Status.Conditions, cetirunv1alpha1.ConditionReady,
 			metav1.ConditionFalse, "InstanceSuspended", "Instance is suspended")
-		now := metav1.Now()
 		instance.Status.Phase = cetirunv1alpha1.PhaseSuspended
 		instance.Status.Namespace = ns
 		instance.Status.HelmReleaseName = releaseName
-		instance.Status.LastReconcileTime = &now
+		instance.Status.LastReconcileTime = &reconciledAt
 		if err := r.updateStatus(ctx, instance); err != nil {
 			logger.Error(err, "Failed to update status to Suspended", "alias", alias)
 			return ctrl.Result{}, err
@@ -1023,10 +1038,9 @@ func (r *AgentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (resu
 	}
 
 	// 12. Persist Ready after prerequisites and workload observation.
-	now := metav1.Now()
 	instance.Status.Namespace = ns
 	instance.Status.HelmReleaseName = releaseName
-	instance.Status.LastReconcileTime = &now
+	instance.Status.LastReconcileTime = &reconciledAt
 	if err := r.updateStatus(ctx, instance); err != nil {
 		logger.Error(err, "Failed to update status to Ready", "alias", alias)
 		return ctrl.Result{}, err

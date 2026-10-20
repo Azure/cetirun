@@ -11,6 +11,7 @@ import (
 	"io"
 	"slices"
 	"testing"
+	"time"
 
 	api "github.com/Azure/CetiRun/app/cetirun-operator/api/v1alpha1"
 	"github.com/Azure/CetiRun/app/cetirun-operator/internal/helm"
@@ -341,6 +342,96 @@ func TestReconciledSandboxRepairsCurrentStateDrift(t *testing.T) {
 	after := reconciledExpectationForTest(t, f)
 	if after.Home != expected.Home || after.PlanHash != expected.PlanHash {
 		t.Fatal("repair changed the authorized plan or retained HOME")
+	}
+}
+
+func TestReconciledSandboxSteadyStateDoesNotRewriteStatus(t *testing.T) {
+	for _, kind := range []string{"openclaw", "hermes"} {
+		for _, suspended := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/suspended=%t", kind, suspended), func(t *testing.T) {
+				ctx := context.Background()
+				f := newSandboxRuntimeFixtureForAgent(t, true, nil, true, kind, true, false)
+				if suspended {
+					agent := f.current(t)
+					agent.Spec.Suspended = true
+					agent.Generation++
+					if err := f.kube.Update(ctx, agent); err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					workload := f.workload(t)
+					workload.Status.ObservedGeneration = workload.Generation
+					workload.Status.ReadyReplicas, workload.Status.UpdatedReplicas = 1, 1
+					if err := f.kube.Status().Update(ctx, workload); err != nil {
+						t.Fatal(err)
+					}
+				}
+				f.reconcileOK(t)
+				agent := f.current(t)
+				wantPhase := api.PhaseReady
+				if suspended {
+					wantPhase = api.PhaseSuspended
+				}
+				if agent.Status.Phase != wantPhase {
+					t.Fatalf("fixture phase = %s, want %s", agent.Status.Phase, wantPhase)
+				}
+				previousTime := metav1.NewTime(time.Now().Add(-time.Minute).Truncate(time.Second))
+				agent.Status.LastReconcileTime = &previousTime
+				if err := f.kube.Status().Update(ctx, agent); err != nil {
+					t.Fatal(err)
+				}
+				// Settle source resourceVersions after the synthetic status change.
+				f.reconcileOK(t)
+				agent = f.current(t)
+				stages, statusWrites := f.installer.stages, 0
+				f.r.Client = interceptor.NewClient(f.kube.(client.WithWatch), interceptor.Funcs{
+					SubResourcePatch: func(ctx context.Context, c client.Client, subresource string, object client.Object,
+						patch client.Patch, opts ...client.SubResourcePatchOption,
+					) error {
+						if _, ok := object.(*api.Agent); ok && subresource == "status" {
+							statusWrites++
+						}
+						return c.SubResource(subresource).Patch(ctx, object, patch, opts...)
+					},
+				})
+				for range 3 {
+					result, err := f.reconcile()
+					if err != nil || result.Requeue || result.RequeueAfter != 10*time.Minute {
+						t.Fatalf("steady reconciliation did not retain its periodic requeue: %+v, %v", result, err)
+					}
+				}
+				current := f.current(t)
+				if statusWrites != 0 || f.installer.stages != stages || current.ResourceVersion != agent.ResourceVersion ||
+					!current.Status.LastReconcileTime.Equal(&previousTime) || current.Status.Phase != wantPhase {
+					t.Fatalf("unchanged lifetime generated status/watch churn: status writes=%d, applies=%d",
+						statusWrites, f.installer.stages-stages)
+				}
+				stale := metav1.NewTime(time.Now().Add(-11 * time.Minute))
+				current.Status.LastReconcileTime = &stale
+				if err := f.kube.Status().Update(ctx, current); err != nil {
+					t.Fatal(err)
+				}
+				for range 3 {
+					f.reconcileOK(t)
+				}
+				if statusWrites != 1 || f.installer.stages != stages ||
+					!f.current(t).Status.LastReconcileTime.After(stale.Time) {
+					t.Fatalf("periodic status refresh did not settle after one write: %d", statusWrites)
+				}
+				secret := &corev1.Secret{}
+				if err := f.kube.Get(ctx, client.ObjectKey{Namespace: instanceNamespace(agent.Name), Name: agent.Spec.GatewayTokenSecretRef}, secret); err != nil {
+					t.Fatal(err)
+				}
+				secret.Data["CETIRUN_AUTH_KEY"] = []byte("synthetic-steady-state-rotation")
+				if err := f.kube.Update(ctx, secret); err != nil {
+					t.Fatal(err)
+				}
+				f.reconcileOK(t)
+				if f.installer.stages != stages+1 {
+					t.Fatal("stable status suppressed a current source change")
+				}
+			})
+		}
 	}
 }
 

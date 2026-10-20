@@ -139,6 +139,9 @@ chart components remain subject to runtime, privilege, storage and credential
 constraints. Config/key/model updates use normal Helm reconciliation and preserve
 HOME and the existing Gateway spending identity. Missing or foreign ownership is
 not repaired by adopting resources or clearing protection markers.
+Ready and suspended Agents still recheck current sources and deployed controls.
+Unchanged passes retain their phase and reconcile timestamp between periodic
+refreshes instead of generating status-watch loops.
 
 Portal runtime profiles are optional: when absent, the controller pins
 chart/image/port from its selected trusted chart, with narrowly authorized
