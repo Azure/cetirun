@@ -542,7 +542,8 @@ gets no second attempt, so `num_retries` stays 0.
 | With 500 or 429, `router.failover: true` | 0 |
 
 Without it, LiteLLM stops sending requests to a failing deployment only after
-several failures, and only for a few seconds, separately on each replica. The
+several failures, and only for a few seconds. Each replica counts the failures
+it sees on its own; the cooldown that follows is shared through Redis. The
 cost: a request the provider refuses as invalid, with a 400, is sent to the
 other deployment too before the error reaches the client.
 
