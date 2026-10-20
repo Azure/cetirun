@@ -572,17 +572,38 @@ resource, a conversation that has been on both pays an extra call, and loses
 the reasoning it had, on every later turn: 61 of 84 turns in the test.
 
 `router.encryptedContentAffinity`, on by default, keeps each conversation on
-the deployment that encrypted its reasoning, or on one with the same endpoint
-and key (LiteLLM's `encrypted_content_affinity`). It marks the items it
-returns, so it needs no state in Redis, and turning it off later is safe: the
-marks are removed from every request either way. When that deployment is
-unavailable, LiteLLM 1.105.1 sends the turn to another deployment and leaves
-out the encrypted reasoning the new one cannot read, so the conversation
-continues without that reasoning rather than failing; LiteLLM 1.101.0 failed
-every such turn until the deployment was back, which is why the check used to
-be off by default. A deployment that authenticates without an API key is never
-treated as sharing an endpoint and key with another. The check applies to
-every model: LiteLLM cannot turn it off for one.
+the deployment that encrypted the earliest reasoning in it, or on one with the
+same endpoint and key (LiteLLM's `encrypted_content_affinity`). It marks the
+items it returns, so it needs no state in Redis, and turning it off later is
+safe: the marks are removed from every request either way. A deployment that
+authenticates without an API key is never treated as sharing an endpoint and
+key with another. The check applies to every model: LiteLLM cannot turn it off
+for one.
+
+When that deployment fails, LiteLLM 1.105.1 keeps the conversation on it while
+it still counts as available, so the conversation's requests fail with the
+deployment's error; `router.failover` does not rescue them, since the check
+pins the second attempt to the same deployment, which that attempt has to
+skip. The deployment stops counting as available while it is in cooldown or
+marked unhealthy by the health checks, and only then does the conversation
+move: its turns go to another deployment without any encrypted reasoning, with
+the reasoning summaries, until the deployment counts as available again.
+Measured with two replicas and mock deployments: no deployment received
+another's encrypted reasoning, and none refused a turn with a 400. LiteLLM
+1.101.0 failed every such turn until the deployment was back, which is why the
+check used to be off by default.
+
+A cooldown starts once more than half of at least five calls to the deployment
+in a minute failed on one replica, or at once on a 429, 401 or 404, and lasts
+five seconds; the request whose failure starts it is the only one
+`router.failover` sends on. Without health checks, a conversation therefore
+leaves a failing deployment only for moments. With health checks on, as by
+default, the conversation's requests fail only until a probe marks the
+deployment unhealthy: within one `router.healthChecks.intervalSeconds`, 300
+seconds by default, on the replica that probes, and up to one interval later
+on the others, which reuse its result. The conversation then stays moved while
+the probes keep failing. Keep health checks on; a shorter interval narrows the
+window, at the cost of more probes.
 
 ### A key stays on its deployment
 

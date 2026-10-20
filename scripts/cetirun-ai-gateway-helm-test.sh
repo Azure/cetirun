@@ -279,7 +279,8 @@ assert_absent "enable_weighted_failover" "failover can be turned off" "$(render 
 # deployment that produced the earlier response. Measured across two
 # deployments: 6 of 20 continuations failed without the check. Only the
 # resource that encrypted a model's reasoning can read it; LiteLLM 1.105.1
-# moves a conversation whose deployment is down and leaves that reasoning out.
+# moves a conversation off its deployment, without that reasoning, only while
+# the deployment is in cooldown or marked unhealthy by the health checks.
 # A key kept on one deployment keeps the provider's prompt cache.
 echo "==> continuations, encrypted reasoning and keys stay on their deployment"
 assert_contains 'optional_pre_call_checks: \["responses_api_deployment_check","encrypted_content_affinity","deployment_affinity"\]' \
