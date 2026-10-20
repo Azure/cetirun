@@ -150,7 +150,11 @@ tier. A changed router replaces its registration under the same internal name,
 so instances keep their configuration, and a removed router is unregistered.
 The registrations appear in the Gateway's console under their internal
 `cetirun-router-` names; change them on the Team, not in the console, which
-the operator does not watch for edits.
+the operator does not watch for edits. The Gateway's request log, and the
+Log Analytics queries in the Gateway chart's
+[Measuring the routers]({{< repo "app/cetirun-ai-gateway/chart/README.md" >}}#measuring-the-routers)
+section, show a Team's router under that internal name too; the Team's
+`status.modelRouters[].gatewayModel` gives the router each name belongs to.
 
 An instance gets a router only when it may use every model the router sends
 requests to, because the Gateway does not check a router's tier models against
