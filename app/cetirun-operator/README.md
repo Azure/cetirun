@@ -148,6 +148,14 @@ Ready and suspended Agents still recheck current sources and deployed controls.
 Unchanged passes retain their phase and reconcile timestamp between periodic
 refreshes instead of generating status-watch loops.
 
+Every disk-backed `emptyDir`, including extension and auxiliary volumes, must
+declare a positive `sizeLimit` no greater than the selected Sandbox scratch limit.
+The common chart bounds its context, empty-skills and Tailscale temporary storage
+too. Helpers with fixed temporary-volume sizes require a sufficiently large
+selected limit; validation does not silently enlarge it. Memory-backed volumes
+retain their separate memory accounting. These are per-volume checks, not a
+replacement for container/Pod storage accounting.
+
 Portal runtime profiles are optional only when its deployment explicitly enables
 `sandboxRuntimeDefaultsFromController` after this common executor is enabled.
 The Portal keeps that opt-in off during reader-first rollout, so missing profiles

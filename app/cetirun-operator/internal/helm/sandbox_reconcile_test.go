@@ -153,10 +153,48 @@ func TestReconciledSandboxProxyPreparationIsIndependent(t *testing.T) {
 	}
 }
 
+func TestReconciledSandboxExtraScratchLimit(t *testing.T) {
+	for _, tc := range []struct {
+		name, size string
+		rejected   bool
+	}{
+		{name: "missing", rejected: true},
+		{name: "zero", size: "0", rejected: true},
+		{name: "negative", size: "-1", rejected: true},
+		{name: "one byte over", size: "1073741825", rejected: true},
+		{name: "below limit", size: "1073741823"},
+		{name: "exact limit", size: "1Gi"},
+		{name: "equivalent units", size: "1024Mi"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bundle, values := reconciledSandboxInputs(t)
+			temporary := map[string]any{}
+			if tc.size != "" {
+				temporary["sizeLimit"] = tc.size
+			}
+			values["extraVolumes"] = []any{map[string]any{"name": "extension-scratch", "emptyDir": temporary}}
+			_, err := PrepareSandboxChart(testChart(t), values, nil, bundle)
+			if (err != nil) != tc.rejected {
+				t.Fatalf("temporary volume size %q: error=%v, want rejection=%t", tc.size, err, tc.rejected)
+			}
+		})
+	}
+}
+
 func TestReconciledSandboxAuxiliaryRoleConstraints(t *testing.T) {
 	bundle, _ := reconciledSandboxInputs(t)
 	for name, change := range map[string]func(*corev1.PodSpec){
 		"baseline": nil,
+		"unbounded scratch": func(p *corev1.PodSpec) {
+			p.Volumes = []corev1.Volume{{Name: "scratch", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}}
+		},
+		"oversized scratch": func(p *corev1.PodSpec) {
+			size := bundle.Identity().Resolution.Sandbox.Storage.Scratch.SizeLimit.DeepCopy()
+			size.Add(size)
+			p.Volumes = []corev1.Volume{{Name: "scratch", VolumeSource: corev1.VolumeSource{
+				EmptyDir: &corev1.EmptyDirVolumeSource{SizeLimit: &size},
+			}}}
+		},
 		"key environment": func(p *corev1.PodSpec) {
 			p.Containers[0].Env = []corev1.EnvVar{{Name: "KEY", ValueFrom: &corev1.EnvVarSource{
 				SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: "model-key"}, Key: "api-key"},
